@@ -1,0 +1,17 @@
+# ── FastAPI core ──────────────────────────────────────────────
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# ── HTTP / integraciones ──────────────────────────────────────
+httpx==0.28.1
+requests==2.32.3
+
+# ── Base de datos (cache híbrido Mercado Libre / Amazon) ──────
+PyMySQL==1.1.1
+cryptography==44.0.0          # requerido por PyMySQL para auth sha256
+
+# ── IA (generación de listings) ───────────────────────────────
+anthropic==0.42.0
