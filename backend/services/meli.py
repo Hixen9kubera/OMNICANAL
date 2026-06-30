@@ -51,7 +51,8 @@ _SQL_LISTAR = """
     WHERE (%(cuenta)s IS NULL OR mp.cuenta = %(cuenta)s)
       AND (%(solo_publicados)s = 0 OR mp.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR mp.sku LIKE %(like)s)
-    ORDER BY (mp.success = 1) DESC, mp.updated_at DESC
+      __ESTADO__
+    ORDER BY __ORDEN__
     LIMIT %(limit)s OFFSET %(offset)s
 """
 
@@ -62,6 +63,7 @@ _SQL_COUNT = """
     WHERE (%(cuenta)s IS NULL OR mp.cuenta = %(cuenta)s)
       AND (%(solo_publicados)s = 0 OR mp.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR mp.sku LIKE %(like)s)
+      __ESTADO__
 """
 
 
@@ -90,31 +92,49 @@ def _normalizar(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Orden permitido (columnas del SELECT)
+_ORDEN_ML = {
+    "stock_desc": "p.stock_odoo DESC",
+    "stock_asc": "p.stock_odoo ASC",
+    "precio_desc": "precio DESC",
+    "precio_asc": "precio ASC",
+    "reciente": "(mp.success = 1) DESC, mp.updated_at DESC",
+}
+
+
 def listar(
     page: int = 1,
     per_page: int = 40,
     search: str | None = None,
     solo_publicados: bool = False,
     cuenta: str | None = None,
+    orden: str = "reciente",
+    estados: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Devuelve (items, total) desde el cache MySQL.
-    `cuenta` filtra por cuenta de ML (BEKURA=Kubera, SANCORFASHION=San Corpe);
-    None = todas las cuentas / todos los productos.
+    `cuenta` filtra por cuenta de ML (BEKURA=Kubera, SANCORFASHION=San Corpe).
+    `orden` ordena por stock/precio. `estados` filtra publicado/inactivo.
     """
     offset = (page - 1) * per_page
     like = f"%{search}%" if search else None
+    # Filtro de estado: publicado (success=1) / inactivo (success<>1)
+    estado_sql = ""
+    if estados:
+        if "publicado" in estados and "inactivo" not in estados:
+            estado_sql = " AND mp.success = 1"
+        elif "inactivo" in estados and "publicado" not in estados:
+            estado_sql = " AND (mp.success IS NULL OR mp.success = 0)"
+    order_sql = _ORDEN_ML.get(orden, _ORDEN_ML["reciente"])
     params = {
-        "limit": per_page,
-        "offset": offset,
-        "search": search,
-        "like": like,
-        "solo_publicados": 1 if solo_publicados else 0,
-        "cuenta": cuenta,
+        "limit": per_page, "offset": offset, "search": search, "like": like,
+        "solo_publicados": 1 if solo_publicados else 0, "cuenta": cuenta,
     }
+    sql = _SQL_LISTAR.replace("__ESTADO__", estado_sql).replace("__ORDEN__", order_sql)
+    sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql)
     try:
-        rows = db.fetch_all(_SQL_LISTAR, params)
-        total = db.fetch_scalar(_SQL_COUNT, params) or 0
+        rows = db.fetch_all(sql, params)
+        total = db.fetch_scalar(sql_count, params) or 0
         return [_normalizar(r) for r in rows], int(total)
     except Exception as exc:  # noqa: BLE001
         log.error("Error listando ML desde DB: %s", exc)
@@ -178,6 +198,60 @@ def _access_token(cuenta: str | None = None) -> str | None:
         return raw  # ya venía en claro
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo leer ml_tokens: %s", exc)
+        return None
+
+
+def refrescar_token(cuenta: str) -> str | None:
+    """
+    Renueva el access_token de una cuenta ML usando su refresh_token + las
+    credenciales de la app (MELI_APP_ID / MELI_CLIENT_SECRET). Guarda el nuevo
+    token cifrado en ml_tokens. Devuelve el nuevo access_token (o None).
+
+    Requiere configurar MELI_APP_ID y MELI_CLIENT_SECRET. Si no están, no se puede
+    renovar (los tokens expiran a las ~6 h) y la cuenta saldrá vacía hasta que el
+    proceso externo los actualice.
+    """
+    if not settings.meli_app_id or not settings.meli_client_secret:
+        log.warning("No hay MELI_APP_ID/SECRET; no se puede renovar token de %s", cuenta)
+        return None
+    try:
+        row = db.fetch_one(
+            "SELECT refresh_token FROM ml_tokens WHERE cuenta=%s LIMIT 1", (cuenta,)
+        )
+        if not row or not row.get("refresh_token"):
+            return None
+        f = _fernet()
+        rt = row["refresh_token"]
+        if f and isinstance(rt, str) and rt.startswith("gAAAAA"):
+            rt = f.decrypt(rt.encode()).decode()
+        import httpx as _httpx
+        r = _httpx.post(f"{_API}/oauth/token", data={
+            "grant_type": "refresh_token",
+            "client_id": settings.meli_app_id,
+            "client_secret": settings.meli_client_secret,
+            "refresh_token": rt,
+        }, timeout=20)
+        if r.status_code != 200:
+            log.warning("Refresh token ML %s falló: %s %s", cuenta, r.status_code, r.text[:120])
+            return None
+        tok = r.json()
+        nuevo = tok["access_token"]
+        nuevo_rt = tok.get("refresh_token", rt)
+        # Guardar cifrado
+        if f:
+            enc_at = f.encrypt(nuevo.encode()).decode()
+            enc_rt = f.encrypt(nuevo_rt.encode()).decode()
+        else:
+            enc_at, enc_rt = nuevo, nuevo_rt
+        with db.get_cursor() as cur:
+            cur.execute(
+                "UPDATE ml_tokens SET access_token=%s, refresh_token=%s, updated_at=NOW() WHERE cuenta=%s",
+                (enc_at, enc_rt, cuenta),
+            )
+        log.info("Token ML %s renovado.", cuenta)
+        return nuevo
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Refresh token ML %s error: %s", cuenta, exc)
         return None
 
 

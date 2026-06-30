@@ -91,9 +91,16 @@ def _upsert(rows: list[dict[str, Any]]) -> int:
 
 # ── LECTOR: Mercado Libre ───────────────────────────────────────────────────────
 
-async def _leer_ml_item(cli: httpx.AsyncClient, item_id: str, token: str) -> dict | None:
+async def _leer_ml_item(
+    cli: httpx.AsyncClient, item_id: str, token: str, cuenta: str | None = None
+) -> dict | None:
     try:
         r = await cli.get(f"/items/{item_id}", headers={"Authorization": f"Bearer {token}"})
+        # Token expirado (401): intentar renovarlo una vez y reintentar.
+        if r.status_code == 401 and cuenta:
+            nuevo = meli.refrescar_token(cuenta)
+            if nuevo:
+                r = await cli.get(f"/items/{item_id}", headers={"Authorization": f"Bearer {nuevo}"})
         if r.status_code != 200:
             return None
         return r.json()
@@ -116,7 +123,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
         for lst in listings:
-            item = await _leer_ml_item(cli, lst["ml_item_id"], token)
+            item = await _leer_ml_item(cli, lst["ml_item_id"], token, cuenta)
             if not item:
                 continue
             logistic = (item.get("shipping") or {}).get("logistic_type")
@@ -241,7 +248,7 @@ async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
                 token = meli._access_token(cta)
                 if not token:
                     continue
-                item = await _leer_ml_item(cli, r["ml_item_id"], token)
+                item = await _leer_ml_item(cli, r["ml_item_id"], token, cta)
                 if not item:
                     continue
                 logistic = (item.get("shipping") or {}).get("logistic_type")

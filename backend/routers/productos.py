@@ -40,13 +40,19 @@ async def listar_productos(
     search: str | None = Query(None, description="Búsqueda por SKU o nombre"),
     solo_publicados: bool = Query(False, description="Solo items publicados en el canal"),
     cuenta: str | None = Query(None, description="Cuenta ML: BEKURA (Kubera) o SANCORFASHION (San Corpe)"),
+    orden: str = Query("reciente", description="reciente | stock_desc | stock_asc | precio_desc | precio_asc"),
+    estados: str | None = Query(None, description="Filtro de estado, coma-separado: publicado,inactivo"),
+    categoria: int | None = Query(None, description="ID de categoría WooCommerce (canal general)"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
 
+    estados_lista = [e.strip() for e in estados.split(",")] if estados else None
+
     if canal == Canal.GENERAL.value:
         items_raw, total, total_pages = await woocommerce.listar_productos(
-            page=page, per_page=per_page, search=search
+            page=page, per_page=per_page, search=search,
+            orden=orden, estados=estados_lista, categoria=categoria,
         )
         # Enriquecer con presencia en marketplaces (puntos de colores)
         skus = [i["sku"] for i in items_raw]
@@ -56,11 +62,13 @@ async def listar_productos(
             it["origen"] = "woocommerce"
 
     elif canal == Canal.MERCADO_LIBRE.value:
-        items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta)
+        items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta,
+                                       orden=orden, estados=estados_lista)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.AMAZON.value:
-        items_raw, total = amazon.listar(page, per_page, search, solo_publicados)
+        items_raw, total = amazon.listar(page, per_page, search, solo_publicados,
+                                         orden=orden, estados=estados_lista)
         total_pages = _paginas(total, per_page)
 
     else:  # tiktok / walmart / temu / shein  → ejemplos
@@ -105,6 +113,15 @@ async def listar_productos(
         tiene_siguiente=page < total_pages,
     )
     return RespuestaProductos(canal=canal, items=items, paginacion=paginacion)
+
+
+@router.get("/_categorias/lista")
+async def listar_categorias():
+    """Categorías de WooCommerce (con productos) para el filtro de la vista General."""
+    try:
+        return await woocommerce.listar_categorias()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 @router.get("/{sku}", response_model=DetalleProducto)

@@ -107,14 +107,34 @@ async def _categoria_de_producto(producto: dict[str, Any]) -> list[dict[str, Any
     return [{"id": c.get("id"), "nombre": c.get("name")} for c in cats]
 
 
+_ESTADOS_WC = {
+    "publicado": ["publish"],
+    "inactivo": ["pending", "draft", "inprogress", "ready", "private"],
+}
+_ORDEN_SQL = {
+    "stock_desc": "stock_odoo DESC",
+    "stock_asc": "stock_odoo ASC",
+    "precio_desc": "precio DESC",
+    "precio_asc": "precio ASC",
+    "reciente": "updated_at DESC",
+}
+
+
 async def listar_productos(
     page: int = 1,
     per_page: int = 40,
     search: str | None = None,
+    orden: str = "reciente",
+    estados: list[str] | None = None,
+    categoria: int | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
-    Cada item ya trae la ruta completa de categorías.
+
+    - `categoria` (id WC) → ruta nativa de WooCommerce (param category).
+    - `search` / `estados` / `orden` por stock o precio → se resuelven contra la
+      tabla maestra `productos` (más potente) y se traen de WooCommerce por wc_id.
+    - Sin filtros → listado en vivo de WooCommerce.
     """
     campos = (
         "id,name,sku,price,regular_price,sale_price,stock_quantity,"
@@ -129,35 +149,50 @@ async def listar_productos(
         "_fields": campos,
     }
 
+    usa_db = bool(search or estados or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc"))
+
     async with _client() as cli:
-        if search:
-            data, total, total_pages = [], 0, 1
-            # 1) Búsqueda PARCIAL (sku o nombre, pocos caracteres) resuelta contra
-            #    la tabla maestra `productos` → wc_ids → traer de WooCommerce.
-            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page)
+        data, total, total_pages = [], 0, 1
+
+        if categoria:
+            # Ruta nativa WooCommerce por categoría (+ orden por precio si aplica)
+            p = {**params, "category": categoria}
+            if orden in ("precio_desc", "precio_asc"):
+                p["orderby"] = "price"
+                p["order"] = "asc" if orden == "precio_asc" else "desc"
+            r = await cli.get("/products", params=p)
+            r.raise_for_status()
+            data = r.json()
+            total = int(r.headers.get("X-WP-Total", len(data)))
+            total_pages = int(r.headers.get("X-WP-TotalPages", 1))
+
+        elif usa_db:
+            # Filtros/orden avanzados vía tabla `productos` → wc_ids → WooCommerce
+            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page, orden, estados)
             if wc_ids:
                 r = await cli.get("/products", params={
                     **params, "include": ",".join(str(i) for i in wc_ids),
                     "per_page": len(wc_ids),
                 })
                 if r.status_code == 200:
-                    data = r.json()
+                    by_id = {p["id"]: p for p in r.json()}
+                    data = [by_id[i] for i in wc_ids if i in by_id]  # preserva el orden
                     total = total_db
                     total_pages = max(1, (total_db + per_page - 1) // per_page)
-            # 2) Fallback: SKU exacto y luego nombre (por si el SKU no está en la DB)
-            if not data:
+            # Fallback SKU exacto / nombre si la DB no resolvió (p. ej. solo search)
+            if not data and search:
                 if " " not in search.strip():
                     rs = await cli.get("/products", params={**params, "sku": search.strip()})
                     if rs.status_code == 200 and rs.json():
                         data = rs.json()
                         total = int(rs.headers.get("X-WP-Total", len(data)))
                         total_pages = int(rs.headers.get("X-WP-TotalPages", 1))
-            if not data:
-                rn = await cli.get("/products", params={**params, "search": search})
-                rn.raise_for_status()
-                data = rn.json()
-                total = int(rn.headers.get("X-WP-Total", len(data)))
-                total_pages = int(rn.headers.get("X-WP-TotalPages", 1))
+                if not data:
+                    rn = await cli.get("/products", params={**params, "search": search})
+                    rn.raise_for_status()
+                    data = rn.json()
+                    total = int(rn.headers.get("X-WP-Total", len(data)))
+                    total_pages = int(rn.headers.get("X-WP-TotalPages", 1))
         else:
             r = await cli.get("/products", params=params)
             r.raise_for_status()
@@ -192,29 +227,72 @@ async def listar_productos(
     return items, total, total_pages
 
 
-def _buscar_wc_ids_db(search: str, page: int, per_page: int) -> tuple[list[int], int]:
+async def listar_categorias(limite: int = 300) -> list[dict[str, Any]]:
+    """Categorías de WooCommerce con productos (id, nombre, count), para el filtro."""
+    salida: list[dict[str, Any]] = []
+    async with _client() as cli:
+        page = 1
+        while page <= 20 and len(salida) < limite:
+            r = await cli.get("/products/categories", params={
+                "per_page": 100, "page": page, "orderby": "count", "order": "desc",
+                "hide_empty": True, "_fields": "id,name,parent,count",
+            })
+            if r.status_code != 200:
+                break
+            data = r.json()
+            if not data:
+                break
+            for c in data:
+                if c.get("count", 0) > 0:
+                    salida.append({"id": c["id"], "nombre": c["name"],
+                                   "parent": c.get("parent", 0), "count": c["count"]})
+            if page >= int(r.headers.get("X-WP-TotalPages", page)):
+                break
+            page += 1
+    return salida[:limite]
+
+
+def _buscar_wc_ids_db(
+    search: str | None,
+    page: int,
+    per_page: int,
+    orden: str = "reciente",
+    estados: list[str] | None = None,
+) -> tuple[list[int], int]:
     """
-    Resuelve una búsqueda PARCIAL (sku o nombre) contra la tabla maestra
-    `productos` y devuelve (wc_ids de la página, total de coincidencias).
-    Permite buscar por SKU parcial / pocos caracteres en la vista GENERAL.
+    Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) contra la
+    tabla maestra `productos` y devuelve (wc_ids de la página, total).
+    Habilita en GENERAL: búsqueda parcial, ordenar por stock/precio y filtrar por
+    estado (publicado / inactivo).
     """
     from services import db  # import local para evitar ciclos
 
-    like = f"%{search.strip()}%"
+    where = ["wc_id IS NOT NULL"]
+    args: list[Any] = []
+    if search:
+        where.append("(sku LIKE %s OR nombre LIKE %s)")
+        like = f"%{search.strip()}%"
+        args += [like, like]
+    if estados:
+        valores: list[str] = []
+        for e in estados:
+            valores += _ESTADOS_WC.get(e, [])
+        if valores:
+            where.append(f"status_wc IN ({','.join(['%s'] * len(valores))})")
+            args += valores
+    where_sql = " AND ".join(where)
+    order_sql = _ORDEN_SQL.get(orden, "updated_at DESC")
     offset = (page - 1) * per_page
     try:
         total = int(db.fetch_scalar(
-            """SELECT COUNT(*) FROM productos
-               WHERE wc_id IS NOT NULL AND (sku LIKE %s OR nombre LIKE %s)""",
-            (like, like),
+            f"SELECT COUNT(*) FROM productos WHERE {where_sql}", tuple(args)
         ) or 0)
         if not total:
             return [], 0
         rows = db.fetch_all(
-            """SELECT wc_id FROM productos
-               WHERE wc_id IS NOT NULL AND (sku LIKE %s OR nombre LIKE %s)
-               ORDER BY updated_at DESC LIMIT %s OFFSET %s""",
-            (like, like, per_page, offset),
+            f"""SELECT wc_id FROM productos WHERE {where_sql}
+                ORDER BY {order_sql} LIMIT %s OFFSET %s""",
+            tuple(args + [per_page, offset]),
         )
         return [r["wc_id"] for r in rows], total
     except Exception as exc:  # noqa: BLE001

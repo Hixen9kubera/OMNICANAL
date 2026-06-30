@@ -9,9 +9,11 @@ import AccountTabs from "@/components/AccountTabs";
 import ChannelLegend from "@/components/ChannelLegend";
 import Pagination from "@/components/Pagination";
 import ProductGrid from "@/components/ProductGrid";
+import ProductList from "@/components/ProductList";
+import ProductControls, { type Vista } from "@/components/ProductControls";
 import ProductDetailDrawer from "@/components/ProductDetailDrawer";
 
-import { listarCanales, listarProductos } from "@/lib/api";
+import { listarCanales, listarProductos, listarCategorias, type CategoriaWC } from "@/lib/api";
 import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
 
@@ -34,6 +36,13 @@ export default function OmnicanalPage() {
   const [soloPublicados, setSoloPublicados] = useState(false);
   const [cargando, setCargando] = useState(true);
   const [skuSel, setSkuSel] = useState<string | null>(null);
+
+  // Vista, orden y filtros
+  const [vista, setVista] = useState<Vista>("mosaico");
+  const [orden, setOrden] = useState("reciente");
+  const [estados, setEstados] = useState<string[]>([]);
+  const [categoria, setCategoria] = useState<number | null>(null);
+  const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -69,6 +78,9 @@ export default function OmnicanalPage() {
     listarCanales()
       .then(setCanales)
       .catch(() => setCanales([]));
+    listarCategorias()
+      .then(setCategorias)
+      .catch(() => setCategorias([]));
   }, []);
 
   // ── Debounce de búsqueda ────────────────────────────────────────────
@@ -92,6 +104,9 @@ export default function OmnicanalPage() {
         search: busqueda || undefined,
         soloPublicados,
         cuenta: esGeneral ? null : cuenta,
+        orden,
+        estados,
+        categoria: esGeneral ? categoria : null,
       },
       ctrl.signal,
     )
@@ -102,7 +117,7 @@ export default function OmnicanalPage() {
       .catch(() => {})
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [canal, page, busqueda, soloPublicados, cuenta, esGeneral]);
+  }, [canal, page, busqueda, soloPublicados, cuenta, esGeneral, orden, estados, categoria]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -117,6 +132,10 @@ export default function OmnicanalPage() {
     setCuenta(def);
     // Marketplaces: por defecto mostrar solo publicados
     setSoloPublicados(nuevo !== GENERAL);
+    // Reiniciar filtros que dependen del canal
+    setCategoria(null);
+    setEstados([]);
+    setOrden("reciente");
   }
 
   function irPagina(p: number) {
@@ -245,23 +264,53 @@ export default function OmnicanalPage() {
           </div>
         </div>
 
+        {/* Controles: vista mosaico/lista, orden, categoría, filtro de estado */}
+        <div className="mt-5">
+          <ProductControls
+            vista={vista}
+            onVista={setVista}
+            orden={orden}
+            onOrden={(o) => { setOrden(o); setPage(1); }}
+            esGeneral={esGeneral}
+            categorias={categorias}
+            categoria={categoria}
+            onCategoria={(c) => { setCategoria(c); setPage(1); }}
+            estados={estados}
+            onEstados={(e) => { setEstados(e); setPage(1); }}
+            color={tema.color}
+            textoColor={tema.texto}
+          />
+        </div>
+
         {/* Paginación superior */}
-        <div className="mt-5 rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
           <Pagination pag={pag} color={tema.color} textoColor={tema.texto} onPage={irPagina} />
         </div>
 
-        {/* Grid */}
+        {/* Productos: mosaico o lista */}
         <div className="mt-5">
-          <ProductGrid
-            productos={productos}
-            canal={canal}
-            esGeneral={esGeneral}
-            cargando={cargando}
-            color={tema.color}
-            colorMap={colorMap}
-            labelMap={labelMap}
-            onSelect={(p) => setSkuSel(p.sku)}
-          />
+          {vista === "mosaico" ? (
+            <ProductGrid
+              productos={productos}
+              canal={canal}
+              esGeneral={esGeneral}
+              cargando={cargando}
+              color={tema.color}
+              colorMap={colorMap}
+              labelMap={labelMap}
+              onSelect={(p) => setSkuSel(p.sku)}
+            />
+          ) : (
+            <ProductList
+              productos={productos}
+              esGeneral={esGeneral}
+              cargando={cargando}
+              color={tema.color}
+              colorMap={colorMap}
+              labelMap={labelMap}
+              onSelect={(p) => setSkuSel(p.sku)}
+            />
+          )}
         </div>
 
         {/* Paginación inferior */}

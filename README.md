@@ -453,6 +453,42 @@ Nuevas variables de entorno (backend): `DB_ENCRYPTION_KEY`, `SYNC_ENABLED`,
 
 ---
 
+## 🧾 Versión 0.13 — filtros, orden y vistas
+
+**Fecha:** 30 jun 2026. Sobre la v0.11.
+
+**Nuevo:**
+- 🔀 **Toggle de vista**: Mosaico (tarjetas) o **Lista** (tabla compacta con
+  imagen, SKU, categoría, precio, stock con FULL/FBA, estado y canales).
+- ↕️ **Orden** por **stock** (mayor↔menor) y **precio** (mayor↔menor).
+- 🗂️ **Filtro por categoría** (vista General) — categorías reales de WooCommerce
+  vía `GET /api/productos/_categorias/lista`.
+- 🧠 **Filtro inteligente de estado** (en vista Lista): Publicados/Activos,
+  Inactivos/Sin publicar, o combinados.
+- 🔧 La vista General resuelve búsqueda/estado/orden contra la tabla `productos` y
+  trae los datos de WooCommerce por `wc_id` (más potente y rápido).
+
+**Error reportado y atendido:**
+- ⚠️ **`401 Unauthorized` de Mercado Libre** (p. ej. `GET /items/MLM... → 401`):
+  el **token de una cuenta (San Corpe) estaba expirado**, por eso esa cuenta salía
+  vacía. Se agregó **renovación automática de token ante 401** usando el
+  `refresh_token` + las credenciales de la app. **Requiere configurar
+  `MELI_APP_ID` y `MELI_CLIENT_SECRET`**; sin ellas no se puede renovar (los tokens
+  de ML expiran a las ~6 h) y la cuenta seguirá vacía hasta que el proceso externo
+  los actualice.
+
+**Notas / limitaciones conocidas:**
+- El **orden por stock en General** usa `productos.stock_odoo`, que puede estar
+  desactualizado; el stock real fresco se va llenando con el sync de inventario.
+- El filtro por categoría aplica a la vista **General** (WooCommerce). Las
+  categorías por marketplace (ML/Amazon multinivel) quedan para una próxima
+  iteración (junto con "suma total de stock" y "categoría general de ML").
+
+Nuevas variables de entorno (opcionales, para renovar tokens ML):
+`MELI_APP_ID`, `MELI_CLIENT_SECRET`.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

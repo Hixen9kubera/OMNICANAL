@@ -28,6 +28,9 @@ export interface ListarParams {
   search?: string;
   soloPublicados?: boolean;
   cuenta?: string | null;
+  orden?: string;
+  estados?: string[];
+  categoria?: number | null;
 }
 
 export function listarProductos(
@@ -41,7 +44,21 @@ export function listarProductos(
   if (p.search) q.set("search", p.search);
   if (p.soloPublicados) q.set("solo_publicados", "true");
   if (p.cuenta) q.set("cuenta", p.cuenta);
+  if (p.orden && p.orden !== "reciente") q.set("orden", p.orden);
+  if (p.estados && p.estados.length) q.set("estados", p.estados.join(","));
+  if (p.categoria) q.set("categoria", String(p.categoria));
   return getJSON<RespuestaProductos>(`/api/productos?${q.toString()}`, signal);
+}
+
+export interface CategoriaWC {
+  id: number;
+  nombre: string;
+  parent: number;
+  count: number;
+}
+
+export function listarCategorias(signal?: AbortSignal): Promise<CategoriaWC[]> {
+  return getJSON<CategoriaWC[]>(`/api/productos/_categorias/lista`, signal);
 }
 
 export function listarCanales(signal?: AbortSignal): Promise<CanalInfo[]> {

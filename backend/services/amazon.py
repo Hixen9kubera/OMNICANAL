@@ -38,7 +38,8 @@ _SQL_LISTAR = """
     LEFT JOIN amazon_progress ap ON ap.sku = p.sku
     WHERE (%(solo_publicados)s = 0 OR ap.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR p.sku LIKE %(like)s)
-    ORDER BY (ap.success = 1) DESC, p.updated_at DESC
+      __ESTADO__
+    ORDER BY __ORDEN__
     LIMIT %(limit)s OFFSET %(offset)s
 """
 
@@ -48,6 +49,7 @@ _SQL_COUNT = """
     LEFT JOIN amazon_progress ap ON ap.sku = p.sku
     WHERE (%(solo_publicados)s = 0 OR ap.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR p.sku LIKE %(like)s)
+      __ESTADO__
 """
 
 
@@ -77,24 +79,41 @@ def _normalizar(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_ORDEN_AZ = {
+    "stock_desc": "p.stock_odoo DESC",
+    "stock_asc": "p.stock_odoo ASC",
+    "precio_desc": "p.precio DESC",
+    "precio_asc": "p.precio ASC",
+    "reciente": "(ap.success = 1) DESC, p.updated_at DESC",
+}
+
+
 def listar(
     page: int = 1,
     per_page: int = 40,
     search: str | None = None,
     solo_publicados: bool = False,
+    orden: str = "reciente",
+    estados: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     offset = (page - 1) * per_page
     like = f"%{search}%" if search else None
+    estado_sql = ""
+    if estados:
+        if "publicado" in estados and "inactivo" not in estados:
+            estado_sql = " AND ap.success = 1"
+        elif "inactivo" in estados and "publicado" not in estados:
+            estado_sql = " AND (ap.success IS NULL OR ap.success = 0)"
+    order_sql = _ORDEN_AZ.get(orden, _ORDEN_AZ["reciente"])
     params = {
-        "limit": per_page,
-        "offset": offset,
-        "search": search,
-        "like": like,
+        "limit": per_page, "offset": offset, "search": search, "like": like,
         "solo_publicados": 1 if solo_publicados else 0,
     }
+    sql = _SQL_LISTAR.replace("__ESTADO__", estado_sql).replace("__ORDEN__", order_sql)
+    sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql)
     try:
-        rows = db.fetch_all(_SQL_LISTAR, params)
-        total = db.fetch_scalar(_SQL_COUNT, params) or 0
+        rows = db.fetch_all(sql, params)
+        total = db.fetch_scalar(sql_count, params) or 0
         return [_normalizar(r) for r in rows], int(total)
     except Exception as exc:  # noqa: BLE001
         log.error("Error listando Amazon desde DB: %s", exc)
