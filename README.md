@@ -190,33 +190,38 @@ Documentación interactiva: **`/docs`** (Swagger UI).
 > Requisitos: **Python 3.12+** y **Node 18+**. Las credenciales ya están en
 > `.env` y `.env.amazon` en la raíz.
 
-### 1) Backend (FastAPI) — puerto 8000
+### ⭐ Comando único (recomendado)
 
-**PowerShell (Windows):**
+Un solo comando hace el setup (si falta) y levanta **backend + frontend** juntos:
+
 ```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+.\dev.ps1
 ```
 
-**bash/macOS/Linux:**
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+- Backend → **http://localhost:8000** (`/docs` para la API)
+- Frontend → **http://localhost:3000**
+
+`Ctrl+C` detiene ambos. La primera vez crea el entorno de Python e instala las
+dependencias automáticamente.
+
+> Alternativa multiplataforma con npm (requiere `npm install` en la raíz una vez,
+> y que el venv del backend ya exista):
+> ```bash
+> npm install      # instala 'concurrently' (solo la primera vez)
+> npm run dev      # levanta backend + frontend a la vez
+> ```
+
+### Arranque manual (dos terminales)
+
+Si prefieres correrlos por separado:
+
+```powershell
+# Terminal 1 — backend
+cd backend; python -m venv .venv; .\.venv\Scripts\Activate.ps1; pip install -r requirements.txt; uvicorn main:app --reload --port 8000
 ```
-
-### 2) Frontend (Next.js) — puerto 3000
-
-```bash
-cd frontend
-npm install
-# apunta al backend local (ya viene en .env.local)
-npm run dev
+```powershell
+# Terminal 2 — frontend
+cd frontend; npm install; npm run dev
 ```
 
 Abre **http://localhost:3000** → redirige a **/omnicanal**.

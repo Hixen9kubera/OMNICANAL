@@ -1,0 +1,15 @@
+{
+  "name": "omnicanal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Panel omnicanal Kubera — backend FastAPI + frontend Next.js. Un solo comando levanta todo.",
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "cd backend && .venv/Scripts/python -m uvicorn main:app --reload --port 8000",
+    "dev:web": "cd frontend && npm run dev",
+    "setup": "cd frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
