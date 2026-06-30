@@ -425,6 +425,34 @@ Nuevas variables de entorno (backend): `DB_ENCRYPTION_KEY`, `SYNC_ENABLED`,
 
 ---
 
+## 🧾 Versión 0.11 — correcciones y mejoras de UX
+
+**Fecha:** 30 jun 2026. Sobre la v0.1.
+
+**Errores corregidos:**
+- 🐛 **500 al abrir el detalle** de algunos productos: un error de red (TLS) de
+  `httpx` no se capturaba. Ahora `obtener_producto_por_sku` y todo el endpoint de
+  detalle son **tolerantes a fallos** (devuelven datos parciales, nunca 500).
+- 🐛 **502 al refrescar** un SKU que no existe en Amazon Listings (404). El botón
+  de refresco ahora usa el sync por SKU resiliente (no rompe).
+- 🐛 **Búsqueda en GENERAL no encontraba por SKU** (WooCommerce no busca SKU con
+  `search`). Ahora hay **búsqueda parcial** por SKU o nombre (pocos caracteres),
+  resuelta contra la tabla `productos`.
+
+**Mejoras:**
+- 💰 **Precio de Amazon** vía Pricing API v0 (lotes de 20) + lectura en vivo de un
+  SKU (Listings API: precio, FBA/FBM, situación, ASIN en una sola llamada).
+- ⚡ **Sincronización en vivo al abrir el detalle** (`sincronizar_sku`): lee ML
+  (ambas cuentas), Amazon y WooCommerce **en paralelo** y tolerante a fallos, para
+  que el detalle 360° nunca salga incompleto.
+- 🎯 **Columnas por canal correctas**: Mercado Libre muestra **FULL** (no FBA),
+  Amazon muestra **FBA** (no FULL), General solo stock propio.
+- 🏷️ Etiqueta **"CANALES"** sobre los puntos de colores + **tarjeta de leyenda
+  desplegable** que explica: punto relleno = publicado, solo borde = sin publicar,
+  sin punto = no está en ese canal, y el color de cada canal.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

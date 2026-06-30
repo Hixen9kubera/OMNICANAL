@@ -217,6 +217,108 @@ async def sincronizar_woo(skus: list[str]) -> dict[str, Any]:
     return {"canal": "general", "ok": True, "actualizados": n}
 
 
+# ── SYNC de un solo SKU (en vivo, al abrir el detalle) ──────────────────────────
+
+async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
+    """Lee el SKU en ambas cuentas de ML. Tolerante a fallos."""
+    try:
+        ml = db.fetch_all(
+            """SELECT cuenta, ml_item_id FROM ml_progress
+               WHERE sku=%s AND ml_item_id IS NOT NULL""",
+            (sku,),
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
+            vistos: set[str] = set()
+            for r in ml:
+                cta = r["cuenta"]
+                if cta in vistos:
+                    continue
+                vistos.add(cta)
+                token = meli._access_token(cta)
+                if not token:
+                    continue
+                item = await _leer_ml_item(cli, r["ml_item_id"], token)
+                if not item:
+                    continue
+                logistic = (item.get("shipping") or {}).get("logistic_type")
+                es_full = logistic == "fulfillment"
+                qty = item.get("available_quantity")
+                out.append({
+                    "sku": sku, "canal": "mercado_libre", "cuenta": cta,
+                    "item_id": r["ml_item_id"], "precio": item.get("price"),
+                    "stock_real": 0 if es_full else qty,
+                    "stock_full": qty if es_full else 0,
+                    "stock_fba": None, "es_full": 1 if es_full else 0,
+                    "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
+                })
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sync ML sku %s: %s", sku, exc)
+    return out
+
+
+async def _sync_amazon_sku(sku: str) -> list[dict[str, Any]]:
+    try:
+        if not db.fetch_one("SELECT 1 FROM amazon_progress WHERE sku=%s LIMIT 1", (sku,)):
+            return []
+        a = await amazon.detalle_sku(sku)
+        if not a:
+            return []
+        return [{
+            "sku": sku, "canal": "amazon", "cuenta": "",
+            "item_id": a.get("asin"), "precio": a.get("precio"),
+            "stock_real": a.get("stock_real"), "stock_full": None,
+            "stock_fba": a.get("stock_fba"), "es_full": 0,
+            "logistica": "FBA" if a.get("es_fba") else "FBM",
+            "situacion": a.get("estado"), "moneda": "MXN",
+        }]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sync Amazon sku %s: %s", sku, exc)
+        return []
+
+
+async def _sync_woo_sku(sku: str) -> list[dict[str, Any]]:
+    try:
+        p = await woocommerce.obtener_producto_por_sku(sku)
+        if not p:
+            return []
+        return [{
+            "sku": sku, "canal": "general", "cuenta": "",
+            "item_id": str(p.get("wc_id") or ""), "precio": p.get("precio"),
+            "stock_real": p.get("stock"), "stock_full": None, "stock_fba": None,
+            "es_full": 0, "logistica": "propia", "situacion": p.get("estado"), "moneda": "MXN",
+        }]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("sync Woo sku %s: %s", sku, exc)
+        return []
+
+
+async def sincronizar_sku(sku: str) -> dict[str, Any]:
+    """
+    Lee en vivo TODOS los canales para un SKU concreto (en paralelo) y actualiza
+    el cache. Se usa al abrir el detalle 360° para que nunca aparezca incompleto.
+    Tolerante a fallos: si un canal falla, los demás se guardan igual.
+    """
+    import asyncio
+    partes = await asyncio.gather(
+        _sync_ml_sku(sku), _sync_amazon_sku(sku), _sync_woo_sku(sku),
+        return_exceptions=True,
+    )
+    rows: list[dict[str, Any]] = []
+    for p in partes:
+        if isinstance(p, list):
+            rows.extend(p)
+    try:
+        n = _upsert(rows)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("upsert sku %s: %s", sku, exc)
+        n = 0
+    return {"sku": sku, "ok": True, "actualizados": n}
+
+
 # ── LECTURA para la UI ──────────────────────────────────────────────────────────
 
 def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:

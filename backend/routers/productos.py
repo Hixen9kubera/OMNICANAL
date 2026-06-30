@@ -110,6 +110,12 @@ async def listar_productos(
 @router.get("/{sku}", response_model=DetalleProducto)
 async def detalle_producto(sku: str):
     """Vista 360°: el SKU en WooCommerce + cada marketplace."""
+    # Sincroniza este SKU en vivo para que el detalle nunca salga incompleto.
+    try:
+        await inventario.sincronizar_sku(sku)
+    except Exception:  # noqa: BLE001
+        pass
+
     base = await woocommerce.obtener_producto_por_sku(sku)
     if not base:
         # Puede existir en el cache aunque no en WooCommerce
@@ -133,6 +139,7 @@ async def detalle_producto(sku: str):
         precio=base.get("precio"),
         precio_base=base.get("precio_base"),
         stock=base.get("stock"),
+        stock_real=base.get("stock"),
         categoria_path=base.get("categoria_path", []),
         categoria_id=base.get("categoria_id"),
         url=base.get("url"),

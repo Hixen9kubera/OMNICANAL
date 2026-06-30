@@ -45,7 +45,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.1.0",
+    version="0.11.0",
     lifespan=lifespan,
 )
 

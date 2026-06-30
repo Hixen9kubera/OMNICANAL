@@ -124,11 +124,16 @@ export default function ProductCard({
 
           {/* Stock o puntos de canal */}
           {esGeneral ? (
-            <ChannelDots
-              canales={producto.canales}
-              colorMap={colorMap}
-              labelMap={labelMap}
-            />
+            <div className="flex flex-col items-end gap-1">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+                Canales
+              </span>
+              <ChannelDots
+                canales={producto.canales}
+                colorMap={colorMap}
+                labelMap={labelMap}
+              />
+            </div>
           ) : (
             <div className="flex flex-col items-end gap-1">
               {/* stock real (lo que se sincroniza) */}

@@ -131,17 +131,27 @@ async def listar_productos(
 
     async with _client() as cli:
         if search:
-            # WooCommerce NO busca por SKU con 'search' (solo nombre/contenido).
-            # Si el término parece un SKU (sin espacios), probamos primero el
-            # parámetro 'sku' (coincidencia exacta) y, si no hay, caemos a 'search'.
-            parece_sku = " " not in search.strip()
             data, total, total_pages = [], 0, 1
-            if parece_sku:
-                rs = await cli.get("/products", params={**params, "sku": search.strip()})
-                if rs.status_code == 200 and rs.json():
-                    data = rs.json()
-                    total = int(rs.headers.get("X-WP-Total", len(data)))
-                    total_pages = int(rs.headers.get("X-WP-TotalPages", 1))
+            # 1) Búsqueda PARCIAL (sku o nombre, pocos caracteres) resuelta contra
+            #    la tabla maestra `productos` → wc_ids → traer de WooCommerce.
+            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page)
+            if wc_ids:
+                r = await cli.get("/products", params={
+                    **params, "include": ",".join(str(i) for i in wc_ids),
+                    "per_page": len(wc_ids),
+                })
+                if r.status_code == 200:
+                    data = r.json()
+                    total = total_db
+                    total_pages = max(1, (total_db + per_page - 1) // per_page)
+            # 2) Fallback: SKU exacto y luego nombre (por si el SKU no está en la DB)
+            if not data:
+                if " " not in search.strip():
+                    rs = await cli.get("/products", params={**params, "sku": search.strip()})
+                    if rs.status_code == 200 and rs.json():
+                        data = rs.json()
+                        total = int(rs.headers.get("X-WP-Total", len(data)))
+                        total_pages = int(rs.headers.get("X-WP-TotalPages", 1))
             if not data:
                 rn = await cli.get("/products", params={**params, "search": search})
                 rn.raise_for_status()
@@ -182,6 +192,36 @@ async def listar_productos(
     return items, total, total_pages
 
 
+def _buscar_wc_ids_db(search: str, page: int, per_page: int) -> tuple[list[int], int]:
+    """
+    Resuelve una búsqueda PARCIAL (sku o nombre) contra la tabla maestra
+    `productos` y devuelve (wc_ids de la página, total de coincidencias).
+    Permite buscar por SKU parcial / pocos caracteres en la vista GENERAL.
+    """
+    from services import db  # import local para evitar ciclos
+
+    like = f"%{search.strip()}%"
+    offset = (page - 1) * per_page
+    try:
+        total = int(db.fetch_scalar(
+            """SELECT COUNT(*) FROM productos
+               WHERE wc_id IS NOT NULL AND (sku LIKE %s OR nombre LIKE %s)""",
+            (like, like),
+        ) or 0)
+        if not total:
+            return [], 0
+        rows = db.fetch_all(
+            """SELECT wc_id FROM productos
+               WHERE wc_id IS NOT NULL AND (sku LIKE %s OR nombre LIKE %s)
+               ORDER BY updated_at DESC LIMIT %s OFFSET %s""",
+            (like, like, per_page, offset),
+        )
+        return [r["wc_id"] for r in rows], total
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Búsqueda DB falló, usando WooCommerce: %s", exc)
+        return [], 0
+
+
 async def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
     """
     Trae la imagen principal de WooCommerce para una lista de wc_id en UNA sola
@@ -211,10 +251,14 @@ async def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
 
 
 async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
-    async with _client() as cli:
-        r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,price,regular_price,stock_quantity,status,categories,brands,images,description,permalink"})
-        r.raise_for_status()
-        data = r.json()
+    try:
+        async with _client() as cli:
+            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,price,regular_price,stock_quantity,status,categories,brands,images,description,permalink"})
+            r.raise_for_status()
+            data = r.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("WooCommerce obtener_producto_por_sku(%s) falló: %s", sku, exc)
+        return None
     if not data:
         return None
     p = data[0]

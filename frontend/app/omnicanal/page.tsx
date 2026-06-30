@@ -6,6 +6,7 @@ import { Search, Filter, RotateCw, Sparkles } from "lucide-react";
 import AppNavbar from "@/components/AppNavbar";
 import MarketplaceTabs from "@/components/MarketplaceTabs";
 import AccountTabs from "@/components/AccountTabs";
+import ChannelLegend from "@/components/ChannelLegend";
 import Pagination from "@/components/Pagination";
 import ProductGrid from "@/components/ProductGrid";
 import ProductDetailDrawer from "@/components/ProductDetailDrawer";
@@ -196,6 +197,9 @@ export default function OmnicanalPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Leyenda de canales (solo en GENERAL, donde están los puntos) */}
+            {esGeneral && <ChannelLegend canales={canales} />}
+
             {/* Toggle solo publicados (marketplaces) */}
             {!esGeneral && (
               <button

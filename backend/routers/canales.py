@@ -53,20 +53,13 @@ async def listar_canales(incluir_totales: bool = True):
 
 @router.post("/{canal}/refrescar/{sku}")
 async def refrescar(canal: str, sku: str, cuenta: str | None = None):
-    """Refresca un SKU contra la API en vivo del marketplace."""
-    if canal == Canal.MERCADO_LIBRE.value:
-        items, _ = meli.listar(search=sku, per_page=1, cuenta=cuenta)
-        if not items or not items[0].get("item_id"):
-            raise HTTPException(404, "SKU sin publicación en Mercado Libre")
-        data = await meli.refrescar_item(items[0]["item_id"], cuenta)
-        if not data:
-            raise HTTPException(502, "No se pudo refrescar contra la API de Mercado Libre")
-        return {"canal": canal, "sku": sku, **data}
-
-    if canal == Canal.AMAZON.value:
-        data = await amazon.refrescar_listing(sku)
-        if not data:
-            raise HTTPException(502, "No se pudo refrescar contra SP-API de Amazon")
-        return {"canal": canal, "sku": sku, **data}
-
-    raise HTTPException(400, f"El canal '{canal}' no soporta refresco en vivo todavía")
+    """
+    Refresca un SKU en vivo contra TODOS los canales y devuelve el inventario
+    actualizado. Tolerante a fallos (un canal caído no rompe la respuesta).
+    """
+    from services import inventario
+    res = await inventario.sincronizar_sku(sku)
+    inv = inventario.leer_inventario([sku]).get(sku, {})
+    return {"sku": sku, "ok": res.get("ok", True),
+            "actualizados": res.get("actualizados", 0),
+            "inventario": {k: dict(v) for k, v in inv.items()}}

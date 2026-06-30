@@ -169,45 +169,68 @@ export default function ProductDetailDrawer({ sku, canales, onClose }: Props) {
                   </div>
                 </header>
 
-                {/* Métricas: precio + desglose de stock (real / FULL / FBA) */}
-                <div className="grid grid-cols-4 divide-x divide-slate-100 border-b border-slate-100">
-                  <Metric icon={<Tag size={14} />} label="Precio" valor={precioMXN(c.precio)} />
-                  <Metric
-                    icon={<Boxes size={14} />}
-                    label="Stock real"
-                    valor={(c.stock_real ?? c.stock) != null ? `${c.stock_real ?? c.stock} u` : "—"}
-                  />
-                  <Metric
-                    icon={<Truck size={14} />}
-                    label="FULL"
-                    valor={c.stock_full != null ? `${c.stock_full} u` : "—"}
-                    destacado={!!c.stock_full}
-                  />
-                  <Metric
-                    icon={<Truck size={14} />}
-                    label="FBA"
-                    valor={c.stock_fba != null ? `${c.stock_fba} u` : "—"}
-                    destacado={!!c.stock_fba}
-                  />
-                </div>
+                {/* Métricas por canal:
+                    - Mercado Libre usa FULL (no FBA)
+                    - Amazon usa FBA (no FULL)
+                    - General solo stock propio */}
+                {(() => {
+                  const esML = c.canal === "mercado_libre";
+                  const esAmazon = c.canal === "amazon";
+                  const stockReal = c.stock_real ?? c.stock;
+                  return (
+                    <>
+                      <div
+                        className={[
+                          "grid divide-x divide-slate-100 border-b border-slate-100",
+                          esML || esAmazon ? "grid-cols-3" : "grid-cols-2",
+                        ].join(" ")}
+                      >
+                        <Metric icon={<Tag size={14} />} label="Precio" valor={precioMXN(c.precio)} />
+                        <Metric
+                          icon={<Boxes size={14} />}
+                          label="Stock real"
+                          valor={stockReal != null ? `${stockReal} u` : "—"}
+                        />
+                        {esML && (
+                          <Metric
+                            icon={<Truck size={14} />}
+                            label="FULL"
+                            valor={c.stock_full != null ? `${c.stock_full} u` : "—"}
+                            destacado={!!c.stock_full}
+                          />
+                        )}
+                        {esAmazon && (
+                          <Metric
+                            icon={<Truck size={14} />}
+                            label="FBA"
+                            valor={c.stock_fba != null ? `${c.stock_fba} u` : "—"}
+                            destacado={!!c.stock_fba}
+                          />
+                        )}
+                      </div>
 
-                {/* Total y situación */}
-                {(c.stock_real != null || c.stock_full != null || c.stock_fba != null) && (
-                  <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-4 py-2 text-xs">
-                    <span className="text-slate-500">
-                      Total ={" "}
-                      <span className="font-bold text-slate-700">
-                        {(c.stock_real ?? 0) + (c.stock_full ?? 0) + (c.stock_fba ?? 0)} u
-                      </span>{" "}
-                      <span className="text-slate-400">(real + FULL + FBA)</span>
-                    </span>
-                    {c.situacion && (
-                      <span className="rounded-full bg-slate-200 px-2 py-0.5 font-semibold uppercase tracking-wide text-slate-600">
-                        {c.situacion}
-                      </span>
-                    )}
-                  </div>
-                )}
+                      {/* Total y situación */}
+                      {(c.stock_real != null || c.stock_full != null || c.stock_fba != null) && (
+                        <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-4 py-2 text-xs">
+                          <span className="text-slate-500">
+                            Total ={" "}
+                            <span className="font-bold text-slate-700">
+                              {(c.stock_real ?? 0) + (c.stock_full ?? 0) + (c.stock_fba ?? 0)} u
+                            </span>{" "}
+                            <span className="text-slate-400">
+                              {esML ? "(real + FULL)" : esAmazon ? "(real + FBA)" : ""}
+                            </span>
+                          </span>
+                          {c.situacion && (
+                            <span className="rounded-full bg-slate-200 px-2 py-0.5 font-semibold uppercase tracking-wide text-slate-600">
+                              {c.situacion}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
 
                 {/* Categoría multinivel */}
                 <div className="px-4 py-3">

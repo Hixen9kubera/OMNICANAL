@@ -178,6 +178,61 @@ async def precios_por_sku(skus: list[str]) -> dict[str, float]:
     return out
 
 
+async def detalle_sku(sku: str) -> dict[str, Any] | None:
+    """
+    Lee en vivo un SKU de Amazon en UNA llamada (Listings Items API):
+    precio, stock (FBA si está en bodega Amazon, FBM si lo surte el vendedor),
+    situación y ASIN. Amazon NO usa FULL (eso es de Mercado Libre).
+    """
+    token = await _access_token()
+    if not token:
+        return None
+    base = settings.amazon_sp_api_endpoint
+    mp = settings.amazon_marketplace_id
+    seller = settings.amazon_seller_id
+    try:
+        async with httpx.AsyncClient(base_url=base, timeout=25.0) as cli:
+            r = await cli.get(
+                f"/listings/2021-08-01/items/{seller}/{sku}",
+                params={"marketplaceIds": mp,
+                        "includedData": "summaries,offers,fulfillmentAvailability"},
+                headers={"x-amz-access-token": token},
+            )
+            if r.status_code != 200:
+                return None
+            d = r.json()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Amazon detalle_sku %s falló: %s", sku, exc)
+        return None
+
+    summaries = d.get("summaries") or [{}]
+    asin = summaries[0].get("asin")
+    estado = summaries[0].get("status")
+    if isinstance(estado, list):
+        estado = estado[0] if estado else None
+
+    offers = d.get("offers") or []
+    precio = None
+    if offers and offers[0].get("price"):
+        precio = _f(offers[0]["price"].get("amount"))
+
+    stock_fba = None
+    stock_fbm = None
+    for fa in d.get("fulfillmentAvailability") or []:
+        code = (fa.get("fulfillmentChannelCode") or "").upper()
+        qty = fa.get("quantity")
+        if code.startswith("AMAZON"):
+            stock_fba = qty
+        else:  # DEFAULT / MFN → lo surte el vendedor (FBM = stock real)
+            stock_fbm = qty
+
+    return {
+        "asin": asin, "precio": precio, "estado": estado,
+        "stock_fba": stock_fba, "stock_real": stock_fbm,
+        "es_fba": bool(stock_fba),
+    }
+
+
 async def refrescar_listing(sku: str, asin: str | None = None) -> dict[str, Any] | None:
     """Consulta SP-API para precio/stock/fulfillment de un SKU."""
     token = await _access_token()
