@@ -18,37 +18,53 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 import pymysql
+from dbutils.pooled_db import PooledDB
 from pymysql.cursors import DictCursor
 
 from config import settings
 
 log = logging.getLogger("omnicanal.db")
 
+# ── Pool de conexiones ────────────────────────────────────────────────────────
+# Hostinger limita las conexiones NUEVAS por hora (max_connections_per_hour=500).
+# Abrir una conexión por consulta agota ese límite. El pool REUTILIZA un puñado de
+# conexiones, así que casi no se crean conexiones nuevas y nunca se toca el límite.
+_pool: PooledDB | None = None
 
-def _connect() -> pymysql.connections.Connection:
-    return pymysql.connect(
-        host=settings.db_host,
-        port=settings.db_port,
-        user=settings.db_user,
-        password=settings.db_password,
-        database=settings.db_name,
-        cursorclass=DictCursor,
-        connect_timeout=10,
-        read_timeout=20,
-        charset="utf8mb4",
-        autocommit=True,
-    )
+
+def _get_pool() -> PooledDB:
+    global _pool
+    if _pool is None:
+        _pool = PooledDB(
+            creator=pymysql,
+            maxconnections=6,    # tope de conexiones simultáneas del pool
+            mincached=1,         # conexiones precreadas
+            maxcached=4,         # conexiones ociosas que se conservan
+            blocking=True,       # si se llega al tope, espera (no falla)
+            ping=4,              # verifica/reconecta antes de cada consulta
+            host=settings.db_host,
+            port=settings.db_port,
+            user=settings.db_user,
+            password=settings.db_password,
+            database=settings.db_name,
+            cursorclass=DictCursor,
+            connect_timeout=10,
+            read_timeout=20,
+            charset="utf8mb4",
+            autocommit=True,
+        )
+    return _pool
 
 
 @contextmanager
 def get_cursor() -> Iterator[DictCursor]:
-    """Context manager que entrega un cursor y cierra la conexión al salir."""
-    conn = _connect()
+    """Entrega un cursor de una conexión del POOL y la devuelve al pool al salir."""
+    conn = _get_pool().connection()
     try:
         with conn.cursor() as cur:
             yield cur
     finally:
-        conn.close()
+        conn.close()  # con PooledDB, esto DEVUELVE la conexión al pool (no la cierra)
 
 
 def fetch_all(sql: str, params: tuple | dict | None = None) -> list[dict[str, Any]]:

@@ -114,10 +114,16 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
     if not token:
         return {"canal": "mercado_libre", "cuenta": cuenta, "ok": False, "motivo": "sin token"}
 
+    # Progresivo: primero los SKUs que aún NO están en el cache, luego los más
+    # viejos. Así, corrida tras corrida, se cubre todo el catálogo y se refresca.
     listings = db.fetch_all(
-        """SELECT sku, ml_item_id FROM ml_progress
-           WHERE cuenta=%s AND success=1 AND ml_item_id IS NOT NULL
-           ORDER BY updated_at DESC LIMIT %s""",
+        """SELECT mp.sku, mp.ml_item_id
+           FROM ml_progress mp
+           LEFT JOIN canal_inventario ci
+                  ON ci.sku = mp.sku AND ci.canal='mercado_libre' AND ci.cuenta = mp.cuenta
+           WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL
+           ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
+           LIMIT %s""",
         (cuenta, limite),
     )
     rows: list[dict[str, Any]] = []
@@ -177,10 +183,16 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.warning("Amazon FBA sync falló: %s", exc)
 
-    # Cruzar con amazon_progress (sku, asin, status) para los publicados.
+    # Cruzar con amazon_progress (sku, asin, status); progresivo: primero los que
+    # faltan en el cache, luego los más viejos.
     pubs = db.fetch_all(
-        """SELECT sku, asin, status FROM amazon_progress
-           WHERE success=1 ORDER BY updated_at DESC LIMIT %s""",
+        """SELECT ap.sku, ap.asin, ap.status
+           FROM amazon_progress ap
+           LEFT JOIN canal_inventario ci
+                  ON ci.sku = ap.sku AND ci.canal='amazon'
+           WHERE ap.success=1
+           ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
+           LIMIT %s""",
         (limite,),
     )
     # Precios por SKU (Pricing API v0, en lotes de 20)

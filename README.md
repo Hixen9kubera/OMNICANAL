@@ -489,6 +489,64 @@ Nuevas variables de entorno (opcionales, para renovar tokens ML):
 
 ---
 
+## 🧾 Versión 0.14 — pool de conexiones + arquitectura "leer del cache"
+
+**Fecha:** 30 jun 2026. Sobre la v0.13.
+
+**Error crítico corregido — `max_connections_per_hour` (500):**
+- El MySQL de Hostinger limita las **conexiones nuevas por hora a 500**. El código
+  abría **una conexión por consulta** → se agotaba el límite → fallaban las
+  consultas y el stock salía en 0/vacío.
+- **Solución:** **pool de conexiones** (DBUtils `PooledDB`) que **reutiliza ~6
+  conexiones** y casi no crea nuevas. Esto baja el consumo de cientos/miles de
+  conexiones por hora a un puñado.
+
+**Cambio de arquitectura (lo que pediste): leer del cache, sincronizar en lote:**
+- La UI ahora **lee del cache `canal_inventario`** (rápido) y **NO** hace consultas
+  a las APIs una-por-una al navegar/abrir detalle.
+- El **detalle 360°** ya no sincroniza al abrir; con el botón *refrescar*
+  (`?refrescar=true`) sí hace una lectura en vivo de ese SKU (a demanda).
+- El **sync en segundo plano es progresivo**: cada corrida toma primero los SKUs
+  que faltan en el cache y luego los más viejos, así cubre todo el catálogo con el
+  tiempo. Arranca ~30 s después de iniciar y se repite cada `SYNC_INTERVAL_MIN`.
+
+### Estructura de base de datos (cache de inventario)
+
+La tabla **`canal_inventario`** es el corazón del cache (una fila por SKU + canal +
+cuenta):
+
+| Columna | Para qué |
+|---|---|
+| `sku, canal, cuenta` | llave (PK) |
+| `item_id` | id del listing (ml_item_id / asin) |
+| `precio`, `precio_base` | precio del canal |
+| `stock_real` | stock propio (lo que se sincroniza) |
+| `stock_full`, `stock_fba` | bodega ML / Amazon (solo lectura) |
+| `es_full`, `logistica` | tipo de logística |
+| `situacion` | estatus del listing (active/paused/PUBLISHED…) |
+| `updated_at` | última sincronización (para el sync progresivo) |
+
+**Flujo:** las APIs (ML/Amazon/Woo) → escriben en `canal_inventario` (sync en lote
+o webhook) → la UI lee de `canal_inventario`. Cuando se implementen **webhooks**,
+solo actualizan las filas afectadas y se apaga el polling (`SYNC_ENABLED=false`).
+
+**Mejora propuesta (siguiente):** guardar también `nombre`, `imagen` y `categoria`
+en `canal_inventario` para que TODA la UI (incluido General) se pinte desde la DB
+sin llamar a WooCommerce en cada vista.
+
+### ¿MySQL (Hostinger) o Supabase?
+
+- Tus datos fuente (`productos`, `ml_progress`, `amazon_progress`, `costos_finales`,
+  `ml_tokens`) **ya viven en MySQL de Hostinger**, así que el cache convive ahí.
+- Con el **pool**, el límite de 500/hora deja de ser problema en operación normal.
+- **Supabase (Postgres)** sería más holgado en conexiones (pooler PgBouncer, sin
+  tope horario) y conviene si el límite vuelve a apretar con mucho tráfico, pero
+  requiere proyecto + credenciales y mantener dos bases (fuente en MySQL, cache en
+  Postgres). **Recomendación:** seguir en MySQL + pool por ahora; migrar el cache a
+  Supabase solo si el límite vuelve a ser un cuello de botella.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

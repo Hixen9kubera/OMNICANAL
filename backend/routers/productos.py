@@ -125,13 +125,18 @@ async def listar_categorias():
 
 
 @router.get("/{sku}", response_model=DetalleProducto)
-async def detalle_producto(sku: str):
-    """Vista 360°: el SKU en WooCommerce + cada marketplace."""
-    # Sincroniza este SKU en vivo para que el detalle nunca salga incompleto.
-    try:
-        await inventario.sincronizar_sku(sku)
-    except Exception:  # noqa: BLE001
-        pass
+async def detalle_producto(sku: str, refrescar: bool = False):
+    """
+    Vista 360°: el SKU en WooCommerce + cada marketplace.
+    Lee del cache (canal_inventario). Con ?refrescar=true sincroniza en vivo ese
+    SKU (lo usa el botón de refrescar); el resto del tiempo NO toca las APIs, para
+    no hacer consultas una-por-una (el sync masivo corre en segundo plano).
+    """
+    if refrescar:
+        try:
+            await inventario.sincronizar_sku(sku)
+        except Exception:  # noqa: BLE001
+            pass
 
     base = await woocommerce.obtener_producto_por_sku(sku)
     if not base:

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 
+from datetime import datetime, timedelta
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from config import settings
@@ -52,7 +54,7 @@ def iniciar() -> None:
         "interval",
         minutes=settings.sync_interval_min,
         id="sync_inventario",
-        next_run_time=None,  # no corre al instante de arrancar
+        next_run_time=datetime.now() + timedelta(seconds=30),  # arranca a llenar el cache
         max_instances=1,
         coalesce=True,
     )
