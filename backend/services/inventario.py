@@ -176,12 +176,16 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
            WHERE success=1 ORDER BY updated_at DESC LIMIT %s""",
         (limite,),
     )
+    # Precios por SKU (Pricing API v0, en lotes de 20)
+    skus_pub = [p["sku"] for p in pubs if p.get("sku")]
+    precios = await amazon.precios_por_sku(skus_pub)
+
     rows: list[dict[str, Any]] = []
     for p in pubs:
         sku = p["sku"]
         rows.append({
             "sku": sku, "canal": "amazon", "cuenta": "",
-            "item_id": p.get("asin"), "precio": None,
+            "item_id": p.get("asin"), "precio": precios.get(sku),
             "stock_real": None,                       # FBM se lee en refresco individual
             "stock_full": None,
             "stock_fba": fba.get(sku, 0),
@@ -190,7 +194,8 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
             "situacion": p.get("status"), "moneda": "MXN",
         })
     n = _upsert(rows)
-    return {"canal": "amazon", "ok": True, "actualizados": n, "skus_fba": len(fba)}
+    return {"canal": "amazon", "ok": True, "actualizados": n,
+            "skus_fba": len(fba), "skus_con_precio": len(precios)}
 
 
 # ── LECTOR: WooCommerce ─────────────────────────────────────────────────────────

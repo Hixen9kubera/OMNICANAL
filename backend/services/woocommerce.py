@@ -116,26 +116,44 @@ async def listar_productos(
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
     Cada item ya trae la ruta completa de categorías.
     """
+    campos = (
+        "id,name,sku,price,regular_price,sale_price,stock_quantity,"
+        "stock_status,status,type,categories,brands,images,permalink"
+    )
     params: dict[str, Any] = {
         "per_page": per_page,
         "page": page,
         "status": "any",
         "orderby": "date",
         "order": "desc",
-        "_fields": (
-            "id,name,sku,price,regular_price,sale_price,stock_quantity,"
-            "stock_status,status,type,categories,brands,images,permalink"
-        ),
+        "_fields": campos,
     }
-    if search:
-        params["search"] = search
 
     async with _client() as cli:
-        r = await cli.get("/products", params=params)
-        r.raise_for_status()
-        data = r.json()
-        total = int(r.headers.get("X-WP-Total", len(data)))
-        total_pages = int(r.headers.get("X-WP-TotalPages", 1))
+        if search:
+            # WooCommerce NO busca por SKU con 'search' (solo nombre/contenido).
+            # Si el término parece un SKU (sin espacios), probamos primero el
+            # parámetro 'sku' (coincidencia exacta) y, si no hay, caemos a 'search'.
+            parece_sku = " " not in search.strip()
+            data, total, total_pages = [], 0, 1
+            if parece_sku:
+                rs = await cli.get("/products", params={**params, "sku": search.strip()})
+                if rs.status_code == 200 and rs.json():
+                    data = rs.json()
+                    total = int(rs.headers.get("X-WP-Total", len(data)))
+                    total_pages = int(rs.headers.get("X-WP-TotalPages", 1))
+            if not data:
+                rn = await cli.get("/products", params={**params, "search": search})
+                rn.raise_for_status()
+                data = rn.json()
+                total = int(rn.headers.get("X-WP-Total", len(data)))
+                total_pages = int(rn.headers.get("X-WP-TotalPages", 1))
+        else:
+            r = await cli.get("/products", params=params)
+            r.raise_for_status()
+            data = r.json()
+            total = int(r.headers.get("X-WP-Total", len(data)))
+            total_pages = int(r.headers.get("X-WP-TotalPages", 1))
 
     # Resolvemos categorías en paralelo (cache compartida hace esto barato).
     rutas = await asyncio.gather(*[_categoria_de_producto(p) for p in data])

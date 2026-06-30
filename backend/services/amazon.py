@@ -141,6 +141,43 @@ async def _access_token() -> str | None:
         return None
 
 
+async def precios_por_sku(skus: list[str]) -> dict[str, float]:
+    """
+    Precio de venta (ListingPrice) por SKU usando la Pricing API v0, en lotes de
+    20 SKUs por llamada. Devuelve { sku: precio }.
+    """
+    token = await _access_token()
+    if not token or not skus:
+        return {}
+    base = settings.amazon_sp_api_endpoint
+    mp = settings.amazon_marketplace_id
+    out: dict[str, float] = {}
+    headers = {"x-amz-access-token": token}
+    try:
+        async with httpx.AsyncClient(base_url=base, timeout=30.0) as cli:
+            for i in range(0, len(skus), 20):
+                lote = skus[i : i + 20]
+                r = await cli.get(
+                    "/products/pricing/v0/price",
+                    params={"MarketplaceId": mp, "ItemType": "Sku", "Skus": lote},
+                    headers=headers,
+                )
+                if r.status_code != 200:
+                    continue
+                for p in r.json().get("payload", []):
+                    if p.get("status") != "Success":
+                        continue
+                    sku = p.get("SellerSKU")
+                    offers = (p.get("Product") or {}).get("Offers") or []
+                    if sku and offers:
+                        amt = (offers[0].get("BuyingPrice") or {}).get("ListingPrice", {}).get("Amount")
+                        if amt is not None:
+                            out[sku] = float(amt)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Pricing Amazon falló: %s", exc)
+    return out
+
+
 async def refrescar_listing(sku: str, asin: str | None = None) -> dict[str, Any] | None:
     """Consulta SP-API para precio/stock/fulfillment de un SKU."""
     token = await _access_token()
