@@ -23,6 +23,10 @@ export interface Producto {
   precio_base: number | null;
   moneda: string;
   stock: number | null;
+  stock_real: number | null;
+  stock_full: number | null;
+  stock_fba: number | null;
+  situacion: string | null;
   estado: string | null;
   categoria_path: CategoriaNivel[];
   categoria_id: string | number | null;
@@ -79,6 +83,10 @@ export interface DetalleCanal {
   precio: number | null;
   precio_base: number | null;
   stock: number | null;
+  stock_real: number | null;
+  stock_full: number | null;
+  stock_fba: number | null;
+  situacion: string | null;
   full: boolean | null;
   full_label: string | null;
   categoria_id: string | number | null;

@@ -13,6 +13,7 @@ En Railway se usa la variable PORT (ver Procfile / railway).
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,14 +21,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from core.marketplaces import lista_canales
 from models.schemas import HealthCheck
-from routers import auth, canales, ia, productos
-from services import db, odoo, woocommerce
+from routers import auth, canales, ia, productos, sync
+from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("omnicanal")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Arranca el sync programado de inventario (cada N min).
+    scheduler.iniciar()
+    yield
+    scheduler.detener()
+
 
 app = FastAPI(
     title="OMNICANAL · Kubera",
@@ -36,7 +45,8 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="1.0.0",
+    version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -51,6 +61,7 @@ app.add_middleware(
 # Routers
 app.include_router(productos.router)
 app.include_router(canales.router)
+app.include_router(sync.router)
 app.include_router(ia.router)
 app.include_router(auth.router)
 

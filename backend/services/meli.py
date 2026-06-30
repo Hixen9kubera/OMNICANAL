@@ -137,8 +137,21 @@ def contar_publicados(cuenta: str | None = None) -> int:
 
 # ── Token OAuth desde DB ──────────────────────────────────────────────────────
 
+def _fernet():
+    """Fernet para desencriptar los tokens de ml_tokens (cifrados con DB_ENCRYPTION_KEY)."""
+    key = settings.db_encryption_key
+    if not key:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Fernet no disponible: %s", exc)
+        return None
+
+
 def _access_token(cuenta: str | None = None) -> str | None:
-    """Lee el access_token vigente de la tabla ml_tokens (por cuenta)."""
+    """Lee y DESENCRIPTA el access_token vigente de ml_tokens (por cuenta)."""
     try:
         if cuenta:
             row = db.fetch_one(
@@ -151,7 +164,18 @@ def _access_token(cuenta: str | None = None) -> str | None:
             )
         if not row:
             return None
-        return row.get("access_token") or row.get("token")
+        raw = row.get("access_token") or row.get("token")
+        if not raw:
+            return None
+        # Los tokens están cifrados con Fernet (empiezan con 'gAAAAA').
+        f = _fernet()
+        if f and isinstance(raw, str) and raw.startswith("gAAAAA"):
+            try:
+                return f.decrypt(raw.encode()).decode()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("No se pudo desencriptar token ML (%s): %s", cuenta, exc)
+                return None
+        return raw  # ya venía en claro
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo leer ml_tokens: %s", exc)
         return None

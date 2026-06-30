@@ -130,14 +130,31 @@ export default function ProductCard({
               labelMap={labelMap}
             />
           ) : (
-            <span
-              className={[
-                "rounded-lg px-2 py-1 text-xs font-bold",
-                sinStock ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600",
-              ].join(" ")}
-            >
-              {producto.stock ?? "—"} u
-            </span>
+            <div className="flex flex-col items-end gap-1">
+              {/* stock real (lo que se sincroniza) */}
+              <span
+                title="Stock propio (se sincroniza entre canales)"
+                className={[
+                  "rounded-lg px-2 py-1 text-xs font-bold",
+                  sinStock ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600",
+                ].join(" ")}
+              >
+                {producto.stock_real ?? producto.stock ?? "—"} u
+              </span>
+              {/* FULL / FBA (inventario en bodega del marketplace) */}
+              <div className="flex gap-1">
+                {!!producto.stock_full && producto.stock_full > 0 && (
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700" title="En bodega de Mercado Libre (FULL)">
+                    FULL {producto.stock_full}
+                  </span>
+                )}
+                {!!producto.stock_fba && producto.stock_fba > 0 && (
+                  <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold text-sky-700" title="En bodega de Amazon (FBA)">
+                    FBA {producto.stock_fba}
+                  </span>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>

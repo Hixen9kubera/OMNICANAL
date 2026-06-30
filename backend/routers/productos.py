@@ -23,7 +23,7 @@ from models.schemas import (
     Producto,
     RespuestaProductos,
 )
-from services import amazon, ejemplos, meli, presencia, woocommerce
+from services import amazon, ejemplos, inventario, meli, presencia, woocommerce
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -66,6 +66,34 @@ async def listar_productos(
     else:  # tiktok / walmart / temu / shein  → ejemplos
         items_raw, total = ejemplos.listar(canal, page, per_page, search)
         total_pages = _paginas(total, per_page)
+
+    # Imágenes: los canales de marketplace/ejemplo comparten el producto de
+    # WooCommerce (vía wc_id). Traemos la imagen en una sola llamada por lote.
+    if canal != Canal.GENERAL.value:
+        wc_ids = [it["wc_id"] for it in items_raw if it.get("wc_id")]
+        if wc_ids:
+            imgs = await woocommerce.imagenes_por_wc_id(wc_ids)
+            for it in items_raw:
+                if not it.get("imagen") and it.get("wc_id") in imgs:
+                    it["imagen"] = imgs[it["wc_id"]]
+
+        # Inventario en vivo cacheado (precio real + desglose stock_real/full/fba).
+        inv = inventario.leer_inventario([it["sku"] for it in items_raw])
+        for it in items_raw:
+            clave = f"{canal}|{it.get('cuenta') or ''}"
+            datos = inv.get(it["sku"], {}).get(clave)
+            if not datos:
+                continue
+            if datos.get("precio") is not None:
+                it["precio"] = float(datos["precio"])
+            it["stock_real"] = datos.get("stock_real")
+            it["stock_full"] = datos.get("stock_full")
+            it["stock_fba"] = datos.get("stock_fba")
+            it["situacion"] = datos.get("situacion")
+            it["full"] = bool(datos.get("es_full"))
+            # El stock mostrado en la tarjeta es el real (lo que se sincroniza)
+            if datos.get("stock_real") is not None:
+                it["stock"] = datos["stock_real"]
 
     items = [Producto(**i) for i in items_raw]
     paginacion = Paginacion(
@@ -111,31 +139,54 @@ async def detalle_producto(sku: str):
         estado=base.get("estado"),
     ))
 
-    # Mercado Libre (cache)
-    ml_items, _ = meli.listar(search=sku, per_page=1)
-    if ml_items:
-        m = ml_items[0]
-        detalle.canales.append(DetalleCanal(
+    # Inventario en vivo cacheado para este SKU (todas las cuentas/canales)
+    inv = inventario.leer_inventario([sku]).get(sku, {})
+
+    def _aplicar_inv(canal: str, cuenta: str, dc: DetalleCanal) -> DetalleCanal:
+        datos = inv.get(f"{canal}|{cuenta}")
+        if datos:
+            if datos.get("precio") is not None:
+                dc.precio = float(datos["precio"])
+            dc.stock_real = datos.get("stock_real")
+            dc.stock_full = datos.get("stock_full")
+            dc.stock_fba = datos.get("stock_fba")
+            dc.situacion = datos.get("situacion")
+            dc.full = bool(datos.get("es_full"))
+            if datos.get("stock_real") is not None:
+                dc.stock = datos["stock_real"]
+        return dc
+
+    # Mercado Libre (cache) — una entrada por cuenta publicada
+    ml_items, _ = meli.listar(search=sku, per_page=5)
+    cuentas_vistas: set[str] = set()
+    for m in ml_items:
+        cta = m.get("cuenta") or ""
+        if cta in cuentas_vistas:
+            continue
+        cuentas_vistas.add(cta)
+        dc = DetalleCanal(
             canal=Canal.MERCADO_LIBRE.value,
             publicado=m["publicado"], item_id=m["item_id"], url=m["url"],
             precio=m["precio"], precio_base=m["precio_base"], stock=m["stock"],
             full=m["full"], full_label=m["full_label"],
             categoria_id=m["categoria_id"], categoria_path=m["categoria_path"],
-            estado=m["estado"],
-        ))
+            estado=m["estado"], extra={"cuenta": cta},
+        )
+        detalle.canales.append(_aplicar_inv(Canal.MERCADO_LIBRE.value, cta, dc))
 
     # Amazon (cache)
     az_items, _ = amazon.listar(search=sku, per_page=1)
     if az_items:
         a = az_items[0]
-        detalle.canales.append(DetalleCanal(
+        dc = DetalleCanal(
             canal=Canal.AMAZON.value,
             publicado=a["publicado"], item_id=a["item_id"], url=a["url"],
             precio=a["precio"], stock=a["stock"],
             full=a["full"], full_label=a["full_label"],
             categoria_id=a["categoria_id"], categoria_path=a["categoria_path"],
             estado=a["estado"],
-        ))
+        )
+        detalle.canales.append(_aplicar_inv(Canal.AMAZON.value, "", dc))
 
     return detalle
 

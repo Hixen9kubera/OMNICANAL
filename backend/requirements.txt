@@ -15,3 +15,6 @@ cryptography==44.0.0          # requerido por PyMySQL para auth sha256
 
 # ── IA (generación de listings) ───────────────────────────────
 anthropic==0.42.0
+
+# ── Sincronización programada de inventario ───────────────────
+APScheduler==3.11.0

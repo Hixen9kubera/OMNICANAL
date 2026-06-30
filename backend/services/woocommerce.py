@@ -164,6 +164,34 @@ async def listar_productos(
     return items, total, total_pages
 
 
+async def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
+    """
+    Trae la imagen principal de WooCommerce para una lista de wc_id en UNA sola
+    llamada (param include). Se usa para mostrar imágenes en los canales de
+    marketplace (que comparten el mismo producto vía wc_id).
+    """
+    ids = [str(i) for i in wc_ids if i]
+    if not ids:
+        return {}
+    salida: dict[int, str] = {}
+    # WooCommerce limita include/per_page a 100; los lotes vienen de a ≤40.
+    async with _client() as cli:
+        r = await cli.get(
+            "/products",
+            params={
+                "include": ",".join(ids),
+                "per_page": min(len(ids), 100),
+                "_fields": "id,images",
+            },
+        )
+        if r.status_code == 200:
+            for p in r.json():
+                imgs = p.get("images") or []
+                if imgs and imgs[0].get("src"):
+                    salida[p["id"]] = imgs[0]["src"]
+    return salida
+
+
 async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
     async with _client() as cli:
         r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,price,regular_price,stock_quantity,status,categories,brands,images,description,permalink"})

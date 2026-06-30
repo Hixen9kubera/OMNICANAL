@@ -1,0 +1,277 @@
+"""
+inventario.py — Núcleo del sistema de sincronización de inventario omnicanal.
+
+Modelo (según la regla de negocio acordada):
+
+    STOCK TOTAL = stock_real + stock_full(ML) + stock_fba(Amazon)
+
+  - stock_real : unidades en TU almacén (vendidas por ti / Flex / FBM).
+                 ↑ ES LO ÚNICO QUE SE SINCRONIZA entre Woo + ML(no-FULL) + Amazon(FBM).
+  - stock_full : unidades en bodega de Mercado Libre (FULL).  Solo se muestran.
+  - stock_fba  : unidades en bodega de Amazon (FBA).           Solo se muestran.
+
+Fuente de verdad del stock_real: Odoo (qty_available).
+
+Este servicio:
+  • LEE en vivo de cada canal (precio, stock real/FULL/FBA, situación) y lo
+    guarda en la tabla cache `canal_inventario` (para que la UI sea rápida).
+  • Calcula un PLAN de sincronización en modo simulación (dry-run): qué stock_real
+    habría que escribir en cada canal para igualarlo al maestro (Odoo).
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+
+from services import amazon, db, meli, odoo, woocommerce
+
+log = logging.getLogger("omnicanal.inventario")
+
+_ML_API = "https://api.mercadolibre.com"
+
+# ── Esquema ───────────────────────────────────────────────────────────────────
+
+_DDL = """
+CREATE TABLE IF NOT EXISTS canal_inventario (
+    sku        VARCHAR(60)  NOT NULL,
+    canal      VARCHAR(20)  NOT NULL,
+    cuenta     VARCHAR(50)  NOT NULL DEFAULT '',
+    item_id    VARCHAR(60),
+    precio     DECIMAL(12,2),
+    stock_real INT,
+    stock_full INT,
+    stock_fba  INT,
+    es_full    TINYINT(1)   NOT NULL DEFAULT 0,
+    logistica  VARCHAR(30),
+    situacion  VARCHAR(30),
+    moneda     VARCHAR(5)   NOT NULL DEFAULT 'MXN',
+    updated_at DATETIME     NOT NULL,
+    PRIMARY KEY (sku, canal, cuenta)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_schema_ok = False
+
+
+def asegurar_schema() -> None:
+    global _schema_ok
+    if _schema_ok:
+        return
+    try:
+        with db.get_cursor() as cur:
+            cur.execute(_DDL)
+        _schema_ok = True
+    except Exception as exc:  # noqa: BLE001
+        log.error("No se pudo crear canal_inventario: %s", exc)
+
+
+def _upsert(rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    asegurar_schema()
+    sql = """
+        INSERT INTO canal_inventario
+          (sku, canal, cuenta, item_id, precio, stock_real, stock_full, stock_fba,
+           es_full, logistica, situacion, moneda, updated_at)
+        VALUES
+          (%(sku)s, %(canal)s, %(cuenta)s, %(item_id)s, %(precio)s, %(stock_real)s,
+           %(stock_full)s, %(stock_fba)s, %(es_full)s, %(logistica)s, %(situacion)s,
+           %(moneda)s, NOW())
+        ON DUPLICATE KEY UPDATE
+          item_id=VALUES(item_id), precio=VALUES(precio), stock_real=VALUES(stock_real),
+          stock_full=VALUES(stock_full), stock_fba=VALUES(stock_fba), es_full=VALUES(es_full),
+          logistica=VALUES(logistica), situacion=VALUES(situacion), updated_at=NOW()
+    """
+    with db.get_cursor() as cur:
+        cur.executemany(sql, rows)
+    return len(rows)
+
+
+# ── LECTOR: Mercado Libre ───────────────────────────────────────────────────────
+
+async def _leer_ml_item(cli: httpx.AsyncClient, item_id: str, token: str) -> dict | None:
+    try:
+        r = await cli.get(f"/items/{item_id}", headers={"Authorization": f"Bearer {token}"})
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
+    """Lee en vivo los items de una cuenta ML y los guarda en canal_inventario."""
+    token = meli._access_token(cuenta)
+    if not token:
+        return {"canal": "mercado_libre", "cuenta": cuenta, "ok": False, "motivo": "sin token"}
+
+    listings = db.fetch_all(
+        """SELECT sku, ml_item_id FROM ml_progress
+           WHERE cuenta=%s AND success=1 AND ml_item_id IS NOT NULL
+           ORDER BY updated_at DESC LIMIT %s""",
+        (cuenta, limite),
+    )
+    rows: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
+        for lst in listings:
+            item = await _leer_ml_item(cli, lst["ml_item_id"], token)
+            if not item:
+                continue
+            logistic = (item.get("shipping") or {}).get("logistic_type")
+            es_full = logistic == "fulfillment"
+            qty = item.get("available_quantity")
+            rows.append({
+                "sku": lst["sku"], "canal": "mercado_libre", "cuenta": cuenta,
+                "item_id": lst["ml_item_id"], "precio": item.get("price"),
+                "stock_real": 0 if es_full else qty,
+                "stock_full": qty if es_full else 0,
+                "stock_fba": None,
+                "es_full": 1 if es_full else 0,
+                "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
+            })
+    n = _upsert(rows)
+    return {"canal": "mercado_libre", "cuenta": cuenta, "ok": True, "actualizados": n}
+
+
+# ── LECTOR: Amazon (FBA bulk) ───────────────────────────────────────────────────
+
+async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
+    """Lee el inventario FBA (fulfillableQuantity) por SKU y lo guarda."""
+    token = await amazon._access_token()
+    if not token:
+        return {"canal": "amazon", "ok": False, "motivo": "sin token LWA"}
+
+    from config import settings
+    mp = settings.amazon_marketplace_id
+    fba: dict[str, int] = {}
+    try:
+        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=30.0) as cli:
+            params = {"granularityType": "Marketplace", "granularityId": mp,
+                      "marketplaceIds": mp, "details": "true"}
+            next_token = None
+            paginas = 0
+            while paginas < 10:  # tope de seguridad
+                if next_token:
+                    params["nextToken"] = next_token
+                r = await cli.get("/fba/inventory/v1/summaries", params=params,
+                                  headers={"x-amz-access-token": token})
+                if r.status_code != 200:
+                    break
+                payload = r.json().get("payload", {})
+                for s in payload.get("inventorySummaries", []):
+                    det = s.get("inventoryDetails", {}) or {}
+                    fba[s.get("sellerSku")] = det.get("fulfillableQuantity", s.get("totalQuantity", 0))
+                next_token = (r.json().get("pagination") or {}).get("nextToken")
+                paginas += 1
+                if not next_token:
+                    break
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Amazon FBA sync falló: %s", exc)
+
+    # Cruzar con amazon_progress (sku, asin, status) para los publicados.
+    pubs = db.fetch_all(
+        """SELECT sku, asin, status FROM amazon_progress
+           WHERE success=1 ORDER BY updated_at DESC LIMIT %s""",
+        (limite,),
+    )
+    rows: list[dict[str, Any]] = []
+    for p in pubs:
+        sku = p["sku"]
+        rows.append({
+            "sku": sku, "canal": "amazon", "cuenta": "",
+            "item_id": p.get("asin"), "precio": None,
+            "stock_real": None,                       # FBM se lee en refresco individual
+            "stock_full": None,
+            "stock_fba": fba.get(sku, 0),
+            "es_full": 1 if fba.get(sku, 0) else 0,
+            "logistica": "FBA" if fba.get(sku, 0) else "FBM",
+            "situacion": p.get("status"), "moneda": "MXN",
+        })
+    n = _upsert(rows)
+    return {"canal": "amazon", "ok": True, "actualizados": n, "skus_fba": len(fba)}
+
+
+# ── LECTOR: WooCommerce ─────────────────────────────────────────────────────────
+
+async def sincronizar_woo(skus: list[str]) -> dict[str, Any]:
+    """Guarda el stock real (stock_quantity) y precio de WooCommerce por SKU."""
+    rows: list[dict[str, Any]] = []
+    for sku in skus[:60]:
+        p = await woocommerce.obtener_producto_por_sku(sku)
+        if not p:
+            continue
+        rows.append({
+            "sku": sku, "canal": "general", "cuenta": "",
+            "item_id": str(p.get("wc_id") or ""), "precio": p.get("precio"),
+            "stock_real": p.get("stock"), "stock_full": None, "stock_fba": None,
+            "es_full": 0, "logistica": "propia", "situacion": p.get("estado"), "moneda": "MXN",
+        })
+    n = _upsert(rows)
+    return {"canal": "general", "ok": True, "actualizados": n}
+
+
+# ── LECTURA para la UI ──────────────────────────────────────────────────────────
+
+def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
+    """
+    Devuelve { sku: { 'mercado_libre|BEKURA': {...}, 'amazon|': {...}, ... } }
+    con lo cacheado en canal_inventario para un lote de SKUs.
+    """
+    if not skus:
+        return {}
+    asegurar_schema()
+    ph = ",".join(["%s"] * len(skus))
+    try:
+        rows = db.fetch_all(
+            f"SELECT * FROM canal_inventario WHERE sku IN ({ph})", tuple(skus)
+        )
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for r in rows:
+        clave = f"{r['canal']}|{r.get('cuenta') or ''}"
+        out.setdefault(r["sku"], {})[clave] = r
+    return out
+
+
+# ── PLAN de sincronización (dry-run) ────────────────────────────────────────────
+
+def plan_dry_run(limite: int = 200) -> dict[str, Any]:
+    """
+    Calcula qué stock_real habría que escribir en cada canal para igualarlo al
+    maestro (Odoo). NO escribe nada. Devuelve un reporte de diferencias.
+    """
+    asegurar_schema()
+    # SKUs con inventario cacheado (no-FULL/FBA) para comparar
+    rows = db.fetch_all(
+        """SELECT sku, canal, cuenta, item_id, stock_real, es_full
+           FROM canal_inventario
+           WHERE es_full = 0 AND canal IN ('mercado_libre','amazon','general')
+           LIMIT %s""",
+        (limite,),
+    )
+    skus = sorted({r["sku"] for r in rows})
+    maestro = odoo.stock_por_sku(skus)  # { sku: qty_available }
+
+    cambios: list[dict[str, Any]] = []
+    for r in rows:
+        objetivo = maestro.get(r["sku"])
+        if objetivo is None:
+            continue
+        actual = r.get("stock_real")
+        if actual is None or int(actual) != int(objetivo):
+            cambios.append({
+                "sku": r["sku"], "canal": r["canal"], "cuenta": r.get("cuenta") or "",
+                "item_id": r.get("item_id"),
+                "stock_actual": actual, "stock_objetivo": int(objetivo),
+                "delta": (int(objetivo) - int(actual)) if actual is not None else None,
+            })
+    return {
+        "modo": "dry_run",
+        "maestro": "odoo",
+        "skus_evaluados": len(skus),
+        "cambios_propuestos": len(cambios),
+        "detalle": cambios[:200],
+    }

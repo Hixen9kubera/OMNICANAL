@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     db_name: str = ""
     db_user: str = ""
     db_password: str = ""
+    # Clave Fernet con la que se cifran los tokens de Mercado Libre en ml_tokens
+    db_encryption_key: str = ""
 
     # ── Mercado Libre ─────────────────────────────────────────
     ml_site_id: str = "MLM"  # MLM = México
@@ -72,6 +74,13 @@ class Settings(BaseSettings):
     amazon_marketplace_id: str = "A1AM78C64UM0Y8"  # México
     amazon_sp_api_endpoint: str = "https://sellingpartnerapi-na.amazon.com"
     amazon_lwa_token_url: str = "https://api.amazon.com/auth/o2/token"
+
+    # ── Sincronización de inventario ──────────────────────────
+    # Cada cuánto corre el lector de inventario (minutos). Cuando se
+    # implementen webhooks, poner sync_enabled=false y depender de ellos.
+    sync_enabled: bool = True
+    sync_interval_min: int = 15
+    sync_batch: int = 80
 
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"

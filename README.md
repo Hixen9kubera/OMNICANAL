@@ -179,6 +179,9 @@ los consume desde `/api/canales`, así que cambiarlos ahí actualiza toda la UI.
 | GET | `/api/productos?canal=&page=&per_page=40&search=&solo_publicados=&cuenta=` | Lista paginada por canal |
 | GET | `/api/productos/{sku}` | Detalle 360° del SKU en todos los canales |
 | POST | `/api/canales/{canal}/refrescar/{sku}?cuenta=` | Refresca precio/stock/FULL en vivo |
+| POST | `/api/sync/leer?canal=&cuenta=&limite=` | Lee inventario en vivo y llena el cache `canal_inventario` |
+| GET | `/api/sync/plan?limite=` | Plan de sincronización en **modo simulación** (dry-run) |
+| GET | `/api/sync/estado` | Resumen del cache: SKUs por canal, totales real/FULL/FBA |
 | POST | `/api/ia/titulo` | Genera título optimizado con Claude |
 
 Documentación interactiva: **`/docs`** (Swagger UI).
@@ -330,6 +333,95 @@ Sesión de construcción (resumen de decisiones y trabajo):
    refresco en vivo. Build de producción sin errores de TypeScript.
 6. **Deploy**: `railway.json`/`Procfile` para ambos servicios, `.gitignore` que
    protege los secretos y plantillas `.env.example`.
+
+---
+
+## 🔄 Sincronización de inventario (v0.1)
+
+El objetivo central de OMNICANAL: mantener el inventario **sincronizado entre
+canales**. Implementado en esta versión.
+
+### Modelo de stock
+
+```
+STOCK TOTAL = stock_real + stock_full (ML) + stock_fba (Amazon)
+```
+
+- **`stock_real`** → unidades en TU almacén (vendidas por ti / Flex / FBM).
+  **Es lo único que se sincroniza** entre Woo + ML(no-FULL) + Amazon(FBM).
+- **`stock_full`** → bodega de Mercado Libre (FULL). Solo se muestra, no se toca.
+- **`stock_fba`** → bodega de Amazon (FBA). Solo se muestra, no se toca.
+- **Fuente de verdad** del `stock_real`: **Odoo** (`qty_available`).
+
+### Tabla cache `canal_inventario`
+
+`sku · canal · cuenta · item_id · precio · stock_real · stock_full · stock_fba ·
+es_full · logistica · situacion · updated_at` (PK: `sku, canal, cuenta`).
+Se crea sola al arrancar. La UI lee de aquí (rápida) y muestra el desglose en
+tarjetas y en el detalle 360°.
+
+### Cómo funciona
+
+1. **Lector** (`services/inventario.py`): consulta en vivo cada canal y guarda en
+   `canal_inventario`.
+   - **Mercado Libre**: desencripta el token de `ml_tokens` (Fernet con
+     `DB_ENCRYPTION_KEY`) y llama `/items/{id}` → precio, `available_quantity`,
+     `logistic_type` (`fulfillment` ⇒ FULL), `status`.
+   - **Amazon**: LWA + `/fba/inventory/v1/summaries` → `fulfillableQuantity` (FBA).
+2. **Programación** (`services/scheduler.py`): APScheduler corre el lector cada
+   `SYNC_INTERVAL_MIN` (15 por defecto). Configurable con variables de entorno.
+3. **Escritura (dry-run)**: `GET /api/sync/plan` compara el maestro (Odoo) contra
+   el `stock_real` cacheado de cada canal y devuelve **qué cambiaría**, sin
+   escribir nada. La escritura en vivo se activará tras revisar el plan.
+
+### De polling a Webhooks (siguiente paso)
+
+El sync cada 15 min es el método inicial. Para tiempo real se usan webhooks; al
+activarlos se pone `SYNC_ENABLED=false` y se apaga el polling:
+
+- **Mercado Libre — Notifications**: en la app de ML, configurar el *callback URL*
+  (ej. `https://backend.../api/webhooks/ml`) y suscribirse a los *topics*
+  `items` y `orders_v2`. ML hará `POST` con `{resource, topic, user_id}` cada vez
+  que cambie un ítem o entre una venta → el backend relee ese ítem y actualiza
+  `canal_inventario` + propaga el `stock_real`.
+- **Amazon — SP-API Notifications**: suscribirse (vía la Notifications API + AWS
+  SQS) a `ANY_OFFER_CHANGED` y `FBA_INVENTORY_AVAILABILITY_CHANGES`. Amazon
+  publica en una cola SQS; un consumidor lee y actualiza el cache.
+- **WooCommerce — Webhooks**: en WooCommerce → Ajustes → Avanzado → Webhooks,
+  crear uno de `Product updated` apuntando a `/api/webhooks/woo`.
+
+> Pendiente de implementar el endpoint `/api/webhooks/*` y, en el caso de Amazon,
+> el consumidor de la cola SQS. La lógica de relectura por SKU ya existe
+> (`inventario.sincronizar_*`), así que el webhook solo dispara esa función.
+
+### Devoluciones (situación por canal)
+
+Se modeló el campo `situacion` por canal (ej. ML `active/paused`, Amazon
+`PUBLISHED/INVALID`). El caso de **devolución** (un producto que bajó stock y se
+restaura al llegar a Odoo) se lee de la API de órdenes/claims de cada canal y se
+reflejará en `situacion` por canal en una próxima iteración.
+
+---
+
+## 🧾 Versión 0.1 — registro de implementación
+
+**Fecha:** 30 jun 2026. Construido sobre la v1 base (FastAPI + Next.js).
+
+Añadido en esta versión:
+- 🖼️ **Imágenes** en todos los canales (se toman de WooCommerce por lote vía `wc_id`).
+- 💰 **Precio real por tienda** y 📦 **desglose de stock** (real / FULL / FBA) en
+  tarjetas y en el detalle 360°.
+- 🔐 **Desencriptado de tokens de Mercado Libre** (Fernet) para lectura en vivo.
+- 🗃️ Tabla **`canal_inventario`** como cache de inventario por canal y cuenta.
+- 🔄 **Lector de inventario en vivo** (ML por cuenta, Amazon FBA) + endpoints
+  `/api/sync/*`.
+- ⏱️ **Sincronización programada cada 15 min** (APScheduler), apagable con
+  `SYNC_ENABLED=false`.
+- 🧪 **Plan de sincronización en modo simulación** (`/api/sync/plan`): Odoo → canales.
+- 🏷️ Campo **`situacion`** por canal (estatus del listing).
+
+Nuevas variables de entorno (backend): `DB_ENCRYPTION_KEY`, `SYNC_ENABLED`,
+`SYNC_INTERVAL_MIN`, `SYNC_BATCH`.
 
 ---
 

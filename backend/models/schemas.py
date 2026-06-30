@@ -39,7 +39,12 @@ class Producto(BaseModel):
     precio: float | None = None
     precio_base: float | None = None  # precio sin descuento / sugerido
     moneda: str = "MXN"
-    stock: int | None = None
+    stock: int | None = None          # stock mostrado (= stock_real del canal)
+    # Desglose de inventario (regla: total = real + full + fba)
+    stock_real: int | None = None     # lo que se sincroniza (almacén propio / FBM / Flex)
+    stock_full: int | None = None     # bodega Mercado Libre (FULL)
+    stock_fba: int | None = None      # bodega Amazon (FBA)
+    situacion: str | None = None      # estatus del listing (active/paused/published/...)
     estado: str | None = None         # publish / draft / activo / pausado...
 
     # Categoría completa (todos los niveles) del canal solicitado
@@ -110,6 +115,10 @@ class DetalleCanal(BaseModel):
     precio: float | None = None
     precio_base: float | None = None
     stock: int | None = None
+    stock_real: int | None = None
+    stock_full: int | None = None
+    stock_fba: int | None = None
+    situacion: str | None = None
     full: bool | None = None
     full_label: str | None = None
     categoria_id: str | int | None = None
