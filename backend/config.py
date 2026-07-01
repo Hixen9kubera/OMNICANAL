@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     sync_enabled: bool = True
     sync_interval_min: int = 15
     sync_batch: int = 80
+    # Guardado de notificaciones de webhooks en la tabla (se puede pausar en runtime)
+    webhook_registro: bool = True
 
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"

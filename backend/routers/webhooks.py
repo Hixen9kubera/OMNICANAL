@@ -21,10 +21,15 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 
+from config import settings
 from services import db, inventario, meli
 
 log = logging.getLogger("omnicanal.webhooks")
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
+
+# Interruptor en runtime: si está en False, el webhook responde 200 pero NO
+# guarda en la tabla ni procesa (pausa el registro de datos sin redesplegar).
+_registro_activo = settings.webhook_registro
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS webhook_eventos (
@@ -119,6 +124,9 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
 @router.post("/ml")
 async def recibir_ml(request: Request, background: BackgroundTasks):
     """Recibe la notificación de Mercado Libre. Responde 200 de inmediato."""
+    # Si el registro está pausado, respondemos 200 pero NO guardamos ni procesamos.
+    if not _registro_activo:
+        return {"ok": True, "registro": "pausado"}
     try:
         payload = await request.json()
     except Exception:  # noqa: BLE001
@@ -128,6 +136,31 @@ async def recibir_ml(request: Request, background: BackgroundTasks):
     # Procesar aparte para responder rápido (ML reintenta si tardas).
     background.add_task(_procesar_ml, evento_id, payload)
     return {"ok": True}
+
+
+@router.api_route("/pausar", methods=["GET", "POST"])
+async def pausar():
+    """Pausa el guardado de notificaciones en la tabla (y su procesamiento)."""
+    global _registro_activo
+    _registro_activo = False
+    log.info("Registro de webhooks PAUSADO.")
+    return {"ok": True, "registro_activo": False,
+            "nota": "Las notificaciones de ML se responden 200 pero NO se guardan."}
+
+
+@router.api_route("/reanudar", methods=["GET", "POST"])
+async def reanudar():
+    """Reanuda el guardado de notificaciones en la tabla."""
+    global _registro_activo
+    _registro_activo = True
+    log.info("Registro de webhooks REANUDADO.")
+    return {"ok": True, "registro_activo": True}
+
+
+@router.get("/estado")
+async def estado_registro():
+    """Indica si el registro está activo o pausado."""
+    return {"registro_activo": _registro_activo}
 
 
 @router.get("/ml")
