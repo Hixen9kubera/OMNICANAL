@@ -315,6 +315,44 @@ async def _sync_woo_sku(sku: str) -> list[dict[str, Any]]:
         return []
 
 
+async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
+    """
+    Refresca UN ítem de Mercado Libre por su id (lo usa el webhook cuando ML avisa
+    que un item cambió). Busca la cuenta/SKU en ml_progress y actualiza el cache.
+    """
+    try:
+        row = db.fetch_one(
+            "SELECT sku, cuenta FROM ml_progress WHERE ml_item_id=%s LIMIT 1",
+            (item_id,),
+        )
+    except Exception:  # noqa: BLE001
+        row = None
+    if not row:
+        return {"ok": False, "motivo": "item_id no está en ml_progress"}
+    sku, cuenta = row["sku"], row["cuenta"]
+    token = meli._access_token(cuenta)
+    if not token:
+        return {"ok": False, "motivo": "sin token"}
+    try:
+        async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
+            item = await _leer_ml_item(cli, item_id, token, cuenta)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "motivo": str(exc)}
+    if not item:
+        return {"ok": False, "motivo": "no se pudo leer el item"}
+    logistic = (item.get("shipping") or {}).get("logistic_type")
+    es_full = logistic == "fulfillment"
+    qty = item.get("available_quantity")
+    _upsert([{
+        "sku": sku, "canal": "mercado_libre", "cuenta": cuenta,
+        "item_id": item_id, "precio": item.get("price"),
+        "stock_real": 0 if es_full else qty, "stock_full": qty if es_full else 0,
+        "stock_fba": None, "es_full": 1 if es_full else 0,
+        "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
+    }])
+    return {"ok": True, "sku": sku, "cuenta": cuenta, "item_id": item_id}
+
+
 async def sincronizar_sku(sku: str) -> dict[str, Any]:
     """
     Lee en vivo TODOS los canales para un SKU concreto (en paralelo) y actualiza
