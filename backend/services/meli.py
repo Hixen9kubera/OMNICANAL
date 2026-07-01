@@ -201,6 +201,30 @@ def _access_token(cuenta: str | None = None) -> str | None:
         return None
 
 
+async def obtener_orden_items(order_id: str) -> list[str]:
+    """
+    Devuelve los item_id de una orden de ML. Prueba con el token de cada cuenta
+    (la orden pertenece a uno de los dos vendedores).
+    """
+    import httpx as _httpx
+    for cuenta in ("BEKURA", "SANCORFASHION"):
+        token = _access_token(cuenta)
+        if not token:
+            continue
+        try:
+            async with _httpx.AsyncClient(base_url=_API, timeout=15.0) as cli:
+                r = await cli.get(f"/orders/{order_id}",
+                                  headers={"Authorization": f"Bearer {token}"})
+                if r.status_code == 200:
+                    data = r.json()
+                    return [str((oi.get("item") or {}).get("id"))
+                            for oi in data.get("order_items", [])
+                            if (oi.get("item") or {}).get("id")]
+        except Exception:  # noqa: BLE001
+            continue
+    return []
+
+
 def refrescar_token(cuenta: str) -> str | None:
     """
     Renueva el access_token de una cuenta ML usando su refresh_token + las

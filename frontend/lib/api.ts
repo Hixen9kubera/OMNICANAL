@@ -4,6 +4,7 @@ import type {
   CanalInfo,
   DetalleProducto,
   RespuestaProductos,
+  WebhookEvento,
 } from "./types";
 
 const BASE =
@@ -87,6 +88,17 @@ export async function refrescarCanal(
   );
   if (!res.ok) throw new Error(`Refresco falló: ${res.status}`);
   return res.json();
+}
+
+export interface NotificacionesResp {
+  eventos: WebhookEvento[];
+  total_hoy: number;
+}
+
+export function notificacionesWebhook(
+  signal?: AbortSignal,
+): Promise<NotificacionesResp> {
+  return getJSON<NotificacionesResp>(`/api/webhooks/notificaciones`, signal);
 }
 
 export const API_BASE = BASE;

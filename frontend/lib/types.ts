@@ -95,6 +95,17 @@ export interface DetalleCanal {
   extra: Record<string, unknown>;
 }
 
+export interface WebhookEvento {
+  id: number;
+  canal: string;
+  topic: string | null;
+  resource: string | null;
+  cuenta: string | null;
+  sku: string | null;
+  resultado: string | null;
+  recibido: string;
+}
+
 export interface DetalleProducto {
   sku: string;
   wc_id: number | null;

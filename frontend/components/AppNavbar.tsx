@@ -11,6 +11,7 @@ import {
   Workflow,
   type LucideIcon,
 } from "lucide-react";
+import NotificationBell from "./NotificationBell";
 
 interface NavItem {
   id: string;
@@ -86,6 +87,7 @@ export default function AppNavbar() {
 
         {/* Usuario */}
         <div className="flex shrink-0 items-center gap-3">
+          <NotificationBell />
           <div className="hidden text-right sm:block">
             <div className="text-xs font-semibold text-slate-700">Kubera</div>
             <div className="text-[11px] text-slate-400">admin</div>
