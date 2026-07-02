@@ -151,6 +151,10 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         imagenes=base.get("imagenes", []),
         marca=base.get("marca"),
         descripcion=base.get("descripcion"),
+        descripcion_corta=base.get("descripcion_corta"),
+        atributos=base.get("atributos", []),
+        precio_base=base.get("precio_base"),
+        precio_oferta=base.get("precio_oferta"),
         canales=[],
     )
 

@@ -34,6 +34,7 @@ class Producto(BaseModel):
     nombre: str
     imagen: str | None = None
     marca: str | None = None
+    descripcion_corta: str | None = None  # resumen para la lista de PRODUCTOS
 
     # Métricas del canal solicitado
     precio: float | None = None
@@ -127,6 +128,12 @@ class DetalleCanal(BaseModel):
     extra: dict = Field(default_factory=dict)  # campos crudos adicionales
 
 
+class AtributoProducto(BaseModel):
+    """Atributo del producto (WooCommerce): nombre + valor."""
+    nombre: str
+    valor: str = ""
+
+
 class DetalleProducto(BaseModel):
     """Vista 360°: el producto en TODOS los canales a la vez."""
     sku: str
@@ -137,6 +144,10 @@ class DetalleProducto(BaseModel):
     imagenes: list[str] = Field(default_factory=list)
     marca: str | None = None
     descripcion: str | None = None
+    descripcion_corta: str | None = None
+    atributos: list[AtributoProducto] = Field(default_factory=list)
+    precio_base: float | None = None
+    precio_oferta: float | None = None
     stock_odoo: int | None = None
     costo: float | None = None
     peso_kg: float | None = None

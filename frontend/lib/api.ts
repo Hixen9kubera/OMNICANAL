@@ -3,6 +3,8 @@
 import type {
   CanalInfo,
   DetalleProducto,
+  GeneradorDef,
+  GenerarIAResp,
   RespuestaProductos,
   WebhookEvento,
 } from "./types";
@@ -88,6 +90,43 @@ export async function refrescarCanal(
   );
   if (!res.ok) throw new Error(`Refresco falló: ${res.status}`);
   return res.json();
+}
+
+// ── IA: generadores de contenido por canal ──────────────────────────
+export function generadoresIA(
+  canal: string,
+  signal?: AbortSignal,
+): Promise<{ canal: string; generadores: GeneradorDef[] }> {
+  return getJSON(`/api/ia/generadores?canal=${encodeURIComponent(canal)}`, signal);
+}
+
+export interface AtributoCtx {
+  nombre: string;
+  valor: string;
+}
+
+export interface GenerarIAParams {
+  canal: string;
+  generador: string;
+  producto: {
+    nombre: string;
+    marca?: string | null;
+    categoria?: string | null;
+    descripcion?: string | null;
+    precio?: number | null;
+    publico?: string | null;
+    atributos?: AtributoCtx[];
+  };
+}
+
+export async function generarIA(p: GenerarIAParams): Promise<GenerarIAResp> {
+  const res = await fetch(`${BASE}/api/ia/generar`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(p),
+  });
+  if (!res.ok) throw new Error(`Generación IA falló: ${res.status}`);
+  return res.json() as Promise<GenerarIAResp>;
 }
 
 export interface NotificacionesResp {

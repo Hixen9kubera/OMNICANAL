@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Package,
@@ -17,16 +19,16 @@ interface NavItem {
   id: string;
   label: string;
   icon: LucideIcon;
-  activo?: boolean;
+  href?: string;          // si tiene href, es navegable
   proximamente?: boolean;
 }
 
-// Navegación principal de la app (replica la barra de cloud.autoazur.com).
-// Solo OMNICANAL está implementado; el resto se marca "próximamente".
+// Navegación principal de la app. OMNICANAL y PRODUCTOS están implementados;
+// el resto se marca "próximamente".
 const ITEMS: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, proximamente: true },
-  { id: "productos", label: "Productos", icon: Package, proximamente: true },
-  { id: "omnicanal", label: "Omnicanal", icon: Share2, activo: true },
+  { id: "productos", label: "Productos", icon: Package, href: "/productos" },
+  { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   { id: "canales", label: "Canales", icon: Store, proximamente: true },
   { id: "ventas", label: "Ventas", icon: TrendingUp, proximamente: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
@@ -35,11 +37,13 @@ const ITEMS: NavItem[] = [
 ];
 
 export default function AppNavbar() {
+  const pathname = usePathname();
+
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-6 px-4 sm:px-6">
         {/* Logo */}
-        <div className="flex items-center gap-2.5 pr-2">
+        <Link href="/omnicanal" className="flex items-center gap-2.5 pr-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
             <Share2 size={18} />
           </div>
@@ -51,22 +55,32 @@ export default function AppNavbar() {
               Omnicanal
             </div>
           </div>
-        </div>
+        </Link>
 
         {/* Navegación */}
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
           {ITEMS.map((item) => {
             const Icon = item.icon;
-            if (item.activo) {
+            const activo = !!item.href && pathname === item.href;
+
+            if (item.href) {
               return (
-                <span
+                <Link
                   key={item.id}
-                  className="group relative flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-indigo-600"
+                  href={item.href}
+                  className={[
+                    "group relative flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors",
+                    activo
+                      ? "font-semibold text-indigo-600"
+                      : "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800",
+                  ].join(" ")}
                 >
                   <Icon size={17} />
                   {item.label}
-                  <span className="absolute inset-x-2 -bottom-[9px] h-[3px] rounded-full bg-indigo-500" />
-                </span>
+                  {activo && (
+                    <span className="absolute inset-x-2 -bottom-[9px] h-[3px] rounded-full bg-indigo-500" />
+                  )}
+                </Link>
               );
             }
             return (

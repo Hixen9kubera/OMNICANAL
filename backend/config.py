@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     replicate_api_key: str = ""
     serpapi_key: str = ""
+    # DeepSeek (API compatible con OpenAI). Si hay clave, los generadores de
+    # contenido lo usan primero; si no, caen a Claude (anthropic).
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────
     db_host: str = ""

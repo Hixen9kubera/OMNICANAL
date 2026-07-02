@@ -547,6 +547,111 @@ sin llamar a WooCommerce en cada vista.
 
 ---
 
+## 🔔 Versión 0.15 — Webhooks de Mercado Libre + campana de notificaciones
+
+**Fecha:** 1–2 jul 2026. Sobre la v0.14.
+
+**Qué se construyó:**
+- **Receptor de webhooks de Mercado Libre** (`POST /api/webhooks/ml`): recibe la
+  notificación, responde **200 de inmediato** (ML reintenta si tardas) y **procesa
+  aparte** en segundo plano.
+  - `topic = items / items_prices / stock_locations` → **refresca ese ítem** en el
+    cache (`refrescar_ml_item_id`).
+  - `topic = orders_v2` → una venta cambia el stock: **resincroniza los ítems de la
+    orden**.
+  - Otros topics (shipments, payments, questions…) se **registran** sin acción de
+    stock.
+- **Persistencia en base de datos** (tabla **`webhook_eventos`**): antes las
+  notificaciones vivían solo en memoria y se perdían al reiniciar. Ahora sobreviven
+  reinicios/redeploys.
+- **Campana de notificaciones** en el navbar (`NotificationBell`): sondea
+  `GET /api/webhooks/notificaciones` cada 30 s, muestra un **badge** con las no
+  leídas, íconos y etiqueta por topic (Venta, Cambio de publicación, Envío…) y el
+  "hace X min". El "leído" se guarda en `localStorage`.
+- **Interruptor de registro en runtime** (para pausar sin redesplegar):
+  - `GET|POST /api/webhooks/pausar` → responde 200 a ML pero **NO guarda** ni procesa.
+  - `GET|POST /api/webhooks/reanudar` → reactiva el guardado.
+  - `GET /api/webhooks/estado` → `{ "registro_activo": true|false }`.
+  - Persistente: variable de entorno **`WEBHOOK_REGISTRO=false`** deja el registro
+    pausado por defecto tras un reinicio.
+
+### Tabla `webhook_eventos`
+
+| Columna | Para qué |
+|---|---|
+| `id` | PK autoincremental |
+| `canal` | `mercado_libre` (preparada para más canales) |
+| `topic` | items / orders_v2 / shipments / … |
+| `resource` | recurso notificado (`/items/MLM…`, `/orders/…`) |
+| `user_id`, `cuenta` | dueño de la notificación |
+| `sku`, `procesado`, `resultado` | resultado del procesamiento en background |
+| `recibido` | fecha/hora de recepción (UTC) |
+
+**Endpoints nuevos:**
+`POST /api/webhooks/ml`, `GET /api/webhooks/ml` (ping), `GET /api/webhooks/ml/log`,
+`GET /api/webhooks/notificaciones`, `.../pausar`, `.../reanudar`, `.../estado`.
+
+**URL del webhook (Railway):**
+`https://backendomnicanal-production.up.railway.app/api/webhooks/ml`
+
+**Otros marketplaces (investigación):** Amazon usa **SQS/EventBridge** (no callback
+HTTP directo); TikTok Shop, Walmart y Temu sí exponen **webhooks HTTP** (pendientes
+de credenciales). El receptor está listo para generalizarse.
+
+---
+
+## 🎨 Versión 0.2 — Pestaña PRODUCTOS + Estudio de producto con IA por canal
+
+**Fecha:** 2 jul 2026. Sobre la v0.15.
+
+Se activa la pestaña **PRODUCTOS** del navbar (antes "próximamente") con un
+**estudio de producto**: una ventana superpuesta que se **desliza desde la derecha**
+para ver la ficha completa y **generar contenido optimizado por canal con IA**.
+
+**Frontend:**
+- **Navbar navegable**: `Omnicanal` (`/omnicanal`) y `Productos` (`/productos`) ahora
+  son rutas reales con estado activo según la URL; el resto sigue "próximamente".
+- **Página `/productos`** (`app/productos/page.tsx`): lista el catálogo de
+  WooCommerce en **forma de lista** mostrando **título, descripción corta, categoría,
+  precio y presencia por canal**; con **buscador parcial** y **paginación arriba y
+  abajo**. Al hacer clic en un producto se abre el estudio.
+- **`ProductStudio`** (overlay, `components/ProductStudio.tsx`):
+  - **La categoría se muestra primero**, luego el resto del contenido (galería de
+    imágenes, título con contador de caracteres, descripción, precio regular/oferta,
+    atributos).
+  - **Selector de canal a editar** arriba: al elegir un canal, **todo el panel cambia
+    de color** (igual que en Omnicanal) y muestra el **estado de ese canal**
+    (publicado, precio, stock, FULL, link) si el producto ya está publicado ahí.
+  - **Botones de IA por canal, uno por tipo de contenido** ("Actualizar contenido para
+    {canal}"). Cada botón dispara el agente/prompt específico de ese canal, con
+    **animación de carga**, y muestra el resultado en tarjetas con **Copiar** y
+    **Usar** (rellena el campo de título/descripción).
+
+**Backend — generadores de contenido por canal** (`services/ia_generadores.py`):
+- Registro `GENERADORES` (fuente única de verdad) con los tipos por canal:
+  - **Amazon** (instrucciones vigentes 27-jul-2026, provistas por Kubera): **Título**
+    (≤75), **Item Highlights** (≤125), **5 Bullet Points** (150–200 c/u), **Descripción**
+    (≤2000), **Atributos Amazon** por categoría, y **Set de 5 imágenes** (detección de
+    categoría A–J + layout + texto exacto + **prompt de IA en inglés** por imagen).
+  - **Mercado Libre**: Título (≤60), Ficha técnica / atributos, Descripción (texto plano).
+  - **General (WooCommerce)**: Título, Descripción (HTML). **TikTok**: título viral.
+- **Proveedor de IA con fallback**: usa **DeepSeek** si `DEEPSEEK_API_KEY` está
+  configurada; si no, cae a **Claude** (`ANTHROPIC_API_KEY`). Si no hay ninguna,
+  devuelve un mensaje claro en vez de fallar.
+- Endpoints: `GET /api/ia/generadores?canal=…` (pinta los botones) y
+  `POST /api/ia/generar` (ejecuta un generador sobre el producto).
+- **WooCommerce** ahora expone `atributos`, `descripcion_corta`, `precio_oferta` en el
+  detalle y `descripcion_corta` en la lista (para la vista PRODUCTOS).
+
+**Nuevas variables de entorno (opcionales):**
+`DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` (default `https://api.deepseek.com`),
+`DEEPSEEK_MODEL` (default `deepseek-chat`).
+
+**Nota:** el estudio es de **edición/generación de contenido**; guardar/publicar los
+cambios de vuelta en cada canal queda para una próxima iteración.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

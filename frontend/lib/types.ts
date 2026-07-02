@@ -19,6 +19,7 @@ export interface Producto {
   nombre: string;
   imagen: string | null;
   marca: string | null;
+  descripcion_corta: string | null;
   precio: number | null;
   precio_base: number | null;
   moneda: string;
@@ -106,6 +107,11 @@ export interface WebhookEvento {
   recibido: string;
 }
 
+export interface AtributoProducto {
+  nombre: string;
+  valor: string;
+}
+
 export interface DetalleProducto {
   sku: string;
   wc_id: number | null;
@@ -115,9 +121,35 @@ export interface DetalleProducto {
   imagenes: string[];
   marca: string | null;
   descripcion: string | null;
+  descripcion_corta: string | null;
+  atributos: AtributoProducto[];
+  precio_base: number | null;
+  precio_oferta: number | null;
   stock_odoo: number | null;
   costo: number | null;
   peso_kg: number | null;
   dimensiones: string | null;
   canales: DetalleCanal[];
+}
+
+// ── IA: generadores de contenido por canal ──────────────────────────
+export interface GeneradorDef {
+  id: string;
+  label: string;
+  icono: string;
+  descripcion: string;
+  tipo?: "texto" | "imagenes";
+  max_tokens?: number;
+}
+
+export interface GenerarIAResp {
+  ok: boolean;
+  texto?: string;
+  modelo?: string;
+  proveedor?: string;
+  motivo?: string;
+  canal: string;
+  generador: string;
+  label: string;
+  tipo: "texto" | "imagenes";
 }

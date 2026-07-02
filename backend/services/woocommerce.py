@@ -87,6 +87,18 @@ def _img(producto: dict[str, Any]) -> str | None:
     return imgs[0].get("src") if imgs else None
 
 
+def _resumen(html: str | None, limite: int = 160) -> str | None:
+    """Convierte un HTML corto de WooCommerce en texto plano recortado."""
+    if not html:
+        return None
+    import re
+    texto = re.sub(r"<[^>]+>", " ", html)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    if not texto:
+        return None
+    return texto if len(texto) <= limite else texto[: limite - 1].rstrip() + "…"
+
+
 def _marca(producto: dict[str, Any]) -> str | None:
     marcas = producto.get("brands") or []
     if marcas:
@@ -138,7 +150,7 @@ async def listar_productos(
     """
     campos = (
         "id,name,sku,price,regular_price,sale_price,stock_quantity,"
-        "stock_status,status,type,categories,brands,images,permalink"
+        "stock_status,status,type,categories,brands,images,short_description,permalink"
     )
     params: dict[str, Any] = {
         "per_page": per_page,
@@ -214,6 +226,7 @@ async def listar_productos(
                 "nombre": p.get("name", ""),
                 "imagen": _img(p),
                 "marca": _marca(p),
+                "descripcion_corta": _resumen(p.get("short_description")),
                 "precio": precio,
                 "precio_base": base,
                 "stock": p.get("stock_quantity"),
@@ -328,10 +341,23 @@ async def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
     return salida
 
 
+def _atributos(producto: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normaliza los atributos de WooCommerce a [{nombre, valor}]."""
+    salida: list[dict[str, Any]] = []
+    for a in producto.get("attributes") or []:
+        nombre = a.get("name")
+        if not nombre:
+            continue
+        opciones = a.get("options") or []
+        valor = ", ".join(str(o) for o in opciones) if opciones else ""
+        salida.append({"nombre": nombre, "valor": valor})
+    return salida
+
+
 async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
     try:
         async with _client() as cli:
-            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,price,regular_price,stock_quantity,status,categories,brands,images,description,permalink"})
+            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
             r.raise_for_status()
             data = r.json()
     except Exception as exc:  # noqa: BLE001
@@ -350,8 +376,11 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
         "imagenes": imgs,
         "marca": _marca(p),
         "descripcion": p.get("description"),
+        "descripcion_corta": p.get("short_description"),
+        "atributos": _atributos(p),
         "precio": _to_float(p.get("price")),
         "precio_base": _to_float(p.get("regular_price")),
+        "precio_oferta": _to_float(p.get("sale_price")),
         "stock": p.get("stock_quantity"),
         "estado": p.get("status"),
         "categoria_path": ruta,
