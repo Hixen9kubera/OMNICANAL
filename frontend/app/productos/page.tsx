@@ -33,7 +33,7 @@ export default function ProductosPage() {
   const [busquedaInput, setBusquedaInput] = useState("");
   const [busqueda, setBusqueda] = useState("");
   const [cargando, setCargando] = useState(true);
-  const [skuSel, setSkuSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<Producto | null>(null);
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -155,7 +155,7 @@ export default function ProductosPage() {
             productos.map((p) => (
               <button
                 key={p.sku}
-                onClick={() => setSkuSel(p.sku)}
+                onClick={() => setSel(p)}
                 className="flex w-full items-center gap-4 border-b border-slate-100 px-4 py-3.5 text-left transition-colors hover:bg-indigo-50/40"
               >
                 {/* Imagen */}
@@ -215,7 +215,7 @@ export default function ProductosPage() {
       </main>
 
       {/* Estudio de producto (overlay) */}
-      <ProductStudio sku={skuSel} canales={canales} onClose={() => setSkuSel(null)} />
+      <ProductStudio sku={sel?.sku ?? null} producto={sel} canales={canales} onClose={() => setSel(null)} />
     </div>
   );
 }

@@ -11,11 +11,13 @@ import {
   ChevronRight,
   ImageIcon,
 } from "lucide-react";
-import type { CanalInfo, DetalleProducto } from "@/lib/types";
-import { detalleProducto, refrescarCanal } from "@/lib/api";
+import type { CanalInfo, Producto } from "@/lib/types";
+import { refrescarCanal } from "@/lib/api";
+import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
 
 interface Props {
   sku: string | null;
+  producto?: Producto | null;
   canales: CanalInfo[];
   onClose: () => void;
 }
@@ -28,24 +30,12 @@ function precioMXN(v: number | null): string {
   }).format(v);
 }
 
-export default function ProductDetailDrawer({ sku, canales, onClose }: Props) {
-  const [data, setData] = useState<DetalleProducto | null>(null);
-  const [cargando, setCargando] = useState(false);
+export default function ProductDetailDrawer({ sku, producto, canales, onClose }: Props) {
+  // #2/#3: pinta al instante lo que ya trae la lista y cachea el detalle (SWR).
+  const { data, cargando, recargar } = useDetalleProducto(sku, producto);
   const [refrescando, setRefrescando] = useState<string | null>(null);
 
   const cfg = (id: string) => canales.find((c) => c.id === id);
-
-  useEffect(() => {
-    if (!sku) return;
-    const ctrl = new AbortController();
-    setCargando(true);
-    setData(null);
-    detalleProducto(sku, ctrl.signal)
-      .then(setData)
-      .catch(() => {})
-      .finally(() => setCargando(false));
-    return () => ctrl.abort();
-  }, [sku]);
 
   // Cerrar con ESC
   useEffect(() => {
@@ -59,8 +49,8 @@ export default function ProductDetailDrawer({ sku, canales, onClose }: Props) {
     setRefrescando(canal);
     try {
       await refrescarCanal(canal, sku);
-      const fresco = await detalleProducto(sku);
-      setData(fresco);
+      invalidarDetalle(sku); // forzamos datos frescos tras el refresco en vivo
+      await recargar();
     } catch {
       /* el botón solo aplica a ML/Amazon con publicación */
     } finally {
@@ -113,11 +103,18 @@ export default function ProductDetailDrawer({ sku, canales, onClose }: Props) {
 
         {/* Contenido */}
         <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
-          {cargando && (
+          {/* Skeleton solo cuando no hay NADA que mostrar todavía */}
+          {!data && cargando && (
             <div className="space-y-3">
               {[0, 1, 2].map((i) => (
                 <div key={i} className="h-28 animate-pulse rounded-xl bg-white" />
               ))}
+            </div>
+          )}
+          {/* Barra sutil mientras se completa el detalle sobre datos parciales */}
+          {data && cargando && (
+            <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 text-xs text-slate-400">
+              <RefreshCw size={12} className="animate-spin" /> Actualizando…
             </div>
           )}
 

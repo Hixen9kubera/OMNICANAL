@@ -21,15 +21,17 @@ import {
 import type {
   CanalInfo,
   DetalleCanal,
-  DetalleProducto,
   GeneradorDef,
   GenerarIAResp,
+  Producto,
 } from "@/lib/types";
-import { detalleProducto, generadoresIA, generarIA } from "@/lib/api";
+import { generadoresIA, generarIA } from "@/lib/api";
+import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
 
 interface Props {
   sku: string | null;
+  producto?: Producto | null;
   canales: CanalInfo[];
   onClose: () => void;
 }
@@ -57,9 +59,9 @@ interface Resultado extends GenerarIAResp {
   key: string;
 }
 
-export default function ProductStudio({ sku, canales, onClose }: Props) {
-  const [data, setData] = useState<DetalleProducto | null>(null);
-  const [cargando, setCargando] = useState(false);
+export default function ProductStudio({ sku, producto, canales, onClose }: Props) {
+  // #2/#3: pinta al instante con lo de la lista y cachea el detalle (SWR).
+  const { data, cargando } = useDetalleProducto(sku, producto);
   const [canal, setCanal] = useState<string>(GENERAL);
 
   // Campos editables (prototipo): se precargan de WooCommerce.
@@ -86,25 +88,22 @@ export default function ProductStudio({ sku, canales, onClose }: Props) {
     };
   }, [canalInfo, canal]);
 
-  // ── Carga del detalle ──────────────────────────────────────────────
+  // ── Al cambiar de SKU: reinicia el panel ────────────────────────────
   useEffect(() => {
-    if (!sku) return;
-    const ctrl = new AbortController();
-    setCargando(true);
-    setData(null);
+    setTitulo("");
+    setDescripcion("");
     setCanal(GENERAL);
     setResultados([]);
-    detalleProducto(sku, ctrl.signal)
-      .then((d) => {
-        setData(d);
-        setTitulo(d.nombre ?? "");
-        setDescripcion(d.descripcion ?? "");
-        setImgActiva(0);
-      })
-      .catch(() => {})
-      .finally(() => setCargando(false));
-    return () => ctrl.abort();
+    setImgActiva(0);
   }, [sku]);
+
+  // ── Al llegar el detalle (parcial o completo): rellena los campos ───
+  // Usamos "valor || nuevo" para NO pisar lo que el usuario ya editó.
+  useEffect(() => {
+    if (!data) return;
+    setTitulo((t) => t || data.nombre || "");
+    setDescripcion((d) => d || data.descripcion || "");
+  }, [data]);
 
   // ── Generadores del canal activo ───────────────────────────────────
   useEffect(() => {
@@ -286,7 +285,8 @@ export default function ProductStudio({ sku, canales, onClose }: Props) {
 
         {/* Cuerpo */}
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
-          {cargando && (
+          {/* Skeleton solo cuando aún no hay nada que mostrar */}
+          {!data && cargando && (
             <div className="space-y-4">
               <div className="h-6 w-1/3 animate-pulse rounded bg-white" />
               <div className="h-52 animate-pulse rounded-2xl bg-white" />
@@ -294,7 +294,14 @@ export default function ProductStudio({ sku, canales, onClose }: Props) {
             </div>
           )}
 
-          {data && !cargando && (
+          {/* Barra sutil mientras se completa el detalle sobre datos parciales */}
+          {data && cargando && (
+            <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-1.5 text-xs text-slate-400">
+              <Loader2 size={12} className="animate-spin" /> Actualizando ficha…
+            </div>
+          )}
+
+          {data && (
             <>
               {/* Estado en el canal seleccionado (solo marketplaces) */}
               {!esGeneral && (

@@ -35,7 +35,7 @@ export default function OmnicanalPage() {
   const [busqueda, setBusqueda] = useState("");
   const [soloPublicados, setSoloPublicados] = useState(false);
   const [cargando, setCargando] = useState(true);
-  const [skuSel, setSkuSel] = useState<string | null>(null);
+  const [sel, setSel] = useState<Producto | null>(null);
 
   // Vista, orden y filtros
   const [vista, setVista] = useState<Vista>("mosaico");
@@ -298,7 +298,7 @@ export default function OmnicanalPage() {
               color={tema.color}
               colorMap={colorMap}
               labelMap={labelMap}
-              onSelect={(p) => setSkuSel(p.sku)}
+              onSelect={(p) => setSel(p)}
             />
           ) : (
             <ProductList
@@ -308,7 +308,7 @@ export default function OmnicanalPage() {
               color={tema.color}
               colorMap={colorMap}
               labelMap={labelMap}
-              onSelect={(p) => setSkuSel(p.sku)}
+              onSelect={(p) => setSel(p)}
             />
           )}
         </div>
@@ -333,9 +333,10 @@ export default function OmnicanalPage() {
 
       {/* Drawer de detalle 360° */}
       <ProductDetailDrawer
-        sku={skuSel}
+        sku={sel?.sku ?? null}
+        producto={sel}
         canales={canales}
-        onClose={() => setSkuSel(null)}
+        onClose={() => setSel(null)}
       />
     </div>
   );
