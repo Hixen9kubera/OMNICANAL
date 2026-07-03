@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     wp_user: str = ""
     wp_app_password: str = ""
 
+    # ── Base de datos de WordPress (lecturas directas) ────────
+    # Sale del wp-config.php del sitio: DB_NAME/DB_USER/DB_PASSWORD/DB_HOST.
+    wpdb_host: str = ""       # si queda vacío usa db_host
+    wpdb_port: int = 3306
+    wpdb_name: str = ""
+    wpdb_user: str = ""
+    wpdb_password: str = ""
+    wpdb_prefix: str = "wp_"  # prefijo de tablas ($table_prefix en wp-config)
+
     # ── IA ────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
@@ -56,6 +65,10 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+
+    # ── Creación de productos (Alibaba → Woo) ─────────────────
+    apify_api_key: str = ""
+    apify_alibaba_actor: str = "happitap~alibaba-product-scraper"
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────
     db_host: str = ""

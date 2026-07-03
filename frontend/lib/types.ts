@@ -12,6 +12,16 @@ export interface CanalResumen {
   url: string | null;
 }
 
+export interface VarianteResumen {
+  sku: string;
+  nombre: string | null; // opciones de atributos ("Café / XL")
+  precio: number | null;
+  costo: number | null; // costo_unitario de costos_finales
+  stock: number | null;
+  valor: number | null; // stock × costo
+  estado: string | null;
+}
+
 export interface Producto {
   sku: string;
   wc_id: number | null;
@@ -38,6 +48,13 @@ export interface Producto {
   url: string | null;
   canales: CanalResumen[];
   cuenta: string | null;
+  // Valor de inventario (Crear Productos): costo y valor = stock × costo
+  costo: number | null;
+  valor: number | null;
+  // Tipo en WooCommerce: simple | variable (padre) | variation
+  tipo: string | null;
+  // Si es padre: sus variantes (vista Crear Productos)
+  variantes: VarianteResumen[];
   origen: string;
 }
 
@@ -50,7 +67,12 @@ export interface Paginacion {
   tiene_siguiente: boolean;
 }
 
-export interface RespuestaProductos {
+export interface RespuestaProductosBase {
+  // false mientras el índice se construye (carga progresiva)
+  completo?: boolean;
+}
+
+export interface RespuestaProductos extends RespuestaProductosBase {
   canal: string;
   items: Producto[];
   paginacion: Paginacion;

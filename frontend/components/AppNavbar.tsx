@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Package,
   Share2,
+  PackagePlus,
   Store,
   TrendingUp,
   FileText,
@@ -23,12 +24,13 @@ interface NavItem {
   proximamente?: boolean;
 }
 
-// Navegación principal de la app. OMNICANAL y PRODUCTOS están implementados;
-// el resto se marca "próximamente".
+// Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
+// implementados; el resto se marca "próximamente".
 const ITEMS: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, proximamente: true },
   { id: "productos", label: "Productos", icon: Package, href: "/productos" },
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
+  { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "canales", label: "Canales", icon: Store, proximamente: true },
   { id: "ventas", label: "Ventas", icon: TrendingUp, proximamente: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
@@ -61,7 +63,7 @@ export default function AppNavbar() {
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
           {ITEMS.map((item) => {
             const Icon = item.icon;
-            const activo = !!item.href && pathname === item.href;
+            const activo = !!item.href && !!pathname?.startsWith(item.href);
 
             if (item.href) {
               return (
@@ -83,6 +85,7 @@ export default function AppNavbar() {
                 </Link>
               );
             }
+
             return (
               <span
                 key={item.id}

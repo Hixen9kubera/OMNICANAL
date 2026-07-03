@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from core.marketplaces import lista_canales
 from models.schemas import HealthCheck
-from routers import auth, canales, ia, productos, sync, webhooks
+from routers import auth, canales, crear, ia, productos, sync, webhooks
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -34,6 +34,10 @@ log = logging.getLogger("omnicanal")
 async def lifespan(app: FastAPI):
     # Arranca el sync programado de inventario (cada N min).
     scheduler.iniciar()
+    # Calienta el índice de "Crear Productos" en segundo plano (escanea WooCommerce),
+    # para que la primera visita a esa vista no espere la construcción del índice.
+    import asyncio
+    asyncio.create_task(woocommerce.indice_candidatos())
     yield
     scheduler.detener()
 
@@ -60,6 +64,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(productos.router)
+app.include_router(crear.router)
 app.include_router(canales.router)
 app.include_router(sync.router)
 app.include_router(webhooks.router)

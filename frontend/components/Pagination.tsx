@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Loader2 } from "lucide-react";
 import type { Paginacion } from "@/lib/types";
 
 interface Props {
@@ -8,6 +8,17 @@ interface Props {
   color: string;
   textoColor: string;
   onPage: (page: number) => void;
+  /** true mientras el catálogo se sigue cargando (el total puede crecer) */
+  sincronizando?: boolean;
+}
+
+function Sincronizando() {
+  return (
+    <span className="ml-2 inline-flex items-center gap-1.5 align-middle text-xs font-semibold text-indigo-500">
+      <Loader2 size={12} className="animate-spin" />
+      sincronizando…
+    </span>
+  );
 }
 
 /** Genera la ventana de páginas con elipsis: 1 … 4 5 [6] 7 8 … 120 */
@@ -26,11 +37,12 @@ function ventana(actual: number, total: number): (number | "...")[] {
   return out;
 }
 
-export default function Pagination({ pag, color, textoColor, onPage }: Props) {
+export default function Pagination({ pag, color, textoColor, onPage, sincronizando }: Props) {
   if (pag.total_pages <= 1) {
     return (
       <div className="text-sm text-slate-400">
         {new Intl.NumberFormat("es-MX").format(pag.total)} productos
+        {sincronizando && <Sincronizando />}
       </div>
     );
   }
@@ -49,6 +61,7 @@ export default function Pagination({ pag, color, textoColor, onPage }: Props) {
           {new Intl.NumberFormat("es-MX").format(pag.total)}
         </span>{" "}
         productos
+        {sincronizando && <Sincronizando />}
       </div>
 
       <div className="flex items-center gap-1.5">

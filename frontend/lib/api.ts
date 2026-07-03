@@ -68,6 +68,137 @@ export function listarCanales(signal?: AbortSignal): Promise<CanalInfo[]> {
   return getJSON<CanalInfo[]>(`/api/canales`, signal);
 }
 
+// ── Crear Productos ──────────────────────────────────────────────────────────
+// Candidatos: productos que están en Odoo pero aún NO listos/publicados en Woo.
+
+export interface CandidatosParams {
+  page?: number;
+  perPage?: number;
+  search?: string;
+  skus?: string; // lista separada por comas: solo esos SKUs
+  orden?: string; // valor|costo|stock|tipo + _asc|_desc
+  categoria?: string; // filtro por nombre de categoría (parcial)
+}
+
+export function listarCandidatos(
+  p: CandidatosParams,
+  signal?: AbortSignal,
+): Promise<RespuestaProductos> {
+  const q = new URLSearchParams();
+  q.set("page", String(p.page ?? 1));
+  q.set("per_page", String(p.perPage ?? 40));
+  if (p.search) q.set("search", p.search);
+  if (p.skus) q.set("skus", p.skus);
+  if (p.orden) q.set("orden", p.orden);
+  if (p.categoria) q.set("categoria", p.categoria);
+  return getJSON<RespuestaProductos>(`/api/crear/candidatos?${q.toString()}`, signal);
+}
+
+// Sincronización Odoo → WooCommerce: SKUs de Odoo que faltan en Woo → drafts.
+
+export interface DraftFaltante {
+  sku: string;
+  nombre: string;
+  precio: number | null;
+  stock: number | null;
+}
+
+export interface DraftsPlanResp {
+  ok: boolean;
+  odoo_total: number;
+  woo_total: number;
+  faltantes_total: number;
+  muestra: DraftFaltante[];
+}
+
+export function planDrafts(signal?: AbortSignal): Promise<DraftsPlanResp> {
+  return getJSON<DraftsPlanResp>(`/api/crear/drafts/plan`, signal);
+}
+
+export interface SincronizarDraftsResp {
+  ok: boolean;
+  creados: { sku: string; wc_id: number }[];
+  errores: { sku: string; error: string }[];
+  faltantes_restantes: number;
+  mensaje?: string;
+}
+
+export async function sincronizarDrafts(
+  limite = 100,
+): Promise<SincronizarDraftsResp> {
+  const res = await fetch(`${BASE}/api/crear/drafts/sincronizar?limite=${limite}`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    let detalle = `API ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detalle = j.detail;
+    } catch {
+      /* sin cuerpo JSON */
+    }
+    throw new Error(detalle);
+  }
+  return res.json() as Promise<SincronizarDraftsResp>;
+}
+
+export interface CrearProductoItem {
+  sku: string;
+  wc_id: number | null;
+  alibaba_url: string;
+}
+
+export interface CrearProductosResp {
+  ok: boolean;
+  recibidos: number;
+  encolados?: number;
+  mensaje?: string;
+  pendiente?: string;
+}
+
+// Avance de la cola de creación (Alibaba → IA → imágenes → categoría → Woo)
+export interface ProgresoCreacionItem {
+  sku: string;
+  estado: "en_cola" | "procesando" | "completado" | "error";
+  paso: string;
+  wc_id?: number | null;
+  titulo?: string;
+}
+
+export function categoriasDisponibles(
+  signal?: AbortSignal,
+): Promise<{ categorias: string[] }> {
+  return getJSON<{ categorias: string[] }>(`/api/crear/categorias`, signal);
+}
+
+export function progresoCreacion(
+  signal?: AbortSignal,
+): Promise<{ items: ProgresoCreacionItem[] }> {
+  return getJSON<{ items: ProgresoCreacionItem[] }>(`/api/crear/progreso`, signal);
+}
+
+export async function crearProductos(
+  items: CrearProductoItem[],
+): Promise<CrearProductosResp> {
+  const res = await fetch(`${BASE}/api/crear/productos`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) {
+    let detalle = `API ${res.status}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detalle = j.detail;
+    } catch {
+      /* sin cuerpo JSON */
+    }
+    throw new Error(detalle);
+  }
+  return res.json() as Promise<CrearProductosResp>;
+}
+
 export function detalleProducto(
   sku: string,
   signal?: AbortSignal,

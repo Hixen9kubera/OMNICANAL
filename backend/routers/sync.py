@@ -17,9 +17,30 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from core.marketplaces import Canal, subcuentas
-from services import db, inventario
+from services import db, inventario, sync_woo
 
 router = APIRouter(prefix="/api/sync", tags=["sincronizacion"])
+
+
+@router.post("/woo")
+async def sincronizar_woo(
+    limite: int | None = Query(None, ge=1, description="Máx. de SKUs (para pruebas); vacío = todos"),
+):
+    """
+    Lanza en segundo plano la sincronización masiva hacia WooCommerce:
+    stock de Odoo (todos los status, nivel variante) + costo de costos_finales
+    (meta `costo`). Avance en GET /api/sync/woo/progreso.
+    """
+    import asyncio
+    if sync_woo.progreso().get("estado") == "corriendo":
+        return {"ok": False, "motivo": "Ya hay una sincronización corriendo.", "progreso": sync_woo.progreso()}
+    asyncio.create_task(sync_woo.sincronizar_stock_y_costos(limite))
+    return {"ok": True, "mensaje": "Sincronización de stock y costos iniciada.", "progreso_en": "/api/sync/woo/progreso"}
+
+
+@router.get("/woo/progreso")
+def progreso_woo():
+    return sync_woo.progreso()
 
 
 @router.post("/leer")

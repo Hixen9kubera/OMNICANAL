@@ -26,6 +26,17 @@ class CategoriaNivel(BaseModel):
     nombre: str
 
 
+class VarianteResumen(BaseModel):
+    """Variante de un producto variable de WooCommerce (vista Crear Productos)."""
+    sku: str
+    nombre: str | None = None      # opciones de atributos ("Café / XL")
+    precio: float | None = None
+    costo: float | None = None     # costo_unitario de costos_finales
+    stock: int | None = None
+    valor: float | None = None     # stock × costo
+    estado: str | None = None
+
+
 class Producto(BaseModel):
     """Producto proyectado al canal solicitado."""
     sku: str
@@ -67,6 +78,16 @@ class Producto(BaseModel):
     # Cuenta del marketplace (Mercado Libre: BEKURA / SANCORFASHION)
     cuenta: str | None = None
 
+    # Valor de inventario (vista Crear Productos): costo de costos_finales,
+    # valor = stock × costo (para padres, suma de sus variantes)
+    costo: float | None = None
+    valor: float | None = None
+
+    # Tipo de producto en WooCommerce: simple | variable (padre) | variation
+    tipo: str | None = None
+    # Si es padre (variable): sus variantes (vista Crear Productos)
+    variantes: list[VarianteResumen] = Field(default_factory=list)
+
     # Origen del dato: woocommerce | db | ejemplo
     origen: str = "woocommerce"
 
@@ -84,6 +105,9 @@ class RespuestaProductos(BaseModel):
     canal: str
     items: list[Producto]
     paginacion: Paginacion
+    # False mientras el índice se sigue construyendo (carga progresiva):
+    # el total y el orden pueden crecer/acomodarse en los siguientes segundos.
+    completo: bool = True
 
 
 class SubCuentaInfo(BaseModel):
