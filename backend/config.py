@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     meli_app_id: str = ""
     meli_client_secret: str = ""
 
+    # ── Supabase (Postgres) — nuevo medio de consultas de ML ──
+    # Dataset ya sincronizado a diario (products_snapshot, daily_stock, ml_accounts…).
+    # supabase_db_url es la cadena del POOLER (session 5432 / transaction 6543):
+    #   postgresql://postgres.<ref>:<PASSWORD>@aws-1-us-west-2.pooler.supabase.com:5432/postgres
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
+    supabase_db_url: str = ""
+
     # ── Amazon SP-API (.env.amazon) ───────────────────────────
     amazon_lwa_client_id: str = ""
     amazon_lwa_client_secret: str = ""
