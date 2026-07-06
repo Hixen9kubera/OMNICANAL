@@ -27,6 +27,12 @@ class CamposPublicar(BaseModel):
     highlights: str | None = None
     bullets: list[str] = Field(default_factory=list)
     atributos: list[AtributoIn] = Field(default_factory=list)
+    # Datos usados al CREAR en Amazon (precio y dimensiones)
+    precio_regular: float | None = None
+    peso: float | None = None
+    largo: float | None = None
+    ancho: float | None = None
+    alto: float | None = None
 
 
 class PublicarRequest(BaseModel):

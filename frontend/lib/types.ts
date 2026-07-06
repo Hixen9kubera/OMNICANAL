@@ -257,6 +257,11 @@ export interface PublicarReq {
     highlights?: string;
     bullets?: string[];
     atributos?: { nombre: string; valor: string }[];
+    precio_regular?: number | null;
+    peso?: number | null;
+    largo?: number | null;
+    ancho?: number | null;
+    alto?: number | null;
   };
 }
 

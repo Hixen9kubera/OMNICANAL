@@ -103,6 +103,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const [cargandoPreview, setCargandoPreview] = useState(false);
   const [publicando, setPublicando] = useState(false);
   const [resultadoPub, setResultadoPub] = useState<PublicarResultado | null>(null);
+  const [amazonPublicadoOk, setAmazonPublicadoOk] = useState(false);
 
   const cargandoCampos = useRef(false);
 
@@ -123,6 +124,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     setCompetencia(sku ? getCompStore(sku) ?? null : null);
     setPreviewPub(null);
     setResultadoPub(null);
+    setAmazonPublicadoOk(false);
   }, [sku]);
 
   // ── Metadata del Estudio (postmeta): precios/costo/alibaba/dims ─────
@@ -251,9 +253,14 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const itemIdSel = datosCanal?.item_id ?? null;
   const cuentaSel =
     (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
+  // Amazon: el botón "Publicar" aparece cuando NO está publicado (o fue rechazado);
+  // desaparece si ya está publicado OK o si se acaba de publicar con éxito.
+  const amazonPublicado = !!datosCanal?.publicado || amazonPublicadoOk;
   const puedeActualizar =
     (canal === "mercado_libre" && !!itemIdSel) ||
-    (canal === "amazon" && !!datosCanal?.publicado);
+    (canal === "amazon" && !amazonPublicado);
+
+  const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
 
   function reqPublicar() {
     return {
@@ -262,7 +269,14 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
       sku,
       wc_id: producto?.wc_id ?? meta?.wc_id ?? null,
       item_id: itemIdSel,
-      campos: { titulo, descripcion, highlights, bullets, atributos },
+      campos: {
+        titulo, descripcion, highlights, bullets, atributos,
+        precio_regular: numOrNull(campos.precioRegular),
+        peso: numOrNull(campos.peso),
+        largo: numOrNull(campos.largo),
+        ancho: numOrNull(campos.ancho),
+        alto: numOrNull(campos.alto),
+      },
     };
   }
 
@@ -282,9 +296,11 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   async function confirmarPublicar() {
     setPublicando(true);
     try {
-      setResultadoPub(await publicarConfirmar(reqPublicar()));
+      const r = await publicarConfirmar(reqPublicar());
+      setResultadoPub(r);
+      if (r.ok && canal === "amazon") setAmazonPublicadoOk(true);
     } catch {
-      setResultadoPub({ ok: false, error: "Error de conexión al actualizar." });
+      setResultadoPub({ ok: false, error: "Error de conexión al publicar." });
     } finally {
       setPublicando(false);
     }

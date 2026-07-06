@@ -127,15 +127,16 @@ def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
     desc = _plain(campos.get("descripcion"))
     avisos: list[str] = []
-    if not pt:
-        avisos.append("Sin product_type en amazon_progress: el producto no está publicado en Amazon (actualizar requiere publicación previa).")
-    if not req.get("item_id"):
-        avisos.append("Sin ASIN: el producto no parece publicado en Amazon.")
+    if not title:
+        avisos.append("Falta el título.")
+    if not campos.get("precio_regular"):
+        avisos.append("Sin precio: revisa el precio regular antes de publicar.")
     if len(title) > AMZ_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Amazon máx {AMZ_TITULO_MAX}).")
+    avisos.append("Publicar CREA el listing en Amazon. Si faltan atributos obligatorios de la categoría, Amazon lo rechazará y verás el motivo aquí y en amazon_backlog.")
     return {
-        "ok": True, "canal": "amazon", "sku": sku, "item_id": req.get("item_id"),
-        "product_type": pt,
+        "ok": True, "canal": "amazon", "sku": sku,
+        "product_type": pt or "(se detecta automáticamente)",
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": f"Bullet {i + 1}", "valor": b} for i, b in enumerate(bullets)],
         "operaciones": {"titulo": bool(title), "bullets": len(bullets), "descripcion": bool(desc)},
@@ -257,18 +258,90 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             "registrado_en": "ml_backlog"}
 
 
-def _amazon_patches(title: str, bullets: list[str], desc: str, mp: str) -> list[dict]:
-    patches: list[dict] = []
-    if title:
-        patches.append({"op": "replace", "path": "/attributes/item_name",
-                        "value": [{"value": title, "language_tag": "es_MX", "marketplace_id": mp}]})
-    if bullets:
-        patches.append({"op": "replace", "path": "/attributes/bullet_point",
-                        "value": [{"value": b, "language_tag": "es_MX", "marketplace_id": mp} for b in bullets]})
-    if desc:
-        patches.append({"op": "replace", "path": "/attributes/product_description",
-                        "value": [{"value": desc, "language_tag": "es_MX", "marketplace_id": mp}]})
-    return patches
+def _attr_from(atributos: list[dict], nombre: str, default: str) -> str:
+    for a in atributos or []:
+        if (a.get("nombre") or "").upper() == nombre.upper() and str(a.get("valor") or "").strip():
+            return str(a["valor"]).strip()
+    return default
+
+
+def _num(v: Any, default: float = 1.0) -> float:
+    try:
+        n = float(v)
+        return n if n > 0 else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _amazon_attributes(sku: str, campos: dict[str, Any], mp: str) -> dict[str, Any]:
+    """Atributos para crear/reemplazar el listing (Listings API, requirements=LISTING)."""
+    atributos = campos.get("atributos") or []
+    title = (campos.get("titulo") or "").strip()[:AMZ_TITULO_MAX] or "Producto"
+    desc = (_plain(campos.get("descripcion")) or "Producto de alta calidad.")[:2000]
+    bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()] \
+        or ["Producto de alta calidad, práctico y duradero."]
+    brand = _attr_from(atributos, "BRAND", "Generic")
+    color = _attr_from(atributos, "COLOR", "Multicolor")
+    material = _attr_from(atributos, "MATERIAL", "Mixto")
+    price = _num(campos.get("precio_regular"), 1.0)
+    l_val = _num(campos.get("largo")); w_val = _num(campos.get("ancho")); h_val = _num(campos.get("alto"))
+
+    def V(value: Any) -> list[dict]:
+        return [{"value": value, "marketplace_id": mp}]
+
+    return {
+        "brand": V(brand),
+        "supplier_declared_has_product_identifier_exemption": V(True),
+        "item_name": V(title),
+        "product_description": V(desc),
+        "bullet_point": [{"value": b, "marketplace_id": mp} for b in bullets[:5]],
+        "condition_type": V("new_new"),
+        "manufacturer": V(brand),
+        "part_number": V(sku),
+        "model_name": V(sku),
+        "model_number": V(sku),
+        "country_of_origin": V("MX"),
+        "color": V(color),
+        "material": V(material),
+        "supplier_declared_dg_hz_regulation": V("not_applicable"),
+        "unit_count": [{"value": 1, "type": "count", "marketplace_id": mp}],
+        "number_of_items": V(1),
+        "list_price": [{"currency": "MXN", "value_with_tax": price, "marketplace_id": mp}],
+        "included_components": V("1 x Producto"),
+        "warranty_description": V("Garantía del vendedor"),
+        "item_length_width_height": [{
+            "length": {"value": l_val, "unit": "centimeters"},
+            "width": {"value": w_val, "unit": "centimeters"},
+            "height": {"value": h_val, "unit": "centimeters"},
+            "marketplace_id": mp,
+        }],
+        "purchasable_offer": [{
+            "currency": "MXN", "marketplace_id": mp,
+            "our_price": [{"schedule": [{"value_with_tax": price}]}],
+        }],
+        "fulfillment_availability": [{
+            "fulfillment_channel_code": "DEFAULT", "quantity": 10, "marketplace_id": mp,
+        }],
+    }
+
+
+async def _detectar_product_type(token: str, nombre: str, mp: str) -> str:
+    """Busca el productType más relevante por keywords del título. Fallback HOME."""
+    kw = " ".join((nombre or "").split()[:3]) or "home"
+    try:
+        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=20.0) as cli:
+            r = await cli.get(
+                "/definitions/2020-09-01/productTypes",
+                params={"keywords": kw[:50], "marketplaceIds": mp},
+                headers={"x-amz-access-token": token},
+            )
+        if r.status_code == 200:
+            tipos = r.json().get("productTypes", [])
+            if tipos:
+                return tipos[0]["name"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_detectar_product_type: %s", exc)
+    return "HOME"
 
 
 def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_count, issues, payload, amz_response):
@@ -292,34 +365,30 @@ def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_cou
 
 
 async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
+    """Publica (crea/reemplaza) el listing en Amazon vía Listings API."""
     from services import amazon as amz
 
     sku = req.get("sku")
     wc_id = req.get("wc_id")
-    pt = _product_type_amazon(sku)
-    if not pt:
-        return {"ok": False, "motivo": "No hay product_type en amazon_progress (requiere publicación previa)."}
+    campos = req.get("campos") or {}
+    if not (campos.get("titulo") or "").strip():
+        return {"ok": False, "motivo": "Falta el título para publicar en Amazon."}
     token = await amz._access_token()
     if not token:
         return {"ok": False, "motivo": "No hay token de Amazon (SP-API). Revisa las credenciales LWA."}
 
-    campos = req.get("campos") or {}
-    title = (campos.get("titulo") or "").strip()
-    bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
-    desc = _plain(campos.get("descripcion"))
     mp = settings.amazon_marketplace_id
-    patches = _amazon_patches(title, bullets, desc, mp)
-    if not patches:
-        return {"ok": False, "motivo": "No había nada que actualizar."}
-
-    body = {"productType": pt, "patches": patches}
-    sku_enc = urllib.parse.quote(str(sku), safe="")
     seller = settings.amazon_seller_id
+    pt = _product_type_amazon(sku) or await _detectar_product_type(token, campos.get("titulo") or "", mp)
+    attributes = _amazon_attributes(str(sku), campos, mp)
+    body = {"productType": pt, "requirements": "LISTING", "attributes": attributes}
+    sku_enc = urllib.parse.quote(str(sku), safe="")
+
     amz_response: dict[str, Any] = {}
     http_status: int | None = None
     try:
-        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=40.0) as cli:
-            r = await cli.patch(
+        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=60.0) as cli:
+            r = await cli.put(
                 f"/listings/2021-08-01/items/{seller}/{sku_enc}",
                 params={"marketplaceIds": mp, "includedData": "issues"},
                 headers={"x-amz-access-token": token, "Content-Type": "application/json"},
@@ -341,10 +410,9 @@ async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
     success = http_ok and status == "ACCEPTED" and not errors
     error = None
     if not success:
-        error = ", ".join(f"{i.get('code','')}: {i.get('message','')[:60]}" for i in errors[:3]) \
-            or amz_response.get("errors") and str(amz_response["errors"])[:200] or f"status={status}"
+        error = ", ".join(f"{i.get('code','')}: {i.get('message','')[:80]}" for i in errors[:4]) or f"status={status}"
 
     _guardar_backlog_amazon(sku, wc_id, pt, status, success, len(errors), issues, body, amz_response)
-    return {"ok": bool(success), "canal": "amazon", "status": status,
+    return {"ok": bool(success), "canal": "amazon", "status": status, "product_type": pt,
             "issue_count": len(errors), "error": None if success else error,
             "respuesta": None if success else amz_response, "registrado_en": "amazon_backlog"}
