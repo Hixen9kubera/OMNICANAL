@@ -268,11 +268,20 @@ export interface PublicarPreview {
   item_id?: string | null;
   sku?: string | null;
   product_type?: string | null;
+  cuentas?: string[];
   titulo?: string | null;
   descripcion?: string | null;
   cambios?: { etiqueta: string; valor: string }[];
   operaciones?: Record<string, number | boolean>;
   avisos?: string[];
+}
+
+export interface PublicarResultadoCuenta {
+  cuenta: string;
+  item_id: string;
+  ok: boolean;
+  error?: string | null;
+  ml_status?: number | null;
 }
 
 export interface PublicarResultado {
@@ -286,6 +295,7 @@ export interface PublicarResultado {
   issue_count?: number;
   error?: string | null;
   respuesta?: unknown;
+  resultados?: PublicarResultadoCuenta[];
   registrado_en?: string;
 }
 

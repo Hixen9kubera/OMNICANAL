@@ -362,7 +362,8 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
               style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
             >
               {cargandoPreview ? <Loader2 size={17} className="animate-spin" /> : <UploadCloud size={17} />}
-              Publicar a {canalInfo?.label ?? canal}{cuentaSel ? ` · ${cuentaSel}` : ""}
+              Publicar a {canalInfo?.label ?? canal}
+              {canal === "mercado_libre" ? " · ambas cuentas" : cuentaSel ? ` · ${cuentaSel}` : ""}
             </button>
           )}
 
@@ -641,7 +642,8 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
               <div className="flex items-center gap-2">
                 <UploadCloud size={18} style={{ color: tema.acento }} />
                 <h3 className="text-sm font-bold text-slate-800">
-                  Publicar a {canalInfo?.label}{cuentaSel ? ` · ${cuentaSel}` : ""}
+                  Publicar a {canalInfo?.label}
+                  {canal === "mercado_libre" ? " · ambas cuentas" : cuentaSel ? ` · ${cuentaSel}` : ""}
                 </h3>
               </div>
               <button onClick={cerrarPreview} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
@@ -657,6 +659,15 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                     {previewPub.product_type && <span className="font-mono rounded bg-slate-100 px-1.5 py-0.5">{previewPub.product_type}</span>}
                     <span>se enviará a {canalInfo?.label}</span>
                   </div>
+
+                  {!!previewPub.cuentas?.length && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                      <span className="text-slate-500">Cuentas:</span>
+                      {previewPub.cuentas.map((c) => (
+                        <span key={c} className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-600">{c}</span>
+                      ))}
+                    </div>
+                  )}
 
                   {previewPub.titulo && (
                     <div>
@@ -698,7 +709,17 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                     </div>
                   )}
 
-                  {resultadoPub && (
+                  {resultadoPub && resultadoPub.resultados?.length ? (
+                    <div className="space-y-1.5">
+                      {resultadoPub.resultados.map((r, i) => (
+                        <div key={i} className={["flex items-start gap-2 rounded-lg px-3 py-2 text-sm", r.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
+                          {r.ok ? <CheckCircle2 size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+                          <div><strong>{r.cuenta}:</strong> {r.ok ? "actualizado" : (r.error || `HTTP ${r.ml_status ?? "?"}`)}</div>
+                        </div>
+                      ))}
+                      <p className="text-[11px] text-slate-400">Registrado en <code>{resultadoPub.registrado_en}</code>.</p>
+                    </div>
+                  ) : resultadoPub ? (
                     <div className={["flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm", resultadoPub.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
                       {resultadoPub.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <AlertTriangle size={16} className="mt-0.5 shrink-0" />}
                       <div>
@@ -709,7 +730,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                         )}
                       </div>
                     </div>
-                  )}
+                  ) : null}
                 </>
               )}
             </div>

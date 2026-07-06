@@ -41,6 +41,29 @@ def _plain(texto: str | None) -> str:
     return t.strip()
 
 
+def _ml_publicaciones(sku: str | None) -> list[dict[str, Any]]:
+    """
+    Cuentas de Mercado Libre donde el SKU está publicado, con su item_id.
+    Fuente: ml_progress (una fila por cuenta:sku). Se publica a TODAS (BEKURA y
+    San Corpe) — el catálogo de Kubera vive en ambas.
+    """
+    if not sku:
+        return []
+    try:
+        rows = db.fetch_all(
+            """SELECT cuenta, ml_item_id FROM ml_progress
+               WHERE sku=%s AND ml_item_id IS NOT NULL AND ml_item_id <> ''""",
+            (sku,),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_ml_publicaciones(%s): %s", sku, exc)
+        return []
+    por_cuenta: dict[str, str] = {}
+    for r in rows:
+        por_cuenta[r["cuenta"]] = r["ml_item_id"]  # última gana
+    return [{"cuenta": c, "item_id": i} for c, i in por_cuenta.items()]
+
+
 # ═══════════════════════════ VISTA PREVIA ═══════════════════════════════════
 def preview(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
@@ -60,14 +83,19 @@ def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
         if a.get("nombre") and str(a.get("valor") or "").strip()
     ]
     desc = _plain(campos.get("descripcion"))
+    pubs = _ml_publicaciones(req.get("sku"))
+    cuentas = [p["cuenta"] for p in pubs]
+
     avisos: list[str] = []
-    if not req.get("item_id"):
-        avisos.append("Este producto no está publicado en esta cuenta (falta item_id): no se puede actualizar.")
+    if not pubs:
+        avisos.append("Este producto no está publicado en ninguna cuenta de Mercado Libre.")
+    elif len(pubs) == 1:
+        avisos.append(f"Solo está publicado en {cuentas[0]} (la otra cuenta no lo tiene aún).")
     if len(title) > ML_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Mercado Libre máx {ML_TITULO_MAX}).")
     return {
-        "ok": True, "canal": "mercado_libre", "cuenta": req.get("cuenta"),
-        "item_id": req.get("item_id"), "sku": req.get("sku"),
+        "ok": True, "canal": "mercado_libre", "sku": req.get("sku"),
+        "cuentas": cuentas, "publicaciones": pubs,
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": a["id"], "valor": a["value_name"]} for a in attrs],
         "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc)},
@@ -154,33 +182,19 @@ def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, 
         log.warning("No se pudo guardar en ml_backlog: %s", exc)
 
 
-async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
-    cuenta = req.get("cuenta")
-    item_id = req.get("item_id")
-    sku = req.get("sku")
-    wc_id = req.get("wc_id")
-    if not item_id:
-        return {"ok": False, "motivo": "No hay item_id: el producto no está publicado en esa cuenta."}
-    campos = req.get("campos") or {}
-    title = (campos.get("titulo") or "").strip()
-    attrs = [
-        {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
-        for a in (campos.get("atributos") or [])
-        if a.get("nombre") and str(a.get("valor") or "").strip()
-    ]
-    desc = _plain(campos.get("descripcion"))
+async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict],
+                         desc: str) -> dict[str, Any]:
+    """Actualiza UNA publicación de ML (una cuenta). Devuelve el resultado."""
     token = meli._access_token(cuenta)
     if not token:
-        return {"ok": False, "motivo": f"No hay token disponible para la cuenta {cuenta}."}
-
+        return {"cuenta": cuenta, "item_id": item_id, "ok": False,
+                "error": f"Sin token para {cuenta}", "ml_status": None, "desc_status": None}
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     payload_item: dict[str, Any] = {}
     if title:
         payload_item["title"] = title
     if attrs:
         payload_item["attributes"] = attrs
-    if not payload_item and not desc:
-        return {"ok": False, "motivo": "No había nada que actualizar."}
 
     ml_status = desc_status = None
     ml_response: dict[str, Any] = {}
@@ -205,11 +219,42 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
                 error = error or f"Descripción: HTTP {desc_status}"
 
     success = (ml_status in (200, 201) or ml_status is None) and error is None
-    _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status,
-                        {"title": title, "attributes": attrs, "description": desc}, ml_response)
-    return {"ok": bool(success), "canal": "mercado_libre", "item_id": item_id,
-            "ml_status": ml_status, "desc_status": desc_status, "error": error,
-            "respuesta": None if success else ml_response, "registrado_en": "ml_backlog"}
+    return {"cuenta": cuenta, "item_id": item_id, "ok": bool(success), "error": error,
+            "ml_status": ml_status, "desc_status": desc_status, "_response": ml_response}
+
+
+async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
+    sku = req.get("sku")
+    wc_id = req.get("wc_id")
+    campos = req.get("campos") or {}
+    title = (campos.get("titulo") or "").strip()
+    attrs = [
+        {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
+        for a in (campos.get("atributos") or [])
+        if a.get("nombre") and str(a.get("valor") or "").strip()
+    ]
+    desc = _plain(campos.get("descripcion"))
+    if not title and not attrs and not desc:
+        return {"ok": False, "motivo": "No había nada que actualizar."}
+
+    pubs = _ml_publicaciones(sku)
+    if not pubs:
+        return {"ok": False, "motivo": "No está publicado en ninguna cuenta de Mercado Libre."}
+
+    resultados: list[dict[str, Any]] = []
+    for p in pubs:
+        res = await _update_ml_una(p["cuenta"], p["item_id"], title, attrs, desc)
+        _guardar_backlog_ml(
+            p["cuenta"], sku, wc_id, p["item_id"], res["ok"], res["error"],
+            res["ml_status"], res["desc_status"],
+            {"title": title, "attributes": attrs, "description": desc},
+            res.pop("_response", {}),
+        )
+        resultados.append(res)
+
+    ok_all = all(r["ok"] for r in resultados)
+    return {"ok": ok_all, "canal": "mercado_libre", "resultados": resultados,
+            "registrado_en": "ml_backlog"}
 
 
 def _amazon_patches(title: str, bullets: list[str], desc: str, mp: str) -> list[dict]:
