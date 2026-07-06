@@ -11,6 +11,9 @@ import {
   Loader2,
   Link2,
   TrendingUp,
+  UploadCloud,
+  CheckCircle2,
+  AlertTriangle,
 } from "lucide-react";
 import type {
   AtributoProducto,
@@ -18,9 +21,18 @@ import type {
   CompetenciaResp,
   DetalleCanal,
   Producto,
+  PublicarPreview,
+  PublicarResultado,
   StudioMetadata,
 } from "@/lib/types";
-import { mejorarIA, precioCompetencia, studioMetadata, type ProductoIA } from "@/lib/api";
+import {
+  mejorarIA,
+  precioCompetencia,
+  publicarConfirmar,
+  publicarPreview,
+  studioMetadata,
+  type ProductoIA,
+} from "@/lib/api";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
   getMejora,
@@ -86,6 +98,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const [mejorando, setMejorando] = useState(false);
   const [competencia, setCompetencia] = useState<CompetenciaResp | null>(null);
 
+  // Publicar (paso 4)
+  const [previewPub, setPreviewPub] = useState<PublicarPreview | null>(null);
+  const [cargandoPreview, setCargandoPreview] = useState(false);
+  const [publicando, setPublicando] = useState(false);
+  const [resultadoPub, setResultadoPub] = useState<PublicarResultado | null>(null);
+
   const cargandoCampos = useRef(false);
 
   // ── Tema del canal seleccionado ────────────────────────────────────
@@ -103,6 +121,8 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     setMeta(null);
     setCampos(CAMPOS_VACIOS);
     setCompetencia(sku ? getCompStore(sku) ?? null : null);
+    setPreviewPub(null);
+    setResultadoPub(null);
   }, [sku]);
 
   // ── Metadata del Estudio (postmeta): precios/costo/alibaba/dims ─────
@@ -217,6 +237,52 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     }
   }, [data, sku, canal, titulo, descripcion, atributos, campos.precioRegular, campos.costo, categoriaMLTexto, categoriaWC]);
 
+  // ── Publicar / actualizar en el canal (paso 4) ──────────────────────
+  const itemIdSel = datosCanal?.item_id ?? null;
+  const cuentaSel =
+    (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
+  const puedeActualizar = canal === "mercado_libre" && !!itemIdSel;
+
+  function reqPublicar() {
+    return {
+      canal,
+      cuenta: cuentaSel,
+      sku,
+      wc_id: producto?.wc_id ?? meta?.wc_id ?? null,
+      item_id: itemIdSel,
+      campos: { titulo, descripcion, highlights, bullets, atributos },
+    };
+  }
+
+  async function abrirPreview() {
+    setCargandoPreview(true);
+    setResultadoPub(null);
+    setPreviewPub(null);
+    try {
+      setPreviewPub(await publicarPreview(reqPublicar()));
+    } catch {
+      setPreviewPub({ ok: false, canal, motivo: "No se pudo generar la vista previa." });
+    } finally {
+      setCargandoPreview(false);
+    }
+  }
+
+  async function confirmarPublicar() {
+    setPublicando(true);
+    try {
+      setResultadoPub(await publicarConfirmar(reqPublicar()));
+    } catch {
+      setResultadoPub({ ok: false, error: "Error de conexión al actualizar." });
+    } finally {
+      setPublicando(false);
+    }
+  }
+
+  function cerrarPreview() {
+    setPreviewPub(null);
+    setResultadoPub(null);
+  }
+
   if (!sku) return null;
 
   const imagenes = data?.imagenes?.length ? data.imagenes : data?.imagen ? [data.imagen] : [];
@@ -289,6 +355,19 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
             Mejora título, descripción y atributos{esAmazon ? " + highlights y bullets" : ""} y sugiere un precio de competencia.
             No cambia precio, costo, Alibaba ni dimensiones.
           </p>
+
+          {/* Paso 4: actualizar en el canal (solo ML publicado, por ahora) */}
+          {puedeActualizar && (
+            <button
+              onClick={abrirPreview}
+              disabled={cargandoPreview}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 bg-white px-4 py-2 text-sm font-bold transition-all hover:brightness-95 disabled:opacity-60"
+              style={{ borderColor: tema.color, color: tema.acento }}
+            >
+              {cargandoPreview ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+              Actualizar en {canalInfo?.label}{cuentaSel ? ` · ${cuentaSel}` : ""}
+            </button>
+          )}
         </div>
 
         {/* Cuerpo */}
@@ -540,6 +619,111 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
           )}
         </div>
       </aside>
+
+      {/* Modal: vista previa del payload + confirmar (paso 4) */}
+      {previewPub && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-slate-900/60" onClick={cerrarPreview} />
+          <div className="relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3" style={{ background: tema.suave }}>
+              <div className="flex items-center gap-2">
+                <UploadCloud size={18} style={{ color: tema.acento }} />
+                <h3 className="text-sm font-bold text-slate-800">
+                  Actualizar en {canalInfo?.label}{cuentaSel ? ` · ${cuentaSel}` : ""}
+                </h3>
+              </div>
+              <button onClick={cerrarPreview} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
+            </div>
+
+            <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+              {!previewPub.ok ? (
+                <div className="rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-700">{previewPub.motivo}</div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <span className="font-mono rounded bg-slate-100 px-1.5 py-0.5">{previewPub.item_id}</span>
+                    <span>se enviará a Mercado Libre</span>
+                  </div>
+
+                  {previewPub.payload_item?.title && (
+                    <div>
+                      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Título</div>
+                      <div className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{previewPub.payload_item.title}</div>
+                    </div>
+                  )}
+
+                  {!!previewPub.payload_item?.attributes?.length && (
+                    <div>
+                      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                        Atributos ({previewPub.payload_item.attributes.length})
+                      </div>
+                      <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-200">
+                        {previewPub.payload_item.attributes.map((a, i) => (
+                          <div key={i} className="flex items-center justify-between gap-3 border-b border-slate-50 px-3 py-1.5 text-sm last:border-0">
+                            <span className="font-mono text-[11px] uppercase text-slate-400">{a.id}</span>
+                            <span className="truncate text-slate-700">{a.value_name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {previewPub.descripcion && (
+                    <div>
+                      <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Descripción (texto plano)</div>
+                      <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-slate-200 px-3 py-2 font-sans text-xs text-slate-600">{previewPub.descripcion}</pre>
+                    </div>
+                  )}
+
+                  {!!previewPub.avisos?.length && (
+                    <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2">
+                      {previewPub.avisos.map((a, i) => (
+                        <div key={i} className="flex items-start gap-1.5 text-xs text-amber-700">
+                          <AlertTriangle size={13} className="mt-0.5 shrink-0" /> {a}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {resultadoPub && (
+                    <div className={["flex items-start gap-2 rounded-lg px-3 py-2.5 text-sm", resultadoPub.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
+                      {resultadoPub.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <AlertTriangle size={16} className="mt-0.5 shrink-0" />}
+                      <div>
+                        {resultadoPub.ok ? (
+                          <span><strong>Actualizado en Mercado Libre.</strong> Registrado en <code>ml_backlog</code>.</span>
+                        ) : (
+                          <span><strong>No se pudo actualizar.</strong> {resultadoPub.error || resultadoPub.motivo} {resultadoPub.ml_status ? `(HTTP ${resultadoPub.ml_status})` : ""}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3">
+              {resultadoPub?.ok ? (
+                <button onClick={cerrarPreview} className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-bold text-white hover:bg-slate-900">Cerrar</button>
+              ) : (
+                <>
+                  <button onClick={cerrarPreview} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">Cancelar</button>
+                  {previewPub.ok && (
+                    <button
+                      onClick={confirmarPublicar}
+                      disabled={publicando}
+                      className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm disabled:opacity-60"
+                      style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
+                    >
+                      {publicando ? <Loader2 size={15} className="animate-spin" /> : <UploadCloud size={15} />}
+                      {publicando ? "Actualizando…" : "Confirmar y actualizar"}
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

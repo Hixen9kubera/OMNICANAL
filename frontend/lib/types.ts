@@ -244,6 +244,47 @@ export interface CompetenciaResp {
   fuentes_encontradas?: number;
 }
 
+// ── Publicar / actualizar en el canal (paso 4) ───────────────────────
+export interface PublicarReq {
+  canal: string;
+  cuenta?: string | null;
+  sku?: string | null;
+  wc_id?: number | null;
+  item_id?: string | null;
+  campos: {
+    titulo?: string;
+    descripcion?: string;
+    highlights?: string;
+    bullets?: string[];
+    atributos?: { nombre: string; valor: string }[];
+  };
+}
+
+export interface PublicarPreview {
+  ok: boolean;
+  motivo?: string;
+  canal: string;
+  cuenta?: string | null;
+  item_id?: string | null;
+  sku?: string | null;
+  operaciones?: { titulo: boolean; atributos: number; descripcion: boolean };
+  payload_item?: { title?: string; attributes?: { id: string; value_name: string }[] };
+  descripcion?: string;
+  avisos?: string[];
+}
+
+export interface PublicarResultado {
+  ok: boolean;
+  motivo?: string;
+  canal?: string;
+  item_id?: string | null;
+  ml_status?: number | null;
+  desc_status?: number | null;
+  error?: string | null;
+  ml_response?: unknown;
+  registrado_en?: string;
+}
+
 export interface GenerarIAResp {
   ok: boolean;
   texto?: string;

@@ -7,6 +7,9 @@ import type {
   GeneradorDef,
   GenerarIAResp,
   MejorarResp,
+  PublicarPreview,
+  PublicarReq,
+  PublicarResultado,
   RespuestaProductos,
   StudioMetadata,
   WebhookEvento,
@@ -308,6 +311,14 @@ export function precioCompetencia(
     producto: p.producto,
     con_lista: p.con_lista ?? true,
   });
+}
+
+export function publicarPreview(req: PublicarReq): Promise<PublicarPreview> {
+  return postJSON<PublicarPreview>(`/api/publicar/preview`, req);
+}
+
+export function publicarConfirmar(req: PublicarReq): Promise<PublicarResultado> {
+  return postJSON<PublicarResultado>(`/api/publicar/confirmar`, req);
 }
 
 export interface NotificacionesResp {
