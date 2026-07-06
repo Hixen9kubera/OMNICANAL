@@ -267,9 +267,11 @@ export interface PublicarPreview {
   cuenta?: string | null;
   item_id?: string | null;
   sku?: string | null;
-  operaciones?: { titulo: boolean; atributos: number; descripcion: boolean };
-  payload_item?: { title?: string; attributes?: { id: string; value_name: string }[] };
-  descripcion?: string;
+  product_type?: string | null;
+  titulo?: string | null;
+  descripcion?: string | null;
+  cambios?: { etiqueta: string; valor: string }[];
+  operaciones?: Record<string, number | boolean>;
   avisos?: string[];
 }
 
@@ -280,8 +282,10 @@ export interface PublicarResultado {
   item_id?: string | null;
   ml_status?: number | null;
   desc_status?: number | null;
+  status?: string | null;
+  issue_count?: number;
   error?: string | null;
-  ml_response?: unknown;
+  respuesta?: unknown;
   registrado_en?: string;
 }
 

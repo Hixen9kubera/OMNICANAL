@@ -147,6 +147,16 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     return () => ctrl.abort();
   }, [sku, producto?.wc_id]);
 
+  // Fallback: si el postmeta no trajo precios, usa los del detalle (WooCommerce).
+  useEffect(() => {
+    if (!data) return;
+    setCampos((c) => ({
+      ...c,
+      precioRegular: c.precioRegular || (data.precio_base != null ? String(data.precio_base) : ""),
+      precioOferta: c.precioOferta || (data.precio_oferta != null ? String(data.precio_oferta) : ""),
+    }));
+  }, [data]);
+
   // ── Cargar campos editables (mejora guardada por canal, o base) ─────
   useEffect(() => {
     if (!sku) return;
@@ -241,7 +251,9 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const itemIdSel = datosCanal?.item_id ?? null;
   const cuentaSel =
     (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
-  const puedeActualizar = canal === "mercado_libre" && !!itemIdSel;
+  const puedeActualizar =
+    (canal === "mercado_libre" && !!itemIdSel) ||
+    (canal === "amazon" && !!datosCanal?.publicado);
 
   function reqPublicar() {
     return {
@@ -341,33 +353,33 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
             })}
           </div>
 
-          {/* Botón MEJORAR CON IA */}
-          <button
-            onClick={mejorarConIA}
-            disabled={mejorando || !data}
-            className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-            style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
-          >
-            {mejorando ? <Loader2 size={17} className="animate-spin" /> : <Wand2 size={17} />}
-            {mejorando ? "Mejorando…" : `Mejorar con IA · ${canalInfo?.label ?? canal}`}
-          </button>
-          <p className="mt-1.5 text-center text-[11px] text-slate-400">
-            Mejora título, descripción y atributos{esAmazon ? " + highlights y bullets" : ""} y sugiere un precio de competencia.
-            No cambia precio, costo, Alibaba ni dimensiones.
-          </p>
-
-          {/* Paso 4: actualizar en el canal (solo ML publicado, por ahora) */}
+          {/* PUBLICAR A {canal} — acción principal (arriba de Mejorar con IA) */}
           {puedeActualizar && (
             <button
               onClick={abrirPreview}
-              disabled={cargandoPreview}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 bg-white px-4 py-2 text-sm font-bold transition-all hover:brightness-95 disabled:opacity-60"
-              style={{ borderColor: tema.color, color: tema.acento }}
+              disabled={cargandoPreview || !data}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+              style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
             >
-              {cargandoPreview ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
-              Actualizar en {canalInfo?.label}{cuentaSel ? ` · ${cuentaSel}` : ""}
+              {cargandoPreview ? <Loader2 size={17} className="animate-spin" /> : <UploadCloud size={17} />}
+              Publicar a {canalInfo?.label ?? canal}{cuentaSel ? ` · ${cuentaSel}` : ""}
             </button>
           )}
+
+          {/* MEJORAR CON IA — secundario */}
+          <button
+            onClick={mejorarConIA}
+            disabled={mejorando || !data}
+            className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 bg-white px-4 py-2 text-sm font-bold transition-all hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
+            style={{ borderColor: tema.color, color: tema.acento }}
+          >
+            {mejorando ? <Loader2 size={16} className="animate-spin" /> : <Wand2 size={16} />}
+            {mejorando ? "Mejorando…" : `Mejorar con IA · ${canalInfo?.label ?? canal}`}
+          </button>
+          <p className="mt-1.5 text-center text-[11px] text-slate-400">
+            <strong>Publicar</strong> envía los datos actuales al canal (revisas antes).{" "}
+            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights y bullets" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
+          </p>
         </div>
 
         {/* Cuerpo */}
@@ -629,7 +641,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
               <div className="flex items-center gap-2">
                 <UploadCloud size={18} style={{ color: tema.acento }} />
                 <h3 className="text-sm font-bold text-slate-800">
-                  Actualizar en {canalInfo?.label}{cuentaSel ? ` · ${cuentaSel}` : ""}
+                  Publicar a {canalInfo?.label}{cuentaSel ? ` · ${cuentaSel}` : ""}
                 </h3>
               </div>
               <button onClick={cerrarPreview} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"><X size={18} /></button>
@@ -640,28 +652,29 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                 <div className="rounded-lg bg-amber-50 px-3 py-3 text-sm text-amber-700">{previewPub.motivo}</div>
               ) : (
                 <>
-                  <div className="flex items-center gap-2 text-xs text-slate-500">
-                    <span className="font-mono rounded bg-slate-100 px-1.5 py-0.5">{previewPub.item_id}</span>
-                    <span>se enviará a Mercado Libre</span>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                    {previewPub.item_id && <span className="font-mono rounded bg-slate-100 px-1.5 py-0.5">{previewPub.item_id}</span>}
+                    {previewPub.product_type && <span className="font-mono rounded bg-slate-100 px-1.5 py-0.5">{previewPub.product_type}</span>}
+                    <span>se enviará a {canalInfo?.label}</span>
                   </div>
 
-                  {previewPub.payload_item?.title && (
+                  {previewPub.titulo && (
                     <div>
                       <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Título</div>
-                      <div className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{previewPub.payload_item.title}</div>
+                      <div className="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800">{previewPub.titulo}</div>
                     </div>
                   )}
 
-                  {!!previewPub.payload_item?.attributes?.length && (
+                  {!!previewPub.cambios?.length && (
                     <div>
                       <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                        Atributos ({previewPub.payload_item.attributes.length})
+                        {esAmazon ? "Bullets" : "Atributos"} ({previewPub.cambios.length})
                       </div>
                       <div className="max-h-40 overflow-y-auto rounded-lg border border-slate-200">
-                        {previewPub.payload_item.attributes.map((a, i) => (
-                          <div key={i} className="flex items-center justify-between gap-3 border-b border-slate-50 px-3 py-1.5 text-sm last:border-0">
-                            <span className="font-mono text-[11px] uppercase text-slate-400">{a.id}</span>
-                            <span className="truncate text-slate-700">{a.value_name}</span>
+                        {previewPub.cambios.map((c, i) => (
+                          <div key={i} className="flex items-start justify-between gap-3 border-b border-slate-50 px-3 py-1.5 text-sm last:border-0">
+                            <span className="shrink-0 font-mono text-[11px] uppercase text-slate-400">{c.etiqueta}</span>
+                            <span className="text-right text-slate-700">{c.valor}</span>
                           </div>
                         ))}
                       </div>
@@ -690,9 +703,9 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                       {resultadoPub.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0" /> : <AlertTriangle size={16} className="mt-0.5 shrink-0" />}
                       <div>
                         {resultadoPub.ok ? (
-                          <span><strong>Actualizado en Mercado Libre.</strong> Registrado en <code>ml_backlog</code>.</span>
+                          <span><strong>Publicado en {canalInfo?.label}.</strong> Registrado en <code>{resultadoPub.registrado_en}</code>.</span>
                         ) : (
-                          <span><strong>No se pudo actualizar.</strong> {resultadoPub.error || resultadoPub.motivo} {resultadoPub.ml_status ? `(HTTP ${resultadoPub.ml_status})` : ""}</span>
+                          <span><strong>No se pudo publicar.</strong> {resultadoPub.error || resultadoPub.motivo}{resultadoPub.ml_status ? ` (HTTP ${resultadoPub.ml_status})` : resultadoPub.status ? ` (${resultadoPub.status})` : ""}</span>
                         )}
                       </div>
                     </div>
@@ -715,7 +728,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                     >
                       {publicando ? <Loader2 size={15} className="animate-spin" /> : <UploadCloud size={15} />}
-                      {publicando ? "Actualizando…" : "Confirmar y actualizar"}
+                      {publicando ? "Publicando…" : "Confirmar y publicar"}
                     </button>
                   )}
                 </>

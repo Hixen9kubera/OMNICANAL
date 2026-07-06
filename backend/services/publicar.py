@@ -1,38 +1,37 @@
 """
-publicar.py — Paso 4: actualizar la publicación en el canal seleccionado.
+publicar.py — Paso 4: actualizar/publicar en el canal seleccionado.
 
-Fase 1: Mercado Libre. Dos operaciones:
-  • preview(req)   → arma y DEVUELVE el payload que se enviaría. NO escribe nada.
-  • confirmar(req) → ejecuta el update EN VIVO y registra el resultado en ml_backlog.
+  • preview(req)   → arma y DEVUELVE lo que se enviaría. NO escribe nada.
+  • confirmar(req) → ejecuta el cambio EN VIVO y lo registra en la bitácora.
 
-Actualiza:
-  • título + atributos → PUT /items/{item_id}
-  • descripción        → PUT /items/{item_id}/description  (POST si es nueva)
-
-Los nombres de atributos de WooCommerce (BRAND, COLOR, MODEL…) coinciden con los
-IDs de atributo de Mercado Libre, así que se mapean directo a {id, value_name}.
-El token se lee de ml_tokens (lo mantiene fresco el pipeline externo).
+Mercado Libre → PUT /items/{id} (título+atributos) + PUT /items/{id}/description.
+                Registro en ml_backlog. Token de ml_tokens.
+Amazon        → PATCH /listings/2021-08-01/items/{seller}/{sku}
+                (item_name, bullet_point, product_description). Registro en
+                amazon_backlog. product_type de amazon_progress. Token LWA (SP-API).
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import urllib.parse
 from datetime import datetime
 from typing import Any
 
 import httpx
 
+from config import settings
 from services import db, meli
 
 log = logging.getLogger("omnicanal.publicar")
 
 _ML = "https://api.mercadolibre.com"
 ML_TITULO_MAX = 60
+AMZ_TITULO_MAX = 200
 
 
 def _plain(texto: str | None) -> str:
-    """HTML → texto plano (la descripción de ML es plain_text)."""
     if not texto:
         return ""
     t = re.sub(r"<\s*br\s*/?\s*>", "\n", texto, flags=re.IGNORECASE)
@@ -42,7 +41,18 @@ def _plain(texto: str | None) -> str:
     return t.strip()
 
 
-def _payload_ml(campos: dict[str, Any]) -> tuple[str, list[dict], str]:
+# ═══════════════════════════ VISTA PREVIA ═══════════════════════════════════
+def preview(req: dict[str, Any]) -> dict[str, Any]:
+    canal = req.get("canal")
+    if canal == "mercado_libre":
+        return _preview_ml(req)
+    if canal == "amazon":
+        return _preview_amazon(req)
+    return {"ok": False, "canal": canal, "motivo": "Canal no soportado todavía (ML y Amazon)."}
+
+
+def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
+    campos = req.get("campos") or {}
     title = (campos.get("titulo") or "").strip()
     attrs = [
         {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
@@ -50,41 +60,69 @@ def _payload_ml(campos: dict[str, Any]) -> tuple[str, list[dict], str]:
         if a.get("nombre") and str(a.get("valor") or "").strip()
     ]
     desc = _plain(campos.get("descripcion"))
-    return title, attrs, desc
-
-
-def preview(req: dict[str, Any]) -> dict[str, Any]:
-    """Arma la vista previa del payload. NO escribe nada."""
-    canal = req.get("canal")
-    if canal != "mercado_libre":
-        return {"ok": False, "motivo": "Por ahora solo Mercado Libre (fase 1)."}
-
-    campos = req.get("campos") or {}
-    title, attrs, desc = _payload_ml(campos)
-
     avisos: list[str] = []
     if not req.get("item_id"):
-        avisos.append("Este producto no parece publicado en esta cuenta (falta item_id): no se puede actualizar.")
+        avisos.append("Este producto no está publicado en esta cuenta (falta item_id): no se puede actualizar.")
     if len(title) > ML_TITULO_MAX:
-        avisos.append(f"El título tiene {len(title)} caracteres (Mercado Libre permite máx {ML_TITULO_MAX}).")
-    if not title and not attrs and not desc:
-        avisos.append("No hay nada que actualizar (título, atributos y descripción vacíos).")
-
+        avisos.append(f"El título tiene {len(title)} caracteres (Mercado Libre máx {ML_TITULO_MAX}).")
     return {
-        "ok": True,
-        "canal": canal,
-        "cuenta": req.get("cuenta"),
-        "item_id": req.get("item_id"),
-        "sku": req.get("sku"),
-        "operaciones": {
-            "titulo": bool(title),
-            "atributos": len(attrs),
-            "descripcion": bool(desc),
-        },
-        "payload_item": {**({"title": title} if title else {}), **({"attributes": attrs} if attrs else {})},
-        "descripcion": desc,
+        "ok": True, "canal": "mercado_libre", "cuenta": req.get("cuenta"),
+        "item_id": req.get("item_id"), "sku": req.get("sku"),
+        "titulo": title or None, "descripcion": desc or None,
+        "cambios": [{"etiqueta": a["id"], "valor": a["value_name"]} for a in attrs],
+        "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc)},
         "avisos": avisos,
     }
+
+
+def _product_type_amazon(sku: str | None) -> str | None:
+    if not sku:
+        return None
+    try:
+        row = db.fetch_one(
+            """SELECT product_type FROM amazon_progress
+               WHERE sku=%s AND product_type IS NOT NULL
+               ORDER BY updated_at DESC LIMIT 1""",
+            (sku,),
+        )
+        return (row or {}).get("product_type")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_product_type_amazon(%s): %s", sku, exc)
+        return None
+
+
+def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
+    campos = req.get("campos") or {}
+    sku = req.get("sku")
+    pt = _product_type_amazon(sku)
+    title = (campos.get("titulo") or "").strip()
+    bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
+    desc = _plain(campos.get("descripcion"))
+    avisos: list[str] = []
+    if not pt:
+        avisos.append("Sin product_type en amazon_progress: el producto no está publicado en Amazon (actualizar requiere publicación previa).")
+    if not req.get("item_id"):
+        avisos.append("Sin ASIN: el producto no parece publicado en Amazon.")
+    if len(title) > AMZ_TITULO_MAX:
+        avisos.append(f"El título tiene {len(title)} caracteres (Amazon máx {AMZ_TITULO_MAX}).")
+    return {
+        "ok": True, "canal": "amazon", "sku": sku, "item_id": req.get("item_id"),
+        "product_type": pt,
+        "titulo": title or None, "descripcion": desc or None,
+        "cambios": [{"etiqueta": f"Bullet {i + 1}", "valor": b} for i, b in enumerate(bullets)],
+        "operaciones": {"titulo": bool(title), "bullets": len(bullets), "descripcion": bool(desc)},
+        "avisos": avisos,
+    }
+
+
+# ═══════════════════════════ CONFIRMAR (EN VIVO) ═════════════════════════════
+async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
+    canal = req.get("canal")
+    if canal == "mercado_libre":
+        return await _confirmar_ml(req)
+    if canal == "amazon":
+        return await _confirmar_amazon(req)
+    return {"ok": False, "motivo": "Canal no soportado todavía (ML y Amazon)."}
 
 
 def _error_ml(resp: dict[str, Any]) -> str | None:
@@ -94,11 +132,10 @@ def _error_ml(resp: dict[str, Any]) -> str | None:
     msgs = [c.get("message") for c in causas if isinstance(c, dict) and c.get("message")]
     if msgs:
         return " · ".join(msgs)[:500]
-    return (resp.get("message") or resp.get("error"))
+    return resp.get("message") or resp.get("error")
 
 
-def _guardar_backlog(cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status, payload, ml_response) -> None:
-    """Registra el intento en ml_backlog (misma tabla que el pipeline)."""
+def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status, payload, ml_response):
     try:
         with db.get_cursor() as cur:
             cur.execute(
@@ -107,32 +144,31 @@ def _guardar_backlog(cuenta, sku, wc_id, item_id, success, error, ml_status, des
                     ml_status, desc_status, pics_preuploaded, payload, ml_response,
                     published_at, gtin_error)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,0,%s,%s,%s,0)""",
-                (
-                    f"studio:{cuenta}:{sku}", cuenta or "", sku or "", wc_id, item_id, None,
-                    1 if success else 0, error, ml_status, desc_status,
-                    json.dumps(payload, ensure_ascii=False),
-                    json.dumps(ml_response, ensure_ascii=False)[:65000],
-                    datetime.now() if success else None,
-                ),
+                (f"studio:{cuenta}:{sku}", cuenta or "", sku or "", wc_id, item_id, None,
+                 1 if success else 0, error, ml_status, desc_status,
+                 json.dumps(payload, ensure_ascii=False),
+                 json.dumps(ml_response, ensure_ascii=False)[:65000],
+                 datetime.now() if success else None),
             )
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo guardar en ml_backlog: %s", exc)
 
 
-async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
-    """Ejecuta el update EN VIVO en Mercado Libre y registra en ml_backlog."""
-    canal = req.get("canal")
-    if canal != "mercado_libre":
-        return {"ok": False, "motivo": "Por ahora solo Mercado Libre (fase 1)."}
-
+async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     cuenta = req.get("cuenta")
     item_id = req.get("item_id")
     sku = req.get("sku")
     wc_id = req.get("wc_id")
     if not item_id:
         return {"ok": False, "motivo": "No hay item_id: el producto no está publicado en esa cuenta."}
-
-    title, attrs, desc = _payload_ml(req.get("campos") or {})
+    campos = req.get("campos") or {}
+    title = (campos.get("titulo") or "").strip()
+    attrs = [
+        {"id": a["nombre"], "value_name": str(a["valor"]).strip()}
+        for a in (campos.get("atributos") or [])
+        if a.get("nombre") and str(a.get("valor") or "").strip()
+    ]
+    desc = _plain(campos.get("descripcion"))
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": f"No hay token disponible para la cuenta {cuenta}."}
@@ -143,14 +179,13 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
         payload_item["title"] = title
     if attrs:
         payload_item["attributes"] = attrs
+    if not payload_item and not desc:
+        return {"ok": False, "motivo": "No había nada que actualizar."}
 
-    ml_status: int | None = None
-    desc_status: int | None = None
+    ml_status = desc_status = None
     ml_response: dict[str, Any] = {}
     error: str | None = None
-
     async with httpx.AsyncClient(timeout=30.0) as cli:
-        # 1) título + atributos
         if payload_item:
             r = await cli.put(f"{_ML}/items/{item_id}", json=payload_item, headers=headers)
             ml_status = r.status_code
@@ -160,8 +195,6 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
                 ml_response = {"text": r.text[:500]}
             if r.status_code not in (200, 201):
                 error = _error_ml(ml_response) or f"HTTP {r.status_code}"
-
-        # 2) descripción (solo si el paso anterior no falló)
         if desc and not error:
             rd = await cli.put(f"{_ML}/items/{item_id}/description", json={"plain_text": desc}, headers=headers)
             desc_status = rd.status_code
@@ -172,22 +205,101 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
                 error = error or f"Descripción: HTTP {desc_status}"
 
     success = (ml_status in (200, 201) or ml_status is None) and error is None
-    # Si no hubo nada que enviar, no es éxito ni error real:
-    if not payload_item and not desc:
+    _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status,
+                        {"title": title, "attributes": attrs, "description": desc}, ml_response)
+    return {"ok": bool(success), "canal": "mercado_libre", "item_id": item_id,
+            "ml_status": ml_status, "desc_status": desc_status, "error": error,
+            "respuesta": None if success else ml_response, "registrado_en": "ml_backlog"}
+
+
+def _amazon_patches(title: str, bullets: list[str], desc: str, mp: str) -> list[dict]:
+    patches: list[dict] = []
+    if title:
+        patches.append({"op": "replace", "path": "/attributes/item_name",
+                        "value": [{"value": title, "language_tag": "es_MX", "marketplace_id": mp}]})
+    if bullets:
+        patches.append({"op": "replace", "path": "/attributes/bullet_point",
+                        "value": [{"value": b, "language_tag": "es_MX", "marketplace_id": mp} for b in bullets]})
+    if desc:
+        patches.append({"op": "replace", "path": "/attributes/product_description",
+                        "value": [{"value": desc, "language_tag": "es_MX", "marketplace_id": mp}]})
+    return patches
+
+
+def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_count, issues, payload, amz_response):
+    try:
+        with db.get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO amazon_backlog
+                   (sku, wc_id, seller_id, marketplace_id, submission_id, product_type,
+                    status, success, issue_count, issues, payload, amz_response,
+                    submitted_at, published_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (sku or "", wc_id, settings.amazon_seller_id, settings.amazon_marketplace_id,
+                 None, product_type, status, 1 if success else 0, issue_count,
+                 json.dumps(issues, ensure_ascii=False)[:65000],
+                 json.dumps(payload, ensure_ascii=False)[:65000],
+                 json.dumps(amz_response, ensure_ascii=False)[:65000],
+                 datetime.now(), datetime.now() if success else None),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo guardar en amazon_backlog: %s", exc)
+
+
+async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
+    from services import amazon as amz
+
+    sku = req.get("sku")
+    wc_id = req.get("wc_id")
+    pt = _product_type_amazon(sku)
+    if not pt:
+        return {"ok": False, "motivo": "No hay product_type en amazon_progress (requiere publicación previa)."}
+    token = await amz._access_token()
+    if not token:
+        return {"ok": False, "motivo": "No hay token de Amazon (SP-API). Revisa las credenciales LWA."}
+
+    campos = req.get("campos") or {}
+    title = (campos.get("titulo") or "").strip()
+    bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
+    desc = _plain(campos.get("descripcion"))
+    mp = settings.amazon_marketplace_id
+    patches = _amazon_patches(title, bullets, desc, mp)
+    if not patches:
         return {"ok": False, "motivo": "No había nada que actualizar."}
 
-    _guardar_backlog(
-        cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status,
-        {"title": title, "attributes": attrs, "description": desc}, ml_response,
-    )
+    body = {"productType": pt, "patches": patches}
+    sku_enc = urllib.parse.quote(str(sku), safe="")
+    seller = settings.amazon_seller_id
+    amz_response: dict[str, Any] = {}
+    http_status: int | None = None
+    try:
+        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=40.0) as cli:
+            r = await cli.patch(
+                f"/listings/2021-08-01/items/{seller}/{sku_enc}",
+                params={"marketplaceIds": mp, "includedData": "issues"},
+                headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                json=body,
+            )
+        http_status = r.status_code
+        try:
+            amz_response = r.json()
+        except Exception:  # noqa: BLE001
+            amz_response = {"text": r.text[:500]}
+        http_ok = r.status_code < 400
+    except Exception as exc:  # noqa: BLE001
+        amz_response = {"error": str(exc)}
+        http_ok = False
 
-    return {
-        "ok": bool(success),
-        "canal": canal,
-        "item_id": item_id,
-        "ml_status": ml_status,
-        "desc_status": desc_status,
-        "error": error,
-        "ml_response": None if success else ml_response,
-        "registrado_en": "ml_backlog",
-    }
+    status = amz_response.get("status") or (f"HTTP {http_status}" if http_status else "ERROR")
+    issues = amz_response.get("issues") or []
+    errors = [i for i in issues if i.get("severity") == "ERROR"]
+    success = http_ok and status == "ACCEPTED" and not errors
+    error = None
+    if not success:
+        error = ", ".join(f"{i.get('code','')}: {i.get('message','')[:60]}" for i in errors[:3]) \
+            or amz_response.get("errors") and str(amz_response["errors"])[:200] or f"status={status}"
+
+    _guardar_backlog_amazon(sku, wc_id, pt, status, success, len(errors), issues, body, amz_response)
+    return {"ok": bool(success), "canal": "amazon", "status": status,
+            "issue_count": len(errors), "error": None if success else error,
+            "respuesta": None if success else amz_response, "registrado_en": "amazon_backlog"}
