@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from services import claude, ia_generadores
+from services import claude, competencia, ia_generadores
 
 router = APIRouter(prefix="/api/ia", tags=["ia"])
 
@@ -35,9 +35,11 @@ class ProductoCtx(BaseModel):
     """Contexto del producto que se le pasa al generador."""
     nombre: str = ""
     marca: str | None = None
+    modelo: str | None = None
     categoria: str | None = None      # ruta legible "A › B › C"
     descripcion: str | None = None
     precio: float | None = None
+    costo: float | None = None
     publico: str | None = None
     atributos: list[AtributoIn] = Field(default_factory=list)
 
@@ -60,6 +62,33 @@ def generar(req: GenerarRequest) -> dict[str, Any]:
     producto = req.producto.model_dump()
     producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
     return ia_generadores.generar(req.canal, req.generador, producto)
+
+
+class MejorarRequest(BaseModel):
+    canal: str = "mercado_libre"
+    producto: ProductoCtx = Field(default_factory=ProductoCtx)
+
+
+@router.post("/mejorar")
+def mejorar(req: MejorarRequest) -> dict[str, Any]:
+    """Mejora con IA varios campos del canal a la vez (título, descripción,
+    atributos y —en Amazon— highlights y bullets)."""
+    producto = req.producto.model_dump()
+    producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
+    return ia_generadores.mejorar(req.canal, producto)
+
+
+class CompetenciaRequest(BaseModel):
+    producto: ProductoCtx = Field(default_factory=ProductoCtx)
+    con_lista: bool = True
+
+
+@router.post("/precio-competencia")
+def precio_competencia(req: CompetenciaRequest) -> dict[str, Any]:
+    """Precio de competencia sugerido (solo para mostrar; no cambia campos)."""
+    producto = req.producto.model_dump()
+    producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
+    return competencia.precio_competencia(producto, con_lista=req.con_lista)
 
 
 # ── Compatibilidad con la versión anterior ───────────────────────────────────

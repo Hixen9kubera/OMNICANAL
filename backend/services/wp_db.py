@@ -198,6 +198,115 @@ def skus_existentes() -> set[str]:
     return {r["sku"] for r in rows}
 
 
+def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
+    """Lee valores de postmeta para un producto: { meta_key: meta_value }."""
+    if not keys:
+        return {}
+    P = _prefix()
+    ph = ",".join(["%s"] * len(keys))
+    rows = _fetch_all(
+        f"""SELECT meta_key, meta_value FROM {P}postmeta
+            WHERE post_id = %s AND meta_key IN ({ph})""",
+        tuple([wc_id, *keys]),
+    )
+    return {r["meta_key"]: r["meta_value"] for r in rows}
+
+
+def _parse_product_attributes(serializado: str | None) -> list[dict[str, Any]]:
+    """
+    Parsea la postmeta `_product_attributes` de WooCommerce (PHP serializado).
+    Estructura: { slug: {name, value, position, is_visible, is_taxonomy, ...} }.
+    Devuelve [{nombre, valor}] en orden de `position`.
+    """
+    if not serializado:
+        return []
+    try:
+        import phpserialize
+        data = phpserialize.loads(
+            serializado.encode("utf-8", "surrogatepass"),
+            decode_strings=True, array_hook=dict,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo parsear _product_attributes: %s", exc)
+        return []
+
+    attrs: list[tuple[int, str, str]] = []
+    for slug, meta in (data or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        # Atributos por taxonomía (pa_*) guardan términos, no un value plano:
+        # se omiten aquí (se editan desde WooCommerce).
+        if meta.get("is_taxonomy"):
+            continue
+        nombre = str(meta.get("name") or slug)
+        valor = str(meta.get("value") or "")
+        try:
+            pos = int(meta.get("position") or 0)
+        except (ValueError, TypeError):
+            pos = 0
+        attrs.append((pos, nombre, valor))
+    attrs.sort(key=lambda x: x[0])
+    return [{"nombre": n, "valor": v} for _, n, v in attrs]
+
+
+def atributos(wc_id: int) -> list[dict[str, Any]]:
+    """Atributos del producto ([{nombre, valor}]) desde `_product_attributes`."""
+    metas = postmeta(wc_id, ["_product_attributes"])
+    return _parse_product_attributes(metas.get("_product_attributes"))
+
+
+def metadata_producto(wc_id: int) -> dict[str, Any]:
+    """
+    Toda la metadata del Estudio para un producto, leída del postmeta (fuente de
+    verdad de lo que está publicado en WooCommerce).
+    """
+    claves = [
+        "_regular_price", "_sale_price", "_price", "costo",
+        "url_alibaba", "alibaba_price", "comentario_revision", "revision_producto_ok",
+        "_weight", "_length", "_width", "_height",
+        "ml_category_id", "ml_categoria_path",
+        "ml_categoria_nivel_1", "ml_categoria_nivel_2", "ml_categoria_nivel_3",
+        "ml_categoria_nivel_4", "ml_categoria_nivel_5",
+        "_product_attributes",
+    ]
+    m = postmeta(wc_id, claves)
+
+    def _f(k: str) -> float | None:
+        v = m.get(k)
+        if v in (None, ""):
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+    niveles = [
+        m[f"ml_categoria_nivel_{i}"].strip()
+        for i in range(1, 6)
+        if (m.get(f"ml_categoria_nivel_{i}") or "").strip()
+    ]
+    return {
+        "dinero": {
+            "costo": _f("costo"),
+            "precio_regular": _f("_regular_price"),
+            "precio_oferta": _f("_sale_price"),
+            "peso": _f("_weight"),
+            "largo": _f("_length"),
+            "ancho": _f("_width"),
+            "alto": _f("_height"),
+        },
+        "alibaba_url": m.get("url_alibaba"),
+        "alibaba_precio": _f("alibaba_price"),
+        "producto_correcto": m.get("comentario_revision"),
+        "categoria_ml": {
+            "category_id": m.get("ml_category_id"),
+            "ruta": m.get("ml_categoria_path"),
+            "niveles": niveles,
+        } if (m.get("ml_category_id") or niveles) else None,
+        "atributos": _parse_product_attributes(m.get("_product_attributes")),
+    }
+
+
 def productos_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
     """
     Lookup masivo por SKU para el sync stock+costo (reemplaza ~270 requests):

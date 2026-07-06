@@ -164,6 +164,86 @@ export interface GeneradorDef {
   max_tokens?: number;
 }
 
+// ── Estudio de producto: metadata completa (postmeta / kubera_ml) ────
+export interface StudioDinero {
+  costo: number | null;
+  precio_regular: number | null;
+  precio_oferta: number | null;
+  peso: number | null;
+  largo: number | null;
+  ancho: number | null;
+  alto: number | null;
+  volumen_m3: number | null;
+}
+
+export interface StudioCategoriaML {
+  category_id: string | null;
+  ruta: string | null;
+  niveles: string[];
+}
+
+export interface StudioMetadata {
+  sku: string;
+  wc_id: number | null;
+  fuente: string | null; // "postmeta" | "kubera_ml" | null
+  dinero: StudioDinero;
+  categoria_ml: StudioCategoriaML | null;
+  alibaba_url: string | null;
+  alibaba_precio: number | null;
+  producto_correcto: string | null;
+  atributos: AtributoProducto[];
+}
+
+// ── Mejorar con IA (un botón por canal) ──────────────────────────────
+export interface MejorarCampos {
+  titulo?: string;
+  descripcion?: string;
+  highlights?: string;
+  bullets?: string[];
+  atributos?: AtributoProducto[];
+}
+
+export interface MejorarResp {
+  ok: boolean;
+  canal: string;
+  proveedor?: string;
+  motivo?: string;
+  campos?: MejorarCampos;
+}
+
+// ── Precio de competencia sugerido ───────────────────────────────────
+export interface CompetenciaFuente {
+  marketplace: string;
+  titulo: string | null;
+  precio: number | null;
+  url: string | null;
+}
+
+export interface CompetenciaPorMarketplace {
+  marketplace: string;
+  min?: number;
+  max?: number;
+  n?: number;
+  estimado_min?: number;
+  estimado_max?: number;
+}
+
+export interface CompetenciaResp {
+  ok: boolean;
+  motivo?: string;
+  proveedor?: string;
+  con_lista?: boolean;
+  query?: string;
+  precio_sugerido?: number | null;
+  moneda?: string;
+  rango?: { min: number; max: number; mediana: number } | null;
+  por_marketplace?: CompetenciaPorMarketplace[];
+  razonamiento?: string;
+  aviso?: string;
+  fuentes?: CompetenciaFuente[];
+  fuentes_encontradas?: number;
+}
+
 export interface GenerarIAResp {
   ok: boolean;
   texto?: string;

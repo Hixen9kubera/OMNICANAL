@@ -34,3 +34,10 @@ Thumbs.db
 .vscode/
 *.log
 tsconfig.tsbuildinfo
+
+# WordPress config (secretos)
+wp-config*.php
+
+# Repos externos de referencia (no forman parte de este proyecto)
+publicaciones_ready/
+publicaciones_amazon/

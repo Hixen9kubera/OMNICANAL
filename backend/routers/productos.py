@@ -23,7 +23,7 @@ from models.schemas import (
     Producto,
     RespuestaProductos,
 )
-from services import amazon, ejemplos, inventario, meli, presencia, woocommerce
+from services import amazon, ejemplos, inventario, meli, presencia, studio, woocommerce
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -122,6 +122,16 @@ async def listar_categorias():
         return await woocommerce.listar_categorias()
     except Exception:  # noqa: BLE001
         return []
+
+
+@router.get("/{sku}/studio")
+async def studio_metadata(sku: str, wc_id: int | None = Query(None, description="wc_id para leer postmeta")):
+    """
+    Metadata extra para el Estudio del producto (pestaña PRODUCTOS):
+    costo, precios, peso/dimensiones (+ volumen m³), categoría ML con TODOS sus
+    subniveles, y campos de Alibaba/atributos (postmeta) si hay WPDB_*.
+    """
+    return studio.metadata(sku, wc_id)
 
 
 @router.get("/{sku}", response_model=DetalleProducto)

@@ -310,6 +310,88 @@ def _buscar(canal: str, generador_id: str) -> dict[str, Any] | None:
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# "Mejorar con IA" — un solo botón por canal que mejora VARIOS campos a la vez.
+# Devuelve JSON estructurado. NO toca precio/costo/alibaba/peso/dimensiones.
+# ─────────────────────────────────────────────────────────────────────────────
+_MEJORAR: dict[str, dict[str, Any]] = {
+    "mercado_libre": {
+        "max_tokens": 1500,
+        "system": _ML_TITULO.split(".")[0] + (
+            ". Mejora la publicación de Mercado Libre México. Devuelve SOLO JSON válido:\n"
+            '{"titulo": "<máx 60 caracteres, keywords al inicio>", '
+            '"descripcion": "<texto plano, párrafos cortos, sin datos de contacto>", '
+            '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
+            "En atributos incluye los NECESARIOS de la categoría (marca, modelo, color, "
+            "material, tamaño…) y los secundarios que ayuden a la ficha. No inventes datos "
+            "que no se puedan inferir del producto."
+        ),
+    },
+    "amazon": {
+        "max_tokens": 2200,
+        "system": _AMZ_BASE + (
+            "\n\nMejora el listing completo. Devuelve SOLO JSON válido:\n"
+            '{"titulo": "<máx 75 car.>", "highlights": "<máx 125 car.>", '
+            '"bullets": ["<150-200 car.>", "..x5.."], '
+            '"descripcion": "<máx 2000 car., en párrafos>", '
+            '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
+            "Respeta ESTRICTAMENTE los límites de caracteres. En atributos infiere los "
+            "obligatorios de la categoría (product_type)."
+        ),
+    },
+    "general": {
+        "max_tokens": 1200,
+        "system": (
+            "Eres redactor de e-commerce (WooCommerce). Devuelve SOLO JSON válido:\n"
+            '{"titulo": "<título comercial claro>", '
+            '"descripcion": "<HTML simple: <p>, <ul>, <li>, <strong>>", '
+            '"atributos": [{"nombre": "..", "valor": ".."}]}'
+        ),
+    },
+    "tiktok": {
+        "max_tokens": 400,
+        "system": (
+            "Eres experto en TikTok Shop. Devuelve SOLO JSON válido:\n"
+            '{"titulo": "<corto, viral, máx 45 car.>", "descripcion": "<gancho breve>"}'
+        ),
+    },
+}
+
+
+def _parse_json(texto: str) -> dict[str, Any]:
+    import json
+    import re
+    t = re.sub(r"^```(?:json)?|```$", "", texto.strip(), flags=re.MULTILINE).strip()
+    try:
+        return json.loads(t)
+    except Exception:  # noqa: BLE001
+        m = re.search(r"\{.*\}", t, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:  # noqa: BLE001
+                pass
+    return {}
+
+
+def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
+    """Mejora con IA varios campos del canal en una sola llamada (JSON)."""
+    cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
+    user = (
+        f"Datos del producto:\n{_contexto(producto)}\n\n"
+        "Mejora el contenido y devuelve SOLO el JSON indicado."
+    )
+    res = _completar(cfg["system"], user, max_tokens=cfg["max_tokens"])
+    if not res.get("ok"):
+        return {"ok": False, "motivo": res.get("motivo"), "canal": canal}
+    data = _parse_json(res.get("texto", ""))
+    if not data:
+        return {"ok": False, "motivo": "La IA no devolvió JSON válido.",
+                "canal": canal, "crudo": res.get("texto", "")[:400]}
+    return {"ok": True, "canal": canal, "proveedor": res.get("proveedor"),
+            "campos": data}
+
+
 def generar(canal: str, generador_id: str, producto: dict[str, Any]) -> dict[str, Any]:
     """Ejecuta un generador concreto para un canal y devuelve el contenido."""
     g = _buscar(canal, generador_id)

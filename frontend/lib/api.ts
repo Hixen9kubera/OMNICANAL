@@ -2,12 +2,37 @@
 
 import type {
   CanalInfo,
+  CompetenciaResp,
   DetalleProducto,
   GeneradorDef,
   GenerarIAResp,
+  MejorarResp,
   RespuestaProductos,
+  StudioMetadata,
   WebhookEvento,
 } from "./types";
+
+export interface ProductoIA {
+  nombre: string;
+  marca?: string | null;
+  modelo?: string | null;
+  categoria?: string | null;
+  descripcion?: string | null;
+  precio?: number | null;
+  costo?: number | null;
+  publico?: string | null;
+  atributos?: { nombre: string; valor: string }[];
+}
+
+async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
+  return res.json() as Promise<T>;
+}
 
 const BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://127.0.0.1:8000";
@@ -66,6 +91,18 @@ export function listarCategorias(signal?: AbortSignal): Promise<CategoriaWC[]> {
 
 export function listarCanales(signal?: AbortSignal): Promise<CanalInfo[]> {
   return getJSON<CanalInfo[]>(`/api/canales`, signal);
+}
+
+export function studioMetadata(
+  sku: string,
+  wcId?: number | null,
+  signal?: AbortSignal,
+): Promise<StudioMetadata> {
+  const q = wcId ? `?wc_id=${wcId}` : "";
+  return getJSON<StudioMetadata>(
+    `/api/productos/${encodeURIComponent(sku)}/studio${q}`,
+    signal,
+  );
 }
 
 // ── Crear Productos ──────────────────────────────────────────────────────────
@@ -258,6 +295,19 @@ export async function generarIA(p: GenerarIAParams): Promise<GenerarIAResp> {
   });
   if (!res.ok) throw new Error(`Generación IA falló: ${res.status}`);
   return res.json() as Promise<GenerarIAResp>;
+}
+
+export function mejorarIA(p: { canal: string; producto: ProductoIA }): Promise<MejorarResp> {
+  return postJSON<MejorarResp>(`/api/ia/mejorar`, p);
+}
+
+export function precioCompetencia(
+  p: { producto: ProductoIA; con_lista?: boolean },
+): Promise<CompetenciaResp> {
+  return postJSON<CompetenciaResp>(`/api/ia/precio-competencia`, {
+    producto: p.producto,
+    con_lista: p.con_lista ?? true,
+  });
 }
 
 export interface NotificacionesResp {
