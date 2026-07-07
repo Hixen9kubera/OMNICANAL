@@ -192,6 +192,19 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   );
   const esGeneral = canal === GENERAL;
   const esAmazon = canal === AMAZON;
+  const esML = canal === "mercado_libre";
+
+  // Cuentas ML donde está publicado (para mostrar "ambas" o "solo una").
+  const mlCuentas = useMemo(
+    () =>
+      (data?.canales ?? [])
+        .filter((c) => c.canal === "mercado_libre" && c.publicado)
+        .map((c) => (c.extra as { cuenta?: string } | undefined)?.cuenta)
+        .filter(Boolean) as string[],
+    [data],
+  );
+  const mlPublicado = mlCuentas.length > 0;
+  const estaPublicado = esML ? mlPublicado : !!datosCanal?.publicado;
 
   const categoriaWC = useMemo(() => {
     const general = data?.canales.find((c) => c.canal === GENERAL);
@@ -253,12 +266,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const itemIdSel = datosCanal?.item_id ?? null;
   const cuentaSel =
     (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
-  // Amazon: el botón "Publicar" aparece cuando NO está publicado (o fue rechazado);
-  // desaparece si ya está publicado OK o si se acaba de publicar con éxito.
+  // ML: si está publicado (1+ cuentas) se muestra "Actualizar" (actualiza lo existente).
+  // Amazon: "Publicar" aparece cuando NO está publicado; desaparece al publicar OK.
   const amazonPublicado = !!datosCanal?.publicado || amazonPublicadoOk;
-  const puedeActualizar =
-    (canal === "mercado_libre" && !!itemIdSel) ||
-    (canal === "amazon" && !amazonPublicado);
+  const puedeActualizar = (esML && mlPublicado) || (esAmazon && !amazonPublicado);
+  // Verbo del botón según el canal: ML actualiza; Amazon crea/publica.
+  const accionLabel = esML ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
 
@@ -378,7 +391,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
               style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
             >
               {cargandoPreview ? <Loader2 size={17} className="animate-spin" /> : <UploadCloud size={17} />}
-              Publicar a {canalInfo?.label ?? canal}
+              {accionLabel} {canalInfo?.label ?? canal}
               {canal === "mercado_libre" ? " · ambas cuentas" : cuentaSel ? ` · ${cuentaSel}` : ""}
             </button>
           )}
@@ -414,15 +427,32 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
               {/* Estado en el canal (marketplaces) */}
               {!esGeneral && (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3" style={{ borderColor: hexToRgba(tema.color, 0.4), background: tema.suave }}>
-                  {datosCanal?.publicado ? (
+                  {estaPublicado ? (
                     <>
                       <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                        <span className="font-bold" style={{ color: tema.acento }}>Publicado en {canalInfo?.label}</span>
-                        <span className="text-slate-600">Precio: <strong>{precioMXN(datosCanal.precio)}</strong></span>
-                        <span className="text-slate-600">Stock: <strong>{datosCanal.stock ?? datosCanal.stock_real ?? "—"}</strong></span>
-                        {datosCanal.full && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">{datosCanal.full_label ?? "FULL"}</span>}
+                        <span className="font-bold" style={{ color: tema.acento }}>
+                          Publicado en {canalInfo?.label}
+                          {esML && mlCuentas.length ? ` · ${mlCuentas.join(" + ")}` : ""}
+                        </span>
+                        {esML && mlCuentas.length === 1 && (
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-700">
+                            solo 1 cuenta
+                          </span>
+                        )}
+                        {esML && mlCuentas.length >= 2 && (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">
+                            ambas cuentas
+                          </span>
+                        )}
+                        {datosCanal && (
+                          <>
+                            <span className="text-slate-600">Precio: <strong>{precioMXN(datosCanal.precio)}</strong></span>
+                            <span className="text-slate-600">Stock: <strong>{datosCanal.stock ?? datosCanal.stock_real ?? "—"}</strong></span>
+                          </>
+                        )}
+                        {datosCanal?.full && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">{datosCanal.full_label ?? "FULL"}</span>}
                       </div>
-                      {datosCanal.url && <a href={datosCanal.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs font-semibold" style={{ color: tema.acento }}>Ver publicación <ExternalLink size={12} /></a>}
+                      {datosCanal?.url && <a href={datosCanal.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs font-semibold" style={{ color: tema.acento }}>Ver publicación <ExternalLink size={12} /></a>}
                     </>
                   ) : (
                     <span className="text-sm font-medium text-slate-500">Este producto <strong>no está publicado</strong> en {canalInfo?.label}. Puedes generar el contenido optimizado.</span>
@@ -658,7 +688,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
               <div className="flex items-center gap-2">
                 <UploadCloud size={18} style={{ color: tema.acento }} />
                 <h3 className="text-sm font-bold text-slate-800">
-                  Publicar a {canalInfo?.label}
+                  {accionLabel} {canalInfo?.label}
                   {canal === "mercado_libre" ? " · ambas cuentas" : cuentaSel ? ` · ${cuentaSel}` : ""}
                 </h3>
               </div>
@@ -765,7 +795,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                     >
                       {publicando ? <Loader2 size={15} className="animate-spin" /> : <UploadCloud size={15} />}
-                      {publicando ? "Publicando…" : "Confirmar y publicar"}
+                      {publicando ? (esML ? "Actualizando…" : "Publicando…") : `Confirmar y ${esML ? "actualizar" : "publicar"}`}
                     </button>
                   )}
                 </>
