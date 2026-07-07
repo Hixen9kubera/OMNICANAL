@@ -127,11 +127,11 @@ async def scrape_alibaba(url: str) -> dict[str, Any] | None:
     if not items:
         return None
     it = items[0]
-    precio = it.get("price") or {}
-    moneda = (precio.get("currency") or "").upper()
-    if moneda and moneda not in ("USD", "MXN", "US$", "$"):
-        log.warning("scrape %s: moneda inesperada %s, se ignora precio", url, moneda)
-        precio = {}
+    # El actor mutila el campo price ({min:1}); el precio REAL viene en
+    # prices[].range / priceText como "$187$2.20" (=$1.87 actual + $2.20 orig,
+    # sin punto). Se reconstruye desde ahí.
+    precio_min, precio_max = _precio_alibaba_real(it)
+    moneda = "USD"
     imagenes = [u for u in (it.get("images") or []) if u][:MAX_IMAGENES]
     specs = it.get("specifications") or {}
 
@@ -145,8 +145,8 @@ async def scrape_alibaba(url: str) -> dict[str, Any] | None:
 
     return {
         "titulo": it.get("title") or "",
-        "precio_min": precio.get("min"),
-        "precio_max": precio.get("max"),
+        "precio_min": precio_min,
+        "precio_max": precio_max,
         "moneda": moneda or None,
         "imagenes": imagenes,
         "n_imagenes": len(imagenes),
@@ -161,6 +161,30 @@ async def scrape_alibaba(url: str) -> dict[str, Any] | None:
         "producto_id": it.get("productId"),
         "url": url,
     }
+
+
+def _precio_alibaba_real(it: dict[str, Any]) -> tuple[float | None, float | None]:
+    """
+    Reconstruye el precio REAL de Alibaba desde prices[].range / priceText.
+    El actor devuelve el precio actual sin punto: "$187$2.20" = $1.87 (actual,
+    reconstruido /100) + $2.20 (original). Devuelve (min, max) del rango real.
+    """
+    texto = str(it.get("priceText") or "")
+    for p in (it.get("prices") or []):
+        texto += " " + str(p.get("range", ""))
+    reales: list[float] = []
+    for n in re.findall(r"\$(\d+\.\d+)", texto):        # con decimal (originales)
+        reales.append(float(n))
+    for n in re.findall(r"\$(\d{3,})(?!\.\d)", texto):  # sin decimal → /100 (actual)
+        reales.append(int(n) / 100)
+    if not reales:
+        # último recurso: el campo price crudo (aunque suele venir mal)
+        pr = it.get("price") or {}
+        mn, mx = pr.get("min"), pr.get("max")
+        return (mn if isinstance(mn, (int, float)) and mn > 1 else None,
+                mx if isinstance(mx, (int, float)) and mx > 1 else None)
+    reales = sorted(set(reales))
+    return reales[0], reales[-1]
 
 
 def _num(s: Any) -> float | None:
@@ -232,31 +256,45 @@ async def titulo_descripcion_ia(
         contenido.append({"type": "image", "source": {"type": "url", "url": imagen_url}})
     contenido.append({"type": "text", "text": _prompt_seo(titulo_alibaba, url)})
 
-    try:
-        resp = await cli.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=2048,
-            output_config={"format": {"type": "json_schema", "schema": _ESQUEMA_SEO}},
-            messages=[{"role": "user", "content": contenido}],
-        )
-    except Exception as exc:  # noqa: BLE001
-        # La imagen remota puede no ser accesible para la API: reintento sin imagen.
+    # A prueba de fallos: si algo falla CON imagen (error, rechazo, JSON inválido),
+    # se reintenta SIN imagen (texto). Solo se cae a inglés si el texto también
+    # falla tras varios intentos. Nunca dejamos el título original en inglés por
+    # un hipo transitorio de la API.
+    def _reintento_texto():
         if imagen_url:
-            log.warning("Claude con imagen falló (%s); reintento solo texto", exc)
-            return await titulo_descripcion_ia(titulo_alibaba, None, url)
-        log.error("Claude SEO falló: %s", exc)
+            log.warning("SEO con imagen falló; reintento solo texto para %s", url)
+            return titulo_descripcion_ia(titulo_alibaba, None, url)
         return None
 
-    if resp.stop_reason == "refusal":
-        log.warning("Claude rechazó la solicitud SEO para %s", url)
-        return None
-    texto = next((b.text for b in resp.content if b.type == "text"), "")
-    try:
-        data = json.loads(texto)
-        return {"titulo": data["titulo"].strip(), "descripcion": data["descripcion"].strip()}
-    except Exception as exc:  # noqa: BLE001
-        log.error("Claude SEO devolvió JSON inválido: %s", exc)
-        return None
+    ultimo_exc = None
+    for intento in range(2 if not imagen_url else 1):  # texto: 2 intentos
+        try:
+            resp = await cli.messages.create(
+                model=CLAUDE_MODEL, max_tokens=2048,
+                output_config={"format": {"type": "json_schema", "schema": _ESQUEMA_SEO}},
+                messages=[{"role": "user", "content": contenido}],
+            )
+        except Exception as exc:  # noqa: BLE001
+            ultimo_exc = exc
+            r = _reintento_texto()
+            if r is not None:
+                return await r
+            continue  # texto: reintenta
+        if resp.stop_reason == "refusal":
+            r = _reintento_texto()
+            return await r if r is not None else None
+        texto = next((b.text for b in resp.content if b.type == "text"), "")
+        try:
+            data = json.loads(texto)
+            return {"titulo": data["titulo"].strip(), "descripcion": data["descripcion"].strip()}
+        except Exception as exc:  # noqa: BLE001
+            ultimo_exc = exc
+            r = _reintento_texto()
+            if r is not None:
+                return await r
+            continue
+    log.error("Claude SEO falló definitivamente para %s: %s", url, ultimo_exc)
+    return None
 
 
 # ── Paso 3: Gemini (limpiar logos) + WordPress Media ────────────────────────────
