@@ -299,6 +299,7 @@ export interface PublicarResultado {
   ok: boolean;
   motivo?: string;
   canal?: string;
+  modo?: string; // "crear" | "actualizar"
   item_id?: string | null;
   ml_status?: number | null;
   desc_status?: number | null;

@@ -263,12 +263,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const itemIdSel = datosCanal?.item_id ?? null;
   const cuentaSel =
     (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
-  // ML: botón solo si está publicado (actualiza). Crear nuevo en ML: pendiente.
-  // Amazon: siempre disponible → "Publicar" si no está, "Actualizar" si ya está.
+  // ML y Amazon: botón siempre disponible → "Publicar" si NO está publicado
+  // (crea nuevo), "Actualizar" si ya está.
   const amazonPublicado = amazonPublicadoReal || amazonPublicadoOk;
-  const puedeActualizar = (esML && mlPublicado) || esAmazon;
-  // Verbo: ML actualiza; Amazon publica (nuevo) o actualiza (ya publicado).
-  const accionLabel = esML || amazonPublicado ? "Actualizar en" : "Publicar a";
+  const puedeActualizar = esML || esAmazon;
+  const accionLabel =
+    (esML && mlPublicado) || (esAmazon && amazonPublicado) ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
 
@@ -765,7 +765,14 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                       {resultadoPub.resultados.map((r, i) => (
                         <div key={i} className={["flex items-start gap-2 rounded-lg px-3 py-2 text-sm", r.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
                           {r.ok ? <CheckCircle2 size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
-                          <div><strong>{r.cuenta}:</strong> {r.ok ? "actualizado" : (r.error || `HTTP ${r.ml_status ?? "?"}`)}</div>
+                          <div>
+                            <strong>{r.cuenta}:</strong>{" "}
+                            {r.ok
+                              ? resultadoPub.modo === "crear"
+                                ? `publicado ${r.item_id ?? ""}`
+                                : "actualizado"
+                              : (r.error || `HTTP ${r.ml_status ?? "?"}`)}
+                          </div>
                         </div>
                       ))}
                       <p className="text-[11px] text-slate-400">Registrado en <code>{resultadoPub.registrado_en}</code>.</p>

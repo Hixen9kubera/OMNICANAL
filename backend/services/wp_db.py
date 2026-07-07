@@ -255,6 +255,37 @@ def atributos(wc_id: int) -> list[dict[str, Any]]:
     return _parse_product_attributes(metas.get("_product_attributes"))
 
 
+def imagenes(wc_id: int) -> list[str]:
+    """URLs de imágenes del producto (miniatura primero + galería), desde WP."""
+    metas = postmeta(wc_id, ["_thumbnail_id", "_product_image_gallery"])
+    ids: list[int] = []
+    if metas.get("_thumbnail_id") and str(metas["_thumbnail_id"]).isdigit():
+        ids.append(int(metas["_thumbnail_id"]))
+    for x in str(metas.get("_product_image_gallery") or "").split(","):
+        x = x.strip()
+        if x.isdigit() and int(x) not in ids:
+            ids.append(int(x))
+    if not ids:
+        return []
+    P = _prefix()
+    ph = ",".join(["%s"] * len(ids))
+    rows = _fetch_all(
+        f"SELECT ID, guid FROM {P}posts WHERE ID IN ({ph}) AND post_type = 'attachment'",
+        tuple(ids),
+    )
+    por_id = {r["ID"]: r["guid"] for r in rows if r.get("guid")}
+    return [por_id[i] for i in ids if i in por_id]
+
+
+def stock_producto(wc_id: int) -> int | None:
+    m = postmeta(wc_id, ["_stock"])
+    v = m.get("_stock")
+    try:
+        return int(float(v)) if v not in (None, "") else None
+    except (ValueError, TypeError):
+        return None
+
+
 def metadata_producto(wc_id: int) -> dict[str, Any]:
     """
     Toda la metadata del Estudio para un producto, leída del postmeta (fuente de
