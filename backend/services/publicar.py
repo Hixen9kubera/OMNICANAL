@@ -304,7 +304,6 @@ def _amazon_attributes(sku: str, campos: dict[str, Any], mp: str) -> dict[str, A
         "color": V(color),
         "material": V(material),
         "supplier_declared_dg_hz_regulation": V("not_applicable"),
-        "unit_count": [{"value": 1, "type": "count", "marketplace_id": mp}],
         "number_of_items": V(1),
         "list_price": [{"currency": "MXN", "value_with_tax": price, "marketplace_id": mp}],
         "included_components": V("1 x Producto"),
@@ -344,6 +343,100 @@ async def _detectar_product_type(token: str, nombre: str, mp: str) -> str:
     return "HOME"
 
 
+# Valores seguros conocidos para atributos comunes (si el enum del esquema lo permite).
+_AMZ_DEFAULTS: dict[str, Any] = {
+    "supplier_declared_dg_hz_regulation": "not_applicable",
+    "supplier_declared_has_product_identifier_exemption": True,
+    "is_fragile": False, "batteries_required": False, "batteries_included": False,
+    "is_assembly_required": False, "contains_liquid_contents": False,
+    "is_expiration_dated_product": False, "country_of_origin": "MX",
+    "condition_type": "new_new",
+}
+# Booleanos que muchas categorías exigen aunque no estén en `required` del esquema.
+_AMZ_COMUNES = [
+    "is_fragile", "batteries_required", "batteries_included", "is_assembly_required",
+    "contains_liquid_contents", "supplier_declared_dg_hz_regulation",
+    "supplier_declared_has_product_identifier_exemption",
+]
+
+
+async def _amazon_schema(token: str, product_type: str, mp: str) -> dict[str, Any] | None:
+    """Esquema del productType (properties + required) desde SP-API Definitions."""
+    try:
+        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=30.0) as cli:
+            r = await cli.get(
+                f"/definitions/2020-09-01/productTypes/{product_type}",
+                params={"marketplaceIds": mp, "requirements": "LISTING", "locale": "es_MX"},
+                headers={"x-amz-access-token": token},
+            )
+            if r.status_code != 200:
+                return None
+            link = (r.json().get("schema") or {}).get("link", {}).get("resource")
+            if not link:
+                return None
+            rs = await cli.get(link, timeout=30.0)
+            if rs.status_code != 200:
+                return None
+            schema = rs.json()
+        return {"properties": schema.get("properties", {}), "required": schema.get("required", []) or []}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_amazon_schema(%s): %s", product_type, exc)
+        return None
+
+
+def _amz_default_value(node: dict[str, Any], mp: str, attr_name: str = "", depth: int = 0) -> Any:
+    """
+    Construye un valor por defecto VÁLIDO para un atributo del esquema Amazon,
+    de forma recursiva (arrays, objetos anidados, unidades y enums incluidos).
+    """
+    if depth > 6:
+        return "N/A"
+    enum = node.get("enum")
+    if enum:
+        conocido = _AMZ_DEFAULTS.get(attr_name)
+        if conocido is not None and conocido in enum:
+            return conocido
+        return False if False in enum else enum[0]
+    t = node.get("type")
+    if t == "array":
+        return [_amz_default_value(node.get("items", {}), mp, attr_name, depth + 1)]
+    if t == "object":
+        obj: dict[str, Any] = {}
+        props = node.get("properties", {})
+        requeridos = node.get("required") or list(props.keys())
+        for k in requeridos:
+            if k == "marketplace_id":
+                obj[k] = mp
+            elif k == "language_tag":
+                obj[k] = "es_MX"
+            elif k in props:
+                obj[k] = _amz_default_value(props[k], mp, attr_name if k == "value" else k, depth + 1)
+        if "marketplace_id" in props and "marketplace_id" not in obj:
+            obj["marketplace_id"] = mp
+        return obj
+    if t == "boolean":
+        c = _AMZ_DEFAULTS.get(attr_name)
+        return c if isinstance(c, bool) else False
+    if t in ("integer", "number"):
+        return 1
+    c = _AMZ_DEFAULTS.get(attr_name)
+    return c if isinstance(c, str) else "N/A"
+
+
+def _amazon_attrs_final(sku: str, campos: dict[str, Any], mp: str,
+                        schema: dict[str, Any] | None) -> dict[str, Any]:
+    """Atributos válidos + requeridos + booleanos comunes (rellenos desde el esquema)."""
+    candidatos = _amazon_attributes(sku, campos, mp)
+    if not schema:
+        return candidatos
+    props = schema["properties"]
+    attrs = {k: v for k, v in candidatos.items() if k in props}
+    for k in _AMZ_COMUNES + list(schema["required"]):
+        if k in props and k not in attrs:
+            attrs[k] = _amz_default_value(props[k], mp, k)
+    return attrs
+
+
 def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_count, issues, payload, amz_response):
     try:
         with db.get_cursor() as cur:
@@ -380,39 +473,67 @@ async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
     mp = settings.amazon_marketplace_id
     seller = settings.amazon_seller_id
     pt = _product_type_amazon(sku) or await _detectar_product_type(token, campos.get("titulo") or "", mp)
-    attributes = _amazon_attributes(str(sku), campos, mp)
-    body = {"productType": pt, "requirements": "LISTING", "attributes": attributes}
+    schema = await _amazon_schema(token, pt, mp)
+    props = (schema or {}).get("properties", {})
+    attributes = _amazon_attrs_final(str(sku), campos, mp, schema)
     sku_enc = urllib.parse.quote(str(sku), safe="")
 
+    body: dict[str, Any] = {}
     amz_response: dict[str, Any] = {}
-    http_status: int | None = None
-    try:
-        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=60.0) as cli:
-            r = await cli.put(
-                f"/listings/2021-08-01/items/{seller}/{sku_enc}",
-                params={"marketplaceIds": mp, "includedData": "issues"},
-                headers={"x-amz-access-token": token, "Content-Type": "application/json"},
-                json=body,
-            )
-        http_status = r.status_code
-        try:
-            amz_response = r.json()
-        except Exception:  # noqa: BLE001
-            amz_response = {"text": r.text[:500]}
-        http_ok = r.status_code < 400
-    except Exception as exc:  # noqa: BLE001
-        amz_response = {"error": str(exc)}
-        http_ok = False
+    status = "ERROR"
+    errors: list[dict] = []
+    http_ok = False
+    intentos = 0
+    MAX_INTENTOS = 4
 
-    status = amz_response.get("status") or (f"HTTP {http_status}" if http_status else "ERROR")
-    issues = amz_response.get("issues") or []
-    errors = [i for i in issues if i.get("severity") == "ERROR"]
+    async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=60.0) as cli:
+        while True:
+            body = {"productType": pt, "requirements": "LISTING", "attributes": attributes}
+            try:
+                r = await cli.put(
+                    f"/listings/2021-08-01/items/{seller}/{sku_enc}",
+                    params={"marketplaceIds": mp, "includedData": "issues"},
+                    headers={"x-amz-access-token": token, "Content-Type": "application/json"},
+                    json=body,
+                )
+                http_ok = r.status_code < 400
+                try:
+                    amz_response = r.json()
+                except Exception:  # noqa: BLE001
+                    amz_response = {"text": r.text[:500]}
+            except Exception as exc:  # noqa: BLE001
+                amz_response = {"error": str(exc)}
+                http_ok = False
+                break
+
+            status = amz_response.get("status") or f"HTTP {r.status_code}"
+            errors = [i for i in (amz_response.get("issues") or []) if i.get("severity") == "ERROR"]
+            if (http_ok and status == "ACCEPTED" and not errors) or intentos >= MAX_INTENTOS - 1:
+                break
+
+            # Rellenar los atributos que Amazon reporta como faltantes y reintentar.
+            faltantes: set[str] = set()
+            for i in errors:
+                es_falta = "MISSING_ATTRIBUTE" in (i.get("categories") or []) \
+                    or "requiere" in (i.get("message", "").lower())
+                if es_falta:
+                    for an in (i.get("attributeNames") or []):
+                        if an in props and an not in attributes:
+                            faltantes.add(an)
+            if not faltantes:
+                break
+            for an in faltantes:
+                attributes[an] = _amz_default_value(props[an], mp, an)
+            intentos += 1
+
     success = http_ok and status == "ACCEPTED" and not errors
     error = None
     if not success:
         error = ", ".join(f"{i.get('code','')}: {i.get('message','')[:80]}" for i in errors[:4]) or f"status={status}"
 
-    _guardar_backlog_amazon(sku, wc_id, pt, status, success, len(errors), issues, body, amz_response)
+    _guardar_backlog_amazon(sku, wc_id, pt, status, success, len(errors),
+                            amz_response.get("issues") or [], body, amz_response)
     return {"ok": bool(success), "canal": "amazon", "status": status, "product_type": pt,
             "issue_count": len(errors), "error": None if success else error,
+            "intentos": intentos + 1,
             "respuesta": None if success else amz_response, "registrado_en": "amazon_backlog"}
