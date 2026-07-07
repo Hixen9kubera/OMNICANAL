@@ -23,7 +23,7 @@ from models.schemas import (
     Producto,
     RespuestaProductos,
 )
-from services import amazon, ejemplos, inventario, meli, presencia, studio, woocommerce
+from services import amazon, ejemplos, inventario, meli, presencia, publicar, studio, woocommerce
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -130,8 +130,14 @@ async def studio_metadata(sku: str, wc_id: int | None = Query(None, description=
     Metadata extra para el Estudio del producto (pestaña PRODUCTOS):
     costo, precios, peso/dimensiones (+ volumen m³), categoría ML con TODOS sus
     subniveles, y campos de Alibaba/atributos (postmeta) si hay WPDB_*.
+    El estado de publicación se consulta EN VIVO (ML/Amazon) para que sea real-time.
     """
-    return studio.metadata(sku, wc_id)
+    m = studio.metadata(sku, wc_id)
+    try:
+        m["estado"] = await publicar.estado_live(sku)
+    except Exception:  # noqa: BLE001
+        pass  # si falla la consulta en vivo, se queda el estado de la DB
+    return m
 
 
 @router.get("/{sku}", response_model=DetalleProducto)

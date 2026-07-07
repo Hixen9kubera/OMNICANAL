@@ -41,6 +41,84 @@ def _plain(texto: str | None) -> str:
     return t.strip()
 
 
+# ── Estado de publicación EN VIVO (consulta las APIs, no la DB) ──────────────
+_ml_user_ids: dict[str, Any] = {}
+
+
+async def _ml_user_id(cuenta: str, token: str, cli: httpx.AsyncClient) -> Any:
+    if cuenta in _ml_user_ids:
+        return _ml_user_ids[cuenta]
+    uid = None
+    try:
+        r = await cli.get(f"{_ML}/users/me", headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 200:
+            uid = r.json().get("id")
+    except Exception:  # noqa: BLE001
+        pass
+    _ml_user_ids[cuenta] = uid
+    return uid
+
+
+async def _ml_live(sku: str) -> list[dict[str, Any]]:
+    """Cuentas donde el SKU tiene una publicación viva (active/paused) en ML."""
+    out: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=15.0) as cli:
+        for cuenta in ("BEKURA", "SANCORFASHION"):
+            token = meli._access_token(cuenta)
+            if not token:
+                continue
+            uid = await _ml_user_id(cuenta, token, cli)
+            if not uid:
+                continue
+            try:
+                r = await cli.get(
+                    f"{_ML}/users/{uid}/items/search",
+                    params={"seller_sku": sku, "status": "active,paused"},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if r.status_code == 200:
+                    res = r.json().get("results") or []
+                    if res:
+                        out.append({"cuenta": cuenta, "item_id": res[0]})
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
+async def _amazon_live(sku: str) -> dict[str, Any]:
+    """¿El SKU tiene un listing vivo en Amazon? (Listings Items API)."""
+    from services import amazon as amz
+
+    token = await amz._access_token()
+    if not token:
+        return {"publicado": False, "asin": None, "status": None}
+    enc = urllib.parse.quote(str(sku), safe="")
+    try:
+        async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint, timeout=20.0) as cli:
+            r = await cli.get(
+                f"/listings/2021-08-01/items/{settings.amazon_seller_id}/{enc}",
+                params={"marketplaceIds": settings.amazon_marketplace_id, "includedData": "summaries"},
+                headers={"x-amz-access-token": token},
+            )
+        if r.status_code == 200:
+            summaries = r.json().get("summaries") or []
+            if summaries:
+                s = summaries[0]
+                st = s.get("status") or []
+                return {"publicado": True, "asin": s.get("asin"),
+                        "status": ",".join(st) if isinstance(st, list) else st}
+    except Exception:  # noqa: BLE001
+        pass
+    return {"publicado": False, "asin": None, "status": None}
+
+
+async def estado_live(sku: str) -> dict[str, Any]:
+    """Estado de publicación consultado EN VIVO a ML y Amazon."""
+    ml = await _ml_live(sku)
+    amazon = await _amazon_live(sku)
+    return {"ml": ml, "amazon": amazon}
+
+
 def _ml_publicaciones(sku: str | None) -> list[dict[str, Any]]:
     """
     Cuentas de Mercado Libre donde el SKU está publicado, con su item_id.
