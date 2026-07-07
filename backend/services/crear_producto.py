@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -132,16 +133,60 @@ async def scrape_alibaba(url: str) -> dict[str, Any] | None:
         log.warning("scrape %s: moneda inesperada %s, se ignora precio", url, moneda)
         precio = {}
     imagenes = [u for u in (it.get("images") or []) if u][:MAX_IMAGENES]
+    specs = it.get("specifications") or {}
+
+    # Paso 6: extraer TODAS las variables de las specifications de Alibaba.
+    peso_kg = _spec_peso(specs.get("Single gross weight") or specs.get("Gross weight"))
+    dims = _spec_dims(specs.get("Single package size") or specs.get("Package size"))
+    cbm = None
+    if dims:
+        cbm = round(dims["largo"] * dims["ancho"] * dims["alto"] / 1_000_000, 5)  # cm³→m³
+    unidades = specs.get("Selling units") or specs.get("Minimum order quantity")
+
     return {
         "titulo": it.get("title") or "",
         "precio_min": precio.get("min"),
         "precio_max": precio.get("max"),
         "moneda": moneda or None,
         "imagenes": imagenes,
+        "n_imagenes": len(imagenes),
         "descripcion_proveedor": it.get("description") or "",
-        "specs": it.get("specifications") or {},
+        "caracteristicas": it.get("details") or {},
+        "specs": specs,
+        # variables del paso 6
+        "peso_kg": peso_kg,
+        "dims_cm": dims,          # {largo, ancho, alto} en cm, o None
+        "cbm": cbm,               # m³ por unidad
+        "unidades_venta": unidades,
+        "producto_id": it.get("productId"),
         "url": url,
     }
+
+
+def _num(s: Any) -> float | None:
+    m = re.search(r"[\d]+(?:\.\d+)?", str(s or ""))
+    return float(m.group()) if m else None
+
+
+def _spec_peso(v: Any) -> float | None:
+    """'0.325 kg' / '325 g' → kg."""
+    if not v:
+        return None
+    n = _num(v)
+    if n is None:
+        return None
+    return round(n / 1000, 4) if "g" in str(v).lower() and "kg" not in str(v).lower() else n
+
+
+def _spec_dims(v: Any) -> dict[str, float] | None:
+    """'39X31X58 cm' / '39*31*58' → {largo, ancho, alto} en cm."""
+    if not v:
+        return None
+    nums = re.findall(r"\d+(?:\.\d+)?", str(v))
+    if len(nums) >= 3:
+        l, a, h = float(nums[0]), float(nums[1]), float(nums[2])
+        return {"largo": l, "ancho": a, "alto": h}
+    return None
 
 
 # ── Paso 2: Claude (título SEO + descripción) ───────────────────────────────────
@@ -159,17 +204,19 @@ _ESQUEMA_SEO = {
 
 def _prompt_seo(titulo_alibaba: str, url: str) -> str:
     return (
-        "Eres un experto en copywriting para Mercado Libre México.\n"
-        "Observa la imagen del producto y usa el título de referencia de Alibaba "
-        "para crear un título y una descripción optimizados para Mercado Libre México.\n\n"
+        "Eres un experto en copywriting para MercadoLibre México.\n"
+        "Observa la imagen del producto y usa el título de referencia de Alibaba para crear\n"
+        "un título y descripción optimizados para Mercado Libre México.\n\n"
         f"TÍTULO DE REFERENCIA (Alibaba): {titulo_alibaba}\n"
         f"URL ALIBABA: {url}\n\n"
-        "REGLAS TÍTULO: 100% español mexicano, máximo 60 caracteres, palabras "
-        "cotidianas de México (tenis, lentes, chamarra…), incluye palabras clave "
-        "de búsqueda, sin nombre de marca del proveedor.\n"
-        "REGLAS DESCRIPCIÓN: español mexicano, 100-250 palabras, HTML básico "
-        "(<p><strong><ul><li>), destaca beneficios y características visibles en "
-        "la imagen. NO usar emojis. NO inventar especificaciones que no veas."
+        "REGLAS TÍTULO: 100% español mexicano, máx 60 caracteres, palabras cotidianas "
+        "generales con las que las personas buscan productos\n"
+        "               (tenis / lentes / chamarra), función principal, sin mayúsculas excesivas.\n\n"
+        "REGLAS DESCRIPCIÓN: español mexicano, 100-250 palabras, HTML básico (<p><strong><ul><li>),\n"
+        "                    beneficios prácticos, tono cercano. Estructura clara con saltos de línea \\n."
+        "NO usar ningún emoji, ícono, símbolo especial o carácter Unicode. Agregar caracteristicas principales.\n\n"
+        "Responde EXACTAMENTE (sin markdown):\n"
+        '{"titulo": "...", "descripcion": "..."}'
     )
 
 
@@ -320,11 +367,76 @@ async def procesar_imagenes(sku: str, urls: list[str]) -> tuple[list[dict[str, A
 
 # ── Paso 4: Categoría de Mercado Libre ──────────────────────────────────────────
 
+def _categoria_curada(sku: str) -> dict[str, str] | None:
+    """
+    Categoría de Mercado Libre CURADA (tabla categorias_ml, 12.8k SKUs).
+    Busca por SKU exacto y, si no, por PREFIJO PADRE (CATEG-####). Trae
+    category_id + category_name listos. `fuente` real=confirmada, predictor=predicha.
+    """
+    if not sku:
+        return None
+    try:
+        r = db.fetch_one(
+            "SELECT category_id, category_name, fuente FROM categorias_ml "
+            "WHERE sku=%s AND category_id IS NOT NULL AND category_id != '' LIMIT 1",
+            (sku,),
+        )
+        if not (r and r.get("category_id")):
+            # fallback: prefijo padre (mismos primeros 2 segmentos)
+            base = "-".join(sku.split("-")[:2])
+            r = db.fetch_one(
+                "SELECT category_id, category_name, fuente FROM categorias_ml "
+                "WHERE sku LIKE %s AND category_id IS NOT NULL AND category_id != '' LIMIT 1",
+                (base + "%",),
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    if r and r.get("category_id"):
+        return {"category_id": r["category_id"],
+                "category_name": r.get("category_name") or "",
+                "fuente": r.get("fuente") or "categorias_ml"}
+    return None
+
+
+async def get_or_create_wc_categoria(cli, nombre: str, ml_id: str = "") -> int | None:
+    """
+    Busca (o crea) en WooCommerce una categoría con el nombre de la categoría ML,
+    guardando 'ML: {ml_id}' en la descripción. Devuelve su id de WC.
+    """
+    if not nombre:
+        return None
+    try:
+        r = await cli.get("/products/categories",
+                          params={"search": nombre, "per_page": 100, "_fields": "id,name"})
+        if r.status_code == 200:
+            for c in r.json():
+                if c["name"].strip().lower() == nombre.strip().lower():
+                    return c["id"]
+        rc = await cli.post("/products/categories",
+                           json={"name": nombre, "description": f"ML: {ml_id}"})
+        if rc.status_code in (200, 201):
+            return rc.json().get("id")
+        # término ya existe con otro case
+        data = rc.json() if rc.headers.get("content-type","").startswith("application/json") else {}
+        return (data.get("data") or {}).get("resource_id")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("get_or_create_wc_categoria(%s) falló: %s", nombre, exc)
+    return None
+
+
 async def categoria_ml(sku: str, titulo: str) -> dict[str, str] | None:
     """
-    Devuelve {"category_id", "category_name"}. Primero intenta el ml_cat_id ya
-    calculado en costos_finales; si no hay, usa domain_discovery con el título.
+    Devuelve {"category_id", "category_name"}. Jerarquía de fuentes:
+      1. categorias_ml  (curada por SKU — id + nombre listos, sin llamar a ML)
+      2. costos_finales.ml_cat_id  (fallback; resuelve el nombre contra ML)
+      3. domain_discovery de MELI con el título nuevo  (fallback final)
     """
+    # 1. Categoría curada (preferida)
+    curada = await asyncio.to_thread(_categoria_curada, sku)
+    if curada:
+        return curada
+
+    # 2. ml_cat_id de costos_finales
     try:
         row = await asyncio.to_thread(
             db.fetch_one, "SELECT ml_cat_id FROM costos_finales WHERE sku=%s", (sku,)
@@ -339,6 +451,7 @@ async def categoria_ml(sku: str, titulo: str) -> dict[str, str] | None:
                 r = await cli.get(f"/categories/{cat_id}")
                 nombre = r.json().get("name") if r.status_code == 200 else None
                 return {"category_id": cat_id, "category_name": nombre or ""}
+            # 3. domain_discovery con el título
             token = await asyncio.to_thread(meli._access_token, None)
             if not token:
                 return None
@@ -395,13 +508,13 @@ async def _actualizar_wc(wc_id: int, payload: dict[str, Any]) -> None:
         r.raise_for_status()
 
 
-async def _estado_inprogress(wc_id: int) -> None:
-    # El status custom "inprogress" solo entra por la batch API (el PUT normal
-    # lo rechaza). Mismo truco que usa el pipeline original.
+async def _estado_wc(wc_id: int, status: str) -> None:
+    # Los status custom (inprogress/ready) y pending solo entran por la batch
+    # API (el PUT normal los rechaza). Mismo truco que el pipeline original.
     async with woocommerce._client() as cli:
         r = await cli.post(
             "/products/batch",
-            json={"update": [{"id": wc_id, "status": "inprogress"}]},
+            json={"update": [{"id": wc_id, "status": status}]},
             timeout=60.0,
         )
         r.raise_for_status()
@@ -411,6 +524,67 @@ def _fmt(v: Any) -> str | None:
     if v in (None, ""):
         return None
     return f"{float(v):.2f}"
+
+
+# ── Paso 8: Atributos ML con IA (Claude) ────────────────────────────────────────
+
+MARCA_FIJA = "Ferrahome"  # BRAND siempre nuestra, nunca la del proveedor
+
+
+async def atributos_ml(cat_id: str | None, titulo: str, sku: str,
+                       scrape: dict[str, Any]) -> dict[str, str]:
+    """
+    Genera los atributos OBLIGATORIOS de la categoría de Mercado Libre con IA.
+    Lee la lista de atributos de la categoría (GET /categories/{id}/attributes),
+    y Claude los llena con el título + specs de Alibaba + color/talla del SKU.
+    Devuelve { "BRAND": "Ferrahome", "MODEL": ..., "COLOR": ... }. {} si falla.
+    """
+    if not cat_id:
+        return {}
+    try:
+        async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
+            r = await cli.get(f"/categories/{cat_id}/attributes")
+        atrs = r.json() if r.status_code == 200 else []
+    except Exception:  # noqa: BLE001
+        return {}
+    # obligatorios (+ algunos clave), máx ~15 para no saturar el prompt
+    oblig = [a for a in atrs if "required" in (a.get("tags") or {})][:15]
+    if not oblig:
+        oblig = atrs[:8]
+    if not oblig:
+        return {}
+
+    lista = "\n".join(f"- {a['id']} ({a.get('name')})" for a in oblig)
+    specs = scrape.get("specs") or {}
+    from services.variables import parse_sku
+    variante = parse_sku(sku).get("attributes") or {}
+    system = (
+        "Eres experto en publicaciones de Mercado Libre México. Llenas los "
+        "atributos obligatorios de un producto con valores reales y coherentes. "
+        'Respondes SOLO un JSON {"ID_ATRIBUTO": "valor", ...}.'
+    )
+    user = (
+        f"Producto: {titulo}\n"
+        f"Specs Alibaba: {json.dumps(specs, ensure_ascii=False)[:800]}\n"
+        f"Variante (del SKU): {variante}\n\n"
+        f"Atributos a llenar (ID y nombre):\n{lista}\n\n"
+        f'REGLAS: BRAND siempre "{MARCA_FIJA}". MODEL: deriva del título o SKU. '
+        "COLOR: usa el color de la variante si existe. No inventes medidas que no "
+        "veas. Si un atributo no aplica, omítelo. Usa los IDs de arriba como claves."
+    )
+    # DeepSeek primero (como el pipeline original) → Claude de fallback.
+    from services.ia_generadores import _completar
+    try:
+        r = await asyncio.to_thread(_completar, system, user, 1024)
+        if not r.get("ok"):
+            return {}
+        m = re.search(r"\{.*\}", r["texto"], re.DOTALL)
+        data = json.loads(m.group()) if m else {}
+        data["BRAND"] = MARCA_FIJA  # forzar marca
+        return {k: str(v) for k, v in data.items() if v}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("atributos ML para %s falló: %s", sku, exc)
+        return {}
 
 
 # ── Orquestador por producto ────────────────────────────────────────────────────
@@ -444,11 +618,16 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             imagenes, limpiadas = await procesar_imagenes(sku, scrape["imagenes"])
 
             titulo = (ia or {}).get("titulo") or scrape["titulo"]
-            _set(sku, "procesando", "4/5 · Categoría de Mercado Libre…", wc_id=wc_id)
+            _set(sku, "procesando", "4/6 · Categoría de Mercado Libre…", wc_id=wc_id)
             cat = await categoria_ml(sku, titulo)
             dinero = await asyncio.to_thread(datos_dinero, sku)
 
-            _set(sku, "procesando", "5/5 · Actualizando WooCommerce…", wc_id=wc_id)
+            # Paso 8: atributos ML con IA (BRAND/MODEL/COLOR…)
+            _set(sku, "procesando", "5/6 · Atributos de Mercado Libre (IA)…", wc_id=wc_id)
+            atributos = await atributos_ml(cat.get("category_id") if cat else None,
+                                           titulo, sku, scrape)
+
+            _set(sku, "procesando", "6/6 · Actualizando WooCommerce…", wc_id=wc_id)
             meta = [
                 {"key": "url_alibaba", "value": url},
                 {"key": "alibaba_title_original", "value": scrape["titulo"]},
@@ -470,27 +649,65 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
                 payload["description"] = scrape["descripcion_proveedor"]
             if imagenes:
                 payload["images"] = imagenes
+            # Categoría ML → categoría de WooCommerce (reemplaza el departamento).
+            if cat and cat.get("category_name"):
+                async with woocommerce._client() as _c:
+                    wc_cat_id = await get_or_create_wc_categoria(
+                        _c, cat["category_name"], cat.get("category_id", ""))
+                if wc_cat_id:
+                    payload["categories"] = [{"id": wc_cat_id}]
             if _fmt(dinero.get("precio_base")):
                 payload["regular_price"] = _fmt(dinero["precio_base"])
             if _fmt(dinero.get("precio_sugerido")):
                 payload["sale_price"] = _fmt(dinero["precio_sugerido"])
-            if dinero.get("peso"):
-                payload["weight"] = str(dinero["peso"])
-            if dinero.get("largo") and dinero.get("alto") and dinero.get("ancho"):
+            # Peso/dims: primero costos_finales/validados; si faltan, lo scrapeado
+            # de Alibaba (paso 6). El SKU real gana sobre lo scrapeado.
+            sd = scrape.get("dims_cm") or {}
+            peso = dinero.get("peso") or scrape.get("peso_kg")
+            largo = dinero.get("largo") or sd.get("largo")
+            ancho = dinero.get("ancho") or sd.get("ancho")
+            alto = dinero.get("alto") or sd.get("alto")
+            if peso:
+                payload["weight"] = str(peso)
+            if largo and ancho and alto:
                 payload["dimensions"] = {
-                    "length": str(dinero["largo"]),
-                    "width": str(dinero["ancho"]),
-                    "height": str(dinero["alto"]),
+                    "length": str(largo), "width": str(ancho), "height": str(alto),
                 }
+            # metas de trazabilidad del scrape (precio Alibaba, CBM, unidades)
+            if scrape.get("precio_min") is not None:
+                meta.append({"key": "alibaba_precio_min", "value": str(scrape["precio_min"])})
+            if scrape.get("precio_max") is not None:
+                meta.append({"key": "alibaba_precio_max", "value": str(scrape["precio_max"])})
+            if scrape.get("cbm") is not None:
+                meta.append({"key": "cbm_producto", "value": str(scrape["cbm"])})
+            if scrape.get("unidades_venta"):
+                meta.append({"key": "alibaba_unidades_venta", "value": str(scrape["unidades_venta"])})
+            # Paso 8: atributos ML → meta ml_atributos (JSON, para el publisher ML)
+            if atributos:
+                meta.append({"key": "ml_atributos", "value": json.dumps(atributos, ensure_ascii=False)})
+            payload["meta_data"] = meta
 
             await _actualizar_wc(wc_id, payload)
-            await _estado_inprogress(wc_id)
 
-            partes = [f"{len(imagenes)} imágenes ({limpiadas} limpiadas con IA)"]
-            partes.append(f"categoría {cat['category_id']}" if cat else "SIN categoría ML")
-            if not dinero.get("precio_sugerido"):
-                partes.append("SIN precio (falta en costos_finales)")
-            _set(sku, "completado", " · ".join(partes), wc_id=wc_id, titulo=titulo)
+            # Paso 9: completitud → pending (100%) o inprogress (parcial).
+            tiene_precio = bool(_fmt(dinero.get("precio_sugerido")) or _fmt(dinero.get("precio_base")))
+            tiene_imgs = bool(imagenes)
+            tiene_attrs = len(atributos) >= 2  # BRAND + al menos 1 más
+            completo = bool(cat) and tiene_precio and tiene_imgs and tiene_attrs
+            status_final = "pending" if completo else "inprogress"
+            await _estado_wc(wc_id, status_final)
+
+            faltan = []
+            if not cat: faltan.append("categoría")
+            if not tiene_precio: faltan.append("precio")
+            if not tiene_imgs: faltan.append("imágenes")
+            if not tiene_attrs: faltan.append("atributos")
+            resumen = (f"{len(imagenes)} imgs · {len(atributos)} atributos · "
+                       f"{('categoría ' + cat['category_id']) if cat else 'sin categoría'}")
+            resumen += f" → {status_final.upper()}"
+            if faltan:
+                resumen += f" (falta: {', '.join(faltan)})"
+            _set(sku, "completado", resumen, wc_id=wc_id, titulo=titulo, status_wc=status_final)
         except Exception as exc:  # noqa: BLE001
             log.exception("crear[%s] falló", sku)
             _set(sku, "error", str(exc)[:200], wc_id=wc_id)

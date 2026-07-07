@@ -626,9 +626,15 @@ async def indice_candidatos(refrescar: bool = False) -> list[dict[str, Any]]:
     índice sigue creciendo detrás (consultar `drafts_completo()`).
     Con cache: stale-while-revalidate (se sirve al instante, refresca detrás).
     """
+    # Con MySQL directo, leer el índice es 1 consulta rápida (~2s) e inmune al
+    # anti-bot: cacheamos solo 20s para que los cambios de status se vean casi
+    # al instante. Sin MySQL (escaneo por API, ~90 requests) mantenemos 15 min.
+    from services import wp_db
+    ttl = 20 if wp_db.disponible() else _CAND_TTL
+
     edad = time.time() - _draft_cache_ts
     if _draft_cache and _drafts_completo and not refrescar:
-        if edad >= _CAND_TTL:
+        if edad >= ttl:
             asyncio.create_task(_refrescar_drafts_bg())
         return _draft_cache
 

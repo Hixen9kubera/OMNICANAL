@@ -155,7 +155,10 @@ async def progreso():
 
 @router.get("/categorias")
 async def categorias_disponibles():
-    """Nombres de TODAS las categorías de Woo (para el autocompletado)."""
+    """Solo categorías PADRE (nivel raíz) de Woo, para el autocompletado."""
     arbol = await woocommerce._cargar_categorias()
-    nombres = sorted({d["name"] for d in arbol.values()}, key=str.casefold)
+    nombres = sorted(
+        {d["name"] for d in arbol.values() if not d.get("parent")},
+        key=str.casefold,
+    )
     return {"categorias": nombres}

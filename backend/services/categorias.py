@@ -27,16 +27,31 @@ MAPEO_PREFIJO: dict[str, str] = {
     "SIL": "Sillas", "PEL": "Peluches", "MUN": "Disfraces", "PAS": "Bebés",
     "EC": "Termos", "TEK": "Hogar", "ACO": "Deportes", "ORT": "Accesorios",
     "CEL": "Tecnología", "ELEC": "Electrónica",
+    # Segunda tanda (2026-07-03), nombres derivados de los productos reales:
+    "HERR": "Herramientas", "HIG": "Higiene y Limpieza", "DEPO": "Deportes",
+    "COM": "Hogar", "TEX": "Textiles", "BAN": "Baño", "SEG": "Seguridad",
+    "JAR": "Jardín", "ART": "Arte y Manualidades", "PAP": "Papelería",
+    "EDU": "Educación", "DEP": "Salud y Belleza", "CAS": "Hogar",
+    "ESCR": "Oficina", "CONS": "Consumibles", "JUG": "Juguetes",
+    "BAS": "Exhibición y Maniquíes", "MAN": "Exhibición y Maniquíes",
+    "MOD": "Exhibición y Maniquíes", "ALIM": "Mascotas", "LUZ": "Iluminación",
+    "CART": "Varios", "MONT": "Herramientas", "VAL": "Herramientas",
+    "ROBB": "Mascotas",
 }
+
+# Prefijos que no estén en el mapeo caen aquí (nadie se queda sin categoría).
+CATEGORIA_FALLBACK = "Varios"
 
 # Cache nombre (lower) → id de categoría WC
 _ids_categoria: dict[str, int] = {}
 
 
 def categoria_para_sku(sku: str) -> str | None:
-    """Nombre de departamento según el prefijo del SKU (None si no hay mapeo)."""
+    """Departamento según el prefijo del SKU (fallback 'Varios'; None si no hay SKU)."""
     prefijo = (sku or "").split("-")[0].strip().upper()
-    return MAPEO_PREFIJO.get(prefijo)
+    if not prefijo:
+        return None
+    return MAPEO_PREFIJO.get(prefijo, CATEGORIA_FALLBACK)
 
 
 async def asegurar_categoria(cli, nombre: str) -> int | None:

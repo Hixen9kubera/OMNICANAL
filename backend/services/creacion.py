@@ -162,6 +162,21 @@ async def sincronizar_drafts(limite: int = 100) -> dict[str, Any]:
         "sincronizar_drafts: %d creados, %d errores (quedaban %d faltantes)",
         len(resultado["creados"]), len(resultado["errores"]), plan["faltantes_total"],
     )
+
+    # Paso 4 AUTOMÁTICO: agrupar en productos variables lo recién creado. Los
+    # SKUs que comparten base (TEC-0002-NEG, TEC-0002-AZL) se vuelven un padre
+    # variable + variaciones. Si la base ya era variable, cuelga los nuevos
+    # simples (modo ATTACH). Acotado a las bases afectadas (rápido).
+    agrupacion = {"grupos_procesados": 0, "convertidos": 0}
+    try:
+        from services import variables
+        bases = {variables.base_de(c["sku"]) for c in resultado["creados"]}
+        if bases:
+            agrupacion = await variables.agrupar_bases(bases)
+            agrupacion.pop("detalle", None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("agrupación automática tras sync falló: %s", exc)
+
     # Refresca el índice de candidatos en segundo plano para que los nuevos
     # drafts aparezcan de inmediato en la vista "Crear Productos".
     asyncio.create_task(woocommerce.indice_candidatos(refrescar=True))
@@ -171,6 +186,7 @@ async def sincronizar_drafts(limite: int = 100) -> dict[str, Any]:
         "creados": resultado["creados"],
         "errores": resultado["errores"],
         "faltantes_restantes": plan["faltantes_total"] - len(resultado["creados"]),
+        "agrupacion": agrupacion,
     }
 
 
@@ -316,15 +332,21 @@ async def listar_candidatos_agrupados(
     """
     from services import wp_db
 
-    # MODO DIRECTO: si el índice completo no está listo y no hay MySQL, la
-    # página y las búsquedas se resuelven contra Woo al momento (1-2 requests)
-    # mientras el índice sigue construyéndose en segundo plano.
-    if not woocommerce.drafts_completo() and not wp_db.disponible():
-        asyncio.create_task(woocommerce.indice_candidatos())  # sigue cargando detrás
-        return await _pagina_directa(page, per_page, search, skus_filtro, orden, categoria)
-
-    indice = await woocommerce.indice_candidatos()
-    lista = await asyncio.to_thread(_armar_grupos, indice)
+    if wp_db.disponible():
+        # Con MySQL, leer el índice es 1 consulta rápida: se lee FRESCO en cada
+        # carga (búsqueda/filtro/status siempre reflejan el estado actual, sin
+        # depender del cache del sync).
+        indice = await asyncio.to_thread(wp_db.indice_drafts)
+        lista = await asyncio.to_thread(_armar_grupos, indice)
+    else:
+        # Sin MySQL (escaneo por API): si el índice completo no está listo, la
+        # página y las búsquedas se resuelven contra Woo al momento mientras el
+        # índice se construye en segundo plano.
+        if not woocommerce.drafts_completo():
+            asyncio.create_task(woocommerce.indice_candidatos())
+            return await _pagina_directa(page, per_page, search, skus_filtro, orden, categoria)
+        indice = await woocommerce.indice_candidatos()
+        lista = await asyncio.to_thread(_armar_grupos, indice)
 
     if skus_filtro:
         # Cada término separado por coma actúa como FILTRO y BUSCADOR a la vez:
