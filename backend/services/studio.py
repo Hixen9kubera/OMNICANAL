@@ -96,6 +96,48 @@ def _resolver_wc_id(sku: str) -> int | None:
     return None
 
 
+def estado_publicacion(sku: str) -> dict[str, Any]:
+    """
+    Estado REAL de publicación por canal (fuente de verdad en DB):
+      - ml: [{cuenta, item_id}] desde ml_progress (cuentas donde está publicado)
+      - amazon: {publicado, asin, status} desde amazon_progress
+    """
+    ml: list[dict[str, Any]] = []
+    try:
+        rows = db.fetch_all(
+            """SELECT cuenta, ml_item_id FROM ml_progress
+               WHERE sku=%s AND ml_item_id IS NOT NULL AND ml_item_id <> ''""",
+            (sku,),
+        )
+        vistas: set[str] = set()
+        for r in rows:
+            if r["cuenta"] in vistas:
+                continue
+            vistas.add(r["cuenta"])
+            ml.append({"cuenta": r["cuenta"], "item_id": r["ml_item_id"]})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("estado_publicacion ml(%s): %s", sku, exc)
+
+    amazon = {"publicado": False, "asin": None, "status": None}
+    try:
+        a = db.fetch_one(
+            """SELECT asin, status, success FROM amazon_progress
+               WHERE sku=%s ORDER BY updated_at DESC LIMIT 1""",
+            (sku,),
+        )
+        if a:
+            st = (a.get("status") or "").upper()
+            amazon = {
+                "publicado": bool(a.get("success")) or st in ("PUBLISHED", "ACTIVE", "ACCEPTED"),
+                "asin": a.get("asin"),
+                "status": a.get("status"),
+            }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("estado_publicacion amazon(%s): %s", sku, exc)
+
+    return {"ml": ml, "amazon": amazon}
+
+
 def metadata(sku: str, wc_id: int | None = None) -> dict[str, Any]:
     """Ensambla la metadata del Estudio para un SKU (postmeta primero)."""
     base: dict[str, Any] = {
@@ -103,6 +145,7 @@ def metadata(sku: str, wc_id: int | None = None) -> dict[str, Any]:
         "dinero": {}, "categoria_ml": None,
         "alibaba_url": None, "alibaba_precio": None, "producto_correcto": None,
         "atributos": [],
+        "estado": estado_publicacion(sku),
     }
 
     # 1) Postmeta de WordPress (fuente de verdad)

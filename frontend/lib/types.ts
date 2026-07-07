@@ -182,6 +182,11 @@ export interface StudioCategoriaML {
   niveles: string[];
 }
 
+export interface EstadoPublicacion {
+  ml: { cuenta: string; item_id: string }[];
+  amazon: { publicado: boolean; asin: string | null; status: string | null };
+}
+
 export interface StudioMetadata {
   sku: string;
   wc_id: number | null;
@@ -192,6 +197,7 @@ export interface StudioMetadata {
   alibaba_precio: number | null;
   producto_correcto: string | null;
   atributos: AtributoProducto[];
+  estado?: EstadoPublicacion;
 }
 
 // ── Mejorar con IA (un botón por canal) ──────────────────────────────

@@ -194,17 +194,14 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const esAmazon = canal === AMAZON;
   const esML = canal === "mercado_libre";
 
-  // Cuentas ML donde está publicado (para mostrar "ambas" o "solo una").
+  // Estado REAL de publicación (fuente de verdad en DB: ml_progress / amazon_progress).
   const mlCuentas = useMemo(
-    () =>
-      (data?.canales ?? [])
-        .filter((c) => c.canal === "mercado_libre" && c.publicado)
-        .map((c) => (c.extra as { cuenta?: string } | undefined)?.cuenta)
-        .filter(Boolean) as string[],
-    [data],
+    () => (meta?.estado?.ml ?? []).map((p) => p.cuenta),
+    [meta],
   );
   const mlPublicado = mlCuentas.length > 0;
-  const estaPublicado = esML ? mlPublicado : !!datosCanal?.publicado;
+  const amazonPublicadoReal = !!meta?.estado?.amazon?.publicado;
+  const estaPublicado = esML ? mlPublicado : esAmazon ? amazonPublicadoReal : !!datosCanal?.publicado;
 
   const categoriaWC = useMemo(() => {
     const general = data?.canales.find((c) => c.canal === GENERAL);
@@ -266,12 +263,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const itemIdSel = datosCanal?.item_id ?? null;
   const cuentaSel =
     (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
-  // ML: si está publicado (1+ cuentas) se muestra "Actualizar" (actualiza lo existente).
-  // Amazon: "Publicar" aparece cuando NO está publicado; desaparece al publicar OK.
-  const amazonPublicado = !!datosCanal?.publicado || amazonPublicadoOk;
-  const puedeActualizar = (esML && mlPublicado) || (esAmazon && !amazonPublicado);
-  // Verbo del botón según el canal: ML actualiza; Amazon crea/publica.
-  const accionLabel = esML ? "Actualizar en" : "Publicar a";
+  // ML: botón solo si está publicado (actualiza). Crear nuevo en ML: pendiente.
+  // Amazon: siempre disponible → "Publicar" si no está, "Actualizar" si ya está.
+  const amazonPublicado = amazonPublicadoReal || amazonPublicadoOk;
+  const puedeActualizar = (esML && mlPublicado) || esAmazon;
+  // Verbo: ML actualiza; Amazon publica (nuevo) o actualiza (ya publicado).
+  const accionLabel = esML || amazonPublicado ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
 
@@ -443,6 +440,14 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">
                             ambas cuentas
                           </span>
+                        )}
+                        {esAmazon && meta?.estado?.amazon?.status && (
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">
+                            {meta.estado.amazon.status}
+                          </span>
+                        )}
+                        {esAmazon && meta?.estado?.amazon?.asin && (
+                          <span className="font-mono text-[11px] text-slate-500">{meta.estado.amazon.asin}</span>
                         )}
                         {datosCanal && (
                           <>
