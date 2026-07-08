@@ -20,6 +20,7 @@ export interface VarianteResumen {
   stock: number | null;
   valor: number | null; // stock × costo
   estado: string | null;
+  contenedor: string | null; // nº de contenedor (costos_validados)
 }
 
 export interface Producto {
@@ -51,6 +52,7 @@ export interface Producto {
   // Valor de inventario (Crear Productos): costo y valor = stock × costo
   costo: number | null;
   valor: number | null;
+  contenedor: string | null; // nº de contenedor (costos_validados)
   // Tipo en WooCommerce: simple | variable (padre) | variation
   tipo: string | null;
   // Si es padre: sus variantes (vista Crear Productos)
@@ -199,6 +201,120 @@ export interface StudioMetadata {
   producto_correcto: string | null;
   atributos: AtributoProducto[];
   estado?: EstadoPublicacion;
+}
+
+// ── Costos: desglose + recálculo (tab COSTOS) ────────────────────────
+export interface CostoCalculo {
+  sku: string;
+  costo_producto: number | null;
+  costo_cbm: number | null;
+  costo_unitario: number | null;
+  largo: number | null;
+  alto: number | null;
+  ancho: number | null;
+  peso: number | null;
+  volumen_m3: number | null;
+  ml_cat_id: string | null;
+  margen: number;
+  incluir_envio: boolean;
+  tarifa_cbm_m3: number;
+  pct_comision: number;
+  costo_comision: number;
+  costo_fee_envio: number;
+  iva_mnt: number;
+  precio_sugerido: number;
+  precio_base: number;
+  ganancia_neta: number;
+  roi: number;
+}
+
+export interface CostoDetalle {
+  sku: string;
+  finales: Record<string, unknown> | null;
+  validados: Record<string, unknown> | null;
+  logs: { accion: string; origen: string; created_at: string }[];
+  constantes: { margen: number; iva: number; descuento: number };
+}
+
+export interface CostoPreviewResp {
+  ok: boolean;
+  sku: string;
+  calculo: CostoCalculo;
+}
+
+export interface CostoGuardarResp {
+  ok: boolean;
+  sku: string;
+  finales: Record<string, unknown>;
+  sincronizado_woo: boolean;
+}
+
+export interface CostoRow {
+  sku: string;
+  nombre: string | null;
+  contenedor: string | null;
+  largo: number | null;
+  ancho: number | null;
+  alto: number | null;
+  peso: number | null;
+  volumen_m3: number | null;
+  costo_producto: number | null;
+  costo_cbm: number | null;
+  costo_unitario: number | null;
+  precio_base: number | null;
+  precio_sugerido: number | null;
+  ml_cat_id: string | null;
+}
+
+export interface CostosListResp {
+  items: CostoRow[];
+  paginacion: Paginacion;
+}
+
+export interface ContenedorInfo {
+  contenedor: string;
+  n: number;
+}
+
+export interface CostoBulkItem {
+  sku: string;
+  costo_producto?: number | null;
+  largo?: number | null;
+  alto?: number | null;
+  ancho?: number | null;
+  peso?: number | null;
+}
+
+export interface CostoBulkResultado {
+  sku: string;
+  ok: boolean;
+  error?: string;
+  aviso?: string;
+  sincronizado_woo?: boolean;
+  costo_unitario?: number | null;
+  precio_base?: number | null;
+  precio_sugerido?: number | null;
+  costo_cbm?: number | null;
+}
+
+export interface CostoBulkResp {
+  ok: boolean;
+  total: number;
+  exitosos: number;
+  resultados: CostoBulkResultado[];
+}
+
+export interface CostoOverrides {
+  costo_producto?: number | null;
+  costo_cbm?: number | null;
+  largo?: number | null;
+  alto?: number | null;
+  ancho?: number | null;
+  peso?: number | null;
+  incluir_envio?: boolean;
+  margen?: number;
+  auto_cbm?: boolean;
+  sincronizar_woo?: boolean;
 }
 
 // ── Mejorar con IA (un botón por canal) ──────────────────────────────

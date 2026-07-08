@@ -14,11 +14,16 @@ import {
   UploadCloud,
   CheckCircle2,
   AlertTriangle,
+  Calculator,
+  RefreshCw,
+  Save,
 } from "lucide-react";
 import type {
   AtributoProducto,
   CanalInfo,
   CompetenciaResp,
+  CostoCalculo,
+  CostoOverrides,
   DetalleCanal,
   Producto,
   PublicarPreview,
@@ -26,6 +31,9 @@ import type {
   StudioMetadata,
 } from "@/lib/types";
 import {
+  costoDetalle,
+  costoGuardar,
+  costoPreview,
   mejorarIA,
   precioCompetencia,
   publicarConfirmar,
@@ -112,6 +120,16 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const [resultadoPub, setResultadoPub] = useState<PublicarResultado | null>(null);
   const [amazonPublicadoOk, setAmazonPublicadoOk] = useState(false);
 
+  // ── Bloque COSTOS (dims de pieza → CBM → costo → precios) ───────────
+  const [costoProducto, setCostoProducto] = useState("");
+  const [margen, setMargen] = useState("48");
+  const [incluirEnvio, setIncluirEnvio] = useState(true);
+  const [costoCalc, setCostoCalc] = useState<Partial<CostoCalculo> | null>(null);
+  const [costoFresco, setCostoFresco] = useState(false); // true tras Regenerar/Guardar
+  const [regenerando, setRegenerando] = useState(false);
+  const [guardandoCosto, setGuardandoCosto] = useState(false);
+  const [costoMsg, setCostoMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
   const cargandoCampos = useRef(false);
 
   // ── Tema del canal seleccionado ────────────────────────────────────
@@ -132,6 +150,40 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     setPreviewPub(null);
     setResultadoPub(null);
     setAmazonPublicadoOk(false);
+    setCostoProducto("");
+    setMargen("48");
+    setIncluirEnvio(true);
+    setCostoCalc(null);
+    setCostoFresco(false);
+    setCostoMsg(null);
+  }, [sku]);
+
+  // ── Semilla del bloque COSTOS: costo_producto + desglose actual ─────
+  useEffect(() => {
+    if (!sku) return;
+    const ctrl = new AbortController();
+    costoDetalle(sku, ctrl.signal)
+      .then((d) => {
+        const cv = (d.validados ?? {}) as Record<string, unknown>;
+        const cf = (d.finales ?? {}) as Record<string, unknown>;
+        const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
+        const cp = num(cv.costo_producto) ?? num(cf.costo_producto);
+        if (cp != null) setCostoProducto(String(cp));
+        if (d.constantes?.margen != null) setMargen(String(Math.round(d.constantes.margen * 100)));
+        // Desglose actual (sin recalcular) para que el bloque no salga vacío.
+        setCostoCalc({
+          costo_producto: cp,
+          costo_cbm: num(cv.costo_cbm) ?? num(cf.costo_cbm),
+          costo_unitario: num(cf.costo_unitario) ?? num(cv.costo_total),
+          costo_comision: num(cf.costo_comision),
+          costo_fee_envio: num(cf.costo_fee_envio),
+          precio_base: num(cf.precio_base),
+          precio_sugerido: num(cf.precio_sugerido),
+          pct_comision: num(cf.pct_comision) ?? undefined,
+        });
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
   }, [sku]);
 
   // ── Metadata del Estudio (postmeta): precios/costo/alibaba/dims ─────
@@ -230,6 +282,20 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
       return n;
     });
 
+  // Atributos SIN las filas basura de dimensiones/peso (esas viven en COSTOS).
+  // Conserva el índice original para que setAtributo edite el elemento correcto.
+  const atributosVisibles = useMemo(
+    () =>
+      atributos
+        .map((a, i) => ({ a, i }))
+        .filter(({ a }) =>
+          !/^\s*(peso|dimensi|medida|largo|ancho|alto|tama|volumen|weight|length|width|height|size)/i.test(
+            a.nombre || "",
+          ),
+        ),
+    [atributos],
+  );
+
   // ── Mejorar con IA (un botón por canal) ─────────────────────────────
   const mejorarConIA = useCallback(async () => {
     if (!data || !sku) return;
@@ -280,6 +346,79 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     (esML && mlPublicado) || (esAmazon && amazonPublicado) ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
+
+  // ── COSTOS: regenerar (preview) / guardar (persistir + Woo) ─────────
+  const overridesCosto = (): CostoOverrides => ({
+    costo_producto: numOrNull(costoProducto),
+    largo: numOrNull(campos.largo),
+    ancho: numOrNull(campos.ancho),
+    alto: numOrNull(campos.alto),
+    peso: numOrNull(campos.peso),
+    margen: (Number(margen) || 0) / 100,
+    incluir_envio: incluirEnvio,
+    auto_cbm: true,
+  });
+
+  // Refleja el cálculo en los campos que usa el resto del modal (publicar).
+  const sincronizarCampos = (c: Partial<CostoCalculo>) => {
+    setCampos((p) => ({
+      ...p,
+      costo: c.costo_unitario != null ? String(c.costo_unitario) : p.costo,
+      precioRegular: c.precio_base != null ? String(c.precio_base) : p.precioRegular,
+      precioOferta: c.precio_sugerido != null ? String(c.precio_sugerido) : p.precioOferta,
+    }));
+  };
+
+  async function regenerarCosto() {
+    if (!sku) return;
+    setRegenerando(true);
+    setCostoMsg(null);
+    try {
+      const r = await costoPreview(sku, overridesCosto());
+      setCostoCalc(r.calculo);
+      setCostoFresco(true);
+      sincronizarCampos(r.calculo);
+    } catch {
+      setCostoMsg({ ok: false, texto: "No se pudo calcular (falta costo base o categoría ML)." });
+    } finally {
+      setRegenerando(false);
+    }
+  }
+
+  async function guardarCosto() {
+    if (!sku) return;
+    setGuardandoCosto(true);
+    setCostoMsg(null);
+    try {
+      const r = await costoGuardar(sku, { ...overridesCosto(), sincronizar_woo: true });
+      const f = r.finales as Record<string, unknown>;
+      const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
+      const merged: Partial<CostoCalculo> = {
+        ...(costoCalc ?? {}),
+        costo_producto: num(f.costo_producto),
+        costo_cbm: num(f.costo_cbm),
+        costo_unitario: num(f.costo_unitario),
+        costo_comision: num(f.costo_comision),
+        costo_fee_envio: num(f.costo_fee_envio),
+        precio_base: num(f.precio_base),
+        precio_sugerido: num(f.precio_sugerido),
+        pct_comision: num(f.pct_comision) ?? undefined,
+      };
+      setCostoCalc(merged);
+      setCostoFresco(true);
+      sincronizarCampos(merged);
+      setCostoMsg({
+        ok: true,
+        texto: r.sincronizado_woo
+          ? "Guardado y sincronizado con WooCommerce."
+          : "Guardado en la base de datos.",
+      });
+    } catch {
+      setCostoMsg({ ok: false, texto: "No se pudo guardar el costo." });
+    } finally {
+      setGuardandoCosto(false);
+    }
+  }
 
   function reqPublicar() {
     return {
@@ -645,6 +784,98 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                 </div>
               </section>
 
+              {/* COSTOS — dims de pieza → CBM → costo → precios */}
+              <section className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em]" style={{ color: tema.acento }}>
+                    <Calculator size={14} /> Costos
+                  </div>
+                  {costoCalc?.pct_comision != null && (
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500">
+                      comisión ML {Math.round((costoCalc.pct_comision ?? 0) * 100)}%
+                    </span>
+                  )}
+                </div>
+
+                {/* Entradas editables */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <Campo label="Costo producto" prefijo="$" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
+                  <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
+                  <Campo label="Margen (%)" value={margen} onChange={setMargen} acento={tema.acento} />
+                  <div>
+                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Envío</label>
+                    <label className="flex h-[42px] cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600">
+                      <input type="checkbox" checked={incluirEnvio} onChange={(e) => setIncluirEnvio(e.target.checked)} className="h-4 w-4" style={{ accentColor: tema.acento }} />
+                      Sumar al precio
+                    </label>
+                  </div>
+                </div>
+
+                {/* Dimensiones de la PIEZA (el flete se calcula por pieza) */}
+                <div>
+                  <div className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                    Dimensiones de la pieza — Largo × Ancho × Alto (cm)
+                    {costoCalc?.volumen_m3 != null && <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-amber-700">{costoCalc.volumen_m3} m³</span>}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["largo", "ancho", "alto"] as const).map((k) => (
+                      <input key={k} value={campos[k]} onChange={(e) => setCampo(k, e.target.value)} placeholder={k}
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Flete por pieza (CBM) = volumen × ${(costoCalc?.tarifa_cbm_m3 ?? 7500).toLocaleString("es-MX")}/m³ (contenedor estándar).
+                  </p>
+                </div>
+
+                {/* Regenerar (preview) */}
+                <button
+                  onClick={regenerarCosto}
+                  disabled={regenerando || !data}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border-2 bg-white px-4 py-2 text-sm font-bold transition-all hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
+                  style={{ borderColor: tema.color, color: tema.acento }}
+                >
+                  {regenerando ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                  {regenerando ? "Calculando…" : "Regenerar costo"}
+                </button>
+
+                {/* Resultados */}
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <Resultado label="Flete CBM" value={precioMXN(costoCalc?.costo_cbm)} />
+                  <Resultado label="Costo" value={precioMXN(costoCalc?.costo_unitario)} destacado acento={tema.acento} />
+                  <Resultado label="Comisión ML" value={precioMXN(costoCalc?.costo_comision)} />
+                  <Resultado label="Envío" value={precioMXN(costoCalc?.costo_fee_envio)} />
+                  <Resultado label="Precio regular" value={precioMXN(costoCalc?.precio_base)} />
+                  <Resultado label="Precio oferta" value={precioMXN(costoCalc?.precio_sugerido)} destacado acento={tema.acento} />
+                </div>
+                {costoFresco && costoCalc?.ganancia_neta != null && (
+                  <div className="text-[11px] text-slate-500">
+                    Ganancia neta <strong>{precioMXN(costoCalc.ganancia_neta)}</strong>
+                    {costoCalc.roi != null && <> · ROI <strong>{Math.round((costoCalc.roi ?? 0) * 100)}%</strong></>}
+                  </div>
+                )}
+
+                {/* Guardar */}
+                <button
+                  onClick={guardarCosto}
+                  disabled={guardandoCosto || !data}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                  style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
+                >
+                  {guardandoCosto ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                  {guardandoCosto ? "Guardando…" : "Guardar costo y precios"}
+                </button>
+                {costoMsg && (
+                  <div className={["flex items-start gap-2 rounded-lg px-3 py-2 text-sm", costoMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
+                    {costoMsg.ok ? <CheckCircle2 size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+                    {costoMsg.texto}
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-400">
+                  <strong>Regenerar</strong> recalcula sin escribir. <strong>Guardar</strong> persiste en la base y actualiza WooCommerce (precio regular/oferta, costo, peso y dimensiones).
+                </p>
+              </section>
+
               {/* ALIBABA */}
               <section className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr,180px]">
                 <div>
@@ -658,29 +889,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                 <Campo label="Precio Alibaba" prefijo="$" value={campos.alibabaPrecio} onChange={(v) => setCampo("alibabaPrecio", v)} acento={tema.acento} />
               </section>
 
-              {/* PESO + DIMENSIONES */}
-              <section className="grid grid-cols-1 gap-4 sm:grid-cols-[160px,1fr]">
-                <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
-                <div>
-                  <div className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                    Largo × Ancho × Alto (cm)
-                    {meta?.dinero?.volumen_m3 != null && <span className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[10px] normal-case tracking-normal text-amber-700">{meta.dinero.volumen_m3} m³</span>}
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(["largo", "ancho", "alto"] as const).map((k) => (
-                      <input key={k} value={campos[k]} onChange={(e) => setCampo(k, e.target.value)}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                    ))}
-                  </div>
-                </div>
-              </section>
-
-              {/* ATRIBUTOS 1×1 (editables) */}
-              {atributos.length > 0 && (
+              {/* ATRIBUTOS 1×1 (editables) — sin las filas basura de dimensiones/peso */}
+              {atributosVisibles.length > 0 && (
                 <section className="rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Atributos</div>
                   <div className="grid gap-2">
-                    {atributos.map((a, i) => (
+                    {atributosVisibles.map(({ a, i }) => (
                       <div key={i} className="grid grid-cols-[160px,1fr] items-center gap-3">
                         <span className="truncate text-xs font-semibold uppercase tracking-wide text-slate-400" title={a.nombre}>{a.nombre}</span>
                         <input value={a.valor} onChange={(e) => setAtributo(i, e.target.value)}
@@ -842,6 +1056,23 @@ function Campo({ label, value, onChange, acento, prefijo }: {
         <input value={value} onChange={(e) => onChange(e.target.value)}
           className={["w-full rounded-lg border border-slate-200 py-2.5 text-sm text-slate-800 outline-none focus:ring-2", prefijo ? "pl-7 pr-3" : "px-3"].join(" ")}
           style={{ outlineColor: acento }} />
+      </div>
+    </div>
+  );
+}
+
+// Celda de resultado (solo lectura) del bloque COSTOS.
+function Resultado({ label, value, destacado, acento }: {
+  label: string; value: string; destacado?: boolean; acento?: string;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+      <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">{label}</div>
+      <div
+        className={["mt-0.5 font-bold", destacado ? "text-base" : "text-sm text-slate-700"].join(" ")}
+        style={destacado ? { color: acento } : undefined}
+      >
+        {value}
       </div>
     </div>
   );

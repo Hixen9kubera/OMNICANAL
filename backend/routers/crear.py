@@ -188,6 +188,17 @@ class RecalcularCostos(BaseModel):
         return {k: v for k, v in ov.items() if v is not None}
 
 
+@router.get("/costos/_contenedores")
+def costos_contenedores():
+    """Contenedores disponibles (para el filtro de la tabla de costos).
+    Definido ANTES de /costos/{sku} para que no lo capture la ruta con parámetro."""
+    rows = db.fetch_all(
+        "SELECT contenedor, COUNT(*) AS n FROM costos_validados "
+        "WHERE contenedor IS NOT NULL AND contenedor <> '' "
+        "GROUP BY contenedor ORDER BY contenedor")
+    return {"contenedores": [{"contenedor": r["contenedor"], "n": int(r["n"])} for r in rows]}
+
+
 @router.get("/costos/{sku}")
 async def costos_detalle(sku: str):
     """
@@ -221,6 +232,37 @@ async def costos_preview(sku: str, req: RecalcularCostos):
     return {"ok": True, "sku": sku, "calculo": calc}
 
 
+async def _sync_woo_costo(sku: str, fila: dict) -> bool:
+    """Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones."""
+    p = await woocommerce.obtener_producto_por_sku(sku)
+    wc_id = p.get("wc_id") if p else None
+    if not wc_id:
+        return False
+    meta = [
+        {"key": "wc_kam_costo_envio", "value": str(fila["costo_fee_envio"])},
+        {"key": "wc_kam_costo_comision", "value": str(fila["costo_comision"])},
+    ]
+    if fila.get("costo_unitario") is not None:
+        meta.append({"key": "costo", "value": f"{float(fila['costo_unitario']):.2f}"})
+    payload: dict = {
+        "regular_price": f"{float(fila['precio_base']):.2f}",
+        "sale_price": f"{float(fila['precio_sugerido']):.2f}",
+        "meta_data": meta,
+    }
+    if fila.get("peso") is not None:
+        payload["weight"] = f"{float(fila['peso']):.3f}"
+    if fila.get("largo") and fila.get("ancho") and fila.get("alto"):
+        payload["dimensions"] = {
+            "length": f"{float(fila['largo']):.2f}",
+            "width": f"{float(fila['ancho']):.2f}",
+            "height": f"{float(fila['alto']):.2f}",
+        }
+    async with woocommerce._client() as cli:
+        r = await cli.put(f"/products/{wc_id}", json=payload, timeout=120.0)
+        r.raise_for_status()
+    return True
+
+
 @router.post("/costos/{sku}/recalcular")
 async def costos_recalcular(sku: str, req: RecalcularCostos):
     """
@@ -234,34 +276,141 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
     if not fila:
         raise HTTPException(
             422, "No se pudo recalcular (falta costo base o categoría ML válida).")
-
-    synced = False
-    if req.sincronizar_woo:
-        p = await woocommerce.obtener_producto_por_sku(sku)
-        wc_id = p.get("wc_id") if p else None
-        if wc_id:
-            meta = [
-                {"key": "wc_kam_costo_envio", "value": str(fila["costo_fee_envio"])},
-                {"key": "wc_kam_costo_comision", "value": str(fila["costo_comision"])},
-            ]
-            if fila.get("costo_unitario") is not None:
-                meta.append({"key": "costo", "value": f"{float(fila['costo_unitario']):.2f}"})
-            payload: dict = {
-                "regular_price": f"{float(fila['precio_base']):.2f}",
-                "sale_price": f"{float(fila['precio_sugerido']):.2f}",
-                "meta_data": meta,
-            }
-            if fila.get("peso") is not None:
-                payload["weight"] = f"{float(fila['peso']):.3f}"
-            if fila.get("largo") and fila.get("ancho") and fila.get("alto"):
-                payload["dimensions"] = {
-                    "length": f"{float(fila['largo']):.2f}",
-                    "width": f"{float(fila['ancho']):.2f}",
-                    "height": f"{float(fila['alto']):.2f}",
-                }
-            async with woocommerce._client() as cli:
-                r = await cli.put(f"/products/{wc_id}", json=payload, timeout=120.0)
-                r.raise_for_status()
-            synced = True
-
+    synced = await _sync_woo_costo(sku, fila) if req.sincronizar_woo else False
     return {"ok": True, "sku": sku, "finales": fila, "sincronizado_woo": synced}
+
+
+# ── Costos: listado (tabla del menú Costos) + regeneración en bulk ──────────────
+
+_ORDEN_COSTOS = {
+    "reciente": "v.created_at DESC",
+    "sku_asc": "v.sku ASC",
+    "sku_desc": "v.sku DESC",
+    "costo_desc": "v.costo_total DESC",
+    "costo_asc": "v.costo_total ASC",
+    "contenedor": "v.contenedor ASC, v.sku ASC",
+}
+
+
+@router.get("/costos")
+def costos_listado(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(PER_PAGE_DEFAULT, ge=1, le=PER_PAGE_MAX),
+    search: str | None = Query(None),
+    contenedor: str | None = Query(None),
+    orden: str = Query("reciente"),
+):
+    """Tabla de costos por SKU (costos_validados + precios + nombre + contenedor)."""
+    where, params = [], []
+    if search:
+        where.append("(v.sku LIKE %s OR p.nombre LIKE %s)")
+        params += [f"%{search}%", f"%{search}%"]
+    if contenedor:
+        where.append("v.contenedor = %s")
+        params.append(contenedor)
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    orden_sql = _ORDEN_COSTOS.get(orden, _ORDEN_COSTOS["reciente"])
+
+    total = db.fetch_scalar(
+        f"SELECT COUNT(*) FROM costos_validados v "
+        f"LEFT JOIN productos p ON p.sku = v.sku {where_sql}", tuple(params)) or 0
+    offset = (page - 1) * per_page
+    rows = db.fetch_all(
+        f"""SELECT v.sku, p.nombre, v.contenedor,
+                   v.largo, v.alto, v.ancho, v.peso,
+                   v.costo_producto, v.costo_cbm, v.costo_total,
+                   f.costo_unitario, f.precio_base, f.precio_sugerido,
+                   f.costo_comision, f.costo_fee_envio, f.ml_cat_id
+            FROM costos_validados v
+            LEFT JOIN productos p ON p.sku = v.sku
+            LEFT JOIN costos_finales f ON f.sku = v.sku
+            {where_sql} ORDER BY {orden_sql} LIMIT %s OFFSET %s""",
+        tuple(params + [per_page, offset]))
+
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    items = []
+    for r in rows:
+        largo, ancho, alto = _f(r["largo"]), _f(r["ancho"]), _f(r["alto"])
+        vol = round(largo * ancho * alto / 1_000_000, 4) if (largo and ancho and alto) else None
+        items.append({
+            "sku": r["sku"], "nombre": r.get("nombre"), "contenedor": r.get("contenedor"),
+            "largo": largo, "ancho": ancho, "alto": alto, "peso": _f(r["peso"]),
+            "volumen_m3": vol,
+            "costo_producto": _f(r["costo_producto"]),
+            "costo_cbm": _f(r["costo_cbm"]),
+            "costo_unitario": _f(r["costo_unitario"]) or _f(r["costo_total"]),
+            "precio_base": _f(r["precio_base"]),
+            "precio_sugerido": _f(r["precio_sugerido"]),
+            "ml_cat_id": r.get("ml_cat_id"),
+        })
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return {
+        "items": items,
+        "paginacion": {
+            "page": page, "per_page": per_page, "total": total, "total_pages": total_pages,
+            "tiene_anterior": page > 1, "tiene_siguiente": page < total_pages,
+        },
+    }
+
+
+class BulkItem(BaseModel):
+    sku: str
+    costo_producto: float | None = None
+    largo: float | None = None
+    alto: float | None = None
+    ancho: float | None = None
+    peso: float | None = None
+
+
+class BulkCostos(BaseModel):
+    items: list[BulkItem]
+    incluir_envio: bool = True
+    margen: float = costos.MARGEN_DEFAULT
+    auto_cbm: bool = True
+    sincronizar_woo: bool = True
+
+
+@router.post("/costos/bulk")
+async def costos_bulk(req: BulkCostos):
+    """
+    Regenera el costo/precio de VARIOS SKUs (con las medidas y costo que llegan por
+    fila). Reconstruye CBM→costo→precios, persiste en DB + log, y (opcional) Woo.
+    """
+    resultados = []
+    for it in req.items:
+        overrides = {k: v for k, v in it.model_dump(exclude={"sku"}).items() if v is not None}
+        try:
+            fila = await run_in_threadpool(
+                costos.recalcular, it.sku, overrides,
+                req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
+        except Exception as exc:  # noqa: BLE001
+            resultados.append({"sku": it.sku, "ok": False, "error": str(exc)[:120]})
+            continue
+        if not fila:
+            resultados.append({"sku": it.sku, "ok": False,
+                               "error": "sin costo base o categoría ML"})
+            continue
+        synced = False
+        if req.sincronizar_woo:
+            try:
+                synced = await _sync_woo_costo(it.sku, fila)
+            except Exception as exc:  # noqa: BLE001
+                resultados.append({"sku": it.sku, "ok": True, "sincronizado_woo": False,
+                                   "aviso": f"DB ok, Woo falló: {str(exc)[:80]}",
+                                   "costo_unitario": fila.get("costo_unitario"),
+                                   "precio_sugerido": fila.get("precio_sugerido")})
+                continue
+        resultados.append({
+            "sku": it.sku, "ok": True, "sincronizado_woo": synced,
+            "costo_unitario": fila.get("costo_unitario"),
+            "precio_base": fila.get("precio_base"),
+            "precio_sugerido": fila.get("precio_sugerido"),
+            "costo_cbm": fila.get("costo_cbm"),
+        })
+    ok = sum(1 for r in resultados if r.get("ok"))
+    return {"ok": True, "total": len(resultados), "exitosos": ok, "resultados": resultados}

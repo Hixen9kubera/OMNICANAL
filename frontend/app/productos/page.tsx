@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
 import ChannelDots from "@/components/ChannelDots";
 import ProductStudio from "@/components/ProductStudio";
+import CostoEditor from "@/components/CostoEditor";
 
 import { listarCanales, listarProductos } from "@/lib/api";
 import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
@@ -34,6 +35,7 @@ export default function ProductosPage() {
   const [busqueda, setBusqueda] = useState("");
   const [cargando, setCargando] = useState(true);
   const [sel, setSel] = useState<Producto | null>(null);
+  const [editCosto, setEditCosto] = useState<string | null>(null);
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -153,57 +155,80 @@ export default function ProductosPage() {
             </div>
           ) : (
             productos.map((p) => (
-              <button
-                key={p.sku}
-                onClick={() => setSel(p)}
-                className="flex w-full items-center gap-4 border-b border-slate-100 px-4 py-3.5 text-left transition-colors hover:bg-indigo-50/40"
-              >
-                {/* Imagen */}
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-100 bg-slate-50">
-                  {p.imagen ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.imagen} alt="" loading="lazy" className="h-full w-full object-contain" />
-                  ) : (
-                    <ImageIcon size={22} className="text-slate-300" />
-                  )}
-                </div>
-
-                {/* Título + descripción + categoría */}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-semibold text-slate-800">{p.nombre}</span>
-                    <span className="shrink-0 rounded bg-slate-100 px-1.5 font-mono text-[10px] text-slate-400">
-                      {p.sku}
-                    </span>
-                  </div>
-                  {p.descripcion_corta && (
-                    <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">{p.descripcion_corta}</p>
-                  )}
-                  {p.categoria_path.length > 0 && (
-                    <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-400">
-                      {p.categoria_path.map((c, i) => (
-                        <span key={i} className="flex items-center gap-1">
-                          {i > 0 && <ChevronRight size={10} />}
-                          {c.nombre}
-                        </span>
-                      ))}
+              <div key={p.sku} className="border-b border-slate-100">
+                <div className="flex items-center gap-4 px-4 py-3.5 transition-colors hover:bg-indigo-50/40">
+                  {/* Zona clickeable: abre el Estudio */}
+                  <button
+                    onClick={() => setSel(p)}
+                    className="flex min-w-0 flex-1 items-center gap-4 text-left"
+                  >
+                    {/* Imagen */}
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-100 bg-slate-50">
+                      {p.imagen ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={p.imagen} alt="" loading="lazy" className="h-full w-full object-contain" />
+                      ) : (
+                        <ImageIcon size={22} className="text-slate-300" />
+                      )}
                     </div>
-                  )}
+
+                    {/* Título + descripción + categoría */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate font-semibold text-slate-800">{p.nombre}</span>
+                        <span className="shrink-0 rounded bg-slate-100 px-1.5 font-mono text-[10px] text-slate-400">
+                          {p.sku}
+                        </span>
+                      </div>
+                      {p.descripcion_corta && (
+                        <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">{p.descripcion_corta}</p>
+                      )}
+                      {p.categoria_path.length > 0 && (
+                        <div className="mt-1 flex items-center gap-1 text-[11px] text-slate-400">
+                          {p.categoria_path.map((c, i) => (
+                            <span key={i} className="flex items-center gap-1">
+                              {i > 0 && <ChevronRight size={10} />}
+                              {c.nombre}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Canales presentes */}
+                    <div className="hidden shrink-0 sm:block">
+                      <ChannelDots canales={p.canales} colorMap={colorMap} labelMap={labelMap} />
+                    </div>
+
+                    {/* Precio */}
+                    <div className="shrink-0 text-right">
+                      <div className="font-bold text-slate-900">{precioMXN(p.precio)}</div>
+                      <div className="text-[11px] text-slate-400">{p.stock ?? "—"} en stock</div>
+                    </div>
+                  </button>
+
+                  {/* Editar costo — icono de lápiz junto al precio (sin modal) */}
+                  <button
+                    onClick={() => setEditCosto((s) => (s === p.sku ? null : p.sku))}
+                    title="Editar costo y precios"
+                    className={[
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-colors",
+                      editCosto === p.sku
+                        ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                        : "border-slate-200 bg-white text-slate-400 hover:bg-slate-50 hover:text-indigo-600",
+                    ].join(" ")}
+                  >
+                    <Pencil size={15} />
+                  </button>
                 </div>
 
-                {/* Canales presentes */}
-                <div className="hidden shrink-0 sm:block">
-                  <ChannelDots canales={p.canales} colorMap={colorMap} labelMap={labelMap} />
-                </div>
-
-                {/* Precio */}
-                <div className="shrink-0 text-right">
-                  <div className="font-bold text-slate-900">{precioMXN(p.precio)}</div>
-                  <div className="text-[11px] text-slate-400">
-                    {p.stock ?? "—"} en stock
+                {/* Panel de costos que se despliega inline */}
+                {editCosto === p.sku && (
+                  <div className="bg-slate-50/60 px-4 pb-4 pt-1">
+                    <CostoEditor sku={p.sku} nombre={p.nombre} onClose={() => setEditCosto(null)} />
                   </div>
-                </div>
-              </button>
+                )}
+              </div>
             ))
           )}
         </div>

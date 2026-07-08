@@ -19,6 +19,7 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  Container,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
@@ -569,6 +570,7 @@ export default function CrearProductosPage() {
                     Valor <IconoOrden campo="valor" />
                   </button>
                 </th>
+                <th className="px-3 py-3 font-semibold">Contenedor</th>
                 <th className="min-w-[360px] px-4 py-3 font-semibold">URL de Alibaba</th>
               </tr>
             </thead>
@@ -591,12 +593,13 @@ export default function CrearProductosPage() {
                     <td className="px-3 py-3"><div className="ml-auto h-4 w-16 animate-pulse rounded bg-slate-100" /></td>
                     <td className="px-3 py-3"><div className="mx-auto h-4 w-10 animate-pulse rounded bg-slate-100" /></td>
                     <td className="px-3 py-3"><div className="ml-auto h-4 w-16 animate-pulse rounded bg-slate-100" /></td>
+                    <td className="px-3 py-3"><div className="h-4 w-20 animate-pulse rounded bg-slate-100" /></td>
                     <td className="px-4 py-3"><div className="h-9 w-full animate-pulse rounded bg-slate-100" /></td>
                   </tr>
                 ))
               ) : productos.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-slate-400">
+                  <td colSpan={10} className="px-4 py-16 text-center text-slate-400">
                     {preparando ? (
                       <span className="inline-flex items-center gap-2">
                         <Loader2 size={16} className="animate-spin" />
@@ -748,6 +751,20 @@ export default function CrearProductosPage() {
                       <td className="px-3 py-4 text-right font-bold text-slate-900">
                         {p.valor != null && p.valor > 0 ? precioMXN(p.valor) : "—"}
                       </td>
+                      {/* Nº de contenedor (costos_validados) */}
+                      <td className="px-3 py-4 text-xs">
+                        {p.contenedor ? (
+                          <span
+                            title={p.contenedor}
+                            className="inline-flex items-center gap-1 rounded-md border border-sky-200 bg-sky-50 px-2 py-1 font-mono font-semibold text-sky-700"
+                          >
+                            <Container size={12} className="shrink-0" />
+                            {p.contenedor}
+                          </span>
+                        ) : (
+                          <span className="text-slate-300">—</span>
+                        )}
+                      </td>
                       {/* URL de Alibaba */}
                       <td className="px-4 py-4">
                         <div className="relative">
@@ -781,7 +798,7 @@ export default function CrearProductosPage() {
                     {abierto && (
                       <tr className="border-b border-slate-100 bg-violet-50/40">
                         <td />
-                        <td colSpan={8} className="px-4 pb-4 pt-1">
+                        <td colSpan={9} className="px-4 pb-4 pt-1">
                           <div className="rounded-xl border border-violet-100 bg-white p-3">
                             <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-violet-600">
                               <Layers size={13} /> {p.variantes.length} variante(s)
@@ -793,7 +810,8 @@ export default function CrearProductosPage() {
                                   <th className="py-1 pr-3 font-semibold">Variante</th>
                                   <th className="py-1 pr-3 text-right font-semibold">Costo</th>
                                   <th className="py-1 pr-3 text-center font-semibold">Stock</th>
-                                  <th className="py-1 text-right font-semibold">Valor</th>
+                                  <th className="py-1 pr-3 text-right font-semibold">Valor</th>
+                                  <th className="py-1 font-semibold">Contenedor</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -809,8 +827,11 @@ export default function CrearProductosPage() {
                                     <td className="py-1.5 pr-3 text-center text-slate-600">
                                       {v.stock ?? "—"}
                                     </td>
-                                    <td className="py-1.5 text-right font-bold text-slate-900">
+                                    <td className="py-1.5 pr-3 text-right font-bold text-slate-900">
                                       {v.valor != null && v.valor > 0 ? precioMXN(v.valor) : "—"}
+                                    </td>
+                                    <td className="py-1.5 font-mono text-sky-700">
+                                      {v.contenedor ?? "—"}
                                     </td>
                                   </tr>
                                 ))}

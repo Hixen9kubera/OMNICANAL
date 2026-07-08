@@ -12,6 +12,7 @@ import {
   FileText,
   BarChart3,
   Workflow,
+  Calculator,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -31,6 +32,7 @@ const ITEMS: NavItem[] = [
   { id: "productos", label: "Productos", icon: Package, href: "/productos" },
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
+  { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   { id: "canales", label: "Canales", icon: Store, proximamente: true },
   { id: "ventas", label: "Ventas", icon: TrendingUp, proximamente: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },

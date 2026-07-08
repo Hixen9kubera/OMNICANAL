@@ -3,6 +3,14 @@
 import type {
   CanalInfo,
   CompetenciaResp,
+  ContenedorInfo,
+  CostoBulkItem,
+  CostoBulkResp,
+  CostoDetalle,
+  CostoGuardarResp,
+  CostoOverrides,
+  CostoPreviewResp,
+  CostosListResp,
   DetalleProducto,
   GeneradorDef,
   GenerarIAResp,
@@ -106,6 +114,59 @@ export function studioMetadata(
     `/api/productos/${encodeURIComponent(sku)}/studio${q}`,
     signal,
   );
+}
+
+// ── Costos: desglose + recálculo (tab COSTOS del Estudio) ────────────────────
+
+export function costoDetalle(sku: string, signal?: AbortSignal): Promise<CostoDetalle> {
+  return getJSON<CostoDetalle>(
+    `/api/crear/costos/${encodeURIComponent(sku)}`,
+    signal,
+  );
+}
+
+// Regenerar (vista previa): calcula costo+precio SIN escribir.
+export function costoPreview(sku: string, ov: CostoOverrides): Promise<CostoPreviewResp> {
+  return postJSON<CostoPreviewResp>(
+    `/api/crear/costos/${encodeURIComponent(sku)}/preview`, ov,
+  );
+}
+
+// Guardar: persiste en costos_validados + costos_finales y sincroniza WooCommerce.
+export function costoGuardar(sku: string, ov: CostoOverrides): Promise<CostoGuardarResp> {
+  return postJSON<CostoGuardarResp>(
+    `/api/crear/costos/${encodeURIComponent(sku)}/recalcular`, ov,
+  );
+}
+
+// Tabla del menú Costos: todos los SKUs con costo + contenedor.
+export interface ListarCostosParams {
+  page?: number;
+  perPage?: number;
+  search?: string;
+  contenedor?: string;
+  orden?: string;
+}
+
+export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promise<CostosListResp> {
+  const q = new URLSearchParams();
+  q.set("page", String(p.page ?? 1));
+  q.set("per_page", String(p.perPage ?? 50));
+  if (p.search) q.set("search", p.search);
+  if (p.contenedor) q.set("contenedor", p.contenedor);
+  if (p.orden) q.set("orden", p.orden);
+  return getJSON<CostosListResp>(`/api/crear/costos?${q.toString()}`, signal);
+}
+
+export function contenedoresCosto(signal?: AbortSignal): Promise<{ contenedores: ContenedorInfo[] }> {
+  return getJSON<{ contenedores: ContenedorInfo[] }>("/api/crear/costos/_contenedores", signal);
+}
+
+export function costoBulk(
+  items: CostoBulkItem[],
+  opts: { margen?: number; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},
+): Promise<CostoBulkResp> {
+  return postJSON<CostoBulkResp>("/api/crear/costos/bulk", { items, ...opts });
 }
 
 // ── Crear Productos ──────────────────────────────────────────────────────────

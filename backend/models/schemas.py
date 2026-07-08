@@ -35,6 +35,7 @@ class VarianteResumen(BaseModel):
     stock: int | None = None
     valor: float | None = None     # stock × costo
     estado: str | None = None
+    contenedor: str | None = None  # nº de contenedor (costos_validados)
 
 
 class Producto(BaseModel):
@@ -82,6 +83,7 @@ class Producto(BaseModel):
     # valor = stock × costo (para padres, suma de sus variantes)
     costo: float | None = None
     valor: float | None = None
+    contenedor: str | None = None  # nº de contenedor (costos_validados)
 
     # Tipo de producto en WooCommerce: simple | variable (padre) | variation
     tipo: str | None = None
