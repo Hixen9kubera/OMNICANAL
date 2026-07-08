@@ -78,8 +78,16 @@ const CAMPOS_VACIOS: Campos = {
 const str = (v: number | null | undefined) => (v === null || v === undefined ? "" : String(v));
 
 export default function ProductStudio({ sku, producto, canales, onClose }: Props) {
-  const { data, cargando } = useDetalleProducto(sku, producto);
+  const { data, cargando, recargar } = useDetalleProducto(sku, producto);
   const [canal, setCanal] = useState<string>(GENERAL);
+
+  // Al abrir el Studio (edición), SIEMPRE recargar en vivo de Woo: el cache de
+  // la lista puede estar viejo (ej. descripción recién actualizada). Así los
+  // datos del modal quedan sincronizados con WooCommerce.
+  useEffect(() => {
+    if (sku) recargar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sku]);
 
   const [meta, setMeta] = useState<StudioMetadata | null>(null);
 
