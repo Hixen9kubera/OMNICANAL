@@ -500,7 +500,7 @@ async def categoria_ml(sku: str, titulo: str) -> dict[str, str] | None:
                 return None
             r = await cli.get(
                 f"/sites/{settings.ml_site_id}/domain_discovery/search",
-                params={"limit": 1, "q": titulo},
+                params={"limit": 3, "q": titulo},  # limit=1 devuelve [] en ML (bug); 3 sí trae
                 headers={"Authorization": f"Bearer {token}"},
             )
             if r.status_code == 200 and r.json():
