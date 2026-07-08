@@ -172,9 +172,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     if (!sku) return;
     cargandoCampos.current = true;
     const stored = getMejora(sku, canal);
-    setTitulo(stored?.titulo ?? data?.nombre ?? "");
-    setDescripcion(stored?.descripcion ?? data?.descripcion ?? "");
-    setAtributos(stored?.atributos ?? meta?.atributos ?? []);
+    // `||` (no `??`): un guardado VACÍO (ej. del detalle parcial inicial con
+    // descripcion=null) NO debe ocultar el dato real de Woo. Así el modal
+    // siempre muestra la descripción/título actuales de WooCommerce.
+    setTitulo(stored?.titulo || data?.nombre || "");
+    setDescripcion(stored?.descripcion || data?.descripcion || "");
+    setAtributos((stored?.atributos && stored.atributos.length ? stored.atributos : meta?.atributos) ?? []);
     setHighlights(stored?.highlights ?? "");
     setBullets(stored?.bullets ?? []);
     const id = setTimeout(() => { cargandoCampos.current = false; }, 0);
