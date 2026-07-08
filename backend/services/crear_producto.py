@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import db, meli, woocommerce
+from services import costos, db, meli, woocommerce
 
 log = logging.getLogger("omnicanal.crear_producto")
 
@@ -663,6 +663,10 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             titulo = (ia or {}).get("titulo") or scrape["titulo"]
             _set(sku, "procesando", "4/6 · Categoría de Mercado Libre…", wc_id=wc_id)
             cat = await categoria_ml(sku, titulo)
+            # Si el SKU no tiene precio en costos_finales, se calcula aquí desde
+            # costos_validados + la comisión ML de la categoría (y se persiste + logea).
+            cat_id_ml = cat.get("category_id") if cat else ""
+            await asyncio.to_thread(costos.asegurar_finales, sku, cat_id_ml)
             dinero = await asyncio.to_thread(datos_dinero, sku)
 
             # Paso 8: atributos ML con IA (BRAND/MODEL/COLOR…)
@@ -680,6 +684,8 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             if cat:
                 meta.append({"key": "ml_category_id", "value": cat["category_id"]})
                 meta.append({"key": "ml_category_name", "value": cat["category_name"]})
+            if dinero.get("costo_unitario") is not None:
+                meta.append({"key": "costo", "value": _fmt(dinero["costo_unitario"])})
             if dinero.get("costo_fee_envio") is not None:
                 meta.append({"key": "wc_kam_costo_envio", "value": str(dinero["costo_fee_envio"])})
             if dinero.get("costo_comision") is not None:

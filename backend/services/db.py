@@ -86,6 +86,12 @@ def fetch_scalar(sql: str, params: tuple | dict | None = None) -> Any:
     return next(iter(row.values()))
 
 
+def execute(sql: str, params: tuple | dict | None = None) -> int:
+    """Ejecuta INSERT/UPDATE/DELETE/DDL. Devuelve filas afectadas. (autocommit=True)."""
+    with get_cursor() as cur:
+        return cur.execute(sql, params)
+
+
 def ping() -> bool:
     """Verifica conectividad con la base de datos."""
     try:

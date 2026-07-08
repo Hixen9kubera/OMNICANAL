@@ -63,7 +63,6 @@ interface Campos {
   costo: string;
   alibabaUrl: string;
   alibabaPrecio: string;
-  productoCorrecto: string;
   peso: string;
   largo: string;
   ancho: string;
@@ -72,7 +71,7 @@ interface Campos {
 
 const CAMPOS_VACIOS: Campos = {
   precioRegular: "", precioOferta: "", costo: "", alibabaUrl: "",
-  alibabaPrecio: "", productoCorrecto: "", peso: "", largo: "", ancho: "", alto: "",
+  alibabaPrecio: "", peso: "", largo: "", ancho: "", alto: "",
 };
 
 const str = (v: number | null | undefined) => (v === null || v === undefined ? "" : String(v));
@@ -149,7 +148,6 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
           costo: str(d.costo),
           alibabaUrl: m.alibaba_url ?? "",
           alibabaPrecio: str(m.alibaba_precio),
-          productoCorrecto: m.producto_correcto ?? "",
           peso: str(d.peso), largo: str(d.largo), ancho: str(d.ancho), alto: str(d.alto),
         });
       })
@@ -649,13 +647,6 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                   </div>
                 </div>
                 <Campo label="Precio Alibaba" prefijo="$" value={campos.alibabaPrecio} onChange={(v) => setCampo("alibabaPrecio", v)} acento={tema.acento} />
-              </section>
-
-              {/* PRODUCTO CORRECTO */}
-              <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Producto correcto <span className="normal-case text-slate-300">(URL o texto)</span></label>
-                <input value={campos.productoCorrecto} onChange={(e) => setCampo("productoCorrecto", e.target.value)} placeholder="URL o descripción del producto correcto"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
               </section>
 
               {/* PESO + DIMENSIONES */}
