@@ -282,6 +282,19 @@ def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, 
             )
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo guardar en ml_backlog: %s", exc)
+    # Reflejar en ml_progress (lo que lee el estado) al publicar/actualizar OK.
+    if success and item_id:
+        try:
+            with db.get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO ml_progress (prog_key, cuenta, sku, wc_id, ml_item_id, success, published_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, 1, NOW(), NOW())
+                       ON DUPLICATE KEY UPDATE ml_item_id=VALUES(ml_item_id), wc_id=VALUES(wc_id),
+                           success=1, published_at=NOW(), updated_at=NOW()""",
+                    (f"{cuenta}:{sku}", cuenta or "", sku or "", wc_id, item_id),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("No se pudo actualizar ml_progress: %s", exc)
 
 
 async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict],
@@ -774,6 +787,20 @@ def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_cou
             )
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo guardar en amazon_backlog: %s", exc)
+    # Reflejar en amazon_progress (lo que lee el estado) al publicar OK.
+    if success:
+        try:
+            with db.get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO amazon_progress (sku, wc_id, seller_id, marketplace_id, product_type,
+                           status, success, published_at, last_submitted, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, 'PUBLISHED', 1, NOW(), NOW(), NOW())
+                       ON DUPLICATE KEY UPDATE wc_id=VALUES(wc_id), product_type=VALUES(product_type),
+                           status='PUBLISHED', success=1, published_at=NOW(), updated_at=NOW()""",
+                    (sku or "", wc_id, settings.amazon_seller_id, settings.amazon_marketplace_id, product_type),
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("No se pudo actualizar amazon_progress: %s", exc)
 
 
 async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
