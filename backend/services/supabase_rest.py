@@ -234,6 +234,44 @@ def listar_publicaciones(
     return items, (total or 0)
 
 
+def presencia_ml(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    Presencia en Mercado Libre para un lote de seller_sku (fuente comprehensiva:
+    products_snapshot del día). Devuelve { sku: {n, publicado, item_id, url} }.
+    """
+    skus = [s for s in skus if s]
+    if not skus or not disponible():
+        return {}
+    snap = ultimo_snapshot()
+    if not snap:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 100):
+        chunk = skus[i:i + 100]
+        lista = ",".join('"' + s.replace('"', "") + '"' for s in chunk)
+        try:
+            data, _ = _get("products_snapshot", {
+                "select": "seller_sku,ml_item_id,account_id,status,permalink",
+                "snapshot_date": f"eq.{snap}",
+                "seller_sku": f"in.({lista})",
+            })
+        except Exception as exc:  # noqa: BLE001
+            log.warning("presencia_ml lote falló: %s", exc)
+            continue
+        for row in data:
+            sku = row.get("seller_sku")
+            if not sku:
+                continue
+            e = out.setdefault(sku, {"n": 0, "publicado": False, "item_id": None, "url": None})
+            e["n"] += 1
+            if row.get("status") == "active":
+                e["publicado"] = True
+            if not e["item_id"] and row.get("ml_item_id"):
+                e["item_id"] = row.get("ml_item_id")
+                e["url"] = _seguro_https(row.get("permalink"))
+    return out
+
+
 # ── Detalle / resumen de un SKU ──────────────────────────────────────────────
 def detalle_sku(sku: str) -> dict | None:
     snap = ultimo_snapshot()

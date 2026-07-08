@@ -47,7 +47,17 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
             if not ent["item_id"] and item_id:
                 ent["item_id"], ent["url"] = item_id, url
 
-    # Mercado Libre
+    # Mercado Libre — fuente comprehensiva: Supabase products_snapshot (todas las
+    # publicaciones del día). Fallback/union con ml_progress.
+    try:
+        from services import supabase_rest
+        pres = supabase_rest.presencia_ml(skus)
+        for sku, e in pres.items():
+            for _ in range(int(e.get("n") or 1)):
+                _agregar(sku, Canal.MERCADO_LIBRE.value,
+                         bool(e.get("publicado")), e.get("item_id"), e.get("url"))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("presencia ML (supabase) falló: %s", exc)
     try:
         rows = db.fetch_all(
             f"""SELECT sku, ml_item_id, ml_url, success
@@ -55,10 +65,13 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
             tuple(skus),
         )
         for r in rows:
+            # Evitar duplicar si Supabase ya marcó el canal para ese SKU.
+            if Canal.MERCADO_LIBRE.value in acc.get(r["sku"], {}):
+                continue
             _agregar(r["sku"], Canal.MERCADO_LIBRE.value,
                      bool(r.get("success")), r.get("ml_item_id"), r.get("ml_url"))
     except Exception as exc:  # noqa: BLE001
-        log.warning("presencia ML falló: %s", exc)
+        log.warning("presencia ML (ml_progress) falló: %s", exc)
 
     # Amazon
     try:
