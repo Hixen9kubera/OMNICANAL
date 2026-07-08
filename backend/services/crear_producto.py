@@ -244,56 +244,61 @@ def _prompt_seo(titulo_alibaba: str, url: str) -> str:
     )
 
 
+def _parse_seo_json(texto: str) -> dict[str, str] | None:
+    """Extrae {titulo, descripcion} del texto de Claude (JSON con o sin ruido)."""
+    if not texto:
+        return None
+    try:
+        m = re.search(r"\{.*\}", texto, re.DOTALL)
+        data = json.loads(m.group()) if m else json.loads(texto)
+        t = (data.get("titulo") or "").strip()
+        d = (data.get("descripcion") or "").strip()
+        return {"titulo": t, "descripcion": d} if t else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def titulo_descripcion_ia(
     titulo_alibaba: str, imagen_url: str | None, url: str
 ) -> dict[str, str] | None:
-    """Genera {titulo, descripcion} con Claude (imagen por URL + título Alibaba)."""
+    """
+    Genera {titulo, descripcion} con Claude usando el título de Alibaba (+ imagen).
+    NO usa output_config (no existe en SDK anthropic viejos como el de Railway):
+    se pide el JSON en el prompt y se parsea con regex. Compatible con cualquier
+    versión del SDK. A prueba de fallos: si falla con imagen, reintenta texto.
+    """
     from anthropic import AsyncAnthropic
 
     cli = AsyncAnthropic(api_key=settings.anthropic_api_key)
-    contenido: list[dict[str, Any]] = []
-    if imagen_url:
-        contenido.append({"type": "image", "source": {"type": "url", "url": imagen_url}})
-    contenido.append({"type": "text", "text": _prompt_seo(titulo_alibaba, url)})
+    prompt = _prompt_seo(titulo_alibaba, url)
 
-    # A prueba de fallos: si algo falla CON imagen (error, rechazo, JSON inválido),
-    # se reintenta SIN imagen (texto). Solo se cae a inglés si el texto también
-    # falla tras varios intentos. Nunca dejamos el título original en inglés por
-    # un hipo transitorio de la API.
-    def _reintento_texto():
-        if imagen_url:
-            log.warning("SEO con imagen falló; reintento solo texto para %s", url)
-            return titulo_descripcion_ia(titulo_alibaba, None, url)
-        return None
+    async def _llamar(con_imagen: bool) -> dict[str, str] | None:
+        contenido: list[dict[str, Any]] = []
+        if con_imagen and imagen_url:
+            contenido.append({"type": "image",
+                              "source": {"type": "url", "url": imagen_url}})
+        contenido.append({"type": "text", "text": prompt})
+        resp = await cli.messages.create(
+            model=CLAUDE_MODEL, max_tokens=2048,
+            messages=[{"role": "user", "content": contenido}],
+        )
+        if getattr(resp, "stop_reason", None) == "refusal":
+            return None
+        texto = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        return _parse_seo_json(texto)
 
-    ultimo_exc = None
-    for intento in range(2 if not imagen_url else 1):  # texto: 2 intentos
+    # 1) con imagen (si hay). 2) sin imagen. 3) 2º intento sin imagen.
+    intentos = [True, False, False] if imagen_url else [False, False]
+    ultimo = None
+    for con_img in intentos:
         try:
-            resp = await cli.messages.create(
-                model=CLAUDE_MODEL, max_tokens=2048,
-                output_config={"format": {"type": "json_schema", "schema": _ESQUEMA_SEO}},
-                messages=[{"role": "user", "content": contenido}],
-            )
+            r = await _llamar(con_img)
+            if r:
+                return r
         except Exception as exc:  # noqa: BLE001
-            ultimo_exc = exc
-            r = _reintento_texto()
-            if r is not None:
-                return await r
-            continue  # texto: reintenta
-        if resp.stop_reason == "refusal":
-            r = _reintento_texto()
-            return await r if r is not None else None
-        texto = next((b.text for b in resp.content if b.type == "text"), "")
-        try:
-            data = json.loads(texto)
-            return {"titulo": data["titulo"].strip(), "descripcion": data["descripcion"].strip()}
-        except Exception as exc:  # noqa: BLE001
-            ultimo_exc = exc
-            r = _reintento_texto()
-            if r is not None:
-                return await r
-            continue
-    log.error("Claude SEO falló definitivamente para %s: %s", url, ultimo_exc)
+            ultimo = exc
+            log.warning("SEO (imagen=%s) falló para %s: %s", con_img, url, exc)
+    log.error("Claude SEO no produjo resultado para %s: %s", url, ultimo)
     return None
 
 
