@@ -160,14 +160,16 @@ async def convertir_grupo(cli, base: str, wc_ids: list[int]) -> dict[str, Any]:
         "per_page": len(wc_ids), "_fields": _CAMPOS})
     r.raise_for_status()
     prods = r.json()
-    if len(prods) < 2:
-        return {"base": base, "ok": False, "motivo": "menos de 2 miembros vivos"}
+    if not prods:
+        return {"base": base, "ok": False, "motivo": "sin miembros vivos"}
 
     parsed = {p["id"]: parse_sku(p.get("sku") or "") for p in prods}
 
     # ¿ya hay un padre variable? Puede estar ENTRE los miembros (draft a medias)
     # o EXISTIR APARTE con sku=base en otro status (inprogress/publish/ready) —
     # ese no viene en el índice de drafts, así que lo buscamos por sku=base.
+    # Esta búsqueda va ANTES del corte por nº de miembros: colgar 1 solo simple
+    # suelto a un padre variable existente es válido (modo ATTACH).
     padre_var = next((p for p in prods if p.get("type") == "variable"), None)
     if not padre_var:
         rb = await cli.get("/products", params={"sku": base, "status": "any",
@@ -176,10 +178,37 @@ async def convertir_grupo(cli, base: str, wc_ids: list[int]) -> dict[str, Any]:
                           if x.get("type") == "variable"), None)
         if existente:
             padre_var = existente  # colgamos los simples draft a este padre
+
+    # Sin padre variable, construir uno NUEVO desde cero necesita ≥2 simples.
+    if not padre_var and len(prods) < 2:
+        return {"base": base, "ok": False, "motivo": "1 simple sin padre variable existente"}
+
     if padre_var:
         simples = [p for p in prods if p["id"] != padre_var["id"] and p.get("type") != "variable"]
         if not simples:
             return {"base": base, "ok": True, "saltado": "ya variable, sin simples sueltos"}
+
+        # El padre debe tener en sus opciones de atributo TODOS los valores de los
+        # simples a colgar; si no, la variación queda inválida ("Any"). Traemos los
+        # atributos actuales del padre y fusionamos las opciones nuevas antes de crear.
+        rap = await cli.get(f"/products/{padre_var['id']}", params={"_fields": "id,attributes"})
+        attrs_actuales = (rap.json().get("attributes") or []) if rap.status_code == 200 else []
+        by_name = {a["name"]: {**a, "options": list(a.get("options") or [])} for a in attrs_actuales}
+        cambia = False
+        for p in simples:
+            for lbl, val in parsed[p["id"]]["attributes"].items():
+                a = by_name.get(lbl)
+                if a is None:
+                    by_name[lbl] = {"name": lbl, "options": [val], "visible": True, "variation": True}
+                    cambia = True
+                elif val not in a["options"]:
+                    a["options"].append(val)
+                    cambia = True
+        if cambia:
+            await cli.put(f"/products/{padre_var['id']}",
+                          json={"attributes": list(by_name.values())}, timeout=120.0)
+            await asyncio.sleep(0.4)
+
         creadas = 0
         for p in simples:
             await cli.delete(f"/products/{p['id']}", params={"force": "true"}, timeout=60.0)
@@ -188,7 +217,7 @@ async def convertir_grupo(cli, base: str, wc_ids: list[int]) -> dict[str, Any]:
                 creadas += 1
             await asyncio.sleep(0.4)
         return {"base": base, "ok": True, "modo": "attach", "padre_wc_id": padre_var["id"],
-                "variaciones_agregadas": creadas}
+                "variaciones_agregadas": creadas, "opciones_fusionadas": cambia}
 
     # opciones por dimensión (para el atributo del padre)
     dim_opts: dict[str, list[str]] = defaultdict(list)
@@ -256,7 +285,10 @@ async def agrupar_bases(bases: set[str], pausa: float = 0.5) -> dict[str, Any]:
         b = base_de(d.get("sku") or "")
         if b in bases:
             grupos[b].append(d["wc_id"])
-    objetivo = [(b, ids) for b, ids in grupos.items() if len(ids) >= 2]
+    # Incluimos también bases de 1 miembro: convertir_grupo busca un padre variable
+    # existente (sku=base) y cuelga el simple suelto (ATTACH). Si no hay padre, sale
+    # sin hacer nada. Acotado a las bases del sync, el lookup extra es barato.
+    objetivo = [(b, ids) for b, ids in grupos.items()]
 
     resultados = []
     async with woocommerce._client() as cli:
