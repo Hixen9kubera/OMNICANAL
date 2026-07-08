@@ -629,11 +629,20 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                 </section>
               )}
 
-              {/* PRECIOS + COSTO */}
-              <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              {/* PRECIOS + COSTO + STOCK (solo lectura) */}
+              <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <Campo label="Precio regular" prefijo="$" value={campos.precioRegular} onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento} />
                 <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta} onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
                 <Campo label="Costo" prefijo="$" value={campos.costo} onChange={(v) => setCampo("costo", v)} acento={tema.acento} />
+                <div>
+                  <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                    Stock <span className="normal-case text-slate-300">(solo lectura)</span>
+                  </label>
+                  <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700">
+                    {meta?.stock != null ? meta.stock : "—"}
+                    <span className="text-xs font-normal text-slate-400">u</span>
+                  </div>
+                </div>
               </section>
 
               {/* ALIBABA */}

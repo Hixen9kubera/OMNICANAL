@@ -293,6 +293,7 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
     """
     claves = [
         "_regular_price", "_sale_price", "_price", "costo",
+        "_stock", "_stock_odoo",
         "url_alibaba", "alibaba_price", "comentario_revision", "revision_producto_ok",
         "_weight", "_length", "_width", "_height",
         "ml_category_id", "ml_categoria_path",
@@ -316,6 +317,10 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
         for i in range(1, 6)
         if (m.get(f"ml_categoria_nivel_{i}") or "").strip()
     ]
+    def _i(k: str) -> int | None:
+        v = _f(k)
+        return int(v) if v is not None else None
+
     return {
         "dinero": {
             "costo": _f("costo"),
@@ -326,6 +331,7 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
             "ancho": _f("_width"),
             "alto": _f("_height"),
         },
+        "stock": _i("_stock_odoo") if _i("_stock_odoo") is not None else _i("_stock"),
         "alibaba_url": m.get("url_alibaba"),
         "alibaba_precio": _f("alibaba_price"),
         "producto_correcto": m.get("comentario_revision"),

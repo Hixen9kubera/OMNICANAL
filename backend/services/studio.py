@@ -144,7 +144,7 @@ def metadata(sku: str, wc_id: int | None = None) -> dict[str, Any]:
         "sku": sku, "wc_id": wc_id, "fuente": None,
         "dinero": {}, "categoria_ml": None,
         "alibaba_url": None, "alibaba_precio": None, "producto_correcto": None,
-        "atributos": [],
+        "atributos": [], "stock": None,
         "estado": estado_publicacion(sku),
     }
 
@@ -161,6 +161,7 @@ def metadata(sku: str, wc_id: int | None = None) -> dict[str, Any]:
                 base.update({
                     "fuente": "postmeta",
                     "dinero": m["dinero"],
+                    "stock": m.get("stock"),
                     "categoria_ml": m["categoria_ml"],
                     "alibaba_url": m["alibaba_url"],
                     "alibaba_precio": m["alibaba_precio"],

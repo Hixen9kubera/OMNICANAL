@@ -113,9 +113,31 @@ async def _amazon_live(sku: str) -> dict[str, Any]:
 
 
 async def estado_live(sku: str) -> dict[str, Any]:
-    """Estado de publicación consultado EN VIVO a ML y Amazon."""
-    ml = await _ml_live(sku)
-    amazon = await _amazon_live(sku)
+    """
+    Estado de publicación combinando EN VIVO (APIs) + REGISTRO (DB).
+    Si el API en vivo no lo halla pero el registro dice publicado, se muestra
+    publicado (el listing puede existir con otro SKU o estar suprimido).
+    """
+    from services import studio
+
+    ml_live = await _ml_live(sku)
+    amazon_live = await _amazon_live(sku)
+    db_estado = studio.estado_publicacion(sku)
+
+    # ML: unión (por cuenta) de lo vivo + el registro
+    por_cuenta: dict[str, dict] = {p["cuenta"]: {**p, "fuente": "registro"} for p in db_estado.get("ml", [])}
+    for p in ml_live:
+        por_cuenta[p["cuenta"]] = {**p, "fuente": "vivo"}
+    ml = list(por_cuenta.values())
+
+    # Amazon: publicado si lo confirma el API en vivo O el registro
+    da = db_estado.get("amazon", {}) or {}
+    amazon = {
+        "publicado": bool(amazon_live.get("publicado")) or bool(da.get("publicado")),
+        "asin": amazon_live.get("asin") or da.get("asin"),
+        "status": amazon_live.get("status") or da.get("status"),
+        "fuente": "vivo" if amazon_live.get("publicado") else ("registro" if da.get("publicado") else None),
+    }
     return {"ml": ml, "amazon": amazon}
 
 

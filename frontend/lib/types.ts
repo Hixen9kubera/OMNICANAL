@@ -183,8 +183,8 @@ export interface StudioCategoriaML {
 }
 
 export interface EstadoPublicacion {
-  ml: { cuenta: string; item_id: string }[];
-  amazon: { publicado: boolean; asin: string | null; status: string | null };
+  ml: { cuenta: string; item_id: string; fuente?: string }[];
+  amazon: { publicado: boolean; asin: string | null; status: string | null; fuente?: string };
 }
 
 export interface StudioMetadata {
@@ -192,6 +192,7 @@ export interface StudioMetadata {
   wc_id: number | null;
   fuente: string | null; // "postmeta" | "kubera_ml" | null
   dinero: StudioDinero;
+  stock: number | null;
   categoria_ml: StudioCategoriaML | null;
   alibaba_url: string | null;
   alibaba_precio: number | null;
