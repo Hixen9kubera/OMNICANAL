@@ -1010,6 +1010,12 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
     for p, ruta, variantes in zip(ordenados, rutas, variantes_por_prod):
         precio = _to_float(p.get("price"))
         base = _to_float(p.get("regular_price")) or precio
+        # Los padres variable no gestionan stock propio (manage_stock=False → None):
+        # su stock real es la SUMA de las variaciones.
+        if p.get("type") == "variable" and variantes:
+            stock = sum((v.get("stock") or 0) for v in variantes)
+        else:
+            stock = p.get("stock_quantity")
         items.append({
             "sku": p.get("sku") or f"WC-{p.get('id')}",
             "wc_id": p.get("id"),
@@ -1018,7 +1024,7 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
             "marca": _marca(p),
             "precio": precio,
             "precio_base": base,
-            "stock": p.get("stock_quantity"),
+            "stock": stock,
             "situacion": p.get("status"),
             "estado": p.get("status"),
             "categoria_path": ruta,

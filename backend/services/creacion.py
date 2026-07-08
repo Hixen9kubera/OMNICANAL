@@ -238,6 +238,27 @@ def _costos_por_sku(skus: list[str]) -> dict[str, float]:
     return salida
 
 
+def _contenedores_por_sku(skus: list[str]) -> dict[str, str]:
+    """{ sku: nº de contenedor } desde costos_validados. Consulta en lotes."""
+    salida: dict[str, str] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            rows = db.fetch_all(
+                f"""SELECT sku, contenedor FROM costos_validados
+                    WHERE sku IN ({ph}) AND contenedor IS NOT NULL AND contenedor <> ''""",
+                tuple(chunk),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("contenedores_por_sku falló: %s", exc)
+            return salida
+        for r in rows:
+            if r.get("contenedor"):
+                salida[r["sku"]] = r["contenedor"]
+    return salida
+
+
 # Claves de ordenamiento de la vista Crear Productos (campo_direccion).
 _CLAVES_ORDEN = {
     "valor": lambda g: g.get("valor") or 0,
@@ -412,6 +433,10 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
         for it in await woocommerce.productos_por_wc_id(wc_ids[i:i + 100]):
             vivos[it["wc_id"]] = it
 
+    # Nº de contenedor por SKU (costos_validados), para todos los miembros.
+    skus = [m["sku"] for g in grupos for m in g["miembros"]]
+    contenedores = await asyncio.to_thread(_contenedores_por_sku, skus)
+
     items: list[dict[str, Any]] = []
     for g in grupos:
         miembros = g["miembros"]
@@ -423,10 +448,22 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
         item["costo"] = g.get("costo")
         item["valor"] = g.get("valor")
         item["stock"] = g.get("stock")
+        # Contenedor del grupo: el del primer miembro que lo tenga.
+        item["contenedor"] = next(
+            (contenedores[m["sku"]] for m in miembros if contenedores.get(m["sku"])),
+            None,
+        )
         if len(miembros) == 1:
             # En Woo los productos "variable" ya traen sus variantes reales.
             if item.get("tipo") != "variable":
                 item["tipo"] = "unico"
+            else:
+                # Padre variable con 1 fila en el índice de drafts: su stock/valor
+                # reales son la SUMA de las variaciones (que `rep` ya trae), no el
+                # _stock del padre (0, porque no gestiona stock propio).
+                item["stock"] = rep.get("stock")
+                if item.get("costo"):
+                    item["valor"] = round((item["stock"] or 0) * item["costo"], 2)
             items.append(item)
             continue
 
@@ -442,6 +479,7 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "stock": stock_var,
                 "valor": round((stock_var or 0) * (m.get("costo") or 0), 2),
                 "estado": vivo.get("estado") if vivo else m.get("estado"),
+                "contenedor": contenedores.get(m["sku"]),
             })
         item.update({
             "sku": g["base"],
