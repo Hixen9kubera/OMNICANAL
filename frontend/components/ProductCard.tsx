@@ -39,7 +39,18 @@ export default function ProductCard({
 
   const padre = esGeneral && esPadre(producto);
   const [verVariantes, setVerVariantes] = useState(false);
+  // En las tarjetas de la última columna el recuadro se saldría por la derecha.
+  const [alinearDerecha, setAlinearDerecha] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
+
+  function abrirVariantes() {
+    const r = cardRef.current?.getBoundingClientRect();
+    if (r) {
+      const ancho = Math.min(480, window.innerWidth * 0.85);
+      setAlinearDerecha(r.left + ancho > window.innerWidth - 16);
+    }
+    setVerVariantes((v) => !v);
+  }
 
   // Cerrar el recuadro al hacer clic fuera o con Escape. No se usa una capa
   // `fixed` porque el `hover:-translate-y-1` de la tarjeta crea un containing
@@ -80,7 +91,14 @@ export default function ProductCard({
           onClick();
         }
       }}
-      className="group relative flex cursor-pointer flex-col rounded-2xl border border-slate-200 bg-white text-left shadow-card transition-all hover:-translate-y-1 hover:border-slate-300 hover:shadow-card-hover focus:outline-none focus:ring-2"
+      className={[
+        "group relative flex cursor-pointer flex-col rounded-2xl border border-slate-200 bg-white text-left shadow-card transition-all hover:-translate-y-1 hover:border-slate-300 hover:shadow-card-hover focus:outline-none focus:ring-2",
+        // El `hover:-translate-y-1` aplica un transform, y un transform crea un
+        // stacking context: el z-index del recuadro quedaría encerrado en la
+        // tarjeta y las tarjetas siguientes del grid lo taparían. Por eso se
+        // eleva la TARJETA entera mientras el recuadro está abierto.
+        verVariantes ? "z-50" : "",
+      ].join(" ")}
       style={{ outlineColor: color }}
     >
       {/* Imagen */}
@@ -164,7 +182,7 @@ export default function ProductCard({
               abierto={verVariantes}
               onClick={(e) => {
                 e.stopPropagation();
-                setVerVariantes((v) => !v);
+                abrirVariantes();
               }}
             />
           </div>
@@ -230,7 +248,10 @@ export default function ProductCard({
       {padre && verVariantes && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="absolute left-0 top-full z-40 mt-2 w-[min(30rem,85vw)] rounded-xl border border-violet-200 bg-white p-1 shadow-card-hover"
+          className={[
+            "absolute top-full z-40 mt-2 w-[min(30rem,85vw)] rounded-xl border border-violet-200 bg-white p-1 shadow-card-hover",
+            alinearDerecha ? "right-0" : "left-0",
+          ].join(" ")}
         >
           <button
             type="button"
