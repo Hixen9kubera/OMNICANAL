@@ -36,6 +36,8 @@ class VarianteResumen(BaseModel):
     valor: float | None = None     # stock × costo
     estado: str | None = None
     contenedor: str | None = None  # nº de contenedor (costos_validados)
+    # Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
+    canales: list[CanalResumen] = []
 
 
 class Producto(BaseModel):

@@ -21,6 +21,8 @@ export interface VarianteResumen {
   valor: number | null; // stock × costo
   estado: string | null;
   contenedor: string | null; // nº de contenedor (costos_validados)
+  // Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
+  canales?: CanalResumen[];
 }
 
 export interface Producto {

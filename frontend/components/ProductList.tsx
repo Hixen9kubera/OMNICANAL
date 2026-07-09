@@ -1,8 +1,10 @@
 "use client";
 
+import { Fragment, useState } from "react";
 import { ImageIcon, PackageCheck, PackageX, Truck } from "lucide-react";
 import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
+import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 
 interface Props {
   productos: Producto[];
@@ -32,6 +34,18 @@ export default function ProductList({
   labelMap,
   onSelect,
 }: Props) {
+  // Padres con su lista de variantes desplegada (mecánica de Crear Productos)
+  const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
+
+  function toggleExpandido(sku: string) {
+    setExpandidos((prev) => {
+      const s = new Set(prev);
+      if (s.has(sku)) s.delete(sku);
+      else s.add(sku);
+      return s;
+    });
+  }
+
   if (cargando) {
     return (
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
@@ -53,6 +67,8 @@ export default function ProductList({
         <thead>
           <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
             <th className="px-4 py-3 font-semibold">Producto</th>
+            {esGeneral && <th className="px-3 py-3 text-center font-semibold">Tipo</th>}
+            {esGeneral && <th className="px-3 py-3 text-center font-semibold">Variantes</th>}
             <th className="px-3 py-3 font-semibold">Categoría</th>
             <th className="px-3 py-3 text-right font-semibold">Precio</th>
             <th className="px-3 py-3 text-center font-semibold">Stock</th>
@@ -65,9 +81,11 @@ export default function ProductList({
         <tbody>
           {productos.map((p) => {
             const sinStock = p.stock_real !== null && (p.stock_real ?? 0) <= 0;
+            const padre = esGeneral && esPadre(p);
+            const abierto = padre && expandidos.has(p.sku);
             return (
+              <Fragment key={`${p.sku}-${p.item_id ?? ""}`}>
               <tr
-                key={`${p.sku}-${p.item_id ?? ""}`}
                 onClick={() => onSelect(p)}
                 className="cursor-pointer border-b border-slate-100 transition-colors hover:bg-slate-50"
               >
@@ -88,6 +106,29 @@ export default function ProductList({
                     </div>
                   </div>
                 </td>
+                {/* Tipo: Padre o Único */}
+                {esGeneral && (
+                  <td className="px-3 py-2.5 text-center">
+                    <TipoBadge padre={padre} />
+                  </td>
+                )}
+                {/* Variantes: número + ver variantes */}
+                {esGeneral && (
+                  <td
+                    className="px-3 py-2.5 text-center"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {padre ? (
+                      <VariantesBoton
+                        n={p.variantes.length}
+                        abierto={abierto}
+                        onClick={() => toggleExpandido(p.sku)}
+                      />
+                    ) : (
+                      <span className="text-xs text-slate-300">—</span>
+                    )}
+                  </td>
+                )}
                 {/* Categoría */}
                 <td className="px-3 py-2.5 text-xs text-slate-500">
                   <span className="line-clamp-1">
@@ -148,6 +189,20 @@ export default function ProductList({
                   </div>
                 </td>
               </tr>
+
+              {/* Variantes del padre (desplegable) */}
+              {abierto && (
+                <tr className="border-b border-slate-100 bg-violet-50/40">
+                  <td colSpan={8} className="px-4 pb-4 pt-1">
+                    <VariantesTabla
+                      variantes={p.variantes}
+                      colorMap={colorMap}
+                      labelMap={labelMap}
+                    />
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             );
           })}
         </tbody>

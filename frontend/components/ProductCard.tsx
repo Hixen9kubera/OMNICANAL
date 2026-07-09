@@ -1,8 +1,10 @@
 "use client";
 
-import { ImageIcon, PackageCheck, PackageX, Truck } from "lucide-react";
-import type { CanalInfo, Producto } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import { ImageIcon, PackageCheck, PackageX, Truck, X } from "lucide-react";
+import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
+import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 
 interface Props {
   producto: Producto;
@@ -35,15 +37,54 @@ export default function ProductCard({
   const stockNum = producto.stock ?? 0;
   const sinStock = producto.stock !== null && stockNum <= 0;
 
+  const padre = esGeneral && esPadre(producto);
+  const [verVariantes, setVerVariantes] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // Cerrar el recuadro al hacer clic fuera o con Escape. No se usa una capa
+  // `fixed` porque el `hover:-translate-y-1` de la tarjeta crea un containing
+  // block y la confinaría al tamaño de la tarjeta. El ref va en la tarjeta (no
+  // en el recuadro) para que el mousedown sobre el propio botón de variantes no
+  // cierre y reabra en el mismo clic.
+  useEffect(() => {
+    if (!verVariantes) return;
+    const fuera = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as Node)) {
+        setVerVariantes(false);
+      }
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setVerVariantes(false);
+    };
+    document.addEventListener("mousedown", fuera);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", fuera);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [verVariantes]);
+
   return (
-    <button
-      type="button"
+    // `relative` sin `overflow-hidden`: el recuadro de variantes debe poder
+    // sobresalir de la tarjeta. El recorte vive ahora en el contenedor de imagen.
+    // No es un <button> porque adentro van otros botones (variantes); es un div
+    // con rol de botón y los controles internos frenan la propagación del clic.
+    <div
+      ref={cardRef}
+      role="button"
+      tabIndex={0}
       onClick={onClick}
-      className="group flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-card transition-all hover:-translate-y-1 hover:border-slate-300 hover:shadow-card-hover focus:outline-none focus:ring-2"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick();
+        }
+      }}
+      className="group relative flex cursor-pointer flex-col rounded-2xl border border-slate-200 bg-white text-left shadow-card transition-all hover:-translate-y-1 hover:border-slate-300 hover:shadow-card-hover focus:outline-none focus:ring-2"
       style={{ outlineColor: color }}
     >
       {/* Imagen */}
-      <div className="relative aspect-square w-full overflow-hidden bg-slate-50">
+      <div className="relative aspect-square w-full overflow-hidden rounded-t-2xl bg-slate-50">
         {producto.imagen ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
@@ -80,10 +121,17 @@ export default function ProductCard({
             <Truck size={11} /> {producto.full_label ?? "FULL"}
           </span>
         )}
+
+        {/* Tipo: Padre / Único — solo en GENERAL */}
+        {esGeneral && (
+          <div className="absolute right-2.5 top-2.5 z-20 scale-90 origin-top-right">
+            <TipoBadge padre={padre} />
+          </div>
+        )}
       </div>
 
       {/* Cuerpo */}
-      <div className="flex flex-1 flex-col gap-2 p-3.5">
+      <div className="relative flex flex-1 flex-col gap-2 p-3.5">
         {/* SKU + marca */}
         <div className="flex items-center justify-between gap-2">
           <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-slate-500">
@@ -105,6 +153,20 @@ export default function ProductCard({
         {cat.length > 0 && (
           <div className="truncate text-[11px] text-slate-400">
             {cat.map((c) => c.nombre).join(" › ")}
+          </div>
+        )}
+
+        {/* Variantes: botón que despliega el recuadro */}
+        {padre && (
+          <div className="relative z-20">
+            <VariantesBoton
+              n={producto.variantes.length}
+              abierto={verVariantes}
+              onClick={(e) => {
+                e.stopPropagation();
+                setVerVariantes((v) => !v);
+              }}
+            />
           </div>
         )}
 
@@ -163,6 +225,31 @@ export default function ProductCard({
           )}
         </div>
       </div>
-    </button>
+
+      {/* Recuadro de variantes: sobresale de la tarjeta */}
+      {padre && verVariantes && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="absolute left-0 top-full z-40 mt-2 w-[min(30rem,85vw)] rounded-xl border border-violet-200 bg-white p-1 shadow-card-hover"
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setVerVariantes(false);
+            }}
+            title="Cerrar"
+            className="absolute right-2 top-2 z-10 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+          >
+            <X size={14} />
+          </button>
+          <VariantesTabla
+            variantes={producto.variantes}
+            colorMap={colorMap}
+            labelMap={labelMap}
+          />
+        </div>
+      )}
+    </div>
   );
 }

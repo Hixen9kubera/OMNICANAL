@@ -223,15 +223,18 @@ async def listar_productos(
                 by_id = {p["id"]: p for p in r.json()}
                 data = [by_id[i] for i in pagina_ids if i in by_id]
 
-    # Los drafts nunca se muestran en GENERAL, vengan de la ruta que vengan
-    # (categoría, búsqueda por SKU exacto, cache DB desactualizado…).
-    data = [p for p in data if p.get("status") != "draft"]
+        # Los drafts nunca se muestran en GENERAL, vengan de la ruta que vengan
+        # (categoría, búsqueda por SKU exacto, cache DB desactualizado…).
+        data = [p for p in data if p.get("status") != "draft"]
+
+        # Variantes de los padres `variable`: misma lectura que Crear Productos.
+        variantes_por_prod = await variantes_de_productos(cli, data)
 
     # Resolvemos categorías en paralelo (cache compartida hace esto barato).
     rutas = await asyncio.gather(*[_categoria_de_producto(p) for p in data])
 
     items: list[dict[str, Any]] = []
-    for p, ruta in zip(data, rutas):
+    for p, ruta, variantes in zip(data, rutas, variantes_por_prod):
         precio = _to_float(p.get("price"))
         base = _to_float(p.get("regular_price")) or precio
         items.append(
@@ -244,12 +247,14 @@ async def listar_productos(
                 "descripcion_corta": _resumen(p.get("short_description")),
                 "precio": precio,
                 "precio_base": base,
-                "stock": p.get("stock_quantity"),
+                "stock": stock_de_padre(p, variantes),
                 "estado": p.get("status"),
                 "categoria_path": ruta,
                 "categoria_id": ruta[-1]["id"] if ruta else None,
                 "publicado": p.get("status") == "publish",
                 "url": p.get("permalink"),
+                "tipo": p.get("type"),
+                "variantes": variantes,
             }
         )
     return items, total, total_pages
@@ -944,6 +949,61 @@ async def asignar_imagenes(asignaciones: list[dict[str, int]]) -> int:
     return ok
 
 
+async def variantes_de_productos(
+    cli: httpx.AsyncClient, productos: list[dict[str, Any]]
+) -> list[list[dict[str, Any]]]:
+    """
+    Variantes de los productos PADRE (`type=variable`), en paralelo y en el mismo
+    orden de entrada. Los que no son variables devuelven [].
+
+    Es la misma lectura que usa la vista "Crear Productos" (era `_variantes()`
+    dentro de `productos_por_wc_id`); se extrajo para que Productos y Omnicanal
+    muestren exactamente las mismas variantes, con los mismos campos.
+    """
+    sem = asyncio.Semaphore(3)  # concurrencia baja: el hosting bloquea por volumen
+
+    async def _una(p: dict[str, Any]) -> list[dict[str, Any]]:
+        if p.get("type") != "variable":
+            return []
+        async with sem:
+            try:
+                rv = await cli.get(f"/products/{p['id']}/variations", params={
+                    "per_page": 100,
+                    "_fields": "id,sku,attributes,price,stock_quantity,status",
+                })
+                if rv.status_code != 200:
+                    return []
+                salida = []
+                for v in rv.json():
+                    ops = " / ".join(
+                        a.get("option") or "" for a in (v.get("attributes") or [])
+                        if a.get("option")
+                    )
+                    salida.append({
+                        "sku": v.get("sku") or f"WC-{v['id']}",
+                        "nombre": ops or None,
+                        "precio": _to_float(v.get("price")),
+                        "stock": v.get("stock_quantity"),
+                        "estado": v.get("status"),
+                    })
+                return salida
+            except Exception as exc:  # noqa: BLE001
+                log.warning("variaciones de wc_id=%s fallaron: %s", p.get("id"), exc)
+                return []
+
+    return await asyncio.gather(*[_una(p) for p in productos])
+
+
+def stock_de_padre(p: dict[str, Any], variantes: list[dict[str, Any]]) -> int | None:
+    """
+    Los padres `variable` no gestionan stock propio (manage_stock=False → None):
+    su stock real es la SUMA de las variaciones. Regla de Crear Productos.
+    """
+    if p.get("type") == "variable" and variantes:
+        return sum((v.get("stock") or 0) for v in variantes)
+    return p.get("stock_quantity")
+
+
 async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
     """
     Trae los productos completos de WooCommerce para una lista de wc_id (en UNA
@@ -971,51 +1031,14 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
         by_id = {p["id"]: p for p in data}
         ordenados = [by_id[i] for i in ids if i in by_id]  # preserva el orden pedido
 
-        # Variantes de los productos PADRE (type=variable), en paralelo.
-        sem = asyncio.Semaphore(3)  # concurrencia baja: el hosting bloquea por volumen
-
-        async def _variantes(p: dict[str, Any]) -> list[dict[str, Any]]:
-            if p.get("type") != "variable":
-                return []
-            async with sem:
-                try:
-                    rv = await cli.get(f"/products/{p['id']}/variations", params={
-                        "per_page": 100,
-                        "_fields": "id,sku,attributes,price,stock_quantity,status",
-                    })
-                    if rv.status_code != 200:
-                        return []
-                    salida = []
-                    for v in rv.json():
-                        ops = " / ".join(
-                            a.get("option") or "" for a in (v.get("attributes") or [])
-                            if a.get("option")
-                        )
-                        salida.append({
-                            "sku": v.get("sku") or f"WC-{v['id']}",
-                            "nombre": ops or None,
-                            "precio": _to_float(v.get("price")),
-                            "stock": v.get("stock_quantity"),
-                            "estado": v.get("status"),
-                        })
-                    return salida
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("variaciones de wc_id=%s fallaron: %s", p.get("id"), exc)
-                    return []
-
-        variantes_por_prod = await asyncio.gather(*[_variantes(p) for p in ordenados])
+        variantes_por_prod = await variantes_de_productos(cli, ordenados)
 
     rutas = await asyncio.gather(*[_categoria_de_producto(p) for p in ordenados])
     items: list[dict[str, Any]] = []
     for p, ruta, variantes in zip(ordenados, rutas, variantes_por_prod):
         precio = _to_float(p.get("price"))
         base = _to_float(p.get("regular_price")) or precio
-        # Los padres variable no gestionan stock propio (manage_stock=False → None):
-        # su stock real es la SUMA de las variaciones.
-        if p.get("type") == "variable" and variantes:
-            stock = sum((v.get("stock") or 0) for v in variantes)
-        else:
-            stock = p.get("stock_quantity")
+        stock = stock_de_padre(p, variantes)
         items.append({
             "sku": p.get("sku") or f"WC-{p.get('id')}",
             "wc_id": p.get("id"),

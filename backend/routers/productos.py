@@ -54,12 +54,17 @@ async def listar_productos(
             page=page, per_page=per_page, search=search,
             orden=orden, estados=estados_lista, categoria=categoria,
         )
-        # Enriquecer con presencia en marketplaces (puntos de colores)
+        # Enriquecer con presencia en marketplaces (puntos de colores).
+        # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que
+        # cada variante muestre en qué canales está publicada.
         skus = [i["sku"] for i in items_raw]
+        skus += [v["sku"] for i in items_raw for v in (i.get("variantes") or [])]
         pres = presencia.presencia_por_sku(skus)
         for it in items_raw:
             it["canales"] = pres.get(it["sku"], [])
             it["origen"] = "woocommerce"
+            for v in (it.get("variantes") or []):
+                v["canales"] = pres.get(v["sku"], [])
 
     elif canal == Canal.MERCADO_LIBRE.value:
         items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta,

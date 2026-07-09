@@ -8,6 +8,7 @@ import Pagination from "@/components/Pagination";
 import ChannelDots from "@/components/ChannelDots";
 import ProductStudio from "@/components/ProductStudio";
 import CostoEditor from "@/components/CostoEditor";
+import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/components/Variantes";
 
 import { listarCanales, listarProductos } from "@/lib/api";
 import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
@@ -36,6 +37,17 @@ export default function ProductosPage() {
   const [cargando, setCargando] = useState(true);
   const [sel, setSel] = useState<Producto | null>(null);
   const [editCosto, setEditCosto] = useState<string | null>(null);
+  // Padres con su lista de variantes desplegada (misma mecánica que Crear Productos)
+  const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
+
+  function toggleExpandido(sku: string) {
+    setExpandidos((prev) => {
+      const s = new Set(prev);
+      if (s.has(sku)) s.delete(sku);
+      else s.add(sku);
+      return s;
+    });
+  }
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +150,18 @@ export default function ProductosPage() {
 
         {/* Lista */}
         <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
+          {/* Encabezado de columnas (alineado con las filas de abajo) */}
+          <div className="hidden items-center gap-4 border-b border-slate-200 bg-slate-50 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500 md:flex">
+            <span className="min-w-0 flex-1">Producto</span>
+            <span className="w-20 shrink-0 text-center">Tipo</span>
+            <span className="w-36 shrink-0 text-center">Variantes</span>
+            <span className="flex shrink-0 items-center gap-4">
+              <span className="hidden w-16 text-center sm:block">Canales</span>
+              <span className="w-24 text-right">Precio</span>
+            </span>
+            <span className="w-8 shrink-0" />
+          </div>
+
           {cargando ? (
             Array.from({ length: 10 }).map((_, i) => (
               <div key={i} className="flex animate-pulse items-center gap-4 border-b border-slate-100 px-4 py-4">
@@ -154,7 +178,10 @@ export default function ProductosPage() {
               No se encontraron productos.
             </div>
           ) : (
-            productos.map((p) => (
+            productos.map((p) => {
+              const padre = esPadre(p);
+              const abierto = padre && expandidos.has(p.sku);
+              return (
               <div key={p.sku} className="border-b border-slate-100">
                 <div className="flex items-center gap-4 px-4 py-3.5 transition-colors hover:bg-indigo-50/40">
                   {/* Zona clickeable: abre el Estudio */}
@@ -194,14 +221,35 @@ export default function ProductosPage() {
                         </div>
                       )}
                     </div>
+                  </button>
 
-                    {/* Canales presentes */}
-                    <div className="hidden shrink-0 sm:block">
+                  {/* Columna TIPO */}
+                  <div className="hidden w-20 shrink-0 justify-center md:flex">
+                    <TipoBadge padre={padre} onClick={() => setSel(p)} />
+                  </div>
+
+                  {/* Columna VARIANTES */}
+                  <div className="hidden w-36 shrink-0 justify-center md:flex">
+                    {padre ? (
+                      <VariantesBoton
+                        n={p.variantes.length}
+                        abierto={abierto}
+                        onClick={() => toggleExpandido(p.sku)}
+                      />
+                    ) : (
+                      <span className="text-xs text-slate-300">—</span>
+                    )}
+                  </div>
+
+                  {/* Canales + precio (también abren el Estudio) */}
+                  <button
+                    onClick={() => setSel(p)}
+                    className="flex shrink-0 items-center gap-4 text-left"
+                  >
+                    <div className="hidden w-16 shrink-0 justify-center sm:flex">
                       <ChannelDots canales={p.canales} colorMap={colorMap} labelMap={labelMap} />
                     </div>
-
-                    {/* Precio */}
-                    <div className="shrink-0 text-right">
+                    <div className="w-24 shrink-0 text-right">
                       <div className="font-bold text-slate-900">{precioMXN(p.precio)}</div>
                       <div className="text-[11px] text-slate-400">{p.stock ?? "—"} en stock</div>
                     </div>
@@ -222,6 +270,17 @@ export default function ProductosPage() {
                   </button>
                 </div>
 
+                {/* Variantes del padre (desplegable) */}
+                {abierto && (
+                  <div className="bg-violet-50/40 px-4 pb-4 pt-1">
+                    <VariantesTabla
+                      variantes={p.variantes}
+                      colorMap={colorMap}
+                      labelMap={labelMap}
+                    />
+                  </div>
+                )}
+
                 {/* Panel de costos que se despliega inline */}
                 {editCosto === p.sku && (
                   <div className="bg-slate-50/60 px-4 pb-4 pt-1">
@@ -229,7 +288,8 @@ export default function ProductosPage() {
                   </div>
                 )}
               </div>
-            ))
+              );
+            })
           )}
         </div>
 
