@@ -975,6 +975,20 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                     </div>
                   )}
 
+                  {previewPub.payload && (
+                    <div>
+                      <div className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                        Payload · POST /items
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold normal-case tracking-normal text-emerald-700">
+                          publicaciones_ready
+                        </span>
+                      </div>
+                      <pre className="max-h-64 overflow-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[10px] leading-relaxed text-slate-600">
+                        {JSON.stringify(previewPub.payload, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+
                   {!!previewPub.avisos?.length && (
                     <div className="space-y-1 rounded-lg bg-amber-50 px-3 py-2">
                       {previewPub.avisos.map((a, i) => (

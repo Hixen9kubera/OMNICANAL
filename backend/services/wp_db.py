@@ -344,6 +344,122 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
     }
 
 
+def producto_wp(wc_id: int) -> dict[str, Any] | None:
+    """Fila de `{P}posts` del producto: título, descripción larga y corta."""
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT post_title, post_content, post_excerpt, post_status
+            FROM {P}posts WHERE ID = %s LIMIT 1""",
+        (wc_id,),
+    )
+    return rows[0] if rows else None
+
+
+def postmeta_todo(wc_id: int) -> dict[str, Any]:
+    """
+    TODO el postmeta del producto: { meta_key: meta_value }.
+
+    El pipeline de publicaciones_ready espera `prod['meta']` con todas las claves
+    (necesita `_barcode`, `_gtin`, `ml_category_id`, `ml_attr_*`, …), no una lista
+    fija como `postmeta()`.
+    """
+    P = _prefix()
+    rows = _fetch_all(
+        f"SELECT meta_key, meta_value FROM {P}postmeta WHERE post_id = %s",
+        (wc_id,),
+    )
+    return {r["meta_key"]: r["meta_value"] for r in rows}
+
+
+def categorias_wc(wc_id: int) -> list[dict[str, Any]]:
+    """
+    Categorías WC del producto en forma REST: [{id, name, slug}].
+
+    `wc_category_mapping.resolve_ml_category_from_wc` las usa para detectar que
+    una KAM cambió la categoría en el admin de WooCommerce.
+    """
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT t.term_id AS id, t.name, t.slug
+            FROM {P}term_relationships tr
+            JOIN {P}term_taxonomy tt
+                 ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                AND tt.taxonomy = 'product_cat'
+            JOIN {P}terms t ON t.term_id = tt.term_id
+            WHERE tr.object_id = %s""",
+        (wc_id,),
+    )
+    return [{"id": r["id"], "name": r["name"], "slug": r["slug"]} for r in rows]
+
+
+def tags_wc(wc_id: int) -> list[dict[str, str]]:
+    """Tags WC del producto en forma REST: [{name}]. Amazon los usa para bullets."""
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT t.name
+            FROM {P}term_relationships tr
+            JOIN {P}term_taxonomy tt
+                 ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                AND tt.taxonomy = 'product_tag'
+            JOIN {P}terms t ON t.term_id = tt.term_id
+            WHERE tr.object_id = %s""",
+        (wc_id,),
+    )
+    return [{"name": r["name"]} for r in rows]
+
+
+def _terminos_taxonomia(wc_id: int, taxonomia: str) -> list[str]:
+    """Valores de un atributo por taxonomía (pa_color, pa_material, …)."""
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT t.name
+            FROM {P}term_relationships tr
+            JOIN {P}term_taxonomy tt
+                 ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                AND tt.taxonomy = %s
+            JOIN {P}terms t ON t.term_id = tt.term_id
+            WHERE tr.object_id = %s""",
+        (taxonomia, wc_id),
+    )
+    return [r["name"] for r in rows]
+
+
+def atributos_wc(wc_id: int) -> list[dict[str, Any]]:
+    """
+    Atributos en forma REST de WooCommerce: [{name, options}].
+
+    Incluye los dos tipos, porque `_parse_product_attributes` descarta los de
+    taxonomía y ahí viven color/material/talla — justo lo que Amazon
+    (`_extract_pa_attrs`) y ML (`build_secondary_attributes`) necesitan.
+    """
+    serializado = postmeta(wc_id, ["_product_attributes"]).get("_product_attributes")
+    if not serializado:
+        return []
+    try:
+        import phpserialize
+        data = phpserialize.loads(
+            serializado.encode("utf-8", "surrogatepass"),
+            decode_strings=True, array_hook=dict,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo parsear _product_attributes (%s): %s", wc_id, exc)
+        return []
+
+    salida: list[dict[str, Any]] = []
+    for slug, meta in (data or {}).items():
+        if not isinstance(meta, dict):
+            continue
+        nombre = str(meta.get("name") or slug)
+        if meta.get("is_taxonomy"):
+            opciones = _terminos_taxonomia(wc_id, nombre)
+        else:
+            crudo = str(meta.get("value") or "")
+            opciones = [v.strip() for v in crudo.split("|") if v.strip()]
+        if opciones:
+            salida.append({"name": nombre, "options": opciones})
+    return salida
+
+
 def productos_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
     """
     Lookup masivo por SKU para el sync stock+costo (reemplaza ~270 requests):

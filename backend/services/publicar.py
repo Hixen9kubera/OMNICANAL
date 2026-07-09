@@ -165,16 +165,34 @@ def _ml_publicaciones(sku: str | None) -> list[dict[str, Any]]:
 
 
 # ═══════════════════════════ VISTA PREVIA ═══════════════════════════════════
-def preview(req: dict[str, Any]) -> dict[str, Any]:
+async def preview(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
     if canal == "mercado_libre":
-        return _preview_ml(req)
+        return await _preview_ml(req)
     if canal == "amazon":
         return _preview_amazon(req)
     return {"ok": False, "canal": canal, "motivo": "Canal no soportado todavía (ML y Amazon)."}
 
 
-def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
+async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
+    """Payload real de `publisher_core.build_payload` (dry-run) para la vista previa."""
+    from services import publicar_ready, studio, wp_db
+
+    sku, wc_id = req.get("sku"), req.get("wc_id")
+    if not wc_id:
+        wc_id = (studio.metadata(sku, None) or {}).get("wc_id")
+    if not (sku and wc_id and wp_db.disponible()):
+        return None
+    try:
+        return await publicar_ready.preview_crear_ml(
+            str(sku), int(wc_id), req.get("campos") or {}, "BEKURA"
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("preview_crear_ml(%s) falló: %s", sku, exc)
+        return None
+
+
+async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     title = (campos.get("titulo") or "").strip()
     attrs = [
@@ -188,18 +206,29 @@ def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     cuentas = [p["cuenta"] for p in pubs] if pubs else ["BEKURA", "SANCORFASHION"]
 
     avisos: list[str] = []
+    payload: dict[str, Any] | None = None
     if not pubs:
         avisos.append("No está publicado en ML: se CREARÁ una nueva publicación (pausada) en ambas cuentas.")
+        # En modo crear el payload lo arma el pipeline de publicaciones_ready.
+        r = await _payload_crear_ml(req)
+        if r and r.get("ok"):
+            payload = r["payload"]
+            n_pics = len(payload.get("pictures") or [])
+            avisos.append(f"{n_pics} imagen(es) se pre-subirán a ML (escaladas a ≥500×250) al confirmar.")
+        elif r and r.get("motivo"):
+            avisos.append(r["motivo"])
     elif len(pubs) == 1:
         avisos.append(f"Solo está publicado en {cuentas[0]} (la otra cuenta no lo tiene aún).")
     if len(title) > ML_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Mercado Libre máx {ML_TITULO_MAX}).")
+
     return {
         "ok": True, "canal": "mercado_libre", "sku": req.get("sku"), "modo": modo,
         "cuentas": cuentas, "publicaciones": pubs,
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": a["id"], "valor": a["value_name"]} for a in attrs],
         "operaciones": {"titulo": bool(title), "atributos": len(attrs), "descripcion": bool(desc)},
+        "payload": payload,
         "avisos": avisos,
     }
 
@@ -338,221 +367,31 @@ async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict
             "ml_status": ml_status, "desc_status": desc_status, "_response": ml_response}
 
 
-# ── Crear NUEVA publicación en Mercado Libre (adaptado de publisher.py) ──────
-_ML_CAT_ATTRS: dict[str, list] = {}
-_ML_LISTING_TYPE = "gold_pro"
-_ML_MARCA_DEFAULT = "Ferrahome"
-
-
-def _num0(v: Any) -> float:
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return 0.0
-
-
-_ML_CAT_INFO: dict[str, dict] = {}
-
-
-async def _ml_cat_info(token: str, cat_id: str) -> dict:
-    if cat_id in _ML_CAT_INFO:
-        return _ML_CAT_INFO[cat_id]
-    info: dict = {}
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as cli:
-            r = await cli.get(f"{_ML}/categories/{cat_id}",
-                              headers={"Authorization": f"Bearer {token}"})
-            if r.status_code == 200:
-                info = r.json()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("_ml_cat_info(%s): %s", cat_id, exc)
-    _ML_CAT_INFO[cat_id] = info
-    return info
-
-
-async def _ml_cat_attrs(token: str, cat_id: str) -> list[dict]:
-    if cat_id in _ML_CAT_ATTRS:
-        return _ML_CAT_ATTRS[cat_id]
-    attrs: list[dict] = []
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as cli:
-            r = await cli.get(f"{_ML}/categories/{cat_id}/attributes",
-                              headers={"Authorization": f"Bearer {token}"})
-            if r.status_code == 200:
-                attrs = r.json()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("_ml_cat_attrs(%s): %s", cat_id, exc)
-    _ML_CAT_ATTRS[cat_id] = attrs
-    return attrs
-
-
-def _ml_sale_terms(sku: str) -> list[dict]:
-    dias = 15 if (sku or "").upper().startswith(("ROP-", "CALZ-")) else 30
-    return [
-        {"id": "WARRANTY_TYPE", "value_id": "6150835"},   # Garantía del vendedor
-        {"id": "WARRANTY_TIME", "value_name": f"{dias} días"},
-    ]
-
-
-def _es_requerido(ca: dict) -> bool:
-    tags = ca.get("tags") or {}
-    return bool(tags.get("required") or tags.get("catalog_required"))
-
-
-def _ml_crear_attributes(sku: str, campos: dict, cat_attrs: list[dict]) -> list[dict]:
-    puestos: set[str] = set()
-    attrs: list[dict] = []
-
-    def add(aid: str, **kw: Any) -> None:
-        if aid and aid not in puestos:
-            attrs.append({"id": aid, **kw})
-            puestos.add(aid)
-
-    modelo = None
-    for a in campos.get("atributos") or []:
-        aid = (a.get("nombre") or "").strip().upper()
-        val = str(a.get("valor") or "").strip()
-        if not aid or not val:
-            continue
-        if aid == "MODEL":
-            modelo = val
-        add(aid, value_name=val)
-
-    marca = next((a.get("value_name") for a in attrs if a["id"] == "BRAND"), None) or _ML_MARCA_DEFAULT
-    add("BRAND", value_name=marca)
-    add("SELLER_SKU", value_name=sku)
-    add("MODEL", value_name=modelo or (campos.get("titulo") or sku)[:60])
-    add("PART_NUMBER", value_name=sku)
-    add("EMPTY_GTIN_REASON", value_id="17055161", value_name="Otra razón")
-
-    peso, l, w, h = (_num0(campos.get(k)) for k in ("peso", "largo", "ancho", "alto"))
-    if l > 0 and w > 0 and h > 0:
-        add("SELLER_PACKAGE_WEIGHT", value_name=f"{max(1, int(round((peso or 0.1) * 1000)))} g")
-        add("SELLER_PACKAGE_LENGTH", value_name=f"{max(1, int(round(l)))} cm")
-        add("SELLER_PACKAGE_WIDTH", value_name=f"{max(1, int(round(w)))} cm")
-        add("SELLER_PACKAGE_HEIGHT", value_name=f"{max(1, int(round(h)))} cm")
-
-    # Rellenar los REQUERIDOS de la categoría que falten (primer valor permitido).
-    for ca in cat_attrs:
-        aid = ca.get("id")
-        if not aid or aid in puestos or not _es_requerido(ca):
-            continue
-        if aid == "MANUFACTURER":
-            add(aid, value_name=marca)
-            continue
-        valores = ca.get("values") or []
-        if valores:
-            add(aid, value_id=valores[0]["id"])
-        elif ca.get("value_type") in ("number", "number_unit"):
-            add(aid, value_name="1 cm" if ca.get("value_type") == "number_unit" else "1")
-        else:
-            add(aid, value_name="N/A")
-    return attrs
-
-
-def _ml_faltantes(resp: dict, cat_attrs: list[dict], puestos: set[str]) -> list[dict]:
-    """Atributos de categoría que ML menciona en el error y aún no enviamos."""
-    blob = json.dumps(resp, ensure_ascii=False).lower()
-    out: list[dict] = []
-    for ca in cat_attrs:
-        aid = ca.get("id")
-        if not aid or aid in puestos:
-            continue
-        if aid.lower() in blob or (ca.get("name", "").lower() in blob):
-            valores = ca.get("values") or []
-            out.append({"id": aid, "value_id": valores[0]["id"]} if valores
-                       else {"id": aid, "value_name": "N/A"})
-    return out
-
-
-async def _crear_ml_una(cuenta: str, sku: str, wc_id, campos: dict, cat_id: str,
-                        cat_attrs: list[dict], images: list[str], stock,
-                        is_catalog: bool = False) -> dict[str, Any]:
-    token = meli._access_token(cuenta)
-    if not token:
-        return {"cuenta": cuenta, "ok": False, "error": f"Sin token {cuenta}", "item_id": None, "ml_status": None}
-    title = (campos.get("titulo") or sku)[:60]
-    price = _num0(campos.get("precio_regular"))
-    if price <= 0:
-        return {"cuenta": cuenta, "ok": False, "error": "Precio inválido (0). Ajusta el precio.", "item_id": None, "ml_status": None}
-
-    payload = {
-        "category_id": cat_id, "price": price, "currency_id": "MXN",
-        "available_quantity": int(stock) if stock and int(stock) > 0 else 1,
-        "buying_mode": "buy_it_now", "listing_type_id": _ML_LISTING_TYPE,
-        "condition": "new", "status": "paused",
-        "pictures": [{"source": u} for u in (images or [])[:10]],
-        "attributes": _ml_crear_attributes(sku, campos, cat_attrs),
-        "sale_terms": _ml_sale_terms(sku),
-        "shipping": {"mode": "me2", "local_pick_up": False, "free_shipping": price > 149},
-    }
-    # Categorías de catálogo: usan family_name; el resto usan title.
-    if is_catalog:
-        payload["family_name"] = title
-    else:
-        payload["title"] = title
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    ml_status = None
-    ml_response: dict = {}
-    error = None
-    item_id = None
-    async with httpx.AsyncClient(timeout=60.0) as cli:
-        for _ in range(3):
-            r = await cli.post(f"{_ML}/items", json=payload, headers=headers)
-            ml_status = r.status_code
-            try:
-                ml_response = r.json()
-            except Exception:  # noqa: BLE001
-                ml_response = {"text": r.text[:500]}
-            if r.status_code in (200, 201):
-                item_id = ml_response.get("id")
-                error = None
-                break
-            error = _error_ml(ml_response) or f"HTTP {r.status_code}"
-            faltantes = _ml_faltantes(ml_response, cat_attrs, {a["id"] for a in payload["attributes"]})
-            if not faltantes:
-                break
-            payload["attributes"].extend(faltantes)
-        desc = _plain(campos.get("descripcion"))
-        if item_id and desc:
-            try:
-                await cli.put(f"{_ML}/items/{item_id}/description",
-                              json={"plain_text": desc}, headers=headers)
-            except Exception:  # noqa: BLE001
-                pass
-
-    ok = item_id is not None
-    _guardar_backlog_ml(cuenta, sku, wc_id, item_id, ok, error, ml_status, None, payload, ml_response)
-    return {"cuenta": cuenta, "ok": ok, "error": error, "item_id": item_id, "ml_status": ml_status}
-
-
 async def _crear_ml(sku: str, wc_id, campos: dict) -> dict[str, Any]:
-    from services import studio, wp_db
+    """
+    Crear publicación nueva en ML → delega en el pipeline de `publicaciones_ready`
+    (vendorizado en `backend/vendor/ml_ready/`), que es el que logró 1200+ altas.
 
-    meta = studio.metadata(sku, wc_id)
-    cat_id = (meta.get("categoria_ml") or {}).get("category_id")
-    if not cat_id:
-        return {"ok": False, "motivo": "Sin categoría de Mercado Libre (categorias_ml): no se puede crear."}
+    Aporta sobre la implementación anterior: pre-upload de imágenes con escalado
+    a ≥500×250, cadena de GTIN (_barcode → catálogo ML → UPC Item DB), SIZE_GRID_ID
+    para ropa/calzado, validación de densidad en las dims de paquete, y ~10
+    reintentos específicos por código de error de ML.
+    """
+    from services import publicar_ready, studio
+
     if not wc_id:
-        wc_id = meta.get("wc_id")
-    images, stock = [], None
-    if wc_id and wp_db.disponible():
-        try:
-            images = wp_db.imagenes(int(wc_id))
-            stock = wp_db.stock_producto(int(wc_id))
-        except Exception:  # noqa: BLE001
-            pass
-    token0 = meli._access_token("BEKURA") or meli._access_token(None)
-    cat_attrs = await _ml_cat_attrs(token0, cat_id) if token0 else []
-    cat_info = await _ml_cat_info(token0, cat_id) if token0 else {}
-    is_catalog = bool((cat_info.get("settings") or {}).get("catalog_domain"))
+        wc_id = (studio.metadata(sku, wc_id) or {}).get("wc_id")
+    if not wc_id:
+        return {"ok": False, "motivo": "Sin wc_id: no se puede leer el producto de WooCommerce."}
+    if not wp_db_disponible():
+        return {"ok": False, "motivo": "Sin conexión a la BD de WordPress (configura WPDB_* en Railway)."}
 
-    resultados = []
-    for cuenta in ("BEKURA", "SANCORFASHION"):
-        resultados.append(await _crear_ml_una(cuenta, sku, wc_id, campos, cat_id, cat_attrs, images, stock, is_catalog))
-    ok_all = all(r["ok"] for r in resultados)
-    return {"ok": ok_all, "canal": "mercado_libre", "modo": "crear",
-            "resultados": resultados, "registrado_en": "ml_backlog"}
+    return await publicar_ready.crear_ml(sku, int(wc_id), campos)
+
+
+def wp_db_disponible() -> bool:
+    from services import wp_db
+    return wp_db.disponible()
 
 
 async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
@@ -755,10 +594,38 @@ def _amz_default_value(node: dict[str, Any], mp: str, attr_name: str = "", depth
     return c if isinstance(c, str) else "N/A"
 
 
-def _amazon_attrs_final(sku: str, campos: dict[str, Any], mp: str,
-                        schema: dict[str, Any] | None) -> dict[str, Any]:
-    """Atributos válidos + requeridos + booleanos comunes (rellenos desde el esquema)."""
-    candidatos = _amazon_attributes(sku, campos, mp)
+async def _amazon_attrs_final(sku: str, wc_id, campos: dict[str, Any], mp: str,
+                              product_type: str | None,
+                              schema: dict[str, Any] | None) -> dict[str, Any]:
+    """
+    Atributos de Amazon: los construye `build_payload_attributes` de
+    `publicaciones_amazon` (vendorizado), y aquí solo se filtran contra el
+    esquema real del productType y se rellenan los `required` que falten.
+
+    Si no hay WPDB o falla la lectura, cae a `_amazon_attributes` (el mapeo
+    propio) para no dejar el botón muerto.
+    """
+    from services import publicar_ready, wp_db
+
+    candidatos: dict[str, Any] | None = None
+    if wc_id and wp_db.disponible():
+        try:
+            candidatos = await publicar_ready.atributos_amazon(
+                str(sku), int(wc_id), campos, mp, product_type, schema
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("build_payload_attributes falló (%s): %s — se usa el mapeo propio", sku, exc)
+    if candidatos is None:
+        candidatos = _amazon_attributes(str(sku), campos, mp)
+
+    # El título y la descripción del Studio mandan sobre lo que trae WooCommerce.
+    titulo = (campos.get("titulo") or "").strip()
+    if titulo:
+        candidatos["item_name"] = [{"value": titulo[:200], "language_tag": "es_MX", "marketplace_id": mp}]
+    desc = _plain(campos.get("descripcion"))
+    if desc:
+        candidatos["product_description"] = [{"value": desc[:2000], "language_tag": "es_MX", "marketplace_id": mp}]
+
     if not schema:
         return candidatos
     props = schema["properties"]
@@ -821,7 +688,7 @@ async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
     pt = _product_type_amazon(sku) or await _detectar_product_type(token, campos.get("titulo") or "", mp)
     schema = await _amazon_schema(token, pt, mp)
     props = (schema or {}).get("properties", {})
-    attributes = _amazon_attrs_final(str(sku), campos, mp, schema)
+    attributes = await _amazon_attrs_final(str(sku), wc_id, campos, mp, pt, schema)
     sku_enc = urllib.parse.quote(str(sku), safe="")
 
     body: dict[str, Any] = {}

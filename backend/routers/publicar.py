@@ -50,8 +50,8 @@ class PublicarRequest(BaseModel):
 
 
 @router.post("/preview")
-def preview(req: PublicarRequest) -> dict[str, Any]:
-    return publicar.preview(req.a_dict())
+async def preview(req: PublicarRequest) -> dict[str, Any]:
+    return await publicar.preview(req.a_dict())
 
 
 @router.post("/confirmar")

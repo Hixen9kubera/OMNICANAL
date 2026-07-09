@@ -401,6 +401,9 @@ export interface PublicarPreview {
   descripcion?: string | null;
   cambios?: { etiqueta: string; valor: string }[];
   operaciones?: Record<string, number | boolean>;
+  // Solo en modo "crear" (ML): payload exacto de POST /items que arma publisher_core.
+  modo?: string;
+  payload?: Record<string, unknown> | null;
   avisos?: string[];
 }
 
