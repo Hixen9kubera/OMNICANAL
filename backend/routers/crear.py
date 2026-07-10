@@ -298,8 +298,34 @@ async def costos_preview(sku: str, req: RecalcularCostos):
     return {"ok": True, "sku": sku, "calculo": calc}
 
 
+async def _categoria_ml_meta(cat_id: str) -> list[dict]:
+    """
+    Meta de Woo para la categoría ML elegida en el costeo: id, nombre y niveles
+    (ml_categoria_nivel_1..5) — lo que lee wp_db.metadata_producto() para pintar
+    el breadcrumb en el Estudio. Usa el endpoint PÚBLICO de ML (sin token).
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=15.0) as cli:
+            r = await cli.get(f"/categories/{cat_id}")
+        if r.status_code != 200:
+            return [{"key": "ml_category_id", "value": cat_id}]
+        d = r.json()
+        niveles = [p.get("name", "") for p in (d.get("path_from_root") or [])]
+        meta = [
+            {"key": "ml_category_id", "value": cat_id},
+            {"key": "ml_category_name", "value": d.get("name") or ""},
+            {"key": "ml_categoria_path", "value": " > ".join(niveles)},
+        ]
+        for i, nombre in enumerate(niveles[:5], start=1):
+            meta.append({"key": f"ml_categoria_nivel_{i}", "value": nombre})
+        return meta
+    except Exception:  # noqa: BLE001
+        return [{"key": "ml_category_id", "value": cat_id}]
+
+
 async def _sync_woo_costo(sku: str, fila: dict) -> bool:
-    """Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones."""
+    """Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones + categoría ML."""
     p = await woocommerce.obtener_producto_por_sku(sku)
     wc_id = p.get("wc_id") if p else None
     if not wc_id:
@@ -310,6 +336,8 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     ]
     if fila.get("costo_unitario") is not None:
         meta.append({"key": "costo", "value": f"{float(fila['costo_unitario']):.2f}"})
+    if fila.get("ml_cat_id"):
+        meta.extend(await _categoria_ml_meta(str(fila["ml_cat_id"])))
     payload: dict = {
         "regular_price": f"{float(fila['precio_base']):.2f}",
         "sale_price": f"{float(fila['precio_sugerido']):.2f}",

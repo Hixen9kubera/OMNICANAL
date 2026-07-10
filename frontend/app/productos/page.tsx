@@ -284,7 +284,7 @@ export default function ProductosPage() {
                 {/* Panel de costos que se despliega inline */}
                 {editCosto === p.sku && (
                   <div className="bg-slate-50/60 px-4 pb-4 pt-1">
-                    <CostoEditor sku={p.sku} nombre={p.nombre} onClose={() => setEditCosto(null)} />
+                    <CostoEditor sku={p.sku} nombre={p.nombre} onClose={() => setEditCosto(null)} onGuardado={cargar} />
                   </div>
                 )}
               </div>
@@ -300,7 +300,7 @@ export default function ProductosPage() {
       </main>
 
       {/* Estudio de producto (overlay) */}
-      <ProductStudio sku={sel?.sku ?? null} producto={sel} canales={canales} onClose={() => setSel(null)} />
+      <ProductStudio sku={sel?.sku ?? null} producto={sel} canales={canales} onClose={() => setSel(null)} onGuardado={cargar} />
     </div>
   );
 }

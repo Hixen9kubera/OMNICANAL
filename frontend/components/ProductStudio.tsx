@@ -69,6 +69,9 @@ interface Props {
   producto?: Producto | null;
   canales: CanalInfo[];
   onClose: () => void;
+  // Se llama tras guardar costo/precios, para que la lista que abrió el Estudio
+  // (Productos/Omnicanal) refresque y no quede con el snapshot viejo.
+  onGuardado?: () => void;
 }
 
 const GENERAL = "general";
@@ -107,7 +110,7 @@ const FLAGS_IMG: { key: keyof FlagsImagen; label: string; Icon: LucideIcon }[] =
   { key: "cambiar_modelo", label: "Modelo", Icon: UserRound },
 ];
 
-export default function ProductStudio({ sku, producto, canales, onClose }: Props) {
+export default function ProductStudio({ sku, producto, canales, onClose, onGuardado }: Props) {
   const { data, cargando, recargar } = useDetalleProducto(sku, producto);
   const [canal, setCanal] = useState<string>(GENERAL);
 
@@ -237,6 +240,9 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
         // Guardado en MXN → mostrar en USD (÷ tipo de cambio) para editar.
         const cp = num(cv.costo_producto) ?? num(cf.costo_producto);
         if (cp != null) setCostoProducto(String(Math.round((cp / DEFAULT_TC) * 100) / 100));
+        // Categoría usada para costear (costos_finales) — respaldo si el postmeta
+        // de Woo aún no la tiene (ej. la escritura no llegó o el producto es nuevo).
+        if (cf.ml_cat_id) setCatMlId((c) => c || String(cf.ml_cat_id));
         if (d.constantes?.margen != null) setMargen(String(Math.round(d.constantes.margen * 100)));
         // Desglose actual (sin recalcular) para que el bloque no salga vacío.
         setCostoCalc({
@@ -503,6 +509,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
           ? "Guardado y sincronizado con WooCommerce."
           : "Guardado en la base de datos.",
       });
+      onGuardado?.();
     } catch {
       setCostoMsg({ ok: false, texto: "No se pudo guardar el costo." });
     } finally {
