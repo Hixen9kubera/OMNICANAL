@@ -62,6 +62,7 @@ export default function CostosPage() {
   // Controles del bulk
   const [margenBulk, setMargenBulk] = useState("48");
   const [tcBulk, setTcBulk] = useState(String(DEFAULT_TC)); // tipo de cambio USD→MXN
+  const [comisionBulk, setComisionBulk] = useState(""); // comisión ML % (vacío = ML/fallback)
   const [envioBulk, setEnvioBulk] = useState(true);
   const [bulkRun, setBulkRun] = useState(false);
   const [bulkResult, setBulkResult] = useState<CostoBulkResp | null>(null);
@@ -161,6 +162,7 @@ export default function CostosPage() {
       });
       const r = await costoBulk(items, {
         margen: (Number(margenBulk) || 0) / 100,
+        pct_comision: comisionBulk.trim() ? (Number(comisionBulk) || 0) / 100 : null,
         incluir_envio: envioBulk,
         auto_cbm: true,
         sincronizar_woo: true,
@@ -371,6 +373,11 @@ export default function CostosPage() {
               Margen %
               <input value={margenBulk} onChange={(e) => setMargenBulk(e.target.value)}
                 className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }} />
+            </label>
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500" title="Vacío = comisión de ML (o estimada si no hay token)">
+              Comisión %
+              <input value={comisionBulk} onChange={(e) => setComisionBulk(e.target.value)} placeholder="auto"
+                className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700 outline-none focus:ring-2 placeholder:text-slate-300" style={{ outlineColor: ACENTO }} />
             </label>
             <label className="flex cursor-pointer items-center gap-1.5 text-xs font-semibold text-slate-500">
               <input type="checkbox" checked={envioBulk} onChange={(e) => setEnvioBulk(e.target.checked)} className="h-4 w-4 accent-indigo-600" />

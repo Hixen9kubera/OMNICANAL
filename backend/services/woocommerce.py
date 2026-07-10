@@ -218,6 +218,10 @@ async def listar_productos(
                     **params,
                     "include": ",".join(str(i) for i in pagina_ids),
                     "per_page": len(pagina_ids),
+                    # pagina_ids YA es el recorte de esta página del índice cacheado;
+                    # "page" aquí paginaría OTRA VEZ sobre ese conjunto ya de por sí
+                    # más chico, dejando vacías todas las páginas > 1 (bug confirmado).
+                    "page": 1,
                 })
                 r.raise_for_status()
                 by_id = {p["id"]: p for p in r.json()}

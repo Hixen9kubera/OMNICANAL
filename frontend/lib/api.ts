@@ -178,7 +178,7 @@ export function buscarCategoriasML(q: string, signal?: AbortSignal): Promise<{ r
 
 export function costoBulk(
   items: CostoBulkItem[],
-  opts: { margen?: number; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},
+  opts: { margen?: number; pct_comision?: number | null; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},
 ): Promise<CostoBulkResp> {
   return postJSON<CostoBulkResp>("/api/crear/costos/bulk", { items, ...opts });
 }
