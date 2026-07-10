@@ -341,8 +341,34 @@ def _preparar_base(sku: str, overrides: dict[str, Any] | None,
             base.get("largo") or 0, base.get("ancho") or 0, base.get("alto") or 0)
     base["costo_unitario"] = round(
         float(base.get("costo_producto") or 0) + float(base.get("costo_cbm") or 0), 2)
-    cat = (overrides or {}).get("ml_cat_id") or cf.get("ml_cat_id") or ""
+    cat = (overrides or {}).get("ml_cat_id") or cf.get("ml_cat_id") or _resolver_cat_ml(sku)
     return base, cat
+
+
+def _resolver_cat_ml(sku: str) -> str:
+    """
+    Busca la categoría ML del SKU cuando no viene en overrides ni en costos_finales:
+      1) tabla categorias_ml (nuestra DB)
+      2) postmeta ml_category_id de WooCommerce (vía wc_id de productos)
+    Devuelve "" si no se encuentra.
+    """
+    try:
+        row = db.fetch_one("SELECT category_id FROM categorias_ml WHERE sku=%s", (sku,))
+        if row and row.get("category_id"):
+            return str(row["category_id"])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        wc = db.fetch_scalar("SELECT wc_id FROM productos WHERE sku=%s", (sku,))
+        if wc:
+            from services import wp_db
+            if wp_db.disponible():
+                m = wp_db.postmeta(int(wc), ["ml_category_id"])
+                if m.get("ml_category_id"):
+                    return str(m["ml_category_id"])
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def computar(sku: str, overrides: dict[str, Any] | None = None,

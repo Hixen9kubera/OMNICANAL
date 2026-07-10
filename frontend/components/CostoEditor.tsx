@@ -15,14 +15,18 @@ import type { CostoCalculo, CostoOverrides, CostoRow } from "@/lib/types";
 
 const COLOR = "#4F46E5";
 const ACENTO = "#4338CA";
+const DEFAULT_TC = 18.5; // tipo de cambio USD→MXN por defecto (editable)
 
 function precioMXN(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
   return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(v);
 }
 
-const str = (v: number | null | undefined) => (v === null || v === undefined ? "" : String(v));
 const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
+// costo_producto guardado en MXN → mostrar en USD (÷ TC).
+const mxnToUsd = (v: number | null | undefined, tc: number) =>
+  v == null ? "" : String(Math.round((v / (tc || DEFAULT_TC)) * 100) / 100);
+const strNum = (v: number | null | undefined) => (v == null ? "" : String(v));
 
 interface Props {
   sku: string;
@@ -33,11 +37,13 @@ interface Props {
 }
 
 export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: Props) {
-  const [costoProducto, setCostoProducto] = useState(str(seed?.costo_producto));
-  const [peso, setPeso] = useState(str(seed?.peso));
-  const [largo, setLargo] = useState(str(seed?.largo));
-  const [ancho, setAncho] = useState(str(seed?.ancho));
-  const [alto, setAlto] = useState(str(seed?.alto));
+  const [tipoCambio, setTipoCambio] = useState(String(DEFAULT_TC));
+  const [costoProducto, setCostoProducto] = useState(mxnToUsd(seed?.costo_producto, DEFAULT_TC)); // USD
+  const [catMlId, setCatMlId] = useState(seed?.ml_cat_id ?? "");
+  const [peso, setPeso] = useState(strNum(seed?.peso));
+  const [largo, setLargo] = useState(strNum(seed?.largo));
+  const [ancho, setAncho] = useState(strNum(seed?.ancho));
+  const [alto, setAlto] = useState(strNum(seed?.alto));
   const [margen, setMargen] = useState("48");
   const [incluirEnvio, setIncluirEnvio] = useState(true);
 
@@ -67,7 +73,9 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         const cf = (d.finales ?? {}) as Record<string, unknown>;
         const s = (v: unknown) => (v == null || v === "" ? "" : String(v));
         const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
-        setCostoProducto((p) => p || s(cv.costo_producto ?? cf.costo_producto));
+        // costo guardado en MXN → USD para editar.
+        setCostoProducto((p) => p || mxnToUsd(num(cv.costo_producto ?? cf.costo_producto) ?? null, DEFAULT_TC));
+        setCatMlId((c) => c || s(cf.ml_cat_id));
         setPeso((p) => p || s(cv.peso ?? cf.peso));
         setLargo((p) => p || s(cv.largo ?? cf.largo));
         setAncho((p) => p || s(cv.ancho ?? cf.ancho));
@@ -90,8 +98,15 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
     return () => ctrl.abort();
   }, [sku]);
 
+  // costo_producto (USD) → MXN con el tipo de cambio.
+  const costoProductoMXN = (): number | null => {
+    const usd = numOrNull(costoProducto);
+    const tc = Number(tipoCambio) || 0;
+    return usd != null && tc > 0 ? Math.round(usd * tc * 100) / 100 : usd;
+  };
+
   const overrides = (): CostoOverrides => ({
-    costo_producto: numOrNull(costoProducto),
+    costo_producto: costoProductoMXN(),
     largo: numOrNull(largo),
     ancho: numOrNull(ancho),
     alto: numOrNull(alto),
@@ -99,6 +114,7 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
     margen: (Number(margen) || 0) / 100,
     incluir_envio: incluirEnvio,
     auto_cbm: true,
+    ml_cat_id: catMlId || null,
   });
 
   async function regenerar() {
@@ -172,7 +188,17 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
 
       {/* Entradas */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Campo label="Costo producto" prefijo="$" value={costoProducto} onChange={setCostoProducto} />
+        <div>
+          <Campo label="Costo producto (USD)" prefijo="$" value={costoProducto} onChange={setCostoProducto} />
+          {(() => {
+            const usd = Number(costoProducto) || 0;
+            const tc = Number(tipoCambio) || 0;
+            return usd > 0 && tc > 0
+              ? <p className="mt-1 text-[10px] text-slate-400">≈ {precioMXN(Math.round(usd * tc * 100) / 100)} MXN</p>
+              : null;
+          })()}
+        </div>
+        <Campo label="Tipo de cambio USD→MXN" value={tipoCambio} onChange={setTipoCambio} />
         <Campo label="Peso (kg)" value={peso} onChange={setPeso} />
         <Campo label="Margen (%)" value={margen} onChange={setMargen} />
         <div>
@@ -181,6 +207,12 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
             <input type="checkbox" checked={incluirEnvio} onChange={(e) => setIncluirEnvio(e.target.checked)} className="h-4 w-4" style={{ accentColor: ACENTO }} />
             Sumar al precio
           </label>
+        </div>
+        {/* Categoría ML editable — define la comisión del cálculo */}
+        <div className="col-span-2 sm:col-span-4">
+          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría Mercado Libre (ID)</label>
+          <input value={catMlId} onChange={(e) => setCatMlId(e.target.value)} placeholder="MLM…"
+            className="w-40 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }} />
         </div>
       </div>
 

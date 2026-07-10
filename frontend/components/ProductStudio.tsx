@@ -59,6 +59,7 @@ interface Props {
 
 const GENERAL = "general";
 const AMAZON = "amazon";
+const DEFAULT_TC = 18.5; // tipo de cambio USD→MXN por defecto (editable en el bloque COSTOS)
 
 function precioMXN(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
@@ -121,7 +122,11 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const [amazonPublicadoOk, setAmazonPublicadoOk] = useState(false);
 
   // ── Bloque COSTOS (dims de pieza → CBM → costo → precios) ───────────
-  const [costoProducto, setCostoProducto] = useState("");
+  // costo_producto se ingresa en USD (Alibaba/Odoo) y se convierte a MXN con el
+  // tipo de cambio antes de calcular. El resto (CBM, precios) ya es MXN.
+  const [costoProducto, setCostoProducto] = useState(""); // USD
+  const [tipoCambio, setTipoCambio] = useState(String(DEFAULT_TC));
+  const [catMlId, setCatMlId] = useState(""); // categoría ML editable (para el costo)
   const [margen, setMargen] = useState("48");
   const [incluirEnvio, setIncluirEnvio] = useState(true);
   const [costoCalc, setCostoCalc] = useState<Partial<CostoCalculo> | null>(null);
@@ -151,6 +156,8 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     setResultadoPub(null);
     setAmazonPublicadoOk(false);
     setCostoProducto("");
+    setTipoCambio(String(DEFAULT_TC));
+    setCatMlId("");
     setMargen("48");
     setIncluirEnvio(true);
     setCostoCalc(null);
@@ -167,8 +174,9 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
         const cv = (d.validados ?? {}) as Record<string, unknown>;
         const cf = (d.finales ?? {}) as Record<string, unknown>;
         const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
+        // Guardado en MXN → mostrar en USD (÷ tipo de cambio) para editar.
         const cp = num(cv.costo_producto) ?? num(cf.costo_producto);
-        if (cp != null) setCostoProducto(String(cp));
+        if (cp != null) setCostoProducto(String(Math.round((cp / DEFAULT_TC) * 100) / 100));
         if (d.constantes?.margen != null) setMargen(String(Math.round(d.constantes.margen * 100)));
         // Desglose actual (sin recalcular) para que el bloque no salga vacío.
         setCostoCalc({
@@ -193,6 +201,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     studioMetadata(sku, producto?.wc_id ?? null, ctrl.signal)
       .then((m) => {
         setMeta(m);
+        setCatMlId((c) => c || (m.categoria_ml?.category_id ?? ""));
         const d = m.dinero || ({} as StudioMetadata["dinero"]);
         setCampos({
           precioRegular: str(d.precio_regular),
@@ -348,8 +357,15 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
 
   // ── COSTOS: regenerar (preview) / guardar (persistir + Woo) ─────────
+  // costo_producto (USD) → MXN con el tipo de cambio antes de enviar.
+  const costoProductoMXN = (): number | null => {
+    const usd = numOrNull(costoProducto);
+    const tc = Number(tipoCambio) || 0;
+    return usd != null && tc > 0 ? Math.round(usd * tc * 100) / 100 : usd;
+  };
+
   const overridesCosto = (): CostoOverrides => ({
-    costo_producto: numOrNull(costoProducto),
+    costo_producto: costoProductoMXN(),
     largo: numOrNull(campos.largo),
     ancho: numOrNull(campos.ancho),
     alto: numOrNull(campos.alto),
@@ -357,6 +373,9 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     margen: (Number(margen) || 0) / 100,
     incluir_envio: incluirEnvio,
     auto_cbm: true,
+    // Categoría ML editable (default del postmeta). El cálculo la necesita
+    // (en costos_finales puede no existir aún, ej. draft).
+    ml_cat_id: catMlId || meta?.categoria_ml?.category_id || null,
   });
 
   // Refleja el cálculo en los campos que usa el resto del modal (publicar).
@@ -799,7 +818,17 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
 
                 {/* Entradas editables */}
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <Campo label="Costo producto" prefijo="$" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
+                  <div>
+                    <Campo label="Costo producto (USD)" prefijo="$" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
+                    {(() => {
+                      const usd = Number(costoProducto) || 0;
+                      const tc = Number(tipoCambio) || 0;
+                      return usd > 0 && tc > 0
+                        ? <p className="mt-1 text-[10px] text-slate-400">≈ {precioMXN(Math.round(usd * tc * 100) / 100)} MXN</p>
+                        : null;
+                    })()}
+                  </div>
+                  <Campo label="Tipo de cambio USD→MXN" value={tipoCambio} onChange={setTipoCambio} acento={tema.acento} />
                   <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
                   <Campo label="Margen (%)" value={margen} onChange={setMargen} acento={tema.acento} />
                   <div>
@@ -808,6 +837,19 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                       <input type="checkbox" checked={incluirEnvio} onChange={(e) => setIncluirEnvio(e.target.checked)} className="h-4 w-4" style={{ accentColor: tema.acento }} />
                       Sumar al precio
                     </label>
+                  </div>
+                  {/* Categoría ML (editable) — define la comisión del cálculo */}
+                  <div className="col-span-2 sm:col-span-4">
+                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                      Categoría Mercado Libre (para el costo)
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input value={catMlId} onChange={(e) => setCatMlId(e.target.value)} placeholder="MLM…"
+                        className="w-40 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                      {meta?.categoria_ml?.niveles?.length ? (
+                        <span className="truncate text-xs text-slate-500">{meta.categoria_ml.niveles.join(" › ")}</span>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
 

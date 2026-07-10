@@ -21,6 +21,9 @@ const PER_PAGE = 50;
 const COLOR = "#4F46E5";
 const ACENTO = "#818CF8";
 const TARIFA_CBM = 7500; // $/m³ (contenedor estándar) — igual que el backend
+const DEFAULT_TC = 18.5; // tipo de cambio USD→MXN por defecto (editable)
+const mxnToUsd = (v: number | null | undefined, tc: number) =>
+  v == null ? "" : String(Math.round((v / (tc || DEFAULT_TC)) * 100) / 100);
 
 function precioMXN(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
@@ -33,8 +36,10 @@ const dims = (r: CostoRow) =>
 type Edicion = { largo: string; ancho: string; alto: string; peso: string; costo_producto: string };
 const s = (v: number | null | undefined) => (v == null ? "" : String(v));
 const n = (v: string): number | null => (v.trim() ? Number(v) || null : null);
-const seedEdicion = (r: CostoRow): Edicion => ({
-  largo: s(r.largo), ancho: s(r.ancho), alto: s(r.alto), peso: s(r.peso), costo_producto: s(r.costo_producto),
+// costo_producto se edita en USD (guardado en MXN → se muestra ÷ TC).
+const seedEdicion = (r: CostoRow, tc: number): Edicion => ({
+  largo: s(r.largo), ancho: s(r.ancho), alto: s(r.alto), peso: s(r.peso),
+  costo_producto: mxnToUsd(r.costo_producto, tc),
 });
 
 export default function CostosPage() {
@@ -56,9 +61,11 @@ export default function CostosPage() {
 
   // Controles del bulk
   const [margenBulk, setMargenBulk] = useState("48");
+  const [tcBulk, setTcBulk] = useState(String(DEFAULT_TC)); // tipo de cambio USD→MXN
   const [envioBulk, setEnvioBulk] = useState(true);
   const [bulkRun, setBulkRun] = useState(false);
   const [bulkResult, setBulkResult] = useState<CostoBulkResp | null>(null);
+  const tcNum = () => Number(tcBulk) || DEFAULT_TC;
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -97,7 +104,7 @@ export default function CostosPage() {
       if (next.has(sku)) next.delete(sku);
       else {
         next.add(sku);
-        if (row) setEdiciones((e) => (e[sku] ? e : { ...e, [sku]: seedEdicion(row) }));
+        if (row) setEdiciones((e) => (e[sku] ? e : { ...e, [sku]: seedEdicion(row, tcNum()) }));
       }
       return next;
     });
@@ -111,7 +118,7 @@ export default function CostosPage() {
       else {
         rows.forEach((r) => {
           next.add(r.sku);
-          setEdiciones((e) => (e[r.sku] ? e : { ...e, [r.sku]: seedEdicion(r) }));
+          setEdiciones((e) => (e[r.sku] ? e : { ...e, [r.sku]: seedEdicion(r, tcNum()) }));
         });
       }
       return next;
@@ -121,13 +128,16 @@ export default function CostosPage() {
   const setEdicion = (sku: string, campo: keyof Edicion, valor: string) =>
     setEdiciones((e) => ({ ...e, [sku]: { ...(e[sku] ?? { largo: "", ancho: "", alto: "", peso: "", costo_producto: "" }), [campo]: valor } }));
 
-  // Cálculo en vivo (CBM = vol×7500, costo = producto + CBM) mientras se edita.
+  // Cálculo en vivo (CBM = vol×7500 MXN, costo = producto_MXN + CBM) mientras se
+  // edita. costo_producto se ingresa en USD → se convierte a MXN con el TC.
   function vivo(r: CostoRow) {
     const ed = ediciones[r.sku];
     if (!seleccion.has(r.sku) || !ed) return { cbm: r.costo_cbm, costo: r.costo_unitario };
-    const l = n(ed.largo), a = n(ed.ancho), h = n(ed.alto), cp = n(ed.costo_producto);
+    const l = n(ed.largo), a = n(ed.ancho), h = n(ed.alto);
+    const cpUsd = n(ed.costo_producto);
+    const cpMxn = cpUsd != null ? cpUsd * tcNum() : null;
     const cbm = l && a && h ? Math.round((l * a * h) / 1_000_000 * TARIFA_CBM * 100) / 100 : r.costo_cbm;
-    const costo = cp != null && cbm != null ? Math.round((cp + cbm) * 100) / 100 : r.costo_unitario;
+    const costo = cpMxn != null && cbm != null ? Math.round((cpMxn + cbm) * 100) / 100 : r.costo_unitario;
     return { cbm, costo };
   }
 
@@ -136,11 +146,13 @@ export default function CostosPage() {
     setBulkRun(true);
     setBulkResult(null);
     try {
+      const tc = tcNum();
       const items = [...seleccion].map((sku) => {
         const ed = ediciones[sku] ?? ({} as Edicion);
+        const cpUsd = n(ed.costo_producto ?? "");
         return {
           sku,
-          costo_producto: n(ed.costo_producto ?? ""),
+          costo_producto: cpUsd != null ? Math.round(cpUsd * tc * 100) / 100 : null, // USD→MXN
           largo: n(ed.largo ?? ""),
           ancho: n(ed.ancho ?? ""),
           alto: n(ed.alto ?? ""),
@@ -266,7 +278,7 @@ export default function CostosPage() {
                 <th className="px-3 py-3 font-semibold">Contenedor</th>
                 <th className="px-3 py-3 font-semibold">Dimensiones (cm)</th>
                 <th className="px-3 py-3 text-right font-semibold">Peso</th>
-                <th className="px-3 py-3 text-right font-semibold">Costo prod.</th>
+                <th className="px-3 py-3 text-right font-semibold">Costo prod. <span className="text-[9px] text-slate-400">(USD)</span></th>
                 <th className="px-3 py-3 text-right font-semibold">Flete CBM</th>
                 <th className="px-3 py-3 text-right font-semibold">Costo</th>
                 <th className="px-3 py-3 text-right font-semibold">P. regular</th>
@@ -318,9 +330,11 @@ export default function CostosPage() {
                       <td className="px-3 py-3 text-right text-slate-600">
                         {sel && ed ? <CeldaInput value={ed.peso} onChange={(v) => setEdicion(r.sku, "peso", v)} align="right" /> : (r.peso ?? "—")}
                       </td>
-                      {/* Costo producto — editable */}
+                      {/* Costo producto — editable en USD (guardado en MXN → ÷TC) */}
                       <td className="px-3 py-3 text-right text-slate-600">
-                        {sel && ed ? <CeldaInput value={ed.costo_producto} onChange={(v) => setEdicion(r.sku, "costo_producto", v)} align="right" prefijo="$" /> : precioMXN(r.costo_producto)}
+                        {sel && ed
+                          ? <CeldaInput value={ed.costo_producto} onChange={(v) => setEdicion(r.sku, "costo_producto", v)} align="right" prefijo="$" />
+                          : (r.costo_producto != null ? `$${mxnToUsd(r.costo_producto, tcNum())}` : "—")}
                       </td>
                       {/* Flete CBM + Costo — en vivo si está seleccionado */}
                       <td className={["px-3 py-3 text-right", sel ? "font-semibold text-indigo-600" : "text-slate-600"].join(" ")}>{precioMXN(cbm)}</td>
@@ -348,6 +362,11 @@ export default function CostosPage() {
             <span className="ml-2 text-xs text-slate-400">· edita medidas/costo en la fila, luego regenera (CBM=vol×7500) + precios y guarda en DB + Woo</span>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
+              TC USD→MXN
+              <input value={tcBulk} onChange={(e) => setTcBulk(e.target.value)}
+                className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }} />
+            </label>
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
               Margen %
               <input value={margenBulk} onChange={(e) => setMargenBulk(e.target.value)}

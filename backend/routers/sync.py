@@ -17,9 +17,23 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from core.marketplaces import Canal, subcuentas
-from services import db, inventario, sync_woo
+from services import db, inventario, sync_woo, woocommerce
 
 router = APIRouter(prefix="/api/sync", tags=["sincronizacion"])
+
+
+@router.post("/catalogo")
+async def refrescar_catalogo():
+    """
+    Fuerza el refresco de los índices de WooCommerce (catálogo + drafts) leyendo
+    en vivo de la DB de WordPress. Lo llama el frontend al abrir la app para que
+    los drafts nuevos aparezcan al instante sin esperar el TTL. No bloquea: el
+    refresco corre en segundo plano.
+    """
+    import asyncio
+    asyncio.create_task(woocommerce.indice_catalogo(refrescar=True))
+    asyncio.create_task(woocommerce.indice_candidatos(refrescar=True))
+    return {"ok": True, "mensaje": "Refresco de catálogo y drafts iniciado."}
 
 
 @router.post("/woo")

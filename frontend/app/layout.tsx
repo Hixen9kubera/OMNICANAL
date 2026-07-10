@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import CatalogoSync from "@/components/CatalogoSync";
 
 export const metadata: Metadata = {
   title: "OMNICANAL · Kubera",
@@ -14,7 +15,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="es">
-      <body>{children}</body>
+      <body>
+        <CatalogoSync />
+        {children}
+      </body>
     </html>
   );
 }

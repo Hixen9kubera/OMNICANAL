@@ -313,6 +313,7 @@ export interface CostoOverrides {
   alto?: number | null;
   ancho?: number | null;
   peso?: number | null;
+  ml_cat_id?: string | null;
   incluir_envio?: boolean;
   margen?: number;
   auto_cbm?: boolean;

@@ -162,6 +162,11 @@ export function contenedoresCosto(signal?: AbortSignal): Promise<{ contenedores:
   return getJSON<{ contenedores: ContenedorInfo[] }>("/api/crear/costos/_contenedores", signal);
 }
 
+// Fuerza el refresco del índice de catálogo + drafts de Woo (al abrir la app).
+export function refrescarCatalogo(): Promise<{ ok: boolean; mensaje: string }> {
+  return postJSON<{ ok: boolean; mensaje: string }>("/api/sync/catalogo", {});
+}
+
 export function costoBulk(
   items: CostoBulkItem[],
   opts: { margen?: number; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},
