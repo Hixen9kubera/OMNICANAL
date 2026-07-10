@@ -24,6 +24,7 @@ class ImagenFlags(BaseModel):
     src: str
     quitar_fondo: bool = False
     traducir_texto: bool = False
+    quitar_logos: bool = False
     cambiar_modelo: bool = False
 
 
@@ -58,7 +59,7 @@ async def procesar(sku: str, req: ProcesarReq):
     """Lanza la edición con IA (según flags) en segundo plano y responde de inmediato."""
     con_flags = [
         i for i in req.imagenes
-        if i.quitar_fondo or i.traducir_texto or i.cambiar_modelo
+        if i.quitar_fondo or i.traducir_texto or i.quitar_logos or i.cambiar_modelo
     ]
     if not con_flags:
         raise HTTPException(400, "Ninguna imagen tiene flags seleccionados.")

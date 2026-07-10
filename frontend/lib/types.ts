@@ -169,6 +169,7 @@ export interface GaleriaImagen {
 export interface FlagsImagen {
   quitar_fondo: boolean;
   traducir_texto: boolean;
+  quitar_logos: boolean;
   cambiar_modelo: boolean;
 }
 

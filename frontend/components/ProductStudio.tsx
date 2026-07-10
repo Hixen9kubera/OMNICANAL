@@ -20,6 +20,7 @@ import {
   Sparkles,
   Eraser,
   Languages,
+  Stamp,
   UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -108,7 +109,8 @@ const str = (v: number | null | undefined) => (v === null || v === undefined ? "
 // Texto=traducir/quitar logos, Modelo=reemplazar persona por una latina.
 const FLAGS_IMG: { key: keyof FlagsImagen; label: string; Icon: LucideIcon }[] = [
   { key: "quitar_fondo", label: "Fondo", Icon: Eraser },
-  { key: "traducir_texto", label: "Traducir / quitar logo", Icon: Languages },
+  { key: "traducir_texto", label: "Traducir texto", Icon: Languages },
+  { key: "quitar_logos", label: "Quitar logos", Icon: Stamp },
   { key: "cambiar_modelo", label: "Modelo", Icon: UserRound },
 ];
 
@@ -593,17 +595,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // ── Editor de imágenes: helpers + acciones ──────────────────────────
   const wcId = data?.wc_id ?? null;
   const flagsDe = (id: number): FlagsImagen =>
-    flagsImg[id] ?? { quitar_fondo: false, traducir_texto: false, cambiar_modelo: false };
+    flagsImg[id] ?? { quitar_fondo: false, traducir_texto: false, quitar_logos: false, cambiar_modelo: false };
   const hasFlags = (id: number) => {
     const f = flagsImg[id];
-    return !!f && (f.quitar_fondo || f.traducir_texto || f.cambiar_modelo);
+    return !!f && (f.quitar_fondo || f.traducir_texto || f.quitar_logos || f.cambiar_modelo);
   };
   const countFlags = (id: number) =>
-    [flagsDe(id).quitar_fondo, flagsDe(id).traducir_texto, flagsDe(id).cambiar_modelo].filter(Boolean).length;
+    [flagsDe(id).quitar_fondo, flagsDe(id).traducir_texto, flagsDe(id).quitar_logos, flagsDe(id).cambiar_modelo].filter(Boolean).length;
 
   function toggleFlag(imgId: number, key: keyof FlagsImagen) {
     setFlagsImg((prev) => {
-      const cur = prev[imgId] ?? { quitar_fondo: false, traducir_texto: false, cambiar_modelo: false };
+      const cur = prev[imgId] ?? { quitar_fondo: false, traducir_texto: false, quitar_logos: false, cambiar_modelo: false };
       return { ...prev, [imgId]: { ...cur, [key]: !cur[key] } };
     });
   }
@@ -1086,7 +1088,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                           : "Procesar con IA"}
                     </button>
                     <p className="mt-1.5 text-center text-[11px] text-slate-400">
-                      Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir / quitar logo</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
+                      Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
                     </p>
                   </>
                 )}

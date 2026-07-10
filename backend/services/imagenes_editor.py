@@ -87,13 +87,17 @@ _PROMPT_DESCRIBE_PERSON = (
     "Respond with the single phrase or NO_PERSON only, nothing else."
 )
 
-_TXT_CLAUSE = (
+_TRADUCIR_CLAUSE = (
     "Translate EVERY piece of written text in the image (it may be in Chinese, English "
     "or any language) into natural, correct Spanish from Mexico. Render each translation in "
     "the SAME position, size, font style, color and alignment as the original text; every "
-    "character must be perfectly legible — never mirrored, garbled, cut off or invented. "
-    "Also remove any brand logo, watermark, blue side borders and blue bottom banner, filling "
-    "those areas with the surrounding background so the result looks natural."
+    "character must be perfectly legible — never mirrored, garbled, cut off or invented."
+)
+
+_LOGOS_CLAUSE = (
+    "Remove any brand logo, watermark, blue side borders and blue bottom banner, filling "
+    "those areas with the surrounding background so the result looks natural. Do not alter "
+    "any other content of the image."
 )
 
 
@@ -127,11 +131,14 @@ def _replacement_for(person_desc: str) -> str:
 def _compose_prompt(
     quitar_fondo: bool,
     traducir_texto: bool,
+    quitar_logos: bool,
     cambiar_modelo: bool,
     person_desc: Optional[str] = None,
 ) -> Optional[str]:
-    qf, tt, cm = bool(quitar_fondo), bool(traducir_texto), bool(cambiar_modelo)
-    if not (qf or tt or cm):
+    qf, tt, ql, cm = (
+        bool(quitar_fondo), bool(traducir_texto), bool(quitar_logos), bool(cambiar_modelo)
+    )
+    if not (qf or tt or ql or cm):
         return None
 
     desc = person_desc or "the person"
@@ -144,7 +151,9 @@ def _compose_prompt(
             "keeping the product exactly as it is, well centered."
         )
     if tt:
-        tasks.append(_TXT_CLAUSE)
+        tasks.append(_TRADUCIR_CLAUSE)
+    if ql:
+        tasks.append(_LOGOS_CLAUSE)
     if cm:
         tasks.append(
             f"Replace the person ({desc}) with {replacement}, keeping exactly the same pose, "
@@ -155,7 +164,9 @@ def _compose_prompt(
     if not qf:
         preserve.append("the same background and scene")
     if not tt:
-        preserve.append("the original text and logos exactly as they are")
+        preserve.append("the original text exactly as it is (do not translate it)")
+    if not ql:
+        preserve.append("the original logos and watermarks exactly as they are")
     if not cm:
         preserve.append("any person unchanged")
     preserve.append("the same layout, composition, camera angle, proportions and lighting")
@@ -326,6 +337,7 @@ async def iniciar(sku: str, wc_id: int | None, entradas: list[dict[str, Any]]) -
             "flags": {
                 "quitar_fondo": bool(e.get("quitar_fondo")),
                 "traducir_texto": bool(e.get("traducir_texto")),
+                "quitar_logos": bool(e.get("quitar_logos")),
                 "cambiar_modelo": bool(e.get("cambiar_modelo")),
             },
             "estado": "pendiente",
@@ -379,7 +391,10 @@ async def _run(sku: str, parent_id: int | None) -> None:
                 person_desc = await _gemini_describe_person(img_b64, mime)
                 info["person_desc"] = person_desc
 
-            prompt = _compose_prompt(f["quitar_fondo"], f["traducir_texto"], f["cambiar_modelo"], person_desc)
+            prompt = _compose_prompt(
+                f["quitar_fondo"], f["traducir_texto"], f.get("quitar_logos", False),
+                f["cambiar_modelo"], person_desc,
+            )
             info["prompt_used"] = prompt
             if not prompt:  # sin flags → nada que hacer
                 _set_img(sku, idx, "sin_flags", "Sin cambios")
