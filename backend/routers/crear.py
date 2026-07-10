@@ -165,6 +165,75 @@ async def categorias_disponibles():
     return {"categorias": nombres}
 
 
+@router.get("/categorias-ml")
+async def buscar_categorias_ml(
+    q: str = Query(..., min_length=2, description="Nombre a buscar"),
+    limite: int = Query(8, ge=1, le=15),
+):
+    """
+    Busca categorías de Mercado Libre por NOMBRE (domain_discovery) y devuelve, por
+    cada una: category_id, nombre, path (Nivel1 > … > hoja) y dominio. Para el picker
+    de categoría del Estudio (define la comisión del cálculo del costo).
+    """
+    import asyncio
+    import httpx
+    from config import settings
+    from services import meli
+
+    cuenta = costos.DEFAULT_ACCOUNT
+    token = meli._access_token(cuenta) or meli._access_token()
+    if not token:
+        raise HTTPException(503, "Sin token de Mercado Libre.")
+
+    async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=20.0) as cli:
+        async def _discovery(tk: str):
+            return await cli.get(
+                f"/sites/{settings.ml_site_id}/domain_discovery/search",
+                params={"limit": limite, "q": q},
+                headers={"Authorization": f"Bearer {tk}"})
+        try:
+            r = await _discovery(token)
+            if r.status_code == 401:  # token vencido → refrescar y reintentar
+                nuevo = await run_in_threadpool(meli.refrescar_token, cuenta)
+                if nuevo:
+                    token = nuevo
+                    r = await _discovery(token)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"Error consultando Mercado Libre: {exc}")
+        headers = {"Authorization": f"Bearer {token}"}
+        cands = r.json() if r.status_code == 200 else []
+
+        vistos: set[str] = set()
+        base: list[dict] = []
+        for d in cands:
+            cid = d.get("category_id")
+            if not cid or cid in vistos:
+                continue
+            vistos.add(cid)
+            base.append({
+                "category_id": cid,
+                "name": d.get("category_name") or "",
+                "domain": d.get("domain_name") or "",
+                "path": "",
+            })
+
+        async def _path(cid: str) -> str:
+            try:
+                rc = await cli.get(f"/categories/{cid}", headers=headers)
+                if rc.status_code == 200:
+                    pr = rc.json().get("path_from_root") or []
+                    return " > ".join(p.get("name", "") for p in pr)
+            except Exception:  # noqa: BLE001
+                pass
+            return ""
+
+        paths = await asyncio.gather(*[_path(b["category_id"]) for b in base])
+        for b, p in zip(base, paths):
+            b["path"] = p or b["name"]
+
+    return {"resultados": base}
+
+
 # ── Costos: consulta + recálculo manual ────────────────────────────────────────
 
 class RecalcularCostos(BaseModel):

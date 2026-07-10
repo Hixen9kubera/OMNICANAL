@@ -41,6 +41,7 @@ import {
   studioMetadata,
   type ProductoIA,
 } from "@/lib/api";
+import CategoriaMLPicker from "./CategoriaMLPicker";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
   getMejora,
@@ -685,33 +686,13 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
 
               {/* CATEGORÍA (Mercado Libre editable + WooCommerce) */}
               <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                {/* Categoría ML editable — define la comisión del cálculo del costo */}
-                <div>
-                  <label className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                    Categoría Mercado Libre <span className="normal-case tracking-normal text-slate-300">(ID — para el costo)</span>
-                  </label>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      value={catMlId}
-                      onChange={(e) => setCatMlId(e.target.value)}
-                      placeholder="MLM…"
-                      className="w-40 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:ring-2"
-                      style={{ outlineColor: tema.acento }}
-                    />
-                    {meta?.categoria_ml?.niveles?.length ? (
-                      <div className="flex flex-wrap items-center gap-1 text-sm font-semibold">
-                        {meta.categoria_ml.niveles.map((n, i, arr) => (
-                          <span key={i} className="flex items-center gap-1">
-                            {i > 0 && <ChevronRight size={14} className="text-slate-300" />}
-                            <span className={i === arr.length - 1 ? "" : "text-slate-500"} style={i === arr.length - 1 ? { color: tema.acento } : undefined}>{n}</span>
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-slate-400">Sin categoría ML — pega el ID (MLM…) para poder generar el costo.</span>
-                    )}
-                  </div>
-                </div>
+                {/* Categoría ML — buscador por nombre (define la comisión del costo) */}
+                <CategoriaMLPicker
+                  value={catMlId}
+                  pathInicial={meta?.categoria_ml?.niveles}
+                  onChange={(c) => setCatMlId(c.category_id)}
+                  acento={tema.acento}
+                />
                 <div className="border-t border-slate-100 pt-3">
                   <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</div>
                   {categoriaWC.length ? (

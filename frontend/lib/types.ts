@@ -306,6 +306,13 @@ export interface CostoBulkResp {
   resultados: CostoBulkResultado[];
 }
 
+export interface CategoriaMLResult {
+  category_id: string;
+  name: string;
+  path: string;
+  domain: string;
+}
+
 export interface CostoOverrides {
   costo_producto?: number | null;
   costo_cbm?: number | null;

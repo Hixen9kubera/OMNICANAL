@@ -3,6 +3,7 @@
 import type {
   CanalInfo,
   CompetenciaResp,
+  CategoriaMLResult,
   ContenedorInfo,
   CostoBulkItem,
   CostoBulkResp,
@@ -165,6 +166,12 @@ export function contenedoresCosto(signal?: AbortSignal): Promise<{ contenedores:
 // Fuerza el refresco del índice de catálogo + drafts de Woo (al abrir la app).
 export function refrescarCatalogo(): Promise<{ ok: boolean; mensaje: string }> {
   return postJSON<{ ok: boolean; mensaje: string }>("/api/sync/catalogo", {});
+}
+
+// Busca categorías de Mercado Libre por nombre (para el picker del Estudio).
+export function buscarCategoriasML(q: string, signal?: AbortSignal): Promise<{ resultados: CategoriaMLResult[] }> {
+  return getJSON<{ resultados: CategoriaMLResult[] }>(
+    `/api/crear/categorias-ml?q=${encodeURIComponent(q)}`, signal);
 }
 
 export function costoBulk(
