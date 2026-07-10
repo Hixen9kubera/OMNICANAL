@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   Container,
   RefreshCw,
+  Layers,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
@@ -50,10 +51,14 @@ export default function CostosPage() {
   const [page, setPage] = useState(1);
   const [busquedaInput, setBusquedaInput] = useState("");
   const [busqueda, setBusqueda] = useState("");
+  const [skusInput, setSkusInput] = useState("");
+  const [skusFiltro, setSkusFiltro] = useState("");
   const [contenedor, setContenedor] = useState("");
   const [orden, setOrden] = useState("reciente");
   const [cargando, setCargando] = useState(true);
   const [contenedores, setContenedores] = useState<ContenedorInfo[]>([]);
+  // Evita el flash de "Sin resultados" antes de que llegue la primera respuesta.
+  const primeraCarga = useRef(true);
 
   const [seleccion, setSeleccion] = useState<Set<string>>(new Set());
   // Valores editados inline por SKU (se siembran al seleccionar la fila).
@@ -79,18 +84,26 @@ export default function CostosPage() {
     return () => clearTimeout(t);
   }, [busquedaInput]);
 
+  useEffect(() => {
+    const t = setTimeout(() => { setSkusFiltro(skusInput.trim()); setPage(1); }, 500);
+    return () => clearTimeout(t);
+  }, [skusInput]);
+
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
     setCargando(true);
     listarCostos(
-      { page, perPage: PER_PAGE, search: busqueda || undefined, contenedor: contenedor || undefined, orden },
+      {
+        page, perPage: PER_PAGE, search: busqueda || undefined,
+        skus: skusFiltro || undefined, contenedor: contenedor || undefined, orden,
+      },
       ctrl.signal,
     )
-      .then((r) => { setRows(r.items); setPag(r.paginacion); })
-      .catch(() => {})
+      .then((r) => { setRows(r.items); setPag(r.paginacion); primeraCarga.current = false; })
+      .catch((exc) => { if (exc?.name !== "AbortError") primeraCarga.current = false; })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, contenedor, orden]);
+  }, [page, busqueda, skusFiltro, contenedor, orden]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -217,6 +230,17 @@ export default function CostosPage() {
                 className="w-56 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }} />
             </div>
             <div className="relative">
+              <Layers size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                value={skusInput}
+                onChange={(e) => setSkusInput(e.target.value)}
+                placeholder="Filtrar SKUs: TEC-0001, ORG-0885, caminadora…"
+                title="Términos separados por coma: filtra y busca a la vez (SKU completo, parcial o palabra del nombre)"
+                className="w-80 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 font-mono text-xs text-slate-700 outline-none transition-shadow placeholder:font-sans placeholder:text-sm placeholder:text-slate-400 focus:ring-2"
+                style={{ outlineColor: ACENTO }}
+              />
+            </div>
+            <div className="relative">
               <Container size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <select value={contenedor} onChange={(e) => { setContenedor(e.target.value); setPage(1); }}
                 className="w-56 appearance-none rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }}>
@@ -288,7 +312,7 @@ export default function CostosPage() {
               </tr>
             </thead>
             <tbody>
-              {cargando ? (
+              {cargando || (rows.length === 0 && primeraCarga.current) ? (
                 Array.from({ length: 10 }).map((_, i) => (
                   <tr key={i} className="border-b border-slate-100">
                     <td colSpan={10} className="px-4 py-4"><div className="h-5 w-full animate-pulse rounded bg-slate-100" /></td>
