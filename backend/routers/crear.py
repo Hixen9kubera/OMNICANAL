@@ -241,6 +241,7 @@ class RecalcularCostos(BaseModel):
     ancho: float | None = None
     peso: float | None = None
     ml_cat_id: str | None = None
+    pct_comision: float | None = None  # comisión ML manual (decimal, ej. 0.15)
     incluir_envio: bool = True
     margen: float = costos.MARGEN_DEFAULT
     # auto_cbm: deriva costo_cbm de las dims (× tarifa) salvo que venga explícito.
@@ -293,7 +294,7 @@ async def costos_preview(sku: str, req: RecalcularCostos):
         req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
     if not calc:
         raise HTTPException(
-            422, "No se pudo calcular (falta costo base o categoría ML válida).")
+            422, "No se pudo calcular: falta el costo base (costo_producto o dimensiones).")
     return {"ok": True, "sku": sku, "calculo": calc}
 
 
@@ -340,7 +341,7 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
         req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
     if not fila:
         raise HTTPException(
-            422, "No se pudo recalcular (falta costo base o categoría ML válida).")
+            422, "No se pudo recalcular: falta el costo base (costo_producto o dimensiones).")
     synced = await _sync_woo_costo(sku, fila) if req.sincronizar_woo else False
     return {"ok": True, "sku": sku, "finales": fila, "sincronizado_woo": synced}
 
@@ -430,12 +431,15 @@ class BulkItem(BaseModel):
     alto: float | None = None
     ancho: float | None = None
     peso: float | None = None
+    ml_cat_id: str | None = None
+    pct_comision: float | None = None
 
 
 class BulkCostos(BaseModel):
     items: list[BulkItem]
     incluir_envio: bool = True
     margen: float = costos.MARGEN_DEFAULT
+    pct_comision: float | None = None  # comisión ML manual global (decimal)
     auto_cbm: bool = True
     sincronizar_woo: bool = True
 
@@ -449,6 +453,9 @@ async def costos_bulk(req: BulkCostos):
     resultados = []
     for it in req.items:
         overrides = {k: v for k, v in it.model_dump(exclude={"sku"}).items() if v is not None}
+        # comisión global del bulk si la fila no trae una propia
+        if "pct_comision" not in overrides and req.pct_comision is not None:
+            overrides["pct_comision"] = req.pct_comision
         try:
             fila = await run_in_threadpool(
                 costos.recalcular, it.sku, overrides,
@@ -458,7 +465,7 @@ async def costos_bulk(req: BulkCostos):
             continue
         if not fila:
             resultados.append({"sku": it.sku, "ok": False,
-                               "error": "sin costo base o categoría ML"})
+                               "error": "sin costo base (falta costo_producto/dims)"})
             continue
         synced = False
         if req.sincronizar_woo:

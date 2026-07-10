@@ -39,6 +39,7 @@ MARGEN_DEFAULT   = 0.48
 IVA_RATE         = 0.16
 DESCUENTO_BASE   = 0.16   # precio_base = precio_sugerido / (1 - DESCUENTO_BASE); determinista
 PRECIO_REFERENCIA = 100.0
+COMISION_FALLBACK = 0.15  # comisión ML por defecto cuando no hay token/categoría (estimada)
 
 # Tarifa de flete por volumen ($/m³). El costo_cbm histórico se calculaba por
 # embarque (flete real ÷ CBM del contenedor); para el recálculo manual usamos una
@@ -173,15 +174,23 @@ def calcular_pricing(costo_unitario: float, cat_id: str,
                      ancho: float = 0.0, alto: float = 0.0,
                      cuenta: str = DEFAULT_ACCOUNT,
                      incluir_envio: bool = True,
-                     margen: float = MARGEN_DEFAULT) -> dict[str, Any] | None:
+                     margen: float = MARGEN_DEFAULT,
+                     pct_override: float | None = None) -> dict[str, Any] | None:
     """
     Calcula precio_sugerido/precio_base y el desglose para un costo + categoría.
-    Devuelve None si no se pudo obtener la comisión de ML (sin precio confiable).
+    La comisión se toma, en orden: pct_override (manual) → API de ML → fallback
+    COMISION_FALLBACK (marca comision_estimada=True). Así el cálculo NO se bloquea
+    si el token de ML no está disponible.
     """
     peso_efectivo, dims_str = _peso_efectivo(peso_kg, largo, ancho, alto)
-    pct = pct_comision_ml(cat_id, dims_str, cuenta)
-    if pct is None:
-        return None
+    estimada = False
+    if pct_override is not None and pct_override > 0:
+        pct = float(pct_override)
+    else:
+        pct = pct_comision_ml(cat_id, dims_str, cuenta)
+        if pct is None:  # sin token/categoría → fallback para no bloquear
+            pct = COMISION_FALLBACK
+            estimada = True
 
     if incluir_envio:
         fee_envio = calc_fee_envio_ml(peso_efectivo, 400.0)
@@ -205,6 +214,7 @@ def calcular_pricing(costo_unitario: float, cat_id: str,
 
     return {
         "pct_comision": pct,
+        "comision_estimada": estimada,
         "costo_comision": costo_comision,
         "costo_fee_envio": fee_envio,
         "iva_mnt": iva_mnt,
@@ -377,16 +387,24 @@ def computar(sku: str, overrides: dict[str, Any] | None = None,
     """
     Calcula costo + precio SIN persistir (para la vista previa del tab Costos).
     Devuelve un dict plano con el costo base, el volumen y todo el pricing, o None
-    si falta el costo base o la categoría ML para la comisión.
+    solo si falta el costo base. La comisión sale de pct_comision (override) →
+    API ML → fallback; sin categoría ni token igual calcula (comision_estimada).
     """
     base, cat = _preparar_base(sku, overrides, auto_cbm)
-    if base.get("costo_unitario", 0) <= 0 or not cat:
-        return None
+    if base.get("costo_unitario", 0) <= 0:
+        return None  # sin costo base no hay nada que calcular
+    pct_override = None
+    try:
+        pv = (overrides or {}).get("pct_comision")
+        pct_override = float(pv) if pv not in (None, "") else None
+    except (TypeError, ValueError):
+        pct_override = None
     pricing = calcular_pricing(
         base["costo_unitario"], cat,
         peso_kg=base.get("peso", 0), largo=base.get("largo", 0),
         ancho=base.get("ancho", 0), alto=base.get("alto", 0),
         cuenta=cuenta, incluir_envio=incluir_envio, margen=margen,
+        pct_override=pct_override,
     )
     if not pricing:
         return None
