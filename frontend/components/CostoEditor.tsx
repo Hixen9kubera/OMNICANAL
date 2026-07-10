@@ -40,6 +40,7 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
   const [tipoCambio, setTipoCambio] = useState(String(DEFAULT_TC));
   const [costoProducto, setCostoProducto] = useState(mxnToUsd(seed?.costo_producto, DEFAULT_TC)); // USD
   const [catMlId, setCatMlId] = useState(seed?.ml_cat_id ?? "");
+  const [comision, setComision] = useState(""); // comisión ML % (vacío = ML/fallback)
   const [peso, setPeso] = useState(strNum(seed?.peso));
   const [largo, setLargo] = useState(strNum(seed?.largo));
   const [ancho, setAncho] = useState(strNum(seed?.ancho));
@@ -115,7 +116,12 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
     incluir_envio: incluirEnvio,
     auto_cbm: true,
     ml_cat_id: catMlId || null,
+    pct_comision: comision.trim() ? (Number(comision) || 0) / 100 : null,
   });
+
+  const reflejarComision = (c: Partial<CostoCalculo>) => {
+    if (!comision.trim() && c.pct_comision != null) setComision(String(Math.round(c.pct_comision * 1000) / 10));
+  };
 
   async function regenerar() {
     setRegenerando(true);
@@ -124,8 +130,9 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
       const r = await costoPreview(sku, overrides());
       setCalc(r.calculo);
       setFresco(true);
+      reflejarComision(r.calculo);
     } catch {
-      setMsg({ ok: false, texto: "No se pudo calcular (falta costo base o categoría ML)." });
+      setMsg({ ok: false, texto: "No se pudo calcular: falta el costo (costo producto o dimensiones)." });
     } finally {
       setRegenerando(false);
     }
@@ -201,6 +208,12 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         <Campo label="Tipo de cambio USD→MXN" value={tipoCambio} onChange={setTipoCambio} />
         <Campo label="Peso (kg)" value={peso} onChange={setPeso} />
         <Campo label="Margen (%)" value={margen} onChange={setMargen} />
+        <div>
+          <Campo label="Comisión ML (%)" value={comision} onChange={setComision} />
+          {calc?.comision_estimada && !comision.trim() && (
+            <p className="mt-1 text-[10px] text-amber-600">estimada (sin token ML)</p>
+          )}
+        </div>
         <div>
           <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Envío</label>
           <label className="flex h-[42px] cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600">

@@ -128,6 +128,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   const [costoProducto, setCostoProducto] = useState(""); // USD
   const [tipoCambio, setTipoCambio] = useState(String(DEFAULT_TC));
   const [catMlId, setCatMlId] = useState(""); // categoría ML editable (para el costo)
+  const [comision, setComision] = useState(""); // comisión ML % (vacío = ML/fallback)
   const [margen, setMargen] = useState("48");
   const [incluirEnvio, setIncluirEnvio] = useState(true);
   const [costoCalc, setCostoCalc] = useState<Partial<CostoCalculo> | null>(null);
@@ -159,6 +160,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     setCostoProducto("");
     setTipoCambio(String(DEFAULT_TC));
     setCatMlId("");
+    setComision("");
     setMargen("48");
     setIncluirEnvio(true);
     setCostoCalc(null);
@@ -377,7 +379,16 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     // Categoría ML editable (default del postmeta). El cálculo la necesita
     // (en costos_finales puede no existir aún, ej. draft).
     ml_cat_id: catMlId || meta?.categoria_ml?.category_id || null,
+    // Comisión ML manual (%). Vacío = la resuelve el backend (ML o fallback).
+    pct_comision: comision.trim() ? (Number(comision) || 0) / 100 : null,
   });
+
+  // Tras calcular, refleja la comisión usada en el campo (si estaba vacío).
+  const reflejarComision = (c: Partial<CostoCalculo>) => {
+    if (!comision.trim() && c.pct_comision != null) {
+      setComision(String(Math.round(c.pct_comision * 1000) / 10));
+    }
+  };
 
   // Refleja el cálculo en los campos que usa el resto del modal (publicar).
   const sincronizarCampos = (c: Partial<CostoCalculo>) => {
@@ -398,8 +409,9 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
       setCostoCalc(r.calculo);
       setCostoFresco(true);
       sincronizarCampos(r.calculo);
+      reflejarComision(r.calculo);
     } catch {
-      setCostoMsg({ ok: false, texto: "No se pudo calcular (falta costo base o categoría ML)." });
+      setCostoMsg({ ok: false, texto: "No se pudo calcular: falta el costo (costo producto o dimensiones)." });
     } finally {
       setRegenerando(false);
     }
@@ -427,6 +439,7 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
       setCostoCalc(merged);
       setCostoFresco(true);
       sincronizarCampos(merged);
+      reflejarComision(merged);
       setCostoMsg({
         ok: true,
         texto: r.sincronizado_woo
@@ -823,6 +836,12 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                   <Campo label="Tipo de cambio USD→MXN" value={tipoCambio} onChange={setTipoCambio} acento={tema.acento} />
                   <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
                   <Campo label="Margen (%)" value={margen} onChange={setMargen} acento={tema.acento} />
+                  <div>
+                    <Campo label="Comisión ML (%)" value={comision} onChange={setComision} acento={tema.acento} />
+                    {costoCalc?.comision_estimada && !comision.trim() && (
+                      <p className="mt-1 text-[10px] text-amber-600">estimada (sin token ML)</p>
+                    )}
+                  </div>
                   <div>
                     <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Envío</label>
                     <label className="flex h-[42px] cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-medium text-slate-600">

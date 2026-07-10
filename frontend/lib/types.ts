@@ -221,6 +221,7 @@ export interface CostoCalculo {
   incluir_envio: boolean;
   tarifa_cbm_m3: number;
   pct_comision: number;
+  comision_estimada?: boolean; // true si la comisión salió del fallback (sin token/categoría)
   costo_comision: number;
   costo_fee_envio: number;
   iva_mnt: number;
@@ -321,6 +322,7 @@ export interface CostoOverrides {
   ancho?: number | null;
   peso?: number | null;
   ml_cat_id?: string | null;
+  pct_comision?: number | null;
   incluir_envio?: boolean;
   margen?: number;
   auto_cbm?: boolean;
