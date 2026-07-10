@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Search, ChevronRight, Loader2 } from "lucide-react";
-import { buscarCategoriasML } from "@/lib/api";
+import { buscarCategoriasML, obtenerCategoriaML } from "@/lib/api";
 import type { CategoriaMLResult } from "@/lib/types";
 
 interface Props {
@@ -42,6 +42,18 @@ export default function CategoriaMLPicker({ value, pathInicial, onChange, acento
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
+
+  // Hay ID pero sin breadcrumb (categoría asignada por un proceso viejo, sin
+  // niveles en el postmeta) → completar el texto con un lookup por ID.
+  useEffect(() => {
+    if (!value || pathInicial?.length) return;
+    const ctrl = new AbortController();
+    obtenerCategoriaML(value, ctrl.signal)
+      .then((c) => setSel((s) => (s && s.category_id === value ? { ...s, ...c } : s)))
+      .catch(() => {});
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, pathInicial?.length]);
 
   // Búsqueda con debounce.
   useEffect(() => {

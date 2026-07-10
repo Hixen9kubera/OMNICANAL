@@ -165,6 +165,29 @@ async def categorias_disponibles():
     return {"categorias": nombres}
 
 
+@router.get("/categorias-ml/{cat_id}")
+async def obtener_categoria_ml(cat_id: str):
+    """
+    Detalle de UNA categoría ML por ID: nombre, path completo (Nivel1 > … > hoja)
+    y dominio. Público (sin token). Lo usa el picker del Estudio para mostrar el
+    breadcrumb completo cuando ya hay un ml_cat_id guardado pero sin niveles en
+    el postmeta de Woo (categorías asignadas por un proceso viejo, solo con ID).
+    """
+    import httpx
+    async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=15.0) as cli:
+        r = await cli.get(f"/categories/{cat_id}")
+    if r.status_code != 200:
+        raise HTTPException(404, f"Categoría {cat_id} no encontrada.")
+    d = r.json()
+    niveles = [p.get("name", "") for p in (d.get("path_from_root") or [])]
+    return {
+        "category_id": cat_id,
+        "name": d.get("name") or "",
+        "domain": "",  # /categories/{id} no trae dominio; solo lo trae domain_discovery
+        "path": " > ".join(niveles),
+    }
+
+
 @router.get("/categorias-ml")
 async def buscar_categorias_ml(
     q: str = Query(..., min_length=2, description="Nombre a buscar"),

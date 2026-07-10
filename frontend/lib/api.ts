@@ -176,6 +176,12 @@ export function buscarCategoriasML(q: string, signal?: AbortSignal): Promise<{ r
     `/api/crear/categorias-ml?q=${encodeURIComponent(q)}`, signal);
 }
 
+// Detalle de UNA categoría ML por ID (nombre + path completo) — para mostrar el
+// breadcrumb cuando solo hay un ml_cat_id guardado sin niveles.
+export function obtenerCategoriaML(catId: string, signal?: AbortSignal): Promise<CategoriaMLResult> {
+  return getJSON<CategoriaMLResult>(`/api/crear/categorias-ml/${encodeURIComponent(catId)}`, signal);
+}
+
 export function costoBulk(
   items: CostoBulkItem[],
   opts: { margen?: number; pct_comision?: number | null; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},
