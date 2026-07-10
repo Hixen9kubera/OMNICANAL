@@ -140,13 +140,18 @@ async def listar_productos(
     orden: str = "reciente",
     estados: list[str] | None = None,
     categoria: int | None = None,
+    skus: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
 
     - `categoria` (id WC) → ruta nativa de WooCommerce (param category).
-    - `search` / `estados` / `orden` por stock o precio → se resuelven contra la
-      tabla maestra `productos` (más potente) y se traen de WooCommerce por wc_id.
+    - `search` / `estados` / `orden` por stock o precio / `skus` → se resuelven
+      contra la tabla maestra `productos` (más potente) y se traen de WooCommerce
+      por wc_id.
+    - `skus`: términos separados por coma (ya en lista); filtra Y busca a la vez
+      (SKU completo, parcial o palabra del nombre) — igual semántica que
+      "Filtrar SKUs" en Crear Productos.
     - Sin filtros → listado en vivo de WooCommerce.
     """
     campos = (
@@ -162,7 +167,10 @@ async def listar_productos(
         "_fields": campos,
     }
 
-    usa_db = bool(search or estados or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc"))
+    usa_db = bool(
+        search or estados or skus
+        or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc")
+    )
 
     async with _client() as cli:
         data, total, total_pages = [], 0, 1
@@ -181,11 +189,15 @@ async def listar_productos(
 
         elif usa_db:
             # Filtros/orden avanzados vía tabla `productos` → wc_ids → WooCommerce
-            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page, orden, estados)
+            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page, orden, estados, skus)
             if wc_ids:
                 r = await cli.get("/products", params={
                     **params, "include": ",".join(str(i) for i in wc_ids),
                     "per_page": len(wc_ids),
+                    # wc_ids YA es el recorte de esta página (LIMIT/OFFSET en SQL);
+                    # "page" aquí volvería a paginar sobre ese conjunto ya chico
+                    # (mismo bug que en la rama de abajo, corregido igual).
+                    "page": 1,
                 })
                 if r.status_code == 200:
                     by_id = {p["id"]: p for p in r.json()}
@@ -295,12 +307,15 @@ def _buscar_wc_ids_db(
     per_page: int,
     orden: str = "reciente",
     estados: list[str] | None = None,
+    skus: list[str] | None = None,
 ) -> tuple[list[int], int]:
     """
-    Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) contra la
-    tabla maestra `productos` y devuelve (wc_ids de la página, total).
-    Habilita en GENERAL: búsqueda parcial, ordenar por stock/precio y filtrar por
-    estado (publicado / inactivo).
+    Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) + lista
+    de SKUs/términos contra la tabla maestra `productos` y devuelve (wc_ids de
+    la página, total). Habilita en GENERAL: búsqueda parcial, ordenar por
+    stock/precio, filtrar por estado (publicado / inactivo) y "Filtrar SKUs"
+    (términos separados por coma — cada uno filtra Y busca a la vez: SKU
+    completo, parcial o palabra del nombre).
     """
     from services import db  # import local para evitar ciclos
 
@@ -310,6 +325,14 @@ def _buscar_wc_ids_db(
         where.append("(sku LIKE %s OR nombre LIKE %s)")
         like = f"%{search.strip()}%"
         args += [like, like]
+    if skus:
+        terminos = [t.strip() for t in skus if t.strip()]
+        if terminos:
+            or_grupo = " OR ".join(["(sku LIKE %s OR nombre LIKE %s)"] * len(terminos))
+            where.append(f"({or_grupo})")
+            for t in terminos:
+                like_t = f"%{t}%"
+                args += [like_t, like_t]
     if estados:
         valores: list[str] = []
         for e in estados:

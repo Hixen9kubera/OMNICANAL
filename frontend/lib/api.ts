@@ -73,6 +73,7 @@ export interface ListarParams {
   orden?: string;
   estados?: string[];
   categoria?: number | null;
+  skus?: string; // "Filtrar SKUs": lista separada por comas, filtra y busca a la vez
 }
 
 export function listarProductos(
@@ -89,6 +90,7 @@ export function listarProductos(
   if (p.orden && p.orden !== "reciente") q.set("orden", p.orden);
   if (p.estados && p.estados.length) q.set("estados", p.estados.join(","));
   if (p.categoria) q.set("categoria", String(p.categoria));
+  if (p.skus) q.set("skus", p.skus);
   return getJSON<RespuestaProductos>(`/api/productos?${q.toString()}`, signal);
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { PackageSearch } from "lucide-react";
+import { PackageSearch, Loader2 } from "lucide-react";
 import type { CanalInfo, Producto } from "@/lib/types";
 import ProductCard from "./ProductCard";
 
@@ -9,6 +9,7 @@ interface Props {
   canal: string;
   esGeneral: boolean;
   cargando: boolean;
+  preparando?: boolean;
   color: string;
   colorMap: Record<string, string>;
   labelMap: Record<string, string>;
@@ -42,12 +43,23 @@ export default function ProductGrid({
   canal,
   esGeneral,
   cargando,
+  preparando,
   color,
   colorMap,
   labelMap,
   onSelect,
 }: Props) {
   if (!cargando && productos.length === 0) {
+    if (preparando) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-white py-24 text-center">
+          <Loader2 size={40} className="animate-spin text-slate-300" strokeWidth={1.3} />
+          <p className="text-base font-semibold text-slate-600">
+            Preparando el catálogo de WooCommerce…
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-white py-24 text-center">
         <PackageSearch size={48} className="text-slate-300" strokeWidth={1.3} />

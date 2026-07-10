@@ -43,16 +43,18 @@ async def listar_productos(
     orden: str = Query("reciente", description="reciente | stock_desc | stock_asc | precio_desc | precio_asc"),
     estados: str | None = Query(None, description="Filtro de estado, coma-separado: publicado,inactivo"),
     categoria: int | None = Query(None, description="ID de categoría WooCommerce (canal general)"),
+    skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
 
     estados_lista = [e.strip() for e in estados.split(",")] if estados else None
+    skus_lista = [s for s in (skus or "").split(",") if s.strip()] or None
 
     if canal == Canal.GENERAL.value:
         items_raw, total, total_pages = await woocommerce.listar_productos(
             page=page, per_page=per_page, search=search,
-            orden=orden, estados=estados_lista, categoria=categoria,
+            orden=orden, estados=estados_lista, categoria=categoria, skus=skus_lista,
         )
         # Enriquecer con presencia en marketplaces (puntos de colores).
         # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que
@@ -68,12 +70,12 @@ async def listar_productos(
 
     elif canal == Canal.MERCADO_LIBRE.value:
         items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta,
-                                       orden=orden, estados=estados_lista)
+                                       orden=orden, estados=estados_lista, skus_filtro=skus_lista)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.AMAZON.value:
         items_raw, total = amazon.listar(page, per_page, search, solo_publicados,
-                                         orden=orden, estados=estados_lista)
+                                         orden=orden, estados=estados_lista, skus_filtro=skus_lista)
         total_pages = _paginas(total, per_page)
 
     else:  # tiktok / walmart / temu / shein  → ejemplos

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, Filter, RotateCw, Sparkles } from "lucide-react";
+import { Search, Filter, RotateCw, Sparkles, Layers, Loader2 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import MarketplaceTabs from "@/components/MarketplaceTabs";
@@ -33,8 +33,18 @@ export default function OmnicanalPage() {
   const [page, setPage] = useState(1);
   const [busquedaInput, setBusquedaInput] = useState("");
   const [busqueda, setBusqueda] = useState("");
+  const [skusInput, setSkusInput] = useState("");
+  const [skusFiltro, setSkusFiltro] = useState("");
   const [soloPublicados, setSoloPublicados] = useState(false);
   const [cargando, setCargando] = useState(true);
+  // Arranque en frío del backend: el índice puede tardar varios segundos en
+  // construirse. "0 resultados" en ese momento no significa catálogo vacío.
+  const [preparando, setPreparando] = useState(false);
+  const reintentos = useRef(0);
+  // true hasta que la carga de este CANAL termine al menos una vez (con o sin
+  // filtro). Evita ver "No se encontraron productos" al entrar a una pestaña,
+  // antes de que llegue la respuesta real.
+  const primeraCarga = useRef(true);
   const [sel, setSel] = useState<Producto | null>(null);
 
   // Vista, orden y filtros
@@ -92,6 +102,14 @@ export default function OmnicanalPage() {
     return () => clearTimeout(t);
   }, [busquedaInput]);
 
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSkusFiltro(skusInput.trim());
+      setPage(1);
+    }, 500);
+    return () => clearTimeout(t);
+  }, [skusInput]);
+
   // ── Carga de productos ──────────────────────────────────────────────
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
@@ -102,6 +120,7 @@ export default function OmnicanalPage() {
         page,
         perPage: PER_PAGE,
         search: busqueda || undefined,
+        skus: skusFiltro || undefined,
         soloPublicados,
         cuenta: esGeneral ? null : cuenta,
         orden,
@@ -113,11 +132,36 @@ export default function OmnicanalPage() {
       .then((r) => {
         setProductos(r.items);
         setPag(r.paginacion);
+        // Sin búsqueda/filtro y 0 resultados → probablemente el índice todavía
+        // se está construyendo (arranque en frío). Reintenta en vez de mostrar
+        // "no encontrados". Solo aplica al canal GENERAL (WooCommerce);
+        // ML/Amazon leen de MySQL propio y no tienen este arranque en frío.
+        if (esGeneral && !busqueda && !skusFiltro && r.paginacion.total === 0 && reintentos.current < 45) {
+          reintentos.current += 1;
+          setPreparando(true);
+          setTimeout(() => cargar(), 1000);
+          return;
+        }
+        reintentos.current = 0;
+        setPreparando(false);
+        primeraCarga.current = false;
       })
-      .catch(() => {})
+      .catch((exc) => {
+        // El backend puede tardar en levantarse (deploy/reinicio) y rechazar la
+        // conexión: reintentamos igual que con 0 resultados, en vez de dejar la
+        // pantalla en "no encontrados" por un error de red silencioso.
+        if (exc?.name === "AbortError") return;
+        if (reintentos.current < 45) {
+          reintentos.current += 1;
+          setPreparando(true);
+          setTimeout(() => cargar(), 1000);
+        } else {
+          primeraCarga.current = false;
+        }
+      })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [canal, page, busqueda, soloPublicados, cuenta, esGeneral, orden, estados, categoria]);
+  }, [canal, page, busqueda, skusFiltro, soloPublicados, cuenta, esGeneral, orden, estados, categoria]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -136,6 +180,15 @@ export default function OmnicanalPage() {
     setCategoria(null);
     setEstados([]);
     setOrden("reciente");
+    // Buscador y "Filtrar SKUs": cada pestaña empieza limpia (evita que un
+    // filtro de un canal se reaplique sin querer al cambiar a otro).
+    setBusquedaInput("");
+    setBusqueda("");
+    setSkusInput("");
+    setSkusFiltro("");
+    // Nueva pestaña: trátala como "primera carga" hasta que responda.
+    primeraCarga.current = true;
+    reintentos.current = 0;
   }
 
   function irPagina(p: number) {
@@ -254,6 +307,22 @@ export default function OmnicanalPage() {
               />
             </div>
 
+            {/* Filtrar SKUs: multi-término separado por coma */}
+            <div className="relative">
+              <Layers
+                size={15}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                value={skusInput}
+                onChange={(e) => setSkusInput(e.target.value)}
+                placeholder="Filtrar SKUs: TEC-0001, ORG-0885, caminadora…"
+                title="Términos separados por coma: filtra y busca a la vez (SKU completo, parcial o palabra del nombre)"
+                className="w-80 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 font-mono text-xs text-slate-700 outline-none transition-shadow placeholder:font-sans placeholder:text-sm placeholder:text-slate-400 focus:ring-2"
+                style={{ outlineColor: tema.acento }}
+              />
+            </div>
+
             <button
               onClick={cargar}
               title="Recargar"
@@ -294,7 +363,8 @@ export default function OmnicanalPage() {
               productos={productos}
               canal={canal}
               esGeneral={esGeneral}
-              cargando={cargando}
+              cargando={cargando || (productos.length === 0 && primeraCarga.current)}
+              preparando={preparando}
               color={tema.color}
               colorMap={colorMap}
               labelMap={labelMap}
@@ -304,7 +374,8 @@ export default function OmnicanalPage() {
             <ProductList
               productos={productos}
               esGeneral={esGeneral}
-              cargando={cargando}
+              cargando={cargando || (productos.length === 0 && primeraCarga.current)}
+              preparando={preparando}
               color={tema.color}
               colorMap={colorMap}
               labelMap={labelMap}

@@ -39,6 +39,7 @@ _SQL_LISTAR = """
     WHERE (%(solo_publicados)s = 0 OR ap.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR p.sku LIKE %(like)s)
       __ESTADO__
+      __SKUS__
     ORDER BY __ORDEN__
     LIMIT %(limit)s OFFSET %(offset)s
 """
@@ -50,7 +51,22 @@ _SQL_COUNT = """
     WHERE (%(solo_publicados)s = 0 OR ap.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR p.sku LIKE %(like)s)
       __ESTADO__
+      __SKUS__
 """
+
+
+def _clausula_skus(skus_filtro: list[str] | None, prefijo: str) -> tuple[str, dict[str, Any]]:
+    """Igual semántica que en meli.py: "Filtrar SKUs" filtra Y busca a la vez."""
+    terminos = [t.strip() for t in (skus_filtro or []) if t.strip()]
+    if not terminos:
+        return "", {}
+    piezas: list[str] = []
+    params: dict[str, Any] = {}
+    for i, t in enumerate(terminos):
+        clave = f"{prefijo}{i}"
+        piezas.append(f"(p.nombre LIKE %({clave})s OR p.sku LIKE %({clave})s)")
+        params[clave] = f"%{t}%"
+    return f"AND ({' OR '.join(piezas)})", params
 
 
 def _normalizar(row: dict[str, Any]) -> dict[str, Any]:
@@ -95,6 +111,7 @@ def listar(
     solo_publicados: bool = False,
     orden: str = "reciente",
     estados: list[str] | None = None,
+    skus_filtro: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     offset = (page - 1) * per_page
     like = f"%{search}%" if search else None
@@ -105,12 +122,15 @@ def listar(
         elif "inactivo" in estados and "publicado" not in estados:
             estado_sql = " AND (ap.success IS NULL OR ap.success = 0)"
     order_sql = _ORDEN_AZ.get(orden, _ORDEN_AZ["reciente"])
+    skus_sql, skus_params = _clausula_skus(skus_filtro, "sku_")
     params = {
         "limit": per_page, "offset": offset, "search": search, "like": like,
         "solo_publicados": 1 if solo_publicados else 0,
+        **skus_params,
     }
-    sql = _SQL_LISTAR.replace("__ESTADO__", estado_sql).replace("__ORDEN__", order_sql)
-    sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql)
+    sql = (_SQL_LISTAR.replace("__ESTADO__", estado_sql)
+           .replace("__ORDEN__", order_sql).replace("__SKUS__", skus_sql))
+    sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql).replace("__SKUS__", skus_sql)
     try:
         rows = db.fetch_all(sql, params)
         total = db.fetch_scalar(sql_count, params) or 0

@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useState } from "react";
-import { ImageIcon, PackageCheck, PackageX, Truck } from "lucide-react";
+import { ImageIcon, PackageCheck, PackageX, Truck, PackageSearch, Loader2 } from "lucide-react";
 import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
@@ -10,6 +10,7 @@ interface Props {
   productos: Producto[];
   esGeneral: boolean;
   cargando: boolean;
+  preparando?: boolean;
   color: string;
   colorMap: Record<string, string>;
   labelMap: Record<string, string>;
@@ -29,6 +30,7 @@ export default function ProductList({
   productos,
   esGeneral,
   cargando,
+  preparando,
   color,
   colorMap,
   labelMap,
@@ -57,6 +59,31 @@ export default function ProductList({
             <div className="h-4 w-20 rounded bg-slate-100" />
           </div>
         ))}
+      </div>
+    );
+  }
+
+  if (productos.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-200 bg-white py-24 text-center">
+        {preparando ? (
+          <>
+            <Loader2 size={40} className="animate-spin text-slate-300" strokeWidth={1.3} />
+            <p className="text-base font-semibold text-slate-600">
+              Preparando el catálogo de WooCommerce…
+            </p>
+          </>
+        ) : (
+          <>
+            <PackageSearch size={48} className="text-slate-300" strokeWidth={1.3} />
+            <p className="text-base font-semibold text-slate-600">
+              No se encontraron productos
+            </p>
+            <p className="text-sm text-slate-400">
+              Prueba con otra búsqueda o cambia de canal.
+            </p>
+          </>
+        )}
       </div>
     );
   }

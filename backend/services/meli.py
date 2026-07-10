@@ -52,6 +52,7 @@ _SQL_LISTAR = """
       AND (%(solo_publicados)s = 0 OR mp.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR mp.sku LIKE %(like)s)
       __ESTADO__
+      __SKUS__
     ORDER BY __ORDEN__
     LIMIT %(limit)s OFFSET %(offset)s
 """
@@ -64,7 +65,26 @@ _SQL_COUNT = """
       AND (%(solo_publicados)s = 0 OR mp.success = 1)
       AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR mp.sku LIKE %(like)s)
       __ESTADO__
+      __SKUS__
 """
+
+
+def _clausula_skus(skus_filtro: list[str] | None, prefijo: str) -> tuple[str, dict[str, Any]]:
+    """
+    Arma "AND (p.nombre LIKE %(sku_0)s OR mp.sku LIKE %(sku_0)s OR ...)" para la
+    lista de términos de "Filtrar SKUs" (separados por coma en el frontend; cada
+    uno filtra Y busca a la vez: SKU completo, parcial o palabra del nombre).
+    """
+    terminos = [t.strip() for t in (skus_filtro or []) if t.strip()]
+    if not terminos:
+        return "", {}
+    piezas: list[str] = []
+    params: dict[str, Any] = {}
+    for i, t in enumerate(terminos):
+        clave = f"{prefijo}{i}"
+        piezas.append(f"(p.nombre LIKE %({clave})s OR mp.sku LIKE %({clave})s)")
+        params[clave] = f"%{t}%"
+    return f"AND ({' OR '.join(piezas)})", params
 
 
 def _normalizar(row: dict[str, Any]) -> dict[str, Any]:
@@ -110,11 +130,14 @@ def listar(
     cuenta: str | None = None,
     orden: str = "reciente",
     estados: list[str] | None = None,
+    skus_filtro: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Devuelve (items, total) desde el cache MySQL.
     `cuenta` filtra por cuenta de ML (BEKURA=Kubera, SANCORFASHION=San Corpe).
     `orden` ordena por stock/precio. `estados` filtra publicado/inactivo.
+    `skus_filtro`: términos separados por coma ("Filtrar SKUs"), filtra Y busca
+    a la vez (SKU completo, parcial o palabra del nombre).
     """
     offset = (page - 1) * per_page
     like = f"%{search}%" if search else None
@@ -126,12 +149,15 @@ def listar(
         elif "inactivo" in estados and "publicado" not in estados:
             estado_sql = " AND (mp.success IS NULL OR mp.success = 0)"
     order_sql = _ORDEN_ML.get(orden, _ORDEN_ML["reciente"])
+    skus_sql, skus_params = _clausula_skus(skus_filtro, "sku_")
     params = {
         "limit": per_page, "offset": offset, "search": search, "like": like,
         "solo_publicados": 1 if solo_publicados else 0, "cuenta": cuenta,
+        **skus_params,
     }
-    sql = _SQL_LISTAR.replace("__ESTADO__", estado_sql).replace("__ORDEN__", order_sql)
-    sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql)
+    sql = (_SQL_LISTAR.replace("__ESTADO__", estado_sql)
+           .replace("__ORDEN__", order_sql).replace("__SKUS__", skus_sql))
+    sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql).replace("__SKUS__", skus_sql)
     try:
         rows = db.fetch_all(sql, params)
         total = db.fetch_scalar(sql_count, params) or 0

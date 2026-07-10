@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
@@ -34,7 +34,18 @@ export default function ProductosPage() {
   const [page, setPage] = useState(1);
   const [busquedaInput, setBusquedaInput] = useState("");
   const [busqueda, setBusqueda] = useState("");
+  const [skusInput, setSkusInput] = useState("");
+  const [skusFiltro, setSkusFiltro] = useState("");
   const [cargando, setCargando] = useState(true);
+  // Arranque en frío del backend: el índice de WooCommerce puede tardar varios
+  // segundos en construirse. Mientras tanto, "0 resultados" no significa que
+  // no haya productos — reintentamos en silencio en vez de mostrar vacío.
+  const [preparando, setPreparando] = useState(false);
+  const reintentos = useRef(0);
+  // true hasta que la PRIMERA carga de esta página termine (con o sin filtro).
+  // Evita que se vea "No se encontraron productos" en el instante antes de que
+  // llegue la respuesta real, incluso si por alguna razón cargando ya es false.
+  const primeraCarga = useRef(true);
   const [sel, setSel] = useState<Producto | null>(null);
   const [editCosto, setEditCosto] = useState<string | null>(null);
   // Padres con su lista de variantes desplegada (misma mecánica que Crear Productos)
@@ -66,21 +77,56 @@ export default function ProductosPage() {
     return () => clearTimeout(t);
   }, [busquedaInput]);
 
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSkusFiltro(skusInput.trim());
+      setPage(1);
+    }, 500);
+    return () => clearTimeout(t);
+  }, [skusInput]);
+
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
     setCargando(true);
     listarProductos(
-      { canal: "general", page, perPage: PER_PAGE, search: busqueda || undefined },
+      {
+        canal: "general", page, perPage: PER_PAGE,
+        search: busqueda || undefined, skus: skusFiltro || undefined,
+      },
       ctrl.signal,
     )
       .then((r) => {
         setProductos(r.items);
         setPag(r.paginacion);
+        // Sin búsqueda/filtro y 0 resultados → probablemente el índice de
+        // WooCommerce todavía se está construyendo (arranque en frío). Reintenta
+        // en vez de mostrar "no encontrados".
+        if (!busqueda && !skusFiltro && r.paginacion.total === 0 && reintentos.current < 45) {
+          reintentos.current += 1;
+          setPreparando(true);
+          setTimeout(() => cargar(), 1000);
+          return;
+        }
+        reintentos.current = 0;
+        setPreparando(false);
+        primeraCarga.current = false;
       })
-      .catch(() => {})
+      .catch((exc) => {
+        // El backend puede tardar en levantarse (deploy/reinicio) y rechazar la
+        // conexión: reintentamos igual que con 0 resultados, en vez de dejar la
+        // pantalla en "no encontrados" por un error de red silencioso.
+        if (exc?.name === "AbortError") return;
+        if (reintentos.current < 45) {
+          reintentos.current += 1;
+          setPreparando(true);
+          setTimeout(() => cargar(), 1000);
+        } else {
+          primeraCarga.current = false;
+        }
+      })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda]);
+  }, [page, busqueda, skusFiltro]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -124,7 +170,7 @@ export default function ProductosPage() {
         </div>
 
         {/* Buscador */}
-        <div className="mt-5 flex items-center justify-end gap-2">
+        <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
           <div className="relative">
             <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -132,6 +178,16 @@ export default function ProductosPage() {
               onChange={(e) => setBusquedaInput(e.target.value)}
               placeholder="SKU o nombre…"
               className="w-64 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm text-slate-700 outline-none placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-300"
+            />
+          </div>
+          <div className="relative">
+            <Layers size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={skusInput}
+              onChange={(e) => setSkusInput(e.target.value)}
+              placeholder="Filtrar SKUs: TEC-0001, ORG-0885, caminadora…"
+              title="Términos separados por coma: filtra y busca a la vez (SKU completo, parcial o palabra del nombre)"
+              className="w-80 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 font-mono text-xs text-slate-700 outline-none transition-shadow placeholder:font-sans placeholder:text-sm placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-300"
             />
           </div>
           <button
@@ -162,7 +218,7 @@ export default function ProductosPage() {
             <span className="w-8 shrink-0" />
           </div>
 
-          {cargando ? (
+          {cargando || (productos.length === 0 && primeraCarga.current) ? (
             Array.from({ length: 10 }).map((_, i) => (
               <div key={i} className="flex animate-pulse items-center gap-4 border-b border-slate-100 px-4 py-4">
                 <div className="h-16 w-16 rounded-lg bg-slate-100" />
@@ -175,7 +231,14 @@ export default function ProductosPage() {
             ))
           ) : productos.length === 0 ? (
             <div className="px-4 py-16 text-center text-sm text-slate-400">
-              No se encontraron productos.
+              {preparando ? (
+                <span className="inline-flex items-center gap-2">
+                  <Loader2 size={16} className="animate-spin" />
+                  Preparando el catálogo de WooCommerce…
+                </span>
+              ) : (
+                "No se encontraron productos."
+              )}
             </div>
           ) : (
             productos.map((p) => {
