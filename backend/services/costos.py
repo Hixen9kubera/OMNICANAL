@@ -85,40 +85,73 @@ DEFAULT_LISTING_TYPE  = "gold_special"
 DEFAULT_LOGISTIC      = "xd_drop_off"
 DEFAULT_SHIPPING_MODE = "me2"
 
-# ── Tarifas Mercado Envíos México (tabla oficial ML) ────────────────────────────
-# (limite_kg, costo_base_MXN) — se usa max(peso_real, peso_volumetrico)
-_TARIFA_ML = [
-    (0.3, 131), (0.5, 140), (1.0, 149), (2.0, 169),
-    (3.0, 190), (4.0, 206), (5.0, 220), (7.0, 245),
-    (9.0, 279), (12.0, 323), (15.0, 380), (20.0, 445),
-    (30.0, 563), (40.0, 698), (50.0, 903),
+# ── Tarifas Mercado Envíos México (tabla oficial ML, 2026-07) ───────────────────
+# Costo DIRECTO por (tramo de peso × tramo de precio del producto) — ya no es una
+# base × factor aproximado, es la tabla real (COSTOSENVIOML.csv). Se usa
+# max(peso_real, peso_volumétrico). Columnas de precio:
+#   0: $0–98.99   1: $99–198.99   2: $199–298.99
+#   3: $299–498.99  4: $499–998.99  5: desde $999
+_TARIFA_ML: list[tuple[float, list[float]]] = [
+    (0.3,   [25.00,   32.00,   35.00,   52.40,   65.50,   65.50]),
+    (0.5,   [28.50,   34.00,   38.00,   56.00,   70.00,   70.00]),
+    (1.0,   [33.00,   38.00,   39.00,   59.60,   74.50,   74.50]),
+    (2.0,   [35.00,   40.00,   41.00,   67.60,   84.50,   84.50]),
+    (3.0,   [37.00,   46.00,   48.00,   76.00,   88.50,   95.00]),
+    (4.0,   [39.00,   50.00,   54.00,   82.40,   95.50,   103.00]),
+    (5.0,   [40.00,   53.00,   59.00,   88.00,   102.50,  110.00]),
+    (7.0,   [45.00,   59.00,   70.00,   98.00,   122.50,  122.50]),
+    (9.0,   [51.00,   67.00,   81.00,   111.60,  139.50,  139.50]),
+    (12.0,  [59.00,   78.00,   96.00,   129.20,  161.50,  161.50]),
+    (15.0,  [69.00,   92.00,   113.00,  152.00,  190.00,  190.00]),
+    (20.0,  [81.00,   108.00,  140.00,  178.00,  222.50,  222.50]),
+    (30.0,  [102.00,  137.00,  195.00,  225.20,  281.50,  281.50]),
+    (40.0,  [126.00,  170.00,  250.00,  279.20,  349.00,  349.00]),
+    (50.0,  [163.00,  220.00,  305.00,  361.20,  451.50,  451.50]),
+    (60.0,  [183.00,  247.00,  334.00,  405.60,  507.00,  507.00]),
+    (70.0,  [188.00,  254.00,  363.00,  416.40,  520.50,  520.50]),
+    (80.0,  [196.00,  264.00,  392.00,  433.60,  542.00,  542.00]),
+    (90.0,  [220.00,  297.00,  421.00,  487.60,  609.50,  609.50]),
+    (100.0, [254.00,  343.00,  450.00,  562.40,  703.00,  703.00]),
+    (125.0, [288.00,  389.00,  523.00,  637.20,  796.50,  796.50]),
+    (150.0, [382.00,  516.00,  694.00,  846.00,  1057.50, 1057.50]),
+    (175.0, [476.00,  643.00,  865.00,  1054.80, 1318.50, 1318.50]),
+    (200.0, [570.00,  770.00,  1036.00, 1263.60, 1579.50, 1579.50]),
+    (225.0, [664.00,  897.00,  1207.00, 1472.40, 1840.50, 1840.50]),
+    (250.0, [758.00,  1024.00, 1378.00, 1681.20, 2101.50, 2101.50]),
+    (275.0, [852.00,  1151.00, 1549.00, 1890.00, 2362.50, 2362.50]),
+    (300.0, [946.00,  1278.00, 1720.00, 2098.40, 2623.00, 2623.00]),
+    (325.0, [1040.00, 1406.00, 1892.00, 2308.00, 2885.00, 2885.00]),
+    (350.0, [1134.00, 1533.00, 2063.00, 2516.80, 3146.00, 3146.00]),
+    # Más de 350 kg: la tabla oficial repite la fila de 325–350 (sin tramo propio).
 ]
 
+# Tope superior de cada tramo de precio, en el mismo orden que las columnas arriba.
+_TRAMOS_PRECIO = [98.99, 198.99, 298.99, 498.99, 998.99]
 
-def _tarifa_base_ml(peso_kg: float) -> float:
-    for limite, costo in _TARIFA_ML:
+
+def _fila_tarifa_ml(peso_kg: float) -> list[float]:
+    for limite, costos_fila in _TARIFA_ML:
         if peso_kg <= limite:
-            return costo
-    return _TARIFA_ML[-1][1]
+            return costos_fila
+    return _TARIFA_ML[-1][1]  # >350 kg → misma fila que 325–350
+
+
+def _columna_precio_ml(precio: float) -> int:
+    for i, tope in enumerate(_TRAMOS_PRECIO):
+        if precio <= tope:
+            return i
+    return len(_TRAMOS_PRECIO)  # última columna: "Desde $999"
 
 
 def calc_fee_envio_ml(peso_kg: float, precio: float) -> float:
     """
-    Fee de envío ML: tarifa base por peso × factor de descuento por tramo de precio.
-      precio >= 499 → paga 50 % del base
-      precio >= 299 → paga 40 % del base
-      precio <  299 → paga 70 % del base
-    Como el factor depende del precio y el precio depende del fee, se resuelve por
-    iteración en `calcular_pricing`.
+    Fee de envío ML: lookup DIRECTO en la tabla oficial (peso efectivo × tramo de
+    precio del producto) — sin aproximaciones. Como la columna depende del precio
+    y el precio depende del fee, se resuelve por iteración en `calcular_pricing`.
     """
-    base = _tarifa_base_ml(peso_kg)
-    if precio >= 499:
-        factor = 0.50
-    elif precio >= 299:
-        factor = 0.40
-    else:
-        factor = 0.70
-    return round(base * factor, 2)
+    fila = _fila_tarifa_ml(peso_kg)
+    col = _columna_precio_ml(precio)
+    return round(fila[col], 2)
 
 
 def calc_precio_sugerido(costo: float, pct: float, fee_envio: float,
