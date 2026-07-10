@@ -132,7 +132,7 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
       setFresco(true);
       reflejarComision(r.calculo);
     } catch {
-      setMsg({ ok: false, texto: "No se pudo calcular: falta el costo (costo producto o dimensiones)." });
+      setMsg({ ok: false, texto: "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría." });
     } finally {
       setRegenerando(false);
     }
@@ -211,7 +211,7 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         <div>
           <Campo label="Comisión ML (%)" value={comision} onChange={setComision} />
           {calc?.comision_estimada && !comision.trim() && (
-            <p className="mt-1 text-[10px] text-amber-600">estimada (sin token ML)</p>
+            <p className="mt-1 text-[10px] text-amber-600">estimada · por categoría (histórico)</p>
           )}
         </div>
         <div>

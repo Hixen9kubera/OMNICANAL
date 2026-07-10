@@ -294,7 +294,7 @@ async def costos_preview(sku: str, req: RecalcularCostos):
         req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
     if not calc:
         raise HTTPException(
-            422, "No se pudo calcular: falta el costo base (costo_producto o dimensiones).")
+            422, "No se pudo calcular: falta el costo (costo producto/dimensiones), o no se encontró la comisión de la categoría — ingresa la Comisión ML (%).")
     return {"ok": True, "sku": sku, "calculo": calc}
 
 
@@ -341,7 +341,7 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
         req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
     if not fila:
         raise HTTPException(
-            422, "No se pudo recalcular: falta el costo base (costo_producto o dimensiones).")
+            422, "No se pudo recalcular: falta el costo (costo producto/dimensiones), o no hay comisión para la categoría — ingresa la Comisión ML (%).")
     synced = await _sync_woo_costo(sku, fila) if req.sincronizar_woo else False
     return {"ok": True, "sku": sku, "finales": fila, "sincronizado_woo": synced}
 
@@ -465,7 +465,7 @@ async def costos_bulk(req: BulkCostos):
             continue
         if not fila:
             resultados.append({"sku": it.sku, "ok": False,
-                               "error": "sin costo base (falta costo_producto/dims)"})
+                               "error": "sin costo base o sin comisión de categoría (ingresar Comisión %)"})
             continue
         synced = False
         if req.sincronizar_woo:
