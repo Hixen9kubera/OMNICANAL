@@ -683,25 +683,36 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                 </section>
               )}
 
-              {/* CATEGORÍA (Mercado Libre con subniveles + WooCommerce) */}
+              {/* CATEGORÍA (Mercado Libre editable + WooCommerce) */}
               <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                {meta?.categoria_ml?.niveles?.length ? (
-                  <div>
-                    <div className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                      Categoría Mercado Libre
-                      {meta.categoria_ml.category_id && <span className="rounded bg-slate-100 px-1.5 font-mono text-[10px] normal-case tracking-normal text-slate-500">{meta.categoria_ml.category_id}</span>}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1 text-sm font-semibold">
-                      {meta.categoria_ml.niveles.map((n, i, arr) => (
-                        <span key={i} className="flex items-center gap-1">
-                          {i > 0 && <ChevronRight size={14} className="text-slate-300" />}
-                          <span className={i === arr.length - 1 ? "" : "text-slate-500"} style={i === arr.length - 1 ? { color: tema.acento } : undefined}>{n}</span>
-                        </span>
-                      ))}
-                    </div>
+                {/* Categoría ML editable — define la comisión del cálculo del costo */}
+                <div>
+                  <label className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                    Categoría Mercado Libre <span className="normal-case tracking-normal text-slate-300">(ID — para el costo)</span>
+                  </label>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      value={catMlId}
+                      onChange={(e) => setCatMlId(e.target.value)}
+                      placeholder="MLM…"
+                      className="w-40 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:ring-2"
+                      style={{ outlineColor: tema.acento }}
+                    />
+                    {meta?.categoria_ml?.niveles?.length ? (
+                      <div className="flex flex-wrap items-center gap-1 text-sm font-semibold">
+                        {meta.categoria_ml.niveles.map((n, i, arr) => (
+                          <span key={i} className="flex items-center gap-1">
+                            {i > 0 && <ChevronRight size={14} className="text-slate-300" />}
+                            <span className={i === arr.length - 1 ? "" : "text-slate-500"} style={i === arr.length - 1 ? { color: tema.acento } : undefined}>{n}</span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400">Sin categoría ML — pega el ID (MLM…) para poder generar el costo.</span>
+                    )}
                   </div>
-                ) : null}
-                <div className={meta?.categoria_ml?.niveles?.length ? "border-t border-slate-100 pt-3" : ""}>
+                </div>
+                <div className="border-t border-slate-100 pt-3">
                   <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</div>
                   {categoriaWC.length ? (
                     <div className="flex flex-wrap items-center gap-1 text-sm text-slate-700">
@@ -837,19 +848,6 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                       <input type="checkbox" checked={incluirEnvio} onChange={(e) => setIncluirEnvio(e.target.checked)} className="h-4 w-4" style={{ accentColor: tema.acento }} />
                       Sumar al precio
                     </label>
-                  </div>
-                  {/* Categoría ML (editable) — define la comisión del cálculo */}
-                  <div className="col-span-2 sm:col-span-4">
-                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                      Categoría Mercado Libre (para el costo)
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <input value={catMlId} onChange={(e) => setCatMlId(e.target.value)} placeholder="MLM…"
-                        className="w-40 rounded-lg border border-slate-200 px-3 py-2 font-mono text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
-                      {meta?.categoria_ml?.niveles?.length ? (
-                        <span className="truncate text-xs text-slate-500">{meta.categoria_ml.niveles.join(" › ")}</span>
-                      ) : null}
-                    </div>
                   </div>
                 </div>
 
