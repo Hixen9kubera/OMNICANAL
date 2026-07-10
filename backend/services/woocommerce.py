@@ -296,6 +296,11 @@ async def listar_productos(
                 if f["precio_oferta"] is not None:
                     it["precio_oferta"] = f["precio_oferta"]
                 it["costo"] = f["costo"]
+                # Todas las variantes son la MISMA pieza física (solo cambia
+                # color/talla/cantidad) — comparten el costo del padre, igual
+                # que el precio se replica a todas al guardar.
+                for v in it.get("variantes", []):
+                    v["costo"] = it["costo"]
     except Exception as exc:  # noqa: BLE001
         log.warning("listar_productos: no se pudo refrescar precio/costo desde DB: %s", exc)
 
