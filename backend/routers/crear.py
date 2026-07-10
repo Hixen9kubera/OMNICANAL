@@ -180,27 +180,23 @@ async def buscar_categorias_ml(
     from config import settings
     from services import meli
 
-    cuenta = costos.DEFAULT_ACCOUNT
-    token = meli._access_token(cuenta) or meli._access_token()
-    if not token:
-        raise HTTPException(503, "Sin token de Mercado Libre.")
+    # Token de ml_tokens (Fernet, llave en .env). domain_discovery y /categories son
+    # PÚBLICOS, así que si el token está vencido/inválido reintentamos sin auth.
+    token = meli._access_token(costos.DEFAULT_ACCOUNT) or meli._access_token()
 
     async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=20.0) as cli:
-        async def _discovery(tk: str):
-            return await cli.get(
-                f"/sites/{settings.ml_site_id}/domain_discovery/search",
-                params={"limit": limite, "q": q},
-                headers={"Authorization": f"Bearer {tk}"})
+        async def _get(path: str, params: dict | None = None):
+            h = {"Authorization": f"Bearer {token}"} if token else {}
+            r = await cli.get(path, params=params, headers=h)
+            if r.status_code in (401, 403) and h:  # token inválido → público
+                r = await cli.get(path, params=params)
+            return r
+
         try:
-            r = await _discovery(token)
-            if r.status_code == 401:  # token vencido → refrescar y reintentar
-                nuevo = await run_in_threadpool(meli.refrescar_token, cuenta)
-                if nuevo:
-                    token = nuevo
-                    r = await _discovery(token)
+            r = await _get(f"/sites/{settings.ml_site_id}/domain_discovery/search",
+                           {"limit": limite, "q": q})
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(502, f"Error consultando Mercado Libre: {exc}")
-        headers = {"Authorization": f"Bearer {token}"}
         cands = r.json() if r.status_code == 200 else []
 
         vistos: set[str] = set()
@@ -219,7 +215,7 @@ async def buscar_categorias_ml(
 
         async def _path(cid: str) -> str:
             try:
-                rc = await cli.get(f"/categories/{cid}", headers=headers)
+                rc = await _get(f"/categories/{cid}")
                 if rc.status_code == 200:
                     pr = rc.json().get("path_from_root") or []
                     return " > ".join(p.get("name", "") for p in pr)
