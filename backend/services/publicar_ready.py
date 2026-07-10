@@ -17,9 +17,12 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from services import db, meli, wp_db
 from vendor.amazon_ready import attribute_mapper as amz_mapper
@@ -102,6 +105,84 @@ def configurar() -> None:
     # solo no se persiste de vuelta en WC.
     publisher_core.configurar(save_backlog_fn=_backlog_ml)
     _configurado = True
+
+
+# ── Garantía de que la publicación quede PAUSADA ─────────────────────────────
+#
+# `POST /items` IGNORA el `status: paused` del payload: Mercado Libre crea el
+# item ACTIVO salvo en categorías de catálogo. Medido sobre ml_backlog: de las
+# creaciones con HTTP 201, 2670 respondieron `active` y solo 310 `paused`, aun
+# cuando el payload llevaba `paused` en el 100% de los casos.
+#
+# Lo único que las pausa es el `pause_item()` posterior, y su resultado no se
+# verificaba ni se registraba: si ML lo rechazaba (p. ej. mientras el item está
+# en `picture_download_pending`) o había timeout, la publicación se quedaba
+# activa en silencio. Aquí se verifica contra ML y se reintenta.
+
+_INTENTOS_PAUSA = 4
+
+
+def _estado_item(item_id: str, token: str) -> tuple[str | None, list[str]]:
+    """(status, sub_status) del item según ML, o (None, []) si no se pudo leer."""
+    try:
+        r = requests.get(
+            f"{ml_api.ML_API_BASE}/items/{item_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"attributes": "status,sub_status"},
+            timeout=15,
+        )
+        if r.status_code != 200:
+            return None, []
+        j = r.json()
+        sub = j.get("sub_status") or []
+        return j.get("status"), sub if isinstance(sub, list) else [sub]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo leer el estado de %s: %s", item_id, exc)
+        return None, []
+
+
+def asegurar_pausado(item_id: str, token: str) -> dict[str, Any]:
+    """
+    Deja el item en `paused`, verificándolo contra ML. Devuelve el desenlace.
+
+    Bloqueante (usa `requests`): llamar con `asyncio.to_thread`.
+    """
+    http_pausa: int | None = None
+    for intento in range(_INTENTOS_PAUSA):
+        status, sub = _estado_item(item_id, token)
+        if status == "paused":
+            return {"pausado": True, "status": status, "sub_status": sub,
+                    "intentos": intento, "http_pausa": http_pausa}
+        http_pausa = ml_api.pause_item(item_id, token)
+        log.info("pause_item(%s) intento %d → HTTP %s (status previo=%s, sub=%s)",
+                 item_id, intento + 1, http_pausa, status, sub)
+        # ML tarda en aceptar el cambio mientras descarga las imágenes.
+        time.sleep(1.5 * (intento + 1))
+
+    status, sub = _estado_item(item_id, token)
+    pausado = status == "paused"
+    if not pausado:
+        log.error("El item %s quedó en status=%r (sub=%s) tras %d intentos de pausa",
+                  item_id, status, sub, _INTENTOS_PAUSA)
+    return {"pausado": pausado, "status": status, "sub_status": sub,
+            "intentos": _INTENTOS_PAUSA, "http_pausa": http_pausa}
+
+
+def _anotar_pausa_backlog(item_id: str, pausa: dict[str, Any]) -> None:
+    """Deja constancia en `ml_backlog` cuando el item NO pudo pausarse."""
+    if pausa.get("pausado"):
+        return
+    aviso = (f"NO_PAUSADO: quedó status={pausa.get('status')!r} "
+             f"sub_status={pausa.get('sub_status')} tras {pausa.get('intentos')} intentos "
+             f"(último pause_item → HTTP {pausa.get('http_pausa')})")
+    try:
+        with db.get_cursor() as cur:
+            cur.execute(
+                "UPDATE ml_backlog SET error=%s WHERE ml_item_id=%s ORDER BY id DESC LIMIT 1",
+                (aviso, item_id),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo anotar la pausa en ml_backlog (%s): %s", item_id, exc)
 
 
 # ── Construcción del `prod` con forma WooCommerce ────────────────────────────
@@ -256,14 +337,31 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         except Exception as exc:  # noqa: BLE001
             log.exception("publish_product reventó (%s / %s)", cuenta, sku)
             r = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
-        resultados.append({
+
+        item_id = r.get("ml_item_id") or ""
+        fila: dict[str, Any] = {
             "cuenta":    cuenta,
-            "item_id":   r.get("ml_item_id") or "",
+            "item_id":   item_id,
             "ok":        bool(r.get("success")),
             "error":     r.get("error"),
             "ml_status": r.get("ml_status"),
             "url":       r.get("ml_url"),
-        })
+        }
+
+        # Toda alta debe quedar PAUSADA. ML ignora el `status` del POST, así que
+        # se verifica y reintenta, y se avisa si no se logró.
+        if fila["ok"] and item_id:
+            pausa = await asyncio.to_thread(asegurar_pausado, item_id, token)
+            fila["pausado"] = pausa["pausado"]
+            fila["estado_ml"] = pausa["status"]
+            if not pausa["pausado"]:
+                await asyncio.to_thread(_anotar_pausa_backlog, item_id, pausa)
+                fila["aviso"] = (
+                    f"La publicación se creó pero quedó {pausa['status'] or 'en estado desconocido'}: "
+                    f"páusala a mano en Mercado Libre ({item_id})."
+                )
+
+        resultados.append(fila)
 
     return {
         "ok": all(r["ok"] for r in resultados),

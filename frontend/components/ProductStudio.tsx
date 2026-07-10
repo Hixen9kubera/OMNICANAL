@@ -1022,19 +1022,42 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
 
                   {resultadoPub && resultadoPub.resultados?.length ? (
                     <div className="space-y-1.5">
-                      {resultadoPub.resultados.map((r, i) => (
-                        <div key={i} className={["flex items-start gap-2 rounded-lg px-3 py-2 text-sm", r.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"].join(" ")}>
-                          {r.ok ? <CheckCircle2 size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
+                      {resultadoPub.resultados.map((r, i) => {
+                        // Creada pero NO pausada: no es un éxito limpio, hay que avisar.
+                        const activa = r.ok && r.pausado === false;
+                        const tono = !r.ok
+                          ? "bg-red-50 text-red-600"
+                          : activa
+                            ? "bg-amber-50 text-amber-700"
+                            : "bg-emerald-50 text-emerald-700";
+                        return (
+                        <div key={i} className={["flex items-start gap-2 rounded-lg px-3 py-2 text-sm", tono].join(" ")}>
+                          {r.ok && !activa ? <CheckCircle2 size={15} className="mt-0.5 shrink-0" /> : <AlertTriangle size={15} className="mt-0.5 shrink-0" />}
                           <div>
                             <strong>{r.cuenta}:</strong>{" "}
-                            {r.ok
-                              ? resultadoPub.modo === "crear"
-                                ? `publicado ${r.item_id ?? ""}`
-                                : "actualizado"
-                              : (r.error || `HTTP ${r.ml_status ?? "?"}`)}
+                            {!r.ok
+                              ? (r.error || `HTTP ${r.ml_status ?? "?"}`)
+                              : resultadoPub.modo === "crear"
+                                ? (
+                                  <>
+                                    publicado {r.item_id ?? ""}{" "}
+                                    {r.pausado ? (
+                                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                                        pausada
+                                      </span>
+                                    ) : (
+                                      <span className="rounded bg-amber-200 px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                                        {r.estado_ml ?? "activa"}
+                                      </span>
+                                    )}
+                                  </>
+                                )
+                                : "actualizado"}
+                            {r.aviso && <div className="mt-0.5 text-xs">{r.aviso}</div>}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                       <p className="text-[11px] text-slate-400">Registrado en <code>{resultadoPub.registrado_en}</code>.</p>
                     </div>
                   ) : resultadoPub ? (

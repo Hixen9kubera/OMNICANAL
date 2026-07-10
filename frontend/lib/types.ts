@@ -423,6 +423,10 @@ export interface PublicarResultadoCuenta {
   ok: boolean;
   error?: string | null;
   ml_status?: number | null;
+  // ML ignora el `status: paused` del POST: el backend verifica y reintenta.
+  pausado?: boolean;
+  estado_ml?: string | null;
+  aviso?: string;
 }
 
 export interface PublicarResultado {
