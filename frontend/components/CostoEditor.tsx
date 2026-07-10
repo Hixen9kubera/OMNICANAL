@@ -77,6 +77,9 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         // costo guardado en MXN → USD para editar.
         setCostoProducto((p) => p || mxnToUsd(num(cv.costo_producto ?? cf.costo_producto) ?? null, DEFAULT_TC));
         setCatMlId((c) => c || s(cf.ml_cat_id));
+        // Comisión ya guardada — antes solo se reflejaba tras Regenerar/Guardar.
+        const pctGuardado = num(cf.pct_comision);
+        if (pctGuardado != null) setComision((c) => c || String(Math.round(pctGuardado * 1000) / 10));
         setPeso((p) => p || s(cv.peso ?? cf.peso));
         setLargo((p) => p || s(cv.largo ?? cf.largo));
         setAncho((p) => p || s(cv.ancho ?? cf.ancho));

@@ -243,6 +243,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         // Categoría usada para costear (costos_finales) — respaldo si el postmeta
         // de Woo aún no la tiene (ej. la escritura no llegó o el producto es nuevo).
         if (cf.ml_cat_id) setCatMlId((c) => c || String(cf.ml_cat_id));
+        // Comisión ya guardada (costos_finales.pct_comision) — antes solo se
+        // reflejaba tras Regenerar/Guardar; al abrir el Estudio quedaba vacía
+        // aunque el badge ya mostrara el % correcto.
+        const pctGuardado = num(cf.pct_comision);
+        if (pctGuardado != null) setComision((c) => c || String(Math.round(pctGuardado * 1000) / 10));
         if (d.constantes?.margen != null) setMargen(String(Math.round(d.constantes.margen * 100)));
         // Desglose actual (sin recalcular) para que el bloque no salga vacío.
         setCostoCalc({
