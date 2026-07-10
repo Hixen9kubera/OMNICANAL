@@ -457,4 +457,17 @@ export function eliminarImagenGaleria(
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/eliminar`, body);
 }
 
+// ── Guardar contenido (título/descripción/atributos) a WooCommerce (General) ──
+export function guardarContenido(
+  sku: string,
+  body: {
+    wc_id: number | null;
+    titulo?: string;
+    descripcion?: string;
+    atributos?: { nombre: string; valor: string }[];
+  },
+): Promise<{ ok: boolean; sku: string; wc_id: number }> {
+  return postJSON(`/api/productos/${encodeURIComponent(sku)}/contenido`, body);
+}
+
 export const API_BASE = BASE;

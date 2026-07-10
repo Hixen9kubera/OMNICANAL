@@ -412,4 +412,18 @@ async def atributos_amazon(sku: str, wc_id: int, campos: dict[str, Any], mp: str
             {"value": str(b)[:500], "language_tag": "es_MX", "marketplace_id": mp}
             for b in bullets[:5]
         ]
+
+    # Imágenes: Amazon las ingiere por URL pública (las MISMAS que usa ML). El
+    # mapper del vendor no las agrega, así que se inyectan aquí (en el adaptador):
+    # 1 principal + hasta 8 secundarias (Amazon admite 9). Son atributos estándar
+    # del schema, así que sobreviven el filtro de _amazon_attrs_final.
+    imgs = [u for u in (prod.get("images") or []) if u]
+    if imgs:
+        attrs["main_product_image_locator"] = [
+            {"media_location": imgs[0], "marketplace_id": mp}
+        ]
+        for i, url in enumerate(imgs[1:9], start=1):
+            attrs[f"other_product_image_locator_{i}"] = [
+                {"media_location": url, "marketplace_id": mp}
+            ]
     return attrs

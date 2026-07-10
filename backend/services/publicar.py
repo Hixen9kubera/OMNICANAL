@@ -170,7 +170,7 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
     if canal == "mercado_libre":
         return await _preview_ml(req)
     if canal == "amazon":
-        return _preview_amazon(req)
+        return await _preview_amazon(req)
     return {"ok": False, "canal": canal, "motivo": "Canal no soportado todavía (ML y Amazon)."}
 
 
@@ -249,9 +249,10 @@ def _product_type_amazon(sku: str | None) -> str | None:
         return None
 
 
-def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
+async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     sku = req.get("sku")
+    wc_id = req.get("wc_id")
     pt = _product_type_amazon(sku)
     title = (campos.get("titulo") or "").strip()
     bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
@@ -263,6 +264,24 @@ def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
         avisos.append("Sin precio: revisa el precio regular antes de publicar.")
     if len(title) > AMZ_TITULO_MAX:
         avisos.append(f"El título tiene {len(title)} caracteres (Amazon máx {AMZ_TITULO_MAX}).")
+
+    # Payload REAL para verlo antes de confirmar. schema=None → sin llamar a la
+    # Definitions API de SP-API (preview rápido); trae precio (regular), atributos
+    # e IMÁGENES tal como se enviarán al publicar.
+    payload = None
+    try:
+        attributes = await _amazon_attrs_final(
+            str(sku), wc_id, campos, settings.amazon_marketplace_id, pt, None
+        )
+        n_imgs = sum(1 for k in attributes if "_image_locator" in k)
+        if n_imgs:
+            avisos.append(f"{n_imgs} imagen(es) se enviarán a Amazon.")
+        else:
+            avisos.append("El producto no tiene imágenes en WooCommerce: el listing quedará sin fotos.")
+        payload = {"productType": pt or "(auto)", "requirements": "LISTING", "attributes": attributes}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("preview amazon attrs (%s): %s", sku, exc)
+
     avisos.append("Publicar CREA el listing en Amazon. Si faltan atributos obligatorios de la categoría, Amazon lo rechazará y verás el motivo aquí y en amazon_backlog.")
     return {
         "ok": True, "canal": "amazon", "sku": sku,
@@ -270,6 +289,7 @@ def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": f"Bullet {i + 1}", "valor": b} for i, b in enumerate(bullets)],
         "operaciones": {"titulo": bool(title), "bullets": len(bullets), "descripcion": bool(desc)},
+        "payload": payload,
         "avisos": avisos,
     }
 

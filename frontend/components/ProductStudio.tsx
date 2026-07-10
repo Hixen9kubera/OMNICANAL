@@ -45,6 +45,7 @@ import {
   costoPreview,
   eliminarImagenGaleria,
   galeriaProducto,
+  guardarContenido,
   mejorarIA,
   precioCompetencia,
   procesarImagenesIA,
@@ -61,6 +62,7 @@ import {
   setMejora as saveMejora,
   getCompetencia as getCompStore,
   setCompetencia as saveCompetencia,
+  limpiarBorrador,
 } from "@/lib/studioStore";
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
 
@@ -106,9 +108,17 @@ const str = (v: number | null | undefined) => (v === null || v === undefined ? "
 // Texto=traducir/quitar logos, Modelo=reemplazar persona por una latina.
 const FLAGS_IMG: { key: keyof FlagsImagen; label: string; Icon: LucideIcon }[] = [
   { key: "quitar_fondo", label: "Fondo", Icon: Eraser },
-  { key: "traducir_texto", label: "Texto", Icon: Languages },
+  { key: "traducir_texto", label: "Traducir / quitar logo", Icon: Languages },
   { key: "cambiar_modelo", label: "Modelo", Icon: UserRound },
 ];
+
+// Límite de caracteres del TÍTULO por canal (para no exceder al publicar).
+// Mercado Libre: 60 (límite duro de ML). Amazon: 200 (límite duro de la API;
+// el estándar de Kubera es ~75, se marca en rojo al pasar el tope).
+const LIMITE_TITULO: Record<string, number> = {
+  mercado_libre: 60,
+  amazon: 200,
+};
 
 export default function ProductStudio({ sku, producto, canales, onClose, onGuardado }: Props) {
   const { data, cargando, recargar } = useDetalleProducto(sku, producto);
@@ -136,6 +146,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const [procesandoIA, setProcesandoIA] = useState(false);
   const [eliminandoId, setEliminandoId] = useState<number | null>(null);
   const pollImgRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Guardar contenido (título/descripción/atributos) a WooCommerce — canal General.
+  const [guardandoContenido, setGuardandoContenido] = useState(false);
+  const [contenidoMsg, setContenidoMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
   // Al abrir/cambiar de producto: cargar la galería (con ids) y limpiar estado.
   useEffect(() => {
@@ -659,9 +673,46 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     }
   }
 
+  async function guardarContenidoWoo() {
+    if (!sku) return;
+    setGuardandoContenido(true);
+    setContenidoMsg(null);
+    try {
+      await guardarContenido(sku, {
+        wc_id: data?.wc_id ?? null,
+        titulo,
+        descripcion,
+        // Todos los atributos custom (los editados + los de peso/dims sin tocar):
+        // el backend preserva los de variación y reemplaza estos custom.
+        atributos,
+      });
+      setContenidoMsg({ ok: true, texto: "Contenido guardado en WooCommerce." });
+      onGuardado?.();
+    } catch {
+      setContenidoMsg({ ok: false, texto: "No se pudo guardar el contenido." });
+    } finally {
+      setGuardandoContenido(false);
+    }
+  }
+
+  function descartarBorrador() {
+    if (!sku) return;
+    limpiarBorrador(sku);
+    // Recarga el contenido desde WooCommerce/postmeta (descarta ediciones locales).
+    cargandoCampos.current = true;
+    setTitulo(data?.nombre || "");
+    setDescripcion(data?.descripcion || "");
+    setAtributos(meta?.atributos ?? []);
+    setHighlights("");
+    setBullets([]);
+    setContenidoMsg({ ok: true, texto: "Borrador descartado · contenido recargado de WooCommerce." });
+    setTimeout(() => { cargandoCampos.current = false; }, 0);
+  }
+
   if (!sku) return null;
 
   const imagenes = data?.imagenes?.length ? data.imagenes : data?.imagen ? [data.imagen] : [];
+  const limiteTitulo = LIMITE_TITULO[canal];
 
   // Galería del editor: usa la galería con ids si ya cargó; si no, cae a las urls
   // del detalle (solo lectura hasta que lleguen los ids desde el backend).
@@ -979,7 +1030,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                         {/* Popover al hover: seleccionar flags + eliminar */}
                         {galEditable && !!img.id && (
                           <div className="absolute bottom-full left-1/2 z-30 hidden -translate-x-1/2 pb-2 group-hover:block">
-                            <div className="w-44 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                            <div className="w-52 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
                               <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Editar con IA</div>
                               <div className="space-y-1">
                                 {FLAGS_IMG.map(({ key, label, Icon }) => {
@@ -1030,7 +1081,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                           : "Procesar con IA"}
                     </button>
                     <p className="mt-1.5 text-center text-[11px] text-slate-400">
-                      Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Texto</strong> (traducir + quitar logos) o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
+                      Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir / quitar logo</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
                     </p>
                   </>
                 )}
@@ -1038,9 +1089,25 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
 
               {/* TÍTULO */}
               <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="mb-1.5 flex items-center justify-between">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
                   <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Título</label>
-                  <span className="text-[11px] text-slate-400">{titulo.length} car.</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={descartarBorrador}
+                      title="Descarta tus ediciones locales y recarga el contenido desde WooCommerce"
+                      className="flex items-center gap-1 text-[11px] font-semibold text-slate-400 transition-colors hover:text-slate-600"
+                    >
+                      <RefreshCw size={11} /> Descartar borrador
+                    </button>
+                    {limiteTitulo ? (
+                      <span className={["text-[11px] font-semibold tabular-nums", titulo.length > limiteTitulo ? "text-red-500" : "text-slate-400"].join(" ")}>
+                        {titulo.length}/{limiteTitulo}{titulo.length > limiteTitulo ? " · excede" : ""}
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-slate-400">{titulo.length} car.</span>
+                    )}
+                  </div>
                 </div>
                 <input value={titulo} onChange={(e) => setTitulo(e.target.value)}
                   className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
@@ -1238,6 +1305,30 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   </div>
                 </section>
               )}
+
+              {/* GUARDAR CONTENIDO — solo canal General (persiste a WooCommerce) */}
+              {esGeneral && (
+                <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <button
+                    onClick={guardarContenidoWoo}
+                    disabled={guardandoContenido || !data}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
+                  >
+                    {guardandoContenido ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                    {guardandoContenido ? "Guardando…" : "Guardar contenido"}
+                  </button>
+                  {contenidoMsg && (
+                    <div className={["mt-2 flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", contenidoMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
+                      {contenidoMsg.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                      {contenidoMsg.texto}
+                    </div>
+                  )}
+                  <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                    Guarda <strong>título, descripción y atributos</strong> en WooCommerce. Los borradores por canal se guardan solos y sobreviven al recargar la página.
+                  </p>
+                </section>
+              )}
             </>
           )}
         </div>
@@ -1312,9 +1403,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   {previewPub.payload && (
                     <div>
                       <div className="mb-1 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                        Payload · POST /items
+                        Payload · {esAmazon ? "PUT /listings/2021-08-01/items" : "POST /items"}
                         <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[9px] font-semibold normal-case tracking-normal text-emerald-700">
-                          publicaciones_ready
+                          {esAmazon ? "Amazon SP-API" : "publicaciones_ready"}
                         </span>
                       </div>
                       <pre className="max-h-64 overflow-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-[10px] leading-relaxed text-slate-600">

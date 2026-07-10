@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from core.marketplaces import Canal, config_canal, es_canal_valido
 from models.schemas import (
@@ -245,6 +246,37 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         detalle.canales.append(_aplicar_inv(Canal.AMAZON.value, "", dc))
 
     return detalle
+
+
+class ContenidoReq(BaseModel):
+    wc_id: int | None = None
+    titulo: str | None = None
+    descripcion: str | None = None
+    atributos: list[dict] | None = None  # [{nombre, valor}] — atributos custom
+
+
+@router.post("/{sku}/contenido")
+async def guardar_contenido(sku: str, req: ContenidoReq):
+    """
+    Guarda el CONTENIDO del producto (título/descripción/atributos custom) en
+    WooCommerce. Lo usa el botón "Guardar contenido" del canal General del Estudio.
+    Preserva los atributos de variación (no rompe productos variables).
+    """
+    wc_id = req.wc_id
+    if not wc_id:
+        p = await woocommerce.obtener_producto_por_sku(sku)
+        wc_id = p.get("wc_id") if p else None
+    if not wc_id:
+        raise HTTPException(400, "No se pudo resolver el producto en WooCommerce.")
+    ok = await woocommerce.guardar_contenido_wc(
+        int(wc_id),
+        titulo=req.titulo,
+        descripcion=req.descripcion,
+        atributos=req.atributos,
+    )
+    if not ok:
+        raise HTTPException(502, "No se pudo guardar el contenido en WooCommerce.")
+    return {"ok": True, "sku": sku, "wc_id": wc_id}
 
 
 def _paginas(total: int, per_page: int) -> int:

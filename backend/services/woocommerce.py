@@ -1306,3 +1306,55 @@ def _to_float(v: Any) -> float | None:
         return float(v)
     except (ValueError, TypeError):
         return None
+
+
+# ── Contenido del producto (título / descripción / atributos) → WooCommerce ─────
+async def guardar_contenido_wc(
+    wc_id: int,
+    titulo: str | None = None,
+    descripcion: str | None = None,
+    atributos: list[dict[str, Any]] | None = None,
+) -> bool:
+    """
+    Guarda el CONTENIDO editable del producto en WooCommerce (canal General):
+      - `titulo`       → name
+      - `descripcion`  → description
+      - `atributos`    → atributos CUSTOM ([{nombre, valor}]).
+
+    Los atributos por TAXONOMÍA (id>0, incluidos los que definen variaciones) se
+    PRESERVAN tal cual; solo se reemplazan los custom (id=0). Así no se rompen las
+    variantes de un producto variable.
+    """
+    payload: dict[str, Any] = {}
+    if titulo is not None:
+        payload["name"] = titulo
+    if descripcion is not None:
+        payload["description"] = descripcion
+
+    async with _client() as cli:
+        if atributos is not None:
+            actuales: list[dict[str, Any]] = []
+            r = await cli.get(f"/products/{wc_id}", params={"_fields": "id,attributes"})
+            if r.status_code == 200:
+                actuales = r.json().get("attributes") or []
+            preservar = [a for a in actuales if a.get("id")]  # taxonomía / variación
+            custom = [
+                {
+                    "id": 0,
+                    "name": (a.get("nombre") or "").strip(),
+                    "options": [str(a.get("valor") or "")],
+                    "visible": True,
+                    "variation": False,
+                }
+                for a in atributos
+                if (a.get("nombre") or "").strip()
+            ]
+            payload["attributes"] = preservar + custom
+
+        if not payload:
+            return False
+        rp = await cli.put(f"/products/{wc_id}", json=payload, timeout=120.0)
+        if rp.status_code != 200:
+            log.warning("guardar_contenido_wc %d → %d %s", wc_id, rp.status_code, rp.text[:200])
+            return False
+    return True
