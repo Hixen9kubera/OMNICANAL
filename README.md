@@ -652,6 +652,33 @@ cambios de vuelta en cada canal queda para una próxima iteración.
 
 ---
 
+## 🖼️ Versión 0.3 — Editor de imágenes por producto (galería WooCommerce + IA)
+
+**Fecha:** 10 jul 2026. Sobre la v0.2.
+
+Se añade un **editor de imágenes** dentro del **ProductStudio**:
+
+- **Galería interactiva por producto**: al pasar el mouse sobre una imagen aparecen
+  sus controles — **flags de IA** (Fondo = quitar fondo · Texto = traducir + quitar
+  logos · Modelo = cambiar persona) y **eliminar** la imagen.
+- **Procesar con IA (on-demand)**: edita cada imagen con Gemini según sus flags
+  (8 combinaciones, portadas del pipeline CLI), la sube a WordPress Media y
+  **reemplaza** la anterior en WooCommerce en **UN solo PUT** (evita la race
+  condition), incluyendo variaciones. La imagen editada se refleja **en tiempo real**.
+- **Label de carga por imagen**: paso actual, avance N/total y **error por imagen**.
+
+**Backend:**
+- `services/imagenes_editor.py`: motor async (flags → prompt Gemini, `describe_person`
+  solo si `cambiar_modelo`, job de progreso en memoria, backlog en `ml_image_edit_backlog`).
+- `services/woocommerce.py`: `galeria_producto` / `reemplazar_imagenes_galeria` /
+  `eliminar_imagen_galeria` (resuelven el padre si es variación).
+- `routers/imagenes.py`: `GET /api/imagenes/{sku}`, `POST …/procesar`,
+  `GET …/progreso`, `POST …/eliminar`.
+
+**Frontend:** galería editable en `ProductStudio` + tipos y cliente API de imágenes.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
