@@ -258,14 +258,19 @@ export default function CrearProductosPage() {
   // ── Progreso de creación (polling mientras haya productos en proceso) ─
   const [progreso, setProgreso] = useState<ProgresoCreacionItem[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // SKUs que se están creando EN ESTA sesión (el backend acumula el histórico
+  // en memoria; solo mostramos lo de esta sesión, así un refresh no revive la
+  // lista de lo ya procesado).
+  const sesionSkus = useRef<Set<string>>(new Set());
 
   const iniciarPolling = useCallback(() => {
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
       try {
         const r = await progresoCreacion();
-        setProgreso(r.items);
-        const activos = r.items.some(
+        const propios = r.items.filter((i) => sesionSkus.current.has(i.sku));
+        setProgreso(propios);
+        const activos = propios.some(
           (i) => i.estado === "en_cola" || i.estado === "procesando",
         );
         if (!activos && pollRef.current) {
@@ -285,15 +290,19 @@ export default function CrearProductosPage() {
     };
   }, []);
 
-  // Al abrir/recargar la vista: recuperar la cola de creación en curso
+  // Al abrir/recargar la vista: recuperar SOLO las creaciones que siguen en
+  // curso (en cola / procesando). Las ya completadas NO se restauran, así un
+  // refresh no vuelve a mostrar la lista de lo que se procesó antes.
   useEffect(() => {
     progresoCreacion()
       .then((r) => {
-        if (r.items.length) {
-          setProgreso(r.items);
-          if (r.items.some((i) => i.estado === "en_cola" || i.estado === "procesando")) {
-            iniciarPolling();
-          }
+        const activos = r.items.filter(
+          (i) => i.estado === "en_cola" || i.estado === "procesando",
+        );
+        if (activos.length) {
+          activos.forEach((i) => sesionSkus.current.add(i.sku));
+          setProgreso(activos);
+          iniciarPolling();
         }
       })
       .catch(() => {});
@@ -333,6 +342,7 @@ export default function CrearProductosPage() {
           `Se enviaron ${r.recibidos} producto(s) a crear.`,
       });
       setSeleccion(new Set());
+      items.forEach((i) => sesionSkus.current.add(i.sku));
       setProgreso(
         items.map((i) => ({ sku: i.sku, estado: "en_cola", paso: "En cola…" })),
       );
