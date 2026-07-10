@@ -1022,7 +1022,14 @@ async def asignar_imagenes(asignaciones: list[dict[str, int]]) -> int:
 # `images` viene ordenada: images[0] = portada, el resto = galería.
 
 async def _producto_con_imagenes(cli: httpx.AsyncClient, wc_id: int) -> dict | None:
-    r = await cli.get(f"/products/{wc_id}", params={"_fields": "id,type,parent_id,images"})
+    # `_cb` (cache-bust): fuerza una lectura FRESCA. Sin esto, tras editar las
+    # imágenes, WooCommerce/LiteSpeed sirve la galería anterior cacheada por un
+    # rato y al recargar se ven las imágenes viejas (aunque en Media ya estén las
+    # nuevas). Un query único por llamada evita ese caché.
+    r = await cli.get(
+        f"/products/{wc_id}",
+        params={"_fields": "id,type,parent_id,images", "_cb": str(time.time())},
+    )
     if r.status_code == 200:
         return r.json()
     return None
@@ -1043,7 +1050,10 @@ async def galeria_producto(wc_id: int | None, sku: str | None = None) -> dict | 
         # Fallback por SKU (p. ej. si wc_id apunta a una variación, que /products/{id}
         # no devuelve como producto de primer nivel).
         if prod is None and sku:
-            r = await cli.get("/products", params={"sku": sku, "_fields": "id,type,parent_id,images"})
+            r = await cli.get(
+                "/products",
+                params={"sku": sku, "_fields": "id,type,parent_id,images", "_cb": str(time.time())},
+            )
             if r.status_code == 200 and r.json():
                 prod = r.json()[0]
         if prod is None:
