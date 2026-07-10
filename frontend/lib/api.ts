@@ -151,6 +151,7 @@ export interface ListarCostosParams {
   search?: string;
   contenedor?: string;
   orden?: string;
+  skus?: string; // "Filtrar SKUs": lista separada por comas, filtra y busca a la vez
 }
 
 export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promise<CostosListResp> {
@@ -160,6 +161,7 @@ export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promi
   if (p.search) q.set("search", p.search);
   if (p.contenedor) q.set("contenedor", p.contenedor);
   if (p.orden) q.set("orden", p.orden);
+  if (p.skus) q.set("skus", p.skus);
   return getJSON<CostosListResp>(`/api/crear/costos?${q.toString()}`, signal);
 }
 

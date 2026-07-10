@@ -441,12 +441,20 @@ def costos_listado(
     search: str | None = Query(None),
     contenedor: str | None = Query(None),
     orden: str = Query("reciente"),
+    skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
 ):
     """Tabla de costos por SKU (costos_validados + precios + nombre + contenedor)."""
     where, params = [], []
     if search:
         where.append("(v.sku LIKE %s OR p.nombre LIKE %s)")
         params += [f"%{search}%", f"%{search}%"]
+    skus_lista = [s.strip() for s in (skus or "").split(",") if s.strip()]
+    if skus_lista:
+        or_grupo = " OR ".join(["(v.sku LIKE %s OR p.nombre LIKE %s)"] * len(skus_lista))
+        where.append(f"({or_grupo})")
+        for t in skus_lista:
+            like_t = f"%{t}%"
+            params += [like_t, like_t]
     if contenedor:
         where.append("v.contenedor = %s")
         params.append(contenedor)
