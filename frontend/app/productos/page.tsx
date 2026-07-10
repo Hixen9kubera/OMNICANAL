@@ -213,7 +213,9 @@ export default function ProductosPage() {
             <span className="w-36 shrink-0 text-center">Variantes</span>
             <span className="flex shrink-0 items-center gap-4">
               <span className="hidden w-16 text-center sm:block">Canales</span>
-              <span className="w-24 text-right">Precio</span>
+              <span className="hidden w-20 text-right sm:block">Costo</span>
+              <span className="hidden w-24 text-right sm:block">P. Regular</span>
+              <span className="w-24 text-right">P. Oferta</span>
             </span>
             <span className="w-8 shrink-0" />
           </div>
@@ -312,8 +314,14 @@ export default function ProductosPage() {
                     <div className="hidden w-16 shrink-0 justify-center sm:flex">
                       <ChannelDots canales={p.canales} colorMap={colorMap} labelMap={labelMap} />
                     </div>
+                    <div className="hidden w-20 shrink-0 text-right sm:block">
+                      <div className="text-sm font-semibold text-slate-600">{precioMXN(p.costo)}</div>
+                    </div>
+                    <div className="hidden w-24 shrink-0 text-right sm:block">
+                      <div className="text-sm text-slate-500">{precioMXN(p.precio_base)}</div>
+                    </div>
                     <div className="w-24 shrink-0 text-right">
-                      <div className="font-bold text-slate-900">{precioMXN(p.precio)}</div>
+                      <div className="font-bold text-slate-900">{precioMXN(p.precio_oferta ?? p.precio)}</div>
                       <div className="text-[11px] text-slate-400">{p.stock ?? "—"} en stock</div>
                     </div>
                   </button>

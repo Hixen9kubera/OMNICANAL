@@ -85,7 +85,7 @@ export function VariantesTabla({
             <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
               <th className="py-1 pr-3 font-semibold">SKU</th>
               <th className="py-1 pr-3 font-semibold">Variante</th>
-              <th className="py-1 pr-3 text-right font-semibold">Precio</th>
+              <th className="py-1 pr-3 text-right font-semibold">Costo</th>
               <th className="py-1 pr-3 text-center font-semibold">Stock</th>
               <th className="py-1 text-center font-semibold">Canales</th>
             </tr>
@@ -96,7 +96,7 @@ export function VariantesTabla({
                 <td className="py-1.5 pr-3 font-mono text-slate-500">{v.sku}</td>
                 <td className="py-1.5 pr-3 font-medium text-slate-700">{v.nombre ?? "—"}</td>
                 <td className="py-1.5 pr-3 text-right font-semibold text-slate-800">
-                  {precioMXN(v.precio)}
+                  {precioMXN(v.costo)}
                 </td>
                 <td className="py-1.5 pr-3 text-center text-slate-600">{v.stock ?? "—"}</td>
                 <td className="py-1.5">

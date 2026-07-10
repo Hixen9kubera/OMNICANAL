@@ -212,6 +212,89 @@ def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
     return {r["meta_key"]: r["meta_value"] for r in rows}
 
 
+def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    """
+    Precio activo, precio regular, precio oferta y costo — leídos DIRECTO de
+    MySQL (no REST), para no depender del caché/anti-bot del hosting justo
+    después de guardar. `items`: [{"wc_id": int, "tipo": str|None}, ...].
+
+    Simples: se leen de su propio postmeta (_price/_regular_price/_sale_price/costo).
+    Padres `variable`: este hosting NO persiste el rango regular/oferta en el
+    padre (solo `_price`, ya sincronizado desde las variantes) — así que
+    precio_base/precio_oferta se resuelven como el MÍNIMO entre sus variantes
+    (mismo criterio que usa WooCommerce para el precio activo mostrado).
+    """
+    if not items:
+        return {}
+    P = _prefix()
+
+    def _f(v: Any) -> float | None:
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    ids_todos = [it["wc_id"] for it in items if it.get("wc_id")]
+    padres = [it["wc_id"] for it in items if it.get("tipo") == "variable" and it.get("wc_id")]
+
+    salida: dict[int, dict[str, Any]] = {}
+    for i in range(0, len(ids_todos), 500):
+        chunk = ids_todos[i:i + 500]
+        ph = ",".join(["%s"] * len(chunk))
+        rows = _fetch_all(
+            f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
+                WHERE post_id IN ({ph})
+                  AND meta_key IN ('_price', '_regular_price', '_sale_price', 'costo')""",
+            tuple(chunk),
+        )
+        agg: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            agg.setdefault(r["post_id"], {})[r["meta_key"]] = r["meta_value"]
+        for wc_id, d in agg.items():
+            salida[wc_id] = {
+                "precio": _f(d.get("_price")),
+                "precio_base": _f(d.get("_regular_price")),
+                "precio_oferta": _f(d.get("_sale_price")),
+                "costo": _f(d.get("costo")),
+            }
+    for wc_id in ids_todos:
+        salida.setdefault(wc_id, {"precio": None, "precio_base": None, "precio_oferta": None, "costo": None})
+
+    if padres:
+        ph = ",".join(["%s"] * len(padres))
+        var_rows = _fetch_all(
+            f"""SELECT ID, post_parent FROM {P}posts
+                WHERE post_parent IN ({ph}) AND post_type = 'product_variation'""",
+            tuple(padres),
+        )
+        por_padre: dict[int, list[int]] = {}
+        for r in var_rows:
+            por_padre.setdefault(r["post_parent"], []).append(r["ID"])
+        var_ids = [vid for ids in por_padre.values() for vid in ids]
+        vm: dict[int, dict[str, Any]] = {}
+        for i in range(0, len(var_ids), 500):
+            chunk = var_ids[i:i + 500]
+            ph2 = ",".join(["%s"] * len(chunk))
+            vm_rows = _fetch_all(
+                f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
+                    WHERE post_id IN ({ph2}) AND meta_key IN ('_regular_price', '_sale_price')""",
+                tuple(chunk),
+            )
+            for r in vm_rows:
+                vm.setdefault(r["post_id"], {})[r["meta_key"]] = r["meta_value"]
+        for padre_id, var_ids_de_padre in por_padre.items():
+            regs = [x for x in (_f(vm.get(v, {}).get("_regular_price")) for v in var_ids_de_padre) if x is not None]
+            ofes = [x for x in (_f(vm.get(v, {}).get("_sale_price")) for v in var_ids_de_padre) if x is not None]
+            if padre_id not in salida:
+                continue
+            if regs and salida[padre_id]["precio_base"] is None:
+                salida[padre_id]["precio_base"] = min(regs)
+            if ofes and salida[padre_id]["precio_oferta"] is None:
+                salida[padre_id]["precio_oferta"] = min(ofes)
+
+    return salida
+
+
 def _parse_product_attributes(serializado: str | None) -> list[dict[str, Any]]:
     """
     Parsea la postmeta `_product_attributes` de WooCommerce (PHP serializado).

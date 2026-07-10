@@ -262,6 +262,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         // aunque el badge ya mostrara el % correcto.
         const pctGuardado = num(cf.pct_comision);
         if (pctGuardado != null) setComision((c) => c || String(Math.round(pctGuardado * 1000) / 10));
+        // No hay un booleano guardado de "incluir envío"; se infiere de
+        // costo_fee_envio: la tabla de tarifas nunca da $0, así que un $0
+        // guardado solo puede venir de haber desmarcado "Sumar al precio".
+        const feeGuardado = num(cf.costo_fee_envio);
+        if (feeGuardado === 0) setIncluirEnvio(false);
         if (d.constantes?.margen != null) setMargen(String(Math.round(d.constantes.margen * 100)));
         // Desglose actual (sin recalcular) para que el bloque no salga vacío.
         setCostoCalc({

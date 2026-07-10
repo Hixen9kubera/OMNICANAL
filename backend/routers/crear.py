@@ -377,6 +377,31 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     async with woocommerce._client() as cli:
         r = await cli.put(f"/products/{wc_id}", json=payload, timeout=120.0)
         r.raise_for_status()
+
+        # Padre variable (ej. mismo producto en varios colores): WooCommerce
+        # muestra en las listas el precio de las VARIANTES, no el del padre —
+        # así que sin esto, un padre recién costeado sigue mostrando el precio
+        # placeholder de sus variantes. Se replica el MISMO costo/precio a todas
+        # (misma pieza física, solo cambia color/talla).
+        if (p or {}).get("tipo") == "variable":
+            try:
+                rv = await cli.get(f"/products/{wc_id}/variations",
+                                    params={"per_page": 100, "_fields": "id"})
+                if rv.status_code == 200:
+                    ids = [v["id"] for v in rv.json()]
+                    if ids:
+                        await cli.post(
+                            f"/products/{wc_id}/variations/batch",
+                            json={"update": [
+                                {"id": vid, "regular_price": payload["regular_price"],
+                                 "sale_price": payload["sale_price"]}
+                                for vid in ids
+                            ]},
+                            timeout=120.0,
+                        )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("No se pudo replicar precio a variantes de %s (wc_id=%s): %s",
+                           sku, wc_id, exc)
     return True
 
 

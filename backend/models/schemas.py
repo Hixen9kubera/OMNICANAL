@@ -52,7 +52,8 @@ class Producto(BaseModel):
 
     # Métricas del canal solicitado
     precio: float | None = None
-    precio_base: float | None = None  # precio sin descuento / sugerido
+    precio_base: float | None = None  # precio regular / sin descuento
+    precio_oferta: float | None = None  # precio de oferta (_sale_price)
     moneda: str = "MXN"
     stock: int | None = None          # stock mostrado (= stock_real del canal)
     # Desglose de inventario (regla: total = real + full + fba)
