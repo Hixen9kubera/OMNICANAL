@@ -263,6 +263,8 @@ async def listar_productos(
                 "descripcion_corta": _resumen(p.get("short_description")),
                 "precio": precio,
                 "precio_base": base,
+                "precio_oferta": _to_float(p.get("sale_price")),
+                "costo": None,
                 "stock": stock_de_padre(p, variantes),
                 "estado": p.get("status"),
                 "categoria_path": ruta,
@@ -273,6 +275,30 @@ async def listar_productos(
                 "variantes": variantes,
             }
         )
+
+    # Precio/costo FRESCOS directo de MySQL: el GET de WooCommerce puede quedar
+    # cacheado por el hosting (anti-bot) justo después de un guardado, mostrando
+    # un precio viejo. La DB no tiene ese problema. Para padres `variable` esto
+    # también trae el `_price` ya sincronizado desde sus variantes.
+    try:
+        from services import wp_db
+        if wp_db.disponible():
+            frescos = wp_db.precios_y_costo_por_wc_id(
+                [{"wc_id": it["wc_id"], "tipo": it.get("tipo")} for it in items if it.get("wc_id")])
+            for it in items:
+                f = frescos.get(it["wc_id"])
+                if not f:
+                    continue
+                if f["precio"] is not None:
+                    it["precio"] = f["precio"]
+                if f["precio_base"] is not None:
+                    it["precio_base"] = f["precio_base"]
+                if f["precio_oferta"] is not None:
+                    it["precio_oferta"] = f["precio_oferta"]
+                it["costo"] = f["costo"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("listar_productos: no se pudo refrescar precio/costo desde DB: %s", exc)
+
     return items, total, total_pages
 
 
@@ -1257,7 +1283,7 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
 async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
     try:
         async with _client() as cli:
-            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
+            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,type,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
             r.raise_for_status()
             data = r.json()
     except Exception as exc:  # noqa: BLE001
@@ -1271,6 +1297,7 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
     return {
         "sku": p.get("sku") or f"WC-{p.get('id')}",
         "wc_id": p.get("id"),
+        "tipo": p.get("type"),
         "nombre": p.get("name", ""),
         "imagen": imgs[0] if imgs else None,
         "imagenes": imgs,

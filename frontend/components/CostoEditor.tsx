@@ -80,6 +80,10 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         // Comisión ya guardada — antes solo se reflejaba tras Regenerar/Guardar.
         const pctGuardado = num(cf.pct_comision);
         if (pctGuardado != null) setComision((c) => c || String(Math.round(pctGuardado * 1000) / 10));
+        // No hay booleano guardado de "incluir envío"; se infiere de
+        // costo_fee_envio: la tabla de tarifas nunca da $0.
+        const feeGuardado = num(cf.costo_fee_envio);
+        if (feeGuardado === 0) setIncluirEnvio(false);
         setPeso((p) => p || s(cv.peso ?? cf.peso));
         setLargo((p) => p || s(cv.largo ?? cf.largo));
         setAncho((p) => p || s(cv.ancho ?? cf.ancho));

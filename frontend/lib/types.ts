@@ -34,7 +34,8 @@ export interface Producto {
   marca: string | null;
   descripcion_corta: string | null;
   precio: number | null;
-  precio_base: number | null;
+  precio_base: number | null; // precio regular
+  precio_oferta: number | null; // precio de descuento (_sale_price)
   moneda: string;
   stock: number | null;
   stock_real: number | null;
