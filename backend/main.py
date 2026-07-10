@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from core.marketplaces import lista_canales
 from models.schemas import HealthCheck
-from routers import auth, canales, crear, ia, productos, publicar, sync, webhooks
+from routers import auth, canales, crear, ia, imagenes, productos, publicar, sync, webhooks
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -64,6 +64,7 @@ app.add_middleware(
 
 # Routers
 app.include_router(productos.router)
+app.include_router(imagenes.router)
 app.include_router(crear.router)
 app.include_router(canales.router)
 app.include_router(sync.router)

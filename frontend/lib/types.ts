@@ -158,6 +158,58 @@ export interface DetalleProducto {
   canales: DetalleCanal[];
 }
 
+// ── Editor de imágenes (galería WooCommerce + IA por flags) ──────────
+export interface GaleriaImagen {
+  id: number;
+  src: string;
+  position: number;
+}
+
+export interface FlagsImagen {
+  quitar_fondo: boolean;
+  traducir_texto: boolean;
+  cambiar_modelo: boolean;
+}
+
+export type EstadoImagen =
+  | "pendiente"
+  | "procesando"
+  | "listo"
+  | "error"
+  | "sin_flags";
+
+export interface ImagenProgreso {
+  indice: number;
+  wc_image_id: number | null;
+  src: string;
+  estado: EstadoImagen;
+  paso: string;
+  error: string | null;
+  nueva_url: string | null;
+  nuevo_id: number | null;
+  flags: FlagsImagen;
+}
+
+export interface ProgresoImagenes {
+  sku: string;
+  wc_id: number | null;
+  estado: "procesando" | "completado" | "sin_datos";
+  total: number;
+  procesadas: number;
+  paso_global: string;
+  imagenes: ImagenProgreso[];
+}
+
+export interface GaleriaResp {
+  sku: string;
+  wc_id: number | null;
+  parent_id: number | null;
+  es_variacion?: boolean;
+  portada: GaleriaImagen | null;
+  imagenes: GaleriaImagen[];
+  progreso?: ProgresoImagenes | null;
+}
+
 // ── IA: generadores de contenido por canal ──────────────────────────
 export interface GeneradorDef {
   id: string;

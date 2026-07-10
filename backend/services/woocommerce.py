@@ -894,13 +894,22 @@ def _borrador_wc(it: dict[str, Any]) -> dict[str, Any]:
 
 # ── WordPress Media (imágenes) ─────────────────────────────────────────────────
 
-async def subir_imagen_wp(nombre: str, data: bytes) -> tuple[int, str] | None:
+_MIME_EXT = {
+    "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png",
+    "image/webp": "webp", "image/gif": "gif",
+}
+
+
+async def subir_imagen_wp(nombre: str, data: bytes, mime: str = "image/png") -> tuple[int, str] | None:
     """
     Sube una imagen a la librería de medios de WordPress (Application Password).
-    Devuelve (media_id, url) o None si falló.
+    Devuelve (media_id, url) o None si falló. `mime` define el Content-Type y la
+    extensión del archivo (por defecto PNG, para no cambiar el flujo existente).
     """
     import unicodedata
 
+    mime = (mime or "image/png").split(";")[0].strip().lower()
+    ext = _MIME_EXT.get(mime, "png")
     # Los headers HTTP solo aceptan ASCII: SKUs con Ñ/acentos se transliteran
     # (BAÑ-0488 → BAN-0488) solo para el nombre de archivo.
     ascii_nombre = (
@@ -909,8 +918,8 @@ async def subir_imagen_wp(nombre: str, data: bytes) -> tuple[int, str] | None:
     )
     url = f"{settings.wc_url.rstrip('/')}/wp-json/wp/v2/media"
     headers = {
-        "Content-Disposition": f'attachment; filename="{ascii_nombre}.png"',
-        "Content-Type": "image/png",
+        "Content-Disposition": f'attachment; filename="{ascii_nombre}.{ext}"',
+        "Content-Type": mime,
     }
     try:
         async with httpx.AsyncClient(timeout=60.0) as cli:
@@ -947,6 +956,163 @@ async def asignar_imagenes(asignaciones: list[dict[str, int]]) -> int:
             except Exception as exc:  # noqa: BLE001
                 log.warning("asignar_imagenes: lote %d falló: %s", i // 50 + 1, exc)
     return ok
+
+
+# ── Galería de producto (leer / reemplazar / eliminar) ─────────────────────────
+# WooCommerce guarda la galería en el PRODUCTO (el padre si es variable). Una
+# variación NO tiene galería propia → siempre se opera sobre el padre. La lista
+# `images` viene ordenada: images[0] = portada, el resto = galería.
+
+async def _producto_con_imagenes(cli: httpx.AsyncClient, wc_id: int) -> dict | None:
+    r = await cli.get(f"/products/{wc_id}", params={"_fields": "id,type,parent_id,images"})
+    if r.status_code == 200:
+        return r.json()
+    return None
+
+
+async def galeria_producto(wc_id: int | None, sku: str | None = None) -> dict | None:
+    """
+    Devuelve la galería COMPLETA (con id y posición de cada imagen) del producto.
+    Si el objeto es una variación, resuelve el PADRE (ahí vive la galería).
+
+    Retorna: {wc_id, parent_id, es_variacion, portada:{id,src,position}|None,
+              imagenes:[{id,src,position}]}  ó None si no se pudo resolver.
+    """
+    async with _client() as cli:
+        prod: dict | None = None
+        if wc_id:
+            prod = await _producto_con_imagenes(cli, wc_id)
+        # Fallback por SKU (p. ej. si wc_id apunta a una variación, que /products/{id}
+        # no devuelve como producto de primer nivel).
+        if prod is None and sku:
+            r = await cli.get("/products", params={"sku": sku, "_fields": "id,type,parent_id,images"})
+            if r.status_code == 200 and r.json():
+                prod = r.json()[0]
+        if prod is None:
+            return None
+
+        parent_id = prod.get("id") or wc_id
+        es_var = False
+        # Variación → subir al padre para leer su galería.
+        if prod.get("type") == "variation" or prod.get("parent_id"):
+            pid = prod.get("parent_id") or parent_id
+            if pid and pid != prod.get("id"):
+                padre = await _producto_con_imagenes(cli, pid)
+                if padre:
+                    prod = padre
+                    parent_id = pid
+                    es_var = True
+
+        imgs = [
+            {"id": i.get("id"), "src": i.get("src"), "position": i.get("position", idx)}
+            for idx, i in enumerate(prod.get("images") or [])
+            if i.get("id")
+        ]
+        return {
+            "wc_id": wc_id,
+            "parent_id": parent_id,
+            "es_variacion": es_var,
+            "portada": imgs[0] if imgs else None,
+            "imagenes": imgs,
+        }
+
+
+async def reemplazar_imagenes_galeria(parent_id: int, id_map: dict[int, int]) -> dict:
+    """
+    Reemplaza old_id → new_id en la galería del producto en UN SOLO PUT (evita la
+    race condition de escrituras paralelas), y actualiza también:
+      - el CSV `commercekit_image_gallery` (best-effort, si el tema lo usa)
+      - `image.id` de cada variación hija que apuntaba a una imagen reemplazada.
+    `id_map`: {wc_image_id_viejo: wc_image_id_nuevo}.
+    """
+    res = {"parent_ok": False, "variaciones_ok": 0, "variaciones_fail": 0}
+    if not id_map:
+        return res
+    async with _client() as cli:
+        r = await cli.get(f"/products/{parent_id}", params={"_fields": "id,images,meta_data"})
+        if r.status_code != 200:
+            log.warning("reemplazar_imagenes_galeria: GET %d → %d", parent_id, r.status_code)
+            return res
+        prod = r.json()
+
+        # 1) images[] del padre, preservando el orden (posición).
+        nuevas = [{"id": id_map.get(i.get("id"), i.get("id"))} for i in prod.get("images", []) if i.get("id")]
+        body: dict[str, Any] = {"images": nuevas}
+
+        # 2) commercekit_image_gallery (CSV por variante) — best-effort.
+        try:
+            ck = None
+            for m in prod.get("meta_data", []):
+                if m.get("key") == "commercekit_image_gallery":
+                    ck = m.get("value")
+                    break
+            if isinstance(ck, dict) and ck:
+                nuevo_ck = {}
+                for k, csv_str in ck.items():
+                    ids = []
+                    for x in str(csv_str).split(","):
+                        x = x.strip()
+                        if x.isdigit():
+                            ids.append(str(id_map.get(int(x), int(x))))
+                    nuevo_ck[k] = ",".join(ids)
+                if nuevo_ck != ck:
+                    body["meta_data"] = [{"key": "commercekit_image_gallery", "value": nuevo_ck}]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("commercekit gallery swap: %s", exc)
+
+        rp = await cli.put(f"/products/{parent_id}", json=body, timeout=90.0)
+        res["parent_ok"] = rp.status_code == 200
+        if not res["parent_ok"]:
+            log.warning("reemplazar_imagenes_galeria: PUT %d → %d %s", parent_id, rp.status_code, rp.text[:160])
+
+        # 3) image.id de variaciones hijas.
+        try:
+            page = 1
+            while True:
+                rv = await cli.get(
+                    f"/products/{parent_id}/variations",
+                    params={"per_page": 100, "page": page, "_fields": "id,image"},
+                )
+                if rv.status_code != 200:
+                    break
+                lote = rv.json()
+                if not lote:
+                    break
+                for var in lote:
+                    vimg = (var.get("image") or {}).get("id")
+                    if vimg in id_map:
+                        rvp = await cli.put(
+                            f"/products/{parent_id}/variations/{var['id']}",
+                            json={"image": {"id": id_map[vimg]}}, timeout=60.0,
+                        )
+                        if rvp.status_code == 200:
+                            res["variaciones_ok"] += 1
+                        else:
+                            res["variaciones_fail"] += 1
+                if len(lote) < 100:
+                    break
+                page += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("reemplazar_imagenes_galeria variaciones: %s", exc)
+    return res
+
+
+async def eliminar_imagen_galeria(parent_id: int, image_id: int) -> bool:
+    """
+    Desvincula una imagen de la galería del producto (un solo PUT con la galería
+    filtrada). NO borra el attachment de la Media Library, solo lo quita del
+    producto. Opera sobre el padre.
+    """
+    async with _client() as cli:
+        r = await cli.get(f"/products/{parent_id}", params={"_fields": "id,images"})
+        if r.status_code != 200:
+            return False
+        prod = r.json()
+        nuevas = [{"id": i["id"]} for i in prod.get("images", []) if i.get("id") and i.get("id") != image_id]
+        rp = await cli.put(f"/products/{parent_id}", json={"images": nuevas}, timeout=90.0)
+        if rp.status_code != 200:
+            log.warning("eliminar_imagen_galeria: PUT %d → %d %s", parent_id, rp.status_code, rp.text[:160])
+        return rp.status_code == 200
 
 
 async def variantes_de_productos(

@@ -13,8 +13,10 @@ import type {
   CostoPreviewResp,
   CostosListResp,
   DetalleProducto,
+  GaleriaResp,
   GeneradorDef,
   GenerarIAResp,
+  ProgresoImagenes,
   MejorarResp,
   PublicarPreview,
   PublicarReq,
@@ -403,6 +405,48 @@ export function notificacionesWebhook(
   signal?: AbortSignal,
 ): Promise<NotificacionesResp> {
   return getJSON<NotificacionesResp>(`/api/webhooks/notificaciones`, signal);
+}
+
+// ── Editor de imágenes (galería WooCommerce + IA por flags) ──────────
+export function galeriaProducto(
+  sku: string,
+  wcId?: number | null,
+  signal?: AbortSignal,
+): Promise<GaleriaResp> {
+  const q = wcId ? `?wc_id=${wcId}` : "";
+  return getJSON<GaleriaResp>(`/api/imagenes/${encodeURIComponent(sku)}${q}`, signal);
+}
+
+export interface ProcesarImagenItem {
+  wc_image_id: number | null;
+  src: string;
+  quitar_fondo: boolean;
+  traducir_texto: boolean;
+  cambiar_modelo: boolean;
+}
+
+export function procesarImagenesIA(
+  sku: string,
+  body: { wc_id: number | null; imagenes: ProcesarImagenItem[] },
+): Promise<{ ok: boolean; total: number; parent_id: number | null }> {
+  return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/procesar`, body);
+}
+
+export function progresoImagenes(
+  sku: string,
+  signal?: AbortSignal,
+): Promise<ProgresoImagenes> {
+  return getJSON<ProgresoImagenes>(
+    `/api/imagenes/${encodeURIComponent(sku)}/progreso`,
+    signal,
+  );
+}
+
+export function eliminarImagenGaleria(
+  sku: string,
+  body: { wc_id: number | null; image_id: number },
+): Promise<{ ok: boolean; image_id: number }> {
+  return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/eliminar`, body);
 }
 
 export const API_BASE = BASE;

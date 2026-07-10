@@ -5,7 +5,6 @@ import {
   X,
   ChevronRight,
   ImageIcon,
-  Plus,
   ExternalLink,
   Wand2,
   Loader2,
@@ -17,7 +16,13 @@ import {
   Calculator,
   RefreshCw,
   Save,
+  Trash2,
+  Sparkles,
+  Eraser,
+  Languages,
+  UserRound,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type {
   AtributoProducto,
   CanalInfo,
@@ -25,7 +30,11 @@ import type {
   CostoCalculo,
   CostoOverrides,
   DetalleCanal,
+  FlagsImagen,
+  GaleriaImagen,
+  ImagenProgreso,
   Producto,
+  ProgresoImagenes,
   PublicarPreview,
   PublicarResultado,
   StudioMetadata,
@@ -34,8 +43,12 @@ import {
   costoDetalle,
   costoGuardar,
   costoPreview,
+  eliminarImagenGaleria,
+  galeriaProducto,
   mejorarIA,
   precioCompetencia,
+  procesarImagenesIA,
+  progresoImagenes,
   publicarConfirmar,
   publicarPreview,
   studioMetadata,
@@ -86,6 +99,14 @@ const CAMPOS_VACIOS: Campos = {
 
 const str = (v: number | null | undefined) => (v === null || v === undefined ? "" : String(v));
 
+// Flags de edición de imagen con IA (por imagen). Fondo=quitar fondo,
+// Texto=traducir/quitar logos, Modelo=reemplazar persona por una latina.
+const FLAGS_IMG: { key: keyof FlagsImagen; label: string; Icon: LucideIcon }[] = [
+  { key: "quitar_fondo", label: "Fondo", Icon: Eraser },
+  { key: "traducir_texto", label: "Texto", Icon: Languages },
+  { key: "cambiar_modelo", label: "Modelo", Icon: UserRound },
+];
+
 export default function ProductStudio({ sku, producto, canales, onClose }: Props) {
   const { data, cargando, recargar } = useDetalleProducto(sku, producto);
   const [canal, setCanal] = useState<string>(GENERAL);
@@ -103,6 +124,42 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
   // Campos de metadata NO tocados por la IA (editables a mano).
   const [campos, setCampos] = useState<Campos>(CAMPOS_VACIOS);
   const [imgActiva, setImgActiva] = useState(0);
+
+  // ── Editor de imágenes (galería WooCommerce + IA por flags) ──────────
+  const [galeria, setGaleria] = useState<GaleriaImagen[] | null>(null);
+  const [flagsImg, setFlagsImg] = useState<Record<number, FlagsImagen>>({});
+  const [progresoImg, setProgresoImg] = useState<Record<number, ImagenProgreso>>({});
+  const [jobImg, setJobImg] = useState<ProgresoImagenes | null>(null);
+  const [procesandoIA, setProcesandoIA] = useState(false);
+  const [eliminandoId, setEliminandoId] = useState<number | null>(null);
+  const pollImgRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Al abrir/cambiar de producto: cargar la galería (con ids) y limpiar estado.
+  useEffect(() => {
+    setGaleria(null);
+    setFlagsImg({});
+    setProgresoImg({});
+    setJobImg(null);
+    setProcesandoIA(false);
+    setImgActiva(0);
+    if (pollImgRef.current) {
+      clearInterval(pollImgRef.current);
+      pollImgRef.current = null;
+    }
+    if (!sku) return;
+    let vivo = true;
+    galeriaProducto(sku)
+      .then((g) => { if (vivo) setGaleria(g.imagenes ?? []); })
+      .catch(() => { if (vivo) setGaleria([]); });
+    return () => {
+      vivo = false;
+      if (pollImgRef.current) {
+        clearInterval(pollImgRef.current);
+        pollImgRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sku]);
 
   // Campos que SÍ mejora la IA (por canal, persisten en memoria).
   const [titulo, setTitulo] = useState("");
@@ -489,9 +546,108 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
     setResultadoPub(null);
   }
 
+  // ── Editor de imágenes: helpers + acciones ──────────────────────────
+  const wcId = data?.wc_id ?? null;
+  const flagsDe = (id: number): FlagsImagen =>
+    flagsImg[id] ?? { quitar_fondo: false, traducir_texto: false, cambiar_modelo: false };
+  const hasFlags = (id: number) => {
+    const f = flagsImg[id];
+    return !!f && (f.quitar_fondo || f.traducir_texto || f.cambiar_modelo);
+  };
+  const countFlags = (id: number) =>
+    [flagsDe(id).quitar_fondo, flagsDe(id).traducir_texto, flagsDe(id).cambiar_modelo].filter(Boolean).length;
+
+  function toggleFlag(imgId: number, key: keyof FlagsImagen) {
+    setFlagsImg((prev) => {
+      const cur = prev[imgId] ?? { quitar_fondo: false, traducir_texto: false, cambiar_modelo: false };
+      return { ...prev, [imgId]: { ...cur, [key]: !cur[key] } };
+    });
+  }
+
+  function iniciarPollingImg() {
+    if (pollImgRef.current) clearInterval(pollImgRef.current);
+    const tick = async () => {
+      try {
+        const j = await progresoImagenes(sku!);
+        setJobImg(j);
+        const m: Record<number, ImagenProgreso> = {};
+        (j.imagenes ?? []).forEach((it) => {
+          if (it.wc_image_id) m[it.wc_image_id] = it;
+        });
+        setProgresoImg(m);
+        if (j.estado === "completado" || j.estado === "sin_datos") {
+          if (pollImgRef.current) {
+            clearInterval(pollImgRef.current);
+            pollImgRef.current = null;
+          }
+          setProcesandoIA(false);
+          // Re-sincronizar la galería con WooCommerce (nuevos ids/urls) y limpiar flags.
+          try {
+            const g = await galeriaProducto(sku!, wcId);
+            setGaleria(g.imagenes ?? []);
+          } catch {
+            /* se conserva la galería previa */
+          }
+          setFlagsImg({});
+        }
+      } catch {
+        /* reintenta en el próximo tick */
+      }
+    };
+    pollImgRef.current = setInterval(tick, 2500);
+    tick();
+  }
+
+  async function procesarIA() {
+    if (!galeria) return;
+    const seleccion = galeria
+      .filter((img) => img.id && hasFlags(img.id))
+      .map((img) => ({ wc_image_id: img.id, src: img.src, ...flagsDe(img.id) }));
+    if (!seleccion.length) return;
+    setProcesandoIA(true);
+    setProgresoImg({});
+    setJobImg(null);
+    try {
+      await procesarImagenesIA(sku!, { wc_id: wcId, imagenes: seleccion });
+      iniciarPollingImg();
+    } catch {
+      setProcesandoIA(false);
+    }
+  }
+
+  async function eliminarImg(img: GaleriaImagen) {
+    if (!img.id) return;
+    if (!window.confirm("¿Quitar esta imagen del producto en WooCommerce?")) return;
+    setEliminandoId(img.id);
+    try {
+      await eliminarImagenGaleria(sku!, { wc_id: wcId, image_id: img.id });
+      setGaleria((prev) => (prev ?? []).filter((x) => x.id !== img.id));
+      setFlagsImg((prev) => {
+        const n = { ...prev };
+        delete n[img.id];
+        return n;
+      });
+    } catch {
+      window.alert("No se pudo eliminar la imagen.");
+    } finally {
+      setEliminandoId(null);
+    }
+  }
+
   if (!sku) return null;
 
   const imagenes = data?.imagenes?.length ? data.imagenes : data?.imagen ? [data.imagen] : [];
+
+  // Galería del editor: usa la galería con ids si ya cargó; si no, cae a las urls
+  // del detalle (solo lectura hasta que lleguen los ids desde el backend).
+  const galItems: GaleriaImagen[] =
+    galeria ?? imagenes.map((src, i) => ({ id: 0, src, position: i }));
+  const galEditable = galeria !== null;
+  const galIdxActiva = galItems.length ? Math.min(imgActiva, galItems.length - 1) : 0;
+  const galActiva = galItems.length ? galItems[galIdxActiva] : null;
+  const totalConFlags = galItems.filter((im) => im.id && hasFlags(im.id)).length;
+  const jobActivo = procesandoIA || jobImg?.estado === "procesando";
+  const pctImg = jobImg && jobImg.total ? Math.round((jobImg.procesadas / jobImg.total) * 100) : 0;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" style={variablesTema(tema)}>
@@ -708,25 +864,151 @@ export default function ProductStudio({ sku, producto, canales, onClose }: Props
                 </div>
               </section>
 
-              {/* Galería */}
+              {/* Galería / Editor de imágenes */}
               <section className="rounded-2xl border border-slate-200 bg-white p-4">
-                <div className="mb-3 flex h-64 items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
-                  {imagenes[imgActiva] ? (
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Imágenes</span>
+                  <span className="text-[11px] text-slate-400">
+                    {galEditable ? `${galItems.length} en galería` : "cargando…"}
+                  </span>
+                </div>
+
+                {/* Preview grande de la imagen activa */}
+                <div className="relative mb-3 flex h-64 items-center justify-center overflow-hidden rounded-xl border border-slate-100 bg-white">
+                  {galActiva ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={imagenes[imgActiva]} alt="" className="h-full w-full object-contain" />
+                    <img
+                      src={(galActiva.id && progresoImg[galActiva.id]?.nueva_url) || galActiva.src}
+                      alt=""
+                      className="h-full w-full object-contain"
+                    />
                   ) : (<ImageIcon size={48} className="text-slate-200" />)}
+                  {galActiva?.id && progresoImg[galActiva.id]?.estado === "procesando" && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/75">
+                      <Loader2 size={26} className="animate-spin" style={{ color: tema.color }} />
+                      <span className="text-xs font-semibold text-slate-500">{progresoImg[galActiva.id]?.paso}</span>
+                    </div>
+                  )}
                 </div>
+
+                {/* Label de carga: paso global, avance y errores por imagen */}
+                {jobActivo && (
+                  <div className="mb-3 rounded-xl border px-3 py-2" style={{ borderColor: hexToRgba(tema.color, 0.4), background: tema.suave }}>
+                    <div className="flex items-center gap-2 text-sm font-semibold" style={{ color: tema.acento }}>
+                      <Loader2 size={15} className="animate-spin" />
+                      <span className="truncate">{jobImg?.paso_global || "Procesando imágenes…"}</span>
+                      <span className="ml-auto shrink-0 text-xs font-normal text-slate-500">{jobImg?.procesadas ?? 0}/{jobImg?.total ?? 0}</span>
+                    </div>
+                    <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pctImg}%`, backgroundColor: tema.color }} />
+                    </div>
+                    {(jobImg?.imagenes ?? []).some((x) => x.estado === "error") && (
+                      <ul className="mt-2 space-y-0.5">
+                        {(jobImg?.imagenes ?? []).filter((x) => x.estado === "error").map((x) => (
+                          <li key={x.indice} className="flex items-start gap-1.5 text-[11px] text-red-600">
+                            <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                            <span>Imagen {x.indice + 1}: {x.error ?? "error"}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
+                {/* Miniaturas con controles al hover (flags + eliminar) */}
                 <div className="flex flex-wrap gap-2">
-                  {imagenes.map((src, i) => (
-                    <button key={i} onClick={() => setImgActiva(i)}
-                      className={["h-16 w-16 overflow-hidden rounded-lg border-2 transition-colors", i === imgActiva ? "" : "border-slate-200 hover:border-slate-300"].join(" ")}
-                      style={i === imgActiva ? { borderColor: tema.color } : undefined}>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={src} alt="" className="h-full w-full object-contain" />
-                    </button>
-                  ))}
-                  <div className="flex h-16 w-16 items-center justify-center rounded-lg border-2 border-dashed border-slate-200 text-slate-300"><Plus size={20} /></div>
+                  {galItems.map((img, i) => {
+                    const prog = img.id ? progresoImg[img.id] : undefined;
+                    const activa = i === galIdxActiva;
+                    return (
+                      <div key={img.id || `u${i}`} className="group relative">
+                        <button
+                          onClick={() => setImgActiva(i)}
+                          className={["relative block h-16 w-16 overflow-hidden rounded-lg border-2 transition-colors", activa ? "" : "border-slate-200 hover:border-slate-300"].join(" ")}
+                          style={activa ? { borderColor: tema.color } : undefined}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={prog?.nueva_url || img.src} alt="" className="h-full w-full object-contain" />
+                          {prog?.estado === "procesando" && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-white/70">
+                              <Loader2 size={16} className="animate-spin" style={{ color: tema.color }} />
+                            </div>
+                          )}
+                          {prog?.estado === "error" && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-red-500/25" title={prog.error ?? "Error"}>
+                              <AlertTriangle size={15} className="text-red-600" />
+                            </div>
+                          )}
+                          {prog?.estado === "listo" && (
+                            <div className="absolute right-0 top-0 rounded-bl-md bg-emerald-500 p-0.5">
+                              <CheckCircle2 size={11} className="text-white" />
+                            </div>
+                          )}
+                          {galEditable && !!img.id && !prog && hasFlags(img.id) && (
+                            <div className="absolute left-0 top-0 rounded-br-md px-1 text-[9px] font-bold text-white" style={{ backgroundColor: tema.color }}>
+                              {countFlags(img.id)}
+                            </div>
+                          )}
+                        </button>
+
+                        {/* Popover al hover: seleccionar flags + eliminar */}
+                        {galEditable && !!img.id && (
+                          <div className="absolute bottom-full left-1/2 z-30 hidden -translate-x-1/2 pb-2 group-hover:block">
+                            <div className="w-44 rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+                              <div className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Editar con IA</div>
+                              <div className="space-y-1">
+                                {FLAGS_IMG.map(({ key, label, Icon }) => {
+                                  const on = !!flagsImg[img.id]?.[key];
+                                  return (
+                                    <button
+                                      key={key}
+                                      onClick={() => toggleFlag(img.id, key)}
+                                      className={["flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold transition-colors", on ? "" : "bg-slate-50 text-slate-600 hover:bg-slate-100"].join(" ")}
+                                      style={on ? { backgroundColor: tema.color, color: tema.texto } : undefined}
+                                    >
+                                      <Icon size={13} /> {label}
+                                      {on && <CheckCircle2 size={12} className="ml-auto" />}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <button
+                                onClick={() => eliminarImg(img)}
+                                disabled={eliminandoId === img.id}
+                                className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
+                              >
+                                {eliminandoId === img.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                                Eliminar
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
+
+                {/* Procesar con IA (on-demand) */}
+                {galEditable && (
+                  <>
+                    <button
+                      onClick={procesarIA}
+                      disabled={jobActivo || totalConFlags === 0}
+                      className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
+                    >
+                      {jobActivo ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                      {jobActivo
+                        ? "Procesando imágenes…"
+                        : totalConFlags
+                          ? `Procesar con IA · ${totalConFlags} imagen${totalConFlags > 1 ? "es" : ""}`
+                          : "Procesar con IA"}
+                    </button>
+                    <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                      Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Texto</strong> (traducir + quitar logos) o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
+                    </p>
+                  </>
+                )}
               </section>
 
               {/* TÍTULO */}
