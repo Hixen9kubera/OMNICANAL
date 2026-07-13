@@ -679,6 +679,47 @@ Se añade un **editor de imágenes** dentro del **ProductStudio**:
 
 ---
 
+## 🧩 Versión 0.4 — Estudio de producto: contenido, imágenes con IA y atributos ML
+
+**Fecha:** 10 jul 2026. Sobre la v0.3.
+
+### Contenido del producto (canal General)
+- **Borradores persistentes**: los cambios de título/descripción/atributos se
+  autoguardan en `localStorage` y **sobreviven al recargar** la página, con botón
+  **"Descartar borrador"** (recarga desde WooCommerce).
+- **Botón "Guardar contenido"** (solo canal General): persiste título/descripción/
+  atributos a WooCommerce **preservando los atributos de variación**
+  (`POST /api/productos/{sku}/contenido`).
+- **Límite de caracteres del título por canal**: Mercado Libre 60, Amazon 200
+  (contador en rojo al exceder).
+
+### Editor de imágenes con IA (galería WooCommerce)
+- **4 flags independientes** por imagen: **Fondo** (quitar fondo), **Traducir texto**,
+  **Quitar logos** y **Modelo** (cambiar persona). Antes "traducir" y "quitar logos"
+  iban juntos.
+- **Agregar imágenes** con botón **"+"**: clic (selector de archivos) o
+  **arrastrar y soltar** (`POST /api/imagenes/{sku}/agregar`).
+- **Fixes de caché (LiteSpeed)**: las lecturas y escrituras de galería van con
+  cache-bust → ya no aparecen imágenes viejas al recargar, ni se revierten las
+  imágenes editadas al procesar un segundo grupo.
+
+### Amazon (publicación)
+- **Imágenes al publicar**: el payload de Amazon ahora incluye las imágenes
+  (`main/other_product_image_locator`) → el listing ya no queda sin fotos.
+- **Payload visible en la vista previa** de Amazon (antes solo se veía el de ML).
+- Verificado que ML/Amazon **publican con el precio REGULAR**.
+
+### Atributos de Mercado Libre (nuevo `services/ml_atributos.py`)
+- Port del pipeline canónico: consulta la categoría ML y separa **PRINCIPALES**
+  (obligatorios) y **SECUNDARIOS** con sus valores válidos; prompt rico + DeepSeek
+  (`json_object`, temp 0.2) con validación contra IDs válidos.
+- **Crear Productos** usa el servicio y guarda los atributos como `ml_attr_<ID>`
+  (lo que lee el publisher) → los atributos ahora **sí llegan a Mercado Libre**.
+- **"Mejorar con IA" (canal Mercado Libre)** trae los atributos reales de la
+  categoría (principales + secundarios) con nombre legible.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
