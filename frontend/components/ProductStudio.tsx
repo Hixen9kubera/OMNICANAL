@@ -16,6 +16,7 @@ import {
   Calculator,
   RefreshCw,
   Save,
+  Plus,
   Trash2,
   Sparkles,
   Eraser,
@@ -44,6 +45,7 @@ import {
   costoDetalle,
   costoGuardar,
   costoPreview,
+  agregarImagenes,
   eliminarImagenGaleria,
   galeriaProducto,
   guardarContenido,
@@ -147,6 +149,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const [jobImg, setJobImg] = useState<ProgresoImagenes | null>(null);
   const [procesandoIA, setProcesandoIA] = useState(false);
   const [eliminandoId, setEliminandoId] = useState<number | null>(null);
+  const [agregandoImg, setAgregandoImg] = useState(false);
+  const [dragImg, setDragImg] = useState(false);
   const pollImgRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Guardar contenido (título/descripción/atributos) a WooCommerce — canal General.
@@ -716,6 +720,42 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     setTimeout(() => { cargandoCampos.current = false; }, 0);
   }
 
+  function leerBase64(f: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = String(reader.result || "");
+        const coma = res.indexOf(",");
+        resolve(coma >= 0 ? res.slice(coma + 1) : res);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(f);
+    });
+  }
+
+  async function agregarArchivos(files: FileList | null) {
+    if (!files || !files.length || !sku) return;
+    const lista = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (!lista.length) return;
+    setAgregandoImg(true);
+    try {
+      const imagenes = await Promise.all(
+        lista.map(async (f) => ({
+          filename: f.name,
+          mime: f.type || "image/jpeg",
+          data_b64: await leerBase64(f),
+        })),
+      );
+      const r = await agregarImagenes(sku, { wc_id: wcId, imagenes });
+      if (r.imagenes?.length) setGaleria(r.imagenes);
+    } catch {
+      window.alert("No se pudieron agregar las imágenes.");
+    } finally {
+      setAgregandoImg(false);
+      setDragImg(false);
+    }
+  }
+
   if (!sku) return null;
 
   const imagenes = data?.imagenes?.length ? data.imagenes : data?.imagen ? [data.imagen] : [];
@@ -1069,6 +1109,20 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                       </div>
                     );
                   })}
+                  {galEditable && (
+                    <label
+                      onDragOver={(e) => { e.preventDefault(); setDragImg(true); }}
+                      onDragLeave={() => setDragImg(false)}
+                      onDrop={(e) => { e.preventDefault(); setDragImg(false); void agregarArchivos(e.dataTransfer.files); }}
+                      title="Agregar imágenes (clic o arrastra aquí)"
+                      className={["flex h-16 w-16 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors", dragImg ? "" : "border-slate-200 text-slate-300 hover:border-slate-300 hover:text-slate-400"].join(" ")}
+                      style={dragImg ? { borderColor: tema.color, color: tema.color } : undefined}
+                    >
+                      {agregandoImg ? <Loader2 size={18} className="animate-spin" style={{ color: tema.color }} /> : <Plus size={20} />}
+                      <input type="file" accept="image/*" multiple className="hidden"
+                        onChange={(e) => { void agregarArchivos(e.target.files); e.currentTarget.value = ""; }} />
+                    </label>
+                  )}
                 </div>
 
                 {/* Procesar con IA (on-demand) */}

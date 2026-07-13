@@ -1097,7 +1097,13 @@ async def reemplazar_imagenes_galeria(parent_id: int, id_map: dict[int, int]) ->
     if not id_map:
         return res
     async with _client() as cli:
-        r = await cli.get(f"/products/{parent_id}", params={"_fields": "id,images,meta_data"})
+        # `_cb` (cache-bust) CRÍTICO: sin esto, al procesar un 2º grupo de imágenes
+        # este GET lee la galería CACHEADA (anterior al 1er swap) y el PUT revierte
+        # las imágenes ya editadas. Con el query único siempre lee el estado actual.
+        r = await cli.get(
+            f"/products/{parent_id}",
+            params={"_fields": "id,images,meta_data", "_cb": str(time.time())},
+        )
         if r.status_code != 200:
             log.warning("reemplazar_imagenes_galeria: GET %d → %d", parent_id, r.status_code)
             return res
@@ -1172,7 +1178,7 @@ async def eliminar_imagen_galeria(parent_id: int, image_id: int) -> bool:
     producto. Opera sobre el padre.
     """
     async with _client() as cli:
-        r = await cli.get(f"/products/{parent_id}", params={"_fields": "id,images"})
+        r = await cli.get(f"/products/{parent_id}", params={"_fields": "id,images", "_cb": str(time.time())})
         if r.status_code != 200:
             return False
         prod = r.json()
@@ -1181,6 +1187,36 @@ async def eliminar_imagen_galeria(parent_id: int, image_id: int) -> bool:
         if rp.status_code != 200:
             log.warning("eliminar_imagen_galeria: PUT %d → %d %s", parent_id, rp.status_code, rp.text[:160])
         return rp.status_code == 200
+
+
+async def agregar_imagenes_galeria(parent_id: int, media_ids: list[int]) -> list[dict[str, Any]]:
+    """
+    Agrega media_ids (ya subidos a WP Media) al FINAL de la galería del producto,
+    en un solo PUT. Devuelve la galería resultante [{id, src, position}].
+    """
+    if not media_ids:
+        return []
+    async with _client() as cli:
+        r = await cli.get(
+            f"/products/{parent_id}",
+            params={"_fields": "id,images", "_cb": str(time.time())},
+        )
+        if r.status_code != 200:
+            return []
+        prod = r.json()
+        existentes = [{"id": i["id"]} for i in prod.get("images", []) if i.get("id")]
+        ya = {i["id"] for i in existentes}
+        nuevas = existentes + [{"id": m} for m in media_ids if m not in ya]
+        rp = await cli.put(f"/products/{parent_id}", json={"images": nuevas}, timeout=90.0)
+        if rp.status_code != 200:
+            log.warning("agregar_imagenes_galeria: PUT %d → %d %s", parent_id, rp.status_code, rp.text[:160])
+            return []
+        prod2 = rp.json()
+        return [
+            {"id": i.get("id"), "src": i.get("src"), "position": i.get("position", idx)}
+            for idx, i in enumerate(prod2.get("images") or [])
+            if i.get("id")
+        ]
 
 
 async def variantes_de_productos(

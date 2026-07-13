@@ -38,6 +38,17 @@ class EliminarReq(BaseModel):
     image_id: int
 
 
+class ImagenNueva(BaseModel):
+    filename: str = "imagen"
+    mime: str = "image/jpeg"
+    data_b64: str  # base64 (sin el prefijo data:...;base64,)
+
+
+class AgregarReq(BaseModel):
+    wc_id: int | None = None
+    imagenes: list[ImagenNueva] = []
+
+
 @router.get("/{sku}")
 async def galeria(sku: str, wc_id: int | None = Query(None)):
     """Galería completa del producto (portada + imágenes con id/posición)."""
@@ -89,3 +100,35 @@ async def eliminar(sku: str, req: EliminarReq):
     if not ok:
         raise HTTPException(502, "No se pudo eliminar la imagen en WooCommerce.")
     return {"ok": True, "image_id": req.image_id}
+
+
+@router.post("/{sku}/agregar")
+async def agregar(sku: str, req: AgregarReq):
+    """Sube imágenes nuevas (base64) a WP Media y las agrega a la galería del producto."""
+    if not req.imagenes:
+        raise HTTPException(400, "No se enviaron imágenes.")
+    try:
+        g = await woocommerce.galeria_producto(req.wc_id, sku)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"No se pudo leer el producto: {exc}")
+    parent_id = (g or {}).get("parent_id") or req.wc_id
+    if not parent_id:
+        raise HTTPException(400, "No se pudo resolver el producto en WooCommerce.")
+
+    import base64
+    media_ids: list[int] = []
+    for i, im in enumerate(req.imagenes):
+        try:
+            data = base64.b64decode(im.data_b64)
+        except Exception:  # noqa: BLE001
+            continue
+        if not data:
+            continue
+        nombre = (im.filename or f"img{i + 1}").rsplit(".", 1)[0][:60]
+        subida = await woocommerce.subir_imagen_wp(f"{sku}-{nombre}", data, im.mime or "image/jpeg")
+        if subida:
+            media_ids.append(subida[0])
+    if not media_ids:
+        raise HTTPException(502, "No se pudo subir ninguna imagen a WordPress.")
+    imagenes = await woocommerce.agregar_imagenes_galeria(int(parent_id), media_ids)
+    return {"ok": True, "agregadas": len(media_ids), "imagenes": imagenes}
