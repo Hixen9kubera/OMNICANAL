@@ -37,6 +37,8 @@ class ProductoCtx(BaseModel):
     marca: str | None = None
     modelo: str | None = None
     categoria: str | None = None      # ruta legible "A › B › C"
+    ml_cat_id: str | None = None      # id de categoría ML (para traer atributos reales)
+    sku: str | None = None
     descripcion: str | None = None
     precio: float | None = None
     costo: float | None = None
@@ -70,12 +72,12 @@ class MejorarRequest(BaseModel):
 
 
 @router.post("/mejorar")
-def mejorar(req: MejorarRequest) -> dict[str, Any]:
+async def mejorar(req: MejorarRequest) -> dict[str, Any]:
     """Mejora con IA varios campos del canal a la vez (título, descripción,
     atributos y —en Amazon— highlights y bullets)."""
     producto = req.producto.model_dump()
     producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
-    return ia_generadores.mejorar(req.canal, producto)
+    return await ia_generadores.mejorar(req.canal, producto)
 
 
 class CompetenciaRequest(BaseModel):

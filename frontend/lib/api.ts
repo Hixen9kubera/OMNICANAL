@@ -35,6 +35,8 @@ export interface ProductoIA {
   precio?: number | null;
   costo?: number | null;
   publico?: string | null;
+  ml_cat_id?: string | null;
+  sku?: string | null;
   atributos?: { nombre: string; valor: string }[];
 }
 

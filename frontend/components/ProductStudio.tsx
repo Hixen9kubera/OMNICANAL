@@ -414,6 +414,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       descripcion: descripcion || data.descripcion,
       precio: Number(campos.precioRegular) || null,
       costo: Number(campos.costo) || null,
+      ml_cat_id: catMlId || meta?.categoria_ml?.category_id || null,
+      sku,
       atributos,
     };
     const [mej, comp] = await Promise.allSettled([

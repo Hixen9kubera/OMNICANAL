@@ -15,6 +15,7 @@ un tipo de contenido es solo editar este diccionario.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -374,20 +375,50 @@ def _parse_json(texto: str) -> dict[str, Any]:
     return {}
 
 
-def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
-    """Mejora con IA varios campos del canal en una sola llamada (JSON)."""
+async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
+    """Mejora con IA varios campos del canal en una sola llamada (JSON). En Mercado
+    Libre, además reemplaza los atributos por los REALES de la categoría
+    (principales + secundarios) vía el servicio ml_atributos."""
     cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
     user = (
         f"Datos del producto:\n{_contexto(producto)}\n\n"
         "Mejora el contenido y devuelve SOLO el JSON indicado."
     )
-    res = _completar(cfg["system"], user, max_tokens=cfg["max_tokens"])
+    res = await asyncio.to_thread(_completar, cfg["system"], user, cfg["max_tokens"])
     if not res.get("ok"):
         return {"ok": False, "motivo": res.get("motivo"), "canal": canal}
     data = _parse_json(res.get("texto", ""))
     if not data:
         return {"ok": False, "motivo": "La IA no devolvió JSON válido.",
                 "canal": canal, "crudo": res.get("texto", "")[:400]}
+
+    # Mercado Libre: reemplaza los atributos por los REALES de la categoría
+    # (principales + secundarios), con nombre legible + valor.
+    if canal == "mercado_libre" and str(producto.get("ml_cat_id") or "").strip():
+        try:
+            from services import ml_atributos
+            attrs_actuales = "; ".join(
+                f"{a.get('nombre')}: {a.get('valor')}"
+                for a in (producto.get("atributos") or []) if a.get("nombre")
+            )
+            r = await ml_atributos.generar_atributos(
+                cat_id=str(producto["ml_cat_id"]).strip(),
+                nombre=producto.get("nombre", ""),
+                alibaba_titulo=producto.get("nombre", ""),
+                atributos_actuales=attrs_actuales,
+                caracteristicas_clave=_sin_html(str(producto.get("descripcion") or ""))[:1500],
+                sku=str(producto.get("sku") or ""),
+            )
+            todos = r["meli_attrs"]["principales"] + r["meli_attrs"]["secundarias"]
+            nombre_por_id = {a["id"]: a["name"] for a in todos}
+            if r["atributos"]:
+                data["atributos"] = [
+                    {"nombre": nombre_por_id.get(k, k), "valor": v}
+                    for k, v in r["atributos"].items()
+                ]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("mejorar ML atributos: %s", exc)
+
     return {"ok": True, "canal": canal, "proveedor": res.get("proveedor"),
             "campos": data}
 

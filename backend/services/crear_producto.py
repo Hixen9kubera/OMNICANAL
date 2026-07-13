@@ -577,54 +577,29 @@ MARCA_FIJA = "Ferrahome"  # BRAND siempre nuestra, nunca la del proveedor
 async def atributos_ml(cat_id: str | None, titulo: str, sku: str,
                        scrape: dict[str, Any]) -> dict[str, str]:
     """
-    Genera los atributos OBLIGATORIOS de la categoría de Mercado Libre con IA.
-    Lee la lista de atributos de la categoría (GET /categories/{id}/attributes),
-    y Claude los llena con el título + specs de Alibaba + color/talla del SKU.
-    Devuelve { "BRAND": "Ferrahome", "MODEL": ..., "COLOR": ... }. {} si falla.
+    Genera los atributos de Mercado Libre (PRINCIPALES + SECUNDARIOS) de la
+    categoría con IA, usando el servicio canónico `ml_atributos` (DeepSeek). Devuelve
+    { "BRAND": "Ferrahome", "MODEL": ..., "COLOR": ... } con IDs de ML como clave.
+    {} si no hay categoría o falla.
     """
     if not cat_id:
         return {}
-    try:
-        async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
-            r = await cli.get(f"/categories/{cat_id}/attributes")
-        atrs = r.json() if r.status_code == 200 else []
-    except Exception:  # noqa: BLE001
-        return {}
-    # obligatorios (+ algunos clave), máx ~15 para no saturar el prompt
-    oblig = [a for a in atrs if "required" in (a.get("tags") or {})][:15]
-    if not oblig:
-        oblig = atrs[:8]
-    if not oblig:
-        return {}
-
-    lista = "\n".join(f"- {a['id']} ({a.get('name')})" for a in oblig)
+    from services import ml_atributos
     specs = scrape.get("specs") or {}
-    from services.variables import parse_sku
-    variante = parse_sku(sku).get("attributes") or {}
-    system = (
-        "Eres experto en publicaciones de Mercado Libre México. Llenas los "
-        "atributos obligatorios de un producto con valores reales y coherentes. "
-        'Respondes SOLO un JSON {"ID_ATRIBUTO": "valor", ...}.'
+    caracteristicas = (
+        scrape.get("caracteristicas_clave")
+        or (json.dumps(specs, ensure_ascii=False)[:1500] if specs else "")
     )
-    user = (
-        f"Producto: {titulo}\n"
-        f"Specs Alibaba: {json.dumps(specs, ensure_ascii=False)[:800]}\n"
-        f"Variante (del SKU): {variante}\n\n"
-        f"Atributos a llenar (ID y nombre):\n{lista}\n\n"
-        f'REGLAS: BRAND siempre "{MARCA_FIJA}". MODEL: deriva del título o SKU. '
-        "COLOR: usa el color de la variante si existe. No inventes medidas que no "
-        "veas. Si un atributo no aplica, omítelo. Usa los IDs de arriba como claves."
-    )
-    # DeepSeek primero (como el pipeline original) → Claude de fallback.
-    from services.ia_generadores import _completar
     try:
-        r = await asyncio.to_thread(_completar, system, user, 1024)
-        if not r.get("ok"):
-            return {}
-        m = re.search(r"\{.*\}", r["texto"], re.DOTALL)
-        data = json.loads(m.group()) if m else {}
-        data["BRAND"] = MARCA_FIJA  # forzar marca
-        return {k: str(v) for k, v in data.items() if v}
+        r = await ml_atributos.generar_atributos(
+            cat_id=cat_id,
+            nombre=titulo,
+            alibaba_titulo=scrape.get("titulo") or "",
+            atributos_actuales="",
+            caracteristicas_clave=caracteristicas,
+            sku=sku,
+        )
+        return r.get("atributos", {})
     except Exception as exc:  # noqa: BLE001
         log.warning("atributos ML para %s falló: %s", sku, exc)
         return {}
@@ -731,8 +706,11 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
                 meta.append({"key": "cbm_producto", "value": str(scrape["cbm"])})
             if scrape.get("unidades_venta"):
                 meta.append({"key": "alibaba_unidades_venta", "value": str(scrape["unidades_venta"])})
-            # Paso 8: atributos ML → meta ml_atributos (JSON, para el publisher ML)
+            # Atributos ML → metas `ml_attr_<ID>` (lo que LEE el publisher en
+            # construir_prod) + un `ml_atributos` JSON de respaldo/trazabilidad.
             if atributos:
+                for _aid, _aval in atributos.items():
+                    meta.append({"key": f"ml_attr_{_aid}", "value": str(_aval)})
                 meta.append({"key": "ml_atributos", "value": json.dumps(atributos, ensure_ascii=False)})
             payload["meta_data"] = meta
 
