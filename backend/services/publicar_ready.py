@@ -395,7 +395,8 @@ def cachear_schema_amazon(product_type: str, schema: dict[str, Any]) -> None:
 
 async def atributos_amazon(sku: str, wc_id: int, campos: dict[str, Any], mp: str,
                            product_type: str | None,
-                           schema: dict[str, Any] | None = None) -> dict[str, Any]:
+                           schema: dict[str, Any] | None = None,
+                           preparar_imagenes: bool = True) -> dict[str, Any]:
     """Atributos de Amazon vía `build_payload_attributes` (su mapper, verbatim)."""
     if schema and product_type:
         await asyncio.to_thread(cachear_schema_amazon, product_type, schema)
@@ -417,7 +418,17 @@ async def atributos_amazon(sku: str, wc_id: int, campos: dict[str, Any], mp: str
     # mapper del vendor no las agrega, así que se inyectan aquí (en el adaptador):
     # 1 principal + hasta 8 secundarias (Amazon admite 9). Son atributos estándar
     # del schema, así que sobreviven el filtro de _amazon_attrs_final.
-    imgs = [u for u in (prod.get("images") or []) if u]
+    #
+    # Antes de enviarlas se dejan "Amazon-ready" (≥1000 px en el lado más largo,
+    # RGB, JPEG) — ver services/imagenes_amazon. Las que ya cumplen NO se tocan.
+    # En la VISTA PREVIA se llama con preparar_imagenes=False para no subir medios.
+    imgs = [u for u in (prod.get("images") or []) if u][:9]
+    if imgs and preparar_imagenes:
+        try:
+            from services import imagenes_amazon
+            imgs, _avisos = await imagenes_amazon.preparar_para_amazon(sku, imgs)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("preparar imágenes Amazon (%s): %s — se envían las originales", sku, exc)
     if imgs:
         attrs["main_product_image_locator"] = [
             {"media_location": imgs[0], "marketplace_id": mp}

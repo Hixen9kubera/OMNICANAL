@@ -270,12 +270,39 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     # e IMÁGENES tal como se enviarán al publicar.
     payload = None
     try:
+        # preparar_imagenes=False: la vista previa NO sube medios ni tarda; solo
+        # mide y avisa. La optimización real ocurre al CONFIRMAR la publicación.
         attributes = await _amazon_attrs_final(
-            str(sku), wc_id, campos, settings.amazon_marketplace_id, pt, None
+            str(sku), wc_id, campos, settings.amazon_marketplace_id, pt, None,
+            preparar_imagenes=False,
         )
         n_imgs = sum(1 for k in attributes if "_image_locator" in k)
         if n_imgs:
             avisos.append(f"{n_imgs} imagen(es) se enviarán a Amazon.")
+            # Amazon exige ≥1000 px en el lado más largo (es lo que habilita el zoom).
+            try:
+                from services import imagenes_amazon
+                urls = [
+                    v[0]["media_location"] for k, v in attributes.items()
+                    if "_image_locator" in k and v and isinstance(v, list)
+                    and v[0].get("media_location")
+                ]
+                d = await imagenes_amazon.diagnostico(urls)
+                problemas = []
+                if d.get("chicas"):
+                    problemas.append(
+                        f"{d['chicas']} miden menos de 1000 px (sin eso Amazon no habilita el zoom)")
+                if d.get("formato_malo"):
+                    problemas.append(
+                        f"{d['formato_malo']} están en un formato que Amazon NO acepta (WebP)")
+                if problemas:
+                    avisos.append(
+                        f"De {d['total']} imagen(es): " + " y ".join(problemas) +
+                        f" [{', '.join(d['detalle'])}]. Al publicar se optimizarán "
+                        f"automáticamente a ≥1000 px, JPEG RGB."
+                    )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("diagnóstico imágenes Amazon (%s): %s", sku, exc)
         else:
             avisos.append("El producto no tiene imágenes en WooCommerce: el listing quedará sin fotos.")
         payload = {"productType": pt or "(auto)", "requirements": "LISTING", "attributes": attributes}
@@ -616,7 +643,8 @@ def _amz_default_value(node: dict[str, Any], mp: str, attr_name: str = "", depth
 
 async def _amazon_attrs_final(sku: str, wc_id, campos: dict[str, Any], mp: str,
                               product_type: str | None,
-                              schema: dict[str, Any] | None) -> dict[str, Any]:
+                              schema: dict[str, Any] | None,
+                              preparar_imagenes: bool = True) -> dict[str, Any]:
     """
     Atributos de Amazon: los construye `build_payload_attributes` de
     `publicaciones_amazon` (vendorizado), y aquí solo se filtran contra el
@@ -631,7 +659,8 @@ async def _amazon_attrs_final(sku: str, wc_id, campos: dict[str, Any], mp: str,
     if wc_id and wp_db.disponible():
         try:
             candidatos = await publicar_ready.atributos_amazon(
-                str(sku), int(wc_id), campos, mp, product_type, schema
+                str(sku), int(wc_id), campos, mp, product_type, schema,
+                preparar_imagenes=preparar_imagenes,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("build_payload_attributes falló (%s): %s — se usa el mapeo propio", sku, exc)
