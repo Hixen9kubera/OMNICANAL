@@ -720,6 +720,102 @@ Se añade un **editor de imágenes** dentro del **ProductStudio**:
 
 ---
 
+## 📸 Versión 0.5 — Imágenes listas para Amazon (WebP → JPEG, ≥1000 px, zoom)
+
+**Fecha:** 14 jul 2026. Sobre la v0.4.
+
+### El problema (diagnosticado con datos reales)
+
+Aunque en la v0.4 ya se enviaban las imágenes a Amazon (`main_product_image_locator` /
+`other_product_image_locator_N`), **los listings seguían sin fotos**. Al medir las imágenes
+reales de la tienda aparecieron **dos incumplimientos**:
+
+| Producto | Imágenes reales |
+|---|---|
+| `HERR-0029` | 720×720, 800×800, 1024×1024, 1024×1024, 800×800, 800×800 — **todas `.webp`** |
+| `EST-0091` | 800×800 ×5, 1024×1024 — **todas `.webp`** |
+
+1. **Formato** — WooCommerce guarda las imágenes en **`.webp`**, y **Amazon NO acepta WebP**
+   (solo JPEG, TIFF, PNG y GIF no animado; prefiere JPEG).
+2. **Tamaño** — Amazon exige entre **1,000 y 10,000 px en el lado más largo**: es lo que
+   habilita el **zoom**. La mayoría del catálogo está en **720–1024 px**, así que **no cumple**.
+
+### Requisitos oficiales de imagen de Amazon (los que ahora se garantizan)
+
+- Servida por **HTTP o HTTPS** (nunca FTP ni ruta de archivo local).
+- Formato **JPEG, TIFF, PNG o GIF no animado** — se prefiere **JPEG**.
+- Color **RGB o CMYK** — se prefiere **RGB**.
+- **Clara y sin pixelar**, mínimo **72 ppp**.
+- Entre **1,000 y 10,000 px** en el **lado más largo** (necesario para el zoom).
+
+### La solución: `services/imagenes_amazon.py`
+
+Un paso **"Amazon-ready"** que corre **al confirmar la publicación** y transforma solo lo
+necesario. **NO toca la galería de WooCommerce ni la de Mercado Libre**: genera una versión
+paralela y usa esas URLs únicamente en el payload de Amazon.
+
+Con `L` = lado más largo de la imagen original:
+
+| Caso | Acción | Resultado |
+|---|---|---|
+| `1000 ≤ L ≤ 10000` **y** formato válido | **No se toca** (ni se descarga ni se sube nada) | Se usa la URL original |
+| Tamaño OK pero **formato inválido** (WebP) | **Convierte a JPEG sin reescalar** | Misma resolución, cero pérdida |
+| `500 ≤ L < 1000` | **(A) Lanczos ×2** | 1000–2000 px, JPEG |
+| `L < 500` | **(B) Fallback IA: Real-ESRGAN ×4** (Replicate). Si falla → Lanczos | ≥1000 px, JPEG |
+| `L > 10000` | Reduce a 10000 | JPEG |
+
+La salida **siempre** es **RGB + JPEG** (calidad 90, progresivo).
+
+**Por qué Real-ESRGAN y no Gemini** (que sí usamos en el editor de imágenes): Gemini es un
+modelo **generativo** — al "mejorar" una imagen la **regenera** y puede alterar el producto.
+**Real-ESRGAN es super-resolución pura**: sube la resolución **sin inventar ni cambiar el
+contenido**. Para fotos de producto que van a un marketplace, eso es lo correcto.
+
+> Con el catálogo actual (720–1024 px) **el fallback de IA no se activa**: todo lo resuelve el
+> reescalado clásico (A) o la simple conversión de formato. El costo extra es **$0**.
+
+### Caché — tabla `amazon_imagenes`
+
+Para no reprocesar ni duplicar medios en cada publicación, el resultado se cachea por
+**hash de la URL de origen**:
+
+| Columna | Para qué |
+|---|---|
+| `src_hash` | PK — sha1 de la URL original |
+| `sku`, `src_url`, `amz_url` | trazabilidad + la URL final que va a Amazon |
+| `wp_media_id` | id del medio subido a WordPress |
+| `ancho`, `alto`, `metodo` | resultado y método usado (`lanczos` / `convert` / `real-esrgan`) |
+
+La tabla **se crea sola**. Si editas una imagen con el editor de IA, **cambia su URL → cambia
+el hash → se vuelve a optimizar automáticamente**.
+
+### Vista previa: avisa antes de publicar
+
+La vista previa **no sube medios ni tarda** (`preparar_imagenes=False`): solo **mide** y avisa.
+Ejemplo real:
+
+> *"De 6 imagen(es): 5 miden menos de 1000 px (sin eso Amazon no habilita el zoom) y 6 están en
+> un formato que Amazon NO acepta (WebP) [800x800 WEBP, …]. Al publicar se optimizarán
+> automáticamente a ≥1000 px, JPEG RGB."*
+
+### Prompt del set de imágenes de Amazon
+
+El generador **"Set de 5 imágenes"** (`ia_generadores._AMZ_IMAGENES`) ahora incluye los
+**requisitos técnicos de Amazon** (HTTP/HTTPS, JPEG preferido, RGB, ≥72 ppp, 1,000–10,000 px)
+para que el set que planea la IA nazca ya conforme.
+
+### Archivos tocados
+
+- **Nuevo**: `backend/services/imagenes_amazon.py` — optimización + caché + fallback IA.
+- `backend/services/publicar_ready.py` → `atributos_amazon(..., preparar_imagenes=True)`.
+- `backend/services/publicar.py` → `_amazon_attrs_final(..., preparar_imagenes)`; la vista previa
+  llama con `False` y añade el diagnóstico de tamaño/formato.
+- `backend/services/ia_generadores.py` → requisitos técnicos en `_AMZ_IMAGENES`.
+- Dependencias: **Pillow** (ya estaba en `requirements.txt`) y **`REPLICATE_API_KEY`** (solo para
+  el fallback de IA).
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
