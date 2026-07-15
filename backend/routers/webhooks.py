@@ -12,9 +12,21 @@ aparte.
 
 ⚙️ Persistencia: las notificaciones se GUARDAN en la tabla `webhook_eventos` de
 MySQL (sobreviven reinicios; antes solo vivían en memoria).
+
+🔁 DUAL-WRITE (piloto de migración a Supabase): con SUPABASE_DUAL_WRITE=true,
+cada notificación se escribe ADEMÁS en `ops.webhook_events` (Supabase) con una
+llave de IDEMPOTENCIA — UNIQUE(env, canal, topic, external_id, delivery_id) —
+de modo que la base descarta los duplicados sola (hoy el 36% de las filas de
+MySQL son repetidas). Reglas del patrón:
+  - MySQL sigue siendo la fuente de verdad; Supabase es copia.
+  - Un fallo de Supabase JAMÁS rompe la respuesta 200: se registra en
+    ops.migration_issues (best-effort) y la operación continúa.
+  - Revertir = SUPABASE_DUAL_WRITE=false (sin redeploy).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -23,6 +35,7 @@ from fastapi import APIRouter, BackgroundTasks, Query, Request
 
 from config import settings
 from services import db, inventario, meli
+from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.webhooks")
 router = APIRouter(prefix="/api/webhooks", tags=["webhooks"])
@@ -51,7 +64,7 @@ _schema_ok = False
 
 def _asegurar_schema() -> None:
     global _schema_ok
-    if _schema_ok:
+    if _schema_ok or not settings.mysql_enabled:
         return
     try:
         with db.get_cursor() as cur:
@@ -63,6 +76,8 @@ def _asegurar_schema() -> None:
 
 def _guardar(canal: str, topic, resource, user_id) -> int | None:
     """Inserta el evento recibido y devuelve su id."""
+    if not settings.mysql_enabled:
+        return None  # staging opción A: sin MySQL; el evento vive en Supabase
     _asegurar_schema()
     try:
         with db.get_cursor() as cur:
@@ -79,6 +94,8 @@ def _guardar(canal: str, topic, resource, user_id) -> int | None:
 
 
 def _actualizar(evento_id: int, sku=None, resultado=None) -> None:
+    if not settings.mysql_enabled:
+        return
     try:
         with db.get_cursor() as cur:
             cur.execute(
@@ -89,7 +106,78 @@ def _actualizar(evento_id: int, sku=None, resultado=None) -> None:
         log.warning("No se pudo actualizar webhook %s: %s", evento_id, exc)
 
 
-async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
+# ── Dual-write a Supabase (ops.webhook_events) ────────────────────────────────
+
+def _dual_write_activo() -> bool:
+    return settings.supabase_dual_write and sdb.disponible()
+
+
+def _guardar_supabase(canal: str, payload: dict[str, Any]) -> int | None:
+    """Escribe el evento en ops.webhook_events (idempotente). Devuelve su id.
+
+    Llave de idempotencia = (env, canal, topic, external_id, delivery_id):
+      - external_id = el `resource` de ML (p. ej. '/items/MLM123').
+      - delivery_id = el `_id` de la notificación de ML; si no viene, hash del
+        payload — dos entregas idénticas colapsan en una sola fila.
+    Si el INSERT choca con el UNIQUE, la BD lo descarta (ON CONFLICT DO NOTHING)
+    y aquí devolvemos None: el conteo de duplicados sale gratis del rowcount.
+    """
+    if not _dual_write_activo():
+        return None
+    try:
+        topic = str(payload.get("topic") or "desconocido")
+        external_id = str(payload.get("resource") or "sin-resource")
+        delivery_id = str(
+            payload.get("_id")
+            or hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
+        )
+        fila = sdb.execute_returning(
+            """insert into ops.webhook_events
+                 (env, canal, topic, external_id, delivery_id, cuenta, payload)
+               values (%s, %s, %s, %s, %s, %s, %s::jsonb)
+               on conflict do nothing
+               returning id""",
+            (settings.app_env, canal, topic, external_id, delivery_id,
+             str(payload.get("user_id") or "") or None, json.dumps(payload)),
+        )
+        if fila is None:
+            log.info("Webhook duplicado descartado por idempotencia: %s %s", topic, external_id)
+            return None
+        return int(fila["id"])
+    except Exception as exc:  # noqa: BLE001
+        # Regla del dual-write: NUNCA romper la operación por un fallo del espejo.
+        log.warning("Dual-write a Supabase falló (la operación continúa): %s", exc)
+        _registrar_issue("webhook_eventos", f"dual-write fallo: {exc}")
+        return None
+
+
+def _actualizar_supabase(sb_id: int | None, sku=None, resultado=None) -> None:
+    if not sb_id or not _dual_write_activo():
+        return
+    try:
+        sdb.execute(
+            """update ops.webhook_events
+               set procesado = true, sku = %s, resultado = %s, procesado_at = now()
+               where id = %s""",
+            (sku, (resultado or "")[:255], sb_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo actualizar ops.webhook_events %s: %s", sb_id, exc)
+
+
+def _registrar_issue(tabla: str, motivo: str) -> None:
+    """Anota un problema del dual-write en ops.migration_issues (best-effort)."""
+    try:
+        sdb.execute(
+            """insert into ops.migration_issues (fase, tabla_origen, motivo)
+               values ('F3-dualwrite', %s, %s)""",
+            (tabla, motivo[:500]),
+        )
+    except Exception:  # noqa: BLE001
+        pass  # si ni esto se pudo, ya quedó en los logs del paso anterior
+
+
+async def _procesar_ml(evento_id: int | None, sb_id: int | None, payload: dict[str, Any]) -> None:
     """Procesa la notificación en segundo plano (tras responder 200)."""
     topic = payload.get("topic")
     resource = payload.get("resource") or ""
@@ -118,6 +206,7 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
         resultado = f"error: {exc}"
     if evento_id:
         _actualizar(evento_id, sku, resultado)
+    _actualizar_supabase(sb_id, sku, resultado)
     log.info("Webhook ML [%s] %s → %s", topic, resource, resultado)
 
 
@@ -133,8 +222,10 @@ async def recibir_ml(request: Request, background: BackgroundTasks):
         payload = {}
     evento_id = _guardar("mercado_libre", payload.get("topic"),
                          payload.get("resource"), payload.get("user_id"))
+    # Espejo idempotente en Supabase (piloto). Nunca rompe el 200.
+    sb_id = _guardar_supabase("mercado_libre", payload)
     # Procesar aparte para responder rápido (ML reintenta si tardas).
-    background.add_task(_procesar_ml, evento_id, payload)
+    background.add_task(_procesar_ml, evento_id, sb_id, payload)
     return {"ok": True}
 
 
@@ -159,8 +250,14 @@ async def reanudar():
 
 @router.get("/estado")
 async def estado_registro():
-    """Indica si el registro está activo o pausado."""
-    return {"registro_activo": _registro_activo}
+    """Estado del receptor: registro, flags del piloto y ambiente."""
+    return {
+        "registro_activo": _registro_activo,
+        "ambiente": settings.app_env,
+        "mysql_enabled": settings.mysql_enabled,
+        "supabase_dual_write": settings.supabase_dual_write,
+        "supabase_disponible": sdb.disponible(),
+    }
 
 
 @router.get("/ml")
