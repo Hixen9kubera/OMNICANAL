@@ -31,9 +31,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 
 from config import settings
+from core.seguridad import requiere_api_key
 from services import db, inventario, meli
 from services import supabase_db as sdb
 
@@ -229,7 +230,7 @@ async def recibir_ml(request: Request, background: BackgroundTasks):
     return {"ok": True}
 
 
-@router.api_route("/pausar", methods=["GET", "POST"])
+@router.api_route("/pausar", methods=["GET", "POST"], dependencies=[Depends(requiere_api_key)])
 async def pausar():
     """Pausa el guardado de notificaciones en la tabla (y su procesamiento)."""
     global _registro_activo
@@ -239,7 +240,7 @@ async def pausar():
             "nota": "Las notificaciones de ML se responden 200 pero NO se guardan."}
 
 
-@router.api_route("/reanudar", methods=["GET", "POST"])
+@router.api_route("/reanudar", methods=["GET", "POST"], dependencies=[Depends(requiere_api_key)])
 async def reanudar():
     """Reanuda el guardado de notificaciones en la tabla."""
     global _registro_activo
