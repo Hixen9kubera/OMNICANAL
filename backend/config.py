@@ -7,9 +7,18 @@ Se cargan DOS archivos:
   - .env.amazon   → credenciales Amazon SP-API (San Corpe)
 
 Ambos viven en la RAÍZ del proyecto (un nivel arriba de /backend).
+
+AMBIENTE STAGING: si el proceso arranca con APP_ENV=staging (variable de
+entorno del sistema, como la inyecta Railway), se carga `env.staging` en lugar
+de `.env` — así el mismo código corre local contra el ambiente de pruebas sin
+tocar el .env de producción. En Railway los archivos ni existen: las variables
+llegan por el entorno y pisan cualquier archivo.
 """
 from __future__ import annotations
 
+import logging
+import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,13 +28,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ROOT_DIR = Path(__file__).resolve().parent.parent
 ENV_MAIN = ROOT_DIR / ".env"
 ENV_AMAZON = ROOT_DIR / ".env.amazon"
+ENV_STAGING = ROOT_DIR / "env.staging"
+
+# La selección del archivo ocurre ANTES de instanciar Settings: depende de la
+# variable de entorno del sistema (no del archivo mismo, sería circular).
+_ENV_FILES = (
+    (ENV_STAGING,)
+    if os.environ.get("APP_ENV", "").strip().lower() == "staging"
+    else (ENV_MAIN, ENV_AMAZON)
+)
 
 
 class Settings(BaseSettings):
     # pydantic-settings carga ambos archivos; las claves de .env.amazon
     # se añaden encima de las de .env.
     model_config = SettingsConfigDict(
-        env_file=(ENV_MAIN, ENV_AMAZON),
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -116,9 +134,72 @@ class Settings(BaseSettings):
     # Orígenes permitidos para el frontend Next.js
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
+    # ── Flags de la migración a Supabase (piloto) ─────────────
+    # Regla: el valor por default de cada flag = comportamiento actual.
+    # Revertir cualquier cambio = regresar el flag a su default (sin redeploy
+    # de código; solo cambiar la variable en Railway y reiniciar).
+    #
+    # mysql_enabled=false → el backend NO crea el pool MySQL; las rutas que lo
+    # requieren responden 503. Solo staging corre así (opción A: staging sin
+    # MySQL). En producción NUNCA se apaga.
+    mysql_enabled: bool = True
+    # supabase_dual_write=true → los webhooks escriben ADEMÁS en Supabase
+    # (ops.webhook_events, idempotente). Apagarlo = solo MySQL, como siempre.
+    supabase_dual_write: bool = False
+    # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
+    # PRODUCCIÓN. Ver validar_ambiente().
+    supabase_prod_ref: str = ""
+    # Auth mínima: si api_key está definida y auth_enforced=true, los endpoints
+    # de escritura/ops exigen el header X-API-Key. Con auth_enforced=false solo
+    # se registra en logs quién habría sido rechazado (rollout gradual).
+    api_key: str = ""
+    auth_enforced: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def supabase_ref(self) -> str:
+        """Referencia (subdominio) del proyecto Supabase al que apunta SUPABASE_URL."""
+        m = re.match(r"https?://([a-z0-9]+)\.supabase\.co", self.supabase_url.strip())
+        return m.group(1) if m else ""
+
+
+def validar_ambiente(s: Settings) -> None:
+    """Candado de arranque anti-mezcla de ambientes.
+
+    Bloquea SOLO ante contradicción comprobada (peor escenario: staging
+    escribiendo en el Supabase de producción). Si falta información para
+    comparar, advierte en logs pero deja arrancar — bloquear por ausencia de
+    config haría más daño del que evita.
+    """
+    log = logging.getLogger("omnicanal.config")
+    env = s.app_env.strip().lower()
+    ref = s.supabase_ref
+    prod_ref = s.supabase_prod_ref.strip()
+
+    if not prod_ref or not ref:
+        log.warning(
+            "Candado de ambiente sin datos para comparar "
+            "(SUPABASE_PROD_REF=%s, SUPABASE_URL ref=%s) — arranco sin verificar.",
+            "definido" if prod_ref else "VACÍO", ref or "VACÍA",
+        )
+        return
+
+    if env != "production" and ref == prod_ref:
+        raise RuntimeError(
+            f"CANDADO DE AMBIENTE: APP_ENV={s.app_env!r} pero SUPABASE_URL apunta al "
+            "proyecto de PRODUCCIÓN. Me niego a arrancar. Corrige las variables "
+            "SUPABASE_* de este ambiente."
+        )
+    if env == "production" and ref != prod_ref:
+        raise RuntimeError(
+            f"CANDADO DE AMBIENTE: APP_ENV='production' pero SUPABASE_URL apunta a un "
+            f"proyecto que NO es el de producción (ref detectada: {ref}). Me niego a "
+            "arrancar. Corrige SUPABASE_URL o SUPABASE_PROD_REF."
+        )
+    log.info("Candado de ambiente OK: APP_ENV=%s, Supabase ref=%s.", s.app_env, ref)
 
 
 @lru_cache

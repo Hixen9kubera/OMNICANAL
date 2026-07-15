@@ -19,11 +19,20 @@ from typing import Any, Iterator
 
 import pymysql
 from dbutils.pooled_db import PooledDB
+from fastapi import HTTPException
 from pymysql.cursors import DictCursor
 
 from config import settings
 
 log = logging.getLogger("omnicanal.db")
+
+# Opción A (staging sin MySQL): con MYSQL_ENABLED=false este módulo no crea el
+# pool y toda ruta que lo use responde 503 con mensaje claro, en vez de colgarse
+# intentando conectar. En producción el flag NUNCA se apaga.
+_MSG_DESHABILITADO = (
+    "MySQL deshabilitado en este ambiente (MYSQL_ENABLED=false — staging opera "
+    "solo con Supabase). Esta funcionalidad no está disponible aquí."
+)
 
 # ── Pool de conexiones ────────────────────────────────────────────────────────
 # Hostinger limita las conexiones NUEVAS por hora (max_connections_per_hour=500).
@@ -34,6 +43,8 @@ _pool: PooledDB | None = None
 
 def _get_pool() -> PooledDB:
     global _pool
+    if not settings.mysql_enabled:
+        raise HTTPException(status_code=503, detail=_MSG_DESHABILITADO)
     if _pool is None:
         _pool = PooledDB(
             creator=pymysql,
@@ -94,6 +105,8 @@ def execute(sql: str, params: tuple | dict | None = None) -> int:
 
 def ping() -> bool:
     """Verifica conectividad con la base de datos."""
+    if not settings.mysql_enabled:
+        return False  # deshabilitado por config, no es una falla (ver /api/health)
     try:
         return fetch_scalar("SELECT 1") == 1
     except Exception as exc:  # noqa: BLE001

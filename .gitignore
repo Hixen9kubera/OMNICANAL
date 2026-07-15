@@ -5,6 +5,12 @@
 .env.*
 !.env.example
 !.env.*.example
+# variantes SIN punto inicial (env, env.railway, env.amazon, env.staging...)
+# — contienen las mismas credenciales y el patrón .env* NO las cubre
+env
+env.*
+!env.example
+!env.*.example
 *.pem
 config/meli_tokens.json
 

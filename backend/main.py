@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from config import settings
+from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
 from models.schemas import HealthCheck
 from routers import auth, canales, crear, ia, imagenes, productos, publicar, sync, webhooks
@@ -30,14 +30,23 @@ logging.basicConfig(
 )
 log = logging.getLogger("omnicanal")
 
+# Candado anti-mezcla de ambientes: si la config es contradictoria (p. ej.
+# staging apuntando al Supabase de producción), el proceso muere AQUÍ, antes de
+# aceptar una sola petición. Ver config.validar_ambiente().
+validar_ambiente(settings)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Arranca el sync programado de inventario (cada N min).
     scheduler.iniciar()
     # Calienta el índice de "Crear Productos" en segundo plano (escanea WooCommerce),
     # para que la primera visita a esa vista no espere la construcción del índice.
+    # En staging no hay credenciales de Woo: sin WC_URL el warm-up no aplica.
     import asyncio
-    asyncio.create_task(woocommerce.indice_candidatos())
+    if settings.wc_url:
+        asyncio.create_task(woocommerce.indice_candidatos())
+    else:
+        log.info("Sin WC_URL configurada — omito el precalentamiento del índice de Woo.")
     yield
     scheduler.detener()
 
@@ -91,4 +100,9 @@ async def health():
         woocommerce=await woocommerce.ping(),
         base_datos=db.ping(),
         odoo=odoo.ping(),
+        ambiente=settings.app_env,
+        # Distingue "MySQL caído" (falla real) de "MySQL apagado por config"
+        # (staging, opción A) — ambos reportan base_datos=false pero solo el
+        # primero es un problema.
+        nota=None if settings.mysql_enabled else "MySQL deshabilitado por config (staging solo-Supabase)",
     )

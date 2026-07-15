@@ -189,3 +189,6 @@ class HealthCheck(BaseModel):
     woocommerce: bool
     base_datos: bool
     odoo: bool
+    ambiente: str = "development"
+    # Aclaraciones de estado (p. ej. "MySQL deshabilitado por config" en staging)
+    nota: str | None = None
