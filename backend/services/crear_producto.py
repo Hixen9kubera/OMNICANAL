@@ -64,12 +64,26 @@ CREATE TABLE IF NOT EXISTS crear_logs (
 _schema_logs_ok = False
 
 
-def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> None:
+def asegurar_schema_logs() -> None:
+    """Crea `crear_logs` si no existe. La usan también los endpoints de LECTURA
+    (/historial, /auditoria): sin esto, consultan una tabla inexistente y dan
+    500 en un deploy donde aún no ha corrido ninguna creación. [Bug detectado
+    en el primer deploy a producción, 2026-07-15.]"""
     global _schema_logs_ok
+    if _schema_logs_ok:
+        return
     try:
+        db.execute(_DDL_LOGS)
+        _schema_logs_ok = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo asegurar el schema de crear_logs: %s", exc)
+
+
+def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> None:
+    try:
+        asegurar_schema_logs()
         if not _schema_logs_ok:
-            db.execute(_DDL_LOGS)
-            _schema_logs_ok = True
+            return
         detalle = {k: v for k, v in extra.items() if k != "wc_id"}
         detalle_json = json.dumps(detalle, ensure_ascii=False, default=str) if detalle else None
         # Salvaguarda de almacenamiento: `detalle` es contexto de depuración, no

@@ -185,6 +185,7 @@ def historial(
     Historial de creaciones: una fila por SKU con su ÚLTIMO evento registrado
     en crear_logs. Sobrevive a los deploys (los logs de Railway se purgan).
     """
+    crear_producto.asegurar_schema_logs()  # la tabla puede no existir aún (deploy nuevo)
     where, params = ["creado >= UTC_TIMESTAMP() - INTERVAL %s DAY"], [dias]
     if sku:
         where.append("sku LIKE %s")
@@ -223,6 +224,7 @@ def historial_sku(
     limite: int = Query(100, ge=1, le=500),
 ):
     """Todos los eventos de creación de UN SKU (más recientes primero)."""
+    crear_producto.asegurar_schema_logs()
     rows = db.fetch_all(
         "SELECT id, wc_id, estado, paso, detalle, creado FROM crear_logs "
         "WHERE sku=%s ORDER BY id DESC LIMIT %s", (sku, limite))
@@ -240,6 +242,7 @@ async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
     existiendo. Distingue 'papelera' (recuperable) de 'eliminado' (borrado
     definitivo o wc_id inexistente).
     """
+    crear_producto.asegurar_schema_logs()
     rows = db.fetch_all(
         """SELECT l.sku, l.wc_id, l.paso, l.creado
            FROM crear_logs l
