@@ -71,11 +71,17 @@ def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> N
             db.execute(_DDL_LOGS)
             _schema_logs_ok = True
         detalle = {k: v for k, v in extra.items() if k != "wc_id"}
+        detalle_json = json.dumps(detalle, ensure_ascii=False, default=str) if detalle else None
+        # Salvaguarda de almacenamiento: `detalle` es contexto de depuración, no
+        # un payload — se trunca a 4 KB para que ningún paso futuro con un JSON
+        # inesperadamente grande convierta esta bitácora en otro amazon_backlog
+        # (161 MB por guardar blobs completos). El resumen siempre cabe.
+        if detalle_json and len(detalle_json) > 4000:
+            detalle_json = detalle_json[:4000] + '…(truncado)"'
         db.execute(
             "INSERT INTO crear_logs (sku, wc_id, estado, paso, detalle, creado) "
             "VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP())",
-            (sku, extra.get("wc_id"), estado, (paso or "")[:255],
-             json.dumps(detalle, ensure_ascii=False, default=str) if detalle else None),
+            (sku, extra.get("wc_id"), estado, (paso or "")[:255], detalle_json),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo escribir crear_logs(%s): %s", sku, exc)
