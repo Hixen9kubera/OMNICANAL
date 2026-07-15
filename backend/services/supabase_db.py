@@ -14,6 +14,15 @@ Tablas clave (ver README / memoria):
 Mismo patrón que services/db.py (MySQL): un POOL de conexiones que se reutiliza.
 Supabase Postgres se conecta por el pooler (session 5432 / transaction 6543) sobre
 TLS. Placeholders con %s (psycopg2), filas como dict (RealDictCursor).
+
+REGLA DEL POOLER TRANSACCIONAL (6543) — aprendida en carne propia (2026-07-15):
+el "cajero" de Postgres se comparte entre clientes ENTRE transacciones, así que
+el estado de sesión SE FUGA a otros clientes. Por eso aquí está PROHIBIDO:
+  - `SET nombre = valor`  /  `set_session(...)`  (sesión)          → usar `SET LOCAL`
+    dentro de la transacción (se limpia solo al terminar).
+  - prepared statements con nombre, LISTEN/NOTIFY, advisory locks de sesión.
+El patrón get_cursor() de este módulo ya es compatible: cada uso es una
+transacción corta con commit/rollback propio.
 """
 from __future__ import annotations
 
@@ -89,6 +98,26 @@ def fetch_scalar(sql: str, params: tuple | dict | None = None) -> Any:
     if not row:
         return None
     return next(iter(row.values()))
+
+
+def execute(sql: str, params: tuple | dict | None = None) -> int:
+    """Ejecuta INSERT/UPDATE/DELETE. Devuelve filas afectadas (commit incluido).
+
+    Con `INSERT ... ON CONFLICT DO NOTHING` el retorno distingue el resultado:
+    1 = fila nueva insertada; 0 = era un duplicado (la base lo descartó) — es
+    la base del conteo de webhooks duplicados sin lógica extra en el código.
+    """
+    with get_cursor() as cur:
+        cur.execute(sql, params)
+        return cur.rowcount
+
+
+def execute_returning(sql: str, params: tuple | dict | None = None) -> dict[str, Any] | None:
+    """Ejecuta una escritura con RETURNING y devuelve la fila (o None si no hubo)."""
+    with get_cursor() as cur:
+        cur.execute(sql, params)
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def ping() -> bool:
