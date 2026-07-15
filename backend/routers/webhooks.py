@@ -25,6 +25,7 @@ MySQL son repetidas). Reglas del patrón:
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -178,8 +179,17 @@ def _registrar_issue(tabla: str, motivo: str) -> None:
         pass  # si ni esto se pudo, ya quedó en los logs del paso anterior
 
 
-async def _procesar_ml(evento_id: int | None, sb_id: int | None, payload: dict[str, Any]) -> None:
-    """Procesa la notificación en segundo plano (tras responder 200)."""
+async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
+    """Procesa la notificación en segundo plano (tras responder 200).
+
+    El espejo a Supabase también vive AQUÍ (no en el receptor) y corre en un
+    HILO (asyncio.to_thread): psycopg2 es I/O bloqueante y ejecutarlo directo
+    en la corrutina congela el event loop entero — la respuesta 200 no alcanza
+    a salir y las demás peticiones se atoran. [Defecto detectado en pruebas
+    2026-07-15: con Supabase caído, cada webhook tardaba 20 s aun estando "en
+    background"; con to_thread el 200 sale en <1 s y el timeout ocurre aparte.]
+    """
+    sb_id = await asyncio.to_thread(_guardar_supabase, "mercado_libre", payload)
     topic = payload.get("topic")
     resource = payload.get("resource") or ""
     sku = None
@@ -207,7 +217,7 @@ async def _procesar_ml(evento_id: int | None, sb_id: int | None, payload: dict[s
         resultado = f"error: {exc}"
     if evento_id:
         _actualizar(evento_id, sku, resultado)
-    _actualizar_supabase(sb_id, sku, resultado)
+    await asyncio.to_thread(_actualizar_supabase, sb_id, sku, resultado)
     log.info("Webhook ML [%s] %s → %s", topic, resource, resultado)
 
 
@@ -223,10 +233,9 @@ async def recibir_ml(request: Request, background: BackgroundTasks):
         payload = {}
     evento_id = _guardar("mercado_libre", payload.get("topic"),
                          payload.get("resource"), payload.get("user_id"))
-    # Espejo idempotente en Supabase (piloto). Nunca rompe el 200.
-    sb_id = _guardar_supabase("mercado_libre", payload)
-    # Procesar aparte para responder rápido (ML reintenta si tardas).
-    background.add_task(_procesar_ml, evento_id, sb_id, payload)
+    # Procesar aparte para responder rápido (ML reintenta si tardas). El espejo
+    # idempotente a Supabase ocurre dentro del background por la misma razón.
+    background.add_task(_procesar_ml, evento_id, payload)
     return {"ok": True}
 
 
