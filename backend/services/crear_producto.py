@@ -42,6 +42,44 @@ _ML_API = "https://api.mercadolibre.com"
 _progreso: dict[str, dict[str, Any]] = {}
 _sem = asyncio.Semaphore(2)  # productos procesándose a la vez
 
+# ── Bitácora persistente (crear_logs) ───────────────────────────────────────────
+# Los logs de Railway se purgan con cada deploy; esta tabla conserva el rastro
+# completo de cada creación (encolado → pasos → completado/error) para auditar
+# después qué se creó, cuándo y en qué terminó. La consulta el endpoint
+# GET /api/crear/historial y la auditoría GET /api/crear/auditoria.
+_DDL_LOGS = """
+CREATE TABLE IF NOT EXISTS crear_logs (
+    id      BIGINT AUTO_INCREMENT PRIMARY KEY,
+    sku     VARCHAR(60)  NOT NULL,
+    wc_id   BIGINT NULL,
+    estado  VARCHAR(20)  NOT NULL,
+    paso    VARCHAR(255),
+    detalle TEXT NULL,
+    creado  DATETIME NOT NULL,
+    INDEX idx_sku (sku),
+    INDEX idx_estado (estado),
+    INDEX idx_creado (creado)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+_schema_logs_ok = False
+
+
+def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> None:
+    global _schema_logs_ok
+    try:
+        if not _schema_logs_ok:
+            db.execute(_DDL_LOGS)
+            _schema_logs_ok = True
+        detalle = {k: v for k, v in extra.items() if k != "wc_id"}
+        db.execute(
+            "INSERT INTO crear_logs (sku, wc_id, estado, paso, detalle, creado) "
+            "VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP())",
+            (sku, extra.get("wc_id"), estado, (paso or "")[:255],
+             json.dumps(detalle, ensure_ascii=False, default=str) if detalle else None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo escribir crear_logs(%s): %s", sku, exc)
+
 
 def _set(sku: str, estado: str, paso: str, **extra: Any) -> None:
     _progreso[sku] = {
@@ -49,6 +87,12 @@ def _set(sku: str, estado: str, paso: str, **extra: Any) -> None:
         "actualizado": time.time(), **extra,
     }
     log.info("crear[%s] %s: %s", sku, estado, paso)
+    try:
+        # sin bloquear el event loop (la escritura va a MySQL en Hostinger)
+        asyncio.get_running_loop().run_in_executor(
+            None, _persistir_log, sku, estado, paso, extra)
+    except RuntimeError:
+        _persistir_log(sku, estado, paso, extra)
 
 
 def progreso() -> list[dict[str, Any]]:
@@ -66,7 +110,8 @@ def encolar(items: list[dict[str, Any]]) -> int:
         sku = it["sku"]
         if _progreso.get(sku, {}).get("estado") in ("en_cola", "procesando"):
             continue
-        _set(sku, "en_cola", "En cola…")
+        _set(sku, "en_cola", "En cola…", wc_id=it.get("wc_id"),
+             alibaba_url=it["alibaba_url"])
         asyncio.create_task(_procesar(sku, it.get("wc_id"), it["alibaba_url"]))
         n += 1
     return n

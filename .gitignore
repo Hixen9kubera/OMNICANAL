@@ -44,3 +44,6 @@ publicaciones_amazon/
 
 # Exportes de datos de trabajo
 fantasmas_*.csv
+
+# Respaldos de base de datos (contienen tokens/credenciales — NUNCA subir)
+backups/

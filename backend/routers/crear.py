@@ -18,6 +18,15 @@ crear.py — Alta de productos (canal "Crear Productos").
          La URL de Alibaba es OBLIGATORIA por producto.
          NOTA: la lógica real de creación se implementa en la siguiente fase;
          por ahora este endpoint valida la carga y la acepta.
+
+  GET  /api/crear/historial            (+ /historial/{sku})
+       → Bitácora PERSISTENTE de creaciones (tabla crear_logs). A diferencia de
+         /progreso (memoria) y de los logs de Railway (se purgan con cada
+         deploy), esto conserva el rastro completo de cada creación.
+
+  GET  /api/crear/auditoria
+       → Cruza los SKUs completados en crear_logs contra WooCommerce y reporta
+         los productos creados que ya NO existen (eliminados o en papelera).
 """
 from __future__ import annotations
 
@@ -152,6 +161,126 @@ async def crear_productos(req: CrearRequest):
 async def progreso():
     """Avance de la cola de creación (en memoria)."""
     return {"items": crear_producto.progreso()}
+
+
+# ── Historial persistente de creaciones (tabla crear_logs) ─────────────────────
+
+def _parse_detalle(v):
+    import json
+    try:
+        return json.loads(v) if v else None
+    except (TypeError, ValueError):
+        return v
+
+
+@router.get("/historial")
+def historial(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(PER_PAGE_DEFAULT, ge=1, le=PER_PAGE_MAX),
+    sku: str | None = Query(None, description="Filtro por SKU (parcial)"),
+    estado: str | None = Query(None, description="en_cola|procesando|completado|error"),
+    dias: int = Query(30, ge=1, le=365),
+):
+    """
+    Historial de creaciones: una fila por SKU con su ÚLTIMO evento registrado
+    en crear_logs. Sobrevive a los deploys (los logs de Railway se purgan).
+    """
+    where, params = ["creado >= UTC_TIMESTAMP() - INTERVAL %s DAY"], [dias]
+    if sku:
+        where.append("sku LIKE %s")
+        params.append(f"%{sku}%")
+    sub = (f"SELECT sku, MAX(id) AS max_id FROM crear_logs "
+           f"WHERE {' AND '.join(where)} GROUP BY sku")
+    est_sql, est_params = "", []
+    if estado:
+        est_sql = "WHERE l.estado = %s"
+        est_params = [estado]
+
+    total = db.fetch_scalar(
+        f"SELECT COUNT(*) FROM crear_logs l JOIN ({sub}) u ON u.max_id = l.id {est_sql}",
+        tuple(params + est_params)) or 0
+    offset = (page - 1) * per_page
+    rows = db.fetch_all(
+        f"""SELECT l.sku, l.wc_id, l.estado, l.paso, l.detalle, l.creado
+            FROM crear_logs l JOIN ({sub}) u ON u.max_id = l.id {est_sql}
+            ORDER BY l.id DESC LIMIT %s OFFSET %s""",
+        tuple(params + est_params + [per_page, offset]))
+
+    items = [{**r, "detalle": _parse_detalle(r.get("detalle"))} for r in rows]
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return {
+        "items": items,
+        "paginacion": {
+            "page": page, "per_page": per_page, "total": total, "total_pages": total_pages,
+            "tiene_anterior": page > 1, "tiene_siguiente": page < total_pages,
+        },
+    }
+
+
+@router.get("/historial/{sku}")
+def historial_sku(
+    sku: str,
+    limite: int = Query(100, ge=1, le=500),
+):
+    """Todos los eventos de creación de UN SKU (más recientes primero)."""
+    rows = db.fetch_all(
+        "SELECT id, wc_id, estado, paso, detalle, creado FROM crear_logs "
+        "WHERE sku=%s ORDER BY id DESC LIMIT %s", (sku, limite))
+    if not rows:
+        raise HTTPException(404, f"No hay historial de creación para {sku}")
+    return {"sku": sku,
+            "eventos": [{**r, "detalle": _parse_detalle(r.get("detalle"))} for r in rows]}
+
+
+@router.get("/auditoria")
+async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
+    """
+    Auditoría de desapariciones: toma los SKUs COMPLETADOS en crear_logs en los
+    últimos `dias` y verifica contra WooCommerce (por wc_id) que sigan
+    existiendo. Distingue 'papelera' (recuperable) de 'eliminado' (borrado
+    definitivo o wc_id inexistente).
+    """
+    rows = db.fetch_all(
+        """SELECT l.sku, l.wc_id, l.paso, l.creado
+           FROM crear_logs l
+           JOIN (SELECT sku, MAX(id) AS max_id FROM crear_logs
+                 WHERE estado='completado'
+                   AND creado >= UTC_TIMESTAMP() - INTERVAL %s DAY
+                 GROUP BY sku) u ON u.max_id = l.id""", (dias,))
+    creados = [r for r in rows if r.get("wc_id")]
+    sin_wc_id = [r["sku"] for r in rows if not r.get("wc_id")]
+
+    estados: dict[int, str] = {}
+    async with woocommerce._client() as cli:
+        async def _estados_lote(lote: list[dict], status: str) -> None:
+            r = await cli.get("/products", params={
+                "include": ",".join(str(c["wc_id"]) for c in lote),
+                "per_page": 100, "status": status, "_fields": "id,status",
+            })
+            if r.status_code == 200:
+                for p in r.json():
+                    estados[int(p["id"])] = p.get("status") or status
+
+        for i in range(0, len(creados), 100):
+            await _estados_lote(creados[i:i + 100], "any")
+        # status=any NO incluye la papelera: segunda pasada solo por los faltantes
+        faltan = [c for c in creados if int(c["wc_id"]) not in estados]
+        for i in range(0, len(faltan), 100):
+            await _estados_lote(faltan[i:i + 100], "trash")
+
+    desaparecidos, existentes = [], 0
+    for c in creados:
+        st = estados.get(int(c["wc_id"]))
+        if st is None:
+            desaparecidos.append({**c, "situacion": "eliminado"})
+        elif st == "trash":
+            desaparecidos.append({**c, "situacion": "papelera"})
+        else:
+            existentes += 1
+    return {
+        "ok": True, "dias": dias, "creados": len(rows), "existentes": existentes,
+        "desaparecidos": desaparecidos, "sin_wc_id": sin_wc_id,
+    }
 
 
 @router.get("/categorias")
