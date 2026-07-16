@@ -53,3 +53,4 @@ fantasmas_*.csv
 
 # Respaldos de base de datos (contienen tokens/credenciales — NUNCA subir)
 backups/
+*.bak

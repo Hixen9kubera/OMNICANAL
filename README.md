@@ -816,6 +816,88 @@ para que el set que planea la IA nazca ya conforme.
 
 ---
 
+## 📈 Versión 0.6 — Tab VENTAS en vivo (por hora, comparativa semanal) + base de pedidos ML→WC
+
+### Qué es
+
+La pestaña **Ventas** deja de decir "Pronto": muestra las ventas REALES de Mercado Libre
+segmentadas **por hora (00:00–23:00)**, de **ambas cuentas** (Kubera/BEKURA y
+San Corpe/SANCORFASHION), **siempre comparadas contra la semana pasada en %**.
+
+- **General** = todas las cuentas sumadas. **Mercado Libre** permite elegir cuenta
+  (Kubera / San Corpe / Todas). La vista entera cambia de color según el canal
+  (índigo General, amarillo ML), igual que en Omnicanal. Amazon/TikTok/Walmart/Temu/Shein
+  aparecen "Pronto" hasta integrar sus órdenes.
+- Filtros: **Hoy / Ayer / Últimos 7 días** + rango personalizado (hasta 31 días).
+- KPIs: ventas brutas, pedidos, unidades, ticket promedio y canceladas (con monto).
+- Gráfica de **48 barras** (24 h × actual/semana pasada) con tooltip por hora
+  (montos, pedidos y delta %), pico del día señalado y hora actual marcada.
+- **EN VIVO**: si el rango incluye hoy, se refresca solo cada 60 s.
+- Desglose por cuenta con % de participación; clic en la tarjeta = filtrar esa cuenta.
+
+### La comparativa honesta (detalle importante)
+
+HOY siempre va incompleto: compararlo contra el día COMPLETO de la semana pasada da un
+−60% engañoso a media mañana. Cuando el rango es "hoy", el backend agrega la comparativa
+**"a la misma hora"** (`totales.parcial`: semana pasada hasta la hora actual) y el frontend
+la usa en el banner, los KPIs y las tarjetas de cuenta. Ejemplo real de la prueba:
+día completo −58.8% (engañoso) vs misma hora **−10.0%** (real). Los rangos cerrados
+(ayer, 7 días) comparan contra el mismo rango de 7 días atrás.
+
+### De dónde salen los datos (y de dónde NO)
+
+De la **API de órdenes de ML** (`/orders/search` filtrado por `order.date_created`),
+con el **precio real de cada venta** (`total_amount`). NO se usa Supabase (dejó de ser el
+registro de ventas) ni el catálogo (sus precios cambian todo el tiempo). Solo cuentan
+órdenes `paid`; las `cancelled` se reportan aparte. Horas bucketizadas en **CDMX (UTC−6
+fijo** — México abolió el horario de verano en 2022).
+
+### Caché (tablas `ventas_horarias` + `ventas_sync`)
+
+Un día por cuenta son ~4–10 páginas de la API. Cada (cuenta, día) se agrega UNA vez a
+24 renglones por hora en MySQL:
+
+| Día consultado | Regla de refresco |
+|---|---|
+| HOY | TTL 3 min (ventas en vivo) |
+| ayer/antier | TTL 15 min (cancelaciones tardías) |
+| > 2 días | **FINAL**: no se vuelve a pedir a ML |
+
+La frescura del rango completo se checa en **una sola** consulta (28 sueltas costaban ~8 s).
+Al arrancar el backend se precalientan los últimos 14 días por cuenta en segundo plano;
+como la tabla persiste entre deploys, tras el primer llenado solo se refresca HOY.
+
+### Endpoints
+
+- `GET /api/ventas/horario?canal=general|mercado_libre&cuenta=&desde=&hasta=` →
+  24 buckets actual+previo, totales con deltas, `parcial` (solo hoy), desglose por cuenta.
+- `GET /api/ventas/dias?dias=7` → serie diaria para tendencias.
+
+### Base del flujo ventas ML → pedidos WooCommerce (preparada, aún sin conectar)
+
+- `meli.obtener_orden(order_id)` ahora devuelve la orden COMPLETA normalizada (SKU,
+  `unit_price` real, comisión `sale_fee`, estado, comprador, envío y si es FULL por
+  `logistic_type == "fulfillment"`). Antes se descartaba todo excepto los item_id.
+- **Nuevo** `services/pedidos_ml.py`: convierte una venta de ML en pedido de WC con el
+  **precio congelado** (línea con `subtotal`/`total` explícitos), comisión y neto en metas
+  `_ml_*`, idempotente (reenvíos del webhook actualizan estado, no duplican), resolución
+  de SKU **directo contra Woo** (el espejo local está incompleto: 66/177 SKUs vendidos
+  faltaban ahí pero SÍ existen en Woo), líneas sueltas para SKUs sin producto y
+  `proteger_stock` para no descontar inventario (pruebas/histórico/FULL).
+  **Verificado con 14 ventas reales** (todas cuadraron al centavo); queda pendiente
+  conectarlo al webhook cuando se decida la estrategia de stock (transición Odoo→WC).
+
+### Archivos tocados
+
+- **Nuevos**: `backend/services/ventas_ml.py`, `backend/routers/ventas.py`,
+  `backend/services/pedidos_ml.py`, `frontend/app/ventas/page.tsx`.
+- `backend/services/meli.py` → `obtener_orden()` completa; `obtener_orden_items()` la envuelve.
+- `backend/main.py` → router `ventas` + warmup del caché en `lifespan` + v0.6.0.
+- `frontend/components/AppNavbar.tsx` → "Ventas" activo (`/ventas`).
+- `frontend/lib/types.ts` + `frontend/lib/api.ts` → tipos `Ventas*` y `ventasHorario()`.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

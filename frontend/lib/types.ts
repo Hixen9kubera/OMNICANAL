@@ -512,3 +512,62 @@ export interface GenerarIAResp {
   label: string;
   tipo: "texto" | "imagenes";
 }
+
+/* ── Tab VENTAS ──────────────────────────────────────────────────── */
+
+export interface VentaHora {
+  hora: number;
+  monto: number;
+  pedidos: number;
+  unidades: number;
+  prev_monto: number;
+  prev_pedidos: number;
+  prev_unidades: number;
+  delta_monto: number | null;
+}
+
+export interface VentasParcial {
+  hora_corte: number;
+  prev_monto: number;
+  prev_pedidos: number;
+  prev_unidades: number;
+  delta: { monto: number | null; pedidos: number | null; unidades: number | null };
+}
+
+export interface VentasTotales {
+  monto: number;
+  pedidos: number;
+  unidades: number;
+  ticket: number;
+  canceladas: number;
+  monto_cancelado: number;
+  prev: { monto: number; pedidos: number; unidades: number; ticket: number; canceladas: number };
+  delta: { monto: number | null; pedidos: number | null; unidades: number | null; ticket: number | null };
+  parcial: VentasParcial | null;
+}
+
+export interface VentasCuenta {
+  cuenta: string;
+  label: string;
+  monto: number;
+  pedidos: number;
+  unidades: number;
+  prev_monto: number;
+  delta_monto: number | null;
+  /** Solo cuando el rango es HOY: comparativa a la misma hora. */
+  prev_monto_parcial?: number;
+  delta_parcial?: number | null;
+}
+
+export interface VentasResumen {
+  canal: string;
+  cuenta: string | null;
+  desde: string;
+  hasta: string;
+  prev_desde: string;
+  prev_hasta: string;
+  horas: VentaHora[];
+  totales: VentasTotales;
+  cuentas: VentasCuenta[];
+  actualizado: string;
+}

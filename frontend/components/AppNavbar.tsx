@@ -34,7 +34,7 @@ const ITEMS: NavItem[] = [
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   { id: "canales", label: "Canales", icon: Store, proximamente: true },
-  { id: "ventas", label: "Ventas", icon: TrendingUp, proximamente: true },
+  { id: "ventas", label: "Ventas", icon: TrendingUp, href: "/ventas" },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
   { id: "reportes", label: "Reportes", icon: BarChart3, proximamente: true },
   { id: "automatizacion", label: "Automatización", icon: Workflow, proximamente: true },
