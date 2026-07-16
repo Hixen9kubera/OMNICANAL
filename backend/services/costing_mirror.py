@@ -36,7 +36,10 @@ log = logging.getLogger("omnicanal.costing_mirror")
 # Versión de la fórmula de pricing vigente en costos.py (margen 0.48, IVA 0.16,
 # fee por tabla _TARIFA_ML). Actualizar la etiqueta si la fórmula cambia: es lo
 # que hace reproducible un cálculo histórico.
-FORMULA_VER = "costos.py/v1-margen48-iva16-tarifaML202607"
+# v2 (2026-07-16): el catálogo migró a Premium — DEFAULT_LISTING_TYPE pasó de
+# gold_special a gold_pro (~+4.5 pts de comisión). Los cálculos v1 y v2 NO son
+# comparables entre sí: esta etiqueta es lo que permite saber cuál fue cuál.
+FORMULA_VER = "costos.py/v2-gold_pro-margen48-iva16-tarifaML202607"
 
 
 def activo() -> bool:
