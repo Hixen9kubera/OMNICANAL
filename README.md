@@ -898,6 +898,41 @@ como la tabla persiste entre deploys, tras el primer llenado solo se refresca HO
 
 ---
 
+## ⭐ Versión 0.7 — Todo el catálogo de ML a PREMIUM (gold_pro)
+
+### Qué se hizo
+
+Las 2 cuentas de Mercado Libre quedan 100% en publicación **Premium** (`gold_pro`),
+por decisión de negocio (Premium da meses sin intereses y mejor exposición).
+
+**Foto ANTES de la migración** (escaneo completo vía `/users/{id}/items/search`):
+
+| Cuenta | Premium | Clásica | Total |
+|---|---|---|---|
+| BEKURA | 2,016 (98%) | 41 | 2,057 |
+| SANCORFASHION | 893 (42%) | **1,219** | 2,112 |
+
+**Migración**: `POST /items/{id}/listing_type {"id":"gold_pro"}` sobre toda clásica no
+cerrada (activas, pausadas y en revisión aceptan el cambio — validado con canario de 5).
+Idempotente y re-ejecutable; log CSV por ítem. Las `closed` se omiten (ML no las revive).
+
+### Publicaciones nuevas
+
+**No hubo que tocar nada**: el pipeline vendorizado ya publica Premium desde siempre
+(`vendor/ml_ready/publisher_core.py: DEFAULT_LISTING_TYPE = "gold_pro"`). Las clásicas
+eran publicaciones anteriores a ese pipeline.
+
+### Comisiones en el módulo de Costos (cambio con impacto)
+
+`services/costos.py` calculaba el % de comisión consultando `listing_prices` con
+`gold_special` (clásica). Con el catálogo en Premium eso **subestimaba el fee ~4.5
+puntos** (medido en vivo: 15%→19.5% y 12%→16.5% según categoría), y el precio sugerido
+salía con margen de menos. `DEFAULT_LISTING_TYPE` pasa a `gold_pro`: **los precios
+sugeridos suben** para compensar la comisión Premium real. ⚠️ Avisar al equipo de
+costos/precios: los % que verán en el panel ahora reflejan Premium.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
