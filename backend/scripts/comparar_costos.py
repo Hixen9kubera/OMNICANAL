@@ -31,15 +31,17 @@ COLS_CF = ("costo_producto", "costo_cbm", "costo_unitario", "costo_comision",
 
 
 def cargar_env(nombre: str) -> dict[str, str]:
-    vals: dict[str, str] = {}
+    """Valores del archivo local; si no existe (Railway cron), variables de
+    entorno del proceso. El archivo gana sobre el entorno en local."""
+    import os
+    vals: dict[str, str] = dict(os.environ)
     p = ROOT / nombre
-    if not p.exists():
-        return vals
-    for line in p.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if s and not s.startswith("#") and "=" in s:
-            k, _, v = s.partition("=")
-            vals.setdefault(k.strip(), v.split("#")[0].strip().strip('"').strip("'"))
+    if p.exists():
+        for line in p.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and "=" in s:
+                k, _, v = s.partition("=")
+                vals[k.strip()] = v.split("#")[0].strip().strip('"').strip("'")
     return vals
 
 
