@@ -1,8 +1,12 @@
 """
 etl_core_products.py — Fase 2 de la migración: homologación de identidad.
 
-Puebla `core.products` en Supabase DEV desde la UNIÓN de 4 fuentes:
-  1. MySQL `productos`        (lo publicado/en workflow — congelada desde 2026-07-07)
+Puebla `core.products` en Supabase DEV desde la UNIÓN de 5 fuentes:
+  0. WooCommerce en vivo      (wp_posts/wp_postmeta, SOLO LECTURA — la verdad del
+                               catálogo web: wc_id, status y nombre reales. Se
+                               agregó al descubrir que los 187 "huérfanos" del
+                               primer corte existían todos en Woo, 42 publicados)
+  1. MySQL `productos`        (snapshot del pipeline — congelada desde 2026-07-07)
   2. MySQL `costos_validados` (el catálogo real del packing list)
   3. MySQL `categorias_ml`    (la curaduría de categorías)
   4. Odoo en vivo             (XML-RPC; SKUs que solo existen en el ERP)
@@ -117,6 +121,28 @@ def main() -> None:
     print(f"MySQL leído: productos={len(t_productos)} costos_validados={len(t_cv)} "
           f"categorias_ml={len(t_cat)} costos_finales={len(t_cf)}")
 
+    # ── EXTRACCIÓN WooCommerce (wp_*, SOLO LECTURA — excepción documentada) ──
+    wp = pymysql.connect(
+        host=PROD.get("WPDB_HOST") or PROD["DB_HOST"], port=int(PROD.get("WPDB_PORT", 3306)),
+        user=PROD["WPDB_USER"], password=PROD["WPDB_PASSWORD"], database=PROD["WPDB_NAME"],
+        charset="utf8mb4", connect_timeout=15, read_timeout=120,
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+    wcur = wp.cursor()
+    wcur.execute("""SELECT p.ID AS wc_id, p.post_status, p.post_title, p.post_type,
+                           p.post_parent, pm.meta_value AS sku
+                    FROM wp_posts p
+                    JOIN wp_postmeta pm ON pm.post_id = p.ID AND pm.meta_key = '_sku'
+                    WHERE p.post_type IN ('product', 'product_variation')
+                      AND p.post_status NOT IN ('trash', 'auto-draft')
+                      AND pm.meta_value <> ''
+                    ORDER BY p.ID""")
+    t_woo = wcur.fetchall()
+    wcur.close()
+    wp.close()
+    woo_sku_por_wcid = {int(r["wc_id"]): str(r["sku"]).strip() for r in t_woo}
+    print(f"WooCommerce leído: {len(t_woo)} productos/variaciones con SKU")
+
     # ── EXTRACCIÓN Odoo (XML-RPC, paginado, solo lectura) ─────────────────────
     odoo_skus: dict[str, dict] = {}
     try:
@@ -145,10 +171,12 @@ def main() -> None:
     issues: list[tuple] = []          # (tabla_origen, sku, motivo, valor_json)
     id_map: dict[str, tuple] = {}     # sku_original -> (sku_norm, wc_id, odoo_id, tabla_origen)
     por_clave: dict[str, dict] = {}   # lower(sku) -> registro consolidado
+    # WooCommerce manda en identidad web (wc_id/status/nombre): ES la fuente,
+    # no una copia. `productos` (snapshot congelado) queda como respaldo.
     # costos_finales entra como fuente de ÚLTIMO recurso: sus SKUs sin padre en
     # ninguna otra fuente son los huérfanos puros (plan F2: placeholder 'orphan').
-    PRECEDENCIA = {"productos": 0, "costos_validados": 1, "categorias_ml": 2,
-                   "odoo": 3, "costos_finales": 4}
+    PRECEDENCIA = {"woocommerce": 0, "productos": 1, "costos_validados": 2,
+                   "categorias_ml": 3, "odoo": 4, "costos_finales": 5}
 
     def incorporar(raw_sku, fuente: str, **campos) -> None:
         sku, motivo = normalizar_sku(raw_sku)
@@ -182,6 +210,9 @@ def main() -> None:
                 reg[k] = v
         id_map[str(raw_sku)] = (reg["sku"], campos.get("wc_id"), campos.get("odoo_id"), fuente)
 
+    for r in t_woo:
+        incorporar(r["sku"], "woocommerce", name=r["post_title"], wc_id=r["wc_id"],
+                   wc_parent_id=r["post_parent"] or None, status=r["post_status"])
     for r in t_productos:
         incorporar(r["sku"], "productos", name=r["nombre"], wc_id=r["wc_id"],
                    wc_parent_id=r["wc_parent_id"], status=r["status_wc"],
@@ -221,11 +252,15 @@ def main() -> None:
             por_wc[int(reg["wc_id"])].append(reg["sku"])
     for wc_id, skus in por_wc.items():
         if len(skus) > 1:
-            skus_orden = sorted(skus)
+            # desempate: gana el SKU que WooCommerce mismo reporta para ese wc_id
+            # (aprendido del caso TEC-1433-NEG-26 vs -26"); si Woo no opina, alfabético
+            woo_dice = woo_sku_por_wcid.get(wc_id)
+            skus_orden = sorted(skus, key=lambda s: (0 if s == woo_dice else 1, s))
             for perdedor in skus_orden[1:]:
                 por_clave[perdedor.lower()]["wc_id"] = None
                 issues.append(("union", perdedor, "wc_id_duplicado",
-                               json.dumps({"wc_id": wc_id, "se_quedo_en": skus_orden[0]})))
+                               json.dumps({"wc_id": wc_id, "se_quedo_en": skus_orden[0],
+                                           "woo_confirma": woo_dice})))
 
     print(f"UNIÓN: {len(por_clave)} SKUs únicos | issues acumuladas: {len(issues)}")
 
@@ -237,8 +272,14 @@ def main() -> None:
                  "set default_transaction_read_only = off;")
     pg.autocommit = False
 
-    # limpieza de la corrida anterior (determinismo) — SOLO artefactos de esta fase
-    pcur.execute("delete from migration.id_map")
+    # FULL-REFRESH: cada corrida parte de cero (es una carga completa, no
+    # incremental). Evita fantasmas de corridas con reglas anteriores (ej. un
+    # wc_id que cambió de dueño de SKU chocaría con el UNIQUE). Cuando el
+    # dual-write empiece a escribir costing en vivo, este ETL se retira o se
+    # vuelve incremental — no conviven.
+    pcur.execute("truncate costing.costos_finales, costing.costos_validados, "
+                 "costing.cost_history, migration.id_map")
+    pcur.execute("truncate core.products cascade")
     pcur.execute("delete from ops.migration_issues where fase = %s", (FASE,))
 
     filas = [(r["sku"], r["name"], r["wc_id"], r["wc_parent_id"], r["odoo_id"],
