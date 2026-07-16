@@ -253,6 +253,11 @@ def main() -> None:
           wc_parent_id = excluded.wc_parent_id, odoo_id = excluded.odoo_id,
           status = excluded.status, has_variations = excluded.has_variations,
           source = excluded.source
+        where (products.name, products.wc_id, products.wc_parent_id, products.odoo_id,
+               products.status, products.has_variations, products.source)
+          is distinct from
+              (excluded.name, excluded.wc_id, excluded.wc_parent_id, excluded.odoo_id,
+               excluded.status, excluded.has_variations, excluded.source)
     """, filas, page_size=BATCH)
 
     psycopg2.extras.execute_values(pcur, """
@@ -289,6 +294,18 @@ def main() -> None:
           costo_cbm=excluded.costo_cbm, largo=excluded.largo, alto=excluded.alto,
           ancho=excluded.ancho, peso=excluded.peso, costo_total=excluded.costo_total,
           cajas=excluded.cajas, piezas_por_caja=excluded.piezas_por_caja
+        -- solo si algo cambió de verdad: evita que las re-corridas del ETL
+        -- disparen snapshots redundantes en costing.cost_history
+        where (costos_validados.wc_id, costos_validados.wc_status, costos_validados.wc_type,
+               costos_validados.contenedor, costos_validados.costo_producto,
+               costos_validados.costo_cbm, costos_validados.largo, costos_validados.alto,
+               costos_validados.ancho, costos_validados.peso, costos_validados.costo_total,
+               costos_validados.cajas, costos_validados.piezas_por_caja)
+          is distinct from
+              (excluded.wc_id, excluded.wc_status, excluded.wc_type, excluded.contenedor,
+               excluded.costo_producto, excluded.costo_cbm, excluded.largo, excluded.alto,
+               excluded.ancho, excluded.peso, excluded.costo_total, excluded.cajas,
+               excluded.piezas_por_caja)
     """, cv_filas, page_size=BATCH)
 
     cf_filas = [(r["sku"].strip(), _f(r, "costo_producto"), _f(r, "costo_cbm"),
@@ -308,6 +325,16 @@ def main() -> None:
           pct_comision=excluded.pct_comision, costo_comision=excluded.costo_comision,
           costo_fee_envio=excluded.costo_fee_envio, precio_sugerido=excluded.precio_sugerido,
           precio_base=excluded.precio_base, peso_origen=excluded.peso_origen
+        where (costos_finales.costo_producto, costos_finales.costo_cbm,
+               costos_finales.costo_unitario, costos_finales.ml_cat_id,
+               costos_finales.pct_comision, costos_finales.costo_comision,
+               costos_finales.costo_fee_envio, costos_finales.precio_sugerido,
+               costos_finales.precio_base, costos_finales.peso_origen)
+          is distinct from
+              (excluded.costo_producto, excluded.costo_cbm, excluded.costo_unitario,
+               excluded.ml_cat_id, excluded.pct_comision, excluded.costo_comision,
+               excluded.costo_fee_envio, excluded.precio_sugerido, excluded.precio_base,
+               excluded.peso_origen)
     """, cf_filas, page_size=BATCH)
     pg.commit()
 
