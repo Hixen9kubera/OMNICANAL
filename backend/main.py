@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
 from models.schemas import HealthCheck
-from routers import auth, canales, crear, ia, imagenes, productos, publicar, sync, webhooks
+from routers import auth, canales, crear, ia, imagenes, productos, publicar, sync, ventas, webhooks
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -47,6 +47,24 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(woocommerce.indice_candidatos())
     else:
         log.info("Sin WC_URL configurada — omito el precalentamiento del índice de Woo.")
+    # Calienta el caché de VENTAS (últimos 14 días por cuenta, secuencial para no
+    # saturar ML): la tabla persiste entre deploys, así que tras el primer
+    # llenado esto solo refresca HOY y el tab abre al instante. Necesita MySQL
+    # (en staging solo-Supabase se omite).
+    async def _ventas_warmup():
+        from datetime import timedelta
+        from services import ventas_ml
+        try:
+            hoy = ventas_ml.hoy_mx()
+            for c in ("BEKURA", "SANCORFASHION"):
+                for i in range(14):
+                    await ventas_ml.asegurar_dia(c, hoy - timedelta(days=i))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Warmup de ventas incompleto: %s", exc)
+    if getattr(settings, "mysql_enabled", True):
+        asyncio.create_task(_ventas_warmup())
+    else:
+        log.info("MySQL deshabilitado — omito el warmup de ventas.")
     yield
     scheduler.detener()
 
@@ -58,7 +76,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.5.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
 
@@ -78,6 +96,7 @@ app.include_router(crear.router)
 app.include_router(canales.router)
 app.include_router(sync.router)
 app.include_router(webhooks.router)
+app.include_router(ventas.router)
 app.include_router(ia.router)
 app.include_router(publicar.router)
 app.include_router(auth.router)
@@ -87,7 +106,7 @@ app.include_router(auth.router)
 def raiz():
     return {
         "app": "OMNICANAL · Kubera",
-        "version": "0.5.0",
+        "version": "0.7.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

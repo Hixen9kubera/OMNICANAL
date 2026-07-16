@@ -238,10 +238,17 @@ def _access_token(cuenta: str | None = None) -> str | None:
         return None
 
 
-async def obtener_orden_items(order_id: str) -> list[str]:
+async def obtener_orden(order_id: str) -> dict | None:
     """
-    Devuelve los item_id de una orden de ML. Prueba con el token de cada cuenta
-    (la orden pertenece a uno de los dos vendedores).
+    Devuelve la orden COMPLETA de ML, normalizada, o None si no se encontró.
+
+    El webhook solo avisa "cambió la orden 123": el precio REAL al que se vendió
+    solo existe aquí (`order_items[].unit_price`). El precio del catálogo cambia
+    todo el tiempo, así que no sirve para saber en cuánto se vendió algo.
+
+    Prueba el token de cada cuenta (la orden es de uno de los dos vendedores) y
+    de paso resuelve el envío, porque `logistic_type == "fulfillment"` es lo que
+    distingue una venta FULL (sale del almacén de ML) de una que surtimos nosotros.
     """
     import httpx as _httpx
     for cuenta in ("BEKURA", "SANCORFASHION"):
@@ -249,17 +256,78 @@ async def obtener_orden_items(order_id: str) -> list[str]:
         if not token:
             continue
         try:
-            async with _httpx.AsyncClient(base_url=_API, timeout=15.0) as cli:
-                r = await cli.get(f"/orders/{order_id}",
-                                  headers={"Authorization": f"Bearer {token}"})
-                if r.status_code == 200:
-                    data = r.json()
-                    return [str((oi.get("item") or {}).get("id"))
-                            for oi in data.get("order_items", [])
-                            if (oi.get("item") or {}).get("id")]
+            cab = {"Authorization": f"Bearer {token}"}
+            async with _httpx.AsyncClient(base_url=_API, timeout=20.0) as cli:
+                r = await cli.get(f"/orders/{order_id}", headers=cab)
+                if r.status_code != 200:
+                    continue  # 404/403 → probablemente es de la otra cuenta
+                d = r.json()
+
+                # El envío va aparte: la orden solo trae shipping.id.
+                envio: dict = {}
+                env_id = (d.get("shipping") or {}).get("id")
+                if env_id:
+                    try:
+                        re_ = await cli.get(f"/shipments/{env_id}", headers=cab)
+                        if re_.status_code == 200:
+                            s = re_.json()
+                            envio = {"id": env_id,
+                                     "logistica": s.get("logistic_type"),
+                                     "estado": s.get("status"),
+                                     "subestado": s.get("substatus")}
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                items = []
+                for oi in d.get("order_items", []):
+                    it = oi.get("item") or {}
+                    items.append({
+                        "item_id": str(it.get("id") or ""),
+                        "sku": (it.get("seller_sku") or "").strip(),
+                        "titulo": it.get("title") or "",
+                        "variacion_id": it.get("variation_id"),
+                        "cantidad": int(oi.get("quantity") or 1),
+                        # unit_price = lo que REALMENTE pagó el comprador por unidad.
+                        "precio_unitario": float(oi.get("unit_price") or 0),
+                        "precio_lista": float(oi.get("full_unit_price")
+                                              or oi.get("gross_price") or 0),
+                        "comision_ml": float(oi.get("sale_fee") or 0),
+                    })
+
+                pago = (d.get("payments") or [{}])[0]
+                comprador = d.get("buyer") or {}
+                return {
+                    "id": str(d.get("id")),
+                    "cuenta": cuenta,
+                    "estado": d.get("status"),
+                    "detalle": d.get("status_detail"),
+                    "etiquetas": d.get("tags") or [],
+                    "fecha": d.get("date_created"),
+                    "total": float(d.get("total_amount") or 0),
+                    "pagado": float(d.get("paid_amount") or 0),
+                    "moneda": d.get("currency_id") or "MXN",
+                    "envio_costo": float(d.get("shipping_cost") or 0),
+                    "items": items,
+                    "envio": envio,
+                    "es_full": (envio.get("logistica") == "fulfillment"),
+                    "pago_estado": pago.get("status"),
+                    "pago_fecha": pago.get("date_approved"),
+                    "comprador": {
+                        "id": comprador.get("id"),
+                        "nick": comprador.get("nickname"),
+                        "nombre": comprador.get("first_name"),
+                        "apellido": comprador.get("last_name"),
+                    },
+                }
         except Exception:  # noqa: BLE001
             continue
-    return []
+    return None
+
+
+async def obtener_orden_items(order_id: str) -> list[str]:
+    """Devuelve solo los item_id de una orden (para resincronizar su stock)."""
+    orden = await obtener_orden(order_id)
+    return [i["item_id"] for i in (orden or {}).get("items", []) if i.get("item_id")]
 
 
 def _dec(f, v):

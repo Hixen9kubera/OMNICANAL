@@ -488,3 +488,24 @@ export function guardarContenido(
 }
 
 export const API_BASE = BASE;
+
+/* ── VENTAS ──────────────────────────────────────────────────────── */
+
+import type { VentasResumen } from "./types";
+
+export function ventasHorario(
+  params: {
+    canal: string;              // "general" | "mercado_libre"
+    cuenta?: string | null;     // BEKURA | SANCORFASHION | null (todas)
+    desde?: string;             // YYYY-MM-DD
+    hasta?: string;
+  },
+  signal?: AbortSignal,
+): Promise<VentasResumen> {
+  const q = new URLSearchParams();
+  q.set("canal", params.canal);
+  if (params.cuenta) q.set("cuenta", params.cuenta);
+  if (params.desde) q.set("desde", params.desde);
+  if (params.hasta) q.set("hasta", params.hasta);
+  return getJSON(`/api/ventas/horario?${q.toString()}`, signal);
+}

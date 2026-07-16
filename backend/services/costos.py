@@ -81,7 +81,11 @@ def costo_cbm_desde_dims(largo: float, ancho: float, alto: float,
 # ── Config de la cuenta/API de Mercado Libre ────────────────────────────────────
 _ML_API               = "https://api.mercadolibre.com"
 DEFAULT_ACCOUNT       = "BEKURA"
-DEFAULT_LISTING_TYPE  = "gold_special"
+# gold_pro (Premium): TODO el catálogo se migró a Premium el 2026-07-16 y el
+# publicador vendorizado publica gold_pro. Calcular comisiones con gold_special
+# subestimaría el fee ~4.5 puntos (ej. 15% vs 19.5%) y el precio sugerido
+# saldría con margen de menos.
+DEFAULT_LISTING_TYPE  = "gold_pro"
 DEFAULT_LOGISTIC      = "xd_drop_off"
 DEFAULT_SHIPPING_MODE = "me2"
 
