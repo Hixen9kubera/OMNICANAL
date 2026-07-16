@@ -30,7 +30,7 @@ from typing import Any
 
 import requests
 
-from services import db, meli
+from services import costing_mirror, db, meli
 
 log = logging.getLogger("uvicorn.error")
 
@@ -321,6 +321,9 @@ def _log_costo(sku: str, accion: str, origen: str, detalle: dict[str, Any]) -> N
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo escribir costos_logs(%s): %s", sku, exc)
+    # Dual-write F3 (flag SUPABASE_DUAL_WRITE): espejo a ops.process_log en un
+    # hilo aparte — nunca en el camino crítico, nunca rompe la operación.
+    costing_mirror.en_hilo(costing_mirror.espejar_log, sku, accion, origen, detalle)
 
 
 def _guardar_finales(sku: str, base: dict[str, Any], pricing: dict[str, Any],
@@ -349,6 +352,8 @@ def _guardar_finales(sku: str, base: dict[str, Any], pricing: dict[str, Any],
         f"ON DUPLICATE KEY UPDATE {upd}, updated_at=NOW()",
         tuple(fila.values()),
     )
+    # Dual-write F3: espejo a costing.costos_finales (MySQL sigue siendo la fuente).
+    costing_mirror.en_hilo(costing_mirror.espejar_finales, sku, dict(fila))
     return fila
 
 
@@ -373,6 +378,14 @@ def _guardar_validados(sku: str, base: dict[str, Any]) -> None:
         f"INSERT INTO costos_validados ({cols}) VALUES ({ph}) "
         f"ON DUPLICATE KEY UPDATE {upd}",
         tuple(fila.values()),
+    )
+    # Dual-write F3: espejo a costing.costos_validados (solo columnas tocadas aquí;
+    # el costo_total del espejo = costo_unitario, igual que la fila de MySQL).
+    costing_mirror.en_hilo(
+        costing_mirror.espejar_validados, sku,
+        {**{k: fila.get(k) for k in ("largo", "alto", "ancho", "peso",
+                                     "costo_producto", "costo_cbm")},
+         "costo_total": fila.get("costo_total")},
     )
 
 
