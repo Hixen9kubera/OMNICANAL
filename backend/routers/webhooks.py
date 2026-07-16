@@ -276,9 +276,33 @@ async def ping_ml():
     return {"ok": True, "servicio": "webhook Mercado Libre", "listo": True}
 
 
+# ── Lecturas: MySQL (hoy) o Supabase (Fase 5, tras flag) ─────────────────────
+
+def _leer_de_supabase() -> bool:
+    """La lectura va a Supabase si el flag lo pide o si no hay MySQL (staging)."""
+    return (settings.supabase_read_webhooks or not settings.mysql_enabled) and sdb.disponible()
+
+
+def _eventos_supabase(limite: int) -> list[dict[str, Any]]:
+    """Lee ops.webhook_events con la MISMA forma que la tabla MySQL (la campana
+    del frontend no distingue el origen): external_id→resource, recibido_at→recibido."""
+    return sdb.fetch_all(
+        """select id, canal, topic, external_id as resource, cuenta, sku,
+                  procesado, resultado, recibido_at as recibido
+           from ops.webhook_events order by id desc limit %s""",
+        (limite,),
+    )
+
+
 @router.get("/ml/log")
 async def log_ml(limite: int = Query(50, ge=1, le=200)):
     """Últimas notificaciones recibidas (para ver tus pruebas en vivo)."""
+    if _leer_de_supabase():
+        try:
+            eventos = await asyncio.to_thread(_eventos_supabase, limite)
+            return {"total": len(eventos), "eventos": eventos, "origen": "supabase"}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("lectura Supabase falló, caigo a MySQL: %s", exc)
     _asegurar_schema()
     try:
         eventos = db.fetch_all(
@@ -292,6 +316,16 @@ async def log_ml(limite: int = Query(50, ge=1, le=200)):
 @router.get("/notificaciones")
 async def notificaciones(limite: int = Query(20, ge=1, le=100)):
     """Feed compacto para la campana de notificaciones del frontend."""
+    if _leer_de_supabase():
+        try:
+            eventos = await asyncio.to_thread(_eventos_supabase, limite)
+            total_hoy = await asyncio.to_thread(
+                sdb.fetch_scalar,
+                "select count(*) from ops.webhook_events where recibido_at >= current_date",
+            )
+            return {"eventos": eventos, "total_hoy": int(total_hoy or 0), "origen": "supabase"}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("lectura Supabase falló, caigo a MySQL: %s", exc)
     _asegurar_schema()
     try:
         eventos = db.fetch_all(

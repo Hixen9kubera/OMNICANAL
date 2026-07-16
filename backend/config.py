@@ -146,6 +146,11 @@ class Settings(BaseSettings):
     # supabase_dual_write=true → los webhooks escriben ADEMÁS en Supabase
     # (ops.webhook_events, idempotente). Apagarlo = solo MySQL, como siempre.
     supabase_dual_write: bool = False
+    # Flags de LECTURA por dominio (Fase 5). supabase_read_webhooks=true → la
+    # campana y /ml/log leen de ops.webhook_events en vez de MySQL. También se
+    # lee de Supabase cuando MYSQL_ENABLED=false (staging). Ante cualquier error
+    # de lectura, se cae al camino MySQL: apagar el flag = revertir al instante.
+    supabase_read_webhooks: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""
