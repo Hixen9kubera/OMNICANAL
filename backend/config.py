@@ -146,6 +146,11 @@ class Settings(BaseSettings):
     # supabase_dual_write=true → los webhooks escriben ADEMÁS en Supabase
     # (ops.webhook_events, idempotente). Apagarlo = solo MySQL, como siempre.
     supabase_dual_write: bool = False
+    # Dual-write del dominio CHANNEL (independiente del de costos, para poder
+    # apagar uno sin el otro): el sync de inventario espeja a channel.listings
+    # y el trigger de la base alimenta channel.listing_history (monitoreo de
+    # precio/stock/FULL por plataforma).
+    supabase_dual_write_channel: bool = False
     # Flags de LECTURA por dominio (Fase 5). supabase_read_webhooks=true → la
     # campana y /ml/log leen de ops.webhook_events en vez de MySQL. También se
     # lee de Supabase cuando MYSQL_ENABLED=false (staging). Ante cualquier error

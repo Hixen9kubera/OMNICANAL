@@ -86,6 +86,11 @@ def _upsert(rows: list[dict[str, Any]]) -> int:
     """
     with db.get_cursor() as cur:
         cur.executemany(sql, rows)
+    # Dual-write F3 (flag SUPABASE_DUAL_WRITE_CHANNEL): espejo de la tanda a
+    # channel.listings en hilo aparte; el trigger de la base registra los
+    # cambios de precio/stock/FULL en channel.listing_history. Nunca rompe el sync.
+    from services import channel_mirror
+    channel_mirror.en_hilo(channel_mirror.espejar_inventario, [dict(r) for r in rows])
     return len(rows)
 
 
