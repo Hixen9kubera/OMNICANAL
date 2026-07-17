@@ -283,10 +283,11 @@ def _leer_rango(cuentas: list[str], desde: date, hasta: date) -> dict:
 
 
 def _delta_pct(actual: float, previo: float) -> float | None:
-    """Variación % vs. semana pasada. None cuando no hay base de comparación."""
+    """Variación % vs. semana pasada. None (= "s/ base") cuando no hay contra
+    qué comparar — un "+100%" contra cero es ruido, no información."""
     if previo:
         return round((actual - previo) / previo * 100, 1)
-    return None if not actual else 100.0
+    return None
 
 
 def _pedidos_rango(cuentas: list[str], desde: date, hasta: date) -> dict | None:
@@ -326,6 +327,132 @@ def _pedidos_rango(cuentas: list[str], desde: date, hasta: date) -> dict | None:
     return {**tot, "cuentas": {c: {"pedidos": v["pedidos"],
                                    "monto": round(v["monto"], 2)}
                                for c, v in por_cuenta.items()}}
+
+
+def _pedidos_horario(cuentas: list[str], desde: date, hasta: date) -> dict:
+    """
+    Agregado por hora-del-día desde `pedidos_ml` (hora CDMX del `creado`, que
+    va segundos después de la venta). Cuentan como VENTA los pedidos pagados
+    (processing/completed/on-hold); `pending` aún no es dinero y `cancelled`
+    va aparte con su monto.
+    """
+    horas = [{"pedidos": 0, "monto": 0.0} for _ in range(24)]
+    tot = {"pedidos": 0, "monto": 0.0, "cancelados": 0, "monto_cancelado": 0.0}
+    por_cuenta = {c: {"pedidos": 0, "monto": 0.0} for c in cuentas}
+    cuenta_horas = {c: [0.0] * 24 for c in cuentas}
+    ini = datetime.combine(desde, datetime.min.time()) + timedelta(hours=6)
+    fin = datetime.combine(hasta, datetime.min.time()) + timedelta(hours=30)
+    marcas = ",".join(["%s"] * len(cuentas))
+    filas = db.fetch_all(
+        f"""SELECT HOUR(DATE_SUB(creado, INTERVAL 6 HOUR)) h, cuenta, estado_wc,
+                   COUNT(*) n, SUM(total) m
+            FROM pedidos_ml
+            WHERE cuenta IN ({marcas}) AND creado >= %s AND creado < %s
+            GROUP BY h, cuenta, estado_wc""",
+        (*cuentas, ini, fin))
+    for f in filas:
+        h, n, m = int(f["h"]), int(f["n"] or 0), float(f["m"] or 0)
+        est = str(f.get("estado_wc") or "")
+        if est == "cancelled":
+            tot["cancelados"] += n
+            tot["monto_cancelado"] += m
+            continue
+        if est == "pending":
+            continue  # confirmada sin pago: todavía no es venta
+        horas[h]["pedidos"] += n
+        horas[h]["monto"] += m
+        tot["pedidos"] += n
+        tot["monto"] += m
+        cta = por_cuenta.get(f["cuenta"])
+        if cta is not None:
+            cta["pedidos"] += n
+            cta["monto"] += m
+            cuenta_horas[f["cuenta"]][h] += m
+    return {"horas": horas, "totales": tot, "cuentas": por_cuenta,
+            "cuenta_horas": cuenta_horas}
+
+
+async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
+    """
+    El tab VENTAS alimentado 100% por los PEDIDOS de WooCommerce (pedidos_ml):
+    la operación vive de pedidos y webhooks (Brandon, 2026-07-17). General =
+    todos los pedidos; el canal/cuenta filtra. Cero llamadas a ML: una consulta
+    a nuestra tabla. La comparativa semanal se llena sola cuando el registro
+    cumpla 7 días (antes: "s/ base").
+    """
+    cuentas = [cuenta] if cuenta else list(_CUENTAS_ML)
+    p_desde, p_hasta = desde - timedelta(days=7), hasta - timedelta(days=7)
+    act = await asyncio.to_thread(_pedidos_horario, cuentas, desde, hasta)
+    prev = await asyncio.to_thread(_pedidos_horario, cuentas, p_desde, p_hasta)
+
+    horas = []
+    for h in range(24):
+        a, p = act["horas"][h], prev["horas"][h]
+        horas.append({
+            "hora": h,
+            "monto": round(a["monto"], 2), "pedidos": a["pedidos"], "unidades": 0,
+            "prev_monto": round(p["monto"], 2), "prev_pedidos": p["pedidos"],
+            "prev_unidades": 0,
+            "delta_monto": _delta_pct(a["monto"], p["monto"]),
+        })
+
+    ta, tp = act["totales"], prev["totales"]
+    ticket_a = ta["monto"] / ta["pedidos"] if ta["pedidos"] else 0
+    ticket_p = tp["monto"] / tp["pedidos"] if tp["pedidos"] else 0
+
+    parcial = None
+    if desde == hasta == hoy_mx():
+        corte = datetime.now(_TZ_MX).hour
+        pm = sum(h["monto"] for h in prev["horas"][:corte + 1])
+        pp = sum(h["pedidos"] for h in prev["horas"][:corte + 1])
+        parcial = {
+            "hora_corte": corte,
+            "prev_monto": round(pm, 2), "prev_pedidos": pp, "prev_unidades": 0,
+            "delta": {"monto": _delta_pct(ta["monto"], pm),
+                      "pedidos": _delta_pct(ta["pedidos"], pp), "unidades": None},
+        }
+
+    etiquetas = {"BEKURA": "Kubera", "SANCORFASHION": "San Corpe"}
+    cuentas_out = []
+    for c in cuentas:
+        ca, cp = act["cuentas"][c], prev["cuentas"][c]
+        fila = {
+            "cuenta": c, "label": etiquetas.get(c, c),
+            "monto": round(ca["monto"], 2), "pedidos": ca["pedidos"], "unidades": 0,
+            "prev_monto": round(cp["monto"], 2),
+            "delta_monto": _delta_pct(ca["monto"], cp["monto"]),
+        }
+        if parcial:
+            pmc = sum(prev["cuenta_horas"][c][:parcial["hora_corte"] + 1])
+            fila["prev_monto_parcial"] = round(pmc, 2)
+            fila["delta_parcial"] = _delta_pct(ca["monto"], pmc)
+        cuentas_out.append(fila)
+
+    return {
+        "fuente": "pedidos",
+        "canal": "mercado_libre" if cuenta else "general",
+        "cuenta": cuenta,
+        "desde": desde.isoformat(), "hasta": hasta.isoformat(),
+        "prev_desde": p_desde.isoformat(), "prev_hasta": p_hasta.isoformat(),
+        "horas": horas,
+        "totales": {
+            "monto": round(ta["monto"], 2), "pedidos": ta["pedidos"],
+            "unidades": 0, "ticket": round(ticket_a, 2),
+            "canceladas": ta["cancelados"],
+            "monto_cancelado": round(ta["monto_cancelado"], 2),
+            "prev": {"monto": round(tp["monto"], 2), "pedidos": tp["pedidos"],
+                     "unidades": 0, "ticket": round(ticket_p, 2),
+                     "canceladas": tp["cancelados"]},
+            "delta": {"monto": _delta_pct(ta["monto"], tp["monto"]),
+                      "pedidos": _delta_pct(ta["pedidos"], tp["pedidos"]),
+                      "unidades": None,
+                      "ticket": _delta_pct(ticket_a, ticket_p)},
+            "parcial": parcial,
+        },
+        "cuentas": cuentas_out,
+        "pedidos_wc": _pedidos_rango(cuentas, desde, hasta),
+        "actualizado": datetime.now(_TZ_MX).isoformat(timespec="seconds"),
+    }
 
 
 async def resumen(cuenta: str | None, desde: date, hasta: date) -> dict:

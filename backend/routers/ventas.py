@@ -34,6 +34,7 @@ async def horario(
     cuenta: str | None = Query(None),
     desde: date | None = Query(None),
     hasta: date | None = Query(None),
+    fuente: str = Query("pedidos"),
 ):
     if canal not in ("general", "mercado_libre"):
         # Amazon y demás canales de ventas vendrán después; avisamos claro.
@@ -53,7 +54,13 @@ async def horario(
     if d1 > ventas_ml.hoy_mx():
         raise HTTPException(400, "El rango empieza en el futuro.")
 
-    return await ventas_ml.resumen(cta, d1, d2)
+    # La operación vive de PEDIDOS de WooCommerce (Brandon, 2026-07-17):
+    # General = todos los pedidos; el canal/cuenta filtra los mismos pedidos.
+    # `fuente=ml` conserva la vista histórica de la API de ML (para cuando se
+    # quiera volver a comparar contra lo que reporta Mercado Libre).
+    if fuente == "ml":
+        return await ventas_ml.resumen(cta, d1, d2)
+    return await ventas_ml.resumen_pedidos(cta, d1, d2)
 
 
 @router.get("/dias")

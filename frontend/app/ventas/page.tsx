@@ -161,6 +161,11 @@ export default function VentasPage() {
     return () => clearInterval(t);
   }, [incluyeHoy, cargar]);
 
+  // La fuente pedidos no tiene "unidades": si quedó seleccionada, regresar a monto.
+  useEffect(() => {
+    if (data?.fuente === "pedidos" && metrica === "unidades") setMetrica("monto");
+  }, [data?.fuente, metrica]);
+
   function seleccionarCanal(id: string, habilitado: boolean) {
     if (!habilitado || id === canal) return;
     setCanal(id);
@@ -175,6 +180,11 @@ export default function VentasPage() {
 
   /* ── Derivados ── */
   const t = data?.totales;
+  // Fuente "pedidos": el tab vive de los pedidos de WooCommerce (no de la API
+  // de ML). Los pedidos no traen unidades, así que esa métrica se oculta; la
+  // comparativa semanal aparece sola cuando el registro cumpla 7 días.
+  const esPedidos = data?.fuente === "pedidos";
+  const sinBaseSemanal = esPedidos && !!t && t.prev.monto === 0 && t.prev.pedidos === 0;
   const parcial = esHoy ? t?.parcial ?? null : null;
   // Con HOY la comparativa honesta es "a la misma hora de la semana pasada".
   const deltaMonto = parcial ? parcial.delta.monto : t?.delta.monto ?? null;
@@ -224,11 +234,11 @@ export default function VentasPage() {
       valor: fmtInt(t.pedidos), delta: deltaPedidos,
       sub: `sem. pasada: ${fmtInt(parcial ? parcial.prev_pedidos : t.prev.pedidos)}`,
     },
-    {
+    ...(esPedidos ? [] : [{
       icono: Boxes, label: "Unidades",
       valor: fmtInt(t.unidades), delta: deltaUnidades,
       sub: `sem. pasada: ${fmtInt(parcial ? parcial.prev_unidades : t.prev.unidades)}`,
-    },
+    }]),
     {
       icono: Receipt, label: "Ticket promedio",
       valor: fmtMXN(t.ticket, 2), delta: t.delta.ticket,
@@ -268,7 +278,7 @@ export default function VentasPage() {
               </h1>
               <p className="mt-1 flex items-center gap-2 text-sm opacity-90">
                 <Clock size={14} />
-                {etiquetaComparativa}
+                {esPedidos ? "pedidos de WooCommerce en tiempo real" : etiquetaComparativa}
                 {incluyeHoy && (
                   <span className="ml-1 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide">
                     <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-300" />
@@ -531,6 +541,11 @@ export default function VentasPage() {
               <h2 className="text-base font-bold text-slate-900">Ventas por hora</h2>
               <p className="text-xs text-slate-500">
                 {etiquetaComparativa}
+                {sinBaseSemanal && (
+                  <span className="ml-1 text-slate-400">
+                    · la comparativa se llenará sola cuando el registro cumpla una semana (24 jul)
+                  </span>
+                )}
                 {pico && (
                   <span className="ml-2 font-semibold" style={{ color: esClaro(tema.color) ? tema.acento : tema.color }}>
                     · Pico {String(pico.hora).padStart(2, "0")}:00 — {fmtMXN(pico.valor)}
@@ -550,9 +565,12 @@ export default function VentasPage() {
                   Semana pasada
                 </span>
               </div>
-              {/* Métrica */}
+              {/* Métrica (unidades no existe en la fuente pedidos) */}
               <div className="inline-flex rounded-lg bg-slate-100 p-1">
-                {([["monto", "Monto"], ["pedidos", "Pedidos"], ["unidades", "Unidades"]] as const).map(([id, label]) => {
+                {(esPedidos
+                  ? ([["monto", "Monto"], ["pedidos", "Pedidos"]] as const)
+                  : ([["monto", "Monto"], ["pedidos", "Pedidos"], ["unidades", "Unidades"]] as const)
+                ).map(([id, label]) => {
                   const sel = metrica === id;
                   return (
                     <button

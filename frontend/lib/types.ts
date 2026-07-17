@@ -569,6 +569,8 @@ export interface PedidosWCResumen {
 }
 
 export interface VentasResumen {
+  /** "pedidos" = alimentado por pedidos de WooCommerce (registro vivo). */
+  fuente?: string;
   canal: string;
   cuenta: string | null;
   desde: string;

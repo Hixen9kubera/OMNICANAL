@@ -1014,6 +1014,21 @@ WooCommerce; las lecturas de datos a ML se apagan sin tocar el flujo de pedidos.
 Lo ÚNICO que sigue hablando con ML: `obtener_orden` por cada venta (sin la orden
 no hay pedido) — 1 lectura por webhook de venta.
 
+### v0.9.0 — La pestaña VENTAS vive de los PEDIDOS (General y canales)
+
+Decisión de Brandon (2026-07-17): la operación vive de pedidos y webhooks.
+El tab entero se alimenta de `pedidos_ml` (cero llamadas a ML):
+
+- **General** = TODOS los pedidos; **Mercado Libre** filtra los mismos pedidos
+  y las cuentas (Kubera/San Corpe) diferencian cada pedido por su `cuenta`.
+- Cuentan como venta los pedidos PAGADOS (processing/completed); `pending` aún
+  no es dinero y `cancelled` va aparte con su monto.
+- Sin métrica de Unidades (los pedidos no la guardan — honestidad ante todo).
+- La comparativa semanal muestra "s/ base" hasta que el registro cumpla 7 días
+  (24-jul); un "+100% vs cero" es ruido y se eliminó de `_delta_pct`.
+- La vista histórica de la API de ML sigue disponible con `?fuente=ml` (para
+  reconciliar contra lo que reporta Mercado Libre cuando se quiera).
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.
