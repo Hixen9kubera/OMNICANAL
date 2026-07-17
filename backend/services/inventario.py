@@ -295,7 +295,7 @@ async def _sync_amazon_sku(sku: str) -> list[dict[str, Any]]:
             "sku": sku, "canal": "amazon", "cuenta": "",
             "item_id": a.get("asin"), "precio": a.get("precio"),
             "stock_real": a.get("stock_real"), "stock_full": None,
-            "stock_fba": a.get("stock_fba"), "es_full": 0,
+            "stock_fba": a.get("stock_fba"), "es_full": 1 if a.get("es_fba") else 0,
             "logistica": "FBA" if a.get("es_fba") else "FBM",
             "situacion": a.get("estado"), "moneda": "MXN",
         }]

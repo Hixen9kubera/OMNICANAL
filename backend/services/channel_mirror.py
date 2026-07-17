@@ -90,6 +90,9 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                     """insert into core.products (sku, status, source)
                        values (%s, 'draft', 'backend-dualwrite')
                        on conflict (sku) do nothing""", (sku,))
+                # NULL en precio/stock/situación = "el lector no lo observó en esta
+                # pasada" (p. ej. Amazon por lote no trae stock FBM) — se conserva
+                # el valor anterior en vez de grabar un falso cambio a NULL.
                 cur.execute(
                     """insert into channel.listings
                          (sku, account_id, canal, listing_id, price, stock_own,
@@ -97,15 +100,19 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                        on conflict (sku, account_id, canal) do update set
                          listing_id = coalesce(excluded.listing_id, listings.listing_id),
-                         price = excluded.price, stock_own = excluded.stock_own,
-                         stock_full = excluded.stock_full,
+                         price = coalesce(excluded.price, listings.price),
+                         stock_own = coalesce(excluded.stock_own, listings.stock_own),
+                         stock_full = coalesce(excluded.stock_full, listings.stock_full),
                          is_fulfillment = excluded.is_fulfillment,
-                         situacion = excluded.situacion
+                         situacion = coalesce(excluded.situacion, listings.situacion)
                        where (listings.price, listings.stock_own, listings.stock_full,
                               listings.is_fulfillment, listings.situacion)
                          is distinct from
-                             (excluded.price, excluded.stock_own, excluded.stock_full,
-                              excluded.is_fulfillment, excluded.situacion)""",
+                             (coalesce(excluded.price, listings.price),
+                              coalesce(excluded.stock_own, listings.stock_own),
+                              coalesce(excluded.stock_full, listings.stock_full),
+                              excluded.is_fulfillment,
+                              coalesce(excluded.situacion, listings.situacion))""",
                     (sku, cuenta_id, canal, r.get("item_id"), r.get("precio"),
                      r.get("stock_real"), stock_full, bool(r.get("es_full")),
                      r.get("situacion")),
