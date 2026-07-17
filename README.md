@@ -933,6 +933,60 @@ costos/precios: los % que verán en el panel ahora reflejan Premium.
 
 ---
 
+## 🛒 Versión 0.8 — Pedidos ML→WC ENCENDIDOS (modo registro) + vigilante de Odoo + fix de categoría
+
+### Pedidos automáticos (la venta se congela como pedido de Woo)
+
+El webhook `orders_v2` — que ML ya manda a este backend — ahora, además de
+resincronizar stock, **crea/actualiza el pedido en WooCommerce** vía
+`pedidos_ml.sincronizar()` con el **precio REAL de la venta congelado**, la comisión
+de ML y el neto en metas `_ml_*`. Idempotente: los webhooks repetidos de la misma
+venta (pago→envío→entrega) actualizan el estado, no duplican.
+
+| Flag (env) | Default | Qué hace |
+|---|---|---|
+| `PEDIDOS_WC_ENABLED` | `true` | Crea el pedido por cada venta de ML |
+| `PEDIDOS_WC_DESCUENTA_STOCK` | `false` | **Modo REGISTRO**: el pedido nace con `_order_stock_reduced` y NO baja inventario (Odoo sigue siendo el maestro). Ponerlo `true` = el corte de inventario a Woo |
+
+Probado end-to-end con la venta real `#2000017468364824` → pedido WC `#101133`
+(FULL, $396, `processing`, stock intacto). `GET /api/webhooks/estado` muestra los flags.
+
+### Vigilante de Odoo (`services/odoo_watch.py`)
+
+Responde a "¿cómo cachamos un cambio de stock hecho en Odoo?": cada
+`ODOO_WATCH_MIN` min (30) compara `qty_available` contra la última foto
+(`productos.stock_odoo`), actualiza la foto, y **avisa en la campana**
+("Odoo: stock 12 → 8", canal `odoo`). Con `ODOO_WATCH_AUTO_PUSH=true` además
+empuja SOLO los SKUs cambiados a Woo (encender tras la carga inicial). Primer
+arranque con foto vieja → un solo aviso-resumen (sin inundar la campana).
+
+### Carga inicial Odoo→Woo (medida, lista para disparar)
+
+`POST /api/sync/woo` (ya existía) alinea stock+costos. Dry-run del 2026-07-17:
+12,923 SKUs en Odoo, 12,806 en Woo (99.1%), **solo 525 difieren** (434 suben,
+65 bajan, 26 quedan en 0). El barrido masivo se dispara manualmente desde el
+panel/endpoint — decisión de negocio, no automática.
+
+### Fix: la categoría del PANEL manda sobre la del predictor
+
+Caso real TEC-1812-NEG: el panel decía **Máquinas Sexuales** (`ml_categoria_id`,
+del selector) pero se publicó en **Máquinas de Coser** (`ml_category_id`, del
+predictor de Crear). `publicar_ready.construir_prod` ahora prefiere
+`ml_categoria_id` (elección humana) y deriva el nombre de `ml_categoria_niveles`.
+El ítem pausado de San Corpe se corrigió EN VIVO con `PUT /items/{id}`
+(`category_id` → aceptado); el cerrado de BEKURA requiere republicar (los
+cerrados devuelven `category_id.not_modifiable`).
+
+### Archivos tocados
+
+- `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.
+- `services/pedidos_ml.py` → `sincronizar(..., orden=)` acepta la orden prefetched.
+- **Nuevo** `services/odoo_watch.py` + job en `services/scheduler.py`.
+- `services/publicar_ready.py` → prioridad de categoría del panel.
+- `config.py` → `pedidos_wc_*`, `odoo_watch_*`.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

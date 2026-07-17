@@ -36,7 +36,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 
 from config import settings
 from core.seguridad import requiere_api_key
-from services import db, inventario, meli
+from services import db, inventario, meli, pedidos_ml
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.webhooks")
@@ -203,7 +203,9 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
         elif topic == "orders_v2" and "/orders/" in resource:
             # Una venta cambia el stock: refrescamos los ítems de la orden.
             order_id = resource.rsplit("/", 1)[-1]
-            items = await meli.obtener_orden_items(order_id)
+            orden = await meli.obtener_orden(order_id)
+            items = [i["item_id"] for i in (orden or {}).get("items", [])
+                     if i.get("item_id")]
             actualizados = []
             for it in items:
                 r = await inventario.refrescar_ml_item_id(it)
@@ -211,6 +213,20 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
                     actualizados.append(r.get("sku"))
             sku = ",".join(a for a in actualizados if a) or None
             resultado = f"venta: {len(actualizados)} ítem(s) resincronizados"
+            # PEDIDOS: la venta queda como pedido de Woo con el precio REAL
+            # congelado. En modo registro (descuenta_stock=false) el pedido
+            # NO baja inventario — Odoo sigue siendo el maestro.
+            if settings.pedidos_wc_enabled and orden:
+                rp = await pedidos_ml.sincronizar(
+                    order_id, orden=orden,
+                    proteger_stock=not settings.pedidos_wc_descuenta_stock)
+                if rp.get("ok"):
+                    resultado += (f" · pedido WC #{rp['wc_order_id']} "
+                                  f"{rp['accion']} ({rp['estado_wc']})")
+                    if rp.get("sin_mapear"):
+                        resultado += f" · SKU sin mapear: {','.join(rp['sin_mapear'])}"
+                else:
+                    resultado += f" · pedido WC falló: {rp.get('motivo')}"
         else:
             resultado = f"topic '{topic}' registrado (sin acción de stock)"
     except Exception as exc:  # noqa: BLE001
@@ -267,6 +283,9 @@ async def estado_registro():
         "mysql_enabled": settings.mysql_enabled,
         "supabase_dual_write": settings.supabase_dual_write,
         "supabase_disponible": sdb.disponible(),
+        "pedidos_wc": settings.pedidos_wc_enabled,
+        "pedidos_descuentan_stock": settings.pedidos_wc_descuenta_stock,
+        "odoo_watch": settings.odoo_watch_enabled,
     }
 
 

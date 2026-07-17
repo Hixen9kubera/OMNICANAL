@@ -165,6 +165,22 @@ class Settings(BaseSettings):
     api_key: str = ""
     auth_enforced: bool = False
 
+    # ── Pedidos ML → WooCommerce + transición de inventario ───
+    # Cada venta de ML se convierte en pedido de Woo con el precio REAL
+    # congelado (services/pedidos_ml.py), disparado por el webhook orders_v2.
+    # Con descuenta_stock=false el pedido nace marcado "stock ya descontado"
+    # y NO toca inventario (modo REGISTRO: Odoo sigue siendo el maestro).
+    # Encender descuenta_stock = el corte de inventario a Woo.
+    pedidos_wc_enabled: bool = True
+    pedidos_wc_descuenta_stock: bool = False
+    # Vigilante de Odoo: compara qty_available contra la última foto
+    # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
+    # Con auto_push=true además empuja el stock nuevo a Woo (activar solo
+    # después de la carga inicial Odoo→Woo).
+    odoo_watch_enabled: bool = True
+    odoo_watch_min: int = 30
+    odoo_watch_auto_push: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
