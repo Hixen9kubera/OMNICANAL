@@ -250,6 +250,23 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         if nombre and valor:
             wc_attrs[nombre.lower()] = valor
 
+    # Categoría ML: hay DOS escritores con llaves distintas. `ml_categoria_id`
+    # la guarda el selector del PANEL (elección humana); `ml_category_id` la
+    # guarda el predictor de Crear Productos. La humana MANDA — caso
+    # TEC-1812-NEG: el predictor eligió "Máquinas de Coser" y el panel decía
+    # "Máquinas Sexuales"; se publicó en coser por leer solo la del predictor.
+    cat_panel = str(meta.get("ml_categoria_id") or "").strip()
+    cat_crear = str(meta.get("ml_category_id") or "").strip()
+    cat_id = cat_panel or cat_crear
+    cat_nombre = str(meta.get("ml_categoria_path") or "")
+    if cat_panel:
+        try:  # nombre legible desde los niveles que guarda el picker del panel
+            niveles = json.loads(meta.get("ml_categoria_niveles") or "[]")
+            if niveles:
+                cat_nombre = " > ".join(n.get("name", "") for n in niveles)
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
         "wc_id":            wc_id,
         "sku":              sku,
@@ -262,8 +279,8 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         "width":            _dim("ancho", "_width"),
         "height":           _dim("alto", "_height"),
         "stock":            stock,
-        "ml_category_id":   meta.get("ml_category_id", "") or "",
-        "ml_category_name": meta.get("ml_categoria_path", "") or "",
+        "ml_category_id":   cat_id,
+        "ml_category_name": cat_nombre,
         "wc_categories":    wp_db.categorias_wc(wc_id),
         "ml_attrs":         {k[len("ml_attr_"):]: v for k, v in meta.items()
                              if k.startswith("ml_attr_") and v},
