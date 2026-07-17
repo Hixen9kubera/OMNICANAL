@@ -181,6 +181,11 @@ class Settings(BaseSettings):
     # Encender descuenta_stock = el corte de inventario a Woo.
     pedidos_wc_enabled: bool = True
     pedidos_wc_descuenta_stock: bool = False
+    # Refresco de VENTAS contra la API de ML (tab Ventas): con false, el tab
+    # sirve solo el caché ya guardado (días cerrados) y NO le pide nada nuevo a
+    # ML — modo "puros pedidos de Woo" (Brandon, 2026-07-17). Los pedidos del
+    # webhook siguen vivos: obtener la orden vendida no es "sincronización".
+    ventas_ml_refresh: bool = True
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
     # Con auto_push=true además empuja el stock nuevo a Woo (activar solo

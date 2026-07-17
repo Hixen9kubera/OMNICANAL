@@ -218,6 +218,8 @@ def _necesita_refresco(cuenta: str, fecha: date) -> bool:
 async def asegurar_dia(cuenta: str, fecha: date) -> None:
     """Garantiza que (cuenta, fecha) esté en caché y fresco según su TTL."""
     _asegurar_schema()
+    if not settings.ventas_ml_refresh:
+        return  # modo "puros pedidos": servir caché sin pedirle nada a ML
     if fecha > hoy_mx():
         return
     if not _necesita_refresco(cuenta, fecha):

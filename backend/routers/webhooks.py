@@ -201,23 +201,33 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
     resultado = ""
     try:
         if topic in ("items", "items_prices", "stock_locations") and "/items/" in resource:
-            item_id = resource.rsplit("/", 1)[-1]
-            r = await inventario.refrescar_ml_item_id(item_id)
-            sku = r.get("sku")
-            resultado = "item actualizado" if r.get("ok") else f"item: {r.get('motivo')}"
+            # Refresco del espejo canal_inventario: es "sincronización de datos
+            # con ML" — respeta el interruptor global (modo puros pedidos).
+            if settings.sync_enabled:
+                item_id = resource.rsplit("/", 1)[-1]
+                r = await inventario.refrescar_ml_item_id(item_id)
+                sku = r.get("sku")
+                resultado = "item actualizado" if r.get("ok") else f"item: {r.get('motivo')}"
+            else:
+                resultado = "item: sync apagado (modo pedidos)"
         elif topic == "orders_v2" and "/orders/" in resource:
-            # Una venta cambia el stock: refrescamos los ítems de la orden.
+            # La ORDEN siempre se trae (sin ella no hay pedido); el refresco de
+            # los ítems en canal_inventario es sync y respeta el interruptor.
             order_id = resource.rsplit("/", 1)[-1]
             orden = await meli.obtener_orden(order_id)
-            items = [i["item_id"] for i in (orden or {}).get("items", [])
-                     if i.get("item_id")]
             actualizados = []
-            for it in items:
-                r = await inventario.refrescar_ml_item_id(it)
-                if r.get("ok"):
-                    actualizados.append(r.get("sku"))
-            sku = ",".join(a for a in actualizados if a) or None
-            resultado = f"venta: {len(actualizados)} ítem(s) resincronizados"
+            if settings.sync_enabled:
+                items = [i["item_id"] for i in (orden or {}).get("items", [])
+                         if i.get("item_id")]
+                for it in items:
+                    r = await inventario.refrescar_ml_item_id(it)
+                    if r.get("ok"):
+                        actualizados.append(r.get("sku"))
+            sku = (",".join(a for a in actualizados if a)
+                   or ",".join(i.get("sku") or "" for i in (orden or {}).get("items", []))
+                   or None)
+            resultado = (f"venta: {len(actualizados)} ítem(s) resincronizados"
+                         if settings.sync_enabled else "venta (modo pedidos)")
             # PEDIDOS: la venta queda como pedido de Woo con el precio REAL
             # congelado. En modo registro (descuenta_stock=false) el pedido
             # NO baja inventario — Odoo sigue siendo el maestro.

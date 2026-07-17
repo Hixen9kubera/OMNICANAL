@@ -1001,6 +1001,19 @@ rango (tabla `pedidos_ml`), con desglose por cuenta (Kubera/San Corpe), FULL vs
 propios y cancelados. El tab muestra el panel "Pedidos en WooCommerce · Registro
 vivo" bajo los KPIs, respeta el filtro de cuenta y se refresca cada 60 s.
 
+### v0.8.2 — Modo "puros pedidos de Woo" (sync de datos de ML apagable)
+
+Pedido de Brandon (2026-07-17): estos días la operación vive de los PEDIDOS de
+WooCommerce; las lecturas de datos a ML se apagan sin tocar el flujo de pedidos.
+
+| Variable | Efecto con `false` |
+|---|---|
+| `SYNC_ENABLED` | Apaga el sync de inventario cada 15 min (ML+Amazon) y las resincronizaciones de ítems que disparaba el webhook. Ya NO mata al vigilante de Odoo (ahora es independiente). |
+| `VENTAS_ML_REFRESH` | El tab Ventas deja de pedirle datos nuevos a ML: sirve el caché de días cerrados; la gráfica de HOY queda congelada al momento del apagado. El panel de PEDIDOS sigue vivo (lee nuestra tabla, 0 llamadas a ML/Woo). |
+
+Lo ÚNICO que sigue hablando con ML: `obtener_orden` por cada venta (sin la orden
+no hay pedido) — 1 lectura por webhook de venta.
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

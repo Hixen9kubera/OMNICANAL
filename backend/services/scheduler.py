@@ -43,21 +43,24 @@ async def _job():
 
 def iniciar() -> None:
     global _scheduler
-    if not settings.sync_enabled:
-        log.info("Sync programado DESACTIVADO (SYNC_ENABLED=false).")
-        return
     if _scheduler:
         return
     _scheduler = AsyncIOScheduler(timezone="UTC")
-    _scheduler.add_job(
-        _job,
-        "interval",
-        minutes=settings.sync_interval_min,
-        id="sync_inventario",
-        next_run_time=datetime.now() + timedelta(seconds=30),  # arranca a llenar el cache
-        max_instances=1,
-        coalesce=True,
-    )
+    # El sync de inventario (lecturas a ML/Amazon) y el vigilante de Odoo son
+    # INDEPENDIENTES: apagar SYNC_ENABLED (modo "puros pedidos de Woo") no debe
+    # matar al vigilante, que no habla con Mercado Libre.
+    if settings.sync_enabled:
+        _scheduler.add_job(
+            _job,
+            "interval",
+            minutes=settings.sync_interval_min,
+            id="sync_inventario",
+            next_run_time=datetime.now() + timedelta(seconds=30),  # arranca a llenar el cache
+            max_instances=1,
+            coalesce=True,
+        )
+    else:
+        log.info("Sync de inventario DESACTIVADO (SYNC_ENABLED=false).")
     # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
     # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
     if settings.odoo_watch_enabled and settings.mysql_enabled:
@@ -74,7 +77,8 @@ def iniciar() -> None:
         log.info("Vigilante de Odoo cada %s min (auto_push=%s).",
                  settings.odoo_watch_min, settings.odoo_watch_auto_push)
     _scheduler.start()
-    log.info("Sync programado cada %s min.", settings.sync_interval_min)
+    if settings.sync_enabled:
+        log.info("Sync programado cada %s min.", settings.sync_interval_min)
 
 
 def detener() -> None:

@@ -61,10 +61,10 @@ async def lifespan(app: FastAPI):
                     await ventas_ml.asegurar_dia(c, hoy - timedelta(days=i))
         except Exception as exc:  # noqa: BLE001
             log.warning("Warmup de ventas incompleto: %s", exc)
-    if getattr(settings, "mysql_enabled", True):
+    if getattr(settings, "mysql_enabled", True) and settings.ventas_ml_refresh:
         asyncio.create_task(_ventas_warmup())
     else:
-        log.info("MySQL deshabilitado — omito el warmup de ventas.")
+        log.info("Warmup de ventas omitido (MySQL off o refresco ML apagado).")
     yield
     scheduler.detener()
 
@@ -76,7 +76,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.8.1",
+    version="0.8.2",
     lifespan=lifespan,
 )
 
@@ -106,7 +106,7 @@ app.include_router(auth.router)
 def raiz():
     return {
         "app": "OMNICANAL · Kubera",
-        "version": "0.8.1",
+        "version": "0.8.2",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
