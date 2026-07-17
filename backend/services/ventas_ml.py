@@ -34,6 +34,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
+from config import settings
 from services import db, meli
 
 log = logging.getLogger("omnicanal.ventas")
