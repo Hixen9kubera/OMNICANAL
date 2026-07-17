@@ -58,21 +58,6 @@ def iniciar() -> None:
         max_instances=1,
         coalesce=True,
     )
-    # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
-    # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
-    if settings.odoo_watch_enabled and settings.mysql_enabled:
-        from services import odoo_watch
-        _scheduler.add_job(
-            odoo_watch.revisar,
-            "interval",
-            minutes=settings.odoo_watch_min,
-            id="odoo_watch",
-            next_run_time=datetime.now() + timedelta(seconds=120),
-            max_instances=1,
-            coalesce=True,
-        )
-        log.info("Vigilante de Odoo cada %s min (auto_push=%s).",
-                 settings.odoo_watch_min, settings.odoo_watch_auto_push)
     _scheduler.start()
     log.info("Sync programado cada %s min.", settings.sync_interval_min)
 

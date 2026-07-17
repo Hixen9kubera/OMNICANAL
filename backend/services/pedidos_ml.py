@@ -203,18 +203,16 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
 
 
 async def sincronizar(order_id: str, forzar_estado: str | None = None,
-                      proteger_stock: bool = False,
-                      orden: dict | None = None) -> dict:
+                      proteger_stock: bool = False) -> dict:
     """
     Trae la orden de ML y la crea (o actualiza) como pedido en WooCommerce.
 
     Idempotente: si la orden ya se registró, actualiza el estado del pedido en
     vez de duplicarlo (ML manda varios webhooks por la misma venta: pago, envío,
-    entrega...). `orden` permite pasar la orden ya traída (el webhook la
-    consulta primero para resincronizar stock; así no se pide dos veces a ML).
+    entrega...).
     """
     _asegurar_schema()
-    orden = orden or await meli.obtener_orden(order_id)
+    orden = await meli.obtener_orden(order_id)
     if not orden:
         return {"ok": False, "motivo": "orden no encontrada en ML"}
 
