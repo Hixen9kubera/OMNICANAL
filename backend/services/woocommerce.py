@@ -218,6 +218,38 @@ async def listar_productos(
                     data = rn.json()
                     total = int(rn.headers.get("X-WP-Total", len(data)))
                     total_pages = int(rn.headers.get("X-WP-TotalPages", 1))
+            # Complemento del bulk "Filtrar SKUs": la tabla maestra `productos`
+            # está congelada e incompleta (no conoce SKUs recientes), así que los
+            # términos sin espacios se consultan ADEMÁS a Woo por SKU exacto en
+            # una sola llamada (?sku=a,b,c) — el mismo plan B que ya tiene
+            # `search`. Solo en la página 1 para no duplicar el total al paginar.
+            if skus and page == 1:
+                terminos = [t.strip() for t in skus if t.strip() and " " not in t.strip()]
+                if terminos:
+                    rs = await cli.get("/products", params={
+                        **params, "sku": ",".join(terminos[:100]),
+                        "per_page": 100, "page": 1,
+                    })
+                    if rs.status_code == 200:
+                        vistos = {p["id"] for p in data}
+                        # drafts fuera desde aquí: la vista los excluye igual (abajo),
+                        # pero si contaran en `total` quedaría "1 producto" con lista vacía
+                        extras = [p for p in rs.json()
+                                  if p["id"] not in vistos and p.get("status") != "draft"]
+                        if estados:  # el complemento respeta el filtro de estado activo
+                            permitidos = {v for e in estados for v in _ESTADOS_WC.get(e, [])}
+                            extras = [p for p in extras if p.get("status") in permitidos]
+                        if extras:
+                            data = data + extras
+                        if total <= per_page:
+                            # Una sola página: el total real es lo fusionado. Corrige
+                            # también el fantasma de filas que la maestra cuenta pero
+                            # el include no devuelve (p. ej. variantes).
+                            total = len(data)
+                            total_pages = 1
+                        elif extras:
+                            total += len(extras)
+                            total_pages = max(1, (total + per_page - 1) // per_page)
         else:
             # GENERAL sin filtros: catálogo SIN drafts (los drafts viven solo en
             # la vista Crear Productos). Paginamos sobre el índice cacheado.
@@ -350,7 +382,9 @@ def _buscar_wc_ids_db(
     """
     from services import db  # import local para evitar ciclos
 
-    where = ["wc_id IS NOT NULL"]
+    # Drafts fuera desde el WHERE: la vista GENERAL los excluye siempre; si la
+    # maestra los contara, el total diría "1 producto" con la lista vacía.
+    where = ["wc_id IS NOT NULL", "(status_wc IS NULL OR status_wc <> 'draft')"]
     args: list[Any] = []
     if search:
         where.append("(sku LIKE %s OR nombre LIKE %s)")
