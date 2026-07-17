@@ -175,7 +175,10 @@ async def scrape_alibaba(url: str) -> dict[str, Any] | None:
         "proxyConfig": {
             "useApifyProxy": True,
             "apifyProxyGroups": ["RESIDENTIAL"],
-            "apifyProxyCountry": "US",
+            # MX, NO US: Alibaba sirve "Product Not Available" a muchas IPs de US
+            # (bloqueo por región) aunque el producto SÍ exista. Desde México carga
+            # bien (título + imágenes + precio reales). Confirmado con CUNA-0020-MET.
+            "apifyProxyCountry": "MX",
         },
     }
     token = {"token": settings.apify_api_key}
@@ -207,6 +210,19 @@ async def scrape_alibaba(url: str) -> dict[str, Any] | None:
     if not items:
         return None
     it = items[0]
+    # Producto MUERTO/removido: Alibaba responde HTTP 200 pero con una página
+    # "Product Not Available" (o "no longer available"). El actor la scrapea igual
+    # y devuelve título basura + 0 imágenes + precio placeholder 0.99. Hay que
+    # tratarlo como scrape fallido para NO sobrescribir el producto con basura.
+    _titulo = (it.get("title") or "").strip().lower()
+    _MUERTO = ("product not available", "no longer available",
+               "product is no longer", "page not found")
+    if any(m in _titulo for m in _MUERTO) or (
+        not (it.get("images") or []) and not _titulo
+    ):
+        log.warning("scrape_alibaba: producto no disponible/muerto (%r) → %s",
+                    it.get("title"), url)
+        return None
     # El actor mutila el campo price ({min:1}); el precio REAL viene en
     # prices[].range / priceText como "$187$2.20" (=$1.87 actual + $2.20 orig,
     # sin punto). Se reconstruye desde ahí.
