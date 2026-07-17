@@ -977,6 +977,23 @@ El ítem pausado de San Corpe se corrigió EN VIVO con `PUT /items/{id}`
 (`category_id` → aceptado); el cerrado de BEKURA requiere republicar (los
 cerrados devuelven `category_id.not_modifiable`).
 
+### Webhook DESVINCULADO de MySQL + candado de cancelación FULL (pedido de Brandon)
+
+- **`WEBHOOK_GUARDA_MYSQL=false` (default)**: las notificaciones de ML ya NO se
+  insertan en `webhook_eventos` (MySQL) — se procesan al vuelo (stock + pedido).
+  El espejo idempotente de Supabase (`ops.webhook_events`) es independiente y lo
+  gobierna `SUPABASE_DUAL_WRITE`. Consecuencia: la campana deja de mostrar
+  eventos de ML salvo que se encienda `SUPABASE_READ_WEBHOOKS` (Fase 5).
+- **Candado de cancelación**: un pedido FULL cancelado hacía que Woo "devolviera"
+  a bodega una pieza que salió del almacén de ML (la marca `_order_stock_reduced`
+  dispara el restock del hook de cancelación). Ahora: al cancelar un pedido
+  protegido primero se pone la marca en `no` (sin restock), y un pedido que NACE
+  cancelado ya no lleva la marca. Los no-FULL cancelados sí reponen (correcto).
+- Verificación de credenciales (2026-07-17): el repo no contiene secretos
+  hardcodeados (vendor recibe tokens por inyección; solo `.env.example` con
+  placeholders). El `client_secret` expuesto conocido vive en el repo externo
+  `publicador` — su rotación sigue pendiente allá.
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

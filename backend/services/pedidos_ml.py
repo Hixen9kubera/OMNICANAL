@@ -181,7 +181,11 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
     ]
     # Venta FULL: la pieza sale del almacén de ML. Nacer con la bandera de
     # "stock ya descontado" evita que Woo baje nuestro stock_real.
-    if orden.get("es_full") or proteger_stock:
+    # EXCEPCIÓN: si el pedido nace ya CANCELADO, la bandera se omite — con ella
+    # puesta, el hook de cancelación de Woo "devolvería" a bodega una pieza que
+    # nunca salió de ahí (inventaría stock).
+    estado_final = forzar_estado or estado_wc(orden)
+    if (orden.get("es_full") or proteger_stock) and estado_final != "cancelled":
         metas.append({"key": "_order_stock_reduced", "value": "yes"})
 
     return {
@@ -229,6 +233,16 @@ async def sincronizar(order_id: str, forzar_estado: str | None = None,
             if previo and previo.get("wc_order_id"):
                 # Ya existía: solo movemos el estado (el precio no se re-toca).
                 wc_id = int(previo["wc_order_id"])
+                # CANDADO de cancelación: en pedidos protegidos (FULL/registro)
+                # Woo "devolvería" a bodega stock que nunca salió de ahí. Se le
+                # quita la marca ANTES del cambio de estado; con la marca en
+                # "no", el hook de restock no repone nada. Los no-FULL conservan
+                # su marca y Woo SÍ repone (la pieza se quedó en la bodega).
+                if (payload["status"] == "cancelled"
+                        and (orden.get("es_full") or proteger_stock)):
+                    await cli.put(f"/orders/{wc_id}", json={
+                        "meta_data": [{"key": "_order_stock_reduced",
+                                       "value": "no"}]})
                 r = await cli.put(f"/orders/{wc_id}", json={"status": payload["status"]})
                 accion = "actualizado"
             else:

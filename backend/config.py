@@ -165,6 +165,14 @@ class Settings(BaseSettings):
     api_key: str = ""
     auth_enforced: bool = False
 
+    # Persistencia de notificaciones en MySQL (webhook_eventos). Brandon pidió
+    # DESVINCULAR el webhook de la base (2026-07-17): con false, las
+    # notificaciones se procesan al vuelo (stock + pedidos) sin insertarse en
+    # MySQL. El espejo de Supabase (ops.webhook_events) es independiente y lo
+    # gobierna supabase_dual_write. La campana deja de mostrar eventos ML salvo
+    # que se encienda supabase_read_webhooks.
+    webhook_guarda_mysql: bool = False
+
     # ── Pedidos ML → WooCommerce + transición de inventario ───
     # Cada venta de ML se convierte en pedido de Woo con el precio REAL
     # congelado (services/pedidos_ml.py), disparado por el webhook orders_v2.

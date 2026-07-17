@@ -80,6 +80,11 @@ def _guardar(canal: str, topic, resource, user_id) -> int | None:
     """Inserta el evento recibido y devuelve su id."""
     if not settings.mysql_enabled:
         return None  # staging opción A: sin MySQL; el evento vive en Supabase
+    if not settings.webhook_guarda_mysql:
+        # Webhook DESVINCULADO de MySQL (pedido de Brandon 2026-07-17): se
+        # procesa al vuelo; el único registro persistente es el espejo de
+        # Supabase (si supabase_dual_write está encendido).
+        return None
     _asegurar_schema()
     try:
         with db.get_cursor() as cur:
@@ -96,7 +101,7 @@ def _guardar(canal: str, topic, resource, user_id) -> int | None:
 
 
 def _actualizar(evento_id: int, sku=None, resultado=None) -> None:
-    if not settings.mysql_enabled:
+    if not settings.mysql_enabled or not settings.webhook_guarda_mysql:
         return
     try:
         with db.get_cursor() as cur:
@@ -285,6 +290,7 @@ async def estado_registro():
         "supabase_disponible": sdb.disponible(),
         "pedidos_wc": settings.pedidos_wc_enabled,
         "pedidos_descuentan_stock": settings.pedidos_wc_descuenta_stock,
+        "webhook_guarda_mysql": settings.webhook_guarda_mysql,
         "odoo_watch": settings.odoo_watch_enabled,
     }
 
