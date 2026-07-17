@@ -20,6 +20,7 @@ import {
   Boxes,
   CalendarDays,
   Clock,
+  PackageCheck,
   Receipt,
   RotateCw,
   ShoppingCart,
@@ -457,6 +458,71 @@ export default function VentasPage() {
                 );
               })}
         </div>
+
+        {/* ── Pedidos registrados en WooCommerce (flujo ML→WC) ── */}
+        {data?.pedidos_wc && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+            <div className="flex items-center gap-3">
+              <span
+                className="flex h-10 w-10 items-center justify-center rounded-xl"
+                style={{ backgroundColor: hexToRgba(tema.color, 0.12), color: esClaro(tema.color) ? tema.acento : tema.color }}
+              >
+                <PackageCheck size={20} />
+              </span>
+              <div>
+                <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                  Pedidos en WooCommerce
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-600">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+                    Registro vivo
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  Cada venta de ML se congela como pedido con su precio real · desde el 17 jul 2026
+                </div>
+              </div>
+            </div>
+
+            {data.pedidos_wc.total > 0 ? (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                <div className="text-right">
+                  <div className="text-xl font-extrabold tabular-nums text-slate-900">
+                    {fmtInt(data.pedidos_wc.total)} <span className="text-sm font-semibold text-slate-400">pedidos</span>
+                  </div>
+                  <div className="text-xs font-semibold text-slate-500">{fmtMXN(data.pedidos_wc.monto)}</div>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {SUBCUENTAS_ML.filter((s) => data.pedidos_wc!.cuentas[s.id]?.pedidos).map((s) => {
+                    const c = data.pedidos_wc!.cuentas[s.id];
+                    return (
+                      <span
+                        key={s.id}
+                        className="rounded-full px-2.5 py-1 text-[11px] font-bold"
+                        style={{
+                          backgroundColor: hexToRgba(THEME_FALLBACK.mercado_libre.color, 0.35),
+                          color: THEME_FALLBACK.mercado_libre.texto,
+                        }}
+                      >
+                        {s.label} {fmtInt(c.pedidos)} · {fmtMXN(c.monto)}
+                      </span>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-500">
+                  <span>FULL {fmtInt(data.pedidos_wc.full)}</span>
+                  <span>propios {fmtInt(data.pedidos_wc.propios)}</span>
+                  {data.pedidos_wc.cancelados > 0 && (
+                    <span className="text-rose-500">cancelados {fmtInt(data.pedidos_wc.cancelados)}</span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-400">
+                Sin pedidos en este rango — el registro existe desde el 17 jul 2026.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Gráfica horaria ── */}
         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

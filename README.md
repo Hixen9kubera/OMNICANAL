@@ -994,6 +994,13 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.8.1 — Los pedidos se ven en la pestaña VENTAS
+
+`/api/ventas/horario` ahora incluye `pedidos_wc`: los pedidos ML→WC creados en el
+rango (tabla `pedidos_ml`), con desglose por cuenta (Kubera/San Corpe), FULL vs
+propios y cancelados. El tab muestra el panel "Pedidos en WooCommerce · Registro
+vivo" bajo los KPIs, respeta el filtro de cuenta y se refresca cada 60 s.
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

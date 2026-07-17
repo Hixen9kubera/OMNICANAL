@@ -559,6 +559,15 @@ export interface VentasCuenta {
   delta_parcial?: number | null;
 }
 
+export interface PedidosWCResumen {
+  total: number;
+  monto: number;
+  full: number;
+  propios: number;
+  cancelados: number;
+  cuentas: Record<string, { pedidos: number; monto: number }>;
+}
+
 export interface VentasResumen {
   canal: string;
   cuenta: string | null;
@@ -569,5 +578,7 @@ export interface VentasResumen {
   horas: VentaHora[];
   totales: VentasTotales;
   cuentas: VentasCuenta[];
+  /** Pedidos ML→WC creados en el rango (registro vivo desde 2026-07-17). */
+  pedidos_wc?: PedidosWCResumen | null;
   actualizado: string;
 }

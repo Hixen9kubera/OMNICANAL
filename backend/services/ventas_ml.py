@@ -286,6 +286,45 @@ def _delta_pct(actual: float, previo: float) -> float | None:
     return None if not actual else 100.0
 
 
+def _pedidos_rango(cuentas: list[str], desde: date, hasta: date) -> dict | None:
+    """
+    PEDIDOS de WooCommerce creados por el flujo ML→WC (tabla pedidos_ml) dentro
+    del rango, por cuenta. Es el "registro vivo" que el tab muestra junto a las
+    ventas de ML. `creado` está en UTC; el rango llega en fechas CDMX (UTC-6).
+    """
+    try:
+        ini = datetime.combine(desde, datetime.min.time()) + timedelta(hours=6)
+        fin = datetime.combine(hasta, datetime.min.time()) + timedelta(hours=30)
+        marcas = ",".join(["%s"] * len(cuentas))
+        filas = db.fetch_all(
+            f"""SELECT cuenta, estado_wc, COUNT(*) n, SUM(total) m, SUM(es_full) f
+                FROM pedidos_ml
+                WHERE cuenta IN ({marcas}) AND creado >= %s AND creado < %s
+                GROUP BY cuenta, estado_wc""",
+            (*cuentas, ini, fin))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Ventas: no se pudo leer pedidos_ml: %s", exc)
+        return None
+    tot = {"total": 0, "monto": 0.0, "full": 0, "propios": 0, "cancelados": 0}
+    por_cuenta = {c: {"pedidos": 0, "monto": 0.0} for c in cuentas}
+    for f in filas:
+        n, m, nf = int(f["n"] or 0), float(f["m"] or 0), int(f["f"] or 0)
+        tot["total"] += n
+        tot["monto"] += m
+        tot["full"] += nf
+        tot["propios"] += n - nf
+        if f.get("estado_wc") == "cancelled":
+            tot["cancelados"] += n
+        cta = por_cuenta.get(f["cuenta"])
+        if cta is not None:
+            cta["pedidos"] += n
+            cta["monto"] += m
+    tot["monto"] = round(tot["monto"], 2)
+    return {**tot, "cuentas": {c: {"pedidos": v["pedidos"],
+                                   "monto": round(v["monto"], 2)}
+                               for c, v in por_cuenta.items()}}
+
+
 async def resumen(cuenta: str | None, desde: date, hasta: date) -> dict:
     """
     Respuesta completa para el tab Ventas: buckets por hora del rango pedido y
@@ -338,6 +377,7 @@ async def resumen(cuenta: str | None, desde: date, hasta: date) -> dict:
 
     act = _leer_rango(cuentas, desde, hasta)
     prev = _leer_rango(cuentas, p_desde, p_hasta)
+    pedidos_wc = await asyncio.to_thread(_pedidos_rango, cuentas, desde, hasta)
 
     horas = []
     for h in range(24):
@@ -409,5 +449,6 @@ async def resumen(cuenta: str | None, desde: date, hasta: date) -> dict:
             "parcial": parcial,
         },
         "cuentas": cuentas_out,
+        "pedidos_wc": pedidos_wc,
         "actualizado": datetime.now(_TZ_MX).isoformat(timespec="seconds"),
     }
