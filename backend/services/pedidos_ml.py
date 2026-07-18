@@ -36,6 +36,7 @@ En ventas no-FULL no se pone y el stock baja normal.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -206,17 +207,37 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
     }
 
 
+# ML manda RÁFAGAS de avisos por la misma venta (creada→pagada→enviada, con
+# segundos o milisegundos entre sí) que se procesan en tareas concurrentes.
+# Sin candado, todas veían "no existe previo" y cada una CREABA su propio
+# pedido en Woo: el 2026-07-17 amanecieron 86 órdenes con 2-7 copias (160
+# pedidos fantasma). Un lock por orden serializa: la primera crea, las demás
+# ya encuentran el registro y solo actualizan estado.
+_locks: dict[str, asyncio.Lock] = {}
+
+
 async def sincronizar(order_id: str, forzar_estado: str | None = None,
                       proteger_stock: bool = False,
                       orden: dict | None = None) -> dict:
     """
     Trae la orden de ML y la crea (o actualiza) como pedido en WooCommerce.
 
-    Idempotente: si la orden ya se registró, actualiza el estado del pedido en
-    vez de duplicarlo (ML manda varios webhooks por la misma venta: pago, envío,
-    entrega...). `orden` permite pasar la orden ya traída (el webhook la
-    consulta primero para resincronizar stock; así no se pide dos veces a ML).
+    Idempotente Y serializada por orden: los webhooks repetidos de la misma
+    venta actualizan el estado del mismo pedido, nunca duplican. `orden`
+    permite pasar la orden ya traída (el webhook la consulta primero).
     """
+    if len(_locks) > 4000:  # poda: candados de órdenes viejas ya sin uso
+        for k in [k for k, l in _locks.items() if not l.locked()][:2000]:
+            _locks.pop(k, None)
+    lock = _locks.setdefault(str(order_id), asyncio.Lock())
+    async with lock:
+        return await _sincronizar_serializado(order_id, forzar_estado,
+                                              proteger_stock, orden)
+
+
+async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
+                                   proteger_stock: bool,
+                                   orden: dict | None) -> dict:
     _asegurar_schema()
     orden = orden or await meli.obtener_orden(order_id)
     if not orden:
