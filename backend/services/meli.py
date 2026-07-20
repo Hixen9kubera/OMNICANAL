@@ -238,6 +238,29 @@ def _access_token(cuenta: str | None = None) -> str | None:
         return None
 
 
+# Anti-estampida del refresh: el renovador EXTERNO de tokens (dashboard) se
+# detiene a ratos — el sáb 18-jul dejó los tokens morir a las 11:02 CDMX y los
+# pedidos pararon 26 h. Con esto, el primer 401 renueva el token AQUÍ (bajo
+# candado por cuenta, para que una ráfaga de webhooks no dispare N refreshes:
+# ML rota el refresh_token en cada uso y las carreras acaban en invalid_grant).
+_refresh_locks: dict[str, "object"] = {}
+_refresh_ts: dict[str, float] = {}
+
+
+async def _renovar_con_candado(cuenta: str) -> str | None:
+    import asyncio as _asyncio
+    import time as _time
+    lock = _refresh_locks.setdefault(cuenta, _asyncio.Lock())
+    async with lock:
+        # Si otra tarea acaba de renovar (ráfaga), usar ese token sin re-rotar.
+        if _time.time() - _refresh_ts.get(cuenta, 0) < 120:
+            return _access_token(cuenta)
+        nuevo = await _asyncio.to_thread(refrescar_token, cuenta)
+        if nuevo:
+            _refresh_ts[cuenta] = _time.time()
+        return nuevo
+
+
 async def obtener_orden(order_id: str) -> dict | None:
     """
     Devuelve la orden COMPLETA de ML, normalizada, o None si no se encontró.
@@ -249,6 +272,7 @@ async def obtener_orden(order_id: str) -> dict | None:
     Prueba el token de cada cuenta (la orden es de uno de los dos vendedores) y
     de paso resuelve el envío, porque `logistic_type == "fulfillment"` es lo que
     distingue una venta FULL (sale del almacén de ML) de una que surtimos nosotros.
+    Un 401 = token caducado → se renueva al vuelo y se reintenta (auto-sanado).
     """
     import httpx as _httpx
     for cuenta in ("BEKURA", "SANCORFASHION"):
@@ -259,6 +283,13 @@ async def obtener_orden(order_id: str) -> dict | None:
             cab = {"Authorization": f"Bearer {token}"}
             async with _httpx.AsyncClient(base_url=_API, timeout=20.0) as cli:
                 r = await cli.get(f"/orders/{order_id}", headers=cab)
+                if r.status_code == 401:
+                    # Token caducado (401). Un 403 NO: significa que la orden es
+                    # de la otra cuenta y el token está bien.
+                    nuevo = await _renovar_con_candado(cuenta)
+                    if nuevo:
+                        cab = {"Authorization": f"Bearer {nuevo}"}
+                        r = await cli.get(f"/orders/{order_id}", headers=cab)
                 if r.status_code != 200:
                     continue  # 404/403 → probablemente es de la otra cuenta
                 d = r.json()
