@@ -249,7 +249,11 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
     if evento_id:
         _actualizar(evento_id, sku, resultado)
     await asyncio.to_thread(_actualizar_supabase, sb_id, sku, resultado)
-    log.info("Webhook ML [%s] %s → %s", topic, resource, resultado)
+    # application_id: identifica QUÉ app de ML nos manda este aviso (hay varias
+    # apps en las cuentas: 2 del dashboard apuntan a Make; la que apunta aquí
+    # es la que importa ahora que Make se va a abandonar).
+    log.info("Webhook ML [%s] %s (app=%s, user=%s) → %s", topic, resource,
+             payload.get("application_id"), payload.get("user_id"), resultado)
 
 
 @router.post("/ml")
