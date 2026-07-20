@@ -191,6 +191,11 @@ class Settings(BaseSettings):
     # protegido (almacén de Amazon); MFN descuenta bodega en Woo.
     pedidos_amazon_enabled: bool = True
     pedidos_amazon_min: int = 5
+    # Pedidos de Temu/TikTok vía M2E Cloud (order/find por canal). El token se
+    # genera en M2E: Settings → Catalog → API. Sondeo suave (volumen ~0 aún).
+    m2e_api_token: str = ""
+    pedidos_m2e_enabled: bool = True
+    pedidos_m2e_min: int = 10
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
     # Con auto_push=true además empuja el stock nuevo a Woo (activar solo

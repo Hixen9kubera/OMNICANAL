@@ -1049,6 +1049,26 @@ tabla con `cuenta='AMAZON'`, `creado`=PurchaseDate):
 - NO toca nada de la migración (canal_inventario, channel/costing/core/ops/
   migration, espejos, ETLs quedan intactos).
 
+### v0.11.0 — Órdenes de Temu/TikTok conectadas (M2E Cloud) + auditoría de publicación
+
+- **`services/pedidos_m2e.py`**: sondeo cada 10 min de `order/find` por canal en
+  la API de M2E Cloud (token en `M2E_API_TOKEN`, se genera en M2E → Settings →
+  Catalog → API). Mismo motor de pedidos (cuenta='TEMU'/'TIKTOK', descuentan
+  bodega — no hay FULL en esos canales). Parseo defensivo + log del JSON crudo
+  de las primeras órdenes (el esquema se confirma con la primera venta real).
+  TikTok se salta mientras su conexión esté inválida (re-autorizar en M2E).
+- La API pública de M2E NO publica listados (verificado a fondo: rutas 404 +
+  docs) — listar en Temu/TikTok es el panel web de M2E; catálogo e inventario
+  ya fluyen solos desde Woo (PATCH probado con {"products":[...]} → 200).
+- **Auditoría de los 131 "Ready"** (2026-07-20): base sana (precio/categoría/
+  fotos ✓). Bloqueos reales, por historial de ml_backlog: 108 SKUs por
+  **GUÍA DE TALLAS faltante** (~25 dominios de ropa sin guía en ambas cuentas;
+  hoy solo existen calzado+bras en `vendor/ml_ready/size_chart_mapping.py`),
+  11 por ME1 inactivo, 5 por imágenes chicas, 2 GTIN. BRAS con guía pero
+  productos sin atributo GÉNERO también fallan (la guía se busca por
+  dominio+género). Alta de guías: dashboard ML o POST /catalog/charts →
+  chart_ids al mapping.
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

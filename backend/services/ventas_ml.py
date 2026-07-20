@@ -372,8 +372,8 @@ def _pedidos_horario(cuentas: list[str], desde: date, hasta: date) -> dict:
             "cuenta_horas": cuenta_horas}
 
 
-# Cuentas que viven en pedidos_ml: las 2 de ML + Amazon (sondeo cada 5 min).
-_CUENTAS_PEDIDOS = ("BEKURA", "SANCORFASHION", "AMAZON")
+# Cuentas que viven en pedidos_ml: 2 de ML + Amazon + Temu/TikTok (vía M2E).
+_CUENTAS_PEDIDOS = ("BEKURA", "SANCORFASHION", "AMAZON", "TEMU", "TIKTOK")
 
 
 async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
@@ -417,7 +417,7 @@ async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
         }
 
     etiquetas = {"BEKURA": "Kubera", "SANCORFASHION": "San Corpe",
-                 "AMAZON": "Amazon"}
+                 "AMAZON": "Amazon", "TEMU": "Temu", "TIKTOK": "TikTok"}
     cuentas_out = []
     for c in cuentas:
         ca, cp = act["cuentas"][c], prev["cuentas"][c]

@@ -75,6 +75,20 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Sondeo de pedidos Amazon cada %s min.", settings.pedidos_amazon_min)
+    # Pedidos de Temu/TikTok vía M2E (sondeo; ver pedidos_m2e.py).
+    if settings.pedidos_m2e_enabled and settings.mysql_enabled and settings.m2e_api_token:
+        from services import pedidos_m2e
+        _scheduler.add_job(
+            pedidos_m2e.revisar,
+            "interval",
+            minutes=settings.pedidos_m2e_min,
+            id="pedidos_m2e",
+            next_run_time=datetime.now() + timedelta(seconds=90),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Sondeo de pedidos M2E (Temu/TikTok) cada %s min.",
+                 settings.pedidos_m2e_min)
     # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
     # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
     if settings.odoo_watch_enabled and settings.mysql_enabled:
