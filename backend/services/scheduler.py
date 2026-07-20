@@ -61,6 +61,20 @@ def iniciar() -> None:
         )
     else:
         log.info("Sync de inventario DESACTIVADO (SYNC_ENABLED=false).")
+    # Pedidos de AMAZON por sondeo (no hay webhook simple): cada N min trae las
+    # órdenes actualizadas y las vuelve pedidos de Woo. Ver pedidos_amazon.py.
+    if settings.pedidos_amazon_enabled and settings.mysql_enabled:
+        from services import pedidos_amazon
+        _scheduler.add_job(
+            pedidos_amazon.revisar,
+            "interval",
+            minutes=settings.pedidos_amazon_min,
+            id="pedidos_amazon",
+            next_run_time=datetime.now() + timedelta(seconds=60),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Sondeo de pedidos Amazon cada %s min.", settings.pedidos_amazon_min)
     # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
     # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
     if settings.odoo_watch_enabled and settings.mysql_enabled:

@@ -1029,6 +1029,26 @@ El tab entero se alimenta de `pedidos_ml` (cero llamadas a ML):
 - La vista histórica de la API de ML sigue disponible con `?fuente=ml` (para
   reconciliar contra lo que reporta Mercado Libre cuando se quiera).
 
+### v0.10.0 — AMAZON entra al registro de pedidos (sondeo cada 5 min)
+
+Amazon no tiene webhook simple (su vía real exige AWS+SQS); con ~4 órdenes/día
+un sondeo de 5 min ES tiempo real en la práctica. `services/pedidos_amazon.py`
+reutiliza `pedidos_ml.sincronizar` (mismo candado, misma idempotencia, misma
+tabla con `cuenta='AMAZON'`, `creado`=PurchaseDate):
+
+- **FBA (AFN)** → protegido (almacén de Amazon, como FULL) · **MFN** → descuenta
+  bodega en Woo · estados: Shipped→completed, Unshipped→processing,
+  Pending→on-hold (no cuenta como venta), Canceled→cancelled.
+- Job `pedidos_amazon` en el scheduler (flags `PEDIDOS_AMAZON_ENABLED`/`_MIN`).
+- Tab Ventas: pastilla **Amazon activa** (naranja), General suma ML+Amazon,
+  chip Amazon en el panel. Carga histórica: 36 órdenes (27 completadas $31k,
+  2 FBA, 7 canceladas) protegidas (sus MFN salieron antes del corte).
+- Comisión de Amazon pendiente (Finances API) — se registra 0 por ahora.
+- Escala: mismas ~288 llamadas/día aunque el volumen crezca ×100 (paginado);
+  upgrade a SQS = solo cambiar el timbre, la tubería es la misma.
+- NO toca nada de la migración (canal_inventario, channel/costing/core/ops/
+  migration, espejos, ETLs quedan intactos).
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

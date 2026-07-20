@@ -40,7 +40,7 @@ import { THEME_FALLBACK, esClaro, hexToRgba, variablesTema } from "@/lib/theme";
 const CANALES_VENTA = [
   { id: "general", label: "General", habilitado: true },
   { id: "mercado_libre", label: "Mercado Libre", habilitado: true },
-  { id: "amazon", label: "Amazon", habilitado: false },
+  { id: "amazon", label: "Amazon", habilitado: true },
   { id: "tiktok", label: "TikTok Shop", habilitado: false },
   { id: "walmart", label: "Walmart", habilitado: false },
   { id: "temu", label: "Temu", habilitado: false },
@@ -51,6 +51,14 @@ const SUBCUENTAS_ML = [
   { id: "BEKURA", label: "Kubera", es_default: true, total_productos: null },
   { id: "SANCORFASHION", label: "San Corpe", es_default: false, total_productos: null },
 ];
+
+/* Chips del panel de pedidos: las cuentas de ML + Amazon (cada una con el
+ * color de su marketplace). */
+const CHIPS_PEDIDOS = [
+  { id: "BEKURA", label: "Kubera", tema: "mercado_libre" },
+  { id: "SANCORFASHION", label: "San Corpe", tema: "mercado_libre" },
+  { id: "AMAZON", label: "Amazon", tema: "amazon" },
+] as const;
 
 type Metrica = "monto" | "pedidos" | "unidades";
 
@@ -502,15 +510,16 @@ export default function VentasPage() {
                   <div className="text-xs font-semibold text-slate-500">{fmtMXN(data.pedidos_wc.monto)}</div>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {SUBCUENTAS_ML.filter((s) => data.pedidos_wc!.cuentas[s.id]?.pedidos).map((s) => {
+                  {CHIPS_PEDIDOS.filter((s) => data.pedidos_wc!.cuentas[s.id]?.pedidos).map((s) => {
                     const c = data.pedidos_wc!.cuentas[s.id];
+                    const th = THEME_FALLBACK[s.tema];
                     return (
                       <span
                         key={s.id}
                         className="rounded-full px-2.5 py-1 text-[11px] font-bold"
                         style={{
-                          backgroundColor: hexToRgba(THEME_FALLBACK.mercado_libre.color, 0.35),
-                          color: THEME_FALLBACK.mercado_libre.texto,
+                          backgroundColor: hexToRgba(th.color, 0.35),
+                          color: th.texto,
                         }}
                       >
                         {s.label} {fmtInt(c.pedidos)} · {fmtMXN(c.monto)}

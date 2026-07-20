@@ -36,14 +36,16 @@ async def horario(
     hasta: date | None = Query(None),
     fuente: str = Query("pedidos"),
 ):
-    if canal not in ("general", "mercado_libre"):
-        # Amazon y demás canales de ventas vendrán después; avisamos claro.
+    if canal not in ("general", "mercado_libre", "amazon"):
+        # TikTok/Walmart/Temu/Shein vendrán después; avisamos claro.
         raise HTTPException(400, f"Canal '{canal}' aún sin ventas integradas.")
     cta = (cuenta or "").strip().upper() or None
-    if cta and cta not in _CUENTAS:
+    if canal == "amazon":
+        cta = "AMAZON"  # el canal ES la cuenta (una sola)
+    elif cta and cta not in _CUENTAS:
         raise HTTPException(400, f"Cuenta desconocida: {cuenta}")
     if canal == "general":
-        cta = None  # general SIEMPRE suma todas las cuentas
+        cta = None  # general SIEMPRE suma todas las cuentas (ML + Amazon)
 
     d1 = desde or ventas_ml.hoy_mx()
     d2 = hasta or d1

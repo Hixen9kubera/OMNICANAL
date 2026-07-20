@@ -186,6 +186,11 @@ class Settings(BaseSettings):
     # ML — modo "puros pedidos de Woo" (Brandon, 2026-07-17). Los pedidos del
     # webhook siguen vivos: obtener la orden vendida no es "sincronización".
     ventas_ml_refresh: bool = True
+    # Pedidos de AMAZON por sondeo (Amazon no tiene webhook simple; con ~4
+    # órdenes/día un poll de 5 min es tiempo real en la práctica). FBA nace
+    # protegido (almacén de Amazon); MFN descuenta bodega en Woo.
+    pedidos_amazon_enabled: bool = True
+    pedidos_amazon_min: int = 5
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
     # Con auto_push=true además empuja el stock nuevo a Woo (activar solo

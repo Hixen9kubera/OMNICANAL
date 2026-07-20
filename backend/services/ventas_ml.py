@@ -357,8 +357,8 @@ def _pedidos_horario(cuentas: list[str], desde: date, hasta: date) -> dict:
             tot["cancelados"] += n
             tot["monto_cancelado"] += m
             continue
-        if est == "pending":
-            continue  # confirmada sin pago: todavía no es venta
+        if est in ("pending", "on-hold"):
+            continue  # sin pago confirmado todavía: no es venta (ML y Amazon)
         horas[h]["pedidos"] += n
         horas[h]["monto"] += m
         tot["pedidos"] += n
@@ -372,15 +372,19 @@ def _pedidos_horario(cuentas: list[str], desde: date, hasta: date) -> dict:
             "cuenta_horas": cuenta_horas}
 
 
+# Cuentas que viven en pedidos_ml: las 2 de ML + Amazon (sondeo cada 5 min).
+_CUENTAS_PEDIDOS = ("BEKURA", "SANCORFASHION", "AMAZON")
+
+
 async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
     """
     El tab VENTAS alimentado 100% por los PEDIDOS de WooCommerce (pedidos_ml):
     la operación vive de pedidos y webhooks (Brandon, 2026-07-17). General =
-    todos los pedidos; el canal/cuenta filtra. Cero llamadas a ML: una consulta
-    a nuestra tabla. La comparativa semanal se llena sola cuando el registro
-    cumpla 7 días (antes: "s/ base").
+    todos los pedidos (ML + Amazon); el canal/cuenta filtra. Cero llamadas a
+    APIs: una consulta a nuestra tabla. La comparativa semanal se llena sola
+    cuando el registro cumpla 7 días (antes: "s/ base").
     """
-    cuentas = [cuenta] if cuenta else list(_CUENTAS_ML)
+    cuentas = [cuenta] if cuenta else list(_CUENTAS_PEDIDOS)
     p_desde, p_hasta = desde - timedelta(days=7), hasta - timedelta(days=7)
     act = await asyncio.to_thread(_pedidos_horario, cuentas, desde, hasta)
     prev = await asyncio.to_thread(_pedidos_horario, cuentas, p_desde, p_hasta)
@@ -412,7 +416,8 @@ async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
                       "pedidos": _delta_pct(ta["pedidos"], pp), "unidades": None},
         }
 
-    etiquetas = {"BEKURA": "Kubera", "SANCORFASHION": "San Corpe"}
+    etiquetas = {"BEKURA": "Kubera", "SANCORFASHION": "San Corpe",
+                 "AMAZON": "Amazon"}
     cuentas_out = []
     for c in cuentas:
         ca, cp = act["cuentas"][c], prev["cuentas"][c]
