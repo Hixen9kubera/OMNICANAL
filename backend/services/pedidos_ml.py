@@ -248,6 +248,16 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     comision = payload.pop("_comision")
     previo = db.fetch_one("SELECT wc_order_id FROM pedidos_ml WHERE ml_order_id=%s", (order_id,))
     ahora = datetime.now(timezone.utc)
+    # `creado` = fecha de la VENTA en ML, no de nuestro registro: el tab
+    # bucketiza por esta columna y un backfill fechado "hoy" deforma los días
+    # (el hueco del sáb 18-jul apareció como pico del lunes 20).
+    creado = ahora
+    try:
+        f = str(orden.get("fecha") or "")
+        if f:
+            creado = datetime.fromisoformat(f).astimezone(timezone.utc)
+    except Exception:  # noqa: BLE001
+        pass
 
     try:
         async with httpx.AsyncClient(base_url=_WC, auth=_AUTH, timeout=45.0) as cli:
@@ -288,7 +298,7 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                        actualizado=VALUES(actualizado)""",
                 (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
                  orden["total"], comision, 1 if orden.get("es_full") else 0,
-                 ",".join(s for s in skus if s)[:255], ahora, ahora))
+                 ",".join(s for s in skus if s)[:255], creado, ahora))
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
 
