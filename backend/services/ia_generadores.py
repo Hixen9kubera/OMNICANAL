@@ -323,6 +323,16 @@ def _buscar(canal: str, generador_id: str) -> dict[str, Any] | None:
 # "Mejorar con IA" — un solo botón por canal que mejora VARIOS campos a la vez.
 # Devuelve JSON estructurado. NO toca precio/costo/alibaba/peso/dimensiones.
 # ─────────────────────────────────────────────────────────────────────────────
+# Blindaje anti-residuos: hay productos CLONADOS de otro (caso real ACC-0653:
+# faros de niebla con categoría y atributos de binoculares). El título y la
+# descripción son la identidad; lo demás puede ser basura heredada.
+_NO_CONTRADECIR = (
+    "\nIMPORTANTE: el TÍTULO y la DESCRIPCIÓN actuales definen QUÉ ES el "
+    "producto. Si la categoría o los atributos recibidos los contradicen "
+    "(pueden ser residuos de otro producto), IGNÓRALOS por completo y NO "
+    "cambies el tipo de producto."
+)
+
 _MEJORAR: dict[str, dict[str, Any]] = {
     "mercado_libre": {
         "max_tokens": 1500,
@@ -333,7 +343,7 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
             "En atributos incluye los NECESARIOS de la categoría (marca, modelo, color, "
             "material, tamaño…) y los secundarios que ayuden a la ficha. No inventes datos "
-            "que no se puedan inferir del producto."
+            "que no se puedan inferir del producto." + _NO_CONTRADECIR
         ),
     },
     "amazon": {
@@ -345,7 +355,7 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             '"descripcion": "<máx 2000 car., en párrafos>", '
             '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
             "Respeta ESTRICTAMENTE los límites de caracteres. En atributos infiere los "
-            "obligatorios de la categoría (product_type)."
+            "obligatorios de la categoría (product_type)." + _NO_CONTRADECIR
         ),
     },
     "general": {
