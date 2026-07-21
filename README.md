@@ -1069,6 +1069,24 @@ tabla con `cuenta='AMAZON'`, `creado`=PurchaseDate):
   dominio+género). Alta de guías: dashboard ML o POST /catalog/charts →
   chart_ids al mapping.
 
+### v0.12.0 — Tipo de producto de AMAZON visible y editable (como la categoría de ML)
+
+Amazon no tiene categorías: tiene PRODUCT TYPES (cada uno con su esquema de
+atributos). Ahora el Studio, en el canal Amazon, muestra el tipo que se usaría
+HOY y permite cambiarlo:
+
+- **Prioridad**: `amz_product_type` (elección del PANEL, meta en Woo) →
+  histórico `amazon_progress.product_type` → detección automática por título.
+  La misma regla que las categorías de ML: la elección humana MANDA.
+- `GET /api/publicar/amazon/tipos?q=` — buscador con la relevancia de Amazon
+  (Definitions API). `GET/POST /api/publicar/amazon/tipo` — leer/guardar la
+  elección. El preview expone `product_type_origen` (panel/historial/auto).
+- UI: `TipoAmazonPicker` en el Studio (chip con el tipo + origen, buscador con
+  resultados en vivo, guardado a Woo). Probado en vivo: "guantes seguridad" →
+  PROTECTIVE_GLOVE, guardado en HERR-0029, resolvedor devuelve origen=panel.
+- Nota: el cambio de tipo aplica al PUBLICAR/actualizar; Amazon puede pedir
+  atributos distintos del nuevo tipo (el flujo de issues los negocia).
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

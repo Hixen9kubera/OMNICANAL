@@ -509,3 +509,38 @@ export function ventasHorario(
   if (params.hasta) q.set("hasta", params.hasta);
   return getJSON(`/api/ventas/horario?${q.toString()}`, signal);
 }
+
+/* ── Tipo de producto de AMAZON (picker como el de categorías ML) ── */
+
+export interface TipoAmazon {
+  name: string;
+  label: string;
+}
+
+export function tipoAmazonActual(
+  sku: string,
+  wcId: number,
+  signal?: AbortSignal,
+): Promise<{ product_type: string | null; origen: "panel" | "historial" | "auto" }> {
+  return getJSON(
+    `/api/publicar/amazon/tipo?sku=${encodeURIComponent(sku)}&wc_id=${wcId}`,
+    signal,
+  );
+}
+
+export function buscarTiposAmazon(
+  q: string,
+  signal?: AbortSignal,
+): Promise<{ tipos: TipoAmazon[] }> {
+  return getJSON(`/api/publicar/amazon/tipos?q=${encodeURIComponent(q)}`, signal);
+}
+
+export function guardarTipoAmazon(
+  sku: string,
+  wcId: number,
+  productType: string,
+): Promise<{ ok: boolean; product_type: string }> {
+  return postJSON(`/api/publicar/amazon/tipo`, {
+    sku, wc_id: wcId, product_type: productType,
+  });
+}

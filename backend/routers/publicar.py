@@ -1,14 +1,16 @@
 """
 publicar.py — Paso 4: actualizar la publicación en el canal seleccionado.
 
-  POST /api/publicar/preview     → arma y devuelve el payload (NO escribe nada)
-  POST /api/publicar/confirmar   → ejecuta el update en vivo + registra en bitácora
+  POST /api/publicar/preview       → arma y devuelve el payload (NO escribe nada)
+  POST /api/publicar/confirmar     → ejecuta el update en vivo + registra en bitácora
+  GET  /api/publicar/amazon/tipos  → buscador de product types (como el picker de ML)
+  POST /api/publicar/amazon/tipo   → guarda la elección (meta amz_product_type en Woo)
 """
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from services import publicar
@@ -57,3 +59,35 @@ async def preview(req: PublicarRequest) -> dict[str, Any]:
 @router.post("/confirmar")
 async def confirmar(req: PublicarRequest) -> dict[str, Any]:
     return await publicar.confirmar(req.a_dict())
+
+
+@router.get("/amazon/tipos")
+async def amazon_tipos(q: str = Query(..., min_length=2, max_length=60)):
+    """Busca product types de Amazon por palabras clave (relevancia de Amazon)."""
+    tipos = await publicar.buscar_product_types(q)
+    return {"tipos": tipos}
+
+
+@router.get("/amazon/tipo")
+async def amazon_tipo_actual(sku: str = Query(...), wc_id: int = Query(...)):
+    """El product type que se usaría HOY para este SKU y de dónde sale."""
+    pt, origen = publicar._pt_resuelto(sku, wc_id)
+    return {"product_type": pt, "origen": origen}
+
+
+class TipoAmazonIn(BaseModel):
+    sku: str
+    wc_id: int
+    product_type: str = Field(min_length=2, max_length=80)
+
+
+@router.post("/amazon/tipo")
+async def amazon_tipo(req: TipoAmazonIn):
+    """Guarda el product type elegido en el panel (meta `amz_product_type`).
+    Esa elección MANDA sobre el histórico y el detector automático."""
+    from services import woocommerce
+    pt = req.product_type.strip().upper().replace(" ", "_")
+    ok = await woocommerce.guardar_meta(req.wc_id, "amz_product_type", pt)
+    if not ok:
+        raise HTTPException(502, "WooCommerce no aceptó el guardado de la meta.")
+    return {"ok": True, "sku": req.sku, "product_type": pt}

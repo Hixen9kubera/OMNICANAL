@@ -25,6 +25,7 @@ import {
   UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import TipoAmazonPicker from "./TipoAmazonPicker";
 import type {
   AtributoProducto,
   CanalInfo,
@@ -912,6 +913,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                     <span className="text-sm font-medium text-slate-500">Este producto <strong>no está publicado</strong> en {canalInfo?.label}. Puedes generar el contenido optimizado.</span>
                   )}
                 </div>
+              )}
+
+              {/* TIPO DE PRODUCTO AMAZON (la "categoría" de Amazon; el panel manda) */}
+              {esAmazon && wcId != null && (
+                <TipoAmazonPicker sku={sku!} wcId={wcId} />
               )}
 
               {/* PRECIO DE COMPETENCIA */}

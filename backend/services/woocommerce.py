@@ -1421,6 +1421,19 @@ def _to_float(v: Any) -> float | None:
 
 
 # ── Contenido del producto (título / descripción / atributos) → WooCommerce ─────
+async def guardar_meta(wc_id: int, clave: str, valor: str) -> bool:
+    """Guarda UNA meta del producto (p. ej. `amz_product_type` elegido en el
+    panel). Woo funde meta_data por clave: no toca las demás metas."""
+    try:
+        async with _client() as cli:
+            r = await cli.put(f"/products/{wc_id}", json={
+                "meta_data": [{"key": clave, "value": valor}]})
+            return r.status_code in (200, 201)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("guardar_meta(%s, %s): %s", wc_id, clave, exc)
+        return False
+
+
 async def guardar_contenido_wc(
     wc_id: int,
     titulo: str | None = None,

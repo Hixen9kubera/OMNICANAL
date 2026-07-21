@@ -249,11 +249,61 @@ def _product_type_amazon(sku: str | None) -> str | None:
         return None
 
 
+def _product_type_panel(wc_id: int | None) -> str | None:
+    """La elección HUMANA del panel (meta `amz_product_type` en Woo). Manda
+    sobre el histórico y el detector — misma regla que la categoría de ML."""
+    if not wc_id:
+        return None
+    try:
+        from services import wp_db
+        if not wp_db.disponible():
+            return None
+        m = wp_db.postmeta(int(wc_id), ["amz_product_type"])
+        v = str(m.get("amz_product_type") or "").strip().upper()
+        return v or None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_product_type_panel(%s): %s", wc_id, exc)
+        return None
+
+
+def _pt_resuelto(sku: str | None, wc_id: int | None) -> tuple[str | None, str]:
+    """(product_type, origen): panel > histórico amazon_progress > auto."""
+    panel = _product_type_panel(wc_id)
+    if panel:
+        return panel, "panel"
+    hist = _product_type_amazon(sku)
+    if hist:
+        return hist, "historial"
+    return None, "auto"
+
+
+async def buscar_product_types(q: str) -> list[dict[str, str]]:
+    """Buscador de tipos de producto de Amazon (como el picker de categorías
+    de ML): keywords → lista ordenada por relevancia."""
+    from services import amazon as _amz
+    token = await _amz._access_token()
+    salida: list[dict[str, str]] = []
+    async with httpx.AsyncClient(base_url=settings.amazon_sp_api_endpoint,
+                                 timeout=20.0) as cli:
+        r = await cli.get(
+            "/definitions/2020-09-01/productTypes",
+            params={"keywords": q[:60],
+                    "marketplaceIds": settings.amazon_marketplace_id},
+            headers={"x-amz-access-token": token},
+        )
+        if r.status_code == 200:
+            for t in r.json().get("productTypes", [])[:20]:
+                salida.append({"name": t.get("name", ""),
+                               "label": (t.get("displayName")
+                                         or t.get("name", "").replace("_", " ").title())})
+    return salida
+
+
 async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     campos = req.get("campos") or {}
     sku = req.get("sku")
     wc_id = req.get("wc_id")
-    pt = _product_type_amazon(sku)
+    pt, pt_origen = _pt_resuelto(sku, wc_id)
     title = (campos.get("titulo") or "").strip()
     bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()]
     desc = _plain(campos.get("descripcion"))
@@ -313,6 +363,7 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": True, "canal": "amazon", "sku": sku,
         "product_type": pt or "(se detecta automáticamente)",
+        "product_type_origen": pt_origen,
         "titulo": title or None, "descripcion": desc or None,
         "cambios": [{"etiqueta": f"Bullet {i + 1}", "valor": b} for i, b in enumerate(bullets)],
         "operaciones": {"titulo": bool(title), "bullets": len(bullets), "descripcion": bool(desc)},
@@ -734,7 +785,8 @@ async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:
 
     mp = settings.amazon_marketplace_id
     seller = settings.amazon_seller_id
-    pt = _product_type_amazon(sku) or await _detectar_product_type(token, campos.get("titulo") or "", mp)
+    pt, _ = _pt_resuelto(sku, wc_id)
+    pt = pt or await _detectar_product_type(token, campos.get("titulo") or "", mp)
     schema = await _amazon_schema(token, pt, mp)
     props = (schema or {}).get("properties", {})
     attributes = await _amazon_attrs_final(str(sku), wc_id, campos, mp, pt, schema)
