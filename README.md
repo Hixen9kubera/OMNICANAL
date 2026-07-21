@@ -1,11 +1,18 @@
 # 🛰️ OMNICANAL · Kubera
 
-Panel omnicanal para gestionar y visualizar las publicaciones de **WooCommerce**
-(tu centro) y su estado en cada **marketplace**: Mercado Libre (principal),
-Amazon, TikTok Shop, Walmart, Temu y Shein.
+Panel omnicanal para gestionar el catálogo de **WooCommerce**, publicar en cada
+**marketplace** (Mercado Libre ×2 cuentas, Amazon; Temu/TikTok vía M2E) y
+registrar **cada venta como pedido de Woo con su precio real congelado**.
 
-> **Centro de verdad:** WooCommerce (`chunche.shop`) · **Inventario:** Odoo ·
-> **Cache de marketplaces:** MySQL · **Vínculo entre todo:** el **SKU**.
+> **Fuente de verdad (ventas E inventario):** WooCommerce (`chunche.shop`)
+> desde el 2026-07-17 · **Odoo:** en retiro (solo vigilado) ·
+> **Cache/control:** MySQL · **Vínculo entre todo:** el **SKU**.
+>
+> 🤖 **¿Eres una sesión de Claude (u otra IA) llegando en frío?** Lee primero
+> **[CLAUDE.md](CLAUDE.md)**: estado operativo actual, reglas de la casa
+> (aprendidas con incidentes reales), flags de producción, mapa de piezas,
+> pendientes y playbooks de diagnóstico. La bitácora versión por versión está
+> más abajo en este README.
 
 ---
 
