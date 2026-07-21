@@ -403,8 +403,19 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   );
 
   // ── Mejorar con IA (un botón por canal) ─────────────────────────────
+  // CANDADO anti-contaminación: la respuesta de "Mejorar con IA" tarda ~20-30 s;
+  // si el usuario cambió de producto o canal mientras tanto, la respuesta vieja
+  // se DESCARTA. Sin esto, el texto de un producto aterrizaba en los campos del
+  // siguiente y el autosave lo persistía en su borrador (caso real: los
+  // binoculares HO392 aparecieron en ACC-0653, faros de niebla).
+  const pedidoVigente = useRef<string>("");
+  useEffect(() => {
+    pedidoVigente.current = `${sku ?? ""}:${canal}`;
+  }, [sku, canal]);
+
   const mejorarConIA = useCallback(async () => {
     if (!data || !sku) return;
+    const pedido = `${sku}:${canal}`;
     setMejorando(true);
     const modelo = atributos.find((a) => /model|modelo/i.test(a.nombre))?.valor || null;
     const ctx: ProductoIA = {
@@ -423,6 +434,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       mejorarIA({ canal, producto: ctx }),
       precioCompetencia({ producto: ctx, con_lista: true }),
     ]);
+
+    // ¿El usuario sigue en el mismo producto+canal? Si no, descartar TODO.
+    if (pedidoVigente.current !== pedido) return;
 
     if (mej.status === "fulfilled" && mej.value.ok && mej.value.campos) {
       const c = mej.value.campos;

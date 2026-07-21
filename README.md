@@ -1094,6 +1094,20 @@ HOY y permite cambiarlo:
 - Nota: el cambio de tipo aplica al PUBLICAR/actualizar; Amazon puede pedir
   atributos distintos del nuevo tipo (el flujo de issues los negocia).
 
+### v0.12.1 — Fix: respuestas tardías de "Mejorar con IA" contaminaban el borrador de OTRO producto
+
+Caso real (ACC-0653-CHE-13-16): el usuario pidió Mejorar con IA en un producto
+(binoculares), cambió a los faros de niebla antes de que la IA respondiera
+(~20-30 s), y la respuesta aterrizó en los campos del producto ABIERTO; el
+autosave del borrador la persistió bajo el SKU equivocado (localStorage).
+WooCommerce y Amazon nunca se contaminaron (verificado: producto Woo correcto,
+amazon_progress/backlog vacíos) — el daño era solo el borrador local.
+
+Fix: candado `pedidoVigente` (sku:canal) en `mejorarConIA` — si al llegar la
+respuesta el usuario ya no está en el mismo producto+canal, se DESCARTA entera
+(mejora y competencia). Limpieza de borradores contaminados: botón
+"Descartar borrador" del Studio (el borrador vive en el navegador del usuario).
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.
