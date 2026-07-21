@@ -1108,6 +1108,18 @@ respuesta el usuario ya no está en el mismo producto+canal, se DESCARTA entera
 (mejora y competencia). Limpieza de borradores contaminados: botón
 "Descartar borrador" del Studio (el borrador vive en el navegador del usuario).
 
+### v0.12.2 — Purga global de borradores contaminados (studioStore v1→v2)
+
+El caso ACC-0653 persistía porque los borradores contaminados por la carrera
+(pre-v0.12.1) seguían en el localStorage del navegador, UNO POR CANAL (por eso
+el texto "mutaba" entre capturas: cada canal guardó una corrida distinta de
+Mejorar del producto equivocado). Verificado server-side limpio: el detalle 360
+de ACC-0653 devuelve faros. Solución de raíz: la clave del almacén de borradores
+sube `v1→v2` — TODOS los borradores viejos quedan huérfanos en todos los
+navegadores y los campos recargan desde WooCommerce (lo guardado/publicado no
+se toca; solo se pierden ediciones locales no guardadas). El botón "Descartar
+borrador" ahora es visible (chip rojo junto al título).
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

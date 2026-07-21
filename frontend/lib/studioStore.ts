@@ -23,7 +23,12 @@ interface EstudioSku {
   competencia?: CompetenciaResp;
 }
 
-const KEY = (sku: string) => `omnicanal:studio:v1:${sku}`;
+// v2 (2026-07-21): se invalidaron TODOS los borradores v1 — la condición de
+// carrera de "Mejorar con IA" (arreglada en v0.12.1) dejó borradores con
+// contenido de OTRO producto (binoculares en ACC-0653). Subir la versión
+// huerfana los borradores viejos en TODOS los navegadores de un golpe: los
+// campos recargan desde WooCommerce. Lo guardado/publicado no se toca.
+const KEY = (sku: string) => `omnicanal:studio:v2:${sku}`;
 
 // Cache en memoria para no leer/parsear localStorage en cada acceso dentro de
 // la sesión. Se hidrata desde localStorage la primera vez que se toca un sku.

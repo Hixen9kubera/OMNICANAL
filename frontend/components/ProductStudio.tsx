@@ -1179,7 +1179,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                       type="button"
                       onClick={descartarBorrador}
                       title="Descarta tus ediciones locales y recarga el contenido desde WooCommerce"
-                      className="flex items-center gap-1 text-[11px] font-semibold text-slate-400 transition-colors hover:text-slate-600"
+                      className="flex items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-600 transition-colors hover:bg-rose-100"
                     >
                       <RefreshCw size={11} /> Descartar borrador
                     </button>
