@@ -1,6 +1,14 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- PROPUESTA (NO APLICAR): destino v4 para el GAP de pedidos
--- Autor: espejo kubera (misión 2026-07-22) · Estado: pendiente del GO de Eduardo
+-- APLICADA ✔ (GO de Eduardo 2026-07-22): destino v4 para el GAP de pedidos
+-- Ejecutada tal cual en la BD kubera (tukwcvsi) + trigger touch de
+-- actualizado_at (before update). El mismo día se creó también el índice
+-- único uq_product_media_sku_kind_url en enrich.product_media (tabla vacía,
+-- sin duplicados) — el upsert del espejo ya puede ser atómico.
+-- Decisiones confirmadas: (1) channel.orders (no esquema sales);
+-- (2) ventas_horarias/ventas_sync NO migran (caché regenerable — confirmado);
+-- (3) sin trigger de historial: actualizado_at basta.
+-- Siguiente paso: agregar el seam en pedidos_ml.sincronizar (espejo kubera).
+-- Autor: espejo kubera (misión 2026-07-22) · GO: Eduardo
 --
 -- El censo del espejo detectó que `pedidos_ml` (MySQL) NO tiene tabla destino
 -- en ESQUEMA_kubera_v4_propuesto.sql. Es el corazón operativo del tab VENTAS:

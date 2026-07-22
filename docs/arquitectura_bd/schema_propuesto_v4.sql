@@ -146,6 +146,59 @@ create table channel.product_category (
   primary key (sku, channel_id)
 );
 
+-- Historial de cambios del listing (monitoreo de precio/stock/FULL/status por
+-- plataforma — requerimiento 2026-07-16). Poblado por TRIGGER: cualquier
+-- escritor (sync 15 min, webhook, espejo) deja huella sin poder olvidarse.
+-- Precio actual = channel.listings.price; el anterior = la última fila de aquí.
+create table channel.listing_history (
+  id             bigint generated always as identity primary key,
+  sku            citext not null,
+  account_id     uuid not null,
+  canal          text not null,
+  campo          text not null,        -- 'price'|'stock_own'|'stock_full'|'is_fulfillment'|'status'|'situacion'
+  valor_anterior text,
+  valor_nuevo    text,
+  detectado_via  text not null default 'sync',   -- 'sync'|'webhook'|'manual' (set_config app.via)
+  changed_at     timestamptz not null default now()
+);
+create index idx_lh_sku on channel.listing_history(sku, canal, changed_at desc);
+create index idx_lh_campo on channel.listing_history(campo, changed_at desc);
+
+create or replace function channel.fn_listing_history() returns trigger
+language plpgsql as $$
+declare
+  via text := coalesce(current_setting('app.via', true), 'sync');
+begin
+  if old.price is distinct from new.price then
+    insert into channel.listing_history (sku, account_id, canal, campo, valor_anterior, valor_nuevo, detectado_via)
+    values (old.sku, old.account_id, old.canal, 'price', old.price::text, new.price::text, via);
+  end if;
+  if old.stock_own is distinct from new.stock_own then
+    insert into channel.listing_history (sku, account_id, canal, campo, valor_anterior, valor_nuevo, detectado_via)
+    values (old.sku, old.account_id, old.canal, 'stock_own', old.stock_own::text, new.stock_own::text, via);
+  end if;
+  if old.stock_full is distinct from new.stock_full then
+    insert into channel.listing_history (sku, account_id, canal, campo, valor_anterior, valor_nuevo, detectado_via)
+    values (old.sku, old.account_id, old.canal, 'stock_full', old.stock_full::text, new.stock_full::text, via);
+  end if;
+  if old.is_fulfillment is distinct from new.is_fulfillment then
+    insert into channel.listing_history (sku, account_id, canal, campo, valor_anterior, valor_nuevo, detectado_via)
+    values (old.sku, old.account_id, old.canal, 'is_fulfillment', old.is_fulfillment::text, new.is_fulfillment::text, via);
+  end if;
+  if old.status is distinct from new.status then
+    insert into channel.listing_history (sku, account_id, canal, campo, valor_anterior, valor_nuevo, detectado_via)
+    values (old.sku, old.account_id, old.canal, 'status', old.status, new.status, via);
+  end if;
+  if old.situacion is distinct from new.situacion then
+    insert into channel.listing_history (sku, account_id, canal, campo, valor_anterior, valor_nuevo, detectado_via)
+    values (old.sku, old.account_id, old.canal, 'situacion', old.situacion, new.situacion, via);
+  end if;
+  return new;
+end $$;
+
+create trigger trg_hist_listings after update on channel.listings
+  for each row execute function channel.fn_listing_history();
+
 
 -- =============================================================================
 -- costing — costos con historial, FX de servidor y parámetros versionados
@@ -643,6 +696,7 @@ create policy usuarios_leen_su_perfil on core.usuarios
 alter table channel.listings            enable row level security;
 alter table channel.categories          enable row level security;
 alter table channel.product_category    enable row level security;
+alter table channel.listing_history     enable row level security;
 alter table costing.costos_validados    enable row level security;
 alter table costing.costos_finales      enable row level security;
 alter table costing.legacy_costos_ml    enable row level security;
