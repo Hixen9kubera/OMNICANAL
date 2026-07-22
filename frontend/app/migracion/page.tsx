@@ -386,7 +386,7 @@ export default function MigracionPage() {
                   {serie.map((b) => (
                     <div
                       key={b.t}
-                      className="flex flex-1 flex-col justify-end gap-[1px]"
+                      className="flex h-full flex-1 flex-col justify-end gap-[1px]"
                       title={`${fmtHora(new Date(b.t).toISOString())} — ${b.ok} ok · ${b.error} error`}
                     >
                       {b.error > 0 && (

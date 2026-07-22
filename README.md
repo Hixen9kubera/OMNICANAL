@@ -1268,6 +1268,14 @@ cuenta; el layout no lo trae) — al entrar se perdían las pestañas del panel.
 Reporte de Eduardo. Se envolvió igual que las demás páginas:
 `<div className="min-h-screen"><AppNavbar /><main …>`. Versión 0.14.1.
 
+### v0.14.2 — Fix: barras invisibles en "Actividad del espejo"
+
+Las columnas de la gráfica no tenían altura definida (`h-full` faltante), así
+que las alturas porcentuales de las barras se resolvían a 0 — la gráfica salía
+"vacía" aun con eventos (reporte de Eduardo, con los PRIMEROS 8 eventos reales
+del espejo en producción: crear_logs → ops.process_log, 8 ok / 0 error,
+~400 ms, 20:25 UTC del 2026-07-22). Versión 0.14.2.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
