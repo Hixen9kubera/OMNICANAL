@@ -202,13 +202,23 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
     ]
     desc = _plain(campos.get("descripcion"))
     pubs = _ml_publicaciones(req.get("sku"))
-    modo = "actualizar" if pubs else "crear"
-    cuentas = [p["cuenta"] for p in pubs] if pubs else ["BEKURA", "SANCORFASHION"]
+    # Verificación EN VIVO contra ML: filas con item borrado pasan a "crear".
+    estados = await _estados_items_ml(pubs) if pubs else {}
+    vivos = [p for p in pubs if estados.get(p["cuenta"], {}).get("vivo", True)]
+    muertos = [p for p in pubs if not estados.get(p["cuenta"], {}).get("vivo", True)]
+    modo = "actualizar" if vivos else "crear"
+    cuentas = [p["cuenta"] for p in vivos + muertos] or ["BEKURA", "SANCORFASHION"]
 
     avisos: list[str] = []
     payload: dict[str, Any] | None = None
-    if not pubs:
-        avisos.append("No está publicado en ML: se CREARÁ una nueva publicación (pausada) en ambas cuentas.")
+    for p in muertos:
+        avisos.append(
+            f"{p['cuenta']}: la publicación anterior ({p['item_id']}) fue eliminada "
+            "en Mercado Libre — se CREARÁ una nueva (pausada)."
+        )
+    if not pubs or not vivos:
+        if not pubs:
+            avisos.append("No está publicado en ML: se CREARÁ una nueva publicación (pausada) en ambas cuentas.")
         # En modo crear el payload lo arma el pipeline de publicaciones_ready.
         r = await _payload_crear_ml(req)
         if r and r.get("ok"):
@@ -438,6 +448,42 @@ def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, 
             log.warning("No se pudo actualizar ml_progress: %s", exc)
 
 
+async def _estados_items_ml(pubs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """
+    Estado EN VIVO de cada publicación registrada: {cuenta: {vivo, status}}.
+
+    Una fila en ml_progress no garantiza que la publicación siga existiendo
+    (casos MOD-0496-NUDE / CAM-0034-BEI del 22-jul: borradas en el seller
+    central con la bitácora intacta → el botón intentaba actualizar items
+    muertos y nunca re-creaba). Un item `closed` o con `deleted` en su
+    sub_status ya no es actualizable: se trata como NO publicado.
+
+    Ante duda (sin token, timeout, 5xx de ML) se asume VIVO — mejor fallar un
+    update que crear un duplicado por un error transitorio.
+    """
+    estados: dict[str, dict[str, Any]] = {}
+    async with httpx.AsyncClient(timeout=10.0) as cli:
+        for p in pubs:
+            cuenta, item_id = p["cuenta"], p["item_id"]
+            vivo, status = True, None
+            token = meli._access_token(cuenta)
+            if token:
+                try:
+                    r = await cli.get(f"{_ML}/items/{item_id}",
+                                      headers={"Authorization": f"Bearer {token}"})
+                    if r.status_code == 200:
+                        d = r.json()
+                        status = d.get("status")
+                        subs = d.get("sub_status") or []
+                        vivo = status != "closed" and "deleted" not in subs
+                    elif r.status_code == 404:
+                        vivo, status = False, "not_found"
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("estado item %s (%s): %s", item_id, cuenta, exc)
+            estados[cuenta] = {"vivo": vivo, "status": status}
+    return estados
+
+
 async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict],
                          desc: str) -> dict[str, Any]:
     """Actualiza UNA publicación de ML (una cuenta). Devuelve el resultado."""
@@ -476,10 +522,12 @@ async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict
 
     success = (ml_status in (200, 201) or ml_status is None) and error is None
     return {"cuenta": cuenta, "item_id": item_id, "ok": bool(success), "error": error,
-            "ml_status": ml_status, "desc_status": desc_status, "_response": ml_response}
+            "ml_status": ml_status, "desc_status": desc_status, "modo": "actualizar",
+            "_response": ml_response}
 
 
-async def _crear_ml(sku: str, wc_id, campos: dict) -> dict[str, Any]:
+async def _crear_ml(sku: str, wc_id, campos: dict,
+                    cuentas: list[str] | None = None) -> dict[str, Any]:
     """
     Crear publicación nueva en ML → delega en el pipeline de `publicaciones_ready`
     (vendorizado en `backend/vendor/ml_ready/`), que es el que logró 1200+ altas.
@@ -498,7 +546,7 @@ async def _crear_ml(sku: str, wc_id, campos: dict) -> dict[str, Any]:
     if not wp_db_disponible():
         return {"ok": False, "motivo": "Sin conexión a la BD de WordPress (configura WPDB_* en Railway)."}
 
-    return await publicar_ready.crear_ml(sku, int(wc_id), campos)
+    return await publicar_ready.crear_ml(sku, int(wc_id), campos, cuentas)
 
 
 def wp_db_disponible() -> bool:
@@ -525,8 +573,19 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
         # No está publicado en ninguna cuenta → CREAR nuevo en ambas.
         return await _crear_ml(sku, wc_id, campos)
 
+    # Verificación EN VIVO: items borrados en ML se re-crean (solo en esa
+    # cuenta) en vez de intentar actualizarlos; el hook de creación pisa la
+    # fila vieja de ml_progress con el item nuevo — la bitácora se cura sola.
+    estados = await _estados_items_ml(pubs)
+    vivos = [p for p in pubs if estados.get(p["cuenta"], {}).get("vivo", True)]
+    muertos = [p for p in pubs if not estados.get(p["cuenta"], {}).get("vivo", True)]
+
+    if not vivos:
+        return await _crear_ml(sku, wc_id, campos,
+                               cuentas=[p["cuenta"] for p in muertos])
+
     resultados: list[dict[str, Any]] = []
-    for p in pubs:
+    for p in vivos:
         res = await _update_ml_una(p["cuenta"], p["item_id"], title, attrs, desc)
         _guardar_backlog_ml(
             p["cuenta"], sku, wc_id, p["item_id"], res["ok"], res["error"],
@@ -535,6 +594,21 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
             res.pop("_response", {}),
         )
         resultados.append(res)
+
+    if muertos:
+        r_crear = await _crear_ml(sku, wc_id, campos,
+                                  cuentas=[p["cuenta"] for p in muertos])
+        filas = r_crear.get("resultados") or []
+        for f in filas:
+            f["modo"] = "crear"
+        resultados.extend(filas)
+        if not filas:  # p. ej. sin wc_id o sin BD de WordPress
+            for p in muertos:
+                resultados.append({
+                    "cuenta": p["cuenta"], "item_id": "", "ok": False,
+                    "error": r_crear.get("motivo") or "No se pudo re-crear la publicación.",
+                    "ml_status": None, "modo": "crear",
+                })
 
     ok_all = all(r["ok"] for r in resultados)
     return {"ok": ok_all, "canal": "mercado_libre", "modo": "actualizar",

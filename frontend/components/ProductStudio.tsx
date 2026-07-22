@@ -1524,7 +1524,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                             <strong>{r.cuenta}:</strong>{" "}
                             {!r.ok
                               ? (r.error || `HTTP ${r.ml_status ?? "?"}`)
-                              : resultadoPub.modo === "crear"
+                              : (r.modo ?? resultadoPub.modo) === "crear"
                                 ? (
                                   <>
                                     publicado {r.item_id ?? ""}{" "}

@@ -362,16 +362,20 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     return {"ok": True, "cuenta": cuenta, "payload": payload, "prod": prod}
 
 
-async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, Any]:
+async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
+                   cuentas: list[str] | None = None) -> dict[str, Any]:
     """
-    Crea la publicación en AMBAS cuentas usando `publisher_core.publish_product`,
-    con pre-upload de imágenes, cadena de GTIN y todos sus reintentos.
+    Crea la publicación usando `publisher_core.publish_product`, con pre-upload
+    de imágenes, cadena de GTIN y todos sus reintentos.
+
+    Por omisión crea en AMBAS cuentas; `cuentas` la restringe (p. ej. re-crear
+    solo donde la publicación anterior fue eliminada en ML).
     """
     configurar()
     prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
 
     resultados: list[dict[str, Any]] = []
-    for cuenta in _CUENTAS_ML:
+    for cuenta in (cuentas or _CUENTAS_ML):
         token = meli._access_token(cuenta)
         if not token:
             resultados.append({"cuenta": cuenta, "item_id": "", "ok": False,

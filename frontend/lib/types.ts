@@ -483,6 +483,9 @@ export interface PublicarResultadoCuenta {
   pausado?: boolean;
   estado_ml?: string | null;
   aviso?: string;
+  // Por fila: "crear" cuando la publicación anterior fue eliminada en ML y se
+  // re-creó solo en esa cuenta (el modo global puede ser "actualizar").
+  modo?: string;
 }
 
 export interface PublicarResultado {

@@ -1302,6 +1302,42 @@ solo `publisher_core`/`wc_category_mapping`).
 SANCORFASHION) hay que borrarlos en ML + limpiar sus filas de `ml_progress`, y
 republicar ya con este fix. Versión 0.14.3.
 
+### v0.15.0 — El publicador detecta publicaciones eliminadas en ML y las re-crea
+
+**Incidencia de fondo (3 casos el 22-jul: TEC-1812-NEG, MOD-0496-NUDE,
+CAM-0034-BEI):** al dar de baja una publicación en el seller central, la
+bitácora `ml_progress` queda congelada diciendo "publicado". El botón del
+Studio decidía crear/actualizar leyendo SOLO esa bitácora → intentaba
+actualizar items muertos y nunca re-creaba; el remedio era SQL manual
+(borrar las filas) con ventana de duplicados si alguien publicaba en medio.
+
+**Cambios (`services/publicar.py` + `services/publicar_ready.py`, vendor
+intacto):**
+
+- `_estados_items_ml()`: antes de decidir el modo, `GET /items/{id}` por cada
+  cuenta registrada (~1 s). Item `closed` o con `deleted` en sub_status (o
+  404) = muerto → esa cuenta pasa a modo CREAR; vivo (`active`/`paused`) →
+  actualizar como siempre. Ante duda (sin token, timeout, 5xx) se asume vivo:
+  mejor fallar un update que crear un duplicado por error transitorio.
+- `crear_ml(..., cuentas=[...])`: el alta ahora puede restringirse a cuentas
+  específicas (antes era todo-o-nada en ambas) → resuelve el caso mixto
+  TEC-1812 (una cuenta viva, la otra eliminada).
+- Caso mixto en `_confirmar_ml`: actualiza las vivas y re-crea (pausada) en
+  las muertas en la misma confirmación; cada fila de resultado lleva
+  `modo` propio ("crear"/"actualizar") para que el modal pinte lo correcto.
+- La bitácora se cura sola: el hook de creación pisa la fila vieja de
+  `ml_progress` con el item nuevo — ya NO hace falta borrar filas a mano.
+- Preview honesto: el modal avisa por cuenta, p. ej. *"BEKURA: la publicación
+  anterior (MLM…) fue eliminada en Mercado Libre — se CREARÁ una nueva
+  (pausada)."* — antes el modo actualizar salía sin ningún aviso.
+- Frontend: `PublicarResultadoCuenta.modo` opcional y el modal usa
+  `(r.modo ?? resultadoPub.modo)` (una línea en ProductStudio.tsx).
+
+**Flujo operativo nuevo** cuando se dé de baja una publicación: usuarios la
+borran en ML → botón Publicar del Studio → el panel avisa y re-crea pausada.
+Sin SQL, sin ventana de duplicados (la verificación es en vivo). Versión
+0.15.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
