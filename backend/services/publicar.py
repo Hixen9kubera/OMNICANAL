@@ -407,6 +407,20 @@ def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, 
                  json.dumps(ml_response, ensure_ascii=False)[:65000],
                  datetime.now() if success else None),
             )
+            backlog_id = cur.lastrowid
+        # Espejo kubera: resumen del envío (blobs payload/response NO viajan).
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/publicar.py", "_guardar_backlog_ml",
+            "ml_backlog", "ops.channel_submissions", "INSERT",
+            {"canal": "mercado_libre", "cuenta": cuenta or "", "sku": sku or "",
+             "submission_id": item_id, "operacion": "actualizacion",
+             "status": ml_status, "success": bool(success),
+             "error_resumen": error,
+             "detail_ref": f"mysql:ml_backlog:{backlog_id}" if backlog_id else None,
+             "submitted_at": datetime.now(),
+             "published_at": datetime.now() if success else None},
+            clave=f"{cuenta}:{sku}")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo guardar en ml_backlog: %s", exc)
     # Reflejar en ml_progress (lo que lee el estado) al publicar/actualizar OK.
@@ -752,6 +766,24 @@ def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_cou
                  json.dumps(amz_response, ensure_ascii=False)[:65000],
                  datetime.now(), datetime.now() if success else None),
             )
+            backlog_id = cur.lastrowid
+        # Espejo kubera: resumen del envío (issues/payload/response NO viajan).
+        primer_issue = ""
+        if issues and isinstance(issues, list) and isinstance(issues[0], dict):
+            primer_issue = str(issues[0].get("message") or "")[:300]
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/publicar.py", "_guardar_backlog_amazon",
+            "amazon_backlog", "ops.channel_submissions", "INSERT",
+            {"canal": "amazon", "cuenta": "AMAZON", "sku": sku or "",
+             "submission_id": None, "operacion": "alta",
+             "status": status, "success": bool(success),
+             "error_resumen": None if success else
+                 f"{issue_count or 0} issues" + (f": {primer_issue}" if primer_issue else ""),
+             "detail_ref": f"mysql:amazon_backlog:{backlog_id}" if backlog_id else None,
+             "submitted_at": datetime.now(),
+             "published_at": datetime.now() if success else None},
+            clave=sku or "")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo guardar en amazon_backlog: %s", exc)
     # Reflejar en amazon_progress (lo que lee el estado) al publicar OK.

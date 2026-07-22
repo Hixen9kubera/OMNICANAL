@@ -294,24 +294,39 @@ async def _gemini_edit(
 def _backlog(sku: str, wc_id: int | None, item: dict, info: dict) -> None:
     try:
         from services import db
-        db.execute(
-            """INSERT INTO ml_image_edit_backlog
-                 (run_key, cuenta, sku, wc_id, wc_image_id, src_url,
-                  flag_quitar_fondo, flag_traducir_texto, flag_cambiar_modelo,
-                  action, person_desc, prompt_used, gemini_model,
-                  gemini_success, gemini_error, bytes_in, bytes_out,
-                  wp_media_id_new, wp_url_new, created_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
-            (
-                f"studio:{sku}", "studio", sku, wc_id, item.get("wc_image_id"), item.get("src"),
-                int(item["flags"]["quitar_fondo"]), int(item["flags"]["traducir_texto"]),
-                int(item["flags"]["cambiar_modelo"]),
-                info.get("action"), info.get("person_desc"), info.get("prompt_used"), GEMINI_MODEL,
-                int(bool(info.get("gemini_success"))), info.get("gemini_error"),
-                info.get("bytes_in"), info.get("bytes_out"),
-                info.get("wp_media_id_new"), info.get("wp_url_new"),
-            ),
-        )
+        with db.get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO ml_image_edit_backlog
+                     (run_key, cuenta, sku, wc_id, wc_image_id, src_url,
+                      flag_quitar_fondo, flag_traducir_texto, flag_cambiar_modelo,
+                      action, person_desc, prompt_used, gemini_model,
+                      gemini_success, gemini_error, bytes_in, bytes_out,
+                      wp_media_id_new, wp_url_new, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())""",
+                (
+                    f"studio:{sku}", "studio", sku, wc_id, item.get("wc_image_id"), item.get("src"),
+                    int(item["flags"]["quitar_fondo"]), int(item["flags"]["traducir_texto"]),
+                    int(item["flags"]["cambiar_modelo"]),
+                    info.get("action"), info.get("person_desc"), info.get("prompt_used"), GEMINI_MODEL,
+                    int(bool(info.get("gemini_success"))), info.get("gemini_error"),
+                    info.get("bytes_in"), info.get("bytes_out"),
+                    info.get("wp_media_id_new"), info.get("wp_url_new"),
+                ),
+            )
+            backlog_id = cur.lastrowid
+        # Espejo kubera: la edición queda como submission de imagen (resumen;
+        # prompts/bytes se quedan en MySQL, viajan solo vía detail_ref).
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/imagenes_editor.py", "_backlog",
+            "ml_image_edit_backlog", "ops.channel_submissions", "INSERT",
+            {"canal": "mercado_libre", "cuenta": "studio", "sku": sku,
+             "submission_id": str(info.get("wp_media_id_new") or "") or None,
+             "operacion": "imagen", "status": info.get("action"),
+             "success": bool(info.get("gemini_success")),
+             "error_resumen": info.get("gemini_error"),
+             "detail_ref": f"mysql:ml_image_edit_backlog:{backlog_id}" if backlog_id else None},
+            clave=sku)
     except Exception as exc:  # noqa: BLE001
         log.debug("backlog imagen (ignorado): %s", exc)
 

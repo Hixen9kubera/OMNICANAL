@@ -173,6 +173,18 @@ class Settings(BaseSettings):
     # que se encienda supabase_read_webhooks.
     webhook_guarda_mysql: bool = False
 
+    # ── Espejo kubera (dual-write propio, fase de descubrimiento) ─
+    # Extiende el patrón del compañero (channel/costing_mirror, INTOCABLES) a
+    # los escritores sin espejo (services/kubera_mirror.py). Nace APAGADO:
+    # encenderlo en producción es cambio de flujo vivo (regla 3 de CLAUDE.md).
+    # kubera_db_url: Postgres de la BD centralizada "kubera" (en DEV, el
+    # Supabase de desarrollo). Mismo formato de pooler que supabase_db_url.
+    kubera_db_url: str = ""
+    kubera_mirror_enabled: bool = False
+    # CSV opcional de tablas MySQL de ORIGEN para encender el espejo tabla por
+    # tabla (p. ej. "ml_backlog,crear_logs"). Vacío = todas las censadas.
+    kubera_mirror_tablas: str = ""
+
     # ── Pedidos ML → WooCommerce + transición de inventario ───
     # Cada venta de ML se convierte en pedido de Woo con el precio REAL
     # congelado (services/pedidos_ml.py), disparado por el webhook orders_v2.

@@ -108,6 +108,13 @@ def _cache_put(sku: str, src_url: str, amz_url: str, media_id: int,
                  ancho=VALUES(ancho), alto=VALUES(alto), metodo=VALUES(metodo)""",
             (_hash(src_url), sku, src_url, amz_url, media_id, ancho, alto, metodo),
         )
+        # Espejo kubera: la imagen procesada viaja a enrich.product_media.
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/imagenes_amazon.py", "_cache_put",
+            "amazon_imagenes", "enrich.product_media", "UPSERT",
+            {"sku": sku, "kind": "amazon", "source_url": src_url,
+             "cdn_url": amz_url}, clave=sku)
     except Exception as exc:  # noqa: BLE001
         log.debug("amazon_imagenes cache put (ignorado): %s", exc)
 

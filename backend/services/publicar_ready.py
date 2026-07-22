@@ -73,6 +73,20 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
                     1 if resultado.get("gtin_error") else 0,
                 ),
             )
+            backlog_id = cur.lastrowid
+        # Espejo kubera: resumen del envío (los blobs payload/response NO viajan).
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/publicar_ready.py", "_backlog_ml",
+            "ml_backlog", "ops.channel_submissions", "INSERT",
+            {"canal": "mercado_libre", "cuenta": cuenta, "sku": sku,
+             "submission_id": item_id, "operacion": "alta",
+             "status": entry.get("ml_status"), "success": success,
+             "error_resumen": resultado.get("error"),
+             "detail_ref": f"mysql:ml_backlog:{backlog_id}" if backlog_id else None,
+             "submitted_at": datetime.now(),
+             "published_at": datetime.now() if success else None},
+            clave=f"{cuenta}:{sku}")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo guardar en ml_backlog (%s): %s", backlog_key, exc)
 
@@ -181,6 +195,16 @@ def _anotar_pausa_backlog(item_id: str, pausa: dict[str, Any]) -> None:
                 "UPDATE ml_backlog SET error=%s WHERE ml_item_id=%s ORDER BY id DESC LIMIT 1",
                 (aviso, item_id),
             )
+        # Espejo kubera: la pausa fallida queda como evento de submission.
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/publicar_ready.py", "_anotar_pausa_backlog",
+            "ml_backlog", "ops.channel_submissions", "UPDATE",
+            {"canal": "mercado_libre", "submission_id": item_id,
+             "operacion": "pausa", "status": pausa.get("status"),
+             "success": False, "error_resumen": aviso,
+             "submitted_at": datetime.now()},
+            clave=item_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo anotar la pausa en ml_backlog (%s): %s", item_id, exc)
 

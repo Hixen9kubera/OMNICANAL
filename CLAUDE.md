@@ -103,13 +103,16 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 | Atributos ML (IA) | `backend/services/ml_atributos.py` | Prompt canónico + DeepSeek; guarda metas `ml_attr_<ID>` (lo que lee el publisher) |
 | Tipo Amazon (picker) | `backend/routers/publicar.py` + `frontend/components/TipoAmazonPicker.tsx` | Ver/buscar/guardar product type; prioridad panel |
 | Sync Odoo→Woo | `backend/services/sync_woo.py` (`POST /api/sync/woo`) | Barrido stock+costos, solo diferencias |
+| Espejo kubera + /migracion | `backend/services/kubera_mirror.py` + `routers/migracion.py` + `frontend/app/migracion/` | Dual-write PROPIO (v0.13.0) de los escritores sin cobertura del compañero hacia la BD kubera (esquema v4); censo hardcodeado, errores en `espejo_kubera_log`, panel en tiempo real. GAP conocido: `pedidos_ml` sin destino v4 (propuesta en `docs/arquitectura_bd/propuesta_ops_orders.sql`, NO aplicar sin GO de Eduardo) |
 
 **Tablas propias en MySQL (`u531713409_kubera_ml`)**: `pedidos_ml`,
 `ventas_horarias`, `ventas_sync`, `webhook_eventos` (campana; los webhooks YA
 NO se insertan ahí — `WEBHOOK_GUARDA_MYSQL=false`), `amazon_imagenes`,
 `ml_backlog`/`ml_progress`/`amazon_progress` (bitácoras del publicador),
 `canal_inventario` (espejo de canales; el esquema es de la migración — leer sí,
-alterar no). Las 72 tablas `wp_*` de WordPress: lectura directa OK, DDL/DML no.
+alterar no), `espejo_kubera_log` (errores del espejo kubera v0.13.0; local a
+propósito — sobrevive con Supabase caído). Las 72 tablas `wp_*` de WordPress:
+lectura directa OK, DDL/DML no.
 
 ## Variables clave en Railway (BackendOmnicanal, production)
 
@@ -121,6 +124,7 @@ alterar no). Las 72 tablas `wp_*` de WordPress: lectura directa OK, DDL/DML no.
 | `SYNC_ENABLED` | true | Sync inventario 15 min (alimenta migración) |
 | `VENTAS_ML_REFRESH` | false | Tab Ventas NO consulta la API de ML (modo pedidos) |
 | `PEDIDOS_AMAZON_*` / `PEDIDOS_M2E_*` / `M2E_API_TOKEN` | activos | Sondeos Amazon / Temu-TikTok |
+| `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | false / — / — | Espejo kubera (v0.13.0) de escritores sin cobertura → esquema v4. Nace APAGADO (inerte); encenderlo = flujo vivo, dale de Brandon. La página /migracion muestra censo, eventos y errores |
 | Apagado de emergencia | — | Cualquier flujo se apaga con su variable, sin deploy (accept-deploy para aplicar staged) |
 
 ## Integraciones y sus mañas

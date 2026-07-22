@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import settings
-from services import db, odoo
+from services import db, kubera_mirror, odoo
 
 log = logging.getLogger("omnicanal.odoo_watch")
 
@@ -83,6 +83,17 @@ def _avisar_campana(cambios: list[tuple[str, int, int | None]]) -> None:
                    (canal, topic, resource, user_id, cuenta, sku, procesado,
                     resultado, recibido)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""", filas)
+        # Espejo kubera (fase de descubrimiento): tras el INSERT exitoso, cada
+        # evento de campana viaja a ops.webhook_events. Nunca rompe el flujo.
+        for canal, topic, resource, _uid, cuenta, sku, procesado, resultado, recibido in filas:
+            kubera_mirror.espejar(
+                "services/odoo_watch.py", "_avisar_campana",
+                "webhook_eventos", "ops.webhook_events", "INSERT",
+                {"canal": canal, "topic": topic, "external_id": resource,
+                 "cuenta": cuenta, "sku": sku, "procesado": bool(procesado),
+                 "resultado": resultado, "recibido": recibido,
+                 "payload": {"resource": resource, "resultado": resultado}},
+                clave=sku or resource)
     except Exception as exc:  # noqa: BLE001
         log.warning("odoo_watch: no se pudo avisar en campana: %s", exc)
 

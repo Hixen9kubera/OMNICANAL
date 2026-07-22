@@ -1120,6 +1120,99 @@ navegadores y los campos recargan desde WooCommerce (lo guardado/publicado no
 se toca; solo se pierden ediciones locales no guardadas). El botón "Descartar
 borrador" ahora es visible (chip rojo junto al título).
 
+### v0.13.0 — Espejo kubera (dual-write propio) + página /migracion en tiempo real
+
+**Qué es.** Fase de DESCUBRIMIENTO de la migración a la BD centralizada
+"kubera" (Postgres/Supabase, esquema v4): cada escritor `.py` que puebla MySQL
+y que el trabajo de Eduardo/José aún no espeja, ahora replica su escritura en
+la tabla equivalente del v4 y REGISTRA cada intento (éxito y error). Los
+errores que aparezcan (FKs huérfanas, tipos, colisiones) son el plan de
+limpieza previo al corte y se ven en la nueva página **/migracion** del panel.
+
+**Censo escritor→tablas** (21 entradas, hardcodeado en
+`services/kubera_mirror.py::CENSO` — es lo que alimenta la UI):
+- **A espejar (7 seams, este módulo)**: `odoo_watch._avisar_campana`
+  (campana→`ops.webhook_events`), `publicar_ready._backlog_ml` y
+  `_anotar_pausa_backlog` (ml_backlog→`ops.channel_submissions`),
+  `publicar._guardar_backlog_ml` y `_guardar_backlog_amazon`
+  (ml/amazon_backlog→`ops.channel_submissions`), `imagenes_editor._backlog`
+  (ml_image_edit_backlog→`ops.channel_submissions`),
+  `imagenes_amazon._cache_put` (amazon_imagenes→`enrich.product_media`),
+  `crear_producto._persistir_log` (crear_logs→`ops.process_log`).
+  Siempre resumen + `detail_ref='mysql:<tabla>:<id>'`: los blobs NO viajan.
+- **Cubierto por el compañero (NO se duplica)**: webhooks ML
+  (`SUPABASE_DUAL_WRITE`), `canal_inventario` (channel_mirror), costos
+  (costing_mirror), y los upserts de `ml_progress`/`amazon_progress` (el
+  estado del listing viaja por channel.listings).
+- **GAP sin destino v4**: `pedidos_ml` (pedidos ML/Amazon/M2E — el corazón del
+  tab Ventas). Propuesta de DDL en
+  `docs/arquitectura_bd/propuesta_ops_orders.sql`, PENDIENTE del GO de
+  Eduardo. No se espeja nada de pedidos hasta entonces.
+- **No aplica**: `ventas_horarias`/`ventas_sync` (caché regenerable),
+  `productos.stock_odoo` (foto local, Odoo en retiro). **Bloqueado**:
+  `ml_tokens*` (P3, secretos→Vault).
+
+**Arquitectura** (`services/kubera_mirror.py`): pool propio de 3 conexiones a
+`KUBERA_DB_URL` (`connect_timeout=4`, `blocking=False`), `espejar()`
+fire-and-forget (executor si hay loop, hilo daemon si no) con try/except
+total — un fallo del espejo JAMÁS toca el flujo; upserts idempotentes según
+las llaves del v4 (`ON CONFLICT` en webhook_events; dedup por `detail_ref` en
+submissions/process_log; update-else-insert en product_media);
+`set_config('app.via','kubera_mirror',true)` y `statement_timeout` por
+transacción (compatible pooler 6543). Registro: ring buffer de 500 eventos +
+contadores por (archivo, función, tabla) + errores persistidos en la tabla
+LOCAL nueva **`espejo_kubera_log`** (MySQL, a propósito: si kubera está caída
+el error se guarda igual; columnas resuelto/resuelto_ts para la limpieza).
+
+**Flags** (Railway, apagables sin deploy): `KUBERA_MIRROR_ENABLED`
+(default **false** — el código en main es inerte), `KUBERA_MIRROR_TABLAS`
+(CSV de tablas origen para encendido gradual), `KUBERA_DB_URL` (en DEV el
+Supabase de desarrollo). **Encenderlo en producción = cambio de flujo vivo:
+esperar el dale de Brandon** (regla 3).
+
+**Página /migracion** (+ navbar "Migración"): tarjeta por escritor con estado
+(verde=activo, ámbar=apagado, azul=cubierto, gris=gap/no aplica), contadores
+ok/error, latencia media y último evento; feed en vivo (poll 5 s) con error
+expandible; vista "Errores para limpieza" agrupados por (archivo, tabla,
+tipo) con ejemplo, payload y botón **Marcar resuelto** (la lista ES el plan
+de limpieza). Endpoints: `GET /api/migracion/estado|eventos|errores`,
+`POST /api/migracion/errores/resolver` (con `requiere_api_key`).
+
+**Pruebas ejecutadas** (2026-07-22):
+- *Inocuidad*: flag OFF → 200 llamadas en 0.03 ms totales, cero eventos;
+  flag ON con BD inalcanzable → el llamador regresa en <1 ms, el error queda
+  en ring buffer y en `espejo_kubera_log`. El flujo actual, intacto.
+- *Corrida real* contra un Postgres 16 local con el DDL v4 aplicado
+  (`ESQUEMA_kubera_v4_propuesto.sql`; solo fallaron las piezas
+  Supabase-only: `auth.users` y grants a `service_role`): filas verificadas
+  por SELECT en `ops.webhook_events` (idempotencia comprobada: re-envío no
+  duplica), `ops.channel_submissions` (dedup por detail_ref),
+  `enrich.product_media` (upsert actualiza sin duplicar), `ops.process_log`;
+  y un **error FK inducido** (SKU fantasma vs `core.products`) capturado sin
+  interrumpir nada y visible/resoluble en /migracion (botón probado
+  end-to-end). 7 ok / 1 error en contadores.
+- Pendiente con credencial real: apuntar `KUBERA_DB_URL` al Supabase DEV
+  (la credencial no vive en esta máquina) y repetir la corrida.
+
+**Hallazgo para el DDL v4** (para Eduardo): `enrich.product_media` no tiene
+UNIQUE natural — un índice único `(sku, kind, source_url)` volvería atómico
+el upsert del espejo (hoy se emula con update-else-insert).
+
+### Archivos tocados (v0.13.0)
+
+- **Nuevo** `services/kubera_mirror.py` (censo + espejo + registro),
+  `routers/migracion.py`, `frontend/app/migracion/page.tsx`,
+  `docs/arquitectura_bd/propuesta_ops_orders.sql`.
+- Llamadas `espejar()` en: `services/odoo_watch.py`,
+  `services/publicar_ready.py`, `services/publicar.py`,
+  `services/imagenes_amazon.py`, `services/imagenes_editor.py`,
+  `services/crear_producto.py` (siempre tras el éxito MySQL; en
+  imagenes_editor/crear_producto el INSERT ahora captura `lastrowid` para el
+  detail_ref — mismo SQL, mismo autocommit).
+- `config.py` → `kubera_db_url`, `kubera_mirror_enabled`,
+  `kubera_mirror_tablas`. `main.py` → router migracion + versión 0.13.0.
+- `frontend/components/AppNavbar.tsx` → entrada "Migración".
+
 ### Archivos tocados
 
 - `routers/webhooks.py` → pedido WC en la rama `orders_v2` + flags en `/estado`.

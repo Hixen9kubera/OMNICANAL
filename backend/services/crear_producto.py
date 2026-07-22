@@ -92,11 +92,23 @@ def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> N
         # (161 MB por guardar blobs completos). El resumen siempre cabe.
         if detalle_json and len(detalle_json) > 4000:
             detalle_json = detalle_json[:4000] + '…(truncado)"'
-        db.execute(
-            "INSERT INTO crear_logs (sku, wc_id, estado, paso, detalle, creado) "
-            "VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP())",
-            (sku, extra.get("wc_id"), estado, (paso or "")[:255], detalle_json),
-        )
+        with db.get_cursor() as cur:
+            cur.execute(
+                "INSERT INTO crear_logs (sku, wc_id, estado, paso, detalle, creado) "
+                "VALUES (%s,%s,%s,%s,%s,UTC_TIMESTAMP())",
+                (sku, extra.get("wc_id"), estado, (paso or "")[:255], detalle_json),
+            )
+            log_id = cur.lastrowid
+        # Espejo kubera: la bitácora de creación viaja a ops.process_log.
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/crear_producto.py", "_persistir_log",
+            "crear_logs", "ops.process_log", "INSERT",
+            {"proceso": "crear", "origen": "backend", "sku": sku,
+             "accion": (paso or "")[:255], "estado": estado,
+             "detalle": detalle or None,
+             "detail_ref": f"mysql:crear_logs:{log_id}" if log_id else None},
+            clave=sku)
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo escribir crear_logs(%s): %s", sku, exc)
 

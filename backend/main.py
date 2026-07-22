@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
 from models.schemas import HealthCheck
-from routers import auth, canales, crear, ia, imagenes, productos, publicar, sync, ventas, webhooks
+from routers import auth, canales, crear, ia, imagenes, migracion, productos, publicar, sync, ventas, webhooks
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -76,7 +76,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.12.2",
+    version="0.13.0",
     lifespan=lifespan,
 )
 
@@ -100,13 +100,14 @@ app.include_router(ventas.router)
 app.include_router(ia.router)
 app.include_router(publicar.router)
 app.include_router(auth.router)
+app.include_router(migracion.router)
 
 
 @app.get("/", tags=["meta"])
 def raiz():
     return {
         "app": "OMNICANAL · Kubera",
-        "version": "0.12.2",
+        "version": "0.13.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
