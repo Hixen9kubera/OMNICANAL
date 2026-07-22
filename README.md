@@ -1261,6 +1261,13 @@ tiempo real de TODA la migración, no solo del espejo:
   `useMemo` sobre los eventos existentes).
 - `backend/main.py` → versión 0.14.0 (dos lugares).
 
+### v0.14.1 — Fix: /migracion sin barra de navegación
+
+La página /migracion no montaba `<AppNavbar />` (cada página lo monta por su
+cuenta; el layout no lo trae) — al entrar se perdían las pestañas del panel.
+Reporte de Eduardo. Se envolvió igual que las demás páginas:
+`<div className="min-h-screen"><AppNavbar /><main …>`. Versión 0.14.1.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

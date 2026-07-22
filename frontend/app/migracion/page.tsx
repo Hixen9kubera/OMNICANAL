@@ -24,6 +24,7 @@ import {
   Power,
 } from "lucide-react";
 import { API_BASE } from "@/lib/api";
+import AppNavbar from "@/components/AppNavbar";
 
 /* ── Tipos que devuelve /api/migracion/* ───────────────────────────────── */
 
@@ -215,7 +216,9 @@ export default function MigracionPage() {
   );
 
   return (
-    <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+    <div className="min-h-screen">
+      <AppNavbar />
+      <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
       {/* Encabezado + flags */}
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white">
@@ -623,6 +626,7 @@ export default function MigracionPage() {
           </div>
         </>
       )}
-    </main>
+      </main>
+    </div>
   );
 }
