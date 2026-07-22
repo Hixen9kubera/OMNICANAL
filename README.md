@@ -1276,6 +1276,32 @@ que las alturas porcentuales de las barras se resolvían a 0 — la gráfica sal
 del espejo en producción: crear_logs → ops.process_log, 8 ok / 0 error,
 ~400 ms, 20:25 UTC del 2026-07-22). Versión 0.14.2.
 
+### v0.14.3 — La categoría del panel manda también sobre WooCommerce al publicar
+
+**Incidencia (reporte de Eduardo, caso CAM-0034-BEI):** el panel mostraba la
+categoría corregida (MLM69819 Colchones Inflables) pero la publicación salió
+con la inicial (MLM419960 Colchonetas Aislantes). Causa: además de las metas
+`ml_categoria_id`/`ml_category_id` (arreglo del caso TEC-1812-NEG), el vendor
+tiene un TERCER decisor: `publisher_core.build_payload` consulta
+`wc_category_mapping` y, si la categoría WooCommerce del producto trae el
+patrón `"ML: MLM###"` en su description, ESA gana sobre la meta (política
+vieja "las KAMs editan la categoría en Woo"). CAM-0034-BEI seguía asignado en
+Woo a "Colchonetas Aislantes" (term 1852) → override silencioso. El mapeo
+además se cachea 1 h en memoria.
+
+**Arreglo (adaptador, vendor intacto):** `publicar_ready.construir_prod` ya no
+pasa `wc_categories` al pipeline cuando el producto tiene categoría elegida
+(`ml_categoria_id` del panel o `ml_category_id` del picker/predictor) — sin
+insumo, el override no puede activarse y la elección del panel manda (regla de
+la casa #2). Sin elección en el panel, el mapeo WC sigue siendo el fallback,
+igual que antes. `wc_categories` no tiene otro consumidor (verificado con grep:
+solo `publisher_core`/`wc_category_mapping`).
+
+**Operativo pendiente:** los 2 items pausados de CAM-0034-BEI creados el
+22-jul con la categoría vieja (MLM5781002168 BEKURA, MLM3175968815
+SANCORFASHION) hay que borrarlos en ML + limpiar sus filas de `ml_progress`, y
+republicar ya con este fix. Versión 0.14.3.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

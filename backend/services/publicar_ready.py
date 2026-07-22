@@ -305,7 +305,13 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         "stock":            stock,
         "ml_category_id":   cat_id,
         "ml_category_name": cat_nombre,
-        "wc_categories":    wp_db.categorias_wc(wc_id),
+        # Con categoría elegida en el panel NO se pasan las categorías WC:
+        # publisher_core prefiere el mapeo "ML: MLM###" de la categoría de Woo
+        # sobre la meta, y eso revertía la elección del picker (caso
+        # CAM-0034-BEI: el panel decía Colchones Inflables MLM69819 y se publicó
+        # en Colchonetas Aislantes MLM419960 por la categoría WC del producto).
+        # Sin elección en el panel, el mapeo WC sigue siendo el fallback.
+        "wc_categories":    [] if cat_id else wp_db.categorias_wc(wc_id),
         "ml_attrs":         {k[len("ml_attr_"):]: v for k, v in meta.items()
                              if k.startswith("ml_attr_") and v},
         "wc_attrs":         wc_attrs,
