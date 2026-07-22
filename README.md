@@ -1221,6 +1221,46 @@ el upsert del espejo (hoy se emula con update-else-insert).
 - `services/publicar_ready.py` → prioridad de categoría del panel.
 - `config.py` → `pedidos_wc_*`, `odoo_watch_*`.
 
+### v0.14.0 — /migracion gráfica: camino al corte (racha 14 días) + actividad del espejo
+
+**Contexto.** El espejo kubera quedó ENCENDIDO en producción el 2026-07-22
+(dale de Brandon, vía Eduardo): `KUBERA_MIRROR_ENABLED=true`,
+`KUBERA_MIRROR_TABLAS=crear_logs` (encendido gradual), `KUBERA_DB_URL` como
+variable de referencia `${{ SUPABASE_DB_URL }}` en Railway. En staging está
+encendido sin filtro de tablas. Mismo día: GO de Eduardo al GAP de pedidos —
+`channel.orders` creada en la BD kubera (ver
+`docs/arquitectura_bd/propuesta_ops_orders.sql`, marcada APLICADA) + índice
+único `uq_product_media_sku_kind_url` en `enrich.product_media` (el upsert del
+espejo ya puede ser atómico). El seam de `pedidos_ml` → `channel.orders` queda
+LISTO PARA CONSTRUIRSE (censo: pasar de `gap_sin_destino` a `a_espejar`).
+
+**Qué se construyó.** La página /migracion ahora es el monitor gráfico en
+tiempo real de TODA la migración, no solo del espejo:
+
+1. **"Camino al corte"** — tarjeta por dominio (Costos, Channel) con la racha
+   de días consecutivos con actas de deltas en CERO (criterio de corte: 14),
+   barra de progreso, los últimos 14 días como puntos (verde ok / rojo
+   con_deltas / gris sin acta) y la última acta con hora y resultado. Fuente:
+   `GET /api/migracion/deltas` (nuevo), que lee
+   `migration.reconciliation_runs` de la BD kubera vía `services/supabase_db`
+   (solo lectura, best-effort: sin BD configurada devuelve
+   `disponible=false` y la página no se rompe). Regla de racha: la ÚLTIMA
+   acta del día manda (una re-corrida que corrige el delta conserva el día);
+   racha = días CONSECUTIVOS en ok terminando en el día más reciente.
+2. **"Actividad del espejo"** — gráfica de barras apiladas (ok verde / error
+   rojo) por minuto de los últimos 30 min, construida del ring buffer de
+   `/api/migracion/eventos` que ya se pollea cada 5 s. Sin librerías nuevas:
+   divs + Tailwind, el mismo patrón de la gráfica del tab Ventas.
+
+### Archivos tocados (v0.14.0)
+
+- `routers/migracion.py` → `GET /deltas` (actas + racha por dominio;
+  `OBJETIVO_RACHA=14`).
+- `frontend/app/migracion/page.tsx` → secciones "Camino al corte" y
+  "Actividad del espejo" (poll de actas cada 60 s; serie de 30 min con
+  `useMemo` sobre los eventos existentes).
+- `backend/main.py` → versión 0.14.0 (dos lugares).
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

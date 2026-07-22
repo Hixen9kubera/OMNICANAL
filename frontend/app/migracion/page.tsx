@@ -15,6 +15,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
+  CalendarCheck,
   CheckCircle2,
   ChevronDown,
   Database,
@@ -78,6 +80,22 @@ interface GrupoError {
   ejemplo_payload: string | null;
 }
 
+/* Camino al corte: actas de migration.reconciliation_runs (crons 06:30/06:45) */
+interface DeltaDominio {
+  dominio: string;
+  etiqueta: string;
+  racha: number;
+  objetivo: number;
+  ultima: { ts: string; resultado: string } | null;
+  historial: { fecha: string; resultado: string }[];
+}
+
+interface DeltasResp {
+  disponible: boolean;
+  objetivo: number;
+  dominios: DeltaDominio[];
+}
+
 /* ── Estilo de los estados (verde=ok, rojo=error, ámbar=apagado, gris=gap) ── */
 
 const ESTILO_ESTADO: Record<string, { chip: string; label: string }> = {
@@ -100,6 +118,7 @@ export default function MigracionPage() {
   const [conResueltos, setConResueltos] = useState(false);
   const [errCarga, setErrCarga] = useState<string | null>(null);
   const [resolviendo, setResolviendo] = useState<string | null>(null);
+  const [deltas, setDeltas] = useState<DeltasResp | null>(null);
 
   const cargar = useCallback(async () => {
     try {
@@ -127,16 +146,48 @@ export default function MigracionPage() {
     }
   }, [conResueltos]);
 
+  const cargarDeltas = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/migracion/deltas`, { cache: "no-store" });
+      setDeltas(await r.json());
+    } catch {
+      /* vista informativa: sin actas no se rompe la página */
+    }
+  }, []);
+
   useEffect(() => {
     cargar();
     cargarErrores();
+    cargarDeltas();
     const t = setInterval(cargar, 5000);          // feed en vivo cada 5 s
     const t2 = setInterval(cargarErrores, 15000); // errores cada 15 s
+    const t3 = setInterval(cargarDeltas, 60000);  // actas cada 60 s (cambian 1 vez al día)
     return () => {
       clearInterval(t);
       clearInterval(t2);
+      clearInterval(t3);
     };
-  }, [cargar, cargarErrores]);
+  }, [cargar, cargarErrores, cargarDeltas]);
+
+  /* Serie de actividad del espejo: eventos ok/error por minuto (últimos 30) */
+  const serie = useMemo(() => {
+    const MIN = 30;
+    const ahora = Date.now();
+    const buckets = Array.from({ length: MIN }, (_, i) => ({
+      t: ahora - (MIN - 1 - i) * 60000,
+      ok: 0,
+      error: 0,
+    }));
+    for (const ev of eventos) {
+      const idx = MIN - 1 - Math.floor((ahora - new Date(ev.ts).getTime()) / 60000);
+      if (idx >= 0 && idx < MIN) {
+        if (ev.ok) buckets[idx].ok += 1;
+        else buckets[idx].error += 1;
+      }
+    }
+    return buckets;
+  }, [eventos]);
+  const maxSerie = Math.max(1, ...serie.map((b) => b.ok + b.error));
 
   const resolver = async (g: GrupoError) => {
     const key = `${g.archivo_py}|${g.tabla_origen}|${g.error_tipo}`;
@@ -249,6 +300,123 @@ export default function MigracionPage() {
 
       {tab === "espejo" && (
         <>
+          {/* Camino al corte: racha de actas en cero por dominio (criterio: 14) */}
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-slate-500">
+            <CalendarCheck size={15} /> Camino al corte — actas de deltas en cero
+          </h2>
+          <div className="mb-6 grid gap-3 md:grid-cols-2">
+            {!deltas?.disponible && (
+              <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-400 md:col-span-2">
+                Sin acceso a las actas (BD kubera no configurada en este ambiente).
+              </div>
+            )}
+            {(deltas?.dominios || []).map((d) => {
+              const completo = d.racha >= d.objetivo;
+              const dias = d.historial.slice(-d.objetivo);
+              const faltantes = Math.max(0, d.objetivo - dias.length);
+              return (
+                <div key={d.dominio} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mb-2 flex items-center gap-3">
+                    <span className="text-sm font-bold text-slate-800">{d.etiqueta}</span>
+                    <span className="font-mono text-[11px] text-slate-400">{d.dominio}</span>
+                    {d.ultima && (
+                      <span
+                        className={`ml-auto rounded-full px-2.5 py-1 text-[10.5px] font-bold uppercase ${
+                          d.ultima.resultado === "ok"
+                            ? "bg-emerald-100 text-emerald-700"
+                            : "bg-rose-100 text-rose-700"
+                        }`}
+                      >
+                        última: {d.ultima.resultado} · {fmtHora(d.ultima.ts)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mb-2 flex items-baseline gap-2">
+                    <span className={`text-2xl font-extrabold tabular-nums ${completo ? "text-emerald-600" : "text-slate-900"}`}>
+                      {d.racha}
+                    </span>
+                    <span className="text-sm text-slate-500">/ {d.objetivo} días consecutivos en cero</span>
+                    {completo && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-bold text-emerald-700">
+                        listo para corte
+                      </span>
+                    )}
+                  </div>
+                  <div className="mb-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className={`h-full rounded-full transition-all ${completo ? "bg-emerald-500" : "bg-indigo-500"}`}
+                      style={{ width: `${Math.min(100, (d.racha / d.objetivo) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {Array.from({ length: faltantes }, (_, i) => (
+                      <span key={`f${i}`} className="h-3 w-3 rounded-full bg-slate-100" title="sin acta" />
+                    ))}
+                    {dias.map((h) => (
+                      <span
+                        key={h.fecha}
+                        className={`h-3 w-3 rounded-full ${
+                          h.resultado === "ok" ? "bg-emerald-500" : "bg-rose-500"
+                        }`}
+                        title={`${h.fecha}: ${h.resultado}`}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Actividad del espejo: eventos ok/error por minuto (últimos 30 min) */}
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-slate-500">
+            <BarChart3 size={15} /> Actividad del espejo (30 min)
+          </h2>
+          <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            {serie.every((b) => b.ok + b.error === 0) ? (
+              <div className="py-6 text-center text-sm text-slate-400">
+                Sin actividad en los últimos 30 minutos — los eventos aparecen aquí
+                al instante cuando un escritor espejado guarda algo.
+              </div>
+            ) : (
+              <>
+                <div className="flex h-24 items-end gap-[3px]">
+                  {serie.map((b) => (
+                    <div
+                      key={b.t}
+                      className="flex flex-1 flex-col justify-end gap-[1px]"
+                      title={`${fmtHora(new Date(b.t).toISOString())} — ${b.ok} ok · ${b.error} error`}
+                    >
+                      {b.error > 0 && (
+                        <div
+                          className="w-full rounded-t-sm bg-rose-400"
+                          style={{ height: `${(b.error / maxSerie) * 100}%` }}
+                        />
+                      )}
+                      {b.ok > 0 && (
+                        <div
+                          className={`w-full bg-emerald-400 ${b.error === 0 ? "rounded-t-sm" : ""}`}
+                          style={{ height: `${(b.ok / maxSerie) * 100}%` }}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-1.5 flex justify-between text-[11px] text-slate-400">
+                  <span>{fmtHora(new Date(serie[0].t).toISOString())}</span>
+                  <span className="flex items-center gap-3">
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full bg-emerald-400" /> ok
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-full bg-rose-400" /> error
+                    </span>
+                  </span>
+                  <span>ahora</span>
+                </div>
+              </>
+            )}
+          </div>
+
           {/* Tarjetas por escritor */}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {(estado?.escritores || []).map((e, i) => {

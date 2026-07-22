@@ -7,12 +7,15 @@ centralizada "kubera" a nivel archivo.py → tabla (services/kubera_mirror.py):
   GET  /api/migracion/estado            censo + contadores + flags
   GET  /api/migracion/eventos           ring buffer (últimos 500 intentos)
   GET  /api/migracion/errores           errores agrupados (plan de limpieza)
+  GET  /api/migracion/deltas            camino al corte: actas + racha 14 días
   POST /api/migracion/errores/resolver  marca un grupo como resuelto
 
 Todo es de LECTURA salvo el POST, que solo marca filas de la bitácora local
 `espejo_kubera_log` (MySQL) como resueltas — lleva la API key del piloto.
 """
 from __future__ import annotations
+
+from datetime import timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -36,6 +39,77 @@ def eventos(limit: int = 100):
 @router.get("/errores")
 def errores(incluir_resueltos: bool = False):
     return {"grupos": kubera_mirror.errores_agrupados(incluir_resueltos)}
+
+
+# Etiquetas humanas de los dominios auditados por los crons de deltas
+_DOMINIOS_DELTAS = {
+    "costing-deltas": "Costos",
+    "channel-deltas": "Channel",
+}
+OBJETIVO_RACHA = 14  # regla de corte de la migración: 14 actas seguidas en cero
+
+
+@router.get("/deltas")
+def deltas(dias: int = 45):
+    """Camino al corte: lee las actas de migration.reconciliation_runs (BD
+    kubera) y calcula, por dominio, la racha de días consecutivos con delta=0.
+
+    Solo lectura, best-effort: si la BD kubera no está configurada o falla la
+    consulta, devuelve disponible=false y la página lo muestra sin romperse.
+    Un día cuenta como "en cero" si su ÚLTIMA acta del día salió resultado='ok'
+    (una re-corrida que corrige un delta el mismo día conserva el día).
+    """
+    from services import supabase_db as sdb  # import tardío: opcional en local
+
+    if not sdb.disponible():
+        return {"disponible": False, "objetivo": OBJETIVO_RACHA, "dominios": []}
+    try:
+        filas = sdb.fetch_all(
+            "select dominio, resultado, conteos, created_at "
+            "from migration.reconciliation_runs "
+            "where dominio = any(%(dominios)s) "
+            "  and created_at >= now() - make_interval(days => %(dias)s) "
+            "order by created_at asc",
+            {"dominios": list(_DOMINIOS_DELTAS), "dias": max(OBJETIVO_RACHA, min(dias, 120))},
+        )
+    except Exception as exc:  # noqa: BLE001 — la vista es informativa
+        return {"disponible": False, "error": str(exc)[:200],
+                "objetivo": OBJETIVO_RACHA, "dominios": []}
+
+    dominios = []
+    for dom, etiqueta in _DOMINIOS_DELTAS.items():
+        actas = [f for f in filas if f["dominio"] == dom]
+        # última acta de cada día (UTC) manda
+        por_dia: dict = {}
+        for f in actas:
+            ts = f["created_at"]
+            dia = ts.astimezone(timezone.utc).date()
+            por_dia[dia] = f  # asc: la última del día queda
+        historial = [
+            {"fecha": d.isoformat(), "resultado": por_dia[d]["resultado"]}
+            for d in sorted(por_dia)
+        ]
+        # racha: días CONSECUTIVOS en 'ok' terminando en el día más reciente
+        racha = 0
+        if por_dia:
+            dia = max(por_dia)
+            while dia in por_dia and por_dia[dia]["resultado"] == "ok":
+                racha += 1
+                dia = dia - timedelta(days=1)
+        ultima = actas[-1] if actas else None
+        dominios.append({
+            "dominio": dom,
+            "etiqueta": etiqueta,
+            "racha": racha,
+            "objetivo": OBJETIVO_RACHA,
+            "ultima": None if ultima is None else {
+                "ts": ultima["created_at"].isoformat(),
+                "resultado": ultima["resultado"],
+                "conteos": ultima["conteos"],
+            },
+            "historial": historial[-OBJETIVO_RACHA:],
+        })
+    return {"disponible": True, "objetivo": OBJETIVO_RACHA, "dominios": dominios}
 
 
 class ResolverGrupo(BaseModel):
