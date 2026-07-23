@@ -415,8 +415,10 @@ def _up_product_media(cur, p: dict[str, Any]) -> None:
 def _up_channel_orders(cur, p: dict[str, Any]) -> None:
     """channel.orders — PK (canal, cuenta, external_order_id). Fiel a la
     semántica de MySQL pedidos_ml: el conflicto solo mueve wc_order_id y los
-    estados (total/comisión/skus/creado_at quedan CONGELADOS al primer
-    registro, igual que el pedido histórico)."""
+    estados; total/skus/creado_at quedan CONGELADOS al primer registro
+    (el pedido histórico). La COMISIÓN sigue la regla v0.17.0 del origen:
+    un 0 nunca calculado SÍ se rellena (0 → valor real), pero un valor ya
+    puesto jamás se re-toca — misma cláusula que el ON DUPLICATE de MySQL."""
     cur.execute(
         """insert into channel.orders
              (external_order_id, canal, cuenta, wc_order_id, estado_canal,
@@ -426,6 +428,9 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
              wc_order_id  = excluded.wc_order_id,
              estado_canal = excluded.estado_canal,
              estado_wc    = excluded.estado_wc,
+             comision     = case when channel.orders.comision = 0
+                                 then excluded.comision
+                                 else channel.orders.comision end,
              actualizado_at = now()""",
         (str(p.get("external_order_id") or ""), p.get("canal"), p.get("cuenta"),
          p.get("wc_order_id"), p.get("estado_canal"), p.get("estado_wc"),
