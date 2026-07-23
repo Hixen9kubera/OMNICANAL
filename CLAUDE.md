@@ -2,7 +2,7 @@
 
 > Este archivo existe para que cualquier sesión de Claude (u otra persona)
 > entienda el proyecto SIN leer todo el historial. Última gran actualización:
-> **2026-07-20 (v0.12.0)**. El changelog detallado versión por versión vive en
+> **2026-07-23 (v0.16.3)**. El changelog detallado versión por versión vive en
 > [README.md](README.md) (sección "bitácora").
 
 ## Qué es esto
@@ -103,7 +103,7 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 | Atributos ML (IA) | `backend/services/ml_atributos.py` | Prompt canónico + DeepSeek; guarda metas `ml_attr_<ID>` (lo que lee el publisher) |
 | Tipo Amazon (picker) | `backend/routers/publicar.py` + `frontend/components/TipoAmazonPicker.tsx` | Ver/buscar/guardar product type; prioridad panel |
 | Sync Odoo→Woo | `backend/services/sync_woo.py` (`POST /api/sync/woo`) | Barrido stock+costos, solo diferencias |
-| Espejo kubera + /migracion | `backend/services/kubera_mirror.py` + `routers/migracion.py` + `frontend/app/migracion/` | Dual-write PROPIO (v0.13.0) de los escritores sin cobertura del compañero hacia la BD kubera (esquema v4); censo hardcodeado, errores en `espejo_kubera_log`, panel en tiempo real (+racha de actas v0.14.0). Pool 6 + reproceso de errores pendientes (v0.15.2, Eduardo) y despacho por cola acotada + 2 workers (v0.15.3). GAP de pedidos CERRADO en v0.16.0: `channel.orders` aplicada por Eduardo (2026-07-22) y seam en `pedidos_ml.sincronizar` — se enciende agregando `pedidos_ml` a `KUBERA_MIRROR_TABLAS` |
+| Espejo kubera + /migracion | `backend/services/kubera_mirror.py` + `routers/migracion.py` + `frontend/app/migracion/` | Dual-write PROPIO (v0.13.0) de los escritores sin cobertura del compañero hacia la BD kubera (esquema v4); censo hardcodeado, errores en `espejo_kubera_log`, panel en tiempo real (+racha de actas v0.14.0). Pool 6 + reproceso de errores pendientes (v0.15.2, Eduardo) y despacho por cola acotada + 2 workers (v0.15.3). GAP de pedidos CERRADO en v0.16.0: `channel.orders` aplicada por Eduardo (2026-07-22) y seam en `pedidos_ml.sincronizar`, ENCENDIDO el 23-jul (dale de Eduardo). Backfills one-shot idempotentes vía `POST /api/migracion/backfill/*`: `product-media` (254 imágenes históricas) y `channel-orders` (3,546 pedidos desde el 13-may, 0 fallos; por tandas con `offset` — la corrida completa excede el timeout del proxy). `channel.orders` está COMPLETO: histórico + flujo vivo (v0.16.1–v0.16.3) |
 
 **Tablas propias en MySQL (`u531713409_kubera_ml`)**: `pedidos_ml`,
 `ventas_horarias`, `ventas_sync`, `webhook_eventos` (campana; los webhooks YA
@@ -124,7 +124,7 @@ lectura directa OK, DDL/DML no.
 | `SYNC_ENABLED` | true | Sync inventario 15 min (alimenta migración) |
 | `VENTAS_ML_REFRESH` | false | Tab Ventas NO consulta la API de ML (modo pedidos) |
 | `PEDIDOS_AMAZON_*` / `PEDIDOS_M2E_*` / `M2E_API_TOKEN` | activos | Sondeos Amazon / Temu-TikTok |
-| `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | **true** / definida / `crear_logs` | Espejo kubera de escritores sin cobertura → esquema v4 (encendido gradual desde 23-jul). Sumar tabla al CSV = flujo vivo, dale de Brandon (siguiente candidata: `pedidos_ml`, seam listo v0.16.0). La página /migracion muestra censo, eventos, errores y racha de actas |
+| `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | **true** / definida / `crear_logs,ml_backlog,amazon_backlog,amazon_imagenes,ml_image_edit_backlog,pedidos_ml` | Espejo kubera de escritores sin cobertura → esquema v4 (6 tablas desde el 23-jul, GO de Eduardo). Sumar tabla al CSV = flujo vivo, dale de Brandon. Quedan FUERA a propósito: `webhook_eventos` campana (opcional, volumen) y `ml_tokens` (bloqueado hasta Vault). La página /migracion muestra censo, eventos, errores y racha de actas |
 | Apagado de emergencia | — | Cualquier flujo se apaga con su variable, sin deploy (accept-deploy para aplicar staged) |
 
 ## Integraciones y sus mañas
@@ -160,7 +160,15 @@ lectura directa OK, DDL/DML no.
    construido) y **webhook de WooCommerce** para ventas web (no construido —
    las ventas web NO aparecen en el tab aún).
 7. **SKUs reciclados** con título distinto en ML vs Woo: `TEC-0492-MUL`,
-   `ORG-0398-NEG`, `ORG-0579-*` (corregir a mano).
+   `ORG-0398-NEG`, `ORG-0579-*`, y (detectados 22-jul) `ORG-0934`,
+   `MAN-0490-DOR`. Caso especial `EST-0091`: es DOS productos — cómoda en
+   BEKURA (nueva) y repisa flotante VIVA en SANCORFASHION (pausada, 40 pzas
+   declaradas; ML no deja eliminarla mientras su user product tenga stock).
+   PLAYBOOK desde v0.15.0: dar de baja las publicaciones viejas en ML →
+   botón Publicar → el panel detecta la baja y re-crea pausada por cuenta
+   (ya NO se limpia `ml_progress` a mano). Regenerar en Crear NO recalcula
+   costos ni toca publicaciones existentes — revisar categoría y regenerar
+   costos antes de publicar un SKU reciclado.
 8. Seguridad heredada: API sin auth real (la de José va en rollout gradual);
    `client_secret` de ML expuesto en el repo externo `publicador` (rotación
    manual pendiente).
@@ -175,6 +183,13 @@ lectura directa OK, DDL/DML no.
   todos; días pre-17-jul parciales; ML dashboard cuenta distinto).
 - **"El espejo CHANNEL no escribe"** → ¿`SYNC_ENABLED`? (alimenta
   `canal_inventario`, fuente del espejo).
+- **"ERROR DE CONEXIÓN al publicar"** → mensaje genérico del frontend para
+  CUALQUIER fallo del fetch: puede ser un 500 del backend (ver logs Railway
+  de `/api/publicar/confirmar`) o el navegador del usuario bloqueando la
+  petición (extensión/antivirus: probar incógnito; caso 22-jul). Desde
+  v0.15.1 los errores de validación de ML sí llegan legibles al modal.
+- **Errores del espejo kubera** → /migracion sección Errores; re-aplicar con
+  `POST /api/migracion/errores/reprocesar` (escribe y marca resuelto).
 - **Deploys**: Railway project `66831425-3b47-4fda-8a8b-4b2b5f3df3e2`;
   BackendOmnicanal `96c29d05…`, FrontendOmnicanal `3ec32033…`. Variables vía
   agent quedan STAGED → `accept-deploy` para aplicarlas.
