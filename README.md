@@ -1512,15 +1512,6 @@ Cuatro arreglos pedidos por Brandon (2026-07-23):
    solo `precio_regular`) publican con el **precio regular**, nunca el de oferta.
    El Estudio precarga `precio_regular = precio_base` (no `precio_sugerido`).
 
-### v0.17.1 — El espejo de pedidos adopta la regla de comisión 0→valor
-
-La corrección v0.17.0 (641 comisiones rellenadas en MySQL) dejó a
-`channel.orders` retratando el pasado: sus comisiones seguían congeladas en 0
-y el comparador `orders-deltas` habría roto la racha (con razón) en su día 2.
-`_up_channel_orders` adopta la MISMA cláusula que el ON DUPLICATE de MySQL:
-`comision = 0 → excluded.comision`, nunca re-tocar un valor ya puesto. Se
-re-corrieron las tandas del backfill para propagar las 641 correcciones y el
-comparador verificó paridad. Versión 0.17.1.
 
 ---
 
@@ -1550,6 +1541,15 @@ comparador verificó paridad. Versión 0.17.1.
   variable `inprogress` con EST/IND/MAT/QUE. (Nota: los sufijos de talla se
   parsean como `Modelo: Ind/Mat/Que` y `EST` cae en `Color: Estampado` — imperfecto
   pero irrelevante para ML, que recibe el padre como simple.)
+### v0.17.2 — El espejo de pedidos adopta la regla de comisión 0→valor
+
+La corrección v0.17.0 (641 comisiones rellenadas en MySQL) dejó a
+`channel.orders` retratando el pasado: sus comisiones seguían congeladas en 0
+y el comparador `orders-deltas` habría roto la racha (con razón) en su día 2.
+`_up_channel_orders` adopta la MISMA cláusula que el ON DUPLICATE de MySQL:
+`comision = 0 → excluded.comision`, nunca re-tocar un valor ya puesto. Se
+re-corrieron las tandas del backfill para propagar las 641 correcciones y el
+comparador verificó paridad. Versión 0.17.2.
 
 ---
 
