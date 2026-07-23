@@ -637,7 +637,7 @@ _BACKFILL_CANAL = {
 }
 
 
-def backfill_channel_orders(max_items: int = 5000) -> dict[str, Any]:
+def backfill_channel_orders(max_items: int = 5000, offset: int = 0) -> dict[str, Any]:
     """Copia el histórico pedidos_ml (MySQL) → channel.orders.
 
     One-shot e idempotente: usa el mismo upsert del seam v0.16.0, cuyo
@@ -653,8 +653,8 @@ def backfill_channel_orders(max_items: int = 5000) -> dict[str, Any]:
     filas = db.fetch_all(
         """SELECT ml_order_id, cuenta, wc_order_id, estado_ml, estado_wc,
                   total, comision, es_full, skus, creado
-           FROM pedidos_ml ORDER BY creado LIMIT %s""",
-        (int(max_items),),
+           FROM pedidos_ml ORDER BY creado LIMIT %s OFFSET %s""",
+        (int(max_items), int(offset)),
     )
     aplicadas = fallidas = 0
     errores: list[dict[str, Any]] = []

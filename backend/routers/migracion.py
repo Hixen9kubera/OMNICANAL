@@ -142,8 +142,10 @@ def backfill_product_media(max_items: int = 1000):
 
 
 @router.post("/backfill/channel-orders", dependencies=[Depends(requiere_api_key)])
-def backfill_channel_orders(max_items: int = 5000):
+def backfill_channel_orders(max_items: int = 5000, offset: int = 0):
     """Copia el histórico pedidos_ml → channel.orders (one-shot, idempotente:
     los pedidos ya espejados en vivo no se alteran — el conflicto congela
-    total/comisión/skus/creado_at). Reporta cada pedido fallido."""
-    return kubera_mirror.backfill_channel_orders(max_items)
+    total/comisión/skus/creado_at). Reporta cada pedido fallido. Usar
+    max_items+offset en tandas (p. ej. 500) para no chocar con el timeout
+    del proxy en corridas grandes."""
+    return kubera_mirror.backfill_channel_orders(max_items, offset)

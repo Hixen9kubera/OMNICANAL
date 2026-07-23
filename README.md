@@ -1448,6 +1448,13 @@ histórico vienen del CSV MySQL truncado a 255 (los pedidos en vivo llevan el
 array completo). Reporta cada pedido fallido (hasta 100) para revisión.
 Versión 0.16.2.
 
+### v0.16.3 — Backfill de pedidos por tandas (offset)
+
+La corrida completa (3,522 upserts seriales) excede el timeout del proxy de
+Railway: la respuesta (con el reporte de fallos) se perdía aunque el trabajo
+terminara en el servidor. `backfill_channel_orders` acepta `offset` y se
+corre en tandas de ~500 que sí regresan su reporte. Versión 0.16.3.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
