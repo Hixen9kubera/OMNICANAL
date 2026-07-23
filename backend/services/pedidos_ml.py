@@ -44,9 +44,20 @@ from datetime import datetime, timezone
 import httpx
 
 from config import settings
-from services import db, meli
+from services import db, kubera_mirror, meli
 
 log = logging.getLogger("omnicanal.pedidos_ml")
+
+# Espejo kubera: cuenta → (canal v4, archivo origen del censo, función). Los
+# pedidos de Amazon/M2E entran por sincronizar() pero su tarjeta en /migracion
+# es la de su sondeo — así los contadores cuentan donde el censo los espera.
+_ESPEJO_ORIGEN = {
+    "BEKURA": ("mercado_libre", "services/pedidos_ml.py", "sincronizar"),
+    "SANCORFASHION": ("mercado_libre", "services/pedidos_ml.py", "sincronizar"),
+    "AMAZON": ("amazon", "services/pedidos_amazon.py", "→ pedidos_ml.sincronizar"),
+    "TEMU": ("temu", "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"),
+    "TIKTOK": ("tiktok", "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"),
+}
 
 _WC = f"{settings.wc_url.rstrip('/')}/wp-json/wc/v3"
 _AUTH = (settings.wc_consumer_key, settings.wc_consumer_secret)
@@ -299,6 +310,22 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                 (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
                  orden["total"], comision, 1 if orden.get("es_full") else 0,
                  ",".join(s for s in skus if s)[:255], creado, ahora))
+        # Espejo kubera: el pedido viaja a channel.orders (DDL aplicado el
+        # 2026-07-22 con GO de Eduardo). El array de SKUs va COMPLETO — el CSV
+        # de MySQL trunca a 255; en conflicto solo se mueven estados (el total
+        # congelado no se re-toca, igual que aquí).
+        cuenta = orden["cuenta"]
+        canal, origen_py, funcion = _ESPEJO_ORIGEN.get(
+            cuenta, (str(orden.get("detalle") or cuenta).lower(),
+                     "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"))
+        kubera_mirror.espejar(
+            origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
+            {"external_order_id": str(order_id), "canal": canal, "cuenta": cuenta,
+             "wc_order_id": wc_id, "estado_canal": str(orden.get("estado") or ""),
+             "estado_wc": payload["status"], "total": orden["total"],
+             "comision": comision, "es_fulfillment": bool(orden.get("es_full")),
+             "skus": [s for s in skus if s], "creado_at": creado},
+            clave=f"{cuenta}:{order_id}")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
 

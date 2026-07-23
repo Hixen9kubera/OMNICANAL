@@ -1367,6 +1367,58 @@ por Eduardo):
   ilegibles se saltan y se reportan. A diferencia de `/errores/resolver`
   (que solo marca), este SÍ escribe los datos perdidos. Versión 0.15.2.
 
+### v0.15.3 — Espejo kubera: cola acotada + 2 workers (la ráfaga ya no puede tirar intentos)
+
+**Mismo incidente que v0.15.2, atacado de raíz** (los dos fixes se
+complementan: se desarrollaron en paralelo y este se montó encima). Con el
+despacho original (un hilo por intento y ~420 ms por escritura a Supabase),
+CUALQUIER ráfaga con más concurrencia que el pool pierde intentos — subir el
+pool a 6 aleja el umbral pero no lo elimina (~10% perdido en la del 23-jul).
+
+**Fix (`services/kubera_mirror.py`):** `espejar()` ya no despacha hilos — solo
+hace `put_nowait` en **colas acotadas (500 c/u)** que drenan **2 workers
+daemon** con **afinidad por clave**: la misma (tabla, clave) cae siempre en el
+mismo worker → los eventos de una misma orden/SKU se aplican en orden FIFO
+(dos updates en ráfaga no pueden invertirse — carrera real cazada por la
+prueba local); claves distintas van en paralelo. ≤2 conexiones en uso del
+pool de 6: el pool no puede agotarse por ráfagas y quedan 4 para
+`reprocesar_errores`. El llamador sigue sin esperar nada (100 llamadas
+encoladas en 1.2 ms, medido). Cola llena (≈7 min de ráfaga sostenida) = el
+intento se descarta PERO queda como evento `ColaLlenaError` en memoria (sin
+escribir MySQL en el camino crítico). Probado contra Postgres local: ráfaga
+de 100 → 100 espejadas, 0 perdidas, 0 TooManyConnections, y orden por clave
+verificado. Con esto: la cola PREVIENE pérdidas nuevas y el reproceso de
+v0.15.2 RECUPERA las históricas — tras correrlo, el grupo
+`TooManyConnectionsError` queda saldado.
+
+### v0.16.0 — Pedidos espejados a `channel.orders` (GAP cerrado con el GO de Eduardo)
+
+Eduardo aplicó el DDL propuesto (`docs/arquitectura_bd/propuesta_ops_orders.sql`,
+2026-07-22) en la BD kubera — `channel.orders` + trigger touch + el índice
+único `uq_product_media_sku_kind_url` en `enrich.product_media` — y dejó como
+siguiente paso el seam. Hecho:
+
+- **`services/pedidos_ml.py::sincronizar`**: tras el upsert exitoso en MySQL
+  `pedidos_ml`, el pedido viaja a `channel.orders` vía `kubera_mirror.espejar`.
+  El mapeo cuenta→canal/tarjeta: BEKURA/SANCORFASHION→`mercado_libre`
+  (tarjeta pedidos_ml.py), AMAZON→`amazon` (tarjeta pedidos_amazon.py),
+  TEMU/TIKTOK→`temu`/`tiktok` (tarjeta pedidos_m2e.py) — los contadores de
+  /migracion cuentan donde el censo los espera.
+- **Semántica FIEL a MySQL**: en conflicto (PK canal+cuenta+orden) solo se
+  mueven `wc_order_id`/estados/`actualizado_at`; total, comisión, skus y
+  creado_at quedan CONGELADOS al primer registro. Bonus: `skus` va como array
+  citext[] COMPLETO (el CSV de MySQL trunca a 255 chars).
+- `enrich.product_media` pasa a upsert **atómico** (`ON CONFLICT` sobre el
+  índice nuevo) — se retira el update-else-insert.
+- Censo: las 3 entradas de pedidos pasan de `gap_sin_destino` a `a_espejar`.
+- Probado contra Postgres local con el DDL aplicado: alta + re-envío (no
+  duplica, estado se mueve, total congelado), FK de canal OK para
+  amazon/temu, atribución por tarjeta correcta.
+
+**OJO — sigue INERTE en producción**: `KUBERA_MIRROR_TABLAS=crear_logs` no
+incluye `pedidos_ml`; espejar pedidos se enciende agregando `pedidos_ml` al
+CSV (dale de Brandon). Versión 0.16.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

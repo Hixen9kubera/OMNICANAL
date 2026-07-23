@@ -15,8 +15,8 @@ y NO se duplica aquí.
 
 Propiedades innegociables (misión 2026-07-22):
   - Un error del espejo JAMÁS interrumpe ni degrada el flujo actual: `espejar()`
-    no lanza, no bloquea (fire-and-forget en executor/hilo daemon) y la conexión
-    tiene timeout corto.
+    no lanza, no bloquea (solo encola; 2 workers daemon drenan en serie) y la
+    conexión tiene timeout corto.
   - Se invoca DESPUÉS de la escritura MySQL exitosa, nunca antes.
   - Cada intento queda en el ring buffer (últimos 500) + contadores por
     (archivo, tabla); los ERRORES además se persisten en la tabla LOCAL MySQL
@@ -30,10 +30,10 @@ estado de sesión; los timeouts se fijan con set_config(..., true) = SET LOCAL.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
+import queue
 import threading
 import time
 from collections import deque
@@ -58,20 +58,21 @@ log = logging.getLogger("omnicanal.kubera_mirror")
 # ══════════════════════════════════════════════════════════════════════════════
 CENSO: list[dict[str, Any]] = [
     {"archivo": "services/pedidos_ml.py", "funcion": "sincronizar",
-     "tabla_mysql": "pedidos_ml", "tabla_kubera": None,
+     "tabla_mysql": "pedidos_ml", "tabla_kubera": "channel.orders",
      "operacion": "UPSERT", "disparador": "webhook orders_v2 (segundos)",
-     "estado": "gap_sin_destino",
-     "nota": "El modelo v4 no tiene dominio de pedidos. Propuesta de DDL en "
-             "docs/arquitectura_bd/propuesta_ops_orders.sql — pendiente de "
-             "confirmación (Eduardo). Cubre también Amazon y M2E."},
+     "estado": "a_espejar",
+     "nota": "GAP CERRADO: DDL channel.orders aplicado el 2026-07-22 con GO de "
+             "Eduardo (propuesta_ops_orders.sql). Ventas BEKURA/SANCORFASHION."},
     {"archivo": "services/pedidos_amazon.py", "funcion": "→ pedidos_ml.sincronizar",
-     "tabla_mysql": "pedidos_ml", "tabla_kubera": None,
+     "tabla_mysql": "pedidos_ml", "tabla_kubera": "channel.orders",
      "operacion": "UPSERT", "disparador": "sondeo SP-API cada 5 min",
-     "estado": "gap_sin_destino", "nota": "Mismo gap (reutiliza pedidos_ml)."},
+     "estado": "a_espejar",
+     "nota": "Mismo seam en pedidos_ml.sincronizar (cuenta AMAZON → canal amazon)."},
     {"archivo": "services/pedidos_m2e.py", "funcion": "→ pedidos_ml.sincronizar",
-     "tabla_mysql": "pedidos_ml", "tabla_kubera": None,
+     "tabla_mysql": "pedidos_ml", "tabla_kubera": "channel.orders",
      "operacion": "UPSERT", "disparador": "sondeo M2E cada 10 min",
-     "estado": "gap_sin_destino", "nota": "Mismo gap (reutiliza pedidos_ml)."},
+     "estado": "a_espejar",
+     "nota": "Mismo seam (cuentas TEMU/TIKTOK → canal temu/tiktok)."},
     {"archivo": "routers/webhooks.py", "funcion": "_guardar/_guardar_supabase",
      "tabla_mysql": "webhook_eventos", "tabla_kubera": "ops.webhook_events",
      "operacion": "INSERT", "disparador": "webhook ML (ráfagas)",
@@ -133,8 +134,8 @@ CENSO: list[dict[str, Any]] = [
      "tabla_mysql": "amazon_imagenes", "tabla_kubera": "enrich.product_media",
      "operacion": "UPSERT", "disparador": "pipeline imágenes Amazon",
      "estado": "a_espejar",
-     "nota": "kind='amazon'. OJO: product_media no tiene UNIQUE (sku,kind,"
-             "source_url) — se emula con update-else-insert; proponer índice."},
+     "nota": "kind='amazon'. Upsert atómico vía uq_product_media_sku_kind_url "
+             "(índice creado por Eduardo 2026-07-22)."},
     {"archivo": "services/imagenes_editor.py", "funcion": "_backlog",
      "tabla_mysql": "ml_image_edit_backlog", "tabla_kubera": "ops.channel_submissions",
      "operacion": "INSERT", "disparador": "UI editor de imágenes IA",
@@ -219,25 +220,79 @@ def _get_pool():
 
 # ══════════════════════════════════════════════════════════════════════════════
 # API pública: espejar() — fire-and-forget, jamás lanza, jamás bloquea
+#
+# Despacho por COLAS ACOTADAS + workers dedicados (v0.15.3). El diseño original
+# lanzaba un hilo/tarea por llamada: en ráfagas (crear_producto emite decenas
+# de logs en segundos y cada escritura a Supabase tarda ~400 ms) más de 3
+# trabajos concurrentes agotaban el pool (blocking=False) y ~10% de los
+# intentos moría en TooManyConnectionsError (60 errores reales capturados en
+# producción el 23-jul; complementa el pool 3→6 + reproceso de v0.15.2).
+# Una cola por worker con AFINIDAD POR CLAVE: ningún intento se pierde por el
+# pool, el llamador no espera nada, y dos eventos de la misma orden/SKU jamás
+# se aplican invertidos (misma clave → mismo worker → FIFO).
 # ══════════════════════════════════════════════════════════════════════════════
+
+_N_WORKERS = 2      # ≤2 conexiones del pool en uso (el pool tiene 6)
+_COLA_MAX = 500     # tope POR COLA; más allá se descarta CON registro
+
+_colas: list[queue.Queue] | None = None
+_workers_lock = threading.Lock()
+
+
+class ColaLlenaError(Exception):
+    """La cola del espejo se llenó (>_COLA_MAX pendientes): intento descartado."""
+
+
+def _asegurar_workers() -> list[queue.Queue]:
+    global _colas
+    if _colas is None:
+        with _workers_lock:
+            if _colas is None:
+                qs = [queue.Queue(maxsize=_COLA_MAX) for _ in range(_N_WORKERS)]
+                for i, q in enumerate(qs):
+                    threading.Thread(target=_worker, args=(q,), daemon=True,
+                                     name=f"kubera-mirror-{i}").start()
+                _colas = qs
+    return _colas
+
+
+def _worker(q: queue.Queue) -> None:
+    while True:
+        args = q.get()
+        try:
+            _trabajar(*args)
+        except Exception as exc:  # noqa: BLE001 — cinturón: _trabajar ya captura todo
+            log.warning("worker del espejo kubera: %s", exc)
+        finally:
+            q.task_done()
+
 
 def espejar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
             operacion: str, payload: dict[str, Any], clave: str | None = None) -> None:
     """Replica una escritura MySQL YA EXITOSA hacia la BD kubera.
 
-    Se llama justo después del INSERT/UPDATE en MySQL. El trabajo real corre en
-    un hilo (executor si hay event loop; hilo daemon si no — varios escritores
-    corren dentro de asyncio.to_thread). Cualquier excepción muere aquí.
+    Se llama justo después del INSERT/UPDATE en MySQL. Solo encola (put_nowait)
+    y regresa; los workers daemon hacen la escritura. Cualquier excepción muere
+    aquí. Si la cola está llena, el intento se descarta pero queda REGISTRADO
+    en memoria (evento ColaLlenaError) — sin tocar MySQL en el camino crítico.
+
+    AFINIDAD POR CLAVE: la misma (tabla, clave) cae siempre en el mismo worker
+    → los eventos de una misma orden/SKU se aplican en orden FIFO (dos updates
+    en ráfaga no pueden invertirse); claves distintas van en paralelo.
     """
     try:
         if not activo(tabla_mysql):
             return
         args = (origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                 dict(payload or {}), clave)
+        colas = _asegurar_workers()
+        idx = hash((tabla_mysql, clave or "")) % len(colas)
         try:
-            asyncio.get_running_loop().run_in_executor(None, _trabajar, *args)
-        except RuntimeError:  # sin loop (hilo worker / script)
-            threading.Thread(target=_trabajar, args=args, daemon=True).start()
+            colas[idx].put_nowait(args)
+        except queue.Full:
+            _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
+                       clave, ok=False, ms=0.0,
+                       exc=ColaLlenaError(f"cola llena ({_COLA_MAX} pendientes)"))
     except Exception as exc:  # noqa: BLE001 — el espejo nunca rompe el flujo
         log.debug("kubera_mirror.espejar (ignorado): %s", exc)
 
@@ -344,21 +399,39 @@ def _up_process_log(cur, p: dict[str, Any]) -> None:
 
 
 def _up_product_media(cur, p: dict[str, Any]) -> None:
-    """enrich.product_media — sin UNIQUE natural en el DDL v4: se emula el
-    upsert con update-else-insert sobre (sku, kind, source_url). Propuesta
-    para Eduardo: índice único (sku, kind, source_url) haría esto atómico."""
-    sku, kind = p.get("sku"), p.get("kind") or "amazon"
-    src = p.get("source_url")
+    """enrich.product_media — upsert atómico sobre el índice único
+    uq_product_media_sku_kind_url (creado por Eduardo el 2026-07-22 a raíz del
+    hallazgo del censo)."""
     cur.execute(
-        "update enrich.product_media set cdn_url = %s where sku = %s and kind = %s and source_url = %s",
-        (p.get("cdn_url"), sku, kind, src),
+        """insert into enrich.product_media (sku, kind, source_url, cdn_url)
+           values (%s,%s,%s,%s)
+           on conflict (sku, kind, source_url)
+           do update set cdn_url = excluded.cdn_url""",
+        (p.get("sku"), p.get("kind") or "amazon", p.get("source_url"),
+         p.get("cdn_url")),
     )
-    if cur.rowcount == 0:
-        cur.execute(
-            """insert into enrich.product_media (sku, kind, source_url, cdn_url)
-               values (%s,%s,%s,%s)""",
-            (sku, kind, src, p.get("cdn_url")),
-        )
+
+
+def _up_channel_orders(cur, p: dict[str, Any]) -> None:
+    """channel.orders — PK (canal, cuenta, external_order_id). Fiel a la
+    semántica de MySQL pedidos_ml: el conflicto solo mueve wc_order_id y los
+    estados (total/comisión/skus/creado_at quedan CONGELADOS al primer
+    registro, igual que el pedido histórico)."""
+    cur.execute(
+        """insert into channel.orders
+             (external_order_id, canal, cuenta, wc_order_id, estado_canal,
+              estado_wc, total, comision, es_fulfillment, skus, creado_at)
+           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::citext[],%s)
+           on conflict (canal, cuenta, external_order_id) do update set
+             wc_order_id  = excluded.wc_order_id,
+             estado_canal = excluded.estado_canal,
+             estado_wc    = excluded.estado_wc,
+             actualizado_at = now()""",
+        (str(p.get("external_order_id") or ""), p.get("canal"), p.get("cuenta"),
+         p.get("wc_order_id"), p.get("estado_canal"), p.get("estado_wc"),
+         p.get("total"), p.get("comision"), bool(p.get("es_fulfillment")),
+         list(p.get("skus") or []), p.get("creado_at")),
+    )
 
 
 _UPSERTS: dict[str, Callable] = {
@@ -366,6 +439,7 @@ _UPSERTS: dict[str, Callable] = {
     "ops.channel_submissions": _up_channel_submissions,
     "ops.process_log": _up_process_log,
     "enrich.product_media": _up_product_media,
+    "channel.orders": _up_channel_orders,
 }
 
 
