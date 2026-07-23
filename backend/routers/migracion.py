@@ -45,6 +45,7 @@ def errores(incluir_resueltos: bool = False):
 _DOMINIOS_DELTAS = {
     "costing-deltas": "Costos",
     "channel-deltas": "Channel",
+    "orders-deltas": "Pedidos",
 }
 OBJETIVO_RACHA = 14  # regla de corte de la migración: 14 actas seguidas en cero
 

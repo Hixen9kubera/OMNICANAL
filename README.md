@@ -1455,6 +1455,23 @@ Railway: la respuesta (con el reporte de fallos) se perdía aunque el trabajo
 terminara en el servidor. `backfill_channel_orders` acepta `offset` y se
 corre en tandas de ~500 que sí regresan su reporte. Versión 0.16.3.
 
+### v0.16.4 — Comparador orders-deltas: pedidos entra al camino al corte
+
+Nuevo job de paridad `backend/scripts/comparar_orders.py` (patrón de
+comparar_channel: pasada completa → reconfirmación 75 s → acta en
+`migration.reconciliation_runs`, dominio `orders-deltas`) y dominio
+"Pedidos" registrado en `_DOMINIOS_DELTAS` (/migracion muestra su racha).
+Reglas propias del dominio: filas calientes <20 min excluidas (cola del
+espejo), SKUs por SUBCONJUNTO (CSV MySQL trunca a 255 vs array completo),
+`solo_en_supabase` SÍ es delta (sin fusión ETL), `creado_at` no se compara,
+y COMISIÓN 0 en MySQL = no observada (hallazgo real de la 1ª corrida: 7
+pedidos con comisión congelada en 0 cuyo valor correcto solo está en
+Supabase — el espejo más fiel que la fuente). Detalles psycopg2: `skus`
+se lee `::text[]` (citext[] llega como cadena si no). Primera corrida
+limpia el 23-jul: 3,533 vs 3,558 pedidos, DELTA = 0 → racha 1/14.
+Corre como servicio Railway `deltas-orders` (clon de deltas-channel).
+Versión 0.16.4.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
