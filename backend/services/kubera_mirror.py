@@ -589,6 +589,48 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
             "detalle_fallos": detalle_fallos}
 
 
+def backfill_product_media(max_items: int = 1000) -> dict[str, Any]:
+    """Copia el caché histórico amazon_imagenes (MySQL) → enrich.product_media.
+
+    One-shot e idempotente (upsert por el índice único de Eduardo): el espejo
+    en vivo solo captura eventos NUEVOS; esto trae las imágenes procesadas
+    antes del encendido de la tabla. Secuencial, una conexión a la vez —
+    misma disciplina que reprocesar_errores(). De paso sirve de verificación:
+    si el índice único no existiera, el ON CONFLICT fallaría aquí y no en el
+    flujo vivo."""
+    if not disponible():
+        return {"ok": False, "motivo": "KUBERA_DB_URL no configurada."}
+    from services import db
+    filas = db.fetch_all(
+        """SELECT sku, src_url, amz_url FROM amazon_imagenes
+           WHERE sku IS NOT NULL AND src_url IS NOT NULL AND amz_url IS NOT NULL
+           ORDER BY created_at LIMIT %s""",
+        (int(max_items),),
+    )
+    aplicadas = fallidas = 0
+    errores: list[str] = []
+    for f in filas:
+        try:
+            conn = _get_pool().connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("select set_config('statement_timeout', '4000', true)")
+                    cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+                    _up_product_media(cur, {"sku": f["sku"], "kind": "amazon",
+                                            "source_url": f["src_url"],
+                                            "cdn_url": f["amz_url"]})
+                conn.commit()
+            finally:
+                conn.close()
+            aplicadas += 1
+        except Exception as exc:  # noqa: BLE001
+            fallidas += 1
+            if len(errores) < 5:
+                errores.append(f"{f['sku']}: {type(exc).__name__}: {str(exc)[:100]}")
+    return {"ok": True, "leidas": len(filas), "aplicadas": aplicadas,
+            "fallidas": fallidas, "errores": errores}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Lecturas para /api/migracion/* (censo, eventos, errores agrupados)
 # ══════════════════════════════════════════════════════════════════════════════

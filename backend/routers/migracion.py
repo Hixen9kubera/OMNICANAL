@@ -131,3 +131,11 @@ def reprocesar(max_items: int = 500):
     los marca resuelto=1. A diferencia de /errores/resolver, este SÍ escribe
     los datos perdidos en kubera antes de marcar."""
     return kubera_mirror.reprocesar_errores(max_items)
+
+
+@router.post("/backfill/product-media", dependencies=[Depends(requiere_api_key)])
+def backfill_product_media(max_items: int = 1000):
+    """Copia el caché histórico amazon_imagenes → enrich.product_media
+    (one-shot, idempotente vía el índice único). Se corre ANTES de encender
+    amazon_imagenes en KUBERA_MIRROR_TABLAS para arrancar con historial."""
+    return kubera_mirror.backfill_product_media(max_items)

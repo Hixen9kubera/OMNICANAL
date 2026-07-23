@@ -1419,6 +1419,23 @@ siguiente paso el seam. Hecho:
 incluye `pedidos_ml`; espejar pedidos se enciende agregando `pedidos_ml` al
 CSV (dale de Brandon). Versión 0.16.0.
 
+### v0.16.1 — Backfill de amazon_imagenes → enrich.product_media + encendido de tablas
+
+Complemento del monitoreo del espejo (GO de Eduardo). El índice único
+`(sku, kind, source_url)` ya existía (lo creó Eduardo el 22-jul) y el upsert
+atómico llegó en v0.16.0 — faltaba el historial y el encendido:
+
+- **`POST /api/migracion/backfill/product-media?max_items=1000`**: copia
+  one-shot del caché `amazon_imagenes` de MySQL (254 imágenes, 87 SKUs) al
+  destino; idempotente. De paso verifica el índice: sin él, el ON CONFLICT
+  fallaría aquí y no en el flujo vivo.
+- **Tablas encendidas** en `KUBERA_MIRROR_TABLAS`: se suman `amazon_imagenes`
+  y `ml_image_edit_backlog` (quedando: crear_logs, ml_backlog, amazon_backlog,
+  amazon_imagenes, ml_image_edit_backlog). `webhook_eventos` fuera a propósito
+  (volumen + dual-write existente). `pedidos_ml` NO se enciende aún — el seam
+  v0.16.0 está listo pero es flujo de ventas: dale de Brandon pendiente.
+  Versión 0.16.1.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
