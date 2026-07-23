@@ -32,6 +32,10 @@ log = logging.getLogger("omnicanal.publicar_ready")
 
 _CUENTAS_ML = publisher_core.ML_CUENTAS  # ["SANCORFASHION", "BEKURA"]
 
+# Intentos por cuenta al crear en ML (cubre fallos transitorios; los errores
+# deterministas de configuración cortan antes — ver crear_ml).
+MAX_INTENTOS_ML = 3
+
 _configurado = False
 
 
@@ -381,13 +385,33 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
             resultados.append({"cuenta": cuenta, "item_id": "", "ok": False,
                                "error": f"Sin token para {cuenta}", "ml_status": None})
             continue
-        try:
-            r = await asyncio.to_thread(
-                publisher_core.publish_product, dict(prod), token, False, cuenta
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.exception("publish_product reventó (%s / %s)", cuenta, sku)
-            r = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+        # Reintentos: hasta MAX_INTENTOS_ML por cuenta. Es RARO que una cuenta
+        # publique y la otra no (SANCORFASHION fallaba donde BEKURA lograba); un
+        # fallo transitorio (timeout, 5xx, token en transición) se supera al
+        # reintentar. NO se reintentan los errores DETERMINISTAS de configuración
+        # (GTIN real requerido / config manual): el mismo payload fallará igual y
+        # solo spamearía a ML — esos necesitan acción humana, no otro intento.
+        r = {"success": False}
+        intentos = 0
+        for intento in range(1, MAX_INTENTOS_ML + 1):
+            intentos = intento
+            try:
+                r = await asyncio.to_thread(
+                    publisher_core.publish_product, dict(prod), token, False, cuenta
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("publish_product reventó (%s / %s, intento %d)", cuenta, sku, intento)
+                r = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+            if r.get("success"):
+                break
+            if r.get("gtin_error") or r.get("needs_manual_config"):
+                log.info("publish %s/%s: error determinista (%s) — no se reintenta",
+                         cuenta, sku, r.get("error"))
+                break
+            if intento < MAX_INTENTOS_ML:
+                log.warning("publish %s/%s falló (intento %d/%d): %s — reintentando",
+                            cuenta, sku, intento, MAX_INTENTOS_ML, r.get("error"))
+                await asyncio.sleep(2.0 * intento)  # backoff 2s, 4s
 
         item_id = r.get("ml_item_id") or ""
         fila: dict[str, Any] = {
@@ -397,6 +421,7 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
             "error":     r.get("error"),
             "ml_status": r.get("ml_status"),
             "url":       r.get("ml_url"),
+            "intentos":  intentos,
         }
 
         # Toda alta debe quedar PAUSADA. ML ignora el `status` del POST, así que

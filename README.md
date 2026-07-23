@@ -1514,6 +1514,35 @@ Cuatro arreglos pedidos por Brandon (2026-07-23):
 
 ---
 
+### v0.17.1 — Reintentos al publicar en ML (hasta 3×) + reestructura variable de CAM-0030
+
+- **Reintentos por cuenta en `crear_ml`** (`MAX_INTENTOS_ML=3`): al crear una
+  publicación ML, un fallo se reintenta hasta 3 veces con backoff (2s, 4s). Cubre
+  fallos **transitorios** (timeout, 5xx, token en transición) — resuelve el caso
+  "raro" de que BEKURA publique y SANCORFASHION no. **NO se reintentan** los
+  errores **deterministas** de configuración (`gtin_error`, `needs_manual_config`):
+  el mismo payload fallaría igual y solo spamearía a ML; ésos requieren acción
+  humana. Cada resultado reporta `intentos`.
+- **Por qué SANCORFASHION fallaba y BEKURA no** (diagnóstico, no era transitorio):
+  la categoría de colchones (MLM121837) en SANCOR **rechaza el placeholder GTIN
+  `0000000000000` Y el `EMPTY_GTIN_REASON` ("sin código universal")** y exige un
+  código de barras REAL; en BEKURA la misma categoría acepta el placeholder. Es
+  una restricción **a nivel de cuenta** de ML (SANCOR en un tier de validación de
+  GTIN más estricto). El fix real para SANCOR es un **GTIN real** en `_barcode`
+  del producto — el reintento no lo resuelve porque no es transitorio.
+- **Publisher = solo SIMPLES** (confirmado): `construir_prod` arma UN producto por
+  `wc_id`; no lee variaciones. Al publicar CAM-0030 se envía el **padre como
+  simple** (BEKURA ya tiene su ítem `MLM5792668714` pausado — se deja pausado, es
+  la política: toda publicación nace paused vía `asegurar_pausado`).
+- **Reestructura CAM-0030 en Woo** (organización de catálogo): `agrupar_bases`
+  colgó `CAM-0030-IND` (era producto suelto) como 4ª variación del padre 104732
+  (stock 258 preservado) y se activaron `MAT`/`QUE` (estaban draft). Padre
+  variable `inprogress` con EST/IND/MAT/QUE. (Nota: los sufijos de talla se
+  parsean como `Modelo: Ind/Mat/Que` y `EST` cae en `Color: Estampado` — imperfecto
+  pero irrelevante para ML, que recibe el padre como simple.)
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
