@@ -1553,6 +1553,25 @@ comparador verificó paridad. Versión 0.17.2.
 
 ---
 
+### v0.17.2 — Campo GTIN / código de barras en el Estudio (desbloquea SANCORFASHION)
+
+- **Nuevo campo "Código de barras / GTIN"** en el Estudio del producto (sección de
+  categoría). Se guarda en WooCommerce (`_barcode`) vía `POST /api/crear/gtin`
+  (valida 8-14 dígitos); el metadata del Estudio ahora lo expone (`wp_db` lee
+  `_barcode`/`_gtin`). El publisher ML ya lo usaba de primera opción en su cadena
+  de GTIN — ahora es editable desde el panel.
+- **Probado en vivo**: con un GTIN en el campo, la publicación a **SANCORFASHION
+  SÍ tuvo éxito** (item creado y pausado) — el campo fluye al payload (confirmado
+  en preview) y ML lo acepta al crear. Sin GTIN, la categoría de colchones
+  (MLM121837) en SANCOR rechaza (placeholder + EMPTY_GTIN_REASON), por eso BEKURA
+  publicaba y SANCOR no. **El GTIN debe ser REAL** (ML lo valida contra su base);
+  la prueba usó un GTIN de formato válido y se limpió después (publicación de
+  prueba cerrada, campo borrado).
+- **Cómo usarlo**: poner el código de barras real del producto en el campo →
+  guardar → Publicar en SANCOR.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

@@ -297,6 +297,31 @@ async def categorias_disponibles():
     return {"categorias": nombres}
 
 
+class GuardarGtin(BaseModel):
+    wc_id: int
+    gtin: str = Field(..., description="Código de barras / GTIN (8-14 dígitos)")
+
+
+@router.post("/gtin")
+async def guardar_gtin(req: GuardarGtin):
+    """
+    Guarda el código de barras / GTIN del producto en WooCommerce (`_barcode`) —
+    lo que el publisher ML usa cuando una categoría exige GTIN real (p. ej.
+    colchones en SANCORFASHION). Solo dígitos (8-14). Vacío = borra el campo.
+    """
+    gtin = "".join(ch for ch in (req.gtin or "") if ch.isdigit())
+    if gtin and not (8 <= len(gtin) <= 14):
+        raise HTTPException(422, "El GTIN debe tener entre 8 y 14 dígitos (EAN-8/UPC-12/EAN-13/GTIN-14).")
+    async with woocommerce._client() as cli:
+        resp = await cli.put(f"/products/{req.wc_id}",
+                             json={"meta_data": [{"key": "_barcode", "value": gtin}]},
+                             timeout=60.0)
+        if resp.status_code not in (200, 201):
+            raise HTTPException(502, f"WooCommerce HTTP {resp.status_code}: {resp.text[:150]}")
+    log.info("GTIN guardado: wc_id=%s → %s", req.wc_id, gtin or "(vacío)")
+    return {"ok": True, "wc_id": req.wc_id, "gtin": gtin or None}
+
+
 class GuardarCategoriaML(BaseModel):
     wc_id: int
     category_id: str = Field(..., description="ID de categoría ML, ej. MLM447349")

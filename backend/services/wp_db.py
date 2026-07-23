@@ -383,6 +383,7 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
         "ml_categoria_nivel_1", "ml_categoria_nivel_2", "ml_categoria_nivel_3",
         "ml_categoria_nivel_4", "ml_categoria_nivel_5",
         "_product_attributes",
+        "_barcode", "_gtin",  # código de barras / GTIN (lo lee el publisher ML)
     ]
     m = postmeta(wc_id, claves)
 
@@ -418,6 +419,7 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
         "alibaba_url": m.get("url_alibaba"),
         "alibaba_precio": _f("alibaba_price"),
         "producto_correcto": m.get("comentario_revision"),
+        "gtin": (m.get("_barcode") or m.get("_gtin") or "").strip() or None,
         "categoria_ml": {
             "category_id": m.get("ml_category_id"),
             "ruta": m.get("ml_categoria_path"),

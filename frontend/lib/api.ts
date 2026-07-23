@@ -197,6 +197,15 @@ export function guardarCategoriaML(
   return postJSON(`/api/crear/categoria-ml`, { wc_id: wcId, category_id: categoryId });
 }
 
+// Guarda el código de barras / GTIN del producto (WooCommerce `_barcode`) — lo usa
+// el publisher ML cuando la categoría exige GTIN real (ej. colchones en SANCOR).
+export function guardarGtin(
+  wcId: number,
+  gtin: string,
+): Promise<{ ok: boolean; gtin: string | null }> {
+  return postJSON(`/api/crear/gtin`, { wc_id: wcId, gtin });
+}
+
 export function costoBulk(
   items: CostoBulkItem[],
   opts: { margen?: number; pct_comision?: number | null; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},

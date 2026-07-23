@@ -167,6 +167,7 @@ def metadata(sku: str, wc_id: int | None = None) -> dict[str, Any]:
                     "alibaba_precio": m["alibaba_precio"],
                     "producto_correcto": m["producto_correcto"],
                     "atributos": m["atributos"],
+                    "gtin": m.get("gtin"),
                 })
                 return base
     except Exception as exc:  # noqa: BLE001

@@ -252,6 +252,7 @@ export interface StudioMetadata {
   dinero: StudioDinero;
   stock: number | null;
   categoria_ml: StudioCategoriaML | null;
+  gtin?: string | null;
   alibaba_url: string | null;
   alibaba_precio: number | null;
   producto_correcto: string | null;

@@ -52,6 +52,7 @@ import {
   galeriaProducto,
   guardarCategoriaML,
   guardarContenido,
+  guardarGtin,
   mejorarIA,
   precioCompetencia,
   procesarImagenesIA,
@@ -217,6 +218,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // (caso ACC-0653: seguía escribiendo "binoculares" tras cambiar la categoría).
   const [catMlNiveles, setCatMlNiveles] = useState<string[] | null>(null);
   const [guardandoCat, setGuardandoCat] = useState(false);
+  // Código de barras / GTIN: requerido por ML en ciertas categorías (colchones en
+  // SANCORFASHION). Se guarda en WooCommerce (_barcode); el publisher lo usa solo.
+  const [gtin, setGtin] = useState("");
+  const [gtinGuardado, setGtinGuardado] = useState<string | null>(null);
+  const [guardandoGtin, setGuardandoGtin] = useState(false);
   const [comision, setComision] = useState(""); // comisión ML % (vacío = ML/fallback)
   const [margen, setMargen] = useState("48");
   const [incluirEnvio, setIncluirEnvio] = useState(true);
@@ -250,6 +256,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     setTipoCambio(String(DEFAULT_TC));
     setCatMlId("");
     setCatMlNiveles(null);
+    setGtin("");
+    setGtinGuardado(null);
     setComision("");
     setMargen("48");
     setIncluirEnvio(true);
@@ -309,6 +317,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         setMeta(m);
         setCatMlId((c) => c || (m.categoria_ml?.category_id ?? ""));
         setCatMlNiveles((n) => n ?? (m.categoria_ml?.niveles?.length ? m.categoria_ml.niveles : null));
+        setGtin((g) => g || (m.gtin ?? ""));
+        setGtinGuardado(m.gtin ?? null);
         const d = m.dinero || ({} as StudioMetadata["dinero"]);
         setCampos({
           precioRegular: str(d.precio_regular),
@@ -422,6 +432,25 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     },
     [meta?.wc_id, producto?.wc_id],
   );
+
+  // Guardar el GTIN en WooCommerce (_barcode). El publisher ML lo usa cuando la
+  // categoría exige código de barras real (ej. colchones en SANCORFASHION).
+  const guardarGtinHandler = useCallback(async () => {
+    const wcId = meta?.wc_id ?? producto?.wc_id ?? null;
+    const limpio = gtin.replace(/\D/g, "");
+    if (!wcId || limpio === (gtinGuardado ?? "")) return;
+    setGuardandoGtin(true);
+    try {
+      const r = await guardarGtin(wcId, limpio);
+      setGtinGuardado(r.gtin ?? null);
+      setGtin(r.gtin ?? "");
+      setMeta((m) => (m ? { ...m, gtin: r.gtin ?? null } : m));
+    } catch {
+      /* fallo de red: el valor local queda para reintentar */
+    } finally {
+      setGuardandoGtin(false);
+    }
+  }, [gtin, gtinGuardado, meta?.wc_id, producto?.wc_id]);
 
   const setCampo = (k: keyof Campos, v: string) => setCampos((c) => ({ ...c, [k]: v }));
   const setAtributo = (i: number, valor: string) =>
@@ -1066,6 +1095,36 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                       ))}
                     </div>
                   ) : (<span className="text-sm text-slate-400">Sin categoría asignada</span>)}
+                </div>
+
+                {/* Código de barras / GTIN — requerido por ML en ciertas
+                    categorías (ej. colchones en SANCORFASHION). Se guarda en Woo. */}
+                <div className="border-t border-slate-100 pt-3">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                      Código de barras / GTIN
+                    </span>
+                    {guardandoGtin ? (
+                      <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
+                        <Loader2 size={11} className="animate-spin" /> guardando…
+                      </span>
+                    ) : gtinGuardado ? (
+                      <span className="text-[10px] font-semibold text-emerald-600">✓ guardado</span>
+                    ) : null}
+                  </div>
+                  <input
+                    value={gtin}
+                    onChange={(e) => setGtin(e.target.value.replace(/[^\d]/g, ""))}
+                    onBlur={guardarGtinHandler}
+                    inputMode="numeric"
+                    maxLength={14}
+                    placeholder="EAN-13 / UPC-12 (8-14 dígitos)"
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
+                    style={{ outlineColor: tema.acento }}
+                  />
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Solo si la categoría lo exige (ML lo valida contra su base — debe ser real).
+                  </p>
                 </div>
               </section>
 
