@@ -168,7 +168,17 @@ lectura directa OK, DDL/DML no.
    botón Publicar → el panel detecta la baja y re-crea pausada por cuenta
    (ya NO se limpia `ml_progress` a mano). Regenerar en Crear NO recalcula
    costos ni toca publicaciones existentes — revisar categoría y regenerar
-   costos antes de publicar un SKU reciclado.
+   costos antes de publicar un SKU reciclado. Sub-caso CLON SIN LIMPIAR
+   (categoría+atributos de OTRO producto): `ACC-0653-CHE-13-16` (faros de niebla
+   con categoría+atributos de binoculares; la IA regeneraba "binoculares" porque
+   leía la categoría — reparado v0.12.3). Al reciclar, limpiar categorías Y
+   atributos, no solo título/imágenes. **Categoría ML del panel** se guarda con
+   `POST /api/crear/categoria-ml` (escribe `ml_categoria_id`+niveles — la elección
+   humana que MANDA al publicar); el picker del Estudio ya persiste (v0.17.0).
+   **Comisión de pedidos ML en 0** (token caído al crearse): re-consultable con
+   `meli.obtener_orden` (trae `sale_fee`); el `ON DUPLICATE` de `pedidos_ml`
+   rellena 0→valor solo, nunca re-toca >0 (v0.17.0). Amazon queda en 0 hasta
+   Finances API (#5); los cancelados no llevan comisión neta.
 8. Seguridad heredada: API sin auth real (la de José va en rollout gradual);
    `client_secret` de ML expuesto en el repo externo `publicador` (rotación
    manual pendiente).

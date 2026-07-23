@@ -297,6 +297,59 @@ async def categorias_disponibles():
     return {"categorias": nombres}
 
 
+class GuardarCategoriaML(BaseModel):
+    wc_id: int
+    category_id: str = Field(..., description="ID de categoría ML, ej. MLM447349")
+
+
+@router.post("/categoria-ml")
+async def guardar_categoria_ml(req: GuardarCategoriaML):
+    """
+    Persiste en WooCommerce la categoría ML ELEGIDA en el panel (Estudio). Escribe
+    las MISMAS metas que lee el publicador (`publicar_ready.construir_prod`):
+    `ml_categoria_id` es la elección HUMANA y MANDA sobre el predictor de Crear
+    (`ml_category_id`). Sin este guardado, el picker solo cambiaba estado local y
+    la categoría no persistía (bug 2026-07-23).
+    """
+    import httpx
+    import json as _json
+    cat_id = (req.category_id or "").strip()
+    if not cat_id:
+        raise HTTPException(422, "category_id vacío.")
+    async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=15.0) as cli:
+        r = await cli.get(f"/categories/{cat_id}")
+    if r.status_code != 200:
+        raise HTTPException(404, f"Categoría {cat_id} no encontrada en Mercado Libre.")
+    d = r.json()
+    niveles = [{"id": p.get("id", ""), "name": p.get("name", "")}
+               for p in (d.get("path_from_root") or [])]
+    ruta = " > ".join(n["name"] for n in niveles)
+    nombre_hoja = d.get("name") or (niveles[-1]["name"] if niveles else cat_id)
+    dominio_id = (d.get("settings") or {}).get("catalog_domain") or ""
+    meta = [
+        # La elección del panel MANDA: se escribe tanto la llave humana
+        # (ml_categoria_id) como la del predictor (ml_category_id) para que
+        # queden alineadas y no se contradigan en una re-lectura.
+        {"key": "ml_categoria_id", "value": cat_id},
+        {"key": "ml_category_id", "value": cat_id},
+        {"key": "ml_category_name", "value": nombre_hoja},
+        {"key": "ml_categoria_path", "value": ruta},
+        {"key": "ml_categoria_niveles", "value": _json.dumps(niveles, ensure_ascii=False)},
+        {"key": "ml_dominio_id", "value": dominio_id},
+    ]
+    # niveles legibles (los que pinta el breadcrumb del Estudio desde postmeta)
+    for i, n in enumerate(niveles[:5], start=1):
+        meta.append({"key": f"ml_categoria_nivel_{i}", "value": n["name"]})
+    async with woocommerce._client() as cli:
+        resp = await cli.put(f"/products/{req.wc_id}", json={"meta_data": meta}, timeout=60.0)
+        if resp.status_code not in (200, 201):
+            raise HTTPException(502, f"WooCommerce HTTP {resp.status_code}: {resp.text[:150]}")
+    log.info("Categoría ML guardada: wc_id=%s → %s (%s)", req.wc_id, cat_id, ruta)
+    return {"ok": True, "wc_id": req.wc_id, "category_id": cat_id,
+            "name": nombre_hoja, "path": ruta, "niveles": niveles,
+            "domain": d.get("settings", {}).get("catalog_domain") or ""}
+
+
 @router.get("/categorias-ml/{cat_id}")
 async def obtener_categoria_ml(cat_id: str):
     """

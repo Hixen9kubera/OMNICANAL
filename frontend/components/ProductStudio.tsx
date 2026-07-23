@@ -29,6 +29,7 @@ import TipoAmazonPicker from "./TipoAmazonPicker";
 import type {
   AtributoProducto,
   CanalInfo,
+  CategoriaMLResult,
   CompetenciaResp,
   CostoCalculo,
   CostoOverrides,
@@ -49,6 +50,7 @@ import {
   agregarImagenes,
   eliminarImagenGaleria,
   galeriaProducto,
+  guardarCategoriaML,
   guardarContenido,
   mejorarIA,
   precioCompetencia,
@@ -209,6 +211,12 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const [costoProducto, setCostoProducto] = useState(""); // USD
   const [tipoCambio, setTipoCambio] = useState(String(DEFAULT_TC));
   const [catMlId, setCatMlId] = useState(""); // categoría ML editable (para el costo)
+  // Niveles de la categoría ML VIGENTE (recién elegida o cargada): alimentan el
+  // breadcrumb y, sobre todo, el contexto de "Mejorar con IA". Sin esto, la IA
+  // leía los niveles GUARDADOS (viejos) y regeneraba con la categoría anterior
+  // (caso ACC-0653: seguía escribiendo "binoculares" tras cambiar la categoría).
+  const [catMlNiveles, setCatMlNiveles] = useState<string[] | null>(null);
+  const [guardandoCat, setGuardandoCat] = useState(false);
   const [comision, setComision] = useState(""); // comisión ML % (vacío = ML/fallback)
   const [margen, setMargen] = useState("48");
   const [incluirEnvio, setIncluirEnvio] = useState(true);
@@ -241,6 +249,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     setCostoProducto("");
     setTipoCambio(String(DEFAULT_TC));
     setCatMlId("");
+    setCatMlNiveles(null);
     setComision("");
     setMargen("48");
     setIncluirEnvio(true);
@@ -299,6 +308,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       .then((m) => {
         setMeta(m);
         setCatMlId((c) => c || (m.categoria_ml?.category_id ?? ""));
+        setCatMlNiveles((n) => n ?? (m.categoria_ml?.niveles?.length ? m.categoria_ml.niveles : null));
         const d = m.dinero || ({} as StudioMetadata["dinero"]);
         setCampos({
           precioRegular: str(d.precio_regular),
@@ -375,7 +385,43 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     return datosCanal?.categoria_path?.length ? datosCanal.categoria_path : general?.categoria_path ?? [];
   }, [data, datosCanal]);
 
-  const categoriaMLTexto = meta?.categoria_ml?.niveles?.join(" › ") || null;
+  // Prefiere los niveles VIGENTES (recién elegidos en el picker) sobre los
+  // guardados: así "Mejorar con IA" usa la categoría actual, no la anterior.
+  const categoriaMLTexto =
+    (catMlNiveles?.length ? catMlNiveles.join(" › ") : null) ||
+    meta?.categoria_ml?.niveles?.join(" › ") ||
+    null;
+
+  // Elegir categoría ML en el picker: actualiza el estado VIGENTE (breadcrumb +
+  // contexto de IA) y PERSISTE en WooCommerce (ml_categoria_id — la elección
+  // humana que MANDA al publicar). Antes solo cambiaba estado local y se perdía.
+  const elegirCategoriaML = useCallback(
+    async (c: CategoriaMLResult) => {
+      const niveles = c.path ? c.path.split(/\s*[>›]\s*/).filter(Boolean) : [c.name];
+      setCatMlId(c.category_id);
+      setCatMlNiveles(niveles);
+      const wcId = meta?.wc_id ?? producto?.wc_id ?? null;
+      if (!wcId) return;
+      setGuardandoCat(true);
+      try {
+        const r = await guardarCategoriaML(wcId, c.category_id);
+        // Refleja lo guardado en el meta para que sobreviva a recargas y lo lea
+        // el publicador; usa los niveles que devolvió el backend (canónicos).
+        const nivelesSrv = r.niveles?.map((n) => n.name) ?? niveles;
+        setCatMlNiveles(nivelesSrv);
+        setMeta((m) =>
+          m
+            ? { ...m, categoria_ml: { category_id: r.category_id, ruta: r.path, niveles: nivelesSrv } }
+            : m,
+        );
+      } catch {
+        /* el estado local ya cambió; un fallo de red no bloquea la edición */
+      } finally {
+        setGuardandoCat(false);
+      }
+    },
+    [meta?.wc_id, producto?.wc_id],
+  );
 
   const setCampo = (k: keyof Campos, v: string) => setCampos((c) => ({ ...c, [k]: v }));
   const setAtributo = (i: number, valor: string) =>
@@ -987,15 +1033,29 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
 
               {/* CATEGORÍA (Mercado Libre editable + WooCommerce) */}
               <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
-                {/* Categoría ML — buscador por nombre (define la comisión del costo) */}
+                {/* Categoría ML — buscador por nombre. ES LA QUE SE ENVÍA a Mercado
+                    Libre al publicar (define además la comisión del costo). */}
+                <div className="flex items-center justify-between">
+                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-600">
+                    Se envía a Mercado Libre
+                  </span>
+                  {guardandoCat && (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
+                      <Loader2 size={11} className="animate-spin" /> guardando…
+                    </span>
+                  )}
+                </div>
                 <CategoriaMLPicker
                   value={catMlId}
-                  pathInicial={meta?.categoria_ml?.niveles}
-                  onChange={(c) => setCatMlId(c.category_id)}
+                  pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
+                  onChange={elegirCategoriaML}
                   acento={tema.acento}
                 />
                 <div className="border-t border-slate-100 pt-3">
-                  <div className="mb-1 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</div>
+                  <div className="mb-1 flex items-center gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</span>
+                    <span className="text-[10px] font-medium text-slate-400">(solo tienda web — no se envía a ML)</span>
+                  </div>
                   {categoriaWC.length ? (
                     <div className="flex flex-wrap items-center gap-1 text-sm text-slate-700">
                       {categoriaWC.map((n, i) => (

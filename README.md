@@ -1474,6 +1474,46 @@ Versión 0.16.4.
 
 ---
 
+### v0.17.0 — 4 correcciones: título Amazon sin acentos · comisión $0 se rellena · picker de categoría persiste · precio regular verificado
+
+Cuatro arreglos pedidos por Brandon (2026-07-23):
+
+1. **Título de Amazon SIN acentos.** El prompt de mejorar Amazon ahora pide el
+   título sin tildes, y hay un **blindaje determinista** (`_sin_acentos`, NFKD)
+   que los quita del título tras el parseo — por si el LLM deja alguno. Solo
+   afecta el TÍTULO de Amazon; el resto del contenido conserva su ortografía.
+
+2. **Comisión $0 → valor real.** Congelar la comisión protege el dato histórico
+   de la venta, PERO un `0` no es histórico: es un dato que **nunca se calculó**
+   (token de ML caído al crearse el pedido). El `ON DUPLICATE` de `pedidos_ml`
+   ahora permite el paso **0 → valor** (`comision=IF(comision=0, VALUES, comision)`);
+   un valor ya puesto (>0) sigue siendo **inmutable**. Corrección histórica:
+   **641 pedidos** ML (BEKURA+SANCOR, no cancelados) re-consultados a ML por su
+   `sale_fee` real y actualizados (**641/641** resueltos, comisión ML total
+   ahora ≈ **$239,558** entre ambas cuentas). Se **excluyeron** los cancelados
+   (una venta cancelada no tiene comisión
+   neta) y **Amazon** (comisión sigue en 0 hasta tener Finances API, pendiente #5).
+   Auditoría del día: la vista de pedidos coincide con las métricas de ML
+   (captura de BEKURA: $36,789 / 88 ventas ≈ pedidos $36,902 / 89).
+
+3. **Picker de categoría ML: ahora PERSISTE.** Bug: elegir una categoría en el
+   Estudio solo cambiaba estado local (`catMlId`) y **nunca se guardaba** — al
+   recargar volvía la anterior, y "Mejorar con IA" seguía leyendo los niveles
+   VIEJOS (por eso ACC-0653 regeneraba "binoculares" tras cambiar la categoría).
+   Fix: nuevo endpoint `POST /api/crear/categoria-ml` que escribe `ml_categoria_id`
+   + niveles + path (las metas que lee el publicador — elección humana que MANDA);
+   el picker ahora guarda al elegir, actualiza el breadcrumb en vivo y alimenta a
+   la IA con la categoría VIGENTE. Además se aclaró en la UI que la categoría ML
+   **es la que se envía a Mercado Libre** y la de WooCommerce es **solo para la
+   tienda web** (por eso aparecen las dos).
+
+4. **Precio REGULAR verificado en todos los canales.** Confirmado: ML
+   (`publicar_ready`: `precio_regular`→`_regular_price`) y Amazon (`publicar`:
+   solo `precio_regular`) publican con el **precio regular**, nunca el de oferta.
+   El Estudio precarga `precio_regular = precio_base` (no `precio_sugerido`).
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

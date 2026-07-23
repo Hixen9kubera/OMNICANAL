@@ -117,6 +117,14 @@ def _sin_html(texto: str) -> str:
     return re.sub(r"\s+", " ", limpio).strip()
 
 
+def _sin_acentos(texto: str) -> str:
+    """Quita tildes/diéresis y convierte ñ→n (título de Amazon, regla de negocio).
+    Descompone en NFKD y elimina los diacríticos combinantes."""
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", texto)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts Amazon (instrucciones provistas por Kubera, vigentes 27-jul-2026)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -355,7 +363,9 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             '"descripcion": "<máx 2000 car., en párrafos>", '
             '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
             "Respeta ESTRICTAMENTE los límites de caracteres. En atributos infiere los "
-            "obligatorios de la categoría (product_type)." + _NO_CONTRADECIR
+            "obligatorios de la categoría (product_type). "
+            "El TÍTULO va SIN NINGÚN ACENTO ni tilde (á→a, é→e, í→i, ó→o, ú→u, ñ→n): "
+            "escribe cada palabra del título sin marcas diacríticas." + _NO_CONTRADECIR
         ),
     },
     "general": {
@@ -409,6 +419,13 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
     if not data:
         return {"ok": False, "motivo": "La IA no devolvió JSON válido.",
                 "canal": canal, "crudo": res.get("texto", "")[:400]}
+
+    # Amazon: el título va SIN acentos (regla de negocio). El prompt ya lo pide,
+    # pero los LLM a veces dejan una tilde suelta — se garantiza aquí quitándolas
+    # de forma determinista. Solo afecta el TÍTULO (ñ→n incluido); el resto del
+    # contenido conserva su ortografía.
+    if canal == "amazon" and data.get("titulo"):
+        data["titulo"] = _sin_acentos(str(data["titulo"]))
 
     # Mercado Libre: reemplaza los atributos por los REALES de la categoría
     # (principales + secundarios), con nombre legible + valor.

@@ -306,6 +306,12 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    ON DUPLICATE KEY UPDATE wc_order_id=VALUES(wc_order_id),
                        estado_ml=VALUES(estado_ml), estado_wc=VALUES(estado_wc),
+                       -- La comisión NO se re-toca (congela el dato histórico de la
+                       -- venta), SALVO que esté en 0: un 0 no es histórico, es un
+                       -- dato que nunca se calculó (token caído al crearse). Solo
+                       -- se permite el paso 0 → valor real; un valor ya puesto es
+                       -- inmutable (COALESCE(NULLIF...) evita re-pisar >0).
+                       comision=IF(comision=0, VALUES(comision), comision),
                        actualizado=VALUES(actualizado)""",
                 (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
                  orden["total"], comision, 1 if orden.get("es_full") else 0,

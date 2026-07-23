@@ -188,6 +188,15 @@ export function obtenerCategoriaML(catId: string, signal?: AbortSignal): Promise
   return getJSON<CategoriaMLResult>(`/api/crear/categorias-ml/${encodeURIComponent(catId)}`, signal);
 }
 
+// Persiste la categoría ML elegida en el panel (escribe ml_categoria_id + niveles
+// en WooCommerce — la elección humana que MANDA sobre el predictor al publicar).
+export function guardarCategoriaML(
+  wcId: number,
+  categoryId: string,
+): Promise<{ ok: boolean; category_id: string; name: string; path: string; niveles: { id: string; name: string }[]; domain: string }> {
+  return postJSON(`/api/crear/categoria-ml`, { wc_id: wcId, category_id: categoryId });
+}
+
 export function costoBulk(
   items: CostoBulkItem[],
   opts: { margen?: number; pct_comision?: number | null; incluir_envio?: boolean; auto_cbm?: boolean; sincronizar_woo?: boolean } = {},
