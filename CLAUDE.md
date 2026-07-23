@@ -179,7 +179,12 @@ lectura directa OK, DDL/DML no.
    `meli.obtener_orden` (trae `sale_fee`); el `ON DUPLICATE` de `pedidos_ml`
    rellena 0→valor solo, nunca re-toca >0 (v0.17.0). Amazon queda en 0 hasta
    Finances API (#5); los cancelados no llevan comisión neta.
-8. Seguridad heredada: API sin auth real (la de José va en rollout gradual);
+8. **KuberaPipelineV1.0 SE DESCONECTA** (decisión de Eduardo, 23-jul): no correr
+   más tandas del robot de Alibaba; sus tablas MySQL = legado congelado (ETL
+   one-shot al corte / retiro). El `publicador` externo se retira con él.
+   `core.products` pierde su fuente → el seam Crear → core.products es el
+   bloqueador del corte (82 SKUs ya faltantes; ver README aviso 23-jul).
+9. Seguridad heredada: API sin auth real (la de José va en rollout gradual);
    `client_secret` de ML expuesto en el repo externo `publicador` (rotación
    manual pendiente).
 

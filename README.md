@@ -1551,6 +1551,31 @@ y el comparador `orders-deltas` habría roto la racha (con razón) en su día 2.
 re-corrieron las tandas del backfill para propagar las 641 correcciones y el
 comparador verificó paridad. Versión 0.17.2.
 
+### 📣 Aviso 2026-07-23 — DECISIÓN: KuberaPipelineV1.0 se DESCONECTA
+
+**Para el equipo y las sesiones de Claude de Brandon** (decisión comunicada por
+Eduardo, dueño de la migración):
+
+- El pipeline externo **KuberaPipelineV1.0** (robot de Alibaba: scraping →
+  atributos IA → alta masiva) **se va a desconectar**. NO se redirige a la BD
+  kubera: sus 13 tablas de MySQL pasan a **legado congelado** (ETL one-shot de
+  las valiosas al corte; retiro del resto — `ml_estado` está vacía y
+  `odoo_sync_*`/`sync_procesados` muertas desde mayo).
+- **NO correr más tandas del robot** (última corrida detectada: 22-jul 00:36).
+  Coordinar fecha de desconexión con quien lo opera.
+- El servicio **`publicador`** (Railway) lee las tablas del robot
+  (`productos`, `atributos_ia`) → retirarlo en el mismo movimiento; además
+  trae el `client_secret` de ML expuesto (pendiente #8, rotar al retirarlo).
+- **Implicación crítica**: la tabla `productos` de MySQL (fuente única del ETL
+  de `core.products`) queda muerta. Desde hoy los productos nacen SOLO en el
+  panel (Crear) → hace falta el **seam Crear → core.products** vía el espejo
+  + backfill de los **82 SKUs** que ya faltan (hallazgo del 23-jul: FK
+  violations de `ops.channel_submissions` con CAM-0030 — están en la vista
+  "errores para limpieza" de /migracion, NO marcarlos resueltos sin insertar
+  antes los productos). Ese seam es ahora EL bloqueador del corte.
+- La creación de productos en el panel NO se ve afectada: el flujo Crear no
+  depende del robot.
+
 ---
 
 ### v0.17.2 — Campo GTIN / código de barras en el Estudio (desbloquea SANCORFASHION)
