@@ -139,3 +139,11 @@ def backfill_product_media(max_items: int = 1000):
     (one-shot, idempotente vía el índice único). Se corre ANTES de encender
     amazon_imagenes en KUBERA_MIRROR_TABLAS para arrancar con historial."""
     return kubera_mirror.backfill_product_media(max_items)
+
+
+@router.post("/backfill/channel-orders", dependencies=[Depends(requiere_api_key)])
+def backfill_channel_orders(max_items: int = 5000):
+    """Copia el histórico pedidos_ml → channel.orders (one-shot, idempotente:
+    los pedidos ya espejados en vivo no se alteran — el conflicto congela
+    total/comisión/skus/creado_at). Reporta cada pedido fallido."""
+    return kubera_mirror.backfill_channel_orders(max_items)

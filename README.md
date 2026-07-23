@@ -1436,6 +1436,18 @@ atómico llegó en v0.16.0 — faltaba el historial y el encendido:
   v0.16.0 está listo pero es flujo de ventas: dale de Brandon pendiente.
   Versión 0.16.1.
 
+### v0.16.2 — Backfill de pedidos históricos → channel.orders
+
+`POST /api/migracion/backfill/channel-orders?max_items=5000`: copia el
+histórico completo de `pedidos_ml` (3,522 pedidos desde el 13-may: BEKURA
+1,867 · SANCORFASHION 1,605 · AMAZON 50) al esquema v4, con el mismo upsert
+del seam v0.16.0 — idempotente y sin alterar los pedidos ya espejados en
+vivo (el conflicto congela total/comisión/skus/creado_at). Mismo mapeo
+cuenta→canal que `_ESPEJO_ORIGEN`. Limitación conocida: los SKUs del
+histórico vienen del CSV MySQL truncado a 255 (los pedidos en vivo llevan el
+array completo). Reporta cada pedido fallido (hasta 100) para revisión.
+Versión 0.16.2.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

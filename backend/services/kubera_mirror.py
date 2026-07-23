@@ -631,6 +631,68 @@ def backfill_product_media(max_items: int = 1000) -> dict[str, Any]:
             "fallidas": fallidas, "errores": errores}
 
 
+_BACKFILL_CANAL = {
+    "BEKURA": "mercado_libre", "SANCORFASHION": "mercado_libre",
+    "AMAZON": "amazon", "TEMU": "temu", "TIKTOK": "tiktok",
+}
+
+
+def backfill_channel_orders(max_items: int = 5000) -> dict[str, Any]:
+    """Copia el histórico pedidos_ml (MySQL) → channel.orders.
+
+    One-shot e idempotente: usa el mismo upsert del seam v0.16.0, cuyo
+    conflicto solo mueve wc_order_id/estados y deja congelados total/comisión/
+    skus/creado_at — los pedidos que ya viajaron en vivo no se alteran.
+    Mismo mapeo cuenta→canal que _ESPEJO_ORIGEN de pedidos_ml.
+    Limitación conocida: los SKUs vienen del CSV MySQL (truncado a 255);
+    los pedidos espejados EN VIVO llevan el array completo.
+    Reporta CADA pedido que falle (hasta 100) para revisión."""
+    if not disponible():
+        return {"ok": False, "motivo": "KUBERA_DB_URL no configurada."}
+    from services import db
+    filas = db.fetch_all(
+        """SELECT ml_order_id, cuenta, wc_order_id, estado_ml, estado_wc,
+                  total, comision, es_full, skus, creado
+           FROM pedidos_ml ORDER BY creado LIMIT %s""",
+        (int(max_items),),
+    )
+    aplicadas = fallidas = 0
+    errores: list[dict[str, Any]] = []
+    for f in filas:
+        cuenta = f.get("cuenta") or ""
+        payload = {
+            "external_order_id": str(f["ml_order_id"]),
+            "canal": _BACKFILL_CANAL.get(cuenta, cuenta.lower() or "desconocido"),
+            "cuenta": cuenta,
+            "wc_order_id": f.get("wc_order_id"),
+            "estado_canal": str(f.get("estado_ml") or ""),
+            "estado_wc": str(f.get("estado_wc") or ""),
+            "total": f.get("total"),
+            "comision": f.get("comision"),
+            "es_fulfillment": bool(f.get("es_full")),
+            "skus": [s for s in (f.get("skus") or "").split(",") if s],
+            "creado_at": f.get("creado"),
+        }
+        try:
+            conn = _get_pool().connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("select set_config('statement_timeout', '4000', true)")
+                    cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+                    _up_channel_orders(cur, payload)
+                conn.commit()
+            finally:
+                conn.close()
+            aplicadas += 1
+        except Exception as exc:  # noqa: BLE001
+            fallidas += 1
+            if len(errores) < 100:
+                errores.append({"pedido": str(f["ml_order_id"]), "cuenta": cuenta,
+                                "error": f"{type(exc).__name__}: {str(exc)[:150]}"})
+    return {"ok": True, "leidas": len(filas), "aplicadas": aplicadas,
+            "fallidas": fallidas, "errores": errores}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Lecturas para /api/migracion/* (censo, eventos, errores agrupados)
 # ══════════════════════════════════════════════════════════════════════════════
