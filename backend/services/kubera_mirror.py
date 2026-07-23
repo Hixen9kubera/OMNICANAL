@@ -203,9 +203,12 @@ def _get_pool():
                 from dbutils.pooled_db import PooledDB
                 _pool = PooledDB(
                     creator=psycopg2,
-                    maxconnections=3,
+                    # 3 se quedaba corto en ráfagas del pipeline de Crear
+                    # (23-jul: 60 eventos crear_logs→ops.process_log perdidos
+                    # por TooManyConnections en una madrugada de altas).
+                    maxconnections=6,
                     mincached=0,
-                    maxcached=2,
+                    maxcached=3,
                     blocking=False,   # pool lleno = error registrado, NO espera
                     ping=1,
                     dsn=settings.kubera_db_url,
@@ -454,6 +457,62 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
         )
     except Exception as exc2:  # noqa: BLE001
         log.warning("no se pudo persistir el error del espejo: %s", exc2)
+
+
+def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
+    """Re-aplica los errores pendientes (resuelto=0) desde su payload_json.
+
+    Secuencial y con una conexión del pool a la vez: cero presión extra sobre
+    kubera. Es seguro re-aplicar: los upserts destino son idempotentes y los
+    errores típicos (TooManyConnections) fallaron ANTES de escribir nada.
+    Payloads ilegibles (p. ej. truncados a _MAX_PAYLOAD_JSON) se saltan y se
+    reportan para revisión manual.
+    """
+    if not disponible():
+        return {"ok": False, "motivo": "KUBERA_DB_URL no configurada."}
+    if not _asegurar_tabla_log():
+        return {"ok": False, "motivo": "Sin tabla espejo_kubera_log."}
+    from services import db
+    filas = db.fetch_all(
+        """SELECT id, tabla_destino, payload_json FROM espejo_kubera_log
+           WHERE resuelto = 0 AND payload_json IS NOT NULL
+           ORDER BY id LIMIT %s""",
+        (int(max_items),),
+    )
+    aplicados = ilegibles = fallidos = 0
+    detalle_fallos: list[str] = []
+    for f in filas:
+        upsert = _UPSERTS.get(f["tabla_destino"] or "")
+        try:
+            payload = json.loads(f["payload_json"])
+        except Exception:  # noqa: BLE001 — truncado o corrupto
+            payload = None
+        if upsert is None or not isinstance(payload, dict):
+            ilegibles += 1
+            continue
+        try:
+            conn = _get_pool().connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("select set_config('statement_timeout', '4000', true)")
+                    cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+                    upsert(cur, payload)
+                conn.commit()
+            finally:
+                conn.close()
+            db.execute(
+                "UPDATE espejo_kubera_log SET resuelto=1, resuelto_ts=UTC_TIMESTAMP() WHERE id=%s",
+                (f["id"],),
+            )
+            aplicados += 1
+        except Exception as exc:  # noqa: BLE001
+            fallidos += 1
+            if len(detalle_fallos) < 5:
+                detalle_fallos.append(
+                    f"id {f['id']}: {type(exc).__name__}: {str(exc)[:120]}")
+    return {"ok": True, "pendientes_leidos": len(filas), "aplicados": aplicados,
+            "ilegibles": ilegibles, "fallidos": fallidos,
+            "detalle_fallos": detalle_fallos}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -1350,6 +1350,23 @@ de re-crear la cuenta muerta (por eso "no se publicó en BEKURA"). Fix:
 `message`/`error` a str. Con esto el modal muestra el ERROR REAL de
 validación de ML. Versión 0.15.1.
 
+### v0.15.2 — Espejo kubera: pool 3→6 + reproceso de errores pendientes
+
+La madrugada del 23-jul una tanda de creaciones dejó 60 eventos
+`crear_logs → ops.process_log` sin espejar (`TooManyConnections`: el pool
+local del espejo topaba en 3 conexiones y por diseño NO espera — registra el
+error con su payload y suelta). Dos cambios (área del espejo propio, pedido
+por Eduardo):
+
+- **Pool 3→6 conexiones** (`maxcached` 2→3) en `kubera_mirror._get_pool` —
+  sigue sin bloquear; solo aguanta ráfagas del pipeline de Crear.
+- **`kubera_mirror.reprocesar_errores()`** + endpoint
+  `POST /api/migracion/errores/reprocesar?max_items=500`: re-aplica los
+  errores `resuelto=0` desde su `payload_json` (secuencial, una conexión,
+  upserts idempotentes) y los marca `resuelto=1`. Los payloads truncados/
+  ilegibles se saltan y se reportan. A diferencia de `/errores/resolver`
+  (que solo marca), este SÍ escribe los datos perdidos. Versión 0.15.2.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

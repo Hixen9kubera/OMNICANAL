@@ -123,3 +123,11 @@ def resolver(grupo: ResolverGrupo):
     n = kubera_mirror.resolver_grupo(
         grupo.archivo_py, grupo.tabla_origen, grupo.error_tipo)
     return {"resueltos": n}
+
+
+@router.post("/errores/reprocesar", dependencies=[Depends(requiere_api_key)])
+def reprocesar(max_items: int = 500):
+    """Re-aplica los errores pendientes desde su payload_json (idempotente) y
+    los marca resuelto=1. A diferencia de /errores/resolver, este SÍ escribe
+    los datos perdidos en kubera antes de marcar."""
+    return kubera_mirror.reprocesar_errores(max_items)
