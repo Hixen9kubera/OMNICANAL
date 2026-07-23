@@ -1338,6 +1338,18 @@ borran en ML → botón Publicar del Studio → el panel avisa y re-crea pausada
 Sin SQL, sin ventana de duplicados (la verificación es en vivo). Versión
 0.15.0.
 
+### v0.15.1 — Hotfix: `_error_ml` tronaba con `cause` no-lista (500 disfrazado de "Error de conexión")
+
+Caso EST-0091 (22-jul, ~01:06 y 01:53 UTC del 23): al actualizar la
+publicación viva de SANCORFASHION, ML respondió un error cuyo `cause` venía
+como ENTERO; `_error_ml` lo iteraba a ciegas → `TypeError: 'int' object is
+not iterable` → 500 → el modal lo pintaba como "Error de conexión al
+publicar" (mensaje del catch genérico del frontend) y el flujo abortaba ANTES
+de re-crear la cuenta muerta (por eso "no se publicó en BEKURA"). Fix:
+`_error_ml` ahora acepta `cause` como lista, dict suelto o escalar, y castea
+`message`/`error` a str. Con esto el modal muestra el ERROR REAL de
+validación de ML. Versión 0.15.1.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

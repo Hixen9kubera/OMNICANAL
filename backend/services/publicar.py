@@ -396,10 +396,18 @@ def _error_ml(resp: dict[str, Any]) -> str | None:
     if not isinstance(resp, dict):
         return None
     causas = resp.get("cause") or []
+    # ML no siempre manda `cause` como lista: se ha visto dict suelto y hasta
+    # un entero. Iterarlo a ciegas tronaba con TypeError → 500 → el modal lo
+    # pintaba como "Error de conexión" (caso EST-0091, 22-jul).
+    if isinstance(causas, dict):
+        causas = [causas]
+    elif not isinstance(causas, (list, tuple)):
+        causas = []
     msgs = [c.get("message") for c in causas if isinstance(c, dict) and c.get("message")]
     if msgs:
         return " · ".join(msgs)[:500]
-    return resp.get("message") or resp.get("error")
+    msg = resp.get("message") or resp.get("error")
+    return str(msg)[:500] if msg is not None else None
 
 
 def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status, payload, ml_response):
