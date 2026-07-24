@@ -198,6 +198,34 @@ def skus_existentes() -> set[str]:
     return {r["sku"] for r in rows}
 
 
+def precio_regular_variantes(wc_id: int) -> float | None:
+    """
+    Precio REGULAR de un padre variable, tomado de sus variaciones (el padre no
+    guarda `_regular_price` propio). Devuelve el MÍNIMO de las variantes.
+
+    Sin esto, al publicar un padre variable el precio caía al `_price` del padre
+    — que es el de OFERTA (caso real CAM-0030: se publicó en $6,514.97 en vez de
+    $7,755.92). La regla de la casa es publicar SIEMPRE con el precio regular.
+    """
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT pm.meta_value AS v
+            FROM {P}posts p
+            JOIN {P}postmeta pm ON pm.post_id = p.ID AND pm.meta_key = '_regular_price'
+            WHERE p.post_parent = %s AND p.post_type = 'product_variation'
+              AND p.post_status <> 'trash'
+              AND pm.meta_value IS NOT NULL AND pm.meta_value <> ''""",
+        (int(wc_id),),
+    )
+    precios: list[float] = []
+    for r in rows:
+        try:
+            precios.append(float(r["v"]))
+        except (TypeError, ValueError):
+            continue
+    return min(precios) if precios else None
+
+
 def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
     """Lee valores de postmeta para un producto: { meta_key: meta_value }."""
     if not keys:

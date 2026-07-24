@@ -47,6 +47,29 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
             if not ent["item_id"] and item_id:
                 ent["item_id"], ent["url"] = item_id, url
 
+    # FUENTE MÁS FRESCA: canal_inventario (espejo de canales). Lo alimentan el
+    # sync de 15 min Y los webhooks de ML (items/stock_locations/orders_v2), así
+    # que refleja el estado REAL por cuenta — incluye las publicaciones PAUSADAS,
+    # que también son "publicado" (existen en el canal). Va primero para que una
+    # publicación recién creada aparezca sin esperar al snapshot diario.
+    try:
+        rows = db.fetch_all(
+            f"""SELECT sku, canal, cuenta, item_id, situacion
+                FROM canal_inventario
+                WHERE sku IN ({placeholders})
+                  AND item_id IS NOT NULL AND item_id <> ''""",
+            tuple(skus),
+        )
+        for r in rows:
+            situacion = (r.get("situacion") or "").lower()
+            # 'closed' = publicación dada de baja: ya NO cuenta como publicada.
+            if situacion == "closed":
+                continue
+            _agregar(r["sku"], r.get("canal") or Canal.MERCADO_LIBRE.value,
+                     True, r.get("item_id"), None)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("presencia (canal_inventario) falló: %s", exc)
+
     # Mercado Libre — fuente comprehensiva: Supabase products_snapshot (todas las
     # publicaciones del día). Fallback/union con ml_progress.
     try:

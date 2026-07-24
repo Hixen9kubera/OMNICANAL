@@ -68,6 +68,17 @@ async def listar_productos(
             it["origen"] = "woocommerce"
             for v in (it.get("variantes") or []):
                 v["canales"] = pres.get(v["sku"], [])
+            # PUBLICADO = está en AL MENOS UN canal (regla del panel), no el
+            # status de WooCommerce: un producto `inprogress` en Woo pero vivo en
+            # Mercado Libre SÍ está publicado (caso CAM-0030, que salía "Sin
+            # publicar" estando en las 2 cuentas de ML). Las variantes cuentan:
+            # tras separar un padre, las publicaciones cuelgan de SUS SKUs.
+            canales_propios = [c for c in it["canales"] if c.get("publicado")]
+            canales_variantes = [
+                c for v in (it.get("variantes") or [])
+                for c in (v.get("canales") or []) if c.get("publicado")
+            ]
+            it["publicado"] = bool(canales_propios or canales_variantes)
 
     elif canal == Canal.MERCADO_LIBRE.value:
         items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta,

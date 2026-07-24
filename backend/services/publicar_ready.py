@@ -256,7 +256,14 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         descripcion = post.get("post_content") or post.get("post_excerpt") or ""
     descripcion = _html_a_plano(descripcion)
 
-    precio = _f(campos.get("precio_regular")) or _f(meta.get("_regular_price")) or _f(meta.get("_price"))
+    # Precio SIEMPRE regular (regla de la casa). Un padre variable NO guarda
+    # `_regular_price` propio: sin el paso por variantes caía al `_price`, que es
+    # el de OFERTA (CAM-0030 se publicó en $6,514.97 en vez de $7,755.92).
+    precio = _f(campos.get("precio_regular")) or _f(meta.get("_regular_price"))
+    if not precio:
+        precio = _f(wp_db.precio_regular_variantes(wc_id))
+    if not precio:
+        precio = _f(meta.get("_price"))
 
     stock = meta.get("_stock_odoo") or meta.get("_stock")
     try:

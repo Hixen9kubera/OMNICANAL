@@ -1671,6 +1671,51 @@ solo lectura — el marketplace las descuenta al vender y nosotros las leemos.
 
 ---
 
+### v0.17.6 — CAM-0030 separado por tamaño · precio REGULAR en padres variables · "Publicado" por canal
+
+**1. CAM-0030 separado en 3 publicaciones ML independientes** (6 ítems: 3 tamaños
+× 2 cuentas, TODAS pausadas). Hallazgo previo: la publicación viva tenía
+atributos de MATRIMONIAL (135×190) pero `SELLER_SKU=CAM-0030-IND` — el SKU es lo
+que liga la venta al inventario, así que una venta habría descontado el
+individual. Corregido a `CAM-0030-MAT` en ambas cuentas + publicadas Individual
+(100×190) y Queen (160×200) con sus imágenes y los mismos atributos.
+
+| Tamaño | BEKURA | SANCORFASHION |
+|---|---|---|
+| Matrimonial | MLM3183258785 | MLM5793156390 |
+| Individual | MLM3188977035 | MLM5802621580 |
+| Queen | MLM3188977305 | MLM5802621930 |
+
+⚠️ **Ojo — un PUT de precio/stock REACTIVA la publicación** (ML lo avisa: "se
+reactivaron porque hiciste cambios en su stock o estado"). Pasó con BEKURA Queen;
+se volvió a pausar. **Tras cualquier edición masiva, re-verificar el status.**
+
+**2. FIX precio REGULAR en padres variables** (bug real, encontrado al publicar):
+un padre `variable` NO guarda `_regular_price` propio, así que `construir_prod`
+caía al `_price` — que es el de OFERTA. CAM-0030 se publicó en **$6,514.97** en
+vez de **$7,755.92**. Nuevo `wp_db.precio_regular_variantes(wc_id)` (mínimo de
+las variantes) se consulta ANTES del fallback; los 4 ítems afectados se
+corrigieron a mano. La regla "siempre precio regular" ya se cumple también para
+variables.
+
+**3. "Publicado / Sin publicar" ahora se decide por CANAL, no por WooCommerce.**
+Antes el badge usaba `status == publish` de Woo: CAM-0030 salía "Sin publicar"
+estando vivo en las 2 cuentas de ML. Ahora: **≥1 canal con publicación viva →
+Publicado; 0 canales → Sin publicar**, y las **variantes cuentan** (tras separar
+un padre, las publicaciones cuelgan de los SKUs hijos). `presencia_por_sku` suma
+`canal_inventario` como fuente PRIMARIA (sync 15 min + webhooks = lo más fresco;
+las `closed` no cuentan). Verificado: CAM-0030 → `publicado=True`;
+TEC-2365-ROJ (sin canales) → `False`.
+
+**4. Propuesta DDL (NO aplicada, requiere GO de Eduardo)** en
+[`docs/arquitectura_bd/propuesta_inventario_drop_full.sql`](docs/arquitectura_bd/propuesta_inventario_drop_full.sql):
+`channel.order_items` (cantidades por línea — hoy `orders.skus` es un array sin
+unidades) + `channel.inventory_moves` (ledger append-only drop/full/fba con
+venta/devolución/cancelación/ajuste, idempotente por orden+sku) + vistas de
+conciliación foto-vs-ledger. Versión 0.17.6.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
