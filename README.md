@@ -1551,6 +1551,28 @@ y el comparador `orders-deltas` habría roto la racha (con razón) en su día 2.
 re-corrieron las tandas del backfill para propagar las 641 correcciones y el
 comparador verificó paridad. Versión 0.17.2.
 
+### v0.17.3 — Seam Crear → core.products: el catálogo tiene registro civil
+
+Con KuberaPipelineV1.0 desconectándose y Odoo en retiro, el panel queda como
+la ÚNICA sala de partos de SKUs — pero `core.products` (la columna vertebral
+del v4: todo le hace FK) se alimentaba solo por ETL desde la tabla congelada
+del robot. Consecuencia real: 82 SKUs sin registrar y FK violations en
+`ops.channel_submissions` al publicar/editar productos nuevos (CAM-0030,
+JUGU-1177 — 5 errores en /migracion el 23-jul).
+
+Hecho (GO de Eduardo):
+
+- **Backfill**: re-corrida del ETL oficial `etl_core_products.py` →
+  core.products 22,067 → 22,150 SKUs (+83); paridad de costos delta 0 en el
+  mismo run. Los 5 errores FK se re-aplicaron con `/errores/reprocesar`
+  (5/5 ok) → lista de limpieza en CERO.
+- **Seam permanente**: `crear_producto.py` (paso 9, tras el éxito en Woo)
+  espeja el nacimiento a `core.products` vía `_up_core_product` — upsert por
+  sku que solo toca name/wc_id/status/source; lo que enriquece el ETL
+  (odoo_id, brand, parent_sku, tags) NUNCA se pisa (probado contra DEV:
+  idempotente, sin duplicar, source original conservado). Censo: nueva
+  tarjeta "crear (nacimiento)" (origen `wp_posts`). Se enciende agregando
+  `wp_posts` a `KUBERA_MIRROR_TABLAS`. Versión 0.17.3.
 ### 📣 Aviso 2026-07-23 — DECISIÓN: KuberaPipelineV1.0 se DESCONECTA
 
 **Para el equipo y las sesiones de Claude de Brandon** (decisión comunicada por

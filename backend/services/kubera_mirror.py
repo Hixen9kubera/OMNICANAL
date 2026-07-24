@@ -144,6 +144,15 @@ CENSO: list[dict[str, Any]] = [
      "tabla_mysql": "crear_logs", "tabla_kubera": "ops.process_log",
      "operacion": "INSERT", "disparador": "UI Crear productos",
      "estado": "a_espejar", "nota": "proceso='crear'; detalle ya viene truncado a 4 KB."},
+    {"archivo": "services/crear_producto.py", "funcion": "crear (nacimiento)",
+     "tabla_mysql": "wp_posts", "tabla_kubera": "core.products",
+     "operacion": "UPSERT", "disparador": "UI Crear productos (paso 9 · completado)",
+     "estado": "a_espejar",
+     "nota": "REGISTRO CIVIL del catálogo (seam 23-jul, GO de Eduardo): el panel "
+             "es la ÚNICA sala de partos tras desconectar KuberaPipelineV1.0. "
+             "Sin esto, cada SKU nuevo genera FK violations en "
+             "channel_submissions (caso 82 SKUs + CAM-0030/JUGU-1177). Solo "
+             "actualiza name/wc_id/status; lo del ETL (odoo_id, brand…) no se pisa."},
     {"archivo": "services/costos.py", "funcion": "_guardar_validados/_guardar_finales/_log_costo",
      "tabla_mysql": "costos_validados / costos_finales / costos_logs",
      "tabla_kubera": "costing.* / ops.process_log",
@@ -439,12 +448,34 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
     )
 
 
+def _up_core_product(cur, p: dict[str, Any]) -> None:
+    """core.products — el registro civil del catálogo. Upsert por sku: el
+    nacimiento desde el panel registra SOLO lo que el flujo Crear conoce
+    (name, wc_id, status, source); lo que enriquecen otras vías (odoo_id,
+    brand, parent_sku, tags — del ETL) no se pisa. Seam pedido por Eduardo
+    (23-jul) tras decidir la desconexión de KuberaPipelineV1.0: el panel
+    queda como ÚNICA sala de partos y cada SKU debe registrarse al nacer
+    (caso de los 82 sin acta + FKs de CAM-0030/JUGU-1177)."""
+    cur.execute(
+        """insert into core.products (sku, name, wc_id, status, source)
+           values (%s,%s,%s,%s,%s)
+           on conflict (sku) do update set
+             name   = coalesce(excluded.name, core.products.name),
+             wc_id  = coalesce(excluded.wc_id, core.products.wc_id),
+             status = coalesce(excluded.status, core.products.status),
+             updated_at = now()""",
+        (p.get("sku"), p.get("name"), p.get("wc_id"),
+         p.get("status") or "draft", p.get("source") or "panel_crear"),
+    )
+
+
 _UPSERTS: dict[str, Callable] = {
     "ops.webhook_events": _up_webhook_events,
     "ops.channel_submissions": _up_channel_submissions,
     "ops.process_log": _up_process_log,
     "enrich.product_media": _up_product_media,
     "channel.orders": _up_channel_orders,
+    "core.products": _up_core_product,
 }
 
 

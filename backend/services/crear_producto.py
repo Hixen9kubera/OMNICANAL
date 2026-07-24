@@ -812,6 +812,17 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             if faltan:
                 resumen += f" (falta: {', '.join(faltan)})"
             _set(sku, "completado", resumen, wc_id=wc_id, titulo=titulo, status_wc=status_final)
+            # Espejo kubera: el NACIMIENTO queda registrado en core.products
+            # (registro civil del catálogo). Tras la desconexión del pipeline
+            # externo, el panel es la única sala de partos: sin este seam cada
+            # SKU nuevo genera FK violations en ops.channel_submissions.
+            from services import kubera_mirror
+            kubera_mirror.espejar(
+                "services/crear_producto.py", "crear (nacimiento)",
+                "wp_posts", "core.products", "UPSERT",
+                {"sku": sku, "name": titulo, "wc_id": wc_id,
+                 "status": status_final, "source": "panel_crear"},
+                clave=sku)
         except Exception as exc:  # noqa: BLE001
             log.exception("crear[%s] falló", sku)
             _set(sku, "error", str(exc)[:200], wc_id=wc_id)
