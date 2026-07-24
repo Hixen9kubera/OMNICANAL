@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 import httpx
 
 from config import settings
-from services import db, kubera_mirror, meli
+from services import db, fanout_stock, kubera_mirror, meli
 
 log = logging.getLogger("omnicanal.pedidos_ml")
 
@@ -334,6 +334,19 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             clave=f"{cuenta}:{order_id}")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
+
+    # FAN-OUT del stock DROP: esta venta movió el almacén PROPIO, así que los
+    # demás canales tienen que enterarse (si no, SANCORFASHION y Amazon siguen
+    # ofreciendo el número viejo → sobreventa). Solo aplica cuando el pedido
+    # DESCUENTA de verdad: una venta FULL/FBA sale de la bodega del marketplace
+    # y no toca el almacén compartido. Fire-and-forget: nunca rompe la venta.
+    try:
+        descuenta = not (orden.get("es_full") or proteger_stock)
+        if descuenta and accion == "creado":
+            fanout_stock.encolar_varios([s for s in skus if s],
+                                        motivo=f"venta {orden['cuenta']} {order_id}")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fan-out no encolado para %s: %s", order_id, exc)
 
     return {"ok": True, "accion": accion, "wc_order_id": wc_id, "ml_order_id": order_id,
             "cuenta": orden["cuenta"], "estado_wc": payload["status"],

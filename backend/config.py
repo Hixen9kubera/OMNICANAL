@@ -185,6 +185,19 @@ class Settings(BaseSettings):
     # tabla (p. ej. "ml_backlog,crear_logs"). Vacío = todas las censadas.
     kubera_mirror_tablas: str = ""
 
+    # ── Fan-out de stock DROP hacia los canales ───────────────────
+    # Tras una venta no-FULL, Woo descuenta pero los OTROS canales siguen
+    # ofreciendo el número viejo (riesgo de sobreventa). El fan-out replica el
+    # stock DROP a las publicaciones ACTIVAS y no-FULL (services/fanout_stock.py).
+    # Nace APAGADO y en DRY-RUN: encender la escritura toca marketplaces vivos
+    # (regla 3 de CLAUDE.md — dale explícito de Brandon).
+    fanout_enabled: bool = False
+    fanout_dry_run: bool = True
+    # CSV de canales con escritura habilitada (encendido gradual). Vacío = todos.
+    fanout_canales: str = ""
+    # Piezas de colchón que NO se publican (cubre la ventana venta→escritura).
+    fanout_reserva: int = 0
+
     # ── Pedidos ML → WooCommerce + transición de inventario ───
     # Cada venta de ML se convierte en pedido de Woo con el precio REAL
     # congelado (services/pedidos_ml.py), disparado por el webhook orders_v2.

@@ -1769,6 +1769,59 @@ cada 15 min)*:
 
 ---
 
+### v0.18.0 — FAN-OUT de stock DROP (en DRY-RUN) + Dashboard de operaciones
+
+**El problema**: una venta no-FULL descuenta en Woo (30→29) pero **nadie avisa a
+los otros canales** — verificado: `sync_woo.py` solo empuja Odoo→Woo y el sync de
+15 min solo LEE. SANCORFASHION y Amazon seguían ofreciendo 30 → sobreventa.
+
+**`services/fanout_stock.py`** replica el stock DROP a las publicaciones ACTIVAS
+y no-FULL de todos los canales. Decisiones de diseño (cada una por un motivo):
+
+- **Se encola el SKU, NUNCA un delta.** Al procesarlo se LEE el stock actual de
+  Woo → idempotente por naturaleza (un mensaje repetido da el mismo resultado) y
+  auto-sanable. Con "resta 1" un duplicado descuadra el inventario para siempre
+  — y ML manda webhooks EN RÁFAGA (regla 6).
+- **Solo publicaciones vivas.** Escribirle a una PAUSADA la **REACTIVA** (pasó
+  con CAM-0030 el 24-jul, ML lo avisa explícitamente). Además una pausada no vende.
+- **Solo no-FULL**: las piezas FULL/FBA son del marketplace.
+- **Comparar antes de escribir**: ahorra rate-limit y **mata el eco** (al escribir
+  en ML vuelve un webhook `items`; como el valor ya coincide, el ciclo muere).
+- **Debounce 5 s por SKU**; seam fire-and-forget en `pedidos_ml.sincronizar` (si
+  el fan-out falla, la venta NO se ve afectada).
+
+**3 bugs que cazó el DRY-RUN antes de tocar producción** (justificación viva del modo):
+
+1. **Vocabulario de estados por canal**: el filtro `situacion='active'` ignoraba
+   las **1,616 publicaciones vivas de Amazon** (usa `PUBLISHED`) — el canal DROP
+   más grande. Normalizado a `{active, published, publish}`.
+2. **`item_id` NULL en Amazon**: su identificador es el **SKU** (la Listings API
+   direcciona `/items/{seller}/{sku}`); filtrar por `item_id` dejaba fuera sus
+   1,631 filas. SKUs con destino: 18 → **1,620**.
+3. **319 publicaciones FULL con 0 piezas** se clasificaban como no-FULL por el
+   heurístico de stock → ahora manda la bandera `es_full`.
+
+**Dato operativo revelado**: hoy en ML **todo lo activo es FULL** (422 BEKURA +
+373 SANCOR) y **todos los no-FULL están pausados** → el único canal que consume
+DROP en vivo es **Amazon** (1,616 listings MFN).
+
+**Dashboard** (`/dashboard`, primera pestaña, antes "PRONTO"): estado de los
+flags, métricas, cola en vivo y **bitácora** con el motivo de cada decisión
+(escribir / sin cambio / omitir), filtrable a solo errores. Poll 10 s.
+
+**Flags** (Railway): `FANOUT_ENABLED` (false), `FANOUT_DRY_RUN` (**true**),
+`FANOUT_CANALES` (CSV, encendido gradual), `FANOUT_RESERVA` (colchón).
+
+> ⚠️ **TABLA TEMPORAL `fanout_log`** (MySQL local, se crea sola): bitácora que
+> sobrevive a los deploys — sin ella cada reinicio de Railway borraría el
+> historial del dry-run. **Local a propósito, NO entra en la migración.**
+> **PENDIENTE: BORRARLA cuando el fan-out pase a producción** (acuerdo con
+> Brandon, 24-jul) — decidir antes si su historial se conserva o se descarta.
+
+Versión 0.18.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

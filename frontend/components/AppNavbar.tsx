@@ -29,7 +29,7 @@ interface NavItem {
 // Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
 // implementados; el resto se marca "próximamente".
 const ITEMS: NavItem[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, proximamente: true },
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
   { id: "productos", label: "Productos", icon: Package, href: "/productos" },
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
