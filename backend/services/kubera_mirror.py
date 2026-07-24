@@ -567,6 +567,17 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
         )
     except Exception as exc2:  # noqa: BLE001
         log.warning("no se pudo persistir el error del espejo: %s", exc2)
+    # Alerta push a Slack (import tardío, jamás rompe el flujo del espejo).
+    try:
+        from services import alertas
+        alertas.avisar(
+            "espejo",
+            f"*Error del espejo kubera*: `{origen_py}` → `{tabla_kubera}` "
+            f"({type(exc).__name__}: {str(exc)[:140]}). "
+            f"Ver /migracion → Errores; re-aplicar con `/errores/reprocesar`.",
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:

@@ -427,6 +427,16 @@ def refrescar_token(cuenta: str) -> str | None:
         }, timeout=20)
         if r.status_code != 200:
             log.warning("Refresh token ML %s falló: %s %s", cuenta, r.status_code, r.text[:150])
+            try:
+                from services import alertas
+                alertas.avisar(
+                    "tokens_ml",
+                    f"*Refresh de token ML {cuenta} FALLÓ* ({r.status_code}: "
+                    f"{r.text[:100]}). Si es `invalid_grant`, el refresh_token "
+                    f"murió y hay que re-autorizar — los pedidos de esa cuenta "
+                    f"pueden parar.")
+            except Exception:  # noqa: BLE001
+                pass
             return None
         tok = r.json()
         nuevo = tok["access_token"]

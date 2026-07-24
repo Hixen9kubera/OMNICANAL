@@ -1669,6 +1669,40 @@ solo lectura — el marketplace las descuenta al vender y nosotros las leemos.
 - Un solo archivo tocado: `frontend/components/ProductDetailDrawer.tsx`
   (feature de UI/lectura — deploy directo a main). Versión 0.17.5.
 
+### v0.17.6 — Notificador de alertas a Slack (Fase 1)
+
+Respuesta a los 3 incidentes de la semana que nadie detectó a tiempo (acta rota
+del TRUNCATE, cron fantasma de deltas-orders, ingest de José caído 2 días).
+Canal dedicado **#alertas-omnicanal** vía webhook entrante de Slack; el
+remitente es este backend (app "Kubera Alertas" — buzón de un solo sentido, no
+hay bot real).
+
+**Arquitectura** (`services/alertas.py`): regla mnemónica — *si algo TRUENA
+avisa el que trona (push, segundos); si algo FALTA avisa el que vigila (job
+cada 15 min)*:
+
+- **Push (tiempo real)**: error nuevo del espejo kubera
+  (`kubera_mirror._persistir_error`) y refresh de token ML fallido
+  (`meli.refrescar_token`, cazador del `invalid_grant`).
+- **Vigilante de ausencias** (scheduler, `ALERTAS_MIN=15`): (1) actas de
+  `migration.reconciliation_runs` — después de las `ALERTAS_ACTAS_HORA_UTC=8`
+  cada dominio debe tener acta HOY y en 'ok'; (2) silencio de ventas —
+  `ALERTAS_SILENCIO_HORAS=4` sin filas nuevas en `pedidos_ml` dentro del
+  horario hábil CDMX (9-21); (3) tokens rancios — `ml_tokens_dashboard` sin
+  renovar en 12 h (el renovador externo corre ~cada 6 h).
+- **Anti-spam**: candado de enfriamiento POR TIPO (espejo 30 min, actas 6 h…);
+  el primer aviso sale al instante, los repetidos se cuentan y el siguiente
+  real anexa "(+N repetidas silenciadas)". `resumen_estado()` para diagnóstico.
+- **Encendido/apagado sin deploy**: todo el módulo es no-op sin
+  `SLACK_WEBHOOK_URL` (variable en Railway — la URL es la llave del canal:
+  JAMÁS en el repo; lección del client_secret del publicador). Sin URL, el
+  scheduler ni registra el job.
+- Probado en local contra datos reales: envío ok, candado ok (2 suprimidas
+  contadas), vigilante completo sin explotar y sin falsas alarmas (venta 0.0 h,
+  tokens 1.1 h). Fase 2 pendiente: 500s de `/publicar/confirmar`, Woo 403,
+  deploys fallidos (nativo de Railway); Fase 3: resumen mañanero.
+  Versión 0.17.6.
+
 ---
 
 ### v0.17.6 — CAM-0030 separado por tamaño · precio REGULAR en padres variables · "Publicado" por canal

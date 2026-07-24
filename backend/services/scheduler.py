@@ -104,6 +104,24 @@ def iniciar() -> None:
         )
         log.info("Vigilante de Odoo cada %s min (auto_push=%s).",
                  settings.odoo_watch_min, settings.odoo_watch_auto_push)
+    # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
+    # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
+    # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no
+    # pasan por aquí — avisan solos en el momento. Ver services/alertas.py.
+    from services import alertas
+    if alertas.disponible():
+        _scheduler.add_job(
+            alertas.vigilante,
+            "interval",
+            minutes=settings.alertas_min,
+            id="alertas_vigilante",
+            next_run_time=datetime.now() + timedelta(seconds=150),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Vigilante de alertas (Slack) cada %s min.", settings.alertas_min)
+    else:
+        log.info("Alertas Slack APAGADAS (sin SLACK_WEBHOOK_URL).")
     _scheduler.start()
     if settings.sync_enabled:
         log.info("Sync programado cada %s min.", settings.sync_interval_min)

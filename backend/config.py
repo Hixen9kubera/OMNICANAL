@@ -216,6 +216,19 @@ class Settings(BaseSettings):
     odoo_watch_min: int = 30
     odoo_watch_auto_push: bool = False
 
+    # ── Notificador de alertas a Slack (services/alertas.py) ───
+    # Webhook entrante amarrado al canal #alertas-omnicanal. Sin URL, el
+    # notificador entero es un no-op (apagable sin deploy). La URL es la llave
+    # del canal: SOLO como variable de Railway, nunca en el repo.
+    slack_webhook_url: str = ""
+    # Vigilante de ausencias (actas faltantes, silencio de ventas): cada N min.
+    alertas_min: int = 15
+    # Hora UTC a partir de la cual una acta diaria ausente es alarma (los crons
+    # corren 06:30/06:47/07:15 UTC; a las 07:45 ya deberían estar las 3).
+    alertas_actas_hora_utc: int = 8
+    # Horas sin ventas nuevas (en horario hábil CDMX) que disparan la alerta.
+    alertas_silencio_horas: int = 4
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
