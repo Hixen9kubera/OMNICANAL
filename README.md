@@ -1746,6 +1746,27 @@ cada 15 min)*:
   deploys fallidos (nativo de Railway); Fase 3: resumen mañanero.
   Versión 0.17.7.
 
+### v0.17.8 — Alertas Fase 2: 500 al publicar · racha de 403 de Woo · deploys
+
+- **500 al publicar** (push): `/api/publicar/confirmar` envuelto — cualquier
+  excepción NO controlada avisa a Slack con SKU, cuenta y causa, y se re-lanza
+  igual. Es el fin del "ERROR DE CONEXIÓN" mudo: el equipo se entera aunque el
+  usuario no reporte. Los `HTTPException` (validación) NO alertan — esos ya
+  llegan legibles al modal (v0.15.1). Candado por SKU (`publicar_500:<sku>`,
+  30 min).
+- **Racha de 403 de WooCommerce** (contador ventana): nuevo
+  `alertas.avisar_si_racha(tipo, texto, umbral, ventana_min)` — cuenta
+  ocurrencias en ventana deslizante y solo alerta al cruzar el umbral. Aplicado
+  al 403 del WAF de Hostinger (pendiente #1): 1 fallo = parpadeo (silencio);
+  **5 en 10 min = bloqueo real** → 🟡 con el conteo. Probado: 4 callados, el
+  5to alerta, el 6to lo suprime el candado.
+- **Deploys fallidos** (config, 0 código): Railway trae webhooks de proyecto
+  con Muxer nativo de Slack — pegar la MISMA URL del canal en Settings →
+  Webhooks del proyecto `Hixen9Proyects` y avisa solo de deployment
+  failed/crashed (+ alertas de volumen/CPU). El agente de Railway no puede
+  crearlos por API: es un paso manual de dashboard (2 clics).
+  Versión 0.17.8.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

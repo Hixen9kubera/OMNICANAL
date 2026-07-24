@@ -48,6 +48,8 @@ _COOLDOWN_MIN: dict[str, int] = {
     "acta": 360,           # una acta ausente se re-avisa a lo mucho 2-3 veces/día
     "silencio_ventas": 240,
     "tokens_rancios": 360,
+    "publicar_500": 30,    # por SKU (tipo "publicar_500:<sku>")
+    "woo_403": 60,
 }
 
 _lock = threading.Lock()
@@ -96,6 +98,32 @@ def avisar(tipo: str, texto: str, nivel: str = "🔴") -> bool:
     except Exception as exc:  # noqa: BLE001
         log.warning("avisar(%s) falló: %s", tipo, exc)
         return False
+
+
+_rachas: dict[str, list[float]] = {}  # tipo → timestamps de ocurrencias
+
+
+def avisar_si_racha(tipo: str, texto: str, umbral: int = 5,
+                    ventana_min: int = 10, nivel: str = "🟡") -> bool:
+    """
+    Para fallas INTERMITENTES que solas no ameritan alerta (p. ej. un 403 de
+    Woo que parpadea): cuenta ocurrencias del tipo en una ventana deslizante y
+    solo alerta al llegar al umbral. `{n}` en el texto se sustituye por el
+    conteo. El candado de enfriamiento de avisar() aplica igual después.
+    """
+    if not disponible():
+        return False
+    ahora = time.time()
+    with _lock:
+        serie = _rachas.setdefault(tipo, [])
+        serie.append(ahora)
+        corte = ahora - ventana_min * 60
+        while serie and serie[0] < corte:
+            serie.pop(0)
+        n = len(serie)
+    if n < umbral:
+        return False
+    return avisar(tipo, texto.replace("{n}", str(n)), nivel=nivel)
 
 
 # ── VIGILANTE de ausencias (job del scheduler) ────────────────────────────────

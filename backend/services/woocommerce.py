@@ -493,6 +493,18 @@ async def _get_con_reintento(cli: httpx.AsyncClient, url: str, params: dict, int
             if r.status_code == 403:
                 # Challenge anti-bot del hosting (bloqueo por IP): reintentar
                 # solo lo empeora. Fallar rápido y dejar que el cache aguante.
+                # Un 403 suelto es un parpadeo; una RACHA (5 en 10 min) es el
+                # WAF bloqueándonos en serio → alerta a Slack con el conteo.
+                try:
+                    from services import alertas
+                    alertas.avisar_si_racha(
+                        "woo_403",
+                        "*WooCommerce devolviendo 403* ({n} en 10 min) — el WAF "
+                        "de Hostinger está bloqueando la API; la vista Productos "
+                        "puede estar rota. Suele levantarse solo en 15-30 min de "
+                        "tráfico bajo (pendiente #1).")
+                except Exception:  # noqa: BLE001
+                    pass
                 raise RuntimeError(
                     "HTTP 403: el hosting está bloqueando la API (protección anti-bot). "
                     "Suele levantarse solo en 15-30 min de tráfico bajo."

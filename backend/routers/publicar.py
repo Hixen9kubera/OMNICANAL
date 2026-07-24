@@ -58,7 +58,25 @@ async def preview(req: PublicarRequest) -> dict[str, Any]:
 
 @router.post("/confirmar")
 async def confirmar(req: PublicarRequest) -> dict[str, Any]:
-    return await publicar.confirmar(req.a_dict())
+    # Un fallo aquí llega al usuario como el genérico "ERROR DE CONEXIÓN" y
+    # rara vez se reporta → alerta push a Slack con el contexto completo, para
+    # enterarnos antes (o aunque nadie reporte). El error se re-lanza igual.
+    try:
+        return await publicar.confirmar(req.a_dict())
+    except HTTPException:
+        raise  # errores controlados (validación): ya llegan legibles al modal
+    except Exception as exc:
+        try:
+            from services import alertas
+            alertas.avisar(
+                f"publicar_500:{req.sku or req.wc_id}",
+                f"*Publicar falló (500)*: `{req.sku or req.wc_id}` en "
+                f"{req.cuenta or req.canal} — {type(exc).__name__}: "
+                f"{str(exc)[:140]}. El panel mostró 'ERROR DE CONEXIÓN'; "
+                f"ver logs de Railway (`/api/publicar/confirmar`).")
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 @router.get("/amazon/tipos")
