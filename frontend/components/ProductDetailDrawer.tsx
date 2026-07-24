@@ -37,6 +37,13 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
 
   const cfg = (id: string) => canales.find((c) => c.id === id);
 
+  // Suma de piezas en bodegas de marketplace del SKU (FULL de cada cuenta ML +
+  // FBA de Amazon). Se muestra junto al stock real en la tarjeta General.
+  const fullFbaTotal = (data?.canales ?? []).reduce(
+    (s, c) => s + (c.stock_full ?? 0) + (c.stock_fba ?? 0),
+    0
+  );
+
   // Cerrar con ESC
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -173,13 +180,17 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                 {(() => {
                   const esML = c.canal === "mercado_libre";
                   const esAmazon = c.canal === "amazon";
+                  // En General, junto al stock real (que NO se toca), va la suma
+                  // de FULL/FBA del producto — solo si tiene piezas en bodegas.
+                  const esGeneral = c.canal === "general";
+                  const conFullFba = esGeneral && fullFbaTotal > 0;
                   const stockReal = c.stock_real ?? c.stock;
                   return (
                     <>
                       <div
                         className={[
                           "grid divide-x divide-slate-100 border-b border-slate-100",
-                          esML || esAmazon ? "grid-cols-3" : "grid-cols-2",
+                          esML || esAmazon || conFullFba ? "grid-cols-3" : "grid-cols-2",
                         ].join(" ")}
                       >
                         <Metric icon={<Tag size={14} />} label="Precio" valor={precioMXN(c.precio)} />
@@ -188,6 +199,14 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                           label="Stock real"
                           valor={stockReal != null ? `${stockReal} u` : "—"}
                         />
+                        {conFullFba && (
+                          <Metric
+                            icon={<Truck size={14} />}
+                            label="FULL/FBA"
+                            valor={`${fullFbaTotal} u`}
+                            destacado
+                          />
+                        )}
                         {esML && (
                           <Metric
                             icon={<Truck size={14} />}

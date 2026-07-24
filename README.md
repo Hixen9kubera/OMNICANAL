@@ -1645,6 +1645,30 @@ Eduardo, dueño de la migración):
 - **Cómo usarlo**: poner el código de barras real del producto en el campo →
   guardar → Publicar en SANCOR.
 
+### v0.17.5 — Suma FULL/FBA en el detalle de producto (Omnicanal)
+
+Primera pieza visible del modelo **Drop/Full** acordado con Eduardo (24-jul):
+DROP = almacén propio (el número de Woo, compartido entre canales no-FULL);
+FULL/FBA = bodegas del marketplace (un cajón por cuenta ML + el de Amazon),
+solo lectura — el marketplace las descuenta al vender y nosotros las leemos.
+
+- En el **drawer de detalle** (clic a un producto en la pestaña Omnicanal), la
+  tarjeta **General** ahora muestra una tercera métrica junto al stock real:
+  **FULL/FBA** = suma de las piezas del SKU en bodegas de marketplace (FULL de
+  BEKURA + FULL de SANCORFASHION + FBA). Se calcula al momento desde los
+  canales del detalle — **nunca se almacena** (un total guardado se congela y
+  miente; mismo patrón que las comisiones en 0).
+- **El stock real NO se modifica** — solo se le pone la suma al lado. La
+  columna aparece únicamente si el producto tiene piezas en bodegas; si no,
+  la tarjeta General queda como siempre (2 columnas).
+- Las tarjetas por cuenta de ML y la de Amazon (que ya mostraban su FULL/FBA
+  individual) quedan intactas.
+- Verificado en local con datos reales: TEC-1032-NEG-SOL → FULL/FBA 539 u
+  (192 BEKURA + 347 SANCORFASHION + 0 FBA); CAM-0030 (sin piezas en bodegas)
+  → tarjeta normal sin columna extra.
+- Un solo archivo tocado: `frontend/components/ProductDetailDrawer.tsx`
+  (feature de UI/lectura — deploy directo a main). Versión 0.17.5.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
