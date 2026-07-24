@@ -1582,7 +1582,9 @@ Hecho (GO de Eduardo):
 core+costing (que quedaron perfectos), **vació en silencio TODAS las tablas
 con FK a core.products** que el script NO recarga: `channel.listings`,
 `ops.channel_submissions`, `enrich.product_media` (+ `supplier_data`,
-`ai_attributes`, `product_category` — avisar a José). El acta channel-deltas
+`ai_attributes`, `product_category` — verificado con pg_stat el 24-jul:
+esas 3 estaban VÍRGENES, cero inserciones históricas; sin daño ni aviso
+necesario). El acta channel-deltas
 del 24-jul lo cazó en horas (`con_deltas`, 3,758 solo_en_mysql): el sistema
 de auditoría funcionó. Racha de channel: reiniciada.
 
