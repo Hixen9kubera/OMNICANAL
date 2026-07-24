@@ -76,7 +76,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.17.6",
+    version="0.17.7",
     lifespan=lifespan,
 )
 
@@ -107,7 +107,7 @@ app.include_router(migracion.router)
 def raiz():
     return {
         "app": "OMNICANAL · Kubera",
-        "version": "0.17.6",
+        "version": "0.17.7",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
