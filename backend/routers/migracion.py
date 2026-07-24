@@ -142,6 +142,15 @@ def backfill_product_media(max_items: int = 1000):
     return kubera_mirror.backfill_product_media(max_items)
 
 
+@router.post("/backfill/channel-submissions", dependencies=[Depends(requiere_api_key)])
+def backfill_channel_submissions(tabla: str = "ml_backlog", max_items: int = 1000,
+                                 offset: int = 0):
+    """Reconstruye ops.channel_submissions desde las bitácoras MySQL
+    (ml_backlog / amazon_backlog / ml_image_edit_backlog). Idempotente por
+    detail_ref. Correr en tandas (max_items+offset) por el timeout del proxy."""
+    return kubera_mirror.backfill_channel_submissions(tabla, max_items, offset)
+
+
 @router.post("/backfill/channel-orders", dependencies=[Depends(requiere_api_key)])
 def backfill_channel_orders(max_items: int = 5000, offset: int = 0):
     """Copia el histórico pedidos_ml → channel.orders (one-shot, idempotente:

@@ -1573,6 +1573,32 @@ Hecho (GO de Eduardo):
   idempotente, sin duplicar, source original conservado). Censo: nueva
   tarjeta "crear (nacimiento)" (origen `wp_posts`). Se enciende agregando
   `wp_posts` a `KUBERA_MIRROR_TABLAS`. Versión 0.17.3.
+
+### v0.17.4 — INCIDENTE y recuperación: TRUNCATE CASCADE de etl_core_products
+
+**Qué pasó (24-jul ~05:27 UTC).** La re-corrida de `etl_core_products.py`
+(para registrar los 82 SKUs del hallazgo FK) ejecutó su
+`TRUNCATE core.products CASCADE` (línea 282): además de reconstruir
+core+costing (que quedaron perfectos), **vació en silencio TODAS las tablas
+con FK a core.products** que el script NO recarga: `channel.listings`,
+`ops.channel_submissions`, `enrich.product_media` (+ `supplier_data`,
+`ai_attributes`, `product_category` — avisar a José). El acta channel-deltas
+del 24-jul lo cazó en horas (`con_deltas`, 3,758 solo_en_mysql): el sistema
+de auditoría funcionó. Racha de channel: reiniciada.
+
+**Recuperación (mismo día, todo desde las fuentes MySQL intactas):**
+`etl_channel_listings` → 5,616 listings (deltas 0); backfill product-media →
+262/262; nuevo `POST /api/migracion/backfill/channel-submissions?tabla=…`
+(payloads idénticos al espejo en vivo, idempotente por detail_ref) →
+reconstruye ml_backlog/amazon_backlog/ml_image_edit_backlog.
+
+**⚠️ REGLA NUEVA: `etl_core_products` es herramienta de FASE (demolición +
+reconstrucción). NO re-correrlo con el espejo vivo salvo que inmediatamente
+después se re-corran etl_channel_listings + los 3 backfills de submissions/
+media Y se avise a José por sus tablas enrich/category. Para "solo faltan
+SKUs nuevos" el camino correcto es el seam v0.17.3 (automático) — no el ETL.
+Propuesta pendiente a Eduardo: cambiar el TRUNCATE CASCADE por upsert.**
+Versión 0.17.4.
 ### 📣 Aviso 2026-07-23 — DECISIÓN: KuberaPipelineV1.0 se DESCONECTA
 
 **Para el equipo y las sesiones de Claude de Brandon** (decisión comunicada por

@@ -667,6 +667,89 @@ def backfill_product_media(max_items: int = 1000) -> dict[str, Any]:
             "fallidas": fallidas, "errores": errores}
 
 
+def backfill_channel_submissions(tabla: str = "ml_backlog", max_items: int = 1000,
+                                 offset: int = 0) -> dict[str, Any]:
+    """Reconstruye ops.channel_submissions desde las bitácoras MySQL
+    (ml_backlog / amazon_backlog / ml_image_edit_backlog), con los MISMOS
+    payloads que el espejo en vivo. Idempotente por detail_ref
+    ('mysql:<tabla>:<id>'). Creado tras el incidente del 24-jul: el
+    TRUNCATE CASCADE de etl_core_products vació la tabla (ver README)."""
+    if not disponible():
+        return {"ok": False, "motivo": "KUBERA_DB_URL no configurada."}
+    from services import db
+    if tabla == "ml_backlog":
+        filas = db.fetch_all(
+            """SELECT id, cuenta, sku, ml_item_id, success, error, ml_status,
+                      created_at, published_at
+               FROM ml_backlog ORDER BY id LIMIT %s OFFSET %s""",
+            (int(max_items), int(offset)))
+        def _payload(f):
+            return {"canal": "mercado_libre", "cuenta": f["cuenta"] or "",
+                    "sku": f["sku"] or "", "submission_id": f["ml_item_id"],
+                    "operacion": "alta" if f.get("ml_status") == 201 else "actualizacion",
+                    "status": f.get("ml_status"), "success": bool(f["success"]),
+                    "error_resumen": f.get("error"),
+                    "detail_ref": f"mysql:ml_backlog:{f['id']}",
+                    "submitted_at": f.get("created_at"),
+                    "published_at": f.get("published_at")}
+    elif tabla == "amazon_backlog":
+        filas = db.fetch_all(
+            """SELECT id, sku, submission_id, status, success, issue_count,
+                      submitted_at, published_at
+               FROM amazon_backlog ORDER BY id LIMIT %s OFFSET %s""",
+            (int(max_items), int(offset)))
+        def _payload(f):
+            return {"canal": "amazon", "cuenta": "AMAZON", "sku": f["sku"] or "",
+                    "submission_id": f.get("submission_id"), "operacion": "alta",
+                    "status": f.get("status"), "success": bool(f["success"]),
+                    "error_resumen": None if f["success"] else f"{f.get('issue_count') or 0} issues",
+                    "detail_ref": f"mysql:amazon_backlog:{f['id']}",
+                    "submitted_at": f.get("submitted_at"),
+                    "published_at": f.get("published_at")}
+    elif tabla == "ml_image_edit_backlog":
+        filas = db.fetch_all(
+            """SELECT id, cuenta, sku, wp_media_id_new, action, gemini_success,
+                      gemini_error, created_at
+               FROM ml_image_edit_backlog ORDER BY id LIMIT %s OFFSET %s""",
+            (int(max_items), int(offset)))
+        def _payload(f):
+            return {"canal": "mercado_libre", "cuenta": f.get("cuenta") or "studio",
+                    "sku": f["sku"] or "",
+                    "submission_id": str(f.get("wp_media_id_new") or "") or None,
+                    "operacion": "imagen", "status": f.get("action"),
+                    "success": bool(f.get("gemini_success")),
+                    "error_resumen": f.get("gemini_error"),
+                    "detail_ref": f"mysql:ml_image_edit_backlog:{f['id']}",
+                    "submitted_at": f.get("created_at")}
+    else:
+        return {"ok": False, "motivo": f"tabla no soportada: {tabla!r}"}
+
+    aplicadas = fallidas = 0
+    errores: list[str] = []
+    for f in filas:
+        conn = None
+        try:
+            conn = _get_pool().connection()
+            with conn.cursor() as cur:
+                cur.execute("select set_config('statement_timeout', '4000', true)")
+                cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+                _up_channel_submissions(cur, _payload(f))
+            conn.commit()
+            aplicadas += 1
+        except Exception as exc:  # noqa: BLE001
+            fallidas += 1
+            if len(errores) < 20:
+                errores.append(f"id {f['id']} ({f.get('sku')}): {type(exc).__name__}: {str(exc)[:100]}")
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return {"ok": True, "tabla": tabla, "leidas": len(filas),
+            "aplicadas": aplicadas, "fallidas": fallidas, "errores": errores}
+
+
 _BACKFILL_CANAL = {
     "BEKURA": "mercado_libre", "SANCORFASHION": "mercado_libre",
     "AMAZON": "amazon", "TEMU": "temu", "TIKTOK": "tiktok",
