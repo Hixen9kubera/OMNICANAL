@@ -80,18 +80,50 @@ const COLOR_ACCION: Record<string, string> = {
   sin_cambio: "bg-slate-50 text-slate-500 border-slate-200",
   omitir: "bg-amber-50 text-amber-700 border-amber-200",
   sin_destinos: "bg-slate-50 text-slate-400 border-slate-200",
+  // Movimientos de bodega FULL/FBA. Los "_sim" son del modo solo-registro:
+  // se calcularon pero NO tocaron Woo.
+  full_ingreso: "bg-rose-50 text-rose-700 border-rose-200",
+  full_ingreso_sim: "bg-violet-50 text-violet-700 border-violet-200",
+  full_retiro: "bg-sky-50 text-sky-700 border-sky-200",
+  full_retiro_sim: "bg-violet-50 text-violet-700 border-violet-200",
+  fba_ingreso: "bg-rose-50 text-rose-700 border-rose-200",
+  fba_ingreso_sim: "bg-violet-50 text-violet-700 border-violet-200",
+  full_aviso: "bg-amber-50 text-amber-700 border-amber-200",
+  full_ignorado: "bg-slate-50 text-slate-400 border-slate-200",
+  full_sospechoso: "bg-rose-100 text-rose-800 border-rose-300",
+  full_sin_sku: "bg-rose-50 text-rose-600 border-rose-200",
 };
+
+interface TipoObservado {
+  tipo: string;
+  n: number;
+  efecto_declarado: string | null;
+  acciones: Record<string, number>;
+  ejemplo: { sku: string; cuenta: string; woo: string; detalle: string; ts: string } | null;
+}
+interface Observacion {
+  modo_solo_registro: boolean;
+  vigilante_encendido: boolean;
+  eventos: number;
+  tipos_vistos: TipoObservado[];
+  TIPOS_DESCONOCIDOS: TipoObservado[];
+}
 
 export default function DashboardPage() {
   const [d, setD] = useState<Estado | null>(null);
+  const [obs, setObs] = useState<Observacion | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [soloErrores, setSoloErrores] = useState(false);
 
   const cargar = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/api/fanout/estado`, { cache: "no-store" });
+      const [r, ro] = await Promise.all([
+        fetch(`${API_BASE}/api/fanout/estado`, { cache: "no-store" }),
+        fetch(`${API_BASE}/api/fanout/full/observacion?horas=24`, { cache: "no-store" }),
+      ]);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setD(await r.json());
+      if (ro.ok) setObs(await ro.json());
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "error");
@@ -197,6 +229,103 @@ export default function DashboardPage() {
               <Dato k="Sin cambio" v={String(acc["sin_cambio"] ?? 0)} />
             </Tarjeta>
           </div>
+        )}
+
+        {/* OBSERVACIÓN DE MOVIMIENTOS FULL/FBA */}
+        {obs && (
+          <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-bold text-slate-800">Movimientos de bodega FULL / FBA</h2>
+                <p className="text-[11px] text-slate-400">
+                  Qué avisa Mercado Libre y qué haría cada tipo con el stock de WooCommerce.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Estadillo
+                  icono={obs.vigilante_encendido ? <Power size={14} /> : <PauseCircle size={14} />}
+                  texto={obs.vigilante_encendido ? "Vigilante encendido" : "Vigilante apagado"}
+                  tono={obs.vigilante_encendido ? "ok" : "off"}
+                />
+                {obs.modo_solo_registro && (
+                  <span className="flex items-center gap-1.5 rounded-lg bg-violet-100 px-2.5 py-1.5 text-xs font-semibold text-violet-700">
+                    <Eye size={14} /> SOLO REGISTRO (no toca inventario)
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* La señal que decide si se puede encender la escritura */}
+            {obs.TIPOS_DESCONOCIDOS.length > 0 ? (
+              <div className="mb-3 flex items-start gap-2 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <div>
+                  <strong>NO encender la escritura todavía.</strong> Mercado Libre mandó tipos de
+                  operación que la tabla de decisión no contempla:{" "}
+                  <span className="font-mono">{obs.TIPOS_DESCONOCIDOS.map((t) => t.tipo).join(", ")}</span>.
+                  Hay que definir qué hace cada uno antes de mover inventario.
+                </div>
+              </div>
+            ) : obs.eventos > 0 ? (
+              <div className="mb-3 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
+                <CheckCircle2 size={16} /> Sin tipos desconocidos en {obs.eventos} evento(s):
+                todos los movimientos caen en la tabla de decisión.
+              </div>
+            ) : null}
+
+            {obs.tipos_vistos.length === 0 ? (
+              <p className="text-sm text-slate-400">
+                Sin movimientos todavía. Aparecerán en cuanto Mercado Libre avise de un envío,
+                retiro o venta en FULL.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-[11px] uppercase tracking-wider text-slate-400">
+                    <tr>
+                      <th className="px-3 py-2 font-semibold">Tipo (Mercado Libre)</th>
+                      <th className="px-3 py-2 font-semibold">Veces</th>
+                      <th className="px-3 py-2 font-semibold">Qué haría con Woo</th>
+                      <th className="px-3 py-2 font-semibold">Último ejemplo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {obs.tipos_vistos.map((t) => (
+                      <tr key={t.tipo} className="border-t border-slate-50">
+                        <td className="px-3 py-2 font-mono text-xs font-semibold text-slate-700">{t.tipo}</td>
+                        <td className="px-3 py-2 text-slate-600">{t.n}</td>
+                        <td className="px-3 py-2">
+                          {t.efecto_declarado === "resta" ? (
+                            <span className="rounded-md border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-[11px] font-semibold text-rose-700">
+                              RESTA (salió del almacén)
+                            </span>
+                          ) : t.efecto_declarado === "suma" ? (
+                            <span className="rounded-md border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[11px] font-semibold text-sky-700">
+                              SUMA
+                            </span>
+                          ) : t.efecto_declarado === "DESCONOCIDO" ? (
+                            <span className="rounded-md border border-rose-300 bg-rose-100 px-1.5 py-0.5 text-[11px] font-bold text-rose-800">
+                              ⚠ SIN DEFINIR
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-slate-400">no toca Woo</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-[11px] text-slate-500">
+                          {t.ejemplo ? (
+                            <span>
+                              <span className="font-mono text-slate-600">{t.ejemplo.sku}</span>
+                              {" · "}{t.ejemplo.detalle?.slice(0, 70)}
+                            </span>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         )}
 
         {/* Bitácora */}
