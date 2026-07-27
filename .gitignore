@@ -59,3 +59,4 @@ backups/
 audita_*.json
 auditoria*.json
 fanout_sobreventa.json
+ambiguos.json
