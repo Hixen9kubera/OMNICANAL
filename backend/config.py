@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
     supabase_db_url: str = ""
+    # ── Analítica (dailytrackMeli) separada de la operativa (BD kubera) ──
+    # Nombres honestos tras declarar tukwcvsi producción operativa: la familia
+    # SUPABASE_* queda para la BD kubera; la lectura de analítica (presencia ML,
+    # products_snapshot/daily_stock vía supabase_rest) usa ANALYTICS_*.
+    # FALLBACK: si están vacías, supabase_rest usa las SUPABASE_* de arriba —
+    # comportamiento idéntico al actual hasta que producción defina las nuevas.
+    analytics_supabase_url: str = ""
+    analytics_supabase_service_role_key: str = ""
 
     # ── Amazon SP-API (.env.amazon) ───────────────────────────
     amazon_lwa_client_id: str = ""

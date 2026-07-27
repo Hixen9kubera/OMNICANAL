@@ -51,18 +51,30 @@ _COLS = (
 )
 
 
+# La analítica vive en su propio proyecto (dailytrackMeli). Con la familia
+# SUPABASE_* re-apuntada a la BD kubera (producción operativa), este módulo
+# usa ANALYTICS_SUPABASE_* — con fallback a SUPABASE_* para configs viejas
+# (local/staging) donde ambas eran el mismo proyecto.
+def _analytics_url() -> str:
+    return settings.analytics_supabase_url or settings.supabase_url
+
+
+def _analytics_key() -> str:
+    return settings.analytics_supabase_service_role_key or settings.supabase_service_role_key
+
+
 def disponible() -> bool:
-    return bool(settings.supabase_url and settings.supabase_service_role_key)
+    return bool(_analytics_url() and _analytics_key())
 
 
 def _base() -> str:
-    return f"{settings.supabase_url.rstrip('/')}/rest/v1"
+    return f"{_analytics_url().rstrip('/')}/rest/v1"
 
 
 def _headers(extra: dict | None = None) -> dict:
     h = {
-        "apikey": settings.supabase_service_role_key,
-        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        "apikey": _analytics_key(),
+        "Authorization": f"Bearer {_analytics_key()}",
     }
     if extra:
         h.update(extra)

@@ -2093,6 +2093,23 @@ con sufijo. El `ON CONFLICT (sku)` no empató y el INSERT chocó con la única d
 
 Versión 0.22.0.
 
+### v0.22.1 — Nombres honestos: la analítica se separa de la operativa (ANALYTICS_SUPABASE_*) (Eduardo)
+
+Preparación del candado de producción (F5). `supabase_rest.py` (presencia ML /
+dataset: `products_snapshot`, `daily_stock`, `ml_accounts` — único consumidor
+de analítica) ahora lee `ANALYTICS_SUPABASE_URL` + `ANALYTICS_SUPABASE_SERVICE_ROLE_KEY`
+con **fallback** a `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` — si las nuevas
+no existen, comportamiento idéntico (cero riesgo en este deploy).
+
+El plan que habilita: en producción se duplican los valores actuales de
+analítica hacia `ANALYTICS_*`, y entonces la familia `SUPABASE_*` puede
+re-apuntarse a la BD kubera (`SUPABASE_URL=https://tukwcvsi….supabase.co` +
+`SUPABASE_PROD_REF=tukwcvsi…`) → `validar_ambiente()` queda activo también en
+producción, con los nombres diciendo la verdad: `SUPABASE_*` = operativa,
+`ANALYTICS_*` = dailytrack. Ese switch de variables lleva dale de Brandon
+(regla 3) y se aplica con un solo accept-deploy. Staging/local no necesitan
+`ANALYTICS_*` (no leen analítica real). Versión 0.22.1.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
