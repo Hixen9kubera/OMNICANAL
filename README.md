@@ -2112,6 +2112,85 @@ producción, con los nombres diciendo la verdad: `SUPABASE_*` = operativa,
 
 ---
 
+### 🔍 AUDITORÍA del vigilante FULL/FBA (2026-07-27) — VEREDICTO: **NO ACTIVAR**
+
+Auditoría adversarial de `services/stock_full.py` antes de encenderlo: 4 revisores
+en paralelo (correctitud, cobertura de tipos, simulación con datos reales,
+robustez) + verificación que intentó REFUTAR cada hallazgo. **Los 4 votaron
+`no_activar`; 7 de 8 hallazgos sobrevivieron a la refutación.** Todo solo-lectura.
+
+**El modo SOLO-REGISTRO evitó un incidente peor que el de la mañana.**
+
+#### 🔴 CRÍTICO 1 — `TRANSFER_DELIVERY` NO es "llegó mercancía a FULL"
+
+Es un **barajeo interno de ML**: `TRANSFER_RESERVATION` mueve piezas de
+`available` al bucket `transfer`, y `TRANSFER_DELIVERY` las regresa. **El `total`
+de la bodega no cambia.**
+
+> Evidencia: 102 operaciones `TRANSFER_DELIVERY` en 60 inventarios de ambas
+> cuentas — en NINGUNA cambió `result.total`. Par observado:
+> `TRANSFER_RESERVATION {available −N, transfer +N}` ↔
+> `TRANSFER_DELIVERY {available +N, transfer −N}`, total constante.
+
+Como era **el único tipo mapeado a `resta`** y ninguno suma, activarlo habría
+desinflado Woo de forma monótona: **−329 pzas solo en la muestra**, y el fan-out
+habría propagado esos ceros a los 1,616 listings de Amazon. Mismo error de
+razonamiento que `WITHDRAWAL_DELIVERY`, invertido de signo.
+
+#### 🔴 CRÍTICO 2 — el ingreso real es `INBOUND_RECEPTION` y NO está mapeado
+
+Verificado en producción: `type=INBOUND_RECEPTION` con `inbound_id` (una
+recepción de **129 pzas** en SANCORFASHION; otra de **17 pzas** de CUNA-0018 el
+18-jul en ráfaga de 9 avisos/11 s). Hoy cae en `full_ignorado` → **el hueco de
+las 1,526 pzas que motivó el módulo seguiría abierto**. Es decir: restaría por lo
+que no debe y no restaría por lo que sí.
+
+#### 🟠 Las tres defensas no defendían
+
+1. **Verificación cruzada = sello de goma**: compara un NIVEL de stock (40-120
+   pzas) contra un DELTA (1-6). Simulada sobre 55 operaciones reales: **0
+   bloqueadas**. No habría atajado ninguno de los dos bugs. Además tira el
+   `result` que la propia operación ya trae y hace un GET duplicado que devuelve
+   el total ACTUAL, no el del momento.
+2. **Idempotencia sella lo NO aplicado**: `_ya_procesada` solo mira si existe
+   fila con ese `operation_id`, y `_registrar` escribe también en
+   `full_sospechoso` / `full_sin_sku` / errores de Woo. Con un 502 del WAF de
+   Hostinger (pendiente #1) el movimiento **se pierde para siempre**.
+3. **`revisar_fba` revienta en cada ejecución** (choque de event loops:
+   `asyncio.run` dentro del `AsyncIOScheduler`) — **nunca ha corrido**. Y aunque
+   corriera, no guarda su propia foto: descontaría el mismo ingreso en cada
+   vuelta.
+
+*(Descartado por el verificador: la race condition en `_ajustar_woo` — la ráfaga
+citada como evidencia no existe en los datos.)*
+
+#### 📐 REGLA que deja la auditoría
+
+**Un tipo de operación solo mueve stock si se DEMUESTRA que cambia el `total` de
+la bodega** — nunca por lo que sugiera su nombre. Los dos bugs del día nacieron
+de interpretar semántica sin medir el efecto.
+
+Tabla correcta a implementar (pendiente):
+
+| Tipo | Efecto |
+|---|---|
+| `INBOUND_RECEPTION` | **RESTA** (ingreso real a FULL) |
+| `TRANSFER_*` | no toca (barajeo interno) |
+| `WITHDRAWAL_*` | no toca (tránsito; llega por Odoo) |
+| `SALE_*` / `QUARANTINE_*` / `ADJUSTMENT` | no toca |
+
+#### Estado
+
+`FULL_WATCH_ENABLED=false` (**apagado**, se queda así). El código de v0.19.0-0.19.2
+sigue desplegado pero INERTE. **Los hallazgos NO están corregidos**: reescribir
+`EFECTO_EN_WOO`, la verificación cruzada (usar el `result` de la operación), la
+idempotencia (marcar solo lo aplicado) y `revisar_fba` (event loop + foto propia).
+
+El **fan-out DROP → canales NO depende de este módulo** y sigue vivo y sano
+(`FANOUT_ENABLED=true`, `DRY_RUN=false`): es el que resolvió la sobreventa.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
