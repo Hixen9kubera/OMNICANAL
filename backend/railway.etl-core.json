@@ -5,7 +5,7 @@
     "buildCommand": "pip install pymysql psycopg2-binary"
   },
   "deploy": {
-    "startCommand": "python scripts/etl_core_products_v2.py --real --acepto-destino tukwcvsi",
+    "startCommand": "python scripts/etl_core_products_v2.py --real --acepto-destino tukwcvsi && python scripts/etl_channel_categories.py --real --acepto-destino tukwcvsi",
     "cronSchedule": "15 6 * * *",
     "restartPolicyType": "NEVER"
   }

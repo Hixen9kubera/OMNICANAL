@@ -2027,6 +2027,36 @@ muestreo, y el muestreo NO vio `TRANSFER_RESERVATION` ni `WITHDRAWAL_RESERVATION
 modo **solo-registro** (sin escribir) hasta ver el catálogo COMPLETO de tipos con
 tráfico real. Versión 0.19.1.
 
+### v0.20.0 — ETL de categorías ML + monitoreo completo del camino al corte (Eduardo)
+
+**Contexto.** El censo de espejos detectó el ÚLTIMO escritor vivo sin cobertura:
+`categorias_ml` (la escriben `crear_producto.py`/`costos.py` al curar categoría).
+Además /migracion solo monitoreaba 2 de los dominios con actas.
+
+**Qué se construyó:**
+1. **`scripts/etl_channel_categories.py`** (mismo esqueleto que el ETL v2 de
+   core: dry-run default, cero truncate, identidad vía id_map, watchdog
+   anti-caso-pedidos): puebla `channel.categories` (árbol ML: 2,674 categorías
+   con nombre+ruta desde `categorias_ml`, SIN llamadas a la API) y
+   `channel.product_category` (13,680 asignaciones sku→categoría). **La
+   elección del PANEL manda** (regla 2): las metas `ml_categoria_id` de Woo se
+   cargan al final con `source='panel'` y pisan al predictor. Backfill aplicado
+   el 2026-07-27 con 0 descartes y 0 issues; re-corrida = 0 cambios
+   (idempotente). Acta: dominio `categorias-etl`.
+2. **Cron `etl-core-products` ahora encadena los dos ETL** (06:15 UTC):
+   maestro primero, categorías después (la FK sku→core.products exige ese
+   orden). `railway.etl-core.json` con `railwayConfigFile` propio
+   (anti-herencia del uvicorn — la causa raíz del cuelgue de deltas-orders).
+3. **/migracion "Camino al corte" ahora muestra los 5 dominios**: Maestro
+   (ETL), Categorías (ETL), Costos, Channel y Pedidos. Para dominios ETL,
+   resultado 'ok' = corrió bien (los cambios van en conteos) — sin esto, un
+   día con sincronización legítima pintaba punto rojo.
+
+**Pendiente que queda de este frente:** el SEAM en vivo
+`crear_producto/costos → channel.product_category` (agregarlo al censo del
+espejo kubera como los demás; mientras, el cron de las 06:15 cierra el hueco
+cada 24 h). Versión 0.20.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

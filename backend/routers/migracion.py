@@ -42,7 +42,10 @@ def errores(incluir_resueltos: bool = False):
 
 
 # Etiquetas humanas de los dominios auditados por los crons de deltas
+# (orden = orden de las tarjetas; el maestro corre primero: 06:15 UTC)
 _DOMINIOS_DELTAS = {
+    "core-etl-v2": "Maestro (ETL)",
+    "categorias-etl": "Categorías (ETL)",
     "costing-deltas": "Costos",
     "channel-deltas": "Channel",
     "orders-deltas": "Pedidos",

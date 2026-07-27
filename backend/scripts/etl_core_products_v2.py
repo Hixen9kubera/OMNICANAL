@@ -452,7 +452,9 @@ def main() -> None:
         """, [(FASE, t, s, m, v) for (t, s, m, v) in issues_escribibles], page_size=BATCH)
     pcur.execute("select count(*) from core.products")
     n_final = pcur.fetchone()[0]
-    resultado = "ok" if not updates and not inserts else "con_cambios"
+    # Para un ETL, "ok" = corrió y sincronizó (haya o no cambios que aplicar);
+    # los cambios van en conteos. La racha de /migracion cuenta días 'ok'.
+    resultado = "ok"
     pcur.execute("""insert into migration.reconciliation_runs
                     (dominio, descripcion, conteos, checksums, resultado)
                     values (%s, 'ETL v2 incremental core.products (sin truncate)', %s, %s, %s)""",
