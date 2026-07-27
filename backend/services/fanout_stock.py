@@ -137,6 +137,71 @@ def _stock_drop(sku: str) -> int | None:
         return None
 
 
+def _token_amazon() -> str | None:
+    """Token LWA de Amazon desde contexto síncrono (el del servicio es async)."""
+    import asyncio
+
+    from services import amazon
+    try:
+        return asyncio.run(amazon._access_token())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(amazon._access_token())
+        finally:
+            loop.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("token Amazon: %s", exc)
+        return None
+
+
+def _amazon_en_vivo(sku: str) -> dict[str, Any]:
+    """
+    Cantidad y estado REALES de un listing de Amazon (SP-API).
+
+    IMPRESCINDIBLE: `canal_inventario.stock_real` viene NULL en el 100% de las
+    filas de Amazon — el batch lo escribe así a propósito
+    (`inventario.py`: "FBM se lee en refresco individual"). Sin esta lectura en
+    vivo, el fan-out creía que Amazon tenía 0 en TODO y el dry-run reportaba
+    "0 → N" para 1,614 SKUs (falso: hay listings con 540, 150 y hasta 1,999 pzas).
+
+    También devuelve el estado real: Amazon usa BUYABLE (vendible) vs
+    DISCOVERABLE (existe pero DORMIDO). El `situacion='PUBLISHED'` que guarda el
+    panel viene de nuestra propia bitácora `amazon_progress`, no de Amazon: el
+    76% de lo que decimos "PUBLISHED" está en realidad dormido, y escribirle
+    stock lo DESPERTARÍA.
+    """
+    import httpx
+    if "/" in sku:   # rompe la URL de la Listings API
+        return {"ok": False, "motivo": "SKU con '/' no direccionable en la API"}
+    token = _token_amazon()
+    if not token:
+        return {"ok": False, "motivo": "sin token de Amazon"}
+    try:
+        r = httpx.get(
+            f"{settings.amazon_sp_api_endpoint}/listings/2021-08-01/items/"
+            f"{settings.amazon_seller_id}/{sku}",
+            params={"marketplaceIds": settings.amazon_marketplace_id,
+                    "includedData": "summaries,fulfillmentAvailability"},
+            headers={"x-amz-access-token": token}, timeout=25.0,
+        )
+        if r.status_code != 200:
+            return {"ok": False, "motivo": f"HTTP {r.status_code}"}
+        d = r.json()
+        fa = (d.get("fulfillmentAvailability") or [])
+        estados = (d.get("summaries") or [{}])[0].get("status") or []
+        if isinstance(estados, str):
+            estados = [estados]
+        return {
+            "ok": True,
+            "cantidad": fa[0].get("quantity") if fa else None,
+            "estados": [str(e).upper() for e in estados],
+            "vendible": any(str(e).upper() == "BUYABLE" for e in estados),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "motivo": f"{type(exc).__name__}: {exc}"}
+
+
 def _destinos(sku: str) -> list[dict[str, Any]]:
     """
     Publicaciones que DEBEN recibir el stock DROP: activas y no-FULL.
@@ -169,18 +234,33 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
         canal = (f.get("canal") or "").lower()
         # Identificador de escritura: ML → item_id (MLM…); Amazon → el SKU.
         identificador = f.get("item_id") or (sku if canal == "amazon" else None)
+        crudo = f.get("stock_real")
+        stock_canal: int | None = None if crudo is None else int(crudo)
+        motivo = None
         if es_full:
             motivo = "FULL/FBA (bodega del marketplace, no se toca)"
         elif situacion not in _SITUACIONES_VIVAS:
             motivo = f"situacion={situacion or 'desconocida'} (escribirle la REACTIVARÍA)"
         elif not identificador:
             motivo = "sin identificador de publicación en el canal"
-        else:
-            motivo = None
+        elif canal == "amazon":
+            # El caché NO sirve para Amazon (stock_real siempre NULL) y su
+            # `situacion` viene de nuestra bitácora, no de Amazon. Se consulta
+            # el listing EN VIVO: da la cantidad real y si está BUYABLE.
+            vivo = _amazon_en_vivo(sku)
+            if not vivo.get("ok"):
+                motivo = f"Amazon ilegible: {vivo.get('motivo')} (no se escribe a ciegas)"
+            elif not vivo.get("vendible"):
+                motivo = (f"Amazon {'/'.join(vivo.get('estados') or ['sin estado'])}"
+                          " — dormido, escribirle lo DESPERTARÍA")
+            elif vivo.get("cantidad") is None:
+                motivo = "Amazon sin fulfillmentAvailability legible (no se escribe a ciegas)"
+            else:
+                stock_canal = int(vivo["cantidad"])
         salida.append({
             "canal": f.get("canal"), "cuenta": f.get("cuenta"),
             "item_id": identificador,
-            "stock_actual_canal": int(f.get("stock_real") or 0),
+            "stock_actual_canal": stock_canal,       # None = DESCONOCIDO (≠ 0)
             "omitido_por": motivo,
         })
     return salida
@@ -281,6 +361,11 @@ def plan(sku: str) -> dict[str, Any]:
         accion["objetivo"] = objetivo
         if d["omitido_por"]:
             accion["accion"] = "omitir"
+        elif d["stock_actual_canal"] is None:
+            # DESCONOCIDO ≠ 0. Escribir sin saber qué tiene el canal fue el bug
+            # que hacía que el dry-run reportara "Amazon = 0" en 1,614 SKUs.
+            accion["accion"] = "omitir"
+            accion["omitido_por"] = "stock del canal DESCONOCIDO (no se escribe a ciegas)"
         elif d["stock_actual_canal"] == objetivo:
             accion["accion"] = "sin_cambio"
             accion["omitido_por"] = f"el canal ya tiene {objetivo}"

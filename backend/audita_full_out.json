@@ -1,0 +1,1120 @@
+[
+ {
+  "sku": "JUEG-0012-MAD",
+  "cuenta": "BEKURA",
+  "item_id": "MLM5258937260",
+  "stock_real": 0,
+  "stock_full": 485,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "JUEG-0012-MAD",
+    "post_id": 39716,
+    "post_type": "product_variation",
+    "post_status": "publish",
+    "stock": "200",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3923223247",
+  "ml_available_quantity": 485,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3923223247",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 485
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1847-BLN",
+  "cuenta": "BEKURA",
+  "item_id": "MLM2880344489",
+  "stock_real": 0,
+  "stock_full": 378,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1847-BLN",
+    "post_id": 85990,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "280",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3908301573",
+  "ml_available_quantity": 378,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3908301573",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 378
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-2162-NEG",
+  "cuenta": "BEKURA",
+  "item_id": "MLM5490984722",
+  "stock_real": 0,
+  "stock_full": 267,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-2162-NEG",
+    "post_id": 74955,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "101",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4075321299",
+  "ml_available_quantity": 267,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4075321299",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 267
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-0767-BLN",
+  "cuenta": "BEKURA",
+  "item_id": "MLM2982229031",
+  "stock_real": 0,
+  "stock_full": 228,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-0767-BLN",
+    "post_id": 13379,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "722",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4042306149",
+  "ml_available_quantity": 228,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4042306149",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 228
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "DEC-0014",
+  "cuenta": "BEKURA",
+  "item_id": "MLM3136223689",
+  "stock_real": 0,
+  "stock_full": 200,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "paused",
+  "woo": [
+   {
+    "sku": "DEC-0014",
+    "post_id": 84230,
+    "post_type": "product",
+    "post_status": "inprogress",
+    "stock": null,
+    "manage": "no",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4327036718",
+  "ml_available_quantity": 200,
+  "ml_logistic": "fulfillment",
+  "ml_status": "paused",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4327036718",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 200
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "HERR-0035",
+  "cuenta": "BEKURA",
+  "item_id": "MLM3097569251",
+  "stock_real": 0,
+  "stock_full": 200,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "HERR-0035",
+    "post_id": 84199,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": null,
+    "manage": "no",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4236977239",
+  "ml_available_quantity": 200,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4236977239",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 200
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "JUGU-0268",
+  "cuenta": "BEKURA",
+  "item_id": "MLM5741078908",
+  "stock_real": 0,
+  "stock_full": 200,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "paused",
+  "woo": [
+   {
+    "sku": "JUGU-0268",
+    "post_id": 74746,
+    "post_type": "product",
+    "post_status": "inprogress",
+    "stock": null,
+    "manage": "no",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4358094486",
+  "ml_available_quantity": 200,
+  "ml_logistic": "fulfillment",
+  "ml_status": "paused",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4358094486",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 200
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "JUGU-0261-LIL",
+  "cuenta": "BEKURA",
+  "item_id": "MLM3081575729",
+  "stock_real": 0,
+  "stock_full": 200,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "JUGU-0261-LIL",
+    "post_id": 74730,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "720",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4224891772",
+  "ml_available_quantity": 200,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4224891772",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 200
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "JUEG-0012-MUL",
+  "cuenta": "BEKURA",
+  "item_id": "MLM5264949394",
+  "stock_real": 0,
+  "stock_full": 199,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "JUEG-0012-MUL",
+    "post_id": 39717,
+    "post_type": "product_variation",
+    "post_status": "publish",
+    "stock": "200",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3925902029",
+  "ml_available_quantity": 199,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3925902029",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 199
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "HERR-0034-AZL-127V",
+  "cuenta": "BEKURA",
+  "item_id": "MLM3102481095",
+  "stock_real": 0,
+  "stock_full": 198,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "HERR-0034-AZL-127V",
+    "post_id": 87031,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "600",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4265842720",
+  "ml_available_quantity": 198,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4265842720",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 198
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1801-NEG",
+  "cuenta": "BEKURA",
+  "item_id": "MLM2992861037",
+  "stock_real": 0,
+  "stock_full": 191,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1801-NEG",
+    "post_id": 76189,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "0",
+    "manage": "yes",
+    "stock_status": "outofstock"
+   }
+  ],
+  "user_product_id": "MLMU4055258323",
+  "ml_available_quantity": 191,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4055258323",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 191
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1032-NEG-SOL",
+  "cuenta": "BEKURA",
+  "item_id": "MLM5306160256",
+  "stock_real": 0,
+  "stock_full": 191,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1032-NEG-SOL",
+    "post_id": 34361,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "2366",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3944067189",
+  "ml_available_quantity": 191,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3944067189",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 191
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-0778-NEG",
+  "cuenta": "BEKURA",
+  "item_id": "MLM2909131465",
+  "stock_real": 0,
+  "stock_full": 182,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-0778-NEG",
+    "post_id": 13400,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "0",
+    "manage": "yes",
+    "stock_status": "outofstock"
+   }
+  ],
+  "user_product_id": "MLMU3937163973",
+  "ml_available_quantity": 182,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3937163973",
+   "user_id": 3072519654,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 182
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1032-NEG-SOL",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM5306160244",
+  "stock_real": 0,
+  "stock_full": 347,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1032-NEG-SOL",
+    "post_id": 34361,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "2366",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3944067175",
+  "ml_available_quantity": 347,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3944067175",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 347
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-0767-BLN",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2982251471",
+  "stock_real": 0,
+  "stock_full": 249,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-0767-BLN",
+    "post_id": 13379,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "722",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4056504124",
+  "ml_available_quantity": 249,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4056504124",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 249
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-0778-NEG",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2909131191",
+  "stock_real": 0,
+  "stock_full": 201,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-0778-NEG",
+    "post_id": 13400,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "0",
+    "manage": "yes",
+    "stock_status": "outofstock"
+   }
+  ],
+  "user_product_id": "MLMU3937159433",
+  "ml_available_quantity": 201,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3937159433",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 201
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1801-NEG",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM5473725094",
+  "stock_real": 0,
+  "stock_full": 200,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1801-NEG",
+    "post_id": 76189,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "0",
+    "manage": "yes",
+    "stock_status": "outofstock"
+   }
+  ],
+  "user_product_id": "MLMU4069804670",
+  "ml_available_quantity": 200,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4069804670",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 200
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-2162-NEG",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM3002665993",
+  "stock_real": 0,
+  "stock_full": 187,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-2162-NEG",
+    "post_id": 74955,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "101",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4090289432",
+  "ml_available_quantity": 187,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4090289432",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 187
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "ORG-0841",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM5485752676",
+  "stock_real": 0,
+  "stock_full": 175,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "ORG-0841",
+    "post_id": 76097,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": null,
+    "manage": "no",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4068683797",
+  "ml_available_quantity": 175,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4068683797",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 175
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "JUGU-0039-MUL",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM5260717882",
+  "stock_real": 0,
+  "stock_full": 173,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "JUGU-0039-MUL",
+    "post_id": 35187,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "0",
+    "manage": "yes",
+    "stock_status": "outofstock"
+   }
+  ],
+  "user_product_id": "MLMU3935429212",
+  "ml_available_quantity": 173,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3935429212",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 173
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "ORG-0382",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2901457825",
+  "stock_real": 0,
+  "stock_full": 169,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "ORG-0382",
+    "post_id": 36785,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": null,
+    "manage": "no",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3927881785",
+  "ml_available_quantity": 169,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3927881785",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 169
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1842-DOR",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM5461084068",
+  "stock_real": 0,
+  "stock_full": 150,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1842-DOR",
+    "post_id": 76269,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "340",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4060224822",
+  "ml_available_quantity": 150,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4060224822",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 150
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-2195-MUL-RGB",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2992944703",
+  "stock_real": 0,
+  "stock_full": 149,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-2195-MUL-RGB",
+    "post_id": 75026,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "2",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4055543245",
+  "ml_available_quantity": 149,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4055543245",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 149
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "ACC-0561-BLN",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2992933195",
+  "stock_real": 0,
+  "stock_full": 148,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "ACC-0561-BLN",
+    "post_id": 75997,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "150",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU4070095076",
+  "ml_available_quantity": 148,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU4070095076",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 148
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-1013-NEG",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2811328181",
+  "stock_real": 0,
+  "stock_full": 130,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-1013-NEG",
+    "post_id": 27144,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": "761",
+    "manage": "yes",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3864751514",
+  "ml_available_quantity": 130,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3864751514",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 130
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ },
+ {
+  "sku": "TEC-0794",
+  "cuenta": "SANCORFASHION",
+  "item_id": "MLM2948794713",
+  "stock_real": 0,
+  "stock_full": 129,
+  "es_full": 1,
+  "logistica": "fulfillment",
+  "situacion": "active",
+  "woo": [
+   {
+    "sku": "TEC-0794",
+    "post_id": 55952,
+    "post_type": "product",
+    "post_status": "publish",
+    "stock": null,
+    "manage": "no",
+    "stock_status": "instock"
+   }
+  ],
+  "user_product_id": "MLMU3993920632",
+  "ml_available_quantity": 129,
+  "ml_logistic": "fulfillment",
+  "ml_status": "active",
+  "stock_http": 200,
+  "stock_raw": {
+   "id": "MLMU3993920632",
+   "user_id": 3064478475,
+   "locations": [
+    {
+     "type": "selling_address",
+     "quantity": 0
+    },
+    {
+     "type": "meli_facility",
+     "availability_type": "in_stock",
+     "quantity": 129
+    }
+   ],
+   "product_release_date": null,
+   "stock_mode": "countable"
+  }
+ }
+]
