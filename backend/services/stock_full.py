@@ -55,13 +55,25 @@ log = logging.getLogger("omnicanal.stock_full")
 #   None     → movimiento interno del marketplace: Woo no se entera
 EFECTO_EN_WOO: dict[str, str | None] = {
     "TRANSFER_DELIVERY":     "resta",
-    "WITHDRAWAL_DELIVERY":   "suma",
+    # RETIROS: NO suman a Woo. La mercancía sale de la bodega de ML pero va EN
+    # TRÁNSITO hacia el almacén; todavía no está disponible. Cuando llegue, el
+    # almacén la captura en Odoo (el restock SIEMPRE entra por Odoo) y de ahí
+    # baja a Woo — sumarla aquí la contaría DOS VECES.
+    # Error real: el 27-jul se sumaron 10 piezas fantasma antes de detectarlo
+    # (TEC-1804-BLN pasó de 0 a 8 en 3 minutos por 8 avisos de x1).
+    "WITHDRAWAL_DELIVERY":   None,
+    "WITHDRAWAL_RESERVATION": None,   # solo RESERVA el retiro, ni siquiera salió
+    "TRANSFER_RESERVATION":  None,    # reserva de envío a FULL; el real es DELIVERY
     "SALE_CONFIRMATION":     None,
     "SALE_CANCELATION":      None,
     "QUARANTINE_RESERVATION": None,
     "QUARANTINE_RESTOCK":    None,
     "ADJUSTMENT":            None,   # se avisa: puede esconder un envío no declarado
 }
+
+# Tipos que MERECEN aviso aunque no toquen Woo: son movimientos reales de
+# mercancía que el almacén debe conciliar (el retiro llegará por Odoo).
+AVISAR_SIN_TOCAR = {"WITHDRAWAL_DELIVERY", "WITHDRAWAL_RESERVATION", "ADJUSTMENT"}
 
 
 def habilitado() -> bool:
@@ -202,10 +214,17 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
 
     # Movimiento interno del marketplace: se registra y no se toca Woo.
     if efecto is None:
-        aviso = "AVISO: revisar (puede esconder un envío)" if tipo == "ADJUSTMENT" else "sin efecto en Woo"
-        _registrar(sku, operacion_id, cuenta, "full_ignorado", None, None,
+        if tipo in AVISAR_SIN_TOCAR:
+            aviso = ("RETIRO en tránsito: llegará por Odoo, NO se suma aquí"
+                     if tipo.startswith("WITHDRAWAL")
+                     else "AVISO: revisar (puede esconder un envío)")
+            accion_reg = "full_aviso"
+        else:
+            aviso = "sin efecto en Woo"
+            accion_reg = "full_ignorado"
+        _registrar(sku, operacion_id, cuenta, accion_reg, None, None,
                    f"{tipo} x{cantidad}: {aviso}")
-        return {"ok": True, "accion": "ignorado", "tipo": tipo, "sku": sku}
+        return {"ok": True, "accion": accion_reg, "tipo": tipo, "sku": sku}
 
     # VERIFICACIÓN CRUZADA: la bodega de ML debe respaldar el movimiento.
     respaldo = None

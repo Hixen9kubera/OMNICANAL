@@ -1989,6 +1989,46 @@ REAL. Versión 0.19.0.
 
 ---
 
+### v0.19.1 — INCIDENTE (30 min): `WITHDRAWAL_DELIVERY` inflaba el stock de Woo
+
+**Qué pasó.** A los ~5 min de encender `FULL_WATCH_ENABLED` (27-jul 19:26) el
+Dashboard mostró un patrón raro: `TEC-1804-BLN` subía de 1 en 1 cada ~20 s
+(0 → 14 en 8 minutos). El mapeo de v0.19.0 trataba `WITHDRAWAL_DELIVERY` como
+"la mercancía regresó a la bodega → SUMA a Woo". **Está mal.**
+
+**Lo que realmente significa** (verificado contra la API):
+```
+WITHDRAWAL_RESERVATION  −15   el vendedor PIDE retirar 15 pzas
+WITHDRAWAL_DELIVERY     −1 ×N ML las va ENTREGANDO de a una
+```
+La mercancía sale de la bodega de ML pero va **EN TRÁNSITO**: todavía no está
+en el almacén. Y cuando llegue, el almacén la captura en Odoo (**el restock
+SIEMPRE entra por Odoo**) → sumarla aquí la contaría **DOS VECES**.
+
+**Contención (en este orden, a petición de Brandon):**
+1. `FULL_WATCH_ENABLED=false` y **esperar a que el deploy aplicara**, confirmando
+   que dejaron de llegar eventos antes de tocar datos.
+2. Medir el daño con la bitácora: **19 pzas fantasma en 3 SKUs**
+   (TEC-1804-BLN +14, TEC-0965-BLN +4, TEC-0324-MUL +1).
+3. Revertir en Woo y verificar contra Odoo → los 3 quedaron **idénticos a Odoo**.
+
+**Alcance real del daño: NINGUNO hacia afuera.** El fan-out (encendido y
+escribiendo) **no alcanzó a propagar** el stock fantasma: esos SKUs no están
+BUYABLE en Amazon, así que el candado los omitió. Cero eventos `escribir` en la
+ventana del incidente. El error vivió 30 min y solo dentro de Woo.
+
+**Corrección**: `WITHDRAWAL_*` y `TRANSFER_RESERVATION` pasan a **no tocar Woo**
+(solo avisan). El único tipo que mueve stock es `TRANSFER_DELIVERY` (llegó
+mercancía a FULL → resta, porque ésa sí salió del almacén).
+
+**Lección para el rediseño**: los tipos de operación de ML se descubrieron por
+muestreo, y el muestreo NO vio `TRANSFER_RESERVATION` ni `WITHDRAWAL_RESERVATION`
+(aparecieron al encender). Antes de volver a encender: correr el vigilante en
+modo **solo-registro** (sin escribir) hasta ver el catálogo COMPLETO de tipos con
+tráfico real. Versión 0.19.1.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
