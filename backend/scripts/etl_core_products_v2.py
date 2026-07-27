@@ -215,7 +215,10 @@ def main() -> None:
     id_map_ci = {k.lower(): v for k, v in id_map.items()}
     pcur.execute("select distinct sku from channel.listings")
     skus_canal = {str(r[0]) for r in pcur.fetchall()}
-    pcur.execute("select sku, motivo from ops.migration_issues where resuelto = false")
+    # Dedup contra TODO el historial (resueltas incluidas): un issue que el
+    # equipo ya resolvió/aceptó (p. ej. un marketplace_only legítimo) no debe
+    # renacer cada mañana.
+    pcur.execute("select sku, motivo from ops.migration_issues")
     issues_abiertas = {(str(s) if s else None, m) for s, m in pcur.fetchall()}
     print(f"BD kubera: core.products={len(core_actual)} id_map={len(id_map)} "
           f"channel.listings skus={len(skus_canal)} issues abiertas={len(issues_abiertas)}")

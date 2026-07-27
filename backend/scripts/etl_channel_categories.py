@@ -161,7 +161,9 @@ def main() -> None:
     arbol_actual = {str(r[0]): (r[1], r[2]) for r in pcur.fetchall()}
     pcur.execute("select sku, category_id, source from channel.product_category where channel_id = %s", (CANAL,))
     asig_actual = {str(r[0]).lower(): (str(r[1]), r[2]) for r in pcur.fetchall()}
-    pcur.execute("select sku, motivo from ops.migration_issues where resuelto = false")
+    # Dedup contra TODO el historial (resueltas incluidas) — ver nota en el
+    # ETL v2 de core: lo resuelto/aceptado no renace.
+    pcur.execute("select sku, motivo from ops.migration_issues")
     issues_abiertas = {(str(s) if s else None, m) for s, m in pcur.fetchall()}
     print(f"BD kubera: maestro={len(maestro)} árbol_actual={len(arbol_actual)} "
           f"asignaciones_actuales={len(asig_actual)}", flush=True)
