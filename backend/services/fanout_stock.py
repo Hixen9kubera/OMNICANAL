@@ -182,19 +182,31 @@ def _amazon_en_vivo(sku: str) -> dict[str, Any]:
             f"{settings.amazon_sp_api_endpoint}/listings/2021-08-01/items/"
             f"{settings.amazon_seller_id}/{sku}",
             params={"marketplaceIds": settings.amazon_marketplace_id,
-                    "includedData": "summaries,fulfillmentAvailability"},
+                    "includedData": "summaries,fulfillmentAvailability,attributes"},
             headers={"x-amz-access-token": token}, timeout=25.0,
         )
         if r.status_code != 200:
             return {"ok": False, "motivo": f"HTTP {r.status_code}"}
         d = r.json()
-        fa = (d.get("fulfillmentAvailability") or [])
+        # DOS vistas de la cantidad y NO son la misma:
+        #   attributes.fulfillment_availability = lo que NOSOTROS fijamos (se
+        #     actualiza al instante con el PATCH) → es la autoritativa para
+        #     decidir si hay que escribir.
+        #   fulfillmentAvailability = lo que Amazon SIRVE hoy (vista derivada,
+        #     tarda en reflejar el cambio).
+        # Comparar contra la servida provocaría reescrituras en bucle tras cada
+        # PATCH (verificado 2026-07-27: attribute=0 mientras servida=1000).
+        servida = (d.get("fulfillmentAvailability") or [])
+        attr = ((d.get("attributes") or {}).get("fulfillment_availability") or [])
+        cant_attr = attr[0].get("quantity") if attr else None
+        cant_serv = servida[0].get("quantity") if servida else None
         estados = (d.get("summaries") or [{}])[0].get("status") or []
         if isinstance(estados, str):
             estados = [estados]
         return {
             "ok": True,
-            "cantidad": fa[0].get("quantity") if fa else None,
+            "cantidad": cant_attr if cant_attr is not None else cant_serv,
+            "cantidad_servida": cant_serv,
             "estados": [str(e).upper() for e in estados],
             "vendible": any(str(e).upper() == "BUYABLE" for e in estados),
         }
@@ -313,13 +325,28 @@ def _escribir_amazon(cuenta: str, sku: str, cantidad: int) -> tuple[bool, str]:
         return False, f"token Amazon: {exc}"
     if not token:
         return False, "sin token de Amazon"
+    # El productType REAL del listing: la Listings API lo exige y un valor
+    # genérico ("PRODUCT") puede rechazarse o alterar la ficha. Se lee del
+    # propio listing antes de escribir.
+    tipo = "PRODUCT"
+    try:
+        rg = httpx.get(
+            f"{settings.amazon_sp_api_endpoint}/listings/2021-08-01/items/"
+            f"{settings.amazon_seller_id}/{sku}",
+            params={"marketplaceIds": settings.amazon_marketplace_id,
+                    "includedData": "summaries"},
+            headers={"x-amz-access-token": token}, timeout=25.0)
+        if rg.status_code == 200:
+            tipo = ((rg.json().get("summaries") or [{}])[0].get("productType") or "PRODUCT")
+    except Exception:  # noqa: BLE001
+        pass
     try:
         r = httpx.patch(
             f"{settings.amazon_sp_api_endpoint}/listings/2021-08-01/items/"
             f"{settings.amazon_seller_id}/{sku}",
             params={"marketplaceIds": settings.amazon_marketplace_id},
             headers={"x-amz-access-token": token},
-            json={"productType": "PRODUCT", "patches": [{
+            json={"productType": tipo, "patches": [{
                 "op": "replace",
                 "path": "/attributes/fulfillment_availability",
                 "value": [{"fulfillment_channel_code": "DEFAULT",
