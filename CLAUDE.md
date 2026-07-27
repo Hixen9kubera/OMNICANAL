@@ -127,6 +127,35 @@ lectura directa OK, DDL/DML no.
 | `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | **true** / definida / `crear_logs,ml_backlog,amazon_backlog,amazon_imagenes,ml_image_edit_backlog,pedidos_ml` | Espejo kubera de escritores sin cobertura → esquema v4 (6 tablas desde el 23-jul, GO de Eduardo). Sumar tabla al CSV = flujo vivo, dale de Brandon. Quedan FUERA a propósito: `webhook_eventos` campana (opcional, volumen) y `ml_tokens` (bloqueado hasta Vault). La página /migracion muestra censo, eventos, errores y racha de actas |
 | Apagado de emergencia | — | Cualquier flujo se apaga con su variable, sin deploy (accept-deploy para aplicar staged) |
 
+## MIGRACIÓN A LA BD KUBERA — estado y reglas rápidas (Eduardo, 2026-07-27)
+
+Para cualquier sesión que toque staging, variables Supabase o los ETLs:
+
+1. **La BD kubera (`tukwcvsi…`) es PRODUCCIÓN OPERATIVA** por decisión de
+   Eduardo. Ahí escriben los espejos/crons y ahí corren las 5 rachas de actas
+   (visibles en /migracion). NO probar ni insertar datos de prueba ahí: una
+   fila de prueba rompe la racha del dominio (14 días a cero).
+2. **Existe un SANDBOX (`yvootpbz…`)**: clon del esquema, VACÍO a propósito,
+   para pruebas/staging. Se recrea con `supabase/migrations/` +
+   `backend/scripts/aplicar_migraciones.py` (candado: se niega a correr contra
+   producción). Si staging muestra datos vacíos de Supabase, ES INTENCIONAL.
+3. **Staging apunta al sandbox** (no a kubera) y tiene `SUPABASE_PROD_REF=
+   tukwcvsi…`: el candado `validar_ambiente()` mata el arranque si staging o
+   un local apuntan a producción. No "arreglarlo" — es la protección.
+4. **Variables (semántica nueva)**: familia `SUPABASE_*` = BD kubera
+   (operativa); `ANALYTICS_SUPABASE_URL`/`ANALYTICS_SUPABASE_SERVICE_ROLE_KEY`
+   = dailytrackMeli (`xaxbkijc…`, presencia ML vía `supabase_rest`, con
+   fallback a las viejas mientras producción no defina las nuevas — switch
+   pendiente de dale de Brandon).
+5. **Crons de la migración** (production): `etl-core-products` 06:15 UTC
+   (maestro + categorías, encadenados; watchdog anti-cuelgue y
+   `railwayConfigFile` propio anti-uvicorn), deltas 06:30/06:45/07:15.
+   `etl_core_products.py` (v1 full-refresh) está RETIRADO con candado — usar
+   `etl_core_products_v2.py` (incremental, dry-run default).
+6. **P4 decidida**: `costing.costos_finales` tiene PK `(sku, canal)`; hoy todo
+   es `canal='mercado_libre'`. Cualquier consulta nueva a esa tabla debe
+   filtrar/considerar el canal.
+
 ## Integraciones y sus mañas
 
 - **Apps de ML**: la `8902165405612832` (dueño: cuenta DevCenter aparte) manda
