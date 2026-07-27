@@ -54,3 +54,8 @@ fantasmas_*.csv
 # Respaldos de base de datos (contienen tokens/credenciales — NUNCA subir)
 backups/
 *.bak
+
+# volcados temporales de auditorías (no son código)
+audita_*.json
+auditoria*.json
+fanout_sobreventa.json
