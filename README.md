@@ -2074,6 +2074,25 @@ Se hizo AHORA porque nadie lee aún de costing: el mismo cambio después del
 switch de lecturas (F5) habría sido una migración con consumidores encima.
 Versión 0.21.0.
 
+### v0.22.0 — Espejo de nacimientos tolerante al desfase de SKU (Eduardo)
+
+**Caso ROBB-0004 (2026-07-27):** el seam Crear → `core.products` falló con
+`UniqueViolation products_wc_id_key (wc_id=88490)`. La cola de Crear traía el
+SKU base `ROBB-0004`, pero el producto vive en Woo como `ROBB-0004-MET` — y el
+acta en `core.products` (cargada por el ETL) ya tenía ese `wc_id` bajo el SKU
+con sufijo. El `ON CONFLICT (sku)` no empató y el INSERT chocó con la única de
+`wc_id`. Dos fixes:
+
+1. `crear_producto.py`: el acta de nacimiento viaja con el **`_sku` REAL de
+   Woo** (lo devuelve el PUT del paso 6/6), no con el SKU de la cola.
+2. `kubera_mirror._up_core_product`: si el `wc_id` ya tiene acta, se
+   **actualiza esa fila** (name/status, sin pisar su sku canónico) y solo si
+   no existe se inserta con `ON CONFLICT (sku)`. Cubre reciclados, renombrados
+   con `editar_sku` y base-vs-sufijo. Con esto, `/errores/reprocesar` sí
+   repara el error pendiente (antes re-chocaba con la misma restricción).
+
+Versión 0.22.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

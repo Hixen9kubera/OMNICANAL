@@ -456,6 +456,22 @@ def _up_core_product(cur, p: dict[str, Any]) -> None:
     (23-jul) tras decidir la desconexión de KuberaPipelineV1.0: el panel
     queda como ÚNICA sala de partos y cada SKU debe registrarse al nacer
     (caso de los 82 sin acta + FKs de CAM-0030/JUGU-1177)."""
+    # Si el wc_id ya tiene acta, se actualiza ESA fila sin tocar su sku: el
+    # evento puede llegar con un SKU distinto al del acta (base vs sufijo,
+    # reciclados, renombrados con editar_sku) y el INSERT chocaría con la
+    # única de wc_id (products_wc_id_key — caso ROBB-0004 vs ROBB-0004-MET,
+    # 2026-07-27). El sku del acta existente es el canónico; no se pisa.
+    if p.get("wc_id") is not None:
+        cur.execute(
+            """update core.products set
+                 name   = coalesce(%s, name),
+                 status = coalesce(%s, status),
+                 updated_at = now()
+               where wc_id = %s""",
+            (p.get("name"), p.get("status"), p.get("wc_id")),
+        )
+        if cur.rowcount:
+            return
     cur.execute(
         """insert into core.products (sku, name, wc_id, status, source)
            values (%s,%s,%s,%s,%s)

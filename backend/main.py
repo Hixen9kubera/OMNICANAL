@@ -1,5 +1,5 @@
-"""
-main.py — Punto de entrada del backend FastAPI de OMNICANAL.
+﻿"""
+main.py â€” Punto de entrada del backend FastAPI de OMNICANAL.
 
 Crea la app, configura CORS para el frontend Next.js, registra los routers
 (productos, canales, ia, auth) y expone un health check que verifica
@@ -32,24 +32,24 @@ logging.basicConfig(
 log = logging.getLogger("omnicanal")
 
 # Candado anti-mezcla de ambientes: si la config es contradictoria (p. ej.
-# staging apuntando al Supabase de producción), el proceso muere AQUÍ, antes de
-# aceptar una sola petición. Ver config.validar_ambiente().
+# staging apuntando al Supabase de producciÃ³n), el proceso muere AQUÃ, antes de
+# aceptar una sola peticiÃ³n. Ver config.validar_ambiente().
 validar_ambiente(settings)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Arranca el sync programado de inventario (cada N min).
     scheduler.iniciar()
-    # Calienta el índice de "Crear Productos" en segundo plano (escanea WooCommerce),
-    # para que la primera visita a esa vista no espere la construcción del índice.
+    # Calienta el Ã­ndice de "Crear Productos" en segundo plano (escanea WooCommerce),
+    # para que la primera visita a esa vista no espere la construcciÃ³n del Ã­ndice.
     # En staging no hay credenciales de Woo: sin WC_URL el warm-up no aplica.
     import asyncio
     if settings.wc_url:
         asyncio.create_task(woocommerce.indice_candidatos())
     else:
-        log.info("Sin WC_URL configurada — omito el precalentamiento del índice de Woo.")
-    # Calienta el caché de VENTAS (últimos 14 días por cuenta, secuencial para no
-    # saturar ML): la tabla persiste entre deploys, así que tras el primer
+        log.info("Sin WC_URL configurada â€” omito el precalentamiento del Ã­ndice de Woo.")
+    # Calienta el cachÃ© de VENTAS (Ãºltimos 14 dÃ­as por cuenta, secuencial para no
+    # saturar ML): la tabla persiste entre deploys, asÃ­ que tras el primer
     # llenado esto solo refresca HOY y el tab abre al instante. Necesita MySQL
     # (en staging solo-Supabase se omite).
     async def _ventas_warmup():
@@ -71,13 +71,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="OMNICANAL · Kubera",
+    title="OMNICANAL Â· Kubera",
     description=(
         "Backend del panel omnicanal: visualiza las publicaciones de WooCommerce "
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.21.0",
+    version="0.22.0",
     lifespan=lifespan,
 )
 
@@ -108,8 +108,8 @@ app.include_router(fanout.router)
 @app.get("/", tags=["meta"])
 def raiz():
     return {
-        "app": "OMNICANAL · Kubera",
-        "version": "0.21.0",
+        "app": "OMNICANAL Â· Kubera",
+        "version": "0.22.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
@@ -123,8 +123,8 @@ async def health():
         base_datos=db.ping(),
         odoo=odoo.ping(),
         ambiente=settings.app_env,
-        # Distingue "MySQL caído" (falla real) de "MySQL apagado por config"
-        # (staging, opción A) — ambos reportan base_datos=false pero solo el
+        # Distingue "MySQL caÃ­do" (falla real) de "MySQL apagado por config"
+        # (staging, opciÃ³n A) â€” ambos reportan base_datos=false pero solo el
         # primero es un problema.
         nota=None if settings.mysql_enabled else "MySQL deshabilitado por config (staging solo-Supabase)",
     )

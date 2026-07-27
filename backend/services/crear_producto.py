@@ -622,10 +622,11 @@ def datos_dinero(sku: str) -> dict[str, Any]:
 
 # ── Paso 6: Update a WooCommerce + status inprogress ────────────────────────────
 
-async def _actualizar_wc(wc_id: int, payload: dict[str, Any]) -> None:
+async def _actualizar_wc(wc_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     async with woocommerce._client() as cli:
         r = await cli.put(f"/products/{wc_id}", json=payload, timeout=180.0)
         r.raise_for_status()
+        return r.json()
 
 
 async def _estado_wc(wc_id: int, status: str) -> None:
@@ -791,7 +792,7 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
                 meta.append({"key": "ml_atributos", "value": json.dumps(atributos, ensure_ascii=False)})
             payload["meta_data"] = meta
 
-            await _actualizar_wc(wc_id, payload)
+            wc_prod = await _actualizar_wc(wc_id, payload)
 
             # Paso 9: completitud → pending (100%) o inprogress (parcial).
             tiene_precio = bool(_fmt(dinero.get("precio_sugerido")) or _fmt(dinero.get("precio_base")))
@@ -816,13 +817,17 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             # (registro civil del catálogo). Tras la desconexión del pipeline
             # externo, el panel es la única sala de partos: sin este seam cada
             # SKU nuevo genera FK violations en ops.channel_submissions.
+            # El acta viaja con el _sku REAL de Woo, no el de la cola: la cola
+            # puede traer el SKU base (ROBB-0004) cuando el producto vive con
+            # sufijo (ROBB-0004-MET) y el desfase choca con products_wc_id_key.
+            sku_real = (wc_prod or {}).get("sku") or sku
             from services import kubera_mirror
             kubera_mirror.espejar(
                 "services/crear_producto.py", "crear (nacimiento)",
                 "wp_posts", "core.products", "UPSERT",
-                {"sku": sku, "name": titulo, "wc_id": wc_id,
+                {"sku": sku_real, "name": titulo, "wc_id": wc_id,
                  "status": status_final, "source": "panel_crear"},
-                clave=sku)
+                clave=sku_real)
         except Exception as exc:  # noqa: BLE001
             log.exception("crear[%s] falló", sku)
             _set(sku, "error", str(exc)[:200], wc_id=wc_id)
