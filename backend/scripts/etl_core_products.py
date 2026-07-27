@@ -87,6 +87,20 @@ def normalizar_sku(raw: str | None) -> tuple[str | None, str | None]:
 
 
 def main() -> None:
+    # ── RETIRADO (2026-07-27, Eduardo) ────────────────────────────────────────
+    # Este ETL es FULL-REFRESH: trunca core.products (cascade), costing.*,
+    # cost_history y migration.id_map. Con el dual-write VIVO (costing/channel/
+    # ops + espejo kubera + channel.orders) correrlo destruiría datos de
+    # producción y los alias persistentes. Lo predijo su propio comentario:
+    # "cuando el dual-write escriba en vivo, este ETL se retira o se vuelve
+    # incremental — no conviven". Sucesor: etl_core_products_v2.py (incremental,
+    # cero truncate, dry-run por default). Se conserva como referencia.
+    import os
+    if os.environ.get("ETL_V1_FULL_REFRESH_PERMITIDO") != "si-entiendo-el-riesgo":
+        sys.exit("RETIRADO: usa etl_core_products_v2.py (incremental). Este script "
+                 "trunca tablas que el dual-write mantiene en vivo. Si de verdad "
+                 "necesitas el full-refresh, exporta "
+                 "ETL_V1_FULL_REFRESH_PERMITIDO=si-entiendo-el-riesgo")
     dev_ref = candado_destino()
     print(f"Destino verificado: Supabase DEV ({dev_ref[:8]}…)")
 
