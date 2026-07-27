@@ -18,12 +18,27 @@ Resolviendo esa operación se sabe QUÉ pasó, CUÁNTAS piezas y el total result
 
 TABLA DE DECISIÓN (qué toca Woo y qué no):
 
-  TRANSFER_DELIVERY    (+)  llegó mercancía a FULL   → RESTA de Woo (salió de bodega)
-  WITHDRAWAL_DELIVERY  (−)  retiro de FULL           → SUMA a Woo (regresó a bodega)
-  SALE_CONFIRMATION    (−)  venta desde FULL         → NO toca Woo (sale del almacén de ML)
-  SALE_CANCELATION     (+)  cancelación              → NO toca Woo (regresa al almacén de ML)
-  QUARANTINE_*         (±)  cuarentena interna de ML → NO toca Woo
-  ADJUSTMENT           (±)  ajuste de ML             → NO toca Woo, pero se AVISA
+  TRANSFER_DELIVERY      (+) llegó mercancía a FULL  → RESTA de Woo (salió de bodega)
+  TRANSFER_RESERVATION   (−) reserva del envío       → NO toca (el real es DELIVERY)
+  WITHDRAWAL_RESERVATION (−) el vendedor PIDE retirar→ NO toca (ni siquiera salió)
+  WITHDRAWAL_DELIVERY    (−) ML entrega el retiro    → NO toca: va EN TRÁNSITO;
+                             cuando llegue lo captura Odoo (el restock SIEMPRE
+                             entra por Odoo) y sumarlo aquí lo contaría DOS VECES
+  SALE_CONFIRMATION      (−) venta desde FULL        → NO toca (sale del almacén de ML)
+  SALE_CANCELATION       (+) cancelación             → NO toca (regresa al de ML)
+  QUARANTINE_*           (±) cuarentena interna      → NO toca
+  ADJUSTMENT             (±) ajuste de ML            → NO toca, pero se AVISA
+
+INCIDENTE 2026-07-27 (30 min): la v0.19.0 trataba WITHDRAWAL_DELIVERY como
+"regresó a bodega → SUMA", y ML entrega los retiros DE A UNO: TEC-1804-BLN subió
+de 0 a 14 en 8 minutos (19 pzas fantasma en 3 SKUs, revertidas). Nada salió a los
+marketplaces: el fan-out omitió esos SKUs por no estar BUYABLE.
+
+MODO SOLO-REGISTRO (`FULL_WATCH_SOLO_REGISTRO`, default True): clasifica y anota
+en el Dashboard lo que HARÍA, sin escribir en Woo. Nació de ese incidente — los
+tipos de operación se descubrieron por muestreo y el muestreo NO vio
+TRANSFER_RESERVATION ni WITHDRAWAL_RESERVATION (aparecieron al encender). Antes
+de mover inventario hay que ver el catálogo COMPLETO con tráfico real.
 
 DEFENSAS CONTRA FALSOS POSITIVOS (el riesgo real de automatizar esto):
   1. IDEMPOTENCIA por `operation_id`: ML manda ráfagas del mismo evento (se vio
@@ -78,6 +93,18 @@ AVISAR_SIN_TOCAR = {"WITHDRAWAL_DELIVERY", "WITHDRAWAL_RESERVATION", "ADJUSTMENT
 
 def habilitado() -> bool:
     return bool(getattr(settings, "full_watch_enabled", False))
+
+
+def solo_registro() -> bool:
+    """
+    True = clasifica y ANOTA lo que haría, sin tocar Woo.
+
+    Es el modo de observación: deja ver el catálogo real de tipos de operación y
+    validar la tabla de decisión con tráfico de producción antes de mover una
+    sola pieza. Default True a propósito — encender el vigilante nunca debe
+    escribir por accidente.
+    """
+    return bool(getattr(settings, "full_watch_solo_registro", True))
 
 
 # ── Bitácora / idempotencia (reutiliza fanout_log: NO se crea tabla nueva) ────
@@ -241,8 +268,22 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
         return {"ok": False, "accion": "sospechoso", "sku": sku}
 
     delta = -abs(cantidad) if efecto == "resta" else abs(cantidad)
-    ok, det, antes, despues = await _ajustar_woo(sku, delta)
     accion = "full_ingreso" if efecto == "resta" else "full_retiro"
+
+    # MODO OBSERVACIÓN: se anota lo que haría y se termina. Nada toca Woo.
+    if solo_registro():
+        actual = fanout_stock._stock_drop(sku)
+        propuesto = max(0, (actual or 0) + delta) if actual is not None else None
+        _registrar(sku, operacion_id, cuenta, f"{accion}_sim", actual, propuesto,
+                   f"{tipo} x{cantidad}: SOLO-REGISTRO — restaría a Woo "
+                   f"{actual}→{propuesto} (no se escribió)")
+        log.info("FULL [solo-registro] %s %s: %s x%s → Woo %s→%s",
+                 cuenta, sku, tipo, cantidad, actual, propuesto)
+        return {"ok": True, "accion": f"{accion}_sim", "sku": sku, "tipo": tipo,
+                "cantidad": cantidad, "antes": actual, "despues": propuesto,
+                "solo_registro": True}
+
+    ok, det, antes, despues = await _ajustar_woo(sku, delta)
     _registrar(sku, operacion_id, cuenta, accion, antes, despues,
                f"{tipo} x{cantidad} → Woo {antes}→{despues} ({det})" if ok
                else f"{tipo} x{cantidad}: {det}")
@@ -309,6 +350,16 @@ async def revisar_fba() -> dict[str, Any]:
         if antes_fba is None or ahora <= antes_fba:
             continue                      # sin ingreso (o SKU nuevo: se toma como base)
         subio = ahora - antes_fba
+        if solo_registro():
+            actual = fanout_stock._stock_drop(sku)
+            propuesto = max(0, (actual or 0) - subio) if actual is not None else None
+            _registrar(sku, f"fba:{sku}:{ahora}", "AMAZON", "fba_ingreso_sim",
+                       actual, propuesto,
+                       f"FBA subió {antes_fba}→{ahora} (+{subio}): SOLO-REGISTRO — "
+                       f"restaría a Woo {actual}→{propuesto} (no se escribió)")
+            aplicados.append({"sku": sku, "piezas": subio, "woo": f"{actual}→{propuesto}",
+                              "solo_registro": True})
+            continue
         ok, det, antes, despues = await _ajustar_woo(sku, -subio)
         _registrar(sku, f"fba:{sku}:{ahora}", "AMAZON",
                    "fba_ingreso" if ok else "fba_error", antes, despues,

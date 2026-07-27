@@ -206,6 +206,11 @@ class Settings(BaseSettings):
     # Nace APAGADO: encenderlo MUEVE INVENTARIO REAL (regla 3 de CLAUDE.md).
     full_watch_enabled: bool = False
     full_watch_fba_min: int = 15   # cada cuántos minutos se revisa el FBA
+    # MODO OBSERVACIÓN (default True): clasifica y ANOTA lo que haría, sin tocar
+    # Woo. Nació del incidente del 27-jul: los tipos de operación se conocían por
+    # muestreo y el muestreo no vio TRANSFER_RESERVATION ni WITHDRAWAL_RESERVATION.
+    # Ponerlo en false = el vigilante empieza a MOVER INVENTARIO.
+    full_watch_solo_registro: bool = True
 
     # ── Pedidos ML → WooCommerce + transición de inventario ───
     # Cada venta de ML se convierte en pedido de Woo con el precio REAL
