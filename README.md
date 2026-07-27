@@ -1822,6 +1822,80 @@ Versión 0.18.0.
 
 ---
 
+### v0.18.1 – v0.18.3 — INCIDENTE DE SOBREVENTA en Amazon: causa, corrección y auditoría (2026-07-27)
+
+**Síntoma reportado por Brandon**: hubo sobreventa en Amazon "aunque lo hayamos
+sincronizado". SKUs de ejemplo: TEC-0837-NEG, SIL-0019-NEG, TEC-0874-NEG (este
+último con `_stock = -1` en Woo: la huella de haber vendido sin existencia).
+
+**Causa raíz (NO era la sync Odoo→Woo del 17-jul).** De los 91 SKUs con
+sobreventa activa, **90 tenían 0 también en Odoo** → Woo estaba correcto. El
+desactualizado era **Amazon**: nada empujaba Woo → Amazon (el sync de 15 min
+solo LEE y `sync_woo.py` solo va de Odoo a Woo). Es el hueco que cierra el
+fan-out.
+
+**⚠️ El diagnóstico evitó un desastre**: correr la sync masiva Odoo→Woo que se
+pidió habría **BORRADO 16,646 piezas en 172 SKUs**, dejando 70 en cero (12,739
+piezas) — producto nacido en Woo tras el corte que Odoo no conoce. Se verificó
+ANTES de ejecutar.
+
+**v0.18.1 — FIX CRÍTICO: el dry-run del fan-out MENTÍA sobre Amazon.**
+`canal_inventario.stock_real` viene NULL en el 100% de las filas de Amazon (el
+batch lo escribe así: *"FBM se lee en refresco individual"*), y el fan-out hacía
+`int(stock_real or 0)` → reportaba **"Amazon tiene 0"** en las 1,614 filas. Falso:
+había listings con 540, 150 y hasta 1,999 piezas. Correcciones:
+- `_amazon_en_vivo()`: lee cantidad y estado REALES por SP-API antes de decidir.
+- **DESCONOCIDO ≠ 0**: si no se sabe qué tiene el canal, se OMITE (no se escribe
+  a ciegas).
+- Estado real (**BUYABLE** vs **DISCOVERABLE**) en vez de `situacion`, que venía
+  de nuestra bitácora `amazon_progress`: el **76% de lo que decíamos PUBLISHED
+  está DORMIDO** y escribirle stock lo despertaría.
+- Se compara contra `attributes.fulfillment_availability` (lo que fijamos, se
+  actualiza al instante) y NO contra `fulfillmentAvailability` (vista servida por
+  Amazon, va con retraso) — si no, se reescribiría en bucle.
+
+**v0.18.2 — Sobreventa corregida**: `scripts/corregir_stock_amazon.py`
+(idempotente, dry-run por defecto, solo toca BUYABLE, registra en `fanout_log`).
+**91/91 SKUs corregidos, 5,693 piezas fantasma retiradas**, 0 errores. Los
+mayores: JUGU-0171-MUL 1000→0, TEC-1028-NEG-NAR-M 540→0, TEC-0828-MET-DOR 240→0.
+
+**v0.18.3 — Auditoría Woo vs Odoo (12,904 SKUs comparables)**:
+
+| | SKUs | Piezas |
+|---|---|---|
+| Iguales | **12,667 (98.2%)** | — |
+| Odoo > Woo | 65 | +2,158 |
+| Odoo < Woo | 172 | −16,646 |
+| Solo en Woo | 1,518 | — |
+| Solo en Odoo | 96 | — |
+
+**Segunda causa encontrada**: en **26 SKUs** la diferencia Woo−Odoo es
+EXACTAMENTE el stock que vive en las bodegas FULL de ML (HERR-0034-AZL-127V
+600/400/FULL=198; TEC-0492-MUL 307/207/100). **Al enviar mercancía a FULL, Odoo
+SÍ descuenta la salida del almacén propio y Woo NO** → Woo ofrecía en los canales
+DROP piezas que están físicamente en la bodega de Mercado Libre. Es la misma
+sobreventa desde el otro lado. `scripts/corregir_stock_woo_full.py` alineó
+Woo=Odoo solo en ese grupo verificado: **26/26, 1,526 piezas retiradas**.
+
+**Aplicado con dale de Brandon**: los **65 SKUs donde Odoo tiene más**
+(+2,158 pzas) — Odoo es la fuente de verdad para resurtidos y envíos a FULL.
+
+**SIN TOCAR (requieren decisión/conteo físico):**
+- **33 AMBIGUOS**: tienen FULL pero el gap NO cuadra. Dos casos: `gap < FULL`
+  (Woo ya descontó parte) y `gap > FULL` (hay otra merma además del FULL, ej.
+  DEC-0018-VER gap=200 con FULL=20). Aplicar Odoo a ciegas borraría stock real o
+  dejaría piezas fantasma.
+- **113 con divergencia sin FULL** (72 publicados + 41 draft): **los 113 SÍ
+  existen en Odoo** — 58 con stock parcial y **50 declarados en CERO por Odoo
+  teniendo 12,097 pzas en Woo**.
+
+**QUÉ FALTA POR CERRAR (la raíz)**: cuando se envía mercancía a FULL nadie
+descuenta en Woo. Mientras sea manual, la deriva vuelve. Opciones: (1) detectar
+los ingresos a FULL por API de ML (`/stock/fulfillment/operations/search`), (2)
+auditoría diaria Woo-vs-Odoo-vs-FULL con alerta, (3) proceso manual disciplinado.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
