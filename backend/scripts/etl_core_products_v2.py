@@ -32,8 +32,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import socket
 import sys
+import threading
 import unicodedata
 import xmlrpc.client
 from collections import Counter, defaultdict
@@ -48,9 +51,31 @@ FASE = "core-etl-v2"
 BATCH = 1000
 CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations", "source")
 
+# ── Anti-cuelgue (lección del backfill de pedidos: NADA corre para siempre) ──
+# 1) Timeout de socket GLOBAL: cubre xmlrpc (Odoo no tiene timeout por default
+#    y puede colgarse eternamente en un socket muerto) y cualquier otra red.
+# 2) Watchdog: si el proceso no terminó en ETL_TIMEOUT_MIN (default 15), se
+#    mata solo con exit(2) — un cron colgado jamás debe quedarse "corriendo".
+socket.setdefaulttimeout(60)
+TIMEOUT_MIN = int(os.environ.get("ETL_TIMEOUT_MIN", "15"))
+ODOO_MAX_PAGINAS = 400  # 400×500 = 200k SKUs; más que eso es un loop enfermo
+
+
+def _armar_watchdog() -> None:
+    def _matar():
+        print(f"WATCHDOG: {TIMEOUT_MIN} min agotados — aborto para no quedar "
+              "colgado (regla anti-caso-pedidos).", flush=True)
+        os._exit(2)
+    t = threading.Timer(TIMEOUT_MIN * 60, _matar)
+    t.daemon = True
+    t.start()
+
 
 def cargar_env(nombre: str) -> dict[str, str]:
-    vals: dict[str, str] = {}
+    """Valores del archivo local; si no existe (cron en Railway), variables de
+    entorno del proceso. El archivo gana sobre el entorno en local — mismo
+    patrón que comparar_costos.py."""
+    vals: dict[str, str] = dict(os.environ)
     p = ROOT / nombre
     if not p.exists():
         return vals
@@ -58,7 +83,7 @@ def cargar_env(nombre: str) -> dict[str, str]:
         s = line.strip()
         if s and not s.startswith("#") and "=" in s:
             k, _, v = s.partition("=")
-            vals.setdefault(k.strip(), v.split("#")[0].strip().strip('"').strip("'"))
+            vals[k.strip()] = v.split("#")[0].strip().strip('"').strip("'")
     return vals
 
 
@@ -101,11 +126,13 @@ def main() -> None:
     ap.add_argument("--acepto-destino", default="", help="primeros 8 chars de la ref destino (obligatorio con --real)")
     args = ap.parse_args()
 
+    _armar_watchdog()
     ref = ref_destino()
     modo = "REAL" if args.real else "DRY-RUN"
     if args.real and not ref.startswith(args.acepto_destino or "±"):
         sys.exit(f"ABORT: --real exige --acepto-destino con el prefijo de la ref destino ({ref[:8]}…).")
-    print(f"[{modo}] destino: {ref[:8]}…  (escrituras: {'SÍ' if args.real else 'NO'})")
+    print(f"[{modo}] destino: {ref[:8]}…  (escrituras: {'SÍ' if args.real else 'NO'}; "
+          f"watchdog: {TIMEOUT_MIN} min)", flush=True)
 
     # ── EXTRACCIÓN de fuentes (solo lectura) ─────────────────────────────────
     my = pymysql.connect(
@@ -153,7 +180,7 @@ def main() -> None:
         uid = common.authenticate(PROD["ODOO_DB"], PROD["ODOO_USER"], PROD["ODOO_PASSWORD"], {})
         models = xmlrpc.client.ServerProxy(f"{PROD['ODOO_URL']}/xmlrpc/2/object")
         offset = 0
-        while True:
+        for _pagina in range(ODOO_MAX_PAGINAS):
             lote = models.execute_kw(
                 PROD["ODOO_DB"], uid, PROD["ODOO_PASSWORD"],
                 "product.product", "search_read",
@@ -165,6 +192,9 @@ def main() -> None:
             for p in lote:
                 odoo_skus[str(p["default_code"]).strip()] = {"odoo_id": p["id"], "name": p["name"]}
             offset += 500
+        else:
+            print(f"AVISO: Odoo superó {ODOO_MAX_PAGINAS} páginas — corto la "
+                  "paginación (tope anti-loop).", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"AVISO: Odoo no disponible ({exc}) — continúo; odoo_id no se actualizará.")
 
