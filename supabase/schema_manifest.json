@@ -1,0 +1,626 @@
+{
+ "esquemas": {
+  "channel": {
+   "categories": {
+    "columnas": [
+     "channel_id:text:notnull",
+     "category_id:text:notnull",
+     "name:text:null",
+     "path:text:null"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "listing_history": {
+    "columnas": [
+     "id:bigint:notnull",
+     "sku:USER-DEFINED:notnull",
+     "account_id:uuid:notnull",
+     "canal:text:notnull",
+     "campo:text:notnull",
+     "valor_anterior:text:null",
+     "valor_nuevo:text:null",
+     "detectado_via:text:notnull",
+     "changed_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "listings": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "account_id:uuid:notnull",
+     "canal:text:notnull",
+     "listing_id:text:null",
+     "url:text:null",
+     "status:text:null",
+     "situacion:text:null",
+     "price:numeric:null",
+     "price_base:numeric:null",
+     "stock_own:integer:null",
+     "stock_full:integer:null",
+     "is_fulfillment:boolean:notnull",
+     "product_type:text:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "orders": {
+    "columnas": [
+     "external_order_id:text:notnull",
+     "canal:text:notnull",
+     "cuenta:text:notnull",
+     "account_id:uuid:null",
+     "wc_order_id:bigint:null",
+     "estado_canal:text:null",
+     "estado_wc:text:null",
+     "total:numeric:null",
+     "comision:numeric:null",
+     "es_fulfillment:boolean:notnull",
+     "skus:ARRAY:null",
+     "creado_at:timestamp with time zone:null",
+     "actualizado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "product_category": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "channel_id:text:notnull",
+     "category_id:text:notnull",
+     "source:text:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   }
+  },
+  "core": {
+   "accounts": {
+    "columnas": [
+     "id:uuid:notnull",
+     "channel_id:text:notnull",
+     "legacy_code:text:null",
+     "external_id:text:null",
+     "label:text:notnull",
+     "is_active:boolean:notnull",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "channels": {
+    "columnas": [
+     "id:text:notnull",
+     "label:text:notnull",
+     "is_active:boolean:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "products": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "name:text:null",
+     "wc_id:bigint:null",
+     "wc_parent_id:bigint:null",
+     "odoo_id:bigint:null",
+     "status:text:notnull",
+     "brand:text:null",
+     "has_variations:boolean:notnull",
+     "parent_sku:USER-DEFINED:null",
+     "tags:ARRAY:null",
+     "source:text:null",
+     "created_at:timestamp with time zone:notnull",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "usuarios": {
+    "columnas": [
+     "id:uuid:notnull",
+     "nombre:text:notnull",
+     "email:USER-DEFINED:null",
+     "rol:text:notnull",
+     "activo:boolean:notnull",
+     "created_at:timestamp with time zone:notnull",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   }
+  },
+  "costing": {
+   "cost_history": {
+    "columnas": [
+     "id:bigint:notnull",
+     "sku:USER-DEFINED:notnull",
+     "tabla:text:notnull",
+     "version:integer:notnull",
+     "snapshot:jsonb:notnull",
+     "cambiado_por:text:null",
+     "accion:text:null",
+     "formula_ver:text:null",
+     "fx_rate_used:numeric:null",
+     "currency:text:notnull",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "costos_finales": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "account_id:uuid:null",
+     "costo_producto:numeric:null",
+     "costo_cbm:numeric:null",
+     "costo_unitario:numeric:null",
+     "ml_cat_id:text:null",
+     "pct_comision:numeric:null",
+     "comision_estimada:boolean:notnull",
+     "costo_comision:numeric:null",
+     "costo_fee_envio:numeric:null",
+     "precio_sugerido:numeric:null",
+     "precio_sugerido_original:numeric:null",
+     "precio_base:numeric:null",
+     "margen:numeric:null",
+     "peso_origen:text:null",
+     "formula_ver:text:null",
+     "costo_validado_at:timestamp with time zone:null",
+     "comision_consultada_at:timestamp with time zone:null",
+     "calculado_at:timestamp with time zone:notnull",
+     "created_at:timestamp with time zone:notnull",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "costos_finales_detalle": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "account_id:uuid:null",
+     "costo_producto:numeric:null",
+     "costo_cbm:numeric:null",
+     "costo_unitario:numeric:null",
+     "ml_cat_id:text:null",
+     "pct_comision:numeric:null",
+     "comision_estimada:boolean:null",
+     "costo_comision:numeric:null",
+     "costo_fee_envio:numeric:null",
+     "precio_sugerido:numeric:null",
+     "precio_sugerido_original:numeric:null",
+     "precio_base:numeric:null",
+     "margen:numeric:null",
+     "peso_origen:text:null",
+     "formula_ver:text:null",
+     "costo_validado_at:timestamp with time zone:null",
+     "comision_consultada_at:timestamp with time zone:null",
+     "calculado_at:timestamp with time zone:null",
+     "created_at:timestamp with time zone:null",
+     "updated_at:timestamp with time zone:null",
+     "ganancia_neta:numeric:null",
+     "roi_pct:numeric:null",
+     "descuento_pct:numeric:null"
+    ]
+   },
+   "costos_validados": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "wc_id:bigint:null",
+     "wc_status:text:null",
+     "wc_type:text:null",
+     "contenedor:text:null",
+     "costo_producto:numeric:null",
+     "costo_cbm:numeric:null",
+     "largo:numeric:null",
+     "alto:numeric:null",
+     "ancho:numeric:null",
+     "peso:numeric:null",
+     "costo_total:numeric:null",
+     "cajas:numeric:null",
+     "piezas_por_caja:numeric:null",
+     "currency:text:notnull",
+     "fx_rate_used:numeric:null",
+     "created_at:timestamp with time zone:notnull",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "fx_rates": {
+    "columnas": [
+     "currency:text:notnull",
+     "rate:numeric:notnull",
+     "valid_from:date:notnull",
+     "source:text:null"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "legacy_costos_ml": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "ml_cat_id:text:null",
+     "ml_cat_nombre:text:null",
+     "pct_comision:numeric:null",
+     "fee_envio:numeric:null",
+     "iva_mnt:numeric:null",
+     "total_costos_ml:numeric:null",
+     "margen:numeric:null",
+     "precio_sugerido:numeric:null",
+     "precio_base:numeric:null",
+     "descuento_pct:numeric:null",
+     "ganancia_neta:numeric:null",
+     "roi:numeric:null",
+     "ml_estado:text:null",
+     "calculado_at:timestamp with time zone:null",
+     "updated_at:timestamp with time zone:null",
+     "precio_sugerido_original:numeric:null",
+     "archivado_at:timestamp with time zone:notnull",
+     "fecha_corte:date:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "precios_desactualizados": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "calculado_at:timestamp with time zone:null",
+     "costo_actualizado_en:timestamp with time zone:null"
+    ]
+   },
+   "pricing_params": {
+    "columnas": [
+     "key:text:notnull",
+     "value:jsonb:notnull",
+     "valid_from:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   }
+  },
+  "enrich": {
+   "ai_attributes": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "attributes:jsonb:null",
+     "is_valid:boolean:null",
+     "model_used:text:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "odoo_viability": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "nombre:text:null",
+     "stock:integer:null",
+     "costo:numeric:null",
+     "flete_unit:numeric:null",
+     "ganancia_unit:numeric:null",
+     "ganancia_total:numeric:null",
+     "cbm_unit:numeric:null",
+     "cbm_total:numeric:null",
+     "peso_kg:numeric:null",
+     "score:numeric:null",
+     "en_wc:boolean:null",
+     "apto:boolean:null",
+     "motivo_excluido:text:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "product_media": {
+    "columnas": [
+     "id:bigint:notnull",
+     "sku:USER-DEFINED:null",
+     "kind:text:null",
+     "source_url:text:null",
+     "cdn_url:text:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "supplier_data": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "source_url:text:null",
+     "price:numeric:null",
+     "currency:text:null",
+     "price_currency_verified:boolean:notnull",
+     "fx_rate_used:numeric:null",
+     "scrape_status:text:null",
+     "title:text:null",
+     "title_original:text:null",
+     "images:jsonb:null",
+     "specs:jsonb:null",
+     "scraped_at:timestamp with time zone:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   }
+  },
+  "migration": {
+   "costs_differences": {
+    "columnas": [
+     "id:bigint:notnull",
+     "run_id:bigint:notnull",
+     "sku:USER-DEFINED:notnull",
+     "columna:text:notnull",
+     "valor_prod:numeric:null",
+     "valor_nuevo:numeric:null",
+     "delta_abs:numeric:null",
+     "delta_pct:numeric:null",
+     "clasificacion:text:notnull",
+     "nota:text:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "costs_preview": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "run_id:bigint:notnull",
+     "costo_producto:numeric:null",
+     "costo_cbm:numeric:null",
+     "costo_unitario:numeric:null",
+     "pct_comision:numeric:null",
+     "costo_comision:numeric:null",
+     "costo_fee_envio:numeric:null",
+     "precio_sugerido:numeric:null",
+     "precio_base:numeric:null",
+     "margen:numeric:null",
+     "formula_ver:text:notnull",
+     "fx_rate_used:numeric:null",
+     "calculado_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "id_map": {
+    "columnas": [
+     "sku_original:text:notnull",
+     "sku:USER-DEFINED:notnull",
+     "wc_id:bigint:null",
+     "odoo_id:bigint:null",
+     "tabla_origen:text:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "reconciliation_runs": {
+    "columnas": [
+     "id:bigint:notnull",
+     "dominio:text:notnull",
+     "descripcion:text:null",
+     "conteos:jsonb:null",
+     "checksums:jsonb:null",
+     "resultado:text:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   }
+  },
+  "ops": {
+   "channel_submissions": {
+    "columnas": [
+     "id:bigint:notnull",
+     "canal:text:notnull",
+     "cuenta:text:null",
+     "sku:USER-DEFINED:null",
+     "account_id:uuid:null",
+     "submission_id:text:null",
+     "operacion:text:null",
+     "status:text:null",
+     "success:boolean:null",
+     "error_resumen:text:null",
+     "detail_ref:text:null",
+     "submitted_at:timestamp with time zone:null",
+     "published_at:timestamp with time zone:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "migration_issues": {
+    "columnas": [
+     "id:bigint:notnull",
+     "fase:text:null",
+     "tabla_origen:text:null",
+     "sku:USER-DEFINED:null",
+     "motivo:text:notnull",
+     "valor:jsonb:null",
+     "resuelto:boolean:notnull",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "ml_tokens": {
+    "columnas": [
+     "cuenta:text:notnull",
+     "vault_access_secret:uuid:null",
+     "vault_refresh_secret:uuid:null",
+     "expires_at:timestamp with time zone:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "process_log": {
+    "columnas": [
+     "id:bigint:notnull",
+     "proceso:text:notnull",
+     "origen:text:null",
+     "sku:USER-DEFINED:null",
+     "accion:text:null",
+     "estado:text:null",
+     "detalle:jsonb:null",
+     "detail_ref:text:null",
+     "duracion_s:numeric:null",
+     "created_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "task_queue": {
+    "columnas": [
+     "id:bigint:notnull",
+     "task_type:text:notnull",
+     "sku:USER-DEFINED:null",
+     "account_id:uuid:null",
+     "status:text:notnull",
+     "payload:jsonb:null",
+     "intentos:integer:notnull",
+     "max_intentos:integer:notnull",
+     "last_error:text:null",
+     "next_retry_at:timestamp with time zone:null",
+     "created_at:timestamp with time zone:notnull",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "webhook_events": {
+    "columnas": [
+     "id:bigint:notnull",
+     "env:text:notnull",
+     "canal:text:notnull",
+     "topic:text:notnull",
+     "external_id:text:notnull",
+     "delivery_id:text:notnull",
+     "cuenta:text:null",
+     "sku:USER-DEFINED:null",
+     "payload:jsonb:null",
+     "detail_ref:text:null",
+     "firma_valida:boolean:null",
+     "procesado:boolean:notnull",
+     "resultado:text:null",
+     "intentos:integer:notnull",
+     "next_retry_at:timestamp with time zone:null",
+     "recibido_at:timestamp with time zone:notnull",
+     "procesado_at:timestamp with time zone:null"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   }
+  }
+ },
+ "resumen": {
+  "channel": 5,
+  "core": 4,
+  "costing": 8,
+  "enrich": 4,
+  "migration": 4,
+  "ops": 6
+ },
+ "triggers": {
+  "channel.listings": [
+   "trg_hist_listings",
+   "trg_touch_listings"
+  ],
+  "channel.orders": [
+   "orders_touch"
+  ],
+  "core.products": [
+   "trg_touch_products"
+  ],
+  "core.usuarios": [
+   "trg_touch_usuarios"
+  ],
+  "costing.costos_finales": [
+   "trg_hist_costos_finales",
+   "trg_touch_costos_finales"
+  ],
+  "costing.costos_validados": [
+   "trg_hist_costos_validados",
+   "trg_touch_costos_validados"
+  ]
+ }
+}
