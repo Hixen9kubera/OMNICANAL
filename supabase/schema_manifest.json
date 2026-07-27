@@ -203,10 +203,11 @@
      "comision_consultada_at:timestamp with time zone:null",
      "calculado_at:timestamp with time zone:notnull",
      "created_at:timestamp with time zone:notnull",
-     "updated_at:timestamp with time zone:notnull"
+     "updated_at:timestamp with time zone:notnull",
+     "canal:text:notnull"
     ],
     "constraints": {
-     "FOREIGN KEY": 2,
+     "FOREIGN KEY": 3,
      "PRIMARY KEY": 1
     },
     "rls": true

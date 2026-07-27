@@ -2057,6 +2057,23 @@ Además /migracion solo monitoreaba 2 de los dominios con actas.
 espejo kubera como los demás; mientras, el cron de las 06:15 cierra el hueco
 cada 24 h). Versión 0.20.0.
 
+### v0.21.0 — DECISIÓN P4 aplicada: el precio sugerido es POR CANAL (Eduardo)
+
+`costing.costos_finales` pasó de PK `(sku)` a **PK `(sku, canal)`** — migración
+`supabase/migrations/0003_p4_precio_por_canal.sql`, ADR completo en
+`docs/arquitectura_bd/DECISION_P4_precio_por_canal.md`. Las 4,353 filas
+existentes quedaron `canal='mercado_libre'` (la fórmula actual es ML-céntrica);
+`costos_validados` NO cambia (lo físico no depende del canal).
+
+Código adaptado: `costing_mirror.espejar_finales` upsertea por `(sku, canal)`
+con canal fijo `mercado_libre` (cuando el motor calcule otros canales, el
+llamador lo pasará), y `comparar_costos.py` compara MySQL contra la fila
+`canal='mercado_libre'` — la racha de deltas sigue intacta. Sandbox: paquete
+`supabase/migrations/` + `schema_manifest.json` regenerado incluyen el cambio.
+Se hizo AHORA porque nadie lee aún de costing: el mismo cambio después del
+switch de lecturas (F5) habría sido una migración con consumidores encima.
+Versión 0.21.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

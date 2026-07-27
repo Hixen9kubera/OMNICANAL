@@ -134,14 +134,18 @@ def espejar_finales(sku: str, fila: dict[str, Any], accion: str = "auto",
             _asegurar_identidad(cur, sku)
             cur.execute(
                 """insert into costing.costos_finales
-                     (sku, costo_producto, costo_cbm, costo_unitario, costo_comision,
+                     (sku, canal, costo_producto, costo_cbm, costo_unitario, costo_comision,
                       costo_fee_envio, precio_sugerido, precio_base, ml_cat_id,
                       pct_comision, peso_origen, formula_ver, comision_consultada_at)
-                   values (%(sku)s, %(costo_producto)s, %(costo_cbm)s, %(costo_unitario)s,
+                   values (%(sku)s, 'mercado_libre', %(costo_producto)s, %(costo_cbm)s,
+                           %(costo_unitario)s,
                            %(costo_comision)s, %(costo_fee_envio)s, %(precio_sugerido)s,
                            %(precio_base)s, %(ml_cat_id)s, %(pct_comision)s,
                            %(peso_origen)s, %(formula_ver)s, now())
-                   on conflict (sku) do update set
+                   -- P4 (2026-07-27): precio POR CANAL — PK (sku, canal). La fórmula
+                   -- actual es ML-céntrica, por eso canal fijo 'mercado_libre'; cuando
+                   -- el motor calcule otros canales, el llamador pasará el canal.
+                   on conflict (sku, canal) do update set
                      costo_producto = excluded.costo_producto, costo_cbm = excluded.costo_cbm,
                      costo_unitario = excluded.costo_unitario,
                      costo_comision = excluded.costo_comision,

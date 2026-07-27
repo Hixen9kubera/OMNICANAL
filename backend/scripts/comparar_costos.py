@@ -76,7 +76,10 @@ def leer(tabla_my: str, cols: tuple, my_cur, pg_cur, tabla_pg: str):
             excluidos += 1
             continue
         mysql_rows[s.lower()] = (s, tuple(_norm(r[c]) for c in cols))
-    pg_cur.execute(f"select sku, {', '.join(cols)} from {tabla_pg}")
+    # P4 (2026-07-27): costos_finales es POR CANAL en kubera; MySQL sigue siendo
+    # por-SKU (ML-céntrico), así que se compara contra la fila canal=mercado_libre.
+    filtro = " where canal = 'mercado_libre'" if tabla_pg.endswith("costos_finales") else ""
+    pg_cur.execute(f"select sku, {', '.join(cols)} from {tabla_pg}{filtro}")
     pg_rows = {}
     for r in pg_cur.fetchall():
         pg_rows[str(r[0]).lower()] = (str(r[0]), tuple(_norm(v) for v in r[1:]))
