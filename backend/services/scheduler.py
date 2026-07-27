@@ -75,6 +75,23 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Sondeo de pedidos Amazon cada %s min.", settings.pedidos_amazon_min)
+    # INGRESOS A FBA (Amazon): sin webhook disponible — la Notifications API de
+    # SP-API devuelve 403 (requiere rol extra + cola SQS). Se detectan comparando
+    # el inventario FBA contra la última foto: si SUBIÓ, llegó mercancía y esas
+    # piezas ya no están en la bodega propia → se restan de Woo. El FULL de ML NO
+    # necesita esto: llega por webhook `fbm_stock_operations` en segundos.
+    if settings.full_watch_enabled and settings.mysql_enabled:
+        from services import stock_full
+        _scheduler.add_job(
+            stock_full.revisar_fba,
+            "interval",
+            minutes=settings.full_watch_fba_min,
+            id="fba_watch",
+            next_run_time=datetime.now() + timedelta(seconds=90),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Vigilante de ingresos a FBA cada %s min.", settings.full_watch_fba_min)
     # Pedidos de Temu/TikTok vía M2E (sondeo; ver pedidos_m2e.py).
     if settings.pedidos_m2e_enabled and settings.mysql_enabled and settings.m2e_api_token:
         from services import pedidos_m2e

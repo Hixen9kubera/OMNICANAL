@@ -198,6 +198,15 @@ class Settings(BaseSettings):
     # Piezas de colchón que NO se publican (cubre la ventana venta→escritura).
     fanout_reserva: int = 0
 
+    # ── Movimientos de bodega FULL / FBA → Woo ────────────────────
+    # Cuando se manda mercancía a FULL, esas piezas SALEN del almacén propio y
+    # Woo no se enteraba (services/stock_full.py). ML lo avisa por el webhook
+    # `fbm_stock_operations` en segundos; Amazon no tiene webhook (403) y se
+    # revisa por comparación de fotos del inventario FBA.
+    # Nace APAGADO: encenderlo MUEVE INVENTARIO REAL (regla 3 de CLAUDE.md).
+    full_watch_enabled: bool = False
+    full_watch_fba_min: int = 15   # cada cuántos minutos se revisa el FBA
+
     # ── Pedidos ML → WooCommerce + transición de inventario ───
     # Cada venta de ML se convierte en pedido de Woo con el precio REAL
     # congelado (services/pedidos_ml.py), disparado por el webhook orders_v2.

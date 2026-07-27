@@ -1,0 +1,39 @@
+{
+ "explicados": [
+  "TEC-0934-NEG"
+ ],
+ "pendientes": [
+  "DEC-0018-VER",
+  "ACC-0307-MUL",
+  "TEC-1291-MUL",
+  "JUGU-0166-MUL",
+  "JUGU-0179-ROS",
+  "JUEG-0017-PLA",
+  "DEP-0016-PLA",
+  "ORG-0421-NEG",
+  "MUE-0299-NEG",
+  "ORG-0631-NEG",
+  "CUNA-0053-BLN",
+  "TEC-1351-NEG",
+  "TEC-0864-NEG",
+  "ORG-0481-NEG",
+  "VAR-0455-EST",
+  "ORG-0483-NEG",
+  "ORG-1040-MAD",
+  "TEC-1137-NEG",
+  "TEC-0983-NEG-CAFET-EXPR",
+  "TEC-1193-MET",
+  "JUGU-0066-MUL",
+  "MUN-0073-ROS",
+  "MAN-0498-BLN",
+  "TEC-0844-NEG",
+  "TEC-0161-NEG",
+  "TEC-1296-GRI",
+  "MAN-0490-DOR",
+  "TEC-0048-NEG",
+  "ORG-0379-NEG-3N",
+  "ORG-0596-NEG",
+  "JUGU-0204-MUL-11PZ",
+  "JUGU-0143-MUL"
+ ]
+}

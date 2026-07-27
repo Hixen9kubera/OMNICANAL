@@ -1935,6 +1935,57 @@ tablero no explicaba:
 3. `TEC-0551-PLU` BEKURA: decidir reabastecer/reactivar — vendía fuerte.
 
 Script del censo reproducible: sesión de Eduardo 27-jul (solo lectura).
+### v0.19.0 — Movimientos de FULL/FBA → Woo (el webhook que ML ya mandaba y tirábamos)
+
+**El hueco**: al mandar mercancía a FULL, esas piezas SALEN del almacén propio.
+Odoo lo registra (a mano) y **Woo no** → Woo seguía ofreciéndolas en los canales
+DROP. Causó la sobreventa del 27-jul (26 SKUs, 1,526 pzas).
+
+**EL HALLAZGO**: ML **ya nos avisa en segundos** y lo estábamos ignorando. En los
+logs de producción:
+
+```
+[fbm_stock_operations] /stock/fulfillment/operations/3963089046712909973 → "sin acción"
+[stock-locations]      /user-products/MLMU3866432728/stock                → "sin acción"
+```
+
+Resolviendo la operación se sabe **qué pasó, cuántas piezas y el total**:
+`{"type": "TRANSFER_DELIVERY", "detail": {"available_quantity": 5}}`.
+
+**Por qué nunca entró**: el filtro pedía `stock_locations` (guion BAJO) y un
+recurso `/items/…`; ML manda `stock-locations` (guion MEDIO) con
+`/user-products/…`. Doble desajuste — verificado en logs.
+
+**`services/stock_full.py`** — tabla de decisión por tipo de operación:
+
+| Tipo | Qué es | Efecto en Woo |
+|---|---|---|
+| `TRANSFER_DELIVERY` (+) | llegó mercancía a FULL | **RESTA** (salió de bodega) |
+| `WITHDRAWAL_DELIVERY` (−) | retiro de FULL | **SUMA** (regresó) |
+| `SALE_CONFIRMATION` (−) | venta desde FULL | no toca (sale del almacén de ML) |
+| `SALE_CANCELATION` (+) | cancelación | no toca |
+| `QUARANTINE_*` | cuarentena de ML | no toca |
+| `ADJUSTMENT` (±) | ajuste de ML | no toca, pero **AVISA** |
+
+**5 defensas contra falsos positivos** (el riesgo real de automatizar esto):
+1. **Idempotencia por `operation_id`** — ML manda ráfagas (se vio el mismo evento
+   3 veces en 2 s). Reutiliza `fanout_log`: **no se creó tabla nueva**.
+2. Solo los tipos de la tabla mueven stock; el resto se registra.
+3. **Verificación cruzada**: antes de restar, confirma contra
+   `/inventories/{id}/stock/fulfillment` que la bodega de ML respalda el
+   movimiento. Si no cuadra → `full_sospechoso`, no toca Woo.
+4. **Tope de cordura**: nunca deja Woo en negativo.
+5. Todo a la bitácora que ya pinta el Dashboard.
+
+Tras ajustar Woo **encola el fan-out** del SKU: los canales DROP se enteran solos.
+
+**Amazon FBA**: sin webhook (Notifications API da **403** — requiere rol extra +
+cola SQS/EventBridge). Se detecta por **comparación de fotos** del inventario FBA
+(`/fba/inventory/v1/summaries`, que sí responde 200) cada 15 min; si SUBIÓ, llegó
+mercancía → se resta de Woo. Son pocos SKUs en FBA (7), así que es barato.
+
+**Flag**: `FULL_WATCH_ENABLED` (default **false**) — encenderlo MUEVE INVENTARIO
+REAL. Versión 0.19.0.
 
 ---
 

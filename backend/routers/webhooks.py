@@ -36,7 +36,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 
 from config import settings
 from core.seguridad import requiere_api_key
-from services import db, inventario, meli, pedidos_ml
+from services import db, inventario, meli, pedidos_ml, stock_full
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.webhooks")
@@ -74,6 +74,15 @@ def _asegurar_schema() -> None:
         _schema_ok = True
     except Exception as exc:  # noqa: BLE001
         log.error("No se pudo crear webhook_eventos: %s", exc)
+
+
+# user_id de ML → cuenta interna. El webhook trae el vendedor dueño del
+# movimiento, y cada cuenta tiene su propio token.
+_USER_A_CUENTA = {"3072519654": "BEKURA", "3064478475": "SANCORFASHION"}
+
+
+def _cuenta_por_user(user_id) -> str:
+    return _USER_A_CUENTA.get(str(user_id or ""), "BEKURA")
 
 
 def _guardar(canal: str, topic, resource, user_id) -> int | None:
@@ -200,10 +209,31 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
     sku = None
     resultado = ""
     try:
-        if topic in ("items", "items_prices", "stock_locations") and "/items/" in resource:
-            # Refresco del espejo canal_inventario: es "sincronización de datos
-            # con ML" — respeta el interruptor global (modo puros pedidos).
-            if settings.sync_enabled:
+        # MOVIMIENTOS DE BODEGA FULL: ML nos avisa en SEGUNDOS y lo estábamos
+        # tirando ("registrado sin acción"). Resolviendo la operación se sabe si
+        # llegó mercancía (TRANSFER_DELIVERY → salió de nuestra bodega, hay que
+        # restar en Woo) o si es un movimiento interno del marketplace.
+        if topic == "fbm_stock_operations" and "/operations/" in resource:
+            op_id = resource.rsplit("/", 1)[-1]
+            cuenta = _cuenta_por_user(payload.get("user_id"))
+            r = await stock_full.procesar_operacion(op_id, cuenta)
+            sku = r.get("sku")
+            resultado = (f"FULL {r.get('tipo')} x{r.get('cantidad')} → Woo "
+                         f"{r.get('antes')}→{r.get('despues')}" if r.get("ok") and r.get("sku")
+                         else f"FULL: {r.get('accion') or r.get('motivo')}")
+        # OJO: ML manda el topic con GUION MEDIO (`stock-locations`) y el recurso
+        # es `/user-products/…`, no `/items/…`. El filtro viejo pedía guion bajo
+        # y un item, así que NUNCA entraba (verificado en logs de producción).
+        elif topic in ("items", "items_prices", "stock_locations", "stock-locations") \
+                and ("/items/" in resource or "/user-products/" in resource):
+            if "/user-products/" in resource:
+                # Cambió el reparto bodega-propia / bodega-ML de un user product.
+                # El movimiento en sí llega por `fbm_stock_operations` (con tipo y
+                # cantidad); aquí solo se deja constancia.
+                resultado = "stock-locations: reparto propio/FULL notificado"
+            elif settings.sync_enabled:
+                # Refresco del espejo canal_inventario: es "sincronización de datos
+                # con ML" — respeta el interruptor global (modo puros pedidos).
                 item_id = resource.rsplit("/", 1)[-1]
                 r = await inventario.refrescar_ml_item_id(item_id)
                 sku = r.get("sku")
