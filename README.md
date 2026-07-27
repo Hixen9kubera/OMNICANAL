@@ -1896,6 +1896,48 @@ auditoría diaria Woo-vs-Odoo-vs-FULL con alerta, (3) proceso manual disciplinad
 
 ---
 
+### 📣 Hallazgo 2026-07-27 — Censo de publicaciones HUÉRFANAS en ML (para Brandon/Hixen9)
+
+Censo por API (`/users/{id}/items/search?status=active`, ambas cuentas, solo
+lectura) cruzado contra `ml_progress` — motivado por ventas no-FULL de ML que el
+tablero no explicaba:
+
+| Cuenta | Activas reales | En radar (ml_progress) | HUÉRFANAS | FULL | no-FULL |
+|---|---|---|---|---|---|
+| BEKURA | 471 | 408 | **63** | 62 | 1 |
+| SANCORFASHION | 434 | 361 | **73** | 73 | 0 |
+
+- **Huérfana** = publicación creada FUERA del publicador (manual/vieja):
+  invisible para `canal_inventario`, el espejo channel, el fan-out y la página
+  /inventario. La afirmación "todo lo activo es FULL" (v0.18.0) es cierta al
+  99.3% — pero solo sobre lo rastreado.
+- **Riesgo de sobreventa: BAJO** — 135/136 huérfanas son FULL (venden de bodega
+  de ML). La única no-FULL activa es `ORG-0399-MET` (cross_docking, 120 pzas,
+  0 ventas).
+- **El costo real es VENTA PERDIDA, no sobreventa** — caso `TEC-0551-PLU`
+  (BEKURA, MLM4685754218, `cross_docking`): 673 ventas históricas, ~93 en sus
+  últimas 2 semanas, se vendió hasta el CERO y ML la pausó sola el 27-jul.
+  Vendía 6-7 pzas/día y nadie la reabasteció porque ningún tablero la veía.
+  (En SANCOR el mismo SKU ya es FULL con stock — MLM4690541010.)
+- **Tercer tipo de logística detectado**: `cross_docking` (vende de almacén
+  propio, ML recolecta). Para el fan-out cuenta como no-FULL (consume DROP);
+  hoy el código solo distingue fulfillment/no-fulfillment — le aplica, pero
+  conviene tenerlo en el vocabulario.
+- **Subconteo del mundo FULL**: las 135 huérfanas FULL tienen piezas en bodega
+  ML que NO suman en canal_inventario ni en /inventario.
+
+**Recomendación (territorio del sync/fan-out — coordinar antes de mover):**
+1. Que el descubrimiento del sync sea por **API del seller** (como este censo)
+   y no solo por `ml_progress` — ninguna publicación manual vuelve a ser
+   invisible.
+2. **Adoptar** las 136 huérfanas (alta en `ml_progress` o fuente alterna) para
+   que tablero, espejo y fan-out las vean.
+3. `TEC-0551-PLU` BEKURA: decidir reabastecer/reactivar — vendía fuerte.
+
+Script del censo reproducible: sesión de Eduardo 27-jul (solo lectura).
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
