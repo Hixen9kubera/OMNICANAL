@@ -523,13 +523,34 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         canal, origen_py, funcion = _ESPEJO_ORIGEN.get(
             cuenta, (str(orden.get("detalle") or cuenta).lower(),
                      "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"))
+        encabezado = {
+            "external_order_id": str(order_id), "canal": canal, "cuenta": cuenta,
+            "wc_order_id": wc_id, "estado_canal": str(orden.get("estado") or ""),
+            "estado_wc": payload["status"], "total": orden["total"],
+            "comision": comision, "es_fulfillment": bool(orden.get("es_full")),
+            "skus": [s for s in skus if s], "creado_at": creado}
         kubera_mirror.espejar(
             origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
-            {"external_order_id": str(order_id), "canal": canal, "cuenta": cuenta,
-             "wc_order_id": wc_id, "estado_canal": str(orden.get("estado") or ""),
-             "estado_wc": payload["status"], "total": orden["total"],
-             "comision": comision, "es_fulfillment": bool(orden.get("es_full")),
-             "skus": [s for s in skus if s], "creado_at": creado},
+            encabezado, clave=f"{cuenta}:{order_id}")
+        # LÍNEAS con cantidades e item_id → channel.order_items (F1 de la
+        # absorción de dailytrack, GO Eduardo 2026-07-28). Los datos ya están
+        # en memoria (meli/pedidos_amazon/pedidos_m2e normalizan igual): cero
+        # llamadas extra. Tabla-origen virtual `pedidos_ml_items`: se enciende
+        # sumándola a KUBERA_MIRROR_TABLAS (variable Railway, sin deploy). La
+        # comisión de línea viaja como TOTAL (fee unitario × cantidad) — misma
+        # base que daily_sales.sale_fee, y suma a la comisión del encabezado.
+        kubera_mirror.espejar(
+            origen_py, "sincronizar (líneas)", "pedidos_ml_items",
+            "channel.order_items", "UPSERT",
+            {**encabezado, "lineas": [
+                {"linea": n, "item_id": it.get("item_id") or None,
+                 "sku": (it.get("sku") or "").strip() or None,
+                 "titulo": (it.get("titulo") or "")[:200] or None,
+                 "cantidad": int(it.get("cantidad") or 1),
+                 "precio_unitario": it.get("precio_unitario"),
+                 "comision": round(float(it.get("comision_ml") or 0)
+                                   * int(it.get("cantidad") or 1), 2)}
+                for n, it in enumerate(orden.get("items", []), start=1)]},
             clave=f"{cuenta}:{order_id}")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)

@@ -2162,6 +2162,74 @@ El sandbox es desechable de verdad y el paquete de migraciones está completo.
 15,411 validados / 4,353 finales / 5,714 listings / 5,591 orders / 13,680
 categorías, 0 filas cobaya, 0 filas de siembra. Versión 0.23.1.
 
+### v0.26.0 — Absorción de dailytrack F1: retención de webhooks, channel.order_items y archivo histórico (Eduardo)
+
+Arranca la absorción de las series de dailytrackMeli (`xaxbkijc`, muertas
+desde el 15-jul por disco lleno/timeouts de su ingest-cron; alcance acordado:
+`daily_sales` + `daily_stock`, `daily_visits` FUERA por ahora). Decisiones de
+Eduardo 2026-07-28: historia comprimida (foto diaria → registro de cambios),
+cancelados se guardan y la vista los excluye, corte del día en
+`America/Mexico_City`.
+
+- **Retención de `ops.webhook_events` = 3 días** (migración
+  `0004_retencion_webhook_events.sql`, APLICADA en kubera). La tabla era el
+  79% de la BD (154 de 194 MB, +17k filas/día). Purga inicial: 129,675 filas
+  respaldadas en `backups/ops_webhook_events_hasta_id_130513_2026-07-28.csv.gz`
+  + `VACUUM FULL` → tabla 33 MB, base 74 MB. Queda `ops.purgar_webhook_events()`
+  (borra por lotes, bitácora en `ops.process_log`) programada con **pg_cron
+  diario 08:20 UTC** (fuera de la ventana de ETLs). Era el bloqueante para
+  meter las series sin repetir el 53100 que mató a dailytrack.
+- **`channel.order_items` + vista `channel.sales_daily`** (migración
+  `0005_order_items_sales_daily.sql`, APLICADA en kubera y sandbox —
+  PARIDAD OK). Las líneas de cada venta con CANTIDADES e `item_id` (lo que el
+  array `skus` de `channel.orders` no guarda); la vista agrega por
+  día×cuenta×item excluyendo cancelados = equivalente 1:1 de `daily_sales`.
+- **Seam en `pedidos_ml.sincronizar`** (junto al espejo de orders, v0.16.0):
+  espeja las líneas vía tabla-origen virtual **`pedidos_ml_items`** — nace
+  APAGADO; encender = sumarla a `KUBERA_MIRROR_TABLAS` (variable Railway, sin
+  deploy, dale de Brandon). El upsert (`_up_channel_order_items`) asegura el
+  padre con DO NOTHING (sin carrera de FK entre workers), congela importes y
+  solo admite comisión 0→valor (regla v0.17.0). Sirve a ML, Amazon y M2E: los
+  tres embudan en `sincronizar` con items ya normalizados — cero llamadas
+  nuevas a las APIs.
+- **Esquema `analytics` para el archivo congelado** (migración
+  `0006_analytics_dailytrack_hist.sql`, APLICADA): `sales_daily_hist`
+  (espejo de daily_sales, dic-2025→15-jul) y `stock_hist` (daily_stock
+  COMPRIMIDA run-length: medido con 200 series completas, el 91.1% de las
+  365,542 filas era idéntica al día previo → se archiva solo el ~9% con
+  vigencia `[valid_from, valid_to)`; vista `stock_hist_dia` reconstruye
+  cualquier día). Por qué es obligatorio: en el traslape 1–15 jul dailytrack
+  registró $3.19M en ventas y `channel.orders` solo $0.24M (7%) — esa
+  historia no existe en ningún otro lado y no se puede reconstruir.
+- **ETL one-shot EJECUTADO** (`scripts/etl_dailytrack_hist.py`, dry-run
+  default, reintentos ante los 503 del origen, compresión en vuelo):
+  `sales_daily_hist` **17,984/17,984** filas con totales verificados al
+  centavo (60,325 uds / $36,866,979.64 / fee $5,699,855.58);
+  `stock_hist` **365,542 → 32,848 filas (9.0%)**, 11,298 items, 10,952
+  vigentes al corte. Reconstrucción verificada contra el origen: 19-jun
+  10,200/10,200 y 15-jul 10,952/10,952 EXACTOS + muestreo de 30 items campo
+  por campo sin deltas (20-may +50 = días con el cron origen caído por
+  cuenta: el archivo interpola presencia a propósito — cierre por ausencia
+  solo cuando la cuenta sí reportó ese día).
+- **Backfill de order_items EJECUTADO** (`scripts/backfill_order_items.py`,
+  desde Woo): 5,819 líneas / 5,826 orders (los 7 sin línea son ventas que
+  entraron DURANTE la corrida — las cubre el seam al encender), 4,195
+  item_id enriquecidos vía channel.listings, 6,940 piezas (el dato que el
+  array `skus` no tenía), consistencia línea-vs-encabezado 5,111/5,154
+  (<$1; el resto es envío incluido en el total del pedido).
+- **Acta de paridad registrada** (`migration.reconciliation_runs` dominio
+  `analytics-hist`, id 59): las dos fuentes son **COMPLEMENTARIAS, no
+  duplicadas** — la serie murió el 15-jul y el webhook nació el 17-jul, no
+  existe ventana con ambas completas (traslape 13-may→15-jul: hist 37,068
+  uds / $17.3M vs nuevo 491 uds / $0.20M). Se probó corrimiento ±1 día y
+  UTC vs MX: los faltantes son días parciales nuestros, no fechas corridas.
+  **Empalme canónico: hist ≤ 15-jul, sales_daily ≥ 16-jul.**
+- Pendientes de esta fase: dale de Brandon para encender `pedidos_ml_items`,
+  F2 (cierre diario de stock), regenerar `schema_manifest.json` con las
+  tablas nuevas, aviso a José (su ingest-cron redespliega cada 2 días aunque
+  ya no escribe), y al final dump completo (incluye daily_visits) + baja de
+  `xaxbkijc`. Versión 0.26.0.
+
 ---
 
 ### 🔍 AUDITORÍA del vigilante FULL/FBA (2026-07-27) — VEREDICTO: **NO ACTIVAR**

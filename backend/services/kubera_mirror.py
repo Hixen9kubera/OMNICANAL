@@ -73,6 +73,14 @@ CENSO: list[dict[str, Any]] = [
      "operacion": "UPSERT", "disparador": "sondeo M2E cada 10 min",
      "estado": "a_espejar",
      "nota": "Mismo seam (cuentas TEMU/TIKTOK → canal temu/tiktok)."},
+    {"archivo": "services/pedidos_ml.py", "funcion": "sincronizar (líneas)",
+     "tabla_mysql": "pedidos_ml_items", "tabla_kubera": "channel.order_items",
+     "operacion": "UPSERT", "disparador": "mismo seam de pedidos (todas las cuentas)",
+     "estado": "a_espejar",
+     "nota": "F1 absorción dailytrack (GO Eduardo 2026-07-28): líneas con "
+             "cantidades e item_id — lo que channel.orders.skus no guarda. "
+             "DDL 0005 aplicado 28-jul. Encender = sumar pedidos_ml_items a "
+             "KUBERA_MIRROR_TABLAS (variable Railway, sin deploy)."},
     {"archivo": "routers/webhooks.py", "funcion": "_guardar/_guardar_supabase",
      "tabla_mysql": "webhook_eventos", "tabla_kubera": "ops.webhook_events",
      "operacion": "INSERT", "disparador": "webhook ML (ráfagas)",
@@ -448,6 +456,53 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
     )
 
 
+def _up_channel_order_items(cur, p: dict[str, Any]) -> None:
+    """channel.order_items — PK (canal, cuenta, external_order_id, linea).
+
+    Seam F1 de la absorción de dailytrack (GO Eduardo 2026-07-28): las líneas
+    con CANTIDADES e item_id que channel.orders.skus (array) no guarda. El
+    payload trae el ENCABEZADO completo además de las líneas: primero se
+    asegura el padre en channel.orders con DO NOTHING — si el espejo de orders
+    de la misma orden cayó en otro worker y aún no aterriza, aquí no hay
+    carrera ni violación de FK (el DO NOTHING no pisa nada de un padre vivo).
+    Importes de línea CONGELADOS al primer registro; solo comision admite el
+    paso 0 → valor real (misma regla v0.17.0 que orders). item_id/sku solo se
+    RELLENAN si faltaban — el backfill desde Woo no los trae completos."""
+    lineas = p.get("lineas") or []
+    if not lineas:
+        return
+    cur.execute(
+        """insert into channel.orders
+             (external_order_id, canal, cuenta, wc_order_id, estado_canal,
+              estado_wc, total, comision, es_fulfillment, skus, creado_at)
+           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::citext[],%s)
+           on conflict (canal, cuenta, external_order_id) do nothing""",
+        (str(p.get("external_order_id") or ""), p.get("canal"), p.get("cuenta"),
+         p.get("wc_order_id"), p.get("estado_canal"), p.get("estado_wc"),
+         p.get("total"), p.get("comision"), bool(p.get("es_fulfillment")),
+         list(p.get("skus") or []), p.get("creado_at")),
+    )
+    for ln in lineas:
+        cur.execute(
+            """insert into channel.order_items
+                 (canal, cuenta, external_order_id, linea, item_id, sku, titulo,
+                  cantidad, precio_unitario, comision, es_fulfillment)
+               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               on conflict (canal, cuenta, external_order_id, linea) do update set
+                 item_id  = coalesce(channel.order_items.item_id, excluded.item_id),
+                 sku      = coalesce(channel.order_items.sku, excluded.sku),
+                 comision = case when coalesce(channel.order_items.comision, 0) = 0
+                                 then excluded.comision
+                                 else channel.order_items.comision end""",
+            (p.get("canal"), p.get("cuenta"),
+             str(p.get("external_order_id") or ""), int(ln.get("linea") or 1),
+             ln.get("item_id") or None, ln.get("sku") or None,
+             ln.get("titulo") or None, int(ln.get("cantidad") or 1),
+             ln.get("precio_unitario"), ln.get("comision"),
+             bool(p.get("es_fulfillment"))),
+        )
+
+
 def _up_core_product(cur, p: dict[str, Any]) -> None:
     """core.products — el registro civil del catálogo. Upsert por sku: el
     nacimiento desde el panel registra SOLO lo que el flujo Crear conoce
@@ -491,6 +546,7 @@ _UPSERTS: dict[str, Callable] = {
     "ops.process_log": _up_process_log,
     "enrich.product_media": _up_product_media,
     "channel.orders": _up_channel_orders,
+    "channel.order_items": _up_channel_order_items,
     "core.products": _up_core_product,
 }
 
