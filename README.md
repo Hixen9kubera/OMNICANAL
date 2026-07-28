@@ -2418,9 +2418,27 @@ Casos gruesos: `TEC-0991-BLN-AIR` con **10,000 en ML y 5,000 en Woo** en ambas
 cuentas; `ORG-0781-AZL-ROS-VER` 7,200 vs 2,300. Al estar pausadas hoy no venden,
 así que el riesgo no es de hoy: es del día que se reactiven con el stock rancio.
 
-El fan-out las corrige **conforme se van tocando** (una venta, un cambio en Woo,
-un delta de Odoo). La alineación de golpe de las 706 es una escritura masiva a un
-canal vivo y espera el dale de Brandon.
+#### Alineación masiva EJECUTADA (dale de Brandon, 28-jul)
+
+Las **705** se alinearon contra Woo — que ya traía el stock real de Odoo — en las
+DOS cuentas por igual. Resultado: **705 escritas, 0 reactivadas, 0 desalineadas**
+al recontar. Muestra aleatoria de 10 verificada en vivo contra ML: pausa intacta
+y cantidad exacta en todas.
+
+Se corrió por tandas (25 de prueba → 508 → 172), ordenadas por exceso descendente
+para atacar primero el riesgo de sobreventa. **Dos fallas transitorias** en la
+tanda larga, ambas por la duración (31 min):
+
+- **147 "sin token de {cuenta}"** — el token de ML expiró a media corrida.
+  `_access_token` no se auto-sana (solo `meli.obtener_orden` lo hace, en un 401:
+  regla 8). Se reprocesaron con el token fresco: 172 escritas, 0 errores.
+- **La conexión MySQL se cayó** y esos 147 errores no quedaron en `fanout_log`
+  (la escritura a ML sí se intentó; lo que falló fue el registro). El log en
+  disco sí los tiene.
+
+Ninguna afectó lo escrito, pero las dos van a volver a morder en cualquier
+corrida larga: falta reintento con refresh de token y reconexión.
+
 
 ---
 
