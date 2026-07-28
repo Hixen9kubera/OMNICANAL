@@ -69,7 +69,16 @@ log = logging.getLogger("omnicanal.stock_full")
 #   "suma"   → las piezas regresaron a nuestro almacén
 #   None     → movimiento interno del marketplace: Woo no se entera
 EFECTO_EN_WOO: dict[str, str | None] = {
-    "TRANSFER_DELIVERY":     "resta",
+    # ÚNICO tipo que mete mercancía NUEVA a la bodega de ML (auditoría 27-jul:
+    # verificado en producción, 129 pzas en SANCORFASHION y 17 de CUNA-0018 con
+    # su `inbound_id`). Esas piezas SÍ salieron del almacén propio → resta.
+    "INBOUND_RECEPTION":     "resta",
+    # TRANSFER_* NO es "llegó mercancía": es un barajeo INTERNO de ML entre sus
+    # propios buckets (RESERVATION saca de `available` al bucket `transfer`,
+    # DELIVERY las regresa). Medido: 102 TRANSFER_DELIVERY en 60 inventarios y el
+    # `total` de la bodega NO cambió ni una sola vez. Mapearlo a "resta" habría
+    # desinflado Woo de forma monótona (−329 pzas solo en la muestra).
+    "TRANSFER_DELIVERY":     None,
     # RETIROS: NO suman a Woo. La mercancía sale de la bodega de ML pero va EN
     # TRÁNSITO hacia el almacén; todavía no está disponible. Cuando llegue, el
     # almacén la captura en Odoo (el restock SIEMPRE entra por Odoo) y de ahí
@@ -109,13 +118,24 @@ def solo_registro() -> bool:
 
 # ── Bitácora / idempotencia (reutiliza fanout_log: NO se crea tabla nueva) ────
 
+# Acciones que significan "el movimiento YA SE APLICÓ a Woo". Solo éstas sellan
+# la operación: si se registró un fallo (full_sospechoso, full_sin_sku, error de
+# Woo), la operación debe poder REINTENTARSE cuando ML la vuelva a avisar.
+# Antes bastaba cualquier fila `full_%`, así que un 502 del WAF de Hostinger
+# (pendiente #1) sellaba el movimiento y se perdía para siempre (auditoría 27-jul).
+_ACCIONES_APLICADAS = ("full_ingreso", "full_retiro", "fba_ingreso")
+
+
 def _ya_procesada(operacion_id: str) -> bool:
     from services import db, fanout_stock
     fanout_stock._asegurar_schema()
+    ph = ",".join(["%s"] * len(_ACCIONES_APLICADAS))
     try:
         r = db.fetch_one(
-            "SELECT id FROM fanout_log WHERE item_id=%s AND accion LIKE 'full_%%' LIMIT 1",
-            (str(operacion_id)[:64],))
+            f"""SELECT id FROM fanout_log
+                WHERE item_id=%s AND accion IN ({ph})
+                  AND (resultado IS NULL OR resultado NOT LIKE 'ERROR%%') LIMIT 1""",
+            (str(operacion_id)[:64], *_ACCIONES_APLICADAS))
         return bool(r)
     except Exception as exc:  # noqa: BLE001
         log.warning("stock_full idempotencia: %s", exc)
@@ -253,19 +273,25 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
                    f"{tipo} x{cantidad}: {aviso}")
         return {"ok": True, "accion": accion_reg, "tipo": tipo, "sku": sku}
 
-    # VERIFICACIÓN CRUZADA: la bodega de ML debe respaldar el movimiento.
-    respaldo = None
-    try:
-        ru = httpx.get(f"https://api.mercadolibre.com/inventories/{inventory_id}/stock/fulfillment",
-                       headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
-        if ru.status_code == 200:
-            respaldo = int(ru.json().get("total") or 0)
-    except Exception:  # noqa: BLE001
-        pass
-    if efecto == "resta" and (respaldo is None or respaldo < abs(cantidad)):
-        _registrar(sku, operacion_id, cuenta, "full_sospechoso", None, None,
-                   f"{tipo} x{cantidad}: la bodega de ML reporta {respaldo} — NO se tocó Woo")
-        return {"ok": False, "accion": "sospechoso", "sku": sku}
+    # VERIFICACIÓN CRUZADA — reescrita tras la auditoría del 27-jul.
+    # La versión vieja comparaba un NIVEL de stock (40-120 pzas) contra un DELTA
+    # (1-6): tautología que no bloqueó ninguna de 55 operaciones simuladas, y
+    # encima hacía un GET extra que devolvía el total ACTUAL, no el del momento.
+    # Ahora se usa el `result` que la PROPIA operación ya trae (foto exacta del
+    # instante) y se exige que el movimiento sea COHERENTE: un ingreso tiene que
+    # haber dejado el total al menos tan grande como las piezas que entraron.
+    resultado_op = op.get("result") or {}
+    total_tras = resultado_op.get("total")
+    if efecto == "resta":
+        if total_tras is None:
+            _registrar(sku, operacion_id, cuenta, "full_sospechoso", None, None,
+                       f"{tipo} x{cantidad}: la operación no trae `result.total` — NO se tocó Woo")
+            return {"ok": False, "accion": "sospechoso", "sku": sku}
+        if int(total_tras) < abs(cantidad):
+            _registrar(sku, operacion_id, cuenta, "full_sospechoso", None, None,
+                       f"{tipo} x{cantidad}: incoherente (total tras la operación = "
+                       f"{total_tras}) — NO se tocó Woo")
+            return {"ok": False, "accion": "sospechoso", "sku": sku}
 
     delta = -abs(cantidad) if efecto == "resta" else abs(cantidad)
     accion = "full_ingreso" if efecto == "resta" else "full_retiro"
@@ -316,8 +342,27 @@ async def revisar_fba() -> dict[str, Any]:
     if not token:
         return {"ok": False, "motivo": "sin token de Amazon"}
 
-    previos = {r["sku"]: int(r["stock_fba"] or 0) for r in db.fetch_all(
-        "SELECT sku, stock_fba FROM canal_inventario WHERE canal='amazon'")}
+    # FOTO PROPIA, no la de canal_inventario (auditoría 27-jul): esa columna la
+    # refresca el sync cada 15 min, así que tras descontar un ingreso el sync la
+    # actualizaba y en la vuelta siguiente el MISMO ingreso volvía a verse como
+    # nuevo → descuento repetido. La referencia es lo que ESTE vigilante vio la
+    # última vez, guardado en su propia bitácora (`fanout_log`, sin tabla nueva).
+    previos: dict[str, int] = {}
+    try:
+        for r in db.fetch_all(
+            """SELECT f.sku, f.resultado FROM fanout_log f
+               JOIN (SELECT sku, MAX(id) mx FROM fanout_log
+                     WHERE accion LIKE 'fba_%%' GROUP BY sku) u ON u.mx = f.id"""):
+            # el resultado guarda "FBA subió A→B (+N)…": la referencia es B
+            import re as _re
+            m = _re.search(r"→\s*(\d+)", str(r["resultado"] or ""))
+            if m:
+                previos[r["sku"]] = int(m.group(1))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("stock_full: sin foto previa de FBA (%s)", exc)
+    # Semilla para los SKUs que este vigilante nunca ha visto: el valor del sync.
+    for r in db.fetch_all("SELECT sku, stock_fba FROM canal_inventario WHERE canal='amazon'"):
+        previos.setdefault(r["sku"], int(r["stock_fba"] or 0))
     actuales: dict[str, int] = {}
     token_pag = None
     try:

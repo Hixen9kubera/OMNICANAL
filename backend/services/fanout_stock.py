@@ -138,20 +138,33 @@ def _stock_drop(sku: str) -> int | None:
 
 
 def _token_amazon() -> str | None:
-    """Token LWA de Amazon desde contexto síncrono (el del servicio es async)."""
+    """
+    Token LWA de Amazon desde contexto SÍNCRONO.
+
+    OJO (auditoría 27-jul): `asyncio.run()` revienta con RuntimeError si YA hay
+    un event loop corriendo, y el `loop.run_until_complete` del except tampoco
+    servía (no se puede correr un loop nuevo dentro del hilo de otro que está
+    activo). El vigilante de FBA vive en un AsyncIOScheduler → moría en CADA
+    ejecución y nunca llegó a correr. Se resuelve empujando la corrutina a un
+    HILO aparte con su propio loop cuando detectamos uno activo.
+    """
     import asyncio
+    from concurrent.futures import ThreadPoolExecutor
 
     from services import amazon
     try:
-        return asyncio.run(amazon._access_token())
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
+        asyncio.get_running_loop()
+    except RuntimeError:                      # no hay loop: camino simple
         try:
-            return loop.run_until_complete(amazon._access_token())
-        finally:
-            loop.close()
+            return asyncio.run(amazon._access_token())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("token Amazon: %s", exc)
+            return None
+    try:                                       # hay loop: hilo con loop propio
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(lambda: asyncio.run(amazon._access_token())).result(timeout=40)
     except Exception as exc:  # noqa: BLE001
-        log.warning("token Amazon: %s", exc)
+        log.warning("token Amazon (hilo aparte): %s", exc)
         return None
 
 
@@ -309,20 +322,11 @@ def _escribir_amazon(cuenta: str, sku: str, cantidad: int) -> tuple[bool, str]:
     canal DEFAULT (= MFN, nuestro almacén). Los FBA no se tocan (los filtra
     `_destinos`): esa bodega la administra Amazon.
     """
-    import asyncio
-
     import httpx
-    from services import amazon
-    try:
-        token = asyncio.run(amazon._access_token())
-    except RuntimeError:  # ya hay loop (llamado desde async): usar uno propio
-        loop = asyncio.new_event_loop()
-        try:
-            token = loop.run_until_complete(amazon._access_token())
-        finally:
-            loop.close()
-    except Exception as exc:  # noqa: BLE001
-        return False, f"token Amazon: {exc}"
+
+    # Mismo helper que la lectura: maneja el caso "ya hay event loop corriendo"
+    # (el `asyncio.run` directo reventaba ahí — auditoría 27-jul).
+    token = _token_amazon()
     if not token:
         return False, "sin token de Amazon"
     # El productType REAL del listing: la Listings API lo exige y un valor

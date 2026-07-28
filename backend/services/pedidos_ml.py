@@ -60,6 +60,12 @@ _ESPEJO_ORIGEN = {
 }
 
 _WC = f"{settings.wc_url.rstrip('/')}/wp-json/wc/v3"
+
+# Antigüedad a partir de la cual una venta se considera REGISTRO HISTÓRICO y ya
+# NO mueve bodega (su salida física ocurrió hace semanas). El desfase real medido
+# en los avisos tardíos de ML fue de 20 y 28 días; 5 días deja margen de sobra
+# para los avisos normales (que llegan en segundos) sin dejar pasar los viejos.
+DIAS_VENTA_VIEJA = 5
 _AUTH = (settings.wc_consumer_key, settings.wc_consumer_secret)
 
 # ML → WooCommerce. `paid` depende del envío: si ya llegó, el pedido está cerrado.
@@ -196,8 +202,28 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
     # EXCEPCIÓN: si el pedido nace ya CANCELADO, la bandera se omite — con ella
     # puesta, el hook de cancelación de Woo "devolvería" a bodega una pieza que
     # nunca salió de ahí (inventaría stock).
+    # VENTA VIEJA que se registra HOY por primera vez: NO debe mover bodega.
+    # ML manda avisos TARDÍOS del ciclo de vida (se midió +28 días al cerrar una
+    # orden y +20 al expirar una impaga). Esas ventas ya salieron del almacén hace
+    # semanas y ya están reflejadas en el stock actual — descontarlas otra vez es
+    # restar dos veces. Pasó el 27-jul: 10 pedidos de junio nacieron `completed`
+    # y bajaron 10 piezas reales (ACC-0250-NEG cayó 74→67 en 17 h), y el fan-out
+    # replicó fielmente cada baja a Amazon.
+    venta_vieja = False
+    try:
+        f = str(orden.get("fecha") or "")
+        if f:
+            dias = (datetime.now(timezone.utc)
+                    - datetime.fromisoformat(f).astimezone(timezone.utc)).days
+            venta_vieja = dias >= DIAS_VENTA_VIEJA
+            if venta_vieja:
+                log.info("Pedido %s: venta de hace %d días — se registra SIN mover stock",
+                         orden.get("id"), dias)
+    except Exception:  # noqa: BLE001 — sin fecha legible se trata como reciente
+        pass
+
     estado_final = forzar_estado or estado_wc(orden)
-    if (orden.get("es_full") or proteger_stock) and estado_final != "cancelled":
+    if (orden.get("es_full") or proteger_stock or venta_vieja) and estado_final != "cancelled":
         metas.append({"key": "_order_stock_reduced", "value": "yes"})
 
     return {

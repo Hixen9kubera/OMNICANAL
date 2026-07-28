@@ -2305,6 +2305,76 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
+### v0.24.0 — Correcciones de las DOS auditorías: descuento fantasma + tabla FULL reescrita
+
+Aplica lo que las auditorías adversariales del 27-28 jul dejaron confirmado.
+
+#### 🔴 Bug NUEVO que destapó la auditoría del fan-out: descuento FANTASMA
+
+**Mercado Libre manda avisos TARDÍOS del ciclo de vida** (medido: **+28 días** al
+cerrar una orden, **+20** al expirar una impaga). Esas ventas de junio se
+registraban en Woo por PRIMERA VEZ el 27-28 de julio: como no existía pedido
+previo, `accion == "creado"` → nacían `completed` **y descontaban stock**. Pero
+esa mercancía salió del almacén hace un mes y **ya estaba reflejada** en la carga
+de Odoo del 17-jul: se restó dos veces. Y el fan-out, haciendo bien su trabajo,
+**replicó cada baja a Amazon**.
+
+> `ACC-0250-NEG` cayó **74 → 67 en 17 horas** por 6 ventas del 29-30 de JUNIO, y
+> las 6 bajas se escribieron en Amazon (74→73→72→70→69→68→67).
+
+- **Fix**: `DIAS_VENTA_VIEJA = 5` — una venta con más de 5 días nace marcada
+  `_order_stock_reduced=yes`, igual que las FULL: se registra como histórico
+  **sin mover bodega**. El fan-out NO se tocó: es un espejo fiel de Woo, y taparlo
+  ahí dejaría Woo mal y Amazon bien (peor).
+- **Corrección de datos**: 10 pedidos afectados en 4 SKUs. Se devolvieron las
+  piezas y se alineó todo contra Odoo — `ACC-0250-NEG` volvió a **74 = Odoo**.
+
+#### 🔴 `stock_full`: la tabla de decisión estaba invertida
+
+- **`TRANSFER_DELIVERY` → `None`** (era el ÚNICO mapeado a `resta`). NO significa
+  "llegó mercancía": es un barajeo INTERNO de ML entre sus buckets. Medido: **102
+  operaciones en 60 inventarios y el `total` de la bodega no cambió NI UNA VEZ**.
+  Activarlo habría desinflado Woo de forma monótona (−329 pzas solo en la muestra).
+- **`INBOUND_RECEPTION` → `resta`** (NUEVO): es el ingreso REAL a FULL, verificado
+  en producción (129 pzas en SANCORFASHION, 17 de CUNA-0018 con su `inbound_id`).
+  Sin él, el hueco de las 1,526 pzas seguía abierto.
+
+#### 🟠 Las tres defensas que no defendían
+
+1. **Verificación cruzada**: comparaba un NIVEL de stock (40-120) contra un DELTA
+   (1-6) — tautología que no bloqueó **ninguna** de 55 operaciones simuladas.
+   Ahora usa el `result.total` que **la propia operación ya trae** (foto exacta
+   del instante) y exige coherencia, en vez de un GET posterior con el total actual.
+2. **Idempotencia**: sellaba operaciones que NO se aplicaron — con un 502 del WAF
+   de Hostinger (pendiente #1) el movimiento se perdía para siempre. Ahora solo
+   sellan las acciones realmente aplicadas y sin `ERROR`.
+3. **Vigilante de FBA**: moría en CADA ejecución (`asyncio.run` dentro del
+   AsyncIOScheduler) — **nunca corrió**. El token ahora se pide en un hilo con
+   loop propio cuando ya hay uno activo (verificado en vivo). El mismo bug estaba
+   en `_escribir_amazon` del fan-out. Además guarda **foto propia** en
+   `fanout_log`: antes se apoyaba en `canal_inventario.stock_fba`, que el sync
+   refresca cada 15 min → el mismo ingreso se habría descontado en cada vuelta.
+
+#### Qué dejó la auditoría del fan-out (lo que SÍ funciona)
+
+8 escrituras reales a Amazon, **0 errores**, verificadas contra SP-API
+(`ACC-0250-NEG` 67/67, `MES-0065-NEG` 2/2, `TEC-1031-NEG` 255/255). Cero fugas:
+las 15 ventas no-FULL generaron sus 15 eventos. Latencia 7-13 s. Sin eco.
+**5 de 8 sospechas fueron DESCARTADAS** por el verificador adversarial.
+
+Dato estructural: **el fan-out nunca ha escrito en Mercado Libre y hoy no puede**
+— no existe ni una publicación ML `active` + no-FULL (las 782 activas son FULL;
+las 2,308 no-FULL están pausadas; caché contrastado 16/16 contra ML en vivo). Hoy
+es un flujo **exclusivamente Amazon**, y cubre ~40% de su catálogo vivo (el resto
+está DISCOVERABLE = dormido y se omite a propósito).
+
+#### Estado
+
+`FULL_WATCH_ENABLED` sigue **apagado**; `FULL_WATCH_SOLO_REGISTRO` en `true`.
+El fan-out DROP sigue **encendido y escribiendo**. Versión 0.24.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
