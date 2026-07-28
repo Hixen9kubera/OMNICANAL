@@ -121,6 +121,22 @@ def iniciar() -> None:
         )
         log.info("Vigilante de Odoo cada %s min (auto_push=%s).",
                  settings.odoo_watch_min, settings.odoo_watch_auto_push)
+    # Vigilante de inventario: Odoo --(delta)--> Woo --(cualquier cambio)-->
+    # canales. Ver services/stock_watch.py. Nace apagado y en solo-registro.
+    if getattr(settings, "stock_watch_enabled", False) and settings.mysql_enabled:
+        from services import stock_watch
+        _scheduler.add_job(
+            stock_watch.revisar,
+            "interval",
+            minutes=settings.stock_watch_min,
+            id="stock_watch",
+            next_run_time=datetime.now() + timedelta(seconds=180),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Vigilante de inventario cada %s min (solo_registro=%s, tope=%s).",
+                 settings.stock_watch_min, settings.stock_watch_solo_registro,
+                 settings.stock_watch_tope)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no

@@ -252,7 +252,23 @@ class Settings(BaseSettings):
     # después de la carga inicial Odoo→Woo).
     odoo_watch_enabled: bool = True
     odoo_watch_min: int = 30
+    # OJO: su empuje manda el VALOR ABSOLUTO de Odoo. Desde que Woo es la fuente
+    # de verdad de las ventas (17-jul) eso RESUCITA mercancía vendida. El empuje
+    # correcto (por DELTA) vive en `stock_watch`; esto se queda apagado.
     odoo_watch_auto_push: bool = False
+
+    # ── Vigilante de inventario Odoo → Woo → canales (stock_watch.py) ─
+    # Cierra el círculo: Odoo aporta DELTAS a Woo (nunca su valor absoluto, que
+    # resucitaría lo vendido) y CUALQUIER cambio de stock en Woo se replica a
+    # los canales por el fan-out. Foto-contra-foto: no se puede evadir.
+    # Nace APAGADO: encenderlo MUEVE INVENTARIO REAL (regla 3 de CLAUDE.md).
+    stock_watch_enabled: bool = False
+    stock_watch_min: int = 20
+    # MODO OBSERVACIÓN (default True): anota lo que haría sin tocar nada.
+    stock_watch_solo_registro: bool = True
+    # CORTACIRCUITOS: si una pasada ve más cambios que esto, NO aplica nada y
+    # avisa. Una edición masiva en Odoo no puede vaciar todos los canales.
+    stock_watch_tope: int = 300
 
     # ── Notificador de alertas a Slack (services/alertas.py) ───
     # Webhook entrante amarrado al canal #alertas-omnicanal. Sin URL, el

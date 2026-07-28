@@ -81,3 +81,37 @@ def encolar(sku: str = Query(..., description="SKU a encolar"),
     return {"ok": True, "sku": sku,
             "habilitado": fanout_stock.habilitado(),
             "dry_run": fanout_stock.dry_run()}
+
+
+@router.get("/inventario/estado")
+def inventario_estado():
+    """Vigilante de inventario (Odoo →delta→ Woo →cambio→ canales)."""
+    from services import stock_watch
+    return stock_watch.estado()
+
+
+@router.post("/inventario/revisar")
+async def inventario_revisar(
+    forzar: bool = Query(False, description="Corre aunque esté apagado / pase el tope")
+):
+    """
+    Dispara una pasada del vigilante de inventario a mano.
+
+    `forzar=true` sirve para dos cosas: correrlo estando apagado (una pasada en
+    solo-registro es inocua) y saltarse el cortacircuitos cuando el volumen de
+    cambios es REAL y ya se revisó.
+    """
+    from services import stock_watch
+    return await stock_watch.revisar(forzar=forzar)
+
+
+@router.get("/inventario/pendientes")
+def inventario_pendientes(limite: int = Query(50, ge=1, le=500)):
+    """Lo que el vigilante de inventario propuso/aplicó, más reciente primero."""
+    from services import db
+    filas = db.fetch_all(
+        """SELECT ts, sku, accion, motivo, resultado, dry_run FROM fanout_log
+           WHERE accion IN ('odoo_delta','odoo_delta_registro','woo_cambio',
+                            'woo_cambio_registro','stock_watch_freno')
+           ORDER BY id DESC LIMIT %s""", (limite,))
+    return {"eventos": filas, "total": len(filas)}

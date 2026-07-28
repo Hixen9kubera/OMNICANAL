@@ -2373,6 +2373,81 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
+### v0.26.0 — Vigilante de inventario: Odoo →delta→ Woo →cambio→ canales
+
+Cierra el círculo del inventario. La auditoría de la sincronización Odoo→Woo
+(v0.25.0) dejó ver que "todo sincronizado" era imposible por dos huecos:
+
+**1. El fan-out solo se disparaba con VENTAS.** Verificado: sus únicos
+disparadores automáticos eran `pedidos_ml` y `stock_full` — y éste último está
+apagado. Cuando llegaron 198 piezas de `CUNA-0018-MET` a Odoo y se empujaron a
+Woo, **ningún canal se enteró**. Es el mismo hueco del *ratchet* que dejó la
+auditoría anterior: el fan-out podía llevar una publicación a 0 pero nunca
+revivirla al volver mercancía.
+
+**2. El empuje Odoo→Woo mandaba el VALOR ABSOLUTO.** Correcto cuando Odoo era el
+maestro; desde el 17-jul **Woo es la fuente de verdad de las VENTAS** y Odoo ya
+no registra esas bajas. Poner `Woo = Odoo` le devuelve el stock a lo que Woo bajó
+*porque vendió*: **resucita mercancía vendida**. Por eso `odoo_watch.auto_push`
+llevaba meses apagado — el candado era correcto, lo que estaba mal era el empuje.
+
+#### La idea: Odoo es un ORIGEN DE CAMBIOS, no el valor verdadero
+
+Woo conserva su absoluto (que trae las ventas) y Odoo aporta solo su **delta**
+(llegaron 50, salieron 17 a FULL). Si Odoo no cambia, Woo no se toca — el
+escenario de resurrección **no puede ocurrir por construcción**.
+
+```
+Odoo ──(delta)──► Woo ──(cualquier cambio)──► Amazon / ML   [vía fan-out]
+```
+
+El segundo tramo se dispara con **cualquier** cambio de stock en Woo contra la
+foto anterior: venta, delta de Odoo, ingreso a FULL, la compensación FULL/FBA o
+una edición a mano en wp-admin. Al ser foto-contra-foto **no se puede evadir**,
+que es la diferencia con enganchar cada escritor uno por uno.
+
+Probado en vivo con la simulación de los dos caminos: `HERR-0303-MET` con Odoo
+460→500 propone **Woo 500 → 540**, no "Woo = 500". El empuje absoluto se habría
+comido las 40 piezas que llegaron.
+
+#### Candados (nace apagado; encenderlo MUEVE INVENTARIO REAL)
+
+- `STOCK_WATCH_ENABLED=false` — no corre.
+- `STOCK_WATCH_SOLO_REGISTRO=true` — anota lo que haría, sin escribir.
+- `STOCK_WATCH_TOPE=300` — **cortacircuitos**: si una pasada ve más cambios que
+  el tope, NO aplica nada y avisa. Una edición masiva en Odoo (o un Odoo que
+  responde vacío) no puede vaciar todos los canales de un golpe. Se salta con
+  `?forzar=true` cuando el volumen ya se revisó y es real.
+- **Odoo mudo ≠ todo en cero**: si `listar_catalogo` viene vacío se aborta la
+  pasada. (La lección de "DESCONOCIDO ≠ 0" del dry-run de Amazon.)
+- La **primera pasada solo levanta la foto base** y nunca escribe.
+- En solo-registro la foto **no absorbe lo pendiente**: si absorbiera, un delta
+  observado desaparecería y al pasar a modo vivo esas piezas no se aplicarían
+  nunca. Lo detectó la prueba de las dos pasadas.
+
+`odoo_watch` conserva su campana intacta, pero su `auto_push` (absoluto) ahora se
+niega a correr si el vigilante nuevo está encendido: se pisarían entre sí.
+
+#### Cobertura
+
+La foto de `odoo_watch` vive en `productos.stock_odoo`, que solo cubre **5,381**
+SKUs (tabla legada del robot, congelada). Ésta cubre el catálogo completo:
+**13,000 de Odoo / 14,422 de Woo — 14,518 SKUs** en la foto, 33 s por pasada.
+
+**Tabla nueva**: `stock_watch_foto` (sku, stock_woo, stock_odoo, actualizado).
+Es **temporal** y regenerable — borrarla hace que la siguiente pasada levante la
+foto base sola, sin escribir. Queda anotada junto con `fanout_log` en
+[docs/TABLAS_TEMPORALES.md](docs/TABLAS_TEMPORALES.md), el registro para el
+borrado al cerrar la migración.
+
+#### Panel
+
+`GET /api/fanout/inventario/estado` · `POST /api/fanout/inventario/revisar` ·
+`GET /api/fanout/inventario/pendientes`. Todo se anota en `fanout_log` con
+acciones propias (`odoo_delta`, `woo_cambio`, `stock_watch_freno`).
+
+---
+
 ### v0.25.0 — La protección de stock FULL/FBA nunca se guardó: ahora se COMPENSA
 
 Auditando la sincronización Odoo→Woo con el fan-out ya encendido apareció un SKU

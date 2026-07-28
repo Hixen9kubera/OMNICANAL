@@ -151,8 +151,18 @@ async def revisar() -> dict[str, Any]:
         await asyncio.to_thread(_guardar_foto, [(s, q) for s, q, _ in cambios])
         await asyncio.to_thread(_avisar_campana, cambios)
     empujados = 0
+    # CANDADO (28-jul): este empuje manda el VALOR ABSOLUTO de Odoo. Desde que
+    # Woo es la fuente de verdad de las VENTAS, eso le devuelve el stock a lo que
+    # Woo bajó PORQUE VENDIÓ (resucita mercancía vendida). El empuje correcto es
+    # por DELTA y vive en `stock_watch`; si aquél está encendido, éste NO corre
+    # (además se pisarían entre sí).
     if cambios and settings.odoo_watch_auto_push:
-        empujados = await _empujar_a_woo([(s, q) for s, q, _ in cambios])
+        if getattr(settings, "stock_watch_enabled", False):
+            log.warning("odoo_watch: auto_push IGNORADO — stock_watch está encendido "
+                        "y empuja por delta (este empuje es absoluto y resucitaría "
+                        "mercancía vendida).")
+        else:
+            empujados = await _empujar_a_woo([(s, q) for s, q, _ in cambios])
 
     _ultimo.update(
         estado="ok", ts=time.time(), segundos=round(time.time() - t0, 1),

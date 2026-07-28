@@ -1,0 +1,317 @@
+"""
+Vigilante de inventario: cierra el círculo Odoo → Woo → canales.
+
+POR QUÉ EXISTE (28-jul). La auditoría de la sincronización Odoo→Woo dejó ver dos
+huecos que hacían imposible el "todo sincronizado":
+
+1. **El fan-out solo se dispara con VENTAS.** Cuando llegan 198 piezas a Odoo y
+   se empujan a Woo, ningún canal se entera: Amazon y ML se quedan como estaban.
+   (Verificado: los únicos disparadores vivos eran `pedidos_ml` y `stock_full`,
+   y éste último está apagado.) De paso, eso dejaba el *ratchet*: el fan-out
+   podía llevar una publicación a 0 pero nunca revivirla al volver mercancía.
+
+2. **El sync Odoo→Woo empuja el VALOR ABSOLUTO.** Eso era correcto cuando Odoo
+   era el maestro, pero desde el 17-jul **Woo es la fuente de verdad de las
+   VENTAS** y Odoo ya no registra esas bajas. Poner `Woo = Odoo` le devuelve el
+   stock a lo que Woo bajó PORQUE VENDIÓ: resucita mercancía vendida. Es
+   exactamente por eso que `odoo_watch.auto_push` seguía apagado.
+
+La solución es tratar a Odoo como un ORIGEN DE CAMBIOS, no como el valor
+verdadero: Woo conserva su absoluto (que trae las ventas) y Odoo aporta solo su
+DELTA (llegaron 50, salieron 17 a FULL). Si Odoo no cambia, Woo no se toca, así
+que el escenario de resurrección **no puede ocurrir por construcción**.
+
+    Odoo ──(delta)──► Woo ──(cualquier cambio)──► Amazon / ML   [vía fan-out]
+
+El segundo tramo se dispara con CUALQUIER cambio de stock en Woo comparado
+contra la foto anterior, venga de donde venga: venta, delta de Odoo, ingreso a
+FULL, la compensación FULL/FBA o una edición a mano en wp-admin. Al ser
+foto-contra-foto **no se puede evadir**, que es la diferencia con enganchar cada
+escritor uno por uno.
+
+COBERTURA: la foto de `odoo_watch` vive en `productos.stock_odoo`, que solo cubre
+5,381 SKUs (tabla legada del robot, congelada). Ésta cubre el catálogo completo
+(13,000 de Odoo / 14,422 de Woo), por eso guarda su propia foto.
+
+CANDADOS (nace apagado; encenderlo MUEVE INVENTARIO REAL — regla 3):
+  · `STOCK_WATCH_ENABLED=false`      — no corre.
+  · `STOCK_WATCH_SOLO_REGISTRO=true` — clasifica y ANOTA lo que haría, sin escribir.
+  · `STOCK_WATCH_TOPE=300`           — cortacircuitos: si una pasada ve más
+    cambios que el tope, NO aplica nada y avisa. Una edición masiva en Odoo (o un
+    Odoo que responde vacío) no puede vaciar todos los canales de un golpe.
+  · La PRIMERA pasada solo levanta la foto base: nunca escribe.
+
+Todo queda anotado en `fanout_log` (misma bitácora del panel; TABLA TEMPORAL,
+ver docs/TABLAS_TEMPORALES.md).
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone
+from typing import Any
+
+from config import settings
+from services import db
+
+log = logging.getLogger("omnicanal.stock_watch")
+
+# TABLA TEMPORAL — se borra al cerrar la migración (docs/TABLAS_TEMPORALES.md)
+_TABLA = "stock_watch_foto"
+
+_ultimo: dict[str, Any] = {"estado": "sin_correr"}
+_lock = asyncio.Lock()
+
+
+def habilitado() -> bool:
+    return bool(getattr(settings, "stock_watch_enabled", False))
+
+
+def solo_registro() -> bool:
+    return bool(getattr(settings, "stock_watch_solo_registro", True))
+
+
+def tope() -> int:
+    return int(getattr(settings, "stock_watch_tope", 300) or 300)
+
+
+def estado() -> dict[str, Any]:
+    return {**_ultimo, "habilitado": habilitado(),
+            "solo_registro": solo_registro(), "tope": tope()}
+
+
+def _asegurar_schema() -> None:
+    with db.get_cursor() as cur:
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_TABLA} (
+                sku          VARCHAR(64)  NOT NULL PRIMARY KEY,
+                stock_woo    INT          NULL,
+                stock_odoo   INT          NULL,
+                actualizado  DATETIME     NOT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+
+
+def _foto() -> dict[str, dict[str, int | None]]:
+    try:
+        return {r["sku"]: {"woo": r["stock_woo"], "odoo": r["stock_odoo"]}
+                for r in db.fetch_all(f"SELECT sku, stock_woo, stock_odoo FROM {_TABLA}")}
+    except Exception:  # noqa: BLE001 — tabla aún no creada
+        return {}
+
+
+def _guardar_foto(filas: list[tuple[str, int | None, int | None]]) -> None:
+    if not filas:
+        return
+    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+    with db.get_cursor() as cur:
+        for i in range(0, len(filas), 500):
+            lote = filas[i:i + 500]
+            cur.executemany(
+                f"""INSERT INTO {_TABLA} (sku, stock_woo, stock_odoo, actualizado)
+                    VALUES (%s,%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE stock_woo=VALUES(stock_woo),
+                        stock_odoo=VALUES(stock_odoo), actualizado=VALUES(actualizado)""",
+                [(s, w, o, ahora) for s, w, o in lote])
+
+
+def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
+    """Bitácora en `fanout_log` (la que ya pinta el Dashboard)."""
+    try:
+        from services import fanout_stock
+        fanout_stock._asegurar_schema()
+        with db.get_cursor() as cur:
+            cur.execute(
+                """INSERT INTO fanout_log
+                   (ts, sku, motivo, dry_run, stock_drop, objetivo, canal, cuenta,
+                    item_id, accion, stock_canal, resultado, ms)
+                   VALUES (%s,%s,%s,%s,NULL,NULL,%s,%s,NULL,%s,NULL,%s,0)""",
+                (datetime.now(timezone.utc).replace(tzinfo=None), sku[:64], motivo[:255],
+                 1 if solo_registro() else 0, "woocommerce", "ODOO", accion, resultado[:255]))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("stock_watch: no se pudo anotar %s: %s", sku, exc)
+
+
+def _leer_woo() -> dict[str, dict[str, Any]]:
+    """Stock actual de TODO el catálogo de Woo (una sola consulta)."""
+    from services import wp_db
+    P = wp_db._prefix()
+    fuera: dict[str, dict[str, Any]] = {}
+    for r in wp_db._fetch_all(
+        f"""SELECT sk.meta_value sku, st.meta_value stock, p.ID, p.post_type, p.post_parent
+            FROM {P}postmeta sk
+            JOIN {P}posts p ON p.ID = sk.post_id
+                 AND p.post_type IN ('product','product_variation')
+                 AND p.post_status <> 'trash'
+            LEFT JOIN {P}postmeta st ON st.post_id = p.ID AND st.meta_key = '_stock'
+            WHERE sk.meta_key = '_sku' AND sk.meta_value <> ''"""):
+        s = (r["sku"] or "").strip()
+        if not s:
+            continue
+        try:
+            v = int(float(r["stock"])) if r["stock"] not in (None, "") else None
+        except (TypeError, ValueError):
+            v = None
+        fuera[s] = {"stock": v, "id": r["ID"], "tipo": r["post_type"],
+                    "padre": r["post_parent"]}
+    return fuera
+
+
+async def _escribir_woo(cambios: list[tuple[str, int, dict]]) -> int:
+    """Aplica los destinos calculados a Woo por REST (nunca DML sobre wp_*)."""
+    from services import woocommerce
+    simples, variaciones = [], {}
+    for _sku, destino, w in cambios:
+        upd = {"id": w["id"], "manage_stock": True, "stock_quantity": destino}
+        if w["tipo"] == "product_variation" and w["padre"]:
+            variaciones.setdefault(w["padre"], []).append(upd)
+        else:
+            simples.append(upd)
+    hechos = 0
+    async with woocommerce._client() as cli:
+        for i in range(0, len(simples), 50):
+            lote = simples[i:i + 50]
+            try:
+                r = await cli.post("/products/batch", json={"update": lote}, timeout=300.0)
+                if r.status_code in (200, 201):
+                    hechos += len(lote)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stock_watch: batch simples falló: %s", exc)
+            await asyncio.sleep(0.5)
+        for padre, lote in variaciones.items():
+            try:
+                r = await cli.post(f"/products/{padre}/variations/batch",
+                                   json={"update": lote}, timeout=300.0)
+                if r.status_code in (200, 201):
+                    hechos += len(lote)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stock_watch: batch variaciones de %s falló: %s", padre, exc)
+            await asyncio.sleep(0.5)
+    return hechos
+
+
+async def revisar(forzar: bool = False) -> dict[str, Any]:
+    """Una pasada completa. La corre el scheduler; también sirve a mano."""
+    if not habilitado() and not forzar:
+        return {"estado": "apagado"}
+    if _lock.locked():
+        return {"estado": "ya_corriendo"}
+
+    async with _lock:
+        t0 = time.time()
+        await asyncio.to_thread(_asegurar_schema)
+        from services import odoo, fanout_stock
+
+        catalogo = await asyncio.to_thread(odoo.listar_catalogo)
+        if not catalogo:
+            # Odoo mudo: NO se interpreta como "todo en cero" (eso vaciaría el
+            # catálogo entero). Se aborta la pasada.
+            _ultimo.update(estado="odoo_sin_respuesta", ts=time.time())
+            return dict(_ultimo)
+        od = {(p.get("sku") or "").strip(): max(0, int(float(p.get("stock") or 0)))
+              for p in catalogo if (p.get("sku") or "").strip()}
+        wo = await asyncio.to_thread(_leer_woo)
+        foto = await asyncio.to_thread(_foto)
+
+        # ── PRIMERA PASADA: solo levantar la base, nunca escribir ──────────
+        if not foto:
+            filas = [(s, w["stock"], od.get(s)) for s, w in wo.items()]
+            for s in od:
+                if s not in wo:
+                    filas.append((s, None, od[s]))
+            await asyncio.to_thread(_guardar_foto, filas)
+            _ultimo.update(estado="foto_base", ts=time.time(), skus=len(filas),
+                           segundos=round(time.time() - t0, 1),
+                           nota="Primera pasada: solo se guardó la foto base. No se escribió nada.")
+            log.info("stock_watch: foto base levantada con %d SKUs (sin escribir)", len(filas))
+            return dict(_ultimo)
+
+        # ── 1) DELTAS DE ODOO → Woo ───────────────────────────────────────
+        deltas: list[tuple[str, int, dict]] = []
+        for sku, ahora_od in od.items():
+            ant = foto.get(sku, {}).get("odoo")
+            w = wo.get(sku)
+            if ant is None or w is None or w["stock"] is None or ahora_od == ant:
+                continue
+            delta = ahora_od - ant
+            destino = max(0, w["stock"] + delta)
+            if destino != w["stock"]:
+                deltas.append((sku, destino, w))
+
+        # ── 2) CAMBIOS DE WOO (venga de donde venga) → canales ────────────
+        movidos_woo: list[tuple[str, int | None, int | None]] = []
+        for sku, w in wo.items():
+            ant = foto.get(sku, {}).get("woo")
+            if ant is not None and w["stock"] is not None and w["stock"] != ant:
+                movidos_woo.append((sku, ant, w["stock"]))
+
+        total = len(deltas) + len(movidos_woo)
+        # ── CORTACIRCUITOS ────────────────────────────────────────────────
+        if total > tope() and not forzar:
+            msg = (f"{total} cambios en una pasada (tope {tope()}). NO se aplicó nada. "
+                   f"Odoo={len(deltas)} Woo={len(movidos_woo)}. Revisar y forzar si es real.")
+            log.error("stock_watch: %s", msg)
+            await asyncio.to_thread(_anotar, "*", "stock_watch_freno", "cortacircuitos", msg)
+            _ultimo.update(estado="frenado", ts=time.time(), cambios=total,
+                           odoo_deltas=len(deltas), woo_cambios=len(movidos_woo), nota=msg)
+            return dict(_ultimo)
+
+        # ── APLICAR ───────────────────────────────────────────────────────
+        escritos = 0
+        if deltas and not solo_registro():
+            escritos = await _escribir_woo(deltas)
+        for sku, destino, w in deltas[:200]:
+            await asyncio.to_thread(
+                _anotar, sku, "odoo_delta" if not solo_registro() else "odoo_delta_registro",
+                f"delta de Odoo (foto {foto.get(sku, {}).get('odoo')} -> {od[sku]})",
+                f"Woo {w['stock']} -> {destino}")
+
+        encolados = 0
+        for sku, ant, ahora_wo in movidos_woo:
+            await asyncio.to_thread(
+                _anotar, sku, "woo_cambio" if not solo_registro() else "woo_cambio_registro",
+                "cambio de stock en Woo", f"{ant} -> {ahora_wo} (replicar a canales)")
+            if not solo_registro():
+                fanout_stock.encolar(sku, motivo="cambio de stock en Woo")
+                encolados += 1
+
+        # ── GUARDAR FOTO ──────────────────────────────────────────────────
+        # Aplicado: la foto del SKU tocado es su destino y Odoo queda absorbido.
+        #
+        # SOLO REGISTRO: la foto NO absorbe lo pendiente. Si absorbiera, un delta
+        # de Odoo observado en modo registro desaparecería (la siguiente pasada
+        # calcularía delta 0) y al pasar a modo vivo esas piezas ya no se
+        # aplicarían NUNCA. Conservando el valor viejo, lo pendiente sigue
+        # pendiente y la transición registro → vivo no pierde nada. El costo es
+        # que la bitácora repite la propuesta cada pasada, que es la verdad:
+        # sigue sin aplicarse.
+        pend_odoo = {s for s, _, _ in deltas}
+        pend_woo = {s for s, _, _ in movidos_woo}
+        destinos = {s: d for s, d, _ in deltas} if not solo_registro() else {}
+        filas = []
+        for s, w in wo.items():
+            if solo_registro():
+                v_woo = foto[s]["woo"] if s in pend_woo and s in foto else w["stock"]
+                v_odoo = foto[s]["odoo"] if s in pend_odoo and s in foto else od.get(s)
+            else:
+                v_woo, v_odoo = destinos.get(s, w["stock"]), od.get(s)
+            filas.append((s, v_woo, v_odoo))
+        for s in od:
+            if s not in wo:
+                filas.append((s, None, od[s]))
+        await asyncio.to_thread(_guardar_foto, filas)
+
+        _ultimo.update(
+            estado="ok", ts=time.time(), segundos=round(time.time() - t0, 1),
+            skus_odoo=len(od), skus_woo=len(wo),
+            odoo_deltas=len(deltas), woo_escritos=escritos,
+            woo_cambios=len(movidos_woo), encolados=encolados,
+            solo_registro=solo_registro(),
+            muestra=[f"{s}: Woo {w['stock']}→{d}" for s, d, w in deltas[:6]]
+                    + [f"{s}: Woo {a}→{b} → canales" for s, a, b in movidos_woo[:6]])
+        if total:
+            log.info("stock_watch: %d deltas de Odoo (%d escritos) · %d cambios de Woo "
+                     "(%d encolados)%s", len(deltas), escritos, len(movidos_woo), encolados,
+                     " [SOLO REGISTRO]" if solo_registro() else "")
+        return dict(_ultimo)
