@@ -2373,6 +2373,57 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
+### v0.28.0 — Fan-out DROP de Mercado Libre: la pausa deja de ser un muro
+
+Faltaba el canal más grande. El fan-out ya replicaba stock a Amazon, pero de ML
+solo podía tocar **32 publicaciones**: las 2,278 DROP restantes están PAUSADAS, y
+escribirles stock las REACTIVA (ML lo avisa; pasó con CAM-0030 el 24-jul). Como
+Brandon pidió que todas se queden pausadas, el fan-out las omitía por diseño.
+
+#### El hallazgo
+
+Mandar `status` **junto con** `available_quantity` en la MISMA petición: ML
+respeta el estado explícito y solo cambia la cantidad.
+
+```
+PUT /items/MLM…  {"available_quantity": 75, "status": "paused"}
+→ 200 · sub_status sigue en paused_by_seller · stock actualizado
+```
+
+Probado en las DOS cuentas antes de escribir una línea de código. También se
+probó `PUT /user-products/{id}/stock` (el endpoint de inventario): **404**, es
+solo de lectura.
+
+#### Cómo quedó
+
+- El estado se **LEE antes de escribir**, nunca se asume: mandar `paused` a
+  ciegas PAUSARÍA una publicación activa — el desastre opuesto.
+- **Verificación posterior**: si a pesar del blindaje despertara, se re-pausa en
+  el acto y queda anotado en la bitácora.
+- Solo entran `active` y `paused`. `under_review`, `closed` e `inactive` siguen
+  fuera a propósito: ahí manda ML, no nosotros.
+- FULL sigue intocable (esa bodega es del marketplace).
+
+#### Lo que destapó
+
+De **2,310** publicaciones ML DROP sincronizables, **706 están desalineadas**
+contra Woo:
+
+| | pubs | piezas |
+|---|---|---|
+| ML ofrece de MÁS (sobreventa el día que se reactiven) | 538 | 51,263 |
+| ML ofrece de MENOS (venta perdida) | 168 | 24,969 |
+
+Casos gruesos: `TEC-0991-BLN-AIR` con **10,000 en ML y 5,000 en Woo** en ambas
+cuentas; `ORG-0781-AZL-ROS-VER` 7,200 vs 2,300. Al estar pausadas hoy no venden,
+así que el riesgo no es de hoy: es del día que se reactiven con el stock rancio.
+
+El fan-out las corrige **conforme se van tocando** (una venta, un cambio en Woo,
+un delta de Odoo). La alineación de golpe de las 706 es una escritura masiva a un
+canal vivo y espera el dale de Brandon.
+
+---
+
 ### v0.27.0 — Vigilante de inventario: Odoo →delta→ Woo →cambio→ canales
 
 Cierra el círculo del inventario. La auditoría de la sincronización Odoo→Woo

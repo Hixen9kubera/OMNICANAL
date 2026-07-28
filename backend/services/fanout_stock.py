@@ -19,10 +19,15 @@ DECISIONES DE DISEÑO (cada una nace de un incidente real o de una regla viva):
      corrige). Con deltas ("resta 1") un duplicado descuadra el inventario para
      siempre — y ML manda webhooks EN RÁFAGA (regla 6 de CLAUDE.md).
 
-  2. SOLO PUBLICACIONES `active`. Escribir stock/precio a una publicación
-     PAUSADA la REACTIVA (ML avisa: "se reactivaron porque hiciste cambios en su
-     stock o estado"; pasado real con CAM-0030 el 2026-07-24). Además una
-     pausada no vende: no necesita stock.
+  2. LA PAUSA SE RESPETA SIEMPRE. Escribir SOLO stock a una publicación PAUSADA
+     la REACTIVA (ML avisa: "se reactivaron porque hiciste cambios en su stock o
+     estado"; pasado real con CAM-0030 el 2026-07-24), y Brandon pidió que todas
+     se queden pausadas. Durante meses eso las dejó fuera del fan-out.
+     Desde el 28-jul SÍ se sincronizan las PAUSADAS de ML DROP: mandando
+     `status` junto al stock en la misma petición, ML respeta el estado y solo
+     cambia la cantidad (probado en ambas cuentas). El estado se LEE antes de
+     escribir — mandar `paused` a ciegas pausaría una activa. `under_review`,
+     `closed` e `inactive` siguen fuera: ahí manda ML, no nosotros.
 
   3. SOLO ítems NO-FULL. Las piezas de FULL/FBA viven en la bodega del
      marketplace, no son del almacén compartido, y ML no deja fijarles cantidad.
@@ -68,6 +73,15 @@ _EVENTOS_MAX = 300     # ring buffer para la pantalla de monitoreo
 # publica) y WooCommerce `publish`. Sin esta normalización el fan-out ignoraba
 # las 1,616 publicaciones vivas de Amazon — que son el destino DROP más grande.
 _SITUACIONES_VIVAS = {"active", "published", "publish"}
+
+# ML PAUSADO que SÍ se sincroniza (solo DROP; el FULL nunca se toca). Una pausada
+# no vende, así que no hay riesgo de sobreventa — pero sí lo hay el día que
+# Brandon la reactive con el stock rancio. Se puede escribir SIN despertarla
+# mandando `status` junto a `available_quantity` (probado 28-jul en ambas
+# cuentas: HTTP 200, `paused_by_seller` intacto y el stock actualizado).
+# `under_review`, `closed` e `inactive` quedan FUERA a propósito: ahí ML decide,
+# no nosotros, y escribirles puede alterar la revisión.
+_SITUACIONES_PAUSADAS = {"paused"}
 
 _pendientes: dict[str, dict[str, Any]] = {}   # sku → {listo_en, motivo, encolado}
 _lock = threading.Lock()
@@ -264,6 +278,11 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
         motivo = None
         if es_full:
             motivo = "FULL/FBA (bodega del marketplace, no se toca)"
+        elif canal == "mercado_libre" and situacion in _SITUACIONES_PAUSADAS:
+            # DROP pausado: SÍ se sincroniza. Mandar `status` junto al stock
+            # conserva la pausa (ver `_escribir_ml`). Sin ese blindaje ML la
+            # reactivaría, que es lo que bloqueaba estas 2,278 publicaciones.
+            pass
         elif situacion not in _SITUACIONES_VIVAS:
             motivo = f"situacion={situacion or 'desconocida'} (escribirle la REACTIVARÍA)"
         elif not identificador:
@@ -294,21 +313,62 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
 # ── Escritores por canal (solo se usan FUERA de dry-run) ─────────────────────
 
 def _escribir_ml(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
-    """PUT del stock a una publicación de Mercado Libre."""
+    """
+    PUT del stock a una publicación de Mercado Libre.
+
+    BLINDAJE DE LA PAUSA (28-jul). Escribir solo `available_quantity` a una
+    publicación PAUSADA la REACTIVA — ML lo avisa ("se reactivaron porque hiciste
+    cambios en su stock o estado"; pasó de verdad con CAM-0030 el 24-jul). Como
+    Brandon pidió que TODAS se queden pausadas, eso dejaba 2,278 publicaciones
+    DROP sin sincronizar.
+
+    La salida: mandar `status` JUNTO con el stock en la MISMA petición. ML
+    respeta el estado explícito y solo cambia la cantidad. Probado en las dos
+    cuentas (28-jul): HTTP 200, `sub_status` sigue en `paused_by_seller` y el
+    stock quedó actualizado.
+
+    El estado se LEE antes de escribir, nunca se asume: mandar `paused` a ciegas
+    PAUSARÍA una publicación activa, que sería el desastre opuesto. Si no se
+    puede leer, se escribe sin `status` solo cuando ya sabíamos que estaba activa.
+    """
     import httpx
     from services import meli
     token = meli._access_token(cuenta)
     if not token:
         return False, f"sin token de {cuenta}"
+    cab = {"Authorization": f"Bearer {token}"}
+    payload: dict[str, Any] = {"available_quantity": int(cantidad)}
+    estado_previo = None
+    try:
+        g = httpx.get(f"https://api.mercadolibre.com/items/{item_id}",
+                      headers=cab, params={"attributes": "status,sub_status"},
+                      timeout=30.0)
+        if g.status_code == 200:
+            estado_previo = (g.json() or {}).get("status")
+    except Exception:  # noqa: BLE001 — sin lectura se escribe sin `status`
+        pass
+    if estado_previo == "paused":
+        payload["status"] = "paused"     # sin esto, ML la despierta
     try:
         r = httpx.put(
             f"https://api.mercadolibre.com/items/{item_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"available_quantity": int(cantidad)}, timeout=30.0,
+            headers=cab, json=payload, timeout=30.0,
         )
-        if r.status_code == 200:
+        if r.status_code != 200:
+            return False, f"HTTP {r.status_code}: {r.text[:120]}"
+        if estado_previo != "paused":
             return True, "ok"
-        return False, f"HTTP {r.status_code}: {r.text[:120]}"
+        # Verificación: si a pesar del blindaje despertó, se re-pausa YA.
+        try:
+            v = httpx.get(f"https://api.mercadolibre.com/items/{item_id}",
+                          headers=cab, params={"attributes": "status"}, timeout=30.0)
+            if v.status_code == 200 and (v.json() or {}).get("status") != "paused":
+                httpx.put(f"https://api.mercadolibre.com/items/{item_id}",
+                          headers=cab, json={"status": "paused"}, timeout=30.0)
+                return True, "ok (se reactivó y se volvió a pausar)"
+        except Exception:  # noqa: BLE001
+            pass
+        return True, "ok (pausa conservada)"
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
 
