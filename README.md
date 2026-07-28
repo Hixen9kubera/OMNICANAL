@@ -2241,6 +2241,30 @@ idempotencia (marcar solo lo aplicado) y `revisar_fba` (event loop + foto propia
 El **fan-out DROP → canales NO depende de este módulo** y sigue vivo y sano
 (`FANOUT_ENABLED=true`, `DRY_RUN=false`): es el que resolvió la sobreventa.
 
+### 2026-07-28 — Incidente actas: backend pirata en etl-core-products + total 0 de Amazon (Eduardo)
+
+**Actas de Maestro/Categorías no generadas (28-jul).** Causa: `etl-core-products`
+NO tenía seteado el `railwayConfigFile` (el candado anti-uvicorn que deltas-orders
+sí lleva desde el 24-jul). El push de v0.23.1 (02:49 UTC) auto-desplegó el
+servicio, `backend/railway.json` pisó su config y arrancó un SEGUNDO backend
+(scheduler completo, sin tokens — todos sus jobs fallaban en seco) que bloqueó
+el cron de las 06:15. Fix: `railwayConfigFile=backend/railway.etl-core.json`
+seteado en el servicio vía API. LECCIÓN OPERATIVA: ese campo solo se re-resuelve
+al crear un deployment nuevo DESDE EL REPO (un `redeploy` reutiliza la config
+vieja) — este mismo commit existe también para disparar ese deployment fresco.
+
+**Acta de Pedidos con_deltas (28-jul).** Dos hallazgos encadenados: (1) un pedido
+solo_en_mysql — reparado con el backfill idempotente completo `pedidos_ml →
+channel.orders` (5,729 en 12 tandas, 0 fallos); (2) el pedido Amazon
+`701-5603407-3803465` con total 0 en MySQL vs 195.98 en el espejo: nació de un
+sondeo en estado Pending (OrderTotal aún no existe), la regla de inmutabilidad
+lo congeló en 0, y un sondeo posterior sí llevó el total real al espejo
+(analogía exacta de la regla 6 de comparar_orders, pero en `total`). Verificado
+contra SP-API (`OrderTotal=195.98 MXN`) y rellenado 0→195.98 en `pedidos_ml`
+(precedente v0.17.0: comisión 0→valor). El pedido Woo #108248 sigue en 0 y el
+`ON DUPLICATE` de pedidos_amazon no rellena total 0→valor — AMBOS pendientes
+(ver Pendientes).
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
