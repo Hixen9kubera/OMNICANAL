@@ -2305,6 +2305,67 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
+### v0.25.0 — La protección de stock FULL/FBA nunca se guardó: ahora se COMPENSA
+
+Auditando la sincronización Odoo→Woo con el fan-out ya encendido apareció un SKU
+con stock **negativo** en Woo (`MUE-0307-GRI` en **−5**, contra 2 en Odoo). El hilo
+llevó a un supuesto que llevaba meses dado por bueno.
+
+#### El hallazgo: `_order_stock_reduced` se manda, pero Woo NO lo persiste
+
+Desde el día 1, un pedido FULL/FBA nace con la meta `_order_stock_reduced=yes`
+para que Woo no toque bodega (la pieza sale del almacén del marketplace, no del
+nuestro). **Esa meta nunca quedó escrita.** Se verificó en vivo: un `PUT` a la
+REST responde **200** y la meta **no aparece** en `wp_wc_orders_meta`, mientras
+las metas `_ml_*` del mismo request sí quedan. La REST de Woo la filtra por ser
+interna — lo que la regla 7 de CLAUDE.md ya advertía para la LECTURA resultó ser
+cierto también para la ESCRITURA.
+
+Entonces, ¿por qué llevaba meses funcionando? Porque Woo **sí honra la meta
+dentro de la misma petición** (la pone en el objeto en memoria antes de correr el
+hook), aunque no la guarde. De ahí que:
+
+| Origen | Cómo nace | Resultado |
+|---|---|---|
+| **FULL de ML** | ya en su estado final, de un solo golpe | el hook ve la meta en memoria → **no descuenta** ✅ |
+| **FBA de Amazon** | `on-hold` (Amazon los manda *Pending*) y **después** se pasa a `completed` | esa **transición posterior** relee el pedido de la BD, donde la meta **ya no está** → **descuenta** ❌ |
+
+La protección de FULL funcionaba **por accidente de forma**, no por la meta. Y el
+candado de cancelación (mandar `_order_stock_reduced=no` antes de cancelar) era
+igual de inútil por la misma razón.
+
+- **Daño real, medido y acotado**: **6 pedidos** de **4,989** protegidos —
+  todos FBA, todos `MUE-0307-GRI`, **7 piezas**. Woo llegó a −5; ya está en
+  **2 = Odoo**. Barrido completo: **0 pendientes**.
+
+#### El fix (opción A): compensar después de la transición
+
+Como la meta no se puede escribir, se corrige el efecto. Tras cada escritura a Woo
+de un pedido protegido se lee **lo que Woo realmente descontó** — `_reduced_stock`
+por línea, su contabilidad de verdad — y se devuelve.
+
+- **Cero ruido**: un pedido FULL de ML no tiene `_reduced_stock`, así que la
+  compensación no hace nada (verificado en producción).
+- **Idempotente**: cada devolución se sella en `fanout_log` como
+  `full_compensado`; un pedido sellado no se vuelve a tocar. Los 6 pedidos
+  corregidos a mano se sembraron ya sellados para que el código no los duplique.
+- **La línea no guarda el SKU**: guarda `_product_id`/`_variation_id`. La primera
+  versión buscaba `_sku` y devolvía `None` — habría corrido sin compensar nada.
+  Se resuelve el producto por id (variación si existe, si no el padre).
+- **Cancelaciones**: al reponer, Woo **BORRA** `_reduced_stock` (medido: de 665
+  pedidos cancelados en julio, **cero** conservan una sola línea). Por eso la
+  foto se toma **ANTES** del `PUT` de cancelación; si no, la reversión leería
+  vacío y el stock quedaría inflado. Con la foto, se resta lo que Woo repuso de
+  más y queda como `full_compensado_revertido`.
+
+#### De paso, confirmado que lo demás sí funciona
+
+Los pedidos **no-FULL sí descuentan** (los que aparecen sin `_reduced_stock` son
+justo los cancelados, donde Woo borra la meta): el comportamiento de negocio del
+día 1 está intacto.
+
+---
+
 ### v0.24.0 — Correcciones de las DOS auditorías: descuento fantasma + tabla FULL reescrita
 
 Aplica lo que las auditorías adversariales del 27-28 jul dejaron confirmado.

@@ -253,6 +253,130 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
 _locks: dict[str, asyncio.Lock] = {}
 
 
+def _leer_reducido(wc_id: int) -> list[dict]:
+    """
+    Lo que Woo REALMENTE descontó en un pedido: `_reduced_stock` por línea.
+
+    OJO — hay que leerla ANTES de cancelar: al reponer, Woo BORRA la meta
+    (`wc_maybe_increase_stock_levels`). Medido en producción: de 665 pedidos
+    cancelados en julio, CERO conservan una sola línea con `_reduced_stock`.
+    La línea tampoco guarda el SKU: guarda `_product_id`/`_variation_id`.
+    """
+    from services import wp_db
+    P = wp_db._prefix()
+    return wp_db._fetch_all(
+        f"""SELECT red.meta_value AS unidades,
+                   CAST(COALESCE(NULLIF(var.meta_value,'0'), pro.meta_value) AS UNSIGNED) AS producto
+            FROM {P}woocommerce_order_items oi
+            JOIN {P}woocommerce_order_itemmeta red
+                 ON red.order_item_id = oi.order_item_id AND red.meta_key = '_reduced_stock'
+            LEFT JOIN {P}woocommerce_order_itemmeta pro
+                 ON pro.order_item_id = oi.order_item_id AND pro.meta_key = '_product_id'
+            LEFT JOIN {P}woocommerce_order_itemmeta var
+                 ON var.order_item_id = oi.order_item_id AND var.meta_key = '_variation_id'
+            WHERE oi.order_id = %s""", (int(wc_id),))
+
+
+async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
+                                     signo: int = 1,
+                                     filas: list[dict] | None = None) -> dict:
+    """
+    Devuelve a Woo las piezas que descontó de un pedido FULL/FBA.
+
+    POR QUÉ EXISTE (hallazgo 28-jul): la protección `_order_stock_reduced=yes`
+    **NUNCA se guarda** — se manda en el alta y la REST de Woo la FILTRA (se
+    verificó: responde 200 pero no queda en `wc_orders_meta`). Los pedidos FULL de
+    ML se salvan por accidente: nacen ya en su estado final y Woo no ejecuta la
+    reducción al crear por API. Los de Amazon FBA nacen `on-hold` (Amazon los manda
+    *Pending*) y al pasarlos a `completed` esa TRANSICIÓN sí dispara la reducción.
+    Resultado: 6 pedidos FBA descontaron 7 piezas de MUE-0307-GRI (Woo llegó a −5).
+
+    Como no se puede escribir la meta interna, se COMPENSA: se lee lo que Woo
+    realmente descontó (`_reduced_stock` por línea, la contabilidad de verdad) y
+    se devuelve. Queda registrado en `fanout_log` para poder auditarlo Y para
+    saber, si el pedido se cancela después, que Woo va a reponer OTRA VEZ lo mismo
+    (ahí hay que volver a restarlo: ver `_revertir_compensacion`).
+    """
+    from services import fanout_stock, woocommerce, wp_db
+    P = wp_db._prefix()
+    try:
+        # `filas` llega precargada en la reversión: ahí la foto se toma ANTES de
+        # cancelar, porque Woo borra `_reduced_stock` al reponer.
+        if filas is None:
+            filas = _leer_reducido(wc_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("compensar %s: no se pudo leer _reduced_stock: %s", wc_id, exc)
+        return {"ok": False, "motivo": str(exc)[:120]}
+    if not filas:
+        return {"ok": True, "compensado": 0, "motivo": "Woo no descontó nada"}
+
+    devueltos = []
+    async with woocommerce._client() as cli:
+        for f in filas:
+            try:
+                n = int(float(f["unidades"] or 0))
+            except (TypeError, ValueError):
+                continue
+            producto = f.get("producto")
+            if n <= 0 or not producto:
+                continue
+            info = wp_db._fetch_all(
+                f"""SELECT p.ID wc_id, p.post_type, p.post_parent,
+                           st.meta_value stock, sk.meta_value sku
+                    FROM {P}posts p
+                    LEFT JOIN {P}postmeta st ON st.post_id = p.ID AND st.meta_key = '_stock'
+                    LEFT JOIN {P}postmeta sk ON sk.post_id = p.ID AND sk.meta_key = '_sku'
+                    WHERE p.ID = %s LIMIT 1""", (int(producto),))
+            if not info:
+                continue
+            sku = (info[0].get("sku") or f"wc:{producto}").strip()
+            i = info[0]
+            try:
+                actual = int(float(i["stock"])) if i["stock"] not in (None, "") else 0
+            except (TypeError, ValueError):
+                actual = 0
+            destino = max(0, actual + n * signo)   # signo=-1 revierte la compensación
+            ruta = (f"/products/{i['post_parent']}/variations/{i['wc_id']}"
+                    if i["post_type"] == "product_variation" else f"/products/{i['wc_id']}")
+            r = await cli.put(ruta, json={"stock_quantity": destino}, timeout=60.0)
+            ok = r.status_code in (200, 201)
+            devueltos.append({"sku": sku, "unidades": n, "woo": f"{actual}→{destino}", "ok": ok})
+            log.info("FULL/FBA #%s: devueltas %d pza(s) de %s a Woo (%s→%s)",
+                     wc_id, n, sku, actual, destino)
+    # Bitácora (misma tabla del panel; NO se crea tabla nueva)
+    try:
+        fanout_stock._asegurar_schema()
+        with db.get_cursor() as cur:
+            for d in devueltos:
+                cur.execute(
+                    """INSERT INTO fanout_log
+                       (ts, sku, motivo, dry_run, stock_drop, objetivo, canal, cuenta,
+                        item_id, accion, stock_canal, resultado, ms)
+                       VALUES (%s,%s,%s,0,NULL,NULL,%s,%s,%s,%s,NULL,%s,0)""",
+                    (datetime.now(timezone.utc).replace(tzinfo=None), d["sku"],
+                     f"compensacion FULL/FBA pedido {order_id}", "woocommerce", cuenta,
+                     str(wc_id)[:64],
+                     ("full_compensado_revertido" if signo < 0 else "full_compensado")
+                     if d["ok"] else "full_compensado_error",
+                     (f"Cancelado: Woo repuso {d['unidades']} pza(s) que nunca salieron "
+                      f"→ restadas ({d['woo']})" if signo < 0 else
+                      f"Woo habia descontado {d['unidades']} pza(s) de un pedido FULL/FBA "
+                      f"→ devueltas ({d['woo']})")[:255]))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("compensar %s: no se pudo registrar: %s", wc_id, exc)
+    return {"ok": True, "compensado": sum(d["unidades"] for d in devueltos), "detalle": devueltos}
+
+
+def _ya_compensado(wc_id: int) -> bool:
+    """¿Ya le devolvimos el stock a este pedido? (evita compensar dos veces)."""
+    try:
+        return bool(db.fetch_one(
+            "SELECT id FROM fanout_log WHERE item_id=%s AND accion='full_compensado' LIMIT 1",
+            (str(wc_id)[:64],)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def sincronizar(order_id: str, forzar_estado: str | None = None,
                       proteger_stock: bool = False,
                       orden: dict | None = None) -> dict:
@@ -296,21 +420,30 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     except Exception:  # noqa: BLE001
         pass
 
+    foto_previa: list[dict] | None = None   # `_reduced_stock` antes de cancelar
     try:
         async with httpx.AsyncClient(base_url=_WC, auth=_AUTH, timeout=45.0) as cli:
             if previo and previo.get("wc_order_id"):
                 # Ya existía: solo movemos el estado (el precio no se re-toca).
                 wc_id = int(previo["wc_order_id"])
-                # CANDADO de cancelación: en pedidos protegidos (FULL/registro)
-                # Woo "devolvería" a bodega stock que nunca salió de ahí. Se le
-                # quita la marca ANTES del cambio de estado; con la marca en
-                # "no", el hook de restock no repone nada. Los no-FULL conservan
-                # su marca y Woo SÍ repone (la pieza se quedó en la bodega).
+                # CANDADO de cancelación (histórico): mandaba
+                # `_order_stock_reduced=no` para que Woo no repusiera stock que
+                # nunca salió de bodega. Se conserva porque la REST SÍ honra la
+                # meta DENTRO de la petición, aunque NO la persista (28-jul);
+                # pero por lo mismo no protege una transición posterior. La
+                # defensa de verdad es la compensación de más abajo.
                 if (payload["status"] == "cancelled"
                         and (orden.get("es_full") or proteger_stock)):
                     await cli.put(f"/orders/{wc_id}", json={
                         "meta_data": [{"key": "_order_stock_reduced",
                                        "value": "no"}]})
+                    # Foto ANTES de cancelar: al reponer, Woo BORRA
+                    # `_reduced_stock` y después ya no habría qué revertir.
+                    if _ya_compensado(wc_id):
+                        try:
+                            foto_previa = _leer_reducido(wc_id)
+                        except Exception:  # noqa: BLE001
+                            foto_previa = None
                 r = await cli.put(f"/orders/{wc_id}", json={"status": payload["status"]})
                 accion = "actualizado"
             else:
@@ -323,6 +456,38 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             wc_id = int(pedido["id"])
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "motivo": f"error al crear pedido: {exc}"}
+
+    # COMPENSACIÓN de pedidos FULL/FBA (opción A, 28-jul). La meta
+    # `_order_stock_reduced` NO se puede escribir por REST (Woo la filtra), así
+    # que un pedido protegido que CAMBIA de estado sí dispara la reducción de
+    # Woo. Se le devuelven las piezas leyendo lo que Woo realmente descontó.
+    # Los que nacen ya en su estado final (los FULL de ML) no reducen, y ahí
+    # `_reduced_stock` viene vacío: la compensación simplemente no hace nada.
+    protegido = bool(orden.get("es_full") or proteger_stock)
+
+    # CANCELACIÓN de un pedido protegido que YA compensamos: Woo repone las
+    # piezas por su cuenta (usa `_reduced_stock`, que sigue puesto). Como ya se
+    # las habíamos devuelto nosotros, esa reposición las duplicaría → se restan.
+    # El candado viejo (poner `_order_stock_reduced=no` antes de cancelar)
+    # tampoco funcionaba: esa meta la filtra la REST igual que la de alta.
+    if protegido and payload["status"] == "cancelled" and foto_previa:
+        try:
+            rev = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"],
+                                                   signo=-1, filas=foto_previa)
+            if rev.get("compensado"):
+                log.info("Pedido %s cancelado: revertidas %d pza(s) de la compensación",
+                         order_id, rev["compensado"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("reversión de compensación de %s falló: %s", order_id, exc)
+
+    if protegido and payload["status"] != "cancelled" and not _ya_compensado(wc_id):
+        try:
+            comp = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"])
+            if comp.get("compensado"):
+                log.info("Pedido %s (FULL/FBA): compensadas %d pza(s) que Woo había descontado",
+                         order_id, comp["compensado"])
+        except Exception as exc:  # noqa: BLE001 — nunca rompe la venta
+            log.warning("compensación FULL/FBA de %s falló: %s", order_id, exc)
 
     try:
         with db.get_cursor() as cur:
