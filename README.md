@@ -2373,7 +2373,7 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
-### v0.26.0 — Vigilante de inventario: Odoo →delta→ Woo →cambio→ canales
+### v0.27.0 — Vigilante de inventario: Odoo →delta→ Woo →cambio→ canales
 
 Cierra el círculo del inventario. La auditoría de la sincronización Odoo→Woo
 (v0.25.0) dejó ver que "todo sincronizado" era imposible por dos huecos:
