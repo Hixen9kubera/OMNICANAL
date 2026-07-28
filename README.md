@@ -2267,6 +2267,44 @@ contra SP-API (`OrderTotal=195.98 MXN`) y rellenado 0→195.98 en `pedidos_ml`
 
 ---
 
+### v0.23.2 — El total $0 de los pedidos de Amazon (hallazgo de Eduardo + Claude, en paralelo)
+
+**Qué pasaba.** Amazon NO publica los importes mientras la orden está **Pending**:
+`OrderTotal` e `ItemPrice` llegan vacíos. `pedidos_amazon._normalizar` hace
+`float(... or 0)` → la venta nacía congelada en **$0.00**… y ahí se quedaba,
+porque el `ON DUPLICATE` de `pedidos_ml` actualizaba estado y comisión pero
+**no el total**. Mismo patrón exacto que la comisión en 0 (v0.17.0).
+
+Detectado el 28-jul por Eduardo (Slack) y por esta sesión de forma independiente,
+al comparar el dashboard de Amazon ($1,652.10 / 7 uds) contra el tab Ventas.
+
+**Alcance real: 14 pedidos**, no 1. Y en DOS capas — Eduardo señaló la segunda:
+`pedidos_ml` alimenta las métricas, pero **el pedido de WooCommerce es el
+registro histórico congelado** y también decía $0. Quien auditara Woo veía una
+venta de $0 que fueron $195.98.
+
+**Las 3 piezas aplicadas (con dale de Brandon):**
+1. **Fix de fondo** — `total=IF(total=0, VALUES(total), total)` en el
+   `ON DUPLICATE` (en `pedidos_ml.py`, no en `pedidos_amazon.py`: éste
+   normaliza y delega). Un total >0 sigue siendo inmutable.
+2. **Backfill `pedidos_ml`**: 13 revisados → **5 recuperados** ($391.96,
+   $195.98 ×4). Los otros 8 siguen en $0 legítimamente: 6 **cancelados** y
+   1 **Pending** (Amazon nunca publica su importe) + 1 MCF `S01-…`.
+3. **Backfill de los pedidos de Woo**: **6 órdenes** corregidas vía REST
+   (nunca tocando `wp_*`, regla de la casa): se reparte el total entre las
+   líneas y se recalcula `_ml_neto`.
+
+**Verificación de una venta real** (28-jul): 2 órdenes, 7 unidades — coincide
+exacto con el dashboard. La de 07:53 desglosa `ItemPrice 336.21 + ItemTax 53.80
+= OrderTotal 390.01`. El dashboard reporta ~$476 para esa orden: la diferencia
+(~$86) **no aparece en la API** (ni `ShippingPrice` ni `PromotionDiscount`
+traen valor) — hipótesis no confirmada: envío cobrado al comprador.
+
+**Pendiente conocido que esto NO resuelve**: la comisión de Amazon sigue en 0
+(falta Finances API).
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

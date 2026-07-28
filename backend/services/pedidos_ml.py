@@ -312,6 +312,14 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                        -- se permite el paso 0 → valor real; un valor ya puesto es
                        -- inmutable (COALESCE(NULLIF...) evita re-pisar >0).
                        comision=IF(comision=0, VALUES(comision), comision),
+                       -- MISMA REGLA para el TOTAL (hallazgo de Eduardo, 28-jul):
+                       -- Amazon NO publica los importes mientras la orden está
+                       -- "Pending" (OrderTotal e ItemPrice llegan vacíos), así que
+                       -- la venta nacía congelada en $0 y ahí se quedaba. 14 pedidos
+                       -- afectados, 6 de ellos ya cobrados. Un 0 no es un dato
+                       -- histórico: es un dato que nunca se pudo capturar. Solo se
+                       -- permite 0 → valor real; un total ya puesto es inmutable.
+                       total=IF(total=0, VALUES(total), total),
                        actualizado=VALUES(actualizado)""",
                 (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
                  orden["total"], comision, 1 if orden.get("es_full") else 0,
