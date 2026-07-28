@@ -2110,6 +2110,27 @@ producción, con los nombres diciendo la verdad: `SUPABASE_*` = operativa,
 (regla 3) y se aplica con un solo accept-deploy. Staging/local no necesitan
 `ANALYTICS_*` (no leen analítica real). Versión 0.22.1.
 
+### v0.23.0 — F5 arranca: primer flag de lectura (COSTOS) con equivalencia probada (Eduardo)
+
+El primer dominio que aprende a LEER de la BD kubera. Nuevo
+`services/costing_read.py`: gemelas Postgres de las 3 lecturas de costos del
+panel (`/api/crear/costos`, `/costos/{sku}`, `/costos/_contenedores`) —
+mismas formas de respuesta, con las trampas de traducción resueltas
+(P4: join a `costos_finales` fija `canal='mercado_libre'`; `p.nombre` ≡
+`core.products.name`; LIKE→ILIKE). Flag **`SUPABASE_READ_COSTING`**
+(default false = comportamiento idéntico): encendido, los 3 GET leen de
+kubera con **fallback automático a MySQL ante cualquier error** — apagar el
+flag o fallar la lectura = MySQL al instante. Los logs de costos siguen en
+MySQL en ambas rutas (su destino ops.process_log es fase aparte).
+
+**Equivalencia demostrada** con `scripts/comparar_lecturas_costing.py`
+(solo lectura, ambas fuentes, muestra reproducible seed=42): contenedores
+102=102 idénticos, conteo global 15,411=15,411, detalle 150 SKUs × 15
+campos = 2,250 comparaciones con 0 diferencias, listado página 1 con
+secuencia y nombres idénticos → veredicto EQUIVALENTE. El arnés queda como
+prueba de regresión: correrlo antes de encender el flag en cada ambiente.
+Versión 0.23.0.
+
 ---
 
 ### 🔍 AUDITORÍA del vigilante FULL/FBA (2026-07-27) — VEREDICTO: **NO ACTIVAR**

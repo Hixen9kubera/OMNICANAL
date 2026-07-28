@@ -164,6 +164,9 @@ class Settings(BaseSettings):
     # lee de Supabase cuando MYSQL_ENABLED=false (staging). Ante cualquier error
     # de lectura, se cae al camino MySQL: apagar el flag = revertir al instante.
     supabase_read_webhooks: bool = False
+    # F5 costos: los GET de /api/crear/costos* leen de costing.* (BD kubera)
+    # con fallback automático a MySQL ante cualquier error. Apagar = revertir.
+    supabase_read_costing: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""
