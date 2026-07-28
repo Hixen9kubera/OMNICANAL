@@ -54,9 +54,16 @@ def cargar_env(nombre: str) -> dict[str, str]:
     return vals
 
 
+ESQUEMAS_PROPIOS = ("core", "channel", "costing", "enrich", "ops", "migration")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verificar-solo", action="store_true")
+    ap.add_argument("--recrear", action="store_true",
+                    help="DROP SCHEMA ... CASCADE de los 6 esquemas antes de aplicar "
+                         "(el simulacro de sandbox desechable; jamás corre contra prod "
+                         "por el candado de ref)")
     args = ap.parse_args()
     _watchdog()
 
@@ -75,6 +82,12 @@ def main() -> None:
     pg = psycopg2.connect(url, connect_timeout=20)
     pg.autocommit = False
     cur = pg.cursor()
+
+    if args.recrear:
+        print("RECREAR: tirando esquemas propios (drop cascade)…", flush=True)
+        for sch in ESQUEMAS_PROPIOS:
+            cur.execute(f"drop schema if exists {sch} cascade")
+        pg.commit()
 
     if not args.verificar_solo:
         archivos = sorted(MIGRACIONES.glob("*.sql"))

@@ -2131,6 +2131,37 @@ secuencia y nombres idénticos → veredicto EQUIVALENTE. El arnés queda como
 prueba de regresión: correrlo antes de encender el flag en cada ambiente.
 Versión 0.23.0.
 
+### v0.23.1 — Suite de CAOS del sandbox: 14 pruebas destructivas y de seguridad (Eduardo)
+
+A petición de Eduardo, antes de encender flags: probar lo que el camino feliz
+no ejerce. `scripts/suite_caos_sandbox.py` (candado triple: aborta si el
+destino no es el sandbox) + `sembrar_sandbox.py` (muestra real desechable
+desde MySQL, solo lectura) + `aplicar_migraciones.py --recrear`
+(DROP SCHEMA CASCADE + re-aplicar).
+
+**Resultado: 14/14 PASA.** Por familia:
+- **Candado (3/3)**: staging→prod y prod→otro-proyecto BLOQUEAN el arranque
+  (RuntimeError); la config coherente arranca. El candado no es decorativo.
+- **Inyección SQL (2/2)**: 4 payloads (`'; drop table…`, `' OR '1'='1`, …) por
+  `search` no ejecutan nada — las tablas quedan intactas; un `orden` malicioso
+  cae al default (el dict de ORDEN nunca interpola entrada del usuario).
+- **Integridad (4/4)**: la FK rechaza costo de SKU huérfano; el CHECK rechaza
+  SKU con espacio (la regla de identidad vive en la BD, no solo en el ETL);
+  la PK (sku,canal) acepta 2 canales del mismo SKU y bloquea el duplicado —
+  **P4 verificada en el motor**.
+- **RLS/llaves (3/3)**: service_role lee, anon 401, sin apikey 401.
+- **Fallback (1/1)**: una DSN inválida lanza excepción → el router cae a MySQL
+  (es el camino que protege al panel con el flag encendido).
+- **Resiliencia (1/1)**: `statement_timeout` corta una consulta de 5 s a los
+  0.8 s — nada se cuelga indefinidamente.
+
+**Prueba mayor**: se DESTRUYÓ el sandbox entero (drop cascade de los 6
+esquemas) y se recreó desde `supabase/migrations/` → **PARIDAD OK 31/31**.
+El sandbox es desechable de verdad y el paquete de migraciones está completo.
+**Producción verificada intacta** tras todo el ejercicio: 22,154 productos /
+15,411 validados / 4,353 finales / 5,714 listings / 5,591 orders / 13,680
+categorías, 0 filas cobaya, 0 filas de siembra. Versión 0.23.1.
+
 ---
 
 ### 🔍 AUDITORÍA del vigilante FULL/FBA (2026-07-27) — VEREDICTO: **NO ACTIVAR**
