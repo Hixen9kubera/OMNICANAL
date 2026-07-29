@@ -2373,6 +2373,53 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
+### v0.31.0 — Alertas: el candado anti-spam sobrevive a los deploys + aviso por CAMBIO de estado
+
+**Síntoma** (reportado por Eduardo con captura del canal): el mismo aviso
+*"Acta de Pedidos salió `con_deltas`"* saliendo a las **10:06, 10:14 y 10:30**,
+pese al candado de enfriamiento de 6 h para el tipo `acta`.
+
+**Causa raíz — el candado vivía en la RAM del proceso.** Los deploys de
+producción de ese día fueron a las **16:02, 16:11 y 16:27 UTC** (= 10:02, 10:11
+y 10:27 CDMX): cada deploy reinicia el contenedor, `_ultimo_envio` nace vacío y
+el vigilante — que arranca a los 150 s — vuelve a avisar de la MISMA condición.
+Las alertas salieron ~3-4 min después de cada arranque, una por una. Que el
+candado sí funcionaba con el proceso vivo lo prueba la propia captura: 2:12 →
+8:27 con *"+24 repetidas silenciadas"* = las 6 h exactas.
+
+**Segundo defecto, de diseño**: un acta con deltas **sigue con deltas todo el
+día**. Aun sin reiniciar, `avisar()` la repetía cada ventana, y la recuperación
+(volver a `ok`) no se anunciaba nunca — había que ir a mirar /migracion.
+
+#### Las dos correcciones
+
+1. **Candado PERSISTIDO** en la tabla nueva `alertas_estado` (MySQL kubera_ml;
+   temporal y regenerable — borrarla solo deja salir una vez más el primer aviso
+   de cada tipo). La BD manda sobre la RAM, así que un deploy ya no reabre la
+   ventana. Todo es best-effort: si MySQL no está, degrada al candado en memoria
+   y **sigue avisando** (probado).
+2. **`alertas.avisar_estado(tipo, estado, …)`** — alertas por CAMBIO de estado
+   para condiciones que duran horas: avisa al entrar en falla, avisa si la falla
+   CAMBIA (`ausente` → `con_deltas`), **avisa la recuperación con ✅**, y
+   mientras nada cambie se calla (recordatorio a lo mucho 1×/día). El vigilante
+   de actas es su primer usuario; el resto de las alertas conserva `avisar()`,
+   que ahora también es a prueba de deploys.
+
+`resumen_estado()` expone lo persistido (estado vigente, minutos desde el último
+aviso y suprimidas por tipo) para diagnóstico.
+
+**Probado** con un doble de MySQL que emula las 5 sentencias reales, simulando
+deploys (borrar la RAM dejando la BD intacta): **12/12 pasa** — 3 deploys con la
+misma falla → **1 aviso** (antes 3); 5 llamadas seguidas → 1 aviso y 4 suprimidas
+contadas; vencida la ventana el re-aviso anexa el conteo; el acta con deltas
+calla 8 pasadas del vigilante y 3 deploys; `con_deltas`→`ausente` sí avisa;
+la recuperación sale con ✅; un tipo que nunca falló no inventa recuperación;
+y con MySQL caído sigue avisando 1 vez y frenando la repetida.
+
+Versión 0.31.0.
+
+---
+
 ### v0.28.1 — El total $0 de Amazon, TERCERA capa: el espejo no podía sanar (Eduardo)
 
 **Síntoma.** El acta de Pedidos salía `con_deltas` a diario desde el 28-jul
