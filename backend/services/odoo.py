@@ -61,7 +61,32 @@ def listar_catalogo() -> list[dict[str, Any]]:
     """
     Devuelve TODO el catálogo activo de Odoo que tiene SKU (default_code):
     [{sku, nombre, precio, stock}]. Pagina de 500 en 500 para no cargar Odoo.
-    Se usa para el diff Odoo↔WooCommerce (crear los faltantes como draft).
+    Se usa para el diff Odoo↔WooCommerce y para alimentar el stock de los canales.
+
+    `stock` = **`free_qty`** ("Disponible"), NO `qty_available` ("A la mano").
+    ------------------------------------------------------------------------
+    Cambiado el 2026-07-29 (dale de Brandon; lo señaló el equipo de Odoo con el
+    caso `JUGU-0066-MUL`: 60 a la mano, 50 en Saliente, **10 libres** — y
+    publicábamos 60).
+
+    `qty_available` es el stock FÍSICO en bodega e incluye piezas ya
+    COMPROMETIDAS (`outgoing_qty`): órdenes de venta por surtir y, sobre todo,
+    la mercancía que se está enviando a FULL. `free_qty` ya les resta esas
+    reservas, que es lo que de verdad se puede prometer a un comprador.
+
+    Medido al cambiar: **382 SKUs** con salida comprometida y **14,097 piezas**
+    que estábamos publicando de más. El peor, `CAM-0030-IND`: 230 a la mano y
+    `free_qty` = 0 — ofrecíamos 230 sin una sola disponible.
+
+    EFECTO LATERAL BUENO: esto CIERRA el hueco que perseguía el vigilante de FULL
+    (`stock_full`, apagado). Las piezas que salen a la bodega de ML dejan de
+    contarse en cuanto Odoo las reserva, sin depender de detectar el movimiento
+    por webhook. Odoo ya llevaba esa cuenta; solo estábamos leyendo la columna
+    equivocada.
+
+    Se pide `free_qty` Y `qty_available`: si Odoo no devolviera `free_qty` (no
+    existe antes de la v13), se cae a `qty_available` en vez de mandar 0 y vaciar
+    el catálogo entero.
     """
     uid = _uid()
     if not uid:
@@ -75,7 +100,8 @@ def listar_catalogo() -> list[dict[str, Any]]:
                 "product.product", "search_read",
                 [[["default_code", "!=", False]]],
                 {
-                    "fields": ["default_code", "name", "list_price", "qty_available"],
+                    "fields": ["default_code", "name", "list_price",
+                               "free_qty", "qty_available"],
                     "limit": lote, "offset": offset, "order": "id asc",
                 },
             )
@@ -83,11 +109,18 @@ def listar_catalogo() -> list[dict[str, Any]]:
                 sku = (p.get("default_code") or "").strip()
                 if not sku:
                     continue
+                # `free_qty` puede venir 0 legítimamente (todo comprometido), así
+                # que NO se puede usar `or`: solo se cae a `qty_available` cuando
+                # el campo NO existe / viene nulo.
+                libre = p.get("free_qty")
+                if libre is None or libre is False:
+                    libre = p.get("qty_available")
                 salida.append({
                     "sku": sku,
                     "nombre": p.get("name") or sku,
                     "precio": p.get("list_price"),
-                    "stock": p.get("qty_available"),
+                    "stock": libre,
+                    "stock_fisico": p.get("qty_available"),   # informativo
                 })
             if len(productos) < lote:
                 break
