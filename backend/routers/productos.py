@@ -45,6 +45,7 @@ async def listar_productos(
     estados: str | None = Query(None, description="Filtro de estado, coma-separado: publicado,inactivo"),
     categoria: int | None = Query(None, description="ID de categoría WooCommerce (canal general)"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
+    vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
@@ -56,6 +57,7 @@ async def listar_productos(
         items_raw, total, total_pages = await woocommerce.listar_productos(
             page=page, per_page=per_page, search=search,
             orden=orden, estados=estados_lista, categoria=categoria, skus=skus_lista,
+            vista=vista,
         )
         # Enriquecer con presencia en marketplaces (puntos de colores).
         # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que

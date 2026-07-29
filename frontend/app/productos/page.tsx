@@ -92,6 +92,9 @@ export default function ProductosPage() {
       {
         canal: "general", page, perPage: PER_PAGE,
         search: busqueda || undefined, skus: skusFiltro || undefined,
+        // Solo lo ya resuelto: publish / pending / ready. Lo que falta trabajar
+        // (draft / inprogress) vive en Crear Productos.
+        vista: "productos",
       },
       ctrl.signal,
     )

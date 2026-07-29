@@ -141,9 +141,13 @@ async def listar_productos(
     estados: list[str] | None = None,
     categoria: int | None = None,
     skus: list[str] | None = None,
+    vista: str = "productos",
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
+
+    - `vista`: qué pestaña pide el listado — `productos` (publish/pending/ready),
+      `crear` (draft/inprogress) u `omnicanal` (todos). Ver VISTAS.
 
     - `categoria` (id WC) → ruta nativa de WooCommerce (param category).
     - `search` / `estados` / `orden` por stock o precio / `skus` → se resuelven
@@ -251,12 +255,12 @@ async def listar_productos(
                             total += len(extras)
                             total_pages = max(1, (total + per_page - 1) // per_page)
         else:
-            # GENERAL sin filtros: catálogo SIN drafts (los drafts viven solo en
-            # la vista Crear Productos). Paginamos sobre el índice cacheado.
-            ids_sin_draft = await wc_ids_sin_draft()
-            total = len(ids_sin_draft)
+            # GENERAL sin filtros: los wc_ids que le tocan a esta VISTA (ver
+            # VISTAS). Paginamos sobre el índice cacheado.
+            ids_vista = await wc_ids_para_vista(vista)
+            total = len(ids_vista)
             total_pages = max(1, (total + per_page - 1) // per_page)
-            pagina_ids = ids_sin_draft[(page - 1) * per_page: page * per_page]
+            pagina_ids = ids_vista[(page - 1) * per_page: page * per_page]
             if pagina_ids:
                 r = await cli.get("/products", params={
                     **params,
@@ -271,9 +275,12 @@ async def listar_productos(
                 by_id = {p["id"]: p for p in r.json()}
                 data = [by_id[i] for i in pagina_ids if i in by_id]
 
-        # Los drafts nunca se muestran en GENERAL, vengan de la ruta que vengan
-        # (categoría, búsqueda por SKU exacto, cache DB desactualizado…).
-        data = [p for p in data if p.get("status") != "draft"]
+        # Red de seguridad: venga de la ruta que venga (categoría, búsqueda por
+        # SKU exacto, cache DB desactualizado…), solo pasan los estados de la
+        # vista. Omnicanal no filtra: los muestra todos, incluidos los drafts.
+        permitidos_vista = VISTAS.get(vista, VISTAS["productos"])
+        if permitidos_vista is not None:
+            data = [p for p in data if p.get("status") in permitidos_vista]
 
         # Variantes de los padres `variable`: misma lectura que Crear Productos.
         variantes_por_prod = await variantes_de_productos(cli, data)
@@ -859,8 +866,36 @@ def quitar_de_drafts(wc_id: int) -> None:
     _draft_cache = [p for p in _draft_cache if p["wc_id"] != wc_id]
 
 
+# ── Reparto del catálogo entre las tres vistas (regla de Brandon, 29-jul) ─────
+# Cada producto vive en UNA pestaña según su estado en WooCommerce, salvo
+# Omnicanal que los muestra todos:
+#
+#   Productos  → publish + pending + ready     (lo que ya está resuelto)
+#   Crear      → draft + inprogress            (lo que falta trabajar)
+#   Omnicanal  → TODOS                         (la vista de control)
+#
+# Antes, "Productos" mostraba todo MENOS draft, así que se colaban los 229
+# `inprogress` que pertenecen a Crear, y Omnicanal escondía los 4,650 drafts —
+# por eso un producto en draft pero VIVO en un canal era invisible en el panel
+# (caso TEC-1841-ROS, que vendió estando oculto; ver v0.29.0).
+VISTAS: dict[str, set[str] | None] = {
+    "productos": {"publish", "pending", "ready", "private"},
+    "crear": {"draft", "inprogress"},
+    "omnicanal": None,          # None = sin filtro, entran todos
+}
+
+
+async def wc_ids_para_vista(vista: str = "productos") -> list[int]:
+    """wc_ids del catálogo que le tocan a una vista. Ver VISTAS."""
+    catalogo = await indice_catalogo()
+    permitidos = VISTAS.get(vista, VISTAS["productos"])
+    if permitidos is None:
+        return [p["wc_id"] for p in catalogo]
+    return [p["wc_id"] for p in catalogo if p["estado"] in permitidos]
+
+
 async def wc_ids_sin_draft() -> list[int]:
-    """wc_ids del catálogo EXCEPTO drafts → vista GENERAL (omnicanal)."""
+    """Compat: wc_ids del catálogo EXCEPTO drafts. Preferir `wc_ids_para_vista`."""
     catalogo = await indice_catalogo()
     return [p["wc_id"] for p in catalogo if p["estado"] != "draft"]
 

@@ -119,8 +119,14 @@ def _categorias_por_post(ids: list[int]) -> dict[int, list[str]]:
 
 def indice_drafts() -> list[dict[str, Any]]:
     """
-    TODOS los drafts en una consulta (reemplaza ~50 requests HTTP):
-    [{wc_id, sku, nombre, estado, stock, categorias}], más recientes primero.
+    Todo lo que le toca a CREAR PRODUCTOS en una consulta (reemplaza ~50
+    requests HTTP): [{wc_id, sku, nombre, estado, stock, categorias}], más
+    recientes primero.
+
+    Incluye `draft` E `inprogress` (regla de Brandon, 29-jul): la pestaña es "lo
+    que falta trabajar". Antes traía solo `draft`, así que los ~229 `inprogress`
+    no salían aquí y se colaban en Productos, que es justo la pestaña de lo ya
+    resuelto.
     """
     P = _prefix()
     rows = _fetch_all(
@@ -131,7 +137,8 @@ def indice_drafts() -> list[dict[str, Any]]:
                    ON sku.post_id = p.ID AND sku.meta_key = '_sku'
             LEFT JOIN {P}postmeta stock
                    ON stock.post_id = p.ID AND stock.meta_key = '_stock'
-            WHERE p.post_type = 'product' AND p.post_status = 'draft'
+            WHERE p.post_type = 'product'
+              AND p.post_status IN ('draft', 'inprogress')
             ORDER BY p.post_date DESC"""
     )
     cats = _categorias_por_post([r["wc_id"] for r in rows])

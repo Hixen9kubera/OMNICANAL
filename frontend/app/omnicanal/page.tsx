@@ -126,6 +126,10 @@ export default function OmnicanalPage() {
         orden,
         estados,
         categoria: esGeneral ? categoria : null,
+        // Omnicanal es la vista de CONTROL: muestra TODO el catálogo, incluidos
+        // los drafts. Esconderlos hacía invisible un producto en draft pero VIVO
+        // en un canal (TEC-1841-ROS vendió estando oculto; ver v0.29.0).
+        vista: "omnicanal",
       },
       ctrl.signal,
     )

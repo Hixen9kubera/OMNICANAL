@@ -76,6 +76,7 @@ export interface ListarParams {
   estados?: string[];
   categoria?: number | null;
   skus?: string; // "Filtrar SKUs": lista separada por comas, filtra y busca a la vez
+  vista?: "productos" | "crear" | "omnicanal";
 }
 
 export function listarProductos(
@@ -93,6 +94,9 @@ export function listarProductos(
   if (p.estados && p.estados.length) q.set("estados", p.estados.join(","));
   if (p.categoria) q.set("categoria", String(p.categoria));
   if (p.skus) q.set("skus", p.skus);
+  // Qué pestaña pide el listado: reparte el catálogo por estado de WooCommerce.
+  // productos = publish/pending/ready · crear = draft/inprogress · omnicanal = todos.
+  if (p.vista) q.set("vista", p.vista);
   return getJSON<RespuestaProductos>(`/api/productos?${q.toString()}`, signal);
 }
 
