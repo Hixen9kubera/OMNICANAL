@@ -432,10 +432,20 @@ def _up_product_media(cur, p: dict[str, Any]) -> None:
 def _up_channel_orders(cur, p: dict[str, Any]) -> None:
     """channel.orders — PK (canal, cuenta, external_order_id). Fiel a la
     semántica de MySQL pedidos_ml: el conflicto solo mueve wc_order_id y los
-    estados; total/skus/creado_at quedan CONGELADOS al primer registro
-    (el pedido histórico). La COMISIÓN sigue la regla v0.17.0 del origen:
-    un 0 nunca calculado SÍ se rellena (0 → valor real), pero un valor ya
-    puesto jamás se re-toca — misma cláusula que el ON DUPLICATE de MySQL."""
+    estados; skus/creado_at quedan CONGELADOS al primer registro (el pedido
+    histórico).
+
+    DOS EXCEPCIONES, ambas del mismo patrón "0 = nunca observado":
+      · COMISIÓN (v0.17.0): el webhook puede llegar antes de que ML calcule
+        el sale_fee.
+      · TOTAL (v0.23.2 → espejo, 2026-07-29): Amazon NO publica `OrderTotal`
+        mientras la orden está Pending, así que la venta nace en $0. El fix
+        se aplicó en MySQL (`total=IF(total=0,...)`) y en los pedidos de Woo,
+        pero el espejo se quedó fuera: `total` no estaba en el DO UPDATE, así
+        que las filas nacidas en 0 no podían sanar NUNCA y el acta de pedidos
+        salía `con_deltas` a diario (7 pedidos Amazon al 29-jul).
+    En ambos casos: 0 → valor real se permite UNA vez; un valor ya puesto es
+    inmutable (jamás se re-toca)."""
     cur.execute(
         """insert into channel.orders
              (external_order_id, canal, cuenta, wc_order_id, estado_canal,
@@ -445,6 +455,9 @@ def _up_channel_orders(cur, p: dict[str, Any]) -> None:
              wc_order_id  = excluded.wc_order_id,
              estado_canal = excluded.estado_canal,
              estado_wc    = excluded.estado_wc,
+             total        = case when coalesce(channel.orders.total, 0) = 0
+                                 then excluded.total
+                                 else channel.orders.total end,
              comision     = case when channel.orders.comision = 0
                                  then excluded.comision
                                  else channel.orders.comision end,

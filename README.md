@@ -1,4 +1,4 @@
-# 🛰️ OMNICANAL · Kubera
+﻿# 🛰️ OMNICANAL · Kubera
 
 Panel omnicanal para gestionar el catálogo de **WooCommerce**, publicar en cada
 **marketplace** (Mercado Libre ×2 cuentas, Amazon; Temu/TikTok vía M2E) y
@@ -2373,6 +2373,40 @@ traen valor) — hipótesis no confirmada: envío cobrado al comprador.
 
 ---
 
+### v0.28.1 — El total $0 de Amazon, TERCERA capa: el espejo no podía sanar (Eduardo)
+
+**Síntoma.** El acta de Pedidos salía `con_deltas` a diario desde el 28-jul
+(alerta de Slack, +24 repeticiones silenciadas). Acta #66 (29-jul 07:19 UTC):
+`divergentes_confirmados=6`, `solo_en_mysql=0`, `solo_en_supabase=0` — no
+faltaba ningún pedido, solo divergía un campo.
+
+**Diagnóstico.** Los divergentes (7 al momento del fix) son TODOS de Amazon,
+con el total real en `pedidos_ml` y **$0.00 en `channel.orders`**. Es el mismo
+hallazgo de v0.23.2 (Amazon no publica `OrderTotal` mientras la orden está
+*Pending* → la venta nace en $0 y la inmutabilidad la congela), pero en una
+**tercera capa que quedó fuera de aquel fix**: se reparó MySQL
+(`total=IF(total=0, VALUES(total), total)`) y los pedidos de Woo por REST,
+mientras que `_up_channel_orders` del espejo **no tenía `total` en su
+`DO UPDATE`** — sí la regla equivalente para `comision` (v0.17.0), no para
+`total`. Consecuencia: MySQL sanaba y el espejo **no podía sanar nunca**, así
+que el acta iba a salir `con_deltas` indefinidamente.
+
+**Fix.** Misma cláusula que ya existía para comisión, ahora también en total:
+`total = case when coalesce(channel.orders.total,0) = 0 then excluded.total
+else channel.orders.total end` — un total >0 sigue siendo inmutable; solo se
+permite el paso 0 → valor real, una vez. Con eso, el backfill idempotente
+`pedidos_ml → channel.orders` sana las filas viejas y las nuevas se
+autocorrigen en el siguiente sondeo.
+
+**Nota de método** (para quien diagnostique esto en local): `comparar_orders.py`
+resuelve su destino con `cargar_env("env.staging")` — en Railway esa variable
+ES producción, pero **en local apunta al sandbox**. Correrlo tal cual desde una
+laptop compara MySQL prod contra el clon y arroja cientos de deltas falsos.
+Y al leer `channel.orders.skus` con psycopg2 hay que castear (`skus::text[]`):
+`citext[]` llega como texto crudo y toda comparación de SKUs da falso positivo.
+
+---
+
 ### v0.28.0 — Fan-out DROP de Mercado Libre: la pausa deja de ser un muro
 
 Faltaba el canal más grande. El fan-out ya replicaba stock a Amazon, pero de ML
@@ -2438,7 +2472,6 @@ tanda larga, ambas por la duración (31 min):
 
 Ninguna afectó lo escrito, pero las dos van a volver a morder en cualquier
 corrida larga: falta reintento con refresh de token y reconexión.
-
 
 ---
 
