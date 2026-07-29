@@ -2840,6 +2840,14 @@ sincronizado con WooCommerce" se desmontaba en el mismo instante en que debía
 leerse. Ahora el bloque sigue montado mientras haya mensaje (en gris, ya sin
 botón) y solo el botón depende de que haya cambios pendientes. Versión 0.33.2.
 
+### v0.33.3 — La nota del precio sigue al canal seleccionado
+
+La ayuda bajo "Precio regular" decía **"Se publica en ML"** fija, así que con
+Amazon seleccionado mentía (reportado por Lalo con captura). Ahora sale del
+canal activo: `Se publica en ${canalInfo?.label}` — "Se publica en Amazon",
+"Se publica en Mercado Libre" — y en **General** no se muestra, porque ahí el
+precio ES el del catálogo de WooCommerce y la nota sobraría. Versión 0.33.3.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

@@ -1447,7 +1447,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   <Campo label="Precio regular" prefijo="$" value={campos.precioRegular}
                     onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento}
-                    nota="Se publica en ML" />
+                    nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`} />
                   <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta}
                     onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
                   <Campo label="Costo" prefijo="$" value={campos.costo} soloLectura acento={tema.acento}
