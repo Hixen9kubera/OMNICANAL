@@ -66,7 +66,15 @@ interface Estado {
   };
   escritores: Escritor[];
   totales: { ok: number; error: number };
+  lecturas?: Record<string, {
+    kubera: number;
+    fallback: number;
+    ultimo_fallback?: string | null;
+    ultimo_error?: string | null;
+  }>;
 }
+
+const ETIQUETA_LECTURAS: Record<string, string> = { costing: "Costos" };
 
 interface GrupoError {
   archivo_py: string;
@@ -263,6 +271,32 @@ export default function MigracionPage() {
           </div>
         )}
       </div>
+
+      {/* Testigo F5: quién respondió cada lectura con flag encendido */}
+      {estado?.lecturas && Object.keys(estado.lecturas).length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-bold uppercase tracking-wide text-slate-500">
+            Lecturas F5:
+          </span>
+          {Object.entries(estado.lecturas).map(([dom, l]) => {
+            const total = l.kubera + l.fallback;
+            const pct = total > 0 ? Math.round((l.kubera / total) * 100) : 0;
+            const sano = l.fallback === 0;
+            return (
+              <span
+                key={dom}
+                title={l.ultimo_fallback ? `último fallback: ${l.ultimo_fallback} — ${l.ultimo_error || ""}` : "sin fallbacks"}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 font-medium ${
+                  sano ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                }`}
+              >
+                {ETIQUETA_LECTURAS[dom] || dom}: {l.kubera.toLocaleString()} kubera ({pct}%)
+                {l.fallback > 0 && ` · ${l.fallback} fallback ⚠️`}
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {errCarga && (
         <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">

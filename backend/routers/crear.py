@@ -38,7 +38,8 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from models.schemas import Paginacion, Producto, RespuestaProductos
-from services import costing_read, costos, creacion, crear_producto, db, woocommerce
+from services import (alertas, costing_read, costos, creacion, crear_producto, db,
+                      lecturas_fuente, woocommerce)
 
 log = logging.getLogger("omnicanal.routers.crear")
 router = APIRouter(prefix="/api/crear", tags=["crear"])
@@ -500,8 +501,16 @@ def costos_contenedores():
     # F5: lectura desde la BD kubera con fallback a MySQL (flag reversible)
     if settings.supabase_read_costing:
         try:
-            return {"contenedores": costing_read.contenedores()}
+            datos = costing_read.contenedores()
+            # guardia de plausibilidad: 0 contenedores con MySQL lleno = sospechoso
+            if not datos and settings.mysql_enabled:
+                raise RuntimeError("kubera devolvió 0 contenedores (implausible)")
+            lecturas_fuente.anotar("costing", "kubera")
+            return {"contenedores": datos}
         except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("costing", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:costing",
+                           f"⚠️ Lectura de COSTOS cayó a MySQL (contenedores): {exc}")
             logging.getLogger("omnicanal.crear").warning(
                 "lectura kubera falló (contenedores) — fallback MySQL: %s", exc)
     rows = db.fetch_all(
@@ -523,7 +532,12 @@ async def costos_detalle(sku: str):
     if settings.supabase_read_costing:
         try:
             cf, cv = costing_read.detalle(sku)
+            if cf is not None or cv is not None:
+                lecturas_fuente.anotar("costing", "kubera")
         except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("costing", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:costing",
+                           f"⚠️ Lectura de COSTOS cayó a MySQL (detalle {sku}): {exc}")
             logging.getLogger("omnicanal.crear").warning(
                 "lectura kubera falló (detalle %s) — fallback MySQL: %s", sku, exc)
             cf = cv = None
@@ -686,7 +700,15 @@ def costos_listado(
         try:
             rows, total = costing_read.listado(
                 page, per_page, search, contenedor, orden, skus_lista)
+            # guardia de plausibilidad: listado SIN filtros con total 0 mientras
+            # MySQL opera = tabla vacía/rota en kubera → tratar como fallo
+            if total == 0 and not (search or skus_lista or contenedor) and settings.mysql_enabled:
+                raise RuntimeError("kubera devolvió total=0 en listado sin filtros (implausible)")
+            lecturas_fuente.anotar("costing", "kubera")
         except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("costing", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:costing",
+                           f"⚠️ Lectura de COSTOS cayó a MySQL (listado): {exc}")
             logging.getLogger("omnicanal.crear").warning(
                 "lectura kubera falló (listado costos) — fallback MySQL: %s", exc)
             rows = total = None

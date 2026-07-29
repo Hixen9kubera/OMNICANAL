@@ -28,7 +28,12 @@ router = APIRouter(prefix="/api/migracion", tags=["migracion"])
 
 @router.get("/estado")
 def estado():
-    return kubera_mirror.estado()
+    est = kubera_mirror.estado()
+    # F5: contadores kubera-vs-fallback de las lecturas por dominio (el testigo
+    # que demuestra que un flag encendido de verdad lee de kubera)
+    from services import lecturas_fuente
+    est["lecturas"] = lecturas_fuente.estado()
+    return est
 
 
 @router.get("/eventos")

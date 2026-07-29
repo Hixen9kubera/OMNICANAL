@@ -2848,6 +2848,30 @@ canal activo: `Se publica en ${canalInfo?.label}` — "Se publica en Amazon",
 "Se publica en Mercado Libre" — y en **General** no se muestra, porque ahí el
 precio ES el del catálogo de WooCommerce y la nota sobraría. Versión 0.33.3.
 
+### v0.34.0 — Observabilidad del flag F5: contador kubera-vs-fallback + alerta Slack + guardia de plausibilidad (Eduardo)
+
+El fallback de las lecturas de costos (v0.23.0) era MUDO: si kubera fallara,
+el panel seguiría vivo desde MySQL y nadie sabría que el flag no está probando
+nada. Tres piezas lo hacen visible, TODO inerte mientras el flag siga apagado:
+
+1. **`services/lecturas_fuente.py`** — contadores en memoria por dominio de
+   quién respondió cada lectura (kubera vs fallback), expuestos en
+   `GET /api/migracion/estado` (campo `lecturas`) y pintados en /migracion
+   como chip: "Costos: 1,240 kubera (100%)" (verde; rojo si hubo fallback,
+   con tooltip del último error). Esa cifra es la evidencia que autorizará el
+   corte del dominio ("N días al 100% kubera").
+2. **Alerta Slack al primer fallback** — `alertas.avisar("lectura_fallback:costing", …)`
+   en el except de los 3 GET: aviso en #alertas-omnicanal en segundos, con el
+   anti-spam del sistema existente.
+3. **Guardia de plausibilidad** — el fallo que no truena: kubera respondiendo
+   "bien" pero VACÍO (0 contenedores / total=0 sin filtros) con MySQL operando
+   se trata como fallo → fallback + alerta, en vez de pintar un panel vacío.
+   Condicionada a `mysql_enabled` para que staging (sandbox vacío, sin MySQL)
+   pueda devolver vacío legítimamente.
+
+Publicado desde worktree aislado (el árbol principal traía WIP de otra
+sesión). Versión 0.34.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
