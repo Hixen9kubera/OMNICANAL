@@ -244,10 +244,11 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         )
         detalle.canales.append(_aplicar_inv(Canal.MERCADO_LIBRE.value, cta, dc))
 
-    # Amazon (cache)
-    az_items, _ = amazon.listar(search=sku, per_page=1)
-    if az_items:
-        a = az_items[0]
+    # Amazon (cache). IGUALDAD EXACTA, nunca `search=` — ése hace LIKE de prefijo
+    # y con 693 SKUs que son prefijo de otros el detalle acababa mostrando la
+    # publicación de OTRO producto (auditoría 29-jul).
+    a = amazon.por_sku(sku)
+    if a:
         dc = DetalleCanal(
             canal=Canal.AMAZON.value,
             publicado=a["publicado"], item_id=a["item_id"], url=a["url"],

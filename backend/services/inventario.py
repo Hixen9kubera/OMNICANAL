@@ -80,7 +80,18 @@ def _upsert(rows: list[dict[str, Any]]) -> int:
            %(stock_full)s, %(stock_fba)s, %(es_full)s, %(logistica)s, %(situacion)s,
            %(moneda)s, NOW())
         ON DUPLICATE KEY UPDATE
-          item_id=VALUES(item_id), precio=VALUES(precio), stock_real=VALUES(stock_real),
+          -- COALESCE en los tres campos que el barrido masivo de Amazon manda
+          -- en NULL (auditoría 29-jul): escribe item_id=amazon_progress.asin,
+          -- que es NULL en las 1,770 filas, y stock_real=None a propósito
+          -- ("FBM se lee en el refresco individual"). Sin COALESCE, cada vuelta
+          -- del ciclo BORRABA el ASIN, el stock FBM y el precio que el refresco
+          -- individual sí había guardado bien. Mismo patrón ya sancionado en
+          -- pedidos_ml para la comisión 0→valor.
+          item_id=COALESCE(VALUES(item_id), item_id),
+          precio=COALESCE(VALUES(precio), precio),
+          stock_real=COALESCE(VALUES(stock_real), stock_real),
+          -- stock_full / stock_fba NO llevan COALESCE: ahí un 0 y un NULL SÍ
+          -- son informativos (bodega vacía vs sin dato).
           stock_full=VALUES(stock_full), stock_fba=VALUES(stock_fba), es_full=VALUES(es_full),
           logistica=VALUES(logistica), situacion=VALUES(situacion), updated_at=NOW()
     """

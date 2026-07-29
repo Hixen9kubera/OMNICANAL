@@ -22,11 +22,22 @@ from services import db
 
 log = logging.getLogger("omnicanal.amazon")
 
+# El DRIVER es `amazon_progress`, NO `productos` (auditoría 29-jul).
+# ------------------------------------------------------------------
+# `productos` es el catálogo del robot KuberaPipelineV1.0, CONGELADO desde el
+# 23-jul y con solo 5,381 filas. Al manejarlo como tabla principal, un SKU
+# publicado en Amazon que no estuviera ahí devolvía CERO filas: el panel
+# colapsaba a "General" y la tarjeta de Amazon simplemente no existía.
+# Medido: 493 SKUs publicados en Amazon se caían por esto (p.ej. TEC-2366-NEG,
+# con amazon_progress success=1 y PUBLISHED, daba (0, [])).
+# `meli.py` siempre lo hizo al revés (FROM ml_progress) — por eso Mercado Libre
+# sí aparecía y Amazon no. Ahora los dos espejan el mismo patrón, y `productos`
+# queda como fuente OPCIONAL de nombre/precio vía COALESCE.
 _SQL_LISTAR = """
-    SELECT  p.sku,
-            p.wc_id,
+    SELECT  ap.sku,
+            COALESCE(p.wc_id, ap.wc_id)      AS wc_id,
             p.odoo_id,
-            p.nombre,
+            COALESCE(p.nombre, ap.sku)       AS nombre,
             p.stock_odoo,
             p.precio,
             ap.asin,
@@ -34,10 +45,10 @@ _SQL_LISTAR = """
             ap.status,
             ap.success      AS publicado,
             ap.published_at
-    FROM productos p
-    LEFT JOIN amazon_progress ap ON ap.sku = p.sku
+    FROM amazon_progress ap
+    LEFT JOIN productos p ON p.sku = ap.sku
     WHERE (%(solo_publicados)s = 0 OR ap.success = 1)
-      AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR p.sku LIKE %(like)s)
+      AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR ap.sku LIKE %(like)s)
       __ESTADO__
       __SKUS__
     ORDER BY __ORDEN__
@@ -46,10 +57,10 @@ _SQL_LISTAR = """
 
 _SQL_COUNT = """
     SELECT COUNT(*) AS total
-    FROM productos p
-    LEFT JOIN amazon_progress ap ON ap.sku = p.sku
+    FROM amazon_progress ap
+    LEFT JOIN productos p ON p.sku = ap.sku
     WHERE (%(solo_publicados)s = 0 OR ap.success = 1)
-      AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR p.sku LIKE %(like)s)
+      AND (%(search)s IS NULL OR p.nombre LIKE %(like)s OR ap.sku LIKE %(like)s)
       __ESTADO__
       __SKUS__
 """
@@ -64,9 +75,34 @@ def _clausula_skus(skus_filtro: list[str] | None, prefijo: str) -> tuple[str, di
     params: dict[str, Any] = {}
     for i, t in enumerate(terminos):
         clave = f"{prefijo}{i}"
-        piezas.append(f"(p.nombre LIKE %({clave})s OR p.sku LIKE %({clave})s)")
+        piezas.append(f"(p.nombre LIKE %({clave})s OR ap.sku LIKE %({clave})s)")
         params[clave] = f"%{t}%"
     return f"AND ({' OR '.join(piezas)})", params
+
+
+def por_sku(sku: str) -> dict[str, Any] | None:
+    """
+    La publicación de Amazon de ESE SKU exacto, o None.
+
+    POR QUÉ EXISTE (auditoría 29-jul). El detalle 360° usaba
+    `listar(search=sku, per_page=1)`, y `search` se traduce a `LIKE %sku%`. Con
+    SKUs que son prefijo de otros (medido: **693** SKUs distintos lo son; el peor,
+    `TEC-0377`, tiene 102 descendientes), el LIKE capturaba a los hijos y
+    `per_page=1` se quedaba con UNO ARBITRARIO. Resultado: el panel pintaba el
+    ASIN, el precio y el stock **de otro producto** como si fueran de éste.
+    Comprobado: `listar(search='ACC-0091', per_page=1)` devolvía `ACC-0091-AST-PLA`.
+
+    Un detalle NUNCA debe resolverse con búsqueda difusa.
+    """
+    filas = db.fetch_all(
+        _SQL_LISTAR
+        .replace("__ESTADO__", "AND ap.sku = %(sku_exacto)s")
+        .replace("__SKUS__", "")
+        .replace("__ORDEN__", "ap.published_at DESC"),
+        {"solo_publicados": 0, "search": None, "like": None,
+         "sku_exacto": sku, "limit": 1, "offset": 0},
+    )
+    return _normalizar(filas[0]) if filas else None
 
 
 def _normalizar(row: dict[str, Any]) -> dict[str, Any]:
@@ -198,7 +234,14 @@ async def precios_por_sku(skus: list[str]) -> dict[str, float]:
                 lote = skus[i : i + 20]
                 r = await cli.get(
                     "/products/pricing/v0/price",
-                    params={"MarketplaceId": mp, "ItemType": "Sku", "Skus": lote},
+                    # `Skus` va SEPARADO POR COMAS. httpx serializa una lista de
+                    # Python como parámetros REPETIDOS (Skus=A&Skus=B&…) y SP-API
+                    # responde 200 pero solo honra el PRIMERO: de cada lote de 20
+                    # volvía 1 item. Medido: misma lista con lista → 1 item; con
+                    # join(",") → 20 items. Techo de 4 precios por corrida contra
+                    # 80 SKUs — por eso el caché tenía 1,628 de 1,660 sin precio.
+                    params={"MarketplaceId": mp, "ItemType": "Sku",
+                            "Skus": ",".join(lote)},
                     headers=headers,
                 )
                 if r.status_code != 200:

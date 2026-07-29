@@ -22,7 +22,7 @@ function precioMXN(v: number | null): string {
   return new Intl.NumberFormat("es-MX", {
     style: "currency",
     currency: "MXN",
-    maximumFractionDigits: 0,
+    minimumFractionDigits: 2, maximumFractionDigits: 2,   // precios SIEMPRE con 2 decimales (Brandon, 29-jul)
   }).format(v);
 }
 

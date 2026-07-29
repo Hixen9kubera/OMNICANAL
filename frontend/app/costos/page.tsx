@@ -28,7 +28,7 @@ const mxnToUsd = (v: number | null | undefined, tc: number) =>
 
 function precioMXN(v: number | null | undefined): string {
   if (v === null || v === undefined) return "—";
-  return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(v);
+  return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
 }
 const dims = (r: CostoRow) =>
   r.largo && r.ancho && r.alto ? `${r.largo}×${r.ancho}×${r.alto}` : "—";

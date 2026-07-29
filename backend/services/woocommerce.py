@@ -1413,11 +1413,21 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
 
 
 async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
+    variantes: list[dict[str, Any]] = []
     try:
         async with _client() as cli:
             r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,type,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
             r.raise_for_status()
             data = r.json()
+            # STOCK DE PADRE VARIABLE (auditoría 29-jul). En WooCommerce un
+            # producto `variable` NO gestiona stock en el padre
+            # (`_manage_stock='no'`), así que `stock_quantity` viene SIEMPRE null
+            # y el detalle 360° pintaba "—" aunque hubiera piezas.
+            # Medido con HERR-0375: el padre daba None y sus variantes tenían
+            # 160 + 0. `listar_productos` ya resolvía bien esto con
+            # `stock_de_padre`; esta función se había quedado sin la regla.
+            if data and data[0].get("type") == "variable":
+                variantes = (await variantes_de_productos(cli, [data[0]]))[0]
     except Exception as exc:  # noqa: BLE001
         log.warning("WooCommerce obtener_producto_por_sku(%s) falló: %s", sku, exc)
         return None
@@ -1440,11 +1450,12 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
         "precio": _to_float(p.get("price")),
         "precio_base": _to_float(p.get("regular_price")),
         "precio_oferta": _to_float(p.get("sale_price")),
-        "stock": p.get("stock_quantity"),
+        "stock": stock_de_padre(p, variantes),
         "estado": p.get("status"),
         "categoria_path": ruta,
         "categoria_id": ruta[-1]["id"] if ruta else None,
         "url": p.get("permalink"),
+        "variantes": variantes,
     }
 
 
