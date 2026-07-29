@@ -2726,6 +2726,41 @@ está DISCOVERABLE = dormido y se omite a propósito).
 `FULL_WATCH_ENABLED` sigue **apagado**; `FULL_WATCH_SOLO_REGISTRO` en `true`.
 El fan-out DROP sigue **encendido y escribiendo**. Versión 0.24.0.
 
+### 2026-07-29 — Estudio: los campos de precio/costo dejan de ser una trampa (Eduardo)
+
+**Incidente `TEC-2352-GRI`.** Se escribió `629` en "Precio regular" del Estudio,
+se pulsó Guardar (dijo "Contenido guardado en WooCommerce") y al publicar salió
+en ML a **$374.11** en ambas cuentas (`ml_backlog` #5785/#5786 con
+`"price": 374.11`, MLM3214874713 y MLM3214887995, pausadas). El 629 nunca
+existió: Woo conservó `_regular_price` 374.11 / `_sale_price` 314.25.
+
+Cadena del defecto — tres eslabones, todos en `ProductStudio.tsx`:
+
+1. Los campos "Precio regular / Precio oferta / Costo" eran **inputs editables**
+   dentro de una sección que el propio código rotulaba `(solo lectura)`: un
+   espejo de Woo disfrazado de formulario.
+2. `guardarContenidoWoo()` manda **solo** `titulo`, `descripcion` y `atributos`
+   — el precio no viaja a ningún endpoint. Y tampoco entra al borrador local
+   (ese cubre título/descripción/atributos), así que vivía solo en estado React.
+3. El `useEffect` de metadata hace `setCampos({...})` de **reemplazo completo**;
+   el `onGuardado?.()` posterior al guardado recarga el producto y repuebla el
+   campo con el valor de Woo. Al publicar, `reqPublicar()` ya mandaba el viejo
+   (y `construir_prod` cae igual a `_regular_price` si llega vacío).
+
+**Arreglo:** `Campo` acepta `soloLectura` y pinta el valor como espejo (mismo
+look que Stock, ya probado en esa misma grid) con la nota "Se cambia en COSTOS
+↓". Se retiró el botón **"Usar como precio"** del panel de competencia: tenía el
+mismo defecto — escribía el campo fantasma, parecía aplicado y se publicaba el
+precio viejo; su nota ahora dirige a ajustar costo/margen en COSTOS.
+
+El precio en este sistema es un valor **derivado** (costo + margen + comisión +
+envío): su único escritor sancionado es **COSTOS → "Guardar costo y precios"**,
+que recalcula, persiste en `costos_finales` y sincroniza a Woo (regular/oferta,
+replicando a variantes). Ahora la UI lo refleja en vez de contradecirlo.
+
+Sin cambio de versión: `backend/main.py` estaba con trabajo sin commitear de
+otra sesión (router `fulfillment`) y bumpear ahí habría arrastrado su WIP.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

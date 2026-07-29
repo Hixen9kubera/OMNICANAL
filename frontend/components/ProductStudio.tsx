@@ -1028,14 +1028,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                             rango {precioMXN(competencia.rango.min)}–{precioMXN(competencia.rango.max)} · mediana {precioMXN(competencia.rango.mediana)}
                           </span>
                         )}
-                        {competencia.precio_sugerido != null && (
-                          <button
-                            onClick={() => setCampo("precioRegular", String(competencia.precio_sugerido))}
-                            className="rounded-lg bg-amber-500 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-600"
-                          >
-                            Usar como precio
-                          </button>
-                        )}
+                        {/* "Usar como precio" se retiró: solo escribía el campo
+                            espejo, que no persiste y se repuebla desde Woo — el
+                            precio parecía aplicado y se publicaba el viejo. */}
                       </div>
                       {competencia.razonamiento && <p className="text-xs leading-relaxed text-slate-600">{competencia.razonamiento}</p>}
                       {competencia.aviso && <p className="text-[11px] italic text-amber-600">⚠ {competencia.aviso}</p>}
@@ -1052,7 +1047,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                           </ul>
                         </details>
                       )}
-                      <p className="text-[11px] text-slate-400">Solo informativo — no cambia el precio salvo que pulses “Usar como precio”.</p>
+                      <p className="text-[11px] text-slate-400">Solo informativo — no cambia el precio. Para aplicarlo, ajusta costo o margen en <strong>COSTOS</strong> y pulsa <strong>Guardar costo y precios</strong>.</p>
                     </div>
                   ) : (
                     <div className="px-4 py-3 text-sm text-amber-700">{competencia.motivo ?? "No se pudo calcular."}</div>
@@ -1355,11 +1350,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 </section>
               )}
 
-              {/* PRECIOS + COSTO + STOCK (solo lectura) */}
+              {/* PRECIOS + COSTO + STOCK — ESPEJO de WooCommerce, no editable.
+                  El precio es un valor DERIVADO (costo + margen + comisión +
+                  envío): se cambia abajo en COSTOS, que recalcula, persiste en
+                  costos_finales y sincroniza a Woo. */}
               <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <Campo label="Precio regular" prefijo="$" value={campos.precioRegular} onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento} />
-                <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta} onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
-                <Campo label="Costo" prefijo="$" value={campos.costo} onChange={(v) => setCampo("costo", v)} acento={tema.acento} />
+                <Campo label="Precio regular" prefijo="$" value={campos.precioRegular} soloLectura acento={tema.acento}
+                  nota="Se cambia en COSTOS ↓" />
+                <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta} soloLectura acento={tema.acento}
+                  nota="Se cambia en COSTOS ↓" />
+                <Campo label="Costo" prefijo="$" value={campos.costo} soloLectura acento={tema.acento}
+                  nota="Se cambia en COSTOS ↓" />
                 <div>
                   <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
                     Stock <span className="normal-case text-slate-300">(solo lectura)</span>
@@ -1709,18 +1710,34 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   );
 }
 
-function Campo({ label, value, onChange, acento, prefijo }: {
-  label: string; value: string; onChange: (v: string) => void; acento: string; prefijo?: string;
+// `soloLectura` pinta el valor como espejo (mismo look que Stock) en vez de un
+// input: un campo que se ve editable pero cuyo valor no persiste en ningún lado
+// es una trampa — TEC-2352-GRI se publicó en $374.11 con $629 escrito en
+// pantalla (29-jul-2026). Los precios/costo solo se escriben desde COSTOS.
+function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota }: {
+  label: string; value: string; onChange?: (v: string) => void; acento: string;
+  prefijo?: string; soloLectura?: boolean; nota?: string;
 }) {
   return (
     <div>
-      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">{label}</label>
-      <div className="relative">
-        {prefijo && <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">{prefijo}</span>}
-        <input value={value} onChange={(e) => onChange(e.target.value)}
-          className={["w-full rounded-lg border border-slate-200 py-2.5 text-sm text-slate-800 outline-none focus:ring-2", prefijo ? "pl-7 pr-3" : "px-3"].join(" ")}
-          style={{ outlineColor: acento }} />
-      </div>
+      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+        {label}
+        {soloLectura && <span className="normal-case text-slate-300"> (solo lectura)</span>}
+      </label>
+      {soloLectura ? (
+        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700">
+          {prefijo && <span className="text-xs font-normal text-slate-400">{prefijo}</span>}
+          {value.trim() || "—"}
+        </div>
+      ) : (
+        <div className="relative">
+          {prefijo && <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">{prefijo}</span>}
+          <input value={value} onChange={(e) => onChange?.(e.target.value)}
+            className={["w-full rounded-lg border border-slate-200 py-2.5 text-sm text-slate-800 outline-none focus:ring-2", prefijo ? "pl-7 pr-3" : "px-3"].join(" ")}
+            style={{ outlineColor: acento }} />
+        </div>
+      )}
+      {nota && <p className="mt-1 text-[10px] text-slate-400">{nota}</p>}
     </div>
   );
 }
