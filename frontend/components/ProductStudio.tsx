@@ -232,6 +232,15 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const [guardandoCosto, setGuardandoCosto] = useState(false);
   const [costoMsg, setCostoMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
+  // Precio escrito a mano: `preciosTocados` (ref) protege lo tecleado de la
+  // metadata que llega async, y `preciosEditados` (estado) muestra el botón de
+  // guardar. Sin esa protección, la respuesta del fetch pisaba el precio recién
+  // escrito y se publicaba el viejo — el caso TEC-2352-GRI del 29-jul-2026.
+  const preciosTocados = useRef(false);
+  const [preciosEditados, setPreciosEditados] = useState(false);
+  const [guardandoPrecios, setGuardandoPrecios] = useState(false);
+  const [precioMsg, setPrecioMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
   const cargandoCampos = useRef(false);
 
   // ── Tema del canal seleccionado ────────────────────────────────────
@@ -320,18 +329,27 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         setGtin((g) => g || (m.gtin ?? ""));
         setGtinGuardado(m.gtin ?? null);
         const d = m.dinero || ({} as StudioMetadata["dinero"]);
-        setCampos({
-          precioRegular: str(d.precio_regular),
-          precioOferta: str(d.precio_oferta),
+        // Este fetch llega DESPUÉS de abrir el modal: si el usuario ya escribió
+        // un precio, respetarlo — antes lo pisaba en silencio.
+        setCampos((prev) => ({
+          precioRegular: preciosTocados.current ? prev.precioRegular : str(d.precio_regular),
+          precioOferta: preciosTocados.current ? prev.precioOferta : str(d.precio_oferta),
           costo: str(d.costo),
           alibabaUrl: m.alibaba_url ?? "",
           alibabaPrecio: str(m.alibaba_precio),
           peso: str(d.peso), largo: str(d.largo), ancho: str(d.ancho), alto: str(d.alto),
-        });
+        }));
       })
       .catch(() => setMeta(null));
     return () => ctrl.abort();
   }, [sku, producto?.wc_id]);
+
+  // Al cambiar de producto, el precio tecleado deja de aplicar.
+  useEffect(() => {
+    preciosTocados.current = false;
+    setPreciosEditados(false);
+    setPrecioMsg(null);
+  }, [sku]);
 
   // Fallback: si el postmeta no trajo precios, usa los del detalle (WooCommerce).
   useEffect(() => {
@@ -452,7 +470,13 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     }
   }, [gtin, gtinGuardado, meta?.wc_id, producto?.wc_id]);
 
-  const setCampo = (k: keyof Campos, v: string) => setCampos((c) => ({ ...c, [k]: v }));
+  const setCampo = (k: keyof Campos, v: string) => {
+    if (k === "precioRegular" || k === "precioOferta") {
+      preciosTocados.current = true;   // protege lo tecleado del fetch de metadata
+      setPreciosEditados(true);        // y saca el botón "Guardar precios"
+    }
+    setCampos((c) => ({ ...c, [k]: v }));
+  };
   const setAtributo = (i: number, valor: string) =>
     setAtributos((a) => a.map((x, j) => (j === i ? { ...x, valor } : x)));
   const setBullet = (i: number, v: string) =>
@@ -577,6 +601,12 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
 
   // Refleja el cálculo en los campos que usa el resto del modal (publicar).
   const sincronizarCampos = (c: Partial<CostoCalculo>) => {
+    // El cálculo acaba de escribir los precios (Regenerar / Guardar costo):
+    // manda sobre lo tecleado, así que ya no queda precio a mano pendiente.
+    if (c.precio_base != null || c.precio_sugerido != null) {
+      preciosTocados.current = false;
+      setPreciosEditados(false);
+    }
     setCampos((p) => ({
       ...p,
       costo: c.costo_unitario != null ? String(c.costo_unitario) : p.costo,
@@ -599,6 +629,52 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       setCostoMsg({ ok: false, texto: "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría." });
     } finally {
       setRegenerando(false);
+    }
+  }
+
+  // Precio fijado A MANO. Va por el MISMO escritor que "Guardar costo y
+  // precios" (costos_finales + WooCommerce, replicando a variantes): el panel
+  // lee el precio de costos_finales, así que escribir solo en Woo dejaría el
+  // Estudio mostrando el viejo. El backend recalcula el desglose con este
+  // precio, y "Regenerar" abajo lo vuelve a derivar del costo si hace falta.
+  async function guardarPrecios() {
+    if (!sku) return;
+    setGuardandoPrecios(true);
+    setPrecioMsg(null);
+    try {
+      const r = await costoGuardar(sku, {
+        ...overridesCosto(),
+        precio_base: numOrNull(campos.precioRegular),
+        precio_sugerido: numOrNull(campos.precioOferta),
+        sincronizar_woo: true,
+      });
+      const f = r.finales as Record<string, unknown>;
+      const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
+      const merged: Partial<CostoCalculo> = {
+        ...(costoCalc ?? {}),
+        costo_comision: num(f.costo_comision),
+        costo_fee_envio: num(f.costo_fee_envio),
+        precio_base: num(f.precio_base),
+        precio_sugerido: num(f.precio_sugerido),
+      };
+      setCostoCalc(merged);
+      preciosTocados.current = false;
+      setPreciosEditados(false);
+      sincronizarCampos(merged);
+      setPrecioMsg({
+        ok: true,
+        texto: r.sincronizado_woo
+          ? "Precio guardado y sincronizado con WooCommerce."
+          : "Precio guardado (no se pudo sincronizar con WooCommerce).",
+      });
+      onGuardado?.();
+    } catch {
+      setPrecioMsg({
+        ok: false,
+        texto: "No se pudo guardar el precio. Si el SKU aún no tiene costo capturado, regístralo primero en COSTOS.",
+      });
+    } finally {
+      setGuardandoPrecios(false);
     }
   }
 
@@ -1350,26 +1426,56 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 </section>
               )}
 
-              {/* PRECIOS + COSTO + STOCK — ESPEJO de WooCommerce, no editable.
-                  El precio es un valor DERIVADO (costo + margen + comisión +
-                  envío): se cambia abajo en COSTOS, que recalcula, persiste en
-                  costos_finales y sincroniza a Woo. */}
-              <section className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <Campo label="Precio regular" prefijo="$" value={campos.precioRegular} soloLectura acento={tema.acento}
-                  nota="Se cambia en COSTOS ↓" />
-                <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta} soloLectura acento={tema.acento}
-                  nota="Se cambia en COSTOS ↓" />
-                <Campo label="Costo" prefijo="$" value={campos.costo} soloLectura acento={tema.acento}
-                  nota="Se cambia en COSTOS ↓" />
-                <div>
-                  <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-                    Stock <span className="normal-case text-slate-300">(solo lectura)</span>
-                  </label>
-                  <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700">
-                    {meta?.stock != null ? meta.stock : "—"}
-                    <span className="text-xs font-normal text-slate-400">u</span>
+              {/* PRECIOS + COSTO + STOCK.
+                  Los dos precios SÍ se editan aquí y "Guardar precios" los
+                  persiste (costos_finales + WooCommerce, mismo escritor que
+                  COSTOS). El precio a mano manda sobre el derivado del costo
+                  hasta que alguien pulse Regenerar abajo.
+                  Costo y Stock son espejo: el costo se edita en COSTOS ↓ como
+                  "Costo producto (USD)"; el stock lo manda Woo. */}
+              <section className="space-y-3">
+                <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                  <Campo label="Precio regular" prefijo="$" value={campos.precioRegular}
+                    onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento}
+                    nota="Se publica en ML" />
+                  <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta}
+                    onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
+                  <Campo label="Costo" prefijo="$" value={campos.costo} soloLectura acento={tema.acento}
+                    nota="Se cambia en COSTOS ↓" />
+                  <div>
+                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                      Stock <span className="normal-case text-slate-300">(solo lectura)</span>
+                    </label>
+                    <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-bold text-slate-700">
+                      {meta?.stock != null ? meta.stock : "—"}
+                      <span className="text-xs font-normal text-slate-400">u</span>
+                    </div>
                   </div>
                 </div>
+
+                {preciosEditados && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3">
+                    <button
+                      onClick={guardarPrecios}
+                      disabled={guardandoPrecios || !data}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                      style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
+                    >
+                      {guardandoPrecios ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+                      {guardandoPrecios ? "Guardando…" : "Guardar precios"}
+                    </button>
+                    {precioMsg ? (
+                      <div className={["mt-2 flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", precioMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
+                        {precioMsg.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                        {precioMsg.texto}
+                      </div>
+                    ) : (
+                      <p className="mt-1.5 text-center text-[11px] text-amber-700">
+                        Cambiaste el precio: sin guardar, <strong>se publica el anterior</strong>.
+                      </p>
+                    )}
+                  </div>
+                )}
               </section>
 
               {/* COSTOS — dims de pieza → CBM → costo → precios */}

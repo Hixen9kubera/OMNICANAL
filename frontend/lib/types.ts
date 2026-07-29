@@ -382,6 +382,9 @@ export interface CostoOverrides {
   margen?: number;
   auto_cbm?: boolean;
   sincronizar_woo?: boolean;
+  // Precio fijado a mano en el Estudio: manda sobre el derivado del costo.
+  precio_base?: number | null;      // "Precio regular" (el que publica ML)
+  precio_sugerido?: number | null;  // "Precio oferta"
 }
 
 // ── Mejorar con IA (un botón por canal) ──────────────────────────────

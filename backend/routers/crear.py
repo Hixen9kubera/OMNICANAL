@@ -476,6 +476,11 @@ class RecalcularCostos(BaseModel):
     peso: float | None = None
     ml_cat_id: str | None = None
     pct_comision: float | None = None  # comisión ML manual (decimal, ej. 0.15)
+    # Precio FIJADO A MANO en el Estudio: manda sobre el derivado del costo.
+    # precio_base = "Precio regular" (el que se publica en ML, regla de la casa);
+    # precio_sugerido = "Precio oferta". Con uno basta: el otro se deriva.
+    precio_base: float | None = None
+    precio_sugerido: float | None = None
     incluir_envio: bool = True
     margen: float = costos.MARGEN_DEFAULT
     # auto_cbm: deriva costo_cbm de las dims (× tarifa) salvo que venga explícito.

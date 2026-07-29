@@ -2761,6 +2761,42 @@ replicando a variantes). Ahora la UI lo refleja en vez de contradecirlo.
 Sin cambio de versión: `backend/main.py` estaba con trabajo sin commitear de
 otra sesión (router `fulfillment`) y bumpear ahí habría arrastrado su WIP.
 
+### v0.33.0 — El precio SÍ se edita desde el Estudio (y se guarda de verdad)
+
+Corrección de rumbo sobre lo anterior: la intención de Lalo era **poder fijar el
+precio desde el Estudio**, no cerrar el campo. Volvió a ser editable, pero ahora
+persiste — que era lo que faltaba.
+
+**Backend.** `costos.aplicar_precio_manual()`: si llegan `precio_base` y/o
+`precio_sugerido` como override, el precio escrito a mano MANDA sobre el
+derivado del costo, y el desglose se rehace **hacia atrás** (comisión, IVA,
+ganancia, ROI). Clave: el **fee de envío se re-evalúa**, porque en ML depende
+del precio — en la prueba, subir 374.11 → 629 mueve el flete de $0 a $84.50; sin
+recalcularlo, la ganancia mostrada saldría inflada en esos $84.50. Con dar uno
+de los dos precios basta: el otro sale de la misma relación `DESCUENTO_BASE`.
+Valores 0/vacíos/no numéricos se ignoran (el cálculo queda intacto).
+`RecalcularCostos` expone los dos campos; `_preparar_base` los ignora por su
+whitelist, así que no ensucian `costos_validados`.
+
+**Frontend.** "Precio regular" y "Precio oferta" vuelven a ser editables (Costo
+y Stock siguen siendo espejo: el costo se edita en COSTOS como "Costo producto
+(USD)"). Al tocarlos aparece **"Guardar precios"**, que va por el MISMO escritor
+que "Guardar costo y precios" → `costos_finales` + WooCommerce (replicando a
+variantes). Esto es obligatorio, no cosmético: el Estudio lee el precio de
+`costos_finales` ([studio.py](backend/services/studio.py)), así que escribir
+solo en Woo dejaría el panel mostrando el viejo — la misma trampa otra vez.
+
+**La causa raíz, atacada aparte:** el `useEffect` de metadata hacía
+`setCampos({...})` de reemplazo y llega DESPUÉS de abrir el modal — si escribías
+rápido, te pisaba el precio en silencio. Ahora un ref `preciosTocados` protege lo
+tecleado, y mientras haya un precio sin guardar la UI avisa: *"Cambiaste el
+precio: sin guardar, se publica el anterior"*. `Regenerar` / `Guardar costo y
+precios` siguen mandando (recalculan desde el costo y limpian el precio manual).
+
+Limitación conocida: fijar precio requiere que el SKU tenga costo capturado (el
+cálculo necesita `costo_unitario > 0`); si no, el endpoint responde 422 y el
+modal dice que primero se registre el costo en COSTOS. Versión 0.33.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

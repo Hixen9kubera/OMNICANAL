@@ -286,6 +286,61 @@ def calcular_pricing(costo_unitario: float, cat_id: str,
     }
 
 
+def aplicar_precio_manual(pricing: dict[str, Any], base: dict[str, Any],
+                          overrides: dict[str, Any] | None,
+                          incluir_envio: bool = True) -> dict[str, Any]:
+    """
+    Un precio ESCRITO A MANO en el Estudio MANDA sobre el derivado del costo.
+
+    El precio normalmente se deriva (costo → margen → comisión → envío), pero el
+    panel permite fijarlo. Cuando eso pasa NO basta con cambiar el número: hay
+    que rehacer el desglose HACIA ATRÁS (comisión, IVA, ganancia, ROI) o la
+    pantalla mostraría la utilidad del precio calculado, no la del real. El fee
+    de envío se re-evalúa porque en ML depende del precio.
+
+    Basta con dar uno de los dos: el otro sale de la misma relación
+    DESCUENTO_BASE que usa el cálculo normal.
+    """
+    def _pos(v: Any) -> float | None:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if f > 0 else None
+
+    pb = _pos((overrides or {}).get("precio_base"))
+    ps = _pos((overrides or {}).get("precio_sugerido"))
+    if pb is None and ps is None:
+        return pricing
+    if ps is None:
+        ps = round(pb * (1 - DESCUENTO_BASE), 2)
+    if pb is None:
+        pb = round(ps / (1 - DESCUENTO_BASE), 2)
+
+    costo_unitario = float(base.get("costo_unitario") or 0)
+    fee_envio = pricing["costo_fee_envio"]
+    if incluir_envio:
+        peso_efectivo, _ = _peso_efectivo(
+            base.get("peso") or 0, base.get("largo") or 0,
+            base.get("ancho") or 0, base.get("alto") or 0)
+        fee_envio = calc_fee_envio_ml(peso_efectivo, ps)
+    precio_sin_iva = ps / (1.0 + IVA_RATE)
+    costo_comision = round(precio_sin_iva * pricing["pct_comision"], 2)
+    iva_mnt = round(ps - precio_sin_iva, 2)
+    ganancia_neta = round(ps - costo_comision - fee_envio - iva_mnt - costo_unitario, 2)
+    return {
+        **pricing,
+        "precio_sugerido": ps,
+        "precio_base": pb,
+        "costo_fee_envio": fee_envio,
+        "costo_comision": costo_comision,
+        "iva_mnt": iva_mnt,
+        "ganancia_neta": ganancia_neta,
+        "roi": round(ganancia_neta / costo_unitario, 4) if costo_unitario else 0.0,
+        "precio_manual": True,
+    }
+
+
 # ── Lectura de costos base desde costos_validados ───────────────────────────────
 
 def costo_desde_validados(sku: str) -> dict[str, Any] | None:
@@ -481,6 +536,8 @@ def computar(sku: str, overrides: dict[str, Any] | None = None,
     )
     if not pricing:
         return None
+    # Un precio fijado a mano en el Estudio pisa al calculado (y rehace el desglose).
+    pricing = aplicar_precio_manual(pricing, base, overrides, incluir_envio)
     return {
         "sku": sku,
         "costo_producto": base.get("costo_producto"),
