@@ -2797,6 +2797,24 @@ Limitación conocida: fijar precio requiere que el SKU tenga costo capturado (el
 cálculo necesita `costo_unitario > 0`); si no, el endpoint responde 422 y el
 modal dice que primero se registre el costo en COSTOS. Versión 0.33.0.
 
+### v0.33.1 — "Guardar costo y precios" conserva el precio puesto a mano
+
+Quedaban DOS botones que guardaban precios con semánticas opuestas: el nuevo
+"Guardar precios" respetaba lo tecleado y "Guardar costo y precios" lo
+recalculaba y lo pisaba. Observación de Lalo, y tenía razón: el botón que dice
+guardar debe guardar **lo que se ve**. Ahora `guardarCosto()` reenvía el precio
+manual como override cuando el usuario tocó los campos, así que los tres
+controles quedan sin ambigüedad:
+
+| Control | Qué hace con el precio |
+|---|---|
+| **Guardar precios** (junto a los campos) | Guarda el precio que escribiste. Atajo sin bajar a COSTOS |
+| **Guardar costo y precios** (COSTOS) | Guarda costo, dims **y** tu precio si lo fijaste; si no lo tocaste, el derivado |
+| **Regenerar costo** (COSTOS) | Vuelve a derivar el precio del costo — es el modo de DESCARTAR el precio manual |
+
+El texto de ayuda bajo los botones ahora lo dice explícitamente, para que
+"Regenerar" no borre un precio sin avisar. Versión 0.33.1.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

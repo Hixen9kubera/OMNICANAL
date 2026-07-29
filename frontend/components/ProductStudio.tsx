@@ -683,7 +683,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     setGuardandoCosto(true);
     setCostoMsg(null);
     try {
-      const r = await costoGuardar(sku, { ...overridesCosto(), sincronizar_woo: true });
+      // Guarda LO QUE SE VE: si el usuario fijó un precio a mano, se respeta en
+      // vez de recalcularlo. Dos botones que guardan precios con semánticas
+      // opuestas confundían — para volver al precio derivado está "Regenerar".
+      const r = await costoGuardar(sku, {
+        ...overridesCosto(),
+        ...(preciosTocados.current ? {
+          precio_base: numOrNull(campos.precioRegular),
+          precio_sugerido: numOrNull(campos.precioOferta),
+        } : {}),
+        sincronizar_woo: true,
+      });
       const f = r.finales as Record<string, unknown>;
       const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
       const merged: Partial<CostoCalculo> = {
@@ -1582,7 +1592,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   </div>
                 )}
                 <p className="text-[11px] text-slate-400">
-                  <strong>Regenerar</strong> recalcula sin escribir. <strong>Guardar</strong> persiste en la base y actualiza WooCommerce (precio regular/oferta, costo, peso y dimensiones).
+                  <strong>Regenerar</strong> recalcula sin escribir — y descarta el precio que hayas puesto a mano arriba, volviendo al derivado del costo.
+                  {" "}<strong>Guardar</strong> persiste en la base y actualiza WooCommerce (precio regular/oferta, costo, peso y dimensiones); si fijaste un precio arriba, guarda <strong>ese</strong>.
                 </p>
               </section>
 
