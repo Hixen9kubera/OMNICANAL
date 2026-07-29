@@ -107,6 +107,60 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("No se pudo actualizar ml_progress (%s): %s", backlog_key, exc)
+        _marcar_publicado_en_woo(sku, wc_id)
+
+
+def _marcar_publicado_en_woo(sku: str, wc_id: int | None) -> None:
+    """
+    Si el producto sigue en `draft`/`inprogress`, lo pasa a `publish`.
+
+    POR QUÉ (29-jul). Publicar en un canal NO tocaba el status de WooCommerce, y
+    el panel esconde los drafts: 100 productos acabaron VIVOS en un canal e
+    INVISIBLES en Productos y Omnicanal. No era teórico — `TEC-1841-ROS` estaba
+    en `draft` con stock 0 y **vendió** en ML FULL ($1,585.92, pedido WC #109551)
+    sin que nadie pudiera verlo en el panel.
+
+    Regla de Brandon (29-jul): publicado aunque sea en UNA cuenta ⇒ `publish` en
+    Woo. Quién lo publicó y en qué canales lo resuelve Omnicanal por presencia.
+
+    Nunca degrada un estado: solo sube desde draft/inprogress. Y nunca rompe la
+    publicación — si falla, se anota y ya (el canal ya quedó publicado).
+    """
+    if not wc_id:
+        return
+    try:
+        from services import wp_db, woocommerce
+        P = wp_db._prefix()
+        # La visibilidad la manda el PADRE cuando el SKU es una variación.
+        fila = wp_db._fetch_all(
+            f"""SELECT p.ID, p.post_type, p.post_parent, p.post_status,
+                       pa.post_status est_padre
+                FROM {P}posts p
+                LEFT JOIN {P}posts pa ON pa.ID = p.post_parent
+                WHERE p.ID = %s""", (int(wc_id),))
+        if not fila:
+            return
+        f = fila[0]
+        es_var = f["post_type"] == "product_variation" and f["post_parent"]
+        objetivo = int(f["post_parent"]) if es_var else int(f["ID"])
+        estado = f["est_padre"] if es_var else f["post_status"]
+        if estado not in ("draft", "inprogress"):
+            return
+        import asyncio
+
+        async def _put() -> None:
+            async with woocommerce._client() as cli:
+                await cli.put(f"/products/{objetivo}", json={"status": "publish"},
+                              timeout=60.0)
+
+        try:                       # ya hay loop (request de FastAPI)
+            asyncio.get_running_loop().create_task(_put())
+        except RuntimeError:       # hilo del pipeline, sin loop
+            asyncio.run(_put())
+        log.info("Woo %s (%s): %s → publish (publicado en un canal)",
+                 objetivo, sku, estado)
+    except Exception as exc:  # noqa: BLE001 — jamás rompe la publicación
+        log.warning("No se pudo marcar %s como publicado en Woo: %s", sku, exc)
 
 
 def configurar() -> None:
