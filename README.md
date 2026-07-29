@@ -2815,6 +2815,31 @@ controles quedan sin ambigüedad:
 El texto de ayuda bajo los botones ahora lo dice explícitamente, para que
 "Regenerar" no borre un precio sin avisar. Versión 0.33.1.
 
+### v0.33.2 — Prueba end-to-end en producción con TEC-2352-GRI (+ fix del acuse)
+
+Se ejercitó el flujo completo desde el panel real: abrir el Estudio, escribir
+**629** en Precio regular, pulsar **Guardar precios**. Resultado medido en las
+tres capas (antes → después):
+
+| Capa | Antes | Después |
+|---|---|---|
+| MySQL `costos_finales.precio_base` | 374.11 | **629.00** |
+| WooCommerce `_regular_price` (wc_id 100924) | 374.11 | **629.00** |
+| kubera `costing.costos_finales` (espejo) | 374.11 | **629.00** |
+
+Las tres con el mismo `updated_at` (18:29:54) — el dual-write viajó solo, así
+que la racha de actas de Costos no se rompe. Al reabrir el Estudio de cero, el
+campo carga 629 desde `costos_finales`: la persistencia es real, no de pantalla.
+`precio_sugerido` quedó en 314.25 porque solo se tocó el campo de arriba —
+"guarda lo que se ve" — y por eso comisión/flete no se movieron (se derivan del
+precio de oferta).
+
+**Defecto que destapó la prueba:** el bloque del acuse colgaba de
+`preciosEditados`, que se limpia al guardar bien → el "Precio guardado y
+sincronizado con WooCommerce" se desmontaba en el mismo instante en que debía
+leerse. Ahora el bloque sigue montado mientras haya mensaje (en gris, ya sin
+botón) y solo el botón depende de que haya cambios pendientes. Versión 0.33.2.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

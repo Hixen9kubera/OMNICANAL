@@ -1463,19 +1463,24 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   </div>
                 </div>
 
-                {preciosEditados && (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3">
-                    <button
-                      onClick={guardarPrecios}
-                      disabled={guardandoPrecios || !data}
-                      className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
-                      style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
-                    >
-                      {guardandoPrecios ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-                      {guardandoPrecios ? "Guardando…" : "Guardar precios"}
-                    </button>
+                {/* El bloque sigue montado mientras haya mensaje: si dependiera
+                    solo de `preciosEditados`, al guardar bien se desmontaría y
+                    el "Precio guardado…" se vería medio parpadeo. */}
+                {(preciosEditados || precioMsg) && (
+                  <div className={["rounded-xl border p-3", preciosEditados ? "border-amber-200 bg-amber-50/60" : "border-slate-200 bg-slate-50"].join(" ")}>
+                    {preciosEditados && (
+                      <button
+                        onClick={guardarPrecios}
+                        disabled={guardandoPrecios || !data}
+                        className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                        style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
+                      >
+                        {guardandoPrecios ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+                        {guardandoPrecios ? "Guardando…" : "Guardar precios"}
+                      </button>
+                    )}
                     {precioMsg ? (
-                      <div className={["mt-2 flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", precioMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
+                      <div className={["flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", preciosEditados ? "mt-2" : "", precioMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
                         {precioMsg.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
                         {precioMsg.texto}
                       </div>
