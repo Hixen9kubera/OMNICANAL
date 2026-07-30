@@ -193,7 +193,7 @@ async def listar_productos(
 
         elif usa_db:
             # Filtros/orden avanzados vía tabla `productos` → wc_ids → WooCommerce
-            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page, orden, estados, skus)
+            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page, orden, estados, skus, vista)
             if wc_ids:
                 r = await cli.get("/products", params={
                     **params, "include": ",".join(str(i) for i in wc_ids),
@@ -371,6 +371,76 @@ async def listar_categorias(limite: int = 300) -> list[dict[str, Any]]:
     return salida[:limite]
 
 
+def _buscar_wc_ids_wp(
+    search: str | None,
+    page: int,
+    per_page: int,
+    orden: str,
+    estados: list[str] | None,
+    skus: list[str] | None,
+    vista: str,
+) -> tuple[list[int], int]:
+    """
+    Búsqueda contra WordPress EN VIVO (wp_posts + wp_postmeta).
+
+    Busca por SKU o nombre, parcial, sobre los 7,151 productos reales — no sobre
+    los 5,381 de la tabla `productos`. Un SKU padre (`DEP-0018`) devuelve TODAS
+    sus variantes porque el LIKE las alcanza a todas.
+
+    El filtro de estado sale de `VISTAS`, así que cada pestaña ve lo suyo:
+    Productos publish/pending/ready, Crear draft/inprogress, Omnicanal todo.
+    """
+    from services import wp_db
+    P = wp_db._prefix()
+    where = ["p.post_type = 'product'", "p.post_status <> 'trash'"]
+    args: list[Any] = []
+
+    permitidos = VISTAS.get(vista, VISTAS["productos"])
+    if permitidos:
+        where.append(f"p.post_status IN ({','.join(['%s'] * len(permitidos))})")
+        args += sorted(permitidos)
+    if estados:                      # filtro explícito del panel (publicado/inactivo)
+        valores: list[str] = []
+        for e in estados:
+            valores += _ESTADOS_WC.get(e, [])
+        if valores:
+            where.append(f"p.post_status IN ({','.join(['%s'] * len(valores))})")
+            args += valores
+    if search:
+        where.append("(sk.meta_value LIKE %s OR p.post_title LIKE %s)")
+        like = f"%{search.strip()}%"
+        args += [like, like]
+    if skus:
+        terminos = [t.strip() for t in skus if t.strip()]
+        if terminos:
+            grupo = " OR ".join(["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos))
+            where.append(f"({grupo})")
+            for t in terminos:
+                args += [f"%{t}%", f"%{t}%"]
+
+    orden_sql = {
+        "stock_desc": "CAST(COALESCE(st.meta_value,0) AS SIGNED) DESC",
+        "stock_asc": "CAST(COALESCE(st.meta_value,0) AS SIGNED) ASC",
+        "precio_desc": "CAST(COALESCE(pr.meta_value,0) AS DECIMAL(12,2)) DESC",
+        "precio_asc": "CAST(COALESCE(pr.meta_value,0) AS DECIMAL(12,2)) ASC",
+    }.get(orden, "p.post_date DESC")
+
+    base = (f"""FROM {P}posts p
+                LEFT JOIN {P}postmeta sk ON sk.post_id=p.ID AND sk.meta_key='_sku'
+                LEFT JOIN {P}postmeta st ON st.post_id=p.ID AND st.meta_key='_stock'
+                LEFT JOIN {P}postmeta pr ON pr.post_id=p.ID AND pr.meta_key='_price'
+                WHERE {' AND '.join(where)}""")
+    try:
+        total = wp_db._fetch_all(f"SELECT COUNT(*) n {base}", tuple(args))[0]["n"]
+        filas = wp_db._fetch_all(
+            f"SELECT p.ID {base} ORDER BY {orden_sql} LIMIT %s OFFSET %s",
+            tuple(args) + (per_page, (page - 1) * per_page))
+        return [f["ID"] for f in filas], int(total)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("búsqueda en WordPress falló (%s); se usa la maestra", exc)
+        return [], 0
+
+
 def _buscar_wc_ids_db(
     search: str | None,
     page: int,
@@ -378,6 +448,7 @@ def _buscar_wc_ids_db(
     orden: str = "reciente",
     estados: list[str] | None = None,
     skus: list[str] | None = None,
+    vista: str = "productos",
 ) -> tuple[list[int], int]:
     """
     Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) + lista
@@ -387,10 +458,20 @@ def _buscar_wc_ids_db(
     (términos separados por coma — cada uno filtra Y busca a la vez: SKU
     completo, parcial o palabra del nombre).
     """
-    from services import db  # import local para evitar ciclos
+    from services import db, wp_db  # import local para evitar ciclos
 
-    # Drafts fuera desde el WHERE: la vista GENERAL los excluye siempre; si la
-    # maestra los contara, el total diría "1 producto" con la lista vacía.
+    # WordPress EN VIVO, no la tabla `productos` (30-jul).
+    # -----------------------------------------------------
+    # `productos` es el catálogo del robot KuberaPipelineV1.0, CONGELADO desde el
+    # 23-jul y con 5,381 de los 7,151 productos. Buscar ahí devolvía resultados
+    # INCOMPLETOS sin avisar: `DEP-0018` traía solo `DEP-0018-NEG` cuando en Woo
+    # existen esa y `DEP-0018-EST`. El usuario concluía "el producto no existe".
+    # Leyendo wp_posts/wp_postmeta se busca sobre el catálogo REAL y además se
+    # respeta la pestaña (Crear necesita ver drafts; Omnicanal, todo).
+    if wp_db.disponible():
+        return _buscar_wc_ids_wp(search, page, per_page, orden, estados, skus, vista)
+
+    # Respaldo: sin acceso directo a WordPress se usa la maestra (incompleta).
     where = ["wc_id IS NOT NULL", "(status_wc IS NULL OR status_wc <> 'draft')"]
     args: list[Any] = []
     if search:
