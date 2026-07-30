@@ -2999,6 +2999,37 @@ Dos pasos, en este orden:
 panel avanza sola desde el momento del encendido. Sigue pendiente el DROP vivo
 (F2).
 
+### v0.42.0 — F2: el DROP en vivo, y el acta deja de auditar un fósil (Eduardo)
+
+Última pieza para que ANÁLISIS esté completo en tiempo real. El canal `general`
+(bodega propia) mostraba stock del **24-jul** porque su fuente estaba muerta:
+`canal_inventario` dejó de observar ese canal el 14-jul y quedaron **20 filas
+fósiles**. La verdad de la bodega propia es `stock_watch_foto` — la foto de Woo
+que el vigilante de Brandon reescribe cada 20 min.
+
+1. **`channel_mirror.sincronizar_drop()`** — lee `stock_watch_foto` y la espeja
+   a `channel.listings` canal `general`, en bloque con `execute_values` (13k
+   SKUs fila por fila serían 13k viajes cada 20 min; así son 21 s). Solo viaja
+   `stock_own`: precio, situación y FULL son de los marketplaces y van NULL
+   para que el `coalesce` conserve lo que hubiera. Los SKUs con `stock_woo`
+   NULL se saltan — Woo no gestiona su stock y un 0 inventado sería peor que
+   callar. El `where ... is distinct from` lo hace idempotente: segunda pasada
+   = 0 cambios, sin ensuciar `channel.listing_history`.
+2. **Job propio en el scheduler** (`DROP_MIRROR_ENABLED`, cada 20 min) y no un
+   gancho al final de `stock_watch`: si el vigilante está apagado o su pasada
+   aborta (Odoo mudo), el DROP del panel debe refrescarse igual.
+3. **Regla 5 del acta de Channel** — `comparar_channel.py` deja de auditar el
+   canal `general` en AMBOS lados. Es la extensión de su regla 3 (NULL = no
+   observado) a un canal entero: comparar contra el fósil del 14-jul marcaría
+   divergente justo lo que se acaba de actualizar bien. Verificado en seco
+   contra producción antes y después de la carga: **0 divergencias las dos
+   veces**, canales comparados `['amazon','mercado_libre']`.
+
+Primera carga aplicada a producción: **12,942 SKUs, 1,103,767 piezas** — el
+total exacto de `stock_watch_foto`. Con esto el panel deja de mentir sobre lo
+que hay en bodega propia, que es justo el número del que depende el "enviable"
+del sugerido de reabasto.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

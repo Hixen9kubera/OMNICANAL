@@ -21,6 +21,13 @@ Reglas propias del dominio (distintas a costos):
      3 tablas (ml_progress + amazon_progress + canal_inventario); es normal y
      correcto que tenga listings que canal_inventario aún no conoce. No cuenta
      como delta. Lo que SÍ es delta es solo_en_mysql (el espejo perdió filas).
+  5. EL CANAL `general` NO SE AUDITA (F2, 30-jul) — es la extensión de la
+     regla 3 a un canal entero. canal_inventario dejó de observar la bodega
+     propia el 14-jul: quedaron 20 filas fósiles con el stock de ese día.
+     Desde F2 la verdad del DROP es `stock_watch_foto` (Woo, cada 20 min) y
+     la espeja `channel_mirror.sincronizar_drop()`. Comparar contra el fósil
+     marcaría divergente justo lo que se acaba de actualizar bien. Si algún
+     día canal_inventario vuelve a observar `general`, se quita esta regla.
 
 SOLO LECTURA sobre las tablas comparadas (su única escritura es el acta).
 Criterio de salida de la fase: 14 días consecutivos con delta = 0.
@@ -123,7 +130,8 @@ def leer_mysql(my_cur) -> tuple[dict, int, int]:
         """SELECT sku, canal, cuenta, item_id, precio, stock_real, stock_full,
                   stock_fba, es_full, situacion,
                   (updated_at >= NOW() - INTERVAL %s MINUTE) AS caliente
-           FROM canal_inventario""",
+           FROM canal_inventario
+          WHERE canal <> 'general'""",
         (VENTANA_CALIENTE_MIN,),
     )
     rows, calientes, invalidos = {}, 0, 0
@@ -144,7 +152,8 @@ def leer_pg(pg_cur) -> dict:
     pg_cur.execute(
         """select l.sku, l.canal, a.legacy_code, l.price, l.stock_own,
                   l.stock_full, l.is_fulfillment, l.situacion, l.listing_id
-           from channel.listings l join core.accounts a on a.id = l.account_id"""
+           from channel.listings l join core.accounts a on a.id = l.account_id
+          where l.canal <> 'general'"""
     )
     return {(str(r[0]).lower(), r[1], r[2]): (str(r[0]), _fila_pg(r[3:]))
             for r in pg_cur.fetchall()}

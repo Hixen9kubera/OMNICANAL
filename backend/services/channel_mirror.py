@@ -13,6 +13,14 @@ Mismas reglas que costing_mirror (el patrón probado):
   4. Identidad primero: SKUs que el maestro no conoce se registran solos.
   5. Flag propio del dominio: SUPABASE_DUAL_WRITE_CHANNEL (revertir = apagarlo),
      independiente del de costos para poder apagar uno sin el otro.
+
+F2 (30-jul) — el canal `general` (DROP, bodega propia) NO viene de
+canal_inventario: su fuente murió el 14-jul y quedaron 20 filas fósiles. Hoy la
+verdad de la bodega propia es `stock_watch_foto` (MySQL), que el vigilante de
+Brandon refresca cada 20 min contra Woo. `sincronizar_drop()` la espeja a
+channel.listings canal='general'. UNA fuente por campo: el sync de canales
+sigue SIN tocar `general`, y el acta de channel dejó de auditarlo (regla 5 de
+comparar_channel.py) porque MySQL ya no lo observa.
 """
 from __future__ import annotations
 
@@ -168,3 +176,77 @@ def backfill_situacion(situacion: str = "closed", canal: str | None = None,
     espejar_inventario([dict(f) for f in filas])
     return {"ok": True, "leidas": len(filas), "situacion": situacion,
             "canal": canal or "todos"}
+
+
+def sincronizar_drop(limite: int = 0) -> dict[str, Any]:
+    """F2 — Espeja la bodega PROPIA (DROP) a channel.listings canal='general'.
+
+    Fuente: `stock_watch_foto` en MySQL (sku, stock_woo), que el vigilante de
+    Brandon reescribe cada 20 min leyendo Woo. Es la ÚNICA verdad del stock
+    propio desde el 17-jul (Woo es fuente de verdad de inventario); el canal
+    `general` de canal_inventario murió el 14-jul y no se toca.
+
+    Solo viaja `stock_own`: precio, situación y FULL son de los marketplaces y
+    aquí van NULL para que el `coalesce` del upsert conserve lo que hubiera.
+    Los SKUs con `stock_woo` NULL se saltan — Woo no gestiona su stock, y un 0
+    inventado sería peor que no decir nada.
+
+    En bloque (execute_values): 13k SKUs fila por fila serían 13k viajes cada
+    20 min. El `where ... is distinct from` del upsert hace que los no-cambios
+    no toquen updated_at ni disparen el trigger de historia.
+    """
+    if not activo():
+        return {"ok": False, "motivo": "SUPABASE_DUAL_WRITE_CHANNEL apagado o sin DSN."}
+    from psycopg2.extras import execute_values
+
+    from services import db
+
+    cuenta_id = _cuenta_uuid("general", "")
+    if not cuenta_id:
+        return {"ok": False, "motivo": "core.accounts no tiene la cuenta GENERAL."}
+
+    sql = "SELECT sku, stock_woo FROM stock_watch_foto WHERE stock_woo IS NOT NULL"
+    if limite:
+        sql += f" LIMIT {int(limite)}"
+    with db.get_cursor() as cur:
+        cur.execute(sql)
+        crudas = cur.fetchall()
+
+    filas = []
+    for r in crudas:
+        sku = str(r["sku"] or "").strip()
+        if not sku or len(sku) > 100 or any(ch.isspace() for ch in sku):
+            continue  # mismos inválidos que descarta el espejo del sync
+        filas.append((sku, cuenta_id, "general", int(r["stock_woo"])))
+    if not filas:
+        return {"ok": True, "leidas": len(crudas), "escritas": 0, "cambiadas": 0}
+
+    cambiadas = 0
+    try:
+        with sdb.get_cursor() as cur:
+            cur.execute("select set_config('app.via', 'drop_watch', true)")
+            for i in range(0, len(filas), 1000):
+                lote = filas[i:i + 1000]
+                # Identidad primero (regla 4): un SKU de Woo que el maestro no
+                # conoce se registra solo, igual que en el espejo del sync.
+                execute_values(
+                    cur,
+                    "insert into core.products (sku, status, source) values %s "
+                    "on conflict (sku) do nothing",
+                    [(f[0], "draft", "drop-watch") for f in lote])
+                execute_values(
+                    cur,
+                    """insert into channel.listings
+                         (sku, account_id, canal, stock_own) values %s
+                       on conflict (sku, account_id, canal) do update set
+                         stock_own = excluded.stock_own
+                       where listings.stock_own is distinct from excluded.stock_own""",
+                    lote)
+                cambiadas += cur.rowcount
+    except Exception as exc:  # noqa: BLE001
+        log.warning("espejo DROP falló: %s", exc)
+        _registrar_issue(None, f"espejo drop fallo: {exc}")
+        return {"ok": False, "motivo": str(exc)[:300]}
+    log.info("espejo DROP: %d SKUs leídos, %d con cambio real", len(filas), cambiadas)
+    return {"ok": True, "leidas": len(crudas), "escritas": len(filas),
+            "cambiadas": cambiadas}

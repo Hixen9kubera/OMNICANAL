@@ -137,6 +137,22 @@ def iniciar() -> None:
         log.info("Vigilante de inventario cada %s min (solo_registro=%s, tope=%s).",
                  settings.stock_watch_min, settings.stock_watch_solo_registro,
                  settings.stock_watch_tope)
+    # F2 — Espejo del DROP: stock_watch_foto (Woo) → channel.listings 'general'.
+    # Job propio y NO un gancho al final de stock_watch: si el vigilante está
+    # apagado o su pasada aborta (Odoo mudo), el DROP del panel debe seguir
+    # refrescándose igual. Solo copia lo que Woo ya dice; no mueve inventario.
+    if getattr(settings, "drop_mirror_enabled", False) and settings.mysql_enabled:
+        from services import channel_mirror
+        _scheduler.add_job(
+            channel_mirror.sincronizar_drop,
+            "interval",
+            minutes=settings.drop_mirror_min,
+            id="drop_mirror",
+            next_run_time=datetime.now() + timedelta(seconds=90),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Espejo DROP → channel.listings cada %s min.", settings.drop_mirror_min)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no

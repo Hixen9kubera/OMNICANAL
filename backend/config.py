@@ -270,6 +270,13 @@ class Settings(BaseSettings):
     # avisa. Una edición masiva en Odoo no puede vaciar todos los canales.
     stock_watch_tope: int = 300
 
+    # ── F2: espejo del DROP (bodega propia) → channel.listings 'general' ──
+    # Lee stock_watch_foto (la que ya refresca el vigilante de arriba) y la
+    # espeja a la BD kubera. NO mueve inventario: solo copia lo que Woo ya
+    # dice, hacia el panel de Análisis. Nace apagado como todo flujo vivo.
+    drop_mirror_enabled: bool = False
+    drop_mirror_min: int = 20
+
     # ── Notificador de alertas a Slack (services/alertas.py) ───
     # Webhook entrante amarrado al canal #alertas-omnicanal. Sin URL, el
     # notificador entero es un no-op (apagable sin deploy). La URL es la llave
