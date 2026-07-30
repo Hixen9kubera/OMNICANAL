@@ -996,17 +996,92 @@ async def crear_borradores(items: list[dict[str, Any]]) -> dict[str, Any]:
                 log.warning("crear_borradores: lote %d falló: %s", i // 50 + 1, exc)
                 errores.extend({"sku": it["sku"], "error": str(exc)} for it in lote)
                 continue
+            reintentar: list[dict[str, Any]] = []
             for it, res in zip(lote, resultados):
                 err = res.get("error")
                 if err:
-                    errores.append({"sku": it["sku"], "error": err.get("message") or str(err)})
+                    msg = err.get("message") or str(err)
+                    # FANTASMA DE LA LOOKUP TABLE (30-jul). Si el SKU quedó
+                    # registrado en `wc_product_meta_lookup` apuntando a un
+                    # producto YA BORRADO, Woo bloquea el alta para siempre con
+                    # "already present in the lookup table" — y el producto no
+                    # aparece por REST ni en el admin, así que el SKU queda
+                    # muerto sin explicación. Se limpia el rastro y se reintenta.
+                    # Medido: 1,155 filas fantasma bloqueaban 640 SKUs.
+                    if _limpiar_fantasma_lookup(it["sku"], msg):
+                        reintentar.append(it)
+                    else:
+                        errores.append({"sku": it["sku"], "error": msg})
                 else:
                     creados.append({"sku": it["sku"], "wc_id": res.get("id")})
+
+            if reintentar:
+                log.info("crear_borradores: reintentando %d SKU(s) tras limpiar "
+                         "su fantasma en la lookup table", len(reintentar))
+                try:
+                    r2 = await cli.post("/products/batch",
+                                        json={"create": [_borrador_wc(x) for x in reintentar]},
+                                        timeout=180.0)
+                    r2.raise_for_status()
+                    for it, res in zip(reintentar, r2.json().get("create", [])):
+                        err = res.get("error")
+                        if err:
+                            errores.append({"sku": it["sku"],
+                                            "error": err.get("message") or str(err)})
+                        else:
+                            creados.append({"sku": it["sku"], "wc_id": res.get("id")})
+                except Exception as exc:  # noqa: BLE001
+                    errores.extend({"sku": x["sku"], "error": f"reintento falló: {exc}"}
+                                   for x in reintentar)
             log.info(
                 "crear_borradores: lote %d procesado (acumulado: %d ok / %d error)",
                 i // 50 + 1, len(creados), len(errores),
             )
     return {"creados": creados, "errores": errores}
+
+
+def _limpiar_fantasma_lookup(sku: str, mensaje_error: str) -> bool:
+    """
+    Borra el rastro de un producto ELIMINADO que sigue reservando su SKU.
+
+    WooCommerce mantiene `wc_product_meta_lookup` como índice de SKUs. Cuando un
+    producto se borra por fuera de su API (SQL directo, herramientas externas),
+    la fila del índice y su `postmeta` se quedan. Resultado: el producto no
+    existe en ningún lado, pero su SKU queda RESERVADO PARA SIEMPRE y toda alta
+    responde 400 "already present in the lookup table".
+
+    Solo limpia filas cuyo `product_id` NO tiene `wp_posts` — o sea, imposible
+    tocar un producto vivo. Devuelve True si limpió algo (procede reintentar).
+
+    Verificado el 30-jul: el borrado por la REST de Woo NO deja rastro; los 1,155
+    fantasmas del catálogo vinieron de borrados por otra vía.
+    """
+    if "lookup table" not in (mensaje_error or "").lower():
+        return False
+    try:
+        from services import wp_db
+        if not wp_db.disponible():
+            return False
+        P = wp_db._prefix()
+        filas = wp_db._fetch_all(
+            f"""SELECT l.product_id FROM {P}wc_product_meta_lookup l
+                LEFT JOIN {P}posts p ON p.ID = l.product_id
+                WHERE l.sku = %s AND p.ID IS NULL""", (sku,))
+        ids = [f["product_id"] for f in filas]
+        if not ids:
+            return False           # el bloqueo viene de un producto VIVO: no se toca
+        ph = ",".join(["%s"] * len(ids))
+        with wp_db._cursor() as cur:
+            cur.execute(f"DELETE FROM {P}wc_product_meta_lookup WHERE product_id IN ({ph})",
+                        tuple(ids))
+            cur.execute(f"DELETE FROM {P}postmeta WHERE post_id IN ({ph})", tuple(ids))
+            cur.execute(f"DELETE FROM {P}term_relationships WHERE object_id IN ({ph})",
+                        tuple(ids))
+        log.info("SKU %s: limpiado fantasma de la lookup table (product_id %s)", sku, ids)
+        return True
+    except Exception as exc:  # noqa: BLE001 — nunca rompe el alta
+        log.warning("No se pudo limpiar el fantasma de %s: %s", sku, exc)
+        return False
 
 
 def _borrador_wc(it: dict[str, Any]) -> dict[str, Any]:
