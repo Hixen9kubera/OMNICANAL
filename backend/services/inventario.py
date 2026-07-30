@@ -93,7 +93,12 @@ def _upsert(rows: list[dict[str, Any]]) -> int:
           -- stock_full / stock_fba NO llevan COALESCE: ahí un 0 y un NULL SÍ
           -- son informativos (bodega vacía vs sin dato).
           stock_full=VALUES(stock_full), stock_fba=VALUES(stock_fba), es_full=VALUES(es_full),
-          logistica=VALUES(logistica), situacion=VALUES(situacion), updated_at=NOW()
+          logistica=VALUES(logistica),
+          -- `situacion` TAMBIÉN con COALESCE: el barrido de Amazon manda NULL
+          -- cuando Amazon no responde ese SKU, y sin esto se perdía el marcado
+          -- `closed` de las publicaciones muertas (293 → 15 en una tarde).
+          situacion=COALESCE(VALUES(situacion), situacion),
+          updated_at=NOW()
     """
     with db.get_cursor() as cur:
         cur.executemany(sql, rows)
@@ -240,8 +245,22 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
             "stock_fba": fba_qty,
             "es_full": 1 if es_fba else 0,
             "logistica": "FBA" if es_fba else "FBM",
-            # Estado REAL del listado; si Amazon no lo devolvió, el de la bitácora.
-            "situacion": v.get("estado") or p.get("status"),
+            # Estado REAL del listado. Si Amazon NO devolvió este SKU se manda
+            # None y el COALESCE del _upsert CONSERVA el valor que ya había.
+            #
+            # OJO, esto es delicado (bug detectado y corregido el 29-jul, mismo
+            # día): la primera versión hacía `v.get("estado") or p.get("status")`,
+            # o sea que ante silencio de Amazon reescribía el estado con el de
+            # `amazon_progress` — siempre "PUBLISHED". Efecto medido: las 293
+            # publicaciones muertas que habíamos marcado `closed` volvían a
+            # PUBLISHED en cuanto el barrido las visitaba (bajaron a 15 en una
+            # tarde). Justo el problema que este cambio venía a resolver.
+            #
+            # Un SKU ausente en la respuesta puede ser un listado dado de baja O
+            # un lote que falló: por eso NO se cierra aquí. Cerrar es tarea de
+            # `scripts/marcar_amazon_muertas.py`, que confirma el 404 uno por uno
+            # y distingue un 404 real de un 429/5xx.
+            "situacion": v.get("estado"),
             "moneda": "MXN",
         })
     n = _upsert(rows)
