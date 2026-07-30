@@ -110,6 +110,44 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
         _marcar_publicado_en_woo(sku, wc_id)
 
 
+def _traducir_error_ml(error: str, prod: dict[str, Any] | None = None) -> str:
+    """
+    Reescribe los mensajes del vendor que mandan al usuario a una acción imposible.
+
+    ME1_INACTIVO (30-jul). ML responde `shipping.lost_me1_by_user` y el publicador
+    lo traduce a "activar Mercado Envíos 1 en dashboard ML". Ese botón NO EXISTE:
+    ML descontinuó ME1 y las preferencias de envío de las dos cuentas devuelven
+    `modes: []` — no hay nada que activar.
+
+    La causa real es la CATEGORÍA. Verificado en vivo:
+        Monederos y Carteras (MLM5527)  shipping_options: ['carrier', 'custom']
+        Gorros (MLM174552)              shipping_options: ['custom', 'carrier']
+    Ninguna admite `me2`, que es lo único que manda el publicador
+    (`publisher_core.py:355 → 'mode': 'me2'`). Al no poder aplicarlo, ML devuelve
+    ese código heredado que nombra un servicio que ya no existe.
+
+    El mensaje NO se corrige en `vendor/publisher_core.py` — esa carpeta no se
+    toca (regla 1). Se traduce aquí, en el adaptador, que sí es nuestro.
+    """
+    if "ME1_INACTIVO" not in (error or ""):
+        return error
+    cat = ""
+    try:
+        cid = (prod or {}).get("ml_categoria_id") or (prod or {}).get("category_id") or ""
+        if cid:
+            cat = f" (categoría {cid})"
+    except Exception:  # noqa: BLE001
+        pass
+    return error.replace(
+        "ME1_INACTIVO (activar Mercado Envíos 1 en dashboard ML)",
+        f"CATEGORIA_SIN_ME2{cat}: esta categoría de ML no admite Mercado Envíos 2 "
+        "— solo acepta envío por paquetería propia (custom). NO es un problema de "
+        "la cuenta ni de las medidas: ME1 ya no existe en Mercado Libre, así que "
+        "no hay nada que activar en el dashboard. Para publicar aquí hay que "
+        "definir un costo de envío propio (decisión de negocio).",
+    )
+
+
 def _marcar_publicado_en_woo(sku: str, wc_id: int | None) -> None:
     """
     Si el producto sigue en `draft`/`inprogress`, lo pasa a `publish`.
@@ -475,6 +513,8 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
                 await asyncio.sleep(2.0 * intento)  # backoff 2s, 4s
 
         item_id = r.get("ml_item_id") or ""
+        if r.get("error"):
+            r["error"] = _traducir_error_ml(r["error"], prod)
         fila: dict[str, Any] = {
             "cuenta":    cuenta,
             "item_id":   item_id,
