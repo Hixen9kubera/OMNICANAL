@@ -159,6 +159,19 @@ def backfill_channel_submissions(tabla: str = "ml_backlog", max_items: int = 100
     return kubera_mirror.backfill_channel_submissions(tabla, max_items, offset)
 
 
+@router.post("/backfill/channel-situacion", dependencies=[Depends(requiere_api_key)])
+def backfill_channel_situacion(situacion: str = "closed", canal: str | None = None,
+                               max_items: int = 5000):
+    """Re-espeja a channel.listings la `situacion` que hoy tiene canal_inventario.
+
+    Para las filas cuya situación se cambió FUERA del barrido (p. ej.
+    `scripts/marcar_amazon_muertas.py`, que marca `closed` con un UPDATE
+    directo): el espejo solo se dispara desde el sync, así que ese cambio nunca
+    viajaba y el acta de Channel salía con_deltas sin curarse sola. Idempotente."""
+    from services import channel_mirror
+    return channel_mirror.backfill_situacion(situacion, canal, max_items)
+
+
 @router.post("/backfill/channel-orders", dependencies=[Depends(requiere_api_key)])
 def backfill_channel_orders(max_items: int = 5000, offset: int = 0):
     """Copia el histórico pedidos_ml → channel.orders (one-shot, idempotente:

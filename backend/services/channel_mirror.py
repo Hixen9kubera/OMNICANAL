@@ -120,3 +120,51 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("espejo channel falló (el sync continúa): %s", exc)
         _registrar_issue(None, f"espejo tanda fallo: {exc}")
+
+
+def backfill_situacion(situacion: str = "closed", canal: str | None = None,
+                       max_items: int = 5000) -> dict[str, Any]:
+    """Re-espeja la `situacion` que HOY tiene canal_inventario a channel.listings.
+
+    Existe porque la `situacion` puede cambiar FUERA del barrido y este espejo
+    solo se dispara desde `inventario._upsert()`: lo que no pasa por ahí nunca
+    llega a Supabase. Caso real (29-jul-2026):
+    `scripts/marcar_amazon_muertas.py` marcó 289 listados de Amazon como
+    `closed` con un UPDATE directo a MySQL; el espejo no se enteró y el acta de
+    Channel salió con_deltas el 30-jul rompiendo una racha de 9 días.
+
+    Y NO se cura sola: para esos SKUs Amazon responde 404, así que el barrido
+    manda `situacion=NULL` y el `coalesce` del upsert —correcto, significa "no
+    lo observé en esta pasada"— conserva el valor viejo (`PUBLISHED`). Cada
+    barrido reconfirma la divergencia en vez de corregirla.
+
+    Idempotente: el `where ... is distinct from` del upsert no toca las filas
+    que ya coinciden, así que tampoco ensucia `channel.listing_history`.
+    """
+    if not activo():
+        return {"ok": False,
+                "motivo": "SUPABASE_DUAL_WRITE_CHANNEL apagado o sin DSN."}
+    from services import db
+
+    cond = ["LOWER(COALESCE(situacion, '')) = LOWER(%s)"]
+    params: list[Any] = [situacion]
+    if canal:
+        cond.append("canal = %s")
+        params.append(canal)
+    params.append(int(max_items))
+    filas = db.fetch_all(
+        f"""SELECT sku, canal, cuenta, item_id, precio, stock_real, stock_full,
+                   stock_fba, es_full, logistica, situacion, moneda
+              FROM canal_inventario
+             WHERE {' AND '.join(cond)}
+             LIMIT %s""",
+        tuple(params),
+    )
+    if not filas:
+        return {"ok": True, "leidas": 0, "situacion": situacion,
+                "canal": canal or "todos"}
+    # Mismo escritor que el sync (no un UPDATE aparte): conserva el set_config
+    # de la vía para el trigger de historia y la resolución de cuenta→uuid.
+    espejar_inventario([dict(f) for f in filas])
+    return {"ok": True, "leidas": len(filas), "situacion": situacion,
+            "canal": canal or "todos"}

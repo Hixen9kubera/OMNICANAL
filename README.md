@@ -2872,6 +2872,42 @@ nada. Tres piezas lo hacen visible, TODO inerte mientras el flag siga apagado:
 Publicado desde worktree aislado (el árbol principal traía WIP de otra
 sesión). Versión 0.34.0.
 
+### v0.36.0 — El acta de Channel: el `closed` de Amazon ya viaja al espejo
+
+**Qué rompió la racha (acta del 30-jul, 289 divergentes tras 9 días en cero).**
+`scripts/marcar_amazon_muertas.py` (29-jul) marca como `closed` los listados que
+Amazon responde 404, con un `UPDATE canal_inventario` **directo**. El espejo
+`channel.listings` no se enteró: no lee la tabla, es un dual-write que se
+dispara desde `inventario._upsert()`. Lo que no pasa por ahí, no llega.
+Resultado medido: 289 filas `closed` en MySQL vs `PUBLISHED` en Supabase
+(amazon PUBLISHED 333 = 289 + los 48 legítimos).
+
+**Y no se curaba sola** — esto es lo importante. Para esos SKUs Amazon devuelve
+404, así que el barrido manda `situacion=NULL`, y ambos lados conservan el valor
+previo ante un NULL (política correcta: "no lo observé en esta pasada"). MySQL
+conserva `closed` ✅, el espejo conserva `PUBLISHED` ❌. Cada barrido
+reconfirmaba la divergencia: `parpadeos_descartados=0`, las 289 sobrevivían la
+re-verificación de 75 s. Una re-corrida NO rescataba el día.
+
+**Arreglo, en dos piezas:**
+
+1. `channel_mirror.backfill_situacion(situacion, canal)` — re-espeja a
+   `channel.listings` la situación que hoy tiene `canal_inventario`, usando el
+   **mismo escritor** que el sync (`espejar_inventario`), no un UPDATE aparte:
+   así conserva el `set_config` de la vía para el trigger de historia y la
+   resolución cuenta→uuid. Idempotente por el `where ... is distinct from` del
+   upsert, así que no ensucia `channel.listing_history`.
+   Expuesto en `POST /api/migracion/backfill/channel-situacion`.
+2. `marcar_amazon_muertas.py` llama a ese backfill al `--aplicar`, y si el
+   espejo está apagado lo dice en pantalla con la instrucción de correr el
+   endpoint en producción. La recaída queda cerrada en el origen.
+
+Nota de convivencia: la nota que la otra sesión dejó ese día
+(`docs/NOTAS_PARA_LALO_2026-07-29.md`) pedía coordinar el cambio ANTES de
+aplicarlo, justo por este efecto; se ejecutó 34 min después. El dato de MySQL es
+el correcto (decisión de Brandon: descontar sin borrar) — el que estaba
+desactualizado era el espejo. Versión 0.36.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

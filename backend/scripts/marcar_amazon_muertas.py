@@ -105,6 +105,21 @@ def main() -> None:
                     WHERE canal='amazon' AND sku IN ({marcas})""", tuple(lote))
     print(f">>> Listo: {len(muertas)} marcadas como closed. Filas borradas: 0.")
 
+    # El espejo channel.listings NO se entera de este UPDATE: solo se dispara
+    # desde inventario._upsert() del barrido, y para estos SKUs el barrido manda
+    # situacion=NULL (Amazon los 404-ea) que el coalesce del espejo conserva como
+    # el valor viejo. Sin esto MySQL dice `closed` y Supabase se queda en
+    # PUBLISHED PARA SIEMPRE — fue lo que rompió el acta de Channel del 30-jul
+    # (289 divergentes tras 9 días en cero).
+    from services import channel_mirror
+    r = channel_mirror.backfill_situacion("closed", canal="amazon")
+    if r.get("ok"):
+        print(f">>> Espejo channel.listings sincronizado: {r['leidas']} filas closed.")
+    else:
+        print(f">>> OJO: el espejo NO se actualizó ({r.get('motivo')}). "
+              f"Correr POST /api/migracion/backfill/channel-situacion en producción, "
+              f"o el acta de Channel saldrá con_deltas.")
+
 
 if __name__ == "__main__":
     main()
