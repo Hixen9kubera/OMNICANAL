@@ -2935,6 +2935,43 @@ devuelve 400 por esa causa, se reintenta **sin `title`** conservando los
 descripción. El caso normal (ítems sin familia) no cambia. Resultado: atributos y
 descripción **sí** se guardan; el título queda como ML lo exige. Versión 0.37.0.
 
+### v0.41.0 — Sección ANÁLISIS: reabastecimiento + Estrellas leyendo la BD kubera en vivo (Eduardo)
+
+Primer LECTOR de producción de la BD kubera con cara de usuario: la sección
+**Análisis** del navbar (clon del tablero kubera-fulfillment de José, que
+muere junto con dailytrackMeli). Todo es LECTURA — ninguna escritura nueva.
+
+1. **Migración `0007_fulfillment_vistas.sql`** (aplicada a sandbox y a
+   producción el 30-jul, precheck previo de insumos): 2 vistas derivadas al
+   vuelo (regla v4) + parámetros `RESTOCK` en `costing.pricing_params`.
+   - `channel.sales_daily_completa`: ventas SIN hueco — historia rescatada de
+     dailytrack (27-dic-2025 → 15-jul) ∪ flujo vivo de `order_items` (16-jul→).
+   - `channel.restock_panel`: Bollinger 45 d (k 1.5, contando días en cero),
+     stock mín/máx, sugerido a FULL y semáforo.
+2. **`routers/fulfillment.py`** (`/api/fulfillment/*`): `meta`, `dashboard`,
+   `tabla` (orden con dirección `dir` real e invertible, nulls last en ambas),
+   `detalle` (serie diaria de un SKU) y `estrellas` (Pareto all-time con
+   ambos pares share/acumulado en una pasada; ventas sin SKU fuera del
+   ranking pero declaradas en `sin_sku` para que los totales cuadren).
+   Precio = SOLO publicación activa (max() mentía en 27% de los SKUs);
+   costo = `costos_validados.costo_total` con fallback a `costo_unitario`;
+   DROP = listing `canal='general'` (bodega Woo real).
+3. **Frontend `app/analisis/`**: layout con banner por sub-sección; submenú
+   desplegable en el navbar (variante definitiva); Reabastecimiento con modal
+   de detalle por sparkline; Estrellas (tabs por cuenta, toggle uds/$,
+   Pareto SVG top-50 con cortes 50/80/90 sobre el universo completo);
+   esqueletos honestos de Amazon FBA y Reportes con sus bloqueos declarados.
+   Componente `Ayuda` ("?" por columna con descripción en lenguaje llano).
+   Navbar: Ventas abre la barra y Dashboard se renombró **Operaciones**
+   (misma ruta `/dashboard`).
+
+Sabido y aceptado al publicar: la serie viva de ventas por SKU depende de
+`pedidos_ml_items`, que sigue FUERA de `KUBERA_MIRROR_TABLAS` (regla 3 —
+pendiente el dale de Brandon): stock y precios se mueven en tiempo real
+(webhook + barrido 15 min), las VENTAS del panel quedan al 28-jul hasta
+encender esa tabla. El DROP vivo (F2, `stock_watch_foto` → listings canal
+general) también sigue pendiente; hoy está al 24-jul.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
