@@ -3046,6 +3046,78 @@ distintos son dos — y eso hay que verlo, no esconderlo. "Sin activa" no cambia
 Sin costo de espacio: la altura de fila sigue en 49–54 px (esas filas ya eran
 de dos líneas por otras columnas) y no aparece scroll horizontal.
 
+### v0.42.2 — Los datos personales del comprador se guardan CIFRADOS
+
+**Por qué.** El cuestionario de cumplimiento de Temu **rechazó la solicitud de
+API** con una exigencia explícita: *"For storage of personally identifiable
+information (PII) such as names, phone numbers, addresses, and emails,
+encryption is required. In this context, the term 'user' refers specifically to
+the recipient."* Pedían además una captura de la base que demostrara el cifrado.
+La respuesta que estaba marcada ("Yes") era falsa: todo estaba en texto plano.
+
+**Qué guardábamos de verdad** (censo en vivo del 30-jul, no del caché):
+
+| Dato | Cantidad | Dónde |
+|---|---|---|
+| Nombre del comprador | **7,279** | `wp_wc_order_addresses` |
+| Nick de ML | **7,095** | meta `_ml_comprador` |
+| Correo | 0 | — |
+| Teléfono | 0 | — |
+| Dirección | 0 | — |
+
+El nombre es el **único** dato personal en toda la base. No hay un solo correo,
+teléfono ni dirección de ningún comprador.
+
+**Cómo quedó.** `services/pii.py` (escrito el 29-jul y que nunca se había
+conectado) ahora sí se usa desde `pedidos_ml.py`: el nombre, el apellido y el
+nick se cifran con **Fernet** (AES-128-CBC + HMAC-SHA256) antes de escribirse en
+WooCommerce. La llave vive solo en la variable `PII_KEY` de Railway, nunca en el
+repositorio.
+
+Tres decisiones de diseño que importan:
+
+- **Prefijo `enc:`** → la operación es idempotente. Un valor ya cifrado se
+  reconoce y no se vuelve a cifrar, así que el barrido de históricos se puede
+  repetir sin dañar nada.
+- **Sin llave NO se escribe en claro.** Si `PII_KEY` falta, `cifrar()` devuelve
+  el marcador genérico `"Comprador"`. Se prefiere perder el dato a guardarlo en
+  claro creyendo que va cifrado — un fallo silencioso aquí sería exactamente lo
+  que el cuestionario castiga. El script de barrido directamente **aborta**.
+- **Nada del panel lee el nombre.** Se verificó: se escribe en 3 lugares y se lee
+  en 0. Cifrarlo no rompe ningún flujo. La única consecuencia visible es que el
+  admin de WooCommerce muestra `enc:gAAAAA…` en la lista de pedidos.
+
+**Histórico.** `scripts/cifrar_pii_historico.py` cierra los pedidos ya
+existentes. Usa SQL directo sobre `wc_order_addresses` y `wc_orders_meta` — una
+excepción acotada a la regla de no hacer DML sobre `wp_*`, y por seguridad, no
+por comodidad: son tablas de **almacenamiento plano** de HPOS (no derivadas como
+`wc_product_meta_lookup`), mientras que un `PUT /orders/{id}` dispararía los
+hooks de actualización de WooCommerce sobre 7,279 pedidos de producción.
+
+**Verificado en producción** con el pedido 100969 antes de correr el barrido:
+
+```
+en la base : enc:gAAAAABqa76WbjRBfCtd23LE-llQPti_8x33GU0LE6p9Qng…
+por la API : enc:gAAAAABqa76WbjRBfCtd23LE-llQPti_8x33GU0LE6p9Qng…
+descifrado : Cecilia
+```
+
+La API REST devuelve exactamente lo mismo que la base — no hay caché sirviendo
+el valor viejo — y la llave recupera el original. El flag `--verificar <pedido>`
+del script reproduce esta comprobación cuando haga falta.
+
+**Ojo con los conteos**: durante la prueba el total subió de 7,279 a 7,281 en
+segundos. No es un error del barrido — son **ventas entrando en vivo** por el
+webhook. Por eso el orden correcto es: poner `PII_KEY` en Railway → desplegar →
+barrer el histórico. Al revés, los pedidos que lleguen entre el barrido y el
+deploy nacerían en claro.
+
+**Lo que NO resuelve.** El cuestionario de Temu sigue con huecos reales que no se
+tapan con cifrado: la API del panel responde **sin autenticación** (III.1) y no
+hay bitácora de auditoría (IV.1/IV.2). Ver
+`docs/PROCEDIMIENTO_NOTIFICACION_BRECHAS.md` para la parte de incidentes (V.1).
+Versión 0.42.2.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

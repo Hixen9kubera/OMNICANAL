@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 import httpx
 
 from config import settings
-from services import db, fanout_stock, kubera_mirror, meli
+from services import db, fanout_stock, kubera_mirror, meli, pii
 
 log = logging.getLogger("omnicanal.pedidos_ml")
 
@@ -195,7 +195,8 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
         {"key": "_ml_logistica", "value": str((orden.get("envio") or {}).get("logistica") or "")},
         {"key": "_ml_es_full", "value": "yes" if orden.get("es_full") else "no"},
         {"key": "_ml_neto", "value": f"{orden['total'] - comision:.2f}"},
-        {"key": "_ml_comprador", "value": str(comp.get("nick") or "")},
+        # PII: el nick identifica a una persona → se guarda CIFRADO (ver pii.py).
+        {"key": "_ml_comprador", "value": pii.cifrar(comp.get("nick"))},
     ]
     # Venta FULL: la pieza sale del almacén de ML. Nacer con la bandera de
     # "stock ya descontado" evita que Woo baje nuestro stock_real.
@@ -229,8 +230,10 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
     return {
         "status": forzar_estado or estado_wc(orden),
         "currency": orden.get("moneda") or "MXN",
-        "billing": {"first_name": comp.get("nombre") or "Comprador",
-                    "last_name": comp.get("apellido") or "Mercado Libre"},
+        # PII: nombre y apellido van CIFRADOS (ver pii.py). Sin nombre real se
+        # deja el marcador legible — no hay dato personal que proteger.
+        "billing": {"first_name": pii.cifrar(comp.get("nombre")) or "Comprador",
+                    "last_name": pii.cifrar(comp.get("apellido")) or "Mercado Libre"},
         "customer_note": (f"Venta Mercado Libre #{orden['id']} · {orden['cuenta']}"
                           f"{' · FULL' if orden.get('es_full') else ''}"),
         "line_items": lineas,

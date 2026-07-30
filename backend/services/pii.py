@@ -9,9 +9,10 @@ El cuestionario de cumplimiento de Temu rechazó la solicitud (29-jul) con:
      phone numbers, addresses, and emails, encryption is required. In this
      context, the term 'user' refers specifically to the recipient."
 
-Auditamos qué guardamos de verdad del comprador:
+Auditamos qué guardamos de verdad del comprador (censo en vivo del 30-jul):
 
-    nombre    → SÍ (6,592 pedidos, en texto plano)
+    nombre    → SÍ (7,275 pedidos, en texto plano)
+    nick ML   → SÍ (7,091 pedidos, meta `_ml_comprador`)
     correo    → 0
     teléfono  → 0
     dirección → 0
