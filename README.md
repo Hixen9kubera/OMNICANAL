@@ -2972,6 +2972,33 @@ pendiente el dale de Brandon): stock y precios se mueven en tiempo real
 encender esa tabla. El DROP vivo (F2, `stock_watch_foto` → listings canal
 general) también sigue pendiente; hoy está al 24-jul.
 
+### v0.41.1 — Las ventas del panel, en vivo: `pedidos_ml_items` ENCENDIDO (Eduardo)
+
+Cierra el pendiente que dejó v0.41.0. **El dale lo dio Eduardo** como dueño de
+la migración; la regla 3 nombra a Brandon y queda anotado que la decisión fue
+de Eduardo, evaluada así: es una escritura ESPEJO hacia kubera — no toca Woo,
+ML, Amazon, stock ni un solo cliente; el upsert exige la orden padre
+(`DO NOTHING` si falta, sin huérfanos) y los fallos van a `espejo_kubera_log`
+sin tumbar el pedido.
+
+Dos pasos, en este orden:
+
+1. **Backfill del hueco** que dejó tener el flag apagado: `channel.orders` iba
+   vivo al 30-jul pero `order_items` se quedó en el 28 — **1,263 pedidos sin
+   líneas** (376 del 28, 550 del 29, 270 del 30). Nuevo modo
+   `--solo-faltantes` en `backend/scripts/backfill_order_items.py`: en vez de
+   barrer las ~58 páginas de Woo, le pregunta a kubera qué pedidos no tienen
+   líneas y se los pide por `include` — 13 peticiones, 110 s. Resultado: 1,263
+   líneas, 942 con `item_id` enriquecido desde listings, 0 pedidos ajenos.
+   Sirve igual cada vez que el flag se apague y se vuelva a encender.
+2. **`pedidos_ml_items` sumado a `KUBERA_MIRROR_TABLAS`** (variable Railway).
+   De ahí en adelante cada webhook de ML escribe encabezado Y líneas en el
+   mismo seam, sin llamadas extra: los datos ya venían en memoria.
+
+`channel.sales_daily` es una vista sobre `order_items`, así que la serie del
+panel avanza sola desde el momento del encendido. Sigue pendiente el DROP vivo
+(F2).
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
