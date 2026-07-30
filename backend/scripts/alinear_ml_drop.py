@@ -41,8 +41,70 @@ def _arg(nombre: str, defecto: int | None = None) -> int | None:
     return defecto
 
 
-def candidatos() -> list[dict]:
-    """Publicaciones ML DROP cuyo stock difiere del de Woo."""
+def _refrescar_en_vivo(filas: list[dict]) -> list[dict]:
+    """
+    Reemplaza `stock_real`/`situacion` del caché por lo que dice ML AHORA.
+
+    Usa el endpoint multi-get (`/items?ids=…&attributes=…`), 20 por llamada: 2,300
+    publicaciones salen en ~115 peticiones en vez de 2,300.
+    Si un lote falla, esas filas se quedan con el valor del caché y se marcan
+    `_vivo=False` para no afirmar que se verificaron.
+    """
+    import httpx
+    from services import meli
+    por_cuenta: dict[str, list[dict]] = {}
+    for f in filas:
+        por_cuenta.setdefault(f["cuenta"], []).append(f)
+    for cuenta, grupo in por_cuenta.items():
+        token = meli._access_token(cuenta)
+        if not token:
+            print(f"   (sin token de {cuenta}: {len(grupo)} filas se quedan con el caché)")
+            continue
+        cab = {"Authorization": f"Bearer {token}"}
+        for i in range(0, len(grupo), 20):
+            lote = grupo[i:i + 20]
+            ids = ",".join(x["item_id"] for x in lote)
+            try:
+                r = httpx.get("https://api.mercadolibre.com/items",
+                              headers=cab,
+                              params={"ids": ids,
+                                      "attributes": "id,available_quantity,status"},
+                              timeout=40.0)
+                if r.status_code != 200:
+                    continue
+                vivos = {}
+                for e in r.json():
+                    b = e.get("body") or {}
+                    if b.get("id"):
+                        vivos[b["id"]] = b
+                for x in lote:
+                    b = vivos.get(x["item_id"])
+                    if b:
+                        x["stock_real"] = b.get("available_quantity")
+                        x["situacion"] = b.get("status")
+                        x["_vivo"] = True
+            except Exception as exc:  # noqa: BLE001
+                print(f"   (lote de {cuenta} falló: {str(exc)[:70]})")
+            time.sleep(0.2)
+    n = sum(1 for f in filas if f.get("_vivo"))
+    print(f"   verificadas EN VIVO contra ML: {n} de {len(filas)}")
+    return [f for f in filas
+            if str(f.get("situacion") or "").lower() in ("active", "paused")]
+
+
+def candidatos(en_vivo: bool = False) -> list[dict]:
+    """
+    Publicaciones ML DROP cuyo stock difiere del de Woo.
+
+    `en_vivo=False` (default) compara contra el CACHÉ `canal_inventario`, que el
+    sync refresca cada 15 min. Es barato pero el caché puede tener DÍAS de
+    antigüedad en las filas que el sync todavía no revisitó, así que un "0
+    desalineadas" solo significa "0 según el caché".
+
+    `en_vivo=True` le pregunta a Mercado Libre por CADA publicación (`/items` en
+    lotes de 20 con `attributes=`). Es la verificación de verdad — la que puede
+    afirmar que el canal está alineado. Tarda unos minutos.
+    """
     from services import db, wp_db
     P = wp_db._prefix()
     ml = db.fetch_all(
@@ -51,6 +113,8 @@ def candidatos() -> list[dict]:
            WHERE canal='mercado_libre' AND es_full=0
              AND LOWER(situacion) IN ('active','paused')
              AND item_id IS NOT NULL""")
+    if en_vivo:
+        ml = _refrescar_en_vivo(ml)
     skus = sorted({m["sku"] for m in ml})
     woo: dict[str, int] = {}
     for i in range(0, len(skus), 900):
@@ -100,7 +164,7 @@ def main() -> None:
     aplicar = "--aplicar" in sys.argv
     limite, offset = _arg("--limite"), _arg("--offset", 0) or 0
 
-    todos = candidatos()
+    todos = candidatos(en_vivo="--en-vivo" in sys.argv)
     mas = [c for c in todos if c["actual"] > c["objetivo"]]
     menos = [c for c in todos if c["actual"] < c["objetivo"]]
     print(f"Publicaciones ML DROP desalineadas: {len(todos)}")

@@ -41,9 +41,21 @@ def _arg(nombre: str, defecto: int | None = None) -> int | None:
 def candidatos(limite: int | None = None) -> dict:
     from services import db, wp_db, fanout_stock
     P = wp_db._prefix()
+    # NO se filtra por situacion='PUBLISHED' (bug corregido el 29-jul).
+    # -----------------------------------------------------------------
+    # Hasta v0.35.0 la `situacion` de Amazon era una copia de nuestra bitácora y
+    # SIEMPRE decía 'PUBLISHED', así que ese filtro funcionaba de casualidad.
+    # Desde que el barrido escribe el estado REAL (BUYABLE / DISCOVERABLE /
+    # ACCEPTED), el filtro empezó a excluir publicaciones —incluidas las 38
+    # BUYABLE, que son las que SÍ están vendiendo— y el hueco CRECE conforme el
+    # barrido avanza: al completar la vuelta habría cubierto cero.
+    # Ahora se excluye solo lo que de verdad no toca: `closed` (dada de baja).
+    # De la vendibilidad se encarga `_amazon_en_vivo`, que lee el estado del
+    # momento; el estado del caché nunca decide si se escribe.
     skus = [r["sku"] for r in db.fetch_all(
         """SELECT DISTINCT sku FROM canal_inventario
-           WHERE canal='amazon' AND es_full=0 AND UPPER(situacion)='PUBLISHED'""")]
+           WHERE canal='amazon' AND es_full=0
+             AND LOWER(COALESCE(situacion,'')) <> 'closed'""")]
     if limite:
         skus = skus[:limite]
     woo: dict[str, int] = {}
