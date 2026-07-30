@@ -11,6 +11,7 @@ El equivalente de "FULL" en Amazon es FBA (Fulfilled by Amazon).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -258,6 +259,80 @@ async def precios_por_sku(skus: list[str]) -> dict[str, float]:
     except Exception as exc:  # noqa: BLE001
         log.warning("Pricing Amazon falló: %s", exc)
     return out
+
+
+def _parsear_listing(d: dict[str, Any]) -> dict[str, Any]:
+    """summaries+offers+fulfillmentAvailability → {asin, precio, estado, stocks}."""
+    summaries = d.get("summaries") or [{}]
+    estado = summaries[0].get("status")
+    if isinstance(estado, list):
+        estado = estado[0] if estado else None
+    offers = d.get("offers") or []
+    precio = None
+    if offers and offers[0].get("price"):
+        precio = _f(offers[0]["price"].get("amount"))
+    stock_fba = stock_fbm = None
+    for fa in d.get("fulfillmentAvailability") or []:
+        code = (fa.get("fulfillmentChannelCode") or "").upper()
+        if code.startswith("AMAZON"):
+            stock_fba = fa.get("quantity")
+        else:                      # DEFAULT / MFN → lo surte el vendedor
+            stock_fbm = fa.get("quantity")
+    return {"asin": summaries[0].get("asin"), "precio": precio, "estado": estado,
+            "stock_fba": stock_fba, "stock_real": stock_fbm,
+            "es_fba": bool(stock_fba)}
+
+
+async def datos_por_sku(skus: list[str], lote: int = 20) -> dict[str, dict[str, Any]]:
+    """
+    Precio + ASIN + estado + stock de varios SKUs, EN LOTES.
+
+    POR QUÉ EXISTE (auditoría 29-jul). El barrido de 15 min solo le preguntaba a
+    Amazon por el inventario FBA y el precio (Pricing API v0). Para todo lo demás
+    copiaba `amazon_progress`, nuestra propia bitácora. Consecuencias medidas:
+
+      · `stock_real` NULL en las 1,660 filas — la tarjeta de Amazon mostraba "—"
+        aunque Amazon SÍ devuelve la cantidad (TEC-2366-NEG: 100 unidades).
+      · `item_id` (ASIN) NULL en el 100% — `asin` viene vacío en amazon_progress.
+      · `situacion` era el estado de PUBLICACIÓN, no el estado real: 293 listados
+        dados de baja seguían diciendo PUBLISHED.
+      · Pricing API v0 solo devuelve precio cuando hay oferta activa: cubría 40%.
+
+    `searchListingsItems` resuelve las cuatro cosas en UNA llamada por lote de 20,
+    y es la MISMA API que ya usaba `detalle_sku` para el botón de refrescar
+    individual — no se estrena nada, se generaliza lo que ya funcionaba.
+    """
+    token = await _access_token()
+    if not token:
+        return {}
+    base = settings.amazon_sp_api_endpoint
+    salida: dict[str, dict[str, Any]] = {}
+    limpios = [s for s in skus if s]
+    async with httpx.AsyncClient(base_url=base, timeout=40.0) as cli:
+        for i in range(0, len(limpios), lote):
+            tanda = limpios[i:i + lote]
+            try:
+                r = await cli.get(
+                    f"/listings/2021-08-01/items/{settings.amazon_seller_id}",
+                    params={"marketplaceIds": settings.amazon_marketplace_id,
+                            "identifiers": ",".join(tanda),
+                            "identifiersType": "SKU",
+                            "includedData": "summaries,offers,fulfillmentAvailability",
+                            "pageSize": lote},
+                    headers={"x-amz-access-token": token},
+                )
+                if r.status_code != 200:
+                    log.warning("Amazon datos_por_sku lote %d: HTTP %s %s",
+                                i // lote + 1, r.status_code, r.text[:120])
+                    continue
+                for it in (r.json().get("items") or []):
+                    s = it.get("sku")
+                    if s:
+                        salida[s] = _parsear_listing(it)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Amazon datos_por_sku lote %d falló: %s", i // lote + 1, exc)
+            await asyncio.sleep(0.25)      # respeta el límite de la API
+    return salida
 
 
 async def detalle_sku(sku: str) -> dict[str, Any] | None:

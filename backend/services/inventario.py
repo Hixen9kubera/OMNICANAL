@@ -211,26 +211,44 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
            LIMIT %s""",
         (limite,),
     )
-    # Precios por SKU (Pricing API v0, en lotes de 20)
+    # Se le pregunta A AMAZON, no a nuestra bitácora (auditoría 29-jul).
+    # Una llamada por lote de 20 devuelve precio + ASIN + estado REAL + stock FBM.
+    # Antes: el precio venía de Pricing API v0 (cubría 40%), el ASIN y el estado se
+    # copiaban de `amazon_progress` (ASIN NULL en el 100%, y el estado era el de
+    # publicación: 293 listados dados de baja seguían diciendo PUBLISHED) y
+    # `stock_real` se mandaba NULL a propósito — por eso la tarjeta de Amazon
+    # mostraba "—" en stock aunque Amazon sí devuelve la cantidad.
     skus_pub = [p["sku"] for p in pubs if p.get("sku")]
-    precios = await amazon.precios_por_sku(skus_pub)
+    vivo = await amazon.datos_por_sku(skus_pub)
 
     rows: list[dict[str, Any]] = []
     for p in pubs:
         sku = p["sku"]
+        v = vivo.get(sku) or {}
+        fba_qty = v.get("stock_fba")
+        if fba_qty is None:
+            fba_qty = fba.get(sku, 0)          # respaldo: summaries de FBA
+        es_fba = bool(fba_qty)
         rows.append({
             "sku": sku, "canal": "amazon", "cuenta": "",
-            "item_id": p.get("asin"), "precio": precios.get(sku),
-            "stock_real": None,                       # FBM se lee en refresco individual
+            # COALESCE en _upsert protege el valor viejo si Amazon no respondió
+            # este SKU en esta vuelta (no se pisa con NULL).
+            "item_id": v.get("asin") or p.get("asin"),
+            "precio": v.get("precio"),
+            "stock_real": v.get("stock_real"),
             "stock_full": None,
-            "stock_fba": fba.get(sku, 0),
-            "es_full": 1 if fba.get(sku, 0) else 0,
-            "logistica": "FBA" if fba.get(sku, 0) else "FBM",
-            "situacion": p.get("status"), "moneda": "MXN",
+            "stock_fba": fba_qty,
+            "es_full": 1 if es_fba else 0,
+            "logistica": "FBA" if es_fba else "FBM",
+            # Estado REAL del listado; si Amazon no lo devolvió, el de la bitácora.
+            "situacion": v.get("estado") or p.get("status"),
+            "moneda": "MXN",
         })
     n = _upsert(rows)
     return {"canal": "amazon", "ok": True, "actualizados": n,
-            "skus_fba": len(fba), "skus_con_precio": len(precios)}
+            "skus_fba": len(fba), "skus_leidos_en_vivo": len(vivo),
+            "skus_con_precio": sum(1 for v in vivo.values() if v.get("precio") is not None),
+            "skus_con_stock": sum(1 for v in vivo.values() if v.get("stock_real") is not None)}
 
 
 # ── LECTOR: WooCommerce ─────────────────────────────────────────────────────────
