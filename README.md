@@ -2910,6 +2910,33 @@ desactualizado era el espejo. Versión 0.36.0.
 
 ---
 
+### v0.37.0 — Fix: actualizar en ML ya no truena por `family_name` (BODY_INVALID_FIELDS)
+
+**Síntoma.** Al **actualizar** (no crear) una publicación viva desde el Estudio,
+ML devolvía `400 BODY_INVALID_FIELDS` y no se guardaba nada. La respuesta cruda
+(en `ml_backlog.ml_response`, no en `ml_backlog.error` que solo tenía el genérico)
+lo decía textual: `cause 374` · *"You cannot modify the title if the item has a
+family_name"*. Cuando ML mete un ítem en una **familia** (catalogación), prohíbe
+cambiar el título.
+
+**Causa.** `publicar._update_ml_una` metía **siempre** el `title` en el cuerpo del
+`PUT /items/{id}`. ML rechazaba el PUT **completo**, así que tampoco entraban los
+`attributes` y la descripción se saltaba (`if desc and not error`). En el panel:
+"sale error" y cero cambios.
+
+**Alcance medido (30-jul).** ~**1,657 SKUs** distintos / ~3,428 intentos con
+`family_name` en `ml_backlog` — bug general de todo ítem ya catalogado por ML
+(ej. `ORG-0846-MUL`, `ACC-0468-NEG`, `MUE-0178-ROS`).
+
+**Arreglo (auto-sanación, como los reintentos del pipeline `ready`).** Nuevo
+`_es_error_family_name(resp)` (cause 374 / texto `family_name`). Si el PUT
+devuelve 400 por esa causa, se reintenta **sin `title`** conservando los
+`attributes`; si el título era lo único, se omite el PUT y se pasa directo a la
+descripción. El caso normal (ítems sin familia) no cambia. Resultado: atributos y
+descripción **sí** se guardan; el título queda como ML lo exige. Versión 0.37.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

@@ -410,6 +410,20 @@ def _error_ml(resp: dict[str, Any]) -> str | None:
     return str(msg)[:500] if msg is not None else None
 
 
+def _es_error_family_name(resp: dict[str, Any]) -> bool:
+    """
+    ¿ML rechazó el update porque el ítem pertenece a una familia y no se le puede
+    cambiar el título? (cause 374 / "You cannot modify the title if the item has a
+    family_name"). Es masivo: cualquier publicación catalogada por ML lo dispara.
+    """
+    if not isinstance(resp, dict):
+        return False
+    if resp.get("cause") == 374:
+        return True
+    blob = f"{resp.get('error', '')} {resp.get('message', '')}".lower()
+    return "family_name" in blob
+
+
 def _guardar_backlog_ml(cuenta, sku, wc_id, item_id, success, error, ml_status, desc_status, payload, ml_response):
     try:
         with db.get_cursor() as cur:
@@ -517,8 +531,24 @@ async def _update_ml_una(cuenta: str, item_id: str, title: str, attrs: list[dict
                 ml_response = r.json()
             except Exception:  # noqa: BLE001
                 ml_response = {"text": r.text[:500]}
-            if r.status_code not in (200, 201):
-                error = _error_ml(ml_response) or f"HTTP {r.status_code}"
+            # Auto-sanación: ML prohíbe modificar el title de un ítem con
+            # family_name (cause 374). Reintentar SIN title, conservando los
+            # attributes; si el title era lo único, se omite el PUT y se pasa
+            # directo a la descripción (no hay nada más que actualizar en el ítem).
+            if r.status_code == 400 and "title" in payload_item and _es_error_family_name(ml_response):
+                payload_item.pop("title", None)
+                if payload_item:
+                    r = await cli.put(f"{_ML}/items/{item_id}", json=payload_item, headers=headers)
+                    ml_status = r.status_code
+                    try:
+                        ml_response = r.json()
+                    except Exception:  # noqa: BLE001
+                        ml_response = {"text": r.text[:500]}
+                else:
+                    ml_status = None  # solo iba el title: nada que actualizar, sigue la descripción
+                    ml_response = {"skipped": "title omitido (family_name); solo se actualiza la descripción"}
+            if ml_status is not None and ml_status not in (200, 201):
+                error = _error_ml(ml_response) or f"HTTP {ml_status}"
         if desc and not error:
             rd = await cli.put(f"{_ML}/items/{item_id}/description", json={"plain_text": desc}, headers=headers)
             desc_status = rd.status_code
