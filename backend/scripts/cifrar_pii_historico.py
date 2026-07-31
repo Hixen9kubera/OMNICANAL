@@ -112,6 +112,33 @@ def _verificar(order_id: int) -> int:
     return 0 if coincide else 1
 
 
+def _muestra(n: int) -> int:
+    """
+    Vuelca las últimas N filas tal cual están guardadas.
+
+    Es la evidencia que pide el cuestionario de Temu ("provide a sample
+    screenshot showing how identity information is stored in the database").
+    No redacta: lo que sale ya es ciphertext.
+    """
+    from services import wp_db
+
+    P = wp_db._prefix()
+    filas = wp_db._fetch_all(
+        f"""SELECT order_id, first_name, last_name, email, phone, address_1
+            FROM {P}wc_order_addresses
+            WHERE address_type = 'billing'
+            ORDER BY order_id DESC LIMIT %s""", (n,))
+    print(f"mysql> SELECT order_id, first_name, last_name, email, phone, address_1")
+    print(f"    -> FROM {P}wc_order_addresses WHERE address_type='billing'")
+    print(f"    -> ORDER BY order_id DESC LIMIT {n};\n")
+    for f in filas:
+        print(f"{f['order_id']} | {f['first_name']} | {f['last_name']} | "
+              f"{f['email'] or 'NULL'} | {f['phone'] or 'NULL'} | "
+              f"{f['address_1'] or 'NULL'}")
+    print(f"\n{len(filas)} rows in set")
+    return 0
+
+
 def main() -> int:
     aplicar = "--aplicar" in sys.argv
     limite = 0
@@ -123,7 +150,13 @@ def main() -> int:
     if "--verificar" in sys.argv:
         return _verificar(int(sys.argv[sys.argv.index("--verificar") + 1]))
 
-    if not pii.habilitado():
+    if "--muestra" in sys.argv:
+        return _muestra(int(sys.argv[sys.argv.index("--muestra") + 1]))
+
+    # La llave solo hace falta para ESCRIBIR. El censo (dry-run) es de solo
+    # lectura y debe poder correrse sin ella — es la forma de auditar el estado
+    # sin tener acceso al secreto.
+    if aplicar and not pii.habilitado():
         print("ABORTA: PII_KEY no está definida. Sin llave este script "
               "escribiría marcadores genéricos y los nombres se perderían.")
         return 1
