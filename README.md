@@ -3118,6 +3118,49 @@ hay bitácora de auditoría (IV.1/IV.2). Ver
 `docs/PROCEDIMIENTO_NOTIFICACION_BRECHAS.md` para la parte de incidentes (V.1).
 Versión 0.42.2.
 
+### v0.43.0 — Análisis crece: Categorías con árbol completo, margen por cuenta y navbar reorganizado (Eduardo)
+
+Cuatro piezas en un paquete, todas probadas en sandbox antes de publicar:
+
+1. **Sección CATEGORÍAS** (`/analisis/categorias` + `GET /api/fulfillment/
+   categorias` y `/categorias/publicaciones`). Réplica EN VIVO del reporte
+   ventas_por_categoria de José (xlsx del 19-jul) con su mismo drill y más
+   profundo: el árbol COMPLETO de ML (hasta 7 niveles; el xlsx cortaba en 4)
+   → publicaciones individuales (MLM…, cuenta, título congelado de la venta,
+   situación, uds, $, precio, 1ª venta). La categoría viene de
+   `channel.product_category` + `channel.categories` (99.9%% de lo vendido
+   clasifica; las ventas de Amazon también, porque la taxonomía se aplica por
+   SKU). El backend manda las HOJAS con su ruta y la UI arma el árbol con
+   acumulados por nivel — un query para cualquier profundidad; las
+   publicaciones se piden al expandir (tope 200). FULL JOIN con el catálogo
+   listado: una categoría con publicaciones y CERO ventas también viaja —
+   buscar "Caminadoras" en 60 días responde "existe y no vendió", no "no
+   existe"; la UI las esconde salvo al buscar (buscador en la cabecera de la
+   columna, filtra por la ruta completa, con nota de que alcanza lo oculto).
+   "Días en venta" del xlsx NO se replica: listings no guarda la fecha de
+   creación — se muestra la 1ª venta del período, declarado en el pie.
+2. **Margen por cuenta** en Reabastecimiento: la columna Margen se desglosa
+   renglón a renglón alineada con la de precio (mismo orden vía
+   `preciosDeVenta()`). Antes un solo número con el precio activo MÁS BARATO:
+   TEC-0977-NEG-800W decía 73.8%% y callaba el 88.3%% de BEKURA. El costo es
+   uno por SKU: entre cuentas solo cambia el precio.
+3. **Navbar reorganizado**: ANÁLISIS abre la barra y VENTAS dejó de ser
+   pestaña — vive en el submenú de Análisis (ruta `/ventas` intacta: página
+   autónoma). El item se marca activo también cuando la ruta pertenece a una
+   entrada del submenú fuera de su prefijo. Submenú: Análisis · Ventas ·
+   Categorías · Estrellas · Amazon FBA · Reportes.
+4. **Lenguaje de usuario** en todo /analisis: 24 textos visibles reescritos
+   sin jerga (nombres de tablas, versiones, "como el archivo de José",
+   Bollinger → "ritmo de venta considerando sus picos"). Los términos de la
+   casa (FULL/DROP/FBA/SKU/ASIN) se quedan; los comentarios del código
+   conservan el detalle técnico. + **Aviso "Sección en desarrollo"** en el
+   layout (cubre las 5 vistas; Ventas fuera a propósito): pide reportar
+   cifras que no cuadren al equipo de tecnología.
+
+Sembrado del sandbox: `channel.categories` (2,679) y `product_category`
+(13,689) copiadas desde producción — estaban vacías y TODO caía en "Sin
+categoría". Producción es el origen: nada que aplicar allá.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

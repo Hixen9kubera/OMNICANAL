@@ -18,6 +18,7 @@ import {
   Workflow,
   Calculator,
   Database,
+  Tags,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -41,27 +42,21 @@ interface NavItem {
 // Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
 // implementados; el resto se marca "próximamente".
 const ITEMS: NavItem[] = [
-  // Ventas abre la barra y Dashboard pasó a llamarse OPERACIONES en el lugar
-  // que era de Ventas (Eduardo, 30-jul). La ruta sigue siendo /dashboard: es
-  // solo la etiqueta; renombrar la ruta se hará aparte si se pide.
-  { id: "ventas", label: "Ventas", icon: TrendingUp, href: "/ventas" },
-  { id: "productos", label: "Productos", icon: Package, href: "/productos" },
-  { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
-  { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
-  { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
-  // Tomó el lugar de "Canales" (placeholder retirado, 2026-07-28). Se llama
-  // ANÁLISIS desde el 29-jul (Eduardo): la sección creció más allá del
-  // reabastecimiento — dentro viven Estrellas, Amazon FBA y Reportes.
-  // Sus secciones cuelgan de este submenú al pasar el cursor — navegación
-  // DEFINITIVA de Análisis (Eduardo, 30-jul), elegida contra la alternativa de
-  // una barra de sub-pestañas dentro de la página, que quedó descartada.
-  // Al sumar una sección nueva basta agregarla aquí: la página solo aporta su
-  // contenido, y el banner del layout se rotula solo con la ruta activa.
+  // ANÁLISIS abre la barra (Eduardo, 31-jul) y absorbió a VENTAS como entrada
+  // de su submenú — ya no es pestaña propia. La ruta /ventas no cambia: esa
+  // página es autónoma (trae su propio navbar) y solo se cuelga de aquí.
+  // Navegación DEFINITIVA: submenú al pasar el cursor (Eduardo, 30-jul). Al
+  // sumar una sección basta agregarla aquí; el banner del layout se rotula
+  // solo con la ruta activa.
   {
     id: "analisis", label: "Análisis", icon: LineChart, href: "/analisis",
     submenu: [
       { label: "Análisis", href: "/analisis", icon: Boxes,
         descripcion: "Stock, ventas y sugerido de reabasto" },
+      { label: "Ventas", href: "/ventas", icon: TrendingUp,
+        descripcion: "Pedidos por canal y comparativa semanal" },
+      { label: "Categorías", href: "/analisis/categorias", icon: Tags,
+        descripcion: "Ventas por categoría de ML y por cuenta" },
       { label: "Estrellas", href: "/analisis/estrellas", icon: Star,
         descripcion: "Pareto histórico: qué SKUs sostienen la venta" },
       { label: "Amazon FBA", href: "/analisis/fba", icon: BarChart3,
@@ -70,6 +65,10 @@ const ITEMS: NavItem[] = [
         descripcion: "Descargas en CSV y Excel" },
     ],
   },
+  { id: "productos", label: "Productos", icon: Package, href: "/productos" },
+  { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
+  { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
+  { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard" },
   { id: "migracion", label: "Migración", icon: Database, href: "/migracion" },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
@@ -125,7 +124,11 @@ export default function AppNavbar() {
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
           {ITEMS.map((item) => {
             const Icon = item.icon;
-            const activo = !!item.href && !!pathname?.startsWith(item.href);
+            // Activo también cuando la ruta pertenece a una entrada del
+            // submenú que vive FUERA del prefijo (p. ej. /ventas bajo
+            // Análisis): sin esto, en /ventas ninguna pestaña se marcaría.
+            const activo = (!!item.href && !!pathname?.startsWith(item.href))
+              || !!item.submenu?.some((s) => !!pathname?.startsWith(s.href));
 
             if (item.href) {
               return (

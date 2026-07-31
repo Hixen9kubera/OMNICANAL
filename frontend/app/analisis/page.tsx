@@ -127,17 +127,17 @@ const TIPO_CHIP: Record<string, string> = {
    de negocio para el humano que mira la tabla, no parte del contrato de datos. */
 const AYUDA: Record<string, { titulo: string; texto: string }> = {
   sku: { titulo: "Producto", texto: "SKU, título y las cuentas donde está publicado: BK Bekura · SC San Corpe · AMZ Amazon. La letra gris es la categoría de tamaño (S/M/L/XL) que sale de sus dimensiones." },
+  visitas: { titulo: "Visitas · CR%", texto: "Todavía sin datos: las visitas y la conversión no están conectadas al panel. La columna guarda su lugar para cuando lo estén." },
   estado: { titulo: "Estado", texto: "Si tiene publicación viva: ACTIVA se puede comprar, PAUSADA existe pero no vende, NO VENTA no está publicado. La segunda etiqueta dice desde qué bodega sale: FULL, FBA, DROP o MIXTO." },
-  visitas: { titulo: "Visitas · CR%", texto: "Sin dato. Las visitas y la conversión venían de dailytrack y quedaron fuera del alcance el 28-jul; la columna se conserva para no perder el lugar si se retoman." },
   venta: { titulo: "Uds · $Venta", texto: "Unidades vendidas e importe en el período elegido arriba, sumando todas las cuentas de ese SKU." },
-  stock_full: { titulo: "FULL · Propio", texto: "Piezas en bodega del marketplace (FULL en ML, FBA en Amazon) y piezas en tu bodega de Woo (DROP). Son bolsas separadas y no se suman: reponer significa mover de Propio a FULL." },
+  stock_full: { titulo: "FULL · Propio", texto: "Piezas en la bodega del marketplace (FULL en Mercado Libre, FBA en Amazon) y piezas en tu bodega propia (DROP). Son inventarios separados y no se suman: reponer significa mover de Propio a FULL." },
   edad: { titulo: "Edad sin venta", texto: "Días desde la última venta registrada. Un número alto con stock encima es dinero detenido." },
   cobertura: { titulo: "Cobertura", texto: "Cuántos días te dura el stock al ritmo de venta del período. Es la columna más accionable: por debajo de 10 días (lo que tarda un envío a FULL) ya vas tarde." },
   precio: { titulo: "Precio de venta", texto: "El precio de la publicación ACTIVA, por cuenta. Si no hay ninguna activa se muestra en gris el de la pausada, porque ese precio no está vigente hoy." },
-  margen: { titulo: "Margen", texto: "(precio − costo) ÷ precio, con el costo por variante de costos_validados. Es margen de CATÁLOGO: todavía no descuenta la comisión del marketplace ni el envío." },
+  margen: { titulo: "Margen por cuenta", texto: "Cuánto deja el producto sobre su precio publicado: (precio − costo) ÷ precio, una línea por cuenta alineada con la columna de precio. El costo es uno solo por producto, así que lo único que cambia entre cuentas es el precio. Es margen sobre precio de LISTA: no descuenta la comisión del marketplace ni el envío, y en promoción se vende más barato que la lista. Al ordenar se usa el margen más bajo del producto." },
   crec: { titulo: "Crecimiento 7 días", texto: "Unidades de los últimos 7 días contra los 7 anteriores. Sirve para cazar lo que despegó antes de que se acabe." },
   spark: { titulo: "Últimos 14 días", texto: "Una barra por día de los últimos 14. Haz clic en la miniatura para abrir el detalle día por día con el desglose por cuenta." },
-  sugerido: { titulo: "Sugerido a FULL", texto: "Piezas a mandar: stock mínimo menos lo que ya hay en FULL. El mínimo sale de la banda alta de Bollinger (venta diaria + 1.5 desviaciones, contando los días en cero) por 24 días: 14 de colchón más 10 de tránsito." },
+  sugerido: { titulo: "Sugerido a FULL", texto: "Cuántas piezas conviene mandar a la bodega del marketplace. Se calcula con el ritmo de venta de los últimos 45 días considerando también sus picos (no solo el promedio), para cubrir 24 días: 14 de colchón más 10 que tarda el envío en llegar." },
 };
 
 /* Dirección con la que abre cada columna: la que responde su pregunta útil.
@@ -208,13 +208,81 @@ const CUENTA_INI: Record<string, string> = {
    José): si varias activas comparten precio se muestra uno con sus etiquetas;
    si difieren, una línea por cuenta. Sin ninguna activa NO hay precio de venta
    vigente → se muestra el de la pausada en gris y marcado. */
-function PrecioVenta({ fila }: { fila: Fila }) {
+/* Renglones por cuenta que COMPARTEN las columnas de PRECIO y MARGEN: el
+   segundo renglón de una es el segundo de la otra, para poder leerlas en
+   pareja. Devuelve las activas ya deduplicadas y ordenadas; si no hay ninguna,
+   el precio de respaldo (la pausada más barata) para pintarlo en gris. */
+function preciosDeVenta(fila: Fila): { lineas: PrecioCanal[]; pausado: number | null } {
   const todos = (fila.precios ?? []).filter((p) => p.price != null && p.canal !== "general");
   const activos = todos.filter((p) => (p.situacion ?? "").toLowerCase() === "active");
-  const distintos = [...new Set(activos.map((p) => Number(p.price)))];
+  const vistos = new Set<string>();
+  const lineas = activos
+    .filter((p) => {
+      const k = `${p.cuenta}|${Number(p.price)}`;
+      if (vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    })
+    .sort((a, b) => (CUENTA_INI[a.cuenta] ?? a.cuenta).localeCompare(CUENTA_INI[b.cuenta] ?? b.cuenta)
+                    || Number(b.price) - Number(a.price));
+  if (lineas.length) return { lineas, pausado: null };
+  return { lineas: [], pausado: todos.length ? Math.min(...todos.map((p) => Number(p.price))) : null };
+}
 
-  if (activos.length === 0) {
-    const pausado = todos.length ? Math.min(...todos.map((p) => Number(p.price))) : null;
+/* Margen POR CUENTA (Eduardo, 30-jul). El costo es UNO por SKU
+   (costos_validados es por variante, no por canal), así que lo único que
+   cambia entre cuentas es el precio — y con precios distintos el margen
+   distinto es real. Antes se mostraba un solo número calculado con el precio
+   ACTIVO MÁS BARATO: en TEC-0977-NEG-800W decía 73.8% (SANCOR $1,199) y
+   callaba el 88.3% de BEKURA ($2,678.81). Sigue siendo margen de CATÁLOGO: no
+   descuenta la comisión del marketplace, que además varía por canal. */
+function MargenVenta({ fila }: { fila: Fila }) {
+  const costo = fila.costo == null ? null : Number(fila.costo);
+  const { lineas, pausado } = preciosDeVenta(fila);
+  const pct = (precio: number) => ((precio - costo!) / precio) * 100;
+  const tono = (m: number) => (m < 20 ? "text-red-500" : "text-emerald-600");
+
+  if (costo == null || costo <= 0) {
+    return (
+      <div className="text-slate-300" title="Sin costo validado para este SKU">—</div>
+    );
+  }
+  const titulo = `calculado con costo ${fMoney(costo, 2)} (el mismo para todos los canales)`;
+
+  if (lineas.length === 0) {
+    if (pausado == null || pausado <= 0) return <div className="text-slate-300">—</div>;
+    return (
+      <div className="font-semibold tabular-nums text-slate-400"
+           title={`${titulo} · sobre el precio de una publicación pausada`}>
+        {fNum(pct(pausado), 1)}%
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-0.5" title={titulo}>
+      {lineas.map((p) => {
+        const m = pct(Number(p.price));
+        return (
+          <div key={`${p.cuenta}${p.canal}${p.price}`}
+               className="flex items-center justify-end gap-1">
+            {/* Etiqueta en gris a propósito: el color de esta columna significa
+                margen sano o flaco, y una insignia verde lo contradiría. */}
+            <span className="rounded bg-slate-100 px-1 text-[9px] font-bold text-slate-500">
+              {CUENTA_INI[p.cuenta] ?? p.cuenta}
+            </span>
+            <span className={`font-semibold tabular-nums ${tono(m)}`}>{fNum(m, 1)}%</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PrecioVenta({ fila }: { fila: Fila }) {
+  const { lineas, pausado } = preciosDeVenta(fila);
+  const distintos = [...new Set(lineas.map((p) => Number(p.price)))];
+
+  if (lineas.length === 0) {
     return (
       <div title="Ninguna publicación activa: no hay precio de venta vigente">
         <div className="font-semibold tabular-nums text-slate-400">
@@ -227,21 +295,8 @@ function PrecioVenta({ fila }: { fila: Fila }) {
   // SIEMPRE una línea por cuenta (Eduardo, 30-jul). Antes, cuando todas las
   // activas coincidían, se colapsaba en un solo precio con las etiquetas al
   // pie — obligaba a leer dos formatos distintos y a deducir que "$989 BK SC"
-  // significaba el mismo precio en ambas. Se pierde una línea de alto y se
-  // gana que el precio de cada cuenta esté siempre en su renglón.
-  // Se deduplica por cuenta+precio: una cuenta con dos publicaciones al mismo
-  // precio es una sola línea; con precios distintos, dos (y eso hay que verlo).
-  const vistos = new Set<string>();
-  const lineas = activos
-    .filter((p) => {
-      const k = `${p.cuenta}|${Number(p.price)}`;
-      if (vistos.has(k)) return false;
-      vistos.add(k);
-      return true;
-    })
-    .sort((a, b) => (CUENTA_INI[a.cuenta] ?? a.cuenta).localeCompare(CUENTA_INI[b.cuenta] ?? b.cuenta)
-                    || Number(b.price) - Number(a.price));
-
+  // significaba el mismo precio en ambas. El orden lo fija preciosDeVenta()
+  // para que este renglón y el de MARGEN hablen de la misma cuenta.
   return (
     <div className="space-y-0.5"
          title={distintos.length > 1 ? "Precio distinto por cuenta" : undefined}>
@@ -743,7 +798,7 @@ export default function FulfillmentPage() {
                     <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${TIPO_CHIP[f.tipo]}`}>{tipoLabel(f)}</span>
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right text-slate-300"
-                      title="daily_visits fuera del alcance v1">— · —</td>
+                      title="Visitas y conversión: todavía sin datos">— · —</td>
                   {/* Uds + venta */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <div className="font-semibold tabular-nums text-slate-800">{fNum(f.uds)}</div>
@@ -768,13 +823,12 @@ export default function FulfillmentPage() {
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <PrecioVenta fila={f} />
                   </td>
-                  {/* Margen. El precio sugerido y el costo se quitaron de la
-                      tabla (Eduardo, 29-jul): el margen ya resume ambos y la
-                      columna de precio muestra solo lo que se vende. El costo
-                      sigue alimentando el cálculo del margen por detrás. */}
-                  <td className={`whitespace-nowrap px-2 py-1.5 text-right font-semibold tabular-nums ${f.margen_pct == null ? "text-slate-300" : f.margen_pct < 20 ? "text-red-500" : "text-emerald-600"}`}
-                      title={f.costo == null ? undefined : `calculado con costo ${fMoney(f.costo, 2)}`}>
-                    {f.margen_pct == null ? "—" : `${fNum(f.margen_pct, 1)}%`}
+                  {/* Margen POR CUENTA, alineado renglón a renglón con la
+                      columna de precio. El precio sugerido y el costo se
+                      quitaron de la tabla (Eduardo, 29-jul): el margen resume
+                      ambos y el costo viaja en el tooltip. */}
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <MargenVenta fila={f} />
                   </td>
                   <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.crec_7d_pct == null ? "text-slate-300" : f.crec_7d_pct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
                     {f.crec_7d_pct == null ? "—" : `${f.crec_7d_pct > 0 ? "+" : ""}${fNum(f.crec_7d_pct)}%`}
@@ -809,8 +863,8 @@ export default function FulfillmentPage() {
         )}
 
         <p className="mt-4 text-center text-[11px] text-slate-400">
-          Visitas y CR% sin dato (daily_visits fuera del alcance v1) · Stock propio = bodega Woo real
-          (DROP, fuente stock_watch v0.27.0) · Sugerido = Bollinger 45d de channel.restock_panel.
+          Visitas y CR% todavía sin datos · Stock propio = lo que hay en tu bodega (se actualiza cada
+          20 minutos) · Sugerido = piezas a mandar a FULL según el ritmo de venta de los últimos 45 días.
         </p>
 
       {detalle && (

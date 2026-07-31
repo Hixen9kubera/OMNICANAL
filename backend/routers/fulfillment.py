@@ -520,3 +520,177 @@ async def tabla(
     except Exception as exc:  # noqa: BLE001
         log.warning("tabla fulfillment falló: %s", exc)
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+
+# ── VENTAS POR CATEGORÍA ─────────────────────────────────────────────────────
+# Réplica del reporte ventas_por_categoria de José (xlsx del 19-jul) contra la
+# BD kubera, en vivo y con el ÁRBOL COMPLETO: el xlsx se detiene en 4 niveles;
+# channel.categories trae la ruta entera (hasta 7). El endpoint devuelve las
+# HOJAS con su ruta y la UI arma el árbol con acumulados por nivel — así un
+# solo query sirve para cualquier profundidad.
+#
+# La taxonomía es de ML pero se aplica POR SKU (channel.product_category,
+# 13,689 mapeos; 99.9%% de lo vendido clasifica), así que las ventas de Amazon
+# también entran. Publicaciones/activas se cuentan sobre el catálogo listado
+# completo de cada hoja, no solo lo vendido — como el xlsx.
+_SQL_CAT_HOJAS = """
+with pc as (
+  select pc.sku, pc.category_id,
+         coalesce(nullif(trim(c.path), ''), c.name, 'Sin categoría') as ruta
+  from channel.product_category pc
+  join channel.categories c
+    on c.category_id = pc.category_id and c.channel_id = pc.channel_id
+),
+v as (
+  select s.sku, s.cuenta,
+         sum(s.units_sold)::int as uds,
+         sum(s.revenue)         as venta
+  from channel.sales_daily_completa s
+  where s.date > current_date - %(dias)s::int and s.sku is not null
+    and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
+  group by 1, 2
+  having sum(s.units_sold) > 0
+),
+vc as (
+  select coalesce(pc.ruta, 'Sin categoría') as ruta,
+         pc.category_id, v.cuenta, v.sku, v.uds, v.venta
+  from v left join pc on pc.sku = v.sku
+),
+ventas_cat as (
+  select ruta, category_id,
+         sum(uds)::int            as uds,
+         round(sum(venta), 2)     as venta,
+         count(distinct sku)::int as skus,
+         (select jsonb_agg(jsonb_build_object('cuenta', x.cuenta,
+                                              'uds', x.uds, 'venta', x.venta)
+                           order by x.cuenta)
+            from (select cuenta, sum(uds)::int as uds, round(sum(venta),2) as venta
+                    from vc i where i.ruta = o.ruta
+                      and i.category_id is not distinct from o.category_id
+                    group by 1) x) as cuentas
+  from vc o
+  group by ruta, category_id
+),
+lst as (
+  select pc.category_id, pc.ruta,
+         count(*)                                       as publicaciones,
+         count(*) filter (where l.situacion = 'active') as activas
+  from channel.listings l
+  join pc on pc.sku = l.sku
+  where l.canal in ('mercado_libre', 'amazon')
+    and lower(coalesce(l.situacion, '')) <> 'closed'
+    and (%(cuenta)s::text is null
+         or exists (select 1 from core.accounts a
+                    where a.id = l.account_id and a.legacy_code = %(cuenta)s))
+  group by 1, 2
+)
+-- FULL JOIN a propósito (31-jul, Eduardo): una categoría CON catálogo pero SIN
+-- venta en el período también viaja (uds 0) — si no, buscar "Caminadoras" en
+-- 60 días respondía "no existe" cuando la verdad era "existe y no vendió".
+-- La UI las esconde del árbol por defecto y solo las enseña al buscar.
+select coalesce(s.ruta, l.ruta)                 as ruta,
+       coalesce(s.category_id, l.category_id)   as category_id,
+       coalesce(s.uds, 0)::int                  as uds,
+       coalesce(s.venta, 0)                     as venta,
+       coalesce(s.skus, 0)::int                 as skus,
+       coalesce(l.publicaciones, 0)::int        as publicaciones,
+       coalesce(l.activas, 0)::int              as activas,
+       s.cuentas
+from ventas_cat s
+full outer join lst l on l.category_id = s.category_id
+order by venta desc
+"""
+
+# Publicaciones de UNA hoja del árbol, como las filas del xlsx: por item_id
+# (MLM…), con cuenta, título, situación, precio y ventas del período.
+# El título sale de order_items (congelado en la venta) con respaldo en el
+# maestro; situación/precio, del listing vivo. "Días en venta" del xlsx NO se
+# puede replicar: listings no guarda la fecha de creación de la publicación —
+# se da la PRIMERA VENTA registrada, que es lo que sí sabemos.
+_SQL_CAT_PUBS = """
+with skus_hoja as (
+  select sku from channel.product_category
+  where category_id = %(categoria_id)s and channel_id = 'mercado_libre'
+)
+select s.item_id,
+       s.cuenta,
+       max(s.sku::text)                as sku,
+       sum(s.units_sold)::int          as uds,
+       round(sum(s.revenue), 2)        as venta,
+       min(s.date)::text               as primera_venta,
+       max(s.date)::text               as ultima_venta,
+       max(l.situacion)                as situacion,
+       max(l.price)                    as precio,
+       coalesce(max(oi.titulo), max(p.name)) as titulo
+from channel.sales_daily_completa s
+left join channel.listings l
+       on l.listing_id = s.item_id and l.canal = s.canal
+left join core.products p on p.sku = s.sku
+left join lateral (
+  select titulo from channel.order_items oi
+  where oi.item_id = s.item_id and oi.titulo is not null limit 1
+) oi on true
+where s.sku in (select sku from skus_hoja)
+  and s.date > current_date - %(dias)s::int
+  and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
+group by s.item_id, s.cuenta
+order by venta desc
+limit 200
+"""
+
+
+@router.get("/categorias")
+async def categorias(
+    dias: int = Query(60, ge=7, le=400),
+    cuenta: str | None = Query(None),
+) -> dict[str, Any]:
+    """Ventas por categoría con la ruta COMPLETA de ML: devuelve las hojas
+    (ruta + category_id) y la UI arma el árbol con acumulados por nivel.
+    `dias=400` cubre todo el histórico."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    try:
+        filas = sdb.fetch_all(_SQL_CAT_HOJAS, {"dias": dias, "cuenta": cuenta})
+        venta_total = sum(float(f["venta"]) for f in filas)
+        uds_total = sum(f["uds"] for f in filas)
+        # solo las que SÍ vendieron cuentan como "categorías con venta"
+        principales = {str(f["ruta"]).split("›")[0].strip()
+                       for f in filas if f["uds"]}
+        return {
+            "ambiente": settings.app_env, "dias": dias, "cuenta": cuenta,
+            "totales": {"venta": round(venta_total, 2), "uds": int(uds_total),
+                        "categorias": len(principales)},
+            "hojas": filas,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("categorias fulfillment falló: %s", exc)
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+
+@router.get("/categorias/publicaciones")
+async def categorias_publicaciones(
+    categoria_id: str = Query(..., max_length=40),
+    dias: int = Query(60, ge=7, le=400),
+    cuenta: str | None = Query(None),
+) -> dict[str, Any]:
+    """Las publicaciones (item_id) de una hoja del árbol, como las filas del
+    xlsx: cuenta, título, situación, precio y ventas del período."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    try:
+        filas = sdb.fetch_all(
+            _SQL_CAT_PUBS,
+            {"categoria_id": categoria_id, "dias": dias, "cuenta": cuenta})
+        return {"categoria_id": categoria_id, "dias": dias,
+                "items": filas, "tope": 200}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("categorias/publicaciones falló: %s", exc)
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc

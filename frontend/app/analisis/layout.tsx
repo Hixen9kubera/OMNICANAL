@@ -21,7 +21,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { BarChart3, Boxes, Clock, FileText, Star } from "lucide-react";
+import { BarChart3, Boxes, Clock, FileText, Star, TriangleAlert } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 
@@ -29,10 +29,13 @@ const SECCIONES = [
   // La primera es la vista general (stock + ventas + sugerido de reabasto) y
   // se llama igual que la sección: es la que abre por defecto.
   { href: "/analisis", label: "Análisis", icon: Boxes, exacta: true },
+  { href: "/analisis/categorias", label: "Categorías", icon: Boxes },
   { href: "/analisis/estrellas", label: "Estrellas", icon: Star },
   { href: "/analisis/fba", label: "Amazon FBA", icon: BarChart3 },
   { href: "/analisis/reportes", label: "Reportes", icon: FileText },
 ];
+// La entrada VENTAS del submenú vive en /ventas (página autónoma con su propio
+// navbar): no pasa por este layout y por eso no está en SECCIONES.
 
 export default function FulfillmentLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "/analisis";
@@ -78,7 +81,7 @@ export default function FulfillmentLayout({ children }: { children: React.ReactN
             <h1 className="mt-1 text-3xl font-extrabold capitalize tracking-tight">{hoy}</h1>
             <p className="mt-1 flex flex-wrap items-center gap-2 text-sm opacity-90">
               <Clock size={14} />
-              stock y ventas leídos en vivo de la BD kubera
+              stock y ventas en tiempo real
               <span className="ml-1 inline-flex items-center gap-1.5 rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-300" />
                 En vivo
@@ -91,6 +94,19 @@ export default function FulfillmentLayout({ children }: { children: React.ReactN
             </p>
           </div>
           <div className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white opacity-20" />
+        </div>
+
+        {/* Aviso de sección nueva (Eduardo, 31-jul): vive en el LAYOUT para
+            cubrir las cinco vistas de /analisis/* con un solo texto. La
+            pestaña Ventas queda fuera a propósito — es la de siempre, solo se
+            recolocó en el submenú. */}
+        <div className="mt-3 flex items-center gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[13px] text-amber-800">
+          <TriangleAlert size={15} className="shrink-0" />
+          <span>
+            <span className="font-semibold">Sección en desarrollo.</span>{" "}
+            Si alguna cifra no cuadra con lo que esperas, avísale al equipo de
+            tecnología para revisarla.
+          </span>
         </div>
 
         {/* Aquí NO va una barra de sub-pestañas: las secciones se navegan desde

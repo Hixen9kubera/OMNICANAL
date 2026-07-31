@@ -29,35 +29,35 @@ export default function ReportesPage() {
         contenido: [
           "Tarjeta por reporte con su descripción, formato y parámetros (p. ej. umbral de 'sin ventas', default 5)",
           "Botón Generar con estado por tarjeta y descarga al terminar",
-          "ventas.csv: CSV maestro por SKU cruzando ventas + inventario + costos",
+          "Reporte maestro por producto cruzando ventas, inventario y costos (CSV)",
           "Aviso en los que dependen del Reporte Semanal (es la base de bodega, posiciones y envío)",
           "Historial de archivos ya generados con su link de descarga",
         ],
         fuentes: [
           {
-            nombre: "channel.sales_daily_completa",
-            detalle: "ventas por SKU sin hueco",
+            nombre: "Historial de ventas por producto",
+            detalle: "completo y al día, sin huecos",
             listo: true,
           },
           {
-            nombre: "channel.listings",
-            detalle: "stock FULL / FBA / DROP y precio por canal",
+            nombre: "Inventario y precios por canal",
+            detalle: "stock FULL / FBA / DROP y precio de cada publicación",
             listo: true,
           },
           {
-            nombre: "costing.costos_validados",
-            detalle: "costo por variante (contrato de costos)",
+            nombre: "Costos por producto",
+            detalle: "el costo validado de cada variante",
             listo: true,
           },
           {
-            nombre: "Directorio de reportes",
-            detalle: "setting `reportes_dir` + entrada en .gitignore",
+            nombre: "Carpeta de descargas",
+            detalle: "definir dónde se guardan los archivos generados",
             listo: false,
           },
         ],
         bloqueos: [
-          "Cerrar la decisión del precio sugerido: precio_base (contrato de José) vs precio_sugerido (semántica de Brandon, v0.33.x)",
-          "Definir dónde se guardan los archivos generados en Railway (el disco del contenedor es efímero — ¿storage o generar al vuelo?)",
+          "Decidir cuál de los dos precios guardados en el sistema es el precio sugerido oficial (hoy conviven dos criterios)",
+          "Decidir dónde se guardan los reportes generados: el servidor no conserva archivos entre reinicios",
         ],
       }}
     />

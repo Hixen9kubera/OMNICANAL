@@ -32,30 +32,30 @@ export default function FbaPage() {
         ],
         fuentes: [
           {
-            nombre: "costing.costos_validados",
-            detalle: "largo / alto / ancho / peso → CBM y tier",
+            nombre: "Medidas y peso por producto",
+            detalle: "para calcular el volumen y la tarifa de cada envío",
             listo: true,
           },
           {
-            nombre: "channel.listings (canal amazon)",
-            detalle: "stock FBA por SKU — 1,590 piezas hoy",
+            nombre: "Inventario FBA por producto",
+            detalle: "1,590 piezas en la bodega de Amazon hoy",
             listo: true,
           },
           {
             nombre: "ASIN de Amazon",
-            detalle: "0 de 1,666 filas lo tienen; amazon_progress tampoco lo guarda",
+            detalle: "el código con el que Amazon identifica cada publicación: hoy no se guarda en ninguna",
             listo: false,
           },
           {
             nombre: "Capacidad contratada en FBA",
-            detalle: "no existe en ninguna tabla; hay que capturarla o leerla de SP-API",
+            detalle: "cuánto espacio tenemos contratado con Amazon: hoy no está registrado en el sistema",
             listo: false,
           },
         ],
         bloqueos: [
-          "Capturar el ASIN al publicar en Amazon (o recuperarlo con SP-API) — sin él no se puede enlazar la publicación con su inventario FBA",
-          "Definir de dónde sale la capacidad contratada: captura manual en pricing_params o la API de Amazon (FBA Inventory / Storage)",
-          "Decidir la tabla de tiers por peso (la de José estaba en su código, no en base de datos)",
+          "Empezar a guardar el ASIN al publicar en Amazon (o recuperarlo de su API) — sin él no se puede enlazar cada publicación con su inventario FBA",
+          "Definir de dónde sale la capacidad contratada: capturarla a mano o leerla de la API de Amazon",
+          "Registrar la tabla de tarifas por peso de Amazon (hoy no está en el sistema)",
         ],
       }}
     />
