@@ -224,34 +224,36 @@ function PrecioVenta({ fila }: { fila: Fila }) {
       </div>
     );
   }
-  if (distintos.length === 1) {
-    return (
-      <div>
-        <div className="font-semibold tabular-nums text-slate-800">{fMoney(distintos[0])}</div>
-        <div className="flex justify-end gap-1">
-          {activos.map((p) => (
-            <span key={`${p.cuenta}${p.canal}`}
-                  className="rounded bg-emerald-50 px-1 text-[9px] font-bold text-emerald-700">
-              {CUENTA_INI[p.cuenta] ?? p.cuenta}
-            </span>
-          ))}
-        </div>
-      </div>
-    );
-  }
+  // SIEMPRE una línea por cuenta (Eduardo, 30-jul). Antes, cuando todas las
+  // activas coincidían, se colapsaba en un solo precio con las etiquetas al
+  // pie — obligaba a leer dos formatos distintos y a deducir que "$989 BK SC"
+  // significaba el mismo precio en ambas. Se pierde una línea de alto y se
+  // gana que el precio de cada cuenta esté siempre en su renglón.
+  // Se deduplica por cuenta+precio: una cuenta con dos publicaciones al mismo
+  // precio es una sola línea; con precios distintos, dos (y eso hay que verlo).
+  const vistos = new Set<string>();
+  const lineas = activos
+    .filter((p) => {
+      const k = `${p.cuenta}|${Number(p.price)}`;
+      if (vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    })
+    .sort((a, b) => (CUENTA_INI[a.cuenta] ?? a.cuenta).localeCompare(CUENTA_INI[b.cuenta] ?? b.cuenta)
+                    || Number(b.price) - Number(a.price));
+
   return (
-    <div className="space-y-0.5" title="Precio distinto por canal">
-      {activos
-        .slice()
-        .sort((a, b) => Number(b.price) - Number(a.price))
-        .map((p) => (
-          <div key={`${p.cuenta}${p.canal}`} className="flex items-center justify-end gap-1">
-            <span className="rounded bg-emerald-50 px-1 text-[9px] font-bold text-emerald-700">
-              {CUENTA_INI[p.cuenta] ?? p.cuenta}
-            </span>
-            <span className="font-semibold tabular-nums text-slate-800">{fMoney(p.price)}</span>
-          </div>
-        ))}
+    <div className="space-y-0.5"
+         title={distintos.length > 1 ? "Precio distinto por cuenta" : undefined}>
+      {lineas.map((p) => (
+        <div key={`${p.cuenta}${p.canal}${p.price}`}
+             className="flex items-center justify-end gap-1">
+          <span className="rounded bg-emerald-50 px-1 text-[9px] font-bold text-emerald-700">
+            {CUENTA_INI[p.cuenta] ?? p.cuenta}
+          </span>
+          <span className="font-semibold tabular-nums text-slate-800">{fMoney(p.price)}</span>
+        </div>
+      ))}
     </div>
   );
 }

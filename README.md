@@ -3030,6 +3030,22 @@ total exacto de `stock_watch_foto`. Con esto el panel deja de mentir sobre lo
 que hay en bodega propia, que es justo el número del que depende el "enviable"
 del sugerido de reabasto.
 
+### v0.42.1 — Precio de venta: una línea por cuenta, siempre (Eduardo)
+
+La celda colapsaba las cuentas en un solo precio cuando coincidían (`$989` con
+las etiquetas `BK SC` debajo) y solo las separaba cuando diferían. Eran dos
+formatos para leer la misma columna, y el colapsado obligaba a DEDUCIR que
+ambas cuentas estaban en el mismo precio. Ahora siempre `BK $989` / `SC $989`:
+ver el número repetido comunica el hecho sin inferencia.
+
+Ordenado por cuenta (no por precio) para que el ojo encuentre la misma cuenta
+en el mismo renglón entre filas. Deduplicado por cuenta+precio: dos
+publicaciones de la misma cuenta al mismo precio son una línea; a precios
+distintos son dos — y eso hay que verlo, no esconderlo. "Sin activa" no cambia.
+
+Sin costo de espacio: la altura de fila sigue en 49–54 px (esas filas ya eran
+de dos líneas por otras columnas) y no aparece scroll horizontal.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
