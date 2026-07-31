@@ -162,6 +162,63 @@ SKU TEC-1571-MET -> DATA_ERROR
 los demás campos —precio, imágenes, dimensiones, clave SAT, NOM, categoría,
 atributos de la categoría— fueron aceptados sin una sola queja.
 
+## 6-ter. PRIMERA PUBLICACIÓN ACEPTADA — `VAR-0436-NEG-6C`
+
+Mezcladora de audio, GTIN `0750747446325` (dígito verificador GS1 validado).
+Feed `18C7772ACD0B562F88469CBF06868FB4`: **`recibidos=1, fallidos=0, SIN ERRORES`**.
+
+Tomó tres rondas, y cada error de Walmart enseñó algo que NO está en la plantilla:
+
+| Ronda | Rechazo | Lección |
+|---|---|---|
+| 1ª | *"Please provide a valid Product ID"* | El GTIN es el único muro real |
+| 2ª | 8 atributos faltantes | La categoría correcta es `sound_and_recording` / **"Amplificadores y Audio"** |
+| 3ª | 3 formatos | País en ESPAÑOL, `material` String, `"Sí"` CON ACENTO |
+
+### Trampas que solo se descubren publicando
+
+- **La clave del grupo `Visible` es la etiqueta en español de la categoría**
+  (`"Amplificadores y Audio"`), no el `subCategory` del header. Si le pegas mal,
+  Walmart cae en un spec genérico y te pide atributos absurdos —"Juguetes",
+  "Cocina", "Adorno" para una mezcladora. **Ese es el síntoma de categoría
+  equivocada.**
+- **Los campos obligatorios CAMBIAN por categoría.** `condition` es obligatorio
+  en Herramientas y **no existe** en Amplificadores y Audio. No hay un juego de
+  52 campos universal: hay uno por categoría.
+- `countryOfOriginAssembly` es **JSONArray con el nombre en español**
+  (`["China"]`), no código ISO ni `"CN - China"`. El mensaje de error escupe la
+  lista completa de países válidos.
+- `material` es **String**, no array. `colorCategory` sí es array.
+- **Los acentos importan**: `electronicsIndicator` y `hasNomCertification`
+  rechazan `"Si"` y aceptan `"Sí"`.
+
+## 6-quater. EL GTIN: la vía real es la EXENCIÓN, no comprar códigos
+
+**Hallazgo (31-jul, verificado contra la SP-API):** Kubera **ya opera en Amazon
+México con exención de GTIN**. Las 5 publicaciones consultadas devuelven:
+
+```
+supplier_declared_has_product_identifier_exemption = true
+part_number  = <el propio SKU>
+model_number = <el propio SKU>
+brand        = "Generic"
+identifiers  = (vacío)
+```
+
+Consecuencias:
+
+1. **Amazon no puede darnos GTINs**: no existen. Nunca hubo códigos; se declaró
+   la exención y Amazon aceptó el SKU propio como identificador.
+2. **Es el precedente para pedirle la exención a Walmart.** Mismo país, mismos
+   productos, misma justificación (marca propia sin prefijo GS1).
+3. ⚠️ **Los 4 `_barcode` de WooCommerce NO vienen de Amazon.** Origen sin
+   confirmar (¿proveedor? ¿Alibaba? ¿ficha de otro vendedor?). Están bien
+   formados —el dígito GS1 cuadra— pero eso no prueba que estén registrados a
+   nombre de Kubera. **Hay que confirmarlo con el proveedor antes de apoyarse en
+   ellos**: Walmart los cruza contra la base de GS1.
+4. En Amazon la marca declarada es **"Generic"**, no "Ferrahome". Inconsistencia
+   de identidad de marca que conviene revisar aparte.
+
 ## 7. Lo que falta por probar
 
 1. **Confirmar el permiso "sin GTIN"**: Brandon dice que ya lo autorizaron. Falta
