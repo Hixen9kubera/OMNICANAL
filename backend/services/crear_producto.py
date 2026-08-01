@@ -685,6 +685,29 @@ async def atributos_ml(cat_id: str | None, titulo: str, sku: str,
 
 # ── Orquestador por producto ────────────────────────────────────────────────────
 
+def _tiene_costo_base(sku: str) -> bool:
+    """
+    ¿El SKU tiene con qué fijar precio? True si hay precio en costos_finales o un
+    costo base en costos_validados (de ahí se deriva el precio con la comisión de
+    la categoría). Sin ninguno, la creación NO puede completar y terminaría en
+    `inprogress` con el nombre/imagen de Odoo ya pisados: mejor no arrancar.
+    Ante un fallo de lectura devuelve True (no bloquear por un tropiezo de la DB).
+    """
+    try:
+        cf = db.fetch_one(
+            "SELECT precio_sugerido, precio_base FROM costos_finales WHERE sku=%s", (sku,))
+        if cf and (cf.get("precio_sugerido") or cf.get("precio_base")):
+            return True
+        cv = db.fetch_one(
+            "SELECT costo_total, costo_producto FROM costos_validados WHERE sku=%s", (sku,))
+        if cv and (cv.get("costo_total") or cv.get("costo_producto")):
+            return True
+        return False
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_tiene_costo_base(%s) falló, no bloqueo: %s", sku, exc)
+        return True
+
+
 async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
     async with _sem:
         try:
@@ -693,6 +716,16 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
                 wc_id = p.get("wc_id") if p else None
             if not wc_id:
                 _set(sku, "error", "No se encontró el producto en WooCommerce")
+                return
+
+            # Guard anti-daño: sin costo/precio el producto nunca quedaría completo
+            # y el flujo pisaría el nombre/imagen de Odoo para dejarlo tullido en
+            # `inprogress`. Se aborta ANTES de scrapear/subir imágenes/sobrescribir;
+            # el draft queda intacto en Crear Productos.
+            if not await asyncio.to_thread(_tiene_costo_base, sku):
+                _set(sku, "error",
+                     "Falta costo/precio: agrégalo en Costos antes de crear "
+                     "(el producto se dejó intacto).", wc_id=wc_id)
                 return
 
             _set(sku, "procesando", "1/5 · Scrapeando Alibaba…", wc_id=wc_id)

@@ -3163,6 +3163,32 @@ categoría". Producción es el origen: nada que aplicar allá.
 
 ---
 
+### v0.44.0 — Crear Producto: guard "sin costo → no crear" (deja de pisar el nombre/imagen de Odoo)
+
+**Síntoma.** Al mandar a crear SKUs **sin costo/precio cargado**, el flujo
+scrapeaba Alibaba, **sobrescribía el nombre y la imagen originales de Odoo** con
+los del scrape y recién al final decidía el estado: sin precio → `inprogress`. El
+producto quedaba en limbo — su identidad de Odoo destruida y sin entrar a la cola
+de validación (`pending`/`ready`). Pasó con 11 SKUs en una tanda (BEB-0126-BLN,
+COC-0152-MET, MIC-0003-AZL…); el único que completó fue el que sí tenía precio
+(JAR-0008-MET → `pending`), confirmando la causa.
+
+**Causa.** `crear_producto._procesar` hacía el `PUT` a WooCommerce (nombre,
+imágenes, etc.) **antes** de verificar si el producto podía quedar completo. Un
+SKU sin `costos_validados` (costo base) ni `costos_finales` (precio) nunca puede
+fijar precio, pero igual se le pisaba nombre+imagen.
+
+**Arreglo.** Nuevo `_tiene_costo_base(sku)` (precio en costos_finales o costo en
+costos_validados). Se llama como **guard al inicio de `_procesar`**, ANTES de
+scrapear/subir imágenes/sobrescribir: si el SKU no tiene con qué fijar precio,
+aborta con "Falta costo/precio: agrégalo en Costos antes de crear" y **deja el
+draft intacto** en Crear Productos. Un fallo de lectura de la DB no bloquea (best
+effort). Recuperación de los 11 dañados: nombre e imagen restaurados desde Odoo
+(la imagen original sobrevivía como adjunto en WordPress) y devueltos a `draft`.
+Versión 0.44.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
