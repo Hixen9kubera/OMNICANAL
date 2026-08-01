@@ -3189,6 +3189,22 @@ Versión 0.44.0.
 
 ---
 
+### v0.45.0 — Crear Producto: guard "scrape en falso" (Product Not Available / 0 imágenes)
+
+**Complemento del v0.44.0.** El guard de costo NO cubre el caso donde el SKU SÍ
+tiene precio pero **el scrape de Alibaba devuelve basura**: la página de listing
+muerto (`"Product Not Available"`, típico de URLs `alilens` expiradas o geo-
+bloqueo) trae un título NO vacío, así que pasaba el chequeo `if not scrape["titulo"]`
+y sobrescribía el nombre/imagen de Odoo con la basura (caso real: MUE-0178-ROS).
+
+**Arreglo.** Nuevo `_scrape_invalido(titulo, imagenes)` — True si el título
+contiene un centinela de página muerta (`product not available`, `no longer
+available`, `page not found`, `item not found`) o si **no vino ninguna imagen**.
+Se chequea justo tras el scrape: si es inválido, aborta con un error legible
+(título + nº de imágenes) y **deja el producto intacto**. Versión 0.45.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

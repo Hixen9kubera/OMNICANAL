@@ -685,6 +685,30 @@ async def atributos_ml(cat_id: str | None, titulo: str, sku: str,
 
 # ── Orquestador por producto ────────────────────────────────────────────────────
 
+# Centinelas de "página muerta" de Alibaba: el scrape trae un título NO vacío pero
+# que no es un producto real (listing dado de baja, geo-bloqueo, URL alilens
+# expirada). Comparar en minúsculas.
+_SCRAPE_SENTINELAS = (
+    "product not available",
+    "no longer available",
+    "page not found",
+    "item not found",
+)
+
+
+def _scrape_invalido(titulo: str, imagenes: list) -> bool:
+    """
+    ¿El scrape "tuvo éxito" pero devolvió basura? True si el título es un centinela
+    de listing muerto de Alibaba (p. ej. 'Product Not Available') o si no vino
+    NINGUNA imagen. En ambos casos sobrescribir pisaría el nombre/imagen de Odoo
+    con datos inútiles y el producto quedaría tullido en `inprogress`.
+    """
+    if not imagenes:
+        return True
+    t = (titulo or "").strip().lower()
+    return any(s in t for s in _SCRAPE_SENTINELAS)
+
+
 def _tiene_costo_base(sku: str) -> bool:
     """
     ¿El SKU tiene con qué fijar precio? True si hay precio en costos_finales o un
@@ -732,6 +756,18 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             scrape = await scrape_alibaba(url)
             if not scrape or not scrape["titulo"]:
                 _set(sku, "error", "Alibaba no devolvió datos (¿URL correcta?)", wc_id=wc_id)
+                return
+            # Scrape "en falso": Alibaba sirvió su página de listing muerto
+            # ("Product Not Available") o no trajo imágenes. El título NO está
+            # vacío, así que el chequeo de arriba no lo atrapa — pero sobrescribir
+            # con esto pisaría el nombre/imagen de Odoo con basura. Se trata como
+            # fallo y el draft queda intacto.
+            if _scrape_invalido(scrape["titulo"], scrape.get("imagenes") or []):
+                _set(sku, "error",
+                     f"Alibaba no devolvió un producto usable "
+                     f"(título «{scrape['titulo'][:40]}», {len(scrape.get('imagenes') or [])} imágenes). "
+                     "Revisa la URL — el producto se dejó intacto.",
+                     wc_id=wc_id)
                 return
 
             _set(sku, "procesando", "2/5 · Mejorando título y descripción con IA…", wc_id=wc_id)
