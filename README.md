@@ -3205,6 +3205,20 @@ Se chequea justo tras el scrape: si es inválido, aborta con un error legible
 
 ---
 
+### v0.46.0 — Crear Producto: opción "crear sin costo" (opt-in)
+
+El guard de v0.44.0 bloquea SIEMPRE la creación sin costo. Pero hay un flujo
+legítimo: crear el producto (scrape + imágenes + categoría + atributos) y **poner
+el precio a mano después** en el Estudio. Para eso se agrega un **check opt-in
+"Crear sin costo"** en la barra de acción de Crear Productos (apagado por
+defecto). Cuando se marca, el request manda `permitir_sin_costo=true`, que viaja
+`router → encolar → _procesar` y **salta el guard** de costo (el producto queda en
+`inprogress`, sin precio, hasta que se capture a mano). Sin marcar, el guard sigue
+protegiendo el caso accidental. No cambia el guard de "scrape en falso"
+(Product Not Available / 0 imágenes), que siempre aplica. Versión 0.46.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

@@ -329,11 +329,12 @@ export function progresoCreacion(
 
 export async function crearProductos(
   items: CrearProductoItem[],
+  permitirSinCosto = false,
 ): Promise<CrearProductosResp> {
   const res = await fetch(`${BASE}/api/crear/productos`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ items }),
+    body: JSON.stringify({ items, permitir_sin_costo: permitirSinCosto }),
   });
   if (!res.ok) {
     let detalle = `API ${res.status}`;

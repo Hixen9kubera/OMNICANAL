@@ -132,10 +132,12 @@ def progreso() -> list[dict[str, Any]]:
     return sorted(_progreso.values(), key=lambda x: x["actualizado"], reverse=True)
 
 
-def encolar(items: list[dict[str, Any]]) -> int:
+def encolar(items: list[dict[str, Any]], permitir_sin_costo: bool = False) -> int:
     """
     Encola items {sku, wc_id, alibaba_url} para creación en segundo plano.
     Ignora SKUs que ya están en cola o procesándose. Devuelve cuántos encoló.
+    `permitir_sin_costo`: opt-in del panel para crear aunque el SKU no tenga
+    costo/precio (queda en `inprogress`, precio se pone a mano en el Estudio).
     """
     n = 0
     for it in items:
@@ -144,7 +146,8 @@ def encolar(items: list[dict[str, Any]]) -> int:
             continue
         _set(sku, "en_cola", "En cola…", wc_id=it.get("wc_id"),
              alibaba_url=it["alibaba_url"])
-        asyncio.create_task(_procesar(sku, it.get("wc_id"), it["alibaba_url"]))
+        asyncio.create_task(
+            _procesar(sku, it.get("wc_id"), it["alibaba_url"], permitir_sin_costo))
         n += 1
     return n
 
@@ -732,7 +735,8 @@ def _tiene_costo_base(sku: str) -> bool:
         return True
 
 
-async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
+async def _procesar(sku: str, wc_id: int | None, url: str,
+                    permitir_sin_costo: bool = False) -> None:
     async with _sem:
         try:
             if not wc_id:
@@ -745,8 +749,9 @@ async def _procesar(sku: str, wc_id: int | None, url: str) -> None:
             # Guard anti-daño: sin costo/precio el producto nunca quedaría completo
             # y el flujo pisaría el nombre/imagen de Odoo para dejarlo tullido en
             # `inprogress`. Se aborta ANTES de scrapear/subir imágenes/sobrescribir;
-            # el draft queda intacto en Crear Productos.
-            if not await asyncio.to_thread(_tiene_costo_base, sku):
+            # el draft queda intacto en Crear Productos. El panel puede forzarlo con
+            # `permitir_sin_costo` (se pone el precio a mano después en el Estudio).
+            if not permitir_sin_costo and not await asyncio.to_thread(_tiene_costo_base, sku):
                 _set(sku, "error",
                      "Falta costo/precio: agrégalo en Costos antes de crear "
                      "(el producto se dejó intacto).", wc_id=wc_id)

@@ -131,6 +131,9 @@ class CrearItem(BaseModel):
 
 class CrearRequest(BaseModel):
     items: list[CrearItem]
+    # Opt-in del panel: crear aunque el SKU no tenga costo/precio (queda en
+    # `inprogress`, el precio se captura a mano después en el Estudio).
+    permitir_sin_costo: bool = False
 
 
 @router.post("/productos")
@@ -146,7 +149,8 @@ async def crear_productos(req: CrearRequest):
             f"Falta la URL de Alibaba para: {', '.join(sin_url)}",
         )
 
-    encolados = crear_producto.encolar([i.model_dump() for i in req.items])
+    encolados = crear_producto.encolar(
+        [i.model_dump() for i in req.items], req.permitir_sin_costo)
     log.info("Creación encolada: %d de %d producto(s)", encolados, len(req.items))
     return {
         "ok": True,
