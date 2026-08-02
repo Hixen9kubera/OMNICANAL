@@ -949,7 +949,7 @@ export default function CrearProductosPage() {
 
           <div className="flex items-center gap-2">
             <label
-              title="Crea aunque el producto no tenga costo/precio; quedará en 'inprogress' y le pones el precio a mano en el Estudio."
+              title="Crea aunque el producto no tenga costo/precio. Queda en Productos (pending) para validarlo a mano y capturar el precio en el Estudio — no se queda en 'inprogress'."
               className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
             >
               <input

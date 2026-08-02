@@ -3219,6 +3219,27 @@ protegiendo el caso accidental. No cambia el guard de "scrape en falso"
 
 ---
 
+### v0.47.0 — "Crear sin costo" cae en Productos (pending), no en limbo + costo pre-lleno con el precio de Alibaba
+
+Dos ajustes al flujo "sin costo" (v0.46.0), a pedido:
+
+1. **No más limbo `inprogress`.** Al crear con "sin costo", el producto ya NO se
+   queda en `inprogress` (que se percibe como limbo); pasa a **`pending`**, que en
+   la vista Productos es la cola de "validar" (filtro *Inactivos / Sin publicar*).
+   Ahí se completa a mano — capturar el precio en el Estudio. Un solo cambio en
+   `_procesar`: `status_final = "pending" if (completo or permitir_sin_costo) else
+   "inprogress"`.
+2. **Costo pre-lleno con el precio de Alibaba.** El Estudio ahora pre-llena
+   "Costo producto (USD)" con el precio scrapeado de Alibaba **solo si el campo
+   está vacío** (sin costo validado/final). Es una sugerencia editable: el scrape
+   a veces trae mal el precio, así que se revisa y se da *Regenerar* (no se guarda
+   solo). Antes ese número solo aparecía en el campo de referencia "Precio
+   Alibaba"; había que copiarlo a mano al campo de costo. Recordatorio del modelo:
+   el precio de Alibaba es el **costo del proveedor (USD)**, no el precio de venta
+   — el panel calcula el precio con flete (CBM) + comisión + margen. Versión 0.47.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

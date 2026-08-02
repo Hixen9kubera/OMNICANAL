@@ -869,11 +869,14 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             wc_prod = await _actualizar_wc(wc_id, payload)
 
             # Paso 9: completitud → pending (100%) o inprogress (parcial).
+            # Con `permitir_sin_costo` (opt-in del panel) NO se deja en `inprogress`
+            # (que el usuario ve como "limbo"): va a `pending` para que caiga en la
+            # cola de Productos y se valide/complete a mano (p. ej. capturar el precio).
             tiene_precio = bool(_fmt(dinero.get("precio_sugerido")) or _fmt(dinero.get("precio_base")))
             tiene_imgs = bool(imagenes)
             tiene_attrs = len(atributos) >= 2  # BRAND + al menos 1 más
             completo = bool(cat) and tiene_precio and tiene_imgs and tiene_attrs
-            status_final = "pending" if completo else "inprogress"
+            status_final = "pending" if (completo or permitir_sin_costo) else "inprogress"
             await _estado_wc(wc_id, status_final)
 
             faltan = []

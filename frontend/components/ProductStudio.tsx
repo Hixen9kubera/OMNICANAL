@@ -339,6 +339,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
           alibabaPrecio: str(m.alibaba_precio),
           peso: str(d.peso), largo: str(d.largo), ancho: str(d.ancho), alto: str(d.alto),
         }));
+        // Pre-llenar "Costo producto (USD)" con el precio de Alibaba SOLO si aún
+        // no hay costo (validado/final): sugerencia editable para no re-teclearlo.
+        // Ambos están en USD; el scrape a veces viene mal, por eso se revisa y se
+        // da Regenerar (no se guarda solo).
+        if (m.alibaba_precio) setCostoProducto((c) => c || str(m.alibaba_precio));
       })
       .catch(() => setMeta(null));
     return () => ctrl.abort();
