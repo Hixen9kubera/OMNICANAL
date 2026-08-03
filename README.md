@@ -3161,6 +3161,30 @@ Sembrado del sandbox: `channel.categories` (2,679) y `product_category`
 (13,689) copiadas desde producción — estaban vacías y TODO caía en "Sin
 categoría". Producción es el origen: nada que aplicar allá.
 
+### v0.47.1 — El KPI de ventas ya suma TODO lo vendido (Eduardo detectó la discrepancia)
+
+Eduardo comparó el panel contra los dashboards de ML y el KPI "UDS 7D" decía
+2,564 cuando la propia gráfica de abajo sumaba 3,243. Diagnóstico con datos:
+
+- **674–818 uds/7d perdidas por el KPI** (creciendo): salía de `filas` (la
+  tabla de reabastecimiento, solo SKUs con publicación viva) y perdía la venta
+  de publicaciones YA CERRADAS — venta real. La gráfica usaba la serie
+  completa: el panel se contradecía a sí mismo.
+- Arreglo: `uds_periodo`/`venta_periodo` se derivan EN PYTHON de la MISMA
+  serie que pinta la gráfica — un solo dato mostrado dos veces; no pueden
+  divergir. Verificado: suma(barras) == SQL directo a la vista, al centavo.
+  El resto de KPIs (productos, activos, stock) sigue saliendo de la tabla de
+  listados, donde ese filtro es correcto.
+- Los dos KPIs llevan ahora un "?" que responde la pregunta que originó todo:
+  contra el dashboard de ML no cuadra exacto porque aquí las canceladas se
+  excluyen y los días se cortan con horario de México (el resto del hueco de
+  Eduardo: +266 uds de canceladas y ~350 de ventana, medidos el 31-jul).
+
+PENDIENTE detectado en el mismo diagnóstico, NO corregido aquí: la ventana
+`date > current_date - N` usa current_date en UTC — por las tardes-noches de
+México el panel muestra N-1 días de datos reales. Corregirlo mueve cifras en
+todos los endpoints de fulfillment; se decide aparte.
+
 ---
 
 ### v0.44.0 — Crear Producto: guard "sin costo → no crear" (deja de pisar el nombre/imagen de Odoo)

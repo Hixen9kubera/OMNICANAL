@@ -190,14 +190,29 @@ function Th({ id, children, right, info, orden, dir, onSort }: {
   );
 }
 
-function Kpi({ label, value, tone }: { label: string; value: string; tone?: string }) {
+function Kpi({ label, value, tone, ayuda }: {
+  label: string; value: string; tone?: string;
+  ayuda?: { titulo: string; texto: string };
+}) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+        <span className="inline-flex items-center">
+          {label}
+          {ayuda && <Ayuda titulo={ayuda.titulo} texto={ayuda.texto} />}
+        </span>
+      </div>
       <div className={`mt-1 text-2xl font-bold ${tone ?? "text-slate-900"}`}>{value}</div>
     </div>
   );
 }
+
+/* La respuesta a "¿por qué no cuadra con Mercado Libre?" vive en el propio
+   KPI: es la pregunta que va a volver cada vez que alguien compare paneles. */
+const AYUDA_VENTA_KPI = {
+  titulo: "¿No cuadra con el panel de ML?",
+  texto: "Es la suma exacta de las barras de la gráfica: toda la venta del período, incluida la de publicaciones ya cerradas. Puede no cuadrar con el panel de Mercado Libre: aquí las canceladas se excluyen y los días se cortan con el horario de México; ML incluye canceladas y corta su ventana distinto.",
+};
 
 /* Iniciales de cuenta para las etiquetas compactas de precio */
 const CUENTA_INI: Record<string, string> = {
@@ -687,8 +702,10 @@ export default function FulfillmentPage() {
           <Kpi label="Activos FULL" value={fNum(dash?.kpis.activos_full)} tone="text-emerald-600" />
           <Kpi label="Stock FULL" value={fNum(dash?.kpis.stock_full)} />
           <Kpi label="Stock propio" value={fNum(dash?.kpis.stock_propio)} tone="text-violet-600" />
-          <Kpi label={`Uds ${dias}d`} value={fNum(dash?.kpis.uds_periodo)} tone="text-emerald-600" />
-          <Kpi label={`$Venta ${dias}d`} value={fMoney(dash?.kpis.venta_periodo)} tone="text-emerald-600" />
+          <Kpi label={`Uds ${dias}d`} value={fNum(dash?.kpis.uds_periodo)} tone="text-emerald-600"
+               ayuda={AYUDA_VENTA_KPI} />
+          <Kpi label={`$Venta ${dias}d`} value={fMoney(dash?.kpis.venta_periodo)} tone="text-emerald-600"
+               ayuda={AYUDA_VENTA_KPI} />
         </div>
 
         {/* Período */}

@@ -342,8 +342,6 @@ async def dashboard(
                                      and tiene_full_agg)::int      as activos_full,
                    coalesce(sum(stock_full), 0)::bigint            as stock_full,
                    coalesce(sum(stock_propio), 0)::bigint          as stock_propio,
-                   coalesce(sum(uds), 0)::bigint                   as uds_periodo,
-                   round(coalesce(sum(venta), 0), 2)               as venta_periodo,
                    count(*) filter (where situacion_chip = 'activa')::int as listadas_activas,
                    count(*) filter (where situacion_chip = 'activa'
                                      and stock_full = 0
@@ -366,6 +364,14 @@ async def dashboard(
                where date > current_date - %(dias)s::int
                  and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
                group by 1 order by 1""", p)
+        # UDS/$VENTA del período se derivan de la MISMA serie que pinta la
+        # gráfica — un solo dato mostrado dos veces, no dos queries que
+        # "deberían" coincidir. Antes salían de `filas` (solo SKUs con
+        # publicación viva) y perdían la venta de publicaciones cerradas:
+        # 818 uds / $326k en la ventana de 7 días del 2-ago (Eduardo detectó
+        # el KPI en 2,564 con la gráfica sumando 3,243).
+        kpis["uds_periodo"] = sum(int(s["unidades"]) for s in serie)
+        kpis["venta_periodo"] = round(sum(float(s["venta"]) for s in serie), 2)
         pct_activas = (round(kpis["listadas_activas"] / kpis["productos"] * 100)
                        if kpis["productos"] else 0)
         pct_sin_stock = (round(kpis["activas_sin_stock"] / kpis["listadas_activas"] * 100)
