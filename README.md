@@ -3356,6 +3356,38 @@ kubera, 0.05%, anotada). Veredicto EQUIVALENTE. Versión 0.48.0.
 
 ---
 
+### v0.49.1 — Fix: cada variante muestra SU costo, no el del padre
+
+Reporte de Eduardo (3-ago): "el 24-jul cambiamos los costos de los colchones
+CAM-0030-IND y CAM-0030-MAT y no se guardaron". La auditoría descartó pérdida
+de datos —los valores reportados no existen en `costos_logs` (204 registros),
+`costos_validados`, `costos_finales`, kubera ni en la postmeta de Woo: la
+petición nunca llegó al servidor— pero destapó por qué el trabajo *parece*
+perderse: **el panel pintaba el costo del padre en las 4 variantes**.
+
+`woocommerce.listar_productos` hacía `v["costo"] = it["costo"]` para toda
+variante, con el supuesto explícito de que "todas son la MISMA pieza física
+(solo cambia color/talla/cantidad)". Es cierto para color o estampado y
+**falso para tallas**: individual, matrimonial y queen son piezas distintas
+con costo distinto. CAM-0030-MAT tenía 1,102.50 guardado en Woo y en
+`costos_validados`, y la pantalla mostraba 2,674.71 (el del padre). Capturar
+un costo por talla era invisible → se leía como "no se guardó".
+
+**Ahora**: `wp_db.precios_y_costo_por_wc_id` también lee la meta `costo` de
+cada variación y la devuelve como `costo_variantes` {sku: costo} en el padre.
+La variante con costo propio muestra el suyo; la que no lo tiene hereda el del
+padre —comportamiento de siempre— pero viaja marcada con `costo_propio: false`
+y la tabla la pinta en gris itálico con la etiqueta HEREDADO y un tooltip. Un
+costo heredado ya no se puede confundir con uno capturado.
+
+Verificado contra producción con el caso del reporte: IND/EST/QUE $2,674.71
+HEREDADO · MAT $1,102.50 propio. Ojo para negocio: IND, EST y QUE **no tienen
+costo capturado**, y el de MAT es puro flete (`costo_producto = 0`,
+`costo_cbm = 1,102.50`), así que su precio sugerido y su margen son ficticios.
+Versión 0.49.1.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

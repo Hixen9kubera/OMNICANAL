@@ -95,8 +95,22 @@ export function VariantesTabla({
               <tr key={v.sku} className="border-t border-slate-100">
                 <td className="py-1.5 pr-3 font-mono text-slate-500">{v.sku}</td>
                 <td className="py-1.5 pr-3 font-medium text-slate-700">{v.nombre ?? "—"}</td>
-                <td className="py-1.5 pr-3 text-right font-semibold text-slate-800">
+                <td
+                  className={
+                    v.costo_propio === false
+                      ? "py-1.5 pr-3 text-right font-normal italic text-slate-400"
+                      : "py-1.5 pr-3 text-right font-semibold text-slate-800"
+                  }
+                  title={
+                    v.costo_propio === false
+                      ? "Esta variante no tiene costo capturado — se muestra el del producto padre"
+                      : undefined
+                  }
+                >
                   {precioMXN(v.costo)}
+                  {v.costo_propio === false && v.costo != null && (
+                    <span className="ml-1 text-[10px] uppercase tracking-wide">heredado</span>
+                  )}
                 </td>
                 <td className="py-1.5 pr-3 text-center text-slate-600">{v.stock ?? "—"}</td>
                 <td className="py-1.5">

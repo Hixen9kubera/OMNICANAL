@@ -17,6 +17,8 @@ export interface VarianteResumen {
   nombre: string | null; // opciones de atributos ("Café / XL")
   precio: number | null;
   costo: number | null; // costo_unitario de costos_finales
+  // false = no tiene costo capturado y está mostrando el del padre (heredado)
+  costo_propio?: boolean;
   stock: number | null;
   valor: number | null; // stock × costo
   estado: string | null;

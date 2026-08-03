@@ -258,6 +258,12 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
     padre (solo `_price`, ya sincronizado desde las variantes) — así que
     precio_base/precio_oferta se resuelven como el MÍNIMO entre sus variantes
     (mismo criterio que usa WooCommerce para el precio activo mostrado).
+
+    Además, de cada padre se devuelve `costo_variantes` = {sku_variante: costo}
+    con el `costo` PROPIO que tenga cada variación en su postmeta. Hay familias
+    donde las variantes NO son la misma pieza (tallas de colchón, capacidades)
+    y su costo real difiere del padre; quien lo pinte decide qué hacer con las
+    que no traen costo propio (hoy: heredan el del padre).
     """
     if not items:
         return {}
@@ -291,9 +297,11 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
                 "precio_base": _f(d.get("_regular_price")),
                 "precio_oferta": _f(d.get("_sale_price")),
                 "costo": _f(d.get("costo")),
+                "costo_variantes": {},
             }
     for wc_id in ids_todos:
-        salida.setdefault(wc_id, {"precio": None, "precio_base": None, "precio_oferta": None, "costo": None})
+        salida.setdefault(wc_id, {"precio": None, "precio_base": None, "precio_oferta": None,
+                                  "costo": None, "costo_variantes": {}})
 
     if padres:
         ph = ",".join(["%s"] * len(padres))
@@ -312,7 +320,8 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
             ph2 = ",".join(["%s"] * len(chunk))
             vm_rows = _fetch_all(
                 f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
-                    WHERE post_id IN ({ph2}) AND meta_key IN ('_regular_price', '_sale_price')""",
+                    WHERE post_id IN ({ph2})
+                      AND meta_key IN ('_regular_price', '_sale_price', 'costo', '_sku')""",
                 tuple(chunk),
             )
             for r in vm_rows:
@@ -326,6 +335,13 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
                 salida[padre_id]["precio_base"] = min(regs)
             if ofes and salida[padre_id]["precio_oferta"] is None:
                 salida[padre_id]["precio_oferta"] = min(ofes)
+            # Costo propio por variante, indexado por SKU (la clave con la que
+            # viajan las variantes en el payload; no llevan wc_id).
+            salida[padre_id]["costo_variantes"] = {
+                str(vm.get(v, {}).get("_sku")): _f(vm.get(v, {}).get("costo"))
+                for v in var_ids_de_padre
+                if vm.get(v, {}).get("_sku") and _f(vm.get(v, {}).get("costo")) is not None
+            }
 
     return salida
 

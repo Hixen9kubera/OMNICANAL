@@ -335,11 +335,17 @@ async def listar_productos(
                 if f["precio_oferta"] is not None:
                     it["precio_oferta"] = f["precio_oferta"]
                 it["costo"] = f["costo"]
-                # Todas las variantes son la MISMA pieza física (solo cambia
-                # color/talla/cantidad) — comparten el costo del padre, igual
-                # que el precio se replica a todas al guardar.
+                # La variante que tiene costo PROPIO en Woo muestra el suyo: hay
+                # familias donde cada variante es otra pieza física (tallas de
+                # colchón, capacidades) y su costo real difiere del padre. La que
+                # no lo tiene hereda el del padre, como siempre (color/estampado:
+                # misma pieza). `costo_propio` distingue una de otra en la tabla,
+                # para que un costo heredado no se lea como capturado.
+                propios = f.get("costo_variantes") or {}
                 for v in it.get("variantes", []):
-                    v["costo"] = it["costo"]
+                    propio = propios.get(v.get("sku"))
+                    v["costo"] = propio if propio is not None else it["costo"]
+                    v["costo_propio"] = propio is not None
     except Exception as exc:  # noqa: BLE001
         log.warning("listar_productos: no se pudo refrescar precio/costo desde DB: %s", exc)
 

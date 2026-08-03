@@ -32,6 +32,9 @@ class VarianteResumen(BaseModel):
     nombre: str | None = None      # opciones de atributos ("Café / XL")
     precio: float | None = None
     costo: float | None = None     # costo_unitario de costos_finales
+    # False = la variante NO tiene costo capturado y está mostrando el del
+    # padre (heredado). Solo lo llena la vista Productos; None = sin dato.
+    costo_propio: bool | None = None
     stock: int | None = None
     valor: float | None = None     # stock × costo
     estado: str | None = None
