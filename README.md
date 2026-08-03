@@ -3427,6 +3427,41 @@ Versión 0.49.2.
 
 ---
 
+### v0.49.3 — Fix: la guardia de plausibilidad de CHANNEL dejaba de leer de kubera por lotes legítimamente vacíos
+
+Slack repitiendo *"⚠️ Lectura de CHANNEL cayó a MySQL (inventario): kubera
+devolvió 0 filas para el lote (implausible)"*, y el contador del dominio en
+**kubera 1 · fallback 5**: el dominio parecía roto sin estarlo.
+
+**Causa.** La guardia de `inventario.leer_inventario` (v0.48.0) trataba
+cualquier lote vacío como fallo. Pero vacío NO es implausible en este dominio:
+`channel_read` solo mira `mercado_libre` y `amazon`, y de los **22,156**
+productos solo **2,027 (9.1%)** tienen publicación viva ahí — los otros
+**20,129 devuelven 0 filas de forma legítima**. Peor: dos de los tres
+llamadores piden **un solo SKU** (`productos.py` y `canales.py`, las fichas de
+producto), así que abrir la ficha de un producto no publicado disparaba alerta,
+tiraba la lectura a MySQL… y MySQL tampoco tenía esas filas (el arnés de
+equivalencia de v0.48.0 ya probó que las dos fuentes coinciden). El fallback no
+corregía nada; solo ensuciaba el testigo que autoriza el corte del dominio.
+
+Las otras dos guardias del mismo commit estaban bien calibradas y no se tocan:
+`presencia` no tiene guardia (vacío es normal) y `resumen_por_canal` sí la
+tiene, pero sobre un agregado global, donde vacío sí es imposible.
+
+**Arreglo.** Nuevo `channel_read.hay_datos()` — un `select 1 … limit 1` que solo
+corre cuando la lectura volvió vacía — y la guardia pasa a preguntar por la
+TABLA, no por el lote: `if not out_kb and mysql_enabled and not hay_datos()`.
+Conserva intacto lo que la guardia buscaba (kubera perdió el dominio) y elimina
+el falso positivo. Un lote legítimamente vacío ahora cuenta como lectura
+`kubera`, que es lo correcto: kubera sí respondió.
+
+**Verificado contra producción**: tres lotes seguidos (`JUGU-0083-PLA` y
+`OFI-0496-MET` sin publicación, `OFI-0493-AMA` con una en Amazon) → 3 lecturas
+kubera, **0 fallbacks, 0 alertas**; y forzando `hay_datos()=False` la guardia
+sigue disparando y cayendo a MySQL como antes. Versión 0.49.3.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

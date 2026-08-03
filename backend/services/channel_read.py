@@ -40,6 +40,19 @@ _SEL = """
 """
 
 
+def hay_datos() -> bool:
+    """
+    ¿El dominio tiene algo en kubera? Sirve para distinguir las dos razones por
+    las que una lectura puede volver vacía:
+      · el lote consultado no tiene publicaciones (NORMAL: ~91% de los productos
+        no viven en ML/Amazon, y una ficha de producto pide un solo SKU), y
+      · kubera perdió la tabla (lo que la guardia de plausibilidad busca).
+    """
+    return bool(sdb.fetch_all(
+        "select 1 from channel.listings where canal = any(%s) limit 1",
+        (list(CANALES),)))
+
+
 def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     if not skus:
         return {}

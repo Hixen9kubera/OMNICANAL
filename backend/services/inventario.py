@@ -444,8 +444,13 @@ def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     if settings.supabase_read_channel:
         try:
             out_kb = channel_read.leer_inventario(list(skus))
-            if not out_kb and settings.mysql_enabled:
-                raise RuntimeError("kubera devolvió 0 filas para el lote (implausible)")
+            # Un lote vacío NO es implausible aquí: solo ~9% de los productos
+            # tienen publicación viva en ML/Amazon, y las fichas de producto
+            # piden un SKU a la vez. Lo implausible es que la TABLA esté vacía
+            # — eso es lo único que hace caer a MySQL (que tampoco tendría esas
+            # filas: el arnés de equivalencia probó que las dos fuentes coinciden).
+            if not out_kb and settings.mysql_enabled and not channel_read.hay_datos():
+                raise RuntimeError("channel.listings vacío en kubera (implausible)")
             lecturas_fuente.anotar("channel", "kubera")
             return out_kb
         except Exception as exc:  # noqa: BLE001
