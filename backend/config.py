@@ -181,6 +181,22 @@ class Settings(BaseSettings):
     # se registra en logs quién habría sido rechazado (rollout gradual).
     api_key: str = ""
     auth_enforced: bool = False
+    # Escotilla del middleware (core/middleware.py): rutas EXTRA que nunca piden
+    # credencial, en CSV. Existe para abrir una ruta olvidada sin hacer commit,
+    # si el censo del modo observación descubre un consumidor legítimo que nadie
+    # documentó. Las imprescindibles (/api/health y el webhook de ML) ya están
+    # en el código: esta variable NO hace falta para el funcionamiento normal.
+    auth_rutas_abiertas: str = ""
+    # Segundos que se guarda en memoria la verificación de un token contra
+    # Supabase Auth. Evita una llamada de red por cada petición del panel.
+    auth_cache_seg: int = 300
+    # RBAC (Temu III.2). Independiente de auth_enforced a propósito: se puede
+    # exigir credencial sin aplicar roles todavía, y encender los roles después
+    # de medir. Con false, un rol insuficiente se registra pero NO se bloquea.
+    rbac_enforced: bool = False
+    # /docs, /redoc y /openapi.json exponen el mapa completo de los 84 endpoints.
+    # En producción se apagan; con esto se pueden reabrir sin redeploy de código.
+    docs_publicas: bool = False
 
     # Persistencia de notificaciones en MySQL (webhook_eventos). Brandon pidió
     # DESVINCULAR el webhook de la base (2026-07-17): con false, las

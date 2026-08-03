@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
+from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (auth, canales, crear, fanout, fulfillment, ia, imagenes,
                      migracion, productos, publicar, sync, ventas, webhooks)
@@ -35,6 +36,10 @@ log = logging.getLogger("omnicanal")
 # staging apuntando al Supabase de producciÃ³n), el proceso muere AQUÃ, antes de
 # aceptar una sola peticiÃ³n. Ver config.validar_ambiente().
 validar_ambiente(settings)
+
+# Las docs interactivas solo se publican fuera de producción, salvo que se pidan
+# a propósito con DOCS_PUBLICAS=true.
+_DOCS_VISIBLES = settings.docs_publicas or settings.app_env != "production"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -77,9 +82,26 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.50.1",
+    version="0.50.2",
     lifespan=lifespan,
+    # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
+    # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
+    # plano para recorrerla. En producción se apagan; DOCS_PUBLICAS=true los
+    # reabre sin tocar código (staging o depuración).
+    docs_url="/docs" if _DOCS_VISIBLES else None,
+    redoc_url="/redoc" if _DOCS_VISIBLES else None,
+    openapi_url="/openapi.json" if _DOCS_VISIBLES else None,
 )
+
+# Puerta de identidad de TODA la API (cierra Temu III.1). Se registra ANTES que
+# el CORS en el código para que quede DESPUÉS en la cadena de ejecución
+# —Starlette invierte el orden—, de modo que el preflight de CORS se resuelva
+# sin pasar por la puerta.
+#
+# NO reordenar sin leer las tres reglas del encabezado de core/middleware.py:
+# `/api/health` es el healthcheck de Railway y el webhook de ML no puede mandar
+# nuestro token. Un 401 en cualquiera de los dos apaga la operación.
+app.middleware("http")(identidad)
 
 app.add_middleware(
     CORSMiddleware,
@@ -110,7 +132,7 @@ app.include_router(fulfillment.router)
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.50.1",
+        "version": "0.50.2",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

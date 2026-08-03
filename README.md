@@ -3354,6 +3354,91 @@ filas 0 faltantes/sobrantes, identidad 0 diferencias, calientes 0.37%,
 presencia 508=508, resumen amazon 1,666=1,666 (BEKURA +1 fila residual en
 kubera, 0.05%, anotada). Veredicto EQUIVALENTE. Versión 0.48.0.
 
+### v0.50.2 — La API deja de responderle a cualquiera (Temu III.1 y III.2)
+
+**Por qué.** El cuestionario de seguridad de Temu rechazó dos respuestas, y las
+dos eran mentira. Verificado contra producción antes de tocar nada:
+
+```
+200  /api/productos          200  /api/fanout/estado
+200  /api/migracion/errores  200  /api/canales
+```
+
+Cuatro de cuatro sin credencial. Y `routers/auth.py` era un maniquí: devolvía
+siempre `{"autenticado": true, "usuario": "kubera", "rol": "admin"}` sin
+verificar nada, y ningún endpoint lo usaba. Nunca hubo autenticación.
+
+**Lo que se construyó.**
+
+- **`core/middleware.py`** — puerta única de la API. Aplica la credencial a los
+  84 endpoints de una vez, en vez de router por router.
+- **`core/identidad.py`** — dos formas de identificarse: `Authorization: Bearer`
+  (Supabase Auth, personas) y `X-API-Key` (máquinas). El token se verifica
+  contra Supabase y el resultado se cachea 5 min, así que una sesión provoca
+  como mucho una llamada de red cada 5 minutos.
+- **`core/rbac.py`** — tabla declarativa de 36 reglas `(método, prefijo) → rol
+  mínimo`. Un solo archivo legible que sirve como evidencia para el
+  cuestionario.
+- **`routers/auth.py`** — deja de mentir: refleja la identidad real.
+- **`/docs`, `/redoc` y `/openapi.json` cerrados en producción.** Publicaban el
+  mapa completo de los 84 endpoints; `DOCS_PUBLICAS=true` los reabre sin deploy.
+
+**`core.usuarios` ya existía y ya tenía el diseño correcto.** No hubo que
+inventar nada ni levantar un Supabase aparte: la tabla del equipo de migración
+trae `CHECK (rol IN ('admin','operador','lectura'))` —los mismos tres roles— y
+`FK id → auth.users(id) ON DELETE CASCADE`. Es decir, **Supabase Auth guarda la
+contraseña y `core.usuarios` guarda el rol**; no hay columna de contraseña
+porque nunca debió haberla. Ese `ON DELETE CASCADE` es además la respuesta a la
+pregunta III.3: al borrar el usuario, su perfil y permisos se van con él.
+
+**El peligro real no era el webhook — era el healthcheck.** `railway.json`
+declara `healthcheckPath=/api/health` con `restartPolicyType=ON_FAILURE`: un 401
+ahí hace que Railway dé el deploy por muerto y entre en BUCLE DE REINICIO,
+tumbando webhook, scheduler (sync de 15 min, `odoo_watch`, fan-out, sondeos de
+Amazon y M2E) y panel. Un error en una lista de strings apaga la operación
+entera. Blindajes, en orden de ejecución:
+
+1. Las rutas abiertas se evalúan **antes** que `AUTH_ENFORCED`. No existe orden
+   en que `/api/health` o el webhook puedan dar 401.
+2. `OPTIONS` siempre pasa (preflight de CORS; bloquearlo mata el panel).
+3. El handler de `/api/webhooks/ml` envuelve **todo** su cuerpo: cualquier
+   excepción responde 200. A ML nunca se le contesta distinto — si lo hiciera,
+   reintenta 1 h y después deshabilita el topic, y se dejan de capturar ventas
+   reales sin ningún error visible.
+4. El middleware **falla abierto**: si revienta, la petición pasa. Un bug en la
+   autenticación no puede convertirse en una caída total.
+5. `AUTH_RUTAS_ABIERTAS` (CSV) abre una ruta olvidada **sin commit**.
+6. `RBAC_ENFORCED` es independiente de `AUTH_ENFORCED`: se puede exigir
+   credencial sin aplicar roles todavía.
+
+**Hallazgo que bajó el riesgo**: el scheduler NO llama la API por HTTP (registra
+funciones en el mismo proceso) y los crons de Railway abren MySQL/Postgres
+directo. La categoría "consumidor interno por HTTP" está prácticamente vacía, así
+que exigir token rompe mucho menos de lo que se temía.
+
+**`scripts/humo_auth.py` — 48 pruebas, todas pasando.** Es la que decide si se
+puede desplegar. Cubre los dos modos en procesos separados (config lee las
+variables al importarse):
+
+```
+python -m scripts.humo_auth --observacion   →  9/9   nadie se bloquea
+python -m scripts.humo_auth                 → 39/39  el estado final
+```
+
+Verifica que `/api/health` y el webhook den 200 sin credencial incluso con el
+enforcement encendido, que el webhook aguante cuerpos inválidos, que el
+preflight de CORS pase, que el resto dé 401, que una ruta no listada exija
+`admin`, y las 13 combinaciones de rol —incluida la que importa para el
+*need-to-know*: **un `operador` no puede publicar a marketplaces, ni mover
+precios en masa, ni ver la bitácora**.
+
+**Despliegue en dos tiempos.** Sin `API_KEY` definida el middleware es inerte y
+todo sigue igual que hoy. Con `API_KEY` + `AUTH_ENFORCED=false` entra en
+OBSERVACIÓN: nada se bloquea, solo se registra en logs quién habría recibido 401
+— ese censo es lo que hace seguro apretar después. Revertir es cambiar una
+variable: 2-4 min, dentro de la ventana de reintentos de ML (1 h), así que no se
+pierde ni una venta. Versión 0.50.2.
+
 ---
 
 ### v0.49.1 — Fix: cada variante muestra SU costo, no el del padre
