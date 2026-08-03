@@ -60,3 +60,6 @@ audita_*.json
 auditoria*.json
 fanout_sobreventa.json
 ambiguos.json
+
+# Base local del módulo de Competencia (datos desechables, se reescriben cada mes)
+backend/competencia.db

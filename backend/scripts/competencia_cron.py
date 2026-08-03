@@ -31,13 +31,12 @@ logging.basicConfig(level=logging.INFO,
 from config import settings  # noqa: E402
 from services import competencia_captura, competencia_scraper, competencia_store  # noqa: E402
 
-# Los 10 SKUs del MVP de Mercado Libre. Tres de ellos (ORG-0334-NEG,
-# TEC-0566-MET, TEC-1112-NEG) NO existen en la tabla `productos`: la siembra los
-# reporta y los omite, no hay nombre con el que buscar.
+# Los 8 SKUs del MVP. MUE-0163-TEL no está en la tabla maestra `productos` — su
+# nombre sale de WooCommerce (lookup huérfana) — y NO está publicado en Mercado
+# Libre, así que sus búsquedas se miden pero "mi posición" siempre dirá "fuera".
 MVP = [
-    "ORG-0334-NEG", "TEC-0566-MET", "TEC-1112-NEG", "TEC-1407-FORD",
-    "TEC-0249-NEG-MOR", "TEC-0265-NEG-VER", "TEC-1765-MET", "ACC-0191-NEG-VER",
-    "TEC-1211-PLA-NISSAN-2.5", "TEC-1539-AZL-XL",
+    "MUE-0163-TEL", "TEC-1407-FORD", "TEC-0249-NEG-MOR", "TEC-0265-NEG-VER",
+    "TEC-1765-MET", "ACC-0191-NEG-VER", "TEC-1211-PLA-NISSAN-2.5", "TEC-1539-AZL-XL",
 ]
 
 
@@ -51,9 +50,7 @@ def main() -> int:
     args = ap.parse_args()
 
     print("═══ Competencia · corrida mensual ═══")
-    if not competencia_store.disponible():
-        print("ERROR: SUPABASE_DB_URL no está configurada — no hay dónde guardar.")
-        return 2
+    print(f"base local: {competencia_store.RUTA_DB}")
     if not competencia_scraper.disponible():
         print("AVISO: APIFY_API_KEY ausente — las búsquedas general/título no "
               "traerán ficha; solo correrá el ranking de categoría (API).")

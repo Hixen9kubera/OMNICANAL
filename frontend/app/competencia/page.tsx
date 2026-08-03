@@ -1,44 +1,50 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
   Loader2,
   AlertTriangle,
   ExternalLink,
   Eye,
-  Trophy,
-  Play,
   Info,
-  Pencil,
   Check,
-  X,
-  ChevronRight,
+  Copy,
   Search,
   Target,
   Crown,
+  ChevronDown,
+  ChevronRight,
+  Store,
+  Flame,
   Sparkles,
+  TrendingUp,
+  Ban,
+  Pause,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import {
-  corregirTerminoCompetencia,
-  correrCompetencia,
-  corridaCompetencia,
-  detalleCompetencia,
+  detalleSkuCompetencia,
   estadoCompetencia,
-  tablaCompetencia,
+  skusSubcategoria,
+  sugerirSku,
+  sugerirSubcategoria,
+  terminosSubcategoria,
+  vistaCompetencia,
 } from "@/lib/api";
 import type {
-  CompetenciaCategoriaGrupo,
-  CompetenciaCorrida,
-  CompetenciaDetalle,
+  CompetenciaDetalleSku,
   CompetenciaEstado,
-  CompetenciaFilaSku,
-  CompetenciaResultado,
-  TipoCompetencia,
+  CompetenciaNicho,
+  CompetenciaRaiz,
+  CompetenciaSkusSub,
+  CompetenciaSkuVista,
+  CompetenciaSubcategoria,
+  CompetenciaSugerenciaSku,
+  CompetenciaSugerenciaSub,
+  CompetenciaTerminosSub,
+  RankingCategoria,
 } from "@/lib/types";
-
-const COLOR = "#4F46E5";
 
 const mxn = (v: number | null | undefined) =>
   v === null || v === undefined
@@ -52,44 +58,37 @@ const mxn = (v: number | null | undefined) =>
 const num = (v: number | null | undefined) =>
   v === null || v === undefined ? "—" : new Intl.NumberFormat("es-MX").format(v);
 
-const mes = (p: string | null | undefined) =>
-  !p
-    ? "—"
-    : new Date(`${p.slice(0, 10)}T12:00:00`).toLocaleDateString("es-MX", {
-        month: "long",
-        year: "numeric",
-      });
+/**
+ * Los "+50mil vendidos" de ML son una COTA INFERIOR: la plataforma redondea, así
+ * que 84,000 no es una cifra exacta sino "al menos 84 mil". Se marca con el `+`
+ * para que nadie la sume como si fuera precisa.
+ */
+const cota = (v: number | null | undefined) => (v ? `+${num(v)}` : "—");
 
-// Las tres mediciones y qué pregunta responde cada una.
-const TIPOS: { id: TipoCompetencia; label: string; pregunta: string; icon: typeof Search }[] = [
-  {
-    id: "general",
-    label: "Búsqueda general",
-    pregunta: "¿Me encuentran cuando buscan el tipo de producto?",
-    icon: Search,
-  },
-  {
-    id: "titulo",
-    label: "Competencia directa",
-    pregunta: "¿Dónde quedo contra el mismo producto?",
-    icon: Target,
-  },
-  {
-    id: "categoria",
-    label: "Top de la categoría",
-    pregunta: "¿Quiénes son los más vendidos de mi categoría?",
-    icon: Crown,
-  },
-];
-
-/** Posición como medalla: lo primero que el ojo busca en la tabla. */
-function Posicion({ pos, total }: { pos: number | null; total: number | null }) {
-  if (pos === null || pos === undefined)
+/** La brecha de precio: es la columna que manda, y su color es el diagnóstico. */
+function Brecha({ x }: { x: number | null }) {
+  if (x === null || x === undefined)
     return (
-      <span className="text-xs text-slate-400" title="No apareces en esta medición">
-        fuera
+      <span className="text-xs text-slate-400" title="Sin ranking de la subcategoría: no hay mercado con qué comparar">
+        —
       </span>
     );
+  const tono =
+    x >= 3
+      ? "bg-rose-100 text-rose-800"
+      : x >= 1.5
+        ? "bg-amber-100 text-amber-800"
+        : "bg-emerald-100 text-emerald-800";
+  return (
+    <span className={`rounded px-1.5 py-0.5 text-xs font-bold tabular-nums ${tono}`}>
+      {x.toFixed(1)}×
+    </span>
+  );
+}
+
+/** La posición como medalla: es lo primero que el ojo busca. */
+function Medalla({ pos }: { pos: number | null }) {
+  if (!pos) return <span className="text-xs text-slate-300">—</span>;
   const tono =
     pos <= 3
       ? "bg-emerald-100 text-emerald-800"
@@ -97,202 +96,1643 @@ function Posicion({ pos, total }: { pos: number | null; total: number | null }) 
         ? "bg-amber-100 text-amber-800"
         : "bg-slate-100 text-slate-600";
   return (
-    <span className="inline-flex items-baseline gap-1">
-      <span className={`rounded px-1.5 py-0.5 text-xs font-bold tabular-nums ${tono}`}>
-        #{pos}
-      </span>
-      {total ? <span className="text-[10px] text-slate-400">/{total}</span> : null}
+    <span className={`rounded px-1.5 py-0.5 text-xs font-bold tabular-nums ${tono}`}>
+      #{pos}
     </span>
   );
 }
 
+/** Foto del producto. Sin `next/image` a propósito: son dominios de ML y de Woo. */
+function Foto({ src, alt, size = 40 }: { src: string | null; alt: string; size?: number }) {
+  if (!src)
+    return (
+      <div
+        className="shrink-0 rounded bg-slate-100 ring-1 ring-slate-200"
+        style={{ width: size, height: size }}
+      />
+    );
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={alt}
+      className="shrink-0 rounded object-cover ring-1 ring-slate-200"
+      style={{ width: size, height: size }}
+      loading="lazy"
+    />
+  );
+}
+
+/** Una tarjeta del top de más vendidos de la categoría padre. */
+function Tarjeta({ r }: { r: RankingCategoria }) {
+  return (
+    <a
+      href={r.url ?? "#"}
+      target="_blank"
+      rel="noreferrer"
+      className="group flex w-[168px] shrink-0 flex-col gap-1.5 rounded-lg bg-white p-2 ring-1 ring-slate-200 transition hover:ring-indigo-300"
+    >
+      <div className="flex items-start justify-between gap-1">
+        <Medalla pos={r.posicion} />
+        {r.es_nuestro ? (
+          <span className="rounded bg-indigo-600 px-1 py-0.5 text-[9px] font-bold text-white">
+            NUESTRO
+          </span>
+        ) : null}
+      </div>
+      <Foto src={r.imagen} alt={r.titulo ?? r.externo_id} size={148} />
+      <div className="line-clamp-2 text-[11px] leading-tight text-slate-700 group-hover:text-indigo-700">
+        {r.titulo ?? r.externo_id}
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-sm font-bold text-slate-900">{mxn(r.precio)}</span>
+        {r.precio_lista && r.precio && r.precio_lista > r.precio ? (
+          <span className="text-[10px] text-slate-400 line-through">{mxn(r.precio_lista)}</span>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-2 text-[10px] text-slate-500">
+        <span title="Visitas en 30 días (API de Mercado Libre)">
+          <Eye size={9} className="mr-0.5 inline" />
+          {num(r.visitas_30d)}
+        </span>
+        <span title="Unidades vendidas: ML redondea, es una cota inferior">
+          {cota(r.vendidos)} vend.
+        </span>
+        {r.rating ? <span>★ {r.rating}</span> : null}
+      </div>
+      {r.item_categoria_nombre ? (
+        <div
+          className="truncate rounded bg-slate-50 px-1 py-0.5 text-[9px] text-slate-500"
+          title={`Subcategoría: ${r.item_categoria_nombre}`}
+        >
+          {r.item_categoria_nombre}
+        </div>
+      ) : null}
+    </a>
+  );
+}
+
+/**
+ * Selector con buscador. Reemplaza al `<select>` de subcategorías porque en
+ * producción son ~988: una lista sin filtro es inservible a esa escala.
+ */
+function SelectorBuscable({
+  valor,
+  opciones,
+  placeholder,
+  vacio,
+  onCambio,
+}: {
+  valor: string;
+  opciones: { id: string; label: string; n?: number }[];
+  placeholder: string;
+  vacio: string;
+  onCambio: (id: string) => void;
+}) {
+  const [abierto, setAbierto] = useState(false);
+  const [q, setQ] = useState("");
+  const caja = useRef<HTMLDivElement>(null);
+
+  // Cerrar al hacer clic fuera: sin esto el panel se queda abierto tapando la tabla.
+  useEffect(() => {
+    if (!abierto) return;
+    const fuera = (e: MouseEvent) => {
+      if (caja.current && !caja.current.contains(e.target as Node)) setAbierto(false);
+    };
+    document.addEventListener("mousedown", fuera);
+    return () => document.removeEventListener("mousedown", fuera);
+  }, [abierto]);
+
+  const elegida = opciones.find((o) => o.id === valor);
+  const filtradas = q.trim()
+    ? opciones.filter((o) => o.label.toLowerCase().includes(q.trim().toLowerCase()))
+    : opciones;
+
+  return (
+    <div ref={caja} className="relative">
+      <button
+        onClick={() => {
+          setAbierto((v) => !v);
+          setQ("");
+        }}
+        className="flex min-w-[240px] items-center gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-50"
+      >
+        <span className="min-w-0 flex-1 truncate">
+          {elegida ? `${elegida.label}${elegida.n ? ` (${elegida.n})` : ""}` : vacio}
+        </span>
+        <ChevronDown size={13} className="shrink-0 text-slate-400" />
+      </button>
+
+      {abierto ? (
+        <div className="absolute z-20 mt-1 w-[320px] overflow-hidden rounded-lg bg-white shadow-lg ring-1 ring-slate-200">
+          <div className="relative border-b border-slate-100 p-2">
+            <Search
+              size={13}
+              className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder={placeholder}
+              autoFocus
+              className="w-full rounded border border-slate-200 py-1 pl-7 pr-2 text-sm"
+            />
+          </div>
+          <div className="max-h-[280px] overflow-y-auto py-1">
+            <button
+              onClick={() => {
+                onCambio("");
+                setAbierto(false);
+              }}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-50 ${
+                valor === "" ? "font-medium text-indigo-700" : "text-slate-600"
+              }`}
+            >
+              {valor === "" ? <Check size={12} /> : <span className="w-3" />}
+              {vacio}
+            </button>
+            {filtradas.length === 0 ? (
+              <div className="px-3 py-3 text-center text-xs text-slate-400">
+                Nada coincide con «{q}».
+              </div>
+            ) : (
+              filtradas.map((o) => (
+                <button
+                  key={o.id}
+                  onClick={() => {
+                    onCambio(o.id);
+                    setAbierto(false);
+                  }}
+                  className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-50 ${
+                    valor === o.id ? "font-medium text-indigo-700" : "text-slate-600"
+                  }`}
+                >
+                  {valor === o.id ? <Check size={12} /> : <span className="w-3" />}
+                  <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                  {o.n ? (
+                    <span className="shrink-0 text-[10px] tabular-nums text-slate-400">
+                      {o.n}
+                    </span>
+                  ) : null}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Cuántas columnas tiene la tabla de SKUs. Lo usa el colSpan del detalle. */
+const COLS = 13;
+
+type Orden =
+  | "visitas_desc"
+  | "visitas_asc"
+  | "unidades_desc"
+  | "unidades_asc";
+
+const ORDENES: { id: Orden; label: string }[] = [
+  { id: "visitas_desc", label: "Más visitas primero" },
+  { id: "visitas_asc", label: "Menos visitas primero" },
+  { id: "unidades_desc", label: "Más vendidos primero" },
+  { id: "unidades_asc", label: "Menos vendidos primero" },
+];
+
+/**
+ * Ordena nuestros SKUs por visitas o unidades.
+ *
+ * Los `null` (sin medir) van SIEMPRE al final, en las dos direcciones. Tratarlos
+ * como 0 los pondría arriba en el orden ascendente y se leería como "estos son
+ * los que nadie ve", cuando la verdad es que nadie los midió.
+ */
+function ordenar<T extends { visitas_30d: number | null; unidades_30d: number | null }>(
+  filas: T[],
+  orden: Orden,
+): T[] {
+  const campo = orden.startsWith("visitas") ? "visitas_30d" : "unidades_30d";
+  const asc = orden.endsWith("_asc");
+  return [...filas].sort((a, b) => {
+    const x = a[campo as keyof T] as number | null;
+    const y = b[campo as keyof T] as number | null;
+    if (x === null || x === undefined) return 1;
+    if (y === null || y === undefined) return -1;
+    return asc ? x - y : y - x;
+  });
+}
+
+/**
+ * Un SKU nuestro = VARIAS filas, una por publicación.
+ *
+ * El desglose por tienda va en la tabla y no escondido en el detalle porque es
+ * donde está la decisión: cada tienda tiene su propio TÍTULO, su precio, sus
+ * visitas y sus ventas, y con títulos distintos una vende y la otra no. Las
+ * celdas del SKU (foto, producto, subcategoría, brecha) llevan `rowSpan`.
+ */
+function FilasSku({
+  s,
+  abierto,
+  onToggle,
+}: {
+  s: CompetenciaSkuVista;
+  abierto: boolean;
+  onToggle: () => void;
+}) {
+  const tiendas = s.tiendas.length ? s.tiendas : [null];
+  const span = tiendas.length;
+  const fondo = abierto ? "bg-indigo-50/40" : "";
+
+  return (
+    <>
+      {tiendas.map((t, i) => (
+        <tr
+          key={t ? `${t.cuenta}-${t.ml_item_id}` : `${s.sku}-vacio`}
+          onClick={onToggle}
+          className={`cursor-pointer transition hover:bg-slate-50 ${fondo} ${
+            i === 0 ? "border-t border-slate-200" : "border-t border-slate-100"
+          }`}
+        >
+          {i === 0 ? (
+            <>
+              <td rowSpan={span} className="py-2 pl-2 pr-1 align-top">
+                {abierto ? (
+                  <ChevronDown size={14} className="text-slate-400" />
+                ) : (
+                  <ChevronRight size={14} className="text-slate-300" />
+                )}
+              </td>
+              <td rowSpan={span} className="py-2 pr-2 align-top">
+                <Foto src={s.imagen} alt={s.sku} />
+              </td>
+              <td rowSpan={span} className="py-2 pr-3 align-top">
+                <div className="font-mono text-xs font-medium text-slate-900">{s.sku}</div>
+                <div className="max-w-[220px] text-[11px] leading-snug text-slate-500">
+                  {s.nombre}
+                </div>
+                {s.pausada_es_la_que_vende ? (
+                  <span
+                    className="mt-1 inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-800"
+                    title="La publicación PAUSADA tiene más visitas que la activa: está pausada la que vende"
+                  >
+                    <Pause size={9} /> pausada vende
+                  </span>
+                ) : null}
+              </td>
+              <td rowSpan={span} className="py-2 pr-3 align-top text-xs text-slate-600">
+                {s.categoria_nombre}
+                {s.pos_en_raiz ? (
+                  <span
+                    className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold text-amber-800"
+                    title={`Su subcategoría es la #${s.pos_en_raiz} más vendida de toda la categoría`}
+                  >
+                    raíz #{s.pos_en_raiz}
+                  </span>
+                ) : null}
+                {s.sin_datos_ml ? (
+                  <span
+                    className="ml-1.5 inline-flex items-center gap-0.5 rounded bg-slate-100 px-1 py-0.5 text-[9px] text-slate-500"
+                    title="ML no publica ni ranking ni términos de esta categoría. No es un fallo de la captura."
+                  >
+                    <Ban size={8} /> sin datos ML
+                  </span>
+                ) : null}
+              </td>
+              <td
+                rowSpan={span}
+                className="py-2 pr-3 align-top text-right text-xs tabular-nums text-slate-500"
+              >
+                {mxn(s.mediana_mercado)}
+              </td>
+              <td rowSpan={span} className="py-2 pr-3 align-top text-right">
+                <Brecha x={s.brecha} />
+              </td>
+            </>
+          ) : null}
+
+          {/* ── Por publicación ── */}
+          <td className="py-2 pr-2 text-[11px] font-medium text-slate-700">
+            {t?.cuenta ?? "—"}
+          </td>
+          <td className="py-2 pr-3">
+            {/* El título es POR TIENDA y suele diferir: es lo que explica por qué
+                una publicación recibe tráfico y la otra no. */}
+            <div className="max-w-[260px] text-[11px] leading-snug text-slate-600">
+              {t?.titulo ?? "—"}
+            </div>
+          </td>
+          <td className="py-2 pr-3">
+            {t?.ml_item_id ? (
+              <a
+                href={t.url ?? "#"}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center gap-0.5 font-mono text-[11px] text-indigo-600 hover:underline"
+              >
+                {t.ml_item_id}
+                <ExternalLink size={9} />
+              </a>
+            ) : (
+              <span className="text-[11px] text-slate-400">sin publicar</span>
+            )}
+            {t?.estado ? (
+              <span
+                className={`ml-1.5 rounded px-1 py-0.5 text-[9px] ${
+                  t.estado === "active"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-amber-100 text-amber-700"
+                }`}
+              >
+                {t.estado}
+              </span>
+            ) : null}
+          </td>
+          <td className="py-2 pr-3 text-right text-xs font-medium tabular-nums text-slate-900">
+            {mxn(t?.precio)}
+          </td>
+          <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
+            {num(t?.visitas_30d)}
+          </td>
+          <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
+            {num(t?.unidades_30d)}
+          </td>
+          <td className="py-2 pr-2 text-right text-xs tabular-nums text-slate-500">
+            {/* Con 0 visitas la conversión es INDEFINIDA, no 0%: mostrarla como
+                0% se lee como "convierte mal" cuando en realidad nadie la vio. */}
+            {t?.conversion_30d === null || t?.conversion_30d === undefined
+              ? "—"
+              : `${t.conversion_30d}%`}
+          </td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
+/**
+ * El detalle de un SKU, todo bajo COMPETENCIA DIRECTA.
+ *
+ * Un solo eje: los títulos que hoy ganan el ranking de la subcategoría, nuestras
+ * publicaciones al lado, y un título que la IA propone a partir de esos líderes.
+ * El panel de "término general" se fue: la decisión no es qué se busca en
+ * abstracto sino cómo se llama lo que ya se vende en el nicho.
+ */
+function DetalleSku({
+  d,
+  cargando,
+}: {
+  d: CompetenciaDetalleSku | null;
+  cargando: boolean;
+}) {
+  const [sug, setSug] = useState<CompetenciaSugerenciaSku | null>(null);
+  const [pidiendo, setPidiendo] = useState(false);
+  const [fallo, setFallo] = useState<string | null>(null);
+  const [copiado, setCopiado] = useState(false);
+
+  // Al cambiar de SKU la sugerencia anterior deja de aplicar.
+  useEffect(() => {
+    setSug(null);
+    setFallo(null);
+    setCopiado(false);
+  }, [d?.sku]);
+
+  if (cargando)
+    return (
+      <div className="flex items-center gap-2 px-4 py-6 text-sm text-slate-500">
+        <Loader2 size={15} className="animate-spin" /> Cargando…
+      </div>
+    );
+  if (!d) return null;
+
+  return (
+    <div className="space-y-3 border-y border-indigo-100 bg-indigo-50/30 px-4 py-4">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+          <Target size={13} /> Competencia directa
+        </span>
+        <span className="text-[11px] text-slate-500">{d.categoria_nombre}</span>
+        {d.ruta ? <span className="text-[10px] text-slate-400">{d.ruta}</span> : null}
+      </div>
+
+      {d.aviso ? (
+        <div className="flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+          <Ban size={14} className="mt-0.5 shrink-0 text-slate-400" />
+          {d.aviso}
+        </div>
+      ) : null}
+
+      {/* ── Los que hoy ganan el nicho ── */}
+      <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          Los que lideran {d.categoria_nombre}
+        </div>
+        {d.top.length === 0 ? (
+          <div className="py-3 text-center text-xs text-slate-400">
+            Sin ranking guardado de esta subcategoría.
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {d.top.slice(0, 8).map((r) => (
+              <a
+                key={r.externo_id}
+                href={r.url ?? "#"}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-2 rounded p-1 hover:bg-slate-50"
+              >
+                <Medalla pos={r.posicion} />
+                <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
+                <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
+                  {r.titulo ?? r.externo_id}
+                </span>
+                <span className="w-8 text-right text-[10px] tabular-nums text-slate-400">
+                  {r.titulo ? r.titulo.length : "—"}c
+                </span>
+                <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
+                  {mxn(r.precio)}
+                </span>
+                <span className="w-16 text-right text-[10px] tabular-nums text-slate-400">
+                  {num(r.visitas_30d)} vis
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Nuestras publicaciones, con su propio título ── */}
+      <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+          Nuestras publicaciones
+        </div>
+        <div className="space-y-1.5">
+          {d.publicaciones.map((p) => (
+            <div key={`${p.cuenta}-${p.ml_item_id}`} className="rounded bg-slate-50 p-2">
+              <div className="mb-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
+                <span className="font-semibold text-slate-700">{p.cuenta}</span>
+                <span
+                  className={`rounded px-1 py-0.5 text-[9px] ${
+                    p.estado === "active"
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-amber-100 text-amber-700"
+                  }`}
+                >
+                  {p.estado}
+                </span>
+                <a
+                  href={p.url ?? "#"}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 font-mono text-indigo-600 hover:underline"
+                >
+                  {p.ml_item_id}
+                  <ExternalLink size={9} />
+                </a>
+                <span className="ml-auto font-medium tabular-nums text-slate-900">
+                  {mxn(p.precio)}
+                </span>
+              </div>
+              <div className="mb-1 flex items-start gap-1.5">
+                <span className="text-[11px] leading-snug text-slate-600">
+                  {p.titulo ?? "— sin título —"}
+                </span>
+                {p.titulo ? (
+                  <span className="shrink-0 text-[10px] tabular-nums text-slate-400">
+                    {p.titulo.length}c
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex gap-3 text-[10px] tabular-nums text-slate-500">
+                <span>
+                  <Eye size={9} className="mr-0.5 inline" />
+                  {num(p.visitas_30d)} vis
+                </span>
+                <span>{num(p.unidades_30d)} u</span>
+                <span>
+                  {/* Con 0 visitas la conversión es INDEFINIDA, no 0%. */}
+                  {p.conversion_30d === null || p.conversion_30d === undefined
+                    ? "—"
+                    : `${p.conversion_30d}%`}{" "}
+                  conv
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── El título que propone la IA a partir de esos líderes ── */}
+      <div className="rounded-lg bg-white p-3 ring-1 ring-indigo-200">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+            <Sparkles size={11} /> Título sugerido (máx. 60 caracteres)
+          </span>
+          <button
+            onClick={async () => {
+              setPidiendo(true);
+              setFallo(null);
+              try {
+                setSug(await sugerirSku(d.sku));
+              } catch (e) {
+                setFallo(e instanceof Error ? e.message : "La IA no pudo sugerir.");
+              } finally {
+                setPidiendo(false);
+              }
+            }}
+            disabled={pidiendo}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {pidiendo ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <Sparkles size={11} />
+            )}
+            {sug ? "Otra propuesta" : "Sugerir título"}
+          </button>
+        </div>
+
+        {fallo ? <div className="text-[11px] text-rose-700">{fallo}</div> : null}
+
+        {!sug && !fallo ? (
+          <div className="text-[11px] leading-snug text-slate-400">
+            La IA lee los títulos de los líderes de arriba y los términos más
+            buscados que no cubrimos, y propone un título. El largo y la cobertura
+            se recalculan aquí: lo que la IA presume de su propio título no basta.
+          </div>
+        ) : null}
+
+        {sug ? (
+          <div className="space-y-2">
+            <div className="flex items-start gap-2">
+              <div className="flex-1 rounded bg-indigo-50 px-2 py-1.5 text-sm font-medium text-slate-900">
+                {sug.titulo}
+              </div>
+              <span
+                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
+                  sug.excede_60
+                    ? "bg-rose-100 text-rose-800"
+                    : "bg-emerald-100 text-emerald-800"
+                }`}
+                title="Largo real, contado en el backend"
+              >
+                {sug.largo}c
+              </span>
+              <button
+                onClick={() => {
+                  void navigator.clipboard.writeText(sug.titulo);
+                  setCopiado(true);
+                }}
+                className="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100"
+                title="Copiar"
+              >
+                {copiado ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
+              </button>
+            </div>
+
+            {sug.excede_60 ? (
+              <div className="flex items-start gap-1.5 text-[11px] text-rose-700">
+                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                Se pasa del límite de 60 caracteres de ML: hay que recortarlo antes
+                de usarlo.
+              </div>
+            ) : null}
+
+            {sug.porque ? (
+              <div className="text-[11px] text-slate-600">{sug.porque}</div>
+            ) : null}
+
+            {/* Lo que el título GANA de verdad, recalculado. */}
+            <div className="text-[11px]">
+              <span className="text-slate-500">Términos que gana: </span>
+              {sug.cubre_verificado.length === 0 ? (
+                <span className="text-rose-700">
+                  ninguno de los {sug.faltantes.length} que no cubríamos
+                </span>
+              ) : (
+                <>
+                  <span className="font-medium text-emerald-700">
+                    {sug.cubre_verificado.length} de {sug.faltantes.length}
+                  </span>
+                  <span className="text-slate-600"> — {sug.cubre_verificado.join(" · ")}</span>
+                </>
+              )}
+            </div>
+
+            {/* Si la IA presumió más de lo que cumple, se dice. */}
+            {sug.cubre_declarado.length > sug.cubre_verificado.length ? (
+              <div className="flex items-start gap-1.5 text-[10px] text-amber-800">
+                <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+                La IA declaró cubrir {sug.cubre_declarado.length} términos; al
+                verificarlo cubre {sug.cubre_verificado.length}.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+
+/**
+ * Nuestros SKUs de una categoría con su barra completa por tienda.
+ *
+ * Distingue dos cosas que se ven parecido y no lo son: un SKU MEDIDO trae visitas,
+ * ventas y conversión; uno solo publicado trae su MLM y su link pero las métricas
+ * en "—" porque nadie lo está midiendo. Pintarle 0 diría "no lo ven".
+ */
+function SkusDeCategoria({ categoriaId }: { categoriaId: string }) {
+  const [datos, setDatos] = useState<CompetenciaSkusSub | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    skusSubcategoria(categoriaId, ac.signal).then(setDatos).catch(() => {});
+    return () => ac.abort();
+  }, [categoriaId]);
+
+  if (!datos)
+    return (
+      <div className="flex items-center gap-2 px-3 py-3 text-[11px] text-slate-400">
+        <Loader2 size={12} className="animate-spin" /> Cargando SKUs…
+      </div>
+    );
+  if (datos.skus.length === 0)
+    return (
+      <div className="px-3 py-3 text-[11px] text-slate-400">
+        No tenemos SKUs en esta categoría.
+      </div>
+    );
+
+  return (
+    <div className="px-3 py-3">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+        <span className="font-semibold uppercase tracking-wide text-slate-500">
+          Nuestros SKUs
+        </span>
+        <span className="text-slate-400">
+          {datos.n_total} en catálogo · {datos.n_publicados} publicados ·{" "}
+          {datos.n_vigilados} medidos
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px]">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wide text-slate-400">
+              <th className="w-12" />
+              <th className="pb-1 text-left font-medium">Producto</th>
+              <th className="pb-1 text-left font-medium">Tienda</th>
+              <th className="pb-1 text-left font-medium">Título de la tienda</th>
+              <th className="pb-1 text-left font-medium">Publicación</th>
+              <th className="pb-1 text-right font-medium">Precio</th>
+              <th className="pb-1 text-right font-medium">Visitas 30d</th>
+              <th className="pb-1 text-right font-medium">Ventas 30d</th>
+              <th className="pb-1 text-right font-medium">Conversión</th>
+            </tr>
+          </thead>
+          <tbody>
+            {datos.skus.map((s) => {
+              const tiendas = s.tiendas.length ? s.tiendas : [null];
+              return (
+                <Fragment key={s.sku}>
+                  {tiendas.map((t, i) => (
+                    <tr
+                      key={t ? `${t.cuenta}-${t.ml_item_id}` : `${s.sku}-vacio`}
+                      className={i === 0 ? "border-t border-slate-200" : "border-t border-slate-100"}
+                    >
+                      {i === 0 ? (
+                        <>
+                          <td rowSpan={tiendas.length} className="py-2 pr-2 align-top">
+                            <Foto src={s.imagen} alt={s.sku} size={34} />
+                          </td>
+                          <td rowSpan={tiendas.length} className="py-2 pr-3 align-top">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-xs font-medium text-slate-900">
+                                {s.sku}
+                              </span>
+                              {s.vigilado ? (
+                                <span
+                                  className="rounded bg-indigo-100 px-1 py-0.5 text-[9px] font-bold text-indigo-700"
+                                  title="Bajo observación: sus visitas y ventas se miden"
+                                >
+                                  medido
+                                </span>
+                              ) : s.publicado ? (
+                                <span
+                                  className="rounded bg-amber-100 px-1 py-0.5 text-[9px] text-amber-800"
+                                  title="Está publicado pero nadie mide sus visitas ni sus ventas"
+                                >
+                                  sin medir
+                                </span>
+                              ) : (
+                                <span
+                                  className="rounded bg-slate-100 px-1 py-0.5 text-[9px] text-slate-500"
+                                  title="No hay publicación de este SKU en Mercado Libre"
+                                >
+                                  sin publicar
+                                </span>
+                              )}
+                            </div>
+                            <div className="max-w-[240px] text-[11px] leading-snug text-slate-500">
+                              {s.nombre ?? "—"}
+                            </div>
+                          </td>
+                        </>
+                      ) : null}
+                      <td className="py-2 pr-2 text-[11px] font-medium text-slate-700">
+                        {t?.cuenta ?? "—"}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <div className="max-w-[260px] text-[11px] leading-snug text-slate-600">
+                          {t?.titulo ?? "—"}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3">
+                        {t?.ml_item_id ? (
+                          <a
+                            href={t.url ?? "#"}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-0.5 font-mono text-[11px] text-indigo-600 hover:underline"
+                          >
+                            {t.ml_item_id}
+                            <ExternalLink size={9} />
+                          </a>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">—</span>
+                        )}
+                        {t?.estado ? (
+                          <span
+                            className={`ml-1.5 rounded px-1 py-0.5 text-[9px] ${
+                              t.estado === "active"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-amber-100 text-amber-700"
+                            }`}
+                          >
+                            {t.estado}
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="py-2 pr-3 text-right text-xs font-medium tabular-nums text-slate-900">
+                        {mxn(t?.precio)}
+                      </td>
+                      <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
+                        {num(t?.visitas_30d)}
+                      </td>
+                      <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
+                        {num(t?.unidades_30d)}
+                      </td>
+                      <td className="py-2 pr-2 text-right text-xs tabular-nums text-slate-500">
+                        {t?.conversion_30d === null || t?.conversion_30d === undefined
+                          ? "—"
+                          : `${t.conversion_30d}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {datos.aviso ? (
+        <div className="mt-1.5 text-[10px] leading-snug text-slate-400">{datos.aviso}</div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * La barra de términos de una subcategoría: qué se busca en ese nicho, qué de eso
+ * cubrimos, y qué palabras conviene agregar.
+ *
+ * Los términos son demanda MEDIDA (lo que ML publica en /trends). Las palabras las
+ * propone la IA a partir de esos términos y de los títulos de los líderes, y cada
+ * una viene marcada con `respaldada`: si no aparece en ninguno de los dos, la IA la
+ * inventó y se muestra distinto en vez de pasarla como dato.
+ */
+function BarraTerminos({ categoriaId }: { categoriaId: string }) {
+  const [datos, setDatos] = useState<CompetenciaTerminosSub | null>(null);
+  const [sug, setSug] = useState<CompetenciaSugerenciaSub | null>(null);
+  const [pidiendo, setPidiendo] = useState(false);
+  const [fallo, setFallo] = useState<string | null>(null);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    terminosSubcategoria(categoriaId, ac.signal).then(setDatos).catch(() => {});
+    return () => ac.abort();
+  }, [categoriaId]);
+
+  if (!datos) return null;
+  if (datos.terminos.length === 0)
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-2 text-[11px] text-slate-400">
+        <Ban size={11} /> {datos.aviso}
+      </div>
+    );
+
+  return (
+    <div className="border-b border-slate-100 bg-white px-3 py-2.5">
+      <div className="mb-1.5 flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <Search size={11} /> Términos más buscados
+        </span>
+        <span
+          className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+            datos.cubiertos === 0
+              ? "bg-rose-100 text-rose-800"
+              : "bg-amber-100 text-amber-800"
+          }`}
+          title="Cuántos de los términos publicados por ML cubren nuestros títulos de este nicho"
+        >
+          {datos.cubiertos} de {datos.total} cubiertos
+        </span>
+        <button
+          onClick={async () => {
+            setPidiendo(true);
+            setFallo(null);
+            try {
+              setSug(await sugerirSubcategoria(categoriaId));
+            } catch (e) {
+              setFallo(e instanceof Error ? e.message : "La IA no pudo sugerir.");
+            } finally {
+              setPidiendo(false);
+            }
+          }}
+          disabled={pidiendo}
+          className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50 disabled:opacity-50"
+        >
+          {pidiendo ? (
+            <Loader2 size={11} className="animate-spin" />
+          ) : (
+            <Sparkles size={11} />
+          )}
+          Sugerir palabras
+        </button>
+      </div>
+
+      {/* Los términos, en orden de volumen. Verde = nuestro título lo cubre. */}
+      <div className="flex flex-wrap gap-1">
+        {datos.terminos.map((t) => (
+          <span
+            key={t.termino}
+            className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] ${
+              t.cubierto
+                ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
+                : "bg-slate-50 text-slate-500 ring-1 ring-slate-200"
+            }`}
+            title={
+              t.cubierto
+                ? `Lo cubre: ${t.cubierto_por.join(", ")}`
+                : "Nadie lo cubre: es tráfico que no nos puede encontrar"
+            }
+          >
+            <span className="tabular-nums text-slate-400">{t.posicion}</span>
+            {t.termino}
+            {t.cubierto ? <Check size={9} /> : null}
+          </span>
+        ))}
+      </div>
+
+      {fallo ? (
+        <div className="mt-2 text-[11px] text-rose-700">{fallo}</div>
+      ) : null}
+
+      {sug ? (
+        <div className="mt-2.5 rounded-lg bg-indigo-50/60 p-2.5 ring-1 ring-indigo-100">
+          <div className="mb-1.5 inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-indigo-700">
+            <Sparkles size={11} /> Palabras a usar en este nicho
+          </div>
+          <div className="space-y-1">
+            {sug.palabras.map((p) => (
+              <div key={p.palabra} className="flex items-start gap-2 text-[11px]">
+                <span
+                  className={`shrink-0 rounded px-1.5 py-0.5 font-semibold ${
+                    p.respaldada
+                      ? "bg-white text-indigo-800 ring-1 ring-indigo-200"
+                      : "bg-amber-100 text-amber-900"
+                  }`}
+                  title={
+                    p.respaldada
+                      ? "Sale de los términos buscados o de los títulos líderes"
+                      : "No aparece en la demanda medida ni en los títulos líderes: la IA la propuso sola"
+                  }
+                >
+                  {p.palabra}
+                  {p.respaldada ? "" : " ⚠"}
+                </span>
+                <span className="text-slate-600">{p.porque}</span>
+              </div>
+            ))}
+          </div>
+          {sug.evitar.length > 0 ? (
+            <div className="mt-2 text-[10px] text-slate-500">
+              evitar: {sug.evitar.join(" · ")}
+            </div>
+          ) : null}
+          {sug.evitar_descartados.length > 0 ? (
+            <div className="mt-1 flex items-start gap-1.5 text-[10px] text-amber-800">
+              <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+              La IA sugirió evitar {sug.evitar_descartados.join(", ")}, pero son
+              términos que la gente SÍ busca. Se descartaron.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Un nicho del top del padre. Se despliega y muestra NUESTROS SKUs de ese nicho
+ * con la barra completa por tienda: título, MLM con link, precio, visitas, ventas
+ * y conversión — la misma barra de siempre, para los que están publicados.
+ */
+function FilaNicho({ n }: { n: CompetenciaNicho }) {
+  const [abierto, setAbierto] = useState(false);
+  return (
+    <div
+      className={`overflow-hidden rounded-lg ring-1 ${
+        n.tenemos ? "bg-slate-50 ring-slate-200" : "bg-rose-50/50 ring-rose-200"
+      }`}
+    >
+      <button
+        onClick={() => n.tenemos && setAbierto((v) => !v)}
+        disabled={!n.tenemos}
+        className={`flex w-full flex-wrap items-center gap-3 p-2 text-left ${
+          n.tenemos ? "hover:bg-white/60" : "cursor-default"
+        }`}
+      >
+        {n.tenemos ? (
+          abierto ? (
+            <ChevronDown size={14} className="shrink-0 text-slate-400" />
+          ) : (
+            <ChevronRight size={14} className="shrink-0 text-slate-300" />
+          )
+        ) : (
+          <span className="w-3.5 shrink-0" />
+        )}
+        <Medalla pos={n.posicion} />
+        <Foto src={n.lider.imagen} alt={n.categoria_nombre} size={44} />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-slate-900">
+            {n.categoria_nombre}
+            {n.otras_posiciones.length > 0 ? (
+              <span
+                className="ml-1.5 text-[10px] font-normal text-slate-400"
+                title="Otras publicaciones del top que caen en este mismo nicho"
+              >
+                también #{n.otras_posiciones.join(", #")}
+              </span>
+            ) : null}
+          </div>
+          <div className="truncate text-[11px] text-slate-500">
+            líder: {n.lider.titulo ?? n.lider.externo_id}
+          </div>
+        </div>
+        <div className="text-right text-[11px] tabular-nums text-slate-600">
+          <div className="font-medium text-slate-900">{mxn(n.lider.precio)}</div>
+          <div>
+            <Eye size={9} className="mr-0.5 inline" />
+            {num(n.lider.visitas_30d)}
+          </div>
+        </div>
+        <div className="w-[210px] shrink-0">
+          {n.tenemos ? (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
+                  {n.n_catalogo} {n.n_catalogo === 1 ? "SKU" : "SKUs"} en catálogo
+                </span>
+                {n.sin_vigilancia ? (
+                  <span
+                    className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                    title="Tenemos producto en este nicho pero no está bajo observación"
+                  >
+                    sin medir
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-0.5 truncate font-mono text-[10px] text-slate-500">
+                {n.skus_catalogo.slice(0, 3).join(" · ")}
+                {n.n_catalogo > 3 ? ` +${n.n_catalogo - 3}` : ""}
+              </div>
+            </>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-800"
+              title="No tenemos ningún SKU en esta categoría: es un hueco de catálogo"
+            >
+              <Ban size={9} /> no tenemos
+            </span>
+          )}
+        </div>
+      </button>
+      {abierto ? (
+        <div className="border-t border-slate-200 bg-white">
+          <SkusDeCategoria categoriaId={n.categoria_id} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Encabezado de las columnas de la tabla de SKUs. Se repite en cada bloque. */
+function Cabeza() {
+  return (
+    <thead>
+      <tr className="text-[10px] uppercase tracking-wide text-slate-400">
+        <th className="w-6" />
+        <th className="w-12" />
+        <th className="pb-1 text-left font-medium">Producto</th>
+        <th className="pb-1 text-left font-medium">Subcategoría</th>
+        <th className="pb-1 text-right font-medium">Mediana</th>
+        <th className="pb-1 text-right font-medium">Brecha</th>
+        <th className="pb-1 text-left font-medium">Tienda</th>
+        <th className="pb-1 text-left font-medium">Título de la tienda</th>
+        <th className="pb-1 text-left font-medium">Publicación</th>
+        <th className="pb-1 text-right font-medium">Precio</th>
+        <th className="pb-1 text-right font-medium">Visitas 30d</th>
+        <th className="pb-1 text-right font-medium">Ventas 30d</th>
+        <th className="pb-1 text-right font-medium">Conversión</th>
+      </tr>
+    </thead>
+  );
+}
+
+/** Una fila de subcategoría: se despliega y muestra el nicho y luego lo nuestro. */
+function BloqueSubcategoria({
+  sub,
+  abiertoSku,
+  detalle,
+  cargandoDetalle,
+  onAbrirSku,
+  filtrando = false,
+}: {
+  sub: CompetenciaSubcategoria;
+  abiertoSku: string | null;
+  detalle: CompetenciaDetalleSku | null;
+  cargandoDetalle: boolean;
+  onAbrirSku: (sku: string) => void;
+  /** Hay algún filtro activo: se abre solo, si no el resultado queda escondido. */
+  filtrando?: boolean;
+}) {
+  // Con un filtro puesto, dejar el bloque cerrado hace ver el filtro como roto:
+  // el SKU que sí pasa queda dentro de una fila colapsada. Se abre solo, y el
+  // usuario puede cerrarlo a mano después.
+  const [abierta, setAbierta] = useState(filtrando);
+  useEffect(() => {
+    if (filtrando) setAbierta(true);
+  }, [filtrando]);
+
+  return (
+    <div className="overflow-hidden rounded-lg bg-white ring-1 ring-slate-200">
+      <button
+        onClick={() => setAbierta((v) => !v)}
+        className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50"
+      >
+        {abierta ? (
+          <ChevronDown size={15} className="shrink-0 text-slate-400" />
+        ) : (
+          <ChevronRight size={15} className="shrink-0 text-slate-300" />
+        )}
+        {sub.pos_en_raiz ? (
+          <span
+            className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+            title={`El #${sub.pos_en_raiz} más vendido de toda la categoría vive en esta subcategoría`}
+          >
+            raíz #{sub.pos_en_raiz}
+          </span>
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-slate-900">
+              {sub.categoria_nombre}
+            </span>
+            <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700">
+              {sub.n_skus} {sub.n_skus === 1 ? "SKU" : "SKUs"}
+            </span>
+            {sub.sin_datos_ml ? (
+              <span
+                className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500"
+                title="ML no publica ni ranking ni términos de esta categoría"
+              >
+                <Ban size={9} /> sin datos en ML
+              </span>
+            ) : null}
+          </div>
+          {/* El path COMPLETO, que es lo que ubica la subcategoría en el árbol. */}
+          {sub.ruta ? (
+            <div className="truncate text-[10px] text-slate-400">{sub.ruta}</div>
+          ) : null}
+        </div>
+        <div className="hidden shrink-0 items-center gap-4 text-[11px] text-slate-500 sm:flex">
+          <span title="Mediana de precio del top de la subcategoría">
+            med. {mxn(sub.mediana)}
+          </span>
+          <span title="Unidades del top: el tamaño del nicho (cota inferior)">
+            <TrendingUp size={10} className="mr-0.5 inline" />
+            {cota(sub.volumen_mercado)}
+          </span>
+          <span title="Términos de búsqueda que ML publica de esta categoría">
+            {sub.n_terminos} términos
+          </span>
+        </div>
+      </button>
+
+      {abierta ? (
+        <div className="border-t border-slate-100">
+          {/* PRIMERO el mercado: los más vendidos de la subcategoría. */}
+          <div className="bg-slate-50/60 px-3 py-3">
+            <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <Crown size={12} /> Más vendidos de {sub.categoria_nombre}
+              {sub.n_ranking ? (
+                <span className="font-normal normal-case text-slate-400">
+                  · {sub.n_ranking} publicaciones
+                </span>
+              ) : null}
+            </div>
+            {sub.top.length === 0 ? (
+              <div className="py-3 text-center text-xs text-slate-400">
+                {sub.sin_datos_ml
+                  ? "Mercado Libre no publica más vendidos de esta categoría."
+                  : "Sin ranking guardado. Corre «Más vendidos»."}
+              </div>
+            ) : (
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {sub.top.map((r) => (
+                  <Tarjeta key={r.externo_id} r={r} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* DESPUÉS los nuestros. */}
+          <div className="px-3 py-3">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Nuestros SKUs en {sub.categoria_nombre}
+            </div>
+            <table className="w-full">
+              <Cabeza />
+              <tbody>
+                {sub.skus.map((s) => (
+                  <Fragment key={s.sku}>
+                    <FilasSku
+                      s={s}
+                      abierto={abiertoSku === s.sku}
+                      onToggle={() => onAbrirSku(s.sku)}
+                    />
+                    {abiertoSku === s.sku ? (
+                      <tr>
+                        <td colSpan={COLS} className="p-0">
+                          <DetalleSku
+                            d={detalle}
+                            cargando={cargandoDetalle}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Una categoría raíz completa: su top, nuestros 5 con más chance, sus nichos. */
+function BloqueRaiz({
+  r,
+  abiertoSku,
+  detalle,
+  cargandoDetalle,
+  onAbrirSku,
+  filtrando = false,
+}: {
+  r: CompetenciaRaiz;
+  abiertoSku: string | null;
+  detalle: CompetenciaDetalleSku | null;
+  cargandoDetalle: boolean;
+  onAbrirSku: (sku: string) => void;
+  filtrando?: boolean;
+}) {
+  return (
+    <section className="mb-6">
+      <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="text-base font-bold text-slate-900">{r.raiz_nombre}</h2>
+        <span className="text-xs text-slate-500">
+          {r.n_skus} SKUs · {r.n_publicaciones} publicaciones ·{" "}
+          {r.subcategorias.length} subcategorías
+        </span>
+      </div>
+
+      {/* ── Nivel 1: el top de la categoría padre ── */}
+      <div className="mb-4 rounded-lg bg-white p-3 ring-1 ring-slate-200">
+        <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+          <Crown size={12} /> Más vendidos de {r.raiz_nombre}
+        </div>
+        {r.top.length === 0 ? (
+          <div className="py-4 text-center text-xs text-slate-400">
+            Sin ranking guardado. Corre «Más vendidos».
+          </div>
+        ) : (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {r.top.map((x) => (
+              <Tarjeta key={x.externo_id} r={x} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Nivel 2: los 5 nichos del top, y si tenemos con qué pelearlos ── */}
+      {r.nichos.length > 0 ? (
+        <div className="mb-4 rounded-lg bg-white p-3 ring-1 ring-slate-200">
+          <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <Flame size={12} /> Los {r.nichos.length} nichos con más chance de competir
+          </div>
+          <div className="mb-3 text-[10px] leading-snug text-slate-400">
+            Los dicta el top de arriba, no nuestro inventario: se recorre #1, #2, #3… y
+            se dice si tenemos producto con qué pelear cada uno. El conteo es sobre el
+            catálogo completo, no sobre los SKUs vigilados.
+          </div>
+          <div className="space-y-2">
+            {r.nichos.map((n) => (
+              <FilaNicho key={n.categoria_id} n={n} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* ── Nivel 3: las subcategorías, cada una desplegable ── */}
+      <div className="space-y-2">
+        {r.subcategorias.map((s) => (
+          <BloqueSubcategoria
+            key={s.categoria_id ?? s.categoria_nombre}
+            sub={s}
+            abiertoSku={abiertoSku}
+            detalle={detalle}
+            cargandoDetalle={cargandoDetalle}
+            onAbrirSku={onAbrirSku}
+            filtrando={filtrando}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function CompetenciaPage() {
-  const [tabla, setTabla] = useState<CompetenciaCategoriaGrupo[]>([]);
-  const [corrida, setCorrida] = useState<CompetenciaCorrida | null>(null);
+  const [canal, setCanal] = useState("mercado_libre");
+  const [raices, setRaices] = useState<CompetenciaRaiz[]>([]);
   const [estado, setEstado] = useState<CompetenciaEstado | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [enCurso, setEnCurso] = useState(false);
+  const [avisos, setAvisos] = useState<string[]>([]);
 
-  // Detalle desplegado: SKU + qué medición se está viendo.
-  const [abierto, setAbierto] = useState<string | null>(null);
-  const [tipoVista, setTipoVista] = useState<TipoCompetencia>("general");
-  const [detalle, setDetalle] = useState<CompetenciaDetalle | null>(null);
+  // Filtros: raíz, subcategoría y SKUs (varios, separados por coma).
+  const [fRaiz, setFRaiz] = useState("");
+  const [fSub, setFSub] = useState("");
+  const [fSku, setFSku] = useState("");
+  // Rango de visitas: dos extremos, como el de precios de Airbnb. `null` = abierto.
+  const [vMin, setVMin] = useState<number | null>(null);
+  const [vMax, setVMax] = useState<number | null>(null);
+  const [orden, setOrden] = useState<Orden>("visitas_desc");
+
+  const [abiertoSku, setAbiertoSku] = useState<string | null>(null);
+  const [detalle, setDetalle] = useState<CompetenciaDetalleSku | null>(null);
   const [cargandoDetalle, setCargandoDetalle] = useState(false);
 
-  // Edición del término general.
-  const [editando, setEditando] = useState<string | null>(null);
-  const [borrador, setBorrador] = useState("");
-
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const cargar = useCallback(async (signal?: AbortSignal) => {
-    setCargando(true);
-    setError(null);
-    try {
-      const r = await tablaCompetencia(signal);
-      setTabla(r.categorias);
-      setCorrida(r.corrida);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo cargar la tabla.");
-    } finally {
-      setCargando(false);
-    }
-  }, []);
+  const cargar = useCallback(
+    async (signal?: AbortSignal) => {
+      setCargando(true);
+      setError(null);
+      try {
+        const r = await vistaCompetencia(canal, signal);
+        setRaices(r.raices);
+        if (r.aviso) setAvisos([r.aviso]);
+      } catch (e) {
+        if (!signal?.aborted)
+          setError(e instanceof Error ? e.message : "No se pudo cargar la vista.");
+      } finally {
+        setCargando(false);
+      }
+    },
+    [canal],
+  );
 
   useEffect(() => {
     const ac = new AbortController();
     void cargar(ac.signal);
-    estadoCompetencia(ac.signal).then(setEstado).catch(() => {});
     return () => ac.abort();
   }, [cargar]);
 
-  useEffect(
-    () => () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    },
-    [],
-  );
+  useEffect(() => {
+    const ac = new AbortController();
+    estadoCompetencia(ac.signal).then(setEstado).catch(() => {});
+    return () => ac.abort();
+  }, []);
 
-  // ── Detalle de un SKU ────────────────────────────────────────────────
-  const abrir = async (sku: string, tipo: TipoCompetencia) => {
-    if (abierto === sku && tipoVista === tipo) {
-      setAbierto(null);
+  const abrirSku = async (sku: string) => {
+    if (abiertoSku === sku) {
+      setAbiertoSku(null);
       return;
     }
-    setAbierto(sku);
-    setTipoVista(tipo);
+    setAbiertoSku(sku);
+    setDetalle(null);
     setCargandoDetalle(true);
     try {
-      setDetalle(await detalleCompetencia(sku));
+      setDetalle(await detalleSkuCompetencia(sku));
     } catch (e) {
       setError(e instanceof Error ? e.message : "No se pudo cargar el detalle.");
-      setDetalle(null);
     } finally {
       setCargandoDetalle(false);
     }
   };
 
-  // ── Término general ──────────────────────────────────────────────────
-  const guardarTermino = async (sku: string) => {
-    const t = borrador.trim();
-    if (!t) return;
-    try {
-      await corregirTerminoCompetencia(sku, t);
-      setEditando(null);
-      await cargar();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo guardar el término.");
-    }
-  };
+  /**
+   * Los tres filtros. Se aplican en el navegador sobre el árbol ya cargado: la
+   * vista viene completa en un GET, así que filtrar no cuesta otra petición.
+   */
+  const raicesFiltradas = raices
+    .filter((r) => !fRaiz || r.raiz_id === fRaiz)
+    .map((r) => {
+      // El filtro de SKUs acepta varios separados por coma, como en Productos y
+      // Omnicanal, y hace match por fragmento: "TEC-15" trae TEC-1539 y TEC-1567.
+      const trozos = fSku
+        .split(",")
+        .map((x) => x.trim().toUpperCase())
+        .filter(Boolean);
+      const pasa = (sku: string) =>
+        trozos.length === 0 || trozos.some((t) => sku.toUpperCase().includes(t));
 
-  // ── Corrida manual ───────────────────────────────────────────────────
-  const correr = async () => {
-    setError(null);
-    setEnCurso(true);
-    try {
-      await correrCompetencia();
-      pollRef.current = setInterval(async () => {
-        const r = await corridaCompetencia();
-        if (r.en_curso?.estado !== "corriendo") {
-          if (pollRef.current) clearInterval(pollRef.current);
-          pollRef.current = null;
-          setEnCurso(false);
-          if (r.en_curso?.error) setError(r.en_curso.error);
-          await cargar();
-        }
-      }, 5000);
-    } catch (e) {
-      setEnCurso(false);
-      setError(e instanceof Error ? e.message : "No se pudo arrancar la corrida.");
-    }
-  };
+      // Rango de visitas. Un SKU sin medir (null) solo se esconde si se movió el
+      // extremo inferior: pedir "de 100 visitas para arriba" excluye lo que no
+      // tiene dato, pero el rango abierto no debe desaparecerlo.
+      const enRango = (v: number | null) => {
+        if (v === null || v === undefined) return vMin === null || vMin === 0;
+        if (vMin !== null && v < vMin) return false;
+        if (vMax !== null && v > vMax) return false;
+        return true;
+      };
+      const admite = (x: CompetenciaSkuVista) =>
+        pasa(x.sku) && enRango(x.visitas_30d);
 
-  const totalSkus = tabla.reduce((a, c) => a + c.skus.length, 0);
+      const subs = r.subcategorias
+        .filter((s) => !fSub || s.categoria_id === fSub)
+        .map((s) => ({ ...s, skus: ordenar(s.skus.filter(admite), orden) }))
+        .filter((s) => s.skus.length > 0 || (trozos.length === 0 && vMin === null && vMax === null));
+
+      return {
+        ...r,
+        subcategorias: subs,
+        skus: ordenar(
+          r.skus.filter((x) => admite(x) && (!fSub || x.categoria_id === fSub)),
+          orden,
+        ),
+      };
+    })
+    .filter((r) => r.subcategorias.length > 0 || r.skus.length > 0);
+
+  /**
+   * La escala del deslizador.
+   *
+   * El techo se redondea HACIA ARRIBA en vez de usar el máximo exacto. Con el
+   * máximo exacto el SKU más grande queda al borde: la lona tiene 9,924 visitas y
+   * arrastrar la manija a 9,900 la excluía, aunque a ojo se ve como "hasta el
+   * final". Con techo 10,000 el extremo derecho sí incluye todo.
+   */
+  const maxVisitas = Math.max(
+    0,
+    ...raices.flatMap((r) => r.skus.map((s) => s.visitas_30d ?? 0)),
+  );
+  const topeVisitas = (() => {
+    if (maxVisitas <= 100) return 100;
+    const escala = 10 ** (Math.floor(Math.log10(maxVisitas)) - 1);
+    return Math.ceil(maxVisitas / escala) * escala;
+  })();
+
+  const hayFiltro = Boolean(fRaiz || fSub || fSku || vMin !== null || vMax !== null);
+
+  // Las subcategorías que se pueden elegir dependen de la raíz seleccionada.
+  const subsDisponibles = raices
+    .filter((r) => !fRaiz || r.raiz_id === fRaiz)
+    .flatMap((r) => r.subcategorias);
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <>
       <AppNavbar />
-
-      <main className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
-        {/* Encabezado */}
-        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+      <main className="mx-auto max-w-[1400px] px-4 py-6">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-slate-900">
-              <Trophy size={20} style={{ color: COLOR }} />
-              Competencia
-            </h1>
-            <p className="mt-0.5 max-w-3xl text-sm text-slate-500">
-              Foto <strong>mensual</strong> de Mercado Libre: {totalSkus} SKUs en{" "}
-              {tabla.length} categorías. No se guarda histórico — cada corrida
-              reemplaza la anterior.
+            <h1 className="text-xl font-bold text-slate-900">Competencia</h1>
+            <p className="text-sm text-slate-500">
+              Dónde estamos frente al mercado, por categoría y por subcategoría.
             </p>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {corrida && (
-              <div className="text-right text-xs text-slate-500">
-                <div>
-                  Última medición: <strong>{mes(corrida.periodo)}</strong>
-                </div>
-                <div>
-                  {corrida.resultados} publicaciones · {corrida.visitas_ok} con visitas
-                  {corrida.costo_apify_usd ? ` · $${corrida.costo_apify_usd} USD` : ""}
-                </div>
-              </div>
-            )}
-            <button
-              onClick={correr}
-              disabled={enCurso}
-              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-              title="En producción esto lo dispara el cron mensual de Railway"
-            >
-              {enCurso ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Play size={15} />
-              )}
-              Medir ahora
-            </button>
           </div>
         </div>
 
-        {/* Estado de las fuentes */}
-        {estado && (!estado.supabase || !estado.scraper_apify) && (
+        {/* Canal: la categoría manda las búsquedas de competencia, y cada canal
+            tiene su propia taxonomía — por eso el filtro va arriba de todo. */}
+        <div className="mb-4 flex w-fit items-center gap-1 rounded-lg bg-white p-1 ring-1 ring-slate-200">
+          {[
+            { id: "mercado_libre", label: "Mercado Libre" },
+            { id: "amazon", label: "Amazon" },
+          ].map((c) => (
+            <button
+              key={c.id}
+              onClick={() => setCanal(c.id)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition ${
+                canal === c.id ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"
+              }`}
+            >
+              <Store size={13} />
+              {c.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Filtros: raíz, subcategoría y SKUs. Se aplican en el navegador sobre
+            el árbol ya cargado — no cuestan otra petición. */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <select
+            value={fRaiz}
+            onChange={(e) => {
+              setFRaiz(e.target.value);
+              // La subcategoría elegida puede no existir en la nueva raíz.
+              setFSub("");
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
+          >
+            <option value="">Todas las categorías principales</option>
+            {raices.map((r) => (
+              <option key={r.raiz_id ?? r.raiz_nombre} value={r.raiz_id ?? ""}>
+                {r.raiz_nombre} ({r.n_skus})
+              </option>
+            ))}
+          </select>
+
+          <SelectorBuscable
+            valor={fSub}
+            vacio="Todas las subcategorías"
+            placeholder="Buscar subcategoría…"
+            opciones={subsDisponibles.map((s) => ({
+              id: s.categoria_id ?? "",
+              label: s.categoria_nombre,
+              n: s.n_skus,
+            }))}
+            onCambio={setFSub}
+          />
+
+          <div className="relative">
+            <Search
+              size={13}
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              value={fSku}
+              onChange={(e) => setFSku(e.target.value)}
+              placeholder="Filtrar SKUs (coma para varios)"
+              className="w-[260px] rounded-lg border border-slate-200 bg-white py-1.5 pl-8 pr-2.5 text-sm text-slate-700 placeholder:text-slate-400"
+            />
+          </div>
+
+          <select
+            value={orden}
+            onChange={(e) => setOrden(e.target.value as Orden)}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
+            title="Ordena nuestros SKUs. Los que no están medidos van al final."
+          >
+            {ORDENES.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+
+          {hayFiltro ? (
+            <button
+              onClick={() => {
+                setFRaiz("");
+                setFSub("");
+                setFSku("");
+                setVMin(null);
+                setVMax(null);
+              }}
+              className="rounded-lg bg-white px-2.5 py-1.5 text-sm text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
+            >
+              Limpiar
+            </button>
+          ) : null}
+        </div>
+
+        {/* Rango de visitas: dos deslizadores superpuestos, como el de precios de
+            Airbnb. Se cruzan a propósito — arrastrar el mínimo por encima del
+            máximo los intercambia en vez de trabarse. */}
+        <div className="mb-4 w-fit rounded-lg bg-white px-3 py-2.5 ring-1 ring-slate-200">
+          <div className="mb-1 flex items-baseline gap-2">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <Eye size={11} /> Visitas 30 días
+            </span>
+            <span className="text-xs tabular-nums text-slate-700">
+              {vMin === null && vMax === null
+                ? "todas"
+                : `${num(vMin ?? 0)} – ${vMax === null ? num(topeVisitas) + "+" : num(vMax)}`}
+            </span>
+          </div>
+          <div className="relative h-6 w-[320px]">
+            {/* Riel y tramo seleccionado */}
+            <div className="absolute top-1/2 h-1 w-full -translate-y-1/2 rounded bg-slate-200" />
+            <div
+              className="absolute top-1/2 h-1 -translate-y-1/2 rounded bg-indigo-500"
+              style={{
+                left: `${((vMin ?? 0) / topeVisitas) * 100}%`,
+                right: `${100 - ((vMax ?? topeVisitas) / topeVisitas) * 100}%`,
+              }}
+            />
+            <input
+              type="range"
+              min={0}
+              max={topeVisitas}
+              step={Math.max(1, Math.round(topeVisitas / 200))}
+              value={vMin ?? 0}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setVMin(v === 0 ? null : v);
+                if (vMax !== null && v > vMax) setVMax(v);
+              }}
+              className="pointer-events-none absolute inset-0 h-6 w-full appearance-none bg-transparent [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:ring-2 [&::-webkit-slider-thumb]:ring-indigo-500"
+              aria-label="Visitas mínimas"
+            />
+            <input
+              type="range"
+              min={0}
+              max={topeVisitas}
+              step={Math.max(1, Math.round(topeVisitas / 200))}
+              value={vMax ?? topeVisitas}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setVMax(v >= topeVisitas ? null : v);
+                if (vMin !== null && v < vMin) setVMin(v);
+              }}
+              className="pointer-events-none absolute inset-0 h-6 w-full appearance-none bg-transparent [&::-webkit-slider-thumb]:pointer-events-auto [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:ring-2 [&::-webkit-slider-thumb]:ring-indigo-500"
+              aria-label="Visitas máximas"
+            />
+          </div>
+          {/* Los números, para poder ser exacto sin pelearse con el deslizador. */}
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              value={vMin ?? ""}
+              onChange={(e) => setVMin(e.target.value === "" ? null : Number(e.target.value))}
+              placeholder="mín"
+              className="w-[92px] rounded border border-slate-200 px-2 py-1 text-xs tabular-nums"
+            />
+            <span className="text-xs text-slate-400">–</span>
+            <input
+              type="number"
+              min={0}
+              value={vMax ?? ""}
+              onChange={(e) => setVMax(e.target.value === "" ? null : Number(e.target.value))}
+              placeholder="máx"
+              className="w-[92px] rounded border border-slate-200 px-2 py-1 text-xs tabular-nums"
+            />
+            {vMin !== null && vMin > 0 ? (
+              <span className="text-[10px] text-slate-400">
+                los SKUs sin medir quedan fuera
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {estado && !estado.navegador_local ? (
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <div>
-              {!estado.supabase && (
-                <div>
-                  <code>SUPABASE_DB_URL</code> no está configurada: no hay dónde
-                  guardar la corrida.
-                </div>
-              )}
-              {!estado.scraper_apify && (
-                <div>
-                  <code>APIFY_API_KEY</code> ausente: sin título, precio, imagen ni
-                  descripción de la competencia (la API de ML los niega con 403).
-                </div>
-              )}
+              Falta el navegador local (<code>selenium</code> + <code>beautifulsoup4</code>):
+              sin él no hay título, foto ni precio de la competencia. La API de ML los
+              niega con 403 para publicaciones ajenas.
             </div>
           </div>
-        )}
+        ) : null}
 
-        {enCurso && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-800">
-            <Loader2 size={15} className="animate-spin" />
-            Midiendo. Cada SKU lanza búsquedas de Apify y una llamada de visitas por
-            publicación; tarda varios minutos.
+        {error ? (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            {error}
           </div>
-        )}
+        ) : null}
 
-        {corrida?.avisos && corrida.avisos.length > 0 && (
+        {avisos.length > 0 ? (
           <details className="mb-4 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
             <summary className="cursor-pointer font-medium text-slate-700">
-              {corrida.avisos.length} avisos de la última medición
+              {avisos.length} avisos de la última captura
             </summary>
             <div className="mt-2 space-y-1">
-              {corrida.avisos.map((a, i) => (
+              {avisos.map((a, i) => (
                 <div key={i} className="flex items-start gap-1.5">
                   <Info size={13} className="mt-0.5 shrink-0 text-slate-400" />
                   {a}
@@ -300,384 +1740,32 @@ export default function CompetenciaPage() {
               ))}
             </div>
           </details>
-        )}
+        ) : null}
 
-        {error && (
-          <div className="mb-4 flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            <AlertTriangle size={15} /> {error}
+        {cargando ? (
+          <div className="flex items-center gap-2 py-12 text-sm text-slate-500">
+            <Loader2 size={16} className="animate-spin" /> Cargando…
           </div>
-        )}
-
-        {cargando && (
-          <div className="flex items-center justify-center gap-2 py-16 text-sm text-slate-500">
-            <Loader2 size={18} className="animate-spin" /> Cargando…
+        ) : raicesFiltradas.length === 0 ? (
+          <div className="py-12 text-center text-sm text-slate-400">
+            {raices.length === 0
+              ? "No hay SKUs vigilados en este canal."
+              : "Ningún SKU coincide con el filtro."}
           </div>
+        ) : (
+          raicesFiltradas.map((r) => (
+            <BloqueRaiz
+              key={r.raiz_id ?? r.raiz_nombre}
+              r={r}
+              abiertoSku={abiertoSku}
+              detalle={detalle}
+              cargandoDetalle={cargandoDetalle}
+              onAbrirSku={abrirSku}
+              filtrando={hayFiltro}
+            />
+          ))
         )}
-
-        {!cargando && tabla.length === 0 && (
-          <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-            No hay SKUs vigilados todavía. Corre la siembra:
-            <code className="mx-1 rounded bg-slate-100 px-1.5 py-0.5">
-              python scripts/competencia_cron.py --sembrar --dry-run
-            </code>
-          </div>
-        )}
-
-        {/* ── Tabla por categoría, con sus SKUs dentro ───────────────── */}
-        {!cargando &&
-          tabla.map((cat) => (
-            <section
-              key={cat.categoria_id ?? "sin"}
-              className="mb-5 overflow-hidden rounded-xl border border-slate-200 bg-white"
-            >
-              <header className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2.5">
-                <h2 className="text-sm font-semibold text-slate-800">
-                  {cat.categoria_nombre}
-                  {cat.categoria_id && (
-                    <span className="ml-2 font-mono text-xs font-normal text-slate-400">
-                      {cat.categoria_id}
-                    </span>
-                  )}
-                </h2>
-                <span className="text-xs text-slate-500">
-                  {cat.skus.length} {cat.skus.length === 1 ? "SKU" : "SKUs"}
-                </span>
-              </header>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-3 py-2">SKU / producto</th>
-                      <th className="w-56 px-3 py-2">Término general</th>
-                      <th className="w-28 px-3 py-2 text-center" title="¿Me encuentran cuando buscan el tipo de producto?">
-                        Búsq. general
-                      </th>
-                      <th className="w-28 px-3 py-2 text-center" title="¿Dónde quedo contra el mismo producto?">
-                        Directa
-                      </th>
-                      <th className="w-28 px-3 py-2 text-center" title="Ranking oficial de más vendidos de la categoría">
-                        Top categoría
-                      </th>
-                      <th className="w-28 px-3 py-2 text-right">Mi precio</th>
-                      <th className="w-28 px-3 py-2 text-right" title="Mediana de precio de los rivales en la búsqueda general">
-                        Mediana riv.
-                      </th>
-                      <th className="w-24 px-3 py-2 text-right">Visitas 30d</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {cat.skus.map((s) => (
-                      <FilaSku
-                        key={s.sku}
-                        s={s}
-                        abierto={abierto === s.sku}
-                        editando={editando === s.sku}
-                        borrador={borrador}
-                        onEditar={() => {
-                          setEditando(s.sku);
-                          setBorrador(s.termino_general ?? "");
-                        }}
-                        onCancelar={() => setEditando(null)}
-                        onBorrador={setBorrador}
-                        onGuardar={() => guardarTermino(s.sku)}
-                        onAbrir={(tipo) => abrir(s.sku, tipo)}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Detalle del SKU abierto, si pertenece a esta categoría */}
-              {abierto && cat.skus.some((s) => s.sku === abierto) && (
-                <Detalle
-                  detalle={detalle}
-                  cargando={cargandoDetalle}
-                  tipo={tipoVista}
-                  onTipo={setTipoVista}
-                />
-              )}
-            </section>
-          ))}
       </main>
-    </div>
-  );
-}
-
-// ── Fila de SKU ────────────────────────────────────────────────────────
-
-function FilaSku({
-  s,
-  abierto,
-  editando,
-  borrador,
-  onEditar,
-  onCancelar,
-  onBorrador,
-  onGuardar,
-  onAbrir,
-}: {
-  s: CompetenciaFilaSku;
-  abierto: boolean;
-  editando: boolean;
-  borrador: string;
-  onEditar: () => void;
-  onCancelar: () => void;
-  onBorrador: (v: string) => void;
-  onGuardar: () => void;
-  onAbrir: (t: TipoCompetencia) => void;
-}) {
-  return (
-    <tr className={abierto ? "bg-indigo-50/40" : "hover:bg-slate-50"}>
-      <td className="px-3 py-2">
-        <div className="flex items-start gap-1.5">
-          <ChevronRight
-            size={14}
-            className={`mt-0.5 shrink-0 text-slate-400 transition ${abierto ? "rotate-90" : ""}`}
-          />
-          <div className="min-w-0">
-            <div className="font-mono text-xs font-semibold text-slate-700">{s.sku}</div>
-            <div className="line-clamp-1 text-slate-600">{s.nombre}</div>
-          </div>
-        </div>
-      </td>
-
-      {/* Término general: propuesto por IA, corregible a mano */}
-      <td className="px-3 py-2">
-        {editando ? (
-          <div className="flex items-center gap-1">
-            <input
-              value={borrador}
-              onChange={(e) => onBorrador(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") onGuardar();
-                if (e.key === "Escape") onCancelar();
-              }}
-              className="w-40 rounded border border-slate-300 px-2 py-1 text-xs"
-              autoFocus
-            />
-            <button onClick={onGuardar} className="text-emerald-600 hover:text-emerald-700">
-              <Check size={14} />
-            </button>
-            <button onClick={onCancelar} className="text-slate-400 hover:text-slate-600">
-              <X size={14} />
-            </button>
-          </div>
-        ) : (
-          <button
-            onClick={onEditar}
-            className="group inline-flex items-center gap-1.5 text-left"
-            title="Editar el término general"
-          >
-            <span className={s.termino_general ? "text-slate-700" : "text-slate-400 italic"}>
-              {s.termino_general || "sin término"}
-            </span>
-            {s.termino_origen === "ia" && s.termino_general && (
-              <span title="Propuesto por IA — edítalo y queda fijo">
-                <Sparkles size={11} className="text-indigo-400" />
-              </span>
-            )}
-            <Pencil
-              size={11}
-              className="opacity-0 transition group-hover:opacity-100 text-slate-400"
-            />
-          </button>
-        )}
-      </td>
-
-      <td className="px-3 py-2 text-center">
-        <button onClick={() => onAbrir("general")} className="hover:opacity-70">
-          <Posicion pos={s.pos_general} total={s.total_general} />
-        </button>
-      </td>
-      <td className="px-3 py-2 text-center">
-        <button onClick={() => onAbrir("titulo")} className="hover:opacity-70">
-          <Posicion pos={s.pos_titulo} total={s.total_titulo} />
-        </button>
-      </td>
-      <td className="px-3 py-2 text-center">
-        <button onClick={() => onAbrir("categoria")} className="hover:opacity-70">
-          <Posicion pos={s.pos_categoria} total={s.total_categoria} />
-        </button>
-      </td>
-
-      <td className="px-3 py-2 text-right tabular-nums">{mxn(s.mi_precio)}</td>
-      <td className="px-3 py-2 text-right tabular-nums text-slate-500">
-        {mxn(s.mediana_general)}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums">
-        {s.visitas_general === null || s.visitas_general === undefined ? (
-          "—"
-        ) : (
-          <span className="inline-flex items-center gap-1">
-            <Eye size={11} className="text-slate-400" />
-            {num(s.visitas_general)}
-          </span>
-        )}
-      </td>
-    </tr>
-  );
-}
-
-// ── Detalle: las publicaciones de una medición ─────────────────────────
-
-function Detalle({
-  detalle,
-  cargando,
-  tipo,
-  onTipo,
-}: {
-  detalle: CompetenciaDetalle | null;
-  cargando: boolean;
-  tipo: TipoCompetencia;
-  onTipo: (t: TipoCompetencia) => void;
-}) {
-  if (cargando)
-    return (
-      <div className="flex items-center gap-2 border-t border-slate-200 px-4 py-6 text-sm text-slate-500">
-        <Loader2 size={15} className="animate-spin" /> Cargando detalle…
-      </div>
-    );
-  if (!detalle) return null;
-
-  const filas: CompetenciaResultado[] = detalle.resultados?.[tipo] ?? [];
-  const meta = TIPOS.find((t) => t.id === tipo)!;
-  const pos = detalle.posiciones.find((p) => p.tipo === tipo);
-
-  return (
-    <div className="border-t-2 border-indigo-200 bg-slate-50/60">
-      {/* Selector de medición */}
-      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
-        {TIPOS.map((t) => {
-          const Icono = t.icon;
-          return (
-            <button
-              key={t.id}
-              onClick={() => onTipo(t.id)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition ${
-                tipo === t.id
-                  ? "bg-indigo-600 text-white"
-                  : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
-              }`}
-            >
-              <Icono size={13} />
-              {t.label}
-            </button>
-          );
-        })}
-        <span className="ml-2 text-xs text-slate-500">{meta.pregunta}</span>
-      </div>
-
-      {pos && (
-        <div className="px-4 pb-2 text-xs text-slate-600">
-          {pos.termino && (
-            <>
-              Búsqueda: <strong>«{pos.termino}»</strong> ·{" "}
-            </>
-          )}
-          {pos.mi_posicion
-            ? `apareces en la posición #${pos.mi_posicion} de ${pos.total_resultados}`
-            : `no apareces entre los ${pos.total_resultados} resultados`}
-        </div>
-      )}
-
-      {filas.length === 0 ? (
-        <div className="px-4 py-6 text-sm text-slate-500">
-          Sin resultados para esta medición.
-          {tipo === "categoria" &&
-            " Mercado Libre no publica ranking de más vendidos para todas las categorías."}
-        </div>
-      ) : (
-        <div className="overflow-x-auto px-2 pb-3">
-          <table className="w-full text-sm">
-            <thead className="text-left text-[11px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="w-10 px-2 py-1.5">#</th>
-                <th className="w-14 px-2 py-1.5">Foto</th>
-                <th className="px-2 py-1.5">Título / descripción</th>
-                <th className="w-28 px-2 py-1.5 text-right">Precio</th>
-                <th className="w-24 px-2 py-1.5 text-right">Visitas 30d</th>
-                <th className="w-20 px-2 py-1.5 text-right">Vendidos</th>
-                <th className="w-36 px-2 py-1.5">Vendedor</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/70">
-              {filas.map((r) => (
-                <tr
-                  key={r.id ?? r.externo_id}
-                  className={r.es_nuestro ? "bg-indigo-100/70 font-medium" : "bg-white"}
-                >
-                  <td className="px-2 py-1.5 font-mono text-xs text-slate-400">
-                    {r.posicion ?? "—"}
-                  </td>
-                  <td className="px-2 py-1.5">
-                    {r.imagen ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={r.imagen} alt="" className="h-9 w-9 rounded object-cover" />
-                    ) : (
-                      <div className="flex h-9 w-9 items-center justify-center rounded bg-slate-100 text-[8px] text-slate-400">
-                        s/foto
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5">
-                    {r.url ? (
-                      <a
-                        href={r.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-start gap-1 text-slate-800 hover:text-indigo-600"
-                      >
-                        <span className="line-clamp-1">{r.titulo || r.externo_id}</span>
-                        <ExternalLink size={11} className="mt-0.5 shrink-0 opacity-50" />
-                      </a>
-                    ) : (
-                      <span className="text-slate-500">
-                        {r.titulo || r.externo_id}
-                        {!r.titulo && (
-                          <span className="ml-1 text-[10px] text-slate-400">
-                            (la API de ML no permite leer esta publicación)
-                          </span>
-                        )}
-                      </span>
-                    )}
-                    {r.descripcion && (
-                      <div className="line-clamp-1 text-[11px] text-slate-500">
-                        {r.descripcion}
-                      </div>
-                    )}
-                    {r.es_nuestro && (
-                      <span className="mt-0.5 inline-block rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                        NUESTRO {r.sku_nuestro}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{mxn(r.precio)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">
-                    {num(r.visitas_30d)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-600">
-                    {num(r.vendidos)}
-                  </td>
-                  <td className="truncate px-2 py-1.5 text-slate-600">
-                    {r.seller || r.marca || "—"}
-                    {r.es_full && (
-                      <span className="ml-1 rounded bg-emerald-600 px-1 py-0.5 text-[9px] text-white">
-                        FULL
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="px-2 pt-2 text-[11px] text-slate-400">
-            La descripción es la corta derivada de atributos; Mercado Libre no expone
-            el texto largo de publicaciones ajenas. Las visitas vienen de la API de ML
-            y las unidades vendidas del scraper.
-          </p>
-        </div>
-      )}
-    </div>
+    </>
   );
 }

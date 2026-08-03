@@ -7,6 +7,14 @@ import type {
   CompetenciaEstado,
   CompetenciaSku,
   CompetenciaTabla,
+  CompetenciaVista,
+  CompetenciaDetalleSku,
+  CompetenciaTerminosSub,
+  CompetenciaSkusSub,
+  CompetenciaSugerenciaSub,
+  CompetenciaSugerenciaSku,
+  CompetenciaTopCategoria,
+  RankingCategoriaResp,
   CompetenciaResp,
   CategoriaMLResult,
   ContenedorInfo,
@@ -607,16 +615,97 @@ export function guardarTipoAmazon(
 }
 
 // ── Competencia (Mercado Libre) ──────────────────────────────────────
-// Los GET leen la foto guardada del mes. La corrida real la dispara un cron
-// mensual de Railway (backend/railway.competencia.json); correrCompetencia()
-// existe para probar a mano y gasta Apify.
+// Los GET leen la foto guardada del mes (SQLite local). La corrida real la
+// dispara el cron mensual de Railway; correrCompetencia() es para probar a mano
+// y gasta Apify (~$1 USD por SKU).
 
 export function estadoCompetencia(signal?: AbortSignal) {
   return getJSON<CompetenciaEstado>("/api/competencia/estado", signal);
 }
 
-export function tablaCompetencia(signal?: AbortSignal) {
-  return getJSON<CompetenciaTabla>("/api/competencia/tabla", signal);
+/**
+ * Tabla por SKU. `agrupar` por defecto es la categoría RAÍZ del path
+ * ("Accesorios para Vehículos"); `categoria_nombre` agrupa por la última.
+ * `canal` separa Mercado Libre de Amazon.
+ */
+export function tablaCompetencia(
+  agrupar = "raiz_nombre",
+  canal = "mercado_libre",
+  signal?: AbortSignal,
+) {
+  return getJSON<CompetenciaTabla>(
+    `/api/competencia/tabla?agrupar=${agrupar}&canal=${canal}`,
+    signal,
+  );
+}
+
+/** Top de más vendidos de una categoría. `nivel` es 'raiz' u 'hoja'. */
+/** El árbol completo del tab: raíz → subcategorías → nuestros SKUs, de un GET. */
+export function vistaCompetencia(canal = "mercado_libre", signal?: AbortSignal) {
+  return getJSON<CompetenciaVista>(`/api/competencia/vista?canal=${canal}`, signal);
+}
+
+/** Lo que se abre al hacer clic en un SKU: términos populares + competencia directa. */
+export function detalleSkuCompetencia(sku: string, signal?: AbortSignal) {
+  return getJSON<CompetenciaDetalleSku>(
+    `/api/competencia/sku/${encodeURIComponent(sku)}`,
+    signal,
+  );
+}
+
+/** Todos nuestros SKUs de una categoría con su barra por tienda. */
+export function skusSubcategoria(categoriaId: string, signal?: AbortSignal) {
+  return getJSON<CompetenciaSkusSub>(
+    `/api/competencia/subcategoria/${encodeURIComponent(categoriaId)}/skus`,
+    signal,
+  );
+}
+
+/** Barra de términos de una subcategoría: qué se busca ahí y qué cubrimos. */
+export function terminosSubcategoria(categoriaId: string, signal?: AbortSignal) {
+  return getJSON<CompetenciaTerminosSub>(
+    `/api/competencia/subcategoria/${encodeURIComponent(categoriaId)}/terminos`,
+    signal,
+  );
+}
+
+/** Palabras clave que la IA sugiere para toda la subcategoría. */
+export function sugerirSubcategoria(categoriaId: string) {
+  return postJSON<CompetenciaSugerenciaSub>(
+    `/api/competencia/subcategoria/${encodeURIComponent(categoriaId)}/sugerir`,
+    {},
+  );
+}
+
+/** Palabras y títulos que la IA sugiere para un SKU, por tienda. */
+export function sugerirSku(sku: string) {
+  return postJSON<CompetenciaSugerenciaSku>(
+    `/api/competencia/sku/${encodeURIComponent(sku)}/sugerir`,
+    {},
+  );
+}
+
+export function rankingCategoria(
+  categoriaId: string,
+  nivel?: "raiz" | "hoja",
+  limite = 10,
+  signal?: AbortSignal,
+) {
+  const q = nivel ? `&nivel=${nivel}` : "";
+  return getJSON<RankingCategoriaResp>(
+    `/api/competencia/ranking-categoria?categoria_id=${encodeURIComponent(categoriaId)}${q}&limite=${limite}`,
+    signal,
+  );
+}
+
+/** Raspa los más vendidos de la raíz y la hoja de cada SKU vigilado. */
+export function capturarRankingsCompetencia() {
+  return postJSON<{
+    ok: boolean;
+    categorias: number;
+    con_datos: number;
+    avisos: string[];
+  }>("/api/competencia/rankings", {});
 }
 
 export function detalleCompetencia(sku: string, tipo?: string, signal?: AbortSignal) {
@@ -627,21 +716,26 @@ export function detalleCompetencia(sku: string, tipo?: string, signal?: AbortSig
   );
 }
 
+/** Los más vendidos de la categoría del SKU (ranking oficial de ML). */
+export function topCategoriaCompetencia(sku: string, limite = 10, signal?: AbortSignal) {
+  return getJSON<CompetenciaTopCategoria>(
+    `/api/competencia/top-categoria?sku=${encodeURIComponent(sku)}&limite=${limite}`,
+    signal,
+  );
+}
+
 export function skusCompetencia(signal?: AbortSignal) {
   return getJSON<{ skus: CompetenciaSku[] }>("/api/competencia/skus", signal);
 }
 
 export function sembrarCompetencia(skus: string[], con_ia = true) {
-  return postJSON<{
-    ok: boolean;
-    guardados: number;
-    sin_registro_en_productos: string[];
-    sin_publicacion_ml: string[];
-    sin_termino_general: string[];
-  }>("/api/competencia/sembrar", { skus, con_ia });
+  return postJSON<{ ok: boolean; guardados: number }>(
+    "/api/competencia/sembrar",
+    { skus, con_ia },
+  );
 }
 
-/** Corrige el término general a mano; queda 'manual' y la IA no lo vuelve a pisar. */
+/** Corrige el término general; queda 'manual' y la IA no lo vuelve a pisar. */
 export async function corregirTerminoCompetencia(sku: string, termino_general: string) {
   const res = await fetch(`${BASE}/api/competencia/skus/${encodeURIComponent(sku)}`, {
     method: "PATCH",
@@ -657,9 +751,21 @@ export function correrCompetencia(skus?: string) {
   return postJSON<{ ok: boolean; estado: string }>(`/api/competencia/correr${q}`, {});
 }
 
+/** Refresca las visitas de NUESTRAS publicaciones (API de ML, gratis). */
+export function refrescarVisitasPropias(skus?: string) {
+  const q = skus ? `?skus=${encodeURIComponent(skus)}` : "";
+  return postJSON<{
+    ok: boolean;
+    skus: number;
+    publicaciones: number;
+    con_visitas: number;
+    sin_dato: string[];
+  }>(`/api/competencia/visitas-propias${q}`, {});
+}
+
 export function corridaCompetencia(signal?: AbortSignal) {
   return getJSON<{
     ultima: CompetenciaCorrida | null;
-    en_curso: { estado: string; error?: string | null; resultado?: unknown };
+    en_curso: { estado: string; error?: string | null };
   }>("/api/competencia/corrida", signal);
 }

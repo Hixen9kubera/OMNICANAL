@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # (título/imagen/precio/descripción/posición) de las ajenas: /items/{id}
     # responde 403 y /sites/MLM/search también. Esa parte la trae este actor.
     apify_ml_actor: str = "piotrv1001~mercado-libre-listings-scraper"
+    # Navegador genérico para la página /mas-vendidos/{cat}: los actores
+    # especializados en ML NO la parsean (uno FAILED, otro 0 items) y este sí,
+    # porque ejecuta el security.js. Cobra por cómputo (~$0.007/página) en vez de
+    # por item, ~93× más barato que el de listings con detalle.
+    apify_navegador_actor: str = "apify~playwright-scraper"
     # ML sirve un interstitial de "tráfico sospechoso" a IPs de datacenter, así
     # que el scraping va por proxy residencial mexicano (igual que Alibaba).
     apify_proxy_pais: str = "MX"

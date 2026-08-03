@@ -37,6 +37,8 @@ interface NavItem {
   icon: LucideIcon;
   href?: string;          // si tiene href, es navegable
   proximamente?: boolean;
+  /** Navegable pero en construcción. No es lo mismo que `proximamente`. */
+  beta?: boolean;
   submenu?: SubItem[];    // despliega al pasar el cursor (VARIANTE B)
 }
 
@@ -70,7 +72,8 @@ const ITEMS: NavItem[] = [
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
-  { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia" },
+  { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
+    beta: true },
   { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard" },
   { id: "migracion", label: "Migración", icon: Database, href: "/migracion" },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
@@ -153,6 +156,13 @@ export default function AppNavbar() {
                 >
                   <Icon size={17} />
                   {item.label}
+                  {/* BETA: la sección ya es navegable pero sigue en construcción.
+                      Distinto de "Pronto", que marca lo que todavía no existe. */}
+                  {item.beta && (
+                    <span className="ml-1 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-indigo-700">
+                      Beta
+                    </span>
+                  )}
                   {item.submenu && (
                     <ChevronDown
                       size={13}

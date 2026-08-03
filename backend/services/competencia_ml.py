@@ -93,6 +93,130 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
     return None
 
 
+# ── Nuestras publicaciones (la autoridad es ML, no nuestra tabla) ───────────
+
+def items_por_sku(sku: str, cuenta: str = _CUENTA_DEFAULT) -> list[str]:
+    """
+    Los item_id NUESTROS que ML tiene para ese seller_sku, en esa cuenta.
+
+    Es la fuente AUTORITATIVA de qué está publicado, y hace falta: `ml_progress`
+    no conoce las publicaciones creadas fuera del pipeline del panel. Caso real —
+    MUE-0163-TEL está publicado en las dos tiendas (BEKURA MLM4702363498,
+    SANCORFASHION MLM4700224434, la del `/up/MLMU3745821559`) y `ml_progress` no
+    tiene ninguna de las dos, así que el panel lo reportaba como "sin publicar".
+
+    Ojo: `/users/{id}/items/search` solo funciona para la PROPIA cuenta del token
+    (con un seller ajeno responde 403).
+    """
+    uid = _user_id(cuenta)
+    if not uid:
+        return []
+    d = _get(f"/users/{uid}/items/search", {"seller_sku": sku, "limit": 50}, cuenta)
+    if not isinstance(d, dict):
+        return []
+    return [i for i in (d.get("results") or []) if i]
+
+
+_uids: dict[str, int] = {}
+
+
+def _user_id(cuenta: str) -> int | None:
+    """user_id de la cuenta del token, cacheado en proceso."""
+    if cuenta in _uids:
+        return _uids[cuenta]
+    d = _get("/users/me", None, cuenta)
+    uid = (d or {}).get("id") if isinstance(d, dict) else None
+    if uid:
+        _uids[cuenta] = int(uid)
+    return _uids.get(cuenta)
+
+
+def detalle_item(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> dict[str, Any] | None:
+    """
+    Ficha de una publicación NUESTRA: título, precio, foto y permalink.
+
+    `GET /items/{id}` funciona para los items propios (para los ajenos es 403 —
+    de ahí que la competencia necesite el scraper).
+    """
+    d = _get(f"/items/{item_id}", {
+        "attributes": "id,title,price,currency_id,permalink,thumbnail,status,"
+                      "sold_quantity,available_quantity",
+    }, cuenta)
+    if not isinstance(d, dict):
+        return None
+    foto = d.get("thumbnail") or ""
+    return {
+        "ml_item_id": d.get("id") or item_id,
+        "titulo": d.get("title"),
+        "precio": d.get("price"),
+        "moneda": d.get("currency_id") or "MXN",
+        "url": d.get("permalink"),
+        # ML sirve el thumbnail por http; en https evita el bloqueo de contenido mixto.
+        "imagen": foto.replace("http://", "https://") if foto else None,
+        "estado": d.get("status"),
+        # OJO: sold_quantity es el ACUMULADO histórico, no de 30 días. Las
+        # unidades del periodo salen de los pedidos, no de aquí.
+        "vendidos_historico": d.get("sold_quantity"),
+    }
+
+
+def unidades_vendidas_30d(cuenta: str = _CUENTA_DEFAULT, dias: int = 30,
+                          tope_paginas: int = 400) -> dict[str, int]:
+    """
+    Unidades VENDIDAS por item_id en los últimos `dias`, para una cuenta.
+    → { item_id: unidades }
+
+    Es un BARRIDO de los pedidos de la cuenta, no una consulta por SKU, y es a
+    propósito: `/orders/search` sí acepta `item=MLM…` (probado: 512 pedidos para
+    MLM4700224434) pero igual hay que paginar para SUMAR cantidades, así que
+    filtrar por item costaría ~11 páginas POR publicación. Un barrido son ~140
+    páginas por cuenta y devuelve TODOS los SKUs de una vez: con 8 SKUs empata,
+    con 1,000 es 10× más barato.
+
+    Filtros que NO sirven (probados): `seller_sku`, `order.item.seller_sku` y
+    `q=<SKU>` se ignoran o dan 0 — el total sigue siendo el de la cuenta completa.
+
+    Y no se usa `items.sold_quantity` porque ese es el acumulado HISTÓRICO
+    (1,159 en MUE-0163-TEL), no el del periodo.
+    """
+    from datetime import datetime, timedelta, timezone
+    uid = _user_id(cuenta)
+    if not uid:
+        return {}
+    hasta = datetime.now(timezone.utc)
+    desde = hasta - timedelta(days=dias)
+
+    def fmt(d):
+        return d.strftime("%Y-%m-%dT%H:%M:%S.000-00:00")
+
+    unidades: dict[str, int] = {}
+    limite, offset = 50, 0
+    for _ in range(tope_paginas):
+        d = _get("/orders/search", {
+            "seller": uid,
+            "order.date_created.from": fmt(desde),
+            "order.date_created.to": fmt(hasta),
+            "limit": limite, "offset": offset, "sort": "date_asc",
+        }, cuenta)
+        if not isinstance(d, dict):
+            break
+        filas = d.get("results") or []
+        for o in filas:
+            for it in o.get("order_items") or []:
+                iid = (it.get("item") or {}).get("id")
+                if iid:
+                    unidades[iid] = unidades.get(iid, 0) + int(it.get("quantity") or 0)
+        total = (d.get("paging") or {}).get("total") or 0
+        offset += limite
+        if offset >= total or not filas:
+            break
+    else:
+        log.warning("unidades_vendidas_30d(%s): corté en el tope de %s páginas",
+                    cuenta, tope_paginas)
+    log.info("unidades_vendidas_30d(%s): %s items con venta", cuenta, len(unidades))
+    return unidades
+
+
 # ── Visitas — el dato central del módulo ─────────────────────────────────────
 
 def visitas(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
@@ -133,6 +257,23 @@ def visitas_30d(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
     return None if s is None else int(s["total"])
 
 
+def ruta_categoria(categoria_id: str,
+                   cuenta: str = _CUENTA_DEFAULT) -> list[dict[str, str]]:
+    """
+    La ruta de una categoría CON SUS IDs, de la raíz a la hoja.
+    → [{"id": "MLM1747", "nombre": "Accesorios para Vehículos"}, …]
+
+    Hace falta porque `categorias_ml.cat1..cat4` guarda los NOMBRES pero no los
+    ids, y para pedir el ranking de un nivel se necesita su id. De aquí sale que
+    la raíz de Tapetes sea MLM1747 (Accesorios para Vehículos) y no el nivel 2.
+    """
+    d = _get(f"/categories/{categoria_id}", None, cuenta)
+    if not isinstance(d, dict):
+        return []
+    return [{"id": n.get("id"), "nombre": n.get("name")}
+            for n in (d.get("path_from_root") or []) if n.get("id")]
+
+
 # ── Más vendidos por categoría ───────────────────────────────────────────────
 
 def mas_vendidos_categoria(categoria_id: str,
@@ -159,7 +300,16 @@ def mas_vendidos_categoria(categoria_id: str,
 
 def tendencias(categoria_id: str | None = None,
                cuenta: str = _CUENTA_DEFAULT) -> list[dict[str, Any]]:
-    """Keywords más buscados del sitio o de una categoría."""
+    """
+    Keywords más buscados del sitio o de una categoría: lo que la gente ESCRIBE
+    en el buscador, ordenado por volumen.
+
+    Devuelve [] tanto si la categoría no tiene términos como si ML responde 404.
+    El 404 NO es un fallo: hay categorías de las que ML no publica nada — Bujías
+    (MLM179785) y Cartuchos de Turbo (MLM458946) dan 404, y son exactamente las
+    mismas cuyo /highlights también viene vacío. Quien llame debe distinguir
+    "sin datos en ML" de "no lo pudimos traer".
+    """
     ruta = f"/trends/{settings.ml_site_id}"
     if categoria_id:
         ruta += f"/{categoria_id}"
@@ -211,7 +361,12 @@ def competidores_de_producto(catalog_product_id: str, limite: int = 20,
         out.append({
             "externo_id": it.get("item_id"),
             "precio": it.get("price"),
+            "precio_lista": it.get("original_price"),
             "moneda": it.get("currency_id") or "MXN",
+            # La categoría REAL de la publicación. Es el único lugar por API donde
+            # se puede saber a qué subcategoría pertenece un competidor: /items de
+            # un ajeno responde 403.
+            "categoria_id": it.get("category_id"),
             "seller_id": str(it.get("seller_id")) if it.get("seller_id") else None,
             "envio_gratis": bool(envio.get("free_shipping")),
             "listing_type": it.get("listing_type_id"),
