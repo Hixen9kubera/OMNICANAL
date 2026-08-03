@@ -601,8 +601,14 @@ interface CambioPrecio {
   canal: string; cuenta: string;
   valor_anterior: string | null; valor_nuevo: string | null; fecha: string;
 }
+interface TemporadaResumen {
+  id: number | null; nombre: string; anio: number | null;
+  fecha_inicio: string | null; fecha_fin: string | null; vigente: boolean;
+  uds: number; ingreso: number; precio_prom: number | null; margen_pct: number | null;
+}
 interface ResumenCanales {
   sku: string; dias: number; canales: ResumenCanal[];
+  temporadas: TemporadaResumen[] | null;
   global: { uds: number; ingreso: number; precio_prom: number | null;
             costo: number | null; margen_prom: number | null; ganancia: number | null };
   cambios_precio: CambioPrecio[]; historia_desde: string;
@@ -756,6 +762,80 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
                 </tbody>
               </table>
             </div>
+
+            {/* Resumen POR TEMPORADA: la etiqueta es un rango de fechas del
+                catálogo; las cifras se derivan de los pedidos de ese rango al
+                momento de abrir — corregir un rango recalcula solo. */}
+            {datos.temporadas && (
+              <>
+                <div className="mb-1 flex items-baseline justify-between">
+                  <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                    Por temporada
+                  </div>
+                  <a href="/analisis/temporadas"
+                     className="text-[10px] font-semibold text-indigo-500 hover:text-indigo-700">
+                    gestionar temporadas →
+                  </a>
+                </div>
+                <div className="mb-4 overflow-x-auto rounded-xl border border-slate-100">
+                  <table className="w-full min-w-[560px] text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-400">
+                        <th className="px-3 py-2 font-semibold">Temporada</th>
+                        <th className="px-3 py-2 font-semibold">Rango</th>
+                        <th className="px-3 py-2 text-right font-semibold">Uds</th>
+                        <th className="px-3 py-2 text-right font-semibold">Ingreso</th>
+                        <th className="px-3 py-2 text-right font-semibold">Precio prom.</th>
+                        <th className="px-3 py-2 text-right font-semibold">Margen</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {datos.temporadas.map((t, i) => {
+                        const futura = t.fecha_inicio != null && t.fecha_inicio > new Date().toISOString().slice(0, 10);
+                        const base = t.id == null; // "Fuera de temporada"
+                        return (
+                          <tr key={t.id ?? `base-${i}`}
+                              className={`border-t border-slate-100 ${base ? "bg-slate-50/60" : ""}`}>
+                            <td className="whitespace-nowrap px-3 py-1.5">
+                              <span className={`font-semibold ${base ? "text-slate-500" : "text-slate-700"}`}>
+                                {t.nombre}{t.anio ? ` ${t.anio}` : ""}
+                              </span>
+                              {t.vigente && (
+                                <span className="ml-1.5 rounded bg-emerald-100 px-1 text-[9px] font-bold text-emerald-700">
+                                  EN CURSO
+                                </span>
+                              )}
+                              {base && (
+                                <span className="ml-1.5 text-[9px] text-slate-400">últimos 90 días</span>
+                              )}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-1.5 tabular-nums text-slate-400">
+                              {t.fecha_inicio ? `${t.fecha_inicio.slice(5)} → ${(t.fecha_fin ?? "").slice(5)}` : "—"}
+                            </td>
+                            {t.uds === 0 ? (
+                              <td colSpan={4} className="px-3 py-1.5 text-right text-slate-300">
+                                {futura ? "pendiente" : "sin ventas en el rango"}
+                              </td>
+                            ) : (
+                              <>
+                                <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{fNum(t.uds)}</td>
+                                <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{fMoney(t.ingreso)}</td>
+                                <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                                  {t.precio_prom == null ? "—" : fMoney(t.precio_prom, 2)}
+                                </td>
+                                <td className={`px-3 py-1.5 text-right font-semibold tabular-nums ${tonoM(t.margen_pct)}`}>
+                                  {t.margen_pct == null ? "—" : `${fNum(t.margen_pct, 1)}%`}
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
 
             {/* Línea de tiempo de precios (trazabilidad de temporadas) */}
             <div className="mb-1 flex items-baseline justify-between">
