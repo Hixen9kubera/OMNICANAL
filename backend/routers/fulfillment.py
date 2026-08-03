@@ -473,6 +473,96 @@ async def detalle(
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
 
+# Resumen por canal de UN SKU: precio REALIZADO (lo que de verdad se cobró,
+# ingreso/unidades de los pedidos) — no el precio de lista de la publicación,
+# que con las promos de ML puede estar ~36%% arriba de lo que entra. El costo
+# sigue el contrato único de José: costos_validados.costo_total primero.
+_SQL_CANALES = _mx("""
+with vta as (
+  select s.canal, s.cuenta,
+         sum(s.units_sold)::int                                   as uds,
+         round(sum(s.revenue), 2)                                 as ingreso,
+         round(sum(s.revenue) / nullif(sum(s.units_sold), 0), 2)  as precio_prom,
+         max(s.date)::text                                        as ultima_venta
+    from channel.sales_daily_completa s
+   where s.sku = %(sku)s::citext
+     and s.date > current_date - %(dias)s::int
+   group by 1, 2
+),
+costo as (
+  select coalesce(
+           (select cv.costo_total from costing.costos_validados cv
+             where cv.sku = %(sku)s::citext),
+           (select cf.costo_unitario from costing.costos_finales cf
+             where cf.sku = %(sku)s::citext and cf.canal = 'mercado_libre')
+         ) as costo
+)
+select v.canal, v.cuenta, v.uds, v.ingreso, v.precio_prom, v.ultima_venta,
+       c.costo,
+       case when c.costo is not null
+            then round(v.ingreso - v.uds * c.costo, 2) end as ganancia,
+       case when v.precio_prom > 0 and c.costo is not null
+            then round((v.precio_prom - c.costo) / v.precio_prom * 100, 1)
+            end as margen_pct
+  from vta v cross join costo c
+ order by v.uds desc
+""")
+
+# Línea de tiempo de precios: channel.listing_history registra cada cambio que
+# el sync observa (desde el 17-jul-2026 — no hay historia anterior). Es la
+# trazabilidad de temporadas en crudo: qué precio había y cuándo cambió.
+_SQL_CAMBIOS_PRECIO = """
+select h.canal,
+       case when a.legacy_code in ('AMAZON','GENERAL') then '' else a.legacy_code end as cuenta,
+       h.valor_anterior, h.valor_nuevo,
+       h.changed_at::date::text as fecha
+  from channel.listing_history h
+  left join core.accounts a on a.id = h.account_id
+ where h.sku = %(sku)s::citext and h.campo = 'price'
+ order by h.changed_at desc
+ limit 60
+"""
+
+
+@router.get("/canales")
+async def resumen_canales(
+    sku: str = Query(..., max_length=100),
+    dias: int = Query(30, ge=7, le=180),
+) -> dict[str, Any]:
+    """Resumen por canal de un SKU (modal de Precio/Margen): unidades, ingreso,
+    precio promedio REALIZADO, ganancia y margen por canal + promedio global
+    ponderado + historial de cambios de precio de la publicación."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    p = {"sku": sku, "dias": dias}
+    try:
+        canales = sdb.fetch_all(_SQL_CANALES, p)
+        cambios = sdb.fetch_all(_SQL_CAMBIOS_PRECIO, {"sku": sku})
+        uds = sum(int(c["uds"]) for c in canales)
+        ingreso = round(sum(float(c["ingreso"]) for c in canales), 2)
+        costo = next((float(c["costo"]) for c in canales
+                      if c.get("costo") is not None), None)
+        precio_prom = round(ingreso / uds, 2) if uds else None
+        margen_prom = (round((precio_prom - costo) / precio_prom * 100, 1)
+                       if precio_prom and costo is not None else None)
+        return {
+            "sku": sku, "dias": dias, "canales": canales,
+            "global": {"uds": uds, "ingreso": ingreso,
+                       "precio_prom": precio_prom, "costo": costo,
+                       "margen_prom": margen_prom,
+                       "ganancia": (round(ingreso - uds * costo, 2)
+                                    if costo is not None else None)},
+            "cambios_precio": cambios,
+            # la historia de precios existe desde esta fecha; antes no hay registro
+            "historia_desde": "2026-07-17",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("resumen canales falló: %s", exc)
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+
 @router.get("/tabla")
 async def tabla(
     dias: int = Query(60, ge=7, le=180),

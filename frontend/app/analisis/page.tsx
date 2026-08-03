@@ -585,6 +585,225 @@ function ModalDetalle({ fila, cuenta, onClose }: {
   );
 }
 
+/* ── Modal de PRECIO/MARGEN por canal (clic en esas columnas) ─────────────
+   La diferencia clave con las columnas de la tabla: aquí el precio es el
+   REALIZADO — lo que de verdad se cobró en los pedidos del período (ingreso ÷
+   unidades) — no el precio de lista de la publicación, que con las promos de
+   Mercado Libre puede estar muy arriba de lo que entra. Incluye la línea de
+   tiempo de cambios de precio (registrada desde el 17-jul-2026: antes de esa
+   fecha no hay historia que mostrar). */
+interface ResumenCanal {
+  canal: string; cuenta: string; uds: number; ingreso: number;
+  precio_prom: number | null; ultima_venta: string | null;
+  costo: number | null; ganancia: number | null; margen_pct: number | null;
+}
+interface CambioPrecio {
+  canal: string; cuenta: string;
+  valor_anterior: string | null; valor_nuevo: string | null; fecha: string;
+}
+interface ResumenCanales {
+  sku: string; dias: number; canales: ResumenCanal[];
+  global: { uds: number; ingreso: number; precio_prom: number | null;
+            costo: number | null; margen_prom: number | null; ganancia: number | null };
+  cambios_precio: CambioPrecio[]; historia_desde: string;
+}
+
+const CANAL_LBL: Record<string, string> = {
+  mercado_libre: "Mercado Libre", amazon: "Amazon", general: "Web",
+};
+
+function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
+  const [datos, setDatos] = useState<ResumenCanales | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [dias, setDias] = useState(30);
+  const [visible, setVisible] = useState(false);
+
+  const cerrar = useCallback(() => {
+    setVisible(false);
+    setTimeout(onClose, 200);
+  }, [onClose]);
+
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(true), 20);
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") cerrar(); };
+    window.addEventListener("keydown", esc);
+    return () => { clearTimeout(t); window.removeEventListener("keydown", esc); };
+  }, [cerrar]);
+
+  useEffect(() => {
+    const q = new URLSearchParams({ sku: fila.sku, dias: String(dias) });
+    fetch(`${API_BASE}/api/fulfillment/canales?${q}`, { cache: "no-store" })
+      .then((r) => { if (!r.ok) throw new Error(`API ${r.status}`); return r.json(); })
+      .then(setDatos)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+  }, [fila.sku, dias]);
+
+  const g = datos?.global;
+  const tonoM = (m: number | null) =>
+    m == null ? "text-slate-300" : m < 20 ? "text-red-500" : "text-emerald-600";
+
+  return (
+    <div
+      className={`fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-200 ${visible ? "opacity-100" : "opacity-0"}`}
+      onClick={cerrar}
+    >
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`relative max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl transition-all duration-200 ${visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-3 scale-95 opacity-0"}`}
+      >
+        {/* Encabezado */}
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm font-bold text-indigo-600">{fila.sku}</span>
+              <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-600">
+                Precio y margen por canal
+              </span>
+            </div>
+            <div className="truncate text-sm text-slate-500" title={fila.titulo ?? ""}>
+              {fila.titulo ?? "—"}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {[14, 30, 60, 90].map((d) => (
+              <button key={d} onClick={() => setDias(d)}
+                      className={`rounded-lg px-2 py-1 text-xs font-bold transition-colors ${dias === d ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}>
+                {d}d
+              </button>
+            ))}
+            <button onClick={cerrar} aria-label="Cerrar"
+                    className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        {err && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            Error al cargar: {err}
+          </div>
+        )}
+        {!err && !datos && (
+          <div className="flex h-48 items-center justify-center text-sm text-slate-400">Cargando…</div>
+        )}
+
+        {datos && g && (
+          <>
+            {/* Promedio de TODOS los canales */}
+            <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {[
+                ["Unidades", fNum(g.uds), ""],
+                ["Ingreso", fMoney(g.ingreso), ""],
+                ["Precio prom.", g.precio_prom == null ? "—" : fMoney(g.precio_prom, 2), ""],
+                ["Margen prom.", g.margen_prom == null ? "—" : `${fNum(g.margen_prom, 1)}%`, tonoM(g.margen_prom)],
+                ["Ganancia", g.ganancia == null ? "—" : fMoney(g.ganancia), g.ganancia != null && g.ganancia < 0 ? "text-red-500" : ""],
+              ].map(([l, v, tone]) => (
+                <div key={l as string} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{l}</div>
+                  <div className={`text-sm font-bold tabular-nums ${tone || "text-slate-800"}`}>{v}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mb-1 text-[11px] text-slate-400">
+              Precio <b>realizado</b>: lo que de verdad se cobró en los pedidos del período
+              (ingreso ÷ unidades), no el precio publicado. El margen usa ese precio.
+            </div>
+
+            {/* Una fila por canal/cuenta */}
+            <div className="mb-4 overflow-x-auto rounded-xl border border-slate-100">
+              <table className="w-full min-w-[560px] text-xs">
+                <thead>
+                  <tr className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-400">
+                    <th className="px-3 py-2 font-semibold">Canal · Cuenta</th>
+                    <th className="px-3 py-2 text-right font-semibold">Uds</th>
+                    <th className="px-3 py-2 text-right font-semibold">Ingreso</th>
+                    <th className="px-3 py-2 text-right font-semibold">Precio prom.</th>
+                    <th className="px-3 py-2 text-right font-semibold">Ganancia</th>
+                    <th className="px-3 py-2 text-right font-semibold">Margen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {datos.canales.length === 0 && (
+                    <tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">
+                      Sin ventas en el período
+                    </td></tr>
+                  )}
+                  {datos.canales.map((c) => (
+                    <tr key={`${c.canal}|${c.cuenta}`} className="border-t border-slate-100">
+                      <td className="whitespace-nowrap px-3 py-1.5">
+                        <span className="font-semibold text-slate-700">{CANAL_LBL[c.canal] ?? c.canal}</span>
+                        {c.cuenta && (
+                          <span className="ml-1.5 rounded bg-slate-100 px-1 text-[9px] font-bold text-slate-500">
+                            {CUENTA_INI[c.cuenta] ?? c.cuenta}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{fNum(c.uds)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">{fMoney(c.ingreso)}</td>
+                      <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
+                        {c.precio_prom == null ? "—" : fMoney(c.precio_prom, 2)}
+                      </td>
+                      <td className={`px-3 py-1.5 text-right tabular-nums ${c.ganancia != null && c.ganancia < 0 ? "text-red-500" : "text-slate-700"}`}>
+                        {c.ganancia == null ? "—" : fMoney(c.ganancia)}
+                      </td>
+                      <td className={`px-3 py-1.5 text-right font-semibold tabular-nums ${tonoM(c.margen_pct)}`}>
+                        {c.margen_pct == null ? "—" : `${fNum(c.margen_pct, 1)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Línea de tiempo de precios (trazabilidad de temporadas) */}
+            <div className="mb-1 flex items-baseline justify-between">
+              <div className="text-[11px] font-bold uppercase tracking-wide text-slate-400">
+                Cambios de precio de la publicación
+              </div>
+              <div className="text-[10px] text-slate-400">
+                registro desde el {datos.historia_desde}
+              </div>
+            </div>
+            {datos.cambios_precio.length === 0 ? (
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+                Sin cambios de precio registrados — el precio no se ha movido desde que hay registro.
+              </div>
+            ) : (
+              <div className="max-h-44 overflow-y-auto rounded-xl border border-slate-100">
+                {datos.cambios_precio.map((c, i) => {
+                  const ant = c.valor_anterior == null ? null : Number(c.valor_anterior);
+                  const nue = c.valor_nuevo == null ? null : Number(c.valor_nuevo);
+                  const delta = ant && nue ? ((nue - ant) / ant) * 100 : null;
+                  return (
+                    <div key={i} className="flex items-center gap-2 border-t border-slate-50 px-3 py-1.5 text-xs first:border-t-0">
+                      <span className="w-20 shrink-0 tabular-nums text-slate-400">{c.fecha}</span>
+                      {c.cuenta && (
+                        <span className="rounded bg-slate-100 px-1 text-[9px] font-bold text-slate-500">
+                          {CUENTA_INI[c.cuenta] ?? c.cuenta}
+                        </span>
+                      )}
+                      <span className="tabular-nums text-slate-500">{ant == null ? "—" : fMoney(ant, 2)}</span>
+                      <span className="text-slate-300">→</span>
+                      <span className="font-semibold tabular-nums text-slate-800">{nue == null ? "—" : fMoney(nue, 2)}</span>
+                      {delta != null && Number.isFinite(delta) && (
+                        <span className={`ml-auto tabular-nums ${delta < 0 ? "text-red-500" : "text-emerald-600"}`}>
+                          {delta > 0 ? "+" : ""}{fNum(delta, 0)}%
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Página ────────────────────────────────────────────────────────────── */
 
 export default function FulfillmentPage() {
@@ -604,6 +823,8 @@ export default function FulfillmentPage() {
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [detalle, setDetalle] = useState<Fila | null>(null);
+  // Modal de precio/margen por canal (clic en las columnas Precio o Margen)
+  const [canalesDe, setCanalesDe] = useState<Fila | null>(null);
 
   const cargar = useCallback(async () => {
     setCargando(true); setErr(null);
@@ -843,16 +1064,23 @@ export default function FulfillmentPage() {
                   <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-slate-600">
                     {f.cobertura_d == null ? "—" : `${fNum(f.cobertura_d, 1)}d`}
                   </td>
-                  {/* PRECIO DE VENTA por canal (solo publicaciones activas) */}
+                  {/* PRECIO DE VENTA por canal (solo publicaciones activas).
+                      Clic → modal con el precio REALIZADO por canal. */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <PrecioVenta fila={f} />
+                    <button onClick={() => setCanalesDe(f)} title="Ver precio y margen por canal"
+                            className="w-full rounded-md px-1 py-0.5 text-right transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
+                      <PrecioVenta fila={f} />
+                    </button>
                   </td>
                   {/* Margen POR CUENTA, alineado renglón a renglón con la
                       columna de precio. El precio sugerido y el costo se
                       quitaron de la tabla (Eduardo, 29-jul): el margen resume
                       ambos y el costo viaja en el tooltip. */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <MargenVenta fila={f} />
+                    <button onClick={() => setCanalesDe(f)} title="Ver precio y margen por canal"
+                            className="w-full rounded-md px-1 py-0.5 text-right transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
+                      <MargenVenta fila={f} />
+                    </button>
                   </td>
                   <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.crec_7d_pct == null ? "text-slate-300" : f.crec_7d_pct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
                     {f.crec_7d_pct == null ? "—" : `${f.crec_7d_pct > 0 ? "+" : ""}${fNum(f.crec_7d_pct)}%`}
@@ -894,6 +1122,9 @@ export default function FulfillmentPage() {
       {detalle && (
         <ModalDetalle fila={detalle} cuenta={cuenta}
                       onClose={() => setDetalle(null)} />
+      )}
+      {canalesDe && (
+        <ModalCanales fila={canalesDe} onClose={() => setCanalesDe(null)} />
       )}
     </>
   );
