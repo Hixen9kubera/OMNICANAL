@@ -3262,6 +3262,32 @@ Dos ajustes al flujo "sin costo" (v0.46.0), a pedido:
    el precio de Alibaba es el **costo del proveedor (USD)**, no el precio de venta
    — el panel calcula el precio con flete (CBM) + comisión + margen. Versión 0.47.0.
 
+### v0.47.2 — La ventana de los períodos ya se corta con horario de México (Eduardo)
+
+Cierra el pendiente que dejó v0.47.1. `current_date` es la fecha DEL SERVIDOR
+—UTC en Railway— pero las ventas están fechadas en horario de México (así las
+construye `channel.sales_daily`). Desde las 6 de la tarde de México el servidor
+ya cambió de día y la ventana se corría: **"7 días" entregaba 6**, y el total
+cambiaba según la HORA a la que abrieras el panel. No se perdía ninguna venta:
+se preguntaba por un rango equivocado. Era la mitad de la discrepancia que
+Eduardo detectó contra el panel de ML (la otra mitad, las canceladas, ya está
+explicada en el "?" de los KPIs).
+
+Arreglo: las 9 consultas del router pasan por `_mx()`, que sustituye
+`current_date` por `(now() at time zone 'America/Mexico_City')::date` — la
+pregunta queda en la misma zona horaria que el dato. Se descartó hacerlo
+configurable por variable: Kubera opera en México y la vista ya está fechada
+así en duro; una segunda fuente de verdad sobre la zona horaria sería otro
+lugar donde desincronizarse.
+
+Verificado: la ventana se corre un día hacia atrás en todos los períodos
+(dias=7 arranca 27-jul en vez de 28-jul; dias=30, 4-jul en vez de 5-jul) y
+`_mx()` no deja ningún `current_date` vivo en las 4 constantes SQL.
+
+Efecto visible: de tarde-noche los totales SUBEN (aparece el día que faltaba).
+De mañana no cambia nada. También corre un día la ventana de 45 días del
+sugerido de reabasto — efecto mínimo, pero es cifra sobre la que se actúa.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

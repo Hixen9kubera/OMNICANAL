@@ -62,9 +62,30 @@ _ORDEN = {
 }
 _DIRS = {"asc", "desc"}
 
+# ── ZONA HORARIA ────────────────────────────────────────────────────────────
+# `current_date` es la fecha DEL SERVIDOR, que en Railway corre en UTC — pero
+# las ventas estan fechadas en horario de MEXICO (asi las construye
+# channel.sales_daily). Desde las 6 de la tarde de Mexico el servidor ya cambio
+# de dia y la ventana se corria: "7 dias" entregaba 6 (Eduardo lo detecto el
+# 2-ago comparando contra el panel de ML). No se perdia ninguna venta: se
+# preguntaba por un rango equivocado, y el total cambiaba segun la HORA a la
+# que abrieras el panel.
+#
+# Toda consulta de este router pasa por _mx(): la pregunta queda en la misma
+# zona horaria que el dato. Kubera opera en Mexico y la vista ya esta fechada
+# asi en duro — una variable de configuracion seria una segunda fuente de
+# verdad sobre la zona horaria, o sea otro lugar donde desincronizarse.
+_HOY_MX = "(now() at time zone 'America/Mexico_City')::date"
+
+
+def _mx(sql: str) -> str:
+    """Cambia `current_date` (UTC) por la fecha de HOY en Mexico."""
+    return sql.replace("current_date", _HOY_MX)
+
+
 # CTEs compartidos del clon: listings agregados POR SKU + ventas del período.
 # %(dias)s = período; %(cuenta)s = filtro de cuenta (None = todas).
-_BASE = """
+_BASE = _mx("""
 with l as (
   select l.sku,
          array_agg(distinct a.legacy_code order by a.legacy_code) as cuentas,
@@ -197,7 +218,7 @@ filas as (
          on cf.sku = l.sku and cf.canal = 'mercado_libre'
   left join costing.costos_validados cv on cv.sku = l.sku
 )
-"""
+""")
 
 
 def _params(dias: int, cuenta: str | None) -> dict[str, Any]:
@@ -219,7 +240,7 @@ def _params(dias: int, cuenta: str | None) -> dict[str, Any]:
 # Las ventas SIN SKU quedan FUERA del ranking (no son un producto: no se pueden
 # ordenar ni reabastecer), pero se devuelven aparte en `sin_sku` para que los
 # totales cuadren contra la vista y no parezca que se perdieron.
-_SQL_ESTRELLAS = """
+_SQL_ESTRELLAS = _mx("""
 with v as (
   select sku,
          sum(units_sold)::bigint                       as uds,
@@ -255,7 +276,7 @@ from v
 cross join t
 left join core.products p on p.sku = v.sku
 order by v.uds desc, v.sku
-"""
+""")
 
 
 @router.get("/estrellas")
@@ -358,12 +379,12 @@ async def dashboard(
                where l.canal in ('mercado_libre','amazon')
                group by 1 order by 1""")
         serie = sdb.fetch_all(
-            """select date, sum(units_sold)::int as unidades,
+            _mx("""select date, sum(units_sold)::int as unidades,
                       round(sum(revenue), 2) as venta
                from channel.sales_daily_completa
                where date > current_date - %(dias)s::int
                  and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-               group by 1 order by 1""", p)
+               group by 1 order by 1"""), p)
         # UDS/$VENTA del período se derivan de la MISMA serie que pinta la
         # gráfica — un solo dato mostrado dos veces, no dos queries que
         # "deberían" coincidir. Antes salían de `filas` (solo SKUs con
@@ -400,21 +421,21 @@ async def detalle(
     p = {"sku": sku, "dias": dias, "cuenta": cuenta}
     try:
         filas = sdb.fetch_all(
-            """select date, sum(units_sold)::int as uds,
+            _mx("""select date, sum(units_sold)::int as uds,
                       round(sum(revenue), 2) as venta
                from channel.sales_daily_completa
                where sku = %(sku)s::citext
                  and date > current_date - %(dias)s::int
                  and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-               group by 1 order by 1""", p)
+               group by 1 order by 1"""), p)
         por_cuenta = sdb.fetch_all(
-            """select cuenta, sum(units_sold)::int as uds,
+            _mx("""select cuenta, sum(units_sold)::int as uds,
                       round(sum(revenue), 2) as venta
                from channel.sales_daily_completa
                where sku = %(sku)s::citext
                  and date > current_date - %(dias)s::int
                  and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-               group by 1 order by 1""", p)
+               group by 1 order by 1"""), p)
         ultima_global = sdb.fetch_scalar(
             "select max(date) from channel.sales_daily_completa where sku = %(sku)s::citext",
             {"sku": sku})
@@ -504,11 +525,11 @@ async def tabla(
         # Sparkline: unidades por día (14 d) SOLO de los SKUs de esta página.
         if items:
             spark = sdb.fetch_all(
-                """select sku, date, sum(units_sold)::int as u
+                _mx("""select sku, date, sum(units_sold)::int as u
                    from channel.sales_daily_completa
                    where date > current_date - 14 and sku = any(%(skus)s::citext[])
                      and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-                   group by 1, 2""",
+                   group by 1, 2"""),
                 {"skus": [str(i["sku"]) for i in items], "cuenta": cuenta})
             from collections import defaultdict
             from datetime import date, timedelta
@@ -539,7 +560,7 @@ async def tabla(
 # 13,689 mapeos; 99.9%% de lo vendido clasifica), así que las ventas de Amazon
 # también entran. Publicaciones/activas se cuentan sobre el catálogo listado
 # completo de cada hoja, no solo lo vendido — como el xlsx.
-_SQL_CAT_HOJAS = """
+_SQL_CAT_HOJAS = _mx("""
 with pc as (
   select pc.sku, pc.category_id,
          coalesce(nullif(trim(c.path), ''), c.name, 'Sin categoría') as ruta
@@ -605,7 +626,7 @@ select coalesce(s.ruta, l.ruta)                 as ruta,
 from ventas_cat s
 full outer join lst l on l.category_id = s.category_id
 order by venta desc
-"""
+""")
 
 # Publicaciones de UNA hoja del árbol, como las filas del xlsx: por item_id
 # (MLM…), con cuenta, título, situación, precio y ventas del período.
@@ -613,7 +634,7 @@ order by venta desc
 # maestro; situación/precio, del listing vivo. "Días en venta" del xlsx NO se
 # puede replicar: listings no guarda la fecha de creación de la publicación —
 # se da la PRIMERA VENTA registrada, que es lo que sí sabemos.
-_SQL_CAT_PUBS = """
+_SQL_CAT_PUBS = _mx("""
 with skus_hoja as (
   select sku from channel.product_category
   where category_id = %(categoria_id)s and channel_id = 'mercado_libre'
@@ -642,7 +663,7 @@ where s.sku in (select sku from skus_hoja)
 group by s.item_id, s.cuenta
 order by venta desc
 limit 200
-"""
+""")
 
 
 @router.get("/categorias")
