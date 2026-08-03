@@ -44,7 +44,8 @@ from datetime import datetime, timezone
 import httpx
 
 from config import settings
-from services import db, fanout_stock, kubera_mirror, meli, pii
+from services import (alertas, core_read, db, fanout_stock, kubera_mirror,
+                      lecturas_fuente, meli, pii)
 
 log = logging.getLogger("omnicanal.pedidos_ml")
 
@@ -121,9 +122,23 @@ async def resolver_producto(sku: str) -> dict | None:
     """
     if not sku:
         return None
-    fila = db.fetch_one(
-        "SELECT sku, wc_id, wc_parent_id FROM productos WHERE sku=%s AND wc_id IS NOT NULL",
-        (sku,))
+    fila = None
+    # F5 core: atajo desde core.products (BD kubera). None NO es concluyente
+    # (el seam Crear→core.products no existe: un SKU del día aparece hasta el
+    # ETL de las 06:15) — se reconsulta MySQL igual que ante cualquier error.
+    if settings.supabase_read_core:
+        try:
+            fila = core_read.wc_de_sku(sku)
+            lecturas_fuente.anotar("core", "kubera")
+        except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("core", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:core",
+                           f"⚠️ Lectura de CORE cayó a MySQL (resolver_producto): {exc}")
+            log.warning("lectura kubera falló (resolver_producto) — fallback MySQL: %s", exc)
+    if not fila or not fila.get("wc_id"):
+        fila = db.fetch_one(
+            "SELECT sku, wc_id, wc_parent_id FROM productos WHERE sku=%s AND wc_id IS NOT NULL",
+            (sku,))
     if fila and fila.get("wc_id"):
         return {"wc_id": int(fila["wc_id"]),
                 "parent_id": int(fila["wc_parent_id"]) if fila.get("wc_parent_id") else None,

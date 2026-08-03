@@ -3304,6 +3304,33 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.55.0 — F5 Core: flag de lectura de los lookups SKU→wc_id (Eduardo)
+
+Cuarto y último dominio F5. Flag **`SUPABASE_READ_CORE`** (default false;
+encendido en producción el 04-ago con dale de Eduardo): `pedidos_ml.resolver_producto` (ruta caliente
+de cada venta) y la categoría-ML de `costos.py` leen su lookup SKU→wc_id de
+`core.products` vía el nuevo `services/core_read.py` (contador + alerta + chip
+"Core" en /migracion). Regla propia del dominio: **None en kubera NO es
+concluyente** (el seam Crear→core.products no existe; un SKU del día aparece
+hasta el ETL de las 06:15) — se reconsulta MySQL sin alertar; solo la excepción
+es fallback.
+
+Alcance deliberado: `ejemplos.py` (usa precio/stock_odoo, no viajan al maestro)
+y el respaldo-DB del listado de `woocommerce.py` (lee `productos` CONGELADO;
+su primario es wp_db vivo) quedan FUERA — la gemela `buscar_wc_ids` queda lista
+en core_read.py para F6.
+
+**Equivalencia con arbitraje** (`scripts/comparar_lecturas_core.py`): 905 SKUs
+(634 vendidos 30d + 300 azar): 665 iguales, 0 ausentes en kubera, y 27
+diferencias arbitradas contra WordPress VIVO → **kubera correcto en las 27,
+MySQL en 0**: son SKUs que se volvieron variación después del congelamiento del
+23-jul; MySQL conserva el id viejo (hoy los pedidos de esos SKUs se crean
+contra el producto equivocado) y kubera trae la variación real. Encender este
+flag además CORRIGE ese defecto. Listado F6: kubera 9,732 ⊇ mysql 5,271.
+Veredicto EQUIVALENTE. Versión 0.55.0.
+
+---
+
 ### v0.49.0 — F5 Pedidos: flag de lectura del tab Ventas con equivalencia probada (Eduardo)
 
 Tercer dominio que aprende a leer de la BD kubera. Flag **`SUPABASE_READ_ORDERS`**

@@ -30,7 +30,9 @@ from typing import Any
 
 import requests
 
-from services import costing_mirror, db, meli
+from config import settings
+from services import (alertas, core_read, costing_mirror, db, lecturas_fuente,
+                      meli)
 
 log = logging.getLogger("uvicorn.error")
 
@@ -526,7 +528,20 @@ def _cat_ml_de(sku: str) -> str:
     except Exception:  # noqa: BLE001
         pass
     try:
-        wc = db.fetch_scalar("SELECT wc_id FROM productos WHERE sku=%s", (sku,))
+        wc = None
+        # F5 core: wc_id desde core.products; None no es concluyente (hueco del
+        # seam Crear hasta el ETL 06:15) → reconsulta MySQL.
+        if settings.supabase_read_core:
+            try:
+                wc = core_read.wc_id_de_sku(sku)
+                lecturas_fuente.anotar("core", "kubera")
+            except Exception as exc:  # noqa: BLE001
+                lecturas_fuente.anotar("core", "fallback", str(exc))
+                alertas.avisar("lectura_fallback:core",
+                               f"⚠️ Lectura de CORE cayó a MySQL (categoria_ml): {exc}")
+                log.warning("lectura kubera falló (categoria_ml) — fallback MySQL: %s", exc)
+        if not wc:
+            wc = db.fetch_scalar("SELECT wc_id FROM productos WHERE sku=%s", (sku,))
         if wc:
             from services import wp_db
             if wp_db.disponible():

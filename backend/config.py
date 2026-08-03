@@ -202,6 +202,10 @@ class Settings(BaseSettings):
     # F5 pedidos: el tab Ventas (fuente=pedidos) lee de channel.orders (BD
     # kubera) con fallback automático a MySQL. Apagar = revertir.
     supabase_read_orders: bool = False
+    # F5 core: los lookups SKU→wc_id (pedidos_ml.resolver_producto y la
+    # categoría ML de costos.py) leen de core.products. None NO es concluyente
+    # (seam Crear pendiente): se reconsulta MySQL. Apagar = revertir.
+    supabase_read_core: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""
