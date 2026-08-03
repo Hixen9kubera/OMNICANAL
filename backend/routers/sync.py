@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
+from config import settings
 from core.marketplaces import Canal, subcuentas
-from services import db, inventario, sync_woo, woocommerce
+from services import (alertas, channel_read, db, inventario, lecturas_fuente,
+                      sync_woo, woocommerce)
 
 router = APIRouter(prefix="/api/sync", tags=["sincronizacion"])
 
@@ -81,6 +83,21 @@ def plan(limite: int = Query(200, ge=1, le=2000)):
 
 @router.get("/estado")
 def estado():
+    import logging
+    # F5: resumen desde la BD kubera con fallback a MySQL
+    if settings.supabase_read_channel:
+        try:
+            por_canal = channel_read.resumen_por_canal()
+            if not por_canal and settings.mysql_enabled:
+                raise RuntimeError("kubera devolvió resumen vacío (implausible)")
+            lecturas_fuente.anotar("channel", "kubera")
+            return {"resumen": por_canal}
+        except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("channel", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:channel",
+                           f"⚠️ Lectura de CHANNEL cayó a MySQL (resumen): {exc}")
+            logging.getLogger("omnicanal.sync").warning(
+                "lectura kubera falló (resumen) — fallback MySQL: %s", exc)
     inventario.asegurar_schema()
     try:
         por_canal = db.fetch_all(

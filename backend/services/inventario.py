@@ -25,7 +25,9 @@ from typing import Any
 
 import httpx
 
-from services import amazon, db, meli, odoo, woocommerce
+from config import settings
+from services import (alertas, amazon, channel_read, db, lecturas_fuente, meli,
+                      odoo, woocommerce)
 
 log = logging.getLogger("omnicanal.inventario")
 
@@ -438,6 +440,19 @@ def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     """
     if not skus:
         return {}
+    # F5: lectura desde la BD kubera con fallback a MySQL (flag reversible)
+    if settings.supabase_read_channel:
+        try:
+            out_kb = channel_read.leer_inventario(list(skus))
+            if not out_kb and settings.mysql_enabled:
+                raise RuntimeError("kubera devolvió 0 filas para el lote (implausible)")
+            lecturas_fuente.anotar("channel", "kubera")
+            return out_kb
+        except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("channel", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:channel",
+                           f"⚠️ Lectura de CHANNEL cayó a MySQL (inventario): {exc}")
+            log.warning("lectura kubera falló (leer_inventario) — fallback MySQL: %s", exc)
     asegurar_schema()
     ph = ",".join(["%s"] * len(skus))
     try:

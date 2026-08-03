@@ -3304,6 +3304,35 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.48.0 — F5 Channel: flag de lectura de inventario/presencia con equivalencia probada (Eduardo)
+
+Segundo dominio que aprende a leer de la BD kubera. Flag **`SUPABASE_READ_CHANNEL`**
+(default false): `inventario.leer_inventario`, la fuente canal_inventario de
+`presencia.py` y `GET /api/sync/estado` leen de `channel.listings` con fallback
+automático a MySQL + contador kubera-vs-fallback + alerta Slack (mismo patrón
+que costos). Nuevo `services/channel_read.py` con la traducción completa
+(cuenta↔core.accounts.legacy_code con la convención '' para amazon/general;
+alcance ml+amazon — 'general' se unifica en F6).
+
+**Tres hallazgos de modelo que el arnés destapó y se corrigieron:**
+1. `channel.listings` no tenía `logistic_type`/`stock_fba`/`currency` que el
+   panel usa → migración `0004_channel_cache_cols.sql` + backfill (5,440 filas)
+   + el espejo ahora las escribe.
+2. El only-if-changed del espejo nunca rellenó `listing_id` en filas estables
+   desde la fusión → backfill único + `listing_id` entra al is-distinct-from.
+3. Los "fantasmas" del ETL de fusión (filas-identidad todo-NULL sin equivalente
+   en canal_inventario) se excluyen de las gemelas; las filas reales sin
+   item_id sí viajan. Convención stock: amazon reporta en `stock_fba` y deja
+   `stock_full` NULL (se normaliza en la lectura).
+
+**Equivalencia** (`scripts/comparar_lecturas_channel.py`, dominio caliente:
+identidad exacta + tolerancia 2% en precio/stock por timing del sync): 539
+filas 0 faltantes/sobrantes, identidad 0 diferencias, calientes 0.37%,
+presencia 508=508, resumen amazon 1,666=1,666 (BEKURA +1 fila residual en
+kubera, 0.05%, anotada). Veredicto EQUIVALENTE. Versión 0.48.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

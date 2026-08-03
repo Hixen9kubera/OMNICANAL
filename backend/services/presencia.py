@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from config import settings
 from core.marketplaces import Canal
-from services import db
+from services import alertas, channel_read, db, lecturas_fuente
 
 log = logging.getLogger("omnicanal.presencia")
 
@@ -53,13 +54,26 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     # que también son "publicado" (existen en el canal). Va primero para que una
     # publicación recién creada aparezca sin esperar al snapshot diario.
     try:
-        rows = db.fetch_all(
-            f"""SELECT sku, canal, cuenta, item_id, situacion
-                FROM canal_inventario
-                WHERE sku IN ({placeholders})
-                  AND item_id IS NOT NULL AND item_id <> ''""",
-            tuple(skus),
-        )
+        rows = None
+        # F5: presencia desde la BD kubera con fallback a MySQL
+        if settings.supabase_read_channel:
+            try:
+                rows = channel_read.presencia(list(skus))
+                lecturas_fuente.anotar("channel", "kubera")
+            except Exception as exc:  # noqa: BLE001
+                lecturas_fuente.anotar("channel", "fallback", str(exc))
+                alertas.avisar("lectura_fallback:channel",
+                               f"⚠️ Lectura de CHANNEL cayó a MySQL (presencia): {exc}")
+                log.warning("lectura kubera falló (presencia) — fallback MySQL: %s", exc)
+                rows = None
+        if rows is None:
+            rows = db.fetch_all(
+                f"""SELECT sku, canal, cuenta, item_id, situacion
+                    FROM canal_inventario
+                    WHERE sku IN ({placeholders})
+                      AND item_id IS NOT NULL AND item_id <> ''""",
+                tuple(skus),
+            )
         for r in rows:
             situacion = (r.get("situacion") or "").lower()
             # 'closed' = publicación dada de baja: ya NO cuenta como publicada.

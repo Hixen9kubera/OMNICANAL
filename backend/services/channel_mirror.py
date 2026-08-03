@@ -104,26 +104,37 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                 cur.execute(
                     """insert into channel.listings
                          (sku, account_id, canal, listing_id, price, stock_own,
-                          stock_full, is_fulfillment, situacion)
-                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          stock_full, is_fulfillment, situacion,
+                          logistic_type, stock_fba, currency)
+                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        on conflict (sku, account_id, canal) do update set
                          listing_id = coalesce(excluded.listing_id, listings.listing_id),
                          price = coalesce(excluded.price, listings.price),
                          stock_own = coalesce(excluded.stock_own, listings.stock_own),
                          stock_full = coalesce(excluded.stock_full, listings.stock_full),
                          is_fulfillment = excluded.is_fulfillment,
-                         situacion = coalesce(excluded.situacion, listings.situacion)
-                       where (listings.price, listings.stock_own, listings.stock_full,
-                              listings.is_fulfillment, listings.situacion)
+                         situacion = coalesce(excluded.situacion, listings.situacion),
+                         logistic_type = coalesce(excluded.logistic_type, listings.logistic_type),
+                         stock_fba = coalesce(excluded.stock_fba, listings.stock_fba),
+                         currency = coalesce(excluded.currency, listings.currency)
+                       where (listings.listing_id,
+                              listings.price, listings.stock_own, listings.stock_full,
+                              listings.is_fulfillment, listings.situacion,
+                              listings.logistic_type, listings.stock_fba, listings.currency)
                          is distinct from
-                             (coalesce(excluded.price, listings.price),
+                             (coalesce(excluded.listing_id, listings.listing_id),
+                              coalesce(excluded.price, listings.price),
                               coalesce(excluded.stock_own, listings.stock_own),
                               coalesce(excluded.stock_full, listings.stock_full),
                               excluded.is_fulfillment,
-                              coalesce(excluded.situacion, listings.situacion))""",
+                              coalesce(excluded.situacion, listings.situacion),
+                              coalesce(excluded.logistic_type, listings.logistic_type),
+                              coalesce(excluded.stock_fba, listings.stock_fba),
+                              coalesce(excluded.currency, listings.currency))""",
                     (sku, cuenta_id, canal, r.get("item_id"), r.get("precio"),
                      r.get("stock_real"), stock_full, bool(r.get("es_full")),
-                     r.get("situacion")),
+                     r.get("situacion"),
+                     r.get("logistica"), r.get("stock_fba"), r.get("moneda")),
                 )
     except Exception as exc:  # noqa: BLE001
         log.warning("espejo channel falló (el sync continúa): %s", exc)
