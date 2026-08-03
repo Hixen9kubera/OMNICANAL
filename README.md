@@ -3288,6 +3288,20 @@ Efecto visible: de tarde-noche los totales SUBEN (aparece el día que faltaba).
 De mañana no cambia nada. También corre un día la ventana de 45 días del
 sugerido de reabasto — efecto mínimo, pero es cifra sobre la que se actúa.
 
+### v0.47.3 — Los KPIs dicen QUÉ cuentan (Eduardo)
+
+"¿Puedes explicarme la suma de las unidades? No me queda muy claro." El
+tooltip decía de dónde salía el número pero no qué cuenta como una unidad, que
+era justo la duda: **cuenta PIEZAS, no pedidos** — un pedido de 3 piezas suma
+3. No es un matiz menor: de las 1,304 líneas de la semana, 364 son de 3 o más
+piezas y aportan 2,587 de las 3,777 unidades (68% del total).
+
+Ahora cada KPI tiene su propio texto en vez de uno compartido, porque el mismo
+párrafo era medio correcto en cada uno: "cuenta piezas" es cierto de las
+UNIDADES y no dice nada de los pesos; "es venta bruta, sin comisión ni costo"
+es al revés. Ambos conservan el "último día en curso" y la reconciliación
+contra el panel de ML (canceladas + ventana horaria).
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

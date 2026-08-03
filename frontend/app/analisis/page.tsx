@@ -209,9 +209,16 @@ function Kpi({ label, value, tone, ayuda }: {
 
 /* La respuesta a "¿por qué no cuadra con Mercado Libre?" vive en el propio
    KPI: es la pregunta que va a volver cada vez que alguien compare paneles. */
+/* Dos textos, no uno compartido: "cuenta piezas, no pedidos" es cierto de las
+   UNIDADES y no dice nada de los pesos; "es venta bruta" es al revés. Un solo
+   tooltip para ambos KPIs sería medio correcto en cada uno. */
+const AYUDA_UDS_KPI = {
+  titulo: "Cómo se cuentan las unidades",
+  texto: "Cuenta PIEZAS, no pedidos: un pedido de 3 piezas suma 3 — la mayor parte del total viene de compras múltiples. Es la suma exacta de las barras de la gráfica, incluida la venta de publicaciones ya cerradas, y el último día va en curso. ¿No cuadra con el panel de Mercado Libre? Aquí las canceladas se excluyen y los días se cortan con horario de México; ML las incluye y corta su ventana distinto.",
+};
 const AYUDA_VENTA_KPI = {
-  titulo: "¿No cuadra con el panel de ML?",
-  texto: "Es la suma exacta de las barras de la gráfica: toda la venta del período, incluida la de publicaciones ya cerradas. Puede no cuadrar con el panel de Mercado Libre: aquí las canceladas se excluyen y los días se cortan con el horario de México; ML incluye canceladas y corta su ventana distinto.",
+  titulo: "Cómo se cuenta la venta",
+  texto: "Venta BRUTA del período: no descuenta la comisión del marketplace, ni el costo, ni el envío. Es la suma exacta de las barras de la gráfica, incluida la venta de publicaciones ya cerradas, y el último día va en curso. ¿No cuadra con el panel de Mercado Libre? Aquí las canceladas se excluyen y los días se cortan con horario de México; ML las incluye y corta su ventana distinto.",
 };
 
 /* Iniciales de cuenta para las etiquetas compactas de precio */
@@ -703,7 +710,7 @@ export default function FulfillmentPage() {
           <Kpi label="Stock FULL" value={fNum(dash?.kpis.stock_full)} />
           <Kpi label="Stock propio" value={fNum(dash?.kpis.stock_propio)} tone="text-violet-600" />
           <Kpi label={`Uds ${dias}d`} value={fNum(dash?.kpis.uds_periodo)} tone="text-emerald-600"
-               ayuda={AYUDA_VENTA_KPI} />
+               ayuda={AYUDA_UDS_KPI} />
           <Kpi label={`$Venta ${dias}d`} value={fMoney(dash?.kpis.venta_periodo)} tone="text-emerald-600"
                ayuda={AYUDA_VENTA_KPI} />
         </div>
