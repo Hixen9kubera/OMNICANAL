@@ -74,7 +74,7 @@ interface Estado {
   }>;
 }
 
-const ETIQUETA_LECTURAS: Record<string, string> = { costing: "Costos", channel: "Channel" };
+const ETIQUETA_LECTURAS: Record<string, string> = { costing: "Costos", channel: "Channel", orders: "Pedidos" };
 
 interface GrupoError {
   archivo_py: string;

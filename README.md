@@ -3304,6 +3304,29 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.49.0 — F5 Pedidos: flag de lectura del tab Ventas con equivalencia probada (Eduardo)
+
+Tercer dominio que aprende a leer de la BD kubera. Flag **`SUPABASE_READ_ORDERS`**
+(default false): las dos consultas del tab Ventas en fuente=pedidos
+(`_pedidos_horario` y `_pedidos_rango` de `ventas_ml.py`, sobre `pedidos_ml`)
+leen sus filas agregadas de `channel.orders` vía el nuevo
+`services/orders_read.py`, con fallback automático a MySQL + contador
+kubera-vs-fallback + alerta Slack (mismo patrón que costos/channel; chip
+"Pedidos" en /migracion). Traducción clave: `creado` (DATETIME naive UTC) ≡
+`creado_at at time zone 'utc'` — el corte de rango y la hora CDMX
+(`- interval '6 hours'`) replican `HOUR(DATE_SUB(creado, INTERVAL 6 HOUR))`.
+OJO: aquí 0 filas es respuesta VÁLIDA (rango sin ventas) — sin guardia de
+plausibilidad por conteo; solo una excepción dispara el fallback.
+
+**Equivalencia** (`scripts/comparar_lecturas_orders.py`): 15 días (14 cerrados
+estrictos + hoy) × 5 cuentas × ambas gemelas + rango de 7 días = **0
+diferencias, EQUIVALENTE a la primera pasada** (el espejo de channel.orders ya
+traía racha de actas en cero). La vista histórica `?fuente=ml`
+(ventas_horarias) NO viaja por el flag: es caché de la API de ML, no dominio
+migrable. Versión 0.49.0.
+
+---
+
 ### v0.48.0 — F5 Channel: flag de lectura de inventario/presencia con equivalencia probada (Eduardo)
 
 Segundo dominio que aprende a leer de la BD kubera. Flag **`SUPABASE_READ_CHANNEL`**

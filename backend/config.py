@@ -170,6 +170,9 @@ class Settings(BaseSettings):
     # F5 channel: leer_inventario/presencia/resumen leen de channel.listings
     # (BD kubera) con fallback automático a MySQL. Apagar = revertir.
     supabase_read_channel: bool = False
+    # F5 pedidos: el tab Ventas (fuente=pedidos) lee de channel.orders (BD
+    # kubera) con fallback automático a MySQL. Apagar = revertir.
+    supabase_read_orders: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""

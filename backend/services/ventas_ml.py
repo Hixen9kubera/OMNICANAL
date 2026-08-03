@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from config import settings
-from services import db, meli
+from services import alertas, db, lecturas_fuente, meli, orders_read
 
 log = logging.getLogger("omnicanal.ventas")
 
@@ -290,25 +290,50 @@ def _delta_pct(actual: float, previo: float) -> float | None:
     return None
 
 
+def _filas_kubera(fn, consulta: str, cuentas: list[str],
+                  ini: datetime, fin: datetime) -> list[dict] | None:
+    """
+    F5 pedidos: filas agregadas desde channel.orders (BD kubera) cuando el flag
+    SUPABASE_READ_ORDERS está encendido. None = usar el camino MySQL (flag
+    apagado o error, con contador+alerta). OJO: [] es una respuesta VÁLIDA
+    (rango sin ventas, p. ej. la semana previa al inicio del registro) y NO
+    dispara fallback — por eso no hay guardia de plausibilidad por conteo.
+    """
+    if not settings.supabase_read_orders:
+        return None
+    try:
+        filas = fn(cuentas, ini, fin)
+        lecturas_fuente.anotar("orders", "kubera")
+        return filas
+    except Exception as exc:  # noqa: BLE001
+        lecturas_fuente.anotar("orders", "fallback", str(exc))
+        alertas.avisar("lectura_fallback:orders",
+                       f"⚠️ Lectura de PEDIDOS cayó a MySQL ({consulta}): {exc}")
+        log.warning("lectura kubera falló (%s) — fallback MySQL: %s", consulta, exc)
+        return None
+
+
 def _pedidos_rango(cuentas: list[str], desde: date, hasta: date) -> dict | None:
     """
     PEDIDOS de WooCommerce creados por el flujo ML→WC (tabla pedidos_ml) dentro
     del rango, por cuenta. Es el "registro vivo" que el tab muestra junto a las
     ventas de ML. `creado` está en UTC; el rango llega en fechas CDMX (UTC-6).
     """
-    try:
-        ini = datetime.combine(desde, datetime.min.time()) + timedelta(hours=6)
-        fin = datetime.combine(hasta, datetime.min.time()) + timedelta(hours=30)
-        marcas = ",".join(["%s"] * len(cuentas))
-        filas = db.fetch_all(
-            f"""SELECT cuenta, estado_wc, COUNT(*) n, SUM(total) m, SUM(es_full) f
-                FROM pedidos_ml
-                WHERE cuenta IN ({marcas}) AND creado >= %s AND creado < %s
-                GROUP BY cuenta, estado_wc""",
-            (*cuentas, ini, fin))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Ventas: no se pudo leer pedidos_ml: %s", exc)
-        return None
+    ini = datetime.combine(desde, datetime.min.time()) + timedelta(hours=6)
+    fin = datetime.combine(hasta, datetime.min.time()) + timedelta(hours=30)
+    filas = _filas_kubera(orders_read.rango, "rango", cuentas, ini, fin)
+    if filas is None:
+        try:
+            marcas = ",".join(["%s"] * len(cuentas))
+            filas = db.fetch_all(
+                f"""SELECT cuenta, estado_wc, COUNT(*) n, SUM(total) m, SUM(es_full) f
+                    FROM pedidos_ml
+                    WHERE cuenta IN ({marcas}) AND creado >= %s AND creado < %s
+                    GROUP BY cuenta, estado_wc""",
+                (*cuentas, ini, fin))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Ventas: no se pudo leer pedidos_ml: %s", exc)
+            return None
     tot = {"total": 0, "monto": 0.0, "full": 0, "propios": 0, "cancelados": 0}
     por_cuenta = {c: {"pedidos": 0, "monto": 0.0} for c in cuentas}
     for f in filas:
@@ -342,14 +367,16 @@ def _pedidos_horario(cuentas: list[str], desde: date, hasta: date) -> dict:
     cuenta_horas = {c: [0.0] * 24 for c in cuentas}
     ini = datetime.combine(desde, datetime.min.time()) + timedelta(hours=6)
     fin = datetime.combine(hasta, datetime.min.time()) + timedelta(hours=30)
-    marcas = ",".join(["%s"] * len(cuentas))
-    filas = db.fetch_all(
-        f"""SELECT HOUR(DATE_SUB(creado, INTERVAL 6 HOUR)) h, cuenta, estado_wc,
-                   COUNT(*) n, SUM(total) m
-            FROM pedidos_ml
-            WHERE cuenta IN ({marcas}) AND creado >= %s AND creado < %s
-            GROUP BY h, cuenta, estado_wc""",
-        (*cuentas, ini, fin))
+    filas = _filas_kubera(orders_read.horario, "horario", cuentas, ini, fin)
+    if filas is None:
+        marcas = ",".join(["%s"] * len(cuentas))
+        filas = db.fetch_all(
+            f"""SELECT HOUR(DATE_SUB(creado, INTERVAL 6 HOUR)) h, cuenta, estado_wc,
+                       COUNT(*) n, SUM(total) m
+                FROM pedidos_ml
+                WHERE cuenta IN ({marcas}) AND creado >= %s AND creado < %s
+                GROUP BY h, cuenta, estado_wc""",
+            (*cuentas, ini, fin))
     for f in filas:
         h, n, m = int(f["h"]), int(f["n"] or 0), float(f["m"] or 0)
         est = str(f.get("estado_wc") or "")
