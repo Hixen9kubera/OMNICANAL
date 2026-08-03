@@ -103,13 +103,14 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                 # el valor anterior en vez de grabar un falso cambio a NULL.
                 cur.execute(
                     """insert into channel.listings
-                         (sku, account_id, canal, listing_id, price, stock_own,
-                          stock_full, is_fulfillment, situacion,
+                         (sku, account_id, canal, listing_id, price, price_base,
+                          stock_own, stock_full, is_fulfillment, situacion,
                           logistic_type, stock_fba, currency)
-                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                        on conflict (sku, account_id, canal) do update set
                          listing_id = coalesce(excluded.listing_id, listings.listing_id),
                          price = coalesce(excluded.price, listings.price),
+                         price_base = coalesce(excluded.price_base, listings.price_base),
                          stock_own = coalesce(excluded.stock_own, listings.stock_own),
                          stock_full = coalesce(excluded.stock_full, listings.stock_full),
                          is_fulfillment = excluded.is_fulfillment,
@@ -118,12 +119,14 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                          stock_fba = coalesce(excluded.stock_fba, listings.stock_fba),
                          currency = coalesce(excluded.currency, listings.currency)
                        where (listings.listing_id,
-                              listings.price, listings.stock_own, listings.stock_full,
+                              listings.price, listings.price_base,
+                              listings.stock_own, listings.stock_full,
                               listings.is_fulfillment, listings.situacion,
                               listings.logistic_type, listings.stock_fba, listings.currency)
                          is distinct from
                              (coalesce(excluded.listing_id, listings.listing_id),
                               coalesce(excluded.price, listings.price),
+                              coalesce(excluded.price_base, listings.price_base),
                               coalesce(excluded.stock_own, listings.stock_own),
                               coalesce(excluded.stock_full, listings.stock_full),
                               excluded.is_fulfillment,
@@ -132,6 +135,10 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                               coalesce(excluded.stock_fba, listings.stock_fba),
                               coalesce(excluded.currency, listings.currency))""",
                     (sku, cuenta_id, canal, r.get("item_id"), r.get("precio"),
+                     # precio de lista (el tachado de ML): solo lo trae el lector
+                     # de mercado_libre; en los demás canales viaja NULL y el
+                     # coalesce conserva lo que hubiera
+                     r.get("precio_base"),
                      r.get("stock_real"), stock_full, bool(r.get("es_full")),
                      r.get("situacion"),
                      r.get("logistica"), r.get("stock_fba"), r.get("moneda")),

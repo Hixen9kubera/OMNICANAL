@@ -3505,6 +3505,53 @@ Versión 0.49.4.
 
 ---
 
+### v0.50.0 — Los listings guardan el precio de LISTA: se puede ver el descuento vivo de ML (paso 1 de 2)
+
+`channel.listings` tenía la columna `price_base` desde el ETL original y estaba
+**100% vacía** — 0 de 4,044 filas de ML y 0 de 1,776 de Amazon. Nunca se cableó:
+su fuente (`canal_inventario` en MySQL) no tiene precio base, y el lector de ML
+solo tomaba `item.get("price")`. Resultado: el panel mostraba el precio real
+pero no permitía distinguir "este es mi precio" de "ML le está aplicando −75%".
+
+**El nombre engaña, y hay que decirlo.** ML expone tres campos y solo uno sirve:
+
+| Campo de ML | Qué es |
+|---|---|
+| `price` | Lo que cobra hoy — el real (ya lo teníamos) |
+| `original_price` | El precio tachado; NULL si no hay campaña ← **el que sirve** |
+| `base_price` | **NO es el precio de lista**: viene igual a `price` (0 de 20 activas difieren) |
+
+**Qué se hizo.** `inventario._precio_lista(item)` devuelve `original_price` y,
+cuando no hay promoción, `price` — nunca NULL. Es deliberado: el espejo trata
+NULL como "no observado" y conserva el valor anterior, así que una promoción
+terminada se quedaría pegada para siempre. Con esto la regla queda limpia:
+`price < price_base` ⇒ hay descuento vivo, y la resta dice cuánto. Los tres
+puntos de `inventario.py` que arman filas de ML lo incluyen, y
+`channel_mirror.espejar_inventario` escribe `price_base` en el upsert y lo suma
+al `is distinct from`.
+
+**Sin migraciones ni DDL**: la columna ya existía en Postgres, y `canal_inventario`
+no se toca porque su `INSERT` lista columnas explícitamente y la llave extra del
+diccionario se ignora sola. Tampoco hay llamadas nuevas a ML: el sync ya pedía
+el item completo, así que `original_price` viajaba en la respuesta sin usarse.
+
+**No rompe las actas**: el comparador usa
+`CAMPOS = ("precio", "stock_own", "stock_full", "es_full", "situacion", "listing_id")`
+— `price_base` no está, así que no puede generar divergencias ni cortar la racha
+del dominio channel.
+
+**Verificado contra producción** (refresco real de 3 publicaciones):
+`MLM2945686509` 103.96 sobre 415.84 = **−75%**, `MLM2914395541` 299.00 sobre
+706.38 = **−58%**, y `MLM3183258785` 7,755.92 = 7,755.92 sin promoción.
+
+**Paso 2 pendiente, a propósito**: la columna todavía NO se pinta en el panel.
+Primero se mide un día cuánto crece la escritura del espejo — al entrar
+`price_base` al `is distinct from`, cada arranque y fin de promoción cuenta como
+cambio y genera fila de historia. Amazon queda fuera de esta vuelta: su precio
+de lista viene por otro camino de SP-API, sin verificar. Versión 0.50.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

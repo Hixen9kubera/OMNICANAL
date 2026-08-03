@@ -31,6 +31,31 @@ from services import (alertas, amazon, channel_read, db, lecturas_fuente, meli,
 
 log = logging.getLogger("omnicanal.inventario")
 
+
+def _precio_lista(item: dict[str, Any]) -> float | None:
+    """
+    Precio de LISTA de una publicación de ML: el tachado cuando hay promoción,
+    o el precio normal cuando no la hay. Con esto, `precio < precio_base`
+    significa "hay descuento vivo" y la resta da cuánto.
+
+    Ojo con los nombres de ML, que engañan:
+      · `price`          — lo que cobra hoy (el real)
+      · `original_price` — el tachado; NULL si no hay campaña  ← el que sirve
+      · `base_price`     — NO es el precio de lista: viene igual a `price`
+                           (medido sobre 20 publicaciones activas: 0 difieren)
+
+    Se devuelve `price` en vez de NULL cuando no hay promoción a propósito: el
+    espejo trata NULL como "no observado" y conserva el valor anterior, así que
+    una promo terminada se quedaría pegada para siempre.
+    """
+    v = item.get("original_price")
+    if v in (None, ""):
+        v = item.get("price")
+    try:
+        return float(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
 _ML_API = "https://api.mercadolibre.com"
 
 # ── Esquema ───────────────────────────────────────────────────────────────────
@@ -160,7 +185,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
             qty = item.get("available_quantity")
             rows.append({
                 "sku": lst["sku"], "canal": "mercado_libre", "cuenta": cuenta,
-                "item_id": lst["ml_item_id"], "precio": item.get("price"),
+                "item_id": lst["ml_item_id"], "precio": item.get("price"), "precio_base": _precio_lista(item),
                 "stock_real": 0 if es_full else qty,
                 "stock_full": qty if es_full else 0,
                 "stock_fba": None,
@@ -323,7 +348,7 @@ async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
                 qty = item.get("available_quantity")
                 out.append({
                     "sku": sku, "canal": "mercado_libre", "cuenta": cta,
-                    "item_id": r["ml_item_id"], "precio": item.get("price"),
+                    "item_id": r["ml_item_id"], "precio": item.get("price"), "precio_base": _precio_lista(item),
                     "stock_real": 0 if es_full else qty,
                     "stock_full": qty if es_full else 0,
                     "stock_fba": None, "es_full": 1 if es_full else 0,
@@ -400,7 +425,7 @@ async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
     qty = item.get("available_quantity")
     _upsert([{
         "sku": sku, "canal": "mercado_libre", "cuenta": cuenta,
-        "item_id": item_id, "precio": item.get("price"),
+        "item_id": item_id, "precio": item.get("price"), "precio_base": _precio_lista(item),
         "stock_real": 0 if es_full else qty, "stock_full": qty if es_full else 0,
         "stock_fba": None, "es_full": 1 if es_full else 0,
         "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
