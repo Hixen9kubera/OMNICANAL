@@ -10,7 +10,7 @@ import {
   AlertTriangle,
   X,
 } from "lucide-react";
-import { costoDetalle, costoPreview, costoGuardar } from "@/lib/api";
+import { costoDetalle, costoPreview, costoGuardar, mensajeDeError } from "@/lib/api";
 import type { CostoCalculo, CostoOverrides, CostoRow } from "@/lib/types";
 
 const COLOR = "#4F46E5";
@@ -138,8 +138,8 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
       setCalc(r.calculo);
       setFresco(true);
       reflejarComision(r.calculo);
-    } catch {
-      setMsg({ ok: false, texto: "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría." });
+    } catch (e) {
+      setMsg({ ok: false, texto: mensajeDeError(e, "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría.") });
     } finally {
       setRegenerando(false);
     }
@@ -170,8 +170,8 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
           : "Guardado en la base de datos.",
       });
       onGuardado?.();
-    } catch {
-      setMsg({ ok: false, texto: "No se pudo guardar el costo." });
+    } catch (e) {
+      setMsg({ ok: false, texto: mensajeDeError(e, "No se pudo guardar el costo.") });
     } finally {
       setGuardando(false);
     }

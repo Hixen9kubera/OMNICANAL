@@ -483,13 +483,29 @@ def _preparar_base(sku: str, overrides: dict[str, Any] | None,
     return base, cat
 
 
-def _resolver_cat_ml(sku: str) -> str:
+def _cat_ml_kubera(sku: str) -> str:
     """
-    Busca la categoría ML del SKU cuando no viene en overrides ni en costos_finales:
-      1) tabla categorias_ml (nuestra DB)
-      2) postmeta ml_category_id de WooCommerce (vía wc_id de productos)
-    Devuelve "" si no se encuentra.
+    Categoría ML del mapa `channel.product_category` de la BD kubera — el mismo
+    que usa el panel de Análisis para agrupar por categoría. Su fuente `panel`
+    es la elección humana, que manda sobre cualquier detector (regla de la casa).
     """
+    try:
+        from services import supabase_db as sdb
+        if not sdb.disponible():
+            return ""
+        row = sdb.fetch_one(
+            "select category_id from channel.product_category "
+            " where sku = %s::citext and channel_id = 'mercado_libre' limit 1",
+            (sku,))
+        return str(row["category_id"]) if row and row.get("category_id") else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _cat_ml_de(sku: str) -> str:
+    """Categoría ML de UN SKU: categorias_ml → postmeta de Woo → mapa kubera."""
+    if not sku:
+        return ""
     try:
         row = db.fetch_one("SELECT category_id FROM categorias_ml WHERE sku=%s", (sku,))
         if row and row.get("category_id"):
@@ -506,7 +522,34 @@ def _resolver_cat_ml(sku: str) -> str:
                     return str(m["ml_category_id"])
     except Exception:  # noqa: BLE001
         pass
-    return ""
+    return _cat_ml_kubera(sku)
+
+
+def _resolver_cat_ml(sku: str) -> str:
+    """
+    Busca la categoría ML del SKU cuando no viene en overrides ni en costos_finales:
+      1) tabla categorias_ml (nuestra DB)
+      2) postmeta ml_category_id de WooCommerce (vía wc_id de productos)
+      3) mapa channel.product_category de la BD kubera
+
+    Si el SKU es una VARIANTE sin categoría propia, HEREDA la del padre: las
+    variantes de un producto viven en la misma categoría de ML. El padre se
+    resuelve por la estructura de WooCommerce (post_parent), no por el nombre
+    del SKU. Sin esta herencia el costeo se cae con 422 en cuanto una variante
+    no tiene categoría: sin categoría no hay comisión, y sin comisión no hay
+    precio que guardar (caso real: CAM-0030-IND/-QUE, colchones por talla).
+
+    Devuelve "" si no se encuentra.
+    """
+    cat = _cat_ml_de(sku)
+    if cat:
+        return cat
+    try:
+        from services import wp_db
+        padre = wp_db.sku_padre(sku)
+    except Exception:  # noqa: BLE001
+        padre = ""
+    return _cat_ml_de(padre) if padre and padre != sku else ""
 
 
 def computar(sku: str, overrides: dict[str, Any] | None = None,

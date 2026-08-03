@@ -40,13 +40,46 @@ export interface ProductoIA {
   atributos?: { nombre: string; valor: string }[];
 }
 
+/**
+ * Error de la API que CONSERVA el `detail` del backend. FastAPI explica en él
+ * qué falta (p. ej. "no se encontró la comisión de la categoría — ingresa la
+ * Comisión ML (%)"); antes se perdía y el usuario solo veía "no se pudo".
+ * `message` no cambia, para no alterar lo que ya se muestra en otras vistas.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail?: string;
+  constructor(status: number, path: string, detail?: string) {
+    super(`API ${status}: ${path}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function errorDeRespuesta(res: Response, path: string): Promise<ApiError> {
+  let detail: string | undefined;
+  try {
+    const j = (await res.json()) as { detail?: unknown };
+    if (typeof j.detail === "string" && j.detail.trim()) detail = j.detail.trim();
+  } catch {
+    // cuerpo vacío o no-JSON: nos quedamos con el mensaje genérico
+  }
+  return new ApiError(res.status, path, detail);
+}
+
+/** Texto para el usuario: lo que explicó el backend, o el respaldo genérico. */
+export function mensajeDeError(e: unknown, respaldo: string): string {
+  return e instanceof ApiError && e.detail ? e.detail : respaldo;
+}
+
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
+  if (!res.ok) throw await errorDeRespuesta(res, path);
   return res.json() as Promise<T>;
 }
 
@@ -60,7 +93,7 @@ async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
     cache: "no-store",
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: ${path}`);
+    throw await errorDeRespuesta(res, path);
   }
   return res.json() as Promise<T>;
 }

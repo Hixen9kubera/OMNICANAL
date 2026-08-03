@@ -247,6 +247,29 @@ def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
     return {r["meta_key"]: r["meta_value"] for r in rows}
 
 
+def sku_padre(sku: str) -> str:
+    """
+    SKU del producto PADRE de una variación, resuelto por la ESTRUCTURA de
+    WooCommerce (`post_parent`), no por el nombre del SKU: `CAM-0030-IND` →
+    `CAM-0030`. Devuelve "" si el SKU no es una variación o no se encuentra.
+    """
+    if not sku or not disponible():
+        return ""
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT padre.meta_value AS sku_padre
+              FROM {P}postmeta hijo
+              JOIN {P}posts    v     ON v.ID = hijo.post_id
+                                    AND v.post_type = 'product_variation'
+              JOIN {P}postmeta padre ON padre.post_id = v.post_parent
+                                    AND padre.meta_key = '_sku'
+             WHERE hijo.meta_key = '_sku' AND hijo.meta_value = %s
+             LIMIT 1""",
+        (sku,),
+    )
+    return str(rows[0]["sku_padre"]) if rows and rows[0].get("sku_padre") else ""
+
+
 def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     """
     Precio activo, precio regular, precio oferta y costo — leídos DIRECTO de

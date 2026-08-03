@@ -3388,6 +3388,45 @@ Versión 0.49.1.
 
 ---
 
+### v0.49.2 — Fix: las variantes heredan la categoría ML del padre (y el error dice qué falta)
+
+Reporte de Eduardo (3-ago): el Estudio contesta *"No se pudo guardar el costo"*
+en los colchones. En los logs, tres intentos con **422** sobre
+`POST /api/crear/costos/CAM-0030-IND/recalcular`.
+
+**Causa.** Para guardar un costo hay que calcular el precio, para eso hace falta
+la comisión de ML, y la comisión sale de la **categoría** del SKU. `costos.
+_resolver_cat_ml` la buscaba en dos lugares (`categorias_ml` y la postmeta de Woo
+vía la tabla `productos`) y ninguno tiene a las variantes de este colchón —
+`productos` no tiene ni una. Sin categoría no hay comisión, `computar` devuelve
+None y el endpoint corta con 422 **antes de escribir nada**. Por eso el padre y
+`-MAT` sí guardaban (traen la categoría en su fila de `costos_finales`) y `-EST`
+también (está en `categorias_ml`), pero `-IND` y `-QUE` no.
+
+**Arreglo 1 — herencia por la estructura de Woo.** `_resolver_cat_ml` gana un
+tercer origen, el mapa `channel.product_category` de la BD kubera (el mismo que
+agrupa el panel de Análisis, donde el padre CAM-0030 tiene `MLM121837` con
+`source='panel'`, o sea elección humana → regla de la casa 2). Y cuando el SKU
+no tiene categoría propia, hereda la del PADRE: las variantes de un producto
+viven en la misma categoría de ML. El padre se resuelve con el nuevo
+`wp_db.sku_padre()`, por `post_parent` de WooCommerce — no por el nombre del SKU,
+que sería una heurística sobre la convención de nombres.
+
+**Arreglo 2 — el error deja de ser mudo.** El backend ya explicaba qué faltaba
+(*"…ingresa la Comisión ML (%)"*), pero `postJSON`/`getJSON` lanzaban
+`Error("API 422: …")` y los editores hacían `catch {}` con un texto fijo. Ahora
+lanzan `ApiError` con el `detail` de FastAPI y los cuatro `catch` de costos lo
+pintan vía `mensajeDeError(e, respaldo)`. `Error.message` no cambia, así que
+ninguna otra vista se ve afectada.
+
+**Verificado contra producción** (con `/preview`, que no escribe): antes
+`CAM-0030-IND` + costo → 422; ahora resuelve `MLM121837` heredada, comisión 17%
+y precio sugerido \$3,460.77; `-QUE` igual con \$3,909.67. Y en el navegador, un
+SKU sin costo ahora muestra el texto del backend en vez del genérico.
+Versión 0.49.2.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

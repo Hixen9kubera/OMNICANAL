@@ -54,6 +54,7 @@ import {
   guardarContenido,
   guardarGtin,
   mejorarIA,
+  mensajeDeError,
   precioCompetencia,
   procesarImagenesIA,
   progresoImagenes,
@@ -630,8 +631,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       setCostoFresco(true);
       sincronizarCampos(r.calculo);
       reflejarComision(r.calculo);
-    } catch {
-      setCostoMsg({ ok: false, texto: "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría." });
+    } catch (e) {
+      setCostoMsg({ ok: false, texto: mensajeDeError(e, "No se pudo calcular: revisa el costo, o ingresa la Comisión ML (%) — no se encontró la de la categoría.") });
     } finally {
       setRegenerando(false);
     }
@@ -723,8 +724,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
           : "Guardado en la base de datos.",
       });
       onGuardado?.();
-    } catch {
-      setCostoMsg({ ok: false, texto: "No se pudo guardar el costo." });
+    } catch (e) {
+      setCostoMsg({ ok: false, texto: mensajeDeError(e, "No se pudo guardar el costo.") });
     } finally {
       setGuardandoCosto(false);
     }
