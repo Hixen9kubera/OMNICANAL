@@ -599,6 +599,23 @@ async def _categoria_ml_meta(cat_id: str) -> list[dict]:
         return [{"key": "ml_category_id", "value": cat_id}]
 
 
+def _tiene_costo_propio(variacion: dict) -> bool:
+    """
+    ¿Esta variación tiene su PROPIO costo capturado en Woo (meta `costo` > 0)?
+
+    Es la misma señal que pinta la tabla de variantes desde v0.49.1: la que lo
+    tiene muestra el suyo, la que no hereda el del padre. Aquí decide a quién
+    NO pisarle el precio cuando se recostea el padre.
+    """
+    for m in (variacion.get("meta_data") or []):
+        if m.get("key") == "costo":
+            try:
+                return float(m.get("value")) > 0
+            except (TypeError, ValueError):
+                return False
+    return False
+
+
 async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     """Escribe a WooCommerce precio regular/oferta + costo + peso/dimensiones + categoría ML."""
     p = await woocommerce.obtener_producto_por_sku(sku)
@@ -641,24 +658,36 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
         r = await cli.put(ruta, json=payload, timeout=120.0)
         r.raise_for_status()
 
-        # Padre variable (ej. mismo producto en varios colores): WooCommerce
-        # muestra en las listas el precio de las VARIANTES, no el del padre —
-        # así que sin esto, un padre recién costeado sigue mostrando el precio
-        # placeholder de sus variantes. Se replica el MISMO costo/precio a todas
-        # (misma pieza física, solo cambia color/talla).
+        # Padre variable: WooCommerce muestra en las listas el precio de las
+        # VARIANTES, no el del padre — así que sin esto, un padre recién costeado
+        # sigue mostrando el precio placeholder de sus variantes.
+        #
+        # Pero la réplica es SOLO para las variantes SIN costo propio. El supuesto
+        # viejo ("todas son la misma pieza física, solo cambia color/talla") es
+        # cierto para color o estampado y falso para tallas: un colchón individual
+        # y uno queen cuestan distinto. Replicar a todas borraba el precio por
+        # talla que alguien acababa de capturar — el costo se guardaba y al
+        # siguiente guardado del padre se perdía.
         if (p or {}).get("tipo") == "variable":
             try:
                 rv = await cli.get(f"/products/{wc_id}/variations",
-                                    params={"per_page": 100, "_fields": "id"})
+                                    params={"per_page": 100, "_fields": "id,sku,meta_data"})
                 if rv.status_code == 200:
-                    ids = [v["id"] for v in rv.json()]
-                    if ids:
+                    variantes = rv.json()
+                    sin_costo = [v for v in variantes if not _tiene_costo_propio(v)]
+                    respetadas = [v.get("sku") for v in variantes
+                                  if _tiene_costo_propio(v)]
+                    if respetadas:
+                        log.info("Sync Woo de %s: %d variante(s) conservan su precio "
+                                 "por tener costo propio (%s)",
+                                 sku, len(respetadas), ", ".join(map(str, respetadas)))
+                    if sin_costo:
                         await cli.post(
                             f"/products/{wc_id}/variations/batch",
                             json={"update": [
-                                {"id": vid, "regular_price": payload["regular_price"],
+                                {"id": v["id"], "regular_price": payload["regular_price"],
                                  "sale_price": payload["sale_price"]}
-                                for vid in ids
+                                for v in sin_costo
                             ]},
                             timeout=120.0,
                         )

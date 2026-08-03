@@ -3552,6 +3552,44 @@ de lista viene por otro camino de SP-API, sin verificar. Versión 0.50.0.
 
 ---
 
+### v0.50.1 — Fix: recostear el padre ya no borra el precio de las variantes que tienen costo propio
+
+Última pieza del caso de los colchones. Al guardar el costo de un padre variable,
+`_sync_woo_costo` replicaba su precio a **todas** sus variantes:
+
+```python
+# Se replica el MISMO costo/precio a todas
+# (misma pieza física, solo cambia color/talla).
+```
+
+Ese supuesto es cierto para color o estampado y **falso para tallas**. La
+consecuencia era silenciosa y cara: alguien capturaba el costo de individual y
+de matrimonial, quedaban bien… y el siguiente guardado del padre aplanaba las
+cuatro al precio del padre. El trabajo se perdía sin ningún aviso.
+
+**Ahora la réplica es solo para las variantes SIN costo propio.** Nuevo
+`_tiene_costo_propio(variacion)`, que usa la misma señal que pinta la tabla desde
+v0.49.1 —la meta `costo` de la variación en Woo— así que lo que se ve en pantalla
+y lo que decide la escritura no pueden divergir. Las variantes respetadas se
+registran en el log por SKU, para que la omisión sea auditable y no un silencio.
+
+**Verificado contra producción** re-sincronizando el padre CAM-0030 con su costo
+actual (2,674.71 → regular 7,755.92 / oferta 6,514.97, o sea sin cambiar ningún
+valor): `-IND` conservó 4,119.96 / 3,460.77 y `-MAT` 7,721.07 / 6,485.70, ambas
+con su `date_modified` intacto; `-EST` y `-QUE`, que no tienen costo propio,
+siguen heredando el del padre. Partición confirmada sobre el payload real:
+
+```
+CONSERVAN su precio (costo propio): CAM-0030-IND, CAM-0030-MAT
+reciben el del padre (sin costo)  : CAM-0030-EST, CAM-0030-QUE
+```
+
+Con esto cierra el hilo completo: v0.49.1 hizo visible el costo por variante,
+v0.49.2 permitió calcularlo, v0.49.4 permitió guardarlo, y v0.50.1 evita que se
+pierda. Versión 0.50.1.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
