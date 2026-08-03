@@ -19,6 +19,7 @@ import {
   Calculator,
   Database,
   Tags,
+  Trophy,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -69,6 +70,7 @@ const ITEMS: NavItem[] = [
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
+  { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia" },
   { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard" },
   { id: "migracion", label: "Migración", icon: Database, href: "/migracion" },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },

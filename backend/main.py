@@ -22,8 +22,9 @@ from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
-from routers import (auth, canales, crear, fanout, fulfillment, ia, imagenes,
-                     migracion, productos, publicar, sync, ventas, webhooks)
+from routers import (auth, canales, competencia, crear, fanout, fulfillment, ia,
+                     imagenes, migracion, productos, publicar, sync, ventas,
+                     webhooks)
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -117,6 +118,7 @@ app.include_router(productos.router)
 app.include_router(imagenes.router)
 app.include_router(crear.router)
 app.include_router(canales.router)
+app.include_router(competencia.router)
 app.include_router(sync.router)
 app.include_router(webhooks.router)
 app.include_router(ventas.router)

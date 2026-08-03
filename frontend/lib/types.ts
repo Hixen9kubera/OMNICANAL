@@ -595,3 +595,135 @@ export interface VentasResumen {
   pedidos_wc?: PedidosWCResumen | null;
   actualizado: string;
 }
+
+// ── Competencia (Mercado Libre) ───────────────────────────────────────
+// Tres mediciones por SKU, que son las tres preguntas del tab:
+//   'general'   → ¿dónde estoy en la búsqueda genérica? (descubrimiento)
+//   'titulo'    → ¿dónde estoy contra mi competencia directa?
+//   'categoria' → ¿quiénes son los mejores de mi categoría? (ranking oficial)
+//
+// Límites reales, que la UI debe mostrar en vez de esconder:
+//   • `descripcion` es la CORTA derivada de atributos ("Largo: 4 m | Ancho: 6 m").
+//     ML no expone el texto largo de publicaciones ajenas.
+//   • `visitas_30d` viene de la API de ML y sí funciona para items ajenos.
+//   • `vendidos` viene del scraper: la API no da sold_quantity de terceros.
+//   • No hay histórico: cada corrida borra la anterior.
+
+export type TipoCompetencia = "general" | "titulo" | "categoria";
+
+export interface CompetenciaSku {
+  sku: string;
+  nombre: string;
+  categoria_id: string | null;
+  categoria_nombre: string | null;
+  ml_item_id: string | null;
+  cuenta: string | null;
+  termino_general: string | null;
+  termino_origen: "ia" | "manual";
+  activo: boolean;
+}
+
+export interface CompetenciaResultado {
+  id: string;
+  sku: string;
+  tipo: TipoCompetencia;
+  termino: string | null;
+  periodo: string;
+  posicion: number | null;
+  externo_id: string;
+  titulo: string | null;
+  descripcion: string | null;
+  precio: number | null;
+  moneda: string;
+  imagen: string | null;
+  url: string | null;
+  seller: string | null;
+  marca: string | null;
+  categoria_id: string | null;
+  categoria_nombre: string | null;
+  visitas_30d: number | null;
+  vendidos: number | null;
+  reviews: number | null;
+  rating: number | null;
+  envio_gratis: boolean | null;
+  es_full: boolean | null;
+  es_nuestro: boolean;
+  sku_nuestro: string | null;
+}
+
+export interface CompetenciaPosicion {
+  sku: string;
+  tipo: TipoCompetencia;
+  termino: string | null;
+  periodo: string;
+  total_resultados: number;
+  mi_posicion: number | null;
+  mi_precio: number | null;
+  mis_visitas_30d: number | null;
+  precio_mediana_rivales: number | null;
+  visitas_max_rival: number | null;
+}
+
+/** Una fila de la vista por categoría: un SKU con mis posiciones en las 3 mediciones. */
+export interface CompetenciaFilaSku {
+  categoria_id: string | null;
+  categoria_nombre: string | null;
+  sku: string;
+  nombre: string;
+  termino_general: string | null;
+  termino_origen: "ia" | "manual";
+  ml_item_id: string | null;
+  cuenta: string | null;
+  pos_general: number | null;
+  total_general: number | null;
+  visitas_general: number | null;
+  mediana_general: number | null;
+  pos_titulo: number | null;
+  total_titulo: number | null;
+  mediana_titulo: number | null;
+  pos_categoria: number | null;
+  total_categoria: number | null;
+  mi_precio: number | null;
+  periodo: string | null;
+}
+
+export interface CompetenciaCategoriaGrupo {
+  categoria_id: string | null;
+  categoria_nombre: string;
+  skus: CompetenciaFilaSku[];
+}
+
+export interface CompetenciaCorrida {
+  id: string;
+  periodo: string;
+  origen: "cron" | "manual";
+  estado: "corriendo" | "listo" | "error";
+  skus_medidos: number;
+  resultados: number;
+  visitas_ok: number;
+  costo_apify_usd: number | null;
+  error: string | null;
+  avisos: string[];
+  creado_en: string;
+  terminado_en: string | null;
+}
+
+export interface CompetenciaTabla {
+  categorias: CompetenciaCategoriaGrupo[];
+  corrida: CompetenciaCorrida | null;
+}
+
+export interface CompetenciaDetalle {
+  sku: string;
+  posiciones: CompetenciaPosicion[];
+  resultados: Partial<Record<TipoCompetencia, CompetenciaResultado[]>>;
+}
+
+export interface CompetenciaEstado {
+  supabase: boolean;
+  scraper_apify: boolean;
+  top_por_busqueda: number;
+  con_detalle: boolean;
+  costo_por_busqueda_usd: number;
+  limites: Record<string, string>;
+}

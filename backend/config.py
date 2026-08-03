@@ -88,6 +88,19 @@ class Settings(BaseSettings):
     apify_api_key: str = ""
     apify_alibaba_actor: str = "happitap~alibaba-product-scraper"
 
+    # ── Competencia (Mercado Libre) ───────────────────────────
+    # La API de ML da las VISITAS de cualquier publicación pero NO la ficha
+    # (título/imagen/precio/descripción/posición) de las ajenas: /items/{id}
+    # responde 403 y /sites/MLM/search también. Esa parte la trae este actor.
+    apify_ml_actor: str = "piotrv1001~mercado-libre-listings-scraper"
+    # ML sirve un interstitial de "tráfico sospechoso" a IPs de datacenter, así
+    # que el scraping va por proxy residencial mexicano (igual que Alibaba).
+    apify_proxy_pais: str = "MX"
+    # Resultados por búsqueda. Con detalle son $0.025/item (trae descripción y
+    # unidades vendidas); sin detalle $0.003 pero sin esos dos campos.
+    competencia_top: int = 25
+    competencia_con_detalle: bool = True
+
     # ── Base de datos MySQL (cache híbrido) ───────────────────
     db_host: str = ""
     db_port: int = 3306

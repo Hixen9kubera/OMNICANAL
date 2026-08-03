@@ -2,6 +2,11 @@
 
 import type {
   CanalInfo,
+  CompetenciaCorrida,
+  CompetenciaDetalle,
+  CompetenciaEstado,
+  CompetenciaSku,
+  CompetenciaTabla,
   CompetenciaResp,
   CategoriaMLResult,
   ContenedorInfo,
@@ -599,4 +604,62 @@ export function guardarTipoAmazon(
   return postJSON(`/api/publicar/amazon/tipo`, {
     sku, wc_id: wcId, product_type: productType,
   });
+}
+
+// ── Competencia (Mercado Libre) ──────────────────────────────────────
+// Los GET leen la foto guardada del mes. La corrida real la dispara un cron
+// mensual de Railway (backend/railway.competencia.json); correrCompetencia()
+// existe para probar a mano y gasta Apify.
+
+export function estadoCompetencia(signal?: AbortSignal) {
+  return getJSON<CompetenciaEstado>("/api/competencia/estado", signal);
+}
+
+export function tablaCompetencia(signal?: AbortSignal) {
+  return getJSON<CompetenciaTabla>("/api/competencia/tabla", signal);
+}
+
+export function detalleCompetencia(sku: string, tipo?: string, signal?: AbortSignal) {
+  const q = tipo ? `&tipo=${tipo}` : "";
+  return getJSON<CompetenciaDetalle>(
+    `/api/competencia/detalle?sku=${encodeURIComponent(sku)}${q}`,
+    signal,
+  );
+}
+
+export function skusCompetencia(signal?: AbortSignal) {
+  return getJSON<{ skus: CompetenciaSku[] }>("/api/competencia/skus", signal);
+}
+
+export function sembrarCompetencia(skus: string[], con_ia = true) {
+  return postJSON<{
+    ok: boolean;
+    guardados: number;
+    sin_registro_en_productos: string[];
+    sin_publicacion_ml: string[];
+    sin_termino_general: string[];
+  }>("/api/competencia/sembrar", { skus, con_ia });
+}
+
+/** Corrige el término general a mano; queda 'manual' y la IA no lo vuelve a pisar. */
+export async function corregirTerminoCompetencia(sku: string, termino_general: string) {
+  const res = await fetch(`${BASE}/api/competencia/skus/${encodeURIComponent(sku)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ termino_general }),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}: corregir término`);
+  return (await res.json()) as { ok: boolean; sku: string; termino_general: string };
+}
+
+export function correrCompetencia(skus?: string) {
+  const q = skus ? `?skus=${encodeURIComponent(skus)}` : "";
+  return postJSON<{ ok: boolean; estado: string }>(`/api/competencia/correr${q}`, {});
+}
+
+export function corridaCompetencia(signal?: AbortSignal) {
+  return getJSON<{
+    ultima: CompetenciaCorrida | null;
+    en_curso: { estado: string; error?: string | null; resultado?: unknown };
+  }>("/api/competencia/corrida", signal);
 }
