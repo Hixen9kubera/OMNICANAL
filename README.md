@@ -3462,6 +3462,49 @@ sigue disparando y cayendo a MySQL como antes. Versión 0.49.3.
 
 ---
 
+### v0.49.4 — Fix: guardar el costo de una VARIANTE reventaba con 500 (y el número tecleado se perdía en silencio)
+
+Con la categoría ya heredada (v0.49.2), el guardado de los colchones dejó de dar
+422 y pasó a dar **500**. La traza de producción del 3-ago 18:55:
+
+```
+crear.py:673 costos_recalcular → crear.py:631 _sync_woo_costo → r.raise_for_status()
+httpx.HTTPStatusError: 404 Not Found for '…/wc/v3/products/104743'
+```
+
+**Bug 1 — la variación no se actualiza por `/products/{id}`.** `104743` es
+`CAM-0030-MAT`, una variación. Ese endpoint la deja **LEER** (GET 200) pero
+rechaza el PUT con 404; el update va a `/products/{padre}/variations/{id}`. Y
+como el 404 subía sin capturar, tumbaba la petición entera **después** de haber
+escrito `costos_validados` + `costos_finales`: el usuario veía "no se pudo
+guardar" con el dato ya guardado, y reintentaba. Ahora
+`obtener_producto_por_sku` trae `parent_id`, `_sync_woo_costo` arma la ruta
+según el tipo, y un fallo de Woo ya no es 500: el endpoint responde
+`sincronizado_woo:false` + `sync_error`, deja alerta en Slack, y la pantalla
+dice *"Costo guardado en la base, pero WooCommerce NO se actualizó: …"* en vez
+de mentir en cualquiera de las dos direcciones.
+
+**Bug 2 — el costo tecleado no viajaba.** Las dos bitácoras del caso (24-jul id
+182 y 3-ago id 208) llegaron con `overrides: {ml_cat_id, pct_comision}` y **sin
+`costo_producto`**, aunque la persona escribió la cifra. La causa es el parseo:
+
+```ts
+const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
+```
+
+`Number("1,625.84")` es `NaN`, y `NaN || null` es `null` → el campo se enviaba
+vacío, el backend recalculaba con el costo viejo y la pantalla decía "guardado".
+Escribir la cifra como se escribe en español bastaba para perderla. Nuevo
+`lib/numeros.ts::aNumero()`, tolerante a separador de millar, símbolo de moneda,
+espacios y coma decimal — y que ya no confunde `0` con vacío (`Number("0") ||
+null` daba null). Lo usan los dos editores para costo, dims, peso, tipo de
+cambio, margen y comisión. 12 casos probados: `1,625.84` · `$1,842.86` ·
+`1 625.84` · `1625,84` · `1,625` · `1,5` · `0` · `""` · `abc` → todos correctos.
+
+Versión 0.49.4.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

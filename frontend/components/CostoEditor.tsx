@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { costoDetalle, costoPreview, costoGuardar, mensajeDeError } from "@/lib/api";
+import { aNumero } from "@/lib/numeros";
 import type { CostoCalculo, CostoOverrides, CostoRow } from "@/lib/types";
 
 const COLOR = "#4F46E5";
@@ -22,7 +23,7 @@ function precioMXN(v: number | null | undefined): string {
   return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(v);
 }
 
-const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
+const numOrNull = (v: string) => aNumero(v);
 // costo_producto guardado en MXN → mostrar en USD (÷ TC).
 const mxnToUsd = (v: number | null | undefined, tc: number) =>
   v == null ? "" : String(Math.round((v / (tc || DEFAULT_TC)) * 100) / 100);
@@ -109,7 +110,7 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
   // costo_producto (USD) → MXN con el tipo de cambio.
   const costoProductoMXN = (): number | null => {
     const usd = numOrNull(costoProducto);
-    const tc = Number(tipoCambio) || 0;
+    const tc = aNumero(tipoCambio) ?? 0;
     return usd != null && tc > 0 ? Math.round(usd * tc * 100) / 100 : usd;
   };
 
@@ -119,11 +120,11 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
     ancho: numOrNull(ancho),
     alto: numOrNull(alto),
     peso: numOrNull(peso),
-    margen: (Number(margen) || 0) / 100,
+    margen: (aNumero(margen) ?? 0) / 100,
     incluir_envio: incluirEnvio,
     auto_cbm: true,
     ml_cat_id: catMlId || null,
-    pct_comision: comision.trim() ? (Number(comision) || 0) / 100 : null,
+    pct_comision: comision.trim() ? (aNumero(comision) ?? 0) / 100 : null,
   });
 
   const reflejarComision = (c: Partial<CostoCalculo>) => {
@@ -167,7 +168,9 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         ok: true,
         texto: r.sincronizado_woo
           ? "Guardado y sincronizado con WooCommerce."
-          : "Guardado en la base de datos.",
+          : r.sync_error
+            ? `Costo guardado en la base, pero WooCommerce NO se actualizó: ${r.sync_error}`
+            : "Guardado en la base de datos.",
       });
       onGuardado?.();
     } catch (e) {
@@ -205,8 +208,8 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
         <div>
           <Campo label="Costo producto (USD)" prefijo="$" value={costoProducto} onChange={setCostoProducto} />
           {(() => {
-            const usd = Number(costoProducto) || 0;
-            const tc = Number(tipoCambio) || 0;
+            const usd = aNumero(costoProducto) ?? 0;
+            const tc = aNumero(tipoCambio) ?? 0;
             return usd > 0 && tc > 0
               ? <p className="mt-1 text-[10px] text-slate-400">≈ {precioMXN(Math.round(usd * tc * 100) / 100)} MXN</p>
               : null;

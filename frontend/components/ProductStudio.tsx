@@ -63,6 +63,7 @@ import {
   studioMetadata,
   type ProductoIA,
 } from "@/lib/api";
+import { aNumero } from "@/lib/numeros";
 import CategoriaMLPicker from "./CategoriaMLPicker";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
@@ -572,13 +573,13 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const accionLabel =
     (esML && mlPublicado) || (esAmazon && amazonPublicado) ? "Actualizar en" : "Publicar a";
 
-  const numOrNull = (v: string) => (v.trim() ? Number(v) || null : null);
+  const numOrNull = (v: string) => aNumero(v);
 
   // ── COSTOS: regenerar (preview) / guardar (persistir + Woo) ─────────
   // costo_producto (USD) → MXN con el tipo de cambio antes de enviar.
   const costoProductoMXN = (): number | null => {
     const usd = numOrNull(costoProducto);
-    const tc = Number(tipoCambio) || 0;
+    const tc = aNumero(tipoCambio) ?? 0;
     return usd != null && tc > 0 ? Math.round(usd * tc * 100) / 100 : usd;
   };
 
@@ -588,14 +589,14 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     ancho: numOrNull(campos.ancho),
     alto: numOrNull(campos.alto),
     peso: numOrNull(campos.peso),
-    margen: (Number(margen) || 0) / 100,
+    margen: (aNumero(margen) ?? 0) / 100,
     incluir_envio: incluirEnvio,
     auto_cbm: true,
     // Categoría ML editable (default del postmeta). El cálculo la necesita
     // (en costos_finales puede no existir aún, ej. draft).
     ml_cat_id: catMlId || meta?.categoria_ml?.category_id || null,
     // Comisión ML manual (%). Vacío = la resuelve el backend (ML o fallback).
-    pct_comision: comision.trim() ? (Number(comision) || 0) / 100 : null,
+    pct_comision: comision.trim() ? (aNumero(comision) ?? 0) / 100 : null,
   });
 
   // Tras calcular, refleja la comisión usada en el campo (si estaba vacío).
@@ -721,7 +722,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         ok: true,
         texto: r.sincronizado_woo
           ? "Guardado y sincronizado con WooCommerce."
-          : "Guardado en la base de datos.",
+          : r.sync_error
+            ? `Costo guardado en la base, pero WooCommerce NO se actualizó: ${r.sync_error}`
+            : "Guardado en la base de datos.",
       });
       onGuardado?.();
     } catch (e) {
@@ -1517,8 +1520,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   <div>
                     <Campo label="Costo producto (USD)" prefijo="$" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
                     {(() => {
-                      const usd = Number(costoProducto) || 0;
-                      const tc = Number(tipoCambio) || 0;
+                      const usd = aNumero(costoProducto) ?? 0;
+                      const tc = aNumero(tipoCambio) ?? 0;
                       return usd > 0 && tc > 0
                         ? <p className="mt-1 text-[10px] text-slate-400">≈ {precioMXN(Math.round(usd * tc * 100) / 100)} MXN</p>
                         : null;

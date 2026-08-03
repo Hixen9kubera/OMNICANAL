@@ -626,8 +626,19 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
             "width": f"{float(fila['ancho']):.2f}",
             "height": f"{float(fila['alto']):.2f}",
         }
+    # Una VARIACIÓN no se actualiza por /products/{id} — ese endpoint la deja
+    # LEER (GET 200) pero rechaza el PUT con 404, y el 404 tumbaba la petición
+    # entera con un 500 DESPUÉS de haber escrito el costo en la base: el usuario
+    # veía "no se pudo guardar" con el dato ya guardado. El update de una
+    # variación va a /products/{padre}/variations/{id}.
+    es_variacion = (p or {}).get("tipo") == "variation"
+    padre_id = (p or {}).get("padre_id")
+    if es_variacion and not padre_id:
+        log.warning("Sync Woo de %s: es variación pero sin padre_id — se omite", sku)
+        return False
+    ruta = f"/products/{padre_id}/variations/{wc_id}" if es_variacion else f"/products/{wc_id}"
     async with woocommerce._client() as cli:
-        r = await cli.put(f"/products/{wc_id}", json=payload, timeout=120.0)
+        r = await cli.put(ruta, json=payload, timeout=120.0)
         r.raise_for_status()
 
         # Padre variable (ej. mismo producto en varios colores): WooCommerce
@@ -670,8 +681,23 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
     if not fila:
         raise HTTPException(
             422, "No se pudo recalcular: falta el costo (costo producto/dimensiones), o no hay comisión para la categoría — ingresa la Comisión ML (%).")
-    synced = await _sync_woo_costo(sku, fila) if req.sincronizar_woo else False
-    return {"ok": True, "sku": sku, "finales": fila, "sincronizado_woo": synced}
+    # El costo YA está en la base. Si el empuje a Woo falla, se reporta — pero no
+    # se convierte en un 500 que haga creer que no se guardó nada (pasó el 3-ago
+    # con CAM-0030-MAT: 404 de Woo → 500 → "no se pudo guardar" con el dato ya
+    # escrito, y el usuario reintentando).
+    synced, sync_error = False, None
+    if req.sincronizar_woo:
+        try:
+            synced = await _sync_woo_costo(sku, fila)
+        except Exception as exc:  # noqa: BLE001
+            sync_error = f"{type(exc).__name__}: {exc}"[:200]
+            alertas.avisar(f"sync_woo_costo:{sku}",
+                           f"⚠️ Costo de `{sku}` guardado en la base, pero WooCommerce "
+                           f"no se actualizó: {sync_error}")
+            log.warning("Sync Woo del costo de %s falló (el costo SÍ se guardó): %s",
+                        sku, exc)
+    return {"ok": True, "sku": sku, "finales": fila,
+            "sincronizado_woo": synced, "sync_error": sync_error}
 
 
 # ── Costos: listado (tabla del menú Costos) + regeneración en bulk ──────────────

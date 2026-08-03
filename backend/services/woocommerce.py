@@ -1578,7 +1578,10 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
     variantes: list[dict[str, Any]] = []
     try:
         async with _client() as cli:
-            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,type,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
+            # `parent_id` viaja porque este endpoint TAMBIÉN devuelve variaciones
+            # (type='variation') y quien las quiera ESCRIBIR necesita al padre:
+            # el update va a /products/{padre}/variations/{id}, no a /products/{id}.
+            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,type,parent_id,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
             r.raise_for_status()
             data = r.json()
             # STOCK DE PADRE VARIABLE (auditoría 29-jul). En WooCommerce un
@@ -1602,6 +1605,7 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
         "sku": p.get("sku") or f"WC-{p.get('id')}",
         "wc_id": p.get("id"),
         "tipo": p.get("type"),
+        "padre_id": p.get("parent_id") or None,  # solo en type='variation'
         "nombre": p.get("name", ""),
         "imagen": imgs[0] if imgs else None,
         "imagenes": imgs,

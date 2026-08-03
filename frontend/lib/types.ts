@@ -307,6 +307,8 @@ export interface CostoGuardarResp {
   sku: string;
   finales: Record<string, unknown>;
   sincronizado_woo: boolean;
+  // Motivo por el que Woo no se actualizó, cuando el costo SÍ quedó guardado.
+  sync_error?: string | null;
 }
 
 export interface CostoRow {
