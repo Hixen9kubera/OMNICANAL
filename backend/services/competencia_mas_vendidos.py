@@ -247,7 +247,7 @@ def _navegador(visible: bool = False):
 
 def _bloqueado(html: str, url: str = "") -> bool:
     """
-    ¿ML nos frenó? Son CUATRO formas distintas, y hay que reconocer las cuatro o el
+    ¿ML nos frenó? Son CINCO formas distintas, y hay que reconocer las cinco o el
     módulo miente:
 
       1. `suspicious-traffic-frontend` — el interstitial que sirve a IPs de datacenter.
@@ -268,13 +268,23 @@ def _bloqueado(html: str, url: str = "") -> bool:
          Turbo). Confundirlas hace que el módulo diga "ML no publica ranking de
          esta categoría" cuando la verdad es "a nosotros no nos deja entrar", y
          son acciones opuestas: una es no reintentar, la otra es cambiar de red.
+
+      5. **MURO DE LOGIN** — "¡Hola! Para continuar, ingresa a tu cuenta", con los
+         botones "Soy nuevo" / "Ya tengo cuenta". Vive en `/jms/mlm/lgz/login` o
+         `/gz/login`. Apareció el 4-ago a mitad de una corrida de búsquedas: ML
+         empieza pidiendo sesión tras N consultas seguidas. Sin reconocerlo, el
+         raspador lo lee como "página sin tarjetas" y reporta "sin resultados",
+         que es falso y además hace que siga insistiendo — cada intento abre otra
+         ventana pidiendo login.
     """
-    if "/captcha/wall" in (url or ""):
+    u = url or ""
+    if "/captcha/wall" in u or "/lgz/login" in u or "/gz/login" in u:
         return True
     return ("suspicious-traffic" in html
             or "account-verification" in html
             or "captcha/wall" in html
-            or "not-found-page" in html)
+            or "not-found-page" in html
+            or "Para continuar, ingresa a tu cuenta" in html)
 
 
 def _esperar_tarjetas(d) -> str:
