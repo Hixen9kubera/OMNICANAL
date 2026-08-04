@@ -89,9 +89,9 @@ async def main() -> int:
             msg += f" · sin_categoria={len(r['sin_categoria'])}"
         if not args.solo_sembrar:
             v = await competencia_captura.refrescar_visitas_propias(tanda)
-            visitas_ok += v.get("visitas_ok") or 0
+            visitas_ok += v.get("con_visitas") or 0
             msg += (f" · pubs={v.get('publicaciones')}"
-                    f" · visitas={v.get('visitas_ok')}"
+                    f" · visitas={v.get('con_visitas')}"
                     f" · unidades={v.get('fuente_unidades')}")
         print(f"{msg} · {time.time() - t0:.0f}s", flush=True)
 

@@ -1036,7 +1036,7 @@ function FilaNicho({ n }: { n: CompetenciaNicho }) {
           <span className="w-3.5 shrink-0" />
         )}
         <Medalla pos={n.posicion} />
-        <Foto src={n.lider.imagen} alt={n.categoria_nombre} size={44} />
+        <Foto src={n.lider.imagen ?? null} alt={n.categoria_nombre} size={44} />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-slate-900">
             {n.categoria_nombre}
@@ -1050,7 +1050,15 @@ function FilaNicho({ n }: { n: CompetenciaNicho }) {
             ) : null}
           </div>
           <div className="truncate text-[11px] text-slate-500">
-            líder: {n.lider.titulo ?? n.lider.externo_id}
+            {n.lider.titulo ? (
+              <>líder: {n.lider.titulo}</>
+            ) : (
+              /* La posición y la categoría son API; el título y la foto del líder
+                 solo salen del raspado. Decirlo es mejor que dejar la línea vacía. */
+              <span className="text-slate-400">
+                líder sin ficha — falta raspar esta categoría
+              </span>
+            )}
           </div>
         </div>
         <div className="text-right text-[11px] tabular-nums text-slate-600">

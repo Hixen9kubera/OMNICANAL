@@ -822,7 +822,9 @@ export interface CompetenciaNicho {
   posicion: number | null;
   /** Otras posiciones del top que caen en el mismo nicho (#5 y #6 se agrupan). */
   otras_posiciones: number[];
-  lider: RankingCategoria;
+  /** Ficha del líder. Puede venir SIN título ni foto: la posición y la categoría
+   *  son API, pero el título/foto/precio solo salen del raspado. */
+  lider: Partial<RankingCategoria>;
   /** SKUs nuestros en esa categoría, de todo el catálogo (no solo los vigilados). */
   n_catalogo: number;
   skus_catalogo: string[];

@@ -41,6 +41,16 @@ log = logging.getLogger("omnicanal.competencia.captura")
 # costo en tiempo de la corrida.
 TOPE_VISITAS = 25
 
+# Caché del barrido de pedidos de la API de ML, por proceso. Es account-wide: la
+# misma foto sirve para cualquier item de la corrida. None = todavía no se corrió.
+_barrido_unidades: dict[str, int] | None = None
+
+
+def limpiar_cache_unidades() -> None:
+    """Fuerza un barrido nuevo. Para corridas largas que quieran refrescar."""
+    global _barrido_unidades
+    _barrido_unidades = None
+
 
 # ── Nuestras publicaciones, para saber "dónde estoy" ────────────────────────
 
@@ -125,12 +135,21 @@ def _unidades_por_item(item_ids: list[str]) -> tuple[dict[str, int], str]:
         except Exception as exc:  # noqa: BLE001
             log.warning("Unidades desde Supabase fallaron, caigo a la API: %s", exc)
 
-    barrido: dict[str, int] = {}
-    for tok, _ in CUENTAS:
-        try:
-            barrido.update(competencia_ml.unidades_vendidas_30d(tok))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Unidades de %s fallaron: %s", tok, exc)
+    # El barrido cubre la CUENTA COMPLETA, no los item_ids que se piden, así que
+    # su resultado sirve para todas las tandas de la misma corrida. Sin esta caché
+    # se repetía por tanda: ~280 páginas de la API cada vez, y medir 1,581 SKUs por
+    # tandas de 120 se iba en 14 barridos idénticos.
+    global _barrido_unidades
+    if _barrido_unidades is None:
+        barrido: dict[str, int] = {}
+        for tok, _ in CUENTAS:
+            try:
+                barrido.update(competencia_ml.unidades_vendidas_30d(tok))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Unidades de %s fallaron: %s", tok, exc)
+        _barrido_unidades = barrido
+        log.info("Barrido de pedidos: %s items con venta en 30 días", len(barrido))
+    barrido = _barrido_unidades
     if not barrido:
         return {}, "ninguna"
     # El barrido cubrió las cuentas completas, así que un item ausente vendió 0.
@@ -586,27 +605,54 @@ def nichos_del_top(raiz: dict[str, Any], tope: int = 5) -> list[dict[str, Any]]:
     y no hay otra ruta para saber su categoría. Se reporta como hueco, no se omite.
     """
     top = raiz.get("top") or []
-    if not top:
+
+    # Los nichos NO dependen del raspado: posición y categoría son 100% API
+    # (/highlights + /products/{id}/items). El ranking raspado solo aporta la FICHA
+    # del líder (título, foto, precio), y si falta se usa lo que tenga la fila.
+    #
+    # Esto importa: las filas capturadas con el actor de Apify no traen `id_pagina`,
+    # así que el join con /highlights no las alcanzaba y Hogar y Jardín salía con 0
+    # nichos. Resolviendo por API el resultado ya no depende de con qué se raspó.
+    entradas = competencia_ml.mas_vendidos_categoria(raiz.get("raiz_id") or "")
+    if not entradas and not top:
         return []
 
-    # Agrupa por subcategoría conservando la MEJOR posición.
+    # La ficha raspada, indexada por los dos ids posibles para poder pegarla.
+    ficha: dict[str, dict[str, Any]] = {}
+    for f in top:
+        for k in (f.get("id_pagina"), f.get("externo_id")):
+            if k:
+                ficha.setdefault(k, f)
+
     nichos: dict[str, dict[str, Any]] = {}
     sin_categoria: list[dict[str, Any]] = []
-    for fila in sorted(top, key=lambda x: x.get("posicion") or 99):
+    cats: dict[str, str | None] = {}
+    for e in sorted(entradas, key=lambda x: x.get("posicion") or 99):
+        ident, tipo, pos = e.get("id"), e.get("tipo"), e.get("posicion")
+        fila = dict(ficha.get(ident) or {})
+        fila.setdefault("posicion", pos)
         cid = fila.get("item_categoria_id")
+        if not cid and tipo in ("PRODUCT", "USER_PRODUCT"):
+            comp = competencia_ml.competidores_de_producto(ident, 1)
+            cid = (comp[0].get("categoria_id") if comp else None)
         if not cid:
+            # Tipo ITEM: /items de un ajeno es 403 y no hay otra ruta.
             sin_categoria.append(fila)
             continue
+        if cid not in cats:
+            ruta = competencia_ml.ruta_categoria(cid)
+            cats[cid] = ruta[-1]["nombre"] if ruta else None
         if cid not in nichos:
             nichos[cid] = {
                 "categoria_id": cid,
-                "categoria_nombre": fila.get("item_categoria_nombre") or cid,
-                "posicion": fila.get("posicion"),
+                "categoria_nombre": (fila.get("item_categoria_nombre")
+                                     or cats[cid] or cid),
+                "posicion": pos,
                 "lider": fila,
                 "otras_posiciones": [],
             }
         else:
-            nichos[cid]["otras_posiciones"].append(fila.get("posicion"))
+            nichos[cid]["otras_posiciones"].append(pos)
 
     orden = sorted(nichos.values(), key=lambda n: n["posicion"] or 99)[:tope]
     if not orden:
