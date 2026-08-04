@@ -913,6 +913,52 @@ async def capturar_rankings_categorias(periodo: str | None = None) -> dict[str, 
             "terminos": terminos, "avisos": avisos}
 
 
+async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
+    """
+    Visitas de 30 días para los resultados de una búsqueda. → cuántas se llenaron.
+
+    Los ids `MLMU…` son PRODUCTOS DE VENDEDOR, no publicaciones: `/visits` no los
+    acepta. Hay que resolverlos con `/products/{id}/items`, que devuelve el item
+    real. En una muestra de 40 resultados, 14 eran de ese tipo — sin resolverlos se
+    perdería más de un tercio de las visitas.
+
+    Y va de a una llamada por publicación porque no hay multiget: `/visits/items`
+    con dos ids responde HTTP 400.
+    """
+    if not filas:
+        return 0
+
+    # 1. Resolver los MLMU a su item real, sin repetir el que ya se resolvió.
+    porv: dict[str, str] = {}
+    mlmu = [f["externo_id"] for f in filas
+            if (f.get("externo_id") or "").startswith("MLMU")]
+    if mlmu:
+        res = await asyncio.gather(
+            *(asyncio.to_thread(competencia_ml.competidores_de_producto, i, 1)
+              for i in dict.fromkeys(mlmu)), return_exceptions=True)
+        for ident, r in zip(dict.fromkeys(mlmu), res):
+            if isinstance(r, list) and r and r[0].get("externo_id"):
+                porv[ident] = r[0]["externo_id"]
+
+    objetivo = []
+    for f in filas:
+        ident = porv.get(f.get("externo_id") or "", f.get("externo_id") or "")
+        if ident.startswith("MLM") and not ident.startswith("MLMU"):
+            objetivo.append((f, ident))
+    if not objetivo:
+        return 0
+
+    vis = await asyncio.gather(
+        *(asyncio.to_thread(competencia_ml.visitas_30d, i) for _, i in objetivo),
+        return_exceptions=True)
+    ok = 0
+    for (f, _), v in zip(objetivo, vis):
+        if isinstance(v, int):
+            f["visitas_30d"] = v
+            ok += 1
+    return ok
+
+
 async def _enriquecer_ranking(categoria_id: str, filas: list[dict[str, Any]],
                               nivel: str = "hoja") -> None:
     """
@@ -1010,7 +1056,7 @@ async def _medir_categoria(sku: dict[str, Any], periodo: str,
         f.pop("tipo_highlight", None)
 
     _marcar(filas, nuestras)
-    ok = await _visitas(filas)
+    ok = await enriquecer_visitas(filas)
     n = competencia_store.reemplazar_resultados(sku["sku"], "categoria", periodo, filas)
 
     avisos = []

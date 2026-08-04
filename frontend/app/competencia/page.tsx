@@ -656,7 +656,7 @@ function DetalleSku({
         <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-              Top {TOPE} términos más buscados
+              Top {TOPE} términos más buscados de {d.categoria_nombre}
             </span>
             {d.terminos_total ? (
               <span
@@ -703,6 +703,11 @@ function DetalleSku({
               ))}
             </ol>
           )}
+
+          <div className="mt-1.5 text-[10px] leading-snug text-slate-400">
+            Mercado Libre no publica el volumen: el número es el ORDEN en que los
+            busca la gente, del más buscado al menos.
+          </div>
 
           <div className="mt-2 border-t border-slate-100 pt-2">
             <button
