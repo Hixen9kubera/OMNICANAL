@@ -156,35 +156,157 @@ async def _leer_ml_item(
         return None
 
 
+def _sku_de_item(item: dict[str, Any]) -> str | None:
+    """
+    SKU de una publicación de ML leyéndolo del PROPIO item, en orden:
+    seller_custom_field → atributo SELLER_SKU → variaciones. Las publicaciones
+    creadas fuera del panel guardan el SKU en el atributo, no en el campo
+    (medido 4-ago: 185 de 186 huérfanas activas lo traen ahí). Mismas reglas
+    de higiene que el espejo: sin espacios y ≤100 caracteres.
+    """
+    def _limpio(v: Any) -> str | None:
+        s = str(v or "").strip()
+        return s if s and len(s) <= 100 and not any(ch.isspace() for ch in s) else None
+
+    sku = _limpio(item.get("seller_custom_field"))
+    if sku:
+        return sku
+    for a in (item.get("attributes") or []):
+        if (a.get("id") or "") == "SELLER_SKU":
+            sku = _limpio(a.get("value_name"))
+            if sku:
+                return sku
+    for var in (item.get("variations") or []):
+        sku = _limpio(var.get("seller_custom_field"))
+        if sku:
+            return sku
+    return None
+
+
+# Universo vivo por cuenta: (timestamp, ids). Listarlo son ~22 GETs por cuenta
+# (paginación scan de 100), así que se cachea media hora — el detalle por item
+# sigue siendo fresco en cada ronda; esto solo decide QUÉ ids existen.
+_UNIVERSO_TTL_S = 1800
+_universo_cache: dict[str, tuple[float, list[str]]] = {}
+_user_id_cache: dict[str, str] = {}
+
+
+async def _universo_ml(cli: httpx.AsyncClient, cuenta: str, token: str) -> list[str]:
+    """IDs de TODAS las publicaciones vivas (active+paused) de la cuenta, del
+    catálogo real de ML — no de ml_progress. Cache de 30 min por cuenta."""
+    import time
+    en_cache = _universo_cache.get(cuenta)
+    if en_cache and time.monotonic() - en_cache[0] < _UNIVERSO_TTL_S:
+        return en_cache[1]
+    h = {"Authorization": f"Bearer {token}"}
+    uid = _user_id_cache.get(cuenta)
+    if not uid:
+        r = await cli.get("/users/me", headers=h)
+        if r.status_code != 200:
+            return en_cache[1] if en_cache else []
+        uid = str(r.json().get("id") or "")
+        _user_id_cache[cuenta] = uid
+    ids: list[str] = []
+    for status in ("active", "paused"):
+        scroll = None
+        while True:
+            params: dict[str, Any] = {"search_type": "scan", "limit": 100, "status": status}
+            if scroll:
+                params["scroll_id"] = scroll
+            r = await cli.get(f"/users/{uid}/items/search", headers=h, params=params)
+            if r.status_code != 200:
+                break
+            j = r.json()
+            res = j.get("results") or []
+            ids.extend(res)
+            scroll = j.get("scroll_id")
+            if not res or not scroll:
+                break
+    if ids:  # una página fallida a media lista no borra el cache bueno anterior
+        _universo_cache[cuenta] = (time.monotonic(), ids)
+        return ids
+    return en_cache[1] if en_cache else []
+
+
+async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
+                         limite: int) -> list[dict[str, Any]]:
+    """
+    Lote de la ronda cuando SYNC_DESDE_ML está encendido: el universo sale del
+    catálogo vivo de ML y la rotación es la MISMA de siempre (lo nunca visto
+    primero, luego lo más rancio, por item_id). Efecto lateral deliberado: las
+    publicaciones que ML ya borró no aparecen en el universo → dejan de
+    refrescarse y de pisar la fila de su SKU (253 muertas medidas el 4-ago).
+    El sku viaja None: se resuelve del propio item al leer el detalle.
+    """
+    ids = await _universo_ml(cli, cuenta, token)
+    if not ids:
+        return []
+    vistos: dict[str, Any] = {}
+    try:
+        for r in db.fetch_all(
+            """SELECT item_id, updated_at FROM canal_inventario
+               WHERE canal='mercado_libre' AND cuenta=%s AND item_id IS NOT NULL""",
+            (cuenta,),
+        ):
+            vistos[str(r["item_id"])] = r["updated_at"]
+    except Exception:  # noqa: BLE001 — sin cache de vistos el orden degrada, no rompe
+        pass
+    from datetime import datetime
+    epoca = datetime(1970, 1, 1)
+    orden = sorted(ids, key=lambda i: (i in vistos, vistos.get(i) or epoca))
+    return [{"sku": None, "ml_item_id": i} for i in orden[:limite]]
+
+
 async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
     """Lee en vivo los items de una cuenta ML y los guarda en canal_inventario."""
     token = meli._access_token(cuenta)
     if not token:
         return {"canal": "mercado_libre", "cuenta": cuenta, "ok": False, "motivo": "sin token"}
 
-    # Progresivo: primero los SKUs que aún NO están en el cache, luego los más
-    # viejos. Así, corrida tras corrida, se cubre todo el catálogo y se refresca.
-    listings = db.fetch_all(
-        """SELECT mp.sku, mp.ml_item_id
-           FROM ml_progress mp
-           LEFT JOIN canal_inventario ci
-                  ON ci.sku = mp.sku AND ci.canal='mercado_libre' AND ci.cuenta = mp.cuenta
-           WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL
-           ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
-           LIMIT %s""",
-        (cuenta, limite),
-    )
     rows: list[dict[str, Any]] = []
+    sin_sku = 0
     async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
+        if settings.sync_desde_ml:
+            # F. UNIVERSO: el catálogo real de ML decide qué existe.
+            listings = await _lote_desde_ml(cli, cuenta, token, limite)
+            # Respaldo de identidad para items sin SKU legible en ML.
+            respaldo = {
+                str(r["ml_item_id"]): r["sku"] for r in db.fetch_all(
+                    "SELECT sku, ml_item_id FROM ml_progress "
+                    "WHERE cuenta=%s AND ml_item_id IS NOT NULL", (cuenta,))
+            }
+        else:
+            # Camino histórico: la bitácora del publicador (ml_progress).
+            # Progresivo: primero los SKUs que aún NO están en el cache, luego
+            # los más viejos, para cubrir todo el catálogo corrida a corrida.
+            listings = db.fetch_all(
+                """SELECT mp.sku, mp.ml_item_id
+                   FROM ml_progress mp
+                   LEFT JOIN canal_inventario ci
+                          ON ci.sku = mp.sku AND ci.canal='mercado_libre' AND ci.cuenta = mp.cuenta
+                   WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL
+                   ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
+                   LIMIT %s""",
+                (cuenta, limite),
+            )
+            respaldo = {}
         for lst in listings:
             item = await _leer_ml_item(cli, lst["ml_item_id"], token, cuenta)
             if not item:
+                continue
+            # Identidad: en modo universo, del propio item (con ml_progress de
+            # respaldo); en modo histórico viene de la bitácora, como siempre.
+            sku = lst["sku"] or _sku_de_item(item) or respaldo.get(str(lst["ml_item_id"]))
+            if not sku:
+                sin_sku += 1
+                log.info("sync ML %s: %s sin SKU legible — no se escribe",
+                         cuenta, lst["ml_item_id"])
                 continue
             logistic = (item.get("shipping") or {}).get("logistic_type")
             es_full = logistic == "fulfillment"
             qty = item.get("available_quantity")
             rows.append({
-                "sku": lst["sku"], "canal": "mercado_libre", "cuenta": cuenta,
+                "sku": sku, "canal": "mercado_libre", "cuenta": cuenta,
                 "item_id": lst["ml_item_id"], "precio": item.get("price"), "precio_base": _precio_lista(item),
                 "stock_real": 0 if es_full else qty,
                 "stock_full": qty if es_full else 0,
@@ -193,7 +315,10 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
                 "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
             })
     n = _upsert(rows)
-    return {"canal": "mercado_libre", "cuenta": cuenta, "ok": True, "actualizados": n}
+    salida = {"canal": "mercado_libre", "cuenta": cuenta, "ok": True, "actualizados": n}
+    if sin_sku:
+        salida["sin_sku"] = sin_sku
+    return salida
 
 
 # ── LECTOR: Amazon (FBA bulk) ───────────────────────────────────────────────────

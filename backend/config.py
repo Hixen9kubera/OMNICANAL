@@ -147,11 +147,22 @@ class Settings(BaseSettings):
     amazon_lwa_token_url: str = "https://api.amazon.com/auth/o2/token"
 
     # ── Sincronización de inventario ──────────────────────────
-    # Cada cuánto corre el lector de inventario (minutos). Cuando se
-    # implementen webhooks, poner sync_enabled=false y depender de ellos.
+    # Cada cuánto corre el lector de inventario (minutos). OJO (medido 4-ago):
+    # NO apagar el sondeo al pasar a webhooks sin encender antes sync_desde_ml —
+    # el webhook descarta lo que no está en ml_progress (1 de cada 3 avisos) y
+    # sin barrido ese punto ciego se vuelve invisible.
     sync_enabled: bool = True
     sync_interval_min: int = 15
     sync_batch: int = 80
+    # F. UNIVERSO (propuesta 4-ago, fase A): el lote del sondeo sale del
+    # CATÁLOGO VIVO de ML (/users/{id}/items/search, active+paused) en vez de
+    # ml_progress (la bitácora del publicador). Medido: entran ~517
+    # publicaciones que hoy no se recorren (186 activas vendiendo) y salen 253
+    # muertas que ML ya borró y que hoy pisan la fila de su SKU cada ciclo
+    # (síntoma "pausado que en realidad está activo", caso CUNA-0011-AZL).
+    # Apagado = comportamiento idéntico al de siempre. Encenderlo = dale de
+    # Brandon (flujo vivo, regla 3).
+    sync_desde_ml: bool = False
     # Guardado de notificaciones de webhooks en la tabla (se puede pausar en runtime)
     webhook_registro: bool = True
 

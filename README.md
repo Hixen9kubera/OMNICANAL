@@ -3818,6 +3818,69 @@ poder hacer su trabajo, y sin ninguna señal de por qué. Versión 0.52.1.
 
 ---
 
+### v0.53.0 — SYNC_DESDE_ML (apagado): el sondeo puede leer el catálogo VIVO de ML, no la bitácora del publicador
+
+**Fase A de la propuesta del 4-ago (Eduardo). Se despliega APAGADA** — con la
+bandera en false el lote se arma de `ml_progress` exactamente como siempre
+(verificado: mismo lote, mismos SKUs). Encenderla es flujo vivo → dale de
+Brandon (regla 3).
+
+**El problema medido.** El panel no sabe qué está publicado en ML; sabe qué
+publicó él. Tanto el sondeo como el webhook resuelven la identidad contra
+`ml_progress`, así que lo publicado/republicado por fuera es invisible:
+
+- **517 publicaciones vivas** que el sondeo no recorre (186 activas VENDIENDO);
+- **253 muertas** (ML ya las borró) que el sondeo sigue refrescando — y como el
+  panel guarda UNA fila por (sku, canal, cuenta), el cadáver pisa la fila de la
+  publicación real cada ciclo. Es el síntoma "aparece pausado pero está activo"
+  (caso testigo `CUNA-0011-AZL`: la vieja `inactive/deleted` en ml_progress, la
+  real activa con 25 pzas en FULL y 134 vendidas, invisible);
+- **313 SKUs con venta en 30d sin publicación activa visible** ($3.08M), de los
+  cuales estas huérfanas explican 91;
+- **2,066 avisos de webhooks descartados en 3 días** ("item_id no está en
+  ml_progress") — 1 de cada 3 avisos de items.
+
+**Qué hace la bandera.** `sincronizar_ml` arma el lote de
+`/users/{uid}/items/search` (active+paused, paginación scan, universo cacheado
+30 min) con la MISMA rotación de siempre (lo nunca visto primero, luego lo más
+rancio). El SKU se resuelve del PROPIO item — nuevo `_sku_de_item()`:
+`seller_custom_field` → atributo `SELLER_SKU` → variaciones, con `ml_progress`
+de respaldo; sin SKU legible NO se escribe (se registra en el log). Las muertas
+simplemente ya no aparecen en el universo → dejan de pisar filas.
+
+**Verificado en seco contra ML real** (con `_upsert` interceptado, cero
+escrituras): el lote nuevo toma primero exactamente las huérfanas conocidas
+(TEC-0551-PLU, OFI-0076-NEG, MASC-0044-NEG…), resuelve su SKU del atributo y
+captura hasta el precio de lista (CAM-0005-NEG $1,350 sobre $3,000). Con la
+bandera apagada, lote idéntico al histórico.
+
+**Convivencia con la migración (pedido explícito de Eduardo):**
+- La fila que produce el modo nuevo es LA MISMA (ni una llave más): el espejo
+  `channel_mirror.espejar_inventario` no se tocó y el dual-write escribe ambos
+  lados en la misma pasada → las actas no ven diferencia (su comparador tampoco
+  incluye campos nuevos).
+- De los 570 SKUs que entrarían, **554 ya existen en core.products**; los 16
+  restantes (MUN-*/JUGU-*, publicados por fuera, nunca conocidos por el
+  maestro) entrarían como `draft/backend-dualwrite` — la costura diseñada para
+  identidades nuevas. Cero cambios de esquema, cero migraciones.
+- Los flags F5 de lectura (`SUPABASE_READ_*`) no se tocan.
+
+**Modo reporte** (paso 2 del plan): `backend/scripts/reporte_sync_desde_ml.py`
+— solo lectura, lista qué entra (con SKU resuelto), qué sale (muertas) y qué se
+omitiría. Corrida del 4-ago: entran 770 (517 vivas nuevas + 253 posiciones de
+muertas), salen 253, 10 sin SKU legible.
+
+**Plan de encendido**: bandera on con `SYNC_BATCH` reducido las primeras rondas
+(las ~138 filas nuevas entran repartidas) → 48 h vigilando actas del dominio
+channel → verificación: CUNA-0011-AZL muestra su publicación real y los 313
+bajan. Reversión: `SYNC_DESDE_ML=false`, sin deploy. **Nota para la transición
+a webhooks**: NO apagar el sondeo sin esta bandera encendida — el webhook
+descarta lo que no está en ml_progress y sin barrido ese punto ciego se vuelve
+invisible (la fase B, resolver el SKU también en el webhook, viene después de
+estabilizar esta). Versión 0.53.0.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
