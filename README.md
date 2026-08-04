@@ -3727,6 +3727,72 @@ equivocada. Sembrar `costos_validados` desde el scrape exige topes de sensatez
 primero: se detectaron valores inverosímiles (precio $21,245.91, peso 500 kg,
 cbm 1.5 m³) que vienen de la heurística `_precio_alibaba_real`. Versión 0.51.0.
 
+### v0.52.0 — El KAM manda en sus pestañas, y el equipo completo cabe a la vez
+
+Dos decisiones de Brandon (4-ago) sobre el panel de roles de v0.50.2, y un
+problema de concurrencia que la segunda destapó.
+
+**1. El KAM hace TODO dentro de sus pestañas.** El reparto de v0.50.2 asumía
+que un rol no-admin miraba y editaba contenido pero no publicaba ni movía
+precios. Brandon lo corrigió: publicar y actualizar **es** el trabajo del KAM.
+El corte ya no es *mirar vs escribir* sino **trabajo comercial vs
+infraestructura**. Un KAM publica a Mercado Libre y Amazon, recalcula costos
+(incluido el masivo) y corre Competencia; lo que no puede es apagar la captura
+de ventas, correr backfills de migración, barrer stock de todo el catálogo con
+`sync/woo`, empujar inventario con `fanout` ni leer la bitácora. Eso sigue
+siendo el *need-to-know* que responde la pregunta III.2 de Temu: un error ahí
+no daña un producto, daña el sistema o borra el rastro de quién hizo qué.
+
+**Dos pestañas estaban rotas y nadie lo habría sabido hasta el enforcement.**
+Al mapear endpoint por endpoint contra lo que llama cada pestaña aparecieron
+dos huecos en la tabla de v0.50.2: **Análisis** (`/api/fulfillment`) estaba
+marcada admin, y **Competencia** no estaba listada — o sea caía en el
+`ROL_POR_DEFECTO = "admin"`. Un KAM se habría topado con un 403 en dos de sus
+seis pestañas el día que se encendiera `RBAC_ENFORCED`. `/api/fulfillment`
+queda en `operador` y no en `lectura` porque su consulta devuelve `costo` y
+`margen_pct`: es el P&L, no inventario a secas.
+
+**2. Los once conectados al mismo tiempo.** Brandon pidió que aguantara al
+equipo completo en simultáneo. La verificación de identidad tenía dos defectos
+que con un solo usuario no se ven:
+
+- **Estampida.** Abrir el panel dispara ~8 llamadas en paralelo. Sin candado,
+  las 8 verificaban el MISMO token contra Supabase y consultaban 8 veces
+  `core.usuarios`. Once personas = ~88 verificaciones simultáneas contra el
+  pool de 6 conexiones de `supabase_db`, que además es `blocking=True`.
+- **Event loop congelado.** `core.usuarios` se lee con psycopg2, que es
+  SÍNCRONO, y se llamaba directo desde una corrutina. Mientras esa consulta
+  corría, el servidor entero dejaba de atender: los demás usuarios, el webhook
+  de ML **y el healthcheck de Railway** — que con `restartPolicyType=ON_FAILURE`
+  reinicia el deploy si no responde.
+
+La cura es la misma que ya usa `pedidos_ml` contra las ráfagas de webhooks: un
+**candado por token** (el primero verifica, los demás esperan y leen el caché
+tibio) y la consulta a la base movida a un hilo con `asyncio.to_thread`. Se
+agregó además caché negativo de 15 s para que una sesión vencida no golpee
+Supabase en cada petición.
+
+**Medido con `scripts/humo_concurrencia.py`** (21 pruebas), que reproduce las
+88 peticiones simultáneas con dobles que cuentan llamadas. La misma prueba
+corrida contra el código anterior:
+
+| | Antes | Ahora |
+|---|---|---|
+| Verificaciones contra Supabase | 88 | **11** |
+| Consultas a `core.usuarios` | 88 | **11** |
+| Tiempo hasta que entra el equipo | 22.12 s | **0.32 s** |
+| Latidos del servidor mientras tanto | 5 | **21** |
+
+**Navbar:** deja de decir "Kubera / admin" fijo — muestra el correo real y su
+rol ("Admin" / "KAM"), y por fin hay botón **Salir**. Con una contraseña
+compartida entre once personas, ver con qué cuenta se entró es la única forma
+de notar el error antes de mover algo.
+
+`humo_auth.py` pasó de 39 a **58 pruebas** (casos de rol uno por pestaña, más
+la comprobación de que un método no listado —DELETE, PUT— también nace cerrado).
+Nada de esto enciende un flujo: `AUTH_ENFORCED` y `RBAC_ENFORCED` siguen en
+observación. Versión 0.52.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

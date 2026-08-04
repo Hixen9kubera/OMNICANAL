@@ -23,7 +23,15 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
-import { quienSoy } from "@/lib/sesion";
+import { cerrarSesion, quienSoy, type Usuario } from "@/lib/sesion";
+
+// El rol que el equipo llama KAM se guarda como 'operador' (core.usuarios tiene
+// un CHECK que solo admite tres nombres). Aquí se traduce de vuelta.
+const ETIQUETA_ROL: Record<string, string> = {
+  admin: "Admin",
+  operador: "KAM",
+  lectura: "Lectura",
+};
 
 interface SubItem {
   label: string;
@@ -95,16 +103,28 @@ export default function AppNavbar() {
   // directo se topa igual con core/rbac.py en el backend, que es la autoridad.
   // Mientras nadie haya iniciado sesión (o el enforcement esté apagado) se
   // muestran TODAS, para no esconderle nada al equipo antes de tiempo.
-  const [rol, setRol] = useState<string | null>(null);
+  const [yo, setYo] = useState<Usuario | null>(null);
   useEffect(() => {
     let vivo = true;
-    void quienSoy().then((yo) => {
-      if (vivo) setRol(yo.autenticado ? yo.rol : null);
+    void quienSoy().then((u) => {
+      if (vivo) setYo(u);
     });
     return () => { vivo = false; };
   }, []);
 
+  const rol = yo?.autenticado ? yo.rol : null;
   const visibles = ITEMS.filter((i) => !i.soloAdmin || rol === null || rol === "admin");
+
+  // Quién está usando el panel. Con una contraseña compartida entre varias
+  // personas, ver el correo propio es la única forma de notar que se entró con
+  // la cuenta equivocada antes de mover algo.
+  const nombre = yo?.usuario?.split("@")[0] || "Kubera";
+  const etiquetaRol = rol ? ETIQUETA_ROL[rol] ?? rol : "sin sesión";
+
+  const salir = useCallback(() => {
+    cerrarSesion();
+    window.location.href = "/login";
+  }, []);
 
   // Submenú al pasar el cursor. Se posiciona FIJO calculando el rect del
   // disparador: el <nav> tiene overflow-x-auto y un menú `absolute` quedaría
@@ -217,12 +237,26 @@ export default function AppNavbar() {
         <div className="flex shrink-0 items-center gap-3">
           <NotificationBell />
           <div className="hidden text-right sm:block">
-            <div className="text-xs font-semibold text-slate-700">Kubera</div>
-            <div className="text-[11px] text-slate-400">admin</div>
+            <div className="max-w-[160px] truncate text-xs font-semibold text-slate-700">
+              {nombre}
+            </div>
+            <div className="text-[11px] text-slate-400">{etiquetaRol}</div>
           </div>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-800 text-sm font-bold text-white">
-            K
+          <div
+            title={yo?.usuario || "Sin sesión iniciada"}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-800 text-sm font-bold uppercase text-white"
+          >
+            {nombre.charAt(0)}
           </div>
+          {yo?.autenticado && (
+            <button
+              type="button"
+              onClick={salir}
+              className="shrink-0 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            >
+              Salir
+            </button>
+          )}
         </div>
       </div>
 

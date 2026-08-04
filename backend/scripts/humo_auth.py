@@ -192,20 +192,45 @@ def main() -> int:
 
     print("\n10) LAS REGLAS DE ROL (core/rbac.py)")
     from core import rbac
+    # El corte NO es mirar-vs-escribir: un KAM (rol `operador`) publica y mueve
+    # precios, porque ese es su trabajo. El corte es TRABAJO COMERCIAL vs
+    # INFRAESTRUCTURA. Estos casos son la evidencia de III.2, uno por pestaña.
     casos = [
-        # (rol, método, ruta, ¿debe permitirse?)  — el "no" es el need-to-know
+        # (rol, método, ruta, ¿debe permitirse?)
+        # --- lectura: ve el catálogo, NO el P&L ---
         ("lectura",  "GET",  "/api/productos", True),
+        ("lectura",  "GET",  "/api/ventas/horario", True),
         ("lectura",  "POST", "/api/productos/ABC/contenido", False),
-        ("lectura",  "GET",  "/api/crear/costos", False),   # márgenes = P&L
-        ("operador", "POST", "/api/productos/ABC/contenido", True),
+        ("lectura",  "GET",  "/api/crear/costos", False),          # márgenes
+        ("lectura",  "GET",  "/api/fulfillment/dashboard", False),  # trae margen_pct
+        # --- KAM: sus seis pestañas, COMPLETAS ---
+        ("operador", "GET",  "/api/fulfillment/dashboard", True),  # Análisis
+        ("operador", "POST", "/api/productos/ABC/contenido", True),  # Productos
         ("operador", "POST", "/api/imagenes/ABC/procesar", True),
+        ("operador", "POST", "/api/canales/ml/refrescar/ABC", True),  # Omnicanal
+        ("operador", "POST", "/api/crear/productos", True),          # Crear
+        ("operador", "POST", "/api/ia/generar", True),
         ("operador", "POST", "/api/publicar/preview", True),
-        ("operador", "POST", "/api/publicar/confirmar", False),  # NO publica al mundo
-        ("operador", "POST", "/api/sync/woo", False),            # NO mueve todo el catálogo
-        ("operador", "POST", "/api/crear/costos/bulk", False),   # NO precios masivos
-        ("operador", "GET",  "/api/auditoria", False),           # NO ve la bitácora
+        ("operador", "POST", "/api/publicar/confirmar", True),       # SÍ publica
+        ("operador", "GET",  "/api/crear/costos", True),             # Costos
+        ("operador", "POST", "/api/crear/costos/ABC/recalcular", True),
+        ("operador", "POST", "/api/crear/costos/bulk", True),        # SÍ precios masivos
+        ("operador", "GET",  "/api/competencia/tabla", True),        # Competencia
+        ("operador", "POST", "/api/competencia/correr", True),
+        ("operador", "PATCH", "/api/competencia/skus/ABC", True),
+        # --- ...pero NO la infraestructura que las sostiene ---
+        ("operador", "POST", "/api/sync/woo", False),          # barrido de TODO el catálogo
+        ("operador", "POST", "/api/fanout/encolar", False),    # empuja stock a los canales
+        ("operador", "POST", "/api/webhooks/pausar", False),   # apaga la captura de ventas
+        ("operador", "GET",  "/api/webhooks/estado", False),
+        ("operador", "POST", "/api/migracion/backfill/channel-orders", False),
+        ("operador", "GET",  "/api/migracion/estado", False),
+        ("operador", "POST", "/api/crear/destrabar", False),   # más específica que /api/crear
+        ("operador", "GET",  "/api/auditoria", False),         # NO ve la bitácora
+        # --- admin: todo ---
         ("admin",    "POST", "/api/publicar/confirmar", True),
         ("admin",    "POST", "/api/sync/woo", True),
+        ("admin",    "POST", "/api/migracion/backfill/channel-orders", True),
         ("admin",    "GET",  "/api/auditoria", True),
     ]
     for rol, metodo, ruta, esperado in casos:
@@ -215,6 +240,9 @@ def main() -> int:
     revisar("una ruta NO listada exige admin",
             rbac.rol_requerido("POST", "/api/algo/que/no/existe"), "admin",
             "Un endpoint nuevo debe nacer cerrado, no abierto.")
+    revisar("un MÉTODO no listado (DELETE) exige admin",
+            rbac.rol_requerido("DELETE", "/api/productos/ABC"), "admin",
+            "Un verbo nuevo sobre una ruta conocida también nace cerrado.")
 
     print("\n11) EL SISTEMA AGUANTA LO RARO")
     revisar("header X-API-Key vacío",
