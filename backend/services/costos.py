@@ -479,6 +479,19 @@ def _preparar_base(sku: str, overrides: dict[str, Any] | None,
             base.get("largo") or 0, base.get("ancho") or 0, base.get("alto") or 0)
     base["costo_unitario"] = round(
         float(base.get("costo_producto") or 0) + float(base.get("costo_cbm") or 0), 2)
+    # Costo TOTAL escrito a mano (campo "Costo" del Estudio): lo que se teclea es
+    # el costo, punto. Se reparte como producto=lo tecleado y flete=0 para que el
+    # total mostrado sea EXACTAMENTE ese — si además se sumara un CBM derivado de
+    # las dims, el número guardado no coincidiría con el escrito.
+    # Para desglosar producto vs flete está el bloque COSTOS (costo USD + dims).
+    try:
+        cu = float((overrides or {}).get("costo_unitario") or 0)
+    except (TypeError, ValueError):
+        cu = 0.0
+    if cu > 0:
+        base["costo_producto"] = cu
+        base["costo_cbm"] = 0.0
+        base["costo_unitario"] = round(cu, 2)
     cat = (overrides or {}).get("ml_cat_id") or cf.get("ml_cat_id") or _resolver_cat_ml(sku)
     return base, cat
 
@@ -647,7 +660,25 @@ def recalcular(sku: str, overrides: dict[str, Any] | None = None,
     """
     calc = computar(sku, overrides, incluir_envio, margen, cuenta, auto_cbm)
     if not calc:
-        return None
+        # `computar` devuelve None por DOS motivos distintos y no dan lo mismo:
+        #   · sin costo base      → no hay nada que guardar
+        #   · sin comisión (casi   → el COSTO sí existe y se puede registrar;
+        #     siempre: sin categoría   lo único que no se puede es DERIVAR el precio
+        #     ML asignada)             (y aquí no se inventa un % — regla de la casa)
+        # Antes ambos casos se perdían igual, así que capturar el costo de un
+        # producto recién creado era imposible hasta asignarle categoría. Ahora
+        # el costo se guarda y el llamador avisa que faltó el precio.
+        base, cat = _preparar_base(sku, overrides, auto_cbm)
+        if base.get("costo_unitario", 0) <= 0:
+            return None
+        _guardar_validados(sku, base)
+        _log_costo(sku, "manual", "recalculo_sin_precio",
+                   {"overrides": overrides or {}, "base": base, "cat_id": cat})
+        log.info("recalcular(%s): costo guardado sin precio (cat_id=%r)", sku, cat)
+        return {**base, "sku": sku, "ml_cat_id": cat, "sin_precio": True,
+                "motivo_sin_precio": ("el producto no tiene categoría ML asignada"
+                                      if not cat else
+                                      "no se encontró la comisión de la categoría")}
     base = {k: calc.get(k) for k in
             ("costo_producto", "costo_cbm", "costo_unitario", "largo", "alto", "ancho", "peso")}
     cat = calc["ml_cat_id"]

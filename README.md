@@ -3919,6 +3919,60 @@ estabilizar esta). Versión 0.53.0.
 
 ---
 
+### v0.54.0 — Capturar el costo desde Producto (y que el panel no mienta 15 min)
+
+Cierra lo que v0.51.0 dejó abierto. Ese cambio logró que los productos llegaran
+a Productos sin costo, pero **al llegar el campo Costo estaba bloqueado**: había
+que bajar al bloque COSTOS o irse a la vista de Costos. Tres arreglos:
+
+**1. El campo "Costo" del Estudio se edita y se guarda.** Va por el mismo
+escritor sancionado (`costos.recalcular` → `costos_validados` + `costos_finales`
++ Woo). Lo capturado ahí es el costo **TOTAL**: se guarda tal cual, sin sumarle
+un flete derivado de las dimensiones, para que el número guardado sea
+exactamente el tecleado. Para desglosar producto vs flete sigue estando el
+bloque COSTOS (costo USD + dims). Override nuevo `costo_unitario`.
+
+**2. Capturar costo ya NO exige categoría ML.** Antes, un producto sin categoría
+no tenía comisión, `calcular_pricing` devolvía `None` y **se perdía todo** — ni
+el costo se guardaba. Y como la regla de la casa es no inventar porcentajes
+("NADA de porcentaje fijo inventado"), la salida no era un fallback: ahora
+`recalcular` distingue los dos motivos de fallo. Sin costo base no hay nada que
+guardar; **sin comisión, el costo SÍ se registra** y la respuesta avisa
+*"Costo guardado. NO se calculó el precio: el producto no tiene categoría ML
+asignada"*. Separa capturar el costo de derivar el precio, que estaban soldados.
+
+**3. El cambio de estado se refleja al instante.** El precio y el costo de las
+listas ya se leían frescos de MySQL, pero el ÍNDICE del catálogo vive en caché
+con TTL de 15 min y **nada lo invalidaba**: un producto que cambiaba de estado
+tardaba hasta un cuarto de hora en aparecer en su pestaña (le pasó al destrabado
+de los 85). `woocommerce.actualizar_estado_en_cache()` parchea la fila —no
+invalida el índice, porque reconstruirlo por la vía API son ~90 requests contra
+un hosting que bloquea por volumen— y se llama al crear y al destrabar.
+
+**Correcciones al diagnóstico de v0.51.0** (señaladas por Lalo, verificadas):
+
+- El guard de costo **no dejaba el producto en `draft`**: lo dejaba en el estado
+  que ya tenía, y de los 34 bloqueados **25 ya habían sido creados antes**, o sea
+  estaban en `inprogress`. Eso revela que las dos fallas no eran independientes
+  sino un **círculo**: `inprogress` → se ve en Crear → se reintenta → el guard lo
+  rechaza → sigue en `inprogress`. Los cambios de v0.51.0 lo cortan en dos
+  puntos. (Y el "~67 atorados/semana" de esa entrada sobreestima: los conjuntos
+  se traslapan.)
+- **`alibaba_price` NO es fuente de costo.** Nadie lo lee para costear: solo se
+  muestra en el Estudio y está en la lista de EXCLUIDOS de `ml_atributos`. Es
+  traza. La afirmación de v0.51.0 de que "Apify guarda el costo en la tabla
+  equivocada" estaba mal planteada — ese precio nunca fue el costo.
+- Por lo mismo, **`_precio_alibaba_real()` no contamina el costeo**: sus valores
+  raros son ruido de visualización, no llegan a `costos_validados`. Se retira esa
+  advertencia de riesgo.
+
+Verificado: 5 casos de prueba del override y del guardado sin precio (lo tecleado
+manda, el flete no se re-suma, valores inválidos se ignoran, el costo persiste
+con aviso, y sin costo sigue devolviendo `None`). Versión 0.54.0.
+
+---
+
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**

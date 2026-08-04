@@ -309,6 +309,10 @@ export interface CostoGuardarResp {
   sincronizado_woo: boolean;
   // Motivo por el que Woo no se actualizó, cuando el costo SÍ quedó guardado.
   sync_error?: string | null;
+  // El COSTO se guardó pero no se pudo derivar el precio (casi siempre: el
+  // producto todavía no tiene categoría ML, y no se inventa una comisión).
+  sin_precio?: boolean;
+  aviso?: string;
 }
 
 export interface CostoRow {
@@ -389,6 +393,8 @@ export interface CostoOverrides {
   // Precio fijado a mano en el Estudio: manda sobre el derivado del costo.
   precio_base?: number | null;      // "Precio regular" (el que publica ML)
   precio_sugerido?: number | null;  // "Precio oferta"
+  // Costo TOTAL a mano (campo "Costo" del Estudio): manda sobre producto+flete.
+  costo_unitario?: number | null;
 }
 
 // ── Mejorar con IA (un botón por canal) ──────────────────────────────

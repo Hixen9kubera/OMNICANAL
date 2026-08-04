@@ -953,6 +953,31 @@ def quitar_de_drafts(wc_id: int) -> None:
     _draft_cache = [p for p in _draft_cache if p["wc_id"] != wc_id]
 
 
+def actualizar_estado_en_cache(wc_id: int, estado: str) -> None:
+    """
+    Refleja AL INSTANTE un cambio de estado en los índices cacheados.
+
+    El precio y el costo de las listas ya se leen frescos de MySQL, pero el
+    ÍNDICE del catálogo (qué productos hay y en qué estado) vive en `_cand_cache`
+    con TTL de 15 min y NADA lo invalidaba: un producto que cambiaba de estado
+    tardaba hasta un cuarto de hora en aparecer en su pestaña. Le pasó al
+    destrabado de los 85 (4-ago).
+
+    Se PARCHEA la fila en vez de invalidar el índice: invalidar obliga a
+    reconstruirlo entero, y por la vía API son ~90 requests contra un hosting
+    que bloquea por volumen.
+    """
+    for fila in _cand_cache:
+        if fila.get("wc_id") == wc_id:
+            fila["estado"] = estado
+            break
+    # Crear Productos = draft/inprogress. Si el producto salió de esos estados,
+    # sale de la pestaña; si entró, se deja que el próximo escaneo lo traiga
+    # (con su nombre/stock completos, que aquí no tenemos).
+    if estado not in ("draft", "inprogress"):
+        quitar_de_drafts(wc_id)
+
+
 # ── Reparto del catálogo entre las tres vistas (regla de Brandon, 29-jul) ─────
 # Cada producto vive en UNA pestaña según su estado en WooCommerce, salvo
 # Omnicanal que los muestra todos:

@@ -703,7 +703,9 @@ async def destrabar_inprogress(aplicar: bool = False,
                 )
                 r.raise_for_status()
                 for p in lote:
-                    woocommerce.quitar_de_drafts(p["wc_id"])  # sale de Crear ya
+                    # Sale de Crear Y aparece en Productos al instante (si no,
+                    # el índice del catálogo lo retiene hasta 15 min).
+                    woocommerce.actualizar_estado_en_cache(p["wc_id"], "pending")
                 movidos += len(lote)
             except Exception as exc:  # noqa: BLE001
                 fallidos.append({"lote": f"{i}-{i + len(lote)}",
@@ -963,6 +965,9 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             tiene_attrs = len(atributos) >= 2  # BRAND + al menos 1 más
             status_final = "pending"
             await _estado_wc(wc_id, status_final)
+            # Sin esto el producto no se ve en Productos hasta que expire el
+            # índice del catálogo (15 min), aunque en Woo ya esté en `pending`.
+            woocommerce.actualizar_estado_en_cache(wc_id, status_final)
 
             # El estado ya no distingue completo de parcial, así que lo que falta
             # se reporta aquí: es lo que queda como pendiente HUMANO en Productos.
