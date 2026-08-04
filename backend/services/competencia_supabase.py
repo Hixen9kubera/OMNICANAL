@@ -119,6 +119,33 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
     return filas
 
 
+def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """
+    TODO el ranking de una vez, agrupado por (categoria_id, nivel).
+
+    La vista lo pedía categoría por categoría. Con ~900 subcategorías eso eran ~900
+    viajes a Supabase por carga de página, y /vista pasaba de 150 s. Una consulta.
+    """
+    filas = supabase_db.fetch_all(
+        "SELECT * FROM propuestas.competencia_rankings_categoria ORDER BY posicion")
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for f in filas:
+        d = dict(f)
+        for k in ("precio", "precio_lista", "rating"):
+            if d.get(k) is not None:
+                d[k] = float(d[k])
+        d["es_nuestro"] = 1 if d.get("es_nuestro") else 0
+        out.setdefault((d["categoria_id"], d["nivel"]), []).append(d)
+    return out
+
+
+def conteo_terminos() -> dict[str, int]:
+    """Cuántos términos hay por categoría, en una sola consulta."""
+    return {f["categoria_id"]: f["n"] for f in supabase_db.fetch_all(
+        "SELECT categoria_id, COUNT(*)::int AS n "
+        "FROM propuestas.competencia_terminos_categoria GROUP BY 1")}
+
+
 def total_terminos(categoria_id: str) -> int:
     n = supabase_db.fetch_scalar(
         "SELECT COUNT(*) FROM propuestas.competencia_terminos_categoria "

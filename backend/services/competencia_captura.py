@@ -613,46 +613,33 @@ def nichos_del_top(raiz: dict[str, Any], tope: int = 5) -> list[dict[str, Any]]:
     # Esto importa: las filas capturadas con el actor de Apify no traen `id_pagina`,
     # así que el join con /highlights no las alcanzaba y Hogar y Jardín salía con 0
     # nichos. Resolviendo por API el resultado ya no depende de con qué se raspó.
-    entradas = competencia_ml.mas_vendidos_categoria(raiz.get("raiz_id") or "")
-    if not entradas and not top:
+    if not top:
         return []
 
-    # La ficha raspada, indexada por los dos ids posibles para poder pegarla.
-    ficha: dict[str, dict[str, Any]] = {}
-    for f in top:
-        for k in (f.get("id_pagina"), f.get("externo_id")):
-            if k:
-                ficha.setdefault(k, f)
-
+    # SOLO DATOS GUARDADOS. Esta función corre en cada carga de /vista, y una
+    # versión anterior resolvía la subcategoría llamando a la API de ML aquí: con
+    # 26 raíces eran cientos de llamadas por request y la página pasó de responder
+    # en 2 s a agotar 150 s en producción. La resolución vive en la CAPTURA
+    # (`_subcategoria_de_cada_fila`), que deja `item_categoria_id` en la tabla.
     nichos: dict[str, dict[str, Any]] = {}
     sin_categoria: list[dict[str, Any]] = []
-    cats: dict[str, str | None] = {}
-    for e in sorted(entradas, key=lambda x: x.get("posicion") or 99):
-        ident, tipo, pos = e.get("id"), e.get("tipo"), e.get("posicion")
-        fila = dict(ficha.get(ident) or {})
-        fila.setdefault("posicion", pos)
+    for fila in sorted(top, key=lambda x: x.get("posicion") or 99):
         cid = fila.get("item_categoria_id")
-        if not cid and tipo in ("PRODUCT", "USER_PRODUCT"):
-            comp = competencia_ml.competidores_de_producto(ident, 1)
-            cid = (comp[0].get("categoria_id") if comp else None)
         if not cid:
-            # Tipo ITEM: /items de un ajeno es 403 y no hay otra ruta.
+            # Tipo ITEM (/items de un ajeno es 403) o ranking capturado antes de
+            # que se guardara la subcategoría. Se cuenta, no se inventa.
             sin_categoria.append(fila)
             continue
-        if cid not in cats:
-            ruta = competencia_ml.ruta_categoria(cid)
-            cats[cid] = ruta[-1]["nombre"] if ruta else None
         if cid not in nichos:
             nichos[cid] = {
                 "categoria_id": cid,
-                "categoria_nombre": (fila.get("item_categoria_nombre")
-                                     or cats[cid] or cid),
-                "posicion": pos,
+                "categoria_nombre": fila.get("item_categoria_nombre") or cid,
+                "posicion": fila.get("posicion"),
                 "lider": fila,
                 "otras_posiciones": [],
             }
         else:
-            nichos[cid]["otras_posiciones"].append(pos)
+            nichos[cid]["otras_posiciones"].append(fila.get("posicion"))
 
     orden = sorted(nichos.values(), key=lambda n: n["posicion"] or 99)[:tope]
     if not orden:

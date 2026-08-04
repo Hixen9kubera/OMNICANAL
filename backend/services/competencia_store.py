@@ -784,6 +784,31 @@ def tabla() -> list[dict[str, Any]]:
     return out
 
 
+def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Todo el ranking de una vez, agrupado por (categoria_id, nivel)."""
+    r = _remoto()
+    if r:
+        return r.rankings_por_categoria()
+    asegurar_schema()
+    with _con() as c:
+        filas = _filas(c.execute("SELECT * FROM rankings_categoria ORDER BY posicion"))
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for f in filas:
+        out.setdefault((f["categoria_id"], f["nivel"]), []).append(f)
+    return out
+
+
+def conteo_terminos() -> dict[str, int]:
+    """Cuántos términos hay por categoría, en una sola consulta."""
+    r = _remoto()
+    if r:
+        return r.conteo_terminos()
+    asegurar_schema()
+    with _con() as c:
+        return {f["categoria_id"]: f["n"] for f in _filas(c.execute(
+            "SELECT categoria_id, COUNT(*) AS n FROM terminos_categoria GROUP BY 1"))}
+
+
 def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
     """
     El árbol que pinta el tab: raíz → subcategorías → nuestros SKUs.
@@ -820,14 +845,19 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
         sub["n_skus"] += 1
         r["skus"].append(f)
 
+    # Precargados: con ~900 subcategorías, pedir el ranking y el conteo de términos
+    # una por una eran ~1,800 viajes a la base por carga de página.
+    rk = rankings_por_categoria()
+    nterm = conteo_terminos()
+
     out = []
     for r in raices.values():
         # Ranking y términos de la raíz.
-        r["top"] = ranking_categoria(r["raiz_id"], "raiz", limite=10) if r["raiz_id"] else []
-        r["terminos_raiz"] = total_terminos(r["raiz_id"]) if r["raiz_id"] else 0
+        r["top"] = rk.get((r["raiz_id"], "raiz"), [])[:10] if r["raiz_id"] else []
+        r["terminos_raiz"] = nterm.get(r["raiz_id"], 0) if r["raiz_id"] else 0
 
         for cid, sub in r["subcategorias"].items():
-            top = ranking_categoria(cid, "hoja", limite=20) if sub["categoria_id"] else []
+            top = rk.get((cid, "hoja"), [])[:20] if sub["categoria_id"] else []
             precios = sorted(x["precio"] for x in top if x.get("precio"))
             sub["top"] = top
             sub["n_ranking"] = len(top)
@@ -836,7 +866,7 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
                                     precios[len(precios) // 2]) / 2) if precios else None
             sub["precio_min"] = precios[0] if precios else None
             sub["precio_max"] = precios[-1] if precios else None
-            sub["n_terminos"] = total_terminos(cid) if sub["categoria_id"] else 0
+            sub["n_terminos"] = nterm.get(cid, 0) if sub["categoria_id"] else 0
             # ML no publica ranking NI términos de toda categoría (Bujías,
             # Cartuchos de Turbo). Hay que decirlo, no pintar celdas vacías.
             sub["sin_datos_ml"] = not top and not sub["n_terminos"]
