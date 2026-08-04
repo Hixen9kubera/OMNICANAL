@@ -196,6 +196,13 @@ CREATE TABLE IF NOT EXISTS busquedas (
     imagen       TEXT,
     url          TEXT,
     visitas_30d  INTEGER,
+    reviews      INTEGER,            -- gratis por /reviews/item/{id}
+    envio_gratis INTEGER,
+    es_full      INTEGER,
+    catalog_id   TEXT,               -- id de producto de catálogo, si lo tiene
+    -- `vendidos` solo llega con el detalle del actor, que cuesta 8x por item
+    -- ($0.025 contra $0.003) y NO existe por API para publicaciones ajenas.
+    -- Con la consulta barata queda en NULL: es un hueco conocido, no un fallo.
     es_nuestro   INTEGER NOT NULL DEFAULT 0,
     sku_nuestro  TEXT,
     capturado_en TEXT NOT NULL,
@@ -277,6 +284,10 @@ def asegurar_schema() -> None:
             ("rankings_categoria", "tipo", "TEXT"),
             ("rankings_categoria", "item_categoria_id", "TEXT"),
             ("rankings_categoria", "item_categoria_nombre", "TEXT"),
+            ("busquedas", "reviews", "INTEGER"),
+            ("busquedas", "envio_gratis", "INTEGER"),
+            ("busquedas", "es_full", "INTEGER"),
+            ("busquedas", "catalog_id", "TEXT"),
         ):
             tiene = {r["name"] for r in c.execute(f"PRAGMA table_info({tabla})")}
             if col not in tiene:
@@ -821,7 +832,8 @@ def tabla() -> list[dict[str, Any]]:
 
 _CAMPOS_BUSQ = ("termino", "periodo", "posicion", "externo_id", "titulo", "precio",
                 "precio_lista", "descuento", "vendidos", "rating", "seller",
-                "imagen", "url", "visitas_30d", "es_nuestro", "sku_nuestro")
+                "imagen", "url", "visitas_30d", "reviews", "envio_gratis",
+                "es_full", "catalog_id", "es_nuestro", "sku_nuestro")
 
 
 def reemplazar_busqueda(termino: str, periodo: str,

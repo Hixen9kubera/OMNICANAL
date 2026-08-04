@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 import re
 from typing import Any
 
@@ -49,7 +50,11 @@ log = logging.getLogger("omnicanal.competencia.scraper")
 
 _APIFY = "https://api.apify.com/v2"
 _ESPERA = 5
-_MAX_SONDEOS = 84          # ~7 min
+# MEDIDO el 4-ago: una tanda de 20 URLs del navegador genérico tarda ~12 min y con
+# el tope viejo de 7 min el sondeo se rendía ANTES de que la corrida terminara —
+# leía el dataset a medias y reportaba "sin resultados" habiendo pagado el cómputo.
+# 240 sondeos son 20 minutos.
+_MAX_SONDEOS = 240
 _sem = asyncio.Semaphore(2)
 _URL_MAS_VENDIDOS = "https://www.mercadolibre.com.mx/mas-vendidos/"
 
@@ -159,7 +164,154 @@ def _normalizar(it: dict[str, Any], posicion: int) -> dict[str, Any]:
         "envio_gratis": it.get("freeShipping"),
         "es_full": it.get("fullShipping"),
         "catalog_product_id": it.get("catalogProductId"),
+        # ANUNCIO. El actor lo marca con `isPromoted` y su permalink va por el
+        # redirector click1. No se cuenta como posición orgánica.
+        "es_anuncio": bool(it.get("isPromoted")),
     }
+
+
+async def buscar_terminos(terminos: list[str], limite: int = 10,
+                          ) -> dict[str, list[dict[str, Any]]]:
+    """
+    Búsqueda de varios términos con el navegador GENÉRICO. → { termino: [filas] }
+
+    ES EL CAMINO BUENO, y sustituye al actor de ML para búsquedas:
+
+      • COSTO: cobra por CÓMPUTO (~$0.007/página) en vez de $0.09 por corrida. Los
+        230 términos de las dos categorías pasan de ~$24 a ~$1.61.
+      • ATRIBUCIÓN: cada página ES una consulta, así que se sabe de qué término
+        vino cada resultado. El actor de ML no lo dice — medido con 5 consultas,
+        devuelve todo intercalado y no hay forma de repartirlo.
+      • VOLUMEN: la página trae ~48 orgánicos por término, no 5.
+
+    Y corre desde la infraestructura de Apify con proxy residencial, así que el
+    muro de login que ML levanta contra nuestra IP no aplica.
+    """
+    consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
+    if not consultas:
+        return {}
+    # El término va en la URL, y de ahí se recupera para atribuir el resultado.
+    urls, de_url = [], {}
+    for q in consultas:
+        slug = urllib.parse.quote(q.replace(" ", "-"))
+        u = f"https://listado.mercadolibre.com.mx/{slug}"
+        urls.append({"url": u})
+        de_url[u.rstrip("/")] = q
+
+    paginas = await _correr_actor(settings.apify_navegador_actor, {
+        "startUrls": urls,
+        "pageFunction": _PAGE_FUNCTION_BUSCADOR,
+        "proxyConfiguration": _proxy(),
+        "maxRequestsPerCrawl": len(urls),
+        # Igual que en el ranking: ML bloquea de forma intermitente y cada intento
+        # fallido aborta en segundos, así que reintentar sale casi gratis.
+        "maxRequestRetries": 8,
+        "maxConcurrency": 2,
+        "headless": True,
+        "launcher": "chromium",
+    }, limite_lectura=len(urls))
+
+    out: dict[str, list[dict[str, Any]]] = {}
+    for pag in paginas:
+        q = de_url.get((pag.get("url") or "").rstrip("/"))
+        if not q:
+            # Respaldo: reconstruir el término desde el slug del URL.
+            q = urllib.parse.unquote(
+                (pag.get("url") or "").rstrip("/").rsplit("/", 1)[-1]).replace("-", " ")
+        filas = []
+        for it in (pag.get("items") or [])[:limite]:
+            f = _de_tarjeta(it)
+            if f["externo_id"]:
+                filas.append(f)
+        if filas:
+            out[q] = filas
+    faltan = [q for q in consultas if q not in out]
+    if faltan:
+        log.warning("buscar_terminos: sin resultados para %s: %s",
+                    len(faltan), faltan[:5])
+    log.info("buscar_terminos: %s consultas → %s con resultados",
+             len(consultas), len(out))
+    return out
+
+
+def _de_tarjeta(it: dict[str, Any]) -> dict[str, Any]:
+    """Item de la pageFunction del buscador → fila de `busquedas`."""
+    url = (it.get("url") or "").split("#")[0]
+    m = re.search(r"/(?:up|p)/(MLMU?\d+)|/(MLM)-(\d{9,12})-", url)
+    ident = (m.group(1) or f"{m.group(2)}{m.group(3)}") if m else None
+    # `vendidos` y el rating viven en las etiquetas visibles de la tarjeta.
+    vendidos = rating = None
+    for et in it.get("etiquetas") or []:
+        if "vendido" in et.lower():
+            vendidos = _vendidos(et)
+        elif rating is None:
+            rating = _score(et)
+    envio = (it.get("envio") or "").lower()
+    return {
+        "externo_id": ident,
+        "posicion": it.get("posicion"),
+        "titulo": it.get("titulo"),
+        "precio": _entero(it.get("precio")),
+        "precio_lista": _entero(it.get("precio_lista")),
+        "descuento": it.get("descuento"),
+        "vendidos": vendidos,
+        "rating": rating,
+        "seller": it.get("seller"),
+        "imagen": it.get("imagen"),
+        "url": url or None,
+        "envio_gratis": 1 if "gratis" in envio else 0,
+        "es_full": 1 if "full" in envio else None,
+        "catalog_id": None,
+    }
+
+
+async def buscar_varios(terminos: list[str], limite: int = 5,
+                        con_detalle: bool = False) -> dict[str, list[dict[str, Any]]]:
+    """
+    VARIOS términos en UNA sola corrida del actor. → { termino: [filas] }
+
+    Es la diferencia de costo que manda. El actor cobra $0.003 por item MÁS $0.09
+    por corrida, así que mandar una consulta por corrida paga la cuota fija N veces:
+    230 términos salen en $24.15 de a uno y en $4.35 agrupados de 25 en 25. La
+    cuota, no los items, es lo que domina.
+
+    `searchQueries` recibe una lista y el actor devuelve los resultados etiquetados
+    con su consulta, así que se pueden separar después.
+    """
+    consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
+    if not consultas:
+        return {}
+    filas = await _correr_actor(settings.apify_ml_actor, {
+        "siteId": settings.ml_site_id,
+        "searchQueries": consultas,
+        "maxItems": limite * len(consultas),
+        "maxPagesPerQuery": 1,
+        "sort": "relevance",
+        "includeProductDetail": con_detalle,
+        "proxyConfiguration": _proxy(),
+    }, limite_lectura=limite * len(consultas))
+
+    # El actor marca cada item con la consulta que lo trajo. Si no lo hiciera, no
+    # habría forma de repartirlos y agrupar sería inservible.
+    por: dict[str, list[dict[str, Any]]] = {}
+    for it in filas:
+        q = (it.get("searchQuery") or it.get("query") or it.get("keyword") or "").strip()
+        por.setdefault(q, []).append(it)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for q, items in por.items():
+        norm = []
+        for i, it in enumerate(items[:limite], start=1):
+            f = _normalizar(it, i)
+            if f["externo_id"]:
+                norm.append(f)
+        if norm:
+            out[q] = norm
+    sin = [q for q in consultas if q not in out]
+    if sin:
+        log.warning("buscar_varios: %s consultas sin resultados: %s", len(sin), sin[:5])
+    log.info("buscar_varios: %s consultas → %s con resultados",
+             len(consultas), len(out))
+    return out
 
 
 async def buscar(termino: str, limite: int = 30,
@@ -170,22 +322,36 @@ async def buscar(termino: str, limite: int = 30,
 
     `con_detalle=True` agrega descripción y vendidos, a 8× el costo por item.
     """
+    # Se piden MÁS items de los que se van a guardar porque los primeros
+    # resultados del buscador son ANUNCIOS y se descartan. MEDIDO: pidiendo 5 se
+    # guardaba 1 sola fila por término — se pagaban 5 items para conservar uno.
+    # El factor 4 deja margen suficiente para quedarse con `limite` orgánicos.
+    pedidos = limite * 4
     filas = await _correr_actor(settings.apify_ml_actor, {
         "siteId": settings.ml_site_id,
         "searchQueries": [termino],
-        "maxItems": limite,
-        "maxPagesPerQuery": max(1, limite // 50 + 1),
+        "maxItems": pedidos,
+        "maxPagesPerQuery": max(1, pedidos // 50 + 1),
         "sort": "relevance",
         "includeProductDetail": con_detalle,
         "proxyConfiguration": _proxy(),
-    }, limite_lectura=limite)
+    }, limite_lectura=pedidos)
 
-    out = []
-    for i, it in enumerate(filas[:limite], start=1):
-        fila = _normalizar(it, i)
+    # Los ANUNCIOS no ocupan posición orgánica: se descartan y la numeración
+    # avanza solo con los demás, igual que en el raspado propio.
+    out, organica, anuncios = [], 0, 0
+    for it in filas:
+        if it.get("isPromoted"):
+            anuncios += 1
+            continue
+        organica += 1
+        fila = _normalizar(it, organica)
         if fila["externo_id"]:
             out.append(fila)
-    log.info("buscar(%r, detalle=%s) → %s resultados", termino, con_detalle, len(out))
+        if len(out) >= limite:
+            break
+    log.info("buscar(%r, detalle=%s) → %s orgánicos (%s anuncios descartados)",
+             termino, con_detalle, len(out), anuncios)
     return out
 
 
@@ -202,6 +368,61 @@ async def buscar(termino: str, limite: int = 30,
 # El bloqueo es INTERMITENTE: la misma URL pasa con una IP residencial y cae en el
 # interstitial con otra. Por eso la pageFunction LANZA al detectarlo — así Apify
 # reintenta la request con otra sesión de proxy, que es el único remedio real.
+
+# Buscador. Se raspa con el navegador GENÉRICO y no con el actor de ML porque el
+# de ML cobra $0.09 por CORRIDA y no etiqueta de qué consulta viene cada item
+# (medido: con 5 consultas devuelve todo intercalado, así que agrupar no sirve).
+# El genérico cobra por CÓMPUTO, ~$0.007 por página, y cada página ES una consulta,
+# con lo que la atribución es trivial: una URL, un término.
+_PAGE_FUNCTION_BUSCADOR = r"""
+async function pageFunction(context) {
+  const { page, request } = context;
+  await page.waitForTimeout(3500);
+  let html = await page.content();
+  const malo = (h) => h.includes('suspicious-traffic') || h.includes('account-verification')
+                   || h.includes('not-found-page') || h.includes('Para continuar, ingresa a tu cuenta');
+  if (malo(html)) {
+    await page.waitForTimeout(2500);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3500);
+    html = await page.content();
+  }
+  if (malo(html)) { throw new Error('BLOQUEADO'); }
+  await page.waitForSelector('div.poly-card', { timeout: 15000 });
+  const items = await page.evaluate(() => {
+    const out = [];
+    let organica = 0;
+    document.querySelectorAll('div.poly-card').forEach((el) => {
+      // ANUNCIO: no ocupa posición orgánica y se descarta.
+      const ad = el.querySelector('.poly-component__ads-promotions');
+      if (ad && /ad/i.test(ad.textContent || '')) return;
+      const a = el.querySelector('a.poly-component__title, a[href*="mercadolibre"]');
+      if (!a) return;
+      organica += 1;
+      const t = (s) => { const n = el.querySelector(s); return n ? n.textContent.trim() : null; };
+      const frac = (s) => {
+        const n = el.querySelector(s + ' .andes-money-amount__fraction');
+        return n ? n.textContent.replace(/[^0-9]/g, '') : null;
+      };
+      const img = el.querySelector('img');
+      out.push({
+        posicion: organica,
+        url: (a.href || '').split('#')[0],
+        titulo: t('.poly-component__title'),
+        precio: frac('.poly-price__current'),
+        precio_lista: frac('.poly-price__previous'),
+        descuento: t('.poly-price__disc-label'),
+        seller: t('.poly-component__seller'),
+        imagen: img ? (img.src || img.getAttribute('data-src')) : null,
+        etiquetas: Array.from(el.querySelectorAll('.polylabel-label')).map(x => x.textContent.trim()),
+        envio: t('.poly-component__shipping'),
+      });
+    });
+    return out;
+  });
+  return { url: request.url, items };
+}
+"""
 
 _PAGE_FUNCTION_MAS_VENDIDOS = r"""
 async function pageFunction(context) {

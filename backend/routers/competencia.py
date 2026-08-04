@@ -262,11 +262,14 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
                 if cat else [])
     total = competencia_store.total_terminos(cat) if cat else 0
     top = competencia_store.ranking_categoria(cat, "hoja", limite=20) if cat else []
-    # LA BÚSQUEDA GENERAL, leída POR TÉRMINO y no por SKU: varios SKUs comparten
-    # término y así se mide (y se paga) una sola vez. La búsqueda por título
-    # completo se retiró — era el doble de consultas para un dato que se solapa
-    # con esta.
-    general = competencia_store.busqueda(fila.get("termino_general") or "", 5)
+    # SOLO la búsqueda general (decisión de José, 4-ago). Se lee POR TÉRMINO y no
+    # por SKU: varios SKUs comparten término y así se mide y se paga una sola vez.
+    #
+    # La búsqueda por TÍTULO COMPLETO se retiró tras medirla: los títulos largos
+    # —"Set 2 vasos boba tea con popote y funda reutilizable"— devolvían cero
+    # resultados en ML, mientras los términos cortos sí. Nadie busca así, y pagar
+    # por consultas que vuelven vacías no tiene sentido.
+    general = competencia_store.busqueda(fila.get("termino_general") or "", 10)
 
     return {
         "busqueda_general": general,
