@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -23,6 +23,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
+import { quienSoy } from "@/lib/sesion";
 
 interface SubItem {
   label: string;
@@ -40,6 +41,8 @@ interface NavItem {
   /** Navegable pero en construcción. No es lo mismo que `proximamente`. */
   beta?: boolean;
   submenu?: SubItem[];    // despliega al pasar el cursor (VARIANTE B)
+  /** Solo para admin. Sin esto, la pestaña la ve todo el mundo. */
+  soloAdmin?: boolean;
 }
 
 // Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
@@ -74,9 +77,12 @@ const ITEMS: NavItem[] = [
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
-  { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard" },
-  { id: "migracion", label: "Migración", icon: Database, href: "/migracion" },
-  { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
+  { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard",
+    soloAdmin: true },
+  { id: "migracion", label: "Migración", icon: Database, href: "/migracion",
+    soloAdmin: true },
+  { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
+    soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
   // Análisis como /analisis/reportes.
   { id: "automatizacion", label: "Automatización", icon: Workflow, proximamente: true },
@@ -84,6 +90,21 @@ const ITEMS: NavItem[] = [
 
 export default function AppNavbar() {
   const pathname = usePathname();
+
+  // El rol decide qué pestañas se ven. Esto es COSMÉTICA: quien llame la API
+  // directo se topa igual con core/rbac.py en el backend, que es la autoridad.
+  // Mientras nadie haya iniciado sesión (o el enforcement esté apagado) se
+  // muestran TODAS, para no esconderle nada al equipo antes de tiempo.
+  const [rol, setRol] = useState<string | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    void quienSoy().then((yo) => {
+      if (vivo) setRol(yo.autenticado ? yo.rol : null);
+    });
+    return () => { vivo = false; };
+  }, []);
+
+  const visibles = ITEMS.filter((i) => !i.soloAdmin || rol === null || rol === "admin");
 
   // Submenú al pasar el cursor. Se posiciona FIJO calculando el rect del
   // disparador: el <nav> tiene overflow-x-auto y un menú `absolute` quedaría
@@ -127,7 +148,7 @@ export default function AppNavbar() {
 
         {/* Navegación */}
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
-          {ITEMS.map((item) => {
+          {visibles.map((item) => {
             const Icon = item.icon;
             // Activo también cuando la ruta pertenece a una entrada del
             // submenú que vive FUERA del prefijo (p. ej. /ventas bajo

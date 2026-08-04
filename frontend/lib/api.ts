@@ -1,5 +1,7 @@
 // api.ts — Cliente del backend FastAPI.
 
+import { token } from "./sesion";
+
 import type {
   CanalInfo,
   CompetenciaCorrida,
@@ -86,10 +88,24 @@ export function mensajeDeError(e: unknown, respaldo: string): string {
   return e instanceof ApiError && e.detail ? e.detail : respaldo;
 }
 
+/**
+ * Cabeceras de toda llamada al backend, con el token de sesión si lo hay.
+ *
+ * Se exporta porque en el archivo quedan `fetch()` sueltos que no pasan por
+ * estos ayudantes; todos deben usar esto o se romperán el día que se encienda
+ * el enforcement (AUTH_ENFORCED=true).
+ */
+export function cabeceras(extra: Record<string, string> = {}): Record<string, string> {
+  const h: Record<string, string> = { Accept: "application/json", ...extra };
+  const t = token();
+  if (t) h.Authorization = `Bearer ${t}`;
+  return h;
+}
+
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: cabeceras({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await errorDeRespuesta(res, path);
@@ -102,7 +118,7 @@ const BASE =
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     signal,
-    headers: { Accept: "application/json" },
+    headers: cabeceras(),
     cache: "no-store",
   });
   if (!res.ok) {
@@ -323,7 +339,7 @@ export async function sincronizarDrafts(
 ): Promise<SincronizarDraftsResp> {
   const res = await fetch(`${BASE}/api/crear/drafts/sincronizar?limite=${limite}`, {
     method: "POST",
-    headers: { Accept: "application/json" },
+    headers: cabeceras(),
   });
   if (!res.ok) {
     let detalle = `API ${res.status}`;
@@ -379,7 +395,7 @@ export async function crearProductos(
 ): Promise<CrearProductosResp> {
   const res = await fetch(`${BASE}/api/crear/productos`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: cabeceras({ "Content-Type": "application/json" }),
     body: JSON.stringify({ items, permitir_sin_costo: permitirSinCosto }),
   });
   if (!res.ok) {
@@ -449,7 +465,7 @@ export interface GenerarIAParams {
 export async function generarIA(p: GenerarIAParams): Promise<GenerarIAResp> {
   const res = await fetch(`${BASE}/api/ia/generar`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: cabeceras({ "Content-Type": "application/json" }),
     body: JSON.stringify(p),
   });
   if (!res.ok) throw new Error(`Generación IA falló: ${res.status}`);
@@ -739,7 +755,7 @@ export function sembrarCompetencia(skus: string[], con_ia = true) {
 export async function corregirTerminoCompetencia(sku: string, termino_general: string) {
   const res = await fetch(`${BASE}/api/competencia/skus/${encodeURIComponent(sku)}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: cabeceras({ "Content-Type": "application/json" }),
     body: JSON.stringify({ termino_general }),
   });
   if (!res.ok) throw new Error(`API ${res.status}: corregir término`);
