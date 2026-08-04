@@ -133,8 +133,8 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   stock_full: { titulo: "FULL · Propio", texto: "Piezas en la bodega del marketplace (FULL en Mercado Libre, FBA en Amazon) y piezas en tu bodega propia (DROP). Son inventarios separados y no se suman: reponer significa mover de Propio a FULL." },
   edad: { titulo: "Edad sin venta", texto: "Días desde la última venta registrada. Un número alto con stock encima es dinero detenido." },
   cobertura: { titulo: "Cobertura", texto: "Cuántos días te dura el stock al ritmo de venta del período. Es la columna más accionable: por debajo de 10 días (lo que tarda un envío a FULL) ya vas tarde." },
-  precio: { titulo: "Precio de venta", texto: "El precio de la publicación ACTIVA, por cuenta. Si no hay ninguna activa se muestra en gris el de la pausada, porque ese precio no está vigente hoy." },
-  margen: { titulo: "Margen por cuenta", texto: "Cuánto deja el producto sobre su precio publicado: (precio − costo) ÷ precio, una línea por cuenta alineada con la columna de precio. El costo es uno solo por producto, así que lo único que cambia entre cuentas es el precio. Es margen sobre precio de LISTA: no descuenta la comisión del marketplace ni el envío, y en promoción se vende más barato que la lista. Al ordenar se usa el margen más bajo del producto." },
+  precio: { titulo: "Precio de venta", texto: "Lo que de VERDAD se cobró en promedio durante el período: el dinero vendido dividido entre las piezas. Ya viene ponderado, así que si un producto se vende en dos cuentas a precios distintos, pesa más la que más vendió. Si no hubo ventas en el período se muestra el precio de la publicación activa, por cuenta. Haz clic para ver el desglose por canal." },
+  margen: { titulo: "Margen", texto: "Cuánto deja el producto sobre lo que de verdad se cobró: (precio real − costo) ÷ precio real. El costo es uno solo por producto, así que el margen cambia según a qué precio se vendió. NO descuenta la comisión del marketplace ni el envío. Si no hubo ventas en el período se calcula sobre el precio publicado, una línea por cuenta. Haz clic para ver el desglose por canal." },
   crec: { titulo: "Crecimiento 7 días", texto: "Unidades de los últimos 7 días contra los 7 anteriores. Sirve para cazar lo que despegó antes de que se acabe." },
   spark: { titulo: "Últimos 14 días", texto: "Una barra por día de los últimos 14. Haz clic en la miniatura para abrir el detalle día por día con el desglose por cuenta." },
   sugerido: { titulo: "Sugerido a FULL", texto: "Cuántas piezas conviene mandar a la bodega del marketplace. Se calcula con el ritmo de venta de los últimos 45 días considerando también sus picos (no solo el promedio), para cubrir 24 días: 14 de colchón más 10 que tarda el envío en llegar." },
@@ -271,6 +271,25 @@ function MargenVenta({ fila }: { fila: Fila }) {
   }
   const titulo = `calculado con costo ${fMoney(costo, 2)} (el mismo para todos los canales)`;
 
+  // Espejo de PrecioVenta: si hubo venta, el margen se calcula contra el precio
+  // REALIZADO y sale un solo número. Antes se pintaba uno por cuenta (6.1% y
+  // 70.3% en el mismo renglón) y no había forma de leer "cómo va este SKU".
+  const real = precioRealizado(fila);
+  if (real != null && real > 0) {
+    const m = pct(real);
+    const detalle = lineas
+      .map((p) => `${CUENTA_INI[p.cuenta] ?? p.cuenta} ${fNum(pct(Number(p.price)), 1)}%`)
+      .join(" · ");
+    return (
+      <div
+        title={`${titulo}\nSobre el precio real de venta del período (${fMoney(real, 2)})`
+               + (detalle ? `\nSobre el precio publicado — ${detalle}` : "")}
+      >
+        <span className={`font-semibold tabular-nums ${tono(m)}`}>{fNum(m, 1)}%</span>
+      </div>
+    );
+  }
+
   if (lineas.length === 0) {
     if (pausado == null || pausado <= 0) return <div className="text-slate-300">—</div>;
     return (
@@ -300,9 +319,52 @@ function MargenVenta({ fila }: { fila: Fila }) {
   );
 }
 
+/* Precio REALIZADO promedio del período: ingreso ÷ unidades de los pedidos.
+   Es un promedio PONDERADO por lo vendido, no el promedio simple de los precios
+   publicados — con BK a $949 y SC a $2,999, promediar a secas daría $1,974
+   aunque el 95% se venda en BK. Devuelve null si no hubo venta en el período
+   (sin unidades no hay precio realizado que calcular). */
+function precioRealizado(fila: Fila): number | null {
+  if (!fila.uds || fila.uds <= 0 || fila.venta == null) return null;
+  return fila.venta / fila.uds;
+}
+
+/* Etiquetas de las cuentas donde el SKU tiene publicación activa — el contexto
+   que se pierde al colapsar las líneas en un solo número. */
+function cuentasDe(fila: Fila): string[] {
+  return [...new Set(preciosDeVenta(fila).lineas.map((p) => p.cuenta))];
+}
+
+/* Detalle por cuenta para el tooltip: "BK $949 · SC $2,999". */
+function detallePrecios(fila: Fila): string {
+  const { lineas } = preciosDeVenta(fila);
+  return lineas
+    .map((p) => `${CUENTA_INI[p.cuenta] ?? p.cuenta} ${fMoney(p.price)}`)
+    .join(" · ");
+}
+
 function PrecioVenta({ fila }: { fila: Fila }) {
   const { lineas, pausado } = preciosDeVenta(fila);
   const distintos = [...new Set(lineas.map((p) => Number(p.price)))];
+  const real = precioRealizado(fila);
+
+  // Con venta en el período manda el precio REALIZADO: un solo número que ya
+  // pondera cuánto se vendió en cada cuenta. El desglose por cuenta no se
+  // pierde — vive en el tooltip y, completo, en la ventana por canal.
+  if (real != null) {
+    const detalle = detallePrecios(fila);
+    return (
+      <div
+        title={`Promedio real de venta del período (${fNum(fila.uds)} uds ÷ ${fMoney(fila.venta)})`
+               + (detalle ? `\nPrecio publicado — ${detalle}` : "")}
+      >
+        <div className="font-semibold tabular-nums text-slate-800">{fMoney(real, 2)}</div>
+        {distintos.length > 1 && (
+          <div className="text-[10px] uppercase tracking-wide text-slate-400">promedio</div>
+        )}
+      </div>
+    );
+  }
 
   if (lineas.length === 0) {
     return (
