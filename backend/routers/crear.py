@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from config import settings
+from core.seguridad import requiere_api_key
 from models.schemas import Paginacion, Producto, RespuestaProductos
 from services import (alertas, costing_read, costos, creacion, crear_producto, db,
                       lecturas_fuente, woocommerce)
@@ -131,8 +132,9 @@ class CrearItem(BaseModel):
 
 class CrearRequest(BaseModel):
     items: list[CrearItem]
-    # Opt-in del panel: crear aunque el SKU no tenga costo/precio (queda en
-    # `inprogress`, el precio se captura a mano después en el Estudio).
+    # VESTIGIAL desde el 4-ago: crear sin costo ya es el comportamiento normal
+    # (todo termina en `pending`), así que este flag ya no cambia nada. Se sigue
+    # aceptando para no romper llamadas existentes.
     permitir_sin_costo: bool = False
 
 
@@ -158,9 +160,23 @@ async def crear_productos(req: CrearRequest):
         "encolados": encolados,
         "mensaje": (
             f"{encolados} producto(s) en proceso: Alibaba → IA → imágenes → "
-            "categoría ML → WooCommerce (inprogress). Sigue el avance en esta vista."
+            "categoría ML → WooCommerce. Al terminar aparecen en Productos "
+            "(pending), tengan costo o no. Sigue el avance en esta vista."
         ),
     }
+
+
+@router.post("/destrabar", dependencies=[Depends(requiere_api_key)])
+async def destrabar(aplicar: bool = False, max_items: int = 500):
+    """
+    Saca de `inprogress` los productos atorados y los pasa a `pending`.
+
+    Limpieza del limbo que se acumuló mientras `inprogress` era un desenlace
+    posible: son productos YA procesados (scrape, imágenes, categoría) a los que
+    solo les quedó mal la etiqueta, así que no se re-scrapea nada.
+    Por defecto es SIMULACRO: dice qué movería. Con `aplicar=true` lo hace.
+    """
+    return await crear_producto.destrabar_inprogress(aplicar, max_items)
 
 
 @router.get("/progreso")

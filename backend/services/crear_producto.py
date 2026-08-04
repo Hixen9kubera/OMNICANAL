@@ -9,7 +9,7 @@ Alibaba) se ejecuta en segundo plano:
   3. Gemini       → limpia logos/textos de hasta 10 imágenes → WordPress Media
   4. Mercado Libre→ categoría (ml_cat_id de costos_finales, o domain_discovery)
   5. MySQL        → precios (costos_finales) y costos (costos_validados)
-  6. WooCommerce  → update completo + status draft → inprogress (batch API)
+  6. WooCommerce  → update completo + status draft → pending (batch API)
 
 El producto desaparece de "Crear Productos" y aparece en la pestaña Omnicanal.
 El avance se consulta en GET /api/crear/progreso (cola en memoria).
@@ -27,7 +27,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import costos, db, meli, woocommerce
+from services import costos, db, meli, woocommerce, wp_db
 
 log = logging.getLogger("omnicanal.crear_producto")
 
@@ -136,8 +136,10 @@ def encolar(items: list[dict[str, Any]], permitir_sin_costo: bool = False) -> in
     """
     Encola items {sku, wc_id, alibaba_url} para creación en segundo plano.
     Ignora SKUs que ya están en cola o procesándose. Devuelve cuántos encoló.
-    `permitir_sin_costo`: opt-in del panel para crear aunque el SKU no tenga
-    costo/precio (queda en `inprogress`, precio se pone a mano en el Estudio).
+
+    `permitir_sin_costo`: VESTIGIAL desde el 4-ago. Era el opt-in para crear sin
+    costo; ahora ese es el comportamiento normal (todo termina en `pending`), así
+    que ya no cambia nada. Se sigue aceptando para no romper a quien lo mande.
     """
     n = 0
     for it in items:
@@ -660,6 +662,60 @@ async def _estado_wc(wc_id: int, status: str) -> None:
         r.raise_for_status()
 
 
+async def destrabar_inprogress(aplicar: bool = False,
+                               max_items: int = 500) -> dict[str, Any]:
+    """
+    Saca de `inprogress` los productos que quedaron atorados y los pasa a
+    `pending`, que es donde se ven en Productos.
+
+    Limpieza de una sola vez del limbo acumulado ANTES de que `inprogress`
+    dejara de ser un desenlace posible (4-ago). Esos productos ya están
+    completamente procesados —scrape, imágenes, categoría, descripción—; lo
+    único mal es la etiqueta, así que NO se re-scrapea ni se vuelve a llamar a
+    Apify/IA: es solo el cambio de estado.
+
+    Seguro de correr en bloque: `inprogress` y `pending` son ambos "inactivo"
+    para el panel, ningún cron actúa sobre `pending`, y publicar es siempre
+    manual (y `publicar_ready` rechaza sin precio).
+
+    `aplicar=False` (default) es simulacro: dice qué movería sin tocar nada.
+    """
+    atorados = [p for p in await asyncio.to_thread(wp_db.indice_drafts)
+                if (p.get("estado") or "") == "inprogress"][:int(max_items)]
+    muestra = [{"sku": p["sku"], "wc_id": p["wc_id"], "nombre": p["nombre"][:60]}
+               for p in atorados[:10]]
+    if not aplicar:
+        return {"ok": True, "simulacro": True, "encontrados": len(atorados),
+                "moveria_a": "pending", "muestra": muestra}
+
+    # Por LOTES: la batch API acepta varios en una petición. 85 sueltas tardaban
+    # minutos y podían morder el timeout del proxy; así son 2.
+    movidos, fallidos = 0, []
+    async with woocommerce._client() as cli:
+        for i in range(0, len(atorados), 50):
+            lote = atorados[i:i + 50]
+            try:
+                r = await cli.post(
+                    "/products/batch",
+                    json={"update": [{"id": p["wc_id"], "status": "pending"}
+                                     for p in lote]},
+                    timeout=120.0,
+                )
+                r.raise_for_status()
+                for p in lote:
+                    woocommerce.quitar_de_drafts(p["wc_id"])  # sale de Crear ya
+                movidos += len(lote)
+            except Exception as exc:  # noqa: BLE001
+                fallidos.append({"lote": f"{i}-{i + len(lote)}",
+                                 "skus": [p["sku"] for p in lote][:5],
+                                 "error": f"{type(exc).__name__}: {exc}"[:160]})
+    log.info("destrabar_inprogress: %d movidos a pending, %d lotes fallidos",
+             movidos, len(fallidos))
+    return {"ok": True, "simulacro": False, "encontrados": len(atorados),
+            "movidos": movidos, "lotes_fallidos": len(fallidos),
+            "detalle_fallos": fallidos[:10], "muestra": muestra}
+
+
 def _fmt(v: Any) -> str | None:
     if v in (None, ""):
         return None
@@ -762,16 +818,16 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 _set(sku, "error", "No se encontró el producto en WooCommerce")
                 return
 
-            # Guard anti-daño: sin costo/precio el producto nunca quedaría completo
-            # y el flujo pisaría el nombre/imagen de Odoo para dejarlo tullido en
-            # `inprogress`. Se aborta ANTES de scrapear/subir imágenes/sobrescribir;
-            # el draft queda intacto en Crear Productos. El panel puede forzarlo con
-            # `permitir_sin_costo` (se pone el precio a mano después en el Estudio).
-            if not permitir_sin_costo and not await asyncio.to_thread(_tiene_costo_base, sku):
-                _set(sku, "error",
-                     "Falta costo/precio: agrégalo en Costos antes de crear "
-                     "(el producto se dejó intacto).", wc_id=wc_id)
-                return
+            # Falta de costo: YA NO ABORTA (cambio del 4-ago).
+            # El guard existía porque sin costo el producto terminaba en
+            # `inprogress`, y esa pestaña es Crear, no Productos: el producto se
+            # "creaba" pero quedaba invisible y había que empujarlo a mano. Ahora
+            # el desenlace SIEMPRE es `pending`, así que crear sin costo lo deja
+            # justo donde el costo se captura. Medido en los 7 días previos: 34
+            # SKUs bloqueados aquí + 33 creados que cayeron en `inprogress`.
+            # Lo que SÍ sigue abortando es un scrape inservible (abajo): ahí el
+            # riesgo real es pisar el nombre/imagen de Odoo con basura.
+            sin_costo = not await asyncio.to_thread(_tiene_costo_base, sku)
 
             _set(sku, "procesando", "1/5 · Scrapeando Alibaba…", wc_id=wc_id)
             scrape = await scrape_alibaba(url)
@@ -884,22 +940,38 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
 
             wc_prod = await _actualizar_wc(wc_id, payload)
 
-            # Paso 9: completitud → pending (100%) o inprogress (parcial).
-            # Con `permitir_sin_costo` (opt-in del panel) NO se deja en `inprogress`
-            # (que el usuario ve como "limbo"): va a `pending` para que caiga en la
-            # cola de Productos y se valide/complete a mano (p. ej. capturar el precio).
+            # Paso 9: el desenlace SIEMPRE es `pending`.
+            # `inprogress` se retiró como resultado posible (4-ago): la vista
+            # Productos es publish/pending/ready y la de Crear es draft/inprogress,
+            # así que dejarlo `inprogress` lo volvía invisible justo donde se le
+            # captura el costo, y seguía listado en Crear como no creado. Lo que
+            # falte se sigue diciendo en el resumen y en `crear_logs`.
+            # Publicar sigue protegido aguas abajo: `publicar_ready` rechaza con
+            # "Faltan datos: precio" si el precio es 0, así que un `pending` a
+            # medias no puede colarse a Mercado Libre.
+            #
+            # El precio también se busca en las VARIANTES: un padre variable no
+            # guarda `_regular_price` propio, así que se le declaraba "sin precio"
+            # teniéndolo. Medido: de 85 productos atorados en `inprogress`, 44 eran
+            # variables y 41 ya tenían precio en sus variantes ($1,364–$14,378).
+            # Es la misma corrección que `publicar_ready` ya hacía al publicar.
             tiene_precio = bool(_fmt(dinero.get("precio_sugerido")) or _fmt(dinero.get("precio_base")))
+            if not tiene_precio:
+                tiene_precio = bool(await asyncio.to_thread(
+                    wp_db.precio_regular_variantes, wc_id))
             tiene_imgs = bool(imagenes)
             tiene_attrs = len(atributos) >= 2  # BRAND + al menos 1 más
-            completo = bool(cat) and tiene_precio and tiene_imgs and tiene_attrs
-            status_final = "pending" if (completo or permitir_sin_costo) else "inprogress"
+            status_final = "pending"
             await _estado_wc(wc_id, status_final)
 
+            # El estado ya no distingue completo de parcial, así que lo que falta
+            # se reporta aquí: es lo que queda como pendiente HUMANO en Productos.
             faltan = []
             if not cat: faltan.append("categoría")
             if not tiene_precio: faltan.append("precio")
             if not tiene_imgs: faltan.append("imágenes")
             if not tiene_attrs: faltan.append("atributos")
+            if sin_costo: faltan.append("costo")
             resumen = (f"{len(imagenes)} imgs · {len(atributos)} atributos · "
                        f"{('categoría ' + cat['category_id']) if cat else 'sin categoría'}")
             resumen += f" → {status_final.upper()}"

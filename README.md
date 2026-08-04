@@ -3673,6 +3673,60 @@ Con esto cierra el hilo completo: v0.49.1 hizo visible el costo por variante,
 v0.49.2 permitió calcularlo, v0.49.4 permitió guardarlo, y v0.50.1 evita que se
 pierda. Versión 0.50.1.
 
+### v0.51.0 — Crear Productos: se acabó el limbo (todo termina en Productos)
+
+**El síntoma.** Al crear un producto sin costo el proceso "terminaba" pero el
+producto no aparecía en Productos: quedaba en `inprogress` y seguía listado en
+Crear como no creado. Pasaba por lotes (~16 y 13 en días seguidos) y cada vez
+había que empujarlo a mano con `permitir_sin_costo=true` por la API.
+
+**El mecanismo.** Las vistas reparten por estado: Productos es
+`publish/pending/ready` y Crear es `draft/inprogress`. Dejar un producto en
+`inprogress` lo volvía **estructuralmente invisible** justo en la pestaña donde
+se le captura el costo. Medido en los 7 días previos: de 87 creaciones, **33
+cayeron en `inprogress`**, y de 38 errores **34 eran el guard de costo** que
+abortaba antes de empezar — unos **67 SKUs atorados por semana**.
+
+**Los cuatro cambios:**
+
+1. **El desenlace siempre es `pending`.** `inprogress` se retira como resultado
+   posible del flujo de creación.
+2. **La falta de costo ya no aborta.** El guard existía porque sin costo el
+   producto acababa en `inprogress`; con el punto 1 esa premisa desaparece.
+   Lo que SÍ sigue abortando es un scrape inservible de Alibaba — ahí el riesgo
+   real es pisar el nombre/imagen de Odoo con basura.
+3. **La completitud lee el precio de las VARIANTES.** Un padre variable no
+   guarda `_regular_price` propio, así que se le declaraba "sin precio"
+   teniéndolo: de los 85 atorados, **44 eran variables y 41 ya tenían precio en
+   sus variantes ($1,364–$14,378)**. Se reusa `wp_db.precio_regular_variantes`,
+   la misma corrección que `publicar_ready` ya aplicaba al publicar.
+4. **Se retiró la casilla "Crear sin costo"** del panel: con el punto 1 ya no
+   cambiaba nada y era un control que no hacía nada. El parámetro
+   `permitir_sin_costo` se sigue aceptando en la API (vestigial) para no romper
+   llamadas existentes.
+
+**Limpieza del limbo acumulado.** `POST /api/crear/destrabar` pasa a `pending`
+los que quedaron en `inprogress`. Son productos YA procesados —85/85 con scrape
+e imagen de portada, 84/85 con categoría y descripción— a los que solo les quedó
+mal la etiqueta: **no se re-scrapea ni se vuelve a llamar a Apify/IA**. Por
+defecto es simulacro; con `aplicar=true` lo hace, por lotes de 50 (2 peticiones
+en vez de 85).
+
+**Por qué mover en bloque es seguro:** `inprogress` y `pending` son ambos
+"inactivo" para el panel, ningún cron actúa sobre `pending`, publicar es siempre
+manual, y `publicar_ready` rechaza con *"Faltan datos: precio"* — un `pending` a
+medias no puede colarse a Mercado Libre.
+
+**Lo que este cambio NO resuelve** (diagnosticado, pendiente de decisión):
+Apify **sí** trae el costo de Alibaba, pero `_procesar` lo guarda solo como meta
+de Woo (`alibaba_price`, `cbm_producto`) y **nunca en `costos_validados`**, que
+es de donde `_tiene_costo_base` y `costos.asegurar_finales` leen. Medido: de los
+30 SKUs más recientes solo **3 tienen fila en `costos_validados`**, pero **25 de
+26 tienen `alibaba_price` en Woo**. El dato llega y se estaciona en la tabla
+equivocada. Sembrar `costos_validados` desde el scrape exige topes de sensatez
+primero: se detectaron valores inverosímiles (precio $21,245.91, peso 500 kg,
+cbm 1.5 m³) que vienen de la heurística `_precio_alibaba_real`. Versión 0.51.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
