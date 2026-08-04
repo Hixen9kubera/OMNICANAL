@@ -53,6 +53,10 @@ _PAUSA_ENTRE = float(os.environ.get("COMPETENCIA_PAUSA", "8"))
 _LOTE_NAVEGADOR = int(os.environ.get("COMPETENCIA_LOTE", "0"))  # 0 = sin reinicio
 _MAX_INTENTOS = 3
 _ESPERA_MAX = 25
+# Tope duro de consultas por corrida. Es un freno, no una meta: sin él un bucle mal
+# parametrizado puede lanzar miles de peticiones seguidas a ML, que es exactamente
+# la conducta que hace que corten la cuenta. 0 = sin tope.
+_TOPE_CONSULTAS = int(os.environ.get("COMPETENCIA_TOPE", "150"))
 
 _RE_ID = re.compile(r"MLMU?\d{9,12}")
 # El id de la publicación tiene 9-12 dígitos tras MLM; los de campaña publicitaria
@@ -130,6 +134,11 @@ def buscar(terminos: list[str], limite: int = 5,
     consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
     if not consultas or not disponible():
         return {}
+    if _TOPE_CONSULTAS and len(consultas) > _TOPE_CONSULTAS:
+        log.warning("Se pidieron %s consultas y el tope por corrida es %s: se "
+                    "recortan. Sube COMPETENCIA_TOPE si de verdad hacen falta.",
+                    len(consultas), _TOPE_CONSULTAS)
+        consultas = consultas[:_TOPE_CONSULTAS]
 
     from bs4 import BeautifulSoup
     from selenium.webdriver.common.by import By

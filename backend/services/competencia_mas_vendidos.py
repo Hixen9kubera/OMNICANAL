@@ -265,6 +265,16 @@ def _navegador(visible: bool = False):
     proxy = os.environ.get("COMPETENCIA_PROXY")
     if proxy:
         op.add_argument(f"--proxy-server={proxy}")
+    # No se descargan imágenes ni fuentes. La URL de la foto sigue en el DOM —que
+    # es lo único que se guarda, nunca el archivo— así que no se pierde ningún
+    # dato. A cambio cada página baja mucho: una de resultados pesa ~2 MB de HTML
+    # más las imágenes, y una corrida de 564 búsquedas rondaría los 2 GB.
+    # `COMPETENCIA_CON_IMAGENES=1` las vuelve a cargar, para depurar la vista real.
+    if os.environ.get("COMPETENCIA_CON_IMAGENES") != "1":
+        op.add_experimental_option("prefs", {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.managed_default_content_settings.stylesheets": 1,
+        })
     op.add_argument("--window-size=1440,2400")
     op.add_argument("--lang=es-MX")
     op.add_argument("--disable-blink-features=AutomationControlled")

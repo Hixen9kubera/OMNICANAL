@@ -63,3 +63,8 @@ ambiguos.json
 
 # Base local del módulo de Competencia (datos desechables, se reescriben cada mes)
 backend/competencia.db
+
+# Perfil de Chrome del raspador de Competencia: trae la SESIÓN de la cuenta
+# dedicada de Mercado Libre. Nunca al repo. Vive en ~/.competencia-chrome,
+# pero se ignora también aquí por si alguien lo copia al proyecto.
+.competencia-chrome/
