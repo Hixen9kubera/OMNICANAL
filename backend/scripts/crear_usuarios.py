@@ -1,4 +1,4 @@
-"""
+r"""
 crear_usuarios.py — Da de alta al equipo en el panel.
 
 CÓMO FUNCIONA LA IDENTIDAD (y por qué son dos pasos)
@@ -102,6 +102,59 @@ def contrasena() -> str:
     return "".join(secrets.choice(alfabeto) for _ in range(16))
 
 
+def sql_perfiles(perfiles: list[tuple[str, str, str, str]]) -> str:
+    """El INSERT que deja a cada quien con su rol. Idempotente."""
+    filas = ",\n       ".join(
+        "('{}'::uuid, '{}', '{}'::citext, '{}')".format(
+            uid, nombre.replace("'", "''"), correo, rol)
+        for uid, nombre, correo, rol in perfiles)
+    return (
+        "insert into core.usuarios (id, nombre, email, rol, activo)\n"
+        "select id, nombre, email, rol, true from (values\n"
+        f"       {filas}\n"
+        ") as x(id, nombre, email, rol)\n"
+        "on conflict (id) do update set nombre = excluded.nombre,\n"
+        "    email = excluded.email, rol = excluded.rol, activo = true;"
+    )
+
+
+def guardar_perfiles(perfiles: list[tuple[str, str, str, str]]) -> None:
+    """
+    Escribe el PERFIL y el ROL en core.usuarios.
+
+    POR QUÉ NO SE USA LA API REST (aprendido en carne propia, 4-ago-2026)
+    --------------------------------------------------------------------
+    PostgREST solo expone los esquemas `public` y `graphql_public`; una escritura
+    a `core.usuarios` responde PGRST106 y falla EN SILENCIO. Exponer `core` sería
+    abrirle a la API pública el esquema del equipo de migración — no se hace.
+    Por eso el perfil se escribe por conexión DIRECTA a Postgres.
+
+    Sin cadena de conexión no se inventa nada: se imprime el SQL para pegarlo en
+    el editor de Supabase. Un usuario sin fila aquí NO queda suelto — `identidad.
+    _perfil_en_kubera` le da el rol mínimo (`lectura`), nunca admin.
+    """
+    if not perfiles:
+        return
+    sql = sql_perfiles(perfiles)
+    dsn = (os.environ.get("KUBERA_DB_URL") or os.environ.get("SUPABASE_DB_URL") or "").strip()
+    if dsn:
+        try:
+            import psycopg2
+            with psycopg2.connect(dsn, connect_timeout=15) as cx:
+                with cx.cursor() as cur:
+                    cur.execute(sql)
+            print(f"\nPerfiles y roles guardados en core.usuarios: {len(perfiles)}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            print(f"\nNo se pudo escribir core.usuarios ({type(exc).__name__}: {exc}).")
+
+    print("\n" + "=" * 74)
+    print("FALTA EL PERFIL Y EL ROL — pega esto en el editor SQL de Supabase")
+    print("(sin esta fila, cada quien entra con el rol MÍNIMO: solo lectura)")
+    print("=" * 74)
+    print(sql)
+
+
 def main() -> int:
     aplicar = "--aplicar" in sys.argv
     url = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
@@ -135,6 +188,7 @@ def main() -> int:
         print(f"\nYa existían en Supabase Auth: {len(existentes)}")
 
         nuevos: list[tuple[str, str, str]] = []
+        perfiles: list[tuple[str, str, str, str]] = []
         print("\n" + "=" * 74)
         for nombre, correo, rol in EQUIPO:
             clave = correo.lower()
@@ -155,16 +209,10 @@ def main() -> int:
                 nuevos.append((nombre, correo, tmp))
                 print(f"   + {correo:32} creado")
 
-            if not uid:
-                continue
-            # Perfil + rol en core.usuarios (PostgREST sobre el esquema core).
-            p = cx.post(f"{url}/rest/v1/usuarios",
-                        headers={**h, "Content-Profile": "core",
-                                 "Prefer": "resolution=merge-duplicates"},
-                        json={"id": uid, "nombre": nombre,
-                              "email": correo, "rol": rol, "activo": True})
-            if p.status_code not in (200, 201, 204):
-                print(f"       (perfil no guardado: {p.text[:110]})")
+            if uid:
+                perfiles.append((uid, nombre, correo, rol))
+
+    guardar_perfiles(perfiles)
 
     if nuevos:
         compartida = bool((os.environ.get("CLAVE_TEMPORAL") or "").strip())

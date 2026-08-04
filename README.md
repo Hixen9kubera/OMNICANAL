@@ -3793,6 +3793,29 @@ la comprobación de que un método no listado —DELETE, PUT— también nace ce
 Nada de esto enciende un flujo: `AUTH_ENFORCED` y `RBAC_ENFORCED` siguen en
 observación. Versión 0.52.0.
 
+### v0.52.1 — Fix: el alta de usuarios guardaba la cuenta pero NO el rol (y no avisaba)
+
+Al dar de alta al equipo (4-ago) las 11 cuentas se crearon en Supabase Auth,
+pero **los 11 perfiles fallaron**: `core.usuarios` quedó en 0 filas.
+
+**La causa.** `crear_usuarios.py` escribía el perfil por la API REST, y
+**PostgREST solo expone `public` y `graphql_public`** — cualquier escritura a
+`core.usuarios` responde `PGRST106`. El script imprimía el error en una línea
+recortada a 110 caracteres por usuario, entre once líneas de "creado": se veía
+como ruido, no como un fallo. La cura correcta NO es exponer `core` a la API
+pública (sería abrirle el esquema del equipo de migración a cualquiera): el
+perfil ahora se escribe por conexión DIRECTA a Postgres (`KUBERA_DB_URL` o
+`SUPABASE_DB_URL`).
+
+**Y si no hay cadena de conexión, no se inventa nada:** imprime el `INSERT ...
+ON CONFLICT` listo para pegar en el editor SQL de Supabase, con las comillas
+simples de los nombres ya escapadas.
+
+**Por qué no era grave, y por qué igual había que arreglarlo:** un usuario sin
+fila en `core.usuarios` no queda suelto — `identidad._perfil_en_kubera` le da
+el rol MÍNIMO (`lectura`), nunca admin. O sea el equipo entraría, pero sin
+poder hacer su trabajo, y sin ninguna señal de por qué. Versión 0.52.1.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
