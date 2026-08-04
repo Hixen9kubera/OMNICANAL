@@ -858,6 +858,15 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             med = sub.get("mediana")
             f["pos_en_raiz"] = sub.get("pos_en_raiz")
             f["volumen_mercado"] = sub.get("volumen_mercado")
+            # ¿ESTAMOS en el top de nuestra subcategoría? Es el logro que la vista
+            # debe celebrar con una corona: significa que una de nuestras
+            # publicaciones aparece entre los más vendidos del nicho. Se busca por
+            # `sku_nuestro`, que `_marcar` llena cruzando el ranking contra nuestras
+            # publicaciones — no por título, que difiere por tienda.
+            mias = [x["posicion"] for x in (sub.get("top") or [])
+                    if x.get("sku_nuestro") == f["sku"]]
+            f["posicion_top"] = min(mias) if mias else None
+            f["en_top"] = bool(mias)
             # El precio de referencia: el más bajo que realmente cobramos.
             precios = [t["precio"] for t in f["tiendas"] if t.get("precio")]
             f["precio_ref"] = min(precios) if precios else None

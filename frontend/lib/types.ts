@@ -773,6 +773,9 @@ export interface CompetenciaSkuVista extends CompetenciaFilaSku {
   n_terminos: number;
   /** La publicación PAUSADA tiene más tráfico que la activa. */
   pausada_es_la_que_vende: boolean;
+  /** Aparecemos en el top de nuestra subcategoría, y en qué posición. */
+  posicion_top: number | null;
+  en_top: boolean;
 }
 
 export interface CompetenciaSubcategoria {

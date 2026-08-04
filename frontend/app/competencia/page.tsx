@@ -8,7 +8,7 @@ import {
   Eye,
   Info,
   Check,
-  Copy,
+  X,
   Search,
   Target,
   Crown,
@@ -366,7 +366,19 @@ function FilasSku({
                 <Foto src={s.imagen} alt={s.sku} />
               </td>
               <td rowSpan={span} className="py-2 pr-3 align-top">
-                <div className="font-mono text-xs font-medium text-slate-900">{s.sku}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-mono text-xs font-medium text-slate-900">{s.sku}</span>
+                  {/* Corona: estamos entre los más vendidos de nuestro nicho. Es el
+                      único logro que la tabla puede celebrar, así que se ve primero. */}
+                  {s.en_top ? (
+                    <span
+                      className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-bold text-amber-800"
+                      title={`Estamos en el top de la subcategoría, en la posición #${s.posicion_top}`}
+                    >
+                      <Crown size={9} />#{s.posicion_top}
+                    </span>
+                  ) : null}
+                </div>
                 <div className="max-w-[220px] text-[11px] leading-snug text-slate-500">
                   {s.nombre}
                 </div>
@@ -469,14 +481,15 @@ function FilasSku({
     </>
   );
 }
-
 /**
- * El detalle de un SKU, todo bajo COMPETENCIA DIRECTA.
+ * El detalle de un SKU: quién lidera su nicho y con qué palabras.
  *
- * Un solo eje: los títulos que hoy ganan el ranking de la subcategoría, nuestras
- * publicaciones al lado, y un título que la IA propone a partir de esos líderes.
- * El panel de "término general" se fue: la decisión no es qué se busca en
- * abstracto sino cómo se llama lo que ya se vende en el nicho.
+ * Solo dos bloques. "Nuestras publicaciones" se fue porque ya está en la fila de
+ * arriba —la misma barra por tienda, con título, precio, visitas y ventas— y
+ * repetirla no agregaba nada. El generador de título también: lo que se pidió aquí
+ * son los términos y las palabras clave del nicho.
+ *
+ * Tampoco se muestra el largo en caracteres de los títulos ajenos: era ruido.
  */
 function DetalleSku({
   d,
@@ -485,16 +498,14 @@ function DetalleSku({
   d: CompetenciaDetalleSku | null;
   cargando: boolean;
 }) {
-  const [sug, setSug] = useState<CompetenciaSugerenciaSku | null>(null);
+  const [sug, setSug] = useState<CompetenciaSugerenciaSub | null>(null);
   const [pidiendo, setPidiendo] = useState(false);
   const [fallo, setFallo] = useState<string | null>(null);
-  const [copiado, setCopiado] = useState(false);
 
   // Al cambiar de SKU la sugerencia anterior deja de aplicar.
   useEffect(() => {
     setSug(null);
     setFallo(null);
-    setCopiado(false);
   }, [d?.sku]);
 
   if (cargando)
@@ -504,6 +515,8 @@ function DetalleSku({
       </div>
     );
   if (!d) return null;
+
+  const TOPE = 5;
 
   return (
     <div className="space-y-3 border-y border-indigo-100 bg-indigo-50/30 px-4 py-4">
@@ -522,217 +535,167 @@ function DetalleSku({
         </div>
       ) : null}
 
-      {/* ── Los que hoy ganan el nicho ── */}
-      <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-          Los que lideran {d.categoria_nombre}
-        </div>
-        {d.top.length === 0 ? (
-          <div className="py-3 text-center text-xs text-slate-400">
-            Sin ranking guardado de esta subcategoría.
+      <div className="grid gap-3 lg:grid-cols-2">
+        {/* ── Los 5 que lideran el nicho ── */}
+        <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+            Top {TOPE} de {d.categoria_nombre}
           </div>
-        ) : (
-          <div className="space-y-1">
-            {d.top.slice(0, 8).map((r) => (
-              <a
-                key={r.externo_id}
-                href={r.url ?? "#"}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-2 rounded p-1 hover:bg-slate-50"
-              >
-                <Medalla pos={r.posicion} />
-                <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
-                <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
-                  {r.titulo ?? r.externo_id}
-                </span>
-                <span className="w-8 text-right text-[10px] tabular-nums text-slate-400">
-                  {r.titulo ? r.titulo.length : "—"}c
-                </span>
-                <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
-                  {mxn(r.precio)}
-                </span>
-                <span className="w-16 text-right text-[10px] tabular-nums text-slate-400">
-                  {num(r.visitas_30d)} vis
-                </span>
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ── Nuestras publicaciones, con su propio título ── */}
-      <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-          Nuestras publicaciones
-        </div>
-        <div className="space-y-1.5">
-          {d.publicaciones.map((p) => (
-            <div key={`${p.cuenta}-${p.ml_item_id}`} className="rounded bg-slate-50 p-2">
-              <div className="mb-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]">
-                <span className="font-semibold text-slate-700">{p.cuenta}</span>
-                <span
-                  className={`rounded px-1 py-0.5 text-[9px] ${
-                    p.estado === "active"
-                      ? "bg-emerald-100 text-emerald-700"
-                      : "bg-amber-100 text-amber-700"
-                  }`}
-                >
-                  {p.estado}
-                </span>
+          {d.top.length === 0 ? (
+            <div className="py-3 text-center text-xs text-slate-400">
+              Sin ranking guardado de esta subcategoría.
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {d.top.slice(0, TOPE).map((r) => (
                 <a
-                  href={p.url ?? "#"}
+                  key={r.externo_id}
+                  href={r.url ?? "#"}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-0.5 font-mono text-indigo-600 hover:underline"
+                  className={`flex items-center gap-2 rounded p-1 hover:bg-slate-50 ${
+                    r.es_nuestro ? "bg-amber-50" : ""
+                  }`}
                 >
-                  {p.ml_item_id}
-                  <ExternalLink size={9} />
-                </a>
-                <span className="ml-auto font-medium tabular-nums text-slate-900">
-                  {mxn(p.precio)}
-                </span>
-              </div>
-              <div className="mb-1 flex items-start gap-1.5">
-                <span className="text-[11px] leading-snug text-slate-600">
-                  {p.titulo ?? "— sin título —"}
-                </span>
-                {p.titulo ? (
-                  <span className="shrink-0 text-[10px] tabular-nums text-slate-400">
-                    {p.titulo.length}c
+                  <Medalla pos={r.posicion} />
+                  <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
+                    {r.titulo ?? r.externo_id}
                   </span>
+                  {r.es_nuestro ? (
+                    <Crown size={11} className="shrink-0 text-amber-600" />
+                  ) : null}
+                  <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
+                    {mxn(r.precio)}
+                  </span>
+                  <span className="w-16 text-right text-[10px] tabular-nums text-slate-400">
+                    {num(r.visitas_30d)} vis
+                  </span>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* ── Los 5 términos más buscados y las palabras a usar ── */}
+        <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Top {TOPE} términos más buscados
+            </span>
+            {d.terminos_total ? (
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                  d.terminos_cubiertos === 0
+                    ? "bg-rose-100 text-rose-800"
+                    : "bg-amber-100 text-amber-800"
+                }`}
+                title="De todos los términos que ML publica, cuántos cubre nuestro título"
+              >
+                {d.terminos_cubiertos} de {d.terminos_total} cubiertos
+              </span>
+            ) : null}
+          </div>
+
+          {d.terminos.length === 0 ? (
+            <div className="py-3 text-center text-xs text-slate-400">
+              Mercado Libre no publica términos de búsqueda de esta categoría.
+            </div>
+          ) : (
+            <ol className="space-y-0.5">
+              {d.terminos.slice(0, TOPE).map((t) => (
+                <li key={t.termino} className="flex items-center gap-2 text-xs">
+                  <span className="w-4 text-right tabular-nums text-slate-300">
+                    {t.posicion}
+                  </span>
+                  {t.cubierto ? (
+                    <Check size={12} className="shrink-0 text-emerald-600" />
+                  ) : (
+                    <X size={12} className="shrink-0 text-rose-400" />
+                  )}
+                  <span className={t.cubierto ? "text-slate-700" : "text-slate-500"}>
+                    {t.termino}
+                  </span>
+                  {/* Los títulos difieren por tienda: una puede ser encontrable y
+                      la otra no con el mismo SKU. */}
+                  {t.cubierto_por?.length &&
+                  t.cubierto_por.length < d.publicaciones.length ? (
+                    <span className="rounded bg-emerald-50 px-1 text-[9px] font-medium text-emerald-700">
+                      solo {t.cubierto_por.join(" · ")}
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          )}
+
+          <div className="mt-2 border-t border-slate-100 pt-2">
+            <button
+              onClick={async () => {
+                if (!d.categoria_id) return;
+                setPidiendo(true);
+                setFallo(null);
+                try {
+                  setSug(await sugerirSubcategoria(d.categoria_id));
+                } catch (e) {
+                  setFallo(e instanceof Error ? e.message : "La IA no pudo sugerir.");
+                } finally {
+                  setPidiendo(false);
+                }
+              }}
+              disabled={pidiendo || !d.categoria_id}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-white px-2 py-1 text-[11px] font-medium text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-50 disabled:opacity-50"
+            >
+              {pidiendo ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <Sparkles size={11} />
+              )}
+              {sug ? "Otra sugerencia" : "Sugerir palabras clave"}
+            </button>
+
+            {fallo ? (
+              <div className="mt-1.5 text-[11px] text-rose-700">{fallo}</div>
+            ) : null}
+
+            {sug ? (
+              <div className="mt-2 space-y-1">
+                {sug.palabras.slice(0, TOPE).map((p) => (
+                  <div key={p.palabra} className="flex items-start gap-2 text-[11px]">
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 font-semibold ${
+                        p.respaldada
+                          ? "bg-indigo-50 text-indigo-800"
+                          : "bg-amber-100 text-amber-900"
+                      }`}
+                      title={
+                        p.respaldada
+                          ? "Sale de los términos buscados o de los títulos líderes"
+                          : "No aparece en la demanda medida ni en los títulos líderes: la IA la propuso sola"
+                      }
+                    >
+                      {p.palabra}
+                      {p.respaldada ? "" : " ⚠"}
+                    </span>
+                    <span className="text-slate-600">{p.porque}</span>
+                  </div>
+                ))}
+                {sug.evitar_descartados.length > 0 ? (
+                  <div className="flex items-start gap-1.5 pt-1 text-[10px] text-amber-800">
+                    <AlertTriangle size={10} className="mt-0.5 shrink-0" />
+                    La IA sugirió evitar {sug.evitar_descartados.join(", ")}, pero son
+                    términos que la gente SÍ busca. Se descartaron.
+                  </div>
                 ) : null}
               </div>
-              <div className="flex gap-3 text-[10px] tabular-nums text-slate-500">
-                <span>
-                  <Eye size={9} className="mr-0.5 inline" />
-                  {num(p.visitas_30d)} vis
-                </span>
-                <span>{num(p.unidades_30d)} u</span>
-                <span>
-                  {/* Con 0 visitas la conversión es INDEFINIDA, no 0%. */}
-                  {p.conversion_30d === null || p.conversion_30d === undefined
-                    ? "—"
-                    : `${p.conversion_30d}%`}{" "}
-                  conv
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── El título que propone la IA a partir de esos líderes ── */}
-      <div className="rounded-lg bg-white p-3 ring-1 ring-indigo-200">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
-            <Sparkles size={11} /> Título sugerido (máx. 60 caracteres)
-          </span>
-          <button
-            onClick={async () => {
-              setPidiendo(true);
-              setFallo(null);
-              try {
-                setSug(await sugerirSku(d.sku));
-              } catch (e) {
-                setFallo(e instanceof Error ? e.message : "La IA no pudo sugerir.");
-              } finally {
-                setPidiendo(false);
-              }
-            }}
-            disabled={pidiendo}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            {pidiendo ? (
-              <Loader2 size={11} className="animate-spin" />
-            ) : (
-              <Sparkles size={11} />
-            )}
-            {sug ? "Otra propuesta" : "Sugerir título"}
-          </button>
-        </div>
-
-        {fallo ? <div className="text-[11px] text-rose-700">{fallo}</div> : null}
-
-        {!sug && !fallo ? (
-          <div className="text-[11px] leading-snug text-slate-400">
-            La IA lee los títulos de los líderes de arriba y los términos más
-            buscados que no cubrimos, y propone un título. El largo y la cobertura
-            se recalculan aquí: lo que la IA presume de su propio título no basta.
-          </div>
-        ) : null}
-
-        {sug ? (
-          <div className="space-y-2">
-            <div className="flex items-start gap-2">
-              <div className="flex-1 rounded bg-indigo-50 px-2 py-1.5 text-sm font-medium text-slate-900">
-                {sug.titulo}
-              </div>
-              <span
-                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
-                  sug.excede_60
-                    ? "bg-rose-100 text-rose-800"
-                    : "bg-emerald-100 text-emerald-800"
-                }`}
-                title="Largo real, contado en el backend"
-              >
-                {sug.largo}c
-              </span>
-              <button
-                onClick={() => {
-                  void navigator.clipboard.writeText(sug.titulo);
-                  setCopiado(true);
-                }}
-                className="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100"
-                title="Copiar"
-              >
-                {copiado ? <Check size={13} className="text-emerald-600" /> : <Copy size={13} />}
-              </button>
-            </div>
-
-            {sug.excede_60 ? (
-              <div className="flex items-start gap-1.5 text-[11px] text-rose-700">
-                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
-                Se pasa del límite de 60 caracteres de ML: hay que recortarlo antes
-                de usarlo.
-              </div>
-            ) : null}
-
-            {sug.porque ? (
-              <div className="text-[11px] text-slate-600">{sug.porque}</div>
-            ) : null}
-
-            {/* Lo que el título GANA de verdad, recalculado. */}
-            <div className="text-[11px]">
-              <span className="text-slate-500">Términos que gana: </span>
-              {sug.cubre_verificado.length === 0 ? (
-                <span className="text-rose-700">
-                  ninguno de los {sug.faltantes.length} que no cubríamos
-                </span>
-              ) : (
-                <>
-                  <span className="font-medium text-emerald-700">
-                    {sug.cubre_verificado.length} de {sug.faltantes.length}
-                  </span>
-                  <span className="text-slate-600"> — {sug.cubre_verificado.join(" · ")}</span>
-                </>
-              )}
-            </div>
-
-            {/* Si la IA presumió más de lo que cumple, se dice. */}
-            {sug.cubre_declarado.length > sug.cubre_verificado.length ? (
-              <div className="flex items-start gap-1.5 text-[10px] text-amber-800">
-                <AlertTriangle size={10} className="mt-0.5 shrink-0" />
-                La IA declaró cubrir {sug.cubre_declarado.length} términos; al
-                verificarlo cubre {sug.cubre_verificado.length}.
-              </div>
             ) : null}
           </div>
-        ) : null}
+        </div>
       </div>
     </div>
   );
 }
+
 
 
 /**
@@ -1402,6 +1365,8 @@ export default function CompetenciaPage() {
   const [vMin, setVMin] = useState<number | null>(null);
   const [vMax, setVMax] = useState<number | null>(null);
   const [orden, setOrden] = useState<Orden>("visitas_desc");
+  // Solo los SKUs que aparecen en el top de su subcategoría.
+  const [soloTop, setSoloTop] = useState(false);
 
   const [abiertoSku, setAbiertoSku] = useState<string | null>(null);
   const [detalle, setDetalle] = useState<CompetenciaDetalleSku | null>(null);
@@ -1490,7 +1455,7 @@ export default function CompetenciaPage() {
         return true;
       };
       const admite = (x: CompetenciaSkuVista) =>
-        pasa(x.sku) && enRango(x.visitas_30d);
+        pasa(x.sku) && enRango(x.visitas_30d) && (!soloTop || x.en_top);
 
       const subs = r.subcategorias
         .filter((s) => !fSub || s.categoria_id === fSub)
@@ -1526,7 +1491,14 @@ export default function CompetenciaPage() {
     return Math.ceil(maxVisitas / escala) * escala;
   })();
 
-  const hayFiltro = Boolean(fRaiz || fSub || fSku || vMin !== null || vMax !== null);
+  const hayFiltro = Boolean(
+    fRaiz || fSub || fSku || vMin !== null || vMax !== null || soloTop,
+  );
+  // Cuántos están en el top, para que el botón diga si vale la pena apretarlo.
+  const nEnTop = raices.reduce(
+    (a, r) => a + r.skus.filter((s) => s.en_top).length,
+    0,
+  );
 
   // Las subcategorías que se pueden elegir dependen de la raíz seleccionada.
   const subsDisponibles = raices
@@ -1624,6 +1596,22 @@ export default function CompetenciaPage() {
             ))}
           </select>
 
+          <button
+            onClick={() => setSoloTop((v) => !v)}
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium transition ${
+              soloTop
+                ? "bg-amber-500 text-white"
+                : "bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
+            }`}
+            title="Solo los SKUs que aparecen entre los más vendidos de su subcategoría"
+          >
+            <Crown size={13} />
+            Solo top
+            <span className={soloTop ? "text-amber-100" : "text-slate-400"}>
+              ({nEnTop})
+            </span>
+          </button>
+
           {hayFiltro ? (
             <button
               onClick={() => {
@@ -1632,6 +1620,7 @@ export default function CompetenciaPage() {
                 setFSku("");
                 setVMin(null);
                 setVMax(null);
+                setSoloTop(false);
               }}
               className="rounded-lg bg-white px-2.5 py-1.5 text-sm text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
             >
