@@ -1387,6 +1387,8 @@ function BloqueRaiz({
 export default function CompetenciaPage() {
   const [canal, setCanal] = useState("mercado_libre");
   const [raices, setRaices] = useState<CompetenciaRaiz[]>([]);
+  const [capturado, setCapturado] = useState<string | null>(null);
+  const [puedeRefrescar, setPuedeRefrescar] = useState(true);
   const [estado, setEstado] = useState<CompetenciaEstado | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1412,6 +1414,16 @@ export default function CompetenciaPage() {
       try {
         const r = await vistaCompetencia(canal, signal);
         setRaices(r.raices);
+        setCapturado(
+          r.capturado_en
+            ? new Date(r.capturado_en).toLocaleDateString("es-MX", {
+                day: "numeric",
+                month: "long",
+                year: "numeric",
+              })
+            : null,
+        );
+        setPuedeRefrescar(r.puede_refrescar);
         if (r.aviso) setAvisos([r.aviso]);
       } catch (e) {
         if (!signal?.aborted)
@@ -1708,13 +1720,24 @@ export default function CompetenciaPage() {
           </div>
         </div>
 
-        {estado && !estado.navegador_local ? (
-          <div className="mb-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+        {/* De cuándo son los datos. Antes había aquí una advertencia de "falta el
+            navegador" que se contradecía sola: la página está llena de títulos,
+            fotos y precios de la competencia. El navegador no hace falta para
+            MOSTRAR —los datos ya están capturados— sino para REFRESCAR, y eso pasa
+            una vez al mes desde una máquina con Chrome. Lo accionable es la fecha. */}
+        {capturado ? (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+            <Info size={14} className="mt-0.5 shrink-0 text-slate-400" />
             <div>
-              Falta el navegador local (<code>selenium</code> + <code>beautifulsoup4</code>):
-              sin él no hay título, foto ni precio de la competencia. La API de ML los
-              niega con 403 para publicaciones ajenas.
+              Ranking de la competencia capturado el{" "}
+              <span className="font-medium text-slate-800">{capturado}</span>.
+              {!puedeRefrescar ? (
+                <>
+                  {" "}Este servidor no puede refrescarlo: el ranking solo se obtiene
+                  raspando (la API de ML responde 403 en publicaciones ajenas) y eso
+                  corre una vez al mes desde una máquina con navegador.
+                </>
+              ) : null}
             </div>
           </div>
         ) : null}

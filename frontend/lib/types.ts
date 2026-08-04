@@ -832,6 +832,10 @@ export interface CompetenciaNicho {
 export interface CompetenciaVista {
   canal: string;
   raices: CompetenciaRaiz[];
+  /** Cuándo se raspó el ranking. Lo que importa en una vista de solo lectura. */
+  capturado_en: string | null;
+  /** Este servidor puede refrescar el ranking (tiene navegador). En Railway: no. */
+  puede_refrescar: boolean;
   aviso: string | null;
 }
 

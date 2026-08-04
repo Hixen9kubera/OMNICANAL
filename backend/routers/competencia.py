@@ -215,14 +215,22 @@ def vista(canal: str = "mercado_libre"):
     subcategoría es sobre datos que ya están en el navegador.
     """
     arbol = competencia_store.vista(canal)
-    # Los NICHOS los dicta el top del padre, no nuestro inventario: se recorre
-    # #1, #2, #3… y se dice si tenemos con qué pelear cada uno. Va aquí y no en el
-    # store porque el conteo sale del catálogo en MySQL.
+    # CUÁNDO se capturó el ranking. Es el dato que importa en una vista de solo
+    # lectura: el navegador no hace falta para MOSTRAR (los datos ya están), solo
+    # para REFRESCAR. Sin esta fecha, la UI advertía de un navegador ausente
+    # mientras enseñaba títulos, fotos y precios — un aviso que se contradecía solo.
+    capturas = [x["capturado_en"] for r in arbol
+                for x in (r.get("top") or []) if x.get("capturado_en")]
     for r in arbol:
         r["nichos"] = competencia_captura.nichos_del_top(r, tope=5)
     return {
         "canal": canal,
         "raices": arbol,
+        "capturado_en": max(capturas) if capturas else None,
+        # Este servidor NO puede refrescar el ranking (sin Chrome no hay raspado y
+        # la API de ML da 403 en publicaciones ajenas). No es un fallo: la captura
+        # corre una vez al mes desde una máquina con navegador y sube a Supabase.
+        "puede_refrescar": competencia_mas_vendidos.disponible(),
         "aviso": None if arbol else
                  "No hay SKUs vigilados. Corre POST /api/competencia/sembrar.",
     }
