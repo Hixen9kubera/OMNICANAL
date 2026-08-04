@@ -120,15 +120,18 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
 
 
 def resultados(sku: str, tipo: str | None = None,
-               limite: int = 25) -> list[dict[str, Any]]:
+               limite: int | None = None) -> list[dict[str, Any]]:
     """Las búsquedas guardadas de un SKU: 'general' (descubrimiento) o 'titulo'."""
     sql = "SELECT * FROM propuestas.competencia_resultados WHERE sku = %s"
     params: list[Any] = [sku]
     if tipo:
         sql += " AND tipo = %s"
         params.append(tipo)
-    sql += " ORDER BY posicion NULLS LAST LIMIT %s"
-    params.append(int(limite))
+    # Mismo orden que el store local, para que los dos modos den lo mismo.
+    sql += " ORDER BY tipo, posicion IS NULL, posicion"
+    if limite:
+        sql += " LIMIT %s"
+        params.append(int(limite))
     filas = [dict(f) for f in supabase_db.fetch_all(sql, tuple(params))]
     for f in filas:
         for k in ("precio", "rating"):

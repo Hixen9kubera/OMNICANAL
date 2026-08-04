@@ -431,6 +431,9 @@ def reemplazar_resultados(sku: str, tipo: str, periodo: str,
 
 def resultados(sku: str, tipo: str | None = None,
                limite: int | None = None) -> list[dict[str, Any]]:
+    r = _remoto()
+    if r:
+        return r.resultados(sku, tipo, limite)
     asegurar_schema()
     sql = "SELECT * FROM resultados WHERE sku = ?"
     params: list[Any] = [sku]
