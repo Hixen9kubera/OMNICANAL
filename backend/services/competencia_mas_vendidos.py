@@ -233,7 +233,7 @@ def _navegador(visible: bool = False):
 
 def _bloqueado(html: str, url: str = "") -> bool:
     """
-    ¿ML nos frenó? Son TRES formas distintas, y hay que reconocer las tres o el
+    ¿ML nos frenó? Son CUATRO formas distintas, y hay que reconocer las cuatro o el
     módulo miente:
 
       1. `suspicious-traffic-frontend` — el interstitial que sirve a IPs de datacenter.
@@ -244,12 +244,23 @@ def _bloqueado(html: str, url: str = "") -> bool:
          Libre". No trae `suspicious-traffic` ni `account-verification`, así que
          antes se colaba como "página sin tarjetas" y el módulo lo reportaba como
          "ML no publica ranking de esta categoría" — un falso negativo.
+
+      4. **PÁGINA 404 de ML** (`ui-empty-state not-found-page`, ~2.5 KB, sin
+         `<title>`). Es una NEGACIÓN disfrazada: cuando ML marca al cliente le
+         sirve un 404 a TODO, incluida la home — comprobado el 4-ago, con la home
+         devolviendo exactamente el mismo cuerpo de 2,581 bytes. Reconocerlo
+         importa porque una categoría que de verdad no tiene ranking devuelve una
+         página NORMAL con 0 tarjetas (así se comportan Bujías y Cartuchos de
+         Turbo). Confundirlas hace que el módulo diga "ML no publica ranking de
+         esta categoría" cuando la verdad es "a nosotros no nos deja entrar", y
+         son acciones opuestas: una es no reintentar, la otra es cambiar de red.
     """
     if "/captcha/wall" in (url or ""):
         return True
     return ("suspicious-traffic" in html
             or "account-verification" in html
-            or "captcha/wall" in html)
+            or "captcha/wall" in html
+            or "not-found-page" in html)
 
 
 def _esperar_tarjetas(d) -> str:

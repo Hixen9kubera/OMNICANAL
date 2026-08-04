@@ -66,6 +66,30 @@ const num = (v: number | null | undefined) =>
 const cota = (v: number | null | undefined) => (v ? `+${num(v)}` : "—");
 
 /**
+ * URL de una fila del ranking de la competencia.
+ *
+ * El SEGMENTO depende del tipo de entrada de /highlights, y las tres formas están
+ * verificadas contra los permalinks que ML mismo generó al raspar:
+ *   USER_PRODUCT → /up/{MLMU…}      PRODUCT → /p/{MLM…}
+ *   ITEM         → articulo…/MLM-<dígitos>-_JM
+ *
+ * Se construye porque `url` viene vacía cuando la captura fue SOLO por API (sin
+ * navegador no hay raspado y por tanto no hay permalink), y entonces la tarjeta
+ * enlazaba a "#" y no llevaba a ninguna parte.
+ */
+const urlRanking = (r: Partial<RankingCategoria>): string | null => {
+  if (r.url) return r.url;
+  const idp = r.id_pagina || r.externo_id;
+  if (!idp) return null;
+  if (r.tipo === "USER_PRODUCT" || idp.startsWith("MLMU"))
+    return `https://www.mercadolibre.com.mx/up/${idp}`;
+  if (r.tipo === "PRODUCT") return `https://www.mercadolibre.com.mx/p/${idp}`;
+  if (/^MLM\d{9,12}$/.test(idp))
+    return `https://articulo.mercadolibre.com.mx/MLM-${idp.slice(3)}-_JM`;
+  return null;
+};
+
+/**
  * URL de una publicación nuestra.
  *
  * Se CONSTRUYE del item id y la url guardada queda como respaldo. Dos razones:
@@ -142,7 +166,7 @@ function Foto({ src, alt, size = 40 }: { src: string | null; alt: string; size?:
 function Tarjeta({ r }: { r: RankingCategoria }) {
   return (
     <a
-      href={r.url ?? "#"}
+      href={urlRanking(r) ?? "#"}
       target="_blank"
       rel="noreferrer"
       className="group flex w-[168px] shrink-0 flex-col gap-1.5 rounded-lg bg-white p-2 ring-1 ring-slate-200 transition hover:ring-indigo-300"
@@ -565,7 +589,7 @@ function DetalleSku({
               {d.top.slice(0, TOPE).map((r) => (
                 <a
                   key={r.externo_id}
-                  href={r.url ?? "#"}
+                  href={urlRanking(r) ?? "#"}
                   target="_blank"
                   rel="noreferrer"
                   className={`flex items-center gap-2 rounded p-1 hover:bg-slate-50 ${
