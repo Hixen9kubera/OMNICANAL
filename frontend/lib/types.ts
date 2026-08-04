@@ -943,10 +943,9 @@ export interface CompetenciaDetalleSku {
   terminos_total: number;
   terminos_cubiertos: number;
   top: RankingCategoria[];
-  /** Qué sale al buscar el TÉRMINO GENERAL: con quién compites por descubrimiento. */
+  /** Qué sale al buscar el TÉRMINO GENERAL. Se guarda POR TÉRMINO, así que los
+   *  SKUs que comparten término comparten resultados — se mide y se paga una vez. */
   busqueda_general: CompetenciaResultado[];
-  /** Qué sale al buscar tu TÍTULO completo: la competencia directa. */
-  busqueda_titulo: CompetenciaResultado[];
   sin_datos_ml: boolean;
   aviso: string | null;
 }

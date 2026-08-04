@@ -172,6 +172,38 @@ CREATE TABLE IF NOT EXISTS rankings_categoria (
     PRIMARY KEY (categoria_id, nivel, externo_id)
 );
 
+-- Resultados del BUSCADOR, guardados POR TÉRMINO y no por SKU.
+--
+-- Varios SKUs comparten el mismo término general —"colchón memory foam" sirve para
+-- todos los colchones del catálogo— así que guardarlo por SKU multiplicaba el
+-- trabajo y el gasto: cada copia era otra búsqueda raspada y otra corrida de Apify
+-- pagada. Con la tabla por término, un SKU nuevo cuyo término ya se midió obtiene
+-- sus resultados sin costo y al instante.
+--
+-- Medido antes del cambio: 150 filas de tipo 'general' para solo 29 términos.
+CREATE TABLE IF NOT EXISTS busquedas (
+    termino      TEXT NOT NULL,
+    periodo      TEXT NOT NULL,
+    posicion     INTEGER NOT NULL,   -- ORGÁNICA: los anuncios no cuentan
+    externo_id   TEXT NOT NULL,
+    titulo       TEXT,
+    precio       REAL,
+    precio_lista REAL,
+    descuento    TEXT,
+    vendidos     INTEGER,
+    rating       REAL,
+    seller       TEXT,
+    imagen       TEXT,
+    url          TEXT,
+    visitas_30d  INTEGER,
+    es_nuestro   INTEGER NOT NULL DEFAULT 0,
+    sku_nuestro  TEXT,
+    capturado_en TEXT NOT NULL,
+    PRIMARY KEY (termino, externo_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_busq_termino ON busquedas (termino, posicion);
+
 -- Términos que la gente ESCRIBE en el buscador de ML, por categoría, ordenados
 -- por volumen (/trends/MLM/{cat}). Es el insumo del "término general": cruzados
 -- contra nuestro título dicen qué palabras nos faltan para capturar tráfico.
@@ -785,6 +817,60 @@ def tabla() -> list[dict[str, Any]]:
         fila["periodo"] = (pos.get((s["sku"], "general")) or {}).get("periodo")
         out.append(fila)
     return out
+
+
+_CAMPOS_BUSQ = ("termino", "periodo", "posicion", "externo_id", "titulo", "precio",
+                "precio_lista", "descuento", "vendidos", "rating", "seller",
+                "imagen", "url", "visitas_30d", "es_nuestro", "sku_nuestro")
+
+
+def reemplazar_busqueda(termino: str, periodo: str,
+                        filas: list[dict[str, Any]]) -> int:
+    """Foto del mes de UN término. Sin histórico, como el resto del módulo."""
+    asegurar_schema()
+    ahora = _ahora()
+    listas, vistos = [], set()
+    for f in filas:
+        ident = f.get("externo_id")
+        if not ident or ident in vistos:
+            continue
+        vistos.add(ident)
+        d = {k: f.get(k) for k in _CAMPOS_BUSQ}
+        d.update(termino=termino, periodo=periodo)
+        d["es_nuestro"] = 1 if d.get("es_nuestro") else 0
+        listas.append([d[k] for k in _CAMPOS_BUSQ] + [ahora])
+    with _con() as c:
+        c.execute("DELETE FROM busquedas WHERE termino = ?", (termino,))
+        if listas:
+            c.executemany(
+                f"INSERT INTO busquedas ({','.join(_CAMPOS_BUSQ)}, capturado_en) "
+                f"VALUES ({','.join(['?'] * (len(_CAMPOS_BUSQ) + 1))})", listas)
+    return len(listas)
+
+
+def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
+    """Los resultados guardados de un término. Vacío = no se ha medido."""
+    if not termino:
+        return []
+    r = _remoto()
+    if r:
+        return r.busqueda(termino, limite)
+    asegurar_schema()
+    with _con() as c:
+        return _filas(c.execute(
+            f"SELECT * FROM busquedas WHERE termino = ? ORDER BY posicion LIMIT {int(limite)}",
+            (termino,)))
+
+
+def terminos_medidos() -> set[str]:
+    """Qué términos ya tienen búsqueda. Es lo que evita volver a pagar por ellos."""
+    r = _remoto()
+    if r:
+        return r.terminos_medidos()
+    asegurar_schema()
+    with _con() as c:
+        return {x["termino"] for x in _filas(c.execute(
+            "SELECT DISTINCT termino FROM busquedas"))}
 
 
 def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:

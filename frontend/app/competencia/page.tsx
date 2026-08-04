@@ -608,10 +608,11 @@ function DetalleSku({
       ) : null}
 
       <div className="grid gap-3 lg:grid-cols-2">
-        {/* ── Las DOS búsquedas: lo que el detalle debe responder ──
-             Antes aquí se repetía el top de la subcategoría, que ya se ve arriba
-             en la tarjetera del nicho. Lo que faltaba es qué sale cuando alguien
-             BUSCA: el término general (descubrimiento) y el título (directa). */}
+        {/* ── La búsqueda general: lo que el detalle debe responder ──
+             Se guarda POR TÉRMINO y no por SKU: varios SKUs comparten término
+             general, así que se mide y se paga una sola vez y los demás lo
+             reusan gratis. La búsqueda por título completo se retiró — era el
+             doble de consultas para un dato que se solapa con esta. */}
         <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
@@ -633,22 +634,6 @@ function DetalleSku({
             </div>
           ) : (
             <ResultadosBusqueda filas={d.busqueda_general} />
-          )}
-        </div>
-
-        <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-              <Target size={11} /> Búsqueda por mi título
-            </span>
-            <span className="max-w-[420px] truncate text-[11px] text-slate-500">
-              {d.busqueda_titulo[0]?.termino ?? d.nombre}
-            </span>
-          </div>
-          {d.busqueda_titulo.length === 0 ? (
-            <div className="py-3 text-center text-xs text-slate-400">Sin medir.</div>
-          ) : (
-            <ResultadosBusqueda filas={d.busqueda_titulo} />
           )}
         </div>
 

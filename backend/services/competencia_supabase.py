@@ -141,6 +141,24 @@ def resultados(sku: str, tipo: str | None = None,
     return filas
 
 
+def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
+    """Resultados guardados de UN término. La tabla es por término, no por SKU."""
+    filas = [dict(f) for f in supabase_db.fetch_all(
+        "SELECT * FROM propuestas.competencia_busquedas WHERE termino = %s "
+        "ORDER BY posicion LIMIT %s", (termino, int(limite)))]
+    for f in filas:
+        for k in ("precio", "precio_lista", "rating"):
+            if f.get(k) is not None:
+                f[k] = float(f[k])
+        f["es_nuestro"] = 1 if f.get("es_nuestro") else 0
+    return filas
+
+
+def terminos_medidos() -> set[str]:
+    return {f["termino"] for f in supabase_db.fetch_all(
+        "SELECT DISTINCT termino FROM propuestas.competencia_busquedas")}
+
+
 def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
     """
     TODO el ranking de una vez, agrupado por (categoria_id, nivel).

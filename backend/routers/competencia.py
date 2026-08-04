@@ -262,16 +262,14 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
                 if cat else [])
     total = competencia_store.total_terminos(cat) if cat else 0
     top = competencia_store.ranking_categoria(cat, "hoja", limite=20) if cat else []
-    # LAS DOS BÚSQUEDAS, que es lo que el detalle debe responder: con quién
-    # compites por DESCUBRIMIENTO (término general) y quién sale con tu TÍTULO
-    # exacto. El top de la categoría ya se ve arriba, en la subcategoría; repetirlo
-    # aquí no aportaba nada.
-    general = competencia_store.resultados(sku, "general") if cat else []
-    directa = competencia_store.resultados(sku, "titulo") if cat else []
+    # LA BÚSQUEDA GENERAL, leída POR TÉRMINO y no por SKU: varios SKUs comparten
+    # término y así se mide (y se paga) una sola vez. La búsqueda por título
+    # completo se retiró — era el doble de consultas para un dato que se solapa
+    # con esta.
+    general = competencia_store.busqueda(fila.get("termino_general") or "", 5)
 
     return {
         "busqueda_general": general,
-        "busqueda_titulo": directa,
         "sku": sku,
         "nombre": fila.get("nombre"),
         "imagen": fila.get("imagen"),
