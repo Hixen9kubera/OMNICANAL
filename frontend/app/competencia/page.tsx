@@ -37,6 +37,7 @@ import type {
   CompetenciaEstado,
   CompetenciaNicho,
   CompetenciaRaiz,
+  CompetenciaResultado,
   CompetenciaSkusSub,
   CompetenciaSkuVista,
   CompetenciaSubcategoria,
@@ -520,6 +521,38 @@ function FilasSku({
     </>
   );
 }
+/** Los resultados de una búsqueda: posición ORGÁNICA, ficha y enlace. */
+function ResultadosBusqueda({ filas }: { filas: CompetenciaResultado[] }) {
+  return (
+    <div className="space-y-1">
+      {filas.map((r) => (
+        <a
+          key={r.externo_id}
+          href={urlRanking({ url: r.url, externo_id: r.externo_id }) ?? "#"}
+          target="_blank"
+          rel="noreferrer"
+          className={`flex items-center gap-2 rounded p-1 hover:bg-slate-50 ${
+            r.es_nuestro ? "bg-amber-50" : ""
+          }`}
+        >
+          <Medalla pos={r.posicion} />
+          <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
+          <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
+            {r.titulo ?? r.externo_id}
+          </span>
+          {r.es_nuestro ? <Crown size={11} className="shrink-0 text-amber-600" /> : null}
+          <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
+            {mxn(r.precio)}
+          </span>
+          <span className="w-16 text-right text-[10px] tabular-nums text-slate-400">
+            {num(r.visitas_30d)} vis
+          </span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 /**
  * El detalle de un SKU: quién lidera su nicho y con qué palabras.
  *
@@ -575,44 +608,47 @@ function DetalleSku({
       ) : null}
 
       <div className="grid gap-3 lg:grid-cols-2">
-        {/* ── Los 5 que lideran el nicho ── */}
+        {/* ── Las DOS búsquedas: lo que el detalle debe responder ──
+             Antes aquí se repetía el top de la subcategoría, que ya se ve arriba
+             en la tarjetera del nicho. Lo que faltaba es qué sale cuando alguien
+             BUSCA: el término general (descubrimiento) y el título (directa). */}
         <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
-          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-            Top {TOPE} de {d.categoria_nombre}
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              <Search size={11} /> Búsqueda general
+            </span>
+            {d.termino_general ? (
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-medium text-slate-700">
+                {d.termino_general}
+              </span>
+            ) : null}
+            <span className="text-[10px] text-slate-400">
+              {d.termino_origen === "manual" ? "corregido a mano" : "propuesto por IA"}
+            </span>
           </div>
-          {d.top.length === 0 ? (
+          {d.busqueda_general.length === 0 ? (
             <div className="py-3 text-center text-xs text-slate-400">
-              Sin ranking guardado de esta subcategoría.
+              Sin medir. La posición orgánica solo sale del buscador raspado —
+              <code className="mx-1">/sites/MLM/search</code> responde 403.
             </div>
           ) : (
-            <div className="space-y-1">
-              {d.top.slice(0, TOPE).map((r) => (
-                <a
-                  key={r.externo_id}
-                  href={urlRanking(r) ?? "#"}
-                  target="_blank"
-                  rel="noreferrer"
-                  className={`flex items-center gap-2 rounded p-1 hover:bg-slate-50 ${
-                    r.es_nuestro ? "bg-amber-50" : ""
-                  }`}
-                >
-                  <Medalla pos={r.posicion} />
-                  <Foto src={r.imagen} alt={r.titulo ?? ""} size={30} />
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-slate-600">
-                    {r.titulo ?? r.externo_id}
-                  </span>
-                  {r.es_nuestro ? (
-                    <Crown size={11} className="shrink-0 text-amber-600" />
-                  ) : null}
-                  <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
-                    {mxn(r.precio)}
-                  </span>
-                  <span className="w-16 text-right text-[10px] tabular-nums text-slate-400">
-                    {num(r.visitas_30d)} vis
-                  </span>
-                </a>
-              ))}
-            </div>
+            <ResultadosBusqueda filas={d.busqueda_general} />
+          )}
+        </div>
+
+        <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              <Target size={11} /> Búsqueda por mi título
+            </span>
+            <span className="max-w-[420px] truncate text-[11px] text-slate-500">
+              {d.busqueda_titulo[0]?.termino ?? d.nombre}
+            </span>
+          </div>
+          {d.busqueda_titulo.length === 0 ? (
+            <div className="py-3 text-center text-xs text-slate-400">Sin medir.</div>
+          ) : (
+            <ResultadosBusqueda filas={d.busqueda_titulo} />
           )}
         </div>
 

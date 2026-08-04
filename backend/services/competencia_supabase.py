@@ -119,6 +119,25 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
     return filas
 
 
+def resultados(sku: str, tipo: str | None = None,
+               limite: int = 25) -> list[dict[str, Any]]:
+    """Las búsquedas guardadas de un SKU: 'general' (descubrimiento) o 'titulo'."""
+    sql = "SELECT * FROM propuestas.competencia_resultados WHERE sku = %s"
+    params: list[Any] = [sku]
+    if tipo:
+        sql += " AND tipo = %s"
+        params.append(tipo)
+    sql += " ORDER BY posicion NULLS LAST LIMIT %s"
+    params.append(int(limite))
+    filas = [dict(f) for f in supabase_db.fetch_all(sql, tuple(params))]
+    for f in filas:
+        for k in ("precio", "rating"):
+            if f.get(k) is not None:
+                f[k] = float(f[k])
+        f["es_nuestro"] = 1 if f.get("es_nuestro") else 0
+    return filas
+
+
 def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
     """
     TODO el ranking de una vez, agrupado por (categoria_id, nivel).

@@ -937,6 +937,10 @@ export interface CompetenciaDetalleSku {
   terminos_total: number;
   terminos_cubiertos: number;
   top: RankingCategoria[];
+  /** Qué sale al buscar el TÉRMINO GENERAL: con quién compites por descubrimiento. */
+  busqueda_general: CompetenciaResultado[];
+  /** Qué sale al buscar tu TÍTULO completo: la competencia directa. */
+  busqueda_titulo: CompetenciaResultado[];
   sin_datos_ml: boolean;
   aviso: string | null;
 }

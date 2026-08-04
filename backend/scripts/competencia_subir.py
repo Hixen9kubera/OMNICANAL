@@ -121,6 +121,17 @@ def main() -> int:
             for r in c.execute("select * from rankings_categoria")]
     print(f"rankings: {cargar('competencia_rankings_categoria', COLS_R, rank, args.token, args.dry_run)}/{len(rank)}")
 
+    # Las DOS búsquedas por SKU (término general y título). Son lo que responde el
+    # detalle, así que sin esto producción mostraría "Sin medir".
+    COLS_X = ["sku","tipo","termino","periodo","posicion","externo_id","titulo",
+              "descripcion","precio","imagen","url","seller","marca","visitas_30d",
+              "vendidos","reviews","rating","envio_gratis","es_full","es_nuestro",
+              "sku_nuestro"]
+    res = [tuple(r[k] if k not in ("es_nuestro","envio_gratis","es_full")
+                 else (bool(r[k]) if r[k] is not None else None) for k in COLS_X)
+           for r in c.execute("select * from resultados")]
+    print(f"resultados: {cargar('competencia_resultados', COLS_X, res, args.token, args.dry_run)}/{len(res)}")
+
     term = [(r["categoria_id"], periodo, r["posicion"], r["termino"], r["url"])
             for r in c.execute("select * from terminos_categoria")]
     print(f"terminos: {cargar('competencia_terminos_categoria', ['categoria_id','periodo','posicion','termino','url'], term, args.token, args.dry_run)}/{len(term)}")
@@ -131,6 +142,7 @@ def main() -> int:
             select 'skus' t, count(*) n from propuestas.competencia_skus
             union all select 'publicaciones', count(*) from propuestas.competencia_publicacion_metricas
             union all select 'rankings', count(*) from propuestas.competencia_rankings_categoria
+            union all select 'resultados', count(*) from propuestas.competencia_resultados
             union all select 'terminos', count(*) from propuestas.competencia_terminos_categoria
             order by 1
         """, args.token), ensure_ascii=False))
