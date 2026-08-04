@@ -259,6 +259,51 @@ def main() -> int:
                         headers={"X-API-Key": LLAVE}).status_code, 404,
             "Con credencial válida, una ruta que no existe es 404.")
 
+    print("\n12) LOS 9 ENDPOINTS CON requiere_api_key ACEPTAN SESIÓN, NO SOLO LA LLAVE")
+    # `requiere_api_key` nació cuando la única credencial era X-API-Key. Sin este
+    # arreglo, un ADMIN con sesión recibiría 401 en /api/migracion/errores/resolver
+    # —que es un BOTÓN de la página /migracion— pese a haber entrado bien.
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from core.identidad import Identidad
+    from core.seguridad import requiere_api_key
+
+    def _peticion(ident, metodo: str, ruta: str):
+        req = type("R", (), {})()
+        req.state = type("S", (), {})()
+        req.state.identidad = ident
+        req.method = metodo
+        req.url = type("U", (), {"path": ruta})()
+        return req
+
+    def _deja_pasar(ident, metodo: str, ruta: str, key: str | None = None) -> bool:
+        try:
+            asyncio.run(requiere_api_key(_peticion(ident, metodo, ruta), key))
+            return True
+        except HTTPException:
+            return False
+
+    admin = Identidad(actor="brandon@kubera.mx", tipo="persona", rol="admin", id="u1")
+    kam = Identidad(actor="andrea.pardo@kubera.mx", tipo="persona", rol="operador", id="u2")
+    anon = Identidad(actor="anonimo", tipo="anonimo", rol="")
+    RUTA = "/api/migracion/errores/resolver"
+
+    revisar("admin con sesión, sin llave -> pasa",
+            _deja_pasar(admin, "POST", RUTA), True,
+            "El botón de /migracion daría 401 a un admin que SÍ inició sesión.")
+    revisar("KAM con sesión, sin llave -> NO pasa",
+            _deja_pasar(kam, "POST", RUTA), False,
+            "Un rol corto no puede colarse por la dependencia.")
+    revisar("anónimo sin llave -> NO pasa",
+            _deja_pasar(anon, "POST", RUTA), False)
+    revisar("máquina con la llave correcta -> pasa",
+            _deja_pasar(anon, "POST", RUTA, LLAVE), True,
+            "Los crons y scripts se quedarían fuera.")
+    revisar("llave equivocada -> NO pasa",
+            _deja_pasar(anon, "POST", RUTA, "llave-mala"), False)
+
     print("\n" + "=" * 72)
     if fallos:
         print(f"FALLARON {len(fallos)} DE {len(fallos) + pasadas} — NO DESPLEGAR")

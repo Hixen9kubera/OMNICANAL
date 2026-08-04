@@ -3816,6 +3816,44 @@ fila en `core.usuarios` no queda suelto — `identidad._perfil_en_kubera` le da
 el rol MÍNIMO (`lectura`), nunca admin. O sea el equipo entraría, pero sin
 poder hacer su trabajo, y sin ninguna señal de por qué. Versión 0.52.1.
 
+### v0.52.2 — QA previo al enforcement: el modo observación nunca observó, y un 401 esperaba a los admins
+
+Antes de encender la autenticación, dos hallazgos que habrían salido en
+producción y con gente adentro.
+
+**1. El censo llevaba semanas vacío.** El plan era "leer el log de observación
+para saber a quién romperíamos antes de encender". Ese log **nunca se escribió**:
+`core/middleware.py` corta en la línea 126 —
+
+```python
+if not settings.api_key and not quien.autenticado:
+    return await call_next(request)   # ← retorna ANTES de registrar nada
+```
+
+— y en Railway **`API_KEY` no existe**, igual que `AUTH_ENFORCED` y
+`RBAC_ENFORCED`. Consecuencia práctica: encender solo `AUTH_ENFORCED` no haría
+nada, y encender solo `RBAC_ENFORCED` sí aplicaría, restringiendo únicamente a
+quien inicia sesión mientras el que no inicia conserva acceso total. El orden
+correcto es **`API_KEY` → `AUTH_ENFORCED` → `RBAC_ENFORCED`**, y el primer paso
+no bloquea a nadie: solo enciende el censo.
+
+**2. Un 401 esperaba a los admins con sesión.** `core/seguridad.py::
+requiere_api_key` nació cuando la única credencial era `X-API-Key` y solo miraba
+ese header. Protege 9 endpoints, y entre ellos está
+`POST /api/migracion/errores/resolver` — que es un **botón** de la página
+/migracion. Con `AUTH_ENFORCED=true`, un admin que hubiera iniciado sesión
+correctamente recibía 401 ahí: la puerta principal lo dejaba pasar y la
+dependencia interna lo rebotaba.
+
+Ahora pasa quien cumpla una de dos: manda la `X-API-Key` correcta (crons y
+scripts) **o** trae sesión válida y su rol alcanza según `core/rbac.py`. Se
+consulta `rbac.permite` en vez de confiar en `RBAC_ENFORCED`, porque esos 9
+endpoints ya estaban protegidos antes de este rollout y no pueden quedar más
+flojos durante la ventana en que el RBAC sigue en observación.
+
+`humo_auth.py` pasó de 58 a **63 pruebas**: admin con sesión pasa, KAM con
+sesión NO, anónimo NO, máquina con llave sí, llave equivocada no. Versión 0.52.2.
+
 ---
 
 ### v0.53.0 — SYNC_DESDE_ML (apagado): el sondeo puede leer el catálogo VIVO de ML, no la bitácora del publicador
