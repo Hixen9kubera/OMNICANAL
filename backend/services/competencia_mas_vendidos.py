@@ -27,11 +27,15 @@ from __future__ import annotations
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("omnicanal.competencia.mas_vendidos")
 
 URL_BASE = "https://www.mercadolibre.com.mx/mas-vendidos/"
+
+# Perfil de Chrome DEDICADO al raspador. Nunca el del usuario: ver `_navegador`.
+RUTA_PERFIL = Path.home() / ".competencia-chrome"
 
 # Se ESPERA a que aparezcan las tarjetas en vez de dormir un rato fijo: con
 # `sleep(6)` una de dos categorías salía vacía porque la página aún no había
@@ -222,6 +226,28 @@ def _navegador(visible: bool = False):
 
     Por eso la ventana es VISIBLE por defecto. `COMPETENCIA_HEADLESS=1` la vuelve a
     ocultar, para cuando ML afloje o para correr en un servidor con Xvfb.
+
+    PERFIL PROPIO, NUNCA EL DE LA PERSONA
+    -------------------------------------
+    ML empezó a exigir sesión tras ~50 consultas seguidas ("¡Hola! Para continuar,
+    ingresa a tu cuenta"). Para responder a eso el raspador usa un perfil de Chrome
+    DEDICADO en `RUTA_PERFIL` (~/.competencia-chrome), con una cuenta de ML creada
+    solo para esto.
+
+    Deliberadamente NO se usa el perfil real de nadie: si ML marca la cuenta por
+    navegación automatizada, la que se pierde debe ser desechable y nunca una que
+    venda (BEKURA / SANCORFASHION). Además Chrome se niega a abrir un perfil que ya
+    esté en uso por otra instancia, así que apuntar al del usuario rompería su
+    navegación.
+
+    La sesión se inicia UNA vez con `scripts/competencia_login.py` y queda guardada
+    en ese directorio.
+
+    PROXY
+    -----
+    `COMPETENCIA_PROXY=host:puerto` enruta el navegador por un proxy residencial.
+    No arregla el muro de login por sí solo —el 404 de headless no era de IP— pero
+    reparte las consultas, que es lo que dispara el corte.
     """
     import os
 
@@ -231,6 +257,14 @@ def _navegador(visible: bool = False):
     op = Options()
     if not visible and os.environ.get("COMPETENCIA_HEADLESS") == "1":
         op.add_argument("--headless=new")
+    perfil = os.environ.get("COMPETENCIA_CHROME_PROFILE") or (
+        str(RUTA_PERFIL) if RUTA_PERFIL.exists() else None)
+    if perfil:
+        op.add_argument(f"--user-data-dir={perfil}")
+        op.add_argument("--profile-directory=Default")
+    proxy = os.environ.get("COMPETENCIA_PROXY")
+    if proxy:
+        op.add_argument(f"--proxy-server={proxy}")
     op.add_argument("--window-size=1440,2400")
     op.add_argument("--lang=es-MX")
     op.add_argument("--disable-blink-features=AutomationControlled")

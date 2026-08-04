@@ -41,7 +41,16 @@ log = logging.getLogger("omnicanal.competencia.busqueda")
 
 URL_BASE = "https://listado.mercadolibre.com.mx/"
 
-_PAUSA_ENTRE = 8.0
+import os
+
+# MEDIDO el 4-ago: con 8 s de pausa y UNA sola sesión de Chrome, ML cortó a las
+# ~50 consultas con el muro de login. Dos palancas contra eso, las dos por
+# variable de entorno para poder ajustar sin tocar código:
+#   COMPETENCIA_PAUSA=35   segundos entre consultas (más lento, menos sospechoso)
+#   COMPETENCIA_LOTE=25    consultas por sesión de navegador; al agotarse se abre
+#                          uno nuevo, que es lo que reinicia el contador de ML
+_PAUSA_ENTRE = float(os.environ.get("COMPETENCIA_PAUSA", "8"))
+_LOTE_NAVEGADOR = int(os.environ.get("COMPETENCIA_LOTE", "0"))  # 0 = sin reinicio
 _MAX_INTENTOS = 3
 _ESPERA_MAX = 25
 
@@ -134,6 +143,15 @@ def buscar(terminos: list[str], limite: int = 5,
         for n, q in enumerate(consultas):
             if n:
                 time.sleep(_PAUSA_ENTRE)
+            # Navegador nuevo cada `_LOTE_NAVEGADOR` consultas: es lo que reinicia
+            # el contador que dispara el muro de login.
+            if _LOTE_NAVEGADOR and n and n % _LOTE_NAVEGADOR == 0:
+                log.info("consulta %s: reinicio el navegador", n)
+                try:
+                    d.quit()
+                except Exception:  # noqa: BLE001
+                    pass
+                d = _navegador(visible)
             url = URL_BASE + urllib.parse.quote(q.replace(" ", "-"))
             for intento in range(1, _MAX_INTENTOS + 1):
                 try:
@@ -144,8 +162,16 @@ def buscar(terminos: list[str], limite: int = 5,
                     log.warning("%r: intento %s sin tarjetas (%s)", q, intento, exc)
                 html = d.page_source
                 if _bloqueado(html, d.current_url):
-                    log.info("%r: bloqueado en el intento %s", q, intento)
-                    time.sleep(20)
+                    # Insistir con la MISMA sesión no sirve: si ML ya pidió login,
+                    # lo va a seguir pidiendo. Se abre una sesión nueva.
+                    log.info("%r: bloqueado en el intento %s, reinicio el navegador",
+                             q, intento)
+                    try:
+                        d.quit()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    time.sleep(_PAUSA_ENTRE * 2)
+                    d = _navegador(visible)
                     continue
                 sopa = BeautifulSoup(html, "lxml")
                 filas, organica, anuncios = [], 0, 0
