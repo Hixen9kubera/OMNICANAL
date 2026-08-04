@@ -11,14 +11,14 @@ LAS DOS BÚSQUEDAS
     DESCUBRIMIENTO: quien no sabe qué marca quiere y escribe la categoría.
   • TÍTULO COMPLETO → tu competencia DIRECTA: el mismo producto.
 
-ANUNCIOS: SE MARCAN, NO SE MEZCLAN
-----------------------------------
+ANUNCIOS: SE DESCARTAN
+----------------------
 Las primeras tarjetas del buscador son publicidad (`.poly-component__ads-promotions`
-con el texto "Ad") y su enlace va por `click1.mercadolibre.com.mx/mclics/…`, que
-esconde el id. Medido en "disfraz de dinosaurio inflable": las 4 primeras eran
-anuncios. Contarlas como posición orgánica falsearía el ranking —dirían que estás
-más abajo de lo que estás—, así que la posición orgánica se numera aparte y el
-anuncio queda etiquetado.
+con el texto "Ad"). Medido en "disfraz de dinosaurio inflable": las 4 primeras lo
+eran. No se devuelven —ni siquiera se construyen— por dos razones: contarlas como
+posición orgánica diría que estás más abajo de lo que estás, y un anuncio no dice
+quién gana el nicho, solo quién pagó hoy. La numeración orgánica avanza únicamente
+con las tarjetas que no son anuncio.
 
 CORRE CON VENTANA VISIBLE
 -------------------------
@@ -66,9 +66,9 @@ def _id_de(tarjeta, href: str) -> str | None:
     """
     El id de la publicación.
 
-    En los ORGÁNICOS el href ES el permalink y se saca de ahí. En los ANUNCIOS el
-    href va por el redirector de clics y no lo trae, así que se busca en los
-    atributos de la tarjeta descartando los de 12 dígitos, que son de campaña.
+    En un resultado orgánico el href ES el permalink. El respaldo por atributos
+    existe para la tarjeta rara cuya ancla no lo trae; descarta los ids de 12+
+    dígitos, que son de campaña publicitaria y no de publicación.
     """
     m = _RE_PERMALINK.search(href or "")
     if m:
@@ -79,7 +79,7 @@ def _id_de(tarjeta, href: str) -> str | None:
     return (propios or candidatos or [None])[0]
 
 
-def _fila(tarjeta, posicion_organica: int | None) -> dict[str, Any] | None:
+def _fila(tarjeta, posicion_organica: int) -> dict[str, Any] | None:
     a = (tarjeta.select_one("a.poly-component__title")
          or tarjeta.select_one("a[href*='mercadolibre']"))
     href = (a.get("href") if a else "") or ""
@@ -93,12 +93,10 @@ def _fila(tarjeta, posicion_organica: int | None) -> dict[str, Any] | None:
         return None
     score, vendidos = _score_y_vendidos(tarjeta)
     img = tarjeta.select_one("img")
-    anuncio = _es_anuncio(tarjeta)
     return {
         "externo_id": ident,
-        # Solo los orgánicos llevan posición. Un anuncio no está "en el puesto 1".
+        # Posición ORGÁNICA: los anuncios no ocupan lugar en esta cuenta.
         "posicion": posicion_organica,
-        "es_anuncio": anuncio,
         "titulo": txt(".poly-component__title"),
         "precio": _entero(txt(".poly-price__current .andes-money-amount__fraction")),
         "precio_lista": _entero(txt(".poly-price__previous .andes-money-amount__fraction")),
@@ -107,8 +105,8 @@ def _fila(tarjeta, posicion_organica: int | None) -> dict[str, Any] | None:
         "rating": score,
         "seller": txt(".poly-component__seller"),
         "imagen": (img.get("src") or img.get("data-src")) if img else None,
-        # El enlace del anuncio pasa por el redirector; se reconstruye del id para
-        # que el clic lleve a la publicación y no a un contador de clics.
+        # Nunca el enlace del redirector de clics: si viene vacío, la UI
+        # reconstruye el permalink a partir del id.
         "url": href if (href and "click1.mercadolibre" not in href) else None,
     }
 
@@ -150,19 +148,21 @@ def buscar(terminos: list[str], limite: int = 5,
                     time.sleep(20)
                     continue
                 sopa = BeautifulSoup(html, "lxml")
-                filas, organica = [], 0
+                filas, organica, anuncios = [], 0, 0
                 for tarjeta in sopa.select("div.poly-card"):
-                    es_ad = _es_anuncio(tarjeta)
-                    if not es_ad:
-                        organica += 1
-                    f = _fila(tarjeta, None if es_ad else organica)
-                    if f and not f["es_anuncio"]:
+                    if _es_anuncio(tarjeta):
+                        anuncios += 1
+                        continue
+                    organica += 1
+                    f = _fila(tarjeta, organica)
+                    if f:
                         filas.append(f)
                     if len(filas) >= limite:
                         break
                 if filas:
                     out[q] = filas
-                    log.info("%r: %s orgánicos", q, len(filas))
+                    log.info("%r: %s orgánicos (%s anuncios descartados)",
+                             q, len(filas), anuncios)
                 break
     except Exception as exc:  # noqa: BLE001
         log.error("El navegador falló: %s", exc)
