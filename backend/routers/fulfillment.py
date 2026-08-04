@@ -29,6 +29,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
@@ -626,6 +627,154 @@ async def guardar_temporada(t: TemporadaIn) -> dict[str, Any]:
         raise
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"no se pudo guardar la temporada: {exc}") from exc
+
+
+# ── Márgenes con COSTO FINAL (requerimientos Eduardo, 4-ago) ────────────────
+#
+# Definiciones del negocio:
+#   Costo Base  = producto + flete de importación (costos_validados.costo_total,
+#                 el contrato único de José; fallback costos_finales.costo_unitario)
+#   Costo Final = Costo Base + cobros de Meli por la venta:
+#                 · comisión REAL por línea (channel.order_items.comision — es
+#                   TOTAL de línea, verificado: 14.5-19.5%% del importe)
+#                 · envío ESTIMADO por peso/dims (costos_finales.costo_fee_envio,
+#                   por unidad). FASE 2 pendiente: envío real del shipment.
+#   Margen %    = (ingreso − costo_final) / ingreso  ← margen sobre venta, como
+#                 el resto del panel (la alternativa ganancia/costo es cambiar
+#                 una línea si negocio la prefiere).
+# Limitaciones declaradas: cargos FULL (facturación mensual, no por pedido)
+# fuera; Amazon con comisión 0 hasta Finances API; filas sin costo van vacías.
+_SQL_MARGEN_LINEAS = _mx("""
+select (o.creado_at at time zone 'America/Mexico_City')::date::text as fecha,
+       o.canal, o.cuenta, o.external_order_id as pedido,
+       i.sku::text as sku, i.titulo,
+       i.cantidad::int as cantidad,
+       i.precio_unitario,
+       round(i.precio_unitario * i.cantidad, 2)          as ingreso,
+       i.comision                                        as comision_ml,
+       case when cf.costo_fee_envio is not null
+            then round(cf.costo_fee_envio * i.cantidad, 2) end as envio_estimado,
+       coalesce(cv.costo_total, cf.costo_unitario)       as costo_base_unit,
+       case when coalesce(cv.costo_total, cf.costo_unitario) is not null
+            then round(coalesce(cv.costo_total, cf.costo_unitario) * i.cantidad, 2)
+            end                                          as costo_base,
+       case when coalesce(cv.costo_total, cf.costo_unitario) is not null
+            then round(coalesce(cv.costo_total, cf.costo_unitario) * i.cantidad
+                       + coalesce(i.comision, 0)
+                       + coalesce(cf.costo_fee_envio, 0) * i.cantidad, 2)
+            end                                          as costo_final,
+       i.es_fulfillment                                  as full,
+       coalesce(o.estado_canal, '')                      as estado
+  from channel.order_items i
+  join channel.orders o using (canal, cuenta, external_order_id)
+  left join costing.costos_validados cv on cv.sku = i.sku
+  left join costing.costos_finales  cf on cf.sku = i.sku and cf.canal = 'mercado_libre'
+ where (o.creado_at at time zone 'America/Mexico_City')::date
+       between %(desde)s::date and %(hasta)s::date
+   and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
+   and (%(canal)s::text  is null or o.canal  = %(canal)s)
+ order by o.creado_at desc, i.linea
+""")
+
+
+@router.get("/reporte-margenes")
+async def reporte_margenes(
+    desde: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    hasta: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    cuenta: str | None = Query(None),
+    canal: str | None = Query(None),
+) -> StreamingResponse:
+    """CSV: UNA fila por línea de venta con Costo Base y Costo Final (req 2).
+    Se genera y baja en el momento — el servidor no guarda archivos."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    try:
+        filas = sdb.fetch_all(_SQL_MARGEN_LINEAS,
+                              {"desde": desde, "hasta": hasta,
+                               "cuenta": cuenta, "canal": canal})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+    import csv as _csv
+    import io
+    buf = io.StringIO()
+    cols = ["fecha", "canal", "cuenta", "pedido", "sku", "titulo", "cantidad",
+            "precio_unitario", "ingreso", "comision_ml", "envio_estimado",
+            "costo_base", "costo_final", "ganancia", "margen_pct", "full", "estado"]
+    w = _csv.DictWriter(buf, fieldnames=cols)
+    w.writeheader()
+    for f in filas:
+        ingreso = float(f["ingreso"] or 0)
+        cf_ = f.get("costo_final")
+        gan = round(ingreso - float(cf_), 2) if cf_ is not None else None
+        mar = (round(gan / ingreso * 100, 1)
+               if gan is not None and ingreso > 0 else None)
+        w.writerow({**{k: f.get(k) for k in cols if k in f},
+                    "ganancia": gan, "margen_pct": mar,
+                    "full": "si" if f.get("full") else "no"})
+    buf.seek(0)
+    nombre = f"margenes_{desde}_{hasta}.csv"
+    return StreamingResponse(
+        iter([("﻿" + buf.getvalue()).encode("utf-8")]),  # BOM: Excel en español
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+
+
+_SQL_MARGEN_TOP = _mx("""
+with lineas as (
+  select i.sku, max(i.titulo) as titulo,
+         sum(i.cantidad)::int as uds,
+         sum(i.precio_unitario * i.cantidad) as ingreso,
+         sum(coalesce(i.comision, 0)) as comision
+    from channel.order_items i
+    join channel.orders o using (canal, cuenta, external_order_id)
+   where (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s::int
+     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and i.sku is not null
+   group by i.sku
+)
+select l.sku::text as sku, l.titulo, l.uds,
+       round(l.ingreso, 2)                              as ingreso,
+       round(l.ingreso / nullif(l.uds, 0), 2)           as precio_prom,
+       coalesce(cv.costo_total, cf.costo_unitario)      as costo_base,
+       round(l.comision / nullif(l.uds, 0), 2)          as comision_prom,
+       cf.costo_fee_envio                               as envio_prom,
+       case when coalesce(cv.costo_total, cf.costo_unitario) is not null
+            then round(coalesce(cv.costo_total, cf.costo_unitario)
+                       + l.comision / nullif(l.uds, 0)
+                       + coalesce(cf.costo_fee_envio, 0), 2)
+            end                                         as costo_final
+  from lineas l
+  left join costing.costos_validados cv on cv.sku = l.sku
+  left join costing.costos_finales  cf on cf.sku = l.sku and cf.canal = 'mercado_libre'
+ order by l.uds desc
+ limit %(limite)s
+""")
+
+
+@router.get("/margenes-top")
+async def margenes_top(
+    dias: int = Query(30, ge=7, le=180),
+    limite: int = Query(10, ge=3, le=50),
+) -> dict[str, Any]:
+    """Top de SKUs más vendidos con precio promedio realizado, Costo Base,
+    cobros de Meli y margen sobre COSTO FINAL (req 1 — tarjeta de Omnicanal)."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    try:
+        filas = sdb.fetch_all(_SQL_MARGEN_TOP, {"dias": dias, "limite": limite})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+    for f in filas:
+        pp, cfin = f.get("precio_prom"), f.get("costo_final")
+        if pp and cfin is not None:
+            f["ganancia_unit"] = round(float(pp) - float(cfin), 2)
+            f["margen_pct"] = round((float(pp) - float(cfin)) / float(pp) * 100, 1)
+        else:
+            f["ganancia_unit"] = None
+            f["margen_pct"] = None
+    return {"dias": dias, "items": filas,
+            "nota_envio": "envío estimado por peso/dimensiones — el real llega en fase 2"}
 
 
 @router.get("/canales")
