@@ -65,6 +65,21 @@ const num = (v: number | null | undefined) =>
  */
 const cota = (v: number | null | undefined) => (v ? `+${num(v)}` : "—");
 
+/**
+ * URL de una publicación nuestra.
+ *
+ * Se CONSTRUYE del item id y la url guardada queda como respaldo. Dos razones:
+ * `channel.listings` no tiene fila para todas las publicaciones (le faltan las de
+ * MUE-0163-TEL, el SKU con la mayor parte del tráfico) y cuando la tiene viene
+ * truncada, sin el sufijo `-_JM`. La forma con `-_JM` es la que ML mismo genera y
+ * redirige al permalink con slug. Sin esto la UI pintaba un enlace a "#".
+ */
+const urlPub = (id: string | null | undefined, url: string | null | undefined) => {
+  if (id && /^MLM\d{9,12}$/.test(id))
+    return `https://articulo.mercadolibre.com.mx/MLM-${id.slice(3)}-_JM`;
+  return url || null;
+};
+
 /** La brecha de precio: es la columna que manda, y su color es el diagnóstico. */
 function Brecha({ x }: { x: number | null }) {
   if (x === null || x === undefined)
@@ -436,7 +451,7 @@ function FilasSku({
           <td className="py-2 pr-3">
             {t?.ml_item_id ? (
               <a
-                href={t.url ?? "#"}
+                href={urlPub(t.ml_item_id, t.url) ?? "#"}
                 target="_blank"
                 rel="noreferrer"
                 onClick={(e) => e.stopPropagation()}
@@ -813,7 +828,7 @@ function SkusDeCategoria({ categoriaId }: { categoriaId: string }) {
                       <td className="py-2 pr-3">
                         {t?.ml_item_id ? (
                           <a
-                            href={t.url ?? "#"}
+                            href={urlPub(t.ml_item_id, t.url) ?? "#"}
                             target="_blank"
                             rel="noreferrer"
                             className="inline-flex items-center gap-0.5 font-mono text-[11px] text-indigo-600 hover:underline"
