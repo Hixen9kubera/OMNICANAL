@@ -210,12 +210,26 @@ def _navegador(visible: bool = False):
     Chrome con las banderas mínimas para no delatarse. Sin ellas ML detecta la
     automatización de inmediato: `navigator.webdriver` y el switch
     `enable-automation` son las delaciones más comunes.
+
+    NO CORRE HEADLESS (medido el 4-ago)
+    -----------------------------------
+    ML detecta `--headless=new` y le sirve un 404 a TODO, incluida su propia home:
+    2,581 bytes, sin <title>, con `ui-empty-state not-found-page`. La MISMA máquina,
+    la MISMA red y el MISMO minuto, con ventana visible, devuelven 499 KB y las 20
+    tarjetas. No era la IP, ni el rate limiting, ni la categoría, ni la sesión: se
+    probó también con el perfil de Chrome de una cuenta con sesión iniciada y no
+    hacía falta — basta con no ser headless.
+
+    Por eso la ventana es VISIBLE por defecto. `COMPETENCIA_HEADLESS=1` la vuelve a
+    ocultar, para cuando ML afloje o para correr en un servidor con Xvfb.
     """
+    import os
+
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
 
     op = Options()
-    if not visible:
+    if not visible and os.environ.get("COMPETENCIA_HEADLESS") == "1":
         op.add_argument("--headless=new")
     op.add_argument("--window-size=1440,2400")
     op.add_argument("--lang=es-MX")
