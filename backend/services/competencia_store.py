@@ -1,12 +1,21 @@
 """
-competencia_store.py — Persistencia LOCAL del módulo de Competencia (SQLite).
+competencia_store.py — Persistencia del módulo de Competencia.
 
-Por qué SQLite y no Supabase: el módulo es un MVP que se trabaja en local, no
-guarda histórico (cada corrida borra y reescribe) y no lo consume nadie más. Un
-archivo `backend/competencia.db` no necesita credenciales, no puede ensuciar la
-BD kubera de producción y se borra sin consecuencias. `sqlite3` es stdlib.
+DOS MODOS, y el de lectura se elige solo:
 
-El archivo está en .gitignore: son datos desechables, no código.
+  • PRODUCCIÓN → BD kubera, esquema `propuestas` (vía `competencia_supabase`).
+    Se usa en cuanto hay `SUPABASE_DB_URL`. Hace falta porque el sistema de
+    archivos de Railway es efímero: con SQLite el tab arrancaba vacío en cada
+    deploy.
+  • LOCAL → SQLite en `backend/competencia.db`. Sin credenciales, sin riesgo de
+    ensuciar la BD de producción, y `sqlite3` es stdlib.
+
+Las ESCRITURAS siguen siendo locales a propósito: la captura corre con un
+navegador (Selenium), que no existe en Railway, así que se raspa desde una máquina
+del equipo y se sube a `propuestas`. Mezclar los dos caminos de escritura sin que
+el equipo apruebe el esquema sería empujar un borrador a producción.
+
+El archivo SQLite está en .gitignore: son datos desechables, no código.
 
 Tres tablas:
   - skus       : los SKUs vigilados, su categoría (con la ruta partida en niveles
@@ -187,8 +196,24 @@ CREATE INDEX IF NOT EXISTS idx_skus_cat     ON skus (categoria_id);
 
 
 def disponible() -> bool:
-    """Siempre: es un archivo local, no hay credencial que falte."""
+    """Siempre: en el peor caso está el archivo local, no hay credencial que falte."""
     return True
+
+
+def _remoto():
+    """
+    El lector de la BD kubera, o None si no hay `SUPABASE_DB_URL`.
+
+    Se resuelve en cada llamada y no al importar: la variable puede aparecer
+    después (Railway aplica cambios de entorno sin rebuild) y no queremos un
+    proceso condenado a SQLite por el orden de arranque.
+    """
+    try:
+        from services import competencia_supabase
+        return competencia_supabase if competencia_supabase.disponible() else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo usar la lectura remota, sigo en local: %s", exc)
+        return None
 
 
 def periodo_actual(hoy: date | None = None) -> str:
@@ -287,6 +312,13 @@ def guardar_skus(skus: list[dict[str, Any]]) -> int:
 
 
 def listar_skus(solo_activos: bool = True) -> list[dict[str, Any]]:
+    r = _remoto()
+    if r:
+        return r.listar_skus(solo_activos)
+    return _listar_skus_local(solo_activos)
+
+
+def _listar_skus_local(solo_activos: bool = True) -> list[dict[str, Any]]:
     asegurar_schema()
     sql = "SELECT * FROM skus"
     if solo_activos:
@@ -537,6 +569,9 @@ def publicaciones(sku: str | None = None) -> list[dict[str, Any]]:
     función directamente (el detalle de un SKU) también la necesita: sin ella el
     frontend imprimía "undefined%".
     """
+    r = _remoto()
+    if r:
+        return r.publicaciones(sku)
     asegurar_schema()
     sql = "SELECT * FROM publicaciones"
     params: list[Any] = []
@@ -591,6 +626,9 @@ def reemplazar_ranking(categoria_id: str, nivel: str, periodo: str,
 
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
+    r = _remoto()
+    if r:
+        return r.ranking_categoria(categoria_id, nivel, limite)
     asegurar_schema()
     sql = "SELECT * FROM rankings_categoria WHERE categoria_id = ?"
     params: list[Any] = [categoria_id]
@@ -652,6 +690,9 @@ def terminos_categoria(categoria_id: str,
     `cubierto` queda como el OR de las tiendas (¿alguna nos hace encontrables?) y
     `cubierto_por` dice cuáles.
     """
+    r = _remoto()
+    if r:
+        return r.terminos_categoria(categoria_id, titulos_por_tienda, limite)
     asegurar_schema()
     with _con() as c:
         filas = _filas(c.execute(
@@ -670,6 +711,9 @@ def terminos_categoria(categoria_id: str,
 
 def total_terminos(categoria_id: str) -> int:
     """Cuántos términos publica ML para la categoría (0 = no publica ninguno)."""
+    r = _remoto()
+    if r:
+        return r.total_terminos(categoria_id)
     asegurar_schema()
     with _con() as c:
         return c.execute("SELECT COUNT(*) FROM terminos_categoria WHERE categoria_id = ?",
