@@ -702,7 +702,10 @@ export interface PublicacionPropia {
   titulo: string | null;
   url: string | null;
   imagen: string | null;
-  precio: number | null;             // de channel.listings.price en producción
+  /** El que el comprador PAGA (de /items/{id}/sale_price), no el de lista. */
+  precio: number | null;
+  /** El de LISTA. Puede ser muy superior: $7,756 contra $3,294 reales. */
+  precio_lista: number | null;
   estado: string | null;
   visitas_30d: number | null;        // API de ML
   unidades_30d: number | null;       // de los pedidos
@@ -796,6 +799,8 @@ export interface CompetenciaSubcategoria {
   precio_min: number | null;
   precio_max: number | null;
   volumen_mercado: number | null;
+  /** Visitas de 30 días sumadas del top del nicho: el tamaño de la demanda. */
+  visitas_mercado: number | null;
   n_terminos: number;
   /** No lo hemos capturado. NO significa que ML no lo tenga — la vista no puede
    *  distinguirlo, solo sabe lo que hay guardado. */

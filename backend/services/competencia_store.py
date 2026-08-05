@@ -124,7 +124,12 @@ CREATE TABLE IF NOT EXISTS publicaciones (
     canal          TEXT NOT NULL DEFAULT 'mercado_libre',
     ml_item_id     TEXT NOT NULL,
     titulo         TEXT,
+    -- El precio que el comprador PAGA (de /items/{id}/sale_price). NO el de
+    -- `channel.listings.price`, que es el de LISTA: en CAM-0030-IND la lista dice
+    -- $7,755.92 y la venta real es $3,294 — mostrar la lista hacía ver la brecha
+    -- contra el mercado mucho peor de lo que es.
     precio         REAL,
+    precio_lista   REAL,
     url            TEXT,
     imagen         TEXT,
     estado         TEXT,
@@ -288,6 +293,7 @@ def asegurar_schema() -> None:
             ("busquedas", "envio_gratis", "INTEGER"),
             ("busquedas", "es_full", "INTEGER"),
             ("busquedas", "catalog_id", "TEXT"),
+            ("publicaciones", "precio_lista", "REAL"),
         ):
             tiene = {r["name"] for r in c.execute(f"PRAGMA table_info({tabla})")}
             if col not in tiene:
@@ -551,8 +557,9 @@ def posiciones(sku: str | None = None) -> list[dict[str, Any]]:
     return out
 
 
-_CAMPOS_PUB = ("sku", "cuenta", "canal", "ml_item_id", "titulo", "precio", "url",
-               "imagen", "estado", "visitas_30d", "unidades_30d")
+_CAMPOS_PUB = ("sku", "cuenta", "canal", "ml_item_id", "titulo", "precio",
+               "precio_lista", "url", "imagen", "estado", "visitas_30d",
+               "unidades_30d")
 
 
 def guardar_publicaciones(filas: list[dict[str, Any]]) -> int:
@@ -799,6 +806,7 @@ def tabla() -> list[dict[str, Any]]:
                 "url": p.get("url"),
                 "imagen": p.get("imagen"),
                 "precio": p.get("precio"),
+                "precio_lista": p.get("precio_lista"),
                 "estado": p.get("estado"),
                 "visitas_30d": vis,
                 "unidades_30d": uni,
@@ -983,6 +991,10 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             # sumando el top. `vendidos` es cota inferior (ML redondea a "+50mil"),
             # así que sirve para ordenar nichos, no como cifra exacta.
             sub["volumen_mercado"] = sum(x["vendidos"] or 0 for x in top) or None
+            # Tráfico del NICHO: la suma de visitas de su top. Junto con la mediana
+            # es lo que permite buscar categorías de ticket alto y mucha demanda,
+            # que es distinto de "dónde tenemos más SKUs".
+            sub["visitas_mercado"] = sum(x["visitas_30d"] or 0 for x in top) or None
             # POSICIÓN DE LA SUBCATEGORÍA EN EL TOP DEL PADRE. Es el criterio más
             # fuerte de oportunidad: si el #1 de toda la categoría vive en nuestra
             # subcategoría, ahí está la pelea que importa. Se une por la categoría

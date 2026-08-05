@@ -113,10 +113,15 @@ def main() -> int:
     print(f"skus: {cargar('competencia_skus', COLS_S, skus, args.token, args.dry_run)}/{len(skus)}")
 
     # Publicaciones. El precio NO se sube: vive en channel.listings.price.
+    # El precio SÍ se sube ahora: es el de VENTA (/sale_price), que no está en
+    # channel.listings — esa tabla guarda el de LISTA y puede estar al doble.
+    COLS_P = ["sku","cuenta","canal","listing_id","periodo","visitas_30d",
+              "unidades_30d","fuente_unidades","titulo","estado","precio","precio_lista"]
     pubs = [(r["sku"], r["cuenta"], r["canal"], r["ml_item_id"], periodo,
-             r["visitas_30d"], r["unidades_30d"], "ml_api", r["titulo"], r["estado"])
+             r["visitas_30d"], r["unidades_30d"], "ml_api", r["titulo"], r["estado"],
+             r["precio"], r["precio_lista"])
             for r in c.execute("select * from publicaciones")]
-    print(f"publicaciones: {cargar('competencia_publicacion_metricas', ['sku','cuenta','canal','listing_id','periodo','visitas_30d','unidades_30d','fuente_unidades','titulo','estado'], pubs, args.token, args.dry_run)}/{len(pubs)}")
+    print(f"publicaciones: {cargar('competencia_publicacion_metricas', COLS_P, pubs, args.token, args.dry_run)}/{len(pubs)}")
 
     COLS_R = ["categoria_id", "nivel", "periodo", "posicion", "externo_id", "id_pagina",
               "tipo", "titulo", "precio", "precio_lista", "descuento", "vendidos",

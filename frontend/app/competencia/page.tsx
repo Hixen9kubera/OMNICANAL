@@ -333,6 +333,56 @@ type Orden =
   | "unidades_desc"
   | "unidades_asc";
 
+/** Cómo ordenar las SUBCATEGORÍAS. Distinto del orden de los SKUs: aquí se busca
+ *  dónde hay ticket alto y demanda, no qué producto nuestro rinde. */
+type OrdenSub =
+  | "defecto"
+  | "mediana_desc"
+  | "mediana_asc"
+  | "visitas_desc"
+  | "visitas_asc"
+  | "volumen_desc"
+  | "skus_desc";
+
+const ORDENES_SUB: { id: OrdenSub; label: string }[] = [
+  { id: "defecto", label: "Orden por oportunidad" },
+  { id: "mediana_desc", label: "Ticket más alto" },
+  { id: "mediana_asc", label: "Ticket más bajo" },
+  { id: "visitas_desc", label: "Más visitas del nicho" },
+  { id: "visitas_asc", label: "Menos visitas del nicho" },
+  { id: "volumen_desc", label: "Más unidades vendidas" },
+  { id: "skus_desc", label: "Donde más SKUs tenemos" },
+];
+
+/**
+ * Ordena las subcategorías. Los `null` van SIEMPRE al final: una categoría sin
+ * mediana es una que no hemos capturado, y colocarla como "la más barata" haría
+ * que el orden mintiera.
+ */
+function ordenarSubs(
+  subs: CompetenciaSubcategoria[],
+  orden: OrdenSub,
+): CompetenciaSubcategoria[] {
+  if (orden === "defecto") return subs;
+  const campo: Record<string, keyof CompetenciaSubcategoria> = {
+    mediana_desc: "mediana",
+    mediana_asc: "mediana",
+    visitas_desc: "visitas_mercado",
+    visitas_asc: "visitas_mercado",
+    volumen_desc: "volumen_mercado",
+    skus_desc: "n_skus",
+  };
+  const k = campo[orden];
+  const asc = orden.endsWith("_asc");
+  return [...subs].sort((a, b) => {
+    const x = a[k] as number | null;
+    const y = b[k] as number | null;
+    if (x === null || x === undefined) return 1;
+    if (y === null || y === undefined) return -1;
+    return asc ? x - y : y - x;
+  });
+}
+
 const ORDENES: { id: Orden; label: string }[] = [
   { id: "visitas_desc", label: "Más visitas primero" },
   { id: "visitas_asc", label: "Menos visitas primero" },
@@ -500,8 +550,15 @@ function FilasSku({
               </span>
             ) : null}
           </td>
-          <td className="py-2 pr-3 text-right text-xs font-medium tabular-nums text-slate-900">
-            {mxn(t?.precio)}
+          <td className="py-2 pr-3 text-right text-xs tabular-nums">
+            {/* El precio que se PAGA. El de lista va tachado cuando hay descuento:
+                mostrar el de lista solo falseaba la brecha contra el mercado. */}
+            <div className="font-medium text-slate-900">{mxn(t?.precio)}</div>
+            {t?.precio_lista && t?.precio && t.precio_lista > t.precio ? (
+              <div className="text-[10px] text-slate-400 line-through">
+                {mxn(t.precio_lista)}
+              </div>
+            ) : null}
           </td>
           <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
             {num(t?.visitas_30d)}
@@ -1266,7 +1323,13 @@ function BloqueSubcategoria({
           <span title="Mediana de precio del top de la subcategoría">
             med. {mxn(sub.mediana)}
           </span>
-          <span title="Unidades del top: el tamaño del nicho (cota inferior)">
+          {/* Visitas del nicho: la DEMANDA. Junto con la mediana es lo que
+              permite buscar categorías de ticket alto y mucho tráfico. */}
+          <span title="Visitas de 30 días sumadas del top: el tamaño de la demanda">
+            <Eye size={10} className="mr-0.5 inline" />
+            {num(sub.visitas_mercado)}
+          </span>
+          <span title="Unidades del top: cuánto se vende en el nicho (cota inferior)">
             <TrendingUp size={10} className="mr-0.5 inline" />
             {cota(sub.volumen_mercado)}
           </span>
@@ -1438,6 +1501,7 @@ export default function CompetenciaPage() {
   const [vMin, setVMin] = useState<number | null>(null);
   const [vMax, setVMax] = useState<number | null>(null);
   const [orden, setOrden] = useState<Orden>("visitas_desc");
+  const [ordenSub, setOrdenSub] = useState<OrdenSub>("defecto");
   // Solo los SKUs que aparecen en el top de su subcategoría.
   const [soloTop, setSoloTop] = useState(false);
 
@@ -1537,7 +1601,7 @@ export default function CompetenciaPage() {
 
       return {
         ...r,
-        subcategorias: subs,
+        subcategorias: ordenarSubs(subs, ordenSub),
         skus: ordenar(
           r.skus.filter((x) => admite(x) && (!fSub || x.categoria_id === fSub)),
           orden,
@@ -1657,10 +1721,23 @@ export default function CompetenciaPage() {
           </div>
 
           <select
+            value={ordenSub}
+            onChange={(e) => setOrdenSub(e.target.value as OrdenSub)}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
+            title="Ordena las SUBCATEGORÍAS: para encontrar nichos de ticket alto y mucha demanda"
+          >
+            {ORDENES_SUB.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+
+          <select
             value={orden}
             onChange={(e) => setOrden(e.target.value as Orden)}
             className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
-            title="Ordena nuestros SKUs. Los que no están medidos van al final."
+            title="Ordena nuestros SKUs dentro de cada subcategoría. Los no medidos van al final."
           >
             {ORDENES.map((o) => (
               <option key={o.id} value={o.id}>

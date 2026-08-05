@@ -442,6 +442,23 @@ def resolver_highlight(entrada: dict[str, Any],
     return fila
 
 
+def precio_venta(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> dict[str, Any] | None:
+    """
+    El precio que el comprador PAGA, y el de lista.
+
+    `/items/{id}.price` es el precio de LISTA y puede estar muy por encima del real:
+    medido en CAM-0030-IND, lista $7,755.92 contra $3,294 de venta en BEKURA y
+    $3,899 en SANCORFASHION — 58% y 50% de descuento. Mostrar el de lista hace ver
+    la brecha contra el mercado mucho peor de lo que es.
+
+    Solo funciona con publicaciones PROPIAS: en ajenas responde 403.
+    """
+    d = _get(f"/items/{item_id}/sale_price", {"context": "channel_marketplace"}, cuenta)
+    if not isinstance(d, dict):
+        return None
+    return {"precio": d.get("amount"), "precio_lista": d.get("regular_amount")}
+
+
 # ── Reseñas ──────────────────────────────────────────────────────────────────
 
 def reviews(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> dict[str, Any] | None:
