@@ -270,6 +270,69 @@ def sku_padre(sku: str) -> str:
     return str(rows[0]["sku_padre"]) if rows and rows[0].get("sku_padre") else ""
 
 
+def skus_padre(skus: list[str]) -> dict[str, str]:
+    """
+    `sku_padre` en LOTE: { sku_variante: sku_padre } en una sola consulta.
+    Los SKUs que no son variación simplemente no aparecen en el diccionario.
+    """
+    limpios = [s.strip() for s in (skus or []) if s and s.strip()]
+    if not limpios or not disponible():
+        return {}
+    P = _prefix()
+    salida: dict[str, str] = {}
+    for i in range(0, len(limpios), 800):
+        chunk = limpios[i:i + 800]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            rows = _fetch_all(
+                f"""SELECT hijo.meta_value AS sku_hijo, padre.meta_value AS sku_padre
+                      FROM {P}postmeta hijo
+                      JOIN {P}posts    v     ON v.ID = hijo.post_id
+                                            AND v.post_type = 'product_variation'
+                      JOIN {P}postmeta padre ON padre.post_id = v.post_parent
+                                            AND padre.meta_key = '_sku'
+                     WHERE hijo.meta_key = '_sku'
+                       AND hijo.meta_value IN ({ph})""",
+                tuple(chunk),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("skus_padre falló: %s", exc)
+            return salida
+        for r in rows:
+            hijo, padre = r.get("sku_hijo"), r.get("sku_padre")
+            if hijo and padre:
+                salida[str(hijo)] = str(padre)
+    return salida
+
+
+def expandir_con_padres(terminos: list[str]) -> tuple[list[str], dict[str, str]]:
+    """
+    Los buscadores del panel indexan solo productos PADRE (`post_type='product'`)
+    y matchean con "el término CABE dentro del SKU". El SKU completo de una
+    variante (`ACC-0069-ROS-2XL`) es más LARGO que el de su padre (`ACC-0069`),
+    así que nunca cabe: pegar variantes devolvía cero resultados sin explicar por
+    qué (reporte del 5-ago con 20 SKUs; 15 eran variantes).
+
+    Aquí se traduce cada variante a su padre por ESTRUCTURA (`post_parent`), no
+    por el nombre del SKU, y se AÑADE a la lista (no se reemplaza: el término
+    original sigue siendo válido como búsqueda parcial).
+
+    Devuelve (términos expandidos, { variante: padre }) — el mapa sirve para
+    explicarle al usuario qué se tradujo.
+    """
+    limpios = [t.strip() for t in (terminos or []) if t and t.strip()]
+    if not limpios:
+        return [], {}
+    mapa = skus_padre(limpios)
+    vistos = {t.upper() for t in limpios}
+    salida = list(limpios)
+    for padre in mapa.values():
+        if padre.upper() not in vistos:
+            vistos.add(padre.upper())
+            salida.append(padre)
+    return salida, mapa
+
+
 def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     """
     Precio activo, precio regular, precio oferta y costo — leídos DIRECTO de

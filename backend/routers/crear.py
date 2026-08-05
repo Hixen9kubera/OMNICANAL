@@ -116,9 +116,16 @@ async def candidatos(
         tiene_anterior=page > 1,
         tiene_siguiente=page < total_pages,
     )
+    # `completo` = "ya no falta índice por construir", y el panel reintenta cada
+    # 4 s mientras sea false. Con MySQL el listado se lee FRESCO y completo en
+    # cada carga (creacion.listar_candidatos_agrupados), pero se seguía
+    # reportando drafts_completo(), que solo lo enciende el escaneo por API —
+    # escaneo que con MySQL nunca corre. Resultado: false para siempre, o sea
+    # "Preparando el catálogo…" y recarga infinita (reporte del 5-ago).
+    from services import wp_db
     return RespuestaProductos(
         canal=_CANAL_CREAR, items=items, paginacion=paginacion,
-        completo=woocommerce.drafts_completo(),
+        completo=True if wp_db.disponible() else woocommerce.drafts_completo(),
     )
 
 

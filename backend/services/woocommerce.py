@@ -446,7 +446,9 @@ def _buscar_wc_ids_wp(
         like = f"%{search.strip()}%"
         args += [like, like]
     if skus:
-        terminos = [t.strip() for t in skus if t.strip()]
+        # Variante → padre: la consulta solo mira `post_type='product'`, así que
+        # un SKU de variante jamás matchea contra el SKU (más corto) de su padre.
+        terminos, _ = wp_db.expandir_con_padres(list(skus))
         if terminos:
             grupo = " OR ".join(["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos))
             where.append(f"({grupo})")
@@ -760,6 +762,7 @@ async def indice_catalogo(refrescar: bool = False) -> list[dict[str, Any]]:
 # escanear el catálogo completo). Es la fuente de la vista Crear Productos.
 _draft_cache: list[dict[str, Any]] = []
 _draft_cache_ts: float = 0.0
+_TOPE_BUSQUEDAS = 60  # términos que `buscar_drafts` consulta por request
 _draft_lock = asyncio.Lock()
 
 
@@ -965,7 +968,13 @@ async def buscar_drafts(terminos: list[str]) -> list[dict[str, Any]]:
                     encontrados[p["id"]] = p
         except Exception as exc:  # noqa: BLE001
             log.warning("buscar_drafts sku= falló: %s", exc)
-        for t in terminos[:10]:  # tope de búsquedas por request
+        # Antes el tope era 10: pegar una lista de 20 SKUs descartaba la mitad en
+        # silencio. Se sube a 60 (lo que un pegado normal trae) y lo que rebase
+        # se registra, en vez de recortarse sin avisar.
+        if len(terminos) > _TOPE_BUSQUEDAS:
+            log.warning("buscar_drafts: %d términos, se buscan los primeros %d",
+                        len(terminos), _TOPE_BUSQUEDAS)
+        for t in terminos[:_TOPE_BUSQUEDAS]:
             try:
                 r = await cli.get("/products", params={
                     "search": t, "status": "draft",

@@ -3304,6 +3304,41 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.59.0 — Pegar SKUs de variantes ya encuentra sus productos (Eduardo)
+
+Eduardo pegó 20 SKUs para publicar y el panel "a veces me aparecen dos SKUs nada
+más, a veces 'preparando catálogo' y a veces solo en blanco y se traba". Eran
+tres fallas distintas apiladas:
+
+- **Variante → padre.** Los buscadores indexan solo productos PADRE
+  (`post_type='product'`; las 7,301 variaciones quedan fuera) y matchean con
+  "el término CABE dentro del SKU". El SKU de una variante es más LARGO que el
+  de su padre (`ACC-0069-ROS-2XL` vs `ACC-0069`), así que **nunca podía
+  coincidir**: 15 de los 20 SKUs eran variantes. Nuevo `wp_db.skus_padre()` /
+  `expandir_con_padres()` traduce cada variante a su padre por ESTRUCTURA
+  (`post_parent`), no por el nombre del SKU, en una sola consulta, y lo AÑADE a
+  la búsqueda. Aplica a Crear (`listar_candidatos_agrupados`) y a
+  Productos/Omnicanal (`_buscar_wc_ids_wp`). Con los 20 SKUs reales: **5
+  productos antes → 14 después**, cobertura completa.
+- **"Preparando el catálogo…" para siempre.** El panel reintenta cada 4 s
+  mientras `completo` sea false, y `completo` salía de `drafts_completo()`, que
+  solo lo enciende el escaneo por API — escaneo que **con MySQL nunca corre**,
+  porque el listado se lee fresco de MySQL. O sea: false eterno. Ahora
+  `completo=True` cuando `wp_db.disponible()`.
+- **Ya no gira sobre lo imposible.** Con búsqueda o filtro puesto, cero
+  resultados es una RESPUESTA, no un índice a medio construir: se acabaron los
+  45 reintentos (~4 min en blanco) y sale *"No se encontró ninguno de esos SKUs
+  por crear · puede que ya estén publicados: búscalos en Productos"*.
+- **El tope de términos sube de 10 a 60** en `buscar_drafts`: pegar 20 SKUs
+  descartaba la mitad en silencio. Lo que rebase se registra en el log.
+
+Verificado contra MySQL de producción con los 20 SKUs del reporte: 15 variantes
+traducidas a 9 padres, 7 grupos en Crear (draft) y 7 en Productos (2 pending, 4
+publish, 1 pending), los 14 productos cubiertos. `py_compile` y `tsc` limpios.
+Versión 0.59.0.
+
+---
+
 ### v0.58.0 — El listado de Productos deja de arrastrarse: 16 s → 4 s en frío (Eduardo)
 
 Eduardo reportó lentitud al buscar SKUs ("Preparando el catálogo…" eterno).
