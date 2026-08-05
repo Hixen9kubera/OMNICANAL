@@ -93,7 +93,19 @@ def construir(hojas: list[dict], pubs: list[dict], desde: str, hasta: str,
         cel.font = _f(bold=True, color="FFFFFF")
         cel.fill = _CAB_FILL
     ws.freeze_panes = "A2"
+    # Agrupación nativa de Excel (botones +/− al margen): el encabezado de cada
+    # categoría queda ARRIBA de su bloque, así que el resumen va arriba.
+    ws.sheet_properties.outlinePr.summaryBelow = False
     fila = 2
+    # El archivo abre COMPACTO: visibles las categorías principales y su primer
+    # nivel; lo demás plegado (clic en + para abrir). Tope de Excel: 7 niveles.
+    _VISIBLE_HASTA = 1  # profundidad máxima visible al abrir
+
+    def _outline(r: int, nivel: int, oculta: bool) -> None:
+        rd = ws.row_dimensions[r]
+        rd.outlineLevel = min(nivel, 7)
+        if oculta:
+            rd.hidden = True
 
     def pinta(n: _Nodo, ruta: str, depth: int) -> None:
         nonlocal fila
@@ -105,6 +117,10 @@ def construir(hojas: list[dict], pubs: list[dict], desde: str, hasta: str,
         fill = PatternFill("solid", fgColor=_NIVEL_FILL[min(depth, 3)])
         for c in range(1, 11):
             ws.cell(r0, c).fill = fill
+        if depth:  # las raíces (nivel 0) no pertenecen a ningún grupo
+            _outline(r0, depth, depth > _VISIBLE_HASTA)
+        if depth >= _VISIBLE_HASTA:  # sus hijos abren plegados
+            ws.row_dimensions[r0].collapsed = True
         fila += 1
         items = sorted((p for h in n.hojas
                         for p in pubs_por_cat.get(str(h["category_id"]), [])),
@@ -125,6 +141,8 @@ def construir(hojas: list[dict], pubs: list[dict], desde: str, hasta: str,
                 ws.cell(fila, 8).number_format = _MONEY
             ws.cell(fila, 9, p.get("primera_venta") or "").font = _f()
             ws.cell(fila, 10, p.get("ultima_venta") or "").font = _f()
+            # las publicaciones cuelgan un nivel bajo su categoría
+            _outline(fila, depth + 1, depth + 1 > _VISIBLE_HASTA)
             fila += 1
         for h in sorted(n.hijos.values(),
                         key=lambda x: -acum[f"{ruta}›{x.nombre}"]["venta"]):
