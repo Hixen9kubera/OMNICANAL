@@ -917,10 +917,18 @@ async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
     """
     Visitas de 30 días para los resultados de una búsqueda. → cuántas se llenaron.
 
-    Los ids `MLMU…` son PRODUCTOS DE VENDEDOR, no publicaciones: `/visits` no los
-    acepta. Hay que resolverlos con `/products/{id}/items`, que devuelve el item
-    real. En una muestra de 40 resultados, 14 eran de ese tipo — sin resolverlos se
-    perdería más de un tercio de las visitas.
+    DOS clases de id hay que resolver antes de pedir visitas, y ninguna es un
+    error de captura:
+
+      • `MLMU…` — PRODUCTO DE VENDEDOR. En una muestra de 40 resultados, 14 lo eran.
+      • `MLM…` que viene de un URL `/p/` — PRODUCTO DE CATÁLOGO. Se ve idéntico a
+        un item pero no lo es: `/visits` devuelve 0 en silencio, así que el panel
+        mostraba "0 visitas" en colchones con miles de ventas. Es el peor caso —
+        no falla, MIENTE.
+
+    Los dos se resuelven con `/products/{id}/items`, que devuelve el item real. Se
+    elige el de MÁS visitas, no el más barato: el barato no siempre es el que
+    recibe el tráfico.
 
     Y va de a una llamada por publicación porque no hay multiget: `/visits/items`
     con dos ids responde HTTP 400.
@@ -928,10 +936,11 @@ async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
     if not filas:
         return 0
 
-    # 1. Resolver los MLMU a su item real, sin repetir el que ya se resolvió.
+    # 1. Resolver a su item real, sin repetir el que ya se resolvió.
     porv: dict[str, str] = {}
     mlmu = [f["externo_id"] for f in filas
-            if (f.get("externo_id") or "").startswith("MLMU")]
+            if (f.get("externo_id") or "").startswith("MLMU")
+            or "/p/" in (f.get("url") or "")]
     if mlmu:
         res = await asyncio.gather(
             *(asyncio.to_thread(competencia_ml.competidores_de_producto, i, 1)
@@ -942,7 +951,12 @@ async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
 
     objetivo = []
     for f in filas:
-        ident = porv.get(f.get("externo_id") or "", f.get("externo_id") or "")
+        crudo = f.get("externo_id") or ""
+        ident = porv.get(crudo, crudo)
+        # Un id de catálogo sin resolver NO sirve para /visits: pedirlo devolvería
+        # 0 y ese cero se leería como "nadie la ve".
+        if ident == crudo and "/p/" in (f.get("url") or "") and crudo not in porv:
+            continue
         if ident.startswith("MLM") and not ident.startswith("MLMU"):
             objetivo.append((f, ident))
     if not objetivo:
