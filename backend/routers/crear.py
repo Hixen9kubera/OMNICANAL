@@ -40,7 +40,7 @@ from config import settings
 from core.seguridad import requiere_api_key
 from models.schemas import Paginacion, Producto, RespuestaProductos
 from services import (alertas, costing_read, costos, creacion, crear_producto, db,
-                      lecturas_fuente, woocommerce)
+                      kubera_mirror, lecturas_fuente, woocommerce)
 
 log = logging.getLogger("omnicanal.routers.crear")
 router = APIRouter(prefix="/api/crear", tags=["crear"])
@@ -309,6 +309,17 @@ async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
             desaparecidos.append({**c, "situacion": "papelera"})
         else:
             existentes += 1
+    # Seam ciclo de vida (05-ago): reparación OPORTUNISTA del maestro kubera —
+    # cada vez que la auditoría confirma que un producto ya no existe en Woo,
+    # core.products lo marca (status trash/deleted, la fila NO se borra: el
+    # ETL v2 tampoco toca filas que desaparecen de las fuentes). Best-effort.
+    for d in desaparecidos:
+        kubera_mirror.espejar(
+            "routers/crear.py", "auditoria (desaparecido)",
+            "wp_posts", "core.products", "UPSERT",
+            {"sku": d.get("sku"), "wc_id": d.get("wc_id"),
+             "status": "trash" if d["situacion"] == "papelera" else "deleted"},
+            clave=str(d.get("sku")))
     return {
         "ok": True, "dias": dias, "creados": len(rows), "existentes": existentes,
         "desaparecidos": desaparecidos, "sin_wc_id": sin_wc_id,

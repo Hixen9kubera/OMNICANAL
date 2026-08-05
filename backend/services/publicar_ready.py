@@ -172,9 +172,12 @@ def _marcar_publicado_en_woo(sku: str, wc_id: int | None) -> None:
         # La visibilidad la manda el PADRE cuando el SKU es una variación.
         fila = wp_db._fetch_all(
             f"""SELECT p.ID, p.post_type, p.post_parent, p.post_status,
-                       pa.post_status est_padre
+                       pa.post_status est_padre, sk.meta_value sku_padre
                 FROM {P}posts p
                 LEFT JOIN {P}posts pa ON pa.ID = p.post_parent
+                LEFT JOIN {P}postmeta sk
+                       ON sk.post_id = COALESCE(NULLIF(p.post_parent, 0), p.ID)
+                      AND sk.meta_key = '_sku'
                 WHERE p.ID = %s""", (int(wc_id),))
         if not fila:
             return
@@ -197,6 +200,18 @@ def _marcar_publicado_en_woo(sku: str, wc_id: int | None) -> None:
             asyncio.run(_put())
         log.info("Woo %s (%s): %s → publish (publicado en un canal)",
                  objetivo, sku, estado)
+        # Seam ciclo de vida (05-ago): el maestro kubera se entera del publish
+        # EN VIVO, no hasta el ETL de las 06:15. El sku que viaja es el del
+        # POST que se publica (el padre para variaciones — sku_padre), para que
+        # el upsert-por-wc_id nunca case el sku de una variación con el wc_id
+        # del padre. Best-effort vía el espejo (cola + reproceso); no bloquea.
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/publicar_ready.py", "publicar (draft→publish)",
+            "wp_posts", "core.products", "UPSERT",
+            {"sku": (f.get("sku_padre") or sku), "wc_id": objetivo,
+             "status": "publish"},
+            clave=str(f.get("sku_padre") or sku))
     except Exception as exc:  # noqa: BLE001 — jamás rompe la publicación
         log.warning("No se pudo marcar %s como publicado en Woo: %s", sku, exc)
 
