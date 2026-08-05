@@ -573,7 +573,8 @@ v as (
          sum(s.units_sold)::int as uds,
          sum(s.revenue)         as venta
   from channel.sales_daily_completa s
-  where s.date > current_date - %(dias)s::int and s.sku is not null
+  where s.date >= %(desde)s::date and s.date <= %(hasta)s::date
+    and s.sku is not null
     and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
   group by 1, 2
   having sum(s.units_sold) > 0
@@ -658,28 +659,82 @@ left join lateral (
   where oi.item_id = s.item_id and oi.titulo is not null limit 1
 ) oi on true
 where s.sku in (select sku from skus_hoja)
-  and s.date > current_date - %(dias)s::int
+  and s.date >= %(desde)s::date and s.date <= %(hasta)s::date
   and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
 group by s.item_id, s.cuenta
 order by venta desc
 limit 200
 """)
 
+# TODAS las publicaciones vendidas del período con su hoja de categoría, en un
+# solo query — para el Excel (la variante de arriba es por-hoja, para la UI).
+_SQL_CAT_PUBS_TODAS = _mx("""
+with pc as (
+  select sku, category_id from channel.product_category
+  where channel_id = 'mercado_libre'
+)
+select pc.category_id::text as category_id,
+       s.item_id, s.cuenta,
+       max(s.sku::text)         as sku,
+       sum(s.units_sold)::int   as uds,
+       round(sum(s.revenue), 2) as venta,
+       min(s.date)::text        as primera_venta,
+       max(s.date)::text        as ultima_venta,
+       max(l.situacion)         as situacion,
+       max(l.price)             as precio,
+       coalesce(max(oi.titulo), max(p.name)) as titulo
+from channel.sales_daily_completa s
+join pc on pc.sku = s.sku
+left join channel.listings l
+       on l.listing_id = s.item_id and l.canal = s.canal
+left join core.products p on p.sku = s.sku
+left join lateral (
+  select titulo from channel.order_items oi
+  where oi.item_id = s.item_id and oi.titulo is not null limit 1
+) oi on true
+where s.date >= %(desde)s::date and s.date <= %(hasta)s::date
+  and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
+group by pc.category_id, s.item_id, s.cuenta
+having sum(s.units_sold) > 0
+""")
+
+
+def _rango_fechas(dias: int, desde: str | None, hasta: str | None) -> tuple[str, str]:
+    """(desde, hasta) ISO. Sin fechas explícitas replica el período relativo
+    `dias` (los últimos N días hasta hoy CDMX, como el SQL original)."""
+    from datetime import date, datetime, timedelta, timezone
+    hoy = datetime.now(timezone(timedelta(hours=-6))).date()
+    try:
+        h = min(date.fromisoformat(hasta), hoy) if hasta else hoy
+        d = date.fromisoformat(desde) if desde else h - timedelta(days=dias - 1)
+    except ValueError as exc:
+        raise HTTPException(400, f"fecha inválida: {exc}") from exc
+    if d > h:
+        d, h = h, d
+    if (h - d).days > 730:
+        raise HTTPException(400, "rango máximo: 2 años")
+    return d.isoformat(), h.isoformat()
+
 
 @router.get("/categorias")
 async def categorias(
     dias: int = Query(60, ge=7, le=400),
     cuenta: str | None = Query(None),
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
 ) -> dict[str, Any]:
     """Ventas por categoría con la ruta COMPLETA de ML: devuelve las hojas
     (ruta + category_id) y la UI arma el árbol con acumulados por nivel.
-    `dias=400` cubre todo el histórico."""
+    `dias=400` cubre todo el histórico; `desde`/`hasta` (YYYY-MM-DD) fijan un
+    período absoluto y mandan sobre `dias`."""
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     if cuenta and cuenta not in _CUENTAS:
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
-        filas = sdb.fetch_all(_SQL_CAT_HOJAS, {"dias": dias, "cuenta": cuenta})
+        d1, d2 = _rango_fechas(dias, desde, hasta)
+        filas = sdb.fetch_all(_SQL_CAT_HOJAS,
+                              {"desde": d1, "hasta": d2, "cuenta": cuenta})
         venta_total = sum(float(f["venta"]) for f in filas)
         uds_total = sum(f["uds"] for f in filas)
         # solo las que SÍ vendieron cuentan como "categorías con venta"
@@ -687,6 +742,7 @@ async def categorias(
                        for f in filas if f["uds"]}
         return {
             "ambiente": settings.app_env, "dias": dias, "cuenta": cuenta,
+            "desde": d1, "hasta": d2,
             "totales": {"venta": round(venta_total, 2), "uds": int(uds_total),
                         "categorias": len(principales)},
             "hojas": filas,
@@ -703,6 +759,8 @@ async def categorias_publicaciones(
     categoria_id: str = Query(..., max_length=40),
     dias: int = Query(60, ge=7, le=400),
     cuenta: str | None = Query(None),
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
 ) -> dict[str, Any]:
     """Las publicaciones (item_id) de una hoja del árbol, como las filas del
     xlsx: cuenta, título, situación, precio y ventas del período."""
@@ -711,13 +769,55 @@ async def categorias_publicaciones(
     if cuenta and cuenta not in _CUENTAS:
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
+        d1, d2 = _rango_fechas(dias, desde, hasta)
         filas = sdb.fetch_all(
             _SQL_CAT_PUBS,
-            {"categoria_id": categoria_id, "dias": dias, "cuenta": cuenta})
+            {"categoria_id": categoria_id, "desde": d1, "hasta": d2,
+             "cuenta": cuenta})
         return {"categoria_id": categoria_id, "dias": dias,
-                "items": filas, "tope": 200}
+                "desde": d1, "hasta": d2, "items": filas, "tope": 200}
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         log.warning("categorias/publicaciones falló: %s", exc)
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+
+@router.get("/categorias/excel")
+async def categorias_excel(
+    dias: int = Query(60, ge=7, le=400),
+    cuenta: str | None = Query(None),
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
+):
+    """El xlsx tipo José (Resumen + árbol de Categorias con publicaciones) con
+    los filtros elegidos. Sin margen (acordado 04-ago: queda para después)."""
+    from fastapi.responses import Response
+
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    d1, d2 = _rango_fechas(dias, desde, hasta)
+    try:
+        import asyncio
+
+        from services import reporte_categorias_xlsx
+
+        hojas = sdb.fetch_all(_SQL_CAT_HOJAS,
+                              {"desde": d1, "hasta": d2, "cuenta": cuenta})
+        pubs = sdb.fetch_all(_SQL_CAT_PUBS_TODAS,
+                             {"desde": d1, "hasta": d2, "cuenta": cuenta})
+        datos = await asyncio.to_thread(
+            reporte_categorias_xlsx.construir, hojas, pubs, d1, d2, cuenta)
+        nombre = f"ventas_por_categoria_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"
+        return Response(
+            content=datos,
+            media_type=("application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"),
+            headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("categorias/excel falló: %s", exc)
+        raise HTTPException(502, f"no se pudo generar el Excel: {exc}") from exc

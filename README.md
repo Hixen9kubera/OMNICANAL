@@ -3304,6 +3304,31 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.56.0 — Análisis/Categorías: período X→X y Exportar a Excel tipo José (Eduardo)
+
+El reporte vivo de /analisis/categorias aprende lo que le faltaba frente al
+xlsx de José: **período absoluto** (dos date-pickers `desde`/`hasta` que mandan
+sobre los botones de días; la X vuelve a los relativos) y **Exportar a Excel**
+(botón verde) que genera el archivo con los filtros elegidos.
+
+- Backend: `GET /api/fulfillment/categorias[/publicaciones]` aceptan
+  `desde`/`hasta` (YYYY-MM-DD, tope 2 años) además de `dias`; el SQL pasa de
+  `date > hoy - dias` a `date between desde and hasta` (mismo conteo de días).
+  Nuevo `GET /api/fulfillment/categorias/excel` + `services/
+  reporte_categorias_xlsx.py` (openpyxl, nueva dependencia): hoja **Resumen**
+  por categoría principal (SKUs con venta, uds, ventas $, %% con fórmula,
+  publicaciones, activas, TOTAL con SUM) y hoja **Categorias** con el árbol
+  completo (subtotales SUBTOTAL(9,…) por nivel) y las publicaciones de cada
+  hoja (SKU, tienda, título, MLM ID, situación, uds, $, precio, 1ª/últ. venta).
+- Sin columna de margen (acordado 04-ago: para después) y con las
+  limitaciones declaradas: venta REAL del período (no sold_quantity×precio del
+  snapshot), "días en venta" no existe (va 1ª venta), y un SKU con doble
+  clasificación cuenta en ambas ramas (convención de la página).
+- Verificado contra kubera: julio 2026 = $5.76M / 16,565 uds / 689 SKUs;
+  Excel recalculado con Excel real, 0 errores de fórmula. Versión 0.56.0.
+
+---
+
 ### v0.55.0 — F5 Core: flag de lectura de los lookups SKU→wc_id (Eduardo)
 
 Cuarto y último dominio F5. Flag **`SUPABASE_READ_CORE`** (default false;

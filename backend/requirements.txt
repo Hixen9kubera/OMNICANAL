@@ -22,3 +22,4 @@ anthropic==0.42.0
 # ── Sincronización programada de inventario ───────────────────
 APScheduler==3.11.0
 Pillow==11.1.0                # ml_api._ensure_min_size: escala imágenes a >=500x250 antes de subirlas a ML
+openpyxl==3.1.5               # reporte_categorias_xlsx: Excel tipo José de /analisis/categorias
