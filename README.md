@@ -4292,3 +4292,31 @@ catálogo oficial del SAT (52,513 claves). Cada categoría lleva la suya.
 Se agregó `--categoria`, `--skus` y `--espera` al publicador, y una lista
 `EXCLUIDOS` que documenta en el código por qué un SKU no se manda, para no
 volver a gastarle cuota ni a redescubrir el motivo.
+
+### v0.63.0 — Walmart MX por LOTE: 40 productos dejaron de ser 40 llamadas
+
+Se estaba mandando **un artículo por feed**. Y `MPItem` es un **array** que
+admite **10,000 artículos / 10 MB** por feed. Ese detalle, que estaba en la
+documentación desde el principio, es el que explica todos los cortes por cuota:
+`REQUEST_THRESHOLD_VIOLATED` **cuenta llamadas, no artículos**.
+
+El 4-ago la cuota se comió 11 disfraces que nunca salieron. El 5-ago, con tandas
+de 8 y 15 s entre productos, se volvió a comer 6 en el artículo número 13. No era
+cuestión de esperar más entre envíos: era mandar de a uno.
+
+**Medido**: cada artículo pesa ~2.6 KB ya serializado, así que en un feed de
+9 MB caben **~3,500 artículos**. Los 12 pendientes de "Cocina, Decoración y
+Otros" salieron en **1 llamada de 31 KB**, y los 6 disfraces que la cuota había
+rechazado, en otra. Dieciocho envíos convertidos en dos.
+
+**No se pierde granularidad.** Walmart valida artículo por artículo aunque vayan
+cientos juntos: un dato malo en uno NO tumba a los demás.
+`GET /v3/feeds/{feedId}?includeDetails=true` devuelve el estado y el error
+**por SKU**, así que la fase 4 ahora consulta el feed y va marcando cuáles
+pasaron y cuáles no, en rondas, hasta que Walmart resuelve o se acaban las
+rondas. Al final imprime los `feedId` de la corrida para poder volver a
+consultarlos después sin adivinar.
+
+`_armar()` se partió en dos: `_item()` arma una entrada de `MPItem` y `_sobre()`
+arma el envoltorio con todas adentro. Flags nuevos: `--lote` (artículos por
+feed, 200 por omisión) y `--rondas` (cuántas veces preguntar el veredicto).

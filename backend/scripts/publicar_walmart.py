@@ -126,14 +126,14 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
 # Para publicar ahí hay que pedir la exención de cada una por separado en
 # sellerhelp.mx.walmart.com.
 
-# Segundos de espera entre productos. Sin esto, Walmart corta con
-# REQUEST_THRESHOLD_VIOLATED (pasó con 4 del primer lote).
-PAUSA_ENTRE_ITEMS = 15
+# Artículos por feed. `MPItem` es un array y Walmart admite 10,000 artículos /
+# 10 MB por feed. Se manda con margen: 200 artículos pesan ~400 KB y el detalle
+# del feed sigue siendo cómodo de leer.
+TAM_LOTE = 200
+LIMITE_BYTES_FEED = 9 * 1024 * 1024      # 10 MB reales, con margen
 
-# Tandas: 8 productos y a descansar. El 4-ago se mandaron 30 feeds seguidos y la
-# cuota se agotó; 11 disfraces ni siquiera llegaron a salir.
-TANDA = 8
-DESCANSO_ENTRE_TANDAS = 120
+# Segundos entre feeds cuando hay más de un lote.
+PAUSA_ENTRE_LOTES = 20
 
 # Segundos entre subir las imágenes a WordPress y mandar el feed.
 #
@@ -398,8 +398,32 @@ async def ficha(cx, sku: str) -> dict | None:
     return p
 
 
-def _armar(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
-    """Payload MP_ITEM_INTL a partir de lo que Woo ya tiene."""
+def _sobre(categoria: str, items: list[dict]) -> dict:
+    """
+    El envoltorio del feed, con TODOS los artículos adentro.
+
+    `MPItem` es un ARRAY y admite hasta 10,000 artículos / 10 MB por feed. Se
+    mandaba UNO por feed, y ahí estaba el cuello de botella: la cuota de Walmart
+    (`REQUEST_THRESHOLD_VIOLATED`) cuenta LLAMADAS, no artículos. Con 1×feed, 40
+    productos son 40 llamadas y la cuota muere a la mitad — pasó el 4-ago (11
+    disfraces sin salir) y volvió a pasar el 5-ago (6 más). En lote, esos mismos
+    40 son UNA llamada.
+
+    Un artículo con datos malos NO tumba a los demás: Walmart valida y reporta
+    artículo por artículo en `GET /v3/feeds/{feedId}?includeDetails=true`.
+    """
+    return {
+        "MPItemFeedHeader": {
+            "subCategory": categoria, "sellingChannel": "marketplace",
+            "processMode": "REPLACE", "mart": "WALMART_MEXICO",
+            "locale": "es", "version": "3.11", "subset": "EXTERNAL",
+        },
+        "MPItem": items,
+    }
+
+
+def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
+    """Una entrada de `MPItem` a partir de lo que Woo ya tiene."""
     clave = cfg["clave_visible"]
     atrs = {a.get("name"): (a.get("options") or [None])[0]
             for a in (p.get("attributes") or [])}
@@ -442,12 +466,6 @@ def _armar(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
         visible["gender"] = _genero(_attr(atrs, "genero"), p.get("name"))
 
     return {
-        "MPItemFeedHeader": {
-            "subCategory": categoria, "sellingChannel": "marketplace",
-            "processMode": "REPLACE", "mart": "WALMART_MEXICO",
-            "locale": "es", "version": "3.11", "subset": "EXTERNAL",
-        },
-        "MPItem": [{
             "Orderable": {
                 "sku": p.get("sku"),
                 # LA EXENCIÓN — folio 15728342, categoría Disfraces
@@ -480,7 +498,6 @@ def _armar(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
                 "itemsIncluded": (p.get("name") or "")[:200],
             },
             "Visible": {clave: visible},
-        }],
     }
 
 
@@ -517,42 +534,46 @@ async def _solo_jpeg(cx, urls: list[str]) -> list[str]:
     return buenas
 
 
-async def consultar_feed(cx, tk: str, fid: str) -> tuple[str, list[str]]:
-    """Estado REAL de un feed. `?` si Walmart todavía no lo resolvió."""
-    r = await cx.get(f"{HOST}/v3/feeds/{fid}", headers=_h(tk),
-                     params={"includeDetails": "true"}, timeout=60.0)
-    if r.status_code != 200:
-        return "CONSULTA_FALLIDA", [f"HTTP {r.status_code}: {r.text[:120]}"]
-    s = r.json()
-    d = ((s.get("itemDetails") or {}).get("itemIngestionStatus") or [{}])[0]
-    st = d.get("ingestionStatus") or ""
-    errs = [e.get("description", "")[:170]
-            for e in (d.get("ingestionErrors") or {}).get("ingestionError", [])]
-    if st and st != "INPROGRESS":
-        return st, errs
-    if s.get("feedStatus") in ("PROCESSED", "ERROR"):
-        # El feed terminó pero el item no reporta estado: manda el conteo.
-        return ("SUCCESS" if (s.get("itemsSucceeded") or 0) > 0 else "DATA_ERROR"), errs
-    return "INPROGRESS", errs
-
-
-async def publicar(cx, tk: str, payload: dict) -> tuple[str, list[str], str]:
+async def consultar_feed(cx, tk: str, fid: str) -> tuple[str, dict[str, tuple[str, list[str]]]]:
     """
-    Manda el feed y devuelve (estado, errores, feedId).
+    Veredicto de UN feed, artículo por artículo.
 
-    NO se queda esperando el veredicto: sondear aquí gastaba cuota y, peor, si a
-    los 112 s Walmart seguía procesando el script devolvía "INPROGRESS" y el
-    resumen lo contaba como ACEPTADO. Así nacieron los "9 feeds sin fallos" del
-    4-ago que en realidad fueron 0 — los 88 feeds de la cuenta tienen CERO items
-    exitosos. El veredicto se consulta al final, en una sola pasada.
+    Devuelve (feedStatus, {sku: (estado, [errores])}). Walmart valida cada
+    artículo por separado aunque vayan cientos en el mismo feed, así que un dato
+    malo en uno NO tumba a los demás: aquí se ve exactamente cuál pasó y cuál no.
+    """
+    r = await cx.get(f"{HOST}/v3/feeds/{fid}", headers=_h(tk),
+                     params={"includeDetails": "true"}, timeout=90.0)
+    if r.status_code != 200:
+        return "CONSULTA_FALLIDA", {}
+    s = r.json()
+    por_sku: dict[str, tuple[str, list[str]]] = {}
+    for d in (s.get("itemDetails") or {}).get("itemIngestionStatus", []):
+        sku = d.get("sku") or "?"
+        errs = [e.get("description", "")[:180]
+                for e in (d.get("ingestionErrors") or {}).get("ingestionError", [])]
+        por_sku[sku] = (d.get("ingestionStatus") or "INPROGRESS", errs)
+    return s.get("feedStatus") or "?", por_sku
+
+
+async def publicar_lote(cx, tk: str, payload: dict) -> tuple[str, str]:
+    """
+    Manda UN feed con TODOS los artículos del lote. Devuelve (estado, feedId).
+
+    NO espera el veredicto aquí: sondear gastaba cuota y, peor, si a los 112 s
+    Walmart seguía procesando el script devolvía "INPROGRESS" y el resumen lo
+    contaba como ACEPTADO. Así nacieron los "9 feeds sin fallos" del 4-ago que en
+    realidad fueron 0. El veredicto se consulta después, por SKU.
     """
     crudo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if len(crudo) > LIMITE_BYTES_FEED:
+        return f"LOTE_MUY_GRANDE ({len(crudo) // 1024} KB)", ""
     r = await cx.post(f"{HOST}/v3/feeds", params={"feedType": "MP_ITEM_INTL"},
-                      headers=_h(tk), timeout=120.0,
-                      files={"file": ("i.json", crudo, "application/json")})
+                      headers=_h(tk), timeout=300.0,
+                      files={"file": ("lote.json", crudo, "application/json")})
     if r.status_code != 200:
-        return "ENVIO_FALLIDO", [r.text[:180]], ""
-    return "ENVIADO", [], r.json().get("feedId", "")
+        return f"ENVIO_FALLIDO: {r.text[:200]}", ""
+    return "ENVIADO", r.json().get("feedId", "")
 
 
 async def main() -> int:
@@ -567,6 +588,12 @@ async def main() -> int:
     espera = ESPERA_PROPAGACION
     if "--espera" in sys.argv:
         espera = int(sys.argv[sys.argv.index("--espera") + 1])
+    tam_lote = TAM_LOTE
+    if "--lote" in sys.argv:
+        tam_lote = max(1, int(sys.argv[sys.argv.index("--lote") + 1]))
+    rondas, espera_ronda = 6, 60
+    if "--rondas" in sys.argv:
+        rondas = int(sys.argv[sys.argv.index("--rondas") + 1])
     categoria = "costumes"
     if "--categoria" in sys.argv:
         categoria = sys.argv[sys.argv.index("--categoria") + 1]
@@ -601,7 +628,7 @@ async def main() -> int:
         return 0
 
     resultados: list[tuple[str, str, list[str]]] = []
-    feeds: list[tuple[str, str]] = []          # (sku, feedId)
+    feeds: list[tuple[str, list[str]]] = []     # (feedId, [skus del lote])
 
     async with httpx.AsyncClient(timeout=120.0) as cx:
         # ── FASE 1: dejar TODAS las imágenes servidas y publicadas ────────────
@@ -655,45 +682,58 @@ async def main() -> int:
                 listos.append(sku)
                 print(f"   {sku:<22} ✓ {len(buenas)} imágenes vivas", flush=True)
 
-        # ── FASE 3: publicar en tandas ────────────────────────────────────────
+        # ── FASE 3: publicar POR LOTE ─────────────────────────────────────────
+        lotes = [listos[i:i + tam_lote] for i in range(0, len(listos), tam_lote)]
         print("\n" + "=" * 78)
-        print(f"FASE 3 — publicar {len(listos)} artículos "
-              f"(tandas de {TANDA}, {PAUSA_ENTRE_ITEMS}s entre cada uno)")
+        print(f"FASE 3 — publicar {len(listos)} artículos en {len(lotes)} "
+              f"feed(s) de hasta {tam_lote}")
         print("=" * 78, flush=True)
-        for i, sku in enumerate(listos, 1):
-            if i > 1:
-                if (i - 1) % TANDA == 0:
-                    print(f"\n   …tanda completa, descansando "
-                          f"{DESCANSO_ENTRE_TANDAS}s para no agotar la cuota\n",
-                          flush=True)
-                    await asyncio.sleep(DESCANSO_ENTRE_TANDAS)
-                else:
-                    await asyncio.sleep(PAUSA_ENTRE_ITEMS)
+        for n, lote in enumerate(lotes, 1):
+            if n > 1:
+                await asyncio.sleep(PAUSA_ENTRE_LOTES)
             tk = await _token(cx)      # se renueva solo (el token dura 900 s)
-            payload = _armar(fichas[sku], imgs[sku], categoria, cfg)
-            estado, errs, fid = await publicar(cx, tk, payload)
-            print(f"[{i}/{len(listos)}] {sku:<22} {estado} {fid}", flush=True)
+            items = [_item(fichas[s], imgs[s], categoria, cfg) for s in lote]
+            estado, fid = await publicar_lote(cx, tk, _sobre(categoria, items))
+            peso = len(json.dumps(_sobre(categoria, items),
+                                  ensure_ascii=False).encode()) // 1024
+            print(f"   lote {n}/{len(lotes)}: {len(lote)} artículos, {peso} KB "
+                  f"-> {estado} {fid}", flush=True)
             if fid:
-                feeds.append((sku, fid))
+                feeds.append((fid, lote))
             else:
-                resultados.append((sku, estado, errs))
-                for e in errs[:2]:
-                    print(f"      · {e}", flush=True)
+                for s in lote:
+                    resultados.append((s, "ENVIO_FALLIDO", [estado]))
 
-        # ── FASE 4: el veredicto REAL, una sola pasada ────────────────────────
+        # ── FASE 4: el veredicto REAL, artículo por artículo ──────────────────
         if feeds:
             print("\n" + "=" * 78)
-            print("FASE 4 — esperando el veredicto de Walmart (90s) y consultando")
+            print(f"FASE 4 — veredicto por SKU ({rondas} rondas de {espera_ronda}s)")
             print("=" * 78, flush=True)
-            await asyncio.sleep(90)
-            tk = await _token(cx)
-            for sku, fid in feeds:
-                await asyncio.sleep(1.5)
-                estado, errs = await consultar_feed(cx, tk, fid)
-                resultados.append((sku, estado, errs))
-                print(f"   {sku:<22} {estado}", flush=True)
-                for e in errs[:2]:
-                    print(f"      · {e}", flush=True)
+            pendientes = {s: fid for fid, lote in feeds for s in lote}
+            for ronda in range(1, rondas + 1):
+                if not pendientes:
+                    break
+                await asyncio.sleep(espera_ronda)
+                tk = await _token(cx)
+                for fid, lote in feeds:
+                    if not any(s in pendientes for s in lote):
+                        continue
+                    fstat, por_sku = await consultar_feed(cx, tk, fid)
+                    for sku, (st, errs) in por_sku.items():
+                        if st == "INPROGRESS" or sku not in pendientes:
+                            continue
+                        resultados.append((sku, st, errs))
+                        pendientes.pop(sku, None)
+                    await asyncio.sleep(1.5)
+                print(f"   ronda {ronda}: resueltos "
+                      f"{len(listos) - len(pendientes)}/{len(listos)}, "
+                      f"faltan {len(pendientes)}", flush=True)
+            for sku in pendientes:
+                resultados.append((sku, "INPROGRESS", []))
+
+            print("\n   FEEDS DE ESTA CORRIDA (para volver a consultarlos):")
+            for fid, lote in feeds:
+                print(f"      {fid}   {len(lote)} artículos")
 
     print("\n" + "=" * 78)
     print("RESUMEN")
