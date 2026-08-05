@@ -19,7 +19,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Search, Star } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import Ayuda from "@/components/Ayuda";
 
 interface Item {
@@ -195,7 +195,7 @@ export default function EstrellasPage() {
     let vivo = true;
     setCargando(true);
     setError(null);
-    fetch(`${API_BASE}/api/fulfillment/estrellas${cuenta ? `?cuenta=${cuenta}` : ""}`,
+    fetchSesion(`${API_BASE}/api/fulfillment/estrellas${cuenta ? `?cuenta=${cuenta}` : ""}`,
           { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.detail ?? r.status))))
       .then((d: Resp) => { if (vivo) { setDatos(d); setLimite(50); } })

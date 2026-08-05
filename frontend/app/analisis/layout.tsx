@@ -22,7 +22,7 @@
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { BarChart3, Boxes, Clock, FileText, Star, TriangleAlert } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 
 const SECCIONES = [
@@ -44,7 +44,7 @@ export default function FulfillmentLayout({ children }: { children: React.ReactN
 
   const [ambiente, setAmbiente] = useState<string | null>(null);
   useEffect(() => {
-    fetch(`${API_BASE}/api/fulfillment/meta`, { cache: "no-store" })
+    fetchSesion(`${API_BASE}/api/fulfillment/meta`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => setAmbiente(d.ambiente))
       .catch(() => setAmbiente(null));

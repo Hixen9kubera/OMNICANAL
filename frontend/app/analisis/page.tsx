@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CalendarDays, RefreshCw, X } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import Ayuda from "@/components/Ayuda";
 
 /* ── Tipos ─────────────────────────────────────────────────────────────── */
@@ -468,7 +468,7 @@ function ModalDetalle({ fila, cuenta, onClose }: {
   useEffect(() => {
     const q = new URLSearchParams({ sku: fila.sku, dias: String(diasModal) });
     if (cuenta) q.set("cuenta", cuenta);
-    fetch(`${API_BASE}/api/fulfillment/detalle?${q}`, { cache: "no-store" })
+    fetchSesion(`${API_BASE}/api/fulfillment/detalle?${q}`, { cache: "no-store" })
       .then((r) => { if (!r.ok) throw new Error(`API ${r.status}`); return r.json(); })
       .then(setDatos)
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
@@ -620,8 +620,8 @@ export default function FulfillmentPage() {
       qt.set("limit", String(limit));
       qt.set("offset", String(pagina * limit));
       const [d, t] = await Promise.all([
-        fetch(`${API_BASE}/api/fulfillment/dashboard?${qd}`, { cache: "no-store" }).then((r) => r.json()),
-        fetch(`${API_BASE}/api/fulfillment/tabla?${qt}`, { cache: "no-store" }).then((r) => r.json()),
+        fetchSesion(`${API_BASE}/api/fulfillment/dashboard?${qd}`, { cache: "no-store" }).then((r) => r.json()),
+        fetchSesion(`${API_BASE}/api/fulfillment/tabla?${qt}`, { cache: "no-store" }).then((r) => r.json()),
       ]);
       setDash(d); setTabla(t);
     } catch (e) {

@@ -23,7 +23,7 @@ import {
   ShieldCheck,
   Power,
 } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 
 /* ── Tipos que devuelve /api/migracion/* ───────────────────────────────── */
@@ -132,8 +132,8 @@ export default function MigracionPage() {
   const cargar = useCallback(async () => {
     try {
       const [e, ev] = await Promise.all([
-        fetch(`${API_BASE}/api/migracion/estado`, { cache: "no-store" }).then((r) => r.json()),
-        fetch(`${API_BASE}/api/migracion/eventos?limit=120`, { cache: "no-store" }).then((r) => r.json()),
+        fetchSesion(`${API_BASE}/api/migracion/estado`, { cache: "no-store" }).then((r) => r.json()),
+        fetchSesion(`${API_BASE}/api/migracion/eventos?limit=120`, { cache: "no-store" }).then((r) => r.json()),
       ]);
       setEstado(e);
       setEventos(ev.eventos || []);
@@ -145,7 +145,7 @@ export default function MigracionPage() {
 
   const cargarErrores = useCallback(async () => {
     try {
-      const r = await fetch(
+      const r = await fetchSesion(
         `${API_BASE}/api/migracion/errores?incluir_resueltos=${conResueltos}`,
         { cache: "no-store" },
       ).then((x) => x.json());
@@ -157,7 +157,7 @@ export default function MigracionPage() {
 
   const cargarDeltas = useCallback(async () => {
     try {
-      const r = await fetch(`${API_BASE}/api/migracion/deltas`, { cache: "no-store" });
+      const r = await fetchSesion(`${API_BASE}/api/migracion/deltas`, { cache: "no-store" });
       setDeltas(await r.json());
     } catch {
       /* vista informativa: sin actas no se rompe la página */
@@ -202,15 +202,18 @@ export default function MigracionPage() {
     const key = `${g.archivo_py}|${g.tabla_origen}|${g.error_tipo}`;
     setResolviendo(key);
     try {
-      await fetch(`${API_BASE}/api/migracion/errores/resolver`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          archivo_py: g.archivo_py,
-          tabla_origen: g.tabla_origen,
-          error_tipo: g.error_tipo,
-        }),
-      });
+      await fetchSesion(
+        `${API_BASE}/api/migracion/errores/resolver`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            archivo_py: g.archivo_py,
+            tabla_origen: g.tabla_origen,
+            error_tipo: g.error_tipo,
+          }),
+        },
+        { "Content-Type": "application/json" },
+      );
       await cargarErrores();
     } finally {
       setResolviendo(null);

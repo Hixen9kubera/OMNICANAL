@@ -26,7 +26,7 @@ import {
   RefreshCw,
   Warehouse,
 } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 
 interface Accion {
@@ -118,8 +118,8 @@ export default function DashboardPage() {
   const cargar = useCallback(async () => {
     try {
       const [r, ro] = await Promise.all([
-        fetch(`${API_BASE}/api/fanout/estado`, { cache: "no-store" }),
-        fetch(`${API_BASE}/api/fanout/full/observacion?horas=24`, { cache: "no-store" }),
+        fetchSesion(`${API_BASE}/api/fanout/estado`, { cache: "no-store" }),
+        fetchSesion(`${API_BASE}/api/fanout/full/observacion?horas=24`, { cache: "no-store" }),
       ]);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setD(await r.json());
