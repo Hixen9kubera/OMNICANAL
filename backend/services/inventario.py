@@ -187,6 +187,8 @@ def _sku_de_item(item: dict[str, Any]) -> str | None:
 # (paginación scan de 100), así que se cachea media hora — el detalle por item
 # sigue siendo fresco en cada ronda; esto solo decide QUÉ ids existen.
 _UNIVERSO_TTL_S = 1800
+# tope de cierres por ronda: no infla el lote y aun asi drena backlogs en horas
+_CIERRES_POR_RONDA = 15
 _universo_cache: dict[str, tuple[float, list[str]]] = {}
 _user_id_cache: dict[str, str] = {}
 
@@ -254,7 +256,35 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     from datetime import datetime
     epoca = datetime(1970, 1, 1)
     orden = sorted(ids, key=lambda i: (i in vistos, vistos.get(i) or epoca))
-    return [{"sku": None, "ml_item_id": i} for i in orden[:limite]]
+    lote = [{"sku": None, "ml_item_id": i} for i in orden[:limite]]
+
+    # BARRIDO DE CIERRE: filas que el panel cree vivas (active/paused) cuyo
+    # item YA NO aparece en el catálogo vivo — ML lo borró o lo cerró y, como
+    # el universo solo consulta active+paused, nadie volvería a preguntarle:
+    # la fila quedaría CONGELADA en su último estado para siempre. Se leen una
+    # única vez (el detalle sí responde con su estado final, p. ej.
+    # inactive/deleted como el caso CUNA-0011-AZL) y al escribirse dejan de
+    # cumplir el filtro → el barrido se auto-termina. Acotado por ronda para
+    # no inflar el lote.
+    try:
+        universo = set(ids)
+        congeladas = [
+            str(r["item_id"]) for r in db.fetch_all(
+                """SELECT item_id FROM canal_inventario
+                   WHERE canal='mercado_libre' AND cuenta=%s
+                     AND situacion IN ('active','paused') AND item_id IS NOT NULL""",
+                (cuenta,))
+            if str(r["item_id"]) not in universo
+        ]
+        if congeladas:
+            log.info("barrido de cierre %s: %d fila(s) viva(s) sin publicación "
+                     "en el catálogo — se les lee el estado final", cuenta,
+                     len(congeladas))
+            lote.extend({"sku": None, "ml_item_id": i}
+                        for i in congeladas[:_CIERRES_POR_RONDA])
+    except Exception:  # noqa: BLE001 — el barrido nunca frena la ronda normal
+        pass
+    return lote
 
 
 async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:

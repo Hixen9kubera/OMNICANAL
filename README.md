@@ -4114,6 +4114,31 @@ con aviso, y sin costo sigue devolviendo `None`). Versión 0.54.0.
 ---
 
 
+### v0.59.1 — Barrido de cierre: una publicación borrada en ML ya no deja su fila congelada
+
+Complemento de SYNC_DESDE_ML (v0.53.0, encendido el 4-ago con dale de Eduardo).
+El universo consulta solo `active+paused`, así que cuando ML borra o cierra una
+publicación ésta SALE del universo y nadie volvería a preguntarle su estado: la
+fila quedaría congelada en el último valor visto — irónicamente, el sistema
+viejo sí la habría marcado muerta porque releía ml_progress sin filtrar.
+
+Ahora `_lote_desde_ml` detecta las filas que el panel cree vivas cuyo item ya
+no aparece en el catálogo y las suma al lote (tope 15 por ronda y cuenta): el
+detalle SÍ responde con el estado final (p. ej. `inactive/deleted`, caso
+CUNA-0011-AZL) y al escribirse dejan de cumplir el filtro — el barrido se
+auto-termina. Nunca frena la ronda normal (try/except alrededor).
+
+Verificado en seco simulando una fila congelada con el cadáver real de CUNA
+(`MLM2883075833`): el barrido lo tomó, leyó su estado en ML y produjo la fila
+`inactive` con SKU resuelto, sin escribir nada en la prueba. Backlog inicial en
+producción: 0 (la incorporación del 4-ago ya lo había limpiado) — la pieza es
+preventiva: con ella el estado activas/pausadas del panel pasa de "100%% exacto
+hoy" (auditoría de 150 publicaciones contra ML en vivo: 150/150) a 100%%
+sostenido. Auditable en el log: "barrido de cierre <cuenta>: N fila(s)…".
+Versión 0.59.1.
+
+---
+
 ## 🚀 Pendientes y estrategias propuestas
 
 **Inmediato (cuando lleguen credenciales):**
