@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { costoDetalle, costoPreview, costoGuardar, mensajeDeError } from "@/lib/api";
 import { aNumero } from "@/lib/numeros";
+import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
 import type { CostoCalculo, CostoOverrides, CostoRow } from "@/lib/types";
 
 const COLOR = "#4F46E5";
@@ -205,17 +206,42 @@ export default function CostoEditor({ sku, nombre, seed, onGuardado, onClose }: 
 
       {/* Entradas */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {/* La ÚNICA casilla en dólares de toda la pantalla — va marcada en
+            ámbar y con su chip. Debajo, la conversión en vivo a pesos: la
+            comprobación de que se tecleó en la moneda que se creía. */}
         <div>
-          <Campo label="Costo producto (USD)" prefijo="$" value={costoProducto} onChange={setCostoProducto} />
+          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+            <TituloMoneda moneda="USD">Costo producto</TituloMoneda>
+          </label>
+          <EntradaMoneda moneda="USD" value={costoProducto} onChange={setCostoProducto}
+                         titulo="Se captura en dólares y se guarda en pesos con el tipo de cambio de al lado" />
           {(() => {
             const usd = aNumero(costoProducto) ?? 0;
             const tc = aNumero(tipoCambio) ?? 0;
             return usd > 0 && tc > 0
-              ? <p className="mt-1 text-[10px] text-slate-400">≈ {precioMXN(Math.round(usd * tc * 100) / 100)} MXN</p>
+              ? <p className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+                  = {precioMXN(Math.round(usd * tc * 100) / 100)}
+                  <ChipMoneda moneda="MXN" />
+                  <span className="text-slate-400">es lo que se guarda</span>
+                </p>
               : null;
           })()}
         </div>
-        <Campo label="Tipo de cambio USD→MXN" value={tipoCambio} onChange={setTipoCambio} />
+        {/* El puente entre las dos monedas: no es dinero, es la tasa. */}
+        <div>
+          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+            Tipo de cambio
+          </label>
+          <div className="relative">
+            <input value={tipoCambio} onChange={(e) => setTipoCambio(e.target.value)} inputMode="decimal"
+              className="w-full rounded-lg border-2 border-slate-200 bg-white py-2.5 pl-3 pr-[74px] text-sm tabular-nums text-slate-800 outline-none focus:ring-2 focus:ring-slate-300" />
+            <span className="pointer-events-none absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+              <ChipMoneda moneda="USD" />
+              <span className="text-[9px] font-bold text-slate-400">→</span>
+              <ChipMoneda moneda="MXN" />
+            </span>
+          </div>
+        </div>
         <Campo label="Peso (kg)" value={peso} onChange={setPeso} />
         <Campo label="Margen (%)" value={margen} onChange={setMargen} />
         <div>
@@ -318,10 +344,15 @@ function Campo({ label, value, onChange, prefijo, placeholder }: {
   );
 }
 
+/* Todos los RESULTADOS son en pesos, sin excepción: el chip lo dice una vez
+   por tarjeta en vez de dejar que se deduzca. */
 function Resultado({ label, value, destacado }: { label: string; value: string; destacado?: boolean }) {
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-      <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">{label}</div>
+      <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+        {label}
+        <ChipMoneda moneda="MXN" />
+      </div>
       <div className={["mt-0.5 font-bold", destacado ? "text-base" : "text-sm text-slate-700"].join(" ")}
         style={destacado ? { color: ACENTO } : undefined}>
         {value}

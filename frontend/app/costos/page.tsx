@@ -15,6 +15,7 @@ import {
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
+import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
 import { listarCostos, contenedoresCosto, costoBulk } from "@/lib/api";
 import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp } from "@/lib/types";
 
@@ -304,11 +305,23 @@ export default function CostosPage() {
                 <th className="px-3 py-3 font-semibold">Contenedor</th>
                 <th className="px-3 py-3 font-semibold">Dimensiones (cm)</th>
                 <th className="px-3 py-3 text-right font-semibold">Peso</th>
-                <th className="px-3 py-3 text-right font-semibold">Costo prod. <span className="text-[9px] text-slate-400">(USD)</span></th>
-                <th className="px-3 py-3 text-right font-semibold">Flete CBM</th>
-                <th className="px-3 py-3 text-right font-semibold">Costo</th>
-                <th className="px-3 py-3 text-right font-semibold">P. regular</th>
-                <th className="px-3 py-3 text-right font-semibold">P. oferta</th>
+                {/* La frontera entre monedas cae aquí: esta columna es la
+                    única en dólares; las cuatro siguientes son pesos. */}
+                <th className="bg-amber-50/40 px-3 py-3 text-right font-semibold">
+                  <TituloMoneda moneda="USD">Costo prod.</TituloMoneda>
+                </th>
+                <th className="px-3 py-3 text-right font-semibold">
+                  <TituloMoneda moneda="MXN">Flete CBM</TituloMoneda>
+                </th>
+                <th className="px-3 py-3 text-right font-semibold">
+                  <TituloMoneda moneda="MXN">Costo</TituloMoneda>
+                </th>
+                <th className="px-3 py-3 text-right font-semibold">
+                  <TituloMoneda moneda="MXN">P. regular</TituloMoneda>
+                </th>
+                <th className="px-3 py-3 text-right font-semibold">
+                  <TituloMoneda moneda="MXN">P. oferta</TituloMoneda>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -356,11 +369,19 @@ export default function CostosPage() {
                       <td className="px-3 py-3 text-right text-slate-600">
                         {sel && ed ? <CeldaInput value={ed.peso} onChange={(v) => setEdicion(r.sku, "peso", v)} align="right" /> : (r.peso ?? "—")}
                       </td>
-                      {/* Costo producto — editable en USD (guardado en MXN → ÷TC) */}
-                      <td className="px-3 py-3 text-right text-slate-600">
+                      {/* Costo producto — la ÚNICA columna en dólares de la
+                          tabla: se captura en USD y se guarda en MXN (×TC).
+                          Va en ámbar para que no se confunda con las cuatro
+                          columnas de pesos que tiene a la derecha. */}
+                      <td className="bg-amber-50/30 px-3 py-3 text-right text-slate-600">
                         {sel && ed
-                          ? <CeldaInput value={ed.costo_producto} onChange={(v) => setEdicion(r.sku, "costo_producto", v)} align="right" prefijo="$" />
-                          : (r.costo_producto != null ? `$${mxnToUsd(r.costo_producto, tcNum())}` : "—")}
+                          ? <EntradaMoneda moneda="USD" compacto alineado="right"
+                                           value={ed.costo_producto}
+                                           onChange={(v) => setEdicion(r.sku, "costo_producto", v)}
+                                           titulo="En dólares — se guarda en pesos con el TC de la barra de abajo" />
+                          : (r.costo_producto != null
+                              ? <span className="font-medium text-amber-700">${mxnToUsd(r.costo_producto, tcNum())}</span>
+                              : "—")}
                       </td>
                       {/* Flete CBM + Costo — en vivo si está seleccionado */}
                       <td className={["px-3 py-3 text-right", sel ? "font-semibold text-indigo-600" : "text-slate-600"].join(" ")}>{precioMXN(cbm)}</td>
@@ -388,10 +409,16 @@ export default function CostosPage() {
             <span className="ml-2 text-xs text-slate-400">· edita medidas/costo en la fila, luego regenera (CBM=vol×7500) + precios y guarda en DB + Woo</span>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
-              TC USD→MXN
-              <input value={tcBulk} onChange={(e) => setTcBulk(e.target.value)}
-                className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }} />
+            {/* Con esta tasa se convierte el costo capturado en dólares antes
+                de guardarlo: si está mal, TODA la tanda queda mal. */}
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"
+                   title="Tipo de cambio con el que el costo en dólares se guarda en pesos">
+              TC
+              <ChipMoneda moneda="USD" />
+              <span className="text-[9px] font-bold text-slate-400">→</span>
+              <ChipMoneda moneda="MXN" />
+              <input value={tcBulk} onChange={(e) => setTcBulk(e.target.value)} inputMode="decimal"
+                className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-sm tabular-nums text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }} />
             </label>
             <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
               Margen %

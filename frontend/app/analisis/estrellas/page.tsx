@@ -21,7 +21,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Loader2, Search, Star } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import Ayuda from "@/components/Ayuda";
-import MargenesTop10 from "@/components/MargenesTop10";
 
 interface Item {
   sku: string;
@@ -264,9 +263,6 @@ export default function EstrellasPage() {
 
   return (
     <div className="space-y-4">
-      {/* Acceso plegado al detalle de márgenes; su casa es /analisis/margenes */}
-      <MargenesTop10 embebido />
-
       {/* Controles */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
