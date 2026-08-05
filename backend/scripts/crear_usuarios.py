@@ -68,10 +68,13 @@ EQUIPO: tuple[tuple[str, str, str], ...] = (
     ("Gabriela Ramírez",  "gabriela.ramirez@kubera.mx",  "operador"),
     ("Haim",              "haim@kubera.mx",              "operador"),
     ("Nancy Cruz",        "nancy.cruz@kubera.mx",        "operador"),
-    ("Thalía",            "thalias@kubera.mx",           "operador"),
-    # Segunda cuenta de Thalía, para San Corpe (Brandon, 5-ago). OJO: con dos
-    # cuentas para una persona la bitácora no puede decir cuál de las dos usó.
-    ("Thalía · San Corpe", "sancorpethalia@kubera.mx",   "operador"),
+    # Thalía Saavedra tiene DOS cuentas y entra con cualquiera de las dos
+    # (Brandon, 5-ago). En Google Workspace una figura como "Zavedra" y la otra
+    # como "Saavedra"; aquí van con el apellido correcto y se distinguen por la
+    # etiqueta. OJO: siendo la misma persona, la bitácora no puede decir con
+    # cuál de las dos trabajó.
+    ("Thalía Saavedra",   "thalias@kubera.mx",           "operador"),
+    ("Thalía Saavedra (San Corpe)", "sancorpethalia@kubera.mx", "operador"),
     ("Valeria",           "valeria@kubera.mx",           "operador"),
 )
 
