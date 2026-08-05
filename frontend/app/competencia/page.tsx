@@ -1251,9 +1251,9 @@ function BloqueSubcategoria({
             {sub.sin_datos_ml ? (
               <span
                 className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500"
-                title="ML no publica ni ranking ni términos de esta categoría"
+                title="Todavía no hemos capturado esta categoría. No quiere decir que ML no la tenga."
               >
-                <Ban size={9} /> sin datos en ML
+                <Ban size={9} /> sin capturar
               </span>
             ) : null}
           </div>
@@ -1291,7 +1291,7 @@ function BloqueSubcategoria({
             {sub.top.length === 0 ? (
               <div className="py-3 text-center text-xs text-slate-400">
                 {sub.sin_datos_ml
-                  ? "Mercado Libre no publica más vendidos de esta categoría."
+                  ? "Todavía no capturamos esta categoría. Puede que ML sí publique su ranking — la vista solo sabe lo que hay guardado."
                   : "Sin ranking guardado. Corre «Más vendidos»."}
               </div>
             ) : (

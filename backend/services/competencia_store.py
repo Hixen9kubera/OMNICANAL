@@ -968,9 +968,17 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             sub["precio_min"] = precios[0] if precios else None
             sub["precio_max"] = precios[-1] if precios else None
             sub["n_terminos"] = nterm.get(cid, 0) if sub["categoria_id"] else 0
-            # ML no publica ranking NI términos de toda categoría (Bujías,
-            # Cartuchos de Turbo). Hay que decirlo, no pintar celdas vacías.
-            sub["sin_datos_ml"] = not top and not sub["n_terminos"]
+            # SIN CAPTURAR ≠ ML NO PUBLICA. Son cosas distintas y llevan a
+            # acciones opuestas: una es "córrele la captura", la otra es "no
+            # insistas, ahí no hay nada". Esta vista NO puede distinguirlas —
+            # solo sabe lo que tiene guardado— así que dice lo único que le
+            # consta: que no lo hemos capturado.
+            #
+            # Medido el 4-ago: 174 de 176 subcategorías salían como "ML no
+            # publica" y TODAS las revisadas sí tenían ranking y términos en ML.
+            # El mensaje viejo mandaba a no reintentar justo donde sí había datos.
+            sub["sin_capturar"] = not top and not sub["n_terminos"]
+            sub["sin_datos_ml"] = sub["sin_capturar"]
             # Volumen del NICHO: lo que se vende al mes en toda la subcategoría,
             # sumando el top. `vendidos` es cota inferior (ML redondea a "+50mil"),
             # así que sirve para ordenar nichos, no como cifra exacta.
@@ -1005,6 +1013,7 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             f["brecha"] = (round(f["precio_ref"] / med, 2)
                            if med and f["precio_ref"] else None)
             f["sin_datos_ml"] = sub.get("sin_datos_ml", False)
+            f["sin_capturar"] = sub.get("sin_capturar", False)
             f["n_terminos"] = sub.get("n_terminos", 0)
             # La trampa que ya apareció dos veces: la publicación PAUSADA es la que
             # tiene el tráfico y las ventas. Se marca aquí para que la vista lo grite.

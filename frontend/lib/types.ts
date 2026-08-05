@@ -797,7 +797,9 @@ export interface CompetenciaSubcategoria {
   precio_max: number | null;
   volumen_mercado: number | null;
   n_terminos: number;
-  /** ML no publica ni ranking ni términos de esta categoría. No es un fallo. */
+  /** No lo hemos capturado. NO significa que ML no lo tenga — la vista no puede
+   *  distinguirlo, solo sabe lo que hay guardado. */
+  sin_capturar: boolean;
   sin_datos_ml: boolean;
   pos_en_raiz: number | null;
 }

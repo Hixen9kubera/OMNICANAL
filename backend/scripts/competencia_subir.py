@@ -102,10 +102,15 @@ def main() -> int:
     # SKUs. Nombre y categoría NO se suben: salen por JOIN de core.products y
     # channel.product_category. `raiz_id` e `imagen` sí, porque no son derivables
     # desde el esquema del equipo (ver el comentario del DDL).
-    skus = [(r["sku"], r["termino_general"], r["termino_origen"], bool(r["activo"]),
-             r["raiz_id"], r["raiz_nombre"], r["imagen"])
+    # `nombre`, `categoria_id`, `categoria_nombre` y `ruta` van como RESPALDO: un
+    # SKU publicado fuera del pipeline del panel (CAM-0030-IND) no está en
+    # core.products ni en channel.product_category, y sin esto la vista lo mostraba
+    # sin categoría y su subcategoría no aparecía.
+    COLS_S = ["sku","termino_general","termino_origen","activo","raiz_id",
+              "raiz_nombre","imagen","nombre","categoria_id","categoria_nombre","ruta"]
+    skus = [tuple(r[k] if k != "activo" else bool(r[k]) for k in COLS_S)
             for r in c.execute("select * from skus")]
-    print(f"skus: {cargar('competencia_skus', ['sku','termino_general','termino_origen','activo','raiz_id','raiz_nombre','imagen'], skus, args.token, args.dry_run)}/{len(skus)}")
+    print(f"skus: {cargar('competencia_skus', COLS_S, skus, args.token, args.dry_run)}/{len(skus)}")
 
     # Publicaciones. El precio NO se sube: vive en channel.listings.price.
     pubs = [(r["sku"], r["cuenta"], r["canal"], r["ml_item_id"], periodo,
