@@ -59,13 +59,14 @@ function TarjetaVentasCategoria() {
         </div>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-slate-800">
-            Ventas por categoría (Excel)
+            Ventas y márgenes (Excel)
           </h2>
           <p className="mt-0.5 text-[13px] text-slate-500">
-            El árbol completo de categorías de ML con sus publicaciones
-            (plegable con los botones +/− de Excel, abre compacto) + hoja de
-            resumen por categoría principal. Venta REAL del período; margen:
-            pendiente.
+            Tres hojas en un archivo: <b>Resumen</b> por categoría principal,
+            el <b>árbol</b> completo de categorías con sus publicaciones
+            (plegable con los +/− de Excel) y <b>Ventas</b>, una fila por cada
+            línea vendida. Todas traen costo base, costo final —con la comisión
+            REAL de Mercado Libre y el envío— ganancia y margen.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -120,74 +121,10 @@ function TarjetaVentasCategoria() {
   );
 }
 
-/* Reporte de MÁRGENES: una fila por venta, con las dos columnas de costo que
-   pidió Eduardo (Base y Final). Vive aquí desde que se retiró la pestaña
-   propia de Márgenes — el margen ya se lee en la tabla de Análisis, y lo único
-   que quedaba suelto era este descargable, que es justo lo que Reportes es. */
-function TarjetaMargenes() {
-  const hace = (d: number) => new Date(Date.now() - d * 86400_000).toISOString().slice(0, 10);
-  const [desde, setDesde] = useState(hace(30));
-  const [hasta, setHasta] = useState(hace(0));
-  const [cuenta, setCuenta] = useState("");
-
-  const q = new URLSearchParams({ desde, hasta });
-  if (cuenta) q.set("cuenta", cuenta);
-
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-start gap-3">
-        <div className="rounded-xl bg-indigo-50 p-2.5 text-indigo-600">
-          <FileText size={22} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold text-slate-800">
-            Márgenes por venta (CSV)
-          </h2>
-          <p className="mt-0.5 text-[13px] text-slate-500">
-            Una fila por cada línea vendida con su ingreso, la comisión REAL que
-            cobró Mercado Libre y el envío estimado, más las dos columnas de
-            costo: <b>Base</b> (producto + flete de importación) y <b>Final</b>
-            {" "}(el Base con los cobros del canal encima). El archivo se genera
-            al momento; no se guarda nada en el servidor.
-          </p>
-
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
-              {CUENTAS.map((c) => (
-                <button key={c.id} onClick={() => setCuenta(c.id)}
-                        className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                          cuenta === c.id
-                            ? "bg-indigo-600 font-semibold text-white"
-                            : "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}>
-                  {c.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-sm">
-              <input type="date" value={desde} max={hasta || undefined}
-                     onChange={(e) => setDesde(e.target.value)}
-                     className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
-              <span className="text-xs text-slate-400">a</span>
-              <input type="date" value={hasta} min={desde || undefined}
-                     onChange={(e) => setHasta(e.target.value)}
-                     className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
-            </div>
-            <a href={`${API_BASE}/api/fulfillment/reporte-margenes?${q.toString()}`}
-               className="flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-sm font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100">
-              <Download size={15} /> Descargar
-            </a>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function ReportesPage() {
   return (
     <div className="space-y-4">
       <TarjetaVentasCategoria />
-      <TarjetaMargenes />
       <FulfillmentPendiente
         p={{
           titulo: "Más reportes descargables",

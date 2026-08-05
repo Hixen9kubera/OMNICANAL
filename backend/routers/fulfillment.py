@@ -651,53 +651,23 @@ select (o.creado_at at time zone 'America/Mexico_City')::date::text as fecha,
   left join costing.costos_finales  cf on cf.sku = i.sku and cf.canal = 'mercado_libre'
  where (o.creado_at at time zone 'America/Mexico_City')::date
        between %(desde)s::date and %(hasta)s::date
+   -- MISMO universo que las otras dos hojas (Eduardo, 5-ago). Antes esto no
+   -- filtraba cancelados ni exigía SKU, y al volverse hoja del mismo libro el
+   -- archivo se contradecía: el detalle sumaba $2.32M contra $2.04M del
+   -- resumen. Un pedido cancelado no es una venta — es su reverso; y una línea
+   -- sin SKU no tiene costo con el cual sacarle margen. La columna `estado`
+   -- sigue sirviendo: quedan paid, Shipped, partially_refunded, Pending.
+   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   and i.sku is not null
    and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
    and (%(canal)s::text  is null or o.canal  = %(canal)s)
  order by o.creado_at desc, i.linea
 """)
 
 
-@router.get("/reporte-margenes")
-async def reporte_margenes(
-    desde: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    hasta: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"),
-    cuenta: str | None = Query(None),
-    canal: str | None = Query(None),
-) -> StreamingResponse:
-    """CSV: UNA fila por línea de venta con Costo Base y Costo Final (req 2).
-    Se genera y baja en el momento — el servidor no guarda archivos."""
-    if not sdb.disponible():
-        raise HTTPException(503, "BD kubera no configurada en este ambiente")
-    try:
-        filas = sdb.fetch_all(_SQL_MARGEN_LINEAS,
-                              {"desde": desde, "hasta": hasta,
-                               "cuenta": cuenta, "canal": canal})
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
-
-    import csv as _csv
-    import io
-    buf = io.StringIO()
-    cols = ["fecha", "canal", "cuenta", "pedido", "sku", "titulo", "cantidad",
-            "precio_unitario", "ingreso", "comision_ml", "envio_estimado",
-            "costo_base", "costo_final", "ganancia", "margen_pct", "full", "estado"]
-    w = _csv.DictWriter(buf, fieldnames=cols)
-    w.writeheader()
-    for f in filas:
-        ingreso = float(f["ingreso"] or 0)
-        cf_ = f.get("costo_final")
-        gan = round(ingreso - float(cf_), 2) if cf_ is not None else None
-        mar = (round(gan / ingreso * 100, 1)
-               if gan is not None and ingreso > 0 else None)
-        w.writerow({**{k: f.get(k) for k in cols if k in f},
-                    "ganancia": gan, "margen_pct": mar,
-                    "full": "si" if f.get("full") else "no"})
-    buf.seek(0)
-    nombre = f"margenes_{desde}_{hasta}.csv"
-    return StreamingResponse(
-        iter([("﻿" + buf.getvalue()).encode("utf-8")]),  # BOM: Excel en español
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+# El CSV suelto de margenes se RETIRA (Eduardo, 5-ago): era el mismo dato
+# que ahora viaja como hoja "Ventas" del Excel, con otro rango de fechas y
+# otro boton. _SQL_MARGEN_LINEAS sigue vivo — lo consume el Excel.
 
 
 _SQL_MARGEN_TOP = _mx("""
@@ -1040,6 +1010,140 @@ having sum(s.units_sold) > 0
 """)
 
 
+# ── El Excel de categorías, ahora desde los PEDIDOS (Eduardo, 5-ago) ─────────
+#
+# DECISIÓN: el libro entero se calcula desde channel.orders/order_items, no
+# desde sales_daily_completa. La razón es que el margen SOLO puede salir de los
+# pedidos —— es el único lugar donde vive la comisión REAL que cobró Mercado
+# Libre—— y un archivo que mezclara ambas fuentes se contradiría a sí mismo:
+# una columna diría una venta y la de al lado calcularía margen sobre otra. En
+# el sandbox las dos fuentes se separan casi al doble ($4.02M contra $2.04M),
+# porque sales_daily_completa empalma el histórico rescatado de dailytrack.
+#
+# Efecto secundario declarado: este libro ya NO cuadra con la página
+# /analisis/categorias, que sigue leyendo sales_daily_completa. A cambio cuadra
+# con la pestaña VENTAS, que es 100%% pedidos —— y para un documento de márgenes
+# atarse a donde está el dinero pesa más.
+#
+# Estas consultas son PROPIAS del reporte a propósito: cambiar _SQL_CAT_HOJAS
+# habría movido también los números de la página, que nadie pidió tocar.
+_SQL_XLS_LINEAS_BASE = """
+  select i.item_id, o.cuenta, i.sku, i.cantidad, i.precio_unitario,
+         i.comision, i.titulo,
+         (o.creado_at at time zone 'America/Mexico_City')::date as fecha
+    from channel.order_items i
+    join channel.orders o using (canal, cuenta, external_order_id)
+   where (o.creado_at at time zone 'America/Mexico_City')::date
+         between %(desde)s::date and %(hasta)s::date
+     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and i.sku is not null
+     and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
+"""
+
+# Una fila por publicación vendida, con su categoría y su costo. El costo se
+# multiplica por las unidades: es el costo de LO VENDIDO, no el unitario.
+_SQL_XLS_PUBS = _mx(f"""
+with pc as (
+  select sku, category_id from channel.product_category
+  where channel_id = 'mercado_libre'
+),
+lin as ({_SQL_XLS_LINEAS_BASE})
+select pc.category_id::text            as category_id,
+       l.item_id, l.cuenta,
+       max(l.sku::text)                as sku,
+       sum(l.cantidad)::int            as uds,
+       round(sum(l.precio_unitario * l.cantidad), 2)      as venta,
+       round(sum(coalesce(l.comision, 0)), 2)             as comision,
+       round(coalesce(max(cf.costo_fee_envio), 0) * sum(l.cantidad), 2) as envio,
+       case when coalesce(max(cv.costo_total), max(cf.costo_unitario)) is not null
+            then round(coalesce(max(cv.costo_total), max(cf.costo_unitario))
+                       * sum(l.cantidad), 2) end          as costo_base,
+       min(l.fecha)::text              as primera_venta,
+       max(l.fecha)::text              as ultima_venta,
+       max(ls.situacion)               as situacion,
+       max(ls.price)                   as precio,
+       coalesce(max(l.titulo), max(p.name)) as titulo
+  from lin l
+  join pc on pc.sku = l.sku
+  left join channel.listings ls on ls.listing_id = l.item_id
+  left join core.products p on p.sku = l.sku
+  left join costing.costos_validados cv on cv.sku = l.sku
+  left join costing.costos_finales  cf on cf.sku = l.sku and cf.canal = 'mercado_libre'
+ group by pc.category_id, l.item_id, l.cuenta
+""")
+
+# Las hojas del árbol. Conserva el FULL OUTER JOIN del original: una categoría
+# con catálogo pero sin venta en el período también viaja (uds 0).
+_SQL_XLS_HOJAS = _mx(f"""
+with pc as (
+  select pc.sku, pc.category_id,
+         coalesce(nullif(trim(c.path), ''), c.name, 'Sin categoría') as ruta
+  from channel.product_category pc
+  join channel.categories c
+    on c.category_id = pc.category_id and c.channel_id = pc.channel_id
+),
+lin as ({_SQL_XLS_LINEAS_BASE}),
+porsku as (
+  select l.sku,
+         sum(l.cantidad)::int                          as uds,
+         sum(l.precio_unitario * l.cantidad)           as venta,
+         sum(coalesce(l.comision, 0))                  as comision,
+         coalesce(max(cf.costo_fee_envio), 0) * sum(l.cantidad) as envio,
+         case when coalesce(max(cv.costo_total), max(cf.costo_unitario)) is not null
+              then coalesce(max(cv.costo_total), max(cf.costo_unitario))
+                   * sum(l.cantidad) end               as costo_base
+    from lin l
+    left join costing.costos_validados cv on cv.sku = l.sku
+    left join costing.costos_finales  cf on cf.sku = l.sku and cf.canal = 'mercado_libre'
+   group by l.sku
+),
+ventas_cat as (
+  -- El bloque de MARGEN se restringe a los SKUs con costo capturado. Sin ese
+  -- filter la categoría cargaba la comisión y el envío de productos cuyo costo
+  -- no conocemos: el costo final salía inflado y `venta_con_costo` contaba la
+  -- venta entera de la categoría, no la medible. Con 4,968 líneas eso separaba
+  -- al Resumen de la hoja Ventas en $15.7k de costo y $83.3k de venta.
+  select coalesce(pc.ruta, 'Sin categoría') as ruta, pc.category_id,
+         sum(v.uds)::int                    as uds,
+         round(sum(v.venta), 2)             as venta,
+         round(sum(v.comision) filter (where v.costo_base is not null), 2) as comision,
+         round(sum(v.envio)    filter (where v.costo_base is not null), 2) as envio,
+         round(sum(v.costo_base), 2)        as costo_base,
+         round(sum(v.venta)    filter (where v.costo_base is not null), 2) as venta_con_costo,
+         count(distinct v.sku)::int         as skus
+    from porsku v left join pc on pc.sku = v.sku
+   group by 1, 2
+),
+lst as (
+  select pc.category_id, pc.ruta,
+         count(*)                                       as publicaciones,
+         count(*) filter (where l.situacion = 'active') as activas
+  from channel.listings l
+  join pc on pc.sku = l.sku
+  where l.canal in ('mercado_libre', 'amazon')
+    and lower(coalesce(l.situacion, '')) <> 'closed'
+    and (%(cuenta)s::text is null
+         or exists (select 1 from core.accounts a
+                    where a.id = l.account_id and a.legacy_code = %(cuenta)s))
+  group by 1, 2
+)
+select coalesce(s.ruta, l.ruta)               as ruta,
+       coalesce(s.category_id, l.category_id) as category_id,
+       coalesce(s.uds, 0)::int                as uds,
+       coalesce(s.venta, 0)                   as venta,
+       coalesce(s.comision, 0)                as comision,
+       coalesce(s.envio, 0)                   as envio,
+       s.costo_base,
+       coalesce(s.venta_con_costo, 0)         as venta_con_costo,
+       coalesce(s.skus, 0)::int               as skus,
+       coalesce(l.publicaciones, 0)::int      as publicaciones,
+       coalesce(l.activas, 0)::int            as activas
+from ventas_cat s
+full outer join lst l on l.category_id = s.category_id
+order by venta desc
+""")
+
+
 def _rango_fechas(dias: int, desde: str | None, hasta: str | None) -> tuple[str, str]:
     """(desde, hasta) ISO. Sin fechas explícitas replica el período relativo
     `dias` (los últimos N días hasta hoy CDMX, como el SQL original)."""
@@ -1131,8 +1235,14 @@ async def categorias_excel(
     desde: str | None = Query(None),
     hasta: str | None = Query(None),
 ):
-    """El xlsx tipo José (Resumen + árbol de Categorias con publicaciones) con
-    los filtros elegidos. Sin margen (acordado 04-ago: queda para después)."""
+    """El reporte ÚNICO de ventas y márgenes (Eduardo, 5-ago): Resumen por
+    categoría, árbol de Categorías con sus publicaciones y una hoja Ventas con
+    una fila por línea vendida. Las tres hojas salen de los PEDIDOS, así que el
+    libro cuadra consigo mismo: la comisión que descuenta el margen es la misma
+    que respalda cada renglón de la hoja Ventas.
+
+    Sustituye al CSV de márgenes, que era el mismo dato con otro rango de
+    fechas y otro botón."""
     from fastapi.responses import Response
 
     if not sdb.disponible():
@@ -1145,13 +1255,14 @@ async def categorias_excel(
 
         from services import reporte_categorias_xlsx
 
-        hojas = sdb.fetch_all(_SQL_CAT_HOJAS,
-                              {"desde": d1, "hasta": d2, "cuenta": cuenta})
-        pubs = sdb.fetch_all(_SQL_CAT_PUBS_TODAS,
-                             {"desde": d1, "hasta": d2, "cuenta": cuenta})
+        p = {"desde": d1, "hasta": d2, "cuenta": cuenta}
+        hojas = sdb.fetch_all(_SQL_XLS_HOJAS, p)
+        pubs = sdb.fetch_all(_SQL_XLS_PUBS, p)
+        # la hoja de detalle reusa el MISMO query del CSV que se retira
+        ventas = sdb.fetch_all(_SQL_MARGEN_LINEAS, {**p, "canal": None})
         datos = await asyncio.to_thread(
-            reporte_categorias_xlsx.construir, hojas, pubs, d1, d2, cuenta)
-        nombre = f"ventas_por_categoria_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"
+            reporte_categorias_xlsx.construir, hojas, pubs, ventas, d1, d2, cuenta)
+        nombre = f"ventas_margenes_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"
         return Response(
             content=datos,
             media_type=("application/vnd.openxmlformats-officedocument"
