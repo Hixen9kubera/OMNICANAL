@@ -83,7 +83,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.57.0",
+    version="0.58.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -134,7 +134,7 @@ app.include_router(fulfillment.router)
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.57.0",
+        "version": "0.58.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

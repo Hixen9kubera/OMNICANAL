@@ -3304,6 +3304,38 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.58.0 — El listado de Productos deja de arrastrarse: 16 s → 4 s en frío (Eduardo)
+
+Eduardo reportó lentitud al buscar SKUs ("Preparando el catálogo…" eterno).
+Perfilado llamada por llamada, el tiempo se iba en 4 goteras, todas contra
+Hostinger:
+
+1. **El árbol de categorías por REST, en serie** (~15 llamadas × 0.8 s ≈ 12 s)
+   cada vez que el caché de 30 min moría — o sea, tras CADA deploy. Ahora sale
+   de wp_db en UNA consulta (1,664 categorías idénticas a REST, 0.55 s), con
+   el REST como respaldo.
+2. **N+1 de variantes**: una llamada REST por padre `variable` (semáforo 3).
+   Ahora TODAS las del lote en 3-4 queries wp_db (`variantes_por_padre`).
+   Arnés `comparar_variantes_wpdb.py`: 34 idénticas, 6 donde el SQL es MEJOR
+   (REST da nombre null si el atributo no liga al padre) y 0 diferencias
+   reales; el orden de opciones replica la inserción de `_product_attributes`
+   (caso TEC-1661 "Negro / 5 canales").
+3. **La búsqueda LIKE (COUNT + ids) en serie y BLOQUEANDO el event loop** —
+   mientras alguien buscaba, el backend entero se pausaba. Ahora en paralelo
+   y en hilo.
+4. **Plan-B `?sku=` innecesario** cuando la búsqueda ya resolvió el término
+   como SKU exacto.
+
+Números (frío = proceso recién desplegado): filtro de SKUs 16.4 s → 3.9 s;
+caliente 1.4 s; página general 3.6 s frío / 1.4 s caliente. Sin cambios de
+contrato (mismas formas de salida). Probado en staging antes del pase.
+
+Hallazgo aparte del reporte original: `ACC-0196-NEG` y `MUN-0020-MUL` están en
+**draft** — Productos no muestra drafts por diseño (viven en Crear/Omnicanal);
+por eso el "0 productos" de la captura, no solo la lentitud. Versión 0.58.0.
+
+---
+
 ### v0.57.0 — El Excel de categorías abre plegado y se descarga desde Reportes (Eduardo)
 
 Afinación del Excel tipo José con el visto bueno de Eduardo sobre archivo real:
