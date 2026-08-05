@@ -69,6 +69,9 @@ EQUIPO: tuple[tuple[str, str, str], ...] = (
     ("Haim",              "haim@kubera.mx",              "operador"),
     ("Nancy Cruz",        "nancy.cruz@kubera.mx",        "operador"),
     ("Thalía",            "thalias@kubera.mx",           "operador"),
+    # Segunda cuenta de Thalía, para San Corpe (Brandon, 5-ago). OJO: con dos
+    # cuentas para una persona la bitácora no puede decir cuál de las dos usó.
+    ("Thalía · San Corpe", "sancorpethalia@kubera.mx",   "operador"),
     ("Valeria",           "valeria@kubera.mx",           "operador"),
 )
 
