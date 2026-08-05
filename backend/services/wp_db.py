@@ -664,3 +664,129 @@ def productos_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
                 "costo": r.get("costo"),
             }
     return salida
+
+
+def variantes_por_padre(padres: list[int]) -> dict[int, list[dict[str, Any]]]:
+    """
+    Variantes de padres `variable` leídas DIRECTO de wp_posts/wp_postmeta en
+    3-4 queries POR LOTE — sustituye el N+1 de REST `/products/{id}/variations`
+    del listado (una llamada por padre, semáforo 3, era lo que arrastraba a la
+    vista Productos). MISMA forma que arma variantes_de_productos:
+    {sku, nombre, precio, stock, estado}.
+
+    `nombre` = opciones unidas con " / " en el ORDEN de los atributos del padre
+    (postmeta `_product_attributes`), igual que el REST de Woo. Los atributos
+    por taxonomía (attribute_pa_*) guardan el SLUG del término: se traduce a su
+    etiqueta con wp_terms/wp_term_taxonomy; los custom traen el texto literal.
+    """
+    if not padres:
+        return {}
+    P = _prefix()
+    ph = ",".join(["%s"] * len(padres))
+    var_rows = _fetch_all(
+        f"""SELECT ID, post_parent, post_status FROM {P}posts
+            WHERE post_parent IN ({ph}) AND post_type = 'product_variation'
+              AND post_status <> 'trash'
+            ORDER BY post_parent, menu_order, ID""",
+        tuple(padres))
+    if not var_rows:
+        return {p: [] for p in padres}
+    var_ids = [r["ID"] for r in var_rows]
+
+    metas: dict[int, dict[str, str]] = {}
+    for i in range(0, len(var_ids), 500):
+        chunk = var_ids[i:i + 500]
+        ph2 = ",".join(["%s"] * len(chunk))
+        for r in _fetch_all(
+            f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
+                WHERE post_id IN ({ph2})
+                  AND (meta_key IN ('_sku', '_price', '_stock')
+                       OR meta_key LIKE 'attribute\\_%%')""",
+            tuple(chunk)):
+            metas.setdefault(r["post_id"], {})[r["meta_key"]] = r["meta_value"]
+
+    # Etiquetas de términos de taxonomía: (taxonomy, slug) -> name
+    pares = {(k[len("attribute_"):], v)
+             for m in metas.values() for k, v in m.items()
+             if k.startswith("attribute_pa_") and v}
+    etiquetas: dict[tuple[str, str], str] = {}
+    if pares:
+        taxos = sorted({t for t, _ in pares})
+        slugs = sorted({s for _, s in pares})
+        pht = ",".join(["%s"] * len(taxos))
+        phs = ",".join(["%s"] * len(slugs))
+        for r in _fetch_all(
+            f"""SELECT tt.taxonomy, t.slug, t.name
+                FROM {P}terms t
+                JOIN {P}term_taxonomy tt ON tt.term_id = t.term_id
+                WHERE tt.taxonomy IN ({pht}) AND t.slug IN ({phs})""",
+            tuple(taxos) + tuple(slugs)):
+            etiquetas[(r["taxonomy"], r["slug"])] = r["name"]
+
+    # Orden de atributos del padre (posición en _product_attributes), como REST
+    orden_padre: dict[int, dict[str, int]] = {}
+    for r in _fetch_all(
+        f"""SELECT post_id, meta_value FROM {P}postmeta
+            WHERE post_id IN ({ph}) AND meta_key = '_product_attributes'""",
+        tuple(padres)):
+        try:
+            import phpserialize
+            data = phpserialize.loads(
+                str(r["meta_value"]).encode("utf-8", "surrogatepass"),
+                decode_strings=True, array_hook=dict) or {}
+            # ORDEN DE INSERCIÓN del dict serializado, no `position`: es lo que
+            # respeta el REST de Woo (los empates de position rompían el orden
+            # de "Negro / 5 canales", caso TEC-1661).
+            orden_padre[r["post_id"]] = {
+                str(slug): i for i, slug in enumerate(data.keys())}
+        except Exception:  # noqa: BLE001
+            orden_padre[r["post_id"]] = {}
+
+    def _f(v):
+        try:
+            return float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    salida: dict[int, list[dict[str, Any]]] = {p: [] for p in padres}
+    for r in var_rows:
+        m = metas.get(r["ID"], {})
+        pos = orden_padre.get(r["post_parent"], {})
+        ops = []
+        for k, v in m.items():
+            if not k.startswith("attribute_") or not v:
+                continue
+            slug_attr = k[len("attribute_"):]
+            texto = (etiquetas.get((slug_attr, v), v)
+                     if slug_attr.startswith("pa_") else v)
+            ops.append((pos.get(slug_attr, 999), slug_attr, str(texto)))
+        ops.sort(key=lambda x: (x[0], x[1]))
+        stock = m.get("_stock")
+        salida[r["post_parent"]].append({
+            "sku": m.get("_sku") or f"WC-{r['ID']}",
+            "nombre": " / ".join(t for _, _, t in ops) or None,
+            "precio": _f(m.get("_price")),
+            "stock": int(float(stock)) if stock not in (None, "") else None,
+            "estado": r["post_status"],
+        })
+    return salida
+
+
+def categorias_producto() -> dict[int, dict[str, Any]]:
+    """
+    TODO el árbol de categorías de WooCommerce en UNA consulta (perf 05-ago):
+    { term_id: {name, parent} }, mismo contrato que _cargar_categorias() de
+    woocommerce.py — que en frío paginaba ~15 llamadas REST en serie (~12 s
+    tras cada deploy). Los nombres se des-escapan (&amp; → &) como los del REST.
+    """
+    import html
+    P = _prefix()
+    return {
+        int(r["term_id"]): {"name": html.unescape(str(r["name"])),
+                            "parent": int(r["parent"] or 0)}
+        for r in _fetch_all(
+            f"""SELECT t.term_id, t.name, tt.parent
+                FROM {P}terms t
+                JOIN {P}term_taxonomy tt ON tt.term_id = t.term_id
+                WHERE tt.taxonomy = 'product_cat'""")
+    }

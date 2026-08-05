@@ -41,6 +41,21 @@ async def _cargar_categorias() -> dict[int, dict[str, Any]]:
     if _cat_cache and (time.time() - _cat_cache_ts) < _CAT_TTL:
         return _cat_cache
 
+    # RUTA RÁPIDA (perf 05-ago): el árbol entero en UNA consulta a wp_db. El
+    # REST de abajo paginaba ~15 llamadas EN SERIE (~12 s) y el caché muere con
+    # cada deploy — era el grueso del "Preparando el catálogo…" en frío.
+    from services import wp_db
+    if wp_db.disponible():
+        try:
+            cache_db = await asyncio.to_thread(wp_db.categorias_producto)
+            if cache_db:
+                _cat_cache = cache_db
+                _cat_cache_ts = time.time()
+                log.info("Categorías WooCommerce cacheadas (wp_db): %d", len(cache_db))
+                return cache_db
+        except Exception as exc:  # noqa: BLE001
+            log.warning("categorías por wp_db fallaron (%s); respaldo REST", exc)
+
     cache: dict[int, dict[str, Any]] = {}
     async with _client() as cli:
         page = 1
@@ -192,8 +207,11 @@ async def listar_productos(
             total_pages = int(r.headers.get("X-WP-TotalPages", 1))
 
         elif usa_db:
-            # Filtros/orden avanzados vía tabla `productos` → wc_ids → WooCommerce
-            wc_ids, total_db = _buscar_wc_ids_db(search, page, per_page, orden, estados, skus, vista)
+            # Filtros/orden avanzados vía tabla `productos` → wc_ids → WooCommerce.
+            # En hilo aparte: las 2 consultas LIKE a Hostinger tardan ~1.5 s y
+            # ejecutarlas inline congelaba el event loop entero (perf 05-ago).
+            wc_ids, total_db = await asyncio.to_thread(
+                _buscar_wc_ids_db, search, page, per_page, orden, estados, skus, vista)
             if wc_ids:
                 r = await cli.get("/products", params={
                     **params, "include": ",".join(str(i) for i in wc_ids),
@@ -228,7 +246,12 @@ async def listar_productos(
             # una sola llamada (?sku=a,b,c) — el mismo plan B que ya tiene
             # `search`. Solo en la página 1 para no duplicar el total al paginar.
             if skus and page == 1:
-                terminos = [t.strip() for t in skus if t.strip() and " " not in t.strip()]
+                # Solo los términos que la búsqueda NO resolvió ya como SKU
+                # exacto: si todos están, la llamada extra sobra (perf 05-ago).
+                ya_exactos = {str(p.get("sku") or "").strip().upper() for p in data}
+                terminos = [t.strip() for t in skus
+                            if t.strip() and " " not in t.strip()
+                            and t.strip().upper() not in ya_exactos]
                 if terminos:
                     rs = await cli.get("/products", params={
                         **params, "sku": ",".join(terminos[:100]),
@@ -254,6 +277,12 @@ async def listar_productos(
                         elif extras:
                             total += len(extras)
                             total_pages = max(1, (total + per_page - 1) // per_page)
+                elif total <= per_page:
+                    # Sin plan-B que hacer, pero la corrección del "fantasma"
+                    # (filas contadas por la búsqueda que el include no devolvió)
+                    # sigue aplicando en una sola página.
+                    total = len(data)
+                    total_pages = 1
         else:
             # GENERAL sin filtros: los wc_ids que le tocan a esta VISTA (ver
             # VISTAS). Paginamos sobre el índice cacheado.
@@ -437,10 +466,18 @@ def _buscar_wc_ids_wp(
                 LEFT JOIN {P}postmeta pr ON pr.post_id=p.ID AND pr.meta_key='_price'
                 WHERE {' AND '.join(where)}""")
     try:
-        total = wp_db._fetch_all(f"SELECT COUNT(*) n {base}", tuple(args))[0]["n"]
-        filas = wp_db._fetch_all(
-            f"SELECT p.ID {base} ORDER BY {orden_sql} LIMIT %s OFFSET %s",
-            tuple(args) + (per_page, (page - 1) * per_page))
+        # COUNT e IDs EN PARALELO (antes en serie: ~0.8 s cada una contra
+        # Hostinger; juntas son el costo dominante de la búsqueda del panel).
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_total = ex.submit(wp_db._fetch_all,
+                                f"SELECT COUNT(*) n {base}", tuple(args))
+            f_ids = ex.submit(
+                wp_db._fetch_all,
+                f"SELECT p.ID {base} ORDER BY {orden_sql} LIMIT %s OFFSET %s",
+                tuple(args) + (per_page, (page - 1) * per_page))
+            total = f_total.result()[0]["n"]
+            filas = f_ids.result()
         return [f["ID"] for f in filas], int(total)
     except Exception as exc:  # noqa: BLE001
         log.warning("búsqueda en WordPress falló (%s); se usa la maestra", exc)
@@ -1497,7 +1534,25 @@ async def variantes_de_productos(
     Es la misma lectura que usa la vista "Crear Productos" (era `_variantes()`
     dentro de `productos_por_wc_id`); se extrajo para que Productos y Omnicanal
     muestren exactamente las mismas variantes, con los mismos campos.
+
+    RUTA RÁPIDA (perf 05-ago): con la DB de WordPress disponible, TODAS las
+    variantes del lote salen de wp_posts/wp_postmeta en 3-4 queries
+    (wp_db.variantes_por_padre) en vez de una llamada REST por padre con
+    semáforo 3 — que era lo que arrastraba la vista Productos. Equivalencia
+    REST↔SQL verificada con arnés (scripts/comparar_variantes_wpdb.py).
+    El REST por producto queda como respaldo ante cualquier error.
     """
+    from services import wp_db
+    variables = [p for p in productos if p.get("type") == "variable"]
+    if variables and wp_db.disponible():
+        try:
+            mapa = await asyncio.to_thread(
+                wp_db.variantes_por_padre, [p["id"] for p in variables])
+            return [mapa.get(p["id"], []) if p.get("type") == "variable" else []
+                    for p in productos]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("variantes por wp_db fallaron (%s); respaldo REST", exc)
+
     sem = asyncio.Semaphore(3)  # concurrencia baja: el hosting bloquea por volumen
 
     async def _una(p: dict[str, Any]) -> list[dict[str, Any]]:
