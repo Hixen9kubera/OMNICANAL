@@ -4137,6 +4137,50 @@ hoy" (auditoría de 150 publicaciones contra ML en vivo: 150/150) a 100%%
 sostenido. Auditable en el log: "barrido de cierre <cuenta>: N fila(s)…".
 Versión 0.59.1.
 
+### v0.60.0 — La sesión ya se renueva sola, y el panel es exclusivo de quien esté dado de alta
+
+Las dos piezas que faltaban para poder encender el enforcement sin romperle el
+día a nadie.
+
+**1. El token moría a la hora y nadie lo renovaba.** `lib/sesion.ts` guardaba el
+`refresh_token` desde el día uno y **nunca lo usaba**. El token de acceso de
+Supabase dura 1 hora: quien entrara a las 9:00 habría visto el panel dejar de
+responder a las 10:00, sin mensaje que lo explicara. Ahora hay dos redes:
+
+- Un **temporizador** que renueva 5 minutos antes de vencer (el caso normal).
+- Un **reintento ante un 401** en `lib/api.ts`: se renueva y se repite la
+  llamada UNA vez. Cubre lo que el temporizador no puede — la laptop durmió, el
+  navegador congeló la pestaña, el equipo ahorró batería.
+
+Y un candado `enVuelo` en la renovación, por la misma razón que el del backend:
+al despertar la laptop **todas** las peticiones pendientes fallan a la vez y
+pedirían renovar en paralelo. Supabase **rota** el token de refresco, así que la
+primera renovación invalida el de las demás — sin candado, cerraría la sesión de
+alguien que sí la tenía. También se re-verifica al volver el foco a la pestaña.
+
+Si la renovación falla por red, **no** se cierra sesión (se reintenta luego);
+solo un 400/401 del propio Supabase —refresco caducado o revocado— cierra.
+
+**2. El acceso es exclusivo de los dados de alta.** Antes, quien se autenticaba
+bien pero no tenía fila en `core.usuarios` entraba con rol `lectura`. Con Google
+encendido eso deja de ser aceptable: **cualquier cuenta del dominio** —un
+empleado nuevo, una cuenta de servicio— pasaría el filtro de Google y vería el
+panel. Ahora se rechaza.
+
+Con la distinción que hace que esto no sea peligroso: `_perfil_en_kubera`
+devuelve un tercer valor que separa **"la base contestó y no está en la lista"**
+(rechazar) de **"no se pudo consultar la base"** (NO rechazar, degradar al rol
+mínimo). Confundirlos costaría caro en las dos direcciones: por un lado dejaría
+entrar a cualquiera con correo de la empresa, por el otro convertiría un hipo de
+Supabase en una caída total del panel.
+
+Google prueba **quién** eres; que además te toque entrar lo decide
+`core.usuarios`. Dar de alta a alguien nuevo es agregar su fila.
+
+`humo_concurrencia.py` pasó de 21 a **27 pruebas** (dado de alta entra con su
+rol, sin fila rechazado, dado de baja rechazado, base caída no bloquea pero
+degrada). `humo_auth.py` sigue en 63. Versión 0.60.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

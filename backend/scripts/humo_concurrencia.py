@@ -102,11 +102,11 @@ class _ClienteFalso:
         return _Respuesta(200, {"id": f"uuid-{token}", "email": f"{token}@kubera.mx"})
 
 
-def _perfil_falso(uid: str, _correo: str) -> tuple[str, bool]:
+def _perfil_falso(uid: str, _correo: str) -> tuple[str, bool, str]:
     """Doble de core.usuarios. BLOQUEANTE, como psycopg2."""
     time.sleep(TARDANZA_BASE)
     consultas_base.append(uid)
-    return ("operador", True)
+    return ("operador", True, "fila")
 
 
 def _instalar_dobles() -> None:
@@ -232,6 +232,49 @@ async def main() -> int:
     revisar("los candados no superan al caché",
             len(identidad._candados) <= len(identidad._cache) + 1, True,
             "Se está fugando un candado por cada sesión que pasa.")
+
+    # 7 ────────────────────────────────────────────────────────────────────
+    print("\n7) EL PANEL ES EXCLUSIVO DE QUIEN ESTÉ DADO DE ALTA")
+    # Google prueba QUIÉN eres; que además te toque entrar lo decide
+    # core.usuarios. Un empleado nuevo con correo @kubera.mx pasa el filtro de
+    # Google y NO debe entrar hasta que se le dé de alta.
+    original = identidad._perfil_en_kubera
+
+    def _con_perfil(resultado):
+        def falso(uid, _correo):
+            consultas_base.append(uid)
+            return resultado
+        return falso
+
+    try:
+        _limpiar()
+        identidad._perfil_en_kubera = _con_perfil(("admin", True, "fila"))  # type: ignore[assignment]
+        yo = await identidad._por_token("brandon")
+        revisar("dado de alta -> entra", yo is not None, True)
+        revisar("y con SU rol", yo.rol if yo else None, "admin")
+
+        _limpiar()
+        identidad._perfil_en_kubera = _con_perfil(("lectura", True, "sin_fila"))  # type: ignore[assignment]
+        intruso = await identidad._por_token("empleado-nuevo")
+        revisar("NO dado de alta -> RECHAZADO", intruso, None,
+                "Cualquier cuenta del dominio entraría con rol de lectura.")
+
+        _limpiar()
+        identidad._perfil_en_kubera = _con_perfil(("operador", False, "fila"))  # type: ignore[assignment]
+        baja = await identidad._por_token("alguien-de-baja")
+        revisar("dado de baja (activo=false) -> RECHAZADO", baja, None)
+
+        # Y el caso que NO puede confundirse con el anterior: si la base no
+        # responde, rechazar dejaría al equipo entero fuera del panel.
+        _limpiar()
+        identidad._perfil_en_kubera = _con_perfil(("lectura", True, "sin_base"))  # type: ignore[assignment]
+        caida = await identidad._por_token("brandon")
+        revisar("base caída -> NO bloquea", caida is not None, True,
+                "Un hipo de Supabase dejaría a todo el equipo sin panel.")
+        revisar("pero degrada al rol mínimo", caida.rol if caida else None, "lectura",
+                "Una caída de la base no puede REGALAR permisos.")
+    finally:
+        identidad._perfil_en_kubera = original  # type: ignore[assignment]
 
     print("\n" + "=" * 74)
     if fallos:

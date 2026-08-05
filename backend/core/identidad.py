@@ -177,29 +177,37 @@ def _por_api_key(recibida: str) -> Identidad | None:
     return None
 
 
-def _perfil_en_kubera(uid: str, correo: str) -> tuple[str, bool]:
+def _perfil_en_kubera(uid: str, correo: str) -> tuple[str, bool, str]:
     """
-    Lee rol y estado desde core.usuarios. Devuelve (rol, activo).
+    Lee rol y estado desde core.usuarios. Devuelve (rol, activo, origen).
 
-    Si la tabla no responde o el usuario no está dado de alta, devuelve
-    ("lectura", True): el rol MÁS BAJO. Un fallo de base nunca debe regalar
-    permisos de admin.
+    `origen` distingue tres situaciones que NO se pueden tratar igual:
+
+      "fila"      → la persona está dada de alta; manda su rol.
+      "sin_fila"  → la base contestó bien y esta persona NO está en la lista.
+                    Se RECHAZA (ver `_verificar`): el acceso es exclusivo de
+                    quien esté dado de alta, aunque Google lo haya validado.
+      "sin_base"  → no se pudo consultar. Aquí NO se rechaza: una caída de
+                    Supabase dejaría al equipo entero fuera del panel. Se cae al
+                    rol MÍNIMO ("lectura"), que degrada pero no bloquea.
+
+    Confundir "sin_fila" con "sin_base" es el error caro: por un lado dejaría
+    entrar a cualquiera con correo de la empresa, por el otro convertiría un
+    hipo de la base en una caída total.
     """
     try:
         from services import supabase_db as sdb
         if not sdb.disponible():
-            return "lectura", True
+            return "lectura", True, "sin_base"
         fila = sdb.fetch_one(
             "SELECT rol, activo FROM core.usuarios WHERE id = %s", (uid,))
         if not fila:
-            log.warning("Usuario %s autenticado pero sin fila en core.usuarios; "
-                        "se le da el rol mínimo.", correo or uid)
-            return "lectura", True
+            return "lectura", True, "sin_fila"
         rol = str(fila.get("rol") or "lectura")
-        return (rol if rol in ROLES_VALIDOS else "lectura"), bool(fila.get("activo"))
+        return (rol if rol in ROLES_VALIDOS else "lectura"), bool(fila.get("activo")), "fila"
     except Exception:  # noqa: BLE001 — nunca romper por la base
         log.exception("No se pudo leer core.usuarios; se asume rol mínimo.")
-        return "lectura", True
+        return "lectura", True, "sin_base"
 
 
 async def _verificar(token: str) -> Identidad | None:
@@ -221,7 +229,16 @@ async def _verificar(token: str) -> Identidad | None:
         # psycopg2 es SÍNCRONO: llamarlo directo desde aquí congelaría el event
         # loop —y con él a todos los demás usuarios y al webhook de ML— mientras
         # la consulta corre o espera una conexión del pool (que es de 6).
-        rol, activo = await asyncio.to_thread(_perfil_en_kubera, uid, correo)
+        rol, activo, origen = await asyncio.to_thread(_perfil_en_kubera, uid, correo)
+
+        # EL PANEL ES EXCLUSIVO DE QUIEN ESTÉ DADO DE ALTA. Google (o Supabase)
+        # solo prueba QUIÉN es; que además le toque entrar lo decide
+        # `core.usuarios`. Sin esto, cualquier cuenta del dominio —un empleado
+        # nuevo, una cuenta de servicio— entraría con rol de lectura.
+        if origen == "sin_fila":
+            log.warning("ACCESO NEGADO: %s se autenticó bien pero no está dado "
+                        "de alta en core.usuarios.", correo or uid)
+            return None
         if not activo:
             log.warning("Usuario %s está marcado inactivo en core.usuarios.", correo)
             return None

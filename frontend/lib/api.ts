@@ -1,6 +1,6 @@
 // api.ts — Cliente del backend FastAPI.
 
-import { token } from "./sesion";
+import { haySesion, refrescar, token } from "./sesion";
 
 import type {
   CanalInfo,
@@ -102,12 +102,33 @@ export function cabeceras(extra: Record<string, string> = {}): Record<string, st
   return h;
 }
 
+/**
+ * `fetch` que sobrevive a un token vencido.
+ *
+ * El token de Supabase dura 1 hora y `lib/sesion.ts` lo renueva solo con un
+ * temporizador. Esta es la SEGUNDA red: si aun así llega un 401 —la laptop
+ * durmió, el navegador congeló la pestaña, el reloj se fue— se renueva y se
+ * reintenta UNA vez. Sin esto, el usuario ve un error y pierde lo que estaba
+ * haciendo por algo que se arregla solo en 300 ms.
+ *
+ * Una sola vez, nunca en bucle: si el segundo intento también da 401, el
+ * problema no es el token y hay que dejar que el error suba.
+ */
+async function fetchSesion(url: string, init: RequestInit,
+                           extra: Record<string, string> = {}): Promise<Response> {
+  const armar = (): RequestInit => ({ ...init, headers: cabeceras(extra) });
+  const res = await fetch(url, armar());
+  if (res.status !== 401 || !haySesion()) return res;
+  if (!(await refrescar())) return res;
+  return fetch(url, armar());
+}
+
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: cabeceras({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
-  });
+  const res = await fetchSesion(
+    `${BASE}${path}`,
+    { method: "POST", body: JSON.stringify(body) },
+    { "Content-Type": "application/json" },
+  );
   if (!res.ok) throw await errorDeRespuesta(res, path);
   return res.json() as Promise<T>;
 }
@@ -116,11 +137,7 @@ const BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://127.0.0.1:8000";
 
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    signal,
-    headers: cabeceras(),
-    cache: "no-store",
-  });
+  const res = await fetchSesion(`${BASE}${path}`, { signal, cache: "no-store" });
   if (!res.ok) {
     throw await errorDeRespuesta(res, path);
   }

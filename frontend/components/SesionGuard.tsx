@@ -14,7 +14,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { haySesion, quienSoy } from "@/lib/sesion";
+import { cuidarSesion, haySesion, quienSoy } from "@/lib/sesion";
 
 // Rutas que se ven sin sesión (si no, el login se bloquearía a sí mismo).
 const ABIERTAS = ["/login"];
@@ -50,6 +50,13 @@ export default function SesionGuard({ children }: { children: React.ReactNode })
       vivo = false;
     };
   }, [ruta, router]);
+
+  // Mantenimiento de la sesión: renueva el token antes de que caduque (dura 1
+  // hora) y lo recupera al volver de una pestaña dormida. Va aparte del efecto
+  // de arriba a propósito: ese depende de la ruta y se re-ejecuta al navegar,
+  // y reiniciar el temporizador en cada clic dejaría la renovación sin correr
+  // nunca en una sesión de trabajo normal.
+  useEffect(() => cuidarSesion(), []);
 
   if (!listo) {
     return (
