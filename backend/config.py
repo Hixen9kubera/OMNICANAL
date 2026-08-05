@@ -88,6 +88,24 @@ class Settings(BaseSettings):
     apify_api_key: str = ""
     apify_alibaba_actor: str = "happitap~alibaba-product-scraper"
 
+    # ── Competencia (Mercado Libre) ───────────────────────────
+    # La API de ML da las VISITAS de cualquier publicación pero NO la ficha
+    # (título/imagen/precio/descripción/posición) de las ajenas: /items/{id}
+    # responde 403 y /sites/MLM/search también. Esa parte la trae este actor.
+    apify_ml_actor: str = "piotrv1001~mercado-libre-listings-scraper"
+    # Navegador genérico para la página /mas-vendidos/{cat}: los actores
+    # especializados en ML NO la parsean (uno FAILED, otro 0 items) y este sí,
+    # porque ejecuta el security.js. Cobra por cómputo (~$0.007/página) en vez de
+    # por item, ~93× más barato que el de listings con detalle.
+    apify_navegador_actor: str = "apify~playwright-scraper"
+    # ML sirve un interstitial de "tráfico sospechoso" a IPs de datacenter, así
+    # que el scraping va por proxy residencial mexicano (igual que Alibaba).
+    apify_proxy_pais: str = "MX"
+    # Resultados por búsqueda. Con detalle son $0.025/item (trae descripción y
+    # unidades vendidas); sin detalle $0.003 pero sin esos dos campos.
+    competencia_top: int = 25
+    competencia_con_detalle: bool = True
+
     # ── Base de datos MySQL (cache híbrido) ───────────────────
     db_host: str = ""
     db_port: int = 3306
@@ -129,11 +147,22 @@ class Settings(BaseSettings):
     amazon_lwa_token_url: str = "https://api.amazon.com/auth/o2/token"
 
     # ── Sincronización de inventario ──────────────────────────
-    # Cada cuánto corre el lector de inventario (minutos). Cuando se
-    # implementen webhooks, poner sync_enabled=false y depender de ellos.
+    # Cada cuánto corre el lector de inventario (minutos). OJO (medido 4-ago):
+    # NO apagar el sondeo al pasar a webhooks sin encender antes sync_desde_ml —
+    # el webhook descarta lo que no está en ml_progress (1 de cada 3 avisos) y
+    # sin barrido ese punto ciego se vuelve invisible.
     sync_enabled: bool = True
     sync_interval_min: int = 15
     sync_batch: int = 80
+    # F. UNIVERSO (propuesta 4-ago, fase A): el lote del sondeo sale del
+    # CATÁLOGO VIVO de ML (/users/{id}/items/search, active+paused) en vez de
+    # ml_progress (la bitácora del publicador). Medido: entran ~517
+    # publicaciones que hoy no se recorren (186 activas vendiendo) y salen 253
+    # muertas que ML ya borró y que hoy pisan la fila de su SKU cada ciclo
+    # (síntoma "pausado que en realidad está activo", caso CUNA-0011-AZL).
+    # Apagado = comportamiento idéntico al de siempre. Encenderlo = dale de
+    # Brandon (flujo vivo, regla 3).
+    sync_desde_ml: bool = False
     # Guardado de notificaciones de webhooks en la tabla (se puede pausar en runtime)
     webhook_registro: bool = True
 
@@ -173,6 +202,10 @@ class Settings(BaseSettings):
     # F5 pedidos: el tab Ventas (fuente=pedidos) lee de channel.orders (BD
     # kubera) con fallback automático a MySQL. Apagar = revertir.
     supabase_read_orders: bool = False
+    # F5 core: los lookups SKU→wc_id (pedidos_ml.resolver_producto y la
+    # categoría ML de costos.py) leen de core.products. None NO es concluyente
+    # (seam Crear pendiente): se reconsulta MySQL. Apagar = revertir.
+    supabase_read_core: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""
@@ -181,6 +214,22 @@ class Settings(BaseSettings):
     # se registra en logs quién habría sido rechazado (rollout gradual).
     api_key: str = ""
     auth_enforced: bool = False
+    # Escotilla del middleware (core/middleware.py): rutas EXTRA que nunca piden
+    # credencial, en CSV. Existe para abrir una ruta olvidada sin hacer commit,
+    # si el censo del modo observación descubre un consumidor legítimo que nadie
+    # documentó. Las imprescindibles (/api/health y el webhook de ML) ya están
+    # en el código: esta variable NO hace falta para el funcionamiento normal.
+    auth_rutas_abiertas: str = ""
+    # Segundos que se guarda en memoria la verificación de un token contra
+    # Supabase Auth. Evita una llamada de red por cada petición del panel.
+    auth_cache_seg: int = 300
+    # RBAC (Temu III.2). Independiente de auth_enforced a propósito: se puede
+    # exigir credencial sin aplicar roles todavía, y encender los roles después
+    # de medir. Con false, un rol insuficiente se registra pero NO se bloquea.
+    rbac_enforced: bool = False
+    # /docs, /redoc y /openapi.json exponen el mapa completo de los 84 endpoints.
+    # En producción se apagan; con esto se pueden reabrir sin redeploy de código.
+    docs_publicas: bool = False
 
     # Persistencia de notificaciones en MySQL (webhook_eventos). Brandon pidió
     # DESVINCULAR el webhook de la base (2026-07-17): con false, las

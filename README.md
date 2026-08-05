@@ -3304,6 +3304,147 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.59.0 — Pegar SKUs de variantes ya encuentra sus productos (Eduardo)
+
+Eduardo pegó 20 SKUs para publicar y el panel "a veces me aparecen dos SKUs nada
+más, a veces 'preparando catálogo' y a veces solo en blanco y se traba". Eran
+tres fallas distintas apiladas:
+
+- **Variante → padre.** Los buscadores indexan solo productos PADRE
+  (`post_type='product'`; las 7,301 variaciones quedan fuera) y matchean con
+  "el término CABE dentro del SKU". El SKU de una variante es más LARGO que el
+  de su padre (`ACC-0069-ROS-2XL` vs `ACC-0069`), así que **nunca podía
+  coincidir**: 15 de los 20 SKUs eran variantes. Nuevo `wp_db.skus_padre()` /
+  `expandir_con_padres()` traduce cada variante a su padre por ESTRUCTURA
+  (`post_parent`), no por el nombre del SKU, en una sola consulta, y lo AÑADE a
+  la búsqueda. Aplica a Crear (`listar_candidatos_agrupados`) y a
+  Productos/Omnicanal (`_buscar_wc_ids_wp`). Con los 20 SKUs reales: **5
+  productos antes → 14 después**, cobertura completa.
+- **"Preparando el catálogo…" para siempre.** El panel reintenta cada 4 s
+  mientras `completo` sea false, y `completo` salía de `drafts_completo()`, que
+  solo lo enciende el escaneo por API — escaneo que **con MySQL nunca corre**,
+  porque el listado se lee fresco de MySQL. O sea: false eterno. Ahora
+  `completo=True` cuando `wp_db.disponible()`.
+- **Ya no gira sobre lo imposible.** Con búsqueda o filtro puesto, cero
+  resultados es una RESPUESTA, no un índice a medio construir: se acabaron los
+  45 reintentos (~4 min en blanco) y sale *"No se encontró ninguno de esos SKUs
+  por crear · puede que ya estén publicados: búscalos en Productos"*.
+- **El tope de términos sube de 10 a 60** en `buscar_drafts`: pegar 20 SKUs
+  descartaba la mitad en silencio. Lo que rebase se registra en el log.
+
+Verificado contra MySQL de producción con los 20 SKUs del reporte: 15 variantes
+traducidas a 9 padres, 7 grupos en Crear (draft) y 7 en Productos (2 pending, 4
+publish, 1 pending), los 14 productos cubiertos. `py_compile` y `tsc` limpios.
+Versión 0.59.0.
+
+---
+
+### v0.58.0 — El listado de Productos deja de arrastrarse: 16 s → 4 s en frío (Eduardo)
+
+Eduardo reportó lentitud al buscar SKUs ("Preparando el catálogo…" eterno).
+Perfilado llamada por llamada, el tiempo se iba en 4 goteras, todas contra
+Hostinger:
+
+1. **El árbol de categorías por REST, en serie** (~15 llamadas × 0.8 s ≈ 12 s)
+   cada vez que el caché de 30 min moría — o sea, tras CADA deploy. Ahora sale
+   de wp_db en UNA consulta (1,664 categorías idénticas a REST, 0.55 s), con
+   el REST como respaldo.
+2. **N+1 de variantes**: una llamada REST por padre `variable` (semáforo 3).
+   Ahora TODAS las del lote en 3-4 queries wp_db (`variantes_por_padre`).
+   Arnés `comparar_variantes_wpdb.py`: 34 idénticas, 6 donde el SQL es MEJOR
+   (REST da nombre null si el atributo no liga al padre) y 0 diferencias
+   reales; el orden de opciones replica la inserción de `_product_attributes`
+   (caso TEC-1661 "Negro / 5 canales").
+3. **La búsqueda LIKE (COUNT + ids) en serie y BLOQUEANDO el event loop** —
+   mientras alguien buscaba, el backend entero se pausaba. Ahora en paralelo
+   y en hilo.
+4. **Plan-B `?sku=` innecesario** cuando la búsqueda ya resolvió el término
+   como SKU exacto.
+
+Números (frío = proceso recién desplegado): filtro de SKUs 16.4 s → 3.9 s;
+caliente 1.4 s; página general 3.6 s frío / 1.4 s caliente. Sin cambios de
+contrato (mismas formas de salida). Probado en staging antes del pase.
+
+Hallazgo aparte del reporte original: `ACC-0196-NEG` y `MUN-0020-MUL` están en
+**draft** — Productos no muestra drafts por diseño (viven en Crear/Omnicanal);
+por eso el "0 productos" de la captura, no solo la lentitud. Versión 0.58.0.
+
+---
+
+### v0.57.0 — El Excel de categorías abre plegado y se descarga desde Reportes (Eduardo)
+
+Afinación del Excel tipo José con el visto bueno de Eduardo sobre archivo real:
+
+- **Agrupación nativa de Excel** en la hoja Categorias (botones +/− al margen,
+  niveles 1–7, summaryBelow=false porque el encabezado va arriba de su
+  bloque). El archivo **abre 100%% plegado**: solo las ~28 categorías
+  principales visibles; el detalle (subniveles y publicaciones) se abre por
+  nivel o por rama.
+- **"Sin categoría" siempre al final** en ambas hojas, venda lo que venda.
+- **La descarga vive en Análisis → Reportes**: la página (placeholder del
+  catálogo de fulfillment de José) estrena su primera tarjeta viva — "Ventas
+  por categoría (Excel)" con filtros de cuenta y período relativo/absoluto.
+  El botón se retiró de /analisis/categorias; el catálogo pendiente sigue
+  debajo intacto.
+- Probado en staging (sandbox) antes del pase, por instrucción de Eduardo:
+  producción no se tocó hasta su dale. Verificado con Excel real: 28 filas
+  visibles al abrir, totales de julio intactos ($5.76M / 16,565 uds), 0
+  errores de fórmula, tsc limpio. Versión 0.57.0.
+
+---
+
+### v0.56.0 — Análisis/Categorías: período X→X y Exportar a Excel tipo José (Eduardo)
+
+El reporte vivo de /analisis/categorias aprende lo que le faltaba frente al
+xlsx de José: **período absoluto** (dos date-pickers `desde`/`hasta` que mandan
+sobre los botones de días; la X vuelve a los relativos) y **Exportar a Excel**
+(botón verde) que genera el archivo con los filtros elegidos.
+
+- Backend: `GET /api/fulfillment/categorias[/publicaciones]` aceptan
+  `desde`/`hasta` (YYYY-MM-DD, tope 2 años) además de `dias`; el SQL pasa de
+  `date > hoy - dias` a `date between desde and hasta` (mismo conteo de días).
+  Nuevo `GET /api/fulfillment/categorias/excel` + `services/
+  reporte_categorias_xlsx.py` (openpyxl, nueva dependencia): hoja **Resumen**
+  por categoría principal (SKUs con venta, uds, ventas $, %% con fórmula,
+  publicaciones, activas, TOTAL con SUM) y hoja **Categorias** con el árbol
+  completo (subtotales SUBTOTAL(9,…) por nivel) y las publicaciones de cada
+  hoja (SKU, tienda, título, MLM ID, situación, uds, $, precio, 1ª/últ. venta).
+- Sin columna de margen (acordado 04-ago: para después) y con las
+  limitaciones declaradas: venta REAL del período (no sold_quantity×precio del
+  snapshot), "días en venta" no existe (va 1ª venta), y un SKU con doble
+  clasificación cuenta en ambas ramas (convención de la página).
+- Verificado contra kubera: julio 2026 = $5.76M / 16,565 uds / 689 SKUs;
+  Excel recalculado con Excel real, 0 errores de fórmula. Versión 0.56.0.
+
+---
+
+### v0.55.0 — F5 Core: flag de lectura de los lookups SKU→wc_id (Eduardo)
+
+Cuarto y último dominio F5. Flag **`SUPABASE_READ_CORE`** (default false;
+encendido en producción el 04-ago con dale de Eduardo): `pedidos_ml.resolver_producto` (ruta caliente
+de cada venta) y la categoría-ML de `costos.py` leen su lookup SKU→wc_id de
+`core.products` vía el nuevo `services/core_read.py` (contador + alerta + chip
+"Core" en /migracion). Regla propia del dominio: **None en kubera NO es
+concluyente** (el seam Crear→core.products no existe; un SKU del día aparece
+hasta el ETL de las 06:15) — se reconsulta MySQL sin alertar; solo la excepción
+es fallback.
+
+Alcance deliberado: `ejemplos.py` (usa precio/stock_odoo, no viajan al maestro)
+y el respaldo-DB del listado de `woocommerce.py` (lee `productos` CONGELADO;
+su primario es wp_db vivo) quedan FUERA — la gemela `buscar_wc_ids` queda lista
+en core_read.py para F6.
+
+**Equivalencia con arbitraje** (`scripts/comparar_lecturas_core.py`): 905 SKUs
+(634 vendidos 30d + 300 azar): 665 iguales, 0 ausentes en kubera, y 27
+diferencias arbitradas contra WordPress VIVO → **kubera correcto en las 27,
+MySQL en 0**: son SKUs que se volvieron variación después del congelamiento del
+23-jul; MySQL conserva el id viejo (hoy los pedidos de esos SKUs se crean
+contra el producto equivocado) y kubera trae la variación real. Encender este
+flag además CORRIGE ese defecto. Listado F6: kubera 9,732 ⊇ mysql 5,271.
+Veredicto EQUIVALENTE. Versión 0.55.0.
+
+---
+
 ### v0.49.0 — F5 Pedidos: flag de lectura del tab Ventas con equivalencia probada (Eduardo)
 
 Tercer dominio que aprende a leer de la BD kubera. Flag **`SUPABASE_READ_ORDERS`**
@@ -3353,6 +3494,91 @@ identidad exacta + tolerancia 2% en precio/stock por timing del sync): 539
 filas 0 faltantes/sobrantes, identidad 0 diferencias, calientes 0.37%,
 presencia 508=508, resumen amazon 1,666=1,666 (BEKURA +1 fila residual en
 kubera, 0.05%, anotada). Veredicto EQUIVALENTE. Versión 0.48.0.
+
+### v0.50.2 — La API deja de responderle a cualquiera (Temu III.1 y III.2)
+
+**Por qué.** El cuestionario de seguridad de Temu rechazó dos respuestas, y las
+dos eran mentira. Verificado contra producción antes de tocar nada:
+
+```
+200  /api/productos          200  /api/fanout/estado
+200  /api/migracion/errores  200  /api/canales
+```
+
+Cuatro de cuatro sin credencial. Y `routers/auth.py` era un maniquí: devolvía
+siempre `{"autenticado": true, "usuario": "kubera", "rol": "admin"}` sin
+verificar nada, y ningún endpoint lo usaba. Nunca hubo autenticación.
+
+**Lo que se construyó.**
+
+- **`core/middleware.py`** — puerta única de la API. Aplica la credencial a los
+  84 endpoints de una vez, en vez de router por router.
+- **`core/identidad.py`** — dos formas de identificarse: `Authorization: Bearer`
+  (Supabase Auth, personas) y `X-API-Key` (máquinas). El token se verifica
+  contra Supabase y el resultado se cachea 5 min, así que una sesión provoca
+  como mucho una llamada de red cada 5 minutos.
+- **`core/rbac.py`** — tabla declarativa de 36 reglas `(método, prefijo) → rol
+  mínimo`. Un solo archivo legible que sirve como evidencia para el
+  cuestionario.
+- **`routers/auth.py`** — deja de mentir: refleja la identidad real.
+- **`/docs`, `/redoc` y `/openapi.json` cerrados en producción.** Publicaban el
+  mapa completo de los 84 endpoints; `DOCS_PUBLICAS=true` los reabre sin deploy.
+
+**`core.usuarios` ya existía y ya tenía el diseño correcto.** No hubo que
+inventar nada ni levantar un Supabase aparte: la tabla del equipo de migración
+trae `CHECK (rol IN ('admin','operador','lectura'))` —los mismos tres roles— y
+`FK id → auth.users(id) ON DELETE CASCADE`. Es decir, **Supabase Auth guarda la
+contraseña y `core.usuarios` guarda el rol**; no hay columna de contraseña
+porque nunca debió haberla. Ese `ON DELETE CASCADE` es además la respuesta a la
+pregunta III.3: al borrar el usuario, su perfil y permisos se van con él.
+
+**El peligro real no era el webhook — era el healthcheck.** `railway.json`
+declara `healthcheckPath=/api/health` con `restartPolicyType=ON_FAILURE`: un 401
+ahí hace que Railway dé el deploy por muerto y entre en BUCLE DE REINICIO,
+tumbando webhook, scheduler (sync de 15 min, `odoo_watch`, fan-out, sondeos de
+Amazon y M2E) y panel. Un error en una lista de strings apaga la operación
+entera. Blindajes, en orden de ejecución:
+
+1. Las rutas abiertas se evalúan **antes** que `AUTH_ENFORCED`. No existe orden
+   en que `/api/health` o el webhook puedan dar 401.
+2. `OPTIONS` siempre pasa (preflight de CORS; bloquearlo mata el panel).
+3. El handler de `/api/webhooks/ml` envuelve **todo** su cuerpo: cualquier
+   excepción responde 200. A ML nunca se le contesta distinto — si lo hiciera,
+   reintenta 1 h y después deshabilita el topic, y se dejan de capturar ventas
+   reales sin ningún error visible.
+4. El middleware **falla abierto**: si revienta, la petición pasa. Un bug en la
+   autenticación no puede convertirse en una caída total.
+5. `AUTH_RUTAS_ABIERTAS` (CSV) abre una ruta olvidada **sin commit**.
+6. `RBAC_ENFORCED` es independiente de `AUTH_ENFORCED`: se puede exigir
+   credencial sin aplicar roles todavía.
+
+**Hallazgo que bajó el riesgo**: el scheduler NO llama la API por HTTP (registra
+funciones en el mismo proceso) y los crons de Railway abren MySQL/Postgres
+directo. La categoría "consumidor interno por HTTP" está prácticamente vacía, así
+que exigir token rompe mucho menos de lo que se temía.
+
+**`scripts/humo_auth.py` — 48 pruebas, todas pasando.** Es la que decide si se
+puede desplegar. Cubre los dos modos en procesos separados (config lee las
+variables al importarse):
+
+```
+python -m scripts.humo_auth --observacion   →  9/9   nadie se bloquea
+python -m scripts.humo_auth                 → 39/39  el estado final
+```
+
+Verifica que `/api/health` y el webhook den 200 sin credencial incluso con el
+enforcement encendido, que el webhook aguante cuerpos inválidos, que el
+preflight de CORS pase, que el resto dé 401, que una ruta no listada exija
+`admin`, y las 13 combinaciones de rol —incluida la que importa para el
+*need-to-know*: **un `operador` no puede publicar a marketplaces, ni mover
+precios en masa, ni ver la bitácora**.
+
+**Despliegue en dos tiempos.** Sin `API_KEY` definida el middleware es inerte y
+todo sigue igual que hoy. Con `API_KEY` + `AUTH_ENFORCED=false` entra en
+OBSERVACIÓN: nada se bloquea, solo se registra en logs quién habría recibido 401
+— ese censo es lo que hace seguro apretar después. Revertir es cambiar una
+variable: 2-4 min, dentro de la ventana de reintentos de ML (1 h), así que no se
+pierde ni una venta. Versión 0.50.2.
 
 ---
 
@@ -3588,6 +3814,410 @@ Con esto cierra el hilo completo: v0.49.1 hizo visible el costo por variante,
 v0.49.2 permitió calcularlo, v0.49.4 permitió guardarlo, y v0.50.1 evita que se
 pierda. Versión 0.50.1.
 
+### v0.51.0 — Crear Productos: se acabó el limbo (todo termina en Productos)
+
+**El síntoma.** Al crear un producto sin costo el proceso "terminaba" pero el
+producto no aparecía en Productos: quedaba en `inprogress` y seguía listado en
+Crear como no creado. Pasaba por lotes (~16 y 13 en días seguidos) y cada vez
+había que empujarlo a mano con `permitir_sin_costo=true` por la API.
+
+**El mecanismo.** Las vistas reparten por estado: Productos es
+`publish/pending/ready` y Crear es `draft/inprogress`. Dejar un producto en
+`inprogress` lo volvía **estructuralmente invisible** justo en la pestaña donde
+se le captura el costo. Medido en los 7 días previos: de 87 creaciones, **33
+cayeron en `inprogress`**, y de 38 errores **34 eran el guard de costo** que
+abortaba antes de empezar — unos **67 SKUs atorados por semana**.
+
+**Los cuatro cambios:**
+
+1. **El desenlace siempre es `pending`.** `inprogress` se retira como resultado
+   posible del flujo de creación.
+2. **La falta de costo ya no aborta.** El guard existía porque sin costo el
+   producto acababa en `inprogress`; con el punto 1 esa premisa desaparece.
+   Lo que SÍ sigue abortando es un scrape inservible de Alibaba — ahí el riesgo
+   real es pisar el nombre/imagen de Odoo con basura.
+3. **La completitud lee el precio de las VARIANTES.** Un padre variable no
+   guarda `_regular_price` propio, así que se le declaraba "sin precio"
+   teniéndolo: de los 85 atorados, **44 eran variables y 41 ya tenían precio en
+   sus variantes ($1,364–$14,378)**. Se reusa `wp_db.precio_regular_variantes`,
+   la misma corrección que `publicar_ready` ya aplicaba al publicar.
+4. **Se retiró la casilla "Crear sin costo"** del panel: con el punto 1 ya no
+   cambiaba nada y era un control que no hacía nada. El parámetro
+   `permitir_sin_costo` se sigue aceptando en la API (vestigial) para no romper
+   llamadas existentes.
+
+**Limpieza del limbo acumulado.** `POST /api/crear/destrabar` pasa a `pending`
+los que quedaron en `inprogress`. Son productos YA procesados —85/85 con scrape
+e imagen de portada, 84/85 con categoría y descripción— a los que solo les quedó
+mal la etiqueta: **no se re-scrapea ni se vuelve a llamar a Apify/IA**. Por
+defecto es simulacro; con `aplicar=true` lo hace, por lotes de 50 (2 peticiones
+en vez de 85).
+
+**Por qué mover en bloque es seguro:** `inprogress` y `pending` son ambos
+"inactivo" para el panel, ningún cron actúa sobre `pending`, publicar es siempre
+manual, y `publicar_ready` rechaza con *"Faltan datos: precio"* — un `pending` a
+medias no puede colarse a Mercado Libre.
+
+**Lo que este cambio NO resuelve** (diagnosticado, pendiente de decisión):
+Apify **sí** trae el costo de Alibaba, pero `_procesar` lo guarda solo como meta
+de Woo (`alibaba_price`, `cbm_producto`) y **nunca en `costos_validados`**, que
+es de donde `_tiene_costo_base` y `costos.asegurar_finales` leen. Medido: de los
+30 SKUs más recientes solo **3 tienen fila en `costos_validados`**, pero **25 de
+26 tienen `alibaba_price` en Woo**. El dato llega y se estaciona en la tabla
+equivocada. Sembrar `costos_validados` desde el scrape exige topes de sensatez
+primero: se detectaron valores inverosímiles (precio $21,245.91, peso 500 kg,
+cbm 1.5 m³) que vienen de la heurística `_precio_alibaba_real`. Versión 0.51.0.
+
+### v0.52.0 — El KAM manda en sus pestañas, y el equipo completo cabe a la vez
+
+Dos decisiones de Brandon (4-ago) sobre el panel de roles de v0.50.2, y un
+problema de concurrencia que la segunda destapó.
+
+**1. El KAM hace TODO dentro de sus pestañas.** El reparto de v0.50.2 asumía
+que un rol no-admin miraba y editaba contenido pero no publicaba ni movía
+precios. Brandon lo corrigió: publicar y actualizar **es** el trabajo del KAM.
+El corte ya no es *mirar vs escribir* sino **trabajo comercial vs
+infraestructura**. Un KAM publica a Mercado Libre y Amazon, recalcula costos
+(incluido el masivo) y corre Competencia; lo que no puede es apagar la captura
+de ventas, correr backfills de migración, barrer stock de todo el catálogo con
+`sync/woo`, empujar inventario con `fanout` ni leer la bitácora. Eso sigue
+siendo el *need-to-know* que responde la pregunta III.2 de Temu: un error ahí
+no daña un producto, daña el sistema o borra el rastro de quién hizo qué.
+
+**Dos pestañas estaban rotas y nadie lo habría sabido hasta el enforcement.**
+Al mapear endpoint por endpoint contra lo que llama cada pestaña aparecieron
+dos huecos en la tabla de v0.50.2: **Análisis** (`/api/fulfillment`) estaba
+marcada admin, y **Competencia** no estaba listada — o sea caía en el
+`ROL_POR_DEFECTO = "admin"`. Un KAM se habría topado con un 403 en dos de sus
+seis pestañas el día que se encendiera `RBAC_ENFORCED`. `/api/fulfillment`
+queda en `operador` y no en `lectura` porque su consulta devuelve `costo` y
+`margen_pct`: es el P&L, no inventario a secas.
+
+**2. Los once conectados al mismo tiempo.** Brandon pidió que aguantara al
+equipo completo en simultáneo. La verificación de identidad tenía dos defectos
+que con un solo usuario no se ven:
+
+- **Estampida.** Abrir el panel dispara ~8 llamadas en paralelo. Sin candado,
+  las 8 verificaban el MISMO token contra Supabase y consultaban 8 veces
+  `core.usuarios`. Once personas = ~88 verificaciones simultáneas contra el
+  pool de 6 conexiones de `supabase_db`, que además es `blocking=True`.
+- **Event loop congelado.** `core.usuarios` se lee con psycopg2, que es
+  SÍNCRONO, y se llamaba directo desde una corrutina. Mientras esa consulta
+  corría, el servidor entero dejaba de atender: los demás usuarios, el webhook
+  de ML **y el healthcheck de Railway** — que con `restartPolicyType=ON_FAILURE`
+  reinicia el deploy si no responde.
+
+La cura es la misma que ya usa `pedidos_ml` contra las ráfagas de webhooks: un
+**candado por token** (el primero verifica, los demás esperan y leen el caché
+tibio) y la consulta a la base movida a un hilo con `asyncio.to_thread`. Se
+agregó además caché negativo de 15 s para que una sesión vencida no golpee
+Supabase en cada petición.
+
+**Medido con `scripts/humo_concurrencia.py`** (21 pruebas), que reproduce las
+88 peticiones simultáneas con dobles que cuentan llamadas. La misma prueba
+corrida contra el código anterior:
+
+| | Antes | Ahora |
+|---|---|---|
+| Verificaciones contra Supabase | 88 | **11** |
+| Consultas a `core.usuarios` | 88 | **11** |
+| Tiempo hasta que entra el equipo | 22.12 s | **0.32 s** |
+| Latidos del servidor mientras tanto | 5 | **21** |
+
+**Navbar:** deja de decir "Kubera / admin" fijo — muestra el correo real y su
+rol ("Admin" / "KAM"), y por fin hay botón **Salir**. Con una contraseña
+compartida entre once personas, ver con qué cuenta se entró es la única forma
+de notar el error antes de mover algo.
+
+`humo_auth.py` pasó de 39 a **58 pruebas** (casos de rol uno por pestaña, más
+la comprobación de que un método no listado —DELETE, PUT— también nace cerrado).
+Nada de esto enciende un flujo: `AUTH_ENFORCED` y `RBAC_ENFORCED` siguen en
+observación. Versión 0.52.0.
+
+### v0.52.1 — Fix: el alta de usuarios guardaba la cuenta pero NO el rol (y no avisaba)
+
+Al dar de alta al equipo (4-ago) las 11 cuentas se crearon en Supabase Auth,
+pero **los 11 perfiles fallaron**: `core.usuarios` quedó en 0 filas.
+
+**La causa.** `crear_usuarios.py` escribía el perfil por la API REST, y
+**PostgREST solo expone `public` y `graphql_public`** — cualquier escritura a
+`core.usuarios` responde `PGRST106`. El script imprimía el error en una línea
+recortada a 110 caracteres por usuario, entre once líneas de "creado": se veía
+como ruido, no como un fallo. La cura correcta NO es exponer `core` a la API
+pública (sería abrirle el esquema del equipo de migración a cualquiera): el
+perfil ahora se escribe por conexión DIRECTA a Postgres (`KUBERA_DB_URL` o
+`SUPABASE_DB_URL`).
+
+**Y si no hay cadena de conexión, no se inventa nada:** imprime el `INSERT ...
+ON CONFLICT` listo para pegar en el editor SQL de Supabase, con las comillas
+simples de los nombres ya escapadas.
+
+**Por qué no era grave, y por qué igual había que arreglarlo:** un usuario sin
+fila en `core.usuarios` no queda suelto — `identidad._perfil_en_kubera` le da
+el rol MÍNIMO (`lectura`), nunca admin. O sea el equipo entraría, pero sin
+poder hacer su trabajo, y sin ninguna señal de por qué. Versión 0.52.1.
+
+### v0.52.2 — QA previo al enforcement: el modo observación nunca observó, y un 401 esperaba a los admins
+
+Antes de encender la autenticación, dos hallazgos que habrían salido en
+producción y con gente adentro.
+
+**1. El censo llevaba semanas vacío.** El plan era "leer el log de observación
+para saber a quién romperíamos antes de encender". Ese log **nunca se escribió**:
+`core/middleware.py` corta en la línea 126 —
+
+```python
+if not settings.api_key and not quien.autenticado:
+    return await call_next(request)   # ← retorna ANTES de registrar nada
+```
+
+— y en Railway **`API_KEY` no existe**, igual que `AUTH_ENFORCED` y
+`RBAC_ENFORCED`. Consecuencia práctica: encender solo `AUTH_ENFORCED` no haría
+nada, y encender solo `RBAC_ENFORCED` sí aplicaría, restringiendo únicamente a
+quien inicia sesión mientras el que no inicia conserva acceso total. El orden
+correcto es **`API_KEY` → `AUTH_ENFORCED` → `RBAC_ENFORCED`**, y el primer paso
+no bloquea a nadie: solo enciende el censo.
+
+**2. Un 401 esperaba a los admins con sesión.** `core/seguridad.py::
+requiere_api_key` nació cuando la única credencial era `X-API-Key` y solo miraba
+ese header. Protege 9 endpoints, y entre ellos está
+`POST /api/migracion/errores/resolver` — que es un **botón** de la página
+/migracion. Con `AUTH_ENFORCED=true`, un admin que hubiera iniciado sesión
+correctamente recibía 401 ahí: la puerta principal lo dejaba pasar y la
+dependencia interna lo rebotaba.
+
+Ahora pasa quien cumpla una de dos: manda la `X-API-Key` correcta (crons y
+scripts) **o** trae sesión válida y su rol alcanza según `core/rbac.py`. Se
+consulta `rbac.permite` en vez de confiar en `RBAC_ENFORCED`, porque esos 9
+endpoints ya estaban protegidos antes de este rollout y no pueden quedar más
+flojos durante la ventana en que el RBAC sigue en observación.
+
+`humo_auth.py` pasó de 58 a **63 pruebas**: admin con sesión pasa, KAM con
+sesión NO, anónimo NO, máquina con llave sí, llave equivocada no. Versión 0.52.2.
+
+---
+
+### v0.53.0 — SYNC_DESDE_ML (apagado): el sondeo puede leer el catálogo VIVO de ML, no la bitácora del publicador
+
+**Fase A de la propuesta del 4-ago (Eduardo). Se despliega APAGADA** — con la
+bandera en false el lote se arma de `ml_progress` exactamente como siempre
+(verificado: mismo lote, mismos SKUs). Encenderla es flujo vivo → dale de
+Brandon (regla 3).
+
+**El problema medido.** El panel no sabe qué está publicado en ML; sabe qué
+publicó él. Tanto el sondeo como el webhook resuelven la identidad contra
+`ml_progress`, así que lo publicado/republicado por fuera es invisible:
+
+- **517 publicaciones vivas** que el sondeo no recorre (186 activas VENDIENDO);
+- **253 muertas** (ML ya las borró) que el sondeo sigue refrescando — y como el
+  panel guarda UNA fila por (sku, canal, cuenta), el cadáver pisa la fila de la
+  publicación real cada ciclo. Es el síntoma "aparece pausado pero está activo"
+  (caso testigo `CUNA-0011-AZL`: la vieja `inactive/deleted` en ml_progress, la
+  real activa con 25 pzas en FULL y 134 vendidas, invisible);
+- **313 SKUs con venta en 30d sin publicación activa visible** ($3.08M), de los
+  cuales estas huérfanas explican 91;
+- **2,066 avisos de webhooks descartados en 3 días** ("item_id no está en
+  ml_progress") — 1 de cada 3 avisos de items.
+
+**Qué hace la bandera.** `sincronizar_ml` arma el lote de
+`/users/{uid}/items/search` (active+paused, paginación scan, universo cacheado
+30 min) con la MISMA rotación de siempre (lo nunca visto primero, luego lo más
+rancio). El SKU se resuelve del PROPIO item — nuevo `_sku_de_item()`:
+`seller_custom_field` → atributo `SELLER_SKU` → variaciones, con `ml_progress`
+de respaldo; sin SKU legible NO se escribe (se registra en el log). Las muertas
+simplemente ya no aparecen en el universo → dejan de pisar filas.
+
+**Verificado en seco contra ML real** (con `_upsert` interceptado, cero
+escrituras): el lote nuevo toma primero exactamente las huérfanas conocidas
+(TEC-0551-PLU, OFI-0076-NEG, MASC-0044-NEG…), resuelve su SKU del atributo y
+captura hasta el precio de lista (CAM-0005-NEG $1,350 sobre $3,000). Con la
+bandera apagada, lote idéntico al histórico.
+
+**Convivencia con la migración (pedido explícito de Eduardo):**
+- La fila que produce el modo nuevo es LA MISMA (ni una llave más): el espejo
+  `channel_mirror.espejar_inventario` no se tocó y el dual-write escribe ambos
+  lados en la misma pasada → las actas no ven diferencia (su comparador tampoco
+  incluye campos nuevos).
+- De los 570 SKUs que entrarían, **554 ya existen en core.products**; los 16
+  restantes (MUN-*/JUGU-*, publicados por fuera, nunca conocidos por el
+  maestro) entrarían como `draft/backend-dualwrite` — la costura diseñada para
+  identidades nuevas. Cero cambios de esquema, cero migraciones.
+- Los flags F5 de lectura (`SUPABASE_READ_*`) no se tocan.
+
+**Modo reporte** (paso 2 del plan): `backend/scripts/reporte_sync_desde_ml.py`
+— solo lectura, lista qué entra (con SKU resuelto), qué sale (muertas) y qué se
+omitiría. Corrida del 4-ago: entran 770 (517 vivas nuevas + 253 posiciones de
+muertas), salen 253, 10 sin SKU legible.
+
+**Plan de encendido**: bandera on con `SYNC_BATCH` reducido las primeras rondas
+(las ~138 filas nuevas entran repartidas) → 48 h vigilando actas del dominio
+channel → verificación: CUNA-0011-AZL muestra su publicación real y los 313
+bajan. Reversión: `SYNC_DESDE_ML=false`, sin deploy. **Nota para la transición
+a webhooks**: NO apagar el sondeo sin esta bandera encendida — el webhook
+descarta lo que no está en ml_progress y sin barrido ese punto ciego se vuelve
+invisible (la fase B, resolver el SKU también en el webhook, viene después de
+estabilizar esta). Versión 0.53.0.
+
+---
+
+### v0.54.0 — Capturar el costo desde Producto (y que el panel no mienta 15 min)
+
+Cierra lo que v0.51.0 dejó abierto. Ese cambio logró que los productos llegaran
+a Productos sin costo, pero **al llegar el campo Costo estaba bloqueado**: había
+que bajar al bloque COSTOS o irse a la vista de Costos. Tres arreglos:
+
+**1. El campo "Costo" del Estudio se edita y se guarda.** Va por el mismo
+escritor sancionado (`costos.recalcular` → `costos_validados` + `costos_finales`
++ Woo). Lo capturado ahí es el costo **TOTAL**: se guarda tal cual, sin sumarle
+un flete derivado de las dimensiones, para que el número guardado sea
+exactamente el tecleado. Para desglosar producto vs flete sigue estando el
+bloque COSTOS (costo USD + dims). Override nuevo `costo_unitario`.
+
+**2. Capturar costo ya NO exige categoría ML.** Antes, un producto sin categoría
+no tenía comisión, `calcular_pricing` devolvía `None` y **se perdía todo** — ni
+el costo se guardaba. Y como la regla de la casa es no inventar porcentajes
+("NADA de porcentaje fijo inventado"), la salida no era un fallback: ahora
+`recalcular` distingue los dos motivos de fallo. Sin costo base no hay nada que
+guardar; **sin comisión, el costo SÍ se registra** y la respuesta avisa
+*"Costo guardado. NO se calculó el precio: el producto no tiene categoría ML
+asignada"*. Separa capturar el costo de derivar el precio, que estaban soldados.
+
+**3. El cambio de estado se refleja al instante.** El precio y el costo de las
+listas ya se leían frescos de MySQL, pero el ÍNDICE del catálogo vive en caché
+con TTL de 15 min y **nada lo invalidaba**: un producto que cambiaba de estado
+tardaba hasta un cuarto de hora en aparecer en su pestaña (le pasó al destrabado
+de los 85). `woocommerce.actualizar_estado_en_cache()` parchea la fila —no
+invalida el índice, porque reconstruirlo por la vía API son ~90 requests contra
+un hosting que bloquea por volumen— y se llama al crear y al destrabar.
+
+**Correcciones al diagnóstico de v0.51.0** (señaladas por Lalo, verificadas):
+
+- El guard de costo **no dejaba el producto en `draft`**: lo dejaba en el estado
+  que ya tenía, y de los 34 bloqueados **25 ya habían sido creados antes**, o sea
+  estaban en `inprogress`. Eso revela que las dos fallas no eran independientes
+  sino un **círculo**: `inprogress` → se ve en Crear → se reintenta → el guard lo
+  rechaza → sigue en `inprogress`. Los cambios de v0.51.0 lo cortan en dos
+  puntos. (Y el "~67 atorados/semana" de esa entrada sobreestima: los conjuntos
+  se traslapan.)
+- **`alibaba_price` NO es fuente de costo.** Nadie lo lee para costear: solo se
+  muestra en el Estudio y está en la lista de EXCLUIDOS de `ml_atributos`. Es
+  traza. La afirmación de v0.51.0 de que "Apify guarda el costo en la tabla
+  equivocada" estaba mal planteada — ese precio nunca fue el costo.
+- Por lo mismo, **`_precio_alibaba_real()` no contamina el costeo**: sus valores
+  raros son ruido de visualización, no llegan a `costos_validados`. Se retira esa
+  advertencia de riesgo.
+
+Verificado: 5 casos de prueba del override y del guardado sin precio (lo tecleado
+manda, el flete no se re-suma, valores inválidos se ignoran, el costo persiste
+con aviso, y sin costo sigue devolviendo `None`). Versión 0.54.0.
+
+---
+
+
+### v0.59.1 — Barrido de cierre: una publicación borrada en ML ya no deja su fila congelada
+
+Complemento de SYNC_DESDE_ML (v0.53.0, encendido el 4-ago con dale de Eduardo).
+El universo consulta solo `active+paused`, así que cuando ML borra o cierra una
+publicación ésta SALE del universo y nadie volvería a preguntarle su estado: la
+fila quedaría congelada en el último valor visto — irónicamente, el sistema
+viejo sí la habría marcado muerta porque releía ml_progress sin filtrar.
+
+Ahora `_lote_desde_ml` detecta las filas que el panel cree vivas cuyo item ya
+no aparece en el catálogo y las suma al lote (tope 15 por ronda y cuenta): el
+detalle SÍ responde con el estado final (p. ej. `inactive/deleted`, caso
+CUNA-0011-AZL) y al escribirse dejan de cumplir el filtro — el barrido se
+auto-termina. Nunca frena la ronda normal (try/except alrededor).
+
+Verificado en seco simulando una fila congelada con el cadáver real de CUNA
+(`MLM2883075833`): el barrido lo tomó, leyó su estado en ML y produjo la fila
+`inactive` con SKU resuelto, sin escribir nada en la prueba. Backlog inicial en
+producción: 0 (la incorporación del 4-ago ya lo había limpiado) — la pieza es
+preventiva: con ella el estado activas/pausadas del panel pasa de "100%% exacto
+hoy" (auditoría de 150 publicaciones contra ML en vivo: 150/150) a 100%%
+sostenido. Auditable en el log: "barrido de cierre <cuenta>: N fila(s)…".
+Versión 0.59.1.
+
+### v0.60.0 — La sesión ya se renueva sola, y el panel es exclusivo de quien esté dado de alta
+
+Las dos piezas que faltaban para poder encender el enforcement sin romperle el
+día a nadie.
+
+**1. El token moría a la hora y nadie lo renovaba.** `lib/sesion.ts` guardaba el
+`refresh_token` desde el día uno y **nunca lo usaba**. El token de acceso de
+Supabase dura 1 hora: quien entrara a las 9:00 habría visto el panel dejar de
+responder a las 10:00, sin mensaje que lo explicara. Ahora hay dos redes:
+
+- Un **temporizador** que renueva 5 minutos antes de vencer (el caso normal).
+- Un **reintento ante un 401** en `lib/api.ts`: se renueva y se repite la
+  llamada UNA vez. Cubre lo que el temporizador no puede — la laptop durmió, el
+  navegador congeló la pestaña, el equipo ahorró batería.
+
+Y un candado `enVuelo` en la renovación, por la misma razón que el del backend:
+al despertar la laptop **todas** las peticiones pendientes fallan a la vez y
+pedirían renovar en paralelo. Supabase **rota** el token de refresco, así que la
+primera renovación invalida el de las demás — sin candado, cerraría la sesión de
+alguien que sí la tenía. También se re-verifica al volver el foco a la pestaña.
+
+Si la renovación falla por red, **no** se cierra sesión (se reintenta luego);
+solo un 400/401 del propio Supabase —refresco caducado o revocado— cierra.
+
+**2. El acceso es exclusivo de los dados de alta.** Antes, quien se autenticaba
+bien pero no tenía fila en `core.usuarios` entraba con rol `lectura`. Con Google
+encendido eso deja de ser aceptable: **cualquier cuenta del dominio** —un
+empleado nuevo, una cuenta de servicio— pasaría el filtro de Google y vería el
+panel. Ahora se rechaza.
+
+Con la distinción que hace que esto no sea peligroso: `_perfil_en_kubera`
+devuelve un tercer valor que separa **"la base contestó y no está en la lista"**
+(rechazar) de **"no se pudo consultar la base"** (NO rechazar, degradar al rol
+mínimo). Confundirlos costaría caro en las dos direcciones: por un lado dejaría
+entrar a cualquiera con correo de la empresa, por el otro convertiría un hipo de
+Supabase en una caída total del panel.
+
+Google prueba **quién** eres; que además te toque entrar lo decide
+`core.usuarios`. Dar de alta a alguien nuevo es agregar su fila.
+
+`humo_concurrencia.py` pasó de 21 a **27 pruebas** (dado de alta entra con su
+rol, sin fila rechazado, dado de baja rechazado, base caída no bloquea pero
+degrada). `humo_auth.py` sigue en 63. Versión 0.60.0.
+
+### v0.61.0 — "Continuar con Google": entrar sin teclear contraseña
+
+El correo de Kubera está en **Google Workspace** (verificado: el MX de
+`kubera.mx` apunta a `smtp.google.com` y el SPF incluye `_spf.google.com`), así
+que cada dirección `@kubera.mx` **ya es** una cuenta de Google. No es "entrar con
+un Gmail personal": es el correo de trabajo, el mismo que está en
+`core.usuarios`.
+
+**Lo que se gana no es comodidad, es control.** Se acaban las 11 contraseñas que
+había que repartir por canal privado, y dar de baja a alguien pasa a ser un solo
+movimiento: se cierra su cuenta de Workspace y queda fuera del panel. Si mañana
+activan verificación en dos pasos en Workspace, el panel la hereda gratis.
+
+**Quién decide qué.** Google prueba **quién** eres; que además te toque entrar lo
+decide `core.usuarios` en el backend (v0.60.0). Un correo del dominio que no esté
+dado de alta se rechaza — el frontend no es autoridad de nada.
+
+**El token viene en el fragmento de la URL** (`#access_token=…`) y se BORRA de la
+barra apenas se recoge. No es cosmética: el fragmento queda en el historial del
+navegador y se lo lleva cualquier captura de pantalla; un token ahí es una sesión
+prestada a quien tome la laptop.
+
+El botón va **arriba** del formulario de correo, que se conserva como respaldo.
+Si Google devuelve `access_denied` (la persona canceló) se dice tal cual, en vez
+de un error genérico.
+
+Un detalle de honestidad en el mensaje de error: cuando el backend no confirma el
+acceso, `quienSoy()` devuelve lo mismo si el correo no está dado de alta que si
+falló la red, y desde el navegador no se puede distinguir. Por eso el mensaje NO
+afirma la causa — decirle "no tienes acceso" a alguien que sí lo tiene manda a
+soporte a buscar donde no es.
+
+**Configuración necesaria fuera del código:** proveedor Google habilitado en
+Supabase (proyecto `tukwcvsitthplhswsblt`), consent screen de Google Cloud en
+**Interno**, y el dominio del panel en Authentication → **URL Configuration** —
+sin eso Supabase se niega a devolver al usuario después de Google. Versión 0.61.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas
@@ -3612,3 +4242,81 @@ pierda. Versión 0.50.1.
 ---
 
 *Hecho para Kubera — panel omnicanal sobre WooCommerce.*
+
+### v0.62.0 — Walmart MX: el lote del 4-ago no había publicado NADA, y ya sabemos por qué
+
+El forense de los **88 feeds** de la cuenta arrojó un número incómodo: **cero
+items exitosos**. Ni el 31-jul ni el 4-ago. `GET /v3/items` daba 404 no porque
+Walmart tardara en publicar, sino porque nada pasó jamás la validación.
+
+**El "9 feeds sin fallos" era un bug nuestro.** `publicar()` sondeaba 8 ciclos de
+14 s y, si Walmart seguía procesando, devolvía `INPROGRESS` — que el resumen
+contaba como aceptado. Ahora `INPROGRESS` significa "sin veredicto" y el estado
+real se consulta en una pasada aparte, al final de la corrida.
+
+**La causa raíz nº1 era el TIEMPO, no el formato.** Ocho rechazos decían *"We
+couldn't download the image, because the URL isn't in the correct format"*. Pero
+las URLs son ASCII puro, terminan en `.jpg`, van por HTTPS y responden 200 con
+ocho User-Agents distintos (curl, Java, Apache-HttpClient, bot, Chrome), con HEAD
+y con Range. Lo que las mataba es otra cosa: las imágenes de `MASC-0033` se
+subieron a WordPress a las **16:25:26 UTC** y el feed salió a las **16:25:28** —
+dos segundos después, cuando el CDN de Hostinger todavía no las servía. Es la
+regla de la casa nº5 (LiteSpeed cachea chunche.shop) pegando desde el otro lado.
+
+El publicador ahora va en **cuatro fases**: preparar todas las imágenes, esperar
+la propagación, **revalidar cada URL contra el servidor público**, y recién
+entonces publicar — en tandas de 8 con descanso, porque la cuota es el cuello de
+botella real y el 4-ago se comió 11 disfraces que ni alcanzaron a salir.
+
+**El esquema oficial es público y nadie lo sabía.**
+`https://developer.walmart.com/file/mp/mx/MX_MP_ITEM_INTL_SPEC.json` — 3.9 MB,
+HTTP 200 sin credenciales. Trae los 75 `subCategory`, los 75 grupos `Visible` con
+su etiqueta en español y la lista `required` de cada uno. Ahí se confirmó que
+`mart`, `locale` y `sellingChannel` son enums de **un solo valor**: `WALMART_MX`
+y `es_MX` nunca iban a funcionar. Antes de sondear con feeds de prueba, leer ese
+archivo.
+
+**Segunda categoría abierta**: `home_other` con clave `Visible` "Cocina,
+Decoración y Otros", exención folio **15751007**. Y con ella una trampa nueva: el
+esquema publicado es de la versión **3.19** y nosotros mandamos **3.11**, así que
+sus `required` NO son los mismos. La categoría de cocina rechazó tres artículos
+pidiendo `Talla` y `Género`, que el esquema dice que esa categoría no pide. Se
+agregaron y pasaron. Corolario útil: si Walmart se queja de solo dos o tres
+atributos, la categoría está bien; el síntoma de categoría equivocada es una
+lluvia de atributos absurdos.
+
+**La clave del SAT estaba mal.** `53102700` es "Uniformes", no ropa genérica.
+Disfraces usa ahora `60141401` "Disfraces o accesorios", verificada contra el
+catálogo oficial del SAT (52,513 claves). Cada categoría lleva la suya.
+
+Se agregó `--categoria`, `--skus` y `--espera` al publicador, y una lista
+`EXCLUIDOS` que documenta en el código por qué un SKU no se manda, para no
+volver a gastarle cuota ni a redescubrir el motivo.
+
+### v0.63.0 — Walmart MX por LOTE: 40 productos dejaron de ser 40 llamadas
+
+Se estaba mandando **un artículo por feed**. Y `MPItem` es un **array** que
+admite **10,000 artículos / 10 MB** por feed. Ese detalle, que estaba en la
+documentación desde el principio, es el que explica todos los cortes por cuota:
+`REQUEST_THRESHOLD_VIOLATED` **cuenta llamadas, no artículos**.
+
+El 4-ago la cuota se comió 11 disfraces que nunca salieron. El 5-ago, con tandas
+de 8 y 15 s entre productos, se volvió a comer 6 en el artículo número 13. No era
+cuestión de esperar más entre envíos: era mandar de a uno.
+
+**Medido**: cada artículo pesa ~2.6 KB ya serializado, así que en un feed de
+9 MB caben **~3,500 artículos**. Los 12 pendientes de "Cocina, Decoración y
+Otros" salieron en **1 llamada de 31 KB**, y los 6 disfraces que la cuota había
+rechazado, en otra. Dieciocho envíos convertidos en dos.
+
+**No se pierde granularidad.** Walmart valida artículo por artículo aunque vayan
+cientos juntos: un dato malo en uno NO tumba a los demás.
+`GET /v3/feeds/{feedId}?includeDetails=true` devuelve el estado y el error
+**por SKU**, así que la fase 4 ahora consulta el feed y va marcando cuáles
+pasaron y cuáles no, en rondas, hasta que Walmart resuelve o se acaban las
+rondas. Al final imprime los `feedId` de la corrida para poder volver a
+consultarlos después sin adivinar.
+
+`_armar()` se partió en dos: `_item()` arma una entrada de `MPItem` y `_sobre()`
+arma el envoltorio con todas adentro. Flags nuevos: `--lote` (artículos por
+feed, 200 por omisión) y `--rondas` (cuántas veces preguntar el veredicto).

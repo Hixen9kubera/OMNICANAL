@@ -372,7 +372,12 @@ async def listar_candidatos_agrupados(
     if skus_filtro:
         # Cada término separado por coma actúa como FILTRO y BUSCADOR a la vez:
         # matchea por coincidencia parcial en la base, el SKU o el nombre.
-        terminos = [s.strip().upper() for s in skus_filtro if s.strip()]
+        #
+        # El índice solo tiene productos PADRE, y el match es "término ⊆ SKU":
+        # una variante (`ACC-0069-ROS-2XL`) nunca cabe en su padre (`ACC-0069`).
+        # Se traduce cada variante a su padre por estructura antes de filtrar.
+        expandidos, _ = await asyncio.to_thread(wp_db.expandir_con_padres, list(skus_filtro))
+        terminos = [s.strip().upper() for s in expandidos if s.strip()]
 
         def _match(g: dict[str, Any]) -> bool:
             for t in terminos:

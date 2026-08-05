@@ -336,7 +336,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         setCampos((prev) => ({
           precioRegular: preciosTocados.current ? prev.precioRegular : str(d.precio_regular),
           precioOferta: preciosTocados.current ? prev.precioOferta : str(d.precio_oferta),
-          costo: str(d.costo),
+          costo: preciosTocados.current ? prev.costo : str(d.costo),
           alibabaUrl: m.alibaba_url ?? "",
           alibabaPrecio: str(m.alibaba_precio),
           peso: str(d.peso), largo: str(d.largo), ancho: str(d.ancho), alto: str(d.alto),
@@ -478,9 +478,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   }, [gtin, gtinGuardado, meta?.wc_id, producto?.wc_id]);
 
   const setCampo = (k: keyof Campos, v: string) => {
-    if (k === "precioRegular" || k === "precioOferta") {
+    if (k === "precioRegular" || k === "precioOferta" || k === "costo") {
       preciosTocados.current = true;   // protege lo tecleado del fetch de metadata
-      setPreciosEditados(true);        // y saca el botón "Guardar precios"
+      setPreciosEditados(true);        // y saca el botón de guardar
     }
     setCampos((c) => ({ ...c, [k]: v }));
   };
@@ -651,14 +651,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     try {
       const r = await costoGuardar(sku, {
         ...overridesCosto(),
+        // El costo escrito aquí es el TOTAL y manda sobre producto+flete.
+        costo_unitario: numOrNull(campos.costo),
         precio_base: numOrNull(campos.precioRegular),
         precio_sugerido: numOrNull(campos.precioOferta),
         sincronizar_woo: true,
       });
-      const f = r.finales as Record<string, unknown>;
+      const f = (r.finales ?? {}) as Record<string, unknown>;
       const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
       const merged: Partial<CostoCalculo> = {
         ...(costoCalc ?? {}),
+        costo_unitario: num(f.costo_unitario),
         costo_comision: num(f.costo_comision),
         costo_fee_envio: num(f.costo_fee_envio),
         precio_base: num(f.precio_base),
@@ -668,17 +671,23 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       preciosTocados.current = false;
       setPreciosEditados(false);
       sincronizarCampos(merged);
-      setPrecioMsg({
-        ok: true,
-        texto: r.sincronizado_woo
-          ? "Precio guardado y sincronizado con WooCommerce."
-          : "Precio guardado (no se pudo sincronizar con WooCommerce).",
-      });
+      // Se guardó el costo pero NO se pudo derivar el precio (casi siempre:
+      // falta la categoría ML). No es error — se avisa para que se asigne.
+      if (r.sin_precio) {
+        setPrecioMsg({ ok: false, texto: r.aviso ?? "Costo guardado, pero falta la categoría ML para calcular el precio." });
+      } else {
+        setPrecioMsg({
+          ok: true,
+          texto: r.sincronizado_woo
+            ? "Guardado y sincronizado con WooCommerce."
+            : "Guardado (no se pudo sincronizar con WooCommerce).",
+        });
+      }
       onGuardado?.();
-    } catch {
+    } catch (e) {
       setPrecioMsg({
         ok: false,
-        texto: "No se pudo guardar el precio. Si el SKU aún no tiene costo capturado, regístralo primero en COSTOS.",
+        texto: mensajeDeError(e, "No se pudo guardar. Revisa el costo (debe ser mayor a 0)."),
       });
     } finally {
       setGuardandoPrecios(false);
@@ -1446,12 +1455,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               )}
 
               {/* PRECIOS + COSTO + STOCK.
-                  Los dos precios SÍ se editan aquí y "Guardar precios" los
-                  persiste (costos_finales + WooCommerce, mismo escritor que
-                  COSTOS). El precio a mano manda sobre el derivado del costo
-                  hasta que alguien pulse Regenerar abajo.
-                  Costo y Stock son espejo: el costo se edita en COSTOS ↓ como
-                  "Costo producto (USD)"; el stock lo manda Woo. */}
+                  Precio regular, precio oferta y COSTO se editan aquí y
+                  "Guardar precio y costo" los persiste (costos_validados +
+                  costos_finales + WooCommerce, el mismo escritor que COSTOS).
+                  Lo escrito a mano manda sobre lo derivado hasta que alguien
+                  pulse Regenerar abajo.
+                  El costo capturado aquí es el TOTAL (producto + flete); para
+                  desglosarlo está el bloque COSTOS ↓ (costo USD + dimensiones).
+                  Si el producto aún no tiene categoría ML, el costo se guarda
+                  igual y se avisa que el precio no se pudo derivar — antes eso
+                  era un 422 y no se podía capturar nada.
+                  Stock sigue siendo espejo: lo manda Woo. */}
               <section className="space-y-3">
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                   <Campo label="Precio regular" prefijo="$" value={campos.precioRegular}
@@ -1459,8 +1473,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                     nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`} />
                   <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta}
                     onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
-                  <Campo label="Costo" prefijo="$" value={campos.costo} soloLectura acento={tema.acento}
-                    nota="Se cambia en COSTOS ↓" />
+                  <Campo label="Costo" prefijo="$" value={campos.costo}
+                    onChange={(v) => setCampo("costo", v)} acento={tema.acento}
+                    nota="Costo unitario total" />
                   <div>
                     <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
                       Stock <span className="normal-case text-slate-300">(solo lectura)</span>
@@ -1485,7 +1500,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                         style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
                       >
                         {guardandoPrecios ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
-                        {guardandoPrecios ? "Guardando…" : "Guardar precios"}
+                        {guardandoPrecios ? "Guardando…" : "Guardar precio y costo"}
                       </button>
                     )}
                     {precioMsg ? (
@@ -1495,7 +1510,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                       </div>
                     ) : (
                       <p className="mt-1.5 text-center text-[11px] text-amber-700">
-                        Cambiaste el precio: sin guardar, <strong>se publica el anterior</strong>.
+                        Cambiaste precio o costo: sin guardar, <strong>no se aplica</strong>.
                       </p>
                     )}
                   </div>

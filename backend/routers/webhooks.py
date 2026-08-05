@@ -288,20 +288,36 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
 
 @router.post("/ml")
 async def recibir_ml(request: Request, background: BackgroundTasks):
-    """Recibe la notificación de Mercado Libre. Responde 200 de inmediato."""
-    # Si el registro está pausado, respondemos 200 pero NO guardamos ni procesamos.
-    if not _registro_activo:
-        return {"ok": True, "registro": "pausado"}
+    """
+    Recibe la notificación de Mercado Libre. Responde 200 de inmediato.
+
+    GUARDA ABSOLUTA: pase lo que pase aquí dentro, a ML se le responde 200.
+    Si le devolvemos otra cosa, reintenta con backoff durante 1 hora y después
+    DESHABILITA el topic — y a partir de ese momento se dejan de capturar
+    ventas reales sin que aparezca ningún error. El síntoma es silencioso: solo
+    dejan de entrar pedidos.
+
+    Por eso el cuerpo entero va dentro de un try. Un fallo de MySQL, de Supabase
+    o del parseo se registra en logs, pero NUNCA cambia la respuesta.
+    """
     try:
-        payload = await request.json()
-    except Exception:  # noqa: BLE001
-        payload = {}
-    evento_id = _guardar("mercado_libre", payload.get("topic"),
-                         payload.get("resource"), payload.get("user_id"))
-    # Procesar aparte para responder rápido (ML reintenta si tardas). El espejo
-    # idempotente a Supabase ocurre dentro del background por la misma razón.
-    background.add_task(_procesar_ml, evento_id, payload)
-    return {"ok": True}
+        # Si el registro está pausado, respondemos 200 pero NO guardamos ni procesamos.
+        if not _registro_activo:
+            return {"ok": True, "registro": "pausado"}
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            payload = {}
+        evento_id = _guardar("mercado_libre", payload.get("topic"),
+                             payload.get("resource"), payload.get("user_id"))
+        # Procesar aparte para responder rápido (ML reintenta si tardas). El espejo
+        # idempotente a Supabase ocurre dentro del background por la misma razón.
+        background.add_task(_procesar_ml, evento_id, payload)
+        return {"ok": True}
+    except Exception:  # noqa: BLE001 — jamás propagar: ver GUARDA ABSOLUTA
+        log.exception("Fallo recibiendo el webhook de ML; se responde 200 igual "
+                      "para no perder la notificación por reintentos agotados.")
+        return {"ok": True, "nota": "error registrado en logs"}
 
 
 @router.api_route("/pausar", methods=["GET", "POST"], dependencies=[Depends(requiere_api_key)])

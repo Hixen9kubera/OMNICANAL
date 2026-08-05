@@ -1,7 +1,22 @@
 // api.ts — Cliente del backend FastAPI.
 
+import { haySesion, refrescar, token } from "./sesion";
+
 import type {
   CanalInfo,
+  CompetenciaCorrida,
+  CompetenciaDetalle,
+  CompetenciaEstado,
+  CompetenciaSku,
+  CompetenciaTabla,
+  CompetenciaVista,
+  CompetenciaDetalleSku,
+  CompetenciaTerminosSub,
+  CompetenciaSkusSub,
+  CompetenciaSugerenciaSub,
+  CompetenciaSugerenciaSku,
+  CompetenciaTopCategoria,
+  RankingCategoriaResp,
   CompetenciaResp,
   CategoriaMLResult,
   ContenedorInfo,
@@ -73,12 +88,47 @@ export function mensajeDeError(e: unknown, respaldo: string): string {
   return e instanceof ApiError && e.detail ? e.detail : respaldo;
 }
 
+/**
+ * Cabeceras de toda llamada al backend, con el token de sesión si lo hay.
+ *
+ * Se exporta porque en el archivo quedan `fetch()` sueltos que no pasan por
+ * estos ayudantes; todos deben usar esto o se romperán el día que se encienda
+ * el enforcement (AUTH_ENFORCED=true).
+ */
+export function cabeceras(extra: Record<string, string> = {}): Record<string, string> {
+  const h: Record<string, string> = { Accept: "application/json", ...extra };
+  const t = token();
+  if (t) h.Authorization = `Bearer ${t}`;
+  return h;
+}
+
+/**
+ * `fetch` que sobrevive a un token vencido.
+ *
+ * El token de Supabase dura 1 hora y `lib/sesion.ts` lo renueva solo con un
+ * temporizador. Esta es la SEGUNDA red: si aun así llega un 401 —la laptop
+ * durmió, el navegador congeló la pestaña, el reloj se fue— se renueva y se
+ * reintenta UNA vez. Sin esto, el usuario ve un error y pierde lo que estaba
+ * haciendo por algo que se arregla solo en 300 ms.
+ *
+ * Una sola vez, nunca en bucle: si el segundo intento también da 401, el
+ * problema no es el token y hay que dejar que el error suba.
+ */
+async function fetchSesion(url: string, init: RequestInit,
+                           extra: Record<string, string> = {}): Promise<Response> {
+  const armar = (): RequestInit => ({ ...init, headers: cabeceras(extra) });
+  const res = await fetch(url, armar());
+  if (res.status !== 401 || !haySesion()) return res;
+  if (!(await refrescar())) return res;
+  return fetch(url, armar());
+}
+
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await fetchSesion(
+    `${BASE}${path}`,
+    { method: "POST", body: JSON.stringify(body) },
+    { "Content-Type": "application/json" },
+  );
   if (!res.ok) throw await errorDeRespuesta(res, path);
   return res.json() as Promise<T>;
 }
@@ -87,11 +137,7 @@ const BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://127.0.0.1:8000";
 
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    signal,
-    headers: { Accept: "application/json" },
-    cache: "no-store",
-  });
+  const res = await fetchSesion(`${BASE}${path}`, { signal, cache: "no-store" });
   if (!res.ok) {
     throw await errorDeRespuesta(res, path);
   }
@@ -310,7 +356,7 @@ export async function sincronizarDrafts(
 ): Promise<SincronizarDraftsResp> {
   const res = await fetch(`${BASE}/api/crear/drafts/sincronizar?limite=${limite}`, {
     method: "POST",
-    headers: { Accept: "application/json" },
+    headers: cabeceras(),
   });
   if (!res.ok) {
     let detalle = `API ${res.status}`;
@@ -366,7 +412,7 @@ export async function crearProductos(
 ): Promise<CrearProductosResp> {
   const res = await fetch(`${BASE}/api/crear/productos`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: cabeceras({ "Content-Type": "application/json" }),
     body: JSON.stringify({ items, permitir_sin_costo: permitirSinCosto }),
   });
   if (!res.ok) {
@@ -436,7 +482,7 @@ export interface GenerarIAParams {
 export async function generarIA(p: GenerarIAParams): Promise<GenerarIAResp> {
   const res = await fetch(`${BASE}/api/ia/generar`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: cabeceras({ "Content-Type": "application/json" }),
     body: JSON.stringify(p),
   });
   if (!res.ok) throw new Error(`Generación IA falló: ${res.status}`);
@@ -599,4 +645,160 @@ export function guardarTipoAmazon(
   return postJSON(`/api/publicar/amazon/tipo`, {
     sku, wc_id: wcId, product_type: productType,
   });
+}
+
+// ── Competencia (Mercado Libre) ──────────────────────────────────────
+// Los GET leen la foto guardada del mes (SQLite local). La corrida real la
+// dispara el cron mensual de Railway; correrCompetencia() es para probar a mano
+// y gasta Apify (~$1 USD por SKU).
+
+export function estadoCompetencia(signal?: AbortSignal) {
+  return getJSON<CompetenciaEstado>("/api/competencia/estado", signal);
+}
+
+/**
+ * Tabla por SKU. `agrupar` por defecto es la categoría RAÍZ del path
+ * ("Accesorios para Vehículos"); `categoria_nombre` agrupa por la última.
+ * `canal` separa Mercado Libre de Amazon.
+ */
+export function tablaCompetencia(
+  agrupar = "raiz_nombre",
+  canal = "mercado_libre",
+  signal?: AbortSignal,
+) {
+  return getJSON<CompetenciaTabla>(
+    `/api/competencia/tabla?agrupar=${agrupar}&canal=${canal}`,
+    signal,
+  );
+}
+
+/** Top de más vendidos de una categoría. `nivel` es 'raiz' u 'hoja'. */
+/** El árbol completo del tab: raíz → subcategorías → nuestros SKUs, de un GET. */
+export function vistaCompetencia(canal = "mercado_libre", signal?: AbortSignal) {
+  return getJSON<CompetenciaVista>(`/api/competencia/vista?canal=${canal}`, signal);
+}
+
+/** Lo que se abre al hacer clic en un SKU: términos populares + competencia directa. */
+export function detalleSkuCompetencia(sku: string, signal?: AbortSignal) {
+  return getJSON<CompetenciaDetalleSku>(
+    `/api/competencia/sku/${encodeURIComponent(sku)}`,
+    signal,
+  );
+}
+
+/** Todos nuestros SKUs de una categoría con su barra por tienda. */
+export function skusSubcategoria(categoriaId: string, signal?: AbortSignal) {
+  return getJSON<CompetenciaSkusSub>(
+    `/api/competencia/subcategoria/${encodeURIComponent(categoriaId)}/skus`,
+    signal,
+  );
+}
+
+/** Barra de términos de una subcategoría: qué se busca ahí y qué cubrimos. */
+export function terminosSubcategoria(categoriaId: string, signal?: AbortSignal) {
+  return getJSON<CompetenciaTerminosSub>(
+    `/api/competencia/subcategoria/${encodeURIComponent(categoriaId)}/terminos`,
+    signal,
+  );
+}
+
+/** Palabras clave que la IA sugiere para toda la subcategoría. */
+export function sugerirSubcategoria(categoriaId: string) {
+  return postJSON<CompetenciaSugerenciaSub>(
+    `/api/competencia/subcategoria/${encodeURIComponent(categoriaId)}/sugerir`,
+    {},
+  );
+}
+
+/** Palabras y títulos que la IA sugiere para un SKU, por tienda. */
+export function sugerirSku(sku: string) {
+  return postJSON<CompetenciaSugerenciaSku>(
+    `/api/competencia/sku/${encodeURIComponent(sku)}/sugerir`,
+    {},
+  );
+}
+
+export function rankingCategoria(
+  categoriaId: string,
+  nivel?: "raiz" | "hoja",
+  limite = 10,
+  signal?: AbortSignal,
+) {
+  const q = nivel ? `&nivel=${nivel}` : "";
+  return getJSON<RankingCategoriaResp>(
+    `/api/competencia/ranking-categoria?categoria_id=${encodeURIComponent(categoriaId)}${q}&limite=${limite}`,
+    signal,
+  );
+}
+
+/** Raspa los más vendidos de la raíz y la hoja de cada SKU vigilado. */
+export function capturarRankingsCompetencia() {
+  return postJSON<{
+    ok: boolean;
+    categorias: number;
+    con_datos: number;
+    avisos: string[];
+  }>("/api/competencia/rankings", {});
+}
+
+export function detalleCompetencia(sku: string, tipo?: string, signal?: AbortSignal) {
+  const q = tipo ? `&tipo=${tipo}` : "";
+  return getJSON<CompetenciaDetalle>(
+    `/api/competencia/detalle?sku=${encodeURIComponent(sku)}${q}`,
+    signal,
+  );
+}
+
+/** Los más vendidos de la categoría del SKU (ranking oficial de ML). */
+export function topCategoriaCompetencia(sku: string, limite = 10, signal?: AbortSignal) {
+  return getJSON<CompetenciaTopCategoria>(
+    `/api/competencia/top-categoria?sku=${encodeURIComponent(sku)}&limite=${limite}`,
+    signal,
+  );
+}
+
+export function skusCompetencia(signal?: AbortSignal) {
+  return getJSON<{ skus: CompetenciaSku[] }>("/api/competencia/skus", signal);
+}
+
+export function sembrarCompetencia(skus: string[], con_ia = true) {
+  return postJSON<{ ok: boolean; guardados: number }>(
+    "/api/competencia/sembrar",
+    { skus, con_ia },
+  );
+}
+
+/** Corrige el término general; queda 'manual' y la IA no lo vuelve a pisar. */
+export async function corregirTerminoCompetencia(sku: string, termino_general: string) {
+  const res = await fetch(`${BASE}/api/competencia/skus/${encodeURIComponent(sku)}`, {
+    method: "PATCH",
+    headers: cabeceras({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ termino_general }),
+  });
+  if (!res.ok) throw new Error(`API ${res.status}: corregir término`);
+  return (await res.json()) as { ok: boolean; sku: string; termino_general: string };
+}
+
+export function correrCompetencia(skus?: string) {
+  const q = skus ? `?skus=${encodeURIComponent(skus)}` : "";
+  return postJSON<{ ok: boolean; estado: string }>(`/api/competencia/correr${q}`, {});
+}
+
+/** Refresca las visitas de NUESTRAS publicaciones (API de ML, gratis). */
+export function refrescarVisitasPropias(skus?: string) {
+  const q = skus ? `?skus=${encodeURIComponent(skus)}` : "";
+  return postJSON<{
+    ok: boolean;
+    skus: number;
+    publicaciones: number;
+    con_visitas: number;
+    sin_dato: string[];
+  }>(`/api/competencia/visitas-propias${q}`, {});
+}
+
+export function corridaCompetencia(signal?: AbortSignal) {
+  return getJSON<{
+    ultima: CompetenciaCorrida | null;
+    en_curso: { estado: string; error?: string | null };
+  }>("/api/competencia/corrida", signal);
 }

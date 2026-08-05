@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import CatalogoSync from "@/components/CatalogoSync";
+import SesionGuard from "@/components/SesionGuard";
 
 export const metadata: Metadata = {
   title: "OMNICANAL · Kubera",
@@ -16,8 +17,13 @@ export default function RootLayout({
   return (
     <html lang="es">
       <body>
-        <CatalogoSync />
-        {children}
+        {/* Envuelve TODAS las páginas: así no hay que acordarse de proteger
+            cada una. Mientras la autenticación esté en observación no bloquea
+            a nadie — lo decide el backend, no el frontend. */}
+        <SesionGuard>
+          <CatalogoSync />
+          {children}
+        </SesionGuard>
       </body>
     </html>
   );

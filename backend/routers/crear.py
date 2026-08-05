@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from config import settings
+from core.seguridad import requiere_api_key
 from models.schemas import Paginacion, Producto, RespuestaProductos
 from services import (alertas, costing_read, costos, creacion, crear_producto, db,
                       lecturas_fuente, woocommerce)
@@ -115,9 +116,16 @@ async def candidatos(
         tiene_anterior=page > 1,
         tiene_siguiente=page < total_pages,
     )
+    # `completo` = "ya no falta índice por construir", y el panel reintenta cada
+    # 4 s mientras sea false. Con MySQL el listado se lee FRESCO y completo en
+    # cada carga (creacion.listar_candidatos_agrupados), pero se seguía
+    # reportando drafts_completo(), que solo lo enciende el escaneo por API —
+    # escaneo que con MySQL nunca corre. Resultado: false para siempre, o sea
+    # "Preparando el catálogo…" y recarga infinita (reporte del 5-ago).
+    from services import wp_db
     return RespuestaProductos(
         canal=_CANAL_CREAR, items=items, paginacion=paginacion,
-        completo=woocommerce.drafts_completo(),
+        completo=True if wp_db.disponible() else woocommerce.drafts_completo(),
     )
 
 
@@ -131,8 +139,9 @@ class CrearItem(BaseModel):
 
 class CrearRequest(BaseModel):
     items: list[CrearItem]
-    # Opt-in del panel: crear aunque el SKU no tenga costo/precio (queda en
-    # `inprogress`, el precio se captura a mano después en el Estudio).
+    # VESTIGIAL desde el 4-ago: crear sin costo ya es el comportamiento normal
+    # (todo termina en `pending`), así que este flag ya no cambia nada. Se sigue
+    # aceptando para no romper llamadas existentes.
     permitir_sin_costo: bool = False
 
 
@@ -158,9 +167,23 @@ async def crear_productos(req: CrearRequest):
         "encolados": encolados,
         "mensaje": (
             f"{encolados} producto(s) en proceso: Alibaba → IA → imágenes → "
-            "categoría ML → WooCommerce (inprogress). Sigue el avance en esta vista."
+            "categoría ML → WooCommerce. Al terminar aparecen en Productos "
+            "(pending), tengan costo o no. Sigue el avance en esta vista."
         ),
     }
+
+
+@router.post("/destrabar", dependencies=[Depends(requiere_api_key)])
+async def destrabar(aplicar: bool = False, max_items: int = 500):
+    """
+    Saca de `inprogress` los productos atorados y los pasa a `pending`.
+
+    Limpieza del limbo que se acumuló mientras `inprogress` era un desenlace
+    posible: son productos YA procesados (scrape, imágenes, categoría) a los que
+    solo les quedó mal la etiqueta, así que no se re-scrapea nada.
+    Por defecto es SIMULACRO: dice qué movería. Con `aplicar=true` lo hace.
+    """
+    return await crear_producto.destrabar_inprogress(aplicar, max_items)
 
 
 @router.get("/progreso")
@@ -475,6 +498,9 @@ class RecalcularCostos(BaseModel):
     """Overrides editables para el recálculo manual del costo/precio."""
     costo_producto: float | None = None
     costo_cbm: float | None = None
+    # Costo TOTAL a mano (campo "Costo" del Estudio): manda sobre producto+flete
+    # y se guarda tal cual — lo que se teclea es el costo.
+    costo_unitario: float | None = None
     largo: float | None = None
     alto: float | None = None
     ancho: float | None = None
@@ -709,7 +735,16 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
         req.incluir_envio, req.margen, costos.DEFAULT_ACCOUNT, req.auto_cbm)
     if not fila:
         raise HTTPException(
-            422, "No se pudo recalcular: falta el costo (costo producto/dimensiones), o no hay comisión para la categoría — ingresa la Comisión ML (%).")
+            422, "No se pudo guardar: falta el costo (costo producto/dimensiones).")
+    # Costo guardado pero SIN precio derivado (casi siempre: el producto todavía
+    # no tiene categoría ML, y aquí no se inventa una comisión). No es un error:
+    # el costo quedó registrado. Se avisa para que se asigne la categoría.
+    if fila.get("sin_precio"):
+        return {"ok": True, "sku": sku, "finales": fila,
+                "sincronizado_woo": False, "sin_precio": True,
+                "aviso": (f"Costo guardado. NO se calculó el precio: "
+                          f"{fila.get('motivo_sin_precio')}. Asígnale la categoría "
+                          f"y vuelve a guardar para derivarlo.")}
     # El costo YA está en la base. Si el empuje a Woo falla, se reporta — pero no
     # se convierte en un 500 que haga creer que no se guardó nada (pasó el 3-ago
     # con CAM-0030-MAT: 404 de Woo → 500 → "no se pudo guardar" con el dato ya
@@ -877,7 +912,15 @@ async def costos_bulk(req: BulkCostos):
             continue
         if not fila:
             resultados.append({"sku": it.sku, "ok": False,
-                               "error": "sin costo base o sin comisión de categoría (ingresar Comisión %)"})
+                               "error": "sin costo base (revisa costo producto/dimensiones)"})
+            continue
+        # Costo guardado sin precio: no es fallo, pero no hay qué sincronizar a
+        # Woo (no existe precio) y el usuario debe saber por qué.
+        if fila.get("sin_precio"):
+            resultados.append({"sku": it.sku, "ok": True, "sincronizado_woo": False,
+                               "sin_precio": True,
+                               "aviso": f"Costo guardado sin precio: {fila.get('motivo_sin_precio')}",
+                               "costo_unitario": fila.get("costo_unitario")})
             continue
         synced = False
         if req.sincronizar_woo:

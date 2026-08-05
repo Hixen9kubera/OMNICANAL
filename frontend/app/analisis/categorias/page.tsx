@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, Loader2, Search } from "lucide-react";
+import { ChevronRight, Loader2, Search, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import Ayuda from "@/components/Ayuda";
 
@@ -165,6 +165,10 @@ function Kpi({ label, value, pie }: { label: string; value: string; pie?: string
 export default function CategoriasPage() {
   const [cuenta, setCuenta] = useState("");
   const [dias, setDias] = useState(60);
+  // Período ABSOLUTO (X a X): si hay fechas, mandan sobre los botones de días.
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const rangoActivo = Boolean(desde || hasta);
   const [datos, setDatos] = useState<Resp | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -178,13 +182,15 @@ export default function CategoriasPage() {
     setAbiertas(new Set()); setPubs({});
     const q = new URLSearchParams({ dias: String(dias) });
     if (cuenta) q.set("cuenta", cuenta);
+    if (desde) q.set("desde", desde);
+    if (hasta) q.set("hasta", hasta);
     fetch(`${API_BASE}/api/fulfillment/categorias?${q}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.detail ?? r.status))))
       .then((d: Resp) => { if (vivo) setDatos(d); })
       .catch((e) => { if (vivo) setError(String(e)); })
       .finally(() => { if (vivo) setCargando(false); });
     return () => { vivo = false; };
-  }, [cuenta, dias]);
+  }, [cuenta, dias, desde, hasta]);
 
   /* La búsqueda filtra por la RUTA completa: "caminadora" encuentra la hoja
      Caminadoras aunque cuelgue 4 niveles abajo, y "deportes" trae la rama
@@ -218,6 +224,8 @@ export default function CategoriasPage() {
       setPubs((p) => ({ ...p, [id]: "cargando" }));
       const q = new URLSearchParams({ categoria_id: id, dias: String(dias) });
       if (cuenta) q.set("cuenta", cuenta);
+      if (desde) q.set("desde", desde);
+      if (hasta) q.set("hasta", hasta);
       fetch(`${API_BASE}/api/fulfillment/categorias/publicaciones?${q}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((d) => setPubs((p) => ({ ...p, [id]: d.items ?? [] })))
@@ -243,15 +251,34 @@ export default function CategoriasPage() {
         </div>
         <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
           {PERIODOS.map((p) => (
-            <button key={p.dias} onClick={() => setDias(p.dias)}
+            <button key={p.dias} onClick={() => { setDias(p.dias); setDesde(""); setHasta(""); }}
                     className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                      dias === p.dias
+                      dias === p.dias && !rangoActivo
                         ? "bg-slate-900 font-semibold text-white"
                         : "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}>
               {p.label}
             </button>
           ))}
         </div>
+        {/* Período absoluto (X a X): manda sobre los botones de días */}
+        <div className={`flex items-center gap-1.5 rounded-xl border p-1.5 shadow-sm ${
+          rangoActivo ? "border-slate-900 bg-white" : "border-slate-200 bg-white"}`}>
+          <input type="date" value={desde} max={hasta || undefined}
+                 onChange={(e) => setDesde(e.target.value)}
+                 className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
+          <span className="text-xs text-slate-400">a</span>
+          <input type="date" value={hasta} min={desde || undefined}
+                 onChange={(e) => setHasta(e.target.value)}
+                 className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
+          {rangoActivo && (
+            <button onClick={() => { setDesde(""); setHasta(""); }}
+                    title="Volver a los períodos relativos"
+                    className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        {/* La descarga a Excel vive en Análisis → Reportes (Eduardo, 05-ago) */}
       </div>
 
       {error && (
@@ -269,7 +296,9 @@ export default function CategoriasPage() {
         <>
           <div className="grid grid-cols-3 gap-3">
             <Kpi label="Ventas del período" value={fMoney(t?.venta)}
-                 pie={PERIODOS.find((p) => p.dias === dias)?.label} />
+                 pie={rangoActivo
+                   ? `${(datos as Resp & { desde?: string }).desde ?? desde} → ${(datos as Resp & { hasta?: string }).hasta ?? hasta}`
+                   : PERIODOS.find((p) => p.dias === dias)?.label} />
             <Kpi label="Unidades" value={fNum(t?.uds)} />
             <Kpi label="Categorías con venta" value={fNum(t?.categorias)}
                  pie={cuenta ? CUENTAS.find((c) => c.id === cuenta)?.label : "las 3 cuentas"} />

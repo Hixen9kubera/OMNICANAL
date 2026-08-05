@@ -117,7 +117,6 @@ export default function CrearProductosPage() {
   const [resultado, setResultado] = useState<Resultado | null>(null);
   // Opt-in: crear aunque el SKU no tenga costo/precio (queda en inprogress;
   // el precio se captura a mano después en el Estudio).
-  const [permitirSinCosto, setPermitirSinCosto] = useState(false);
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -175,15 +174,19 @@ export default function CrearProductosPage() {
         setProductos(r.items);
         setPag(r.paginacion);
         setIndiceCompleto(r.completo !== false);
+        // Con una búsqueda o un filtro puesto, cero resultados es una RESPUESTA,
+        // no un índice a medio construir: reintentar 45 veces dejaba el panel
+        // girando ~4 min sobre algo que nunca iba a aparecer (reporte del 5-ago).
+        const filtrando = Boolean(busqueda || skusFiltro || categoriaFiltro);
         // Índice construyéndose (carga progresiva): recargar en silencio para
         // que el total y el orden se vayan actualizando sin parpadeos.
-        if (r.completo === false) {
+        if (r.completo === false && !filtrando) {
           setPreparando(r.paginacion.total === 0);
           setTimeout(() => cargar(true), 4000);
           return;
         }
         // Sin búsqueda/filtro y 0 resultados → índice aún vacío; reintentar.
-        if (!busqueda && !skusFiltro && r.paginacion.total === 0 && reintentos.current < 45) {
+        if (!filtrando && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
           setTimeout(() => cargar(), 5000);
@@ -337,7 +340,7 @@ export default function CrearProductosPage() {
     });
     setEnviando(true);
     try {
-      const r = await crearProductos(items, permitirSinCosto);
+      const r = await crearProductos(items);
       setResultado({
         tipo: "ok",
         texto:
@@ -618,7 +621,14 @@ export default function CrearProductosPage() {
                         <Loader2 size={16} className="animate-spin" />
                         Preparando el catálogo de WooCommerce…
                       </span>
-                    ) : busqueda ? (
+                    ) : skusFiltro ? (
+                      <span className="inline-flex flex-col gap-1">
+                        <span>No se encontró ninguno de esos SKUs por crear.</span>
+                        <span className="text-xs text-slate-400">
+                          Puede que ya estén publicados: búscalos en Productos.
+                        </span>
+                      </span>
+                    ) : busqueda || categoriaFiltro ? (
                       "Sin resultados para tu búsqueda."
                     ) : (
                       "No hay productos pendientes por crear."
@@ -947,19 +957,10 @@ export default function CrearProductosPage() {
             )}
           </div>
 
+          {/* La casilla "Crear sin costo" se retiró (4-ago): crear sin costo ya
+              es el comportamiento normal — todo termina en Productos (pending) —
+              así que el control no cambiaba nada y solo confundía. */}
           <div className="flex items-center gap-2">
-            <label
-              title="Crea aunque el producto no tenga costo/precio. Queda en Productos (pending) para validarlo a mano y capturar el precio en el Estudio — no se queda en 'inprogress'."
-              className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50"
-            >
-              <input
-                type="checkbox"
-                checked={permitirSinCosto}
-                onChange={(e) => setPermitirSinCosto(e.target.checked)}
-                className="h-3.5 w-3.5 cursor-pointer accent-indigo-600"
-              />
-              Crear sin costo
-            </label>
             {totalSel > 0 && (
               <button
                 onClick={() => { setSeleccion(new Set()); setResultado(null); }}

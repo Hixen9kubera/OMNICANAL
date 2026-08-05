@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -20,9 +20,19 @@ import {
   Calculator,
   Database,
   Tags,
+  Trophy,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
+import { cerrarSesion, quienSoy, type Usuario } from "@/lib/sesion";
+
+// El rol que el equipo llama KAM se guarda como 'operador' (core.usuarios tiene
+// un CHECK que solo admite tres nombres). Aquí se traduce de vuelta.
+const ETIQUETA_ROL: Record<string, string> = {
+  admin: "Admin",
+  operador: "KAM",
+  lectura: "Lectura",
+};
 
 interface SubItem {
   label: string;
@@ -37,7 +47,11 @@ interface NavItem {
   icon: LucideIcon;
   href?: string;          // si tiene href, es navegable
   proximamente?: boolean;
+  /** Navegable pero en construcción. No es lo mismo que `proximamente`. */
+  beta?: boolean;
   submenu?: SubItem[];    // despliega al pasar el cursor (VARIANTE B)
+  /** Solo para admin. Sin esto, la pestaña la ve todo el mundo. */
+  soloAdmin?: boolean;
 }
 
 // Navegación principal de la app. OMNICANAL, PRODUCTOS y CREAR PRODUCTOS están
@@ -74,9 +88,14 @@ const ITEMS: NavItem[] = [
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
-  { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard" },
-  { id: "migracion", label: "Migración", icon: Database, href: "/migracion" },
-  { id: "facturas", label: "Facturas", icon: FileText, proximamente: true },
+  { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
+    beta: true },
+  { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard",
+    soloAdmin: true },
+  { id: "migracion", label: "Migración", icon: Database, href: "/migracion",
+    soloAdmin: true },
+  { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
+    soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
   // Análisis como /analisis/reportes.
   { id: "automatizacion", label: "Automatización", icon: Workflow, proximamente: true },
@@ -84,6 +103,33 @@ const ITEMS: NavItem[] = [
 
 export default function AppNavbar() {
   const pathname = usePathname();
+
+  // El rol decide qué pestañas se ven. Esto es COSMÉTICA: quien llame la API
+  // directo se topa igual con core/rbac.py en el backend, que es la autoridad.
+  // Mientras nadie haya iniciado sesión (o el enforcement esté apagado) se
+  // muestran TODAS, para no esconderle nada al equipo antes de tiempo.
+  const [yo, setYo] = useState<Usuario | null>(null);
+  useEffect(() => {
+    let vivo = true;
+    void quienSoy().then((u) => {
+      if (vivo) setYo(u);
+    });
+    return () => { vivo = false; };
+  }, []);
+
+  const rol = yo?.autenticado ? yo.rol : null;
+  const visibles = ITEMS.filter((i) => !i.soloAdmin || rol === null || rol === "admin");
+
+  // Quién está usando el panel. Con una contraseña compartida entre varias
+  // personas, ver el correo propio es la única forma de notar que se entró con
+  // la cuenta equivocada antes de mover algo.
+  const nombre = yo?.usuario?.split("@")[0] || "Kubera";
+  const etiquetaRol = rol ? ETIQUETA_ROL[rol] ?? rol : "sin sesión";
+
+  const salir = useCallback(() => {
+    cerrarSesion();
+    window.location.href = "/login";
+  }, []);
 
   // Submenú al pasar el cursor. Se posiciona FIJO calculando el rect del
   // disparador: el <nav> tiene overflow-x-auto y un menú `absolute` quedaría
@@ -127,7 +173,7 @@ export default function AppNavbar() {
 
         {/* Navegación */}
         <nav className="flex flex-1 items-center gap-1 overflow-x-auto">
-          {ITEMS.map((item) => {
+          {visibles.map((item) => {
             const Icon = item.icon;
             // Activo también cuando la ruta pertenece a una entrada del
             // submenú que vive FUERA del prefijo (p. ej. /ventas bajo
@@ -156,6 +202,13 @@ export default function AppNavbar() {
                 >
                   <Icon size={17} />
                   {item.label}
+                  {/* BETA: la sección ya es navegable pero sigue en construcción.
+                      Distinto de "Pronto", que marca lo que todavía no existe. */}
+                  {item.beta && (
+                    <span className="ml-1 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-indigo-700">
+                      Beta
+                    </span>
+                  )}
                   {item.submenu && (
                     <ChevronDown
                       size={13}
@@ -189,12 +242,26 @@ export default function AppNavbar() {
         <div className="flex shrink-0 items-center gap-3">
           <NotificationBell />
           <div className="hidden text-right sm:block">
-            <div className="text-xs font-semibold text-slate-700">Kubera</div>
-            <div className="text-[11px] text-slate-400">admin</div>
+            <div className="max-w-[160px] truncate text-xs font-semibold text-slate-700">
+              {nombre}
+            </div>
+            <div className="text-[11px] text-slate-400">{etiquetaRol}</div>
           </div>
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-800 text-sm font-bold text-white">
-            K
+          <div
+            title={yo?.usuario || "Sin sesión iniciada"}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-800 text-sm font-bold uppercase text-white"
+          >
+            {nombre.charAt(0)}
           </div>
+          {yo?.autenticado && (
+            <button
+              type="button"
+              onClick={salir}
+              className="shrink-0 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
+            >
+              Salir
+            </button>
+          )}
         </div>
       </div>
 
