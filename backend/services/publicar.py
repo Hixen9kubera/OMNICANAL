@@ -912,6 +912,12 @@ def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_cou
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("No se pudo actualizar amazon_progress: %s", exc)
+        # Regla de Brandon (29-jul): publicado aunque sea en UNA cuenta ⇒
+        # publish en Woo. Solo el camino de ML lo hacía — el de Amazon dejaba
+        # el producto en draft/inprogress (hueco señalado por Eduardo, 05-ago).
+        # La misma llamada dispara el seam a core.products (ciclo de vida).
+        from services import publicar_ready
+        publicar_ready._marcar_publicado_en_woo(str(sku or ""), wc_id)
 
 
 async def _confirmar_amazon(req: dict[str, Any]) -> dict[str, Any]:

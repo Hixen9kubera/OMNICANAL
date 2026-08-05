@@ -538,7 +538,13 @@ def _up_core_product(cur, p: dict[str, Any]) -> None:
                where wc_id = %s""",
             (p.get("name"), p.get("status"), p.get("wc_id")),
         )
-        if cur.rowcount:
+        # `solo_por_wc_id`: candado para eventos DESTRUCTIVOS (papelera/
+        # eliminado de la auditoría). Si el wc_id auditado ya no es el del
+        # acta (SKU reciclado FUERA de Crear: la fila viva trae el wc_id
+        # nuevo), caer al insert-por-sku pintaría 'deleted' sobre el producto
+        # recreado. Con el candado: sin match por wc_id, no se escribe nada
+        # (revisión de Eduardo, 05-ago).
+        if cur.rowcount or p.get("solo_por_wc_id"):
             return
     cur.execute(
         """insert into core.products (sku, name, wc_id, status, source)

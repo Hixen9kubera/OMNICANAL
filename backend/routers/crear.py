@@ -313,12 +313,17 @@ async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
     # cada vez que la auditoría confirma que un producto ya no existe en Woo,
     # core.products lo marca (status trash/deleted, la fila NO se borra: el
     # ETL v2 tampoco toca filas que desaparecen de las fuentes). Best-effort.
+    # `solo_por_wc_id`: el marcado SOLO aplica si el acta aún apunta a ese
+    # wc_id — un SKU reciclado fuera de Crear tiene fila viva con wc_id nuevo
+    # y NO debe pintarse como borrado (candado pedido por Eduardo, 05-ago; la
+    # auditoría además solo mira la última encarnación por SKU: max_id arriba).
     for d in desaparecidos:
         kubera_mirror.espejar(
             "routers/crear.py", "auditoria (desaparecido)",
             "wp_posts", "core.products", "UPSERT",
             {"sku": d.get("sku"), "wc_id": d.get("wc_id"),
-             "status": "trash" if d["situacion"] == "papelera" else "deleted"},
+             "status": "trash" if d["situacion"] == "papelera" else "deleted",
+             "solo_por_wc_id": True},
             clave=str(d.get("sku")))
     return {
         "ok": True, "dias": dias, "creados": len(rows), "existentes": existentes,
