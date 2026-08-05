@@ -867,167 +867,35 @@ async def tabla(
 # HOJAS con su ruta y la UI arma el árbol con acumulados por nivel — así un
 # solo query sirve para cualquier profundidad.
 #
-# La taxonomía es de ML pero se aplica POR SKU (channel.product_category,
-# 13,689 mapeos; 99.9%% de lo vendido clasifica), así que las ventas de Amazon
-# también entran. Publicaciones/activas se cuentan sobre el catálogo listado
-# completo de cada hoja, no solo lo vendido — como el xlsx.
-_SQL_CAT_HOJAS = _mx("""
-with pc as (
-  select pc.sku, pc.category_id,
-         coalesce(nullif(trim(c.path), ''), c.name, 'Sin categoría') as ruta
-  from channel.product_category pc
-  join channel.categories c
-    on c.category_id = pc.category_id and c.channel_id = pc.channel_id
-),
-v as (
-  select s.sku, s.cuenta,
-         sum(s.units_sold)::int as uds,
-         sum(s.revenue)         as venta
-  from channel.sales_daily_completa s
-  where s.date >= %(desde)s::date and s.date <= %(hasta)s::date
-    and s.sku is not null
-    and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
-  group by 1, 2
-  having sum(s.units_sold) > 0
-),
-vc as (
-  select coalesce(pc.ruta, 'Sin categoría') as ruta,
-         pc.category_id, v.cuenta, v.sku, v.uds, v.venta
-  from v left join pc on pc.sku = v.sku
-),
-ventas_cat as (
-  select ruta, category_id,
-         sum(uds)::int            as uds,
-         round(sum(venta), 2)     as venta,
-         count(distinct sku)::int as skus,
-         (select jsonb_agg(jsonb_build_object('cuenta', x.cuenta,
-                                              'uds', x.uds, 'venta', x.venta)
-                           order by x.cuenta)
-            from (select cuenta, sum(uds)::int as uds, round(sum(venta),2) as venta
-                    from vc i where i.ruta = o.ruta
-                      and i.category_id is not distinct from o.category_id
-                    group by 1) x) as cuentas
-  from vc o
-  group by ruta, category_id
-),
-lst as (
-  select pc.category_id, pc.ruta,
-         count(*)                                       as publicaciones,
-         count(*) filter (where l.situacion = 'active') as activas
-  from channel.listings l
-  join pc on pc.sku = l.sku
-  where l.canal in ('mercado_libre', 'amazon')
-    and lower(coalesce(l.situacion, '')) <> 'closed'
-    and (%(cuenta)s::text is null
-         or exists (select 1 from core.accounts a
-                    where a.id = l.account_id and a.legacy_code = %(cuenta)s))
-  group by 1, 2
-)
--- FULL JOIN a propósito (31-jul, Eduardo): una categoría CON catálogo pero SIN
--- venta en el período también viaja (uds 0) — si no, buscar "Caminadoras" en
--- 60 días respondía "no existe" cuando la verdad era "existe y no vendió".
--- La UI las esconde del árbol por defecto y solo las enseña al buscar.
-select coalesce(s.ruta, l.ruta)                 as ruta,
-       coalesce(s.category_id, l.category_id)   as category_id,
-       coalesce(s.uds, 0)::int                  as uds,
-       coalesce(s.venta, 0)                     as venta,
-       coalesce(s.skus, 0)::int                 as skus,
-       coalesce(l.publicaciones, 0)::int        as publicaciones,
-       coalesce(l.activas, 0)::int              as activas,
-       s.cuentas
-from ventas_cat s
-full outer join lst l on l.category_id = s.category_id
-order by venta desc
-""")
-
-# Publicaciones de UNA hoja del árbol, como las filas del xlsx: por item_id
-# (MLM…), con cuenta, título, situación, precio y ventas del período.
-# El título sale de order_items (congelado en la venta) con respaldo en el
-# maestro; situación/precio, del listing vivo. "Días en venta" del xlsx NO se
-# puede replicar: listings no guarda la fecha de creación de la publicación —
-# se da la PRIMERA VENTA registrada, que es lo que sí sabemos.
-_SQL_CAT_PUBS = _mx("""
-with skus_hoja as (
-  select sku from channel.product_category
-  where category_id = %(categoria_id)s and channel_id = 'mercado_libre'
-)
-select s.item_id,
-       s.cuenta,
-       max(s.sku::text)                as sku,
-       sum(s.units_sold)::int          as uds,
-       round(sum(s.revenue), 2)        as venta,
-       min(s.date)::text               as primera_venta,
-       max(s.date)::text               as ultima_venta,
-       max(l.situacion)                as situacion,
-       max(l.price)                    as precio,
-       coalesce(max(oi.titulo), max(p.name)) as titulo
-from channel.sales_daily_completa s
-left join channel.listings l
-       on l.listing_id = s.item_id and l.canal = s.canal
-left join core.products p on p.sku = s.sku
-left join lateral (
-  select titulo from channel.order_items oi
-  where oi.item_id = s.item_id and oi.titulo is not null limit 1
-) oi on true
-where s.sku in (select sku from skus_hoja)
-  and s.date >= %(desde)s::date and s.date <= %(hasta)s::date
-  and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
-group by s.item_id, s.cuenta
-order by venta desc
-limit 200
-""")
-
-# TODAS las publicaciones vendidas del período con su hoja de categoría, en un
-# solo query — para el Excel (la variante de arriba es por-hoja, para la UI).
-_SQL_CAT_PUBS_TODAS = _mx("""
-with pc as (
-  select sku, category_id from channel.product_category
-  where channel_id = 'mercado_libre'
-)
-select pc.category_id::text as category_id,
-       s.item_id, s.cuenta,
-       max(s.sku::text)         as sku,
-       sum(s.units_sold)::int   as uds,
-       round(sum(s.revenue), 2) as venta,
-       min(s.date)::text        as primera_venta,
-       max(s.date)::text        as ultima_venta,
-       max(l.situacion)         as situacion,
-       max(l.price)             as precio,
-       coalesce(max(oi.titulo), max(p.name)) as titulo
-from channel.sales_daily_completa s
-join pc on pc.sku = s.sku
-left join channel.listings l
-       on l.listing_id = s.item_id and l.canal = s.canal
-left join core.products p on p.sku = s.sku
-left join lateral (
-  select titulo from channel.order_items oi
-  where oi.item_id = s.item_id and oi.titulo is not null limit 1
-) oi on true
-where s.date >= %(desde)s::date and s.date <= %(hasta)s::date
-  and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
-group by pc.category_id, s.item_id, s.cuenta
-having sum(s.units_sold) > 0
-""")
-
-
-# ── El Excel de categorías, ahora desde los PEDIDOS (Eduardo, 5-ago) ─────────
+# La taxonomía es de ML pero se aplica POR SKU (channel.product_category), así
+# que las ventas de Amazon también entran. Publicaciones/activas se cuentan
+# sobre el catálogo listado completo de cada hoja, no solo lo vendido.
 #
-# DECISIÓN: el libro entero se calcula desde channel.orders/order_items, no
-# desde sales_daily_completa. La razón es que el margen SOLO puede salir de los
-# pedidos —— es el único lugar donde vive la comisión REAL que cobró Mercado
-# Libre—— y un archivo que mezclara ambas fuentes se contradiría a sí mismo:
-# una columna diría una venta y la de al lado calcularía margen sobre otra. En
-# el sandbox las dos fuentes se separan casi al doble ($4.02M contra $2.04M),
-# porque sales_daily_completa empalma el histórico rescatado de dailytrack.
+# FUENTE: LOS PEDIDOS (Eduardo, 5-ago). Antes esto leía
+# channel.sales_daily_completa y el Excel leía los pedidos, así que la página y
+# su propio reporte no cuadraban — en el sandbox se separaban casi al doble
+# ($4.02M contra $2.04M), porque sales_daily_completa empalma el histórico
+# rescatado de dailytrack. Ahora las dos leen lo mismo.
 #
-# Efecto secundario declarado: este libro ya NO cuadra con la página
-# /analisis/categorias, que sigue leyendo sales_daily_completa. A cambio cuadra
-# con la pestaña VENTAS, que es 100%% pedidos —— y para un documento de márgenes
-# atarse a donde está el dinero pesa más.
+# Lo que se gana: el margen solo puede salir de los pedidos (es donde vive la
+# comisión REAL de Mercado Libre), y la página cuadra con la pestaña VENTAS,
+# que también es 100%% pedidos.
+# Lo que se pierde: la venta anterior al backfill de channel.orders. Esta vista
+# ya no ve el histórico de dailytrack — para eso está Estrellas, que sigue
+# leyendo la serie completa a propósito.
+
+
+# ── Consultas COMPARTIDAS: la página de Categorías y su Excel ────────────────
 #
-# Estas consultas son PROPIAS del reporte a propósito: cambiar _SQL_CAT_HOJAS
-# habría movido también los números de la página, que nadie pidió tocar.
-_SQL_XLS_LINEAS_BASE = """
+# Una sola familia, una sola fuente: los PEDIDOS. Antes la página leía
+# channel.sales_daily_completa y el Excel leía los pedidos — la página y su
+# propio reporte no cuadraban.
+#
+# El filtro de categoría es un parámetro (%%(categoria_id)s NULL = todas), así
+# que el mismo query sirve para el desglose de UNA hoja del árbol en la UI y
+# para el libro completo. Dos consultas que deben dar lo mismo son dos
+# consultas que se van a desincronizar.
+_SQL_CAT_LINEAS = """
   select i.item_id, o.cuenta, i.sku, i.cantidad, i.precio_unitario,
          i.comision, i.titulo,
          (o.creado_at at time zone 'America/Mexico_City')::date as fecha
@@ -1042,12 +910,12 @@ _SQL_XLS_LINEAS_BASE = """
 
 # Una fila por publicación vendida, con su categoría y su costo. El costo se
 # multiplica por las unidades: es el costo de LO VENDIDO, no el unitario.
-_SQL_XLS_PUBS = _mx(f"""
+_SQL_CAT_PUBS = _mx(f"""
 with pc as (
   select sku, category_id from channel.product_category
   where channel_id = 'mercado_libre'
 ),
-lin as ({_SQL_XLS_LINEAS_BASE})
+lin as ({_SQL_CAT_LINEAS})
 select pc.category_id::text            as category_id,
        l.item_id, l.cuenta,
        max(l.sku::text)                as sku,
@@ -1065,6 +933,7 @@ select pc.category_id::text            as category_id,
        coalesce(max(l.titulo), max(p.name)) as titulo
   from lin l
   join pc on pc.sku = l.sku
+         and (%(categoria_id)s::text is null or pc.category_id = %(categoria_id)s)
   left join channel.listings ls on ls.listing_id = l.item_id
   left join core.products p on p.sku = l.sku
   left join costing.costos_validados cv on cv.sku = l.sku
@@ -1074,7 +943,7 @@ select pc.category_id::text            as category_id,
 
 # Las hojas del árbol. Conserva el FULL OUTER JOIN del original: una categoría
 # con catálogo pero sin venta en el período también viaja (uds 0).
-_SQL_XLS_HOJAS = _mx(f"""
+_SQL_CAT_HOJAS = _mx(f"""
 with pc as (
   select pc.sku, pc.category_id,
          coalesce(nullif(trim(c.path), ''), c.name, 'Sin categoría') as ruta
@@ -1082,7 +951,7 @@ with pc as (
   join channel.categories c
     on c.category_id = pc.category_id and c.channel_id = pc.channel_id
 ),
-lin as ({_SQL_XLS_LINEAS_BASE}),
+lin as ({_SQL_CAT_LINEAS}),
 porsku as (
   select l.sku,
          sum(l.cantidad)::int                          as uds,
@@ -1114,6 +983,21 @@ ventas_cat as (
     from porsku v left join pc on pc.sku = v.sku
    group by 1, 2
 ),
+cuentas_cat as (
+  -- Desglose por cuenta de cada hoja del árbol (la UI lo pinta al lado). Va en
+  -- su propio CTE porque `porsku` agrega por SKU para poder cruzar el costo,
+  -- y aquí hace falta el corte por cuenta.
+  select ruta, category_id,
+         jsonb_agg(jsonb_build_object('cuenta', cuenta, 'uds', uds, 'venta', venta)
+                   order by cuenta) as cuentas
+    from (select coalesce(pc.ruta, 'Sin categoría') as ruta, pc.category_id,
+                 l.cuenta,
+                 sum(l.cantidad)::int as uds,
+                 round(sum(l.precio_unitario * l.cantidad), 2) as venta
+            from lin l left join pc on pc.sku = l.sku
+           group by 1, 2, 3) y
+   group by 1, 2
+),
 lst as (
   select pc.category_id, pc.ruta,
          count(*)                                       as publicaciones,
@@ -1137,9 +1021,11 @@ select coalesce(s.ruta, l.ruta)               as ruta,
        coalesce(s.venta_con_costo, 0)         as venta_con_costo,
        coalesce(s.skus, 0)::int               as skus,
        coalesce(l.publicaciones, 0)::int      as publicaciones,
-       coalesce(l.activas, 0)::int            as activas
+       coalesce(l.activas, 0)::int            as activas,
+       c.cuentas
 from ventas_cat s
 full outer join lst l on l.category_id = s.category_id
+left join cuentas_cat c on c.category_id is not distinct from s.category_id
 order by venta desc
 """)
 
@@ -1178,8 +1064,9 @@ async def categorias(
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
         d1, d2 = _rango_fechas(dias, desde, hasta)
-        filas = sdb.fetch_all(_SQL_CAT_HOJAS,
-                              {"desde": d1, "hasta": d2, "cuenta": cuenta})
+        filas = sdb.fetch_all(
+            _SQL_CAT_HOJAS,
+            {"desde": d1, "hasta": d2, "cuenta": cuenta, "categoria_id": None})
         venta_total = sum(float(f["venta"]) for f in filas)
         uds_total = sum(f["uds"] for f in filas)
         # solo las que SÍ vendieron cuentan como "categorías con venta"
@@ -1219,8 +1106,11 @@ async def categorias_publicaciones(
             _SQL_CAT_PUBS,
             {"categoria_id": categoria_id, "desde": d1, "hasta": d2,
              "cuenta": cuenta})
+        # el tope se aplica AQUÍ y no en el SQL: el mismo query alimenta al
+        # Excel, que necesita todas las publicaciones
+        filas.sort(key=lambda f: -float(f["venta"] or 0))
         return {"categoria_id": categoria_id, "dias": dias,
-                "desde": d1, "hasta": d2, "items": filas, "tope": 200}
+                "desde": d1, "hasta": d2, "items": filas[:200], "tope": 200}
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -1255,11 +1145,14 @@ async def categorias_excel(
 
         from services import reporte_categorias_xlsx
 
-        p = {"desde": d1, "hasta": d2, "cuenta": cuenta}
-        hojas = sdb.fetch_all(_SQL_XLS_HOJAS, p)
-        pubs = sdb.fetch_all(_SQL_XLS_PUBS, p)
+        p = {"desde": d1, "hasta": d2, "cuenta": cuenta,
+             "categoria_id": None}
+        hojas = sdb.fetch_all(_SQL_CAT_HOJAS, p)
+        pubs = sdb.fetch_all(_SQL_CAT_PUBS, p)
         # la hoja de detalle reusa el MISMO query del CSV que se retira
-        ventas = sdb.fetch_all(_SQL_MARGEN_LINEAS, {**p, "canal": None})
+        ventas = sdb.fetch_all(
+            _SQL_MARGEN_LINEAS,
+            {"desde": d1, "hasta": d2, "cuenta": cuenta, "canal": None})
         datos = await asyncio.to_thread(
             reporte_categorias_xlsx.construir, hojas, pubs, ventas, d1, d2, cuenta)
         nombre = f"ventas_margenes_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"

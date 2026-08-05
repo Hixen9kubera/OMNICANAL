@@ -11,6 +11,12 @@
  * árbol con acumulados por nivel; las publicaciones se piden al expandir una
  * hoja (endpoint /categorias/publicaciones).
  *
+ * FUENTE: los PEDIDOS (Eduardo, 5-ago). Antes esta vista leía la serie de
+ * analítica y su propio Excel leía los pedidos, así que la página y el reporte
+ * que se descarga desde ella no cuadraban. Ahora las dos leen lo mismo, y
+ * también cuadran con la pestaña VENTAS. Lo que se dejó de ver: la venta
+ * anterior al backfill de pedidos — para el histórico completo está Estrellas.
+ *
  * Diferencia declarada vs el xlsx: "Días en venta" no existe — listings no
  * guarda la fecha de creación de la publicación. Se muestra la 1ª VENTA
  * registrada del período, que es lo que sí sabemos.
