@@ -4181,6 +4181,43 @@ Google prueba **quién** eres; que además te toque entrar lo decide
 rol, sin fila rechazado, dado de baja rechazado, base caída no bloquea pero
 degrada). `humo_auth.py` sigue en 63. Versión 0.60.0.
 
+### v0.61.0 — "Continuar con Google": entrar sin teclear contraseña
+
+El correo de Kubera está en **Google Workspace** (verificado: el MX de
+`kubera.mx` apunta a `smtp.google.com` y el SPF incluye `_spf.google.com`), así
+que cada dirección `@kubera.mx` **ya es** una cuenta de Google. No es "entrar con
+un Gmail personal": es el correo de trabajo, el mismo que está en
+`core.usuarios`.
+
+**Lo que se gana no es comodidad, es control.** Se acaban las 11 contraseñas que
+había que repartir por canal privado, y dar de baja a alguien pasa a ser un solo
+movimiento: se cierra su cuenta de Workspace y queda fuera del panel. Si mañana
+activan verificación en dos pasos en Workspace, el panel la hereda gratis.
+
+**Quién decide qué.** Google prueba **quién** eres; que además te toque entrar lo
+decide `core.usuarios` en el backend (v0.60.0). Un correo del dominio que no esté
+dado de alta se rechaza — el frontend no es autoridad de nada.
+
+**El token viene en el fragmento de la URL** (`#access_token=…`) y se BORRA de la
+barra apenas se recoge. No es cosmética: el fragmento queda en el historial del
+navegador y se lo lleva cualquier captura de pantalla; un token ahí es una sesión
+prestada a quien tome la laptop.
+
+El botón va **arriba** del formulario de correo, que se conserva como respaldo.
+Si Google devuelve `access_denied` (la persona canceló) se dice tal cual, en vez
+de un error genérico.
+
+Un detalle de honestidad en el mensaje de error: cuando el backend no confirma el
+acceso, `quienSoy()` devuelve lo mismo si el correo no está dado de alta que si
+falló la red, y desde el navegador no se puede distinguir. Por eso el mensaje NO
+afirma la causa — decirle "no tienes acceso" a alguien que sí lo tiene manda a
+soporte a buscar donde no es.
+
+**Configuración necesaria fuera del código:** proveedor Google habilitado en
+Supabase (proyecto `tukwcvsitthplhswsblt`), consent screen de Google Cloud en
+**Interno**, y el dominio del panel en Authentication → **URL Configuration** —
+sin eso Supabase se niega a devolver al usuario después de Google. Versión 0.61.0.
+
 ---
 
 ## 🚀 Pendientes y estrategias propuestas

@@ -101,6 +101,64 @@ export async function entrar(correo: string, contrasena: string): Promise<string
   return null;
 }
 
+// ── Entrar con Google ───────────────────────────────────────────────────────
+//
+// POR QUÉ ES MEJOR QUE LA CONTRASEÑA
+// El correo de Kubera está en Google Workspace (MX → smtp.google.com), así que
+// cada dirección @kubera.mx YA es una cuenta de Google. Nadie teclea una
+// contraseña en nuestro panel, no hay claves que repartir, y dar de baja a
+// alguien se vuelve un solo movimiento: se cierra su cuenta de Workspace.
+//
+// QUIÉN DECIDE QUÉ
+//   Google  → prueba QUIÉN eres.
+//   nosotros→ si además te toca entrar, y con qué rol (core.usuarios).
+// Un correo del dominio que no esté dado de alta se rechaza en el backend
+// (`core/identidad.py`), no aquí: el frontend no es autoridad de nada.
+
+/** Manda al usuario a Google. No regresa: la página se reemplaza. */
+export function entrarConGoogle(): void {
+  if (typeof window === "undefined") return;
+  const destino = `${window.location.origin}/login`;
+  window.location.href =
+    `${URL_SUPABASE}/auth/v1/authorize?provider=google` +
+    `&redirect_to=${encodeURIComponent(destino)}`;
+}
+
+/**
+ * Al volver de Google, Supabase pega la sesión en el **fragmento** de la URL
+ * (`#access_token=…`). Se recoge, se guarda y se BORRA de la barra.
+ *
+ * Borrarlo no es cosmética: el fragmento queda en el historial del navegador y
+ * se lo lleva cualquier captura de pantalla. Un token en el historial es una
+ * sesión prestada a quien tome la laptop.
+ *
+ * Devuelve "ok" si entró, el mensaje de error si Google lo rechazó, o null si
+ * esta carga no viene de Google.
+ */
+export function recogerSesionDeURL(): "ok" | string | null {
+  if (typeof window === "undefined") return null;
+  const bruto = window.location.hash;
+  if (!bruto || bruto.length < 2) return null;
+  const p = new URLSearchParams(bruto.slice(1));
+
+  const limpiar = () =>
+    window.history.replaceState({}, "", window.location.pathname);
+
+  if (p.get("error")) {
+    limpiar();
+    // `access_denied` = la persona canceló en la pantalla de Google.
+    if (p.get("error") === "access_denied") return "Cancelaste el acceso con Google.";
+    return p.get("error_description") || "Google rechazó el acceso.";
+  }
+
+  const acceso = p.get("access_token") || "";
+  if (!acceso) return null;
+  guardar(acceso, p.get("refresh_token") || "", Number(p.get("expires_in") || 0));
+  limpiar();
+  programarRefresco();
+  return "ok";
+}
+
 // ── Renovación del token ────────────────────────────────────────────────────
 //
 // EL TOKEN DE SUPABASE DURA 1 HORA. Sin esto, quien entrara a las 9:00 vería el
