@@ -58,6 +58,9 @@ _ORDEN = {
     "cobertura": ("cobertura_d", "asc"),
     "edad": ("edad_sin_venta_d", "desc"),
     "margen": ("margen_pct", "desc"),
+    # margen NETO = ya descontados los cobros del marketplace. Ordenar ascendente
+    # es el "filtro" de lo que está vendiendo mal: lo peor queda arriba.
+    "margen_neto": ("margen_neto_pct", "desc"),
     "crec": ("crec_7d_pct", "desc"),
     "sugerido": ("sugerido_full", "desc"),
     "sku": ("sku", "asc"),
@@ -167,6 +170,28 @@ sug as (
   where (%(cuenta)s::text is null or cuenta = %(cuenta)s)
   group by sku
 ),
+com as (
+  -- Comisión REAL del marketplace en el período, POR UNIDAD (Eduardo, 5-ago).
+  -- Es lo único que faltaba para pasar del margen de CATÁLOGO al margen NETO:
+  -- sale de los pedidos (channel.order_items.comision es el total de la línea),
+  -- no de una tasa supuesta, así que ya viene con la comisión de CADA canal.
+  --
+  -- Solo entran líneas con comisión > 0: Amazon todavía la registra en cero
+  -- (falta Finances API) y promediarla con ML abarataría el costo. Un SKU que
+  -- solo vende en Amazon se queda sin margen neto — "—" es más honesto que
+  -- decir que Amazon no cobra nada.
+  select i.sku,
+         sum(coalesce(i.comision, 0)) / nullif(sum(i.cantidad), 0) as comision_unit
+  from channel.order_items i
+  join channel.orders o using (canal, cuenta, external_order_id)
+  where (o.creado_at at time zone 'America/Mexico_City')::date
+        > current_date - %(dias)s::int
+    and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+    and coalesce(i.comision, 0) > 0
+    and i.sku is not null
+    and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
+  group by i.sku
+),
 filas as (
   select l.sku, l.cuentas, l.titulo, coalesce(t.tam, 'S/C') as tam,
          case when l.alguna_activa then 'activa'
@@ -205,6 +230,28 @@ filas as (
               then round((l.precio - coalesce(cv.costo_total, cf.costo_unitario))
                          / l.precio * 100, 1)
               end as margen_pct,
+         -- MARGEN NETO: el de arriba menos los cobros de Meli. El precio de
+         -- referencia es el REALIZADO cuando hubo ventas (ingreso ÷ uds, ya
+         -- ponderado entre cuentas) y el publicado cuando no las hubo — el
+         -- mismo criterio que usa la celda de Precio de venta, para que
+         -- ordenar por esta columna y leerla no se contradigan.
+         co.comision_unit,
+         cf.costo_fee_envio                                as envio_unit,
+         case when coalesce(cv.costo_total, cf.costo_unitario) is not null
+               and co.comision_unit is not null
+              then round(coalesce(cv.costo_total, cf.costo_unitario)
+                         + co.comision_unit
+                         + coalesce(cf.costo_fee_envio, 0), 2)
+              end as costo_final,
+         case when coalesce(cv.costo_total, cf.costo_unitario) is not null
+               and co.comision_unit is not null
+               and coalesce(v.venta / nullif(v.uds, 0), l.precio) > 0
+              then round((coalesce(v.venta / nullif(v.uds, 0), l.precio)
+                          - coalesce(cv.costo_total, cf.costo_unitario)
+                          - co.comision_unit
+                          - coalesce(cf.costo_fee_envio, 0))
+                         / coalesce(v.venta / nullif(v.uds, 0), l.precio) * 100, 1)
+              end as margen_neto_pct,
          case when coalesce(v.u7_prev, 0) > 0
               then round((coalesce(v.u7,0) - v.u7_prev) / v.u7_prev::numeric * 100, 0)
               when coalesce(v.u7, 0) > 0 then 100
@@ -216,6 +263,7 @@ filas as (
   left join dr d  on d.sku = l.sku
   left join tam t on t.sku = l.sku
   left join sug s on s.sku = l.sku
+  left join com co on co.sku = l.sku
   left join costing.costos_finales cf
          on cf.sku = l.sku and cf.canal = 'mercado_libre'
   left join costing.costos_validados cv on cv.sku = l.sku
@@ -491,13 +539,31 @@ with vta as (
      and s.date > current_date - %(dias)s::int
    group by 1, 2
 ),
+com as (
+  -- Comisión REAL cobrada POR CANAL Y CUENTA en el período: aquí es donde se
+  -- ve que el mismo producto deja distinto según dónde se venda. Solo líneas
+  -- con comisión > 0 (Amazon la registra en cero hasta tener Finances API).
+  select o.canal, o.cuenta,
+         sum(coalesce(i.comision, 0))  as comision,
+         sum(i.cantidad)::int          as uds_com
+    from channel.order_items i
+    join channel.orders o using (canal, cuenta, external_order_id)
+   where i.sku = %(sku)s::citext
+     and (o.creado_at at time zone 'America/Mexico_City')::date
+         > current_date - %(dias)s::int
+     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and coalesce(i.comision, 0) > 0
+   group by 1, 2
+),
 costo as (
   select coalesce(
            (select cv.costo_total from costing.costos_validados cv
              where cv.sku = %(sku)s::citext),
            (select cf.costo_unitario from costing.costos_finales cf
              where cf.sku = %(sku)s::citext and cf.canal = 'mercado_libre')
-         ) as costo
+         ) as costo,
+         (select cf.costo_fee_envio from costing.costos_finales cf
+           where cf.sku = %(sku)s::citext and cf.canal = 'mercado_libre') as envio
 )
 select v.canal, v.cuenta, v.uds, v.ingreso, v.precio_prom, v.ultima_venta,
        c.costo,
@@ -505,8 +571,26 @@ select v.canal, v.cuenta, v.uds, v.ingreso, v.precio_prom, v.ultima_venta,
             then round(v.ingreso - v.uds * c.costo, 2) end as ganancia,
        case when v.precio_prom > 0 and c.costo is not null
             then round((v.precio_prom - c.costo) / v.precio_prom * 100, 1)
-            end as margen_pct
-  from vta v cross join costo c
+            end as margen_pct,
+       -- y lo mismo ya con los cobros del canal encima
+       round(m.comision / nullif(m.uds_com, 0), 2)         as comision_unit,
+       c.envio                                             as envio_unit,
+       case when c.costo is not null and m.comision is not null
+            then round(c.costo + m.comision / nullif(m.uds_com, 0)
+                       + coalesce(c.envio, 0), 2)
+            end as costo_final,
+       case when c.costo is not null and m.comision is not null
+            then round(v.ingreso - v.uds * (c.costo + m.comision / nullif(m.uds_com, 0)
+                                            + coalesce(c.envio, 0)), 2)
+            end as ganancia_neta,
+       case when v.precio_prom > 0 and c.costo is not null and m.comision is not null
+            then round((v.precio_prom - (c.costo + m.comision / nullif(m.uds_com, 0)
+                                         + coalesce(c.envio, 0)))
+                       / v.precio_prom * 100, 1)
+            end as margen_neto_pct
+  from vta v
+  cross join costo c
+  left join com m on m.canal = v.canal and m.cuenta = v.cuenta
  order by v.uds desc
 """)
 
@@ -811,12 +895,30 @@ async def resumen_canales(
         precio_prom = round(ingreso / uds, 2) if uds else None
         margen_prom = (round((precio_prom - costo) / precio_prom * 100, 1)
                        if precio_prom and costo is not None else None)
-        # margen por temporada con el MISMO costo (uno por SKU)
+        # COSTO FINAL global: comisión ponderada por lo vendido en cada canal
+        # (no el promedio simple — vender 100 en BEKURA y 2 en SANCOR no son
+        # dos comisiones que pesen igual). El envío es uno por SKU.
+        con_com = [c for c in canales if c.get("comision_unit") is not None]
+        uds_com = sum(int(c["uds"]) for c in con_com)
+        comision_unit = (round(sum(float(c["comision_unit"]) * int(c["uds"])
+                                   for c in con_com) / uds_com, 2)
+                         if uds_com else None)
+        envio_unit = next((float(c["envio_unit"]) for c in canales
+                           if c.get("envio_unit") is not None), None)
+        costo_final = (round(costo + comision_unit + (envio_unit or 0), 2)
+                       if costo is not None and comision_unit is not None else None)
+        margen_neto = (round((precio_prom - costo_final) / precio_prom * 100, 1)
+                       if precio_prom and costo_final is not None else None)
+        # margen por temporada con el MISMO costo (uno por SKU); el neto usa el
+        # costo final global — la comisión de una temporada vieja no se guarda
+        # aparte, así que se declara como aproximación en la UI
         if temporadas is not None:
             for t in temporadas:
                 pp = float(t["precio_prom"]) if t.get("precio_prom") else None
                 t["margen_pct"] = (round((pp - costo) / pp * 100, 1)
                                    if pp and costo is not None else None)
+                t["margen_neto_pct"] = (round((pp - costo_final) / pp * 100, 1)
+                                        if pp and costo_final is not None else None)
         return {
             "sku": sku, "dias": dias, "canales": canales,
             "temporadas": temporadas,
@@ -824,7 +926,11 @@ async def resumen_canales(
                        "precio_prom": precio_prom, "costo": costo,
                        "margen_prom": margen_prom,
                        "ganancia": (round(ingreso - uds * costo, 2)
-                                    if costo is not None else None)},
+                                    if costo is not None else None),
+                       "comision_unit": comision_unit, "envio_unit": envio_unit,
+                       "costo_final": costo_final, "margen_neto": margen_neto,
+                       "ganancia_neta": (round(ingreso - uds * costo_final, 2)
+                                         if costo_final is not None else None)},
             "cambios_precio": cambios,
             # la historia de precios existe desde esta fecha; antes no hay registro
             "historia_desde": "2026-07-17",

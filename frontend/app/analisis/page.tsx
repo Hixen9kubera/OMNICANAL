@@ -66,6 +66,13 @@ interface Fila {
   precio_sugerido: number | null;
   costo: number | null;
   margen_pct: number | null;
+  // Cobros del marketplace por unidad (Eduardo, 5-ago): la comisión es la REAL
+  // de los pedidos del período — por eso puede faltar (SKU sin ventas, o
+  // Amazon, que aún la registra en cero). Con ellos sale el margen NETO.
+  comision_unit: number | null;
+  envio_unit: number | null;
+  costo_final: number | null;
+  margen_neto_pct: number | null;
   crec_7d_pct: number | null;
   sugerido_full: number;
   spark: number[];
@@ -138,7 +145,8 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   edad: { titulo: "Edad sin venta", texto: "Días desde la última venta registrada. Un número alto con stock encima es dinero detenido." },
   cobertura: { titulo: "Cobertura", texto: "Cuántos días te dura el stock al ritmo de venta del período. Es la columna más accionable: por debajo de 10 días (lo que tarda un envío a FULL) ya vas tarde." },
   precio: { titulo: "Precio de venta", texto: "Lo que de VERDAD se cobró en promedio durante el período: el dinero vendido dividido entre las piezas. Ya viene ponderado, así que si un producto se vende en dos cuentas a precios distintos, pesa más la que más vendió. Si no hubo ventas en el período se muestra el precio de la publicación activa, por cuenta. Haz clic para ver el desglose por canal." },
-  margen: { titulo: "Margen", texto: "Cuánto deja el producto sobre lo que de verdad se cobró: (precio real − costo) ÷ precio real. El costo es uno solo por producto, así que el margen cambia según a qué precio se vendió. NO descuenta la comisión del marketplace ni el envío. Si no hubo ventas en el período se calcula sobre el precio publicado, una línea por cuenta. Haz clic para ver el desglose por canal." },
+  margen: { titulo: "Margen bruto", texto: "Cuánto deja el producto sobre lo que de verdad se cobró: (precio real − costo) ÷ precio real. El costo es uno solo por producto, así que el margen cambia según a qué precio se vendió. NO descuenta la comisión del marketplace ni el envío — para eso está la columna de al lado. Si no hubo ventas en el período se calcula sobre el precio publicado, una línea por cuenta. Haz clic para ver el desglose por canal." },
+  margen_neto: { titulo: "Margen neto", texto: "El mismo margen pero ya con los cobros de Mercado Libre encima: costo del producto + comisión + envío. La comisión es la REAL que cobró el marketplace en las ventas del período, no una tasa supuesta, así que ya viene con la comisión de cada canal. Este es el margen que de verdad queda. Sale vacío cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Haz clic para ver el desglose por canal." },
   crec: { titulo: "Crecimiento 7 días", texto: "Unidades de los últimos 7 días contra los 7 anteriores. Sirve para cazar lo que despegó antes de que se acabe." },
   spark: { titulo: "Últimos 14 días", texto: "Una barra por día de los últimos 14. Haz clic en la miniatura para abrir el detalle día por día con el desglose por cuenta." },
   sugerido: { titulo: "Sugerido a FULL", texto: "Cuántas piezas conviene mandar a la bodega del marketplace. Se calcula con el ritmo de venta de los últimos 45 días considerando también sus picos (no solo el promedio), para cubrir 24 días: 14 de colchón más 10 que tarda el envío en llegar." },
@@ -149,12 +157,13 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
    debe coincidir con _ORDEN del backend (routers/fulfillment.py). */
 const DIR_NATURAL: Record<string, "asc" | "desc"> = {
   sku: "asc", venta: "desc", stock_full: "desc", edad: "desc",
-  cobertura: "asc", margen: "desc", crec: "desc", sugerido: "desc",
+  cobertura: "asc", margen: "desc", margen_neto: "desc", crec: "desc",
+  sugerido: "desc",
 };
 const ORDEN_LABEL: Record<string, string> = {
   sku: "SKU", venta: "$ venta", stock_full: "stock FULL", edad: "edad sin venta",
-  cobertura: "cobertura", margen: "margen", crec: "crecimiento 7d",
-  sugerido: "sugerido",
+  cobertura: "cobertura", margen: "margen bruto", margen_neto: "margen neto",
+  crec: "crecimiento 7d", sugerido: "sugerido",
 };
 
 /* Cabecera de tabla: ordena al hacer clic (segundo clic invierte) y lleva su
@@ -319,6 +328,55 @@ function MargenVenta({ fila }: { fila: Fila }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* MARGEN NETO (Eduardo, 5-ago): el margen de al lado pero con los cobros del
+   marketplace ya descontados — Costo Final = costo + comisión + envío.
+
+   La comisión NO es una tasa supuesta: es la que Mercado Libre cobró de verdad
+   en los pedidos del período (channel.order_items.comision), promediada por
+   unidad, así que ya trae la comisión de cada canal donde se vendió. Por eso la
+   celda se queda vacía cuando no hubo ventas: sin venta no hay comisión que
+   leer, e inventar una sería peor que no decir nada. Amazon la reporta en cero
+   hasta que exista Finances API y también queda fuera a propósito. */
+function MargenNeto({ fila }: { fila: Fila }) {
+  const costo = fila.costo == null ? null : Number(fila.costo);
+  const com = fila.comision_unit == null ? null : Number(fila.comision_unit);
+  const envio = fila.envio_unit == null ? 0 : Number(fila.envio_unit);
+  const real = precioRealizado(fila);
+  const precio = real ?? (fila.precio == null ? null : Number(fila.precio));
+
+  if (costo == null || costo <= 0)
+    return <div className="text-slate-300" title="Sin costo validado para este SKU">—</div>;
+  if (com == null)
+    return (
+      <div className="text-slate-300"
+           title="Sin comisión que leer en el período: la comisión sale de los pedidos reales, no de una tasa estimada. Pasa cuando el producto no vendió, o cuando solo vende en Amazon (comisión aún en cero, falta Finances API).">
+        —
+      </div>
+    );
+  if (precio == null || precio <= 0)
+    return <div className="text-slate-300" title="Sin precio con el que comparar">—</div>;
+
+  const costoFinal = costo + com + envio;
+  const m = ((precio - costoFinal) / precio) * 100;
+  const cobros = com + envio;
+  return (
+    <div
+      title={`Costo final ${fMoney(costoFinal, 2)} = producto ${fMoney(costo, 2)}`
+             + ` + comisión ${fMoney(com, 2)}`
+             + (envio ? ` + envío ${fMoney(envio, 2)}` : " (sin envío estimado)")
+             + `\nSobre el precio ${real != null ? "real de venta" : "publicado"} (${fMoney(precio, 2)})`
+             + `\nQuedan ${fMoney(precio - costoFinal, 2)} por pieza`}
+    >
+      <div className={`font-semibold tabular-nums ${m < 20 ? "text-red-500" : "text-emerald-600"}`}>
+        {fNum(m, 1)}%
+      </div>
+      {/* Cuánto se lleva el canal por pieza: el dato que explica la caída
+          contra la columna de la izquierda sin tener que abrir nada. */}
+      <div className="text-[10px] tabular-nums text-slate-400">−{fMoney(cobros, 0)}</div>
     </div>
   );
 }
@@ -662,6 +720,11 @@ interface ResumenCanal {
   canal: string; cuenta: string; uds: number; ingreso: number;
   precio_prom: number | null; ultima_venta: string | null;
   costo: number | null; ganancia: number | null; margen_pct: number | null;
+  // cobros del canal: aquí es donde se ve que el mismo producto deja distinto
+  // según dónde se venda, porque la comisión la cobra cada canal a su manera
+  comision_unit: number | null; envio_unit: number | null;
+  costo_final: number | null; ganancia_neta: number | null;
+  margen_neto_pct: number | null;
 }
 interface CambioPrecio {
   canal: string; cuenta: string;
@@ -671,12 +734,16 @@ interface TemporadaResumen {
   id: number | null; nombre: string; anio: number | null;
   fecha_inicio: string | null; fecha_fin: string | null; vigente: boolean;
   uds: number; ingreso: number; precio_prom: number | null; margen_pct: number | null;
+  margen_neto_pct: number | null;
 }
 interface ResumenCanales {
   sku: string; dias: number; canales: ResumenCanal[];
   temporadas: TemporadaResumen[] | null;
   global: { uds: number; ingreso: number; precio_prom: number | null;
-            costo: number | null; margen_prom: number | null; ganancia: number | null };
+            costo: number | null; margen_prom: number | null; ganancia: number | null;
+            comision_unit: number | null; envio_unit: number | null;
+            costo_final: number | null; margen_neto: number | null;
+            ganancia_neta: number | null };
   cambios_precio: CambioPrecio[]; historia_desde: string;
 }
 
@@ -722,7 +789,7 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
       <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`relative max-h-[88vh] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl transition-all duration-200 ${visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-3 scale-95 opacity-0"}`}
+        className={`relative max-h-[88vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl transition-all duration-200 ${visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-3 scale-95 opacity-0"}`}
       >
         {/* Encabezado */}
         <div className="mb-3 flex items-start justify-between gap-3">
@@ -763,15 +830,26 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
         {datos && g && (
           <>
             {/* Promedio de TODOS los canales */}
-            <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-6">
               {[
-                ["Unidades", fNum(g.uds), ""],
-                ["Ingreso", fMoney(g.ingreso), ""],
-                ["Precio prom.", g.precio_prom == null ? "—" : fMoney(g.precio_prom, 2), ""],
-                ["Margen prom.", g.margen_prom == null ? "—" : `${fNum(g.margen_prom, 1)}%`, tonoM(g.margen_prom)],
-                ["Ganancia", g.ganancia == null ? "—" : fMoney(g.ganancia), g.ganancia != null && g.ganancia < 0 ? "text-red-500" : ""],
-              ].map(([l, v, tone]) => (
-                <div key={l as string} className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                ["Unidades", fNum(g.uds), "", ""],
+                ["Ingreso", fMoney(g.ingreso), "", ""],
+                ["Precio prom.", g.precio_prom == null ? "—" : fMoney(g.precio_prom, 2), "",
+                 "Lo que de verdad se cobró: ingreso ÷ unidades"],
+                ["Margen bruto", g.margen_prom == null ? "—" : `${fNum(g.margen_prom, 1)}%`,
+                 tonoM(g.margen_prom), "Solo contra el costo del producto, sin los cobros del canal"],
+                ["Margen neto", g.margen_neto == null ? "—" : `${fNum(g.margen_neto, 1)}%`,
+                 tonoM(g.margen_neto),
+                 g.costo_final == null ? "Sin comisión que leer en el período"
+                   : `Costo final ${fMoney(g.costo_final, 2)} = producto ${fMoney(g.costo, 2)}`
+                     + ` + comisión ${fMoney(g.comision_unit, 2)}`
+                     + (g.envio_unit ? ` + envío ${fMoney(g.envio_unit, 2)}` : "")],
+                ["Ganancia neta", g.ganancia_neta == null ? "—" : fMoney(g.ganancia_neta),
+                 g.ganancia_neta != null && g.ganancia_neta < 0 ? "text-red-500" : "",
+                 "Ingreso menos el costo final de todas las piezas vendidas"],
+              ].map(([l, v, tone, ayuda]) => (
+                <div key={l as string} title={ayuda as string}
+                     className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
                   <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{l}</div>
                   <div className={`text-sm font-bold tabular-nums ${tone || "text-slate-800"}`}>{v}</div>
                 </div>
@@ -780,25 +858,38 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
 
             <div className="mb-1 text-[11px] text-slate-400">
               Precio <b>realizado</b>: lo que de verdad se cobró en los pedidos del período
-              (ingreso ÷ unidades), no el precio publicado. El margen usa ese precio.
+              (ingreso ÷ unidades), no el precio publicado. El <b>margen neto</b> le resta
+              además la comisión REAL que cobró cada canal y el envío estimado.
             </div>
 
             {/* Una fila por canal/cuenta */}
             <div className="mb-4 overflow-x-auto rounded-xl border border-slate-100">
-              <table className="w-full min-w-[560px] text-xs">
+              <table className="w-full min-w-[720px] text-xs">
                 <thead>
                   <tr className="bg-slate-50 text-left text-[10px] uppercase tracking-wide text-slate-400">
                     <th className="px-3 py-2 font-semibold">Canal · Cuenta</th>
                     <th className="px-3 py-2 text-right font-semibold">Uds</th>
                     <th className="px-3 py-2 text-right font-semibold">Ingreso</th>
                     <th className="px-3 py-2 text-right font-semibold">Precio prom.</th>
-                    <th className="px-3 py-2 text-right font-semibold">Ganancia</th>
-                    <th className="px-3 py-2 text-right font-semibold">Margen</th>
+                    <th className="px-3 py-2 text-right font-semibold"
+                        title="Sin los cobros del canal: solo precio contra costo del producto">
+                      Margen
+                    </th>
+                    <th className="px-3 py-2 text-right font-semibold"
+                        title="Comisión REAL cobrada por el canal, por pieza (+ envío estimado si lo hay)">
+                      Cobros/u
+                    </th>
+                    <th className="px-3 py-2 text-right font-semibold"
+                        title="Producto + comisión + envío">Costo final</th>
+                    <th className="px-3 py-2 text-right font-semibold"
+                        title="Lo que de verdad queda después de los cobros del canal">
+                      Margen neto
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {datos.canales.length === 0 && (
-                    <tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">
+                    <tr><td colSpan={8} className="px-3 py-4 text-center text-slate-400">
                       Sin ventas en el período
                     </td></tr>
                   )}
@@ -817,11 +908,22 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
                       <td className="px-3 py-1.5 text-right font-semibold tabular-nums text-slate-800">
                         {c.precio_prom == null ? "—" : fMoney(c.precio_prom, 2)}
                       </td>
-                      <td className={`px-3 py-1.5 text-right tabular-nums ${c.ganancia != null && c.ganancia < 0 ? "text-red-500" : "text-slate-700"}`}>
-                        {c.ganancia == null ? "—" : fMoney(c.ganancia)}
-                      </td>
-                      <td className={`px-3 py-1.5 text-right font-semibold tabular-nums ${tonoM(c.margen_pct)}`}>
+                      <td className={`px-3 py-1.5 text-right tabular-nums ${tonoM(c.margen_pct)}`}>
                         {c.margen_pct == null ? "—" : `${fNum(c.margen_pct, 1)}%`}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-500"
+                          title={c.comision_unit == null ? "Sin comisión registrada en el período"
+                                 : `Comisión ${fMoney(c.comision_unit, 2)}`
+                                   + (c.envio_unit ? ` + envío ${fMoney(c.envio_unit, 2)}` : " (sin envío estimado)")}>
+                        {c.comision_unit == null ? "—"
+                          : `−${fMoney(Number(c.comision_unit) + Number(c.envio_unit ?? 0), 2)}`}
+                      </td>
+                      <td className="px-3 py-1.5 text-right tabular-nums text-slate-700">
+                        {c.costo_final == null ? "—" : fMoney(c.costo_final, 2)}
+                      </td>
+                      <td className={`px-3 py-1.5 text-right font-bold tabular-nums ${tonoM(c.margen_neto_pct)}`}
+                          title={c.ganancia_neta == null ? "" : `Ganancia neta del canal: ${fMoney(c.ganancia_neta)}`}>
+                        {c.margen_neto_pct == null ? "—" : `${fNum(c.margen_neto_pct, 1)}%`}
                       </td>
                     </tr>
                   ))}
@@ -853,6 +955,10 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
                         <th className="px-3 py-2 text-right font-semibold">Ingreso</th>
                         <th className="px-3 py-2 text-right font-semibold">Precio prom.</th>
                         <th className="px-3 py-2 text-right font-semibold">Margen</th>
+                        <th className="px-3 py-2 text-right font-semibold"
+                            title="Con el costo final de HOY: la comisión de una temporada pasada no se guarda por separado, así que es una aproximación">
+                          Neto aprox.
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -879,7 +985,7 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
                               {t.fecha_inicio ? `${t.fecha_inicio.slice(5)} → ${(t.fecha_fin ?? "").slice(5)}` : "—"}
                             </td>
                             {t.uds === 0 ? (
-                              <td colSpan={4} className="px-3 py-1.5 text-right text-slate-300">
+                              <td colSpan={5} className="px-3 py-1.5 text-right text-slate-300">
                                 {futura ? "pendiente" : "sin ventas en el rango"}
                               </td>
                             ) : (
@@ -891,6 +997,9 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
                                 </td>
                                 <td className={`px-3 py-1.5 text-right font-semibold tabular-nums ${tonoM(t.margen_pct)}`}>
                                   {t.margen_pct == null ? "—" : `${fNum(t.margen_pct, 1)}%`}
+                                </td>
+                                <td className={`px-3 py-1.5 text-right font-bold tabular-nums ${tonoM(t.margen_neto_pct)}`}>
+                                  {t.margen_neto_pct == null ? "—" : `${fNum(t.margen_neto_pct, 1)}%`}
                                 </td>
                               </>
                             )}
@@ -1162,6 +1271,7 @@ export default function FulfillmentPage() {
                 <Th id="cobertura" right {...th}>Cobertura</Th>
                 <Th right info="precio" {...th}>Precio venta</Th>
                 <Th id="margen" right {...th}>Margen</Th>
+                <Th id="margen_neto" right info="margen_neto" {...th}>Margen neto</Th>
                 <Th id="crec" right {...th}>Crec. 7d</Th>
                 <Th info="spark" {...th}>14d</Th>
                 <Th id="sugerido" right {...th}>Sugerido</Th>
@@ -1235,6 +1345,15 @@ export default function FulfillmentPage() {
                     <button onClick={() => setCanalesDe(f)} title="Ver precio y margen por canal"
                             className="w-full rounded-md px-1 py-0.5 text-right transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
                       <MargenVenta fila={f} />
+                    </button>
+                  </td>
+                  {/* Margen NETO: el mismo margen ya con la comisión real del
+                      canal y el envío encima. Abre el mismo modal, donde se ve
+                      canal por canal cuánto se lleva cada uno. */}
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <button onClick={() => setCanalesDe(f)} title="Ver el desglose de cobros por canal"
+                            className="w-full rounded-md px-1 py-0.5 text-right transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
+                      <MargenNeto fila={f} />
                     </button>
                   </td>
                   <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.crec_7d_pct == null ? "text-slate-300" : f.crec_7d_pct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
