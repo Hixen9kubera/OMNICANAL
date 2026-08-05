@@ -33,7 +33,6 @@ const SECCIONES = [
   { href: "/analisis/estrellas", label: "Estrellas", icon: Star },
   { href: "/analisis/fba", label: "Amazon FBA", icon: BarChart3 },
   { href: "/analisis/reportes", label: "Reportes", icon: FileText },
-  { href: "/analisis/temporadas", label: "Temporadas", icon: Clock },
 ];
 // La entrada VENTAS del submenú vive en /ventas (página autónoma con su propio
 // navbar): no pasa por este layout y por eso no está en SECCIONES.

@@ -30,7 +30,6 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from config import settings
 from services import supabase_db as sdb
@@ -610,109 +609,6 @@ select h.canal,
 """
 
 
-# Ventas del SKU agrupadas por TEMPORADA del catálogo. La etiqueta es solo un
-# rango de fechas: el resumen se deriva de los pedidos al momento de consultar,
-# así que corregir un rango recalcula solo y se pueden leer temporadas
-# retroactivas. Se muestran las de los últimos 13 meses y las que arrancan en
-# los próximos 45 días (las 2027 lejanas no ensucian la ventana).
-_SQL_TEMPORADAS = _mx("""
-select t.id, t.nombre, t.anio,
-       t.fecha_inicio::text as fecha_inicio, t.fecha_fin::text as fecha_fin,
-       (current_date between t.fecha_inicio and t.fecha_fin) as vigente,
-       coalesce(sum(s.units_sold), 0)::int                       as uds,
-       round(coalesce(sum(s.revenue), 0), 2)                     as ingreso,
-       round(sum(s.revenue) / nullif(sum(s.units_sold), 0), 2)   as precio_prom
-  from analytics.temporadas t
-  left join channel.sales_daily_completa s
-    on s.sku = %(sku)s::citext
-   and s.date between t.fecha_inicio and t.fecha_fin
- where t.activa
-   and t.fecha_fin >= current_date - 400
-   and t.fecha_inicio <= current_date + 45
- group by t.id, t.nombre, t.anio, t.fecha_inicio, t.fecha_fin
- order by t.fecha_inicio desc
-""")
-
-# La línea base para comparar: lo vendido en los últimos 90 días FUERA de
-# cualquier temporada activa. Sin esto, "Navidad vendió a $X" no dice nada.
-_SQL_FUERA_TEMPORADA = _mx("""
-select coalesce(sum(s.units_sold), 0)::int                      as uds,
-       round(coalesce(sum(s.revenue), 0), 2)                    as ingreso,
-       round(sum(s.revenue) / nullif(sum(s.units_sold), 0), 2)  as precio_prom
-  from channel.sales_daily_completa s
- where s.sku = %(sku)s::citext
-   and s.date > current_date - 90
-   and not exists (select 1 from analytics.temporadas t
-                    where t.activa
-                      and s.date between t.fecha_inicio and t.fecha_fin)
-""")
-
-
-class TemporadaIn(BaseModel):
-    """Alta/edición de una temporada desde el panel."""
-    id: int | None = None
-    nombre: str
-    anio: int
-    fecha_inicio: str   # YYYY-MM-DD
-    fecha_fin: str
-    activa: bool = True
-    notas: str | None = None
-
-
-@router.get("/temporadas")
-async def listar_temporadas() -> dict[str, Any]:
-    """Catálogo completo (para la página de administración)."""
-    if not sdb.disponible():
-        raise HTTPException(503, "BD kubera no configurada en este ambiente")
-    try:
-        filas = sdb.fetch_all("""
-            select id, nombre, anio, fecha_inicio::text, fecha_fin::text,
-                   fuente, activa, notas
-              from analytics.temporadas
-             order by fecha_inicio desc""")
-        return {"temporadas": filas}
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"catálogo de temporadas no disponible: {exc}") from exc
-
-
-@router.post("/temporadas")
-async def guardar_temporada(t: TemporadaIn) -> dict[str, Any]:
-    """Crea o edita una temporada. Editar una sembrada NO cambia su fuente:
-    sigue siendo 'sembrada' con fechas corregidas (caso Hot Sale/Buen Fin)."""
-    if not sdb.disponible():
-        raise HTTPException(503, "BD kubera no configurada en este ambiente")
-    try:
-        if t.id:
-            fila = sdb.execute_returning("""
-                update analytics.temporadas
-                   set nombre = %(nombre)s, anio = %(anio)s,
-                       fecha_inicio = %(fecha_inicio)s::date,
-                       fecha_fin = %(fecha_fin)s::date,
-                       activa = %(activa)s, notas = %(notas)s,
-                       updated_at = now()
-                 where id = %(id)s
-             returning id""", t.model_dump())
-            if not fila:
-                raise HTTPException(404, f"temporada id={t.id} no existe")
-        else:
-            fila = sdb.execute_returning("""
-                insert into analytics.temporadas
-                       (nombre, anio, fecha_inicio, fecha_fin, fuente, activa, notas)
-                values (%(nombre)s, %(anio)s, %(fecha_inicio)s::date,
-                        %(fecha_fin)s::date, 'manual', %(activa)s, %(notas)s)
-                on conflict (nombre, anio) do update set
-                       fecha_inicio = excluded.fecha_inicio,
-                       fecha_fin = excluded.fecha_fin,
-                       activa = excluded.activa, notas = excluded.notas,
-                       updated_at = now()
-             returning id""", t.model_dump())
-        return {"ok": True, "id": fila["id"]}
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"no se pudo guardar la temporada: {exc}") from exc
-
-
 # ── Márgenes con COSTO FINAL (requerimientos Eduardo, 4-ago) ────────────────
 #
 # Definiciones del negocio:
@@ -875,19 +771,6 @@ async def resumen_canales(
     try:
         canales = sdb.fetch_all(_SQL_CANALES, p)
         cambios = sdb.fetch_all(_SQL_CAMBIOS_PRECIO, {"sku": sku})
-        # Resumen por TEMPORADA (catálogo analytics.temporadas). En un ambiente
-        # donde la migración 0008 no se ha aplicado la tabla no existe: el
-        # modal simplemente no muestra la sección, sin romper lo demás.
-        temporadas = None
-        try:
-            temporadas = sdb.fetch_all(_SQL_TEMPORADAS, {"sku": sku})
-            fuera = sdb.fetch_one(_SQL_FUERA_TEMPORADA, {"sku": sku})
-            if fuera and int(fuera["uds"] or 0) > 0:
-                temporadas.append({**fuera, "id": None, "nombre": "Fuera de temporada",
-                                   "anio": None, "fecha_inicio": None, "fecha_fin": None,
-                                   "vigente": False})
-        except Exception as exc:  # noqa: BLE001
-            log.info("temporadas no disponibles (¿migración 0008 sin aplicar?): %s", exc)
         uds = sum(int(c["uds"]) for c in canales)
         ingreso = round(sum(float(c["ingreso"]) for c in canales), 2)
         costo = next((float(c["costo"]) for c in canales
@@ -909,19 +792,8 @@ async def resumen_canales(
                        if costo is not None and comision_unit is not None else None)
         margen_neto = (round((precio_prom - costo_final) / precio_prom * 100, 1)
                        if precio_prom and costo_final is not None else None)
-        # margen por temporada con el MISMO costo (uno por SKU); el neto usa el
-        # costo final global — la comisión de una temporada vieja no se guarda
-        # aparte, así que se declara como aproximación en la UI
-        if temporadas is not None:
-            for t in temporadas:
-                pp = float(t["precio_prom"]) if t.get("precio_prom") else None
-                t["margen_pct"] = (round((pp - costo) / pp * 100, 1)
-                                   if pp and costo is not None else None)
-                t["margen_neto_pct"] = (round((pp - costo_final) / pp * 100, 1)
-                                        if pp and costo_final is not None else None)
         return {
             "sku": sku, "dias": dias, "canales": canales,
-            "temporadas": temporadas,
             "global": {"uds": uds, "ingreso": ingreso,
                        "precio_prom": precio_prom, "costo": costo,
                        "margen_prom": margen_prom,
