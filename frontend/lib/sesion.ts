@@ -29,6 +29,8 @@ export interface Usuario {
   rol: "admin" | "operador" | "lectura" | null;
   tipo?: string;
   puede?: Record<string, boolean>;
+  /** ¿La API ya está exigiendo credencial? Lo dice el backend, no el panel. */
+  auth_activa?: boolean;
 }
 
 /** El token de la sesión actual, o "" si no hay. */
@@ -267,7 +269,13 @@ export async function quienSoy(): Promise<Usuario> {
       headers: { Authorization: `Bearer ${t}` },
       cache: "no-store",
     });
-    if (!res.ok) return anon;
+    // UN 401 NO ES "NO SÉ": es la API diciendo que YA exige credencial. Tratarlo
+    // como desconocido fue el bug del 5-ago — el guardián lo leía como
+    // "enforcement apagado" y dejaba entrar sin sesión justo cuando se encendió.
+    if (res.status === 401 || res.status === 403) {
+      return { ...anon, auth_activa: true };
+    }
+    if (!res.ok) return anon;   // 5xx o red: de verdad no sabemos
     return (await res.json()) as Usuario;
   } catch {
     return anon;
