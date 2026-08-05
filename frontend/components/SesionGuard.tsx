@@ -28,6 +28,24 @@ import { cerrarSesion, cuidarSesion, haySesion, quienSoy, refrescar } from "@/li
 // Rutas que se ven sin sesión (si no, el login se bloquearía a sí mismo).
 const ABIERTAS = ["/login"];
 
+// SANDBOX SIN LOGIN (Eduardo, 5-ago).
+//
+// El sandbox corre contra la BD de pruebas (yvootpbz), donde NO hay nadie dado
+// de alta: las cuentas del panel viven en el proyecto Supabase de producción.
+// Exigir sesión ahí no protege nada — solo impide probar, que es para lo único
+// que existe ese ambiente.
+//
+// Se apaga con NEXT_PUBLIC_AUTH_OFF=true, y solo ahí. Next.js sustituye las
+// NEXT_PUBLIC_* al COMPILAR, así que en un build de producción —donde la
+// variable no existe— esto queda como `false` literal y el bloque desaparece
+// del bundle. No se puede encender desde el navegador.
+//
+// Y aunque alguien la prendiera por error en producción, el candado de verdad
+// sigue puesto: el backend exige credencial por su cuenta (AUTH_ENFORCED), así
+// que se vería el cascarón del panel sin un solo dato. Esto abre la PUERTA de
+// la UI, no los datos.
+const SIN_LOGIN = process.env.NEXT_PUBLIC_AUTH_OFF === "true";
+
 export default function SesionGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const ruta = usePathname();
@@ -42,6 +60,11 @@ export default function SesionGuard({ children }: { children: React.ReactNode })
     }
 
     async function revisar() {
+      // Sandbox: se entra directo, sin preguntar ni redirigir.
+      if (SIN_LOGIN) {
+        if (vivo) setListo(true);
+        return;
+      }
       if (ABIERTAS.some((r) => ruta?.startsWith(r))) {
         if (vivo) setListo(true);
         return;
