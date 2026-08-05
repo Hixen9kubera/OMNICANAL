@@ -48,6 +48,10 @@ interface Fila {
   titulo: string | null;
   tam: string;
   estado: "activa" | "pausada" | "no_venta";
+  // situación de las publicaciones, independiente de la venta: "NO VENTA" la
+  // tapa en `estado` (caso real: 15 de 17 SKUs de una captura eran pausados y
+  // el chip no lo decía) — este campo la rescata para mostrarla al lado
+  situacion_chip: "activa" | "pausada" | "otra";
   tipo: "full" | "no_full" | "mixto";
   uds: number;
   venta: number;
@@ -1182,6 +1186,15 @@ export default function FulfillmentPage() {
                   {/* Estado + tipo */}
                   <td className="whitespace-nowrap px-2 py-1.5">
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${ESTADO_CHIP[f.estado]}`}>{ESTADO_LABEL[f.estado]}</span>
+                    {/* NO VENTA habla de la VENTA, no de la publicación: el
+                        mini-chip dice cómo está la publicación para no tener
+                        que adivinarla (pedido de Eduardo, 5-ago) */}
+                    {f.estado === "no_venta" && f.situacion_chip !== "otra" && (
+                      <span className={`ml-1 rounded px-1 py-0.5 text-[9px] font-semibold ${f.situacion_chip === "activa" ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"}`}
+                            title="Situación de la publicación (la etiqueta NO VENTA habla del período, no de la publicación)">
+                        {f.situacion_chip}
+                      </span>
+                    )}
                     <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${TIPO_CHIP[f.tipo]}`}>{tipoLabel(f)}</span>
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right text-slate-300"
