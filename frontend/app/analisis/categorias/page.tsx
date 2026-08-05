@@ -17,7 +17,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, Download, Loader2, Search, X } from "lucide-react";
+import { ChevronRight, Loader2, Search, X } from "lucide-react";
 import { API_BASE } from "@/lib/api";
 import Ayuda from "@/components/Ayuda";
 
@@ -278,16 +278,7 @@ export default function CategoriasPage() {
             </button>
           )}
         </div>
-        <a href={`${API_BASE}/api/fulfillment/categorias/excel?${(() => {
-             const q = new URLSearchParams({ dias: String(dias) });
-             if (cuenta) q.set("cuenta", cuenta);
-             if (desde) q.set("desde", desde);
-             if (hasta) q.set("hasta", hasta);
-             return q.toString();
-           })()}`}
-           className="ml-auto flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100">
-          <Download size={15} /> Exportar a Excel
-        </a>
+        {/* La descarga a Excel vive en Análisis → Reportes (Eduardo, 05-ago) */}
       </div>
 
       {error && (

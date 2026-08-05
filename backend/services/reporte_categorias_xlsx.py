@@ -80,7 +80,9 @@ def construir(hojas: list[dict], pubs: list[dict], desde: str, hasta: str,
     for p in pubs:
         pubs_por_cat[str(p["category_id"])].append(p)
     raices, acum = _arbol(hojas)
-    orden_raiz = sorted(raices, key=lambda r: -acum[r]["venta"])
+    # "Sin categoría" SIEMPRE al final, venda lo que venda (Eduardo, 05-ago)
+    orden_raiz = sorted(raices,
+                        key=lambda r: (r == "Sin categoría", -acum[r]["venta"]))
 
     wb = Workbook()
 
@@ -97,9 +99,9 @@ def construir(hojas: list[dict], pubs: list[dict], desde: str, hasta: str,
     # categoría queda ARRIBA de su bloque, así que el resumen va arriba.
     ws.sheet_properties.outlinePr.summaryBelow = False
     fila = 2
-    # El archivo abre COMPACTO: visibles las categorías principales y su primer
-    # nivel; lo demás plegado (clic en + para abrir). Tope de Excel: 7 niveles.
-    _VISIBLE_HASTA = 1  # profundidad máxima visible al abrir
+    # El archivo abre TOTALMENTE plegado: solo las categorías principales
+    # (Eduardo, 05-ago); todo lo demás se abre con los +. Tope Excel: 7 niveles.
+    _VISIBLE_HASTA = 0  # profundidad máxima visible al abrir
 
     def _outline(r: int, nivel: int, oculta: bool) -> None:
         rd = ws.row_dimensions[r]
