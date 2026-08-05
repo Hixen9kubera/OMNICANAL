@@ -4242,3 +4242,53 @@ sin eso Supabase se niega a devolver al usuario después de Google. Versión 0.6
 ---
 
 *Hecho para Kubera — panel omnicanal sobre WooCommerce.*
+
+### v0.62.0 — Walmart MX: el lote del 4-ago no había publicado NADA, y ya sabemos por qué
+
+El forense de los **88 feeds** de la cuenta arrojó un número incómodo: **cero
+items exitosos**. Ni el 31-jul ni el 4-ago. `GET /v3/items` daba 404 no porque
+Walmart tardara en publicar, sino porque nada pasó jamás la validación.
+
+**El "9 feeds sin fallos" era un bug nuestro.** `publicar()` sondeaba 8 ciclos de
+14 s y, si Walmart seguía procesando, devolvía `INPROGRESS` — que el resumen
+contaba como aceptado. Ahora `INPROGRESS` significa "sin veredicto" y el estado
+real se consulta en una pasada aparte, al final de la corrida.
+
+**La causa raíz nº1 era el TIEMPO, no el formato.** Ocho rechazos decían *"We
+couldn't download the image, because the URL isn't in the correct format"*. Pero
+las URLs son ASCII puro, terminan en `.jpg`, van por HTTPS y responden 200 con
+ocho User-Agents distintos (curl, Java, Apache-HttpClient, bot, Chrome), con HEAD
+y con Range. Lo que las mataba es otra cosa: las imágenes de `MASC-0033` se
+subieron a WordPress a las **16:25:26 UTC** y el feed salió a las **16:25:28** —
+dos segundos después, cuando el CDN de Hostinger todavía no las servía. Es la
+regla de la casa nº5 (LiteSpeed cachea chunche.shop) pegando desde el otro lado.
+
+El publicador ahora va en **cuatro fases**: preparar todas las imágenes, esperar
+la propagación, **revalidar cada URL contra el servidor público**, y recién
+entonces publicar — en tandas de 8 con descanso, porque la cuota es el cuello de
+botella real y el 4-ago se comió 11 disfraces que ni alcanzaron a salir.
+
+**El esquema oficial es público y nadie lo sabía.**
+`https://developer.walmart.com/file/mp/mx/MX_MP_ITEM_INTL_SPEC.json` — 3.9 MB,
+HTTP 200 sin credenciales. Trae los 75 `subCategory`, los 75 grupos `Visible` con
+su etiqueta en español y la lista `required` de cada uno. Ahí se confirmó que
+`mart`, `locale` y `sellingChannel` son enums de **un solo valor**: `WALMART_MX`
+y `es_MX` nunca iban a funcionar. Antes de sondear con feeds de prueba, leer ese
+archivo.
+
+**Segunda categoría abierta**: `home_other` con clave `Visible` "Cocina,
+Decoración y Otros", exención folio **15751007**. Y con ella una trampa nueva: el
+esquema publicado es de la versión **3.19** y nosotros mandamos **3.11**, así que
+sus `required` NO son los mismos. La categoría de cocina rechazó tres artículos
+pidiendo `Talla` y `Género`, que el esquema dice que esa categoría no pide. Se
+agregaron y pasaron. Corolario útil: si Walmart se queja de solo dos o tres
+atributos, la categoría está bien; el síntoma de categoría equivocada es una
+lluvia de atributos absurdos.
+
+**La clave del SAT estaba mal.** `53102700` es "Uniformes", no ropa genérica.
+Disfraces usa ahora `60141401` "Disfraces o accesorios", verificada contra el
+catálogo oficial del SAT (52,513 claves). Cada categoría lleva la suya.
+
+Se agregó `--categoria`, `--skus` y `--espera` al publicador, y una lista
+`EXCLUIDOS` que documenta en el código por qué un SKU no se manda, para no
+volver a gastarle cuota ni a redescubrir el motivo.

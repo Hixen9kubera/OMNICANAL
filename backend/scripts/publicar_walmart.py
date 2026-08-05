@@ -54,21 +54,110 @@ except Exception:  # noqa: BLE001
 
 HOST = "https://marketplace.walmartapis.com"
 
-# categoría de la API -> etiqueta del grupo Visible (la que usa el spec en español)
-CATEGORIAS_AUTORIZADAS = {
-    "costumes": "Disfraces",
+# EL ESQUEMA OFICIAL ES PÚBLICO — ya no hay que adivinar
+# ------------------------------------------------------
+#   https://developer.walmart.com/file/mp/mx/MX_MP_ITEM_INTL_SPEC.json
+#   3.9 MB, HTTP 200 SIN credenciales.
+#
+# Trae el enum de los 75 `subCategory`, los 75 grupos `Visible` con su etiqueta
+# en español y la lista `required` de cada uno. Antes de sondear con feeds de
+# prueba (que queman cuota), leer ese archivo. De ahí salieron los `required`
+# de abajo y la confirmación de que `mart`, `locale` y `sellingChannel` son
+# enums de UN SOLO valor — por eso "WALMART_MX" y "es_MX" nunca iban a funcionar.
+#
+# OJO: el esquema publicado hoy es la versión 3.19 y nosotros mandamos 3.11, que
+# funciona. No migrar a ciegas: el Orderable de 3.19 exige 4 campos que este
+# payload no manda (condition, sellerWarranty, sellerWarrantyCondition,
+# sellerWarrantyPeriod).
+
+# Categorías con EXENCIÓN DE UPC concedida. Walmart la otorga por categoría, no
+# por cuenta: publicar en una que no esté aquí responde "You are not authorized
+# to set up 'CUSTOM' Product IDs for UPC exemptions".
+#
+#   clave_visible : etiqueta EN ESPAÑOL del grupo Visible (la del esquema, con
+#                   acentos exactos). Si se equivoca, Walmart cae en un spec
+#                   genérico y pide atributos absurdos — ese es el síntoma.
+#   clave_sat     : c_ClaveProdServ del SAT. Walmart solo valida el FORMATO
+#                   (entero ≤ 8 dígitos), no lo cruza contra el SAT, pero la
+#                   factura sí, así que vale ponerla bien.
+#   pide_genero   : Disfraces exige `gender`; "Cocina, Decoración y Otros" no.
+CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
+    "costumes": {
+        "clave_visible": "Disfraces",
+        "folio_exencion": "15728342",     # 4-ago-2026
+        # 60141401 = "Disfraces o accesorios". La anterior (53102700) era
+        # "Uniformes", no ropa genérica: verificado contra el catálogo oficial
+        # del SAT (catCFDI_V_4, 52,513 claves).
+        "clave_sat": 60141401,
+        "pide_genero": True,
+        "patron_categoria": "isfra|osplay",
+        "patron_titulo": "isfra|osplay|allowee",
+    },
+    "home_other": {
+        "clave_visible": "Cocina, Decoración y Otros",
+        "folio_exencion": "15751007",     # 5-ago-2026
+        "clave_sat": 52151600,            # "Utensilios de cocina domésticos"
+        # OJO — el esquema PUBLICADO (3.19) dice que esta categoría NO pide
+        # `gender` ni `size`: su `required` son 7 campos. PRODUCCIÓN DICE OTRA
+        # COSA. Con version=3.11 (la que mandamos y funciona), los tres SKUs de
+        # cocina del 5-ago fueron rechazados con:
+        #     "`Talla` is a required attribute, but no value was provided"
+        #     "`Género` is a required attribute, but no value was provided"
+        # El esquema público es de la 3.19; los `required` NO son los de la 3.11.
+        # Lección: el JSON oficial sirve para descubrir nombres, claves y listas
+        # cerradas — pero la obligatoriedad hay que verificarla contra la versión
+        # que de verdad se manda.
+        "pide_genero": True,
+        # El patrón por título jalaba 38 SKUs, casi todos TEC-* (reflectores,
+        # tiras LED, lámparas de trabajo): "iluminación" aparece en el título de
+        # mucha electrónica que NO es de hogar. El prefijo del SKU es la
+        # taxonomía real de Kubera (ver services/categorias.py), así que manda él.
+        "prefijos_sku": ("COC", "DEC", "ILUM", "LUZ"),
+        "patron_categoria": "ocina|ecoraci|dorno|luminaci",
+        "patron_titulo": "ocina|ecoraci|dorno|luminaci",
+    },
 }
 
-# Cómo reconocer un disfraz en el catálogo de Woo.
-PATRON_CATEGORIA = "isfra|osplay"
-PATRON_TITULO = "isfra|osplay|allowee"
-
-# Clave del SAT para ropa y accesorios de vestir.
-CLAVE_SAT = 53102700
+# ⚠️ NO todo el catálogo de hogar cae en "Cocina, Decoración y Otros". El
+# esquema tiene grupos SEPARADOS que esta exención NO cubre:
+#     storage              -> "Almacenamiento"        (cajas, organizadores)
+#     furniture_other      -> "Muebles"               (mesas, sillas, estantes)
+#     decorations_and_favors -> "Adornos y Decoraciones"
+# Para publicar ahí hay que pedir la exención de cada una por separado en
+# sellerhelp.mx.walmart.com.
 
 # Segundos de espera entre productos. Sin esto, Walmart corta con
 # REQUEST_THRESHOLD_VIOLATED (pasó con 4 del primer lote).
-PAUSA_ENTRE_ITEMS = 8
+PAUSA_ENTRE_ITEMS = 15
+
+# Tandas: 8 productos y a descansar. El 4-ago se mandaron 30 feeds seguidos y la
+# cuota se agotó; 11 disfraces ni siquiera llegaron a salir.
+TANDA = 8
+DESCANSO_ENTRE_TANDAS = 120
+
+# Segundos entre subir las imágenes a WordPress y mandar el feed.
+#
+# LA CAUSA RAÍZ DEL LOTE DEL 4-AGO. El script subía las imágenes y publicaba en
+# el mismo aliento: las de MASC-0033 se subieron a las 16:25:26 UTC y el feed
+# salió a las 16:25:28 — dos segundos después. Walmart intentó descargarlas de
+# inmediato, el CDN de Hostinger (`server=hcdn`) todavía no las servía, y
+# respondió "We couldn't download the image, because the URL isn't in the correct
+# format" (8 veces) + "Main image URL setup failed" (8 veces). El mensaje habla
+# de formato, pero las URLs son ASCII puro, .jpg y HTTPS: el problema era el
+# tiempo. Un día después, las MISMAS urls responden 200 con ocho User-Agents.
+#
+# Por eso ahora hay dos fases: se preparan TODAS las imágenes, se espera, se
+# revalida cada URL contra el servidor público, y recién entonces se publica.
+ESPERA_PROPAGACION = 120
+
+# SKUs que NO se mandan y por qué. Documentarlo aquí evita volver a gastarles
+# cuota y volver a descubrir el mismo motivo.
+EXCLUIDOS = {
+    "JUGU-0241-ROJ": "solo 1 imagen utilizable; Walmart exige mínimo 1 foto adicional",
+    "JUGU-1177": "solo 1 imagen utilizable; Walmart exige mínimo 1 foto adicional",
+    "ACC-0162-NEG": "en revisión de cumplimiento desde el 4-ago; Walmart rechaza "
+                    "reenvíos hasta que termine (hasta 48 h)",
+}
 
 # `Género` es lista cerrada: [Hombre, Niño, Mujer, Unisex, Niña]. Woo guarda
 # valores libres ("Adulto", "Dama", "Caballero"...) que Walmart rechaza. Lo que
@@ -208,24 +297,48 @@ async def _token(cx) -> str:
     return _token_cache["valor"]
 
 
-def candidatos() -> list[str]:
-    """SKUs de disfraz que YA están vivos en Mercado Libre o Amazon."""
+def candidatos(cfg: dict | None = None) -> list[str]:
+    """SKUs de esa categoría que YA están vivos en Mercado Libre o Amazon."""
     from services import db, wp_db
 
+    cfg = cfg or CATEGORIAS_AUTORIZADAS["costumes"]
+    PATRON_CATEGORIA = cfg["patron_categoria"]
+    PATRON_TITULO = cfg["patron_titulo"]
+
+    # El prefijo del SKU es una vía ALTERNA al texto, no un filtro encima. Un
+    # sartén puede estar en la categoría "Sartenes" y titularse "Sartén
+    # antiadherente 24 cm": ni la categoría ni el título dicen "cocina", pero el
+    # prefijo COC sí. Al revés, media electrónica dice "iluminación" en el
+    # título sin ser de hogar — por eso el prefijo también acota.
+    prefijos = cfg.get("prefijos_sku") or ()
+    patron_sku = ("^(" + "|".join(prefijos) + ")-") if prefijos else None
+
     P = wp_db._prefix()
+    cond = "(t.name REGEXP %s OR p.post_title REGEXP %s"
+    params: list = [PATRON_CATEGORIA, PATRON_TITULO]
+    if patron_sku:
+        cond += " OR m2.meta_value REGEXP %s"
+        params.append(patron_sku)
+    cond += ")"
+
     filas = wp_db._fetch_all(f"""
-        SELECT MAX(CASE WHEN m.meta_key='_sku' THEN m.meta_value END) AS sku
+        SELECT MAX(m2.meta_value) AS sku
         FROM {P}posts p
-        JOIN {P}postmeta m ON m.post_id = p.ID
+        JOIN {P}postmeta m2 ON m2.post_id = p.ID AND m2.meta_key = '_sku'
+                           AND m2.meta_value <> ''
         LEFT JOIN {P}term_relationships tr ON tr.object_id = p.ID
         LEFT JOIN {P}term_taxonomy tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
                                      AND tt.taxonomy = 'product_cat'
         LEFT JOIN {P}terms t ON t.term_id = tt.term_id
         WHERE p.post_type = 'product' AND p.post_status = 'publish'
-          AND (t.name REGEXP %s OR p.post_title REGEXP %s)
+          AND {cond}
         GROUP BY p.ID
-        HAVING sku IS NOT NULL""", (PATRON_CATEGORIA, PATRON_TITULO))
+        HAVING sku IS NOT NULL""", tuple(params))
     skus = sorted({f["sku"] for f in filas if f["sku"]})
+    # Si hay prefijos declarados, ninguno de otra familia entra aunque el texto
+    # haya coincidido.
+    if prefijos:
+        skus = [s for s in skus if s.split("-")[0].upper() in prefijos]
     if not skus:
         return []
     ph = ",".join(["%s"] * len(skus))
@@ -285,8 +398,9 @@ async def ficha(cx, sku: str) -> dict | None:
     return p
 
 
-def _armar(p: dict, imgs: list[str], categoria: str, clave: str) -> dict:
+def _armar(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
     """Payload MP_ITEM_INTL a partir de lo que Woo ya tiene."""
+    clave = cfg["clave_visible"]
     atrs = {a.get("name"): (a.get("options") or [None])[0]
             for a in (p.get("attributes") or [])}
     dims = p.get("dimensions") or {}
@@ -310,6 +424,23 @@ def _armar(p: dict, imgs: list[str], categoria: str, clave: str) -> dict:
     desc = re.sub(r"<[^>]+>", " ", desc)
     desc = re.sub(r"\s+", " ", desc).strip()[:3900] or p.get("name")
 
+    # Los 7 obligatorios que TODA categoría comparte, según el `required` del
+    # esquema oficial. Disfraces añade el octavo (`gender`); "Cocina, Decoración
+    # y Otros" no lo pide — mandarlo de más ahí sería inventar un dato.
+    visible = {
+        "countPerPack": 1,
+        "material": _attr(atrs, "material") or cfg.get("material_default", "Plástico"),
+        "colorCategory": [_color(_attr(atrs, "color"))],
+        "modelNumber": atrs.get("MODEL") or p.get("sku"),
+        "assembledProductLength": {"measure": num(dims.get("length")), "unit": "cm"},
+        "assembledProductWidth": {"measure": num(dims.get("width")), "unit": "cm"},
+        "assembledProductHeight": {"measure": num(dims.get("height")), "unit": "cm"},
+        "assembledProductWeight": {"measure": num(p.get("weight"), 0.3), "unit": "kg"},
+    }
+    if cfg.get("pide_genero"):
+        visible["size"] = _attr(atrs, "talla") or "Unitalla"
+        visible["gender"] = _genero(_attr(atrs, "genero"), p.get("name"))
+
     return {
         "MPItemFeedHeader": {
             "subCategory": categoria, "sellingChannel": "marketplace",
@@ -327,14 +458,14 @@ def _armar(p: dict, imgs: list[str], categoria: str, clave: str) -> dict:
                 # Precio de LISTA, ya resuelto en ficha() (los variables traen
                 # el padre vacío y caían al precio con descuento).
                 "price": num(p.get("_precio_lista"), 1.0),
-                "ProductTaxCode": CLAVE_SAT,
+                "ProductTaxCode": cfg["clave_sat"],
                 "msiEligible": "No",
                 "shortDescription": desc,
                 "keyFeatures": [k for k in [
                     p.get("name"),
                     f"Material: {atrs['MAIN_MATERIAL']}" if atrs.get("MAIN_MATERIAL") else None,
                     f"Personaje: {atrs['CHARACTER']}" if atrs.get("CHARACTER") else None,
-                    "Ideal para Halloween y fiestas temáticas",
+                    cfg.get("frase_extra"),
                 ] if k][:5],
                 "mainImageUrl": imgs[0],
                 "productSecondaryImageURL": imgs[1:5],
@@ -348,20 +479,7 @@ def _armar(p: dict, imgs: list[str], categoria: str, clave: str) -> dict:
                 "shippingDiscount": 0,
                 "itemsIncluded": (p.get("name") or "")[:200],
             },
-            "Visible": {
-                clave: {
-                    "countPerPack": 1,
-                    "material": _attr(atrs, "material") or "Poliéster",
-                    "colorCategory": [_color(_attr(atrs, "color"))],
-                    "modelNumber": atrs.get("MODEL") or p.get("sku"),
-                    "size": _attr(atrs, "talla") or "Unitalla",
-                    "gender": _genero(_attr(atrs, "genero"), p.get("name")),
-                    "assembledProductLength": {"measure": num(dims.get("length")), "unit": "cm"},
-                    "assembledProductWidth": {"measure": num(dims.get("width")), "unit": "cm"},
-                    "assembledProductHeight": {"measure": num(dims.get("height")), "unit": "cm"},
-                    "assembledProductWeight": {"measure": num(p.get("weight"), 0.3), "unit": "kg"},
-                }
-            },
+            "Visible": {clave: visible},
         }],
     }
 
@@ -399,27 +517,42 @@ async def _solo_jpeg(cx, urls: list[str]) -> list[str]:
     return buenas
 
 
-async def publicar(cx, tk: str, payload: dict) -> tuple[str, list[str]]:
+async def consultar_feed(cx, tk: str, fid: str) -> tuple[str, list[str]]:
+    """Estado REAL de un feed. `?` si Walmart todavía no lo resolvió."""
+    r = await cx.get(f"{HOST}/v3/feeds/{fid}", headers=_h(tk),
+                     params={"includeDetails": "true"}, timeout=60.0)
+    if r.status_code != 200:
+        return "CONSULTA_FALLIDA", [f"HTTP {r.status_code}: {r.text[:120]}"]
+    s = r.json()
+    d = ((s.get("itemDetails") or {}).get("itemIngestionStatus") or [{}])[0]
+    st = d.get("ingestionStatus") or ""
+    errs = [e.get("description", "")[:170]
+            for e in (d.get("ingestionErrors") or {}).get("ingestionError", [])]
+    if st and st != "INPROGRESS":
+        return st, errs
+    if s.get("feedStatus") in ("PROCESSED", "ERROR"):
+        # El feed terminó pero el item no reporta estado: manda el conteo.
+        return ("SUCCESS" if (s.get("itemsSucceeded") or 0) > 0 else "DATA_ERROR"), errs
+    return "INPROGRESS", errs
+
+
+async def publicar(cx, tk: str, payload: dict) -> tuple[str, list[str], str]:
+    """
+    Manda el feed y devuelve (estado, errores, feedId).
+
+    NO se queda esperando el veredicto: sondear aquí gastaba cuota y, peor, si a
+    los 112 s Walmart seguía procesando el script devolvía "INPROGRESS" y el
+    resumen lo contaba como ACEPTADO. Así nacieron los "9 feeds sin fallos" del
+    4-ago que en realidad fueron 0 — los 88 feeds de la cuenta tienen CERO items
+    exitosos. El veredicto se consulta al final, en una sola pasada.
+    """
     crudo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     r = await cx.post(f"{HOST}/v3/feeds", params={"feedType": "MP_ITEM_INTL"},
                       headers=_h(tk), timeout=120.0,
                       files={"file": ("i.json", crudo, "application/json")})
     if r.status_code != 200:
-        return "ENVIO_FALLIDO", [r.text[:180]]
-    fid = r.json()["feedId"]
-    for _ in range(8):
-        await asyncio.sleep(14)
-        s = (await cx.get(f"{HOST}/v3/feeds/{fid}", headers=_h(tk),
-                          params={"includeDetails": "true"}, timeout=60.0)).json()
-        d = ((s.get("itemDetails") or {}).get("itemIngestionStatus") or [{}])[0]
-        st = d.get("ingestionStatus") or ""
-        if st and st != "INPROGRESS":
-            errs = [e.get("description", "")[:170]
-                    for e in (d.get("ingestionErrors") or {}).get("ingestionError", [])]
-            return st, errs
-        if s.get("feedStatus") == "PROCESSED":
-            return st or "PROCESSED", []
-    return "INPROGRESS", []
+        return "ENVIO_FALLIDO", [r.text[:180]], ""
+    return "ENVIADO", [], r.json().get("feedId", "")
 
 
 async def main() -> int:
@@ -427,79 +560,159 @@ async def main() -> int:
     limite = 0
     if "--limite" in sys.argv:
         limite = int(sys.argv[sys.argv.index("--limite") + 1])
+    solo: list[str] = []
+    if "--skus" in sys.argv:
+        solo = [s.strip() for s in sys.argv[sys.argv.index("--skus") + 1].split(",")
+                if s.strip()]
+    espera = ESPERA_PROPAGACION
+    if "--espera" in sys.argv:
+        espera = int(sys.argv[sys.argv.index("--espera") + 1])
+    categoria = "costumes"
+    if "--categoria" in sys.argv:
+        categoria = sys.argv[sys.argv.index("--categoria") + 1]
+    if categoria not in CATEGORIAS_AUTORIZADAS:
+        print(f"categoría '{categoria}' sin exención de UPC. "
+              f"Disponibles: {', '.join(CATEGORIAS_AUTORIZADAS)}")
+        return 1
+    cfg = CATEGORIAS_AUTORIZADAS[categoria]
 
     import httpx
 
     from services import imagenes_amazon
 
-    skus = candidatos()
+    skus = solo or [s for s in candidatos(cfg) if s not in EXCLUIDOS]
     if limite:
         skus = skus[:limite]
 
     print("=" * 78)
-    print(f"DISFRACES YA PUBLICADOS EN OTRO CANAL: {len(skus)}")
-    print(f"Categorías con exención de UPC: {', '.join(CATEGORIAS_AUTORIZADAS)}")
+    print(f"A PUBLICAR EN WALMART MX: {len(skus)}")
+    print(f"Categoría: {categoria} → Visible[{cfg['clave_visible']!r}]  "
+          f"exención folio {cfg['folio_exencion']}  SAT {cfg['clave_sat']}")
     print("=" * 78)
     for s in skus:
         print(f"   {s}")
+    if not solo and EXCLUIDOS:
+        print("\n   FUERA a propósito:")
+        for s, motivo in EXCLUIDOS.items():
+            print(f"      {s:<20} {motivo}")
 
     if not aplicar:
         print("\n(simulación — agrega --aplicar para publicar de verdad)")
         return 0
 
-    categoria, clave = next(iter(CATEGORIAS_AUTORIZADAS.items()))
     resultados: list[tuple[str, str, list[str]]] = []
+    feeds: list[tuple[str, str]] = []          # (sku, feedId)
 
     async with httpx.AsyncClient(timeout=120.0) as cx:
+        # ── FASE 1: dejar TODAS las imágenes servidas y publicadas ────────────
+        print("\n" + "=" * 78)
+        print("FASE 1 — preparar imágenes (nada se manda a Walmart todavía)")
+        print("=" * 78, flush=True)
+        fichas: dict[str, dict] = {}
+        imgs: dict[str, list[str]] = {}
         for i, sku in enumerate(skus, 1):
-            print(f"\n{'─' * 78}\n[{i}/{len(skus)}] {sku}", flush=True)
-            if i > 1:
-                await asyncio.sleep(PAUSA_ENTRE_ITEMS)   # evita el corte por ritmo
             p = await ficha(cx, sku)
             if not p:
                 resultados.append((sku, "SIN_FICHA", ["no se encontró en WooCommerce"]))
-                print("   sin ficha en Woo", flush=True)
+                print(f"[{i}/{len(skus)}] {sku:<22} sin ficha en Woo", flush=True)
                 continue
             urls = [im.get("src") for im in (p.get("images") or [])][:5]
             if not urls:
                 resultados.append((sku, "SIN_IMAGEN", ["el producto no tiene imágenes"]))
-                print("   sin imágenes", flush=True)
+                print(f"[{i}/{len(skus)}] {sku:<22} sin imágenes", flush=True)
                 continue
-            print(f"   {str(p.get('name'))[:62]}", flush=True)
-            print(f"   convirtiendo {len(urls)} imágenes…", flush=True)
             listas, _ = await imagenes_amazon.preparar_para_amazon(sku, urls)
-            listas = await _solo_jpeg(cx, listas)
-            if not listas:
+            fichas[sku], imgs[sku] = p, listas
+            print(f"[{i}/{len(skus)}] {sku:<22} {len(listas)} imágenes preparadas",
+                  flush=True)
+
+        # ── Propagación: el CDN necesita tiempo antes de que Walmart entre ────
+        if fichas and espera:
+            print(f"\nesperando {espera}s a que el CDN sirva las imágenes nuevas…",
+                  flush=True)
+            await asyncio.sleep(espera)
+
+        # ── FASE 2: revalidar contra el servidor público ──────────────────────
+        print("\n" + "=" * 78)
+        print("FASE 2 — revalidar que las imágenes se descargan de verdad")
+        print("=" * 78, flush=True)
+        listos: list[str] = []
+        for sku in list(fichas):
+            buenas = await _solo_jpeg(cx, imgs[sku])
+            imgs[sku] = buenas
+            if not buenas:
                 resultados.append((sku, "IMAGEN_FALLIDA",
                                    ["ninguna imagen quedó en JPEG utilizable"]))
-                print("   ninguna imagen sirve para Walmart", flush=True)
-                continue
-            if len(listas) < 2:
+                print(f"   {sku:<22} ✗ ninguna descargable", flush=True)
+            elif len(buenas) < 2:
                 # Walmart exige al menos una 'Foto adicional'. No se inventa
                 # duplicando la principal: se reporta para que se suba otra.
                 resultados.append((sku, "FALTA_2A_FOTO",
-                                   [f"solo 1 imagen utilizable de {len(urls)}; "
-                                    f"Walmart exige mínimo 1 foto adicional"]))
-                print("   solo 1 imagen utilizable — se necesita una segunda",
-                      flush=True)
-                continue
-            # El token se renueva solo si está por vencer (dura 900 s).
+                                   ["solo 1 imagen utilizable; Walmart exige "
+                                    "mínimo 1 foto adicional"]))
+                print(f"   {sku:<22} ✗ solo 1 imagen utilizable", flush=True)
+            else:
+                listos.append(sku)
+                print(f"   {sku:<22} ✓ {len(buenas)} imágenes vivas", flush=True)
+
+        # ── FASE 3: publicar en tandas ────────────────────────────────────────
+        print("\n" + "=" * 78)
+        print(f"FASE 3 — publicar {len(listos)} artículos "
+              f"(tandas de {TANDA}, {PAUSA_ENTRE_ITEMS}s entre cada uno)")
+        print("=" * 78, flush=True)
+        for i, sku in enumerate(listos, 1):
+            if i > 1:
+                if (i - 1) % TANDA == 0:
+                    print(f"\n   …tanda completa, descansando "
+                          f"{DESCANSO_ENTRE_TANDAS}s para no agotar la cuota\n",
+                          flush=True)
+                    await asyncio.sleep(DESCANSO_ENTRE_TANDAS)
+                else:
+                    await asyncio.sleep(PAUSA_ENTRE_ITEMS)
+            tk = await _token(cx)      # se renueva solo (el token dura 900 s)
+            payload = _armar(fichas[sku], imgs[sku], categoria, cfg)
+            estado, errs, fid = await publicar(cx, tk, payload)
+            print(f"[{i}/{len(listos)}] {sku:<22} {estado} {fid}", flush=True)
+            if fid:
+                feeds.append((sku, fid))
+            else:
+                resultados.append((sku, estado, errs))
+                for e in errs[:2]:
+                    print(f"      · {e}", flush=True)
+
+        # ── FASE 4: el veredicto REAL, una sola pasada ────────────────────────
+        if feeds:
+            print("\n" + "=" * 78)
+            print("FASE 4 — esperando el veredicto de Walmart (90s) y consultando")
+            print("=" * 78, flush=True)
+            await asyncio.sleep(90)
             tk = await _token(cx)
-            estado, errs = await publicar(cx, tk, _armar(p, listas, categoria, clave))
-            resultados.append((sku, estado, errs))
-            print(f"   -> {estado}", flush=True)
-            for e in errs[:3]:
-                print(f"      · {e}", flush=True)
+            for sku, fid in feeds:
+                await asyncio.sleep(1.5)
+                estado, errs = await consultar_feed(cx, tk, fid)
+                resultados.append((sku, estado, errs))
+                print(f"   {sku:<22} {estado}", flush=True)
+                for e in errs[:2]:
+                    print(f"      · {e}", flush=True)
 
     print("\n" + "=" * 78)
     print("RESUMEN")
     print("=" * 78)
-    ok = [r for r in resultados if r[1] in ("INPROGRESS", "SUCCESS", "PROCESSED")]
-    mal = [r for r in resultados if r not in ok]
-    print(f"   Aceptados por Walmart : {len(ok)}")
-    print(f"   Rechazados            : {len(mal)}")
+    # INPROGRESS NO es éxito: es "Walmart todavía no decide". Contarlo como
+    # aceptado fue lo que produjo los "9 feeds sin fallos" del 4-ago que en
+    # realidad fueron 0.
+    ok = [r for r in resultados if r[1] in ("SUCCESS", "PROCESSED")]
+    pendientes = [r for r in resultados if r[1] == "INPROGRESS"]
+    mal = [r for r in resultados if r not in ok and r not in pendientes]
+    print(f"   Publicados (SUCCESS)     : {len(ok)}")
+    print(f"   Sin veredicto todavía    : {len(pendientes)}")
+    print(f"   Rechazados               : {len(mal)}")
+    for sku, _e, _errs in ok:
+        print(f"      ✓ {sku}")
+    for sku, estado, errs in pendientes:
+        print(f"      … {sku}  [{estado}]  vuelve a correr estado_walmart en un rato")
     for sku, estado, errs in mal:
-        print(f"\n   {sku}  [{estado}]")
+        print(f"\n   ✗ {sku}  [{estado}]")
         for e in errs[:4]:
             print(f"      · {e}")
     return 0
