@@ -3304,6 +3304,28 @@ contra el panel de ML (canceladas + ventana horaria).
 
 ---
 
+### v0.57.0 — El Excel de categorías abre plegado y se descarga desde Reportes (Eduardo)
+
+Afinación del Excel tipo José con el visto bueno de Eduardo sobre archivo real:
+
+- **Agrupación nativa de Excel** en la hoja Categorias (botones +/− al margen,
+  niveles 1–7, summaryBelow=false porque el encabezado va arriba de su
+  bloque). El archivo **abre 100%% plegado**: solo las ~28 categorías
+  principales visibles; el detalle (subniveles y publicaciones) se abre por
+  nivel o por rama.
+- **"Sin categoría" siempre al final** en ambas hojas, venda lo que venda.
+- **La descarga vive en Análisis → Reportes**: la página (placeholder del
+  catálogo de fulfillment de José) estrena su primera tarjeta viva — "Ventas
+  por categoría (Excel)" con filtros de cuenta y período relativo/absoluto.
+  El botón se retiró de /analisis/categorias; el catálogo pendiente sigue
+  debajo intacto.
+- Probado en staging (sandbox) antes del pase, por instrucción de Eduardo:
+  producción no se tocó hasta su dale. Verificado con Excel real: 28 filas
+  visibles al abrir, totales de julio intactos ($5.76M / 16,565 uds), 0
+  errores de fórmula, tsc limpio. Versión 0.57.0.
+
+---
+
 ### v0.56.0 — Análisis/Categorías: período X→X y Exportar a Excel tipo José (Eduardo)
 
 El reporte vivo de /analisis/categorias aprende lo que le faltaba frente al
