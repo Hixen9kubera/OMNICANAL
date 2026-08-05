@@ -30,6 +30,7 @@ const SECCIONES = [
   // se llama igual que la sección: es la que abre por defecto.
   { href: "/analisis", label: "Análisis", icon: Boxes, exacta: true },
   { href: "/analisis/categorias", label: "Categorías", icon: Boxes },
+  { href: "/analisis/margenes", label: "Márgenes", icon: BarChart3 },
   { href: "/analisis/estrellas", label: "Estrellas", icon: Star },
   { href: "/analisis/fba", label: "Amazon FBA", icon: BarChart3 },
   { href: "/analisis/reportes", label: "Reportes", icon: FileText },

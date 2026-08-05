@@ -264,9 +264,8 @@ export default function EstrellasPage() {
 
   return (
     <div className="space-y-4">
-      {/* Márgenes con costo final de los más vendidos — mismo componente que
-          en Omnicanal (decidir cuál de los dos montajes queda al publicar) */}
-      <MargenesTop10 />
+      {/* Acceso plegado al detalle de márgenes; su casa es /analisis/margenes */}
+      <MargenesTop10 embebido />
 
       {/* Controles */}
       <div className="flex flex-wrap items-center gap-3">

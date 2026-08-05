@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Search, Filter, RotateCw, Sparkles, Layers, Loader2 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
-import MargenesTop10 from "@/components/MargenesTop10";
 import MarketplaceTabs from "@/components/MarketplaceTabs";
 import AccountTabs from "@/components/AccountTabs";
 import ChannelLegend from "@/components/ChannelLegend";
@@ -246,9 +245,6 @@ export default function OmnicanalPage() {
             style={{ background: tema.texto }}
           />
         </div>
-
-        {/* Márgenes con costo final de los más vendidos (req Eduardo 4-ago) */}
-        <MargenesTop10 />
 
         {/* Pestañas de marketplace */}
         <div className="mt-6">

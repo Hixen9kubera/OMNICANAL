@@ -34,19 +34,22 @@ const fM = (v: number | string | null | undefined, dec = 2) =>
     minimumFractionDigits: dec, maximumFractionDigits: dec,
   }).format(Number(v));
 
-export default function MargenesTop10() {
-  const [abierto, setAbierto] = useState(true);
+export default function MargenesTop10({ embebido = false }: { embebido?: boolean }) {
+  // embebido = va dentro de otra vista y arranca plegado, para no estorbar.
+  // En su página propia se muestra siempre abierto y con selector de cuántos.
+  const [abierto, setAbierto] = useState(!embebido);
   const [dias, setDias] = useState(30);
+  const [limite, setLimite] = useState(10);
   const [filas, setFilas] = useState<FilaTop[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
     setFilas(null);
-    fetch(`${API_BASE}/api/fulfillment/margenes-top?dias=${dias}`, { cache: "no-store" })
+    fetch(`${API_BASE}/api/fulfillment/margenes-top?dias=${dias}&limite=${limite}`, { cache: "no-store" })
       .then((r) => { if (!r.ok) throw new Error(`API ${r.status}`); return r.json(); })
       .then((d) => setFilas(d.items))
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
-  }, [dias]);
+  }, [dias, limite]);
 
   return (
     <div className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -55,12 +58,18 @@ export default function MargenesTop10() {
                 className="flex items-center gap-2 text-sm font-bold text-slate-800">
           {abierto ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           <TrendingUp size={15} className="text-indigo-500" />
-          Márgenes · 10 más vendidos
+          Márgenes · {limite} más vendidos
           <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
             margen sobre costo final
           </span>
         </button>
         <div className="flex items-center gap-1.5">
+          {!embebido && (
+            <select value={limite} onChange={(e) => setLimite(Number(e.target.value))}
+                    className="mr-1 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600">
+              {[10, 25, 50].map((n) => <option key={n} value={n}>top {n}</option>)}
+            </select>
+          )}
           {[7, 30, 90].map((d) => (
             <button key={d} onClick={() => setDias(d)}
                     className={`rounded-lg px-2 py-1 text-xs font-bold transition-colors ${dias === d ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}>

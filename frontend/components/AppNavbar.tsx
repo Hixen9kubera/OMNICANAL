@@ -58,6 +58,8 @@ const ITEMS: NavItem[] = [
         descripcion: "Pedidos por canal y comparativa semanal" },
       { label: "Categorías", href: "/analisis/categorias", icon: Tags,
         descripcion: "Ventas por categoría de ML y por cuenta" },
+      { label: "Márgenes", href: "/analisis/margenes", icon: TrendingUp,
+        descripcion: "Qué deja cada producto después de los cobros de Mercado Libre" },
       { label: "Estrellas", href: "/analisis/estrellas", icon: Star,
         descripcion: "Pareto histórico: qué SKUs sostienen la venta" },
       { label: "Amazon FBA", href: "/analisis/fba", icon: BarChart3,
