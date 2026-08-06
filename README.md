@@ -4433,3 +4433,34 @@ de `fetch()` sin token de la v0.61.x, así que se le había escapado — ya usa
 por `<a href>`, que tampoco mandan el token.
 
 Sin migraciones que aplicar y sin variables nuevas en Railway. Versión 0.64.0.
+
+### v0.66.0 — Un costo increíble ya no se pinta como margen
+
+Al encender el margen neto sobre datos reales quedó a la vista que el problema
+no era el cálculo sino los insumos: **119 SKUs** con venta en 60 días tienen un
+costo capturado MAYOR que su precio de venta, y 32 lo superan más de 3 veces
+(`TEC-0406-AZL`: precio $269, costo $30,058 — **111×**). El agregado se delata
+solo: la "pérdida" implicada ($2.33M) supera a la venta ($1.94M), lo cual es
+imposible. Un `−978%` en pantalla se lee como un hecho y puede costar que
+alguien baje una publicación rentable.
+
+La regla vive en UN lugar (`frontend/lib/margen.ts`): si el costo supera al
+precio realizado por más de **3×**, la celda de margen neto NO pinta un número
+falso — muestra `⚠ costo?` en ámbar con el aviso completo en el tooltip
+("Costo no creíble: N× el precio…, revísalo en Costos"). El umbral es 3× y no
+1× a propósito: vender bajo costo existe (liquidación, error de precio) y eso
+SÍ debe verse en rojo; arriba de 3× ya no es una decisión comercial, es un
+dato mal capturado.
+
+En Categorías la misma regla aplica en el agregado SQL (`porsku_c.creible` en
+`_SQL_CAT_HOJAS`): los SKUs de costo no creíble salen de los promedios de rama
+y el asterisco de cobertura cuenta la venta que quedó fuera. Sin esto, marcar
+solo las hojas dejaba las ramas envenenadas — Herramientas decía **−173.9%**
+por culpa de un puñado de costos rotos; limpio queda **−21%** con 87%% de
+venta medible. Electrónica: −65.9%% → −13.2%%.
+
+La lista de los 119 SKUs a recapturar (con dimensiones, flete y contenedor
+para reconstruir el costo real) se entregó aparte como CSV — el panel avisa,
+pero el dato solo se arregla capturándolo bien.
+
+Sin migraciones que aplicar y sin variables nuevas en Railway. Versión 0.66.0.
