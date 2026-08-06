@@ -34,9 +34,11 @@ interface Fila {
   uds_sin_envio: number; precio_pub: number | null; precio_lista: number | null;
   costo_final: number | null; ganancia_unit: number | null;
   margen_pct: number | null; ganancia_total: number | null;
+  estado: string | null;   // 'activa' | 'pausada' | 'otra'
 }
 interface Respuesta {
   dias: number; pendientes: number; consultadas: number; nota: string;
+  estado: string | null;
   cuentas: { cuenta: string; filas: Fila[] }[];
 }
 
@@ -53,9 +55,28 @@ const NOMBRE_CUENTA: Record<string, string> = {
 // tablas al mismo tiempo). El mismo SKU puede aparecer dos veces — una por
 // cuenta — porque cada publicación tiene su propio precio, comisión y envío.
 const CHIP_CUENTA: Record<string, { ini: string; clase: string }> = {
-  BEKURA: { ini: "BK", clase: "bg-emerald-50 text-emerald-700" },
+  BEKURA: { ini: "BK", clase: "bg-indigo-50 text-indigo-700" },
   SANCORFASHION: { ini: "SC", clase: "bg-sky-50 text-sky-700" },
 };
+
+/* Situación de la publicación en esa cuenta. Importa para leer el margen: una
+   pausada ya no está sangrando aunque su fila siga en rojo, y una activa con
+   margen negativo sí requiere acción hoy. 'otra' = vendió en el período pero
+   hoy no le queda publicación viva (ni activa ni pausada). */
+const CHIP_ESTADO: Record<string, { txt: string; clase: string; ayuda: string }> = {
+  activa: { txt: "ACTIVA", clase: "bg-emerald-50 text-emerald-700",
+            ayuda: "Publicación activa: se está vendiendo ahora" },
+  pausada: { txt: "PAUSADA", clase: "bg-amber-50 text-amber-700",
+             ayuda: "Publicación pausada: vendió en el período pero hoy no está a la venta" },
+  otra: { txt: "SIN PUB.", clase: "bg-slate-100 text-slate-500",
+          ayuda: "Sin publicación viva en esta cuenta (cerrada o dada de baja)" },
+};
+const FILTRO_ESTADO = [
+  { id: "TODAS", label: "Todas" },
+  { id: "activa", label: "Activas" },
+  { id: "pausada", label: "Pausadas" },
+] as const;
+type FiltroEstado = (typeof FILTRO_ESTADO)[number]["id"];
 const FILTRO_CUENTAS = [
   { id: "TODAS", label: "Ambas" },
   { id: "BEKURA", label: "Kubera" },
@@ -177,6 +198,15 @@ function TablaCuenta({ titulo, sub, filas }: {
                         {CHIP_CUENTA[f.cuenta].ini}
                       </span>
                     )}
+                    {(() => {
+                      const e = CHIP_ESTADO[f.estado ?? "otra"] ?? CHIP_ESTADO.otra;
+                      return (
+                        <span title={e.ayuda}
+                              className={`rounded px-1 text-[9px] font-bold ${e.clase}`}>
+                          {e.txt}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div className="truncate text-[11px] text-slate-400">{f.titulo ?? ""}</div>
                 </td>
@@ -225,6 +255,7 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
   const [visible, setVisible] = useState(false);
   const [dias, setDias] = useState(30);
   const [cuenta, setCuenta] = useState<FiltroCuenta>("TODAS");
+  const [estado, setEstado] = useState<FiltroEstado>("TODAS");
   const [data, setData] = useState<Respuesta | null>(null);
   const [error, setError] = useState<string | null>(null);
   const rondas = useRef(0);
@@ -236,8 +267,12 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
     return () => { clearTimeout(t); window.removeEventListener("keydown", esc); };
   }, [cerrar]);
 
-  const cargar = useCallback((d: number) => {
-    fetchSesion(`${API_BASE}/api/fulfillment/margenes-reales?dias=${d}`, { cache: "no-store" })
+  // El filtro de ESTADO viaja al backend, no se aplica aquí: el top se corta
+  // en SQL, así que filtrar en el cliente dejaría "las que sobrevivan de 10"
+  // en vez del top 10 de las activas.
+  const cargar = useCallback((d: number, est: FiltroEstado) => {
+    const q = `dias=${d}` + (est === "TODAS" ? "" : `&estado=${est}`);
+    fetchSesion(`${API_BASE}/api/fulfillment/margenes-reales?${q}`, { cache: "no-store" })
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((res: Respuesta) => {
         setData(res); setError(null);
@@ -245,7 +280,7 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
         // quedan pendientes, se vuelve a pedir y cada ronda avanza otro tanto.
         if (res.pendientes > 0 && rondas.current < MAX_RONDAS) {
           rondas.current += 1;
-          setTimeout(() => cargar(d), 2500);
+          setTimeout(() => cargar(d, est), 2500);
         }
       })
       .catch((e) => setError(String(e)));
@@ -254,8 +289,8 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
   useEffect(() => {
     rondas.current = 0;
     setData(null);
-    cargar(dias);
-  }, [dias, cargar]);
+    cargar(dias, estado);
+  }, [dias, estado, cargar]);
 
   // "Ambas" = UNA lista general: se funden las dos cuentas, se reordena por
   // unidades y se corta en 10; la etiqueta BK/SC diferencia cada fila.
@@ -264,6 +299,8 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
     .sort((a, b) => b.uds - a.uds || b.ingreso - a.ingreso)
     .slice(0, 10);
   const cuentasVisibles = (data?.cuentas ?? []).filter((c) => c.cuenta === cuenta);
+  const sufijoEstado = estado === "TODAS" ? ""
+    : estado === "activa" ? " activas" : " pausadas";
 
   return (
     <div
@@ -296,6 +333,16 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
                 <button key={c.id} onClick={() => setCuenta(c.id)}
                         className={`px-2.5 py-1.5 transition-colors ${cuenta === c.id ? "bg-indigo-600 text-white" : "bg-white text-slate-500 hover:text-slate-800"}`}>
                   {c.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex overflow-hidden rounded-lg border border-slate-200 text-xs font-semibold">
+              {FILTRO_ESTADO.map((e) => (
+                <button key={e.id} onClick={() => setEstado(e.id)}
+                        title={e.id === "TODAS" ? "Activas y pausadas"
+                               : `Solo publicaciones ${e.label.toLowerCase()}`}
+                        className={`px-2.5 py-1.5 transition-colors ${estado === e.id ? "bg-indigo-600 text-white" : "bg-white text-slate-500 hover:text-slate-800"}`}>
+                  {e.label}
                 </button>
               ))}
             </div>
@@ -334,16 +381,22 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
           {cuenta === "TODAS" ? (
             data && (
               <TablaCuenta titulo="General"
-                           sub="top 10 de ambas cuentas por unidades vendidas"
+                           sub={`top ${general.length} de ambas cuentas${sufijoEstado} por unidades vendidas`}
                            filas={general} />
             )
           ) : (
             cuentasVisibles.map((c) => (
               <TablaCuenta key={c.cuenta}
                            titulo={NOMBRE_CUENTA[c.cuenta] ?? c.cuenta}
-                           sub={`top ${c.filas.length} por unidades vendidas`}
+                           sub={`top ${c.filas.length}${sufijoEstado} por unidades vendidas`}
                            filas={c.filas} />
             ))
+          )}
+          {data && (cuenta === "TODAS" ? general.length === 0 : cuentasVisibles.every((c) => !c.filas.length)) && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-400">
+              Sin productos {estado === "TODAS" ? "" : `${estado === "activa" ? "activos" : "pausados"} `}
+              con venta en este período.
+            </div>
           )}
         </div>
         {data && (

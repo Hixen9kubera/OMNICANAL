@@ -738,7 +738,30 @@ async def margenes_top(
 # Eduardo — este endpoint solo cambiaría de dónde lee.
 
 _SQL_MARGEN_REAL_TOP = _mx("""
-with lineas as (
+with est as (
+  -- Estado de la publicación del SKU en ESA cuenta (Eduardo, 6-ago: "que se
+  -- vean pausadas o si está activa"). Una cuenta puede tener más de una
+  -- publicación del mismo SKU: manda la activa si existe. Las cerradas no
+  -- cuentan — un listado que ya no existe no describe el estado de hoy.
+  --
+  -- Aquí también salen los precios de la publicación: `price` es lo que ve el
+  -- comprador y `price_base` el de LISTA. Que difieran significa promoción
+  -- montada (Malla Sombra: lista $960, venta $355 — el margen malo era
+  -- decisión comercial, no misterio). Cero llamadas a ML: ya está en la BD.
+  select a.legacy_code as cuenta, l.sku,
+         case when bool_or(l.situacion = 'active') then 'activa'
+              when bool_or(l.situacion = 'paused') then 'pausada'
+              else 'otra' end                                 as estado,
+         min(l.price) filter (where l.situacion = 'active')   as precio_activo,
+         min(l.price)                                         as precio_cualquiera,
+         max(l.price_base)                                    as precio_lista
+    from channel.listings l
+    join core.accounts a on a.id = l.account_id
+   where l.canal = 'mercado_libre'
+     and lower(coalesce(l.situacion, '')) <> 'closed'
+   group by 1, 2
+),
+lineas as (
   select o.cuenta, i.sku, max(i.titulo) as titulo,
          sum(i.cantidad)::int as uds,
          sum(i.precio_unitario * i.cantidad) as ingreso,
@@ -753,12 +776,21 @@ with lineas as (
    group by 1, 2
 ),
 top as (
-  select *, row_number() over (partition by cuenta order by uds desc, ingreso desc) as rn
-    from lineas
+  -- El filtro de estado va ANTES de numerar: pedir "activas" debe dar el top 10
+  -- DE LAS ACTIVAS, no las que sobrevivan de un top 10 mixto.
+  select l.*, e.estado, e.precio_activo, e.precio_cualquiera, e.precio_lista,
+         row_number() over (partition by l.cuenta
+                            order by l.uds desc, l.ingreso desc) as rn
+    from lineas l
+    left join est e on e.cuenta = l.cuenta and e.sku = l.sku
+   where %(estado)s::text is null or coalesce(e.estado, 'otra') = %(estado)s
 )
 select t.cuenta, t.sku::text as sku, t.titulo, t.uds,
        round(t.ingreso, 2)                         as ingreso,
        round(t.comision / nullif(t.uds_com, 0), 2) as comision_unit,
+       coalesce(t.estado, 'otra')                  as estado,
+       coalesce(t.precio_activo, t.precio_cualquiera) as precio_pub,
+       t.precio_lista,
        coalesce(cv.costo_total, cf.costo_unitario) as costo_base,
        cf.costo_fee_envio                          as envio_estimado
   from top t
@@ -794,19 +826,7 @@ select o.cuenta, o.external_order_id, sum(i.cantidad)::int as uds_orden
  group by 1, 2
 """
 
-# Publicación ACTIVA del SKU en esa cuenta: price = lo que ve el comprador hoy,
-# price_base = el precio de LISTA. Difieren ⇒ hay promoción montada (caso
-# Malla Sombra: lista $960, promo $355 — el margen malo era decisión comercial,
-# no misterio). El dato ya vive en channel.listings: cero llamadas a ML.
-_SQL_MARGEN_REAL_PUBS = """
-select a.legacy_code as cuenta, l.sku::text as sku,
-       min(l.price) as precio_pub, max(l.price_base) as precio_lista
-  from channel.listings l
-  join core.accounts a on a.id = l.account_id
- where l.canal = 'mercado_libre' and l.situacion = 'active'
-   and l.sku = any(%(skus)s::citext[])
- group by 1, 2
-"""
+_ESTADOS_PUB = {"activa", "pausada"}
 
 
 @router.get("/margenes-reales")
@@ -814,24 +834,27 @@ async def margenes_reales(
     dias: int = Query(30, ge=7, le=90),
     limite: int = Query(10, ge=3, le=20),
     presupuesto: int = Query(250, ge=0, le=500),
+    estado: str | None = Query(None, description="activa|pausada; omitido = ambas"),
 ) -> dict[str, Any]:
     """Top de SKUs más vendidos POR CUENTA con margen sobre Costo Final y los
     tres cobros de Meli REALES: comisión (pedidos), envío (API de shipments,
-    caché MySQL) y el precio realizado. `pendientes` > 0 significa que el caché
+    caché MySQL) y el precio realizado. `estado` filtra por la situación de la
+    publicación ANTES de cortar el top. `pendientes` > 0 significa que el caché
     de envíos sigue llenándose — el frontend refresca hasta que llegue a 0."""
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if estado and estado not in _ESTADOS_PUB:
+        raise HTTPException(400, f"estado inválido: {estado}")
     try:
-        top = sdb.fetch_all(_SQL_MARGEN_REAL_TOP, {"dias": dias, "limite": limite})
+        top = sdb.fetch_all(_SQL_MARGEN_REAL_TOP,
+                            {"dias": dias, "limite": limite, "estado": estado})
         pares_cs = [(f["cuenta"], f["sku"]) for f in top]
         lineas = sdb.fetch_all(_SQL_MARGEN_REAL_LINEAS, {
             "dias": dias,
             "cuentas": [c for c, _ in pares_cs],
-            "skus": [s for _, s in pares_cs]})
+            "skus": [s for _, s in pares_cs]}) if pares_cs else []
         ids = sorted({str(l["external_order_id"]) for l in lineas})
         ordenes = sdb.fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
-        pubs = sdb.fetch_all(_SQL_MARGEN_REAL_PUBS,
-                             {"skus": [s for _, s in pares_cs]}) if pares_cs else []
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
@@ -866,7 +889,6 @@ async def margenes_reales(
         else:
             uds_sin[ks] = uds_sin.get(ks, 0) + int(l["uds"])
 
-    promos = {(p["cuenta"], p["sku"]): p for p in pubs}
     cuentas: dict[str, list[dict[str, Any]]] = {}
     pendientes_total = 0
     for f in top:
@@ -887,10 +909,12 @@ async def margenes_reales(
                               else float(f["envio_estimado"]),
             "cobertura_envio_pct": round(cub / uds * 100) if uds else 0,
             "uds_sin_envio": sin,
+            # Situación de la publicación en ESTA cuenta: 'activa', 'pausada' u
+            # 'otra' (incluye el SKU que ya no tiene publicación viva).
+            "estado": f["estado"],
+            "precio_pub": None if f["precio_pub"] is None else float(f["precio_pub"]),
+            "precio_lista": None if f["precio_lista"] is None else float(f["precio_lista"]),
         }
-        pr = promos.get(ks)
-        fila["precio_pub"] = None if not pr else float(pr["precio_pub"] or 0) or None
-        fila["precio_lista"] = None if not pr else float(pr["precio_lista"] or 0) or None
         if precio and costo is not None and com is not None and envio_u is not None:
             cfinal = round(costo + com + envio_u, 2)
             fila["costo_final"] = cfinal
@@ -904,6 +928,7 @@ async def margenes_reales(
 
     return {
         "dias": dias,
+        "estado": estado,
         "cuentas": [{"cuenta": c, "filas": filas} for c, filas in sorted(cuentas.items())],
         "pendientes": pendientes_total,
         "consultadas": consultadas,
