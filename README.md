@@ -4321,6 +4321,33 @@ consultarlos después sin adivinar.
 arma el envoltorio con todas adentro. Flags nuevos: `--lote` (artículos por
 feed, 200 por omisión) y `--rondas` (cuántas veces preguntar el veredicto).
 
+### v0.65.0 — Seam de ciclo de vida core.products: publish y papelera EN VIVO, ML y Amazon (Eduardo)
+
+El nacimiento (Crear → core.products, v0.24) dejaba al maestro kubera ciego a
+lo que pasa DESPUÉS: publicar y borrar llegaban hasta el ETL de las 06:15.
+Con el dale de Eduardo (canalizando a Brandon):
+
+1. **Publicar → publish en vivo**: `_marcar_publicado_en_woo` ahora también
+   espeja el cambio a core.products (sku del PADRE para variaciones —
+   `sku_padre` en el SELECT — para no casar sku de variación con wc_id del
+   padre). Y el flujo de **Amazon** por fin la llama: cerraba un hueco de la
+   regla de Brandon (29-jul) — publicado solo en Amazon dejaba Woo en
+   draft/inprogress. Temu/TikTok no aplican (sin flujo de publicar).
+2. **Papelera/eliminados**: la auditoría de Crear marca `trash`/`deleted` en
+   el maestro al confirmarlos en Woo (la fila no se borra). Con candado
+   `solo_por_wc_id` (revisión de Eduardo): los marcados destructivos solo
+   escriben si el acta aún apunta a ese wc_id — un SKU reciclado fuera de
+   Crear (fila viva con wc_id nuevo) queda intacto. Complementa el max_id
+   por SKU de la auditoría y el update-por-wc_id del upsert (ROBB-0004).
+
+Mismas garantías del espejo kubera: best-effort, cola + reproceso en
+/migracion, jamás bloquea publicar. Probado en sandbox (update sin pisar
+nombre, insert de respaldo, papelera, idempotencia, reciclado protegido).
+Con esto el corte F6 de Core queda a expensas solo de su racha de actas.
+Versión 0.65.0.
+
+---
+
 ### v0.64.0 — El margen REAL: lo que queda después de que Mercado Libre cobra
 
 Hasta ahora el panel calculaba el margen contra el costo del producto y ya. Ese
