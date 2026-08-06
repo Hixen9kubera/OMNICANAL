@@ -17,8 +17,9 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { CalendarDays, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, CalendarDays, RefreshCw, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
+import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
 
 /* ── Tipos ─────────────────────────────────────────────────────────────── */
@@ -146,7 +147,7 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   cobertura: { titulo: "Cobertura", texto: "Cuántos días te dura el stock al ritmo de venta del período. Es la columna más accionable: por debajo de 10 días (lo que tarda un envío a FULL) ya vas tarde." },
   precio: { titulo: "Precio de venta", texto: "Lo que de VERDAD se cobró en promedio durante el período: el dinero vendido dividido entre las piezas. Ya viene ponderado, así que si un producto se vende en dos cuentas a precios distintos, pesa más la que más vendió. Si no hubo ventas en el período se muestra el precio de la publicación activa, por cuenta. Haz clic para ver el desglose por canal." },
   margen: { titulo: "Margen bruto", texto: "Cuánto deja el producto sobre lo que de verdad se cobró: (precio real − costo) ÷ precio real. El costo es uno solo por producto, así que el margen cambia según a qué precio se vendió. NO descuenta la comisión del marketplace ni el envío — para eso está la columna de al lado. Si no hubo ventas en el período se calcula sobre el precio publicado, una línea por cuenta. Haz clic para ver el desglose por canal." },
-  margen_neto: { titulo: "Margen neto", texto: "El mismo margen pero ya con los cobros de Mercado Libre encima: costo del producto + comisión + envío. La comisión es la REAL que cobró el marketplace en las ventas del período, no una tasa supuesta, así que ya viene con la comisión de cada canal. Este es el margen que de verdad queda. Sale vacío cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Haz clic para ver el desglose por canal." },
+  margen_neto: { titulo: "Margen neto", texto: "El mismo margen pero ya con los cobros de Mercado Libre encima: costo del producto + comisión + envío. La comisión es la REAL que cobró el marketplace en las ventas del período, no una tasa supuesta, así que ya viene con la comisión de cada canal. Este es el margen que de verdad queda. Sale vacío cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Si en vez de un porcentaje aparece ⚠ costo?, el costo capturado supera 3 veces el precio al que se vendió: ahí el problema es el dato, no la venta, y por eso no se pinta un margen que sería falso. Haz clic para ver el desglose por canal." },
   crec: { titulo: "Crecimiento 7 días", texto: "Unidades de los últimos 7 días contra los 7 anteriores. Sirve para cazar lo que despegó antes de que se acabe." },
   spark: { titulo: "Últimos 14 días", texto: "Una barra por día de los últimos 14. Haz clic en la miniatura para abrir el detalle día por día con el desglose por cuenta." },
   sugerido: { titulo: "Sugerido a FULL", texto: "Cuántas piezas conviene mandar a la bodega del marketplace. Se calcula con el ritmo de venta de los últimos 45 días considerando también sus picos (no solo el promedio), para cubrir 24 días: 14 de colchón más 10 que tarda el envío en llegar." },
@@ -359,6 +360,16 @@ function MargenNeto({ fila }: { fila: Fila }) {
     );
   if (precio == null || precio <= 0)
     return <div className="text-slate-300" title="Sin precio con el que comparar">—</div>;
+  // Costo increíble → NO se pinta margen. Un −978% se lee como un hecho y
+  // puede costar que alguien baje una publicación rentable.
+  if (costoImplausible(precio, costo))
+    return (
+      <div className="flex items-center justify-end gap-1 text-amber-600"
+           title={avisoCostoImplausible(precio, costo)}>
+        <AlertTriangle size={12} />
+        <span className="text-[10px] font-semibold">costo?</span>
+      </div>
+    );
 
   const costoFinal = costo + com + envio;
   const m = ((precio - costoFinal) / precio) * 100;

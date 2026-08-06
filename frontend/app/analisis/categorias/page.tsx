@@ -23,8 +23,9 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, Loader2, Search, X } from "lucide-react";
+import { AlertTriangle, ChevronRight, Loader2, Search, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
+import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
 
 interface CuentaVenta { cuenta: string; uds: number; venta: number }
@@ -84,6 +85,7 @@ interface Nodo {
   activas: number;
   cuentas: Map<string, { uds: number; venta: number }>;
   costo_final: number;      // producto + comisión + envío, solo de lo medible
+  costo_base: number;       // solo el producto — con esto se juzga si es creíble
   venta_con_costo: number;  // denominador del margen
 }
 
@@ -118,9 +120,23 @@ function margen(venta: number, ventaMedible: number, costoFinal: number) {
   };
 }
 
-function CeldaMargen({ venta, ventaMedible, costoFinal, bold }: {
-  venta: number; ventaMedible: number; costoFinal: number; bold?: boolean;
+function CeldaMargen({ venta, ventaMedible, costoFinal, costoBase, bold }: {
+  venta: number; ventaMedible: number; costoFinal: number;
+  costoBase?: number; bold?: boolean;
 }) {
+  // En una PUBLICACIÓN el costo es de un solo producto y el criterio aplica
+  // directo. En una RAMA es la suma de varios SKUs, así que se compara el costo
+  // acumulado contra la venta medible: si la rama entera pide 3× lo que
+  // vendió, adentro hay basura y el promedio no la disuelve.
+  if (costoImplausible(ventaMedible, costoBase ?? 0)) {
+    return (
+      <span className="inline-flex items-center gap-1 text-amber-600"
+            title={avisoCostoImplausible(ventaMedible, costoBase ?? 0)}>
+        <AlertTriangle size={12} />
+        <span className="text-[10px] font-semibold">costo?</span>
+      </span>
+    );
+  }
   const m = margen(venta, ventaMedible, costoFinal);
   if (!m) {
     return <span className="text-slate-300" title="Sin costo capturado en esta rama">—</span>;
@@ -170,7 +186,7 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   venta: { titulo: "Ventas $", texto: "Importe vendido en el período. Venta bruta: no descuenta comisión ni costo." },
   pct: { titulo: "% del total", texto: "Qué parte de la venta del período aporta esta rama. La barra compara contra la categoría más grande." },
   prom: { titulo: "Precio promedio", texto: "Ventas $ entre unidades: el ticket promedio REAL al que salió la rama (no el precio de lista)." },
-  margen: { titulo: "Margen", texto: "Lo que queda después de TODO: el costo del producto (compra + flete de importación) más los cobros de Mercado Libre por vender (la comisión REAL de cada venta y el envío estimado). Se calcula solo sobre la parte de la venta cuyo producto tiene costo capturado — dividir entre la venta completa hundiría a las ramas con la captura a medias. Cuando esa parte no es toda la venta, el número va en gris con un asterisco y el tooltip dice sobre cuánto se midió. Vacío significa que ningún producto de la rama tiene costo. El desglose completo, fila por fila, está en el Excel de arriba." },
+  margen: { titulo: "Margen", texto: "Lo que queda después de TODO: el costo del producto (compra + flete de importación) más los cobros de Mercado Libre por vender (la comisión REAL de cada venta y el envío estimado). Se calcula solo sobre la parte de la venta cuyo producto tiene costo capturado — dividir entre la venta completa hundiría a las ramas con la captura a medias. Cuando esa parte no es toda la venta, el número va en gris con un asterisco y el tooltip dice sobre cuánto se midió. Vacío significa que ningún producto de la rama tiene costo, y ⚠ costo? que el costo capturado supera 3 veces lo vendido: el dato está mal y un margen ahí sería falso. El desglose completo, fila por fila, está en el Excel de arriba." },
   cuentas: { titulo: "Por cuenta", texto: "Desglose de las unidades entre Bekura, Sancor y Amazon. El importe de cada cuenta va en el tooltip." },
 };
 
@@ -181,7 +197,7 @@ function armarArbol(hojas: Hoja[]): Nodo[] {
     if (!x) {
       x = { label, clave, hijos: [], category_id: null, uds: 0, venta: 0,
             skus: 0, publicaciones: 0, activas: 0, cuentas: new Map(),
-            costo_final: 0, venta_con_costo: 0 };
+            costo_final: 0, costo_base: 0, venta_con_costo: 0 };
       nivel.push(x);
     }
     return x;
@@ -204,6 +220,7 @@ function armarArbol(hojas: Hoja[]): Nodo[] {
       // medias — se vería peor de lo que es.
       if (h.costo_base != null) {
         nodo.costo_final += n(h.costo_base) + n(h.comision) + n(h.envio);
+        nodo.costo_base += n(h.costo_base);
         nodo.venta_con_costo += n(h.venta_con_costo);
       }
       for (const c of h.cuentas ?? []) {
@@ -501,7 +518,8 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
             title={nodo.uds ? undefined : "Con catálogo pero sin ventas en el período"}>{fMoney(nodo.venta)}</td>
         <td className="px-3 py-2 text-right">
           <CeldaMargen venta={nodo.venta} ventaMedible={nodo.venta_con_costo}
-                       costoFinal={nodo.costo_final} bold={nivel === 0} />
+                       costoFinal={nodo.costo_final} costoBase={nodo.costo_base}
+                       bold={nivel === 0} />
         </td>
         <td className="px-3 py-2">
           <div className="flex items-center gap-1.5">
@@ -575,7 +593,8 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
                 <CeldaMargen
                   venta={n(p.venta)}
                   ventaMedible={p.costo_base == null ? 0 : n(p.venta)}
-                  costoFinal={n(p.costo_base) + n(p.comision) + n(p.envio)} />
+                  costoFinal={n(p.costo_base) + n(p.comision) + n(p.envio)}
+                  costoBase={n(p.costo_base)} />
               </span>
               <span className="w-20 shrink-0 text-right tabular-nums text-slate-500"
                     title="Precio de lista actual del listado">

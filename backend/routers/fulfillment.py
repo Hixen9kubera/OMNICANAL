@@ -966,21 +966,36 @@ porsku as (
     left join costing.costos_finales  cf on cf.sku = l.sku and cf.canal = 'mercado_libre'
    group by l.sku
 ),
+porsku_c as (
+  -- `creible` = el costo del producto no supera 3x lo vendido. Arriba de eso
+  -- ya no es una decision comercial (liquidar, error de precio): es captura.
+  select p.*, (p.costo_base is not null and p.costo_base <= p.venta * 3) as creible
+    from porsku p
+),
 ventas_cat as (
   -- El bloque de MARGEN se restringe a los SKUs con costo capturado. Sin ese
   -- filter la categoría cargaba la comisión y el envío de productos cuyo costo
   -- no conocemos: el costo final salía inflado y `venta_con_costo` contaba la
   -- venta entera de la categoría, no la medible. Con 4,968 líneas eso separaba
   -- al Resumen de la hoja Ventas en $15.7k de costo y $83.3k de venta.
+  --
+  -- Y ADEMAS se excluyen los COSTOS INCREIBLES (Eduardo, 6-ago). Un SKU cuyo
+  -- costo capturado supera 3 veces lo que vendio no es una perdida: es un dato
+  -- roto — hay 119 asi en 60 dias, 32 de ellos arriba de 3x (TEC-0406-AZL:
+  -- vende en $269 con costo $30,058). Promediados dentro de la rama arrastran
+  -- a los sanos: Herramientas mostraba -173.9%% por unos pocos. Al excluirlos,
+  -- el porcentaje de la rama vuelve a ser legible y `venta_con_costo` baja,
+  -- que es justo la senal de que la foto esta incompleta (la UI lo marca con
+  -- asterisco). Mismo umbral que costoImplausible() en el frontend.
   select coalesce(pc.ruta, 'Sin categoría') as ruta, pc.category_id,
          sum(v.uds)::int                    as uds,
          round(sum(v.venta), 2)             as venta,
-         round(sum(v.comision) filter (where v.costo_base is not null), 2) as comision,
-         round(sum(v.envio)    filter (where v.costo_base is not null), 2) as envio,
-         round(sum(v.costo_base), 2)        as costo_base,
-         round(sum(v.venta)    filter (where v.costo_base is not null), 2) as venta_con_costo,
+         round(sum(v.comision) filter (where v.creible), 2) as comision,
+         round(sum(v.envio)    filter (where v.creible), 2) as envio,
+         round(sum(v.costo_base) filter (where v.creible), 2) as costo_base,
+         round(sum(v.venta)    filter (where v.creible), 2) as venta_con_costo,
          count(distinct v.sku)::int         as skus
-    from porsku v left join pc on pc.sku = v.sku
+    from porsku_c v left join pc on pc.sku = v.sku
    group by 1, 2
 ),
 cuentas_cat as (
