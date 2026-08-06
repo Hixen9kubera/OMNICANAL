@@ -3,6 +3,7 @@
 import { ChevronDown, ChevronRight, Layers } from "lucide-react";
 import type { Producto, VarianteResumen } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
+import { TituloMoneda } from "./Moneda";
 
 /**
  * Piezas de "Padre / Único + variantes", calcadas de la vista Crear Productos
@@ -85,7 +86,11 @@ export function VariantesTabla({
             <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
               <th className="py-1 pr-3 font-semibold">SKU</th>
               <th className="py-1 pr-3 font-semibold">Variante</th>
-              <th className="py-1 pr-3 text-right font-semibold">Costo</th>
+              {/* El costo de la variante es el TOTAL en pesos, no la compra en
+                  dólares que se captura en el Estudio. */}
+              <th className="py-1 pr-3 text-right font-semibold">
+                <TituloMoneda moneda="MXN">Costo</TituloMoneda>
+              </th>
               <th className="py-1 pr-3 text-center font-semibold">Stock</th>
               <th className="py-1 text-center font-semibold">Canales</th>
             </tr>

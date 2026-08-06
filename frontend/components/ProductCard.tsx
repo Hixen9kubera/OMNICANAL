@@ -5,6 +5,7 @@ import { ImageIcon, PackageCheck, PackageX, Truck, X } from "lucide-react";
 import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
+import { ChipMoneda } from "./Moneda";
 
 interface Props {
   producto: Producto;
@@ -190,8 +191,11 @@ export default function ProductCard({
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-1">
           <div>
-            <div className="text-lg font-extrabold tracking-tight text-slate-900">
+            {/* El chip va PEGADO al precio y no en un rótulo: en la tarjeta la
+                cifra viaja sola, sin encabezado que la contextualice. */}
+            <div className="flex items-baseline gap-1 text-lg font-extrabold tracking-tight text-slate-900">
               {precioMXN(producto.precio)}
+              <ChipMoneda moneda="MXN" />
             </div>
             {producto.precio_base &&
               producto.precio &&

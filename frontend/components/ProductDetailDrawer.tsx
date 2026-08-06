@@ -14,6 +14,7 @@ import {
 import type { CanalInfo, Producto } from "@/lib/types";
 import { refrescarCanal } from "@/lib/api";
 import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
+import { ChipMoneda, type Moneda } from "./Moneda";
 
 interface Props {
   sku: string | null;
@@ -193,7 +194,7 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                           esML || esAmazon || conFullFba ? "grid-cols-3" : "grid-cols-2",
                         ].join(" ")}
                       >
-                        <Metric icon={<Tag size={14} />} label="Precio" valor={precioMXN(c.precio)} />
+                        <Metric icon={<Tag size={14} />} label="Precio" moneda="MXN" valor={precioMXN(c.precio)} />
                         <Metric
                           icon={<Boxes size={14} />}
                           label="Stock real"
@@ -302,16 +303,21 @@ function Metric({
   label,
   valor,
   destacado,
+  moneda,
 }: {
   icon: React.ReactNode;
   label: string;
   valor: string;
   destacado?: boolean;
+  /** Marca la divisa cuando el dato es dinero. Sin esto un "$1.00" no dice si
+      son pesos o dólares, y en este panel conviven las dos. */
+  moneda?: Moneda;
 }) {
   return (
     <div className="flex flex-col items-center gap-0.5 px-2 py-3 text-center">
       <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
         {icon} {label}
+        {moneda && <ChipMoneda moneda={moneda} />}
       </span>
       <span
         className={[

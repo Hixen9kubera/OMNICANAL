@@ -9,6 +9,7 @@ import ChannelDots from "@/components/ChannelDots";
 import ProductStudio from "@/components/ProductStudio";
 import CostoEditor from "@/components/CostoEditor";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/components/Variantes";
+import { TituloMoneda } from "@/components/Moneda";
 
 import { listarCanales, listarProductos } from "@/lib/api";
 import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
@@ -216,9 +217,18 @@ export default function ProductosPage() {
             <span className="w-36 shrink-0 text-center">Variantes</span>
             <span className="flex shrink-0 items-center gap-4">
               <span className="hidden w-16 text-center sm:block">Canales</span>
-              <span className="hidden w-20 text-right sm:block">Costo</span>
-              <span className="hidden w-24 text-right sm:block">P. Regular</span>
-              <span className="w-24 text-right">P. Oferta</span>
+              {/* Las tres columnas de dinero son PESOS. Se declara aquí porque
+                  en el Estudio, a un clic de distancia, hay campos en dólares
+                  con el mismo aspecto (Eduardo, 6-ago). */}
+              <span className="hidden w-20 justify-end text-right sm:flex">
+                <TituloMoneda moneda="MXN">Costo</TituloMoneda>
+              </span>
+              <span className="hidden w-24 justify-end text-right sm:flex">
+                <TituloMoneda moneda="MXN">P. Regular</TituloMoneda>
+              </span>
+              <span className="flex w-24 justify-end text-right">
+                <TituloMoneda moneda="MXN">P. Oferta</TituloMoneda>
+              </span>
             </span>
             <span className="w-8 shrink-0" />
           </div>
