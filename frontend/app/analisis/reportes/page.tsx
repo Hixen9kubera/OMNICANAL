@@ -21,7 +21,7 @@
 
 import { useState } from "react";
 import { Download, FileSpreadsheet, FileText, X } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, descargar } from "@/lib/api";
 import FulfillmentPendiente from "@/components/FulfillmentPendiente";
 
 const CUENTAS = [
@@ -45,6 +45,8 @@ function TarjetaVentasCategoria() {
   const [desde, setDesde] = useState("");
   const [hasta, setHasta] = useState("");
   const rangoActivo = Boolean(desde || hasta);
+  const [bajando, setBajando] = useState(false);
+  const [errorBaja, setErrorBaja] = useState<string | null>(null);
 
   const q = new URLSearchParams({ dias: String(dias) });
   if (cuenta) q.set("cuenta", cuenta);
@@ -110,12 +112,36 @@ function TarjetaVentasCategoria() {
                 </button>
               )}
             </div>
-            <a href={`${API_BASE}/api/fulfillment/categorias/excel?${q.toString()}`}
-               className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100">
-              <Download size={15} /> Descargar
-            </a>
+            {/* Botón y NO un <a href>: una navegación del navegador no manda el
+                token de sesión, así que desde el enforcement (5-ago) bajaba un
+                401 en vez del Excel. `descargar()` lo pide con la sesión. */}
+            <button
+              type="button"
+              disabled={bajando}
+              onClick={async () => {
+                setErrorBaja(null);
+                setBajando(true);
+                try {
+                  await descargar(
+                    `${API_BASE}/api/fulfillment/categorias/excel?${q.toString()}`,
+                    `ventas-por-categoria-${cuenta || "consolidado"}.xlsx`,
+                  );
+                } catch (e) {
+                  setErrorBaja(e instanceof Error ? e.message : "No se pudo descargar.");
+                } finally {
+                  setBajando(false);
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60">
+              <Download size={15} /> {bajando ? "Preparando…" : "Descargar"}
+            </button>
           </div>
         </div>
+        {errorBaja && (
+          <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+            {errorBaja}
+          </p>
+        )}
       </div>
     </div>
   );

@@ -24,7 +24,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronRight, Loader2, Search, X } from "lucide-react";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import Ayuda from "@/components/Ayuda";
 
 interface CuentaVenta { cuenta: string; uds: number; venta: number }
@@ -255,7 +255,7 @@ export default function CategoriasPage() {
     if (cuenta) q.set("cuenta", cuenta);
     if (desde) q.set("desde", desde);
     if (hasta) q.set("hasta", hasta);
-    fetch(`${API_BASE}/api/fulfillment/categorias?${q}`, { cache: "no-store" })
+    fetchSesion(`${API_BASE}/api/fulfillment/categorias?${q}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : r.json().then((e) => Promise.reject(e.detail ?? r.status))))
       .then((d: Resp) => { if (vivo) setDatos(d); })
       .catch((e) => { if (vivo) setError(String(e)); })
@@ -297,7 +297,7 @@ export default function CategoriasPage() {
       if (cuenta) q.set("cuenta", cuenta);
       if (desde) q.set("desde", desde);
       if (hasta) q.set("hasta", hasta);
-      fetch(`${API_BASE}/api/fulfillment/categorias/publicaciones?${q}`, { cache: "no-store" })
+      fetchSesion(`${API_BASE}/api/fulfillment/categorias/publicaciones?${q}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((d) => setPubs((p) => ({ ...p, [id]: d.items ?? [] })))
         .catch(() => setPubs((p) => ({ ...p, [id]: [] })));
