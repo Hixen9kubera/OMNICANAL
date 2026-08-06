@@ -442,9 +442,16 @@ def _buscar_wc_ids_wp(
             where.append(f"p.post_status IN ({','.join(['%s'] * len(valores))})")
             args += valores
     if search:
-        where.append("(sk.meta_value LIKE %s OR p.post_title LIKE %s)")
-        like = f"%{search.strip()}%"
-        args += [like, like]
+        # Variante → padre, igual que en `skus` de abajo: la caja de búsqueda
+        # recibía el mismo trato de antes y `JUGU-1179-NEG` devolvía 0 (el SKU
+        # del padre, `JUGU-1179`, es más corto y no contiene al de la variante).
+        terminos_s, _ = wp_db.expandir_con_padres([search])
+        if terminos_s:
+            grupo_s = " OR ".join(
+                ["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos_s))
+            where.append(f"({grupo_s})")
+            for t in terminos_s:
+                args += [f"%{t}%", f"%{t}%"]
     if skus:
         # Variante → padre: la consulta solo mira `post_type='product'`, así que
         # un SKU de variante jamás matchea contra el SKU (más corto) de su padre.

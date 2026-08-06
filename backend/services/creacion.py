@@ -395,16 +395,26 @@ async def listar_candidatos_agrupados(
         lista = [g for g in lista if _match(g)]
 
     if search:
-        s = search.strip().lower()
-        lista = [
-            g for g in lista
-            if s in g["base"].lower() or any(
-                s in (m.get("sku") or "").lower()
-                or s in (m.get("nombre") or "").lower()
-                or any(s in c.lower() for c in (m.get("categorias") or []))
-                for m in g["miembros"]
-            )
-        ]
+        # Variante → padre, igual que en `skus_filtro`: escribir el SKU completo
+        # de una variante en la caja de búsqueda no encontraba nada, porque el
+        # índice solo trae padres y el término no cabe en la base del grupo.
+        exp_s, _ = await asyncio.to_thread(wp_db.expandir_con_padres, [search])
+        terminos_s = [t.lower() for t in exp_s] or [search.strip().lower()]
+
+        def _match_search(g: dict[str, Any]) -> bool:
+            for s in terminos_s:
+                if s in g["base"].lower():
+                    return True
+                for m in g["miembros"]:
+                    if (
+                        s in (m.get("sku") or "").lower()
+                        or s in (m.get("nombre") or "").lower()
+                        or any(s in c.lower() for c in (m.get("categorias") or []))
+                    ):
+                        return True
+            return False
+
+        lista = [g for g in lista if _match_search(g)]
 
     if categoria:
         c = categoria.strip().lower()

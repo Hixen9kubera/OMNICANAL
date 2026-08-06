@@ -323,7 +323,10 @@ def expandir_con_padres(terminos: list[str]) -> tuple[list[str], dict[str, str]]
     limpios = [t.strip() for t in (terminos or []) if t and t.strip()]
     if not limpios:
         return [], {}
-    mapa = skus_padre(limpios)
+    # Solo se busca padre de lo que PUEDA ser un SKU: la caja de búsqueda
+    # también recibe texto libre ("disfraz de bruja"), y ahí la consulta sobra.
+    candidatos = [t for t in limpios if " " not in t]
+    mapa = skus_padre(candidatos) if candidatos else {}
     vistos = {t.upper() for t in limpios}
     salida = list(limpios)
     for padre in mapa.values():

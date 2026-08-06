@@ -4321,6 +4321,38 @@ consultarlos después sin adivinar.
 arma el envoltorio con todas adentro. Flags nuevos: `--lote` (artículos por
 feed, 200 por omisión) y `--rondas` (cuántas veces preguntar el veredicto).
 
+### v0.67.0 — La caja de búsqueda también traduce variante → padre (Eduardo)
+
+Cierre del hueco que dejó la v0.59.0. Ahí se conectó `expandir_con_padres()` al
+parámetro `skus` ("Filtrar SKUs") pero **no** al parámetro `search` (la caja
+"SKU o nombre…"), así que el mismo SKU encontraba o no encontraba según en qué
+recuadro lo escribieras.
+
+Lo reportó Eduardo con `JUGU-1179-NEG`: le puso su link de Alibaba, le dio
+crear, y "no me sale en productos y tampoco ya me sale en crear". Eran dos cosas
+a la vez, y la creación **no** había fallado:
+
+- `JUGU-1179-NEG` es una `product_variation` (padre `JUGU-1179`, id 104668).
+  Ninguna vista lista variantes como renglón propio — salen dentro del padre.
+- La creación funcionó: el padre pasó a `pending` (comportamiento nuevo desde
+  la v0.51.0), o sea que **salió de Crear y llegó a Productos**. Por eso "ya no
+  sale en crear": se graduó.
+- Y no aparecía en Productos porque lo buscó en la caja de búsqueda, que se
+  había quedado sin la traducción. Verificado: `search='JUGU-1179-NEG'` → 0
+  resultados; con el arreglo → 1 (`JUGU-1179`, pending).
+
+Aplicado en las dos vistas: `_buscar_wc_ids_wp` (Productos/Omnicanal) y
+`listar_candidatos_agrupados` (Crear). Para no pagar una consulta de más en cada
+tecleo, `expandir_con_padres` ahora solo busca padre de términos **sin espacios**
+— el texto libre ("disfraz de bruja") ni siquiera dispara la consulta.
+
+Verificado contra MySQL de producción: `JUGU-1179-NEG` 0 → 1;
+`ACC-0069-ROS-2XL`, `ROP-0505-VER-110CM` y `ROP-0374-NEG-ROJ-2XL` 0 → 1 cada
+uno; texto libre intacto y sin consulta extra (3 y 13 resultados, los de antes).
+Versión 0.67.0.
+
+---
+
 ### v0.65.0 — Seam de ciclo de vida core.products: publish y papelera EN VIVO, ML y Amazon (Eduardo)
 
 El nacimiento (Crear → core.products, v0.24) dejaba al maestro kubera ciego a
