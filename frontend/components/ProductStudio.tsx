@@ -64,6 +64,7 @@ import {
   type ProductoIA,
 } from "@/lib/api";
 import { aNumero } from "@/lib/numeros";
+import { ChipMoneda, TONO, type Moneda } from "@/components/Moneda";
 import CategoriaMLPicker from "./CategoriaMLPicker";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
@@ -1468,14 +1469,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   Stock sigue siendo espejo: lo manda Woo. */}
               <section className="space-y-3">
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                  <Campo label="Precio regular" prefijo="$" value={campos.precioRegular}
+                  <Campo label="Precio regular" prefijo="$" moneda="MXN" value={campos.precioRegular}
                     onChange={(v) => setCampo("precioRegular", v)} acento={tema.acento}
                     nota={esGeneral ? undefined : `Se publica en ${canalInfo?.label ?? canal}`} />
-                  <Campo label="Precio oferta" prefijo="$" value={campos.precioOferta}
+                  <Campo label="Precio oferta" prefijo="$" moneda="MXN" value={campos.precioOferta}
                     onChange={(v) => setCampo("precioOferta", v)} acento={tema.acento} />
-                  <Campo label="Costo" prefijo="$" value={campos.costo}
+                  {/* OJO: este "Costo" NO es el "Costo producto" de abajo. Aquí
+                      va el total en pesos, ya con flete; abajo, la compra en
+                      dólares. La nota lo dice porque el nombre no alcanza. */}
+                  <Campo label="Costo" prefijo="$" moneda="MXN" value={campos.costo}
                     onChange={(v) => setCampo("costo", v)} acento={tema.acento}
-                    nota="Costo unitario total" />
+                    nota="Total por pieza, ya con flete" />
                   <div>
                     <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
                       Stock <span className="normal-case text-slate-300">(solo lectura)</span>
@@ -1533,16 +1537,37 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 {/* Entradas editables */}
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   <div>
-                    <Campo label="Costo producto (USD)" prefijo="$" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
+                    {/* El "(USD)" del rótulo sobra: lo dice el chip. */}
+                    <Campo label="Costo producto" prefijo="$" moneda="USD" value={costoProducto} onChange={setCostoProducto} acento={tema.acento} />
                     {(() => {
                       const usd = aNumero(costoProducto) ?? 0;
                       const tc = aNumero(tipoCambio) ?? 0;
+                      // La conversión en vivo: la comprobación de que se tecleó
+                      // en la moneda que se creía, antes de guardar.
                       return usd > 0 && tc > 0
-                        ? <p className="mt-1 text-[10px] text-slate-400">≈ {precioMXN(Math.round(usd * tc * 100) / 100)} MXN</p>
+                        ? <p className="mt-1 flex items-center gap-1 text-[10px] text-slate-500">
+                            = {precioMXN(Math.round(usd * tc * 100) / 100)}
+                            <ChipMoneda moneda="MXN" />
+                            <span className="text-slate-400">es lo que se guarda</span>
+                          </p>
                         : null;
                     })()}
                   </div>
-                  <Campo label="Tipo de cambio USD→MXN" value={tipoCambio} onChange={setTipoCambio} acento={tema.acento} />
+                  {/* El puente entre las dos monedas: no es dinero, es la tasa. */}
+                  <div>
+                    <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
+                      Tipo de cambio
+                    </label>
+                    <div className="relative">
+                      <input value={tipoCambio} onChange={(e) => setTipoCambio(e.target.value)} inputMode="decimal"
+                        className="w-full rounded-lg border-2 border-slate-200 bg-white py-2.5 pl-3 pr-[74px] text-sm tabular-nums text-slate-800 outline-none focus:ring-2 focus:ring-slate-300" />
+                      <span className="pointer-events-none absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5">
+                        <ChipMoneda moneda="USD" />
+                        <span className="text-[9px] font-bold text-slate-400">→</span>
+                        <ChipMoneda moneda="MXN" />
+                      </span>
+                    </div>
+                  </div>
                   <Campo label="Peso (kg)" value={campos.peso} onChange={(v) => setCampo("peso", v)} acento={tema.acento} />
                   <Campo label="Margen (%)" value={margen} onChange={setMargen} acento={tema.acento} />
                   <div>
@@ -1636,7 +1661,12 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                     {campos.alibabaUrl && <a href={campos.alibabaUrl} target="_blank" rel="noreferrer" className="shrink-0 rounded-lg border border-slate-200 p-2 text-slate-400 hover:bg-slate-50"><ExternalLink size={15} /></a>}
                   </div>
                 </div>
-                <Campo label="Precio Alibaba" prefijo="$" value={campos.alibabaPrecio} onChange={(v) => setCampo("alibabaPrecio", v)} acento={tema.acento} />
+                {/* En DÓLARES: no es una suposición sobre Alibaba — este valor
+                    siembra el "Costo producto" de arriba, que es el campo en
+                    dólares (ver el efecto que lee m.alibaba_precio). */}
+                <Campo label="Precio Alibaba" prefijo="$" moneda="USD" value={campos.alibabaPrecio}
+                  onChange={(v) => setCampo("alibabaPrecio", v)} acento={tema.acento}
+                  nota="Siembra el costo del producto" />
               </section>
 
               {/* ATRIBUTOS 1×1 (editables) — sin las filas basura de dimensiones/peso */}
@@ -1860,14 +1890,27 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
 // input: un campo que se ve editable pero cuyo valor no persiste en ningún lado
 // es una trampa — TEC-2352-GRI se publicó en $374.11 con $629 escrito en
 // pantalla (29-jul-2026). Los precios/costo solo se escriben desde COSTOS.
-function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota }: {
+/* `moneda` marca los campos de dinero (Eduardo, 6-ago). En esta pantalla
+   conviven las dos: los precios y el costo TOTAL son pesos, mientras que el
+   costo del producto y el precio de Alibaba se capturan en dólares — y hasta
+   ahora los cinco se veían igual, con un "$" a secas. Peor: hay dos campos que
+   se llaman "Costo" con monedas distintas, a media pantalla de distancia.
+
+   El dólar se tiñe de ámbar (la excepción) y el peso queda en el tono neutro;
+   ambos llevan su chip, porque el color solo no basta para quien no lo
+   distingue. Mismo tratamiento que la pantalla de Costos: components/Moneda. */
+function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota, moneda }: {
   label: string; value: string; onChange?: (v: string) => void; acento: string;
-  prefijo?: string; soloLectura?: boolean; nota?: string;
+  prefijo?: string; soloLectura?: boolean; nota?: string; moneda?: Moneda;
 }) {
+  const t = moneda ? TONO[moneda] : null;
   return (
     <div>
       <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">
-        {label}
+        <span className="inline-flex items-center gap-1">
+          {label}
+          {moneda && <ChipMoneda moneda={moneda} />}
+        </span>
         {soloLectura && <span className="normal-case text-slate-300"> (solo lectura)</span>}
       </label>
       {soloLectura ? (
@@ -1877,9 +1920,19 @@ function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota }: {
         </div>
       ) : (
         <div className="relative">
-          {prefijo && <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">{prefijo}</span>}
+          {prefijo && (
+            <span className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm ${moneda === "USD" ? TONO.USD.texto : "text-slate-400"}`}>
+              {prefijo}
+            </span>
+          )}
           <input value={value} onChange={(e) => onChange?.(e.target.value)}
-            className={["w-full rounded-lg border border-slate-200 py-2.5 text-sm text-slate-800 outline-none focus:ring-2", prefijo ? "pl-7 pr-3" : "px-3"].join(" ")}
+            className={[
+              "w-full rounded-lg py-2.5 text-sm text-slate-800 outline-none focus:ring-2",
+              prefijo ? "pl-7 pr-3" : "px-3",
+              // Solo el dólar cambia de aspecto: si se tiñeran los dos, ninguno
+              // resaltaría y volveríamos al punto de partida.
+              moneda === "USD" ? `border-2 ${t!.borde} ${t!.fondo} tabular-nums` : "border border-slate-200",
+            ].join(" ")}
             style={{ outlineColor: acento }} />
         </div>
       )}
@@ -1889,12 +1942,17 @@ function Campo({ label, value, onChange, acento, prefijo, soloLectura, nota }: {
 }
 
 // Celda de resultado (solo lectura) del bloque COSTOS.
+/* Todo lo CALCULADO sale en pesos, sin excepción — el chip lo dice una vez por
+   tarjeta en vez de dejar que se deduzca del contexto. */
 function Resultado({ label, value, destacado, acento }: {
   label: string; value: string; destacado?: boolean; acento?: string;
 }) {
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-      <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">{label}</div>
+      <div className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+        {label}
+        <ChipMoneda moneda="MXN" />
+      </div>
       <div
         className={["mt-0.5 font-bold", destacado ? "text-base" : "text-sm text-slate-700"].join(" ")}
         style={destacado ? { color: acento } : undefined}
