@@ -48,6 +48,14 @@ const fNum = (v: number | string | null | undefined, dec = 0) =>
 const NOMBRE_CUENTA: Record<string, string> = {
   BEKURA: "Kubera (BEKURA)", SANCORFASHION: "San Corpe (SANCORFASHION)",
 };
+// Etiqueta corta por fila para la vista GENERAL (Eduardo, 6-ago: "Ambas" es
+// UNA lista con las primeras 10 y una etiqueta que las diferencie, no las dos
+// tablas al mismo tiempo). El mismo SKU puede aparecer dos veces — una por
+// cuenta — porque cada publicación tiene su propio precio, comisión y envío.
+const CHIP_CUENTA: Record<string, { ini: string; clase: string }> = {
+  BEKURA: { ini: "BK", clase: "bg-emerald-50 text-emerald-700" },
+  SANCORFASHION: { ini: "SC", clase: "bg-sky-50 text-sky-700" },
+};
 const FILTRO_CUENTAS = [
   { id: "TODAS", label: "Ambas" },
   { id: "BEKURA", label: "Kubera" },
@@ -123,13 +131,17 @@ function Envio({ f }: { f: Fila }) {
   );
 }
 
-function TablaCuenta({ cuenta, filas }: { cuenta: string; filas: Fila[] }) {
+type FilaConCuenta = Fila & { cuenta?: string };
+
+function TablaCuenta({ titulo, sub, filas }: {
+  titulo: string; sub: string; filas: FilaConCuenta[];
+}) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white">
       <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-3">
         <Tag size={15} className="text-indigo-500" />
-        <h2 className="text-sm font-bold text-slate-800">{NOMBRE_CUENTA[cuenta] ?? cuenta}</h2>
-        <span className="text-xs text-slate-400">top {filas.length} por unidades vendidas</span>
+        <h2 className="text-sm font-bold text-slate-800">{titulo}</h2>
+        <span className="text-xs text-slate-400">{sub}</span>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[13px]">
@@ -154,10 +166,18 @@ function TablaCuenta({ cuenta, filas }: { cuenta: string; filas: Fila[] }) {
           </thead>
           <tbody>
             {filas.map((f, i) => (
-              <tr key={f.sku} className="border-b border-slate-50 hover:bg-slate-50/60">
+              <tr key={`${f.cuenta ?? ""}${f.sku}`} className="border-b border-slate-50 hover:bg-slate-50/60">
                 <td className="px-3 py-2 text-slate-400">{i + 1}</td>
                 <td className="max-w-[240px] px-3 py-2">
-                  <div className="font-semibold text-slate-800">{f.sku}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-slate-800">{f.sku}</span>
+                    {f.cuenta && CHIP_CUENTA[f.cuenta] && (
+                      <span title={NOMBRE_CUENTA[f.cuenta] ?? f.cuenta}
+                            className={`rounded px-1 text-[9px] font-bold ${CHIP_CUENTA[f.cuenta].clase}`}>
+                        {CHIP_CUENTA[f.cuenta].ini}
+                      </span>
+                    )}
+                  </div>
                   <div className="truncate text-[11px] text-slate-400">{f.titulo ?? ""}</div>
                 </td>
                 {/* De adorno a propósito: el lugar queda apartado para cuando
@@ -237,8 +257,13 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
     cargar(dias);
   }, [dias, cargar]);
 
-  const cuentasVisibles = (data?.cuentas ?? []).filter(
-    (c) => cuenta === "TODAS" || c.cuenta === cuenta);
+  // "Ambas" = UNA lista general: se funden las dos cuentas, se reordena por
+  // unidades y se corta en 10; la etiqueta BK/SC diferencia cada fila.
+  const general: FilaConCuenta[] = (data?.cuentas ?? [])
+    .flatMap((c) => c.filas.map((f) => ({ ...f, cuenta: c.cuenta })))
+    .sort((a, b) => b.uds - a.uds || b.ingreso - a.ingreso)
+    .slice(0, 10);
+  const cuentasVisibles = (data?.cuentas ?? []).filter((c) => c.cuenta === cuenta);
 
   return (
     <div
@@ -306,9 +331,20 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
           </div>
         )}
         <div className="space-y-4">
-          {cuentasVisibles.map((c) => (
-            <TablaCuenta key={c.cuenta} cuenta={c.cuenta} filas={c.filas} />
-          ))}
+          {cuenta === "TODAS" ? (
+            data && (
+              <TablaCuenta titulo="General"
+                           sub="top 10 de ambas cuentas por unidades vendidas"
+                           filas={general} />
+            )
+          ) : (
+            cuentasVisibles.map((c) => (
+              <TablaCuenta key={c.cuenta}
+                           titulo={NOMBRE_CUENTA[c.cuenta] ?? c.cuenta}
+                           sub={`top ${c.filas.length} por unidades vendidas`}
+                           filas={c.filas} />
+            ))
+          )}
         </div>
         {data && (
           <p className="mt-3 text-[11px] text-slate-400">
