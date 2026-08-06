@@ -21,7 +21,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { BadgePercent, BarChart3, Boxes, Clock, FileText, Star, TriangleAlert } from "lucide-react";
+import { BarChart3, Boxes, Clock, FileText, Star, TriangleAlert } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 
@@ -30,7 +30,6 @@ const SECCIONES = [
   // se llama igual que la sección: es la que abre por defecto.
   { href: "/analisis", label: "Análisis", icon: Boxes, exacta: true },
   { href: "/analisis/categorias", label: "Categorías", icon: Boxes },
-  { href: "/analisis/margenes", label: "Márgenes", icon: BadgePercent },
   { href: "/analisis/estrellas", label: "Estrellas", icon: Star },
   { href: "/analisis/fba", label: "Amazon FBA", icon: BarChart3 },
   { href: "/analisis/reportes", label: "Reportes", icon: FileText },

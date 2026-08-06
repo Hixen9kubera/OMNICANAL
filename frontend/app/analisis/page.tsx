@@ -17,7 +17,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CalendarDays, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, BadgePercent, CalendarDays, RefreshCw, X } from "lucide-react";
+import MargenesRealesModal from "@/components/MargenesRealesModal";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
@@ -1006,6 +1007,9 @@ export default function FulfillmentPage() {
   const [detalle, setDetalle] = useState<Fila | null>(null);
   // Modal de precio/margen por canal (clic en las columnas Precio o Margen)
   const [canalesDe, setCanalesDe] = useState<Fila | null>(null);
+  // Popup "Productos más vendidos" (márgenes con cobros reales de Meli) —
+  // vive como botón junto al período, no como sub-pestaña (Eduardo, 6-ago).
+  const [verMargenes, setVerMargenes] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true); setErr(null);
@@ -1126,6 +1130,12 @@ export default function FulfillmentPage() {
               {d} días
             </button>
           ))}
+          <button onClick={() => setVerMargenes(true)}
+                  title="Top por cuenta con margen sobre Costo Final: comisión y envío REALES de Meli"
+                  className="ml-2 inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-semibold text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100">
+            <BadgePercent size={15} />
+            Productos más vendidos
+          </button>
         </div>
 
         {/* Gráfica */}
@@ -1322,6 +1332,9 @@ export default function FulfillmentPage() {
       {detalle && (
         <ModalDetalle fila={detalle} cuenta={cuenta}
                       onClose={() => setDetalle(null)} />
+      )}
+      {verMargenes && (
+        <MargenesRealesModal cerrar={() => setVerMargenes(false)} />
       )}
       {canalesDe && (
         <ModalCanales fila={canalesDe} onClose={() => setCanalesDe(null)} />
