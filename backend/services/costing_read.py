@@ -46,14 +46,31 @@ def contenedores() -> list[dict]:
     return [{"contenedor": r["contenedor"], "n": int(r["n"])} for r in rows]
 
 
-def detalle(sku: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(finales, validados) del SKU — superset de columnas del par MySQL."""
-    cf = sdb.fetch_one(
+def finales(sku: str) -> dict[str, Any] | None:
+    return sdb.fetch_one(
         "select * from costing.costos_finales where sku = %s and canal = %s",
         (sku, CANAL))
-    cv = sdb.fetch_one(
+
+
+def validados(sku: str) -> dict[str, Any] | None:
+    return sdb.fetch_one(
         "select * from costing.costos_validados where sku = %s", (sku,))
-    return cf, cv
+
+
+def detalle(sku: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(finales, validados) del SKU — superset de columnas del par MySQL."""
+    return finales(sku), validados(sku)
+
+
+def pct_comision_categoria(cat_id: str) -> float | None:
+    """La comisión más frecuente cacheada para un ml_cat_id (gemela de
+    costos._comision_categoria_db). None si nunca se costeó esa categoría."""
+    row = sdb.fetch_one(
+        """select pct_comision from costing.costos_finales
+           where ml_cat_id = %s and pct_comision > 0
+           group by pct_comision order by count(*) desc limit 1""",
+        (cat_id,))
+    return float(row["pct_comision"]) if row and row.get("pct_comision") else None
 
 
 def listado(page: int, per_page: int, search: str | None, contenedor: str | None,

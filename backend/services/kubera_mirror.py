@@ -559,6 +559,25 @@ def _up_core_product(cur, p: dict[str, Any]) -> None:
     )
 
 
+def _up_costing_validados(cur, p: dict[str, Any]) -> None:
+    """costing.costos_validados — reproceso de la cola del CORTE F6 (kubera
+    estaba caída al escribir; el payload trae la fila + accion/origen)."""
+    from services import costing_mirror
+    costing_mirror._atribuir(cur, p.get("accion") or "reproceso",
+                             p.get("origen") or "backend")
+    costing_mirror._asegurar_identidad(cur, p.get("sku") or "")
+    costing_mirror.upsert_validados(cur, p.get("sku") or "", p)
+
+
+def _up_costing_finales(cur, p: dict[str, Any]) -> None:
+    """costing.costos_finales — reproceso de la cola del CORTE F6."""
+    from services import costing_mirror
+    costing_mirror._atribuir(cur, p.get("accion") or "reproceso",
+                             p.get("origen") or "backend")
+    costing_mirror._asegurar_identidad(cur, p.get("sku") or "")
+    costing_mirror.upsert_finales(cur, p.get("sku") or "", p)
+
+
 _UPSERTS: dict[str, Callable] = {
     "ops.webhook_events": _up_webhook_events,
     "ops.channel_submissions": _up_channel_submissions,
@@ -567,6 +586,8 @@ _UPSERTS: dict[str, Callable] = {
     "channel.orders": _up_channel_orders,
     "channel.order_items": _up_channel_order_items,
     "core.products": _up_core_product,
+    "costing.costos_validados": _up_costing_validados,
+    "costing.costos_finales": _up_costing_finales,
 }
 
 

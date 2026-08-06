@@ -4596,3 +4596,65 @@ niveles.
 Tablas nuevas, todas NUESTRAS en MySQL (mismo terreno que `amazon_imagenes`):
 `ml_envio_real`, `ml_visitas`, `ml_ficha`. Sin migraciones en la BD kubera y sin
 variables nuevas en Railway. Versión 0.69.0.
+
+### v0.70.0 — CORTE F6 de COSTOS: kubera pasa a ser la fuente de escritura (Eduardo)
+
+Primer corte de escritura de la migración. Con la racha del acta de costos
+cumplida (14/14 el 06-ago), el dominio COSTOS invierte la fuente de verdad:
+con `SUPABASE_WRITE_COSTING=true` (nuevo flag, apagado por omisión) las tres
+escrituras de `services/costos.py` van PRIMERO a la BD kubera y MySQL queda de
+**espejo inverso** (opción A):
+
+- `costos_validados` → `costing.costos_validados` (primaria, síncrona)
+- `costos_finales`   → `costing.costos_finales` (primaria; P4: canal fijo
+  `mercado_libre` mientras el motor sea ML-céntrico)
+- bitácora `costos_logs` → `ops.process_log` (primaria; el panel sigue leyendo
+  `costos_logs`, que el espejo inverso mantiene completa)
+
+Piezas nuevas y movidas:
+
+- **`services/costing_write.py`** (nuevo): decide el orden del corte. Primaria
+  kubera con la MISMA atribución de `cost_history` del espejo (`set_config`
+  transaccional) y los MISMOS upserts que validaron la racha —
+  `costing_mirror` ahora expone `upsert_validados` / `upsert_finales` /
+  `insertar_log` a nivel cursor y tanto el espejo F3 como el corte F6 y el
+  reproceso los comparten (cero SQL duplicado). El SQL de MySQL tampoco se
+  duplica: `costos.py` se lo pasa como thunk.
+- **Espejo inverso**: tras la primaria, MySQL se escribe en hilo best-effort.
+  Si MySQL falla: log + `ops.migration_issues` + Slack
+  (`espejo_inverso:costing`) — la operación de negocio jamás se rompe.
+- **Resiliencia con kubera caída** (el riesgo nuevo del corte): el negocio NO
+  se bloquea. Se escribe MySQL como en el mundo viejo y el evento kubera queda
+  ENCOLADO en `espejo_kubera_log` con payload reproducible; los handlers
+  nuevos `costing.costos_validados` / `costing.costos_finales` de
+  `kubera_mirror._UPSERTS` lo re-aplican con
+  `POST /api/migracion/errores/reprocesar` (la bitácora encola con la forma de
+  `ops.process_log`, que ya tenía handler). Slack avisa por la vía del espejo.
+- **Lecturas internas del motor** bajo el flag: `costo_desde_validados`, la
+  semilla de `_preparar_base` y la caché de comisiones
+  (`_comision_categoria_db`) leen de kubera con fallback a MySQL (mismo patrón
+  F5: `lecturas_fuente` + alerta). `None` de kubera reconsulta MySQL: si un
+  evento quedó encolado por una caída, el espejo tiene la fila. OJO modelo v4:
+  `costing.costos_finales` no lleva dims — durante la transición se
+  complementan del MySQL espejo; al retirar MySQL las dims viven SOLO en
+  `costos_validados` (el contrato).
+- El acta diaria (`deltas-costos` 06:30) NO cambia: compara ambos lados y
+  sigue debiendo dar cero — ahora audita el espejo inverso. Criterio de cierre
+  de la transición: 14 días de actas invertidas en cero → retirar flag de
+  lectura, espejo inverso y cron; tablas MySQL de costos a legado (F8).
+
+Pruebas en el SANDBOX (`backend/scripts/probar_corte_costing.py`, patrón de la
+suite de caos: guardia triple de ref, MySQL 100% stubeado, fila cobaya
+`ZZZ-CORTE-F6` que se limpia al final): **15/15 PASAN** — primaria + espejo
+inverso + identidad `core.products`, lectura con fallback y alerta, caída de
+kubera (negocio no truena, evento encolado, Slack), reproceso del payload
+encolado (el valor de la cola gana) y flag OFF (mundo viejo intacto).
+
+Revertir = `SUPABASE_WRITE_COSTING=false` (vuelve el dual-write clásico, cero
+deploys). Sin migraciones que aplicar. Variable nueva en Railway:
+`SUPABASE_WRITE_COSTING` (encender SOLO con el dale — es la primera vez que
+escrituras de un dominio vivo cambian de casa). Los cortes de los demás
+dominios (core/orders/channel/categorías) esperan su propia racha 14/14; el
+candado de alertas (`alertas_estado`) NO se corta a propósito: debe sobrevivir
+con kubera caída (es quien avisa de esas caídas) y su fusión a
+`ops.process_log` es tarea del cierre (F8).

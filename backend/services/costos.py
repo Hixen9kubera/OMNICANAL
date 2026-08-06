@@ -31,8 +31,8 @@ from typing import Any
 import requests
 
 from config import settings
-from services import (alertas, core_read, costing_mirror, db, lecturas_fuente,
-                      meli)
+from services import (alertas, core_read, costing_mirror, costing_read,
+                      costing_write, db, lecturas_fuente, meli)
 
 log = logging.getLogger("uvicorn.error")
 
@@ -51,6 +51,15 @@ def _comision_categoria_db(cat_id: str) -> float | None:
     """
     if not cat_id:
         return None
+    # F6 (corte): con kubera como fuente de escritura, la caché de comisiones
+    # también se consulta ahí primero; MySQL (espejo inverso) es el fallback.
+    if costing_write.activo():
+        try:
+            pct = costing_read.pct_comision_categoria(cat_id)
+            if pct is not None:
+                return pct
+        except Exception:  # noqa: BLE001
+            pass
     try:
         row = db.fetch_one(
             """SELECT pct_comision FROM costos_finales
@@ -350,7 +359,21 @@ def costo_desde_validados(sku: str) -> dict[str, Any] | None:
     Costo base + dimensiones de un SKU desde costos_validados.
     costo_unitario = costo_total (o costo_producto + costo_cbm si falta). None si no existe.
     """
-    cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
+    cv = None
+    # F6 (corte): kubera es la fuente; ante error se cae al espejo MySQL (que
+    # el espejo inverso mantiene fresco). None también reconsulta MySQL: si el
+    # evento kubera quedó encolado por una caída, MySQL tiene la fila.
+    if costing_write.activo():
+        try:
+            cv = costing_read.validados(sku)
+            lecturas_fuente.anotar("costing", "kubera")
+        except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("costing", "fallback", str(exc))
+            alertas.avisar("lectura_fallback:costing",
+                           f"⚠️ Lectura de COSTOS cayó a MySQL (validados {sku}): {exc}")
+            log.warning("lectura kubera falló (validados %s) — fallback MySQL: %s", sku, exc)
+    if cv is None:
+        cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
     if not cv:
         return None
     def _f(v: Any) -> float:
@@ -375,13 +398,21 @@ def costo_desde_validados(sku: str) -> dict[str, Any] | None:
 # ── Persistencia + logs ─────────────────────────────────────────────────────────
 
 def _log_costo(sku: str, accion: str, origen: str, detalle: dict[str, Any]) -> None:
-    try:
-        db.execute(
-            "INSERT INTO costos_logs (sku, accion, origen, detalle) VALUES (%s,%s,%s,%s)",
-            (sku, accion, origen, json.dumps(detalle, ensure_ascii=False, default=str)),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("no se pudo escribir costos_logs(%s): %s", sku, exc)
+    def _mysql() -> None:
+        try:
+            db.execute(
+                "INSERT INTO costos_logs (sku, accion, origen, detalle) VALUES (%s,%s,%s,%s)",
+                (sku, accion, origen, json.dumps(detalle, ensure_ascii=False, default=str)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no se pudo escribir costos_logs(%s): %s", sku, exc)
+
+    # F6 (corte): la bitácora primaria es ops.process_log; costos_logs queda de
+    # espejo inverso (el panel sigue leyéndola completa durante la transición).
+    if costing_write.activo():
+        costing_write.registrar_log(sku, accion, origen, detalle, _mysql)
+        return
+    _mysql()
     # Dual-write F3 (flag SUPABASE_DUAL_WRITE): espejo a ops.process_log en un
     # hilo aparte — nunca en el camino crítico, nunca rompe la operación.
     costing_mirror.en_hilo(costing_mirror.espejar_log, sku, accion, origen, detalle)
@@ -408,11 +439,19 @@ def _guardar_finales(sku: str, base: dict[str, Any], pricing: dict[str, Any],
     cols = ", ".join(fila.keys())
     ph = ", ".join(["%s"] * len(fila))
     upd = ", ".join(f"{k}=VALUES({k})" for k in fila if k != "sku")
-    db.execute(
-        f"INSERT INTO costos_finales ({cols}) VALUES ({ph}) "
-        f"ON DUPLICATE KEY UPDATE {upd}, updated_at=NOW()",
-        tuple(fila.values()),
-    )
+
+    def _mysql() -> None:
+        db.execute(
+            f"INSERT INTO costos_finales ({cols}) VALUES ({ph}) "
+            f"ON DUPLICATE KEY UPDATE {upd}, updated_at=NOW()",
+            tuple(fila.values()),
+        )
+
+    # F6 (corte, opción A): kubera primaria + MySQL de espejo inverso.
+    if costing_write.activo():
+        costing_write.guardar_finales(sku, dict(fila), _mysql)
+        return fila
+    _mysql()
     # Dual-write F3: espejo a costing.costos_finales (MySQL sigue siendo la fuente).
     costing_mirror.en_hilo(costing_mirror.espejar_finales, sku, dict(fila))
     return fila
@@ -435,19 +474,26 @@ def _guardar_validados(sku: str, base: dict[str, Any]) -> None:
     cols = ", ".join(fila.keys())
     ph = ", ".join(["%s"] * len(fila))
     upd = ", ".join(f"{k}=VALUES({k})" for k in fila if k != "sku")
-    db.execute(
-        f"INSERT INTO costos_validados ({cols}) VALUES ({ph}) "
-        f"ON DUPLICATE KEY UPDATE {upd}",
-        tuple(fila.values()),
-    )
-    # Dual-write F3: espejo a costing.costos_validados (solo columnas tocadas aquí;
-    # el costo_total del espejo = costo_unitario, igual que la fila de MySQL).
-    costing_mirror.en_hilo(
-        costing_mirror.espejar_validados, sku,
-        {**{k: fila.get(k) for k in ("largo", "alto", "ancho", "peso",
-                                     "costo_producto", "costo_cbm")},
-         "costo_total": fila.get("costo_total")},
-    )
+
+    def _mysql() -> None:
+        db.execute(
+            f"INSERT INTO costos_validados ({cols}) VALUES ({ph}) "
+            f"ON DUPLICATE KEY UPDATE {upd}",
+            tuple(fila.values()),
+        )
+
+    # La fila kubera: solo columnas tocadas aquí; el costo_total del espejo =
+    # costo_unitario, igual que la fila de MySQL.
+    fila_kb = {**{k: fila.get(k) for k in ("largo", "alto", "ancho", "peso",
+                                           "costo_producto", "costo_cbm")},
+               "costo_total": fila.get("costo_total")}
+    # F6 (corte, opción A): kubera primaria + MySQL de espejo inverso.
+    if costing_write.activo():
+        costing_write.guardar_validados(sku, fila_kb, _mysql)
+        return
+    _mysql()
+    # Dual-write F3: espejo a costing.costos_validados.
+    costing_mirror.en_hilo(costing_mirror.espejar_validados, sku, fila_kb)
 
 
 def _preparar_base(sku: str, overrides: dict[str, Any] | None,
@@ -459,7 +505,31 @@ def _preparar_base(sku: str, overrides: dict[str, Any] | None,
     Devuelve (base, cat_id).
     """
     base = costo_desde_validados(sku) or {}
-    cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,)) or {}
+    cf = None
+    # F6 (corte): la semilla de costos_finales sale de kubera. OJO modelo v4:
+    # costing.costos_finales NO lleva dims — si a validados le faltan, las dims
+    # se complementan del MySQL espejo (solo durante la transición; al retirar
+    # MySQL, las dims solo vivirán en costos_validados, que es el contrato v4).
+    if costing_write.activo():
+        try:
+            cf = costing_read.finales(sku)  # None (sin fila) → reconsulta MySQL
+        except Exception as exc:  # noqa: BLE001
+            lecturas_fuente.anotar("costing", "fallback", str(exc))
+            log.warning("lectura kubera falló (finales %s) — fallback MySQL: %s", sku, exc)
+            cf = None
+        if cf is not None and not all(base.get(k) for k in ("largo", "alto", "ancho", "peso")):
+            cf = dict(cf)
+            try:
+                cf_my = db.fetch_one(
+                    "SELECT largo, alto, ancho, peso FROM costos_finales WHERE sku=%s",
+                    (sku,)) or {}
+                for k in ("largo", "alto", "ancho", "peso"):
+                    if cf.get(k) is None and cf_my.get(k) is not None:
+                        cf[k] = cf_my[k]
+            except Exception:  # noqa: BLE001 — sin dims de MySQL, la kubera basta
+                pass
+    if cf is None:
+        cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,)) or {}
     for k in ("costo_producto", "costo_cbm", "largo", "alto", "ancho", "peso"):
         if not base.get(k) and cf.get(k) is not None:
             try:

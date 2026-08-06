@@ -89,51 +89,53 @@ def _asegurar_identidad(cur, sku: str) -> None:
     )
 
 
+def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
+    """Upsert de costing.costos_validados a nivel cursor (lo comparten el espejo
+    F3, el corte F6 de costing_write y el reproceso de espejo_kubera_log).
+    Solo las columnas que costos.py toca; contenedor/cajas/etc. de la fila
+    existente se conservan, igual que en MySQL."""
+    cur.execute(
+        """insert into costing.costos_validados
+             (sku, largo, alto, ancho, peso, costo_producto, costo_cbm, costo_total)
+           values (%(sku)s, %(largo)s, %(alto)s, %(ancho)s, %(peso)s,
+                   %(costo_producto)s, %(costo_cbm)s, %(costo_total)s)
+           on conflict (sku) do update set
+             largo = excluded.largo, alto = excluded.alto, ancho = excluded.ancho,
+             peso = excluded.peso, costo_producto = excluded.costo_producto,
+             costo_cbm = excluded.costo_cbm, costo_total = excluded.costo_total
+           where (costos_validados.largo, costos_validados.alto,
+                  costos_validados.ancho, costos_validados.peso,
+                  costos_validados.costo_producto, costos_validados.costo_cbm,
+                  costos_validados.costo_total)
+             is distinct from
+                 (excluded.largo, excluded.alto, excluded.ancho, excluded.peso,
+                  excluded.costo_producto, excluded.costo_cbm, excluded.costo_total)""",
+        {**fila, "sku": sku, "costo_total": fila.get("costo_total")},
+    )
+
+
 def espejar_validados(sku: str, fila: dict[str, Any], accion: str = "auto",
                       origen: str = "backend") -> None:
-    """Espeja el upsert de costos_validados (solo las columnas que costos.py toca;
-    contenedor/cajas/etc. de la fila existente se conservan, igual que en MySQL)."""
+    """Espeja el upsert de costos_validados (best-effort: un fallo jamás rompe
+    la operación de negocio)."""
     if not activo():
         return
     try:
         with sdb.get_cursor() as cur:
             _atribuir(cur, accion, origen)
             _asegurar_identidad(cur, sku)
-            cur.execute(
-                """insert into costing.costos_validados
-                     (sku, largo, alto, ancho, peso, costo_producto, costo_cbm, costo_total)
-                   values (%(sku)s, %(largo)s, %(alto)s, %(ancho)s, %(peso)s,
-                           %(costo_producto)s, %(costo_cbm)s, %(costo_total)s)
-                   on conflict (sku) do update set
-                     largo = excluded.largo, alto = excluded.alto, ancho = excluded.ancho,
-                     peso = excluded.peso, costo_producto = excluded.costo_producto,
-                     costo_cbm = excluded.costo_cbm, costo_total = excluded.costo_total
-                   where (costos_validados.largo, costos_validados.alto,
-                          costos_validados.ancho, costos_validados.peso,
-                          costos_validados.costo_producto, costos_validados.costo_cbm,
-                          costos_validados.costo_total)
-                     is distinct from
-                         (excluded.largo, excluded.alto, excluded.ancho, excluded.peso,
-                          excluded.costo_producto, excluded.costo_cbm, excluded.costo_total)""",
-                {**fila, "sku": sku, "costo_total": fila.get("costo_total")},
-            )
+            upsert_validados(cur, sku, fila)
     except Exception as exc:  # noqa: BLE001
         log.warning("espejo costos_validados(%s) falló (la operación continúa): %s", sku, exc)
         _registrar_issue("costos_validados", sku, f"espejo fallo: {exc}")
 
 
-def espejar_finales(sku: str, fila: dict[str, Any], accion: str = "auto",
-                    origen: str = "backend") -> None:
-    """Espeja el upsert de costos_finales. Las dimensiones NO viajan (en el
-    modelo v4 viven solo en costos_validados); se agrega formula_ver."""
-    if not activo():
-        return
-    try:
-        with sdb.get_cursor() as cur:
-            _atribuir(cur, accion, origen)
-            _asegurar_identidad(cur, sku)
-            cur.execute(
-                """insert into costing.costos_finales
+def upsert_finales(cur, sku: str, fila: dict[str, Any]) -> None:
+    """Upsert de costing.costos_finales a nivel cursor (compartido igual que
+    upsert_validados). Las dimensiones NO viajan (en el modelo v4 viven solo
+    en costos_validados); se agrega formula_ver."""
+    cur.execute(
+        """insert into costing.costos_finales
                      (sku, canal, costo_producto, costo_cbm, costo_unitario, costo_comision,
                       costo_fee_envio, precio_sugerido, precio_base, ml_cat_id,
                       pct_comision, peso_origen, formula_ver, comision_consultada_at)
@@ -165,33 +167,53 @@ def espejar_finales(sku: str, fila: dict[str, Any], accion: str = "auto",
                           excluded.costo_comision, excluded.costo_fee_envio,
                           excluded.precio_sugerido, excluded.precio_base, excluded.ml_cat_id,
                           excluded.pct_comision, excluded.peso_origen)""",
-                {"sku": sku, "formula_ver": FORMULA_VER,
-                 **{k: fila.get(k) for k in (
-                     "costo_producto", "costo_cbm", "costo_unitario", "costo_comision",
-                     "costo_fee_envio", "precio_sugerido", "precio_base", "ml_cat_id",
-                     "pct_comision", "peso_origen")}},
-            )
+        {"sku": sku, "formula_ver": FORMULA_VER,
+         **{k: fila.get(k) for k in (
+             "costo_producto", "costo_cbm", "costo_unitario", "costo_comision",
+             "costo_fee_envio", "precio_sugerido", "precio_base", "ml_cat_id",
+             "pct_comision", "peso_origen")}},
+    )
+
+
+def espejar_finales(sku: str, fila: dict[str, Any], accion: str = "auto",
+                    origen: str = "backend") -> None:
+    """Espeja el upsert de costos_finales (best-effort: un fallo jamás rompe
+    la operación de negocio)."""
+    if not activo():
+        return
+    try:
+        with sdb.get_cursor() as cur:
+            _atribuir(cur, accion, origen)
+            _asegurar_identidad(cur, sku)
+            upsert_finales(cur, sku, fila)
     except Exception as exc:  # noqa: BLE001
         log.warning("espejo costos_finales(%s) falló (la operación continúa): %s", sku, exc)
         _registrar_issue("costos_finales", sku, f"espejo fallo: {exc}")
 
 
+def insertar_log(cur, sku: str, accion: str, origen: str,
+                 detalle: dict[str, Any]) -> None:
+    """Insert de la bitácora en ops.process_log a nivel cursor (compartido;
+    detalle truncado a 4 KB, la misma salvaguarda de crear_logs)."""
+    detalle_json = json.dumps(detalle, ensure_ascii=False, default=str)
+    if len(detalle_json) > 4000:
+        # el recorte invalida el JSON: se re-empaca como valor string válido
+        detalle_json = json.dumps({"truncado": True, "detalle": detalle_json[:4000]},
+                                  ensure_ascii=False)
+    cur.execute(
+        """insert into ops.process_log (proceso, origen, sku, accion, estado, detalle)
+           values ('costos', %s, %s, %s, 'ok', %s::jsonb)""",
+        (origen or "backend", sku, accion, detalle_json),
+    )
+
+
 def espejar_log(sku: str, accion: str, origen: str, detalle: dict[str, Any]) -> None:
-    """Espeja costos_logs → ops.process_log (detalle truncado a 4 KB, la misma
-    salvaguarda de crear_logs)."""
+    """Espeja costos_logs → ops.process_log (best-effort)."""
     if not activo():
         return
     try:
-        detalle_json = json.dumps(detalle, ensure_ascii=False, default=str)
-        if len(detalle_json) > 4000:
-            # el recorte invalida el JSON: se re-empaca como valor string válido
-            detalle_json = json.dumps({"truncado": True, "detalle": detalle_json[:4000]},
-                                      ensure_ascii=False)
-        sdb.execute(
-            """insert into ops.process_log (proceso, origen, sku, accion, estado, detalle)
-               values ('costos', %s, %s, %s, 'ok', %s::jsonb)""",
-            (origen or "backend", sku, accion, detalle_json),
-        )
+        with sdb.get_cursor() as cur:
+            insertar_log(cur, sku, accion, origen, detalle)
     except Exception as exc:  # noqa: BLE001
         log.warning("espejo process_log(%s) falló (la operación continúa): %s", sku, exc)
         _registrar_issue("costos_logs", sku, f"espejo fallo: {exc}")

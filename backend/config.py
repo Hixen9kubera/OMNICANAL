@@ -206,6 +206,14 @@ class Settings(BaseSettings):
     # categoría ML de costos.py) leen de core.products. None NO es concluyente
     # (seam Crear pendiente): se reconsulta MySQL. Apagar = revertir.
     supabase_read_core: bool = False
+    # F6 costos (CORTE, opción A — espejo inverso): las ESCRITURAS de costos
+    # (costos_finales / costos_validados / bitácora) van PRIMERO a costing.* /
+    # ops.process_log en la BD kubera (fuente de verdad) y MySQL pasa a ser el
+    # espejo best-effort. Con kubera caída el negocio no se bloquea: se escribe
+    # MySQL y el evento queda encolado en espejo_kubera_log (reprocesable).
+    # Apagar = volver al dual-write clásico (MySQL manda). Requiere racha de
+    # actas cumplida (costing 14/14, 06-ago-2026) y dale de Brandon.
+    supabase_write_costing: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""
