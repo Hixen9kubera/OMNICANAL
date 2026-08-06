@@ -38,6 +38,13 @@ interface Hoja {
   publicaciones: number;
   activas: number;
   cuentas: CuentaVenta[] | null;
+  // Margen: costo del producto + los cobros del canal. `venta_con_costo` es la
+  // parte de la venta cuyo producto SÍ tiene costo capturado — el denominador
+  // honesto del margen, y la medida de qué tan completa está la foto.
+  costo_base: number | null;
+  comision: number | null;
+  envio: number | null;
+  venta_con_costo: number | null;
 }
 
 interface Resp {
@@ -59,6 +66,9 @@ interface Pub {
   situacion: string | null;
   precio: number | null;
   titulo: string | null;
+  costo_base: number | null;
+  comision: number | null;
+  envio: number | null;
 }
 
 /* Nodo del árbol armado en cliente a partir de las rutas de las hojas. */
@@ -73,6 +83,8 @@ interface Nodo {
   publicaciones: number;
   activas: number;
   cuentas: Map<string, { uds: number; venta: number }>;
+  costo_final: number;      // producto + comisión + envío, solo de lo medible
+  venta_con_costo: number;  // denominador del margen
 }
 
 const n = (v: number | string | null | undefined) => (v == null ? 0 : Number(v));
@@ -80,6 +92,49 @@ const fMoney = (v: number | string | null | undefined, dec = 0) =>
   v == null ? "—" : `$${n(v).toLocaleString("es-MX", { maximumFractionDigits: dec })}`;
 const fNum = (v: number | string | null | undefined, dec = 0) =>
   v == null ? "—" : n(v).toLocaleString("es-MX", { maximumFractionDigits: dec });
+
+/* La celda de MARGEN, igual para una rama del árbol y para una publicación.
+   Devuelve null cuando no hay costo con qué calcular: una celda vacía dice la
+   verdad, un 0% mentiría.
+
+   `venta` es el total de la fila y `ventaMedible` la parte con costo
+   capturado. El porcentaje se calcula sobre la SEGUNDA; cuando las dos no
+   coinciden, el número se pinta en gris y el tooltip declara sobre cuánto se
+   midió — un margen sacado del 40%% de la venta no se puede leer igual que uno
+   completo. */
+function margen(venta: number, ventaMedible: number, costoFinal: number) {
+  if (!ventaMedible || ventaMedible <= 0) return null;
+  const pct = ((ventaMedible - costoFinal) / ventaMedible) * 100;
+  const parcial = ventaMedible < venta * 0.995;
+  const cobertura = venta > 0 ? (ventaMedible / venta) * 100 : 100;
+  return {
+    pct, parcial,
+    titulo: [
+      `Costo final ${fMoney(costoFinal)} · ganancia ${fMoney(ventaMedible - costoFinal)}`,
+      parcial
+        ? `Medido sobre ${fMoney(ventaMedible)} de ${fMoney(venta)} (${fNum(cobertura, 0)}% de la venta): al resto le falta capturar el costo`
+        : "Toda la venta de esta fila tiene costo capturado",
+    ].join("\n"),
+  };
+}
+
+function CeldaMargen({ venta, ventaMedible, costoFinal, bold }: {
+  venta: number; ventaMedible: number; costoFinal: number; bold?: boolean;
+}) {
+  const m = margen(venta, ventaMedible, costoFinal);
+  if (!m) {
+    return <span className="text-slate-300" title="Sin costo capturado en esta rama">—</span>;
+  }
+  const tono = m.parcial
+    ? "text-slate-400"
+    : m.pct < 20 ? "text-red-500" : "text-emerald-600";
+  return (
+    <span className={`tabular-nums ${bold ? "font-bold" : "font-semibold"} ${tono}`}
+          title={m.titulo}>
+      {fNum(m.pct, 1)}%{m.parcial && <span className="ml-0.5 text-[9px]">*</span>}
+    </span>
+  );
+}
 
 const CUENTAS = [
   { id: "", label: "Consolidado" },
@@ -115,6 +170,7 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   venta: { titulo: "Ventas $", texto: "Importe vendido en el período. Venta bruta: no descuenta comisión ni costo." },
   pct: { titulo: "% del total", texto: "Qué parte de la venta del período aporta esta rama. La barra compara contra la categoría más grande." },
   prom: { titulo: "Precio promedio", texto: "Ventas $ entre unidades: el ticket promedio REAL al que salió la rama (no el precio de lista)." },
+  margen: { titulo: "Margen", texto: "Lo que queda después de TODO: el costo del producto (compra + flete de importación) más los cobros de Mercado Libre por vender (la comisión REAL de cada venta y el envío estimado). Se calcula solo sobre la parte de la venta cuyo producto tiene costo capturado — dividir entre la venta completa hundiría a las ramas con la captura a medias. Cuando esa parte no es toda la venta, el número va en gris con un asterisco y el tooltip dice sobre cuánto se midió. Vacío significa que ningún producto de la rama tiene costo. El desglose completo, fila por fila, está en el Excel de arriba." },
   cuentas: { titulo: "Por cuenta", texto: "Desglose de las unidades entre Bekura, Sancor y Amazon. El importe de cada cuenta va en el tooltip." },
 };
 
@@ -124,7 +180,8 @@ function armarArbol(hojas: Hoja[]): Nodo[] {
     let x = nivel.find((h) => h.label === label);
     if (!x) {
       x = { label, clave, hijos: [], category_id: null, uds: 0, venta: 0,
-            skus: 0, publicaciones: 0, activas: 0, cuentas: new Map() };
+            skus: 0, publicaciones: 0, activas: 0, cuentas: new Map(),
+            costo_final: 0, venta_con_costo: 0 };
       nivel.push(x);
     }
     return x;
@@ -141,6 +198,14 @@ function armarArbol(hojas: Hoja[]): Nodo[] {
       nodo.skus += h.skus;
       nodo.publicaciones += h.publicaciones;
       nodo.activas += h.activas;
+      // El costo SOLO suma cuando la rama lo tiene, y la venta medible se
+      // acumula aparte. Sumar la comisión de un SKU sin costo, o dividir entre
+      // la venta completa, hunde el margen de una categoría con la captura a
+      // medias — se vería peor de lo que es.
+      if (h.costo_base != null) {
+        nodo.costo_final += n(h.costo_base) + n(h.comision) + n(h.envio);
+        nodo.venta_con_costo += n(h.venta_con_costo);
+      }
       for (const c of h.cuentas ?? []) {
         const acc = nodo.cuentas.get(c.cuenta) ?? { uds: 0, venta: 0 };
         acc.uds += c.uds; acc.venta += n(c.venta);
@@ -327,7 +392,8 @@ export default function CategoriasPage() {
                       31-jul). El nombre completo va en el tooltip. */}
                   {([["cat", "Categoría", false], ["pub", "Pubs", true],
                      ["skus", "SKUs", true], ["uds", "Uds", true],
-                     ["venta", "Ventas $", true], ["pct", "% del total", false],
+                     ["venta", "Ventas $", true], ["margen", "Margen", true],
+                     ["pct", "% del total", false],
                      ["prom", "Precio prom", true], ["cuentas", "Por cuenta", true],
                    ] as const).map(([id, label, right]) => (
                     <th key={id}
@@ -376,7 +442,7 @@ export default function CategoriasPage() {
                 ))}
                 {arbol.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="px-3 py-8 text-center text-sm text-slate-400">
+                    <td colSpan={9} className="px-3 py-8 text-center text-sm text-slate-400">
                       {buscando
                         ? `Ninguna categoría coincide con “${q.trim()}” en este período.`
                         : "Sin ventas en el período seleccionado."}
@@ -433,6 +499,10 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
         <td className={`px-3 py-2 text-right font-semibold tabular-nums ${nodo.uds ? "text-slate-900" : "text-slate-300"}`}>{fNum(nodo.uds)}</td>
         <td className={`px-3 py-2 text-right font-semibold tabular-nums ${nodo.uds ? "text-emerald-700" : "text-slate-300"}`}
             title={nodo.uds ? undefined : "Con catálogo pero sin ventas en el período"}>{fMoney(nodo.venta)}</td>
+        <td className="px-3 py-2 text-right">
+          <CeldaMargen venta={nodo.venta} ventaMedible={nodo.venta_con_costo}
+                       costoFinal={nodo.costo_final} bold={nivel === 0} />
+        </td>
         <td className="px-3 py-2">
           <div className="flex items-center gap-1.5">
             <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
@@ -468,7 +538,7 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
       ))}
 
       {abierta && esHoja && detalle === "cargando" && (
-        <tr><td colSpan={8} className="py-2 text-center text-[12px] text-slate-400"
+        <tr><td colSpan={9} className="py-2 text-center text-[12px] text-slate-400"
                 style={{ paddingLeft: `${30 + nivel * 18}px` }}>
           <Loader2 size={13} className="mr-1 inline animate-spin" /> Cargando publicaciones…
         </td></tr>
@@ -476,7 +546,7 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
       {abierta && esHoja && Array.isArray(detalle) && detalle.map((p) => (
         <tr key={`${p.item_id}-${p.cuenta}-${p.sku}`}
             className="border-b border-slate-50 bg-white text-[12px] last:border-0">
-          <td colSpan={8} className="py-1.5 pr-3"
+          <td colSpan={9} className="py-1.5 pr-3"
               style={{ paddingLeft: `${30 + nivel * 18}px` }}>
             <div className="flex items-center gap-2 overflow-hidden">
               <span className={`shrink-0 rounded px-1 text-[9px] font-bold ${CUENTA_CHIP[p.cuenta] ?? "bg-slate-100 text-slate-500"}`}>
@@ -498,6 +568,15 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
               <span className="w-24 shrink-0 text-right font-semibold tabular-nums text-slate-800">
                 {fMoney(p.venta)}
               </span>
+              {/* Margen de la publicación. Aquí el costo o está o no está —— no
+                  hay promedios de por medio, así que la venta medible es la
+                  venta entera cuando hay costo. */}
+              <span className="w-16 shrink-0 text-right">
+                <CeldaMargen
+                  venta={n(p.venta)}
+                  ventaMedible={p.costo_base == null ? 0 : n(p.venta)}
+                  costoFinal={n(p.costo_base) + n(p.comision) + n(p.envio)} />
+              </span>
               <span className="w-20 shrink-0 text-right tabular-nums text-slate-500"
                     title="Precio de lista actual del listado">
                 {fMoney(p.precio)}
@@ -511,7 +590,7 @@ function FilaNodo({ nodo, nivel, ventaTotal, maxPct, abiertas, pubs, onToggle, a
         </tr>
       ))}
       {abierta && esHoja && Array.isArray(detalle) && detalle.length === 0 && (
-        <tr><td colSpan={8} className="py-2 text-[12px] text-slate-400"
+        <tr><td colSpan={9} className="py-2 text-[12px] text-slate-400"
                 style={{ paddingLeft: `${30 + nivel * 18}px` }}>
           Sin publicaciones con venta en el período.
         </td></tr>
