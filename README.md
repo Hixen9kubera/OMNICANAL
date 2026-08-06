@@ -4496,3 +4496,38 @@ para reconstruir el costo real) se entregó aparte como CSV — el panel avisa,
 pero el dato solo se arregla capturándolo bien.
 
 Sin migraciones que aplicar y sin variables nuevas en Railway. Versión 0.66.0.
+
+### v0.68.0 — Márgenes reales: el envío deja de ser un estimado (fase 0)
+
+Nueva sección **Análisis › Márgenes** (`/analisis/margenes`): los 10 SKUs más
+vendidos POR CUENTA (30 días) con el margen sobre el **Costo Final** y los tres
+cobros de Meli REALES — requisito de Eduardo del 6-ago:
+
+- **Precio prom** = ingreso ÷ unidades de los pedidos (realizado), con
+  insignia de PROMO cuando la publicación activa vende bajo su precio de
+  lista (`channel.listings.price_base`) — el caso Malla Sombra: lista $960,
+  promo $355, y el "misterio" del margen rojo era una decisión comercial.
+- **Comisión /u** = `sale_fee` que ML cobró de verdad (ya se guardaba).
+- **Envío /u** = **NUEVO**: el cobro real de ML por embarque
+  (`GET /shipments/{id}/costs` → `senders[].cost`, con descuentos aplicados),
+  prorrateado por unidad en carritos mixtos. El estimado de costing mentía en
+  las dos direcciones: peso de caja capturado como pieza inflaba fees ($349
+  contra $88 real en MUE-0163-TEL) y 141 SKUs con venta tenían el fee en $0,
+  inflando el top de márgenes (VAR-0037-EST decía 47%% y gana 5%%).
+
+La pieza nueva es `services/envio_real.py`: consulta los embarques a la API de
+ML y cachea el costo POR ORDEN en MySQL (`ml_envio_real`, tabla nuestra, mismo
+terreno que `amazon_imagenes`). Cada carga del panel consulta hasta
+`presupuesto` órdenes faltantes (250 por default) y el frontend refresca solo
+mientras `pendientes > 0` — así la primera carga grande no pelea con el timeout
+del proxy y las siguientes solo pagan las órdenes nuevas. Un reintento nunca
+pisa un costo real con NULL (COALESCE, mismo patrón que la comisión 0→valor).
+
+Esto es la FASE 0 acordada: el caché es del panel. La fase 1 (persistir el
+envío como parte del modelo de pedidos en `channel.order_shipments`, con seam
+en vivo + backfill que bebe de este caché) queda a decisión de Eduardo — el
+endpoint `/api/fulfillment/margenes-reales` solo cambiaría de dónde lee.
+`/margenes-top` (envío estimado) queda vivo mientras tanto para la tarjeta
+vieja de Omnicanal.
+
+Sin migraciones que aplicar y sin variables nuevas en Railway. Versión 0.68.0.

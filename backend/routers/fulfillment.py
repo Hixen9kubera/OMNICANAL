@@ -727,6 +727,191 @@ async def margenes_top(
             "nota_envio": "envío estimado por peso/dimensiones — el real llega en fase 2"}
 
 
+# ── MÁRGENES REALES (fase 0) ─────────────────────────────────────────────────
+# "Márgenes en Análisis: 10 SKUs más vendidos POR CUENTA, margen sobre el Costo
+# Final con TODOS los cobros de Meli" (Eduardo, 6-ago). La diferencia contra
+# /margenes-top: el ENVÍO ya no es el estimado de costing (que mentía en las
+# dos direcciones — ver services/envio_real.py), es lo que ML cobró de verdad
+# por cada embarque, consultado a su API y cacheado en MySQL. La comisión ya
+# era real (sale_fee de los pedidos); el precio también (ingreso ÷ unidades).
+# Fase 1 (persistir el envío en channel.order_shipments) queda a decisión de
+# Eduardo — este endpoint solo cambiaría de dónde lee.
+
+_SQL_MARGEN_REAL_TOP = _mx("""
+with lineas as (
+  select o.cuenta, i.sku, max(i.titulo) as titulo,
+         sum(i.cantidad)::int as uds,
+         sum(i.precio_unitario * i.cantidad) as ingreso,
+         sum(coalesce(i.comision, 0)) as comision,
+         sum(i.cantidad) filter (where coalesce(i.comision, 0) > 0)::int as uds_com
+    from channel.order_items i
+    join channel.orders o using (canal, cuenta, external_order_id)
+   where o.canal = 'mercado_libre'
+     and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s::int
+     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and i.sku is not null
+   group by 1, 2
+),
+top as (
+  select *, row_number() over (partition by cuenta order by uds desc, ingreso desc) as rn
+    from lineas
+)
+select t.cuenta, t.sku::text as sku, t.titulo, t.uds,
+       round(t.ingreso, 2)                         as ingreso,
+       round(t.comision / nullif(t.uds_com, 0), 2) as comision_unit,
+       coalesce(cv.costo_total, cf.costo_unitario) as costo_base,
+       cf.costo_fee_envio                          as envio_estimado
+  from top t
+  left join costing.costos_validados cv on cv.sku = t.sku
+  left join costing.costos_finales  cf on cf.sku = t.sku and cf.canal = 'mercado_libre'
+ where t.rn <= %(limite)s
+ order by t.cuenta, t.uds desc
+""")
+
+# Líneas de los SKUs del top (para saber qué órdenes consultar y cuántas
+# piezas del SKU van en cada una).
+_SQL_MARGEN_REAL_LINEAS = _mx("""
+select o.cuenta, o.external_order_id, i.sku::text as sku, sum(i.cantidad)::int as uds
+  from channel.order_items i
+  join channel.orders o using (canal, cuenta, external_order_id)
+  join unnest(%(cuentas)s::text[], %(skus)s::text[]) as t(c, s)
+    on t.c = o.cuenta and t.s = i.sku::text
+ where o.canal = 'mercado_libre'
+   and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s::int
+   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+ group by 1, 2, 3
+""")
+
+# Piezas TOTALES por orden (cualquier SKU): el cobro de envío es por EMBARQUE,
+# así que en un carrito mixto se prorratea por unidades — sin esto, dos SKUs
+# del top en el mismo carrito contarían el mismo envío dos veces.
+_SQL_MARGEN_REAL_ORDENES = """
+select o.cuenta, o.external_order_id, sum(i.cantidad)::int as uds_orden
+  from channel.order_items i
+  join channel.orders o using (canal, cuenta, external_order_id)
+ where o.canal = 'mercado_libre'
+   and o.external_order_id = any(%(ids)s::text[])
+ group by 1, 2
+"""
+
+# Publicación ACTIVA del SKU en esa cuenta: price = lo que ve el comprador hoy,
+# price_base = el precio de LISTA. Difieren ⇒ hay promoción montada (caso
+# Malla Sombra: lista $960, promo $355 — el margen malo era decisión comercial,
+# no misterio). El dato ya vive en channel.listings: cero llamadas a ML.
+_SQL_MARGEN_REAL_PUBS = """
+select a.legacy_code as cuenta, l.sku::text as sku,
+       min(l.price) as precio_pub, max(l.price_base) as precio_lista
+  from channel.listings l
+  join core.accounts a on a.id = l.account_id
+ where l.canal = 'mercado_libre' and l.situacion = 'active'
+   and l.sku = any(%(skus)s::citext[])
+ group by 1, 2
+"""
+
+
+@router.get("/margenes-reales")
+async def margenes_reales(
+    dias: int = Query(30, ge=7, le=90),
+    limite: int = Query(10, ge=3, le=20),
+    presupuesto: int = Query(250, ge=0, le=500),
+) -> dict[str, Any]:
+    """Top de SKUs más vendidos POR CUENTA con margen sobre Costo Final y los
+    tres cobros de Meli REALES: comisión (pedidos), envío (API de shipments,
+    caché MySQL) y el precio realizado. `pendientes` > 0 significa que el caché
+    de envíos sigue llenándose — el frontend refresca hasta que llegue a 0."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    try:
+        top = sdb.fetch_all(_SQL_MARGEN_REAL_TOP, {"dias": dias, "limite": limite})
+        pares_cs = [(f["cuenta"], f["sku"]) for f in top]
+        lineas = sdb.fetch_all(_SQL_MARGEN_REAL_LINEAS, {
+            "dias": dias,
+            "cuentas": [c for c, _ in pares_cs],
+            "skus": [s for _, s in pares_cs]})
+        ids = sorted({str(l["external_order_id"]) for l in lineas})
+        ordenes = sdb.fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
+        pubs = sdb.fetch_all(_SQL_MARGEN_REAL_PUBS,
+                             {"skus": [s for _, s in pares_cs]}) if pares_cs else []
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+    # Envío real: completar el caché (hasta `presupuesto` consultas) y leerlo.
+    pares_orden = [(l["cuenta"], str(l["external_order_id"])) for l in lineas]
+    pares_orden = sorted(set(pares_orden))
+    consultadas = 0
+    costos: dict[tuple[str, str], dict[str, Any]] = {}
+    if getattr(settings, "mysql_enabled", True) and pares_orden:
+        from services import envio_real
+        try:
+            if presupuesto:
+                consultadas = await envio_real.completar(pares_orden, presupuesto)
+            costos = envio_real.leer(pares_orden)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("envío real no disponible: %s", exc)
+
+    uds_orden = {(o["cuenta"], str(o["external_order_id"])): int(o["uds_orden"] or 0)
+                 for o in ordenes}
+    envio_acum: dict[tuple[str, str], float] = {}
+    uds_cub: dict[tuple[str, str], int] = {}
+    uds_sin: dict[tuple[str, str], int] = {}
+    for l in lineas:
+        ko = (l["cuenta"], str(l["external_order_id"]))
+        ks = (l["cuenta"], l["sku"])
+        fila = costos.get(ko)
+        if fila and fila.get("costo_vendedor") is not None:
+            total = uds_orden.get(ko) or int(l["uds"])
+            parte = float(fila["costo_vendedor"]) * int(l["uds"]) / max(total, 1)
+            envio_acum[ks] = envio_acum.get(ks, 0.0) + parte
+            uds_cub[ks] = uds_cub.get(ks, 0) + int(l["uds"])
+        else:
+            uds_sin[ks] = uds_sin.get(ks, 0) + int(l["uds"])
+
+    promos = {(p["cuenta"], p["sku"]): p for p in pubs}
+    cuentas: dict[str, list[dict[str, Any]]] = {}
+    pendientes_total = 0
+    for f in top:
+        ks = (f["cuenta"], f["sku"])
+        uds = int(f["uds"] or 0)
+        precio = round(float(f["ingreso"]) / uds, 2) if uds else None
+        cub, sin = uds_cub.get(ks, 0), uds_sin.get(ks, 0)
+        pendientes_total += sin
+        envio_u = round(envio_acum[ks] / cub, 2) if cub else None
+        costo = None if f["costo_base"] is None else float(f["costo_base"])
+        com = None if f["comision_unit"] is None else float(f["comision_unit"])
+        fila: dict[str, Any] = {
+            "sku": f["sku"], "titulo": f["titulo"], "uds": uds,
+            "ingreso": float(f["ingreso"]), "precio_prom": precio,
+            "costo_base": costo, "comision_unit": com,
+            "envio_unit": envio_u,
+            "envio_estimado": None if f["envio_estimado"] is None
+                              else float(f["envio_estimado"]),
+            "cobertura_envio_pct": round(cub / uds * 100) if uds else 0,
+            "uds_sin_envio": sin,
+        }
+        pr = promos.get(ks)
+        fila["precio_pub"] = None if not pr else float(pr["precio_pub"] or 0) or None
+        fila["precio_lista"] = None if not pr else float(pr["precio_lista"] or 0) or None
+        if precio and costo is not None and com is not None and envio_u is not None:
+            cfinal = round(costo + com + envio_u, 2)
+            fila["costo_final"] = cfinal
+            fila["ganancia_unit"] = round(precio - cfinal, 2)
+            fila["margen_pct"] = round((precio - cfinal) / precio * 100, 1)
+            fila["ganancia_total"] = round((precio - cfinal) * uds, 2)
+        else:
+            fila["costo_final"] = fila["ganancia_unit"] = None
+            fila["margen_pct"] = fila["ganancia_total"] = None
+        cuentas.setdefault(f["cuenta"], []).append(fila)
+
+    return {
+        "dias": dias,
+        "cuentas": [{"cuenta": c, "filas": filas} for c, filas in sorted(cuentas.items())],
+        "pendientes": pendientes_total,
+        "consultadas": consultadas,
+        "nota": "envío = cobro real de ML por embarque, prorrateado por unidad "
+                "en carritos mixtos; no incluye cargos de almacenamiento FULL",
+    }
+
+
 @router.get("/canales")
 async def resumen_canales(
     sku: str = Query(..., max_length=100),
