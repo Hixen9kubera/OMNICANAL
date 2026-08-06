@@ -24,6 +24,7 @@ import {
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
+import { TituloMoneda } from "@/components/Moneda";
 import {
   listarCandidatos,
   crearProductos,
@@ -572,8 +573,11 @@ export default function CrearProductosPage() {
                 <th className="px-3 py-3 text-center font-semibold">Variantes</th>
                 <th className="px-3 py-3 font-semibold">Categoría</th>
                 <th className="px-3 py-3 text-right font-semibold">
+                  {/* Es costos_finales.costo_unitario: el TOTAL en pesos, no
+                      la compra en dólares que se captura en el Estudio. */}
                   <button onClick={() => toggleOrden("costo")} className="inline-flex items-center gap-1 uppercase hover:text-slate-700">
-                    Costo <IconoOrden campo="costo" />
+                    <TituloMoneda moneda="MXN">Costo</TituloMoneda>
+                    <IconoOrden campo="costo" />
                   </button>
                 </th>
                 <th className="px-3 py-3 text-center font-semibold">
@@ -582,8 +586,10 @@ export default function CrearProductosPage() {
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right font-semibold">
+                  {/* Valor = stock × costo, así que hereda la moneda del costo. */}
                   <button onClick={() => toggleOrden("valor")} className="inline-flex items-center gap-1 uppercase hover:text-slate-700">
-                    Valor <IconoOrden campo="valor" />
+                    <TituloMoneda moneda="MXN">Valor</TituloMoneda>
+                    <IconoOrden campo="valor" />
                   </button>
                 </th>
                 <th className="px-3 py-3 font-semibold">Contenedor</th>
@@ -831,9 +837,13 @@ export default function CrearProductosPage() {
                                 <tr className="text-left text-[10px] uppercase tracking-wide text-slate-400">
                                   <th className="py-1 pr-3 font-semibold">SKU</th>
                                   <th className="py-1 pr-3 font-semibold">Variante</th>
-                                  <th className="py-1 pr-3 text-right font-semibold">Costo</th>
+                                  <th className="py-1 pr-3 text-right font-semibold">
+                                    <TituloMoneda moneda="MXN">Costo</TituloMoneda>
+                                  </th>
                                   <th className="py-1 pr-3 text-center font-semibold">Stock</th>
-                                  <th className="py-1 pr-3 text-right font-semibold">Valor</th>
+                                  <th className="py-1 pr-3 text-right font-semibold">
+                                    <TituloMoneda moneda="MXN">Valor</TituloMoneda>
+                                  </th>
                                   <th className="py-1 font-semibold">Contenedor</th>
                                 </tr>
                               </thead>
