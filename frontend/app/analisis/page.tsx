@@ -764,7 +764,10 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
 
   useEffect(() => {
     const q = new URLSearchParams({ sku: fila.sku, dias: String(dias) });
-    fetch(`${API_BASE}/api/fulfillment/canales?${q}`, { cache: "no-store" })
+    // fetchSesion y NO fetch: manda el token. Un fetch pelón respondía 401
+    // desde que la API exige credencial (auditoría de Brandon, afb6421) —
+    // esta llamada nació después de ese barrido y se le habría escapado.
+    fetchSesion(`${API_BASE}/api/fulfillment/canales?${q}`, { cache: "no-store" })
       .then((r) => { if (!r.ok) throw new Error(`API ${r.status}`); return r.json(); })
       .then(setDatos)
       .catch((e) => setErr(e instanceof Error ? e.message : String(e)));
