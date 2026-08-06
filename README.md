@@ -4320,3 +4320,89 @@ consultarlos después sin adivinar.
 `_armar()` se partió en dos: `_item()` arma una entrada de `MPItem` y `_sobre()`
 arma el envoltorio con todas adentro. Flags nuevos: `--lote` (artículos por
 feed, 200 por omisión) y `--rondas` (cuántas veces preguntar el veredicto).
+
+### v0.64.0 — El margen REAL: lo que queda después de que Mercado Libre cobra
+
+Hasta ahora el panel calculaba el margen contra el costo del producto y ya. Ese
+número es de CATÁLOGO: no descuenta la comisión ni el envío, que es justo lo que
+convierte una venta rentable en una que no lo es. `TEC-0492-MUL` aparentaba
+**10.6%** y en realidad **pierde $92.96 por pieza** — con 230 unidades vendidas
+en 60 días.
+
+**Costo Base** = producto + flete de importación.
+**Costo Final** = Base + comisión REAL de la venta + envío estimado.
+**Margen** = (precio − Costo Final) ÷ precio, sobre el precio REALIZADO.
+
+La comisión NO es una tasa supuesta: sale de `channel.order_items.comision`,
+promediada por unidad, así que ya trae la de CADA canal. Solo entran líneas con
+comisión > 0 — Amazon la registra en cero hasta tener Finances API, y
+promediarla abarataría el costo; esos SKUs quedan en "—" en vez de mentir.
+
+**Dónde se ve**: columna *Margen neto* en la tabla de Análisis (ordenable;
+ascendente es el filtro de lo que vende mal), la ventana de precio/margen por
+canal — donde se ve que el MISMO producto deja distinto según dónde se venda
+(`TEC-0552-NEG`: 42.5% en BEKURA contra 35.4% en SANCOR) — y una columna
+*Margen* en el árbol de Categorías, hasta la publicación individual.
+
+**El denominador no es la venta total** sino la venta con costo capturado, y el
+costo solo se acumula en las ramas que lo tienen. Dividir la ganancia de media
+categoría entre la venta entera la haría verse peor de lo que es. Cuando la
+cobertura no es total el número va en gris con asterisco y el tooltip declara
+sobre cuánto se midió ("sobre $360,554 de $413,041, 87% de la venta").
+
+#### Un solo reporte, y sin contradecirse
+
+Las dos tarjetas de Reportes eran el mismo período con dos rangos de fecha y dos
+botones. Ahora es **un Excel de tres hojas**: *Resumen* por categoría, el *árbol*
+con sus publicaciones y *Ventas*, una fila por línea vendida (sustituye al CSV
+suelto, que se retira con su endpoint).
+
+**Fuente única: los PEDIDOS.** El margen solo puede salir de ahí, y mezclar
+fuentes haría que una columna dijera una venta y la de al lado calculara margen
+sobre otra. Al fusionarlas aparecieron dos contradicciones reales, que separadas
+nadie habría notado: la hoja de detalle no filtraba cancelados ni exigía SKU
+($2.32M contra $2.04M del resumen), y al agregar por categoría el bloque de
+margen absorbía la comisión de SKUs sin costo capturado ($15.7k y $83.3k de
+desfase). Corregidas, el libro cuadra al centavo — los 4 centavos que quedan son
+redondeo por línea contra redondeo por SKU.
+
+**La página de Categorías migró a la misma fuente**, porque leía
+`sales_daily_completa` mientras su propio Excel leía los pedidos. No se
+duplicó la consulta: se convergió a una sola familia `_SQL_CAT_*` donde el
+filtro de categoría es un parámetro, así que el mismo query sirve al desglose de
+una rama y al libro completo. Efecto declarado: esa vista deja de ver el
+histórico rescatado de dailytrack (en la ventana de prueba, de $4.02M a $2.04M).
+No se perdieron ventas — se dejó de mezclar dos universos. Para el histórico
+completo sigue estando Estrellas.
+
+#### MXN y USD dejan de parecerse
+
+En Costos y en el Estudio conviven las dos monedas y nada lo decía: el costo del
+producto se CAPTURA en dólares pero se GUARDA en pesos (× tipo de cambio), y
+todo lo demás es peso. Dos casillas idénticas lado a lado con **19× de
+diferencia** entre teclear en una o en la otra: un 1,625 en la equivocada son
+$30,891. Peor aún, en el Estudio hay DOS campos llamados "Costo" con monedas
+distintas a media pantalla de distancia.
+
+Nuevo `components/Moneda.tsx` con el tratamiento en un solo lugar: el dólar en
+ámbar (borde, fondo y chip), el peso en el tono neutro del panel. **Color +
+etiqueta, nunca color solo** — quien no distinga ámbar de índigo sigue leyendo
+USD y MXN en letras, y cada chip lleva su title. La conversión en vivo pasó de
+un "≈" al margen a "= $58,907.89 MXN es lo que se guarda".
+
+Aplicado donde se CAPTURA (Costos, CostoEditor, Estudio) y donde solo se
+MUESTRA (tabla de Productos, Variantes, ficha, tarjeta y Crear Productos): un
+"$1.00" en una tarjeta tampoco dice de qué moneda habla. El precio de Alibaba va
+en dólares y no por suposición sobre esa plataforma — ese valor siembra el campo
+de costo en USD.
+
+#### Notas de la versión
+
+También: mini-chip de situación junto a NO VENTA (la etiqueta habla del período,
+no de la publicación); precio y margen muestran el promedio REALIZADO en vez de
+una línea por cuenta; y `/api/fulfillment/canales` nació después de la auditoría
+de `fetch()` sin token de la v0.61.x, así que se le había escapado — ya usa
+`fetchSesion`. Auditado el frontend completo: 0 llamadas crudas y 0 descargas
+por `<a href>`, que tampoco mandan el token.
+
+Sin migraciones que aplicar y sin variables nuevas en Railway. Versión 0.64.0.
