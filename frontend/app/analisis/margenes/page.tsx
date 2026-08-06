@@ -164,11 +164,18 @@ function TablaCuenta({ cuenta, filas }: { cuenta: string; filas: Fila[] }) {
                   {fMoney(f.costo_final, 2)}
                 </td>
                 <td className="px-3 py-2 text-right"><Margen f={f} /></td>
-                <td className={`px-3 py-2 text-right font-bold tabular-nums ${
-                    f.ganancia_total == null ? "text-slate-300"
-                    : f.ganancia_total < 0 ? "text-red-500" : "text-emerald-600"}`}>
-                  {fMoney(f.ganancia_total)}
-                </td>
+                {/* Si el costo no es creíble, la ganancia tampoco: pintar
+                    −$179k junto a un "⚠ costo?" sería mentir con decimales. */}
+                {f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base) ? (
+                  <td className="px-3 py-2 text-right text-slate-300"
+                      title={avisoCostoImplausible(f.precio_prom, f.costo_base!)}>—</td>
+                ) : (
+                  <td className={`px-3 py-2 text-right font-bold tabular-nums ${
+                      f.ganancia_total == null ? "text-slate-300"
+                      : f.ganancia_total < 0 ? "text-red-500" : "text-emerald-600"}`}>
+                    {fMoney(f.ganancia_total)}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
