@@ -214,6 +214,18 @@ class Settings(BaseSettings):
     # Apagar = volver al dual-write clásico (MySQL manda). Requiere racha de
     # actas cumplida (costing 14/14, 06-ago-2026) y dale de Brandon.
     supabase_write_costing: bool = False
+    # F6 pedidos (CORTE, opción A): el registro de cada venta escribe PRIMERO
+    # channel.orders(+order_items) en kubera (síncrono, misma transacción) y
+    # pedidos_ml MySQL pasa a espejo inverso en hilo. Con kubera caída: MySQL
+    # aguanta y el evento viaja por el espejo viejo (cola espejo_kubera_log).
+    # Racha orders-deltas 15/14 (06-ago). Apagar = revertir al dual-write.
+    supabase_write_orders: bool = False
+    # F6 channel (CORTE, opción A): cada tanda del sync de inventario escribe
+    # PRIMERO channel.listings (kubera) y canal_inventario MySQL pasa a espejo
+    # inverso en hilo. Con kubera caída: MySQL aguanta y el siguiente ciclo
+    # (15 min) auto-sana kubera — este dominio no necesita cola. Racha
+    # channel-deltas 17/14 (06-ago). Apagar = revertir al dual-write.
+    supabase_write_channel: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""

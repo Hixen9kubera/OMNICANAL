@@ -4658,3 +4658,51 @@ dominios (core/orders/channel/categorías) esperan su propia racha 14/14; el
 candado de alertas (`alertas_estado`) NO se corta a propósito: debe sobrevivir
 con kubera caída (es quien avisa de esas caídas) y su fusión a
 `ops.process_log` es tarea del cierre (F8).
+
+### v0.71.0 — CORTES F6 de PEDIDOS y CHANNEL (Eduardo)
+
+Los otros dos dominios con racha cumplida se cortan con el mismo patrón de la
+v0.70.0 (opción A, espejo inverso). Verificado contra
+`migration.reconciliation_runs` el 06-ago: **orders-deltas 15/14** y
+**channel-deltas 17/14** (costing va en 19).
+
+**PEDIDOS** — flag `SUPABASE_WRITE_ORDERS` (apagado por omisión). El registro
+de cada venta (`pedidos_ml.sincronizar`, por donde pasan ML, Amazon y
+Temu/TikTok) escribe PRIMERO `channel.orders` + `channel.order_items` en UNA
+transacción kubera, reutilizando los upserts del seam
+(`_up_channel_orders`/`_up_channel_order_items` — la semántica que validó la
+racha: estados se mueven, importes congelados, 0 → valor real una sola vez).
+`pedidos_ml` MySQL pasa a espejo inverso en hilo (fallo → log + issue +
+Slack `espejo_inverso:orders`; el fallback de lectura F5 del tab Ventas sigue
+fresco). Con kubera caída: MySQL aguanta y los DOS payloads viajan por el
+espejo clásico (workers → cola `espejo_kubera_log`, reprocesable) + Slack
+`escritura_fallback:orders`. Las LÍNEAS respetan el censo
+(`pedidos_ml_items` en `KUBERA_MIRROR_TABLAS`): el corte no enciende flujos
+que el censo tenga apagados. Módulo nuevo: `services/orders_write.py`; el
+SQL de MySQL viaja como thunk desde `pedidos_ml.py` (cero duplicación).
+
+**CHANNEL** — flag `SUPABASE_WRITE_CHANNEL` (apagado por omisión). Cada tanda
+del sync de inventario (15 min) escribe PRIMERO `channel.listings` (kubera,
+vía `corte_channel` para el trigger de historia) y `canal_inventario` MySQL
+queda de espejo inverso en hilo. `channel_mirror` expone la tanda a nivel
+cursor (`escribir_tanda`, compartida por espejo F3 / corte / backfill) y
+`escribir_primario` decide el orden. Este dominio NO lleva cola a propósito:
+con kubera caída MySQL aguanta y el SIGUIENTE ciclo (full-refresh por tanda)
+auto-sana — Slack avisa (`escritura_fallback:channel` /
+`espejo_inverso:channel`). `backfill_situacion` y `sincronizar_drop` (bodega
+propia) operan también bajo el corte (`activo() or corte_activo()`).
+
+Pruebas en el SANDBOX (`backend/scripts/probar_corte_orders_channel.py`,
+mismo arnés: guardia triple, MySQL stubeado, cobayas `ZZZ-CAOS-1` /
+`ZZZ-CORTE-CH` limpiadas al final): **20/20 PASAN** — primarias + espejos
+inversos, paridad de semántica (total congelado 100 vs 999, comisión 0→55 y
+luego inmutable ante 77, estados siempre se mueven), caídas de kubera en
+ambos dominios (negocio no truena, eventos por espejo/cola en pedidos,
+auto-sanado en channel) y flags OFF (mundo viejo intacto).
+
+Revertir = apagar el flag del dominio (cada uno independiente, cero deploys).
+Sin migraciones que aplicar. Variables nuevas en Railway:
+`SUPABASE_WRITE_ORDERS` y `SUPABASE_WRITE_CHANNEL` — encender SOLO con el
+dale (pedidos es el flujo vivo más caliente: webhooks en ráfaga). Con esto,
+TRES de los cinco dominios tienen su corte listo; core y categorías esperan
+racha (van 11/14 ambos).

@@ -44,6 +44,11 @@ def activo() -> bool:
     return settings.supabase_dual_write_channel and sdb.disponible()
 
 
+def corte_activo() -> bool:
+    """CORTE F6 (opción A): channel.listings primaria, canal_inventario espejo."""
+    return settings.supabase_write_channel and sdb.disponible()
+
+
 def en_hilo(fn: Callable, *args) -> None:
     if not activo():
         return
@@ -73,18 +78,12 @@ def _registrar_issue(sku, motivo: str) -> None:
         pass
 
 
-def espejar_inventario(rows: list[dict[str, Any]]) -> None:
-    """Espeja una tanda del sync (las mismas filas que fueron a canal_inventario).
-
-    Todo en UNA transacción: set_config de la vía (para el trigger de historia),
-    identidad de SKUs nuevos, y upserts solo-si-cambió por fila.
-    """
-    if not activo() or not rows:
-        return
-    try:
-        with sdb.get_cursor() as cur:
-            cur.execute("select set_config('app.via', 'sync', true)")
-            for r in rows:
+def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
+    """Upserts de una tanda a nivel cursor (identidad + solo-si-cambió por
+    fila). Lo comparten el espejo F3 y la primaria del CORTE F6 — es el mismo
+    SQL que validó la racha del acta. El set_config de la vía lo pone el
+    llamador (define QUIÉN escribió para el trigger de historia)."""
+    for r in rows:
                 sku = str(r.get("sku") or "").strip()
                 if not sku or len(sku) > 100 or any(ch.isspace() for ch in sku):
                     continue  # inválidos conocidos: ya inventariados en el Excel
@@ -143,9 +142,77 @@ def espejar_inventario(rows: list[dict[str, Any]]) -> None:
                      r.get("situacion"),
                      r.get("logistica"), r.get("stock_fba"), r.get("moneda")),
                 )
+
+
+def espejar_inventario(rows: list[dict[str, Any]]) -> None:
+    """Espeja una tanda del sync (las mismas filas que fueron a canal_inventario).
+
+    Todo en UNA transacción: set_config de la vía (para el trigger de historia),
+    identidad de SKUs nuevos, y upserts solo-si-cambió por fila. Con el CORTE
+    encendido también sirve (lo usa backfill_situacion) — la vía sigue siendo
+    'sync'."""
+    if not (activo() or corte_activo()) or not rows:
+        return
+    try:
+        with sdb.get_cursor() as cur:
+            cur.execute("select set_config('app.via', 'sync', true)")
+            escribir_tanda(cur, rows)
     except Exception as exc:  # noqa: BLE001
         log.warning("espejo channel falló (el sync continúa): %s", exc)
         _registrar_issue(None, f"espejo tanda fallo: {exc}")
+
+
+def escribir_primario(rows: list[dict[str, Any]],
+                      escribir_mysql: Callable[[], None]) -> None:
+    """CORTE F6 (opción A): la tanda va PRIMERO a channel.listings (síncrona);
+    canal_inventario MySQL queda de espejo inverso en hilo, best-effort.
+
+    Con kubera caída el sync NO truena: se escribe MySQL como en el mundo
+    viejo y el SIGUIENTE ciclo (15 min, full-refresh por tanda) auto-sana
+    kubera — este dominio no necesita cola. Un fallo del espejo inverso deja
+    MySQL desfasado ese ciclo (log + issue + Slack) y también se auto-sana."""
+    if not rows:
+        return
+    try:
+        with sdb.get_cursor() as cur:
+            cur.execute("select set_config('app.via', 'corte_channel', true)")
+            escribir_tanda(cur, rows)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("primaria kubera channel falló — MySQL aguanta y el "
+                    "siguiente ciclo sana: %s", exc)
+        try:
+            from services import alertas
+            alertas.avisar(
+                "escritura_fallback:channel",
+                f"⚠️ Escritura de CHANNEL cayó a MySQL (tanda de {len(rows)}): "
+                f"{type(exc).__name__}: {str(exc)[:140]}. El siguiente ciclo "
+                f"del sync auto-sana kubera.")
+        except Exception:  # noqa: BLE001
+            pass
+        escribir_mysql()  # si esto también truena, el error sube al llamador
+        return
+
+    def _inverso() -> None:
+        try:
+            escribir_mysql()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("espejo inverso MySQL canal_inventario falló (el sync "
+                        "continúa): %s", exc)
+            _registrar_issue(None, f"espejo inverso MySQL fallo: {exc}")
+            try:
+                from services import alertas
+                alertas.avisar(
+                    "espejo_inverso:channel",
+                    f"*Espejo inverso de CHANNEL a MySQL falló*: "
+                    f"{type(exc).__name__}: {str(exc)[:140]}. kubera SÍ guardó; "
+                    f"canal_inventario se sana en el siguiente ciclo.")
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _inverso)
+    except RuntimeError:
+        _inverso()
 
 
 def backfill_situacion(situacion: str = "closed", canal: str | None = None,
@@ -167,7 +234,7 @@ def backfill_situacion(situacion: str = "closed", canal: str | None = None,
     Idempotente: el `where ... is distinct from` del upsert no toca las filas
     que ya coinciden, así que tampoco ensucia `channel.listing_history`.
     """
-    if not activo():
+    if not (activo() or corte_activo()):
         return {"ok": False,
                 "motivo": "SUPABASE_DUAL_WRITE_CHANNEL apagado o sin DSN."}
     from services import db
@@ -213,7 +280,7 @@ def sincronizar_drop(limite: int = 0) -> dict[str, Any]:
     20 min. El `where ... is distinct from` del upsert hace que los no-cambios
     no toquen updated_at ni disparen el trigger de historia.
     """
-    if not activo():
+    if not (activo() or corte_activo()):
         return {"ok": False, "motivo": "SUPABASE_DUAL_WRITE_CHANNEL apagado o sin DSN."}
     from psycopg2.extras import execute_values
 

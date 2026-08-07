@@ -45,7 +45,7 @@ import httpx
 
 from config import settings
 from services import (alertas, core_read, db, fanout_stock, kubera_mirror,
-                      lecturas_fuente, meli, pii)
+                      lecturas_fuente, meli, orders_write, pii)
 
 log = logging.getLogger("omnicanal.pedidos_ml")
 
@@ -508,31 +508,33 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             log.warning("compensación FULL/FBA de %s falló: %s", order_id, exc)
 
     try:
-        with db.get_cursor() as cur:
-            cur.execute(
-                """INSERT INTO pedidos_ml (ml_order_id, cuenta, wc_order_id, estado_ml,
-                       estado_wc, total, comision, es_full, skus, creado, actualizado)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                   ON DUPLICATE KEY UPDATE wc_order_id=VALUES(wc_order_id),
-                       estado_ml=VALUES(estado_ml), estado_wc=VALUES(estado_wc),
-                       -- La comisión NO se re-toca (congela el dato histórico de la
-                       -- venta), SALVO que esté en 0: un 0 no es histórico, es un
-                       -- dato que nunca se calculó (token caído al crearse). Solo
-                       -- se permite el paso 0 → valor real; un valor ya puesto es
-                       -- inmutable (COALESCE(NULLIF...) evita re-pisar >0).
-                       comision=IF(comision=0, VALUES(comision), comision),
-                       -- MISMA REGLA para el TOTAL (hallazgo de Eduardo, 28-jul):
-                       -- Amazon NO publica los importes mientras la orden está
-                       -- "Pending" (OrderTotal e ItemPrice llegan vacíos), así que
-                       -- la venta nacía congelada en $0 y ahí se quedaba. 14 pedidos
-                       -- afectados, 6 de ellos ya cobrados. Un 0 no es un dato
-                       -- histórico: es un dato que nunca se pudo capturar. Solo se
-                       -- permite 0 → valor real; un total ya puesto es inmutable.
-                       total=IF(total=0, VALUES(total), total),
-                       actualizado=VALUES(actualizado)""",
-                (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
-                 orden["total"], comision, 1 if orden.get("es_full") else 0,
-                 ",".join(s for s in skus if s)[:255], creado, ahora))
+        def _mysql() -> None:
+            with db.get_cursor() as cur:
+                cur.execute(
+                    """INSERT INTO pedidos_ml (ml_order_id, cuenta, wc_order_id, estado_ml,
+                           estado_wc, total, comision, es_full, skus, creado, actualizado)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON DUPLICATE KEY UPDATE wc_order_id=VALUES(wc_order_id),
+                           estado_ml=VALUES(estado_ml), estado_wc=VALUES(estado_wc),
+                           -- La comisión NO se re-toca (congela el dato histórico de la
+                           -- venta), SALVO que esté en 0: un 0 no es histórico, es un
+                           -- dato que nunca se calculó (token caído al crearse). Solo
+                           -- se permite el paso 0 → valor real; un valor ya puesto es
+                           -- inmutable (COALESCE(NULLIF...) evita re-pisar >0).
+                           comision=IF(comision=0, VALUES(comision), comision),
+                           -- MISMA REGLA para el TOTAL (hallazgo de Eduardo, 28-jul):
+                           -- Amazon NO publica los importes mientras la orden está
+                           -- "Pending" (OrderTotal e ItemPrice llegan vacíos), así que
+                           -- la venta nacía congelada en $0 y ahí se quedaba. 14 pedidos
+                           -- afectados, 6 de ellos ya cobrados. Un 0 no es un dato
+                           -- histórico: es un dato que nunca se pudo capturar. Solo se
+                           -- permite 0 → valor real; un total ya puesto es inmutable.
+                           total=IF(total=0, VALUES(total), total),
+                           actualizado=VALUES(actualizado)""",
+                    (order_id, orden["cuenta"], wc_id, orden.get("estado"), payload["status"],
+                     orden["total"], comision, 1 if orden.get("es_full") else 0,
+                     ",".join(s for s in skus if s)[:255], creado, ahora))
+
         # Espejo kubera: el pedido viaja a channel.orders (DDL aplicado el
         # 2026-07-22 con GO de Eduardo). El array de SKUs va COMPLETO — el CSV
         # de MySQL trunca a 255; en conflicto solo se mueven estados (el total
@@ -547,9 +549,6 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             "estado_wc": payload["status"], "total": orden["total"],
             "comision": comision, "es_fulfillment": bool(orden.get("es_full")),
             "skus": [s for s in skus if s], "creado_at": creado}
-        kubera_mirror.espejar(
-            origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
-            encabezado, clave=f"{cuenta}:{order_id}")
         # LÍNEAS con cantidades e item_id → channel.order_items (F1 de la
         # absorción de dailytrack, GO Eduardo 2026-07-28). Los datos ya están
         # en memoria (meli/pedidos_amazon/pedidos_m2e normalizan igual): cero
@@ -557,19 +556,28 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         # sumándola a KUBERA_MIRROR_TABLAS (variable Railway, sin deploy). La
         # comisión de línea viaja como TOTAL (fee unitario × cantidad) — misma
         # base que daily_sales.sale_fee, y suma a la comisión del encabezado.
-        kubera_mirror.espejar(
-            origen_py, "sincronizar (líneas)", "pedidos_ml_items",
-            "channel.order_items", "UPSERT",
-            {**encabezado, "lineas": [
-                {"linea": n, "item_id": it.get("item_id") or None,
-                 "sku": (it.get("sku") or "").strip() or None,
-                 "titulo": (it.get("titulo") or "")[:200] or None,
-                 "cantidad": int(it.get("cantidad") or 1),
-                 "precio_unitario": it.get("precio_unitario"),
-                 "comision": round(float(it.get("comision_ml") or 0)
-                                   * int(it.get("cantidad") or 1), 2)}
-                for n, it in enumerate(orden.get("items", []), start=1)]},
-            clave=f"{cuenta}:{order_id}")
+        lineas = {**encabezado, "lineas": [
+            {"linea": n, "item_id": it.get("item_id") or None,
+             "sku": (it.get("sku") or "").strip() or None,
+             "titulo": (it.get("titulo") or "")[:200] or None,
+             "cantidad": int(it.get("cantidad") or 1),
+             "precio_unitario": it.get("precio_unitario"),
+             "comision": round(float(it.get("comision_ml") or 0)
+                               * int(it.get("cantidad") or 1), 2)}
+            for n, it in enumerate(orden.get("items", []), start=1)]}
+        # F6 (corte, opción A): kubera primaria + pedidos_ml de espejo inverso.
+        if orders_write.activo():
+            orders_write.guardar(origen_py, funcion, encabezado, lineas,
+                                 f"{cuenta}:{order_id}", _mysql)
+        else:
+            _mysql()
+            kubera_mirror.espejar(
+                origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
+                encabezado, clave=f"{cuenta}:{order_id}")
+            kubera_mirror.espejar(
+                origen_py, "sincronizar (líneas)", "pedidos_ml_items",
+                "channel.order_items", "UPSERT", lineas,
+                clave=f"{cuenta}:{order_id}")
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
 
