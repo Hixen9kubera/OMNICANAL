@@ -128,25 +128,23 @@ function CeldaMargen({ venta, ventaMedible, costoFinal, costoBase, bold }: {
   // directo. En una RAMA es la suma de varios SKUs, así que se compara el costo
   // acumulado contra la venta medible: si la rama entera pide 3× lo que
   // vendió, adentro hay basura y el promedio no la disuelve.
-  if (costoImplausible(ventaMedible, costoBase ?? 0)) {
-    return (
-      <span className="inline-flex items-center gap-1 text-amber-600"
-            title={avisoCostoImplausible(ventaMedible, costoBase ?? 0)}>
-        <AlertTriangle size={12} />
-        <span className="text-[10px] font-semibold">costo?</span>
-      </span>
-    );
-  }
+  // Costo poco creíble: el porcentaje SÍ se muestra, marcado en ámbar con ⚠
+  // (Eduardo, 6-ago). Dejar la celda vacía escondía la rama entera y con ella
+  // la señal de que ahí adentro hay algo que revisar.
+  const dudoso = costoImplausible(ventaMedible, costoBase ?? 0);
   const m = margen(venta, ventaMedible, costoFinal);
   if (!m) {
     return <span className="text-slate-300" title="Sin costo capturado en esta rama">—</span>;
   }
-  const tono = m.parcial
-    ? "text-slate-400"
+  const tono = dudoso
+    ? "text-amber-600"
+    : m.parcial ? "text-slate-400"
     : m.pct < 20 ? "text-red-500" : "text-emerald-600";
   return (
-    <span className={`tabular-nums ${bold ? "font-bold" : "font-semibold"} ${tono}`}
-          title={m.titulo}>
+    <span className={`inline-flex items-center gap-0.5 tabular-nums ${bold ? "font-bold" : "font-semibold"} ${tono}`}
+          title={dudoso ? avisoCostoImplausible(ventaMedible, costoBase ?? 0) + "\n\n" + m.titulo
+                        : m.titulo}>
+      {dudoso && <AlertTriangle size={11} className="shrink-0" />}
       {fNum(m.pct, 1)}%{m.parcial && <span className="ml-0.5 text-[9px]">*</span>}
     </span>
   );
@@ -186,7 +184,7 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   venta: { titulo: "Ventas $", texto: "Importe vendido en el período. Venta bruta: no descuenta comisión ni costo." },
   pct: { titulo: "% del total", texto: "Qué parte de la venta del período aporta esta rama. La barra compara contra la categoría más grande." },
   prom: { titulo: "Precio promedio", texto: "Ventas $ entre unidades: el ticket promedio REAL al que salió la rama (no el precio de lista)." },
-  margen: { titulo: "Margen", texto: "Lo que queda después de TODO: el costo del producto (compra + flete de importación) más los cobros de Mercado Libre por vender (la comisión REAL de cada venta y el envío estimado). Se calcula solo sobre la parte de la venta cuyo producto tiene costo capturado — dividir entre la venta completa hundiría a las ramas con la captura a medias. Cuando esa parte no es toda la venta, el número va en gris con un asterisco y el tooltip dice sobre cuánto se midió. Vacío significa que ningún producto de la rama tiene costo, y ⚠ costo? que el costo capturado supera 3 veces lo vendido: el dato está mal y un margen ahí sería falso. El desglose completo, fila por fila, está en el Excel de arriba." },
+  margen: { titulo: "Margen", texto: "Lo que queda después de TODO: el costo del producto (compra + flete de importación) más los cobros de Mercado Libre por vender (la comisión REAL de cada venta y el envío estimado). Se calcula solo sobre la parte de la venta cuyo producto tiene costo capturado — dividir entre la venta completa hundiría a las ramas con la captura a medias. Cuando esa parte no es toda la venta, el número va en gris con un asterisco y el tooltip dice sobre cuánto se midió. Vacío significa que ningún producto de la rama tiene costo. Si el porcentaje sale en ÁMBAR con ⚠, el costo capturado supera 3 veces lo vendido: el número se muestra igual, pero apóyate en él solo como referencia — ese costo hay que verificarlo. El desglose completo, fila por fila, está en el Excel de arriba." },
   cuentas: { titulo: "Por cuenta", texto: "Desglose de las unidades entre Bekura, Sancor y Amazon. El importe de cada cuenta va en el tooltip." },
 };
 

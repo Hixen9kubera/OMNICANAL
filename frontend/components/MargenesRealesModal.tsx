@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BadgePercent, RefreshCw, Tag, X } from "lucide-react";
+import { AlertTriangle, BadgePercent, RefreshCw, Tag, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 
@@ -89,15 +89,12 @@ type FiltroCuenta = (typeof FILTRO_CUENTAS)[number]["id"];
    presupuesto 250/carga, 8 rondas cubren ~2,000 órdenes — más que un mes. */
 const MAX_RONDAS = 8;
 
+/* Cuando el costo no es creíble el número SÍ se muestra, pero en ámbar y con ⚠
+   (Eduardo, 6-ago): esconderlo sacaba al SKU del análisis y con él la señal de
+   que algo pasa ahí. El ámbar es deliberado — no es el rojo/verde que se lee
+   como veredicto, es "esto está en duda". */
 function Margen({ f }: { f: Fila }) {
-  if (f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base)) {
-    return (
-      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600"
-            title={avisoCostoImplausible(f.precio_prom, f.costo_base!)}>
-        ⚠ costo?
-      </span>
-    );
-  }
+  const dudoso = f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base);
   if (f.margen_pct == null) {
     return (
       <span className="text-slate-300"
@@ -107,11 +104,21 @@ function Margen({ f }: { f: Fila }) {
     );
   }
   return (
-    <div>
-      <div className={`font-bold tabular-nums ${f.margen_pct < 20 ? "text-red-500" : "text-emerald-600"}`}>
+    <div title={dudoso ? avisoCostoImplausible(f.precio_prom!, f.costo_base!) : undefined}>
+      <div className={`flex items-center justify-end gap-1 font-bold tabular-nums ${
+          dudoso ? "text-amber-600"
+          : f.margen_pct < 20 ? "text-red-500" : "text-emerald-600"}`}>
+        {dudoso && <AlertTriangle size={11} className="shrink-0" />}
         {fNum(f.margen_pct, 1)}%
       </div>
-      <div className="text-[10px] tabular-nums text-slate-400">{fMoney(f.ganancia_unit, 2)}/u</div>
+      <div className={`text-[10px] tabular-nums ${dudoso ? "text-amber-500" : "text-slate-400"}`}>
+        {fMoney(f.ganancia_unit, 2)}/u
+      </div>
+      {dudoso && (
+        <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-500">
+          costo dudoso
+        </div>
+      )}
     </div>
   );
 }
@@ -264,18 +271,17 @@ function TablaCuenta({ titulo, sub, filas }: {
                   {fMoney(f.costo_final, 2)}
                 </td>
                 <td className="px-3 py-2 text-right"><Margen f={f} /></td>
-                {/* Si el costo no es creíble, la ganancia tampoco: pintar
-                    −$179k junto a un "⚠ costo?" sería mentir con decimales. */}
-                {f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base) ? (
-                  <td className="px-3 py-2 text-right text-slate-300"
-                      title={avisoCostoImplausible(f.precio_prom, f.costo_base!)}>—</td>
-                ) : (
-                  <td className={`px-3 py-2 text-right font-bold tabular-nums ${
-                      f.ganancia_total == null ? "text-slate-300"
-                      : f.ganancia_total < 0 ? "text-red-500" : "text-emerald-600"}`}>
-                    {fMoney(f.ganancia_total)}
-                  </td>
-                )}
+                {/* La ganancia sigue la misma regla que el margen: se muestra,
+                    en ámbar, cuando el costo del que sale está en duda. */}
+                <td className={`px-3 py-2 text-right font-bold tabular-nums ${
+                    f.ganancia_total == null ? "text-slate-300"
+                    : (f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base))
+                      ? "text-amber-600"
+                      : f.ganancia_total < 0 ? "text-red-500" : "text-emerald-600"}`}
+                    title={f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base)
+                           ? avisoCostoImplausible(f.precio_prom, f.costo_base!) : undefined}>
+                  {fMoney(f.ganancia_total)}
+                </td>
               </tr>
             ))}
           </tbody>

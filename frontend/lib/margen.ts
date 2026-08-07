@@ -13,13 +13,20 @@
  * como un hecho; este no lo es.
  *
  * Por eso, cuando el costo supera al precio por más del factor de abajo, la
- * celda NO pinta un margen: avisa que el costo no es creíble y manda a
- * revisarlo. Es preferible una celda que dice "no sé" a una que miente con
- * precisión de un decimal.
+ * cifra se pinta MARCADA: en ámbar y con ⚠, no en el rojo/verde que se lee
+ * como un hecho.
+ *
+ * CAMBIO (Eduardo, 6-ago): antes la celda se quedaba vacía. Ocultar el número
+ * salía peor — un SKU marcado desaparecía del análisis y con él la sospecha de
+ * que ALGO pasa ahí, aunque no sepamos cuánto. Ahora se muestra el margen y la
+ * ganancia, con el aviso de que el costo puede estar mal: el lector decide.
+ * Lo que sigue prohibido es pintarlos como si fueran ciertos.
  *
  * El umbral es 3× y no 1× a propósito: vender bajo costo existe (liquidar,
  * error de precio, promoción agresiva) y eso SÍ hay que verlo en rojo. Arriba
- * de 3× ya no es una decisión comercial, es un dato mal capturado.
+ * de 3× ya no es una decisión comercial, es un dato mal capturado — y desde el
+ * 6-ago sabemos por qué: el costo_producto de buena parte del catálogo es un
+ * precio en dólares redondeado (×19), no un costo medido.
  */
 
 /** Arriba de este múltiplo, el costo deja de ser una cifra y pasa a ser un bug. */
@@ -36,13 +43,14 @@ export function costoImplausible(
   return c > p * FACTOR_COSTO_IMPLAUSIBLE;
 }
 
-/** El texto que explica por qué no hay número, con las cifras del caso. */
+/** El texto que acompaña a la cifra marcada, con los números del caso. */
 export function avisoCostoImplausible(precio: number, costoBase: number): string {
   const veces = (costoBase / precio).toFixed(costoBase / precio >= 10 ? 0 : 1);
   return (
-    `Costo no creíble: ${veces}× el precio al que se vendió.\n` +
-    `No se muestra margen porque saldría un número falso — el problema está en ` +
-    `el costo capturado, no en la venta.\n` +
-    `Revísalo en Costos antes de tomar cualquier decisión de precio.`
+    `TÓMALO CON RESERVA: el costo capturado es ${veces}× el precio al que se vendió.\n` +
+    `El margen y la ganancia de abajo SÍ se calculan, pero salen de ese costo, ` +
+    `así que sirven de referencia y no como un hecho.\n` +
+    `El problema está en el costo, no en la venta: verifícalo en Costos antes ` +
+    `de mover el precio o dar de baja el producto.`
   );
 }
