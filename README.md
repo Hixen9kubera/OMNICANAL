@@ -5111,3 +5111,51 @@ stock y la publicación está apagada.
 Verificado tras el cambio: las cuentas que aparecen son solo Bekura, Sancor y
 Amazon; "En FULL" sigue cuadrando con Bekura + Sancor en las 293 filas. Sin
 migraciones y sin variables nuevas. Versión 0.80.0.
+
+### v0.81.0 — El inventario se agrupa por FAMILIA: la publicación vive en el padre, las ventas llegan en el hijo
+
+Reportado por Eduardo con `ORG-0841` (7-ago): el reporte lo daba por
+"nunca vendió" con 127 piezas en FULL, pero su publicación de Sancor lleva
+**44 ventas en 7 días**. El motivo: **la publicación está registrada con el SKU
+PADRE (`ORG-0841`) y las ventas entran con el del HIJO (`ORG-0841-AZL-L`)**.
+Cruzados por SKU a secas, el padre parecía muerto.
+
+**Alcance del error: 74 de 292 filas de Inmovilizado eran falsas** (25%).
+
+La relación buena es **`wc_parent_id`**, poblada en 7,299 productos.
+`parent_sku` y `has_variations` están **VACÍAS en las 22,186 filas** de
+`core.products` — son columnas muertas, no usarlas.
+
+| | Antes | Ahora |
+|---|---|---|
+| Inmovilizado | 292 | **218** |
+| Invisible | 85 | **83** |
+
+Además las filas se consolidan: `DEC-0012-ROJ`, `-ROS` y `-BLN` eran tres
+renglones de 230 piezas; ahora es **una familia con 687 en FULL**, que es la
+unidad en la que se decide.
+
+**Y un doble conteo que apareció al agrupar.** El `stock_own` de una
+publicación de marketplace es un espejo, y en un producto con variantes el
+espejo del PADRE trae el acumulado de los hijos: `DEC-0012` tiene 26,100 en su
+publicación de Sancor contra 25,410 sumando sus 8 variantes en Woo. Sumar padre
++ hijos daba **51,510 — el doble del inventario real**. La regla ahora:
+
+> Woo (`general`) es el almacén de registro y guarda una fila por variante:
+> esas se **suman** entre hermanos. El espejo del marketplace solo entra si la
+> familia no tiene NINGUNA fila en Woo, y ahí se toma el **máximo**, jamás la
+> suma. Nunca se mezclan las dos fuentes.
+
+**Contrastado contra la API de ML en vivo** (678 publicaciones, 35 llamadas):
+217 de 218 filas de Inmovilizado coinciden exacto en unidades de FULL. El único
+"falso positivo" de Invisible fue `TEC-0393-ROS`, y no es un error: **ML lo
+reporta `active` desde las 20:45 de hoy** — alguien lo reactivó después de que
+el reporte lo señalara. Nuestro espejo llevaba 39 h sin refrescar esa fila.
+
+**El reporte de ventas NO se toca.** Se midió: de los 96 SKUs vendidos sin
+costo capturado, 27 son variantes y solo **6** tienen un padre con costo. Y
+heredar el costo del padre a una variante es una suposición distinta —dos
+variantes pueden costar diferente— que además cae en "no tocar costos". Se deja
+como está.
+
+Sin migraciones y sin variables nuevas. Versión 0.81.0.

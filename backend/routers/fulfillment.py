@@ -1549,45 +1549,88 @@ async def categorias_publicaciones(
 # 7-ago: 1,109,525 unidades en el canal `general` contra 343,045 en
 # mercado_libre, que son las MISMAS piezas. FULL y FBA sí son por cuenta.
 _SQL_INV_BASE = _mx("""
-with v30 as (
-  select i.sku::text as sku, sum(i.cantidad)::int as uds,
+with padres as (
+  -- LA PUBLICACIÓN VIVE EN EL PADRE, LAS VENTAS LLEGAN EN EL HIJO (Eduardo,
+  -- 7-ago). Caso ORG-0841: la publicación de Sancor está registrada con el SKU
+  -- padre `ORG-0841` y sus 127 piezas en FULL, mientras las 48 ventas del mes
+  -- entraron como `ORG-0841-AZL-L`. Cruzados por SKU a secas, el padre parecía
+  -- no haber vendido NUNCA. Eran 21 de 292 inmovilizados falsos, 1,465
+  -- unidades mal clasificadas.
+  --
+  -- La relación buena es `wc_parent_id` (poblada en 7,299 productos).
+  -- `parent_sku` y `has_variations` están VACÍAS en las 22,186 filas de
+  -- core.products — no usarlas, no son la fuente.
+  select h.sku::text as hijo, p.sku::text as padre
+    from core.products h
+    join core.products p on p.wc_id = h.wc_parent_id
+   where h.wc_parent_id is not null and h.wc_parent_id <> 0),
+v30 as (
+  select coalesce(pa.padre, i.sku::text) as sku, sum(i.cantidad)::int as uds,
          max((o.creado_at at time zone 'America/Mexico_City')::date) as ult
     from channel.order_items i
     join channel.orders o using (canal, cuenta, external_order_id)
+    left join padres pa on pa.hijo = i.sku::text
    where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
      and i.sku is not null
      and (o.creado_at at time zone 'America/Mexico_City')::date
          > current_date - %(dias)s
    group by 1),
 vh as (
-  select i.sku::text as sku,
+  select coalesce(pa.padre, i.sku::text) as sku,
          max((o.creado_at at time zone 'America/Mexico_City')::date) as ult_hist
     from channel.order_items i
     join channel.orders o using (canal, cuenta, external_order_id)
+    left join padres pa on pa.hijo = i.sku::text
    where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
      and i.sku is not null
    group by 1),
+lst as (
+  select coalesce(pa.padre, l.sku::text) as clave, l.sku::text as sku_real,
+         l.canal, l.situacion, a.legacy_code as cta,
+         coalesce(l.stock_own, 0)  as stock_own,
+         coalesce(l.stock_full, 0) as stock_full,
+         coalesce(l.stock_fba, 0)  as stock_fba
+    from channel.listings l
+    join core.accounts a on a.id = l.account_id
+    left join padres pa on pa.hijo = l.sku::text
+   where lower(coalesce(l.situacion, '')) <> 'closed'
+     and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)),
+prop as (
+  -- STOCK PROPIO: nunca mezclar Woo con los espejos del marketplace.
+  --
+  -- Woo (`general`) es el almacén de registro y guarda una fila POR VARIANTE:
+  -- esas son piezas distintas y se SUMAN entre hermanos de la familia.
+  --
+  -- El `stock_own` de una publicación de marketplace es un espejo, y en un
+  -- producto con variantes el espejo del PADRE trae el acumulado de los hijos:
+  -- DEC-0012 tiene 26,100 en su publicación de Sancor contra 25,410 sumando
+  -- sus 8 variantes en Woo. Sumar padre + hijos contaba el mismo inventario
+  -- dos veces (daba 51,510). Por eso el espejo solo entra cuando la familia no
+  -- tiene NINGUNA fila en Woo, y ahí se toma el máximo, jamás la suma.
+  select clave,
+         coalesce(sum(woo) filter (where woo is not null),
+                  max(espejo))::int as propio
+    from (select clave, sku_real,
+                 max(stock_own) filter (where canal = 'general')  as woo,
+                 max(stock_own) filter (where canal <> 'general') as espejo
+            from lst group by 1, 2) x
+   group by 1),
 s as (
-  select l.sku::text as sku,
+  select l.clave as sku,
          -- WOOCOMMERCE NO ES UN CANAL (Eduardo, 7-ago): es nuestro puente de
-         -- registro, y ahí vive el almacén propio. Por eso su fila SÍ cuenta
-         -- para el stock —es la fuente buena: en 47 de los 97 SKUs de
-         -- Invisible el valor cambia si se le excluye— pero NO cuenta como
-         -- tienda ni como publicación.
-         coalesce(max(coalesce(l.stock_own, 0))
-                    filter (where l.canal = 'general'),
-                  max(coalesce(l.stock_own, 0)))::int          as propio,
+         -- registro, y ahí vive el almacén propio. Su fila SÍ cuenta para el
+         -- stock —es la fuente buena: en 47 de 97 SKUs el valor cambia si se
+         -- le excluye— pero NO como tienda ni como publicación.
+         max(prop.propio)                                      as propio,
          -- FULL es un concepto de MERCADO LIBRE. Sin este filtro la columna
          -- "En FULL" no cuadraba con la suma de Bekura + Sancor (272 contra
          -- 200 en JUGU-0261-LIL): se colaba `stock_full` de publicaciones de
          -- Amazon, cuyo equivalente es `stock_fba` y va en su propia columna.
-         sum(coalesce(l.stock_full, 0))
+         sum(l.stock_full)
            filter (where l.canal = 'mercado_libre')::int       as full_total,
-         sum(coalesce(l.stock_full, 0))
-           filter (where a.legacy_code = 'BEKURA')::int        as full_bk,
-         sum(coalesce(l.stock_full, 0))
-           filter (where a.legacy_code = 'SANCORFASHION')::int as full_sc,
-         sum(coalesce(l.stock_fba, 0))::int                    as fba,
+         sum(l.stock_full) filter (where l.cta = 'BEKURA')::int        as full_bk,
+         sum(l.stock_full) filter (where l.cta = 'SANCORFASHION')::int as full_sc,
+         sum(l.stock_fba)::int                                 as fba,
          -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
          -- 'buyable'/'published'. Contar solo 'active' marcaba como invisibles
          -- 3 SKUs que sí estaban a la venta en Amazon.
@@ -1600,12 +1643,10 @@ s as (
          count(*) filter (where l.canal = 'mercado_libre'
                             and lower(coalesce(l.situacion,'')) = 'paused')::int as pausadas,
          count(*) filter (where l.canal <> 'general')::int      as pubs,
-         array_agg(distinct a.legacy_code order by a.legacy_code)
+         array_agg(distinct l.cta order by l.cta)
            filter (where l.canal <> 'general')                  as cuentas
-    from channel.listings l
-    join core.accounts a on a.id = l.account_id
-   where lower(coalesce(l.situacion, '')) <> 'closed'
-     and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
+    from lst l
+    join prop on prop.clave = l.clave
    group by 1)
 """)
 
