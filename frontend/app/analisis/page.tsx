@@ -85,6 +85,12 @@ interface Fila {
   visitas_dias: number | null;
   cr_pct: number | null;
   uds_ml: number;
+  // Presente solo cuando ML pesó el producto en las DOS cuentas y los pesos no
+  // coinciden: el SKU tiene dos productos distintos debajo (ver ficha_ml.py).
+  peso_divergente: {
+    ratio: number; min_g: number; max_g: number;
+    detalle: { cuenta: string; peso_g: number; titulo: string | null }[];
+  } | null;
 }
 
 interface TablaResp { total: number; items: Fila[]; limit: number; offset: number }
@@ -338,6 +344,36 @@ function MargenVenta({ fila }: { fila: Fila }) {
         );
       })}
     </div>
+  );
+}
+
+/* MARCA "2 PRODUCTOS": el mismo SKU pesa distinto en cada cuenta, según la
+   báscula de la bodega de ML. No es un detalle de catálogo — significa que las
+   dos publicaciones comparten un costo, un inventario y un margen que no le
+   corresponden a una de ellas.
+
+   Solo aparece cuando ML pesó AMBAS publicaciones. Comparar su báscula contra
+   un peso capturado por nosotros detecta capturas malas (que ya sabemos que
+   abundan) y no dice nada sobre si son dos productos: mezclando las dos fuentes
+   el censo pasaba de 26 hallazgos sólidos a 462, casi todos falsos. */
+function MarcaDosProductos({ div }: { div: Fila["peso_divergente"] }) {
+  if (!div) return null;
+  const lineas = div.detalle
+    .map((d) => `  · ${d.cuenta}: ${d.peso_g} g — ${d.titulo ?? "sin título"}`)
+    .join("\n");
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 rounded bg-rose-50 px-1 py-px text-[9px] font-bold text-rose-600"
+      title={`ESTE SKU TIENE DOS PRODUCTOS DISTINTOS\n\n`
+             + `La bodega de Mercado Libre pesó cada publicación y no coinciden `
+             + `(${div.min_g} g contra ${div.max_g} g, ${div.ratio}× de diferencia):\n${lineas}\n\n`
+             + `Comparten un solo costo, un inventario y un margen, así que esos `
+             + `números están mal para al menos uno de los dos. Separa el SKU antes `
+             + `de tomar decisiones de precio o de reabasto.`}
+    >
+      <AlertTriangle size={9} />
+      2 productos
+    </span>
   );
 }
 
@@ -1283,6 +1319,7 @@ export default function FulfillmentPage() {
                         ))}
                       </span>
                       <span className="rounded bg-slate-100 px-1 py-px text-[9px] font-bold text-slate-500">{f.tam}</span>
+                      <MarcaDosProductos div={f.peso_divergente} />
                     </div>
                     <div className="truncate text-[11px] text-slate-500" title={f.titulo ?? ""}>{f.titulo ?? "—"}</div>
                   </td>

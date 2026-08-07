@@ -1046,6 +1046,47 @@ async def resumen_canales(
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
 
+async def _pesos_en_filas(items: list[dict[str, Any]], presupuesto: int) -> None:
+    """
+    Marca los SKUs que son DOS PRODUCTOS bajo una sola clave.
+
+    La señal es el peso que midió la bodega de ML en cada cuenta: si difieren,
+    no es el mismo objeto, y entonces el costo, el inventario y el margen que
+    comparten no le corresponden a uno de los dos. Ver services/ficha_ml.py —
+    el título NO sirve para esto (el mismo producto se describe de dos formas).
+    """
+    if not getattr(settings, "mysql_enabled", True):
+        return
+    pares: set[tuple[str, str]] = set()
+    for f in items:
+        for p in (f.get("pubs_ml") or []):
+            if p.get("cuenta") and p.get("item"):
+                pares.add((p["cuenta"], str(p["item"])))
+    if not pares:
+        return
+    try:
+        from services import ficha_ml
+        fichas = ficha_ml.leer([i for _, i in pares])
+        # La consulta a ML va EN SEGUNDO PLANO: esto es una marca, no una
+        # columna que se lea a cada rato, y esperarla le sumaba ~5 s a cada
+        # página nueva. Se responde con lo que ya está en caché y la marca
+        # aparece en el siguiente refresco (la vista se recarga sola cada 60 s).
+        # El TTL es de una semana, así que converge y no se vuelve a pagar.
+        if presupuesto and len(fichas) < len(pares):
+            import asyncio as _asyncio
+            _asyncio.create_task(ficha_ml.completar(sorted(pares)))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fichas de ML no disponibles: %s", exc)
+        return
+    for f in items:
+        propias = [fichas.get(str(p.get("item")))
+                   for p in (f.get("pubs_ml") or []) if p.get("item")]
+        try:
+            f["peso_divergente"] = ficha_ml.divergencia(propias)
+        except Exception:  # noqa: BLE001
+            f["peso_divergente"] = None
+
+
 async def _visitas_en_filas(items: list[dict[str, Any]], dias: int,
                             presupuesto: int) -> None:
     """
@@ -1059,17 +1100,27 @@ async def _visitas_en_filas(items: list[dict[str, Any]], dias: int,
     """
     if not getattr(settings, "mysql_enabled", True):
         return
-    pares: set[tuple[str, str]] = set()
+    # EN ORDEN DE FILA, no en un set: ML no acepta multiget para visitas (una
+    # llamada por publicación), así que una página fría costaba ~18 s. Se mide
+    # bloqueando solo lo de ARRIBA —que es lo que el ojo lee primero— y el resto
+    # se completa en segundo plano para el refresco siguiente.
+    pares: list[tuple[str, str]] = []
+    vistos: set[tuple[str, str]] = set()
     for f in items:
         for p in (f.get("pubs_ml") or []):
             if p.get("cuenta") and p.get("item"):
-                pares.add((p["cuenta"], str(p["item"])))
+                k = (p["cuenta"], str(p["item"]))
+                if k not in vistos:
+                    vistos.add(k); pares.append(k)
     if not pares:
         return
     try:
         from services import visitas_ml
         if presupuesto:
-            await visitas_ml.completar(sorted(pares), dias, presupuesto)
+            await visitas_ml.completar(pares, dias, presupuesto)
+            if len(pares) > presupuesto:
+                import asyncio as _asyncio
+                _asyncio.create_task(visitas_ml.completar(pares, dias, len(pares)))
         medidas = visitas_ml.leer([i for _, i in pares], dias)
     except Exception as exc:  # noqa: BLE001
         log.warning("visitas no disponibles en la tabla: %s", exc)
@@ -1106,10 +1157,10 @@ async def tabla(
     dir: str | None = Query(None, description="asc|desc; omitido = natural"),
     limit: int = Query(50, ge=10, le=200),
     offset: int = Query(0, ge=0),
-    # 150 alcanza para una página de 50 filas (≈2 publicaciones por SKU) en una
-    # sola carga; con menos, la mitad de las filas se quedaría sin medir y la
-    # regla de "todo o nada" las dejaría en blanco hasta el siguiente refresco.
-    visitas: int = Query(150, ge=0, le=500,
+    # Cuántas publicaciones se miden ESPERANDO la respuesta. 40 ≈ las 20 filas
+    # de arriba, que es lo que se lee primero, y mantiene la carga en ~2 s; el
+    # resto de la página se completa en segundo plano y aparece al refrescar.
+    visitas: int = Query(40, ge=0, le=500,
                          description="cuántas publicaciones medir por carga (0 = solo caché)"),
 ) -> dict[str, Any]:
     """Filas por SKU (agregado de cuentas) + sparkline 14 d por fila."""
@@ -1168,6 +1219,7 @@ async def tabla(
                 m = por_sku.get(str(i["sku"]).lower(), {})
                 i["spark"] = [m.get(f, 0) for f in fechas]
             await _visitas_en_filas(items, dias, visitas)
+            await _pesos_en_filas(items, visitas)
         return {"total": int(total or 0), "items": items,
                 "limit": limit, "offset": offset, "dias": dias,
                 "orden": orden, "dir": dir or dir_natural}
