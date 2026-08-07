@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime, timezone
@@ -424,3 +425,168 @@ async def notificaciones(limite: int = Query(20, ge=1, le=100)):
     except Exception:  # noqa: BLE001
         eventos, total_hoy = [], 0
     return {"eventos": eventos, "total_hoy": int(total_hoy)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIKTOK SHOP — receptor en modo OBSERVACIÓN
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# FASE 1 A PROPÓSITO: recibe, verifica firma, registra en logs y NO TOCA LA
+# BASE DE DATOS. Ni una tabla, ni un pedido, ni stock.
+#
+# Por qué así y no completo de una vez: no sabemos qué manda TikTok de verdad.
+# La consola ofrece cuatro temas (tipos 2,3,4,5) y ninguno es "pedido creado",
+# así que el catálogo real solo se descubre viéndolo llegar. Es lo mismo que se
+# hizo con M2E — loguear el crudo hasta que la primera venta real confirme el
+# esquema — y evita diseñar tablas contra un formato imaginado.
+#
+# El plan de Brandon es observar DOS SEMANAS después de publicar 300 productos.
+# Con eso se decide qué persistir, en vez de adivinarlo.
+from collections import deque
+
+# Anillo en MEMORIA. Se pierde al reiniciar y está bien: para persistir hace
+# falta saber qué se persiste, que es justo lo que este receptor va a averiguar.
+_TIKTOK_LOG: deque = deque(maxlen=300)
+
+
+def _firma_tiktok_ok(cuerpo: bytes, cabeceras: dict) -> bool | None:
+    """
+    ¿La firma corresponde? True/False, o None si no se pudo evaluar.
+
+    ⚠️ HOY SOLO OBSERVA: el resultado se registra pero NO se rechaza nada. El
+    algoritmo exacto de TikTok (sobre qué cadena se calcula el HMAC, con qué
+    separadores) todavía no está confirmado contra su documentación, y un
+    verificador mal implementado tiraría eventos legítimos sin dejar rastro.
+
+    Cuando la investigación confirme el esquema, esto pasa a rechazar — y ahí sí
+    deja de ser opcional: la URL es pública y sin firma cualquiera puede
+    inyectar eventos falsos.
+    """
+    secreto = (settings.tiktok_app_secret or "").encode()
+    if not secreto:
+        return None
+    recibida = (cabeceras.get("authorization")
+                or cabeceras.get("x-tts-signature")
+                or cabeceras.get("signature") or "").strip()
+    if not recibida:
+        return None
+    try:
+        calculada = hmac.new(secreto, cuerpo, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(calculada, recibida.lower())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@router.post("/tiktok")
+async def recibir_tiktok(request: Request):
+    """
+    Recibe la notificación de TikTok Shop. Responde 200 SIEMPRE.
+
+    GUARDA ABSOLUTA, igual que en ML: si devolvemos otra cosa, TikTok reintenta
+    y puede terminar deshabilitando la suscripción. El síntoma sería silencioso
+    — simplemente dejan de llegar eventos — así que el cuerpo entero va dentro
+    de un try y ningún fallo cambia la respuesta.
+    """
+    try:
+        crudo = await request.body()
+        cab = {k.lower(): v for k, v in request.headers.items()}
+        try:
+            payload = json.loads(crudo or b"{}")
+        except Exception:  # noqa: BLE001
+            payload = {"_no_json": (crudo or b"")[:2000].decode("utf-8", "replace")}
+
+        firma = _firma_tiktok_ok(crudo, cab)
+        evento = {
+            "recibido": datetime.now(timezone.utc).isoformat(),
+            "tipo": payload.get("type"),
+            "shop_id": payload.get("shop_id"),
+            "timestamp": payload.get("timestamp"),
+            "firma_ok": firma,          # None = no evaluable (aún no confirmado)
+            "bytes": len(crudo or b""),
+            "cabeceras": {k: v for k, v in cab.items()
+                          if k.startswith(("x-tts", "content-type", "user-agent"))},
+            "payload": payload,
+        }
+        _TIKTOK_LOG.append(evento)
+        # A los logs de Railway, completo: es el único registro de la fase 1.
+        log.info("TIKTOK webhook tipo=%s shop=%s firma=%s bytes=%s :: %s",
+                 evento["tipo"], evento["shop_id"], firma, evento["bytes"],
+                 json.dumps(payload, ensure_ascii=False)[:1500])
+        return {"code": 0, "message": "success"}
+    except Exception:  # noqa: BLE001 — jamás propagar: ver GUARDA ABSOLUTA
+        log.exception("Fallo recibiendo el webhook de TikTok; se responde 200 "
+                      "igual para no perder la suscripción por reintentos.")
+        return {"code": 0, "message": "success"}
+
+
+@router.get("/tiktok")
+async def ping_tiktok():
+    """Prueba de accesibilidad. TikTok valida que la URL responda al guardarla."""
+    return {"ok": True, "canal": "tiktok", "modo": "observacion",
+            "persistencia": "ninguna — solo logs",
+            "eventos_en_memoria": len(_TIKTOK_LOG)}
+
+
+@router.get("/tiktok/log", dependencies=[Depends(requiere_api_key)])
+async def log_tiktok(limite: int = Query(50, ge=1, le=300)):
+    """
+    Lo que TikTok ha mandado, para la pestaña de administración.
+
+    Va CERRADO (a diferencia de POST /tiktok, que TikTok no puede autenticar):
+    el payload trae datos de pedido y el scope `seller.order.info` viene marcado
+    por TikTok como "Datos confidenciales — contiene información personal de los
+    clientes".
+    """
+    eventos = list(_TIKTOK_LOG)[-limite:]
+    eventos.reverse()
+    tipos: dict[str, int] = {}
+    for e in _TIKTOK_LOG:
+        tipos[str(e.get("tipo"))] = tipos.get(str(e.get("tipo")), 0) + 1
+    return {"total_en_memoria": len(_TIKTOK_LOG), "por_tipo": tipos,
+            "eventos": eventos}
+
+
+@router.get("/activos", dependencies=[Depends(requiere_api_key)])
+async def webhooks_activos():
+    """
+    Panel de administración: qué webhooks existen y cómo están funcionando.
+
+    Un canal puede estar en tres situaciones distintas y conviene no
+    confundirlas: SIN CONSTRUIR (no hay endpoint), CONSTRUIDO PERO APAGADO
+    (existe y su interruptor está en false), o VIVO.
+    """
+    base = (settings.tiktok_redirect_uri or "").split("/api/")[0]
+    return {
+        "canales": [
+            {
+                "canal": "mercado_libre",
+                "estado": "vivo" if _registro_activo else "pausado",
+                "url": f"{base}/api/webhooks/ml",
+                "persistencia": ("mysql+supabase" if settings.webhook_guarda_mysql
+                                 else "supabase" if settings.supabase_dual_write
+                                 else "ninguna — se procesa al vuelo"),
+                "procesa_pedidos": settings.pedidos_wc_enabled,
+                "descuenta_stock": settings.pedidos_wc_descuenta_stock,
+            },
+            {
+                "canal": "tiktok",
+                "estado": "observacion",
+                "url": f"{base}/api/webhooks/tiktok",
+                "persistencia": "ninguna — solo logs (fase 1)",
+                "eventos_en_memoria": len(_TIKTOK_LOG),
+                "app_configurada": bool(settings.tiktok_app_key),
+                "canal_encendido": settings.tiktok_enabled,
+            },
+            {
+                "canal": "amazon",
+                "estado": "sin webhook — es SONDEO cada 5 min (SP-API)",
+                "url": None,
+            },
+            {
+                "canal": "temu",
+                "estado": "sin webhook — es SONDEO cada 10 min (M2E Cloud)",
+                "url": None,
+            },
+        ],
+        "ambiente": settings.app_env,
+    }

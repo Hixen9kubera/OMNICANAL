@@ -4293,6 +4293,60 @@ Se agregó `--categoria`, `--skus` y `--espera` al publicador, y una lista
 `EXCLUIDOS` que documenta en el código por qué un SKU no se manda, para no
 volver a gastarle cuota ni a redescubrir el motivo.
 
+### v0.64.0 — TikTok Shop deja de depender de M2E: vía propia de autorización
+
+TikTok es el único canal del omnicanal que hoy no está en nuestras manos: la
+conexión de M2E quedó en `is_valid=false` en julio y nunca se re-autorizó, así
+que ni catálogo ni pedidos fluyen. Con la app de ISV que Brandon dio de alta en
+el **Partner Center** (`partner.tiktokshop.com` → App & Service, *Enable API*),
+el canal pasa a tener su propia puerta.
+
+Lo que exige ese alta es un **Redirect URL**: la dirección a la que TikTok
+devuelve al seller con el `authorization code` cuando aprueba la app. Se
+registró la nuestra:
+
+```
+https://backendomnicanal-production.up.railway.app/api/tiktok/callback
+```
+
+**No sirve reusar la de Google.** Es otro flujo OAuth: el handler del login del
+panel valida contra Google su propio `state` y `code`, y un `code` de TikTok ahí
+solo consigue ensuciar el único mecanismo de autenticación que ya corre en
+producción con `AUTH_ENFORCED` encendido.
+
+Tres piezas nuevas:
+
+| Endpoint | Qué hace |
+|---|---|
+| `GET /api/tiktok/autorizar` | Redirige al seller a la pantalla de consentimiento con un `state` fresco |
+| `GET /api/tiktok/callback` | Recibe el `code`, lo canjea por tokens y los guarda. **Público** |
+| `GET /api/tiktok/estado` | Diagnóstico: si hay conexión viva y hasta cuándo, sin exponer el token |
+
+El callback va en `RUTAS_ABIERTAS` del middleware por la misma razón que el
+webhook de ML: **TikTok no puede mandar nuestra `X-API-Key`**. Lo que lo protege
+no es la credencial sino un **`state` firmado con HMAC y TTL de 15 min**, emitido
+por nosotros y verificado a la vuelta; un `code` sin `state` válido se rechaza
+antes de tocar la red.
+
+Los tokens (`access` ~7 días, `refresh` ~1 año) se guardan **cifrados con Fernet
+en `tiktok_tokens`**, reusando la `DB_ENCRYPTION_KEY` que ya cifra `ml_tokens` —
+sin inventar un esquema nuevo de secretos. Si esa llave falta, el módulo **se
+niega a guardar**: mejor quedarse sin token que tenerlo en claro.
+
+Se aceptan `code` y `auth_code` como nombre del parámetro, porque el Partner
+Center ha usado ambos según la versión del flujo.
+
+**Nace APAGADO** (`TIKTOK_ENABLED=false`): con el interruptor abajo los endpoints
+responden 503 y no se llama a TikTok. Encenderlo es cambio de flujo vivo y
+espera el dale de Brandon (regla 3). Variables nuevas: `TIKTOK_ENABLED`,
+`TIKTOK_APP_KEY`, `TIKTOK_APP_SECRET`, `TIKTOK_SERVICE_ID`,
+`TIKTOK_REDIRECT_URI`.
+
+Pendiente para cuando se encienda: el Redirect URL es **editable después** del
+alta ("You may edit it after submission"), pero al autorizar tiene que coincidir
+carácter por carácter con el que mandemos — una diagonal final de más y TikTok
+rechaza el canje.
+
 ### v0.63.0 — Walmart MX por LOTE: 40 productos dejaron de ser 40 llamadas
 
 Se estaba mandando **un artículo por feed**. Y `MPItem` es un **array** que
@@ -5111,6 +5165,70 @@ stock y la publicación está apagada.
 Verificado tras el cambio: las cuentas que aparecen son solo Bekura, Sancor y
 Amazon; "En FULL" sigue cuadrando con Bekura + Sancor en las 293 filas. Sin
 migraciones y sin variables nuevas. Versión 0.80.0.
+
+### v0.82.0 — TikTok Shop: el canal deja de depender de M2E, y su webhook nace en modo OBSERVACIÓN
+
+Kubera obtuvo credenciales propias en el TikTok Shop Partner Center (app
+`tiktotapi`, 7-ago). Hasta hoy TikTok entraba por **M2E Cloud**, cuyo conector
+lleva con `is_valid=false` desde julio. Esto abre la vía directa.
+
+**El bloqueador que nadie había visto:** el código del OAuth de TikTok
+(`routers/tiktok.py`, `services/tiktok.py`, ~450 líneas) llevaba días escrito en
+disco y **nunca se commiteó**. La URL de redirección ya estaba registrada en el
+Partner Center, así que producción respondía **401** a la vuelta del seller:
+
+```
+200  /api/health           ✓
+200  /api/webhooks/ml      ✓
+401  /api/tiktok/callback  ✗   ← TikTok recibiría esto
+```
+
+**El receptor del webhook nace SIN TOCAR LA BASE DE DATOS.** No es minimalismo:
+la consola de TikTok ofrece cuatro temas (tipos 2, 3, 4 y 5) y **ninguno es
+"pedido creado"**, así que el catálogo real de eventos solo se descubre viéndolo
+llegar. Es el mismo método que se usó con M2E — loguear el crudo hasta que la
+primera venta confirme el esquema — y evita diseñar tablas contra un formato
+imaginado. El plan es observar **dos semanas** tras publicar 300 productos.
+
+| Ruta | Quién entra | Qué hace |
+|---|---|---|
+| `POST /api/webhooks/tiktok` | abierta | verifica firma, loguea, **cero BD**, responde 200 siempre |
+| `GET /api/webhooks/tiktok` | abierta | prueba de accesibilidad (TikTok la valida al guardar) |
+| `GET /api/webhooks/tiktok/log` | **cerrada** | últimos 300 eventos en memoria |
+| `GET /api/webhooks/activos` | **cerrada** | panel de administración de los 4 canales |
+
+**Por qué `/log` va cerrado:** el scope `seller.order.info` viene marcado por el
+propio TikTok como *"Datos confidenciales — contiene información personal de los
+clientes"*. La apertura del middleware es por **igualdad exacta**, no por
+prefijo, así que `/api/webhooks/tiktok/log` NO hereda la de
+`/api/webhooks/tiktok`. Verificado con pruebas, no supuesto.
+
+**La firma HOY SOLO OBSERVA.** Calcula el HMAC, registra el veredicto y **no
+rechaza nada**: el algoritmo exacto de TikTok no está confirmado contra su
+documentación, y un verificador mal implementado tiraría eventos legítimos sin
+dejar rastro. Como en fase 1 no se persiste ni se actúa, un evento falso solo
+ensucia el log. Al confirmarse el esquema pasa a rechazar — y ahí deja de ser
+opcional: la URL es pública.
+
+**Guarda absoluta, igual que en ML:** el cuerpo entero va dentro de un `try` y
+ningún fallo cambia la respuesta 200. Si devolviéramos otra cosa, TikTok
+reintenta y puede deshabilitar la suscripción — un fallo silencioso en el que
+simplemente dejan de llegar eventos.
+
+**El panel `/activos` distingue tres situaciones** que conviene no confundir:
+vivo, construido-pero-apagado, y *sin webhook porque la plataforma no los
+ofrece*. Amazon (sondeo SP-API cada 5 min) y Temu (sondeo M2E cada 10 min)
+caen en la tercera: **no son un pendiente**, y la pestaña lo dice así para que
+nadie los busque.
+
+**Nace apagado** (`TIKTOK_ENABLED=false`): hablar con un marketplace vivo es
+cambio de flujo (regla 3). El webhook en observación funciona sin encender el
+canal.
+
+Verificado antes del push: las **63 pruebas** de `humo_auth.py` y 6 del receptor,
+todas bajo condiciones de producción (`API_KEY` puesta y `AUTH_ENFORCED=true`).
+Sin eso, `requiere_api_key` devuelve en la línea 48 y todo pasa — dos "fallos"
+iniciales resultaron ser ese artefacto local, no un hueco real.
 
 ### v0.81.0 — El inventario se agrupa por FAMILIA: la publicación vive en el padre, las ventas llegan en el hijo
 

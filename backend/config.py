@@ -321,6 +321,23 @@ class Settings(BaseSettings):
     m2e_api_token: str = ""
     pedidos_m2e_enabled: bool = True
     pedidos_m2e_min: int = 10
+    # ── TikTok Shop: vía PROPIA (app de ISV en el Partner Center) ─
+    # M2E dejó la conexión de TikTok en is_valid=false desde julio y nunca se
+    # re-autorizó. Esto abre el canal sin depender de M2E: app propia con
+    # Enable API y Redirect URL a nuestro backend (/api/tiktok/callback).
+    # NACE APAGADO: hablar con un marketplace vivo es cambio de flujo (regla 3).
+    tiktok_enabled: bool = False
+    tiktok_app_key: str = ""
+    tiktok_app_secret: str = ""
+    # service_id de la app (Partner Center → App & Service); arma la URL de
+    # consentimiento a la que se manda al seller.
+    tiktok_service_id: str = ""
+    # Debe ser IDÉNTICA a la registrada en el Partner Center: una diagonal final
+    # de más y TikTok rechaza el canje del code.
+    tiktok_redirect_uri: str = (
+        "https://backendomnicanal-production.up.railway.app/api/tiktok/callback"
+    )
+
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
     # Con auto_push=true además empuja el stock nuevo a Woo (activar solo

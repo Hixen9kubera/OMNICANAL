@@ -72,6 +72,13 @@ RUTAS_ABIERTAS: frozenset[str] = frozenset({
     "/api/health",          # healthcheck de Railway — ver regla 1
     "/api/health/detalle",
     "/api/webhooks/ml",     # ML no puede mandar nuestro token — ver regla 1
+    "/api/tiktok/callback", # TikTok tampoco: es la vuelta del OAuth del seller.
+                            # Lo protege el `state` firmado, no la credencial.
+    "/api/webhooks/tiktok", # TikTok no puede mandar nuestro token — ver regla 1.
+                            # Lo protege la firma HMAC del propio TikTok.
+                            # OJO: `/api/webhooks/tiktok/log` NO hereda esta
+                            # apertura (coincidencia exacta) y sigue cerrado —
+                            # ese sí expone datos personales del comprador.
     "/",                    # raíz: solo versión y lista de canales
 })
 

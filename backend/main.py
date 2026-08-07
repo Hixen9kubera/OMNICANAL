@@ -24,7 +24,7 @@ from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (auth, canales, competencia, crear, fanout, fulfillment, ia,
                      imagenes, migracion, productos, publicar, sync, ventas,
-                     webhooks)
+                     tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -83,7 +83,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.81.0",
+    version="0.82.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -128,13 +128,14 @@ app.include_router(auth.router)
 app.include_router(migracion.router)
 app.include_router(fanout.router)
 app.include_router(fulfillment.router)
+app.include_router(tiktok.router)
 
 
 @app.get("/", tags=["meta"])
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.81.0",
+        "version": "0.82.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
