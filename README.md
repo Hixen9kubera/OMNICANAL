@@ -4531,3 +4531,68 @@ endpoint `/api/fulfillment/margenes-reales` solo cambiaría de dónde lee.
 vieja de Omnicanal.
 
 Sin migraciones que aplicar y sin variables nuevas en Railway. Versión 0.68.0.
+
+### v0.69.0 — Márgenes: de una pestaña aparte a un popup, con visitas y dos guardas nuevas
+
+Cierra el requisito "Márgenes en Omnicanal: 10 SKUs más vendidos, estructura de
+precio promedio y sus costos, margen sobre el COSTO FINAL con todos los cobros
+de Meli". La v0.68.0 lo entregó como sección propia; aquí se mueve a donde se
+usa y se le suman las piezas que faltaban para que el número sea creíble.
+
+**Deja de ser sección: es un botón.** "Productos más vendidos" vive junto al
+selector de período de Análisis y abre un popup (`MargenesRealesModal`). Dentro
+se filtra por cuenta (Ambas / Kubera / San Corpe), por estado de la publicación
+(Todas / Activas / Pausadas) y por período (7/30/60/90 d). `/analisis/margenes`
+se retira. "Ambas" es UNA lista general de 10, con chip BK/SC por fila — no las
+dos tablas al mismo tiempo.
+
+**Estado de la publicación + filtro.** Chip ACTIVA / PAUSADA / SIN PUB. por
+fila, y el filtro va al BACKEND (`?estado=`): el top se corta en SQL, así que
+filtrar en el cliente daría "las que sobrevivan de 10" y no el top 10 de las
+activas. De 20 filas del top, 15 están pausadas — distinguir lo que sangra hoy
+de lo que ya se detuvo era imposible antes.
+
+**Visitas y conversión REALES** (`services/visitas_ml.py`). Sale del mismo
+endpoint que usa Competencia (`/items/{id}/visits/time_window`). ML no acepta
+multiget aquí — una llamada por publicación — así que se cachea en MySQL
+(`ml_visitas`, TTL 6 h). Está en el popup y en la columna Visitas·CR% de la
+tabla principal, que llevaba meses de adorno. En la tabla la conversión se
+calcula con `uds_ml` y NO con las unidades totales: incluir las ventas de
+Amazon, que no aporta visitas, inflaría el CR%% de cualquier SKU que venda allá.
+Regla de TODO O NADA: si falta medir alguna publicación del SKU, la celda dice
+"—" en vez de dividir media medición entre las unidades completas
+(MUE-0163-TEL llegó a mostrar "209 visitas · 378.5%%" teniendo 13,331).
+
+**El costo dudoso ya no esconde el margen.** Antes, con costo > 3× el precio, la
+celda se quedaba en "⚠ costo?" y la ganancia en "—". Esconderlo sacaba al SKU
+del análisis junto con la señal de que ahí pasa algo. Ahora margen y ganancia se
+muestran SIEMPRE, en ámbar y con ⚠ — no en el rojo/verde que se lee como
+veredicto. Aplicado en los tres lugares que comparten `lib/margen.ts`: popup,
+tabla y árbol de Categorías.
+
+**Marca "2 productos"** (`services/ficha_ml.py`). Un SKU publicado en las dos
+cuentas debería ser el mismo objeto; si la bodega de ML pesó 40 g en una y 60 g
+en la otra, no lo es — y comparten un costo, un inventario y un margen que no le
+corresponden a uno de los dos. Solo cuenta lo que ML PESÓ (`PACKAGE_WEIGHT`),
+nunca lo que declaramos: mezclar ambas fuentes llevaba el censo de 26 hallazgos
+sólidos a 462 casi todos falsos. El título tampoco sirve (de 67 SKUs con títulos
+distintos, la mayoría eran el mismo producto dicho de dos formas). Casos que ya
+salta: TEC-0393-ROS (40/60 g), CUNA-0011-GRI (580/1140 g), MASC-0044-NEG
+(1040/1820 g) y TEC-0324-MUL, una "aspiradora industrial" de 1 kg en una cuenta
+y 14 kg en la otra.
+
+**Rendimiento.** Una página fría llegó a tardar 18 s: se esperaban las ~100
+llamadas de visitas de la página. Ahora los pares van en ORDEN DE FILA y solo se
+bloquea por las 40 primeras (~20 filas, lo que se lee primero); el resto y la
+ficha de peso se completan en segundo plano. Los cachés se escriben con UN solo
+INSERT en vez de uno por fila — cada fila era un viaje de red al MySQL de
+Hostinger. Medido: 7 s en frío / 2.8 s tibia, contra 18 s / 3.6 s.
+
+Además, un bug PREEXISTENTE: `dash?.skus.skus_catalogo` protegía solo a `dash`,
+así que un error de la API (o un reinicio) tumbaba la pestaña Análisis entera
+con "cannot read properties of undefined". Ya va con opcional en los dos
+niveles.
+
+Tablas nuevas, todas NUESTRAS en MySQL (mismo terreno que `amazon_imagenes`):
+`ml_envio_real`, `ml_visitas`, `ml_ficha`. Sin migraciones en la BD kubera y sin
+variables nuevas en Railway. Versión 0.69.0.
