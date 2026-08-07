@@ -10,7 +10,7 @@
  */
 
 import type { LucideIcon } from "lucide-react";
-import { CircleDashed } from "lucide-react";
+import { Check, CircleDashed } from "lucide-react";
 
 export interface Pendiente {
   titulo: string;
@@ -22,6 +22,14 @@ export interface Pendiente {
   fuentes: { nombre: string; detalle: string; listo: boolean }[];
   /** Lo que hace falta ANTES de poder construirla (vacío = nada). */
   bloqueos?: string[];
+  /**
+   * Estado de la CALIDAD DE LOS NÚMEROS, en grueso: qué ya cierra y qué no.
+   *
+   * Va aparte de `bloqueos` porque no impide construir nada — impide CONFIAR.
+   * Se listan también los resueltos: sin ellos la lista parece un muro y no se
+   * ve que se está avanzando.
+   */
+  numeros?: { punto: string; listo: boolean }[];
 }
 
 export default function FulfillmentPendiente({ p }: { p: Pendiente }) {
@@ -85,6 +93,38 @@ export default function FulfillmentPendiente({ p }: { p: Pendiente }) {
           </ul>
         </div>
       </div>
+
+      {p.numeros && p.numeros.length > 0 && (
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              Para que los números cierren al 100%
+            </span>
+            <span className="text-[11px] font-semibold text-slate-400">
+              {p.numeros.filter((n) => n.listo).length} de {p.numeros.length} resueltos
+            </span>
+          </div>
+          <p className="mb-3 text-[12px] text-slate-400">
+            Los reportes ya salen; esto es lo que decide cuánto puedes confiar en
+            las cifras que traen.
+          </p>
+          <ul className="space-y-2">
+            {p.numeros.map((n) => (
+              <li key={n.punto} className="flex items-start gap-2.5 text-sm">
+                <span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${
+                  n.listo ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+                  {n.listo ? <Check size={11} strokeWidth={3} />
+                           : <span className="h-1 w-1 rounded-full bg-amber-600" />}
+                </span>
+                <span className={n.listo ? "text-slate-400 line-through decoration-slate-300"
+                                         : "text-slate-600"}>
+                  {n.punto}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {p.bloqueos && p.bloqueos.length > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-5">

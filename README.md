@@ -4978,3 +4978,46 @@ días distintos"—. De paso quedó ejercitada la degradación sin MySQL que exi
 "0 real · 6,605 estimado · 2,848 sin dato" en vez de caerse.
 
 Sin migraciones y sin variables nuevas. Versión 0.77.0.
+
+### v0.78.0 — La tarjeta "Más reportes" dice la verdad de hoy: qué falta para creerle a los números
+
+Petición de Eduardo (7-ago): la tarjeta seguía pidiendo decisiones que ya no
+aplican, y lo que hoy limita el reporte no es construirlo — es **confiar en sus
+cifras**.
+
+**Fuera "Antes de construirla hace falta".** Los dos bloqueos (elegir el precio
+sugerido oficial, decidir dónde guardar los archivos) se retiran. También sale
+"Carpeta de descargas" de *Datos que necesita*: no era una fuente de datos sino
+el mismo prerrequisito listado dos veces. El contador queda en **3 de 3 listas**
+en vez de 3 de 4.
+
+**Entra "Para que los números cierren al 100%"** (prop `numeros` en
+`FulfillmentPendiente`, junto a `bloqueos` — que se conserva porque
+`/analisis/fba` lo usa). Va aparte a propósito: no impide *construir*, impide
+*creer*. Siete puntos, **3 resueltos** —tachados, para que se vea el avance y no
+parezca un muro— y 4 pendientes:
+
+| | Punto |
+|---|---|
+| ✓ | Envío: el cobro REAL de ML por embarque, no una estimación por peso |
+| ✓ | Comisión: la que ML cobró de verdad en cada venta |
+| ✓ | Huecos señalados: cada renglón dice por qué le falta un dato |
+| • | Costo de compra: ~⅓ del catálogo trae precio de lista en dólares, no lo pagado |
+| • | Productos sin costo: ~1 de cada 7 SKUs vendidos |
+| • | Pesos mal capturados: ~500 productos con peso de caja como pieza |
+| • | Historial corto: ventas capturadas desde finales de junio |
+
+Redactado **en grueso a propósito**: sin nombres de tablas ni cifras al detalle.
+Para el detalle está la columna Diagnóstico del propio Excel — la tarjeta es el
+mapa, no el terreno.
+
+Verificado en el navegador contra el sandbox: el bloque ámbar viejo ya no
+existe, la sección nueva pinta sus 7 puntos con 3 tachados, ocupa el ancho
+completo y no desborda.
+
+**Hallazgo que NO se tocó:** en móvil (375 px) la página desborda 53 px, y el
+culpable son las filas de filtros preexistentes (cuentas, períodos y las dos
+fechas), no las secciones nuevas — ninguna de ellas se sale. Queda anotado, no
+corregido: arreglarlo toca el layout de los filtros y eso es otro cambio.
+
+Sin migraciones y sin variables nuevas. Versión 0.78.0.

@@ -407,15 +407,43 @@ export default function ReportesPage() {
               detalle: "el costo validado de cada variante",
               listo: true,
             },
+            // "Carpeta de descargas" salió de aquí: no era una fuente de datos
+            // sino el mismo prerrequisito que se retiró, listado dos veces.
+          ],
+          // Los "bloqueos" se retiraron (Eduardo, 7-ago): ya no aplican. En su
+          // lugar va el estado de la CALIDAD DE LOS NÚMEROS, que es lo que hoy
+          // limita el reporte — no le impide salir, le impide ser creíble.
+          // A propósito EN GRUESO: sin nombres de tablas ni cifras al detalle,
+          // que para eso está la columna Diagnóstico del propio Excel.
+          numeros: [
             {
-              nombre: "Carpeta de descargas",
-              detalle: "definir dónde se guardan los archivos generados",
+              punto: "Costo de envío: se usa el cobro REAL de Mercado Libre por cada embarque, no una estimación por peso",
+              listo: true,
+            },
+            {
+              punto: "Comisión: es la que Mercado Libre cobró de verdad en cada venta",
+              listo: true,
+            },
+            {
+              punto: "Huecos señalados: cada renglón del Excel dice por qué le falta un dato, en vez de dejarlo en blanco o en cero",
+              listo: true,
+            },
+            {
+              punto: "Costo de compra: cerca de un tercio del catálogo trae un precio de lista en dólares en lugar de lo que realmente se pagó. Se destraba con la factura del contenedor",
               listo: false,
             },
-          ],
-          bloqueos: [
-            "Decidir cuál de los dos precios guardados en el sistema es el precio sugerido oficial (hoy conviven dos criterios)",
-            "Decidir dónde se guardan los reportes generados: el servidor no conserva archivos entre reinicios",
+            {
+              punto: "Productos sin costo: aproximadamente 1 de cada 7 SKUs vendidos no tiene ningún costo capturado, así que su margen no se puede calcular",
+              listo: false,
+            },
+            {
+              punto: "Pesos mal capturados: unos 500 productos traen el peso de la caja completa como si fuera el de una pieza. Ya no afecta al envío, pero sí al precio sugerido",
+              listo: false,
+            },
+            {
+              punto: "Historial corto: las ventas están capturadas desde finales de junio; pedir un rango más largo no devuelve más historia, y el reporte lo avisa",
+              listo: false,
+            },
           ],
         }}
       />
