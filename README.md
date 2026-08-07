@@ -5021,3 +5021,53 @@ fechas), no las secciones nuevas — ninguna de ellas se sale. Queda anotado, no
 corregido: arreglarlo toca el layout de los filtros y eso es otro cambio.
 
 Sin migraciones y sin variables nuevas. Versión 0.78.0.
+
+### v0.79.0 — Inventario accionable: Inmovilizado e Invisible
+
+Primer reporte de inventario (Eduardo, 7-ago). No es un volcado del almacén:
+son las **dos poblaciones sobre las que se puede actuar hoy**, y son problemas
+opuestos.
+
+| | Qué es | Producción, 30 días |
+|---|---|---|
+| **Inmovilizado** | El mercado no lo quiere: hay stock en FULL y no vende, así que paga renta a ML todos los días | **292 SKUs**, 13,839 unidades — y **294 de ellos NUNCA han vendido una pieza** |
+| **Invisible** | El mercado sí lo quiere y no se lo estamos ofreciendo: vendió, tiene stock, y ninguna publicación está activa | **97 SKUs**, 2,497 unidades vendidas que hoy no se pueden repetir |
+
+Casos que las definen: `JUGU-0261-LIL` (karaoke, 272 en FULL + 648 en bodega,
+cero ventas históricas) y `TEC-0393-ROS` (291 unidades vendidas en 30 días,
+2,394 en bodega, sus dos publicaciones pausadas).
+
+**El filtro que hace creíble a Invisible.** Solo entra lo pausado CON STOCK. Lo
+pausado sin stock está agotado —que es la razón correcta para pausar— y
+pertenece a "Reponer", todavía sin construir. Ese filtro bajó la hoja de 187 a
+**97 SKUs**: sin él, la mitad no sería accionable y la hoja perdería
+credibilidad al primer vistazo.
+
+**Sin valorizar en dinero, a propósito.** Es la misma trampa del margen que se
+retiró en la v0.72.0: `costo_producto` es un precio USD×19 de relleno en ~30%
+del catálogo, así que un total de "inventario valuado en $X" sería ficción con
+formato de hecho. Lo que sí se mide con datos confiables: cuánto hay, dónde
+está y cuánto lleva sin moverse.
+
+**Dos trampas del modelo de datos, resueltas:**
+
+1. `max(stock_own)` y NO `sum`: el stock propio está espejeado en CADA
+   publicación del mismo SKU. Sumarlo por publicación cuenta la misma pieza
+   varias veces — medido: 1,109,525 unidades en el canal `general` contra
+   343,045 en `mercado_libre`, que son las MISMAS piezas.
+2. `stock_full` filtrado a `canal='mercado_libre'`: FULL es un concepto de ML.
+   Sin el filtro, la columna "En FULL" no cuadraba con la suma de Bekura +
+   Sancor (272 contra 200 en JUGU-0261-LIL) porque se colaba `stock_full` de
+   publicaciones de Amazon, cuyo equivalente es `stock_fba`. Verificado tras el
+   arreglo: 0 filas donde no cuadre, de 292.
+
+Endpoints `GET /api/fulfillment/inventario/excel` y `.../preview`, con
+`_datos_inventario()` compartido —misma razón que en el reporte de ventas: una
+previa que arma sus propios datos acaba prometiendo un archivo distinto del que
+llega—. Tarjeta propia en `/analisis/reportes` con previa automática de dos
+bloques. El libro trae una portada "Cómo leer" y cada hoja lleva su criterio
+escrito dentro, porque el Excel se comparte fuera del panel.
+
+Verificado en el navegador contra el sandbox: los dos bloques lado a lado, misma
+altura, 1,180 px, sin desbordes ni scroll horizontal. Sin migraciones y sin
+variables nuevas. Versión 0.79.0.

@@ -25,6 +25,7 @@ Equivalencias vs el original (documentadas para el clon):
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -1523,6 +1524,108 @@ async def categorias_publicaciones(
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
 
+# ── Reporte de INVENTARIO: dos preguntas, dos hojas ──────────────────────────
+#
+# No es un volcado del inventario: son las dos poblaciones sobre las que se
+# puede ACTUAR hoy, y son problemas opuestos.
+#
+#   INMOVILIZADO — hay stock en FULL y no vende. Ahí no solo es capital
+#     detenido: paga renta a ML todos los días. Censo 7-ago: 14,873 unidades
+#     en FULL sin una sola venta en 30 días (39%% de todo lo que hay en FULL),
+#     y las mayores nunca han vendido una pieza.
+#
+#   INVISIBLE — vende, pero ninguna publicación está activa. Demanda probada
+#     con el aparador cerrado. Caso canónico TEC-0393-ROS: 291 unidades
+#     vendidas en 30 días, 2,394 en bodega, las dos publicaciones pausadas.
+#
+# EL FILTRO QUE HACE CREÍBLE A "INVISIBLE": solo entra lo pausado CON STOCK.
+# Lo pausado SIN stock está agotado, que es la razón correcta para pausar, y
+# pertenece a "Reponer" (todavía sin construir). Sin esa separación la hoja
+# mezclaría 187 SKUs donde solo una parte es accionable.
+#
+# `max(stock_own)` y NO `sum`: el stock propio está espejeado en CADA
+# publicación del mismo SKU (misma bodega vista desde otra publicación).
+# Sumarlo por publicación cuenta la misma pieza varias veces — medido el
+# 7-ago: 1,109,525 unidades en el canal `general` contra 343,045 en
+# mercado_libre, que son las MISMAS piezas. FULL y FBA sí son por cuenta.
+_SQL_INV_BASE = _mx("""
+with v30 as (
+  select i.sku::text as sku, sum(i.cantidad)::int as uds,
+         max((o.creado_at at time zone 'America/Mexico_City')::date) as ult
+    from channel.order_items i
+    join channel.orders o using (canal, cuenta, external_order_id)
+   where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and i.sku is not null
+     and (o.creado_at at time zone 'America/Mexico_City')::date
+         > current_date - %(dias)s
+   group by 1),
+vh as (
+  select i.sku::text as sku,
+         max((o.creado_at at time zone 'America/Mexico_City')::date) as ult_hist
+    from channel.order_items i
+    join channel.orders o using (canal, cuenta, external_order_id)
+   where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and i.sku is not null
+   group by 1),
+s as (
+  select l.sku::text as sku,
+         max(coalesce(l.stock_own, 0))::int                    as propio,
+         -- FULL es un concepto de MERCADO LIBRE. Sin este filtro la columna
+         -- "En FULL" no cuadraba con la suma de Bekura + Sancor (272 contra
+         -- 200 en JUGU-0261-LIL): se colaba `stock_full` de publicaciones de
+         -- Amazon, cuyo equivalente es `stock_fba` y va en su propia columna.
+         sum(coalesce(l.stock_full, 0))
+           filter (where l.canal = 'mercado_libre')::int       as full_total,
+         sum(coalesce(l.stock_full, 0))
+           filter (where a.legacy_code = 'BEKURA')::int        as full_bk,
+         sum(coalesce(l.stock_full, 0))
+           filter (where a.legacy_code = 'SANCORFASHION')::int as full_sc,
+         sum(coalesce(l.stock_fba, 0))::int                    as fba,
+         count(*) filter (where lower(coalesce(l.situacion,'')) = 'active')::int as activas,
+         count(*) filter (where lower(coalesce(l.situacion,'')) = 'paused')::int as pausadas,
+         count(*)::int                                         as pubs,
+         array_agg(distinct a.legacy_code order by a.legacy_code) as cuentas
+    from channel.listings l
+    join core.accounts a on a.id = l.account_id
+   where lower(coalesce(l.situacion, '')) <> 'closed'
+     and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
+   group by 1)
+""")
+
+# Stock en FULL que no vendió NADA en el período. Ordenado por unidades: es lo
+# que más renta paga sin devolver nada.
+_SQL_INV_INMOVILIZADO = _SQL_INV_BASE + """
+select s.sku, coalesce(p.name, '') as titulo,
+       s.full_total, s.full_bk, s.full_sc, s.propio,
+       s.activas, s.pausadas, s.cuentas,
+       vh.ult_hist::text as ultima_venta,
+       case when vh.ult_hist is not null
+            then (current_date - vh.ult_hist)::int end as dias_sin_vender
+  from s
+  left join v30 on v30.sku = s.sku
+  left join vh  on vh.sku  = s.sku
+  left join core.products p on p.sku = s.sku
+ where coalesce(v30.uds, 0) = 0
+   and s.full_total > 0
+ order by s.full_total desc, s.propio desc
+"""
+
+# Vendió y NO tiene una sola publicación activa, teniendo stock con qué surtir.
+_SQL_INV_INVISIBLE = _SQL_INV_BASE + """
+select s.sku, coalesce(p.name, '') as titulo,
+       v30.uds as uds_periodo, v30.ult::text as ultima_venta,
+       s.propio, s.full_total, s.fba,
+       (s.propio + s.full_total + s.fba)::int as stock_total,
+       s.pausadas, s.pubs, s.cuentas
+  from s
+  join v30 on v30.sku = s.sku
+  left join core.products p on p.sku = s.sku
+ where s.activas = 0
+   and (s.propio + s.full_total + s.fba) > 0
+ order by v30.uds desc, stock_total desc
+"""
+
+
 async def _datos_reporte(d1: str, d2: str, cuenta: str | None) -> tuple:
     """
     Los tres conjuntos del reporte, ya enriquecidos con el envío REAL de ML.
@@ -1586,6 +1689,92 @@ async def _datos_reporte(d1: str, d2: str, cuenta: str | None) -> tuple:
     log.info("reporte %s→%s: envío %d real / %d estimado / %d sin dato (%d por llenar)",
              d1, d2, censo["reales"], censo["estimadas"], censo["sin_dato"], len(pend))
     return hojas, pubs, ventas, censo
+
+
+def _datos_inventario(dias: int, cuenta: str | None) -> tuple[list, list]:
+    """Las dos poblaciones accionables. Compartido por la descarga y su previa,
+    por lo mismo que `_datos_reporte`: una previa que arma sus propios datos
+    acaba prometiendo un archivo distinto del que llega."""
+    par = {"dias": dias, "cuenta": cuenta}
+    return (sdb.fetch_all(_SQL_INV_INMOVILIZADO, par),
+            sdb.fetch_all(_SQL_INV_INVISIBLE, par))
+
+
+@router.get("/inventario/excel/preview")
+async def inventario_excel_preview(
+    dias: int = Query(30, ge=7, le=400),
+    cuenta: str | None = Query(None),
+):
+    """Qué trae el reporte de inventario antes de bajarlo."""
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    try:
+        inm, inv = await asyncio.to_thread(_datos_inventario, dias, cuenta)
+        return {
+            "dias": dias,
+            "inmovilizado": {
+                "skus": len(inm),
+                "unidades_full": sum(int(f.get("full_total") or 0) for f in inm),
+                "nunca_vendieron": sum(1 for f in inm if not f.get("ultima_venta")),
+                "top": [{"sku": f["sku"], "titulo": (f.get("titulo") or "")[:60],
+                         "full": int(f.get("full_total") or 0),
+                         "propio": int(f.get("propio") or 0),
+                         "ultima_venta": f.get("ultima_venta")} for f in inm[:5]],
+            },
+            "invisible": {
+                "skus": len(inv),
+                "unidades_vendidas": sum(int(f.get("uds_periodo") or 0) for f in inv),
+                "stock_disponible": sum(int(f.get("stock_total") or 0) for f in inv),
+                "top": [{"sku": f["sku"], "titulo": (f.get("titulo") or "")[:60],
+                         "uds": int(f.get("uds_periodo") or 0),
+                         "stock": int(f.get("stock_total") or 0),
+                         "ultima_venta": f.get("ultima_venta")} for f in inv[:5]],
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("inventario/excel/preview falló: %s", exc)
+        raise HTTPException(502, f"no se pudo calcular la vista previa: {exc}") from exc
+
+
+@router.get("/inventario/excel")
+async def inventario_excel(
+    dias: int = Query(30, ge=7, le=400),
+    cuenta: str | None = Query(None),
+):
+    """
+    Inventario ACCIONABLE en dos hojas: Inmovilizado (stock en FULL que no
+    vende y paga renta) e Invisible (vende, tiene stock, y ninguna publicación
+    activa). Ver el encabezado de `reporte_inventario_xlsx`.
+    """
+    from fastapi.responses import Response
+
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    try:
+        from services import reporte_inventario_xlsx
+
+        inm, inv = await asyncio.to_thread(_datos_inventario, dias, cuenta)
+        log.info("inventario: %d inmovilizados / %d invisibles (%d días)",
+                 len(inm), len(inv), dias)
+        datos = await asyncio.to_thread(
+            reporte_inventario_xlsx.construir, inm, inv, dias, cuenta)
+        nombre = f"inventario_accionable_{dias}d.xlsx"
+        return Response(
+            content=datos,
+            media_type=("application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet"),
+            headers={"Content-Disposition": f'attachment; filename="{nombre}"'})
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("inventario/excel falló: %s", exc)
+        raise HTTPException(502, f"no se pudo generar el Excel: {exc}") from exc
 
 
 @router.get("/categorias/excel/preview")

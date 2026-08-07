@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, Download, Eye, FileSpreadsheet, FileText, X } from "lucide-react";
+import { AlertTriangle, Boxes, Download, Eye, FileSpreadsheet, FileText, X } from "lucide-react";
 import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
 import FulfillmentPendiente from "@/components/FulfillmentPendiente";
 
@@ -207,6 +207,224 @@ function VistaPrevia({ p, cargando, error }: {
   );
 }
 
+/* ── Inventario accionable ─────────────────────────────────────────────────
+   Dos poblaciones opuestas, no un volcado del almacén:
+   INMOVILIZADO = el mercado no lo quiere (y en FULL paga renta todos los días).
+   INVISIBLE    = el mercado sí lo quiere y no se lo estamos ofreciendo.       */
+interface PreviewInv {
+  dias: number;
+  inmovilizado: {
+    skus: number; unidades_full: number; nunca_vendieron: number;
+    top: { sku: string; titulo: string; full: number; propio: number;
+           ultima_venta: string | null }[];
+  };
+  invisible: {
+    skus: number; unidades_vendidas: number; stock_disponible: number;
+    top: { sku: string; titulo: string; uds: number; stock: number;
+           ultima_venta: string | null }[];
+  };
+}
+
+const PERIODOS_INV = [30, 60, 90];
+
+function TarjetaInventario() {
+  const [cuenta, setCuenta] = useState("");
+  const [dias, setDias] = useState(30);
+  const [previa, setPrevia] = useState<PreviewInv | null>(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [bajando, setBajando] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      setCargando(true);
+      setError(null);
+      try {
+        const par = new URLSearchParams({ dias: String(dias) });
+        if (cuenta) par.set("cuenta", cuenta);
+        const r = await fetchSesion(
+          `${API_BASE}/api/fulfillment/inventario/excel/preview?${par.toString()}`,
+          { signal: ctrl.signal });
+        if (!r.ok) throw new Error(`El servidor respondió ${r.status}`);
+        setPrevia(await r.json());
+        setCargando(false);
+      } catch (e) {
+        if (ctrl.signal.aborted) return;
+        setError(mensajeDeError(e, "No se pudo calcular la vista previa."));
+        setCargando(false);
+      }
+    }, 450);
+    return () => { clearTimeout(t); ctrl.abort(); };
+  }, [cuenta, dias]);
+
+  const q = new URLSearchParams({ dias: String(dias) });
+  if (cuenta) q.set("cuenta", cuenta);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className="rounded-xl bg-sky-50 p-2.5 text-sky-600">
+          <Boxes size={22} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-slate-800">
+            Inventario accionable (Excel)
+          </h2>
+          <p className="mt-0.5 text-[13px] text-slate-500">
+            No es el inventario completo: son las dos poblaciones sobre las que
+            se puede actuar hoy.{" "}
+            <b className="text-slate-600">Inmovilizado</b> — hay stock en FULL y
+            no vende, así que paga renta a Mercado Libre todos los días.{" "}
+            <b className="text-slate-600">Invisible</b> — vende y tiene stock,
+            pero ninguna publicación está activa. Sin valor en dinero: el costo
+            capturado no es de fiar en ~⅓ del catálogo.
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+              {CUENTAS.map((c) => (
+                <button key={c.id} onClick={() => setCuenta(c.id)}
+                        className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                          cuenta === c.id
+                            ? "bg-indigo-600 font-semibold text-white"
+                            : "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}>
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+              {PERIODOS_INV.map((d) => (
+                <button key={d} onClick={() => setDias(d)}
+                        className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                          dias === d
+                            ? "bg-slate-900 font-semibold text-white"
+                            : "font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-800"}`}>
+                  {d} días
+                </button>
+              ))}
+            </div>
+            <button
+              type="button"
+              disabled={bajando}
+              onClick={async () => {
+                setBajando(true);
+                try {
+                  await descargar(
+                    `${API_BASE}/api/fulfillment/inventario/excel?${q.toString()}`,
+                    `inventario-accionable-${cuenta || "consolidado"}-${dias}d.xlsx`,
+                  );
+                } catch (e) {
+                  setError(mensajeDeError(e, "No se pudo descargar."));
+                } finally {
+                  setBajando(false);
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-700 shadow-sm transition-colors hover:bg-emerald-100 disabled:cursor-wait disabled:opacity-60">
+              <Download size={15} /> {bajando ? "Preparando…" : "Descargar"}
+            </button>
+          </div>
+        </div>
+      </div>
+      {error && (
+        <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+          {error}
+        </p>
+      )}
+      <PreviaInventario p={previa} cargando={cargando} dias={dias} />
+    </div>
+  );
+}
+
+function BloqueInv({ titulo, subtitulo, cifras, top, tono }: {
+  titulo: string; subtitulo: string;
+  cifras: [string, string][];
+  top: { sku: string; titulo: string; der: string }[];
+  tono: "amber" | "sky";
+}) {
+  const borde = tono === "amber" ? "border-amber-200 bg-amber-50/50"
+                                 : "border-sky-200 bg-sky-50/50";
+  const texto = tono === "amber" ? "text-amber-800" : "text-sky-800";
+  return (
+    <div className={`rounded-xl border p-4 ${borde}`}>
+      <p className={`text-[12px] font-bold uppercase tracking-wide ${texto}`}>{titulo}</p>
+      <p className="mt-0.5 text-[11px] text-slate-500">{subtitulo}</p>
+      <div className="mt-2.5 flex flex-wrap gap-x-6 gap-y-2">
+        {cifras.map(([et, v]) => (
+          <div key={et}>
+            <p className="text-[10px] uppercase tracking-wide text-slate-400">{et}</p>
+            <p className="text-base font-semibold text-slate-800">{v}</p>
+          </div>
+        ))}
+      </div>
+      {top.length > 0 && (
+        <ul className="mt-3 space-y-1 border-t border-slate-200/70 pt-2">
+          {top.map((t) => (
+            <li key={t.sku} className="flex items-baseline justify-between gap-2 text-[11px]">
+              <span className="min-w-0 truncate text-slate-600">
+                <code className="font-semibold text-slate-700">{t.sku}</code>{" "}
+                {t.titulo}
+              </span>
+              <span className="shrink-0 font-semibold text-slate-700">{t.der}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PreviaInventario({ p, cargando, dias }: {
+  p: PreviewInv | null; cargando: boolean; dias: number;
+}) {
+  if (!p) {
+    return (
+      <div className="mt-4 grid min-h-[168px] animate-pulse gap-4 sm:grid-cols-2">
+        {[0, 1].map((i) => (
+          <div key={i} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <div className="h-3 w-32 rounded bg-slate-200" />
+            <div className="mt-3 h-6 w-24 rounded bg-slate-200" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const m = (n: number) => n.toLocaleString("es-MX");
+  return (
+    <div className={`mt-4 grid min-h-[168px] gap-4 transition-opacity sm:grid-cols-2 ${
+      cargando ? "opacity-50" : "opacity-100"}`}>
+      <BloqueInv
+        tono="amber"
+        titulo="Inmovilizado"
+        subtitulo="En FULL y sin una sola venta: paga renta todos los días"
+        cifras={[
+          ["SKUs", m(p.inmovilizado.skus)],
+          ["Unidades en FULL", m(p.inmovilizado.unidades_full)],
+          ["Nunca vendieron", m(p.inmovilizado.nunca_vendieron)],
+        ]}
+        top={p.inmovilizado.top.map((t) => ({
+          sku: t.sku, titulo: t.titulo,
+          der: `${m(t.full)} en FULL · ${t.ultima_venta ?? "nunca vendió"}`,
+        }))}
+      />
+      <BloqueInv
+        tono="sky"
+        titulo="Invisible"
+        subtitulo={`Vendió en ${dias} días, tiene stock y ninguna publicación activa`}
+        cifras={[
+          ["SKUs", m(p.invisible.skus)],
+          [`Unidades vendidas (${dias}d)`, m(p.invisible.unidades_vendidas)],
+          ["Stock disponible", m(p.invisible.stock_disponible)],
+        ]}
+        top={p.invisible.top.map((t) => ({
+          sku: t.sku, titulo: t.titulo,
+          der: `vendió ${m(t.uds)} · ${m(t.stock)} en bodega`,
+        }))}
+      />
+    </div>
+  );
+}
+
 const CUENTAS = [
   { id: "", label: "Consolidado" },
   { id: "BEKURA", label: "Bekura" },
@@ -377,6 +595,7 @@ export default function ReportesPage() {
   return (
     <div className="space-y-4">
       <TarjetaVentasCategoria />
+      <TarjetaInventario />
       <FulfillmentPendiente
         p={{
           titulo: "Más reportes descargables",
