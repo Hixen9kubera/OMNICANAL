@@ -4851,3 +4851,44 @@ se queda con el estimado y lo dice. En `Categorias`, "Origen envío" y
 el cambio.
 
 Sin migraciones y sin variables nuevas. Versión 0.74.0.
+
+### v0.75.0 — El reporte avisa cuando el rango pedido no es el rango con datos
+
+Al llenar el caché de envío para el histórico salió que **el botón "Histórico
+(400 días)" no tiene histórico**: en 400 días hay 9,822 pedidos de ML, y 9,668
+son de julio y agosto de 2026.
+
+| Mes | `channel.orders` (ML) | `pedidos_ml` (registro viejo) |
+|---|---|---|
+| 2026-02 | 1 | 1 |
+| 2026-05 | 4 | 4 |
+| 2026-06 | 182 | 181 |
+| 2026-07 | 7,749 | 7,608 |
+| 2026-08 | 3,276 | 3,513 |
+
+Verificado contra las DOS fuentes por separado, para descartar pérdida de datos
+en la migración: coinciden. No falta historia — **no existe**. La captura de
+pedidos arrancó de verdad a finales de junio de 2026.
+
+El riesgo no es el archivo vacío, es el archivo que parece lleno: pedir 400
+días devuelve un libro que aparenta cubrir un año y cubre siete semanas, y los
+meses sin captura se leen como meses malos. Es el mismo error de siempre —
+tomar la ausencia de dato por un dato.
+
+Ahora la hoja `Resumen` escribe en **A2** (fila que estaba libre; no se corre
+ninguna fórmula) uno de dos avisos en ámbar, y ninguno si el rango pedido sí
+tiene datos de principio a fin:
+
+- *"OJO CON EL RANGO: se pidió desde 2025-07-03, pero la primera venta
+  capturada es del 2026-02-16 (hay ventas en 59 días distintos, hasta
+  2026-08-07). Los meses anteriores no salen bajos: salen sin captura."*
+- *"SIN VENTAS en el rango pedido (…). El libro va vacío: no es que no haya
+  margen, es que no hay pedidos capturados en esas fechas."*
+
+El conteo de **días distintos con venta** es deliberado: la primera fecha por
+sí sola engaña (ese único pedido de febrero haría creer que hay serie desde
+entonces).
+
+Probado en los tres escenarios —histórico con datos parciales, rango normal
+cubierto, y rango sin ventas— y contra producción con `dias=400`. Sin
+migraciones y sin variables nuevas. Versión 0.75.0.

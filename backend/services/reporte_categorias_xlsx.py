@@ -363,6 +363,29 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     rs["A1"].font = _f(bold=True, size=12)
     rs["B1"] = f"{desde} → {hasta}"
     rs["B1"].font = _f(bold=True)
+
+    # RANGO PEDIDO ≠ RANGO CON DATOS. La captura de pedidos arrancó de verdad a
+    # finales de junio de 2026: antes de eso `channel.orders` tiene 186 filas en
+    # total (verificado el 7-ago contra `pedidos_ml`, el registro viejo, que
+    # coincide — no falta historia, no existe). Sin este aviso, pedir "Histórico
+    # (400 días)" devuelve un libro que parece cubrir un año y cubre siete
+    # semanas, y los meses vacíos se leen como meses malos.
+    fechas = sorted(str(v["fecha"]) for v in ventas if v.get("fecha"))
+    if not fechas:
+        rs["A2"] = (f"SIN VENTAS en el rango pedido ({desde} → {hasta}). "
+                    f"El libro va vacío: no es que no haya margen, es que no "
+                    f"hay pedidos capturados en esas fechas.")
+        rs["A2"].font = _f(bold=True, size=9)
+        rs["A2"].fill = _AVISO_FILL
+    elif fechas[0] > desde:
+        dias_reales = len(set(fechas))
+        rs["A2"] = (f"OJO CON EL RANGO: se pidió desde {desde}, pero la primera "
+                    f"venta capturada es del {fechas[0]} (hay ventas en "
+                    f"{dias_reales} días distintos, hasta {fechas[-1]}). "
+                    f"Los meses anteriores no salen bajos: salen sin captura. "
+                    f"Compara solo dentro del rango con datos.")
+        rs["A2"].font = _f(bold=True, size=9)
+        rs["A2"].fill = _AVISO_FILL
     rs["C1"] = f"Cuenta: {TIENDA.get(cuenta or '', cuenta) or 'todas'}"
     rs["C1"].font = _f(bold=True)
     cob = ""
