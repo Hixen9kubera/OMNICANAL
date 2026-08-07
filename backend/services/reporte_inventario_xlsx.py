@@ -38,10 +38,11 @@ _AVISO_FILL = PatternFill("solid", fgColor="FFF2CC")
 _GRAVE_FILL = PatternFill("solid", fgColor="FCE4E4")
 _INT = "#,##0"
 
-TIENDA = {"BEKURA": "Bekura", "SANCORFASHION": "Sancor", "AMAZON": "Amazon",
-          # `GENERAL` es la cuenta del catálogo de WooCommerce; sin traducir
-          # salía en mayúsculas junto a las tiendas y parecía otra cosa.
-          "GENERAL": "Woo"}
+# WooCommerce NO va aquí a propósito: no es un canal de venta sino nuestro
+# puente de registro, y la consulta ya lo excluye de la lista de cuentas. Si
+# alguna vez se colara, saldría como "GENERAL" en mayúsculas — una señal
+# visible, mejor que pintarlo como si fuera una tienda más.
+TIENDA = {"BEKURA": "Bekura", "SANCORFASHION": "Sancor", "AMAZON": "Amazon"}
 
 
 def _f(**kw) -> Font:
@@ -105,15 +106,21 @@ def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
         if dias_sin is not None:
             ws.cell(r, 11, int(dias_sin)).font = _f()
             ws.cell(r, 11).number_format = _INT
-        # Nunca vendido es peor que "dejó de venderse": no es que se enfriara,
-        # es que la compra no tenía mercado. Se pinta distinto a propósito.
+        # Nunca vendido es distinto de "dejó de venderse": no es que se
+        # enfriara, es que la compra no tenía mercado. Se pinta distinto.
+        #
+        # El diagnóstico DESCRIBE, no receta (Eduardo, 7-ago): qué hacer con un
+        # inmovilizado —sacarlo de FULL, liquidarlo, dejar de comprarlo— depende
+        # de temporada, contrato y planes que el reporte no conoce. Aquí solo va
+        # el hecho. En Invisible sí se sugiere, porque ahí la acción es una sola
+        # y no admite matices: la publicación está apagada teniendo stock.
         if not f.get("ultima_venta"):
             aviso = ("NUNCA HA VENDIDO — no dejó de venderse: jamás vendió una "
-                     "pieza, y aun así ocupa FULL. Sacarlo deja de pagar renta")
+                     "pieza, y aun así ocupa lugar en FULL")
             ws.cell(r, 10).fill = _GRAVE_FILL
         else:
             aviso = (f"SIN VENTA EN {dias} DÍAS — lleva {int(dias_sin):,} días "
-                     f"desde su última venta; evalúa retirarlo de FULL")
+                     f"desde su última venta y sigue ocupando FULL")
             ws.cell(r, 10).fill = _AVISO_FILL
         ws.cell(r, 12, aviso).font = _f(size=9)
 

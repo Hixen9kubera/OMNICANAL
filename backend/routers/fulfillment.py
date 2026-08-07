@@ -1569,7 +1569,14 @@ vh as (
    group by 1),
 s as (
   select l.sku::text as sku,
-         max(coalesce(l.stock_own, 0))::int                    as propio,
+         -- WOOCOMMERCE NO ES UN CANAL (Eduardo, 7-ago): es nuestro puente de
+         -- registro, y ahí vive el almacén propio. Por eso su fila SÍ cuenta
+         -- para el stock —es la fuente buena: en 47 de los 97 SKUs de
+         -- Invisible el valor cambia si se le excluye— pero NO cuenta como
+         -- tienda ni como publicación.
+         coalesce(max(coalesce(l.stock_own, 0))
+                    filter (where l.canal = 'general'),
+                  max(coalesce(l.stock_own, 0)))::int          as propio,
          -- FULL es un concepto de MERCADO LIBRE. Sin este filtro la columna
          -- "En FULL" no cuadraba con la suma de Bekura + Sancor (272 contra
          -- 200 en JUGU-0261-LIL): se colaba `stock_full` de publicaciones de
@@ -1581,10 +1588,20 @@ s as (
          sum(coalesce(l.stock_full, 0))
            filter (where a.legacy_code = 'SANCORFASHION')::int as full_sc,
          sum(coalesce(l.stock_fba, 0))::int                    as fba,
-         count(*) filter (where lower(coalesce(l.situacion,'')) = 'active')::int as activas,
-         count(*) filter (where lower(coalesce(l.situacion,'')) = 'paused')::int as pausadas,
-         count(*)::int                                         as pubs,
-         array_agg(distinct a.legacy_code order by a.legacy_code) as cuentas
+         -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
+         -- 'buyable'/'published'. Contar solo 'active' marcaba como invisibles
+         -- 3 SKUs que sí estaban a la venta en Amazon.
+         count(*) filter (
+           where (l.canal = 'mercado_libre'
+                  and lower(coalesce(l.situacion,'')) = 'active')
+              or (l.canal = 'amazon'
+                  and lower(coalesce(l.situacion,'')) in ('buyable', 'published'))
+         )::int                                                as activas,
+         count(*) filter (where l.canal = 'mercado_libre'
+                            and lower(coalesce(l.situacion,'')) = 'paused')::int as pausadas,
+         count(*) filter (where l.canal <> 'general')::int      as pubs,
+         array_agg(distinct a.legacy_code order by a.legacy_code)
+           filter (where l.canal <> 'general')                  as cuentas
     from channel.listings l
     join core.accounts a on a.id = l.account_id
    where lower(coalesce(l.situacion, '')) <> 'closed'

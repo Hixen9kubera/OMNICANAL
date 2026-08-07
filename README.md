@@ -5071,3 +5071,43 @@ escrito dentro, porque el Excel se comparte fuera del panel.
 Verificado en el navegador contra el sandbox: los dos bloques lado a lado, misma
 altura, 1,180 px, sin desbordes ni scroll horizontal. Sin migraciones y sin
 variables nuevas. Versión 0.79.0.
+
+### v0.80.0 — WooCommerce no es un canal, y "publicación viva" se dice distinto en cada marketplace
+
+Dos correcciones al reporte de inventario, pedidas por Eduardo (7-ago):
+WooCommerce es **nuestro puente de registro**, no un canal de venta; y el
+diagnóstico de Inmovilizado debe **describir, no recetar**.
+
+**Woo deja de ser una tienda, pero sigue siendo el almacén.** Su fila ya no
+aparece en la columna "Cuentas" ni cuenta como publicación. Lo que SÍ conserva
+es el stock propio, y no por comodidad: **en 47 de los 97 SKUs de Invisible el
+valor cambia si se le excluye**, porque el `stock_own` de las publicaciones de
+marketplace es un espejo que puede venir viejo. Ahora se toma el de Woo y solo
+se cae al espejo si no existe.
+
+**"Viva" no significa lo mismo en cada canal.** El criterio contaba solo
+`situacion = 'active'`, que es vocabulario de Mercado Libre; **Amazon usa
+`buyable` / `published`**. Se descubrió revisando los estados por canal, no
+buscándolo.
+
+Efecto medido en la hoja Invisible, **97 → 85 SKUs**:
+
+| Salieron | Por qué |
+|---|---|
+| 3 | Sí estaban a la venta en Amazon — nunca fueron invisibles |
+| 9 | Su stock propio era **fantasma**: la publicación de ML espejeaba un valor viejo y Woo dice 0 |
+
+Los 9 del stock fantasma son el hallazgo colateral: la hoja los ofrecía como
+"reactivables" cuando no había nada con qué surtir.
+
+**El diagnóstico de Inmovilizado ya no receta.** Antes decía "Sacarlo deja de
+pagar renta" y "evalúa retirarlo de FULL". Qué hacer con un inmovilizado
+—retirarlo, liquidarlo, dejar de comprarlo— depende de temporada, contrato y
+planes que el reporte no conoce; ahora solo declara el hecho ("jamás vendió una
+pieza, y aun así ocupa lugar en FULL"). **Invisible sí conserva la sugerencia**,
+a petición de Eduardo, porque ahí la acción es una sola y no admite matices: hay
+stock y la publicación está apagada.
+
+Verificado tras el cambio: las cuentas que aparecen son solo Bekura, Sancor y
+Amazon; "En FULL" sigue cuadrando con Bekura + Sancor en las 293 filas. Sin
+migraciones y sin variables nuevas. Versión 0.80.0.
