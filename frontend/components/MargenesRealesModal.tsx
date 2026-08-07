@@ -35,6 +35,7 @@ interface Fila {
   costo_final: number | null; ganancia_unit: number | null;
   margen_pct: number | null; ganancia_total: number | null;
   estado: string | null;   // 'activa' | 'pausada' | 'otra'
+  visitas: number | null; visitas_dias: number | null; cr_pct: number | null;
 }
 interface Respuesta {
   dias: number; pendientes: number; consultadas: number; nota: string;
@@ -154,6 +155,42 @@ function Envio({ f }: { f: Fila }) {
 
 type FilaConCuenta = Fila & { cuenta?: string };
 
+/* VISITAS y CONVERSIÓN. Es el par que explica por qué un producto vende poco:
+   sin visitas el problema es de visibilidad (precio, posición, publicidad); con
+   muchas visitas y poca conversión el problema está en la ficha o el precio.
+   Caso real: MUE-0226-DOR convierte 47.8% con 274 visitas — no es mal producto,
+   es invisible; CUNA-0011-GRI recibe 4,188 visitas y convierte 2.2%.
+
+   El color va sobre la CONVERSIÓN, no sobre las visitas: mucho tráfico no es
+   un logro si no se traduce en venta. 5% es la referencia sana en ML. */
+function Visitas({ f }: { f: Fila }) {
+  if (f.visitas == null) {
+    return (
+      <span className="text-[11px] text-slate-300"
+            title="Sin medición de visitas todavía — se consulta a Mercado Libre y se guarda por unas horas">
+        — · —
+      </span>
+    );
+  }
+  const parcial = f.visitas_dias != null && f.visitas_dias < 28;
+  return (
+    <div title={`${fNum(f.visitas)} visitas a la publicación en Mercado Libre`
+                + (f.visitas_dias ? `\nVentana devuelta por ML: ${f.visitas_dias} días` : "")
+                + (parcial ? " (menos que el período pedido — ML no siempre entrega la ventana completa)" : "")
+                + (f.cr_pct != null ? `\nConversión: ${fNum(f.cr_pct, 1)}% (${fNum(f.uds)} uds ÷ ${fNum(f.visitas)} visitas)` : "")
+                + "\nNo incluye Amazon."}>
+      <div className="tabular-nums text-slate-700">
+        {fNum(f.visitas)}{parcial && <span className="text-amber-500">*</span>}
+      </div>
+      <div className={`text-[10px] font-semibold tabular-nums ${
+          f.cr_pct == null ? "text-slate-300"
+          : f.cr_pct >= 5 ? "text-emerald-600" : "text-amber-600"}`}>
+        {f.cr_pct == null ? "—" : `${fNum(f.cr_pct, 1)}%`}
+      </div>
+    </div>
+  );
+}
+
 function TablaCuenta({ titulo, sub, filas }: {
   titulo: string; sub: string; filas: FilaConCuenta[];
 }) {
@@ -171,7 +208,7 @@ function TablaCuenta({ titulo, sub, filas }: {
               <th className="px-3 py-2 text-left">#</th>
               <th className="px-3 py-2 text-left">Producto</th>
               <th className="px-3 py-2 text-right"
-                  title="Visitas de la publicación y conversión — pendiente de conectar la fuente">
+                  title="Visitas a la publicación en Mercado Libre y conversión (unidades ÷ visitas) del mismo período. No incluye Amazon.">
                 Visitas · CR%
               </th>
               <th className="px-3 py-2 text-right">Uds</th>
@@ -210,10 +247,7 @@ function TablaCuenta({ titulo, sub, filas }: {
                   </div>
                   <div className="truncate text-[11px] text-slate-400">{f.titulo ?? ""}</div>
                 </td>
-                {/* De adorno a propósito: el lugar queda apartado para cuando
-                    se conecte la fuente de visitas. */}
-                <td className="px-3 py-2 text-right tabular-nums text-slate-300"
-                    title="Pendiente de conectar la fuente de visitas">— · —</td>
+                <td className="px-3 py-2 text-right"><Visitas f={f} /></td>
                 <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{fNum(f.uds)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-600">{fMoney(f.ingreso)}</td>
                 <td className="px-3 py-2 text-right"><Precio f={f} /></td>
@@ -419,9 +453,11 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
         </div>
         {data && (
           <p className="mt-3 text-[11px] text-slate-400">
-            * cobertura parcial: el envío promedio sale de las piezas ya
-            consultadas. En carritos con varios productos el cobro del embarque
-            se prorratea por unidad.
+            * en <b>Envío</b>: cobertura parcial — el promedio sale de las piezas
+            ya consultadas; en carritos con varios productos el cobro del
+            embarque se prorratea por unidad. * en <b>Visitas</b>: ML devolvió
+            menos días que el período pedido. Las visitas y la conversión son
+            solo de Mercado Libre.
           </p>
         )}
       </div>

@@ -754,7 +754,11 @@ with est as (
               else 'otra' end                                 as estado,
          min(l.price) filter (where l.situacion = 'active')   as precio_activo,
          min(l.price)                                         as precio_cualquiera,
-         max(l.price_base)                                    as precio_lista
+         max(l.price_base)                                    as precio_lista,
+         -- Los item_id sirven para pedir las VISITAS: ML las da por
+         -- publicación, no por SKU (services/visitas_ml.py).
+         array_agg(distinct l.listing_id)
+           filter (where l.listing_id is not null)            as listing_ids
     from channel.listings l
     join core.accounts a on a.id = l.account_id
    where l.canal = 'mercado_libre'
@@ -779,6 +783,7 @@ top as (
   -- El filtro de estado va ANTES de numerar: pedir "activas" debe dar el top 10
   -- DE LAS ACTIVAS, no las que sobrevivan de un top 10 mixto.
   select l.*, e.estado, e.precio_activo, e.precio_cualquiera, e.precio_lista,
+         e.listing_ids,
          row_number() over (partition by l.cuenta
                             order by l.uds desc, l.ingreso desc) as rn
     from lineas l
@@ -791,6 +796,7 @@ select t.cuenta, t.sku::text as sku, t.titulo, t.uds,
        coalesce(t.estado, 'otra')                  as estado,
        coalesce(t.precio_activo, t.precio_cualquiera) as precio_pub,
        t.precio_lista,
+       t.listing_ids,
        coalesce(cv.costo_total, cf.costo_unitario) as costo_base,
        cf.costo_fee_envio                          as envio_estimado
   from top t
@@ -872,6 +878,21 @@ async def margenes_reales(
         except Exception as exc:  # noqa: BLE001
             log.warning("envío real no disponible: %s", exc)
 
+    # VISITAS de cada publicación (ML las da por item, no por SKU) para poder
+    # sacar la conversión: unidades vendidas ÷ visitas, ambas del MISMO período.
+    # Solo Mercado Libre — Amazon no tiene equivalente por esta vía.
+    pares_pub = sorted({(f["cuenta"], str(i))
+                        for f in top for i in (f["listing_ids"] or [])})
+    visitas: dict[str, dict[str, Any]] = {}
+    if getattr(settings, "mysql_enabled", True) and pares_pub:
+        from services import visitas_ml
+        try:
+            if presupuesto:
+                await visitas_ml.completar(pares_pub, dias)
+            visitas = visitas_ml.leer([i for _, i in pares_pub], dias)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("visitas no disponibles: %s", exc)
+
     uds_orden = {(o["cuenta"], str(o["external_order_id"])): int(o["uds_orden"] or 0)
                  for o in ordenes}
     envio_acum: dict[tuple[str, str], float] = {}
@@ -915,6 +936,19 @@ async def margenes_reales(
             "precio_pub": None if f["precio_pub"] is None else float(f["precio_pub"]),
             "precio_lista": None if f["precio_lista"] is None else float(f["precio_lista"]),
         }
+        # Visitas: se suman las publicaciones del SKU en ESA cuenta. `dias_datos`
+        # es cuántos días trajo ML de verdad — la ventana no siempre viene
+        # completa, y presumir 30 días falsearía la conversión.
+        vis = [visitas.get(str(i)) for i in (f["listing_ids"] or [])]
+        vis = [v for v in vis if v and v.get("visitas") is not None]
+        if vis:
+            total_vis = sum(int(v["visitas"]) for v in vis)
+            fila["visitas"] = total_vis
+            fila["visitas_dias"] = max((int(v["dias_datos"] or 0) for v in vis),
+                                       default=None) or None
+            fila["cr_pct"] = round(uds / total_vis * 100, 1) if total_vis else None
+        else:
+            fila["visitas"] = fila["visitas_dias"] = fila["cr_pct"] = None
         if precio and costo is not None and com is not None and envio_u is not None:
             cfinal = round(costo + com + envio_u, 2)
             fila["costo_final"] = cfinal
