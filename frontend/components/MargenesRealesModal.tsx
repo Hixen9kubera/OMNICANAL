@@ -304,30 +304,49 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-200 ${visible ? "opacity-100" : "opacity-0"}`}
+      /* ANCLADO ARRIBA, no centrado: con `items-center`, cada vez que el
+         contenido se encogía (al recargar por un filtro) el modal se
+         recentraba y el encabezado —con los filtros— se movía 38 px hacia
+         abajo. Fijando el borde superior, los controles no se mueven nunca. */
+      className={`fixed inset-0 z-50 flex items-start justify-center px-4 pb-4 pt-[5vh] transition-opacity duration-200 ${visible ? "opacity-100" : "opacity-0"}`}
       onClick={cerrar}
     >
       <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" />
       <div
         onClick={(e) => e.stopPropagation()}
+        /* scrollbarGutter reserva el carril de la barra SIEMPRE: sin esto, al
+           pasar de "cargando" (contenido corto, sin barra) a la tabla completa
+           (con barra) todo se recorría ~15 px de golpe. */
+        style={{ scrollbarGutter: "stable" }}
         className={`relative max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl transition-all duration-200 ${visible ? "translate-y-0 scale-100 opacity-100" : "translate-y-3 scale-95 opacity-0"}`}
       >
-        {/* Encabezado: título + filtros de cuenta y período */}
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <BadgePercent size={18} className="text-indigo-600" />
-            <span className="text-sm font-bold text-slate-800">Productos más vendidos</span>
-            <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-600">
-              cobros reales de Meli
-            </span>
-            {data && data.pendientes > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-600">
-                <RefreshCw size={11} className="animate-spin" />
-                consultando envíos — faltan {fNum(data.pendientes)} piezas
+        {/* Encabezado en DOS renglones fijos. Antes era uno solo con
+            `justify-between`: al aparecer el aviso de "consultando envíos" el
+            bloque izquierdo crecía, la fila se partía y los filtros —que viven
+            a la derecha— caían a un segundo renglón pegados a la IZQUIERDA.
+            Cambiaban de lugar justo cuando el usuario los estaba usando. Con
+            renglón propio, los filtros no se mueven pase lo que pase arriba. */}
+        <div className="mb-3 space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <BadgePercent size={18} className="shrink-0 text-indigo-600" />
+              <span className="text-sm font-bold text-slate-800">Productos más vendidos</span>
+              <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold text-indigo-600">
+                cobros reales de Meli
               </span>
-            )}
+              {data && data.pendientes > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-600">
+                  <RefreshCw size={11} className="animate-spin" />
+                  consultando envíos — faltan {fNum(data.pendientes)} piezas
+                </span>
+              )}
+            </div>
+            <button onClick={cerrar} aria-label="Cerrar"
+                    className="shrink-0 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700">
+              <X size={18} />
+            </button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex overflow-hidden rounded-lg border border-slate-200 text-xs font-semibold">
               {FILTRO_CUENTAS.map((c) => (
                 <button key={c.id} onClick={() => setCuenta(c.id)}
@@ -354,10 +373,6 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
                 </button>
               ))}
             </div>
-            <button onClick={cerrar} aria-label="Cerrar"
-                    className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700">
-              <X size={18} />
-            </button>
           </div>
         </div>
 
@@ -372,12 +387,15 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
             No se pudo cargar: {error}
           </div>
         )}
-        {!data && !error && (
-          <div className="flex h-40 items-center justify-center text-sm text-slate-400">
-            Cargando márgenes…
-          </div>
-        )}
-        <div className="space-y-4">
+        {/* min-h: al cambiar de filtro la tabla desaparece un instante; sin
+            una altura mínima el modal se encogía y, al estar centrado, saltaba
+            hacia arriba para volver a bajar. Con esto se queda quieto. */}
+        <div className="min-h-[420px] space-y-4">
+          {!data && !error && (
+            <div className="flex h-40 items-center justify-center text-sm text-slate-400">
+              Cargando márgenes…
+            </div>
+          )}
           {cuenta === "TODAS" ? (
             data && (
               <TablaCuenta titulo="General"
