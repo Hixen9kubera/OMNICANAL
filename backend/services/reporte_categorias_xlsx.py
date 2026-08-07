@@ -52,6 +52,9 @@ from openpyxl.utils import get_column_letter
 
 TIENDA = {"BEKURA": "Bekura", "SANCORFASHION": "Sancor", "AMAZON": "Amazon"}
 _CAB_FILL = PatternFill("solid", fgColor="1F3864")
+# Ámbar para la celda que falta o no es de fiar. Acompaña al texto de la
+# columna Diagnóstico; nunca lo sustituye (el color no sobrevive a un CSV).
+_AVISO_FILL = PatternFill("solid", fgColor="FFF2CC")
 _NIVEL_FILL = ["BDD7EE", "DDEBF7", "F2F7FC", "FAFCFE"]
 _MONEY, _INT, _PCT = "$#,##0", "#,##0", "0.0%"
 
@@ -77,6 +80,104 @@ def _costo_final(f: dict) -> float | None:
         return None
     return (float(f["costo_base"]) + float(f.get("comision") or 0)
             + float(f.get("envio") or 0))
+
+
+# ── DIAGNÓSTICO ──────────────────────────────────────────────────────────────
+#
+# Una celda vacía dice "no sé" sin decir QUÉ no sé, y un $0 miente peor: no
+# distingue "el envío costó cero" de "no tenemos el dato". Esta columna nombra
+# el problema de cada renglón y dice dónde se arregla.
+#
+# Va como TEXTO y no solo como color, porque el color no sobrevive a un copiar
+# y pegar ni a una exportación a CSV, y este archivo se comparte fuera del
+# panel. El relleno ámbar es la comodidad; el texto es el dato.
+#
+# Umbrales calibrados el 7-ago contra los 689 SKUs con venta en 60 días:
+#   sin fila de costo .......  96 (13.9%)   ← los renglones vacíos
+#   sin costo_fee_envio ..... 239 (34.7%)   ← lo que se pintaba como $0
+#   costo placeholder ....... 202 (29.3%)
+#   cajas = 0 ............... 151 (21.9%)
+#   peso de caja ............  32 ( 4.6%)
+#   piezas_por_caja < 1 .....   7 ( 1.0%)
+
+# El peso de `costos_validados` está en KILOGRAMOS: verificado el 7-ago contra
+# la báscula de ML (`ml_ficha.peso_g`, solo PACKAGE_WEIGHT) sobre 344
+# publicaciones comparables — la mediana de peso×1000/peso_ML es 1.000.
+# Arriba de esta densidad el "peso de la pieza" es en realidad el de la caja.
+_DENSIDAD_MAX = 1.5          # kg/L
+
+# Al capturar, ~30%% del catálogo trae el PRECIO en dólares multiplicado por un
+# tipo de cambio redondo en vez de un costo medido. `fx_rate_used` está NULL en
+# las 15,395 filas, así que el múltiplo exacto es la única huella que queda.
+_TC_PLACEHOLDER = 19
+
+
+def _num(v: Any) -> float | None:
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def diagnosticar(f: dict, ingreso: float | None = None,
+                 costo_base: float | None = None) -> str:
+    """Por qué esta fila está incompleta o no es de fiar. "" si está sana.
+
+    Devuelve el problema MÁS GRAVE en claro, y si hay más los lista al final
+    entre paréntesis: así se puede filtrar por el prefijo sin perder el resto.
+    """
+    graves: list[str] = []
+    otros: list[str] = []
+
+    tiene_fila = bool(f.get("tiene_validado") or f.get("tiene_final"))
+    if costo_base is None:
+        graves.append(
+            "SIN COSTO — el SKU no está capturado en costing"
+            + ("" if tiene_fila else " (no existe ni en costos_validados ni en "
+                                    "costos_finales)")
+            + "; sin eso no hay costo base ni costo final")
+
+    ing, cb = _num(ingreso), _num(costo_base)
+    if ing and cb and cb > ing:
+        graves.append(f"COSTO MAYOR QUE LA VENTA — costo base ${cb:,.0f} contra "
+                      f"un ingreso de ${ing:,.0f}")
+
+    pzas = _num(f.get("piezas_por_caja"))
+    if pzas is not None and 0 < pzas < 1:
+        graves.append(f"FLETE MULTIPLICADO ×{1 / pzas:,.0f} — piezas_por_caja = "
+                      f"{pzas:g}: al ser menor que 1, el flete de la caja se "
+                      f"multiplica en vez de repartirse entre las piezas")
+
+    peso, largo = _num(f.get("peso")), _num(f.get("largo"))
+    alto, ancho = _num(f.get("alto")), _num(f.get("ancho"))
+    if peso and largo and alto and ancho and largo > 0 and alto > 0 and ancho > 0:
+        litros = largo * alto * ancho / 1000.0     # cm³ → L
+        if litros > 0 and peso / litros > _DENSIDAD_MAX:
+            graves.append(f"PESO DE CAJA — {peso / litros:,.1f} kg/L: el peso "
+                          f"capturado ({peso:g} kg) parece el de la caja master, "
+                          f"no el de una pieza; infla el costo de envío")
+
+    cp = _num(f.get("costo_producto"))
+    if cp and cp > 0 and round(cp * 100) % (_TC_PLACEHOLDER * 100) == 0:
+        otros.append(f"COSTO PLACEHOLDER — costo_producto ${cp:,.0f} es múltiplo "
+                     f"exacto de {_TC_PLACEHOLDER} (precio en USD por un tipo de "
+                     f"cambio redondo), no un costo medido")
+
+    if _num(f.get("cajas")) == 0:
+        otros.append("CAJAS EN CERO — con cajas = 0 el costo por pieza no se "
+                     "puede derivar del contenedor")
+
+    if f.get("fee_envio_unit") is None:
+        otros.append("SIN DATO DE ENVÍO — costos_finales no tiene "
+                     "costo_fee_envio para este SKU; la celda va vacía, no en $0")
+
+    todos = graves + otros
+    if not todos:
+        return ""
+    if len(todos) == 1:
+        return todos[0]
+    extra = " · ".join(t.split(" — ")[0] for t in todos[1:])
+    return f"{todos[0]}  (además: {extra})"
 
 
 def _arbol(hojas: list[dict]) -> tuple[dict[str, _Nodo], dict[str, dict]]:
@@ -135,7 +236,7 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     ws = wb.create_sheet("Categorias")
     cabs = ["Categoría / SKU", "Tienda", "Título", "MLM ID", "Situación",
             "Ventas Uds", "Ventas $", "Costo base", "Comisión ML", "Envío est.",
-            "Costo final", "Precio", "1ª venta", "Últ. venta"]
+            "Costo final", "Precio", "1ª venta", "Últ. venta", "Diagnóstico"]
     _N = len(cabs)
     for c, t in enumerate(cabs, 1):
         cel = ws.cell(1, c, t)
@@ -200,6 +301,12 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
                 ws.cell(fila, 12).number_format = _MONEY
             ws.cell(fila, 13, p.get("primera_venta") or "").font = _f()
             ws.cell(fila, 14, p.get("ultima_venta") or "").font = _f()
+            aviso = diagnosticar(p, p.get("venta"), p.get("costo_base"))
+            if aviso:
+                ws.cell(fila, 15, aviso).font = _f(size=9)
+                for c in (8, 9, 10, 11):
+                    if ws.cell(fila, c).value is None:
+                        ws.cell(fila, c).fill = _AVISO_FILL
             # las publicaciones cuelgan un nivel bajo su categoría
             _outline(fila, depth + 1, depth + 1 > _VISIBLE_HASTA)
             fila += 1
@@ -224,7 +331,7 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     for r in orden_raiz:
         pinta(raices[r], r, 0)
     for c, w in {1: 42, 2: 9, 3: 52, 4: 15, 5: 10, 6: 10, 7: 12, 8: 12,
-                 9: 12, 10: 11, 11: 12, 12: 10, 13: 11, 14: 11}.items():
+                 9: 12, 10: 11, 11: 12, 12: 10, 13: 11, 14: 11, 15: 80}.items():
         ws.column_dimensions[get_column_letter(c)].width = w
     ult = fila - 1
 
@@ -301,7 +408,7 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     vs = wb.create_sheet("Ventas")
     cabs_v = ["Fecha", "Canal", "Cuenta", "Pedido", "SKU", "Título", "Cant.",
               "Precio unit.", "Ingreso", "Comisión ML", "Envío est.",
-              "Costo base", "Costo final", "FULL", "Estado"]
+              "Costo base", "Costo final", "FULL", "Estado", "Diagnóstico"]
     for c, t in enumerate(cabs_v, 1):
         cel = vs.cell(1, c, t)
         cel.font = _f(bold=True, color="FFFFFF")
@@ -322,18 +429,29 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
         vs.cell(r, 8, float(v.get("precio_unitario") or 0)).font = _f()
         vs.cell(r, 9, ingreso).font = _f()
         vs.cell(r, 10, float(v.get("comision_ml") or 0)).font = _f()
-        vs.cell(r, 11, float(v.get("envio_estimado") or 0)).font = _f()
+        # El envío va VACÍO cuando no hay dato. Antes iba `or 0`, y eso volvía
+        # indistinguible "el envío costó cero" de "no lo sabemos": 239 de los
+        # 689 SKUs vendidos no tienen costo_fee_envio, y el archivo los pintaba
+        # como envío gratis. La columna Diagnóstico dice cuál de las dos es.
+        if v.get("envio_estimado") is not None:
+            vs.cell(r, 11, float(v["envio_estimado"])).font = _f()
         if v.get("costo_base") is not None:
             vs.cell(r, 12, float(v["costo_base"])).font = _f()
         if cfin is not None:
             vs.cell(r, 13, float(cfin)).font = _f()
         vs.cell(r, 14, "sí" if v.get("full") else "no").font = _f()
         vs.cell(r, 15, v.get("estado") or "").font = _f()
+        aviso = diagnosticar(v, ingreso, v.get("costo_base"))
+        if aviso:
+            vs.cell(r, 16, aviso).font = _f(size=9)
+            for c in (11, 12, 13):
+                if vs.cell(r, c).value is None:
+                    vs.cell(r, c).fill = _AVISO_FILL
         for c, fmt in ((7, _INT), (8, _MONEY), (9, _MONEY), (10, _MONEY),
                        (11, _MONEY), (12, _MONEY), (13, _MONEY)):
             vs.cell(r, c).number_format = fmt
     for c, w in {1: 11, 2: 14, 3: 9, 4: 16, 5: 18, 6: 52, 7: 7, 8: 12, 9: 12,
-                 10: 12, 11: 11, 12: 12, 13: 12, 14: 6, 15: 12}.items():
+                 10: 12, 11: 11, 12: 12, 13: 12, 14: 6, 15: 12, 16: 80}.items():
         vs.column_dimensions[get_column_letter(c)].width = w
 
     _ = ult  # (referencia futura: filas totales de la hoja Categorias)

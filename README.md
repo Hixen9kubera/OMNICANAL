@@ -4757,3 +4757,50 @@ variables nuevas en Railway. Versión 0.72.0.
 de leyenda que cuente cuántas filas trae cada motivo—. Bloqueado a propósito
 hasta saber DÓNDE se captura cada dato faltante, para que el mensaje diga
 "captúralo en tal pantalla" y no solo "falta el costo".
+
+### v0.73.0 — Columna Diagnóstico: cada hueco del reporte dice por qué está vacío
+
+Petición de Eduardo (7-ago), sobre la v0.72.0: "para los que tienen campos
+vacíos, una columna describiendo el tipo de problema". Las hojas `Ventas` y
+`Categorias` ganan una última columna **Diagnóstico** que nombra el problema
+del renglón y dice dónde se arregla.
+
+**El hallazgo que salió al construirla: el reporte fabricaba ceros.** La
+columna "Envío est." se pintaba con `float(... or 0)`, así que un SKU sin
+`costo_fee_envio` salía como **envío $0** — indistinguible de un envío
+gratis real. Medido sobre 60 días: **3,076 renglones con envío en $0, de los
+cuales CERO eran envío gratis**. Los 3,076 eran falta de dato. Ahora la celda
+va vacía, en ámbar, y el diagnóstico dice cuál de las dos es.
+
+**Las seis reglas**, calibradas contra los 689 SKUs con venta en 60 días:
+
+| Diagnóstico | Regla | Renglones (de 9,844) |
+|---|---|---|
+| COSTO MAYOR QUE LA VENTA | `costo_base > ingreso` | 2,161 (22.0%) |
+| COSTO PLACEHOLDER | `costo_producto` múltiplo exacto de 19 | 1,974 (20.1%) |
+| SIN DATO DE ENVÍO | `costo_fee_envio IS NULL` | 1,188 (12.1%) |
+| SIN COSTO | sin fila en `costos_validados` ni `costos_finales` | 924 (9.4%) |
+| PESO DE CAJA | densidad > 1.5 kg/L | 824 (8.4%) |
+| CAJAS EN CERO | `cajas = 0` | 230 (2.3%) |
+| FLETE MULTIPLICADO ×N | `piezas_por_caja < 1` | 1 |
+
+74.2% de los renglones traen diagnóstico. Cada fila muestra el problema MÁS
+GRAVE en claro y lista los demás entre paréntesis, así que se puede filtrar
+por el prefijo sin perder el resto.
+
+**La unidad de `costos_validados.peso` quedó verificada**, no supuesta: son
+KILOGRAMOS. Comparada contra la báscula de ML (`ml_ficha.peso_g`, solo
+`PACKAGE_WEIGHT`) sobre 344 publicaciones, la mediana de `peso×1000 / peso_ML`
+es 1.000. Sin esa comprobación el umbral de densidad habría sido un adivine, y
+una bandera equivocada es peor que ninguna bandera.
+
+**Va como TEXTO, no solo como color.** El relleno ámbar marca la celda que
+falta, pero el diagnóstico vive en una columna de texto porque el color no
+sobrevive a un copiar-y-pegar ni a una exportación a CSV, y este archivo se
+comparte fuera del panel.
+
+Insumos nuevos en `_SQL_MARGEN_LINEAS` y `_SQL_CAT_PUBS` (`fee_envio_unit`,
+`tiene_validado`, `tiene_final`, `piezas_por_caja`, `cajas`, `costo_producto`,
+`peso`, `largo`, `alto`, `ancho`): se leen para diagnosticar, no se pintan.
+Nada de esto ESCRIBE en costing — solo lo lee. Sin migraciones y sin variables
+nuevas. Versión 0.73.0.

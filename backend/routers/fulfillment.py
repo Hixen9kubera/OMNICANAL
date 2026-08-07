@@ -659,7 +659,18 @@ select (o.creado_at at time zone 'America/Mexico_City')::date::text as fecha,
                        + coalesce(cf.costo_fee_envio, 0) * i.cantidad, 2)
             end                                          as costo_final,
        i.es_fulfillment                                  as full,
-       coalesce(o.estado_canal, '')                      as estado
+       coalesce(o.estado_canal, '')                      as estado,
+       -- Insumos del DIAGNÓSTICO (columna del Excel). No se pintan: alimentan
+       -- reporte_categorias_xlsx.diagnosticar(), que explica POR QUÉ una celda
+       -- va vacía o por qué el costo no es de fiar. Se distingue a propósito
+       -- `cf.costo_fee_envio` crudo de su versión multiplicada: NULL ("no hay
+       -- dato") y 0 ("el envío costó cero") son cosas distintas, y el reporte
+       -- las estaba pintando iguales.
+       cf.costo_fee_envio                                as fee_envio_unit,
+       (cv.sku is not null)                              as tiene_validado,
+       (cf.sku is not null)                              as tiene_final,
+       cv.piezas_por_caja, cv.cajas, cv.costo_producto,
+       cv.peso, cv.largo, cv.alto, cv.ancho
   from channel.order_items i
   join channel.orders o using (canal, cuenta, external_order_id)
   left join costing.costos_validados cv on cv.sku = i.sku
@@ -1298,7 +1309,17 @@ select pc.category_id::text            as category_id,
        max(l.fecha)::text              as ultima_venta,
        max(ls.situacion)               as situacion,
        max(ls.price)                   as precio,
-       coalesce(max(l.titulo), max(p.name)) as titulo
+       coalesce(max(l.titulo), max(p.name)) as titulo,
+       -- Insumos del DIAGNÓSTICO — mismos que _SQL_MARGEN_LINEAS. Van con max()
+       -- porque son atributos del SKU, iguales en todas las filas del grupo.
+       max(cf.costo_fee_envio)         as fee_envio_unit,
+       bool_or(cv.sku is not null)     as tiene_validado,
+       bool_or(cf.sku is not null)     as tiene_final,
+       max(cv.piezas_por_caja)         as piezas_por_caja,
+       max(cv.cajas)                   as cajas,
+       max(cv.costo_producto)          as costo_producto,
+       max(cv.peso) as peso, max(cv.largo) as largo,
+       max(cv.alto) as alto, max(cv.ancho) as ancho
   from lin l
   join pc on pc.sku = l.sku
          and (%(categoria_id)s::text is null or pc.category_id = %(categoria_id)s)
