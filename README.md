@@ -4804,3 +4804,50 @@ Insumos nuevos en `_SQL_MARGEN_LINEAS` y `_SQL_CAT_PUBS` (`fee_envio_unit`,
 `peso`, `largo`, `alto`, `ancho`): se leen para diagnosticar, no se pintan.
 Nada de esto ESCRIBE en costing — solo lo lee. Sin migraciones y sin variables
 nuevas. Versión 0.73.0.
+
+### v0.74.0 — El reporte usa el envío REAL de Mercado Libre, no el estimado
+
+Cierra el pendiente que quedó abierto desde la v0.68.0. La columna de envío ya
+no es el cálculo por peso/dimensiones de `costing.costos_finales`: es lo que ML
+**cobró de verdad** por cada embarque (`GET /shipments/{id}/costs`).
+
+**Cuánto mentía el estimado.** Sobre los mismos 60 días:
+
+| | Estimado (antes) | Real de ML (ahora) |
+|---|---|---|
+| Envío total | $1,118,123 | **$741,119** |
+| Como % del ingreso | 30.0% | **18.4%** |
+| Costo final / venta con costo | 154.3% | **142.4%** |
+
+El estimado inflaba el flete en **$377,004 en 60 días**. Caso concreto:
+`TEC-0049-NEG` (máscara de motocross) tenía envío estimado de **$152**; ML
+cobró **$35**. Es el mismo SKU que el diagnóstico marca como PESO DE CAJA
+(12.58 kg capturados, 4.6 kg/L) — la causa y su efecto, ahora visibles juntos.
+
+**El reparto.** ML cobra por EMBARQUE, no por pieza: una orden con tres
+artículos tiene un solo cobro. `envio_real.aplicar_a_lineas()` lo reparte entre
+las líneas de su orden en proporción a las UNIDADES (misma convención que el
+popup de Análisis). Repartir por importe le cargaría al artículo caro de un
+carrito mixto un flete que no le toca. El costo final se rearma con el envío ya
+resuelto, para que la columna y el total no digan cosas distintas.
+
+**Cobertura: 99.3%** (9,786 de 9,856 renglones). El caché `ml_envio_real` se
+llenó de 40.7% a **100% de los 9,804 pedidos de ML del período en 161 s**. Lo
+que falte en descargas futuras se consulta en segundo plano (presupuesto 400
+por descarga), así que la siguiente sale más completa sin que ésta espere.
+
+**Nueva columna "Origen envío"** (`ML real` / `estimado` / `sin dato`, y
+`mezclado` en el árbol cuando una publicación tiene de ambos). Una columna que
+mezcla fuentes en silencio es la misma trampa que el margen retirado en la
+v0.72.0; aquí la fuente viaja al lado del número, renglón por renglón, y el
+Resumen declara la cobertura en su nota de encabezado.
+
+Detalles que importan: un `costo_vendedor = 0` es una respuesta legítima de ML
+(el comprador pagó el envío) y se distingue de `NULL` comparando contra None,
+no por verdad/falsedad. Sin MySQL (staging solo-Supabase) el reporte no se cae:
+se queda con el estimado y lo dice. En `Categorias`, "Origen envío" y
+"Diagnóstico" van al FINAL para que el bloque numérico F..K siga contiguo y los
+`SUBTOTAL(9,…)` no tengan que saltarse una columna de texto — verificado tras
+el cambio.
+
+Sin migraciones y sin variables nuevas. Versión 0.74.0.

@@ -74,6 +74,85 @@ def leer(pares: list[tuple[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
     return res
 
 
+ORIGEN_REAL = "ML real"
+ORIGEN_ESTIMADO = "estimado"
+ORIGEN_SIN_DATO = "sin dato"
+
+
+def aplicar_a_lineas(lineas: list[dict[str, Any]]) -> dict[str, int]:
+    """
+    Sustituye el envío ESTIMADO por el cobro REAL de ML donde lo haya, y deja
+    dicho en cada línea de dónde salió el número (`envio_origen`).
+
+    EL REPARTO. ML cobra por EMBARQUE, no por pieza: una orden con tres
+    artículos tiene un solo cobro. Se reparte entre sus líneas en proporción a
+    las unidades, que es la misma convención del popup de Análisis. Repartir
+    por importe premiaría al artículo caro de un carrito mixto con un flete que
+    no le toca.
+
+    UN CERO REAL NO ES UN HUECO. `costo_vendedor = 0` es una respuesta legítima
+    de ML (el comprador pagó el envío); `NULL` es que no lo pudimos consultar.
+    Por eso se compara contra None y no por verdad/falsedad.
+
+    Devuelve el censo {reales, estimadas, sin_dato} para poder declarar la
+    cobertura en el archivo en vez de dejarla implícita.
+    """
+    censo = {"reales": 0, "estimadas": 0, "sin_dato": 0}
+    if not lineas:
+        return censo
+
+    ml = [f for f in lineas if (f.get("canal") or "") == "mercado_libre"
+          and f.get("pedido")]
+    cache: dict[tuple[str, str], dict[str, Any]] = {}
+    if ml:
+        pares = sorted({(str(f["cuenta"]), str(f["pedido"])) for f in ml})
+        try:
+            cache = leer(pares)
+        except Exception as exc:  # noqa: BLE001
+            # Sin MySQL (staging solo-Supabase) el reporte no se cae: se queda
+            # con el estimado y lo dice.
+            log.warning("envio_real: caché no disponible (%s); voy con estimado", exc)
+            cache = {}
+
+    uds_orden: dict[tuple[str, str], int] = {}
+    for f in ml:
+        clave = (str(f["cuenta"]), str(f["pedido"]))
+        uds_orden[clave] = uds_orden.get(clave, 0) + int(f.get("cantidad") or 0)
+
+    for f in lineas:
+        est = f.get("envio_estimado")
+        real = None
+        if (f.get("canal") or "") == "mercado_libre" and f.get("pedido"):
+            clave = (str(f["cuenta"]), str(f["pedido"]))
+            fila = cache.get(clave)
+            costo = fila.get("costo_vendedor") if fila else None
+            if costo is not None:
+                total = uds_orden.get(clave) or 0
+                cant = int(f.get("cantidad") or 0)
+                # Sin unidades no hay proporción que repartir; se cae al total
+                # del embarque antes que inventar una división por cero.
+                real = (round(float(costo) * cant / total, 2) if total > 0
+                        else round(float(costo), 2))
+
+        if real is not None:
+            f["envio"], f["envio_origen"] = real, ORIGEN_REAL
+            censo["reales"] += 1
+        elif est is not None:
+            f["envio"], f["envio_origen"] = float(est), ORIGEN_ESTIMADO
+            censo["estimadas"] += 1
+        else:
+            f["envio"], f["envio_origen"] = None, ORIGEN_SIN_DATO
+            censo["sin_dato"] += 1
+
+        # El costo final se rearma con el envío que acabamos de resolver: si no,
+        # la columna diría una cosa y el total otra.
+        if f.get("costo_base") is not None:
+            f["costo_final"] = round(float(f["costo_base"])
+                                     + float(f.get("comision_ml") or 0)
+                                     + float(f.get("envio") or 0), 2)
+    return censo
+
+
 async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int:
     """
     Consulta a ML las órdenes SIN costo en caché (o con NULL viejo de >24 h),

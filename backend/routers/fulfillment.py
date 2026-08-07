@@ -642,6 +642,7 @@ select h.canal,
 _SQL_MARGEN_LINEAS = _mx("""
 select (o.creado_at at time zone 'America/Mexico_City')::date::text as fecha,
        o.canal, o.cuenta, o.external_order_id as pedido,
+       i.item_id,                          -- para casar el envío real con la hoja Categorias
        i.sku::text as sku, i.titulo,
        i.cantidad::int as cantidad,
        i.precio_unitario,
@@ -1562,8 +1563,53 @@ async def categorias_excel(
         ventas = sdb.fetch_all(
             _SQL_MARGEN_LINEAS,
             {"desde": d1, "hasta": d2, "cuenta": cuenta, "canal": None})
+
+        # ENVÍO REAL. El estimado de costing mintió en las dos direcciones
+        # (Malla Sombra: fee $349 contra un cobro real de $88), así que donde
+        # ML nos diga cuánto cobró, manda ML. `aplicar_a_lineas` reparte el
+        # cobro del EMBARQUE entre las líneas de su orden y rearma el costo
+        # final; lo que no esté en caché se queda con el estimado, marcado.
+        from services import envio_real
+        censo = await asyncio.to_thread(envio_real.aplicar_a_lineas, ventas)
+        # El árbol agrega por publicación: se suma el envío ya resuelto de sus
+        # líneas en vez de volver a leer costos_finales, para que las dos hojas
+        # no se contradigan. Una publicación es "ML real" solo si TODAS sus
+        # líneas lo son — media medición no es una medición.
+        real_pub: dict[tuple[str, str], list[float]] = {}
+        origen_pub: dict[tuple[str, str], set[str]] = {}
+        for f in ventas:
+            if not f.get("item_id"):
+                continue
+            k = (str(f["item_id"]), str(f["cuenta"]))
+            real_pub.setdefault(k, []).append(float(f.get("envio") or 0))
+            origen_pub.setdefault(k, set()).add(f.get("envio_origen") or "")
+        for p in pubs:
+            k = (str(p.get("item_id")), str(p.get("cuenta")))
+            orgs = origen_pub.get(k)
+            if not orgs:
+                p["envio_origen"] = envio_real.ORIGEN_ESTIMADO
+                continue
+            p["envio"] = round(sum(real_pub.get(k) or []), 2)
+            p["envio_origen"] = (orgs.pop() if len(orgs) == 1 else "mezclado")
+            if p.get("costo_base") is not None:
+                p["costo_final_real"] = round(
+                    float(p["costo_base"]) + float(p.get("comision") or 0)
+                    + float(p["envio"]), 2)
+
+        # Lo que falte se consulta en segundo plano: la siguiente descarga sale
+        # más completa sin que ésta espere ~5,800 llamadas a ML.
+        pend = sorted({(str(f["cuenta"]), str(f["pedido"])) for f in ventas
+                       if (f.get("canal") or "") == "mercado_libre"
+                       and f.get("pedido")
+                       and f.get("envio_origen") != envio_real.ORIGEN_REAL})
+        if pend:
+            asyncio.create_task(envio_real.completar(pend, presupuesto=400))
+
+        log.info("excel: envío %d real / %d estimado / %d sin dato (%d por llenar)",
+                 censo["reales"], censo["estimadas"], censo["sin_dato"], len(pend))
         datos = await asyncio.to_thread(
-            reporte_categorias_xlsx.construir, hojas, pubs, ventas, d1, d2, cuenta)
+            reporte_categorias_xlsx.construir, hojas, pubs, ventas, d1, d2,
+            cuenta, censo)
         nombre = f"ventas_costos_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"
         return Response(
             content=datos,

@@ -167,9 +167,15 @@ def diagnosticar(f: dict, ingreso: float | None = None,
         otros.append("CAJAS EN CERO — con cajas = 0 el costo por pieza no se "
                      "puede derivar del contenedor")
 
-    if f.get("fee_envio_unit") is None:
-        otros.append("SIN DATO DE ENVÍO — costos_finales no tiene "
-                     "costo_fee_envio para este SKU; la celda va vacía, no en $0")
+    if f.get("envio_origen") == "sin dato":
+        otros.append("SIN DATO DE ENVÍO — ni ML nos dio el cobro del embarque "
+                     "ni costos_finales tiene costo_fee_envio; la celda va "
+                     "vacía, no en $0, y el costo final de este renglón queda "
+                     "INCOMPLETO (es un piso: le falta el envío)")
+    elif f.get("envio_origen") == "estimado":
+        otros.append("ENVÍO ESTIMADO — es el cálculo por peso/dimensiones de "
+                     "costing, no el cobro real de ML; el estimado ya se ha "
+                     "equivocado por 4× en ambas direcciones")
 
     todos = graves + otros
     if not todos:
@@ -220,7 +226,8 @@ def _arbol(hojas: list[dict]) -> tuple[dict[str, _Nodo], dict[str, dict]]:
 
 
 def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
-              desde: str, hasta: str, cuenta: str | None) -> bytes:
+              desde: str, hasta: str, cuenta: str | None,
+              censo_envio: dict[str, int] | None = None) -> bytes:
     """Arma el workbook y lo devuelve como bytes (para StreamingResponse)."""
     pubs_por_cat: dict[str, list[dict]] = defaultdict(list)
     for p in pubs:
@@ -234,9 +241,13 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
 
     # ── hoja Categorias ──────────────────────────────────────────────────────
     ws = wb.create_sheet("Categorias")
+    # "Origen envío" y "Diagnóstico" van AL FINAL a propósito: así el bloque
+    # numérico F..K queda contiguo y los SUBTOTAL(9,…) por nivel no tienen que
+    # saltarse una columna de texto.
     cabs = ["Categoría / SKU", "Tienda", "Título", "MLM ID", "Situación",
-            "Ventas Uds", "Ventas $", "Costo base", "Comisión ML", "Envío est.",
-            "Costo final", "Precio", "1ª venta", "Últ. venta", "Diagnóstico"]
+            "Ventas Uds", "Ventas $", "Costo base", "Comisión ML", "Envío",
+            "Costo final", "Precio", "1ª venta", "Últ. venta", "Origen envío",
+            "Diagnóstico"]
     _N = len(cabs)
     for c, t in enumerate(cabs, 1):
         cel = ws.cell(1, c, t)
@@ -288,11 +299,15 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
             ws.cell(fila, 7).number_format = _MONEY
             # Costos: en blanco cuando el producto no tiene costo capturado.
             # Sin Ganancia ni Margen %: ver el encabezado del módulo.
-            cf = _costo_final(p)
+            # `costo_final_real` lo arma el router con el envío ya resuelto
+            # (real de ML donde lo hay). Si no vino, se cae al de costing.
+            cf = p.get("costo_final_real")
+            cf = _costo_final(p) if cf is None else float(cf)
             if cf is not None:
                 ws.cell(fila, 8, float(p["costo_base"])).font = _f()
                 ws.cell(fila, 9, float(p.get("comision") or 0)).font = _f()
-                ws.cell(fila, 10, float(p.get("envio") or 0)).font = _f()
+                if p.get("envio") is not None:
+                    ws.cell(fila, 10, float(p["envio"])).font = _f()
                 ws.cell(fila, 11, round(cf, 2)).font = _f()
                 for c in (8, 9, 10, 11):
                     ws.cell(fila, c).number_format = _MONEY
@@ -301,9 +316,14 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
                 ws.cell(fila, 12).number_format = _MONEY
             ws.cell(fila, 13, p.get("primera_venta") or "").font = _f()
             ws.cell(fila, 14, p.get("ultima_venta") or "").font = _f()
+            org = p.get("envio_origen") or ""
+            cel_org = ws.cell(fila, 15, org)
+            cel_org.font = _f(size=9, bold=(org == "ML real"))
+            if org and org != "ML real":
+                cel_org.fill = _AVISO_FILL
             aviso = diagnosticar(p, p.get("venta"), p.get("costo_base"))
             if aviso:
-                ws.cell(fila, 15, aviso).font = _f(size=9)
+                ws.cell(fila, 16, aviso).font = _f(size=9)
                 for c in (8, 9, 10, 11):
                     if ws.cell(fila, c).value is None:
                         ws.cell(fila, c).fill = _AVISO_FILL
@@ -331,7 +351,8 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     for r in orden_raiz:
         pinta(raices[r], r, 0)
     for c, w in {1: 42, 2: 9, 3: 52, 4: 15, 5: 10, 6: 10, 7: 12, 8: 12,
-                 9: 12, 10: 11, 11: 12, 12: 10, 13: 11, 14: 11, 15: 80}.items():
+                 9: 12, 10: 11, 11: 12, 12: 10, 13: 11, 14: 11, 15: 12,
+                 16: 80}.items():
         ws.column_dimensions[get_column_letter(c)].width = w
     ult = fila - 1
 
@@ -344,9 +365,18 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     rs["B1"].font = _f(bold=True)
     rs["C1"] = f"Cuenta: {TIENDA.get(cuenta or '', cuenta) or 'todas'}"
     rs["C1"].font = _f(bold=True)
+    cob = ""
+    if censo_envio:
+        n = sum(censo_envio.values())
+        if n:
+            cob = (f" ENVÍO: {censo_envio['reales']:,} de {n:,} renglones "
+                   f"({censo_envio['reales'] / n * 100:.0f}%) traen el cobro "
+                   f"REAL que hizo ML por el embarque; el resto va con el "
+                   f"estimado de costing. La columna 'Origen envío' lo dice "
+                   f"renglón por renglón.")
     rs["D1"] = ("Todo el libro sale de los PEDIDOS del período. Costo base = "
                 "producto + flete de importación; costo final le suma la "
-                "comisión REAL de Mercado Libre y el envío estimado. Este "
+                "comisión REAL de Mercado Libre y el envío." + cob + " Este "
                 "reporte NO calcula ganancia ni margen: la base de costos tiene "
                 "defectos medidos (precios placeholder, pesos de caja como "
                 "pieza) que harían ver un margen como un hecho sin serlo. "
@@ -407,8 +437,9 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     # pensada para tabla dinámica y para auditar una cifra que no cuadre.
     vs = wb.create_sheet("Ventas")
     cabs_v = ["Fecha", "Canal", "Cuenta", "Pedido", "SKU", "Título", "Cant.",
-              "Precio unit.", "Ingreso", "Comisión ML", "Envío est.",
-              "Costo base", "Costo final", "FULL", "Estado", "Diagnóstico"]
+              "Precio unit.", "Ingreso", "Comisión ML", "Envío",
+              "Costo base", "Costo final", "FULL", "Estado", "Origen envío",
+              "Diagnóstico"]
     for c, t in enumerate(cabs_v, 1):
         cel = vs.cell(1, c, t)
         cel.font = _f(bold=True, color="FFFFFF")
@@ -429,21 +460,28 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
         vs.cell(r, 8, float(v.get("precio_unitario") or 0)).font = _f()
         vs.cell(r, 9, ingreso).font = _f()
         vs.cell(r, 10, float(v.get("comision_ml") or 0)).font = _f()
-        # El envío va VACÍO cuando no hay dato. Antes iba `or 0`, y eso volvía
-        # indistinguible "el envío costó cero" de "no lo sabemos": 239 de los
-        # 689 SKUs vendidos no tienen costo_fee_envio, y el archivo los pintaba
-        # como envío gratis. La columna Diagnóstico dice cuál de las dos es.
-        if v.get("envio_estimado") is not None:
-            vs.cell(r, 11, float(v["envio_estimado"])).font = _f()
+        # El envío es el COBRO REAL de ML cuando lo tenemos, y el estimado de
+        # costing si no; la columna "Origen envío" dice cuál de los dos, porque
+        # una columna que mezcla fuentes en silencio es la misma trampa que el
+        # margen que se retiró. Va VACÍO cuando no hay ninguno de los dos:
+        # antes iba `or 0` y eso volvía indistinguible "el envío costó cero"
+        # de "no lo sabemos".
+        if v.get("envio") is not None:
+            vs.cell(r, 11, float(v["envio"])).font = _f()
         if v.get("costo_base") is not None:
             vs.cell(r, 12, float(v["costo_base"])).font = _f()
         if cfin is not None:
             vs.cell(r, 13, float(cfin)).font = _f()
         vs.cell(r, 14, "sí" if v.get("full") else "no").font = _f()
         vs.cell(r, 15, v.get("estado") or "").font = _f()
+        org = v.get("envio_origen") or ""
+        cel_org = vs.cell(r, 16, org)
+        cel_org.font = _f(size=9, bold=(org == "ML real"))
+        if org != "ML real":
+            cel_org.fill = _AVISO_FILL
         aviso = diagnosticar(v, ingreso, v.get("costo_base"))
         if aviso:
-            vs.cell(r, 16, aviso).font = _f(size=9)
+            vs.cell(r, 17, aviso).font = _f(size=9)
             for c in (11, 12, 13):
                 if vs.cell(r, c).value is None:
                     vs.cell(r, c).fill = _AVISO_FILL
@@ -451,7 +489,8 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
                        (11, _MONEY), (12, _MONEY), (13, _MONEY)):
             vs.cell(r, c).number_format = fmt
     for c, w in {1: 11, 2: 14, 3: 9, 4: 16, 5: 18, 6: 52, 7: 7, 8: 12, 9: 12,
-                 10: 12, 11: 11, 12: 12, 13: 12, 14: 6, 15: 12, 16: 80}.items():
+                 10: 12, 11: 11, 12: 12, 13: 12, 14: 6, 15: 12, 16: 12,
+                 17: 80}.items():
         vs.column_dimensions[get_column_letter(c)].width = w
 
     _ = ult  # (referencia futura: filas totales de la hoja Categorias)
