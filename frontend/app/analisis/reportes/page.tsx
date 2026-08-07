@@ -19,7 +19,7 @@
  * precio_base es el precio de lista antes del descuento. Decisión pendiente.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, Download, Eye, FileSpreadsheet, FileText, X } from "lucide-react";
 import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
 import FulfillmentPendiente from "@/components/FulfillmentPendiente";
@@ -67,11 +67,43 @@ function Barra({ pct, bueno }: { pct: number; bueno: boolean }) {
   );
 }
 
-function VistaPrevia({ p }: { p: Preview }) {
+/* Se calcula sola con los filtros puestos. Mantiene una altura mínima estable
+   para que la tarjeta no salte entre "cargando" y "listo" — el mismo cuidado
+   que en el popup de Análisis. */
+function VistaPrevia({ p, cargando, error }: {
+  p: Preview | null; cargando: boolean; error: string | null;
+}) {
+  if (error) {
+    return (
+      <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 p-4 text-[13px] text-rose-700">
+        {error}
+      </div>
+    );
+  }
+  if (!p) {
+    return (
+      <div className="mt-4 min-h-[132px] animate-pulse rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i}>
+              <div className="h-2.5 w-24 rounded bg-slate-200" />
+              <div className="mt-2 h-5 w-20 rounded bg-slate-200" />
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 h-1.5 w-full rounded-full bg-slate-200" />
+      </div>
+    );
+  }
   const cobCosto = p.cobertura.costo;
   const cobEnvio = p.cobertura.envio;
   return (
-    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+    <div className={`mt-4 min-h-[132px] rounded-xl border border-slate-200 bg-slate-50/70 p-4 transition-opacity ${
+      cargando ? "opacity-50" : "opacity-100"}`}>
+      <div className="mb-3 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-slate-400">
+        <Eye size={13} />
+        {cargando ? "Actualizando la vista previa…" : "Esto es lo que vas a descargar"}
+      </div>
       {/* El aviso del rango va PRIMERO: es lo que evita bajar un archivo que
           parece cubrir un año y cubre siete semanas. */}
       {p.totales.lineas === 0 ? (
@@ -199,15 +231,43 @@ function TarjetaVentasCategoria() {
   const [bajando, setBajando] = useState(false);
   const [errorBaja, setErrorBaja] = useState<string | null>(null);
   const [previa, setPrevia] = useState<Preview | null>(null);
-  const [cargandoPrevia, setCargandoPrevia] = useState(false);
-  // Cualquier cambio de filtro invalida la vista previa: dejarla en pantalla
-  // describiendo OTRO rango es peor que no mostrarla.
-  const cambiar = (fn: () => void) => { setPrevia(null); setErrorBaja(null); fn(); };
+  const [cargandoPrevia, setCargandoPrevia] = useState(true);
+  const [errorPrevia, setErrorPrevia] = useState<string | null>(null);
 
   const q = new URLSearchParams({ dias: String(dias) });
   if (cuenta) q.set("cuenta", cuenta);
   if (desde) q.set("desde", desde);
   if (hasta) q.set("hasta", hasta);
+
+  // La vista previa se calcula SOLA con los filtros puestos — sin botón, que
+  // era un paso de más para algo que siempre quieres ver. Con retardo porque
+  // cada cálculo son 1.4-7 s en el servidor: pasar de "7 días" a "Histórico"
+  // haría 4 peticiones si se disparara en cada clic. La anterior se aborta,
+  // así que la que pinta es siempre la última pedida, no la que llegue antes.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const t = setTimeout(async () => {
+      setCargandoPrevia(true);
+      setErrorPrevia(null);
+      try {
+        const par = new URLSearchParams({ dias: String(dias) });
+        if (cuenta) par.set("cuenta", cuenta);
+        if (desde) par.set("desde", desde);
+        if (hasta) par.set("hasta", hasta);
+        const r = await fetchSesion(
+          `${API_BASE}/api/fulfillment/categorias/excel/preview?${par.toString()}`,
+          { signal: ctrl.signal });
+        if (!r.ok) throw new Error(`El servidor respondió ${r.status}`);
+        setPrevia(await r.json());
+        setCargandoPrevia(false);
+      } catch (e) {
+        if (ctrl.signal.aborted) return;   // la reemplazó otra: no es un error
+        setErrorPrevia(mensajeDeError(e, "No se pudo calcular la vista previa."));
+        setCargandoPrevia(false);
+      }
+    }, 450);
+    return () => { clearTimeout(t); ctrl.abort(); };
+  }, [cuenta, dias, desde, hasta]);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -230,16 +290,13 @@ function TarjetaVentasCategoria() {
             </b>{" "}
             la base de costos tiene defectos medidos (precios placeholder, peso
             de caja capturado como pieza) y un margen calculado sobre eso se lee
-            como un hecho sin serlo.{" "}
-            <b className="text-slate-600">Previsualiza</b> antes de bajarlo: te
-            dice cuántas líneas trae, si el rango pedido tiene datos de verdad y
-            qué tan completos vienen el costo y el envío.
+            como un hecho sin serlo.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
               {CUENTAS.map((c) => (
-                <button key={c.id} onClick={() => cambiar(() => setCuenta(c.id))}
+                <button key={c.id} onClick={() => setCuenta(c.id)}
                         className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                           cuenta === c.id
                             ? "bg-indigo-600 font-semibold text-white"
@@ -251,7 +308,7 @@ function TarjetaVentasCategoria() {
             <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
               {PERIODOS.map((p) => (
                 <button key={p.dias}
-                        onClick={() => cambiar(() => { setDias(p.dias); setDesde(""); setHasta(""); })}
+                        onClick={() => { setDias(p.dias); setDesde(""); setHasta(""); }}
                         className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                           dias === p.dias && !rangoActivo
                             ? "bg-slate-900 font-semibold text-white"
@@ -263,42 +320,20 @@ function TarjetaVentasCategoria() {
             <div className={`flex items-center gap-1.5 rounded-xl border p-1.5 shadow-sm ${
               rangoActivo ? "border-slate-900 bg-white" : "border-slate-200 bg-white"}`}>
               <input type="date" value={desde} max={hasta || undefined}
-                     onChange={(e) => cambiar(() => setDesde(e.target.value))}
+                     onChange={(e) => setDesde(e.target.value)}
                      className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
               <span className="text-xs text-slate-400">a</span>
               <input type="date" value={hasta} min={desde || undefined}
-                     onChange={(e) => cambiar(() => setHasta(e.target.value))}
+                     onChange={(e) => setHasta(e.target.value)}
                      className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
               {rangoActivo && (
-                <button onClick={() => cambiar(() => { setDesde(""); setHasta(""); })}
+                <button onClick={() => { setDesde(""); setHasta(""); }}
                         title="Volver a los períodos relativos"
                         className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
                   <X size={14} />
                 </button>
               )}
             </div>
-            {/* Ver ANTES de bajar: el archivo pesa ~1.4 MB y hasta abrirlo no
-                sabías si el rango traía datos ni qué tan completo venía. */}
-            <button
-              type="button"
-              disabled={cargandoPrevia}
-              onClick={async () => {
-                setErrorBaja(null);
-                setCargandoPrevia(true);
-                try {
-                  const r = await fetchSesion(
-                    `${API_BASE}/api/fulfillment/categorias/excel/preview?${q.toString()}`);
-                  if (!r.ok) throw new Error(`El servidor respondió ${r.status}`);
-                  setPrevia(await r.json());
-                } catch (e) {
-                  setErrorBaja(mensajeDeError(e, "No se pudo calcular la vista previa."));
-                } finally {
-                  setCargandoPrevia(false);
-                }
-              }}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-wait disabled:opacity-60">
-              <Eye size={15} /> {cargandoPrevia ? "Calculando…" : "Previsualizar"}
-            </button>
             {/* Botón y NO un <a href>: una navegación del navegador no manda el
                 token de sesión, así que desde el enforcement (5-ago) bajaba un
                 401 en vez del Excel. `descargar()` lo pide con la sesión. */}
@@ -324,13 +359,16 @@ function TarjetaVentasCategoria() {
             </button>
           </div>
         </div>
-        {errorBaja && (
-          <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
-            {errorBaja}
-          </p>
-        )}
-        {previa && <VistaPrevia p={previa} />}
       </div>
+      {/* FUERA de la fila flex. Estaban DENTRO (el error ya venía así), así que
+          se volvían un tercer ítem del flex y le robaban el ancho al texto:
+          la descripción de la tarjeta se aplastaba a una palabra por renglón. */}
+      {errorBaja && (
+        <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+          {errorBaja}
+        </p>
+      )}
+      <VistaPrevia p={previa} cargando={cargandoPrevia} error={errorPrevia} />
     </div>
   );
 }

@@ -4941,3 +4941,40 @@ describiendo otro rango sería peor que no mostrarla. Probado el endpoint en
 cuatro escenarios contra producción (60d, 400d, una cuenta, rango sin ventas);
 tarda 1.4–7 s. Typecheck y `next build` limpios. Sin migraciones y sin
 variables nuevas. Versión 0.76.0.
+
+### v0.77.0 — La vista previa se calcula sola, y sale del flex que la aplastaba
+
+Dos correcciones a la v0.76.0, ambas reportadas por Eduardo con una captura.
+
+**El layout estaba roto.** `{errorBaja}` y `<VistaPrevia/>` quedaron como
+hermanos DENTRO de `<div className="flex items-start gap-3">`, así que se
+volvían un tercer ítem del flex y le robaban el ancho al texto: la descripción
+de la tarjeta se aplastaba a **una palabra por renglón** y el panel se montaba
+encima. El error ya venía así de antes; la vista previa solo lo hizo visible.
+Ahora los dos van FUERA de la fila, como hijos directos de la tarjeta.
+
+Medido en el navegador, antes y después: la descripción pasó de una columna de
+una palabra a **1,126 px en 3 renglones**; el panel es hijo directo de la
+tarjeta (`panel_dentro_de_fila_flex: false`), mide 1,180 px —el mismo ancho que
+la fila de filtros— y va debajo de todo. Sin scroll horizontal, y los 8 chips
+de diagnóstico envuelven sin desbordar.
+
+**Fuera el botón "Previsualizar".** Era un paso de más para algo que siempre
+quieres ver: ahora la previa se calcula sola con los filtros puestos, y se
+actualiza al cambiarlos. Con retardo de 450 ms y `AbortController`, porque cada
+cálculo son 1.4–7 s en el servidor: ir de "7 días" a "Histórico" dispararía
+cuatro peticiones si saliera en cada clic, y sin abortar la que pinta sería la
+que llegue antes, no la última pedida.
+
+Mientras recalcula, el panel se atenúa y dice "Actualizando la vista previa…"
+en vez de vaciarse, con `min-h-[132px]` y un esqueleto para la primera carga:
+la tarjeta no salta entre estados.
+
+**Verificado en el navegador contra el sandbox**, no solo con typecheck: la
+previa carga sola al abrir (200 OK), y al pulsar "Histórico" se recalcula y
+aparece el aviso —"227 días (56.9% del rango) van sin captura, hay ventas en 58
+días distintos"—. De paso quedó ejercitada la degradación sin MySQL que exige
+`aplicar_a_lineas`: en staging `MYSQL_ENABLED=false`, y el panel reporta
+"0 real · 6,605 estimado · 2,848 sin dato" en vez de caerse.
+
+Sin migraciones y sin variables nuevas. Versión 0.77.0.
