@@ -78,6 +78,13 @@ interface Fila {
   crec_7d_pct: number | null;
   sugerido_full: number;
   spark: number[];
+  // Visitas a las publicaciones de MERCADO LIBRE en el período y conversión.
+  // `uds_ml` es el numerador de esa conversión: las unidades totales incluyen
+  // Amazon, que no aporta visitas, y mezclarlas inflaría el porcentaje.
+  visitas: number | null;
+  visitas_dias: number | null;
+  cr_pct: number | null;
+  uds_ml: number;
 }
 
 interface TablaResp { total: number; items: Fila[]; limit: number; offset: number }
@@ -140,7 +147,7 @@ const TIPO_CHIP: Record<string, string> = {
    de negocio para el humano que mira la tabla, no parte del contrato de datos. */
 const AYUDA: Record<string, { titulo: string; texto: string }> = {
   sku: { titulo: "Producto", texto: "SKU, título y las cuentas donde está publicado: BK Bekura · SC San Corpe · AMZ Amazon. La letra gris es la categoría de tamaño (S/M/L/XL) que sale de sus dimensiones." },
-  visitas: { titulo: "Visitas · CR%", texto: "Todavía sin datos: las visitas y la conversión no están conectadas al panel. La columna guarda su lugar para cuando lo estén." },
+  visitas: { titulo: "Visitas · CR%", texto: "Cuánta gente vio las publicaciones del SKU en Mercado Libre durante el período, y qué porcentaje de esas visitas terminó en compra. Sirve para separar dos problemas distintos: pocas visitas es falta de visibilidad (precio, posición, publicidad); muchas visitas con conversión baja es un problema de la ficha o del precio. Solo Mercado Libre — Amazon no publica este dato, así que la conversión se calcula únicamente con las unidades vendidas en ML. El asterisco avisa que ML devolvió menos días que el período pedido." },
   estado: { titulo: "Estado", texto: "Si tiene publicación viva: ACTIVA se puede comprar, PAUSADA existe pero no vende, NO VENTA no está publicado. La segunda etiqueta dice desde qué bodega sale: FULL, FBA, DROP o MIXTO." },
   venta: { titulo: "Uds · $Venta", texto: "Unidades vendidas e importe en el período elegido arriba, sumando todas las cuentas de ese SKU." },
   stock_full: { titulo: "FULL · Propio", texto: "Piezas en la bodega del marketplace (FULL en Mercado Libre, FBA en Amazon) y piezas en tu bodega propia (DROP). Son inventarios separados y no se suman: reponer significa mover de Propio a FULL." },
@@ -330,6 +337,53 @@ function MargenVenta({ fila }: { fila: Fila }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* VISITAS y CONVERSIÓN de Mercado Libre. El par responde la pregunta que ni las
+   unidades ni el margen contestan: si algo vende poco, ¿es que nadie lo ve o es
+   que quien lo ve no compra? Sin visitas el problema es de visibilidad (precio,
+   posición, publicidad); con muchas visitas y poca conversión, el problema está
+   en la ficha o el precio.
+
+   El color va sobre la CONVERSIÓN, no sobre las visitas: juntar tráfico no es
+   un logro si no se traduce en venta.
+
+   Dos avisos que la celda no puede callar: ML a veces devuelve menos días que
+   el período pedido (asterisco), y Amazon no aporta visitas — por eso la
+   conversión se calcula solo con las unidades vendidas EN ML. */
+function VisitasCR({ fila, dias }: { fila: Fila; dias: number }) {
+  if (fila.visitas == null) {
+    return (
+      <span className="text-slate-300"
+            title="Sin medición de visitas todavía. Se consultan a Mercado Libre por publicación y se guardan unas horas; al recorrer la tabla se van completando.">
+        — · —
+      </span>
+    );
+  }
+  const parcial = fila.visitas_dias != null && fila.visitas_dias < dias - 2;
+  const soloParte = fila.uds > fila.uds_ml;
+  return (
+    <div
+      title={`${fNum(fila.visitas)} visitas a las publicaciones de Mercado Libre`
+             + (fila.visitas_dias ? `\nVentana devuelta por ML: ${fila.visitas_dias} de ${dias} días` : "")
+             + (fila.cr_pct != null
+                ? `\nConversión ${fNum(fila.cr_pct, 1)}%: ${fNum(fila.uds_ml)} uds vendidas en ML ÷ ${fNum(fila.visitas)} visitas`
+                : "")
+             + (soloParte
+                ? `\nOJO: este SKU vendió ${fNum(fila.uds)} uds en total; las otras ${fNum(fila.uds - fila.uds_ml)} son de Amazon y no cuentan aquí porque no aportan visitas.`
+                : "")}
+    >
+      <div className="tabular-nums text-slate-700">
+        {fNum(fila.visitas)}{parcial && <span className="text-amber-500">*</span>}
+      </div>
+      <div className={`text-[10px] font-semibold tabular-nums ${
+          fila.cr_pct == null ? "text-slate-300"
+          : fila.cr_pct >= 5 ? "text-emerald-600" : "text-amber-600"}`}>
+        {fila.cr_pct == null ? "—" : `${fNum(fila.cr_pct, 1)}%`}
+        {soloParte && <span className="ml-0.5 text-slate-400">ml</span>}
+      </div>
     </div>
   );
 }
@@ -1243,8 +1297,9 @@ export default function FulfillmentPage() {
                     )}
                     <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${TIPO_CHIP[f.tipo]}`}>{tipoLabel(f)}</span>
                   </td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-right text-slate-300"
-                      title="Visitas y conversión: todavía sin datos">— · —</td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <VisitasCR fila={f} dias={dias} />
+                  </td>
                   {/* Uds + venta */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <div className="font-semibold tabular-nums text-slate-800">{fNum(f.uds)}</div>
@@ -1325,8 +1380,9 @@ export default function FulfillmentPage() {
         )}
 
         <p className="mt-4 text-center text-[11px] text-slate-400">
-          Visitas y CR% todavía sin datos · Stock propio = lo que hay en tu bodega (se actualiza cada
-          20 minutos) · Sugerido = piezas a mandar a FULL según el ritmo de venta de los últimos 45 días.
+          Visitas y CR% son de Mercado Libre (Amazon no publica ese dato) · Stock propio = lo que hay
+          en tu bodega (se actualiza cada 20 minutos) · Sugerido = piezas a mandar a FULL según el
+          ritmo de venta de los últimos 45 días.
         </p>
 
       {detalle && (

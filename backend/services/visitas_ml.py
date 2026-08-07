@@ -128,15 +128,20 @@ async def completar(pares: list[tuple[str, str]], dias: int,
         await asyncio.gather(*(una(c, i) for c, i in lote))
 
     def _guardar() -> None:
+        # UN solo INSERT con todas las filas. Escribirlas de a una costaba un
+        # viaje de red por medición al MySQL de Hostinger: 20 publicaciones
+        # tardaban ~11 s aunque las llamadas a ML sumaran menos de uno.
+        vals = ", ".join(["(%s, %s, %s, %s, %s, UTC_TIMESTAMP())"] * len(resultados))
+        params: list[Any] = []
         for cuenta, iid, visitas, dd in resultados:
-            db.execute(
-                "INSERT INTO ml_visitas (listing_id, dias, cuenta, visitas,"
-                " dias_datos, consultado_at)"
-                " VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP())"
-                " ON DUPLICATE KEY UPDATE cuenta=VALUES(cuenta),"
-                " visitas=VALUES(visitas), dias_datos=VALUES(dias_datos),"
-                " consultado_at=UTC_TIMESTAMP()",
-                (iid, dias, cuenta, visitas, dd))
+            params += [iid, dias, cuenta, visitas, dd]
+        db.execute(
+            "INSERT INTO ml_visitas (listing_id, dias, cuenta, visitas,"
+            f" dias_datos, consultado_at) VALUES {vals}"
+            " ON DUPLICATE KEY UPDATE cuenta=VALUES(cuenta),"
+            " visitas=VALUES(visitas), dias_datos=VALUES(dias_datos),"
+            " consultado_at=UTC_TIMESTAMP()",
+            tuple(params))
 
     if resultados:
         await asyncio.to_thread(_guardar)

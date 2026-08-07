@@ -138,15 +138,20 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int
     # COALESCE: un reintento que vuelva a traer NULL nunca pisa un costo real
     # (mismo patrón que la comisión 0→valor de pedidos_ml).
     def _guardar() -> None:
+        # UN solo INSERT: escribir de a una costaba un viaje de red por orden
+        # al MySQL de Hostinger, que era lo que hacía lento el llenado.
+        vals = ", ".join(["(%s, %s, %s, %s, UTC_TIMESTAMP())"] * len(resultados))
+        params: list[Any] = []
         for cuenta, oid, sid, costo in resultados:
-            db.execute(
-                "INSERT INTO ml_envio_real (cuenta, external_order_id, shipment_id,"
-                " costo_vendedor, consultado_at) VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())"
-                " ON DUPLICATE KEY UPDATE"
-                " shipment_id = COALESCE(VALUES(shipment_id), shipment_id),"
-                " costo_vendedor = COALESCE(VALUES(costo_vendedor), costo_vendedor),"
-                " consultado_at = UTC_TIMESTAMP()",
-                (cuenta, oid, sid, costo))
+            params += [cuenta, oid, sid, costo]
+        db.execute(
+            "INSERT INTO ml_envio_real (cuenta, external_order_id, shipment_id,"
+            f" costo_vendedor, consultado_at) VALUES {vals}"
+            " ON DUPLICATE KEY UPDATE"
+            " shipment_id = COALESCE(VALUES(shipment_id), shipment_id),"
+            " costo_vendedor = COALESCE(VALUES(costo_vendedor), costo_vendedor),"
+            " consultado_at = UTC_TIMESTAMP()",
+            tuple(params))
 
     if resultados:
         await asyncio.to_thread(_guardar)

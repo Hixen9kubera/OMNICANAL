@@ -110,6 +110,13 @@ with l as (
              'cuenta', a.legacy_code, 'canal', l.canal,
              'situacion', l.situacion, 'price', l.price))
            filter (where l.price is not null)       as precios,
+         -- Publicaciones de MERCADO LIBRE con su cuenta: es lo que hace falta
+         -- para pedir las VISITAS (ML las da por item y con el token de su
+         -- cuenta). Amazon queda fuera porque no tiene equivalente.
+         jsonb_agg(distinct jsonb_build_object(
+             'cuenta', a.legacy_code, 'item', l.listing_id))
+           filter (where l.canal = 'mercado_libre'
+                     and l.listing_id is not null)  as pubs_ml,
          max(l.updated_at)                          as precio_visto_at,
          bool_or(l.situacion = 'active')            as alguna_activa,
          bool_or(l.situacion = 'paused')            as alguna_pausada,
@@ -127,6 +134,12 @@ with l as (
 v as (
   select sku,
          sum(units_sold)                                        as uds,
+         -- Unidades SOLO de Mercado Libre: es el numerador honesto de la
+         -- conversión, porque las visitas también son solo de ML. Dividir las
+         -- unidades totales (que incluyen Amazon) entre visitas de ML inflaría
+         -- el CR%% de cualquier SKU que venda fuerte en Amazon. (El %% va
+         -- escapado: psycopg2 lee un %% suelto como marcador de parámetro.)
+         sum(units_sold) filter (where canal = 'mercado_libre')  as uds_ml,
          sum(revenue)                                           as venta,
          sum(units_sold) filter (where date > current_date - 7) as u7,
          sum(units_sold) filter (where date > current_date - 14
@@ -203,6 +216,8 @@ filas as (
               when l.tiene_full then 'mixto'
               else 'no_full' end as tipo,
          coalesce(v.uds, 0)::int        as uds,
+         coalesce(v.uds_ml, 0)::int     as uds_ml,
+         l.pubs_ml,
          coalesce(v.venta, 0)           as venta,
          coalesce(l.stock_full, 0)::int as stock_full,
          coalesce(d.stock_drop, l.stock_propio, 0)::int as stock_propio,
@@ -939,12 +954,15 @@ async def margenes_reales(
         # Visitas: se suman las publicaciones del SKU en ESA cuenta. `dias_datos`
         # es cuántos días trajo ML de verdad — la ventana no siempre viene
         # completa, y presumir 30 días falsearía la conversión.
-        vis = [visitas.get(str(i)) for i in (f["listing_ids"] or [])]
-        vis = [v for v in vis if v and v.get("visitas") is not None]
-        if vis:
-            total_vis = sum(int(v["visitas"]) for v in vis)
+        ids_pub = [str(i) for i in (f["listing_ids"] or [])]
+        vis = [visitas.get(i) for i in ids_pub]
+        listas = [v for v in vis if v and v.get("visitas") is not None]
+        # Todo o nada, igual que en la tabla: con una medición a medias el
+        # porcentaje sale falso (ver _visitas_en_filas).
+        if ids_pub and len(listas) == len(ids_pub):
+            total_vis = sum(int(v["visitas"]) for v in listas)
             fila["visitas"] = total_vis
-            fila["visitas_dias"] = max((int(v["dias_datos"] or 0) for v in vis),
+            fila["visitas_dias"] = max((int(v["dias_datos"] or 0) for v in listas),
                                        default=None) or None
             fila["cr_pct"] = round(uds / total_vis * 100, 1) if total_vis else None
         else:
@@ -1028,6 +1046,54 @@ async def resumen_canales(
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
 
+async def _visitas_en_filas(items: list[dict[str, Any]], dias: int,
+                            presupuesto: int) -> None:
+    """
+    Agrega `visitas`, `visitas_dias` y `cr_pct` a las filas de la tabla.
+
+    Las visitas las da ML por PUBLICACIÓN (services/visitas_ml.py), así que se
+    suman las publicaciones de ML del SKU. La conversión se calcula con
+    `uds_ml`, NO con las unidades totales: si un SKU vende también en Amazon,
+    dividir sus ventas completas entre visitas de solo Mercado Libre daría un
+    CR% inflado que no significa nada.
+    """
+    if not getattr(settings, "mysql_enabled", True):
+        return
+    pares: set[tuple[str, str]] = set()
+    for f in items:
+        for p in (f.get("pubs_ml") or []):
+            if p.get("cuenta") and p.get("item"):
+                pares.add((p["cuenta"], str(p["item"])))
+    if not pares:
+        return
+    try:
+        from services import visitas_ml
+        if presupuesto:
+            await visitas_ml.completar(sorted(pares), dias, presupuesto)
+        medidas = visitas_ml.leer([i for _, i in pares], dias)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("visitas no disponibles en la tabla: %s", exc)
+        return
+    for f in items:
+        pubs = [p for p in (f.get("pubs_ml") or []) if p.get("item")]
+        vis = [medidas.get(str(p["item"])) for p in pubs]
+        listas = [v for v in vis if v and v.get("visitas") is not None]
+        # TODO O NADA. Un SKU publicado en las dos cuentas tiene dos
+        # mediciones; si solo llegó una, sumar esa mitad y dividirla entre las
+        # unidades COMPLETAS da un porcentaje absurdo — MUE-0163-TEL llegó a
+        # mostrar "209 visitas · 378.5%" teniendo 13,122 visitas reales. Hasta
+        # que estén todas, la celda dice "—" y la siguiente carga la completa.
+        if pubs and len(listas) == len(pubs):
+            total = sum(int(v["visitas"]) for v in listas)
+            uds_ml = int(f.get("uds_ml") or 0)
+            f["visitas"] = total
+            f["visitas_dias"] = max((int(v["dias_datos"] or 0) for v in listas),
+                                    default=None) or None
+            f["cr_pct"] = round(uds_ml / total * 100, 1) if total else None
+        else:
+            f["visitas"] = f["visitas_dias"] = f["cr_pct"] = None
+
+
 @router.get("/tabla")
 async def tabla(
     dias: int = Query(60, ge=7, le=180),
@@ -1040,6 +1106,11 @@ async def tabla(
     dir: str | None = Query(None, description="asc|desc; omitido = natural"),
     limit: int = Query(50, ge=10, le=200),
     offset: int = Query(0, ge=0),
+    # 150 alcanza para una página de 50 filas (≈2 publicaciones por SKU) en una
+    # sola carga; con menos, la mitad de las filas se quedaría sin medir y la
+    # regla de "todo o nada" las dejaría en blanco hasta el siguiente refresco.
+    visitas: int = Query(150, ge=0, le=500,
+                         description="cuántas publicaciones medir por carga (0 = solo caché)"),
 ) -> dict[str, Any]:
     """Filas por SKU (agregado de cuentas) + sparkline 14 d por fila."""
     if not sdb.disponible():
@@ -1096,6 +1167,7 @@ async def tabla(
             for i in items:
                 m = por_sku.get(str(i["sku"]).lower(), {})
                 i["spark"] = [m.get(f, 0) for f in fechas]
+            await _visitas_en_filas(items, dias, visitas)
         return {"total": int(total or 0), "items": items,
                 "limit": limit, "offset": offset, "dias": dias,
                 "orden": orden, "dir": dir or dir_natural}
