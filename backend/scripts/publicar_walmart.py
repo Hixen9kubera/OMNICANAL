@@ -527,7 +527,13 @@ async def _solo_jpeg(cx, urls: list[str]) -> list[str]:
             if r.status_code != 200:
                 continue
             im = Image.open(BytesIO(r.content))
-            if im.format == "JPEG" and min(im.width, im.height) >= 500:
+            # 1000 px, no 500. El esquema oficial recomienda 1000×1000 para
+            # `mainImageUrl` y la guía de Walmart pide 1500×1500 para el zoom.
+            # Con el umbral en 500 pasaban imágenes que Walmart iba a rechazar
+            # de todos modos. (Revisado el 6-ago: ninguna de las 37 enviadas
+            # caía ahí, así que este NO fue el motivo de esos rechazos — pero
+            # habría mordido al escalar a 500 SKUs.)
+            if im.format == "JPEG" and min(im.width, im.height) >= 1000:
                 buenas.append(u)
         except Exception:  # noqa: BLE001 — una imagen ilegible simplemente no entra
             continue
@@ -594,6 +600,7 @@ async def main() -> int:
     rondas, espera_ronda = 6, 60
     if "--rondas" in sys.argv:
         rondas = int(sys.argv[sys.argv.index("--rondas") + 1])
+    refrescar = "--refrescar-imagenes" in sys.argv
     categoria = "costumes"
     if "--categoria" in sys.argv:
         categoria = sys.argv[sys.argv.index("--categoria") + 1]
@@ -635,6 +642,23 @@ async def main() -> int:
         print("\n" + "=" * 78)
         print("FASE 1 — preparar imágenes (nada se manda a Walmart todavía)")
         print("=" * 78, flush=True)
+        if refrescar and skus:
+            # Walmart parece CACHEAR el fallo por URL: las tres imágenes que
+            # rechazó el 4-ago volvieron a ser rechazadas el 5-ago con el mismo
+            # mensaje, estando perfectas (JPEG, 1600×1600, 197 KB, descargables
+            # desde fetchers externos de datacenter). Borrar el caché de
+            # `amazon_imagenes` fuerza a regenerarlas: WordPress les pone un
+            # nombre nuevo y Walmart las ve como URLs que nunca ha visto.
+            from services import db as _db
+            ph = ",".join(["%s"] * len(skus))
+            try:
+                _db.execute(f"DELETE FROM amazon_imagenes WHERE sku IN ({ph})",
+                            tuple(skus))
+                print(f"   caché de imágenes borrado para {len(skus)} SKUs "
+                      f"(se regeneran con URL nueva)", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"   no se pudo borrar el caché: {e}", flush=True)
+
         fichas: dict[str, dict] = {}
         imgs: dict[str, list[str]] = {}
         for i, sku in enumerate(skus, 1):
