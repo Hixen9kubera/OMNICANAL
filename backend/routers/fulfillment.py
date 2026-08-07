@@ -1508,11 +1508,16 @@ async def categorias_excel(
     desde: str | None = Query(None),
     hasta: str | None = Query(None),
 ):
-    """El reporte ÚNICO de ventas y márgenes (Eduardo, 5-ago): Resumen por
+    """El reporte ÚNICO de ventas y costos (Eduardo, 5-ago): Resumen por
     categoría, árbol de Categorías con sus publicaciones y una hoja Ventas con
     una fila por línea vendida. Las tres hojas salen de los PEDIDOS, así que el
-    libro cuadra consigo mismo: la comisión que descuenta el margen es la misma
-    que respalda cada renglón de la hoja Ventas.
+    libro cuadra consigo mismo: la comisión de cada categoría es la misma que
+    respalda cada renglón de la hoja Ventas.
+
+    SIN Ganancia ni Margen %% desde el 7-ago (Eduardo): la base de costos tiene
+    defectos medidos —placeholders USD×19, peso de caja capturado como pieza,
+    piezas_por_caja < 1— y un margen sacado de ahí se lee como un hecho sin
+    serlo. Las columnas de costo se quedan como dato crudo.
 
     Sustituye al CSV de márgenes, que era el mismo dato con otro rango de
     fechas y otro botón."""
@@ -1538,7 +1543,7 @@ async def categorias_excel(
             {"desde": d1, "hasta": d2, "cuenta": cuenta, "canal": None})
         datos = await asyncio.to_thread(
             reporte_categorias_xlsx.construir, hojas, pubs, ventas, d1, d2, cuenta)
-        nombre = f"ventas_margenes_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"
+        nombre = f"ventas_costos_{d1.replace('-', '')}_{d2.replace('-', '')}.xlsx"
         return Response(
             content=datos,
             media_type=("application/vnd.openxmlformats-officedocument"

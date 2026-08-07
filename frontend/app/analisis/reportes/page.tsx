@@ -61,14 +61,20 @@ function TarjetaVentasCategoria() {
         </div>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-slate-800">
-            Ventas y márgenes (Excel)
+            Ventas y costos (Excel)
           </h2>
           <p className="mt-0.5 text-[13px] text-slate-500">
             Tres hojas en un archivo: <b>Resumen</b> por categoría principal,
             el <b>árbol</b> completo de categorías con sus publicaciones
             (plegable con los +/− de Excel) y <b>Ventas</b>, una fila por cada
-            línea vendida. Todas traen costo base, costo final —con la comisión
-            REAL de Mercado Libre y el envío— ganancia y margen.
+            línea vendida. Todas traen costo base y costo final —con la comisión
+            REAL de Mercado Libre y el envío—.{" "}
+            <b className="text-slate-600">
+              No incluye ganancia ni margen:
+            </b>{" "}
+            la base de costos tiene defectos medidos (precios placeholder, peso
+            de caja capturado como pieza) y un margen calculado sobre eso se lee
+            como un hecho sin serlo.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3">

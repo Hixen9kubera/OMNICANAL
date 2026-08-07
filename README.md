@@ -4706,3 +4706,54 @@ Sin migraciones que aplicar. Variables nuevas en Railway:
 dale (pedidos es el flujo vivo más caliente: webhooks en ráfaga). Con esto,
 TRES de los cinco dominios tienen su corte listo; core y categorías esperan
 racha (van 11/14 ambos).
+
+### v0.72.0 — El Excel de reportes deja de calcular margen
+
+Petición de Eduardo (7-ago): quitar los márgenes del reporte descargable, en
+las tres hojas. Se retiran las columnas **Ganancia** y **Margen %** de
+`Resumen`, `Categorias` y `Ventas`.
+
+**Por qué, y por qué no es una pérdida.** El margen del libro salía de
+`costing.costos_validados` / `costos_finales`, y esa base tiene tres defectos
+ya medidos en producción:
+
+| Defecto | Alcance | Efecto en el margen |
+|---|---|---|
+| `costo_producto` es un precio USD×19 (placeholder, no costo medido) | 4,606 de 15,395 filas (~30% del catálogo) | El margen es una resta contra un número inventado |
+| Peso de la CAJA capturado como peso de la pieza | ~536 SKUs | Infla `costo_fee_envio` (~$231k fantasma en 60 días) |
+| `piezas_por_caja < 1` — multiplica el flete en vez de dividirlo | 30 SKUs | TEC-0406-AZL llega a 111× su flete real |
+
+Una celda que dice "36.0%" se lee como un hecho. Con esa base no lo es, y el
+reporte se comparte fuera del panel, donde la advertencia no viaja con el
+archivo. Las columnas de COSTO se quedan —son el dato crudo— y quien necesite
+la resta la arma en su tabla dinámica sabiendo qué está restando.
+
+**Qué cambia en cada hoja**
+
+- `Resumen`: 12 → 10 columnas. Se van Ganancia y Margen %; `Venta con costo`
+  se queda pero cambia de papel: era el denominador del margen, ahora es el
+  medidor de COBERTURA (cuánto de lo vendido tiene costo capturado). Su
+  comentario de celda se reescribió para decir eso. Los `SUM` del TOTAL se
+  reindexaron a B,C,D,F,G,H,I,J.
+- `Categorias`: 16 → 14 columnas. Los `SUBTOTAL(9,…)` por nivel ahora abarcan
+  F:K (antes F:L, donde L era Ganancia); se retiró la fórmula `SUMIF` que
+  calculaba el margen del nivel sobre la venta con costo.
+- `Ventas`: 17 → 15 columnas. Sin las dos fórmulas por renglón.
+
+El archivo pasa a llamarse `ventas_costos_*.xlsx` y la tarjeta de
+`/analisis/reportes` dice "Ventas y costos (Excel)" con la razón de la
+ausencia a la vista, para que nadie la busque como si fuera un bug.
+
+Verificado con un libro sintético que incluye filas CON y SIN costo: 10/14/15
+columnas, cero encabezados de margen o ganancia, `SUBTOTAL` y `SUM` apuntando
+a las columnas nuevas, y las filas sin costo en blanco (no en cero).
+
+Nada de esto toca la captura de costos ni las vistas de Análisis, que siguen
+mostrando margen con su marca de "costo dudoso". Sin migraciones y sin
+variables nuevas en Railway. Versión 0.72.0.
+
+**Pendiente propuesto (no construido):** marcar cada celda vacía con el motivo
+—columna `Diagnóstico` en texto, relleno ámbar + comentario, y una cuarta hoja
+de leyenda que cuente cuántas filas trae cada motivo—. Bloqueado a propósito
+hasta saber DÓNDE se captura cada dato faltante, para que el mensaje diga
+"captúralo en tal pantalla" y no solo "falta el costo".

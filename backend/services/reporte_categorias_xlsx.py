@@ -1,34 +1,43 @@
 """
-reporte_categorias_xlsx.py — El reporte ÚNICO de ventas y márgenes, generado EN
+reporte_categorias_xlsx.py — El reporte ÚNICO de ventas y costos, generado EN
 VIVO desde la BD kubera con los filtros elegidos en /analisis/reportes.
 
+SIN MÁRGENES (Eduardo, 7-ago). El libro traía Ganancia y Margen %% en las tres
+hojas y se retiraron: se calculaban sobre `costing.costos_validados` /
+`costos_finales`, y esa base tiene defectos medidos que hacen el resultado no
+publicable — ~30%% del catálogo con `costo_producto` puesto como precio USD×19
+(placeholder, no costo medido), ~536 SKUs con el peso de la CAJA capturado como
+peso de pieza, y 30 SKUs con `piezas_por_caja < 1` que multiplican el flete en
+vez de dividirlo. Un margen sacado de ahí se ve como un hecho y no lo es. Las
+columnas de costo SÍ se quedan: son el dato crudo, y quien lo necesite arma la
+resta en su propia tabla dinámica sabiendo lo que está restando.
+
 TRES hojas, que responden tres preguntas distintas (Eduardo, 5-ago):
-  - Resumen:    ¿qué categoría deja dinero? Una fila por categoría PRINCIPAL
-                con SKUs con venta, unidades, venta $, costo base, costo final,
-                ganancia y margen %%. Totales y %% con FÓRMULAS (recalcula solo).
+  - Resumen:    ¿qué categoría vende? Una fila por categoría PRINCIPAL con SKUs
+                con venta, unidades, venta $, costo base y costo final.
+                Totales y %% con FÓRMULAS (recalcula solo).
   - Categorias: ¿qué SKU dentro de esa categoría? El árbol completo con
                 subtotales SUBTOTAL(9,…) por nivel y, bajo cada hoja, sus
                 publicaciones con las mismas columnas de costo.
   - Ventas:     ¿por qué? Una fila por línea vendida — el insumo para tablas
-                dinámicas y para auditar un margen que no cuadre.
+                dinámicas y para auditar una cifra que no cuadre.
 
-FUENTE ÚNICA: los PEDIDOS (channel.orders/order_items). El margen solo puede
-salir de ahí, porque es donde vive la comisión REAL que cobró Mercado Libre;
-mezclar fuentes haría que una columna dijera una venta y la de al lado
-calculara margen sobre otra. Consecuencia declarada: este libro NO cuadra con
-la página /analisis/categorias, que sigue leyendo sales_daily_completa (esa
-serie incluye el histórico rescatado de dailytrack). Sí cuadra con la pestaña
-VENTAS, que también es 100%% pedidos.
+FUENTE ÚNICA: los PEDIDOS (channel.orders/order_items). La comisión solo puede
+salir de ahí, porque es donde vive la que REALMENTE cobró Mercado Libre;
+mezclar fuentes haría que una columna dijera una venta y la de al lado restara
+sobre otra. Consecuencia declarada: este libro NO cuadra con la página
+/analisis/categorias, que sigue leyendo sales_daily_completa (esa serie incluye
+el histórico rescatado de dailytrack). Sí cuadra con la pestaña VENTAS, que
+también es 100%% pedidos.
 
 Costo Base  = producto + flete de importación, × unidades vendidas
 Costo Final = Costo Base + comisión REAL + envío estimado
-Margen %%    = (venta − costo final) / venta
 
 Limitaciones que siguen vigentes: "Días en venta" no existe (listings no
 guarda la fecha de alta → va la 1ª venta del período); los cargos de bodega
 FULL quedan fuera (se facturan por mes, no por venta); Amazon reporta comisión
-0 hasta tener Finances API; una fila sin costo capturado va con el margen en
-blanco, no en cero.
+0 hasta tener Finances API; una fila sin costo capturado va en blanco, no en
+cero.
 """
 from __future__ import annotations
 
@@ -63,7 +72,7 @@ class _Nodo:
 def _costo_final(f: dict) -> float | None:
     """Costo Base + los cobros del canal. None cuando el costo del producto no
     está capturado: sin él la cifra sería el costo de vender algo gratis, y una
-    celda vacía es más honesta que un margen inflado."""
+    celda vacía es más honesta que un costo final que finge estar completo."""
     if f.get("costo_base") is None:
         return None
     return (float(f["costo_base"]) + float(f.get("comision") or 0)
@@ -73,10 +82,10 @@ def _costo_final(f: dict) -> float | None:
 def _arbol(hojas: list[dict]) -> tuple[dict[str, _Nodo], dict[str, dict]]:
     """Raíces del árbol + acumulados por nodo (uds/venta/costos/pubs/skus).
 
-    `venta_con_costo` acumula aparte la venta de las filas que SÍ traen costo:
-    es el denominador honesto del margen. Sin él, una categoría donde la mitad
-    de los SKUs no tiene costo capturado mostraría un margen hundido por
-    dividir una ganancia parcial entre la venta completa."""
+    `venta_con_costo` acumula aparte la venta de las filas que SÍ traen costo.
+    Es el medidor de COBERTURA de la categoría: cuánto de lo que vendió tiene
+    costo capturado. Si queda muy por debajo de `venta`, las columnas de costo
+    de esa fila describen una muestra, no la categoría."""
     raices: dict[str, _Nodo] = {}
     acum: dict[str, dict] = defaultdict(lambda: {"uds": 0, "venta": 0.0,
                                                  "pubs": 0, "activas": 0,
@@ -126,8 +135,7 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     ws = wb.create_sheet("Categorias")
     cabs = ["Categoría / SKU", "Tienda", "Título", "MLM ID", "Situación",
             "Ventas Uds", "Ventas $", "Costo base", "Comisión ML", "Envío est.",
-            "Costo final", "Ganancia", "Margen %", "Precio",
-            "1ª venta", "Últ. venta"]
+            "Costo final", "Precio", "1ª venta", "Últ. venta"]
     _N = len(cabs)
     for c, t in enumerate(cabs, 1):
         cel = ws.cell(1, c, t)
@@ -178,24 +186,20 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
             ws.cell(fila, 7, float(p.get("venta") or 0)).font = _f()
             ws.cell(fila, 7).number_format = _MONEY
             # Costos: en blanco cuando el producto no tiene costo capturado.
-            # Ganancia y margen van como FÓRMULA para que el archivo siga vivo
-            # si alguien corrige un costo a mano dentro del Excel.
+            # Sin Ganancia ni Margen %: ver el encabezado del módulo.
             cf = _costo_final(p)
             if cf is not None:
                 ws.cell(fila, 8, float(p["costo_base"])).font = _f()
                 ws.cell(fila, 9, float(p.get("comision") or 0)).font = _f()
                 ws.cell(fila, 10, float(p.get("envio") or 0)).font = _f()
                 ws.cell(fila, 11, round(cf, 2)).font = _f()
-                ws.cell(fila, 12, f"=G{fila}-K{fila}").font = _f()
-                ws.cell(fila, 13, f"=IF(G{fila}=0,\"\",(G{fila}-K{fila})/G{fila})").font = _f()
-                for c, fmt in ((8, _MONEY), (9, _MONEY), (10, _MONEY),
-                               (11, _MONEY), (12, _MONEY), (13, _PCT)):
-                    ws.cell(fila, c).number_format = fmt
+                for c in (8, 9, 10, 11):
+                    ws.cell(fila, c).number_format = _MONEY
             if p.get("precio") is not None:
-                ws.cell(fila, 14, float(p["precio"])).font = _f()
-                ws.cell(fila, 14).number_format = _MONEY
-            ws.cell(fila, 15, p.get("primera_venta") or "").font = _f()
-            ws.cell(fila, 16, p.get("ultima_venta") or "").font = _f()
+                ws.cell(fila, 12, float(p["precio"])).font = _f()
+                ws.cell(fila, 12).number_format = _MONEY
+            ws.cell(fila, 13, p.get("primera_venta") or "").font = _f()
+            ws.cell(fila, 14, p.get("ultima_venta") or "").font = _f()
             # las publicaciones cuelgan un nivel bajo su categoría
             _outline(fila, depth + 1, depth + 1 > _VISIBLE_HASTA)
             fila += 1
@@ -207,19 +211,10 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
             # SUBTOTAL(9,…) ignora las filas plegadas y los subtotales anidados,
             # así que cada nivel suma bien sin contar dos veces.
             for col, fmt in (("F", _INT), ("G", _MONEY), ("H", _MONEY),
-                             ("I", _MONEY), ("J", _MONEY), ("K", _MONEY),
-                             ("L", _MONEY)):
+                             ("I", _MONEY), ("J", _MONEY), ("K", _MONEY)):
                 c = ord(col) - 64
                 ws.cell(r0, c, f"=SUBTOTAL(9,{col}{r0 + 1}:{col}{r1})").font = _f(bold=True)
                 ws.cell(r0, c).number_format = fmt
-            # El margen del nivel se calcula sobre la venta QUE TIENE COSTO
-            # (columna G de las filas con K), no sobre la venta total: si no,
-            # una categoría con costos a medio capturar se vería peor de lo que
-            # es. SUMIF sobre K>0 hace justo eso, y sigue vivo dentro de Excel.
-            ws.cell(r0, 13, f'=IF(SUMIF(K{r0 + 1}:K{r1},">0",G{r0 + 1}:G{r1})=0,"",'
-                            f'L{r0}/SUMIF(K{r0 + 1}:K{r1},">0",G{r0 + 1}:G{r1}))'
-                    ).font = _f(bold=True)
-            ws.cell(r0, 13).number_format = _PCT
         else:  # nodo sin publicaciones desglosadas: valores del acumulado
             ws.cell(r0, 6, a["uds"]).font = _f(bold=True)
             ws.cell(r0, 6).number_format = _INT
@@ -229,15 +224,14 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     for r in orden_raiz:
         pinta(raices[r], r, 0)
     for c, w in {1: 42, 2: 9, 3: 52, 4: 15, 5: 10, 6: 10, 7: 12, 8: 12,
-                 9: 12, 10: 11, 11: 12, 12: 12, 13: 10, 14: 10,
-                 15: 11, 16: 11}.items():
+                 9: 12, 10: 11, 11: 12, 12: 10, 13: 11, 14: 11}.items():
         ws.column_dimensions[get_column_letter(c)].width = w
     ult = fila - 1
 
     # ── hoja Resumen ─────────────────────────────────────────────────────────
     rs = wb["Sheet"]
     rs.title = "Resumen"
-    rs["A1"] = "Ventas y márgenes por categoría"
+    rs["A1"] = "Ventas y costos por categoría"
     rs["A1"].font = _f(bold=True, size=12)
     rs["B1"] = f"{desde} → {hasta}"
     rs["B1"].font = _f(bold=True)
@@ -245,13 +239,17 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
     rs["C1"].font = _f(bold=True)
     rs["D1"] = ("Todo el libro sale de los PEDIDOS del período. Costo base = "
                 "producto + flete de importación; costo final le suma la "
-                "comisión REAL de Mercado Libre y el envío estimado. El margen "
-                "se calcula solo sobre la venta que tiene costo capturado.")
+                "comisión REAL de Mercado Libre y el envío estimado. Este "
+                "reporte NO calcula ganancia ni margen: la base de costos tiene "
+                "defectos medidos (precios placeholder, pesos de caja como "
+                "pieza) que harían ver un margen como un hecho sin serlo. "
+                "Compara Venta con costo contra Ventas $ para saber sobre qué "
+                "parte de la categoría estás mirando costos.")
     rs["D1"].font = _f(italic=True, size=9)
 
     cabs_r = ["Categoría Principal", "SKUs con venta", "Ventas Uds", "Ventas $",
-              "% Ventas $", "Costo base", "Costo final", "Ganancia", "Margen %",
-              "Venta con costo", "Publicaciones", "Activas"]
+              "% Ventas $", "Costo base", "Costo final", "Venta con costo",
+              "Publicaciones", "Activas"]
     for c, t in enumerate(cabs_r, 1):
         cel = rs.cell(3, c, t)
         cel.font = _f(bold=True, color="FFFFFF")
@@ -268,52 +266,42 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
         rs.cell(rr, 5, f"=IF($D${tot_row}=0,0,D{rr}/$D${tot_row})").font = _f()
         rs.cell(rr, 6, round(a["costo_base"], 2)).font = _f()
         rs.cell(rr, 7, round(a["costo_final"], 2)).font = _f()
-        rs.cell(rr, 8, f"=J{rr}-G{rr}").font = _f()
-        # Margen sobre la VENTA CON COSTO (columna J), no sobre la venta total:
-        # dividir la ganancia de media categoría entre la venta de la categoría
-        # entera la haría verse peor de lo que es.
-        rs.cell(rr, 9, f'=IF(J{rr}=0,"",H{rr}/J{rr})').font = _f()
-        rs.cell(rr, 10, round(a["venta_con_costo"], 2)).font = _f()
-        rs.cell(rr, 11, a["pubs"]).font = _f()
-        rs.cell(rr, 12, a["activas"]).font = _f()
+        rs.cell(rr, 8, round(a["venta_con_costo"], 2)).font = _f()
+        rs.cell(rr, 9, a["pubs"]).font = _f()
+        rs.cell(rr, 10, a["activas"]).font = _f()
         for c, fmt in ((2, _INT), (3, _INT), (4, _MONEY), (5, _PCT),
-                       (6, _MONEY), (7, _MONEY), (8, _MONEY), (9, _PCT),
-                       (10, _MONEY), (11, _INT), (12, _INT)):
+                       (6, _MONEY), (7, _MONEY), (8, _MONEY), (9, _INT),
+                       (10, _INT)):
             rs.cell(rr, c).number_format = fmt
     rs.cell(tot_row, 1, "TOTAL").font = _f(bold=True)
-    for col, fmt in (("B", _INT), ("C", _INT), ("D", _MONEY), ("G", _MONEY),
-                     ("H", _MONEY), ("J", _MONEY), ("K", _INT), ("L", _INT)):
+    for col, fmt in (("B", _INT), ("C", _INT), ("D", _MONEY), ("F", _MONEY),
+                     ("G", _MONEY), ("H", _MONEY), ("I", _INT), ("J", _INT)):
         rs.cell(tot_row, ord(col) - 64,
                 f"=SUM({col}4:{col}{tot_row - 1})").font = _f(bold=True)
         rs.cell(tot_row, ord(col) - 64).number_format = fmt
-    rs.cell(tot_row, 6, f"=SUM(F4:F{tot_row - 1})").font = _f(bold=True)
-    rs.cell(tot_row, 6).number_format = _MONEY
     rs.cell(tot_row, 5, f"=IF($D${tot_row}=0,0,1)").font = _f(bold=True)
     rs.cell(tot_row, 5).number_format = _PCT
-    rs.cell(tot_row, 9, f'=IF(J{tot_row}=0,"",H{tot_row}/J{tot_row})').font = _f(bold=True)
-    rs.cell(tot_row, 9).number_format = _PCT
     rs.cell(3, 2).comment = Comment(
         "SKUs distintos con venta en el período. En categorías con "
         "sub-clasificación doble un SKU puede contar en dos ramas (misma "
         "convención que la página).", "OMNICANAL")
-    rs.cell(3, 10).comment = Comment(
+    rs.cell(3, 8).comment = Comment(
         "Parte de las Ventas $ cuyo producto SÍ tiene costo capturado. Es el "
-        "denominador del Margen %. Si queda muy por debajo de Ventas $, el "
-        "margen de esa categoría se está midiendo sobre una muestra: faltan "
-        "costos por capturar.", "OMNICANAL")
-    for c, w in {1: 32, 2: 13, 3: 11, 4: 13, 5: 10, 6: 13, 7: 13, 8: 13,
-                 9: 10, 10: 14, 11: 13, 12: 9}.items():
+        "medidor de COBERTURA: si queda muy por debajo de Ventas $, las "
+        "columnas de costo de esta fila describen una muestra, no la "
+        "categoría completa.", "OMNICANAL")
+    for c, w in {1: 32, 2: 13, 3: 11, 4: 13, 5: 10, 6: 13, 7: 13, 8: 14,
+                 9: 13, 10: 9}.items():
         rs.column_dimensions[get_column_letter(c)].width = w
 
     # ── hoja Ventas ──────────────────────────────────────────────────────────
     # Una fila por LÍNEA vendida: el grano más fino del libro. Sustituye al CSV
     # de márgenes que se descargaba aparte. Sin fórmulas ni agrupaciones: está
-    # pensada para tabla dinámica y para auditar un margen que no cuadre.
+    # pensada para tabla dinámica y para auditar una cifra que no cuadre.
     vs = wb.create_sheet("Ventas")
     cabs_v = ["Fecha", "Canal", "Cuenta", "Pedido", "SKU", "Título", "Cant.",
               "Precio unit.", "Ingreso", "Comisión ML", "Envío est.",
-              "Costo base", "Costo final", "Ganancia", "Margen %", "FULL",
-              "Estado"]
+              "Costo base", "Costo final", "FULL", "Estado"]
     for c, t in enumerate(cabs_v, 1):
         cel = vs.cell(1, c, t)
         cel.font = _f(bold=True, color="FFFFFF")
@@ -339,17 +327,13 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
             vs.cell(r, 12, float(v["costo_base"])).font = _f()
         if cfin is not None:
             vs.cell(r, 13, float(cfin)).font = _f()
-            vs.cell(r, 14, f"=I{r}-M{r}").font = _f()
-            vs.cell(r, 15, f'=IF(I{r}=0,"",(I{r}-M{r})/I{r})').font = _f()
-        vs.cell(r, 16, "sí" if v.get("full") else "no").font = _f()
-        vs.cell(r, 17, v.get("estado") or "").font = _f()
+        vs.cell(r, 14, "sí" if v.get("full") else "no").font = _f()
+        vs.cell(r, 15, v.get("estado") or "").font = _f()
         for c, fmt in ((7, _INT), (8, _MONEY), (9, _MONEY), (10, _MONEY),
-                       (11, _MONEY), (12, _MONEY), (13, _MONEY), (14, _MONEY),
-                       (15, _PCT)):
+                       (11, _MONEY), (12, _MONEY), (13, _MONEY)):
             vs.cell(r, c).number_format = fmt
     for c, w in {1: 11, 2: 14, 3: 9, 4: 16, 5: 18, 6: 52, 7: 7, 8: 12, 9: 12,
-                 10: 12, 11: 11, 12: 12, 13: 12, 14: 12, 15: 10, 16: 6,
-                 17: 12}.items():
+                 10: 12, 11: 11, 12: 12, 13: 12, 14: 6, 15: 12}.items():
         vs.column_dimensions[get_column_letter(c)].width = w
 
     _ = ult  # (referencia futura: filas totales de la hoja Categorias)
