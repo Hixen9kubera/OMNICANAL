@@ -1523,6 +1523,157 @@ async def categorias_publicaciones(
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
 
+async def _datos_reporte(d1: str, d2: str, cuenta: str | None) -> tuple:
+    """
+    Los tres conjuntos del reporte, ya enriquecidos con el envío REAL de ML.
+
+    Vive aparte porque lo usan DOS endpoints: la descarga del Excel y su vista
+    previa. Si cada uno armara sus datos, la vista previa acabaría prometiendo
+    un archivo distinto del que llega — que es exactamente lo que no debe pasar
+    en una previsualización.
+    """
+    import asyncio
+
+    from services import envio_real
+
+    par = {"desde": d1, "hasta": d2, "cuenta": cuenta, "categoria_id": None}
+    hojas = sdb.fetch_all(_SQL_CAT_HOJAS, par)
+    pubs = sdb.fetch_all(_SQL_CAT_PUBS, par)
+    # la hoja de detalle reusa el MISMO query del CSV que se retiró
+    ventas = sdb.fetch_all(
+        _SQL_MARGEN_LINEAS,
+        {"desde": d1, "hasta": d2, "cuenta": cuenta, "canal": None})
+
+    # ENVÍO REAL. El estimado de costing mintió en las dos direcciones (Malla
+    # Sombra: fee $349 contra un cobro real de $88), así que donde ML nos diga
+    # cuánto cobró, manda ML. `aplicar_a_lineas` reparte el cobro del EMBARQUE
+    # entre las líneas de su orden y rearma el costo final; lo que no esté en
+    # caché se queda con el estimado, marcado.
+    censo = await asyncio.to_thread(envio_real.aplicar_a_lineas, ventas)
+
+    # El árbol agrega por publicación: se suma el envío ya resuelto de sus
+    # líneas en vez de volver a leer costos_finales, para que las dos hojas no
+    # se contradigan. Una publicación es "ML real" solo si TODAS sus líneas lo
+    # son — media medición no es una medición.
+    real_pub: dict[tuple[str, str], list[float]] = {}
+    origen_pub: dict[tuple[str, str], set[str]] = {}
+    for f in ventas:
+        if not f.get("item_id"):
+            continue
+        k = (str(f["item_id"]), str(f["cuenta"]))
+        real_pub.setdefault(k, []).append(float(f.get("envio") or 0))
+        origen_pub.setdefault(k, set()).add(f.get("envio_origen") or "")
+    for pb in pubs:
+        k = (str(pb.get("item_id")), str(pb.get("cuenta")))
+        orgs = origen_pub.get(k)
+        if not orgs:
+            pb["envio_origen"] = envio_real.ORIGEN_ESTIMADO
+            continue
+        pb["envio"] = round(sum(real_pub.get(k) or []), 2)
+        pb["envio_origen"] = (next(iter(orgs)) if len(orgs) == 1 else "mezclado")
+        if pb.get("costo_base") is not None:
+            pb["costo_final_real"] = round(
+                float(pb["costo_base"]) + float(pb.get("comision") or 0)
+                + float(pb["envio"]), 2)
+
+    # Lo que falte se consulta en segundo plano: la siguiente descarga sale más
+    # completa sin que ésta espere ~5,800 llamadas a ML.
+    pend = sorted({(str(f["cuenta"]), str(f["pedido"])) for f in ventas
+                   if (f.get("canal") or "") == "mercado_libre" and f.get("pedido")
+                   and f.get("envio_origen") != envio_real.ORIGEN_REAL})
+    if pend:
+        asyncio.create_task(envio_real.completar(pend, presupuesto=400))
+    log.info("reporte %s→%s: envío %d real / %d estimado / %d sin dato (%d por llenar)",
+             d1, d2, censo["reales"], censo["estimadas"], censo["sin_dato"], len(pend))
+    return hojas, pubs, ventas, censo
+
+
+@router.get("/categorias/excel/preview")
+async def categorias_excel_preview(
+    dias: int = Query(60, ge=7, le=400),
+    cuenta: str | None = Query(None),
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
+):
+    """
+    Qué trae el Excel ANTES de bajarlo: tamaño, rango con datos de verdad,
+    cobertura de costo y de envío, y el censo de diagnósticos.
+
+    Corre EXACTAMENTE la misma preparación que la descarga (`_datos_reporte`);
+    lo único que no hace es armar el workbook. Así la vista previa no puede
+    prometer un archivo distinto del que llega.
+    """
+    from collections import Counter
+
+    from services import reporte_categorias_xlsx as rx
+
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    d1, d2 = _rango_fechas(dias, desde, hasta)
+    try:
+        hojas, pubs, ventas, censo = await _datos_reporte(d1, d2, cuenta)
+
+        fechas = sorted(str(v["fecha"]) for v in ventas if v.get("fecha"))
+        ingreso = sum(float(v.get("ingreso") or 0) for v in ventas)
+        uds = sum(int(v.get("cantidad") or 0) for v in ventas)
+        con_costo = [v for v in ventas if v.get("costo_base") is not None]
+        venta_con_costo = sum(float(v.get("ingreso") or 0) for v in con_costo)
+
+        # El MISMO diagnóstico que se escribe en el archivo, contado por código.
+        diag: Counter = Counter()
+        for v in ventas:
+            txt = rx.diagnosticar(v, v.get("ingreso"), v.get("costo_base"))
+            if txt:
+                diag[txt.split(" — ")[0]] += 1
+
+        n = len(ventas)
+        pct = lambda x: round(x / n * 100, 1) if n else 0.0  # noqa: E731
+        return {
+            "rango": {
+                "desde": d1, "hasta": d2,
+                "primera_venta": fechas[0] if fechas else None,
+                "ultima_venta": fechas[-1] if fechas else None,
+                "dias_con_venta": len(set(fechas)),
+                # MISMA regla que el aviso de Resumen!A2 (rx.rango_parcial), no
+                # una copia con otro umbral: la vista previa tiene que avisar
+                # exactamente cuando el archivo va a avisar.
+                "parcial": rx.rango_parcial(d1, d2, fechas),
+            },
+            "totales": {
+                "lineas": n,
+                "pedidos": len({(v.get("cuenta"), v.get("pedido")) for v in ventas}),
+                "publicaciones": len(pubs),
+                "categorias": len(hojas),
+                "skus": len({v.get("sku") for v in ventas if v.get("sku")}),
+                "unidades": uds,
+                "ingreso": round(ingreso, 2),
+            },
+            "cobertura": {
+                "costo": {
+                    "lineas": len(con_costo), "pct": pct(len(con_costo)),
+                    "venta_con_costo": round(venta_con_costo, 2),
+                    "pct_venta": (round(venta_con_costo / ingreso * 100, 1)
+                                  if ingreso else 0.0),
+                },
+                "envio": {**censo, "pct_real": pct(censo["reales"])},
+            },
+            "diagnosticos": [{"codigo": c, "lineas": k, "pct": pct(k)}
+                             for c, k in diag.most_common()],
+            "hojas": [
+                {"nombre": "Resumen", "filas": len(hojas), "columnas": 10},
+                {"nombre": "Categorias", "filas": len(pubs), "columnas": 16},
+                {"nombre": "Ventas", "filas": n, "columnas": 17},
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("categorias/excel/preview falló: %s", exc)
+        raise HTTPException(502, f"no se pudo calcular la vista previa: {exc}") from exc
+
+
 @router.get("/categorias/excel")
 async def categorias_excel(
     dias: int = Query(60, ge=7, le=400),
@@ -1555,58 +1706,7 @@ async def categorias_excel(
 
         from services import reporte_categorias_xlsx
 
-        p = {"desde": d1, "hasta": d2, "cuenta": cuenta,
-             "categoria_id": None}
-        hojas = sdb.fetch_all(_SQL_CAT_HOJAS, p)
-        pubs = sdb.fetch_all(_SQL_CAT_PUBS, p)
-        # la hoja de detalle reusa el MISMO query del CSV que se retira
-        ventas = sdb.fetch_all(
-            _SQL_MARGEN_LINEAS,
-            {"desde": d1, "hasta": d2, "cuenta": cuenta, "canal": None})
-
-        # ENVÍO REAL. El estimado de costing mintió en las dos direcciones
-        # (Malla Sombra: fee $349 contra un cobro real de $88), así que donde
-        # ML nos diga cuánto cobró, manda ML. `aplicar_a_lineas` reparte el
-        # cobro del EMBARQUE entre las líneas de su orden y rearma el costo
-        # final; lo que no esté en caché se queda con el estimado, marcado.
-        from services import envio_real
-        censo = await asyncio.to_thread(envio_real.aplicar_a_lineas, ventas)
-        # El árbol agrega por publicación: se suma el envío ya resuelto de sus
-        # líneas en vez de volver a leer costos_finales, para que las dos hojas
-        # no se contradigan. Una publicación es "ML real" solo si TODAS sus
-        # líneas lo son — media medición no es una medición.
-        real_pub: dict[tuple[str, str], list[float]] = {}
-        origen_pub: dict[tuple[str, str], set[str]] = {}
-        for f in ventas:
-            if not f.get("item_id"):
-                continue
-            k = (str(f["item_id"]), str(f["cuenta"]))
-            real_pub.setdefault(k, []).append(float(f.get("envio") or 0))
-            origen_pub.setdefault(k, set()).add(f.get("envio_origen") or "")
-        for p in pubs:
-            k = (str(p.get("item_id")), str(p.get("cuenta")))
-            orgs = origen_pub.get(k)
-            if not orgs:
-                p["envio_origen"] = envio_real.ORIGEN_ESTIMADO
-                continue
-            p["envio"] = round(sum(real_pub.get(k) or []), 2)
-            p["envio_origen"] = (orgs.pop() if len(orgs) == 1 else "mezclado")
-            if p.get("costo_base") is not None:
-                p["costo_final_real"] = round(
-                    float(p["costo_base"]) + float(p.get("comision") or 0)
-                    + float(p["envio"]), 2)
-
-        # Lo que falte se consulta en segundo plano: la siguiente descarga sale
-        # más completa sin que ésta espere ~5,800 llamadas a ML.
-        pend = sorted({(str(f["cuenta"]), str(f["pedido"])) for f in ventas
-                       if (f.get("canal") or "") == "mercado_libre"
-                       and f.get("pedido")
-                       and f.get("envio_origen") != envio_real.ORIGEN_REAL})
-        if pend:
-            asyncio.create_task(envio_real.completar(pend, presupuesto=400))
-
-        log.info("excel: envío %d real / %d estimado / %d sin dato (%d por llenar)",
-                 censo["reales"], censo["estimadas"], censo["sin_dato"], len(pend))
+        hojas, pubs, ventas, censo = await _datos_reporte(d1, d2, cuenta)
         datos = await asyncio.to_thread(
             reporte_categorias_xlsx.construir, hojas, pubs, ventas, d1, d2,
             cuenta, censo)

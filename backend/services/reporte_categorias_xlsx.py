@@ -112,6 +112,42 @@ _DENSIDAD_MAX = 1.5          # kg/L
 _TC_PLACEHOLDER = 19
 
 
+# Cuánto hueco al inicio del rango merece un aviso. Ambas condiciones a la vez:
+# un rango de 7 días que empieza a vender al segundo día tiene 14% de hueco y no
+# pasa nada; uno de 400 que empieza a los 227 sí. La primera versión avisaba en
+# cuanto `primera_venta > desde`, o sea CASI SIEMPRE — y un aviso que sale
+# siempre enseña a ignorarlo, que es peor que no avisar.
+_HUECO_MIN_DIAS = 7
+_HUECO_MIN_PCT = 0.10
+
+
+def rango_parcial(desde: str, hasta: str,
+                  fechas: list[str]) -> dict[str, Any] | None:
+    """
+    ¿El rango PEDIDO promete mucho más de lo que el rango con DATOS entrega?
+
+    Devuelve None cuando el hueco inicial es despreciable. Lo usan el Excel
+    (aviso en Resumen!A2) y la vista previa, para que digan lo mismo.
+    """
+    from datetime import date
+
+    if not fechas:
+        return None
+    try:
+        d0, d1 = date.fromisoformat(desde), date.fromisoformat(hasta)
+        primera = date.fromisoformat(fechas[0])
+    except ValueError:
+        return None
+    ventana = (d1 - d0).days or 1
+    hueco = (primera - d0).days
+    if hueco < _HUECO_MIN_DIAS or hueco / ventana < _HUECO_MIN_PCT:
+        return None
+    return {"primera_venta": fechas[0], "ultima_venta": fechas[-1],
+            "dias_sin_captura": hueco, "dias_ventana": ventana,
+            "pct_sin_captura": round(hueco / ventana * 100, 1),
+            "dias_con_venta": len(set(fechas))}
+
+
 def _num(v: Any) -> float | None:
     try:
         return None if v is None else float(v)
@@ -377,15 +413,20 @@ def construir(hojas: list[dict], pubs: list[dict], ventas: list[dict],
                     f"hay pedidos capturados en esas fechas.")
         rs["A2"].font = _f(bold=True, size=9)
         rs["A2"].fill = _AVISO_FILL
-    elif fechas[0] > desde:
-        dias_reales = len(set(fechas))
-        rs["A2"] = (f"OJO CON EL RANGO: se pidió desde {desde}, pero la primera "
-                    f"venta capturada es del {fechas[0]} (hay ventas en "
-                    f"{dias_reales} días distintos, hasta {fechas[-1]}). "
-                    f"Los meses anteriores no salen bajos: salen sin captura. "
-                    f"Compara solo dentro del rango con datos.")
-        rs["A2"].font = _f(bold=True, size=9)
-        rs["A2"].fill = _AVISO_FILL
+    else:
+        parcial = rango_parcial(desde, hasta, fechas)
+        if parcial:
+            rs["A2"] = (
+                f"OJO CON EL RANGO: se pidió desde {desde}, pero la primera "
+                f"venta capturada es del {parcial['primera_venta']} — "
+                f"{parcial['dias_sin_captura']} días "
+                f"({parcial['pct_sin_captura']}% del rango) van sin captura. "
+                f"Hay ventas en {parcial['dias_con_venta']} días distintos, "
+                f"hasta {parcial['ultima_venta']}. Los meses anteriores no "
+                f"salen bajos: salen sin captura. Compara solo dentro del "
+                f"rango con datos.")
+            rs["A2"].font = _f(bold=True, size=9)
+            rs["A2"].fill = _AVISO_FILL
     rs["C1"] = f"Cuenta: {TIENDA.get(cuenta or '', cuenta) or 'todas'}"
     rs["C1"].font = _f(bold=True)
     cob = ""

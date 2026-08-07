@@ -4892,3 +4892,52 @@ entonces).
 Probado en los tres escenarios —histórico con datos parciales, rango normal
 cubierto, y rango sin ventas— y contra producción con `dias=400`. Sin
 migraciones y sin variables nuevas. Versión 0.75.0.
+
+### v0.76.0 — Vista previa del Excel, y el aviso de rango deja de gritar siempre
+
+Petición de Eduardo (7-ago): poder ver qué trae el archivo antes de bajarlo.
+Botón **Previsualizar** en la tarjeta de `/analisis/reportes`, junto a
+Descargar, con endpoint nuevo `GET /api/fulfillment/categorias/excel/preview`.
+
+Muestra, sin bajar los ~1.4 MB: líneas, unidades, SKUs distintos e ingreso;
+dos barras de cobertura (**envío con el cobro real de ML** y **venta con costo
+capturado**); el censo de diagnósticos que va a traer; y el tamaño de cada
+hoja. Arriba de todo, el aviso de rango si aplica.
+
+**Refactor que hace honesta la vista previa.** La preparación de datos —tres
+consultas, envío real, agregado por publicación, relleno en segundo plano— se
+extrajo a `_datos_reporte()`, que ahora usan LOS DOS endpoints. Si cada uno
+armara sus datos, la vista previa acabaría prometiendo un archivo distinto del
+que llega, que es justo lo que una previsualización no puede hacer. De paso se
+arregló un `p` que se sombreaba a sí mismo (el dict de parámetros y la variable
+del `for p in pubs`).
+
+**DEFECTO CORREGIDO de la v0.75.0.** El aviso de rango se disparaba con
+`primera_venta > desde`, o sea CASI SIEMPRE: pedir 60 días arranca el 09-jun y
+la primera venta es del 10-jun — un día de hueco y ya avisaba. Un aviso que
+sale siempre enseña a ignorarlo, que es peor que no avisar. Ahora
+`rango_parcial()` exige las DOS condiciones: hueco inicial de **más de 7 días**
+Y de **más del 10% de la ventana**. Verificado:
+
+| Caso | Antes | Ahora |
+|---|---|---|
+| 60 días, vende al día siguiente | avisaba | **callado** |
+| 7 días, vende al 2º día | avisaba | **callado** |
+| 90 días, primera venta a los 30 | avisaba | avisa (33.3%) |
+| 400 días, primera venta a los 227 | avisaba | avisa (56.9%) |
+
+La regla vive en `reporte_categorias_xlsx.rango_parcial()` y la consumen el
+Excel (Resumen!A2) y la vista previa: la previa avisa exactamente cuando el
+archivo va a avisar, no con un umbral paralelo.
+
+**"Pedidos" salió de los mosaicos**: en estos datos cada pedido trae
+exactamente una línea (verificado: `max_lineas = 1` sobre 9,875 pedidos de 60
+días), así que era la misma cifra dos veces. En su lugar va **Unidades**, que
+sí difiere (11,649 unidades en 9,879 líneas; hay pedidos de hasta 40 piezas).
+El campo sigue en el JSON por si ML alguna vez manda órdenes multi-línea.
+
+Cambiar cualquier filtro borra la vista previa: dejarla en pantalla
+describiendo otro rango sería peor que no mostrarla. Probado el endpoint en
+cuatro escenarios contra producción (60d, 400d, una cuenta, rango sin ventas);
+tarda 1.4–7 s. Typecheck y `next build` limpios. Sin migraciones y sin
+variables nuevas. Versión 0.76.0.

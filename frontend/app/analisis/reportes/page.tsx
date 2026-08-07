@@ -20,9 +20,160 @@
  */
 
 import { useState } from "react";
-import { Download, FileSpreadsheet, FileText, X } from "lucide-react";
-import { API_BASE, descargar } from "@/lib/api";
+import { AlertTriangle, Download, Eye, FileSpreadsheet, FileText, X } from "lucide-react";
+import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
 import FulfillmentPendiente from "@/components/FulfillmentPendiente";
+
+/* Lo que /categorias/excel/preview responde: el contenido del archivo ANTES de
+   bajarlo. Sale del mismo `_datos_reporte` que la descarga, así que lo que se
+   ve aquí es lo que llega. */
+interface Preview {
+  rango: {
+    desde: string; hasta: string;
+    primera_venta: string | null; ultima_venta: string | null;
+    dias_con_venta: number;
+    /* null cuando el hueco inicial es despreciable — el backend aplica la
+       MISMA regla que usa para el aviso dentro del Excel. */
+    parcial: {
+      primera_venta: string; ultima_venta: string;
+      dias_sin_captura: number; dias_ventana: number;
+      pct_sin_captura: number; dias_con_venta: number;
+    } | null;
+  };
+  totales: {
+    lineas: number; pedidos: number; publicaciones: number;
+    categorias: number; skus: number; unidades: number; ingreso: number;
+  };
+  cobertura: {
+    costo: { lineas: number; pct: number; venta_con_costo: number; pct_venta: number };
+    envio: { reales: number; estimadas: number; sin_dato: number; pct_real: number };
+  };
+  diagnosticos: { codigo: string; lineas: number; pct: number }[];
+  hojas: { nombre: string; filas: number; columnas: number }[];
+}
+
+const money = (n: number) =>
+  "$" + Math.round(n).toLocaleString("es-MX");
+const miles = (n: number) => n.toLocaleString("es-MX");
+
+/* Barra de cobertura: verde si el dato está completo, ámbar si va a medias.
+   El número siempre al lado — una barra sin cifra invita a estimar a ojo. */
+function Barra({ pct, bueno }: { pct: number; bueno: boolean }) {
+  return (
+    <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+      <div className={`h-full rounded-full ${bueno ? "bg-emerald-500" : "bg-amber-500"}`}
+           style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+    </div>
+  );
+}
+
+function VistaPrevia({ p }: { p: Preview }) {
+  const cobCosto = p.cobertura.costo;
+  const cobEnvio = p.cobertura.envio;
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+      {/* El aviso del rango va PRIMERO: es lo que evita bajar un archivo que
+          parece cubrir un año y cubre siete semanas. */}
+      {p.totales.lineas === 0 ? (
+        <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            <b>Sin ventas en este rango.</b> El archivo saldría vacío: no es que
+            no haya margen, es que no hay pedidos capturados en esas fechas.
+          </span>
+        </p>
+      ) : p.rango.parcial ? (
+        <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            <b>El rango pedido no es el rango con datos.</b> Pediste desde{" "}
+            {p.rango.desde}, pero la primera venta capturada es del{" "}
+            <b>{p.rango.parcial.primera_venta}</b>:{" "}
+            <b>{miles(p.rango.parcial.dias_sin_captura)} días</b> ({p.rango.parcial.pct_sin_captura}%
+            {" "}del rango) van sin captura. Hay ventas en{" "}
+            <b>{p.rango.parcial.dias_con_venta} días distintos</b>. Los meses
+            anteriores no salen bajos: salen sin captura.
+          </span>
+        </p>
+      ) : null}
+
+      {p.totales.lineas > 0 && (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-4">
+            {[
+              /* "Pedidos" NO va aquí: en estos datos cada pedido trae
+                 exactamente una línea, así que sería la misma cifra dos veces
+                 (verificado 7-ago: max_lineas = 1 sobre 9,875 pedidos). */
+              ["Líneas vendidas", miles(p.totales.lineas)],
+              ["Unidades", miles(p.totales.unidades)],
+              ["SKUs distintos", miles(p.totales.skus)],
+              ["Ingreso", money(p.totales.ingreso)],
+            ].map(([et, v]) => (
+              <div key={et}>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">{et}</p>
+                <p className="text-lg font-semibold text-slate-800">{v}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <div className="flex items-baseline justify-between">
+                <p className="text-[12px] font-medium text-slate-600">
+                  Envío con el cobro REAL de ML
+                </p>
+                <p className="text-[13px] font-semibold text-slate-800">
+                  {cobEnvio.pct_real}%
+                </p>
+              </div>
+              <div className="mt-1"><Barra pct={cobEnvio.pct_real} bueno={cobEnvio.pct_real >= 95} /></div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {miles(cobEnvio.reales)} real · {miles(cobEnvio.estimadas)} estimado
+                {cobEnvio.sin_dato > 0 && ` · ${miles(cobEnvio.sin_dato)} sin dato`}
+              </p>
+            </div>
+            <div>
+              <div className="flex items-baseline justify-between">
+                <p className="text-[12px] font-medium text-slate-600">
+                  Venta con costo capturado
+                </p>
+                <p className="text-[13px] font-semibold text-slate-800">
+                  {cobCosto.pct_venta}%
+                </p>
+              </div>
+              <div className="mt-1"><Barra pct={cobCosto.pct_venta} bueno={cobCosto.pct_venta >= 95} /></div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {money(cobCosto.venta_con_costo)} de {money(p.totales.ingreso)}
+              </p>
+            </div>
+          </div>
+
+          {p.diagnosticos.length > 0 && (
+            <div className="mt-4">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                Diagnósticos que va a traer
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {p.diagnosticos.map((d) => (
+                  <span key={d.codigo}
+                        className="rounded-lg bg-white px-2 py-1 text-[11px] text-slate-600 ring-1 ring-slate-200">
+                    {d.codigo}{" "}
+                    <b className="text-slate-800">{miles(d.lineas)}</b>
+                    <span className="text-slate-400"> ({d.pct}%)</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      <p className="mt-4 border-t border-slate-200 pt-2.5 text-[11px] text-slate-500">
+        {p.hojas.map((h) => `${h.nombre}: ${miles(h.filas)} filas × ${h.columnas} col`).join("  ·  ")}
+      </p>
+    </div>
+  );
+}
 
 const CUENTAS = [
   { id: "", label: "Consolidado" },
@@ -47,6 +198,11 @@ function TarjetaVentasCategoria() {
   const rangoActivo = Boolean(desde || hasta);
   const [bajando, setBajando] = useState(false);
   const [errorBaja, setErrorBaja] = useState<string | null>(null);
+  const [previa, setPrevia] = useState<Preview | null>(null);
+  const [cargandoPrevia, setCargandoPrevia] = useState(false);
+  // Cualquier cambio de filtro invalida la vista previa: dejarla en pantalla
+  // describiendo OTRO rango es peor que no mostrarla.
+  const cambiar = (fn: () => void) => { setPrevia(null); setErrorBaja(null); fn(); };
 
   const q = new URLSearchParams({ dias: String(dias) });
   if (cuenta) q.set("cuenta", cuenta);
@@ -74,13 +230,16 @@ function TarjetaVentasCategoria() {
             </b>{" "}
             la base de costos tiene defectos medidos (precios placeholder, peso
             de caja capturado como pieza) y un margen calculado sobre eso se lee
-            como un hecho sin serlo.
+            como un hecho sin serlo.{" "}
+            <b className="text-slate-600">Previsualiza</b> antes de bajarlo: te
+            dice cuántas líneas trae, si el rango pedido tiene datos de verdad y
+            qué tan completos vienen el costo y el envío.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
               {CUENTAS.map((c) => (
-                <button key={c.id} onClick={() => setCuenta(c.id)}
+                <button key={c.id} onClick={() => cambiar(() => setCuenta(c.id))}
                         className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                           cuenta === c.id
                             ? "bg-indigo-600 font-semibold text-white"
@@ -92,7 +251,7 @@ function TarjetaVentasCategoria() {
             <div className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
               {PERIODOS.map((p) => (
                 <button key={p.dias}
-                        onClick={() => { setDias(p.dias); setDesde(""); setHasta(""); }}
+                        onClick={() => cambiar(() => { setDias(p.dias); setDesde(""); setHasta(""); })}
                         className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
                           dias === p.dias && !rangoActivo
                             ? "bg-slate-900 font-semibold text-white"
@@ -104,20 +263,42 @@ function TarjetaVentasCategoria() {
             <div className={`flex items-center gap-1.5 rounded-xl border p-1.5 shadow-sm ${
               rangoActivo ? "border-slate-900 bg-white" : "border-slate-200 bg-white"}`}>
               <input type="date" value={desde} max={hasta || undefined}
-                     onChange={(e) => setDesde(e.target.value)}
+                     onChange={(e) => cambiar(() => setDesde(e.target.value))}
                      className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
               <span className="text-xs text-slate-400">a</span>
               <input type="date" value={hasta} min={desde || undefined}
-                     onChange={(e) => setHasta(e.target.value)}
+                     onChange={(e) => cambiar(() => setHasta(e.target.value))}
                      className="rounded-lg px-2 py-1 text-sm text-slate-600 outline-none" />
               {rangoActivo && (
-                <button onClick={() => { setDesde(""); setHasta(""); }}
+                <button onClick={() => cambiar(() => { setDesde(""); setHasta(""); })}
                         title="Volver a los períodos relativos"
                         className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
                   <X size={14} />
                 </button>
               )}
             </div>
+            {/* Ver ANTES de bajar: el archivo pesa ~1.4 MB y hasta abrirlo no
+                sabías si el rango traía datos ni qué tan completo venía. */}
+            <button
+              type="button"
+              disabled={cargandoPrevia}
+              onClick={async () => {
+                setErrorBaja(null);
+                setCargandoPrevia(true);
+                try {
+                  const r = await fetchSesion(
+                    `${API_BASE}/api/fulfillment/categorias/excel/preview?${q.toString()}`);
+                  if (!r.ok) throw new Error(`El servidor respondió ${r.status}`);
+                  setPrevia(await r.json());
+                } catch (e) {
+                  setErrorBaja(mensajeDeError(e, "No se pudo calcular la vista previa."));
+                } finally {
+                  setCargandoPrevia(false);
+                }
+              }}
+              className="flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:cursor-wait disabled:opacity-60">
+              <Eye size={15} /> {cargandoPrevia ? "Calculando…" : "Previsualizar"}
+            </button>
             {/* Botón y NO un <a href>: una navegación del navegador no manda el
                 token de sesión, así que desde el enforcement (5-ago) bajaba un
                 401 en vez del Excel. `descargar()` lo pide con la sesión. */}
@@ -148,6 +329,7 @@ function TarjetaVentasCategoria() {
             {errorBaja}
           </p>
         )}
+        {previa && <VistaPrevia p={previa} />}
       </div>
     </div>
   );
