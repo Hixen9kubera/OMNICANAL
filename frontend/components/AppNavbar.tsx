@@ -20,6 +20,7 @@ import {
   Database,
   Tags,
   Trophy,
+  Webhook,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -88,6 +89,10 @@ const ITEMS: NavItem[] = [
   { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard",
     soloAdmin: true },
   { id: "migracion", label: "Migración", icon: Database, href: "/migracion",
+    soloAdmin: true },
+  // Solo admin: el log de TikTok trae datos del comprador (su scope
+  // `seller.order.info` viene marcado como información personal).
+  { id: "webhooks", label: "Webhooks", icon: Webhook, href: "/webhooks",
     soloAdmin: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
     soloAdmin: true },

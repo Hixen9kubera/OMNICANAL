@@ -5166,6 +5166,87 @@ Verificado tras el cambio: las cuentas que aparecen son solo Bekura, Sancor y
 Amazon; "En FULL" sigue cuadrando con Bekura + Sancor en las 293 filas. Sin
 migraciones y sin variables nuevas. Versión 0.80.0.
 
+### v0.83.0 — TikTok Shop CONECTADO: tres bugs que dejaban el canal inservible con el token bueno, y la pestaña de Webhooks
+
+La app quedó publicada y la tienda **KUBERA** (`shop_id 7494659908378395724`,
+region MX, **seller_type LOCAL**) autorizada. Pero entre "token válido" y "canal
+que funciona" había tres bugs.
+
+#### 🔴 Sin `shop_cipher` no se publica NADA
+
+`guardar()` buscaba las tiendas en `data["granted_shops"]` / `data["shops"]`, y
+**el canje del token no trae ninguna de esas llaves**. Caía SIEMPRE al respaldo
+y guardaba el `open_id` como si fuera shop_id, con el cipher en `NULL`:
+
+```
+antes →  shop_id = CGqC6QAAAACagEFIP-HAFurH…   (eso es el open_id)
+         shop_cipher = NULL
+después → shop_id = 7494659908378395724
+         shop_cipher = ROW_FnkQ_QAAAA…
+```
+
+El cipher es query param **obligatorio** en Create Product, Update Inventory,
+Update Price y la Events API. Se piden aparte con
+`GET /authorization/202309/shops`, y los campos se llaman **`cipher` e `id`** —
+no `shop_cipher` ni `shop_id`.
+
+#### 🔴 El `state` caducaba ANTES que el permiso de TikTok
+
+`_STATE_TTL` estaba en 900 (15 min) y el `auth_code` de TikTok dura **30**. Entre
+los minutos 16 y 29, TikTok mandaba un code **válido** y nuestro propio candado
+lo rechazaba. El síntoma habría sido *"autoricé y no sirvió"*, sin nada raro del
+lado de TikTok. El 7-ago funcionó solo porque Brandon fue rápido.
+
+#### 🔴 No había forma de firmar peticiones
+
+TikTok no se conforma con el token: firma cada llamada. El HMAC que existía era
+solo para el `state`. Se agregan `_firmar()`, `llamar()` y
+`tiendas_autorizadas()`.
+
+**Cómo se verificó la firma sin poder llamar:** TikTok respondió
+`36009033 IP not in allow list`. Ese error **prueba** que la firma es correcta —
+pasó la validación criptográfica y se frenó en la capa de red. Una firma mal
+armada devuelve error de firma. El bloqueo fue la evidencia.
+
+#### 🖼️ Las imágenes las rehospeda TikTok — el problema de Walmart NO aplica
+
+El producto que ya existía en la tienda lo demostró: sus imágenes viven en
+`p16-oec-sg.ibyteimg.com` con un `uri` propio, a 1000×1000. **Se suben a TikTok
+y el producto referencia el `uri`** — TikTok nunca entra a nuestro servidor, así
+que el infierno del WebP de `chunche.shop` (v0.82.0 de Walmart) no se repite.
+El costo es otro: ~300 productos × 3 imágenes = **~900 subidas** antes de crear.
+
+#### 🔒 La allowlist de IPs y su trampa
+
+TikTok tiene lista de IPs permitidas por app. **Los cambios quedan en BORRADOR
+hasta presionar "Publicar cambios"**: la IP aparece en la lista y sigue
+bloqueando. Costó ~15 min de diagnóstico y seis reintentos.
+
+#### Lo que se agregó
+
+| | |
+|---|---|
+| `POST /api/tiktok/reparar-tiendas` | admin — rellena el cipher **sin re-autorizar** |
+| `/webhooks` (frontend) | pestaña solo-admin: los 4 canales y el log en vivo |
+
+La pestaña distingue tres situaciones que conviene no confundir: **vivo**,
+**en observación**, y **sin webhook porque la plataforma no los ofrece**. Amazon
+(sondeo SP-API cada 5 min) y Temu (sondeo M2E cada 10 min) son el tercer caso:
+**no son un pendiente**, y la pantalla lo dice para que nadie los busque.
+
+#### Datos del canal al 7-ago
+
+- **2,168 categorías** de México, **1,937 son HOJA** (solo ahí se publica).
+- **1 producto ya publicado**: `TEC-1212-NEG-150MTS`, categoría hoja
+  `913416 "Accesorios de audio y video"`. Vino de M2E o se subió a mano.
+- `seller_type = LOCAL` ⇒ las APIs `global_product_*` **no sirven**: son para
+  vendedores intra-UE y globales.
+- `/seller/202309/shops` **rechaza** el `shop_cipher` (*"is not required for
+  this request"*). El cipher no es universal.
+
+Verificado antes del push: las **63 pruebas** de `humo_auth.py`, typecheck y
+build del frontend.
+
 ### v0.82.0 — TikTok Shop: el canal deja de depender de M2E, y su webhook nace en modo OBSERVACIÓN
 
 Kubera obtuvo credenciales propias en el TikTok Shop Partner Center (app
