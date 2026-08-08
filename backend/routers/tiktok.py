@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from config import settings
 from core.seguridad import requiere_api_key
-from services import tiktok
+from services import db, tiktok
 
 log = logging.getLogger("omnicanal.tiktok")
 router = APIRouter(prefix="/api/tiktok", tags=["tiktok"])
@@ -93,7 +93,19 @@ async def callback(
 
     try:
         data = await tiktok.intercambiar_code(recibido)
-        tiendas = tiktok.guardar(data)
+        # PASO OBLIGATORIO: el canje del token NO devuelve las tiendas ni su
+        # `cipher`, y sin cipher el canal queda inservible (es query param
+        # obligatorio en Create Product, Update Inventory y Update Price).
+        # Si esta llamada falla se guarda igual — perder el token recién
+        # canjeado por un fallo de red sería peor: el code ya se consumió y
+        # habría que rehacer toda la autorización.
+        try:
+            shops = await tiktok.tiendas_autorizadas(data["access_token"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("TikTok: token canjeado pero no se pudieron leer las "
+                        "tiendas (%s). Se guarda sin cipher; hay que reparar.", exc)
+            shops = []
+        tiendas = tiktok.guardar(data, shops)
     except Exception as exc:  # noqa: BLE001
         log.exception("TikTok: falló el canje del code")
         return _pagina("No se pudo conectar", str(exc), False)
@@ -105,6 +117,51 @@ async def callback(
         f"({tiendas} tienda/s). Ya puedes cerrar esta ventana.",
         True,
     )
+
+
+@router.post("/reparar-tiendas", dependencies=[Depends(requiere_api_key)])
+async def reparar_tiendas() -> dict:
+    """
+    Rellena el `shop_cipher` de una autorización que quedó sin él.
+
+    Existe porque la primera tienda se conectó ANTES de que el canje leyera las
+    tiendas: su fila guardó el `open_id` como shop_id y el cipher en NULL, y sin
+    cipher no se puede crear ni un producto. Esto lo arregla SIN volver a
+    autorizar — el token sigue siendo válido.
+
+    También sirve de refresco: si el seller agrega una tienda a la misma
+    autorización, vuelve a correrse y aparece.
+
+    Corre desde Railway a propósito: la lista de IPs permitidas de TikTok deja
+    fuera a las máquinas de desarrollo, así que este es el único lugar desde
+    donde la llamada pasa.
+    """
+    _exigir_encendido()
+    token = tiktok.access_token()
+    if not token:
+        raise HTTPException(409, "No hay ninguna tienda autorizada todavía.")
+    try:
+        shops = await tiktok.tiendas_autorizadas(token)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TikTok reparar-tiendas: %s", exc)
+        raise HTTPException(502, f"TikTok rechazó la consulta: {exc}") from exc
+    if not shops:
+        return {"ok": False, "motivo": "TikTok no devolvió ninguna tienda.",
+                "tiendas": []}
+    for s in shops:
+        db.execute(
+            "UPDATE tiktok_tokens SET shop_id=%s, shop_cipher=%s, seller_name=%s "
+            "WHERE shop_cipher IS NULL OR shop_id=%s",
+            (str(s.get("id")), s.get("cipher"), s.get("name") or "",
+             str(s.get("id"))),
+        )
+    log.info("TikTok: %d tienda(s) reparadas con su cipher", len(shops))
+    return {"ok": True, "reparadas": len(shops),
+            "tiendas": [{"id": s.get("id"), "name": s.get("name"),
+                         "region": s.get("region"),
+                         "seller_type": s.get("seller_type"),
+                         "cipher": bool(s.get("cipher"))} for s in shops],
+            "estado": tiktok.estado()}
 
 
 @router.get("/estado")

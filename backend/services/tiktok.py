@@ -128,7 +128,14 @@ def _descifrar(valor: str | None) -> str | None:
 
 # ── `state` firmado: lo que realmente protege el callback ─────────────────────
 
-_STATE_TTL = 900  # 15 min: de sobra para que el seller apruebe la pantalla
+# 30 min, EXACTAMENTE lo que dura el `auth_code` de TikTok.
+#
+# Estaba en 900 (15 min) y era una bomba de tiempo: si el seller se tardaba
+# entre 16 y 29 minutos en aprobar la pantalla, TikTok mandaba un code VÁLIDO y
+# nuestro propio candado lo rechazaba. El síntoma habría sido "autoricé y no
+# sirvió", sin nada raro del lado de TikTok. El 7-ago funcionó solo porque
+# Brandon fue rápido.
+_STATE_TTL = 1800
 
 
 def _secreto_state() -> str:
@@ -212,6 +219,77 @@ async def refrescar(refresh_token: str) -> dict[str, Any]:
     return cuerpo.get("data") or {}
 
 
+# ── Llamadas firmadas a la Open API ───────────────────────────────────────────
+#
+# TikTok NO se conforma con el token: firma cada petición. Sin esto no se puede
+# llamar a ningún endpoint de negocio, y era lo que faltaba para que el canal
+# sirviera de algo más que guardar un token.
+#
+# Verificado contra la API real el 7-ago: con esta firma la respuesta fue
+# `36009033 IP not in allow list` — es decir, pasó la validación de firma y se
+# frenó en la capa de red. Una firma mal armada devuelve error de firma, no ese.
+
+def _firmar(ruta: str, params: dict[str, Any], cuerpo: str = "") -> str:
+    """
+    HMAC-SHA256 sobre la cadena canónica de TikTok.
+
+    La receta: los query params MENOS `sign` y `access_token`, ordenados por
+    nombre y concatenados clave+valor sin separadores; se antepone la RUTA, se
+    anexa el cuerpo crudo, y todo se envuelve con el app_secret a ambos lados.
+    """
+    secreto = settings.tiktok_app_secret or ""
+    partes = "".join(f"{k}{params[k]}" for k in sorted(params)
+                     if k not in ("sign", "access_token"))
+    envuelto = f"{secreto}{ruta}{partes}{cuerpo}{secreto}"
+    return hmac.new(secreto.encode(), envuelto.encode(), hashlib.sha256).hexdigest()
+
+
+async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
+                 cuerpo: dict[str, Any] | None = None,
+                 metodo: str = "GET") -> dict[str, Any]:
+    """
+    Una llamada firmada. Devuelve el `data` de la respuesta.
+
+    TikTok responde HTTP 200 aunque haya fallado: el veredicto está en `code`
+    del cuerpo, no en el status. Confundirlos es el error clásico con esta API.
+
+    OJO con `timestamp`: TikTok solo acepta una ventana de [ahora−5min, ahora+30s].
+    Un reloj desfasado devuelve `36009004 Invalid timestamp` y parece otra cosa.
+    """
+    p: dict[str, Any] = dict(params or {})
+    p["app_key"] = settings.tiktok_app_key
+    p["timestamp"] = str(int(time.time()))
+    body = json.dumps(cuerpo, separators=(",", ":")) if cuerpo else ""
+    p["sign"] = _firmar(ruta, p, body)
+    cab = {"x-tts-access-token": token, "Content-Type": "application/json"}
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=60) as cli:
+        r = (await cli.get(ruta, params=p, headers=cab) if metodo == "GET"
+             else await cli.post(ruta, params=p, headers=cab, content=body))
+    try:
+        j = r.json()
+    except Exception:  # noqa: BLE001
+        raise RuntimeError(f"TikTok devolvió algo que no es JSON (HTTP {r.status_code}): "
+                           f"{r.text[:200]}")
+    if j.get("code") not in (0, "0"):
+        raise RuntimeError(f"TikTok {ruta} → code={j.get('code')} "
+                           f"{j.get('message')} (request_id={j.get('request_id')})")
+    return j.get("data") or {}
+
+
+async def tiendas_autorizadas(token: str) -> list[dict[str, Any]]:
+    """
+    Las tiendas que autorizaron la app, CON su `cipher`.
+
+    Este paso faltaba y por eso el canal quedaba inservible: el `shop_cipher` es
+    query param OBLIGATORIO en Create Product, Update Inventory, Update Price y
+    la Events API. El canje del token NO lo devuelve — hay que pedirlo aparte.
+
+    Devuelve objetos con `{cipher, code, id, name, region, seller_type}`.
+    """
+    data = await llamar("/authorization/202309/shops", token)
+    return data.get("shops") or []
+
+
 # ── Persistencia ──────────────────────────────────────────────────────────────
 
 def _a_datetime(epoch: Any) -> datetime | None:
@@ -221,12 +299,17 @@ def _a_datetime(epoch: Any) -> datetime | None:
         return None
 
 
-def guardar(data: dict[str, Any]) -> int:
+def guardar(data: dict[str, Any],
+            tiendas: list[dict[str, Any]] | None = None) -> int:
     """
     Persiste el token cifrado. Devuelve cuántas tiendas se guardaron.
 
-    Una autorización puede traer VARIAS tiendas (`seller_name` con N shops); se
-    guarda una fila por tienda para poder operarlas por separado.
+    `tiendas` son las de `tiendas_autorizadas()`, con su `cipher`. Se pasan
+    aparte a propósito: el canje del token no las trae, y sin el cipher el canal
+    queda inservible aunque el token sea válido.
+
+    Una autorización puede traer VARIAS tiendas; se guarda una fila por tienda
+    para poder operarlas por separado.
     """
     _asegurar_tabla()
     access = data.get("access_token")
@@ -241,10 +324,18 @@ def guardar(data: dict[str, Any]) -> int:
     seller = data.get("seller_name") or ""
     open_id = data.get("open_id") or ""
 
-    tiendas = data.get("granted_shops") or data.get("shops") or []
+    # Las tiendas vienen de `GET /authorization/202309/shops`, NO del canje del
+    # token: esa respuesta no trae ni `granted_shops` ni `shops`, así que buscarlas
+    # ahí caía SIEMPRE al respaldo y se guardaba el `open_id` como si fuera un
+    # shop_id, con el `cipher` en NULL. Resultado: token válido y canal inservible,
+    # porque el cipher es obligatorio en Create Product, Update Inventory,
+    # Update Price y la Events API.
+    #
+    # Los nombres de campo son `cipher` e `id` — NO `shop_cipher` ni `shop_id`.
     if not tiendas:
-        # Sin detalle de tiendas guardamos igual: el token sirve para consultarlas.
-        tiendas = [{"shop_id": open_id or seller or "default", "shop_cipher": None}]
+        log.warning("TikTok: se guarda el token SIN tiendas resueltas. El canal "
+                    "no podrá publicar hasta obtener el shop_cipher.")
+        tiendas = [{"id": open_id or seller or "default", "cipher": None}]
 
     guardadas = 0
     for t in tiendas:
@@ -260,8 +351,10 @@ def guardar(data: dict[str, Any]) -> int:
                 refresh_token=VALUES(refresh_token), expira=VALUES(expira),
                 refresh_expira=VALUES(refresh_expira), updated_at=VALUES(updated_at)
             """,
-            (seller, open_id, str(t.get("shop_id") or t.get("id") or "default"),
-             t.get("shop_cipher"), access_c, refresh_c, expira, refresh_expira, ahora),
+            (t.get("name") or seller, open_id,
+             str(t.get("id") or t.get("shop_id") or "default"),
+             t.get("cipher") or t.get("shop_cipher"),
+             access_c, refresh_c, expira, refresh_expira, ahora),
         )
         guardadas += 1
     log.info("TikTok: token guardado para %s (%d tienda/s)", seller or open_id, guardadas)
