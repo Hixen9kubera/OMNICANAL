@@ -204,11 +204,10 @@ def _marcar_publicado_en_woo(sku: str, wc_id: int | None) -> None:
         # EN VIVO, no hasta el ETL de las 06:15. El sku que viaja es el del
         # POST que se publica (el padre para variaciones — sku_padre), para que
         # el upsert-por-wc_id nunca case el sku de una variación con el wc_id
-        # del padre. Best-effort vía el espejo (cola + reproceso); no bloquea.
-        from services import kubera_mirror
-        kubera_mirror.espejar(
+        # del padre. F6 (corte core): síncrono con el flag; cola sin él.
+        from services import core_write
+        core_write.registrar(
             "services/publicar_ready.py", "publicar (draft→publish)",
-            "wp_posts", "core.products", "UPSERT",
             {"sku": (f.get("sku_padre") or sku), "wc_id": objetivo,
              "status": "publish"},
             clave=str(f.get("sku_padre") or sku))

@@ -455,13 +455,19 @@ def main() -> None:
         """, [(FASE, t, s, m, v) for (t, s, m, v) in issues_escribibles], page_size=BATCH)
     pcur.execute("select count(*) from core.products")
     n_final = pcur.fetchone()[0]
-    # Para un ETL, "ok" = corrió y sincronizó (haya o no cambios que aplicar);
-    # los cambios van en conteos. La racha de /migracion cuenta días 'ok'.
-    resultado = "ok"
+    # CORTE F6 de core (v0.84): el seam del panel es la PRIMARIA y este ETL
+    # queda de AUDITOR/respaldo — "ok" ya no significa "corrió", significa
+    # "no tuve nada que corregir". seam_gap = filas que el seam debió cubrir
+    # y no cubrió; >0 marca con_deltas y rompe la racha de /migracion (el
+    # mismo criterio de 14 días en cero de los demás dominios). Hueco medido
+    # en cero desde el 08-ago-2026.
+    seam_gap = len(inserts) + len(updates)
+    resultado = "ok" if seam_gap == 0 else "con_deltas"
     pcur.execute("""insert into migration.reconciliation_runs
                     (dominio, descripcion, conteos, checksums, resultado)
                     values (%s, 'ETL v2 incremental core.products (sin truncate)', %s, %s, %s)""",
                  (FASE, json.dumps({**reporte["plan"], "core_products_final": n_final,
+                                    "seam_gap": seam_gap,
                                     "issues_nuevas": len(issues_escribibles),
                                     "nombre_no_coincide_informativo": tally_issues.get("nombre_no_coincide", 0),
                                     "aliases_nuevos": len(aliases_nuevos)}, default=str),

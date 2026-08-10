@@ -273,13 +273,20 @@ def main() -> None:
     n_arbol = pcur.fetchone()[0]
     pcur.execute("select count(*) from channel.product_category where channel_id=%s", (CANAL,))
     n_asig = pcur.fetchone()[0]
+    # CORTE F6 de categorías (v0.84): el seam del panel (categoria-ml) es la
+    # PRIMARIA y este ETL queda de AUDITOR/respaldo — "ok" = "no tuve nada que
+    # corregir". seam_gap >0 marca con_deltas y rompe la racha (criterio de 14
+    # días en cero). Hueco medido en cero desde el 08-ago-2026.
+    seam_gap = len(arbol_ins) + len(arbol_upd) + len(asig_ins) + len(asig_upd)
+    resultado = "ok" if seam_gap == 0 else "con_deltas"
     pcur.execute("""insert into migration.reconciliation_runs
                     (dominio, descripcion, conteos, checksums, resultado)
-                    values (%s, 'ETL categorías ML: árbol + asignación (panel manda)', %s, %s, 'ok')""",
+                    values (%s, 'ETL categorías ML: árbol + asignación (panel manda)', %s, %s, %s)""",
                  (FASE, json.dumps({**reporte["arbol"], **reporte["asignaciones"],
                                     "arbol_final": n_arbol, "asignaciones_final": n_asig,
+                                    "seam_gap": seam_gap,
                                     "issues_nuevas": len(issues_nuevas)}, default=str),
-                  json.dumps({})))
+                  json.dumps({}), resultado))
     pg.commit()
     pcur.close()
     pg.close()

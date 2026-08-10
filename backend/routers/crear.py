@@ -39,8 +39,9 @@ from pydantic import BaseModel, Field
 from config import settings
 from core.seguridad import requiere_api_key
 from models.schemas import Paginacion, Producto, RespuestaProductos
-from services import (alertas, costing_read, costos, creacion, crear_producto, db,
-                      kubera_mirror, lecturas_fuente, woocommerce)
+from services import (alertas, categorias_write, core_write, costing_read, costos,
+                      creacion, crear_producto, db, kubera_mirror, lecturas_fuente,
+                      woocommerce)
 
 log = logging.getLogger("omnicanal.routers.crear")
 router = APIRouter(prefix="/api/crear", tags=["crear"])
@@ -318,9 +319,9 @@ async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
     # y NO debe pintarse como borrado (candado pedido por Eduardo, 05-ago; la
     # auditoría además solo mira la última encarnación por SKU: max_id arriba).
     for d in desaparecidos:
-        kubera_mirror.espejar(
+        # F6 (corte core): síncrono con el flag; cola sin él.
+        core_write.registrar(
             "routers/crear.py", "auditoria (desaparecido)",
-            "wp_posts", "core.products", "UPSERT",
             {"sku": d.get("sku"), "wc_id": d.get("wc_id"),
              "status": "trash" if d["situacion"] == "papelera" else "deleted",
              "solo_por_wc_id": True},
@@ -414,6 +415,12 @@ async def guardar_categoria_ml(req: GuardarCategoriaML):
         resp = await cli.put(f"/products/{req.wc_id}", json={"meta_data": meta}, timeout=60.0)
         if resp.status_code not in (200, 201):
             raise HTTPException(502, f"WooCommerce HTTP {resp.status_code}: {resp.text[:150]}")
+    # F6 (corte categorías): kubera se entera de la elección AL GUARDARSE —
+    # árbol + asignación (source='panel'), con cola si kubera está caída. En
+    # threadpool: psycopg2 bloquea y esto es un handler async. Jamás rompe el
+    # guardado en Woo (registrar atrapa todo por dentro).
+    await run_in_threadpool(categorias_write.registrar,
+                            req.wc_id, cat_id, nombre_hoja, ruta)
     log.info("Categoría ML guardada: wc_id=%s → %s (%s)", req.wc_id, cat_id, ruta)
     return {"ok": True, "wc_id": req.wc_id, "category_id": cat_id,
             "name": nombre_hoja, "path": ruta, "niveles": niveles,

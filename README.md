@@ -5358,3 +5358,53 @@ variantes pueden costar diferente— que además cae en "no tocar costos". Se de
 como está.
 
 Sin migraciones y sin variables nuevas. Versión 0.81.0.
+
+### v0.84.0 — CORTES F6 de CORE y CATEGORÍAS: los últimos dos dominios (Eduardo)
+
+Con esto los CINCO dominios de la migración tienen su corte. Estos dos son de
+naturaleza distinta a costos/pedidos/channel: **WooCommerce no se retira** (es
+la fuente de verdad del catálogo), así que aquí el corte no invierte un espejo
+— cambia QUIÉN mantiene a kubera y CUÁNDO:
+
+**CORE — flag `SUPABASE_WRITE_CORE`.** Los tres seams de ciclo de vida
+(nacimiento en `crear_producto`, publish en `publicar_ready`, trash/deleted de
+la auditoría de `crear.py`) dejan la cola best-effort y escriben
+`core.products` **SÍNCRONO en la misma petición** vía el nuevo
+`services/core_write.py` — mismo upsert de siempre
+(`_up_core_product`: update-por-wc_id primero, candado `solo_por_wc_id`).
+Si kubera está caída: el evento cae a la cola del espejo clásico
+(`espejo_kubera_log`, reprocesable desde /migracion) + Slack
+(`escritura_fallback:core`) — el flujo de negocio jamás se bloquea. Flag
+apagado = seam encolado de la v0.65, sin cambios.
+
+**CATEGORÍAS — flag `SUPABASE_WRITE_CATEGORIAS`.** La elección de categoría
+del panel (la que MANDA, regla 2) ganó su seam: al guardarse
+(`POST /api/crear/categoria-ml`), `services/categorias_write.py` escribe
+síncrono el árbol (`channel.categories`, nombre+ruta del path_from_root) y la
+asignación (`channel.product_category`, source='panel') — kubera se entera al
+momento, no hasta el ETL de las 06:15. El sku se resuelve por `wc_id` contra
+`core.products` (por eso este corte va de la mano del de core); sin acta, el
+evento queda en la cola y el reproceso lo aplica cuando el acta exista.
+Handler nuevo `channel.product_category` en `kubera_mirror._UPSERTS`. Flag
+apagado = hoy exacto (solo el ETL nocturno; el censo filtra `wp_postmeta`).
+
+**Los ETLs pasan de POBLADORES a AUDITORES.** Siguen corriendo como respaldo,
+pero su acta se vuelve estricta: `resultado='ok'` ya no significa "corrió" —
+significa "**no tuve nada que corregir**". El conteo nuevo `seam_gap`
+(insertar+actualizar que el seam debió cubrir) marca `con_deltas` si es >0 y
+rompe la racha de /migracion: el MISMO criterio de 14 días en cero de los
+demás dominios, ahora midiendo lo correcto. El hueco viene en CERO desde el
+08-ago (verificado en las actas del 08/09/10), así que la racha no se rompe
+al cambiar la vara — se vuelve honesta.
+
+Pruebas en el SANDBOX (`backend/scripts/probar_corte_core_categorias.py`,
+mismo arnés: guardia triple, MySQL/Slack stubeados, cobayas limpiadas):
+**12/12 PASAN** — ciclo de vida primario (nacimiento, publish por wc_id,
+candado de reciclados), elección y re-elección de categoría, wc_id sin acta →
+cola → reproceso, caídas de kubera en ambos dominios y flags OFF.
+
+Revertir = apagar el flag del dominio (independientes, cero deploys). Sin
+migraciones que aplicar. Variables nuevas en Railway: `SUPABASE_WRITE_CORE` y
+`SUPABASE_WRITE_CATEGORIAS`. Al cierre de las cinco transiciones (14 actas en
+cero cada una): retirar flags de lectura y espejos inversos, crons deltas
+fuera, tablas MySQL a legado y F8.

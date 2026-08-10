@@ -226,6 +226,19 @@ class Settings(BaseSettings):
     # (15 min) auto-sana kubera — este dominio no necesita cola. Racha
     # channel-deltas 17/14 (06-ago). Apagar = revertir al dual-write.
     supabase_write_channel: bool = False
+    # F6 core (CORTE): los eventos de ciclo de vida del maestro (nacimiento en
+    # Crear, publish, trash/deleted de la auditoría) escriben core.products
+    # SÍNCRONO en la misma petición (primaria); si kubera falla, el evento cae
+    # a la cola del espejo clásico (espejo_kubera_log, reprocesable) + Slack.
+    # El ETL de las 06:15 queda de AUDITOR/respaldo: su acta pasa a medir el
+    # hueco del seam (resultado con_deltas si tuvo algo que corregir). Hueco
+    # medido en cero desde el 08-ago. Apagar = volver al seam encolado.
+    supabase_write_core: bool = False
+    # F6 categorías (CORTE): la elección de categoría ML del panel (la que
+    # MANDA, regla 2) escribe channel.categories + channel.product_category
+    # SÍNCRONO al guardarse — kubera se entera en vivo, no hasta el ETL.
+    # Mismo fallback a cola + Slack. Apagado = solo el ETL nocturno (hoy).
+    supabase_write_categorias: bool = False
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""

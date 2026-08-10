@@ -991,10 +991,11 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             # puede traer el SKU base (ROBB-0004) cuando el producto vive con
             # sufijo (ROBB-0004-MET) y el desfase choca con products_wc_id_key.
             sku_real = (wc_prod or {}).get("sku") or sku
-            from services import kubera_mirror
-            kubera_mirror.espejar(
+            # F6 (corte core): registrar() escribe SÍNCRONO con el flag
+            # encendido; apagado delega en el espejo encolado de siempre.
+            from services import core_write
+            core_write.registrar(
                 "services/crear_producto.py", "crear (nacimiento)",
-                "wp_posts", "core.products", "UPSERT",
                 {"sku": sku_real, "name": titulo, "wc_id": wc_id,
                  "status": status_final, "source": "panel_crear"},
                 clave=sku_real)

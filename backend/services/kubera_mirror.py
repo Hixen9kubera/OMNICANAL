@@ -578,6 +578,45 @@ def _up_costing_finales(cur, p: dict[str, Any]) -> None:
     costing_mirror.upsert_finales(cur, p.get("sku") or "", p)
 
 
+def _up_channel_categoria(cur, p: dict[str, Any]) -> None:
+    """channel.categories + channel.product_category — la elección de categoría
+    del PANEL (la que manda, regla 2). CORTE F6 de categorías: kubera se entera
+    al guardarse, no hasta el ETL de las 06:15.
+
+    El sku se resuelve por wc_id contra core.products (el acta del maestro):
+    sin acta no hay FK posible — se lanza para que el evento quede en la cola
+    y el reproceso lo aplique cuando el acta exista (el ETL nocturno también
+    la cierra). El árbol se upsertea con la ruta que trae el payload; la
+    asignación pisa con source='panel' (mismo contrato que el ETL)."""
+    cur.execute("select sku from core.products where wc_id = %s", (p.get("wc_id"),))
+    fila = cur.fetchone()
+    sku = (fila or {}).get("sku") if isinstance(fila, dict) else (fila[0] if fila else None)
+    if not sku:
+        raise ValueError(f"wc_id {p.get('wc_id')} sin acta en core.products")
+    cid = str(p.get("category_id") or "")
+    cur.execute(
+        """insert into channel.categories (channel_id, category_id, name, path)
+           values ('mercado_libre', %s, %s, %s)
+           on conflict (channel_id, category_id) do update set
+             name = coalesce(excluded.name, categories.name),
+             path = coalesce(excluded.path, categories.path)
+           where (categories.name, categories.path) is distinct from
+                 (coalesce(excluded.name, categories.name),
+                  coalesce(excluded.path, categories.path))""",
+        (cid, p.get("name"), p.get("path")),
+    )
+    cur.execute(
+        """insert into channel.product_category (sku, channel_id, category_id, source)
+           values (%s, 'mercado_libre', %s, 'panel')
+           on conflict (sku, channel_id) do update set
+             category_id = excluded.category_id, source = excluded.source,
+             updated_at = now()
+           where (product_category.category_id, product_category.source)
+             is distinct from (excluded.category_id, excluded.source)""",
+        (sku, cid),
+    )
+
+
 _UPSERTS: dict[str, Callable] = {
     "ops.webhook_events": _up_webhook_events,
     "ops.channel_submissions": _up_channel_submissions,
@@ -588,6 +627,7 @@ _UPSERTS: dict[str, Callable] = {
     "core.products": _up_core_product,
     "costing.costos_validados": _up_costing_validados,
     "costing.costos_finales": _up_costing_finales,
+    "channel.product_category": _up_channel_categoria,
 }
 
 
