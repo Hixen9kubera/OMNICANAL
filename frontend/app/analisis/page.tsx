@@ -7,13 +7,18 @@
  *
  * Equivalencias vs el original (ver routers/fulfillment.py):
  *   STOCK ODOO → STOCK PROPIO · DÍAS ODOO → EDAD S/VENTA ·
- *   DÍAS VENTA → COBERTURA · VISITAS/CR% → sin dato (fuera de alcance) ·
  *   TAM → derivado de dimensiones de costos_validados.
- * Columna extra NUESTRA: SUGERIDO (Bollinger de channel.restock_panel).
+ *
+ * QUÉ CONTESTA LA TABLA (Eduardo, 10-ago). Dejó de ser "qué reabastecer" para
+ * ser "qué deja dinero": salieron COBERTURA, SUGERIDO A FULL y el MARGEN BRUTO
+ * (el que no descuenta los cobros del canal — convivía con el neto y obligaba a
+ * elegir cuál leer), y entró el bloque de costos del popup de "Productos más
+ * vendidos": costo base · comisión /u · envío /u · costo final · margen ·
+ * ganancia del período. La fila ahora explica sola de dónde sale su margen.
  *
  * La tabla se COMPACTA en celdas de dos líneas (producto+tam+cuentas,
- * uds+venta, full+propio, precio+sug+costo) para verse completa sin
- * desplazamiento horizontal.
+ * uds+venta, full+propio, envío+origen, margen+ganancia por pieza) para no
+ * crecer a lo ancho con seis columnas más.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -44,6 +49,18 @@ interface PrecioCanal {
   price: number | null;
 }
 
+/* Los cobros del canal, abiertos: una línea por canal/cuenta que de verdad le
+   cobró algo a este SKU en el período. */
+interface ComisionCanal {
+  canal: string; cuenta: string; uds: number; comision_unit: number;
+}
+/* El envío es por CUENTA (la bodega que despachó), no por canal: `cubiertas`
+   son las piezas cuyo embarque ya se consultó a ML — el resto sigue en
+   estimado. */
+interface EnvioCuenta {
+  cuenta: string; uds: number; cubiertas: number; envio_unit: number | null;
+}
+
 interface Fila {
   sku: string;
   cuentas: string[];
@@ -60,23 +77,37 @@ interface Fila {
   stock_full: number;
   stock_propio: number;
   edad_sin_venta_d: number | null;
-  cobertura_d: number | null;
   precio: number | null;              // el de la publicación ACTIVA
   precio_cualquiera: number | null;   // fallback cuando no hay ninguna activa
   precios: PrecioCanal[] | null;      // desglose por cuenta/canal
   precio_visto_at: string | null;
   precio_sugerido: number | null;
+  // Precio contra el que se juzga el margen: el REALIZADO si hubo ventas en el
+  // período, el publicado si no. Lo decide el backend para que la columna de
+  // margen y el orden de la tabla hablen del mismo número.
+  precio_ref: number | null;
   costo: number | null;
-  margen_pct: number | null;
   // Cobros del marketplace por unidad (Eduardo, 5-ago): la comisión es la REAL
   // de los pedidos del período — por eso puede faltar (SKU sin ventas, o
   // Amazon, que aún la registra en cero). Con ellos sale el margen NETO.
+  // `comisiones` y `envios` son el mismo dato ABIERTO por canal y por cuenta:
+  // el promedio de la celda es ponderado, y sin el desglose no hay forma de ver
+  // qué cuenta lo está jalando. Se leen al pasar el cursor.
   comision_unit: number | null;
+  comisiones: ComisionCanal[] | null;
+  // ENVÍO: el cobro REAL del embarque cuando ya se consultó a ML, el estimado
+  // de costing mientras tanto. `envio_origen` dice cuál de los dos se está
+  // viendo y `cobertura_envio_pct` sobre qué parte de las piezas se midió.
   envio_unit: number | null;
+  envio_estimado: number | null;
+  envio_origen: "real" | "estimado" | "sin dato";
+  cobertura_envio_pct: number;
+  envios: EnvioCuenta[] | null;
   costo_final: number | null;
   margen_neto_pct: number | null;
+  ganancia_unit: number | null;
+  ganancia_periodo: number | null;
   crec_7d_pct: number | null;
-  sugerido_full: number;
   spark: number[];
   // Visitas a las publicaciones de MERCADO LIBRE en el período y conversión.
   // `uds_ml` es el numerador de esa conversión: las unidades totales incluyen
@@ -93,7 +124,12 @@ interface Fila {
   } | null;
 }
 
-interface TablaResp { total: number; items: Fila[]; limit: number; offset: number }
+interface TablaResp {
+  total: number; items: Fila[]; limit: number; offset: number;
+  // Piezas de la página que todavía traen envío ESTIMADO. Mientras sea > 0 el
+  // caché de embarques se sigue llenando y el refresco de 60 s lo completa.
+  envios_pendientes?: number;
+}
 
 interface DetalleDia { date: string; uds: number; venta: number }
 
@@ -158,27 +194,28 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   venta: { titulo: "Uds · $Venta", texto: "Unidades vendidas e importe en el período elegido arriba, sumando todas las cuentas de ese SKU." },
   stock_full: { titulo: "FULL · Propio", texto: "Piezas en la bodega del marketplace (FULL en Mercado Libre, FBA en Amazon) y piezas en tu bodega propia (DROP). Son inventarios separados y no se suman: reponer significa mover de Propio a FULL." },
   edad: { titulo: "Edad sin venta", texto: "Días desde la última venta registrada. Un número alto con stock encima es dinero detenido." },
-  cobertura: { titulo: "Cobertura", texto: "Cuántos días te dura el stock al ritmo de venta del período. Es la columna más accionable: por debajo de 10 días (lo que tarda un envío a FULL) ya vas tarde." },
   precio: { titulo: "Precio de venta", texto: "Lo que de VERDAD se cobró en promedio durante el período: el dinero vendido dividido entre las piezas. Ya viene ponderado, así que si un producto se vende en dos cuentas a precios distintos, pesa más la que más vendió. Si no hubo ventas en el período se muestra el precio de la publicación activa, por cuenta. Haz clic para ver el desglose por canal." },
-  margen: { titulo: "Margen bruto", texto: "Cuánto deja el producto sobre lo que de verdad se cobró: (precio real − costo) ÷ precio real. El costo es uno solo por producto, así que el margen cambia según a qué precio se vendió. NO descuenta la comisión del marketplace ni el envío — para eso está la columna de al lado. Si no hubo ventas en el período se calcula sobre el precio publicado, una línea por cuenta. Haz clic para ver el desglose por canal." },
-  margen_neto: { titulo: "Margen neto", texto: "El mismo margen pero ya con los cobros de Mercado Libre encima: costo del producto + comisión + envío. La comisión es la REAL que cobró el marketplace en las ventas del período, no una tasa supuesta, así que ya viene con la comisión de cada canal. Este es el margen que de verdad queda. Sale vacío cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Cuando el porcentaje sale en ÁMBAR con ⚠, el costo capturado supera 3 veces el precio al que se vendió: el margen se muestra igual, pero sale de un costo poco creíble, así que léelo como referencia y no como un hecho — el problema está en el dato, no en la venta. Haz clic para ver el desglose por canal." },
-  crec: { titulo: "Crecimiento 7 días", texto: "Unidades de los últimos 7 días contra los 7 anteriores. Sirve para cazar lo que despegó antes de que se acabe." },
-  spark: { titulo: "Últimos 14 días", texto: "Una barra por día de los últimos 14. Haz clic en la miniatura para abrir el detalle día por día con el desglose por cuenta." },
-  sugerido: { titulo: "Sugerido a FULL", texto: "Cuántas piezas conviene mandar a la bodega del marketplace. Se calcula con el ritmo de venta de los últimos 45 días considerando también sus picos (no solo el promedio), para cubrir 24 días: 14 de colchón más 10 que tarda el envío en llegar." },
+  costo: { titulo: "Costo base", texto: "Lo que cuesta traer una pieza: producto más flete de importación, del costeo validado. Es uno solo por producto — no cambia entre cuentas ni entre canales. Vacío significa que a ese SKU todavía no se le captura el costo, y sin él no hay margen que calcular." },
+  comision: { titulo: "Comisión por unidad", texto: "Lo que Mercado Libre cobró DE VERDAD por vender una pieza en el período, no una tasa supuesta: sale de la comisión registrada en cada pedido, así que ya trae la del canal donde se vendió. Sale vacía cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía la reporta en cero." },
+  envio: { titulo: "Envío por unidad", texto: "Lo que Mercado Libre te cobró por mandar el paquete, promediado por pieza. Cuando dice REAL es el cobro del embarque consultado a Mercado Libre; cuando dice EST es el estimado por peso y medidas, que se equivoca en las dos direcciones y se va sustituyendo solo conforme se consultan los pedidos. El asterisco avisa que solo una parte de las piezas ya tiene el cobro real. En carritos con varios productos el cobro del paquete se reparte entre las piezas." },
+  costo_final: { titulo: "Costo final", texto: "Lo que de verdad cuesta vender una pieza: costo base + comisión + envío. Es el número contra el que se compara el precio para saber si el producto deja dinero. No incluye el almacenamiento en FULL, que Mercado Libre cobra por mes y no por venta. Cuando sale en ÁMBAR con la nota «sin envío capturado», a ese producto le falta el costo de envío —no tiene el estimado por peso y medidas ni ha vendido un pedido del que leer el cobro real—, así que ese costo final es solo costo base + comisión y el margen de al lado sale optimista." },
+  margen_neto: { titulo: "Margen", texto: "Lo que queda después de TODO: (precio real − costo final) ÷ precio real, con la comisión y el envío ya descontados. Este es el margen que de verdad queda; abajo va lo que deja cada pieza en pesos. Sale vacío cuando falta el costo del producto o cuando no hubo ventas en el período (sin venta no hay comisión que leer), y también en lo que solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Cuando el porcentaje sale en ÁMBAR con ⚠, el costo capturado supera 3 veces el precio al que se vendió: el margen se muestra igual, pero sale de un costo poco creíble, así que léelo como referencia y no como un hecho — el problema está en el dato, no en la venta. Haz clic para ver el desglose por canal." },
+  ganancia: { titulo: "Ganancia del período", texto: "Cuánto dinero dejó ese producto en el período completo: lo que gana una pieza por las piezas que se vendieron. Es la columna para ordenar cuando la pregunta es qué sostiene el negocio en pesos, no en porcentaje — un margen de 60% sobre tres piezas pesa menos que uno de 15% sobre trescientas. Vacía si no hubo ventas en el período." },
 };
 
 /* Dirección con la que abre cada columna: la que responde su pregunta útil.
-   COBERTURA abre ascendente porque lo urgente es lo que MENOS dura. Este mapa
-   debe coincidir con _ORDEN del backend (routers/fulfillment.py). */
+   MARGEN abre de mayor a menor, pero el clic que más se usa es el segundo — el
+   que lo invierte y sube lo que está vendiendo en pérdida. Este mapa debe
+   coincidir con _ORDEN del backend (routers/fulfillment.py). */
 const DIR_NATURAL: Record<string, "asc" | "desc"> = {
   sku: "asc", venta: "desc", stock_full: "desc", edad: "desc",
-  cobertura: "asc", margen: "desc", margen_neto: "desc", crec: "desc",
-  sugerido: "desc",
+  costo: "desc", comision: "desc", costo_final: "desc",
+  margen_neto: "desc", ganancia: "desc",
 };
 const ORDEN_LABEL: Record<string, string> = {
   sku: "SKU", venta: "$ venta", stock_full: "stock FULL", edad: "edad sin venta",
-  cobertura: "cobertura", margen: "margen bruto", margen_neto: "margen neto",
-  crec: "crecimiento 7d", sugerido: "sugerido",
+  costo: "costo base", comision: "comisión", costo_final: "costo final",
+  margen_neto: "margen", ganancia: "ganancia del período",
 };
 
 /* Cabecera de tabla: ordena al hacer clic (segundo clic invierte) y lleva su
@@ -279,73 +316,11 @@ function preciosDeVenta(fila: Fila): { lineas: PrecioCanal[]; pausado: number | 
   return { lineas: [], pausado: todos.length ? Math.min(...todos.map((p) => Number(p.price))) : null };
 }
 
-/* Margen POR CUENTA (Eduardo, 30-jul). El costo es UNO por SKU
-   (costos_validados es por variante, no por canal), así que lo único que
-   cambia entre cuentas es el precio — y con precios distintos el margen
-   distinto es real. Antes se mostraba un solo número calculado con el precio
-   ACTIVO MÁS BARATO: en TEC-0977-NEG-800W decía 73.8% (SANCOR $1,199) y
-   callaba el 88.3% de BEKURA ($2,678.81). Sigue siendo margen de CATÁLOGO: no
-   descuenta la comisión del marketplace, que además varía por canal. */
-function MargenVenta({ fila }: { fila: Fila }) {
-  const costo = fila.costo == null ? null : Number(fila.costo);
-  const { lineas, pausado } = preciosDeVenta(fila);
-  const pct = (precio: number) => ((precio - costo!) / precio) * 100;
-  const tono = (m: number) => (m < 20 ? "text-red-500" : "text-emerald-600");
-
-  if (costo == null || costo <= 0) {
-    return (
-      <div className="text-slate-300" title="Sin costo validado para este SKU">—</div>
-    );
-  }
-  const titulo = `calculado con costo ${fMoney(costo, 2)} (el mismo para todos los canales)`;
-
-  // Espejo de PrecioVenta: si hubo venta, el margen se calcula contra el precio
-  // REALIZADO y sale un solo número. Antes se pintaba uno por cuenta (6.1% y
-  // 70.3% en el mismo renglón) y no había forma de leer "cómo va este SKU".
-  const real = precioRealizado(fila);
-  if (real != null && real > 0) {
-    const m = pct(real);
-    const detalle = lineas
-      .map((p) => `${CUENTA_INI[p.cuenta] ?? p.cuenta} ${fNum(pct(Number(p.price)), 1)}%`)
-      .join(" · ");
-    return (
-      <div
-        title={`${titulo}\nSobre el precio real de venta del período (${fMoney(real, 2)})`
-               + (detalle ? `\nSobre el precio publicado — ${detalle}` : "")}
-      >
-        <span className={`font-semibold tabular-nums ${tono(m)}`}>{fNum(m, 1)}%</span>
-      </div>
-    );
-  }
-
-  if (lineas.length === 0) {
-    if (pausado == null || pausado <= 0) return <div className="text-slate-300">—</div>;
-    return (
-      <div className="font-semibold tabular-nums text-slate-400"
-           title={`${titulo} · sobre el precio de una publicación pausada`}>
-        {fNum(pct(pausado), 1)}%
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-0.5" title={titulo}>
-      {lineas.map((p) => {
-        const m = pct(Number(p.price));
-        return (
-          <div key={`${p.cuenta}${p.canal}${p.price}`}
-               className="flex items-center justify-end gap-1">
-            {/* Etiqueta en gris a propósito: el color de esta columna significa
-                margen sano o flaco, y una insignia verde lo contradiría. */}
-            <span className="rounded bg-slate-100 px-1 text-[9px] font-bold text-slate-500">
-              {CUENTA_INI[p.cuenta] ?? p.cuenta}
-            </span>
-            <span className={`font-semibold tabular-nums ${tono(m)}`}>{fNum(m, 1)}%</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
+/* El MARGEN BRUTO (precio contra costo, sin los cobros del canal) se RETIRÓ de
+   la tabla el 10-ago: convivía con el neto en columnas contiguas y la pregunta
+   "¿cuál de los dos leo?" se repetía en cada revisión. El que decide es el
+   neto, y el bruto sigue disponible canal por canal en el modal de precio y
+   margen (clic en Precio o en Margen), donde el desglose sí lo justifica. */
 
 /* MARCA "2 PRODUCTOS": el mismo SKU pesa distinto en cada cuenta, según la
    báscula de la bodega de ML. No es un detalle de catálogo — significa que las
@@ -424,59 +399,342 @@ function VisitasCR({ fila, dias }: { fila: Fila; dias: number }) {
   );
 }
 
-/* MARGEN NETO (Eduardo, 5-ago): el margen de al lado pero con los cobros del
-   marketplace ya descontados — Costo Final = costo + comisión + envío.
+/* ── EL BLOQUE DE COSTOS (Eduardo, 10-ago) ────────────────────────────────
+   Las mismas columnas del popup "Productos más vendidos", ahora en la tabla:
+   Costo base · Comisión/u · Envío/u · Costo final · Margen · Ganancia. Antes el
+   desglose vivía solo en ese popup —diez SKUs por cuenta— y la tabla resumía
+   todo en un porcentaje: para saber POR QUÉ un margen estaba flaco había que
+   salir de la tabla y buscar el producto en otra lista.
 
-   La comisión NO es una tasa supuesta: es la que Mercado Libre cobró de verdad
-   en los pedidos del período (channel.order_items.comision), promediada por
-   unidad, así que ya trae la comisión de cada canal donde se vendió. Por eso la
-   celda se queda vacía cuando no hubo ventas: sin venta no hay comisión que
-   leer, e inventar una sería peor que no decir nada. Amazon la reporta en cero
-   hasta que exista Finances API y también queda fuera a propósito. */
-function MargenNeto({ fila }: { fila: Fila }) {
-  const costo = fila.costo == null ? null : Number(fila.costo);
-  const com = fila.comision_unit == null ? null : Number(fila.comision_unit);
-  const envio = fila.envio_unit == null ? 0 : Number(fila.envio_unit);
-  const real = precioRealizado(fila);
-  const precio = real ?? (fila.precio == null ? null : Number(fila.precio));
+   Los números los arma el backend (_rehacer_costos) para que la celda, el
+   tooltip y el ORDEN de la tabla salgan del mismo cálculo. Aquí solo se pintan.
 
-  if (costo == null || costo <= 0)
-    return <div className="text-slate-300" title="Sin costo validado para este SKU">—</div>;
-  if (com == null)
+   Regla que gobierna todo el bloque: sin costo base o sin comisión REAL no hay
+   costo final — celda vacía antes que un número inventado. La comisión sale de
+   los pedidos del período, así que falta en lo que no vendió y en lo que solo
+   vende en Amazon (comisión aún en cero, falta Finances API). */
+
+/* Una cifra de dinero con su explicación; el gris de "—" significa "no se
+   sabe", nunca "cero". */
+function Cifra({ v, ayuda, fuerte, dec = 2 }: {
+  v: number | null; ayuda: string; fuerte?: boolean; dec?: number;
+}) {
+  if (v == null)
+    return <div className="text-slate-300" title={ayuda}>—</div>;
+  return (
+    <div className={`tabular-nums ${fuerte ? "font-semibold text-slate-800" : "text-slate-700"}`}
+         title={ayuda}>
+      {fMoney(v, dec)}
+    </div>
+  );
+}
+
+/* ── PANEL AL PASAR EL CURSOR ──────────────────────────────────────────────
+   Un `title` nativo solo sabe pintar texto corrido, y comisión y envío no son
+   un número: son un número POR CANAL. Este panel muestra el desglose sin pedir
+   un clic (Eduardo, 10-ago) — abrir una ventana modal para leer dos renglones
+   sería peor que el problema.
+
+   Va POSICIONADO FIJO calculando el rect de la celda, no `absolute`: la tabla
+   vive dentro de un contenedor con overflow-x-auto y un panel absoluto quedaría
+   recortado por su borde (misma razón que en components/Ayuda.tsx). Y se pinta
+   ARRIBA de la celda cuando no cabe abajo, que es lo normal en las últimas
+   filas de la página. */
+function PanelHover({ children, panel, ancho = 290 }: {
+  children: React.ReactNode; panel: React.ReactNode; ancho?: number;
+}) {
+  const [pos, setPos] = useState<{ x: number; y: number; arriba: boolean } | null>(null);
+  const abrir = useCallback((el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const medio = ancho / 2 + 8;
+    const x = Math.min(Math.max(r.left + r.width / 2, medio), window.innerWidth - medio);
+    const arriba = r.bottom + 190 > window.innerHeight;
+    setPos({ x, y: arriba ? r.top - 8 : r.bottom + 8, arriba });
+  }, [ancho]);
+  return (
+    <span className="inline-block w-full cursor-help"
+          onMouseEnter={(e) => abrir(e.currentTarget)}
+          onMouseLeave={() => setPos(null)}>
+      {children}
+      {pos && (
+        <span
+          role="tooltip"
+          style={{
+            left: pos.x, top: pos.y, width: ancho,
+            transform: `translateX(-50%)${pos.arriba ? " translateY(-100%)" : ""}`,
+          }}
+          className="pointer-events-none fixed z-50 block whitespace-normal break-words rounded-lg bg-slate-900 px-3 py-2 text-left text-[11px] font-normal normal-case leading-snug tracking-normal text-slate-100 shadow-xl"
+        >
+          {panel}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* Renglón del panel: etiqueta a la izquierda, cifra a la derecha. */
+function Renglon({ etiqueta, detalle, valor, tenue }: {
+  etiqueta: string; detalle?: string; valor: string; tenue?: boolean;
+}) {
+  return (
+    <span className={`mt-1 flex items-baseline justify-between gap-3 ${tenue ? "text-slate-400" : ""}`}>
+      <span className="truncate">
+        {etiqueta}
+        {detalle && <span className="ml-1 text-slate-400">{detalle}</span>}
+      </span>
+      <span className="shrink-0 tabular-nums">{valor}</span>
+    </span>
+  );
+}
+
+const CANAL_CORTO: Record<string, string> = {
+  mercado_libre: "Meli", amazon: "Amazon", general: "Web",
+};
+
+/* COMISIÓN: el promedio de la celda es PONDERADO por unidades, así que sin el
+   desglose no hay forma de saber qué cuenta lo está jalando. */
+function ComisionUnit({ fila }: { fila: Fila }) {
+  const v = fila.comision_unit == null ? null : Number(fila.comision_unit);
+  const lineas = fila.comisiones ?? [];
+  if (v == null)
     return (
       <div className="text-slate-300"
-           title="Sin comisión que leer en el período: la comisión sale de los pedidos reales, no de una tasa estimada. Pasa cuando el producto no vendió, o cuando solo vende en Amazon (comisión aún en cero, falta Finances API).">
+           title="Sin comisión que leer: el producto no vendió en el período, o solo vende en Amazon (comisión aún en cero)">
         —
       </div>
     );
-  if (precio == null || precio <= 0)
-    return <div className="text-slate-300" title="Sin precio con el que comparar">—</div>;
+  // Piezas del período que NO aportaron comisión: hoy son las de Amazon, que
+  // la reporta en cero. Decirlo evita leer el promedio como si cubriera todo.
+  const conComision = lineas.reduce((s, l) => s + l.uds, 0);
+  const sinComision = Math.max(0, fila.uds - conComision);
+  return (
+    <PanelHover
+      panel={
+        <>
+          <span className="block font-semibold text-white">Comisión por canal</span>
+          {lineas.map((l) => (
+            <Renglon key={`${l.canal}|${l.cuenta}`}
+                     etiqueta={`${CANAL_CORTO[l.canal] ?? l.canal} · ${CUENTA_INI[l.cuenta] ?? l.cuenta}`}
+                     detalle={`${fNum(l.uds)} uds`}
+                     valor={`${fMoney(l.comision_unit, 2)}/u`} />
+          ))}
+          {lineas.length > 1 && (
+            <Renglon etiqueta="Promedio ponderado" valor={`${fMoney(v, 2)}/u`} />
+          )}
+          {sinComision > 0 && (
+            <span className="mt-1.5 block text-slate-400">
+              {fNum(sinComision)} piezas del período no traen comisión: Amazon
+              todavía la reporta en cero.
+            </span>
+          )}
+          <span className="mt-1.5 block text-slate-400">
+            Es la comisión REAL de los pedidos, no una tasa estimada.
+          </span>
+        </>
+      }
+    >
+      <div className="tabular-nums text-slate-700">{fMoney(v, 2)}</div>
+      {lineas.length > 1 && (
+        <div className="text-[9px] uppercase tracking-wide text-slate-400">
+          {lineas.length} canales
+        </div>
+      )}
+    </PanelHover>
+  );
+}
+
+/* ENVÍO: real o estimado, dicho en la celda. El estimado de costing miente en
+   las dos direcciones ($349 contra $88 reales en Malla Sombra, y 141 SKUs con
+   flete en $0), así que un margen calculado con él no es el margen — pero
+   tampoco se puede esperar a tener todos los embarques consultados para mostrar
+   algo. Se muestra lo que hay y se declara cuál es. */
+function EnvioUnit({ fila }: { fila: Fila }) {
+  const v = fila.envio_unit == null ? null : Number(fila.envio_unit);
+  const real = fila.envio_origen === "real";
+  const parcial = real && fila.cobertura_envio_pct < 100;
+  const est = fila.envio_estimado == null ? null : Number(fila.envio_estimado);
+  const difiere = real && est != null && v != null && Math.abs(est - v) > 5;
+  const cuentas = fila.envios ?? [];
+
+  // El desglose vale aunque el número aún no exista: dice qué cuenta vendió y
+  // cuántas piezas están esperando su cobro real.
+  const panel = (
+    <>
+      <span className="block font-semibold text-white">Envío por cuenta</span>
+      {cuentas.length === 0 && (
+        <span className="mt-1 block text-slate-400">
+          Sin ventas de Mercado Libre en el período: no hay embarque del que leer
+          un cobro real.
+        </span>
+      )}
+      {cuentas.map((c) => (
+        <Renglon key={c.cuenta}
+                 etiqueta={CUENTA_INI[c.cuenta] ?? c.cuenta}
+                 detalle={c.envio_unit == null
+                   ? `${fNum(c.uds)} uds · pendiente`
+                   : c.cubiertas < c.uds
+                     ? `${fNum(c.cubiertas)} de ${fNum(c.uds)} uds`
+                     : `${fNum(c.uds)} uds`}
+                 valor={c.envio_unit == null ? "—" : `${fMoney(c.envio_unit, 2)}/u`}
+                 tenue={c.envio_unit == null} />
+      ))}
+      {est != null && (
+        <Renglon etiqueta="Estimado por peso" valor={fMoney(est, 2)} tenue={real} />
+      )}
+      {/* Cuatro situaciones distintas, cada una con su frase: decir "todavía se
+          muestra el estimado" cuando NO hay estimado es exactamente el tipo de
+          texto que hace desconfiar de toda la tabla. */}
+      <span className={`mt-1.5 block ${est == null && !real ? "text-amber-300" : "text-slate-400"}`}>
+        {real
+          ? "Se está usando el cobro REAL de Mercado Libre por cada embarque. "
+            + "En un pedido con varios productos, el cobro se reparte entre las piezas."
+          : est != null
+            ? (cuentas.some((c) => c.uds > 0)
+                ? "Todavía se muestra el estimado: los cobros reales de esos pedidos "
+                  + "siguen consultándose y aparecen solos en el siguiente refresco."
+                : "Estimado por peso y medidas. Se equivoca en las dos direcciones, "
+                  + "pero es lo único que hay hasta que el producto venda.")
+            : (cuentas.some((c) => c.uds > 0)
+                ? "A este producto no se le capturó el estimado por peso y medidas: "
+                  + "hasta que se consulten los cobros reales de esos pedidos, su costo "
+                  + "final va SIN envío y el margen sale optimista."
+                : "Sin envío por ningún lado: no tiene estimado capturado ni ventas en "
+                  + "el período de las que leer un cobro real. Su costo final va sin envío.")}
+      </span>
+      {difiere && (
+        <span className="mt-1 block text-amber-300">
+          El estimado se equivocaba por {fMoney(Math.abs(est! - v!), 2)} por pieza.
+        </span>
+      )}
+    </>
+  );
+
+  return (
+    <PanelHover panel={panel}>
+      {v == null ? (
+        <div className="text-slate-300">—</div>
+      ) : (
+        <>
+          <div className="tabular-nums text-slate-700">
+            {fMoney(v, 2)}{parcial && <span className="text-amber-500">*</span>}
+          </div>
+          <div className={`text-[9px] font-bold uppercase tracking-wide ${
+              real ? "text-emerald-600" : "text-slate-400"}`}>
+            {real ? "real" : "est"}
+          </div>
+        </>
+      )}
+    </PanelHover>
+  );
+}
+
+/* COSTO FINAL. Cuando la fila no tiene envío —ni el real del embarque ni el
+   estimado por peso y medidas— el número se arma solo con costo base +
+   comisión: es un costo final INCOMPLETO, y el margen que sale de él es
+   optimista porque le falta restar el envío. Son 248 SKUs en producción, y sin
+   marca se leían igual de firmes que los completos (Eduardo, 10-ago).
+
+   La etiqueta nombra el costo que falta —"sin envío capturado"— y no un genérico
+   "sin costo": la fila de al lado ES una columna de Costo base, y un lector que
+   vea "sin costo capturado" ahí va a creer que le falta esa otra cosa. */
+function CostoFinal({ fila }: { fila: Fila }) {
+  const v = fila.costo_final == null ? null : Number(fila.costo_final);
+  if (v == null)
+    return (
+      <div className="text-slate-300"
+           title="Falta el costo base o la comisión real: sin uno de los dos no hay costo final">
+        —
+      </div>
+    );
+  const sinEnvio = fila.envio_unit == null;
+  return (
+    <div title={sinEnvio
+        ? "A este SKU no se le ha capturado el COSTO DE ENVÍO: no tiene el estimado por "
+          + "peso y medidas, y tampoco ha vendido un pedido del que se pueda leer el cobro "
+          + "real del embarque.\nEste costo final es solo costo base + comisión, así que el "
+          + "margen de al lado sale optimista: le falta restar el envío."
+        : "Costo final = costo base + comisión + envío. No incluye almacenamiento FULL."}>
+      <div className={`font-semibold tabular-nums ${sinEnvio ? "text-amber-600" : "text-slate-800"}`}>
+        {fMoney(v, 2)}
+      </div>
+      {sinEnvio && (
+        <div className="text-[9px] font-semibold uppercase tracking-wide text-amber-500">
+          sin envío capturado
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* MARGEN: el único que queda en la tabla — el que ya trae los cobros del canal
+   descontados. Abajo, en pesos, lo que deja cada pieza: el porcentaje solo dice
+   qué tan eficiente es la venta, no si vale la pena. */
+function Margen({ fila }: { fila: Fila }) {
+  const m = fila.margen_neto_pct == null ? null : Number(fila.margen_neto_pct);
+  const costo = fila.costo == null ? null : Number(fila.costo);
+  const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
+  if (m == null || costo == null || precio == null)
+    return (
+      <div className="text-slate-300"
+           title={fila.costo == null
+             ? "Sin costo capturado para este SKU: no hay con qué calcular el margen"
+             : "Sin comisión que leer en el período: sale de los pedidos reales, no de "
+               + "una tasa estimada. Pasa cuando el producto no vendió, o cuando solo "
+               + "vende en Amazon (comisión aún en cero, falta Finances API)."}>
+        —
+      </div>
+    );
   // Costo poco creíble: el margen SÍ se pinta, pero en ámbar y con ⚠ (Eduardo,
   // 6-ago). Ocultarlo sacaba al SKU del análisis junto con la señal de que algo
   // pasa ahí; el ámbar dice "esto está en duda" sin fingir un veredicto.
   const dudoso = costoImplausible(precio, costo);
-  const costoFinal = costo + com + envio;
-  const m = ((precio - costoFinal) / precio) * 100;
-  const cobros = com + envio;
+  const final = fila.costo_final == null ? null : Number(fila.costo_final);
+  const com = fila.comision_unit == null ? 0 : Number(fila.comision_unit);
+  const envio = fila.envio_unit == null ? 0 : Number(fila.envio_unit);
   return (
     <div
       title={(dudoso ? avisoCostoImplausible(precio, costo) + "\n\n" : "")
-             + `Costo final ${fMoney(costoFinal, 2)} = producto ${fMoney(costo, 2)}`
+             + `Costo final ${fMoney(final, 2)} = producto ${fMoney(costo, 2)}`
              + ` + comisión ${fMoney(com, 2)}`
-             + (envio ? ` + envío ${fMoney(envio, 2)}` : " (sin envío estimado)")
-             + `\nSobre el precio ${real != null ? "real de venta" : "publicado"} (${fMoney(precio, 2)})`
-             + `\nQuedan ${fMoney(precio - costoFinal, 2)} por pieza`}
+             + (envio ? ` + envío ${fMoney(envio, 2)}`
+                        + (fila.envio_origen === "real" ? " (real)" : " (estimado)")
+                      : " (sin envío)")
+             + `\nSobre el precio ${fila.uds > 0 ? "real de venta" : "publicado"}`
+             + ` (${fMoney(precio, 2)})`}
     >
       <div className={`flex items-center justify-end gap-1 font-semibold tabular-nums ${
           dudoso ? "text-amber-600" : m < 20 ? "text-red-500" : "text-emerald-600"}`}>
         {dudoso && <AlertTriangle size={11} className="shrink-0" />}
         {fNum(m, 1)}%
       </div>
-      {/* Cuánto se lleva el canal por pieza: el dato que explica la caída
-          contra la columna de la izquierda sin tener que abrir nada. */}
       <div className={`text-[10px] tabular-nums ${dudoso ? "text-amber-500" : "text-slate-400"}`}>
-        {dudoso ? "costo dudoso" : `−${fMoney(cobros, 0)}`}
+        {dudoso ? "costo dudoso"
+          : fila.ganancia_unit == null ? "" : `${fMoney(fila.ganancia_unit, 2)}/u`}
       </div>
+    </div>
+  );
+}
+
+/* GANANCIA DEL PERÍODO: el margen en pesos y ya multiplicado por lo que se
+   vendió. Es la columna que ordena por lo que sostiene el negocio — un 60%
+   sobre tres piezas pesa menos que un 15% sobre trescientas. */
+function Ganancia({ fila }: { fila: Fila }) {
+  const g = fila.ganancia_periodo == null ? null : Number(fila.ganancia_periodo);
+  if (g == null)
+    return (
+      <div className="text-slate-300"
+           title={fila.uds > 0 ? "Falta costo o comisión para calcular la ganancia"
+                               : "Sin ventas en el período"}>—</div>
+    );
+  const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
+  const dudoso = precio != null && costoImplausible(precio, fila.costo);
+  return (
+    <div className={`font-bold tabular-nums ${
+        dudoso ? "text-amber-600" : g < 0 ? "text-red-500" : "text-emerald-600"}`}
+         title={(dudoso && precio != null
+                 ? avisoCostoImplausible(precio, Number(fila.costo)) + "\n\n" : "")
+                + `${fNum(fila.uds)} piezas × ${fMoney(fila.ganancia_unit, 2)} de ganancia`}>
+      {fMoney(g)}
     </div>
   );
 }
@@ -1267,6 +1525,18 @@ export default function FulfillmentPage() {
                    className="w-56 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-slate-700 shadow-sm outline-none focus:border-indigo-400" />
           </form>
           <span className="text-slate-500">{tabla ? `${fNum(tabla.total)} SKUs` : ""}</span>
+          {/* El envío real se consulta a Mercado Libre por tandas y se guarda:
+              mientras queden piezas con el estimado se avisa, porque un margen
+              con envío estimado y uno con el real son números distintos y el
+              lector tiene derecho a saber cuál está viendo. La página se
+              refresca sola cada 60 s y cada vuelta avanza otro tanto. */}
+          {!!tabla?.envios_pendientes && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-600"
+                  title="Cada pedido se consulta una sola vez y queda guardado; mientras tanto esas piezas usan el envío estimado.">
+              <RefreshCw size={11} className="animate-spin" />
+              consultando envíos — faltan {fNum(tabla.envios_pendientes)} piezas
+            </span>
+          )}
           {/* Qué orden está aplicado, en palabras: la flecha sola no alcanzaba
               para saber qué estaba haciendo el clic (Eduardo, 30-jul). */}
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-600">
@@ -1297,13 +1567,13 @@ export default function FulfillmentPage() {
                 <Th id="venta" right {...th}>Uds · $Venta</Th>
                 <Th id="stock_full" right {...th}>FULL · Propio</Th>
                 <Th id="edad" right {...th}>Edad s/v</Th>
-                <Th id="cobertura" right {...th}>Cobertura</Th>
                 <Th right info="precio" {...th}>Precio venta</Th>
-                <Th id="margen" right {...th}>Margen</Th>
-                <Th id="margen_neto" right info="margen_neto" {...th}>Margen neto</Th>
-                <Th id="crec" right {...th}>Crec. 7d</Th>
-                <Th info="spark" {...th}>14d</Th>
-                <Th id="sugerido" right {...th}>Sugerido</Th>
+                <Th id="costo" right info="costo" {...th}>Costo base</Th>
+                <Th id="comision" right info="comision" {...th}>Comisión /u</Th>
+                <Th right info="envio" {...th}>Envío /u</Th>
+                <Th id="costo_final" right info="costo_final" {...th}>Costo final</Th>
+                <Th id="margen_neto" right info="margen_neto" {...th}>Margen</Th>
+                <Th id="ganancia" right info="ganancia" {...th}>Ganancia</Th>
               </tr>
             </thead>
             <tbody>
@@ -1357,9 +1627,6 @@ export default function FulfillmentPage() {
                   <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.edad_sin_venta_d != null && f.edad_sin_venta_d > 30 ? "text-red-500" : "text-slate-500"}`}>
                     {f.edad_sin_venta_d == null ? "—" : `${f.edad_sin_venta_d}d`}
                   </td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums text-slate-600">
-                    {f.cobertura_d == null ? "—" : `${fNum(f.cobertura_d, 1)}d`}
-                  </td>
                   {/* PRECIO DE VENTA por canal (solo publicaciones activas).
                       Clic → modal con el precio REALIZADO por canal. */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
@@ -1368,41 +1635,42 @@ export default function FulfillmentPage() {
                       <PrecioVenta fila={f} />
                     </button>
                   </td>
-                  {/* Margen POR CUENTA, alineado renglón a renglón con la
-                      columna de precio. El precio sugerido y el costo se
-                      quitaron de la tabla (Eduardo, 29-jul): el margen resume
-                      ambos y el costo viaja en el tooltip. */}
+                  {/* EL BLOQUE DE COSTOS, en el mismo orden en que se suman:
+                      costo base + comisión + envío = costo final. Leído de
+                      izquierda a derecha, la fila explica sola de dónde sale el
+                      margen — que es justo lo que antes obligaba a abrir el
+                      popup de "Productos más vendidos". */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <button onClick={() => setCanalesDe(f)} title="Ver precio y margen por canal"
-                            className="w-full rounded-md px-1 py-0.5 text-right transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
-                      <MargenVenta fila={f} />
-                    </button>
+                    <Cifra v={f.costo == null ? null : Number(f.costo)}
+                           ayuda={f.costo == null
+                             ? "Sin costo capturado para este SKU"
+                             : "Costo base: producto + flete de importación (costeo validado)"} />
                   </td>
-                  {/* Margen NETO: el mismo margen ya con la comisión real del
-                      canal y el envío encima. Abre el mismo modal, donde se ve
-                      canal por canal cuánto se lleva cada uno. */}
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <ComisionUnit fila={f} />
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <EnvioUnit fila={f} />
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <CostoFinal fila={f} />
+                  </td>
+                  {/* MARGEN: el único que queda: ya con los cobros del canal
+                      descontados. Abre el modal por canal, donde se ve cuánto se
+                      lleva cada uno y el margen bruto para comparar. */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <button onClick={() => setCanalesDe(f)} title="Ver el desglose de cobros por canal"
                             className="w-full rounded-md px-1 py-0.5 text-right transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
-                      <MargenNeto fila={f} />
+                      <Margen fila={f} />
                     </button>
                   </td>
-                  <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.crec_7d_pct == null ? "text-slate-300" : f.crec_7d_pct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
-                    {f.crec_7d_pct == null ? "—" : `${f.crec_7d_pct > 0 ? "+" : ""}${fNum(f.crec_7d_pct)}%`}
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-1.5">
-                    <button onClick={() => setDetalle(f)} title="Ver detalle de ventas"
-                            className="rounded-md p-1 transition-all hover:bg-indigo-50 hover:ring-1 hover:ring-indigo-200">
-                      <Spark datos={f.spark ?? []} />
-                    </button>
-                  </td>
-                  <td className="whitespace-nowrap px-2 py-1.5 text-right font-bold tabular-nums text-indigo-600">
-                    {f.sugerido_full > 0 ? fNum(f.sugerido_full) : "—"}
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                    <Ganancia fila={f} />
                   </td>
                 </tr>
               ))}
               {tabla && tabla.items.length === 0 && (
-                <tr><td colSpan={12} className="px-3 py-10 text-center text-slate-400">Sin resultados con estos filtros.</td></tr>
+                <tr><td colSpan={13} className="px-3 py-10 text-center text-slate-400">Sin resultados con estos filtros.</td></tr>
               )}
             </tbody>
           </table>
@@ -1421,8 +1689,9 @@ export default function FulfillmentPage() {
 
         <p className="mt-4 text-center text-[11px] text-slate-400">
           Visitas y CR% son de Mercado Libre (Amazon no publica ese dato) · Stock propio = lo que hay
-          en tu bodega (se actualiza cada 20 minutos) · Sugerido = piezas a mandar a FULL según el
-          ritmo de venta de los últimos 45 días.
+          en tu bodega (se actualiza cada 20 minutos) · Costo final = costo base + comisión real +
+          envío, y el margen sale de ahí — no incluye el almacenamiento en FULL, que Mercado Libre
+          cobra por mes y no por venta.
         </p>
 
       {detalle && (

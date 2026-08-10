@@ -5,19 +5,24 @@ de José), leyendo DIRECTO de la BD kubera v4 — primer lector de producción.
 Fuentes (todas vistas/tablas de la migración):
   channel.listings              → foto viva por listing (webhook, segundos)
   channel.sales_daily_completa  → ventas sin hueco (hist dailytrack + vivo)
-  channel.restock_panel         → sugerido/semáforo (Bollinger, migración 0007)
+  channel.order_items           → comisión REAL cobrada por el canal
   costing.costos_finales        → costo y precio sugerido (canal ML)
   costing.costos_validados      → dimensiones → categoría de TAMAÑO
+  ml_envio_real (MySQL, caché)  → envío REAL por embarque (services/envio_real)
 
 Equivalencias vs el original (documentadas para el clon):
   STOCK ODOO   → STOCK PROPIO = DROP real (bodega Woo por SKU, listing
                  canal='general'; fuente: stock_watch_foto de Brandon v0.27.0.
                  Fallback: stock_own declarado por el marketplace).
   DÍAS ODOO    → EDAD S/VENTA (días desde la última venta registrada).
-  DÍAS VENTA   → COBERTURA (stock total / venta diaria del período).
   VISITAS/CR%  → SIN DATO (daily_visits quedó fuera del alcance 2026-07-28).
   TAM          → derivada de costos_validados (lado mayor): S<30, M<60,
                  L<120, XL≥120 cm; S/C sin dimensiones.
+
+COBERTURA y SUGERIDO A FULL se RETIRARON de la tabla (Eduardo, 10-ago): la
+vista pasó de "qué reabastecer" a "qué deja dinero", y en su lugar entraron las
+columnas de costo del popup de márgenes. `channel.restock_panel` sigue viva en
+la BD — lo que se quitó es la columna, no el cálculo.
 
   GET /api/fulfillment/dashboard → KPIs + conteo por cuenta + serie diaria
   GET /api/fulfillment/tabla     → filas por SKU (filtros del clon) + sparkline
@@ -50,19 +55,26 @@ _TAMS = {"S", "M", "L", "XL", "S/C"}
 # la dirección estaba pegada a la columna y no se podía invertir — la flecha de
 # la cabecera dibujaba ↓ siempre, incluso ordenando ascendente (Eduardo lo
 # detectó el 30-jul). Ahora `dir` la sobreescribe y la UI dibuja la real.
+#
+# Las columnas de COSTO ordenan por el valor que calcula el SQL, que usa el
+# envío ESTIMADO; la celda puede acabar mostrando el envío REAL (se resuelve
+# después, por página — ver _envio_real_en_filas). Es deliberado: el orden se
+# decide sobre las ~2,000 filas y el refinamiento solo alcanza a las 50 de la
+# página. La diferencia mueve centavos en el margen, no el ranking.
 _ORDEN = {
     "venta": ("venta", "desc"),
     "uds": ("uds", "desc"),
     "stock_full": ("stock_full", "desc"),
     "stock_propio": ("stock_propio", "desc"),
-    "cobertura": ("cobertura_d", "asc"),
     "edad": ("edad_sin_venta_d", "desc"),
-    "margen": ("margen_pct", "desc"),
+    "costo": ("costo", "desc"),
+    "comision": ("comision_unit", "desc"),
+    "costo_final": ("costo_final", "desc"),
     # margen NETO = ya descontados los cobros del marketplace. Ordenar ascendente
     # es el "filtro" de lo que está vendiendo mal: lo peor queda arriba.
     "margen_neto": ("margen_neto_pct", "desc"),
+    "ganancia": ("ganancia_periodo", "desc"),
     "crec": ("crec_7d_pct", "desc"),
-    "sugerido": ("sugerido_full", "desc"),
     "sku": ("sku", "asc"),
 }
 _DIRS = {"asc", "desc"}
@@ -177,23 +189,18 @@ tam as (
          end as tam
   from costing.costos_validados
 ),
-sug as (
-  select sku, sum(sugerido_full)::int as sugerido_full
-  from channel.restock_panel
-  where (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-  group by sku
-),
-com as (
-  -- Comisión REAL del marketplace en el período, POR UNIDAD (Eduardo, 5-ago).
-  -- Es lo único que faltaba para pasar del margen de CATÁLOGO al margen NETO:
-  -- sale de los pedidos (channel.order_items.comision es el total de la línea),
-  -- no de una tasa supuesta, así que ya viene con la comisión de CADA canal.
+com_canal as (
+  -- Comisión REAL del marketplace en el período, POR UNIDAD y POR CANAL/CUENTA
+  -- (Eduardo, 5-ago; el desglose se agregó el 10-ago para poder explicarla al
+  -- pasar el cursor). Sale de los pedidos —channel.order_items.comision es el
+  -- total de la línea—, no de una tasa supuesta.
   --
   -- Solo entran líneas con comisión > 0: Amazon todavía la registra en cero
   -- (falta Finances API) y promediarla con ML abarataría el costo. Un SKU que
   -- solo vende en Amazon se queda sin margen neto — "—" es más honesto que
   -- decir que Amazon no cobra nada.
-  select i.sku,
+  select i.sku, o.canal, o.cuenta,
+         sum(i.cantidad)::int as uds,
          sum(coalesce(i.comision, 0)) / nullif(sum(i.cantidad), 0) as comision_unit
   from channel.order_items i
   join channel.orders o using (canal, cuenta, external_order_id)
@@ -203,7 +210,20 @@ com as (
     and coalesce(i.comision, 0) > 0
     and i.sku is not null
     and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
-  group by i.sku
+  group by 1, 2, 3
+),
+com as (
+  -- El promedio del SKU se rearma PONDERANDO por unidades: da exactamente lo
+  -- mismo que promediar las líneas de golpe (suma de comisiones ÷ suma de
+  -- piezas), pero de paso deja el desglose por canal que lee el panel flotante.
+  select sku,
+         sum(comision_unit * uds) / nullif(sum(uds), 0) as comision_unit,
+         jsonb_agg(jsonb_build_object(
+             'canal', canal, 'cuenta', cuenta, 'uds', uds,
+             'comision_unit', round(comision_unit, 2))
+           order by uds desc) as comisiones
+  from com_canal
+  group by sku
 ),
 filas as (
   select l.sku, l.cuentas, l.titulo, coalesce(t.tam, 'S/C') as tam,
@@ -223,10 +243,6 @@ filas as (
          coalesce(l.stock_full, 0)::int as stock_full,
          coalesce(d.stock_drop, l.stock_propio, 0)::int as stock_propio,
          (current_date - u.ultima_venta)::int as edad_sin_venta_d,
-         case when coalesce(v.uds, 0) > 0
-              then round((coalesce(l.stock_full,0)
-                          + coalesce(d.stock_drop, l.stock_propio, 0))
-                         / (v.uds::numeric / %(dias)s::int), 1) end as cobertura_d,
          l.precio,
          l.precio_cualquiera,
          l.precios,
@@ -241,17 +257,21 @@ filas as (
          -- de "—" a margen 61.8%%). OJO: los porcentajes en comentarios DENTRO
          -- del SQL van escapados (%%%%) — psycopg2 los lee como marcadores.
          coalesce(cv.costo_total, cf.costo_unitario) as costo,
-         case when l.precio > 0 and coalesce(cv.costo_total, cf.costo_unitario) is not null
-              then round((l.precio - coalesce(cv.costo_total, cf.costo_unitario))
-                         / l.precio * 100, 1)
-              end as margen_pct,
-         -- MARGEN NETO: el de arriba menos los cobros de Meli. El precio de
-         -- referencia es el REALIZADO cuando hubo ventas (ingreso ÷ uds, ya
-         -- ponderado entre cuentas) y el publicado cuando no las hubo — el
-         -- mismo criterio que usa la celda de Precio de venta, para que
-         -- ordenar por esta columna y leerla no se contradigan.
+         -- PRECIO DE REFERENCIA de todo el bloque de margen: el REALIZADO
+         -- cuando hubo ventas (ingreso ÷ uds, ya ponderado entre cuentas) y el
+         -- publicado cuando no las hubo — el mismo criterio que usa la celda de
+         -- Precio de venta, para que ordenar por margen y leerlo no se
+         -- contradigan. Sale como columna para que el recálculo en Python (tras
+         -- resolver el envío real) parta EXACTAMENTE del mismo número.
+         coalesce(v.venta / nullif(v.uds, 0), l.precio)    as precio_ref,
+         -- COSTO FINAL = costo base + los cobros de Meli, igual que el popup de
+         -- "Productos más vendidos" (Eduardo, 10-ago). Aquí el envío es el
+         -- ESTIMADO de costing; _envio_real_en_filas lo sustituye por el cobro
+         -- REAL del embarque en las filas de la página y REHACE costo_final,
+         -- margen_neto_pct y ganancia_periodo con él.
          co.comision_unit,
-         cf.costo_fee_envio                                as envio_unit,
+         co.comisiones,
+         cf.costo_fee_envio                                as envio_estimado,
          case when coalesce(cv.costo_total, cf.costo_unitario) is not null
                and co.comision_unit is not null
               then round(coalesce(cv.costo_total, cf.costo_unitario)
@@ -267,17 +287,26 @@ filas as (
                           - coalesce(cf.costo_fee_envio, 0))
                          / coalesce(v.venta / nullif(v.uds, 0), l.precio) * 100, 1)
               end as margen_neto_pct,
+         -- GANANCIA DEL PERÍODO: lo que dejaron las piezas que SÍ se vendieron
+         -- (ganancia por pieza × unidades). Sin ventas no hay ganancia que
+         -- contar — queda NULL, no cero: cero diría "vendió y no dejó nada".
+         case when coalesce(cv.costo_total, cf.costo_unitario) is not null
+               and co.comision_unit is not null
+               and coalesce(v.uds, 0) > 0
+              then round((v.venta / v.uds
+                          - coalesce(cv.costo_total, cf.costo_unitario)
+                          - co.comision_unit
+                          - coalesce(cf.costo_fee_envio, 0)) * v.uds, 2)
+              end as ganancia_periodo,
          case when coalesce(v.u7_prev, 0) > 0
               then round((coalesce(v.u7,0) - v.u7_prev) / v.u7_prev::numeric * 100, 0)
               when coalesce(v.u7, 0) > 0 then 100
-              end as crec_7d_pct,
-         coalesce(s.sugerido_full, 0) as sugerido_full
+              end as crec_7d_pct
   from l
   left join v   on v.sku = l.sku
   left join ult u on u.sku = l.sku
   left join dr d  on d.sku = l.sku
   left join tam t on t.sku = l.sku
-  left join sug s on s.sku = l.sku
   left join com co on co.sku = l.sku
   left join costing.costos_finales cf
          on cf.sku = l.sku and cf.canal = 'mercado_libre'
@@ -1158,6 +1187,167 @@ async def _visitas_en_filas(items: list[dict[str, Any]], dias: int,
             f["visitas"] = f["visitas_dias"] = f["cr_pct"] = None
 
 
+# Líneas de pedido de MERCADO LIBRE de los SKUs de la página: con ellas se sabe
+# qué embarques hay que consultar y cuántas piezas del SKU viajaron en cada uno.
+# Amazon queda fuera (no hay API de embarque equivalente conectada).
+_SQL_TABLA_ENVIO_LINEAS = _mx("""
+select o.cuenta, o.external_order_id, i.sku::text as sku,
+       sum(i.cantidad)::int as uds
+  from channel.order_items i
+  join channel.orders o using (canal, cuenta, external_order_id)
+ where o.canal = 'mercado_libre'
+   and i.sku = any(%(skus)s::citext[])
+   and (o.creado_at at time zone 'America/Mexico_City')::date
+       > current_date - %(dias)s::int
+   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
+ group by 1, 2, 3
+""")
+
+
+def _rehacer_costos(items: list[dict[str, Any]]) -> None:
+    """
+    Rehace COSTO FINAL, MARGEN y GANANCIA con el envío que quedó en la fila.
+
+    Se corre SIEMPRE, aunque el envío siga siendo el estimado: así el número
+    que se pinta sale de un solo lugar en vez de "a veces el del SQL, a veces
+    el de Python". Las reglas de qué se puede calcular son las del popup de
+    márgenes: sin costo base o sin comisión no hay costo final, y sin precio no
+    hay margen — vacío antes que un número inventado.
+    """
+    for f in items:
+        costo = f.get("costo")
+        com = f.get("comision_unit")
+        envio = f.get("envio_unit")
+        precio = f.get("precio_ref")
+        uds = int(f.get("uds") or 0)
+        # Un costo en CERO no es un costo barato, es un costo sin capturar: da
+        # un margen cercano al 100% que se lee como el mejor producto del
+        # catálogo. Se trata igual que la ausencia (regla que ya tenía la celda
+        # de margen antes de este cambio).
+        if costo is None or float(costo) <= 0 or com is None:
+            f["costo_final"] = f["margen_neto_pct"] = f["ganancia_periodo"] = None
+            f["ganancia_unit"] = None
+            continue
+        final = round(float(costo) + float(com) + float(envio or 0), 2)
+        f["costo_final"] = final
+        if precio is not None and float(precio) > 0:
+            p = float(precio)
+            f["margen_neto_pct"] = round((p - final) / p * 100, 1)
+            f["ganancia_unit"] = round(p - final, 2)
+            # La ganancia del período solo existe si hubo venta EN el período:
+            # el precio publicado sirve para juzgar un margen, no para inventar
+            # una ganancia de piezas que nadie compró.
+            f["ganancia_periodo"] = round((p - final) * uds, 2) if uds else None
+        else:
+            f["margen_neto_pct"] = f["ganancia_unit"] = None
+            f["ganancia_periodo"] = None
+
+
+def pares_de(lineas: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """(cuenta, pedido) únicos y ordenados — la llave del caché de envío real."""
+    return sorted({(l["cuenta"], str(l["external_order_id"])) for l in lineas})
+
+
+async def _envio_real_en_filas(items: list[dict[str, Any]], dias: int,
+                               cuenta: str | None, presupuesto: int) -> int:
+    """
+    Sustituye el envío ESTIMADO por el que Mercado Libre cobró DE VERDAD.
+
+    Es el mismo dato del popup "Productos más vendidos", traído a la tabla: el
+    estimado de `costing` miente en las dos direcciones (ver
+    services/envio_real.py — $349 estimados contra $88 reales en Malla Sombra, y
+    141 SKUs con flete en $0), así que un margen calculado con él no es el
+    margen. El cobro es por EMBARQUE: en un carrito con varios productos se
+    reparte entre las líneas en proporción a las unidades.
+
+    Presupuesto acotado a propósito: cada pedido nuevo cuesta dos llamadas a ML
+    y se cachea para siempre, así que la tabla se completa sola a lo largo de
+    los refrescos (la página se recarga cada 60 s) en vez de pagar el llenado
+    entero en la primera carga. Mientras tanto la fila muestra el ESTIMADO y lo
+    dice — `envio_origen`.
+
+    Devuelve cuántas PIEZAS de la página siguen sin envío real (0 = la página
+    ya está completa).
+    """
+    for f in items:
+        est = f.get("envio_estimado")
+        f["envio_unit"] = None if est is None else float(est)
+        f["envio_origen"] = "estimado" if est is not None else "sin dato"
+        f["cobertura_envio_pct"] = 0
+        f["envios"] = []
+    try:
+        lineas = sdb.fetch_all(_SQL_TABLA_ENVIO_LINEAS, {
+            "skus": [str(i["sku"]) for i in items], "dias": dias, "cuenta": cuenta})
+        ids = sorted({str(l["external_order_id"]) for l in lineas})
+        ordenes = sdb.fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
+    except Exception as exc:  # noqa: BLE001
+        log.warning("líneas de envío no disponibles en la tabla: %s", exc)
+        _rehacer_costos(items)
+        return 0
+    if not lineas:
+        _rehacer_costos(items)
+        return 0
+
+    # Las LÍNEAS salen de kubera y el desglose por cuenta se arma con ellas, así
+    # que se calcula SIEMPRE — también sin MySQL (staging solo-Supabase), donde
+    # no hay caché ni tokens de ML. Ahí el panel sigue diciendo qué cuenta vendió
+    # y cuántas piezas, y declara que el cobro real está pendiente; solo el
+    # número real es lo que falta, no el contexto.
+    costos: dict[tuple[str, str], dict[str, Any]] = {}
+    if getattr(settings, "mysql_enabled", True):
+        try:
+            from services import envio_real
+            if presupuesto:
+                await envio_real.completar(pares_de(lineas), presupuesto)
+            costos = envio_real.leer(pares_de(lineas))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("envío real no disponible en la tabla: %s", exc)
+
+    uds_orden = {(o["cuenta"], str(o["external_order_id"])): int(o["uds_orden"] or 0)
+                 for o in ordenes}
+    # Por SKU y, dentro, por CUENTA: el mismo producto puede salir de dos
+    # bodegas con tarifas distintas, y ese es justo el desglose que se pide al
+    # pasar el cursor.
+    por_sku: dict[str, dict[str, dict[str, float]]] = {}
+    for l in lineas:
+        sku, cta = str(l["sku"]).lower(), str(l["cuenta"])
+        uds = int(l["uds"] or 0)
+        d = por_sku.setdefault(sku, {}).setdefault(cta, {"uds": 0, "cub": 0, "acum": 0.0})
+        d["uds"] += uds
+        clave = (l["cuenta"], str(l["external_order_id"]))
+        fila = costos.get(clave)
+        # `costo_vendedor = 0` es una respuesta legítima de ML (el comprador
+        # pagó el envío); NULL es que no se pudo consultar. De ahí el `is None`.
+        if fila and fila.get("costo_vendedor") is not None:
+            del_pedido = uds_orden.get(clave) or uds
+            d["acum"] += float(fila["costo_vendedor"]) * uds / max(del_pedido, 1)
+            d["cub"] += uds
+
+    pendientes = 0
+    for f in items:
+        cuentas = por_sku.get(str(f["sku"]).lower())
+        if not cuentas:
+            continue
+        f["envios"] = [
+            {"cuenta": c,
+             "uds": int(d["uds"]),
+             "cubiertas": int(d["cub"]),
+             "envio_unit": round(d["acum"] / d["cub"], 2) if d["cub"] else None}
+            for c, d in sorted(cuentas.items(), key=lambda kv: -kv[1]["uds"])]
+        cub = sum(int(d["cub"]) for d in cuentas.values())
+        tot = sum(int(d["uds"]) for d in cuentas.values())
+        acum = sum(d["acum"] for d in cuentas.values())
+        pendientes += max(0, tot - cub)
+        if not cub:
+            continue
+        f["envio_unit"] = round(acum / cub, 2)
+        f["envio_origen"] = "real"
+        f["cobertura_envio_pct"] = round(cub / tot * 100) if tot else 0
+    _rehacer_costos(items)
+    return pendientes
+
+
 @router.get("/tabla")
 async def tabla(
     dias: int = Query(60, ge=7, le=180),
@@ -1175,6 +1365,13 @@ async def tabla(
     # resto de la página se completa en segundo plano y aparece al refrescar.
     visitas: int = Query(40, ge=0, le=500,
                          description="cuántas publicaciones medir por carga (0 = solo caché)"),
+    # Cuántos EMBARQUES se consultan a ML por carga para el envío real. Cada uno
+    # cuesta dos llamadas y se cachea para siempre, así que el llenado se reparte
+    # entre refrescos en vez de pagarse entero en la primera carga. Sin valor
+    # explícito manda `TABLA_ENVIO_REAL_PRESUPUESTO` de Railway: ponerla en 0
+    # apaga las llamadas a ML sin deploy (la tabla sigue con lo ya cacheado).
+    envios: int | None = Query(None, ge=0, le=500,
+                               description="cuántos embarques consultar por carga (0 = solo caché)"),
 ) -> dict[str, Any]:
     """Filas por SKU (agregado de cuentas) + sparkline 14 d por fila."""
     if not sdb.disponible():
@@ -1233,9 +1430,19 @@ async def tabla(
                 i["spark"] = [m.get(f, 0) for f in fechas]
             await _visitas_en_filas(items, dias, visitas)
             await _pesos_en_filas(items, visitas)
+            pendientes = await _envio_real_en_filas(
+                items, dias, cuenta,
+                envios if envios is not None
+                else getattr(settings, "tabla_envio_real_presupuesto", 150))
+        else:
+            pendientes = 0
         return {"total": int(total or 0), "items": items,
                 "limit": limit, "offset": offset, "dias": dias,
-                "orden": orden, "dir": dir or dir_natural}
+                "orden": orden, "dir": dir or dir_natural,
+                # Piezas de ESTA página que todavía traen envío estimado. El
+                # frontend lo anuncia y refresca hasta que llegue a 0, igual que
+                # el popup de "Productos más vendidos".
+                "envios_pendientes": pendientes}
     except Exception as exc:  # noqa: BLE001
         log.warning("tabla fulfillment falló: %s", exc)
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc

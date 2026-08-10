@@ -5408,3 +5408,132 @@ migraciones que aplicar. Variables nuevas en Railway: `SUPABASE_WRITE_CORE` y
 `SUPABASE_WRITE_CATEGORIAS`. Al cierre de las cinco transiciones (14 actas en
 cero cada una): retirar flags de lectura y espejos inversos, crons deltas
 fuera, tablas MySQL a legado y F8.
+
+
+### v0.85.0 — La tabla de Análisis deja de resumir el margen y lo DESGLOSA (Eduardo)
+
+Tarea: *"Pulir tabla de Análisis (quitar columnas Cobertura, Sugerido, Margen
+sin fees) y agregar costos/márgenes como los más vendidos"*.
+
+**Qué pregunta contesta ahora la tabla.** Nació como tablero de
+reabastecimiento —clon del de José— y las columnas lo delataban: COBERTURA
+(cuántos días dura el stock) y SUGERIDO A FULL (piezas a mandar) contestaban
+"qué reponer". La pregunta que hoy se le hace es otra: "qué deja dinero". Esas
+dos salen, y con ellas el **MARGEN BRUTO** — el que no descuenta los cobros del
+canal. Convivía con el neto en columnas contiguas y obligaba a decidir cuál de
+los dos leer; el que decide es el neto, y el bruto sigue estando canal por
+canal en el modal de precio y margen (clic en Precio o en Margen).
+
+**Entra el bloque de costos del popup "Productos más vendidos"**, con las
+mismas definiciones: `Costo base · Comisión /u · Envío /u · Costo final ·
+Margen · Ganancia`. Leídas de izquierda a derecha, la fila explica sola de
+dónde sale su margen — que es justo lo que antes obligaba a salir de la tabla y
+buscar el producto en el popup, donde además solo caben 10 SKUs por cuenta.
+Nada de esto es una tasa supuesta: la comisión es la que el canal cobró en los
+pedidos del período (`channel.order_items.comision`) y el precio es el
+REALIZADO (ingreso ÷ unidades, ya ponderado entre cuentas).
+
+**EL ENVÍO REAL, la pieza que faltaba.** El popup vale por eso: el estimado de
+`costing.costos_finales.costo_fee_envio` miente en las dos direcciones ($349
+estimados contra $88 reales en Malla Sombra; 141 SKUs con venta y flete en $0).
+Ahora la tabla también consulta el cobro real del embarque a ML
+(`services/envio_real.py`, caché `ml_envio_real` en MySQL) para los SKUs de la
+página. Diferencia deliberada contra el popup: **ahí el margen se queda vacío
+hasta tener el envío real; aquí NO**. Son 2,681 SKUs — esperar a tenerlos todos
+dejaría la columna en blanco durante días. La celda muestra el envío que haya y
+DICE cuál es: etiqueta `REAL` en verde o `EST` en gris, `*` cuando el real solo
+cubre parte de las piezas, y el estimado viejo en el tooltip cuando difiere.
+Mientras queden piezas con estimado, junto al contador de SKUs aparece
+*"consultando envíos — faltan N piezas"*; la página se refresca sola cada 60 s
+y cada vuelta avanza otro tanto (presupuesto `envios`, 150 embarques por carga,
+cada pedido se consulta UNA vez y queda cacheado).
+
+**Un solo cálculo para la celda, el tooltip y el ORDEN.** `_rehacer_costos()`
+rearma costo final, margen y ganancia en el backend después de resolver el
+envío, así que no hay dos aritméticas conviviendo. Regla que gobierna todo el
+bloque, heredada del popup: sin costo base o sin comisión real **no hay costo
+final** — celda vacía antes que un número inventado (por eso lo que solo vende
+en Amazon sigue sin margen: comisión en cero hasta Finances API). El costo
+implausible (>3× el precio) se sigue pintando en ÁMBAR con ⚠, no en rojo.
+
+**Y una marca más, del mismo espíritu: «sin envío capturado».** 248 SKUs de
+producción no tienen envío por ningún lado — ni el estimado por peso y medidas,
+ni un pedido del que leer el cobro real. Su costo final se arma solo con costo
+base + comisión, así que el margen sale optimista; sin marca se leían igual de
+firmes que los completos. Ahora ese costo final va en ÁMBAR con la nota debajo,
+y la etiqueta NOMBRA lo que falta: "sin envío capturado", no un genérico "sin
+costo" — la columna de al lado es Costo base, y ahí un "sin costo capturado"
+haría creer que lo ausente es esa otra cosa.
+
+**Comisión y envío se explican SOLOS al pasar el cursor.** Las dos celdas
+muestran un promedio PONDERADO por unidades, y un promedio sin desglose no dice
+qué cuenta lo está jalando: TEC-2162-NEG cobra $92.21 por pieza en BEKURA y
+$105.87 en SANCORFASHION, y la celda decía $97.94 a secas. Ahora el backend
+manda el desglose (`comisiones` por canal/cuenta desde `channel.order_items`,
+`envios` por cuenta desde las líneas de pedido) y la celda abre un panel al
+pasar el cursor — sin clic y sin modal, que para leer dos renglones sería peor
+que el problema. El panel va posicionado FIJO (no `absolute`) porque la tabla
+vive en un `overflow-x-auto` que lo recortaría, y se pinta ARRIBA de la celda
+cuando no cabe abajo. La comisión declara además cuántas piezas del período no
+aportaron comisión (las de Amazon, que la reporta en cero); el envío dice por
+cuenta cuántas piezas ya tienen cobro real y cuántas siguen pendientes, con
+cuatro textos distintos según haya cobro real, estimado, ninguno de los dos con
+ventas esperando, o ninguno de los dos sin ventas — decir "todavía se muestra el
+estimado" cuando no hay estimado es de lo que hace desconfiar de toda la tabla.
+
+De paso, el desglose por cuenta se calcula AUNQUE no haya MySQL: las líneas de
+pedido salen de kubera y solo el cobro real necesita el caché y los tokens de
+ML. En staging el panel sigue diciendo qué cuenta vendió y cuántas piezas están
+esperando su cobro — falta el número, no el contexto.
+
+**Orden nuevo**: `costo`, `comision`, `costo_final`, `margen_neto` y
+`ganancia`. El de ganancia es el que faltaba para la pregunta en pesos — un 60%
+sobre tres piezas pesa menos que un 15% sobre trescientas. Ordenar por margen
+ascendente sigue siendo el "filtro" de lo que vende mal. Salen del whitelist
+`cobertura`, `sugerido` y `margen`; el orden se decide sobre las ~2,700 filas
+con el envío ESTIMADO (el refinamiento real solo alcanza a las 50 de la página):
+mueve centavos en el margen, no el ranking, y queda dicho en el código.
+
+`channel.restock_panel` **no se toca** — se quitó la columna, no el cálculo; su
+CTE sale de la consulta porque ya nadie lo lee. Sin migraciones. UNA variable
+nueva, `TABLA_ENVIO_REAL_PRESUPUESTO` (default 150): cuántos embarques consulta
+la tabla a ML por carga. En 0 la tabla usa solo lo ya cacheado y deja de llamar a
+ML — es el apagador sin deploy si esas llamadas estorban, porque son lo único de
+esta vista que sale a un tercero y la página se refresca cada 60 s. El desglose
+por cuenta del panel NO depende de ella: sale de kubera. Probado en el SANDBOX (`APP_ENV=staging`), donde `MYSQL_ENABLED=false`
+deja sin caché de envíos y toda la columna cae al estimado marcado `EST`: es
+exactamente el camino de degradación que se quería verificar. Versión 0.85.0.
+
+**Herramienta nueva: `backend/scripts/actualizar_sandbox.py`.** El sandbox se
+quedaba días atrás y las pantallas se probaban contra cifras viejas (`sembrar_
+sandbox.py` solo trae 300 SKUs de costos desde MySQL: ni listings ni pedidos).
+Este copia por UPSERT `core`, `channel` y `costing` desde la BD kubera de
+producción — que se lee en transacciones READ ONLY — sin borrar nada, así que
+no propaga bajas y respeta las filas propias del sandbox. Tres cosas que costó
+descubrir y quedan documentadas en su cabecera:
+
+1. **El pooler filtra estado de SESIÓN.** Las dos DSN entran por el pooler de
+   Supabase en modo transacción (6543): varios clientes se turnan la misma
+   conexión del servidor. Abrir producción con
+   `options=-c default_transaction_read_only=on` —la protección obvia— deja
+   conexiones del pool en read-only para QUIEN SEA que las tome después, el
+   backend de Railway incluido. Así se envenenó el pool del sandbox el 10-ago y
+   `aplicar_migraciones.py` falló con "cannot execute CREATE EXTENSION in a
+   read-only transaction" sin que nadie hubiera tocado nada. El candado correcto
+   es `set transaction read only`, que muere con la transacción.
+2. **Los triggers falsean la copia.** `touch` pone `updated_at = now()` e `hist`
+   escribe `listing_history` / `cost_history`: copiando con ellos activos el
+   sandbox queda con todas las fechas del momento de la copia y una historia de
+   cambios inventada — así llegó `costing.cost_history` a 19,767 filas contra 52
+   en producción. Se apagan por tabla dentro de la misma transacción y se
+   verifica al final que quedaron activos.
+3. **Las secuencias se quedan atrás.** `listing_history` estaba en 19,220 con
+   ids hasta 42,551 (carga vieja), así que cualquier UPDATE a un listing chocaba
+   contra la PK al escribir su historial. El script hace `setval` de todas las
+   secuencias de los tres esquemas.
+
+Corrida del 10-ago: sandbox al día con producción (22,186 productos · 19,678
+listings · 12,810 pedidos), con `listings.max(updated_at)` IDÉNTICO al de
+producción — la prueba de que no se falsearon fechas. `aplicar_migraciones.py`
+completo solo sirve para un sandbox nuevo (la `0001` no es idempotente): al
+sandbox existente se le aplicó a mano la `0009`, que le faltaba.

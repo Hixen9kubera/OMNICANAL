@@ -67,7 +67,7 @@ const ITEMS: NavItem[] = [
     id: "analisis", label: "Análisis", icon: LineChart, href: "/analisis",
     submenu: [
       { label: "Análisis", href: "/analisis", icon: Boxes,
-        descripcion: "Stock, ventas y sugerido de reabasto" },
+        descripcion: "Stock, ventas y margen con los cobros del canal" },
       { label: "Ventas", href: "/ventas", icon: TrendingUp,
         descripcion: "Pedidos por canal y comparativa semanal" },
       { label: "Categorías", href: "/analisis/categorias", icon: Tags,

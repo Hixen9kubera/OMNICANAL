@@ -171,6 +171,16 @@ class Settings(BaseSettings):
     # Orígenes permitidos para el frontend Next.js
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
+    # Cuántos EMBARQUES consulta a ML la tabla de /analisis por carga, para
+    # cambiar el envío ESTIMADO por el cobro REAL (v0.85.0). Cada pedido cuesta
+    # dos llamadas y se cachea para siempre, así que el gasto se acaba solo;
+    # pero la página se refresca cada 60 s y esto es lo único de esa vista que
+    # sale a un tercero. En 0 la tabla usa SOLO lo ya cacheado y no llama a ML:
+    # es el apagador sin deploy si esas llamadas estorban (rate limit, incidente
+    # de tokens). El desglose por cuenta del panel NO depende de esto — sale de
+    # kubera.
+    tabla_envio_real_presupuesto: int = 150
+
     # ── Flags de la migración a Supabase (piloto) ─────────────
     # Regla: el valor por default de cada flag = comportamiento actual.
     # Revertir cualquier cambio = regresar el flag a su default (sin redeploy
