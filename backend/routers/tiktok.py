@@ -164,6 +164,119 @@ async def reparar_tiendas() -> dict:
             "estado": tiktok.estado()}
 
 
+@router.get("/explorar", dependencies=[Depends(requiere_api_key)])
+async def explorar(sku: str = Query(..., description="SKU de WooCommerce")) -> dict:
+    """
+    Reconocimiento COMPLETO de un SKU contra TikTok. NO publica nada.
+
+    Existe porque la lista de IPs permitidas de TikTok deja fuera las máquinas
+    de desarrollo (y una IP doméstica cambia sola: la de Brandon se renovó a
+    media sesión). Railway tiene IPs fijas y permitidas, así que este es el
+    único lugar desde donde se puede investigar.
+
+    Cada paso captura su propio error en vez de abortar: un fallo en las marcas
+    no debe impedir ver los atributos. Con una sola llamada se sabe todo lo que
+    falta para armar el payload.
+    """
+    _exigir_encendido()
+    token = tiktok.access_token()
+    if not token:
+        raise HTTPException(409, "No hay tienda autorizada.")
+    fila = db.fetch_all("SELECT shop_cipher FROM tiktok_tokens "
+                        "WHERE shop_cipher IS NOT NULL LIMIT 1")
+    if not fila:
+        raise HTTPException(409, "Sin shop_cipher — corre POST /api/tiktok/reparar-tiendas.")
+    cipher = fila[0]["shop_cipher"]
+
+    from services import woocommerce as wc
+    salida: dict = {"sku": sku, "pasos": {}}
+
+    async def paso(nombre, ruta, params=None, cuerpo=None, metodo="GET"):
+        try:
+            d = await tiktok.llamar(ruta, token, params, cuerpo, metodo)
+            salida["pasos"][nombre] = {"ok": True}
+            return d
+        except Exception as exc:  # noqa: BLE001
+            salida["pasos"][nombre] = {"ok": False, "error": str(exc)[:400]}
+            return None
+
+    # ── el producto en Woo ────────────────────────────────────────────────
+    # `_cb` es cache-bust: LiteSpeed cachea chunche.shop y una lectura vieja
+    # aquí se convierte en un payload con datos rancios (regla de la casa nº5).
+    try:
+        async with wc._client() as cli:
+            r = await cli.get("/products", params={"sku": sku, "_cb": "tkexp"})
+        prods = r.json() if r.status_code == 200 else []
+        p = prods[0] if prods else None
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(404, f"No se pudo leer {sku} de Woo: {exc}") from exc
+    if not p:
+        raise HTTPException(404, f"{sku} no existe en WooCommerce.")
+    titulo = (p.get("name") or "")[:255]
+    salida["producto"] = {
+        "titulo": titulo,
+        "precio_regular": p.get("regular_price"),
+        "precio_venta": p.get("price"),
+        "stock": p.get("stock_quantity"),
+        "peso": p.get("weight"),
+        "dimensiones": p.get("dimensions"),
+        "imagenes": [i.get("src") for i in (p.get("images") or [])][:9],
+        "atributos_woo": {a.get("name"): (a.get("options") or [None])[0]
+                          for a in (p.get("attributes") or [])},
+    }
+
+    # ── 1. ¿TikTok recomienda categoría desde el título? ───────────────────
+    rec = await paso("recomendar_categoria",
+                     "/product/202309/categories/recommend",
+                     {"shop_cipher": cipher},
+                     {"product_title": titulo}, "POST")
+    cat_id = None
+    if rec:
+        salida["recomendacion"] = rec
+        cadena = rec.get("categories") or []
+        if cadena:
+            cat_id = (cadena[-1] or {}).get("id")
+        cat_id = cat_id or rec.get("leaf_category_id")
+
+    # ── 2. atributos y reglas de esa categoría ────────────────────────────
+    if cat_id:
+        salida["categoria_id"] = cat_id
+        at = await paso("atributos", f"/product/202309/categories/{cat_id}/attributes",
+                        {"shop_cipher": cipher, "locale": "es-MX"})
+        if at:
+            attrs = at.get("attributes") or []
+            salida["atributos"] = {
+                "total": len(attrs),
+                "obligatorios": [
+                    {"id": a.get("id"), "nombre": a.get("name"),
+                     "tipo": a.get("type"),
+                     "opciones": [v.get("name") for v in (a.get("values") or [])][:25]}
+                    for a in attrs
+                    if a.get("is_requried") or a.get("is_required")
+                ],
+                "opcionales": [a.get("name") for a in attrs
+                               if not (a.get("is_requried") or a.get("is_required"))][:40],
+            }
+        rl = await paso("reglas", f"/product/202309/categories/{cat_id}/rules",
+                        {"shop_cipher": cipher})
+        if rl:
+            salida["reglas"] = rl
+
+    # ── 3. marcas ─────────────────────────────────────────────────────────
+    br = await paso("marcas", "/product/202309/brands",
+                    {"shop_cipher": cipher, "page_size": 20})
+    if br:
+        salida["marcas"] = {"total": br.get("total_count"),
+                            "muestra": [{"id": b.get("id"), "name": b.get("name")}
+                                        for b in (br.get("brands") or [])][:10]}
+
+    salida["siguiente"] = (
+        "Con los atributos obligatorios ya se puede armar el payload de "
+        "createProduct. Falta confirmar cómo se suben las imágenes."
+    )
+    return salida
+
+
 @router.get("/estado")
 async def estado(_: None = Depends(requiere_api_key)) -> dict:
     """Diagnóstico. No devuelve el token, solo si hay conexión y su vigencia."""
