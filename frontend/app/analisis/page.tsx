@@ -230,7 +230,11 @@ function Th({ id, children, right, info, orden, dir, onSort }: {
   orden: string; dir: "asc" | "desc"; onSort: (id: string) => void;
 }) {
   const activa = !!id && orden === id;
-  const ayuda = AYUDA[info ?? id ?? ""];
+  /* El "?" solo sale si la columna lo pide con `info`, ya NO por su `id`
+     (Eduardo, 8-ago): las columnas cuya celda se explica sola al pasar el
+     cursor no necesitan además un signo en el encabezado — eran dos formas de
+     contar lo mismo y el "?" es la que estorba. */
+  const ayuda = info ? AYUDA[info] : undefined;
   return (
     <th
       onClick={id ? () => onSort(id) : undefined}
@@ -515,6 +519,94 @@ const CANAL_CORTO: Record<string, string> = {
   mercado_libre: "Meli", amazon: "Amazon", general: "Web",
 };
 
+/* UDS · $VENTA. Las dos cifras de la celda son del PERÍODO elegido arriba y
+   suman todas las cuentas, que es justo lo que no se ve mirando el número.
+   El precio promedio va aquí porque es la división de las dos: tenerlo a mano
+   evita que alguien lo calcule mal de cabeza. */
+function VentaUds({ fila, dias }: { fila: Fila; dias: number }) {
+  const uds = Number(fila.uds || 0);
+  const venta = fila.venta == null ? null : Number(fila.venta);
+  if (uds <= 0)
+    return (
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Uds · $Venta</span>
+          <span className="mt-1 block text-slate-400">
+            Este producto no vendió una sola pieza en los últimos {dias} días.
+            No habla de la publicación —puede estar activa— sino del período.
+          </span>
+        </>
+      }>
+        <div>
+          <div className="font-semibold tabular-nums text-slate-800">0</div>
+          <div className="text-[11px] tabular-nums text-slate-300">—</div>
+        </div>
+      </PanelHover>
+    );
+  return (
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Uds · $Venta</span>
+        <Renglon etiqueta="Piezas vendidas" valor={fNum(uds)} />
+        <Renglon etiqueta="Importe" valor={fMoney(venta)} />
+        {venta != null && (
+          <Renglon etiqueta="Precio promedio" detalle="importe ÷ piezas"
+                   valor={fMoney(venta / uds, 2)} tenue />
+        )}
+        <span className="mt-1.5 block text-slate-400">
+          Últimos {dias} días, sumando TODAS las cuentas donde se vende este
+          SKU. Es venta bruta: todavía no se le descuenta comisión ni envío.
+        </span>
+      </>
+    }>
+      <div>
+        <div className="font-semibold tabular-nums text-slate-800">{fNum(uds)}</div>
+        <div className="text-[11px] tabular-nums text-emerald-600">{fMoney(fila.venta)}</div>
+      </div>
+    </PanelHover>
+  );
+}
+
+/* FULL · PROPIO. Son DOS bodegas distintas y la confusión más cara del panel es
+   sumarlas: tener 300 piezas propias no evita quedarse sin vender si FULL está
+   en cero, porque una publicación FULL solo surte de la bodega de Meli. */
+function StockFullPropio({ fila }: { fila: Fila }) {
+  const full = Number(fila.stock_full || 0);
+  const propio = Number(fila.stock_propio || 0);
+  const quiebre = full === 0 && fila.uds > 0;
+  return (
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">FULL · Propio</span>
+        <Renglon etiqueta="En bodega del marketplace" detalle="FULL / FBA"
+                 valor={fNum(full)} />
+        <Renglon etiqueta="En bodega propia" detalle="DROP" valor={fNum(propio)} />
+        <span className="mt-1.5 block text-slate-400">
+          Son inventarios SEPARADOS y no se suman: una publicación FULL solo
+          surte de la bodega de Meli. Reponer significa mover piezas de Propio
+          a FULL, no comprar más.
+        </span>
+        {quiebre && (
+          <span className="mt-1 block text-amber-300">
+            {propio > 0
+              ? `Vendió en el período y FULL está en cero teniendo ${fNum(propio)} ${propio === 1 ? "pieza propia" : "piezas propias"}: hay con qué reponer, pero mientras tanto no vende.`
+              : "Vendió en el período y no queda stock en ninguna de las dos bodegas."}
+          </span>
+        )}
+      </>
+    }>
+      <div>
+        <div className={`font-semibold tabular-nums ${quiebre ? "text-red-500" : "text-slate-800"}`}>
+          {fNum(full)}
+        </div>
+        <div className={`text-[11px] tabular-nums ${propio > 0 ? "text-amber-600" : "text-slate-300"}`}>
+          {fNum(propio)}
+        </div>
+      </div>
+    </PanelHover>
+  );
+}
+
 /* COMISIÓN: el promedio de la celda es PONDERADO por unidades, así que sin el
    desglose no hay forma de saber qué cuenta lo está jalando. */
 function ComisionUnit({ fila }: { fila: Fila }) {
@@ -567,10 +659,13 @@ function ComisionUnit({ fila }: { fila: Fila }) {
   );
 }
 
-/* COSTO BASE. La tarjeta hace dos cosas que el número solo no puede: convertir
-   el costo por pieza en lo que costó TODO lo vendido, y señalar al culpable
-   cuando el costo no es creíble — hasta ahora ese aviso vivía en Margen y en
-   Ganancia, que son las víctimas, no el origen. */
+/* COSTO BASE. La tarjeta señala al culpable cuando el costo no es creíble —
+   ese aviso vivía en Margen y en Ganancia, que son las víctimas, no el origen.
+
+   SIN el "× N piezas vendidas" (Eduardo, 8-ago): multiplicar el costo por las
+   unidades daba una cifra que no es de esta columna. El costo del período ya
+   lo cuentan Costo final y Ganancia, cada uno con los cobros que le tocan; aquí
+   sobraba y se leía como si fuera un total propio. */
 function CostoBase({ fila }: { fila: Fila }) {
   const v = fila.costo == null ? null : Number(fila.costo);
   const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
@@ -594,10 +689,6 @@ function CostoBase({ fila }: { fila: Fila }) {
       <>
         <span className="block font-semibold text-white">Costo base</span>
         <Renglon etiqueta="Por pieza" valor={fMoney(v, 2)} />
-        {fila.uds > 0 && (
-          <Renglon etiqueta={`× ${fNum(fila.uds)} piezas vendidas`}
-                   valor={fMoney(v * fila.uds)} />
-        )}
         <span className="mt-1.5 block text-slate-400">
           Producto + flete de importación, del costeo validado. Es uno solo por
           producto: no cambia entre cuentas ni entre canales.
@@ -1696,19 +1787,22 @@ export default function FulfillmentPage() {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/70">
-                <Th id="sku" {...th}>Producto</Th>
+                {/* `info` = mostrar el "?" del encabezado. Solo lo llevan las
+                    columnas SIN panel al pasar el cursor sobre la celda; donde
+                    hay panel, el "?" repetía lo mismo (Eduardo, 8-ago). */}
+                <Th id="sku" info="sku" {...th}>Producto</Th>
                 <Th info="estado" {...th}>Estado</Th>
-                <Th right info="visitas" {...th}>Visitas · CR%</Th>
+                <Th right {...th}>Visitas · CR%</Th>
                 <Th id="venta" right {...th}>Uds · $Venta</Th>
                 <Th id="stock_full" right {...th}>FULL · Propio</Th>
-                <Th id="edad" right {...th}>Edad s/v</Th>
+                <Th id="edad" right info="edad" {...th}>Edad s/v</Th>
                 <Th right info="precio" {...th}>Precio venta</Th>
-                <Th id="costo" right info="costo" {...th}>Costo base</Th>
-                <Th id="comision" right info="comision" {...th}>Comisión /u</Th>
-                <Th right info="envio" {...th}>Envío /u</Th>
-                <Th id="costo_final" right info="costo_final" {...th}>Costo final</Th>
+                <Th id="costo" right {...th}>Costo base</Th>
+                <Th id="comision" right {...th}>Comisión /u</Th>
+                <Th right {...th}>Envío /u</Th>
+                <Th id="costo_final" right {...th}>Costo final</Th>
                 <Th id="margen_neto" right info="margen_neto" {...th}>Margen</Th>
-                <Th id="ganancia" right info="ganancia" {...th}>Ganancia</Th>
+                <Th id="ganancia" right {...th}>Ganancia</Th>
               </tr>
             </thead>
             <tbody>
@@ -1747,17 +1841,11 @@ export default function FulfillmentPage() {
                   </td>
                   {/* Uds + venta */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <div className="font-semibold tabular-nums text-slate-800">{fNum(f.uds)}</div>
-                    <div className="text-[11px] tabular-nums text-emerald-600">{fMoney(f.venta)}</div>
+                    <VentaUds fila={f} dias={dias} />
                   </td>
                   {/* Stock full + propio */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <div className={`font-semibold tabular-nums ${f.stock_full === 0 && f.uds > 0 ? "text-red-500" : "text-slate-800"}`}>
-                      {fNum(f.stock_full)}
-                    </div>
-                    <div className={`text-[11px] tabular-nums ${f.stock_propio > 0 ? "text-amber-600" : "text-slate-300"}`}>
-                      {fNum(f.stock_propio)}
-                    </div>
+                    <StockFullPropio fila={f} />
                   </td>
                   <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.edad_sin_venta_d != null && f.edad_sin_venta_d > 30 ? "text-red-500" : "text-slate-500"}`}>
                     {f.edad_sin_venta_d == null ? "—" : `${f.edad_sin_venta_d}d`}

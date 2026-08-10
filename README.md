@@ -5574,3 +5574,44 @@ Verificado que la tarjeta no se recorta ni en la columna mas a la izquierda
 (Visitas) ni en la ultima fila de la pagina, donde se voltea hacia arriba. Se
 retiro el componente `Cifra`, que ya no usaba nadie. Solo frontend: sin
 migraciones, sin variables y sin cambios de API. Version 0.86.0.
+
+### v0.87.0 — Análisis: dos columnas más que se explican solas, y fuera el "?" repetido
+
+Tres ajustes a la v0.86.0, pedidos por Eduardo (8-ago).
+
+**Fuera la multiplicación del Costo base.** El panel mostraba
+`Por pieza $4,229.19 × 183 piezas vendidas = $773,942`. Ese total no es de esa
+columna: el costo del período ya lo cuentan Costo final y Ganancia, cada uno
+con los cobros que le tocan. Aquí se leía como si fuera un total propio y
+competía con ellos. Queda solo el costo por pieza y su explicación.
+
+**Uds · $Venta** y **FULL · Propio** ganan panel al pasar el cursor, como las
+columnas de costo:
+
+- *Uds · $Venta* — piezas, importe y **precio promedio** (importe ÷ piezas,
+  que es de donde sale la columna Precio venta), más la aclaración de que es
+  del período elegido, suma TODAS las cuentas y es venta bruta. Cuando no
+  vendió, lo dice sin ambigüedad: habla del período, no de la publicación.
+- *FULL · Propio* — las dos bodegas por separado con la advertencia que evita
+  la confusión más cara del panel: **no se suman**. Una publicación FULL solo
+  surte de la bodega de Meli, así que reponer es mover de Propio a FULL, no
+  comprar. Si vendió y FULL está en cero, el panel dice si hay piezas propias
+  con qué reponer.
+
+**El "?" del encabezado ya no sale por `id`, solo si la columna lo pide con
+`info`.** Donde la celda se explica sola al pasar el cursor, el signo repetía
+lo mismo. Reparto final:
+
+| Sin "?" (la celda tiene panel) | Con "?" (no hay panel) |
+|---|---|
+| Visitas · Uds/$Venta · FULL/Propio · Costo base · Comisión · Envío · Costo final · Ganancia | Producto · Estado · Edad s/v · Precio venta · Margen |
+
+Esas cinco conservan el "?" porque su celda no tiene panel —Precio venta y
+Margen solo llevan `title` nativo—. Cuando lo tengan, se les quita el `info` y
+listo.
+
+Verificado en el navegador contra el sandbox: los tres paneles pintan su
+contenido, el de Costo base ya no trae la multiplicación, el reparto de "?"
+quedó como arriba y la página no desborda. De paso se corrigió un "1 piezas
+propias" que salía en singular. Sin migraciones y sin variables nuevas.
+Versión 0.87.0.
