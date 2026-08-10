@@ -84,17 +84,22 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     except Exception as exc:  # noqa: BLE001
         log.warning("presencia (canal_inventario) falló: %s", exc)
 
-    # Mercado Libre — fuente comprehensiva: Supabase products_snapshot (todas las
-    # publicaciones del día). Fallback/union con ml_progress.
-    try:
-        from services import supabase_rest
-        pres = supabase_rest.presencia_ml(skus)
-        for sku, e in pres.items():
-            for _ in range(int(e.get("n") or 1)):
-                _agregar(sku, Canal.MERCADO_LIBRE.value,
-                         bool(e.get("publicado")), e.get("item_id"), e.get("url"))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("presencia ML (supabase) falló: %s", exc)
+    # Aquí vivía una segunda fuente para Mercado Libre: `products_snapshot` del
+    # proyecto dailytrackMeli, vía supabase_rest. SE RETIRA (Eduardo, 8-ago):
+    # ese proyecto YA NO EXISTE — su hostname dejó de resolver, después de que
+    # su Postgres se quedara sin espacio y restringiera la organización entera.
+    # Desde entonces la llamada fallaba en CADA carga de la página Productos y
+    # solo servía para llenar el log.
+    #
+    # No se reemplaza porque no hace falta: `channel_read.presencia()` de arriba
+    # ya lee channel.listings, que es la misma información y mejor. Censo del
+    # 7-ago contra la API de Mercado Libre: listings conoce las 4,586
+    # publicaciones (el snapshot tenía 1,000 de las 2,320 de Sancor) y coincide
+    # en estado con ML en 99.8%. En la muestra donde las dos fuentes discrepaban,
+    # ML le dio la razón a listings en 44 de 44.
+    #
+    # Tampoco se pierde la URL: la de los puntos de esta vista no se usa, y el
+    # enlace "Ver publicación" del Estudio sale de studio.metadata, no de aquí.
     try:
         rows = db.fetch_all(
             f"""SELECT sku, ml_item_id, ml_url, success
@@ -102,7 +107,9 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
             tuple(skus),
         )
         for r in rows:
-            # Evitar duplicar si Supabase ya marcó el canal para ese SKU.
+            # Evitar duplicar si channel.listings ya marcó el canal para ese SKU.
+            # ml_progress es la bitácora del publicador: sirve de red para lo
+            # recién publicado que el espejo todavía no alcanzó.
             if Canal.MERCADO_LIBRE.value in acc.get(r["sku"], {}):
                 continue
             _agregar(r["sku"], Canal.MERCADO_LIBRE.value,

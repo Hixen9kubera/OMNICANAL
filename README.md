@@ -5615,3 +5615,42 @@ contenido, el de Costo base ya no trae la multiplicación, el reparto de "?"
 quedó como arriba y la página no desborda. De paso se corrigió un "1 piezas
 propias" que salía en singular. Sin migraciones y sin variables nuevas.
 Versión 0.87.0.
+
+### v0.88.0 — Fuera la lectura de dailytrackMeli: el proyecto ya no existe
+
+`dailytrackMeli` (`xaxbkijc…`) **desapareció**: su hostname dejó de resolver
+—tres intentos, mientras `supabase.com` y los otros dos proyectos resuelven
+bien—. Antes de eso su Postgres llevaba ~2 semanas devolviendo
+`53100: No space left on device`, que en el plan gratuito **restringe la
+organización entera**: por eso el panel de Supabase marcaba servicios
+restringidos aunque kubera solo ocupa 183 MB de 500.
+
+`presencia.py` seguía llamándolo en **cada carga de la página Productos**. La
+llamada fallaba siempre y solo llenaba el log. Se retira.
+
+**No se reemplaza porque no hace falta.** El bloque de arriba ya lee
+`channel_read.presencia()` → `channel.listings`, que es la misma información y
+mejor. Censo del 7-ago contra la API de Mercado Libre:
+
+| | `products_snapshot` | `channel.listings` |
+|---|---|---|
+| Publicaciones de Sancor | 1,000 de 2,320 (**43%**) | 2,320 (**100%**) |
+| Acuerdo con ML | perdió **44 de 44** | **99.8%** |
+
+El snapshot no solo estaba viejo (último 27-jul): le faltaba **el 59% de una
+cuenta**, seguramente por un tope de paginación o una corrida cortada. En los
+24 SKUs donde las dos fuentes discrepaban, ML le dio la razón a `listings`
+**siempre**.
+
+Tampoco se pierde nada más: la URL de los puntos de esta vista no se usa, y el
+enlace «Ver publicación» del Estudio sale de `studio.metadata`, no de aquí.
+
+Verificado contra producción: 40 SKUs resueltos en 0.28 s, los 40 con Mercado
+Libre y Amazon — y con MySQL apagado, o sea **todo desde `channel.listings`**.
+Sin migraciones y sin variables nuevas. Versión 0.88.0.
+
+**Queda huérfano** `services/supabase_rest.py`: ya no lo importa nadie (solo
+quedan menciones en comentarios de `config.py`). Su retiro, junto con las
+variables `ANALYTICS_SUPABASE_*` de Railway, es una limpieza aparte — ojo con
+el fallback: si se borran esas variables sin quitar el módulo, `_analytics_url()`
+cae a `SUPABASE_*` y le pediría `products_snapshot` a kubera, donde no existe.
