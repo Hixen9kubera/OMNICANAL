@@ -367,25 +367,58 @@ function MarcaDosProductos({ div }: { div: Fila["peso_divergente"] }) {
 function VisitasCR({ fila, dias }: { fila: Fila; dias: number }) {
   if (fila.visitas == null) {
     return (
-      <span className="text-slate-300"
-            title="Sin medición de visitas todavía. Se consultan a Mercado Libre por publicación y se guardan unas horas; al recorrer la tabla se van completando.">
-        — · —
-      </span>
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Visitas · CR%</span>
+          <span className="mt-1 block text-slate-400">
+            Sin medición todavía. Las visitas se le piden a Mercado Libre una
+            publicación a la vez y se guardan unas horas; al recorrer la tabla se
+            van completando solas.
+          </span>
+        </>
+      }>
+        <span className="text-slate-300">— · —</span>
+      </PanelHover>
     );
   }
   const parcial = fila.visitas_dias != null && fila.visitas_dias < dias - 2;
   const soloParte = fila.uds > fila.uds_ml;
   return (
-    <div
-      title={`${fNum(fila.visitas)} visitas a las publicaciones de Mercado Libre`
-             + (fila.visitas_dias ? `\nVentana devuelta por ML: ${fila.visitas_dias} de ${dias} días` : "")
-             + (fila.cr_pct != null
-                ? `\nConversión ${fNum(fila.cr_pct, 1)}%: ${fNum(fila.uds_ml)} uds vendidas en ML ÷ ${fNum(fila.visitas)} visitas`
-                : "")
-             + (soloParte
-                ? `\nOJO: este SKU vendió ${fNum(fila.uds)} uds en total; las otras ${fNum(fila.uds - fila.uds_ml)} son de Amazon y no cuentan aquí porque no aportan visitas.`
-                : "")}
-    >
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Visitas y conversión</span>
+        <Renglon etiqueta="Visitas en Mercado Libre" valor={fNum(fila.visitas)} />
+        <Renglon etiqueta="Unidades vendidas en ML" valor={fNum(fila.uds_ml)} />
+        {fila.cr_pct != null && (
+          <span className="mt-1 block border-t border-slate-700 pt-1">
+            <Renglon etiqueta="Conversión" valor={`${fNum(fila.cr_pct, 1)}%`} />
+          </span>
+        )}
+        {/* La lectura del par, que es para lo que sirve la columna. */}
+        <span className="mt-1.5 block text-slate-400">
+          {fila.cr_pct == null
+            ? "Sin unidades con qué calcular la conversión."
+            : fila.cr_pct >= 5
+              ? "Convierte bien: de cada 100 personas que la ven, compran "
+                + `${fNum(fila.cr_pct, 1)}. Si vende poco, el problema es que no la ven.`
+              : "Convierte por debajo de lo sano en ML (5%): mucha gente la ve y no "
+                + "compra, así que el problema está en la ficha o en el precio, no en el tráfico."}
+        </span>
+        {soloParte && (
+          <span className="mt-1 block text-amber-300">
+            Este producto vendió {fNum(fila.uds)} piezas en total; las otras{" "}
+            {fNum(fila.uds - fila.uds_ml)} son de Amazon y no cuentan aquí porque no
+            aportan visitas.
+          </span>
+        )}
+        {parcial && (
+          <span className="mt-1 block text-amber-300">
+            Mercado Libre devolvió {fila.visitas_dias} días de los {dias} pedidos:
+            las visitas cubren menos período que las ventas.
+          </span>
+        )}
+      </>
+    }>
       <div className="tabular-nums text-slate-700">
         {fNum(fila.visitas)}{parcial && <span className="text-amber-500">*</span>}
       </div>
@@ -395,7 +428,7 @@ function VisitasCR({ fila, dias }: { fila: Fila; dias: number }) {
         {fila.cr_pct == null ? "—" : `${fNum(fila.cr_pct, 1)}%`}
         {soloParte && <span className="ml-0.5 text-slate-400">ml</span>}
       </div>
-    </div>
+    </PanelHover>
   );
 }
 
@@ -414,20 +447,11 @@ function VisitasCR({ fila, dias }: { fila: Fila; dias: number }) {
    los pedidos del período, así que falta en lo que no vendió y en lo que solo
    vende en Amazon (comisión aún en cero, falta Finances API). */
 
-/* Una cifra de dinero con su explicación; el gris de "—" significa "no se
-   sabe", nunca "cero". */
-function Cifra({ v, ayuda, fuerte, dec = 2 }: {
-  v: number | null; ayuda: string; fuerte?: boolean; dec?: number;
-}) {
-  if (v == null)
-    return <div className="text-slate-300" title={ayuda}>—</div>;
-  return (
-    <div className={`tabular-nums ${fuerte ? "font-semibold text-slate-800" : "text-slate-700"}`}
-         title={ayuda}>
-      {fMoney(v, dec)}
-    </div>
-  );
-}
+/* La celda simple con `title` nativo se RETIRÓ: las seis columnas de costo
+   pasaron a la tarjeta flotante de abajo (Eduardo, 10-ago). Un `title` solo sabe
+   pintar texto corrido, y lo que estas columnas tienen que explicar es una
+   cuenta —de dónde sale el número y con qué se compara— que en renglones se lee
+   de un vistazo y en un párrafo no se lee. */
 
 /* ── PANEL AL PASAR EL CURSOR ──────────────────────────────────────────────
    Un `title` nativo solo sabe pintar texto corrido, y comisión y envío no son
@@ -543,6 +567,55 @@ function ComisionUnit({ fila }: { fila: Fila }) {
   );
 }
 
+/* COSTO BASE. La tarjeta hace dos cosas que el número solo no puede: convertir
+   el costo por pieza en lo que costó TODO lo vendido, y señalar al culpable
+   cuando el costo no es creíble — hasta ahora ese aviso vivía en Margen y en
+   Ganancia, que son las víctimas, no el origen. */
+function CostoBase({ fila }: { fila: Fila }) {
+  const v = fila.costo == null ? null : Number(fila.costo);
+  const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
+  if (v == null || v <= 0)
+    return (
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Costo base</span>
+          <span className="mt-1 block text-slate-400">
+            A este producto no se le ha capturado el costo. Sin él no hay costo
+            final ni margen que calcular — por eso esas dos columnas salen vacías.
+          </span>
+        </>
+      }>
+        <div className="text-slate-300">—</div>
+      </PanelHover>
+    );
+  const dudoso = precio != null && costoImplausible(precio, v);
+  return (
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Costo base</span>
+        <Renglon etiqueta="Por pieza" valor={fMoney(v, 2)} />
+        {fila.uds > 0 && (
+          <Renglon etiqueta={`× ${fNum(fila.uds)} piezas vendidas`}
+                   valor={fMoney(v * fila.uds)} />
+        )}
+        <span className="mt-1.5 block text-slate-400">
+          Producto + flete de importación, del costeo validado. Es uno solo por
+          producto: no cambia entre cuentas ni entre canales.
+        </span>
+        {dudoso && (
+          <span className="mt-1 block text-amber-300">
+            Ojo: es {fNum(v / precio!, 1)}× el precio al que se vendió
+            ({fMoney(precio, 2)}). El margen y la ganancia salen de aquí, así que
+            léelos como referencia — el problema está en el costo, no en la venta.
+          </span>
+        )}
+      </>
+    }>
+      <div className="tabular-nums text-slate-700">{fMoney(v, 2)}</div>
+    </PanelHover>
+  );
+}
+
 /* ENVÍO: real o estimado, dicho en la celda. El estimado de costing miente en
    las dos direcciones ($349 contra $88 reales en Malla Sombra, y 141 SKUs con
    flete en $0), así que un margen calculado con él no es el margen — pero
@@ -639,21 +712,53 @@ function EnvioUnit({ fila }: { fila: Fila }) {
    vea "sin costo capturado" ahí va a creer que le falta esa otra cosa. */
 function CostoFinal({ fila }: { fila: Fila }) {
   const v = fila.costo_final == null ? null : Number(fila.costo_final);
+  const costo = fila.costo == null ? null : Number(fila.costo);
+  const com = fila.comision_unit == null ? null : Number(fila.comision_unit);
+  const envio = fila.envio_unit == null ? null : Number(fila.envio_unit);
   if (v == null)
     return (
-      <div className="text-slate-300"
-           title="Falta el costo base o la comisión real: sin uno de los dos no hay costo final">
-        —
-      </div>
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Costo final</span>
+          <span className="mt-1 block text-slate-400">
+            {costo == null
+              ? "Falta el costo base de este producto."
+              : "Falta la comisión: sale de los pedidos reales del período, así que "
+                + "no existe si el producto no vendió o si solo vende en Amazon."}
+            {" "}Sin ella no hay costo final ni margen.
+          </span>
+        </>
+      }>
+        <div className="text-slate-300">—</div>
+      </PanelHover>
     );
-  const sinEnvio = fila.envio_unit == null;
+  const sinEnvio = envio == null;
   return (
-    <div title={sinEnvio
-        ? "A este SKU no se le ha capturado el COSTO DE ENVÍO: no tiene el estimado por "
-          + "peso y medidas, y tampoco ha vendido un pedido del que se pueda leer el cobro "
-          + "real del embarque.\nEste costo final es solo costo base + comisión, así que el "
-          + "margen de al lado sale optimista: le falta restar el envío."
-        : "Costo final = costo base + comisión + envío. No incluye almacenamiento FULL."}>
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Costo final por pieza</span>
+        <Renglon etiqueta="Costo base" valor={fMoney(costo, 2)} />
+        <Renglon etiqueta="+ Comisión" valor={fMoney(com, 2)} />
+        <Renglon etiqueta={`+ Envío${sinEnvio ? "" : fila.envio_origen === "real" ? " (real)" : " (estimado)"}`}
+                 valor={sinEnvio ? "—" : fMoney(envio, 2)}
+                 tenue={sinEnvio} />
+        <span className="mt-1 block border-t border-slate-700 pt-1">
+          <Renglon etiqueta="Costo final" valor={fMoney(v, 2)} />
+        </span>
+        {sinEnvio ? (
+          <span className="mt-1.5 block text-amber-300">
+            A este producto no se le capturó el costo de ENVÍO: no tiene el estimado
+            por peso y medidas ni ha vendido un pedido del que leer el cobro real.
+            Este total va sin envío, así que el margen sale optimista.
+          </span>
+        ) : (
+          <span className="mt-1.5 block text-slate-400">
+            No incluye el almacenamiento en FULL, que Mercado Libre cobra por mes y
+            no por venta.
+          </span>
+        )}
+      </>
+    }>
       <div className={`font-semibold tabular-nums ${sinEnvio ? "text-amber-600" : "text-slate-800"}`}>
         {fMoney(v, 2)}
       </div>
@@ -662,7 +767,7 @@ function CostoFinal({ fila }: { fila: Fila }) {
           sin envío capturado
         </div>
       )}
-    </div>
+    </PanelHover>
   );
 }
 
@@ -720,22 +825,52 @@ function Margen({ fila }: { fila: Fila }) {
    sobre tres piezas pesa menos que un 15% sobre trescientas. */
 function Ganancia({ fila }: { fila: Fila }) {
   const g = fila.ganancia_periodo == null ? null : Number(fila.ganancia_periodo);
+  const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
   if (g == null)
     return (
-      <div className="text-slate-300"
-           title={fila.uds > 0 ? "Falta costo o comisión para calcular la ganancia"
-                               : "Sin ventas en el período"}>—</div>
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Ganancia del período</span>
+          <span className="mt-1 block text-slate-400">
+            {fila.uds > 0
+              ? "Falta el costo base o la comisión, así que no hay costo final del "
+                + "que restar: sin eso no se puede saber cuánto dejó."
+              : "Este producto no vendió en el período. Sin piezas vendidas no hay "
+                + "ganancia que contar — no es cero, es que no hay."}
+          </span>
+        </>
+      }>
+        <div className="text-slate-300">—</div>
+      </PanelHover>
     );
-  const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
   const dudoso = precio != null && costoImplausible(precio, fila.costo);
   return (
-    <div className={`font-bold tabular-nums ${
-        dudoso ? "text-amber-600" : g < 0 ? "text-red-500" : "text-emerald-600"}`}
-         title={(dudoso && precio != null
-                 ? avisoCostoImplausible(precio, Number(fila.costo)) + "\n\n" : "")
-                + `${fNum(fila.uds)} piezas × ${fMoney(fila.ganancia_unit, 2)} de ganancia`}>
-      {fMoney(g)}
-    </div>
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Ganancia del período</span>
+        <Renglon etiqueta="Precio real de venta" valor={fMoney(precio, 2)} />
+        <Renglon etiqueta="− Costo final" valor={fMoney(fila.costo_final, 2)} />
+        <span className="mt-1 block border-t border-slate-700 pt-1">
+          <Renglon etiqueta="Deja por pieza" valor={fMoney(fila.ganancia_unit, 2)} />
+        </span>
+        <Renglon etiqueta={`× ${fNum(fila.uds)} piezas vendidas`} valor={fMoney(g)} />
+        <span className="mt-1.5 block text-slate-400">
+          Es la columna para ordenar cuando la pregunta es qué sostiene el negocio
+          en pesos: un 60% sobre tres piezas pesa menos que un 15% sobre trescientas.
+        </span>
+        {dudoso && (
+          <span className="mt-1 block text-amber-300">
+            Sale de un costo poco creíble ({fNum(Number(fila.costo) / precio!, 1)}× el
+            precio de venta): tómalo como referencia, no como un hecho.
+          </span>
+        )}
+      </>
+    }>
+      <div className={`font-bold tabular-nums ${
+          dudoso ? "text-amber-600" : g < 0 ? "text-red-500" : "text-emerald-600"}`}>
+        {fMoney(g)}
+      </div>
+    </PanelHover>
   );
 }
 
@@ -1641,10 +1776,7 @@ export default function FulfillmentPage() {
                       margen — que es justo lo que antes obligaba a abrir el
                       popup de "Productos más vendidos". */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <Cifra v={f.costo == null ? null : Number(f.costo)}
-                           ayuda={f.costo == null
-                             ? "Sin costo capturado para este SKU"
-                             : "Costo base: producto + flete de importación (costeo validado)"} />
+                    <CostoBase fila={f} />
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <ComisionUnit fila={f} />

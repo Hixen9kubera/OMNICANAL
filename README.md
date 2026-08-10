@@ -5537,3 +5537,40 @@ listings · 12,810 pedidos), con `listings.max(updated_at)` IDÉNTICO al de
 producción — la prueba de que no se falsearon fechas. `aplicar_migraciones.py`
 completo solo sirve para un sandbox nuevo (la `0001` no es idempotente): al
 sandbox existente se le aplicó a mano la `0009`, que le faltaba.
+
+
+### v0.86.0 — Las columnas de costo se explican solas al pasar el cursor (Eduardo)
+
+Continuacion directa de v0.85.0: ahi entro el bloque de costos, y con el la
+pregunta de siempre — "de donde sale este numero?". El `title` nativo del
+navegador no puede contestarla: solo sabe pintar texto corrido, y lo que estas
+columnas tienen que mostrar es una CUENTA. En renglones se lee de un vistazo; en
+un parrafo no se lee. Cuatro columnas mas pasan a la tarjeta flotante que ya
+estrenaron Comision y Envio:
+
+**Costo base** — el costo por pieza convertido en lo que costo todo lo vendido
+(`$813.63 x 584 piezas = $475,160`), y el aviso de costo poco creible. Ese aviso
+hasta ahora solo vivia en Margen y en Ganancia, que son las VICTIMAS; ahora
+tambien aparece en el ORIGEN: "es 4.5x el precio al que se vendio ($179.44)".
+
+**Costo final** — la suma en renglones con linea de total: costo base +
+comision + envio (etiquetado real o estimado). Cuando falta el envio, el aviso
+ambar explica que ese total va incompleto y que el margen sale optimista.
+
+**Ganancia** — la cuenta completa, que es lo que mas faltaba: precio real de
+venta - costo final = deja por pieza, x piezas vendidas = ganancia del periodo.
+Un renglon con signo negativo explica una perdida mejor que cualquier tooltip.
+
+**Visitas · CR%** — visitas, unidades de ML y conversion, mas la LECTURA del
+par: arriba de 5% dice que si vende poco es porque no la ven; abajo, que el
+problema esta en la ficha o el precio. En ambar los dos matices que la celda no
+puede callar: unidades de Amazon que no cuentan (no aportan visitas) y ventanas
+en las que ML devolvio menos dias de los pedidos.
+
+MARGEN se queda con el tooltip viejo a proposito: esa celda es un boton que abre
+el modal por canal, y una tarjeta al pasar el cursor competiria con el clic.
+
+Verificado que la tarjeta no se recorta ni en la columna mas a la izquierda
+(Visitas) ni en la ultima fila de la pagina, donde se voltea hacia arriba. Se
+retiro el componente `Cifra`, que ya no usaba nadie. Solo frontend: sin
+migraciones, sin variables y sin cambios de API. Version 0.86.0.
