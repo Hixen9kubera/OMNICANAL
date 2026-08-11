@@ -499,8 +499,20 @@ strings en `competencia_supabase.py` y las vistas.
    (`sale_price`) está completo e intacto — 3,118 de 3,118 con visitas.
 4. **Vistas** `enrich.market_skus_v` y `enrich.market_publicaciones_v`
    con la forma exacta que hoy devuelven las de `propuestas`.
-5. **Backend**: repuntar `competencia_supabase.py`, podar `competencia_store.py`
-   *sin romper la fachada ni `_cubre*`, y el router.
+5. **Backend** ✅ **HECHO (11-ago, v0.99.0)** — `competencia_supabase.py`
+   repuntado: 10 consultas a `enrich.market_*`; la ÚNICA que sigue en
+   `propuestas` es `resultados()` (tabla `competencia_resultados`, 295 filas,
+   lector vivo `/detalle` — resolver antes del rename del 7a). La columna
+   `canal` de las tablas nuevas NO se expone al API aún (pop documentado).
+   Poda: GET `/visitas-propias` retirado — llamaba a una función que nunca
+   existió y respondía 500 en el 100% de los casos. La fachada
+   (`competencia_store`) y `_cubre` quedaron intactos.
+
+   Verificación pre-deploy: módulo viejo y nuevo corridos LADO A LADO contra
+   producción, mismo instante — las 11 funciones equivalentes módulo los
+   retiros documentados (`periodo`/`descuento` en rankings; `periodo`/
+   `precio_lista`/`descuento`/`vendidos`/`visitas_30d` en búsquedas;
+   `periodo`/`url` en términos).
 6. **Frontend**: podar tipos y llamadas muertas.
 7. **7a.** `alter schema propuestas rename to propuestas_retirado`, tras el diff
    sobre todos los endpoints. **7b.** Días después, con racha verde:

@@ -133,9 +133,13 @@ async def visitas_propias(skus: str | None = None):
     return r
 
 
-@router.get("/visitas-propias")
-def ver_visitas_propias(sku: str | None = None):
-    return {"visitas": competencia_store.visitas_propias(sku)}
+# GET /visitas-propias PODADO (paso 5 del PLAN_COMPETENCIA_v2): llamaba a
+# competencia_store.visitas_propias(), que NUNCA existió — el endpoint
+# respondía 500 en el 100% de los casos, con y sin parámetro. Nadie pudo
+# haberlo consumido. El dato vive en enrich.market_listing_metrics.visits_30d
+# y ya viaja dentro de /vista y /sku/{sku}; si algún día hace falta suelto,
+# se implementa sobre esa tabla. (El POST /visitas-propias — el refresco —
+# sigue vivo: ese sí funciona.)
 
 
 # ── Vistas ───────────────────────────────────────────────────────────────────

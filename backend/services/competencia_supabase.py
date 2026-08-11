@@ -1,12 +1,14 @@
-"""Lectura del módulo de Competencia desde la BD kubera (esquema `propuestas`).
+"""Lectura del módulo de Competencia desde la BD kubera (esquema `enrich.market_*`).
 
 POR QUÉ ESTE ARCHIVO
 --------------------
 El MVP guarda en SQLite (`backend/competencia.db`), que es local y con Railway no
 sirve: su sistema de archivos es efímero, así que en producción el tab arrancaba
-vacío. Los datos ya están en Supabase, en el esquema `propuestas`, y esta capa los
-lee con la MISMA forma que devuelve `competencia_store` para que la vista y el
-router no cambien.
+vacío. Los datos viven en `enrich.market_*` (migrados desde el esquema puente
+`propuestas` el 11-ago; PLAN_COMPETENCIA_v2.md) y esta capa los lee con la
+MISMA forma que devuelve `competencia_store` para que la vista y el router no
+cambien. Las vistas `enrich.market_*_v` se verificaron byte a byte contra las
+de `propuestas` antes del switch.
 
 POR QUÉ psycopg2 Y NO PostgREST
 -------------------------------
@@ -20,13 +22,13 @@ a SQLite. No es un error: es el modo local.
 
 QUÉ SALE DE DÓNDE
 -----------------
-Las vistas `propuestas.competencia_*_v` ya hacen el JOIN con las tablas del equipo
+Las vistas `enrich.market_*_v` ya hacen el JOIN con las tablas del equipo
 (solo lectura): el nombre de `core.products`, la categoría de
 `channel.product_category` + `channel.categories`, el precio de `channel.listings`.
-Lo que no tiene hogar en ese esquema vive en `propuestas`: el título por tienda
-(channel.listings no lo guarda), `raiz_id` (channel.categories.path trae los
-NOMBRES de los niveles pero no el id de cada uno, y la API de ML necesita el id) y
-la imagen (viene de WooCommerce; enrich.product_media no cubre estos SKUs).
+Lo que es foto del periodo vive en `enrich.market_listing_metrics` (título por
+tienda, sale_price, estado del listing, visitas); la raíz sale de
+`channel.categories.root_id` (backfill desde wp_ml_categorias) y la imagen de
+`enrich.product_media` kind='wc'.
 """
 from __future__ import annotations
 
@@ -53,7 +55,7 @@ def _niveles(ruta: str | None) -> dict[str, str | None]:
 
 
 def listar_skus(solo_activos: bool = True) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM propuestas.competencia_skus_v"
+    sql = "SELECT * FROM enrich.market_skus_v"
     if solo_activos:
         sql += " WHERE activo"
     sql += " ORDER BY sku"
@@ -63,12 +65,15 @@ def listar_skus(solo_activos: bool = True) -> list[dict[str, Any]]:
     # las publicaciones, que es donde viven de verdad.
     pubs: dict[str, list[dict[str, Any]]] = {}
     for p in supabase_db.fetch_all(
-            "SELECT sku, cuenta, ml_item_id FROM propuestas.competencia_publicaciones_v"):
+            "SELECT sku, cuenta, ml_item_id FROM enrich.market_publicaciones_v"):
         pubs.setdefault(p["sku"], []).append(p)
 
     out = []
     for f in filas:
         d = dict(f)
+        # market_skus_v ya es multicanal; `canal` se expondra en el API cuando
+        # sea a proposito, no como efecto del switch (fidelidad del diff).
+        d.pop("canal", None)
         d.update(_niveles(d.get("ruta")))
         mis = pubs.get(d["sku"]) or []
         # La de BEKURA es la de referencia si existe, como en el store local.
@@ -83,7 +88,7 @@ def listar_skus(solo_activos: bool = True) -> list[dict[str, Any]]:
 
 
 def publicaciones(sku: str | None = None) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM propuestas.competencia_publicaciones_v"
+    sql = "SELECT * FROM enrich.market_publicaciones_v"
     params: tuple = ()
     if sku:
         sql += " WHERE sku = %s"
@@ -102,7 +107,7 @@ def publicaciones(sku: str | None = None) -> list[dict[str, Any]]:
 
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
-    sql = ("SELECT * FROM propuestas.competencia_rankings_categoria "
+    sql = ("SELECT * FROM enrich.market_bestsellers "
            "WHERE categoria_id = %s")
     params: list[Any] = [categoria_id]
     if nivel:
@@ -112,6 +117,7 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
     params.append(int(limite))
     filas = [dict(f) for f in supabase_db.fetch_all(sql, tuple(params))]
     for f in filas:
+        f.pop("canal", None)          # multicanal en la tabla, no en el API aun
         for k in ("precio", "precio_lista", "rating"):
             if f.get(k) is not None:
                 f[k] = float(f[k])
@@ -122,6 +128,10 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
 def resultados(sku: str, tipo: str | None = None,
                limite: int | None = None) -> list[dict[str, Any]]:
     """Las búsquedas guardadas de un SKU: 'general' (descubrimiento) o 'titulo'."""
+    # ÚNICA lectura que sigue en `propuestas`: competencia_resultados (295
+    # filas) NO migró a enrich — el plan la declaró sin lectores y /detalle
+    # resultó leerla. Resolver ANTES del rename del paso 7a: o se archiva la
+    # tabla y se retira /detalle, o migra. Ver PLAN_COMPETENCIA_v2.md.
     sql = "SELECT * FROM propuestas.competencia_resultados WHERE sku = %s"
     params: list[Any] = [sku]
     if tipo:
@@ -144,9 +154,10 @@ def resultados(sku: str, tipo: str | None = None,
 def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
     """Resultados guardados de UN término. La tabla es por término, no por SKU."""
     filas = [dict(f) for f in supabase_db.fetch_all(
-        "SELECT * FROM propuestas.competencia_busquedas WHERE termino = %s "
+        "SELECT * FROM enrich.market_search_results WHERE termino = %s "
         "ORDER BY posicion LIMIT %s", (termino, int(limite)))]
     for f in filas:
+        f.pop("canal", None)          # multicanal en la tabla, no en el API aun
         for k in ("precio", "precio_lista", "rating"):
             if f.get(k) is not None:
                 f[k] = float(f[k])
@@ -156,7 +167,7 @@ def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
 
 def terminos_medidos() -> set[str]:
     return {f["termino"] for f in supabase_db.fetch_all(
-        "SELECT DISTINCT termino FROM propuestas.competencia_busquedas")}
+        "SELECT DISTINCT termino FROM enrich.market_search_results")}
 
 
 def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
@@ -167,10 +178,11 @@ def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
     viajes a Supabase por carga de página, y /vista pasaba de 150 s. Una consulta.
     """
     filas = supabase_db.fetch_all(
-        "SELECT * FROM propuestas.competencia_rankings_categoria ORDER BY posicion")
+        "SELECT * FROM enrich.market_bestsellers ORDER BY posicion")
     out: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for f in filas:
         d = dict(f)
+        d.pop("canal", None)          # multicanal en la tabla, no en el API aun
         for k in ("precio", "precio_lista", "rating"):
             if d.get(k) is not None:
                 d[k] = float(d[k])
@@ -183,12 +195,12 @@ def conteo_terminos() -> dict[str, int]:
     """Cuántos términos hay por categoría, en una sola consulta."""
     return {f["categoria_id"]: f["n"] for f in supabase_db.fetch_all(
         "SELECT categoria_id, COUNT(*)::int AS n "
-        "FROM propuestas.competencia_terminos_categoria GROUP BY 1")}
+        "FROM enrich.market_terms GROUP BY 1")}
 
 
 def total_terminos(categoria_id: str) -> int:
     n = supabase_db.fetch_scalar(
-        "SELECT COUNT(*) FROM propuestas.competencia_terminos_categoria "
+        "SELECT COUNT(*) FROM enrich.market_terms "
         "WHERE categoria_id = %s", (categoria_id,))
     return int(n or 0)
 
@@ -204,9 +216,11 @@ def terminos_categoria(categoria_id: str,
     from services import competencia_store
 
     filas = [dict(f) for f in supabase_db.fetch_all(
-        "SELECT * FROM propuestas.competencia_terminos_categoria "
+        "SELECT * FROM enrich.market_terms "
         "WHERE categoria_id = %s ORDER BY posicion LIMIT %s",
         (categoria_id, int(limite)))]
+    for f in filas:
+        f.pop("canal", None)          # multicanal en la tabla, no en el API aun
     porv = {k: (v or "").lower() for k, v in (titulos_por_tienda or {}).items() if v}
     for f in filas:
         if not porv:

@@ -6205,3 +6205,32 @@ y con kubera caída MySQL absorbe con su evento encolado.
 
 Encenderlos es flujo vivo: censo de 26 h limpio + dale de Brandon. Sin
 migraciones; dos variables nuevas. Versión 0.98.0.
+---
+
+### v0.99.0 — Competencia paso 5: el backend lee `enrich.market_*` (Eduardo)
+
+El switch: `competencia_supabase.py` deja de leer `propuestas` y lee las tablas
+y vistas nuevas. 10 consultas repuntadas; la única que sigue en `propuestas` es
+`resultados()` (`competencia_resultados`, 295 filas): el plan la declaró sin
+lectores y `/detalle` resultó leerla — queda documentada como decisión previa
+al rename del paso 7a.
+
+**Verificación pre-deploy, la parte importante**: el módulo viejo y el nuevo se
+corrieron LADO A LADO contra producción, mismo instante, comparando la salida
+de las 11 funciones. Primer intento: 4 diferían — exactamente las que leen
+tablas directas, porque la columna `canal` nueva se filtraba al API y los
+campos retirados desaparecían. Se corrigió lo primero (pop de `canal`: la tabla
+es multicanal, el API lo expondrá cuando sea a propósito) y se descontó lo
+segundo (retiros documentados). Segundo intento: **11 de 11 equivalentes**.
+
+Poda: **GET `/visitas-propias` retirado**. Llamaba a
+`competencia_store.visitas_propias()`, que NUNCA existió en el código —
+respondía 500 en el 100% de los casos, con y sin parámetro, así que nadie pudo
+haberlo consumido. El dato (`visits_30d`) ya viaja en `/vista` y `/sku/{sku}`.
+El POST del mismo nombre (el refresco) sigue vivo.
+
+Línea base HTTP de los 14 GET capturada ANTES del switch con la `API_KEY` (vía
+Railway CLI; `AUTH_ENFORCED=true` ya alcanza estas rutas): 17 archivos en
+`verificacion_competencia/`, `/vista` completo con 3.5 MB. El diff después del
+deploy cierra este paso. `propuestas` sigue intacta como red de seguridad:
+rollback = revertir este commit. Versión 0.99.0.
