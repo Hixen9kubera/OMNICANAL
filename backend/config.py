@@ -245,6 +245,17 @@ class Settings(BaseSettings):
     # full-refresh por tanda) repuebla canal_inventario solo. El respaldo de
     # emergencia (kubera caída → MySQL absorbe) NO se toca: sigue vivo.
     channel_espejo_inverso: bool = True
+    # DESMANTELAMIENTO de costing y orders (mismo paso 1 que channel). En false,
+    # el espejo inverso a MySQL (costos_*/pedidos_ml) deja de escribirse y la
+    # tabla queda congelada; el cron de deltas correspondiente se retira EN EL
+    # MISMO movimiento (con MySQL congelado el acta acusaría divergencia por
+    # construcción). OJO, diferencia con channel: aquí el espejo es POR EVENTO,
+    # no full-refresh — revertir el flag NO repuebla lo perdido; si pasaron
+    # días apagado, la reversa completa necesita backfill desde kubera. La
+    # resiliencia (kubera caída → MySQL absorbe + cola) NO depende de estos
+    # flags: vive en el camino de error y se queda hasta F8.
+    costing_espejo_inverso: bool = True
+    orders_espejo_inverso: bool = True
     # F6 core (CORTE): los eventos de ciclo de vida del maestro (nacimiento en
     # Crear, publish, trash/deleted de la auditoría) escriben core.products
     # SÍNCRONO en la misma petición (primaria); si kubera falla, el evento cae

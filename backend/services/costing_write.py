@@ -96,6 +96,11 @@ def _escribir(funcion: str, tabla_mysql: str, tabla_kubera: str, sku: str,
         escribir_mysql()  # si esto también truena, el error SÍ sube al llamador
         _encolar_kubera(funcion, tabla_mysql, tabla_kubera, sku, payload, exc)
         return
+    # Desmantelamiento (paso 1): sin espejo inverso las tablas MySQL de costos
+    # quedan congeladas a propósito. kubera ya guardó. El camino de emergencia
+    # de arriba (kubera caída → MySQL absorbe + cola) NO depende de este flag.
+    if not settings.costing_espejo_inverso:
+        return
     _en_hilo(_espejo_inverso_mysql, tabla_mysql, sku, escribir_mysql)
 
 

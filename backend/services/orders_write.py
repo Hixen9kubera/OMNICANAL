@@ -103,4 +103,9 @@ def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
         except Exception:  # noqa: BLE001
             pass
         return
+    # Desmantelamiento (paso 1): sin espejo inverso, pedidos_ml queda congelada
+    # a propósito. kubera ya guardó el pedido completo (encabezado + líneas).
+    # El camino de emergencia de arriba NO depende de este flag.
+    if not settings.orders_espejo_inverso:
+        return
     _en_hilo(_espejo_inverso_mysql, clave, escribir_mysql)

@@ -6173,3 +6173,35 @@ cero. `market_skus_v` gana la columna `canal` como única adición deliberada.
 
 `propuestas` sigue intacta y el backend sigue leyéndola: el switch es el paso
 5. Versión 0.97.0.
+
+### v0.98.0 — Desmantelamiento de COSTOS y PEDIDOS, paso 1: los interruptores listos
+
+El molde que channel estrenó en v0.95.0/v0.95.1, aplicado a los dos dominios
+que mueven dinero. Flags nuevos `COSTING_ESPEJO_INVERSO` y
+`ORDERS_ESPEJO_INVERSO` (default **true** = comportamiento de hoy; este deploy
+no cambia nada). En false, el espejo inverso deja de copiar a MySQL:
+`costos_validados`/`costos_finales`/`costos_logs` y `pedidos_ml` quedan
+congeladas, primer movimiento del retiro.
+
+**La diferencia con channel, dicha sin rodeos:** channel se auto-repara (su
+sync es full-refresh cada 15 min — revertir el flag repuebla MySQL solo). Estos
+dos son POR EVENTO: revertir el flag NO recupera lo que no se copió. Si el
+retiro lleva días y hay que volver, la reversa completa necesita un backfill
+desde kubera. Por eso estos dos esperaron al censo de lectores (24 h de
+conexiones en curso) y por eso van después del ensayo.
+
+Lo que NO tocan los flags, a propósito: la resiliencia entera vive en el camino
+de error y queda intacta — kubera caída → MySQL absorbe + evento a la cola
+(costing) / espejo clásico (orders) + Slack. Verificado en las pruebas.
+
+Al encenderlos: apagar en el MISMO movimiento los crons `deltas-costos` y
+`deltas-orders` (editar sus `railway.*.json` — un redeploy no re-resuelve el
+config file, solo un push). Las rachas cierran cumplidas (costing 26, orders 20
+al 11-ago).
+
+Pruebas sandbox `backend/scripts/probar_retiro_costing_orders.py`: **11/11
+pasan** — por dominio: con flag copia, sin flag congela mientras kubera avanza,
+y con kubera caída MySQL absorbe con su evento encolado.
+
+Encenderlos es flujo vivo: censo de 26 h limpio + dale de Brandon. Sin
+migraciones; dos variables nuevas. Versión 0.98.0.
