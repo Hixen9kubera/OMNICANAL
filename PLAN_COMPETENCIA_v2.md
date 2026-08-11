@@ -536,9 +536,15 @@ strings en `competencia_supabase.py` y las vistas.
    `verificacion_competencia/archivo_competencia_resultados.json`.
    Verificado: sintaxis + `tabla()`/`vista()` funcionales contra prod +
    `tsc --noEmit` exit 0.
-7. **7a.** `alter schema propuestas rename to propuestas_retirado`, tras el diff
-   sobre todos los endpoints. **7b.** Días después, con racha verde:
-   `drop schema propuestas_retirado cascade`.
+7. **7a** ✅ **HECHO (11-ago, migración 0014)** — `propuestas` →
+   `propuestas_retirado` en producción; 9 objetos intactos, sandbox no-op,
+   vistas de enrich vivas y smoke HTTP en 200 tras el rename. Reversible:
+   `alter schema propuestas_retirado rename to propuestas`.
+   **7b AGENDADO**: tarea programada `competencia-paso-7b-drop` para el
+   **lunes 18-ago 09:45** — re-verifica panel sano, cero lectores, conteos de
+   enrich y respaldos presentes; si TODO pasa, aplica la 0015
+   (`drop schema propuestas_retirado cascade`) y documenta; si algo falla,
+   ABORTA sin dropear y reporta.
 
 Los pasos 1-3 tocan la BD de producción operativa. Van con dale explícito y se
 corren desde terminal.

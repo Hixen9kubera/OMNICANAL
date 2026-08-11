@@ -6285,3 +6285,29 @@ Verificación: sintaxis ok, `tabla()` (393 filas, sin llaves residuales) y
 `vista()` funcionales contra producción, `tsc --noEmit` exit 0. Con esto,
 `propuestas` queda listo para el rename del paso 7a: cero lectores.
 Versión 0.100.0.
+
+---
+
+### v0.101.0 — Competencia paso 7a: `propuestas` se retira sin destruirse (Eduardo)
+
+Migración **0014**: `alter schema propuestas rename to propuestas_retirado` en
+la BD kubera. Mismo efecto funcional que el drop (nadie lo encuentra por su
+nombre), pero **reversible** con un rename de vuelta. En sandbox es no-op:
+`propuestas` nunca existió ahí — se creó ad-hoc durante el MVP y jamás estuvo
+trackeada en migraciones.
+
+Precondiciones al ejecutar: cero lectores (la última lectura se podó en
+v0.100.0), cero escritores (el cron nunca existió), y el contenido a salvo por
+triplicado — 15,307 filas migradas con conteos exactos, 295 archivadas en JSON,
+línea base completa en `verificacion_competencia/`.
+
+Verificado tras el rename: los 9 objetos intactos bajo el nombre nuevo, las
+vistas `enrich.market_*_v` vivas (1,584 / 3,118), y los 4 endpoints del smoke
+en 200.
+
+**El 7b quedó agendado**: tarea `competencia-paso-7b-drop`, corrida única el
+**lunes 18-ago 09:45**. Re-verifica todo (panel sano, cero lectores, conteos
+mínimos de enrich, respaldos presentes) y solo si TODO pasa aplica la 0015
+(`drop … cascade`) y la documenta; ante cualquier falla aborta sin tocar nada.
+Una semana de enfriamiento: la deuda no cobra intereses, el drop sí es
+irreversible. Versión 0.101.0.
