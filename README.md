@@ -6234,3 +6234,18 @@ Railway CLI; `AUTH_ENFORCED=true` ya alcanza estas rutas): 17 archivos en
 `verificacion_competencia/`, `/vista` completo con 3.5 MB. El diff después del
 deploy cierra este paso. `propuestas` sigue intacta como red de seguridad:
 rollback = revertir este commit. Versión 0.99.0.
+
+### v0.99.1 — /api/webhooks/woo abierto en el middleware (faltó en v0.92.0)
+
+El endpoint del webhook de Woo nació protegido por el candado de auth sin
+querer: WooCommerce no puede mandar nuestra `X-API-Key`, así que cada entrega
+habría recibido 401 — y Woo deshabilita un webhook tras 5 fallas seguidas, en
+silencio. Detectado hoy al ir a crear los webhooks en wp-admin: el ping de
+verificación contestó "Falta la credencial".
+
+`/api/webhooks/woo` entra a `RUTAS_ABIERTAS` con la misma regla que ML y
+TikTok: al webhook lo protege su firma HMAC (`X-WC-Webhook-Signature`), no la
+credencial — y sin firma válida el endpoint no escribe nada. La coincidencia
+es exacta: `/api/webhooks/woo/log` sigue cerrado con API key.
+
+Versión 0.99.1.

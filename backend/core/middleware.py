@@ -79,6 +79,12 @@ RUTAS_ABIERTAS: frozenset[str] = frozenset({
                             # OJO: `/api/webhooks/tiktok/log` NO hereda esta
                             # apertura (coincidencia exacta) y sigue cerrado —
                             # ese sí expone datos personales del comprador.
+    "/api/webhooks/woo",    # WooCommerce tampoco manda token: lo protege su
+                            # firma HMAC (X-WC-Webhook-Signature) y sin firma
+                            # válida el endpoint NO escribe. Faltó en v0.92 —
+                            # sin esta línea, Woo recibe 401 en cada entrega y
+                            # a las 5 fallas deshabilita el webhook solo.
+                            # `/api/webhooks/woo/log` sigue cerrado (exacta).
     "/",                    # raíz: solo versión y lista de canales
 })
 
