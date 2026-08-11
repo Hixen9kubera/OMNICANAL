@@ -6,7 +6,10 @@
      "channel_id:text:notnull",
      "category_id:text:notnull",
      "name:text:null",
-     "path:text:null"
+     "path:text:null",
+     "parent_id:text:null",
+     "root_id:text:null",
+     "root_name:text:null"
     ],
     "constraints": {
      "FOREIGN KEY": 1,
@@ -46,10 +49,35 @@
      "stock_full:integer:null",
      "is_fulfillment:boolean:notnull",
      "product_type:text:null",
-     "updated_at:timestamp with time zone:notnull"
+     "updated_at:timestamp with time zone:notnull",
+     "logistic_type:text:null",
+     "stock_fba:integer:null",
+     "currency:text:null",
+     "category_id:text:null",
+     "store_name:text:null"
     ],
     "constraints": {
      "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "order_items": {
+    "columnas": [
+     "canal:text:notnull",
+     "cuenta:text:notnull",
+     "external_order_id:text:notnull",
+     "linea:integer:notnull",
+     "item_id:text:null",
+     "sku:USER-DEFINED:null",
+     "titulo:text:null",
+     "cantidad:integer:notnull",
+     "precio_unitario:numeric:null",
+     "comision:numeric:null",
+     "es_fulfillment:boolean:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
      "PRIMARY KEY": 1
     },
     "rls": true
@@ -89,6 +117,62 @@
      "PRIMARY KEY": 1
     },
     "rls": true
+   },
+   "restock_panel": {
+    "columnas": [
+     "canal:text:null",
+     "cuenta:text:null",
+     "sku:USER-DEFINED:null",
+     "item_id:text:null",
+     "titulo:text:null",
+     "status:text:null",
+     "situacion:text:null",
+     "is_fulfillment:boolean:null",
+     "price:numeric:null",
+     "stock_own:integer:null",
+     "stock_full:integer:null",
+     "costo_unitario:numeric:null",
+     "precio_sugerido:numeric:null",
+     "unidades_30d:numeric:null",
+     "revenue_30d:numeric:null",
+     "venta_diaria:numeric:null",
+     "sigma:numeric:null",
+     "banda_sup:numeric:null",
+     "stock_min:integer:null",
+     "stock_max:integer:null",
+     "lead_days:integer:null",
+     "dias_full:numeric:null",
+     "sugerido_full:integer:null",
+     "enviable_hoy:integer:null",
+     "semaforo:text:null"
+    ]
+   },
+   "sales_daily": {
+    "columnas": [
+     "date:date:null",
+     "canal:text:null",
+     "cuenta:text:null",
+     "item_id:text:null",
+     "sku:USER-DEFINED:null",
+     "is_full:boolean:null",
+     "units_sold:bigint:null",
+     "revenue:numeric:null",
+     "sale_fee:numeric:null"
+    ]
+   },
+   "sales_daily_completa": {
+    "columnas": [
+     "date:date:null",
+     "canal:text:null",
+     "cuenta:text:null",
+     "item_id:text:null",
+     "sku:USER-DEFINED:null",
+     "is_full:boolean:null",
+     "units_sold:bigint:null",
+     "revenue:numeric:null",
+     "sale_fee:numeric:null",
+     "fuente:text:null"
+    ]
    }
   },
   "core": {
@@ -137,6 +221,7 @@
      "updated_at:timestamp with time zone:notnull"
     ],
     "constraints": {
+     "CHECK": 1,
      "FOREIGN KEY": 1,
      "PRIMARY KEY": 1,
      "UNIQUE": 1
@@ -154,6 +239,7 @@
      "updated_at:timestamp with time zone:notnull"
     ],
     "constraints": {
+     "CHECK": 1,
      "FOREIGN KEY": 1,
      "PRIMARY KEY": 1,
      "UNIQUE": 1
@@ -333,6 +419,134 @@
      "is_valid:boolean:null",
      "model_used:text:null",
      "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "ai_content": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "canal:text:notnull",
+     "cuenta:text:notnull",
+     "account_id:uuid:null",
+     "categoria:text:null",
+     "payload:jsonb:notnull",
+     "origen:jsonb:null",
+     "flags:jsonb:null",
+     "modelo_ia:text:null",
+     "spec_version:text:null",
+     "estado:text:notnull",
+     "error_texto:text:null",
+     "hash_woo:character:null",
+     "generado_at:timestamp with time zone:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "market_bestsellers": {
+    "columnas": [
+     "canal:text:notnull",
+     "categoria_id:text:notnull",
+     "nivel:text:notnull",
+     "posicion:integer:notnull",
+     "externo_id:text:null",
+     "id_pagina:text:null",
+     "tipo:text:null",
+     "titulo:text:null",
+     "precio:numeric:null",
+     "precio_lista:numeric:null",
+     "vendidos:integer:null",
+     "rating:numeric:null",
+     "reviews:integer:null",
+     "seller:text:null",
+     "imagen:text:null",
+     "url:text:null",
+     "visitas_30d:integer:null",
+     "item_categoria_id:text:null",
+     "item_categoria_nombre:text:null",
+     "es_nuestro:boolean:null",
+     "sku_nuestro:USER-DEFINED:null",
+     "capturado_en:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "market_listing_metrics": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "canal:text:notnull",
+     "cuenta:text:notnull",
+     "periodo:date:notnull",
+     "account_id:uuid:null",
+     "listing_id:text:null",
+     "title:text:null",
+     "sale_price:numeric:null",
+     "visits_30d:integer:null",
+     "units_30d:integer:null",
+     "metrics_updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 3,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "market_search_results": {
+    "columnas": [
+     "canal:text:notnull",
+     "termino:text:notnull",
+     "externo_id:text:notnull",
+     "posicion:integer:null",
+     "titulo:text:null",
+     "precio:numeric:null",
+     "imagen:text:null",
+     "url:text:null",
+     "seller:text:null",
+     "rating:numeric:null",
+     "es_nuestro:boolean:null",
+     "sku_nuestro:USER-DEFINED:null",
+     "capturado_en:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "market_sku_config": {
+    "columnas": [
+     "sku:USER-DEFINED:notnull",
+     "canal:text:notnull",
+     "termino_general:text:null",
+     "termino_origen:text:null",
+     "activo:boolean:notnull",
+     "categoria_id_real:text:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "market_terms": {
+    "columnas": [
+     "canal:text:notnull",
+     "categoria_id:text:notnull",
+     "posicion:integer:notnull",
+     "termino:text:notnull",
+     "capturado_en:timestamp with time zone:notnull"
     ],
     "constraints": {
      "FOREIGN KEY": 1,
@@ -560,6 +774,7 @@
      "updated_at:timestamp with time zone:notnull"
     ],
     "constraints": {
+     "CHECK": 1,
      "FOREIGN KEY": 1,
      "PRIMARY KEY": 1
     },
@@ -594,10 +809,10 @@
   }
  },
  "resumen": {
-  "channel": 5,
+  "channel": 9,
   "core": 4,
   "costing": 8,
-  "enrich": 4,
+  "enrich": 10,
   "migration": 4,
   "ops": 6
  },

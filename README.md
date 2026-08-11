@@ -5927,3 +5927,83 @@ uno de los cinco campos — los otros cuatro hay que generarlos igual. El retiro
 de `enrich.ai_attributes` va en migración aparte, ya con el conteo confirmado.
 
 Propuesta completa: `PROPUESTA_CONTENIDO_IA.md`. Versión 0.93.0.
+
+---
+
+### v0.94.0 — `enrich.market_*`: el destino de Competencia, con canal desde el principio (Eduardo)
+
+El módulo de Competencia se construyó contra un SQLite local y se subió a
+Supabase en un esquema aislado (`propuestas`) para no tocar los esquemas del
+equipo mientras se validaba. Ya está en vivo: **1,584 SKUs · 3,118
+publicaciones · 3,000 filas de ranking · 1,816 de búsqueda · 5,789 términos**.
+Toca pagar la deuda y darle destino definitivo.
+
+El plan se sometió a revisión de tres agentes independientes antes de tocar
+nada (`PLAN_COMPETENCIA_v2.md`). Los tres, por separado, señalaron lo mismo:
+
+**1. Faltaba `canal`.** Las tablas propuestas no lo tenían y `sku_market_config`
+tenía PK de un solo campo — el mismo defecto que acababa de costar el retiro de
+`atributos_ia` y `enrich.ai_attributes`. Lo irónico: el esquema `propuestas`
+que se va a borrar **ya lo tenía resuelto** (*"El canal está desde el principio
+para que un ASIN de Amazon sea otra fila y no un rediseño"*), y el router que
+el plan conserva ya recibe `canal` como parámetro. Se estaba borrando previsión
+ya escrita. Las cinco tablas nacen con `canal` en la PK y FK a `core.channels`.
+
+**2. Las métricas no van en `channel.listings`.** El plan quería colgarle 5
+columnas (title, sale_price, visits_30d, units_30d). El análisis de seguridad
+era correcto —`channel_mirror.py` usa listas explícitas de columnas y el
+trigger `fn_listing_history` no las mira—, pero se retiran por otras tres
+razones: se perdía la dimensión `periodo` (esa tabla es el ESTADO ACTUAL del
+listing, no una ventana de 30 días); `visits_30d` no tiene equivalente en
+Amazon (el sustituto es BSR + Buy Box, no es que quede NULL: el concepto no
+existe); y existe `etl_channel_listings.py` con un `truncate channel.listings`
+cuya lista de columnas **ya está desactualizada** (le faltan las de 0004 y
+0009). Van a `enrich.market_listing_metrics`, PK `(sku, canal, cuenta, periodo)`.
+
+**3. Faltaban RLS, grants e índices.** El patrón del repo los da tabla por
+tabla; el `alter default privileges` de la 0001 solo aplica si las crea el
+mismo rol. Y el esquema viejo tenía índices parciales sobre `es_nuestro` —los
+que arman la corona— que el DDL nuevo no reproducía.
+
+**4. El `drop` no va el mismo día**, y el diff de verificación tiene que cubrir
+los ~18 endpoints de lectura, no solo `/vista`.
+
+**5. Prefijo de dominio.** `search_results` a secas es demasiado genérico para
+un `enrich` compartido que ya tiene `supplier_data`, `ai_attributes`,
+`product_media`, `odoo_viability` y `ai_content`.
+
+**Migración 0011** — cinco tablas: `market_bestsellers`, `market_search_results`,
+`market_terms`, `market_sku_config` y `market_listing_metrics`, con RLS, grants
+y cuatro índices. **Migración 0012** — `channel.categories` gana `parent_id`,
+`root_id` y `root_name`. Ambas aplicadas en sandbox y en la BD kubera; las
+tablas nacen vacías y las 2,692 filas de categorías quedaron intactas.
+
+**El backfill del árbol no llama a la API de ML.** El plan estimaba una pasada
+por `GET /categories/{id}` para ~988 categorías; son 2,692 y **cero llamadas**:
+el árbol completo ya está descargado offline en `wp_ml_categorias` (12,256
+categorías, todas con `parent_id`, 31 raíces). Cobertura medida: 2,692 de
+2,692. `backend/scripts/backfill_categories_arbol.py` lo recorre en memoria —
+dry-run por default, `--destino prod` + `--acepto-destino` para producción,
+idempotente, y **reporta las no cubiertas en vez de asumir cero** porque ese
+árbol lo mantiene un proceso ajeno al panel. Aplicado: 2,692 con raíz, 30
+raíces distintas.
+
+⚠️ **No parsear `path` para sacar la raíz**: usa DOS separadores distintos
+(`›` en 2,612 filas y `>` en 2) y guarda nombres, no ids. Y el backfill **no es
+one-shot**: `etl_channel_categories.py` inserta las categorías nuevas con esas
+tres columnas en NULL.
+
+**Pre-chequeo de colisión de PK, corrido contra producción en solo lectura**:
+cero colisiones por la llave nueva en las cuatro tablas que migran. El
+`insert…select` del paso 3 no va a perder filas.
+
+**`schema_manifest.json` regenerado.** Estaba roto desde antes de este trabajo:
+le faltaban `channel.order_items`, `enrich.ai_content`, tres vistas de 0005/0007
+y cinco columnas de `channel.listings` (de 0004 y 0009). El chequeo de paridad
+llevaba semanas reportando diferencias heredadas. Ahora da **PARIDAD OK**:
+41 tablas, cero faltantes, cero extras.
+
+Falta el paso 3 (migrar el dato de `propuestas`), las vistas, el repunte del
+backend y el retiro del esquema — que va en dos tiempos, con `rename` primero.
+Y `competencia_resultados` tiene 295 filas, no cero como decía el plan: hay que
+decidir si se tiran o se archivan antes del `drop`. Versión 0.94.0.
