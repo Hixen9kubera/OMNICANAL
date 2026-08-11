@@ -5654,3 +5654,77 @@ quedan menciones en comentarios de `config.py`). Su retiro, junto con las
 variables `ANALYTICS_SUPABASE_*` de Railway, es una limpieza aparte — ojo con
 el fallback: si se borran esas variables sin quitar el módulo, `_analytics_url()`
 cae a `SUPABASE_*` y le pediría `products_snapshot` a kubera, donde no existe.
+
+### v0.89.0 — Análisis: Edad s/v se explica sola, y las filas que venden sin costo se ven
+
+Dos ajustes a la tabla de Análisis, más un script de mantenimiento que todavía
+NO se ha corrido contra producción.
+
+**Edad s/v gana panel** y pierde el "?" del encabezado, con lo que el reparto de
+la v0.87.0 se reduce a cuatro columnas con signo (Producto · Estado · Precio
+venta · Margen).
+
+Lo que el panel dice y el número solo no podía: **esta columna no respeta el
+período de arriba.** Uds y $Venta miran los días elegidos; la edad sale de
+`max(date)` sobre todo el historial, sin filtro de fechas. Por eso un producto
+puede tener 0 piezas vendidas en 60 días y aun así edad de 3 días —vendió justo
+antes de que empezara la ventana—, y leído sin saber eso el número parece
+contradecir la celda de al lado.
+
+El panel también separa dos vacíos que se veían igual: el guion **no es un dato
+que falte**, es que ese SKU nunca ha vendido. No es un caso raro: **12,358 de
+los 13,475 SKUs listados** jamás han registrado una venta. Y cuando hay stock
+encima, lo dice con la cifra.
+
+**Las filas que vendieron SIN costo capturado ahora se ven.** Su Costo final,
+su Margen y su Ganancia salen vacíos, así que ordenar por cualquiera de esas
+tres columnas las mandaba al fondo justo cuando más había que verlas.
+
+El criterio de a quién marcar importa tanto como la marca:
+
+| | SKUs | Marca |
+|---|---|---|
+| Sin costo capturado | 5,493 de 13,475 (41%) | guion en gris normal, ya no casi invisible |
+| **Sin costo y CON venta en el período** | **~126** | **franja ámbar en el renglón + guion ámbar en negritas** |
+
+Marcar los 5,493 habría vuelto la marca invisible por repetición. Un SKU dormido
+sin costo es una tarea de captura; uno que vendió 159 piezas y $48,376 sin costo
+es un hueco en el estado de resultados. La franja va en el **borde izquierdo**
+justamente para que no dependa del orden ni del scroll horizontal; las filas no
+marcadas y la cabecera llevan un borde transparente del mismo ancho para que las
+columnas no se corran. El panel de Costo base cuantifica cuánto se movió a
+ciegas.
+
+Verificado en el navegador contra el sandbox: las dos ramas de cada panel, 2
+filas marcadas de 50 en la vista por defecto (proporcionado, no invade), y los
+tres bordes izquierdos —cabecera, fila normal y fila marcada— midiendo 4px.
+
+**`backend/scripts/actualizar_comision.py` (nuevo, todavía sin correr en
+producción).** El 99% del catálogo tiene la comisión de un solo lote del
+24-jul, con promedio 13.13%; lo que ML cobró de verdad en 60 días fue 16.19%
+—$92,892 sobre $3.7M de venta—. Todo lo recalculado individualmente desde
+agosto sale en 17–19%, así que el motor está bien y lo que está mal es el dato
+guardado.
+
+No se usa «Regenerar costo» del panel porque ese camino manda `auto_cbm=true` y
+`sincronizar_woo=true`: rederiva el flete del contenedor desde las dimensiones,
+recalcula los precios y **los empuja a WooCommerce**, pisando los puestos a
+mano. El script toca `pct_comision` y `costo_comision`, nada más; el precio solo
+con `--con-precio`, y aun entonces con el costo y el envío ya guardados.
+
+Cuatro candados: dry-run por defecto, `--real` exige nombrar la ref destino a
+mano, `--real` se niega si el corte F6 está apagado (lee de kubera como
+primaria), y escribe por `costing_write.guardar_finales`, heredando cola de
+reproceso y alertas. El porcentaje sale de la API de ML y, si no contesta, del
+promedio real medido por categoría en nuestros propios pedidos; fuera de
+[5%, 25%] se descarta por absurdo —el filtro que faltó el 24-jul, cuando
+quedaron 316 SKUs con 0% guardado como cobro real—.
+
+Probado end-to-end contra el **sandbox** sobre 5 SKUs al azar, comparando la
+fila completa antes y después: `costos_validados` sin un solo cambio y, en
+`costos_finales`, solo `pct_comision` y `costo_comision` entre las columnas de
+negocio. `cost_history` y `ops.process_log` registraron cada cambio atribuido al
+script por nombre. **Falta ejercitar la ruta de la API de ML**, que necesita
+tokens: la primera corrida en producción debe ser en seco y con `--sku`.
+
+Sin migraciones y sin variables nuevas. Versión 0.89.0.

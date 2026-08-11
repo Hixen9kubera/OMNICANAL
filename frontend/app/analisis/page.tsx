@@ -500,6 +500,14 @@ function PanelHover({ children, panel, ancho = 290 }: {
   );
 }
 
+/* SIN COSTO PERO VENDIENDO. De los 13,475 SKUs listados, 5,493 no tienen costo
+   capturado — marcarlos todos sería ruido y se dejaría de ver la marca. Pero
+   solo ~126 de ellos VENDIERON en el período, y esos son otra cosa: ahí ya se
+   movió dinero sin saber si dejó o quitó. Esa es la fila que hay que traer a la
+   vista, no la del SKU dormido al que le falta capturar un dato. */
+const sinCostoVendiendo = (f: Fila) =>
+  (f.costo == null || Number(f.costo) <= 0) && Number(f.uds || 0) > 0;
+
 /* Renglón del panel: etiqueta a la izquierda, cifra a la derecha. */
 function Renglon({ etiqueta, detalle, valor, tenue }: {
   etiqueta: string; detalle?: string; valor: string; tenue?: boolean;
@@ -607,6 +615,67 @@ function StockFullPropio({ fila }: { fila: Fila }) {
   );
 }
 
+/* EDAD S/V. La trampa de esta columna es que NO respeta el período de arriba:
+   Uds y $Venta miran los días elegidos, pero la edad recorre TODO el historial
+   (el SQL saca max(date) sin filtro de fechas). Por eso un producto puede tener
+   0 piezas vendidas en el período y aun así una edad de 3 días — vendió justo
+   antes de que empezara la ventana. Leído sin saber eso, el número se
+   contradice con la celda de al lado. */
+function EdadSinVenta({ fila, dias }: { fila: Fila; dias: number }) {
+  const d = fila.edad_sin_venta_d;
+  const stock = Number(fila.stock_full || 0) + Number(fila.stock_propio || 0);
+  const viejo = d != null && d > 30;
+
+  if (d == null)
+    return (
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Edad sin venta</span>
+          <span className="mt-1 block text-slate-400">
+            No hay NINGUNA venta de este SKU en todo el historial, así que no hay
+            desde cuándo contar. El guion no es un dato que falte: es que nunca
+            ha vendido.
+          </span>
+          {stock > 0 && (
+            <span className="mt-1 block text-amber-300">
+              Y tiene {fNum(stock)} {stock === 1 ? "pieza" : "piezas"} en bodega
+              ocupando lugar.
+            </span>
+          )}
+        </>
+      }>
+        <span className="text-slate-500">—</span>
+      </PanelHover>
+    );
+
+  return (
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Edad sin venta</span>
+        <Renglon etiqueta="Días desde la última venta" valor={`${fNum(d)} d`} />
+        {stock > 0 && (
+          <Renglon etiqueta="Piezas en bodega" detalle="FULL + propio"
+                   valor={fNum(stock)} tenue />
+        )}
+        <span className="mt-1.5 block text-slate-400">
+          Cuenta desde el último día CON venta, mirando todo el historial — no
+          solo los {dias} días del filtro de arriba. Por eso puede haber 0 piezas
+          vendidas en el período y aun así una edad chica.
+        </span>
+        {viejo && (
+          <span className="mt-1 block text-amber-300">
+            {stock > 0
+              ? `Más de un mes sin vender con ${fNum(stock)} ${stock === 1 ? "pieza" : "piezas"} encima: eso es dinero detenido.`
+              : "Más de un mes sin vender, pero no queda stock: no hay dinero detenido que rescatar."}
+          </span>
+        )}
+      </>
+    }>
+      <span className={viejo ? "text-red-500" : "text-slate-500"}>{fNum(d)}d</span>
+    </PanelHover>
+  );
+}
+
 /* COMISIÓN: el promedio de la celda es PONDERADO por unidades, así que sin el
    desglose no hay forma de saber qué cuenta lo está jalando. */
 function ComisionUnit({ fila }: { fila: Fila }) {
@@ -666,7 +735,7 @@ function ComisionUnit({ fila }: { fila: Fila }) {
    unidades daba una cifra que no es de esta columna. El costo del período ya
    lo cuentan Costo final y Ganancia, cada uno con los cobros que le tocan; aquí
    sobraba y se leía como si fuera un total propio. */
-function CostoBase({ fila }: { fila: Fila }) {
+function CostoBase({ fila, dias }: { fila: Fila; dias: number }) {
   const v = fila.costo == null ? null : Number(fila.costo);
   const precio = fila.precio_ref == null ? null : Number(fila.precio_ref);
   if (v == null || v <= 0)
@@ -678,9 +747,18 @@ function CostoBase({ fila }: { fila: Fila }) {
             A este producto no se le ha capturado el costo. Sin él no hay costo
             final ni margen que calcular — por eso esas dos columnas salen vacías.
           </span>
+          {sinCostoVendiendo(fila) && (
+            <span className="mt-1 block text-amber-300">
+              Y sí está vendiendo: {fNum(fila.uds)} {fila.uds === 1 ? "pieza" : "piezas"}
+              {fila.venta != null && ` y ${fMoney(fila.venta)}`} en {dias} días se
+              movieron sin saber cuánto costaron. Por eso el renglón va marcado.
+            </span>
+          )}
         </>
       }>
-        <div className="text-slate-300">—</div>
+        {/* El guion ya no va en gris casi invisible: en esta columna un vacío no
+            es "no aplica", es un dato que falta. Ámbar cuando además vendió. */}
+        <div className={sinCostoVendiendo(fila) ? "font-semibold text-amber-500" : "text-slate-400"}>—</div>
       </PanelHover>
     );
   const dudoso = precio != null && costoImplausible(precio, v);
@@ -1786,7 +1864,10 @@ export default function FulfillmentPage() {
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-[13px]">
             <thead>
-              <tr className="border-b border-slate-100 bg-slate-50/70">
+              {/* El borde izquierdo transparente iguala el ancho de la franja
+                  ámbar de los renglones: sin él, la cabecera quedaría corrida
+                  4px respecto al cuerpo. */}
+              <tr className="border-b border-l-4 border-slate-100 border-l-transparent bg-slate-50/70">
                 {/* `info` = mostrar el "?" del encabezado. Solo lo llevan las
                     columnas SIN panel al pasar el cursor sobre la celda; donde
                     hay panel, el "?" repetía lo mismo (Eduardo, 8-ago). */}
@@ -1795,7 +1876,7 @@ export default function FulfillmentPage() {
                 <Th right {...th}>Visitas · CR%</Th>
                 <Th id="venta" right {...th}>Uds · $Venta</Th>
                 <Th id="stock_full" right {...th}>FULL · Propio</Th>
-                <Th id="edad" right info="edad" {...th}>Edad s/v</Th>
+                <Th id="edad" right {...th}>Edad s/v</Th>
                 <Th right info="precio" {...th}>Precio venta</Th>
                 <Th id="costo" right {...th}>Costo base</Th>
                 <Th id="comision" right {...th}>Comisión /u</Th>
@@ -1807,7 +1888,17 @@ export default function FulfillmentPage() {
             </thead>
             <tbody>
               {(tabla?.items ?? []).map((f) => (
-                <tr key={f.sku} className="border-b border-slate-50 align-middle hover:bg-slate-50/60">
+                /* Franja ámbar a la izquierda cuando el renglón VENDIÓ sin costo
+                   capturado: su margen, su costo final y su ganancia salen
+                   vacíos, así que ordenar por cualquiera de esas columnas lo
+                   esconde justo cuando más habría que verlo. La franja no
+                   depende del orden ni del scroll horizontal. */
+                <tr key={f.sku}
+                    className={`border-b border-slate-50 align-middle hover:bg-slate-50/60 ${
+                      sinCostoVendiendo(f)
+                        ? "border-l-4 border-l-amber-400 bg-amber-50/40"
+                        : "border-l-4 border-l-transparent"
+                    }`}>
                   {/* Producto: SKU + dots + tam / título */}
                   <td className="max-w-[270px] px-2 py-1.5">
                     <div className="flex items-center gap-1.5">
@@ -1847,8 +1938,9 @@ export default function FulfillmentPage() {
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <StockFullPropio fila={f} />
                   </td>
-                  <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${f.edad_sin_venta_d != null && f.edad_sin_venta_d > 30 ? "text-red-500" : "text-slate-500"}`}>
-                    {f.edad_sin_venta_d == null ? "—" : `${f.edad_sin_venta_d}d`}
+                  {/* Edad sin venta */}
+                  <td className="whitespace-nowrap px-2 py-1.5 text-right tabular-nums">
+                    <EdadSinVenta fila={f} dias={dias} />
                   </td>
                   {/* PRECIO DE VENTA por canal (solo publicaciones activas).
                       Clic → modal con el precio REALIZADO por canal. */}
@@ -1864,7 +1956,7 @@ export default function FulfillmentPage() {
                       margen — que es justo lo que antes obligaba a abrir el
                       popup de "Productos más vendidos". */}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
-                    <CostoBase fila={f} />
+                    <CostoBase fila={f} dias={dias} />
                   </td>
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <ComisionUnit fila={f} />
