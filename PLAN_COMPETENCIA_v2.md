@@ -513,6 +513,13 @@ strings en `competencia_supabase.py` y las vistas.
    retiros documentados (`periodo`/`descuento` en rankings; `periodo`/
    `precio_lista`/`descuento`/`vendidos`/`visitas_30d` en búsquedas;
    `periodo`/`url` en términos).
+
+   **Verificación post-deploy (11-ago, v0.99.0 en producción): 15 de 15.**
+   8 endpoints byte-idénticos a la línea base; 6 difieren SOLO en los retiros
+   documentados (más deriva de `precio_lista` vivo en tabla/vista, esperada);
+   `GET /visitas-propias` pasó de 500 (roto) a **405** — el GET se podó y el
+   POST del mismo path sigue vivo, por eso 405 y no 404. Cero regresiones.
+   El diff quedó en `verificacion_competencia/despues_http_*.json`.
 6. **Frontend**: podar tipos y llamadas muertas.
 7. **7a.** `alter schema propuestas rename to propuestas_retirado`, tras el diff
    sobre todos los endpoints. **7b.** Días después, con racha verde:
