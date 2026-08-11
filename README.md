@@ -5874,3 +5874,56 @@ Variables nuevas: `WOO_WEBHOOK_ENABLED` (default false) y `WOO_WEBHOOK_SECRET`.
 poner las dos variables — flujo vivo, va con el dale de Brandon.
 
 Sin migraciones. Versión 0.92.0.
+
+---
+
+### v0.93.0 — `enrich.ai_content`: el contenido de IA deja de vivir en cuatro lugares (Eduardo)
+
+José pidió (Slack, 7-ago) que el prompt se genere para todo el catálogo de una
+vez y luego por producto al publicar. Son dos modos sobre el mismo dato y
+**ninguno tenía dónde escribir**. Antes de construir el generador había que
+resolver la persistencia.
+
+El prompt produce **cinco campos** por producto: título, bullets, descripción,
+atributos y `backend_search_terms` (éste se mide en BYTES, no caracteres — 249
+máx. en Amazon). Hoy sólo uno de los cinco tiene casa, y mal:
+
+- **MySQL `atributos_ia`** (5,380 SKUs, 4,355 con JSON) está **congelada desde
+  el 22-jul**: no hay un solo INSERT/UPDATE contra ella en todo `backend/`, la
+  única mención viva es un docstring. Guarda solo atributos y no tiene columna
+  de canal — todo es Mercado Libre implícito. Su columna `flags` (el
+  razonamiento de descarte de la IA) no existe en ningún otro lado.
+- **Metas de Woo** `ml_attributes` (208) y `ml_attr_<X>` (777 por ID + 208 por
+  nombre en español): el mismo atributo bajo dos convenciones.
+- **`enrich.ai_attributes`** (esta BD, migración 0001): existía, **vacía y sin
+  escritor** — no aparece en el mapa de UPSERTS de `kubera_mirror.py` ni en
+  `KUBERA_MIRROR_TABLAS`. Conteo verificado contra sandbox Y producción: 0
+  filas en ambos. Y arrastraba los dos mismos defectos: PK de un solo campo y
+  solo `attributes`. Se diseñó antes de que existiera este requerimiento.
+
+**La tabla nueva tiene PK `(sku, canal, cuenta)`**, con `canal` referenciando
+`core.channels`. No es `(sku, canal)`: en ML hay dos cuentas que pueden
+publicar el MISMO SKU en categorías distintas, y los atributos derivan de la
+categoría (caso `EST-0091`, ya documentado). Es la misma llave que ya usan
+`canal_inventario` y `channel.listings`.
+
+`estado` es el backlog (`pendiente` → el "córrelo para todos" procesa
+pendientes; el "por cada uno al publicar" inserta en pendiente). **No existe
+`publicado`**: ese evento vive en `ml_progress`/`amazon_progress` y dos tablas
+diciendo lo mismo se contradicen. En su lugar está `obsoleto`, que es lo que
+`hash_woo` necesita — la huella del producto en Woo al generar, para saber qué
+regenerar cuando cambie. **No meter el `updated_at` de Woo en ese hash**:
+cualquier toque irrelevante marcaría todo el catálogo como obsoleto.
+
+Probado en sandbox con transacción revertida (cero filas persistidas): la FK
+rechaza `canal='meli'` (el id correcto es `mercado_libre`), el CHECK rechaza
+`estado='publicado'`, la FK rechaza SKUs fuera de `core.products`, y el mismo
+SKU convive en BEKURA y SANCORFASHION.
+
+Migración **0010**, aplicada en sandbox y en la BD kubera. La tabla nace
+**vacía**: la siembra desde `atributos_ia` (4,355 JSON con sus `flags` y su
+`modelo_ia`) queda pendiente como backfill en `kubera_mirror.py`, y siembra
+uno de los cinco campos — los otros cuatro hay que generarlos igual. El retiro
+de `enrich.ai_attributes` va en migración aparte, ya con el conteo confirmado.
+
+Propuesta completa: `PROPUESTA_CONTENIDO_IA.md`. Versión 0.93.0.
