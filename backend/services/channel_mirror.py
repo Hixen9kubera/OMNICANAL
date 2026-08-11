@@ -192,6 +192,11 @@ def escribir_primario(rows: list[dict[str, Any]],
         escribir_mysql()  # si esto también truena, el error sube al llamador
         return
 
+    # Desmantelamiento (paso 1): sin espejo inverso, canal_inventario queda
+    # congelado a propósito. kubera ya guardó; no hay nada más que hacer.
+    if not settings.channel_espejo_inverso:
+        return
+
     def _inverso() -> None:
         try:
             escribir_mysql()

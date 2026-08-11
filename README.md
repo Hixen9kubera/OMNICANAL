@@ -6043,3 +6043,36 @@ es el comentario del DDL (`'ml_ia'|'manual'|'woocommerce'`), no el dato.
 
 Verificado antes de escribir: ningún `comparar_*.py` audita `product_media` y la
 tabla no tiene triggers — no mueve ninguna acta. Versión 0.94.1.
+### v0.95.0 — Desmantelamiento de CHANNEL, paso 1: el interruptor del espejo inverso
+
+Primera pieza del retiro de un dominio migrado. Channel es el ensayo elegido:
+22 días de actas en cero, cero lectores externos de `canal_inventario` (censo
+del 10-ago: clones de los 7 repos + muestreo de conexiones, solo Railway), su
+propio servicio de deltas en Railway, y el diseño auto-sanable del corte — si
+algo sale mal, el ciclo de 15 min lo repara solo.
+
+Flag nuevo `CHANNEL_ESPEJO_INVERSO` (default **true** = comportamiento de hoy,
+este deploy NO cambia nada). En false, cada tanda del sync deja de copiarse a
+`canal_inventario`: MySQL queda congelado a propósito, que es el primer
+movimiento del retiro.
+
+Lo que este flag NO toca, a propósito:
+
+- **El respaldo de emergencia sigue vivo.** Con kubera caída, la tanda se
+  escribe a MySQL como en el mundo viejo y el siguiente ciclo auto-sana kubera.
+  Ese camino es de resiliencia, no de migración, y se queda hasta F8.
+- Las lecturas F5 (`SUPABASE_READ_CHANNEL` con fallback a MySQL) siguen como
+  están; su retiro es el paso 3, días después, cuando MySQL congelado confirme
+  que nadie lo extraña.
+
+Al encender el retiro (apagar el flag) hay que apagar EN EL MISMO MOVIMIENTO el
+cron `deltas-channel`: con MySQL congelado, el acta compararía contra una foto
+vieja y reportaría divergencia por construcción. La racha de channel (22 al
+11-ago) queda CERRADA como cumplida en ese momento — el acta ya no corre más.
+
+Pruebas sandbox `backend/scripts/probar_retiro_channel.py`: **5/5 pasan** —
+con flag el espejo copia, sin flag MySQL queda congelado y kubera recibe, y con
+kubera caída MySQL absorbe la tanda (la emergencia intacta).
+
+Apagar el flag es flujo vivo: va con dale de Brandon. Sin migraciones; una
+variable nueva. Versión 0.95.0.

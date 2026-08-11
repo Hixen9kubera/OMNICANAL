@@ -236,6 +236,15 @@ class Settings(BaseSettings):
     # (15 min) auto-sana kubera — este dominio no necesita cola. Racha
     # channel-deltas 17/14 (06-ago). Apagar = revertir al dual-write.
     supabase_write_channel: bool = False
+    # DESMANTELAMIENTO de channel (paso 1 de 4). En true, cada tanda del sync
+    # sigue copiándose a canal_inventario en un hilo (espejo inverso del corte).
+    # En FALSE, MySQL deja de recibir escrituras del sync y queda congelado:
+    # es el primer movimiento del retiro, y se hace EN EL MISMO MOMENTO que se
+    # apaga el cron deltas-channel — con MySQL congelado el acta reportaría
+    # divergencia por construcción. Revertir = true; el ciclo siguiente (15 min,
+    # full-refresh por tanda) repuebla canal_inventario solo. El respaldo de
+    # emergencia (kubera caída → MySQL absorbe) NO se toca: sigue vivo.
+    channel_espejo_inverso: bool = True
     # F6 core (CORTE): los eventos de ciclo de vida del maestro (nacimiento en
     # Crear, publish, trash/deleted de la auditoría) escriben core.products
     # SÍNCRONO en la misma petición (primaria); si kubera falla, el evento cae
