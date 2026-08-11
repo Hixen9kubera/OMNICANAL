@@ -249,6 +249,19 @@ class Settings(BaseSettings):
     # SÍNCRONO al guardarse — kubera se entera en vivo, no hasta el ETL.
     # Mismo fallback a cola + Slack. Apagado = solo el ETL nocturno (hoy).
     supabase_write_categorias: bool = False
+    # Webhook de WooCommerce → core.products (11-ago). Los tres seams de core
+    # solo ven lo que pasa POR EL PANEL, y el catálogo también se edita desde
+    # wp-admin: 444 fichas guardadas ahí alguna vez y 39 de 253 SKUs con un
+    # título distinto al que dejó el panel. Eso NO es cubrible con más seams en
+    # nuestro código — hay que escuchar en la fuente. Woo manda `product.updated`
+    # con la ficha completa y de ahí salen sku/name/wc_id/status, que es
+    # exactamente lo que el registro civil necesita. Encender = crear el webhook
+    # en wp-admin (Brandon) + estas dos variables. Apagar = esta en false.
+    woo_webhook_enabled: bool = False
+    # Secreto del webhook (el mismo que se teclea en wp-admin). SIN él el
+    # endpoint queda en OBSERVACIÓN: registra lo que llega pero no escribe —
+    # una firma que no se puede verificar no autoriza a tocar el maestro.
+    woo_webhook_secret: str = ""
     # Candado de arranque: la referencia (subdominio) del proyecto Supabase de
     # PRODUCCIÓN. Ver validar_ambiente().
     supabase_prod_ref: str = ""

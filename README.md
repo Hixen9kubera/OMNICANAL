@@ -5808,3 +5808,69 @@ suma todas las cuentas y es venta bruta. Bajó de 145 a 121 px de alto.
 Verificado en el navegador contra el sandbox: el panel ya no menciona el precio
 promedio, sin errores de consola. Sin migraciones y sin variables nuevas.
 Versión 0.91.0.
+
+### v0.92.0 — El webhook de WooCommerce: el registro civil se entera de las ediciones a mano
+
+`POST /api/webhooks/woo`. Nace de una alerta del 11-ago que resultó tener razón:
+el acta de Maestro salió `con_deltas` porque **OFI-0079-BLN tenía en Woo un
+título distinto al que el panel había registrado**, y el ETL de las 06:15 tuvo
+que corregirlo.
+
+El barrido del catálogo explicó por qué, y no era un caso aislado:
+
+| Señal | Medida |
+|---|---|
+| Fichas guardadas alguna vez desde wp-admin | **444** (montefeni 231, Brandon 65, valeria 63, Thalia 28, José 21, cinthya 16, Andrea 16) |
+| SKUs con título dejado por el panel en `crear_logs` | 253 |
+| …de esos, con OTRO título hoy en Woo | **39**, los 39 modificados DESPUÉS del paso del panel |
+| Productos publicados cuyo slug ya no corresponde al título | 1,339 de 3,509 (38%) |
+
+Y las ediciones son **correcciones legítimas**: "20 moños" → "40 moños",
+"Product Not Available" → el título de verdad, el caso TEC-1812-NEG que ya vive
+en el CLAUDE.md. La gente arregla fichas en WordPress, como debe ser.
+
+**El problema no era de disciplina sino de arquitectura.** Los tres seams del
+corte F6 de core (nacimiento, publish, auditoría) cubren lo que pasa *por el
+panel*. Nada de lo que se edite fuera existe para ellos, y no se arregla
+poniendo un cuarto y un quinto avisador: hay que **escuchar en la fuente**.
+
+WooCommerce trae webhooks nativos. Con `product.updated` apuntando a este
+endpoint, cada cambio llega con la ficha completa venga de donde venga —
+wp-admin, la API REST, otro plugin, WP-CLI— y de ahí salen `sku`, `name`,
+`wc_id` y `status`, que es exactamente lo que el registro civil necesita. El
+evento entra por `core_write.registrar`, el mismo camino de los otros tres
+seams: escritura síncrona a `core.products` y, si kubera está caída, cola en
+`espejo_kubera_log` reprocesable.
+
+Decisiones que vale la pena conocer:
+
+- **GUARDA ABSOLUTA**: responde 200 siempre, incluso con kubera caída o con la
+  petición rota. Woo deshabilita un webhook tras 5 entregas fallidas seguidas y
+  el síntoma sería silencioso — dejan de llegar eventos y nadie se entera hasta
+  que el acta lo delata semanas después.
+- **Sin firma no se escribe.** Se valida `X-WC-Webhook-Signature` (HMAC-SHA256
+  del cuerpo en base64). Sin secreto configurado el endpoint queda en
+  OBSERVACIÓN: registra lo que llega y no toca el maestro. Una firma que no se
+  puede verificar no autoriza a escribir en el registro civil.
+- **Caché por SKU**: `product.updated` dispara con CADA cambio, incluidos los
+  nuestros — el sync de inventario cada 15 minutos y el descuento de stock de
+  cada venta. Si la terna (name, status, wc_id) es idéntica a la del evento
+  anterior, se descarta sin viajar a kubera. El upsert ya era no-op, pero el
+  viaje no.
+- **Límite conocido**: no cubre escrituras directas a la base de WordPress.
+  Es justamente el caso del único de los 39 sin `_edit_last`, que sigue sin
+  explicación.
+
+`GET /api/webhooks/woo` responde el estado (para que wp-admin valide la URL al
+guardar) y `GET /api/webhooks/woo/log` (con API key) muestra qué llegó y qué se
+hizo con cada evento.
+
+Pruebas sandbox `backend/scripts/probar_webhook_woo.py`: **9/9 pasan** — ping de
+alta, firma inválida, sin secreto, flag apagado, alta del acta, evento repetido,
+edición fuera del panel seguida en vivo, ficha sin sku y kubera caída.
+
+Variables nuevas: `WOO_WEBHOOK_ENABLED` (default false) y `WOO_WEBHOOK_SECRET`.
+**Nace APAGADO**: encenderlo es crear el webhook en wp-admin de producción y
+poner las dos variables — flujo vivo, va con el dale de Brandon.
+
+Sin migraciones. Versión 0.92.0.

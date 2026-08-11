@@ -26,14 +26,17 @@ MySQL son repetidas). Reglas del patrón:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
+from fastapi.concurrency import run_in_threadpool
 
 from config import settings
 from core.seguridad import requiere_api_key
@@ -590,3 +593,139 @@ async def webhooks_activos():
         ],
         "ambiente": settings.app_env,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  WooCommerce → core.products (registro civil del catálogo)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# POR QUÉ EXISTE. El corte F6 de core puso tres seams en el panel (nacimiento,
+# publish, auditoría), y eso cubre lo que pasa POR EL PANEL. Pero el catálogo
+# también se edita desde wp-admin: 444 fichas guardadas ahí alguna vez (7
+# personas) y, de los 253 SKUs con título dejado por el panel en `crear_logs`,
+# 39 tienen hoy OTRO título en Woo — todos modificados DESPUÉS del paso del
+# panel, y casi todos correcciones legítimas ("20 moños" → "40 moños",
+# "Product Not Available" → el título de verdad). Barrido del 11-ago-2026.
+#
+# Eso no se arregla con más seams en nuestro código: hay que escuchar en la
+# FUENTE. Woo manda `product.updated` con la ficha completa venga de donde
+# venga el cambio (wp-admin, REST, otro plugin, WP-CLI), y de ahí salen
+# sku/name/wc_id/status — justo lo que el registro civil necesita.
+#
+# LÍMITE CONOCIDO: no cubre escrituras directas a la base de WordPress (nadie
+# las hace hoy; explicarían el único caso de los 39 sin `_edit_last`).
+#
+# GUARDA ABSOLUTA: responder 200 SIEMPRE. Woo deshabilita un webhook tras 5
+# entregas fallidas seguidas y el síntoma es silencioso — dejan de llegar
+# eventos y nadie se entera hasta que el acta de core lo delata.
+
+_WOO_LOG: deque = deque(maxlen=200)
+# Última foto vista por SKU: el sync de inventario (15 min) y cada venta
+# disparan `product.updated` sin tocar nada de lo nuestro. Descartarlos aquí
+# ahorra un viaje a kubera por evento (el upsert ya es no-op, pero el viaje no).
+_WOO_ULTIMO: dict[str, tuple] = {}
+
+
+def _firma_woo_ok(cuerpo: bytes, cabeceras: dict[str, str]) -> bool | None:
+    """HMAC-SHA256 del cuerpo crudo en base64 — como lo firma WooCommerce.
+
+    None = no evaluable (falta el secreto o la cabecera): el llamador NO
+    escribe. Una firma que no se puede verificar no autoriza a tocar el maestro.
+    """
+    secreto = (settings.woo_webhook_secret or "").encode()
+    recibida = (cabeceras.get("x-wc-webhook-signature") or "").strip()
+    if not secreto or not recibida:
+        return None
+    try:
+        calculada = base64.b64encode(
+            hmac.new(secreto, cuerpo, hashlib.sha256).digest()).decode()
+        return hmac.compare_digest(calculada, recibida)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _woo_a_acta(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Ficha de Woo → payload de core.products. None si no hay nada que registrar."""
+    sku = str(payload.get("sku") or "").strip()
+    wc_id = payload.get("id")
+    if not sku or not wc_id:
+        return None
+    return {"sku": sku, "name": (payload.get("name") or "").strip() or None,
+            "wc_id": int(wc_id), "status": payload.get("status") or None,
+            "source": "webhook_woo"}
+
+
+@router.post("/woo")
+async def recibir_woo(request: Request):
+    """Recibe `product.created|updated` de WooCommerce. Responde 200 SIEMPRE."""
+    try:
+        crudo = await request.body()
+        cab = {k.lower(): v for k, v in request.headers.items()}
+        try:
+            payload = json.loads(crudo or b"{}")
+        except Exception:  # noqa: BLE001
+            payload = {}
+        topic = cab.get("x-wc-webhook-topic") or ""
+        # Al crear el webhook, Woo manda un ping {"webhook_id": N} sin tema.
+        if not topic and "webhook_id" in payload:
+            log.info("WOO webhook ping de alta (id=%s)", payload.get("webhook_id"))
+            return {"ok": True, "ping": True}
+
+        firma = _firma_woo_ok(crudo, cab)
+        acta = _woo_a_acta(payload) if isinstance(payload, dict) else None
+        evento = {"recibido": datetime.now(timezone.utc).isoformat(),
+                  "topic": topic, "firma_ok": firma,
+                  "sku": (acta or {}).get("sku"), "wc_id": (acta or {}).get("wc_id"),
+                  "aplicado": False, "motivo": None}
+
+        if not settings.woo_webhook_enabled:
+            evento["motivo"] = "flag apagado"
+        elif firma is not True:
+            evento["motivo"] = ("sin secreto configurado (observación)"
+                                if firma is None else "FIRMA INVÁLIDA")
+        elif not topic.startswith("product."):
+            evento["motivo"] = f"tema ignorado ({topic})"
+        elif not acta:
+            evento["motivo"] = "ficha sin sku o sin id"
+        else:
+            foto = (acta["name"], acta["status"], acta["wc_id"])
+            if _WOO_ULTIMO.get(acta["sku"]) == foto:
+                evento["motivo"] = "sin cambios desde el último evento"
+            else:
+                _WOO_ULTIMO[acta["sku"]] = foto
+                from services import core_write
+                await run_in_threadpool(
+                    core_write.registrar, "routers/webhooks.py",
+                    f"woo {topic}", acta, acta["sku"])
+                evento["aplicado"] = True
+                log.info("WOO %s → core.products %s (wc %s) name=%r status=%s",
+                         topic, acta["sku"], acta["wc_id"],
+                         (acta["name"] or "")[:60], acta["status"])
+        if not evento["aplicado"]:
+            log.info("WOO %s ignorado (%s) sku=%s", topic or "?", evento["motivo"],
+                     evento["sku"])
+        _WOO_LOG.append(evento)
+        return {"ok": True}
+    except Exception:  # noqa: BLE001 — ver GUARDA ABSOLUTA
+        log.exception("Fallo recibiendo el webhook de Woo; se responde 200 igual "
+                      "para que Woo no deshabilite la suscripción.")
+        return {"ok": True}
+
+
+@router.get("/woo")
+async def ping_woo():
+    """Prueba de accesibilidad (wp-admin valida la URL al guardar el webhook)."""
+    return {"ok": True, "canal": "woocommerce",
+            "activo": settings.woo_webhook_enabled,
+            "secreto_configurado": bool(settings.woo_webhook_secret),
+            "eventos_en_memoria": len(_WOO_LOG)}
+
+
+@router.get("/woo/log", dependencies=[Depends(requiere_api_key)])
+async def log_woo(limite: int = Query(50, ge=1, le=200)):
+    """Lo que Woo ha mandado y qué se hizo con cada evento."""
+    eventos = list(_WOO_LOG)[-limite:]
+    eventos.reverse()
+    return {"total_en_memoria": len(_WOO_LOG),
+            "aplicados": sum(1 for e in _WOO_LOG if e.get("aplicado")),
+            "skus_vigilados": len(_WOO_ULTIMO), "eventos": eventos}
