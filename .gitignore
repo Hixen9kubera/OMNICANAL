@@ -68,3 +68,4 @@ backend/competencia.db
 # dedicada de Mercado Libre. Nunca al repo. Vive en ~/.competencia-chrome,
 # pero se ignora también aquí por si alguien lo copia al proyecto.
 .competencia-chrome/
+verificacion_competencia/

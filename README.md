@@ -6085,3 +6085,49 @@ convertido en aviso de retiro — su `startCommand` ya no compara nada, imprime
 que `canal_inventario` está congelado a propósito. La racha de channel cierra
 en 22/14, cumplida. Reversa completa: flag a true + restaurar el startCommand
 de `railway.deltas-channel.json`; el ciclo de 15 min repuebla MySQL solo.
+
+---
+
+### v0.96.0 — Competencia paso 3: las 15,307 filas ya viven en `enrich.market_*` (Eduardo)
+
+`migrar_competencia_enrich.py` movió el dato de `propuestas.competencia_*` a
+las cinco tablas nuevas, todo dentro de la BD kubera con `insert…select`:
+
+| destino | filas | esperado |
+|---|---|---|
+| `market_bestsellers` | 3,000 | 3,000 ✓ |
+| `market_search_results` | 1,816 | 1,816 ✓ |
+| `market_terms` | 5,789 | 5,789 ✓ |
+| `market_sku_config` | 1,584 | 1,584 ✓ |
+| `market_listing_metrics` | 3,118 | 3,118 ✓ |
+
+**Cero pérdidas, segunda corrida idempotente** (0 insertadas, `on conflict do
+nothing` en todo). El diagnóstico previo salió limpio: cero SKUs fuera de
+`core.products`, cero métricas sin periodo, cero colisiones por las PK nuevas
+— incluida la de `(sku, canal, cuenta, periodo)` que preocupaba por el caso de
+dos listings del mismo SKU. **`propuestas` quedó intacta**: sigue siendo lo que
+lee el backend hasta el paso 5.
+
+Guardas del script: `canal='mercado_libre'` explícito, `sku_nuestro` se anula
+si no está en el maestro (0 casos), `distinct on` determinista para duplicados
+de PK (0 casos), acta en `reconciliation_runs` dominio `F3-migracion-enrich`.
+
+**El cron de captura no existe.** El plan pedía apagar `railway.competencia.json`
+durante la ventana; verificado contra Railway, ningún servicio lo usa — las
+capturas siempre fueron manuales. El candado real es no correr
+`competencia_subir.py` mientras conviven los dos esquemas.
+
+**Línea base congelada antes de migrar** en `verificacion_competencia/`
+(git-ignorada): vistas + tablas de `propuestas`, ~9 MB. La base HTTP de los 14
+GET del router queda para antes del paso 5: el backend ya exige `X-API-Key` y
+la llave no está en los env locales (Railway la redacta por OAuth).
+
+Casos del plan verificados en el destino: `CAM-0030-IND` con sus dos cuentas y
+sus precios de descuento reales ($3,294 BEKURA / $3,899 SANCORFASHION, no el
+$7,755.92 del listing); 3,118 de 3,118 con `visits_30d`. Matiz: el conteo "785
+con descuento" del plan era `precio < precio_lista` en el origen; contra
+`channel.listings.price` da 645 porque ese price se refresca cada 15 min —
+consecuencia esperada de descartar `precio_lista` por diseño.
+
+Siguen: paso 4 (vistas `market_skus_v` / `market_publicaciones_v`), 5 (repuntar
+backend), 6 (frontend), 7 (rename + drop en dos tiempos). Versión 0.96.0.

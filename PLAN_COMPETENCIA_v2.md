@@ -471,8 +471,32 @@ strings en `competencia_supabase.py` y las vistas.
    Son dos escrituras menos a tablas compartidas del equipo. `channel.listings`
    además **sí está auditada** por `comparar_channel.py`, así que no tocarla es
    la opción barata.
-3. **Migrar el dato** de `propuestas` con `insert … select`, *previo
-   pre-chequeo de colisión de PK*. Apagar el cron de captura.
+3. **Migrar el dato** ✅ **HECHO (11-ago)** — `migrar_competencia_enrich.py`,
+   conteos exactos: 3,000 + 1,816 + 5,789 + 1,584 + 3,118 = **15,307 filas,
+   cero pérdidas**, segunda corrida idempotente (0 insertadas). Diagnóstico
+   previo: cero huérfanos de FK, cero sin periodo, cero duplicados por la PK
+   nueva. `propuestas` quedó INTACTA — sigue siendo la fuente viva hasta el
+   paso 5.
+
+   **El cron de captura NO EXISTE como servicio en Railway** (verificado
+   contra el proyecto: ningún servicio usa `railway.competencia.json`; las
+   capturas han sido corridas manuales). No había nada que apagar — el candado
+   real durante la ventana es no correr `competencia_subir.py` ni los POST del
+   panel.
+
+   **Línea base capturada ANTES de migrar** en `verificacion_competencia/`
+   (git-ignorada): las 2 vistas + las 5 tablas de `propuestas`, ~9 MB. La
+   línea base HTTP de los 14 endpoints GET queda pendiente: el backend ya
+   exige `X-API-Key` (el rollout de auth avanzó) y la llave no está en los
+   env locales — pedirla antes del paso 5. Con los escritores parados, el
+   dato congelado hace equivalente capturarla ahora o entonces.
+
+   ⚠️ **Matiz del conteo "785 con sale_price < price"**: ese 785 se midió
+   `precio < precio_lista` DENTRO de la tabla origen. Cruzado contra
+   `channel.listings.price` da **645**, porque el price del listing se
+   refresca cada 15 min y se movió desde la captura. Es la consecuencia
+   esperada de descartar `precio_lista` por diseño; el dato migrado
+   (`sale_price`) está completo e intacto — 3,118 de 3,118 con visitas.
 4. **Vistas** `enrich.market_skus_v` y `enrich.market_publicaciones_v`
    con la forma exacta que hoy devuelven las de `propuestas`.
 5. **Backend**: repuntar `competencia_supabase.py`, podar `competencia_store.py`
