@@ -529,8 +529,12 @@ const CANAL_CORTO: Record<string, string> = {
 
 /* UDS · $VENTA. Las dos cifras de la celda son del PERÍODO elegido arriba y
    suman todas las cuentas, que es justo lo que no se ve mirando el número.
-   El precio promedio va aquí porque es la división de las dos: tenerlo a mano
-   evita que alguien lo calcule mal de cabeza. */
+
+   SIN el "precio promedio" (Eduardo, 11-ago): importe ÷ piezas es exactamente
+   la columna Precio venta —el SQL la arma con el mismo `venta / uds`—, así que
+   el panel repetía un dato que ya está en la tabla, dos columnas a la derecha.
+   Mismo criterio que quitó el "× N piezas vendidas" del Costo base en v0.87.0:
+   una cifra derivada que compite con la columna que ya la muestra. */
 function VentaUds({ fila, dias }: { fila: Fila; dias: number }) {
   const uds = Number(fila.uds || 0);
   const venta = fila.venta == null ? null : Number(fila.venta);
@@ -557,10 +561,6 @@ function VentaUds({ fila, dias }: { fila: Fila; dias: number }) {
         <span className="block font-semibold text-white">Uds · $Venta</span>
         <Renglon etiqueta="Piezas vendidas" valor={fNum(uds)} />
         <Renglon etiqueta="Importe" valor={fMoney(venta)} />
-        {venta != null && (
-          <Renglon etiqueta="Precio promedio" detalle="importe ÷ piezas"
-                   valor={fMoney(venta / uds, 2)} tenue />
-        )}
         <span className="mt-1.5 block text-slate-400">
           Últimos {dias} días, sumando TODAS las cuentas donde se vende este
           SKU. Es venta bruta: todavía no se le descuenta comisión ni envío.

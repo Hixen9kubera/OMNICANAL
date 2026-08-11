@@ -5786,3 +5786,25 @@ Probado con dry-run contra producción (lectura pura, sin `--real`): core
 sin cambio.
 
 Sin migraciones y sin variables nuevas. Versión 0.90.0.
+
+### v0.91.0 — Análisis: fuera el precio promedio del panel de Uds · $Venta
+
+Ajuste chico pedido por Eduardo (11-ago). El panel de **Uds · $Venta** mostraba
+un tercer renglón, *Precio promedio (importe ÷ piezas)*, que se retira.
+
+Repetía un dato que ya está en la tabla: **`importe ÷ piezas` es exactamente la
+columna Precio venta**, que el SQL arma con el mismo `venta / uds`
+(`coalesce(v.venta / nullif(v.uds, 0), l.precio)`). En la fila con la que se
+verificó, el panel decía $1,962.54 y la columna Precio venta, dos a la derecha,
+$1,962.54.
+
+Es el mismo criterio de la v0.87.0 al quitar el `× N piezas vendidas` del Costo
+base: una cifra derivada que compite con la columna que ya la muestra. Queda
+anotado en el comentario del componente para que no reaparezca.
+
+El panel conserva piezas, importe y la aclaración de que es del período elegido,
+suma todas las cuentas y es venta bruta. Bajó de 145 a 121 px de alto.
+
+Verificado en el navegador contra el sandbox: el panel ya no menciona el precio
+promedio, sin errores de consola. Sin migraciones y sin variables nuevas.
+Versión 0.91.0.
