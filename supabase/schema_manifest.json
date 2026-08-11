@@ -494,13 +494,33 @@
      "sale_price:numeric:null",
      "visits_30d:integer:null",
      "units_30d:integer:null",
-     "metrics_updated_at:timestamp with time zone:notnull"
+     "metrics_updated_at:timestamp with time zone:notnull",
+     "estado:text:null",
+     "list_price:numeric:null",
+     "fuente_unidades:text:null"
     ],
     "constraints": {
      "FOREIGN KEY": 3,
      "PRIMARY KEY": 1
     },
     "rls": true
+   },
+   "market_publicaciones_v": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "cuenta:text:null",
+     "canal:text:null",
+     "ml_item_id:text:null",
+     "titulo:text:null",
+     "estado:text:null",
+     "precio:numeric:null",
+     "precio_lista:numeric:null",
+     "url:text:null",
+     "visitas_30d:integer:null",
+     "unidades_30d:integer:null",
+     "fuente_unidades:text:null",
+     "periodo:date:null"
+    ]
    },
    "market_search_results": {
     "columnas": [
@@ -539,6 +559,22 @@
      "PRIMARY KEY": 1
     },
     "rls": true
+   },
+   "market_skus_v": {
+    "columnas": [
+     "sku:USER-DEFINED:null",
+     "canal:text:null",
+     "nombre:text:null",
+     "categoria_id:text:null",
+     "categoria_nombre:text:null",
+     "ruta:text:null",
+     "raiz_id:text:null",
+     "raiz_nombre:text:null",
+     "termino_general:text:null",
+     "termino_origen:text:null",
+     "activo:boolean:null",
+     "imagen:text:null"
+    ]
    },
    "market_terms": {
     "columnas": [
@@ -812,7 +848,7 @@
   "channel": 9,
   "core": 4,
   "costing": 8,
-  "enrich": 10,
+  "enrich": 12,
   "migration": 4,
   "ops": 6
  },

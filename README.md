@@ -6131,3 +6131,45 @@ consecuencia esperada de descartar `precio_lista` por diseño.
 
 Siguen: paso 4 (vistas `market_skus_v` / `market_publicaciones_v`), 5 (repuntar
 backend), 6 (frontend), 7 (rename + drop en dos tiempos). Versión 0.96.0.
+
+---
+
+### v0.97.0 — Competencia paso 4: las vistas `market_*_v`, verificadas byte a byte (Eduardo)
+
+Migración **0013**: `enrich.market_skus_v` y `enrich.market_publicaciones_v`
+reproducen la forma exacta de las vistas de `propuestas` (contrato tomado de
+`pg_get_viewdef`, no reescrito de memoria) sobre las tablas nuevas. Aplicada en
+sandbox y producción; **PARIDAD OK** en el manifiesto.
+
+**La verificación**: `market_skus_v` idéntica a la línea base congelada —
+1,584 de 1,584 filas, byte a byte. `market_publicaciones_v` dio 20 diferencias
+contra la línea base… que resultaron ser deriva del dato VIVO: donde el origen
+no capturó precio, la vista cae a `channel.listings.price`, que el sync
+refresca cada 15 min. Comparadas las dos vistas **en la misma transacción**
+(`repeatable read`): **3,118 de 3,118 idénticas**. Moraleja para el paso 5: el
+diff de publicaciones debe capturarse mismo instante, no contra fotos viejas.
+
+**Tres columnas que el plan creyó derivables y NO lo son** (todo medido):
+
+- `estado`: `l.status` es el estado del PUBLICADOR (`published`/`error`); el
+  capturado es el del LISTING en ML (`active`/`paused`/`under_review`).
+  Difieren en **3,118 de 3,118** — la premisa "ya existe en channel.listings"
+  era falsa en semántica, no solo en frescura.
+- `list_price`: 314 filas ya diferían del `l.price` vivo al migrar. El precio
+  de lista DEL PERIODO es parte de la medición (y solo se capturó donde hay
+  descuento: 785 filas — de ahí salía el conteo 785 del plan).
+- `fuente_unidades`: 3,118 no nulo, sin consumidor hoy, pero retirarlo rompía
+  la fidelidad de la vista. Cuesta una columna.
+
+Las tres van en `market_listing_metrics` como foto del periodo, con backfill
+dentro de la misma 0013 en un `DO $$` guardado por la existencia de
+`propuestas` — en sandbox pasa sin tocar datos.
+
+Decisiones de derivación medidas: `nombre` = `core.products.name` (el fallback
+almacenado se usó 0 veces), categoría = panel primero y medida como fallback
+(misma prioridad que la vista vieja; 1 caso, `CAM-0030-IND`), y la **raíz sale
+de la categoría MEDIDA** — derivarla vía panel daba 79 diferencias; vía medida,
+cero. `market_skus_v` gana la columna `canal` como única adición deliberada.
+
+`propuestas` sigue intacta y el backend sigue leyéndola: el switch es el paso
+5. Versión 0.97.0.
