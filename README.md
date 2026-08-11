@@ -6007,3 +6007,39 @@ Falta el paso 3 (migrar el dato de `propuestas`), las vistas, el repunte del
 backend y el retiro del esquema — que va en dos tiempos, con `rename` primero.
 Y `competencia_resultados` tiene 295 filas, no cero como decía el plan: hay que
 decidir si se tiran o se archivan antes del `drop`. Versión 0.94.0.
+
+---
+
+### v0.94.1 — Competencia paso 2: las imágenes, y dos escrituras que se cancelan (Eduardo)
+
+`backfill_product_media_wc.py` copia las imágenes de Competencia a
+`enrich.product_media` con `kind='wc'`. **1,572 filas** (el plan estimaba
+~1,541), aplicado en la BD kubera, segunda corrida idempotente. La tabla queda
+con 1,572 `wc` + 522 `amazon`.
+
+**No toca WooCommerce.** El plan decía "backfill desde WooCommerce", pero la URL
+ya está capturada en `propuestas.competencia_skus.imagen` (1,572 de 1,584 SKUs),
+así que es un `insert…select` dentro de la misma base. Además de ser instantáneo,
+esquiva el 403 intermitente del WAF de Hostinger (pendiente conocido #1).
+
+Idempotente **por construcción**, no por procedimiento: el índice único
+`uq_product_media_sku_kind_url` existe desde la migración 0002 y el insert usa
+`on conflict do nothing`. (La revisión del consejo lo había marcado como riesgo
+de duplicados leyendo solo la 0001 — falsa alarma, el índice está en la 0002.)
+
+**Se cancelan las dos filas sueltas del paso 2.** El plan v1 quería insertar una
+fila en `channel.product_category` (CAM-0030-IND) y otra en `channel.listings`
+(TEC-0631-PLA/BEKURA, la única de las 3,118 sin fila por PK). Las necesitaba
+porque ahí iban a vivir las métricas. Al moverlas a
+`enrich.market_listing_metrics` —que **no tiene FK a `channel.listings`**— dejan
+de hacer falta: TEC-0631-PLA está en `core.products` y sus 2 filas de métricas
+migran igual; CAM-0030-IND trae su categoría en `competencia_skus` y el
+`coalesce` de la vista la resuelve. Dos escrituras menos a tablas del equipo, y
+`channel.listings` sí está auditada por `comparar_channel.py`.
+
+También resuelto: **`source='real'` sí existe** — 940 filas en producción, junto
+a `predictor` (5,277), `panel` (5,166) y `costos_ml` (2,340). Lo desactualizado
+es el comentario del DDL (`'ml_ia'|'manual'|'woocommerce'`), no el dato.
+
+Verificado antes de escribir: ningún `comparar_*.py` audita `product_media` y la
+tabla no tiene triggers — no mueve ninguna acta. Versión 0.94.1.

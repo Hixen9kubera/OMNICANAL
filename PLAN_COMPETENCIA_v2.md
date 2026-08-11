@@ -377,15 +377,16 @@ v1 lo dejaba implícito en el orden de los pasos. Escrito:
 Estos no son de los 4 cambios, pero salieron verificados y bloquean pasos
 concretos:
 
-1. **El vocabulario de `source` no cuadra.** El plan habla de
-   `predictor / panel / costos_ml / real`, pero el DDL de
-   `channel.product_category` declara `'ml_ia' | 'manual' | 'woocommerce'`
-   (`0001_esquema_v4.sql:144`). `'real'` no está en ese enum — y es justo el
-   valor con el que se piensa insertar la fila de `CAM-0030-IND`. Reconciliar
-   antes de escribir esa fila.
-2. **`enrich.product_media` no es idempotente.** No tiene unique más allá del
-   `id` autogenerado. Correr el backfill de 1,541 imágenes dos veces las duplica.
-   Agregar `on conflict` o `where not exists` por `(sku, kind, source_url)`.
+1. ~~**El vocabulario de `source` no cuadra.**~~ **RESUELTO (11-ago, medido).**
+   El DDL declara `'ml_ia' | 'manual' | 'woocommerce'` (`0001:144`) pero eso es
+   un comentario viejo, no una restricción: los valores REALES en producción son
+   `predictor` 5,277 · `panel` 5,166 · `costos_ml` 2,340 · **`real` 940**.
+   `'real'` es un valor en uso. Lo desactualizado es el comentario del DDL.
+2. ~~**`enrich.product_media` no es idempotente.**~~ **FALSA ALARMA (11-ago).**
+   El consejo leyó la 0001, que no lo trae — pero el índice único
+   `uq_product_media_sku_kind_url (sku, kind, source_url)` se creó en la
+   **migración 0002, línea 49**, y existe tanto en producción como en sandbox.
+   El backfill usa `on conflict do nothing` y es idempotente por construcción.
 3. **`competencia_store.py` no es solo legado.** `competencia_supabase.py:204`
    lo importa en tiempo de ejecución para reusar `_cubre`, y el router importa el
    store —no el módulo de Supabase— directamente. El store es la fachada y su
@@ -448,8 +449,28 @@ strings en `competencia_supabase.py` y las vistas.
    Aditivo, no rompe nada vivo. **Regenerar `schema_manifest.json`.**
 2. **Backfills**: `channel.categories` parent/root con
    `backend/scripts/backfill_categories_arbol.py` (**cero llamadas a la API de
-   ML** — ver abajo), `enrich.product_media` (1,541 imágenes, *con guarda de
-   idempotencia*), las 2 filas faltantes.
+   ML** — ver abajo) ✅ **HECHO**, y `enrich.product_media` ✅ **HECHO**
+   (`backfill_product_media_wc.py`: **1,572** imágenes, no 1,541, y **tampoco
+   desde WooCommerce** — la URL ya está en `propuestas.competencia_skus.imagen`,
+   así que es un `insert…select` dentro de la misma base; evita además el 403
+   intermitente del WAF, pendiente conocido #1).
+
+   **Las 2 filas sueltas se CANCELAN.** El plan v1 las necesitaba porque las
+   métricas iban como columnas de `channel.listings`: sin fila no había dónde
+   ponerlas. El cambio 2 las movió a `enrich.market_listing_metrics`, que **no
+   tiene FK a `channel.listings`** (solo a `core.products`, `core.channels` y
+   `core.accounts`), así que ya no hacen falta. Verificado en datos:
+
+   - `TEC-0631-PLA` / BEKURA / mercado_libre es la única publicación de las
+     3,118 sin fila por PK — pero está en `core.products` y sus 2 filas de
+     métricas migran sin tocar `channel.listings`.
+   - `CAM-0030-IND` trae su categoría (`MLM121837`, Colchones) en
+     `competencia_skus`; va a `market_sku_config.categoria_id_real` y el
+     `coalesce` de la vista la resuelve sin fila en `product_category`.
+
+   Son dos escrituras menos a tablas compartidas del equipo. `channel.listings`
+   además **sí está auditada** por `comparar_channel.py`, así que no tocarla es
+   la opción barata.
 3. **Migrar el dato** de `propuestas` con `insert … select`, *previo
    pre-chequeo de colisión de PK*. Apagar el cron de captura.
 4. **Vistas** `enrich.market_skus_v` y `enrich.market_publicaciones_v`
