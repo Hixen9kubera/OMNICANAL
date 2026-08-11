@@ -5,7 +5,7 @@
     "buildCommand": "pip install pymysql psycopg2-binary"
   },
   "deploy": {
-    "startCommand": "python scripts/comparar_channel.py",
+    "startCommand": "python -c \"print('deltas-channel RETIRADO 11-ago-2026 (racha 22/14 cumplida): canal_inventario esta congelado a proposito -paso 1 del desmantelamiento- y compararlo reportaria divergencia por construccion. Reactivar = restaurar startCommand en railway.deltas-channel.json.')\"",
     "cronSchedule": "45 6 * * *",
     "restartPolicyType": "NEVER"
   }

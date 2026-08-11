@@ -6076,3 +6076,12 @@ kubera caída MySQL absorbe la tanda (la emergencia intacta).
 
 Apagar el flag es flujo vivo: va con dale de Brandon. Sin migraciones; una
 variable nueva. Versión 0.95.0.
+
+### v0.95.1 — Channel: el retiro ENCENDIDO (flag apagado + acta retirada)
+
+Ejecución del paso 1 con dale de Brandon (11-ago, vía Eduardo):
+`CHANNEL_ESPEJO_INVERSO=false` en producción y el cron `deltas-channel`
+convertido en aviso de retiro — su `startCommand` ya no compara nada, imprime
+que `canal_inventario` está congelado a propósito. La racha de channel cierra
+en 22/14, cumplida. Reversa completa: flag a true + restaurar el startCommand
+de `railway.deltas-channel.json`; el ciclo de 15 min repuebla MySQL solo.
