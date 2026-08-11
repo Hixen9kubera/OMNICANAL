@@ -478,22 +478,9 @@ def reemplazar_resultados(sku: str, tipo: str, periodo: str,
     return len(listas)
 
 
-def resultados(sku: str, tipo: str | None = None,
-               limite: int | None = None) -> list[dict[str, Any]]:
-    r = _remoto()
-    if r:
-        return r.resultados(sku, tipo, limite)
-    asegurar_schema()
-    sql = "SELECT * FROM resultados WHERE sku = ?"
-    params: list[Any] = [sku]
-    if tipo:
-        sql += " AND tipo = ?"
-        params.append(tipo)
-    sql += " ORDER BY tipo, posicion IS NULL, posicion"
-    if limite:
-        sql += f" LIMIT {int(limite)}"
-    with _con() as c:
-        return _filas(c.execute(sql, params))
+# resultados() PODADO (paso 6) junto con GET /detalle. La tabla SQLite
+# `resultados` sigue viva para el modo local: la escribe reemplazar_resultados
+# (captura) y la lee top_categoria.
 
 
 def top_categoria(sku: str, limite: int = 10) -> list[dict[str, Any]]:
@@ -508,58 +495,9 @@ def top_categoria(sku: str, limite: int = 10) -> list[dict[str, Any]]:
             "ORDER BY posicion IS NULL, posicion LIMIT ?", (sku, limite)))
 
 
-def posiciones(sku: str | None = None) -> list[dict[str, Any]]:
-    """
-    Mi posición y el contexto de precios por SKU y tipo de medición. SQLite no
-    tiene percentile_cont, así que la mediana se calcula en Python (son decenas
-    de filas por medición, no vale un window function).
-    """
-    asegurar_schema()
-    sql = "SELECT * FROM resultados"
-    params: list[Any] = []
-    if sku:
-        sql += " WHERE sku = ?"
-        params.append(sku)
-    with _con() as c:
-        filas = _filas(c.execute(sql, params))
-
-    grupos: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for f in filas:
-        grupos.setdefault((f["sku"], f["tipo"]), []).append(f)
-
-    out = []
-    for (s, tipo), rs in grupos.items():
-        mios = [r for r in rs if r["es_nuestro"]]
-        rivales = [r for r in rs if not r["es_nuestro"] and r.get("precio") is not None]
-        precios = sorted(r["precio"] for r in rivales)
-        mediana = None
-        if precios:
-            n = len(precios)
-            mediana = (precios[n // 2] if n % 2
-                       else (precios[n // 2 - 1] + precios[n // 2]) / 2)
-        visitas_rivales = [r["visitas_30d"] for r in rs
-                           if not r["es_nuestro"] and r.get("visitas_30d") is not None]
-        out.append({
-            "sku": s, "tipo": tipo,
-            "termino": rs[0].get("termino"),
-            "periodo": rs[0].get("periodo"),
-            "total_resultados": len(rs),
-            "mi_posicion": min((r["posicion"] for r in mios
-                                if r.get("posicion") is not None), default=None),
-            "mi_precio": next((r["precio"] for r in mios if r.get("precio")), None),
-            "mis_visitas_30d": next((r["visitas_30d"] for r in mios
-                                     if r.get("visitas_30d") is not None), None),
-            "mis_vendidos": next((r["vendidos"] for r in mios
-                                  if r.get("vendidos") is not None), None),
-            "precio_mediana_rivales": mediana,
-            "visitas_max_rival": max(visitas_rivales, default=None),
-        })
-    return out
-
-
-_CAMPOS_PUB = ("sku", "cuenta", "canal", "ml_item_id", "titulo", "precio",
-               "precio_lista", "url", "imagen", "estado", "visitas_30d",
-               "unidades_30d")
+# posiciones() PODADO (paso 6): en produccion leia el SQLite efimero de
+# Railway (siempre vacio), asi que pos_gen/pos_tit/pos_cat llevaban meses en
+# None. Retirados del API junto con el resto de los retiros del plan.
 
 
 def guardar_publicaciones(filas: list[dict[str, Any]]) -> int:
@@ -782,7 +720,6 @@ def tabla() -> list[dict[str, Any]]:
     debe mostrar "—" en vez de un cero que se lee como "convierte mal".
     """
     skus = listar_skus()
-    pos = {(p["sku"], p["tipo"]): p for p in posiciones()}
     pubs: dict[str, list[dict[str, Any]]] = {}
     for p in publicaciones():
         pubs.setdefault(p["sku"], []).append(p)
@@ -829,11 +766,6 @@ def tabla() -> list[dict[str, Any]]:
             fila["imagen"] = (ref or {}).get("imagen")
         fila["actualizado"] = max((p["actualizado_en"] for p in mis), default=None)
 
-        for tipo, prefijo in (("general", "gen"), ("titulo", "tit"), ("categoria", "cat")):
-            pp = pos.get((s["sku"], tipo)) or {}
-            fila[f"pos_{prefijo}"] = pp.get("mi_posicion")
-            fila[f"total_{prefijo}"] = pp.get("total_resultados")
-        fila["periodo"] = (pos.get((s["sku"], "general")) or {}).get("periodo")
         out.append(fila)
     return out
 

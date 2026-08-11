@@ -6249,3 +6249,39 @@ credencial — y sin firma válida el endpoint no escribe nada. La coincidencia
 es exacta: `/api/webhooks/woo/log` sigue cerrado con API key.
 
 Versión 0.99.1.
+---
+
+### v0.100.0 — Competencia paso 6: la poda, y adiós al fósil de /detalle (Eduardo)
+
+Decisión tomada: **`/detalle` se retira completo** — endpoint, funciones y
+tabla. Era el fósil de la primera versión del módulo (cuando se capturaba por
+SKU); tras pasar a buscar por término quedó devolviendo ~93 bytes. Sus 295
+filas están archivadas en `verificacion_competencia/` antes de morir con el
+esquema en el paso 7.
+
+Lo notable de la poda es lo que REVELÓ:
+
+- **`detalleCompetencia` y `topCategoriaCompetencia` (api.ts): exportadas y
+  jamás llamadas.** Ni un solo uso en la UI. El "consumidor" que se creía que
+  tenía /detalle era una confusión de nombres con `detalleSkuCompetencia`
+  (el cajón del SKU, que llama a `/sku/{sku}` y está vivísimo).
+- **`posiciones()` llevaba meses muerta en producción sin que nadie lo
+  notara**: leía el SQLite local directamente —sin delegar al modo Supabase—
+  y en Railway ese archivo es efímero y siempre está vacío. `pos_gen`,
+  `pos_tit`, `pos_cat` y `periodo` de `/tabla`: siempre None. Retirados.
+- Con `resultados()` fuera del módulo supabase, el backend quedó con **cero
+  lecturas de `propuestas`**: el esquema viejo ya no tiene ni un lector.
+
+También: tipos muertos fuera de types.ts (`CompetenciaDetalle`,
+`CompetenciaPosicion`, `TipoCompetencia`…), `CompetenciaResultado` adelgazado
+al contrato real del paso 5, `descuento` fantasma fuera de `RankingCategoria`,
+y la columna "vis" de ResultadosBusqueda que ya solo pintaba "—".
+
+Se CONSERVA el pipeline local de captura (`reemplazar_resultados`,
+`top_categoria`, la tabla SQLite `resultados`): escribe local, no toca
+`propuestas`, y el modo local lo usa.
+
+Verificación: sintaxis ok, `tabla()` (393 filas, sin llaves residuales) y
+`vista()` funcionales contra producción, `tsc --noEmit` exit 0. Con esto,
+`propuestas` queda listo para el rename del paso 7a: cero lectores.
+Versión 0.100.0.

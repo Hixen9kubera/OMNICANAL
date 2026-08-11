@@ -520,7 +520,22 @@ strings en `competencia_supabase.py` y las vistas.
    `GET /visitas-propias` pasó de 500 (roto) a **405** — el GET se podó y el
    POST del mismo path sigue vivo, por eso 405 y no 404. Cero regresiones.
    El diff quedó en `verificacion_competencia/despues_http_*.json`.
-6. **Frontend**: podar tipos y llamadas muertas.
+6. **Frontend y poda transversal** ✅ **HECHO (11-ago, v0.100.0)** — decisión
+   del usuario: `/detalle` SE RETIRA con su tabla. Podados: GET `/detalle` y
+   `_TIPOS` (router); `resultados()` del módulo supabase — **cero lecturas de
+   `propuestas` en el backend**; `resultados()` y `posiciones()` de la fachada
+   (posiciones leía el SQLite efímero de Railway: `pos_gen/tit/cat` llevaban
+   meses en None) y los 7 campos muertos de `tabla()`; `detalleCompetencia` y
+   `topCategoriaCompetencia` de api.ts (exportadas y jamás llamadas);
+   `CompetenciaDetalle`/`CompetenciaTopCategoria`/`CompetenciaPosicion`/
+   `TipoCompetencia` de types.ts; `CompetenciaResultado` adelgazado al
+   contrato real; la columna "vis" fantasma de ResultadosBusqueda.
+   CONSERVADOS: el pipeline local de captura (`reemplazar_resultados`,
+   `top_categoria`, la tabla SQLite `resultados`) — no tocan `propuestas`.
+   Las 295 filas quedaron archivadas en
+   `verificacion_competencia/archivo_competencia_resultados.json`.
+   Verificado: sintaxis + `tabla()`/`vista()` funcionales contra prod +
+   `tsc --noEmit` exit 0.
 7. **7a.** `alter schema propuestas rename to propuestas_retirado`, tras el diff
    sobre todos los endpoints. **7b.** Días después, con racha verde:
    `drop schema propuestas_retirado cascade`.

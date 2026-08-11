@@ -617,7 +617,7 @@ export interface VentasResumen {
 //     encontrar en el ranking. Es información, no un error.
 //   • No hay histórico: cada corrida borra la anterior y reescribe.
 
-export type TipoCompetencia = "general" | "titulo" | "categoria";
+// TipoCompetencia PODADO (paso 6): era el eje del /detalle retirado.
 /** Niveles por los que se puede agrupar la tabla. `raiz_nombre` es la categoría
  *  PRINCIPAL (primer nivel del path) y `categoria_nombre` la ÚLTIMA. */
 export type NivelCategoria =
@@ -652,45 +652,25 @@ export interface CompetenciaSku {
   activo: number;
 }
 
+/** Una fila de resultados de búsqueda (enrich.market_search_results). Es el
+ *  contrato REAL del backend tras el paso 5: los campos capturados-y-retirados
+ *  (periodo, vendidos, visitas_30d, descuento, precio_lista…) ya no viajan. */
 export interface CompetenciaResultado {
-  id: number;
-  sku: string;
-  tipo: TipoCompetencia;
   termino: string | null;
-  periodo: string;
-  posicion: number | null;
   externo_id: string;
+  posicion: number | null;
   titulo: string | null;
-  descripcion: string | null;
   precio: number | null;
-  moneda: string;
   imagen: string | null;
   url: string | null;
   seller: string | null;
-  marca: string | null;
-  visitas_30d: number | null;
-  vendidos: number | null;
-  reviews: number | null;
   rating: number | null;
-  envio_gratis: number | null;
-  es_full: number | null;
   es_nuestro: number;
   sku_nuestro: string | null;
 }
 
-export interface CompetenciaPosicion {
-  sku: string;
-  tipo: TipoCompetencia;
-  termino: string | null;
-  periodo: string | null;
-  total_resultados: number;
-  mi_posicion: number | null;
-  mi_precio: number | null;
-  mis_visitas_30d: number | null;
-  mis_vendidos: number | null;
-  precio_mediana_rivales: number | null;
-  visitas_max_rival: number | null;
-}
+// CompetenciaPosicion PODADA (paso 6): posiciones() leía el SQLite efímero
+// (vacío en Railway) — pos_gen/pos_tit/pos_cat llevaban meses en None.
 
 /** Una PUBLICACIÓN nuestra. `canal` está desde el inicio para que un ASIN de
  *  Amazon sea otra fila y no un rediseño de la vista. */
@@ -723,13 +703,6 @@ export interface CompetenciaFilaSku extends CompetenciaSku {
   unidades_30d: number | null;
   conversion_30d: number | null;
   actualizado: string | null;
-  pos_gen: number | null;
-  total_gen: number | null;
-  pos_tit: number | null;
-  total_tit: number | null;
-  pos_cat: number | null;
-  total_cat: number | null;
-  periodo: string | null;
 }
 
 export interface CompetenciaGrupo {
@@ -749,7 +722,6 @@ export interface RankingCategoria {
   titulo: string | null;
   precio: number | null;         // el que se paga (con descuento)
   precio_lista: number | null;   // precio base, antes del descuento
-  descuento: string | null;      // '58% OFF'
   vendidos: number | null;       // cota inferior: ML redondea (+50mil → 50000)
   rating: number | null;         // 0-5
   seller: string | null;
@@ -987,20 +959,8 @@ export interface CompetenciaTabla {
   corrida: CompetenciaCorrida | null;
 }
 
-export interface CompetenciaDetalle {
-  sku: string;
-  posiciones: CompetenciaPosicion[];
-  resultados: Partial<Record<TipoCompetencia, CompetenciaResultado[]>>;
-}
-
-export interface CompetenciaTopCategoria {
-  sku: string;
-  categoria_id: string | null;
-  categoria_nombre: string | null;
-  ruta: string | null;
-  top: CompetenciaResultado[];
-  aviso: string | null;
-}
+// CompetenciaDetalle y CompetenciaTopCategoria PODADAS (paso 6): sus
+// funciones de api.ts no tenían consumidor y GET /detalle se retiró.
 
 export interface CompetenciaEstado {
   supabase: boolean;

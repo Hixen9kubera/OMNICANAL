@@ -601,9 +601,6 @@ function ResultadosBusqueda({ filas }: { filas: CompetenciaResultado[] }) {
           <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
             {mxn(r.precio)}
           </span>
-          <span className="w-16 text-right text-[10px] tabular-nums text-slate-400">
-            {num(r.visitas_30d)} vis
-          </span>
         </a>
       ))}
     </div>

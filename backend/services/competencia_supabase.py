@@ -125,30 +125,9 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
     return filas
 
 
-def resultados(sku: str, tipo: str | None = None,
-               limite: int | None = None) -> list[dict[str, Any]]:
-    """Las búsquedas guardadas de un SKU: 'general' (descubrimiento) o 'titulo'."""
-    # ÚNICA lectura que sigue en `propuestas`: competencia_resultados (295
-    # filas) NO migró a enrich — el plan la declaró sin lectores y /detalle
-    # resultó leerla. Resolver ANTES del rename del paso 7a: o se archiva la
-    # tabla y se retira /detalle, o migra. Ver PLAN_COMPETENCIA_v2.md.
-    sql = "SELECT * FROM propuestas.competencia_resultados WHERE sku = %s"
-    params: list[Any] = [sku]
-    if tipo:
-        sql += " AND tipo = %s"
-        params.append(tipo)
-    # Mismo orden que el store local, para que los dos modos den lo mismo.
-    sql += " ORDER BY tipo, posicion IS NULL, posicion"
-    if limite:
-        sql += " LIMIT %s"
-        params.append(int(limite))
-    filas = [dict(f) for f in supabase_db.fetch_all(sql, tuple(params))]
-    for f in filas:
-        for k in ("precio", "rating"):
-            if f.get(k) is not None:
-                f[k] = float(f[k])
-        f["es_nuestro"] = 1 if f.get("es_nuestro") else 0
-    return filas
+# resultados() PODADO (paso 6): era la ultima lectura de `propuestas`
+# (competencia_resultados). Su unico consumidor era GET /detalle, tambien
+# podado. Este modulo ya lee 100% enrich.market_*.
 
 
 def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:

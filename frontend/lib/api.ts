@@ -5,7 +5,6 @@ import { haySesion, refrescar, token } from "./sesion";
 import type {
   CanalInfo,
   CompetenciaCorrida,
-  CompetenciaDetalle,
   CompetenciaEstado,
   CompetenciaSku,
   CompetenciaTabla,
@@ -15,7 +14,6 @@ import type {
   CompetenciaSkusSub,
   CompetenciaSugerenciaSub,
   CompetenciaSugerenciaSku,
-  CompetenciaTopCategoria,
   RankingCategoriaResp,
   CompetenciaResp,
   CategoriaMLResult,
@@ -775,21 +773,11 @@ export function capturarRankingsCompetencia() {
   }>("/api/competencia/rankings", {});
 }
 
-export function detalleCompetencia(sku: string, tipo?: string, signal?: AbortSignal) {
-  const q = tipo ? `&tipo=${tipo}` : "";
-  return getJSON<CompetenciaDetalle>(
-    `/api/competencia/detalle?sku=${encodeURIComponent(sku)}${q}`,
-    signal,
-  );
-}
+// detalleCompetencia PODADA (paso 6): GET /detalle se retiró del backend y
+// esta función no tenía ni un solo consumidor en la UI.
 
-/** Los más vendidos de la categoría del SKU (ranking oficial de ML). */
-export function topCategoriaCompetencia(sku: string, limite = 10, signal?: AbortSignal) {
-  return getJSON<CompetenciaTopCategoria>(
-    `/api/competencia/top-categoria?sku=${encodeURIComponent(sku)}&limite=${limite}`,
-    signal,
-  );
-}
+// topCategoriaCompetencia PODADA (paso 6): exportada y jamás llamada.
+// GET /top-categoria sigue vivo en el backend por el modo local.
 
 export function skusCompetencia(signal?: AbortSignal) {
   return getJSON<{ skus: CompetenciaSku[] }>("/api/competencia/skus", signal);

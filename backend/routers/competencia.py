@@ -35,7 +35,6 @@ router = APIRouter(prefix="/api/competencia", tags=["competencia"])
 # Progreso de la corrida manual, en memoria (mismo patrón que sync_woo/crear).
 _corrida: dict[str, Any] = {"estado": "inactivo"}
 
-_TIPOS = ("general", "titulo", "categoria")
 # Los dos niveles que manda la vista: la RAÍZ del path (Accesorios para
 # Vehículos) y la ÚLTIMA categoría (Tapetes). Los intermedios quedan disponibles
 # pero no son el caso de uso: agrupar por cat2 partía "Accesorios para Vehículos"
@@ -389,20 +388,10 @@ async def capturar_rankings():
     return r
 
 
-@router.get("/detalle")
-def detalle(sku: str, tipo: str | None = None):
-    """Los resultados de un SKU. `tipo` en general | titulo | categoria."""
-    if tipo and tipo not in _TIPOS:
-        raise HTTPException(400, f"tipo debe ser uno de {_TIPOS}")
-    filas = competencia_store.resultados(sku, tipo)
-    por_tipo: dict[str, list[dict[str, Any]]] = {t: [] for t in _TIPOS}
-    for f in filas:
-        por_tipo.setdefault(f["tipo"], []).append(f)
-    return {
-        "sku": sku,
-        "posiciones": competencia_store.posiciones(sku),
-        "resultados": por_tipo if not tipo else {tipo: por_tipo.get(tipo, [])},
-    }
+# GET /detalle PODADO (paso 6): leia propuestas.competencia_resultados (295
+# filas), el fosil de cuando el modulo capturaba por SKU. Sin consumidor en la
+# UI (detalleCompetencia no se llamaba desde page.tsx). Las 295 filas quedan
+# archivadas en verificacion_competencia/archivo_competencia_resultados.json.
 
 
 @router.get("/corrida")
