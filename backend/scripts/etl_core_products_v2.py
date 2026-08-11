@@ -50,6 +50,13 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 FASE = "core-etl-v2"
 BATCH = 1000
 CAMPOS = ("name", "wc_id", "wc_parent_id", "odoo_id", "status", "has_variations", "source")
+# Lo ÚNICO que escribe el seam del corte F6 (kubera_mirror._up_core_product:
+# name, wc_id, status, source). El resto lo llena este ETL y nada más: odoo_id
+# viene de Odoo, wc_parent_id de Woo, has_variations está muerta (vacía en las
+# 22,186 filas). `source` queda fuera aunque el seam lo escriba, porque el ETL
+# lo recalcula como la lista de tablas MySQL donde aparece el SKU: contra el
+# 'panel_crear' del seam SIEMPRE difiere. Solo estos campos entran a seam_gap.
+CAMPOS_SEAM = ("name", "wc_id", "status")
 
 # ── Anti-cuelgue (lección del backfill de pedidos: NADA corre para siempre) ──
 # 1) Timeout de socket GLOBAL: cubre xmlrpc (Odoo no tiene timeout por default
@@ -393,6 +400,10 @@ def main() -> None:
                 sin_cambio += 1
     solo_en_core = len(core_actual) - (len(union) - len(inserts))
 
+    # Updates que SÍ acusan al seam (tocan un campo que el seam escribe) vs los
+    # que son trabajo normal del ETL (odoo_id, wc_parent_id, source…).
+    updates_seam = [f for f in updates if not set(f["_difs"]).isdisjoint(CAMPOS_SEAM)]
+
     reporte = {
         "modo": modo, "destino": ref[:8] + "…",
         "fuentes": {"woocommerce": len(t_woo), "productos_frozen": len(t_productos),
@@ -407,6 +418,9 @@ def main() -> None:
         "muestra_inserts": [{"sku": f["sku"], "status": f["status"], "source": f["source"]}
                              for f in inserts[:15]],
         "muestra_updates": [{"sku": f["sku"], "campos": f["_difs"]} for f in updates[:10]],
+        # La muestra que importa cuando suena la alerta: quién rompió la racha.
+        "muestra_seam_gap": [{"sku": f["sku"], "campos": f["_difs"]}
+                              for f in updates_seam[:15]],
         "muestra_aliases": dict(list(aliases_nuevos.items())[:10]),
     }
 
@@ -461,13 +475,20 @@ def main() -> None:
     # y no cubrió; >0 marca con_deltas y rompe la racha de /migracion (el
     # mismo criterio de 14 días en cero de los demás dominios). Hueco medido
     # en cero desde el 08-ago-2026.
-    seam_gap = len(inserts) + len(updates)
+    # v0.90: cuenta SOLO los campos de CAMPOS_SEAM. Antes contaba todo update y
+    # eso le reclamaba al corte campos que ningún seam escribe: el 11-ago un
+    # lote de Odoo llenó odoo_id en 35 SKUs y rompió la racha sin que nada
+    # fallara (38 updates, de los cuales solo 2 —dos títulos editados fuera del
+    # panel— eran hueco real). Un INSERT sí cuenta siempre: un SKU que nace sin
+    # pasar por el panel es exactamente lo que el seam debía cubrir.
+    seam_gap = len(inserts) + len(updates_seam)
     resultado = "ok" if seam_gap == 0 else "con_deltas"
     pcur.execute("""insert into migration.reconciliation_runs
                     (dominio, descripcion, conteos, checksums, resultado)
                     values (%s, 'ETL v2 incremental core.products (sin truncate)', %s, %s, %s)""",
                  (FASE, json.dumps({**reporte["plan"], "core_products_final": n_final,
                                     "seam_gap": seam_gap,
+                                    "updates_fuera_de_seam": len(updates) - len(updates_seam),
                                     "issues_nuevas": len(issues_escribibles),
                                     "nombre_no_coincide_informativo": tally_issues.get("nombre_no_coincide", 0),
                                     "aliases_nuevos": len(aliases_nuevos)}, default=str),

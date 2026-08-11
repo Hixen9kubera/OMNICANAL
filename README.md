@@ -5728,3 +5728,61 @@ script por nombre. **Falta ejercitar la ruta de la API de ML**, que necesita
 tokens: la primera corrida en producción debe ser en seco y con `--sku`.
 
 Sin migraciones y sin variables nuevas. Versión 0.89.0.
+
+### v0.90.0 — El acta estricta de core y categorías mide el hueco del seam, no el trabajo del ETL
+
+El 11-ago las actas de **Maestro** y **Categorías** salieron `con_deltas` y
+rompieron las rachas del corte F6 sin que nada hubiera fallado. Las dos alertas
+eran falsas por construcción: el criterio que estrenó la v0.84.0 contaba como
+"hueco del seam" cualquier fila que el ETL tuviera que escribir, incluidos
+campos que **ningún seam escribe ni puede escribir**.
+
+**Qué pasó ese día.** En core, 38 updates y 0 inserts:
+
+| Campo que cambió | SKUs | Quién lo escribe |
+|---|---|---|
+| `odoo_id` | 35 | solo este ETL (viene de Odoo) |
+| `name` | 2 | el panel… o quien edite por fuera |
+| `source` | 1 | lo recalcula este ETL |
+
+Los 35 son un bloque consecutivo de `odoo_id` 125119–125153: una carga en lote
+del lado de Odoo que le puso id a SKUs que ya existían. El seam del corte
+(`kubera_mirror._up_core_product`) escribe `name`, `wc_id`, `status` y `source`
+— y su propio comentario ya decía que lo que enriquecen otras vías (`odoo_id`…)
+no se pisa. El acta le estaba reclamando al corte un campo que el corte nunca
+prometió cubrir. **De los 38, solo 2 eran señal real**: dos títulos editados
+fuera del panel, que es exactamente lo que la regla debe detectar.
+
+En categorías, las asignaciones —lo único que el seam del panel posee— salieron
+impecables (0 insert, 0 update, 13,722 sin cambio). El `con_deltas` lo
+provocaron **2 nodos del árbol de ML** que cambiaron de nombre o ruta: Mercado
+Libre renombrando sus propias categorías.
+
+**El ajuste.** `seam_gap` ahora cuenta solo lo que un seam pudo haber cubierto:
+
+- **core**: `CAMPOS_SEAM = (name, wc_id, status)`. Fuera `odoo_id` y
+  `wc_parent_id` (los llena el ETL desde Odoo y Woo) y `has_variations`, que
+  además está muerta —vacía en las 22,186 filas—. `source` queda fuera aunque el
+  seam lo escriba: el ETL lo recalcula como la lista de tablas MySQL donde
+  aparece el SKU, así que contra el `panel_crear` del seam siempre difiere. Un
+  INSERT sí cuenta siempre — un SKU que nace sin pasar por el panel es
+  precisamente el hueco que se está midiendo.
+- **categorías**: solo asignaciones, más los nodos de árbol que entran **por una
+  elección del panel** (si el panel eligió una categoría y su nodo no está,
+  `categorias_write.registrar` falló). Que ML agregue o renombre categorías es
+  trabajo normal del ETL.
+
+Con el criterio nuevo, el 11-ago habría dado **core 2** (los dos títulos
+editados fuera del panel) y **categorías 0**.
+
+El ETL sigue aplicando todos esos updates: lo que cambia es qué se cuenta como
+hueco, no qué se escribe. Y para que la próxima alerta no obligue a bucear en
+los logs de Railway, el acta gana dos contadores nuevos —
+`updates_fuera_de_seam` en core, `arbol_fuera_de_seam` en categorías — y el
+reporte de core una `muestra_seam_gap` con los SKUs culpables y sus campos.
+
+Probado con dry-run contra producción (lectura pura, sin `--real`): core
+0 insert / 0 update / 22,186 sin cambio, categorías 0/0 con 13,722 asignaciones
+sin cambio.
+
+Sin migraciones y sin variables nuevas. Versión 0.90.0.

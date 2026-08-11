@@ -192,6 +192,7 @@ def main() -> None:
 
     # ── ASIGNACIÓN: categorias_ml primero, el PANEL pisa al final ────────────
     issues_nuevas: list[tuple] = []
+    arbol_ins_seam: list[str] = []  # nodos que el seam del panel debió dejar
     tally = Counter()
     plan_asig: dict[str, tuple] = {}  # sku_canon -> (category_id, source)
     for origen, filas, source_de in (("categorias_ml", t_cat, None), ("panel", t_panel, "panel")):
@@ -213,6 +214,10 @@ def main() -> None:
                 # categoría elegida en el panel que no está en el árbol: entra
                 # al árbol sin nombre (el builder de identidad lo rellenará)
                 arbol_ins.append((CANAL, cid, None, None))
+                if origen == "panel":
+                    # ESTO sí acusa al seam: categorias_write.registrar debió
+                    # haber dejado el nodo al guardarse la elección.
+                    arbol_ins_seam.append(cid)
                 arbol_nuevo[cid] = (None, None)
             plan_asig[canon] = (cid, source_de or r["fuente"] or "real")
 
@@ -229,6 +234,7 @@ def main() -> None:
     reporte = {
         "modo": modo, "canal": CANAL,
         "arbol": {"insertar": len(arbol_ins), "actualizar": len(arbol_upd),
+                   "insertar_del_panel": len(arbol_ins_seam),
                    "total_categorias": len(arbol_nuevo)},
         "asignaciones": {"insertar": len(asig_ins), "actualizar": len(asig_upd),
                           "sin_cambio": asig_igual, "del_panel": len(t_panel)},
@@ -277,7 +283,12 @@ def main() -> None:
     # PRIMARIA y este ETL queda de AUDITOR/respaldo — "ok" = "no tuve nada que
     # corregir". seam_gap >0 marca con_deltas y rompe la racha (criterio de 14
     # días en cero). Hueco medido en cero desde el 08-ago-2026.
-    seam_gap = len(arbol_ins) + len(arbol_upd) + len(asig_ins) + len(asig_upd)
+    # v0.90: el ÁRBOL de ML no entra al hueco. El seam del panel posee las
+    # ASIGNACIONES (y el nodo de la categoría que se elige); que ML renombre o
+    # agregue categorías es trabajo normal del ETL y no acusa a nadie — el
+    # 11-ago dos renombres de ML rompieron la racha con las asignaciones
+    # impecables (0 insert, 0 update, 13,722 sin cambio).
+    seam_gap = len(asig_ins) + len(asig_upd) + len(arbol_ins_seam)
     resultado = "ok" if seam_gap == 0 else "con_deltas"
     pcur.execute("""insert into migration.reconciliation_runs
                     (dominio, descripcion, conteos, checksums, resultado)
@@ -285,6 +296,8 @@ def main() -> None:
                  (FASE, json.dumps({**reporte["arbol"], **reporte["asignaciones"],
                                     "arbol_final": n_arbol, "asignaciones_final": n_asig,
                                     "seam_gap": seam_gap,
+                                    "arbol_fuera_de_seam": len(arbol_ins) - len(arbol_ins_seam)
+                                                           + len(arbol_upd),
                                     "issues_nuevas": len(issues_nuevas)}, default=str),
                   json.dumps({}), resultado))
     pg.commit()
