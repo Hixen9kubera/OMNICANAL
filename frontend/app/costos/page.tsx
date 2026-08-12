@@ -682,7 +682,15 @@ function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; 
     );
   }
   if (!calc) {
-    return <div className="text-[11px] text-slate-400">Sin desglose — falta costo o dimensiones.</div>;
+    // El backend devuelve vacío cuando NO tiene una comisión confiable (sin
+    // token de ML y sin histórico de la categoría). Es la causa habitual, y
+    // tiene salida: escribir el % en la barra de abajo.
+    return (
+      <div className="text-[11px] text-slate-400">
+        Sin desglose — falta costo, dimensiones o una comisión confiable
+        (escribe el % de comisión en la barra de abajo).
+      </div>
+    );
   }
   // Lo que de verdad cuesta poner la pieza en manos del cliente: el costo
   // aterrizado más lo que se llevan ML y la paquetería.
@@ -692,7 +700,11 @@ function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; 
   const margen = calc.precio_sugerido ? calc.ganancia_neta / calc.precio_sugerido : 0;
 
   const celdas: { rotulo: string; valor: string; tono?: string; nota?: string }[] = [
-    { rotulo: "Precio base", valor: precioMXN(calc.precio_sugerido), tono: "text-slate-900" },
+    // El backend llama `precio_base` al precio TACHADO y `precio_sugerido` al
+    // de oferta. El margen se calcula sobre el de oferta, que es al que se
+    // vende de verdad — así que ese es el que encabeza el desglose.
+    { rotulo: "Precio base", valor: precioMXN(calc.precio_sugerido), tono: "text-slate-900",
+      nota: `oferta · regular ${precioMXN(calc.precio_base)}` },
     { rotulo: "Costo base", valor: precioMXN(calc.costo_unitario),
       nota: `producto + flete ${precioMXN(calc.costo_cbm)}` },
     { rotulo: "Comisión /u", valor: precioMXN(calc.costo_comision),
