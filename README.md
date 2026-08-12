@@ -6288,6 +6288,45 @@ Versión 0.100.0.
 
 ---
 
+### v0.104.0 — El receptor de Temu, y la firma de TikTok que habría tirado todo
+
+**`POST /api/webhooks/temu`**, en observación y sin base de datos, mismo patrón
+que ML y TikTok: guarda absoluta (200 pase lo que pase), anillo de 300 eventos
+en memoria, el crudo completo a los logs de Railway, y `GET /temu/log` cerrado
+tras la credencial porque los eventos traen datos del comprador.
+
+**Por qué el endpoint va ANTES de suscribir nada.** La consola de Temu (Partner
+Platform → Webhook → Create webhook) pide una *"Push website"* y la **valida al
+guardarla**: si la URL no responde, rechaza el alta con *"The Push website is
+invalid"*. Brandon lo topó escribiendo un nombre en vez de una URL. Por eso
+`/api/webhooks/temu` entra también en `RUTAS_ABIERTAS` del middleware: un 401
+ahí no solo perdería eventos, impediría dar de alta la suscripción. La apertura
+es por igualdad EXACTA, así que `/temu/log` no la hereda.
+
+**El alta es MANUAL, y está confirmado.** De los 129 permisos que Temu concedió
+a la app, **ninguno es de eventos**; `appSubscribeStatus` viene en 0 con las
+listas vacías. No hay forma de suscribir por API. Los eventos que importan, con
+el nombre que muestra la consola: `Order status change event` (la venta),
+`trade logistics address changed` y `Aftersales status change event` (para
+devolver stock). El de *Supply chain* es para ERP con almacén cooperativo y no
+aplica.
+
+**Lo que esta fase tiene que averiguar.** Los endpoints de pedido de Temu **NO
+traen precio** — verificado sobre las 2 ventas reales: hay `quantity`,
+`extCode` (nuestro SKU), `goodsName`, estados y tiempos, ningún monto. Si el
+webhook tampoco lo trae, el pedido de Woo no se puede congelar con su precio
+real. Se decide viendo llegar el primer evento, no adivinando.
+
+**Fix aparte, en la firma de TikTok.** El verificador calculaba
+`HMAC-SHA256(cuerpo, app_secret)` y el algoritmo real es
+`HMAC-SHA256(app_key + cuerpo_crudo, app_secret)`. Hoy no molestaba porque solo
+observa, pero el día que pasara a rechazar habría tirado **el 100% de los
+eventos legítimos**, con el síntoma "dejaron de entrar ventas de TikTok" y
+ningún error a la vista.
+
+También entran: `services/tiktok_atributos.py` (prompt + validador de atributos
+del publicador masivo) y tres documentos de investigación en `docs/`.
+
 ### v0.103.0 — El padre viaja con la variante: se cierra el hueco del seam (Eduardo)
 
 Cuatro de los siete huecos que el acta de core reportó la madrugada del 12-ago

@@ -79,6 +79,13 @@ RUTAS_ABIERTAS: frozenset[str] = frozenset({
                             # OJO: `/api/webhooks/tiktok/log` NO hereda esta
                             # apertura (coincidencia exacta) y sigue cerrado —
                             # ese sí expone datos personales del comprador.
+    "/api/webhooks/temu",   # Temu tampoco. Y aquí la apertura es DOBLEMENTE
+                            # necesaria: la consola del Partner Platform VALIDA
+                            # la URL al guardarla, así que un 401 no solo
+                            # perdería eventos — impediría dar de alta la
+                            # suscripción ("The Push website is invalid").
+                            # `/api/webhooks/temu/log` sigue cerrado (exacta):
+                            # los eventos traen datos del comprador.
     "/api/webhooks/woo",    # WooCommerce tampoco manda token: lo protege su
                             # firma HMAC (X-WC-Webhook-Signature) y sin firma
                             # válida el endpoint NO escribe. Faltó en v0.92 —

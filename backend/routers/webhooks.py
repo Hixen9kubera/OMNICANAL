@@ -456,14 +456,25 @@ def _firma_tiktok_ok(cuerpo: bytes, cabeceras: dict) -> bool | None:
     """
     ¿La firma corresponde? True/False, o None si no se pudo evaluar.
 
-    ⚠️ HOY SOLO OBSERVA: el resultado se registra pero NO se rechaza nada. El
-    algoritmo exacto de TikTok (sobre qué cadena se calcula el HMAC, con qué
-    separadores) todavía no está confirmado contra su documentación, y un
-    verificador mal implementado tiraría eventos legítimos sin dejar rastro.
+    EL ALGORITMO (confirmado en doc oficial el 2026-08-11):
 
-    Cuando la investigación confirme el esquema, esto pasa a rechazar — y ahí sí
-    deja de ser opcional: la URL es pública y sin firma cualquiera puede
-    inyectar eventos falsos.
+        HMAC-SHA256( app_key + cuerpo_crudo , app_secret )  → hex
+        y llega en la cabecera `Authorization`.
+
+    ⚠️ EL PREFIJO `app_key` NO ES ADORNO. La primera versión firmaba SOLO el
+    cuerpo, y ese error es de los que no se ven: en modo observar solo deja un
+    veredicto equivocado en el log, pero el día que esto pase a RECHAZAR tiraría
+    el 100% de los eventos legítimos. El síntoma sería "dejaron de entrar
+    ventas de TikTok", sin ningún error a la vista.
+
+    ⚠️ El cuerpo tiene que ser el CRUDO, byte por byte como llegó. Volver a
+    serializar el JSON cambia espacios y orden, y la firma deja de cuadrar.
+
+    SIGUE EN MODO OBSERVAR a propósito: el algoritmo está confirmado contra la
+    documentación pero AÚN NO contra un evento real de TikTok (hoy hay 0
+    suscripciones registradas). Pasa a rechazar cuando el primer evento
+    verdadero valide en verde — y ahí deja de ser opcional, porque la URL es
+    pública y sin firma cualquiera puede inyectar eventos falsos.
     """
     secreto = (settings.tiktok_app_secret or "").encode()
     if not secreto:
@@ -474,7 +485,8 @@ def _firma_tiktok_ok(cuerpo: bytes, cabeceras: dict) -> bool | None:
     if not recibida:
         return None
     try:
-        calculada = hmac.new(secreto, cuerpo, hashlib.sha256).hexdigest()
+        base = (settings.tiktok_app_key or "").encode() + cuerpo
+        calculada = hmac.new(secreto, base, hashlib.sha256).hexdigest()
         return hmac.compare_digest(calculada, recibida.lower())
     except Exception:  # noqa: BLE001
         return None
@@ -549,6 +561,118 @@ async def log_tiktok(limite: int = Query(50, ge=1, le=300)):
             "eventos": eventos}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  TEMU — receptor en OBSERVACIÓN (mismo patrón que ML y TikTok)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# POR QUÉ EXISTE ESTE ENDPOINT ANTES DE SABER QUÉ MANDA TEMU. La consola del
+# Partner Platform (Webhook → Create webhook) pide una "Push website" y la
+# VALIDA al guardarla: si la URL no responde, rechaza el alta con "The Push
+# website is invalid". O sea, el endpoint tiene que existir ANTES de poder
+# suscribir nada — no después.
+#
+# LO QUE SÍ SABEMOS (medido el 2026-08-12 contra la API y la consola):
+#
+#   · Los eventos NO se dan de alta por API: de los 129 permisos concedidos
+#     NINGUNO es de eventos, y `appSubscribeStatus` es 0 con las listas vacías.
+#     El alta es por consola, a mano.
+#   · Eventos que nos sirven, con el nombre que muestra la consola:
+#       "Order status change event"      (Order)            ← la venta
+#       "trade logistics address changed"(Order)
+#       "Aftersales status change event" (Return and Refund)← devolver stock
+#     El de "Supply chain" es para ERP con almacén cooperativo: no aplica.
+#   · 🔴 LOS ENDPOINTS DE PEDIDO NO TRAEN PRECIO. Verificado sobre las 2 ventas
+#     reales: hay `quantity`, `extCode` (nuestro SKU), `goodsName`, estados y
+#     tiempos, pero NINGÚN monto. Si el webhook tampoco lo trae, el pedido de
+#     Woo no se puede congelar con su precio real y hay que buscarlo aparte.
+#     ESO SE CONFIRMA VIENDO LLEGAR EL PRIMER EVENTO — es la razón principal
+#     de que esta fase sea de observación.
+#
+# La firma NO se verifica todavía: el algoritmo no está confirmado contra
+# documentación NI contra un evento real, y un verificador mal hecho tiraría
+# eventos legítimos sin dejar rastro (la lección de la firma de TikTok, que
+# omitía el prefijo `app_key` y habría rechazado el 100%).
+
+_TEMU_LOG: deque = deque(maxlen=300)
+
+
+@router.post("/temu")
+async def recibir_temu(request: Request):
+    """
+    Recibe la notificación de Temu. Responde 200 SIEMPRE.
+
+    GUARDA ABSOLUTA, como en ML y TikTok: cualquier otra respuesta invita a
+    reintentos y, en varias plataformas, a que la suscripción se deshabilite
+    sola. El fallo sería SILENCIOSO — dejan de llegar ventas y nadie se entera
+    — así que ningún error de aquí adentro cambia lo que devolvemos.
+    """
+    try:
+        crudo = await request.body()
+        cab = {k.lower(): v for k, v in request.headers.items()}
+        try:
+            payload = json.loads(crudo or b"{}")
+        except Exception:  # noqa: BLE001
+            payload = {"_no_json": (crudo or b"")[:2000].decode("utf-8", "replace")}
+
+        evento = {
+            "recibido": datetime.now(timezone.utc).isoformat(),
+            # Los nombres reales de estos campos SE DESCUBREN con el primer
+            # evento. Se prueban varios alias a propósito en vez de fijar uno.
+            "tipo": (payload.get("eventCode") or payload.get("event_code")
+                     or payload.get("type") or payload.get("messageType")),
+            "mall_id": payload.get("mallId") or payload.get("mall_id"),
+            "bytes": len(crudo or b""),
+            "cabeceras": cab,          # completas: aquí vive la firma, aún sin identificar
+            "payload": payload,
+        }
+        _TEMU_LOG.append(evento)
+        # Completo a los logs de Railway: es el ÚNICO registro de esta fase.
+        log.info("TEMU webhook tipo=%s mall=%s bytes=%s cabeceras=%s :: %s",
+                 evento["tipo"], evento["mall_id"], evento["bytes"],
+                 json.dumps(cab, ensure_ascii=False)[:400],
+                 json.dumps(payload, ensure_ascii=False)[:1500])
+        # Temu no documenta qué cuerpo espera. Se devuelve la forma que aceptan
+        # las APIs de su familia (`success: true`) MÁS las llaves que usan otros
+        # canales, para que cualquier validador encuentre la suya.
+        return {"success": True, "code": 0, "message": "success"}
+    except Exception:  # noqa: BLE001 — jamás propagar: ver GUARDA ABSOLUTA
+        log.exception("Fallo recibiendo el webhook de Temu; se responde 200 "
+                      "igual para no perder la suscripción por reintentos.")
+        return {"success": True, "code": 0, "message": "success"}
+
+
+@router.get("/temu")
+async def ping_temu():
+    """
+    Prueba de accesibilidad.
+
+    ESTO ES LO QUE HACE VÁLIDA LA "Push website" de la consola: Temu comprueba
+    la URL al guardarla y sin esta respuesta el alta se rechaza.
+    """
+    return {"ok": True, "canal": "temu", "modo": "observacion",
+            "persistencia": "ninguna — solo logs",
+            "eventos_en_memoria": len(_TEMU_LOG)}
+
+
+@router.get("/temu/log", dependencies=[Depends(requiere_api_key)])
+async def log_temu(limite: int = Query(50, ge=1, le=300)):
+    """
+    Lo que Temu ha mandado, para la pestaña de administración.
+
+    CERRADO (a diferencia del POST, que Temu no puede autenticar con nuestra
+    llave): los eventos de pedido traen datos del comprador. Mismo criterio que
+    el log de TikTok. La apertura del middleware es por igualdad EXACTA, así que
+    `/temu/log` NO hereda la de `/temu`.
+    """
+    eventos = list(_TEMU_LOG)[-limite:]
+    eventos.reverse()
+    tipos: dict[str, int] = {}
+    for e in _TEMU_LOG:
+        tipos[str(e.get("tipo"))] = tipos.get(str(e.get("tipo")), 0) + 1
+    return {"total_en_memoria": len(_TEMU_LOG), "por_tipo": tipos,
+            "eventos": eventos}
+
+
 @router.get("/activos", dependencies=[Depends(requiere_api_key)])
 async def webhooks_activos():
     """
@@ -587,8 +711,15 @@ async def webhooks_activos():
             },
             {
                 "canal": "temu",
-                "estado": "sin webhook — es SONDEO cada 10 min (M2E Cloud)",
-                "url": None,
+                "estado": "observacion",
+                "url": f"{base}/api/webhooks/temu",
+                "persistencia": "ninguna — solo logs (fase 1)",
+                "eventos_en_memoria": len(_TEMU_LOG),
+                "alta": "MANUAL en Partner Platform → Webhook → Create webhook "
+                        "(no hay permiso de API para suscribir)",
+                "eventos_a_encender": ["Order status change event",
+                                       "trade logistics address changed",
+                                       "Aftersales status change event"],
             },
         ],
         "ambiente": settings.app_env,
