@@ -39,11 +39,65 @@ const dims = (r: CostoRow) =>
   r.largo && r.ancho && r.alto ? `${r.largo}×${r.ancho}×${r.alto}` : "—";
 
 // Edición inline por SKU (valores como string para inputs controlados).
-type Edicion = { largo: string; ancho: string; alto: string; peso: string; costo_producto: string };
+/**
+ * Una fila se puede capturar de dos maneras, y la diferencia importa mucho:
+ *
+ *   "individual" — lo tecleado ES la pieza. Es como funcionaba siempre.
+ *   "caja"       — lo tecleado es el CARTÓN MASTER, y la pieza se deriva
+ *                  repartiendo el volumen entre `piezas_por_caja`.
+ *
+ * Sin este interruptor la gente escribía las medidas del cartón en los campos
+ * de pieza y el flete salía por caja (84×33×60 daba $1,247 en vez de $124.74),
+ * o convertía a mano dividiendo CADA LADO — que da volumen ÷ n³ y dejó 270 SKUs
+ * del catálogo con densidades imposibles.
+ */
+type ModoCaptura = "individual" | "caja";
+type Edicion = {
+  modo: ModoCaptura; piezas_por_caja: string;
+  largo: string; ancho: string; alto: string; peso: string; costo_producto: string;
+};
+
+/** Reparte el volumen del cartón entre sus piezas, conservándolo exacto. */
+function piezaDesdeCaja(
+  L: number, W: number, H: number, piezas: number,
+): [number, number, number] {
+  if (!L || !W || !H || piezas <= 0) return [L, W, H];
+  if (piezas <= 1) return [L, W, H];
+  const lados: [number, number, number] = [L, W, H];
+  if (piezas <= 10) {
+    // Pocas piezas: van formadas en fila a lo largo del lado mayor.
+    const i = lados.indexOf(Math.max(...lados)) as 0 | 1 | 2;
+    lados[i] = lados[i] / piezas;
+  } else {
+    // Muchas: nadie apila 120 piezas en hilera. La raíz cúbica reparte el
+    // encogimiento entre los tres lados y da una forma plausible.
+    const f = Math.cbrt(1 / piezas);
+    lados[0] *= f; lados[1] *= f; lados[2] *= f;
+  }
+  return [
+    Math.round(lados[0] * 100) / 100,
+    Math.round(lados[1] * 100) / 100,
+    Math.round(lados[2] * 100) / 100,
+  ];
+}
+
+/** Valores POR PIEZA de una edición, sea cual sea el modo en que se capturó. */
+function porPieza(ed: Edicion) {
+  const L = Number(ed.largo) || 0, W = Number(ed.ancho) || 0, H = Number(ed.alto) || 0;
+  const peso = Number(ed.peso) || 0;
+  if (ed.modo === "individual") return { largo: L, ancho: W, alto: H, peso };
+  const pzs = Number(ed.piezas_por_caja) || 0;
+  if (pzs <= 0) return { largo: L, ancho: W, alto: H, peso };
+  const [l, a, h] = piezaDesdeCaja(L, W, H, pzs);
+  return { largo: l, ancho: a, alto: h, peso: Math.round((peso / pzs) * 1000) / 1000 };
+}
 const s = (v: number | null | undefined) => (v == null ? "" : String(v));
 const n = (v: string): number | null => (v.trim() ? Number(v) || null : null);
 // costo_producto se edita en USD (guardado en MXN → se muestra ÷ TC).
 const seedEdicion = (r: CostoRow, tc: number): Edicion => ({
+  // Se abre en "individual" porque es lo que la fila ya trae guardado; cambiar
+  // a "caja" es un acto deliberado del usuario.
+  modo: "individual", piezas_por_caja: "",
   largo: s(r.largo), ancho: s(r.ancho), alto: s(r.alto), peso: s(r.peso),
   costo_producto: mxnToUsd(r.costo_producto, tc),
 });
@@ -149,15 +203,21 @@ export default function CostosPage() {
     });
   }
 
+  const seedVacia = (): Edicion => ({
+    modo: "individual", piezas_por_caja: "",
+    largo: "", ancho: "", alto: "", peso: "", costo_producto: "",
+  });
   const setEdicion = (sku: string, campo: keyof Edicion, valor: string) =>
-    setEdiciones((e) => ({ ...e, [sku]: { ...(e[sku] ?? { largo: "", ancho: "", alto: "", peso: "", costo_producto: "" }), [campo]: valor } }));
+    setEdiciones((e) => ({ ...e, [sku]: { ...(e[sku] ?? seedVacia()), [campo]: valor } }));
 
   // Cálculo en vivo (CBM = vol×7500 MXN, costo = producto_MXN + CBM) mientras se
   // edita. costo_producto se ingresa en USD → se convierte a MXN con el TC.
   function vivo(r: CostoRow) {
     const ed = ediciones[r.sku];
     if (!seleccion.has(r.sku) || !ed) return { cbm: r.costo_cbm, costo: r.costo_unitario };
-    const l = n(ed.largo), a = n(ed.ancho), h = n(ed.alto);
+    // Siempre se calcula sobre la PIEZA: en modo "caja" se deriva primero.
+    const pz = porPieza(ed);
+    const l = pz.largo || null, a = pz.ancho || null, h = pz.alto || null;
     const cpUsd = n(ed.costo_producto);
     const cpMxn = cpUsd != null ? cpUsd * tcNum() : null;
     const cbm = l && a && h ? Math.round((l * a * h) / 1_000_000 * TARIFA_CBM * 100) / 100 : r.costo_cbm;
@@ -173,14 +233,16 @@ export default function CostosPage() {
       const tc = tcNum();
       const items = [...seleccion].map((sku) => {
         const ed = ediciones[sku] ?? ({} as Edicion);
+        const pz = porPieza(ed);
         const cpUsd = n(ed.costo_producto ?? "");
         return {
           sku,
           costo_producto: cpUsd != null ? Math.round(cpUsd * tc * 100) / 100 : null, // USD→MXN
-          largo: n(ed.largo ?? ""),
-          ancho: n(ed.ancho ?? ""),
-          alto: n(ed.alto ?? ""),
-          peso: n(ed.peso ?? ""),
+          // Se guarda SIEMPRE la pieza: costos_validados es por unidad.
+          largo: pz.largo || null,
+          ancho: pz.ancho || null,
+          alto: pz.alto || null,
+          peso: pz.peso || null,
         };
       });
       const r = await costoBulk(items, {
@@ -380,12 +442,63 @@ export default function CostosPage() {
                       {/* Dimensiones — editable al seleccionar */}
                       <td className="px-3 py-3 text-xs text-slate-600">
                         {sel && ed ? (
-                          <div className="flex items-center gap-1">
-                            <CeldaInput value={ed.largo} onChange={(v) => setEdicion(r.sku, "largo", v)} />
-                            <span className="text-slate-300">×</span>
-                            <CeldaInput value={ed.ancho} onChange={(v) => setEdicion(r.sku, "ancho", v)} />
-                            <span className="text-slate-300">×</span>
-                            <CeldaInput value={ed.alto} onChange={(v) => setEdicion(r.sku, "alto", v)} />
+                          <div className="flex flex-col gap-1">
+                            {/* Qué significa lo que se está tecleando. Sin esto
+                                la fila no puede saber si 84×33×60 es la pieza
+                                o el cartón, y el flete sale 100x mal. */}
+                            <div className="flex w-fit rounded-md border border-slate-200 bg-slate-50 p-0.5 text-[10px] font-medium">
+                              {(["individual", "caja"] as const).map((m) => (
+                                <button
+                                  key={m}
+                                  type="button"
+                                  onClick={() => setEdicion(r.sku, "modo", m)}
+                                  className={`rounded px-2 py-0.5 transition ${
+                                    ed.modo === m ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                                  }`}
+                                >
+                                  {m === "individual" ? "Individual" : "Caja master"}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <CeldaInput value={ed.largo} onChange={(v) => setEdicion(r.sku, "largo", v)} />
+                              <span className="text-slate-300">×</span>
+                              <CeldaInput value={ed.ancho} onChange={(v) => setEdicion(r.sku, "ancho", v)} />
+                              <span className="text-slate-300">×</span>
+                              <CeldaInput value={ed.alto} onChange={(v) => setEdicion(r.sku, "alto", v)} />
+                              {ed.modo === "caja" && (
+                                <>
+                                  <span className="ml-1 text-[10px] text-slate-400">÷</span>
+                                  <CeldaInput
+                                    value={ed.piezas_por_caja}
+                                    onChange={(v) => setEdicion(r.sku, "piezas_por_caja", v)}
+                                  />
+                                  <span className="text-[10px] text-slate-400">pz</span>
+                                </>
+                              )}
+                            </div>
+                            {/* La derivación se muestra SIEMPRE que esté en modo
+                                caja: es lo que de verdad se va a guardar. */}
+                            {ed.modo === "caja" && (() => {
+                              const pz = porPieza(ed);
+                              if (!ed.piezas_por_caja.trim()) {
+                                return <div className="text-[10px] text-amber-600">Falta piezas por caja</div>;
+                              }
+                              const vol = (pz.largo * pz.ancho * pz.alto) / 1_000_000;
+                              const dens = vol > 0 && pz.peso ? pz.peso / vol : 0;
+                              return (
+                                <div className="text-[10px] leading-tight">
+                                  <span className="font-mono text-indigo-700">
+                                    {pz.largo}×{pz.ancho}×{pz.alto} cm
+                                    {pz.peso ? ` · ${pz.peso} kg` : ""}
+                                  </span>
+                                  <span className="text-slate-400"> por pieza</span>
+                                  {dens > 3000 && (
+                                    <span className="ml-1 text-rose-600">· {Math.round(dens)} kg/m³ imposible</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         ) : (
                           <>
@@ -490,6 +603,8 @@ export default function CostosPage() {
             setEdiciones((e) => ({
               ...e,
               [cajaMaster]: {
+                // Ya vienen convertidos a pieza: la fila los toma como individuales.
+                modo: "individual", piezas_por_caja: "",
                 largo: String(d.largo), ancho: String(d.ancho), alto: String(d.alto),
                 peso: String(d.peso), costo_producto: String(d.costoUsd),
               },
