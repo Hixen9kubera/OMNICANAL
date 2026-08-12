@@ -6674,7 +6674,7 @@ que las tablas `enrich.market_*` fueron reestructuradas fuera de las migraciones
 tablas donde la 0011 pone texto). **No es de este cambio** — `channel_content` no
 aparece en ninguna diferencia. El candado de paridad no se rompió: estaba dando
 falso verde con un manifiesto viejo. Queda como pendiente con dueño aparte.
-Versión 0.108.0.
+Versión 0.112.0.
 
 ---
 
@@ -6875,7 +6875,7 @@ El modo de fallo era benigno —`manual` protege de más, nunca de menos— pero
 ensuciaba el dato justo en la columna que existe para saber qué revisar.
 Versión 0.110.1.
 
-### v0.108.0 — CORE: paso 3, fuera el respaldo de lectura a MySQL
+### v0.112.0 — CORE: paso 3, fuera el respaldo de lectura a MySQL
 
 Con el go de Eduardo ("retirar ya"), core y categorías cierran su ventana. Estos
 dos no tenían paso 1 que ejecutar: **nunca hubo espejo inverso que apagar.**
@@ -6916,4 +6916,4 @@ kubera, y es justo lo que destapó las ediciones de títulos del 11-ago. Por eso
 core-etl-v2 y categorias-etl NO entran a `_DOMINIOS_RETIRADOS`.
 
 `SUPABASE_READ_CORE` se queda como interruptor de reversa: apagarlo manda los
-lookups directo a Woo. Versión 0.108.0.
+lookups directo a Woo. Versión 0.112.0.
