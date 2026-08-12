@@ -102,6 +102,10 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # Costos · ver el P&L y recalcular precios, incluido el masivo
     ("GET", "/api/crear/costos", "operador"),
     ("POST", "/api/crear/costos", "operador"),           # /preview, /recalcular y /bulk
+    # Costos · "Resolver": compara un packing list contra costos_validados.
+    ("GET", "/api/resolver", "operador"),
+    ("POST", "/api/resolver", "operador"),
+    ("PATCH", "/api/resolver", "operador"),
     # Competencia · sembrar SKUs, correr el rastreo, ajustar términos
     ("GET", "/api/competencia", "operador"),
     ("POST", "/api/competencia", "operador"),

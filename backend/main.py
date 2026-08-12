@@ -23,7 +23,7 @@ from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (auth, canales, competencia, crear, fanout, fulfillment, ia,
-                     imagenes, migracion, productos, publicar, sync, ventas,
+                     imagenes, migracion, productos, publicar, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
@@ -135,6 +135,8 @@ app.include_router(migracion.router)
 app.include_router(fanout.router)
 app.include_router(fulfillment.router)
 app.include_router(tiktok.router)
+# Resolver: packing list vs costos_validados (herramienta de /costos).
+app.include_router(resolver.router)
 
 
 @app.get("/", tags=["meta"])

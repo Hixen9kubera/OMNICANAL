@@ -1004,3 +1004,142 @@ export interface CompetenciaEstado {
   costo_por_busqueda_usd: number;
   limites: Record<string, string>;
 }
+
+// ── Resolver de costos (packing list vs costos_validados) ────────────
+// Herramienta de un solo uso: el análisis vive 3 h en memoria del backend y no
+// se persiste. Lo único que se escribe es el UPSERT que el usuario confirma.
+
+export interface ResolverValores {
+  costo_producto: number;
+  costo_cbm: number;
+  costo_total: number;
+  costo_usd: number;
+  // Por PIEZA — lo que se escribe en costos_validados
+  largo: number;
+  ancho: number;
+  alto: number;
+  peso: number;
+  cbm_por_pieza?: number;
+  // De la CAJA — lo que trae el packing list, capturable
+  largo_caja?: number;
+  ancho_caja?: number;
+  alto_caja?: number;
+  peso_caja?: number;
+  cbm_caja?: number;
+  cajas: number;
+  piezas_por_caja: number;
+  unidades: number;
+}
+
+/** Lo que hay hoy en costos_validados (sin costo_usd ni unidades). */
+export type ResolverActual = Omit<ResolverValores, "costo_usd" | "unidades">;
+
+export interface ResolverFila {
+  fila: number | null;
+  descripcion: string;
+  producto_chn: string;
+  /** Miniatura del Excel como data URI: no hay Storage en este flujo. */
+  imagen: string | null;
+  sku: string | null;
+  sku_sugerido: string | null;
+  confianza: "alta" | "media" | "baja" | string;
+  razon_empate: string;
+  /** nuevo = no empató con nada · igual = dentro del umbral · revisar = cambió demasiado */
+  estado: "nuevo" | "igual" | "revisar";
+  /** Diferencia relativa (0.35 = +35%). null si no hay con qué comparar. */
+  diferencia: number | null;
+  nuevo: ResolverValores;
+  actual: ResolverActual | null;
+  /** Qué le falta para poder guardarse (dimensiones de pieza, peso, unidades). */
+  faltantes?: string[];
+}
+
+export interface ResolverResumen {
+  total: number;
+  nuevos: number;
+  revisar: number;
+  iguales: number;
+  candidatos: number;
+  /** SKUs del contenedor que ningún renglón reclamó. */
+  sin_empatar: string[];
+}
+
+export interface ResolverTotales {
+  costo_contenedor: number;
+  tipo_cambio: number;
+  total_cbm: number;
+  costo_por_m3: number;
+  total_unidades: number;
+  total_filas: number;
+  costo_total: number;
+}
+
+/** SKU ya costeado del contenedor: alimenta el selector de empate. */
+export interface ResolverCandidato {
+  sku: string;
+  nombre: string;
+  /** Foto del producto en WooCommerce, para empatar viendo la imagen. */
+  imagen?: string | null;
+  costo_total: number;
+  largo: number;
+  ancho: number;
+  alto: number;
+  peso: number;
+  cajas: number;
+  piezas_por_caja: number;
+}
+
+/** Valores finales de un renglón; lo que no venga conserva lo calculado. */
+export interface ResolverEdicion {
+  indice: number;
+  sku?: string | null;
+  largo?: number;
+  ancho?: number;
+  alto?: number;
+  peso?: number;
+  costo_producto?: number;
+  costo_cbm?: number;
+  costo_total?: number;
+  cajas?: number;
+  piezas_por_caja?: number;
+}
+
+export interface ResolverEstado {
+  id: string;
+  archivo: string;
+  paso: string;
+  paso_label: string;
+  actual: number;
+  total: number;
+  error?: string | null;
+  contenedor?: string;
+  /** El contenedor tal como está en costos_validados, con su sufijo " - NN". */
+  contenedor_bd?: string;
+  contenedores_encontrados?: { contenedor: string; n: number }[];
+  candidatos?: ResolverCandidato[];
+  totales?: ResolverTotales;
+  avisos?: string[];
+  comparacion?: { filas: ResolverFila[]; resumen: ResolverResumen };
+  /** Prosa del agente: qué cambió y de qué desconfiar. */
+  analisis?: string;
+  /** Tabla en TSV para pegar en Excel. */
+  tsv?: string;
+}
+
+/** Resultado de buscar un SKU en todo el catálogo, para empatar a mano. */
+export interface ResolverSkuBuscado {
+  sku: string;
+  nombre: string;
+  imagen?: string | null;
+  /** Contenedor con el que está capturado hoy. Vacío = aún sin costo. */
+  contenedor?: string | null;
+  costo_total?: number;
+  /** Índices de los renglones de ESTE análisis que ya lo usan. */
+  usado_en_filas: number[];
+}
+
+export interface ResolverGuardado {
+  escritos: number;
+  saltados: { sku?: string; fila?: number; motivo: string }[];
+  errores: { sku: string; error: string }[];
+}

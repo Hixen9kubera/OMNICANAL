@@ -11,10 +11,14 @@ import {
   Container,
   RefreshCw,
   Layers,
+  Box,
+  Sparkles,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
+import ResolverCostosModal from "@/components/ResolverCostosModal";
+import CajaMasterPanel from "@/components/CajaMasterPanel";
 import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
 import { listarCostos, contenedoresCosto, costoBulk } from "@/lib/api";
 import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp } from "@/lib/types";
@@ -45,6 +49,11 @@ const seedEdicion = (r: CostoRow, tc: number): Edicion => ({
 });
 
 export default function CostosPage() {
+  // "Resolver": compara un packing list contra estos costos. Vive aquí porque
+  // su resultado se escribe justo en esta tabla.
+  const [resolverAbierto, setResolverAbierto] = useState(false);
+  // SKU cuya CAJA MASTER se está capturando (null = panel cerrado).
+  const [cajaMaster, setCajaMaster] = useState<string | null>(null);
   const [rows, setRows] = useState<CostoRow[]>([]);
   const [pag, setPag] = useState<Paginacion>({
     page: 1, per_page: PER_PAGE, total: 0, total_pages: 1, tiene_anterior: false, tiene_siguiente: false,
@@ -213,6 +222,13 @@ export default function CostosPage() {
             <div className="text-right">
               <div className="text-4xl font-black tabular-nums">{new Intl.NumberFormat("es-MX").format(pag.total)}</div>
               <div className="text-xs font-semibold uppercase tracking-wide opacity-80">SKUs con costo</div>
+              <button
+                onClick={() => setResolverAbierto(true)}
+                title="Compara un packing list de contenedor contra estos costos"
+                className="mt-2 flex items-center gap-2 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/25"
+              >
+                <Sparkles size={14} /> Resolver desde packing list
+              </button>
             </div>
           </div>
         </div>
@@ -344,7 +360,20 @@ export default function CostosPage() {
                         <input type="checkbox" checked={sel} onChange={() => toggle(r.sku, r)} className="h-4 w-4 cursor-pointer accent-indigo-600" />
                       </td>
                       <td className="px-4 py-3">
-                        <div className="font-mono text-xs text-slate-500">{r.sku}</div>
+                        <div className="flex items-center gap-1.5">
+                          <div className="font-mono text-xs text-slate-500">{r.sku}</div>
+                          {/* Capturar por caja master. Está aquí y no en una
+                              pantalla aparte porque la conversión a pieza es
+                              justo donde se equivoca la captura a mano: dividir
+                              cada lado entre las piezas da volumen ÷ n³. */}
+                          <button
+                            onClick={() => { if (!sel) toggle(r.sku, r); setCajaMaster(r.sku); }}
+                            title="Capturar desde la caja master y derivar la pieza"
+                            className="rounded p-1 text-slate-300 hover:bg-indigo-50 hover:text-indigo-600"
+                          >
+                            <Box size={13} />
+                          </button>
+                        </div>
                         {r.nombre && <div className="line-clamp-1 max-w-[240px] text-xs text-slate-600">{r.nombre}</div>}
                       </td>
                       <td className="px-3 py-3 text-xs text-slate-500">{r.contenedor ?? "—"}</td>
@@ -443,6 +472,31 @@ export default function CostosPage() {
           </div>
         </div>
       </div>
+
+      {resolverAbierto && (
+        <ResolverCostosModal onCerrar={() => setResolverAbierto(false)} />
+      )}
+
+      {cajaMaster && (
+        <CajaMasterPanel
+          sku={cajaMaster}
+          tipoCambio={tcNum()}
+          margen={(Number(margenBulk) || 0) / 100}
+          incluirEnvio={envioBulk}
+          onCerrar={() => setCajaMaster(null)}
+          onAplicar={(d) => {
+            // Los valores POR PIEZA se vuelcan en la edición inline: de ahí en
+            // adelante el flujo es el de siempre (Regenerar y guardar).
+            setEdiciones((e) => ({
+              ...e,
+              [cajaMaster]: {
+                largo: String(d.largo), ancho: String(d.ancho), alto: String(d.alto),
+                peso: String(d.peso), costo_producto: String(d.costoUsd),
+              },
+            }));
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -465,5 +519,6 @@ function CeldaInput({ value, onChange, align, prefijo }: {
         style={{ outlineColor: ACENTO }}
       />
     </div>
+
   );
 }

@@ -34,6 +34,12 @@ import type {
   PublicarPreview,
   PublicarReq,
   PublicarResultado,
+  ResolverEdicion,
+  ResolverEstado,
+  ResolverFila,
+  ResolverGuardado,
+  ResolverSkuBuscado,
+  ResolverTotales,
   RespuestaProductos,
   StudioMetadata,
   WebhookEvento,
@@ -901,4 +907,114 @@ export function corridaCompetencia(signal?: AbortSignal) {
     ultima: CompetenciaCorrida | null;
     en_curso: { estado: string; error?: string | null };
   }>("/api/competencia/corrida", signal);
+}
+
+// ── Resolver de costos (packing list vs costos_validados) ────────────
+// Herramienta de /costos. El análisis corre en background: estas llamadas
+// arrancan el trabajo y la UI hace polling a estadoResolver.
+//
+// Todas pasan por fetchSesion: un fetch pelón NO manda el token y devuelve 401
+// con el enforcement encendido.
+
+export async function analizarPackingArchivo(
+  archivo: File,
+  opts: { costoContenedor?: number; tipoCambio?: number; contenedor?: string } = {},
+): Promise<{ id: string; paso: string; paso_label: string }> {
+  const fd = new FormData();
+  fd.append("archivo", archivo);
+  if (opts.contenedor) fd.append("contenedor", opts.contenedor);
+  if (opts.costoContenedor != null)
+    fd.append("costo_contenedor", String(opts.costoContenedor));
+  if (opts.tipoCambio != null) fd.append("tipo_cambio", String(opts.tipoCambio));
+
+  // Sin Content-Type a mano: el navegador tiene que poner el boundary del multipart.
+  const res = await fetchSesion(`${BASE}/api/resolver/analizar`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!res.ok) throw await errorDeRespuesta(res, "/api/resolver/analizar");
+  return res.json();
+}
+
+export function analizarPackingUrl(
+  url: string,
+  opts: { costoContenedor?: number; tipoCambio?: number; contenedor?: string } = {},
+): Promise<{ id: string; paso: string; paso_label: string }> {
+  return postJSON("/api/resolver/analizar-url", {
+    url,
+    contenedor: opts.contenedor,
+    costo_contenedor: opts.costoContenedor,
+    tipo_cambio: opts.tipoCambio,
+  });
+}
+
+export function estadoResolver(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ResolverEstado> {
+  return getJSON<ResolverEstado>(`/api/resolver/${encodeURIComponent(id)}`, signal);
+}
+
+/** Corrige a mano el SKU de un renglón; el backend recalcula SU comparación. */
+export async function corregirEmpateResolver(
+  id: string,
+  indice: number,
+  sku: string | null,
+): Promise<ResolverFila> {
+  const path = `/api/resolver/${encodeURIComponent(id)}/empate`;
+  const res = await fetchSesion(
+    `${BASE}${path}`,
+    { method: "PATCH", body: JSON.stringify({ indice, sku }) },
+    { "Content-Type": "application/json" },
+  );
+  if (!res.ok) throw await errorDeRespuesta(res, path);
+  return res.json();
+}
+
+/**
+ * Captura datos de un renglón (cajas, piezas por caja, total, dims de caja…) y
+ * el backend deriva el resto hasta dimensiones y peso por pieza. Recalcula el
+ * contenedor completo porque el flete se prorratea sobre el CBM total.
+ */
+export async function capturarFilaResolver(
+  id: string,
+  indice: number,
+  campos: Record<string, number>,
+): Promise<{ fila: ResolverFila; totales: ResolverTotales }> {
+  const path = `/api/resolver/${encodeURIComponent(id)}/fila`;
+  const res = await fetchSesion(
+    `${BASE}${path}`,
+    { method: "PATCH", body: JSON.stringify({ indice, ...campos }) },
+    { "Content-Type": "application/json" },
+  );
+  if (!res.ok) throw await errorDeRespuesta(res, path);
+  return res.json();
+}
+
+/**
+ * Busca un SKU en TODO el catálogo (no solo en los candidatos del contenedor).
+ * Cada resultado dice con qué contenedor está capturado y en qué renglones de
+ * este análisis ya se usó.
+ */
+export function buscarSkuResolver(
+  id: string,
+  q: string,
+  signal?: AbortSignal,
+): Promise<{ resultados: ResolverSkuBuscado[] }> {
+  return getJSON(
+    `/api/resolver/${encodeURIComponent(id)}/buscar-sku?q=${encodeURIComponent(q)}`,
+    signal,
+  );
+}
+
+/** UPSERT en costos_validados. `skus` acota qué se escribe. */
+export function guardarResolver(
+  id: string,
+  skus?: string[],
+  editados?: ResolverEdicion[],
+): Promise<ResolverGuardado> {
+  return postJSON(`/api/resolver/${encodeURIComponent(id)}/guardar`, {
+    skus,
+    editados,
+  });
 }
