@@ -170,6 +170,91 @@ async def resumen(sku: str) -> list[dict[str, Any]]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# El semáforo: qué le falta a un SKU para publicarse en un canal
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _faltantes_sync(sku: str, canal: str, cuenta: str,
+                    categoria: str | None) -> dict[str, Any]:
+    cx = _pool().connection()
+    try:
+        with cx.cursor() as cur:
+            # ¿Hay requisitos leídos para este canal+categoría? Si no, el panel
+            # NO debe decir "está completo" — debe decir "no sabemos". Solo 12
+            # de los 558 productTypes de Amazon están cargados.
+            cur.execute(
+                """select count(*), max(leido_at)
+                     from channel.field_requirements
+                    where canal = %s and categoria_id in ('*', %s)""",
+                (canal, categoria or "\x00"),
+            )
+            cuantos, leido_at = cur.fetchone()
+            if not cuantos:
+                return {"estado": "sin_requisitos", "faltan": [], "automaticos": [],
+                        "categoria": categoria, "leido_at": None}
+
+            # La precedencia se resuelve ANTES de filtrar por `obligatorio`: si
+            # se filtra primero, la fila de la categoría específica que dice
+            # `obligatorio=false` desaparece y gana la de '*'. Medido.
+            cur.execute(
+                """with efectivo as (
+                     select distinct on (campo) *
+                       from channel.field_requirements
+                      where canal = %s and categoria_id in ('*', %s)
+                      order by campo, (categoria_id <> '*') desc
+                   )
+                   select e.campo, e.campo_canonico, e.default_value, f.label
+                     from efectivo e
+                     left join core.canonical_fields f on f.campo = e.campo_canonico
+                     left join enrich.channel_content c
+                            on c.sku = %s and c.canal = %s and c.cuenta = %s
+                           and c.contenido ? e.campo_canonico
+                    where e.obligatorio and c.sku is null
+                    order by e.campo""",
+                (canal, categoria or "\x00", sku, canal, cuenta),
+            )
+            filas = cur.fetchall()
+    finally:
+        cx.close()
+
+    faltan, automaticos = [], []
+    for campo, canonico, default, label in filas:
+        if default is not None:
+            automaticos.append({"campo": campo, "valor": default})
+        else:
+            faltan.append({"campo": campo, "canonico": canonico,
+                           "label": label or canonico or campo})
+    return {
+        "estado": "ok" if not faltan else "incompleto",
+        "faltan": faltan, "automaticos": automaticos,
+        "categoria": categoria,
+        "leido_at": leido_at.isoformat() if leido_at else None,
+    }
+
+
+async def faltantes(sku: str, canal: str, cuenta: str = "",
+                    categoria: str | None = None) -> dict[str, Any]:
+    """
+    Qué le falta a un SKU para publicarse en un canal.
+
+    Tres estados, no dos — es lo que evita pintar en rojo lo que se llena solo:
+      · `faltan`      → nadie los llena. Rojo de verdad.
+      · `automaticos` → los pone el publicador con su respaldo.
+      · `sin_requisitos` → NO hay requisitos leídos para esa categoría. El panel
+        debe decir "sin verificar", NUNCA "está completo": de los 558
+        productTypes de Amazon solo hay 12 cargados.
+    """
+    if not disponible():
+        return {"estado": "sin_requisitos", "faltan": [], "automaticos": [],
+                "categoria": categoria, "leido_at": None}
+    try:
+        return await asyncio.to_thread(_faltantes_sync, sku, canal, cuenta, categoria)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("channel_content.faltantes(%s,%s) falló: %s", sku, canal, exc)
+        return {"estado": "sin_requisitos", "faltan": [], "automaticos": [],
+                "categoria": categoria, "leido_at": None}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Escritura
 # ══════════════════════════════════════════════════════════════════════════════
 

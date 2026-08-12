@@ -25,6 +25,8 @@ import {
   UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+
+import type { FaltantesCanal } from "@/lib/api";
 import TipoAmazonPicker from "./TipoAmazonPicker";
 import type {
   AtributoProducto,
@@ -54,6 +56,7 @@ import {
   guardarContenido,
   guardarContenidoCanal,
   guardarGtin,
+  faltantesCanal,
   leerContenidoCanal,
   mejorarIA,
   mensajeDeError,
@@ -389,6 +392,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // Es un ref y no estado: cambiarlo no debe repintar nada.
   const iaCampos = useRef<Record<string, unknown>>({});
 
+  // El semáforo: qué le falta a este SKU para publicarse en el canal abierto.
+  const [faltantes, setFaltantes] = useState<FaltantesCanal | null>(null);
+
   // ── Cargar campos editables (borrador local > servidor > Woo) ───────
   useEffect(() => {
     if (!sku) return;
@@ -620,6 +626,18 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       .catch(() => { /* sin guardar todavía o BD caída: se sigue con Woo */ });
     return () => { vivo = false; };
   }, [sku, canal, cuentaSel, esML]);
+
+  // El semáforo. Se recalcula tras guardar (`canalMsg` cambia) porque guardar es
+  // justo lo que puede quitar campos de la lista de faltantes.
+  useEffect(() => {
+    setFaltantes(null);
+    if (!sku || canal === GENERAL) return;
+    let vivo = true;
+    faltantesCanal(sku, canal, esML ? cuentaSel || "" : "")
+      .then((r) => { if (vivo) setFaltantes(r); })
+      .catch(() => { /* sin requisitos o BD caída: no se pinta nada */ });
+    return () => { vivo = false; };
+  }, [sku, canal, cuentaSel, esML, canalMsg]);
   // ML y Amazon: botón siempre disponible → "Publicar" si NO está publicado
   // (crea nuevo), "Actualizar" si ya está.
   const amazonPublicado = amazonPublicadoReal || amazonPublicadoOk;
@@ -1830,6 +1848,68 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   <p className="mt-1.5 text-center text-[11px] text-slate-400">
                     Guarda <strong>título, descripción y atributos</strong> en WooCommerce. Los borradores por canal se guardan solos y sobreviven al recargar la página.
                   </p>
+                </section>
+              )}
+
+              {/* SEMÁFORO — qué le falta para publicarse en este canal.
+                  Tres estados y NO dos: "sin verificar" no es "listo". De los
+                  558 productTypes de Amazon solo hay 12 con requisitos leídos,
+                  así que decir "está completo" sin haberlos leído sería mentir
+                  en verde — que es justo lo que el sello `leido_at` evita. */}
+              {!esGeneral && faltantes && (
+                <section className={[
+                  "rounded-2xl border p-4",
+                  faltantes.estado === "ok" ? "border-emerald-200 bg-emerald-50/60"
+                  : faltantes.estado === "incompleto" ? "border-amber-200 bg-amber-50/60"
+                  : "border-slate-200 bg-slate-50",
+                ].join(" ")}>
+                  <header className="flex items-center gap-2">
+                    {faltantes.estado === "ok" ? <CheckCircle2 size={16} className="text-emerald-600" />
+                     : faltantes.estado === "incompleto" ? <AlertTriangle size={16} className="text-amber-600" />
+                     : <AlertTriangle size={16} className="text-slate-400" />}
+                    <span className="text-sm font-bold text-slate-700">
+                      {faltantes.estado === "ok"
+                        ? `Listo para ${canalInfo?.label ?? canal}`
+                        : faltantes.estado === "incompleto"
+                        ? `Le faltan ${faltantes.faltan.length} campo(s) para ${canalInfo?.label ?? canal}`
+                        : "Requisitos sin verificar"}
+                    </span>
+                  </header>
+
+                  {faltantes.estado === "sin_requisitos" && (
+                    <p className="mt-1.5 text-[11px] text-slate-500">
+                      No se han leído los requisitos de esta categoría en {canalInfo?.label ?? canal}.
+                      <strong> No quiere decir que esté completo</strong>, quiere decir que no sabemos.
+                    </p>
+                  )}
+
+                  {faltantes.faltan.length > 0 && (
+                    <ul className="mt-2 space-y-1">
+                      {faltantes.faltan.map((f) => (
+                        <li key={f.campo} className="flex items-center gap-2 text-xs text-slate-700">
+                          <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                          <strong>{f.label}</strong>
+                          {f.canonico === null && (
+                            <span className="text-[10px] text-slate-400">· no editable desde el panel</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  {faltantes.automaticos.length > 0 && (
+                    <p className="mt-2 text-[11px] text-slate-400">
+                      {faltantes.automaticos.length} campo(s) los llena el publicador solo
+                      ({faltantes.automaticos.map((a) => a.campo).join(", ")}).
+                    </p>
+                  )}
+
+                  {faltantes.categoria && (
+                    <p className="mt-1.5 text-[11px] text-slate-400">
+                      Categoría <span className="font-mono">{faltantes.categoria}</span>
+                      {faltantes.leido_at && ` · requisitos leídos el ${faltantes.leido_at.slice(0, 10)}`}
+                    </p>
+                  )}
                 </section>
               )}
 

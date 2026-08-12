@@ -7068,3 +7068,44 @@ migraciones — `market_search_term` con 464 filas sin DDL en archivo, `termino_
 donde la 0011 ponía texto. Eso **ya no aparece**: el equipo escribió sus
 migraciones 0015 y 0017 mientras tanto, y producción y el árbol vuelven a decir
 lo mismo. Versión 0.114.1.
+
+---
+
+### v0.115.0 — El semáforo, y por qué tiene tres luces y no dos (Eduardo)
+
+Cierra el trabajo de los cuatro pasos: el panel ya puede contestar *"¿qué le
+falta a este SKU para publicarse en este canal?"*. Cruza lo que el canal exige
+(`channel.field_requirements`, v0.114.0) contra lo que tenemos
+(`enrich.channel_content`, v0.108.0).
+
+**Tres estados, no dos:**
+
+- **`incompleto`** — faltan campos que nadie llena. Ámbar, con la lista.
+- **`ok`** — están todos. Verde.
+- **`sin_requisitos`** — **no lo sabemos**. Gris, y lo dice con todas sus letras:
+  *"No quiere decir que esté completo, quiere decir que no sabemos."*
+
+Ese tercero es el que importa. De los 558 productTypes de Amazon solo hay 12 con
+requisitos leídos: pintar verde una categoría sin leer sería mentir, y el sello
+`leido_at` existe justo para no hacerlo.
+
+Y aparte, los campos con respaldo no cuentan como faltantes: se listan como *"los
+llena el publicador solo"*. Sin esa distinción, un disfraz mostraría 6 campos en
+rojo cuando solo 4 lo son.
+
+**`brand` se queda en `"Generic"`** (decisión de Eduardo). No se hace campo
+editable: se le pone `default_value`, así que el semáforo lo cuenta como
+automático y no como hueco. Refleja lo que el publicador ya hace —
+`_attr_from(atributos,"BRAND","Generic")`: del producto si lo trae (3,060 de
+7,264), "Generic" en los otros 4,204. La divergencia con ML, que publica todo
+como "Ferrahome", sigue abierta y es decisión de negocio.
+
+**Verificado por HTTP y con el servicio real contra el sandbox**, los cuatro
+comportamientos: categoría sin cargar → `sin_requisitos`; COSTUME_OUTFIT sin
+contenido → 4 faltantes + 2 automáticos; tras guardar título, descripción y
+bullets → queda solo `fabric_type`; sin ese último → `ok`. `tsc --noEmit` limpio.
+
+**NO verificado: el semáforo en el navegador.** Mismo bloqueo que la v0.109.0 —
+el listado de Productos está fijo en `canal:"general"` (`page.tsx:94`), que lee
+WooCommerce en vivo, y `env.staging` no tiene esas credenciales. Sin productos no
+hay modal que abrir. Versión 0.115.0.

@@ -79,6 +79,14 @@ CANONICO: dict[str, str] = {
 # services/publicar.py:_amazon_attributes y _AMZ_DEFAULTS). Son las que evitan
 # que el panel pinte en rojo ~7 campos que SIEMPRE se llenan solos.
 DEFAULTS: dict[str, object] = {
+    # Decisión de Eduardo (12-ago): la marca se queda en "Generic" y NO se hace
+    # campo editable en el panel. Así que es un respaldo, no un hueco: el
+    # publicador ya hace `_attr_from(atributos,"BRAND","Generic")` — sale del
+    # producto si lo trae (3,060 de 7,264) y cae a "Generic" en los otros 4,204.
+    # Con esto el semáforo lo pinta como "lo ponemos nosotros" en vez de rojo.
+    # (ML sigue publicando todo como "Ferrahome": esa divergencia entre canales
+    # es decisión de negocio y sigue abierta.)
+    "brand": "Generic",
     "condition_type": "new_new",
     "country_of_origin": "MX",
     "included_components": "1 x Producto",

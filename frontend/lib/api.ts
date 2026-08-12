@@ -676,6 +676,29 @@ export function leerContenidoCanal(
   );
 }
 
+/** El semáforo: qué le falta a un SKU para publicarse en un canal. */
+export interface FaltantesCanal {
+  /** `sin_requisitos` = NO sabemos (esa categoría no se ha leído del canal).
+   *  NO es lo mismo que `ok`, y el panel no debe pintarlo en verde. */
+  estado: "ok" | "incompleto" | "sin_requisitos";
+  faltan: { campo: string; canonico: string | null; label: string }[];
+  /** Los que el publicador llena solo con su respaldo: ni verde ni rojo. */
+  automaticos: { campo: string; valor: unknown }[];
+  categoria: string | null;
+  leido_at: string | null;
+}
+
+export function faltantesCanal(
+  sku: string,
+  canal: string,
+  cuenta = "",
+): Promise<FaltantesCanal> {
+  const q = cuenta ? `?cuenta=${encodeURIComponent(cuenta)}` : "";
+  return getJSON<FaltantesCanal>(
+    `/api/productos/${encodeURIComponent(sku)}/canal/${encodeURIComponent(canal)}/faltantes${q}`,
+  );
+}
+
 export const API_BASE = BASE;
 
 /* ── VENTAS ──────────────────────────────────────────────────────── */

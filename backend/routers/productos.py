@@ -385,6 +385,22 @@ async def leer_contenido_canal(sku: str, canal: str, cuenta: str = Query("")):
     return {"existe": True, **doc}
 
 
+@router.get("/{sku}/canal/{canal}/faltantes")
+async def faltantes_canal(sku: str, canal: str, cuenta: str = Query("")):
+    """
+    El semáforo: qué le falta a este SKU para publicarse en este canal.
+
+    La categoría la resuelve el backend con la precedencia del canal (en Amazon,
+    panel > histórico > detección), igual que al guardar.
+    """
+    from services import channel_content
+
+    if not es_canal_valido(canal):
+        raise HTTPException(400, f"Canal '{canal}' inválido.")
+    categoria = await _categoria_del_canal(sku, canal)
+    return await channel_content.faltantes(sku, canal, cuenta, categoria)
+
+
 @router.get("/{sku}/canales/contenido")
 async def resumen_contenido_canales(sku: str):
     """Qué canales tienen contenido y cuántos campos — para pintar las pestañas
