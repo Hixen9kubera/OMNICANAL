@@ -131,6 +131,20 @@ falta, sin default, y obligatorio  → rojo
   todos en **un solo tipo**. Kubera no vende libros: ese productType casi seguro
   entró por una detección automática equivocada en algún producto.
 
+### Dos formas de comprobar, según dónde viva el campo
+
+- `campo_canonico = 'atributos'` → se mira **DENTRO** de la lista, por el
+  `nombre` de cada entrada, y se exige que el valor no venga vacío. Es el caso
+  de Mercado Libre: sus obligatorios por categoría (`BRAND`, `MODEL`…) son
+  atributos de la ficha, no campos de primer nivel.
+- Cualquier otro canónico → basta la presencia de la llave.
+- Sin canónico → nadie puede llenarlo: siempre falta.
+
+**`campo_canonico` dice DÓNDE buscar y `campo` dice QUÉ buscar.** Sin esto, el
+semáforo se pondría verde con cualquier atributo aunque faltara el obligatorio
+de esa categoría — un falso verde, que es lo que la tercera luz existe para
+evitar.
+
 ### `leido_at`: el tercer estado del semáforo
 
 Si un canal agrega un obligatorio y nadie relee, el panel diría "no le falta
@@ -244,20 +258,24 @@ confirmó a mano en producción.
 1. **Amazon está COMPLETO**: 553 de 553 productTypes, 64,125 requisitos. Cero
    tipos del catálogo sin cubrir. Lo que falta es **`fabric_type`**: obligatorio
    en 45 tipos de ropa y sin nadie que lo llene.
-2. **ML, Walmart, TikTok, Temu, Shein sin requisitos.** Cada uno necesita su
+2. **Mercado Libre COMPLETO**: 1,058 categorías, 2,765 filas. Su forma es
+   distinta a la de Amazon — `/categories/{id}/attributes` devuelve solo la
+   ficha técnica, así que los comunes van como `categoria_id='*'` y los
+   atributos obligatorios con su `MLM…`.
+3. **Walmart, TikTok, Temu, Shein sin requisitos.** Cada uno necesita su
    cargador leyendo su propia API. Temu y Shein **no tienen una línea de código
    en el repo**: modelarlos hoy sería adivinar.
-3. **`brand`**: decisión tomada — se queda en `"Generic"`, sin campo editable.
+4. **`brand`**: decisión tomada — se queda en `"Generic"`, sin campo editable.
    Pero **ML publica todo como `"Ferrahome"`** y Amazon cae a `"Generic"` en
    4,204 de 7,264 productos. La divergencia entre canales es decisión de negocio
    y sigue abierta.
-4. **`country_of_origin`**: unificado en `"MX"` por decisión de Eduardo. Walmart
+5. **`country_of_origin`**: unificado en `"MX"` por decisión de Eduardo. Walmart
    sigue mandando `"China"`. Es declaración aduanal.
-5. **Sin columna de restricciones** (título 60 en ML vs 75 en Amazon, 2 decimales
+6. **Sin columna de restricciones** (título 60 en ML vs 75 en Amazon, 2 decimales
    en Walmart). Esta tabla contesta "¿está el campo?", no "¿está bien?". La
    ausencia es decisión, no olvido: una columna que nace vacía es como nacieron
    `parent_sku` y `has_variations`.
-6. **Sin refresco automático de `leido_at`.** Hoy se recarga a mano.
+7. **Sin refresco automático de `leido_at`.** Hoy se recarga a mano.
 
 ---
 

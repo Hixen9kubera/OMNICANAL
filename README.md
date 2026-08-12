@@ -7171,3 +7171,46 @@ escrito para leerse sin el historial: dónde vive cada cosa (JSON dentro de
 tablas, y por qué), las tres tablas, el flujo de seis pasos, las decisiones con
 su porqué, lo verificado y cómo, las 7 trampas medidas y lo que falta.
 Versión 0.115.2.
+
+---
+
+### v0.116.0 — Mercado Libre completo, y el semáforo aprende a mirar dentro (Eduardo)
+
+**Los pasos 1-3 ya servían para ML y no hubo que replicarlos** — y no por
+casualidad: la llave `(sku, canal, cuenta)` de `enrich.channel_content` existe
+**por ML**, que es el único canal con dos cuentas. Amazon fue el que se adaptó.
+Verificado en el caso difícil (`EST-0091`): el mismo SKU guarda y lee contenido
+distinto en BEKURA y SANCORFASHION, y el publicador toma el de la cuenta
+correcta.
+
+**Paso 4 · `cargar_requisitos_ml.py`.** 1,058 categorías, 2,765 filas.
+
+**ML no encaja igual que Amazon, y eso cambia la forma.** El esquema de Amazon
+trae el payload COMPLETO por tipo. `/categories/{id}/attributes` de ML devuelve
+**solo la ficha técnica** — 57 atributos para MLM1071, de los cuales **uno** es
+obligatorio. Título, precio, stock e imágenes no están ahí: ML los exige para
+TODAS las categorías. Por eso el cargador escribe en dos niveles: los comunes
+como `categoria_id='*'` (levantados del publicador vendorizado, no de la doc) y
+los atributos obligatorios con su `MLM…`. Es justo para lo que existe el
+centinela: sin él habría que repetir 12 campos en 1,058 categorías.
+
+**Y el semáforo aprende a mirar DENTRO de `atributos`.** Los obligatorios de ML
+no son campos de primer nivel: viven como `{"nombre":"BRAND","valor":"…"}`
+dentro de la llave `atributos`. Comparar solo la presencia de la llave habría
+puesto el semáforo **en verde con cualquier atributo**, aunque faltara justo el
+obligatorio de esa categoría.
+
+Sin columna nueva: **`campo_canonico` dice DÓNDE buscar y `campo` dice QUÉ
+buscar.** Si el canónico es `atributos`, se busca por el `nombre` de cada
+entrada y se exige que el valor no venga vacío.
+
+Probado con siete casos, los dos que importan:
+
+```
+titulo + OTRO atributo   -> faltan BRAND y MODEL   (ya no da falso verde)
+titulo + BRAND VACIO     -> BRAND sigue faltando   (presente ≠ lleno)
+```
+
+La primera versión los dejaba sin canónico para no mentir en verde, pero el
+panel los etiquetaba *"no editable desde el panel"* — falso, los atributos sí se
+editan en el Estudio. Mirar dentro resuelve las dos cosas. Versión 0.116.0.

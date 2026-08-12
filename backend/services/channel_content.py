@@ -192,6 +192,23 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                 return {"estado": "sin_requisitos", "faltan": [], "automaticos": [],
                         "categoria": categoria, "leido_at": None}
 
+            # DOS FORMAS DE COMPROBAR, según dónde viva el campo:
+            #
+            #   campo_canonico = 'atributos'  → se mira DENTRO de la lista, por
+            #     el `nombre` de cada entrada. Es el caso de Mercado Libre: sus
+            #     obligatorios por categoría (BRAND, MODEL…) son atributos de la
+            #     ficha, no campos de primer nivel.
+            #   cualquier otro canónico       → basta la presencia de la llave.
+            #   sin canónico                  → nadie puede llenarlo: siempre falta.
+            #
+            # POR QUÉ NO ALCANZABA `contenido ? campo_canonico`: si los atributos
+            # de ML se mapearan a `atributos` a secas, el semáforo se pondría
+            # VERDE en cuanto el producto tuviera cualquier atributo, aunque le
+            # faltara justo el obligatorio. Un falso verde es peor que no saber
+            # — es lo mismo que evita la tercera luz del semáforo.
+            #
+            # Un atributo presente pero con valor VACÍO cuenta como ausente.
+            #
             # La precedencia se resuelve ANTES de filtrar por `obligatorio`: si
             # se filtra primero, la fila de la categoría específica que dice
             # `obligatorio=false` desaparece y gana la de '*'. Medido.
@@ -201,14 +218,29 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                        from channel.field_requirements
                       where canal = %s and categoria_id in ('*', %s)
                       order by campo, (categoria_id <> '*') desc
+                   ),
+                   cont as (
+                     select coalesce(
+                       (select contenido from enrich.channel_content
+                         where sku = %s and canal = %s and cuenta = %s),
+                       '{}'::jsonb) as j
                    )
                    select e.campo, e.campo_canonico, e.default_value, f.label
                      from efectivo e
+                     cross join cont
                      left join core.canonical_fields f on f.campo = e.campo_canonico
-                     left join enrich.channel_content c
-                            on c.sku = %s and c.canal = %s and c.cuenta = %s
-                           and c.contenido ? e.campo_canonico
-                    where e.obligatorio and c.sku is null
+                    where e.obligatorio
+                      and not (case
+                        when e.campo_canonico = 'atributos' and e.campo <> 'atributos'
+                          then exists (
+                            select 1 from jsonb_array_elements(
+                                     coalesce(cont.j -> 'atributos', '[]'::jsonb)) a
+                             where a ->> 'nombre' = e.campo
+                               and coalesce(a ->> 'valor', '') <> '')
+                        when e.campo_canonico is not null
+                          then cont.j ? e.campo_canonico
+                        else false
+                      end)
                     order by e.campo""",
                 (canal, categoria or "\x00", sku, canal, cuenta),
             )
