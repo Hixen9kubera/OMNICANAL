@@ -984,8 +984,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     //   igual a lo que produjo la IA  -> ia
     //   igual a lo que tiene Woo      -> woo
     //   ninguna de las dos            -> manual (alguien lo escribió o lo editó)
+    //
+    // Se comparan NORMALIZADOS por los dos lados. `contenido` se arma con
+    // `.trim()` y filtrando bullets vacíos; lo que guardó la IA está crudo. Sin
+    // normalizar, un solo espacio al final del texto que devolvió la IA hacía
+    // que el campo saliera marcado `manual` sin que nadie lo hubiera tocado.
+    const norm = (v: unknown): unknown =>
+      typeof v === "string" ? v.trim()
+      : Array.isArray(v) ? v.map(norm).filter((x) => x !== "" && x != null)
+      : v;
     const mismo = (a: unknown, b: unknown) =>
-      a != null && b != null && JSON.stringify(a) === JSON.stringify(b);
+      a != null && b != null && JSON.stringify(norm(a)) === JSON.stringify(norm(b));
     const deWoo: Record<string, unknown> = {
       titulo: data?.nombre, descripcion: data?.descripcion, atributos: meta?.atributos,
     };

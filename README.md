@@ -6790,3 +6790,25 @@ existe para no borrar la categoría cuando el guardado no la manda. En fila
 limpia salía `None`, y de ahí se llegó a la causa real: ese SKU no tenía tipo
 asignado. Al verificar un upsert con `coalesce`, la fila tiene que estar limpia o
 se está leyendo el pasado. Versión 0.110.0.
+
+---
+
+### v0.110.1 — El `origen` comparaba manzanas con peras
+
+Salió al verificar la v0.110.0 en producción con `ACC-0091`: cuatro campos
+marcados `ia` y el título `manual`. Era correcto —Eduardo sí editó el título—
+pero al revisar por qué, apareció un hueco que no se había disparado por suerte.
+
+`contenido` se arma con `.trim()` en los textos y filtrando bullets vacíos; lo
+que la IA produjo se guardaba **crudo** en el `useRef`. Se comparaban sin
+normalizar, así que **un solo espacio al final del texto que devolvió la IA**
+marcaba el campo como `manual` sin que nadie lo hubiera tocado.
+
+Ahora los dos lados se normalizan igual antes de comparar. Probado con los
+cuatro casos: espacio final ya no produce falso `manual`, texto realmente
+editado sigue dando `manual`, un bullet vacío que se filtra no rompe la
+igualdad, y bullets distintos siguen dando `manual`.
+
+El modo de fallo era benigno —`manual` protege de más, nunca de menos— pero
+ensuciaba el dato justo en la columna que existe para saber qué revisar.
+Versión 0.110.1.
