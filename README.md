@@ -6874,3 +6874,46 @@ igualdad, y bullets distintos siguen dando `manual`.
 El modo de fallo era benigno —`manual` protege de más, nunca de menos— pero
 ensuciaba el dato justo en la columna que existe para saber qué revisar.
 Versión 0.110.1.
+
+### v0.108.0 — CORE: paso 3, fuera el respaldo de lectura a MySQL
+
+Con el go de Eduardo ("retirar ya"), core y categorías cierran su ventana. Estos
+dos no tenían paso 1 que ejecutar: **nunca hubo espejo inverso que apagar.**
+Verificado en el código — el único `UPDATE` a `productos` en todo el backend es
+`odoo_watch.py:57` (stock de Odoo, ajeno al registro civil) y `categorias_ml` no
+la escribe nadie. Sus tablas de MySQL están de hecho congeladas desde el corte
+del 10-ago.
+
+Lo que sí quedaba es el paso 3: los dos lookups SKU→wc_id dejan de reconsultar
+MySQL. Un miss en `core.products` ya no cae a `productos`, sigue a **Woo**, que
+es la autoridad:
+
+- `pedidos_ml.resolver_producto` — la ruta caliente de cada venta.
+- `costos._cat_ml_de` — categoría ML para la comisión.
+
+El fallback nació cuando el seam Crear→core no existía y un SKU del día
+aparecía hasta el ETL de las 06:15. Ese hueco lo cerraron el corte (v0.84) y el
+webhook de Woo (v0.92).
+
+**Medido antes de quitarlo** con `comparar_lecturas_core.py` contra producción,
+sobre 995 SKUs (727 vendidos en 30 días + 300 al azar):
+
+| | |
+|---|---|
+| iguales | 731 |
+| difieren | 28 |
+| ausentes en kubera | **0** |
+| arbitraje contra Woo vivo | **kubera correcto 28 · MySQL correcto 0** |
+| listado | MySQL 5,271 ⊂ kubera 9,793 |
+
+O sea que el respaldo no era neutral: **era peor.** Las 28 discrepancias son
+variantes donde MySQL guardaba el `wc_id` viejo y sin padre — kubera coincidió
+con Woo en las 28. Veredicto del arnés: EQUIVALENTE.
+
+**Los ETLs de las 06:15 se quedan corriendo.** Dejan de ser compuerta de la
+migración y pasan a vigilante permanente: son lo único que compara Woo contra
+kubera, y es justo lo que destapó las ediciones de títulos del 11-ago. Por eso
+core-etl-v2 y categorias-etl NO entran a `_DOMINIOS_RETIRADOS`.
+
+`SUPABASE_READ_CORE` se queda como interruptor de reversa: apagarlo manda los
+lookups directo a Woo. Versión 0.108.0.

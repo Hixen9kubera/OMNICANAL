@@ -599,8 +599,10 @@ def _cat_ml_de(sku: str) -> str:
         pass
     try:
         wc = None
-        # F5 core: wc_id desde core.products; None no es concluyente (hueco del
-        # seam Crear hasta el ETL 06:15) → reconsulta MySQL.
+        # PASO 3 del desmantelamiento (12-ago-2026): wc_id sale de core.products
+        # y ya NO se reconsulta MySQL — ver la nota larga en
+        # pedidos_ml.resolver_producto. Sin wc_id se sigue al mapa de kubera del
+        # final, que es el que manda para la categoría.
         if settings.supabase_read_core:
             try:
                 wc = core_read.wc_id_de_sku(sku)
@@ -608,10 +610,9 @@ def _cat_ml_de(sku: str) -> str:
             except Exception as exc:  # noqa: BLE001
                 lecturas_fuente.anotar("core", "fallback", str(exc))
                 alertas.avisar("lectura_fallback:core",
-                               f"⚠️ Lectura de CORE cayó a MySQL (categoria_ml): {exc}")
-                log.warning("lectura kubera falló (categoria_ml) — fallback MySQL: %s", exc)
-        if not wc:
-            wc = db.fetch_scalar("SELECT wc_id FROM productos WHERE sku=%s", (sku,))
+                               f"⚠️ Lectura de CORE falló (categoria_ml), se "
+                               f"resuelve por el mapa de kubera: {exc}")
+                log.warning("lectura kubera falló (categoria_ml) — sigue a kubera: %s", exc)
         if wc:
             from services import wp_db
             if wp_db.disponible():

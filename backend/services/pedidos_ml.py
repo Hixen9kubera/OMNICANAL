@@ -115,17 +115,21 @@ async def resolver_producto(sku: str) -> dict | None:
     """
     SKU de ML → producto de WooCommerce.
 
-    Consulta a Woo DIRECTO y usa el espejo local (`productos`) solo como atajo.
-    Al revés no funciona: el espejo está incompleto. En el cruce de las últimas
-    ~400 ventas, 66 de 177 SKUs vendidos NO estaban en el espejo pero SÍ existían
-    en Woo — si nos fiáramos del espejo tiraríamos el 37% de las ventas.
+    Consulta a Woo DIRECTO y usa el registro civil (`core.products`) solo como
+    atajo. Al revés no funciona: el atajo puede no tener el SKU. En el cruce de
+    las últimas ~400 ventas contra el espejo MySQL viejo, 66 de 177 SKUs
+    vendidos NO estaban ahí pero SÍ existían en Woo — si nos fiáramos del atajo
+    tiraríamos el 37% de las ventas. Por eso el miss cae a Woo, no se descarta.
     """
     if not sku:
         return None
     fila = None
-    # F5 core: atajo desde core.products (BD kubera). None NO es concluyente
-    # (el seam Crear→core.products no existe: un SKU del día aparece hasta el
-    # ETL de las 06:15) — se reconsulta MySQL igual que ante cualquier error.
+    # PASO 3 del desmantelamiento (12-ago-2026): el atajo es core.products y ya
+    # NO se reconsulta MySQL. El fallback nació cuando el seam Crear→core no
+    # existía y un SKU del día aparecía hasta el ETL de las 06:15; desde el
+    # corte (v0.84) y el webhook de Woo (v0.92) ese hueco está cubierto, y
+    # además el espejo MySQL era un subconjunto: 5,381 filas contra las 22,279
+    # de core.products. Un miss aquí sigue cayendo a Woo, que es la autoridad.
     if settings.supabase_read_core:
         try:
             fila = core_read.wc_de_sku(sku)
@@ -133,12 +137,9 @@ async def resolver_producto(sku: str) -> dict | None:
         except Exception as exc:  # noqa: BLE001
             lecturas_fuente.anotar("core", "fallback", str(exc))
             alertas.avisar("lectura_fallback:core",
-                           f"⚠️ Lectura de CORE cayó a MySQL (resolver_producto): {exc}")
-            log.warning("lectura kubera falló (resolver_producto) — fallback MySQL: %s", exc)
-    if not fila or not fila.get("wc_id"):
-        fila = db.fetch_one(
-            "SELECT sku, wc_id, wc_parent_id FROM productos WHERE sku=%s AND wc_id IS NOT NULL",
-            (sku,))
+                           f"⚠️ Lectura de CORE falló (resolver_producto), se "
+                           f"resuelve por Woo: {exc}")
+            log.warning("lectura kubera falló (resolver_producto) — sigue a Woo: %s", exc)
     if fila and fila.get("wc_id"):
         return {"wc_id": int(fila["wc_id"]),
                 "parent_id": int(fila["wc_parent_id"]) if fila.get("wc_parent_id") else None,
