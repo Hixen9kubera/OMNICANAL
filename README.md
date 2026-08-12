@@ -7174,6 +7174,50 @@ Versión 0.115.2.
 
 ---
 
+### v0.117.0 — 964 pedidos fantasma: el registro de pedidos deja de preguntarle al espejo
+
+**INCIDENTE del 12-ago-2026, 19:12→23:29 UTC (4 h 17 min).** El paso 1 del
+desmantelamiento de PEDIDOS congeló `pedidos_ml` — correcto, kubera ya era el
+registro. Pero tres consultas del flujo de ALTA seguían preguntándole a esa
+tabla, y una foto detenida contesta con seguridad lo que ya no sabe:
+
+- **El candado de idempotencia** (`pedidos_ml.py:429`) devolvía SIEMPRE "no
+  existe", así que cada aviso de ML creaba OTRO pedido en Woo. ML manda ráfagas
+  por venta (creada→pagada→enviada): **964 pedidos fantasma, $409,741**, el 85%
+  de todo lo creado en la ventana. Es la reincidencia del 17-jul (86 órdenes con
+  2-7 copias), ahora por una causa distinta.
+- **La marca de agua** (`pedidos_amazon._desde()`) se quedaba fija, pidiendo
+  siempre la misma ventana. Amazon **no duplicó por casualidad**: no tuvo
+  tráfico en esas 4 h. La bomba estaba armada igual.
+- **El dedupe** de los sondeos (Amazon y M2E/TEMU/TIKTOK) veía "sin cambio" al
+  revés y reprocesaba.
+
+Los tres lectores se mudan a `channel.orders` en `orders_write` —
+`wc_order_id_previo`, `ultimo_actualizado`, `estados_wc`. **Regla de la fuente:
+se lee de donde se está escribiendo.** Con kubera arriba, el registro; si kubera
+cae, `guardar()` hace que MySQL absorba y ahí sí es la fresca. Nunca al revés.
+Un None equivocado en el candado crea un fantasma, así que el error se propaga
+en vez de asumir "es nueva".
+
+**Y el vigilante de silencio de ventas**, que leía la misma tabla congelada:
+gritó *"sin ventas nuevas en 4.1 h"* en pleno día récord — 1,861 pedidos, el
+último de hacía segundos. Ahora mira las tres cuentas en `channel.orders`.
+Verificado: vería la última venta hace 1.4 min → no alerta.
+
+Es el mismo error que la v0.102.0 (el acta de channel): **se retira un dominio y
+su vigilante se queda mirando la tabla apagada.** Van dos; conviene revisar el
+resto antes de apagar costing.
+
+Contención: `ORDERS_ESPEJO_INVERSO=true` (descongela el espejo) paró la
+duplicación en el siguiente ciclo — verificado 7 min seguidos en ratio 1.00
+exacto. Los 964 fantasma se mandaron a PAPELERA (recuperables), y los 16 que
+habían descontado stock se cancelaron primero para que Woo devolviera la pieza.
+
+**El desmantelamiento de PEDIDOS queda desbloqueado**: con los lectores mudados,
+`pedidos_ml` ya se puede volver a congelar. Versión 0.117.0.
+
+---
+
 ### v0.116.0 — Mercado Libre completo, y el semáforo aprende a mirar dentro (Eduardo)
 
 **Los pasos 1-3 ya servían para ML y no hubo que replicarlos** — y no por

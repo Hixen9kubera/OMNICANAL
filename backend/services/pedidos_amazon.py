@@ -107,10 +107,12 @@ def _normalizar(o: dict, items: list[dict]) -> dict:
 
 def _desde() -> str:
     """LastUpdatedAfter: el último `actualizado` de AMAZON menos el margen."""
-    fila = db.fetch_one(
-        "SELECT MAX(actualizado) m FROM pedidos_ml WHERE cuenta='AMAZON'")
-    base = (fila and fila.get("m")) or (datetime.now(timezone.utc).replace(tzinfo=None)
-                                        - timedelta(days=7))
+    # Del REGISTRO (channel.orders), no del espejo: con `pedidos_ml` congelada
+    # la marca se quedaba fija y el sondeo repetía siempre la misma ventana.
+    from services import orders_write
+    m = orders_write.ultimo_actualizado("AMAZON")
+    base = m or (datetime.now(timezone.utc).replace(tzinfo=None)
+                 - timedelta(days=7))
     base = base - timedelta(minutes=_MARGEN_MIN)
     return base.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -138,8 +140,10 @@ async def revisar(proteger_stock: bool = False,
                 params = {"NextToken": nt}
                 await asyncio.sleep(0.6)
 
-            previos = {f["ml_order_id"]: f["estado_wc"] for f in db.fetch_all(
-                "SELECT ml_order_id, estado_wc FROM pedidos_ml WHERE cuenta='AMAZON'")}
+            # Dedupe contra el registro (ver orders_write): con el espejo
+            # congelado, "sin cambio" nunca acertaba y se reprocesaba todo.
+            from services import orders_write
+            previos = orders_write.estados_wc(("AMAZON",))
 
             for o in ordenes:
                 oid = str(o.get("AmazonOrderId"))

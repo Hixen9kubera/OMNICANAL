@@ -339,18 +339,28 @@ def _revisar_actas() -> None:
                           texto_ok=resuelto)
 
 
+# Cuentas cuya venta alimenta el vigilante de silencio. Se miran TODAS: que una
+# cuente sola bastaría para tapar la caída de otra.
+_CUENTAS_VENTA = ("BEKURA", "SANCORFASHION", "AMAZON")
+
+
 def _revisar_silencio_ventas() -> None:
     """Sin ventas nuevas por N horas en horario hábil de CDMX = arteria caída."""
     hora_mx = datetime.now(ZoneInfo("America/Mexico_City")).hour
     if not (9 <= hora_mx < 21):
         return
-    from services import db
+    # Del REGISTRO, no del espejo. Leía `pedidos_ml`, y cuando el paso 1 del
+    # desmantelamiento la congeló (12-ago-2026) el vigilante empezó a gritar
+    # "sin ventas" en pleno día récord — 1,861 pedidos, el último de hacía
+    # segundos. Mismo error que el acta de channel: se retira un dominio y su
+    # vigilante se queda mirando la tabla apagada.
+    from services import orders_write
     try:
-        fila = db.fetch_one("SELECT MAX(actualizado) AS ult FROM pedidos_ml")
+        ult = max(filter(None, (orders_write.ultimo_actualizado(c)
+                                for c in _CUENTAS_VENTA)), default=None)
     except Exception as exc:  # noqa: BLE001
         log.warning("vigilante silencio: %s", exc)
         return
-    ult = (fila or {}).get("ult")
     if not ult:
         return
     # MySQL guarda DATETIME naive en UTC → comparar con "ahora UTC" naive.

@@ -426,7 +426,12 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     payload = await construir_payload(orden, forzar_estado, proteger_stock)
     skus = payload.pop("_skus"); sin_mapear = payload.pop("_sin_mapear")
     comision = payload.pop("_comision")
-    previo = db.fetch_one("SELECT wc_order_id FROM pedidos_ml WHERE ml_order_id=%s", (order_id,))
+    # Candado de idempotencia contra el REGISTRO (channel.orders desde el corte
+    # F6), no contra el espejo: `pedidos_ml` congelada contestaba siempre "no
+    # existe" y cada aviso creaba otro pedido — 964 fantasma el 12-ago-2026.
+    from services import orders_write
+    wc_previo = orders_write.wc_order_id_previo(str(order_id))
+    previo = {"wc_order_id": wc_previo} if wc_previo else None
     ahora = datetime.now(timezone.utc)
     # `creado` = fecha de la VENTA en ML, no de nuestro registro: el tab
     # bucketiza por esta columna y un backfill fechado "hoy" deforma los días

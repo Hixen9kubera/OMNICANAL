@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timezone
 from typing import Any, Callable
 
 from config import settings
@@ -38,6 +39,77 @@ log = logging.getLogger("omnicanal.orders_write")
 
 def activo() -> bool:
     return settings.supabase_write_orders and sdb.disponible()
+
+
+# ── LECTURAS DEL REGISTRO ─────────────────────────────────────────────────────
+# Tras el corte, el registro de pedidos es channel.orders; `pedidos_ml` es el
+# espejo. Los sondeos y el alta seguían PREGUNTÁNDOLE a MySQL, y el 12-ago-2026
+# el paso 1 del desmantelamiento la congeló: las tres consultas empezaron a
+# contestar desde una foto detenida.
+#
+#   · el candado de idempotencia devolvía SIEMPRE "no existe" → cada vuelta
+#     creaba otro pedido en Woo: 964 fantasma en 4 h 17 min ($409,741), 85% de
+#     todo lo creado en la ventana. Solo ML, porque Amazon no tuvo tráfico —
+#     su marca de agua estaba igual de rota y se salvó por casualidad.
+#   · el dedupe de los sondeos veía "nada cambió" al revés y reprocesaba.
+#   · la marca de agua se quedaba fija, pidiendo siempre la misma ventana.
+#
+# Regla de la fuente: se lee de DONDE SE ESTÁ ESCRIBIENDO. Con kubera arriba,
+# channel.orders; si kubera está caída, `guardar()` hace que MySQL absorba, así
+# que ahí sí es la fresca. Nunca al revés.
+
+
+def _mysql_previo(external_order_id: str) -> int | None:
+    from services import db
+    f = db.fetch_one("SELECT wc_order_id FROM pedidos_ml WHERE ml_order_id=%s",
+                     (str(external_order_id),))
+    return int(f["wc_order_id"]) if f and f.get("wc_order_id") else None
+
+
+def wc_order_id_previo(external_order_id: str) -> int | None:
+    """`wc_order_id` ya registrado para esta orden, o None si de verdad es nueva.
+
+    Un None equivocado CREA un pedido duplicado, así que el error se propaga en
+    vez de asumir "nueva": que el alta falle y se reintente es reparable; un
+    fantasma en Woo, no.
+    """
+    if not sdb.disponible():
+        return _mysql_previo(external_order_id)
+    f = sdb.fetch_one(
+        "select wc_order_id from channel.orders where external_order_id = %(id)s",
+        {"id": str(external_order_id)})
+    return int(f["wc_order_id"]) if f and f.get("wc_order_id") else None
+
+
+def estados_wc(cuentas: tuple[str, ...]) -> dict[str, str]:
+    """{ external_order_id: estado_wc } de esas cuentas — dedupe de los sondeos."""
+    if not sdb.disponible():
+        from services import db
+        ph = ",".join(["%s"] * len(cuentas))
+        return {f["ml_order_id"]: f["estado_wc"] for f in db.fetch_all(
+            f"SELECT ml_order_id, estado_wc FROM pedidos_ml WHERE cuenta IN ({ph})",
+            tuple(cuentas))}
+    return {f["external_order_id"]: f["estado_wc"] for f in sdb.fetch_all(
+        "select external_order_id, estado_wc from channel.orders "
+        "where cuenta = any(%(c)s)", {"c": list(cuentas)})}
+
+
+def ultimo_actualizado(cuenta: str):
+    """Marca de agua del sondeo: último `actualizado_at` de la cuenta (naive UTC).
+
+    None si la cuenta aún no tiene pedidos — el llamador decide su ventana
+    inicial.
+    """
+    if not sdb.disponible():
+        from services import db
+        f = db.fetch_one(
+            "SELECT MAX(actualizado) m FROM pedidos_ml WHERE cuenta=%s", (cuenta,))
+        return (f or {}).get("m")
+    f = sdb.fetch_one(
+        "select max(actualizado_at) m from channel.orders where cuenta = %(c)s",
+        {"c": cuenta})
+    ts = (f or {}).get("m")
+    return ts.astimezone(timezone.utc).replace(tzinfo=None) if ts else None
 
 
 def _en_hilo(fn: Callable, *args) -> None:

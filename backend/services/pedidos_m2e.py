@@ -110,9 +110,10 @@ async def revisar() -> dict[str, Any]:
             r.raise_for_status()
             cuentas = [a for a in r.json()
                        if a.get("channel") in _CANAL_A_CUENTA and a.get("is_valid")]
-            previos = {f["ml_order_id"]: f["estado_wc"] for f in db.fetch_all(
-                "SELECT ml_order_id, estado_wc FROM pedidos_ml "
-                "WHERE cuenta IN ('TEMU','TIKTOK')")}
+            # Dedupe contra el registro (ver orders_write): mismo caso que
+            # Amazon — el espejo congelado hacía que "sin cambio" no acertara.
+            from services import orders_write
+            previos = orders_write.estados_wc(("TEMU", "TIKTOK"))
             for cta in cuentas:
                 canal = cta["channel"]
                 ro = await cli.post(
