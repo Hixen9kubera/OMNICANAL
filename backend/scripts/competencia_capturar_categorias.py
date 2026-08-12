@@ -27,11 +27,19 @@ escribir en un disco que nadie lee.
 Gratis: el raspado no cuesta (es el navegador de casa), y las visitas, reseñas,
 subcategoría de cada fila y términos más buscados salen de la API de ML.
 
+UNA CATEGORÍA PADRE NUEVA SON DOS PASOS, NO UNO
+-----------------------------------------------
+Los SKUs de una raíz suelen YA estar en `market_sku_config` (los sembró la
+medición), pero con `activo=false`, y `listar_skus()` filtra `WHERE activo`. Un
+SKU inactivo está en la tabla y es invisible: de las 1,584 filas el panel rendía
+393. Por eso `--activar-raiz` va primero — sin él la raíz nueva se raspa como
+'hoja' y sus SKUs siguen sin aparecer.
+
 USO
 ---
-    # Deportes y Fitness (raíz) + Mini Bicicletas Fijas (hoja)
+    # Deportes y Fitness: prender sus SKUs y capturar la raíz + una hoja
     backend/.venv/bin/python backend/scripts/competencia_capturar_categorias.py \
-        MLM1276 MLM184769
+        MLM1276 MLM184769 --activar-raiz MLM1276
 
     # Ver qué haría, sin abrir el navegador ni escribir
     ... --dry-run
@@ -51,7 +59,8 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 from services import (  # noqa: E402
-    competencia_captura, competencia_ml, competencia_store, supabase_db,
+    competencia_captura, competencia_ml, competencia_store, competencia_supabase,
+    supabase_db,
 )
 
 
@@ -59,6 +68,10 @@ async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("categorias", nargs="+",
                     help="Ids de categoría de ML (p. ej. MLM1276 MLM184769)")
+    ap.add_argument("--activar-raiz", metavar="MLM####",
+                    help="Prende los SKUs de esa raíz en market_sku_config antes "
+                         "de capturar. Sin esto, una raíz nueva se raspa como "
+                         "'hoja' y sus SKUs siguen invisibles en el panel.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Solo dice qué haría: nivel de cada categoría y si ML "
                          "publica más vendidos. No abre navegador ni escribe.")
@@ -72,6 +85,21 @@ async def main() -> int:
               "a dónde escribir.\n  (está en Railway, servicio BackendOmnicanal)")
         return 2
     print(f"destino : BD kubera · enrich.market_*  (ping {supabase_db.ping()})")
+
+    if args.activar_raiz:
+        raiz = args.activar_raiz.strip().upper()
+        antes = supabase_db.fetch_one(
+            "SELECT count(*) total, sum(case when c.activo then 1 else 0 end) activos "
+            "  FROM enrich.market_sku_config c "
+            "  JOIN enrich.market_skus_v v ON v.sku = c.sku AND v.canal = c.canal "
+            " WHERE v.raiz_id = %s", (raiz,))
+        print(f"\nactivar raíz {raiz}: {antes['total']} SKUs, "
+              f"{antes['activos'] or 0} activos hoy")
+        if args.dry_run:
+            print(f"  [dry-run] prendería {int(antes['total']) - int(antes['activos'] or 0)}")
+        else:
+            n = competencia_supabase.activar_raiz(raiz)
+            print(f"  ✓ {n} SKUs prendidos (idempotente: correrlo otra vez da 0)")
 
     # Nivel según nuestros SKUs, igual que lo decide la captura.
     skus = competencia_store.listar_skus()

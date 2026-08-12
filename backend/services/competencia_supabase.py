@@ -296,3 +296,30 @@ def reemplazar_terminos(categoria_id: str, periodo: str,
                 "VALUES (%s,%s,%s,%s)", f)
     log.info("market_terms %s/%s ← %s términos", canal, categoria_id, len(listas))
     return len(listas)
+
+
+def activar_raiz(raiz_id: str, activo: bool = True,
+                 canal: str = CANAL_DEFAULT) -> int:
+    """
+    Prende (o apaga) los SKUs de una categoría RAÍZ en `market_sku_config`.
+
+    Es lo que hace que una categoría padre "exista" para el módulo: la captura y
+    la vista parten de `listar_skus()`, que filtra `WHERE activo`. Un SKU
+    inactivo está en la tabla pero es invisible — por eso las 1,584 filas rendían
+    solo 393 SKUs en pantalla.
+
+    La raíz sale de `market_skus_v` (que la resuelve con
+    `channel.categories.root_id`), no de una columna propia: así una categoría
+    reclasificada por ML no deja SKUs prendidos en la raíz vieja.
+
+    Devuelve cuántas filas cambiaron. Es idempotente: el `AND activo IS DISTINCT
+    FROM` hace que correrlo dos veces no toque nada la segunda.
+    """
+    return supabase_db.execute(
+        "UPDATE enrich.market_sku_config c "
+        "   SET activo = %s, updated_at = now() "
+        "  FROM enrich.market_skus_v v "
+        " WHERE v.sku = c.sku AND v.canal = c.canal "
+        "   AND v.raiz_id = %s AND c.canal = %s "
+        "   AND c.activo IS DISTINCT FROM %s",
+        (activo, raiz_id, canal, activo))
