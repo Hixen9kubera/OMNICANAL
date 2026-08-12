@@ -7127,3 +7127,47 @@ cosas que a esa escala dejan de ser opcionales:
 
 El token de SP-API ya venía cacheado (`amazon._access_token`), así que 541 tipos
 no son 541 renovaciones. Versión 0.115.1.
+
+---
+
+### v0.115.2 — Amazon completo (553 tipos), y la trampa del pooler que ya nos había mordido
+
+**Los 553 productTypes de Amazon cargados: 64,125 requisitos.** Cero tipos del
+catálogo sin cubrir.
+
+```
+3,354 obligatorios
+  2,201  con canónico  → el panel puede llenarlos
+  1,643  con respaldo  → el publicador los pone solo
+     54  SIN NADIE
+```
+
+Los 54 huérfanos son **dos grupos, no 54 problemas**: `fabric_type` en 45 tipos
+de ropa —obligatorio en Amazon, sin canónico y sin respaldo, hoy nadie puede
+llenarlo— y 9 campos de libro (`author`, `pages`, `publication_date`…) todos en
+un solo productType, que Kubera no vende: casi seguro entró por una detección
+automática equivocada.
+
+**El error que costó media corrida.** `tipos_mas_usados` abría producción con
+`set_session(readonly=True)`, que parece lo prudente y es lo contrario: las DSN
+entran por el pooler de Supabase en modo TRANSACCIÓN, varios clientes se turnan
+la MISMA conexión del servidor, y un ajuste de SESIÓN se queda pegado y lo
+hereda quien la tome después. La carga murió en el tipo 296 con
+`cannot execute INSERT in a read-only transaction`, envenenada por su propia
+lectura.
+
+**Está documentado en el encabezado de `actualizar_sandbox.py`**, que ya lo
+había sufrido el 10-ago — y ese archivo se leyó y se citó horas antes de
+escribir el mismo error. Corregido a `set transaction read only`, que muere con
+la transacción. Verificado: leer y después escribir en la misma corrida funciona.
+
+Lo grave no era el script: el mismo patrón se usó en las verificaciones de todo
+el día contra producción, y una conexión envenenada la puede tomar el backend de
+Railway. No hubo incidente —los procesos eran cortos—, pero el riesgo era real.
+Queda como trampa #7 en `docs/CONTENIDO_POR_CANAL.md`.
+
+**`docs/CONTENIDO_POR_CANAL.md`** — documento de traspaso del trabajo completo,
+escrito para leerse sin el historial: dónde vive cada cosa (JSON dentro de
+tablas, y por qué), las tres tablas, el flujo de seis pasos, las decisiones con
+su porqué, lo verificado y cómo, las 7 trampas medidas y lo que falta.
+Versión 0.115.2.

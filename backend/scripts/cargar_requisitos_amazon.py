@@ -136,14 +136,30 @@ def tipos_mas_usados(limite: int) -> list[tuple[str, int]]:
     dsn_prod = _env_destino("prod")
     cx = psycopg2.connect(dsn_prod, connect_timeout=20)
     try:
-        cx.set_session(readonly=True, autocommit=True)
         with cx.cursor() as cur:
+            # TRAMPA DEL POOLER — el candado va POR TRANSACCIÓN, no por sesión.
+            #
+            # La primera versión usaba `set_session(readonly=True)`, que parece
+            # lo prudente y es lo contrario: las DSN entran por el pooler de
+            # Supabase en modo TRANSACCIÓN, varios clientes se turnan la MISMA
+            # conexión del servidor, y un ajuste de SESIÓN se queda pegado y lo
+            # hereda quien la tome después — el backend de Railway incluido.
+            #
+            # Pasó de verdad: la corrida de los 541 tipos murió a la mitad con
+            # `cannot execute INSERT in a read-only transaction`, envenenada por
+            # su propia lectura. Está documentado en el encabezado de
+            # actualizar_sandbox.py, que ya lo había sufrido el 10-ago.
+            #
+            # `set transaction read only` muere con la transacción y no
+            # contamina a nadie.
+            cur.execute("set transaction read only")
             cur.execute(
                 """select product_type, count(*) n from channel.listings
                     where product_type is not null and product_type <> ''
                     group by 1 order by 2 desc limit %s""", (limite,))
             return [(t, n) for t, n in cur.fetchall()]
     finally:
+        cx.rollback()   # cierra la transacción de lectura antes de devolverla
         cx.close()
 
 
