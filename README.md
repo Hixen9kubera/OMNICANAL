@@ -6591,3 +6591,87 @@ muestra sus rachas cumplidas (27/14 y 21/14), solo dejan de vigilarse.
 
 Regla que queda escrita en el código: **el dominio se apunta como retirado en el
 mismo commit que lo apaga.** Versión 0.107.1.
+
+---
+
+### v0.108.0 — El contenido por canal deja de vivir en el navegador (Eduardo)
+
+**El problema.** El Estudio ya sabía GENERAR contenido por canal —`ia_generadores.GENERADORES`
+tiene 6 tipos para Amazon (título, item highlights, bullet points, descripción,
+atributos, plan de imágenes), 3 para ML y 1 para TikTok— y no sabía guardarlo:
+`POST /api/ia/generar` devuelve el texto y ahí muere. El único botón de guardar
+(`POST /api/productos/{sku}/contenido`) escribe a WooCommerce y **no recibe canal**.
+
+Los borradores por canal existían, pero en `localStorage` (`studioStore.ts`):
+sobrevivían al recargar la página y **no salían de esa máquina**. Ni el
+publicador ni el resto del equipo los veían.
+
+**Qué entra.**
+
+- **Migración 0016 · `enrich.channel_content`** — llave `(sku, canal, cuenta)`,
+  `contenido jsonb` + `origen jsonb`. La cuenta va en la llave por el caso
+  `EST-0091`: el mismo SKU es dos productos según la cuenta de ML.
+- **`services/channel_content.py`** — leer, guardar y resumen. **Reusa el pool de
+  `kubera_mirror`** en vez de abrir uno propio: ese pool está acotado a 6
+  conexiones a propósito (el 23-jul se perdieron 60 eventos por
+  `TooManyConnections` con un pool de 3).
+- **Tres endpoints** en `routers/productos.py`: `PUT`/`GET` por canal y un resumen
+  para pintar las pestañas sin traerse los documentos.
+- **Botón en el Estudio**, en todos los canales menos General — General ya tiene
+  el suyo y su destino es WooCommerce, la fuente de verdad del canal web.
+
+**FUSIONA, no reemplaza.** El panel manda una pestaña a la vez: si guardar los
+highlights borrara los bullets, sería peor que no guardar. El upsert hace
+`contenido || excluded.contenido`, y hay un `reemplazar` para el único caso donde
+hace falta — borrar un campo.
+
+**Se retiran `enrich.ai_content` y `enrich.ai_attributes`.** La 0010 se escribió el
+10-ago suponiendo que este contenido sería de IA. Al leer los publicadores resultó
+falso: es MEZCLADO —copiado de Woo, escrito a mano, constante del código, o
+generado— y su propia columna `origen` (woo|const|ia|calc) ya lo anticipaba.
+Reusarla habría dejado `flags`, `modelo_ia`, `error_texto` y `generado_at` vacías:
+exactamente cómo nacieron `core.products.parent_sku` y `has_variations`, columnas
+muertas que alguien usó creyéndolas vivas y produjeron 74 de 292 filas falsas en
+un reporte de Inmovilizado. Ambas verificadas en **0 filas y 0 lectores** dentro
+de la misma transacción del `drop`.
+
+**Además, dos correcciones en el publicador de Amazon:**
+
+- **`item_highlights` se conecta.** `campos["highlights"]` YA llegaba del frontend
+  (`routers/publicar.py:29`) y nadie lo leía; el comentario de
+  `publicar_ready.py:596` decía "bullets **y highlights**… pisan los que genera el
+  mapper" pero solo se pisaban los bullets. El nombre real del atributo **no se
+  pudo verificar** (sin esquemas cacheados ni credenciales de Amazon en local), y
+  como `_amazon_attrs_final` filtra contra `schema["properties"]`, un nombre
+  inventado se descarta EN SILENCIO. Así que se prueba contra el esquema real del
+  productType y, si ninguno encaja, se registra un warning **con los nombres que
+  ese esquema sí ofrece**: el bueno sale en la primera corrida en vez de nunca.
+- **El país de origen se unifica en `"MX"`.** Había TRES valores: `"CN"` en el
+  mapper vendorizado, `"MX"` en el mapeo propio, `["China"]` en Walmart. Y dentro
+  de Amazon no eran dos opciones sino una bifurcación silenciosa —
+  `_amazon_attrs_final` usa el mapper como primario y el mapeo propio como respaldo
+  **cuando la BD de WordPress no contesta**, y los 403 intermitentes de Hostinger
+  (pendiente #1) hacen que ese respaldo sí se use. El país declarado dependía del
+  estado de la red al publicar. Se corrige en el adaptador, no en `vendor/`
+  (regla 1). Decisión de Eduardo; es declaración aduanal y los tres sitios donde
+  vive quedan anotados en el comentario.
+
+**`CAMPOS_POR_CANAL.md`** — inventario de qué campos manda cada canal, levantado
+del código de los publicadores y no de la documentación. Es el insumo para diseñar
+`channel_requirements`. Sus cuatro afirmaciones falsas de la primera versión quedan
+marcadas con lo que sí dice el código, no borradas.
+
+**Verificado.** Sandbox recreado con las 15 migraciones (`--recrear`):
+`columnas_diferentes: []` en las otras 42 tablas. Viaje redondo con escrituras
+reales contra la tabla nueva — fusiona sin borrar, conserva la categoría cuando el
+guardado no la manda, y la FK rechaza un SKU que no está en el maestro (el endpoint
+lo traduce a un 409 legible). `tsc --noEmit` limpio, `py_compile` OK. Aplicada en
+producción con pre-chequeo de 0 filas dentro de la misma transacción.
+
+**Aviso sobre `schema_manifest.json`:** se regeneró contra producción y eso destapa
+que las tablas `enrich.market_*` fueron reestructuradas fuera de las migraciones
+(`market_search_term` con 464 filas sin DDL en archivo, y `termino_id` en tres
+tablas donde la 0011 pone texto). **No es de este cambio** — `channel_content` no
+aparece en ninguna diferencia. El candado de paridad no se rompió: estaba dando
+falso verde con un manifiesto viejo. Queda como pendiente con dueño aparte.
+Versión 0.108.0.

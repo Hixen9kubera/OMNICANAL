@@ -293,5 +293,75 @@ async def guardar_contenido(sku: str, req: ContenidoReq):
     return {"ok": True, "sku": sku, "wc_id": wc_id}
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CONTENIDO POR CANAL — lo que el Estudio edita antes de publicar
+#
+# El endpoint de arriba (`POST /{sku}/contenido`) guarda el canal GENERAL en
+# WooCommerce y no recibe canal. Estos tres son el resto: guardan en
+# `enrich.channel_content`, con llave (sku, canal, cuenta).
+#
+# Por qué hacían falta: el Estudio ya generaba contenido por canal (los 6
+# generadores de Amazon, 3 de ML, 1 de TikTok) y no tenía dónde guardarlo — si
+# no publicabas en la misma sesión, se perdía.
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ContenidoCanalReq(BaseModel):
+    # Llaves CANÓNICAS del panel: titulo, descripcion, bullets, highlights,
+    # atributos… NO los nombres nativos del canal (`item_name`, `productName`).
+    # La traducción vive en el publicador.
+    contenido: dict
+    # Por campo: woo | ia | manual | calc. Es lo que deja saber qué revisar.
+    origen: dict | None = None
+    categoria: str | None = None
+    spec_version: str | None = None
+    hash_base: str | None = None
+    # Por omisión FUSIONA: mandar solo {"highlights": "..."} conserva el resto.
+    # true pisa el documento entero — el único modo de BORRAR un campo.
+    reemplazar: bool = False
+
+
+@router.put("/{sku}/canal/{canal}/contenido")
+async def guardar_contenido_canal(sku: str, canal: str, req: ContenidoCanalReq,
+                                  cuenta: str = Query("")):
+    """Guarda el contenido de un SKU para un canal. Fusiona salvo `reemplazar`."""
+    from services import channel_content
+
+    if not es_canal_valido(canal):
+        raise HTTPException(400, f"Canal '{canal}' inválido.")
+    res = await channel_content.guardar(
+        sku, canal, req.contenido, cuenta=cuenta, origen=req.origen,
+        categoria=req.categoria, spec_version=req.spec_version,
+        hash_base=req.hash_base, reemplazar=req.reemplazar,
+    )
+    if not res.get("ok"):
+        # 409: el caso normal es el SKU que aún no está en core.products (lo
+        # agrega el cron de las 06:15). No es culpa del cliente ni del servidor.
+        raise HTTPException(409, res.get("motivo") or "No se pudo guardar.")
+    return res
+
+
+@router.get("/{sku}/canal/{canal}/contenido")
+async def leer_contenido_canal(sku: str, canal: str, cuenta: str = Query("")):
+    """El contenido guardado. `existe:false` si nunca se guardó nada."""
+    from services import channel_content
+
+    if not es_canal_valido(canal):
+        raise HTTPException(400, f"Canal '{canal}' inválido.")
+    doc = await channel_content.leer(sku, canal, cuenta)
+    if doc is None:
+        return {"existe": False, "sku": sku, "canal": canal, "cuenta": cuenta,
+                "contenido": {}, "origen": {}}
+    return {"existe": True, **doc}
+
+
+@router.get("/{sku}/canales/contenido")
+async def resumen_contenido_canales(sku: str):
+    """Qué canales tienen contenido y cuántos campos — para pintar las pestañas
+    sin traerse los documentos completos."""
+    from services import channel_content
+
+    return {"sku": sku, "canales": await channel_content.resumen(sku)}
+
+
 def _paginas(total: int, per_page: int) -> int:
     return max(1, (total + per_page - 1) // per_page)

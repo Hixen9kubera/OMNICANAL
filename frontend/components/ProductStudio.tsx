@@ -52,6 +52,7 @@ import {
   galeriaProducto,
   guardarCategoriaML,
   guardarContenido,
+  guardarContenidoCanal,
   guardarGtin,
   mejorarIA,
   mensajeDeError,
@@ -163,6 +164,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // Guardar contenido (título/descripción/atributos) a WooCommerce — canal General.
   const [guardandoContenido, setGuardandoContenido] = useState(false);
   const [contenidoMsg, setContenidoMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Guardado del contenido POR CANAL al servidor (enrich.channel_content).
+  // Estado propio y no compartido con el de arriba: son dos destinos distintos
+  // (WooCommerce vs BD kubera) y pueden fallar por separado.
+  const [subiendoCanal, setSubiendoCanal] = useState(false);
+  const [canalMsg, setCanalMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
   // Al abrir/cambiar de producto: cargar la galería (con ids) y limpiar estado.
   useEffect(() => {
@@ -900,6 +906,44 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       setContenidoMsg({ ok: false, texto: "No se pudo guardar el contenido." });
     } finally {
       setGuardandoContenido(false);
+    }
+  }
+
+  // Sube el contenido del canal ABIERTO a la BD (enrich.channel_content).
+  //
+  // Hasta hoy esto vivía solo en el localStorage de este navegador
+  // (studioStore.ts): sobrevivía al recargar, pero no salía de esta máquina —
+  // ni el publicador ni el resto del equipo lo veían. Esto lo sube.
+  //
+  // Manda SOLO los campos con contenido: el backend fusiona, así que subir la
+  // pestaña de Amazon no borra lo que ya hubiera de otro campo.
+  async function subirContenidoCanal() {
+    if (!sku) return;
+    const contenido: Record<string, unknown> = {};
+    if (titulo.trim()) contenido.titulo = titulo.trim();
+    if (descripcion.trim()) contenido.descripcion = descripcion.trim();
+    if (highlights.trim()) contenido.highlights = highlights.trim();
+    if (bullets.some((b) => b.trim())) contenido.bullets = bullets.filter((b) => b.trim());
+    if (atributos.length) contenido.atributos = atributos;
+
+    if (!Object.keys(contenido).length) {
+      setCanalMsg({ ok: false, texto: "No hay contenido que guardar en esta pestaña." });
+      return;
+    }
+    setSubiendoCanal(true);
+    setCanalMsg(null);
+    try {
+      const r = await guardarContenidoCanal(sku, canal, contenido, {
+        cuenta: canal === "mercado_libre" ? cuentaSel || "" : "",
+      });
+      setCanalMsg({ ok: true, texto: `Guardado para ${canalInfo?.label ?? canal}: ${r.campos} campo(s).` });
+    } catch (e) {
+      // El caso esperable es 409: el SKU todavía no está en core.products
+      // (lo agrega el cron etl-core-products de las 06:15 UTC). El backend
+      // manda ese motivo en texto, así que se muestra tal cual.
+      setCanalMsg({ ok: false, texto: mensajeDeError(e, "No se pudo guardar el contenido del canal.") });
+    } finally {
+      setSubiendoCanal(false);
     }
   }
 
@@ -1705,6 +1749,34 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   )}
                   <p className="mt-1.5 text-center text-[11px] text-slate-400">
                     Guarda <strong>título, descripción y atributos</strong> en WooCommerce. Los borradores por canal se guardan solos y sobreviven al recargar la página.
+                  </p>
+                </section>
+              )}
+
+              {/* GUARDAR EN EL SERVIDOR — todos los canales MENOS General.
+                  General ya tiene su botón arriba y su destino es WooCommerce,
+                  que es la fuente de verdad del canal web. El resto no tenía
+                  dónde persistir: el borrador vivía solo en este navegador. */}
+              {!esGeneral && (
+                <section className="rounded-2xl border border-slate-200 bg-white p-4">
+                  <button
+                    onClick={subirContenidoCanal}
+                    disabled={subiendoCanal || !data}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
+                  >
+                    {subiendoCanal ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+                    {subiendoCanal ? "Guardando…" : `Guardar contenido de ${canalInfo?.label ?? canal}`}
+                  </button>
+                  {canalMsg && (
+                    <div className={["mt-2 flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium", canalMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"].join(" ")}>
+                      {canalMsg.ok ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                      {canalMsg.texto}
+                    </div>
+                  )}
+                  <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                    Guarda este contenido <strong>en el servidor</strong>, no solo en este navegador.
+                    Sin esto, lo que generas se pierde si no publicas en la misma sesión.
                   </p>
                 </section>
               )}

@@ -145,7 +145,9 @@
      "sugerido_full:integer:null",
      "enviable_hoy:integer:null",
      "semaforo:text:null"
-    ]
+    ],
+    "constraints": {},
+    "rls": false
    },
    "sales_daily": {
     "columnas": [
@@ -158,7 +160,9 @@
      "units_sold:bigint:null",
      "revenue:numeric:null",
      "sale_fee:numeric:null"
-    ]
+    ],
+    "constraints": {},
+    "rls": false
    },
    "sales_daily_completa": {
     "columnas": [
@@ -172,7 +176,9 @@
      "revenue:numeric:null",
      "sale_fee:numeric:null",
      "fuente:text:null"
-    ]
+    ],
+    "constraints": {},
+    "rls": false
    }
   },
   "core": {
@@ -324,7 +330,9 @@
      "ganancia_neta:numeric:null",
      "roi_pct:numeric:null",
      "descuento_pct:numeric:null"
-    ]
+    ],
+    "constraints": {},
+    "rls": false
    },
    "costos_validados": {
     "columnas": [
@@ -397,7 +405,9 @@
      "sku:USER-DEFINED:null",
      "calculado_at:timestamp with time zone:null",
      "costo_actualizado_en:timestamp with time zone:null"
-    ]
+    ],
+    "constraints": {},
+    "rls": false
    },
    "pricing_params": {
     "columnas": [
@@ -412,40 +422,20 @@
    }
   },
   "enrich": {
-   "ai_attributes": {
-    "columnas": [
-     "sku:USER-DEFINED:notnull",
-     "attributes:jsonb:null",
-     "is_valid:boolean:null",
-     "model_used:text:null",
-     "updated_at:timestamp with time zone:notnull"
-    ],
-    "constraints": {
-     "FOREIGN KEY": 1,
-     "PRIMARY KEY": 1
-    },
-    "rls": true
-   },
-   "ai_content": {
+   "channel_content": {
     "columnas": [
      "sku:USER-DEFINED:notnull",
      "canal:text:notnull",
      "cuenta:text:notnull",
      "account_id:uuid:null",
      "categoria:text:null",
-     "payload:jsonb:notnull",
+     "contenido:jsonb:notnull",
      "origen:jsonb:null",
-     "flags:jsonb:null",
-     "modelo_ia:text:null",
      "spec_version:text:null",
-     "estado:text:notnull",
-     "error_texto:text:null",
-     "hash_woo:character:null",
-     "generado_at:timestamp with time zone:null",
+     "hash_base:character:null",
      "updated_at:timestamp with time zone:notnull"
     ],
     "constraints": {
-     "CHECK": 1,
      "FOREIGN KEY": 3,
      "PRIMARY KEY": 1
     },
@@ -520,12 +510,12 @@
      "unidades_30d:integer:null",
      "fuente_unidades:text:null",
      "periodo:date:null"
-    ]
+    ],
+    "constraints": {},
+    "rls": false
    },
    "market_search_results": {
     "columnas": [
-     "canal:text:notnull",
-     "termino:text:notnull",
      "externo_id:text:notnull",
      "posicion:integer:null",
      "titulo:text:null",
@@ -536,7 +526,8 @@
      "rating:numeric:null",
      "es_nuestro:boolean:null",
      "sku_nuestro:USER-DEFINED:null",
-     "capturado_en:timestamp with time zone:notnull"
+     "capturado_en:timestamp with time zone:notnull",
+     "termino_id:bigint:notnull"
     ],
     "constraints": {
      "FOREIGN KEY": 2,
@@ -544,18 +535,35 @@
     },
     "rls": true
    },
+   "market_search_term": {
+    "columnas": [
+     "id:bigint:notnull",
+     "canal:text:notnull",
+     "termino:text:notnull",
+     "origen:text:null",
+     "medido_en:timestamp with time zone:null",
+     "resultados:integer:null",
+     "creado_en:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 1,
+     "PRIMARY KEY": 1,
+     "UNIQUE": 1
+    },
+    "rls": true
+   },
    "market_sku_config": {
     "columnas": [
      "sku:USER-DEFINED:notnull",
      "canal:text:notnull",
-     "termino_general:text:null",
      "termino_origen:text:null",
      "activo:boolean:notnull",
      "categoria_id_real:text:null",
-     "updated_at:timestamp with time zone:notnull"
+     "updated_at:timestamp with time zone:notnull",
+     "termino_id:bigint:null"
     ],
     "constraints": {
-     "FOREIGN KEY": 2,
+     "FOREIGN KEY": 3,
      "PRIMARY KEY": 1
     },
     "rls": true
@@ -573,18 +581,22 @@
      "termino_general:text:null",
      "termino_origen:text:null",
      "activo:boolean:null",
-     "imagen:text:null"
-    ]
+     "imagen:text:null",
+     "padre_id:text:null",
+     "padre_nombre:text:null"
+    ],
+    "constraints": {},
+    "rls": false
    },
    "market_terms": {
     "columnas": [
      "canal:text:notnull",
      "categoria_id:text:notnull",
-     "posicion:integer:notnull",
-     "termino:text:notnull",
+     "terminos:jsonb:notnull",
      "capturado_en:timestamp with time zone:notnull"
     ],
     "constraints": {
+     "CHECK": 1,
      "FOREIGN KEY": 1,
      "PRIMARY KEY": 1
     },

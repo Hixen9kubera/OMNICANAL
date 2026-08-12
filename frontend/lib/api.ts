@@ -621,6 +621,61 @@ export function guardarContenido(
   return postJSON(`/api/productos/${encodeURIComponent(sku)}/contenido`, body);
 }
 
+/* ── CONTENIDO POR CANAL (enrich.channel_content) ─────────────────────
+ * `guardarContenido` de arriba escribe a WooCommerce y es SOLO del canal
+ * General. Estas dos son el resto de los canales: el contenido editado por
+ * canal (título, descripción, bullets, highlights, atributos) sube al servidor
+ * en vez de quedarse en el localStorage de este navegador.
+ *
+ * Las llaves del objeto son las CANÓNICAS del panel — el backend traduce a
+ * `item_name` / `productName` / `goodsName` al publicar.
+ */
+
+export interface ContenidoCanal {
+  existe: boolean;
+  sku: string;
+  canal: string;
+  cuenta: string;
+  categoria?: string | null;
+  contenido: Record<string, unknown>;
+  origen: Record<string, string>;
+  updated_at?: string | null;
+}
+
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetchSesion(
+    `${BASE}${path}`,
+    { method: "PUT", body: JSON.stringify(body) },
+    { "Content-Type": "application/json" },
+  );
+  if (!res.ok) throw await errorDeRespuesta(res, path);
+  return res.json() as Promise<T>;
+}
+
+export function guardarContenidoCanal(
+  sku: string,
+  canal: string,
+  contenido: Record<string, unknown>,
+  opts?: { cuenta?: string; origen?: Record<string, string>; categoria?: string },
+): Promise<{ ok: boolean; sku: string; canal: string; campos: number }> {
+  const q = opts?.cuenta ? `?cuenta=${encodeURIComponent(opts.cuenta)}` : "";
+  return putJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/${encodeURIComponent(canal)}/contenido${q}`,
+    { contenido, origen: opts?.origen, categoria: opts?.categoria },
+  );
+}
+
+export function leerContenidoCanal(
+  sku: string,
+  canal: string,
+  cuenta = "",
+): Promise<ContenidoCanal> {
+  const q = cuenta ? `?cuenta=${encodeURIComponent(cuenta)}` : "";
+  return getJSON<ContenidoCanal>(
+    `/api/productos/${encodeURIComponent(sku)}/canal/${encodeURIComponent(canal)}/contenido${q}`,
+  );
+}
+
 export const API_BASE = BASE;
 
 /* ── VENTAS ──────────────────────────────────────────────────────── */

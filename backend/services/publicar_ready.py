@@ -32,6 +32,19 @@ log = logging.getLogger("omnicanal.publicar_ready")
 
 _CUENTAS_ML = publisher_core.ML_CUENTAS  # ["SANCORFASHION", "BEKURA"]
 
+# Nombres posibles del atributo de "Item Highlights" en el esquema de Amazon,
+# en orden de preferencia. NO están verificados contra un esquema real: no hay
+# esquemas cacheados en el repo ni credenciales de Amazon en local. Se prueban
+# contra `schema["properties"]` en `atributos_amazon`, y si ninguno encaja se
+# registra un warning con los nombres que ese productType SÍ ofrece — así el
+# nombre bueno sale en la primera corrida. Al confirmarlo, dejar solo ése.
+_AMZ_HIGHLIGHTS_CANDIDATOS = (
+    "item_highlights",
+    "product_highlights",
+    "key_product_features",
+    "special_feature",
+)
+
 # Intentos por cuenta al crear en ML (cubre fallos transitorios; los errores
 # deterministas de configuración cortan antes — ver crear_ml).
 MAX_INTENTOS_ML = 3
@@ -604,6 +617,60 @@ async def atributos_amazon(sku: str, wc_id: int, campos: dict[str, Any], mp: str
             {"value": str(b)[:500], "language_tag": "es_MX", "marketplace_id": mp}
             for b in bullets[:5]
         ]
+
+    # ITEM HIGHLIGHTS — el generador del panel existía y su texto se tiraba.
+    #
+    # `campos["highlights"]` YA llegaba del frontend (routers/publicar.py:29,
+    # frontend/lib/studioStore.ts:16) y nadie lo leía. El comentario de arriba
+    # dice "bullets/highlights… pisan los que genera el mapper", pero solo se
+    # pisaban los bullets.
+    #
+    # POR QUÉ SE ELIGE EL NOMBRE CONTRA EL ESQUEMA Y NO SE ESCRIBE FIJO:
+    # el nombre real del atributo NO se pudo verificar — no hay esquemas
+    # cacheados en el repo ni credenciales de Amazon en local. Y `_amazon_attrs_final`
+    # filtra por `schema["properties"]` (publicar.py:857), así que un nombre
+    # inventado se DESCARTA EN SILENCIO y parecería que funciona. Eso es
+    # justamente el modo de fallo que ya nos costó dos hallazgos falsos hoy.
+    #
+    # Así que: se prueba contra el esquema real del productType y, si ninguno
+    # encaja, se avisa en el log CON los nombres que ese esquema sí ofrece. El
+    # nombre correcto aparece en la primera corrida en vez de nunca.
+    highlights = (campos.get("highlights") or "").strip()
+    if highlights:
+        props = (schema or {}).get("properties") or {}
+        destino = next((c for c in _AMZ_HIGHLIGHTS_CANDIDATOS if c in props), None)
+        if destino:
+            attrs[destino] = [{"value": highlights[:500],
+                               "language_tag": "es_MX", "marketplace_id": mp}]
+        elif props:
+            parecidos = sorted(k for k in props
+                               if "highlight" in k or "feature" in k)
+            log.warning(
+                "highlights de %s SIN DESTINO: el esquema de %s no acepta %s. "
+                "Candidatos en ese esquema: %s",
+                sku, product_type, _AMZ_HIGHLIGHTS_CANDIDATOS,
+                parecidos or "(ninguno con 'highlight' o 'feature')",
+            )
+        # Sin esquema no se arriesga: el filtro de abajo lo descartaría igual.
+
+    # PAÍS DE ORIGEN — se unifica en "MX", que es el valor de OMNICANAL.
+    #
+    # El mapper vendorizado pone "CN" (vendor/amazon_ready/attribute_mapper.py:222)
+    # y el mapeo propio pone "MX" (publicar.py:698 y _AMZ_DEFAULTS:747). Como
+    # `_amazon_attrs_final` usa el mapper como PRIMARIO y el mapeo propio como
+    # RESPALDO cuando WPDB no responde, el mismo producto se publicaba
+    # declarando CN o MX según si la BD de WordPress contestó — y los 403
+    # intermitentes de Hostinger (pendiente #1 de CLAUDE.md) hacen que ese
+    # respaldo sí se use.
+    #
+    # Se corrige AQUÍ y no en el vendor por la regla 1 de la casa: `vendor/` no
+    # se toca, se ajustan los adaptadores. Mismo patrón que los bullets de
+    # arriba.
+    #
+    # Decisión de Eduardo (12-ago-2026). Es una declaración aduanal: si se
+    # revierte, el valor correcto se cambia en este bloque y en los dos sitios
+    # de publicar.py, que son los tres lugares donde vive.
+    attrs["country_of_origin"] = [{"value": "MX", "marketplace_id": mp}]
 
     # Imágenes: Amazon las ingiere por URL pública (las MISMAS que usa ML). El
     # mapper del vendor no las agrega, así que se inyectan aquí (en el adaptador):
