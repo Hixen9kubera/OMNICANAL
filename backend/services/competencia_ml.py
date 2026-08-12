@@ -76,17 +76,23 @@ def item_id_desde_url(url: str | None) -> str | None:
 # El TTL es corto contra una vida de ~6 h del token, y el 401 invalida la caché
 # antes de refrescar, así que un token renovado por fuera se recoge enseguida.
 _TTL_TOKEN = 300.0          # segundos
-_cache_token: dict[str, tuple[float, str]] = {}
+# Caché NEGATIVA: si el token no se pudo leer, no reintentar en cada llamada.
+# Sin esto el fallo se retroalimenta — MySQL sin cuota hace fallar la lectura, y
+# reintentarla 1,900 veces es justo lo que MANTIENE la cuota agotada. Con 30 s se
+# recupera rápido cuando la cuota vuelve, sin convertir un tropiezo en un bucle.
+_TTL_SIN_TOKEN = 30.0
+_cache_token: dict[str, tuple[float, str | None]] = {}
 
 
 def _token(cuenta: str) -> str | None:
     import time as _t
     hit = _cache_token.get(cuenta)
-    if hit and (_t.monotonic() - hit[0]) < _TTL_TOKEN:
-        return hit[1]
+    if hit:
+        edad, valor = _t.monotonic() - hit[0], hit[1]
+        if edad < (_TTL_TOKEN if valor else _TTL_SIN_TOKEN):
+            return valor
     tok = meli._access_token(cuenta)
-    if tok:
-        _cache_token[cuenta] = (_t.monotonic(), tok)
+    _cache_token[cuenta] = (_t.monotonic(), tok)
     return tok
 
 
