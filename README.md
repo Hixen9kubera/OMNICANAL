@@ -6576,3 +6576,18 @@ La resiliencia queda intacta: kubera caída → MySQL absorbe + evento a la cola
 no depende de los flags.
 
 Sin migraciones. Versión 0.107.0.
+
+### v0.107.1 — Costos y Pedidos al vigilante de retirados (o dos falsas alarmas a las 2 a.m.)
+
+Cabo suelto de la v0.107.0, señalado por Eduardo antes de que ocurriera:
+`costing-deltas` y `orders-deltas` entran a `_DOMINIOS_RETIRADOS`. Su cron dejó
+de escribir acta a propósito, así que sin esto el vigilante de ausencias
+(08:00 UTC) habría avisado *"Acta de Costos NO generada hoy — revisar el cron
+deltas en Railway"* y mandado a revisar dos crons apagados adrede. Es
+exactamente lo que pasó con channel el 12-ago a las 02:06 CDMX.
+
+Siguen listados en `_DOMINIOS_DELTAS`: /migracion conserva el expediente y
+muestra sus rachas cumplidas (27/14 y 21/14), solo dejan de vigilarse.
+
+Regla que queda escrita en el código: **el dominio se apunta como retirado en el
+mismo commit que lo apaga.** Versión 0.107.1.

@@ -68,7 +68,12 @@ OBJETIVO_RACHA = 14  # regla de corte de la migración: 14 actas seguidas en cer
 # =false y el cron convertido en aviso de retiro). El 12-ago a las 02:06 CDMX el
 # bot avisó "Acta de Channel NO generada hoy — revisar el cron deltas en
 # Railway" y mandó a revisar un cron apagado a propósito.
-_DOMINIOS_RETIRADOS = {"channel-deltas"}
+#
+# costing-deltas y orders-deltas: retirados el 12-ago-2026 en la v0.107.0, con
+# sus rachas cumplidas (27/14 y 21/14). Se apuntan AQUÍ EN EL MISMO COMMIT que
+# los apaga: el vigilante corre a las 08:00 UTC del día siguiente, así que
+# olvidarlo cuesta dos falsas alarmas a las 2 de la mañana — una por dominio.
+_DOMINIOS_RETIRADOS = {"channel-deltas", "costing-deltas", "orders-deltas"}
 
 
 @router.get("/deltas")
