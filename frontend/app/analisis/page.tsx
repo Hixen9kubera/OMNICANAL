@@ -53,6 +53,10 @@ interface PrecioCanal {
    cobró algo a este SKU en el período. */
 interface ComisionCanal {
   canal: string; cuenta: string; uds: number; comision_unit: number;
+  /* De dónde salió: `pedidos` es el cobro orden por orden, que solo existe
+     desde el 15/16-jul; `historico` es el agregado diario, que cubre desde
+     abril pero reparte el cobro entre SKUs con menos precisión. */
+  origen?: "pedidos" | "historico";
 }
 /* El envío es por CUENTA (la bodega que despachó), no por canal: `cubiertas`
    son las piezas cuyo embarque ya se consultó a ML — el resto sigue en
@@ -199,7 +203,7 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   comision: { titulo: "Comisión por unidad", texto: "Lo que Mercado Libre cobró DE VERDAD por vender una pieza en el período, no una tasa supuesta: sale de la comisión registrada en cada pedido, así que ya trae la del canal donde se vendió. Sale vacía cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía la reporta en cero." },
   envio: { titulo: "Envío por unidad", texto: "Lo que Mercado Libre te cobró por mandar el paquete, promediado por pieza. Cuando dice REAL es el cobro del embarque consultado a Mercado Libre; cuando dice EST es el estimado por peso y medidas, que se equivoca en las dos direcciones y se va sustituyendo solo conforme se consultan los pedidos. El asterisco avisa que solo una parte de las piezas ya tiene el cobro real. En carritos con varios productos el cobro del paquete se reparte entre las piezas." },
   costo_final: { titulo: "Costo final", texto: "Lo que de verdad cuesta vender una pieza: costo base + comisión + envío. Es el número contra el que se compara el precio para saber si el producto deja dinero. No incluye el almacenamiento en FULL, que Mercado Libre cobra por mes y no por venta. Cuando sale en ÁMBAR con la nota «sin envío capturado», a ese producto le falta el costo de envío —no tiene el estimado por peso y medidas ni ha vendido un pedido del que leer el cobro real—, así que ese costo final es solo costo base + comisión y el margen de al lado sale optimista." },
-  margen_neto: { titulo: "Margen", texto: "Lo que queda después de TODO: (precio real − costo final) ÷ precio real, con la comisión y el envío ya descontados. Este es el margen que de verdad queda; abajo va lo que deja cada pieza en pesos. Sale vacío cuando falta el costo del producto o cuando no hubo ventas en el período (sin venta no hay comisión que leer), y también en lo que solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Cuando el porcentaje sale en ÁMBAR con ⚠, el costo capturado supera 3 veces el precio al que se vendió: el margen se muestra igual, pero sale de un costo poco creíble, así que léelo como referencia y no como un hecho — el problema está en el dato, no en la venta. Haz clic para ver el desglose por canal." },
+  margen_neto: { titulo: "Margen", texto: "Lo que queda después de TODO: (precio real − costo final) ÷ precio real, con la comisión y el envío ya descontados. Este es el margen que de verdad queda; abajo va lo que deja cada pieza en pesos. Sale vacío cuando falta el costo del producto o cuando no hubo ventas en el período (sin venta no hay comisión que leer), y también en lo que solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Cuando el porcentaje sale en ÁMBAR con ⚠, el costo capturado es más de 1.5 veces el precio al que se vendió: el margen se muestra igual, pero sale de un costo poco creíble, así que léelo como referencia y no como un hecho — el problema está en el dato, no en la venta. Haz clic para ver el desglose por canal." },
   ganancia: { titulo: "Ganancia del período", texto: "Cuánto dinero dejó ese producto en el período completo: lo que gana una pieza por las piezas que se vendieron. Es la columna para ordenar cuando la pregunta es qué sostiene el negocio en pesos, no en porcentaje — un margen de 60% sobre tres piezas pesa menos que uno de 15% sobre trescientas. Vacía si no hubo ventas en el período." },
 };
 
@@ -706,15 +710,43 @@ function ComisionUnit({ fila }: { fila: Fila }) {
           {lineas.length > 1 && (
             <Renglon etiqueta="Promedio ponderado" valor={`${fMoney(v, 2)}/u`} />
           )}
+          {/* Este renglón culpaba a Amazon de TODAS las piezas sin comisión, y
+              casi nunca era cierto: en TEC-1284-NEG-27" eran 156 piezas, y no
+              son de Amazon sino de junio, cuando order_items todavía no
+              capturaba. Como desde el payload no se distingue una causa de la
+              otra, se nombran las dos en vez de afirmar la equivocada. */}
           {sinComision > 0 && (
             <span className="mt-1.5 block text-slate-400">
-              {fNum(sinComision)} piezas del período no traen comisión: Amazon
-              todavía la reporta en cero.
+              {fNum(sinComision)} piezas del período no traen comisión: o son de
+              Amazon, que aún la reporta en cero, o son anteriores al 15 de
+              julio, cuando todavía no se guardaba el detalle de cada pedido.
             </span>
           )}
-          <span className="mt-1.5 block text-slate-400">
-            Es la comisión REAL de los pedidos, no una tasa estimada.
-          </span>
+          {/* Los dos orígenes NO valen lo mismo y la celda no puede callarlo:
+              el cobro orden por orden es exacto; el agregado diario reparte
+              bien el total del mes pero con ruido al bajarlo a cada SKU. */}
+          {lineas.some((l) => l.origen === "historico") ? (
+            <span className="mt-1.5 block text-amber-300">
+              Sale del histórico diario, no de los pedidos: antes del 15 de
+              julio no hay detalle orden por orden. El total del mes es
+              confiable; el reparto entre productos es aproximado.
+              {/* La edad va AQUÍ y no solo en su columna porque las dos señales
+                  se leen juntas o no se leen: de los 283 SKUs cuyo margen sale
+                  del histórico, 280 no tienen una sola venta reciente —mediana
+                  de 66 días sin vender, contra 7 de los demás—. El riesgo es
+                  ordenar por margen, ver un −141% y tratarlo como una fuga
+                  activa de un producto que lleva mes y medio quieto. */}
+              {fila.edad_sin_venta_d != null && fila.edad_sin_venta_d > 30 && (
+                <> Y no vende desde hace {fNum(fila.edad_sin_venta_d)} días: este
+                margen es un cierre de cuentas de algo que ya paró, no una señal
+                de cómo va hoy.</>
+              )}
+            </span>
+          ) : (
+            <span className="mt-1.5 block text-slate-400">
+              Es la comisión REAL de los pedidos, no una tasa estimada.
+            </span>
+          )}
         </>
       }
     >

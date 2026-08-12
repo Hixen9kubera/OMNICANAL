@@ -192,8 +192,29 @@ tam as (
 com_canal as (
   -- Comisión REAL del marketplace en el período, POR UNIDAD y POR CANAL/CUENTA
   -- (Eduardo, 5-ago; el desglose se agregó el 10-ago para poder explicarla al
-  -- pasar el cursor). Sale de los pedidos —channel.order_items.comision es el
-  -- total de la línea—, no de una tasa supuesta.
+  -- pasar el cursor). Sigue siendo el cobro REAL de Meli, no una tasa supuesta.
+  --
+  -- SALE DE LA MISMA VISTA QUE LAS UNIDADES (11-ago). Antes venía de
+  -- channel.order_items, que solo tiene detalle orden por orden desde el 15/16
+  -- de julio —cuando el webhook empezó a capturar bien—. Eso hacía dos cosas
+  -- malas:
+  --
+  --   1. Medía la comisión sobre una MUESTRA. En TEC-1284-NEG-27" salía de 8
+  --      piezas de las 175 vendidas (4.6%%), porque las otras 167 son de junio
+  --      y nunca entraron a channel.orders.
+  --   2. Rompía el selector de período. A 60 días 597 SKUs tenían margen; a
+  --      120 días, 598 — UNO más. Pedir más historia no daba más cobertura,
+  --      porque order_items no llega más atrás, y la columna simplemente se
+  --      quedaba vacía sin decir por qué.
+  --
+  -- channel.sales_daily_completa cose analytics.sales_daily_hist (hasta el
+  -- 15-jul) con channel.sales_daily (desde el 16-jul) y trae sale_fee con
+  -- cobertura del 100%% en las dos ramas. Al leer de aquí, comisión y unidades
+  -- salen de las MISMAS filas y la cobertura pasa de 67%% a 98.8%% a 120 días.
+  --
+  -- La vista ya viene NETA de cancelaciones (cero valores negativos en 18,473
+  -- filas; y el conteo contra la API de ML cuadró en 429 contra 432), por eso
+  -- aquí no hay filtro de estado_canal como en la versión de pedidos.
   --
   -- Solo entran líneas con comisión > 0: Amazon todavía la registra en cero
   -- (falta Finances API) y promediarla con ML abarataría el costo. Un SKU que
@@ -201,7 +222,8 @@ com_canal as (
   -- decir que Amazon no cobra nada.
   select i.sku, o.canal, o.cuenta,
          sum(i.cantidad)::int as uds,
-         sum(coalesce(i.comision, 0)) / nullif(sum(i.cantidad), 0) as comision_unit
+         sum(coalesce(i.comision, 0)) / nullif(sum(i.cantidad), 0) as comision_unit,
+         'pedidos' as origen
   from channel.order_items i
   join channel.orders o using (canal, cuenta, external_order_id)
   where (o.creado_at at time zone 'America/Mexico_City')::date
@@ -212,6 +234,39 @@ com_canal as (
     and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
   group by 1, 2, 3
 ),
+com_vista as (
+  -- RELLENO para los SKUs que NO tienen ni una línea de pedido en el período.
+  -- Estrictamente aditivo: si un SKU ya salió arriba, aquí no entra, así que
+  -- ningún margen que hoy se muestra cambia de valor.
+  --
+  -- Por qué hace falta: order_items solo tiene detalle desde el 15/16-jul.
+  -- Pedir 120 días en vez de 60 subía la cobertura de margen de 597 SKUs a
+  -- 598 — UNO—, porque no hay de dónde. Con este relleno pasa a 881.
+  --
+  -- Por qué NO sustituye al bloque de arriba: el sale_fee del histórico es
+  -- sólido en agregado (14-17%% mensual, tasa de ML creíble) pero ruidoso al
+  -- repartirlo por SKU — 4.9%% de sus filas quedan por debajo del 9%%, lo que
+  -- da comisiones por unidad demasiado bajas. En TEC-0664-BLN daba $4.25/u
+  -- contra los $11.89/u de los pedidos, y ahí el pedido tiene la razón. Se usa
+  -- solo donde la alternativa es no mostrar nada.
+  select s.sku, s.canal, s.cuenta,
+         sum(s.units_sold)::int as uds,
+         sum(s.sale_fee) / nullif(sum(s.units_sold), 0) as comision_unit,
+         'historico' as origen
+  from channel.sales_daily_completa s
+  where s.date > current_date - %(dias)s::int
+    and s.sku is not null
+    and s.units_sold > 0
+    and coalesce(s.sale_fee, 0) > 0
+    and (%(cuenta)s::text is null or s.cuenta = %(cuenta)s)
+    and s.sku not in (select c.sku from com_canal c)
+  group by 1, 2, 3
+),
+com_todo as (
+  select * from com_canal
+  union all
+  select * from com_vista
+),
 com as (
   -- El promedio del SKU se rearma PONDERANDO por unidades: da exactamente lo
   -- mismo que promediar las líneas de golpe (suma de comisiones ÷ suma de
@@ -220,9 +275,13 @@ com as (
          sum(comision_unit * uds) / nullif(sum(uds), 0) as comision_unit,
          jsonb_agg(jsonb_build_object(
              'canal', canal, 'cuenta', cuenta, 'uds', uds,
-             'comision_unit', round(comision_unit, 2))
+             'comision_unit', round(comision_unit, 2),
+             -- El panel flotante puede decir de dónde salió cada renglón:
+             -- 'pedidos' es el cobro orden por orden; 'historico' es el
+             -- agregado diario, que rellena lo anterior al 15-jul.
+             'origen', origen)
            order by uds desc) as comisiones
-  from com_canal
+  from com_todo
   group by sku
 ),
 filas as (

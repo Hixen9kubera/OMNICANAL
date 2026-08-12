@@ -6414,3 +6414,78 @@ mínimos de enrich, respaldos presentes) y solo si TODO pasa aplica la 0015
 (`drop … cascade`) y la documenta; ante cualquier falla aborta sin tocar nada.
 Una semana de enfriamiento: la deuda no cobra intereses, el drop sí es
 irreversible. Versión 0.101.0.
+
+### v0.105.0 — Análisis: el margen alcanza hasta abril, y el costo dudoso se marca antes
+
+Dos cambios que se descubrieron juntos investigando por qué la tabla no podía
+mirar más atrás de julio.
+
+**El selector de período no servía para margen.** Pedir 60 días daba 597 SKUs
+con margen; pedir 120 daba **598 — uno más**. La causa: la comisión salía de
+`channel.order_items`, que solo tiene detalle orden por orden desde el 15/16 de
+julio, cuando el webhook empezó a capturar bien. Antes de esa fecha no hay
+pedidos que leer, así que la columna se quedaba vacía sin decir por qué.
+
+Peor: donde sí había datos, medía sobre una MUESTRA. En `TEC-1284-NEG-27"` la
+comisión salía de 8 piezas de las 175 vendidas (4.6%) — las otras 167 son de
+junio y nunca entraron a `channel.orders`.
+
+**Se agregó un relleno, NO una sustitución.** `channel.sales_daily_completa`
+cose `analytics.sales_daily_hist` (hasta el 15-jul) con `channel.sales_daily`
+(desde el 16-jul) y trae `sale_fee` en las dos ramas. Pero la primera versión
+—sustituir una fuente por la otra— se descartó al medirla: de 699 SKUs con las
+dos, solo 53% coincidían dentro de 5%, y las diferencias grandes iban en la
+dirección equivocada. En `TEC-0664-BLN` el histórico daba $4.25/u contra
+$11.89/u de los pedidos; sobre un producto de ~$85 eso es una tasa de 5%, y ML
+no cobra 5%.
+
+El diagnóstico: el `sale_fee` histórico es **sólido en agregado pero ruidoso al
+repartirlo por SKU**.
+
+| fuente | tasa implícita mensual | filas creíbles (9–22%) |
+|---|---|---|
+| hist | 14–17% | 14,908 de 16,066 (92.8%) |
+| vivo | 16% | 4,388 de 4,425 (99.2%) |
+
+Por eso el histórico entra **solo donde no hay ni una línea de pedido**. Medido
+comparando la consulta vieja contra la nueva, fila por fila:
+
+| ventana | ya tenían margen | cambiaron de valor | ganan margen |
+|---|---|---|---|
+| 60 días | 598 | **0** | +107 |
+| 120 días | 598 | **0** | +283 |
+
+Cero regresiones. Y el panel de Comisión declara el origen de cada renglón:
+`pedidos` es el cobro orden por orden, `historico` el agregado diario.
+
+**Los 283 que ganan margen son una autopsia, no un tablero.** De ellos, 280 no
+tienen una sola venta reciente; su mediana es de **66 días sin vender**, contra
+7 de los que ya tenían margen. Son productos que se detuvieron. El riesgo era
+ordenar por margen, ver un −141% y tratarlo como fuga activa. Por eso el aviso
+ámbar del panel dice además desde cuándo no vende, y solo cuando pasa de 30
+días.
+
+**Umbral de costo dudoso: 3× → 1.5×.** Al destapar esos 283, **56 quedaban en
+rojo con un costo entre 1× y 3× el precio**: creíbles a primera vista y sin nada
+que avisara. `TEC-1284-NEG-27"` se vende en $1,960 con un costo de $4,229 (2.2×)
+y mostraba −137.9% como si fuera un producto ruinoso. Las marcadas pasan de 45 a
+96 en la ventana de 60 días. El precio de bajarlo: una liquidación real a menos
+de dos tercios del costo ahora sale marcada aunque el dato esté bien — se aceptó
+ese falso positivo, porque es más barato dudar de un costo correcto que dar por
+bueno uno inventado. La página de Categorías usa el mismo umbral y no cambió:
+ninguna de sus 28 ramas lo cruza, la agregación diluye los costos malos.
+
+**De paso**, el panel de Comisión culpaba a Amazon de TODAS las piezas sin
+comisión. Casi nunca era cierto: en `TEC-1284` eran 156 piezas de junio, no de
+Amazon. Ahora nombra las dos causas posibles en vez de afirmar la equivocada.
+
+**Lo que NO se tocó y queda declarado:** el Excel de categorías sigue leyendo
+`order_items`, así que conserva su límite de julio en adelante. No es descuido —
+su SQL necesita `item_id`, título y precio POR LÍNEA, y la vista es agregada por
+día. Cambiarlo es un rediseño, no un ajuste. Igual `detalle` y `margenes_top`,
+que sí admitirían el mismo tratamiento.
+
+Verificado en el navegador contra el sandbox: los dos orígenes en el panel, el
+marcado en ámbar-600/500 contra una fila normal, el volteo del panel en la
+última fila visible, y Categorías sin ruido nuevo. Sin migraciones y sin
+variables nuevas. Versión 0.105.0.
