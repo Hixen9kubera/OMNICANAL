@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 from config import settings
@@ -45,21 +46,55 @@ TABLA = "enrich.channel_content"
 CANALES = ("general", "mercado_libre", "amazon", "tiktok", "walmart", "temu", "shein")
 
 
+def _dsn() -> str:
+    """
+    La BD kubera. `supabase_db_url` PRIMERO y `kubera_db_url` de respaldo.
+
+    POR QUÉ ESE ORDEN (y no al revés, que fue el primer intento): en producción
+    las dos apuntan a la misma base, pero `env.staging` define SOLO
+    `SUPABASE_DB_URL`. Pedir `kubera_db_url` dejaba este módulo muerto en
+    staging — el guardado respondía "KUBERA_DB_URL no configurada" mientras el
+    resto del panel funcionaba contra el sandbox. Detectado al probar el panel
+    local contra el sandbox.
+    """
+    return settings.supabase_db_url or settings.kubera_db_url
+
+
 def disponible() -> bool:
-    return bool(settings.kubera_db_url)
+    return bool(_dsn())
+
+
+_POOL = None
+_POOL_LOCK = threading.Lock()
 
 
 def _pool():
     """
-    Se REUSA el pool de kubera_mirror en vez de abrir uno propio.
+    Pool propio, chico y perezoso.
 
-    Es la misma base, y ese pool ya está acotado a 6 conexiones a propósito:
-    el 23-jul se perdieron 60 eventos por `TooManyConnections` con un pool de 3
-    (ver el comentario de kubera_mirror._get_pool). Un segundo pool duplicaría
-    el presupuesto contra la misma instancia y reabriría ese problema.
+    El primer intento reusaba el de `kubera_mirror` para no duplicar el
+    presupuesto de conexiones (el suyo está acotado a 6 porque el 23-jul se
+    perdieron 60 eventos por `TooManyConnections`). Pero ese pool se construye
+    sobre `kubera_db_url`, que es justo la variable que falta en staging — así
+    que el reuso ataba este módulo a un ambiente.
+
+    Éste abre como mucho 3 conexiones, `mincached=0` (no abre ninguna hasta que
+    alguien guarda) y `blocking=False` (pool lleno = error registrado, no una
+    espera que cuelgue al panel). El uso es interactivo —una persona dándole a
+    Guardar—, no ráfagas.
     """
-    from services import kubera_mirror
-    return kubera_mirror._get_pool()  # noqa: SLF001 — deliberado, ver arriba
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                import psycopg2
+                from dbutils.pooled_db import PooledDB
+                _POOL = PooledDB(
+                    creator=psycopg2, maxconnections=3, mincached=0,
+                    maxcached=2, blocking=False, ping=1,
+                    dsn=_dsn(), connect_timeout=4,
+                )
+    return _POOL
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -214,13 +249,20 @@ async def guardar(sku: str, canal: str, contenido: dict[str, Any], *,
         )
     except Exception as exc:  # noqa: BLE001
         texto = str(exc)
-        # La FK a core.products: el maestro se llena con el cron
-        # `etl-core-products` de las 06:15 UTC, así que un SKU nacido hoy en Woo
-        # puede no estar todavía. Se reporta claro en vez de fallar en silencio.
-        if "core" in texto and ("foreign key" in texto.lower() or "fkey" in texto):
+        # Se detecta por el NOMBRE de la constraint, no por el del esquema.
+        # Postgres reporta `table "products"` a secas, sin el `core.`, así que
+        # buscar "core" en el mensaje no encontraba nada y el 409 salía con el
+        # error crudo de la base. Visto al probar el panel contra el sandbox.
+        if "channel_content_sku_fkey" in texto:
             log.warning("channel_content.guardar(%s): SKU fuera de core.products", sku)
             return {"ok": False, "sku": sku,
                     "motivo": f"El SKU {sku} todavía no está en el maestro "
                               f"(core.products). Lo agrega el ETL de las 06:15 UTC."}
+        if "channel_content_account_id_fkey" in texto:
+            return {"ok": False, "sku": sku,
+                    "motivo": f"La cuenta '{cuenta}' no existe en core.accounts."}
+        if "channel_content_canal_fkey" in texto:
+            return {"ok": False, "sku": sku,
+                    "motivo": f"El canal '{canal}' no existe en core.channels."}
         log.warning("channel_content.guardar(%s,%s) falló: %s", sku, canal, exc)
         return {"ok": False, "sku": sku, "motivo": texto[:300]}

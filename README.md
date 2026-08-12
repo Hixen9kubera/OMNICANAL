@@ -6675,3 +6675,62 @@ tablas donde la 0011 pone texto). **No es de este cambio** — `channel_content`
 aparece en ninguna diferencia. El candado de paridad no se rompió: estaba dando
 falso verde con un manifiesto viejo. Queda como pendiente con dueño aparte.
 Versión 0.108.0.
+
+---
+
+### v0.109.0 — Publicar deja de exigir que la pestaña esté abierta (Eduardo)
+
+Cierra el ciclo que abrió la v0.108.0: ya se podía GUARDAR el contenido por
+canal, pero publicar seguía leyendo **solo el formulario abierto**, así que
+preparar y publicar tenían que ser la misma sesión.
+
+**Las dos mitades.**
+
+- **El Estudio carga lo guardado** al abrir una pestaña de canal. Sin esto,
+  guardabas, reabrías y veías lo de WooCommerce otra vez: parecía que el
+  guardado no había servido. Precedencia **borrador local > servidor > Woo** —
+  el local va primero porque es trabajo sin subir de esa máquina, y pisarlo con
+  lo del servidor le borraría a alguien lo que estaba escribiendo.
+- **`publicar._rellenar_desde_guardado`** completa `campos` desde
+  `enrich.channel_content`. **El formulario MANDA**: lo guardado solo rellena lo
+  que venga vacío (regla 2 de la casa — la elección humana del momento gana). Un
+  campo presente pero EN BLANCO cuenta como ausente, o un formulario a medio
+  llenar bloquearía el respaldo justo cuando más sirve.
+- Se llama desde `preview` **y** desde `confirmar`. Si solo lo hiciera el envío,
+  el modal enseñaría una cosa y se publicaría otra — y la vista previa existe
+  para que lo que se revisa sea lo que sale.
+
+**Dos bugs que salieron al probar el panel local contra el sandbox**, y que en
+producción no habrían aparecido nunca:
+
+1. **`channel_content` estaba muerto en staging.** Pedía `KUBERA_DB_URL` y
+   `env.staging` define solo `SUPABASE_DB_URL`. En producción las dos apuntan a
+   la misma base, así que el fallo estaba latente hasta que alguien probara en
+   staging: el guardado respondía *"KUBERA_DB_URL no configurada"* mientras el
+   resto del panel funcionaba. Ahora resuelve `supabase_db_url` primero.
+   Eso obligó además a **quitar el reuso del pool de `kubera_mirror`** (se
+   construye sobre la variable que falta, así que ataba el módulo a un ambiente):
+   ahora tiene el suyo, `maxconnections=3` y `mincached=0` — no abre una
+   conexión hasta que alguien guarda.
+2. **El mensaje amable de la FK nunca disparaba.** Se detectaba buscando `"core"`
+   en el texto del error, pero Postgres reporta `table "products"` a secas, sin
+   el esquema. El panel recibía el error crudo de la base. Ahora se detecta por
+   el nombre de la constraint (`channel_content_sku_fkey`), y hay mensaje propio
+   para las FK de cuenta y de canal.
+
+**Verificado por HTTP real contra el sandbox** (backend local con `APP_ENV=staging`,
+candado de ambiente confirmando `ref=yvootpbz`): guardar devuelve 3 campos; leer
+los devuelve con su categoría; guardar solo `descripcion` deja 4 y **no borra
+nada**; un SKU fuera del maestro da un 409 legible; un canal inválido da 400. Y
+el relleno del publicador probado con el servicio real — el formulario gana en
+`titulo`, lo guardado aporta `bullets` y `highlights`. `tsc --noEmit` limpio,
+`py_compile` OK.
+
+**Lo que NO se verificó:** el botón en el navegador. El listado de Productos está
+fijo en `canal: "general"` (`page.tsx:94`), que lee WooCommerce en vivo, y
+`env.staging` no tiene credenciales de Woo — sin productos no hay modal que
+abrir. Queda pendiente y necesita `WPDB_*` de lectura en staging.
+
+De paso: el `POST /api/sync/catalogo` que el panel dispara al abrir **es de solo
+lectura** (refresca índices leyendo la BD de WordPress). Queda anotado porque se
+venía tratando como si escribiera. Versión 0.109.0.

@@ -167,6 +167,10 @@ def _ml_publicaciones(sku: str | None) -> list[dict[str, Any]]:
 # ═══════════════════════════ VISTA PREVIA ═══════════════════════════════════
 async def preview(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
+    # El MISMO relleno que `confirmar`, y por eso: si la vista previa no leyera
+    # lo guardado y el envío sí, el modal enseñaría una cosa y se publicaría
+    # otra. La vista previa existe para que lo que se revisa sea lo que sale.
+    await _rellenar_desde_guardado(req)
     if canal == "mercado_libre":
         return await _preview_ml(req)
     if canal == "amazon":
@@ -383,8 +387,51 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
 
 
 # ═══════════════════════════ CONFIRMAR (EN VIVO) ═════════════════════════════
+async def _rellenar_desde_guardado(req: dict[str, Any]) -> None:
+    """
+    Completa `req["campos"]` con lo guardado en `enrich.channel_content`.
+
+    QUÉ RESUELVE: hasta v0.108.0 publicar leía SOLO el formulario abierto, así
+    que preparar el contenido y publicarlo tenían que ser la misma sesión. Con
+    esto, lo que se guardó por canal se puede publicar después — o en lote, sin
+    abrir producto por producto.
+
+    PRECEDENCIA: el formulario MANDA. Lo guardado solo rellena los campos que
+    vengan vacíos. Es la misma regla que aplica el Estudio al pintar (borrador
+    local > servidor > Woo) y la misma que ya rige en el resto del panel: la
+    elección humana del momento gana sobre cualquier respaldo (regla 2 de la
+    casa).
+
+    Nunca lanza: si la BD no contesta se publica con lo que traiga el
+    formulario, que es exactamente lo que pasaba antes.
+    """
+    from services import channel_content
+
+    sku, canal = req.get("sku"), req.get("canal")
+    if not (sku and canal) or not channel_content.disponible():
+        return
+    campos = req.setdefault("campos", {})
+    cuenta = req.get("cuenta") or "" if canal == "mercado_libre" else ""
+    doc = await channel_content.leer(str(sku), str(canal), cuenta)
+    if not doc:
+        return
+    guardado = doc.get("contenido") or {}
+    usados = []
+    for k, v in guardado.items():
+        # `or` y no `in`: un campo presente pero VACÍO (cadena en blanco, lista
+        # sin elementos) cuenta como ausente — si no, un formulario a medio
+        # llenar bloquearía el respaldo justo cuando más sirve.
+        if v and not campos.get(k):
+            campos[k] = v
+            usados.append(k)
+    if usados:
+        log.info("publicar(%s,%s): %d campo(s) desde channel_content: %s",
+                 sku, canal, len(usados), ", ".join(sorted(usados)))
+
+
 async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
+    await _rellenar_desde_guardado(req)
     if canal == "mercado_libre":
         return await _confirmar_ml(req)
     if canal == "amazon":

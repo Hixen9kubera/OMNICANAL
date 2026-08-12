@@ -54,6 +54,7 @@ import {
   guardarContenido,
   guardarContenidoCanal,
   guardarGtin,
+  leerContenidoCanal,
   mejorarIA,
   mensajeDeError,
   precioCompetencia,
@@ -375,22 +376,40 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     }));
   }, [data]);
 
-  // ── Cargar campos editables (mejora guardada por canal, o base) ─────
+  // ── Contenido guardado en el SERVIDOR para este canal ───────────────
+  // Se trae aparte del borrador local: el local es trabajo sin subir de ESTA
+  // máquina, el del servidor es lo que ya subió alguien (puede ser otro del
+  // equipo). Sin esto, guardar y reabrir mostraba lo de Woo otra vez y parecía
+  // que el guardado no había servido.
+  // (el efecto que lo trae vive más abajo: necesita `cuentaSel`, que se declara
+  // después de este bloque)
+  const [servidor, setServidor] = useState<Record<string, unknown> | null>(null);
+
+  // ── Cargar campos editables (borrador local > servidor > Woo) ───────
   useEffect(() => {
     if (!sku) return;
     cargandoCampos.current = true;
     const stored = getMejora(sku, canal);
+    const srv = servidor ?? {};
     // `||` (no `??`): un guardado VACÍO (ej. del detalle parcial inicial con
     // descripcion=null) NO debe ocultar el dato real de Woo. Así el modal
     // siempre muestra la descripción/título actuales de WooCommerce.
-    setTitulo(stored?.titulo || data?.nombre || "");
-    setDescripcion(stored?.descripcion || data?.descripcion || "");
-    setAtributos((stored?.atributos && stored.atributos.length ? stored.atributos : meta?.atributos) ?? []);
-    setHighlights(stored?.highlights ?? "");
-    setBullets(stored?.bullets ?? []);
+    //
+    // PRECEDENCIA: borrador local > servidor > Woo. El local va primero porque
+    // es lo que esta persona estaba editando y todavía no sube; pisarlo con lo
+    // del servidor le borraría trabajo sin avisar.
+    setTitulo(stored?.titulo || (srv.titulo as string) || data?.nombre || "");
+    setDescripcion(stored?.descripcion || (srv.descripcion as string) || data?.descripcion || "");
+    setAtributos(
+      (stored?.atributos && stored.atributos.length ? stored.atributos : null)
+      ?? (srv.atributos as AtributoProducto[] | undefined)
+      ?? meta?.atributos ?? [],
+    );
+    setHighlights(stored?.highlights ?? (srv.highlights as string) ?? "");
+    setBullets(stored?.bullets ?? (srv.bullets as string[]) ?? []);
     const id = setTimeout(() => { cargandoCampos.current = false; }, 0);
     return () => clearTimeout(id);
-  }, [sku, canal, data?.nombre, data?.descripcion, meta]);
+  }, [sku, canal, data?.nombre, data?.descripcion, meta, servidor]);
 
   // ── Persistir en memoria lo mejorado/editado (por sku+canal) ────────
   useEffect(() => {
@@ -573,6 +592,19 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const itemIdSel = datosCanal?.item_id ?? null;
   const cuentaSel =
     (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
+
+  // Trae el contenido guardado en el SERVIDOR para el canal abierto.
+  // Va aquí y no arriba porque necesita `cuentaSel`: en ML el mismo SKU puede
+  // ser dos productos según la cuenta (caso EST-0091).
+  useEffect(() => {
+    setServidor(null);
+    if (!sku || canal === GENERAL) return;   // General vive en WooCommerce
+    let vivo = true;
+    leerContenidoCanal(sku, canal, esML ? cuentaSel || "" : "")
+      .then((r) => { if (vivo && r.existe) setServidor(r.contenido); })
+      .catch(() => { /* sin guardar todavía o BD caída: se sigue con Woo */ });
+    return () => { vivo = false; };
+  }, [sku, canal, cuentaSel, esML]);
   // ML y Amazon: botón siempre disponible → "Publicar" si NO está publicado
   // (crea nuevo), "Actualizar" si ya está.
   const amazonPublicado = amazonPublicadoReal || amazonPublicadoOk;
