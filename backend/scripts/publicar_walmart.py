@@ -88,6 +88,38 @@ HOST = "https://marketplace.walmartapis.com"
 #                   (entero ≤ 8 dígitos), no lo cruza contra el SAT, pero la
 #                   factura sí, así que vale ponerla bien.
 #   pide_genero   : Disfraces exige `gender`; "Cocina, Decoración y Otros" no.
+#   campos_visible: BLANCA de campos del bloque `Visible`. Ver LA PODA abajo.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# LA PODA — por qué cada categoría lleva su propia lista de campos
+# ═════════════════════════════════════════════════════════════════════════════
+# Mandar un campo que la categoría NO define no es un aviso: tumba el artículo
+# entero, y con él el lote. Tres feeds completos murieron así el 7-ago, cada uno
+# por UN campo de más:
+#
+#     'modelNumber' is not a valid field   ->  85/85 muertos (Electrónicos)
+#     'gender' is not a valid field        ->  83/83 muertos (Almacenamiento)
+#     'countPerPack' is not a valid field  ->  33/33 muertos (Juguetes)
+#
+# El esquema PUBLICADO (3.19) no sirve para decidir esto: dice que
+# `modelNumber` es válido en electrónica y producción (3.11) lo rechaza. Vale lo
+# MEDIDO. Por eso `campos_visible` es una lista blanca explícita por categoría y
+# no una derivación automática del JSON oficial.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# EXENCIÓN DE UPC — la regla para leer la evidencia
+# ═════════════════════════════════════════════════════════════════════════════
+# Walmart valida POR ETAPAS y solo reporta la PRIMERA que falla. Por eso hay
+# exactamente dos clases de prueba válida:
+#
+#   ✅ POSITIVA  un SKU de esa categoría llegó a SUCCESS. Para lograrlo tuvo que
+#                pasar el filtro de UPC. La exención existe.
+#   ❌ NEGATIVA  Walmart contestó "not authorized to set up 'CUSTOM' Product
+#                IDs". La exención NO existe.
+#
+# **Que no aparezca el error de UPC NO prueba nada**: el artículo pudo morir
+# antes de esa etapa. Un lote entero se envió sobre esa suposición y se cayó.
+# Las categorías sin prueba positiva viven en CATEGORIAS_POR_CONFIRMAR, abajo.
 CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
     "costumes": {
         "clave_visible": "Disfraces",
@@ -99,6 +131,11 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         "pide_genero": True,
         "patron_categoria": "isfra|osplay",
         "patron_titulo": "isfra|osplay|allowee",
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory", "modelNumber",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender"),
     },
     "home_other": {
         "clave_visible": "Cocina, Decoración y Otros",
@@ -122,6 +159,111 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
         "prefijos_sku": ("COC", "DEC", "ILUM", "LUZ"),
         "patron_categoria": "ocina|ecoraci|dorno|luminaci",
         "patron_titulo": "ocina|ecoraci|dorno|luminaci",
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory", "modelNumber",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender"),
+    },
+    # ── LA PUERTA GRANDE (folio 15777537, "Electrónicos") ────────────────
+    # OJO CON EL NOMBRE. La exención de electrónica NO vive en "Accesorios
+    # Electrónicos" (`electronics_accessories`): vive en "Electrónicos", que en
+    # el esquema es `health_and_beauty_electronics`. El nombre engaña y la
+    # taxonomía tiene 15 puertas de electrónica.
+    #
+    # Se probó mandando EL MISMO SKU (TEC-0018-NEG) a cinco puertas el 7-ago:
+    #     Eléctricas        (electrical)          -> ❌ "not authorized"
+    #     Cables            (electronics_cables)  -> ❌ "not authorized"
+    #     Electrodomésticos (large_appliances)    -> ❌ "not authorized"
+    #     Otros Electrónicos(electronics_other)   -> ❓ murió antes (Watts)
+    #     Electrónicos      (health_and_beauty_…) -> ✅ pasó el filtro de UPC
+    # Y la prueba definitiva: 182 artículos publicaron por esta puerta ese
+    # mismo día. `electronics_accessories` NUNCA se probó — sus 5 feeds de 85
+    # murieron todos en `modelNumber`, antes de llegar a la etapa de UPC.
+    "health_and_beauty_electronics": {
+        "clave_visible": "Electrónicos",
+        "folio_exencion": "15777537",     # 7-ago-2026
+        # 52161500 = "Equipos audiovisuales" (verificado en catCFDI_V_4).
+        # ⚠ Es la clave con la que publicaron los 182, pero le queda CHICA al
+        # catálogo real: por esta puerta entran herramientas, autopartes y
+        # artículos deportivos (lo dice el `shelf` que Walmart les asignó). No
+        # frena la publicación —Walmart solo valida el formato— pero el CFDI
+        # sale mal. Afinarla por familia de SKU es trabajo de facturación.
+        "clave_sat": 52161500,
+        # `gender` es OPCIONAL aquí y así se mandó en los 182 que publicaron.
+        "pide_genero": True,
+        "prefijos_sku": ("TEC", "VEH", "VAR", "CORR", "ELEC"),
+        "patron_categoria": "lectr|udio|celular|comput",
+        "patron_titulo": "lectr|udio|celular|comput",
+        # Bloque MUY corto: ni material, ni size, ni countPerPack, ni
+        # modelNumber. Es exactamente lo que publicó el 7-ago.
+        "campos_visible": (
+            "colorCategory", "gender",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight"),
+    },
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CATEGORÍAS **NO** AUTORIZADAS TODAVÍA — no mover de aquí sin prueba positiva
+# ─────────────────────────────────────────────────────────────────────────────
+# Esta tabla existe para que nadie vuelva a leer "no salió el error de UPC"
+# como "sí tenemos la exención". Cada renglón dice qué evidencia hay y cuál
+# falta. Un piloto de UN SKU la resuelve; el lote completo NO es un piloto.
+#
+# Los folios 15776196 y 15822204 llegaron SIN categoría especificada en el
+# mensaje, y COLCHONES (cinthya garcia) sigue pendiente. Cualquiera de ellos
+# podría cubrir a los de abajo — pero eso se confirma en Seller Center o con un
+# piloto, no suponiendo.
+CATEGORIAS_POR_CONFIRMAR: dict[str, dict] = {
+    "furniture_other": {
+        "clave_visible": "Muebles",
+        "evidencia": "❌ NEGATIVA — 39 SKUs con 'not authorized' el 7-ago 11:25",
+        "que_falta": "ticket de exención para 'Muebles' (¿folio 15822204?)",
+        "skus_esperando": 96,
+    },
+    "storage": {
+        "clave_visible": "Almacenamiento",
+        "evidencia": "❓ NINGUNA — los 83 murieron en 'gender', antes del UPC",
+        "que_falta": "piloto de 1 SKU sin `gender` (ver campos_visible abajo)",
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory", "modelNumber",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight", "size"),
+        "skus_esperando": 129,
+    },
+    "toys_other": {
+        "clave_visible": "Juguetes",
+        "evidencia": "❓ NINGUNA — los 33 murieron en 'countPerPack' + dos "
+                     "obligatorios que el esquema no declara",
+        "que_falta": "piloto de 1 SKU sin `countPerPack` y CON `activity` "
+                     "(Actividad) y `productLine` (Linea de Producto)",
+        "campos_visible": (
+            "material", "colorCategory", "modelNumber",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender", "activity", "productLine"),
+        "skus_esperando": 53,
+    },
+    "electronics_accessories": {
+        "clave_visible": "Accesorios Electrónicos",
+        "evidencia": "❓ NINGUNA — 5 feeds de 85 murieron en 'modelNumber'. "
+                     "Es la puerta que PARECÍA la buena y nunca se probó",
+        "que_falta": "no urge: el volumen de electrónica ya entra por "
+                     "'Electrónicos' (health_and_beauty_electronics)",
+        "skus_esperando": 0,
+    },
+    "office_other": {
+        "clave_visible": "Papelería",
+        "evidencia": "❓ NINGUNA — nunca se mandó nada",
+        "que_falta": "piloto de 1 SKU",
+        "skus_esperando": 27,
+    },
+    "tools": {
+        "clave_visible": "Herramientas",
+        "evidencia": "❓ NINGUNA — nunca se mandó nada por esta puerta",
+        "que_falta": "piloto de 1 SKU",
+        "skus_esperando": 7,
     },
 }
 
@@ -133,14 +275,26 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
 # Para publicar ahí hay que pedir la exención de cada una por separado en
 # sellerhelp.mx.walmart.com.
 
-# Artículos por feed. `MPItem` es un array y Walmart admite 10,000 artículos /
-# 10 MB por feed. Se manda con margen: 200 artículos pesan ~400 KB y el detalle
-# del feed sigue siendo cómodo de leer.
-TAM_LOTE = 200
+# Artículos por feed. La doc dice 10,000; la realidad es otra cosa y hay tres
+# fuentes independientes que apuntan al mismo número:
+#   · lo MEDIDO: 343 artículos -> SYSTEM_ERROR.GMP_GATEWAY_API; 85 pasan. El
+#     gateway revienta por CONTEO, no por peso (937 KB contra un tope de 25 MB).
+#   · lo único que Walmart publica cerca de la realidad: "Max SKUs per call: 50".
+#   · el paginado del veredicto: `GET /v3/feeds/{id}?includeDetails=true` topa
+#     en 50 entidades. Con lotes más grandes el resumen por SKU sale INCOMPLETO
+#     y en silencio — la misma clase de falso positivo que produjo los "9 feeds
+#     sin fallos" del 4-ago que en realidad fueron 0.
+# Con 50 las tres cosas se alinean y el veredicto es completo.
+TAM_LOTE = 50
 LIMITE_BYTES_FEED = 9 * 1024 * 1024      # 10 MB reales, con margen
 
 # Segundos entre feeds cuando hay más de un lote.
-PAUSA_ENTRE_LOTES = 20
+#
+# El presupuesto de MP_ITEM_INTL es de 10 feeds POR HORA. Con 20 s de pausa, 10
+# feeds seguidos queman la hora entera en 3.3 minutos y el resto de la corrida
+# muere en REQUEST_THRESHOLD_VIOLATED — que es exactamente lo que tumbó 19 de 24
+# productos sin que hubiera nada malo en sus datos. 360 s = 10 feeds/hora justos.
+PAUSA_ENTRE_LOTES = 360
 
 # Segundos entre subir las imágenes a WordPress y mandar el feed.
 #
@@ -472,6 +626,15 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
         visible["size"] = _attr(atrs, "talla") or "Unitalla"
         visible["gender"] = _genero(_attr(atrs, "genero"), p.get("name"))
 
+    # LA PODA. Un solo campo de más tumba el artículo y arrastra el lote (85/85
+    # por `modelNumber`, 83/83 por `gender`, 33/33 por `countPerPack`). Si la
+    # categoría declara su lista blanca, aquí se recorta a ella; si no la
+    # declara, se manda todo como siempre — así ninguna categoría vieja cambia
+    # de comportamiento por este cambio.
+    blanca = cfg.get("campos_visible")
+    if blanca:
+        visible = {k: v for k, v in visible.items() if k in blanca}
+
     return {
             "Orderable": {
                 "sku": p.get("sku"),
@@ -555,18 +718,30 @@ async def consultar_feed(cx, tk: str, fid: str) -> tuple[str, dict[str, tuple[st
     artículo por separado aunque vayan cientos en el mismo feed, así que un dato
     malo en uno NO tumba a los demás: aquí se ve exactamente cuál pasó y cuál no.
     """
-    r = await cx.get(f"{HOST}/v3/feeds/{fid}", headers=_h(tk),
-                     params={"includeDetails": "true"}, timeout=90.0)
-    if r.status_code != 200:
-        return "CONSULTA_FALLIDA", {}
-    s = r.json()
+    # `limit` va EXPLÍCITO: el default de Walmart es 20 y el máximo 50. Sin él,
+    # un feed de 50 artículos devolvía el detalle de 20 y los otros 30 no
+    # aparecían en `por_sku` — el resumen los daba por buenos sin haberlos
+    # mirado. Y se pagina con `offset`, porque `nextCursor` no llega en MX.
     por_sku: dict[str, tuple[str, list[str]]] = {}
-    for d in (s.get("itemDetails") or {}).get("itemIngestionStatus", []):
-        sku = d.get("sku") or "?"
-        errs = [e.get("description", "")[:180]
-                for e in (d.get("ingestionErrors") or {}).get("ingestionError", [])]
-        por_sku[sku] = (d.get("ingestionStatus") or "INPROGRESS", errs)
-    return s.get("feedStatus") or "?", por_sku
+    estado, off = "?", 0
+    while off < TAM_LOTE + 50:
+        r = await cx.get(f"{HOST}/v3/feeds/{fid}", headers=_h(tk),
+                         params={"includeDetails": "true", "limit": 50,
+                                 "offset": off}, timeout=90.0)
+        if r.status_code != 200:
+            return ("CONSULTA_FALLIDA", por_sku) if por_sku else ("CONSULTA_FALLIDA", {})
+        s = r.json()
+        estado = s.get("feedStatus") or "?"
+        trozo = (s.get("itemDetails") or {}).get("itemIngestionStatus", [])
+        for d in trozo:
+            sku = d.get("sku") or "?"
+            errs = [e.get("description", "")[:180]
+                    for e in (d.get("ingestionErrors") or {}).get("ingestionError", [])]
+            por_sku[sku] = (d.get("ingestionStatus") or "INPROGRESS", errs)
+        if len(trozo) < 50:
+            break
+        off += 50
+    return estado, por_sku
 
 
 async def publicar_lote(cx, tk: str, payload: dict) -> tuple[str, str]:

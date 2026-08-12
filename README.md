@@ -6326,6 +6326,71 @@ ningún error a la vista.
 
 También entran: `services/tiktok_atributos.py` (prompt + validador de atributos
 del publicador masivo) y tres documentos de investigación en `docs/`.
+### v0.136.0 — Walmart: la exención no vivía donde creíamos, y un campo de más mataba lotes enteros
+
+**El hallazgo que cambia el plan.** La exención de UPC de electrónica **no está
+en "Accesorios Electrónicos"** (`electronics_accessories`), que es donde el
+código apuntaba. Está en **"Electrónicos"** (`health_and_beauty_electronics`).
+La sonda del 7-ago mandó **el mismo SKU** (`TEC-0018-NEG`) a cinco puertas de
+electrónica y solo esa pasó el filtro de UPC; `electrical`, `electronics_cables`
+y `large_appliances` contestaron *"not authorized to set up 'CUSTOM' Product
+IDs"*. La prueba definitiva son los **182 artículos que publicaron por esa
+puerta** ese mismo día. `electronics_accessories` **nunca llegó a probarse**:
+sus cinco feeds de 85 murieron antes, en `modelNumber`.
+
+**La poda.** Mandar un campo que la categoría no define no es un aviso — tumba
+el artículo y con él el lote. Tres feeds completos murieron el 7-ago, cada uno
+por UN campo de más:
+
+| Campo de más | Categoría | Muertos |
+|---|---|---|
+| `modelNumber` | Electrónicos | 85 de 85 |
+| `gender` | Almacenamiento | 83 de 83 |
+| `countPerPack` | Juguetes | 33 de 33 |
+
+Ahora cada categoría lleva su `campos_visible` (lista blanca) y `_item()`
+recorta contra ella. Las categorías que no la declaran se comportan igual que
+antes, así que el cambio no puede romper lo que ya funcionaba.
+
+**El esquema oficial no es la autoridad.** El JSON publicado es la 3.19 y
+producción corre la 3.11: la 3.19 dice que `modelNumber` es válido en
+electrónica y producción lo rechaza. Sirve para descubrir nombres y listas
+cerradas; la obligatoriedad y la validez se verifican contra lo que de verdad
+se manda.
+
+**La regla para leer la evidencia, ahora escrita en el código.** Walmart valida
+**por etapas** y solo reporta la primera que falla. Que *no* aparezca el error
+de UPC **no prueba** que haya exención: el artículo pudo morir antes. Solo
+valen dos pruebas: un SKU que llegó a `SUCCESS` (exención sí) o un
+*"not authorized"* explícito (exención no). Las demás categorías se mudaron a
+`CATEGORIAS_POR_CONFIRMAR`, cada una con qué evidencia hay y cuál falta:
+Muebles tiene **rechazo explícito** (39 SKUs), y Almacenamiento, Juguetes,
+Papelería y Herramientas **no tienen ninguna evidencia** — un lote no es un
+piloto.
+
+**Tamaño de lote y ritmo.** `TAM_LOTE` baja de 200 a **50** y
+`PAUSA_ENTRE_LOTES` sube de 20 s a **360 s**. Los 50 alinean tres cosas: lo
+medido (343 truenan con `GMP_GATEWAY_API`, 85 pasan), el único número que
+Walmart publica cerca de la realidad (50 SKUs/call) y el tope de 50 entidades
+del detalle del feed. Los 360 s son la cuota real: **10 feeds/hora**; con 20 s
+la hora entera se quemaba en 3.3 minutos y el resto moría en
+`REQUEST_THRESHOLD_VIOLATED` — que es lo que tumbó 19 de 24 productos sin que
+hubiera nada malo en sus datos.
+
+**El veredicto por SKU ya no miente.** `consultar_feed()` pedía
+`includeDetails=true` **sin `limit`**: el default de Walmart es 20 y el máximo
+50, así que un feed de 50 devolvía el detalle de 20 y los otros 30 se daban por
+buenos sin haberlos mirado. Ahora va `limit=50` explícito y se pagina con
+`offset` — porque **`nextCursor` no llega en MX**. El mismo bug estaba en el
+censo: `GET /v3/items` declaraba `totalItems=237` y devolvía 200 sin cursor, y
+37 artículos eran invisibles.
+
+**Números al 12-ago:** 237 artículos en Walmart (221 `PUBLISHED`), de los que
+**176 tienen stock real**. Con las tres exenciones probadas hay **458 SKUs más
+listos para mandar** en 11 feeds, o sea un techo de **634** contra la meta de
+600. Muebles (96), Almacenamiento (129), Juguetes (53) y Papelería (27) siguen
+esperando exención — no hacen falta para llegar.
+
 ### v0.106.0 — Walmart deja rastro: el feed ya no muere en una variable local (Eduardo)
 
 **El problema.** `publicar_walmart.py` armaba el payload en memoria, mandaba el
