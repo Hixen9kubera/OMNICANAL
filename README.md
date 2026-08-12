@@ -6734,3 +6734,59 @@ abrir. Queda pendiente y necesita `WPDB_*` de lectura en staging.
 De paso: el `POST /api/sync/catalogo` que el panel dispara al abrir **es de solo
 lectura** (refresca índices leyendo la BD de WordPress). Queda anotado porque se
 venía tratando como si escribiera. Versión 0.109.0.
+
+---
+
+### v0.110.0 — `origen` y `categoria`: el guardado por canal deja de guardar a medias (Eduardo)
+
+La prueba en producción de la v0.109.0 (`ACC-0091`) funcionó, y al cotejar la
+fila contra la base aparecieron **dos columnas vacías**: `origen` y `categoria`.
+Ninguna rompía nada, pero se habrían quedado así — que es exactamente cómo
+nacieron `core.products.parent_sku` y `has_variations`.
+
+**`origen` — quién escribió cada campo.** Hoy no hay forma de saber si un título
+lo generó la IA o lo redactó una persona. Importa porque "Mejorar con IA" **pisa
+lo que había**: si alguien trabajó esos bullets, se pierden sin aviso.
+
+Se DERIVA al guardar, comparando, en vez de rastrear cada tecla:
+
+```
+igual a lo que produjo la IA  ->  ia
+igual a lo que tiene Woo      ->  woo
+ninguna de las dos            ->  manual
+```
+
+Se eligió comparar sobre envolver cada `setState` porque los campos se editan
+desde muchos sitios y un wrapper por input se desincroniza en cuanto alguien
+agregue uno nuevo. Lo que la IA produjo se guarda en un `useRef` (no estado: no
+debe repintar).
+
+**`categoria` — contra qué comparar los requisitos.** Es la que conecta con el
+encargo de `channel_requirements`: la pregunta *"¿qué le falta a este SKU?"* no
+se puede contestar sin saber en qué categoría va, porque **los obligatorios
+cuelgan de la categoría**.
+
+**La resuelve el BACKEND, no el panel** (`_categoria_del_canal`). En Amazon el
+tipo sigue la precedencia de la regla 2 —panel > histórico > detección, la que
+nació del caso `TEC-1812-NEG` publicado en "Máquinas de Coser"— y esa lógica ya
+vive en `publicar._pt_resuelto`. Copiarla a React sería la misma regla en dos
+lugares, y el día que alguien cambie una la otra empieza a mentir. Además el
+Estudio ni siquiera conoce el tipo: `TipoAmazonPicker` lo maneja por dentro y no
+lo expone al padre. En ML sí lo manda el front, porque ese picker sí vive en esa
+pantalla. El cliente puede mandarla; si no viene, el backend la resuelve.
+
+**Verificado contra el sandbox**, endpoint real:
+
+```
+PUT sin mandar categoría, SKU con tipo en la meta del panel (HERR-0029):
+  categoria -> 'PROTECTIVE_GLOVE'      (la resolvió el backend)
+  origen    -> {'titulo':'ia', 'highlights':'manual'}
+```
+
+**Un falso acierto que hay que dejar anotado:** la primera verificación leyó
+`categoria: "HOME"` y se dio por buena. Era **residuo de una prueba anterior**,
+conservado por el `coalesce(excluded.categoria, …)` del upsert — el mismo que
+existe para no borrar la categoría cuando el guardado no la manda. En fila
+limpia salía `None`, y de ahí se llegó a la causa real: ese SKU no tenía tipo
+asignado. Al verificar un upsert con `coalesce`, la fila tiene que estar limpia o
+se está leyendo el pasado. Versión 0.110.0.

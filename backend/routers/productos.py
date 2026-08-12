@@ -320,6 +320,35 @@ class ContenidoCanalReq(BaseModel):
     reemplazar: bool = False
 
 
+async def _categoria_del_canal(sku: str, canal: str) -> str | None:
+    """
+    La categoría que ese canal tiene hoy para el SKU.
+
+    Se resuelve AQUÍ y no en el frontend porque la lógica ya existe y tiene
+    precedencia propia: en Amazon `_pt_resuelto` aplica panel > histórico >
+    detección (regla 2 de la casa), y el Estudio ni siquiera conoce el tipo —
+    `TipoAmazonPicker` lo maneja por dentro y no lo expone al padre.
+    Duplicar esa resolución en React sería una segunda verdad que se desincroniza.
+
+    Nunca lanza: sin categoría se guarda el contenido igual y la columna queda
+    nula. Es un dato para comparar contra los requisitos del canal, no un
+    requisito para guardar.
+    """
+    try:
+        if canal == "amazon":
+            from services import publicar, studio
+            wc_id = (studio.metadata(sku, None) or {}).get("wc_id")
+            pt, _origen = publicar._pt_resuelto(sku, wc_id)  # noqa: SLF001
+            return pt
+        if canal == "mercado_libre":
+            from services import studio
+            cat = (studio.metadata(sku, None) or {}).get("categoria_ml") or {}
+            return cat.get("category_id") or None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo resolver la categoría de %s en %s: %s", sku, canal, exc)
+    return None
+
+
 @router.put("/{sku}/canal/{canal}/contenido")
 async def guardar_contenido_canal(sku: str, canal: str, req: ContenidoCanalReq,
                                   cuenta: str = Query("")):
@@ -328,9 +357,11 @@ async def guardar_contenido_canal(sku: str, canal: str, req: ContenidoCanalReq,
 
     if not es_canal_valido(canal):
         raise HTTPException(400, f"Canal '{canal}' inválido.")
+    # El cliente puede mandarla; si no, se resuelve con la lógica del canal.
+    categoria = req.categoria or await _categoria_del_canal(sku, canal)
     res = await channel_content.guardar(
         sku, canal, req.contenido, cuenta=cuenta, origen=req.origen,
-        categoria=req.categoria, spec_version=req.spec_version,
+        categoria=categoria, spec_version=req.spec_version,
         hash_base=req.hash_base, reemplazar=req.reemplazar,
     )
     if not res.get("ok"):

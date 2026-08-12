@@ -385,6 +385,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // después de este bloque)
   const [servidor, setServidor] = useState<Record<string, unknown> | null>(null);
 
+  // Lo que la IA produjo en ESTA sesión, para marcar el `origen` al guardar.
+  // Es un ref y no estado: cambiarlo no debe repintar nada.
+  const iaCampos = useRef<Record<string, unknown>>({});
+
   // ── Cargar campos editables (borrador local > servidor > Woo) ───────
   useEffect(() => {
     if (!sku) return;
@@ -577,6 +581,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       if (c.atributos?.length) setAtributos(c.atributos);
       if (c.highlights != null) setHighlights(c.highlights);
       if (c.bullets?.length) setBullets(c.bullets);
+      // Se anota QUÉ escribió la IA para poder marcar el `origen` al guardar.
+      // Se compara al vuelo en vez de envolver cada setter: los campos se
+      // editan desde muchos sitios y un wrapper por input se desincroniza en
+      // cuanto alguien agregue uno nuevo.
+      iaCampos.current = {
+        ...(c.titulo != null ? { titulo: c.titulo } : {}),
+        ...(c.descripcion != null ? { descripcion: c.descripcion } : {}),
+        ...(c.atributos?.length ? { atributos: c.atributos } : {}),
+        ...(c.highlights != null ? { highlights: c.highlights } : {}),
+        ...(c.bullets?.length ? { bullets: c.bullets } : {}),
+      };
     }
     setMejorando(false);
 
@@ -962,11 +977,35 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       setCanalMsg({ ok: false, texto: "No hay contenido que guardar en esta pestaña." });
       return;
     }
+
+    // ORIGEN por campo — es lo que después deja decir "esto lo generó la IA,
+    // revísalo" y "esto lo escribió una persona, no lo pises".
+    // Se DERIVA comparando, en vez de rastrear cada tecla:
+    //   igual a lo que produjo la IA  -> ia
+    //   igual a lo que tiene Woo      -> woo
+    //   ninguna de las dos            -> manual (alguien lo escribió o lo editó)
+    const mismo = (a: unknown, b: unknown) =>
+      a != null && b != null && JSON.stringify(a) === JSON.stringify(b);
+    const deWoo: Record<string, unknown> = {
+      titulo: data?.nombre, descripcion: data?.descripcion, atributos: meta?.atributos,
+    };
+    const origen: Record<string, string> = {};
+    for (const [k, v] of Object.entries(contenido)) {
+      origen[k] = mismo(v, iaCampos.current[k]) ? "ia"
+                : mismo(v, deWoo[k]) ? "woo"
+                : "manual";
+    }
+
     setSubiendoCanal(true);
     setCanalMsg(null);
     try {
       const r = await guardarContenidoCanal(sku, canal, contenido, {
         cuenta: canal === "mercado_libre" ? cuentaSel || "" : "",
+        origen,
+        // La del canal la resuelve el backend (tiene la precedencia canónica);
+        // aquí solo se manda la de ML, que el Estudio sí conoce porque su
+        // picker vive en esta pantalla.
+        categoria: esML ? catMlId || meta?.categoria_ml?.category_id || undefined : undefined,
       });
       setCanalMsg({ ok: true, texto: `Guardado para ${canalInfo?.label ?? canal}: ${r.campos} campo(s).` });
     } catch (e) {
