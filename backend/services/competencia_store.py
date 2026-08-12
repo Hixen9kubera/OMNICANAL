@@ -969,6 +969,12 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             mios = [f for f in r["skus"] if (f.get("categoria_id") or "sin_categoria") == cid]
             sub["skus"] = mios
             sub["ruta"] = next((f.get("ruta") for f in mios if f.get("ruta")), None)
+            # El padre inmediato con su id: es lo que permite auditar de qué
+            # cuelga la subcategoría sin salir del panel. Todos los SKUs de una
+            # subcategoría comparten padre, así que basta el primero que lo traiga.
+            sub["padre_id"] = next((f.get("padre_id") for f in mios if f.get("padre_id")), None)
+            sub["padre_nombre"] = next(
+                (f.get("padre_nombre") for f in mios if f.get("padre_nombre")), None)
 
         r["subcategorias"] = sorted(
             r["subcategorias"].values(),

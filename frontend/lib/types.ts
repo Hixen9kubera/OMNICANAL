@@ -640,6 +640,11 @@ export interface CompetenciaSku {
   raiz_id: string | null;            // p.ej. MLM1747 = Accesorios para Vehículos
   raiz_nombre: string | null;
   ruta: string | null;               // 'Nivel 1 › Nivel 2 › … › Hoja'  (separador U+203A)
+  /** Categoría PADRE inmediata. El id sale de `channel.categories.parent_id`; el
+   *  nombre del penúltimo segmento de `ruta`, porque channel.categories solo
+   *  tiene las categorías HOJA y el join por parent_id daba NULL siempre. */
+  padre_id: string | null;
+  padre_nombre: string | null;
   cat1: string | null;
   cat2: string | null;
   cat3: string | null;
@@ -763,6 +768,11 @@ export interface CompetenciaSubcategoria {
   categoria_id: string | null;
   categoria_nombre: string;
   ruta: string | null;
+  /** De qué cuelga la subcategoría, con id para poder verificarlo en ML. Sale de
+   *  `enrich.market_skus_v` (migración 0015): el id de
+   *  `channel.categories.parent_id`, el nombre del penúltimo segmento de `ruta`. */
+  padre_id: string | null;
+  padre_nombre: string | null;
   n_skus: number;
   n_ranking: number;
   top: RankingCategoria[];

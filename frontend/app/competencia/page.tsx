@@ -682,9 +682,24 @@ function DetalleSku({
             </span>
           </div>
           {d.busqueda_general.length === 0 ? (
+            /* El mensaje viejo explicaba por qué la API no sirve
+               (`/sites/MLM/search` → 403). Cierto, pero inútil: no dice qué
+               hacer. La búsqueda se mide con Apify y cuesta ~$0.007 por término,
+               así que lo accionable es que ESE término todavía no se ha corrido. */
             <div className="py-3 text-center text-xs text-slate-400">
-              Sin medir. La posición orgánica solo sale del buscador raspado —
-              <code className="mx-1">/sites/MLM/search</code> responde 403.
+              {d.termino_general ? (
+                <>
+                  Este término todavía no se ha medido. La posición orgánica se
+                  captura con el buscador de Apify (~$0.007 por término) y se
+                  guarda una sola vez: los demás SKUs con el mismo término la
+                  reusan sin costo.
+                </>
+              ) : (
+                <>
+                  Este SKU no tiene término general, así que no hay nada que
+                  buscar. Asígnale uno para poder medir su posición orgánica.
+                </>
+              )}
             </div>
           ) : (
             <ResultadosBusqueda filas={d.busqueda_general} />
@@ -1311,9 +1326,20 @@ function BloqueSubcategoria({
               </span>
             ) : null}
           </div>
-          {/* El path COMPLETO, que es lo que ubica la subcategoría en el árbol. */}
+          {/* El path COMPLETO, que es lo que ubica la subcategoría en el árbol,
+              y el PADRE inmediato con su id: sin el id no se puede ir a verificar
+              en ML de qué cuelga realmente esta subcategoría. */}
           {sub.ruta ? (
             <div className="truncate text-[10px] text-slate-400">{sub.ruta}</div>
+          ) : null}
+          {sub.padre_nombre ? (
+            <div className="text-[10px] text-slate-400">
+              padre:{" "}
+              <span className="font-medium text-slate-500">{sub.padre_nombre}</span>
+              {sub.padre_id ? (
+                <code className="ml-1 text-slate-400">{sub.padre_id}</code>
+              ) : null}
+            </div>
           ) : null}
         </div>
         <div className="hidden shrink-0 items-center gap-4 text-[11px] text-slate-500 sm:flex">
