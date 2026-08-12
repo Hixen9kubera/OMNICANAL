@@ -6674,7 +6674,7 @@ que las tablas `enrich.market_*` fueron reestructuradas fuera de las migraciones
 tablas donde la 0011 pone texto). **No es de este cambio** — `channel_content` no
 aparece en ninguna diferencia. El candado de paridad no se rompió: estaba dando
 falso verde con un manifiesto viejo. Queda como pendiente con dueño aparte.
-Versión 0.112.0.
+Versión 0.108.0.
 
 ---
 
