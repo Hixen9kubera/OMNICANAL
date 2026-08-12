@@ -6326,6 +6326,55 @@ ningún error a la vista.
 
 También entran: `services/tiktok_atributos.py` (prompt + validador de atributos
 del publicador masivo) y tres documentos de investigación en `docs/`.
+### v0.106.0 — Walmart deja rastro: el feed ya no muere en una variable local (Eduardo)
+
+**El problema.** `publicar_walmart.py` armaba el payload en memoria, mandaba el
+feed, recibía el `feedId`… y lo dejaba morir en una variable local (línea 638).
+Nada se persistía. Para saber qué pasó con un artículo había que volver a
+preguntarle a Walmart — y preguntarle **cuesta**: el corte por
+`REQUEST_THRESHOLD_VIOLATED` tumbó **19 de 24 productos** del segundo lote sin
+que hubiera nada malo en sus datos. Por eso `estado_walmart.py` está diseñado
+para hacer 3 llamadas en total. La pregunta era cara porque no había dónde
+guardarla.
+
+**Qué hace ahora.** Con `--aplicar`, cada artículo enviado deja una fila en
+`ops.channel_submissions` (`canal='walmart'`, `submission_id=feedId`,
+`operacion='alta'`, `status='ENVIADO'`), y el veredicto de FASE 4 se escribe
+**encima** cuando Walmart contesta. Los que quedan en `INPROGRESS` conservan su
+fila: se pueden re-consultar después sin volver a publicar. `--sin-bitacora`
+la apaga.
+
+**Idempotente SIN DDL.** Cada INSERT trae su propio `where not exists` sobre
+`(canal, submission_id, sku)`, y el veredicto es UPDATE, no INSERT — por eso las
+6 rondas de consulta de FASE 4 no duplican. Probado contra filas reales de
+producción, sin escribir: el mismo feed insertaría 0 filas, un feed nuevo
+insertaría 1.
+
+**Por qué no se creó un índice único**, que era la recomendación del consejo:
+`ops.channel_submissions` no tiene ninguno y **hoy no se le puede crear**. El
+pre-chequeo (`scripts/prechequeo_unique_submissions.py`, solo lectura) midió
+22,946 filas con **una** colisión de `detail_ref`: las 369 filas de tiktok del
+11-ago comparten `tiktok:lote:20260811` sobre 252 SKUs distintos — el publicador
+de TikTok, que vive fuera del repo, escribió un ref de LOTE en vez de uno por
+fila. Aquí el `detail_ref` se escribe **por fila**
+(`walmart:feed:<feedId>:<sku>`), que es como debió hacerse allá.
+
+También se descartó el `unique (canal, submission_id, sku)` que se había
+sugerido: **habría roto producción**. Para ML el `submission_id` es el
+`ml_item_id` (`kubera_mirror.py:851`) y se reusa entre los eventos `alta`,
+`actualizacion`, `imagen` y `pausa` del mismo SKU — hay **84 grupos** vivos que
+ese índice habría rechazado. Medido antes de escribir una línea.
+
+**Nunca rompe la publicación.** Si la BD no contesta, se anota y el script sigue
+mandando: publicar es su trabajo, registrar es el extra. Los SKUs que no están en
+`core.products` (FK) no se registran y se listan en el resumen, con la nota de
+que los agrega el cron `etl-core-products` de las 06:15 UTC.
+
+Verificado: `py_compile` OK; los tres statements validados con `EXPLAIN` contra
+el esquema de producción (sintaxis, columnas y tipos) sin ejecutar DML; guarda de
+idempotencia probada contra filas reales. Versión 0.106.0.
+
+---
 
 ### v0.103.0 — El padre viaja con la variante: se cierra el hueco del seam (Eduardo)
 

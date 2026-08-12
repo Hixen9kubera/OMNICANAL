@@ -34,6 +34,13 @@ Uso (desde backend/):
     python -m scripts.publicar_walmart                  # lista, no manda nada
     python -m scripts.publicar_walmart --limite 3 --aplicar
     python -m scripts.publicar_walmart --aplicar        # todos
+    python -m scripts.publicar_walmart --aplicar --sin-bitacora   # no registrar
+
+BITÁCORA (desde v0.106.0): con --aplicar, cada artículo enviado queda en
+`ops.channel_submissions` (canal='walmart', submission_id=feedId) y su veredicto
+se escribe encima cuando Walmart contesta. Así "¿qué pasó con este SKU?" deja de
+costar una llamada a la API — que es lo que tumbó 19 de 24 productos por
+REQUEST_THRESHOLD_VIOLATED. Ver la clase _Bitacora.
 """
 from __future__ import annotations
 
@@ -582,8 +589,148 @@ async def publicar_lote(cx, tk: str, payload: dict) -> tuple[str, str]:
     return "ENVIADO", r.json().get("feedId", "")
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# BITÁCORA — qué se mandó y qué contestó Walmart, en ops.channel_submissions
+#
+# POR QUÉ EXISTE: hasta hoy el `feedId` moría en una variable local. Para saber
+# qué pasó con un artículo había que volver a preguntarle a Walmart, y
+# preguntarle CUESTA: el corte por REQUEST_THRESHOLD_VIOLATED tumbó 19 de 24
+# productos del segundo lote sin que hubiera nada malo en sus datos (ver el
+# encabezado de estado_walmart.py). Con esto la pregunta se contesta en local.
+#
+# IDEMPOTENTE SIN DDL: cada INSERT trae su propio `where not exists` sobre
+# (canal, submission_id, sku), y el veredicto es UPDATE, no INSERT — por eso
+# las 6 rondas de consulta de FASE 4 no duplican nada.
+#
+# NO se apoya en un índice único porque `ops.channel_submissions` no tiene
+# ninguno, y hoy no se le puede crear: las 369 filas de tiktok del 11-ago
+# comparten un solo `detail_ref` de lote (`tiktok:lote:20260811`, 252 SKUs
+# distintos). Medido con scripts/prechequeo_unique_submissions.py. Aquí el
+# `detail_ref` se escribe POR FILA, que es como debió hacerse allá.
+#
+# NUNCA rompe la publicación: si la BD no contesta, se anota y el script sigue
+# mandando. Publicar es su trabajo; registrar es el extra.
+# ═════════════════════════════════════════════════════════════════════════════
+class _Bitacora:
+    """Escribe a ops.channel_submissions. Callada ante fallos, ruidosa al final."""
+
+    def __init__(self, activa: bool) -> None:
+        self.activa = activa
+        self.corrida = uuid.uuid4().hex[:12]
+        self.con = None
+        self.escritas = 0
+        self.actualizadas = 0
+        self.sin_maestro: list[str] = []
+        self.fallos: list[str] = []
+        if not activa:
+            return
+        dsn = os.getenv("SUPABASE_DB_URL") or os.getenv("KUBERA_DB_URL") or ""
+        if not dsn:
+            self.activa = False
+            self.fallos.append("no hay SUPABASE_DB_URL en el entorno")
+            return
+        try:
+            import psycopg2
+            self.con = psycopg2.connect(dsn, connect_timeout=20)
+            # autocommit: cada fila es su propia transacción, así un SKU que no
+            # está en core.products no envenena al resto del lote.
+            self.con.autocommit = True
+        except Exception as e:  # noqa: BLE001
+            self.activa = False
+            self.fallos.append(f"conexión: {str(e)[:120]}")
+
+    def _ejecutar(self, sql: str, args: tuple) -> int | None:
+        """rowcount, o -1 si el SKU no está en el maestro, o None si falló."""
+        if not self.activa or self.con is None:
+            return None
+        try:
+            with self.con.cursor() as cur:
+                cur.execute(sql, args)
+                return cur.rowcount
+        except Exception as e:  # noqa: BLE001
+            texto = str(e).lower()
+            if "foreign key" in texto or "core.products" in texto or "fkey" in texto:
+                return -1
+            self.fallos.append(str(e)[:140])
+            return None
+
+    def _anotar(self, sku: str, n: int | None) -> None:
+        if n == -1:
+            self.sin_maestro.append(sku)
+        elif n:
+            self.escritas += n
+
+    def enviado(self, fid: str, skus: list[str]) -> None:
+        """Una fila por SKU al mandar el feed. Veredicto todavía pendiente."""
+        for sku in skus:
+            self._anotar(sku, self._ejecutar(
+                """insert into ops.channel_submissions
+                     (canal, cuenta, sku, submission_id, operacion, status,
+                      detail_ref, submitted_at)
+                   select 'walmart', '', %s, %s, 'alta', 'ENVIADO', %s, now()
+                    where not exists (
+                      select 1 from ops.channel_submissions
+                       where canal = 'walmart' and submission_id = %s
+                         and sku = %s)""",
+                (sku, fid, f"walmart:feed:{fid}:{sku}", fid, sku)))
+
+    def envio_fallido(self, skus: list[str], motivo: str) -> None:
+        """Walmart ni aceptó el feed: no hay feedId. Se marca por corrida."""
+        for sku in skus:
+            ref = f"walmart:envio_fallido:{self.corrida}:{sku}"
+            self._anotar(sku, self._ejecutar(
+                """insert into ops.channel_submissions
+                     (canal, cuenta, sku, operacion, status, success,
+                      error_resumen, detail_ref, submitted_at)
+                   select 'walmart', '', %s, 'alta', 'ENVIO_FALLIDO', false,
+                          %s, %s, now()
+                    where not exists (
+                      select 1 from ops.channel_submissions
+                       where detail_ref = %s)""",
+                (sku, motivo[:500], ref, ref)))
+
+    def veredicto(self, fid: str, sku: str, estado: str,
+                  errores: list[str]) -> None:
+        """UPDATE, no INSERT: por eso re-consultar el feed no duplica filas."""
+        gano = estado in ("SUCCESS", "PROCESSED")
+        n = self._ejecutar(
+            """update ops.channel_submissions
+                  set status = %s, success = %s, error_resumen = %s,
+                      published_at = case when %s then now()
+                                          else published_at end
+                where canal = 'walmart' and submission_id = %s and sku = %s""",
+            (estado, gano, (" · ".join(errores))[:500] or None, gano, fid, sku))
+        if n and n > 0:
+            self.actualizadas += n
+
+    def resumen(self) -> str:
+        if not self.activa and not self.fallos:
+            return "   Bitácora                 : apagada"
+        out = [f"   Bitácora                 : {self.escritas} filas nuevas, "
+               f"{self.actualizadas} veredictos"]
+        if self.sin_maestro:
+            faltan = sorted(set(self.sin_maestro))
+            out.append(f"      ⚠ {len(faltan)} SKU sin fila en core.products, "
+                       f"NO registrados: {', '.join(faltan[:8])}"
+                       + (" …" if len(faltan) > 8 else ""))
+            out.append("        (los agrega el cron etl-core-products 06:15 UTC)")
+        if self.fallos:
+            out.append(f"      ⚠ {len(self.fallos)} error(es) de BD; "
+                       f"el primero: {self.fallos[0]}")
+        return "\n".join(out)
+
+    def cerrar(self) -> None:
+        if self.con is not None:
+            try:
+                self.con.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 async def main() -> int:
     aplicar = "--aplicar" in sys.argv
+    # Sin --aplicar no se manda nada, así que no hay nada que registrar.
+    bitacora = _Bitacora(aplicar and "--sin-bitacora" not in sys.argv)
     limite = 0
     if "--limite" in sys.argv:
         limite = int(sys.argv[sys.argv.index("--limite") + 1])
@@ -724,9 +871,11 @@ async def main() -> int:
                   f"-> {estado} {fid}", flush=True)
             if fid:
                 feeds.append((fid, lote))
+                bitacora.enviado(fid, lote)
             else:
                 for s in lote:
                     resultados.append((s, "ENVIO_FALLIDO", [estado]))
+                bitacora.envio_fallido(lote, estado)
 
         # ── FASE 4: el veredicto REAL, artículo por artículo ──────────────────
         if feeds:
@@ -747,6 +896,7 @@ async def main() -> int:
                         if st == "INPROGRESS" or sku not in pendientes:
                             continue
                         resultados.append((sku, st, errs))
+                        bitacora.veredicto(fid, sku, st, errs)
                         pendientes.pop(sku, None)
                     await asyncio.sleep(1.5)
                 print(f"   ronda {ronda}: resueltos "
@@ -771,6 +921,8 @@ async def main() -> int:
     print(f"   Publicados (SUCCESS)     : {len(ok)}")
     print(f"   Sin veredicto todavía    : {len(pendientes)}")
     print(f"   Rechazados               : {len(mal)}")
+    print(bitacora.resumen())
+    bitacora.cerrar()
     for sku, _e, _errs in ok:
         print(f"      ✓ {sku}")
     for sku, estado, errs in pendientes:
