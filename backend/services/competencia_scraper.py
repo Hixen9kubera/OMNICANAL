@@ -546,6 +546,27 @@ def _del_badge(txt: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# El id de la RUTA del URL, que no es el mismo que el `wid`. El `wid` es el item
+# real (sirve para /visits); éste es el que `/products/{id}/items` necesita para
+# resolver a qué SUBCATEGORÍA pertenece la fila, o sea los NICHOS. Sin él, un
+# ranking de raíz capturado por Apify se queda sin nichos — que es exactamente el
+# hueco medido en producción (37 de 3,000 filas con item_categoria_id, y eran
+# justo las que se habían capturado con el navegador local).
+_RE_PAGINA_RANK = re.compile(r"/(?:up|p)/(MLMU?\d+)|/(MLM)-(\d{9,12})-")
+
+
+def _pagina_y_tipo(url: str | None) -> tuple[str | None, str | None]:
+    """`(id_pagina, tipo)` a partir del href de la tarjeta."""
+    u = url or ""
+    m = _RE_PAGINA_RANK.search(u)
+    if not m:
+        return None, None
+    if m.group(1):
+        ident = m.group(1)
+        return ident, "USER_PRODUCT" if ident.startswith("MLMU") else "PRODUCT"
+    return f"{m.group(2)}{m.group(3)}", "ITEM"
+
+
 async def mas_vendidos_categorias(categorias: list[str],
                                   limite: int = 10) -> dict[str, list[dict[str, Any]]]:
     """
@@ -589,8 +610,15 @@ async def mas_vendidos_categorias(categorias: list[str],
                     vendidos = vendidos if vendidos is not None else _vendidos(et.replace("|", ""))
                 elif score is None:
                     score = _score(et)
+            id_pagina, tipo = _pagina_y_tipo(it.get("url"))
             normalizadas.append({
                 "externo_id": ident,
+                # El id de la RUTA y el tipo: los necesita
+                # `_subcategoria_de_cada_fila` para resolver los nichos. Antes
+                # quedaban en NULL y por eso se creía que Apify no servía para
+                # capturar una categoría RAÍZ.
+                "id_pagina": id_pagina,
+                "tipo": tipo,
                 # El badge oficial manda; el orden del DOM es el respaldo.
                 "posicion": _del_badge(it.get("badge")) or i,
                 "titulo": it.get("titulo"),

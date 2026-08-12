@@ -45,6 +45,11 @@ async def main() -> int:
     ap.add_argument("--raiz", required=True, help="Raíz a capturar (p. ej. MLM1574)")
     ap.add_argument("--top", type=int, default=20, help="Filas por categoría")
     ap.add_argument("--limite", type=int, default=0, help="Corta tras N categorías")
+    ap.add_argument("--solo", nargs="*", metavar="MLM####",
+                    help="Solo estas subcategorías. Sirve para no pagar por las "
+                         "que ya se sabe que ML no publica: de las 7 pendientes de "
+                         "Herramientas, 6 tienen /highlights vacío y raspar su "
+                         "página no devuelve nada.")
     ap.add_argument("--execute", action="store_true")
     args = ap.parse_args()
 
@@ -58,6 +63,9 @@ async def main() -> int:
     # gratis y su ausencia es justo lo que hoy no sabemos distinguir.
     pend = [s for s in raiz["subcategorias"]
             if s["categoria_id"] and not s["n_ranking"]]
+    if args.solo:
+        quiere = {c.strip().upper() for c in args.solo if c and c.strip()}
+        pend = [s for s in pend if s["categoria_id"] in quiere]
     if args.limite:
         pend = pend[:args.limite]
 
