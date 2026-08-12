@@ -300,23 +300,27 @@ def _revisar_actas() -> None:
     ahora = datetime.now(timezone.utc)
     if ahora.hour < settings.alertas_actas_hora_utc:
         return
-    from routers.migracion import _DOMINIOS_DELTAS  # etiquetas canónicas
+    # etiquetas canónicas; los retirados NO se vigilan (su cron ya no escribe
+    # acta a propósito, así que la ausencia es lo esperado — v0.95.1 con channel)
+    from routers.migracion import _DOMINIOS_DELTAS, _DOMINIOS_RETIRADOS
     from services import supabase_db as sdb
     if not sdb.disponible():
         return
+    vigilados = {d: e for d, e in _DOMINIOS_DELTAS.items()
+                 if d not in _DOMINIOS_RETIRADOS}
     try:
         filas = sdb.fetch_all(
             "select distinct on (dominio) dominio, resultado, created_at "
             "from migration.reconciliation_runs "
             "where dominio = any(%(d)s) and created_at >= date_trunc('day', now()) "
             "order by dominio, created_at desc",
-            {"d": list(_DOMINIOS_DELTAS)},
+            {"d": list(vigilados)},
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("vigilante actas: %s", exc)
         return
     por_dominio = {f["dominio"]: f for f in filas}
-    for dom, etiqueta in _DOMINIOS_DELTAS.items():
+    for dom, etiqueta in vigilados.items():
         acta = por_dominio.get(dom)
         # Por CAMBIO de estado: el acta de hoy no se arregla sola en 15 min, así
         # que repetir el aviso cada ventana solo es ruido. La recuperación

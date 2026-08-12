@@ -57,6 +57,19 @@ _DOMINIOS_DELTAS = {
 }
 OBJETIVO_RACHA = 14  # regla de corte de la migración: 14 actas seguidas en cero
 
+# Dominios que YA cumplieron su racha y se retiraron a propósito: su cron dejó
+# de escribir acta, así que "no hay acta hoy" es lo esperado, no una falla.
+#
+# Siguen en `_DOMINIOS_DELTAS` para que /migracion conserve el expediente (la
+# racha se calcula desde el último día CON acta, así que channel sigue
+# mostrando su 22/14 cumplido), pero el vigilante de ausencias los salta.
+#
+# channel-deltas: retirado el 11-ago-2026 en la v0.95.1 (CHANNEL_ESPEJO_INVERSO
+# =false y el cron convertido en aviso de retiro). El 12-ago a las 02:06 CDMX el
+# bot avisó "Acta de Channel NO generada hoy — revisar el cron deltas en
+# Railway" y mandó a revisar un cron apagado a propósito.
+_DOMINIOS_RETIRADOS = {"channel-deltas"}
+
 
 @router.get("/deltas")
 def deltas(dias: int = 45):

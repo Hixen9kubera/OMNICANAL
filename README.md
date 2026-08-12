@@ -6288,6 +6288,29 @@ Versión 0.100.0.
 
 ---
 
+### v0.102.0 — El vigilante deja de pedirle acta a un dominio retirado (Eduardo)
+
+El 12-ago a las 02:06 CDMX el bot de Slack mandó tres alertas. Dos eran reales;
+la tercera decía *"Acta de Channel NO generada hoy — revisar el cron deltas en
+Railway"* y mandaba a revisar **un cron apagado a propósito**: Channel se retiró
+la víspera en la v0.95.1 (`CHANNEL_ESPEJO_INVERSO=false`, cron convertido en
+aviso de retiro) con su racha cerrada en **22/14, cumplida**. Se apagó el
+dominio y nadie lo sacó de la lista que vigila `_revisar_actas`.
+
+Nuevo `_DOMINIOS_RETIRADOS` en `routers/migracion.py`: el vigilante lo salta,
+pero el dominio **se queda** en `_DOMINIOS_DELTAS` para que /migracion conserve
+el expediente. Eso no había que arreglarlo — la racha se calcula desde el último
+día CON acta, así que la tarjeta de Channel sigue mostrando su 22/14 cumplido
+aunque hoy no haya corrida.
+
+Las otras dos alertas del día (`core-etl-v2` y `categorias-etl` en `con_deltas`,
+`seam_gap` 17 y 15) son legítimas y se atendieron con re-corrida el mismo día,
+que es lo que rescata el día para la racha.
+
+Versión 0.102.0.
+
+---
+
 ### v0.101.0 — Competencia paso 7a: `propuestas` se retira sin destruirse (Eduardo)
 
 Migración **0014**: `alter schema propuestas rename to propuestas_retirado` en
