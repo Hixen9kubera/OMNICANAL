@@ -217,15 +217,34 @@ async def main() -> int:
     ap.add_argument("--aplicar", action="store_true", help="sin esto NO escribe")
     ap.add_argument("--destino", choices=["sandbox", "prod"], default="sandbox")
     ap.add_argument("--limite", type=int, default=12, help="cuántos tipos (default 12)")
+    ap.add_argument("--saltar-cargados", action="store_true",
+                    help="omite los tipos que ya tienen requisitos (para retomar "
+                         "una corrida larga sin repetir las llamadas)")
     args = ap.parse_args()
 
     dsn = _env_destino(args.destino)
     print(f"DESTINO: {args.destino}   ({'ENSAYO' if not args.aplicar else 'ESCRIBIENDO'})\n")
 
     tipos = tipos_mas_usados(args.limite)
+
+    if args.saltar_cargados:
+        import psycopg2
+        cx = psycopg2.connect(dsn, connect_timeout=20)
+        try:
+            with cx.cursor() as cur:
+                cur.execute("select distinct categoria_id from channel.field_requirements "
+                            "where canal = 'amazon'")
+                ya = {r[0] for r in cur.fetchall()}
+        finally:
+            cx.close()
+        antes = len(tipos)
+        tipos = [(t, n) for t, n in tipos if t not in ya]
+        print(f"Ya cargados: {antes - len(tipos)}  ·  pendientes: {len(tipos)}")
+
     print(f"Tipos a cargar: {len(tipos)}")
-    for t, n in tipos:
-        print(f"   {t:<32} {n} publicaciones")
+    if len(tipos) <= 15:
+        for t, n in tipos:
+            print(f"   {t:<32} {n} publicaciones")
     print()
 
     total, sin_canonico, fallidos = 0, set(), []
@@ -234,6 +253,11 @@ async def main() -> int:
         if motivo:
             fallidos.append((tipo, motivo))
             print(f"   {tipo:<32} FALLÓ: {motivo}", flush=True)
+            # Respira más tras un fallo. Casi siempre es corte por exceso de
+            # peticiones, y seguir al mismo ritmo garantiza que los siguientes
+            # también caigan — que es como Walmart nos tumbó 19 de 24 productos.
+            # Los fallidos se retoman con --saltar-cargados.
+            await asyncio.sleep(5.0)
             continue
         obl = sum(1 for f in filas if f["obligatorio"])
         con_def = sum(1 for f in filas if f["default_value"] is not None)

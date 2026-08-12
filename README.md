@@ -7109,3 +7109,21 @@ bullets → queda solo `fabric_type`; sin ese último → `ok`. `tsc --noEmit` l
 el listado de Productos está fijo en `canal:"general"` (`page.tsx:94`), que lee
 WooCommerce en vivo, y `env.staging` no tiene esas credenciales. Sin productos no
 hay modal que abrir. Versión 0.115.0.
+
+---
+
+### v0.115.1 — El cargador aguanta una corrida de 541 tipos
+
+La carga inicial fueron 12 productTypes. Para los 541 restantes hacían falta dos
+cosas que a esa escala dejan de ser opcionales:
+
+- **`--saltar-cargados`**: omite los tipos que ya tienen requisitos. El upsert ya
+  hacía la carga idempotente, pero re-correrla repetía las llamadas a Amazon. Con
+  esto una corrida cortada se retoma sin volver a pedir lo que ya está.
+- **Pausa de 5 s tras un fallo** (antes seguía al mismo ritmo de 1 s). Casi todo
+  fallo a esta escala es corte por exceso de peticiones, y seguir igual garantiza
+  que los siguientes también caigan — es como Walmart nos tumbó 19 de 24
+  productos en el segundo lote.
+
+El token de SP-API ya venía cacheado (`amazon._access_token`), así que 541 tipos
+no son 541 renovaciones. Versión 0.115.1.
