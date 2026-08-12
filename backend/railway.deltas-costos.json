@@ -5,7 +5,7 @@
     "buildCommand": "pip install pymysql psycopg2-binary"
   },
   "deploy": {
-    "startCommand": "python scripts/comparar_costos.py",
+    "startCommand": "python -c \"print('deltas-costos RETIRADO 12-ago-2026 (racha 27/14 cumplida): costos_validados/costos_finales/costos_logs estan congeladas a proposito -paso 1 del desmantelamiento- y compararlas reportaria divergencia por construccion. Reactivar = restaurar startCommand en railway.deltas-costos.json.')\"",
     "cronSchedule": "30 6 * * *",
     "restartPolicyType": "NEVER"
   }

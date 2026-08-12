@@ -6538,3 +6538,41 @@ Verificado en el navegador contra el sandbox: los dos orígenes en el panel, el
 marcado en ámbar-600/500 contra una fila normal, el volteo del panel en la
 última fila visible, y Categorías sin ruido nuevo. Sin migraciones y sin
 variables nuevas. Versión 0.105.0.
+
+### v0.107.0 — Retiro de COSTOS y PEDIDOS: MySQL congelado en los dos dominios de dinero
+
+Ejecución del paso 1 con el dale de Brandon (que cubre los cinco cortes) y el
+go de Eduardo: `COSTING_ESPEJO_INVERSO=false` y `ORDERS_ESPEJO_INVERSO=false` en
+producción, y los crons `deltas-costos` y `deltas-orders` convertidos en aviso
+de retiro por sus config files (`railway.deltas-costos.json` y
+`railway-deltas.json` — este último con nombre fuera de patrón y sin
+`cronSchedule` propio: su horario vive en el servicio).
+
+`costos_validados`, `costos_finales`, `costos_logs` y `pedidos_ml` quedan
+congeladas a propósito. Rachas cerradas cumplidas: **costing 27/14, orders
+21/14**.
+
+**El censo de lectores que autorizó esto**, y lo que costó: la primera corrida
+(11-ago) tenía un defecto propio — agrupaba las IPs por lo anterior al primer
+`:`, que en IPv6 es el prefijo y no el puerto, así que TODAS las máquinas
+residenciales caían en un mismo bucket que se leyó como "mi sonda". Corregido a
+`rsplit(":", 1)`. Con la agrupación buena aparecieron tres IPv6 distintas y una
+IPv4, todas confirmadas por Eduardo como equipo conectando en local. Sumado al
+censo de código del 10-ago (ningún repo externo lee estas tablas), el
+desmantelamiento quedó autorizado.
+
+Hallazgo extra: **el egress de Railway cambió** de `162.220.232.251` a
+`152.55.177.181` (misma huella: 3 conexiones ociosas del pool y las queries del
+backend). Cualquier plan futuro que dependa de una allowlist por IP tiene que
+contar con que esa IP se mueve sola.
+
+Reversa: los dos flags a `true` + restaurar los `startCommand`. **Ojo, y aquí
+sí duele**: estos espejos son POR EVENTO, no full-refresh como channel —
+revertir NO repuebla lo que no se copió, así que una reversa tras días necesita
+backfill desde kubera. Dentro de las primeras horas es trivial.
+
+La resiliencia queda intacta: kubera caída → MySQL absorbe + evento a la cola
+(costing) o al espejo clásico (orders). Ese camino vive en el manejo de error y
+no depende de los flags.
+
+Sin migraciones. Versión 0.107.0.
