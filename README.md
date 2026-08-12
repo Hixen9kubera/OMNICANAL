@@ -7053,3 +7053,18 @@ NO se agrega columna de restricciones (título 60 en ML vs 75 en Amazon, 2
 decimales en Walmart): esta tabla contesta "¿está el campo?", no "¿está bien?", y
 una columna que nace vacía es como nacieron `parent_sku` y `has_variations`.
 Queda dicho para que la ausencia sea decisión y no olvido. Versión 0.114.0.
+
+---
+
+### v0.114.1 — Manifiesto al día: el candado vuelve a decir la verdad
+
+`schema_manifest.json` regenerado contra producción tras aplicar la 0018 y correr
+el cargador. Ahora incluye `channel.field_requirements` y `core.canonical_fields`
+(45 tablas).
+
+**El candado de paridad vuelve a `PARIDAD OK`.** La regeneración anterior (v0.108.0)
+había destapado que `enrich.market_*` estaba reestructurada fuera de las
+migraciones — `market_search_term` con 464 filas sin DDL en archivo, `termino_id`
+donde la 0011 ponía texto. Eso **ya no aparece**: el equipo escribió sus
+migraciones 0015 y 0017 mientras tanto, y producción y el árbol vuelven a decir
+lo mismo. Versión 0.114.1.

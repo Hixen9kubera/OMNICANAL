@@ -17,6 +17,27 @@
     },
     "rls": true
    },
+   "field_requirements": {
+    "columnas": [
+     "canal:text:notnull",
+     "categoria_id:text:notnull",
+     "campo:text:notnull",
+     "campo_canonico:text:null",
+     "obligatorio:boolean:notnull",
+     "tipo:text:null",
+     "valores_permitidos:jsonb:null",
+     "default_value:jsonb:null",
+     "fuente:text:notnull",
+     "leido_at:timestamp with time zone:null",
+     "updated_at:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "CHECK": 1,
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
    "listing_history": {
     "columnas": [
      "id:bigint:notnull",
@@ -196,6 +217,18 @@
      "FOREIGN KEY": 1,
      "PRIMARY KEY": 1,
      "UNIQUE": 1
+    },
+    "rls": true
+   },
+   "canonical_fields": {
+    "columnas": [
+     "campo:text:notnull",
+     "tipo:text:notnull",
+     "label:text:notnull",
+     "nota:text:null"
+    ],
+    "constraints": {
+     "PRIMARY KEY": 1
     },
     "rls": true
    },
@@ -857,8 +890,8 @@
   }
  },
  "resumen": {
-  "channel": 9,
-  "core": 4,
+  "channel": 10,
+  "core": 5,
   "costing": 8,
   "enrich": 12,
   "migration": 4,
