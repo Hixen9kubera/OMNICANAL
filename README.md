@@ -6979,3 +6979,77 @@ permanente del catálogo, el webhook de Woo, la resiliencia con kubera caída,
 las mañas de los crons de Railway, y **los seis pendientes de F8** en orden.
 
 Sin cambios de código. Versión 0.113.1.
+
+---
+
+### v0.114.0 — Qué exige cada canal, preguntándoselo al canal (Eduardo)
+
+Tercera y última pata de las tres que estaban revueltas. Ahora existen por
+separado: lo que el canal **EXIGE** (esta migración), lo que **tenemos**
+(`enrich.channel_content`, v0.108.0) y lo que **se mandó**
+(`ops.channel_submissions`). Sin la primera, la pregunta del panel —*"¿qué le
+falta a este SKU?"*— era incontestable: se buscó en las 17 migraciones y no
+existía nada.
+
+**Migración 0018 · `channel.field_requirements` + `core.canonical_fields`.**
+
+**`campo` guarda el nombre NATIVO del canal y `campo_canonico` lo traduce.** Una
+vuelta anterior del consejo pidió solo el canónico con FK. No cierra: Amazon
+exige `condition_type`, `fabric_type`, `supplier_declared_dg_hz_regulation` —
+campos que **no son conceptos del panel**, nadie edita y no tienen equivalente
+posible. Con FK obligatoria no cabe la mitad de lo que Amazon pide; sin nombre
+canónico se rompe la comparación contra el contenido. Se guardan los dos y se
+compara por el canónico. Los tres revisores respaldaron la decisión — el
+argumento decisivo: fusionarlos destruiría lo único que la tabla puede dar,
+comparar *"¿ML y Amazon piden título?"* sin saber que uno se llama `title` y
+otro `item_name`. Y deja el mapeo AUDITABLE, que es lo que habría hecho visible
+la contradicción `MX`/`CN` del país de origen.
+
+**`default_value`: tres estados, no dos.** ~7 campos de Amazon siempre se
+llenan con una constante del publicador. Sin distinguirlos el panel los pintaría
+en rojo para los 22,186 SKUs. Medido: de 73 obligatorios, 47 tienen canónico, 24
+tienen respaldo y **solo 2 quedan sin nada**.
+
+**`leido_at`:** si un canal agrega un obligatorio y nadie relee, el panel diría
+"no le falta nada" y las publicaciones rebotarían sin explicación.
+
+**Cargador `cargar_requisitos_amazon.py`** — la tabla nace CON su escritor, que
+era la condición que puso el consejo (el precedente es `enrich.ai_attributes`:
+creada vacía, sin escritor, muerta meses hasta que la 0016 la dropeó).
+
+Lee el JSON Schema de SP-API Definitions por productType. **Alcance: los 12 más
+usados, no los 558.** Casi todos los 558 tienen uno o dos productos, y son 558
+llamadas a una API que ya nos cortó por exceso de peticiones en Walmart. Cargados
+**1,563 campos de 12 tipos**.
+
+**Lee de `channel.listings`, NO de `amazon_progress`** — esa quedó congelada al
+cerrarse la migración el 12-ago, y un SELECT ahí devuelve el pasado sin decirlo.
+Se nota: `ARTIFICIAL_PLANT` sale 43 en MySQL y 41 en la gemela viva, y el top-12
+real trae `HEADPHONES` donde el congelado ponía otro tipo.
+
+**Lo que el cargador reportó y valía el ejercicio:** los obligatorios que el
+panel **no puede pedirle a nadie**. Salieron 4, y uno era real — **`brand`**:
+Amazon lo exige, sale de un dato del producto (no es constante) y no tenía dónde
+editarse. **3,060 de 7,264 productos traen atributo BRAND; los otros 4,204 se
+publican en Amazon como `"Generic"` y en ML como `"Ferrahome"`.** Se agregó al
+diccionario canónico; que los canales usen criterios distintos es decisión de
+negocio y conviene que la vea Brandon.
+
+`item_length_width_height` queda SIN mapear a propósito: un atributo de Amazon
+cubre tres canónicos (largo/ancho/alto) y el modelo guarda uno por fila.
+Inventar la correspondencia sería la suposición que este cargador existe para
+evitar.
+
+**Dos errores propios que el consejo cazó en la consulta de referencia**, antes
+de que algún cargador la copiara: no filtraba por `cuenta` (caso `EST-0091`: si
+BEKURA tiene el campo y SANCORFASHION no, el panel pintaba verde algo que a una
+cuenta le falta), y la precedencia `'*'` vs categoría no estaba definida. **El
+primer arreglo de la precedencia estaba mal** y solo se vio corriéndolo: poner
+`and obligatorio` en el mismo WHERE que el `distinct on` descartaba la fila de la
+categoría específica justo cuando decía `obligatorio=false`. Ahora se resuelve en
+un CTE antes de filtrar. Medido en sandbox, no razonado.
+
+NO se agrega columna de restricciones (título 60 en ML vs 75 en Amazon, 2
+decimales en Walmart): esta tabla contesta "¿está el campo?", no "¿está bien?", y
+una columna que nace vacía es como nacieron `parent_sku` y `has_variations`.
+Queda dicho para que la ausencia sea decisión y no olvido. Versión 0.114.0.
