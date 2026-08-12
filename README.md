@@ -6958,3 +6958,24 @@ congeladas.
 
 Pruebas sandbox tras el cambio: `probar_retiro_costing_orders.py` 11/11,
 `probar_corte_core_categorias.py` 12/12. Versión 0.113.0.
+
+### v0.113.1 — El CLAUDE.md deja de describir una migración que ya terminó
+
+La sección de migración era del 27-jul y mandaba a "no tocar los jobs
+`deltas-costos`/`deltas-channel`" (retirados) y hablaba de una "regla de corte
+de 14 días de actas en cero" (cumplida en los cinco dominios). Cualquier sesión
+nueva la leía como estado actual.
+
+Lo importante que ahora dice, y que es la trampa más fácil de pisar: **las
+tablas de MySQL están congeladas**, así que los flags `SUPABASE_READ_*` —el
+interruptor de reversa— mandan las lecturas a datos de agosto. El panel no
+diría "error": diría cifras viejas como si fueran de hoy. Misma advertencia
+para cualquier `SELECT` nuevo que apunte a `costos_*`, `pedidos_ml` o
+`canal_inventario`.
+
+También queda escrito qué NO se retira (los ETLs de 06:15 como vigilante
+permanente del catálogo, el webhook de Woo, la resiliencia con kubera caída,
+`alertas_estado` y `espejo_kubera_log`), el estado por dominio con sus rachas,
+las mañas de los crons de Railway, y **los seis pendientes de F8** en orden.
+
+Sin cambios de código. Versión 0.113.1.

@@ -61,13 +61,13 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
    stock masivo, variables de producción): mostrar QUÉ se va a encender y
    esperar el dale de Brandon ANTES del push. Features de UI/lectura: deploy
    directo a `main` (regla vieja de Brandon, sigue viva para eso).
-4. **NO tocar NADA de la migración de Eduardo/José**: esquemas Supabase
-   (`core`, `channel`, `costing`, `ops`, `migration`), espejos
-   (`channel_mirror.py`, `costing_mirror.py`), ETLs (`backend/scripts/etl_*`,
-   `comparar_*`), jobs Railway `deltas-costos`/`deltas-channel`, ni el esquema
-   de `canal_inventario`. El sync de 15 min ALIMENTA su espejo — no apagarlo
-   sin coordinar (`SYNC_ENABLED=false` del 17-20 jul les congeló la observación
-   3 días). Su regla de corte: 14 días de actas en cero.
+4. **La BD kubera ES la fuente de verdad** (migración cerrada el 12-ago-2026).
+   Los cinco dominios están cortados y sus espejos a MySQL RETIRADOS: escribir
+   ahí ya no sirve de nada y leer de ahí devuelve datos de agosto. Ver la
+   sección de migración más abajo antes de tocar `core`/`channel`/`costing`/
+   `ops`/`migration`, `kubera_mirror.py`, los ETLs o el sync de 15 min (que
+   alimenta `channel.listings`; `SYNC_ENABLED=false` del 17-20 jul congeló la
+   observación 3 días).
 5. **LiteSpeed cachea chunche.shop**: TODA lectura de galería/producto que
    alimente una escritura lleva `_cb` (cache-bust). Ya causó un revert de
    imágenes editadas.
@@ -127,34 +127,106 @@ lectura directa OK, DDL/DML no.
 | `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | **true** / definida / `crear_logs,ml_backlog,amazon_backlog,amazon_imagenes,ml_image_edit_backlog,pedidos_ml` | Espejo kubera de escritores sin cobertura → esquema v4 (6 tablas desde el 23-jul, GO de Eduardo). Sumar tabla al CSV = flujo vivo, dale de Brandon. Quedan FUERA a propósito: `webhook_eventos` campana (opcional, volumen) y `ml_tokens` (bloqueado hasta Vault). La página /migracion muestra censo, eventos, errores y racha de actas |
 | Apagado de emergencia | — | Cualquier flujo se apaga con su variable, sin deploy (accept-deploy para aplicar staged) |
 
-## MIGRACIÓN A LA BD KUBERA — estado y reglas rápidas (Eduardo, 2026-07-27)
+## MIGRACIÓN A LA BD KUBERA — CERRADA el 12-ago-2026
 
-Para cualquier sesión que toque staging, variables Supabase o los ETLs:
+Los cinco dominios (costos, pedidos, channel, core, categorías) están cortados
+y desmantelados. **kubera escribe y kubera lee; MySQL ya no participa.**
 
-1. **La BD kubera (`tukwcvsi…`) es PRODUCCIÓN OPERATIVA** por decisión de
-   Eduardo. Ahí escriben los espejos/crons y ahí corren las 5 rachas de actas
-   (visibles en /migracion). NO probar ni insertar datos de prueba ahí: una
-   fila de prueba rompe la racha del dominio (14 días a cero).
-2. **Existe un SANDBOX (`yvootpbz…`)**: clon del esquema, VACÍO a propósito,
-   para pruebas/staging. Se recrea con `supabase/migrations/` +
-   `backend/scripts/aplicar_migraciones.py` (candado: se niega a correr contra
-   producción). Si staging muestra datos vacíos de Supabase, ES INTENCIONAL.
-3. **Staging apunta al sandbox** (no a kubera) y tiene `SUPABASE_PROD_REF=
-   tukwcvsi…`: el candado `validar_ambiente()` mata el arranque si staging o
-   un local apuntan a producción. No "arreglarlo" — es la protección.
-4. **Variables (semántica nueva)**: familia `SUPABASE_*` = BD kubera
-   (operativa); `ANALYTICS_SUPABASE_URL`/`ANALYTICS_SUPABASE_SERVICE_ROLE_KEY`
-   = dailytrackMeli (`xaxbkijc…`, presencia ML vía `supabase_rest`, con
-   fallback a las viejas mientras producción no defina las nuevas — switch
-   pendiente de dale de Brandon).
-5. **Crons de la migración** (production): `etl-core-products` 06:15 UTC
-   (maestro + categorías, encadenados; watchdog anti-cuelgue y
-   `railwayConfigFile` propio anti-uvicorn), deltas 06:30/06:45/07:15.
-   `etl_core_products.py` (v1 full-refresh) está RETIRADO con candado — usar
-   `etl_core_products_v2.py` (incremental, dry-run default).
-6. **P4 decidida**: `costing.costos_finales` tiene PK `(sku, canal)`; hoy todo
-   es `canal='mercado_libre'`. Cualquier consulta nueva a esa tabla debe
-   filtrar/considerar el canal.
+### ⚠️ Lo primero que hay que saber: las tablas de MySQL están CONGELADAS
+
+`costos_validados`, `costos_finales`, `costos_logs`, `pedidos_ml` y
+`canal_inventario` **dejaron de recibir escrituras** (11 y 12-ago). Siguen ahí,
+con su último valor bueno, hasta F8.
+
+Consecuencia que ha mordido: **los flags `SUPABASE_READ_*` son el interruptor
+de reversa, y apagarlos manda las lecturas a esas tablas congeladas.** El panel
+no diría "error", diría cifras de agosto como si fueran de hoy — un tab de
+Ventas con 21 pedidos de menos, publicaciones marcadas `inactive` que llevan
+semanas activas. Si alguna vez hay que apagarlos, es una decisión consciente y
+temporal, no un "por si acaso".
+
+Lo mismo con cualquier consulta nueva: **si un SELECT nuevo lee esas tablas,
+está leyendo el pasado.** Las gemelas vivas son `costing.*`, `channel.orders`,
+`channel.listings` y `core.products`.
+
+### Estado por dominio
+
+| Dominio | Escritura | Lectura | Racha al cierre |
+|---|---|---|---|
+| Costos | kubera (espejo retirado) | kubera, sin fallback | 27/14 |
+| Pedidos | kubera (espejo retirado) | kubera, sin fallback | 21/14 |
+| Channel | kubera (espejo retirado) | kubera, sin fallback | 22/14 |
+| Core | kubera (nunca tuvo espejo) | kubera, sin fallback | 17 |
+| Categorías | kubera (nunca tuvo espejo) | kubera, sin fallback | 17 |
+
+### Lo que sigue vivo y NO se retira
+
+- **Los ETLs de las 06:15** (`etl-core-products`: maestro + categorías
+  encadenados). Dejaron de ser compuerta de la migración y son ahora el
+  **vigilante permanente del catálogo**: lo único que compara Woo contra
+  kubera. Destaparon las ediciones de títulos del 11-ago. Su acta mide
+  `seam_gap` (>0 = algo cambió en Woo que ningún seam cubrió).
+- **El webhook de Woo** (`/api/webhooks/woo`, v0.92 + v0.99.1): dos webhooks en
+  wp-admin (`product.updated` y `product.created`) que avisan a
+  `core.products` de cualquier edición, venga del panel o de wp-admin. Sin él,
+  editar un título en WordPress desfasa el registro civil hasta el día
+  siguiente. Se protege con firma HMAC; sin firma válida NO escribe.
+- **La resiliencia**: kubera caída → MySQL absorbe y el evento se encola en
+  `espejo_kubera_log` (reprocesable en /migracion). Vive en el camino de error
+  y no depende de ningún flag. Se retira hasta F8.
+- **`alertas_estado` y `espejo_kubera_log`** siguen en MySQL A PROPÓSITO: deben
+  sobrevivir con kubera caída.
+
+### Los crons de deltas están RETIRADOS
+
+`deltas-costos`, `deltas-channel` y `deltas-orders` ya no comparan nada: su
+`startCommand` imprime un aviso de retiro. Están en `_DOMINIOS_RETIRADOS`
+(`routers/migracion.py`) para que el vigilante de ausencias no avise "Acta NO
+generada hoy" a las 08:00 UTC. **Regla: el dominio se apunta como retirado en
+el mismo commit que lo apaga** (a channel se le olvidó y avisó a las 2 a.m.).
+
+Ojo con los crons de Railway: su horario y comando viven en su
+`railwayConfigFile`, no en el servicio. Cambiar `cronSchedule` por API NO
+funciona; solo un push re-resuelve el archivo. Y `deltas-orders` usa
+`railway-deltas.json` (nombre fuera de patrón).
+
+### F8 — lo que falta para cerrar del todo
+
+1. **Bitácoras a `ops.process_log`**: falta `crear_logs`, y al FINAL la fusión
+   de `alertas_estado` (esa es la última pieza: debe seguir funcionando aunque
+   kubera esté caída, así que se mueve cuando ya no haya nada que rescatar).
+2. **Archivo de congelados**: tablas del robot Alibaba (`scraping_alibaba`,
+   `atributos_ia`, `imagenes_producto`, `productos`), `legacy_costos_ml`, seeds
+   de `fx_rates`/`pricing_params`, `marketplace_identity` y su cron.
+3. **Retirar el andamiaje**: `kubera_mirror.py`, los flags `SUPABASE_WRITE_*` y
+   `SUPABASE_READ_*`, la página `/migracion`, `espejo_kubera_log` y los
+   arneses `comparar_lecturas_*`.
+4. **Retirar el esquema MySQL `kubera_ml`** (respaldo previo:
+   `Documents/respaldos_kubera_ml`, hecho el 11-ago sin tablas de tokens).
+   WordPress se queda: vive en el mismo hosting y el panel lo lee directo.
+5. **MIGRACION_FINAL.md**: el acta de defunción con el mapa de qué quedó dónde.
+6. **Un lector externo pendiente**: `MonitoreoOperaciones` (servicio Railway)
+   lee `productos` de MySQL. Cuando se retire el esquema hay que repuntarlo a
+   `core.products` o avisar que ese panel se congela.
+
+### Reglas que siguen vigentes
+
+1. **La BD kubera (`tukwcvsi…`) es PRODUCCIÓN OPERATIVA.** NO insertar datos de
+   prueba: las cobayas van al **SANDBOX (`yvootpbz…`)**, clon del esquema y
+   vacío a propósito. Se recrea con `supabase/migrations/` +
+   `backend/scripts/aplicar_migraciones.py`.
+2. **Staging apunta al sandbox** y tiene `SUPABASE_PROD_REF=tukwcvsi…`: el
+   candado `validar_ambiente()` mata el arranque si staging o un local apuntan
+   a producción. No "arreglarlo" — es la protección.
+3. **P4**: `costing.costos_finales` tiene PK `(sku, canal)`; hoy todo es
+   `canal='mercado_libre'`. Toda consulta nueva filtra canal.
+4. **`etl_core_products.py`** (v1 full-refresh) está RETIRADO con candado —
+   usar `etl_core_products_v2.py` (incremental, dry-run por default).
+5. **dailytrackMeli (`xaxbkijc…`) DESAPARECIÓ** (v0.88.0): su hostname dejó de
+   resolver. `services/supabase_rest.py` quedó huérfano y las variables
+   `ANALYTICS_SUPABASE_*` ya no apuntan a nada vivo — ojo al borrarlas sin
+   quitar el módulo (el fallback le pediría `products_snapshot` a kubera, donde
+   no existe).
 
 ## Integraciones y sus mañas
 
