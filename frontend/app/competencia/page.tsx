@@ -642,7 +642,12 @@ function DetalleSku({
     );
   if (!d) return null;
 
-  const TOPE = 5;
+  // Términos más buscados que se pintan: 10 en tres columnas. ML da hasta 50 por
+  // categoría (medido: 37 categorías topan en 50, promedio 39.8), así que esto es
+  // una muestra de la cabeza, no la lista completa — el resto queda guardado.
+  const TOPE = 10;
+  // Las palabras clave sugeridas siguen en 5: ahí más es ruido.
+  const TOPE_PALABRAS = 5;
 
   return (
     <div className="space-y-3 border-y border-indigo-100 bg-indigo-50/30 px-4 py-4">
@@ -731,10 +736,12 @@ function DetalleSku({
               Mercado Libre no publica términos de búsqueda de esta categoría.
             </div>
           ) : (
-            <ol className="space-y-0.5">
+            /* Tres columnas: 15 términos en una sola lista obligaban a hacer
+               scroll y el bloque perdía de vista el resto del detalle. */
+            <ol className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2 lg:grid-cols-3">
               {d.terminos.slice(0, TOPE).map((t) => (
-                <li key={t.termino} className="flex items-center gap-2 text-xs">
-                  <span className="w-4 text-right tabular-nums text-slate-300">
+                <li key={t.termino} className="flex min-w-0 items-center gap-1.5 text-xs">
+                  <span className="w-4 shrink-0 text-right tabular-nums text-slate-300">
                     {t.posicion}
                   </span>
                   {t.cubierto ? (
@@ -742,7 +749,10 @@ function DetalleSku({
                   ) : (
                     <X size={12} className="shrink-0 text-rose-400" />
                   )}
-                  <span className={t.cubierto ? "text-slate-700" : "text-slate-500"}>
+                  <span
+                    title={t.termino}
+                    className={`truncate ${t.cubierto ? "text-slate-700" : "text-slate-500"}`}
+                  >
                     {t.termino}
                   </span>
                   {/* Los títulos difieren por tienda: una puede ser encontrable y
@@ -794,7 +804,7 @@ function DetalleSku({
 
             {sug ? (
               <div className="mt-2 space-y-1">
-                {sug.palabras.slice(0, TOPE).map((p) => (
+                {sug.palabras.slice(0, TOPE_PALABRAS).map((p) => (
                   <div key={p.palabra} className="flex items-start gap-2 text-[11px]">
                     <span
                       className={`shrink-0 rounded px-1.5 py-0.5 font-semibold ${

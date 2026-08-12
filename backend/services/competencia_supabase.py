@@ -32,6 +32,7 @@ tienda, sale_price, estado del listing, visitas); la raíz sale de
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -130,13 +131,23 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
 # podado. Este modulo ya lee 100% enrich.market_*.
 
 
-def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
-    """Resultados guardados de UN término. La tabla es por término, no por SKU."""
+def busqueda(termino: str, limite: int = 5,
+             canal: str = "mercado_libre") -> list[dict[str, Any]]:
+    """
+    Resultados guardados de UN término.
+
+    El texto del término ya no vive en la fila del resultado: desde la 0016 está
+    UNA vez en `market_search_term` y el resultado lo referencia por FK. Es lo que
+    garantiza que un término medido (una corrida de Apify, ~$0.007) lo reusen
+    todos los SKUs que lo comparten sin volver a pagarlo.
+    """
     filas = [dict(f) for f in supabase_db.fetch_all(
-        "SELECT * FROM enrich.market_search_results WHERE termino = %s "
-        "ORDER BY posicion LIMIT %s", (termino, int(limite)))]
+        "SELECT r.* FROM enrich.market_search_results r "
+        "  JOIN enrich.market_search_term st ON st.id = r.termino_id "
+        " WHERE st.termino = %s AND st.canal = %s "
+        " ORDER BY r.posicion LIMIT %s", (termino, canal, int(limite)))]
     for f in filas:
-        f.pop("canal", None)          # multicanal en la tabla, no en el API aun
+        f.pop("termino_id", None)     # llave interna, no viaja al API
         for k in ("precio", "precio_lista", "rating"):
             if f.get(k) is not None:
                 f[k] = float(f[k])
@@ -144,9 +155,13 @@ def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
     return filas
 
 
-def terminos_medidos() -> set[str]:
+def terminos_medidos(canal: str = "mercado_libre") -> set[str]:
+    """Los términos que YA se corrieron. Sale del catálogo, no de los resultados:
+    un término puede estar medido y haber devuelto cero filas, y eso también
+    cuenta como medido (no hay que volver a pagarlo)."""
     return {f["termino"] for f in supabase_db.fetch_all(
-        "SELECT DISTINCT termino FROM enrich.market_search_results")}
+        "SELECT termino FROM enrich.market_search_term "
+        " WHERE canal = %s AND medido_en IS NOT NULL", (canal,))}
 
 
 def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
@@ -171,15 +186,19 @@ def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
 
 
 def conteo_terminos() -> dict[str, int]:
-    """Cuántos términos hay por categoría, en una sola consulta."""
+    """Cuántos términos hay por categoría, en una sola consulta.
+
+    Desde la 0016 `market_terms` es UNA fila por categoría con un array JSON, así
+    que el conteo es la longitud del array y no un GROUP BY sobre 5,853 filas.
+    """
     return {f["categoria_id"]: f["n"] for f in supabase_db.fetch_all(
-        "SELECT categoria_id, COUNT(*)::int AS n "
-        "FROM enrich.market_terms GROUP BY 1")}
+        "SELECT categoria_id, jsonb_array_length(terminos)::int AS n "
+        "FROM enrich.market_terms")}
 
 
 def total_terminos(categoria_id: str) -> int:
     n = supabase_db.fetch_scalar(
-        "SELECT COUNT(*) FROM enrich.market_terms "
+        "SELECT jsonb_array_length(terminos) FROM enrich.market_terms "
         "WHERE categoria_id = %s", (categoria_id,))
     return int(n or 0)
 
@@ -194,12 +213,15 @@ def terminos_categoria(categoria_id: str,
     """
     from services import competencia_store
 
+    # El array se desempaqueta EN SQL con jsonb_array_elements_text + ordinality:
+    # así el LIMIT sigue aplicándose en la base y la posición sale del índice del
+    # array, que es donde vive el orden que publica ML.
     filas = [dict(f) for f in supabase_db.fetch_all(
-        "SELECT * FROM enrich.market_terms "
-        "WHERE categoria_id = %s ORDER BY posicion LIMIT %s",
+        "SELECT e.ord::int AS posicion, e.termino "
+        "  FROM enrich.market_terms t, "
+        "       jsonb_array_elements_text(t.terminos) WITH ORDINALITY AS e(termino, ord) "
+        " WHERE t.categoria_id = %s ORDER BY e.ord LIMIT %s",
         (categoria_id, int(limite)))]
-    for f in filas:
-        f.pop("canal", None)          # multicanal en la tabla, no en el API aun
     porv = {k: (v or "").lower() for k, v in (titulos_por_tienda or {}).items() if v}
     for f in filas:
         if not porv:
@@ -279,23 +301,31 @@ def reemplazar_terminos(categoria_id: str, periodo: str,
     `url` no se escribe: la tabla nueva la descartó (se raspaba y nadie la leía).
     `periodo` se acepta por compatibilidad de firma y tampoco se escribe.
     """
-    listas, vistos = [], set()
-    for i, t in enumerate(terminos, start=1):
-        termino = (t.get("termino") or t.get("keyword") or "").strip()
+    # Un array ORDENADO, sin duplicados y conservando el orden que da ML: es la
+    # única cosa que /trends publica (no hay volumen). El orden se respeta con
+    # `posicion` cuando viene y con el de llegada cuando no.
+    ordenados = sorted(
+        ((t.get("posicion") or i, (t.get("termino") or t.get("keyword") or "").strip())
+         for i, t in enumerate(terminos, start=1)),
+        key=lambda x: x[0])
+    lista, vistos = [], set()
+    for _, termino in ordenados:
         if not termino or termino in vistos:
             continue
         vistos.add(termino)
-        listas.append((canal, categoria_id, t.get("posicion") or i, termino))
+        lista.append(termino)
 
-    with supabase_db.get_cursor() as cur:
-        cur.execute("DELETE FROM enrich.market_terms "
-                    "WHERE canal = %s AND categoria_id = %s", (canal, categoria_id))
-        for f in listas:
-            cur.execute(
-                "INSERT INTO enrich.market_terms (canal, categoria_id, posicion, termino) "
-                "VALUES (%s,%s,%s,%s)", f)
-    log.info("market_terms %s/%s ← %s términos", canal, categoria_id, len(listas))
-    return len(listas)
+    # Una sola fila por categoría: upsert, no delete+insert. La 0016 empaquetó
+    # los términos en JSON justamente porque son gratis, masivos y solo se leen
+    # en bloque (5,853 términos en 222 categorías).
+    supabase_db.execute(
+        "INSERT INTO enrich.market_terms (canal, categoria_id, terminos, capturado_en) "
+        "VALUES (%s, %s, %s::jsonb, now()) "
+        "ON CONFLICT (canal, categoria_id) DO UPDATE "
+        "   SET terminos = EXCLUDED.terminos, capturado_en = EXCLUDED.capturado_en",
+        (canal, categoria_id, json.dumps(lista, ensure_ascii=False)))
+    log.info("market_terms %s/%s ← %s términos (JSON)", canal, categoria_id, len(lista))
+    return len(lista)
 
 
 def activar_raiz(raiz_id: str, activo: bool = True,
