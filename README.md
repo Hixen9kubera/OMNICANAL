@@ -6917,3 +6917,44 @@ core-etl-v2 y categorias-etl NO entran a `_DOMINIOS_RETIRADOS`.
 
 `SUPABASE_READ_CORE` se queda como interruptor de reversa: apagarlo manda los
 lookups directo a Woo. Versión 0.112.0.
+
+### v0.113.0 — Paso 3 de channel, costos y pedidos: se acabaron los respaldos a MySQL
+
+Los tres dominios retirados dejan de reconsultar MySQL cuando kubera falla. Con
+esto **ninguna lectura del panel toca ya las tablas de la migración**.
+
+**El argumento cambió de signo, y por eso esto urgía.** Mientras MySQL era un
+espejo fresco, el fallback era una red de seguridad. Desde que congelamos los
+espejos (11 y 12-ago) es lo contrario: caer ahí sirve datos viejos **sin avisar
+a nadie**. Medido con los arneses de paridad el mismo día:
+
+| Dominio | Arnés | Qué mostró |
+|---|---|---|
+| costing | **EQUIVALENTE** | sin diferencias |
+| channel | con diferencias | 354 filas, 0 solo-en-MySQL y 0 solo-en-kubera, pero **12 campos desfasados**: `ORG-0451` decía `cross_docking/inactive` en MySQL cuando la publicación ya estaba `fulfillment/active` |
+| orders | con diferencias | MySQL con 1,429 completados de BEKURA contra 1,450 en kubera, y 21 pedidos atorados en `processing` que ya se habían completado |
+
+Ninguna de esas diferencias es un fallo: es la firma de un espejo congelado
+haciendo su trabajo. Pero son exactamente los números que el panel habría
+mostrado como buenos si la lectura se hubiera caído a MySQL — un tab de VENTAS
+reportando 21 pedidos menos, sin que nadie sepa que están mal.
+
+Sitios intervenidos:
+
+- **channel** — `inventario.leer_inventario`, `presencia`, `GET /api/sync/estado`
+- **costing** — `crear.py` (contenedores, detalle, listado) y
+  `costos.costo_desde_validados`, que alimenta precios: un costo viejo ahí sale
+  caro y en silencio
+- **orders** — el agregador del tab Ventas
+
+Se van también las guardias de plausibilidad ("0 contenedores con MySQL lleno es
+sospechoso", "listado sin filtros con total 0"): existían para decidir cuándo
+caer al espejo. Sin espejo al cual caer, un error de kubera ahora es un error
+visible, que es lo que queremos.
+
+Los flags `SUPABASE_READ_*` se quedan como interruptor de reversa: apagarlos
+devuelve el camino MySQL completo, con el aviso de que esas tablas están
+congeladas.
+
+Pruebas sandbox tras el cambio: `probar_retiro_costing_orders.py` 11/11,
+`probar_corte_core_categorias.py` 12/12. Versión 0.113.0.

@@ -629,24 +629,17 @@ def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     """
     if not skus:
         return {}
-    # F5: lectura desde la BD kubera con fallback a MySQL (flag reversible)
+    # PASO 3 del desmantelamiento (12-ago-2026): `canal_inventario` quedó
+    # CONGELADA el 11-ago, así que caer ahí ya no es una red de seguridad —
+    # es servir datos viejos sin avisar. Medido el mismo día: de 354 filas, 0
+    # solo en MySQL y 0 solo en kubera, pero 12 campos distintos, todos con
+    # kubera al día (ORG-0451: MySQL decía cross_docking/inactive cuando la
+    # publicación ya estaba en fulfillment/active). Si kubera falla, la lectura
+    # falla: es preferible un error visible a un inventario mentiroso.
     if settings.supabase_read_channel:
-        try:
-            out_kb = channel_read.leer_inventario(list(skus))
-            # Un lote vacío NO es implausible aquí: solo ~9% de los productos
-            # tienen publicación viva en ML/Amazon, y las fichas de producto
-            # piden un SKU a la vez. Lo implausible es que la TABLA esté vacía
-            # — eso es lo único que hace caer a MySQL (que tampoco tendría esas
-            # filas: el arnés de equivalencia probó que las dos fuentes coinciden).
-            if not out_kb and settings.mysql_enabled and not channel_read.hay_datos():
-                raise RuntimeError("channel.listings vacío en kubera (implausible)")
-            lecturas_fuente.anotar("channel", "kubera")
-            return out_kb
-        except Exception as exc:  # noqa: BLE001
-            lecturas_fuente.anotar("channel", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:channel",
-                           f"⚠️ Lectura de CHANNEL cayó a MySQL (inventario): {exc}")
-            log.warning("lectura kubera falló (leer_inventario) — fallback MySQL: %s", exc)
+        out_kb = channel_read.leer_inventario(list(skus))
+        lecturas_fuente.anotar("channel", "kubera")
+        return out_kb
     asegurar_schema()
     ph = ",".join(["%s"] * len(skus))
     try:

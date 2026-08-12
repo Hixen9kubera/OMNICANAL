@@ -84,20 +84,12 @@ def plan(limite: int = Query(200, ge=1, le=2000)):
 @router.get("/estado")
 def estado():
     import logging
-    # F5: resumen desde la BD kubera con fallback a MySQL
+    # PASO 3 (12-ago-2026): sin fallback — `canal_inventario` congelada desde
+    # el 11-ago; su resumen diría "última actualización: ayer" para siempre.
     if settings.supabase_read_channel:
-        try:
-            por_canal = channel_read.resumen_por_canal()
-            if not por_canal and settings.mysql_enabled:
-                raise RuntimeError("kubera devolvió resumen vacío (implausible)")
-            lecturas_fuente.anotar("channel", "kubera")
-            return {"resumen": por_canal}
-        except Exception as exc:  # noqa: BLE001
-            lecturas_fuente.anotar("channel", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:channel",
-                           f"⚠️ Lectura de CHANNEL cayó a MySQL (resumen): {exc}")
-            logging.getLogger("omnicanal.sync").warning(
-                "lectura kubera falló (resumen) — fallback MySQL: %s", exc)
+        por_canal = channel_read.resumen_por_canal()
+        lecturas_fuente.anotar("channel", "kubera")
+        return {"resumen": por_canal}
     inventario.asegurar_schema()
     try:
         por_canal = db.fetch_all(

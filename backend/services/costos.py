@@ -360,18 +360,14 @@ def costo_desde_validados(sku: str) -> dict[str, Any] | None:
     costo_unitario = costo_total (o costo_producto + costo_cbm si falta). None si no existe.
     """
     cv = None
-    # F6 (corte): kubera es la fuente; ante error se cae al espejo MySQL (que
-    # el espejo inverso mantiene fresco). None también reconsulta MySQL: si el
-    # evento kubera quedó encolado por una caída, MySQL tiene la fila.
+    # PASO 3 (12-ago-2026): kubera es la ÚNICA fuente. El comentario viejo decía
+    # que el espejo inverso mantenía MySQL fresco — ya no: `costos_validados`
+    # quedó congelada al retirar el espejo, así que caer ahí devolvería el costo
+    # de antes del último recálculo. Este valor alimenta precios: un costo viejo
+    # sale caro y en silencio.
     if costing_write.activo():
-        try:
-            cv = costing_read.validados(sku)
-            lecturas_fuente.anotar("costing", "kubera")
-        except Exception as exc:  # noqa: BLE001
-            lecturas_fuente.anotar("costing", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:costing",
-                           f"⚠️ Lectura de COSTOS cayó a MySQL (validados {sku}): {exc}")
-            log.warning("lectura kubera falló (validados %s) — fallback MySQL: %s", sku, exc)
+        cv = costing_read.validados(sku)
+        lecturas_fuente.anotar("costing", "kubera")
     if cv is None:
         cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
     if not cv:

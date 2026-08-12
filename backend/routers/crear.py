@@ -551,21 +551,14 @@ class RecalcularCostos(BaseModel):
 def costos_contenedores():
     """Contenedores disponibles (para el filtro de la tabla de costos).
     Definido ANTES de /costos/{sku} para que no lo capture la ruta con parámetro."""
-    # F5: lectura desde la BD kubera con fallback a MySQL (flag reversible)
+    # PASO 3 (12-ago-2026): sin fallback a MySQL — costos_validados,
+    # costos_finales y costos_logs quedaron CONGELADAS el 12-ago, así que
+    # caer ahí serviría costos viejos sin avisar. Arnés de paridad del
+    # mismo día: EQUIVALENTE. Si kubera falla, la lectura falla.
     if settings.supabase_read_costing:
-        try:
-            datos = costing_read.contenedores()
-            # guardia de plausibilidad: 0 contenedores con MySQL lleno = sospechoso
-            if not datos and settings.mysql_enabled:
-                raise RuntimeError("kubera devolvió 0 contenedores (implausible)")
-            lecturas_fuente.anotar("costing", "kubera")
-            return {"contenedores": datos}
-        except Exception as exc:  # noqa: BLE001
-            lecturas_fuente.anotar("costing", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:costing",
-                           f"⚠️ Lectura de COSTOS cayó a MySQL (contenedores): {exc}")
-            logging.getLogger("omnicanal.crear").warning(
-                "lectura kubera falló (contenedores) — fallback MySQL: %s", exc)
+        datos = costing_read.contenedores()
+        lecturas_fuente.anotar("costing", "kubera")
+        return {"contenedores": datos}
     rows = db.fetch_all(
         "SELECT contenedor, COUNT(*) AS n FROM costos_validados "
         "WHERE contenedor IS NOT NULL AND contenedor <> '' "
@@ -583,20 +576,9 @@ async def costos_detalle(sku: str):
     # F5: finales/validados desde kubera (los logs siguen en MySQL en ambas
     # rutas — su destino ops.process_log es fase aparte)
     if settings.supabase_read_costing:
-        try:
-            cf, cv = costing_read.detalle(sku)
-            if cf is not None or cv is not None:
-                lecturas_fuente.anotar("costing", "kubera")
-        except Exception as exc:  # noqa: BLE001
-            lecturas_fuente.anotar("costing", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:costing",
-                           f"⚠️ Lectura de COSTOS cayó a MySQL (detalle {sku}): {exc}")
-            logging.getLogger("omnicanal.crear").warning(
-                "lectura kubera falló (detalle %s) — fallback MySQL: %s", sku, exc)
-            cf = cv = None
-    if cf is None and cv is None:
-        cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,))
-        cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
+        cf, cv = costing_read.detalle(sku)
+        if cf is not None or cv is not None:
+            lecturas_fuente.anotar("costing", "kubera")
     logs = db.fetch_all(
         "SELECT accion, origen, created_at FROM costos_logs "
         "WHERE sku=%s ORDER BY id DESC LIMIT 10", (sku,))
@@ -814,21 +796,9 @@ def costos_listado(
     # F5: filas desde kubera (misma forma) con fallback a MySQL
     rows = total = None
     if settings.supabase_read_costing:
-        try:
-            rows, total = costing_read.listado(
-                page, per_page, search, contenedor, orden, skus_lista)
-            # guardia de plausibilidad: listado SIN filtros con total 0 mientras
-            # MySQL opera = tabla vacía/rota en kubera → tratar como fallo
-            if total == 0 and not (search or skus_lista or contenedor) and settings.mysql_enabled:
-                raise RuntimeError("kubera devolvió total=0 en listado sin filtros (implausible)")
-            lecturas_fuente.anotar("costing", "kubera")
-        except Exception as exc:  # noqa: BLE001
-            lecturas_fuente.anotar("costing", "fallback", str(exc))
-            alertas.avisar("lectura_fallback:costing",
-                           f"⚠️ Lectura de COSTOS cayó a MySQL (listado): {exc}")
-            logging.getLogger("omnicanal.crear").warning(
-                "lectura kubera falló (listado costos) — fallback MySQL: %s", exc)
-            rows = total = None
+        rows, total = costing_read.listado(
+            page, per_page, search, contenedor, orden, skus_lista)
+        lecturas_fuente.anotar("costing", "kubera")
 
     if rows is None:
         where, params = [], []

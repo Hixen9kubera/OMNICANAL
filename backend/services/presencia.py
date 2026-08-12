@@ -55,17 +55,12 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     # publicación recién creada aparezca sin esperar al snapshot diario.
     try:
         rows = None
-        # F5: presencia desde la BD kubera con fallback a MySQL
+        # PASO 3 (12-ago-2026): sin fallback a `canal_inventario` — está
+        # congelada desde el 11-ago y serviría publicaciones con su estado
+        # viejo. Ver la nota larga en inventario.leer_inventario.
         if settings.supabase_read_channel:
-            try:
-                rows = channel_read.presencia(list(skus))
-                lecturas_fuente.anotar("channel", "kubera")
-            except Exception as exc:  # noqa: BLE001
-                lecturas_fuente.anotar("channel", "fallback", str(exc))
-                alertas.avisar("lectura_fallback:channel",
-                               f"⚠️ Lectura de CHANNEL cayó a MySQL (presencia): {exc}")
-                log.warning("lectura kubera falló (presencia) — fallback MySQL: %s", exc)
-                rows = None
+            rows = channel_read.presencia(list(skus))
+            lecturas_fuente.anotar("channel", "kubera")
         if rows is None:
             rows = db.fetch_all(
                 f"""SELECT sku, canal, cuenta, item_id, situacion

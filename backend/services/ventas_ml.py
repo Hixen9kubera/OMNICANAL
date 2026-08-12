@@ -293,24 +293,23 @@ def _delta_pct(actual: float, previo: float) -> float | None:
 def _filas_kubera(fn, consulta: str, cuentas: list[str],
                   ini: datetime, fin: datetime) -> list[dict] | None:
     """
-    F5 pedidos: filas agregadas desde channel.orders (BD kubera) cuando el flag
-    SUPABASE_READ_ORDERS está encendido. None = usar el camino MySQL (flag
-    apagado o error, con contador+alerta). OJO: [] es una respuesta VÁLIDA
-    (rango sin ventas, p. ej. la semana previa al inicio del registro) y NO
-    dispara fallback — por eso no hay guardia de plausibilidad por conteo.
+    Filas agregadas desde channel.orders (BD kubera). None = camino MySQL, que
+    ya SOLO ocurre con el flag apagado (interruptor de reversa).
+
+    PASO 3 del desmantelamiento (12-ago-2026): sin fallback por error.
+    `pedidos_ml` quedó CONGELADA el 12-ago a las 19:12, así que caer ahí
+    reportaría ventas viejas — y en un tab de VENTAS eso es peor que un error:
+    el arnés del mismo día mostró a MySQL con 1,429 pedidos completados de
+    BEKURA contra 1,450 en kubera, y 21 pedidos atorados en `processing` que
+    en realidad ya se completaron. Cifras que nadie sabría que están mal.
+
+    OJO: [] sigue siendo una respuesta VÁLIDA (rango sin ventas).
     """
     if not settings.supabase_read_orders:
         return None
-    try:
-        filas = fn(cuentas, ini, fin)
-        lecturas_fuente.anotar("orders", "kubera")
-        return filas
-    except Exception as exc:  # noqa: BLE001
-        lecturas_fuente.anotar("orders", "fallback", str(exc))
-        alertas.avisar("lectura_fallback:orders",
-                       f"⚠️ Lectura de PEDIDOS cayó a MySQL ({consulta}): {exc}")
-        log.warning("lectura kubera falló (%s) — fallback MySQL: %s", consulta, exc)
-        return None
+    filas = fn(cuentas, ini, fin)
+    lecturas_fuente.anotar("orders", "kubera")
+    return filas
 
 
 def _pedidos_rango(cuentas: list[str], desde: date, hasta: date) -> dict | None:
