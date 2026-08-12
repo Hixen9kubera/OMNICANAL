@@ -6793,6 +6793,68 @@ se está leyendo el pasado. Versión 0.110.0.
 
 ---
 
+### v0.111.0 — Competencia: Deportes y Fitness completa, y la captura deja de tumbar MySQL
+
+Se cerraron las tres primeras categorías padre del módulo de Competencia
+(Deportes y Fitness, Herramientas, Recuerdos y Fiestas) y en el camino salieron
+cuatro cosas rotas que no se veían.
+
+**El camino de ESCRITURA seguía apuntando a `propuestas`.** El switch de la
+v0.99.0 repuntó las lecturas a `enrich.market_*`, pero la captura escribía en un
+SQLite local y `competencia_subir.py` empujaba la foto completa a un esquema que
+la 0014 ya había renombrado. Capturar una categoría nueva era imposible. Y
+repuntar ese script tal cual habría sido peor que dejarlo roto: hace `delete
+from` + reinsert de TODO, así que contra las tablas nuevas habría borrado las
+15,307 filas migradas. Ahora la captura escribe directo, acotada a su propia
+`(canal, categoria_id, nivel)` y en una sola transacción; sin `SUPABASE_DB_URL`
+revienta en vez de caer al archivo, porque una captura escrita en un disco que
+nadie lee es peor que una que no corrió.
+
+**Una categoría padre nueva son DOS pasos.** Sus SKUs suelen ya existir en
+`market_sku_config` pero con `activo=false`, y `listar_skus()` filtra por eso: de
+1,584 filas el panel rendía 393. `activar_raiz()` los prende; sin ese paso la
+raíz se raspa como 'hoja' y sus SKUs siguen invisibles.
+
+**Migración 0015 — la raíz se mezclaba con la ruta.** En `market_skus_v` el
+nombre y la ruta salían de la categoría del PANEL y `raiz_id` SOLO de la que
+midió Competencia. Cuando pertenecían a raíces distintas, la fila mostraba una y
+se agrupaba bajo otra: en pantalla se veían "Licoreras" y "Veladores" —ruta de
+Hogar— colgadas de Deportes y Fitness. 79 de 1,584 filas así; con el arreglo las
+coherentes pasan de 0 a 1,567. Se agregan `padre_id` y `padre_nombre`; el nombre
+NO puede salir de `channel.categories` (solo tiene las hojas) y se toma del
+penúltimo segmento de la ruta.
+
+**Migración 0017 — los términos eran dos problemas con la misma forma.** Los de
+`/trends` son gratis y masivos (5,853 filas en 222 categorías, hasta 50 por
+categoría) y solo se leen en bloque: se empaquetan en un array JSON por
+categoría, 222 filas. Los MEDIDOS cuestan una corrida de Apify cada uno y su
+texto se repetía en 1,816 filas para 326 distintos: se normalizan en
+`enrich.market_search_term` con FK. El FK no es por los 35 KB de texto — es para
+que "un término medido una vez sirve a todos los SKUs que lo comparten" sea
+garantía de la base y no convención del código.
+
+**Apify sí sirve para capturar una raíz.** Se había descartado porque "tira
+`id_pagina`", el id que resuelve la subcategoría de cada fila y por tanto los
+nichos. Era un parseo faltante, no una limitación: la pageFunction ya devolvía el
+`url`. Con `_pagina_y_tipo()` quedó equivalente al navegador local — que ML
+bloquea a las ~50 consultas por IP, como volvió a pasar a mitad de esta captura.
+
+**La captura se tumbaba su propia base.** `meli._access_token()` hace dos
+consultas a MySQL por llamada y no cachea, y `competencia_ml` lo llamaba en cada
+petición: ~3,800 consultas contra un plan de 500 conexiones/hora. A media corrida
+MySQL empezó a rechazar conexiones, el token dejó de leerse y 538 filas se
+guardaron sin visitas. Caché con TTL —y caché NEGATIVA, porque sin ella el fallo
+se retroalimenta— en `competencia_ml` y no en `meli.py`, que está en el camino de
+los pedidos vivos. Las 538 se rellenaron después: 3,964 de 3,964 con visitas.
+
+Cierre de las tres: Deportes y Fitness 77/85 subcategorías con top y 143/143 SKUs
+con término medido; Herramientas 49/55 y 99/99; Recuerdos 14/18 y 32/32. Las 18
+subcategorías sin top son de las que Mercado Libre NO publica más vendidos —
+verificado una por una contra `/highlights`— y reintentar no cambia nada. Costo
+total en Apify: $1.42. Versión 0.111.0.
+
+---
+
 ### v0.110.1 — El `origen` comparaba manzanas con peras
 
 Salió al verificar la v0.110.0 en producción con `ACC-0091`: cuatro campos

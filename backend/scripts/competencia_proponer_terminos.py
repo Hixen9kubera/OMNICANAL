@@ -11,7 +11,7 @@ Reforzada 4x6m Protección Uv Beige"— así que lo propone un LLM.
 GRATIS. Esto solo llama al LLM. Lo que cuesta es MEDIR el término después
 (~$0.007 por término en Apify, `competencia_buscar_apify.py`), y por eso importa
 el paso siguiente: términos repetidos se miden y se pagan UNA vez, porque desde
-la migración 0016 viven en `enrich.market_search_term` y los SKUs los referencian
+la migración 0017 viven en `enrich.market_search_term` y los SKUs los referencian
 por FK. Medido en las raíces ya trabajadas: 1.07 a 1.19 SKUs por término.
 
 NO PISA CORRECCIONES HUMANAS

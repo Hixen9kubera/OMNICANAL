@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0016 — ENRICH: los términos de /trends viven como JSON por categoría, y los
+-- 0017 — ENRICH: los términos de /trends viven como JSON por categoría, y los
 --        términos MEDIDOS se normalizan en un catálogo con FK.
 --
 -- Son DOS problemas distintos y por eso llevan soluciones distintas. La

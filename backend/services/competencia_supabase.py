@@ -136,7 +136,7 @@ def busqueda(termino: str, limite: int = 5,
     """
     Resultados guardados de UN término.
 
-    El texto del término ya no vive en la fila del resultado: desde la 0016 está
+    El texto del término ya no vive en la fila del resultado: desde la 0017 está
     UNA vez en `market_search_term` y el resultado lo referencia por FK. Es lo que
     garantiza que un término medido (una corrida de Apify, ~$0.007) lo reusen
     todos los SKUs que lo comparten sin volver a pagarlo.
@@ -188,7 +188,7 @@ def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
 def conteo_terminos() -> dict[str, int]:
     """Cuántos términos hay por categoría, en una sola consulta.
 
-    Desde la 0016 `market_terms` es UNA fila por categoría con un array JSON, así
+    Desde la 0017 `market_terms` es UNA fila por categoría con un array JSON, así
     que el conteo es la longitud del array y no un GROUP BY sobre 5,853 filas.
     """
     return {f["categoria_id"]: f["n"] for f in supabase_db.fetch_all(
