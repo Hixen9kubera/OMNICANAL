@@ -14,7 +14,7 @@ POR QUÉ UNA SOLA CORRIDA
 El navegador NO puede ser headless —ML detecta `--headless=new` y sirve un 404 a
 todo—, así que esto abre una ventana de Chrome durante toda la corrida. A ~8 s por
 consulta, 289 SKUs son 578 búsquedas ≈ 77 min. Por eso se corre UNA vez y el
-resultado se sube a Supabase (`competencia_subir.py`): el panel lee de ahí y nadie
+resultado queda en `enrich.market_*` de la BD kubera: el panel lee de ahí y nadie
 vuelve a abrir el navegador para verlo.
 
 REANUDABLE
@@ -102,7 +102,6 @@ async def main() -> int:
 
     print(f"\nLISTO en {time.time() - t0:.0f}s · búsquedas guardadas: {hechos} "
           f"· sin resultados: {vacios}")
-    print("Ahora: python scripts/competencia_subir.py --token sbp_…")
     return 0
 
 

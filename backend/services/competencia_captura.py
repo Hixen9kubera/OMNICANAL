@@ -834,10 +834,17 @@ def sembrar_skus(skus: list[str], con_ia: bool = True) -> dict[str, Any]:
     }
 
 
-async def capturar_rankings_categorias(periodo: str | None = None) -> dict[str, Any]:
+async def capturar_rankings_categorias(periodo: str | None = None,
+                                       solo: list[str] | None = None,
+                                       ) -> dict[str, Any]:
     """
     Top 10 de más vendidos de la categoría RAÍZ y de la ÚLTIMA categoría de cada
     SKU vigilado, raspado de `/mas-vendidos/{cat}`.
+
+    ``solo`` acota a esas categorías (raíz y/o hoja). Sin él son las 26 raíces y
+    todas sus hojas — más de 200 páginas de navegador. Con él se puede traer una
+    categoría padre nueva sin re-raspar lo que ya está capturado, que es el caso
+    normal: el catálogo crece de a una categoría, no de golpe.
 
     Se agrupa POR CATEGORÍA y no por SKU: los 3 SKUs de Tapetes comparten
     MLM162997 y las 7 autopartes comparten la raíz MLM1747, así que 8 SKUs son
@@ -859,6 +866,11 @@ async def capturar_rankings_categorias(periodo: str | None = None) -> dict[str, 
     # Si la hoja ES la raíz no se pide dos veces.
     hojas -= raices
     nivel_de = {**{c: "raiz" for c in raices}, **{c: "hoja" for c in hojas}}
+    if solo:
+        pedidas = [c.strip() for c in solo if c and c.strip()]
+        # Una categoría pedida que ningún SKU vigilado tiene se raspa igual, como
+        # HOJA: es el caso de explorar un nicho antes de tener producto ahí.
+        nivel_de = {c: nivel_de.get(c, "hoja") for c in pedidas}
     if not nivel_de:
         return {"ok": False, "motivo": "Los SKUs vigilados no tienen categoría."}
 

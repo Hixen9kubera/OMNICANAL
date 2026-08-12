@@ -592,27 +592,18 @@ def reemplazar_ranking(categoria_id: str, nivel: str, periodo: str,
     """
     Borra el ranking anterior de esa (categoría, nivel) y escribe el nuevo.
     Sin histórico, igual que `resultados`: es la foto del mes.
+
+    Va SIEMPRE a `enrich.market_bestsellers`. Si no hay `SUPABASE_DB_URL`
+    revienta en vez de caer a SQLite: el destino es la BD kubera y una captura
+    escrita en un disco que nadie lee es peor que una captura que no corrió —
+    parece que sí funcionó.
     """
-    asegurar_schema()
-    ahora = _ahora()
-    listas, vistos = [], set()
-    for f in filas:
-        ident = f.get("externo_id")
-        if not ident or ident in vistos or f.get("posicion") is None:
-            continue
-        vistos.add(ident)
-        d = {k: f.get(k) for k in _CAMPOS_RANK}
-        d.update(categoria_id=categoria_id, nivel=nivel, periodo=periodo)
-        d["es_nuestro"] = 1 if d.get("es_nuestro") else 0
-        listas.append([d[k] for k in _CAMPOS_RANK] + [ahora])
-    with _con() as c:
-        c.execute("DELETE FROM rankings_categoria WHERE categoria_id = ? AND nivel = ?",
-                  (categoria_id, nivel))
-        if listas:
-            c.executemany(
-                f"INSERT INTO rankings_categoria ({','.join(_CAMPOS_RANK)}, capturado_en) "
-                f"VALUES ({','.join(['?'] * (len(_CAMPOS_RANK) + 1))})", listas)
-    return len(listas)
+    r = _remoto()
+    if r:
+        return r.reemplazar_ranking(categoria_id, nivel, periodo, filas)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: la captura escribe en enrich.market_bestsellers "
+        "y no hay a dónde. Define la variable antes de capturar.")
 
 
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
@@ -633,25 +624,18 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None,
 
 def reemplazar_terminos(categoria_id: str, periodo: str,
                         terminos: list[dict[str, Any]]) -> int:
-    """Foto del mes de los términos más buscados de una categoría. Sin histórico."""
-    asegurar_schema()
-    ahora = _ahora()
-    listas, vistos = [], set()
-    for i, t in enumerate(terminos, start=1):
-        termino = (t.get("termino") or t.get("keyword") or "").strip()
-        if not termino or termino in vistos:
-            continue
-        vistos.add(termino)
-        listas.append([categoria_id, periodo, t.get("posicion") or i,
-                       termino, t.get("url"), ahora])
-    with _con() as c:
-        c.execute("DELETE FROM terminos_categoria WHERE categoria_id = ?", (categoria_id,))
-        if listas:
-            c.executemany(
-                "INSERT INTO terminos_categoria "
-                "(categoria_id, periodo, posicion, termino, url, capturado_en) "
-                "VALUES (?,?,?,?,?,?)", listas)
-    return len(listas)
+    """
+    Foto del mes de los términos más buscados de una categoría. Sin histórico.
+
+    Va SIEMPRE a `enrich.market_terms`; sin `SUPABASE_DB_URL` revienta, por la
+    misma razón que :func:`reemplazar_ranking`.
+    """
+    r = _remoto()
+    if r:
+        return r.reemplazar_terminos(categoria_id, periodo, terminos)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: la captura escribe en enrich.market_terms "
+        "y no hay a dónde. Define la variable antes de capturar.")
 
 
 def _cubre(termino: str, titulos: list[str]) -> bool:

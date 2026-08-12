@@ -21,11 +21,14 @@ La siembra corre con `con_ia=False`: el término general lo propondría un LLM p
 SKU y a esta escala serían ~1,581 llamadas para un dato que una persona corrige
 después. Los términos se generan cuando alguien los vaya a usar.
 
-ESCRIBE EN LOCAL
-----------------
-Deja todo en `backend/competencia.db`. Subir a Supabase es el paso siguiente y va
-aparte (scripts/competencia_subir.py), para que una medición a medias no deje la
-BD kubera inconsistente.
+ESCRIBE DIRECTO EN LA BD KUBERA
+-------------------------------
+Cada categoría se escribe en `enrich.market_*` en cuanto se captura, acotada a su
+propia (canal, categoría, nivel) y en una sola transacción. Ya no hay paso de
+"subir" ni base local: `competencia_subir.py` se retiró porque su `delete from` +
+reinsert completo, apuntado a las tablas nuevas, habría borrado las 15,307 filas
+migradas. Requiere `SUPABASE_DB_URL`; sin ella la captura revienta en vez de
+escribir en un disco que nadie lee.
 """
 from __future__ import annotations
 

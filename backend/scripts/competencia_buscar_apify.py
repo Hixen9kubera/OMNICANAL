@@ -127,7 +127,6 @@ async def main() -> int:
     print(f"\nLISTO en {time.time() - t0:.0f}s · filas guardadas: {ok} "
           f"· términos sin resultados: {vacios}")
     print(f"gasto real aproximado: ${len(pendientes) * COSTO_PAGINA:.2f}")
-    print("Ahora: python scripts/competencia_subir.py --token sbp_…")
     return 0
 
 

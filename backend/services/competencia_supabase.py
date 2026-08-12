@@ -210,3 +210,89 @@ def terminos_categoria(categoria_id: str,
         f["cubierto"] = bool(quienes)
         f["cubierto_por"] = quienes
     return filas
+
+
+# ── ESCRITURA ────────────────────────────────────────────────────────────────
+# Antes la captura escribía en SQLite y un script aparte (`competencia_subir.py`)
+# empujaba la foto completa a `propuestas` con `delete from` + reinsert. Las dos
+# piezas se retiraron: SQLite era invisible en Railway (FS efímero) y el reinsert
+# completo, apuntado a `enrich.market_*`, habría borrado las 15,307 filas
+# migradas para reemplazarlas con lo que hubiera en el disco de quien corriera el
+# script. Ahora la captura escribe aquí, directo y ACOTADO a lo que recapturó.
+
+CANAL_DEFAULT = "mercado_libre"
+
+# Columnas de enrich.market_bestsellers, en el orden del insert. `periodo` y
+# `descuento` NO existen ahí: el periodo lo dice `capturado_en` y el descuento la
+# UI lo infiere de precio_lista > precio (ver la migración 0011).
+_COLS_BEST = ("canal", "categoria_id", "nivel", "posicion", "externo_id",
+              "id_pagina", "tipo", "titulo", "precio", "precio_lista",
+              "vendidos", "rating", "reviews", "seller", "imagen", "url",
+              "visitas_30d", "item_categoria_id", "item_categoria_nombre",
+              "es_nuestro", "sku_nuestro")
+
+
+def reemplazar_ranking(categoria_id: str, nivel: str, periodo: str,
+                       filas: list[dict[str, Any]],
+                       canal: str = CANAL_DEFAULT) -> int:
+    """
+    Reescribe el top de UNA (canal, categoría, nivel). Nada más.
+
+    El borrado va acotado a esa llave y en la MISMA transacción que el insert: si
+    el insert falla, el top viejo sigue ahí. Recapturar Hogar no puede tocar
+    Herramientas.
+
+    `periodo` se acepta por compatibilidad con la firma del store y no se
+    escribe: la tabla nueva no tiene esa columna.
+    """
+    listas, vistos = [], set()
+    for f in filas:
+        ident = f.get("externo_id")
+        if not ident or ident in vistos or f.get("posicion") is None:
+            continue
+        vistos.add(ident)
+        d = {k: f.get(k) for k in _COLS_BEST}
+        d.update(canal=canal, categoria_id=categoria_id, nivel=nivel)
+        d["es_nuestro"] = bool(f.get("es_nuestro"))
+        listas.append(tuple(d[k] for k in _COLS_BEST))
+
+    marcas = "(" + ",".join(["%s"] * len(_COLS_BEST)) + ")"
+    with supabase_db.get_cursor() as cur:
+        cur.execute("DELETE FROM enrich.market_bestsellers "
+                    "WHERE canal = %s AND categoria_id = %s AND nivel = %s",
+                    (canal, categoria_id, nivel))
+        for f in listas:
+            cur.execute(
+                f"INSERT INTO enrich.market_bestsellers ({','.join(_COLS_BEST)}) "
+                f"VALUES {marcas}", f)
+    log.info("market_bestsellers %s/%s/%s ← %s filas", canal, categoria_id, nivel,
+             len(listas))
+    return len(listas)
+
+
+def reemplazar_terminos(categoria_id: str, periodo: str,
+                        terminos: list[dict[str, Any]],
+                        canal: str = CANAL_DEFAULT) -> int:
+    """
+    Reescribe los términos más buscados de UNA (canal, categoría).
+
+    `url` no se escribe: la tabla nueva la descartó (se raspaba y nadie la leía).
+    `periodo` se acepta por compatibilidad de firma y tampoco se escribe.
+    """
+    listas, vistos = [], set()
+    for i, t in enumerate(terminos, start=1):
+        termino = (t.get("termino") or t.get("keyword") or "").strip()
+        if not termino or termino in vistos:
+            continue
+        vistos.add(termino)
+        listas.append((canal, categoria_id, t.get("posicion") or i, termino))
+
+    with supabase_db.get_cursor() as cur:
+        cur.execute("DELETE FROM enrich.market_terms "
+                    "WHERE canal = %s AND categoria_id = %s", (canal, categoria_id))
+        for f in listas:
+            cur.execute(
+                "INSERT INTO enrich.market_terms (canal, categoria_id, posicion, termino) "
+                "VALUES (%s,%s,%s,%s)", f)
+    log.info("market_terms %s/%s ← %s términos", canal, categoria_id, len(listas))
+    return len(listas)
