@@ -247,6 +247,34 @@ def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
     return {r["meta_key"]: r["meta_value"] for r in rows}
 
 
+def ficha_basica(wc_id: int) -> dict[str, Any] | None:
+    """
+    { sku, name, status } de un producto por `wc_id`, leído de wp_posts.
+
+    Lo usa el webhook de Woo para registrar al PADRE de una variación: el evento
+    de la variante trae `parent_id` pero NADA del padre (ni su SKU ni su
+    estado), y sin esto el padre se queda sin acta.
+    """
+    if not wc_id or not disponible():
+        return None
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT sk.meta_value AS sku, p.post_title AS name, p.post_status AS status
+              FROM {P}posts p
+              LEFT JOIN {P}postmeta sk ON sk.post_id = p.ID AND sk.meta_key = '_sku'
+             WHERE p.ID = %s AND p.post_type = 'product'
+             LIMIT 1""",
+        (int(wc_id),),
+    )
+    if not rows:
+        return None
+    sku = (rows[0].get("sku") or "").strip()
+    if not sku:
+        return None
+    return {"sku": sku, "name": (rows[0].get("name") or "").strip() or None,
+            "status": rows[0].get("status") or None}
+
+
 def sku_padre(sku: str) -> str:
     """
     SKU del producto PADRE de una variación, resuelto por la ESTRUCTURA de

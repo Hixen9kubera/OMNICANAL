@@ -6288,6 +6288,47 @@ Versión 0.100.0.
 
 ---
 
+### v0.103.0 — El padre viaja con la variante: se cierra el hueco del seam (Eduardo)
+
+Cuatro de los siete huecos que el acta de core reportó la madrugada del 12-ago
+eran padres variables (`ACC-0816`, `ROP-0795`, `TEC-2344`, `ROP-0874`): el seam
+escribió sus 24 variantes en vivo y a ellos NO, y el ETL de las 00:15 tuvo que
+darlos de alta.
+
+**Causa, reproducida en producción.** Al guardar una variación, WooCommerce
+sincroniza el padre y le mueve `post_modified` POR DENTRO — pero eso no es un
+guardado de producto, así que **no dispara `product.updated` del padre**. Queda
+un padre que parece modificado y del que nadie se entera.
+
+La prueba: se tocó SOLO la variante `ACC-0816-MUL`. En Woo los dos quedaron con
+`modificado = 15:54:16 UTC`; en el registro, la variante entró a las 09:55:09 y
+el padre se quedó con la marca del ETL (00:15:50).
+
+**El arreglo.** El evento de la variante trae `parent_id` pero nada más del
+padre, así que el resto se lee de wp_posts (`wp_db.ficha_basica`) y se registra
+junto con la variante. El registro se extrajo a `_registrar_acta` para que padre
+y variante pasen por el MISMO candado anti-repetidos. El padre se intenta
+siempre, incluso si la variante se descartó por repetida — puede seguir sin
+acta. Envuelto en try/except: jamás rompe el evento.
+
+**Dos cosas que quedaron descartadas en el camino**, y conviene dejarlas
+escritas para no volver a perseguirlas:
+
+- **Los borradores SÍ disparan webhook.** Se probó tocando un `draft`
+  (`DEPO-0014-NEG`) y un `pending` (`JUGU-1179`): ambos se registraron, con
+  ~80 s de latencia (entrega asíncrona por wp-cron). No confundir "no llegó"
+  con "aún no llega".
+- **`core.products.source` NO sirve para rastrear quién escribió una fila.** El
+  ETL la reescribe cada noche (`source = excluded.source`, calculada como la
+  unión de fuentes), así que hoy ninguna fila conserva su `source` de seam. El
+  testigo bueno es `created_at`, que sí sobrevive.
+
+Queda pendiente el otro hueco del acta: los `odoo_only` (SKUs que existen en
+Odoo y no en Woo), que dependen del botón manual "Sincronizar Odoo". Versión
+0.103.0.
+
+---
+
 ### v0.102.0 — El vigilante deja de pedirle acta a un dominio retirado (Eduardo)
 
 El 12-ago a las 02:06 CDMX el bot de Slack mandó tres alertas. Dos eran reales;

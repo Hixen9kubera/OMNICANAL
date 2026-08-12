@@ -655,6 +655,50 @@ def _woo_a_acta(payload: dict[str, Any]) -> dict[str, Any] | None:
             "source": "webhook_woo"}
 
 
+async def _registrar_acta(acta: dict[str, Any], topic: str) -> bool:
+    """Escribe UN acta en core.products si cambió desde el último evento."""
+    foto = (acta["name"], acta["status"], acta["wc_id"])
+    if _WOO_ULTIMO.get(acta["sku"]) == foto:
+        return False
+    _WOO_ULTIMO[acta["sku"]] = foto
+    from services import core_write
+    await run_in_threadpool(
+        core_write.registrar, "routers/webhooks.py", f"woo {topic}",
+        acta, acta["sku"])
+    log.info("WOO %s → core.products %s (wc %s) name=%r status=%s",
+             topic, acta["sku"], acta["wc_id"], (acta["name"] or "")[:60],
+             acta["status"])
+    return True
+
+
+async def _acta_del_padre(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Ficha del PADRE de una variación, para registrarlo junto con ella.
+
+    Al guardar una variación, WooCommerce sincroniza al padre y le mueve
+    `post_modified` POR DENTRO — pero eso no es un guardado de producto, así que
+    NO dispara `product.updated` del padre. Resultado: un padre que parece
+    modificado y del que nadie se entera (reproducido el 12-ago-2026: tocar
+    `ACC-0816-MUL` registró la variante y dejó a `ACC-0816` con la fecha del
+    ETL). Eran 4 de los 7 huecos del seam de esa madrugada.
+
+    El evento de la variante solo trae `parent_id`, así que el resto se lee de
+    wp_posts. Devuelve None si no es variación o si el padre no se puede leer.
+    """
+    try:
+        padre_id = int(payload.get("parent_id") or 0)
+    except (TypeError, ValueError):
+        return None
+    if padre_id <= 0:
+        return None
+    from services import wp_db
+    ficha = await run_in_threadpool(wp_db.ficha_basica, padre_id)
+    if not ficha:
+        return None
+    return {"sku": ficha["sku"], "name": ficha["name"], "wc_id": padre_id,
+            "status": ficha["status"], "source": "webhook_woo"}
+
+
 @router.post("/woo")
 async def recibir_woo(request: Request):
     """Recibe `product.created|updated` de WooCommerce. Responde 200 SIEMPRE."""
@@ -688,19 +732,20 @@ async def recibir_woo(request: Request):
         elif not acta:
             evento["motivo"] = "ficha sin sku o sin id"
         else:
-            foto = (acta["name"], acta["status"], acta["wc_id"])
-            if _WOO_ULTIMO.get(acta["sku"]) == foto:
+            evento["aplicado"] = await _registrar_acta(acta, topic)
+            if not evento["aplicado"]:
                 evento["motivo"] = "sin cambios desde el último evento"
-            else:
-                _WOO_ULTIMO[acta["sku"]] = foto
-                from services import core_write
-                await run_in_threadpool(
-                    core_write.registrar, "routers/webhooks.py",
-                    f"woo {topic}", acta, acta["sku"])
-                evento["aplicado"] = True
-                log.info("WOO %s → core.products %s (wc %s) name=%r status=%s",
-                         topic, acta["sku"], acta["wc_id"],
-                         (acta["name"] or "")[:60], acta["status"])
+            # El PADRE viaja con la variante: Woo le mueve la fecha al
+            # sincronizar pero no manda evento suyo (ver _acta_del_padre).
+            # Se intenta SIEMPRE, aunque la variante se haya descartado por
+            # repetida: el padre puede seguir sin acta.
+            try:
+                padre = await _acta_del_padre(payload)
+                if padre and await _registrar_acta(padre, f"{topic} (padre)"):
+                    evento["padre"] = padre["sku"]
+            except Exception as exc:  # noqa: BLE001 — nunca rompe el evento
+                log.warning("WOO padre de %s no se pudo registrar: %s",
+                            acta["sku"], exc)
         if not evento["aplicado"]:
             log.info("WOO %s ignorado (%s) sku=%s", topic or "?", evento["motivo"],
                      evento["sku"])
