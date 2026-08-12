@@ -59,6 +59,41 @@ def item_id_desde_url(url: str | None) -> str | None:
 
 # ── Plomería: GET autenticado con reintento de token ─────────────────────────
 
+# CACHÉ DEL TOKEN, y no es una optimización cosmética: es un candado de cuota.
+#
+# `meli._access_token()` hace DOS consultas a MySQL en cada llamada (compara
+# ml_tokens_dashboard contra ml_tokens para quedarse con el más reciente) y no
+# cachea. Este módulo lo llamaba en CADA petición a la API de ML. Una captura de
+# 84 subcategorías son ~1,900 llamadas —visitas y reseñas de cada fila— o sea
+# ~3,800 consultas contra un MySQL compartido de Hostinger que tiene
+# `max_connections_per_hour`.
+#
+# PASÓ DE VERDAD el 12-ago: a media captura MySQL empezó a responder
+# «User has exceeded the max_connections_per_hour resource», el token dejó de
+# leerse y 537 de 964 filas se guardaron SIN visitas. El log solo decía "Sin
+# token de ML", que apunta al lugar equivocado.
+#
+# El TTL es corto contra una vida de ~6 h del token, y el 401 invalida la caché
+# antes de refrescar, así que un token renovado por fuera se recoge enseguida.
+_TTL_TOKEN = 300.0          # segundos
+_cache_token: dict[str, tuple[float, str]] = {}
+
+
+def _token(cuenta: str) -> str | None:
+    import time as _t
+    hit = _cache_token.get(cuenta)
+    if hit and (_t.monotonic() - hit[0]) < _TTL_TOKEN:
+        return hit[1]
+    tok = meli._access_token(cuenta)
+    if tok:
+        _cache_token[cuenta] = (_t.monotonic(), tok)
+    return tok
+
+
+def _olvidar_token(cuenta: str) -> None:
+    _cache_token.pop(cuenta, None)
+
+
 def _get(ruta: str, params: dict[str, Any] | None = None,
          cuenta: str = _CUENTA_DEFAULT, _reintentado: bool = False) -> Any | None:
     """
@@ -66,9 +101,11 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
     `costos.pct_comision_ml`. Un 403 se registra en DEBUG y no se reintenta: es
     permiso denegado por diseño de ML, no un token caduco.
     """
-    token = meli._access_token(cuenta)
+    token = _token(cuenta)
     if not token:
-        log.warning("Sin token de ML para la cuenta %s", cuenta)
+        # Ojo al diagnosticar: la causa más probable NO es que el token expiró,
+        # sino que MySQL —donde vive— rechazó la conexión por cuota horaria.
+        log.warning("Sin token de ML para la cuenta %s (¿MySQL sin conexiones?)", cuenta)
         return None
     try:
         r = requests.get(f"{_API}{ruta}", params=params,
@@ -83,6 +120,7 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
         except Exception:  # noqa: BLE001
             return None
     if r.status_code == 401 and not _reintentado:
+        _olvidar_token(cuenta)          # el cacheado ya no sirve
         if meli.refrescar_token(cuenta):
             return _get(ruta, params, cuenta, _reintentado=True)
     if r.status_code == 403:
