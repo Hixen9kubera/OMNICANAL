@@ -1,19 +1,19 @@
 """
-competencia_store.py — Persistencia del módulo de Competencia.
+competencia_store.py — Fachada de persistencia del módulo de Competencia.
 
-DOS MODOS, y el de lectura se elige solo:
+UN SOLO DESTINO: la BD kubera, esquema `enrich.market_*`, vía
+`competencia_supabase` (psycopg2, requiere `SUPABASE_DB_URL`).
 
-  • PRODUCCIÓN → BD kubera, esquema `propuestas` (vía `competencia_supabase`).
-    Se usa en cuanto hay `SUPABASE_DB_URL`. Hace falta porque el sistema de
-    archivos de Railway es efímero: con SQLite el tab arrancaba vacío en cada
-    deploy.
-  • LOCAL → SQLite en `backend/competencia.db`. Sin credenciales, sin riesgo de
-    ensuciar la BD de producción, y `sqlite3` es stdlib.
+Este archivo era antes un store SQLite con un modo remoto encima. Ya no: las
+LECTURAS caen a SQLite solo si no hay credencial (modo local de desarrollo), y
+las ESCRITURAS **revientan** en ese caso en vez de caer al archivo. Una captura
+escrita en un disco que nadie lee es peor que una que no corrió, porque parece
+que funcionó — y el FS de Railway es efímero, así que ese disco no existe en
+producción. El script que empujaba la foto local a `propuestas`
+(`competencia_subir.py`) se retiró junto con el esquema.
 
-Las ESCRITURAS siguen siendo locales a propósito: la captura corre con un
-navegador (Selenium), que no existe en Railway, así que se raspa desde una máquina
-del equipo y se sube a `propuestas`. Mezclar los dos caminos de escritura sin que
-el equipo apruebe el esquema sería empujar un borrador a producción.
+Lo que queda de SQLite es el DDL y los lectores locales, por si se quiere
+trabajar sin credenciales.
 
 El archivo SQLite está en .gitignore: son datos desechables, no código.
 
@@ -378,13 +378,27 @@ def _listar_skus_local(solo_activos: bool = True) -> list[dict[str, Any]]:
 
 
 def actualizar_termino(sku: str, termino: str) -> bool:
-    """Corrección manual: marca origen='manual' para que la IA no lo vuelva a pisar."""
-    asegurar_schema()
-    with _con() as c:
-        cur = c.execute(
-            "UPDATE skus SET termino_general = ?, termino_origen = 'manual', "
-            "actualizado_en = ? WHERE sku = ?", (termino.strip(), _ahora(), sku))
-        return cur.rowcount > 0
+    """Corrección manual: marca origen='manual' para que la IA no lo vuelva a pisar.
+
+    Va a `enrich.market_sku_config.termino_id` vía el catálogo de términos. Sin
+    `SUPABASE_DB_URL` revienta, igual que el resto de las escrituras del módulo.
+    """
+    r = _remoto()
+    if r:
+        return r.actualizar_termino(sku, termino)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: el término se guarda en enrich.market_sku_config "
+        "y no hay a dónde. Define la variable antes de escribir.")
+
+
+def proponer_termino(sku: str, termino: str) -> bool:
+    """Término propuesto por la IA. NO pisa una corrección humana previa."""
+    r = _remoto()
+    if r:
+        return r.proponer_termino(sku, termino)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: el término se guarda en enrich.market_sku_config "
+        "y no hay a dónde. Define la variable antes de escribir.")
 
 
 # ── Corridas ─────────────────────────────────────────────────────────────────
@@ -762,26 +776,19 @@ _CAMPOS_BUSQ = ("termino", "periodo", "posicion", "externo_id", "titulo", "preci
 
 def reemplazar_busqueda(termino: str, periodo: str,
                         filas: list[dict[str, Any]]) -> int:
-    """Foto del mes de UN término. Sin histórico, como el resto del módulo."""
-    asegurar_schema()
-    ahora = _ahora()
-    listas, vistos = [], set()
-    for f in filas:
-        ident = f.get("externo_id")
-        if not ident or ident in vistos:
-            continue
-        vistos.add(ident)
-        d = {k: f.get(k) for k in _CAMPOS_BUSQ}
-        d.update(termino=termino, periodo=periodo)
-        d["es_nuestro"] = 1 if d.get("es_nuestro") else 0
-        listas.append([d[k] for k in _CAMPOS_BUSQ] + [ahora])
-    with _con() as c:
-        c.execute("DELETE FROM busquedas WHERE termino = ?", (termino,))
-        if listas:
-            c.executemany(
-                f"INSERT INTO busquedas ({','.join(_CAMPOS_BUSQ)}, capturado_en) "
-                f"VALUES ({','.join(['?'] * (len(_CAMPOS_BUSQ) + 1))})", listas)
-    return len(listas)
+    """
+    Resultados del buscador para UN término → `enrich.market_search_results`.
+
+    El término se registra en el catálogo (`market_search_term`) y queda marcado
+    como MEDIDO aunque la corrida venga vacía: se pagó igual, y sin la marca el
+    siguiente barrido lo volvería a correr.
+    """
+    r = _remoto()
+    if r:
+        return r.reemplazar_busqueda(termino, periodo, filas)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: la búsqueda se guarda en "
+        "enrich.market_search_results y no hay a dónde.")
 
 
 def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:

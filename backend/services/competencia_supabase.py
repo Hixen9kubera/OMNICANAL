@@ -353,3 +353,92 @@ def activar_raiz(raiz_id: str, activo: bool = True,
         "   AND v.raiz_id = %s AND c.canal = %s "
         "   AND c.activo IS DISTINCT FROM %s",
         (activo, raiz_id, canal, activo))
+
+
+def _id_de_termino(cur, termino: str, canal: str, origen: str | None = None,
+                   medido: bool = False, resultados: int | None = None) -> int:
+    """
+    Id del término en el catálogo, creándolo si no existe. → `market_search_term.id`
+
+    Es el único lugar donde nace un término. Concentrarlo aquí es lo que hace que
+    el FK cumpla su promesa: dos SKUs que comparten término apuntan a la MISMA
+    fila y su medición —que costó una corrida de Apify— se paga una vez.
+
+    `medido` solo se marca cuando de verdad se corrió el buscador; no cuando se le
+    asigna el término a un SKU.
+    """
+    cur.execute(
+        "INSERT INTO enrich.market_search_term (canal, termino, origen, medido_en, resultados) "
+        "VALUES (%s, %s, %s, CASE WHEN %s THEN now() ELSE NULL END, %s) "
+        "ON CONFLICT (canal, termino) DO UPDATE SET "
+        # coalesce al revés en `origen`: el que ya estaba manda, para que una
+        # propuesta de IA posterior no borre el rastro de una corrección humana.
+        "  origen     = COALESCE(enrich.market_search_term.origen, EXCLUDED.origen), "
+        "  medido_en  = COALESCE(EXCLUDED.medido_en, enrich.market_search_term.medido_en), "
+        "  resultados = COALESCE(EXCLUDED.resultados, enrich.market_search_term.resultados) "
+        "RETURNING id",
+        (canal, termino.strip(), origen, medido, resultados))
+    return int(cur.fetchone()["id"])
+
+
+def actualizar_termino(sku: str, termino: str, canal: str = CANAL_DEFAULT) -> bool:
+    """Corrección manual del término de un SKU. Marca origen='manual' en la
+    ASIGNACIÓN para que una propuesta posterior de la IA no la pise."""
+    with supabase_db.get_cursor() as cur:
+        tid = _id_de_termino(cur, termino, canal, origen="manual")
+        cur.execute(
+            "UPDATE enrich.market_sku_config "
+            "   SET termino_id = %s, termino_origen = 'manual', updated_at = now() "
+            " WHERE sku = %s AND canal = %s", (tid, sku, canal))
+        return cur.rowcount > 0
+
+
+def proponer_termino(sku: str, termino: str, canal: str = CANAL_DEFAULT) -> bool:
+    """Término propuesto por la IA. NO pisa una corrección humana previa."""
+    with supabase_db.get_cursor() as cur:
+        tid = _id_de_termino(cur, termino, canal, origen="ia")
+        cur.execute(
+            "UPDATE enrich.market_sku_config "
+            "   SET termino_id = %s, termino_origen = COALESCE(termino_origen, 'ia'), "
+            "       updated_at = now() "
+            " WHERE sku = %s AND canal = %s "
+            "   AND (termino_origen IS DISTINCT FROM 'manual')", (tid, sku, canal))
+        return cur.rowcount > 0
+
+
+# Columnas de enrich.market_search_results, en el orden del insert.
+_COLS_SERP = ("termino_id", "posicion", "externo_id", "titulo", "precio", "imagen",
+              "url", "seller", "rating", "es_nuestro", "sku_nuestro")
+
+
+def reemplazar_busqueda(termino: str, periodo: str, filas: list[dict[str, Any]],
+                        canal: str = CANAL_DEFAULT) -> int:
+    """
+    Reescribe los resultados de UN término medido con el buscador.
+
+    Marca el término como medido AUNQUE venga vacío: un término que se corrió y
+    no devolvió nada también está pagado, y sin la marca se volvería a correr en
+    cada barrido. `periodo` se acepta por compatibilidad de firma; la tabla nueva
+    no lo tiene (el momento lo dice `capturado_en` / `medido_en`).
+    """
+    listas, vistos = [], set()
+    for f in filas:
+        ident = f.get("externo_id")
+        if not ident or ident in vistos:
+            continue
+        vistos.add(ident)
+        listas.append(f)
+
+    marcas = "(" + ",".join(["%s"] * len(_COLS_SERP)) + ")"
+    with supabase_db.get_cursor() as cur:
+        tid = _id_de_termino(cur, termino, canal, medido=True, resultados=len(listas))
+        cur.execute("DELETE FROM enrich.market_search_results WHERE termino_id = %s", (tid,))
+        for f in listas:
+            d = {k: f.get(k) for k in _COLS_SERP}
+            d["termino_id"] = tid
+            d["es_nuestro"] = bool(f.get("es_nuestro"))
+            cur.execute(
+                f"INSERT INTO enrich.market_search_results ({','.join(_COLS_SERP)}) "
+                f"VALUES {marcas}", tuple(d[k] for k in _COLS_SERP))
+    log.info("market_search_results %s/%r ← %s filas", canal, termino, len(listas))
+    return len(listas)
