@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   RotateCw,
@@ -20,8 +20,8 @@ import Pagination from "@/components/Pagination";
 import ResolverCostosModal from "@/components/ResolverCostosModal";
 import CajaMasterPanel from "@/components/CajaMasterPanel";
 import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
-import { listarCostos, contenedoresCosto, costoBulk } from "@/lib/api";
-import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp } from "@/lib/types";
+import { listarCostos, contenedoresCosto, costoBulk, costoPreview } from "@/lib/api";
+import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp, CostoCalculo } from "@/lib/types";
 
 const PER_PAGE = 50;
 const COLOR = "#4F46E5";
@@ -136,6 +136,44 @@ export default function CostosPage() {
   const [bulkRun, setBulkRun] = useState(false);
   const [bulkResult, setBulkResult] = useState<CostoBulkResp | null>(null);
   const tcNum = () => Number(tcBulk) || DEFAULT_TC;
+
+  // Desglose por SKU seleccionado. Se pide al backend porque la COMISIÓN sale
+  // de la categoría real de ML: calcularla aquí sería adivinar.
+  const [desglose, setDesglose] = useState<Record<string, CostoCalculo | null>>({});
+  // Con muchas filas abiertas serían decenas de llamadas por tecla. Arriba de
+  // este número la tabla se usa para el bulk, no para estudiar un SKU.
+  const MAX_DESGLOSE = 12;
+
+  useEffect(() => {
+    const skus = [...seleccion];
+    if (!skus.length || skus.length > MAX_DESGLOSE) { setDesglose({}); return; }
+    let vivo = true;
+    const t = setTimeout(async () => {
+      for (const sku of skus) {
+        const ed = ediciones[sku];
+        if (!ed) continue;
+        const pz = porPieza(ed);
+        const cpUsd = n(ed.costo_producto);
+        try {
+          const r = await costoPreview(sku, {
+            costo_producto: cpUsd != null ? cpUsd * tcNum() : null,
+            largo: pz.largo || null, ancho: pz.ancho || null, alto: pz.alto || null,
+            peso: pz.peso || null,
+            margen: (Number(margenBulk) || 0) / 100,
+            pct_comision: comisionBulk.trim() ? Number(comisionBulk) / 100 : null,
+            incluir_envio: envioBulk,
+            auto_cbm: true,
+          });
+          if (!vivo) return;
+          setDesglose((d) => ({ ...d, [sku]: r.calculo }));
+        } catch {
+          if (!vivo) return;
+          setDesglose((d) => ({ ...d, [sku]: null }));
+        }
+      }
+    }, 450);
+    return () => { vivo = false; clearTimeout(t); };
+  }, [seleccion, ediciones, margenBulk, comisionBulk, envioBulk, tcBulk]);
 
   const topRef = useRef<HTMLDivElement>(null);
 
@@ -417,7 +455,8 @@ export default function CostosPage() {
                   const ed = ediciones[r.sku];
                   const { cbm, costo } = vivo(r);
                   return (
-                    <tr key={r.sku} className={["border-b border-slate-100 transition-colors", sel ? "bg-indigo-50/50" : "hover:bg-slate-50"].join(" ")}>
+                    <Fragment key={r.sku}>
+                    <tr className={["border-b transition-colors", sel ? "border-transparent bg-indigo-50/50" : "border-slate-100 hover:bg-slate-50"].join(" ")}>
                       <td className="px-4 py-3">
                         <input type="checkbox" checked={sel} onChange={() => toggle(r.sku, r)} className="h-4 w-4 cursor-pointer accent-indigo-600" />
                       </td>
@@ -531,6 +570,18 @@ export default function CostosPage() {
                       <td className="px-3 py-3 text-right text-slate-600">{precioMXN(r.precio_base)}</td>
                       <td className="px-3 py-3 text-right font-semibold text-slate-900">{precioMXN(r.precio_sugerido)}</td>
                     </tr>
+                    {/* Desglose: de dónde sale el precio y qué se lleva cada
+                        quien. Va en la misma línea —no en un panel aparte—
+                        porque es lo que se mira mientras se teclea. */}
+                    {sel && (
+                      <tr className="border-b border-slate-100 bg-indigo-50/50">
+                        <td />
+                        <td colSpan={9} className="px-4 pb-3">
+                          <Desglose calc={desglose[r.sku]} pendiente={!(r.sku in desglose)} />
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })
               )}
@@ -617,6 +668,62 @@ export default function CostosPage() {
 }
 
 // Input compacto para editar una celda de la tabla.
+/**
+ * El renglón de desglose: precio de venta a la izquierda, y a la derecha todo
+ * lo que se le resta hasta llegar a la ganancia. Los números vienen del
+ * backend (`/preview`), incluida la comisión de la categoría real de ML.
+ */
+function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; pendiente: boolean }) {
+  if (pendiente) {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-slate-400">
+        <Loader2 size={12} className="animate-spin" /> calculando desglose…
+      </div>
+    );
+  }
+  if (!calc) {
+    return <div className="text-[11px] text-slate-400">Sin desglose — falta costo o dimensiones.</div>;
+  }
+  // Lo que de verdad cuesta poner la pieza en manos del cliente: el costo
+  // aterrizado más lo que se llevan ML y la paquetería.
+  const costoFinal = Math.round(
+    ((calc.costo_unitario ?? 0) + calc.costo_comision + calc.costo_fee_envio + calc.iva_mnt) * 100,
+  ) / 100;
+  const margen = calc.precio_sugerido ? calc.ganancia_neta / calc.precio_sugerido : 0;
+
+  const celdas: { rotulo: string; valor: string; tono?: string; nota?: string }[] = [
+    { rotulo: "Precio base", valor: precioMXN(calc.precio_sugerido), tono: "text-slate-900" },
+    { rotulo: "Costo base", valor: precioMXN(calc.costo_unitario),
+      nota: `producto + flete ${precioMXN(calc.costo_cbm)}` },
+    { rotulo: "Comisión /u", valor: precioMXN(calc.costo_comision),
+      nota: `${(calc.pct_comision * 100).toFixed(1)}%${calc.comision_estimada ? " estimada" : ""}` },
+    { rotulo: "Envío real /u", valor: precioMXN(calc.costo_fee_envio),
+      nota: calc.incluir_envio ? undefined : "no se suma" },
+    { rotulo: "Costo final", valor: precioMXN(costoFinal), tono: "text-slate-900",
+      nota: `incluye IVA ${precioMXN(calc.iva_mnt)}` },
+    { rotulo: "Margen", valor: `${(margen * 100).toFixed(1)}%`,
+      tono: margen <= 0 ? "text-rose-600" : margen < 0.15 ? "text-amber-600" : "text-emerald-600",
+      nota: `${precioMXN(calc.ganancia_neta)} neto` },
+  ];
+
+  return (
+    <div className="flex flex-wrap items-stretch gap-1.5">
+      {celdas.map((c) => (
+        <div key={c.rotulo} className="min-w-[104px] flex-1 rounded-lg border border-indigo-100 bg-white px-2.5 py-1.5">
+          <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">{c.rotulo}</div>
+          <div className={`font-mono text-xs font-semibold ${c.tono ?? "text-slate-700"}`}>{c.valor}</div>
+          {c.nota && <div className="truncate text-[9px] text-slate-400" title={c.nota}>{c.nota}</div>}
+        </div>
+      ))}
+      {calc.comision_estimada && (
+        <div className="flex items-center gap-1 px-1 text-[10px] text-amber-600">
+          <AlertTriangle size={11} /> comisión de respaldo: sin categoría de ML
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CeldaInput({ value, onChange, align, prefijo }: {
   value: string; onChange: (v: string) => void; align?: "right"; prefijo?: string;
 }) {

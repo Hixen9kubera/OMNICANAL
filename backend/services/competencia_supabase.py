@@ -407,8 +407,10 @@ def proponer_termino(sku: str, termino: str, canal: str = CANAL_DEFAULT) -> bool
 
 
 # Columnas de enrich.market_search_results, en el orden del insert.
+# `visitas_30d` va en la lista: la captura las pide por API antes de guardar
+# (competencia_buscar_apify.py:121) y sin la columna ese trabajo se tiraba.
 _COLS_SERP = ("termino_id", "posicion", "externo_id", "titulo", "precio", "imagen",
-              "url", "seller", "rating", "es_nuestro", "sku_nuestro")
+              "url", "seller", "rating", "visitas_30d", "es_nuestro", "sku_nuestro")
 
 
 def reemplazar_busqueda(termino: str, periodo: str, filas: list[dict[str, Any]],
@@ -442,3 +444,45 @@ def reemplazar_busqueda(termino: str, periodo: str, filas: list[dict[str, Any]],
                 f"VALUES {marcas}", tuple(d[k] for k in _COLS_SERP))
     log.info("market_search_results %s/%r ← %s filas", canal, termino, len(listas))
     return len(listas)
+
+
+def guardar_publicaciones(filas: list[dict[str, Any]]) -> int:
+    """
+    Upsert de NUESTRAS publicaciones en `enrich.market_listing_metrics`.
+
+    Una fila por (sku, canal, cuenta, periodo). El COALESCE del UPDATE es lo que
+    permite refrescos PARCIALES: el paso de precios solo trae precio, el de
+    visitas solo visitas, y ninguno debe borrar lo que escribió el otro.
+
+    El precio que se guarda en `sale_price` es el que el comprador PAGA
+    (`/items/{id}/sale_price`), no el de lista. Medido: ORG-0385-NEG tenía $598
+    guardado cuando ML ya lo vendía en $399, y MES-0061-CAF $1,088 contra $599
+    reales — con el de lista, la brecha contra el mercado sale al doble.
+    """
+    listos = [f for f in filas if f.get("sku") and f.get("cuenta")]
+    if not listos:
+        return 0
+    n = 0
+    with supabase_db.get_cursor() as cur:
+        for f in listos:
+            cur.execute(
+                "INSERT INTO enrich.market_listing_metrics "
+                "  (sku, canal, cuenta, periodo, listing_id, title, estado, "
+                "   sale_price, list_price, visits_30d, units_30d, metrics_updated_at) "
+                "VALUES (%s,%s,%s,date_trunc('month', now())::date,%s,%s,%s,%s,%s,%s,%s, now()) "
+                "ON CONFLICT (sku, canal, cuenta, periodo) DO UPDATE SET "
+                "  listing_id = COALESCE(EXCLUDED.listing_id, market_listing_metrics.listing_id), "
+                "  title      = COALESCE(EXCLUDED.title,      market_listing_metrics.title), "
+                "  estado     = COALESCE(EXCLUDED.estado,     market_listing_metrics.estado), "
+                "  sale_price = COALESCE(EXCLUDED.sale_price, market_listing_metrics.sale_price), "
+                "  list_price = COALESCE(EXCLUDED.list_price, market_listing_metrics.list_price), "
+                "  visits_30d = COALESCE(EXCLUDED.visits_30d, market_listing_metrics.visits_30d), "
+                "  units_30d  = COALESCE(EXCLUDED.units_30d,  market_listing_metrics.units_30d), "
+                "  metrics_updated_at = now()",
+                (f["sku"], f.get("canal") or "mercado_libre", f["cuenta"],
+                 f.get("ml_item_id") or f.get("listing_id"), f.get("titulo") or f.get("title"),
+                 f.get("estado"), f.get("precio"), f.get("precio_lista"),
+                 f.get("visitas_30d"), f.get("unidades_30d")))
+            n += 1
+    log.info("market_listing_metrics ← %s publicaciones", n)
+    return n

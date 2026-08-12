@@ -515,28 +515,17 @@ def top_categoria(sku: str, limite: int = 10) -> list[dict[str, Any]]:
 
 
 def guardar_publicaciones(filas: list[dict[str, Any]]) -> int:
-    """
-    Upsert de NUESTRAS publicaciones con su ficha y sus métricas de 30 días. Una
-    fila por (sku, cuenta): el mismo SKU está publicado en las dos tiendas y cada
-    publicación tiene su propio precio, sus visitas y sus ventas.
+    """Upsert de NUESTRAS publicaciones → `enrich.market_listing_metrics`.
 
-    `COALESCE` en el UPDATE: un refresco parcial (p. ej. solo visitas) no debe
-    borrar el precio ni las unidades que ya escribió otro paso.
+    Refrescos PARCIALES: el paso de precios solo trae precio y el de visitas solo
+    visitas; el COALESCE del remoto evita que uno borre lo del otro.
     """
-    asegurar_schema()
-    listas = [[f.get(k) for k in _CAMPOS_PUB] + [_ahora()] for f in filas
-              if f.get("sku") and f.get("cuenta") and f.get("ml_item_id")]
-    if not listas:
-        return 0
-    sets = ", ".join(f"{k}=COALESCE(excluded.{k}, {k})"
-                     for k in _CAMPOS_PUB if k not in ("sku", "cuenta"))
-    with _con() as c:
-        c.executemany(
-            f"INSERT INTO publicaciones ({','.join(_CAMPOS_PUB)}, actualizado_en) "
-            f"VALUES ({','.join(['?'] * (len(_CAMPOS_PUB) + 1))}) "
-            f"ON CONFLICT(sku, cuenta) DO UPDATE SET {sets}, "
-            f"actualizado_en=excluded.actualizado_en", listas)
-    return len(listas)
+    r = _remoto()
+    if r:
+        return r.guardar_publicaciones(filas)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: las publicaciones se guardan en "
+        "enrich.market_listing_metrics y no hay a dónde.")
 
 
 def marcar_publicadas(pubs: list[dict[str, Any]]) -> int:

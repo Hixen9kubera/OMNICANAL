@@ -598,6 +598,15 @@ function ResultadosBusqueda({ filas }: { filas: CompetenciaResultado[] }) {
             {r.titulo ?? r.externo_id}
           </span>
           {r.es_nuestro ? <Crown size={11} className="shrink-0 text-amber-600" /> : null}
+          {/* Las VISITAS de cada resultado: sin ellas la lista dice a qué precio
+              compite cada uno pero no cuánto tráfico se lleva, que es la mitad
+              de la decisión. Se piden por API al capturar (gratis). */}
+          <span
+            className="w-16 shrink-0 text-right text-[11px] tabular-nums text-slate-500"
+            title="Visitas de 30 días de esa publicación"
+          >
+            {r.visitas_30d != null ? `${num(r.visitas_30d)} vis` : "—"}
+          </span>
           <span className="w-16 text-right text-xs font-medium tabular-nums text-slate-900">
             {mxn(r.precio)}
           </span>

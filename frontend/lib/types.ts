@@ -692,6 +692,9 @@ export interface CompetenciaResultado {
   url: string | null;
   seller: string | null;
   rating: number | null;
+  /** Visitas de 30 días de ESE resultado. La captura las pide por API (gratis);
+   *  la 0017 quitó la columna por leerla como "vacía" y la 0018 la devolvió. */
+  visitas_30d: number | null;
   es_nuestro: number;
   sku_nuestro: string | null;
 }
