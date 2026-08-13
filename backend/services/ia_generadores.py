@@ -126,74 +126,25 @@ def _sin_acentos(texto: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Prompts Amazon (instrucciones provistas por Kubera, vigentes 27-jul-2026)
+# Amazon: UN SOLO PROMPT, y no vive aquí.
+#
+# La especificación de contenido de Amazon es `amazon_ia._SISTEMA` — el spec de
+# Brandon, literal — y es la única que pasa por el validador de límites, por los
+# requisitos REALES de la categoría (`channel.field_requirements`) y por el
+# detector de marcas registradas.
+#
+# Aquí vivían SEIS prompts más (título, highlights, bullets, descripción,
+# atributos y el JSON de "Mejorar con IA"), escritos contra la guía del 27-jul.
+# Se BORRARON el 13-ago por decisión de Brandon: dos textos para el mismo campo
+# es una invitación a editar el que no sale a producción. Los bullets son el
+# ejemplo — el viejo pedía el prefijo «[CARACTERÍSTICA EN MAYÚSCULAS]:» y el
+# spec vivo pide oraciones completas: el mismo producto habría salido distinto
+# según qué botón se apretara.
+#
+# Lo único de Amazon que sobrevive en este módulo es el planificador de
+# IMÁGENES, que no compite con nada: no escribe contenido del listado, arma un
+# set de 5 fotos con sus prompts.
 # ─────────────────────────────────────────────────────────────────────────────
-_AMZ_BASE = (
-    "Eres un experto en optimización de listings para Amazon México "
-    "(amazon.com.mx), con dominio de los lineamientos vigentes a partir del "
-    "27 de julio de 2026. Escribe TODO en español. Respeta ESTRICTAMENTE los "
-    "límites de caracteres indicados y verifica el conteo exacto antes de "
-    "entregar. No inventes datos que no se puedan inferir del producto."
-)
-
-_AMZ_TITULO = _AMZ_BASE + (
-    "\n\nGenera el TÍTULO (máximo 75 caracteres, incluyendo espacios).\n"
-    "Reglas:\n"
-    "• Mayúscula en la primera letra de cada sustantivo importante.\n"
-    "• Incluye: tipo de producto + característica 1 + característica 2 / tamaño; "
-    "marca solo si aporta.\n"
-    "• Prohibido: signos especiales (! $ * ~), palabras promocionales (oferta, "
-    "gratis, mejor), emojis.\n"
-    "• Formato: [Tipo de producto] + [Característica 1] + [Característica 2 / Tamaño].\n"
-    "Devuelve SOLO el título en una línea y, debajo, «(N caracteres)»."
-)
-
-_AMZ_HIGHLIGHTS = _AMZ_BASE + (
-    "\n\nGenera el ITEM HIGHLIGHTS (máximo 125 caracteres, incluyendo espacios).\n"
-    "Es el segundo campo indexable: úsalo para palabras clave secundarias.\n"
-    "Reglas:\n"
-    "• Incluye materiales, casos de uso, público objetivo o ventaja competitiva.\n"
-    "• Frase natural, no lista. No repitas el título. Sin palabras promocionales.\n"
-    "Devuelve SOLO la frase y, debajo, «(N caracteres)»."
-)
-
-_AMZ_BULLETS = _AMZ_BASE + (
-    "\n\nGenera 5 BULLET POINTS (cada uno entre 150 y 200 caracteres, incluyendo "
-    "espacios).\n"
-    "Estructura obligatoria:\n"
-    "1) Beneficio principal (no una característica).\n"
-    "2) Material / durabilidad / construcción.\n"
-    "3) Compatibilidad o casos de uso específicos.\n"
-    "4) Facilidad de uso / instalación / mantenimiento.\n"
-    "5) Garantía, certificación o propuesta de valor diferencial.\n"
-    "Formato de cada bullet: [CARACTERÍSTICA EN MAYÚSCULAS]: descripción del "
-    "beneficio concreto. Oraciones completas, no listas de keywords.\n"
-    "Devuelve los 5 bullets, uno por línea, y al final el conteo de caracteres de "
-    "cada uno."
-)
-
-_AMZ_DESCRIPCION = _AMZ_BASE + (
-    "\n\nGenera la DESCRIPCIÓN (máximo 2000 caracteres, incluyendo espacios).\n"
-    "En párrafos (NO listas):\n"
-    "• Párrafo 1: propuesta de valor y contexto de uso (quién lo necesita y por qué).\n"
-    "• Párrafo 2: características técnicas y materiales con sus beneficios.\n"
-    "• Párrafo 3: casos de uso específicos y compatibilidades.\n"
-    "• Cierre: llamada a la acción natural.\n"
-    "Tono informativo, profesional, orientado al beneficio. Incorpora keywords "
-    "long-tail de forma natural.\n"
-    "Devuelve la descripción y, al final, «(N caracteres)»."
-)
-
-_AMZ_ATRIBUTOS = _AMZ_BASE + (
-    "\n\nGenera la TABLA DE ATRIBUTOS recomendada para publicar este producto en "
-    "Amazon México. Detecta el tipo de producto (product_type) e infiere los "
-    "atributos clave y obligatorios de esa categoría (marca, fabricante, material, "
-    "color, tamaño/dimensiones, cantidad, público objetivo, país de origen, etc.).\n"
-    "Devuelve en formato «Atributo: valor», uno por línea. Marca con «(sugerido)» "
-    "los valores que estás infiriendo y con «(requerido)» los obligatorios que "
-    "falten por completar."
-)
-
 _AMZ_IMAGENES = (
     "Eres un director de arte experto en imágenes de producto para Amazon. A "
     "partir de la imagen principal y los datos del producto: 1) DETECTA la "
@@ -274,17 +225,12 @@ _TT_TITULO = (
 #   tipo  = "texto" | "imagenes" (imagenes = plan + prompts, también texto)
 # ─────────────────────────────────────────────────────────────────────────────
 GENERADORES: dict[str, list[dict[str, Any]]] = {
+    # AMAZON: el contenido (título, highlights, bullets, descripción, términos
+    # de búsqueda y atributos) sale ENTERO de `amazon_ia.mejorar`, con su
+    # validador. Los cinco generadores por campo que había aquí se borraron el
+    # 13-ago para no tener dos prompts del mismo campo. Queda el de imágenes,
+    # que no escribe contenido del listado.
     "amazon": [
-        {"id": "titulo", "label": "Título", "icono": "type", "max_tokens": 300,
-         "descripcion": "Título Amazon MX ≤75 caracteres", "system": _AMZ_TITULO},
-        {"id": "highlights", "label": "Item Highlights", "icono": "sparkles", "max_tokens": 300,
-         "descripcion": "Campo indexable ≤125 caracteres", "system": _AMZ_HIGHLIGHTS},
-        {"id": "bullets", "label": "Bullet Points", "icono": "list", "max_tokens": 900,
-         "descripcion": "5 bullets de 150–200 caracteres", "system": _AMZ_BULLETS},
-        {"id": "descripcion", "label": "Descripción", "icono": "align-left", "max_tokens": 1200,
-         "descripcion": "Descripción ≤2000 caracteres", "system": _AMZ_DESCRIPCION},
-        {"id": "atributos", "label": "Atributos Amazon", "icono": "tags", "max_tokens": 900,
-         "descripcion": "Tabla de atributos por categoría", "system": _AMZ_ATRIBUTOS},
         {"id": "imagenes", "label": "Set de imágenes", "icono": "image", "max_tokens": 1800, "tipo": "imagenes",
          "descripcion": "Plan de 5 imágenes + prompts IA", "system": _AMZ_IMAGENES},
     ],
@@ -354,20 +300,11 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             "que no se puedan inferir del producto." + _NO_CONTRADECIR
         ),
     },
-    "amazon": {
-        "max_tokens": 2200,
-        "system": _AMZ_BASE + (
-            "\n\nMejora el listing completo. Devuelve SOLO JSON válido:\n"
-            '{"titulo": "<máx 75 car.>", "highlights": "<máx 125 car.>", '
-            '"bullets": ["<150-200 car.>", "..x5.."], '
-            '"descripcion": "<máx 2000 car., en párrafos>", '
-            '"atributos": [{"nombre": "..", "valor": ".."}]}\n'
-            "Respeta ESTRICTAMENTE los límites de caracteres. En atributos infiere los "
-            "obligatorios de la categoría (product_type). "
-            "El TÍTULO va SIN NINGÚN ACENTO ni tilde (á→a, é→e, í→i, ó→o, ú→u, ñ→n): "
-            "escribe cada palabra del título sin marcas diacríticas." + _NO_CONTRADECIR
-        ),
-    },
+    # AMAZON no está en este diccionario a propósito: `mejorar()` desvía el canal
+    # a `amazon_ia.mejorar` antes de llegar aquí. El prompt que vivía en esta
+    # entrada se borró el 13-ago — mientras existió, era el que un humano habría
+    # editado creyendo que cambiaba el botón, cuando el que sale a producción es
+    # `amazon_ia._SISTEMA`.
     "general": {
         "max_tokens": 1200,
         "system": (

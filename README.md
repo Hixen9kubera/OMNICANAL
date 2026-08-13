@@ -8065,6 +8065,17 @@ dos lados (apagado devuelve `None`; encendido generó y guardó los 6 campos de
 `TEC-1013-NEG`) y va después del acta de `core.products`, porque la tabla tiene
 FK contra el maestro.
 
+**Un solo prompt, y el viejo se borró.** `ia_generadores` tenía SEIS prompts de
+Amazon más: los cinco por campo (`GENERADORES`, servidos por
+`/api/ia/generadores` y `/api/ia/generar` — dos endpoints que **hoy no llama
+ninguna pantalla**) y el JSON de `_MEJORAR["amazon"]`, que era el del botón
+hasta esta versión. Se eliminaron por decisión de Brandon: dos textos para el
+mismo campo es una invitación a editar el que no sale a producción. No era
+teórico — el bullet viejo pedía el prefijo «[CARACTERÍSTICA EN MAYÚSCULAS]:» y
+el spec vivo pide oraciones completas, así que el mismo producto salía distinto
+según qué botón se apretara. De Amazon solo sobrevive el planificador de
+imágenes, que no escribe contenido del listado.
+
 Sin migraciones: `enrich.channel_content` ya existía (0016) y no la audita
 ningún ETL, así que escribir ahí no toca ninguna racha. Versión 0.137.0.
 
