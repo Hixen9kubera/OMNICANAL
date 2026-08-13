@@ -6326,7 +6326,7 @@ ningún error a la vista.
 
 También entran: `services/tiktok_atributos.py` (prompt + validador de atributos
 del publicador masivo) y tres documentos de investigación en `docs/`.
-### v0.136.0 — Walmart: la exención no vivía donde creíamos, y un campo de más mataba lotes enteros
+### v0.136.1 — Walmart: la exención no vivía donde creíamos, y un campo de más mataba lotes enteros
 
 **El hallazgo que cambia el plan.** La exención de UPC de electrónica **no está
 en "Accesorios Electrónicos"** (`electronics_accessories`), que es donde el
