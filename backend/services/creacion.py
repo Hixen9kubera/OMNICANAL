@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any
 
-from services import db, odoo, woocommerce
+from services import costing_read, costing_write, db, odoo, woocommerce
 
 log = logging.getLogger("omnicanal.creacion")
 
@@ -218,6 +218,14 @@ def _costos_por_sku(skus: list[str]) -> dict[str, float]:
     { sku: costo_unitario } desde costos_finales (fallback costo_producto).
     Consulta en lotes para no pasarse del límite de placeholders.
     """
+    # PASO 0 (12-ago-2026): 4,376 SKUs con costo en ambos lados, cero de
+    # diferencia. Es una columna de la lista, no un lector que decide.
+    if costing_write.activo():
+        try:
+            return costing_read.costos_por_sku(skus)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("costos_por_sku kubera falló: %s", exc)
+            return {}
     salida: dict[str, float] = {}
     for i in range(0, len(skus), 800):
         chunk = skus[i:i + 800]
@@ -240,6 +248,12 @@ def _costos_por_sku(skus: list[str]) -> dict[str, float]:
 
 def _contenedores_por_sku(skus: list[str]) -> dict[str, str]:
     """{ sku: nº de contenedor } desde costos_validados. Consulta en lotes."""
+    if costing_write.activo():  # 15,348 en ambos lados, cero de diferencia
+        try:
+            return costing_read.contenedores_por_sku(skus)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("contenedores_por_sku kubera falló: %s", exc)
+            return {}
     salida: dict[str, str] = {}
     for i in range(0, len(skus), 800):
         chunk = skus[i:i + 800]

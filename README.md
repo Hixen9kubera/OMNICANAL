@@ -7527,7 +7527,7 @@ de las dos es correcta; la correcta es recapturarlos.
 
 Versión 0.122.0.
 
-### v0.123.0 — COSTOS cierra el círculo: ni una lectura toca MySQL
+### v0.124.0 — COSTOS cierra el círculo: ni una lectura toca MySQL
 
 Último paso del dominio. Con el corte encendido, `costos.py` ya no consulta el
 espejo en ninguna ruta: se retiran el complemento de dims de `_preparar_base` y
@@ -7559,4 +7559,45 @@ Las cuatro lecturas a MySQL que quedan en el archivo corren **solo con el corte
 apagado**, que es el interruptor de reversa.
 
 Pruebas sandbox: `probar_corte_costing.py` 15/15 · `probar_retiro_costing_orders.py`
-11/11. Versión 0.123.0.
+11/11. Versión 0.124.0.
+
+### v0.125.0 — El flujo de Crear deja de preguntarle a una tabla muerta
+
+Paso 0 de los últimos lectores de costos: `crear_producto.py` (5 sitios) y
+`creacion.py` (2). Se miden los cinco antes de tocarlos.
+
+**Cuatro tenían paridad exacta** — `_tiene_costo_base` 15,903 contra 15,903,
+`ml_cat_id` 3,813, costos 4,376, contenedores 15,348, cero de diferencia en
+ambos sentidos. El quinto no, y ahí estaba el problema.
+
+**`_categoria_curada` leía `categorias_ml`, que nadie escribe desde el 22-jul.**
+Kubera y esa tabla discrepan en **2,270 SKUs**, y en todos los muestreados
+MySQL traía `predictor` —la adivinanza del detector— contra el `panel` de
+kubera, que es la corrección humana. O sea: **la creación violaba la regla 2 de
+la casa en uno de cada seis SKUs con categoría**, y llevaba haciéndolo tres
+semanas. El ejemplo no podía ser más literal: `TEC-1812-NEG` sale hoy como
+`MLM190965` = *Máquinas Sexuales* en kubera; el predictor de MySQL fue el que
+lo mandó a "Máquinas de Coser", el incidente que originó la regla. Kubera
+además cubre 13,733 SKUs contra 12,399.
+
+El único SKU que parecía existir solo en MySQL resultó ser una fila con un
+**salto de línea** pegado al SKU (`'CALZ-0170-NEG-XL\n'`). Cero huérfanos reales.
+
+**Un hueco que sí era real, y se tapó.** El mapa de kubera guarda el id pero el
+NOMBRE vive en `channel.categories`, y 75 categorías en uso lo tenían en NULL —
+1,468 SKUs que se habrían publicado sin categoría de WooCommerce. MySQL no
+podía taparlo: de esas 75 llena **cero** (son elecciones del panel posteriores
+al congelamiento). `backfill_nombres_categorias.py` las resuelve contra la API
+pública de ML: 75 de 75, sin fallos. Escribe solo sobre NULL. Hueco actual: 0.
+
+Nuevas gemelas: `channel_read.categoria_curada`, `costing_read.costos_por_sku`
+y `costing_read.contenedores_por_sku` (en lotes de 800, como las originales).
+
+Con esto **ya no queda ningún lector de costos apuntando al espejo** y
+`costos_*` puede volver a congelarse. Falta `competencia_captura.py`, que lee
+`categorias_ml` para decidir a qué SKUs seguirles la competencia — no bloquea
+nada, solo encoge su alcance.
+
+Pruebas sandbox: `probar_corte_costing.py` 15/15 · `probar_retiro_costing_orders.py`
+11/11. Lecturas nuevas verificadas contra producción en solo lectura.
+Versión 0.125.0.

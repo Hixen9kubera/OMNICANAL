@@ -141,3 +141,43 @@ def vivas_ml(cuenta: str) -> list[str]:
               and lower(l.situacion) in ('active', 'paused')
               and nullif(l.listing_id, '') is not null""",
         {"c": cuenta})]
+
+
+# ── Categoría ML curada (paso 0, 12-ago-2026) ───────────────────────────────
+
+def categoria_curada(sku: str) -> dict[str, str] | None:
+    """
+    Gemela de `crear_producto._categoria_curada`, que leía `categorias_ml`.
+
+    El mapa vive en `channel.product_category` y el NOMBRE en
+    `channel.categories` (2,116 de 2,116 ids en uso tienen nombre). Se busca
+    por SKU exacto y, si no, por PREFIJO PADRE, igual que el original.
+
+    `fuente` traduce `source`: 'panel' es la elección HUMANA y por regla de la
+    casa manda sobre cualquier detector. Ese matiz no es cosmético — kubera y
+    el viejo `categorias_ml` discrepan en 2,270 SKUs y en todos los muestreados
+    MySQL traía `predictor` contra el `panel` de kubera. Publicar desde MySQL
+    era publicar en la categoría que ADIVINÓ el detector, ignorando la que un
+    humano ya había corregido.
+    """
+    if not sku:
+        return None
+    base = "-".join(sku.split("-")[:2])
+    row = sdb.fetch_one(
+        """select pc.category_id, ct.name as category_name, pc.source
+             from channel.product_category pc
+             left join channel.categories ct
+                    on ct.category_id = pc.category_id
+                   and ct.channel_id = pc.channel_id
+            where pc.channel_id = 'mercado_libre'
+              and nullif(pc.category_id, '') is not null
+              and (pc.sku = %(s)s::citext or pc.sku::text ilike %(p)s)
+            order by (pc.sku = %(s)s::citext) desc,
+                     (pc.source = 'panel') desc
+            limit 1""",
+        {"s": sku, "p": base + "%"})
+    if not (row and row.get("category_id")):
+        return None
+    return {"category_id": str(row["category_id"]),
+            "category_name": str(row.get("category_name") or ""),
+            "fuente": str(row.get("source") or "")}

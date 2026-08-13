@@ -27,7 +27,8 @@ from typing import Any
 import httpx
 
 from config import settings
-from services import costos, db, meli, woocommerce, wp_db
+from services import (categorias_write, channel_read, costing_read, costing_write,
+                      costos, db, meli, woocommerce, wp_db)
 
 log = logging.getLogger("omnicanal.crear_producto")
 
@@ -510,12 +511,25 @@ async def procesar_imagenes(sku: str, urls: list[str]) -> tuple[list[dict[str, A
 
 def _categoria_curada(sku: str) -> dict[str, str] | None:
     """
-    Categoría de Mercado Libre CURADA (tabla categorias_ml, 12.8k SKUs).
-    Busca por SKU exacto y, si no, por PREFIJO PADRE (CATEG-####). Trae
-    category_id + category_name listos. `fuente` real=confirmada, predictor=predicha.
+    Categoría de Mercado Libre CURADA. Busca por SKU exacto y, si no, por
+    PREFIJO PADRE (CATEG-####). Trae category_id + category_name listos.
+
+    PASO 0 del desmantelamiento (12-ago-2026). Antes leía `categorias_ml`, que
+    nadie escribe desde el 22-jul. Ese cambio NO es cosmético: kubera y esa
+    tabla discrepan en **2,270 SKUs**, y en todos los muestreados MySQL traía
+    `predictor` (la adivinanza del detector) contra el `panel` de kubera (la
+    corrección humana). Publicar desde MySQL violaba la regla 2 de la casa en
+    uno de cada seis SKUs con categoría — el mismo error que mandó TEC-1812-NEG
+    a "Máquinas de Coser". Kubera además es superset: 13,733 SKUs contra 12,399.
     """
     if not sku:
         return None
+    if categorias_write.activo():
+        try:
+            return channel_read.categoria_curada(sku)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("categoria_curada kubera falló (%s): %s", sku, exc)
+            return None
     try:
         r = db.fetch_one(
             "SELECT category_id, category_name, fuente FROM categorias_ml "
@@ -579,9 +593,12 @@ async def categoria_ml(sku: str, titulo: str) -> dict[str, str] | None:
 
     # 2. ml_cat_id de costos_finales
     try:
-        row = await asyncio.to_thread(
-            db.fetch_one, "SELECT ml_cat_id FROM costos_finales WHERE sku=%s", (sku,)
-        )
+        if costing_write.activo():
+            row = await asyncio.to_thread(costing_read.finales, sku)
+        else:
+            row = await asyncio.to_thread(
+                db.fetch_one, "SELECT ml_cat_id FROM costos_finales WHERE sku=%s", (sku,)
+            )
     except Exception:  # noqa: BLE001
         row = None
     cat_id = (row or {}).get("ml_cat_id")
@@ -618,7 +635,11 @@ def datos_dinero(sku: str) -> dict[str, Any]:
     """Lee precio (costos_finales) y costos/dimensiones (costos_validados)."""
     salida: dict[str, Any] = {}
     try:
-        cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,))
+        if costing_write.activo():
+            cf, cv_kb = costing_read.detalle(sku)
+        else:
+            cf, cv_kb = db.fetch_one(
+                "SELECT * FROM costos_finales WHERE sku=%s", (sku,)), None
         if cf:
             salida.update({
                 "precio_base": cf.get("precio_base"),
@@ -630,7 +651,11 @@ def datos_dinero(sku: str) -> dict[str, Any]:
                 "costo_fee_envio": cf.get("costo_fee_envio"),
             })
         if not salida.get("peso") or not salida.get("largo"):
-            cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
+            # En kubera las dims viven SOLO en validados (el modelo v4 no las
+            # puso en finales), así que este segundo tramo no es un respaldo:
+            # es la única fuente de tamaño y peso.
+            cv = cv_kb if costing_write.activo() else db.fetch_one(
+                "SELECT * FROM costos_validados WHERE sku=%s", (sku,))
             if cv:
                 salida.setdefault("peso", cv.get("peso"))
                 salida.setdefault("largo", cv.get("largo"))
@@ -795,12 +820,22 @@ def _tiene_costo_base(sku: str) -> bool:
     Ante un fallo de lectura devuelve True (no bloquear por un tropiezo de la DB).
     """
     try:
-        cf = db.fetch_one(
-            "SELECT precio_sugerido, precio_base FROM costos_finales WHERE sku=%s", (sku,))
+        # PASO 0 (12-ago-2026): este es EL lector que decide. Una tabla
+        # congelada no dice "no tiene costo", dice "ya no sé", y aquí ese
+        # matiz frena una creación legítima. Medido antes de repuntar:
+        # 15,903 SKUs en MySQL, 15,903 en kubera, cero de diferencia en
+        # ambos sentidos.
+        if costing_write.activo():
+            cf, cv = costing_read.detalle(sku)
+        else:
+            cf = db.fetch_one(
+                "SELECT precio_sugerido, precio_base FROM costos_finales WHERE sku=%s", (sku,))
+            cv = None
         if cf and (cf.get("precio_sugerido") or cf.get("precio_base")):
             return True
-        cv = db.fetch_one(
-            "SELECT costo_total, costo_producto FROM costos_validados WHERE sku=%s", (sku,))
+        if not costing_write.activo():
+            cv = db.fetch_one(
+                "SELECT costo_total, costo_producto FROM costos_validados WHERE sku=%s", (sku,))
         if cv and (cv.get("costo_total") or cv.get("costo_producto")):
             return True
         return False

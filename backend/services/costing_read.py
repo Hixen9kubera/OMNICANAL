@@ -109,3 +109,38 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
             {where_sql} order by {orden_sql} limit %s offset %s""",
         tuple([CANAL] + params + [per_page, offset]))
     return rows, int(total)
+
+
+# ── Lotes para la vista Crear Productos (paso 0, 12-ago-2026) ───────────────
+# Gemelas de creacion._costos_por_sku / _contenedores_por_sku. Van en lotes de
+# 800 como las originales: el límite de placeholders es el mismo aquí.
+
+def costos_por_sku(skus: list[str]) -> dict[str, float]:
+    """{ sku: costo_unitario } (respaldo costo_producto), como el par MySQL."""
+    salida: dict[str, float] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        for r in sdb.fetch_all(
+            """select sku::text as sku, costo_unitario, costo_producto
+                 from costing.costos_finales
+                where sku = any(%s::citext[]) and canal = %s""",
+                (chunk, CANAL)):
+            costo = r.get("costo_unitario") or r.get("costo_producto")
+            if costo:
+                salida[r["sku"]] = float(costo)
+    return salida
+
+
+def contenedores_por_sku(skus: list[str]) -> dict[str, str]:
+    """{ sku: nº de contenedor } desde costing.costos_validados."""
+    salida: dict[str, str] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        for r in sdb.fetch_all(
+            """select sku::text as sku, contenedor
+                 from costing.costos_validados
+                where sku = any(%s::citext[])
+                  and nullif(contenedor, '') is not null""", (chunk,)):
+            if r.get("contenedor"):
+                salida[r["sku"]] = r["contenedor"]
+    return salida
