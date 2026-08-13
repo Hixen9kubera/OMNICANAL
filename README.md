@@ -8010,7 +8010,7 @@ con el envío interceptado: 24 h → 3 duplicados · 1 h → silencio.
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20. Versión 0.133.0.
 
-### v0.134.0 — El umbral que medía el paso del tiempo
+### v0.136.0 — El umbral que medía el paso del tiempo
 
 Primera verificación tras 14 h con los espejos apagados. **Los tres siguen
 congelados** —`costos_finales` 70 h, `pedidos_ml` 13.5 h, `canal_inventario`
@@ -8039,4 +8039,4 @@ número que se puede seguir: cuando el arreglo del barrido funcione, este númer
 baja; antes, solo subía porque pasaba el tiempo.
 
 Se conserva la marca más vieja en la salida, pero como DATO y no como umbral:
-si no cambia entre corridas, esa fila no la alcanza el barrido. Versión 0.134.0.
+si no cambia entre corridas, esa fila no la alcanza el barrido. Versión 0.136.0.
