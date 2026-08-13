@@ -308,18 +308,36 @@ kubera.
 
 ### Reglas que siguen vigentes
 
-1. **La BD kubera (`tukwcvsi…`) es PRODUCCIÓN OPERATIVA.** NO insertar datos de
-   prueba: las cobayas van al **SANDBOX (`yvootpbz…`)**, clon del esquema y
-   vacío a propósito. Se recrea con `supabase/migrations/` +
-   `backend/scripts/aplicar_migraciones.py`.
-2. **Staging apunta al sandbox** y tiene `SUPABASE_PROD_REF=tukwcvsi…`: el
+1. **La BD kubera (`tukwcvsi…`) es PRODUCCIÓN OPERATIVA.** Desde fuera de la
+   app se toca **SOLO CON `SELECT`**: nada de INSERT/UPDATE de prueba — las
+   cobayas van al sandbox.
+2. **El SANDBOX (`yvootpbz…`) LLEVA CLONES DE PRODUCCIÓN** (Eduardo, 12-ago;
+   la regla anterior decía "vacío a propósito" y **se cambió**). Ahí se prueba
+   y se verifica con datos que se parecen a los de verdad; sin eso, cualquier
+   cambio de UI o de SQL se valida a ciegas. El esquema se recrea con
+   `supabase/migrations/` + `backend/scripts/aplicar_migraciones.py`; los datos
+   se cargan con **`backend/scripts/clonar_a_sandbox.py`** (kubera → sandbox,
+   lectura en producción, dry-run por default). **Si el sandbox aparece vacío
+   ya no es intencional: hay que re-sembrarlo.**
+
+   `backend/scripts/sembrar_sandbox.py` quedó **OBSOLETO**: lee de MySQL —que
+   salió de la arquitectura— y solo cubre 3 tablas, sin `channel.listings` ni
+   `channel.orders`, que son las que alimentan la tabla de Análisis.
+
+   Mañas que costaron seis intentos y están resueltas en el script nuevo: el
+   DSN del `.env` apunta al pooler en **modo transacción (6543)**, que no
+   sostiene cursores con nombre ni transacciones largas — hay que usar el
+   **5432** del mismo host; y las 21 tablas se leen en **una sola
+   `REPEATABLE READ`**, porque producción está viva y en un intento se creó una
+   cuenta a media copia que rompió una llave foránea.
+3. **Staging apunta al sandbox** y tiene `SUPABASE_PROD_REF=tukwcvsi…`: el
    candado `validar_ambiente()` mata el arranque si staging o un local apuntan
    a producción. No "arreglarlo" — es la protección.
-3. **P4**: `costing.costos_finales` tiene PK `(sku, canal)`; hoy todo es
+4. **P4**: `costing.costos_finales` tiene PK `(sku, canal)`; hoy todo es
    `canal='mercado_libre'`. Toda consulta nueva filtra canal.
-4. **`etl_core_products.py`** (v1 full-refresh) está RETIRADO con candado —
+5. **`etl_core_products.py`** (v1 full-refresh) está RETIRADO con candado —
    usar `etl_core_products_v2.py` (incremental, dry-run por default).
-5. **dailytrackMeli (`xaxbkijc…`) DESAPARECIÓ** (v0.88.0): su hostname dejó de
+6. **dailytrackMeli (`xaxbkijc…`) DESAPARECIÓ** (v0.88.0): su hostname dejó de
    resolver. `services/supabase_rest.py` quedó huérfano y las variables
    `ANALYTICS_SUPABASE_*` ya no apuntan a nada vivo — ojo al borrarlas sin
    quitar el módulo (el fallback le pediría `products_snapshot` a kubera, donde
