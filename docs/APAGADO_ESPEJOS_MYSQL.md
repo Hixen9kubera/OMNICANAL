@@ -93,19 +93,31 @@ Tampoco corras a mano los scripts de mantenimiento que todavía leen MySQL —
 `sincronizar_ml_huerfanas`, `publicar_walmart`, `sync_odoo_woo_seguro`—
 sin repuntarlos antes: después del apagado leerían una foto detenida.
 
-## Un problema PREVIO que salió al medir (no lo causa el apagado)
+## Corrección: lo que se dijo del barrido estaba MAL medido
 
-El barrido de 15 minutos no le da la vuelta al catálogo: toca ~77
-publicaciones por hora y **2,890 publicaciones vivas llevan más de 7 días sin
-revisarse** (1,653 de ML y 1,237 de Amazon, el 64% de las vivas).
+La primera versión de este documento decía que el barrido de 15 minutos no le
+daba la vuelta al catálogo y que 2,890 publicaciones llevaban 7+ días sin
+revisarse. **Ese número no significaba eso.**
 
-No bloquea el apagado y conviene entender por qué: **el mismo barrido escribe
-las dos tablas**, la de kubera y el espejo, así que las dos están igual de
-viejas. Apagar la copia no cambia la frescura de nada.
+`channel.listings.updated_at` NO es "cuándo se revisó": es **"cuándo CAMBIÓ"**.
+El upsert lleva `where … is distinct from …`, así que el UPDATE solo dispara si
+el dato cambió, y el trigger solo entonces toca la fecha. Una publicación
+pausada con precio y stock estables se visita cada 15 minutos y conserva su
+fecha de hace diez días. Contarla como "sin revisar" es leer mal la columna.
 
-Nadie lo había visto porque todos miraban la revisión **más reciente**, que
-siempre se ve bien. El detector mira la **más vieja**. Queda como tarea aparte:
-revisar `SYNC_BATCH` y el orden del turno en `inventario.py`.
+**Nada de esto tiene que ver con el apagado de los espejos**, que sigue siendo
+correcto y verificado.
+
+**Pero al mirar el orden con la columna bien entendida, sí aparece un problema
+real**, y es otro: el turno del barrido (`inventario._lote_desde_ml`) se ordena
+por esa misma `updated_at`. Una publicación estable tiene la fecha más vieja →
+sale elegida → se visita → **como no cambió, su fecha no se mueve** → vuelve a
+salir elegida la ronda siguiente. La marca de "ya lo hice" no la pone el
+hacerlo.
+
+Arreglarlo pide una columna `last_seen_at` que se escriba en CADA visita, pase
+lo que pase con el dato. Esa misma columna es la única forma de medir la
+cobertura del barrido, que hoy **no es medible** desde la base.
 
 ## Dónde está el detalle
 

@@ -36,9 +36,26 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Cada latido: (nombre, horas_de_gracia, qué significa si se pasa)
-# Una vuelta completa al catálogo. 72 h es holgado: el stock y el precio de una
-# publicación no deberían quedarse sin mirar más de tres días.
-_CICLO_MAX_H = 72
+# ⚠️ ESTE LATIDO NO SE PUEDE MEDIR HOY — leer antes de reactivarlo.
+#
+# `channel.listings.updated_at` NO es "cuándo se revisó": es "cuándo CAMBIÓ".
+# El upsert de channel_mirror lleva `where … is distinct from …`, así que el
+# UPDATE solo dispara si el dato cambió, y `trg_touch_listings` (BEFORE UPDATE)
+# solo entonces toca la fecha. Una publicación pausada con precio y stock
+# estables puede visitarse cada 15 min y conservar la fecha de hace diez días.
+#
+# Sobre esa columna se construyeron DOS métricas equivocadas el 13-ago-2026:
+# primero un tope de antigüedad (que además crecía con el reloj) y después un
+# "ciclo completo" — las dos leían "no lo han revisado" donde el dato decía
+# "no ha cambiado". No hay ninguna columna que registre la VISITA, así que la
+# cobertura del barrido hoy NO es medible desde la base.
+#
+# Para medirla hace falta un `last_seen_at` que se escriba en cada visita, pase
+# lo que pase con el dato. Ese mismo campo arregla de paso el turno del barrido
+# (`inventario._lote_desde_ml`), que hoy ordena por `updated_at` y por eso se
+# atora: visitar una publicación estable no mueve su lugar en la fila, así que
+# vuelve a salir elegida en la ronda siguiente, para siempre.
+_MIDE_COBERTURA = False
 
 UMBRALES = {
     # `turno_sync` ya NO se mide por antigüedad. La primera versión ponía un tope
@@ -104,18 +121,12 @@ def main() -> None:
                         count(*) filter (where updated_at < now() - interval '7 days') viejas
                    from channel.listings where canal in ('mercado_libre','amazon')""")
     r = c.fetchone()
-    ritmo = (r["ultimas_3h"] or 0) / 3.0          # publicaciones por hora
-    ciclo = (r["total"] / ritmo) if ritmo else 9999
-    ok = ciclo <= _CICLO_MAX_H
-    todo_ok &= ok
-    print(f"  [{'OK  ' if ok else 'ALTO'}] turno_sync   una vuelta completa "
-          f"tardaría {ciclo:.0f} h (tope {_CICLO_MAX_H} h) · {ritmo:.0f}/h "
-          f"sobre {r['total']} publicaciones")
-    if not ok:
-        print(f"         → a este ritmo {r['viejas']} publicaciones llevan 7+ días "
-              f"sin revisarse. Revisar SYNC_BATCH y el orden del turno.")
-    print(f"         marca más vieja: {r['mas_vieja']:%Y-%m-%d %H:%M} — si NO cambia "
-          f"entre corridas, esa fila no la alcanza el barrido")
+    print(f"  [ n/d] turno_sync   {r['ultimas_3h']} publicaciones CAMBIARON en 3 h "
+          f"de {r['total']}")
+    print(f"         (no es cobertura: updated_at dice cuándo CAMBIÓ el dato, no "
+          f"cuándo se revisó — ver la nota de _MIDE_COBERTURA)")
+    if not _MIDE_COBERTURA:
+        pass  # este latido no entra al veredicto hasta que exista `last_seen_at`
 
     c.execute("select max(creado_at) t from channel.orders")
     todo_ok &= _linea("pedidos", c.fetchone()["t"])
