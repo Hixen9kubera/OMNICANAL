@@ -7448,6 +7448,49 @@ Queda como el último pendiente antes de poder apagar `costos_*` en MySQL.
 
 Versión 0.121.0.
 
+### v0.123.0 — Se cierran los dos huecos que dejó el incidente de los fantasma
+
+Cola del 12-ago. Limpiar los 964 pedidos fantasma y reactivar el espejo dejó dos
+cosas a medias que ningún proceso cierra solo.
+
+**1. El registro apuntaba a pedidos en la papelera (145 filas).** Durante el
+incidente cada orden de ML generó decenas de pedidos en Woo; `channel.orders`
+guarda UNA fila por orden, así que su `wc_order_id` quedó apuntando al ÚLTIMO
+fantasma creado. La limpieza conservó el MÁS ANTIGUO —el que tiene la historia
+real y el stock— y mandó el resto a la papelera.
+
+No era cosmético: el candado de idempotencia lee ese `wc_order_id`, así que el
+próximo cambio de estado del canal se habría escrito sobre el pedido muerto.
+`repuntar_channel_orders_wc.py` lo devuelve al superviviente (el no-papelera más
+antiguo de la misma orden). Sin sustituto NO se toca la fila: es preferible un
+puntero roto y visible a uno inventado. Aplicadas 145, sin sustituto 0.
+
+**2. El espejo tenía un hueco de 143 pedidos.** Reactivar
+`ORDERS_ESPEJO_INVERSO` reanudó la escritura HACIA ADELANTE pero no rellenó
+hacia atrás (en la ventana congelada kubera registró 446 movimientos y MySQL 3).
+Importa aunque MySQL ya no sea el registro: `wc_order_id_previo` cae a MySQL si
+kubera no responde, y para esos 143 habría contestado "no existe" — el mismo
+fallo del 12-ago esperando otro disparador. `backfill_pedidos_ml.py` los escribe
+con el MISMO `ON DUPLICATE KEY UPDATE` del flujo vivo, candado de importes
+incluido (comisión y total solo admiten 0 → valor real).
+
+**El orden importaba**: el backfill DESPUÉS del repunte, o se habrían propagado
+los 145 punteros muertos también al espejo.
+
+Los dos scripts calculan su diff en cada corrida — idempotentes y
+auto-verificables, correrlos de nuevo da cero —, ensayo en seco por defecto,
+`--real` para aplicar, y transacción única que revierte todo ante un fallo.
+
+Verificado aparte de la salida de los scripts: 0 de 14,919 filas apuntando a
+papelera, kubera 14,919 = MySQL 14,919, y los repuntados apuntan a pedidos vivos
+con el espejo coincidiendo.
+
+Pendientes de la auditoría, sin urgencia mientras los espejos estén encendidos:
+`sync_woo.py:51` (empuja costo a TODO el catálogo leyendo MySQL, sin camino a
+kubera) y `crear_producto.py:583` (la categoría ML al publicar). Versión 0.123.0.
+
+---
+
 ### v0.122.0 — 401 SKUs recuperan sus dimensiones en kubera
 
 Corrección a la conclusión de la v0.121.0: **a esos 474 SKUs no les faltaba el
