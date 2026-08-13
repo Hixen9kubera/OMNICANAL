@@ -19,6 +19,7 @@ legadas — no son equivalentes; 'general' se unifica en el corte (F6).
 """
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Any
 
 from services import supabase_db as sdb
@@ -98,3 +99,45 @@ def resumen_por_canal() -> list[dict[str, Any]]:
                     and l.price is null and l.stock_own is null
                     and l.logistic_type is null)
          group by 1, 2""", (list(CANALES),))
+
+
+# ── Gemelas del SYNC de ML (repunte del paso 0, 12-ago-2026) ──────────────────
+# `_lote_desde_ml` decidía la rotación y el barrido de cierre leyendo
+# `canal_inventario`. Con el espejo congelado el barrido NUNCA se auto-termina:
+# las filas siguen 'active' en MySQL y vuelven a colarse en cada ronda. Estas
+# dos leen de donde el sync ESCRIBE hoy (channel.listings).
+#
+# Las fechas vuelven NAIVE en UTC a propósito: el llamador ordena comparando
+# contra datetime(1970,1,1), y mezclar aware con naive revienta el sort.
+
+def vistos_ml(cuenta: str) -> dict[str, Any]:
+    """{ item_id: updated_at (naive UTC) } de las publicaciones ML de la cuenta."""
+    filas = sdb.fetch_all(
+        """select l.listing_id as item_id, l.updated_at
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre' and a.legacy_code = %(c)s
+              and nullif(l.listing_id, '') is not null""",
+        {"c": cuenta})
+    out: dict[str, Any] = {}
+    for f in filas:
+        ts = f.get("updated_at")
+        out[str(f["item_id"])] = (
+            ts.astimezone(timezone.utc).replace(tzinfo=None) if ts else None)
+    return out
+
+
+def vivas_ml(cuenta: str) -> list[str]:
+    """item_id de las publicaciones ML que el registro cree VIVAS (active/paused).
+
+    Es el insumo del barrido de cierre: lo que está aquí y ya no está en el
+    catálogo de ML necesita que se le lea su estado final.
+    """
+    return [str(f["item_id"]) for f in sdb.fetch_all(
+        """select l.listing_id as item_id
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre' and a.legacy_code = %(c)s
+              and lower(l.situacion) in ('active', 'paused')
+              and nullif(l.listing_id, '') is not null""",
+        {"c": cuenta})]

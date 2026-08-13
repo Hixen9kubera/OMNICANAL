@@ -252,14 +252,13 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     ids = await _universo_ml(cli, cuenta, token)
     if not ids:
         return []
+    # PASO 0 del desmantelamiento (12-ago-2026): la rotación se ordena con
+    # `channel.listings`, que es donde este mismo sync escribe. Leerlo del
+    # espejo MySQL funcionaba solo mientras el espejo estuviera fresco.
     vistos: dict[str, Any] = {}
     try:
-        for r in db.fetch_all(
-            """SELECT item_id, updated_at FROM canal_inventario
-               WHERE canal='mercado_libre' AND cuenta=%s AND item_id IS NOT NULL""",
-            (cuenta,),
-        ):
-            vistos[str(r["item_id"])] = r["updated_at"]
+        from services import channel_read
+        vistos = channel_read.vistos_ml(cuenta)
     except Exception:  # noqa: BLE001 — sin cache de vistos el orden degrada, no rompe
         pass
     from datetime import datetime
@@ -275,16 +274,13 @@ async def _lote_desde_ml(cli: httpx.AsyncClient, cuenta: str, token: str,
     # inactive/deleted como el caso CUNA-0011-AZL) y al escribirse dejan de
     # cumplir el filtro → el barrido se auto-termina. Acotado por ronda para
     # no inflar el lote.
+    # Insumo desde `channel.listings` (paso 0): con el espejo MySQL congelado
+    # este barrido NO se auto-terminaba — las filas seguían 'active' ahí para
+    # siempre y volvían a colarse en cada ronda, desplazando trabajo real.
     try:
+        from services import channel_read
         universo = set(ids)
-        congeladas = [
-            str(r["item_id"]) for r in db.fetch_all(
-                """SELECT item_id FROM canal_inventario
-                   WHERE canal='mercado_libre' AND cuenta=%s
-                     AND situacion IN ('active','paused') AND item_id IS NOT NULL""",
-                (cuenta,))
-            if str(r["item_id"]) not in universo
-        ]
+        congeladas = [i for i in channel_read.vivas_ml(cuenta) if i not in universo]
         if congeladas:
             log.info("barrido de cierre %s: %d fila(s) viva(s) sin publicación "
                      "en el catálogo — se les lee el estado final", cuenta,

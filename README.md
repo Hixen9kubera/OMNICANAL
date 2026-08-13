@@ -7323,3 +7323,45 @@ Queda en el archivo un detalle que no es de la migración: `fanout_log`, la
 bitácora propia del fan-out, sigue en MySQL y así se queda.
 
 Versión 0.118.0.
+
+### v0.119.0 — El sync de ML deja de consultarse en el espejo
+
+Segundo lector del **paso 0**. `_lote_desde_ml` decidía dos cosas leyendo
+`canal_inventario` — la misma tabla que ese sync escribe:
+
+- **la rotación**: qué publicaciones tocan esta ronda (lo nunca visto primero,
+  luego lo más rancio);
+- **el barrido de cierre**: filas que el registro cree vivas (`active`/`paused`)
+  cuyo item ya no está en el catálogo de ML, para leerles su estado final.
+
+El segundo es el que se degradaba feo con el espejo congelado. El barrido está
+diseñado para **auto-terminarse**: al escribir el estado final, la fila deja de
+cumplir el filtro y no vuelve a salir. Con la tabla detenida esa escritura nunca
+llegaba, así que las mismas publicaciones se colaban en cada ronda para siempre,
+desplazando trabajo real del lote.
+
+Ahora ambos leen `channel.listings` vía dos gemelas nuevas en `channel_read`:
+`vistos_ml(cuenta)` y `vivas_ml(cuenta)`.
+
+**Las fechas vuelven NAIVE en UTC a propósito.** `channel.listings.updated_at`
+es `timestamptz` y el llamador ordena comparando contra `datetime(1970,1,1)`:
+mezclar aware con naive lanza `TypeError` y habría tumbado la rotación del sync
+en la primera ronda. Se normaliza en `channel_read` para que el llamador no
+cambie.
+
+**Medido antes de subirlo**, por cuenta:
+
+| | vistos (MySQL / kubera) | vivas (MySQL / kubera) |
+|---|---|---|
+| BEKURA | 2,227 / 2,228 | **2,127 / 2,127** |
+| SANCORFASHION | 2,273 / 2,272 | **2,157 / 2,157** |
+
+`vivas` —el insumo con consecuencia— coincide exacto en ambas cuentas. Las
+diferencias de ±1 en `vistos` son el espejo yendo un hilo atrás, y ese dato solo
+ordena prioridad. El `sorted` real del llamador se ejecutó contra las fechas de
+kubera sin reventar.
+
+Se conserva el `try/except` que ya tenían: si kubera no responde, la rotación
+degrada a orden arbitrario y el barrido se salta esa ronda — nunca frena el sync.
+
+Versión 0.119.0.
