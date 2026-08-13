@@ -404,14 +404,23 @@ def _up_process_log(cur, p: dict[str, Any]) -> None:
         if cur.fetchone():
             return
     detalle = p.get("detalle")
+    # `creado`: la hora del EVENTO, no la de esta escritura. Sin esto,
+    # created_at guardaba el now() del espejo — para el camino normal da igual
+    # (corre en un hilo, décimas), pero un evento reprocesado desde
+    # `espejo_kubera_log` entra HORAS después. El 12-ago-2026 había 60 filas
+    # así, la peor con 17.6 h de desfase, y como el historial busca el ÚLTIMO
+    # evento de cada SKU, esas filas se colaban al frente e invertían el estado
+    # de 50 SKUs: productos terminados que el panel mostraba "procesando".
+    # Si el llamador no la manda, el default de la columna sigue aplicando.
     cur.execute(
         """insert into ops.process_log
-             (proceso, origen, sku, accion, estado, detalle, detail_ref, duracion_s)
-           values (%s,%s,%s,%s,%s,%s::jsonb,%s,%s)""",
+             (proceso, origen, sku, accion, estado, detalle, detail_ref,
+              duracion_s, created_at)
+           values (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,coalesce(%s, now()))""",
         (p.get("proceso") or "desconocido", p.get("origen") or "backend",
          p.get("sku"), p.get("accion"), p.get("estado"),
          json.dumps(detalle, ensure_ascii=False, default=str) if detalle is not None else None,
-         detail_ref, p.get("duracion_s")),
+         detail_ref, p.get("duracion_s"), p.get("creado")),
     )
 
 

@@ -7866,3 +7866,47 @@ revisar—, con la explicación de por qué no bloquea el apagado (las dos tabla
 están igual de viejas, las escribe el mismo barrido).
 
 CLAUDE.md apunta al procedimiento desde la sección de migración. Versión 0.131.0.
+
+### v0.132.0 — La bitácora de creación se muda a kubera (y traía la hora mal)
+
+`crear_logs` era la última bitácora en MySQL. Ya se espejaba a
+`ops.process_log`, así que parecía un repunte de trámite. No lo fue: al medir
+salieron tres cosas.
+
+**1. Faltaba la primera semana.** `crear_logs` arrancó el 15-jul y el espejo se
+encendió el 23. Esas **378 filas** nunca viajaron. Cargadas.
+
+**2. El `wc_id` se perdía en el camino.** El espejo lo excluye del detalle
+(`{k: v for k, v in extra.items() if k != "wc_id"}`) y `ops.process_log` no
+tiene esa columna. Pero `/auditoria` lo necesita: es con lo que le pregunta a
+WooCommerce si el producto sigue vivo. **1,629 filas rellenadas** y el espejo
+corregido para que ya no lo tire.
+
+El relleno destapó un clásico: `not (detalle ? 'wc_id')` sobre un `detalle`
+NULO devuelve NULL, no TRUE, así que esas filas se caían del WHERE en silencio.
+Y eran justo las que más importaban — el espejo guarda `detalle` nulo cuando lo
+único que traía era el wc_id que él mismo excluye. El primer intento rellenó
+503 de 2,132.
+
+**3. Y la peor: `created_at` guardaba la hora de la ESCRITURA DEL ESPEJO, no la
+del evento.** Para el camino normal da igual (décimas de diferencia), pero un
+evento reprocesado desde `espejo_kubera_log` entra horas después. **60 filas con
+más de 1 h de desfase, la peor con 17.6 h.**
+
+No es cosmético: el historial busca el ÚLTIMO evento de cada SKU, así que una
+fila con la hora equivocada se cuela al frente. Medido con el arnés de paridad:
+**invertía el estado de 50 SKUs** — productos terminados que el panel mostraba
+"procesando", y 49 que no aparecían al filtrar por "completado". Corregidas las
+60, y `kubera_mirror` ahora recibe la hora del evento para que no vuelva a
+pasar.
+
+**Las gemelas** (`bitacora_read`) ordenan por FECHA, no por id. En MySQL el id
+era monotónico; en kubera es una secuencia, y el backfill cargó julio DESPUÉS de
+todo agosto — ordenar por id habría mostrado julio como "lo último".
+
+Paridad final contra el par MySQL, **10 de 10**: mismo total (275), mismos SKUs,
+mismo estado por SKU (0 difieren), mismo wc_id (0 difieren), mismos conteos
+filtrando por estado, mismo historial por SKU, y los 270 completados de
+`/auditoria` con su wc_id.
+
+Pruebas sandbox: 15/15 · 11/11 · 20/20 · 5/5 · 12/12. Versión 0.132.0.

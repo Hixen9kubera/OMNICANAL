@@ -17,6 +17,7 @@ El avance se consulta en GET /api/crear/progreso (cola en memoria).
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import base64
 import json
 import logging
@@ -105,10 +106,18 @@ def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> N
         kubera_mirror.espejar(
             "services/crear_producto.py", "_persistir_log",
             "crear_logs", "ops.process_log", "INSERT",
+            # El wc_id viaja DENTRO del detalle: ops.process_log no tiene esa
+            # columna y sin él /auditoria no puede preguntarle a WooCommerce si
+            # el producto sigue vivo. Se excluía por error hasta el 12-ago-2026
+            # (1,629 filas se rellenaron con backfill_crear_logs.py).
             {"proceso": "crear", "origen": "backend", "sku": sku,
              "accion": (paso or "")[:255], "estado": estado,
-             "detalle": detalle or None,
-             "detail_ref": f"mysql:crear_logs:{log_id}" if log_id else None},
+             "detalle": ({**detalle, "wc_id": extra["wc_id"]}
+                         if extra.get("wc_id") else (detalle or None)),
+             "detail_ref": f"mysql:crear_logs:{log_id}" if log_id else None,
+             # La hora del evento, para que un reproceso tardío de la cola no
+             # se cuele como "lo más reciente" del SKU.
+             "creado": datetime.now(timezone.utc)},
             clave=sku)
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo escribir crear_logs(%s): %s", sku, exc)

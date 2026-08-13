@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field
 from config import settings
 from core.seguridad import requiere_api_key
 from models.schemas import Paginacion, Producto, RespuestaProductos
-from services import (alertas, categorias_write, core_write, costing_read, costos,
+from services import (alertas, bitacora_read, categorias_write, core_write, costing_read, costos,
                       creacion, crear_producto, db, kubera_mirror, lecturas_fuente,
                       woocommerce)
 
@@ -215,6 +215,20 @@ def historial(
     Historial de creaciones: una fila por SKU con su ÚLTIMO evento registrado
     en crear_logs. Sobrevive a los deploys (los logs de Railway se purgan).
     """
+    # PASO 0 (12-ago-2026): la bitácora primaria es ops.process_log. `crear_logs`
+    # se congela con el espejo y serviría un historial detenido — en una vista
+    # que existe justamente para sobrevivir a los deploys, eso es peor que un
+    # error. Paridad medida antes de repuntar: 2,583 filas en las dos, 2,510
+    # con wc_id en las dos.
+    if settings.supabase_write_core:
+        items, total = bitacora_read.historial(page, per_page, sku, estado, dias)
+        lecturas_fuente.anotar("bitacora", "kubera")
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return {"items": [{**r, "detalle": _parse_detalle(r.get("detalle"))} for r in items],
+                "paginacion": {"page": page, "per_page": per_page, "total": total,
+                               "total_pages": total_pages,
+                               "tiene_anterior": page > 1,
+                               "tiene_siguiente": page < total_pages}}
     crear_producto.asegurar_schema_logs()  # la tabla puede no existir aún (deploy nuevo)
     where, params = ["creado >= UTC_TIMESTAMP() - INTERVAL %s DAY"], [dias]
     if sku:
@@ -254,10 +268,14 @@ def historial_sku(
     limite: int = Query(100, ge=1, le=500),
 ):
     """Todos los eventos de creación de UN SKU (más recientes primero)."""
-    crear_producto.asegurar_schema_logs()
-    rows = db.fetch_all(
-        "SELECT id, wc_id, estado, paso, detalle, creado FROM crear_logs "
-        "WHERE sku=%s ORDER BY id DESC LIMIT %s", (sku, limite))
+    if settings.supabase_write_core:
+        rows = bitacora_read.historial_sku(sku, limite)
+        lecturas_fuente.anotar("bitacora", "kubera")
+    else:
+        crear_producto.asegurar_schema_logs()
+        rows = db.fetch_all(
+            "SELECT id, wc_id, estado, paso, detalle, creado FROM crear_logs "
+            "WHERE sku=%s ORDER BY id DESC LIMIT %s", (sku, limite))
     if not rows:
         raise HTTPException(404, f"No hay historial de creación para {sku}")
     return {"sku": sku,
@@ -272,14 +290,18 @@ async def auditoria_creaciones(dias: int = Query(30, ge=1, le=365)):
     existiendo. Distingue 'papelera' (recuperable) de 'eliminado' (borrado
     definitivo o wc_id inexistente).
     """
-    crear_producto.asegurar_schema_logs()
-    rows = db.fetch_all(
-        """SELECT l.sku, l.wc_id, l.paso, l.creado
-           FROM crear_logs l
-           JOIN (SELECT sku, MAX(id) AS max_id FROM crear_logs
-                 WHERE estado='completado'
-                   AND creado >= UTC_TIMESTAMP() - INTERVAL %s DAY
-                 GROUP BY sku) u ON u.max_id = l.id""", (dias,))
+    if settings.supabase_write_core:
+        rows = bitacora_read.completados(dias)
+        lecturas_fuente.anotar("bitacora", "kubera")
+    else:
+        crear_producto.asegurar_schema_logs()
+        rows = db.fetch_all(
+            """SELECT l.sku, l.wc_id, l.paso, l.creado
+               FROM crear_logs l
+               JOIN (SELECT sku, MAX(id) AS max_id FROM crear_logs
+                     WHERE estado='completado'
+                       AND creado >= UTC_TIMESTAMP() - INTERVAL %s DAY
+                     GROUP BY sku) u ON u.max_id = l.id""", (dias,))
     creados = [r for r in rows if r.get("wc_id")]
     sin_wc_id = [r["sku"] for r in rows if not r.get("wc_id")]
 
