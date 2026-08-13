@@ -7406,3 +7406,44 @@ el flete por volumen. Necesita un backfill previo a `costing.costos_validados`
 — queda anotado como el último pendiente del paso 0.
 
 Pruebas sandbox `probar_retiro_costing_orders.py`: 11/11. Versión 0.120.0.
+
+### v0.121.0 — Backfill de dims, y el bloqueador real para apagar MySQL
+
+`backend/scripts/backfill_dims_validados.py`: rescata a
+`costing.costos_validados` las dimensiones que solo vivían en el MySQL de
+`costos_finales`. Aplicado: **36 filas**, todas a las que solo les faltaba
+`peso`, rellenando NULOS y sin pisar un solo valor existente.
+
+Dos cosas que el script deja documentadas porque cambian la conclusión:
+
+**El `peso` que se copió es VOLUMÉTRICO, no medido.** Las 36 filas dan
+exactamente 0.17 kg/L — se derivó del volumen. No es ideal, pero es el mismo
+valor que el código ya usaba vía el respaldo, así que copiarlo preserva el
+comportamiento en vez de empeorarlo.
+
+**El 14% de los candidatos trae peso de CAJA MASTER como pieza** y se descarta
+con una guarda de densidad > 1.5 kg/L (`mue-0064`: 12×10×10 cm y 224 kg = 185
+kg/L). Copiar eso habría inflado el flete por volumen.
+
+**Y el hallazgo que importa: el bloqueador no eran las dims.** De los 514
+candidatos, 474 **no tienen fila de costo en kubera en absoluto**:
+
+| | |
+|---|---|
+| existen en `core.products` | 474 (son productos reales) |
+| con publicación VIVA en algún canal | **122** |
+| con `costo_producto` capturado solo en MySQL | 474 |
+
+No les falta el tamaño: les falta la semilla de costeo completa. Por eso el
+respaldo de `_preparar_base` **sigue en pie** — quitarlo hoy dejaría 122 SKUs
+vendiéndose sin poder recalcular su costo.
+
+El script NO los inserta a propósito: una fila con dims y sin costo hace que
+`costo_desde_validados` devuelva `costo_total = 0`, y un "cuesta cero" es peor
+que un "no sé" — es justo la clase de error que este paso 0 corrige.
+
+Reconstruir esas 474 filas desde `costos_finales` es una decisión de negocio
+(qué significa "validado" para un costo derivado), no un movimiento mecánico.
+Queda como el último pendiente antes de poder apagar `costos_*` en MySQL.
+
+Versión 0.121.0.
