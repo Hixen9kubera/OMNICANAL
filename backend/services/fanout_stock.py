@@ -295,6 +295,17 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
             # conserva la pausa (ver `_escribir_ml`). Sin ese blindaje ML la
             # reactivaría, que es lo que bloqueaba estas 2,278 publicaciones.
             pass
+        elif canal == "tiktok":
+            # TikTok no cabe en `_SITUACIONES_VIVAS`, y forzarlo habría sido un
+            # error silencioso: su `situacion` es el veredicto de la AUDITORÍA
+            # (APPROVED/FAILED/NONE/PRE_APPROVED) y quien dice si está a la venta
+            # es `status` (ACTIVATE). Hoy APPROVED coincide con ACTIVATE en las
+            # 900 publicaciones, pero es coincidencia del dato, no una regla:
+            # meter "approved" en la lista de vivas ataba el fan-out a esa
+            # casualidad. Se mira `estado_canal`, que es el campo que manda.
+            if str(f.get("estado_canal") or "").upper() != "ACTIVATE":
+                motivo = (f"status={f.get('estado_canal') or 'desconocido'} — "
+                          "no está a la venta en TikTok")
         elif situacion not in _SITUACIONES_VIVAS:
             motivo = f"situacion={situacion or 'desconocida'} (escribirle la REACTIVARÍA)"
         elif not identificador:
@@ -440,9 +451,81 @@ def _escribir_amazon(cuenta: str, sku: str, cantidad: int) -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {exc}"
 
 
-_ESCRITORES = {"mercado_libre": _escribir_ml, "amazon": _escribir_amazon}
-# temu / tiktok: se suman aquí cuando su escritura por M2E esté probada. En
-# dry-run igual aparecen en el plan, así se ve el alcance completo.
+def _en_hilo(corutina_factory, etiqueta: str, timeout: int = 60):
+    """
+    Corre una corrutina desde contexto SÍNCRONO, haya o no un loop activo.
+
+    Es el mismo puente que `_token_amazon` documentó tras la auditoría del
+    27-jul: `asyncio.run()` revienta si YA hay un event loop corriendo, y el
+    fan-out corre dentro del AsyncIOScheduler. Extraído para no tenerlo escrito
+    dos veces con la mitad del comentario.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(corutina_factory())
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(corutina_factory())).result(timeout=timeout)
+
+
+def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
+    """
+    Actualiza el stock de UN producto en TikTok Shop.
+
+    DOS COSAS QUE TIKTOK EXIGE Y QUE NO SE PUEDEN ADIVINAR:
+
+    1. **El identificador de la variante (`sku_id`), no el `seller_sku`.** El
+       endpoint es `/product/202309/products/{product_id}/inventory/update` y
+       dentro pide `skus[].id`, que es un id propio de TikTok. `channel.listings`
+       no tiene columna para guardarlo (el censo sí lo traía), así que se lee del
+       propio producto antes de escribir — una llamada más, pero siempre
+       correcta: si TikTok recreó la variante, el id nuevo se toma solo.
+    2. **El `warehouse_id` de VENTAS.** Hay dos almacenes y el otro es el de
+       devoluciones; escribirle stock a ese no da error y no vende nada.
+    """
+    from services import tiktok as tk
+
+    if not item_id:
+        return False, "sin product_id de TikTok"
+    token, cipher = tk.access_token(), tk.cipher()
+    if not (token and cipher):
+        return False, "TikTok sin token o sin shop_cipher"
+    try:
+        detalle = _en_hilo(
+            lambda: tk.llamar(f"/product/202309/products/{item_id}", token,
+                              {"shop_cipher": cipher}),
+            "detalle tiktok")
+        skus = detalle.get("skus") or []
+        if not skus:
+            return False, "el producto no tiene variantes en TikTok"
+        sku_id = str(skus[0].get("id") or "")
+        if not sku_id:
+            return False, "la variante de TikTok no trae id"
+        cuerpo = {"skus": [{"id": sku_id,
+                            "inventory": [{"warehouse_id": _ALMACEN_VENTAS_TIKTOK,
+                                           "quantity": int(cantidad)}]}]}
+        _en_hilo(
+            lambda: tk.llamar(f"/product/202309/products/{item_id}/inventory/update",
+                              token, {"shop_cipher": cipher}, cuerpo, "POST"),
+            "inventario tiktok")
+        return True, f"ok ({cantidad})"
+    except Exception as exc:  # noqa: BLE001
+        # `tiktok.llamar` ya traduce el `code` del cuerpo a excepción: TikTok
+        # responde HTTP 200 aunque haya fallado, y confundirlos es el error
+        # clásico con esta API.
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+# El de VENTAS. El otro almacén de la tienda es el de DEVOLUCIONES: escribirle
+# stock no da error y no vende nada.
+_ALMACEN_VENTAS_TIKTOK = "7647893424175580935"
+
+_ESCRITORES = {"mercado_libre": _escribir_ml, "amazon": _escribir_amazon,
+               "tiktok": _escribir_tiktok}
+# temu: se suma aquí cuando su escritura esté probada. En dry-run igual aparece
+# en el plan, así se ve el alcance completo.
 
 
 # ── Núcleo: calcular el plan de un SKU ───────────────────────────────────────
@@ -475,6 +558,14 @@ def plan(sku: str) -> dict[str, Any]:
         elif canales_ok is not None and (d["canal"] or "").lower() not in canales_ok:
             accion["accion"] = "omitir"
             accion["omitido_por"] = f"canal '{d['canal']}' no habilitado en FANOUT_CANALES"
+        elif (d["canal"] or "").lower() == "tiktok" and not settings.fanout_tiktok:
+            # Candado propio, además de FANOUT_CANALES. El escritor ESTÁ hecho y
+            # probado; lo que falta es la decisión de encenderlo, y encender
+            # escrituras a un marketplace vivo no puede ser efecto secundario de
+            # un deploy.
+            accion["accion"] = "omitir"
+            accion["omitido_por"] = ("FANOUT_TIKTOK apagado — el escritor está "
+                                     "listo, falta encenderlo")
         elif (d["canal"] or "").lower() not in _ESCRITORES:
             accion["accion"] = "omitir"
             accion["omitido_por"] = f"sin escritor implementado para '{d['canal']}'"

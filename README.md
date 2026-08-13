@@ -8034,6 +8034,50 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.146.0 — El fan-out ya sabe escribirle a TikTok (y no lo hace todavía)
+
+Última de las seis etapas. `_escribir_tiktok` entra en `_ESCRITORES`, y con eso
+TikTok deja de ser un destino que se descarta por *"sin escritor implementado"*.
+
+**Dos cosas que TikTok exige y no se pueden adivinar:**
+
+1. **El `sku_id` de la variante, no el `seller_sku`.** El endpoint es
+   `/product/202309/products/{product_id}/inventory/update` y dentro pide
+   `skus[].id`, un id propio de TikTok. `channel.listings` no tiene columna para
+   guardarlo, así que se lee del producto antes de escribir: una llamada más,
+   pero siempre correcta — si TikTok recreó la variante, el id nuevo se toma
+   solo.
+2. **El almacén de VENTAS.** La tienda tiene dos y el otro es el de
+   devoluciones: escribirle stock ahí no da error y no vende nada.
+
+**El bug que se evitó mirando antes de escribir.** `_destinos` decidía si una
+publicación está viva con `situacion`, y en TikTok esa columna guarda el
+veredicto de la **auditoría** (`APPROVED`/`FAILED`/`NONE`/`PRE_APPROVED`), no si
+está a la venta — eso lo dice `status` (`ACTIVATE`). Con la lógica de ML, el
+canal entero se habría descartado con *"situación desconocida"*. Hoy `APPROVED`
+coincide con `ACTIVATE` en las 900 publicaciones, así que meter `"approved"` en
+la lista de vivas habría *funcionado*… atado a una casualidad del dato. Se
+agregó `estado_canal` a `channel_read` y se mira el campo que manda.
+
+**Nace con interruptor propio, `FANOUT_TIKTOK`, aparte de `FANOUT_CANALES`.**
+El valor de esa lista no se puede leer desde fuera de Railway, así que si TikTok
+dependiera solo de ella, un deploy podría **encender escrituras a un marketplace
+vivo sin que nadie lo hubiera decidido**. Con el flag propio el deploy es inerte
+y encenderlo es un acto explícito; para escribir hacen falta las dos cosas.
+
+Probado con una diferencia de stock simulada (sin tocar Woo ni TikTok):
+
+```
+FANOUT_TIKTOK=false → omitir   "el escritor está listo, falta encenderlo"
+FANOUT_TIKTOK=true  → escribir
+```
+
+Y un dato tranquilizador del plan real: en los SKUs medidos, TikTok ya tiene
+**exactamente** el stock de WooCommerce (7,200 · 4,890 · 156 · 144), así que
+encenderlo no va a provocar una avalancha de correcciones.
+
+Versión 0.146.0.
+
 ### v0.145.0 — La venta de TikTok se vuelve pedido
 
 El receptor de `/api/webhooks/tiktok` existía desde la v0.104.0 y estaba en modo

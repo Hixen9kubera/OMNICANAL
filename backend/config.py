@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # y contabilidad: los pedidos de TikTok DESCUENTAN stock, porque la
     # mercancía sale de nuestra bodega.
     pedidos_tiktok_enabled: bool = False
+    # ¿El fan-out ESCRIBE stock en TikTok? Interruptor propio, aparte de
+    # `FANOUT_CANALES`, y a propósito: el valor de esa lista no se puede leer
+    # desde fuera de Railway, así que si TikTok dependiera solo de ella un deploy
+    # podría encender escrituras a un marketplace vivo sin que nadie lo hubiera
+    # decidido. Con este flag el deploy es INERTE y encenderlo es un acto
+    # explícito. Para escribir hacen falta las dos cosas.
+    fanout_tiktok: bool = False
 
     # ── Creación de productos (Alibaba → Woo) ─────────────────
     apify_api_key: str = ""

@@ -43,6 +43,12 @@ _SEL = """
            l.stock_fba,
            (case when l.is_fulfillment then 1 else 0 end) as es_full,
            l.logistic_type as logistica, l.situacion, l.currency as moneda,
+           -- `estado_canal` es `status`, que NO es lo mismo que `situacion`. En
+           -- TikTok `status` dice si el producto está a la venta (ACTIVATE) y
+           -- `situacion` dice cómo salió de la auditoría (APPROVED/FAILED): el
+           -- fan-out necesita el primero, y sin esta columna leía el segundo y
+           -- descartaba todo el canal por "situación desconocida".
+           l.status as estado_canal,
            l.updated_at
       from channel.listings l
       join core.accounts a on a.id = l.account_id
