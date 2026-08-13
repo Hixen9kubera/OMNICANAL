@@ -92,11 +92,26 @@ def proponer(productos: list[dict[str, Any]]) -> dict[str, str]:
         return {}
 
     datos = _parse_json(res.get("texto", ""))
+
+    # El modelo NORMALIZA el SKU al repetirlo, y si el nuestro trae comillas o
+    # espacios devuelve otra cadena: `TEC-1284-NEG-27"` volvió como
+    # `TEC-1284-NEG-27` y el cruce exacto lo descartó en silencio — un monitor
+    # gamer se quedó sin término por una comilla. Se reconcilia por forma
+    # normalizada antes de darlo por perdido.
+    def _clave(s: str) -> str:
+        return "".join(c for c in (s or "").upper() if c.isalnum())
+
+    por_clave = {_clave(p["sku"]): p["sku"] for p in pendientes}
     out: dict[str, str] = {}
     for t in datos.get("terminos") or []:
         sku, termino = t.get("sku"), _limpiar(t.get("termino", ""))
-        if sku and termino:
-            out[sku] = termino
+        if not (sku and termino):
+            continue
+        real = sku if any(p["sku"] == sku for p in pendientes) else por_clave.get(_clave(sku))
+        if real:
+            out[real] = termino
+        else:
+            log.warning("La IA devolvió un SKU que no pedimos: %r", sku)
 
     faltan = {p["sku"] for p in pendientes} - set(out)
     if faltan:

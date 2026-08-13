@@ -102,7 +102,16 @@ async def _correr_actor(actor: str, payload: dict[str, Any],
                     log.warning("Apify %s no arrancó: %s %s", actor,
                                 r.status_code, r.text[:200])
                     raise RuntimeError(f"no arrancó: {r.status_code}")
-                run_id = r.json()["data"]["id"]
+                # `r.json()` puede reventar con "Expecting value: line 1
+                # column 1": Apify contestó 2xx pero con HTML —una página de
+                # error o un límite— y el traceback no dice nada del porqué. Se
+                # registra el cuerpo para poder diagnosticar.
+                try:
+                    run_id = r.json()["data"]["id"]
+                except Exception:
+                    log.warning("Apify %s: respuesta no-JSON al arrancar (%s): %s",
+                                actor, r.status_code, r.text[:200])
+                    raise RuntimeError("respuesta no-JSON al arrancar")
 
                 datos: dict[str, Any] = {}
                 for _ in range(_MAX_SONDEOS):
