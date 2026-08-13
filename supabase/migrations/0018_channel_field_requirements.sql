@@ -1,7 +1,15 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 0018 — Qué EXIGE cada canal, como datos.
 --
--- Estado: NO APLICADA. Sandbox primero.
+-- Estado: APLICADA en producción (tukwcvsi) el 12-ago-2026, tras verificarse en
+-- sandbox. El encabezado decía "NO APLICADA" y quedó rancio; se corrige el
+-- 13-ago porque contradecía a producción y alguien podría "arreglar" el número
+-- renumerando una migración ya aplicada — lo que desincroniza el ledger.
+--
+-- OJO CON EL NÚMERO: hay dos archivos `0018` (éste y
+-- `0018_market_search_results_visitas.sql`) y también dos `0004`. NO rompe
+-- nada: `aplicar_migraciones.py:93` aplica con `sorted(glob("*.sql"))` — orden
+-- alfabético por nombre COMPLETO, no por número. No renumerar.
 --
 -- QUÉ RESUELVE
 -- ------------

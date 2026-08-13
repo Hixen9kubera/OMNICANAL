@@ -159,6 +159,22 @@ def main() -> None:
 
     print(f"Entrega: {len(censo)} publicaciones · {len(cats)} categorías · "
           f"{len(reqs)} requisitos")
+
+    # La columna del permiso NO se puede verificar desde otra máquina (los CSV
+    # viven en el escritorio de quien hizo la entrega), así que se comprueba en
+    # tiempo de corrida en vez de suponerla. Sin esto, un `.get()` devolvería
+    # None y `disponibilidad` quedaría en NULL para las 2,168 filas SIN QUE
+    # NADIE SE ENTERE — que es justo el modo de fallo que estas columnas
+    # existen para evitar: una categoría INVITE_ONLY que nadie marca acepta el
+    # producto y lo deja en PENDING para siempre.
+    if cats and "permission_status" not in cats[0]:
+        sys.exit(
+            "ABORT: TIKTOK_CATEGORIAS.csv no trae la columna `permission_status`.\n"
+            f"       Columnas que sí trae: {', '.join(cats[0].keys())}\n"
+            "       Ajusta el nombre en este script — NO se puede seguir: "
+            "`disponibilidad` quedaría en NULL y el semáforo no bloquearía las "
+            "categorías restringidas."
+        )
     if not args.aplicar:
         print("ENSAYO — no se escribe nada. Agrega --aplicar para hacerlo.")
 
@@ -216,20 +232,32 @@ def main() -> None:
     for c in cats:
         rid, rnom = raiz(c["categoria_id"])
         filas_cat.append((CANAL, c["categoria_id"], c["nombre"], c["ruta"],
-                          (c["parent_id"] if c["parent_id"] != "0" else None), rid, rnom))
+                          (c["parent_id"] if c["parent_id"] != "0" else None), rid, rnom,
+                          # `is_leaf` y `disponibilidad` entran desde la 0019.
+                          # `permission_status` se guarda VERBATIM: es el valor
+                          # nativo de TikTok y aplastarlo a un boolean perdería
+                          # el porqué — hay categorías bloqueadas por no ser hoja
+                          # y otras por ser INVITE_ONLY, y son problemas
+                          # distintos. `publicable` NO se guarda: se deriva con
+                          # `is_leaf and disponibilidad = 'AVAILABLE'`.
+                          _bool(c["is_leaf"]),
+                          (c.get("permission_status") or None)))
     hojas = sum(1 for c in cats if _bool(c["is_leaf"]))
     publicables = sum(1 for c in cats if _bool(c["publicable"]))
-    print(f"  categorías: {len(filas_cat)} · {hojas} hojas · {publicables} publicables")
-    print("  ⚠️ `is_leaf`, `permission_status` y `publicable` NO SE GUARDAN: "
-          "channel.categories no tiene esas columnas (hacen falta 2 columnas de Eduardo)")
+    restringidas = sum(1 for c in cats
+                       if (c.get("permission_status") or "") == "INVITE_ONLY")
+    print(f"  categorías: {len(filas_cat)} · {hojas} hojas · {publicables} publicables "
+          f"· {restringidas} restringidas (INVITE_ONLY)")
     if args.aplicar:
         execute_values(cur, """
             insert into channel.categories
-                (channel_id, category_id, name, path, parent_id, root_id, root_name)
+                (channel_id, category_id, name, path, parent_id, root_id, root_name,
+                 is_leaf, disponibilidad)
             values %s
             on conflict (channel_id, category_id) do update set
                 name=excluded.name, path=excluded.path, parent_id=excluded.parent_id,
-                root_id=excluded.root_id, root_name=excluded.root_name""",
+                root_id=excluded.root_id, root_name=excluded.root_name,
+                is_leaf=excluded.is_leaf, disponibilidad=excluded.disponibilidad""",
             filas_cat, page_size=500)
 
     # ── 3) Requisitos ────────────────────────────────────────────────────────

@@ -8818,3 +8818,60 @@ escrito en cada visita no se puede medir la cobertura del barrido. Es para PODER
 MEDIR, no para arreglar nada. Baja de "bug" a "sería bueno tenerlo".
 
 Se corrigen la nota del detector y `docs/APAGADO_ESPEJOS_MYSQL.md`. Versión 0.140.0.
+
+---
+
+### v0.149.0 — Las categorías de TikTok que aceptan el producto y lo entierran (Eduardo)
+
+`channel.categories` gana dos columnas. Las pidió el compañero que abrió el canal
+y el cargador ya las esperaba: `cargar_tiktok.py` leía los datos de la entrega y
+los **tiraba en cada corrida**, diciéndolo en su propia salida — *"is_leaf,
+permission_status y publicable NO SE GUARDAN"*.
+
+**Por qué duele el segundo.** Las categorías `INVITE_ONLY` **no rechazan el
+producto**: lo aceptan y lo dejan en `PENDING` para siempre, sin error y sin
+aviso. Verificado contra producción: de las 900 publicaciones de TikTok, 599
+`DRAFT`, 283 `ACTIVATE`, 11 `FAILED` y **7 `PENDING`** — y esos 7 son los que
+cayeron en categorías restringidas. Sin este dato la vista previa solo podía
+decir "no se puede verificar"; ahora bloquea.
+
+**`disponibilidad` es TEXT, no boolean** (corrección del consejo sobre la
+propuesta original). Un boolean aplasta el porqué: TikTok da
+`AVAILABLE`/`INVITE_ONLY` y **35 de las 451 restringidas ni siquiera son hoja**,
+o sea dos motivos distintos por los que no sirve. Es el mismo criterio que ya
+sigue esta base: `channel.listings` guarda `status` Y `situacion` por separado
+porque "aplastarlas perdería justo la que explica por qué algo no se vende".
+`publicable` NO lleva columna: se deriva con `is_leaf and disponibilidad =
+'AVAILABLE'`.
+
+**`is_leaf` en inglés** (la otra corrección). El argumento "un concepto, un
+nombre" es correcto pero apunta a no usar el vocabulario NATIVO del canal
+(`permission_status`, `is_final_category`), no a elegir idioma.
+`channel.categories` es 100% inglés, y el esquema ya arrastra un caso de
+vocabulario duplicado para el mismo concepto — `is_fulfillment` en
+`channel.listings` contra `es_fulfillment` en `channel.order_items`.
+(`disponibilidad` se queda en español por petición explícita, y anotado.)
+
+**La numeración se resolvió midiendo:** `aplicar_migraciones.py:93` aplica con
+`sorted(glob("*.sql"))` — alfabético por nombre COMPLETO, no por número. Por eso
+los dos `0018` y los dos `0004` conviven sin romper nada. Se toma `0019` y NO se
+renumera: `0018_channel_field_requirements.sql` ya está aplicada en producción y
+renumerar una migración aplicada desincroniza el ledger. Su encabezado seguía
+diciendo `NO APLICADA` — quedó rancio y se corrige aquí, porque invitaba
+justamente a ese error.
+
+**Un candado en el cargador.** Al poblar `disponibilidad` se usaba
+`.get("permission_status")`, que si la columna del CSV se llama distinto devuelve
+`None` y deja las 2,168 filas en NULL **sin que nadie se entere** — el fallo
+silencioso que estas columnas existen para evitar. Y **no se puede verificar
+desde otra máquina**: los CSV viven en el escritorio de quien hizo la entrega.
+Ahora aborta con el nombre de las columnas que sí trae.
+
+`country_of_origin` queda FUERA a propósito: el consejo coincidió en que
+colapsarlo a un valor global reintroduce el punto ciego del incidente original
+(Amazon declaraba `MX` por un camino y `CN` por otro sin que nadie comparara). Su
+casa es `core.canonical_fields`, como dato comparable por canal.
+
+Aplicada en producción con pre-chequeo en la misma transacción; 4,860 filas
+intactas y 0 con dato — la migración no siembra. Manifiesto regenerado:
+**`PARIDAD OK`**, 45 tablas. Versión 0.149.0.
