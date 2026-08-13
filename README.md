@@ -8236,6 +8236,48 @@ con el envío interceptado: 24 h → 3 duplicados · 1 h → silencio.
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20. Versión 0.133.0.
 
+### v0.139.0 — El alta de SKUs de Odoo deja de esperar a que alguien apriete un botón
+
+Era el ÚNICO paso del pipeline que dependía de una persona. Todo lo demás corre
+solo —el sync de inventario cada 15 min, `odoo_watch` cada 30, `stock_watch`,
+los ETLs de medianoche— pero un SKU nuevo en Odoo no cruzaba a Woo hasta que
+alguien entraba a Crear y apretaba "Sincronizar Odoo".
+
+Mientras tanto ese SKU existe en Odoo y no en la tienda, así que el ETL nocturno
+lo da de alta como `odoo_only` y el acta sale `con_deltas`. **Las TRES altas del
+hueco del 13-ago fueron exactamente eso**: `ACC-0816-AMA`, `-AZL` y `-ROS`,
+esperando el clic. No es una fuga del seam — es un paso manual que nadie dio.
+
+Nuevo job `alta_skus_odoo` en el scheduler: cada 6 h, lote de 100, el mismo
+`sincronizar_drafts` que el botón ya usaba. Seis horas alcanzan de sobra para
+llegar antes del ETL de las 00:15.
+
+**CANDADO DE INVENTARIO — el alta solo trae la IDENTIDAD del SKU.** Hasta ahora
+`_borrador_wc` sembraba `manage_stock` y `stock_quantity` con el `free_qty` de
+Odoo. Eso no puede ir en un cron:
+
+- `free_qty` es 0 SIEMPRE para los 45 SKUs de tipo `consu` — por definición, no
+  porque no haya piezas. Sembrar ese 0 al nacer mete el producto al catálogo
+  declarando "no hay", y el fan-out lo propaga a los canales.
+- El inventario lo gobiernan `stock_watch` (Odoo→Woo por DELTA) y el sync de
+  canales. El alta no tiene por qué opinar.
+
+Manualmente el botón podía permitírselo: había una persona mirando el resultado.
+Un cron cada seis horas, no.
+
+**Reversible sin tocar código**: `SYNC_ODOO_INCLUIR_STOCK=true` restaura el
+comportamiento anterior. Verificado en los dos sentidos — con el candado puesto
+el payload no lleva `manage_stock` ni `stock_quantity` y conserva nombre, sku,
+tipo, status, precio, imagen y categoría; levantado, vuelven `manage_stock=True`
+y `stock_quantity=42`; y el resto del payload es idéntico byte a byte entre
+ambos casos.
+
+Los otros dos interruptores también son variables: `SYNC_ODOO_SKUS_ENABLED` para
+apagarlo entero y `SYNC_ODOO_SKUS_MIN` / `_LIMITE` para el ritmo y el lote.
+Versión 0.139.0.
+
+---
+
 ### v0.136.0 — El umbral que medía el paso del tiempo
 
 Primera verificación tras 14 h con los espejos apagados. **Los tres siguen

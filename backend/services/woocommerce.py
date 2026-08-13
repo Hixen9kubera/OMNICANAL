@@ -1260,10 +1260,24 @@ def _borrador_wc(it: dict[str, Any]) -> dict[str, Any]:
     precio = it.get("precio")
     if precio not in (None, "", 0, 0.0):
         p["regular_price"] = f"{float(precio):.2f}"
-    stock = it.get("stock")
-    if stock is not None:
-        p["manage_stock"] = True
-        p["stock_quantity"] = max(0, int(stock))
+    # CANDADO DE INVENTARIO (13-ago-2026, instrucción de Eduardo al automatizar
+    # el alta). El alta solo debe traer la IDENTIDAD del SKU; el inventario lo
+    # gobiernan `stock_watch` (Odoo→Woo por delta) y el sync de canales, y el
+    # stock que Odoo reporta aquí es `free_qty` — que para los 45 SKUs de tipo
+    # `consu` es 0 SIEMPRE por definición, no porque no haya piezas. Sembrar ese
+    # 0 al nacer haría que el producto entre al catálogo declarando "no hay",
+    # y el fan-out lo propaga a los canales.
+    #
+    # Manualmente el botón podía permitírselo (una persona mirando el
+    # resultado); un cron cada N horas, no.
+    #
+    # REVERSIBLE: SYNC_ODOO_INCLUIR_STOCK=true restaura el comportamiento
+    # anterior sin tocar código.
+    if settings.sync_odoo_incluir_stock:
+        stock = it.get("stock")
+        if stock is not None:
+            p["manage_stock"] = True
+            p["stock_quantity"] = max(0, int(stock))
     if it.get("imagen_media_id"):  # imagen de Odoo ya subida a WordPress
         p["images"] = [{"id": it["imagen_media_id"]}]
     if it.get("categoria_wc_id"):  # departamento por prefijo de SKU

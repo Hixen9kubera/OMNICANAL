@@ -416,6 +416,19 @@ class Settings(BaseSettings):
     # correcto (por DELTA) vive en `stock_watch`; esto se queda apagado.
     odoo_watch_auto_push: bool = False
 
+    # ── Alta automática de SKUs nuevos de Odoo (sincronizar_drafts) ───
+    # El alta Odoo→Woo era el ÚNICO paso del pipeline que dependía de que
+    # alguien apretara el botón "Sincronizar Odoo" de la pestaña Crear. Mientras
+    # nadie lo apretaba, esos SKUs existían en Odoo y no en Woo: el ETL nocturno
+    # los daba de alta como `odoo_only` y el acta salía `con_deltas` — el 13-ago
+    # las TRES altas del hueco fueron eso (ACC-0816-AMA/AZL/ROS).
+    sync_odoo_skus_enabled: bool = True
+    sync_odoo_skus_min: int = 360          # cada 6 h: llega antes del ETL de las 00:15
+    sync_odoo_skus_limite: int = 100       # mismo lote que el botón
+    # SOLO IDENTIDAD: el alta NO siembra inventario (ver _borrador_wc). En true
+    # vuelve el comportamiento del botón manual, que sí mandaba `free_qty`.
+    sync_odoo_incluir_stock: bool = False
+
     # ── Vigilante de inventario Odoo → Woo → canales (stock_watch.py) ─
     # Cierra el círculo: Odoo aporta DELTAS a Woo (nunca su valor absoluto, que
     # resucitaría lo vendido) y CUALQUIER cambio de stock en Woo se replica a

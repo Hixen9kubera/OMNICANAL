@@ -121,6 +121,37 @@ def iniciar() -> None:
         )
         log.info("Vigilante de Odoo cada %s min (auto_push=%s).",
                  settings.odoo_watch_min, settings.odoo_watch_auto_push)
+    # Alta automática de SKUs nuevos de Odoo. Crea en Woo, como DRAFT, los SKUs
+    # que existen en Odoo y faltan en la tienda — solo la identidad, sin
+    # inventario (candado en woocommerce._borrador_wc). Era el único paso del
+    # pipeline que esperaba a que alguien apretara un botón.
+    if settings.sync_odoo_skus_enabled:
+        from services import creacion
+
+        async def _alta_skus_odoo() -> None:
+            r = await creacion.sincronizar_drafts(settings.sync_odoo_skus_limite)
+            if not r.get("ok"):
+                log.warning("alta de SKUs de Odoo: %s", r.get("motivo"))
+                return
+            creados, errores = len(r.get("creados") or []), len(r.get("errores") or [])
+            if creados or errores:
+                log.info("Alta de SKUs de Odoo: %d creado(s), %d error(es), "
+                         "quedan %s por crear.", creados, errores,
+                         r.get("faltantes_restantes"))
+
+        _scheduler.add_job(
+            _alta_skus_odoo,
+            "interval",
+            minutes=settings.sync_odoo_skus_min,
+            id="alta_skus_odoo",
+            next_run_time=datetime.now() + timedelta(seconds=240),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Alta de SKUs de Odoo cada %s min (lote %s, stock=%s).",
+                 settings.sync_odoo_skus_min, settings.sync_odoo_skus_limite,
+                 settings.sync_odoo_incluir_stock)
+
     # Vigilante de inventario: Odoo --(delta)--> Woo --(cualquier cambio)-->
     # canales. Ver services/stock_watch.py. Nace apagado y en solo-registro.
     if getattr(settings, "stock_watch_enabled", False) and settings.mysql_enabled:
