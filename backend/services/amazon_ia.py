@@ -209,6 +209,115 @@ async def _detectar(nombre: str) -> tuple[str | None, str]:
         return None, "auto"
 
 
+async def sugerir_tipo(sku: str, titulo: str) -> dict[str, Any]:
+    """
+    Un `productType` RECOMENDADO para el panel. Sugerencia: no se guarda.
+
+    POR QUÉ HACE FALTA, con el caso que lo destapó. `_detectar_product_type`
+    busca en la Definitions API con **las tres primeras palabras del título**, y
+    nuestros títulos están en español mientras ese buscador indexa en inglés.
+    Medido el 13-ago con un producto real: *"Contadora y Clasificadora de
+    Monedas Eléctrica Automática"* → **HOME**, el respaldo genérico. El mismo
+    producto, preguntado a TikTok, salió a *"Contadoras de dinero"*.
+
+    Así que se pregunta DOS VECES y se elige entre lo que contesten:
+      1. la Definitions API de Amazon (su propio buscador), y
+      2. la IA sobre los 553 productTypes que ya tenemos cargados en
+         `channel.field_requirements` — con sus nombres, que es lo que un
+         modelo puede leer.
+
+    El id se valida contra la tabla: un tipo inventado no da error, publica el
+    producto en la categoría equivocada y ahí se queda.
+    """
+    from services import channel_content, ia_generadores, supabase_db as sdb
+
+    vacio = {"product_type": None, "origen": None, "confianza": None, "motivo": None}
+    if not (titulo or "").strip():
+        return {**vacio, "motivo": "El producto no tiene título."}
+
+    # 1) El buscador del propio Amazon.
+    candidatos: list[str] = []
+    try:
+        from services import publicar
+        pt = await _detectar(titulo)
+        if pt[0] and pt[0] != "HOME":
+            return {"product_type": pt[0], "origen": "buscador de Amazon",
+                    "confianza": None,
+                    "motivo": "Es lo que contesta la Definitions API para ese título."}
+        candidatos = [t["name"] for t in await publicar.buscar_product_types(titulo[:60])]
+    except Exception as exc:  # noqa: BLE001
+        log.info("amazon_ia: el buscador de Amazon no ayudó (%s)", exc)
+
+    # 2) La IA sobre los tipos REALES que tenemos cargados. Se acotan por
+    #    palabras del título: 553 nombres no caben en un prompt útil.
+    try:
+        palabras = [p for p in _palabras_titulo(titulo)]
+        like = "|".join(palabras) if palabras else ""
+        filas = sdb.fetch_all(
+            """select distinct categoria_id from channel.field_requirements
+                where canal='amazon' and (%s = '' or categoria_id ~* %s)
+                limit 40""", (like, like)) if like else []
+        candidatos = list(dict.fromkeys(candidatos + [f["categoria_id"] for f in filas]))
+    except Exception as exc:  # noqa: BLE001
+        log.info("amazon_ia: no se pudieron acotar tipos (%s)", exc)
+
+    if not candidatos:
+        return {**vacio, "motivo": "Ni el buscador de Amazon ni el catálogo "
+                                   "propusieron un tipo para ese título."}
+    lista = "\n".join(f"  {c}" for c in candidatos[:40])
+    prompt = (f"Producto: {titulo}\n\nTipos de producto de Amazon posibles:\n{lista}\n\n"
+              "Elige el que MEJOR describe el producto. Si ninguno encaja, devuelve "
+              'product_type vacío.\nDevuelve SOLO JSON: {"product_type": "<uno de la '
+              'lista o vacío>", "confianza": 0.0, "motivo": "<una frase>"}')
+    try:
+        r = await asyncio.to_thread(
+            ia_generadores._completar,  # noqa: SLF001
+            "Eres un catalogador de producto. Devuelves SOLO JSON válido.", prompt, 300)
+        d = ia_generadores._parse_json(r.get("texto", "")) if r.get("ok") else {}  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        return {**vacio, "motivo": f"No se pudo sugerir: {exc}"}
+
+    elegido = str((d or {}).get("product_type") or "").strip().upper()
+    if elegido not in {c.upper() for c in candidatos}:
+        return {**vacio, "motivo": (d or {}).get("motivo") or
+                "La IA no encontró un tipo que encaje."}
+    # Se comprueba que el tipo tenga requisitos cargados: si no, el semáforo
+    # diría "sin requisitos" y no sabríamos si es que no los pedimos.
+    reqs = await channel_content.requisitos(CANAL, elegido, solo_obligatorios=True)
+    return {"product_type": elegido, "origen": "IA sobre los 553 tipos cargados",
+            "confianza": (d or {}).get("confianza"),
+            "motivo": ((d or {}).get("motivo") or "") +
+                      (f" · {len(reqs)} obligatorios conocidos" if reqs else
+                       " · sin requisitos cargados para ese tipo")}
+
+
+def _palabras_titulo(titulo: str) -> list[str]:
+    """Palabras del título que sirven para acotar tipos, en inglés y español.
+
+    Los `productType` son palabras en INGLÉS (`CHAINSAW`, `MICROPHONE`), así que
+    buscar con el título en español casi nunca pega directo — por eso se
+    complementa con el buscador de Amazon arriba. Aquí solo se usa para acotar,
+    y una lista corta de equivalencias cubre lo que más vendemos.
+    """
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKD", (titulo or "").lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    equivalencias = {
+        "monedas": "COIN|MONEY|CURRENCY", "microfono": "MICROPHONE",
+        "motosierra": "CHAINSAW", "lampara": "LAMP|LIGHT", "planta": "PLANT",
+        "termo": "THERMOS|DRINKING|BOTTLE", "audifonos": "HEADPHONE",
+        "silla": "CHAIR", "mesa": "TABLE", "cable": "CABLE", "camara": "CAMERA",
+        "reloj": "WATCH|CLOCK", "bocina": "SPEAKER", "juguete": "TOY",
+        "herramienta": "TOOL", "bolsa": "BAG", "funda": "CASE",
+    }
+    salida = []
+    for palabra, patron in equivalencias.items():
+        if palabra in t:
+            salida.append(patron)
+    return salida
+
+
 def hash_base(producto: dict[str, Any]) -> str:
     """
     Huella (sha1, 40 caracteres — el ancho exacto de la columna) de la BASE con

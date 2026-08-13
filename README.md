@@ -8034,6 +8034,68 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.152.0 — Publicar de verdad destapó dos cosas que ninguna prueba veía
+
+Prueba de extremo a extremo pedida por Brandon con un SKU real
+(`CONS-0016-EST`, contadora de monedas, desde su URL de Alibaba): crear, mejorar
+con IA por canal y publicar en los tres. **Publicó ML y Amazon; TikTok destapó
+un bug y un dato faltante.**
+
+**El bug: el modelo del endpoint tiraba los IDs de los atributos.**
+`AtributoIn` declaraba `{nombre, valor}` y nada más, así que **pydantic
+descartaba `campo` y `valor_id`** en cuanto la petición entraba. El generador
+los guardaba bien, el panel los mandaba, y el publicador armaba el payload sin
+ellos. TikTok contestó:
+
+```
+12052104 · Parameter `Tipo de garantía` is invalid because the request is
+missing product attribute ID `100107`. Provide this product attribute and retry.
+```
+
+…teniendo el atributo guardado con su `valor_id: ["1000054"]`. El mensaje decía
+"falta el atributo" cuando lo que faltaba era **su id**, que es de las
+distancias más caras entre el síntoma y la causa.
+
+Se arregla en los dos extremos: el modelo ahora acepta `campo` y `valor_id`, y
+`publicar_tiktok` los **recupera desde lo guardado** cruzando por nombre cuando
+el formulario no los trae — con un detalle: si alguien editó el texto del valor,
+el id viejo NO se reusa, porque ya no corresponde.
+
+**El dato faltante: stock 0.** TikTok exige `[1, 99999]` y el producto tenía
+cero. Ahora se comprueba antes de mandar, así que el panel dice *"Sin stock:
+TikTok exige al menos 1 pieza"* en vez de dejar que el canal conteste con un
+código.
+
+**Lo que la prueba confirmó, además:**
+
+| Etapa | Resultado |
+|---|---|
+| Crear (6 pasos) | ✅ 5 imágenes · 8 atributos ML · categoría MLM187307 |
+| Contenido Amazon al alta | ✅ 6 campos · tipo `HOME` |
+| Contenido TikTok al alta | ✅ 3 campos, sin atributos — no tiene categoría todavía, como se documentó |
+| Categoría TikTok recomendada | ✅ **"Contadoras de dinero"**, aceptada con un clic |
+| Mejorar con IA (TikTok) | ✅ 11 atributos de ESA categoría, con sus IDs |
+| Publicar Mercado Libre | ✅ `MLM5981232724` y `MLM5981268600`, pausados en ambas cuentas |
+| Publicar Amazon | ✅ `ACCEPTED`, 0 issues, 1 intento |
+| Publicar TikTok | ❌ bloqueado por stock 0 — **y el fallo quedó en `ops.channel_submissions`** |
+
+**Y un hueco de Amazon que solo se ve con un producto en español.**
+`_detectar_product_type` busca en la Definitions API con las tres primeras
+palabras del título; el nuestro está en español y ese buscador indexa en inglés.
+Resultado para *"Contadora y Clasificadora de Monedas"*: **HOME**, el respaldo
+genérico. Se agrega `amazon_ia.sugerir_tipo`, que pregunta al buscador de Amazon
+y, si no ayuda, deja que la IA elija entre los 553 tipos cargados — validando el
+id contra la tabla.
+
+Medido: *"Microfono inalambrico UHF"* → `MICROPHONE` y *"Motosierra electrica"*
+→ `CHAINSAW` los resuelve el propio buscador de Amazon. Pero para la contadora
+de monedas **no hay tipo bueno**: los únicos parecidos entre los 553 son
+`COIN_PURSE_POUCH` y `MONEY_BANK` (una hucha), y la IA se negó a forzarlo —
+`coin counter machine` y `money counter` devuelven **vacío** en la propia API de
+Amazon. Ahí `HOME` no es un error del panel: es lo que hay.
+
+Versión 0.152.0.
+
 ### v0.148.0 — La categoría de TikTok se recomienda sola, pero la elige una persona
 
 Petición de Brandon sobre el picker nuevo: que **siempre** proponga una

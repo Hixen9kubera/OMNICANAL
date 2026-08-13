@@ -66,6 +66,44 @@ def _dims(campos: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _completar_ids(sku: str, atributos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Rellena `campo`/`valor_id` desde lo guardado cuando el formulario no los trae.
+
+    RED DE SEGURIDAD, no camino principal. El formulario del Estudio edita
+    `{nombre, valor}` y puede perder los ids por el camino (así se descubrió el
+    fallo: pydantic los descartaba). Aquí se recuperan cruzando por `nombre`
+    contra `enrich.channel_content`, que es donde el generador los dejó con sus
+    IDs. Sin esto, un atributo editado a mano llegaría sin id y TikTok
+    rechazaría el producto entero por "falta el atributo", que es lo que menos
+    se parece a la causa.
+    """
+    if not atributos or all(a.get("campo") for a in atributos):
+        return atributos
+    try:
+        filas = sdb.fetch_all(
+            "select contenido->'atributos' as a from enrich.channel_content "
+            "where sku=%s::citext and canal=%s", (sku, CANAL))
+        guardados = (filas or [{}])[0].get("a") or []
+    except Exception:  # noqa: BLE001
+        return atributos
+    por_nombre = {str(g.get("nombre") or "").strip().lower(): g for g in guardados}
+    salida = []
+    for a in atributos:
+        if not a.get("campo"):
+            g = por_nombre.get(str(a.get("nombre") or "").strip().lower())
+            if g:
+                # El VALOR del formulario manda (alguien pudo corregirlo); del
+                # guardado se toman los identificadores, y su `valor_id` solo si
+                # el texto sigue siendo el mismo — si lo cambiaron, el id viejo
+                # ya no corresponde.
+                a = {**a, "campo": g.get("campo"),
+                     "valor_id": (g.get("valor_id") or [])
+                     if str(g.get("valor") or "") == str(a.get("valor") or "") else []}
+        salida.append(a)
+    return salida
+
+
 def _atributos_payload(atributos: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     De los atributos guardados en `channel_content` al formato de TikTok.
@@ -173,6 +211,12 @@ async def _armar(req: dict[str, Any], token: str, cipher: str,
     precio = campos.get("precio_regular")
     if not precio or float(precio) <= 0:
         raise RuntimeError("Sin precio: TikTok rechaza el producto.")
+    # TikTok exige stock en [1, 99999]: el 0 NO es válido. Se comprueba AQUÍ
+    # para que el panel diga "sin stock" en vez de dejar que TikTok conteste con
+    # un código, que es lo que menos se parece a la causa.
+    if int(campos.get("stock") or 0) < 1:
+        raise RuntimeError("Sin stock: TikTok exige al menos 1 pieza "
+                           "(el 0 no es un valor válido para publicar).")
 
     cat_id, cat_origen = await _categoria(sku, titulo, token, cipher)
     if not cat_id:
@@ -203,7 +247,8 @@ async def _armar(req: dict[str, Any], token: str, cipher: str,
         "category_id": str(cat_id),
         "brand_id": MARCA_ID,
         "main_images": uris,
-        "product_attributes": _atributos_payload(campos.get("atributos") or []),
+        "product_attributes": _atributos_payload(
+            _completar_ids(sku, campos.get("atributos") or [])),
         **_dims(campos),
         "skus": [{
             "seller_sku": sku,

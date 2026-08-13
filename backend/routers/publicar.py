@@ -21,6 +21,20 @@ router = APIRouter(prefix="/api/publicar", tags=["publicar"])
 class AtributoIn(BaseModel):
     nombre: str
     valor: str = ""
+    # EL NOMBRE NO BASTA EN TIKTOK, y este modelo lo estaba tirando.
+    #
+    # `campo` es el nombre NATIVO del canal (`product_attributes.100107`) y
+    # `valor_id` los IDs de valor que TikTok exige — sin ellos rechaza el
+    # producto entero con `12052104 … is missing product attribute ID 100107`,
+    # aunque el atributo viaje con su nombre y su texto.
+    #
+    # Pydantic descarta lo que no está declarado, así que el panel los mandaba,
+    # el modelo los borraba y el publicador armaba el payload sin ellos. No daba
+    # error en el panel: fallaba en TikTok, con un mensaje que parecía decir que
+    # faltaba el atributo cuando lo que faltaba era su id. Medido publicando
+    # `CONS-0016-EST` el 13-ago.
+    campo: str | None = None
+    valor_id: list[str] = Field(default_factory=list)
 
 
 class CamposPublicar(BaseModel):
