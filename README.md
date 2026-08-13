@@ -8350,3 +8350,32 @@ PRIMERO en todas las rondas: son 9 lugares del lote de 80 quemados cada vez.
 
 También se corrige `docs/APAGADO_ESPEJOS_MYSQL.md`, que llevaba el número malo.
 El apagado de los espejos no está en cuestión: sigue verificado. Versión 0.138.0.
+
+### v0.140.0 — El barrido está bien: se comprobó contra Mercado Libre
+
+Cierre del hilo abierto en v0.130.0 y continuado en v0.136.0 y v0.138.0. Las
+tres publicaron un problema del barrido; **no existe**, y la pregunta de Eduardo
+fue la que lo destapó: *"¿el 'se revisa' en qué consiste? Si es que entren y no
+haya modificaciones, no creo que haya problema."*
+
+Tenía razón. Se midió contra la fuente en vez de razonarlo: se tomaron **24
+publicaciones —las 12 más rancias por `updated_at` y las 12 que cambiaron hoy—
+y se le preguntó su estado real a la API de ML**. Precio, stock y situación:
+**cero diferencias en las 24**.
+
+O sea que el turno puede repetir a las publicaciones estables sin consecuencia,
+porque son justamente las que no tienen nada nuevo que contar. Lo que en v0.138.0
+se describió como "un bug real" es un comportamiento sin daño observable.
+
+**Y la primera lectura de esa prueba también estaba mal**, lo que vale anotar
+porque es la misma trampa de siempre: salían 10 de 12 con diferencia de stock,
+todas con kubera en 0. No era stock viejo — el stock vive en `stock_full` SOLO
+si la publicación es FULL, y si no, en `stock_own`. Leer siempre `stock_full`
+daba 0 y marcaba diferencias inventadas. Tres lecturas equivocadas seguidas de
+la misma tabla: dos de `updated_at` y una de las columnas de stock.
+
+Lo único que queda es una carencia de instrumentación: sin un `last_seen_at`
+escrito en cada visita no se puede medir la cobertura del barrido. Es para PODER
+MEDIR, no para arreglar nada. Baja de "bug" a "sería bueno tenerlo".
+
+Se corrigen la nota del detector y `docs/APAGADO_ESPEJOS_MYSQL.md`. Versión 0.140.0.

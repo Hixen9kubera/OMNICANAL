@@ -50,11 +50,14 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 # "no ha cambiado". No hay ninguna columna que registre la VISITA, así que la
 # cobertura del barrido hoy NO es medible desde la base.
 #
-# Para medirla hace falta un `last_seen_at` que se escriba en cada visita, pase
-# lo que pase con el dato. Ese mismo campo arregla de paso el turno del barrido
-# (`inventario._lote_desde_ml`), que hoy ordena por `updated_at` y por eso se
-# atora: visitar una publicación estable no mueve su lugar en la fila, así que
-# vuelve a salir elegida en la ronda siguiente, para siempre.
+# Para medirla haría falta un `last_seen_at` escrito en cada visita, pase lo que
+# pase con el dato. Sería para PODER MEDIR, no para arreglar nada: el turno de
+# `inventario._lote_desde_ml` ordena por `updated_at`, así que en teoría una
+# publicación estable no cede su lugar al visitarse — pero eso NO produce datos
+# viejos. Comprobado contra la API de ML el 13-ago-2026: 24 publicaciones, las
+# 12 más rancias y las 12 recién cambiadas, **cero diferencias** en precio,
+# stock y situación. La fila puede repetir a los estables sin consecuencia,
+# porque justamente son los que no tienen nada nuevo que contar.
 _MIDE_COBERTURA = False
 
 UMBRALES = {

@@ -108,16 +108,15 @@ fecha de hace diez días. Contarla como "sin revisar" es leer mal la columna.
 **Nada de esto tiene que ver con el apagado de los espejos**, que sigue siendo
 correcto y verificado.
 
-**Pero al mirar el orden con la columna bien entendida, sí aparece un problema
-real**, y es otro: el turno del barrido (`inventario._lote_desde_ml`) se ordena
-por esa misma `updated_at`. Una publicación estable tiene la fecha más vieja →
-sale elegida → se visita → **como no cambió, su fecha no se mueve** → vuelve a
-salir elegida la ronda siguiente. La marca de "ya lo hice" no la pone el
-hacerlo.
+**Y tampoco hay un problema debajo.** El turno (`inventario._lote_desde_ml`)
+ordena por esa misma `updated_at`, así que en teoría una publicación estable no
+cede su lugar al visitarse. Se comprobó contra la API de ML el 13-ago: **24
+publicaciones —las 12 más rancias y las 12 recién cambiadas— con CERO
+diferencias** en precio, stock y situación. La fila puede repetir a los estables
+sin consecuencia, porque son justamente los que no tienen nada nuevo que contar.
 
-Arreglarlo pide una columna `last_seen_at` que se escriba en CADA visita, pase
-lo que pase con el dato. Esa misma columna es la única forma de medir la
-cobertura del barrido, que hoy **no es medible** desde la base.
+Queda solo una carencia de instrumentación: sin una columna `last_seen_at` no
+se puede medir la cobertura del barrido. Es para PODER MEDIR, no para arreglar.
 
 ## Dónde está el detalle
 
