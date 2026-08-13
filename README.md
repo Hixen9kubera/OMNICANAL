@@ -8009,3 +8009,34 @@ Consulta: 0.83 s. Ventana 24 h, enfriamiento 60 min. Probado contra producción
 con el envío interceptado: 24 h → 3 duplicados · 1 h → silencio.
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20. Versión 0.133.0.
+
+### v0.134.0 — El umbral que medía el paso del tiempo
+
+Primera verificación tras 14 h con los espejos apagados. **Los tres siguen
+congelados** —`costos_finales` 70 h, `pedidos_ml` 13.5 h, `canal_inventario`
+14 h— y kubera recibiendo con normalidad. El apagado aguantó.
+
+Pero el latido del barrido cruzó a ALTO, y no porque algo empeorara: **el umbral
+estaba mal de origen.**
+
+Medía la antigüedad de la marca más vieja contra un tope fijo de 240 h. Si el
+barrido no alcanza esa fila, su antigüedad crece **1:1 con el reloj**, así que el
+umbral se cruza solo. Cruzó a las 14 h exactas de ponerlo —226.1 + 14.1 = 240.2—
+con la marca más vieja **intacta al segundo**: `2026-08-03 18:14:31.360898`, la
+misma de la línea base.
+
+Un umbral absoluto sobre algo que crece con el calendario mide el paso del
+tiempo, no la salud. Habría gritado todos los días hasta volverse ruido, que es
+exactamente el modo en que muere un detector.
+
+**Ahora mide cuánto tardaría UNA VUELTA COMPLETA** al catálogo al ritmo actual:
+`total ÷ tocadas por hora`. No crece solo, y dice lo único que importa — si el
+barrido alcanza a observar todo antes de que el dato envejezca. Tope: 72 h.
+
+Lectura de hoy: **156 h de ciclo** (43/h sobre 6,639 publicaciones) y **5,593
+con 7+ días sin revisarse**. El diagnóstico es el mismo de ayer, ahora con un
+número que se puede seguir: cuando el arreglo del barrido funcione, este número
+baja; antes, solo subía porque pasaba el tiempo.
+
+Se conserva la marca más vieja en la salida, pero como DATO y no como umbral:
+si no cambia entre corridas, esa fila no la alcanza el barrido. Versión 0.134.0.

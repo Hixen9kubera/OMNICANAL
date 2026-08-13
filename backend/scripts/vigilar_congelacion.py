@@ -36,15 +36,18 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Cada latido: (nombre, horas_de_gracia, qué significa si se pasa)
+# Una vuelta completa al catálogo. 72 h es holgado: el stock y el precio de una
+# publicación no deberían quedarse sin mirar más de tres días.
+_CICLO_MAX_H = 72
+
 UMBRALES = {
-    # OJO con el umbral: medido el 12-ago-2026, ANTES de apagar nada, la marca
-    # más vieja ya era de 225 h y 2,890 publicaciones VIVAS llevaban 7+ días sin
-    # revisarse (64% de las vivas). El barrido solo alcanza ~77 por hora y no le
-    # da la vuelta al catálogo. Es un problema PREVIO al apagado y no lo empeora
-    # —el mismo barrido escribe las dos tablas, así que están igual de viejas—,
-    # pero por eso el tope es de días y no de horas: mide EMPEORAMIENTO, no salud.
-    "turno_sync": (240, "el barrido se atoró AÚN MÁS que su línea base de 225 h: "
-                        "revisar SYNC_BATCH y el orden del turno"),
+    # `turno_sync` ya NO se mide por antigüedad. La primera versión ponía un tope
+    # fijo de 240 h a la marca más vieja, y eso está mal de origen: si el barrido
+    # no alcanza esa fila, su antigüedad crece 1:1 con el reloj y el umbral se
+    # cruza solo, sin que nada haya empeorado. Cruzó a las 14 h exactas de
+    # ponerlo (226.1 + 14.1 = 240.2) con la marca más vieja INTACTA al segundo.
+    # Un umbral absoluto sobre algo que crece con el calendario mide el paso del
+    # tiempo, no la salud. Ver `_ciclo_horas`.
     "pedidos": (6, "no entran pedidos (puede ser noche o día flojo; contrastar "
                    "con el tab de Ventas antes de alarmarse)"),
     "costos": (72, "nadie ha recalculado un costo (normal si no se usó el panel)"),
@@ -89,18 +92,30 @@ def main() -> None:
     c = pg.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     todo_ok = True
 
-    # 1. El turno del sync: la marca MÁS VIEJA es la que tiene que avanzar.
-    #    Mirar la más nueva no sirve — con el barrido atorado, los mismos SKUs
-    #    se refrescan cada 15 min y el "último visto" se ve perfecto.
+    # 1. El turno del sync, medido como CUÁNTO TARDA UNA VUELTA COMPLETA al
+    #    catálogo al ritmo actual: total ÷ (tocadas por hora). Es independiente
+    #    del calendario —no crece solo— y dice lo único que importa: si el
+    #    barrido alcanza a observar todo antes de que el dato envejezca.
+    #    Mirar la marca más NUEVA no sirve: con el barrido atorado los mismos
+    #    SKUs se refrescan cada 15 min y el "último visto" se ve perfecto.
     c.execute("""select min(updated_at) mas_vieja, max(updated_at) mas_nueva,
-                        count(*) filter (where updated_at > now() - interval '1 hour') ultima_hora,
-                        count(*) total
+                        count(*) filter (where updated_at > now() - interval '3 hours') ultimas_3h,
+                        count(*) total,
+                        count(*) filter (where updated_at < now() - interval '7 days') viejas
                    from channel.listings where canal in ('mercado_libre','amazon')""")
     r = c.fetchone()
-    todo_ok &= _linea("turno_sync", r["mas_vieja"],
-                      f"· {r['ultima_hora']} de {r['total']} tocadas en 1 h")
-    print(f"         más nueva: hace {_horas(r['mas_nueva']):.1f} h "
-          f"(esta NO delata un barrido atorado; la de arriba sí)")
+    ritmo = (r["ultimas_3h"] or 0) / 3.0          # publicaciones por hora
+    ciclo = (r["total"] / ritmo) if ritmo else 9999
+    ok = ciclo <= _CICLO_MAX_H
+    todo_ok &= ok
+    print(f"  [{'OK  ' if ok else 'ALTO'}] turno_sync   una vuelta completa "
+          f"tardaría {ciclo:.0f} h (tope {_CICLO_MAX_H} h) · {ritmo:.0f}/h "
+          f"sobre {r['total']} publicaciones")
+    if not ok:
+        print(f"         → a este ritmo {r['viejas']} publicaciones llevan 7+ días "
+              f"sin revisarse. Revisar SYNC_BATCH y el orden del turno.")
+    print(f"         marca más vieja: {r['mas_vieja']:%Y-%m-%d %H:%M} — si NO cambia "
+          f"entre corridas, esa fila no la alcanza el barrido")
 
     c.execute("select max(creado_at) t from channel.orders")
     todo_ok &= _linea("pedidos", c.fetchone()["t"])
