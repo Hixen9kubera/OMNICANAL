@@ -8034,6 +8034,44 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.154.0 — El webhook de TikTok trabajaba antes de contestar, y eso tumbó el panel
+
+**Incidente, 13-ago 22:2x.** Brandon: *"ya está en producción pero no se alcanza
+a visualizar la página… se queda cargando"*.
+
+El frontend contestaba en 0.2 s y el backend **no contestaba en absoluto**: DNS,
+TCP y TLS completaban en 0.2 s y después silencio hasta el timeout. Y sin
+embargo el proceso estaba vivo (procesando webhooks en el log) con la **CPU al
+1.5%** y 226 MB. Un servicio ocupado con la CPU ociosa es I/O, no cómputo.
+
+Lo dijeron los registros del proxy:
+
+```
+POST /api/webhooks/ml → 499 · 985 ms · varias por segundo
+"client has closed the request before the server could send a response"
+```
+
+**Mercado Libre corta a ~1 s.** Si no alcanzamos a acusar recibo, reintenta — y
+cada reintento es más trabajo, que hace más lenta la siguiente respuesta. Un
+lazo que se alimenta solo, y el panel esperando turno detrás.
+
+**La causa era mía y estaba a la vista en el mismo archivo.** El handler de ML
+usa `BackgroundTasks` desde siempre: acusa recibo y trabaja después. El de
+TikTok, que escribí hoy, llamaba a `pedidos_tiktok.procesar()` **antes** de
+responder — traer la orden de TikTok y escribir el pedido en Woo son varios
+segundos con el proceso sin atender a nadie. Con eventos llegando seguido, eso
+bastó para empujar las respuestas de ML por encima de su límite de 1 s.
+
+Dos patrones para el mismo problema conviviendo en 200 líneas de distancia, y
+copié el que no era.
+
+**Contención inmediata**: `PEDIDOS_TIKTOK_ENABLED=false` (variable, sin deploy).
+**Arreglo**: el webhook de TikTok acusa recibo primero y procesa en segundo
+plano, con su propio `try` — una tarea de fondo que revienta se lleva la traza
+al log de Starlette y nadie la ve.
+
+Versión 0.154.0.
+
 ### v0.153.0 — El semáforo marcaba en rojo lo que sí estaba, y Ventas no dejaba ver TikTok
 
 Dos cosas que Brandon vio en el panel, y las dos eran del panel, no del canal.

@@ -452,6 +452,22 @@ from collections import deque
 _TIKTOK_LOG: deque = deque(maxlen=300)
 
 
+async def _procesar_tiktok(order_id: str) -> None:
+    """La venta de TikTok → pedido, YA fuera del ciclo de respuesta.
+
+    Nunca lanza: una tarea de fondo que revienta se lleva su traza al log de
+    Starlette y nadie la ve. Aquí se registra el resultado, que es lo que
+    permite auditar después si un pedido entró o no.
+    """
+    from services import pedidos_tiktok
+    try:
+        r = await pedidos_tiktok.procesar(order_id)
+        log.info("TIKTOK pedido %s → %s", order_id,
+                 r.get("accion") or r.get("motivo"))
+    except Exception:  # noqa: BLE001
+        log.exception("TIKTOK pedido %s falló en segundo plano", order_id)
+
+
 def _firma_tiktok_ok(cuerpo: bytes, cabeceras: dict) -> bool | None:
     """
     ¿La firma corresponde? True/False, o None si no se pudo evaluar.
@@ -493,14 +509,25 @@ def _firma_tiktok_ok(cuerpo: bytes, cabeceras: dict) -> bool | None:
 
 
 @router.post("/tiktok")
-async def recibir_tiktok(request: Request):
+async def recibir_tiktok(request: Request, background: BackgroundTasks):
     """
-    Recibe la notificación de TikTok Shop. Responde 200 SIEMPRE.
+    Recibe la notificación de TikTok Shop. Responde 200 SIEMPRE, y RÁPIDO.
 
     GUARDA ABSOLUTA, igual que en ML: si devolvemos otra cosa, TikTok reintenta
     y puede terminar deshabilitando la suscripción. El síntoma sería silencioso
     — simplemente dejan de llegar eventos — así que el cuerpo entero va dentro
     de un try y ningún fallo cambia la respuesta.
+
+    ⚠️ EL TRABAJO VA EN SEGUNDO PLANO, y esto costó un incidente.
+    La primera versión llamaba a `pedidos_tiktok.procesar()` **antes** de
+    responder: traer la orden de TikTok y escribir el pedido en Woo son varios
+    segundos, y durante ese rato el proceso no atendía a nadie más. Con eventos
+    llegando seguido, el panel entero se quedaba cargando y Mercado Libre —que
+    corta a ~1 s— empezó a recibir 499 y a REINTENTAR sus propios webhooks,
+    alimentando la congestión.
+
+    El handler de ML ya usaba `BackgroundTasks` por esta razón exacta; el de
+    TikTok no lo hacía. Ahora sí: se acusa recibo primero y se trabaja después.
     """
     try:
         crudo = await request.body()
@@ -542,9 +569,7 @@ async def recibir_tiktok(request: Request):
             from services import pedidos_tiktok
             oid = pedidos_tiktok.id_de_evento(payload)
             if oid:
-                r = await pedidos_tiktok.procesar(oid)
-                log.info("TIKTOK pedido %s → %s", oid,
-                         r.get("accion") or r.get("motivo"))
+                background.add_task(_procesar_tiktok, oid)
             else:
                 log.info("TIKTOK webhook sin id de orden reconocible: %s",
                          json.dumps(payload, ensure_ascii=False)[:300])
