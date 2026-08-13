@@ -9036,3 +9036,44 @@ encabezado y sus filtros— y muestra «Error al cargar», en vez de desaparecer
 decir qué pasó.
 
 Sin migraciones y sin variables nuevas. Versión 0.151.0.
+
+### v0.153.0 — Análisis: la tabla se ve ocupada mientras carga
+
+Reporte de Eduardo (13-ago): *«coloco el filtro pero no pasa nada»*, con captura
+del filtro de tamaño en «L · XL» y la tabla mostrando SKUs S y M.
+
+**No estaba roto.** El backend filtraba bien —`tam=L,XL` devuelve 344 filas,
+todas L o XL— y la petición salía con el parámetro correcto. Lo que fallaba es
+que la consulta tarda **2.4 s** y durante ese rato la tabla seguía mostrando el
+resultado ANTERIOR sin ninguna señal: el botón ya decía «L · XL» y las filas
+eran las de antes, así que se leía como que el filtro no servía.
+
+El ícono de Actualizar sí giraba, pero vive arriba del todo, lejos de donde mira
+quien acaba de mover un filtro. Ahora la tabla **se atenúa** y aparece
+«Actualizando…» encima de ella. Se conserva la intención original de no
+parpadear con el auto-refresco de 60 s: la tabla vieja sigue legible debajo, no
+se vacía ni se reemplaza por un esqueleto.
+
+De paso quedó medido de dónde salía la lentitud, y confirma que el respiro de la
+v0.151.0 era el arreglo correcto:
+
+| | tiempo |
+|---|---|
+| Una consulta sola | **2.4 – 2.8 s** |
+| Tres a la vez (lo de antes del respiro) | **7.8 s** |
+
+No se estorbaban por casualidad: son la misma consulta pesada compitiendo por la
+base. Con el respiro, tres clics producen una sola petición y el resultado llega
+tres veces más rápido.
+
+Queda pendiente lo de fondo: **2.4 s siguen siendo muchos** para un filtro. La
+consulta arma 8 CTEs sobre 20,642 publicaciones y 15,487 pedidos en cada carga.
+Optimizarla es trabajo aparte y merece su propia revisión.
+
+Verificado: el aviso se pinta durante la carga y desaparece al terminar; el
+contenedor nuevo está en el bundle servido; `tsc` limpio. **No pude filmarlo
+durante un cambio de filtro** —el panel del navegador estaba oculto y tumbaba
+los scripts de muestreo—, así que esa parte queda observada en la carga inicial,
+que usa exactamente el mismo indicador.
+
+Sin migraciones y sin variables nuevas. Versión 0.153.0.

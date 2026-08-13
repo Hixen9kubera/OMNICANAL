@@ -2165,9 +2165,30 @@ export default function FulfillmentPage() {
           </div>
         )}
 
-        {/* Tabla compacta: celdas de dos líneas para caber sin scroll horizontal */}
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-[13px]">
+        {/* Tabla compacta: celdas de dos líneas para caber sin scroll horizontal.
+
+            LA TABLA SE VE OCUPADA MIENTRAS CARGA (Eduardo, 13-ago: "coloco el
+            filtro pero no pasa nada"). No estaba roto: la consulta tarda de 3.6
+            a 11.5 s —medido instrumentando fetch— y durante esos segundos la
+            tabla seguía mostrando el resultado ANTERIOR sin ninguna señal. El
+            botón ya decía "L · XL" y las filas eran las de antes, así que se
+            leía como que el filtro no servía.
+
+            El ícono de Actualizar giraba, pero vive arriba, lejos de donde está
+            mirando quien acaba de mover un filtro. Aquí se atenúa la tabla y se
+            pone el aviso ENCIMA de ella. Se conserva la intención original de
+            no parpadear con el auto-refresco de 60 s: la tabla vieja sigue
+            legible debajo, no se vacía ni se reemplaza por un esqueleto. */}
+        <div className="relative overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+          {cargando && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-start justify-center bg-white/60 pt-16">
+              <span className="flex items-center gap-2 rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 shadow-sm">
+                <RefreshCw size={13} className="animate-spin" />
+                Actualizando…
+              </span>
+            </div>
+          )}
+          <table className={`w-full text-[13px] transition-opacity ${cargando ? "opacity-40" : ""}`}>
             <thead>
               {/* El borde izquierdo transparente iguala el ancho de la franja
                   ámbar de los renglones: sin él, la cabecera quedaría corrida
