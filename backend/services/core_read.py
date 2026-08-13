@@ -77,3 +77,25 @@ def buscar_wc_ids(search: str | None, skus: list[str] | None,
         f"order by {orden_sql} limit %s offset %s",
         tuple(args + [per_page, offset]))
     return [int(r["wc_id"]) for r in rows], total
+
+
+def nombres_y_wc(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    { sku: {nombre, wc_id} } — gemela del lookup a la tabla maestra `productos`.
+
+    kubera no solo la cubre, la corrige: `productos` tiene 5,381 SKUs con wc_id
+    contra los 14,617 de aquí y, en los 332 en que discrepan, WordPress le da
+    la razón a kubera en los 332 (el wc_id de MySQL apunta a un post que ya no
+    existe — SKUs reciclados). Ese wc_id se usa para traer la foto y el título
+    del producto: con el viejo se traía el del producto ANTERIOR.
+    """
+    salida: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        idx = {s.lower(): s for s in chunk}  # citext: la llave la pone el llamador
+        for r in sdb.fetch_all(
+            """select sku::text as sku, name, wc_id from core.products
+                where sku = any(%s::citext[])""", (chunk,)):
+            salida[idx.get(r["sku"].lower(), r["sku"])] = {
+                "nombre": r.get("name") or "", "wc_id": r.get("wc_id")}
+    return salida

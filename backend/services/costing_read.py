@@ -120,6 +120,7 @@ def costos_por_sku(skus: list[str]) -> dict[str, float]:
     salida: dict[str, float] = {}
     for i in range(0, len(skus), 800):
         chunk = skus[i:i + 800]
+        idx = {s.lower(): s for s in chunk}  # citext: la llave la pone el llamador
         for r in sdb.fetch_all(
             """select sku::text as sku, costo_unitario, costo_producto
                  from costing.costos_finales
@@ -127,7 +128,7 @@ def costos_por_sku(skus: list[str]) -> dict[str, float]:
                 (chunk, CANAL)):
             costo = r.get("costo_unitario") or r.get("costo_producto")
             if costo:
-                salida[r["sku"]] = float(costo)
+                salida[idx.get(r["sku"].lower(), r["sku"])] = float(costo)
     return salida
 
 
@@ -136,11 +137,12 @@ def contenedores_por_sku(skus: list[str]) -> dict[str, str]:
     salida: dict[str, str] = {}
     for i in range(0, len(skus), 800):
         chunk = skus[i:i + 800]
+        idx = {s.lower(): s for s in chunk}
         for r in sdb.fetch_all(
             """select sku::text as sku, contenedor
                  from costing.costos_validados
                 where sku = any(%s::citext[])
                   and nullif(contenedor, '') is not null""", (chunk,)):
             if r.get("contenedor"):
-                salida[r["sku"]] = r["contenedor"]
+                salida[idx.get(r["sku"].lower(), r["sku"])] = r["contenedor"]
     return salida

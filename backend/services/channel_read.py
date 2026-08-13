@@ -181,3 +181,61 @@ def categoria_curada(sku: str) -> dict[str, str] | None:
     return {"category_id": str(row["category_id"]),
             "category_name": str(row.get("category_name") or ""),
             "fuente": str(row.get("source") or "")}
+
+
+def skus_de_categoria(category_id: str) -> list[str]:
+    """SKUs mapeados a una categoría ML, ordenados (gemela del SELECT sobre
+    `categorias_ml` de competencia_captura)."""
+    return [str(r["sku"]) for r in sdb.fetch_all(
+        """select sku::text as sku from channel.product_category
+            where channel_id = 'mercado_libre' and category_id = %s
+            order by sku""", (category_id,))]
+
+
+def skus_por_categorias(ids: list[str]) -> dict[str, list[str]]:
+    """{ category_id: [sku, …] } para varios nichos de una sola consulta."""
+    salida: dict[str, list[str]] = {c: [] for c in ids}
+    if not ids:
+        return salida
+    for r in sdb.fetch_all(
+        """select category_id, sku::text as sku from channel.product_category
+            where channel_id = 'mercado_libre' and category_id = any(%s)
+            order by sku""", (list(ids),)):
+        salida.setdefault(r["category_id"], []).append(str(r["sku"]))
+    return salida
+
+
+def categorias_de(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    { sku: {category_id, category_name, ruta, cat1..cat4} } — gemela de las
+    columnas de `categorias_ml` que consume competencia_captura.
+
+    `ruta` es el `path` de `channel.categories` y cat1..cat4 son sus tramos: la
+    tabla vieja guardaba el camino ya partido, aquí se parte al leer para no
+    duplicar el dato.
+    """
+    salida: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        idx = {s.lower(): s for s in chunk}
+        for r in sdb.fetch_all(
+            """select pc.sku::text as sku, pc.category_id,
+                      ct.name as category_name, ct.path
+                 from channel.product_category pc
+                 left join channel.categories ct
+                        on ct.category_id = pc.category_id
+                       and ct.channel_id = pc.channel_id
+                where pc.channel_id = 'mercado_libre'
+                  and pc.sku = any(%s::citext[])
+                  and nullif(pc.category_id, '') is not null""", (chunk,)):
+            tramos = [t.strip() for t in str(r.get("path") or "").split("›") if t.strip()]
+            salida[idx.get(r["sku"].lower(), r["sku"])] = {
+                "category_id": r["category_id"],
+                "category_name": r.get("category_name") or "",
+                "ruta": r.get("path") or "",
+                "cat1": tramos[0] if len(tramos) > 0 else None,
+                "cat2": tramos[1] if len(tramos) > 1 else None,
+                "cat3": tramos[2] if len(tramos) > 2 else None,
+                "cat4": tramos[3] if len(tramos) > 3 else None,
+            }
+    return salida

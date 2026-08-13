@@ -30,8 +30,9 @@ from typing import Any
 
 from config import settings
 from services import (
-    competencia_mas_vendidos, competencia_ml, competencia_scraper, competencia_store,
-    competencia_terminos, db, supabase_db,
+    categorias_write, channel_read, competencia_mas_vendidos, competencia_ml,
+    competencia_scraper, competencia_store, competencia_terminos, core_read,
+    core_write, db, supabase_db,
 )
 
 log = logging.getLogger("omnicanal.competencia.captura")
@@ -385,14 +386,21 @@ def skus_de_categoria(categoria_id: str) -> dict[str, Any]:
     El título de los no vigilados sale de WooCommerce, que es la fuente del
     catálogo; el de ML puede diferir y por eso se marca el origen.
     """
+    # PASO 0 (12-ago-2026): `categorias_ml` está congelada desde el 22-jul. El
+    # mapa vivo es el de kubera, donde manda la elección del PANEL: no es solo
+    # más grande (13,733 SKUs contra 12,399), es que 2,270 SKUs están en otra
+    # categoría porque un humano corrigió al predictor. Medir la competencia
+    # del nicho equivocado es medir a los rivales de otro producto.
     try:
-        cat = db.fetch_all(
-            "SELECT sku FROM categorias_ml WHERE category_id = %s ORDER BY sku",
-            (categoria_id,))
+        if categorias_write.activo():
+            todos = channel_read.skus_de_categoria(categoria_id)
+        else:
+            todos = [r["sku"] for r in db.fetch_all(
+                "SELECT sku FROM categorias_ml WHERE category_id = %s ORDER BY sku",
+                (categoria_id,))]
     except Exception as exc:  # noqa: BLE001
         log.warning("skus_de_categoria(%s): %s", categoria_id, exc)
         return {"categoria_id": categoria_id, "skus": [], "error": str(exc)}
-    todos = [r["sku"] for r in cat]
     if not todos:
         return {"categoria_id": categoria_id, "skus": []}
 
@@ -649,11 +657,15 @@ def nichos_del_top(raiz: dict[str, Any], tope: int = 5) -> list[dict[str, Any]]:
     cids = [n["categoria_id"] for n in orden]
     catalogo: dict[str, list[dict[str, Any]]] = {c: [] for c in cids}
     try:
-        marcas = ",".join(["%s"] * len(cids))
-        for f in db.fetch_all(
-            f"SELECT sku, category_id FROM categorias_ml WHERE category_id IN ({marcas}) "
-            f"ORDER BY sku", tuple(cids)):
-            catalogo.setdefault(f["category_id"], []).append({"sku": f["sku"]})
+        if categorias_write.activo():
+            for cid, skus_cat in channel_read.skus_por_categorias(cids).items():
+                catalogo[cid] = [{"sku": s} for s in skus_cat]
+        else:
+            marcas = ",".join(["%s"] * len(cids))
+            for f in db.fetch_all(
+                f"SELECT sku, category_id FROM categorias_ml WHERE category_id IN ({marcas}) "
+                f"ORDER BY sku", tuple(cids)):
+                catalogo.setdefault(f["category_id"], []).append({"sku": f["sku"]})
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo contar el catálogo por categoría: %s", exc)
 
@@ -722,9 +734,13 @@ def _fotos_desde_woo(skus: list[str]) -> dict[str, str]:
     try:
         from services import wp_db
         marcas = ",".join(["%s"] * len(skus))
-        wc = {r["sku"]: r["wc_id"] for r in db.fetch_all(
-            f"SELECT sku, wc_id FROM productos WHERE sku IN ({marcas}) AND wc_id IS NOT NULL",
-            tuple(skus)) if r.get("wc_id")}
+        if core_write.activo():
+            wc = {s: d["wc_id"] for s, d in core_read.nombres_y_wc(skus).items()
+                  if d.get("wc_id")}
+        else:
+            wc = {r["sku"]: r["wc_id"] for r in db.fetch_all(
+                f"SELECT sku, wc_id FROM productos WHERE sku IN ({marcas}) AND wc_id IS NOT NULL",
+                tuple(skus)) if r.get("wc_id")}
         faltan = [s for s in skus if s not in wc]
         if faltan:
             mm = ",".join(["%s"] * len(faltan))
@@ -762,20 +778,43 @@ def sembrar_skus(skus: list[str], con_ia: bool = True) -> dict[str, Any]:
     marcas = ",".join(["%s"] * len(skus))
     # La categoría se lee por SKU y NO se cuelga de `productos`: hay SKUs
     # categorizados que la maestra no tiene (MUE-0163-TEL).
-    filas = db.fetch_all(f"""
-        SELECT s.sku, p.nombre,
-               c.category_id, c.category_name, c.ruta, c.cat1, c.cat2, c.cat3, c.cat4,
-               MAX(CASE WHEN mp.cuenta = 'BEKURA' THEN mp.ml_item_id END) AS item_bekura,
-               MAX(mp.ml_item_id) AS item_cualquiera,
-               MAX(CASE WHEN mp.cuenta = 'BEKURA' THEN 'BEKURA' END) AS tiene_bekura
-          FROM (SELECT %s AS sku {"".join(f" UNION ALL SELECT %s" for _ in skus[1:])}) s
-          LEFT JOIN productos p     ON p.sku = s.sku
-          LEFT JOIN categorias_ml c ON c.sku = s.sku
-          LEFT JOIN ml_progress mp  ON mp.sku = s.sku
-               AND mp.ml_item_id IS NOT NULL AND mp.ml_item_id <> ''
-         GROUP BY s.sku, p.nombre, c.category_id, c.category_name, c.ruta,
-                  c.cat1, c.cat2, c.cat3, c.cat4
+    #
+    # PASO 0 (12-ago-2026): el JOIN de tres tablas se parte en dos mundos.
+    # `productos` y `categorias_ml` están congeladas y sus gemelas viven en
+    # kubera; `ml_progress` es la bitácora del publicador, sigue viva en MySQL
+    # y se lee igual que siempre. Se juntan en Python porque ya no comparten
+    # base de datos.
+    publicaciones = db.fetch_all(f"""
+        SELECT sku,
+               MAX(CASE WHEN cuenta = 'BEKURA' THEN ml_item_id END) AS item_bekura,
+               MAX(ml_item_id) AS item_cualquiera,
+               MAX(CASE WHEN cuenta = 'BEKURA' THEN 'BEKURA' END) AS tiene_bekura
+          FROM ml_progress
+         WHERE sku IN ({marcas}) AND ml_item_id IS NOT NULL AND ml_item_id <> ''
+         GROUP BY sku
     """, tuple(skus))
+    por_sku = {r["sku"]: r for r in publicaciones}
+
+    if core_write.activo() and categorias_write.activo():
+        maestra = core_read.nombres_y_wc(skus)
+        cats = channel_read.categorias_de(skus)
+        filas = [{"sku": s, "nombre": maestra.get(s, {}).get("nombre") or None,
+                  **{k: (cats.get(s) or {}).get(k) for k in
+                     ("category_id", "category_name", "ruta", "cat1", "cat2", "cat3", "cat4")},
+                  **{k: (por_sku.get(s) or {}).get(k) for k in
+                     ("item_bekura", "item_cualquiera", "tiene_bekura")}}
+                 for s in skus]
+    else:
+        viejas = db.fetch_all(f"""
+            SELECT s.sku, p.nombre,
+                   c.category_id, c.category_name, c.ruta, c.cat1, c.cat2, c.cat3, c.cat4
+              FROM (SELECT %s AS sku {"".join(f" UNION ALL SELECT %s" for _ in skus[1:])}) s
+              LEFT JOIN productos p     ON p.sku = s.sku
+              LEFT JOIN categorias_ml c ON c.sku = s.sku
+        """, tuple(skus))
+        filas = [{**f, **{k: (por_sku.get(f["sku"]) or {}).get(k) for k in
+                          ("item_bekura", "item_cualquiera", "tiene_bekura")}}
+                 for f in viejas]
 
     # Fallback a Woo solo para los que no traen nombre de la maestra.
     sin_nombre = [f["sku"] for f in filas if not f.get("nombre")]

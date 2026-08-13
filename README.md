@@ -7601,3 +7601,57 @@ nada, solo encoge su alcance.
 Pruebas sandbox: `probar_corte_costing.py` 15/15 · `probar_retiro_costing_orders.py`
 11/11. Lecturas nuevas verificadas contra producción en solo lectura.
 Versión 0.125.0.
+
+### v0.126.0 — Competencia deja el espejo, y una advertencia sobre el mapa de categorías
+
+Últimos cuatro lectores de tablas congeladas. `competencia_captura.py` mide la
+competencia de cada SKU, y para saber **a quién medir** le preguntaba a
+`productos` y `categorias_ml`.
+
+**Los wc_id de la maestra estaban podridos y nadie lo sabía.** 332 SKUs tienen
+un `wc_id` distinto en MySQL que en kubera. Le pregunté a WordPress cuál existe:
+**kubera acierta en los 332 y MySQL en ninguno** — sus ids apuntan a posts
+borrados de SKUs reciclados. Ese wc_id trae la foto y el título del producto,
+así que la captura venía mostrando el producto ANTERIOR. Y `MUE-0163-TEL`, el
+caso que el comentario del código señalaba como "la maestra no lo conoce", sí
+está en kubera con el mismo wc_id 11154: el respaldo a WordPress deja de ser el
+camino normal para volver a ser lo que dice su nombre.
+
+**⚠️ Y una advertencia que corrige lo que escribí en v0.125.0.** Ahí dije que
+los 2,270 SKUs donde kubera y MySQL discrepan eran "la corrección humana contra
+la adivinanza del detector". Es más matizado. `source` tiene cuatro valores
+—`predictor` 5,281, `panel` 5,172, `costos_ml` 2,340, `real` 940— así que
+`panel` sí distingue algo real. Pero **2,833 de los 5,172 `panel` están en
+bloques de 8 o más SKUs de la misma FAMILIA compartiendo una sola categoría**, y
+los bloques no son coherentes: la familia `CORR-` mete pasamanos, frenos de
+disco, reposapiés y bolsas de bicicleta en "Corrales" de mascotas; `DEPO`
+mezcla aletas de natación con vendas de boxeo; `JUGU`, calcomanías de pared con
+un xilófono. Eso es asignación por PREFIJO de SKU, no elección producto por
+producto.
+
+No cambia el código —la regla 2 de la casa dice que el panel manda, y el MySQL
+congelado tampoco era mejor: era un predictor viejo— pero sí cambia cuánto vale
+la salida. **Medir la competencia de un nicho equivocado da un número que
+parece dato y es ruido**, y el mismo mapa alimenta la comisión con la que se
+calculan precios. Vale una revisión aparte de los bloques por familia.
+
+El JOIN de tres tablas se parte en dos mundos: `productos` y `categorias_ml`
+salen de kubera, `ml_progress` sigue en MySQL —es bitácora del publicador, no
+está congelada— y se juntan en Python.
+
+**Detalle de las gemelas de lote**: devolvían el SKU con la ortografía de la
+base. Con `citext` la consulta acierta pero la llave no coincidía con la que
+pasó el llamador, y un `dict.get` fallaba en silencio. Las cuatro (las dos de
+costos, `categorias_de` y `nombres_y_wc`) ahora devuelven la llave que se les
+pidió.
+
+Nuevas gemelas: `channel_read.skus_de_categoria`, `skus_por_categorias`,
+`categorias_de` (parte el `path` en cat1..cat4) y `core_read.nombres_y_wc`.
+
+**Con esto no queda ningún lector interno apuntando al espejo de costos, core ni
+categorías.** Los tres pueden congelarse; falta el dale para apagar el
+interruptor. Channel y orders siguen pendientes de su propio barrido.
+
+Pruebas sandbox: `probar_corte_costing.py` 15/15 · `probar_retiro_costing_orders.py`
+11/11. Lecturas nuevas verificadas contra producción en solo lectura, con
+WordPress de árbitro en los wc_id. Versión 0.126.0.
