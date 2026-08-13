@@ -126,11 +126,29 @@ async def _correr_actor(actor: str, payload: dict[str, Any],
             log.warning("Apify %s falló: %s", actor, exc or type(exc).__name__)
             filas = []
 
-    if not filas and respaldo and respaldo != actor:
-        log.warning("Apify %s no trajo nada; reintento con el respaldo %s",
-                    actor, respaldo)
-        return await _correr_actor(respaldo, payload, limite_lectura, respaldo=None)
     return filas
+
+
+async def _con_respaldo(payload: dict[str, Any], limite_lectura: int,
+                        util) -> list[dict[str, Any]]:
+    """
+    Corre el actor principal y, si lo que trajo NO SIRVE, reintenta con el otro.
+
+    `util(filas) -> bool` lo decide quien llama, porque "vacío" no es lo mismo
+    que "inútil": una corrida puede terminar SUCCEEDED y devolver una entrada por
+    URL con `items: []` — el dataset no está vacío pero no hay nada que guardar.
+    Pasó con dos términos de Herramientas, dos veces seguidas.
+    """
+    filas = await _correr_actor(settings.apify_navegador_actor, payload, limite_lectura)
+    if util(filas):
+        return filas
+    respaldo = settings.apify_navegador_respaldo
+    if not respaldo or respaldo == settings.apify_navegador_actor:
+        return filas
+    log.warning("El actor principal no trajo nada aprovechable; "
+                "reintento con el respaldo %s", respaldo)
+    otras = await _correr_actor(respaldo, payload, limite_lectura)
+    return otras if util(otras) else filas
 
 
 def _num(v: Any) -> float | None:
@@ -212,7 +230,7 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
         urls.append({"url": u})
         de_url[u.rstrip("/")] = q
 
-    paginas = await _correr_actor(settings.apify_navegador_actor, {
+    paginas = await _con_respaldo({
         "startUrls": urls,
         "pageFunction": _PAGE_FUNCTION_BUSCADOR,
         "proxyConfiguration": _proxy(),
@@ -223,7 +241,8 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
         "maxConcurrency": 2,
         "headless": True,
         "launcher": "chromium",
-    }, limite_lectura=len(urls))
+    }, limite_lectura=len(urls),
+        util=lambda fs: any((p.get("items") or []) for p in fs))
 
     out: dict[str, list[dict[str, Any]]] = {}
     for pag in paginas:
@@ -510,7 +529,7 @@ async def mas_vendidos_categorias(categorias: list[str],
     cats = [c for c in dict.fromkeys(categorias) if c]
     if not cats or not disponible():
         return {}
-    filas = await _correr_actor(settings.apify_navegador_actor, {
+    filas = await _con_respaldo({
         "startUrls": [{"url": f"{_URL_MAS_VENDIDOS}{c}"} for c in cats],
         "pageFunction": _PAGE_FUNCTION_MAS_VENDIDOS,
         "proxyConfiguration": _proxy(),
@@ -523,7 +542,8 @@ async def mas_vendidos_categorias(categorias: list[str],
         "maxConcurrency": 2,
         "headless": True,
         "launcher": "chromium",
-    }, limite_lectura=len(cats))
+    }, limite_lectura=len(cats),
+        util=lambda fs: any((p.get('items') or []) for p in fs))
 
     out: dict[str, list[dict[str, Any]]] = {}
     for pagina in filas:
