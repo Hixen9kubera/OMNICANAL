@@ -127,11 +127,16 @@ lectura directa OK, DDL/DML no.
 | `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | **true** / definida / `crear_logs,ml_backlog,amazon_backlog,amazon_imagenes,ml_image_edit_backlog,pedidos_ml` | Espejo kubera de escritores sin cobertura → esquema v4 (6 tablas desde el 23-jul, GO de Eduardo). Sumar tabla al CSV = flujo vivo, dale de Brandon. Quedan FUERA a propósito: `webhook_eventos` campana (opcional, volumen) y `ml_tokens` (bloqueado hasta Vault). La página /migracion muestra censo, eventos, errores y racha de actas |
 | Apagado de emergencia | — | Cualquier flujo se apaga con su variable, sin deploy (accept-deploy para aplicar staged) |
 
-## MIGRACIÓN A LA BD KUBERA — cortada, con el desmantelamiento EN PAUSA
+## MIGRACIÓN A LA BD KUBERA — cortada, y los espejos APAGADOS (13-ago-2026)
 
 Los cinco dominios (costos, pedidos, channel, core, categorías) están cortados:
-**kubera es la fuente de verdad y ahí se escribe primero.** El retiro de los
-espejos a MySQL se intentó el 11 y 12-ago y **se revirtió** — abajo el porqué.
+**kubera es la fuente de verdad y ahí se escribe primero.** Y desde el 13-ago a
+las 04:23 UTC **los tres espejos inversos están apagados**: MySQL ya no recibe
+nada. Ese fue el último paso de la fase de CORTES; lo que queda es el
+desmantelamiento (F8), que es limpieza, no migración.
+
+El retiro se intentó antes, el 11 y 12-ago, y **se revirtió** — abajo el porqué,
+porque la lección es lo que hizo que la segunda vez funcionara.
 
 ### ⚠️ Antes de congelar una tabla: busca quién la LEE PARA DECIDIR
 
@@ -165,15 +170,22 @@ significa "no existe": significa "ya no sé".
 Qué se apaga, cómo se verifica con `vigilar_congelacion.py`, cómo se
 revierte (una variable, sin deploy) y qué NO tocar mientras tanto.
 
-### Estado real de los espejos (12-ago, 24:00 UTC)
+### Estado real de los espejos (13-ago, 05:00 UTC)
 
 `CHANNEL_ESPEJO_INVERSO`, `COSTING_ESPEJO_INVERSO` y `ORDERS_ESPEJO_INVERSO`
-están en **`true`**: los tres espejos vuelven a escribir MySQL. El paso 1 fue
-prematuro en los tres dominios, no solo en pedidos.
+están en **`false`**. Verificado con `vigilar_congelacion.py` a las 14 h: las
+tres tablas congeladas y kubera recibiendo con normalidad.
+
+Ojo con el tiempo de efecto: inventario y costos pararon en minutos, **pedidos
+tardó ~36 min** (hasta las 05:00). Lo más probable es la cola del espejo
+drenando lo ya encolado — el flag corta lo que ENTRA, no lo que ya está dentro.
+No asumir que un flag apagado significa "detenido ya".
 
 `core` y `categorías` nunca tuvieron espejo inverso (el único `UPDATE` a
 `productos` es `odoo_watch.py:57`, stock de Odoo; `categorias_ml` no la escribe
 nadie desde el 22-jul).
+
+**La reversa sigue siendo una variable**, por dominio y sin deploy.
 
 ### Lo que hay que repuntar antes de reintentar el retiro
 
@@ -207,19 +219,16 @@ apagar el espejo de ese dominio.
 
 ### Estado por dominio
 
-| Dominio | Escritura | Lectura | Racha cumplida |
+| Dominio | Escritura | Lectura | Espejo MySQL |
 |---|---|---|---|
-| Costos | kubera + espejo MySQL (reactivado 12-ago) | kubera, sin fallback | 27/14 |
-| Pedidos | kubera + espejo MySQL (reactivado 12-ago) | kubera, sin fallback | 21/14 |
-| Channel | kubera + espejo MySQL (reactivado 12-ago) | kubera, sin fallback | 22/14 |
-| Core | kubera (nunca tuvo espejo) | kubera, sin fallback | 17 |
-| Categorías | kubera (nunca tuvo espejo) | kubera, sin fallback | 17 |
+| Costos | kubera | kubera, sin fallback | APAGADO 13-ago |
+| Pedidos | kubera | kubera, sin fallback | APAGADO 13-ago |
+| Channel | kubera | kubera, sin fallback | APAGADO 13-ago |
+| Core | kubera | kubera, sin fallback | nunca tuvo |
+| Categorías | kubera | kubera, sin fallback | nunca tuvo |
 
-Ojo con la asimetría de esa tabla: las **lecturas** del panel ya no consultan
-MySQL (paso 3, v0.112.0 y v0.113.0) pero las **escrituras** vuelven a espejarse.
-Es a propósito: el panel lee de la fuente de verdad, y el espejo se mantiene
-fresco para los lectores internos que todavía no se repuntan (la lista de
-arriba). Los flags `SUPABASE_READ_*` siguen siendo la reversa de las lecturas.
+Los flags `SUPABASE_READ_*` siguen siendo la reversa de las lecturas y los
+`*_ESPEJO_INVERSO` la de las escrituras.
 
 ### Lo que sigue vivo y NO se retira
 
@@ -265,9 +274,24 @@ kubera.
    del esquema viejo. Lo que queda apuntando ahí son 8 scripts de mantenimiento
    que se corren A MANO y el andamiaje del propio espejo.
 
-1. **Bitácoras a `ops.process_log`**: falta `crear_logs`, y al FINAL la fusión
-   de `alertas_estado` (esa es la última pieza: debe seguir funcionando aunque
-   kubera esté caída, así que se mueve cuando ya no haya nada que rescatar).
+1. **Bitácoras a `ops.process_log`**: `crear_logs` HECHO (v0.132.0, con los
+   2,583 eventos y sus fechas corregidas). Falta solo `alertas_estado`, y va al
+   FINAL a propósito: debe seguir funcionando aunque kubera esté caída, así que
+   se mueve cuando ya no haya nada que rescatar.
+
+1b. **La foto de stock de Odoo NO tiene casa en kubera.** `odoo_watch` compara
+   contra `productos.stock_odoo` (MySQL) y la escribe cada 30 min — o sea que
+   `productos` NO está del todo congelada. `core.products` no tiene esa columna.
+   Al retirar el esquema, ese vigilante se queda sin dónde guardar. Decisión
+   pendiente: darle casa o **apagarlo** (Odoo está en retiro y Woo es la fuente
+   de verdad del stock; hoy solo vigila 4,786 de los 13,030 SKUs de Odoo porque
+   su lista dejó de crecer el 23-jul).
+
+1c. **Los 8 scripts de mantenimiento** que se corren a mano y todavía leen
+   MySQL: `alinear_ml_drop`, `alinear_amazon_drop`, `marcar_amazon_muertas`,
+   `corregir_status_publicados`, `corregir_stock_woo_full`,
+   `sincronizar_ml_huerfanas`, `publicar_walmart`, `sync_odoo_woo_seguro`.
+   Repuntar o archivar antes del retiro del esquema.
 2. **Archivo de congelados**: tablas del robot Alibaba (`scraping_alibaba`,
    `atributos_ia`, `imagenes_producto`, `productos`), `legacy_costos_ml`, seeds
    de `fx_rates`/`pricing_params`, `marketplace_identity` y su cron.
