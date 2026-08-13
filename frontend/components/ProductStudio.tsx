@@ -669,9 +669,14 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // ML y Amazon: botón siempre disponible → "Publicar" si NO está publicado
   // (crea nuevo), "Actualizar" si ya está.
   const amazonPublicado = amazonPublicadoReal || amazonPublicadoOk;
-  const puedeActualizar = esML || esAmazon;
+  // TikTok entra en v0.144.0: el botón sirve para crear y para actualizar, y el
+  // backend decide cuál según haya o no `listing_id` — crear sobre un producto
+  // que ya existe genera un DUPLICADO que hay que borrar a mano en TikTok.
+  const puedeActualizar = esML || esAmazon || esTikTok;
+  const tiktokPublicado = Boolean(datosCanal?.item_id);
   const accionLabel =
-    (esML && mlPublicado) || (esAmazon && amazonPublicado) ? "Actualizar en" : "Publicar a";
+    (esML && mlPublicado) || (esAmazon && amazonPublicado) || (esTikTok && tiktokPublicado)
+      ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => aNumero(v);
 

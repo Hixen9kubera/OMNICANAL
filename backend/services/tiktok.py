@@ -276,6 +276,58 @@ async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
     return j.get("data") or {}
 
 
+async def subir_imagen(url: str, token: str | None = None) -> str | None:
+    """
+    Sube una imagen a TikTok y devuelve su `uri` — el identificador OPACO que
+    viaja en el producto. TikTok rehospeda: la URL de chunche.shop no sirve.
+
+    DOS COSAS DISTINTAS obligan a convertir a JPEG, y conviene no confundirlas:
+      1. parte del catálogo son `.webp` DE VERDAD (así vinieron de Alibaba) — el
+         primer piloto perdió 3 de 5 productos por eso;
+      2. además chunche.shop entrega WEBP disfrazado de `.jpg` cuando el cliente
+         acepta webp, así que hay que pedir `Accept: image/jpeg`.
+
+    Se REUSA el conversor de `imagenes_amazon`: ya está probado, hace Lanczos a
+    1000 px y trae las cabeceras que sortean el WAF de Hostinger. Dos
+    implementaciones del mismo problema es como se acaban arreglando los bugs
+    una sola vez de dos.
+
+    La firma se arma aquí y no en `llamar()` porque este endpoint es
+    **multipart**: el cuerpo no entra en la cadena firmada.
+    """
+    import asyncio
+
+    token = token or access_token()
+    if not token:
+        return None
+    try:
+        from services import imagenes_amazon as ia
+        crudo = await ia._descargar(url)  # noqa: SLF001
+        if not crudo:
+            return None
+        contenido, _w, _h = await asyncio.to_thread(ia._a_jpeg, crudo, 1000)  # noqa: SLF001
+        ruta = "/product/202309/images/upload"
+        p = {"app_key": settings.tiktok_app_key, "timestamp": str(int(time.time()))}
+        partes = "".join(f"{k}{p[k]}" for k in sorted(p))
+        env = f"{settings.tiktok_app_secret}{ruta}{partes}{settings.tiktok_app_secret}"
+        p["sign"] = hmac.new(settings.tiktok_app_secret.encode(), env.encode(),
+                             hashlib.sha256).hexdigest()
+        async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as cli:
+            r = await cli.post(ruta, params=p,
+                               headers={"x-tts-access-token": token},
+                               files={"data": ("i.jpg", contenido, "image/jpeg")},
+                               data={"use_case": "MAIN_IMAGE"})
+        j = r.json()
+        if j.get("code") not in (0, "0"):
+            log.warning("subir_imagen(%s): code=%s %s", url[:60], j.get("code"),
+                        j.get("message"))
+            return None
+        return (j.get("data") or {}).get("uri")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("subir_imagen(%s) falló: %s", url[:60], exc)
+        return None
+
+
 async def tiendas_autorizadas(token: str) -> list[dict[str, Any]]:
     """
     Las tiendas que autorizaron la app, CON su `cipher`.

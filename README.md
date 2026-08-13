@@ -8034,6 +8034,53 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.144.0 — Publicar en TikTok desde el panel
+
+El publicador de TikTok vivía como script suelto en el escritorio de otra sesión
+—con él se subieron las 900 publicaciones— y el panel no podía mandar nada.
+`services/publicar_tiktok.py` es su versión de panel: mismo payload y mismas
+trampas, pero sobre UN producto, disparado por una persona y con vista previa.
+
+**Lo que NO se copió, a propósito:** el respaldo de categoría por IA en dos
+pasos. Elige "la hoja más próxima" con confianza baja, que es razonable en un
+lote de 900 donde no publicar sale caro; en el panel hay alguien enfrente, así
+que sin categoría fiable **se para y se dice**. Un producto vivo y mal
+clasificado no da error — es el error de `TEC-1812-NEG`.
+
+**De dónde sale cada dato.** Imágenes, precio, stock y medidas salen de
+WooCommerce por el MISMO camino que ML y Amazon (`publicar_ready.construir_prod`,
+que ya aplica "lo editado en el Studio pisa lo de Woo"). El título, la
+descripción y los atributos salen de `enrich.channel_content` — o sea, de lo que
+escribió la IA de la v0.143.0. Pedirle las imágenes al frontend habría sido una
+segunda fuente que se desincroniza, y el Studio ni siquiera las conoce.
+
+**Crear y actualizar son endpoints distintos**, y el backend elige según haya o
+no `listing_id`: crear sobre un producto que ya existe genera un **duplicado**
+que en TikTok se borra a mano.
+
+Probado contra la API real **sin crear ningún producto**:
+
+- **Vista previa completa** de `TEC-0697-MET`: categoría 600032 (*"la que ya
+  tiene en TikTok"*), 6 atributos con sus IDs de valor, precio $660.54, stock
+  156, dimensiones reales, 4 imágenes contadas y cuatro avisos — entre ellos que
+  el modo `LISTING` lo deja a la venta y que el borrador *casi no valida*.
+- **Subida de imagen real**: `principal_TEC-0697-MET.jpg` → `uri`
+  `tos-alisg-i-aphluv4xwc-sg/7f9d17f36…`. Era la pieza más frágil (multipart con
+  la firma armada a mano, porque el cuerpo no entra en la cadena firmada) y es
+  la que decide si el producto sale con fotos.
+
+**Lo que la vista previa NO puede prometer todavía:** si la categoría admite
+publicación. `channel.categories` no guarda `is_leaf` ni `permission_status`, y
+las `INVITE_ONLY` **no rechazan** — aceptan el producto y lo dejan en `PENDING`
+para siempre, sin error. Mientras falten esas dos columnas, el aviso lo dice con
+todas sus letras en vez de afirmar lo que no sabemos.
+
+Cada envío queda en `ops.channel_submissions` (`detail_ref='panel:publicar'`) y
+el resultado se refleja en `channel.listings` al instante: sin eso, el panel
+diría "no publicado" de algo que uno acaba de publicar.
+
+Versión 0.144.0.
+
 ### v0.143.0 — TikTok escribe con IA: el mismo contrato de Amazon, con las trampas de TikTok
 
 `services/tiktok_ia.py`, hermano de `amazon_ia`: resuelve la categoría real del
