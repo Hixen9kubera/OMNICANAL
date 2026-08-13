@@ -104,6 +104,41 @@ def estado(raiz: str) -> dict:
     """, (raiz, raiz, raiz))
 
 
+def pendientes() -> list[str]:
+    """Raíces con trabajo por hacer, de la más chica a la más grande.
+
+    De menor a mayor a propósito: si algo se rompe se ve en los primeros
+    minutos y no después de tres horas. Una raíz cuenta como pendiente si le
+    falta el top de la raíz, alguna subcategoría sin capturar, o algún SKU sin
+    término medido.
+    """
+    filas = supabase_db.fetch_all("""
+     with s as (select * from enrich.market_skus_v where raiz_id is not null),
+          sub as (select distinct raiz_id, categoria_id from s)
+     select s.raiz_id, max(s.raiz_nombre) nom, count(*) skus,
+            (select count(*) from sub where sub.raiz_id = s.raiz_id) subs,
+            (select count(*) from sub where sub.raiz_id = s.raiz_id
+               and exists (select 1 from enrich.market_bestsellers b
+                            where b.categoria_id = sub.categoria_id)) con_top,
+            (select count(*) from enrich.market_bestsellers
+              where categoria_id = s.raiz_id and nivel = 'raiz') raiz,
+            (select count(distinct x.sku) from enrich.market_skus_v x
+               join enrich.market_sku_config c on c.sku = x.sku and c.canal = x.canal
+               join enrich.market_search_term st on st.id = c.termino_id
+              where x.raiz_id = s.raiz_id and st.medido_en is not null) medidos
+       from s group by s.raiz_id
+       order by count(*)""")
+    out = []
+    for f in filas:
+        falta = (f["subs"] - f["con_top"]) + (0 if f["raiz"] else 1) \
+                + max(0, f["skus"] - f["medidos"])
+        if falta > 0:
+            out.append(f["raiz_id"])
+            print(f"   {f['raiz_id']:<11} {str(f['nom'])[:30]:<30} "
+                  f"{f['skus']:>4} SKUs · faltan {falta}")
+    return out
+
+
 def pinta(e: dict, titulo: str) -> None:
     print(f"\n  ── {titulo}")
     print(f"     SKUs {e['activos']}/{e['skus']} activos · top raíz {e['raiz']} · "
@@ -155,7 +190,10 @@ async def cerrar(raiz: str, args) -> None:
 
 async def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("raices", nargs="+", help="Ids de raíz (p. ej. MLM1648 MLM1500)")
+    ap.add_argument("raices", nargs="*", help="Ids de raíz (p. ej. MLM1648 MLM1500)")
+    ap.add_argument("--pendientes", action="store_true",
+                    help="Descubre solas TODAS las raíces con trabajo pendiente y "
+                         "las ordena de menor a mayor. Las completas se saltan.")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--sin-medir", action="store_true",
                     help="Captura y propone, pero no mide los términos en Apify.")
@@ -165,7 +203,15 @@ async def main() -> int:
         print("✗ Falta SUPABASE_DB_URL.")
         return 2
 
-    raices = [r.strip().upper() for r in args.raices]
+    if args.pendientes:
+        raices = pendientes()
+        if not raices:
+            print("Nada pendiente: todas las raíces con SKUs están completas.")
+            return 0
+    else:
+        raices = [r.strip().upper() for r in args.raices]
+    if not raices:
+        ap.error("da al menos una raíz, o usa --pendientes")
     t0 = time.time()
     for i, raiz in enumerate(raices, 1):
         print(f"\n\n########  {i}/{len(raices)}  ########")
