@@ -7911,6 +7911,36 @@ filtrando por estado, mismo historial por SKU, y los 270 completados de
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20 · 5/5 · 12/12. Versión 0.132.0.
 
+### v0.135.0 — Se retira deltas-orders: los tres crons de deltas quedan cerrados
+
+`pedidos_ml` volvió a congelarse (última escritura 05:00 UTC del 13-ago), así
+que `deltas-orders` habría sacado `con_deltas` **por construcción** en su corrida
+de las 07:15 — la misma razón por la que se retiraron channel el 11-ago y costos
+el 12. Racha cerrada en **21/14, cumplida**.
+
+Hay un motivo extra que no aplicaba a los otros dos: **su regla 4 quedó
+invertida por el corte F6.** Decía *"solo_en_supabase es delta: channel.orders
+nace exclusivamente de pedidos_ml, así que una fila que MySQL no conoce es una
+anomalía real"*. Hoy es al revés — `channel.orders` se escribe PRIMERO y el
+espejo después, así que una fila solo en Supabase no es anomalía: es el espejo
+yendo atrás. Fueron exactamente los 143 y los 23 que hubo que rellenar el 12 y
+13-ago.
+
+Nace `railway.deltas-orders.json` con el aviso de retiro, siguiendo el patrón de
+los otros dos. El servicio apuntaba a `backend/railway-deltas.json` —con guion, y
+ese archivo NO existe en el repo—, así que además se corrige la referencia rota.
+
+También se les pone `watchPatterns` a los tres para que solo se reconstruyan si
+se toca su propio archivo de configuración. Sin eso, cada push al repo los
+redesplegaba y `deltas-channel` ya había fallado dos veces en un día generando
+alertas de un servicio retirado — ruido que enseña a ignorar alertas, que es
+justo lo que casi cuesta caro el 12-ago.
+
+Los tres dominios de deltas quedan cerrados: channel 22/14, costos 27/14,
+orders 21/14. Versión 0.135.0.
+
+---
+
 ### v0.134.0 — La alerta de duplicados suena una vez, no cada hora
 
 La v0.133.0 acertó en QUÉ vigilar y falló en CUÁNDO hablar: usaba `avisar()`,
