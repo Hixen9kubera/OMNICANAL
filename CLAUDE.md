@@ -127,37 +127,80 @@ lectura directa OK, DDL/DML no.
 | `KUBERA_MIRROR_ENABLED` / `KUBERA_DB_URL` / `KUBERA_MIRROR_TABLAS` | **true** / definida / `crear_logs,ml_backlog,amazon_backlog,amazon_imagenes,ml_image_edit_backlog,pedidos_ml` | Espejo kubera de escritores sin cobertura → esquema v4 (6 tablas desde el 23-jul, GO de Eduardo). Sumar tabla al CSV = flujo vivo, dale de Brandon. Quedan FUERA a propósito: `webhook_eventos` campana (opcional, volumen) y `ml_tokens` (bloqueado hasta Vault). La página /migracion muestra censo, eventos, errores y racha de actas |
 | Apagado de emergencia | — | Cualquier flujo se apaga con su variable, sin deploy (accept-deploy para aplicar staged) |
 
-## MIGRACIÓN A LA BD KUBERA — CERRADA el 12-ago-2026
+## MIGRACIÓN A LA BD KUBERA — cortada, con el desmantelamiento EN PAUSA
 
-Los cinco dominios (costos, pedidos, channel, core, categorías) están cortados
-y desmantelados. **kubera escribe y kubera lee; MySQL ya no participa.**
+Los cinco dominios (costos, pedidos, channel, core, categorías) están cortados:
+**kubera es la fuente de verdad y ahí se escribe primero.** El retiro de los
+espejos a MySQL se intentó el 11 y 12-ago y **se revirtió** — abajo el porqué.
 
-### ⚠️ Lo primero que hay que saber: las tablas de MySQL están CONGELADAS
+### ⚠️ Antes de congelar una tabla: busca quién la LEE PARA DECIDIR
 
-`costos_validados`, `costos_finales`, `costos_logs`, `pedidos_ml` y
-`canal_inventario` **dejaron de recibir escrituras** (11 y 12-ago). Siguen ahí,
-con su último valor bueno, hasta F8.
+Esta sección existe por un incidente que costó dinero.
 
-Consecuencia que ha mordido: **los flags `SUPABASE_READ_*` son el interruptor
-de reversa, y apagarlos manda las lecturas a esas tablas congeladas.** El panel
-no diría "error", diría cifras de agosto como si fueran de hoy — un tab de
-Ventas con 21 pedidos de menos, publicaciones marcadas `inactive` que llevan
-semanas activas. Si alguna vez hay que apagarlos, es una decisión consciente y
-temporal, no un "por si acaso".
+El 12-ago se congeló `pedidos_ml` (paso 1 del retiro de pedidos). Kubera quedaba
+al día y el espejo dejaba de escribirse: parecía inocuo. Pero **tres consultas
+del flujo de alta seguían preguntándole a esa tabla**, y una foto detenida
+contesta con seguridad lo que ya no sabe:
 
-Lo mismo con cualquier consulta nueva: **si un SELECT nuevo lee esas tablas,
-está leyendo el pasado.** Las gemelas vivas son `costing.*`, `channel.orders`,
-`channel.listings` y `core.products`.
+- El candado de idempotencia respondía SIEMPRE "esta orden no existe" → cada
+  aviso de ML creaba otro pedido en Woo. **964 pedidos fantasma en 4 h 17 min,
+  $409,741**, 85% de todo lo creado en la ventana.
+- La marca de agua de Amazon quedó fija: pedía siempre la misma ventana. **No
+  duplicó por casualidad — no tuvo tráfico esa tarde.**
+- El vigilante de silencio de ventas gritó "sin ventas en 4.1 h" en día récord.
+
+Arreglado en v0.117.0 (las tres lecturas se mudan a `channel.orders` vía
+`orders_write`), con contención `ORDERS_ESPEJO_INVERSO=true`, los 964 a la
+papelera y los 16 que habían descontado stock cancelados primero para que Woo
+devolviera la pieza.
+
+**La regla que faltaba: congelar una tabla es cambiar el contrato de LECTURA,
+no solo el de escritura.** Verificar que kubera quede al día y que el espejo
+deje de escribir NO alcanza. Un arnés de paridad mide si los datos coinciden,
+no si alguien toma decisiones con ellos. Y un `None` de una tabla detenida no
+significa "no existe": significa "ya no sé".
+
+### Estado real de los espejos (12-ago, 24:00 UTC)
+
+`CHANNEL_ESPEJO_INVERSO`, `COSTING_ESPEJO_INVERSO` y `ORDERS_ESPEJO_INVERSO`
+están en **`true`**: los tres espejos vuelven a escribir MySQL. El paso 1 fue
+prematuro en los tres dominios, no solo en pedidos.
+
+`core` y `categorías` nunca tuvieron espejo inverso (el único `UPDATE` a
+`productos` es `odoo_watch.py:57`, stock de Odoo; `categorias_ml` no la escribe
+nadie desde el 22-jul).
+
+### Lo que hay que repuntar antes de reintentar el retiro
+
+Barrido del 12-ago — lectores de tablas del espejo que toman DECISIONES:
+
+| Sitio | Qué decide | Riesgo |
+|---|---|---|
+| `fanout_stock.py:260` | a qué publicaciones empujar stock, leyendo `canal_inventario` **sin camino a kubera** | alto |
+| `inventario.py:258 / 282` | qué ítems ya vio el sync y cuáles cerrar | alto |
+| `costos.py:65` | comisión para calcular precios (kubera primero, MySQL de respaldo) | medio |
+| `crear_producto.py`, `creacion.py` (7 sitios) | costos y categorías al crear productos | medio |
+| `competencia_captura.py` | qué SKUs capturar, por `categorias_ml` (congelada desde jul) | bajo, encoge alcance |
+
+Mientras esos lean MySQL, esas tablas **no se pueden congelar**. El orden
+correcto es: repuntar los lectores → verificar → recién entonces apagar el
+espejo de ese dominio.
 
 ### Estado por dominio
 
-| Dominio | Escritura | Lectura | Racha al cierre |
+| Dominio | Escritura | Lectura | Racha cumplida |
 |---|---|---|---|
-| Costos | kubera (espejo retirado) | kubera, sin fallback | 27/14 |
-| Pedidos | kubera (espejo retirado) | kubera, sin fallback | 21/14 |
-| Channel | kubera (espejo retirado) | kubera, sin fallback | 22/14 |
+| Costos | kubera + espejo MySQL (reactivado 12-ago) | kubera, sin fallback | 27/14 |
+| Pedidos | kubera + espejo MySQL (reactivado 12-ago) | kubera, sin fallback | 21/14 |
+| Channel | kubera + espejo MySQL (reactivado 12-ago) | kubera, sin fallback | 22/14 |
 | Core | kubera (nunca tuvo espejo) | kubera, sin fallback | 17 |
 | Categorías | kubera (nunca tuvo espejo) | kubera, sin fallback | 17 |
+
+Ojo con la asimetría de esa tabla: las **lecturas** del panel ya no consultan
+MySQL (paso 3, v0.112.0 y v0.113.0) pero las **escrituras** vuelven a espejarse.
+Es a propósito: el panel lee de la fuente de verdad, y el espejo se mantiene
+fresco para los lectores internos que todavía no se repuntan (la lista de
+arriba). Los flags `SUPABASE_READ_*` siguen siendo la reversa de las lecturas.
 
 ### Lo que sigue vivo y NO se retira
 
@@ -191,6 +234,12 @@ funciona; solo un push re-resuelve el archivo. Y `deltas-orders` usa
 `railway-deltas.json` (nombre fuera de patrón).
 
 ### F8 — lo que falta para cerrar del todo
+
+**0. Repuntar los lectores de la tabla de arriba.** Es el paso que faltó y el
+que habilita todos los demás: mientras `fanout_stock`, `inventario` y el flujo
+de Crear decidan leyendo MySQL, ningún espejo se puede volver a apagar. Se hace
+dominio por dominio, y cada uno se apaga solo cuando SUS lectores ya miran a
+kubera.
 
 1. **Bitácoras a `ops.process_log`**: falta `crear_logs`, y al FINAL la fusión
    de `alertas_estado` (esa es la última pieza: debe seguir funcionando aunque

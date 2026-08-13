@@ -7258,3 +7258,36 @@ titulo + BRAND VACIO     -> BRAND sigue faltando   (presente ≠ lleno)
 La primera versión los dejaba sin canónico para no mentir en verde, pero el
 panel los etiquetaba *"no editable desde el panel"* — falso, los atributos sí se
 editan en el Estudio. Mirar dentro resuelve las dos cosas. Versión 0.116.0.
+
+### v0.117.1 — El CLAUDE.md dice la verdad del desmantelamiento (y por qué se revirtió)
+
+La sección de migración afirmaba que las tablas de MySQL estaban congeladas y
+advertía sobre los flags de lectura. Tras el incidente de los 964 pedidos
+fantasma **los tres espejos se reactivaron** (`CHANNEL_`, `COSTING_` y
+`ORDERS_ESPEJO_INVERSO=true`, dale de Eduardo), así que ese texto había pasado
+de guía a información falsa para cualquier sesión que entrara mañana.
+
+Lo que ahora dice, y es la lección que costó $409,741 en pedidos fantasma:
+
+> **Congelar una tabla es cambiar el contrato de LECTURA, no solo el de
+> escritura.** Verificar que kubera quede al día y que el espejo deje de
+> escribir NO alcanza. Un arnés de paridad mide si los datos coinciden, no si
+> alguien toma decisiones con ellos. Y un `None` de una tabla detenida no
+> significa "no existe": significa "ya no sé".
+
+Se documenta el incidente completo (candado de idempotencia ciego, marca de
+agua de Amazon fija —que no duplicó por falta de tráfico, no por diseño—, y el
+vigilante de ventas gritando en día récord), el estado real de cada flag, y la
+**tabla de lectores pendientes de repuntar** que salió del barrido: el peor es
+`fanout_stock.py:260`, que decide a qué publicaciones empujar stock leyendo
+`canal_inventario` sin ningún camino a kubera.
+
+Ese barrido entra a F8 como **paso 0**: mientras esos lectores decidan con
+MySQL, ningún espejo se puede volver a apagar. Cada dominio se apaga cuando SUS
+lectores ya miran a kubera, no antes.
+
+También se corrige la tabla de estado por dominio, que ahora refleja la
+asimetría deliberada: las lecturas del panel ya no tocan MySQL (paso 3), pero
+las escrituras vuelven a espejarse para los lectores internos que faltan.
+
+Sin cambios de código. Versión 0.117.1.
