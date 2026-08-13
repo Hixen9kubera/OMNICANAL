@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     # con IA" del Estudio NO depende de esta variable: ahí lo dispara una
     # persona.
     amazon_ia_en_crear: bool = False
+    # Lo mismo para TikTok. Ojo: al crear, el producto todavía NO está publicado
+    # en TikTok, así que no tiene categoría y sus atributos no se pueden pedir —
+    # se genera el título y la descripción, y los atributos entran cuando el SKU
+    # ya tenga categoría en el canal.
+    tiktok_ia_en_crear: bool = False
 
     # ── Creación de productos (Alibaba → Woo) ─────────────────
     apify_api_key: str = ""

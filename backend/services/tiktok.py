@@ -390,6 +390,31 @@ def estado() -> dict[str, Any]:
     }
 
 
+def cipher(shop_id: str | None = None) -> str | None:
+    """
+    El `shop_cipher` de la tienda — query param OBLIGATORIO en casi todo lo que
+    no sea leer catálogo público: atributos de categoría, crear producto,
+    inventario, precios.
+
+    Va aparte de `access_token()` porque son dos cosas distintas y se pierden
+    distinto: el token caduca y se renueva; el cipher solo aparece al llamar
+    `/authorization/202309/shops`, y sin él una conexión con token válido
+    contesta 'shop_cipher is required' y parece un problema de permisos.
+    """
+    try:
+        _asegurar_tabla()
+        if shop_id:
+            fila = db.fetch_one(
+                "SELECT shop_cipher FROM tiktok_tokens WHERE shop_id=%s", (shop_id,))
+        else:
+            fila = db.fetch_one(
+                "SELECT shop_cipher FROM tiktok_tokens ORDER BY updated_at DESC LIMIT 1")
+        return (fila or {}).get("shop_cipher") or None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo leer el shop_cipher de TikTok: %s", exc)
+        return None
+
+
 def access_token(shop_id: str | None = None) -> str | None:
     """Access token descifrado de una tienda (o el más reciente)."""
     try:

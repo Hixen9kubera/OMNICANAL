@@ -1073,6 +1073,25 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 log.info("crear[%s]: contenido Amazon %s (%d campo(s), tipo %s)",
                          sku_real, "ok" if amz.get("ok") else "falló",
                          len(amz.get("campos") or {}), amz.get("product_type"))
+
+            # Contenido de TIKTOK, mismo trato que Amazon (`TIKTOK_IA_EN_CREAR`).
+            # ⚠️ El producto acaba de nacer y NO está publicado en TikTok, así
+            # que todavía no tiene categoría en el canal: se genera el título y
+            # la descripción —que son del producto, no del canal— y los
+            # atributos entran cuando el SKU ya tenga categoría. El resultado lo
+            # dice en vez de dejarlo en silencio.
+            from services import tiktok_ia
+            tk = await tiktok_ia.generar_para_alta(
+                sku_real, titulo,
+                (ia or {}).get("descripcion") or scrape.get("descripcion_proveedor") or "",
+                atributos=[{"nombre": k, "valor": str(v)}
+                           for k, v in (atributos or {}).items()],
+                precio=dinero.get("precio_sugerido") or dinero.get("precio_base"),
+            )
+            if tk:
+                log.info("crear[%s]: contenido TikTok %s (%d campo(s), categoría %s)",
+                         sku_real, "ok" if tk.get("ok") else "falló",
+                         len(tk.get("campos") or {}), tk.get("product_type") or "—")
         except Exception as exc:  # noqa: BLE001
             log.exception("crear[%s] falló", sku)
             _set(sku, "error", str(exc)[:200], wc_id=wc_id)

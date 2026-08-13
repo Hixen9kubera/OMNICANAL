@@ -195,4 +195,23 @@ def validar(propuesta: dict[str, Any],
         validos.append({"id": aid,
                         "values": [{"id": str(cal.get("id")),
                                     "name": cal.get("name")}]})
-    return validos, rechazos
+
+    # ── FUSIÓN POR ID (arreglo del 13-ago-2026) ──────────────────────────────
+    #
+    # Un atributo con `is_multiple_selection` invita al modelo a devolverlo DOS
+    # veces (Material: Plástico / Material: Metal), y TikTok rechaza el producto
+    # entero con `12052254` cuando el mismo `id` aparece repetido en
+    # `product_attributes`: la forma correcta es UNA entrada con varios `values`.
+    #
+    # Medido por el hilo de TikTok: afectó a 40 de 1,221 payloads. Lo parcheaba
+    # `tk_activar.py::fundir_repetidos`, fuera de este servicio — así que
+    # cualquier consumidor nuevo (el generador del panel, sin ir más lejos)
+    # heredaba el bug intacto. Se arregla donde vive la garantía.
+    fundidos: dict[str, dict] = {}
+    for v in validos:
+        destino = fundidos.setdefault(v["id"], {"id": v["id"], "values": []})
+        vistos = {(x.get("id"), x.get("name")) for x in destino["values"]}
+        for valor in v["values"]:
+            if (valor.get("id"), valor.get("name")) not in vistos:
+                destino["values"].append(valor)
+    return list(fundidos.values()), rechazos

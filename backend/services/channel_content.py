@@ -235,7 +235,14 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                           then exists (
                             select 1 from jsonb_array_elements(
                                      coalesce(cont.j -> 'atributos', '[]'::jsonb)) a
-                             where a ->> 'nombre' = e.campo
+                             -- Se acepta por `campo` O por `nombre`. `campo` es
+                             -- el nombre NATIVO del canal, que es el que trae
+                             -- `field_requirements` (`product_attributes.100107`
+                             -- en TikTok, `BRAND` en ML); `nombre` es el legible
+                             -- que ve una persona. Comparar solo contra `nombre`
+                             -- daba falso ROJO en cuanto el generador guardaba el
+                             -- atributo correcto con su etiqueta humana.
+                             where (a ->> 'campo' = e.campo or a ->> 'nombre' = e.campo)
                                and coalesce(a ->> 'valor', '') <> '')
                         when e.campo_canonico is not null
                           then cont.j ? e.campo_canonico

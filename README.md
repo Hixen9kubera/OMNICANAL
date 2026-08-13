@@ -8034,6 +8034,75 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.143.0 — TikTok escribe con IA: el mismo contrato de Amazon, con las trampas de TikTok
+
+`services/tiktok_ia.py`, hermano de `amazon_ia`: resuelve la categoría real del
+SKU, pide el contenido con **el prompt que entregó el hilo de TikTok** (literal),
+lo pasa por `tiktok_contenido.validar` con una ronda de reparación, pide los
+**atributos a la API de esa categoría** y los valida contra su lista cerrada, y
+guarda todo en `enrich.channel_content` con `origen: ia`.
+
+**Las tres diferencias con Amazon que no son de estilo:**
+
+1. **Amazon trunca; TikTok acepta el borrador y rebota al vender.** `AS_DRAFT`
+   casi no valida y `LISTING` valida todo, así que se valida contra lo que exige
+   LISTING. Un semáforo verde de borrador no significa publicable.
+2. **El título de MX admite 300 caracteres.** El prompt que había en el panel
+   pedía **45** — 255 caracteres tirados en el campo que más pesa para que a uno
+   lo encuentren. En la prueba real el título salió de 127.
+3. **TikTok exige ID de atributo Y de valor**, nunca texto. Por eso los
+   atributos se piden en vivo a `/product/202309/categories/{id}/attributes` (los
+   IDs de valor **no** están en `field_requirements`: ahí quedaron los nombres,
+   que sirven para revisar, no para publicar).
+
+**Se guarda el nombre nativo Y el legible.** Cada atributo queda como
+`{nombre: "Material", campo: "product_attributes.100701", valor: "Acero
+inoxidable", valor_id: ["1000006"]}`. El nativo es lo que el semáforo compara
+contra `channel.field_requirements`; el legible es lo único que una persona
+puede revisar. Guardar solo uno obliga a elegir entre que el semáforo funcione o
+que el panel se entienda — así que el semáforo ahora acepta **`campo` o
+`nombre`**, y de paso deja de dar falso rojo en Mercado Libre, donde el
+requisito dice `BRAND` y el contenido guarda `Marca`.
+
+**El bug que avisó el hilo de TikTok, arreglado donde vive.**
+`tiktok_atributos.validar` no fundía atributos repetidos por `id`, y TikTok
+rechaza el producto entero con `12052254` cuando el mismo id aparece dos veces
+(pasa con los `is_multiple_selection`: *Material: Plástico* + *Material:
+Metal*). Afectó a **40 de 1,221** payloads y lo parcheaba un script suelto, así
+que cualquier consumidor nuevo heredaba el bug. Ahora se funden en una entrada
+con varios `values`, dentro del servicio.
+
+**Probado en vivo con dos productos publicados**, guardando en producción:
+
+```
+TEC-0697-MET · categoría 600032 · título 127/300 · 5 puntos · 6 atributos con su ID de valor
+VAR-0048-EST · categoría 1011720 · título  86/300 · 5 puntos
+```
+
+Dos cosas que la prueba enseñó y conviene tener presentes:
+
+- **La IA descartó sola dos atributos** que no pudo confirmar («el termo conserva
+  calor, no calienta») y quedaron en avisos, sin guardarse. Es la regla de la
+  casa funcionando: un dato inventado no da error, se publica, y después nadie
+  sabe cuál era mentira.
+- **El validador comprueba que el valor EXISTA en la lista, no que sea el
+  correcto.** Para un termo de 1.9 L eligió *«Más de 2000 ml»* pudiendo elegir
+  *«1000-2000 ml»*: las dos son válidas para TikTok. Ese acierto no se puede
+  automatizar con lista cerrada — lo revisa una persona en el panel.
+
+**Y un hallazgo del catálogo, no del código:** `TEC-0697-MET` se llama *"Termo
+… 20 Oz"* en WooCommerce y su propia descripción dice **64 oz** dos veces. La IA
+hizo lo correcto —creerle a la descripción— y al hacerlo destapó que el título
+publicado está mal. Hay que revisar cuántos más están así.
+
+El enganche del alta queda tras `TIKTOK_IA_EN_CREAR`, **apagado**. Ojo con lo que
+significa encenderlo: un producto recién creado **todavía no está publicado en
+TikTok**, así que no tiene categoría en el canal — se le genera título y
+descripción (que son del producto), y los atributos entran cuando el SKU ya
+tenga categoría. El resultado lo dice en vez de callarlo.
+
+Versión 0.143.0.
+
 ### v0.142.0 — TikTok deja de ser una maqueta: el canal se abre con sus 900 publicaciones
 
 **Lo que decía el panel y lo que era verdad.** La pestaña TikTok llevaba meses

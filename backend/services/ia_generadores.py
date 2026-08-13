@@ -212,11 +212,6 @@ _GEN_DESCRIPCION = (
     "introducción, una lista de características/beneficios y un cierre. Devuelve "
     "solo el HTML."
 )
-_TT_TITULO = (
-    "Eres experto en TikTok Shop. Genera un título corto, llamativo y orientado a "
-    "contenido viral (máx 45 caracteres) con un gancho emocional. Devuelve solo "
-    "el título."
-)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,10 +243,11 @@ GENERADORES: dict[str, list[dict[str, Any]]] = {
         {"id": "descripcion", "label": "Descripción", "icono": "align-left", "max_tokens": 900,
          "descripcion": "Descripción HTML para WooCommerce", "system": _GEN_DESCRIPCION},
     ],
-    "tiktok": [
-        {"id": "titulo", "label": "Título viral", "icono": "type", "max_tokens": 200,
-         "descripcion": "Título corto y llamativo", "system": _TT_TITULO},
-    ],
+    # TIKTOK: el contenido sale entero de `tiktok_ia.mejorar`, con su validador
+    # y los atributos de la categoría real. El generador de "título viral" que
+    # había aquí se borró el 13-ago junto con los de Amazon: pedía 45 caracteres
+    # donde MX admite 300.
+    "tiktok": [],
 }
 
 # Campos internos que NO se exponen al frontend.
@@ -314,13 +310,10 @@ _MEJORAR: dict[str, dict[str, Any]] = {
             '"atributos": [{"nombre": "..", "valor": ".."}]}'
         ),
     },
-    "tiktok": {
-        "max_tokens": 400,
-        "system": (
-            "Eres experto en TikTok Shop. Devuelve SOLO JSON válido:\n"
-            '{"titulo": "<corto, viral, máx 45 car.>", "descripcion": "<gancho breve>"}'
-        ),
-    },
+    # TIKTOK tampoco está aquí desde v0.143.0: `mejorar()` lo desvía a
+    # `tiktok_ia`. El prompt que vivía en esta entrada pedía un título de "máx
+    # 45 caracteres" cuando MX admite **300** — 255 caracteres tirados en el
+    # campo que más pesa para que a uno lo encuentren.
 }
 
 
@@ -352,6 +345,12 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
     if canal == "amazon":
         from services import amazon_ia
         return await amazon_ia.mejorar(producto)
+    # TikTok, desde v0.143.0: mismo contrato que Amazon — contenido validado
+    # contra lo que exige LISTING (no lo que tolera el borrador), atributos de
+    # la categoría REAL con sus IDs de valor, y guardado en channel_content.
+    if canal == "tiktok":
+        from services import tiktok_ia
+        return await tiktok_ia.mejorar(producto)
 
     cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
     user = (

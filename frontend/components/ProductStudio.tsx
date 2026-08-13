@@ -456,6 +456,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const esGeneral = canal === GENERAL;
   const esAmazon = canal === AMAZON;
   const esML = canal === "mercado_libre";
+  const esTikTok = canal === "tiktok";
+  // Los dos canales cuyo "Mejorar con IA" devuelve parte: qué no se aplicó, qué
+  // marcas se sustituyeron y cuántos obligatorios de su categoría cubre.
+  const conParteIA = esAmazon || esTikTok;
 
   // Estado REAL de publicación (fuente de verdad en DB: ml_progress / amazon_progress).
   const mlCuentas = useMemo(
@@ -1220,7 +1224,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
           </button>
           <p className="mt-1.5 text-center text-[11px] text-slate-400">
             <strong>Publicar</strong> envía los datos actuales al canal (revisas antes).{" "}
-            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
+            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : esTikTok ? " + puntos clave, con los atributos reales de su categoría de TikTok" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
           </p>
 
           {/* EL PARTE DEL GENERADOR (Amazon).
@@ -1228,11 +1232,12 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               silencio. El validador propio sí avisa — y esto es donde se lee.
               Si no se pinta, rechazar un campo sería tan invisible como el
               fallo que el validador existe para evitar. */}
-          {reporteIA && esAmazon && (
+          {reporteIA && conParteIA && (
             <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px] leading-relaxed">
               {reporteIA.product_type && (
                 <div className="text-slate-500">
-                  Tipo de Amazon <strong className="text-slate-700">{reporteIA.product_type}</strong>
+                  {esAmazon ? "Tipo de Amazon" : "Categoría de TikTok"}{" "}
+                  <strong className="text-slate-700">{reporteIA.product_type}</strong>
                   {reporteIA.product_type_origen ? ` (${reporteIA.product_type_origen})` : ""}
                   {reporteIA.requisitos?.estado === "sin_requisitos"
                     ? " · requisitos SIN VERIFICAR"
