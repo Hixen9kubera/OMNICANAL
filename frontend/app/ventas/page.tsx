@@ -35,15 +35,19 @@ import type { VentasResumen } from "@/lib/types";
 import { THEME_FALLBACK, esClaro, hexToRgba, variablesTema } from "@/lib/theme";
 
 /* ── Canales de venta ─────────────────────────────────────────────────
- * Lista propia (no depende de /api/canales): Ventas solo tiene integrado
- * Mercado Libre; el resto se muestra "Pronto" hasta conectar sus órdenes. */
+ * Lista propia (no depende de /api/canales): un canal entra aquí cuando sus
+ * pedidos YA están en la tabla de control, no cuando el canal existe.
+ *
+ * TikTok y Temu llevaban meses guardando pedidos ahí y seguían en "Pronto":
+ * el dato estaba y el tab no lo dejaba ver. Se abren el 13-ago. Walmart y
+ * Shein siguen sin entrada de pedidos, así que siguen en "Pronto". */
 const CANALES_VENTA = [
   { id: "general", label: "General", habilitado: true },
   { id: "mercado_libre", label: "Mercado Libre", habilitado: true },
   { id: "amazon", label: "Amazon", habilitado: true },
-  { id: "tiktok", label: "TikTok Shop", habilitado: false },
+  { id: "tiktok", label: "TikTok Shop", habilitado: true },
+  { id: "temu", label: "Temu", habilitado: true },
   { id: "walmart", label: "Walmart", habilitado: false },
-  { id: "temu", label: "Temu", habilitado: false },
   { id: "shein", label: "Shein", habilitado: false },
 ] as const;
 
@@ -58,6 +62,11 @@ const CHIPS_PEDIDOS = [
   { id: "BEKURA", label: "Kubera", tema: "mercado_libre" },
   { id: "SANCORFASHION", label: "San Corpe", tema: "mercado_libre" },
   { id: "AMAZON", label: "Amazon", tema: "amazon" },
+  // TikTok y Temu tienen pocas ventas todavía, y por eso mismo importa que se
+  // vean: un canal que vende 1 y no aparece es indistinguible de uno que no
+  // vende nada.
+  { id: "TIKTOK", label: "TikTok", tema: "tiktok" },
+  { id: "TEMU", label: "Temu", tema: "temu" },
 ] as const;
 
 type Metrica = "monto" | "pedidos" | "unidades";

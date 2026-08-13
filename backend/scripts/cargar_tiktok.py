@@ -114,18 +114,37 @@ def _int(v: str):
 #                 dice `precio_regular`. Manda el código.
 #   marca       → `brand`. Igual: el diccionario lo tiene en inglés porque así
 #                 se llama el campo en el panel y en el payload de Amazon.
-#   dimensiones → NULL. `package_dimension` de TikTok cubre TRES canónicos
-#                 (largo/ancho/alto) y el modelo guarda uno por fila. Es
-#                 exactamente el caso que el cargador de Amazon dejó sin mapear
-#                 a propósito con `item_length_width_height`: inventar la
-#                 correspondencia sería la suposición que estos cargadores
-#                 existen para evitar. El requisito se guarda igual, sin
-#                 canónico — y "sin canónico" ya significa "nadie puede
-#                 llenarlo" en el semáforo, que es la verdad.
+#   dimensiones → depende del CAMPO, y aquí me equivoqué la primera vez.
+#
+#     Lo mapeé a NULL en bloque razonando que "un campo cubre tres canónicos",
+#     que es el caso de Amazon (`item_length_width_height`, UN atributo con las
+#     tres medidas dentro). **TikTok las entrega SEPARADAS**, una fila por
+#     medida, así que cada una mapea limpio y no hay nada que inventar.
+#
+#     El costo del error se vio en el panel: el semáforo marcaba en rojo peso y
+#     medidas de productos PUBLICADOS Y A LA VENTA, porque "sin canónico"
+#     significa "nadie puede llenarlo". Cuatro falsos rojos por producto.
+#
+#     Se mapea por NOMBRE DE CAMPO, no por el valor del CSV, que es lo que
+#     permite distinguir estos cuatro de cualquier otro "dimensiones" futuro.
 #
 # Se contrastaron los ONCE valores distintos de la entrega contra el diccionario
 # de una vez, en vez de ir descubriéndolos por FK una a una: tres no existían.
 _CANONICO = {"precio": "precio_regular", "marca": "brand", "dimensiones": None}
+
+# Por NOMBRE DE CAMPO. Gana sobre `_CANONICO` cuando aplica.
+_CANONICO_POR_CAMPO = {
+    "package_weight.value":       "peso",
+    "package_dimensions.length":  "largo",
+    "package_dimensions.width":   "ancho",
+    "package_dimensions.height":  "alto",
+}
+
+
+def _canonico(campo: str, valor_csv: str) -> str | None:
+    if campo in _CANONICO_POR_CAMPO:
+        return _CANONICO_POR_CAMPO[campo]
+    return _CANONICO.get(valor_csv, valor_csv) or None
 
 
 def _valores(texto: str):
@@ -262,7 +281,7 @@ def main() -> None:
 
     # ── 3) Requisitos ────────────────────────────────────────────────────────
     filas_req = [(r["canal"], r["categoria_id"], r["campo"],
-                  _CANONICO.get(r["campo_canonico"], r["campo_canonico"]) or None,
+                  _canonico(r["campo"], r["campo_canonico"]),
                   _bool(r["obligatorio"]), r["tipo"] or None,
                   _valores(r["valores_permitidos"]),
                   json.dumps(r["default_value"], ensure_ascii=False) if r["default_value"] else None,

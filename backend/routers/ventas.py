@@ -27,6 +27,13 @@ router = APIRouter(prefix="/api/ventas", tags=["ventas"])
 _CUENTAS = {"BEKURA", "SANCORFASHION"}
 _MAX_DIAS = 31  # tope del rango: protege a ML y a la tabla de un rango loco
 
+# Canales cuyos pedidos YA están en la tabla de control (`_CUENTAS_PEDIDOS` de
+# `ventas_ml`). El router los rechazaba con "aún sin ventas integradas" aunque
+# la capa de datos ya los contemplara: TikTok y Temu llevan meses guardando
+# pedidos ahí y el tab no los dejaba ver.
+_CANAL_ES_CUENTA = {"amazon": "AMAZON", "tiktok": "TIKTOK", "temu": "TEMU"}
+_CANALES_CON_VENTAS = {"general", "mercado_libre", *_CANAL_ES_CUENTA}
+
 
 @router.get("/horario")
 async def horario(
@@ -36,12 +43,14 @@ async def horario(
     hasta: date | None = Query(None),
     fuente: str = Query("pedidos"),
 ):
-    if canal not in ("general", "mercado_libre", "amazon"):
-        # TikTok/Walmart/Temu/Shein vendrán después; avisamos claro.
+    if canal not in _CANALES_CON_VENTAS:
+        # Walmart/Shein vendrán después; avisamos claro.
         raise HTTPException(400, f"Canal '{canal}' aún sin ventas integradas.")
     cta = (cuenta or "").strip().upper() or None
-    if canal == "amazon":
-        cta = "AMAZON"  # el canal ES la cuenta (una sola)
+    if canal in _CANAL_ES_CUENTA:
+        # El canal ES la cuenta (una sola): Amazon, TikTok y Temu guardan sus
+        # pedidos con ese nombre en la tabla de control.
+        cta = _CANAL_ES_CUENTA[canal]
     elif cta and cta not in _CUENTAS:
         raise HTTPException(400, f"Cuenta desconocida: {cuenta}")
     if canal == "general":

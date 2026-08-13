@@ -8034,6 +8034,58 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.153.0 — El semáforo marcaba en rojo lo que sí estaba, y Ventas no dejaba ver TikTok
+
+Dos cosas que Brandon vio en el panel, y las dos eran del panel, no del canal.
+
+**1 · Obligatorios "faltantes" en productos que están A LA VENTA.**
+`MUN-0023-MUL` está publicado y vendiendo en TikTok, y el semáforo le marcaba
+**ocho obligatorios en rojo**: categoría, imágenes, peso, las tres medidas,
+stock y precio. Los ocho existen — pero viven en WooCommerce y en el canal, no
+en `enrich.channel_content`, que guarda lo EDITORIAL. El semáforo miraba una
+sola de las dos fuentes.
+
+Ahora recibe también **lo que el publicador va a encontrar**, sacado de la misma
+función que arma el envío (`publicar_ready.construir_prod`): si el publicador lo
+va a mandar, el panel no puede decir que falta. Lo cubierto por esa vía se
+devuelve aparte (`del_producto`) en vez de esconderse.
+
+**Un semáforo que marca en rojo lo que sí está enseña a ignorarlo**, que es peor
+que no tenerlo.
+
+**2 · Un error mío al cargar los requisitos, que ese rojo destapó.**
+Mapeé el canónico `dimensiones` a NULL **en bloque**, razonando que "un campo
+cubre tres canónicos". Eso es cierto en Amazon (`item_length_width_height` es UN
+atributo con las tres medidas dentro) y **falso en TikTok**, que las entrega
+separadas:
+
+```
+package_weight.value       → peso
+package_dimensions.length  → largo
+package_dimensions.width   → ancho
+package_dimensions.height  → alto
+```
+
+Cada una mapea limpio y no había nada que inventar. El mapeo pasa a ser por
+NOMBRE DE CAMPO, que es lo que permite distinguir estos cuatro de cualquier
+otro "dimensiones" futuro. Con eso, los tres productos publicados que se
+midieron pasan de `incompleto` a **`ok`, sin faltantes**.
+
+**3 · Ventas no dejaba entrar a TikTok ni a Temu.** El tab los mostraba como
+"Pronto" y el backend contestaba *"canal aún sin ventas integradas"*… mientras
+`ventas_ml._CUENTAS_PEDIDOS` ya los incluía y **sus pedidos llevaban meses
+guardándose**. El dato estaba; la puerta no. Medido tras abrirla: Temu **2
+pedidos / $598.11** en 30 días, TikTok 0 (su única venta es más vieja). Walmart
+y Shein siguen en "Pronto" porque de verdad no tienen entrada de pedidos.
+
+**Y de paso, las columnas de Eduardo.** Ya aplicó `is_leaf` y `disponibilidad`
+(en `text`, conservando el valor nativo — su corrección, y tiene razón: 35 de
+las 451 restringidas ni siquiera son hoja, y un booleano no distinguiría por
+cuál de las dos razones está bloqueada). Recargadas las 2,168 categorías:
+**1,717 AVAILABLE / 451 INVITE_ONLY**, con 1,521 hojas publicables.
+
+Versión 0.153.0.
+
 ### v0.152.0 — Publicar de verdad destapó dos cosas que ninguna prueba veía
 
 Prueba de extremo a extremo pedida por Brandon con un SKU real

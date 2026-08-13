@@ -174,7 +174,8 @@ async def resumen(sku: str) -> list[dict[str, Any]]:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _faltantes_sync(sku: str, canal: str, cuenta: str,
-                    categoria: str | None) -> dict[str, Any]:
+                    categoria: str | None,
+                    datos: dict[str, Any] | None = None) -> dict[str, Any]:
     cx = _pool().connection()
     try:
         with cx.cursor() as cur:
@@ -255,9 +256,28 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
     finally:
         cx.close()
 
-    faltan, automaticos = [], []
+    # LO QUE EL PRODUCTO YA TIENE FUERA DEL DOCUMENTO.
+    #
+    # `enrich.channel_content` guarda lo EDITORIAL (título, descripción,
+    # bullets, atributos). Las imágenes, el precio, el stock, las dimensiones y
+    # la categoría viven en WooCommerce y en el propio canal, y el publicador
+    # los toma de ahí — así que exigirlos en el documento pintaba en rojo cosas
+    # que sí están.
+    #
+    # Medido el 13-ago: `MUN-0023-MUL`, PUBLICADO Y A LA VENTA en TikTok, salía
+    # con 8 obligatorios "faltantes" — categoría, imágenes, peso, medidas, stock
+    # y precio. Los seis existían. Un semáforo que marca en rojo lo que sí está
+    # enseña a ignorarlo, que es peor que no tenerlo.
+    tiene = {k for k, v in (datos or {}).items()
+             if v not in (None, "", [], {}, 0)}
+    if categoria:
+        tiene.add("categoria_id")   # se resolvió arriba: por definición, está
+
+    faltan, automaticos, cubiertos_fuera = [], [], []
     for campo, canonico, default, label in filas:
-        if default is not None:
+        if canonico and canonico in tiene:
+            cubiertos_fuera.append({"campo": campo, "canonico": canonico})
+        elif default is not None:
             automaticos.append({"campo": campo, "valor": default})
         else:
             faltan.append({"campo": campo, "canonico": canonico,
@@ -265,13 +285,17 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
     return {
         "estado": "ok" if not faltan else "incompleto",
         "faltan": faltan, "automaticos": automaticos,
+        # Lo que se cubre con datos del producto (Woo/canal) y no con el
+        # documento: se devuelve para poder explicarlo, no para esconderlo.
+        "del_producto": cubiertos_fuera,
         "categoria": categoria,
         "leido_at": leido_at.isoformat() if leido_at else None,
     }
 
 
 async def faltantes(sku: str, canal: str, cuenta: str = "",
-                    categoria: str | None = None) -> dict[str, Any]:
+                    categoria: str | None = None,
+                    datos: dict[str, Any] | None = None) -> dict[str, Any]:
     """
     Qué le falta a un SKU para publicarse en un canal.
 
@@ -286,7 +310,8 @@ async def faltantes(sku: str, canal: str, cuenta: str = "",
         return {"estado": "sin_requisitos", "faltan": [], "automaticos": [],
                 "categoria": categoria, "leido_at": None}
     try:
-        return await asyncio.to_thread(_faltantes_sync, sku, canal, cuenta, categoria)
+        return await asyncio.to_thread(_faltantes_sync, sku, canal, cuenta,
+                                       categoria, datos)
     except Exception as exc:  # noqa: BLE001
         log.warning("channel_content.faltantes(%s,%s) falló: %s", sku, canal, exc)
         return {"estado": "sin_requisitos", "faltan": [], "automaticos": [],

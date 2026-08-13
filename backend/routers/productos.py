@@ -11,7 +11,9 @@ productos.py — Endpoints de productos por canal.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -438,7 +440,43 @@ async def faltantes_canal(sku: str, canal: str, cuenta: str = Query("")):
     if not es_canal_valido(canal):
         raise HTTPException(400, f"Canal '{canal}' inválido.")
     categoria = await _categoria_del_canal(sku, canal)
-    return await channel_content.faltantes(sku, canal, cuenta, categoria)
+    return await channel_content.faltantes(sku, canal, cuenta, categoria,
+                                           await _datos_publicables(sku))
+
+
+async def _datos_publicables(sku: str) -> dict[str, Any]:
+    """
+    Lo que el producto YA TIENE fuera del documento editorial: imágenes,
+    precio, stock, peso y medidas.
+
+    Sale de la MISMA función que usa el publicador (`construir_prod`), a
+    propósito: el semáforo tiene que medir lo que se va a mandar, no una
+    aproximación. Si el publicador lo va a encontrar, el panel no puede decir
+    que falta.
+
+    Nunca lanza: sin estos datos el semáforo simplemente vuelve a ser estricto,
+    que es como estaba.
+    """
+    try:
+        from services import publicar_ready, studio, wp_db
+        if not wp_db.disponible():
+            return {}
+        wc_id = (await asyncio.to_thread(studio.metadata, sku, None) or {}).get("wc_id")
+        if not wc_id:
+            return {}
+        p = await asyncio.to_thread(publicar_ready.construir_prod, sku, int(wc_id), {})
+        return {
+            "imagenes": p.get("images") or [],
+            "precio_regular": p.get("price"),
+            "stock": p.get("stock"),
+            "peso": p.get("weight"),
+            "largo": p.get("length"), "ancho": p.get("width"), "alto": p.get("height"),
+            "titulo": p.get("title"), "descripcion": p.get("description"),
+            "sku": sku,
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudieron leer los datos publicables de %s: %s", sku, exc)
+        return {}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
