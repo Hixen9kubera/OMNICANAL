@@ -8034,6 +8034,40 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.141.0 — El producto recién creado ya sabe en qué categoría de Amazon va
+
+**El hueco que dejó la v0.137.0, medido.** El contenido de Amazon se genera con
+los obligatorios de su `productType`… y un producto **recién creado no tiene
+ninguno**: `_pt_resuelto` mira la meta del panel (que nadie llenó todavía) y el
+histórico de `amazon_progress` (donde un SKU nuevo no está). Devolvía `None`, y
+con `None` no hay requisitos que leer.
+
+Verificado con un SKU inexistente, que es exactamente la situación del alta:
+
+```
+antes   product_type: None    requisitos: sin_requisitos (0 obligatorios)
+        atributos: Material, Color, Cantidad…   ← inventados, no los que Amazon pide
+después product_type: LAMP    requisitos: ok (5 de 5 cubiertos)
+        origen: deteccion
+```
+
+Se agrega el tercer escalón de la precedencia —**panel > histórico >
+detección**— usando `publicar._detectar_product_type`, que es **la misma llamada
+que hace el publicador al publicar**. Eso es lo que importa: si el generador
+detectara por su cuenta, el contenido se escribiría para una categoría y se
+publicaría en otra.
+
+Su respaldo cuando ninguna keyword pega es `HOME`, que tiene sus **110
+requisitos** cargados: el respaldo tampoco deja al generador a ciegas.
+
+**Lo que NO hace, a propósito:** escribir la meta `amz_product_type`. Esa es la
+elección humana del panel y manda sobre todo lo demás (regla 2 de la casa);
+rellenarla desde una detección automática convertiría una corazonada en una
+decisión de persona. El origen viaja en la respuesta (`deteccion`) y el panel lo
+muestra.
+
+Cuesta una llamada más a la Definitions API por producto creado. Versión 0.141.0.
+
 ### v0.137.0 — Amazon: la IA propone, el código valida, y el contenido ya no se pierde
 
 **El circuito que Mercado Libre tenía y Amazon no.** En ML, "Mejorar con IA"

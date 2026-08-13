@@ -173,6 +173,42 @@ def _product_type(sku: str | None, wc_id: int | None) -> tuple[str | None, str]:
         return None, "auto"
 
 
+async def _detectar(nombre: str) -> tuple[str | None, str]:
+    """
+    El último escalón de la precedencia: preguntarle a Amazon por keywords.
+
+    POR QUÉ HACE FALTA. `_pt_resuelto` mira la meta del panel y el histórico de
+    `amazon_progress`. Un producto RECIÉN CREADO no tiene ninguna de las dos, así
+    que devolvía `None` y el contenido se generaba **sin los requisitos de su
+    categoría**: título, bullets y descripción salían bien, pero los atributos
+    eran genéricos (Material, Color, Cantidad) en vez de los obligatorios del
+    tipo. Verificado con un SKU nuevo antes de escribir esto.
+
+    Es la MISMA llamada que hace el publicador al publicar
+    (`publicar._detectar_product_type`), a propósito: si se detectara distinto,
+    el contenido se escribiría para una categoría y se publicaría en otra.
+
+    Su respaldo es `HOME` cuando ninguna keyword pega — y `HOME` tiene sus 110
+    requisitos cargados, así que el respaldo tampoco deja al generador a ciegas.
+
+    NO escribe la meta `amz_product_type`: esa es la elección HUMANA del panel y
+    manda sobre todo lo demás (regla 2 de la casa). Inventarla desde aquí
+    convertiría una detección automática en una decisión de persona.
+    """
+    if not (nombre or "").strip():
+        return None, "auto"
+    try:
+        from services import amazon as _amz, publicar
+        token = await _amz._access_token()  # noqa: SLF001
+        pt = await publicar._detectar_product_type(  # noqa: SLF001
+            token, nombre, settings.amazon_marketplace_id)
+        return (pt or None), ("deteccion" if pt else "auto")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("amazon_ia: no se pudo detectar el productType de «%s»: %s",
+                    nombre[:60], exc)
+        return None, "auto"
+
+
 def hash_base(producto: dict[str, Any]) -> str:
     """
     Huella (sha1, 40 caracteres — el ancho exacto de la columna) de la BASE con
@@ -262,6 +298,11 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True,
     sku = str(producto.get("sku") or "").strip()
     pt, pt_origen = await asyncio.to_thread(
         _product_type, sku or None, producto.get("wc_id"))
+    # Panel > histórico > DETECCIÓN. El tercer escalón existe para el producto
+    # recién creado, que no tiene ninguno de los dos primeros: sin él, su
+    # contenido se generaba sin los obligatorios de su categoría.
+    if not pt:
+        pt, pt_origen = await _detectar(str(producto.get("nombre") or ""))
 
     from services import channel_content
     reqs = await channel_content.requisitos(CANAL, pt, solo_obligatorios=True)
