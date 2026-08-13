@@ -24,7 +24,15 @@ from typing import Any
 
 from services import supabase_db as sdb
 
-CANALES = ("mercado_libre", "amazon")
+# `tiktok` entra el 13-ago con las 900 publicaciones del censo. Con esto sus
+# puntos aparecen en la vista General (`presencia`) y su precio/stock enriquece
+# el listado, igual que ML y Amazon.
+#
+# Para el FAN-OUT no cambia nada aunque sus filas ahora se vean: `_ESCRITORES`
+# no tiene escritor de TikTok y `FANOUT_CANALES` no lo incluye, así que sus
+# destinos se OMITEN con motivo escrito ("sin escritor implementado") en vez de
+# recibir stock. Verificado antes de agregarlo aquí.
+CANALES = ("mercado_libre", "amazon", "tiktok")
 _SEL = """
     select l.sku, l.canal,
            case when a.legacy_code in ('AMAZON','GENERAL') then '' else a.legacy_code end as cuenta,

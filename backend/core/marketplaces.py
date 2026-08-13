@@ -82,9 +82,13 @@ MARKETPLACES: dict[str, CanalConfig] = {
         "color": "#000000",
         "color_texto": "#FFFFFF",
         "acento": "#FE2C55",      # rojo/rosa TikTok
-        "habilitado": False,
-        "origen": Origen.EJEMPLO,
-        "descripcion": "Próximamente — pendiente de credenciales.",
+        # ABIERTO el 13-ago-2026. Decía "pendiente de credenciales" con la
+        # tienda publicando desde julio: 900 publicaciones y 283 a la venta. Lo
+        # que faltaba no eran credenciales, era que el panel supiera mirarlas
+        # (`channel.listings` + `tiktok_panel`).
+        "habilitado": True,
+        "origen": Origen.DB,
+        "descripcion": "Publicaciones en TikTok Shop México (tienda KUBERA).",
     },
     Canal.WALMART: {
         "id": Canal.WALMART,

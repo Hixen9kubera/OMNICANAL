@@ -8034,6 +8034,72 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.142.0 — TikTok deja de ser una maqueta: el canal se abre con sus 900 publicaciones
+
+**Lo que decía el panel y lo que era verdad.** La pestaña TikTok llevaba meses
+con la leyenda *"Próximamente — pendiente de credenciales"* y datos de ejemplo
+(`services/ejemplos.py`), mientras la tienda KUBERA publicaba desde julio: **900
+publicaciones, 283 a la venta y 1,883 envíos registrados**. No faltaban
+credenciales; faltaba que el panel supiera mirarlas.
+
+Se abre con la entrega del chat de TikTok (cuatro CSV medidos en vivo el 13-ago)
+y un cargador propio, `scripts/cargar_tiktok.py`:
+
+| Destino | Filas |
+|---|---|
+| `core.accounts` | la cuenta **KUBERA** (`shop_id 7494659908378395724`) |
+| `core.channels.is_active` | `false` → **`true`** (el flag rancio) |
+| `channel.categories` | **2,168** (1,937 hojas, 1,521 publicables) |
+| `channel.field_requirements` | **1,779** en 760 categorías |
+| `channel.listings` | **900** · 283 ACTIVATE · 599 DRAFT · 11 FAILED · 7 PENDING |
+
+**El diccionario canónico tumbó la carga dos veces, y por eso ahora se contrasta
+entero.** `field_requirements.campo_canonico` tiene FK contra
+`core.canonical_fields`, así que un nombre que no exista aborta la transacción
+completa. La entrega traía tres que no están, y se descubrían de uno en uno por
+error de FK. Se enumeraron **los once valores distintos de una vez** y se
+resolvieron según lo que son:
+
+- `precio` → `precio_regular` y `marca` → `brand`: el mismo concepto con otro
+  nombre. El diccionario se sembró desde el código, y manda el código.
+- `dimensiones` → **NULL**: `package_dimension` cubre TRES canónicos
+  (largo/ancho/alto) y el modelo guarda uno por fila. Es el mismo caso que el
+  cargador de Amazon dejó sin mapear a propósito con
+  `item_length_width_height`. Y "sin canónico" ya significa "nadie puede
+  llenarlo" en el semáforo — que es la verdad, no un hueco.
+
+**El panel lee de kubera, no de MySQL.** `services/tiktok_panel.py` es la primera
+lectura de listado del panel que va directo a `channel.listings`: ML y Amazon
+siguen leyendo MySQL, pero los espejos inversos están apagados desde el 13-ago y
+sembrar un canal nuevo en una tabla congelada sería crear una foto que nadie va
+a actualizar. El nombre del producto sale de `core.products`, que es el registro
+civil; `channel.listings` no guarda títulos a propósito.
+
+`status` y `situacion` viajan **separados**: el primero es del producto
+(ACTIVATE/DRAFT) y el segundo de la auditoría de TikTok (APPROVED/FAILED).
+Aplastarlos escondería justo el motivo por el que algo no se vende — hay 11
+`FAILED` que lo demuestran.
+
+**El fan-out ve TikTok y no le escribe, con motivo escrito.** Al sumar `tiktok`
+a `channel_read.CANALES` sus filas entran en `_destinos`, pero `_ESCRITORES` no
+tiene escritor de TikTok y `FANOUT_CANALES` no lo incluye: cada destino se omite
+con *"sin escritor implementado"* en vez de recibir stock. Verificado **antes**
+de tocar la lista.
+
+**Lo que el canal enseñó apenas se pudo mirar** — 20 publicaciones **vivas** con
+el precio desviado contra Mercado Libre: 5 por arriba de 3× (`TEC-1775-NEG` está
+a **12×**: $22,171 contra $1,849) y 15 por debajo de 0.6×. El promedio del
+catálogo es 1.30×, así que no es una regla de margen: son casos sueltos. Ninguno
+se habría visto sin la pestaña.
+
+**Lo que NO se pudo guardar:** `is_leaf`, `permission_status` y `publicable` de
+las categorías — `channel.categories` no tiene esas columnas y el esquema es de
+Eduardo. Importa más de lo que parece: las `INVITE_ONLY` **no rebotan al
+activar**, dejan el producto en `PENDING` para siempre, sin error (los 7
+`PENDING` de la tienda son exactamente eso). Pide dos columnas.
+
+Versión 0.142.0.
+
 ### v0.141.0 — El producto recién creado ya sabe en qué categoría de Amazon va
 
 **El hueco que dejó la v0.137.0, medido.** El contenido de Amazon se genera con

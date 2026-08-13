@@ -92,7 +92,17 @@ async def listar_productos(
                                          orden=orden, estados=estados_lista, skus_filtro=skus_lista)
         total_pages = _paginas(total, per_page)
 
-    else:  # tiktok / walmart / temu / shein  → ejemplos
+    elif canal == Canal.TIKTOK.value:
+        # Lee `channel.listings` en kubera (no MySQL: los espejos inversos están
+        # apagados desde el 13-ago). Es la primera lectura de listado del panel
+        # que va directo a kubera; ML y Amazon siguen en MySQL.
+        from services import tiktok_panel
+        items_raw, total = tiktok_panel.listar(
+            page, per_page, search, solo_publicados, orden=orden,
+            estados=estados_lista, skus_filtro=skus_lista)
+        total_pages = _paginas(total, per_page)
+
+    else:  # walmart / temu / shein  → ejemplos
         items_raw, total = ejemplos.listar(canal, page, per_page, search)
         total_pages = _paginas(total, per_page)
 
@@ -344,6 +354,12 @@ async def _categoria_del_canal(sku: str, canal: str) -> str | None:
             from services import studio
             cat = (studio.metadata(sku, None) or {}).get("categoria_ml") or {}
             return cat.get("category_id") or None
+        if canal == "tiktok":
+            # ⚠️ En TikTok la categoría vive en `listings.category_id`; en Amazon
+            # vive en `product_type`. Cruzar los requisitos por la columna
+            # equivocada devuelve cero filas SIN dar error.
+            from services import tiktok_panel
+            return tiktok_panel.categoria_de(sku)
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo resolver la categoría de %s en %s: %s", sku, canal, exc)
     return None

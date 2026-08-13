@@ -47,6 +47,12 @@ async def listar_canales(incluir_totales: bool = True):
                 ))
         elif cfg["id"] == Canal.AMAZON.value:
             total = amazon.contar_publicados() if incluir_totales else None
+        elif cfg["id"] == Canal.TIKTOK.value:
+            # A LA VENTA (ACTIVATE), no "existe": de las 900 publicaciones, 599
+            # son borradores. Poner 900 en la pestaña sería prometer catálogo
+            # que nadie puede comprar.
+            from services import tiktok_panel
+            total = tiktok_panel.contar_publicados() if incluir_totales else None
         salida.append(CanalInfo(**cfg, total_productos=total, subcuentas=subs))
     return salida
 
