@@ -527,6 +527,27 @@ async def recibir_tiktok(request: Request):
         log.info("TIKTOK webhook tipo=%s shop=%s firma=%s bytes=%s :: %s",
                  evento["tipo"], evento["shop_id"], firma, evento["bytes"],
                  json.dumps(payload, ensure_ascii=False)[:1500])
+
+        # ── LA VENTA SE VUELVE PEDIDO ────────────────────────────────────────
+        # Del evento solo se toma el ID; la orden se pide a la API. Un evento es
+        # el aviso de que algo cambió, no un documento contable — y esta URL es
+        # pública: armar el pedido con lo que llega dejaría inventar ventas a
+        # cualquiera. Así, un evento falso a lo más provoca una consulta vacía.
+        #
+        # Va DESPUÉS de registrar y dentro del try grande: si esto falla, el
+        # evento ya quedó en el log y la respuesta sigue siendo 200 (guarda
+        # absoluta — otra cosa invita a reintentos y a que TikTok deshabilite la
+        # suscripción, y el síntoma sería que dejan de entrar ventas).
+        if settings.pedidos_tiktok_enabled:
+            from services import pedidos_tiktok
+            oid = pedidos_tiktok.id_de_evento(payload)
+            if oid:
+                r = await pedidos_tiktok.procesar(oid)
+                log.info("TIKTOK pedido %s → %s", oid,
+                         r.get("accion") or r.get("motivo"))
+            else:
+                log.info("TIKTOK webhook sin id de orden reconocible: %s",
+                         json.dumps(payload, ensure_ascii=False)[:300])
         return {"code": 0, "message": "success"}
     except Exception:  # noqa: BLE001 — jamás propagar: ver GUARDA ABSOLUTA
         log.exception("Fallo recibiendo el webhook de TikTok; se responde 200 "

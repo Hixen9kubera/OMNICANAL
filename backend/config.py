@@ -95,6 +95,11 @@ class Settings(BaseSettings):
     # se genera el título y la descripción, y los atributos entran cuando el SKU
     # ya tenga categoría en el canal.
     tiktok_ia_en_crear: bool = False
+    # ¿El webhook de TikTok CREA pedidos en WooCommerce? Apagado, el receptor
+    # sigue en modo observar (registra y no escribe). Encenderlo toca inventario
+    # y contabilidad: los pedidos de TikTok DESCUENTAN stock, porque la
+    # mercancía sale de nuestra bodega.
+    pedidos_tiktok_enabled: bool = False
 
     # ── Creación de productos (Alibaba → Woo) ─────────────────
     apify_api_key: str = ""

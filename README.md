@@ -8034,6 +8034,50 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.145.0 — La venta de TikTok se vuelve pedido
+
+El receptor de `/api/webhooks/tiktok` existía desde la v0.104.0 y estaba en modo
+**observar**: registraba el evento y no escribía nada. Entra la otra mitad,
+`services/pedidos_tiktok.py`, con el mismo aparato de ML y Amazon:
+
+```
+evento → id de la orden → la orden COMPLETA por API
+       → pedidos_ml.sincronizar (candado, precio congelado, idempotencia,
+         pedido de Woo, channel.orders)
+```
+
+**No se reimplantó nada de eso.** `pedidos_ml.sincronizar` sigue siendo el único
+sitio donde nace un pedido, venga del canal que venga; lo demás son traductores.
+
+**Del evento solo se toma el ID.** Líneas, precios, estado y comprador se piden
+a la API, por dos razones: un evento es el aviso de que algo cambió, no un
+documento contable; y **la URL es pública** — armar el pedido con lo que llega
+dejaría que cualquiera inventara una venta. Con este diseño, un evento falso a
+lo más provoca una consulta que no encuentra nada.
+
+**Dos detalles que se miden, no se suponen:**
+
+- **TikTok manda una línea por unidad**, no una línea con cantidad: dos piezas
+  del mismo SKU llegan como dos entradas. Se agrupan por (sku, precio), así que
+  el pedido dice «2 × $660.54» y no dos renglones iguales. Verificado con un
+  evento de prueba.
+- **El id viene con nombre distinto según el evento**, así que se prueban cuatro
+  alias (`order_id`, `orderId`, `order_no`, `id`) en vez de fijar uno. El
+  esquema real se confirma con el primer evento verdadero — el mismo criterio
+  que el receptor de Temu.
+
+⚠️ **Estos pedidos DESCUENTAN stock.** La mercancía sale de nuestra bodega — el
+`warehouse_id` de TikTok es dónde la recogen, no quién la guarda —, así que NO
+llevan la protección de ML FULL ni de Amazon FBA.
+
+`UNPAID` no genera pedido a propósito: todavía no es una venta, y crearlo ahí
+descontaría inventario por algo que puede no pagarse nunca.
+
+Nace APAGADO (`PEDIDOS_TIKTOK_ENABLED`): crear pedidos toca inventario y
+contabilidad. Con el flag apagado el receptor sigue exactamente como estaba.
+
+Versión 0.145.0.
+
 ### v0.144.0 — Publicar en TikTok desde el panel
 
 El publicador de TikTok vivía como script suelto en el escritorio de otra sesión
