@@ -66,6 +66,13 @@ async def main() -> int:
     if args.solo:
         quiere = {c.strip().upper() for c in args.solo if c and c.strip()}
         pend = [s for s in pend if s["categoria_id"] in quiere]
+        # La RAÍZ no está en `subcategorias` —es el padre de todas— así que si se
+        # pide explícitamente hay que agregarla a mano. Es lo que da los NICHOS y
+        # `pos_en_raiz`: sin el top del padre no se sabe qué subcategoría manda.
+        if args.raiz in quiere and not any(s["categoria_id"] == args.raiz for s in pend):
+            pend.insert(0, {"categoria_id": args.raiz,
+                            "categoria_nombre": raiz.get("raiz_nombre") or args.raiz,
+                            "n_ranking": len(raiz.get("top") or [])})
     if args.limite:
         pend = pend[:args.limite]
 
@@ -100,11 +107,15 @@ async def main() -> int:
 
         for s in lote:
             cid = s["categoria_id"]
+            # El NIVEL no es constante: la raíz se guarda como 'raiz' y solo en
+            # ese nivel se resuelve `item_categoria_id` —la subcategoría de cada
+            # fila del top—, que es de donde salen los nichos.
+            nivel = "raiz" if cid == args.raiz else "hoja"
             filas = crudos.get(cid) or []
             if filas:
                 competencia_captura._marcar(filas, nuestras)
-                await competencia_captura._enriquecer_ranking(cid, filas, "hoja")
-                competencia_store.reemplazar_ranking(cid, "hoja", periodo, filas)
+                await competencia_captura._enriquecer_ranking(cid, filas, nivel)
+                competencia_store.reemplazar_ranking(cid, nivel, periodo, filas)
                 con_ranking += 1
             # Términos: gratis, y se piden aunque el raspado haya fallado.
             t = await asyncio.to_thread(competencia_ml.tendencias, cid)
