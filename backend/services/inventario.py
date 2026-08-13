@@ -20,6 +20,7 @@ Este servicio:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any
@@ -154,6 +155,18 @@ def _upsert(rows: list[dict[str, Any]]) -> int:
     # cambios de precio/stock/FULL en channel.listing_history. Nunca rompe el sync.
     channel_mirror.en_hilo(channel_mirror.espejar_inventario, [dict(r) for r in rows])
     return len(rows)
+
+
+async def _upsert_async(rows: list[dict[str, Any]]) -> int:
+    """`_upsert` EN UN HILO — la única forma correcta de llamarlo desde async.
+
+    `_upsert` escribe primero en kubera (`channel_mirror.escribir_primario`) con
+    psycopg2, que es BLOQUEANTE. Llamado dentro de una corrutina paraba el
+    backend entero mientras Postgres contestaba: el vigilante del event loop lo
+    cachó parado justo ahí, en el sync de inventario y en el webhook de ML
+    (13-ago). Todos los llamadores de `_upsert` son async, así que van por aquí.
+    """
+    return await asyncio.to_thread(_upsert, rows)
 
 
 # ── LECTOR: Mercado Libre ───────────────────────────────────────────────────────
@@ -378,7 +391,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
                 "es_full": 1 if es_full else 0,
                 "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
             })
-    n = _upsert(rows)
+    n = await _upsert_async(rows)
     salida = {"canal": "mercado_libre", "cuenta": cuenta, "ok": True, "actualizados": n}
     if sin_sku:
         salida["sin_sku"] = sin_sku
@@ -490,7 +503,7 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
             "situacion": v.get("estado"),
             "moneda": "MXN",
         })
-    n = _upsert(rows)
+    n = await _upsert_async(rows)
     return {"canal": "amazon", "ok": True, "actualizados": n,
             "skus_fba": len(fba), "skus_leidos_en_vivo": len(vivo),
             "skus_con_precio": sum(1 for v in vivo.values() if v.get("precio") is not None),
@@ -512,7 +525,7 @@ async def sincronizar_woo(skus: list[str]) -> dict[str, Any]:
             "stock_real": p.get("stock"), "stock_full": None, "stock_fba": None,
             "es_full": 0, "logistica": "propia", "situacion": p.get("estado"), "moneda": "MXN",
         })
-    n = _upsert(rows)
+    n = await _upsert_async(rows)
     return {"canal": "general", "ok": True, "actualizados": n}
 
 
@@ -623,7 +636,7 @@ async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
     logistic = (item.get("shipping") or {}).get("logistic_type")
     es_full = logistic == "fulfillment"
     qty = item.get("available_quantity")
-    _upsert([{
+    await _upsert_async([{
         "sku": sku, "canal": "mercado_libre", "cuenta": cuenta,
         "item_id": item_id, "precio": item.get("price"), "precio_base": _precio_lista(item),
         "stock_real": 0 if es_full else qty, "stock_full": qty if es_full else 0,
@@ -649,7 +662,7 @@ async def sincronizar_sku(sku: str) -> dict[str, Any]:
         if isinstance(p, list):
             rows.extend(p)
     try:
-        n = _upsert(rows)
+        n = await _upsert_async(rows)
     except Exception as exc:  # noqa: BLE001
         log.warning("upsert sku %s: %s", sku, exc)
         n = 0

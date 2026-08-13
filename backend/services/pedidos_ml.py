@@ -430,7 +430,10 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     # F6), no contra el espejo: `pedidos_ml` congelada contestaba siempre "no
     # existe" y cada aviso creaba otro pedido — 964 fantasma el 12-ago-2026.
     from services import orders_write
-    wc_previo = orders_write.wc_order_id_previo(str(order_id))
+    # A un HILO: es una consulta a kubera (psycopg2, bloqueante) y está en el
+    # camino de CADA aviso de ML. En la corrutina, el backend entero se paraba
+    # aquí mientras Postgres contestaba.
+    wc_previo = await asyncio.to_thread(orders_write.wc_order_id_previo, str(order_id))
     previo = {"wc_order_id": wc_previo} if wc_previo else None
     ahora = datetime.now(timezone.utc)
     # `creado` = fecha de la VENTA en ML, no de nuestro registro: el tab
@@ -572,18 +575,24 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                                * int(it.get("cantidad") or 1), 2)}
             for n, it in enumerate(orden.get("items", []), start=1)]}
         # F6 (corte, opción A): kubera primaria + pedidos_ml de espejo inverso.
-        if orders_write.activo():
-            orders_write.guardar(origen_py, funcion, encabezado, lineas,
-                                 f"{cuenta}:{order_id}", _mysql)
-        else:
-            _mysql()
-            kubera_mirror.espejar(
-                origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
-                encabezado, clave=f"{cuenta}:{order_id}")
-            kubera_mirror.espejar(
-                origen_py, "sincronizar (líneas)", "pedidos_ml_items",
-                "channel.order_items", "UPSERT", lineas,
-                clave=f"{cuenta}:{order_id}")
+        # EN UN HILO: psycopg2 es bloqueante y esto son varios viajes a kubera.
+        # Dentro de la corrutina congelaba el backend ENTERO en cada venta —
+        # con la tormenta de avisos de ML, el panel dejaba de cargar (13-ago).
+        def _registrar() -> None:
+            if orders_write.activo():
+                orders_write.guardar(origen_py, funcion, encabezado, lineas,
+                                     f"{cuenta}:{order_id}", _mysql)
+            else:
+                _mysql()
+                kubera_mirror.espejar(
+                    origen_py, funcion, "pedidos_ml", "channel.orders", "UPSERT",
+                    encabezado, clave=f"{cuenta}:{order_id}")
+                kubera_mirror.espejar(
+                    origen_py, "sincronizar (líneas)", "pedidos_ml_items",
+                    "channel.order_items", "UPSERT", lineas,
+                    clave=f"{cuenta}:{order_id}")
+
+        await asyncio.to_thread(_registrar)
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
 

@@ -8034,6 +8034,56 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.157.0 — El vigilante habló: kubera se consultaba dentro de la corrutina
+
+**La causa, por fin, señalada por el propio backend.** El vigilante del event
+loop (v0.156.0) volcó la pila del hilo principal en cinco atascones seguidos.
+Los cinco terminan en lo mismo:
+
+| Hora | Dónde estaba parado el backend |
+|---|---|
+| 23:04 | webhook ML → `orders_write.wc_order_id_previo` → `supabase_db.fetch_one` |
+| 23:05 | webhook ML → `orders_write.guardar` → `kubera_mirror._up_channel_order_items` |
+| 23:06 | webhook ML → `inventario._upsert` → `channel_mirror.escribir_tanda` |
+| 23:09 | sync de inventario → `inventario._upsert` → `channel_mirror.escribir_tanda` |
+| 23:10 | sync de inventario → `inventario._upsert` → `channel_mirror.escribir_tanda` |
+
+**psycopg2 es bloqueante.** Cada aviso de venta de ML y cada tanda del sync de
+inventario escribían a kubera DENTRO de la corrutina: mientras Postgres
+contestaba, el backend entero no atendía a nadie. Con la CPU al 1.2% y la
+memoria plana, porque no estaba trabajando — estaba esperando.
+
+Esta lección ya estaba escrita en este repo. El docstring de `_procesar_ml` la
+dice textual desde el 15-jul: *"psycopg2 es I/O bloqueante y ejecutarlo directo
+en la corrutina congela el event loop entero"*. Se aplicó al espejo del evento
+(`asyncio.to_thread(_guardar_supabase, …)`) y **no** a las escrituras que llegaron
+después con el corte de la migración — que son las del camino caliente.
+
+Por eso empezó ahora y no antes: desde el corte, kubera es la escritura
+PRIMARIA de pedidos e inventario. Antes esas líneas iban a MySQL y el bloqueo
+era corto; ahora cada venta son varios viajes a Postgres, y las ventas de ML
+llegan en ráfaga.
+
+**El arreglo**: las tres escrituras salen a un hilo.
+
+- `pedidos_ml`: el candado de idempotencia (`wc_order_id_previo`) y el registro
+  completo (`orders_write.guardar` / los dos `espejar`) van por `to_thread`.
+- `inventario`: `_upsert` era síncrono y lo llamaban CINCO funciones async. Se
+  añade `_upsert_async` y los cinco pasan por ahí.
+
+Sin cambio de comportamiento: se escribe lo mismo, en el mismo orden, con los
+mismos candados. Lo único que cambia es QUIÉN espera — un hilo en vez del
+backend completo.
+
+**Nota de método.** Este incidente costó tres diagnósticos: el webhook de TikTok
+(v0.154.0) y el llenado del envío real (v0.155.0) eran defectos reales y están
+arreglados, pero ninguno era la causa. Los dos se "confirmaron" apagando algo y
+viendo mejorar el panel — sin notar que cambiar una variable en Railway
+REINICIA el contenedor, y que el reinicio era lo que mejoraba. Un flag que
+arregla al reiniciar no ha demostrado nada. Lo que cerró el caso fue instrumentar.
+
+---
+
 ### v0.155.0 — El panel se tumbaba solo: 2,241 órdenes que se pedían para siempre
 
 **No era TikTok.** La v0.154.0 arregló un defecto real (el webhook de TikTok
