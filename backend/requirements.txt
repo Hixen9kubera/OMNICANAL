@@ -4,6 +4,12 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1
 python-dotenv==1.0.1
+# `routers/resolver.py::analizar` recibe el packing list como UploadFile + Form.
+# FastAPI NO lo avisa al escribirlo: revienta al IMPORTAR el router, así que sin
+# esta línea el backend entero no arranca. Tumbó los 4 deploys seguidos del
+# 13-ago 18:54–19:12 (producción se salvó porque seguía corriendo el contenedor
+# anterior — un deploy fallido no tira lo que ya está en el aire).
+python-multipart==0.0.20
 
 # ── HTTP / integraciones ──────────────────────────────────────
 httpx==0.28.1
