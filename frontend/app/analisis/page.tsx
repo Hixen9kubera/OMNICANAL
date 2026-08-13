@@ -1943,9 +1943,20 @@ export default function FulfillmentPage() {
       qt.set("dir", dir);
       qt.set("limit", String(limit));
       qt.set("offset", String(pagina * limit));
+      // `r.ok` ANTES de leer el cuerpo, como ya hacen `detalle` y `canales` en
+      // este mismo archivo. Estas dos eran las únicas sin la guarda, y cuando la
+      // API contestaba con error el cuerpo entraba igual al estado: un 400 o un
+      // 502 acababan en "Cannot read properties of undefined" y la PÁGINA ENTERA
+      // en blanco, sin decir qué pasó. Un error de red debe pintar el aviso, no
+      // tumbar la vista.
+      const leer = async (url: string) => {
+        const r = await fetchSesion(url, { cache: "no-store" });
+        if (!r.ok) throw new Error(`API ${r.status}`);
+        return r.json();
+      };
       const [d, t] = await Promise.all([
-        fetchSesion(`${API_BASE}/api/fulfillment/dashboard?${qd}`, { cache: "no-store" }).then((r) => r.json()),
-        fetchSesion(`${API_BASE}/api/fulfillment/tabla?${qt}`, { cache: "no-store" }).then((r) => r.json()),
+        leer(`${API_BASE}/api/fulfillment/dashboard?${qd}`),
+        leer(`${API_BASE}/api/fulfillment/tabla?${qt}`),
       ]);
       if (mia !== cargaVigente.current) return;   // llegó tarde: ya hay otra
       setDash(d); setTabla(t);
@@ -1959,7 +1970,17 @@ export default function FulfillmentPage() {
     }
   }, [dias, cuenta, estado, tipo, tam, busqueda, orden, dir, limit, pagina]);
 
-  useEffect(() => { void cargar(); }, [cargar]);
+  /* Un respiro antes de consultar. La consulta de la tabla es CARA: medida en
+     vivo tarda de 3.6 a 11.5 s, y empeora cuando varias se enciman porque se
+     estorban entre ellas. Sin esto, marcar tres tamaños seguidos lanzaba tres
+     consultas completas —y escribir "TEC-1284" en el buscador, ocho—, cuando
+     solo interesa el resultado de la última.
+     Cada cambio cancela el temporizador anterior, así que una ráfaga se colapsa
+     en UNA consulta. 350 ms no se perciben al cambiar un filtro suelto. */
+  useEffect(() => {
+    const t = setTimeout(() => { void cargar(); }, 350);
+    return () => clearTimeout(t);
+  }, [cargar]);
 
   // EN VIVO: el precio y el stock de ML llegan por webhook en segundos
   // (topics items / items_prices / stock-locations refrescan el listing), así

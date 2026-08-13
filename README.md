@@ -8940,3 +8940,37 @@ Verificado contra el sandbox con clon de producción: las cuatro ramas de las
 tarjetas (con medidas, sin medidas, con peso sospechoso, con y sin publicación
 vendible), los cinco conteos del filtro, y que Escape, el clic fuera y "Todos"
 cierran o limpian. Sin migraciones y sin variables nuevas. Versión 0.150.0.
+
+### v0.151.0 — Análisis deja de lanzar una consulta por clic (y de morirse cuando la API falla)
+
+Dos arreglos que salieron de medir el filtro de tamaño recién estrenado.
+
+**Una ráfaga de clics ya no lanza una consulta por cada uno.** La consulta de la
+tabla es cara: medida en vivo con el espía de peticiones tarda **de 3.6 a 11.5
+segundos**, y empeora cuando varias se enciman porque se estorban entre ellas.
+
+```
+tam=S        pedida     0 ms  →  respondida   3,639 ms
+tam=S,M      pedida 1,007 ms  →  respondida   8,764 ms
+tam=S,M,L    pedida 1,998 ms  →  respondida  11,527 ms
+```
+
+Marcar tres tamaños seguidos lanzaba tres consultas completas cuando solo
+interesa el resultado de la última — y escribir `TEC-1284` en el buscador
+lanzaba **ocho**, una por tecla, porque tampoco tenía respiro. Ahora cada cambio
+cancela el temporizador anterior y la ráfaga se colapsa en UNA sola consulta:
+medido, tres clics rápidos producen una petición (`tam=S,M,L`) con el resultado
+correcto. 350 ms no se perciben al cambiar un filtro suelto.
+
+**Un error de la API ya no deja la página en blanco.** Las peticiones de
+`dashboard` y `tabla` eran las únicas del archivo sin revisar `r.ok` antes de
+leer el cuerpo —`detalle` y `canales` sí lo hacían—, así que la respuesta de
+error entraba igual al estado y el render reventaba con *"Cannot read properties
+of undefined"*. Pasó dos veces el mismo día: con un 400 de validación y con un
+502 del backend.
+
+Verificado apagando el backend y recargando: la página **sigue viva** —con su
+encabezado y sus filtros— y muestra «Error al cargar», en vez de desaparecer sin
+decir qué pasó.
+
+Sin migraciones y sin variables nuevas. Versión 0.151.0.
