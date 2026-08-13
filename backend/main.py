@@ -72,6 +72,12 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_ventas_warmup())
     else:
         log.info("Warmup de ventas omitido (MySQL off o refresco ML apagado).")
+    # Contenido de Amazon al crear productos: se declara en el arranque porque
+    # es la ÚNICA forma honesta de saber si está encendido. Leer el `.env` local
+    # ya llevó a reportar el fan-out como apagado cuando llevaba dos semanas
+    # escribiendo; la fuente buena es este log y las tablas.
+    log.info("Contenido Amazon con IA al crear productos: %s (AMAZON_IA_EN_CREAR)",
+             "ENCENDIDO" if settings.amazon_ia_en_crear else "apagado")
     yield
     scheduler.detener()
 
