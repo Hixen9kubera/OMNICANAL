@@ -21,6 +21,7 @@ Este servicio:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -30,6 +31,15 @@ from services import (alertas, amazon, channel_read, db, lecturas_fuente, meli,
                       odoo, woocommerce)
 
 log = logging.getLogger("omnicanal.inventario")
+
+_EPOCA = datetime(1970, 1, 1)
+
+
+def _turno(visto: datetime | None):
+    """Clave de orden del barrido progresivo: primero lo que NUNCA se ha visto,
+    luego lo más viejo. Réplica exacta del viejo
+    `ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC`."""
+    return (visto is not None, visto or _EPOCA)
 
 
 def _precio_lista(item: dict[str, Any]) -> float | None:
@@ -314,7 +324,21 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
             # Camino histórico: la bitácora del publicador (ml_progress).
             # Progresivo: primero los SKUs que aún NO están en el cache, luego
             # los más viejos, para cubrir todo el catálogo corrida a corrida.
+            #
+            # PASO 0 (12-ago-2026): el TURNO se decide con `channel.listings`,
+            # no con `canal_inventario`. Ese JOIN no traía datos, ORDENABA — y
+            # una fecha congelada congela el orden: el barrido se quedaría
+            # rifando los mismos SKUs cada 15 min y el resto del catálogo no se
+            # volvería a observar NUNCA. Sin un error en los logs: la fuente de
+            # verdad simplemente dejaría de refrescarse. `ml_progress` sí sigue
+            # en MySQL (bitácora del publicador, viva), así que el orden se
+            # arma aquí — son ~1,900 filas por cuenta.
             listings = db.fetch_all(
+                """SELECT mp.sku, mp.ml_item_id
+                   FROM ml_progress mp
+                   WHERE mp.cuenta=%s AND mp.success=1 AND mp.ml_item_id IS NOT NULL""",
+                (cuenta,),
+            ) if settings.supabase_read_channel else db.fetch_all(
                 """SELECT mp.sku, mp.ml_item_id
                    FROM ml_progress mp
                    LEFT JOIN canal_inventario ci
@@ -324,6 +348,11 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
                    LIMIT %s""",
                 (cuenta, limite),
             )
+            if settings.supabase_read_channel:
+                vistos = channel_read.vistos_ml(cuenta)
+                listings.sort(key=lambda r: _turno(vistos.get(str(r["ml_item_id"]))))
+                listings = listings[:limite]
+                lecturas_fuente.anotar("channel", "kubera")
             respaldo = {}
         for lst in listings:
             item = await _leer_ml_item(cli, lst["ml_item_id"], token, cuenta)
@@ -393,16 +422,27 @@ async def sincronizar_amazon(limite: int = 100) -> dict[str, Any]:
 
     # Cruzar con amazon_progress (sku, asin, status); progresivo: primero los que
     # faltan en el cache, luego los más viejos.
-    pubs = db.fetch_all(
-        """SELECT ap.sku, ap.asin, ap.status
-           FROM amazon_progress ap
-           LEFT JOIN canal_inventario ci
-                  ON ci.sku = ap.sku AND ci.canal='amazon'
-           WHERE ap.success=1
-           ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
-           LIMIT %s""",
-        (limite,),
-    )
+    # PASO 0 (12-ago-2026): mismo caso que el turno de ML — el JOIN ordenaba,
+    # no traía datos. Ver la nota larga en `_lote_ml`.
+    if settings.supabase_read_channel:
+        pubs = db.fetch_all(
+            """SELECT ap.sku, ap.asin, ap.status
+               FROM amazon_progress ap WHERE ap.success=1""")
+        vistos = channel_read.vistos_amazon()
+        pubs.sort(key=lambda r: _turno(vistos.get(str(r["sku"]))))
+        pubs = pubs[:limite]
+        lecturas_fuente.anotar("channel", "kubera")
+    else:
+        pubs = db.fetch_all(
+            """SELECT ap.sku, ap.asin, ap.status
+               FROM amazon_progress ap
+               LEFT JOIN canal_inventario ci
+                      ON ci.sku = ap.sku AND ci.canal='amazon'
+               WHERE ap.success=1
+               ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC
+               LIMIT %s""",
+            (limite,),
+        )
     # Se le pregunta A AMAZON, no a nuestra bitácora (auditoría 29-jul).
     # Una llamada por lote de 20 devuelve precio + ASIN + estado REAL + stock FBM.
     # Antes: el precio venía de Pricing API v0 (cubría 40%), el ASIN y el estado se

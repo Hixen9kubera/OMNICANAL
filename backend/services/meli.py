@@ -158,13 +158,50 @@ def listar(
     sql = (_SQL_LISTAR.replace("__ESTADO__", estado_sql)
            .replace("__ORDEN__", order_sql).replace("__SKUS__", skus_sql))
     sql_count = _SQL_COUNT.replace("__ESTADO__", estado_sql).replace("__SKUS__", skus_sql)
+    # PASO 0 (12-ago-2026): `ml_progress` sigue viva en MySQL, pero el PRECIO
+    # sale de kubera. Con el espejo congelado esta vista mostraría el precio
+    # del día del corte para siempre. Cuando se ordena POR precio no alcanza
+    # con reemplazarlo al final —el ORDER BY del SQL usaría el viejo— así que
+    # en ese caso se trae el conjunto filtrado (≤2k filas por cuenta), se le
+    # pega el precio vivo y se ordena y pagina aquí.
+    from services import costing_read, costing_write
+    por_precio = orden in ("precio_desc", "precio_asc")
     try:
+        if costing_write.activo() and por_precio:
+            sql_todo = (_SQL_LISTAR.replace("__ESTADO__", estado_sql)
+                        .replace("__ORDEN__", "mp.sku").replace("__SKUS__", skus_sql))
+            crudas = db.fetch_all(sql_todo, {**params, "limit": 100_000, "offset": 0})
+            items = _con_precio_kubera([_normalizar(r) for r in crudas],
+                                       costing_read)
+            items.sort(key=lambda i: (i["precio"] is None, i["precio"] or 0),
+                       reverse=(orden == "precio_desc"))
+            return items[offset:offset + per_page], len(items)
         rows = db.fetch_all(sql, params)
         total = db.fetch_scalar(sql_count, params) or 0
-        return [_normalizar(r) for r in rows], int(total)
+        items = [_normalizar(r) for r in rows]
+        if costing_write.activo():
+            items = _con_precio_kubera(items, costing_read)
+        return items, int(total)
     except Exception as exc:  # noqa: BLE001
         log.error("Error listando ML desde DB: %s", exc)
         return [], 0
+
+
+def _con_precio_kubera(items: list[dict[str, Any]], costing_read) -> list[dict[str, Any]]:
+    """Pega precio/precio_base/categoría de `costing.costos_finales` sobre las
+    filas que salieron de la bitácora. El precio del ESPEJO no se usa."""
+    if not items:
+        return items
+    precios = costing_read.precios_de([i["sku"] for i in items])
+    for i in items:
+        p = precios.get(i["sku"])
+        if not p:
+            continue
+        if p.get("precio_sugerido") is not None:
+            i["precio"] = _f(p["precio_sugerido"])
+        i["precio_base"] = _f(p.get("precio_base"))
+        i["categoria_id"] = p.get("ml_cat_id") or i.get("categoria_id")
+    return items
 
 
 def contar_publicados(cuenta: str | None = None) -> int:

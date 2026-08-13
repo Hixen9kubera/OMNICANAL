@@ -280,3 +280,22 @@ def no_full(limite: int) -> list[dict[str, Any]]:
              where coalesce(l.is_fulfillment, false) = false
                and l.canal in ('mercado_libre', 'amazon')
              limit %s""", (limite,))
+
+
+def vistos_amazon() -> dict[str, Any]:
+    """
+    { sku: updated_at (naive UTC) } de las publicaciones Amazon — gemela de
+    `vistos_ml` para el otro canal.
+
+    Su uso NO es informativo: es el turno del barrido progresivo. Ver la nota
+    en `inventario._lote_amazon`.
+    """
+    out: dict[str, Any] = {}
+    for f in sdb.fetch_all(
+        """select l.sku::text as sku, l.updated_at
+             from channel.listings l
+            where l.canal = 'amazon'"""):
+        ts = f.get("updated_at")
+        out[str(f["sku"])] = (
+            ts.astimezone(timezone.utc).replace(tzinfo=None) if ts else None)
+    return out

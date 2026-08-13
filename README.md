@@ -7701,3 +7701,58 @@ con la versión en que cayó cada uno.
 Pruebas sandbox: `probar_corte_orders_channel` 20/20 · `probar_retiro_channel`
 5/5 · `probar_corte_core_categorias` 12/12 · `probar_corte_costing` 15/15 ·
 `probar_retiro_costing_orders` 11/11. Versión 0.127.0.
+
+### v0.128.0 — Los tres blockers que faltaban para poder apagar MySQL
+
+Barrido exhaustivo de los lectores de las cinco tablas que se congelan al
+apagar los espejos (`costos_validados`, `costos_finales`, `costos_logs`,
+`pedidos_ml`, `canal_inventario`). Aparecieron tres que ningún barrido anterior
+había tocado, y el primero era grave.
+
+**1. El TURNO del sync de 15 minutos** — `inventario.py`, camino ML y camino
+Amazon. El `LEFT JOIN canal_inventario` de esas dos consultas **no traía
+datos: ordenaba**. `ORDER BY (ci.sku IS NULL) DESC, ci.updated_at ASC LIMIT n`
+es lo que hace que el barrido recorra todo el catálogo corrida a corrida.
+
+Con la tabla congelada, `updated_at` deja de avanzar → el orden queda fijo →
+**el sync barre los mismos N SKUs cada 15 minutos y el resto del catálogo no se
+vuelve a observar nunca**. Y ese sync es lo que alimenta `channel.listings`: la
+fuente de verdad dejaría de refrescarse para casi todo el catálogo **sin un
+solo error en los logs**. Es la misma familia que los 964 pedidos fantasma —
+una lectura congelada que decide, aquí *a quién mirar*.
+
+El turno ahora se arma con `channel.listings.updated_at`. Verificado con datos
+reales: BEKURA 1,944 publicaciones con 47 nunca vistas al frente, y **584 marcas
+de tiempo distintas** (1,844 en SANCORFASHION) — o sea, el orden avanza de
+verdad. `ml_progress` y `amazon_progress` siguen en MySQL porque son bitácoras
+del publicador, vivas; el orden se arma en Python sobre ~1,900 filas.
+
+**2. `sync_woo` le habría escrito costos viejos a la tienda.** Su
+`_costos_finales()` no es un dato de pantalla: se compara contra la meta `costo`
+del producto en WooCommerce y, si difiere, **se escribe**. Congelado, cada
+recálculo del panel se desharía en el siguiente barrido: la tienda volvería al
+costo viejo. Ahora sale de kubera. Paridad medida: 4,376 contra 4,376, **cero
+SKUs con valor distinto** — el repunte no mueve un solo precio hoy.
+
+**3. El listado de publicaciones ML** (`meli.listar`) mostraba el precio del
+espejo. Ahora se le pega el precio vivo de `costing.costos_finales`. Cuando se
+ordena POR precio no basta con reemplazarlo al final —el `ORDER BY` del SQL
+usaría el viejo—, así que en ese caso se trae el conjunto filtrado (≤2k filas
+por cuenta), se le pega el precio vivo y se ordena y pagina en Python.
+
+**Lo que se revisó y está limpio** (verificado, no supuesto): el ETL de las
+06:15 no borra nada y Woo/Odoo tienen precedencia sobre lo congelado, así que
+no se contamina; `seam_gap` solo mide `name/wc_id/status`, que vienen de Woo;
+la alerta de silencio de ventas ya lee kubera; `orders_write` y `ventas_ml`
+solo caen a MySQL con kubera caída o el flag apagado. Quedan dos cosméticos: la
+bitácora de costos del panel (`crear.py:583`, últimos 10 movimientos) dejaría de
+mostrar los nuevos, y `studio._dinero_mysql`, un respaldo que hoy no corre
+porque WordPress está configurado.
+
+No pude leer el valor de `SYNC_DESDE_ML` en Railway (el token OAuth devuelve
+solo nombres), así que **se endurecieron los dos caminos**, el activo y el de
+respaldo. Es lo correcto igual: la variable se puede voltear.
+
+Pruebas sandbox: `probar_retiro_channel` 5/5 · `probar_corte_orders_channel`
+20/20 · `probar_corte_costing` 15/15 · `probar_retiro_costing_orders` 11/11 ·
+`probar_corte_core_categorias` 12/12. Versión 0.128.0.

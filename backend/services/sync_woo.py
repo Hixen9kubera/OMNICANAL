@@ -44,9 +44,19 @@ def _set(**campos: Any) -> None:
 
 
 def _costos_finales() -> dict[str, float]:
-    """{ sku: costo } de TODA la tabla costos_finales."""
+    """
+    { sku: costo } de TODO el catálogo.
+
+    PASO 0 (12-ago-2026): sale de kubera. Este dict NO se muestra: se compara
+    contra la meta `costo` del producto en Woo y, si difiere, SE ESCRIBE. Con
+    el espejo congelado, cada recálculo del panel se desharía en el siguiente
+    barrido — la tienda volvería al costo viejo y el panel diría otra cosa.
+    """
     salida: dict[str, float] = {}
     try:
+        from services import costing_read, costing_write
+        if costing_write.activo():
+            return costing_read.costos_todos()
         rows = db.fetch_all(
             "SELECT sku, costo_unitario, costo_producto FROM costos_finales"
         )

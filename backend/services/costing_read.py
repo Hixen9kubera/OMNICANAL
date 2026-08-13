@@ -146,3 +146,39 @@ def contenedores_por_sku(skus: list[str]) -> dict[str, str]:
             if r.get("contenedor"):
                 salida[idx.get(r["sku"].lower(), r["sku"])] = r["contenedor"]
     return salida
+
+
+def costos_todos() -> dict[str, float]:
+    """
+    { sku: costo_unitario } (respaldo costo_producto) de TODO el catálogo.
+
+    Gemela de `sync_woo._costos_finales`, que es la que EMPUJA el costo a la
+    meta del producto en WooCommerce. Leerlo del espejo congelado no daría un
+    dato viejo y ya: al comparar contra Woo vería una diferencia y le
+    ESCRIBIRÍA el valor viejo encima, deshaciendo cada recálculo del panel.
+    """
+    salida: dict[str, float] = {}
+    for r in sdb.fetch_all(
+        """select sku::text as sku, costo_unitario, costo_producto
+             from costing.costos_finales where canal = %s""", (CANAL,)):
+        costo = r.get("costo_unitario") or r.get("costo_producto")
+        if costo:
+            salida[r["sku"]] = round(float(costo), 2)
+    return salida
+
+
+def precios_de(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """{ sku: {precio_sugerido, precio_base, ml_cat_id} } para el listado ML."""
+    salida: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        idx = {s.lower(): s for s in chunk}
+        for r in sdb.fetch_all(
+            """select sku::text as sku, precio_sugerido, precio_base, ml_cat_id
+                 from costing.costos_finales
+                where sku = any(%s::citext[]) and canal = %s""", (chunk, CANAL)):
+            salida[idx.get(r["sku"].lower(), r["sku"])] = {
+                "precio_sugerido": r.get("precio_sugerido"),
+                "precio_base": r.get("precio_base"),
+                "ml_cat_id": r.get("ml_cat_id")}
+    return salida
