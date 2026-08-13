@@ -7911,6 +7911,36 @@ filtrando por estado, mismo historial por SKU, y los 270 completados de
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20 · 5/5 · 12/12. Versión 0.132.0.
 
+### v0.134.0 — La alerta de duplicados suena una vez, no cada hora
+
+La v0.133.0 acertó en QUÉ vigilar y falló en CUÁNDO hablar: usaba `avisar()`,
+que es por enfriamiento. Un duplicado dura hasta que alguien lo atiende, así que
+el mismo caso volvía a sonar cada ventana — el 13-ago sonó a las 23:35 y otra
+vez a las 00:38 por los MISMOS tres pedidos, con 4 repeticiones suprimidas
+además. Repetir lo ya reportado no informa: entrena a ignorar la alerta, que es
+justo lo que casi cuesta caro el 12-ago.
+
+Pasa a `avisar_estado()`, y el estado es la **huella del conjunto** de órdenes
+duplicadas, no su número: si aparece una nueva la huella cambia y vuelve a
+sonar —que es lo que hay que saber—, pero mientras sea el mismo caso hay
+silencio. Va hasheada (sha1, 12 chars) porque `alertas_estado.estado` es
+varchar(30) y no cabe la lista; la huella real mide 17.
+
+Además estrena recuperación: cuando ya no queda ninguno avisa *"Sin pedidos
+duplicados en Woo — resuelto"*. Antes el `if not filas: return` nunca cerraba el
+estado, así que un caso atendido se quedaba mudo para siempre.
+
+Recordatorio semanal y no diario: un duplicado sin atender no cambia de urgencia
+cada 24 h, y la ventana de 24 h del `having` ya apaga el aviso solo cuando la
+copia envejece.
+
+Verificado simulando siete vueltas del vigilante: 3 duplicados → SUENA; los
+mismos, dos vueltas → callado; aparece un cuarto → SUENA; los mismos → callado;
+ninguno → SUENA la recuperación; sigue limpio → callado. **3 avisos donde antes
+habrían sido 7.** Versión 0.134.0.
+
+---
+
 ### v0.133.0 — La alerta que faltaba: pedidos DUPLICADOS
 
 Pregunta de Eduardo: *"¿tenemos alguna alerta si comienza a duplicarse algo?"*

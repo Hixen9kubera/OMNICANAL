@@ -47,6 +47,7 @@ variable, sin deploy.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -445,16 +446,36 @@ def _revisar_duplicados() -> None:
            HAVING n > 1
               AND MAX(o.date_created_gmt) > UTC_TIMESTAMP() - INTERVAL %s HOUR
             ORDER BY n DESC LIMIT 20""", (_HORAS_DUP,))
+    # Por CAMBIO DE ESTADO, no por enfriamiento. Un duplicado dura hasta que
+    # alguien lo atiende, así que con `avisar()` el mismo caso volvía a sonar
+    # cada ventana: el 13-ago sonó a las 23:35 y otra vez a las 00:38 por los
+    # MISMOS tres pedidos (+4 suprimidas). Repetir lo ya reportado no informa,
+    # entrena a ignorar la alerta.
+    #
+    # El estado es la HUELLA del conjunto de órdenes duplicadas, no su número:
+    # si aparece una nueva la huella cambia y vuelve a sonar (que es justo lo
+    # que hay que saber), pero mientras sea el mismo caso hay silencio. Va
+    # hasheada porque la columna `estado` es varchar(30) y no cabe la lista.
     if not filas:
+        avisar_estado("pedidos_duplicados", "ok", "",
+                      texto_ok="*Sin pedidos duplicados en Woo* — resuelto.")
         return
+    ids = sorted(str(f["ml_order_id"]) for f in filas)
+    huella = f"dup{len(ids)}:{hashlib.sha1('|'.join(ids).encode()).hexdigest()[:12]}"
     piezas = sum(int(f["n"]) - 1 for f in filas)
     muestra = " · ".join(f"{f['ml_order_id']}→#{f['pedidos']}" for f in filas[:4])
-    avisar("pedidos_duplicados",
-           f"*{len(filas)} orden(es) con pedido DUPLICADO en Woo* en las últimas "
-           f"{_HORAS_DUP} h ({piezas} pedido(s) de más). {muestra}. "
-           f"Revisar el candado de idempotencia: agrupar por meta `_ml_order_id`. "
-           f"Cancelar ANTES de mandar a la papelera los que hayan descontado "
-           f"stock, o Woo devuelve piezas que nunca salieron.")
+    avisar_estado(
+        "pedidos_duplicados", huella,
+        f"*{len(filas)} orden(es) con pedido DUPLICADO en Woo* en las últimas "
+        f"{_HORAS_DUP} h ({piezas} pedido(s) de más). {muestra}. "
+        f"Revisar el candado de idempotencia: agrupar por meta `_ml_order_id`. "
+        f"Cancelar ANTES de mandar a la papelera los que hayan descontado "
+        f"stock, o Woo devuelve piezas que nunca salieron.",
+        texto_ok="*Sin pedidos duplicados en Woo* — resuelto.",
+        # Semanal y no diario: un duplicado sin atender no cambia de urgencia
+        # cada 24 h, y la ventana de 24 h del `having` ya apaga el aviso solo
+        # cuando la copia envejece.
+        recordatorio_h=168)
 
 
 async def vigilante() -> None:
