@@ -7847,3 +7847,22 @@ no existe grita todos los días y se vuelve ruido.
 
 Correrlo antes de apagar deja la línea base; correrlo después dice si algo dejó
 de moverse. Versión 0.130.0.
+
+### v0.131.0 — El procedimiento de apagado, escrito para el equipo
+
+[docs/APAGADO_ESPEJOS_MYSQL.md](docs/APAGADO_ESPEJOS_MYSQL.md): qué se apaga y
+qué NO (ningún flujo de negocio: solo la copia a la base vieja), la línea base
+del detector antes de tocar nada, qué debe verse después, y cómo se revierte —
+una variable, sin deploy, y se puede revertir **un dominio solo**.
+
+Lleva dos advertencias que no son del apagado pero que quien lo ejecute tiene
+que saber: **no apretar el botón de sincronizar stock** (pondría en cero 8,120
+SKUs porque Odoo no conoce el stock de drop) y no correr a mano los ocho
+scripts de mantenimiento que todavía leen MySQL.
+
+Y deja anotado el problema previo que salió al medir: el barrido de 15 min no
+le da la vuelta al catálogo —2,890 publicaciones vivas con 7+ días sin
+revisar—, con la explicación de por qué no bloquea el apagado (las dos tablas
+están igual de viejas, las escribe el mismo barrido).
+
+CLAUDE.md apunta al procedimiento desde la sección de migración. Versión 0.131.0.

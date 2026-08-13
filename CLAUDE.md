@@ -160,6 +160,11 @@ deje de escribir NO alcanza. Un arnés de paridad mide si los datos coinciden,
 no si alguien toma decisiones con ellos. Y un `None` de una tabla detenida no
 significa "no existe": significa "ya no sé".
 
+### PROCEDIMIENTO de apagado → [docs/APAGADO_ESPEJOS_MYSQL.md](docs/APAGADO_ESPEJOS_MYSQL.md)
+
+Qué se apaga, cómo se verifica con `vigilar_congelacion.py`, cómo se
+revierte (una variable, sin deploy) y qué NO tocar mientras tanto.
+
 ### Estado real de los espejos (12-ago, 24:00 UTC)
 
 `CHANNEL_ESPEJO_INVERSO`, `COSTING_ESPEJO_INVERSO` y `ORDERS_ESPEJO_INVERSO`
