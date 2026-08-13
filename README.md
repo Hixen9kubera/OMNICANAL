@@ -7447,3 +7447,39 @@ Reconstruir esas 474 filas desde `costos_finales` es una decisión de negocio
 Queda como el último pendiente antes de poder apagar `costos_*` en MySQL.
 
 Versión 0.121.0.
+
+### v0.122.0 — 401 SKUs recuperan sus dimensiones en kubera
+
+Corrección a la conclusión de la v0.121.0: **a esos 474 SKUs no les faltaba el
+costo, les faltaban las dimensiones.** Los 474 ya tienen su fila en
+`costing.costos_finales` con `costo_unitario` y `precio_sugerido` poblados; lo
+que no tienen es dims, porque el modelo v4 no puso esas columnas ahí (viven en
+`costos_validados`). Leí "sin fila en validados" como "sin costo" y no lo era.
+
+El script ahora da de alta filas **solo con dims**, y eso es seguro porque los
+dos únicos llamadores lo toleran — verificado línea por línea:
+
+- `asegurar_finales` corta antes: esos SKUs tienen `precio_sugerido` en kubera y
+  retorna ahí. Si llegara, su guarda `costo_unitario <= 0` no calcula nada.
+- `_preparar_base` toma las dims de validados y el **costo de `cf`**
+  (`costing.costos_finales`), que sí está poblado.
+
+Sin esas dos verificaciones una fila "solo dims" haría que
+`costo_desde_validados` devolviera `costo_total = 0`, y un "cuesta cero" es peor
+que un "no sé".
+
+Aplicado: **401 altas** y 36 rellenos (v0.121.0). El hueco pasó de 514 SKUs a
+**73**, y esos 73 son exactamente los descartados por la guarda de densidad
+(peso de caja master capturado como pieza: `mue-0064` a 185 kg/L). De ellos, 14
+tienen publicación viva.
+
+```
+kubera costos_validados con dims: 14,355 → 14,792
+```
+
+Queda pendiente decidir qué hacer con esos 73 antes de retirar el respaldo de
+`_preparar_base`: hoy alimentan el cálculo con un peso falso —que infla el costo
+de envío— y sin él quedarían sin peso, que el panel ya marca en ámbar. Ninguna
+de las dos es correcta; la correcta es recapturarlos.
+
+Versión 0.122.0.

@@ -3,14 +3,22 @@ backfill_dims_validados.py — Rescata a `costing.costos_validados` las dims que
 solo viven en el MySQL de `costos_finales`, para poder retirar el respaldo de
 `costos._preparar_base` (paso 0 del desmantelamiento, 12-ago-2026).
 
-ALCANCE DELIBERADAMENTE ESTRECHO — solo rellena NULOS en filas QUE YA EXISTEN.
+DOS OPERACIONES, ambas solo con dims:
+  · RELLENO de filas existentes cuyas dims están en NULL.
+  · ALTA de filas para los SKUs cuyo costo YA vive en costing.costos_finales
+    (con costo_unitario y precio_sugerido) pero que no tienen fila en
+    validados. A esos no les falta el costo: les faltan las dimensiones,
+    porque el modelo v4 no puso esas columnas en `costos_finales`.
 
-De los 514 SKUs con dims solo en MySQL:
-  · 474 NO tienen fila en costing.costos_validados. NO se insertan: una fila
-    con dims y sin costo hace que `costo_desde_validados` devuelva
-    costo_total = 0, y un "cuesta cero" es peor que un "no sé" — es justo la
-    clase de error que este paso 0 está corrigiendo.
-  ·  40 sí tienen fila con las dims en NULL. Esas se rellenan.
+POR QUÉ UNA FILA "SOLO DIMS" ES SEGURA (verificado en los dos llamadores):
+  · `asegurar_finales` corta antes de llegar: esos SKUs tienen precio_sugerido
+    en kubera y retorna ahí. Y si llegara, su guarda `costo_unitario <= 0` no
+    calcula nada.
+  · `_preparar_base` toma las dims de validados y el COSTO de `cf`
+    (costing.costos_finales), que sí está poblado.
+Sin esas dos verificaciones, una fila con dims y sin costo haría que
+`costo_desde_validados` devolviera costo_total = 0 — un "cuesta cero" es peor
+que un "no sé".
 
 GUARDA DE PLAUSIBILIDAD: se descarta toda medida <= 0 y toda densidad mayor a
 1.5 kg/L. El 14% de los candidatos trae peso de CAJA MASTER capturado como
@@ -82,11 +90,27 @@ def main() -> None:
                        from costing.costos_validados""")
         destino = {str(r["sku"]).lower(): r for r in c.fetchall()}
 
-    plan, sin_fila, densos, completos = [], 0, [], 0
+    with pg.cursor() as c:
+        c.execute("""select lower(sku::text) from costing.costos_finales
+                      where costo_unitario is not null and precio_sugerido is not null""")
+        con_costo_kb = {r[0] for r in c.fetchall()}
+
+    plan, altas, densos, completos, sin_costo = [], [], [], 0, 0
     for sku, o in origen.items():
+        litros0 = (float(o["largo"]) * float(o["ancho"]) * float(o["alto"])) / 1000.0
+        dens0 = float(o["peso"]) / litros0 if litros0 > 0 else 9999
         d = destino.get(sku)
         if d is None:
-            sin_fila += 1
+            # sin fila en validados: solo se da de alta si su costo YA está en
+            # kubera (si no, la fila nueva sería un "cuesta cero" fabricado)
+            if sku not in con_costo_kb:
+                sin_costo += 1
+                continue
+            if dens0 > DENSIDAD_MAX:
+                densos.append((sku, round(dens0, 1)))
+                continue
+            altas.append({"sku": o["sku"], **{k: float(o[k]) for k in CAMPOS},
+                          "densidad": round(dens0, 2)})
             continue
         faltantes = [k for k in CAMPOS if d.get(k) is None]
         if not faltantes:
@@ -102,12 +126,14 @@ def main() -> None:
 
     print(f"  candidatos en MySQL con dims         : {len(origen)}")
     print(f"  ya completos en kubera               : {completos}")
-    print(f"  SIN fila en kubera (no se insertan)  : {sin_fila}")
+    print(f"  sin costo en kubera (NO se dan de alta): {sin_costo}")
     print(f"  descartados por densidad > {DENSIDAD_MAX} kg/L : {len(densos)}")
-    print(f"  >>> A RELLENAR                       : {len(plan)}\n")
-    for p in plan[:10]:
+    print(f"  >>> A RELLENAR (filas existentes)    : {len(plan)}")
+    print(f"  >>> A DAR DE ALTA (solo dims)        : {len(altas)}\n")
+    for p in (plan + altas)[:10]:
         print(f"    {p['sku']:22s} {p['largo']}x{p['ancho']}x{p['alto']} cm · "
-              f"{p['peso']} kg  ({p['densidad']} kg/L)  campos={p['campos']}")
+              f"{p['peso']} kg  ({p['densidad']} kg/L)  "
+              f"{'relleno ' + str(p['campos']) if 'campos' in p else 'ALTA'}")
     if densos:
         print("\n  descartados más extremos:")
         for sku, dens in sorted(densos, key=lambda x: -x[1])[:5]:
@@ -118,16 +144,23 @@ def main() -> None:
         pg.close()
         return
 
-    if plan:
-        with pg.cursor() as c:
-            c.execute("select set_config('app.via', 'backfill_dims', true)")
-            for p in plan:
-                sets = ", ".join(f"{k} = coalesce({k}, %s)" for k in CAMPOS)
-                c.execute(f"update costing.costos_validados set {sets} where sku = %s",
-                          tuple(p[k] for k in CAMPOS) + (p["sku"],))
-        pg.commit()
-    print(f"\n== APLICADO: {len(plan)} fila(s) rellenada(s) ==")
-    print(json.dumps({"rellenadas": len(plan), "sin_fila": sin_fila,
+    with pg.cursor() as c:
+        c.execute("select set_config('app.via', 'backfill_dims', true)")
+        for p in plan:
+            sets = ", ".join(f"{k} = coalesce({k}, %s)" for k in CAMPOS)
+            c.execute(f"update costing.costos_validados set {sets} where sku = %s",
+                      tuple(p[k] for k in CAMPOS) + (p["sku"],))
+        for a in altas:
+            cols = ", ".join(CAMPOS)
+            ph = ", ".join(["%s"] * len(CAMPOS))
+            c.execute(
+                f"insert into costing.costos_validados (sku, {cols}) "
+                f"values (%s, {ph}) on conflict (sku) do nothing",
+                (a["sku"],) + tuple(a[k] for k in CAMPOS))
+    pg.commit()
+    print(f"\n== APLICADO: {len(plan)} rellenada(s) · {len(altas)} alta(s) ==")
+    print(json.dumps({"rellenadas": len(plan), "altas": len(altas),
+                      "sin_costo_en_kubera": sin_costo,
                       "descartados_densidad": len(densos)}, ensure_ascii=False))
     pg.close()
 
