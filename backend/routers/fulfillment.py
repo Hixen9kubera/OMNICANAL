@@ -1009,7 +1009,9 @@ async def margenes_reales(
         try:
             if presupuesto:
                 consultadas = await envio_real.completar(pares_orden, presupuesto)
-            costos = envio_real.leer(pares_orden)
+            # leer() es MySQL síncrono con ~15,000 pares (1.46 s medidos): en la
+            # corrutina congela el backend entero mientras dura.
+            costos = await asyncio.to_thread(envio_real.leer, pares_orden)
         except Exception as exc:  # noqa: BLE001
             log.warning("envío real no disponible: %s", exc)
 
@@ -1378,7 +1380,7 @@ async def _envio_real_en_filas(items: list[dict[str, Any]], dias: int,
             from services import envio_real
             if presupuesto:
                 await envio_real.completar(pares_de(lineas), presupuesto)
-            costos = envio_real.leer(pares_de(lineas))
+            costos = await asyncio.to_thread(envio_real.leer, pares_de(lineas))
         except Exception as exc:  # noqa: BLE001
             log.warning("envío real no disponible en la tabla: %s", exc)
 

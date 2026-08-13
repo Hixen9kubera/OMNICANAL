@@ -153,6 +153,15 @@ def aplicar_a_lineas(lineas: list[dict[str, Any]]) -> dict[str, int]:
     return censo
 
 
+# UN SOLO LLENADO A LA VEZ. Análisis pide el suyo desde cuatro lados (la tabla,
+# el dashboard, el reporte y su vista previa) y uno de ellos lo lanza sin
+# esperarlo. Con la pestaña abierta se solapaban, y cada llenado abría SU PROPIA
+# ráfaga contra Mercado Libre: ocho llamadas concurrentes por llenado, no ocho
+# en total. El candado no pierde trabajo — el que llega tarde se va sin hacer
+# nada y el que está corriendo llena el mismo caché para todos.
+_llenando = asyncio.Lock()
+
+
 async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int:
     """
     Consulta a ML las órdenes SIN costo en caché (o con NULL viejo de >24 h),
@@ -160,10 +169,19 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int
     se come el timeout del proxy: cada refresco del panel avanza otro tanto.
     Devuelve cuántas órdenes consultó.
     """
+    if _llenando.locked():
+        return 0  # ya hay un llenado en curso: este se salta, no se encola
+    async with _llenando:
+        return await _completar(pares, presupuesto)
+
+
+async def _completar(pares: list[tuple[str, str]], presupuesto: int) -> int:
     from datetime import datetime, timedelta
 
-    _asegurar_tabla()
-    cache = leer(pares)
+    # leer() es psycopg2/MySQL SÍNCRONO y aquí llega con ~15,000 pares: medido en
+    # 1.46 s. Ejecutarlo en la corrutina congela el backend ENTERO ese tiempo —
+    # el mismo defecto que ya se había pagado en los webhooks (ver _procesar_ml).
+    cache = await asyncio.to_thread(leer, pares)
     limite_retry = datetime.utcnow() - timedelta(hours=24)
     faltan = [
         (c, str(o)) for (c, o) in pares
@@ -180,15 +198,17 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int
     tokens: dict[str, str | None] = {}
     sem = asyncio.Semaphore(8)
     resultados: list[tuple[str, str, str | None, float | None]] = []
+    fallos: dict[int, int] = {}  # status → cuántas, para poder verlo en los logs
 
     async with httpx.AsyncClient(base_url=_API, timeout=20.0) as cli:
 
         async def una(cuenta: str, oid: str) -> None:
             if cuenta not in tokens:
-                tokens[cuenta] = meli._access_token(cuenta)
+                # Lee el token de la BD: síncrono, va a un hilo.
+                tokens[cuenta] = await asyncio.to_thread(meli._access_token, cuenta)
             tk = tokens.get(cuenta)
             if not tk:
-                return
+                return  # sin token no hay intento que registrar: es falla nuestra
             async with sem:
                 cab = {"Authorization": f"Bearer {tk}"}
                 r = await cli.get(f"/orders/{oid}", headers=cab)
@@ -200,7 +220,18 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int
                     cab = {"Authorization": f"Bearer {nuevo}"}
                     r = await cli.get(f"/orders/{oid}", headers=cab)
                 if r.status_code != 200:
-                    return  # sin fila: se reintenta en la siguiente carga
+                    # EL INTENTO SE REGISTRA. Antes se descartaba en silencio, así
+                    # que la orden seguía "pendiente" y volvía a la CABEZA de la
+                    # lista (que va ordenada): la misma orden se pedía otra vez en
+                    # cada carga del panel, para siempre. Eran 2,241 órdenes que
+                    # ML rechaza en ráfaga (403) y contesta 200 de una en una:
+                    # el propio reintento era lo que las hacía fallar. Con la fila
+                    # en NULL entran en la regla de reintento a las 24 h y la
+                    # lista AVANZA. El COALESCE del guardado impide que un NULL
+                    # pise un costo real.
+                    fallos[r.status_code] = fallos.get(r.status_code, 0) + 1
+                    resultados.append((cuenta, oid, None, None))
+                    return
                 sid = (r.json().get("shipping") or {}).get("id")
                 costo = None
                 if sid:
@@ -234,6 +265,7 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 250) -> int
 
     if resultados:
         await asyncio.to_thread(_guardar)
-    log.info("envio_real: %d órdenes consultadas (%d pendientes)",
-             len(resultados), len(faltan) - len(lote))
+    log.info("envio_real: %d órdenes consultadas (%d pendientes)%s",
+             len(resultados), len(faltan) - len(lote),
+             f" · sin dato por respuesta de ML: {fallos}" if fallos else "")
     return len(resultados)

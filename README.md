@@ -8034,6 +8034,71 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.155.0 — El panel se tumbaba solo: 2,241 órdenes que se pedían para siempre
+
+**No era TikTok.** La v0.154.0 arregló un defecto real (el webhook de TikTok
+trabajaba antes de contestar), pero la conclusión estaba mal: al reencender el
+canal el backend se volvió a degradar, así que se apagó otra vez. **Con TikTok
+apagado siguió igual** — 10 s, 22 s, 25 s y timeout en un simple `/api/health` —
+y en la ventana degradada **no entró ni un solo evento de TikTok**. Lo que
+revivía al backend no era apagar la variable: era el **reinicio** que provoca
+cambiarla. Un flag que "arregla" al reiniciar no ha demostrado nada.
+
+**La causa real, medida.** El envío real de ML (`services/envio_real.py`,
+v0.68.0) cachea en MySQL lo que ML cobró por cada embarque, y Análisis manda
+llenar el caché en cada carga. Los números de producción:
+
+| | |
+|---|---|
+| Órdenes de ML en la ventana de 60 días que pide el panel | 15,487 |
+| Ya en el caché | 13,246 |
+| **Pendientes, carga tras carga** | **2,241** |
+
+Esas 2,241 contestan **200 pedidas de una en una, con un segundo entre ellas**.
+Solo fallan **en ráfaga**: ML responde 403 y el código hacía
+
+```python
+if r.status_code != 200:
+    return  # sin fila: se reintenta en la siguiente carga
+```
+
+Sin fila, la orden sigue "pendiente" y —como la lista va ordenada y se toman las
+primeras N— **vuelve a la cabeza**. Cada carga del panel volvía a pedir las
+mismas órdenes que ya sabíamos que iban a fallar. El reintento era lo que las
+hacía fallar: un tapón que no se podía destapar solo.
+
+**Y se multiplicaba por cuatro.** La tabla, el dashboard, el reporte y su vista
+previa piden su propio llenado, y uno lo lanza con `create_task` sin esperarlo.
+El semáforo de 8 es *por llenado*, no en total: con la pestaña abierta eran
+cuatro ráfagas simultáneas contra ML. Por eso ML tiraba 403 (y por eso en los
+logs se ve la misma orden pedida dos veces en el mismo milisegundo).
+
+**El tercer filo: bloqueo del event loop.** `envio_real.leer()` es MySQL
+síncrono y le llegan ~15,000 pares: **1.46 s medidos**, dentro de la corrutina,
+dos veces por carga. Mientras corre, el backend entero no atiende a nadie — el
+mismo defecto que ya se había pagado en los webhooks el 15-jul y que está
+documentado en `_procesar_ml`. Con la CPU al 1.5% y todo colgado, el síntoma
+era idéntico.
+
+**Los tres arreglos:**
+
+1. **El intento se registra.** Un fallo de ML escribe la fila con costo NULL, así
+   que entra en la regla de reintento a las 24 h y **la lista avanza**. El
+   `COALESCE` del guardado impide que ese NULL pise un costo real.
+2. **Un solo llenado a la vez** (`asyncio.Lock`). El que llega tarde se va sin
+   hacer nada; el que corre llena el mismo caché para todos.
+3. **Las lecturas síncronas salen del event loop** (`asyncio.to_thread`): el
+   `leer()` de los dos endpoints, el de dentro del llenado y la lectura del token.
+
+**Verificado en producción antes de subir**: dos llenados en paralelo → el
+segundo devuelve 0 (candado), 6 órdenes nuevas al caché, 0 nulos.
+
+Queda medido y **no** arreglado aquí: los 25 `sdb.fetch_*` síncronos de
+`routers/fulfillment.py` siguen en la corrutina (~1 s el del dashboard). Es
+preexistente y ya no se multiplica, pero es la siguiente deuda de ese archivo.
+
+---
+
 ### v0.154.0 — El webhook de TikTok trabajaba antes de contestar, y eso tumbó el panel
 
 **Incidente, 13-ago 22:2x.** Brandon: *"ya está en producción pero no se alcanza
