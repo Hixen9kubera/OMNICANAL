@@ -7976,6 +7976,64 @@ filtrando por estado, mismo historial por SKU, y los 270 completados de
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20 · 5/5 · 12/12. Versión 0.132.0.
 
+### v0.139.0 — Competencia: todo el raspado por actor de Apify, y se va el modo local
+
+Cuatro cambios que sostienen una sola regla: **lo que la API de Mercado Libre da
+se pide por API; lo que no, se raspa con un ACTOR de Apify** — nunca con un
+navegador local, que ML corta a las ~50 consultas por IP. Pasó dos veces a mitad
+de una captura.
+
+**Selenium retirado.** Borrados `competencia_mas_vendidos.py`,
+`competencia_busqueda.py` y sus cuatro scripts. Con ellos se va la cadena que
+solo existía para el navegador —`correr`, `medir_sku`, `_medir_busqueda`,
+`_medir_categoria`— y los endpoints `/correr`, `/corrida` y `/detalle`, ninguno
+con consumidor en el panel. La captura raspa con Apify; lo único que le faltaba a
+esa ruta, `id_pagina`, se deriva ahora del propio href. Son DOS ids distintos y
+confundirlos cuesta: el `wid` es el ITEM real y sirve para `/visits`; el de la
+RUTA (`/up/MLMU…`, `/p/MLM…`) es el que `/products/{id}/items` necesita para
+resolver la subcategoría de cada fila, o sea los nichos.
+
+**Actor de respaldo.** `apify~puppeteer-scraper` entra cuando el principal no
+trae nada aprovechable. La primera versión preguntaba `if not filas` y nunca se
+disparaba: cuando el actor no logra raspar, la corrida termina SUCCEEDED y el
+dataset trae una entrada por URL con `items: []` — no está vacío, pero no hay
+nada que guardar. La decisión se movió a quien llama, que es quien sabe qué
+cuenta como útil. Las dos `pageFunction` se reescribieron en el subconjunto común
+de ambas APIs (`page.waitForTimeout` es de Playwright), así que la misma función
+corre en los dos actores. El de respaldo exige aprobar permisos una vez en la
+consola de Apify: sin eso responde 403.
+
+**Fuera el actor especializado.** `apify_ml_actor` y sus dos funciones muertas.
+Cobraba $0.09 por corrida más $0.003 por item, devolvía ~5 orgánicos contra ~48 y
+no etiquetaba los resultados con la consulta que los trajo.
+
+**Fuera SQLite y fuera la memoria.** `competencia_store` pierde el DDL, `_con()`
+y `asegurar_schema()`: sus funciones exigen `SUPABASE_DB_URL` y revientan sin
+ella. El modo local costaba de dos maneras — en Railway el FS es efímero y el tab
+arrancaba vacío, y cuando el archivo sí existía una captura escrita ahí parecía
+haber funcionado sin que nadie la leyera jamás. Y la captura escribe por tanda de
+20 en vez de acumular todo y guardar al final, que es lo que hizo perder 49
+categorías ya raspadas cuando ML bloqueó a media corrida.
+
+**Migración 0018: el buscador recupera sus visitas.** La 0017 había retirado
+`visitas_30d` de `market_search_results` leyendo "4 filas llenas de 1,816" como
+columna muerta. Estaba desconectada del escritor, no muerta: el pipeline SÍ pide
+esas visitas y el subidor viejo no las incluía en su INSERT. Vuelve, con índice
+parcial, y el panel las pinta junto al precio — en «soldadora inverter» el #2 es
+el más barato Y el que se lleva 69,440 visitas, tres veces más que el #1; con
+solo el precio esa lectura no aparece. Al rellenar se volvió a caer en la trampa
+conocida: `/visits` sobre un id de CATÁLOGO responde 0 sin error, y 1,893 de las
+1,894 filas en cero venían de un `/p/` o un `MLMU`.
+
+Cierre de las tres categorías trabajadas: Deportes y Fitness 77/85 subcategorías
+con top y 143/143 SKUs con término medido; Herramientas 49/55 y 99/99; Recuerdos
+14/18 y 32/32. Los huecos restantes se verificaron uno por uno contra
+`/highlights` y `/trends`: son categorías de las que ML no publica nada.
+`docs/COMPETENCIA_ORIGEN_DE_DATOS.md` documenta de dónde viene cada campo de cada
+tabla, con su cobertura medida. Versión 0.139.0.
+
+---
+
 ### v0.137.0 — Amazon: la IA propone, el código valida, y el contenido ya no se pierde
 
 **El circuito que Mercado Libre tenía y Amazon no.** En ML, "Mejorar con IA"
