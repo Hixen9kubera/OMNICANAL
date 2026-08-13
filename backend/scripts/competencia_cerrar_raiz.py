@@ -63,10 +63,20 @@ COSTO_PAGINA = 0.007
 
 
 def corre(script: str, *args: str) -> int:
-    """Lanza uno de los scripts del módulo y deja su salida a la vista."""
+    """Lanza uno de los scripts del módulo y deja su salida a la vista.
+
+    `stdin=DEVNULL` NO es cosmético. Lanzado con `nohup … &` el descriptor de
+    entrada queda cerrado, y el Python hijo muere antes de ejecutar una sola
+    línea con «Fatal Python error: init_sys_streams … Bad file descriptor».
+    Heredarlo hacía que cada paso fallara en un segundo y el lote recorriera las
+    20 raíces sin hacer nada — sin gastar, pero sin trabajar.
+    """
     cmd = [PY, str(RAIZ_DIR / script), *args]
     print(f"\n$ {' '.join(cmd[1:])}", flush=True)
-    return subprocess.run(cmd).returncode
+    r = subprocess.run(cmd, stdin=subprocess.DEVNULL)
+    if r.returncode != 0:
+        print(f"  ! {script} terminó con código {r.returncode}", flush=True)
+    return r.returncode
 
 
 def estado(raiz: str) -> dict:
