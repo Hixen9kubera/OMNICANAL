@@ -7365,3 +7365,44 @@ Se conserva el `try/except` que ya tenían: si kubera no responde, la rotación
 degrada a orden arbitrario y el barrido se salta esa ronda — nunca frena el sync.
 
 Versión 0.119.0.
+
+### v0.120.0 — Costos deja de decidir con el espejo (y aparece un bug de 2,270 SKUs)
+
+Tercer lector del **paso 0**. Tres consultas de `costos.py` dejan de preguntarle
+a MySQL. Una de ellas destapó un error que llevaba semanas afectando precios.
+
+**1. La categoría ML, y el bug.** `_cat_ml_de` preguntaba PRIMERO a
+`categorias_ml` —tabla sin una escritura desde el 22-jul— y solo después miraba
+el mapa de kubera. Al medirlo para quitarla:
+
+| | |
+|---|---|
+| filas en `categorias_ml` (MySQL) | 12,399 |
+| filas en `channel.product_category` (kubera) | 13,733 |
+| SKUs solo en MySQL | **1** |
+| **SKUs con categoría DISTINTA** | **2,270** |
+
+Ejemplo: `edu-0011-pla` decía `MLM456620` en MySQL y `MLM190037` en kubera. Para
+esos 2,270 la comisión —y por lo tanto el precio— se calculaba con la categoría
+equivocada, porque la tabla congelada le ganaba a **la elección del panel**, que
+por regla 2 de la casa es la que MANDA. No era solo una tabla vieja: era una
+violación de la regla, silenciosa.
+
+**2. `asegurar_finales`.** Leía `costos_finales` de MySQL para decidir si
+recalcular el precio. Con el espejo detenido, un "no tiene precio" falso dispara
+recálculos que pisan lo bueno, y un "sí tiene" falso deja al SKU sin precio.
+Paridad medida: 4,128 SKUs con precio en ambas bases, **cero diferencias en los
+dos sentidos**.
+
+**3. La comisión por categoría** ya consultaba kubera primero; se retira el
+respaldo. Una comisión vieja de una tabla detenida se vuelve un precio mal
+calculado sin aviso.
+
+**Lo que NO se tocó, y por qué.** El complemento de dimensiones de
+`_preparar_base` se queda leyendo MySQL: `costing.costos_finales` no tiene
+columnas de dims (contrato v4: viven en `costos_validados`) y **514 SKUs tienen
+su tamaño y peso SOLO en el espejo**. Quitarlo hoy los dejaría sin poder derivar
+el flete por volumen. Necesita un backfill previo a `costing.costos_validados`
+— queda anotado como el último pendiente del paso 0.
+
+Pruebas sandbox `probar_retiro_costing_orders.py`: 11/11. Versión 0.120.0.

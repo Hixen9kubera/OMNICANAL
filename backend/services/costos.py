@@ -55,11 +55,12 @@ def _comision_categoria_db(cat_id: str) -> float | None:
     # también se consulta ahí primero; MySQL (espejo inverso) es el fallback.
     if costing_write.activo():
         try:
-            pct = costing_read.pct_comision_categoria(cat_id)
-            if pct is not None:
-                return pct
+            return costing_read.pct_comision_categoria(cat_id)
         except Exception:  # noqa: BLE001
-            pass
+            return None
+    # PASO 0 (12-ago-2026): sin el corte encendido, el espejo sigue siendo la
+    # fuente. Con el corte, ya no se reconsulta: una comisión vieja de una tabla
+    # detenida se convierte en un precio mal calculado, sin aviso.
     try:
         row = db.fetch_one(
             """SELECT pct_comision FROM costos_finales
@@ -584,15 +585,22 @@ def _cat_ml_kubera(sku: str) -> str:
 
 
 def _cat_ml_de(sku: str) -> str:
-    """Categoría ML de UN SKU: categorias_ml → postmeta de Woo → mapa kubera."""
+    """Categoría ML de UN SKU: mapa kubera → postmeta de Woo."""
     if not sku:
         return ""
-    try:
-        row = db.fetch_one("SELECT category_id FROM categorias_ml WHERE sku=%s", (sku,))
-        if row and row.get("category_id"):
-            return str(row["category_id"])
-    except Exception:  # noqa: BLE001
-        pass
+    # PASO 0 (12-ago-2026): sale del mapa de kubera y ya NO se consulta
+    # `categorias_ml`, que no recibe una escritura desde el 22-jul.
+    #
+    # No era solo "una tabla vieja": preguntarle PRIMERO hacía que su categoría
+    # le ganara a la elección del panel, violando la regla 2 de la casa. Medido
+    # al quitarla: de 12,399 filas, **2,270 SKUs tenían una categoría DISTINTA**
+    # a la de `channel.product_category` (p. ej. edu-0011-pla: MLM456620 contra
+    # MLM190037). Para esos, la comisión —y por lo tanto el precio— se calculaba
+    # con la categoría equivocada. kubera es superset: solo 1 SKU vivía nada más
+    # en MySQL, y ese cae al postmeta de Woo igual.
+    cat_kb = _cat_ml_kubera(sku)
+    if cat_kb:
+        return cat_kb
     try:
         wc = None
         # PASO 3 del desmantelamiento (12-ago-2026): wc_id sale de core.products
@@ -617,7 +625,7 @@ def _cat_ml_de(sku: str) -> str:
                     return str(m["ml_category_id"])
     except Exception:  # noqa: BLE001
         pass
-    return _cat_ml_kubera(sku)
+    return ""  # el mapa de kubera ya se consultó arriba
 
 
 def _resolver_cat_ml(sku: str) -> str:
@@ -701,7 +709,14 @@ def asegurar_finales(sku: str, cat_id: str = "",
       · Si no → lo calcula desde costos_validados + categoría ML, lo persiste y logea.
     Devuelve el dict con precio_base/precio_sugerido/costo_* o None si no se pudo.
     """
-    cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,))
+    # PASO 0 (12-ago-2026): esta consulta DECIDE si se recalcula el precio, así
+    # que sale del registro vivo. Preguntándoselo al espejo congelado, un
+    # "no tiene precio" falso dispara recálculos que pisan lo bueno — y un
+    # "sí tiene" falso deja al SKU sin precio nuevo. Paridad medida el mismo
+    # día: 4,128 SKUs con precio en las dos bases, cero diferencias.
+    cf = costing_read.finales(sku) if costing_write.activo() else None
+    if cf is None and not costing_write.activo():
+        cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,))
     if cf and cf.get("precio_sugerido"):
         return cf
 
