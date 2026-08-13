@@ -78,6 +78,18 @@ async def lifespan(app: FastAPI):
     # escribiendo; la fuente buena es este log y las tablas.
     log.info("Contenido Amazon con IA al crear productos: %s (AMAZON_IA_EN_CREAR)",
              "ENCENDIDO" if settings.amazon_ia_en_crear else "apagado")
+    # Los tres de TikTok, por la misma razón: un flag que solo vive en Railway no
+    # se puede verificar sin abrir Railway. Y con `FANOUT_CANALES` hay un motivo
+    # extra — su VALOR no se puede leer desde fuera (la API lo devuelve
+    # redactado), así que aquí se imprime la lista ya RESUELTA: es la única forma
+    # de saber a qué canales puede escribirles el fan-out sin adivinar.
+    from services import fanout_stock as _fs
+    log.info("TikTok · contenido al crear: %s · pedidos por webhook: %s · "
+             "fan-out de stock: %s · canales del fan-out: %s",
+             "ENCENDIDO" if settings.tiktok_ia_en_crear else "apagado",
+             "ENCENDIDO" if settings.pedidos_tiktok_enabled else "apagado",
+             "ENCENDIDO" if settings.fanout_tiktok else "apagado",
+             sorted(_fs._canales_activos()) if _fs._canales_activos() else "TODOS")  # noqa: SLF001
     yield
     scheduler.detener()
 
@@ -89,7 +101,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.146.1",
+    version="0.146.2",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -143,7 +155,7 @@ app.include_router(resolver.router)
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.146.1",
+        "version": "0.146.2",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
