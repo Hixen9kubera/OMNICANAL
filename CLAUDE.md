@@ -255,6 +255,11 @@ de Crear decidan leyendo MySQL, ningún espejo se puede volver a apagar. Se hace
 dominio por dominio, y cada uno se apaga solo cuando SUS lectores ya miran a
 kubera.
 
+0b. **El cron de las 06:15 ya NO abre `kubera_ml`** (v0.129.0): los dos ETLs
+   leen kubera y Woo/Odoo vivos. Era el último proceso no-espejo que dependía
+   del esquema viejo. Lo que queda apuntando ahí son 8 scripts de mantenimiento
+   que se corren A MANO y el andamiaje del propio espejo.
+
 1. **Bitácoras a `ops.process_log`**: falta `crear_logs`, y al FINAL la fusión
    de `alertas_estado` (esa es la última pieza: debe seguir funcionando aunque
    kubera esté caída, así que se mueve cuando ya no haya nada que rescatar).

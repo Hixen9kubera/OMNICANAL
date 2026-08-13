@@ -34,6 +34,7 @@ import os
 import re
 import socket
 import sys
+import urllib.request
 import threading
 from collections import Counter
 from pathlib import Path
@@ -98,6 +99,32 @@ def normalizar_mecanico(raw: str | None) -> str | None:
     return s or None
 
 
+_ML_API = "https://api.mercadolibre.com"
+_cache_ml: dict[str, tuple[str | None, str | None]] = {}
+
+
+def _nombre_ml(cid: str) -> tuple[str | None, str | None]:
+    """(name, path) de una categoría desde la API pública de ML — sin token.
+
+    Se usa urllib y no httpx a propósito: el contenedor de este cron solo
+    instala pymysql y psycopg2-binary (ver railway.etl-core.json). Ante
+    cualquier fallo devuelve (None, None): el nodo entra sin nombre, como
+    antes, y el hueco se ve — nunca se inventa un nombre.
+    """
+    if cid in _cache_ml:
+        return _cache_ml[cid]
+    nom = camino = None
+    try:
+        with urllib.request.urlopen(f"{_ML_API}/categories/{cid}", timeout=20) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        nom = str(d.get("name") or "") or None
+        camino = " › ".join(p.get("name", "") for p in (d.get("path_from_root") or [])) or None
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (categoría {cid}: no se pudo resolver el nombre — {exc})", flush=True)
+    _cache_ml[cid] = (nom, camino)
+    return nom, camino
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--real", action="store_true")
@@ -112,20 +139,15 @@ def main() -> None:
     print(f"[{modo}] destino: {ref[:8]}…  canal: {CANAL}  (watchdog: {TIMEOUT_MIN} min)", flush=True)
 
     # ── EXTRACCIÓN ───────────────────────────────────────────────────────────
-    my = pymysql.connect(
-        host=PROD["DB_HOST"], port=int(PROD.get("DB_PORT", 3306)),
-        user=PROD["DB_USER"], password=PROD["DB_PASSWORD"], database=PROD["DB_NAME"],
-        charset="utf8mb4", connect_timeout=15, read_timeout=120,
-        cursorclass=pymysql.cursors.DictCursor,
-    )
-    cur = my.cursor()
-    cur.execute("""SELECT sku, category_id, category_name, ruta, fuente, updated_at
-                   FROM categorias_ml
-                   WHERE category_id IS NOT NULL AND category_id <> ''
-                   ORDER BY updated_at""")
-    t_cat = cur.fetchall()
-    cur.close()
-    my.close()
+    # PASO 0 del desmantelamiento (12-ago-2026): se retira `categorias_ml`.
+    # Nadie la escribe desde el 22-jul y este ETL nunca borra, así que sus
+    # 12,839 asignaciones YA están en channel.product_category — releerlas cada
+    # mañana solo re-afirmaba lo mismo. La fuente viva es la elección del panel
+    # (`wp_postmeta.ml_categoria_id`), que además MANDA por la regla 2.
+    #
+    # Con esto el cron de las 06:15 deja de abrir el MySQL `kubera_ml`: era lo
+    # último que impedía retirarlo.
+    t_cat: list[dict] = []
 
     wp = pymysql.connect(
         host=PROD.get("WPDB_HOST") or PROD["DB_HOST"], port=int(PROD.get("WPDB_PORT", 3306)),
@@ -146,7 +168,8 @@ def main() -> None:
     t_panel = wcur.fetchall()
     wcur.close()
     wp.close()
-    print(f"Fuentes: categorias_ml={len(t_cat)} panel(ml_categoria_id)={len(t_panel)}", flush=True)
+    print(f"Fuentes: categorias_ml(RETIRADA)={len(t_cat)} "
+          f"panel(ml_categoria_id)={len(t_panel)}", flush=True)
 
     # ── ESTADO ACTUAL de la BD kubera ────────────────────────────────────────
     pg = psycopg2.connect(DEST["SUPABASE_DB_URL"], connect_timeout=20)
@@ -211,14 +234,20 @@ def main() -> None:
                 continue
             cid = str(r["category_id"])
             if cid not in arbol_nuevo and cid not in arbol_actual:
-                # categoría elegida en el panel que no está en el árbol: entra
-                # al árbol sin nombre (el builder de identidad lo rellenará)
-                arbol_ins.append((CANAL, cid, None, None))
+                # Categoría elegida en el panel que no está en el árbol. Antes
+                # entraba SIN NOMBRE, esperando a un "builder de identidad" que
+                # nunca llegó: el 12-ago-2026 había 75 categorías así, y con
+                # ellas 1,468 SKUs que se habrían publicado sin categoría de
+                # WooCommerce (`get_or_create_wc_categoria` devuelve None sin
+                # nombre). Ahora se le pregunta a la API PÚBLICA de ML, que es
+                # quien sabe: 75 de 75 resueltas en el backfill del mismo día.
+                nom, camino = _nombre_ml(cid)
+                arbol_ins.append((CANAL, cid, nom, camino))
                 if origen == "panel":
                     # ESTO sí acusa al seam: categorias_write.registrar debió
                     # haber dejado el nodo al guardarse la elección.
                     arbol_ins_seam.append(cid)
-                arbol_nuevo[cid] = (None, None)
+                arbol_nuevo[cid] = (nom, camino)
             plan_asig[canon] = (cid, source_de or r["fuente"] or "real")
 
     asig_ins, asig_upd, asig_igual = [], [], 0
@@ -235,7 +264,9 @@ def main() -> None:
         "modo": modo, "canal": CANAL,
         "arbol": {"insertar": len(arbol_ins), "actualizar": len(arbol_upd),
                    "insertar_del_panel": len(arbol_ins_seam),
-                   "total_categorias": len(arbol_nuevo)},
+                   # el árbol YA no se reconstruye cada mañana: se reporta el
+                   # tamaño real en la BD, no cuántas vio esta corrida.
+                   "total_categorias": len(arbol_actual) + len(arbol_ins)},
         "asignaciones": {"insertar": len(asig_ins), "actualizar": len(asig_upd),
                           "sin_cambio": asig_igual, "del_panel": len(t_panel)},
         "descartes": dict(tally), "issues_nuevas": len(issues_nuevas),

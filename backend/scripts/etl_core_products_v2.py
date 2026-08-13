@@ -142,24 +142,42 @@ def main() -> None:
           f"watchdog: {TIMEOUT_MIN} min)", flush=True)
 
     # ── EXTRACCIÓN de fuentes (solo lectura) ─────────────────────────────────
-    my = pymysql.connect(
-        host=PROD["DB_HOST"], port=int(PROD.get("DB_PORT", 3306)),
-        user=PROD["DB_USER"], password=PROD["DB_PASSWORD"], database=PROD["DB_NAME"],
-        charset="utf8mb4", connect_timeout=15, read_timeout=120,
-        cursorclass=pymysql.cursors.DictCursor,
-    )
-    cur = my.cursor()
-    cur.execute("""SELECT sku, wc_id, wc_parent_id, odoo_id, nombre, status_wc, variaciones
-                   FROM productos""")
-    t_productos = cur.fetchall()
-    cur.execute("SELECT sku, wc_id FROM costos_validados")
-    t_cv = cur.fetchall()
-    cur.execute("SELECT sku FROM categorias_ml")
-    t_cat = cur.fetchall()
-    cur.execute("SELECT sku FROM costos_finales")
-    t_cf = cur.fetchall()
-    cur.close()
-    my.close()
+    #
+    # PASO 0 del desmantelamiento (12-ago-2026): este ETL ya NO abre el MySQL
+    # `kubera_ml`. Era el último proceso vivo que dependía de él para algo que
+    # no fuera el espejo, y mientras leyera de ahí el esquema no se podía
+    # retirar: los SKUs de packing list dejarían de entrar al padrón.
+    #
+    # Las tres fuentes de EXISTENCIA se leen de su gemela en kubera. Medido
+    # antes de cambiarlo, contra producción:
+    #   costos_validados  15,429 → 15,830   0 solo en MySQL
+    #   categorias_ml     12,839 → 13,733   356 solo en MySQL
+    #   costos_finales     4,376 →  4,376   0 solo en MySQL
+    # y NINGUNO de los SKUs que cambian de lado (ni los 356 que se pierden ni
+    # los 1,295 que se ganan) provoca un alta: todos ya están en el padrón,
+    # porque este ETL nunca borra y lleva meses corriendo. El resultado del
+    # cambio es el MISMO padrón.
+    #
+    # `productos` SE RETIRA como fuente. Su precedencia (1, debajo de Woo) solo
+    # decidiría para SKUs que no estén en WooCommerce, y **no hay ninguno**:
+    # los 5,381 están en Woo, que gana siempre. `odoo_id` se sobreescribe
+    # siempre desde el Odoo vivo y `has_variations` está muerta. Lo único que
+    # cambia es la etiqueta `source`, que deja de nombrarla — un update de una
+    # sola vez que NO entra a seam_gap (ver CAMPOS_SEAM).
+    #
+    # Las etiquetas de `source` se conservan idénticas a propósito: renombrarlas
+    # reescribiría la columna de 22 mil filas sin que nada haya cambiado.
+    pg_src = psycopg2.connect(DEST["SUPABASE_DB_URL"], connect_timeout=20)
+    with pg_src.cursor() as c_src:
+        c_src.execute("select sku::text, wc_id from costing.costos_validados")
+        t_cv = [{"sku": s, "wc_id": w} for s, w in c_src.fetchall()]
+        c_src.execute("select sku::text from channel.product_category "
+                      " where channel_id = 'mercado_libre'")
+        t_cat = [{"sku": s} for (s,) in c_src.fetchall()]
+        c_src.execute("select distinct sku::text from costing.costos_finales")
+        t_cf = [{"sku": s} for (s,) in c_src.fetchall()]
+    pg_src.close()
+    t_productos: list[dict] = []
 
     wp = pymysql.connect(
         host=PROD.get("WPDB_HOST") or PROD["DB_HOST"], port=int(PROD.get("WPDB_PORT", 3306)),
@@ -205,9 +223,9 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"AVISO: Odoo no disponible ({exc}) — continúo; odoo_id no se actualizará.")
 
-    print(f"Fuentes: woo={len(t_woo)} productos(frozen)={len(t_productos)} "
-          f"costos_validados={len(t_cv)} categorias_ml={len(t_cat)} "
-          f"costos_finales={len(t_cf)} odoo={len(odoo_skus)}")
+    print(f"Fuentes: woo={len(t_woo)} productos(RETIRADA)={len(t_productos)} "
+          f"costos_validados(kb)={len(t_cv)} categorias_ml(kb)={len(t_cat)} "
+          f"costos_finales(kb)={len(t_cf)} odoo={len(odoo_skus)}")
 
     # ── ESTADO ACTUAL de la BD kubera (lectura) ──────────────────────────────
     pg = psycopg2.connect(DEST["SUPABASE_DB_URL"], connect_timeout=20)
@@ -385,11 +403,17 @@ def main() -> None:
         union = union[: args.limit]
     inserts, updates, sin_cambio = [], [], 0
     for reg in union:
+        actual = core_actual.get(reg["sku"].lower())
+        fuentes = set(reg["fuentes"])
+        # `productos` dejó de leerse (ver la nota de EXTRACCIÓN) pero haber
+        # nacido ahí es un hecho histórico: si el padrón ya lo dice, se
+        # conserva. Borrarlo reescribiría 5,381 filas para perder información.
+        if actual and "productos" in str(actual.get("source") or "").split(","):
+            fuentes.add("productos")
         fila = {"sku": reg["sku"], "name": reg["name"], "wc_id": reg["wc_id"],
                 "wc_parent_id": reg["wc_parent_id"], "odoo_id": reg["odoo_id"],
                 "status": reg["status"], "has_variations": reg["has_variations"],
-                "source": ",".join(sorted(reg["fuentes"]))}
-        actual = core_actual.get(reg["sku"].lower())
+                "source": ",".join(sorted(fuentes))}
         if actual is None:
             inserts.append(fila)
         else:
@@ -406,7 +430,7 @@ def main() -> None:
 
     reporte = {
         "modo": modo, "destino": ref[:8] + "…",
-        "fuentes": {"woocommerce": len(t_woo), "productos_frozen": len(t_productos),
+        "fuentes": {"woocommerce": len(t_woo), "productos_retirada": len(t_productos),
                      "costos_validados": len(t_cv), "categorias_ml": len(t_cat),
                      "costos_finales": len(t_cf), "odoo": len(odoo_skus),
                      "channel.listings": len(skus_canal)},

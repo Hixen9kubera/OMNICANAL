@@ -7756,3 +7756,49 @@ respaldo. Es lo correcto igual: la variable se puede voltear.
 Pruebas sandbox: `probar_retiro_channel` 5/5 · `probar_corte_orders_channel`
 20/20 · `probar_corte_costing` 15/15 · `probar_retiro_costing_orders` 11/11 ·
 `probar_corte_core_categorias` 12/12. Versión 0.128.0.
+
+### v0.129.0 — El cron de las 06:15 deja de abrir el MySQL viejo
+
+Los dos ETLs que corren encadenados a las 06:15 leían cuatro tablas de
+`kubera_ml`. Eran **el último proceso vivo que dependía del esquema viejo para
+algo que no fuera el espejo**: mientras leyeran de ahí, retirarlo habría dejado
+a los SKUs de packing list fuera del padrón sin que nadie se enterara.
+
+**`etl_core_products_v2`** — las tres fuentes de EXISTENCIA pasan a su gemela en
+kubera. Medido antes de tocar nada: `costos_validados` 15,429→15,830,
+`categorias_ml` 12,839→13,733, `costos_finales` 4,376→4,376, y **ninguno de los
+SKUs que cambian de lado provoca un alta**: todos ya están en el padrón, porque
+este ETL nunca borra.
+
+`productos` **se retira como fuente**. Su precedencia (1, debajo de Woo) solo
+decidiría para SKUs ausentes de WooCommerce, y **no hay ninguno**: los 5,381
+están en Woo, que gana siempre. `odoo_id` se sobreescribe desde el Odoo vivo y
+`has_variations` está muerta.
+
+**Verificado con un A/B en seco contra producción**, que es lo que da la
+confianza: original 3 altas · 26 updates; repuntado 3 altas · 1,718 updates
+**tocando solo `source`**, y con la **misma lista de `seam_gap`** (los mismos
+SEG-0030-* por títulos editados en Woo). Mismo padrón, mismo diagnóstico.
+
+En el primer intento eran 6,443 updates porque las filas perdían la palabra
+`productos` de su `source`. Haber nacido en esa tabla es un **hecho histórico**:
+si el padrón ya lo dice, se conserva. Borrarlo habría reescrito 5,381 filas para
+perder información.
+
+**`etl_channel_categories`** — se retira `categorias_ml`. Nadie la escribe desde
+el 22-jul y sus 12,839 asignaciones ya están cargadas; releerlas cada mañana
+solo re-afirmaba lo mismo. La fuente viva es la elección del panel
+(`wp_postmeta.ml_categoria_id`), que además MANDA por la regla 2. Dry-run contra
+producción: árbol 0 inserts / 0 updates, asignaciones 8 altas del panel.
+
+**Y se arregla de raíz el hueco de nombres de v0.125.0.** Cuando el panel elegía
+una categoría desconocida, este ETL insertaba el nodo **sin nombre**, esperando
+a un "builder de identidad" que nunca llegó — así se acumularon las 75
+categorías mudas que dejaban 1,468 SKUs sin categoría de WooCommerce al
+publicar. Ahora se le pregunta a la API pública de ML. Con `urllib` y no
+`httpx`: el contenedor de este cron solo instala `pymysql` y `psycopg2-binary`.
+Si la API falla, el nodo entra sin nombre como antes y el hueco se ve — no se
+inventa un nombre.
+
+Pruebas: A/B en seco contra producción de los dos ETLs (no escriben nada sin
+`--real`). Versión 0.129.0.
