@@ -245,22 +245,34 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
     """
     Publicaciones que DEBEN recibir el stock DROP: activas y no-FULL.
 
-    Fuente: `canal_inventario` (espejo de canales, refrescado por el sync de 15
-    min y por los webhooks de ML). Devuelve también los descartes, para que la
-    pantalla explique POR QUÉ un canal no recibió nada.
+    Fuente: `channel.listings` (BD kubera), vía la gemela `channel_read`, que
+    traduce a los nombres de columna de siempre (item_id, stock_real, es_full…).
+
+    POR QUÉ NO `canal_inventario` (repunte 12-ago-2026). Esta función decide a
+    qué publicaciones se les ESCRIBE stock en el marketplace, y lo decidía
+    leyendo el espejo MySQL. El 12-ago se congeló ese espejo unas horas y el
+    riesgo quedó a la vista: con una foto detenida, el fan-out le escribiría a
+    publicaciones cerradas creyéndolas vivas y no vería las nuevas. Es la misma
+    causa que dejó 964 pedidos fantasma ese día — leer de una tabla que ya no se
+    escribe. Se lee de donde se escribe.
+
+    Sin respaldo a MySQL a propósito: si kubera no responde, esto REVIENTA y el
+    SKU no se sincroniza. Fallar es barato (el stock se propaga en la siguiente
+    vuelta); escribirle stock equivocado a un marketplace, no.
+
+    Devuelve también los descartes, para que la pantalla explique POR QUÉ un
+    canal no recibió nada.
     """
-    from services import db
+    from services import channel_read
     # OJO: NO se filtra por item_id. En Mercado Libre el identificador es el
     # `item_id` (MLM…), pero en AMAZON es el PROPIO SKU (la Listings Items API
-    # direcciona /items/{sellerId}/{sku}) y sus 1,631 filas tienen item_id NULL.
+    # direcciona /items/{sellerId}/{sku}) y sus filas tienen item_id NULL.
     # Filtrar por item_id dejaba fuera el canal DROP más grande.
-    filas = db.fetch_all(
-        """SELECT sku, canal, cuenta, item_id, stock_real, stock_full, stock_fba,
-                  es_full, situacion
-           FROM canal_inventario
-           WHERE sku = %s""",
-        (sku,),
-    )
+    # Se aplana el dict {sku: {canal|cuenta: fila}}: pedimos UN sku, así que
+    # todo lo que vuelve es de él (y así el match no depende de mayúsculas —
+    # `sku` es citext en kubera).
+    filas = [f for por_sku in channel_read.leer_inventario([sku]).values()
+             for f in por_sku.values()]
     salida: list[dict[str, Any]] = []
     for f in filas:
         situacion = (f.get("situacion") or "").lower()

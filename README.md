@@ -7291,3 +7291,35 @@ asimetría deliberada: las lecturas del panel ya no tocan MySQL (paso 3), pero
 las escrituras vuelven a espejarse para los lectores internos que faltan.
 
 Sin cambios de código. Versión 0.117.1.
+
+### v0.118.0 — El fan-out deja de decidir con el espejo: `_destinos` lee kubera
+
+Primer lector repuntado del **paso 0** de F8, y el que más urgía. `_destinos()`
+decide **a qué publicaciones se les escribe stock en el marketplace**, y lo
+decidía leyendo `canal_inventario` — el espejo MySQL — sin ningún camino a
+kubera.
+
+El 12-ago ese espejo estuvo congelado unas horas y dejó el riesgo a la vista:
+con una foto detenida, el fan-out le escribe a publicaciones cerradas creyéndolas
+vivas y no ve las nuevas. Es la misma causa raíz de los 964 pedidos fantasma del
+mismo día — decidir leyendo una tabla que ya no se escribe.
+
+Ahora lee `channel.listings` vía `channel_read.leer_inventario`, que ya traducía
+a los nombres de columna de siempre (`item_id`, `stock_real`, `es_full`…), así
+que el resto de la función no cambió ni una línea.
+
+**Sin respaldo a MySQL, a propósito**: si kubera no responde, `_destinos` revienta
+y ese SKU no se sincroniza esa vuelta. Fallar es barato —el stock se propaga en
+el siguiente ciclo—; escribirle stock equivocado a un marketplace, no.
+
+**Medido antes de subirlo** sobre 120 SKUs con publicación, comparando la lista
+de destinos de cada fuente: **117 idénticos y 3 con diferencia de una o dos
+piezas en `stock_full`** (15/14, 78/76, 9/8) — artefacto de leer las dos bases
+con segundos de diferencia mientras el sync corre. En los tres, `es_full=1` en
+ambas fuentes, así que la decisión (`FULL/FBA, no se toca`) es la misma. Salida
+idéntica en 120 de 120.
+
+Queda en el archivo un detalle que no es de la migración: `fanout_log`, la
+bitácora propia del fan-out, sigue en MySQL y así se queda.
+
+Versión 0.118.0.
