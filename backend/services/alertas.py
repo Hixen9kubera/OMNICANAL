@@ -21,6 +21,12 @@ si algo FALTA avisa el que vigila):
       ALERTAS_SILENCIO_HORAS dentro del horario hábil de CDMX (9-21 h).
     · Tokens ML rancios: ml_tokens_dashboard sin renovar en 12 h (el proceso
       externo renueva cada ~6 h; el doble = el renovador está caído).
+    · Pedidos DUPLICADOS: dos pedidos de Woo para la misma orden del
+      marketplace. Faltaba, y por eso los 964 fantasma del 12-ago corrieron
+      4 h 17 min sin que nadie se enterara: la única alerta de pedidos era la
+      de SILENCIO, que mide lo contrario y esa tarde gritó "sin ventas"
+      mientras se creaban 964. Se cuenta en WooCommerce porque channel.orders
+      tiene llave por orden y un duplicado la sobreescribe: ahí es invisible.
 
 Anti-spam, en dos capas (v0.31.0 — antes se colaba una alerta por deploy):
 
@@ -60,6 +66,9 @@ _COOLDOWN_MIN: dict[str, int] = {
     "acta": 360,           # una acta ausente se re-avisa a lo mucho 2-3 veces/día
     "silencio_ventas": 240,
     "tokens_rancios": 360,
+    # Duplicados: 60 min. Corto a propósito — mientras sigan naciendo copias hay
+    # dinero moviéndose, y el aviso se apaga solo cuando dejan de aparecer.
+    "pedidos_duplicados": 60,
     "publicar_500": 30,    # por SKU (tipo "publicar_500:<sku>")
     "woo_403": 60,
 }
@@ -393,11 +402,67 @@ def _revisar_tokens_rancios() -> None:
                nivel="🟡")
 
 
+# Ventana del vigilante de duplicados: se mira la COPIA más nueva. 24 h da
+# margen para que un hueco del scheduler no deje pasar un episodio, y el
+# enfriamiento de `avisar()` evita que se repita el mismo aviso todo el día.
+_HORAS_DUP = 24
+
+
+def _revisar_duplicados() -> None:
+    """
+    Dos pedidos de WooCommerce para la MISMA orden del marketplace.
+
+    Este vigilante no existía y por eso los 964 pedidos fantasma del 12-ago
+    corrieron 4 h 17 min sin que nadie se enterara: la única alerta de pedidos
+    era la de SILENCIO, que mide el problema contrario. Aquella tarde gritó
+    "sin ventas" mientras se creaban 964 — la señal estaba invertida.
+
+    Se cuenta en WooCommerce, no en nuestras tablas: `channel.orders` tiene
+    llave por orden del marketplace, así que un duplicado la SOBREESCRIBE y es
+    invisible ahí. El pedido de más solo se ve en la tienda.
+
+    Medido el 13-ago-2026: la consulta tarda 0.1 s y hay 7 casos en 7 días
+    —dos de anoche— así que esto NO es hipotético, ya está pasando a goteo.
+    """
+    from services import wp_db
+    if not wp_db.disponible():
+        return
+    # La ventana va sobre la COPIA MÁS NUEVA (el `having`), no sobre las dos.
+    # Filtrando ambas se escapa el caso peor: un reintento que llega días
+    # después del original —el pedido viejo queda fuera de la ventana, el grupo
+    # se queda con una sola fila y el duplicado pasa invisible—. Y de paso el
+    # aviso se apaga solo cuando la copia envejece, en vez de repetir para
+    # siempre un duplicado que ya se atendió.
+    filas = wp_db._fetch_all(
+        """SELECT m.meta_value AS ml_order_id, COUNT(*) AS n,
+                  GROUP_CONCAT(o.id ORDER BY o.id) AS pedidos
+             FROM wp_wc_orders_meta m
+             JOIN wp_wc_orders o ON o.id = m.order_id
+            WHERE m.meta_key = '_ml_order_id'
+              AND o.status NOT IN ('trash', 'wc-checkout-draft')
+              AND o.date_created_gmt > UTC_TIMESTAMP() - INTERVAL 30 DAY
+            GROUP BY m.meta_value
+           HAVING n > 1
+              AND MAX(o.date_created_gmt) > UTC_TIMESTAMP() - INTERVAL %s HOUR
+            ORDER BY n DESC LIMIT 20""", (_HORAS_DUP,))
+    if not filas:
+        return
+    piezas = sum(int(f["n"]) - 1 for f in filas)
+    muestra = " · ".join(f"{f['ml_order_id']}→#{f['pedidos']}" for f in filas[:4])
+    avisar("pedidos_duplicados",
+           f"*{len(filas)} orden(es) con pedido DUPLICADO en Woo* en las últimas "
+           f"{_HORAS_DUP} h ({piezas} pedido(s) de más). {muestra}. "
+           f"Revisar el candado de idempotencia: agrupar por meta `_ml_order_id`. "
+           f"Cancelar ANTES de mandar a la papelera los que hayan descontado "
+           f"stock, o Woo devuelve piezas que nunca salieron.")
+
+
 async def vigilante() -> None:
     """Job del scheduler: cada revisión es independiente y best-effort."""
     if not disponible():
         return
-    for revision in (_revisar_actas, _revisar_silencio_ventas, _revisar_tokens_rancios):
+    for revision in (_revisar_actas, _revisar_silencio_ventas, _revisar_tokens_rancios,
+                     _revisar_duplicados):
         try:
             revision()
         except Exception as exc:  # noqa: BLE001

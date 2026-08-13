@@ -7910,3 +7910,42 @@ filtrando por estado, mismo historial por SKU, y los 270 completados de
 `/auditoria` con su wc_id.
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20 · 5/5 · 12/12. Versión 0.132.0.
+
+### v0.133.0 — La alerta que faltaba: pedidos DUPLICADOS
+
+Pregunta de Eduardo: *"¿tenemos alguna alerta si comienza a duplicarse algo?"*
+La respuesta era **no**, y al medirlo salió que ya está pasando.
+
+**La señal estaba invertida.** La única alerta de pedidos era la de SILENCIO
+—sin ventas nuevas en N horas—, que mide el problema contrario. El 12-ago esa
+alerta gritó "sin ventas en 4.1 h" mientras se creaban **964 pedidos fantasma**:
+no solo no avisó del desastre, avisó de lo opuesto. Los 4 h 17 min que corrió
+el incidente fueron exactamente el tiempo que tardó una persona en notarlo.
+
+**Y no es hipotético.** Medido el 13-ago: **7 órdenes de ML con dos pedidos en
+Woo en los últimos 7 días**, tres de ellas de anoche. Los patrones son dos:
+
+| Orden | Separación |
+|---|---|
+| `2000017882564134` | 2 segundos — la ráfaga clásica de ML |
+| `2000017802673864` | 48 segundos |
+| `2000017905227724` | **13 minutos** — esto no es una ráfaga |
+
+**Se cuenta en WooCommerce, no en nuestras tablas.** `channel.orders` tiene
+llave por orden del marketplace: un duplicado la SOBREESCRIBE y ahí es
+invisible. El pedido de más solo existe en la tienda.
+
+**La ventana va sobre la copia MÁS NUEVA**, no sobre las dos. Filtrando ambas se
+escapaba el caso peor —un reintento que llega días después del original: el
+pedido viejo queda fuera de la ventana, el grupo se queda con una sola fila y el
+duplicado pasa invisible—. Y de paso el aviso se apaga solo cuando la copia
+envejece, en vez de repetir para siempre uno que ya se atendió.
+
+El aviso incluye el playbook: agrupar por meta `_ml_order_id`, y **cancelar
+antes de mandar a la papelera** los que hayan descontado stock, o Woo devuelve
+piezas que nunca salieron (la lección de los 16 del incidente).
+
+Consulta: 0.83 s. Ventana 24 h, enfriamiento 60 min. Probado contra producción
+con el envío interceptado: 24 h → 3 duplicados · 1 h → silencio.
+
+Pruebas sandbox: 15/15 · 11/11 · 20/20. Versión 0.133.0.
