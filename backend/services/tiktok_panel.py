@@ -218,6 +218,122 @@ def buscar_categorias(q: str, limite: int = 25) -> list[dict[str, Any]]:
         return []
 
 
+def _palabras_clave(titulo: str, tope: int = 4) -> list[str]:
+    """Las palabras del título que sirven para buscar categoría.
+
+    Se quitan las vacías y las de menos de 4 letras: "de", "con", "para" y los
+    colores/medidas no acercan a ninguna categoría, y sí ensucian el solape.
+    """
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKD", (titulo or "").lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    vacias = {"para", "con", "sin", "los", "las", "del", "una", "unos", "unas",
+              "por", "mas", "muy", "kit", "set", "pza", "pzas", "color", "negro",
+              "blanco", "rojo", "azul", "verde", "gris", "multicolor", "cm", "mm"}
+    palabras = [p for p in re.findall(r"[a-z]{4,}", t) if p not in vacias]
+    # Se prioriza el ORDEN del título: en español el sustantivo va primero
+    # ("Termo de acero…"), y esa primera palabra es casi siempre la categoría.
+    return palabras[:tope]
+
+
+async def sugerir_categoria(sku: str, titulo: str) -> dict[str, Any]:
+    """
+    Una categoría RECOMENDADA, siempre — pero como sugerencia, nunca guardada.
+
+    POR QUÉ NO SE GUARDA SOLA. Si la recomendación se escribiera como elección
+    del panel, dejaría de poder distinguirse de una decisión humana, y el panel
+    entero se apoya en esa diferencia (regla 2 de la casa). El caso que lo
+    enseñó: un "Collar de recuperación para gato" —un cono veterinario— acabó
+    clasificado en joyería de disfraces, con confianza y sin error. La máquina
+    propone; una persona acepta.
+
+    DOS FUENTES, en orden:
+      1. **El recomendador de TikTok**, que es el del propio canal. Falla el 49%
+         (medido sobre 245 productos), así que su respuesta viaja marcada.
+      2. **La IA eligiendo entre hojas REALES** de nuestro catálogo cuando el
+         recomendador no contesta o propone una categoría que no conocemos.
+
+    Devuelve siempre la misma forma; `category_id` en None significa "no me
+    atrevo", que es una respuesta legítima y mejor que inventar.
+    """
+    from services import tiktok as tk
+
+    vacio = {"category_id": None, "name": None, "path": None,
+             "origen": None, "confianza": None, "motivo": None}
+
+    # ── 1) El recomendador del canal ─────────────────────────────────────────
+    token, cipher = tk.access_token(), tk.cipher()
+    if token and cipher and titulo:
+        try:
+            rec = await tk.llamar("/product/202309/categories/recommend", token,
+                                  {"shop_cipher": cipher},
+                                  {"product_title": titulo[:255]}, "POST")
+            cad = rec.get("categories") or []
+            cid = rec.get("leaf_category_id") or (cad[-1].get("id") if cad else None)
+            if cid:
+                filas = sdb.fetch_all(
+                    "select category_id, name, path from channel.categories "
+                    "where channel_id=%s and category_id=%s", (CANAL, str(cid)))
+                if filas:
+                    return {**filas[0], "origen": "recomendador de TikTok",
+                            "confianza": None,
+                            "motivo": "Es la que propone el propio canal. Acierta "
+                                      "poco más de la mitad de las veces: revísala."}
+        except Exception as exc:  # noqa: BLE001
+            log.info("tiktok_panel: el recomendador no contestó (%s)", exc)
+
+    # ── 2) La IA, eligiendo entre hojas REALES ───────────────────────────────
+    candidatas: list[dict[str, Any]] = []
+    for palabra in _palabras_clave(titulo):
+        for c in buscar_categorias(palabra, 8):
+            if c["category_id"] not in {x["category_id"] for x in candidatas}:
+                candidatas.append(c)
+        if len(candidatas) >= 20:
+            break
+    if not candidatas:
+        return {**vacio, "motivo": "Ninguna categoría de TikTok coincide con las "
+                                   "palabras del título. TikTok usa su propio "
+                                   "vocabulario: prueba a buscar a mano."}
+
+    from services import ia_generadores
+    lista = "\n".join(f"  {c['category_id']} · {c['path'] or c['name']}"
+                      for c in candidatas)
+    prompt = (
+        f"Producto: {titulo}\n\n"
+        f"Categorías posibles de TikTok Shop México (todas son finales):\n{lista}\n\n"
+        "Elige la que MEJOR describe el producto. Si ninguna encaja de verdad, "
+        "devuelve category_id vacío: es preferible no clasificar a clasificar mal.\n"
+        'Devuelve SOLO JSON: {"category_id": "<id o vacío>", "confianza": 0.0, '
+        '"motivo": "<una frase>"}'
+    )
+    try:
+        import asyncio
+        r = await asyncio.to_thread(
+            ia_generadores._completar,  # noqa: SLF001
+            "Eres un catalogador de producto. Devuelves SOLO JSON válido.",
+            prompt, 300)
+        if not r.get("ok"):
+            return {**vacio, "motivo": "La IA no contestó."}
+        d = ia_generadores._parse_json(r.get("texto", "")) or {}  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tiktok_panel.sugerir_categoria(%s): %s", sku, exc)
+        return {**vacio, "motivo": f"No se pudo sugerir: {exc}"}
+
+    cid = str(d.get("category_id") or "").strip()
+    # LA GARANTÍA NO ES EL PROMPT. Se comprueba que el id exista de verdad entre
+    # las candidatas: un id inventado no da error, deja el producto mal
+    # clasificado y vivo.
+    elegida = next((c for c in candidatas if c["category_id"] == cid), None)
+    if not elegida:
+        return {**vacio, "motivo": (d.get("motivo") or
+                                    "La IA no encontró ninguna que encaje.")}
+    return {**elegida, "origen": "IA sobre categorías reales",
+            "confianza": d.get("confianza"),
+            "motivo": d.get("motivo") or "Elegida entre las categorías que coinciden "
+                                         "con el título."}
+
+
 def guardar_categoria(sku: str, categoria_id: str) -> dict[str, Any]:
     """
     La categoría de TikTok ELEGIDA EN EL PANEL. Manda sobre el recomendador.

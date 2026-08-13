@@ -19,13 +19,15 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Check, Loader2, Search, Tag } from "lucide-react";
+import { Check, Loader2, Search, Sparkles, Tag } from "lucide-react";
 
 import {
   buscarCategoriasTikTok,
   categoriaTikTokActual,
   guardarCategoriaTikTok,
+  sugerirCategoriaTikTok,
   type CategoriaTikTok,
+  type SugerenciaCategoria,
 } from "@/lib/api";
 
 const ORIGEN: Record<string, { texto: string; clase: string }> = {
@@ -33,9 +35,11 @@ const ORIGEN: Record<string, { texto: string; clase: string }> = {
   canal: { texto: "la que tiene en TikTok", clase: "bg-slate-200 text-slate-600" },
 };
 
-export default function CategoriaTikTokPicker({ sku }: { sku: string }) {
+export default function CategoriaTikTokPicker({ sku, titulo }: { sku: string; titulo?: string }) {
   const [actual, setActual] = useState<CategoriaTikTok | null>(null);
   const [origen, setOrigen] = useState<string | null>(null);
+  const [sugerida, setSugerida] = useState<SugerenciaCategoria | null>(null);
+  const [sugiriendo, setSugiriendo] = useState(false);
   const [q, setQ] = useState("");
   const [resultados, setResultados] = useState<CategoriaTikTok[]>([]);
   const [buscando, setBuscando] = useState(false);
@@ -49,10 +53,23 @@ export default function CategoriaTikTokPicker({ sku }: { sku: string }) {
       .then((r) => {
         setOrigen(r.origen);
         setActual(r.category_id ? { category_id: r.category_id, name: r.name, path: r.path } : null);
+        // Se recomienda SIEMPRE que la categoría no la haya elegido una persona.
+        // Si ya hay elección del panel no se gasta la llamada: para eso está el
+        // botón "Recomendar otra".
+        if (r.origen !== "panel") pedirSugerencia(ctrl.signal);
       })
       .catch(() => {});
     return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sku]);
+
+  function pedirSugerencia(signal?: AbortSignal) {
+    setSugiriendo(true);
+    sugerirCategoriaTikTok(sku, titulo, signal)
+      .then(setSugerida)
+      .catch(() => setSugerida(null))
+      .finally(() => setSugiriendo(false));
+  }
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -125,13 +142,59 @@ export default function CategoriaTikTokPicker({ sku }: { sku: string }) {
       )}
 
       {/* SIN categoría: el hueco se explica, no se deja en blanco. */}
-      {!actual && (
+      {!actual && !sugiriendo && !sugerida?.category_id && (
         <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
           Este producto <strong>no está publicado en TikTok</strong>, así que el canal
-          todavía no le asignó categoría. Elígela aquí y se usará al publicar;
-          si no eliges ninguna, se pedirá al recomendador de TikTok — que acierta
-          poco más de la mitad de las veces.
+          todavía no le asignó categoría. Elígela aquí y se usará al publicar.
+          {sugerida?.motivo ? ` ${sugerida.motivo}` : ""}
         </p>
+      )}
+
+      {/* LA RECOMENDACIÓN. Se muestra, no se guarda: guardarla sola la volvería
+          indistinguible de una elección humana, y toda la precedencia del panel
+          se apoya en esa diferencia. Se guarda cuando alguien aprieta "Usar". */}
+      {sugiriendo && (
+        <p className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+          <Loader2 size={13} className="animate-spin" /> Buscando una categoría recomendada…
+        </p>
+      )}
+      {!sugiriendo && sugerida?.category_id && (
+        <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50/60 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Sparkles size={14} className="text-rose-500" />
+            <span className="text-[11px] font-bold uppercase tracking-wide text-rose-600">
+              Recomendada
+            </span>
+            <span className="text-sm font-semibold text-slate-800">{sugerida.name}</span>
+            {sugerida.confianza != null && (
+              <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                confianza {Math.round(sugerida.confianza * 100)}%
+              </span>
+            )}
+            <span className="text-[10px] uppercase tracking-wide text-slate-400">
+              {sugerida.origen}
+            </span>
+          </div>
+          {sugerida.path && <p className="mt-1 text-xs text-slate-500">{sugerida.path}</p>}
+          {sugerida.motivo && <p className="mt-1 text-xs text-slate-600">{sugerida.motivo}</p>}
+          <button
+            type="button"
+            onClick={() => elegir({ category_id: sugerida.category_id, name: sugerida.name, path: sugerida.path })}
+            disabled={guardando !== null}
+            className="mt-2 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-slate-700 disabled:opacity-60"
+          >
+            {guardando === sugerida.category_id ? "Guardando…" : "Usar esta categoría"}
+          </button>
+        </div>
+      )}
+      {!sugiriendo && origen === "panel" && (
+        <button
+          type="button"
+          onClick={() => pedirSugerencia()}
+          className="mt-2 text-xs font-semibold text-rose-600 hover:underline"
+        >
+          Recomendar otra categoría
+        </button>
       )}
 
       <div className="relative mt-3">

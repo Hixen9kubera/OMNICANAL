@@ -793,6 +793,25 @@ export function categoriaTikTokActual(
   );
 }
 
+/** Categoría RECOMENDADA. Es una sugerencia: no se guarda hasta que alguien la acepta. */
+export interface SugerenciaCategoria extends CategoriaTikTok {
+  origen: string | null;      // "recomendador de TikTok" | "IA sobre categorías reales"
+  confianza: number | null;
+  motivo: string | null;
+}
+
+export function sugerirCategoriaTikTok(
+  sku: string,
+  titulo?: string,
+  signal?: AbortSignal,
+): Promise<SugerenciaCategoria> {
+  const q = titulo ? `?titulo=${encodeURIComponent(titulo)}` : "";
+  return getJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/tiktok/categoria/sugerida${q}`,
+    signal,
+  );
+}
+
 export function guardarCategoriaTikTok(
   sku: string,
   categoriaId: string,

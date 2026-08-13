@@ -1356,7 +1356,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               {esAmazon && wcId != null && (
                 <TipoAmazonPicker sku={sku!} wcId={wcId} />
               )}
-              {esTikTok && sku && <CategoriaTikTokPicker sku={sku} />}
+              {/* El título que ve el usuario, no el de Woo: si acaba de mejorarlo
+                  con IA, la recomendación tiene que salir de ESE texto. */}
+              {esTikTok && sku && (
+                <CategoriaTikTokPicker sku={sku} titulo={titulo || data?.nombre} />
+              )}
 
               {/* PRECIO DE COMPETENCIA */}
               {competencia && (

@@ -8034,6 +8034,51 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.148.0 — La categoría de TikTok se recomienda sola, pero la elige una persona
+
+Petición de Brandon sobre el picker nuevo: que **siempre** proponga una
+categoría y que además se pueda escoger otra. Las dos cosas, con una regla que
+no se negocia: **la recomendación NO se guarda sola.**
+
+Si se guardara, dejaría de poder distinguirse de una elección humana — y toda la
+precedencia del panel se apoya en esa diferencia (regla 2 de la casa). La
+máquina propone; una persona aprieta "Usar esta categoría".
+
+**Dos fuentes, en orden:**
+
+1. **El recomendador de TikTok**, que es el del propio canal.
+2. **La IA eligiendo entre hojas REALES** de nuestro catálogo, cuando el
+   recomendador no contesta o propone una categoría que no conocemos. Las
+   candidatas salen de buscar las palabras del título (quitando colores,
+   medidas y palabras vacías) y **el id se valida contra esa lista**: un id
+   inventado no da error, deja el producto vivo y mal clasificado.
+
+**La prueba en vivo enseñó por qué hacen falta las dos.** Con el recomendador
+del canal:
+
+```
+Termo de acero inoxidable        → Frascos de vacío     ✅
+Motosierra eléctrica 21V         → Motosierras          ✅
+Bolsas de dulces de halloween    → Juguetes de peluche  ❌
+```
+
+Ese último es el 49% de fallo, ocurriendo en la primera tanda de tres. Con el
+respaldo de IA sobre categorías reales, el mismo producto sale a **Manualidades
+de fieltro** con confianza 0.7, y la motosierra a Motosierras con 0.98.
+
+Y cuando nada encaja, contesta que no encaja: *"Xilófono de bambú para
+meditación tibetana"* devuelve **sin categoría** con el motivo escrito, en vez
+de colocarlo en lo más parecido. No clasificar es una respuesta legítima.
+
+En el panel: la recomendación aparece con su origen, su confianza y su porqué;
+el botón la acepta; el buscador sigue ahí para elegir otra; y si ya la eligió una
+persona no se gasta la llamada — para eso está "Recomendar otra categoría".
+
+La sugerencia usa el título que se ve en pantalla, no el de WooCommerce: si
+acaba de mejorarse con IA, la recomendación tiene que salir de ese texto.
+
+Versión 0.148.0.
+
 ### v0.147.0 — Cada canal, su categoría; y TikTok aparece en el detalle
 
 Cuatro cosas que Brandon vio en el panel el 13-ago. Una de ellas resultó no ser

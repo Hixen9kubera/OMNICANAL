@@ -476,6 +476,22 @@ def guardar_categoria_tiktok(sku: str, req: CategoriaCanalReq):
     return r
 
 
+@router.get("/{sku}/canal/tiktok/categoria/sugerida")
+async def sugerir_categoria_tiktok(sku: str, titulo: str = Query("")):
+    """
+    Una categoría RECOMENDADA para el SKU. Sugerencia: no se guarda.
+
+    Se guarda cuando una persona la acepta (el POST de arriba). Escribirla sola
+    la volvería indistinguible de una elección humana, y toda la precedencia del
+    panel se apoya en esa diferencia.
+    """
+    from services import tiktok_panel, woocommerce
+    if not titulo:
+        p = await woocommerce.obtener_producto_por_sku(sku)
+        titulo = (p or {}).get("nombre") or ""
+    return await tiktok_panel.sugerir_categoria(sku, titulo)
+
+
 @router.get("/{sku}/canal/tiktok/categoria")
 def leer_categoria_tiktok(sku: str):
     """
