@@ -37,7 +37,7 @@ log = logging.getLogger("omnicanal.vigilante_loop")
 _iniciado = False
 
 
-def _cadena(marco, solo_nuestros: bool = False, tope: int = 14) -> str:
+def _cadena(marco, solo_nuestros: bool = False, tope: int = 22) -> str:
     """La pila de un hilo en UNA línea: `archivo:línea función > …`.
 
     El último eslabón es donde está parado. Con `solo_nuestros`, devuelve vacío
@@ -45,19 +45,29 @@ def _cadena(marco, solo_nuestros: bool = False, tope: int = 14) -> str:
     """
     if marco is None:
         return "(sin marco)"
-    eslabones = []
-    nuestros = False
-    for f in traceback.extract_stack(marco)[-tope:]:
-        archivo = f.filename.replace("\\", "/")
-        if "/app/" in archivo or "\\omnicanal\\" in f.filename:
-            archivo = archivo.split("/app/")[-1]
-            nuestros = True
-        else:  # librerías: solo el nombre del archivo, para no perder el rastro
-            archivo = archivo.rsplit("/", 1)[-1]
-        eslabones.append(f"{archivo}:{f.lineno} {f.name}")
-    if solo_nuestros and not nuestros:
+    marcos = traceback.extract_stack(marco)
+
+    def _es_nuestro(f) -> bool:
+        return "/app/" in f.filename.replace("\\", "/") or "omnicanal" in f.filename
+
+    # NUESTROS MARCOS SIEMPRE, aunque estén lejos del final. Cortar por los
+    # últimos N no sirve: la cadena de httpx sola mide 14 eslabones y tapaba
+    # justo el dato que importa (quién llamó). Se conservan todos los marcos de
+    # la app y los últimos de librería, que dicen en qué se está esperando.
+    utiles = [i for i, f in enumerate(marcos) if _es_nuestro(f)]
+    if solo_nuestros and not utiles:
         return ""
-    return " > ".join(eslabones)
+    quedan = sorted(set(utiles) | set(range(max(0, len(marcos) - 5), len(marcos))))
+    eslabones, previo = [], None
+    for i in quedan:
+        f = marcos[i]
+        archivo = f.filename.replace("\\", "/")
+        archivo = (archivo.split("/app/")[-1] if "/app/" in archivo
+                   else archivo.rsplit("/", 1)[-1])
+        salto = "… > " if previo is not None and i > previo + 1 else ""
+        eslabones.append(f"{salto}{archivo}:{f.lineno} {f.name}")
+        previo = i
+    return " > ".join(eslabones[-tope:])
 
 
 def iniciar(umbral_s: float = 5.0, cada_s: float = 2.0, silencio_s: float = 60.0) -> None:
