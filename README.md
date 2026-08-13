@@ -7802,3 +7802,48 @@ inventa un nombre.
 
 Pruebas: A/B en seco contra producción de los dos ETLs (no escriben nada sin
 `--real`). Versión 0.129.0.
+
+### v0.130.0 — El detector de fallas silenciosas (y lo que encontró antes de apagar)
+
+Un arnés de paridad ya no sirve para vigilar el apagado de los espejos: MySQL
+deja de ser la referencia. Lo que hay que vigilar es otra cosa — **que kubera
+siga MOVIÉNDOSE**. Porque congelar una tabla no produce errores, produce datos
+que dejan de moverse mientras todo parece bien. Los 964 pedidos fantasma no
+lanzaron una sola excepción.
+
+`vigilar_congelacion.py` toma cinco latidos, cada uno con su umbral: que el
+turno del sync avance, que entren pedidos, que se escriban costos, que el padrón
+reciba altas, y que las tablas del espejo estén efectivamente quietas (lo que
+confirma que el flag tomó efecto).
+
+El detalle que lo hace funcionar: **el turno se mide con la marca MÁS VIEJA, no
+con la más nueva.** Con el barrido atorado los mismos SKUs se refrescan cada 15
+minutos y el "último visto" se ve perfecto — justo el punto ciego que dejó pasar
+el incidente.
+
+**Y en su primera corrida, ANTES de apagar nada, encontró algo:**
+
+| Última revisión | Mercado Libre | Amazon |
+|---|---|---|
+| < 6 h | 196 | 25 |
+| 6–24 h | 166 | — |
+| 1–2 días | 214 | 35 |
+| 2–7 días | 2,134 | 93 |
+| **> 7 días** | **1,653** | **1,237** |
+
+**2,890 publicaciones VIVAS llevan más de 7 días sin revisarse** — el 64% de las
+vivas. El barrido toca ~77 por hora y a ese ritmo no le da la vuelta al
+catálogo.
+
+**No bloquea el apagado, y conviene entender por qué**: el mismo barrido escribe
+las dos tablas, la de kubera y el espejo, así que **las dos están igual de
+viejas**. Apagar la copia no cambia la frescura de nada — no hay riesgo
+diferencial. Es un problema del barrido, previo e independiente, que nadie había
+medido porque nadie miraba la marca más vieja.
+
+Por eso el umbral de ese latido quedó en 240 h y no en 2: mide **empeoramiento
+contra la línea base real**, no salud. Un detector calibrado contra un ideal que
+no existe grita todos los días y se vuelve ruido.
+
+Correrlo antes de apagar deja la línea base; correrlo después dice si algo dejó
+de moverse. Versión 0.130.0.
