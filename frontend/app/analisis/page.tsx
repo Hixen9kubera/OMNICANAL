@@ -21,7 +21,7 @@
  * crecer a lo ancho con seis columnas más.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BadgePercent, CalendarDays, RefreshCw, X } from "lucide-react";
 import MargenesRealesModal from "@/components/MargenesRealesModal";
 import { API_BASE, fetchSesion } from "@/lib/api";
@@ -65,11 +65,29 @@ interface EnvioCuenta {
   cuenta: string; uds: number; cubiertas: number; envio_unit: number | null;
 }
 
+/* Una publicación del SKU, tal como existe en su cuenta. `situacion` viene
+   CRUDA del marketplace y no está normalizada: ML manda minúsculas
+   ('active', 'paused', 'under_review') y Amazon MAYÚSCULAS ('DISCOVERABLE',
+   'BUYABLE'). Comparar sin bajar a minúsculas falla en silencio. */
+interface PublicacionCanal {
+  cuenta: string; canal: string; situacion: string | null;
+  item: string | null; price: number | null; full: boolean | null;
+}
+
 interface Fila {
   sku: string;
   cuentas: string[];
   titulo: string | null;
   tam: string;
+  /* Medidas del costeo, en cm y kg. Alimentan la tarjeta del chip de tamaño:
+     el chip solo dice la letra, y sin las medidas no hay forma de saber si un
+     SKU está en el borde de su categoría. */
+  largo: number | null;
+  ancho: number | null;
+  alto: number | null;
+  peso: number | null;
+  /* Todas las publicaciones del SKU, con precio o sin él. */
+  publicaciones: PublicacionCanal[] | null;
   estado: "activa" | "pausada" | "no_venta";
   // situación de las publicaciones, independiente de la venta: "NO VENTA" la
   // tapa en `estado` (caso real: 15 de 17 SKUs de una captura eran pausados y
@@ -527,6 +545,77 @@ function Renglon({ etiqueta, detalle, valor, tenue }: {
   );
 }
 
+/* FILTRO DE VARIAS OPCIONES. Un <select multiple> nativo se ve mal y se opera
+   peor —hay que saber que se sostiene Ctrl—, así que va un botón con su panel
+   de casillas. "Todos" no es una opción más: es limpiar, y por eso va como
+   botón aparte y no como casilla que habría que desmarcar. */
+function FiltroMultiple({ etiqueta, opciones, valor, onChange }: {
+  etiqueta: string;
+  opciones: [string, string][];
+  valor: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [abierto, setAbierto] = useState(false);
+  const caja = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!abierto) return;
+    const fuera = (e: MouseEvent) => {
+      if (caja.current && !caja.current.contains(e.target as Node)) setAbierto(false);
+    };
+    const tecla = (e: KeyboardEvent) => { if (e.key === "Escape") setAbierto(false); };
+    document.addEventListener("mousedown", fuera);
+    document.addEventListener("keydown", tecla);
+    return () => {
+      document.removeEventListener("mousedown", fuera);
+      document.removeEventListener("keydown", tecla);
+    };
+  }, [abierto]);
+
+  const alternar = (v: string) =>
+    onChange(valor.includes(v) ? valor.filter((x) => x !== v) : [...valor, v]);
+
+  // Con una o dos se nombran; con más, el conteo — "S · M · L · XL" no cabe en
+  // el botón y se leería peor que "4 de 5".
+  const resumen = valor.length === 0 ? "Todos"
+    : valor.length <= 2 ? valor.join(" · ")
+    : `${valor.length} de ${opciones.length}`;
+
+  return (
+    <div ref={caja} className="relative">
+      <button type="button" onClick={() => setAbierto((a) => !a)}
+              aria-expanded={abierto} aria-label={etiqueta}
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 shadow-sm transition-colors ${
+                valor.length
+                  ? "border-indigo-300 bg-indigo-50 font-semibold text-indigo-700"
+                  : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"}`}>
+        {resumen}
+        <span className="text-[9px] text-slate-400">▼</span>
+      </button>
+      {abierto && (
+        <div className="absolute left-0 top-full z-30 mt-1 min-w-[150px] rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+          <button type="button" onClick={() => onChange([])}
+                  className={`block w-full rounded px-2 py-1 text-left ${
+                    valor.length === 0
+                      ? "bg-indigo-50 font-semibold text-indigo-700"
+                      : "text-slate-600 hover:bg-slate-50"}`}>
+            Todos
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          {opciones.map(([v, l]) => (
+            <label key={v}
+                   className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 hover:bg-slate-50">
+              <input type="checkbox" checked={valor.includes(v)} onChange={() => alternar(v)}
+                     className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+              <span className="text-slate-700">{l}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const CANAL_CORTO: Record<string, string> = {
   mercado_libre: "Meli", amazon: "Amazon", general: "Web",
 };
@@ -616,6 +705,143 @@ function StockFullPropio({ fila }: { fila: Fila }) {
         </div>
       </div>
     </PanelHover>
+  );
+}
+
+/* Cómo se lee el estado CRUDO de una publicación, por marketplace.
+
+   No se puede normalizar a "activa/pausada" sin perder la verdad: en Amazon
+   DISCOVERABLE es la mayoría (1,258 de 1,501) y significa que la publicación
+   existe y se encuentra, pero NO que se pueda comprar. Tratarla como activa
+   inflaría el conteo de vivas; tratarla como pausada diría que está detenida,
+   que tampoco es cierto. Se nombra tal cual y se dice si vende o no. */
+function estadoPublicacion(canal: string, situacion: string | null) {
+  const s = (situacion ?? "").toLowerCase();
+  if (canal === "amazon") {
+    if (s === "buyable") return { texto: "a la venta", vende: true };
+    if (s === "published") return { texto: "publicada", vende: true };
+    if (s === "discoverable") return { texto: "visible, no comprable", vende: false };
+  } else {
+    if (s === "active") return { texto: "activa", vende: true };
+    if (s === "paused") return { texto: "pausada", vende: false };
+    if (s === "under_review") return { texto: "en revisión por ML", vende: false };
+    if (s === "inactive") return { texto: "inactiva", vende: false };
+  }
+  return { texto: s ? s : "sin estado", vende: false };
+}
+
+/* CHIP DE TAMAÑO. La letra sale del LADO MÁS LARGO, y sola no dice nada: un
+   SKU de 29 cm y otro de 31 caen en categorías distintas sin que se vea por
+   qué. La tarjeta muestra las tres medidas, señala cuál manda, y da el corte
+   de cada letra para que la clasificación sea comprobable y no un veredicto. */
+function ChipTamano({ fila }: { fila: Fila }) {
+  const l = fila.largo == null ? 0 : Number(fila.largo);
+  const a = fila.ancho == null ? 0 : Number(fila.ancho);
+  const h = fila.alto == null ? 0 : Number(fila.alto);
+  const peso = fila.peso == null ? null : Number(fila.peso);
+  const mayor = Math.max(l, a, h);
+  const chip = (
+    <span className="rounded bg-slate-100 px-1 py-px text-[9px] font-bold text-slate-500">
+      {fila.tam}
+    </span>
+  );
+
+  if (!(mayor > 0))
+    return (
+      <PanelHover panel={
+        <>
+          <span className="block font-semibold text-white">Tamaño · sin medidas</span>
+          <span className="mt-1 block text-slate-400">
+            A este SKU no se le han capturado largo, ancho ni alto en el costeo,
+            así que no hay de dónde sacar la categoría. Sin medidas tampoco hay
+            flete de importación calculable.
+          </span>
+        </>
+      }>{chip}</PanelHover>
+    );
+
+  // Densidad: el peso de la CAJA master capturado como peso de la pieza es un
+  // problema conocido del catálogo, y se delata solo — arriba de 1.5 kg/L no
+  // hay producto de estas medidas que pese eso.
+  const litros = (l * a * h) / 1000;
+  const densidad = peso && litros > 0 ? peso / litros : null;
+  const pesoRaro = densidad != null && densidad > 1.5;
+  const medida = (nom: string, v: number) => (
+    <Renglon etiqueta={nom} valor={`${fNum(v, 2)} cm`}
+             detalle={v === mayor ? "← decide la letra" : undefined}
+             tenue={v !== mayor} />
+  );
+
+  return (
+    <PanelHover panel={
+      <>
+        <span className="block font-semibold text-white">Tamaño {fila.tam}</span>
+        {medida("Largo", l)}
+        {medida("Ancho", a)}
+        {medida("Alto", h)}
+        {peso != null && <Renglon etiqueta="Peso" valor={`${fNum(peso, 3)} kg`} tenue />}
+        <span className="mt-1.5 block text-slate-400">
+          La categoría sale del lado más largo: menos de 30 cm es S, menos de 60
+          es M, menos de 120 es L, y de ahí para arriba XL.
+        </span>
+        {pesoRaro && (
+          <span className="mt-1 block text-amber-300">
+            Ojo con el peso: {fNum(densidad!, 1)} kg por litro para {fNum(litros, 1)} L
+            de volumen. Suele ser el peso de la CAJA capturado como si fuera el de
+            una pieza, y con él el flete estimado sale muy alto.
+          </span>
+        )}
+      </>
+    }>{chip}</PanelHover>
+  );
+}
+
+/* PUNTOS DE CUENTA. Los puntitos dicen EN CUÁNTAS cuentas está el SKU, pero no
+   cuáles ni cómo — y "está en tres cuentas" con las tres pausadas se lee igual
+   que con las tres vendiendo. La tarjeta abre el censo. */
+function PuntosCuenta({ fila }: { fila: Fila }) {
+  const pubs = fila.publicaciones ?? [];
+  const puntos = (
+    <span className="flex items-center gap-0.5">
+      {fila.cuentas.map((c) => (
+        <span key={c} className={`h-2 w-2 rounded-full ${CUENTA_DOT[c] ?? "bg-slate-400"}`} />
+      ))}
+    </span>
+  );
+  if (!pubs.length) return puntos;
+
+  const venden = pubs.filter((p) => estadoPublicacion(p.canal, p.situacion).vende).length;
+  return (
+    <PanelHover ancho={320} panel={
+      <>
+        <span className="block font-semibold text-white">
+          Publicado en {pubs.length} {pubs.length === 1 ? "lugar" : "lugares"}
+        </span>
+        {pubs.map((p, i) => {
+          const e = estadoPublicacion(p.canal, p.situacion);
+          return (
+            <span key={`${p.cuenta}|${p.item ?? i}`}
+                  className="mt-1 flex items-baseline justify-between gap-3">
+              <span className="truncate">
+                <span className={e.vende ? "text-emerald-300" : "text-slate-400"}>●</span>
+                {" "}{CANAL_CORTO[p.canal] ?? p.canal} · {CUENTA_INI[p.cuenta] ?? p.cuenta}
+                {/* El espacio va DENTRO del texto y no solo como margen: el
+                    panel se copia y pegar "SCFULL" no se entiende. */}
+                {p.full && <span className="text-slate-400">{" · FULL"}</span>}
+              </span>
+              <span className={`shrink-0 ${e.vende ? "text-emerald-300" : "text-slate-400"}`}>
+                {e.texto}
+              </span>
+            </span>
+          );
+        })}
+        <span className="mt-1.5 block text-slate-400">
+          {venden === 0
+            ? "Ninguna puede comprarse ahora mismo: el SKU existe en el catálogo pero no está vendiendo en ningún lado."
+            : `${venden} de ${pubs.length} se puede comprar; el resto existe pero no vende.`}
+        </span>
+      </>
+    }>{puntos}</PanelHover>
   );
 }
 
@@ -1677,7 +1903,7 @@ export default function FulfillmentPage() {
   const [cuenta, setCuenta] = useState<string | null>(null);
   const [estado, setEstado] = useState("");
   const [tipo, setTipo] = useState("");
-  const [tam, setTam] = useState("");
+  const [tam, setTam] = useState<string[]>([]);
   const [q, setQ] = useState("");
   const [busqueda, setBusqueda] = useState("");
   const [orden, setOrden] = useState("venta");
@@ -1693,7 +1919,17 @@ export default function FulfillmentPage() {
   // vive como botón junto al período, no como sub-pestaña (Eduardo, 6-ago).
   const [verMargenes, setVerMargenes] = useState(false);
 
+  /* Carrera de respuestas. `cargar` no cancelaba nada: si el usuario cambia dos
+     filtros seguidos salen dos peticiones y gana la que RESPONDA última, que no
+     siempre es la última pedida — la tabla acaba mostrando un filtro que ya no
+     está seleccionado. Con el filtro de una sola opción casi no se notaba;
+     con casillas se marcan dos o tres seguidas y es fácil de provocar.
+     Cada carga se queda con su número; si al volver ya no es la vigente, su
+     resultado se tira. */
+  const cargaVigente = useRef(0);
+
   const cargar = useCallback(async () => {
+    const mia = ++cargaVigente.current;
     setCargando(true); setErr(null);
     try {
       const qd = new URLSearchParams({ dias: String(dias) });
@@ -1701,7 +1937,7 @@ export default function FulfillmentPage() {
       const qt = new URLSearchParams(qd);
       if (estado) qt.set("estado", estado);
       if (tipo) qt.set("tipo", tipo);
-      if (tam) qt.set("tam", tam);
+      if (tam.length) qt.set("tam", tam.join(","));
       if (busqueda) qt.set("q", busqueda);
       qt.set("orden", orden);
       qt.set("dir", dir);
@@ -1711,11 +1947,15 @@ export default function FulfillmentPage() {
         fetchSesion(`${API_BASE}/api/fulfillment/dashboard?${qd}`, { cache: "no-store" }).then((r) => r.json()),
         fetchSesion(`${API_BASE}/api/fulfillment/tabla?${qt}`, { cache: "no-store" }).then((r) => r.json()),
       ]);
+      if (mia !== cargaVigente.current) return;   // llegó tarde: ya hay otra
       setDash(d); setTabla(t);
     } catch (e) {
+      if (mia !== cargaVigente.current) return;
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setCargando(false);
+      // El spinner solo lo apaga la carga vigente: si lo apagara una vieja, la
+      // tabla se vería "lista" mientras la buena sigue en camino.
+      if (mia === cargaVigente.current) setCargando(false);
     }
   }, [dias, cuenta, estado, tipo, tam, busqueda, orden, dir, limit, pagina]);
 
@@ -1839,7 +2079,6 @@ export default function FulfillmentPage() {
           {([
             ["Estado", estado, setEstado, [["", "Todos"], ["activa", "Activa"], ["pausada", "Pausada"], ["no_venta", "No venta"]]],
             ["Tipo", tipo, setTipo, [["", "Todos"], ["full", "FULL / FBA"], ["no_full", "DROP"], ["mixto", "Mixto"]]],
-            ["Tamaño", tam, setTam, [["", "Todos"], ["S", "S"], ["M", "M"], ["L", "L"], ["XL", "XL"], ["S/C", "S/C"]]],
           ] as [string, string, (v: string) => void, [string, string][]][]).map(([lbl, val, set, opts]) => (
             <label key={lbl} className="flex items-center gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{lbl}</span>
@@ -1849,6 +2088,19 @@ export default function FulfillmentPage() {
               </select>
             </label>
           ))}
+          {/* Tamaño acepta VARIOS: filtrar por tamaño casi siempre es preguntar
+              por un rango (lo chico que cabe en un sobre, lo grande que paga
+              flete caro), y con una sola opción había que mirar la tabla dos
+              veces para comparar S contra M. */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Tamaño</span>
+            <FiltroMultiple
+              etiqueta="Tamaño"
+              valor={tam}
+              onChange={(v) => { setTam(v); setPagina(0); }}
+              opciones={[["S", "S"], ["M", "M"], ["L", "L"], ["XL", "XL"], ["S/C", "S/C — sin medidas"]]}
+            />
+          </div>
           <label className="flex items-center gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Mostrar</span>
             <select value={limit} onChange={(e) => { setLimit(Number(e.target.value)); setPagina(0); }}
@@ -1935,12 +2187,12 @@ export default function FulfillmentPage() {
                   <td className="max-w-[270px] px-2 py-1.5">
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono text-[12px] font-semibold text-indigo-600">{f.sku}</span>
-                      <span className="flex items-center gap-0.5">
-                        {f.cuentas.map((c) => (
-                          <span key={c} title={c} className={`h-1.5 w-1.5 rounded-full ${CUENTA_DOT[c] ?? "bg-slate-400"}`} />
-                        ))}
-                      </span>
-                      <span className="rounded bg-slate-100 px-1 py-px text-[9px] font-bold text-slate-500">{f.tam}</span>
+                      {/* Los puntos y el chip dejan de ser adornos: cada uno
+                          abre su tarjeta. Van en un contenedor propio porque
+                          PanelHover ocupa todo el ancho de su padre y sin esto
+                          se comerían el renglón. */}
+                      <span className="shrink-0"><PuntosCuenta fila={f} /></span>
+                      <span className="shrink-0"><ChipTamano fila={f} /></span>
                       <MarcaDosProductos div={f.peso_divergente} />
                     </div>
                     <div className="truncate text-[11px] text-slate-500" title={f.titulo ?? ""}>{f.titulo ?? "—"}</div>

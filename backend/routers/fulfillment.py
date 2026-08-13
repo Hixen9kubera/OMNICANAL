@@ -130,6 +130,17 @@ with l as (
              'cuenta', a.legacy_code, 'item', l.listing_id))
            filter (where l.canal = 'mercado_libre'
                      and l.listing_id is not null)  as pubs_ml,
+         -- CENSO DE PUBLICACIONES para la tarjeta de los puntitos: en qué
+         -- cuentas existe el SKU y cómo está cada una. NO reusa `precios` de
+         -- arriba porque ese filtra `price is not null` y se comería 267
+         -- publicaciones de ML y 115 de Amazon — una sin precio sigue siendo
+         -- una publicación, y esconderla haría que la tarjeta contradiga a los
+         -- puntos, que sí las cuentan.
+         jsonb_agg(distinct jsonb_build_object(
+             'cuenta', a.legacy_code, 'canal', l.canal,
+             'situacion', l.situacion, 'item', l.listing_id,
+             'price', l.price, 'full', l.is_fulfillment))
+                                                    as publicaciones,
          max(l.updated_at)                          as precio_visto_at,
          bool_or(l.situacion = 'active')            as alguna_activa,
          bool_or(l.situacion = 'paused')            as alguna_pausada,
@@ -178,7 +189,11 @@ dr as (
   group by sku
 ),
 tam as (
-  select sku,
+  -- El chip S/M/L/XL sale del LADO MÁS LARGO. Las medidas viajan con él para
+  -- que la tarjeta pueda mostrar de dónde salió la letra: sin eso el chip es un
+  -- veredicto sin sustento, y un SKU en el borde (29.9 vs 30.1 cm) cambia de
+  -- categoría sin que nada lo explique.
+  select sku, largo, ancho, alto, peso,
          case
            when greatest(coalesce(largo,0), coalesce(alto,0), coalesce(ancho,0)) = 0
                 then 'S/C'
@@ -286,6 +301,10 @@ com as (
 ),
 filas as (
   select l.sku, l.cuentas, l.titulo, coalesce(t.tam, 'S/C') as tam,
+         -- Medidas y publicaciones: alimentan las dos tarjetas de la columna
+         -- Producto (el chip de tamaño y los puntos de cuenta).
+         t.largo, t.ancho, t.alto, t.peso,
+         l.publicaciones,
          case when l.alguna_activa then 'activa'
               when l.alguna_pausada then 'pausada'
               else 'otra' end as situacion_chip,
@@ -1441,8 +1460,13 @@ async def tabla(
         raise HTTPException(400, f"estado inválido: {estado}")
     if tipo and tipo not in _TIPOS:
         raise HTTPException(400, f"tipo inválido: {tipo}")
-    if tam and tam not in _TAMS:
-        raise HTTPException(400, f"tam inválido: {tam}")
+    # `tam` acepta VARIOS separados por coma: se valida cada uno, no la cadena
+    # entera. Validar la cadena rechazaba "S,M" con un 400 y dejaba la tabla en
+    # blanco sin explicar por qué.
+    tams = [t.strip() for t in (tam or "").split(",") if t.strip()]
+    malos = [t for t in tams if t not in _TAMS]
+    if malos:
+        raise HTTPException(400, f"tam inválido: {', '.join(malos)}")
     if dir and dir not in _DIRS:
         raise HTTPException(400, f"dir inválida: {dir}")
     p = _params(dias, cuenta)
@@ -1451,8 +1475,9 @@ async def tabla(
         cond.append("estado = %(estado)s"); extra["estado"] = estado
     if tipo:
         cond.append("tipo = %(tipo)s"); extra["tipo"] = tipo
-    if tam:
-        cond.append("tam = %(tam)s"); extra["tam"] = tam
+    if tams:
+        # Compatible con el valor suelto de antes: "L" llega como lista de uno.
+        cond.append("tam = any(%(tam)s)"); extra["tam"] = tams
     if q:
         cond.append("(sku::text ilike %(q)s or titulo ilike %(q)s)")
         extra["q"] = f"%{q}%"

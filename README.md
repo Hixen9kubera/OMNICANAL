@@ -8875,3 +8875,68 @@ casa es `core.canonical_fields`, como dato comparable por canal.
 Aplicada en producción con pre-chequeo en la misma transacción; 4,860 filas
 intactas y 0 con dato — la migración no siembra. Manifiesto regenerado:
 **`PARIDAD OK`**, 45 tablas. Versión 0.149.0.
+
+### v0.150.0 — Análisis: el tamaño y las cuentas se explican, y el filtro acepta varios
+
+Tres cosas en la columna Producto y sus filtros.
+
+**El chip de tamaño abre su tarjeta.** La letra S/M/L/XL sale del lado más largo
+y sola no dice nada: un SKU de 29 cm y otro de 31 caen en categorías distintas
+sin que se vea por qué. Ahora muestra las tres medidas, **señala cuál decide la
+letra** y da los cortes, para que la clasificación se pueda comprobar en vez de
+creerse. Sin medidas capturadas lo dice, y aclara que sin ellas tampoco hay
+flete de importación calculable.
+
+De paso **detecta el peso de caja**: arriba de 1.5 kg por litro avisa que suele
+ser el peso de la CAJA master capturado como si fuera el de una pieza. En
+`MUE-0163-TEL` son 39.36 kg en 12.2 L — 3.2 kg/L — y con ese peso el flete
+estimado sale muy alto.
+
+**Los puntos de cuenta abren el censo de publicaciones.** Decían *cuántas*
+cuentas, no cuáles ni cómo, y "está en tres cuentas" con las tres pausadas se
+leía igual que con las tres vendiendo. `TEC-1284-NEG-27"` lo muestra: tres
+publicaciones, **ninguna comprable**.
+
+Dos decisiones que salieron de medir, no de suponer:
+
+- **El estado no se normaliza a activa/pausada.** En Amazon `DISCOVERABLE` es
+  la mayoría (1,258 de 1,501) y significa que existe y se encuentra, pero **no
+  que se pueda comprar**. Tratarla como activa inflaría el conteo de vivas;
+  como pausada diría que está detenida. Se nombra tal cual —"visible, no
+  comprable"— y se marca si vende.
+- **No se reusó el agregado `precios`** que ya existía: filtra
+  `price is not null` y se comería **267 publicaciones de ML y 115 de Amazon**.
+  Una sin precio sigue siendo una publicación, y esconderla haría que la
+  tarjeta contradiga a los puntos, que sí las cuentan.
+
+**El filtro de tamaño acepta varios.** Filtrar por tamaño casi siempre es
+preguntar por un rango —lo chico que cabe en un sobre, lo grande que paga flete
+caro— y con una sola opción había que mirar la tabla dos veces para comparar S
+contra M. Va como botón con casillas y no como `<select multiple>` nativo, que
+se ve mal y se opera peor. "Todos" es limpiar, por eso va como botón aparte.
+
+| selección | SKUs |
+|---|---|
+| Todos | 2,687 |
+| S | 923 |
+| S · M | 1,695 |
+| S · M · L | 2,011 |
+| 4 de 5 | 2,039 |
+
+**Dos defectos corregidos en el camino**, ambos destapados al probarlo:
+
+- **Un 400 que dejaba la página en blanco.** El filtro pasó a aceptar lista pero
+  la validación, veinte líneas más arriba, seguía comparando la cadena completa
+  contra el conjunto: `"S,M"` se rechazaba. Ahora valida cada elemento y el
+  mensaje nombra solo el malo (`tam=S,Z` → «tam inválido: Z»).
+- **Una carrera de respuestas en `cargar()`.** No cancelaba nada: con dos
+  filtros seguidos ganaba la respuesta que llegara última, no la última pedida,
+  y la tabla acababa mostrando un filtro que ya no estaba seleccionado. Con el
+  `select` de una opción casi no se notaba; con casillas se marcan tres seguidas
+  y es fácil de provocar. Cada carga lleva ahora su número y descarta su
+  resultado si ya no es la vigente.
+
+Verificado contra el sandbox con clon de producción: las cuatro ramas de las
+tarjetas (con medidas, sin medidas, con peso sospechoso, con y sin publicación
+vendible), los cinco conteos del filtro, y que Escape, el clic fuera y "Todos"
+cierran o limpian. Sin migraciones y sin variables nuevas. Versión 0.150.0.
