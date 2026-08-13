@@ -8034,6 +8034,24 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.146.1 — El validador de TikTok existía en mi disco y no en el repo
+
+`services/tiktok_contenido.py` —el validador que escribió el hilo de TikTok y
+que `tiktok_ia` usa en cada generación— **nunca se había commiteado**. Estaba en
+el working tree, así que todas las pruebas locales pasaron; en producción, el
+primer clic en "Mejorar con IA" para TikTok habría sido un `ImportError`.
+
+No tumbaba el arranque porque el import es perezoso (dentro de la función), lo
+que lo hacía peor: el backend levantaba sano y solo fallaba esa acción.
+
+Se detectó revisando `git status` al cerrar, no probando — las pruebas no podían
+verlo. Es exactamente el modo de fallo que este proyecto lleva semanas
+documentando: **la ausencia de un error no es evidencia de éxito**, y un `?? `
+en `git status` es tan importante como un test en rojo cuando hay varias
+sesiones escribiendo en el mismo árbol.
+
+Versión 0.146.1.
+
 ### v0.146.0 — El fan-out ya sabe escribirle a TikTok (y no lo hace todavía)
 
 Última de las seis etapas. `_escribir_tiktok` entra en `_ESCRITORES`, y con eso
