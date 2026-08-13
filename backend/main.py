@@ -44,6 +44,11 @@ _DOCS_VISIBLES = settings.docs_publicas or settings.app_env != "production"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Vigilante del event loop: cuando el backend deja de contestar con la CPU
+    # ociosa, vuelca la pila del hilo principal y dice en qué línea se atoró.
+    # Va PRIMERO: lo que se quiera diagnosticar puede pasar en el arranque.
+    from services import vigilante_loop
+    vigilante_loop.iniciar()
     # Arranca el sync programado de inventario (cada N min).
     scheduler.iniciar()
     # Calienta el Ã­ndice de "Crear Productos" en segundo plano (escanea WooCommerce),
@@ -101,7 +106,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.155.0",
+    version="0.156.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -155,7 +160,7 @@ app.include_router(resolver.router)
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.155.0",
+        "version": "0.156.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
