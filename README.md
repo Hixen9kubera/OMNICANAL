@@ -8208,3 +8208,45 @@ baja; antes, solo subía porque pasaba el tiempo.
 
 Se conserva la marca más vieja en la salida, pero como DATO y no como umbral:
 si no cambia entre corridas, esa fila no la alcanza el barrido. Versión 0.136.0.
+
+### v0.138.0 — El barrido: dos métricas mal leídas y el bug que sí existe
+
+Corrección de lo publicado en v0.130.0 y v0.136.0. Las dos midieron el barrido
+sobre `channel.listings.updated_at` leyéndola como "cuándo se revisó". **No es
+eso: es "cuándo CAMBIÓ".**
+
+El upsert de `channel_mirror` lleva `where … is distinct from …`, así que el
+UPDATE solo dispara si el dato cambió, y `trg_touch_listings` (BEFORE UPDATE)
+solo entonces toca la fecha. Una publicación pausada con precio y stock estables
+se visita cada 15 minutos y conserva su fecha de hace diez días.
+
+Así que "5,593 publicaciones con 7+ días sin revisarse" en realidad decía
+"5,593 cuyo precio y stock no han cambiado en 7+ días" — que es lo normal, no
+una falla. El primer intento midió el paso del tiempo; el segundo midió un ciclo
+que no existe. **Ninguna columna registra la VISITA**, así que la cobertura del
+barrido hoy no es medible desde la base, y el latido se queda en `n/d` en vez de
+inventar un número.
+
+**Pero con la columna bien entendida aparece un bug REAL, y es otro.** El turno
+(`inventario._lote_desde_ml`) se ordena por esa misma `updated_at`:
+
+```python
+orden = sorted(ids, key=lambda i: (i in vistos, vistos.get(i) or epoca))
+```
+
+Una publicación estable tiene la fecha más vieja → sale elegida → se visita →
+**como no cambió, su fecha no se mueve** → vuelve a salir elegida la ronda
+siguiente, para siempre. Y las que sí cambian se van al fondo de la fila. Es la
+misma familia de los otros tres hallazgos de esta semana: **la marca de "ya lo
+hice" no la pone el hacerlo.**
+
+El arreglo pide una columna `last_seen_at` escrita en CADA visita, pase lo que
+pase con el dato — que de paso es la única forma de medir la cobertura. Es un
+cambio de esquema en producción, así que va aparte y con su dale.
+
+De camino, un dato de los logs que sí es real: **9 ítems por ronda vuelven "sin
+SKU legible"** y nunca se escriben. Como nunca entran a `vistos`, ordenan
+PRIMERO en todas las rondas: son 9 lugares del lote de 80 quemados cada vez.
+
+También se corrige `docs/APAGADO_ESPEJOS_MYSQL.md`, que llevaba el número malo.
+El apagado de los espejos no está en cuestión: sigue verificado. Versión 0.138.0.
