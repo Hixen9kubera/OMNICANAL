@@ -8034,6 +8034,23 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.159.0 — El vigilante habla en una sola línea (o el volcado no sirve)
+
+El primer volcado del vigilante llegó **revuelto**: Railway parte los mensajes
+multilínea en registros sueltos y los reordena por milisegundo. Resultado: se
+veían los marcos, pero no cuáles eran del hilo principal — que es exactamente el
+dato por el que existe el instrumento. Hubo que deducirlo por el nombre del
+hilo, y en el atascón de las 23:24 ya no se pudo.
+
+Ahora la pila viaja **encadenada en una línea**, del marco más antiguo al más
+reciente (`archivo:línea función > …`); el último eslabón es dónde está parado.
+De los demás hilos solo se imprimen los que tienen código NUESTRO: los del pool
+esperando trabajo llenaban el volcado sin decir nada.
+
+Un instrumento que no se puede leer cuando hace falta no es un instrumento.
+
+---
+
 ### v0.158.0 — Análisis deja de congelar el backend mientras consulta
 
 Con el camino de ventas e inventario ya en hilos (v0.157.0), el vigilante del

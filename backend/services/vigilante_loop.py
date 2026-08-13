@@ -37,6 +37,29 @@ log = logging.getLogger("omnicanal.vigilante_loop")
 _iniciado = False
 
 
+def _cadena(marco, solo_nuestros: bool = False, tope: int = 14) -> str:
+    """La pila de un hilo en UNA línea: `archivo:línea función > …`.
+
+    El último eslabón es donde está parado. Con `solo_nuestros`, devuelve vacío
+    si el hilo no tiene código de la app (los del pool esperando trabajo).
+    """
+    if marco is None:
+        return "(sin marco)"
+    eslabones = []
+    nuestros = False
+    for f in traceback.extract_stack(marco)[-tope:]:
+        archivo = f.filename.replace("\\", "/")
+        if "/app/" in archivo or "\\omnicanal\\" in f.filename:
+            archivo = archivo.split("/app/")[-1]
+            nuestros = True
+        else:  # librerías: solo el nombre del archivo, para no perder el rastro
+            archivo = archivo.rsplit("/", 1)[-1]
+        eslabones.append(f"{archivo}:{f.lineno} {f.name}")
+    if solo_nuestros and not nuestros:
+        return ""
+    return " > ".join(eslabones)
+
+
 def iniciar(umbral_s: float = 5.0, cada_s: float = 2.0, silencio_s: float = 60.0) -> None:
     """Arranca el latido y su vigilante. Idempotente."""
     global _iniciado
@@ -68,19 +91,25 @@ def iniciar(umbral_s: float = 5.0, cada_s: float = 2.0, silencio_s: float = 60.0
                 continue
             ultimo_aviso = time.monotonic()
             pilas = sys._current_frames()
-            partes = [f"EVENT LOOP ATASCADO {atraso:.1f} s - {len(pilas)} hilos vivos"]
-            marco = pilas.get(principal)
-            if marco is not None:
-                partes.append("--- HILO PRINCIPAL (el que atiende peticiones) ---\n"
-                              + "".join(traceback.format_stack(marco)[-12:]))
+            # UNA SOLA LÍNEA. Railway parte los mensajes multilínea en registros
+            # sueltos y los reordena por milisegundo: en el primer incidente el
+            # volcado llegó revuelto y no se pudo saber qué marcos eran del hilo
+            # principal — que es justo el dato. Aquí la pila viaja encadenada con
+            # " > ", del más antiguo al más reciente (el último es dónde está
+            # parado), y solo se nombran los marcos NUESTROS.
+            log.error("EVENT LOOP ATASCADO %.1f s - %d hilos vivos | PRINCIPAL: %s",
+                      atraso, len(pilas), _cadena(pilas.get(principal)))
+            # Los demás hilos, uno por línea y solo si tienen código nuestro:
+            # los del pool esperando trabajo no dicen nada y tapan el volcado.
             for tid, m in pilas.items():
                 if tid == principal:
                     continue
+                cadena = _cadena(m, solo_nuestros=True)
+                if not cadena:
+                    continue
                 nombre = next((h.name for h in threading.enumerate()
                                if h.ident == tid), str(tid))
-                partes.append(f"--- hilo {nombre} ---\n"
-                              + "".join(traceback.format_stack(m)[-6:]))
-            log.error("\n".join(partes))
+                log.error("  hilo %s: %s", nombre, cadena)
 
     threading.Thread(target=_vigilar, name="vigilante-loop", daemon=True).start()
     log.info("Vigilante del event loop encendido (umbral %.0f s).", umbral_s)
