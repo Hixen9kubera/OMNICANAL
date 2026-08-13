@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from config import settings
 from services import (
-    competencia_captura, competencia_mas_vendidos, competencia_scraper, competencia_store,
+    competencia_captura, competencia_scraper, competencia_store,
 )
 
 log = logging.getLogger("omnicanal.routers.competencia")
@@ -56,9 +56,9 @@ def estado():
     """Diagnóstico honesto: qué fuentes hay y qué NO se puede medir, con el motivo."""
     return {
         "supabase": competencia_store.disponible(),
-        # El raspado del ranking corre con NAVEGADOR LOCAL (selenium + bs4). Apify
-        # queda solo para las búsquedas por término, que todavía pasan por el actor.
-        "navegador_local": competencia_mas_vendidos.disponible(),
+        # TODO el raspado va por ACTOR de Apify: el ranking de más vendidos y la
+        # búsqueda por término. El navegador local se retiró — ML corta la IP a
+        # las ~50 consultas y tumbó dos capturas a la mitad.
         "scraper_apify": competencia_scraper.disponible(),
         "top_por_busqueda": settings.competencia_top,
         "con_detalle": settings.competencia_con_detalle,
@@ -143,46 +143,6 @@ async def visitas_propias(skus: str | None = None):
 
 # ── Vistas ───────────────────────────────────────────────────────────────────
 
-@router.get("/tabla")
-def tabla(agrupar: str = "raiz_nombre", canal: str = "mercado_libre"):
-    """
-    Una fila por SKU con mi posición en las tres mediciones, agrupada por el nivel
-    de categoría que se pida.
-
-    Por defecto agrupa por la RAÍZ del path (`raiz_nombre`), que es la categoría
-    principal — "Accesorios para Vehículos", no "Accesorios de Auto y Camioneta".
-    `categoria_nombre` agrupa por la última categoría.
-
-    `canal` filtra las publicaciones que se muestran. Hoy solo hay
-    'mercado_libre'; cuando entre Amazon, sus ASINs ya vienen como filas con
-    canal='amazon' y este filtro los separa sin tocar la vista.
-    """
-    if agrupar not in _NIVELES:
-        raise HTTPException(400, f"agrupar debe ser uno de {_NIVELES}")
-
-    grupos: dict[str, dict[str, Any]] = {}
-    for f in competencia_store.tabla():
-        f["tiendas"] = [t for t in f.get("tiendas", []) if t.get("canal") == canal]
-        clave = f.get(agrupar) or "Sin categoría"
-        g = grupos.setdefault(clave, {
-            "grupo": clave, "nivel": agrupar,
-            # El id del grupo permite pedir SU ranking de más vendidos.
-            "categoria_id": f.get("raiz_id") if agrupar == "raiz_nombre"
-                            else f.get("categoria_id"),
-            "skus": [],
-        })
-        g["skus"].append(f)
-
-    corrida = competencia_store.ultima_corrida()
-    return {
-        "agrupar": agrupar,
-        "canal": canal,
-        "niveles": list(_NIVELES),
-        "grupos": sorted(grupos.values(), key=lambda g: g["grupo"]),
-        "corrida": corrida,
-    }
-
-
 @router.get("/top-categoria")
 def top_categoria(sku: str, limite: int = 10):
     """
@@ -230,10 +190,9 @@ def vista(canal: str = "mercado_libre"):
         "canal": canal,
         "raices": arbol,
         "capturado_en": max(capturas) if capturas else None,
-        # Este servidor NO puede refrescar el ranking (sin Chrome no hay raspado y
-        # la API de ML da 403 en publicaciones ajenas). No es un fallo: la captura
-        # corre una vez al mes desde una máquina con navegador y sube a Supabase.
-        "puede_refrescar": competencia_mas_vendidos.disponible(),
+        # Con Apify el raspado ya no depende de que ESTE servidor tenga Chrome:
+        # corre en su infraestructura. Alcanza con la API key.
+        "puede_refrescar": competencia_scraper.disponible(),
         "aviso": None if arbol else
                  "No hay SKUs vigilados. Corre POST /api/competencia/sembrar.",
     }
@@ -394,34 +353,3 @@ async def capturar_rankings():
 # archivadas en verificacion_competencia/archivo_competencia_resultados.json.
 
 
-@router.get("/corrida")
-def corrida():
-    return {"ultima": competencia_store.ultima_corrida(), "en_curso": _corrida}
-
-
-# ── Corrida manual (en producción la dispara el cron de Railway) ────────────
-
-@router.post("/correr")
-async def correr(skus: str | None = None):
-    """
-    Dispara la corrida en segundo plano y responde de inmediato; la UI hace
-    polling a /corrida. `skus` acepta una lista separada por comas para probar
-    con uno solo sin gastar la corrida completa.
-    """
-    if _corrida.get("estado") == "corriendo":
-        raise HTTPException(409, "Ya hay una corrida de competencia en curso.")
-
-    lista = [s.strip() for s in (skus or "").split(",") if s.strip()] or None
-
-    async def _tarea():
-        _corrida.update(estado="corriendo", resultado=None, error=None)
-        try:
-            r = await competencia_captura.correr(origen="manual", skus=lista)
-            _corrida.update(estado="listo" if r.get("ok") else "error",
-                            resultado=r, error=r.get("motivo"))
-        except Exception as exc:  # noqa: BLE001
-            log.error("Corrida de competencia falló: %s", exc)
-            _corrida.update(estado="error", error=str(exc)[:500])
-
-    asyncio.create_task(_tarea())
-    return {"ok": True, "estado": "corriendo", "skus": lista or "todos"}

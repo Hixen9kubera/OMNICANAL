@@ -98,13 +98,17 @@ class Settings(BaseSettings):
     # ── Competencia (Mercado Libre) ───────────────────────────
     # La API de ML da las VISITAS de cualquier publicación pero NO la ficha
     # (título/imagen/precio/descripción/posición) de las ajenas: /items/{id}
-    # responde 403 y /sites/MLM/search también. Esa parte la trae este actor.
-    apify_ml_actor: str = "piotrv1001~mercado-libre-listings-scraper"
     # Navegador genérico para la página /mas-vendidos/{cat}: los actores
     # especializados en ML NO la parsean (uno FAILED, otro 0 items) y este sí,
     # porque ejecuta el security.js. Cobra por cómputo (~$0.007/página) en vez de
     # por item, ~93× más barato que el de listings con detalle.
     apify_navegador_actor: str = "apify~playwright-scraper"
+    # RESPALDO cuando el de arriba devuelve "Crawled 0/N pages". Mismo contrato
+    # de entrada (startUrls + pageFunction + proxyConfiguration) y el mismo
+    # `context.page`, así que la pageFunction sirve para los dos — siempre que
+    # se escriba en el subconjunto común: `page.waitForTimeout` es de Playwright
+    # y en Puppeteer hay que dormir con un setTimeout envuelto en Promise.
+    apify_navegador_respaldo: str = "apify~puppeteer-scraper"
     # ML sirve un interstitial de "tráfico sospechoso" a IPs de datacenter, así
     # que el scraping va por proxy residencial mexicano (igual que Alibaba).
     apify_proxy_pais: str = "MX"

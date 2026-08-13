@@ -1,6 +1,8 @@
 # Competencia · de dónde viene cada dato y por dónde se escribe
 
-> Estado: propuesta. Lo que hoy es distinto está marcado como **PENDIENTE**.
+> Estado: **aplicado**. Los cuatro pendientes de la primera versión se cerraron
+> el 13-ago: Selenium retirado, actor especializado borrado, respaldo cableado y
+> SQLite eliminado.
 > Escrito el 13-ago-2026 tras cerrar Deportes y Fitness, Herramientas y
 > Recuerdos y Fiestas.
 
@@ -161,43 +163,43 @@ Las siete funciones de escritura, todas en `competencia_supabase`:
 
 ---
 
-## PENDIENTE — lo que falta para cumplir la regla
+## Lo que se cerró el 13-ago
 
-### 1. Retirar el navegador local
+**Selenium retirado.** `competencia_mas_vendidos.py` y `competencia_busqueda.py`
+borrados, con sus scripts (`competencia_login`, `competencia_buscar_todo`,
+`competencia_medir_todo`, `competencia_capturar_categorias`). Con ellos se fue la
+cadena que solo existía para el navegador: `correr`, `medir_sku`,
+`_medir_busqueda`, `_medir_categoria` y los endpoints `/correr`, `/corrida` y
+`/detalle`, ninguno con consumidor en el panel.
 
-Dos módulos siguen usando Selenium y hay que borrarlos:
+**El actor especializado, borrado.** `apify_ml_actor`
+(`piotrv1001~mercado-libre-listings-scraper`) y sus dos funciones muertas. Daba
+datos que no se podían atribuir a la consulta que los trajo.
 
-| Módulo | Lo llaman | Reemplazo |
-|---|---|---|
-| `competencia_mas_vendidos.py` | `routers/competencia.py`, `competencia_captura.py`, `competencia_login.py` | `competencia_scraper.mas_vendidos_categorias()` |
-| `competencia_busqueda.py` | `scripts/competencia_buscar_todo.py` | `competencia_scraper.buscar_terminos()` |
+**Actor de respaldo.** `apify~puppeteer-scraper` entra cuando el principal no
+trae nada — que no siempre es un error visible: dos términos terminaron en
+corridas `SUCCEEDED` con "Crawled 0/2 pages". Las `pageFunction` se escribieron
+en el subconjunto común de las dos APIs (`page.waitForTimeout` es de Playwright;
+se reemplazó por un `setTimeout` envuelto en Promise), así que la misma función
+corre en los dos sin tocarla.
 
-El reemplazo ya es equivalente: lo único que le faltaba a Apify —`id_pagina` y
-`tipo`— se resolvió con `_pagina_y_tipo()`, y las filas nuevas los traen al 100%.
+**SQLite eliminado.** `competencia_store` ya no tiene DDL, ni `_con()`, ni
+`asegurar_schema()`, ni modo local: las 22 funciones exigen `SUPABASE_DB_URL` y
+revientan sin ella. Antes las lecturas caían al archivo — en Railway el FS es
+efímero, así que el tab arrancaba vacío, y cuando el archivo sí existía una
+captura escrita ahí parecía haber funcionado sin que nadie la leyera.
 
-`competencia_captura.capturar_rankings_categorias()` es la que hay que repuntar;
-de paso arreglar que **acumula todo en memoria y escribe al final** — un bloqueo
-a mitad costó ~49 categorías raspadas.
+**Nada en memoria.** `capturar_rankings_categorias` va por tandas de 20 y escribe
+cada categoría en cuanto la tiene. La versión anterior raspaba todo en memoria y
+guardaba al final: un bloqueo a media corrida se llevó 49 categorías ya raspadas.
 
-### 2. Borrar el actor especializado
+### Queda abierto
 
-`apify_ml_actor` y las funciones `buscar()` / `buscar_varios()` no las llama
-nadie. Dejarlas invita a usarlas.
-
-### 3. Reintentos del buscador
-
-Dos términos de Herramientas (`pistola de agua a presion`, `maquina de soldadura
-laser`) fallaron dos veces: la corrida de Apify termina `SUCCEEDED` pero con
-"Crawled 0/2 pages". El actor no reintenta lo suficiente o esas dos páginas
-tienen algo distinto. Falta diagnosticar; hoy el script los cuenta como "sin
-resultados", que es honesto pero no los recupera.
-
-### 4. Cerrar el hueco de `item_categoria_id`
-
-66 de 4,002 filas. No es un bug: solo se resuelve en `nivel='raiz'` y solo hay 4
-raíces capturadas. Al capturar una raíz nueva se llena sola.
-
----
+- **`item_categoria_id`**: 66 de 4,002 filas. No es un bug — solo se resuelve en
+  `nivel='raiz'` y hay 4 raíces capturadas. Se llena al capturar cada raíz nueva.
+- **Dos términos de Herramientas** (`pistola de agua a presion`, `maquina de
+  soldadura laser`) que fallaron dos veces antes de existir el respaldo. Vale
+  reintentarlos ahora.
 
 ## Costos reales medidos
 

@@ -76,15 +76,23 @@ def _proxy() -> dict[str, Any]:
 
 
 async def _correr_actor(actor: str, payload: dict[str, Any],
-                        limite_lectura: int = 200) -> list[dict[str, Any]]:
+                        limite_lectura: int = 200,
+                        respaldo: str | None = None) -> list[dict[str, Any]]:
     """
     Corre un actor y devuelve las filas de su dataset. Devuelve [] ante cualquier
     fallo: un SKU que no raspa no debe tumbar la corrida mensual completa.
+
+    `respaldo` es otro actor con el MISMO contrato de entrada. Se usa cuando el
+    primero no trae nada, que no siempre es un error visible: el 13-ago dos
+    términos de Herramientas terminaron en corridas `SUCCEEDED` con "Crawled 0/2
+    pages" — el actor reporta éxito y el dataset viene vacío. Un fallo así no se
+    distingue de "la página no tiene resultados" sin intentar por otro lado.
     """
     if not disponible():
         log.warning("APIFY_API_KEY no configurada; el scraping de competencia no corre")
         return []
     token = {"token": settings.apify_api_key}
+    filas: list[dict[str, Any]] = []
     async with _sem:
         try:
             async with httpx.AsyncClient(timeout=120.0) as cli:
@@ -93,7 +101,7 @@ async def _correr_actor(actor: str, payload: dict[str, Any],
                 if r.status_code >= 300:
                     log.warning("Apify %s no arrancó: %s %s", actor,
                                 r.status_code, r.text[:200])
-                    return []
+                    raise RuntimeError(f"no arrancó: {r.status_code}")
                 run_id = r.json()["data"]["id"]
 
                 datos: dict[str, Any] = {}
@@ -106,17 +114,23 @@ async def _correr_actor(actor: str, payload: dict[str, Any],
 
                 if datos.get("status") != "SUCCEEDED":
                     log.warning("Apify %s terminó en %s", actor, datos.get("status"))
-                    return []
+                    raise RuntimeError(f"terminó en {datos.get('status')}")
 
                 rd = await cli.get(
                     f"{_APIFY}/datasets/{datos['defaultDatasetId']}/items",
                     params={**token, "limit": limite_lectura},
                 )
-                filas = rd.json()
-                return filas if isinstance(filas, list) else []
+                leidas = rd.json()
+                filas = leidas if isinstance(leidas, list) else []
         except Exception as exc:  # noqa: BLE001
-            log.warning("Apify %s falló: %s", actor, exc)
-            return []
+            log.warning("Apify %s falló: %s", actor, exc or type(exc).__name__)
+            filas = []
+
+    if not filas and respaldo and respaldo != actor:
+        log.warning("Apify %s no trajo nada; reintento con el respaldo %s",
+                    actor, respaldo)
+        return await _correr_actor(respaldo, payload, limite_lectura, respaldo=None)
+    return filas
 
 
 def _num(v: Any) -> float | None:
@@ -265,96 +279,6 @@ def _de_tarjeta(it: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def buscar_varios(terminos: list[str], limite: int = 5,
-                        con_detalle: bool = False) -> dict[str, list[dict[str, Any]]]:
-    """
-    VARIOS términos en UNA sola corrida del actor. → { termino: [filas] }
-
-    Es la diferencia de costo que manda. El actor cobra $0.003 por item MÁS $0.09
-    por corrida, así que mandar una consulta por corrida paga la cuota fija N veces:
-    230 términos salen en $24.15 de a uno y en $4.35 agrupados de 25 en 25. La
-    cuota, no los items, es lo que domina.
-
-    `searchQueries` recibe una lista y el actor devuelve los resultados etiquetados
-    con su consulta, así que se pueden separar después.
-    """
-    consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
-    if not consultas:
-        return {}
-    filas = await _correr_actor(settings.apify_ml_actor, {
-        "siteId": settings.ml_site_id,
-        "searchQueries": consultas,
-        "maxItems": limite * len(consultas),
-        "maxPagesPerQuery": 1,
-        "sort": "relevance",
-        "includeProductDetail": con_detalle,
-        "proxyConfiguration": _proxy(),
-    }, limite_lectura=limite * len(consultas))
-
-    # El actor marca cada item con la consulta que lo trajo. Si no lo hiciera, no
-    # habría forma de repartirlos y agrupar sería inservible.
-    por: dict[str, list[dict[str, Any]]] = {}
-    for it in filas:
-        q = (it.get("searchQuery") or it.get("query") or it.get("keyword") or "").strip()
-        por.setdefault(q, []).append(it)
-    out: dict[str, list[dict[str, Any]]] = {}
-    for q, items in por.items():
-        norm = []
-        for i, it in enumerate(items[:limite], start=1):
-            f = _normalizar(it, i)
-            if f["externo_id"]:
-                norm.append(f)
-        if norm:
-            out[q] = norm
-    sin = [q for q in consultas if q not in out]
-    if sin:
-        log.warning("buscar_varios: %s consultas sin resultados: %s", len(sin), sin[:5])
-    log.info("buscar_varios: %s consultas → %s con resultados",
-             len(consultas), len(out))
-    return out
-
-
-async def buscar(termino: str, limite: int = 30,
-                 con_detalle: bool = True) -> list[dict[str, Any]]:
-    """
-    Resultados de búsqueda de ML para un término, **en orden**: el índice ES la
-    posición orgánica, el único lugar de donde se puede sacar ese dato.
-
-    `con_detalle=True` agrega descripción y vendidos, a 8× el costo por item.
-    """
-    # Se piden MÁS items de los que se van a guardar porque los primeros
-    # resultados del buscador son ANUNCIOS y se descartan. MEDIDO: pidiendo 5 se
-    # guardaba 1 sola fila por término — se pagaban 5 items para conservar uno.
-    # El factor 4 deja margen suficiente para quedarse con `limite` orgánicos.
-    pedidos = limite * 4
-    filas = await _correr_actor(settings.apify_ml_actor, {
-        "siteId": settings.ml_site_id,
-        "searchQueries": [termino],
-        "maxItems": pedidos,
-        "maxPagesPerQuery": max(1, pedidos // 50 + 1),
-        "sort": "relevance",
-        "includeProductDetail": con_detalle,
-        "proxyConfiguration": _proxy(),
-    }, limite_lectura=pedidos)
-
-    # Los ANUNCIOS no ocupan posición orgánica: se descartan y la numeración
-    # avanza solo con los demás, igual que en el raspado propio.
-    out, organica, anuncios = [], 0, 0
-    for it in filas:
-        if it.get("isPromoted"):
-            anuncios += 1
-            continue
-        organica += 1
-        fila = _normalizar(it, organica)
-        if fila["externo_id"]:
-            out.append(fila)
-        if len(out) >= limite:
-            break
-    log.info("buscar(%r, detalle=%s) → %s orgánicos (%s anuncios descartados)",
-             termino, con_detalle, len(out), anuncios)
-    return out
-
-
 # ── Más vendidos por categoría (página /mas-vendidos/{cat}) ─────────────────
 #
 # HALLAZGO que cambió el diseño: los actores ESPECIALIZADOS en ML no sirven para
@@ -377,14 +301,17 @@ async def buscar(termino: str, limite: int = 30,
 _PAGE_FUNCTION_BUSCADOR = r"""
 async function pageFunction(context) {
   const { page, request } = context;
-  await page.waitForTimeout(3500);
+  // `page.waitForTimeout` solo existe en Playwright. Con esto la MISMA
+  // pageFunction corre en el actor de respaldo (Puppeteer) sin tocarla.
+  const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+  await dormir(3500);
   let html = await page.content();
   const malo = (h) => h.includes('suspicious-traffic') || h.includes('account-verification')
                    || h.includes('not-found-page') || h.includes('Para continuar, ingresa a tu cuenta');
   if (malo(html)) {
-    await page.waitForTimeout(2500);
+    await dormir(2500);
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3500);
+    await dormir(3500);
     html = await page.content();
   }
   if (malo(html)) { throw new Error('BLOQUEADO'); }
@@ -427,13 +354,16 @@ async function pageFunction(context) {
 _PAGE_FUNCTION_MAS_VENDIDOS = r"""
 async function pageFunction(context) {
   const { page, request } = context;
-  await page.waitForTimeout(4000);
+  // `page.waitForTimeout` solo existe en Playwright. Con esto la MISMA
+  // pageFunction corre en el actor de respaldo (Puppeteer) sin tocarla.
+  const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+  await dormir(4000);
   let html = await page.content();
   const malo = (h) => h.includes('suspicious-traffic') || h.includes('account-verification');
   if (malo(html)) {
-    await page.waitForTimeout(2500);
+    await dormir(2500);
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(4000);
+    await dormir(4000);
     html = await page.content();
   }
   if (malo(html)) { throw new Error('BLOQUEADO: interstitial de trafico sospechoso'); }

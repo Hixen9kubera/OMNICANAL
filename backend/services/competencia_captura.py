@@ -30,12 +30,16 @@ from typing import Any
 
 from config import settings
 from services import (
-    categorias_write, channel_read, competencia_mas_vendidos, competencia_ml,
-    competencia_scraper, competencia_store, competencia_terminos, core_read,
-    core_write, db, supabase_db,
+    categorias_write, channel_read, competencia_ml, competencia_scraper,
+    competencia_store, competencia_terminos, core_read, core_write, db,
+    supabase_db,
 )
 
 log = logging.getLogger("omnicanal.competencia.captura")
+
+# Categorías por corrida de Apify. Una corrida con 20 URLs tarda ~9 min; en
+# tandas se escribe cada 9 min en vez de al final de todo.
+_TANDA_RANKING = 20
 
 # Cuántas publicaciones de cada medición se enriquecen con visitas. Cada visita
 # es UNA llamada a la API (ML no acepta multiget), así que este número es el
@@ -913,22 +917,35 @@ async def capturar_rankings_categorias(periodo: str | None = None,
     if not nivel_de:
         return {"ok": False, "motivo": "Los SKUs vigilados no tienen categoría."}
 
-    # NAVEGADOR LOCAL, no Apify: decisión de José (3-ago). El actor genérico
-    # funcionaba pero se paga por cómputo, y además su normalización tira
-    # `id_pagina` — el id del URL, que es la llave para unir la ficha raspada con
-    # /highlights y con la subcategoría de cada fila. `leer` es bloqueante
-    # (Selenium lo es), de ahí el to_thread.
-    crudos = await asyncio.to_thread(
-        competencia_mas_vendidos.leer, list(nivel_de), 20)
+    # ACTOR DE APIFY, no navegador local. ML corta la IP a las ~50 consultas y ya
+    # nos pasó dos veces a mitad de una captura; Apify corre con proxy
+    # residencial propio. Lo único que le faltaba —`id_pagina`, la llave para
+    # resolver la subcategoría de cada fila— se deriva del href en
+    # `_pagina_y_tipo`, así que hoy es equivalente.
+    #
+    # POR TANDAS Y ESCRIBIENDO EN CADA UNA: la versión anterior raspaba TODO en
+    # memoria y guardaba al final, así que un bloqueo a media corrida se llevaba
+    # lo ya raspado. Pasó: 49 categorías perdidas.
     nuestras = _nuestras_publicaciones()
-
     guardados, avisos, terminos = {}, [], {}
-    for cat, filas in crudos.items():
-        _marcar(filas, nuestras)
-        await _enriquecer_ranking(cat, filas, nivel_de.get(cat, "hoja"))
-        n = competencia_store.reemplazar_ranking(cat, nivel_de.get(cat, "hoja"),
-                                                 periodo, filas)
-        guardados[cat] = n
+    crudos: dict[str, list[dict[str, Any]]] = {}
+    cats = list(nivel_de)
+    for ini in range(0, len(cats), _TANDA_RANKING):
+        lote = cats[ini:ini + _TANDA_RANKING]
+        try:
+            parcial = await competencia_scraper.mas_vendidos_categorias(lote, limite=20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tanda de rankings %s falló: %s", ini, exc)
+            continue
+        crudos.update(parcial)
+        for cat, filas in parcial.items():
+            if not filas:
+                continue
+            _marcar(filas, nuestras)
+            nivel = nivel_de.get(cat, "hoja")
+            await _enriquecer_ranking(cat, filas, nivel)
+            guardados[cat] = competencia_store.reemplazar_ranking(
+                cat, nivel, periodo, filas)
 
     # Términos más buscados: una llamada por categoría, gratis, sin navegador.
     for cat in nivel_de:
@@ -1101,147 +1118,5 @@ async def _subcategoria_de_cada_fila(filas: list[dict[str, Any]]) -> None:
 
 # ── Las tres mediciones de un SKU ───────────────────────────────────────────
 
-async def _medir_categoria(sku: dict[str, Any], periodo: str,
-                           nuestras: dict[str, dict[str, str]]) -> tuple[int, int, list[str]]:
-    """Ranking OFICIAL de la categoría, por API. Sin scraper y sin costo."""
-    cat_id = sku.get("categoria_id")
-    if not cat_id:
-        return 0, 0, [f"{sku['sku']}: sin categoría de ML, no hay ranking que leer."]
-
-    crudo = await asyncio.to_thread(competencia_ml.mas_vendidos_categoria, cat_id)
-    if not crudo:
-        return 0, 0, [f"{sku['sku']}: ML no publica ranking de más vendidos para "
-                      f"«{sku.get('categoria_nombre') or cat_id}»."]
-
-    filas = [await asyncio.to_thread(competencia_ml.resolver_highlight, e) for e in crudo]
-    sin_ficha = sum(1 for f in filas if not f.get("titulo"))
-    for f in filas:
-        f["categoria_id"] = cat_id
-        f["categoria_nombre"] = sku.get("categoria_nombre")
-        f.pop("tipo_highlight", None)
-
-    _marcar(filas, nuestras)
-    ok = await enriquecer_visitas(filas)
-    n = competencia_store.reemplazar_resultados(sku["sku"], "categoria", periodo, filas)
-
-    avisos = []
-    if sin_ficha:
-        avisos.append(f"{sku['sku']}: {sin_ficha} de {len(filas)} del ranking son de "
-                      "tipo ITEM — la API de ML no permite leerlas (403) y quedan sin ficha.")
-    return n, ok, avisos
-
-
-async def _medir_busqueda(sku: dict[str, Any], tipo: str, termino: str, periodo: str,
-                          nuestras: dict[str, dict[str, str]],
-                          cache: dict[str, list[dict[str, Any]]]) -> tuple[int, int, list[str]]:
-    """
-    Una búsqueda ('general' o 'titulo') por scraper. El resultado se cachea por
-    término: varios SKUs comparten término general y no hay razón para pagarlo
-    dos veces.
-    """
-    clave = termino.strip().lower()
-    if clave in cache:
-        crudas = cache[clave]
-    else:
-        crudas = await competencia_scraper.buscar(
-            termino, limite=settings.competencia_top,
-            con_detalle=settings.competencia_con_detalle)
-        cache[clave] = crudas
-
-    if not crudas:
-        return 0, 0, [f"{sku['sku']} ({tipo}): el scraper no devolvió resultados "
-                      f"para «{termino}»."]
-
-    # Copia por SKU: el marcado de es_nuestro y las visitas son por medición.
-    filas = [dict(c) for c in crudas]
-    for f in filas:
-        f["categoria_id"] = sku.get("categoria_id")
-        f["categoria_nombre"] = sku.get("categoria_nombre")
-        f.pop("catalog_product_id", None)
-
-    _marcar(filas, nuestras)
-    ok = await _visitas(filas)
-    n = competencia_store.reemplazar_resultados(sku["sku"], tipo, periodo, filas,
-                                                termino=termino)
-    return n, ok, []
-
-
-async def medir_sku(sku: dict[str, Any], periodo: str,
-                    nuestras: dict[str, dict[str, str]],
-                    cache: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    """Las tres mediciones de un SKU."""
-    total = visitas_ok = 0
-    avisos: list[str] = []
-
-    # 1. Búsqueda general (descubrimiento).
-    if sku.get("termino_general"):
-        n, ok, av = await _medir_busqueda(sku, "general", sku["termino_general"],
-                                         periodo, nuestras, cache)
-        total += n; visitas_ok += ok; avisos += av
-    else:
-        avisos.append(f"{sku['sku']}: sin término general, no se mide descubrimiento.")
-
-    # 2. Título completo (competencia directa).
-    if sku.get("nombre"):
-        n, ok, av = await _medir_busqueda(sku, "titulo", sku["nombre"],
-                                         periodo, nuestras, cache)
-        total += n; visitas_ok += ok; avisos += av
-
-    # 3. Ranking de la categoría (los mejores).
-    n, ok, av = await _medir_categoria(sku, periodo, nuestras)
-    total += n; visitas_ok += ok; avisos += av
-
-    return {"sku": sku["sku"], "resultados": total, "visitas_ok": visitas_ok,
-            "avisos": avisos}
-
-
 # ── La corrida completa ─────────────────────────────────────────────────────
 
-async def correr(periodo: str | None = None, origen: str = "manual",
-                 skus: list[str] | None = None) -> dict[str, Any]:
-    """
-    Mide todos los SKUs vigilados (o los que se indiquen) y deja la foto del mes.
-
-    Los SKUs se corren EN SERIE: cada uno lanza búsquedas de Apify y decenas de
-    llamadas de visitas; en paralelo solo se gana rate-limit.
-    """
-    periodo = periodo or competencia_store.periodo_actual()
-    vigilados = competencia_store.listar_skus()
-    if skus:
-        pedidos = set(skus)
-        vigilados = [s for s in vigilados if s["sku"] in pedidos]
-    if not vigilados:
-        return {"ok": False, "motivo": "No hay SKUs vigilados. Corre la siembra "
-                                       "primero (POST /api/competencia/sembrar).",
-                "periodo": periodo}
-
-    corrida_id = competencia_store.abrir_corrida(periodo, origen)
-    nuestras = _nuestras_publicaciones()
-    cache: dict[str, list[dict[str, Any]]] = {}
-    detalle, avisos = [], []
-    total = visitas_ok = 0
-
-    try:
-        for s in vigilados:
-            r = await medir_sku(s, periodo, nuestras, cache)
-            detalle.append(r)
-            total += r["resultados"]
-            visitas_ok += r["visitas_ok"]
-            avisos += r["avisos"]
-
-        costo = competencia_scraper.costo_estimado(
-            len(cache), settings.competencia_top, settings.competencia_con_detalle)
-        competencia_store.cerrar_corrida(corrida_id, len(vigilados), total,
-                                         visitas_ok, costo, avisos=avisos)
-        log.info("Corrida %s: %s SKUs, %s resultados, %s visitas, %s búsquedas (~$%s)",
-                 periodo, len(vigilados), total, visitas_ok, len(cache), costo)
-        return {"ok": True, "periodo": periodo, "corrida_id": corrida_id,
-                "skus": len(vigilados), "resultados": total, "visitas_ok": visitas_ok,
-                "busquedas": len(cache), "costo_apify_usd": costo,
-                "avisos": avisos, "detalle": detalle}
-
-    except Exception as exc:  # noqa: BLE001
-        log.error("Corrida de competencia falló: %s", exc)
-        competencia_store.cerrar_corrida(corrida_id, len(vigilados), total,
-                                         visitas_ok, error=str(exc)[:500])
-        return {"ok": False, "motivo": str(exc), "corrida_id": corrida_id}
