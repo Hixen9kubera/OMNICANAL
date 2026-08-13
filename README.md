@@ -8034,6 +8034,34 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.158.0 — Análisis deja de congelar el backend mientras consulta
+
+Con el camino de ventas e inventario ya en hilos (v0.157.0), el vigilante del
+event loop volvió a hablar — y ahora señalaba a un solo archivo:
+
+```
+EVENT LOOP ATASCADO 5.6 s   routers/fulfillment.py:1494 -> supabase_db.fetch_all
+EVENT LOOP ATASCADO 6.2 s   routers/fulfillment.py:1519 -> _envio_real_en_filas -> fetch_all
+```
+
+Son las lecturas de la tabla de Análisis. Mismo defecto, otro archivo: 25
+llamadas `sdb.fetch_*` síncronas dentro de funciones async. Medido: 0.98 s el
+query base del dashboard, y hasta 6 s la tabla — todo eso con el backend
+entero detenido, sin atender a nadie más.
+
+Se añaden tres envolturas (`_fetch_all`, `_fetch_one`, `_fetch_scalar`) que
+hacen el mismo query en un hilo, y las 25 llamadas pasan por ahí. Misma
+consulta, mismos parámetros, mismo resultado: lo único que cambia es que el que
+espera es un hilo y no el backend. **Toda lectura nueva de este router va por
+las envolturas.**
+
+Medición en producción antes de este commit (v0.157.0, con el camino de ventas
+ya arreglado): picos de 8 s al arrancar y estabilización en **0.45 s**, sin un
+solo timeout — contra el 0.4 → 3.6 → 13 s → timeout de antes, que no se
+recuperaba nunca.
+
+---
+
 ### v0.157.0 — El vigilante habló: kubera se consultaba dentro de la corrutina
 
 **La causa, por fin, señalada por el propio backend.** El vigilante del event

@@ -40,6 +40,25 @@ from fastapi.responses import StreamingResponse
 from config import settings
 from services import supabase_db as sdb
 
+
+# ── Las lecturas de kubera, FUERA del event loop ────────────────────────────
+# psycopg2 es BLOQUEANTE: `sdb.fetch_*` dentro de la corrutina para el backend
+# entero mientras Postgres contesta (medido: 0.98 s el query base del dashboard,
+# y el vigilante del event loop cachó a este archivo congelando 6 s la tabla de
+# Análisis). Estas envolturas hacen el mismo query en un hilo: el que espera es
+# el hilo, no el backend. Toda lectura nueva de este router va por aquí.
+async def _fetch_all(sql: str, par: Any = None) -> list[dict[str, Any]]:
+    return await asyncio.to_thread(sdb.fetch_all, sql, par)
+
+
+async def _fetch_one(sql: str, par: Any = None) -> dict[str, Any] | None:
+    return await asyncio.to_thread(sdb.fetch_one, sql, par)
+
+
+async def _fetch_scalar(sql: str, par: Any = None) -> Any:
+    return await asyncio.to_thread(sdb.fetch_scalar, sql, par)
+
+
 log = logging.getLogger("omnicanal.fulfillment")
 router = APIRouter(prefix="/api/fulfillment", tags=["fulfillment"])
 
@@ -461,7 +480,7 @@ async def estrellas(cuenta: str | None = Query(None)) -> dict[str, Any]:
     if cuenta and cuenta not in _CUENTAS:
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
-        filas = sdb.fetch_all(_SQL_ESTRELLAS, {"cuenta": cuenta})
+        filas = await _fetch_all(_SQL_ESTRELLAS, {"cuenta": cuenta})
         # Los totales se derivan de las filas ya traídas (son ~1,000): una
         # segunda consulta solo para sumarlas no aporta y paga otro viaje.
         uds = sum(f["uds"] for f in filas)
@@ -480,7 +499,7 @@ async def estrellas(cuenta: str | None = Query(None)) -> dict[str, Any]:
             "desde": min((f["primera"] for f in filas), default=None),
             "hasta": max((f["ultima"] for f in filas), default=None),
         }
-        sin_sku = sdb.fetch_one(
+        sin_sku = await _fetch_one(
             """select coalesce(sum(units_sold), 0)::int as uds,
                       round(coalesce(sum(revenue), 0), 2) as venta
                from channel.sales_daily_completa
@@ -527,7 +546,7 @@ async def dashboard(
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     p = _params(dias, cuenta)
     try:
-        kpis = sdb.fetch_one(
+        kpis = await _fetch_one(
             _BASE + """
             select count(*)::int                                   as productos,
                    count(*) filter (where estado = 'activa')::int  as activos,
@@ -541,16 +560,16 @@ async def dashboard(
                                      and stock_propio = 0)::int    as activas_sin_stock
             from (select f.*, (tipo in ('full','mixto')) as tiene_full_agg
                   from filas f) x""", p)
-        skus = sdb.fetch_one(
+        skus = await _fetch_one(
             """select (select count(*)::int from core.products)          as skus_catalogo,
                       (select count(distinct sku)::int from channel.listings
                         where canal in ('mercado_libre','amazon'))       as skus_listados""")
-        cuentas = sdb.fetch_all(
+        cuentas = await _fetch_all(
             """select a.legacy_code as cuenta, count(*)::int as listings
                from channel.listings l join core.accounts a on a.id = l.account_id
                where l.canal in ('mercado_libre','amazon')
                group by 1 order by 1""")
-        serie = sdb.fetch_all(
+        serie = await _fetch_all(
             _mx("""select date, sum(units_sold)::int as unidades,
                       round(sum(revenue), 2) as venta
                from channel.sales_daily_completa
@@ -592,7 +611,7 @@ async def detalle(
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     p = {"sku": sku, "dias": dias, "cuenta": cuenta}
     try:
-        filas = sdb.fetch_all(
+        filas = await _fetch_all(
             _mx("""select date, sum(units_sold)::int as uds,
                       round(sum(revenue), 2) as venta
                from channel.sales_daily_completa
@@ -600,7 +619,7 @@ async def detalle(
                  and date > current_date - %(dias)s::int
                  and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
                group by 1 order by 1"""), p)
-        por_cuenta = sdb.fetch_all(
+        por_cuenta = await _fetch_all(
             _mx("""select cuenta, sum(units_sold)::int as uds,
                       round(sum(revenue), 2) as venta
                from channel.sales_daily_completa
@@ -608,7 +627,7 @@ async def detalle(
                  and date > current_date - %(dias)s::int
                  and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
                group by 1 order by 1"""), p)
-        ultima_global = sdb.fetch_scalar(
+        ultima_global = await _fetch_scalar(
             "select max(date) from channel.sales_daily_completa where sku = %(sku)s::citext",
             {"sku": sku})
 
@@ -847,7 +866,7 @@ async def margenes_top(
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     try:
-        filas = sdb.fetch_all(_SQL_MARGEN_TOP, {"dias": dias, "limite": limite})
+        filas = await _fetch_all(_SQL_MARGEN_TOP, {"dias": dias, "limite": limite})
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
     for f in filas:
@@ -987,15 +1006,15 @@ async def margenes_reales(
     if estado and estado not in _ESTADOS_PUB:
         raise HTTPException(400, f"estado inválido: {estado}")
     try:
-        top = sdb.fetch_all(_SQL_MARGEN_REAL_TOP,
+        top = await _fetch_all(_SQL_MARGEN_REAL_TOP,
                             {"dias": dias, "limite": limite, "estado": estado})
         pares_cs = [(f["cuenta"], f["sku"]) for f in top]
-        lineas = sdb.fetch_all(_SQL_MARGEN_REAL_LINEAS, {
+        lineas = await _fetch_all(_SQL_MARGEN_REAL_LINEAS, {
             "dias": dias,
             "cuentas": [c for c, _ in pares_cs],
             "skus": [s for _, s in pares_cs]}) if pares_cs else []
         ids = sorted({str(l["external_order_id"]) for l in lineas})
-        ordenes = sdb.fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
+        ordenes = await _fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
@@ -1123,8 +1142,8 @@ async def resumen_canales(
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     p = {"sku": sku, "dias": dias}
     try:
-        canales = sdb.fetch_all(_SQL_CANALES, p)
-        cambios = sdb.fetch_all(_SQL_CAMBIOS_PRECIO, {"sku": sku})
+        canales = await _fetch_all(_SQL_CANALES, p)
+        cambios = await _fetch_all(_SQL_CAMBIOS_PRECIO, {"sku": sku})
         uds = sum(int(c["uds"]) for c in canales)
         ingreso = round(sum(float(c["ingreso"]) for c in canales), 2)
         costo = next((float(c["costo"]) for c in canales
@@ -1357,10 +1376,10 @@ async def _envio_real_en_filas(items: list[dict[str, Any]], dias: int,
         f["cobertura_envio_pct"] = 0
         f["envios"] = []
     try:
-        lineas = sdb.fetch_all(_SQL_TABLA_ENVIO_LINEAS, {
+        lineas = await _fetch_all(_SQL_TABLA_ENVIO_LINEAS, {
             "skus": [str(i["sku"]) for i in items], "dias": dias, "cuenta": cuenta})
         ids = sorted({str(l["external_order_id"]) for l in lineas})
-        ordenes = sdb.fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
+        ordenes = await _fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
     except Exception as exc:  # noqa: BLE001
         log.warning("líneas de envío no disponibles en la tabla: %s", exc)
         _rehacer_costos(items)
@@ -1489,15 +1508,15 @@ async def tabla(
     # margen", es uno del que no sabemos — va al final se ordene como se ordene.
     orden_sql = f"{col} {dir or dir_natural} nulls last"
     try:
-        total = sdb.fetch_scalar(
+        total = await _fetch_scalar(
             _BASE + f"select count(*) from filas where {where}", {**p, **extra})
-        items = sdb.fetch_all(
+        items = await _fetch_all(
             _BASE + f"""select * from filas where {where}
                         order by {orden_sql}, sku limit %(limit)s offset %(offset)s""",
             {**p, **extra, "limit": limit, "offset": offset})
         # Sparkline: unidades por día (14 d) SOLO de los SKUs de esta página.
         if items:
-            spark = sdb.fetch_all(
+            spark = await _fetch_all(
                 _mx("""select sku, date, sum(units_sold)::int as u
                    from channel.sales_daily_completa
                    where date > current_date - 14 and sku = any(%(skus)s::citext[])
@@ -1763,7 +1782,7 @@ async def categorias(
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
         d1, d2 = _rango_fechas(dias, desde, hasta)
-        filas = sdb.fetch_all(
+        filas = await _fetch_all(
             _SQL_CAT_HOJAS,
             {"desde": d1, "hasta": d2, "cuenta": cuenta, "categoria_id": None})
         venta_total = sum(float(f["venta"]) for f in filas)
@@ -1801,7 +1820,7 @@ async def categorias_publicaciones(
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
         d1, d2 = _rango_fechas(dias, desde, hasta)
-        filas = sdb.fetch_all(
+        filas = await _fetch_all(
             _SQL_CAT_PUBS,
             {"categoria_id": categoria_id, "desde": d1, "hasta": d2,
              "cuenta": cuenta})
@@ -1991,10 +2010,10 @@ async def _datos_reporte(d1: str, d2: str, cuenta: str | None) -> tuple:
     from services import envio_real
 
     par = {"desde": d1, "hasta": d2, "cuenta": cuenta, "categoria_id": None}
-    hojas = sdb.fetch_all(_SQL_CAT_HOJAS, par)
-    pubs = sdb.fetch_all(_SQL_CAT_PUBS, par)
+    hojas = await _fetch_all(_SQL_CAT_HOJAS, par)
+    pubs = await _fetch_all(_SQL_CAT_PUBS, par)
     # la hoja de detalle reusa el MISMO query del CSV que se retiró
-    ventas = sdb.fetch_all(
+    ventas = await _fetch_all(
         _SQL_MARGEN_LINEAS,
         {"desde": d1, "hasta": d2, "cuenta": cuenta, "canal": None})
 
