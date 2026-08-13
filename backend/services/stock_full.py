@@ -56,6 +56,8 @@ inventario real (regla 3 de CLAUDE.md).
 """
 from __future__ import annotations
 
+import asyncio
+
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -216,43 +218,54 @@ async def procesar_operacion(operacion_id: str, cuenta: str) -> dict[str, Any]:
     from services import fanout_stock, meli
     if not habilitado():
         return {"ok": False, "motivo": "FULL_WATCH_ENABLED apagado"}
-    if _ya_procesada(operacion_id):
+    if await asyncio.to_thread(_ya_procesada, operacion_id):
         return {"ok": True, "accion": "duplicado", "motivo": "operación ya aplicada"}
 
-    token = meli._access_token(cuenta)
-    if not token:
-        return {"ok": False, "motivo": f"sin token de {cuenta}"}
-    try:
-        r = httpx.get(f"https://api.mercadolibre.com/stock/fulfillment/operations/{operacion_id}",
-                      headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
-        if r.status_code != 200:
-            return {"ok": False, "motivo": f"operación ilegible: HTTP {r.status_code}"}
-        op = r.json()
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "motivo": f"{type(exc).__name__}: {exc}"}
+    # LAS TRES LECTURAS A ML, EN UN HILO. Son `httpx` SÍNCRONO con timeout de
+    # 25 s cada una: dentro de la corrutina, cada aviso de FULL congelaba el
+    # backend entero mientras ML contestaba — y los avisos llegan en ráfaga.
+    # El vigilante del event loop lo cachó parado en `ssl.read` (13-ago). El
+    # token también sale del hilo: es una consulta a la BD.
+    def _leer() -> dict[str, Any]:
+        token = meli._access_token(cuenta)
+        if not token:
+            return {"motivo": f"sin token de {cuenta}"}
+        try:
+            r = httpx.get(f"https://api.mercadolibre.com/stock/fulfillment/operations/{operacion_id}",
+                          headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
+            if r.status_code != 200:
+                return {"motivo": f"operación ilegible: HTTP {r.status_code}"}
+            op_ = r.json()
+        except Exception as exc:  # noqa: BLE001
+            return {"motivo": f"{type(exc).__name__}: {exc}"}
+
+        sku_ = None
+        inv = op_.get("inventory_id")
+        try:
+            rs = httpx.get(f"https://api.mercadolibre.com/inventories/{inv}/stock/fulfillment",
+                           headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
+            if rs.status_code == 200:
+                refs = (rs.json().get("external_references") or [])
+                item = next((x.get("id") for x in refs if x.get("type") == "item"), None)
+                if item:
+                    ri = httpx.get(f"https://api.mercadolibre.com/items/{item}",
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
+                    if ri.status_code == 200:
+                        d = ri.json()
+                        sku_ = next((a.get("value_name") for a in d.get("attributes", [])
+                                     if a.get("id") == "SELLER_SKU"), None) or d.get("seller_custom_field")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stock_full: no se pudo resolver el SKU de %s: %s", inv, exc)
+        return {"op": op_, "sku": sku_}
+
+    leido = await asyncio.to_thread(_leer)
+    if leido.get("motivo"):
+        return {"ok": False, "motivo": leido["motivo"]}
+    op, sku = leido["op"], leido["sku"]
 
     tipo = str(op.get("type") or "").upper()
     cantidad = int((op.get("detail") or {}).get("available_quantity") or 0)
-    inventory_id = op.get("inventory_id")
     efecto = EFECTO_EN_WOO.get(tipo)
-
-    # SKU del inventario afectado
-    sku = None
-    try:
-        rs = httpx.get(f"https://api.mercadolibre.com/inventories/{inventory_id}/stock/fulfillment",
-                       headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
-        if rs.status_code == 200:
-            refs = (rs.json().get("external_references") or [])
-            item = next((x.get("id") for x in refs if x.get("type") == "item"), None)
-            if item:
-                ri = httpx.get(f"https://api.mercadolibre.com/items/{item}",
-                               headers={"Authorization": f"Bearer {token}"}, timeout=25.0)
-                if ri.status_code == 200:
-                    d = ri.json()
-                    sku = next((a.get("value_name") for a in d.get("attributes", [])
-                                if a.get("id") == "SELLER_SKU"), None) or d.get("seller_custom_field")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("stock_full: no se pudo resolver el SKU de %s: %s", inventory_id, exc)
 
     if not sku:
         _registrar("?", operacion_id, cuenta, "full_sin_sku", None, None,

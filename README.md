@@ -8034,6 +8034,36 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.160.0 — El aviso de FULL esperaba a Mercado Libre con el backend detenido
+
+Primer volcado legible del vigilante (v0.159.0), y señaló algo que ninguna de las
+capas anteriores había tocado:
+
+```
+EVENT LOOP ATASCADO 5.5 s | PRINCIPAL: _client.py:825 request > … >
+  http11.py:177 _receive_response_headers > sync.py:128 read > ssl.py:1105 read
+```
+
+`sync.py` y `ssl.read`: una petición HTTP **síncrona** esperando respuesta, con
+el event loop detenido. El dueño es `stock_full.procesar_operacion`, que atiende
+el webhook `fbm_stock_operations` (los movimientos de la bodega FULL de ML). Es
+`async`, pero hacía **tres `httpx.get` síncronos con timeout de 25 s cada uno**:
+la operación, el inventario y el ítem. Más el token y el candado de
+idempotencia, que son consultas a MySQL. Con los avisos de FULL llegando en
+ráfaga —se ven decenas por minuto en los logs— el backend pasaba buena parte del
+tiempo parado esperando a ML.
+
+Las tres lecturas se agrupan en una función y salen a un hilo de una sola vez;
+el candado de idempotencia también. La lógica de decisión (la tabla de tipos, la
+verificación cruzada, el tope de cordura) **no se tocó**: sigue corriendo igual y
+en el mismo orden.
+
+Es el mismo defecto de v0.157.0 y v0.158.0 en su tercer disfraz: kubera, MySQL y
+ahora HTTP. La regla que queda escrita: **en una corrutina, nada que espere a la
+red o al disco puede llamarse de forma síncrona.**
+
+---
+
 ### v0.159.0 — El vigilante habla en una sola línea (o el volcado no sirve)
 
 El primer volcado del vigilante llegó **revuelto**: Railway parte los mensajes
