@@ -27,6 +27,10 @@ class CamposPublicar(BaseModel):
     titulo: str | None = None
     descripcion: str | None = None
     highlights: str | None = None
+    # Amazon: viaja como `generic_keyword`. Sin declararlo aquí, pydantic lo
+    # descartaba en silencio y `_rellenar_desde_guardado` no tenía dónde
+    # dejarlo — se generaba y se tiraba, como pasó con `highlights`.
+    backend_search_terms: str | None = None
     bullets: list[str] = Field(default_factory=list)
     atributos: list[AtributoIn] = Field(default_factory=list)
     # Datos usados al CREAR en Amazon (precio y dimensiones)

@@ -407,6 +407,15 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
     """Mejora con IA varios campos del canal en una sola llamada (JSON). En Mercado
     Libre, además reemplaza los atributos por los REALES de la categoría
     (principales + secundarios) vía el servicio ml_atributos."""
+    # Amazon tiene circuito propio desde v0.137.0: los atributos salen de los
+    # requisitos REALES de su productType (`channel.field_requirements`), el
+    # resultado pasa por el validador de límites y se persiste en
+    # `enrich.channel_content`. El prompt de aquí abajo se quedó como está para
+    # los demás canales; el de Amazon vive en `amazon_ia._SISTEMA`.
+    if canal == "amazon":
+        from services import amazon_ia
+        return await amazon_ia.mejorar(producto)
+
     cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
     user = (
         f"Datos del producto:\n{_contexto(producto)}\n\n"

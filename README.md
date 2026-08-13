@@ -7976,6 +7976,98 @@ filtrando por estado, mismo historial por SKU, y los 270 completados de
 
 Pruebas sandbox: 15/15 · 11/11 · 20/20 · 5/5 · 12/12. Versión 0.132.0.
 
+### v0.137.0 — Amazon: la IA propone, el código valida, y el contenido ya no se pierde
+
+**El circuito que Mercado Libre tenía y Amazon no.** En ML, "Mejorar con IA"
+saca los atributos de la categoría REAL (`ml_atributos`) y el resultado se
+persiste. En Amazon existía la mitad: se pedía un JSON, se le quitaban los
+acentos al título y se devolvía. Nadie comprobaba los límites, los atributos se
+los inventaba el modelo sin mirar lo que Amazon exige de esa categoría, no había
+términos de búsqueda, y si no publicabas en la misma sesión se perdía todo.
+
+Entra `services/amazon_ia.py`, que encadena cuatro piezas:
+
+1. **Los requisitos REALES** del `productType`, leídos de
+   `channel.field_requirements` (64,125 filas / 553 tipos, cargadas el 12-ago).
+   ⚠️ El cruce es `listings.product_type = field_requirements.categoria_id`.
+   `listings.category_id` existe y guarda otra cosa: unir por ahí devuelve cero
+   filas **sin dar error**, y el panel diría "sin requisitos" en todo el
+   catálogo teniendo 64,125 cargados.
+2. **El prompt de Brandon**, literal: título 75, highlights 125, cinco bullets
+   de 150–200 en su orden, descripción 2000 y **términos de búsqueda de 249
+   BYTES** (no caracteres: cada acento pesa 2, y un byte de más hace que Amazon
+   ignore el campo ENTERO, en silencio).
+3. **El validador** (`amazon_contenido`) más **una** ronda de reparación con los
+   problemas de vuelta.
+4. **El documento persistido** en `enrich.channel_content` con `origen: ia`,
+   `categoria` = el productType y `spec_version` = `amazon-mx-2026-07`.
+
+**Dos niveles de rechazo, y el segundo salió de la primera corrida en vivo.**
+Al probar los tres SKUs reales, **dos perdieron los términos de búsqueda
+completos** —245 bytes de palabras clave— porque repetían UNA palabra del
+título. En uno de ellos, la palabra era «de». Amazon no castiga eso: solo
+desaprovecha espacio. Así que ahora el criterio es **qué hace Amazon con el
+campo**: si lo trunca, lo ignora entero o puede suprimir el listado (límites,
+signos, promos, emojis) es FATAL y **no se manda**; si solo se aparta del estilo
+pedido (un bullet de 148, repetir palabras) es AVISO, se manda y se reporta. Y
+las palabras vacías («de», «para», «cm») dejaron de contar como repetición.
+
+**El detector de marcas registradas es determinista, con lista.** 86 marcas con
+su reemplazo en español, sin semántica ni confianza en el modelo — la lección de
+`TEC-1812-NEG`. Con una guarda que importa: **detrás de «compatible con» NO
+sustituye**, solo avisa. Convertir "funda para iPhone 15" en "funda para
+smartphone 15" es corrupción silenciosa del contenido. Fuera de la lista a
+propósito: `puma` (animal), `vans` (vehículo) y `honda` (adjetivo: "olla honda").
+
+**Lo que se descubrió con los 553 esquemas ya cargados** (antes había que
+adivinar, ahora es una consulta):
+- `generic_keyword` —el nombre real de los términos de búsqueda— existe en
+  **551 de 553**. Los dos que no: `ABIS_BOOK` y `MAPS`. Ya viaja en el payload.
+- De los cuatro candidatos que el código probaba para "Item Highlights",
+  **tres no existen en ningún esquema**: `item_highlights`, `product_highlights`
+  y `key_product_features` salen 0 de 553. El único destino real es
+  `special_feature`, y **falta en 289 tipos** (CHAINSAW entre ellos): ahí el
+  texto se genera y no tiene dónde ir. La lista se recortó a lo medido.
+- **La marca ya era `Generic` por el mapper del vendor**; quien metía la del
+  producto era el camino de RESPALDO (`_amazon_attributes`), el que se usa justo
+  cuando WordPress da 403. Misma clase de bug que el `CN`/`MX` de julio: dos
+  caminos declarando cosas distintas del mismo producto. Cerrado por decisión de
+  Brandon (13-ago): las siguientes publicaciones, todas con `Generic`.
+
+**Probado EN VIVO contra producción**, tres SKUs publicados de tres categorías
+distintas a propósito:
+
+| SKU | productType | Resultado |
+|---|---|---|
+| `DEC-0018-VER` | ARTIFICIAL_PLANT | 6 campos · **7/7 obligatorios**, `fabric_type` incluido |
+| `TEC-1013-NEG` | MICROPHONE | 6 campos · 6/6 · términos 242 bytes |
+| `HERR-0032-ROJ-21V` | CHAINSAW | 6 campos · 6/6 · 222 bytes con «leña» y «cabaña» (220 caracteres: la cuenta por bytes se ve) |
+
+`fabric_type` es el que el propio `CONTENIDO_POR_CANAL.md` daba por perdido —
+*"obligatorio en 45 tipos de ropa y sin nadie que lo llene"*. Con los requisitos
+alimentando el prompt, lo llena la IA y llega al payload.
+
+Y el ciclo completo, sin publicar: `POST /api/publicar/preview` con **el
+formulario VACÍO** devolvió el título, los bullets, la descripción y
+`generic_keyword` traídos de `enrich.channel_content`, con `brand` y
+`manufacturer` en `Generic` y `fabric_type` en "Plástico". Antes de esto, un
+formulario vacío se publicaba vacío.
+
+**En el panel**: campo *Términos de búsqueda* con **contador en BYTES** (rojo al
+pasar de 249) y, bajo el botón, el parte del generador — qué no se aplicó y por
+qué, qué marcas se sustituyeron, cuántos obligatorios cubre y si quedó guardado.
+Un rechazo invisible sería tan malo como el silencio de Amazon.
+
+**Lo que NO se encendió:** el enganche del alta (pestaña Crear) queda tras
+`AMAZON_IA_EN_CREAR`, **apagado**. Encenderlo cambia un flujo vivo: cada alta
+gasta 1-2 llamadas de IA y escribe en producción. El código está probado por los
+dos lados (apagado devuelve `None`; encendido generó y guardó los 6 campos de
+`TEC-1013-NEG`) y va después del acta de `core.products`, porque la tabla tiene
+FK contra el maestro.
+
+Sin migraciones: `enrich.channel_content` ya existía (0016) y no la audita
+ningún ETL, así que escribir ahí no toca ninguna racha. Versión 0.137.0.
+
 ### v0.135.0 — Se retira deltas-orders: los tres crons de deltas quedan cerrados
 
 `pedidos_ml` volvió a congelarse (última escritura 05:00 UTC del 13-ago), así

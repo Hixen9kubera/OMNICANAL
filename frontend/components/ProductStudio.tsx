@@ -39,6 +39,7 @@ import type {
   FlagsImagen,
   GaleriaImagen,
   ImagenProgreso,
+  MejorarResp,
   Producto,
   ProgresoImagenes,
   PublicarPreview,
@@ -118,6 +119,12 @@ const CAMPOS_VACIOS: Campos = {
 };
 
 const str = (v: number | null | undefined) => (v === null || v === undefined ? "" : String(v));
+
+// Lo que Amazon cuenta en los términos de búsqueda: BYTES UTF-8, no caracteres.
+// `"cañón".length` son 5 y sus bytes son 7. Contar caracteres deja pasar textos
+// que Amazon ignora completos, sin avisar. Es el mismo cálculo que hace
+// `amazon_contenido.bytes_utf8` en el backend.
+const bytesUTF8 = (s: string) => new TextEncoder().encode(s || "").length;
 
 // Flags de edición de imagen con IA (por imagen). Fondo=quitar fondo,
 // Texto=traducir/quitar logos, Modelo=reemplazar persona por una latina.
@@ -207,10 +214,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const [atributos, setAtributos] = useState<AtributoProducto[]>([]);
   const [highlights, setHighlights] = useState("");
   const [bullets, setBullets] = useState<string[]>([]);
+  // Amazon: términos de búsqueda del backend (invisibles al comprador).
+  const [searchTerms, setSearchTerms] = useState("");
 
   // IA
   const [mejorando, setMejorando] = useState(false);
   const [competencia, setCompetencia] = useState<CompetenciaResp | null>(null);
+  // El parte del generador de Amazon: qué NO se aplicó y por qué, qué marcas
+  // registradas se sustituyeron y qué exige su categoría. Sin esto, el
+  // validador rechazaría campos en silencio — que es justo lo que hace Amazon
+  // y la razón por la que existe el validador.
+  const [reporteIA, setReporteIA] = useState<MejorarResp | null>(null);
 
   // Publicar (paso 4)
   const [previewPub, setPreviewPub] = useState<PublicarPreview | null>(null);
@@ -417,6 +431,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     );
     setHighlights(stored?.highlights ?? (srv.highlights as string) ?? "");
     setBullets(stored?.bullets ?? (srv.bullets as string[]) ?? []);
+    setSearchTerms(stored?.searchTerms ?? (srv.backend_search_terms as string) ?? "");
     const id = setTimeout(() => { cargandoCampos.current = false; }, 0);
     return () => clearTimeout(id);
   }, [sku, canal, data?.nombre, data?.descripcion, meta, servidor]);
@@ -424,8 +439,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // ── Persistir en memoria lo mejorado/editado (por sku+canal) ────────
   useEffect(() => {
     if (!sku || cargandoCampos.current) return;
-    saveMejora(sku, canal, { titulo, descripcion, atributos, highlights, bullets });
-  }, [sku, canal, titulo, descripcion, atributos, highlights, bullets]);
+    saveMejora(sku, canal, { titulo, descripcion, atributos, highlights, bullets, searchTerms });
+  }, [sku, canal, titulo, descripcion, atributos, highlights, bullets, searchTerms]);
 
   // Cerrar con ESC
   useEffect(() => {
@@ -553,6 +568,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const pedidoVigente = useRef<string>("");
   useEffect(() => {
     pedidoVigente.current = `${sku ?? ""}:${canal}`;
+    // El parte es de ESE producto y ESE canal: al cambiar cualquiera de los
+    // dos deja de aplicar, y dejarlo puesto sería leer el veredicto de otro.
+    setReporteIA(null);
   }, [sku, canal]);
 
   const mejorarConIA = useCallback(async () => {
@@ -587,6 +605,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       if (c.atributos?.length) setAtributos(c.atributos);
       if (c.highlights != null) setHighlights(c.highlights);
       if (c.bullets?.length) setBullets(c.bullets);
+      if (c.backend_search_terms != null) setSearchTerms(c.backend_search_terms);
+      // El parte del generador (Amazon): rechazados, avisos, marcas
+      // sustituidas y cobertura de requisitos. Se pinta abajo del botón.
+      setReporteIA(mej.value);
       // Se anota QUÉ escribió la IA para poder marcar el `origen` al guardar.
       // Se compara al vuelo en vez de envolver cada setter: los campos se
       // editan desde muchos sitios y un wrapper por input se desincroniza en
@@ -597,6 +619,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
         ...(c.atributos?.length ? { atributos: c.atributos } : {}),
         ...(c.highlights != null ? { highlights: c.highlights } : {}),
         ...(c.bullets?.length ? { bullets: c.bullets } : {}),
+        ...(c.backend_search_terms != null
+          ? { backend_search_terms: c.backend_search_terms } : {}),
       };
     }
     setMejorando(false);
@@ -824,6 +848,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       item_id: itemIdSel,
       campos: {
         titulo, descripcion, highlights, bullets, atributos,
+        // Amazon lo recibe como `generic_keyword`. Antes ni siquiera viajaba:
+        // se generaba y se tiraba, igual que pasó con highlights.
+        backend_search_terms: searchTerms || undefined,
         precio_regular: numOrNull(campos.precioRegular),
         peso: numOrNull(campos.peso),
         largo: numOrNull(campos.largo),
@@ -988,6 +1015,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     if (titulo.trim()) contenido.titulo = titulo.trim();
     if (descripcion.trim()) contenido.descripcion = descripcion.trim();
     if (highlights.trim()) contenido.highlights = highlights.trim();
+    if (searchTerms.trim()) contenido.backend_search_terms = searchTerms.trim();
     if (bullets.some((b) => b.trim())) contenido.bullets = bullets.filter((b) => b.trim());
     if (atributos.length) contenido.atributos = atributos;
 
@@ -1055,6 +1083,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     setAtributos(meta?.atributos ?? []);
     setHighlights("");
     setBullets([]);
+    setSearchTerms("");
     setContenidoMsg({ ok: true, texto: "Borrador descartado · contenido recargado de WooCommerce." });
     setTimeout(() => { cargandoCampos.current = false; }, 0);
   }
@@ -1191,8 +1220,64 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
           </button>
           <p className="mt-1.5 text-center text-[11px] text-slate-400">
             <strong>Publicar</strong> envía los datos actuales al canal (revisas antes).{" "}
-            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights y bullets" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
+            <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
           </p>
+
+          {/* EL PARTE DEL GENERADOR (Amazon).
+              Amazon no rebota cuando te pasas: trunca o ignora el campo en
+              silencio. El validador propio sí avisa — y esto es donde se lee.
+              Si no se pinta, rechazar un campo sería tan invisible como el
+              fallo que el validador existe para evitar. */}
+          {reporteIA && esAmazon && (
+            <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px] leading-relaxed">
+              {reporteIA.product_type && (
+                <div className="text-slate-500">
+                  Tipo de Amazon <strong className="text-slate-700">{reporteIA.product_type}</strong>
+                  {reporteIA.product_type_origen ? ` (${reporteIA.product_type_origen})` : ""}
+                  {reporteIA.requisitos?.estado === "sin_requisitos"
+                    ? " · requisitos SIN VERIFICAR"
+                    : reporteIA.requisitos
+                      ? ` · ${reporteIA.requisitos.cubiertos.length}/${reporteIA.requisitos.obligatorios} obligatorios cubiertos`
+                      : ""}
+                </div>
+              )}
+              {!!reporteIA.requisitos?.sin_cubrir?.length && (
+                <div className="text-amber-700">
+                  Sin cubrir: {reporteIA.requisitos.sin_cubrir.join(", ")}
+                </div>
+              )}
+              {!!reporteIA.rechazados?.length && (
+                <div className="text-rose-700">
+                  <strong>No se aplicó</strong> (Amazon lo truncaría o lo ignoraría):
+                  <ul className="ml-3 list-disc">
+                    {reporteIA.rechazados.map((r) => (
+                      <li key={r.campo}>{r.campo}: {r.motivo}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {!!reporteIA.avisos?.length && (
+                <ul className="ml-3 list-disc text-amber-700">
+                  {reporteIA.avisos.map((a) => <li key={a}>{a}</li>)}
+                </ul>
+              )}
+              {!!reporteIA.terminos_detectados?.length && (
+                <div className="text-slate-600">
+                  <strong>Marcas registradas:</strong>
+                  <ul className="ml-3 list-disc">
+                    {reporteIA.terminos_detectados.map((t) => <li key={t}>{t}</li>)}
+                  </ul>
+                </div>
+              )}
+              {reporteIA.guardado && (
+                <div className={reporteIA.guardado.ok ? "text-emerald-700" : "text-rose-700"}>
+                  {reporteIA.guardado.ok
+                    ? `Guardado en el servidor: ${reporteIA.guardado.campos} campo(s) · origen IA.`
+                    : `No se pudo guardar en el servidor: ${reporteIA.guardado.motivo ?? ""}`}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Cuerpo */}
@@ -1575,6 +1660,29 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                     </div>
                     <input value={highlights} onChange={(e) => setHighlights(e.target.value)} placeholder="Se llena al Mejorar con IA…"
                       className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                  </div>
+                  {/* TÉRMINOS DE BÚSQUEDA — el contador va en BYTES, no en
+                      caracteres, y no es un capricho: Amazon cuenta bytes UTF-8
+                      y cada acento o ñ pesa 2. Un byte de más y IGNORA EL CAMPO
+                      ENTERO, sin avisar. Por eso el texto se escribe sin
+                      acentos (Amazon los normaliza igual al indexar). */}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                        Términos de búsqueda <span className="normal-case tracking-normal text-slate-400">(no los ve el comprador)</span>
+                      </label>
+                      <span className={`text-[11px] ${bytesUTF8(searchTerms) > 249 ? "font-bold text-rose-600" : "text-slate-400"}`}>
+                        {bytesUTF8(searchTerms)}/249 bytes
+                      </span>
+                    </div>
+                    <textarea value={searchTerms} onChange={(e) => setSearchTerms(e.target.value)} rows={2}
+                      placeholder="Sinónimos y variantes, separados por espacios. Se llena al Mejorar con IA…"
+                      className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                    {bytesUTF8(searchTerms) > 249 && (
+                      <p className="mt-1 text-[11px] text-rose-600">
+                        Pasado de 249 bytes: Amazon ignoraría el campo completo. Quita acentos o palabras.
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">Bullet Points (5)</label>

@@ -32,16 +32,21 @@ log = logging.getLogger("omnicanal.publicar_ready")
 
 _CUENTAS_ML = publisher_core.ML_CUENTAS  # ["SANCORFASHION", "BEKURA"]
 
-# Nombres posibles del atributo de "Item Highlights" en el esquema de Amazon,
-# en orden de preferencia. NO están verificados contra un esquema real: no hay
-# esquemas cacheados en el repo ni credenciales de Amazon en local. Se prueban
-# contra `schema["properties"]` en `atributos_amazon`, y si ninguno encaja se
-# registra un warning con los nombres que ese productType SÍ ofrece — así el
-# nombre bueno sale en la primera corrida. Al confirmarlo, dejar solo ése.
+# Nombres posibles del atributo de "Item Highlights" en el esquema de Amazon.
+#
+# YA ESTÁN VERIFICADOS (13-ago-2026) contra los 553 productTypes cargados en
+# `channel.field_requirements` — los mismos esquemas de SP-API Definitions, pero
+# como datos consultables en vez de una llamada por tipo:
+#
+#     item_highlights        0 de 553      product_highlights     0 de 553
+#     key_product_features   0 de 553      special_feature      264 de 553
+#
+# O sea: **el atributo que la guía de Amazon llama "Item Highlights" no existe
+# en el esquema de Listings**, y el único destino real es `special_feature`, que
+# además falta en 289 tipos (entre ellos CHAINSAW). Ahí el texto se sigue
+# generando y NO tiene dónde ir: el warning de abajo lo dice con nombre y
+# apellido en vez de dejarlo desaparecer.
 _AMZ_HIGHLIGHTS_CANDIDATOS = (
-    "item_highlights",
-    "product_highlights",
-    "key_product_features",
     "special_feature",
 )
 
@@ -652,6 +657,23 @@ async def atributos_amazon(sku: str, wc_id: int, campos: dict[str, Any], mp: str
                 parecidos or "(ninguno con 'highlight' o 'feature')",
             )
         # Sin esquema no se arriesga: el filtro de abajo lo descartaría igual.
+
+    # BACKEND SEARCH TERMS → `generic_keyword`.
+    #
+    # Verificado contra los 553 esquemas cargados: `generic_keyword` existe en
+    # **551**; los dos que no lo tienen son ABIS_BOOK y MAPS (libros y mapas —
+    # Kubera no vende ninguno de los dos). Por eso aquí sí se escribe el nombre
+    # directo en vez de probar candidatos: está medido, no supuesto.
+    #
+    # ⚠️ El límite son 249 BYTES en UTF-8, no 249 caracteres, y pasarse hace que
+    # Amazon ignore el campo ENTERO sin avisar. `amazon_contenido` lo valida al
+    # generarlo; este recorte es la última red para el texto tecleado a mano.
+    st = (campos.get("backend_search_terms") or "").strip()
+    if st:
+        from services.amazon_contenido import cabe_en_bytes
+        attrs["generic_keyword"] = [
+            {"value": cabe_en_bytes(st), "language_tag": "es_MX", "marketplace_id": mp}
+        ]
 
     # PAÍS DE ORIGEN — se unifica en "MX", que es el valor de OMNICANAL.
     #

@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    # ¿El alta de productos (pestaña Crear) genera además el contenido de Amazon
+    # y lo deja guardado en enrich.channel_content? Nace APAGADO: encenderlo
+    # cambia lo que hace un flujo vivo (cada alta gasta 1-2 llamadas de IA y
+    # escribe en producción), y eso lleva el dale de Brandon. El botón "Mejorar
+    # con IA" del Estudio NO depende de esta variable: ahí lo dispara una
+    # persona.
+    amazon_ia_en_crear: bool = False
 
     # ── Creación de productos (Alibaba → Woo) ─────────────────
     apify_api_key: str = ""

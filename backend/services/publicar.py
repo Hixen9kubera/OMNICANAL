@@ -722,16 +722,34 @@ def _amazon_attributes(sku: str, campos: dict[str, Any], mp: str) -> dict[str, A
     desc = (_plain(campos.get("descripcion")) or "Producto de alta calidad.")[:2000]
     bullets = [b.strip() for b in (campos.get("bullets") or []) if b and b.strip()] \
         or ["Producto de alta calidad, práctico y duradero."]
-    brand = _attr_from(atributos, "BRAND", "Generic")
+    # La marca NO sale del producto: decisión de Brandon del 13-ago-2026 — las
+    # siguientes publicaciones van todas con `Generic`. Antes era
+    # `_attr_from(atributos,"BRAND","Generic")`, que respetaba la marca del
+    # producto cuando la traía (3,060 de 7,264) y caía a Generic en los otros
+    # 4,204: esa mezcla es la divergencia que se cierra aquí. `Generic` es
+    # además lo que sostiene la exención de identificador de producto.
+    brand = "Generic"
     color = _attr_from(atributos, "COLOR", "Multicolor")
     material = _attr_from(atributos, "MATERIAL", "Mixto")
+    # Términos de búsqueda del backend: invisibles al comprador, indexables.
+    # ⚠️ El límite de Amazon son 249 BYTES, no caracteres, y pasarse hace que
+    # ignore el campo ENTERO sin avisar. `amazon_contenido` ya lo valida al
+    # generarlo; aquí se recorta por bytes como última red, porque a este punto
+    # puede llegar texto tecleado a mano en el panel.
+    from services.amazon_contenido import cabe_en_bytes
+    search_terms = cabe_en_bytes((campos.get("backend_search_terms") or "").strip())
     price = _num(campos.get("precio_regular"), 1.0)
     l_val = _num(campos.get("largo")); w_val = _num(campos.get("ancho")); h_val = _num(campos.get("alto"))
 
     def V(value: Any) -> list[dict]:
         return [{"value": value, "marketplace_id": mp}]
 
+    extra: dict[str, Any] = {}
+    if search_terms:
+        extra["generic_keyword"] = V(search_terms)
+
     return {
+        **extra,
         "brand": V(brand),
         "supplier_declared_has_product_identifier_exemption": V(True),
         "item_name": V(title),

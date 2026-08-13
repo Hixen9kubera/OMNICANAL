@@ -1043,6 +1043,36 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 {"sku": sku_real, "name": titulo, "wc_id": wc_id,
                  "status": status_final, "source": "panel_crear"},
                 clave=sku_real)
+
+            # Contenido de AMAZON con IA, guardado en enrich.channel_content.
+            #
+            # Va DESPUÉS del acta de `core.products` a propósito: la tabla tiene
+            # FK contra el maestro, así que escribir antes del nacimiento da 409
+            # ("el SKU todavía no está en core.products"). Patrón "identidad
+            # primero", el mismo de channel_mirror.
+            #
+            # Nace APAGADO (`AMAZON_IA_EN_CREAR=false`): encenderlo cambia lo que
+            # hace un flujo vivo — cada alta gasta 1-2 llamadas de IA y escribe en
+            # producción. Nunca tumba la creación: `generar_para_alta` se traga
+            # sus propios errores y devuelve None.
+            #
+            # La marca NO viaja en el contexto: en ML es "Ferrahome" y en Amazon
+            # es "Generic" (decisión del 13-ago). Mandarla invitaría a la IA a
+            # escribirla en el título.
+            from services import amazon_ia
+            amz = await amazon_ia.generar_para_alta(
+                sku_real, titulo,
+                (ia or {}).get("descripcion") or scrape.get("descripcion_proveedor") or "",
+                atributos=[{"nombre": k, "valor": str(v)}
+                           for k, v in (atributos or {}).items()
+                           if k.upper() not in ("BRAND", "MARCA")],
+                categoria=cat.get("category_name") if cat else None,
+                precio=dinero.get("precio_sugerido") or dinero.get("precio_base"),
+            )
+            if amz:
+                log.info("crear[%s]: contenido Amazon %s (%d campo(s), tipo %s)",
+                         sku_real, "ok" if amz.get("ok") else "falló",
+                         len(amz.get("campos") or {}), amz.get("product_type"))
         except Exception as exc:  # noqa: BLE001
             log.exception("crear[%s] falló", sku)
             _set(sku, "error", str(exc)[:200], wc_id=wc_id)

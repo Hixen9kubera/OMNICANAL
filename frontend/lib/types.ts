@@ -404,6 +404,8 @@ export interface MejorarCampos {
   highlights?: string;
   bullets?: string[];
   atributos?: AtributoProducto[];
+  /** Amazon. Se mide en BYTES (249), no en caracteres: ver el contador del Estudio. */
+  backend_search_terms?: string;
 }
 
 export interface MejorarResp {
@@ -412,6 +414,26 @@ export interface MejorarResp {
   proveedor?: string;
   motivo?: string;
   campos?: MejorarCampos;
+  /* ── Solo Amazon (v0.137.0) ─────────────────────────────────────────
+   * El generador valida contra los límites reales del canal y contra los
+   * requisitos de su productType. Lo que NO pasa no se aplica: llega aquí
+   * para que se vea por qué, en vez de desaparecer. */
+  /** Fatales: Amazon truncaría o ignoraría el campo. NO se aplican. */
+  rechazados?: { campo: string; motivo: string }[];
+  /** Publicable, pero fuera del estilo pedido. Sí se aplica. */
+  avisos?: string[];
+  /** Marcas registradas encontradas y qué se hizo con cada una. */
+  terminos_detectados?: string[];
+  product_type?: string | null;
+  product_type_origen?: string;
+  requisitos?: {
+    estado: "ok" | "incompleto" | "sin_requisitos";
+    obligatorios: number;
+    cubiertos: string[];
+    sin_cubrir: string[];
+  };
+  /** El documento quedó en enrich.channel_content (origen `ia`). */
+  guardado?: { ok: boolean; campos?: number; motivo?: string } | null;
 }
 
 // ── Precio de competencia sugerido ───────────────────────────────────

@@ -287,6 +287,65 @@ async def faltantes(sku: str, canal: str, cuenta: str = "",
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Los requisitos crudos de una categoría — para ALIMENTAR a la IA, no para pintar
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _requisitos_sync(canal: str, categoria: str,
+                     solo_obligatorios: bool) -> list[dict[str, Any]]:
+    cx = _pool().connection()
+    try:
+        with cx.cursor() as cur:
+            # Misma precedencia que `faltantes`: la fila de la categoría gana a
+            # la de '*', y se resuelve ANTES de filtrar por `obligatorio` — si se
+            # filtra primero, la fila específica que dice `obligatorio=false`
+            # desaparece y gana la del comodín. Medido.
+            cur.execute(
+                """with efectivo as (
+                     select distinct on (campo) *
+                       from channel.field_requirements
+                      where canal = %s and categoria_id in ('*', %s)
+                      order by campo, (categoria_id <> '*') desc
+                   )
+                   select campo, campo_canonico, obligatorio, tipo,
+                          valores_permitidos, default_value
+                     from efectivo
+                    where (%s = false or obligatorio)
+                    order by obligatorio desc, campo""",
+                (canal, categoria, solo_obligatorios),
+            )
+            filas = cur.fetchall()
+    finally:
+        cx.close()
+    return [{"campo": f[0], "campo_canonico": f[1], "obligatorio": f[2],
+             "tipo": f[3], "valores_permitidos": f[4], "default_value": f[5]}
+            for f in filas]
+
+
+async def requisitos(canal: str, categoria: str | None,
+                     solo_obligatorios: bool = True) -> list[dict[str, Any]]:
+    """
+    Qué exige el canal para esa categoría, en crudo.
+
+    `faltantes()` contesta "¿qué le falta a este SKU?"; ésta contesta "¿qué pide
+    esta categoría?" sin mirar producto — que es lo que necesita el generador de
+    IA para pedirle a la IA justo esos campos y no los que se imagine.
+
+    ⚠️ EL CRUCE ES `listings.product_type = field_requirements.categoria_id`.
+    `listings.category_id` existe y guarda OTRA cosa: unir por ahí devuelve cero
+    filas sin dar error, y el semáforo diría "sin_requisitos" en todo el catálogo
+    teniendo 64,125 requisitos cargados.
+    """
+    if not disponible() or not categoria:
+        return []
+    try:
+        return await asyncio.to_thread(_requisitos_sync, canal, categoria,
+                                       solo_obligatorios)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("channel_content.requisitos(%s,%s) falló: %s", canal, categoria, exc)
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Escritura
 # ══════════════════════════════════════════════════════════════════════════════
 

@@ -173,6 +173,10 @@ de filtrar por `obligatorio` — si se filtra primero, la fila específica que d
 
 ```
 1. El Estudio genera contenido por canal   (ia_generadores.GENERADORES)
+   · AMAZON tiene circuito propio desde v0.137.0 (services/amazon_ia.py):
+     los requisitos de su productType alimentan el prompt, el validador
+     decide qué se aplica, y el documento se guarda SOLO (origen `ia`)
+     sin esperar al botón de Guardar.
 2. "Guardar contenido de <canal>"          → PUT .../canal/{canal}/contenido
                                              → enrich.channel_content (fusiona)
 3. Al reabrir, el panel lo carga           → GET .../canal/{canal}/contenido
@@ -256,8 +260,12 @@ confirmó a mano en producción.
 ## LO QUE FALTA
 
 1. **Amazon está COMPLETO**: 553 de 553 productTypes, 64,125 requisitos. Cero
-   tipos del catálogo sin cubrir. Lo que falta es **`fabric_type`**: obligatorio
-   en 45 tipos de ropa y sin nadie que lo llene.
+   tipos del catálogo sin cubrir. ~~Lo que falta es `fabric_type`: obligatorio
+   en 45 tipos de ropa y sin nadie que lo llene.~~ **RESUELTO en v0.137.0**: los
+   obligatorios sin canónico y sin respaldo se le piden a la IA por su nombre
+   nativo (`services/amazon_ia._bloque_atributos`). Medido en vivo con
+   `DEC-0018-VER` (ARTIFICIAL_PLANT): 7 de 7 obligatorios cubiertos,
+   `fabric_type` entre ellos, y llega al payload.
 2. **Mercado Libre COMPLETO**: 1,058 categorías, 2,765 filas. Su forma es
    distinta a la de Amazon — `/categories/{id}/attributes` devuelve solo la
    ficha técnica, así que los comunes van como `categoria_id='*'` y los
@@ -265,10 +273,17 @@ confirmó a mano en producción.
 3. **Walmart, TikTok, Temu, Shein sin requisitos.** Cada uno necesita su
    cargador leyendo su propia API. Temu y Shein **no tienen una línea de código
    en el repo**: modelarlos hoy sería adivinar.
-4. **`brand`**: decisión tomada — se queda en `"Generic"`, sin campo editable.
-   Pero **ML publica todo como `"Ferrahome"`** y Amazon cae a `"Generic"` en
-   4,204 de 7,264 productos. La divergencia entre canales es decisión de negocio
-   y sigue abierta.
+4. **`brand`**: decisión de Brandon (13-ago) — **las siguientes publicaciones,
+   todas con `Generic`**, sin campo editable. En Amazon ya se cumple en los dos
+   caminos: el mapper del vendor siempre puso `Generic`
+   (`vendor/amazon_ready/attribute_mapper.py:204`) y el de RESPALDO
+   (`publicar._amazon_attributes`, el que se usa cuando WordPress da 403) tomaba
+   la marca del producto — ahí nacía el 3,060 / 4,204. Cerrado en v0.137.0.
+   **Sigue abierto fuera de Amazon**: ML publica `"Ferrahome"`
+   (`ml_atributos.MARCA`, `crear_producto.MARCA_FIJA`), TikTok igual
+   (`tiktok_atributos.MARCA`) y Walmart lo toma del atributo con respaldo
+   `"Ferrahome"` (`scripts/publicar_walmart.py:644`). Unificarlos toca a los
+   otros publicadores y no se hizo sin coordinar con sus chats.
 5. **`country_of_origin`**: unificado en `"MX"` por decisión de Eduardo. Walmart
    sigue mandando `"China"`. Es declaración aduanal.
 6. **Sin columna de restricciones** (título 60 en ML vs 75 en Amazon, 2 decimales
@@ -284,9 +299,33 @@ confirmó a mano en producción.
 ```
 supabase/migrations/0016_enrich_channel_content.sql
 supabase/migrations/0018_channel_field_requirements.sql
-backend/services/channel_content.py          leer / guardar / faltantes
+backend/services/channel_content.py          leer / guardar / faltantes / requisitos
+backend/services/amazon_ia.py                el generador de Amazon (v0.137.0)
+backend/services/amazon_contenido.py         los límites, validados
+backend/services/terminos_protegidos.py      marcas registradas, lista cerrada
 backend/routers/productos.py                 4 endpoints
 backend/scripts/cargar_requisitos_amazon.py  el cargador
-frontend/components/ProductStudio.tsx        botón + semáforo
+frontend/components/ProductStudio.tsx        botón + semáforo + parte de la IA
 CAMPOS_POR_CANAL.md                          inventario por canal
 ```
+
+## LO QUE SE MIDIÓ CON LOS 553 ESQUEMAS YA CARGADOS (13-ago)
+
+La tabla dejó de ser solo para el semáforo: es el censo de atributos de Amazon
+que antes había que adivinar con una llamada por tipo.
+
+| Atributo | En cuántos de los 553 | Qué significa |
+|---|---|---|
+| `generic_keyword` | **551** | Es el destino real de los *backend search terms*. Faltan solo `ABIS_BOOK` y `MAPS` |
+| `special_feature` | 264 | El ÚNICO destino posible de "Item Highlights" |
+| `item_highlights` | **0** | No existe en el esquema de Listings, pese a llamarse así en la guía |
+| `product_highlights` | **0** | idem |
+| `key_product_features` | **0** | idem |
+
+Consecuencia: en **289 tipos** (CHAINSAW entre ellos) los highlights se generan
+y **no tienen dónde ir**. El adaptador lo dice en el log con nombre y apellido
+en vez de dejar que desaparezcan.
+
+Y `valores_permitidos` está **NULL en las 64,125 filas** de Amazon: el cargador
+no trajo los enums. Por eso el prompt pide los campos por nombre pero no puede
+ofrecerle a la IA la lista de valores válidos.

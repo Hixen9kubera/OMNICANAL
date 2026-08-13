@@ -39,6 +39,9 @@ class ProductoCtx(BaseModel):
     categoria: str | None = None      # ruta legible "A › B › C"
     ml_cat_id: str | None = None      # id de categoría ML (para traer atributos reales)
     sku: str | None = None
+    # Amazon: ahorra una lectura a WordPress al resolver el productType (la meta
+    # `amz_product_type` del panel cuelga del wc_id). Si no viene, se resuelve.
+    wc_id: int | None = None
     descripcion: str | None = None
     precio: float | None = None
     costo: float | None = None
@@ -74,7 +77,12 @@ class MejorarRequest(BaseModel):
 @router.post("/mejorar")
 async def mejorar(req: MejorarRequest) -> dict[str, Any]:
     """Mejora con IA varios campos del canal a la vez (título, descripción,
-    atributos y —en Amazon— highlights y bullets)."""
+    atributos y —en Amazon— highlights, bullets y términos de búsqueda).
+
+    En Amazon la respuesta trae además `rechazados` (lo que no pasó el
+    validador y por eso NO se aplica), `terminos_detectados` (marcas
+    registradas sustituidas) y `guardado` (el documento quedó en
+    `enrich.channel_content` con origen `ia`)."""
     producto = req.producto.model_dump()
     producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
     return await ia_generadores.mejorar(req.canal, producto)

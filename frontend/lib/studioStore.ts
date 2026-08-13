@@ -16,6 +16,8 @@ export interface MejoraCanal {
   highlights?: string;
   bullets?: string[];
   atributos?: AtributoProducto[];
+  /** Amazon: términos de búsqueda del backend (límite en BYTES). */
+  searchTerms?: string;
 }
 
 interface EstudioSku {
