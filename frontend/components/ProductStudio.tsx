@@ -27,6 +27,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import type { FaltantesCanal } from "@/lib/api";
+import CategoriaTikTokPicker from "./CategoriaTikTokPicker";
 import TipoAmazonPicker from "./TipoAmazonPicker";
 import type {
   AtributoProducto,
@@ -1346,10 +1347,16 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 </div>
               )}
 
-              {/* TIPO DE PRODUCTO AMAZON (la "categoría" de Amazon; el panel manda) */}
+              {/* LA CATEGORÍA DEL CANAL ABIERTO, y solo ésa.
+                  Cada canal tiene su propio mundo y no se traducen entre sí:
+                  ML usa `MLM…`, Amazon un `productType` de lista plana y TikTok
+                  un id numérico de hoja. Antes se pintaba SIEMPRE la de Mercado
+                  Libre, así que estando en Amazon o TikTok se leía la categoría
+                  de otro canal como si fuera la suya. */}
               {esAmazon && wcId != null && (
                 <TipoAmazonPicker sku={sku!} wcId={wcId} />
               )}
+              {esTikTok && sku && <CategoriaTikTokPicker sku={sku} />}
 
               {/* PRECIO DE COMPETENCIA */}
               {competencia && (
@@ -1397,27 +1404,34 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 </section>
               )}
 
-              {/* CATEGORÍA (Mercado Libre editable + WooCommerce) */}
+              {/* CATEGORÍA (Mercado Libre editable + WooCommerce)
+                  El picker de ML solo se pinta en ML y en General: en Amazon y
+                  en TikTok arriba ya está el suyo, y mostrar los dos hacía creer
+                  que la categoría de ML viajaba a esos canales. */}
               <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
                 {/* Categoría ML — buscador por nombre. ES LA QUE SE ENVÍA a Mercado
                     Libre al publicar (define además la comisión del costo). */}
-                <div className="flex items-center justify-between">
-                  <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-600">
-                    Se envía a Mercado Libre
-                  </span>
-                  {guardandoCat && (
-                    <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
-                      <Loader2 size={11} className="animate-spin" /> guardando…
-                    </span>
-                  )}
-                </div>
-                <CategoriaMLPicker
-                  value={catMlId}
-                  pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
-                  onChange={elegirCategoriaML}
-                  acento={tema.acento}
-                />
-                <div className="border-t border-slate-100 pt-3">
+                {(esML || esGeneral) && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-indigo-600">
+                        Se envía a Mercado Libre
+                      </span>
+                      {guardandoCat && (
+                        <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400">
+                          <Loader2 size={11} className="animate-spin" /> guardando…
+                        </span>
+                      )}
+                    </div>
+                    <CategoriaMLPicker
+                      value={catMlId}
+                      pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
+                      onChange={elegirCategoriaML}
+                      acento={tema.acento}
+                    />
+                  </>
+                )}
+                <div className={(esML || esGeneral) ? "border-t border-slate-100 pt-3" : ""}>
                   <div className="mb-1 flex items-center gap-2">
                     <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</span>
                     <span className="text-[10px] font-medium text-slate-400">(solo tienda web — no se envía a ML)</span>

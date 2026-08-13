@@ -269,6 +269,30 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         )
         detalle.canales.append(_aplicar_inv(Canal.AMAZON.value, "", dc))
 
+    # TikTok Shop (kubera). Faltaba entero: el cajón mostraba General, ML y
+    # Amazon, y un producto publicado en TikTok no tenía dónde verse.
+    #
+    # No pasa por `_aplicar_inv`: ese enriquece desde `canal_inventario` con la
+    # convención de ML/Amazon (FULL/FBA), y en TikTok el stock ya viene de la
+    # misma tabla que lo alimenta todo. Añadirlo dos veces solo podía
+    # contradecirse.
+    from services import tiktok_panel
+    tk = tiktok_panel.datos_de(sku)
+    if tk:
+        detalle.canales.append(DetalleCanal(
+            canal=Canal.TIKTOK.value,
+            publicado=tk["publicado"], item_id=tk["item_id"], url=tk["url"],
+            precio=tk["precio"], precio_base=tk["precio_base"],
+            stock=tk["stock"], stock_real=tk["stock"],
+            # TikTok Shop MX trabaja con almacenes DEL VENDEDOR: no hay
+            # equivalente a FULL o FBA, así que `full` va en falso y sin
+            # etiqueta. Las 900 publicaciones están en el almacén de ventas.
+            full=False, full_label=None,
+            categoria_id=tk["categoria_id"], categoria_path=tk["categoria_path"],
+            estado=tk["estado"], situacion=tk.get("situacion"),
+            extra={"cuenta": "KUBERA"},
+        ))
+
     return detalle
 
 
@@ -415,6 +439,64 @@ async def faltantes_canal(sku: str, canal: str, cuenta: str = Query("")):
         raise HTTPException(400, f"Canal '{canal}' inválido.")
     categoria = await _categoria_del_canal(sku, canal)
     return await channel_content.faltantes(sku, canal, cuenta, categoria)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CATEGORÍA POR CANAL — cada canal, su mundo
+#
+# ML tiene su picker desde hace meses y Amazon el suyo (`TipoAmazonPicker`, que
+# escribe la meta `amz_product_type`). TikTok no tenía ninguno: se publicaba con
+# lo que dijera su recomendador, que falla el 49% de las veces (medido).
+#
+# La elección se guarda en `channel.product_category`, donde ya viven las 5,166
+# elecciones humanas de ML con `source='panel'`: es el mismo concepto para otro
+# canal y su PK `(sku, channel_id)` ya lo admite. Y MANDA sobre el recomendador,
+# igual que `ml_categoria_id` manda sobre el predictor (regla 2 de la casa).
+# ══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/categorias/tiktok")
+def buscar_categorias_tiktok(q: str = Query(..., min_length=2),
+                             limite: int = Query(25, ge=1, le=60)):
+    """Categorías de TikTok por nombre. SOLO HOJAS: las intermedias rechazan."""
+    from services import tiktok_panel
+    return {"canal": "tiktok", "resultados": tiktok_panel.buscar_categorias(q, limite)}
+
+
+class CategoriaCanalReq(BaseModel):
+    categoria_id: str
+
+
+@router.post("/{sku}/canal/tiktok/categoria")
+def guardar_categoria_tiktok(sku: str, req: CategoriaCanalReq):
+    """Guarda la categoría de TikTok elegida en el panel."""
+    from services import tiktok_panel
+    r = tiktok_panel.guardar_categoria(sku, req.categoria_id.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("motivo") or "No se pudo guardar.")
+    return r
+
+
+@router.get("/{sku}/canal/tiktok/categoria")
+def leer_categoria_tiktok(sku: str):
+    """
+    Qué categoría de TikTok tiene el SKU y DE DÓNDE sale.
+
+    Tres respuestas posibles, y la diferencia importa: `panel` (alguien la
+    eligió), `canal` (es la que tiene publicada hoy) o ninguna — y entonces el
+    Estudio debe decir por qué no hay, no dejar el hueco en blanco.
+    """
+    from services import tiktok_panel
+    elegida = tiktok_panel.categoria_elegida(sku)
+    if elegida and elegida.get("category_id"):
+        return {"origen": "panel", **elegida}
+    cid = tiktok_panel.categoria_de(sku)
+    if not cid:
+        return {"origen": None, "category_id": None, "name": None, "path": None}
+    from services import supabase_db as sdb
+    f = (sdb.fetch_all("select name, path from channel.categories "
+                       "where channel_id='tiktok' and category_id=%s", (cid,)) or [{}])[0]
+    return {"origen": "canal", "category_id": cid,
+            "name": f.get("name"), "path": f.get("path")}
 
 
 @router.get("/{sku}/canales/contenido")

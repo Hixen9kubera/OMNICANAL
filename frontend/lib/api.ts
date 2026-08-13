@@ -763,6 +763,46 @@ export function guardarTipoAmazon(
   });
 }
 
+/* ── CATEGORÍA DE TIKTOK ───────────────────────────────────────────────
+ * Cada canal tiene su propio mundo de categorías y no se traducen entre sí:
+ * ML usa `MLM…`, Amazon un `productType` de lista plana y TikTok un id numérico
+ * de HOJA. La elección del panel manda sobre el recomendador del canal.
+ */
+
+export interface CategoriaTikTok {
+  category_id: string;
+  name?: string | null;
+  path?: string | null;
+}
+
+export function buscarCategoriasTikTok(
+  q: string,
+  signal?: AbortSignal,
+): Promise<{ canal: string; resultados: CategoriaTikTok[] }> {
+  return getJSON(`/api/productos/categorias/tiktok?q=${encodeURIComponent(q)}`, signal);
+}
+
+/** `origen`: `panel` (alguien la eligió) · `canal` (la que tiene publicada) · null. */
+export function categoriaTikTokActual(
+  sku: string,
+  signal?: AbortSignal,
+): Promise<CategoriaTikTok & { origen: string | null }> {
+  return getJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/tiktok/categoria`,
+    signal,
+  );
+}
+
+export function guardarCategoriaTikTok(
+  sku: string,
+  categoriaId: string,
+): Promise<{ ok: boolean; categoria_id: string; nombre?: string; ruta?: string }> {
+  return postJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/tiktok/categoria`,
+    { categoria_id: categoriaId },
+  );
+}
+
 // ── Competencia (Mercado Libre) ──────────────────────────────────────
 // Los GET leen la foto guardada del mes (SQLite local). La corrida real la
 // dispara el cron mensual de Railway; correrCompetencia() es para probar a mano

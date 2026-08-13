@@ -125,15 +125,142 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
 
 
 def contar_publicados() -> int:
-    """Los que están A LA VENTA, no los que existen: el número de la pestaña."""
+    """
+    TODAS las publicaciones del canal, no solo las que están a la venta.
+
+    Empezó contando solo los `ACTIVATE` (283 de 900) con el argumento de que
+    poner 900 prometía catálogo que nadie puede comprar. Brandon pidió lo
+    contrario, y tiene razón operativa: **los 599 borradores y los 11 rechazados
+    son trabajo que existe y hay que ver**. Esconderlos en el contador los volvía
+    invisibles justo para quien tiene que destrabarlos.
+
+    Cuántos se venden se sigue viendo: el botón "Solo publicados" filtra, y cada
+    tarjeta lleva su estado.
+    """
     try:
         filas = sdb.fetch_all(
-            "select count(*) as n from channel.listings where canal=%(canal)s and status=%(vivo)s",
-            {"canal": CANAL, "vivo": ESTADO_VIVO})
+            "select count(*) as n from channel.listings where canal=%(canal)s",
+            {"canal": CANAL})
         return int((filas or [{}])[0].get("n") or 0)
     except Exception as exc:  # noqa: BLE001
         log.warning("tiktok_panel.contar_publicados falló: %s", exc)
         return 0
+
+
+def resumen_estados() -> dict[str, int]:
+    """{ACTIVATE: 283, DRAFT: 599, …} — para explicar el número de la pestaña."""
+    try:
+        filas = sdb.fetch_all(
+            "select coalesce(status,'?') as s, count(*) as n from channel.listings "
+            "where canal=%(canal)s group by 1 order by 2 desc", {"canal": CANAL})
+        return {f["s"]: int(f["n"]) for f in filas}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tiktok_panel.resumen_estados falló: %s", exc)
+        return {}
+
+
+def datos_de(sku: str) -> dict[str, Any] | None:
+    """
+    La publicación de TikTok de UN SKU, ya normalizada, o None.
+
+    La usa el detalle de Omnicanal: sin esto el cajón mostraba General, ML y
+    Amazon, y TikTok no existía aunque el producto estuviera publicado.
+    """
+    try:
+        filas = sdb.fetch_all(
+            f"{_SEL} and l.sku = %(sku)s::citext limit 1",
+            {"canal": CANAL, "sku": sku})
+        return _normalizar(filas[0]) if filas else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tiktok_panel.datos_de(%s) falló: %s", sku, exc)
+        return None
+
+
+def buscar_categorias(q: str, limite: int = 25) -> list[dict[str, Any]]:
+    """
+    Buscador de categorías de TikTok por nombre, como el picker de ML.
+
+    SOLO DEVUELVE HOJAS. Las intermedias rechazan con `12052024 Category is not
+    final category`, así que ofrecerlas sería ofrecer un error.
+
+    ⚠️ `es hoja` se DERIVA aquí (`not exists` un hijo) porque
+    `channel.categories` todavía no tiene la columna — está pedida a Eduardo.
+    Lo que NO se puede derivar es si la categoría está restringida
+    (`INVITE_ONLY`): ese dato se cargó y se tuvo que tirar por la misma razón, y
+    es el que deja el producto en `PENDING` para siempre sin dar error. Mientras
+    falte, el picker lo advierte en vez de fingir que lo sabe.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    try:
+        # SIN ACENTOS EN LOS DOS LADOS. `ilike` ignora mayúsculas pero NO
+        # diacríticos: buscar "audifon" no encontraba "Audífonos" y el picker
+        # salía vacío como si el catálogo no tuviera la categoría. Se usa
+        # `translate` en vez de la extensión `unaccent` porque no está instalada
+        # en la base y pedirla sería un cambio de esquema para un buscador.
+        return sdb.fetch_all(
+            """select c.category_id, c.name, c.path
+                 from channel.categories c
+                where c.channel_id = %(canal)s
+                  and (translate(lower(c.name), 'áéíóúüñ', 'aeiouun')
+                         like translate(lower(%(like)s), 'áéíóúüñ', 'aeiouun')
+                    or translate(lower(c.path), 'áéíóúüñ', 'aeiouun')
+                         like translate(lower(%(like)s), 'áéíóúüñ', 'aeiouun'))
+                  and not exists (select 1 from channel.categories h
+                                   where h.channel_id = c.channel_id
+                                     and h.parent_id = c.category_id)
+                order by length(c.name), c.name
+                limit %(limite)s""",
+            {"canal": CANAL, "like": f"%{q}%", "limite": limite})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tiktok_panel.buscar_categorias(%s) falló: %s", q, exc)
+        return []
+
+
+def guardar_categoria(sku: str, categoria_id: str) -> dict[str, Any]:
+    """
+    La categoría de TikTok ELEGIDA EN EL PANEL. Manda sobre el recomendador.
+
+    Se guarda en `channel.product_category` —donde ya viven las 5,166 elecciones
+    humanas de Mercado Libre con `source='panel'`— y no en una tabla nueva: es
+    exactamente el mismo concepto para otro canal, y su PK `(sku, channel_id)` ya
+    lo admite.
+    """
+    try:
+        filas = sdb.fetch_all(
+            "select name, path from channel.categories where channel_id=%s and category_id=%s",
+            (CANAL, categoria_id))
+        if not filas:
+            return {"ok": False, "motivo": f"La categoría {categoria_id} no existe en TikTok."}
+        sdb.execute(
+            """insert into channel.product_category (sku, channel_id, category_id, source, updated_at)
+               values (%s::citext, %s, %s, 'panel', now())
+               on conflict (sku, channel_id) do update set
+                 category_id = excluded.category_id, source = 'panel', updated_at = now()""",
+            (sku, CANAL, categoria_id))
+        f = filas[0]
+        return {"ok": True, "sku": sku, "categoria_id": categoria_id,
+                "nombre": f.get("name"), "ruta": f.get("path")}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tiktok_panel.guardar_categoria(%s) falló: %s", sku, exc)
+        return {"ok": False, "motivo": str(exc)[:300]}
+
+
+def categoria_elegida(sku: str) -> dict[str, Any] | None:
+    """La elección del PANEL, si existe, con su nombre legible."""
+    try:
+        filas = sdb.fetch_all(
+            """select pc.category_id, c.name, c.path
+                 from channel.product_category pc
+                 left join channel.categories c
+                        on c.channel_id = pc.channel_id and c.category_id = pc.category_id
+                where pc.sku = %s::citext and pc.channel_id = %s""",
+            (sku, CANAL))
+        return filas[0] if filas else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("tiktok_panel.categoria_elegida(%s) falló: %s", sku, exc)
+        return None
 
 
 def categoria_de(sku: str) -> str | None:
@@ -145,7 +272,14 @@ def categoria_de(sku: str) -> str | None:
     `listings.product_type`. Cruzar `field_requirements` por la columna
     equivocada devuelve cero filas SIN dar error, y el semáforo diría
     "sin requisitos" con 1,779 cargados.
+
+    PRECEDENCIA, la misma regla de la casa que en ML y Amazon: **la elección del
+    PANEL manda** sobre lo que el canal tenga hoy. Si alguien eligió categoría en
+    el Estudio, es la que se usa para pedir requisitos y para publicar.
     """
+    elegida = categoria_elegida(sku)
+    if elegida and elegida.get("category_id"):
+        return str(elegida["category_id"])
     try:
         filas = sdb.fetch_all(
             """select category_id from channel.listings

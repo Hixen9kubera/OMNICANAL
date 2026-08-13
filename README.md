@@ -8034,6 +8034,78 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.147.0 — Cada canal, su categoría; y TikTok aparece en el detalle
+
+Cuatro cosas que Brandon vio en el panel el 13-ago. Una de ellas resultó no ser
+un error.
+
+**1 · TikTok no salía en el detalle de un producto.** El cajón de Omnicanal
+armaba su lista con General, Mercado Libre y Amazon, y TikTok simplemente no
+estaba: un producto publicado ahí no tenía dónde verse. Ahora trae su tarjeta
+con precio del canal, stock y estado.
+
+No lleva tercera columna de FULL/FBA, y no es un olvido: **TikTok Shop MX
+trabaja con almacenes DEL VENDEDOR** — hay dos, ventas y devoluciones, y las 900
+publicaciones están en el de ventas. No existe un equivalente a que el
+marketplace te guarde la mercancía, así que el total dice *"nuestra bodega"* en
+vez de dejar un `—` que se lee como "no sabemos".
+
+**2 · La pestaña decía 283 y hay 900.** El contador mostraba solo los que están
+a la venta, con el argumento de que poner 900 prometía catálogo que nadie puede
+comprar. Brandon pidió lo contrario y tiene razón operativa: **los 599
+borradores, los 11 rechazados y los 7 atorados son trabajo que existe y hay que
+ver.** Esconderlos los volvía invisibles justo para quien tiene que
+destrabarlos. Cuántos se venden se sigue viendo con el filtro "Solo publicados"
+y con el estado de cada tarjeta.
+
+**3 · "La pestaña Productos no muestra información" — resultó ser cierto lo que
+mostraba.** Se midió antes de tocar nada: los cuatro productos de la captura
+(`VIA-0006-AMA`, `VEH-0356-NEG-BLN`, `VEH-0337-NEG`, `VEH-0268-GRI`) están en
+`pending` y **no tienen precio, ni costo, ni canal** — ni en Woo, ni en
+`costing.costos_finales`, ni en `channel.listings`. La tabla decía la verdad.
+Con productos que sí tienen datos las columnas se llenan enteras:
+
+```
+DEC-0018-VER  publish  $130.01 / $156.68  6,100 u   amazon · mercado_libre
+TEC-0697-MET  publish  $559.61 / $660.54    156 u   amazon · mercado_libre
+```
+
+El orden por omisión es "más recientes", que es justo lo que sube los borradores
+recién creados —los más vacíos— a la primera página. No se cambió: es el orden
+correcto para la pestaña donde se trabaja lo nuevo.
+
+**4 · Cada canal mostraba la categoría de Mercado Libre.** Estando en Amazon o
+en TikTok, el Estudio pintaba el picker de ML y la categoría de WooCommerce, que
+no viajan a esos canales. Ahora **cada canal muestra la suya y solo la suya**:
+
+| Canal | Qué es su categoría | Picker |
+|---|---|---|
+| Mercado Libre | `MLM…` del árbol | el de siempre |
+| Amazon | `productType` de lista plana | `TipoAmazonPicker`, ya existía |
+| TikTok | id numérico **de hoja** | **nuevo** |
+
+`CategoriaTikTokPicker` busca entre las 2,168 categorías cargadas y **solo
+ofrece hojas** —las intermedias rechazan con `12052024 Category is not final
+category`—, guarda en `channel.product_category` con `source='panel'` (donde ya
+viven las 5,166 elecciones humanas de ML) y **manda sobre el recomendador de
+TikTok**, que falla el 49%. Verificado: elegir "Termómetros de cocina" hace que
+el publicador y el semáforo usen esa, no la que el canal tenía.
+
+**Dos cosas que el buscador enseñó al probarlo:**
+
+- **`ilike` no ignora acentos.** Buscar `audifon` no encontraba «Audífonos» y el
+  picker salía vacío como si el catálogo no tuviera la categoría. Se normaliza
+  con `translate` en los dos lados (no con la extensión `unaccent`: no está
+  instalada y pedirla sería un cambio de esquema para un buscador).
+- **TikTok tiene su propio vocabulario**: no existe «Audífonos», existe
+  «Auriculares». Cuando no hay resultados el picker lo dice, en vez de dejar
+  concluir que la categoría no está.
+
+Y cuando el producto no tiene categoría del canal, el hueco **se explica**: dice
+que no está publicado, que se puede elegir ahí mismo, y qué pasa si no se elige.
+
+Versión 0.147.0.
+
 ### v0.146.1 — El validador de TikTok existía en mi disco y no en el repo
 
 `services/tiktok_contenido.py` —el validador que escribió el hilo de TikTok y

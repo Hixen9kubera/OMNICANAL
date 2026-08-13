@@ -92,13 +92,16 @@ def _atributos_payload(atributos: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 async def _categoria(sku: str, titulo: str, token: str, cipher: str) -> tuple[str | None, str]:
     """
-    (category_id, origen). Precedencia: lo que YA tiene publicado > el
-    recomendador de TikTok.
+    (category_id, origen). Precedencia: **elección del PANEL** > lo que ya tiene
+    publicado > el recomendador de TikTok.
 
     El recomendador falla el 49% (medido sobre 245 productos), así que su
     respuesta se marca como tal para que el humano la vea en la vista previa.
     """
     from services import tiktok_panel
+    elegida = tiktok_panel.categoria_elegida(sku)
+    if elegida and elegida.get("category_id"):
+        return str(elegida["category_id"]), "elegida en el panel"
     ya = tiktok_panel.categoria_de(sku)
     if ya:
         return ya, "la que ya tiene en TikTok"

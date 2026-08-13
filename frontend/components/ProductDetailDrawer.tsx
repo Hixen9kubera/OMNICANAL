@@ -181,6 +181,11 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                 {(() => {
                   const esML = c.canal === "mercado_libre";
                   const esAmazon = c.canal === "amazon";
+                  // TikTok Shop MX trabaja con almacenes DEL VENDEDOR: no tiene
+                  // equivalente a FULL ni a FBA, así que no lleva tercera
+                  // columna. Decirlo es mejor que dejar un "—" que se lee como
+                  // "no sabemos".
+                  const esTikTok = c.canal === "tiktok";
                   // En General, junto al stock real (que NO se toca), va la suma
                   // de FULL/FBA del producto — solo si tiene piezas en bodegas.
                   const esGeneral = c.canal === "general";
@@ -235,7 +240,10 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                               {(c.stock_real ?? 0) + (c.stock_full ?? 0) + (c.stock_fba ?? 0)} u
                             </span>{" "}
                             <span className="text-slate-400">
-                              {esML ? "(real + FULL)" : esAmazon ? "(real + FBA)" : ""}
+                              {esML ? "(real + FULL)"
+                                : esAmazon ? "(real + FBA)"
+                                : esTikTok ? "(nuestra bodega — TikTok no tiene FULL/FBA)"
+                                : ""}
                             </span>
                           </span>
                           {c.situacion && (
