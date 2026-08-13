@@ -169,11 +169,22 @@ def main() -> None:
         original_validados = costing_read.validados
         costing_read.validados = lambda s: (_ for _ in ()).throw(RuntimeError("caos-lectura"))
         avisos.clear()
-        r2 = costos.costo_desde_validados(SKU)
-        costing_read.validados = original_validados
-        check("fallback de lectura a MySQL + alerta",
-              bool(r2) and r2["costo_producto"] == 999.0
-              and "lectura_fallback:costing" in avisos)
+        # PASO 0 (12-ago-2026): el contrato CAMBIÓ. Antes una lectura fallida
+        # caía al espejo MySQL; desde que ese espejo se congela al desmantelar,
+        # devolvería un costo viejo sin avisar. Ahora el error SE PROPAGA.
+        #
+        # Propagar es más seguro que devolver None: con None, `_preparar_base`
+        # armaría el costo desde un `cf` también vacío y calcularía sobre CERO
+        # — la misma familia de error que dejó 964 pedidos fantasma ese día por
+        # confundir "no sé" con "no hay".
+        try:
+            costos.costo_desde_validados(SKU)
+            propago = False
+        except RuntimeError:
+            propago = True
+        finally:
+            costing_read.validados = original_validados
+        check("una lectura fallida de kubera PROPAGA (ya no cae al espejo)", propago)
 
         # ── T3: kubera caída al escribir ─────────────────────────────────────
         print("T3. kubera caída al escribir", flush=True)

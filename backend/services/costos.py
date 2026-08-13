@@ -369,7 +369,12 @@ def costo_desde_validados(sku: str) -> dict[str, Any] | None:
     if costing_write.activo():
         cv = costing_read.validados(sku)
         lecturas_fuente.anotar("costing", "kubera")
-    if cv is None:
+    else:
+        # Solo con el corte APAGADO (interruptor de reversa). Con el corte
+        # encendido, un None de kubera significa "este SKU no tiene costo
+        # validado" y así se propaga: kubera es superset —15,830 filas contra
+        # las 15,429 de MySQL, cero SKUs exclusivos del espejo (medido 12-ago)—
+        # así que reconsultarlo solo podía devolver datos viejos.
         cv = db.fetch_one("SELECT * FROM costos_validados WHERE sku=%s", (sku,))
     if not cv:
         return None
@@ -503,30 +508,29 @@ def _preparar_base(sku: str, overrides: dict[str, Any] | None,
     """
     base = costo_desde_validados(sku) or {}
     cf = None
-    # F6 (corte): la semilla de costos_finales sale de kubera. OJO modelo v4:
-    # costing.costos_finales NO lleva dims — si a validados le faltan, las dims
-    # se complementan del MySQL espejo (solo durante la transición; al retirar
-    # MySQL, las dims solo vivirán en costos_validados, que es el contrato v4).
+    # PASO 0 del desmantelamiento (12-ago-2026): la semilla sale de kubera y
+    # las dims salen de `costos_validados`, que es el contrato v4. Ya NO se
+    # complementan del espejo MySQL.
+    #
+    # Ese complemento existía porque `costing.costos_finales` no lleva columnas
+    # de dims y 514 SKUs las tenían solo en MySQL. Se migraron 437 a validados
+    # (v0.121.0 y v0.122.0). Los 73 restantes se dejaron FUERA a propósito: su
+    # peso es el de la CAJA MASTER capturado como pieza (mue-0064: 12×10×10 cm
+    # y 224 kg = 185 kg/L). Con el complemento calculaban su envío con ese peso
+    # falso —costo inflado, margen peor de lo real, y nadie lo cuestionaba—;
+    # sin él se quedan sin peso, que el panel YA marca en ámbar. Un dato
+    # ausente y señalado es mejor que uno falso e invisible. La solución de
+    # verdad es recapturarlos (14 de los 73 tienen publicación viva).
     if costing_write.activo():
         try:
-            cf = costing_read.finales(sku)  # None (sin fila) → reconsulta MySQL
+            cf = costing_read.finales(sku)
         except Exception as exc:  # noqa: BLE001
             lecturas_fuente.anotar("costing", "fallback", str(exc))
-            log.warning("lectura kubera falló (finales %s) — fallback MySQL: %s", sku, exc)
+            log.warning("lectura kubera falló (finales %s): %s", sku, exc)
             cf = None
-        if cf is not None and not all(base.get(k) for k in ("largo", "alto", "ancho", "peso")):
-            cf = dict(cf)
-            try:
-                cf_my = db.fetch_one(
-                    "SELECT largo, alto, ancho, peso FROM costos_finales WHERE sku=%s",
-                    (sku,)) or {}
-                for k in ("largo", "alto", "ancho", "peso"):
-                    if cf.get(k) is None and cf_my.get(k) is not None:
-                        cf[k] = cf_my[k]
-            except Exception:  # noqa: BLE001 — sin dims de MySQL, la kubera basta
-                pass
-    if cf is None:
-        cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,)) or {}
+    else:
+        cf = db.fetch_one("SELECT * FROM costos_finales WHERE sku=%s", (sku,))
+    cf = cf or {}
     for k in ("costo_producto", "costo_cbm", "largo", "alto", "ancho", "peso"):
         if not base.get(k) and cf.get(k) is not None:
             try:

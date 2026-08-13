@@ -7526,3 +7526,37 @@ de envío— y sin él quedarían sin peso, que el panel ya marca en ámbar. Nin
 de las dos es correcta; la correcta es recapturarlos.
 
 Versión 0.122.0.
+
+### v0.123.0 — COSTOS cierra el círculo: ni una lectura toca MySQL
+
+Último paso del dominio. Con el corte encendido, `costos.py` ya no consulta el
+espejo en ninguna ruta: se retiran el complemento de dims de `_preparar_base` y
+la reconsulta de `costo_desde_validados`.
+
+**El complemento de dims.** Existía porque `costing.costos_finales` no lleva
+esas columnas y 514 SKUs las tenían solo en MySQL. Se migraron 437 a
+`costos_validados` (v0.121.0 y v0.122.0). Los **73 restantes quedan fuera a
+propósito**: su peso es el de la CAJA MASTER capturado como pieza (`mue-0064`:
+12×10×10 cm y 224 kg = 185 kg/L). Con el complemento calculaban su envío con ese
+peso falso —costo inflado, margen peor de lo real, y nadie lo cuestionaba—; sin
+él se quedan sin peso, que el panel **ya marca en ámbar**. Un dato ausente y
+señalado es mejor que uno falso e invisible. 14 de esos 73 tienen publicación
+viva y la solución real es recapturarlos.
+
+**La reconsulta de validados.** Con el corte encendido, un `None` de kubera
+ahora significa "este SKU no tiene costo validado" y así se propaga. Medido:
+kubera es superset —15,830 filas contra las 15,429 de MySQL, **cero SKUs
+exclusivos del espejo**—, así que reconsultarlo solo podía devolver datos viejos.
+
+**Cambia un contrato, y el test lo dice.** `probar_corte_costing.py` verificaba
+que una lectura fallida de kubera cayera al espejo con alerta. Ahora verifica
+que **PROPAGUE**. Propagar es más seguro que devolver `None`: con `None`,
+`_preparar_base` armaría el costo desde un `cf` también vacío y calcularía sobre
+CERO — la misma familia de error que dejó 964 pedidos fantasma ese día por
+confundir "no sé" con "no hay".
+
+Las cuatro lecturas a MySQL que quedan en el archivo corren **solo con el corte
+apagado**, que es el interruptor de reversa.
+
+Pruebas sandbox: `probar_corte_costing.py` 15/15 · `probar_retiro_costing_orders.py`
+11/11. Versión 0.123.0.
