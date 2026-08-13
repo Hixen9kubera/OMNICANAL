@@ -54,6 +54,11 @@ Ambos usan **`apify~playwright-scraper`** — un Chromium genérico al que le
 mandamos nuestra propia `pageFunction`. No es un actor "de Mercado Libre": es el
 navegador, corriendo en infraestructura de Apify con proxy residencial MX.
 
+Si ese actor no trae nada, se reintenta solo con **`apify~puppeteer-scraper`**
+(`apify_navegador_respaldo`). Mismo contrato de entrada y mismo `context.page`,
+así que la `pageFunction` sirve para los dos — está escrita en el subconjunto
+común de ambas APIs.
+
 | | Página | Qué saca | Costo |
 |---|---|---|---|
 | **Ranking** `mas_vendidos_categorias()` | `/mas-vendidos/{cat}` | posición del badge, título, precio, precio de lista, imagen, href, seller, vendidos, rating | ~$0.007/página |
@@ -62,9 +67,9 @@ navegador, corriendo en infraestructura de Apify con proxy residencial MX.
 **Por qué el genérico y no `piotrv1001~mercado-libre-listings-scraper`:** el
 especializado cobra $0.09 por corrida más $0.003 por item, no etiqueta los
 resultados con la consulta que los trajo (`searchQuery` viene vacío) y devuelve
-~5 orgánicos contra ~48. Medido: 230 términos pasan de ~$24 a ~$1.61. Sigue
-declarado en `config.py` como `apify_ml_actor` pero **solo lo usan
-`buscar()` y `buscar_varios()`, que ya no llama nadie** → PENDIENTE de borrar.
+~5 orgánicos contra ~48. Medido: 230 términos pasan de ~$24 a ~$1.61. **Borrado
+el 13-ago** junto con `buscar()` y `buscar_varios()`, que eran sus únicos
+llamadores y ya no los usaba nadie.
 
 **Un id, dos ids.** La tarjeta trae dos identificadores distintos y confundirlos
 cuesta caro:
