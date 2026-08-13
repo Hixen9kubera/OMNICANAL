@@ -239,3 +239,44 @@ def categorias_de(skus: list[str]) -> dict[str, dict[str, Any]]:
                 "cat4": tramos[3] if len(tramos) > 3 else None,
             }
     return salida
+
+
+def stock_fba_amazon() -> dict[str, int]:
+    """
+    { sku: stock_fba } de Amazon — la SEMILLA del vigilante de FBA.
+
+    No es un dato de adorno: es la referencia contra la que se compara el
+    inventario que devuelve Amazon. Una semilla vieja no da un error, da una
+    ALERTA FANTASMA ("FBA bajó de 40 a 12") sobre un movimiento que nunca pasó.
+    Medido antes de repuntar: 1,790 SKUs aquí contra 1,680 en el espejo, cero
+    con valor distinto.
+    """
+    return {str(r["sku"]): int(r["fba"] or 0) for r in sdb.fetch_all(
+        """select l.sku::text as sku, coalesce(l.stock_fba, 0) as fba
+             from channel.listings l
+            where l.canal = 'amazon'""")}
+
+
+def no_full(limite: int) -> list[dict[str, Any]]:
+    """
+    Publicaciones NO-FULL (las que sí salen de nuestra bodega), para el plan de
+    sincronización. Gemela del SELECT sobre `canal_inventario`.
+
+    Deja fuera el canal 'general' A PROPÓSITO, aunque el SELECT viejo lo
+    nombrara: en kubera 'general' es el catálogo Woo COMPLETO (13,092 filas)
+    mientras `canal_inventario` solo tenía 21 legadas. No son la misma cosa, y
+    además Woo es la FUENTE del stock, no un destino al que empujarlo — ese
+    camino es `sync_woo.py`. Incluirlo multiplicaría el plan por cuatro con
+    filas que nadie pidió sincronizar.
+    """
+    return sdb.fetch_all(
+        f"""select l.sku::text as sku, l.canal,
+                   case when a.legacy_code in ('AMAZON','GENERAL')
+                        then '' else a.legacy_code end as cuenta,
+                   l.listing_id as item_id, l.stock_own as stock_real,
+                   0 as es_full
+              from channel.listings l
+              join core.accounts a on a.id = l.account_id
+             where coalesce(l.is_fulfillment, false) = false
+               and l.canal in ('mercado_libre', 'amazon')
+             limit %s""", (limite,))

@@ -660,13 +660,17 @@ def plan_dry_run(limite: int = 200) -> dict[str, Any]:
     """
     asegurar_schema()
     # SKUs con inventario cacheado (no-FULL/FBA) para comparar
-    rows = db.fetch_all(
-        """SELECT sku, canal, cuenta, item_id, stock_real, es_full
-           FROM canal_inventario
-           WHERE es_full = 0 AND canal IN ('mercado_libre','amazon','general')
-           LIMIT %s""",
-        (limite,),
-    )
+    if settings.supabase_read_channel:
+        rows = channel_read.no_full(limite)
+        lecturas_fuente.anotar("channel", "kubera")
+    else:
+        rows = db.fetch_all(
+            """SELECT sku, canal, cuenta, item_id, stock_real, es_full
+               FROM canal_inventario
+               WHERE es_full = 0 AND canal IN ('mercado_libre','amazon','general')
+               LIMIT %s""",
+            (limite,),
+        )
     skus = sorted({r["sku"] for r in rows})
     maestro = odoo.stock_por_sku(skus)  # { sku: qty_available }
 

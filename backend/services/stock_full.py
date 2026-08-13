@@ -335,7 +335,7 @@ async def revisar_fba() -> dict[str, Any]:
     """
     import httpx
 
-    from services import db, fanout_stock
+    from services import channel_read, db, fanout_stock
     if not habilitado():
         return {"ok": False, "motivo": "FULL_WATCH_ENABLED apagado"}
     token = fanout_stock._token_amazon()
@@ -361,8 +361,15 @@ async def revisar_fba() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         log.warning("stock_full: sin foto previa de FBA (%s)", exc)
     # Semilla para los SKUs que este vigilante nunca ha visto: el valor del sync.
-    for r in db.fetch_all("SELECT sku, stock_fba FROM canal_inventario WHERE canal='amazon'"):
-        previos.setdefault(r["sku"], int(r["stock_fba"] or 0))
+    # PASO 0 (12-ago-2026): la semilla sale de kubera. Con `canal_inventario`
+    # congelada, un SKU visto por primera vez se compararía contra su foto del
+    # 11-ago: no un error, una ALERTA FANTASMA de un movimiento que no pasó.
+    if settings.supabase_read_channel:
+        for sku, fba in channel_read.stock_fba_amazon().items():
+            previos.setdefault(sku, fba)
+    else:
+        for r in db.fetch_all("SELECT sku, stock_fba FROM canal_inventario WHERE canal='amazon'"):
+            previos.setdefault(r["sku"], int(r["stock_fba"] or 0))
     actuales: dict[str, int] = {}
     token_pag = None
     try:

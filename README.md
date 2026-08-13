@@ -7655,3 +7655,49 @@ interruptor. Channel y orders siguen pendientes de su propio barrido.
 Pruebas sandbox: `probar_corte_costing.py` 15/15 · `probar_retiro_costing_orders.py`
 11/11. Lecturas nuevas verificadas contra producción en solo lectura, con
 WordPress de árbitro en los wc_id. Versión 0.126.0.
+
+### v0.127.0 — Barrido de channel y orders: el último cierra el círculo
+
+Barrido completo de los dos dominios que faltaban.
+
+**Orders no necesitó ni una línea.** Sus tres lecturas de `pedidos_ml`
+(`orders_write`) solo van a MySQL cuando kubera está **caída** — que es
+exactamente cuando MySQL es el fresco, porque ahí `guardar()` lo hace absorber
+la escritura. Y `ventas_ml` cae a MySQL solo con el flag apagado. La regla ya
+estaba escrita en el archivo desde el incidente: *se lee de donde se está
+escribiendo, nunca al revés*. Es lo que se ve cuando una lección quedó bien
+aprendida: el barrido no encuentra nada porque ya no hay nada.
+
+**Channel tenía dos sin protección**, ambos repuntados:
+
+- `stock_full.py:364` — la SEMILLA del vigilante de FBA. Es la referencia
+  contra la que se compara lo que responde Amazon, así que una semilla vieja no
+  produce un error: produce una **alerta fantasma** de un movimiento que nunca
+  ocurrió. Paridad medida: 1,790 SKUs en kubera contra 1,680 en el espejo,
+  **cero con valor distinto**.
+- `inventario.plan_dry_run` — decide qué stock habría que escribir en cada
+  canal.
+
+**El canal `general` queda fuera del plan a propósito**, aunque el SELECT viejo
+lo nombrara. En kubera `general` es el catálogo Woo COMPLETO —13,092 filas—
+mientras `canal_inventario` solo tenía 21 legadas: no son la misma cosa.
+Copiarlo tal cual habría multiplicado el plan por cuatro con filas que nadie
+pidió sincronizar, y además Woo es la FUENTE del stock, no un destino al que
+empujarlo (ese camino es `sync_woo.py`). Sin `general`, la paridad es 4,877
+contra 4,501 y solo 2 filas viven únicamente en el espejo.
+
+Nuevas gemelas: `channel_read.stock_fba_amazon` y `channel_read.no_full`.
+
+**Con esto los cinco dominios tienen el círculo completo.** Ningún flujo vivo
+lee ya del espejo de MySQL. Lo que queda apuntando ahí son scripts de
+mantenimiento que se corren a mano (`alinear_ml_drop`, `marcar_amazon_muertas`,
+`publicar_walmart`, `sync_odoo_woo_seguro` y cuatro más): dejarán de servir
+cuando se retire el esquema y se repuntan o archivan en F8. `channel_mirror` y
+`etl_channel_listings` leen MySQL por diseño — son el espejo.
+
+CLAUDE.md: la tabla de "lectores por repuntar" se reemplaza por la de cerrados,
+con la versión en que cayó cada uno.
+
+Pruebas sandbox: `probar_corte_orders_channel` 20/20 · `probar_retiro_channel`
+5/5 · `probar_corte_core_categorias` 12/12 · `probar_corte_costing` 15/15 ·
+`probar_retiro_costing_orders` 11/11. Versión 0.127.0.

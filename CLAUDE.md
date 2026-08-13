@@ -172,19 +172,33 @@ nadie desde el 22-jul).
 
 ### Lo que hay que repuntar antes de reintentar el retiro
 
-Barrido del 12-ago — lectores de tablas del espejo que toman DECISIONES:
+El barrido del 12-ago está **CERRADO**: los diez sitios que decidían leyendo
+el espejo ya miran a kubera, cada uno con su medición de paridad previa.
 
-| Sitio | Qué decide | Riesgo |
+| Sitio | Qué decidía | Cerrado en |
 |---|---|---|
-| `fanout_stock.py:260` | a qué publicaciones empujar stock, leyendo `canal_inventario` **sin camino a kubera** | alto |
-| `inventario.py:258 / 282` | qué ítems ya vio el sync y cuáles cerrar | alto |
-| `costos.py:65` | comisión para calcular precios (kubera primero, MySQL de respaldo) | medio |
-| `crear_producto.py`, `creacion.py` (7 sitios) | costos y categorías al crear productos | medio |
-| `competencia_captura.py` | qué SKUs capturar, por `categorias_ml` (congelada desde jul) | bajo, encoge alcance |
+| `fanout_stock.py:260` | a qué publicaciones empujar stock | v0.118.0 |
+| `inventario.py:258 / 282` | qué ítems vio el sync y cuáles cerrar | v0.119.0 |
+| `costos.py:65` + `costo_desde_validados` + `_preparar_base` | comisión y costo al fijar precios | v0.120.0, v0.124.0 |
+| `crear_producto.py` (5) · `creacion.py` (2) | costos y categorías al crear productos | v0.125.0 |
+| `competencia_captura.py` (4) | a qué SKUs medirles la competencia | v0.126.0 |
+| `stock_full.py:364` · `inventario.plan_dry_run` | semilla del vigilante FBA y plan de sync | v0.127.0 |
 
-Mientras esos lean MySQL, esas tablas **no se pueden congelar**. El orden
-correcto es: repuntar los lectores → verificar → recién entonces apagar el
-espejo de ese dominio.
+**Orders no necesitó nada**: desde v0.117.0 sus tres lecturas solo van a MySQL
+cuando kubera está CAÍDA —que es justo cuando MySQL es el fresco, porque
+`guardar()` lo hace absorber— y `ventas_ml` solo con el flag apagado. La regla
+está escrita en el propio archivo: *se lee de donde se está escribiendo*.
+
+Lo que queda leyendo MySQL son **scripts de mantenimiento a mano**, no flujos
+vivos: `alinear_ml_drop`, `alinear_amazon_drop`, `marcar_amazon_muertas`,
+`corregir_status_publicados`, `corregir_stock_woo_full`,
+`sincronizar_ml_huerfanas`, `publicar_walmart`, `sync_odoo_woo_seguro`. Dejarán
+de servir cuando se retire el esquema; se repuntan o se archivan en F8. El
+`etl_channel_listings` y `channel_mirror` leen MySQL POR DISEÑO (son el espejo)
+y se retiran con el andamiaje.
+
+El orden sigue siendo: repuntar los lectores → verificar → recién entonces
+apagar el espejo de ese dominio.
 
 ### Estado por dominio
 
