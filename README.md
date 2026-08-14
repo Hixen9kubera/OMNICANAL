@@ -9939,6 +9939,47 @@ lector pregunta "¿ya procesé esta URL?" sin filtrar por SKU.
 
 Sin migraciones ni variables nuevas. Versión 0.172.0.
 
+### v0.175.0 — La venta de Temu se vuelve pedido (y el sobre cifrado se abre)
+
+Pieza 6. El receptor de `/api/webhooks/temu` deja la fase de observación:
+descifra, verifica la firma y encola el pedido.
+
+**El presupuesto es 6× más estricto que el de ML.** Temu da **500 ms** antes de
+contar la entrega como fallida (reintentos 2m, 10m, 30m, 1h ×3, 12h ×2 y luego
+abandona el mensaje). Así que el receptor solo descifra, verifica y acusa
+recibo; traer la orden y escribir el pedido van a `BackgroundTasks`. Trabajar
+antes de contestar es exactamente lo que tumbó el panel el 13-ago.
+
+**El sobre**: `{"eventData": "<base64>"}` con AES-128-CBC/PKCS5, donde la clave
+**y** el IV son los primeros 16 bytes del `app_secret`. Se descifra PRIMERO
+porque la firma se calcula sobre el texto ya en claro.
+
+**La firma**: HMAC-SHA256 sobre las cabeceras `x-tm-*` más el `eventData`
+descifrado, ordenadas y concatenadas clave+valor **sin separadores**. El ejemplo
+de la doc de Temu firma con `clave=valor&` y no reproduce ni sus propios
+ejemplos: copiarlo habría rechazado el 100% de los eventos legítimos. Y como de
+los dos ejemplos oficiales uno lleva `x-tm-ext-param` y el otro no, se calculan
+**las dos variantes** y basta con que una cuadre. Probado de ida y vuelta:
+cifrado→descifrado idéntico, las dos variantes válidas, una firma falsa
+rechazada.
+
+**Lo que Temu NO da, y queda dicho.** Medido contra las dos órdenes reales:
+`bg.order.detail.v2.get` devuelve `productList[].extCode` (nuestro SKU),
+`quantity` y `orderStatus`, pero **ni un campo de dinero** — `paymentInfo` viene
+en `null`, y las dos APIs de importes están bloqueadas con `3000032`. Así que el
+pedido se crea con el precio de CATÁLOGO y eso queda registrado. Inventar un
+precio verosímil habría contaminado el análisis de márgenes sin dar error.
+
+**El enum de `orderStatus` no está documentado**, así que el mapa tiene UN código
+(`4` → processing, que es lo único con evidencia: las dos ventas reales) y todo
+lo demás **se registra sin crear pedido**. El modo de fallo importa: un código
+desconocido que no crea pedido se arregla reprocesando; uno que sí lo crea
+descuenta stock de una venta que quizá se canceló.
+
+Nace apagado (`PEDIDOS_TEMU_ENABLED`).
+
+---
+
 ### v0.174.0 — Publicar en Temu desde el panel, sin quemar el SKU
 
 Pieza 5. `services/publicar_temu.py` con el par `preview()` / `confirmar()`, como

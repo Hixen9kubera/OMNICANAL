@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     # y contabilidad: los pedidos de TikTok DESCUENTAN stock, porque la
     # mercancía sale de nuestra bodega.
     pedidos_tiktok_enabled: bool = False
+    # ¿El webhook de Temu CREA pedidos en WooCommerce? Apagado: el receptor
+    # registra, descifra y verifica la firma, pero no escribe. Ojo con lo que
+    # NO se puede hacer aunque se encienda: Temu no expone el importe del
+    # pedido (API bloqueada con 3000032), así que el pedido se crea con el
+    # precio de CATÁLOGO y eso queda dicho en el registro.
+    pedidos_temu_enabled: bool = False
     # ¿El fan-out ESCRIBE stock en TikTok? Interruptor propio, aparte de
     # `FANOUT_CANALES`, y a propósito: el valor de esa lista no se puede leer
     # desde fuera de Railway, así que si TikTok dependiera solo de ella un deploy

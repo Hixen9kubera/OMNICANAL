@@ -642,15 +642,91 @@ async def log_tiktok(limite: int = Query(50, ge=1, le=300)):
 _TEMU_LOG: deque = deque(maxlen=300)
 
 
-@router.post("/temu")
-async def recibir_temu(request: Request):
+def _temu_descifrar(b64: str | None) -> str | None:
     """
-    Recibe la notificación de Temu. Responde 200 SIEMPRE.
+    El cuerpo real de un evento de Temu: AES-128-CBC / PKCS5.
+
+    La clave Y el vector de inicialización son **los primeros 16 bytes del
+    app_secret** (sí, el mismo valor para las dos cosas). Devuelve None si no
+    hay nada que descifrar o si no se pudo — nunca lanza: esto corre dentro de
+    la guarda absoluta del receptor.
+    """
+    if not b64 or not settings.temu_app_secret:
+        return None
+    try:
+        import base64 as _b64
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        clave = settings.temu_app_secret[:16].encode("utf-8")
+        datos = _b64.b64decode(b64)
+        des = Cipher(algorithms.AES(clave), modes.CBC(clave)).decryptor()
+        claro = des.update(datos) + des.finalize()
+        relleno = claro[-1] if claro else 0
+        if 1 <= relleno <= 16:
+            claro = claro[:-relleno]
+        return claro.decode("utf-8", "replace")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TEMU: no se pudo descifrar eventData: %s", exc)
+        return None
+
+
+def _temu_firma_ok(cabeceras: dict[str, str], claro: str | None) -> bool | None:
+    """
+    ¿La firma `x-tm-signature` cuadra? True / False / None (no venía firma).
+
+    HMAC-SHA256 con el app_secret sobre las cabeceras `x-tm-*` MÁS el
+    `eventData` ya descifrado, ordenadas alfabéticamente y concatenadas
+    **clave+valor SIN separadores** (ni `=` ni `&`).
+
+    ⚠️ EL EJEMPLO DE LA DOC DE TEMU ESTÁ MAL: firma con formato `clave=valor&` y
+    no reproduce ni sus propios ejemplos. Copiarlo habría rechazado el 100% de
+    los eventos legítimos — es el mismo error que casi cuesta el canal en
+    TikTok. Además, de los dos ejemplos oficiales uno incluye `x-tm-ext-param` y
+    el otro no, así que se calculan LAS DOS variantes y basta con que una cuadre.
+    """
+    firmada = (cabeceras.get("x-tm-signature") or "").strip().lower()
+    if not firmada or not settings.temu_app_secret:
+        return None
+    base = {k: v for k, v in cabeceras.items()
+            if k.startswith("x-tm-") and k != "x-tm-signature"}
+    secreto = settings.temu_app_secret.encode("utf-8")
+    for excluidas in ((), ("x-tm-ext-param",)):
+        campos = {k: v for k, v in base.items() if k not in excluidas}
+        if claro is not None:
+            campos["eventData"] = claro
+        cadena = "".join(f"{k}{campos[k]}" for k in sorted(campos))
+        calc = hmac.new(secreto, cadena.encode("utf-8"), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(calc, firmada):
+            return True
+    return False
+
+
+async def _procesar_temu(parent_sn: str) -> None:
+    """El pedido, fuera del camino de la respuesta (presupuesto de 500 ms)."""
+    from services import pedidos_temu
+    try:
+        r = await pedidos_temu.procesar(parent_sn)
+        log.info("TEMU pedido %s → %s", parent_sn,
+                 r.get("accion") or r.get("motivo") or r.get("wc_order_id"))
+    except Exception:  # noqa: BLE001
+        log.exception("TEMU pedido %s falló en segundo plano", parent_sn)
+
+
+@router.post("/temu")
+async def recibir_temu(request: Request, background: BackgroundTasks):
+    """
+    Recibe la notificación de Temu. Responde 200 SIEMPRE y en menos de 500 ms.
 
     GUARDA ABSOLUTA, como en ML y TikTok: cualquier otra respuesta invita a
     reintentos y, en varias plataformas, a que la suscripción se deshabilite
     sola. El fallo sería SILENCIOSO — dejan de llegar ventas y nadie se entera
     — así que ningún error de aquí adentro cambia lo que devolvemos.
+
+    EL PRESUPUESTO ES 6× MÁS ESTRICTO QUE EL DE ML. Temu da **500 ms** antes de
+    contar la entrega como fallida (reintentos a 2m, 10m, 30m, 1h ×3, 12h ×2 y
+    luego abandona el mensaje). Así que aquí solo se descifra, se verifica la
+    firma y se acusa recibo: traer la orden y escribir el pedido —varios
+    segundos— va a `BackgroundTasks`. Trabajar antes de contestar es exactamente
+    lo que tumbó el panel el 13-ago (v0.154.0).
     """
     try:
         crudo = await request.body()
@@ -671,12 +747,38 @@ async def recibir_temu(request: Request):
             "cabeceras": cab,          # completas: aquí vive la firma, aún sin identificar
             "payload": payload,
         }
+        # ── DESCIFRAR PRIMERO, VERIFICAR DESPUÉS ────────────────────────────
+        # El cuerpo real viaja en `{"eventData": "<base64>"}` con AES-128-CBC y
+        # la firma se calcula sobre el texto YA DESCIFRADO: al revés no cuadra.
+        claro, evento["descifrado"] = _temu_descifrar(payload.get("eventData")), None
+        if claro is not None:
+            evento["descifrado"] = claro[:2000]
+            try:
+                payload = {**payload, **json.loads(claro)}
+            except Exception:  # noqa: BLE001
+                pass
+        evento["firma_ok"] = _temu_firma_ok(cab, claro)
+
         _TEMU_LOG.append(evento)
         # Completo a los logs de Railway: es el ÚNICO registro de esta fase.
-        log.info("TEMU webhook tipo=%s mall=%s bytes=%s cabeceras=%s :: %s",
+        log.info("TEMU webhook tipo=%s mall=%s bytes=%s firma=%s cabeceras=%s :: %s",
                  evento["tipo"], evento["mall_id"], evento["bytes"],
+                 evento["firma_ok"],
                  json.dumps(cab, ensure_ascii=False)[:400],
                  json.dumps(payload, ensure_ascii=False)[:1500])
+
+        # ── El pedido, en segundo plano ─────────────────────────────────────
+        # Solo si la firma cuadra: un evento sin firma válida no mueve
+        # inventario. `firma_ok is None` = no había firma que verificar (la
+        # prueba de la consola), y eso tampoco crea pedidos.
+        if evento["firma_ok"] is True:
+            from services import pedidos_temu
+            oid = pedidos_temu.id_de_evento(payload)
+            if oid:
+                background.add_task(_procesar_temu, oid)
+            else:
+                log.warning("TEMU webhook con firma válida pero SIN id de orden "
+                            "reconocible: %s", json.dumps(payload, ensure_ascii=False)[:400])
         # Temu no documenta qué cuerpo espera. Se devuelve la forma que aceptan
         # las APIs de su familia (`success: true`) MÁS las llaves que usan otros
         # canales, para que cualquier validador encuentre la suya.
