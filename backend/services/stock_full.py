@@ -351,63 +351,75 @@ async def revisar_fba() -> dict[str, Any]:
     from services import channel_read, db, fanout_stock
     if not habilitado():
         return {"ok": False, "motivo": "FULL_WATCH_ENABLED apagado"}
-    token = fanout_stock._token_amazon()
-    if not token:
-        return {"ok": False, "motivo": "sin token de Amazon"}
+    # TODA LA RECOLECCIÓN, EN UN HILO. Es el token de Amazon (BD), la foto previa
+    # (dos consultas) y el barrido PAGINADO del inventario FBA con `httpx.Client`
+    # SÍNCRONO a 30 s por página. Dentro de la corrutina, este vigilante detenía
+    # el backend entero cada vez que le tocaba turno — y le toca cada pocos
+    # minutos. Lo de abajo (comparar, decidir y ajustar Woo) no cambia.
+    def _recolectar() -> dict[str, Any]:
+        token = fanout_stock._token_amazon()
+        if not token:
+            return {"motivo": "sin token de Amazon"}
 
-    # FOTO PROPIA, no la de canal_inventario (auditoría 27-jul): esa columna la
-    # refresca el sync cada 15 min, así que tras descontar un ingreso el sync la
-    # actualizaba y en la vuelta siguiente el MISMO ingreso volvía a verse como
-    # nuevo → descuento repetido. La referencia es lo que ESTE vigilante vio la
-    # última vez, guardado en su propia bitácora (`fanout_log`, sin tabla nueva).
-    previos: dict[str, int] = {}
-    try:
-        for r in db.fetch_all(
-            """SELECT f.sku, f.resultado FROM fanout_log f
-               JOIN (SELECT sku, MAX(id) mx FROM fanout_log
-                     WHERE accion LIKE 'fba_%%' GROUP BY sku) u ON u.mx = f.id"""):
-            # el resultado guarda "FBA subió A→B (+N)…": la referencia es B
-            import re as _re
-            m = _re.search(r"→\s*(\d+)", str(r["resultado"] or ""))
-            if m:
-                previos[r["sku"]] = int(m.group(1))
-    except Exception as exc:  # noqa: BLE001
-        log.warning("stock_full: sin foto previa de FBA (%s)", exc)
-    # Semilla para los SKUs que este vigilante nunca ha visto: el valor del sync.
-    # PASO 0 (12-ago-2026): la semilla sale de kubera. Con `canal_inventario`
-    # congelada, un SKU visto por primera vez se compararía contra su foto del
-    # 11-ago: no un error, una ALERTA FANTASMA de un movimiento que no pasó.
-    if settings.supabase_read_channel:
-        for sku, fba in channel_read.stock_fba_amazon().items():
-            previos.setdefault(sku, fba)
-    else:
-        for r in db.fetch_all("SELECT sku, stock_fba FROM canal_inventario WHERE canal='amazon'"):
-            previos.setdefault(r["sku"], int(r["stock_fba"] or 0))
-    actuales: dict[str, int] = {}
-    token_pag = None
-    try:
-        with httpx.Client(timeout=30.0) as cli:
-            while True:
-                params = {"granularityType": "Marketplace",
-                          "granularityId": settings.amazon_marketplace_id,
-                          "marketplaceIds": settings.amazon_marketplace_id,
-                          "details": "false"}
-                if token_pag:
-                    params["nextToken"] = token_pag
-                r = cli.get(f"{settings.amazon_sp_api_endpoint}/fba/inventory/v1/summaries",
-                            params=params, headers={"x-amz-access-token": token})
-                if r.status_code != 200:
-                    return {"ok": False, "motivo": f"HTTP {r.status_code}"}
-                d = r.json().get("payload") or r.json()
-                for s in (d.get("inventorySummaries") or []):
-                    sku = s.get("sellerSku")
-                    if sku:
-                        actuales[sku] = int((s.get("totalQuantity") or 0))
-                token_pag = ((r.json().get("pagination") or {}).get("nextToken"))
-                if not token_pag:
-                    break
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "motivo": f"{type(exc).__name__}: {exc}"}
+        # FOTO PROPIA, no la de canal_inventario (auditoría 27-jul): esa columna la
+        # refresca el sync cada 15 min, así que tras descontar un ingreso el sync la
+        # actualizaba y en la vuelta siguiente el MISMO ingreso volvía a verse como
+        # nuevo → descuento repetido. La referencia es lo que ESTE vigilante vio la
+        # última vez, guardado en su propia bitácora (`fanout_log`, sin tabla nueva).
+        previos: dict[str, int] = {}
+        try:
+            for r in db.fetch_all(
+                """SELECT f.sku, f.resultado FROM fanout_log f
+                   JOIN (SELECT sku, MAX(id) mx FROM fanout_log
+                         WHERE accion LIKE 'fba_%%' GROUP BY sku) u ON u.mx = f.id"""):
+                # el resultado guarda "FBA subió A→B (+N)…": la referencia es B
+                import re as _re
+                m = _re.search(r"→\s*(\d+)", str(r["resultado"] or ""))
+                if m:
+                    previos[r["sku"]] = int(m.group(1))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stock_full: sin foto previa de FBA (%s)", exc)
+        # Semilla para los SKUs que este vigilante nunca ha visto: el valor del sync.
+        # PASO 0 (12-ago-2026): la semilla sale de kubera. Con `canal_inventario`
+        # congelada, un SKU visto por primera vez se compararía contra su foto del
+        # 11-ago: no un error, una ALERTA FANTASMA de un movimiento que no pasó.
+        if settings.supabase_read_channel:
+            for sku, fba in channel_read.stock_fba_amazon().items():
+                previos.setdefault(sku, fba)
+        else:
+            for r in db.fetch_all("SELECT sku, stock_fba FROM canal_inventario WHERE canal='amazon'"):
+                previos.setdefault(r["sku"], int(r["stock_fba"] or 0))
+        actuales: dict[str, int] = {}
+        token_pag = None
+        try:
+            with httpx.Client(timeout=30.0) as cli:
+                while True:
+                    params = {"granularityType": "Marketplace",
+                              "granularityId": settings.amazon_marketplace_id,
+                              "marketplaceIds": settings.amazon_marketplace_id,
+                              "details": "false"}
+                    if token_pag:
+                        params["nextToken"] = token_pag
+                    r = cli.get(f"{settings.amazon_sp_api_endpoint}/fba/inventory/v1/summaries",
+                                params=params, headers={"x-amz-access-token": token})
+                    if r.status_code != 200:
+                        return {"motivo": f"HTTP {r.status_code}"}
+                    d = r.json().get("payload") or r.json()
+                    for s in (d.get("inventorySummaries") or []):
+                        sku = s.get("sellerSku")
+                        if sku:
+                            actuales[sku] = int((s.get("totalQuantity") or 0))
+                    token_pag = ((r.json().get("pagination") or {}).get("nextToken"))
+                    if not token_pag:
+                        break
+        except Exception as exc:  # noqa: BLE001
+            return {"motivo": f"{type(exc).__name__}: {exc}"}
+        return {"previos": previos, "actuales": actuales}
+
+    recolectado = await asyncio.to_thread(_recolectar)
+    if recolectado.get("motivo"):
+        return {"ok": False, "motivo": recolectado["motivo"]}
+    previos, actuales = recolectado["previos"], recolectado["actuales"]
 
     aplicados = []
     for sku, ahora in actuales.items():

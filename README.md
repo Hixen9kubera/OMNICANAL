@@ -8034,6 +8034,25 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.162.0 — El vigilante de FBA también esperaba con el backend detenido
+
+Mismo defecto que v0.160.0, en la otra mitad del mismo archivo. `revisar_fba`
+—el job que detecta ingresos a la bodega de Amazon comparando fotos— es `async`
+y hacía, dentro de la corrutina: el token de Amazon (consulta a la BD), la foto
+previa (dos consultas más) y el **barrido PAGINADO** del inventario FBA con
+`httpx.Client` **síncrono a 30 s por página**. Cada vez que le tocaba turno
+—y le toca cada pocos minutos— detenía el backend entero.
+
+Este no lo cazó el vigilante: se encontró **leyendo**, buscando el mismo patrón
+después de que el volcado de las 23:46 dijera "petición HTTP síncrona" sin poder
+nombrar al culpable. Encontrar por patrón lo que el instrumento enseñó a
+reconocer es, seguramente, el mejor rendimiento de haberlo construido.
+
+Toda la recolección sale a un hilo de una sola vez. La comparación, la decisión
+y el ajuste a Woo **no cambian**.
+
+---
+
 ### v0.160.0 — El aviso de FULL esperaba a Mercado Libre con el backend detenido
 
 Primer volcado legible del vigilante (v0.159.0), y señaló algo que ninguna de las
