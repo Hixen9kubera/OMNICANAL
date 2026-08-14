@@ -10426,3 +10426,53 @@ tuplas basura y los workers REALES persisten sus propios errores. Medía su
 montaje, no el descarte. Ahora busca la fila del `ColaLlenaError`.
 
 Sin migraciones ni variables nuevas. Versión 0.180.0.
+
+### v0.182.0 — Las tres gemelas de Márgenes devolvían la fecha con zona (y vaciaron una columna)
+
+Defecto del PASO 1 (v0.165.0), reportado desde Análisis: la columna
+**«Visitas · CR%» salió vacía** para todas las filas. En los logs, una vez por
+minuto:
+
+    [WARNING] omnicanal.fulfillment: visitas no disponibles en la tabla:
+              can't compare offset-naive and offset-aware datetimes
+
+**La causa es mía y es de contrato.** `margenes_read` promete en su docstring
+que cada función *"devuelve EXACTAMENTE la misma forma que su gemela MySQL"*. No
+era cierto: en MySQL `consultado_at` era `DATETIME` → naive; en kubera es
+`timestamptz` → psycopg2 lo devuelve **con zona**. Los tres consumidores calculan
+su TTL contra `datetime.utcnow()` —naive— y comparar aware con naive **lanza
+`TypeError`**. El `try` del llamador se la tragaba: no rompía nada a la vista,
+solo desaparecía el dato.
+
+**Los tres estaban afectados; dos fallaban invisible.** Medido, no supuesto:
+
+| gemela | qué pasaba |
+|---|---|
+| `visitas_ml` | **fallaba y se veía** — un warning por minuto |
+| `envio_real` | **no fallaba, por casualidad**: compara detrás de `costo_vendedor is None and …` y hoy hay **0 filas con costo NULL**, así que el `and` corta antes. La primera con NULL lo dispara |
+| `ficha_ml` | **fallaba en silencio**: `completar()` corre en un `create_task`, así que su excepción no deja warning y la marca de peso dejaba de converger |
+
+**El arreglo va en el LECTOR, no en las tres comparaciones.** `margenes_read`
+normaliza `consultado_at` a UTC sin zona antes de devolverlo, que es lo que hace
+cierto el contrato que ya estaba escrito. Parchear cada llamador también
+funcionaría, pero dejaría la trampa puesta para **las 28 tablas que faltan del
+instructivo**: cada `timestamptz` que se migre traería el mismo defecto.
+
+**La lección de método, que vale más que el bug.** La paridad del paso 1 se
+verificó celda por celda —13,735 + 971 + 1,485, **cero diferencias**— y aun así
+esto se rompió. Un arnés que compara VALORES no ve un cambio de TIPO. El arnés
+nuevo (`probar_gemelas_margenes.py`) mide lo que aquél no podía:
+
+- el tipo (`tzinfo` ausente en las tres),
+- **la operación real**: repite el cálculo de TTL de cada consumidor, en vez de
+  mirar el tipo y darlo por bueno,
+- que normalizar no corrió el instante,
+- y fuerza el camino de `envio_real` con costo NULL, para que la prueba no
+  dependa del accidente de que hoy no haya ninguno.
+
+Verificado que la prueba TIENE DIENTES: con `_naive_utc` desactivado reproduce
+el error exacto de producción. Sin eso, un arnés que pasa no prueba nada.
+
+Gracias a quien lo reportó con el log, la línea y el diagnóstico ya hecho.
+
+Sin migraciones ni variables nuevas. Versión 0.182.0.

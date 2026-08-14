@@ -30,9 +30,46 @@ DOS COSAS QUE NO SON COSMÉTICAS
 """
 from __future__ import annotations
 
+from datetime import timezone
 from typing import Any
 
 from services import supabase_db as sdb
+
+
+# ── EL CONTRATO INCLUYE EL TIPO DE LA FECHA ────────────────────────────────
+#
+# En MySQL `consultado_at` era DATETIME → naive. En kubera es `timestamptz` →
+# psycopg2 lo devuelve CON ZONA. Los tres consumidores calculan su TTL contra
+# `datetime.utcnow()`, que es naive, y comparar aware con naive **lanza
+# TypeError** en Python.
+#
+# Eso ya pasó en producción el 14-ago, el día que se encendió la lectura:
+#
+#   [WARNING] visitas no disponibles en la tabla:
+#             can't compare offset-naive and offset-aware datetimes
+#
+# La columna «Visitas · CR%» de Análisis se vació entera y nadie se enteró por
+# una excepción: el `try` del llamador la tragaba y solo quedaba el warning.
+#
+# Los otros dos NO fallaron, pero por casualidad y no por diseño:
+#   · `envio_real` compara detrás de `costo_vendedor is None and …`, y HOY hay
+#     0 filas con costo nulo, así que el `and` corta antes. La primera que
+#     llegue con NULL lo dispara.
+#   · `ficha_ml.completar` sí llega a la comparación, pero corre en un
+#     `create_task`: falla EN SEGUNDO PLANO, sin warning visible, y la marca de
+#     peso deja de converger en silencio.
+#
+# Por eso se normaliza AQUÍ y no en cada comparación. El docstring de este
+# módulo promete "EXACTAMENTE la misma forma que su gemela MySQL" — esto es lo
+# que hace que sea cierto. Parchear los tres llamadores también funcionaría,
+# pero dejaría la trampa puesta para las 28 tablas que faltan del instructivo:
+# cada `timestamptz` que se migre traería el mismo defecto.
+def _naive_utc(fila: dict[str, Any]) -> dict[str, Any]:
+    """`consultado_at` a UTC SIN zona, como lo daba MySQL."""
+    v = fila.get("consultado_at")
+    if v is not None and getattr(v, "tzinfo", None) is not None:
+        fila["consultado_at"] = v.astimezone(timezone.utc).replace(tzinfo=None)
+    return fila
 
 
 # ── Costo real de envío, por pedido ─────────────────────────────────────────
@@ -51,7 +88,7 @@ def envio_leer(pares: list[tuple[str, str]]) -> dict[tuple[str, str], dict[str, 
                  from enrich.order_shipping_cost
                 where cuenta = %s and external_order_id = any(%s)""",
                 (cuenta, ids)):
-            res[(cuenta, str(f["external_order_id"]))] = f
+            res[(cuenta, str(f["external_order_id"]))] = _naive_utc(f)
     return res
 
 
@@ -87,7 +124,7 @@ def ficha_leer(listing_ids: list[str]) -> dict[str, dict[str, Any]]:
     """{ listing_id: fila } — gemela de `ficha_ml.leer`."""
     if not listing_ids:
         return {}
-    return {str(f["listing_id"]): f for f in sdb.fetch_all(
+    return {str(f["listing_id"]): _naive_utc(f) for f in sdb.fetch_all(
         """select listing_id, cuenta, titulo, peso_g, medido, consultado_at
              from enrich.listing_weight where listing_id = any(%s)""",
         ([str(i) for i in listing_ids],))}
@@ -123,7 +160,7 @@ def visitas_leer(listing_ids: list[str], dias: int) -> dict[str, dict[str, Any]]
     """{ listing_id: fila } para esa ventana — gemela de `visitas_ml.leer`."""
     if not listing_ids:
         return {}
-    return {str(f["listing_id"]): f for f in sdb.fetch_all(
+    return {str(f["listing_id"]): _naive_utc(f) for f in sdb.fetch_all(
         """select listing_id, visitas, dias_datos, consultado_at
              from enrich.listing_visits
             where dias = %s and listing_id = any(%s)""",
