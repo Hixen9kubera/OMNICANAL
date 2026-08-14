@@ -10002,6 +10002,62 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.185.0 — Inmovilizado contaba dos veces las piezas de un producto con variantes
+
+Eduardo pidió investigar la hoja de **Inmovilizado** sospechando que hubiera
+SKUs padre que no venden *a propósito*. Ese hueco ya estaba cerrado; buscándolo
+apareció otro, y este sí estaba inflando el número.
+
+**Lo que se revisó primero (y salió limpio).** El arreglo del 7-ago —*la
+publicación vive en el padre, las ventas llegan en el hijo*— sigue haciendo su
+trabajo. Hoy 23 de los 222 inmovilizados son SKUs padre. Para cada uno se
+buscaron ventas de CUALQUIER SKU de su familia, enlazado o no, incluso por
+prefijo de texto: **cero en los 23**. Ni el padre ni un solo hijo ha vendido
+nunca una pieza. Están muertos de verdad, no mal clasificados.
+
+Contexto del catálogo, de paso: de las 1,486 familias con variantes, **1,408
+(95%) no han vendido nada jamás**, ni el padre ni ningún hijo.
+
+**El defecto que sí había.** `channel.listings` guarda una fila por SKU, pero en
+un producto con variantes el padre y el hijo comparten el **mismo
+`listing_id`**: son la misma publicación de Mercado Libre vista desde dos SKUs.
+Como el CTE `lst` cuelga a los dos de la misma clave, `sum(stock_full)` sumaba
+las dos filas y contaba las mismas piezas dos veces.
+
+Los casos no dejan lugar a dudas:
+
+| familia | publicación | filas | reportaba | real |
+|---|---|---|---|---|
+| `DEC-0014` | MLM3136223689 | `DEC-0014` 200 + `DEC-0014-BLN` 200 | 400 | **200** |
+| `JUGU-0268` | MLM5741078908 | 199 + 199 | 398 | **199** |
+| `HERR-0035` | MLM3097569251 | 191 + 191 | 382 | **191** |
+| `CUNA-0052` | MLM3136277755 | 90 + 90 | 180 | **90** |
+
+Cuando los dos números no empatan exacto (`TEC-0794`: 89 y 90) es la misma
+publicación leída por el sync en momentos distintos, no dos existencias.
+
+**El arreglo.** Un CTE `pub` colapsa a **una fila por publicación real**
+—`coalesce(listing_id, 'sku:'||sku)` como clave— y toma `max` del stock, por el
+mismo motivo por el que `prop` ya usaba `max` para el stock propio: las dos
+filas son la misma pieza. `s` pasa a contar sobre `pub` en vez de sobre `lst`;
+`prop` se queda con `lst`, porque el stock propio se resuelve por variante y ya
+tiene su propia regla. Los conteos de publicaciones (`pubs`, `activas`,
+`pausadas`) también salen de `pub`, así que una publicación duplicada deja de
+contar como dos.
+
+**Medido.** En todo el FULL de Mercado Libre: 40 publicaciones duplicadas,
+**2,024 unidades fantasma de 34,766 (5.8%)**. En la hoja de Inmovilizado, 13 de
+los 222 SKUs traían el stock inflado: **9,436 → 8,914 unidades**.
+
+**Verificado corriendo el SQL real del archivo contra el clon de producción,
+antes y después:** las mismas 222 filas —**ningún SKU entra ni sale de la
+hoja**, solo se corrige el conteo—, 209 de 222 sin un solo cambio, y ninguna
+otra columna se movió. La hoja de Invisible queda idéntica (104 SKUs, 8,029
+unidades, cero correcciones): sus poblaciones son disjuntas por construcción,
+una exige ventas y la otra exige que no las haya.
+
+Sin migraciones ni variables nuevas. Versión 0.185.0.
+
 ### v0.184.0 — Los tres canales sugieren categoría al abrir su pestaña
 
 Brandon, mirando el Estudio: *"tiktok y amazon no sugieren categoría primero"*.

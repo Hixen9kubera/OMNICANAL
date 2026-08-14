@@ -1905,7 +1905,7 @@ vh as (
    group by 1),
 lst as (
   select coalesce(pa.padre, l.sku::text) as clave, l.sku::text as sku_real,
-         l.canal, l.situacion, a.legacy_code as cta,
+         l.canal, l.situacion, a.legacy_code as cta, l.listing_id::text as pub_id,
          coalesce(l.stock_own, 0)  as stock_own,
          coalesce(l.stock_full, 0) as stock_full,
          coalesce(l.stock_fba, 0)  as stock_fba
@@ -1914,6 +1914,41 @@ lst as (
     left join padres pa on pa.hijo = l.sku::text
    where lower(coalesce(l.situacion, '')) <> 'closed'
      and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)),
+pub as (
+  -- UNA PUBLICACIÓN ES UNA, Y SUS PIEZAS SE CUENTAN UNA VEZ (14-ago-2026).
+  --
+  -- `channel.listings` guarda una fila por SKU, pero en un producto con
+  -- variantes el PADRE y el HIJO comparten el MISMO `listing_id`: es la misma
+  -- publicación de ML vista desde dos SKUs. Como `lst` cuelga a los dos de la
+  -- misma clave, sumar por fila contaba las mismas piezas dos veces.
+  -- Medido: DEC-0014 (MLM3136223689) reportaba 400 unidades en FULL — 200 en
+  -- `DEC-0014` y otras 200 en `DEC-0014-BLN`, que son las MISMAS 200. Igual
+  -- JUGU-0268 (398→199) y HERR-0035 (382→191). En total 40 publicaciones
+  -- duplicadas: 2,024 unidades fantasma de 34,766 en FULL (5.8%%), y 522 de
+  -- las 9,436 que la hoja de Inmovilizado presentaba como capital detenido.
+  --
+  -- `max` y no `sum` por el mismo motivo que en `prop`: las dos filas son la
+  -- misma pieza. Cuando difieren (TEC-0794: 89 y 90) es el sync que las leyó
+  -- en momentos distintos, no dos existencias.
+  --
+  -- La clave cae en `sku_real` cuando no hay `listing_id` para que esas filas
+  -- sigan contándose una por SKU, como hasta hoy.
+  select clave, canal, cta,
+         coalesce(pub_id, 'sku:' || sku_real) as clave_pub,
+         max(stock_full) as stock_full,
+         max(stock_fba)  as stock_fba,
+         -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
+         -- 'buyable'/'published'. Contar solo 'active' marcaba como invisibles
+         -- 3 SKUs que sí estaban a la venta en Amazon.
+         bool_or((canal = 'mercado_libre'
+                  and lower(coalesce(situacion,'')) = 'active')
+              or (canal = 'amazon'
+                  and lower(coalesce(situacion,'')) in ('buyable', 'published')))
+           as viva,
+         bool_or(canal = 'mercado_libre'
+                 and lower(coalesce(situacion,'')) = 'paused') as pausada
+    from lst
+   group by 1, 2, 3, 4),
 prop as (
   -- STOCK PROPIO: nunca mezclar Woo con los espejos del marketplace.
   --
@@ -1935,7 +1970,10 @@ prop as (
             from lst group by 1, 2) x
    group by 1),
 s as (
-  select l.clave as sku,
+  -- Cuenta sobre `pub` (una fila por publicación real), NO sobre `lst` (una
+  -- fila por SKU): ver la nota de `pub`. `prop` sí se queda con `lst`, porque
+  -- el stock propio se resuelve por variante y ya tiene su propia regla.
+  select p.clave as sku,
          -- WOOCOMMERCE NO ES UN CANAL (Eduardo, 7-ago): es nuestro puente de
          -- registro, y ahí vive el almacén propio. Su fila SÍ cuenta para el
          -- stock —es la fuente buena: en 47 de 97 SKUs el valor cambia si se
@@ -1945,27 +1983,18 @@ s as (
          -- "En FULL" no cuadraba con la suma de Bekura + Sancor (272 contra
          -- 200 en JUGU-0261-LIL): se colaba `stock_full` de publicaciones de
          -- Amazon, cuyo equivalente es `stock_fba` y va en su propia columna.
-         sum(l.stock_full)
-           filter (where l.canal = 'mercado_libre')::int       as full_total,
-         sum(l.stock_full) filter (where l.cta = 'BEKURA')::int        as full_bk,
-         sum(l.stock_full) filter (where l.cta = 'SANCORFASHION')::int as full_sc,
-         sum(l.stock_fba)::int                                 as fba,
-         -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
-         -- 'buyable'/'published'. Contar solo 'active' marcaba como invisibles
-         -- 3 SKUs que sí estaban a la venta en Amazon.
-         count(*) filter (
-           where (l.canal = 'mercado_libre'
-                  and lower(coalesce(l.situacion,'')) = 'active')
-              or (l.canal = 'amazon'
-                  and lower(coalesce(l.situacion,'')) in ('buyable', 'published'))
-         )::int                                                as activas,
-         count(*) filter (where l.canal = 'mercado_libre'
-                            and lower(coalesce(l.situacion,'')) = 'paused')::int as pausadas,
-         count(*) filter (where l.canal <> 'general')::int      as pubs,
-         array_agg(distinct l.cta order by l.cta)
-           filter (where l.canal <> 'general')                  as cuentas
-    from lst l
-    join prop on prop.clave = l.clave
+         sum(p.stock_full)
+           filter (where p.canal = 'mercado_libre')::int       as full_total,
+         sum(p.stock_full) filter (where p.cta = 'BEKURA')::int        as full_bk,
+         sum(p.stock_full) filter (where p.cta = 'SANCORFASHION')::int as full_sc,
+         sum(p.stock_fba)::int                                 as fba,
+         count(*) filter (where p.viva)::int                   as activas,
+         count(*) filter (where p.pausada)::int                as pausadas,
+         count(*) filter (where p.canal <> 'general')::int     as pubs,
+         array_agg(distinct p.cta order by p.cta)
+           filter (where p.canal <> 'general')                 as cuentas
+    from pub p
+    join prop on prop.clave = p.clave
    group by 1)
 """)
 
