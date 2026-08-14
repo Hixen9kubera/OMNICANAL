@@ -247,6 +247,26 @@ def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
     return {r["meta_key"]: r["meta_value"] for r in rows}
 
 
+def padre_de(wc_id: int) -> int | None:
+    """
+    `post_parent` de una variación, por su propio `wc_id`. None si no es
+    variación o no existe.
+
+    Respaldo del webhook cuando el evento no trae `parent_id`: el vínculo vive
+    en wp_posts, así que no hace falta que el canal lo mande.
+    """
+    if not wc_id or not disponible():
+        return None
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT post_parent FROM {P}posts
+             WHERE ID = %s AND post_type = 'product_variation' LIMIT 1""",
+        (int(wc_id),),
+    )
+    padre = rows[0]["post_parent"] if rows else 0
+    return int(padre) if padre else None
+
+
 def ficha_basica(wc_id: int) -> dict[str, Any] | None:
     """
     { sku, name, status } de un producto por `wc_id`, leído de wp_posts.

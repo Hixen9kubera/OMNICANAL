@@ -837,11 +837,17 @@ async def _registrar_acta(acta: dict[str, Any], topic: str) -> bool:
     foto = (acta["name"], acta["status"], acta["wc_id"])
     if _WOO_ULTIMO.get(acta["sku"]) == foto:
         return False
-    _WOO_ULTIMO[acta["sku"]] = foto
     from services import core_write
     await run_in_threadpool(
         core_write.registrar, "routers/webhooks.py", f"woo {topic}",
         acta, acta["sku"])
+    # La foto se sella DESPUÉS de escribir, no antes. Sellarla primero convierte
+    # un fallo de escritura en un silencio permanente: la foto de un padre
+    # (nombre, estado, wc_id) casi nunca cambia, así que el evento siguiente se
+    # descarta por "sin cambios" y el SKU se queda sin acta hasta que el proceso
+    # reinicie. Es la misma trampa de todo el 12-ago: un caché que dice "ya está
+    # atendido" cuando en realidad no lo sabe.
+    _WOO_ULTIMO[acta["sku"]] = foto
     log.info("WOO %s → core.products %s (wc %s) name=%r status=%s",
              topic, acta["sku"], acta["wc_id"], (acta["name"] or "")[:60],
              acta["status"])
@@ -861,14 +867,29 @@ async def _acta_del_padre(payload: dict[str, Any]) -> dict[str, Any] | None:
 
     El evento de la variante solo trae `parent_id`, así que el resto se lee de
     wp_posts. Devuelve None si no es variación o si el padre no se puede leer.
+
+    RESPALDO (14-ago-2026): si el payload NO trae `parent_id`, el padre se
+    resuelve por `post_parent` desde el id del propio evento. El 13-ago dos
+    variantes recién creadas (`CALZ-0318-EST`, `COM-0027-MET`) se registraron
+    solas y sus padres no; depender de un campo que el canal puede omitir según
+    el tema del evento deja el hueco abierto, y el dato está en wp_posts de
+    todos modos.
     """
+    from services import wp_db
     try:
         padre_id = int(payload.get("parent_id") or 0)
     except (TypeError, ValueError):
-        return None
+        padre_id = 0
+    if padre_id <= 0:
+        try:
+            propio = int(payload.get("id") or 0)
+        except (TypeError, ValueError):
+            return None
+        if propio <= 0:
+            return None
+        padre_id = await run_in_threadpool(wp_db.padre_de, propio) or 0
     if padre_id <= 0:
         return None
-    from services import wp_db
     ficha = await run_in_threadpool(wp_db.ficha_basica, padre_id)
     if not ficha:
         return None

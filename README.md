@@ -8034,6 +8034,43 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.164.0 — El seam del padre: dos huecos que el 14-ago dejó a la vista
+
+Investigación de las 4 altas que el ETL tuvo que hacer el 14-ago. Son DOS causas
+distintas, no una.
+
+**Dos eran padres de variantes nuevas** (`CALZ-0318`, `COM-0027`): la variante
+se creó 17:15:49 UTC, el padre cambió de fecha 3 s después, la variante SÍ se
+registró en vivo y el padre no. Es el patrón que arregló la v0.103.0 — y el
+arreglo está intacto: se comprobó tocando `CALZ-0318-EST` y el padre entró un
+segundo después (02:38:56 / 02:38:57). Así que el hueco estaba en otro lado.
+
+**EL CANDADO SELLABA ANTES DE ESCRIBIR.** `_registrar_acta` marcaba la foto en
+`_WOO_ULTIMO` y DESPUÉS llamaba a `core_write.registrar`. Un fallo de escritura
+dejaba el SKU sellado igual, y como la foto de un padre (nombre, estado, wc_id)
+casi nunca cambia, todos los eventos siguientes se descartaban por "sin cambios":
+el padre se quedaba sin acta hasta que el proceso reiniciara. Misma trampa del
+12-ago — un caché que dice "ya está atendido" sin saberlo. Ahora se sella
+DESPUÉS del write.
+
+**Y el padre ya no depende de que el canal mande `parent_id`.** Si el payload no
+lo trae, se resuelve por `post_parent` desde el id del propio evento
+(`wp_db.padre_de`). El vínculo vive en wp_posts; no hacía falta confiar en un
+campo que el canal puede omitir según el tema.
+
+**Las otras dos** (`COC-0011`, `COC-0012`) nacieron 19:41 UTC, dentro de la
+tormenta de deploys fallidos del `python-multipart`. Hipótesis no comprobable
+hoy —los eventos ya no están—, pero encaja: mientras el backend no arranca, los
+webhooks de esa ventana se pierden. Daño colateral de aquel bloqueo.
+
+Probado contra datos reales: `padre_de` acierta en las dos variantes y devuelve
+None en producto simple / id inexistente; `_acta_del_padre` resuelve igual con y
+sin `parent_id`; y el candado NO sella tras un fallo (el siguiente evento
+reintenta) pero sí tras un write bueno (el repetido no vuelve a escribir).
+Versión 0.164.0.
+
+---
+
 ### v0.163.0 — Las actas de los dos ETLs dejan de timbrar en Slack (Eduardo)
 
 Petición de Eduardo tras tres días de actas rojas. Nuevo `_DOMINIOS_SIN_ALERTA`
