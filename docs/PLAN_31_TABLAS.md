@@ -129,7 +129,7 @@ El producto de este paso NO son las tres tablas: es el **instructivo de seis
 pasos** (gemela → copia → comparación → escritor → lector → verificación) que se
 va a usar en todo lo demás.
 
-### PASO 2 — `stock_watch_foto` (fuente, no caché) — **CÓDIGO LISTO (v0.166.0)**
+### PASO 2 — `stock_watch_foto` (fuente, no caché) — **CÓDIGO LISTO (v0.167.0)**
 
 Que el vigilante escriba su foto directo en kubera. Correrlo unos días
 escribiendo en los dos lados y comparando, y solo entonces apagar el viejo.

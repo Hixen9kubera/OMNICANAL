@@ -9553,7 +9553,7 @@ dos (13,735 + 971 + 1,485, cero diferencias); gemelas contra el par MySQL
 **11/11**, incluyendo que la ventana de visitas no se mezcle entre 7, 30 y 60
 días. Versión 0.165.0.
 
-### v0.166.0 — Paso 2: la foto del vigilante de inventario sale de MySQL
+### v0.167.0 — Paso 2: la foto del vigilante de inventario sale de MySQL
 
 Segunda tabla de las 31 ([docs/PLAN_31_TABLAS.md](docs/PLAN_31_TABLAS.md)) y la
 más caliente que quedaba: `stock_watch_foto` (14,640 filas) →
@@ -9633,4 +9633,4 @@ casa ya existe. No se hace ahora para no mezclar dos flujos vivos en un cambio.
 Probado: migración aplicada a sandbox y a producción; backfill verificado en los
 dos (**14,640 filas × 4 columnas = 58,560 celdas idénticas, cero diferencias**);
 arnés de comparación en verde en los cinco bloques, incluidas **0 publicaciones
-`general` desfasadas** contra la foto. Versión 0.166.0.
+`general` desfasadas** contra la foto. Versión 0.167.0.
