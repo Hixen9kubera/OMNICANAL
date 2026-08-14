@@ -9456,6 +9456,38 @@ que usa exactamente el mismo indicador.
 
 Sin migraciones y sin variables nuevas. Versión 0.153.0.
 
+### v0.167.0 — Temu: 2,086 reglas de campo, y los duros son tres conceptos
+
+Pieza 3 de las seis. `scripts/cargar_temu_requisitos.py` lee
+`bg.local.goods.template.get` de las **144 categorías en uso** y llena
+`channel.field_requirements`: 2,098 atributos + 5 filas globales.
+
+**Las cinco globales son las únicas que Temu valida de verdad.** El sondeo del
+13-ago quitó un campo a la vez en 12 altas de prueba y **las 12 publicaron**. De
+todo el payload solo se hacen respetar `goodsName`, `externalGoodsId`,
+`externalSkuId`, `images` y `basePrice`. Lo demás no truena al publicar — pero
+un producto sin sus atributos cae en "Incompleto" y no se vende, que es
+justamente donde están 90 de nuestras 160 publicaciones.
+
+**Duro vs condicional, ahora medido.** De los obligatorios: **285 duros y 260
+condicionales**. Los duros son ~2 por hoja y se concentran en tres conceptos,
+tal como predecía el manual:
+
+| Atributo duro | En cuántas hojas |
+|---|---|
+| Material | 72 |
+| Características de la batería | 55 |
+| Modo de alimentación | 39 |
+| Fuente de alimentación | 36 |
+
+Las tres listas de energía traen salida de emergencia ("Sin electricidad", "Sin
+batería"), así que **un producto no eléctrico se cierra con Material + dos
+"no"** — y el catálogo Kubera es casi todo no eléctrico. Cada fila guarda su
+`pid` y la lista CERRADA de `vid`+valor: es lo que impide que la IA invente un
+valor (10 inventados en 89 productos durante la prueba del 13-ago).
+
+---
+
 ### v0.166.0 — Temu deja de ser una maqueta: 160 publicaciones vivas en el panel
 
 La pestaña Temu mostraba **datos de ejemplo** (`ejemplos.py`) encima de un canal
