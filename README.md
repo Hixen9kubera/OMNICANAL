@@ -10282,3 +10282,34 @@ que hoy fallarían con el código viejo.
 las otras dos se quedan como están.
 
 Sin migraciones en producción y sin variables nuevas. Versión 0.177.0.
+
+### v0.178.0 — El registro de la venta va antes de la compensación
+
+Cambio de UNA cosa: en `pedidos_ml._sincronizar_serializado`, el bloque que
+escribe `channel.orders` (y su espejo) se mueve **antes** de la compensación
+FULL/FBA. Nada más cambia — verificado, es un movimiento puro: los dos bloques
+quedan byte a byte idénticos y el resto del archivo intacto; la diferencia son
+las 16 líneas del comentario nuevo.
+
+**Por qué.** Con el orden viejo, si la compensación se caía —o si su candado
+PROPAGABA, que es justo lo que el paso 0 viene a hacer— la excepción subía con
+el pedido **ya creado en Woo** y la venta **sin registrar en kubera**.
+
+El RECLAMO de v0.176.0 evita que eso se convierta en duplicado: el reintento
+pierde el reclamo, le pregunta a Woo y adopta el pedido que ya existía. Pero no
+evita lo otro — la venta se queda sin registro hasta que un reintento lo consiga,
+y cada reintento paga los 4 s de espera del perdedor. **Los dos arreglos son
+complementarios, no alternativos**, y este es la mitad que faltaba.
+
+Registrar primero pone el registro a salvo de todo lo que venga después: la
+compensación ahora puede fallar RUIDOSAMENTE sin arrastrar la venta. Que es la
+precondición para que el paso 0 pueda quitar el `except: return False` sin
+recrear el desastre que dice prevenir.
+
+**Es seguro por construcción**, y por eso el movimiento se pudo hacer sin tocar
+una línea: nada del registro depende de la compensación (`encabezado` sale de
+`orden`/`payload`/`comision`/`skus`, todos calculados antes de crear en Woo) y la
+compensación no lee nada que el registro produzca. `protegido` se define dentro
+del bloque de compensación y solo se usa ahí — verificado.
+
+Sin migraciones ni variables nuevas. Versión 0.178.0.

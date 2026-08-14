@@ -526,38 +526,22 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                 orders_write.liberar, cnl, cta, str(order_id))
         return {"ok": False, "motivo": f"error al crear pedido: {exc}"}
 
-    # COMPENSACIÓN de pedidos FULL/FBA (opción A, 28-jul). La meta
-    # `_order_stock_reduced` NO se puede escribir por REST (Woo la filtra), así
-    # que un pedido protegido que CAMBIA de estado sí dispara la reducción de
-    # Woo. Se le devuelven las piezas leyendo lo que Woo realmente descontó.
-    # Los que nacen ya en su estado final (los FULL de ML) no reducen, y ahí
-    # `_reduced_stock` viene vacío: la compensación simplemente no hace nada.
-    protegido = bool(orden.get("es_full") or proteger_stock)
-
-    # CANCELACIÓN de un pedido protegido que YA compensamos: Woo repone las
-    # piezas por su cuenta (usa `_reduced_stock`, que sigue puesto). Como ya se
-    # las habíamos devuelto nosotros, esa reposición las duplicaría → se restan.
-    # El candado viejo (poner `_order_stock_reduced=no` antes de cancelar)
-    # tampoco funcionaba: esa meta la filtra la REST igual que la de alta.
-    if protegido and payload["status"] == "cancelled" and foto_previa:
-        try:
-            rev = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"],
-                                                   signo=-1, filas=foto_previa)
-            if rev.get("compensado"):
-                log.info("Pedido %s cancelado: revertidas %d pza(s) de la compensación",
-                         order_id, rev["compensado"])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("reversión de compensación de %s falló: %s", order_id, exc)
-
-    if protegido and payload["status"] != "cancelled" and not _ya_compensado(wc_id):
-        try:
-            comp = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"])
-            if comp.get("compensado"):
-                log.info("Pedido %s (FULL/FBA): compensadas %d pza(s) que Woo había descontado",
-                         order_id, comp["compensado"])
-        except Exception as exc:  # noqa: BLE001 — nunca rompe la venta
-            log.warning("compensación FULL/FBA de %s falló: %s", order_id, exc)
-
+    # ORDEN (v0.177.0): el REGISTRO va ANTES de la compensación, no al revés
+    # como estaba. Con el orden viejo, si la compensación se caía —o si su
+    # candado PROPAGABA, que es lo que el paso 0 viene a hacer— la excepción
+    # subía con el pedido YA creado en Woo y la venta SIN registrar en kubera.
+    #
+    # El reclamo (v0.176.0) evita que eso DUPLIQUE: el reintento pierde el
+    # reclamo, le pregunta a Woo y adopta el pedido. Pero no evita que la venta
+    # se quede sin registro hasta que un reintento lo consiga, pagando 4 s de
+    # espera cada vez. Los dos arreglos son complementarios, no alternativos.
+    #
+    # Registrar primero pone el registro a salvo de todo lo que venga después:
+    # la compensación puede fallar RUIDOSAMENTE sin arrastrar la venta.
+    # Es seguro por construcción: nada del registro depende de la compensación
+    # (`encabezado` sale de `orden`/`payload`/`comision`/`skus`, calculados
+    # todos antes de crear en Woo), y la compensación no lee nada que el
+    # registro produzca.
     try:
         def _mysql() -> None:
             with db.get_cursor() as cur:
@@ -637,6 +621,38 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         await asyncio.to_thread(_registrar)
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo registrar pedidos_ml %s: %s", order_id, exc)
+
+    # COMPENSACIÓN de pedidos FULL/FBA (opción A, 28-jul). La meta
+    # `_order_stock_reduced` NO se puede escribir por REST (Woo la filtra), así
+    # que un pedido protegido que CAMBIA de estado sí dispara la reducción de
+    # Woo. Se le devuelven las piezas leyendo lo que Woo realmente descontó.
+    # Los que nacen ya en su estado final (los FULL de ML) no reducen, y ahí
+    # `_reduced_stock` viene vacío: la compensación simplemente no hace nada.
+    protegido = bool(orden.get("es_full") or proteger_stock)
+
+    # CANCELACIÓN de un pedido protegido que YA compensamos: Woo repone las
+    # piezas por su cuenta (usa `_reduced_stock`, que sigue puesto). Como ya se
+    # las habíamos devuelto nosotros, esa reposición las duplicaría → se restan.
+    # El candado viejo (poner `_order_stock_reduced=no` antes de cancelar)
+    # tampoco funcionaba: esa meta la filtra la REST igual que la de alta.
+    if protegido and payload["status"] == "cancelled" and foto_previa:
+        try:
+            rev = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"],
+                                                   signo=-1, filas=foto_previa)
+            if rev.get("compensado"):
+                log.info("Pedido %s cancelado: revertidas %d pza(s) de la compensación",
+                         order_id, rev["compensado"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("reversión de compensación de %s falló: %s", order_id, exc)
+
+    if protegido and payload["status"] != "cancelled" and not _ya_compensado(wc_id):
+        try:
+            comp = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"])
+            if comp.get("compensado"):
+                log.info("Pedido %s (FULL/FBA): compensadas %d pza(s) que Woo había descontado",
+                         order_id, comp["compensado"])
+        except Exception as exc:  # noqa: BLE001 — nunca rompe la venta
+            log.warning("compensación FULL/FBA de %s falló: %s", order_id, exc)
 
     # FAN-OUT del stock DROP: esta venta movió el almacén PROPIO, así que los
     # demás canales tienen que enterarse (si no, SANCORFASHION y Amazon siguen
