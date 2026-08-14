@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # se genera el título y la descripción, y los atributos entran cuando el SKU
     # ya tenga categoría en el canal.
     tiktok_ia_en_crear: bool = False
+    # Lo mismo para Temu. Mismo matiz que TikTok y más marcado: un producto
+    # recién creado no está publicado en Temu, así que no tiene hoja de
+    # categoría — sin hoja no hay atributos que pedir y solo sale el texto.
+    temu_ia_en_crear: bool = False
     # ¿El webhook de TikTok CREA pedidos en WooCommerce? Apagado, el receptor
     # sigue en modo observar (registra y no escribe). Encenderlo toca inventario
     # y contabilidad: los pedidos de TikTok DESCUENTAN stock, porque la

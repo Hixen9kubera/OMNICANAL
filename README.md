@@ -9456,6 +9456,50 @@ que usa exactamente el mismo indicador.
 
 Sin migraciones y sin variables nuevas. Versión 0.153.0.
 
+### v0.168.0 — Temu escribe con IA: el mismo contrato, con su cascada
+
+Piezas 2 y 4. `services/temu_ia.py` es el ADAPTADOR que conecta los prompts y
+validadores que ya existían (`temu_contenido.py`) con el panel: resuelve la
+categoría, pide la plantilla real, llama a la IA, valida y guarda en
+`enrich.channel_content`. Mismo papel que `tiktok_ia.py` y `amazon_ia.py`.
+
+**Por qué son tres llamadas y a veces cuatro** — no es diseño, es el orden que
+impone Temu:
+
+1. La categoría va primero porque **la categoría determina qué atributos
+   existen**: `template.get` solo responde en hojas.
+2. El contenido, ya con la hoja sabida.
+3. Los atributos **en dos vueltas**, porque la cascada es circular: qué
+   condicionales se activan depende de lo que se contestó en los duros. No se
+   puede preguntar "¿qué voltaje?" antes de saber si el producto se enchufa.
+   La segunda vuelta solo ocurre si algo se destrabó (13 de 89 productos).
+
+**Probado contra un producto real** (`OFI-0057-NEG`, un pistón de gas):
+
+| | |
+|---|---|
+| Categoría | 12438, resuelta desde la publicación |
+| Título | 85 caracteres |
+| Atributos validados | 9, incluido "Uso sin electricidad" |
+| Llamadas a la IA | 2 (no necesitó vuelta condicional) |
+| Obligatorios sin llenar | **ninguno** → no caería en Borrador |
+
+Entendió que es una **refacción** y no una silla, que es justo donde el
+recomendador de Temu se equivoca.
+
+**El chequeo que evita el Borrador.** `faltantes()` dice qué obligatorios
+quedaron vacíos; si no viene vacío, publicar deja que Temu autocomplete y el
+producto **cae en Borrador en vez de publicarse**. Se devuelve como aviso al
+panel en vez de esconderse.
+
+También `scripts/cargar_temu_categorias.py`: recorre el árbol con
+`bg.local.goods.cats.get` (`language=es` da los nombres traducidos) y llena
+`channel.categories` con `path`, `is_leaf` y `disponibilidad`. `is_leaf` importa
+porque el selector solo debe ofrecer hojas — ofrecer una intermedia es ofrecer
+un error.
+
+---
+
 ### v0.167.0 — Temu: 2,086 reglas de campo, y los duros son tres conceptos
 
 Pieza 3 de las seis. `scripts/cargar_temu_requisitos.py` lee
