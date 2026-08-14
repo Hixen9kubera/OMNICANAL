@@ -121,7 +121,18 @@ async def llamar(tipo: str, datos: dict[str, Any] | None = None,
     if not d.get("success", False):
         raise RuntimeError(f"Temu {tipo}: errorCode={d.get('errorCode')} "
                            f"{d.get('errorMsg') or ''}".strip())
-    return d.get("result") or {}
+    res = d.get("result") or {}
+    # ⚠️ `success: true` NO siempre significa éxito. Hay endpoints —`goods.delete`
+    # es el caso medido— que contestan bien por fuera y traen el veredicto REAL
+    # anidado en `result.success`, con el motivo en `result.errorMsg` ("data
+    # under review cannot be deleted"). Quien solo mire el de arriba dará por
+    # hecho un cambio que no ocurrió. Solo se levanta si viene explícitamente en
+    # falso: la mayoría de los endpoints no traen esa llave.
+    if isinstance(res, dict) and res.get("success") is False:
+        raise RuntimeError(
+            f"Temu {tipo}: la llamada respondió OK pero la operación FALLÓ "
+            f"(result.success=false): {res.get('errorMsg') or res.get('errorCode') or ''}")
+    return res
 
 
 async def listar_productos(cubetas: tuple[int, ...] = CUBETAS) -> list[dict[str, Any]]:

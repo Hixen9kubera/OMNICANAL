@@ -9939,6 +9939,41 @@ lector pregunta "¿ya procesé esta URL?" sin filtrar por SKU.
 
 Sin migraciones ni variables nuevas. Versión 0.172.0.
 
+### v0.174.0 — Publicar en Temu desde el panel, sin quemar el SKU
+
+Pieza 5. `services/publicar_temu.py` con el par `preview()` / `confirmar()`, como
+TikTok. El pipeline por tandas del otro chat (`scripts/publicar_temu.py`) sigue
+para lotes; esto es el otro camino: un producto, un botón, y el payload a la
+vista antes de mandarlo.
+
+**El payload es el de ellos a propósito** — ya está verificado contra altas
+reales (`ACC-0017-MUL` → `608007295444247`) y trae las cinco decisiones que
+costó medir: `extCatName` y no `catId` (v3 ignora en silencio lo que no
+conoce: se pidió 1761 y publicó en 1769), `basePrice` en decimal de 2 cifras
+(en centavos es lo que dejó dos productos a 100×), `packageInfo` aunque la doc
+lo dé por opcional (sin él Temu asume 100 g y 10×20×30 y cobra volumétrico),
+`variations` por NOMBRE (Temu acuña el `specId` solo, sin `spec.id.get`), y
+`attributes` como texto validado por `vid`.
+
+**Los dos candados contra el quemado.** Un fallo DESPUÉS de que Temu acepta el
+alta quema el `externalSkuId` para siempre y borrar no lo libera:
+
+1. `out.sn.check` antes de mandar nada. Si el SKU ya existe se ABORTA y se dice
+   su `goodsId`. La vista previa también lo advierte, antes de que nadie apriete.
+2. El payload se registra en la bitácora ANTES de salir, no después.
+
+**Y un defecto propio corregido gracias a su entrega:** `services/temu.py` daba
+por buena cualquier respuesta con `success: true` de primer nivel. Su medición
+mostró que hay endpoints —`goods.delete` es el caso— que contestan bien por
+fuera y traen el veredicto REAL anidado en `result.success` ("data under review
+cannot be deleted"). Ahora se lee el de adentro: un cambio que no ocurrió ya no
+se reporta como hecho.
+
+Además: "Mejorar con IA" ya despacha a `temu_ia` (`ia_generadores`), y el
+Estudio habilita Temu (`esTemu`) para que el botón exista.
+
+---
+
 ### v0.173.0 — Paso 4 cerrado: la caché de imágenes lee de kubera, y `?fuente=ml` deja de mentir
 
 **1. El aviso de la vista detenida.** `GET /api/ventas/resumen?fuente=ml` sirve

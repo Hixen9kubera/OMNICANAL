@@ -178,8 +178,11 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
     if canal == "tiktok":
         from services import publicar_tiktok
         return await publicar_tiktok.preview(req)
+    if canal == "temu":
+        from services import publicar_temu
+        return await publicar_temu.preview(req)
     return {"ok": False, "canal": canal,
-            "motivo": "Canal no soportado todavía (ML, Amazon y TikTok)."}
+            "motivo": "Canal no soportado todavía (ML, Amazon, TikTok y Temu)."}
 
 
 async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
@@ -443,7 +446,11 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     if canal == "tiktok":
         from services import publicar_tiktok
         return await publicar_tiktok.confirmar(req)
-    return {"ok": False, "motivo": "Canal no soportado todavía (ML, Amazon y TikTok)."}
+    if canal == "temu":
+        from services import publicar_temu
+        return await publicar_temu.confirmar(req)
+    return {"ok": False,
+            "motivo": "Canal no soportado todavía (ML, Amazon, TikTok y Temu)."}
 
 
 def _error_ml(resp: dict[str, Any]) -> str | None:

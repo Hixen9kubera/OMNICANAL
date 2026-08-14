@@ -351,6 +351,13 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
     if canal == "tiktok":
         from services import tiktok_ia
         return await tiktok_ia.mejorar(producto)
+    # Temu, desde v0.168.0: mismo contrato, más su cascada. Los atributos van en
+    # DOS vueltas porque los condicionales dependen de lo contestado en los
+    # duros — preguntarlos todos de golpe llena voltajes de productos sin
+    # electricidad, y eso es lo que manda el producto a Borrador.
+    if canal == "temu":
+        from services import temu_ia
+        return await temu_ia.mejorar(producto)
 
     cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
     user = (

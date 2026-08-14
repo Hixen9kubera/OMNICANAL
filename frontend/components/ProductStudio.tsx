@@ -458,9 +458,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const esAmazon = canal === AMAZON;
   const esML = canal === "mercado_libre";
   const esTikTok = canal === "tiktok";
-  // Los dos canales cuyo "Mejorar con IA" devuelve parte: qué no se aplicó, qué
+  const esTemu = canal === "temu";
+  // Los canales cuyo "Mejorar con IA" devuelve parte: qué no se aplicó, qué
   // marcas se sustituyeron y cuántos obligatorios de su categoría cubre.
-  const conParteIA = esAmazon || esTikTok;
+  const conParteIA = esAmazon || esTikTok || esTemu;
 
   // Estado REAL de publicación (fuente de verdad en DB: ml_progress / amazon_progress).
   const mlCuentas = useMemo(
@@ -673,10 +674,16 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // TikTok entra en v0.144.0: el botón sirve para crear y para actualizar, y el
   // backend decide cuál según haya o no `listing_id` — crear sobre un producto
   // que ya existe genera un DUPLICADO que hay que borrar a mano en TikTok.
-  const puedeActualizar = esML || esAmazon || esTikTok;
+  // Temu entra en v0.174.0. Ojo con la diferencia: en TikTok el botón sirve
+  // para crear y para actualizar, pero en Temu un alta repetida devuelve
+  // 150010090 y QUEMA el SKU para siempre. Por eso el backend consulta
+  // `out.sn.check` antes de mandar nada y la vista previa lo advierte.
+  const puedeActualizar = esML || esAmazon || esTikTok || esTemu;
   const tiktokPublicado = Boolean(datosCanal?.item_id);
+  const temuPublicado = Boolean(datosCanal?.item_id);
   const accionLabel =
-    (esML && mlPublicado) || (esAmazon && amazonPublicado) || (esTikTok && tiktokPublicado)
+    (esML && mlPublicado) || (esAmazon && amazonPublicado) ||
+    (esTikTok && tiktokPublicado) || (esTemu && temuPublicado)
       ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => aNumero(v);
