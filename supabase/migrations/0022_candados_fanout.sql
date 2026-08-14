@@ -44,19 +44,41 @@
 -- Va como COLUMNA y no como tabla: es estado de ESE pedido, y el pedido ya vive
 -- aquí. Timestamp y no boolean — "cuándo" contesta "si" y además sirve para
 -- auditar; un `true` sin fecha no se puede reconciliar contra `fanout_log`.
+-- DOS columnas y no una: la compensación NO es un sí/no.
+--
+-- El código escribe TRES acciones distintas (`full_compensado`,
+-- `full_compensado_error`, `full_compensado_revertido`, pedidos_ml.py:378-379)
+-- y `_ya_compensado` solo mira la primera. Con una columna booleana —o un solo
+-- timestamp— se heredaría el bug con checksum: tras una REVERSIÓN el candado
+-- seguiría diciendo "ya compensado" y la próxima compensación legítima no
+-- ocurriría. Lo marcó el consejo (opus) y tiene razón.
 alter table channel.orders
-    add column if not exists stock_compensado_at timestamptz;
+    add column if not exists stock_compensado_at timestamptz,
+    add column if not exists stock_revertido_at  timestamptz;
 
 comment on column channel.orders.stock_compensado_at is
   'Cuándo se le devolvieron a Woo las piezas que descontó de este pedido '
-  'FULL/FBA. NULL = nunca se compensó. Es el candado de pedidos_ml.'
-  '_ya_compensado, que antes vivía en fanout_log (accion=full_compensado).';
+  'FULL/FBA. NULL = nunca se compensó. Candado de pedidos_ml._ya_compensado, '
+  'que antes vivía en fanout_log (accion=full_compensado).';
 
--- El candado busca por `wc_order_id` (el id del pedido en WooCommerce), que no
--- es la PK de esta tabla —la PK es (canal, cuenta, external_order_id)—. Sin
--- este índice, cada webhook haría un seq scan.
-create index if not exists ix_orders_wc_order_id
-    on channel.orders (wc_order_id) where wc_order_id is not null;
+comment on column channel.orders.stock_revertido_at is
+  'Cuándo se DESHIZO esa compensación (el pedido se canceló y Woo repuso por '
+  'su cuenta, así que hubo que volver a restar). Compensado vale solo si es '
+  'posterior a la última reversión — por eso son dos columnas y no un boolean.';
+
+-- ⚠️ DEUDA QUE ESTA MIGRACIÓN **NO** RESUELVE, y que hay que decir en voz alta:
+-- una compensación PARCIAL (unas líneas devueltas, otras con error) hoy cuenta
+-- como hecha, así que las líneas fallidas NO se reintentan nunca. Ese defecto
+-- YA EXISTE en `fanout_log` y se hereda tal cual: mudarlo de casa no lo cura y
+-- curarlo aquí sería cambiar el comportamiento del flujo de pedidos dentro de
+-- un paso que es de mudanza. Queda anotado como pendiente propio.
+
+-- NO se crea índice por `wc_order_id`, y la razón cambió con v0.176.0:
+-- desde el RECLAMO, `wc_order_id` es NULL a propósito mientras el pedido está
+-- reclamado y todavía no creado. Buscar la compensación por esa columna fallaría
+-- justo en los casos revueltos (relevo de contenedores, reintento de ML). El
+-- candado busca por la PK `(canal, cuenta, external_order_id)`, que `sincronizar`
+-- tiene en mano y que NUNCA es nula. Menos superficie y más correcto.
 
 -- ── 2) Operaciones de bodega ya aplicadas ──────────────────────────────────
 -- Movimientos REALES de mercancía en el almacén de ML / Amazon: `full_ingreso`,

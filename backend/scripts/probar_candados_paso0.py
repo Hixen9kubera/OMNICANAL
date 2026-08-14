@@ -69,10 +69,25 @@ ops = sdb.fetch_all("select operacion_id, accion from ops.fulfillment_operations
 check("toda operación migrada se reconoce como APLICADA",
       all(cr.ya_aplicada(o["operacion_id"]) for o in ops), f"{len(ops)} operaciones")
 
-comp = sdb.fetch_all("select wc_order_id from channel.orders "
+comp = sdb.fetch_all("select canal, cuenta, external_order_id from channel.orders "
                      "where stock_compensado_at is not null")
 check("todo pedido compensado se reconoce como COMPENSADO",
-      all(cr.ya_compensado(r["wc_order_id"]) for r in comp), f"{len(comp)} pedidos")
+      all(cr.ya_compensado(r["canal"], r["cuenta"], r["external_order_id"])
+          for r in comp), f"{len(comp)} pedidos")
+
+# El caso que el consejo marcó: tras una REVERSIÓN el pedido vuelve a ser
+# compensable. Con un boolean —o un solo timestamp— seguiría diciendo "ya
+# compensado" para siempre y la compensación legítima no ocurriría nunca.
+if comp:
+    r0 = comp[0]
+    llave = (r0["canal"], r0["cuenta"], r0["external_order_id"])
+    cr.marcar_revertido(*llave)
+    check("tras REVERTIR, el pedido deja de contar como compensado",
+          cr.ya_compensado(*llave) is False, "un bool se habría quedado en True")
+    cr.marcar_compensado(*llave)
+    check("y al compensar de nuevo, vuelve a contar", cr.ya_compensado(*llave) is True)
+    sdb.execute("update channel.orders set stock_revertido_at = null "
+                "where canal=%s and cuenta=%s and external_order_id=%s", llave)
 
 # ── T2 · kubera caída: TIENE que propagar ──────────────────────────────────
 print("\nT2 · kubera CAÍDA: ¿propaga o inventa un 'no lo hice'?")
@@ -85,7 +100,7 @@ def _truena(*_a, **_k):
 
 sdb.fetch_one = sdb.fetch_all = sdb.execute = _truena
 try:
-    for nombre, fn, arg in (("ya_compensado", cr.ya_compensado, 12345),
+    for nombre, fn, arg in (("ya_compensado", lambda a: cr.ya_compensado("mercado_libre", "BEKURA", a), "orden-x"),
                             ("ya_aplicada", cr.ya_aplicada, "op-xyz"),
                             ("marcas_fba", cr.marcas_fba, ["SKU-X"])):
         try:
@@ -102,7 +117,8 @@ finally:
 # ── T3 · lo desconocido es "no aplicada", y está bien ──────────────────────
 print("\nT3 · operación nunca vista: 'no aplicada' es la respuesta correcta")
 check("un operacion_id inventado da False", cr.ya_aplicada("no-existe-jamas-0000") is False)
-check("un wc_id inventado da False", cr.ya_compensado(999_999_999) is False)
+check("una orden inventada da False",
+      cr.ya_compensado("mercado_libre", "BEKURA", "no-existe-0000") is False)
 
 # ── T4 · el candado nuevo no depende de la bitácora ────────────────────────
 print("\nT4 · la bitácora ya no existe: ¿el candado la busca o la recrea?")

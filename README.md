@@ -10227,3 +10227,58 @@ así que va doble-escritura + comparación one-shot + la matriz T1-T6.
 
 Informes completos en `agents/counselors/1786735774-revisin-paso-0-*`.
 Versión 0.175.0.
+
+### v0.177.0 — Paso 0 se rebasa sobre el RECLAMO, y el reclamo le cambia el diseño
+
+Rebasado sobre `da3f720` (v0.176.0, el reclamo). Sigue sin conectarse nada:
+`0022` está **solo en sandbox** y ningún candado usa el código nuevo todavía.
+
+**El reclamo cierra la ventana que el consejo marcó como bloqueante — pero no
+todo el problema.** Con el reclamo, si `_ya_compensado` propaga después de crear
+en Woo, ML reintenta, el reintento pierde el reclamo, espera 4 s y **le pregunta
+a Woo**, encuentra el pedido y lo adopta. No hay duplicado. El ancla dejó de ser
+el registro y pasó a ser **la fila del reclamo, que se inserta ANTES de tocar
+Woo**.
+
+Lo que el reclamo NO cubre y sigue haciendo falta: con la compensación
+propagando, `_registrar()` nunca corre, así que la venta **no queda en kubera**
+hasta que un reintento lo logre — y cada reintento paga los 4 s de espera. El
+arreglo sigue siendo **mover el registro antes de la compensación**. Los dos
+cambios son complementarios, no alternativos.
+
+**Y el reclamo obliga a cambiar mi diseño en un punto concreto.** Desde
+v0.176.0, `wc_order_id` es **NULL a propósito** mientras el pedido está reclamado
+y aún no creado — es la señal de "reclamado, sin pedido". Buscar la compensación
+por esa columna fallaría **justo en los casos revueltos**: el relevo de
+contenedores de un deploy y el reintento de ML.
+
+    ya_compensado(canal, cuenta, external_order_id)   ← la PK, nunca nula
+    ya_compensado(wc_id)                              ← lo que iba a hacer
+
+De paso desaparece el índice `ix_orders_wc_order_id` que la migración creaba: no
+hace falta y habría sido el índice equivocado.
+
+**Dos columnas, no una** (lo marcó opus y tiene razón). La compensación escribe
+TRES acciones distintas —`full_compensado`, `_error`, `_revertido`— y el candado
+viejo solo mira la primera: **tras una reversión seguiría diciendo "ya
+compensado" para siempre**. Ahora hay `stock_compensado_at` y
+`stock_revertido_at`, y compensado vale solo si es posterior a la última
+reversión. La prueba nueva lo cubre: revertir → deja de contar; compensar de
+nuevo → vuelve a contar.
+
+**Una deuda que se hereda y se dice en voz alta:** una compensación PARCIAL
+(unas líneas devueltas, otras con error) cuenta como hecha, así que las líneas
+fallidas no se reintentan nunca. Ese defecto **ya existe** en `fanout_log`;
+mudarlo de casa no lo cura, y curarlo aquí sería cambiar el comportamiento del
+flujo de pedidos dentro de un paso que es de mudanza. Queda como pendiente
+propio, escrito en la migración.
+
+**Sandbox: 8/8**, incluidos los dos casos nuevos de reversión. T2 (kubera caída →
+propaga) y T4 (el candado nuevo ni busca ni recrea la bitácora) siguen siendo las
+que hoy fallarían con el código viejo.
+
+**Choque de versión, de paso:** tres commits distintos salieron como v0.175.0
+(el mío, Temu y las medidas). Esta entrada renumera solo la mía hacia adelante;
+las otras dos se quedan como están.
+
+Sin migraciones en producción y sin variables nuevas. Versión 0.177.0.

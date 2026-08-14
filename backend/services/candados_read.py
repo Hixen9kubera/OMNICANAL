@@ -40,27 +40,51 @@ from services import supabase_db as sdb
 
 # ── 1) ¿Ya le devolvimos el stock a este pedido? ────────────────────────────
 
-def ya_compensado(wc_id: int) -> bool:
-    """Gemela de `pedidos_ml._ya_compensado`. PROPAGA si la base falla."""
+def ya_compensado(canal: str, cuenta: str, external_order_id: str) -> bool:
+    """Gemela de `pedidos_ml._ya_compensado`. PROPAGA si la base falla.
+
+    SE BUSCA POR LA PK, no por `wc_order_id`. Desde el RECLAMO (v0.176.0)
+    `wc_order_id` es NULL a propósito mientras el pedido está reclamado y aún no
+    creado, así que buscar por ahí fallaría justo en los casos revueltos: el
+    relevo de contenedores de un deploy y el reintento de ML. La PK
+    `(canal, cuenta, external_order_id)` la tiene `sincronizar` en mano y nunca
+    es nula.
+
+    "Compensado" es compensado Y NO revertido después. Dos columnas y no un
+    boolean: tras una reversión el pedido vuelve a ser compensable, y un `bool`
+    diría que no para siempre.
+    """
     fila = sdb.fetch_one(
-        "select stock_compensado_at from channel.orders "
-        "where wc_order_id = %s and stock_compensado_at is not null limit 1",
-        (int(wc_id),))
-    return bool(fila)
+        """select stock_compensado_at, stock_revertido_at from channel.orders
+            where canal = %s and cuenta = %s and external_order_id = %s""",
+        (canal, cuenta, str(external_order_id)))
+    if not fila or not fila.get("stock_compensado_at"):
+        return False
+    rev = fila.get("stock_revertido_at")
+    return rev is None or rev < fila["stock_compensado_at"]
 
 
-def marcar_compensado(wc_id: int, cuando: datetime | None = None) -> int:
-    """Sella el pedido como compensado. Idempotente por `coalesce`.
+def marcar_compensado(canal: str, cuenta: str, external_order_id: str,
+                      cuando: datetime | None = None) -> int:
+    """Sella el pedido como compensado.
 
-    `coalesce` y no asignación directa: si el pedido ya estaba compensado, la
-    fecha ORIGINAL se conserva. Pisarla con la de hoy borraría la única pista
-    de cuándo pasó de verdad — el error que costó corregir 21,816 filas de
-    `ops.channel_submissions`.
+    Aquí SÍ pisa (sin `coalesce`): una compensación posterior a una reversión es
+    un evento nuevo y su fecha tiene que ganarle a la reversión, o el candado de
+    arriba seguiría leyendo "revertido después" y compensaría en bucle.
     """
     return sdb.execute(
-        "update channel.orders set stock_compensado_at = "
-        "coalesce(stock_compensado_at, coalesce(%s, now())) "
-        "where wc_order_id = %s", (cuando, int(wc_id)))
+        """update channel.orders set stock_compensado_at = coalesce(%s, now())
+            where canal = %s and cuenta = %s and external_order_id = %s""",
+        (cuando, canal, cuenta, str(external_order_id)))
+
+
+def marcar_revertido(canal: str, cuenta: str, external_order_id: str,
+                     cuando: datetime | None = None) -> int:
+    """La compensación se deshizo: el pedido vuelve a ser compensable."""
+    return sdb.execute(
+        """update channel.orders set stock_revertido_at = coalesce(%s, now())
+            where canal = %s and cuenta = %s and external_order_id = %s""",
+        (cuando, canal, cuenta, str(external_order_id)))
 
 
 # ── 2) ¿Ya aplicamos este movimiento de bodega? ─────────────────────────────

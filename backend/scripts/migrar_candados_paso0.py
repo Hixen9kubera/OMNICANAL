@@ -144,6 +144,10 @@ def main() -> None:
     with pg.cursor() as c:
         for r in o["comp"]:
             if str(r["item_id"]).isdigit():
+                # La COPIA histórica sí va por `wc_order_id`: la bitácora solo
+                # guarda ese id, y esas filas viejas lo tienen completo. El
+                # candado VIVO en cambio busca por la PK, porque desde el
+                # reclamo (v0.176.0) `wc_order_id` puede ser NULL a propósito.
                 c.execute(
                     "update channel.orders set stock_compensado_at = "
                     "coalesce(stock_compensado_at, %s) where wc_order_id = %s",
