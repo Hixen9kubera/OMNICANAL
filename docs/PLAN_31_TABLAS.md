@@ -157,12 +157,37 @@ El orden es al revés que en el paso 1 (allá lectura y escritura viajaron junta
 porque esta foto no guarda un valor, guarda el estado ANTERIOR: una foto nueva
 leída como buena haría que el vigilante recalculara el mundo de un golpe.
 
-### PASO 3 — Grupo 4, el publicador
+### PASO 3 — Grupo 4, el publicador — **EN CURSO**
 
-Split por intención en los 19 lectores, con doble lectura previa y flag por
-lector. Los dos backlogs (246 MB, cero lectores) se archivan y se purgan —
-**pero los 269 fallidos NO son backlog**: son la razón operativa de por qué
-ciertos SKUs no están publicados, y van a la bitácora.
+Split por intención en los lectores, con doble lectura previa y flag por lector.
+Los dos backlogs (**255 MB**: `ml_backlog` 69 + `amazon_backlog` 186) se archivan
+y se purgan al final, ya con la bitácora completa.
+
+**El censo previo (14-ago) corrigió tres cosas del plan:**
+
+1. **La bitácora destino YA EXISTE y está viva**: `ops.channel_submissions`,
+   24,558 eventos, escribiendo hoy. No se arranca de cero.
+2. **Los "269 fallidos" eran FILAS, no SKUs** — `ml_progress` tiene llave
+   `cuenta:sku`. Son **138 SKUs y los 138 ya están en la bitácora**. Ese lado no
+   necesitaba rescate.
+3. **El hueco real era de Amazon: 44 SKUs**, y no eran fallos de publicación
+   sino **bajas por marca / propiedad intelectual** (`bulk_deleted_ip_brand` 30,
+   `amz_infringement_deleted` 14), todas anteriores al arranque del espejo.
+   **RESCATADAS en v0.169.0** con `operacion='baja_ip'`; hueco = 0.
+
+**Lectores: son 25 sitios vivos, no 19.** `inventario` 8 · `competencia_captura`
+y `meli` 4 c/u · `amazon` 3 · `presencia`, `publicar` y `studio` 2 c/u. **24 de
+25 preguntan lo mismo** ("¿está publicado y con qué id?") → `channel.listings`,
+que ya tiene `listing_id`, `url`, `status`, `situacion` y `product_type`. Lo
+único sin casa ahí es `published_at`, y la bitácora lo tiene.
+
+**Ningún código lee el MOTIVO del fallo** (verificado). Los 138 + 44 los consulta
+una persona. El split del consejo sigue siendo correcto, pero su riesgo es de
+archivo histórico, no de una decisión automática que se equivoque.
+
+**Falta:** doble lectura con log de discrepancia en los 25 sitios, repunte por
+archivo empezando por los de menos riesgo (`studio`, `presencia`, `publicar`) y
+dejando `inventario` al final (8 sitios, mueve stock).
 
 ### PASO 4 — Cachés de verdad
 

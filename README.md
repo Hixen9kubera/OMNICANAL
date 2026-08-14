@@ -9710,3 +9710,69 @@ Probado: migración aplicada a sandbox y a producción; backfill verificado en l
 dos (**14,640 filas × 4 columnas = 58,560 celdas idénticas, cero diferencias**);
 arnés de comparación en verde en los cinco bloques, incluidas **0 publicaciones
 `general` desfasadas** contra la foto. Versión 0.167.0.
+
+### v0.169.0 — Paso 3, primer rescate: las 44 bajas por marca de Amazon
+
+Primer sub-paso del grupo 4 ([docs/PLAN_31_TABLAS.md](docs/PLAN_31_TABLAS.md)),
+y el censo previo cambió el tamaño del paso.
+
+**Tres correcciones al plan, medidas contra producción:**
+
+1. **La bitácora destino ya existía y está viva.** `ops.channel_submissions`
+   tiene 24,558 eventos y sigue escribiendo (`mercado_libre` 18,244, `amazon`
+   4,358, `tiktok` 1,886, `temu` 70). El paso 3 no arranca de cero.
+
+2. **Los "269 fallidos" de ML del plan eran FILAS, no SKUs.** `ml_progress`
+   tiene llave `cuenta:sku`, así que un SKU intentado en las dos cuentas cuenta
+   doble. Son **138 SKUs, y los 138 ya tienen su motivo en la bitácora**. Ese
+   lado no necesitaba rescate — lo di por hueco al principio por leer filas
+   como SKUs, y la medición lo corrigió.
+
+3. **El hueco real era de Amazon y es otra cosa.** 126 SKUs con `success=0`,
+   82 ya cubiertos, **44 huérfanos**: todos entre el 30-jun y el 6-jul, todos
+   anteriores al arranque del espejo (24-jul), ninguno posterior.
+
+**Y no son fallos de publicación.** Los 44 están en `DELETED` con motivo
+`bulk_deleted_ip_brand` (30) o `amz_infringement_deleted` (14): **Amazon les dio
+de baja el listing por marca / propiedad intelectual**, después de haber vivido
+publicados desde el 23-jun.
+
+`channel.listings` ya contesta bien la pregunta "¿está publicado?" — los 44
+figuran ahí como `DELETED`. Lo que no existía en kubera es el **por qué**, y esa
+diferencia cuesta dinero: un SKU que solo dice `DELETED` se ve como candidato a
+re-publicar, y re-publicarlo lo vuelve a tumbar con el historial de infracciones
+de la cuenta de por medio. Es literalmente el caso que el consejo describió:
+`channel.listings` es superset **solo de los éxitos**.
+
+**Decisiones del rescate que no son obvias:**
+
+- **`operacion='baja_ip'`, no `'alta'`.** No fue un alta que salió mal: fue una
+  baja impuesta desde afuera. Registrarla como alta fallida haría creer que
+  alguien intentó publicar el 30-jun, y no pasó eso — el `published_at` de los
+  44 es del 23-jun y salió BIEN.
+- **`created_at` = la fecha del origen, no `now()`.** La bitácora se lee en
+  orden cronológico; sellar un evento de junio con la fecha de la copia lo
+  pondría al frente de la fila y contaría una historia falsa. Mismo error que
+  hubo que corregir en `crear_logs` (60 filas con hasta 17.6 h de desfase
+  invirtieron el estado de 50 SKUs). El script lo **verifica**: cuenta cuántas
+  filas quedaron selladas después del 24-jul y reprueba si hay alguna.
+- **Idempotente por `detail_ref`**, no por conteo, y solo toca SKUs sin ningún
+  evento de fallo: nunca pisa lo que el espejo ya trajo. Verificado
+  reejecutándolo: la segunda corrida no inserta nada.
+
+**Censo de lectores del grupo 4, de paso:** son **25 sitios vivos** en
+`services/` (no 19), y **24 preguntan lo mismo** — "¿está publicado y con qué
+id?" → `channel.listings`, que ya tiene `listing_id`, `url`, `status`,
+`situacion` y hasta `product_type`. Lo único sin casa ahí es `published_at`, y
+la bitácora sí lo tiene.
+
+**El dato que más cambia el riesgo del paso 3:** ningún código lee el MOTIVO del
+fallo. Verificado — los únicos usos de `gtin_error`/`error_label` en código vivo
+son escrituras, o leen el diccionario de resultado en memoria, no la tabla. Los
+138 + 44 los consulta una persona, no un flujo. El "split por intención" del
+consejo sigue siendo correcto, pero su riesgo es de **archivo histórico**, no de
+una decisión automática que se vaya a equivocar.
+
+Probado: dry-run, corrida real y reejecución inerte. El hueco pasó de 44 a **0**
+y las 44 fechas viajaron intactas (0 selladas con fecha de copia).
+Versión 0.169.0.
