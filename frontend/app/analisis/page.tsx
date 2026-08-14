@@ -79,9 +79,9 @@ interface Fila {
   cuentas: string[];
   titulo: string | null;
   tam: string;
-  /* Medidas del costeo, en cm y kg. Alimentan la tarjeta del chip de tamaño:
-     el chip solo dice la letra, y sin las medidas no hay forma de saber si un
-     SKU está en el borde de su categoría. */
+  /* Medidas del costeo, en cm y kg. Son columnas propias de la tabla desde el
+     14-ago: el chip solo dice la letra, y sin las medidas no hay forma de
+     saber si un SKU está en el borde de su categoría. */
   largo: number | null;
   ancho: number | null;
   alto: number | null;
@@ -219,6 +219,8 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   precio: { titulo: "Precio de venta", texto: "Lo que de VERDAD se cobró en promedio durante el período: el dinero vendido dividido entre las piezas. Ya viene ponderado, así que si un producto se vende en dos cuentas a precios distintos, pesa más la que más vendió. Si no hubo ventas en el período se muestra el precio de la publicación activa, por cuenta. Haz clic para ver el desglose por canal." },
   costo: { titulo: "Costo base", texto: "Lo que cuesta traer una pieza: producto más flete de importación, del costeo validado. Es uno solo por producto — no cambia entre cuentas ni entre canales. Vacío significa que a ese SKU todavía no se le captura el costo, y sin él no hay margen que calcular." },
   comision: { titulo: "Comisión por unidad", texto: "Lo que Mercado Libre cobró DE VERDAD por vender una pieza en el período, no una tasa supuesta: sale de la comisión registrada en cada pedido, así que ya trae la del canal donde se vendió. Sale vacía cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía la reporta en cero." },
+  medidas: { titulo: "Largo · Ancho · Alto", texto: "Las medidas de la PIEZA en centímetros, capturadas en el costeo. De ellas salen dos cosas: la letra del tamaño (S/M/L/XL), que se toma del lado más largo —por eso ese lado va resaltado en el renglón—, y el flete de importación. Un SKU sin medidas no tiene ni categoría de tamaño ni flete calculable: aparece con guiones y su costo de importación se queda corto. Los cortes de la letra son 30, 60 y 120 cm." },
+  peso: { titulo: "Peso por pieza", texto: "El peso de UNA pieza en kilos, capturado en el costeo. Es lo que alimenta el envío estimado, así que un peso mal capturado infla el costo de todos los pedidos de ese SKU. Cuando sale en ÁMBAR es que el peso no cuadra con el volumen —más de 1.5 kg por litro—, y casi siempre significa lo mismo: se capturó el peso de la CAJA master como si fuera el de una pieza. Es un defecto conocido del catálogo, ~536 SKUs, y ordenar por esta columna es la forma de irlos sacando." },
   envio: { titulo: "Envío por unidad", texto: "Lo que Mercado Libre te cobró por mandar el paquete, promediado por pieza. Cuando dice REAL es el cobro del embarque consultado a Mercado Libre; cuando dice EST es el estimado por peso y medidas, que se equivoca en las dos direcciones y se va sustituyendo solo conforme se consultan los pedidos. El asterisco avisa que solo una parte de las piezas ya tiene el cobro real. En carritos con varios productos el cobro del paquete se reparte entre las piezas." },
   costo_final: { titulo: "Costo final", texto: "Lo que de verdad cuesta vender una pieza: costo base + comisión + envío. Es el número contra el que se compara el precio para saber si el producto deja dinero. No incluye el almacenamiento en FULL, que Mercado Libre cobra por mes y no por venta. Cuando sale en ÁMBAR con la nota «sin envío capturado», a ese producto le falta el costo de envío —no tiene el estimado por peso y medidas ni ha vendido un pedido del que leer el cobro real—, así que ese costo final es solo costo base + comisión y el margen de al lado sale optimista." },
   margen_neto: { titulo: "Margen", texto: "Lo que queda después de TODO: (precio real − costo final) ÷ precio real, con la comisión y el envío ya descontados. Este es el margen que de verdad queda; abajo va lo que deja cada pieza en pesos. Sale vacío cuando falta el costo del producto o cuando no hubo ventas en el período (sin venta no hay comisión que leer), y también en lo que solo vende en Amazon, que todavía reporta comisión cero. Ordena por esta columna de menor a mayor para ver primero lo que está vendiendo mal. Cuando el porcentaje sale en ÁMBAR con ⚠, el costo capturado es más de 1.5 veces el precio al que se vendió: el margen se muestra igual, pero sale de un costo poco creíble, así que léelo como referencia y no como un hecho — el problema está en el dato, no en la venta. Haz clic para ver el desglose por canal." },
@@ -730,69 +732,45 @@ function estadoPublicacion(canal: string, situacion: string | null) {
   return { texto: s ? s : "sin estado", vende: false };
 }
 
-/* CHIP DE TAMAÑO. La letra sale del LADO MÁS LARGO, y sola no dice nada: un
-   SKU de 29 cm y otro de 31 caen en categorías distintas sin que se vea por
-   qué. La tarjeta muestra las tres medidas, señala cuál manda, y da el corte
-   de cada letra para que la clasificación sea comprobable y no un veredicto. */
+/* CHIP DE TAMAÑO. La letra sale del LADO MÁS LARGO (menos de 30 cm es S, menos
+   de 60 M, menos de 120 L, de ahí para arriba XL). Volvió a ser una etiqueta
+   muda a propósito (Eduardo, 14-ago): las medidas que antes solo se veían
+   pasando el cursor ahora son columnas propias, y repetirlas en una tarjeta
+   eran dos formas de contar lo mismo. */
 function ChipTamano({ fila }: { fila: Fila }) {
-  const l = fila.largo == null ? 0 : Number(fila.largo);
-  const a = fila.ancho == null ? 0 : Number(fila.ancho);
-  const h = fila.alto == null ? 0 : Number(fila.alto);
-  const peso = fila.peso == null ? null : Number(fila.peso);
-  const mayor = Math.max(l, a, h);
-  const chip = (
+  return (
     <span className="rounded bg-slate-100 px-1 py-px text-[9px] font-bold text-slate-500">
       {fila.tam}
     </span>
   );
+}
 
-  if (!(mayor > 0))
-    return (
-      <PanelHover panel={
-        <>
-          <span className="block font-semibold text-white">Tamaño · sin medidas</span>
-          <span className="mt-1 block text-slate-400">
-            A este SKU no se le han capturado largo, ancho ni alto en el costeo,
-            así que no hay de dónde sacar la categoría. Sin medidas tampoco hay
-            flete de importación calculable.
-          </span>
-        </>
-      }>{chip}</PanelHover>
-    );
-
-  // Densidad: el peso de la CAJA master capturado como peso de la pieza es un
-  // problema conocido del catálogo, y se delata solo — arriba de 1.5 kg/L no
-  // hay producto de estas medidas que pese eso.
+/* DENSIDAD. El peso de la CAJA master capturado como peso de la PIEZA es un
+   defecto conocido del catálogo (~536 SKUs) y se delata solo: arriba de
+   1.5 kg/L no hay producto de esas medidas que pese eso. Con la tarjeta fuera,
+   el aviso se muda a la celda de Peso — si no, al pasar las medidas a columnas
+   se perdería la única señal que teníamos de un flete inflado. */
+function densidadRara(fila: Fila): number | null {
+  const l = Number(fila.largo ?? 0), a = Number(fila.ancho ?? 0), h = Number(fila.alto ?? 0);
+  const peso = fila.peso == null ? null : Number(fila.peso);
   const litros = (l * a * h) / 1000;
-  const densidad = peso && litros > 0 ? peso / litros : null;
-  const pesoRaro = densidad != null && densidad > 1.5;
-  const medida = (nom: string, v: number) => (
-    <Renglon etiqueta={nom} valor={`${fNum(v, 2)} cm`}
-             detalle={v === mayor ? "← decide la letra" : undefined}
-             tenue={v !== mayor} />
-  );
+  if (!peso || litros <= 0) return null;
+  const d = peso / litros;
+  return d > 1.5 ? d : null;
+}
 
+/* CELDA DE MEDIDA. `decide` marca el lado del que sale la letra: sin eso, un
+   SKU de 29 cm y otro de 31 caen en categorías distintas sin que se vea por
+   qué, que es justo lo que explicaba la tarjeta vieja. */
+function CeldaMedida({ v, decide }: { v: number | string | null; decide?: boolean }) {
+  if (v == null || Number(v) <= 0)
+    return <td className="px-2 py-1.5 text-right text-slate-300">—</td>;
   return (
-    <PanelHover panel={
-      <>
-        <span className="block font-semibold text-white">Tamaño {fila.tam}</span>
-        {medida("Largo", l)}
-        {medida("Ancho", a)}
-        {medida("Alto", h)}
-        {peso != null && <Renglon etiqueta="Peso" valor={`${fNum(peso, 3)} kg`} tenue />}
-        <span className="mt-1.5 block text-slate-400">
-          La categoría sale del lado más largo: menos de 30 cm es S, menos de 60
-          es M, menos de 120 es L, y de ahí para arriba XL.
-        </span>
-        {pesoRaro && (
-          <span className="mt-1 block text-amber-300">
-            Ojo con el peso: {fNum(densidad!, 1)} kg por litro para {fNum(litros, 1)} L
-            de volumen. Suele ser el peso de la CAJA capturado como si fuera el de
-            una pieza, y con él el flete estimado sale muy alto.
-          </span>
-        )}
-      </>
-    }>{chip}</PanelHover>
+    <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${
+      decide ? "font-semibold text-slate-700" : "text-slate-500"}`}
+        title={decide ? "El lado más largo: de este sale la letra del tamaño" : undefined}>
+      {fNum(Number(v), 1)}
+    </td>
   );
 }
 
@@ -2199,6 +2177,14 @@ export default function FulfillmentPage() {
                     hay panel, el "?" repetía lo mismo (Eduardo, 8-ago). */}
                 <Th id="sku" info="sku" {...th}>Producto</Th>
                 <Th info="estado" {...th}>Estado</Th>
+                {/* Las medidas van pegadas al producto y ANTES de las columnas
+                    de dinero: describen el bulto, no el resultado del período.
+                    Cada una ordena por su cuenta — es la forma de barrer el
+                    catálogo por tamaño, que la tarjeta vieja no permitía. */}
+                <Th id="largo" right info="medidas" {...th}>Largo</Th>
+                <Th id="ancho" right {...th}>Ancho</Th>
+                <Th id="alto" right {...th}>Alto</Th>
+                <Th id="peso" right info="peso" {...th}>Peso</Th>
                 <Th right {...th}>Visitas · CR%</Th>
                 <Th id="venta" right {...th}>Uds · $Venta</Th>
                 <Th id="stock_full" right {...th}>FULL · Propio</Th>
@@ -2253,6 +2239,32 @@ export default function FulfillmentPage() {
                     )}
                     <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${TIPO_CHIP[f.tipo]}`}>{tipoLabel(f)}</span>
                   </td>
+                  {/* MEDIDAS. `mayor` decide la letra del chip; se resalta para
+                      que la clasificación se pueda comprobar de un vistazo. */}
+                  {(() => {
+                    const l = Number(f.largo ?? 0), an = Number(f.ancho ?? 0), al = Number(f.alto ?? 0);
+                    const mayor = Math.max(l, an, al);
+                    const dens = densidadRara(f);
+                    return (
+                      <>
+                        <CeldaMedida v={f.largo} decide={mayor > 0 && l === mayor} />
+                        <CeldaMedida v={f.ancho} decide={mayor > 0 && an === mayor} />
+                        <CeldaMedida v={f.alto} decide={mayor > 0 && al === mayor} />
+                        {f.peso == null ? (
+                          <td className="px-2 py-1.5 text-right text-slate-300">—</td>
+                        ) : (
+                          <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${
+                            dens ? "font-semibold text-amber-600" : "text-slate-500"}`}
+                              title={dens
+                                ? `${fNum(dens, 1)} kg por litro: casi seguro es el peso de la CAJA `
+                                  + "capturado como si fuera el de una pieza. Con él, el envío estimado sale muy alto."
+                                : undefined}>
+                            {fNum(Number(f.peso), 3)}
+                          </td>
+                        )}
+                      </>
+                    );
+                  })()}
                   <td className="whitespace-nowrap px-2 py-1.5 text-right">
                     <VisitasCR fila={f} dias={dias} />
                   </td>
@@ -2308,7 +2320,7 @@ export default function FulfillmentPage() {
                 </tr>
               ))}
               {tabla && tabla.items.length === 0 && (
-                <tr><td colSpan={13} className="px-3 py-10 text-center text-slate-400">Sin resultados con estos filtros.</td></tr>
+                <tr><td colSpan={17} className="px-3 py-10 text-center text-slate-400">Sin resultados con estos filtros.</td></tr>
               )}
             </tbody>
           </table>

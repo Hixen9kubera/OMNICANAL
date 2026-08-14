@@ -9974,6 +9974,48 @@ Estudio habilita Temu (`esTemu`) para que el botón exista.
 
 ---
 
+### v0.175.0 — Las medidas salen de la tarjeta y se vuelven columnas
+
+Pedido de Eduardo: el chip de tamaño **vuelve a ser una etiqueta muda** y las
+medidas que solo se veían pasando el cursor pasan a ser **cuatro columnas
+propias** de la tabla de Análisis: Largo, Ancho, Alto y Peso.
+
+**Por qué el cambio.** La tarjeta resolvía "¿por qué este SKU es M?" para UN
+renglón a la vez, y solo si sabías que había algo debajo del cursor. Las
+preguntas reales del catálogo son de barrido —cuáles son los bultos grandes,
+a cuáles les falta medida, cuáles traen un peso imposible— y esas no se
+contestan renglón por renglón. En columna se contestan ordenando.
+
+**Lo que se conserva de la tarjeta**, porque era información y no adorno:
+
+- **El lado que decide la letra** va resaltado en el renglón (semibold, más
+  oscuro) con su `title`. Sin eso, un SKU de 29 cm y otro de 31 caen en
+  categorías distintas sin que se vea por qué — que era justo lo que la
+  tarjeta explicaba.
+- **El aviso de densidad.** Arriba de 1.5 kg/L el peso se pinta en ÁMBAR con
+  la cuenta en el `title`: es el peso de la CAJA master capturado como si fuera
+  el de una pieza, defecto conocido de ~536 SKUs que infla el envío estimado.
+  Al pasar las medidas a columnas, esta era la única señal que se habría
+  perdido. Ahora además se puede **ordenar por Peso** para irlos sacando.
+- Los cortes de la letra (30 / 60 / 120 cm) y el "sin medidas no hay flete
+  calculable" se mudan a la ayuda `?` del encabezado de Largo.
+
+Un SKU sin medida sale con guion en gris, no con cero: cero es una medida y
+"no la capturaron" no lo es.
+
+**Backend.** Cuatro claves nuevas en `_ORDEN` (`largo`, `ancho`, `alto`,
+`peso`). Las columnas ya venían en el CTE `filas` desde que existía el chip, así
+que la consulta no cambia; solo se permite ordenar por ellas. El `nulls last`
+que ya estaba puesto aplica igual: un SKU sin medida no es "el más chico", es
+uno del que no sabemos, y va al final se ordene como se ordene.
+
+La tabla pasa de 13 a 17 columnas y ya vivía en `overflow-x-auto`, así que el
+ancho extra hace scroll horizontal en vez de apretar las demás.
+
+Sin migraciones ni variables nuevas. Versión 0.175.0.
+
+---
+
 ### v0.173.0 — Paso 4 cerrado: la caché de imágenes lee de kubera, y `?fuente=ml` deja de mentir
 
 **1. El aviso de la vista detenida.** `GET /api/ventas/resumen?fuente=ml` sirve

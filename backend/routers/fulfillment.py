@@ -95,6 +95,13 @@ _ORDEN = {
     "ganancia": ("ganancia_periodo", "desc"),
     "crec": ("crec_7d_pct", "desc"),
     "sku": ("sku", "asc"),
+    # Medidas: desde que dejaron de vivir en la tarjeta del chip y son columnas
+    # propias, ordenar por ellas es la forma de barrer el catálogo por bulto
+    # (y de sacar a flote los pesos de caja capturados como pieza).
+    "largo": ("largo", "desc"),
+    "ancho": ("ancho", "desc"),
+    "alto": ("alto", "desc"),
+    "peso": ("peso", "desc"),
 }
 _DIRS = {"asc", "desc"}
 
