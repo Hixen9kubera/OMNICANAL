@@ -429,6 +429,15 @@ class Settings(BaseSettings):
         "https://backendomnicanal-production.up.railway.app/api/tiktok/callback"
     )
 
+    # ── TEMU (mallId 635517742093915, regionId 128) ──────────────────────────
+    # Token de larga vida emitido en el Seller Center: Temu no usa el baile de
+    # OAuth de TikTok. Si el vendedor re-autoriza eventos, sale un token NUEVO y
+    # hay que reemplazarlo aquí (ver docs/TEMU_MANUAL.md §1, paso 4).
+    temu_app_key: str = ""
+    temu_app_secret: str = ""
+    temu_access_token: str = ""
+    temu_api_base: str = "https://openapi-b-global.temu.com/openapi/router"
+
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
     # Con auto_push=true además empuja el stock nuevo a Woo (activar solo

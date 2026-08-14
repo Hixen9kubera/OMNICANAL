@@ -53,6 +53,12 @@ async def listar_canales(incluir_totales: bool = True):
             # que nadie puede comprar.
             from services import tiktok_panel
             total = tiktok_panel.contar_publicados() if incluir_totales else None
+        elif cfg["id"] == Canal.TEMU.value:
+            # Las 160 que existen en Temu. Cuántas de ellas se venden no se
+            # puede afirmar todavía: Temu devuelve el estado como número y solo
+            # dos de sus siete códigos están verificados (ver temu_panel).
+            from services import temu_panel
+            total = temu_panel.contar_publicados() if incluir_totales else None
         salida.append(CanalInfo(**cfg, total_productos=total, subcuentas=subs))
     return salida
 

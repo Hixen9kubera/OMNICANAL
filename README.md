@@ -9456,6 +9456,55 @@ que usa exactamente el mismo indicador.
 
 Sin migraciones y sin variables nuevas. Versión 0.153.0.
 
+### v0.166.0 — Temu deja de ser una maqueta: 160 publicaciones vivas en el panel
+
+La pestaña Temu mostraba **datos de ejemplo** (`ejemplos.py`) encima de un canal
+con 160 publicaciones reales. Ahora lee de `channel.listings`, igual que TikTok.
+
+**El cliente de la API** (`services/temu.py`, solo lectura por ahora). Se firma
+MD5 en mayúsculas de `app_secret + clave+valor ordenados y CONCATENADOS +
+app_secret`, sin separadores; todo va en el cuerpo de un POST al mismo `router`
+y el endpoint se elige con `type`. Es la misma trampa del webhook: el ejemplo de
+la propia doc de Temu firma con `clave=valor&` y no reproduce ni sus propios
+ejemplos.
+
+**Aparecieron dos cubetas que la doc no conocía.** `docs/TEMU_MANUAL.md`
+documentó `goodsSearchType` 1 y 4 —era lo que había el 12-ago—, pero dos
+productos que la doc daba por publicados (`ILUM-0089-PLA`, `HERR-0374-MUL`) no
+salían en el censo. Sondeando de 0 a 7 aparecieron la **5** (2 productos) y la
+**6** (1). Ninguna cubeta da error: las vacías contestan lista vacía, así que
+**una cubeta que no se pregunta no se extraña**. Censo real: 174 publicaciones,
+160 con SKU nuestro, 14 de prueba que se omiten.
+
+**El precio, resuelto midiendo.** En `list.query`, `price` y
+`retailPrice.amount` vienen en PESOS con decimales (338.46) pero `marketPrice`
+viene en CENTAVOS (11400 = $114.00) — el mismo concepto con dos formatos en la
+MISMA respuesta. Se usa `price`.
+
+**El estado NO se traduce, y eso es la feature.** Temu contesta números
+(`2/8`, `3/2`, `4/7`, `5/None`…) y no documenta qué significan. Se decodificaron
+DOS cruzando productos cuyo estado real se conocía por el Seller Center:
+
+| Código | Significa | Cómo se supo |
+|---|---|---|
+| `2/8` | Incompleto | los 4 publicados el 13-ago, los 4 coinciden |
+| `5/None` | Borrador | los 2 con precio 0.00 |
+
+Los otros cinco códigos (87 publicaciones) se muestran crudos —"Temu 3/2"— y se
+dicen crudos. **Consecuencia operativa: Temu NO entra al fan-out de stock.** No
+se le escribe inventario a un canal del que no se sabe qué publicaciones venden;
+es exactamente el error que en TikTok habría atado el fan-out a una casualidad.
+
+Piezas: `services/temu.py`, `services/temu_panel.py`,
+`scripts/cargar_temu.py` (dry-run por default), y las ramas de Temu en
+`routers/productos.py` (listado + tarjeta del cajón) y `routers/canales.py`.
+
+⚠️ Las credenciales `TEMU_*` viven **solo en el `.env` local**: no están en
+Railway, así que en producción el cliente se reporta como no configurado. El
+cargador se corre a mano hasta que se decida meterlas.
+
+---
+
 ### v0.165.0 — Paso 1 del desmantelamiento: las tres cachés de Márgenes salen de MySQL
 
 Primer grupo de las 31 tablas que quedan (plan y dictamen del consejo en

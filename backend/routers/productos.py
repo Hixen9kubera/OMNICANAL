@@ -104,7 +104,17 @@ async def listar_productos(
             estados=estados_lista, skus_filtro=skus_lista)
         total_pages = _paginas(total, per_page)
 
-    else:  # walmart / temu / shein  → ejemplos
+    elif canal == Canal.TEMU.value:
+        # Mismo camino que TikTok: `channel.listings` en kubera. Hasta el 14-ago
+        # esta pestaña mostraba datos de EJEMPLO encima de un canal con 160
+        # publicaciones vivas.
+        from services import temu_panel
+        items_raw, total = temu_panel.listar(
+            page, per_page, search, solo_publicados, orden=orden,
+            estados=estados_lista, skus_filtro=skus_lista)
+        total_pages = _paginas(total, per_page)
+
+    else:  # walmart / shein  → ejemplos
         items_raw, total = ejemplos.listar(canal, page, per_page, search)
         total_pages = _paginas(total, per_page)
 
@@ -293,6 +303,26 @@ async def detalle_producto(sku: str, refrescar: bool = False):
             categoria_id=tk["categoria_id"], categoria_path=tk["categoria_path"],
             estado=tk["estado"], situacion=tk.get("situacion"),
             extra={"cuenta": "KUBERA"},
+        ))
+
+    # Temu (kubera). Mismo trato que TikTok y por la misma razón: 160
+    # publicaciones vivas que el cajón no mostraba.
+    from services import temu_panel
+    tm = temu_panel.datos_de(sku)
+    if tm:
+        detalle.canales.append(DetalleCanal(
+            canal=Canal.TEMU.value,
+            publicado=tm["publicado"], item_id=tm["item_id"], url=tm["url"],
+            precio=tm["precio"], precio_base=tm["precio_base"],
+            stock=tm["stock"], stock_real=tm["stock"],
+            # Temu tampoco tiene bodega propia del marketplace para nosotros.
+            full=False, full_label=None,
+            categoria_id=tm["categoria_id"], categoria_path=tm["categoria_path"],
+            # `estado` trae la etiqueta cuando el código está verificado y el
+            # código crudo cuando no. `situacion` siempre lleva el código: si
+            # alguien ve "Temu 3/2" en pantalla, es que ese aún no se decodifica.
+            estado=tm["estado"], situacion=tm.get("situacion"),
+            extra={"cuenta": "TEMU"},
         ))
 
     return detalle
