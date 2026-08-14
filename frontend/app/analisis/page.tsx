@@ -249,8 +249,9 @@ const ORDEN_LABEL: Record<string, string> = {
    ve como un tipo distinto en cada render y desmonta las 12 cabeceras — con el
    contador de "hace Xs" refrescando cada segundo, el tooltip no alcanzaba a
    verse. */
-function Th({ id, children, right, info, orden, dir, onSort }: {
+function Th({ id, children, right, info, compacto, orden, dir, onSort }: {
   id?: string; children: React.ReactNode; right?: boolean; info?: string;
+  compacto?: boolean;
   orden: string; dir: "asc" | "desc"; onSort: (id: string) => void;
 }) {
   const activa = !!id && orden === id;
@@ -266,7 +267,9 @@ function Th({ id, children, right, info, orden, dir, onSort }: {
          30-jul). Que la columna ordena ya lo dicen el cursor, la flecha y el
          chip "Orden:" del encabezado de la tabla. */
       className={[
-        "whitespace-nowrap px-2 py-2.5 text-[10px] font-semibold uppercase tracking-wide",
+        // `compacto` iguala el px-1 de las celdas de medida: el encabezado manda
+        // el ancho de la columna, así que apretar solo la celda no sirve.
+        `whitespace-nowrap ${compacto ? "px-1" : "px-2"} py-2.5 text-[10px] font-semibold uppercase tracking-wide`,
         right ? "text-right" : "text-left",
         id ? "cursor-pointer select-none hover:text-slate-700" : "",
         activa ? "text-indigo-600" : "text-slate-500",
@@ -763,10 +766,12 @@ function densidadRara(fila: Fila): number | null {
    SKU de 29 cm y otro de 31 caen en categorías distintas sin que se vea por
    qué, que es justo lo que explicaba la tarjeta vieja. */
 function CeldaMedida({ v, decide }: { v: number | string | null; decide?: boolean }) {
+  /* `px-1` y no `px-2`: son cuatro columnas nuevas de números cortos y con el
+     acolchado normal empujaban Ganancia fuera del borde. */
   if (v == null || Number(v) <= 0)
-    return <td className="px-2 py-1.5 text-right text-slate-300">—</td>;
+    return <td className="px-1 py-1.5 text-right text-slate-300">—</td>;
   return (
-    <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${
+    <td className={`whitespace-nowrap px-1 py-1.5 text-right tabular-nums ${
       decide ? "font-semibold text-slate-700" : "text-slate-500"}`}
         title={decide ? "El lado más largo: de este sale la letra del tamaño" : undefined}>
       {fNum(Number(v), 1)}
@@ -2181,10 +2186,10 @@ export default function FulfillmentPage() {
                     de dinero: describen el bulto, no el resultado del período.
                     Cada una ordena por su cuenta — es la forma de barrer el
                     catálogo por tamaño, que la tarjeta vieja no permitía. */}
-                <Th id="largo" right info="medidas" {...th}>Largo</Th>
-                <Th id="ancho" right {...th}>Ancho</Th>
-                <Th id="alto" right {...th}>Alto</Th>
-                <Th id="peso" right info="peso" {...th}>Peso</Th>
+                <Th id="largo" right compacto info="medidas" {...th}>Largo</Th>
+                <Th id="ancho" right compacto {...th}>Ancho</Th>
+                <Th id="alto" right compacto {...th}>Alto</Th>
+                <Th id="peso" right compacto info="peso" {...th}>Peso</Th>
                 <Th right {...th}>Visitas · CR%</Th>
                 <Th id="venta" right {...th}>Uds · $Venta</Th>
                 <Th id="stock_full" right {...th}>FULL · Propio</Th>
@@ -2212,7 +2217,7 @@ export default function FulfillmentPage() {
                         : "border-l-4 border-l-transparent"
                     }`}>
                   {/* Producto: SKU + dots + tam / título */}
-                  <td className="max-w-[270px] px-2 py-1.5">
+                  <td className="max-w-[185px] px-2 py-1.5">
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono text-[12px] font-semibold text-indigo-600">{f.sku}</span>
                       {/* Los puntos y el chip dejan de ser adornos: cada uno
@@ -2251,9 +2256,9 @@ export default function FulfillmentPage() {
                         <CeldaMedida v={f.ancho} decide={mayor > 0 && an === mayor} />
                         <CeldaMedida v={f.alto} decide={mayor > 0 && al === mayor} />
                         {f.peso == null ? (
-                          <td className="px-2 py-1.5 text-right text-slate-300">—</td>
+                          <td className="px-1 py-1.5 text-right text-slate-300">—</td>
                         ) : (
-                          <td className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${
+                          <td className={`whitespace-nowrap px-1 py-1.5 text-right tabular-nums ${
                             dens ? "font-semibold text-amber-600" : "text-slate-500"}`}
                               title={dens
                                 ? `${fNum(dens, 1)} kg por litro: casi seguro es el peso de la CAJA `

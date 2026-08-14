@@ -9939,6 +9939,36 @@ lector pregunta "¿ya procesé esta URL?" sin filtrar por SKU.
 
 Sin migraciones ni variables nuevas. Versión 0.172.0.
 
+### v0.181.0 — Las 17 columnas de Análisis caben sin scroll
+
+Pedido de Eduardo: con las medidas (v0.175.0) la tabla llegó a 17 columnas y
+**Ganancia se salía del borde**. Dos cambios chicos, medidos y no estimados.
+
+**Se ensancha el lienzo.** `max-w-[1600px]` → `1800px` en el `<main>` de
+`app/analisis/layout.tsx` **y en `AppNavbar`**. Van los dos juntos a propósito:
+si solo crece el contenido, en pantallas grandes la barra queda angosta respecto
+a la tarjeta y se nota. Cada archivo lleva una nota apuntando al otro.
+
+**Se aprieta lo que yo mismo agregué.** Las cuatro columnas de medida pasan de
+`px-2` a `px-1` —son números cortos y no necesitan ese aire— y la celda de
+producto de `max-w-[270px]` a `185px`. El título ya venía truncado antes del
+cambio, así que lo que se pierde son caracteres de un texto que igual no cabía.
+El encabezado manda el ancho de la columna, así que `Th` recibe una prop
+`compacto` para igualar el `px-1`; apretar solo la celda no habría servido.
+
+**Medido en el sandbox, no calculado.** El ancho MÍNIMO del contenido de la
+tabla —el que decide si hay scroll— bajó a **1,428 px**. Medirlo requiere
+encoger la ventana: la tabla es `w-full` y a pantalla ancha se estira para
+llenar el contenedor, así que comparar `scrollWidth` contra el contenedor ahí
+siempre da "justo cabe" y no dice nada.
+
+A 1642 px de pantalla (la de Eduardo) el contenedor mide 1,582: **154 px de
+holgura**, sin scroll horizontal, con Ganancia completa dentro del borde. Por
+debajo de ~1,490 px vuelve a aparecer la barra de scroll, que es el
+comportamiento que ya tenía y para lo que está el `overflow-x-auto`.
+
+Sin migraciones ni variables nuevas. Versión 0.181.0.
+
 ### v0.176.0 — El reclamo va antes de crear: se cierra la ventana del relevo
 
 El 14-ago la orden 2000017937146172 quedó duplicada en Woo (#123068 y #123069,

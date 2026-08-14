@@ -155,7 +155,10 @@ export default function AppNavbar() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
-      <div className="mx-auto flex h-16 max-w-[1600px] items-center gap-6 px-4 sm:px-6">
+      {/* Va parejo con el <main> de app/analisis/layout.tsx (ver la nota de
+          allá): si cambias uno, cambia el otro o la barra queda angosta
+          respecto al contenido en pantallas grandes. */}
+      <div className="mx-auto flex h-16 max-w-[1800px] items-center gap-6 px-4 sm:px-6">
         {/* Logo */}
         <Link href="/omnicanal" className="flex items-center gap-2.5 pr-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">

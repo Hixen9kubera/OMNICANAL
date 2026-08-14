@@ -66,7 +66,11 @@ export default function FulfillmentLayout({ children }: { children: React.ReactN
   return (
     <div className="min-h-screen bg-slate-50">
       <AppNavbar />
-      <main className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6">
+      {/* 1800 y no 1600 desde el 14-ago: la tabla de Análisis creció a 17
+          columnas con las medidas y Ganancia se salía del borde. Va parejo con
+          el ancho de AppNavbar — si uno crece y el otro no, la barra queda
+          angosta respecto a la tarjeta y se nota. */}
+      <main className="mx-auto max-w-[1800px] px-4 py-5 sm:px-6">
         {/* Banner común */}
         <div
           className="relative overflow-hidden rounded-3xl p-6 shadow-card"
