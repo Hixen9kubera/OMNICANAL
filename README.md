@@ -10076,3 +10076,77 @@ de `config.py` no son los de Railway. Probar contra producción se hace con
 que es como se hizo la segunda vez.
 
 Sin migraciones. `SUPABASE_READ_MEDIA` nace apagada. Versión 0.173.0.
+
+### v0.175.0 — Paso 0: migración y pruebas en sandbox, y el consejo encuentra un bloqueante
+
+Nada de esto está conectado: `candados_read.py` existe pero **ningún candado lo
+usa todavía**. La migración `0022` está aplicada **solo en sandbox**.
+
+**Lo construido y probado en sandbox:**
+
+- `0022_candados_fanout.sql` — `channel.orders.stock_compensado_at`,
+  `ops.fulfillment_operations`, `ops.fba_watermark`.
+- `candados_read.py` — las tres gemelas. **Ninguna tiene `except`**, y eso es el
+  punto entero del paso.
+- `migrar_candados_paso0.py` — copia los 23 estados y las 99 marcas con sus
+  fechas reales. Corrido en sandbox: 6 + 17 + 99, todo verificado.
+- `probar_candados_paso0.py` — **las 6 pruebas pasan**. T2 (kubera caída →
+  propaga) y T4 (el candado nuevo ni busca ni recrea la bitácora) son las que
+  hoy fallarían con el código viejo.
+
+**Y el consejo (opus, sonnet, haiku) encontró algo que bloquea el plan.**
+
+Verificado por mi cuenta en `pedidos_ml.py`, la secuencia real es:
+
+    1. lee channel.orders (ancla de idempotencia)   ~436
+    2. CREA el pedido en Woo                        ~477
+    3. `_ya_compensado(wc_id)` — en la CONDICIÓN de un `if`, fuera de todo `try`   ~510
+    4. ESCRIBE channel.orders                       ~583
+
+Si el candado propaga en el paso 3, la excepción sube **con el pedido ya creado
+en Woo y sin registrar**. ML reintenta, el paso 1 no encuentra previo, y **crea
+un segundo pedido**. O sea: propagar ingenuamente **reproduce el patrón de los
+964 fantasma que dice prevenir**.
+
+El arreglo no es "no propagar": es **persistir `channel.orders` ANTES de
+compensar**. Entonces el reintento es idempotente a nivel pedido y la
+compensación puede fallar sin duplicar nada.
+
+**Un agujero que ya existe hoy, sin tocar nada.** La escritura a `channel.orders`
+(~583) está envuelta en `except Exception: log.warning` (~596). Si falla, el
+pedido queda en Woo pero no en el registro, y el siguiente aviso crea el
+duplicado. **El ancla anti-duplicado no es el candado: es el orden de
+operaciones más la durabilidad de ese registro.** Busqué el mensaje en los logs
+de Railway retenidos y no aparece — el agujero es real en el código, pero no
+tengo evidencia de que se haya disparado en la ventana que los logs conservan.
+
+**Otras tres correcciones que acepto:**
+
+1. **La compensación no es un booleano.** Escribe tres valores distintos
+   (`full_compensado`, `_error`, `_revertido`) y `_ya_compensado` solo mira el
+   primero: una compensación PARCIAL cuenta como hecha y sus líneas fallidas no
+   reintentan nunca, y tras una reversión el candado sigue diciendo `True`. Una
+   columna `bool` copiaría ese bug con checksum. Necesita estado tri-valor.
+2. **La marca de agua se actualiza al OBSERVAR, no al aplicar.** Si se atara a
+   "operación aplicada", en modo solo-registro nunca avanzaría, y el día que
+   quiten el solo-registro el vigilante vería todo como nuevo. El script de
+   migración ya toma la última fila `fba_%` sea `sim`, aplicada o error — lo que
+   faltaba era decirlo.
+3. **Quitar el `CREATE TABLE IF NOT EXISTS` es PASO 5, no PASO 0.** Lo llaman
+   CINCO sitios; quitarlo antes de repuntar los 8 escritores los deja
+   escribiendo en una tabla zombi. Va después de repuntarlos y antes del DROP,
+   nunca junto con ninguno de los dos.
+
+**Y una crítica a mi propia evidencia que también acepto.** Sostuve que la marca
+de agua no es `channel.listings.stock_fba` con "96 de 99 difieren". Opus tiene
+razón en que ese número es casi una tautología —dos relojes distintos marcan
+horas distintas— y no prueba nada. La conclusión sigue siendo correcta, pero el
+argumento bueno es el MECANISMO: **el sync pisa la referencia entre pasadas**, que
+es el mismo defecto que ya se arregló en `stock_watch._foto()` en el paso 2.
+
+**La doble lectura de días se cambia por otra cosa.** Con 23 filas casi estáticas
+prueba poco. El riesgo real de la compensación está en el camino de ESCRITURA,
+así que va doble-escritura + comparación one-shot + la matriz T1-T6.
+
+Informes completos en `agents/counselors/1786735774-revisin-paso-0-*`.
+Versión 0.175.0.
