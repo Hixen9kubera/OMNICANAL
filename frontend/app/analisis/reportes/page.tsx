@@ -215,7 +215,12 @@ interface PreviewInv {
   dias: number;
   inmovilizado: {
     skus: number; unidades_full: number; nunca_vendieron: number;
+    /* `variantes` > 0 = el renglón es una FAMILIA y el sku de la izquierda es
+       el padre, que nunca vende por sí mismo; `donde` dice en qué variante y
+       cuenta están las piezas (Eduardo, 14-ago, sobre CAM-0030). */
     top: { sku: string; titulo: string; full: number; propio: number;
+           variantes: number;
+           donde: { sku: string; cuenta: string; uds: number }[];
            ultima_venta: string | null }[];
   };
   invisible: {
@@ -339,7 +344,7 @@ function TarjetaInventario() {
 function BloqueInv({ titulo, subtitulo, cifras, top, tono }: {
   titulo: string; subtitulo: string;
   cifras: [string, string][];
-  top: { sku: string; titulo: string; der: string }[];
+  top: { sku: string; titulo: string; der: string; pie?: string }[];
   tono: "amber" | "sky";
 }) {
   const borde = tono === "amber" ? "border-amber-200 bg-amber-50/50"
@@ -360,12 +365,21 @@ function BloqueInv({ titulo, subtitulo, cifras, top, tono }: {
       {top.length > 0 && (
         <ul className="mt-3 space-y-1 border-t border-slate-200/70 pt-2">
           {top.map((t) => (
-            <li key={t.sku} className="flex items-baseline justify-between gap-2 text-[11px]">
-              <span className="min-w-0 truncate text-slate-600">
-                <code className="font-semibold text-slate-700">{t.sku}</code>{" "}
-                {t.titulo}
-              </span>
-              <span className="shrink-0 font-semibold text-slate-700">{t.der}</span>
+            <li key={t.sku} className="text-[11px]">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="min-w-0 truncate text-slate-600">
+                  <code className="font-semibold text-slate-700">{t.sku}</code>{" "}
+                  {t.titulo}
+                </span>
+                <span className="shrink-0 font-semibold text-slate-700">{t.der}</span>
+              </div>
+              {/* El renglón de una familia se nombra con el SKU padre, que no
+                  vende por sí mismo. Sin decir dónde están las piezas, quien
+                  revisa busca las ventas del padre y concluye que el reporte
+                  miente (Eduardo, 14-ago). */}
+              {t.pie && (
+                <div className="truncate pl-2 text-[10px] text-slate-400">↳ {t.pie}</div>
+              )}
             </li>
           ))}
         </ul>
@@ -405,6 +419,10 @@ function PreviaInventario({ p, cargando, dias }: {
         top={p.inmovilizado.top.map((t) => ({
           sku: t.sku, titulo: t.titulo,
           der: `${m(t.full)} en FULL · ${t.ultima_venta ?? "nunca vendió"}`,
+          pie: t.variantes
+            ? `familia de ${t.variantes} variantes — el stock está en `
+              + (t.donde ?? []).map((d) => `${d.sku} (${d.cuenta} ${m(d.uds)})`).join(" · ")
+            : undefined,
         }))}
       />
       <BloqueInv

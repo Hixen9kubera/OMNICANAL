@@ -10002,6 +10002,56 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.186.0 — El renglón de Inmovilizado dice que es una FAMILIA, y dónde están las piezas
+
+Eduardo, viendo la hoja: *«¿por qué aparece CAM-0030? el SKU es padre y no va a
+vender, los que van a vender son los hijos»*.
+
+El dato estaba bien y el reporte también: ese renglón **no es el SKU padre, es
+la familia entera**, y desde el 7-ago suma tanto el stock como las ventas de los
+hijos. `CAM-0030` es un colchón comprimido con 4 variantes; sus 230 piezas en
+FULL están todas en `CAM-0030-IND` (150 en Sancor, 80 en Bekura), y **ni el
+padre ni una sola variante ha vendido jamás una pieza**. Está donde debe estar.
+
+**Lo que estaba mal era lo que el renglón DECÍA.** Mostraba un código de SKU
+padre para una fila que significa "familia". Quien lo revisa busca las ventas de
+`CAM-0030`, no encuentra ninguna —nunca las va a haber, un padre con variantes
+no se vende— y concluye que el reporte miente. Un reporte que obliga a
+consultar la base para creerle no sirve.
+
+Ahora el renglón lo declara. En el Excel, una columna nueva **«Dónde está el
+stock»**:
+
+```
+CAM-0030   Colchon comprimido.   CAM-0030-IND · Sancor · 150 | CAM-0030-IND · Bekura · 80
+```
+
+y el diagnóstico cierra con *«la cuenta cubre al padre y a sus 4 variantes»*,
+para que «nunca ha vendido» se lea como lo que es: de la familia completa, no
+solo del padre. En la vista previa del panel, una segunda línea bajo el SKU:
+
+```
+CAM-0030  Colchon comprimido.              230 en FULL · nunca vendió
+  ↳ familia de 4 variantes — el stock está en CAM-0030-IND (SANCORFASHION 150) · CAM-0030-IND (BEKURA 80)
+```
+
+**Detalles que costaron una iteración.** El CTE `pub` colapsa cada publicación
+duplicada a una fila, y hay que elegir con qué SKU nombrarla: se **prefiere el
+hijo**, porque decir `CAM-0030` donde las piezas son de `CAM-0030-IND` es
+volver a mandar al lector a buscar ventas de un código que nunca las tendrá.
+Y la columna solo aparece cuando el stock vive en un SKU **distinto** del que
+nombra el renglón: en un producto simple publicado en dos cuentas repetiría el
+código de la columna 1 y el reparto que ya dan «FULL Bekura» y «FULL Sancor».
+Con ese filtro son 23 renglones de 222 los que la llevan — exactamente las 23
+familias.
+
+**Verificado contra el clon de producción:** el Excel se arma completo (40,020
+bytes, tres hojas, 13 columnas) y la vista previa renderiza las tres familias
+del top con su desglose. Los totales no se mueven: esto solo agrega
+explicación, no cambia ningún número.
+
+Sin migraciones ni variables nuevas. Versión 0.186.0.
+
 ### v0.185.0 — Inmovilizado contaba dos veces las piezas de un producto con variantes
 
 Eduardo pidió investigar la hoja de **Inmovilizado** sospechando que hubiera

@@ -55,6 +55,28 @@ def _cuentas(v: Any) -> str:
     return ", ".join(TIENDA.get(c, c) for c in v if c)
 
 
+def _donde(f: dict) -> str:
+    """En qué VARIANTE y en qué cuenta están de verdad las piezas de FULL.
+
+    El renglón se nombra con el SKU padre, y el padre de un producto con
+    variantes no vende nunca: vende la variante. Sin esta columna, revisar el
+    reporte llevaba a buscar las ventas del padre, no encontrar ninguna y
+    concluir que el dato estaba mal (Eduardo, 14-ago, sobre CAM-0030).
+    """
+    det = f.get("full_detalle") or []
+    if not det:
+        return ""
+    # La columna solo gana su lugar cuando el stock vive en un SKU DISTINTO del
+    # que nombra el renglón. Si todas las piezas son del mismo código, esto
+    # repetiría la columna 1 y el reparto por cuenta que ya dan «FULL Bekura» y
+    # «FULL Sancor» — ruido, no información.
+    if all(d.get("sku") == f.get("sku") for d in det):
+        return ""
+    return "   |   ".join(
+        f"{d.get('sku')} · {TIENDA.get(d.get('cuenta'), d.get('cuenta'))}"
+        f" · {int(d.get('uds') or 0):,}" for d in det)
+
+
 def _encabezar(ws, cabs: list[str], nota: str, anchos: dict[int, int]) -> None:
     """Título explicativo en la fila 1 y encabezados en la 3.
 
@@ -76,9 +98,10 @@ def _encabezar(ws, cabs: list[str], nota: str, anchos: dict[int, int]) -> None:
 
 def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
     ws = wb.create_sheet("Inmovilizado")
-    cabs = ["SKU", "Título", "En FULL", "FULL Bekura", "FULL Sancor",
-            "En bodega propia", "Publicaciones activas", "Pausadas",
-            "Cuentas", "Última venta", "Días sin vender", "Diagnóstico"]
+    cabs = ["SKU", "Título", "Dónde está el stock", "En FULL", "FULL Bekura",
+            "FULL Sancor", "En bodega propia", "Publicaciones activas",
+            "Pausadas", "Cuentas", "Última venta", "Días sin vender",
+            "Diagnóstico"]
     total_uds = sum(int(f.get("full_total") or 0) for f in filas)
     nunca = sum(1 for f in filas if not f.get("ultima_venta"))
     _encabezar(ws, cabs,
@@ -89,23 +112,28 @@ def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
                f"Ordenado por unidades: arriba está lo que más renta paga sin "
                f"devolver nada. No incluye el stock parado en bodega propia "
                f"(ese no paga renta) ni valor en dinero (el costo capturado no "
-               f"es de fiar en ~30% del catálogo).",
-               {1: 22, 2: 46, 3: 10, 4: 12, 5: 12, 6: 16, 7: 18, 8: 10,
-                9: 16, 10: 12, 11: 14, 12: 62})
+               f"es de fiar en ~30% del catálogo). En un producto con variantes "
+               f"el renglón es la FAMILIA COMPLETA —el SKU de la izquierda es "
+               f"el padre, que nunca vende por sí mismo— y la columna «Dónde "
+               f"está el stock» dice en qué variante y en qué cuenta están las "
+               f"piezas.",
+               {1: 22, 2: 42, 3: 46, 4: 10, 5: 12, 6: 12, 7: 16, 8: 18,
+                9: 10, 10: 16, 11: 12, 12: 14, 13: 62})
     for i, f in enumerate(filas):
         r = 4 + i
         dias_sin = f.get("dias_sin_vender")
         ws.cell(r, 1, f.get("sku") or "").font = _f()
         ws.cell(r, 2, (f.get("titulo") or "")[:120]).font = _f()
-        for c, k in ((3, "full_total"), (4, "full_bk"), (5, "full_sc"),
-                     (6, "propio"), (7, "activas"), (8, "pausadas")):
+        ws.cell(r, 3, _donde(f)).font = _f(size=9)
+        for c, k in ((4, "full_total"), (5, "full_bk"), (6, "full_sc"),
+                     (7, "propio"), (8, "activas"), (9, "pausadas")):
             ws.cell(r, c, int(f.get(k) or 0)).font = _f()
             ws.cell(r, c).number_format = _INT
-        ws.cell(r, 9, _cuentas(f.get("cuentas"))).font = _f()
-        ws.cell(r, 10, f.get("ultima_venta") or "nunca").font = _f()
+        ws.cell(r, 10, _cuentas(f.get("cuentas"))).font = _f()
+        ws.cell(r, 11, f.get("ultima_venta") or "nunca").font = _f()
         if dias_sin is not None:
-            ws.cell(r, 11, int(dias_sin)).font = _f()
-            ws.cell(r, 11).number_format = _INT
+            ws.cell(r, 12, int(dias_sin)).font = _f()
+            ws.cell(r, 12).number_format = _INT
         # Nunca vendido es distinto de "dejó de venderse": no es que se
         # enfriara, es que la compra no tenía mercado. Se pinta distinto.
         #
@@ -117,12 +145,18 @@ def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
         if not f.get("ultima_venta"):
             aviso = ("NUNCA HA VENDIDO — no dejó de venderse: jamás vendió una "
                      "pieza, y aun así ocupa lugar en FULL")
-            ws.cell(r, 10).fill = _GRAVE_FILL
+            ws.cell(r, 11).fill = _GRAVE_FILL
         else:
             aviso = (f"SIN VENTA EN {dias} DÍAS — lleva {int(dias_sin):,} días "
                      f"desde su última venta y sigue ocupando FULL")
-            ws.cell(r, 10).fill = _AVISO_FILL
-        ws.cell(r, 12, aviso).font = _f(size=9)
+            ws.cell(r, 11).fill = _AVISO_FILL
+        # En una familia, "nunca vendió" es de la familia ENTERA: ni el padre ni
+        # una sola variante. Decirlo evita la lectura de que solo se revisó el
+        # padre — que es justo lo que el SKU de la izquierda sugiere.
+        if int(f.get("variantes") or 0):
+            aviso += (f" · la cuenta cubre al padre y a sus "
+                      f"{int(f['variantes'])} variantes")
+        ws.cell(r, 13, aviso).font = _f(size=9)
 
 
 def _hoja_invisible(wb: Workbook, filas: list[dict], dias: int) -> None:

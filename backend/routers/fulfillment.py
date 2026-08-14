@@ -1905,6 +1905,7 @@ vh as (
    group by 1),
 lst as (
   select coalesce(pa.padre, l.sku::text) as clave, l.sku::text as sku_real,
+         (pa.padre is not null) as es_hijo,
          l.canal, l.situacion, a.legacy_code as cta, l.listing_id::text as pub_id,
          coalesce(l.stock_own, 0)  as stock_own,
          coalesce(l.stock_full, 0) as stock_full,
@@ -1935,6 +1936,11 @@ pub as (
   -- sigan contándose una por SKU, como hasta hoy.
   select clave, canal, cta,
          coalesce(pub_id, 'sku:' || sku_real) as clave_pub,
+         -- Con qué SKU se nombra la publicación colapsada: se PREFIERE EL HIJO.
+         -- El padre de un producto con variantes no se vende —se vende la
+         -- variante— así que decir "CAM-0030" donde las piezas son de
+         -- `CAM-0030-IND` manda a buscar ventas de un SKU que nunca las tendrá.
+         coalesce(max(sku_real) filter (where es_hijo), max(sku_real)) as sku_real,
          max(stock_full) as stock_full,
          max(stock_fba)  as stock_fba,
          -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
@@ -1992,7 +1998,18 @@ s as (
          count(*) filter (where p.pausada)::int                as pausadas,
          count(*) filter (where p.canal <> 'general')::int     as pubs,
          array_agg(distinct p.cta order by p.cta)
-           filter (where p.canal <> 'general')                 as cuentas
+           filter (where p.canal <> 'general')                 as cuentas,
+         -- DÓNDE ESTÁ REALMENTE EL STOCK (Eduardo, 14-ago). El renglón se
+         -- nombra con el SKU padre, pero el padre no tiene inventario: lo
+         -- tienen sus variantes. Sin este desglose, quien revisa busca las
+         -- ventas del padre, no encuentra ninguna —nunca las va a haber— y
+         -- concluye que el reporte miente. Caso CAM-0030: sus 230 piezas son
+         -- todas de `CAM-0030-IND` (150 en Sancor, 80 en Bekura).
+         jsonb_agg(jsonb_build_object(
+                     'sku', p.sku_real, 'cuenta', p.cta, 'uds', p.stock_full)
+                   order by p.stock_full desc)
+           filter (where p.canal = 'mercado_libre' and p.stock_full > 0)
+                                                               as full_detalle
     from pub p
     join prop on prop.clave = p.clave
    group by 1)
@@ -2004,6 +2021,10 @@ _SQL_INV_INMOVILIZADO = _SQL_INV_BASE + """
 select s.sku, coalesce(p.name, '') as titulo,
        s.full_total, s.full_bk, s.full_sc, s.propio,
        s.activas, s.pausadas, s.cuentas,
+       -- El renglón es la FAMILIA, no el SKU padre: `variantes` dice cuántas
+       -- cubre (0 = producto simple) y `full_detalle` en cuál está el stock.
+       (select count(*) from padres where padre = s.sku)::int as variantes,
+       s.full_detalle,
        vh.ult_hist::text as ultima_venta,
        case when vh.ult_hist is not null
             then (current_date - vh.ult_hist)::int end as dias_sin_vender
@@ -2124,9 +2145,17 @@ async def inventario_excel_preview(
                 "skus": len(inm),
                 "unidades_full": sum(int(f.get("full_total") or 0) for f in inm),
                 "nunca_vendieron": sum(1 for f in inm if not f.get("ultima_venta")),
+                # `variantes` y `donde` viajan a la vista previa para que el
+                # renglón se lea como lo que es —una FAMILIA— y no como el SKU
+                # padre, que nunca vende por sí mismo (Eduardo, 14-ago).
                 "top": [{"sku": f["sku"], "titulo": (f.get("titulo") or "")[:60],
                          "full": int(f.get("full_total") or 0),
                          "propio": int(f.get("propio") or 0),
+                         "variantes": int(f.get("variantes") or 0),
+                         "donde": [
+                             {"sku": d.get("sku"), "cuenta": d.get("cuenta"),
+                              "uds": int(d.get("uds") or 0)}
+                             for d in (f.get("full_detalle") or [])][:3],
                          "ultima_venta": f.get("ultima_venta")} for f in inm[:5]],
             },
             "invisible": {
