@@ -434,6 +434,42 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     # camino de CADA aviso de ML. En la corrutina, el backend entero se paraba
     # aquí mientras Postgres contestaba.
     wc_previo = await asyncio.to_thread(orders_write.wc_order_id_previo, str(order_id))
+    reclamo_mio = False
+    if not wc_previo:
+        # RECLAMO ANTES DE CREAR (14-ago-2026). `_locks` serializa dentro de UN
+        # proceso; el relevo de contenedores de un deploy tiene dos. Aquí el
+        # derecho a crear se gana con un insert atómico sobre la PK, que sí
+        # cruza procesos. Ver orders_write.reclamar.
+        cta = orden["cuenta"]
+        cnl = _ESPEJO_ORIGEN.get(
+            cta, (str(orden.get("detalle") or cta).lower(), "", ""))[0]
+        reclamo_mio = await asyncio.to_thread(
+            orders_write.reclamar, cnl, cta, str(order_id))
+        if not reclamo_mio:
+            # Lo tiene otro proceso. Si sigue vivo termina en un parpadeo, así
+            # que se le da margen antes de decidir nada.
+            for _ in range(4):
+                await asyncio.sleep(1.0)
+                wc_previo = await asyncio.to_thread(
+                    orders_write.wc_order_id_previo, str(order_id))
+                if wc_previo:
+                    break
+            if not wc_previo:
+                # No completó: o murió a media petición, o creó en Woo sin
+                # alcanzar a registrarlo — que es exactamente lo que dejó
+                # #123068/#123069. Se le pregunta a Woo, que es donde el
+                # duplicado se vería.
+                from services import wp_db  # local: evita ciclo de importación
+                wc_previo = await asyncio.to_thread(
+                    wp_db.pedido_por_ml_order_id, str(order_id))
+                if wc_previo:
+                    log.warning("orden %s: el reclamo era de otro proceso que no "
+                                "completó; se adopta el pedido %s que ya existía "
+                                "en Woo", order_id, wc_previo)
+                else:
+                    # Nadie lo creó: tomamos el relevo.
+                    log.warning("orden %s: reclamo huérfano sin pedido en Woo; "
+                                "se crea aquí", order_id)
     previo = {"wc_order_id": wc_previo} if wc_previo else None
     ahora = datetime.now(timezone.utc)
     # `creado` = fecha de la VENTA en ML, no de nuestro registro: el tab
@@ -482,6 +518,12 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             pedido = r.json()
             wc_id = int(pedido["id"])
     except Exception as exc:  # noqa: BLE001
+        # El reclamo se suelta si no llegó a pedido: dejarlo puesto haría que
+        # el siguiente aviso viera "ya reclamada" y no la creara NUNCA — la
+        # venta se perdería en silencio, peor que el duplicado que se evita.
+        if reclamo_mio:
+            await asyncio.to_thread(
+                orders_write.liberar, cnl, cta, str(order_id))
         return {"ok": False, "motivo": f"error al crear pedido: {exc}"}
 
     # COMPENSACIÓN de pedidos FULL/FBA (opción A, 28-jul). La meta

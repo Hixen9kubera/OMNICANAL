@@ -143,6 +143,68 @@ def _espejo_inverso_mysql(clave: str, escribir_mysql: Callable[[], None]) -> Non
             pass
 
 
+def reclamar(canal: str, cuenta: str, external_order_id: str) -> bool:
+    """
+    Reserva el derecho a CREAR el pedido en Woo. True = lo ganamos nosotros.
+
+    POR QUÉ. El candado de ráfaga (`pedidos_ml._locks`) vive en la memoria de UN
+    proceso, así que no sirve en el relevo de contenedores de un deploy: el
+    14-ago-2026 dos avisos de la orden 2000017937146172 cayeron uno en el
+    proceso viejo y otro en el nuevo, con 3 segundos de diferencia y 1 segundo
+    después del cambio. Cada uno se creyó el primero y Woo terminó con
+    #123068 y #123069 — y como NO era FULL, la pieza se descontó dos veces.
+
+    El registro anterior tampoco alcanzaba: se escribía DESPUÉS de crear en Woo,
+    así que al proceso viejo lo mataron con el pedido ya creado y sin rastro en
+    kubera. El nuevo no tenía cómo enterarse.
+
+    Aquí el reclamo va ANTES, y es atómico: la PK (canal, cuenta,
+    external_order_id) hace que solo un proceso pueda insertar la fila. El
+    perdedor no crea; consulta. `wc_order_id` queda NULL hasta que el ganador
+    complete — ese NULL es la señal de "reclamado, aún sin pedido".
+
+    Si kubera no responde, devuelve True: es preferible arriesgar un duplicado
+    (detectable y reparable) a perder la venta.
+    """
+    if not activo():
+        return True
+    try:
+        fila = sdb.fetch_one(
+            "insert into channel.orders (canal, cuenta, external_order_id, "
+            "                            creado_at, actualizado_at) "
+            "values (%(ca)s, %(cu)s, %(id)s, now(), now()) "
+            "on conflict (canal, cuenta, external_order_id) do nothing "
+            "returning external_order_id",
+            {"ca": canal, "cu": cuenta, "id": str(external_order_id)})
+        return fila is not None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("reclamo de %s falló (%s); se sigue como si lo ganáramos: "
+                    "perder la venta es peor que un duplicado reparable",
+                    external_order_id, exc)
+        return True
+
+
+def liberar(canal: str, cuenta: str, external_order_id: str) -> None:
+    """
+    Suelta un reclamo que NO llegó a pedido (la creación en Woo falló).
+
+    Sin esto, un fallo dejaría la fila con `wc_order_id` NULL para siempre y el
+    siguiente aviso de esa orden vería "ya reclamada" y no la crearía nunca:
+    la venta se perdería en silencio, que es peor que el duplicado que se
+    intenta evitar. Solo borra si sigue sin pedido.
+    """
+    if not activo():
+        return
+    try:
+        sdb.execute(
+            "delete from channel.orders where canal = %(ca)s and cuenta = %(cu)s "
+            "  and external_order_id = %(id)s and wc_order_id is null",
+            {"ca": canal, "cu": cuenta, "id": str(external_order_id)})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo liberar el reclamo de %s: %s",
+                    external_order_id, exc)
+
+
 def guardar(origen_py: str, funcion: str, encabezado: dict[str, Any],
             lineas: dict[str, Any], clave: str,
             escribir_mysql: Callable[[], None]) -> None:

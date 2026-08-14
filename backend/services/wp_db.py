@@ -247,6 +247,34 @@ def postmeta(wc_id: int, keys: list[str]) -> dict[str, Any]:
     return {r["meta_key"]: r["meta_value"] for r in rows}
 
 
+def pedido_por_ml_order_id(ml_order_id: str) -> int | None:
+    """
+    `wc_order_id` del pedido que YA tiene esa orden del canal, preguntándole a
+    WooCommerce, que es donde el duplicado se vería. None si no existe.
+
+    Último recurso del alta cuando el reclamo se perdió y el ganador nunca
+    completó (murió a media petición, p. ej. en el relevo de un deploy): kubera
+    no sabe, pero Woo sí. Se toma el más antiguo y se ignora la papelera.
+    """
+    if not ml_order_id or not disponible():
+        return None
+    P = _prefix()
+    try:
+        rows = _fetch_all(
+            f"""SELECT MIN(o.id) AS wc_id
+                  FROM {P}wc_orders_meta m
+                  JOIN {P}wc_orders o ON o.id = m.order_id
+                 WHERE m.meta_key = '_ml_order_id' AND m.meta_value = %s
+                   AND o.status <> 'trash'""",
+            (str(ml_order_id),),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pedido_por_ml_order_id(%s) falló: %s", ml_order_id, exc)
+        return None
+    wc = rows[0]["wc_id"] if rows else None
+    return int(wc) if wc else None
+
+
 def padre_de(wc_id: int) -> int | None:
     """
     `post_parent` de una variación, por su propio `wc_id`. None si no es

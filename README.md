@@ -9939,6 +9939,42 @@ lector pregunta "¿ya procesé esta URL?" sin filtrar por SKU.
 
 Sin migraciones ni variables nuevas. Versión 0.172.0.
 
+### v0.176.0 — El reclamo va antes de crear: se cierra la ventana del relevo
+
+El 14-ago la orden 2000017937146172 quedó duplicada en Woo (#123068 y #123069,
+3 s de diferencia) **un segundo después del relevo de contenedores** del deploy
+de las 19:12:23. `_locks` serializa dentro de UN proceso; un deploy tiene dos, y
+cada uno se creyó el primero. El registro tampoco alcanzaba: se escribía DESPUÉS
+de crear en Woo, así que al proceso viejo lo mataron con el pedido ya creado y
+sin rastro en kubera.
+
+A diferencia de los 15 duplicados anteriores, éste **no era FULL**: los dos
+pedidos descontaron pieza y faltó una unidad real. Se canceló el duplicado (Woo
+devolvió la pieza, `_reduced_stock` 1→0) y se mandó a papelera.
+
+`orders_write.reclamar` gana el derecho a crear con un INSERT atómico sobre la
+PK `(canal, cuenta, external_order_id)` — eso sí cruza procesos. `wc_order_id`
+queda NULL hasta completar: es la señal de "reclamado, aún sin pedido".
+
+El perdedor NO crea: espera 4 s por si el ganador está terminando, y si sigue sin
+pedido le pregunta a **Woo** (`wp_db.pedido_por_ml_order_id`), que es donde el
+duplicado se vería. Si Woo tampoco lo tiene, el ganador murió sin crear y el
+perdedor toma el relevo.
+
+Y `liberar` suelta el reclamo si la creación falla: dejarlo puesto haría que el
+siguiente aviso viera "ya reclamada" y no la creara nunca — perder la venta en
+silencio es peor que el duplicado que se evita. Solo borra si `wc_order_id` sigue
+NULL, nunca una venta completada.
+
+Si kubera no responde, `reclamar` devuelve True: arriesgar un duplicado
+detectable es mejor que perder la venta.
+
+Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
+el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
+completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+
+---
+
 ### v0.175.0 — La venta de Temu se vuelve pedido (y el sobre cifrado se abre)
 
 Pieza 6. El receptor de `/api/webhooks/temu` deja la fase de observación:
