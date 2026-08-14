@@ -1,8 +1,56 @@
 # PASO 0 — Los candados que viven en una bitácora
 
-> Planteamiento medido contra producción el 14-ago-2026. **Todavía no se ha
-> tocado una línea de código.** Orden acordado con Eduardo: planteamiento →
-> pruebas en sandbox → verificación → recién entonces el cambio.
+> Planteamiento medido contra producción el 14-ago-2026, **revisado por el
+> consejo** (opus, sonnet, haiku) y corregido con lo que encontraron. Informes en
+> `agents/counselors/1786735774-revisin-paso-0-*`.
+>
+> Estado: migración `0022` y gemelas **aplicadas SOLO EN SANDBOX**, las 6 pruebas
+> pasan, y **ningún candado usa todavía el código nuevo**. Orden acordado con
+> Eduardo: planteamiento → sandbox → verificación → recién entonces el cambio.
+
+## 🛑 BLOQUEANTE — el paso 0 no se puede ejecutar como estaba escrito
+
+Lo encontró opus y está **verificado en el código**. La secuencia real de
+`pedidos_ml.sincronizar` es:
+
+| # | Qué hace | Línea |
+|---|---|---|
+| 1 | lee `channel.orders` — **el ancla de idempotencia** | ~436 |
+| 2 | **CREA el pedido en Woo** | ~477 |
+| 3 | `_ya_compensado(wc_id)`, en la **condición de un `if`, fuera de todo `try`** | ~510 |
+| 4 | **ESCRIBE `channel.orders`** | ~583 |
+
+Si el candado del paso 3 **propaga**, la excepción sube con el pedido **ya creado
+en Woo y todavía sin registrar**. ML reintenta ante cualquier no-2xx, el paso 1 no
+encuentra previo, y **se crea un segundo pedido**.
+
+**Propagar ingenuamente reproduce el patrón de los 964 fantasma que este paso
+dice prevenir.** No es un riesgo teórico: es la misma mecánica, en el mismo
+archivo.
+
+El arreglo no es renunciar a propagar. Es **mover el registro antes de la
+compensación**:
+
+    crear en Woo  →  escribir channel.orders  →  compensar
+
+Con ese orden el reintento es idempotente a nivel pedido, y la compensación puede
+fallar ruidosamente sin duplicar nada.
+
+### Y un agujero que YA ESTÁ ABIERTO hoy, sin tocar nada
+
+La escritura del paso 4 está envuelta en `except Exception: log.warning` (~596).
+Si falla, el pedido queda en Woo pero **no** en el registro; el candado por orden
+se libera, y el siguiente aviso —o un reintento de ML— no encuentra previo y
+**crea el duplicado**.
+
+**El ancla anti-duplicado no es el candado: es el orden de operaciones más la
+durabilidad de ese registro.** Ese `except: warning` es más peligroso que el
+`except: return False` que motivó este paso.
+
+Buscado en los logs de Railway retenidos: **el mensaje no aparece**. El agujero es
+real en el código; no hay evidencia de que se haya disparado en la ventana que
+los logs conservan. Puede tener relación con los duplicados a goteo que siguen
+sin causa raíz.
 
 ## El resumen en una frase
 
