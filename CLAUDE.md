@@ -87,6 +87,20 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
    entrada DETALLADA en README por cada feature.
 10. **El repo vive en OneDrive**: los archivos pueden cambiar bajo tus pies —
     re-Read antes de Edit si hay dudas.
+11. **En una corrutina, NADA que espere a la red o al disco se llama de forma
+    síncrona.** `sdb.*`/`db.*` (psycopg2, pymysql), `httpx.get/post` sin `await`,
+    `requests`, xmlrpc: todo eso detiene el backend ENTERO mientras responde, no
+    solo a quien llamó. Va en `asyncio.to_thread`. Costó el apagón del 13-ago
+    (v0.157.0–v0.162.0): el mismo defecto en cinco lugares — pedidos, sync de
+    inventario, Análisis, webhook de FULL y vigilante de FBA. Síntoma: el panel
+    no carga, la CPU al 1% y la memoria plana (no computa: **espera**).
+12. **Cambiar una variable en Railway REINICIA el contenedor.** Apagar un flag y
+    ver que el panel mejora NO prueba que ese flag fuera la causa — lo que
+    mejoró pudo ser el reinicio. El 13-ago eso produjo dos diagnósticos
+    equivocados seguidos. Para saber quién congela el backend está
+    `services/vigilante_loop.py`: late dentro del loop y, desde un hilo aparte,
+    vuelca la pila cuando el latido se atrasa. Buscar `EVENT LOOP ATASCADO` en
+    los logs de Railway.
 
 ## Mapa rápido de piezas propias
 
