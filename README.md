@@ -9455,3 +9455,51 @@ los scripts de muestreo—, así que esa parte queda observada en la carga inici
 que usa exactamente el mismo indicador.
 
 Sin migraciones y sin variables nuevas. Versión 0.153.0.
+
+### v0.165.0 — Paso 1 del desmantelamiento: las tres cachés de Márgenes salen de MySQL
+
+Primer grupo de las 31 tablas que quedan (plan y dictamen del consejo en
+[docs/PLAN_31_TABLAS.md](docs/PLAN_31_TABLAS.md)). `ml_envio_real` (13,735),
+`ml_ficha` (971) y `ml_visitas` (1,485) pasan a `enrich.order_shipping_cost`,
+`enrich.listing_weight` y `enrich.listing_visits`.
+
+**Se eligieron como primeras a propósito**, y el producto de este paso no son
+las tres tablas: es el **instructivo** para las otras 28. Cada una tiene
+exactamente un lector y un escritor, los dos en su propio servicio, sin crons
+detrás — el caso más limpio que queda para probar el método antes de gastarlo
+en el grupo del publicador, que tiene ~19 lectores.
+
+**El instructivo, en seis pasos:** gemela → copia → comparación → escritor →
+lector → verificación. Cada uno con su artefacto:
+`supabase/migrations/0020_enrich_margenes.sql`, `backend/scripts/backfill_margenes.py`
+(idempotente, dry-run por default, y **verifica solo** al final: conteos por
+tabla y muestra de 200 filas valor por valor) y `backend/services/margenes_read.py`.
+
+**Flag propio, no el de channel.** El primer intento reusó
+`SUPABASE_WRITE_CHANNEL` y eso rompía la propiedad que salvó los cinco cortes:
+la reversa por dominio. Ahora es `SUPABASE_WRITE_MARGENES`, **nace apagado**, y
+este deploy no cambia nada hasta que se encienda.
+
+**Detalles que costaron una corrida cada uno:**
+
+- `medido` es `TINYINT(1)` en MySQL y `boolean` en Postgres — 0/1 no se
+  convierte solo. Se traduce en Python y no con un cast en SQL, para que el
+  NULL siga siendo NULL ("no sé") y no se vuelva `false` ("no medido").
+- `consultado_at` se preserva del origen. Es lo que decide si hay que volver a
+  llamar a ML, que **acepta un ítem por llamada** en visitas y en costos de
+  envío. Re-sellarlo con `now()` haría que el primer barrido creyera que todo
+  está fresco y sirviera datos viejos durante un TTL entero.
+
+**Deuda que se documenta y NO se resuelve:** `enrich.market_listing_metrics.visits_30d`
+(módulo Competencia) y `enrich.listing_visits` (Márgenes) guardan lo mismo,
+pedido al MISMO endpoint. Medido: 323 publicaciones en las dos, 257 con números
+distintos — pero la diferencia es esperable, son ventanas MÓVILES consultadas en
+fechas distintas. Lo real es el desperdicio de llamadas. Converger cambia la
+semántica del tab (ventana variable 7/30/60 contra la fija de 30) y eso es
+decisión de producto. Queda anotado en la migración para que nadie cree un
+tercer caché sin saber que ya hay dos.
+
+Probado: migración aplicada a sandbox y a producción; backfill verificado en los
+dos (13,735 + 971 + 1,485, cero diferencias); gemelas contra el par MySQL
+**11/11**, incluyendo que la ventana de visitas no se mezcle entre 7, 30 y 60
+días. Versión 0.165.0.

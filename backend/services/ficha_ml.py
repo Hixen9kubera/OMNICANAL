@@ -30,6 +30,7 @@ import logging
 import re
 from typing import Any
 
+from config import settings
 from services import db, meli
 
 log = logging.getLogger("omnicanal.ficha_ml")
@@ -74,6 +75,13 @@ def leer(listing_ids: list[str]) -> dict[str, dict[str, Any]]:
     ids = [str(i) for i in listing_ids if i]
     if not ids:
         return {}
+    # PASO 1 del desmantelamiento (14-ago-2026): el caché vive en kubera.
+    # `margenes_read` es BLOQUEANTE (psycopg2) — se conserva el envoltorio
+    # `asyncio.to_thread` del llamador, que es la regla 11 de la casa.
+    # MySQL solo con el flag apagado, que es el interruptor de reversa.
+    if settings.supabase_write_margenes:
+        from services import margenes_read
+        return margenes_read.ficha_leer(ids)
     _asegurar_tabla()
     marcas = ",".join(["%s"] * len(ids))
     filas = db.fetch_all(
@@ -145,6 +153,12 @@ async def completar(pares: list[tuple[str, str]], presupuesto: int = 400) -> int
         await asyncio.gather(*tareas)
 
     def _guardar() -> None:
+        if settings.supabase_write_margenes:
+            from services import margenes_read
+            margenes_read.ficha_guardar(
+                [(iid, cuenta, titulo, peso, bool(medido))
+                 for cuenta, iid, titulo, peso, medido in resultados])
+            return
         vals = ", ".join(["(%s, %s, %s, %s, %s, UTC_TIMESTAMP())"] * len(resultados))
         params: list[Any] = []
         for cuenta, iid, titulo, peso, medido in resultados:

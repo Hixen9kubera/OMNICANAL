@@ -25,6 +25,7 @@ import asyncio
 import logging
 from typing import Any
 
+from config import settings
 from services import db, meli
 
 log = logging.getLogger("omnicanal.envio_real")
@@ -58,6 +59,13 @@ def leer(pares: list[tuple[str, str]]) -> dict[tuple[str, str], dict[str, Any]]:
     """Filas del caché para (cuenta, external_order_id). Solo lectura."""
     if not pares:
         return {}
+    # PASO 1 del desmantelamiento (14-ago-2026): el caché vive en kubera.
+    # `margenes_read` es BLOQUEANTE (psycopg2) — se conserva el envoltorio
+    # `asyncio.to_thread` del llamador, que es la regla 11 de la casa.
+    # MySQL solo con el flag apagado, que es el interruptor de reversa.
+    if settings.supabase_write_margenes:
+        from services import margenes_read
+        return margenes_read.envio_leer(pares)
     _asegurar_tabla()
     res: dict[tuple[str, str], dict[str, Any]] = {}
     por_cuenta: dict[str, list[str]] = {}
@@ -248,6 +256,10 @@ async def _completar(pares: list[tuple[str, str]], presupuesto: int) -> int:
     # COALESCE: un reintento que vuelva a traer NULL nunca pisa un costo real
     # (mismo patrón que la comisión 0→valor de pedidos_ml).
     def _guardar() -> None:
+        if settings.supabase_write_margenes:
+            from services import margenes_read
+            margenes_read.envio_guardar(resultados)
+            return
         # UN solo INSERT: escribir de a una costaba un viaje de red por orden
         # al MySQL de Hostinger, que era lo que hacía lento el llenado.
         vals = ", ".join(["(%s, %s, %s, %s, UTC_TIMESTAMP())"] * len(resultados))

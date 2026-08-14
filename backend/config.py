@@ -297,6 +297,13 @@ class Settings(BaseSettings):
     # SÍNCRONO al guardarse — kubera se entera en vivo, no hasta el ETL.
     # Mismo fallback a cola + Slack. Apagado = solo el ETL nocturno (hoy).
     supabase_write_categorias: bool = False
+
+    # MÁRGENES (grupo 5 del desmantelamiento, 14-ago-2026): las tres cachés del
+    # tab —costo real de envío, peso medido por ML, visitas— pasan de MySQL a
+    # enrich.*. Flag PROPIO y no el de channel: la reversa tiene que ser por
+    # dominio, que es lo que salvó los cinco cortes. Nace apagado; se enciende
+    # cuando las tablas existen en kubera Y el backfill está verificado.
+    supabase_write_margenes: bool = False
     # Webhook de WooCommerce → core.products (11-ago). Los tres seams de core
     # solo ven lo que pasa POR EL PANEL, y el catálogo también se edita desde
     # wp-admin: 444 fichas guardadas ahí alguna vez y 39 de 253 SKUs con un
