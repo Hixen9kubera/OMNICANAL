@@ -241,6 +241,20 @@ class Settings(BaseSettings):
     # F5 channel: leer_inventario/presencia/resumen leen de channel.listings
     # (BD kubera) con fallback automático a MySQL. Apagar = revertir.
     supabase_read_channel: bool = False
+    # ── PASO 3: el acta de nacimiento de una publicación llega a kubera YA ──
+    # Hoy publicar escribe `ml_progress`/`amazon_progress` (MySQL) y kubera se
+    # entera hasta el sync de 15 min — que además lee de esas mismas tablas. O
+    # sea que `ml_progress` no es la bitácora del publicador: es lo ÚNICO que
+    # sabe de un listing nuevo durante hasta 15 minutos.
+    #
+    # Mientras ese hueco exista, repuntar cualquiera de los 25 lectores del
+    # grupo 4 convierte "publicado hace 30 segundos" en "sin publicar". Este
+    # seam es el requisito previo, igual que Crear → core.products lo fue para
+    # el corte de `core`.
+    #
+    # NACE APAGADO: encenderlo mete una escritura en el flujo de PUBLICAR, que
+    # es negocio vivo (regla 3, dale de Brandon). Ver services/publicacion_seam.py.
+    supabase_seam_publicar: bool = False
     # F5 pedidos: el tab Ventas (fuente=pedidos) lee de channel.orders (BD
     # kubera) con fallback automático a MySQL. Apagar = revertir.
     supabase_read_orders: bool = False

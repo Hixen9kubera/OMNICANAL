@@ -125,6 +125,14 @@ def _backlog_ml(backlog_key: str, entry: dict[str, Any]) -> None:
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("No se pudo actualizar ml_progress (%s): %s", backlog_key, exc)
+        # SEAM del PASO 3 (nace apagado): que `channel.listings` sepa del MLM
+        # ahora y no dentro de 15 min. Sin esto, `ml_progress` es lo único que
+        # conoce la publicación recién nacida y ningún lector del grupo 4 se
+        # puede repuntar. Ver services/publicacion_seam.py.
+        from services import publicacion_seam
+        publicacion_seam.registrar(
+            "mercado_libre", cuenta, sku, listing_id=str(item_id),
+            url=entry.get("ml_url"))
         _marcar_publicado_en_woo(sku, wc_id)
 
 

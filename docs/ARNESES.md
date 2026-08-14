@@ -86,6 +86,31 @@ Opción: `--max-atraso-min 90` si el vigilante llegara a correr más espaciado.
 `stock_watch_foto` se archive. Este arnés existe para autorizar ese encendido;
 después no mide nada.
 
+### `comparar_seam_publicar.py` — el del paso 3
+
+```bash
+python backend/scripts/comparar_seam_publicar.py
+```
+
+Vigila que ninguna publicación reciente se quede sin `listing_id` en kubera, y
+—cuando se encienda `SUPABASE_SEAM_PUBLICAR`— que el seam esté escribiendo de
+verdad. Código de salida fiable.
+
+Arbitra por RECENCIA en vez de exigir igualdad: un `listing_id` distinto entre
+`ml_progress` y `channel.listings` **no es fallo** — es un SKU republicado, y
+kubera tiene el vivo. Solo reprueba si el id del publicador es el más nuevo.
+
+⚠️ **Lo que este arnés deliberadamente NO mide: el retraso.** No es medible con
+lo que hay — `listing_history` no registra `listing_id`, y
+`listings.updated_at` significa "cuándo CAMBIÓ", no "cuándo se enteró". La
+primera versión lo calculaba igual e imprimía una mediana de 889 minutos: un
+número real que medía otra cosa. Mismo error que invalidó `turno_sync`. Está
+escrito en el código para que nadie lo "arregle" reponiéndolo.
+
+Mientras el seam esté apagado, el bloque 3 sale `n/d` — es la línea base, no una
+aprobación. **No se repunta ningún lector del grupo 4 hasta que ese bloque
+muestre tráfico real por la vía `publicar`.**
+
 ---
 
 ## 🔑 La regla que decide si un arnés sobrevive al corte
@@ -203,6 +228,16 @@ commit que lo crea.
       "leer_salida": false,
       "nota": "Autoriza encender SUPABASE_READ_STOCK_WATCH. Verde varios dias seguidos o no se avanza.",
       "retiro": "cuando la lectura pase a kubera y stock_watch_foto se archive"
+    },
+    {
+      "id": "paso3_seam_publicar",
+      "cmd": "python backend/scripts/comparar_seam_publicar.py",
+      "cadencia": "diaria",
+      "solo_lectura": true,
+      "codigo_salida_confiable": true,
+      "leer_salida": false,
+      "nota": "Con el seam apagado el bloque 3 sale n/d: es linea base. No repuntar lectores del grupo 4 hasta ver trafico por la via 'publicar'.",
+      "retiro": "cuando los 25 lectores esten repuntados y ml_progress sea archivo"
     }
   ],
   "retirados": [

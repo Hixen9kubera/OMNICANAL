@@ -9776,3 +9776,73 @@ una decisión automática que se vaya a equivocar.
 Probado: dry-run, corrida real y reejecución inerte. El hueco pasó de 44 a **0**
 y las 44 fechas viajaron intactas (0 selladas con fecha de copia).
 Versión 0.169.0.
+
+### v0.170.0 — Paso 3, bloque 1: el seam de publicación (APAGADO)
+
+Iba a repuntar los tres archivos de menos riesgo del grupo 4 (`studio`,
+`presencia`, `publicar`) y **paré antes de tocarlos**, porque el barrido
+descubrió que el paso 3 no empieza donde el plan decía.
+
+**`ml_progress` y `amazon_progress` NO son bitácoras congeladas: están vivas.**
+`ml_progress` se escribió hoy 18:25, `amazon_progress` ayer (24 y 12 escrituras
+en 7 días). Y la cadena real es:
+
+    publicar  →  ml_progress / amazon_progress  (MySQL)
+                          ↓  sync de 15 min (inventario.py)
+                   channel.listings  (kubera)
+
+Verificado en el código: **el publicador no tiene seam a `channel.listings`**.
+Escribe MySQL y nada más; kubera se entera hasta el siguiente sync, y ese sync
+lee de `ml_progress`. Así que `ml_progress` no es "la bitácora del publicador":
+es el **acta de nacimiento** de la publicación, y durante hasta 15 minutos es lo
+único que sabe que ese listing existe.
+
+Por eso el bloque de `presencia.py` que consulta `ml_progress` después de
+`channel.listings` **no es redundancia, es la red de lo recién publicado**.
+Repuntarlo sin el seam convierte "publicado hace 30 segundos" en "sin publicar".
+Misma forma que el bloqueador del corte de `core`: el seam Crear →
+`core.products`.
+
+**Qué se agrega** (`services/publicacion_seam.py`, `SUPABASE_SEAM_PUBLICAR`,
+apagado): al publicar, `channel.listings` se entera en el momento. ML manda
+`listing_id` y `url`; Amazon manda `status` y `product_type` — **no
+`listing_id`**, porque el ASIN todavía no existe al publicar (los 1,791
+registros de `amazon_progress` nacidos así tienen `asin` NULL).
+
+**Lo que el seam NO toca, y es lo importante:** `is_fulfillment` jamás. El upsert
+del sync lo escribe SIN `coalesce`, así que mandar un `false` por "no sé"
+apagaría el FULL de una publicación que sí lo es — y al republicar un SKU
+reciclado eso sería un dato falso sobre dónde está la mercancía. Precio, stock,
+situación y logística tampoco: los observa el sync contra el marketplace.
+
+La escritura va en un hilo (regla 11) y es best-effort **mientras sea espejo**:
+un fallo degrada la frescura, no la verdad, y queda anotado en
+`ops.migration_issues`. Está escrito en el módulo que **el día que se repunten
+los lectores ese `except` tiene que morir** — ahí un fallo silencioso sería una
+publicación invisible, que es la trampa del paso 0.
+
+**Arnés nuevo** (`comparar_seam_publicar.py`) y su línea base de hoy: 203
+publicaciones de ML y 31 de Amazon en 14 días, **todas presentes en kubera**, 0
+sin `listing_id`. Arbitra por RECENCIA en vez de exigir igualdad: los 2 SKUs con
+id distinto (`TEC-0404-MET` en las dos cuentas) son republicaciones donde kubera
+tiene el vivo y `ml_progress` el viejo — informativo, no fallo. Es el fenómeno de
+los 63 pares que citó el consejo.
+
+**Una métrica que se construyó y se tiró.** La primera versión medía "cuánto
+tarda kubera en enterarse" restando `published_at` de `listings.updated_at`, e
+imprimía una mediana de 889 minutos. El número era real y medía otra cosa:
+`updated_at` significa **cuándo CAMBIÓ el dato**, no cuándo se visitó, y
+`listing_history` ni siquiera registra `listing_id`. Es la misma trampa que
+invalidó `turno_sync` en `vigilar_congelacion.py`. Se reemplazó por el síntoma
+que sí es observable —publicaciones sin `listing_id` en kubera— y el porqué
+quedó escrito en el código para que nadie lo reponga.
+
+**Defecto encontrado de paso, aún sin corregir:** en `presencia.py` el bloque de
+ML tiene guardia contra duplicar (`if MERCADO_LIBRE in acc: continue`) y el de
+Amazon no. Con `SUPABASE_READ_CHANNEL=true`, `channel_read.presencia()` ya
+devuelve Amazon, así que **1,387 SKUs salen con `n=2` para una sola
+publicación**. Se corrige al repuntar ese archivo, que es el paso siguiente.
+
+Sin migraciones. La variable nace apagada: este deploy no cambia nada.
+Encenderla mete una escritura en el flujo de PUBLICAR — negocio vivo, regla 3,
+dale de Brandon. Versión 0.170.0.

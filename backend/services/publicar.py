@@ -984,6 +984,14 @@ def _guardar_backlog_amazon(sku, wc_id, product_type, status, success, issue_cou
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("No se pudo actualizar amazon_progress: %s", exc)
+        # SEAM del PASO 3 (nace apagado). En Amazon NO viaja `listing_id`: el
+        # ASIN todavía no existe al publicar (los 1,791 registros de
+        # `amazon_progress` nacidos así tienen `asin` NULL, y lo asigna Amazon
+        # después). Viajan `status` y `product_type`, que es lo que sí sabemos.
+        from services import publicacion_seam
+        publicacion_seam.registrar(
+            "amazon", "AMAZON", str(sku or ""),
+            status="PUBLISHED", product_type=product_type)
         # Regla de Brandon (29-jul): publicado aunque sea en UNA cuenta ⇒
         # publish en Woo. Solo el camino de ML lo hacía — el de Amazon dejaba
         # el producto en draft/inprogress (hueco señalado por Eduardo, 05-ago).
