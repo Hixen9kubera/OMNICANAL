@@ -10101,6 +10101,88 @@ del top con su desglose. Los totales no se mueven: esto solo agrega
 explicación, no cambia ningún número.
 
 Sin migraciones ni variables nuevas. Versión 0.186.0.
+### v0.196.0 — Walmart: los 445 atributos obligatorios, y el contenido que llevamos mal en los 221 publicados
+
+**El hueco.** Temu y TikTok ya piden los atributos obligatorios de cada
+categoría y llenan la ficha con IA. Walmart no: el publicador manda un bloque
+fijo, y hasta ahora lo único que se había hecho era **quitar** los campos que
+tumbaban el lote. Nadie estaba **llenando** los que Walmart pide.
+
+**De dónde salen los obligatorios, sin API.** En TikTok es
+`GET /categories/{id}/attributes`. En Walmart MX esa API **no existe**:
+`POST /v3/items/spec` da 404 con credenciales MX y en Global está marcada
+"US only" — no llega ni migrando. La fuente es el esquema público
+`MX_MP_ITEM_INTL_SPEC.json` (3.9 MB, HTTP 200 sin credenciales).
+`scripts/walmart_field_requirements.py` lo convierte en tabla:
+
+| | |
+|---|---|
+| Categorías | **75** |
+| Filas (campo × categoría) | **3,326** |
+| **Obligatorios** | **445** — 24 comunes + **421 por categoría** |
+| Con lista cerrada | **1,334** |
+
+Sale con el esquema de `channel.field_requirements`, y con dos columnas que no
+tiene ningún otro canal: `veredicto_produccion` y `evidencia_produccion`.
+Existen porque **el archivo es la 3.19 y producción corre la 3.11**, y donde
+chocan manda lo medido. Las 9 correcciones conocidas (`modelNumber` rechazado
+donde el archivo lo lista, `productLine` y `activity` obligatorios donde el
+archivo dice que no…) viven en `CORRECCIONES_MEDIDAS` y cada una costó un lote.
+
+**Lo que estábamos dejando sobre la mesa:** el publicador manda 6 campos en
+Electrónicos de los 27 que la categoría admite; en "Cocina, Decoración y Otros"
+manda 10 de 81. Son **68 atributos opcionales sin usar** en una sola categoría,
+y `offerScore`/`contentScore` de la Listing Quality API miden justamente eso.
+
+**El contenido que ya publicamos está mal, y se puede medir.** Sobre los 244
+payloads de Electrónicos del 7-ago:
+
+| Hallazgo | Cuántos |
+|---|---|
+| `keyFeatures` con UNA viñeta, copia literal del título | **244 de 244 (100%)** |
+| Título fuera del rango 50–75 | 80 |
+| Título con MAYÚSCULAS sostenidas | 25 |
+| `brand` = `"Ferrahome"` por default | **244 de 244** |
+| **Frases penalizadas VIVAS en Walmart** | **5** |
+
+Lo de `keyFeatures` es lo más caro y lo más fácil: el propio esquema dice, en la
+descripción del campo, *"Recomendamos encarecidamente utilizar mínimo tres"* y
+**"Deben de ser diferentes al Título del Producto y no repetirse en la
+Descripción"**. Mandamos exactamente lo contrario, 244 veces. Se corrige con
+`MP_MAINTENANCE`, sin republicar. Los 5 con frase penalizada —`garantizada`,
+`lo mejor` ×2, `la mejor`, `sin fallas`— son del tipo que puede **inactivar** el
+producto.
+
+**`services/walmart_contenido.py`** trae los dos prompts (contenido y atributos)
+y, sobre todo, los validadores. **27 pruebas, 27 pasan.** El prompt pide; el
+código garantiza:
+
+- Título 50–75 (regla de negocio) con tope duro **200**, que sale de
+  `productName.maxLength` y **cierra el pendiente #7 del manual**, donde el 200
+  figuraba como `[SUPUESTO]` heredado sin fuente.
+- Beneficios 3–8, ≤50 caracteres, **distintos del título y ausentes de la
+  descripción** — la regla literal del esquema que hoy violan los 244.
+- Todo valor de lista cerrada se comprueba contra la lista real de esa
+  categoría; lo que no cuadra no se publica.
+- Un campo con veto medido se descarta **antes** de mirar el esquema, para que
+  el motivo que quede en la bitácora sea la evidencia de producción y no un
+  "no existe" genérico.
+- `[FALTA DATO]` ⇒ el campo no se publica. Un hueco es mejor que una mentira:
+  en Walmart un dato inventado no da error, publica.
+
+**Dos comprobaciones que existen por un caso real.** La primera: las frases
+penalizadas se buscan **con límite de palabra**. Por subcadena, `"cura"` caza
+dentro de *manicura*, *pedicura* y *oscuras*, y `"la mejor"` dentro de *"mejora
+tu visibilidad"* — medido sobre los 244, la versión ingenua marcaba 8 artículos
+y **3 eran falsos positivos**. La segunda: **el título propuesto tiene que
+compartir alguna palabra con el original**. Un título puede quedar impecable de
+forma y describir otro producto; es el mismo modo de fallo que en TikTok mandó
+un cono veterinario a *Joyas para disfraces*, con confianza y sin error.
+
+Entregable completo en
+[docs/WALMART_ENTREGA_A_OMNICANAL.md](docs/WALMART_ENTREGA_A_OMNICANAL.md),
+hermano de los de Temu y TikTok. **No se mandó ningún feed**: los 147 feeds
+analizados son históricos y todo se leyó con `GET`.
 
 ### v0.185.0 — Inmovilizado contaba dos veces las piezas de un producto con variantes
 
