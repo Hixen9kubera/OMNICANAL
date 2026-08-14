@@ -88,20 +88,55 @@ después no mide nada.
 
 ---
 
+## 🔑 La regla que decide si un arnés sobrevive al corte
+
+Esto se aprendió **midiendo**, no razonando: la primera versión de este archivo
+daba por muertos a los siete de abajo, y uno resultó estar vivo.
+
+> **Sobrevive el arnés que arbitra contra un tercero VIVO. Muere el que usa
+> MySQL como referencia.**
+
+- `comparar_lecturas_core.py` sobrevive porque cuando encuentra una diferencia
+  **le pregunta a Woo quién tiene razón**. Corrido el 14-ago: 28 diferencias,
+  Woo le dio la razón a kubera en 28 de 28 → `difs_reales=0`, veredicto
+  `EQUIVALENTE`, código 0.
+- Los otros tres comparan contra MySQL a secas y por eso reprueban: MySQL está
+  congelado a propósito y la diferencia crece sola cada día.
+- `vigilar_congelacion.py` sobrevive por otra vía: no compara igualdad, mide
+  **movimiento**.
+- `comparar_stock_watch_foto.py` sobrevive porque sus dos lados están vivos.
+
+**Todo arnés nuevo se diseña con esa regla.** Un arnés que solo sabe comparar
+dos tablas caduca el día del corte; uno que sabe a quién preguntarle, no.
+
 ## ❌ Retirados — NO meter al chequeo diario
 
 No se borran: son la evidencia de cómo se cerró cada corte. Se archivan en F8
-junto con el resto del andamiaje.
+junto con el resto del andamiaje. **Los códigos de salida son medidos, no
+supuestos** (y ojo: no son uniformes — `orders` sale con 2, no con 1).
 
-| Script | Por qué ya no mide |
-|---|---|
-| `comparar_costos.py` | MySQL congelado. **Además ESCRIBE** acta en `migration.reconciliation_runs`; su cron ya está retirado |
-| `comparar_channel.py` | Igual (escribe acta) |
-| `comparar_orders.py` | Igual (escribe acta) |
-| `comparar_lecturas_costing.py` | Arnés del flag F5, ya cerrado. Solo lectura, pero mide algo que dejó de existir |
-| `comparar_lecturas_channel.py` | Igual |
-| `comparar_lecturas_orders.py` | Igual |
-| `comparar_lecturas_core.py` | Igual (`productos` es tabla legada) |
+| Script | Medido 14-ago | Por qué queda fuera |
+|---|---|---|
+| `comparar_costos.py` | no corrido a propósito | **ESCRIBE** acta en `migration.reconciliation_runs` y su cron está retirado. Razón independiente de si pasa |
+| `comparar_channel.py` | ídem | ídem |
+| `comparar_orders.py` | ídem | ídem |
+| `comparar_lecturas_costing.py` | `CON DIFERENCIAS`, exit **1** | Compara contra MySQL congelado. Alarma garantizada, todos los días |
+| `comparar_lecturas_channel.py` | `CON DIFERENCIAS`, exit **1** | Ídem |
+| `comparar_lecturas_orders.py` | `CON DIFERENCIAS (15)`, exit **2** | Ídem. Las diferencias son el corte: kubera trae 1,702 `completed` de BEKURA contra 1,004 de MySQL — kubera siguió, MySQL no |
+
+### Caso aparte: `comparar_lecturas_core.py`
+
+**Pasa** (`EQUIVALENTE`, exit 0) por la regla de arriba, así que no ensuciaría
+el chequeo diario. Aun así **no va al agente**, por dos razones que no son
+"falla":
+
+1. Tarda **más de dos minutos**, y la mitad de lo que compara —el lado MySQL—
+   ya es peso muerto.
+2. Lo único que sigue midiendo de verdad es *kubera contra Woo*, y eso merece un
+   arnés propio, sin MySQL en medio.
+
+Queda anotado para F8: **partirlo en dos y quedarse con la mitad viva.** Es
+trabajo chico y convierte un arnés que caduca en uno permanente.
 
 **Aparte, y no es de migración:** `comparar_variantes_wpdb.py` verifica que la
 ruta rápida de variantes de WordPress devuelva lo mismo que el REST que
@@ -171,9 +206,17 @@ commit que lo crea.
     }
   ],
   "retirados": [
-    "comparar_costos.py", "comparar_channel.py", "comparar_orders.py",
-    "comparar_lecturas_costing.py", "comparar_lecturas_channel.py",
-    "comparar_lecturas_orders.py", "comparar_lecturas_core.py"
+    {"script": "comparar_costos.py",           "motivo": "escribe acta; cron retirado"},
+    {"script": "comparar_channel.py",          "motivo": "escribe acta; cron retirado"},
+    {"script": "comparar_orders.py",           "motivo": "escribe acta; cron retirado"},
+    {"script": "comparar_lecturas_costing.py", "motivo": "compara contra MySQL congelado", "medido_exit": 1},
+    {"script": "comparar_lecturas_channel.py", "motivo": "compara contra MySQL congelado", "medido_exit": 1},
+    {"script": "comparar_lecturas_orders.py",  "motivo": "compara contra MySQL congelado", "medido_exit": 2}
+  ],
+  "pasa_pero_fuera": [
+    {"script": "comparar_lecturas_core.py", "medido_exit": 0, "veredicto": "EQUIVALENTE",
+     "motivo": "arbitra contra Woo vivo, pero tarda >2 min y la mitad MySQL es peso muerto",
+     "pendiente": "F8: partirlo y quedarse con kubera-vs-Woo"}
   ],
   "fuera_de_migracion": ["comparar_variantes_wpdb.py"]
 }
