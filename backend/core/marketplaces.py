@@ -106,9 +106,13 @@ MARKETPLACES: dict[str, CanalConfig] = {
         "color": "#FB7701",       # naranja Temu
         "color_texto": "#FFFFFF",
         "acento": "#FF5000",
-        "habilitado": False,
-        "origen": Origen.EJEMPLO,
-        "descripcion": "Próximamente — pendiente de credenciales.",
+        # Abierto el 14-ago-2026: 352 publicaciones vivas leídas de
+        # `channel.listings`, no de ejemplos. Decía "pendiente de credenciales"
+        # cuando las credenciales llevaban horas en Railway y el canal ya
+        # publicaba — la pestaña seguía diciendo PRONTO.
+        "habilitado": True,
+        "origen": Origen.DB,
+        "descripcion": "Catálogo de Temu (mallId 635517742093915).",
     },
     Canal.SHEIN: {
         "id": Canal.SHEIN,

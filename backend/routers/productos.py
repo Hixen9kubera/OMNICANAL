@@ -410,6 +410,11 @@ async def _categoria_del_canal(sku: str, canal: str) -> str | None:
             from services import studio
             cat = (studio.metadata(sku, None) or {}).get("categoria_ml") or {}
             return cat.get("category_id") or None
+        if canal == "temu":
+            # Panel > publicación, igual que TikTok. Sin esto el Estudio pedía
+            # los requisitos con categoría None y el semáforo se caía.
+            from services import temu_panel
+            return temu_panel.categoria_de(sku)
         if canal == "tiktok":
             # ⚠️ En TikTok la categoría vive en `listings.category_id`; en Amazon
             # vive en `product_type`. Cruzar los requisitos por la columna
@@ -579,6 +584,65 @@ def leer_categoria_tiktok(sku: str):
     from services import supabase_db as sdb
     f = (sdb.fetch_all("select name, path from channel.categories "
                        "where channel_id='tiktok' and category_id=%s", (cid,)) or [{}])[0]
+    return {"origen": "canal", "category_id": cid,
+            "name": f.get("name"), "path": f.get("path")}
+
+
+# ── Lo mismo para TEMU ───────────────────────────────────────────────────────
+# Mismo contrato que TikTok, y hace más falta todavía: en Temu la categoría no
+# es solo dónde aparece el producto, es la que DETERMINA qué atributos existen
+# (`template.get` solo responde en hojas). Sin elegirla no hay contenido que
+# generar ni alta que mandar.
+
+@router.get("/categorias/temu")
+def buscar_categorias_temu(q: str = Query(..., min_length=2),
+                           limite: int = Query(25, ge=1, le=60)):
+    """Categorías de Temu por nombre o ruta. SOLO HOJAS."""
+    from services import temu_panel
+    return {"canal": "temu", "resultados": temu_panel.buscar_categorias(q, limite)}
+
+
+@router.post("/{sku}/canal/temu/categoria")
+def guardar_categoria_temu(sku: str, req: CategoriaCanalReq):
+    """Guarda la categoría de Temu elegida en el panel."""
+    from services import temu_panel
+    r = temu_panel.guardar_categoria(sku, req.categoria_id.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("motivo") or "No se pudo guardar.")
+    return r
+
+
+@router.get("/{sku}/canal/temu/categoria/sugerida")
+async def sugerir_categoria_temu(sku: str, titulo: str = Query("")):
+    """
+    Categoría RECOMENDADA para el SKU. Sugerencia: NO se guarda sola.
+
+    Dos pasos: Temu propone candidatas (`category.recommend`) y la IA elige
+    entre ellas **con permiso de decir que ninguna sirve** (catId 0). Esa salida
+    es la que la vuelve portera en vez de adivina — medido sobre 89 productos,
+    corrigió la primera opción del recomendador en el 37% y apartó 11 que no
+    encajaban en ninguna.
+    """
+    from services import temu_panel, woocommerce
+    if not titulo:
+        p = await woocommerce.obtener_producto_por_sku(sku)
+        titulo = (p or {}).get("nombre") or ""
+    return await temu_panel.sugerir_categoria(sku, titulo)
+
+
+@router.get("/{sku}/canal/temu/categoria")
+def leer_categoria_temu(sku: str):
+    """Qué categoría de Temu tiene el SKU y DE DÓNDE sale (panel / canal / nada)."""
+    from services import temu_panel
+    elegida = temu_panel.categoria_elegida(sku)
+    if elegida and elegida.get("category_id"):
+        return {"origen": "panel", **elegida}
+    cid = temu_panel.categoria_de(sku)
+    if not cid:
+        return {"origen": None, "category_id": None, "name": None, "path": None}
+    from services import supabase_db as sdb
+    f = (sdb.fetch_all("select name, path from channel.categories "
+                       "where channel_id='temu' and category_id=%s", (cid,)) or [{}])[0]
     return {"origen": "canal", "category_id": cid,
             "name": f.get("name"), "path": f.get("path")}
 

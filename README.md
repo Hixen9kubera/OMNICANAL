@@ -10002,6 +10002,68 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.183.0 — Publicar en Temu desde el panel: cuatro defectos que solo salían en pantalla
+
+Prueba en vivo pedida por Brandon: abrir el panel, apretar *Mejorar con IA* y
+*Publicar a Temu* con `JUGU-0053-MUL`. Salió publicado —`goodsId
+607904216261491`— pero **el camino tenía cuatro defectos que ninguna prueba de
+backend habría visto**, porque cada uno vivía en la costura entre dos piezas.
+
+**1. Temu decía "PRONTO".** `core/marketplaces.py` lo marcaba
+`habilitado: False` con la leyenda *"pendiente de credenciales"* — cuando las
+credenciales llevaban horas en Railway y el canal ya tenía 352 publicaciones.
+La pestaña estaba deshabilitada encima de un canal vivo.
+
+**2. El semáforo reventaba en Temu.** `channel_content` usaba un **NUL
+literal** (`chr(0)`) como centinela de "sin categoría", y **psycopg2 lo rechaza
+en un parámetro**: *"A string literal cannot contain NUL (0x00) characters"*. El
+semáforo se apagaba entero y el panel no decía por qué. Ahora el centinela es
+`__sin_categoria__`; el NUL parecía el "vacío perfecto" y es justo el que no se
+puede mandar.
+
+**3. Faltaba la rama de Temu** en `_categoria_del_canal`, que devolvía `None` y
+activaba el centinela anterior. Con ella, panel > publicación, igual que TikTok.
+
+**4. Un 422 al publicar, y el panel solo decía "No se pudo generar la vista
+previa".** El generador de Temu produce los atributos en el formato del canal
+—`{name, value: [...]}`, que es lo que pide `v3.add`— y el modelo del panel
+exige `{nombre, valor}`, el idioma de ML, Amazon y TikTok. El mensaje en
+pantalla no nombraba ni el canal ni el campo; el error real se leyó
+interceptando la petición del navegador:
+
+```json
+{"loc":["body","campos","atributos",0,"nombre"],"msg":"Field required",
+ "input":{"name":"Grupo de edad aplicable","value":["3 años+"]}}
+```
+
+`AtributoIn` acepta ahora las dos formas y normaliza; y `publicar_temu` traduce
+DE VUELTA al formato de Temu antes de armar el payload, sin confiar en quién
+llamó — mandar `{nombre, valor}` a `v3.add` no da error: **v3 ignora en
+silencio** lo que no reconoce y el producto se publica sin atributos.
+
+**El selector de categoría de Temu** (`CategoriaTemuPicker`) cierra la paridad
+con Amazon y TikTok: dice cuál tiene y de dónde sale, la sugiere (Temu propone
+candidatas y la IA elige, **con permiso de decir que ninguna encaja**) y deja
+cambiarla — solo HOJAS, porque las intermedias no tienen plantilla. Se guarda en
+`channel.product_category` con `source='panel'` y MANDA sobre el recomendador.
+Para el producto de prueba eligió *Arte, Manualidades y Costura > Modelismo >
+Sets de herramientas para pasatiempos*, descartando las de jardín, pesca y
+juguete.
+
+**Cinco códigos de estado más, decodificados.** Brandon leyó los totales del
+Seller Center (Activo/Inactivo 182 · Incompleto 172 · Borrador 14) y se cruzaron
+contra el censo por código: `5/None` = 14 y `2/8+3/2+3/3` = 172, exactos. Eso
+convierte tres códigos en "Incompleto" y deja el resto como vendible. Ojo: los
+conteos se MUEVEN mientras Temu procesa un lote (entre dos censos con minutos de
+diferencia, `2/8` pasó de 129 a 133), así que el cruce vale por la suma.
+
+**Y un hallazgo del censo: 4 SKUs están publicados DOS veces** en Temu
+(`ACC-0160-AZL`, `TEC-1509-MET-300W`, `MUE-0364-BLN/DOR`, `MUE-0293-AZL`). Dos
+publicaciones del mismo SKU compiten entre sí y parten el inventario; y
+`ACC-0160-AZL` es además uno de los dos con precio a 100×.
+
+---
+
 ### v0.179.0 — Temu: la categoría se elige (y el alta ya pasa por su IA)
 
 Auditoría en vivo con `ORG-0261-NEG` — un soporte de pared para casco de moto —

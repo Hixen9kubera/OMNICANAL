@@ -60,9 +60,27 @@ PAGE_SIZE = 100
 # Qué significan los códigos de estado, hasta donde está VERIFICADO. Temu no
 # documenta esta tabla; lo de aquí salió de cruzar productos cuyo estado real se
 # conocía por el Seller Center. Lo que no está aquí, no se inventa.
+# CÓMO SE DECODIFICARON (14-ago): Brandon leyó los totales del Seller Center
+# —Activo/Inactivo 182 · Incompleto 172 · Borrador 14— y se cruzaron contra el
+# censo por código. Dos cuadraron EXACTO: `5/None` = 14 y `2/8+3/2+3/3` = 172.
+# Eso convierte tres códigos en "Incompleto" y deja el resto como vendible.
+# ⚠️ Los conteos se MUEVEN mientras Temu procesa un lote (entre dos censos con
+# minutos de diferencia, 2/8 pasó de 129 a 133): el cruce vale por la suma, no
+# por el número exacto de un momento.
 ESTADOS = {
-    "2/8": "Incompleto",   # los 4 publicados el 13-ago que el panel de Temu marca así
-    "5/None": "Borrador",  # ILUM-0089-PLA y HERR-0374-MUL, ambos con precio 0.00
+    "2/8": "Incompleto",
+    "3/2": "Incompleto",
+    "3/3": "Incompleto",
+    "5/None": "Borrador",
+    # Los de abajo caen en el cubo "Activo / Inactivo" del Seller Center. NO se
+    # distingue activo de inactivo con lo que se sabe hoy, así que no se afirma:
+    # por eso el fan-out sigue sin escribirle a Temu.
+    "4/7": "Activo o inactivo",
+    "4/10": "Activo o inactivo",
+    "4/11": "Activo o inactivo",
+    "2/4": "Activo o inactivo",
+    "3/1": "Activo o inactivo",
+    "6/None": "Activo o inactivo",
 }
 
 

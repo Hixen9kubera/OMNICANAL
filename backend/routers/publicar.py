@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from services import publicar
 
@@ -19,8 +19,29 @@ router = APIRouter(prefix="/api/publicar", tags=["publicar"])
 
 
 class AtributoIn(BaseModel):
-    nombre: str
+    # TEMU HABLA OTRO IDIOMA. ML, Amazon y TikTok mandan `{nombre, valor}`; el
+    # generador de Temu produce `{name, value: [...]}` porque es el formato que
+    # pide `temu.local.goods.v3.add`, y guardarlo traducido sería guardar algo
+    # distinto de lo que se publica. Con `nombre` obligatorio, el Estudio mandaba
+    # los atributos de Temu y el modelo los rechazaba con un 422 que en pantalla
+    # solo decía "No se pudo generar la vista previa" — el mensaje no nombraba ni
+    # el canal ni el campo. Medido publicando JUGU-0053-MUL desde el panel.
+    #
+    # Se aceptan las dos formas y se normaliza a `nombre`/`valor`; `campo` y
+    # `valor_id` siguen intactos para TikTok.
+    nombre: str = ""
     valor: str = ""
+    name: str | None = None
+    value: list[str] | str | None = None
+
+    @model_validator(mode="after")
+    def _unificar(self) -> "AtributoIn":
+        if not self.nombre and self.name:
+            self.nombre = self.name
+        if not self.valor and self.value is not None:
+            self.valor = (", ".join(str(v) for v in self.value)
+                          if isinstance(self.value, list) else str(self.value))
+        return self
     # EL NOMBRE NO BASTA EN TIKTOK, y este modelo lo estaba tirando.
     #
     # `campo` es el nombre NATIVO del canal (`product_attributes.100107`) y

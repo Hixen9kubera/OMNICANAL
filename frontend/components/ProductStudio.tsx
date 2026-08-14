@@ -28,6 +28,7 @@ import type { LucideIcon } from "lucide-react";
 
 import type { FaltantesCanal } from "@/lib/api";
 import CategoriaTikTokPicker from "./CategoriaTikTokPicker";
+import CategoriaTemuPicker from "@/components/CategoriaTemuPicker";
 import TipoAmazonPicker from "./TipoAmazonPicker";
 import type {
   AtributoProducto,
@@ -1367,6 +1368,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   con IA, la recomendación tiene que salir de ESE texto. */}
               {esTikTok && sku && (
                 <CategoriaTikTokPicker sku={sku} titulo={titulo || data?.nombre} />
+              )}
+              {/* En Temu la categoría no es cosmética: DETERMINA qué atributos
+                  existen, así que sin elegirla no hay contenido ni alta. */}
+              {esTemu && sku && (
+                <CategoriaTemuPicker sku={sku} titulo={titulo || data?.nombre} />
               )}
 
               {/* PRECIO DE COMPETENCIA */}

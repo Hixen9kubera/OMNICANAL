@@ -822,6 +822,61 @@ export function guardarCategoriaTikTok(
   );
 }
 
+/* ── Categoría de TEMU ───────────────────────────────────────────────────────
+ * Mismo contrato que TikTok. La diferencia de fondo: en Temu la categoría
+ * DETERMINA qué atributos existen (`template.get` solo responde en hojas), así
+ * que sin elegirla no hay contenido que generar ni alta que mandar.
+ */
+
+export function buscarCategoriasTemu(
+  q: string,
+  signal?: AbortSignal,
+): Promise<{ canal: string; resultados: CategoriaTikTok[] }> {
+  return getJSON(`/api/productos/categorias/temu?q=${encodeURIComponent(q)}`, signal);
+}
+
+export function categoriaTemuActual(
+  sku: string,
+  signal?: AbortSignal,
+): Promise<CategoriaTikTok & { origen: string | null }> {
+  return getJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/temu/categoria`,
+    signal,
+  );
+}
+
+/** Candidatas de Temu + la que la IA eligió, o `ninguna: true` si no encaja. */
+export interface SugerenciaTemu {
+  ok: boolean;
+  motivo?: string | null;
+  sugerida?: { category_id: string; name?: string | null; path?: string | null } | null;
+  razon?: string | null;
+  ninguna?: boolean;
+  candidatas?: { categoria_id: string; path: string }[];
+}
+
+export function sugerirCategoriaTemu(
+  sku: string,
+  titulo?: string,
+  signal?: AbortSignal,
+): Promise<SugerenciaTemu> {
+  const q = titulo ? `?titulo=${encodeURIComponent(titulo)}` : "";
+  return getJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/temu/categoria/sugerida${q}`,
+    signal,
+  );
+}
+
+export function guardarCategoriaTemu(
+  sku: string,
+  categoriaId: string,
+): Promise<{ ok: boolean; categoria_id: string; nombre?: string; path?: string }> {
+  return postJSON(
+    `/api/productos/${encodeURIComponent(sku)}/canal/temu/categoria`,
+    { categoria_id: categoriaId },
+  );
+}
+
 // ── Competencia (Mercado Libre) ──────────────────────────────────────
 // Los GET leen la foto guardada del mes (SQLite local). La corrida real la
 // dispara el cron mensual de Railway; correrCompetencia() es para probar a mano

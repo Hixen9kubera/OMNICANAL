@@ -63,6 +63,36 @@ def _medida(valor: Any, defecto: float, tope: float) -> str:
     return f"{min(max(f or defecto, 0.1), tope):g}"
 
 
+def _atributos_temu(crudos: list[Any]) -> list[dict[str, Any]]:
+    """Deja los atributos en la forma que pide `v3.add`: `{name, value: [...]}`.
+
+    Llegan de dos sitios con dos formas: del documento guardado ya vienen así
+    (el generador los produce en el formato del canal), pero si pasan por el
+    modelo del panel se normalizan a `{nombre, valor}` — que es el idioma de ML,
+    Amazon y TikTok. Mandar esa forma a Temu no da error: v3 **ignora en
+    silencio** lo que no reconoce, y el producto se publica sin atributos y cae
+    en Incompleto. Por eso se traduce aquí y no se confía en quién llamó.
+    """
+    salida: list[dict[str, Any]] = []
+    for a in crudos or []:
+        if not isinstance(a, dict):
+            continue
+        nombre = (a.get("name") or a.get("nombre") or "").strip()
+        if not nombre:
+            continue
+        bruto = a.get("value") if a.get("value") is not None else a.get("valor")
+        if isinstance(bruto, list):
+            valores = [str(v) for v in bruto if str(v).strip()]
+        elif bruto in (None, ""):
+            valores = []
+        else:
+            # El modelo del panel aplana las listas con ", ": se deshace.
+            valores = [t.strip() for t in str(bruto).split(",") if t.strip()]
+        if valores:
+            salida.append({"name": nombre, "value": valores})
+    return salida
+
+
 def _contenido(sku: str) -> dict[str, Any]:
     """Lo que la IA dejó guardado para Temu en `enrich.channel_content`."""
     from services import supabase_db as sdb
@@ -113,7 +143,7 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
     descripcion = (campos.get("descripcion") or guardado.get("descripcion")
                    or prod.get("description") or "").strip()
     bullets = campos.get("bullets") or guardado.get("bullets") or []
-    atributos = campos.get("atributos") or guardado.get("atributos") or []
+    atributos = _atributos_temu(campos.get("atributos") or guardado.get("atributos") or [])
 
     if not titulo:
         raise RuntimeError("Falta el título.")

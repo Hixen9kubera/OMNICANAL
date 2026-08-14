@@ -39,6 +39,22 @@ from config import settings
 
 log = logging.getLogger("omnicanal.channel_content")
 
+# Centinela de "este SKU no tiene categoría en el canal". Era un NUL literal, y
+# psycopg2 lo RECHAZA en un parámetro: la consulta reventaba con "A string
+# literal cannot contain NUL (0x00) characters" y el semáforo se apagaba entero.
+# Salió al abrir Temu en el Estudio, donde el resolvedor todavía no tenía rama y
+# devolvía None. Sirve cualquier cadena que no pueda ser un categoria_id real;
+# el NUL no, aunque parezca el "vacío perfecto".
+_SIN_CATEGORIA = "__sin_categoria__"
+
+# Centinela de "este SKU no tiene categoría en el canal". Era un NUL literal, y psycopg2
+# RECHAZA el NUL en un parámetro: la consulta reventaba con "A string literal
+# cannot contain NUL (0x00) characters" y el semáforo se apagaba entero. Salió
+# al abrir Temu en el Estudio, donde el resolvedor todavía no tenía rama y
+# devolvía None. Cualquier cadena que no pueda ser un categoria_id real sirve;
+# el NUL no, aunque parezca el "vacío perfecto".
+_SIN_CATEGORIA = "__sin_categoria__"
+
 TABLA = "enrich.channel_content"
 
 # Canales válidos: son los ids de core.channels y hay una FK que lo verifica.
@@ -186,7 +202,7 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                 """select count(*), max(leido_at)
                      from channel.field_requirements
                     where canal = %s and categoria_id in ('*', %s)""",
-                (canal, categoria or "\x00"),
+                (canal, categoria or _SIN_CATEGORIA),
             )
             cuantos, leido_at = cur.fetchone()
             if not cuantos:
@@ -250,7 +266,7 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
                         else false
                       end)
                     order by e.campo""",
-                (canal, categoria or "\x00", sku, canal, cuenta),
+                (canal, categoria or _SIN_CATEGORIA, sku, canal, cuenta),
             )
             filas = cur.fetchall()
     finally:
