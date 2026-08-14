@@ -8034,6 +8034,21 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.164.1 — core-etl-v2 vuelve a timbrar por un par de días (Eduardo)
+
+Ventana abierta a propósito para comprobar si la v0.164.0 cerró el hueco de los
+padres. Es la única forma de saberlo sin entrar a /migracion a mano.
+
+  · sale `ok` dos días seguidos → el arreglo sirvió, y toca decidir si se deja
+    vigilado (lo sano: es el único auditor del seam) o se vuelve a callar.
+  · sale `con_deltas` → queda otro hueco. Las altas de core.products a la hora
+    de la corrida dicen exactamente qué SKUs fueron, igual que el 14-ago.
+
+`categorias-etl` sigue callado. REVISAR EL 16-AGO-2026: si nadie lo mira, la
+ventana se queda abierta y vuelve el aviso diario que se pidió callar. Versión 0.164.1.
+
+---
+
 ### v0.164.0 — El seam del padre: dos huecos que el 14-ago dejó a la vista
 
 Investigación de las 4 altas que el ETL tuvo que hacer el 14-ago. Son DOS causas
