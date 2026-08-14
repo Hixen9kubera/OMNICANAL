@@ -57,7 +57,11 @@ from services import db
 
 log = logging.getLogger("omnicanal.stock_watch")
 
-# TABLA TEMPORAL — se borra al cerrar la migración (docs/TABLAS_TEMPORALES.md)
+# La foto vive en MySQL y se está mudando a `ops.stock_watch_photo` (PASO 2 de
+# docs/PLAN_31_TABLAS.md). Mientras dure la mudanza el destino lo eligen dos
+# flags: `SUPABASE_WRITE_STOCK_WATCH` (escribe en los dos) y luego
+# `SUPABASE_READ_STOCK_WATCH` (la DECISIÓN pasa a kubera). Ver `kubera_escribe`
+# y `kubera_decide` más abajo, y `services/stock_watch_read.py`.
 _TABLA = "stock_watch_foto"
 
 _ultimo: dict[str, Any] = {"estado": "sin_correr"}
@@ -78,7 +82,8 @@ def tope() -> int:
 
 def estado() -> dict[str, Any]:
     return {**_ultimo, "habilitado": habilitado(),
-            "solo_registro": solo_registro(), "tope": tope()}
+            "solo_registro": solo_registro(), "tope": tope(),
+            "foto_en_kubera": kubera_escribe(), "foto_decide_kubera": kubera_decide()}
 
 
 def _asegurar_schema() -> None:
@@ -93,18 +98,43 @@ def _asegurar_schema() -> None:
         """)
 
 
+def kubera_escribe() -> bool:
+    """¿La foto se está guardando TAMBIÉN en kubera? (paso 2, fase 1)"""
+    from services import supabase_db as sdb
+    return bool(getattr(settings, "supabase_write_stock_watch", False)) and sdb.disponible()
+
+
+def kubera_decide() -> bool:
+    """¿La foto que se LEE —la que decide los deltas— sale ya de kubera?"""
+    from services import supabase_db as sdb
+    return bool(getattr(settings, "supabase_read_stock_watch", False)) and sdb.disponible()
+
+
 def _foto() -> dict[str, dict[str, int | None]]:
-    try:
-        return {r["sku"]: {"woo": r["stock_woo"], "odoo": r["stock_odoo"]}
-                for r in db.fetch_all(f"SELECT sku, stock_woo, stock_odoo FROM {_TABLA}")}
-    except Exception:  # noqa: BLE001 — tabla aún no creada
-        return {}
+    """La foto anterior. NUNCA devuelve `{}` para tapar un error.
+
+    Antes tenía `except Exception: return {}` con el comentario "tabla aún no
+    creada" — pero `_asegurar_schema()` corre justo antes, así que ese except ya
+    solo atrapaba fallos REALES de la base. Y ahí `{}` no decía "no hay foto",
+    decía "no sé": `revisar()` lo tomaba por PRIMERA PASADA, y la primera pasada
+    absorbe en la foto todo lo pendiente SIN aplicarlo. Un parpadeo de MySQL
+    tiraba a la basura, en silencio, los deltas de Odoo y los cambios de Woo de
+    esa vuelta — y con `STOCK_WATCH_SOLO_REGISTRO=false` eso es mercancía que
+    nunca llegó a los canales.
+
+    Ahora el error PROPAGA y la pasada se aborta. Vacío de verdad (primera
+    corrida) sigue devolviendo `{}`; roto y vacío ya no se confunden.
+    """
+    if kubera_decide():
+        from services import stock_watch_read
+        return stock_watch_read.foto_leer()
+    return {r["sku"]: {"woo": r["stock_woo"], "odoo": r["stock_odoo"]}
+            for r in db.fetch_all(f"SELECT sku, stock_woo, stock_odoo FROM {_TABLA}")}
 
 
-def _guardar_foto(filas: list[tuple[str, int | None, int | None]]) -> None:
-    if not filas:
-        return
-    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+def _guardar_foto_mysql(filas: list[tuple[str, int | None, int | None]],
+                        ahora: datetime | None = None) -> None:
+    ahora = (ahora or datetime.now(timezone.utc)).replace(tzinfo=None)
     with db.get_cursor() as cur:
         for i in range(0, len(filas), 500):
             lote = filas[i:i + 500]
@@ -114,6 +144,35 @@ def _guardar_foto(filas: list[tuple[str, int | None, int | None]]) -> None:
                     ON DUPLICATE KEY UPDATE stock_woo=VALUES(stock_woo),
                         stock_odoo=VALUES(stock_odoo), actualizado=VALUES(actualizado)""",
                 [(s, w, o, ahora) for s, w, o in lote])
+
+
+def _guardar_foto(filas: list[tuple[str, int | None, int | None]]) -> None:
+    """Guarda la foto donde toque según la fase del paso 2.
+
+    El lado que MANDA se escribe de forma síncrona y si falla, falla la pasada:
+    perder la foto no es perder un dato, es perder la memoria contra la que se
+    calcula el delta de la próxima vuelta. El otro lado es best-effort.
+    """
+    if not filas:
+        return
+    # UN solo instante para los dos lados: así el arnés de comparación puede
+    # exigir igualdad exacta en vez de una tolerancia inventada.
+    ahora = datetime.now(timezone.utc)
+    if kubera_decide():
+        from services import stock_watch_read
+        stock_watch_read.foto_guardar(filas, ahora)   # manda kubera
+        try:
+            _guardar_foto_mysql(filas, ahora)         # espejo inverso, best-effort
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stock_watch: espejo inverso a MySQL falló: %s", exc)
+        return
+    _guardar_foto_mysql(filas, ahora)                 # manda MySQL
+    if kubera_escribe():
+        try:
+            from services import stock_watch_read
+            stock_watch_read.foto_guardar(filas, ahora)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("stock_watch: copia de la foto a kubera falló: %s", exc)
 
 
 def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
@@ -212,7 +271,17 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         od = {(p.get("sku") or "").strip(): max(0, int(float(p.get("stock") or 0)))
               for p in catalogo if (p.get("sku") or "").strip()}
         wo = await asyncio.to_thread(_leer_woo)
-        foto = await asyncio.to_thread(_foto)
+        try:
+            foto = await asyncio.to_thread(_foto)
+        except Exception as exc:  # noqa: BLE001
+            # Se aborta igual que con Odoo mudo, y por la misma razón: sin la
+            # foto anterior no hay delta que calcular, y seguir significaría
+            # tratar "no sé" como "no había nada". Ver `_foto`.
+            log.error("stock_watch: no se pudo leer la foto anterior: %s", exc)
+            _ultimo.update(estado="foto_no_disponible", ts=time.time(),
+                           nota=f"No se pudo leer la foto anterior ({exc}). "
+                                f"Pasada abortada; nada se escribió.")
+            return dict(_ultimo)
 
         # ── PRIMERA PASADA: solo levantar la base, nunca escribir ──────────
         if not foto:

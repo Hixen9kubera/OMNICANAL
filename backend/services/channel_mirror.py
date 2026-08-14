@@ -271,8 +271,9 @@ def backfill_situacion(situacion: str = "closed", canal: str | None = None,
 def sincronizar_drop(limite: int = 0) -> dict[str, Any]:
     """F2 — Espeja la bodega PROPIA (DROP) a channel.listings canal='general'.
 
-    Fuente: `stock_watch_foto` en MySQL (sku, stock_woo), que el vigilante de
-    Brandon reescribe cada 20 min leyendo Woo. Es la ÚNICA verdad del stock
+    Fuente: la foto del vigilante (sku, stock_woo), que él reescribe cada 20 min
+    leyendo Woo — `stock_watch_foto` en MySQL, o `ops.stock_watch_photo` en
+    kubera según la fase del paso 2 (ver abajo). Es la ÚNICA verdad del stock
     propio desde el 17-jul (Woo es fuente de verdad de inventario); el canal
     `general` de canal_inventario murió el 14-jul y no se toca.
 
@@ -295,12 +296,24 @@ def sincronizar_drop(limite: int = 0) -> dict[str, Any]:
     if not cuenta_id:
         return {"ok": False, "motivo": "core.accounts no tiene la cuenta GENERAL."}
 
-    sql = "SELECT sku, stock_woo FROM stock_watch_foto WHERE stock_woo IS NOT NULL"
-    if limite:
-        sql += f" LIMIT {int(limite)}"
-    with db.get_cursor() as cur:
-        cur.execute(sql)
-        crudas = cur.fetchall()
+    # PASO 2 de la migración: la foto se muda a `ops.stock_watch_photo`. Este
+    # lector sigue al MISMO flag que el vigilante (`SUPABASE_READ_STOCK_WATCH`)
+    # y no a uno propio, a propósito: si los dos lectores de la foto pudieran
+    # apuntar a lados distintos, el panel mostraría un stock y el vigilante
+    # decidiría con otro. Un solo interruptor, un solo momento de la verdad.
+    from services import stock_watch
+    if stock_watch.kubera_decide():
+        from services import stock_watch_read
+        crudas = stock_watch_read.drop_leer()
+        if limite:
+            crudas = crudas[:int(limite)]
+    else:
+        sql = "SELECT sku, stock_woo FROM stock_watch_foto WHERE stock_woo IS NOT NULL"
+        if limite:
+            sql += f" LIMIT {int(limite)}"
+        with db.get_cursor() as cur:
+            cur.execute(sql)
+            crudas = cur.fetchall()
 
     filas = []
     for r in crudas:

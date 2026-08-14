@@ -474,6 +474,21 @@ class Settings(BaseSettings):
     # CORTACIRCUITOS: si una pasada ve más cambios que esto, NO aplica nada y
     # avisa. Una edición masiva en Odoo no puede vaciar todos los canales.
     stock_watch_tope: int = 300
+    # ── PASO 2 de la migración: la foto sale de MySQL (ops.stock_watch_photo).
+    # DOS flags y no uno, y se encienden en ESTE orden con días de por medio:
+    #
+    #   1) …WRITE_STOCK_WATCH=true  → la foto se escribe en LOS DOS lados.
+    #      MySQL sigue mandando; kubera solo se llena. Reversible sin costo.
+    #   2) (varios días) `comparar_stock_watch_foto.py` cada mañana.
+    #   3) …READ_STOCK_WATCH=true   → la DECISIÓN pasa a kubera. Aquí sí cambia
+    #      lo que el vigilante le escribe a Woo: es un flujo vivo (regla 3).
+    #
+    # Al revés que en el paso 1 (cachés), donde lectura y escritura viajaron
+    # juntas. Aquí no se puede: esta foto no guarda un valor, guarda el ESTADO
+    # ANTERIOR contra el que se calcula el delta. Una foto nueva y vacía leída
+    # como buena haría que el vigilante recalculara el mundo entero de un golpe.
+    supabase_write_stock_watch: bool = False
+    supabase_read_stock_watch: bool = False
 
     # ── F2: espejo del DROP (bodega propia) → channel.listings 'general' ──
     # Lee stock_watch_foto (la que ya refresca el vigilante de arriba) y la

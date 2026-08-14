@@ -129,11 +129,33 @@ El producto de este paso NO son las tres tablas: es el **instructivo de seis
 pasos** (gemela → copia → comparación → escritor → lector → verificación) que se
 va a usar en todo lo demás.
 
-### PASO 2 — `stock_watch_foto` (fuente, no caché)
+### PASO 2 — `stock_watch_foto` (fuente, no caché) — **CÓDIGO LISTO (v0.166.0)**
 
 Que el vigilante escriba su foto directo en kubera. Correrlo unos días
 escribiendo en los dos lados y comparando, y solo entonces apagar el viejo.
 Antes de tocar nada que dependa del canal `general`.
+
+**Hecho:** `ops.stock_watch_photo` creada (sandbox y producción), las 14,640
+filas copiadas y verificadas celda por celda, los tres puntos de acceso
+repuntados detrás de flags, y el `except → foto vacía` de `_foto()` arreglado
+(devolvía "no sé" como "no hay foto", y la primera pasada absorbe lo pendiente
+sin aplicarlo). Barrido de lectores cerrado: **1 escritor, 2 lectores**
+(`stock_watch._foto` y `channel_mirror.sincronizar_drop`), ninguno fuera de este
+repo.
+
+**Falta, y es lo que decide Eduardo/Brandon:**
+
+1. `SUPABASE_WRITE_STOCK_WATCH=true` — la foto se escribe en los dos lados.
+   MySQL sigue mandando. Reversible sin costo.
+2. Correr `comparar_stock_watch_foto.py` **cada mañana, varios días**. Los cinco
+   bloques en verde o no se avanza.
+3. `SUPABASE_READ_STOCK_WATCH=true` — la DECISIÓN pasa a kubera. **Aquí sí
+   cambia lo que el vigilante le escribe a Woo: flujo vivo, regla 3.**
+4. Recién entonces `stock_watch_foto` queda muerta y se archiva con el grupo 1.
+
+El orden es al revés que en el paso 1 (allá lectura y escritura viajaron juntas)
+porque esta foto no guarda un valor, guarda el estado ANTERIOR: una foto nueva
+leída como buena haría que el vigilante recalculara el mundo de un golpe.
 
 ### PASO 3 — Grupo 4, el publicador
 

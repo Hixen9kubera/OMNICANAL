@@ -9552,3 +9552,85 @@ Probado: migración aplicada a sandbox y a producción; backfill verificado en l
 dos (13,735 + 971 + 1,485, cero diferencias); gemelas contra el par MySQL
 **11/11**, incluyendo que la ventana de visitas no se mezcle entre 7, 30 y 60
 días. Versión 0.165.0.
+
+### v0.166.0 — Paso 2: la foto del vigilante de inventario sale de MySQL
+
+Segunda tabla de las 31 ([docs/PLAN_31_TABLAS.md](docs/PLAN_31_TABLAS.md)) y la
+más caliente que quedaba: `stock_watch_foto` (14,640 filas) →
+`ops.stock_watch_photo`.
+
+**No es un caché, es la memoria de un proceso que mueve inventario real.** El
+consejo la sacó del grupo de cachés por eso. Estado verificado hoy en Railway:
+`STOCK_WATCH_ENABLED=true` y **`STOCK_WATCH_SOLO_REGISTRO=false`** — el vigilante
+está escribiendo stock en Woo de verdad (70 `odoo_delta` y 22 `woo_cambio` en
+48 h), y `DROP_MIRROR_ENABLED=true` la lee cada 20 min para ser la ÚNICA fuente
+del canal `general` de `channel.listings` (13,103 publicaciones).
+
+**La trampa propia de esta tabla.** No guarda un valor, guarda el ESTADO
+ANTERIOR:
+
+    delta = odoo_ahora − odoo_en_la_foto     →     Woo += delta
+
+Si la foto se congela pero sigue legible, `odoo_en_la_foto` nunca avanza y **el
+mismo delta se re-aplica cada 20 minutos, para siempre**. No es el error de los
+964 pedidos fantasma —aquél fue un `None` leído como "no existe"— es peor: aquél
+se detenía al arreglarlo, éste se acumula mientras dure.
+
+Por eso el orden va **al revés que en el paso 1**: primero la ESCRITURA a los
+dos lados, después días de comparación, y la LECTURA al final. Dos flags en vez
+de uno: `SUPABASE_WRITE_STOCK_WATCH` y `SUPABASE_READ_STOCK_WATCH`, ambos en
+`false` por defecto. Con los dos apagados este deploy no cambia nada.
+
+**Un defecto encontrado de paso, y arreglado.** `stock_watch._foto()` tenía
+`except Exception: return {}` con el comentario "tabla aún no creada" — pero
+`_asegurar_schema()` corre justo antes, así que ese `except` ya solo atrapaba
+fallos reales de la base. Y ahí el `{}` no decía "no hay foto", decía "no sé":
+`revisar()` lo tomaba por PRIMERA PASADA, y la primera pasada **absorbe en la
+foto todo lo pendiente sin aplicarlo**. O sea que un parpadeo de MySQL tiraba a
+la basura, en silencio, los deltas de Odoo y los cambios de Woo de esa vuelta —
+mercancía que nunca llegó a los canales. Ahora el error propaga, la pasada se
+aborta con estado `foto_no_disponible` y no se escribe nada. Vacío de verdad
+(primera corrida) sigue devolviendo `{}`: roto y vacío ya no se confunden. **Es
+la misma familia de los candados del paso 0, que siguen pendientes.**
+
+**Detalles que no son cosméticos:**
+
+- **`citext` y no `text`.** La PK de MySQL usa `utf8mb4_uca1400_ai_ci`, que es
+  case-insensitive. Con `text`, una foto que allá era UNA fila se partiría en
+  dos y la primera pasada vería un delta que no existió. (Verificado: 14,640
+  entraron y 14,640 salieron — no había colisiones, pero el tipo protege igual.)
+- **`actualizado` sigue significando "cuándo se MIRÓ", no "cuándo cambió".** Se
+  reescribe en toda la tabla cada pasada aunque el número no se mueva. Ahorrar
+  esas escrituras con un `where ... is distinct from` la convertiría en otra
+  cosa, y esa confusión exacta (`channel.listings.updated_at`) ya produjo tres
+  diagnósticos equivocados seguidos.
+- **Los dos lados sellan la pasada con el MISMO instante**, pasado desde Python.
+  Si cada uno pusiera su reloj (`now()` de Postgres contra `datetime.now()`), el
+  arnés vería una diferencia en cada fila de cada pasada y habría que inventarle
+  una tolerancia — un arnés que ya no compara.
+- **El espejo del DROP sigue el MISMO flag que el vigilante**, no uno propio: si
+  los dos lectores de la foto pudieran apuntar a lados distintos, el panel
+  mostraría un stock y el vigilante decidiría con otro.
+- **Sin `coalesce` en el upsert**, al revés que en el paso 1: aquí un NULL es
+  informativo ("Woo no gestiona stock de este SKU") y tiene que poder pisar a un
+  número anterior.
+
+**Dos arneses nuevos.** `backfill_stock_watch_foto.py` aborta si la foto de
+origen lleva más de 60 min sin refrescarse (copiar una foto detenida es sembrar
+el error, no migrarlo) y verifica las 14,640 filas enteras, no una muestra.
+`comparar_stock_watch_foto.py` se corre cada mañana durante la observación y
+mide cinco cosas: que las dos fotos estén VIVAS, mismo censo, mismos valores
+—NULL incluido—, **el mismo delta que se aplicaría** (que los datos coincidan es
+la hipótesis; que la decisión coincida es la conclusión) y el desfase contra
+`channel.listings` canal `general`.
+
+**Anotado para después:** `odoo_watch` guarda su foto en `productos.stock_odoo`
+(MySQL), la otra razón por la que `productos` no está congelada — pendiente 1b
+de F8. Esta tabla ya tiene esa columna y cubre 13,039 SKUs contra los 4,786 de
+aquélla: cuando toque decidir si a ese vigilante se le da casa o se apaga, la
+casa ya existe. No se hace ahora para no mezclar dos flujos vivos en un cambio.
+
+Probado: migración aplicada a sandbox y a producción; backfill verificado en los
+dos (**14,640 filas × 4 columnas = 58,560 celdas idénticas, cero diferencias**);
+arnés de comparación en verde en los cinco bloques, incluidas **0 publicaciones
+`general` desfasadas** contra la foto. Versión 0.166.0.
