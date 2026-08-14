@@ -9985,7 +9985,7 @@ que del alta sale el texto y los atributos entran cuando el SKU tenga categoría
 
 **2. No se podía elegir categoría, así que un producto NUEVO no se podía
 publicar.** La vista previa lo rechazaba con "Sin categoría de Temu", que era
-correcto pero sin salida. Ahora  trae buscador (solo HOJAS: las
+correcto pero sin salida. Ahora `temu_panel` trae buscador (solo HOJAS: las
 intermedias no tienen plantilla), guardado en `channel.product_category` —donde
 ya viven las 5,166 elecciones humanas de ML— y **recomendador**: Temu propone
 candidatas con `category.recommend` y la IA elige entre ellas **con permiso de
