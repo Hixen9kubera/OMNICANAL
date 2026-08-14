@@ -1,0 +1,180 @@
+# Arneses de verificación — qué se corre cada mañana y qué NO
+
+> Lista viva. La lee una persona **y** el agente de cowork que corre los
+> chequeos diarios. Al final hay un manifiesto en JSON para que el agente no
+> tenga que interpretar prosa.
+>
+> **Regla de oro: sumar o quitar un arnés es un commit a este archivo, no un
+> cambio en el agente.**
+
+## Por qué existe este archivo
+
+En `backend/scripts/` hay diez scripts que se llaman `comparar_*` o
+`vigilar_*`. **Siete de ellos ya no miden nada** y correrlos daría alarma todos
+los días. La razón está en una sola frase:
+
+> Desde el 13-ago-2026 los espejos a MySQL están apagados. MySQL está congelado
+> **a propósito**. Todo arnés que compare "MySQL como fuente de verdad contra
+> kubera como espejo" mide, a partir de esa fecha, una divergencia que **crece
+> sola cada día**.
+
+Medido el 14-ago: `costos_finales` llevaba 93.7 h sin escribirse, `pedidos_ml`
+36.7 h, `canal_inventario` 37.3 h. Eso no es una falla: es el resultado
+esperado del corte.
+
+Meter esos arneses en el chequeo diario no es "ser precavido". Es fabricar una
+alarma que suena siempre, y una alarma que siempre suena entrena a la gente a
+ignorarla — el mismo motivo por el que `alertas.py` avisa por CAMBIO DE ESTADO
+y no por repetición.
+
+---
+
+## ✅ Activos — van al chequeo diario
+
+### `vigilar_congelacion.py` — el latido de kubera
+
+```bash
+python backend/scripts/vigilar_congelacion.py
+```
+
+El único diseñado **para después** del corte. No compara contra MySQL (esa
+referencia ya no existe): mide que **kubera siga moviéndose** y que los espejos
+sigan quietos. Cinco latidos: `turno_sync`, `pedidos`, `costos`, `padron`, y las
+tres tablas congeladas.
+
+⚠️ **EL CÓDIGO DE SALIDA NO ALCANZA.** Hoy devuelve `1` de forma rutinaria
+porque el latido `costos` marca ALTO cuando nadie ha recalculado un costo en
+72 h — y eso pasa cualquier fin de semana. El propio script lo dice: *"normal si
+no se usó el panel"*.
+
+El agente tiene que **leer qué latido falló**, no el código:
+
+| Latido | ¿Alarma de verdad? |
+|---|---|
+| `pedidos` (tope 6 h) | **SÍ.** Ventas paradas o el flujo roto |
+| las tres congeladas | **SÍ**, si alguna dice `AÚN ESCRIBIENDO` en vez de `congelada`: algo volvió a escribir MySQL |
+| `padron` (tope 30 h) | **SÍ.** El ETL de las 06:15 no corrió |
+| `costos` (tope 72 h) | **NO por sí solo.** Benigno en fines de semana |
+| `turno_sync` | **NO.** Sale `n/d` a propósito (`_MIDE_COBERTURA = False`): la métrica que medía resultó inválida |
+
+Retiro: nunca mientras kubera sea la fuente de verdad.
+
+### `comparar_stock_watch_foto.py` — el del paso 2
+
+```bash
+python backend/scripts/comparar_stock_watch_foto.py
+```
+
+Compara la foto del vigilante de inventario en sus dos casas
+(`stock_watch_foto` en MySQL contra `ops.stock_watch_photo` en kubera) mientras
+dure la doble escritura del PASO 2 ([PLAN_31_TABLAS.md](PLAN_31_TABLAS.md)).
+
+Aquí el código de salida **sí** es fiable: `0` limpio, `1` con diferencias. Sin
+falsos positivos conocidos.
+
+Cinco bloques. El que decide es el cuarto: no compara datos, compara **el delta
+que se aplicaría con cada foto**. Que los datos coincidan es la hipótesis; que
+la decisión coincida es la conclusión. En el incidente de los 964 pedidos, los
+datos coincidían.
+
+Un desfase de ≤100 publicaciones en el bloque 5 es normal y el script ya lo
+tolera: el espejo del DROP corre en su propio job y va una pasada atrás.
+
+Opción: `--max-atraso-min 90` si el vigilante llegara a correr más espaciado.
+
+**Retiro:** cuando `SUPABASE_READ_STOCK_WATCH=true` lleve días estable y
+`stock_watch_foto` se archive. Este arnés existe para autorizar ese encendido;
+después no mide nada.
+
+---
+
+## ❌ Retirados — NO meter al chequeo diario
+
+No se borran: son la evidencia de cómo se cerró cada corte. Se archivan en F8
+junto con el resto del andamiaje.
+
+| Script | Por qué ya no mide |
+|---|---|
+| `comparar_costos.py` | MySQL congelado. **Además ESCRIBE** acta en `migration.reconciliation_runs`; su cron ya está retirado |
+| `comparar_channel.py` | Igual (escribe acta) |
+| `comparar_orders.py` | Igual (escribe acta) |
+| `comparar_lecturas_costing.py` | Arnés del flag F5, ya cerrado. Solo lectura, pero mide algo que dejó de existir |
+| `comparar_lecturas_channel.py` | Igual |
+| `comparar_lecturas_orders.py` | Igual |
+| `comparar_lecturas_core.py` | Igual (`productos` es tabla legada) |
+
+**Aparte, y no es de migración:** `comparar_variantes_wpdb.py` verifica que la
+ruta rápida de variantes de WordPress devuelva lo mismo que el REST que
+sustituye. Sigue siendo válido —WordPress se queda— pero es el arnés de un
+cambio de rendimiento puntual, no algo que cambie de día a día. Se corre a mano
+si alguien toca `wp_db.variantes_por_padre`.
+
+---
+
+## 🔜 Los que faltan
+
+Cada paso del plan trae el suyo, con el molde de seis pasos que salió del PASO 1
+(gemela → copia → comparación → escritor → lector → verificación):
+
+| Paso | Arnés que va a necesitar |
+|---|---|
+| 3 — publicador (grupo 4) | ~19 lectores partidos por intención. El más grande de todos |
+| 4 — cachés | uno por caché, cortos |
+| 5 — bitácoras | paridad de eventos, como el que se usó para `crear_logs` |
+| 0 — candados de `fanout_log` | **no lleva arnés de datos**: lleva prueba de COMPORTAMIENTO (que el candado diga "no sé" y no "no lo hice" cuando la base falla) |
+
+Cuando nazca uno, se agrega arriba **y** al manifiesto de abajo, en el mismo
+commit que lo crea.
+
+---
+
+## Cómo lo corre el agente
+
+- Desde la raíz del repo (`OMNICANAL`); necesita el `.env`.
+- Los dos activos son **SOLO LECTURA** sobre producción. Se pueden correr sin
+  riesgo y sin avisar a nadie.
+- Duración: `comparar_stock_watch_foto` segundos; `vigilar_congelacion` cerca de
+  un minuto.
+- Lo que ya avisa solo por Slack cada 15 min (`services/alertas.py`) es OTRA
+  cosa: actas de los ETLs, silencio de ventas, tokens rancios y pedidos
+  duplicados. Ni la foto ni los latidos están ahí — por eso este chequeo diario
+  tiene sentido y no duplica nada.
+
+### Manifiesto
+
+```json
+{
+  "version": "2026-08-14",
+  "cwd": "OMNICANAL",
+  "activos": [
+    {
+      "id": "latido_kubera",
+      "cmd": "python backend/scripts/vigilar_congelacion.py",
+      "cadencia": "diaria",
+      "solo_lectura": true,
+      "codigo_salida_confiable": false,
+      "leer_salida": true,
+      "alarma_si_contiene": ["[ALTO] pedidos", "[ALTO] padron", "AÚN ESCRIBIENDO"],
+      "ignorar_si_solo": ["[ALTO] costos", "[ n/d] turno_sync"],
+      "nota": "El codigo 1 es rutinario. Decide el latido, no el exit code.",
+      "retiro": "nunca mientras kubera sea la fuente de verdad"
+    },
+    {
+      "id": "paso2_foto_vigilante",
+      "cmd": "python backend/scripts/comparar_stock_watch_foto.py",
+      "cadencia": "diaria",
+      "solo_lectura": true,
+      "codigo_salida_confiable": true,
+      "leer_salida": false,
+      "nota": "Autoriza encender SUPABASE_READ_STOCK_WATCH. Verde varios dias seguidos o no se avanza.",
+      "retiro": "cuando la lectura pase a kubera y stock_watch_foto se archive"
+    }
+  ],
+  "retirados": [
+    "comparar_costos.py", "comparar_channel.py", "comparar_orders.py",
+    "comparar_lecturas_costing.py", "comparar_lecturas_channel.py",
+    "comparar_lecturas_orders.py", "comparar_lecturas_core.py"
+  ],
+  "fuera_de_migracion": ["comparar_variantes_wpdb.py"]
+}
+```
