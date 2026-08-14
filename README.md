@@ -9846,3 +9846,31 @@ publicación**. Se corrige al repuntar ese archivo, que es el paso siguiente.
 Sin migraciones. La variable nace apagada: este deploy no cambia nada.
 Encenderla mete una escritura en el flujo de PUBLICAR — negocio vivo, regla 3,
 dale de Brandon. Versión 0.170.0.
+
+### v0.171.0 — Amazon dejaba de contarse doble en los puntos de la vista GENERAL
+
+`presencia.py` arma los "puntos de colores" acumulando por `(sku, canal)`, y su
+`_agregar` **no reemplaza: SUMA** (`n += 1`) cuando el canal ya existe. El bloque
+de Mercado Libre tenía la guardia para no duplicar:
+
+    if Canal.MERCADO_LIBRE.value in acc.get(r["sku"], {}):
+        continue
+
+y **el de Amazon no la tenía**. Con `SUPABASE_READ_CHANNEL=true`,
+`channel_read.presencia()` ya devuelve Amazon (`CANALES` lo incluye), así que
+cada SKU presente en las dos fuentes salía con **`n=2` para una sola
+publicación**: los 1,387 que `channel.listings` tiene con `item_id`.
+
+Medido antes y después sobre 120 SKUs reales de producción: **120 con `n=2`
+antes, 0 después**.
+
+El bloque de `amazon_progress` **no se borra**: sigue siendo la red de lo recién
+publicado, igual que el de ML. Un SKU sin `listing_id` en `listings` —Amazon no
+asigna el ASIN al publicar— no entra por arriba y necesita esa vuelta. Lo que se
+corrige es que cuente dos veces al mismo.
+
+El defecto entró al descubierto: apareció midiendo el bloque 1 del paso 3, no
+por un reporte. Salió a la luz porque el corte de channel encendió la primera
+fuente y nadie volvió a mirar la segunda.
+
+Sin migraciones ni variables nuevas. Versión 0.171.0.

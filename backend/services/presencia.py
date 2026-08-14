@@ -120,6 +120,19 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
             tuple(skus),
         )
         for r in rows:
+            # MISMA GUARDIA QUE ML, que aquí faltaba (medido el 14-ago-2026).
+            # `_agregar` no reemplaza: si el canal ya existe, SUMA (`n += 1`).
+            # Con `SUPABASE_READ_CHANNEL=true`, `channel_read.presencia()` ya
+            # devuelve Amazon —`CANALES` lo incluye—, así que cada SKU presente
+            # en las dos fuentes salía con **n=2 para una sola publicación**:
+            # 1,387 SKUs, todos los que `channel.listings` tiene con item_id.
+            #
+            # El bloque NO se borra: sigue siendo la red de lo recién publicado,
+            # igual que el de ML. Un SKU sin `listing_id` en listings (Amazon no
+            # asigna el ASIN al publicar) no entra por arriba y necesita esta
+            # vuelta. Lo que se corrige es que cuente dos veces al mismo.
+            if Canal.AMAZON.value in acc.get(r["sku"], {}):
+                continue
             asin = r.get("asin")
             _agregar(r["sku"], Canal.AMAZON.value, bool(r.get("success")),
                      asin, f"https://www.amazon.com.mx/dp/{asin}" if asin else None)
