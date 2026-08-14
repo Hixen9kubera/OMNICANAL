@@ -8034,6 +8034,33 @@ tabla, con su cobertura medida. Versión 0.139.0.
 
 ---
 
+### v0.163.0 — Las actas de los dos ETLs dejan de timbrar en Slack (Eduardo)
+
+Petición de Eduardo tras tres días de actas rojas. Nuevo `_DOMINIOS_SIN_ALERTA`
+en `routers/migracion.py`: el acta **se sigue escribiendo** y se sigue viendo en
+/migracion con su racha; lo único que se quita es el aviso de Slack. Distinto de
+`_DOMINIOS_RETIRADOS`, donde el cron ya ni genera acta.
+
+**Lo que se calla NO es un falso positivo**, y conviene que quede escrito. Las
+tres alarmas tuvieron causas reales y distintas:
+
+- 12-ago: `seam_gap` 17 y 15 — 4 padres variables que el webhook no anunciaba
+  (arreglado en la v0.103.0) y 3 `odoo_only`.
+- 13-ago: 3 altas `odoo_only` — SKUs nacidos en Odoo que nadie cruzó a Woo. Es
+  el alta manual que la v0.137.0 automatiza con cron.
+- 14-ago: 4 altas de productos de WOO. Esa sí es fuga del seam y sigue sin
+  diagnosticar.
+
+Con este cambio **ningún dominio timbra ya por actas**: los otros tres están
+retirados, así que `_revisar_actas` queda sin nada que vigilar. `seam_gap` es lo
+que mide que el dual-write en vivo no perdió nada — la misma familia de señal
+que delató los 964 pedidos fantasma del 12-ago. Mientras esto siga así hay que
+mirar /migracion a mano.
+
+Reactivar = quitar el dominio del conjunto. Versión 0.163.0.
+
+---
+
 ### v0.162.0 — El vigilante de FBA también esperaba con el backend detenido
 
 Mismo defecto que v0.160.0, en la otra mitad del mismo archivo. `revisar_fba`

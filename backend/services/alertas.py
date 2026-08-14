@@ -312,12 +312,15 @@ def _revisar_actas() -> None:
         return
     # etiquetas canónicas; los retirados NO se vigilan (su cron ya no escribe
     # acta a propósito, así que la ausencia es lo esperado — v0.95.1 con channel)
-    from routers.migracion import _DOMINIOS_DELTAS, _DOMINIOS_RETIRADOS
+    from routers.migracion import (_DOMINIOS_DELTAS, _DOMINIOS_RETIRADOS,
+                                   _DOMINIOS_SIN_ALERTA)
     from services import supabase_db as sdb
     if not sdb.disponible():
         return
+    # Retirados: ya no escriben acta. Sin alerta: la escriben y se ve en
+    # /migracion, pero no timbran (ver _DOMINIOS_SIN_ALERTA).
     vigilados = {d: e for d, e in _DOMINIOS_DELTAS.items()
-                 if d not in _DOMINIOS_RETIRADOS}
+                 if d not in _DOMINIOS_RETIRADOS and d not in _DOMINIOS_SIN_ALERTA}
     try:
         filas = sdb.fetch_all(
             "select distinct on (dominio) dominio, resultado, created_at "

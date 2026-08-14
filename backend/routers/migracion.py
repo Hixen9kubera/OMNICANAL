@@ -75,6 +75,25 @@ OBJETIVO_RACHA = 14  # regla de corte de la migración: 14 actas seguidas en cer
 # olvidarlo cuesta dos falsas alarmas a las 2 de la mañana — una por dominio.
 _DOMINIOS_RETIRADOS = {"channel-deltas", "costing-deltas", "orders-deltas"}
 
+# Dominios que SIGUEN AUDITANDO pero ya no tocan Slack (decisión de Eduardo,
+# 14-ago-2026). Distinto de `_DOMINIOS_RETIRADOS`: aquellos no generan acta;
+# estos SÍ la generan, se siguen viendo en /migracion con su racha, y solo se
+# les quita el timbre.
+#
+# Los dos ETLs de las 06:15 son el único auditor permanente del seam y llevan
+# tres días saliendo `con_deltas` por causas REALES y distintas entre sí:
+# 13-ago fueron 3 altas `odoo_only` (SKUs que Odoo dio de alta y nadie cruzó a
+# Woo — el alta manual que la v0.137.0 automatiza), y el 14-ago 4 altas de
+# productos de Woo, que sí es fuga del seam. O sea que no se calla un falso
+# positivo: se calla una señal cierta que hoy nadie está atendiendo.
+#
+# Queda escrito para que quien lo reactive sepa qué recupera: `seam_gap` mide lo
+# que el dual-write en vivo NO cubrió, y es lo que delató los 964 pedidos
+# fantasma. Revisar /migracion a mano mientras esto esté aquí.
+#
+# Reactivar = quitar el dominio de este conjunto.
+_DOMINIOS_SIN_ALERTA = {"core-etl-v2", "categorias-etl"}
+
 
 @router.get("/deltas")
 def deltas(dias: int = 45):
