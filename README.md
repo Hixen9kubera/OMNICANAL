@@ -10348,3 +10348,51 @@ compensación no lee nada que el registro produzca. `protegido` se define dentro
 del bloque de compensación y solo se usa ahí — verificado.
 
 Sin migraciones ni variables nuevas. Versión 0.178.0.
+
+### v0.180.0 — El espejo deja de perder filas EN SILENCIO
+
+`kubera_mirror.espejar()` encola con `put_nowait`. Si la cola está llena
+(`_COLA_MAX = 500` por worker) el evento **se descarta** — eso ya era así y es
+una decisión razonable: el espejo nunca debe frenar al flujo real. Lo que no era
+razonable es lo que pasaba después: el descarte se anotaba **solo en el ring de
+500 eventos EN MEMORIA**, así que moría con el siguiente reinicio y nunca llegaba
+a `espejo_kubera_log` —la tabla que sobrevive y la que alimenta el reproceso de
+/migracion—.
+
+**El único camino del espejo que PIERDE datos era también el único que no se
+podía ni ver ni reintentar.**
+
+Se descubrió midiendo el PASO 4: faltaban **156 filas de `amazon_imagenes` del 4
+al 13-ago**, con el espejo encendido y la tabla en `KUBERA_MIRROR_TABLAS`, y el
+log de errores **vacío**. No hay prueba de que esas 156 se fueran por aquí —el
+ring ya se había perdido en algún reinicio— pero el canal de pérdida silenciosa
+sí quedó probado, leyendo el código.
+
+Ahora un descarte también se persiste, **con su payload**, que es lo que permite
+reprocesarlo desde /migracion como cualquier otro error del espejo.
+
+**Dos detalles que no son cosméticos:**
+
+- **Va en un hilo.** `_persistir_error` escribe en MySQL y `espejar()` promete no
+  bloquear a quien la llama —que a veces es una corrutina, regla 11—. Mismo
+  patrón que el aviso a Slack de `alertas.py`.
+- **ACOTADO a 4 rescates concurrentes.** La cola se llena justamente en ráfaga:
+  sin tope serían cientos de hilos a la vez. Si ni eso alcanza, el evento se
+  pierde igual — pero se pierde **a gritos** (`log.error` con la clave y la
+  tabla), que es lo contrario de lo que pasaba antes. Medido: 60 descartes
+  seguidos no pasan del tope.
+
+El aviso a Slack no se desborda: `alertas.avisar` ya tiene candado anti-spam por
+tipo y cuenta las suprimidas.
+
+**Probado sin tocar ninguna base** (`probar_rescate_cola_llena.py`, 3/3): se
+llenan las colas de verdad, se stubea `db.execute` y se verifica que el descarte
+deje fila con su payload, que el rescate esté acotado y que `espejar` siga sin
+lanzar ni bloquear (0.0 ms).
+
+De la propia prueba salió una lección de método: la primera versión tomaba la
+primera escritura capturada y reprobaba — porque las colas se rellenan con
+tuplas basura y los workers REALES persisten sus propios errores. Medía su
+montaje, no el descarte. Ahora busca la fila del `ColaLlenaError`.
+
+Sin migraciones ni variables nuevas. Versión 0.180.0.

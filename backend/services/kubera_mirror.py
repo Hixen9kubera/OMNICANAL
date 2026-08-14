@@ -251,6 +251,10 @@ def _get_pool():
 
 _N_WORKERS = 2      # ≤2 conexiones del pool en uso (el pool tiene 6)
 _COLA_MAX = 500     # tope POR COLA; más allá se descarta CON registro
+# Rescates concurrentes de descartes por cola llena (ver `espejar`). La cola
+# se llena en ráfaga, así que sin tope serían cientos de hilos a la vez.
+_RESCATE_MAX = 4
+_rescate = threading.Semaphore(_RESCATE_MAX)
 
 _colas: list[queue.Queue] | None = None
 _workers_lock = threading.Lock()
@@ -307,9 +311,46 @@ def espejar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
         try:
             colas[idx].put_nowait(args)
         except queue.Full:
+            exc = ColaLlenaError(f"cola llena ({_COLA_MAX} pendientes)")
             _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
-                       clave, ok=False, ms=0.0,
-                       exc=ColaLlenaError(f"cola llena ({_COLA_MAX} pendientes)"))
+                       clave, ok=False, ms=0.0, exc=exc)
+            # Y ADEMÁS se persiste, que es lo que faltaba (14-ago-2026).
+            #
+            # `_registrar` solo escribe el ring de 500 eventos EN MEMORIA. Un
+            # descarte por cola llena moría con el siguiente reinicio y no
+            # dejaba rastro en `espejo_kubera_log` — la tabla que sobrevive y
+            # que alimenta el reproceso de /migracion. O sea: el único camino
+            # del espejo que PIERDE datos era también el único que no se podía
+            # ni ver ni reintentar.
+            #
+            # Se descubrió midiendo el paso 4: faltaban 156 filas de
+            # `amazon_imagenes` del 4 al 13-ago —con el espejo encendido y la
+            # tabla en la lista— y el log de errores estaba vacío. No hay prueba
+            # de que ESAS se fueran por aquí (el ring ya se había perdido), pero
+            # el canal de pérdida silenciosa sí estaba probado en el código.
+            #
+            # EN UN HILO: `_persistir_error` escribe en MySQL, y `espejar()`
+            # promete no bloquear a quien la llama (a veces es una corrutina —
+            # regla 11). Mismo patrón que el aviso a Slack de `alertas.py`.
+            #
+            # ACOTADO a `_RESCATE_MAX` hilos: la cola se llena justamente en
+            # ráfaga, y un hilo por descarte podría ser cientos a la vez. Si
+            # ni eso alcanza, se pierde igual — pero se pierde A GRITOS
+            # (`log.error`), que es lo contrario de lo que pasaba antes.
+            if _rescate.acquire(blocking=False):
+                def _rescatar() -> None:
+                    try:
+                        _persistir_error(origen_py, funcion, tabla_mysql,
+                                         tabla_kubera, operacion, clave, exc,
+                                         dict(payload or {}))
+                    finally:
+                        _rescate.release()
+
+                threading.Thread(target=_rescatar, daemon=True).start()
+            else:
+                log.error("espejo kubera: descarte por cola llena SIN rescatar "
+                          "(%s→%s clave=%s) — %d rescates ya en vuelo",
+                          tabla_mysql, tabla_kubera, clave, _RESCATE_MAX)
     except Exception as exc:  # noqa: BLE001 — el espejo nunca rompe el flujo
         log.debug("kubera_mirror.espejar (ignorado): %s", exc)
 
