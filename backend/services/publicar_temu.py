@@ -148,6 +148,17 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
                            "cancela, y las cancelaciones pegan en la métrica de "
                            "la tienda.")
 
+    # MEDIDAS DE RELLENO. Temu cobra VOLUMÉTRICO, así que un 1×1×1 no es una
+    # medida chiquita: es un hueco de Woo que se va a convertir en un cobro
+    # equivocado. No se bloquea —hay productos que sí se publican así— pero no
+    # puede pasar en silencio. (Recordar que las dimensiones de Woo son CBM
+    # reconstruido, no medidas tomadas: ver docs/ARNESES.md.)
+    dims = [float(campos.get(k) or 0) for k in ("largo", "ancho", "alto")]
+    if all(d <= 1 for d in dims):
+        avisos.append(f"Medidas sospechosas ({dims[0]:g}×{dims[1]:g}×{dims[2]:g} cm): "
+                      f"parecen relleno de Woo, no medidas reales. Temu cobra "
+                      f"volumétrico y ese cobro sale de aquí.")
+
     imagenes = [u for u in (campos.get("imagenes") or []) if u][:MAX_IMAGENES]
     if not imagenes:
         raise RuntimeError("Sin imágenes: Temu las exige (es uno de los cinco "

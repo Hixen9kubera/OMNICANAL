@@ -9972,6 +9972,41 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.179.0 — Temu: la categoría se elige (y el alta ya pasa por su IA)
+
+Auditoría en vivo con `ORG-0261-NEG` — un soporte de pared para casco de moto —
+y salieron **tres huecos reales**, los tres cerrados aquí.
+
+**1. El alta NO pasaba por la IA de Temu.** `temu_ia.generar_para_alta` existía
+desde v0.168.0 y **nadie la llamaba**: `crear_producto` solo invocaba Amazon y
+TikTok. Ya está conectada, con el mismo matiz de TikTok y más marcado — sin
+publicación no hay hoja, y en Temu la hoja DETERMINA qué atributos existen, así
+que del alta sale el texto y los atributos entran cuando el SKU tenga categoría.
+
+**2. No se podía elegir categoría, así que un producto NUEVO no se podía
+publicar.** La vista previa lo rechazaba con "Sin categoría de Temu", que era
+correcto pero sin salida. Ahora  trae buscador (solo HOJAS: las
+intermedias no tienen plantilla), guardado en `channel.product_category` —donde
+ya viven las 5,166 elecciones humanas de ML— y **recomendador**: Temu propone
+candidatas con `category.recommend` y la IA elige entre ellas **con permiso de
+decir que ninguna sirve**. Esa salida es la que lo vuelve portero en vez de
+adivino.
+
+Medido con el producto de prueba: Temu propuso 5 candidatas y la IA eligió
+*Automotriz > Motocicletas > Equipo de protección > Accesorios para casco >
+**Hardware para casco***, con su razón. La elección del panel MANDA sobre
+cualquier recomendador (regla 2 de la casa).
+
+**3. Las medidas de relleno pasaban en silencio.** El producto trae 1×1×1 cm y
+0.1 kg en Woo — eso no es una medida chiquita, es un hueco. Y **Temu cobra
+volumétrico**, así que ese hueco se convierte en un cobro equivocado sin que
+nada dé error. Ahora la vista previa lo advierte.
+
+**Lo que la auditoría confirmó que SÍ funciona**, contra la API real:
+`out.sn.check` dice que el SKU está libre; la cadena categoría → plantilla →
+IA → validación cierra en 2 llamadas; y el validador **rechaza un valor
+inventado** ("Kryptonita" → *no existe en esta categoría*) mientras acepta
+"Hierro", que sí está entre los 71 valores de esa hoja.
 
 ---
 

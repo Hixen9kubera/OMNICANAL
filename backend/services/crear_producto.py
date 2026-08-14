@@ -1092,6 +1092,22 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 log.info("crear[%s]: contenido TikTok %s (%d campo(s), categoría %s)",
                          sku_real, "ok" if tk.get("ok") else "falló",
                          len(tk.get("campos") or {}), tk.get("product_type") or "—")
+
+            # Contenido de TEMU (`TEMU_IA_EN_CREAR`). Mismo matiz que TikTok y
+            # más marcado: sin publicación no hay HOJA de categoría, y en Temu la
+            # hoja es la que DETERMINA qué atributos existen. Así que aquí sale
+            # el texto y los atributos entran cuando el SKU ya tenga categoría —
+            # que es justo lo que hace el botón del Estudio.
+            from services import temu_ia
+            tm = await temu_ia.generar_para_alta(
+                sku_real, titulo,
+                (ia or {}).get("descripcion") or scrape.get("descripcion_proveedor") or "",
+                atributos={k: str(v) for k, v in (atributos or {}).items()},
+            )
+            if tm:
+                log.info("crear[%s]: contenido Temu %s (%d campo(s), categoría %s)",
+                         sku_real, "ok" if tm.get("ok") else "falló",
+                         len(tm.get("campos") or {}), tm.get("categoria_id") or "—")
         except Exception as exc:  # noqa: BLE001
             log.exception("crear[%s] falló", sku)
             _set(sku, "error", str(exc)[:200], wc_id=wc_id)

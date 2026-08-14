@@ -66,20 +66,20 @@ def _categoria(sku: str) -> tuple[str | None, str | None]:
     NO como Amazon, donde vive en `product_type`. Cruzar por la columna
     equivocada devuelve cero filas sin dar error.
     """
-    from services import supabase_db as sdb
+    from services import supabase_db as sdb, temu_panel
     try:
-        filas = sdb.fetch_all(
-            """select l.category_id, c.path, c.name
-                 from channel.listings l
-                 left join channel.categories c
-                        on c.channel_id = %(canal)s and c.category_id = l.category_id
-                where l.canal = %(canal)s and l.sku = %(sku)s::citext limit 1""",
-            {"canal": CANAL, "sku": sku})
-        if not filas:
+        # LA ELECCIÓN DEL PANEL MANDA (regla 2 de la casa): `categoria_de` mira
+        # primero `channel.product_category` y solo después la publicación. Sin
+        # esto, un producto NUEVO —que no tiene publicación— no tendría hoja y
+        # no se podría ni generar contenido ni publicar.
+        cid = temu_panel.categoria_de(sku)
+        if not cid:
             return None, None
-        f = filas[0]
-        return (str(f["category_id"]) if f.get("category_id") else None,
-                f.get("path") or f.get("name"))
+        filas = sdb.fetch_all(
+            """select name, path from channel.categories
+                where channel_id=%s and category_id=%s""", (CANAL, cid))
+        f = (filas or [{}])[0]
+        return str(cid), (f.get("path") or f.get("name"))
     except Exception as exc:  # noqa: BLE001
         log.warning("temu_ia._categoria(%s): %s", sku, exc)
         return None, None

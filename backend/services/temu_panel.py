@@ -161,3 +161,183 @@ def datos_de(sku: str) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001
         log.warning("temu_panel.datos_de(%s) falló: %s", sku, exc)
         return None
+
+
+# ── LA CATEGORÍA: buscarla, elegirla y recomendarla ──────────────────────────
+#
+# Es la pieza que faltaba para publicar un producto NUEVO. Un SKU que ya está en
+# Temu trae su hoja en la publicación; uno que no, no tiene de dónde sacarla — y
+# sin hoja no hay atributos que pedir, porque en Temu la categoría es la que
+# DETERMINA qué atributos existen.
+#
+# La elección del PANEL manda sobre cualquier recomendador (regla 2 de la casa).
+# Se guarda en `channel.product_category`, donde ya viven las 5,166 elecciones
+# humanas de Mercado Libre: mismo concepto, otro canal, y su PK (sku, channel_id)
+# ya lo admite.
+
+def buscar_categorias(q: str, limite: int = 25) -> list[dict[str, Any]]:
+    """Buscador por nombre o ruta. SOLO HOJAS: `template.get` rechaza las
+    intermedias ("The catId not a leaf category"), así que ofrecerlas sería
+    ofrecer un error.
+
+    Sin acentos en los DOS lados: `ilike` ignora mayúsculas pero no diacríticos,
+    y buscar "audifon" dejaba el picker vacío como si el catálogo no tuviera la
+    categoría. Se usa `translate` porque la extensión `unaccent` no está en la
+    base y pedirla sería un cambio de esquema para un buscador.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    try:
+        return sdb.fetch_all(
+            """select category_id, name, path
+                 from channel.categories
+                where channel_id = %(canal)s and is_leaf
+                  and (translate(lower(name), 'áéíóúüñ', 'aeiouun')
+                         like translate(lower(%(like)s), 'áéíóúüñ', 'aeiouun')
+                    or translate(lower(path), 'áéíóúüñ', 'aeiouun')
+                         like translate(lower(%(like)s), 'áéíóúüñ', 'aeiouun'))
+                order by length(name), name
+                limit %(limite)s""",
+            {"canal": CANAL, "like": f"%{q}%", "limite": limite})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("temu_panel.buscar_categorias(%s) falló: %s", q, exc)
+        return []
+
+
+def guardar_categoria(sku: str, categoria_id: str) -> dict[str, Any]:
+    """La categoría de Temu ELEGIDA EN EL PANEL. Manda sobre el recomendador."""
+    try:
+        filas = sdb.fetch_all(
+            """select name, path, is_leaf from channel.categories
+                where channel_id=%s and category_id=%s""", (CANAL, categoria_id))
+        if not filas:
+            return {"ok": False, "motivo": f"La categoría {categoria_id} no existe en Temu."}
+        if not filas[0].get("is_leaf"):
+            return {"ok": False,
+                    "motivo": f"La categoría {categoria_id} no es una hoja: Temu solo "
+                              f"acepta hojas y su plantilla de atributos no responde."}
+        sdb.execute(
+            """insert into channel.product_category
+                 (sku, channel_id, category_id, source, updated_at)
+               values (%s::citext, %s, %s, 'panel', now())
+               on conflict (sku, channel_id) do update set
+                 category_id = excluded.category_id, source = 'panel',
+                 updated_at = now()""",
+            (sku, CANAL, categoria_id))
+        return {"ok": True, "sku": sku, "categoria_id": categoria_id,
+                "nombre": filas[0].get("name"), "path": filas[0].get("path")}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("temu_panel.guardar_categoria(%s): %s", sku, exc)
+        return {"ok": False, "motivo": str(exc)}
+
+
+def categoria_elegida(sku: str) -> dict[str, Any] | None:
+    """La elección del panel, si existe, con su nombre legible."""
+    try:
+        filas = sdb.fetch_all(
+            """select pc.category_id, c.name, c.path
+                 from channel.product_category pc
+                 left join channel.categories c
+                        on c.channel_id = pc.channel_id and c.category_id = pc.category_id
+                where pc.sku = %s::citext and pc.channel_id = %s""", (sku, CANAL))
+        return filas[0] if filas else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("temu_panel.categoria_elegida(%s): %s", sku, exc)
+        return None
+
+
+def categoria_de(sku: str) -> str | None:
+    """La categoría que MANDA: la del panel primero, la de su publicación después."""
+    elegida = categoria_elegida(sku)
+    if elegida and elegida.get("category_id"):
+        return str(elegida["category_id"])
+    d = datos_de(sku)
+    return str(d["categoria_id"]) if d and d.get("categoria_id") else None
+
+
+# El prompt es el del pipeline de tandas (`scripts/publicar_temu.py`), a
+# propósito: ya está medido. Sobre 89 productos corrigió la primera opción del
+# recomendador de Temu en 33 casos (37%) y apartó 11 que no encajaban en
+# ninguna — un palillo para cabello que iba a "Tenedores", un removedor de pelo
+# para muebles que iba a "Cepillos para perro".
+_PROMPT_CAT = """Eres un catalogador de producto para TEMU Mexico.
+
+PRODUCTO: {titulo}
+
+El recomendador de Temu propuso estas categorias. Elige la que DE VERDAD
+corresponde al producto.
+
+{lista}
+
+REGLAS
+1. Fijate en QUE ES el producto, no en las palabras que aparecen en el titulo.
+   Una REFACCION no va en la categoria del aparato completo: un piston de
+   repuesto para silla NO va en "Sillas de oficina". Un proyector de luces NO
+   va en "Series de luces".
+2. Si NINGUNA corresponde, devuelve catId 0. Publicar en la categoria
+   equivocada no da error: el producto queda donde nadie lo busca.
+
+SALIDA — solo JSON:
+{{"catId": <catId elegido o 0>, "razon": "<breve>"}}"""
+
+
+async def sugerir_categoria(sku: str, titulo: str) -> dict[str, Any]:
+    """
+    Recomienda UNA hoja de Temu para este producto, o ninguna.
+
+    Dos pasos, y el segundo es el que importa: Temu propone candidatas
+    (`category.recommend`) y la IA elige entre ellas **con permiso de decir que
+    ninguna sirve**. Esa salida es la que convierte al recomendador en portero
+    en vez de adivino: sin ella el modelo siempre elige algo.
+
+    La ruta legible sale de `channel.categories` —el árbol ya cargado— y no de
+    caminar la API en vivo.
+    """
+    import asyncio
+    from services import ia_generadores, temu
+
+    titulo = (titulo or "").strip()
+    if not titulo:
+        return {"ok": False, "motivo": "sin título con el que recomendar"}
+    try:
+        r = await temu.llamar("bg.local.goods.category.recommend",
+                              {"goodsName": titulo[:120]})
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "motivo": f"el recomendador de Temu falló: {exc}"}
+
+    cands = list(dict.fromkeys([str(c) for c in (r.get("catIdList") or [])]
+                               + ([str(r["catId"])] if r.get("catId") else [])))
+    if not cands:
+        return {"ok": False, "motivo": "Temu no propuso ninguna categoría"}
+
+    filas = sdb.fetch_all(
+        """select category_id, name, path, is_leaf from channel.categories
+            where channel_id=%s and category_id = any(%s)""", (CANAL, cands))
+    porid = {str(f["category_id"]): f for f in filas}
+    # Solo hojas: las intermedias no tienen plantilla y no se pueden publicar.
+    opciones = [porid[c] for c in cands if c in porid and porid[c].get("is_leaf")]
+    if not opciones:
+        return {"ok": False, "motivo": "las candidatas de Temu no son hojas conocidas",
+                "candidatas": cands}
+
+    lista = "\n".join(f"- catId {o['category_id']}: {o['path']}" for o in opciones)
+    res = await asyncio.to_thread(
+        ia_generadores._completar,  # noqa: SLF001
+        "Devuelve SOLO JSON válido.", _PROMPT_CAT.format(titulo=titulo, lista=lista), 400)
+    elegido, razon = None, None
+    if res.get("ok"):
+        d = ia_generadores._parse_json(res.get("texto", "")) or {}  # noqa: SLF001
+        cid = str(d.get("catId") or "0")
+        razon = d.get("razon")
+        if cid != "0" and cid in porid:
+            elegido = cid
+
+    return {
+        "ok": True, "sku": sku,
+        "sugerida": (porid[elegido] if elegido else None),
+        "razon": razon,
+        "ninguna": elegido is None,
+        "candidatas": [{"categoria_id": o["category_id"], "path": o["path"]}
+                       for o in opciones],
+    }
