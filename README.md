@@ -10002,6 +10002,46 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.184.0 — Los tres canales sugieren categoría al abrir su pestaña
+
+Brandon, mirando el Estudio: *"tiktok y amazon no sugieren categoría primero"*.
+Tenía razón, y por dos motivos distintos.
+
+**Amazon no sugería porque nadie podía pedírselo.** `amazon_ia.sugerir_tipo`
+existía desde v0.137.0 y **ningún endpoint la llamaba** — el mismo patrón que ya
+había aparecido con la IA de Temu al crear productos: función escrita, función
+huérfana. El picker solo sabía buscar, así que había que adivinar el término
+—en inglés, porque la Definitions API indexa así— o dejar que el detector
+automático eligiera AL PUBLICAR, que es el peor momento para enterarse de que
+eligió mal. Es como *"Contadora y Clasificadora de Monedas"* acabó en `HOME`.
+
+Ahora hay `GET /api/publicar/amazon/tipo/sugerido` y el picker lo pide solo.
+Medido con el producto de prueba: *"set de plastilina ligera 48 colores"* →
+`TOYS_AND_GAMES`.
+
+**TikTok sí sugería, y ese era el problema.** Lo pedía en silencio al montar el
+componente, así que si la API de TikTok tardaba —tarda— la pantalla se veía
+igual que si no existiera recomendador. Sigue siendo automático, pero ya no es
+invisible.
+
+**Temu lo hacía solo con un botón.** Si hay que apretar algo para ver la
+sugerencia, en la práctica nadie la ve y el producto se publica con lo que haya.
+Ahora se pide al presionar la pestaña, y el botón queda como *"Sugerir otra"*.
+
+**La regla que queda pareja en los tres:** proponer es del panel, **decidir es
+de la persona**. La sugerencia nunca se guarda sola — hay que aceptarla
+("Usar esta categoría" / "Usar este tipo"). Guardarla sola la volvería
+indistinguible de una elección humana, y toda la precedencia del panel se apoya
+en esa diferencia (regla 2 de la casa).
+
+**Y la categoría de WooCommerce ya solo se ve en General.** En un marketplace
+confundía: cada canal tiene su propia taxonomía —y en Temu la categoría además
+DECIDE qué atributos existen—, así que verla al lado de la del canal invitaba a
+creer que alguna de las dos se envía. Ninguna sale de ahí: la de Woo es de la
+tienda web.
+
+---
+
 ### v0.183.0 — Publicar en Temu desde el panel: cuatro defectos que solo salían en pantalla
 
 Prueba en vivo pedida por Brandon: abrir el panel, apretar *Mejorar con IA* y

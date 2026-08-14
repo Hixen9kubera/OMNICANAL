@@ -132,6 +132,29 @@ async def amazon_tipo_actual(sku: str = Query(...), wc_id: int = Query(...)):
     return {"product_type": pt, "origen": origen}
 
 
+@router.get("/amazon/tipo/sugerido")
+async def amazon_tipo_sugerido(sku: str = Query(...), titulo: str = Query("")):
+    """
+    Un `productType` RECOMENDADO para el panel. Sugerencia: NO se guarda.
+
+    `amazon_ia.sugerir_tipo` existía desde v0.137.0 y **ningún endpoint la
+    llamaba**, así que el picker de Amazon solo sabía buscar: quien abría el
+    Estudio no veía ninguna propuesta y tenía que adivinar el término en inglés.
+    Mientras tanto el detector automático seguía corriendo AL PUBLICAR, que es el
+    peor momento para enterarse de que eligió mal — es como
+    "Contadora de Monedas" acabó en HOME.
+
+    Se guarda cuando una persona la acepta (el POST de abajo). Escribirla sola la
+    volvería indistinguible de una elección humana, y toda la precedencia del
+    panel se apoya en esa diferencia.
+    """
+    from services import amazon_ia, woocommerce
+    if not titulo:
+        p = await woocommerce.obtener_producto_por_sku(sku)
+        titulo = (p or {}).get("nombre") or ""
+    return await amazon_ia.sugerir_tipo(sku, titulo)
+
+
 class TipoAmazonIn(BaseModel):
     sku: str
     wc_id: int

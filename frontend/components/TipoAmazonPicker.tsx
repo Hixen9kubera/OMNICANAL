@@ -16,7 +16,9 @@ import { Boxes, Check, Loader2, Search } from "lucide-react";
 import {
   buscarTiposAmazon,
   guardarTipoAmazon,
+  sugerirTipoAmazon,
   tipoAmazonActual,
+  type SugerenciaTipoAmazon,
   type TipoAmazon,
 } from "@/lib/api";
 
@@ -26,7 +28,15 @@ const ORIGEN_LABEL: Record<string, { texto: string; clase: string }> = {
   auto: { texto: "se detecta al publicar", clase: "bg-amber-100 text-amber-700" },
 };
 
-export default function TipoAmazonPicker({ sku, wcId }: { sku: string; wcId: number }) {
+export default function TipoAmazonPicker({
+  sku,
+  wcId,
+  titulo,
+}: {
+  sku: string;
+  wcId: number;
+  titulo?: string | null;
+}) {
   const [actual, setActual] = useState<string | null>(null);
   const [origen, setOrigen] = useState<string>("auto");
   const [q, setQ] = useState("");
@@ -34,6 +44,12 @@ export default function TipoAmazonPicker({ sku, wcId }: { sku: string; wcId: num
   const [buscando, setBuscando] = useState(false);
   const [guardando, setGuardando] = useState<string | null>(null);
   const [guardadoOk, setGuardadoOk] = useState(false);
+  // LA SUGERENCIA. El backend sabía proponer un tipo desde v0.137.0 y nadie se
+  // lo pedía: el picker solo buscaba, así que quien abría el Estudio tenía que
+  // adivinar el término —en inglés— o dejar que el detector automático eligiera
+  // AL PUBLICAR, que es el peor momento para enterarse de que eligió mal.
+  const [sugerido, setSugerido] = useState<SugerenciaTipoAmazon | null>(null);
+  const [sugiriendo, setSugiriendo] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -46,6 +62,24 @@ export default function TipoAmazonPicker({ sku, wcId }: { sku: string; wcId: num
       .catch(() => {});
     return () => ctrl.abort();
   }, [sku, wcId]);
+
+  function pedirSugerencia(signal?: AbortSignal) {
+    setSugiriendo(true);
+    sugerirTipoAmazon(sku, titulo || undefined, signal)
+      .then(setSugerido)
+      .catch(() => setSugerido(null))
+      .finally(() => setSugiriendo(false));
+  }
+
+  // Solo si NO hay elección humana: si alguien ya fijó el tipo, proponer otro
+  // sería ruido — y su elección manda igual (regla 2 de la casa).
+  useEffect(() => {
+    if (origen === "panel") return;
+    const ctrl = new AbortController();
+    pedirSugerencia(ctrl.signal);
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sku, origen]);
 
   useEffect(() => {
     if (timer.current) clearTimeout(timer.current);
@@ -109,6 +143,45 @@ export default function TipoAmazonPicker({ sku, wcId }: { sku: string; wcId: num
           </span>
         )}
       </div>
+
+      {sugiriendo && (
+        <p className="mt-3 flex items-center gap-1.5 text-xs text-slate-500">
+          <Loader2 size={13} className="animate-spin" /> Buscando un tipo recomendado…
+        </p>
+      )}
+      {!sugiriendo && sugerido?.product_type && origen !== "panel" && (
+        <div className="mt-3 rounded-xl border border-orange-200 bg-orange-50/60 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-orange-600 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+              sugerido
+            </span>
+            <span className="font-mono text-xs font-bold text-slate-800">
+              {sugerido.product_type}
+            </span>
+            {sugerido.origen && (
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                {sugerido.origen}
+              </span>
+            )}
+          </div>
+          {sugerido.motivo && (
+            <p className="mt-1 text-xs text-slate-600">{sugerido.motivo}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => elegir({ name: sugerido.product_type as string, label: sugerido.product_type as string })}
+            disabled={guardando === sugerido.product_type}
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-orange-300 px-2.5 py-1 text-xs font-semibold text-orange-700 hover:bg-orange-100 disabled:opacity-50"
+          >
+            {guardando === sugerido.product_type ? (
+              <Loader2 size={12} className="animate-spin" />
+            ) : (
+              <Check size={12} />
+            )}
+            Usar este tipo
+          </button>
+        </div>
+      )}
 
       <div className="relative mt-3">
         <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />

@@ -1362,7 +1362,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                   Libre, así que estando en Amazon o TikTok se leía la categoría
                   de otro canal como si fuera la suya. */}
               {esAmazon && wcId != null && (
-                <TipoAmazonPicker sku={sku!} wcId={wcId} />
+                <TipoAmazonPicker sku={sku!} wcId={wcId} titulo={titulo || data?.nombre} />
               )}
               {/* El título que ve el usuario, no el de Woo: si acaba de mejorarlo
                   con IA, la recomendación tiene que salir de ESE texto. */}
@@ -1448,10 +1448,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                     />
                   </>
                 )}
-                <div className={(esML || esGeneral) ? "border-t border-slate-100 pt-3" : ""}>
+                {/* La categoría de WooCommerce SOLO en General. En un
+                    marketplace confunde: cada canal tiene su propia taxonomía
+                    —y en Temu la categoría además DECIDE qué atributos
+                    existen—, así que ver la de Woo al lado de la del canal
+                    invita a creer que alguna de las dos se envía. Ninguna sale
+                    de aquí: la de Woo es de la tienda web. */}
+                {esGeneral && (
+                <div className="border-t border-slate-100 pt-3">
                   <div className="mb-1 flex items-center gap-2">
                     <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Categoría WooCommerce</span>
-                    <span className="text-[10px] font-medium text-slate-400">(solo tienda web — no se envía a ML)</span>
+                    <span className="text-[10px] font-medium text-slate-400">(solo tienda web)</span>
                   </div>
                   {categoriaWC.length ? (
                     <div className="flex flex-wrap items-center gap-1 text-sm text-slate-700">
@@ -1464,6 +1471,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                     </div>
                   ) : (<span className="text-sm text-slate-400">Sin categoría asignada</span>)}
                 </div>
+                )}
 
                 {/* Código de barras / GTIN — requerido por ML en ciertas
                     categorías (ej. colchones en SANCORFASHION). Se guarda en Woo. */}

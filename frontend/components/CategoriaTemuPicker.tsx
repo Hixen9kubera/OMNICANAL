@@ -54,11 +54,21 @@ export default function CategoriaTemuPicker({
   }, [sku]);
 
   useEffect(() => {
-    recargar();
     setSug(null);
     setQ("");
     setResultados([]);
-  }, [sku, recargar]);
+    // Se pide la sugerencia AL ABRIR, como TikTok y Amazon: si hay que apretar
+    // un botón para verla, en la práctica nadie la ve y el producto se publica
+    // con lo que haya. Aceptarla sigue siendo un acto EXPLÍCITO ("Usar esta"):
+    // proponer es del panel, decidir es de la persona.
+    categoriaTemuActual(sku)
+      .then((r) => {
+        setActual(r);
+        if (r?.origen !== "panel") pedirSugerencia();
+      })
+      .catch(() => setActual(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sku]);
 
   // Búsqueda con freno: sin esto cada tecla dispara una consulta.
   useEffect(() => {
@@ -147,7 +157,7 @@ export default function CategoriaTemuPicker({
             className="inline-flex items-center gap-1.5 rounded-lg bg-orange-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-orange-700 disabled:opacity-50"
           >
             {cargandoSug ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-            Sugerir categoría
+            {sug ? "Sugerir otra" : "Sugerir categoría"}
           </button>
           <span className="text-[11px] text-slate-500">
             Temu propone y la IA elige — puede decir que ninguna encaja.

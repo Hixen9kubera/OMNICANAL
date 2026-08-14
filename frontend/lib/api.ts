@@ -746,6 +746,29 @@ export function tipoAmazonActual(
   );
 }
 
+/** Tipo de producto RECOMENDADO para Amazon. Sugerencia: no se guarda sola.
+ *  Existía en el backend desde v0.137.0 sin nadie que lo llamara: el picker
+ *  solo sabía buscar, y el detector automático corría AL PUBLICAR — el peor
+ *  momento para enterarse de que eligió mal. */
+export interface SugerenciaTipoAmazon {
+  product_type: string | null;
+  origen: string | null;
+  confianza: number | null;
+  motivo: string | null;
+}
+
+export function sugerirTipoAmazon(
+  sku: string,
+  titulo?: string,
+  signal?: AbortSignal,
+): Promise<SugerenciaTipoAmazon> {
+  const q = titulo ? `&titulo=${encodeURIComponent(titulo)}` : "";
+  return getJSON(
+    `/api/publicar/amazon/tipo/sugerido?sku=${encodeURIComponent(sku)}${q}`,
+    signal,
+  );
+}
+
 export function buscarTiposAmazon(
   q: string,
   signal?: AbortSignal,
