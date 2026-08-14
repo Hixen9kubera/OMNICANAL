@@ -255,6 +255,13 @@ class Settings(BaseSettings):
     # NACE APAGADO: encenderlo mete una escritura en el flujo de PUBLICAR, que
     # es negocio vivo (regla 3, dale de Brandon). Ver services/publicacion_seam.py.
     supabase_seam_publicar: bool = False
+    # ── PASO 4: la caché de imágenes ya procesadas se lee de kubera ────────
+    # `imagenes_amazon._cache_get` pregunta "¿ya procesé ESTA URL?" y con esto
+    # la respuesta sale de `enrich.product_media` en vez de `amazon_imagenes`.
+    # Las dos tablas están 1:1 (678/678 desde v0.172.0) y la escritura ya va a
+    # las dos, así que encenderlo es reversible sin perder nada.
+    # Equivocarse aquí NO corrompe: reprocesa una imagen. Caro, no incorrecto.
+    supabase_read_media: bool = False
     # F5 pedidos: el tab Ventas (fuente=pedidos) lee de channel.orders (BD
     # kubera) con fallback automático a MySQL. Apagar = revertir.
     supabase_read_orders: bool = False

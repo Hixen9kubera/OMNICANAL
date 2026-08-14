@@ -210,10 +210,16 @@ consultar": es reprocesar y subir OTRA copia a WordPress con otro `wp_media_id`.
    es el hash de la URL (única global); en kubera el índice único es
    `(sku, kind, source_url)`. El lector pregunta "¿ya procesé esta URL?" SIN
    filtrar por SKU, así que el repunte tampoco debe filtrar.
-2. **Decisión de producto sobre `ventas_horarias` / `ventas_sync`:** con
-   `VENTAS_ML_REFRESH=false` esa caché **ya no se refresca** —última escritura
-   13-ago 22:18— y `?fuente=ml` la sirve **sin avisar que está detenida**. O se
-   retira la vista, o se le pone la advertencia. No es trabajo de migración.
+2. ~~Decisión de producto sobre `ventas_horarias` / `ventas_sync`~~ —
+   **RESUELTO (v0.173.0): se le puso la advertencia.** Con
+   `VENTAS_ML_REFRESH=false` esa caché no se refresca, y `?fuente=ml` la servía
+   sin decirlo. Ahora la respuesta trae `aviso.tipo = "cache_detenida"`,
+   `datos_hasta` (la escritura más nueva EN EL RANGO PEDIDO) y
+   `dias_sin_datos_frescos`. La vista no se retira: se la dejó honesta.
+
+   El panel **nunca** pide `fuente=ml` —`ventasHorario()` no manda el
+   parámetro—, así que esta vista es solo por API y el aviso va en el JSON.
+   `fuente: "ml"` se agregó por simetría con `resumen_pedidos`, que ya lo traía.
 
 ### ⚠️ Hallazgo del paso 4: el espejo puede perder filas EN SILENCIO
 

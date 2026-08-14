@@ -511,6 +511,7 @@ async def resumen(cuenta: str | None, desde: date, hasta: date) -> dict:
     _asegurar_schema()
     hoy = hoy_mx()
     pendientes: list[tuple[str, date]] = []
+    estado: dict[tuple[str, date], dict] = {}
     try:
         marcas_c = ",".join(["%s"] * len(cuentas))
         marcas_f = ",".join(["%s"] * len(fechas))
@@ -589,7 +590,45 @@ async def resumen(cuenta: str | None, desde: date, hasta: date) -> dict:
             fila["delta_parcial"] = _delta_pct(ca["monto"], pmc)
         cuentas_out.append(fila)
 
+    # ── LA CACHÉ PUEDE ESTAR DETENIDA, Y HAY QUE DECIRLO ──────────────────
+    # Con `VENTAS_ML_REFRESH=false` (su estado desde hace semanas) `asegurar_dia`
+    # regresa sin pedirle nada a ML: los días marcados como pendientes arriba
+    # NUNCA se refrescan y esta respuesta sirve la última foto que quedó — sin
+    # que nada en el JSON lo dijera. El campo `actualizado` empeoraba la
+    # confusión: traía la hora de ESTA petición, así que unos números de hace
+    # días se presentaban con la hora de hace un segundo.
+    #
+    # Es la misma familia de todo lo que costó dinero en esta migración: una
+    # fuente detenida que contesta con seguridad lo que ya no sabe. Aquí no se
+    # arregla apagando la vista (eso es decisión de producto): se arregla
+    # diciendo la verdad.
+    #
+    # `datos_hasta` = la escritura más nueva de la caché EN EL RANGO PEDIDO, no
+    # de toda la tabla: un rango viejo puede estar perfectamente completo
+    # aunque la caché lleve días sin tocarse.
+    sellos = [f["actualizado"] for f in estado.values() if f.get("actualizado")]
+    datos_hasta = max(sellos) if sellos else None
+    aviso = None
+    if not settings.ventas_ml_refresh:
+        aviso = {
+            "tipo": "cache_detenida",
+            "motivo": "VENTAS_ML_REFRESH=false",
+            "texto": (
+                "Esta vista (`fuente=ml`) sirve una caché de la API de Mercado "
+                "Libre que YA NO SE REFRESCA: el refresco está apagado, así que "
+                "los días sin cachear se quedan sin datos y los cacheados no se "
+                "vuelven a pedir. "
+                + (f"Lo más nuevo en el rango es del {datos_hasta:%Y-%m-%d %H:%M} UTC. "
+                   if datos_hasta else "No hay nada cacheado en el rango pedido. ")
+                + "La fuente viva de ventas son los PEDIDOS: `fuente=pedidos` "
+                  "(el default, y lo que usa el panel)."),
+            "dias_sin_datos_frescos": len(pendientes),
+        }
+
     return {
+        "fuente": "ml",          # simétrico con `resumen_pedidos`, que ya lo traía
+        "aviso": aviso,          # None cuando la caché sí se está refrescando
+        "datos_hasta": datos_hasta.isoformat() if datos_hasta else None,
         "canal": "mercado_libre" if cuenta else "general",
         "cuenta": cuenta,
         "desde": desde.isoformat(), "hasta": hasta.isoformat(),

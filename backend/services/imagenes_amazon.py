@@ -86,6 +86,24 @@ def _hash(url: str) -> str:
 
 
 def _cache_get(src_url: str) -> Optional[str]:
+    """¿Ya procesamos ESTA imagen? (no "¿para este SKU?" — ver media_read).
+
+    PASO 4 de la migración: con `SUPABASE_READ_MEDIA=true` la respuesta sale de
+    `enrich.product_media`; apagado, de `amazon_imagenes` como siempre.
+
+    El `except → None` se conserva A PROPÓSITO, y aquí sí es correcto: un fallo
+    de la base significa "no sé si ya la procesé", y la consecuencia de
+    equivocarse es reprocesar una imagen — costoso, no incorrecto. Es lo
+    contrario de los candados del paso 0, donde el mismo `except` produce un
+    movimiento de inventario duplicado. La diferencia no es el patrón: es qué
+    pasa cuando la respuesta está mal.
+    """
+    if settings.supabase_read_media:
+        try:
+            from services import media_read
+            return media_read.imagen_amazon(src_url)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("caché de imágenes en kubera falló, se cae a MySQL: %s", exc)
     _asegurar_tabla()
     try:
         row = db.fetch_one(

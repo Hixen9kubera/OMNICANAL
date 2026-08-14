@@ -9938,3 +9938,64 @@ allá y DOS aquí. No es pérdida y los conteos no tienen por qué cuadrar — e
 lector pregunta "¿ya procesé esta URL?" sin filtrar por SKU.
 
 Sin migraciones ni variables nuevas. Versión 0.172.0.
+
+### v0.173.0 — Paso 4 cerrado: la caché de imágenes lee de kubera, y `?fuente=ml` deja de mentir
+
+**1. El aviso de la vista detenida.** `GET /api/ventas/resumen?fuente=ml` sirve
+una caché de la API de Mercado Libre que, con `VENTAS_ML_REFRESH=false`, **ya no
+se refresca**: `asegurar_dia` regresa sin pedir nada y la respuesta entrega la
+última foto que quedó. Nada en el JSON lo decía, y el campo `actualizado`
+empeoraba la confusión — traía la hora de ESA petición, así que números de hace
+días se presentaban con la hora de hace un segundo.
+
+Es la misma familia de todo lo que costó dinero en esta migración: una fuente
+detenida que contesta con seguridad lo que ya no sabe. No se retira la vista
+—eso es decisión de producto—: se la deja honesta. La respuesta ahora trae
+
+    "fuente": "ml",
+    "aviso": {"tipo": "cache_detenida", "motivo": "VENTAS_ML_REFRESH=false",
+              "texto": "…", "dias_sin_datos_frescos": N},
+    "datos_hasta": "2026-08-13T22:18:15"
+
+`datos_hasta` es la escritura más nueva **en el rango pedido**, no de toda la
+tabla: un rango viejo puede estar completo aunque la caché lleve días quieta.
+`fuente: "ml"` se agregó por simetría — `resumen_pedidos` ya lo traía y el
+frontend ya lo lee. El panel **nunca** pide `fuente=ml` (`ventasHorario()` no
+manda el parámetro), así que esta vista es solo por API y ahí va el aviso.
+
+**2. El lector de imágenes** (`SUPABASE_READ_MEDIA`, nuevo):
+`imagenes_amazon._cache_get` puede leer de `enrich.product_media` en vez de
+`amazon_imagenes`. **Paridad verificada URL por URL: 678 de 678, cero sin
+respuesta y cero distintas.**
+
+La sutileza está en la llave. En MySQL la PK es el SHA-1 de la URL, **única
+global**: una imagen usada por dos SKUs es UNA fila. En kubera el índice único es
+`(sku, kind, source_url)` y da DOS. Por eso la gemela **no filtra por SKU** — la
+pregunta es "¿ya procesé ESTA URL?", no "¿para este SKU?". Filtrar por SKU haría
+reprocesar la misma imagen una vez por producto, y reprocesar no es gratis ni
+idempotente: baja la imagen, WebP→JPEG, escala a ≥1000 px, a veces Real-ESRGAN, y
+**sube otra copia a WordPress con otro `wp_media_id`**.
+
+**El `except → None` de ese lector se conserva a propósito**, y quedó escrito por
+qué: aquí un fallo significa "no sé si ya la procesé" y equivocarse cuesta
+reprocesar — caro, no incorrecto. Es el mismo patrón que en los candados del
+paso 0 produce un movimiento de inventario duplicado. **La diferencia no es el
+patrón: es qué pasa cuando la respuesta está mal.** Distinguirlos es lo que
+evita tanto el bug como la sobrecorrección.
+
+**Un error mío, con su daño medido.** Probando el aviso corrí `ventas_ml.resumen`
+en local, donde `ventas_ml_refresh` **default es True** (en Railway es false), y
+la función refrescó de verdad: escribió en `ventas_horarias`/`ventas_sync` de
+producción y gastó llamadas a ML. Alcance: **4 filas** de `ventas_sync` (11 y
+12-ago, ambas cuentas) re-selladas y sus buckets horarios reescritos con datos
+reales de la API; `ventas_horarias` sigue en 2,016 filas — reemplazó, no agregó.
+Sin efecto de negocio: el panel no lee esa caché. La última escritura ORGÁNICA
+sigue siendo la del 13-ago 22:18.
+
+La lección, que vale más que el incidente: **llamar una función de servicio en
+local puede ESCRIBIR en producción**, porque el `.env` apunta ahí y los defaults
+de `config.py` no son los de Railway. Probar contra producción se hace con
+`SELECT`, o forzando la variable al valor real (`VENTAS_ML_REFRESH=false python …`),
+que es como se hizo la segunda vez.
+
+Sin migraciones. `SUPABASE_READ_MEDIA` nace apagada. Versión 0.173.0.
