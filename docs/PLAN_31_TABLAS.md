@@ -189,11 +189,47 @@ archivo histórico, no de una decisión automática que se equivoque.
 archivo empezando por los de menos riesgo (`studio`, `presencia`, `publicar`) y
 dejando `inventario` al final (8 sitios, mueve stock).
 
-### PASO 4 — Cachés de verdad
+### PASO 4 — Cachés de verdad — **EN CURSO**
 
 `ventas_horarias`, `ventas_sync`, `amazon_imagenes`, `ml_image_edit_backlog`.
-Un solo lector que repuntar (el de imágenes). Decisión de producto pendiente:
-¿alguien usa todavía la vista `?fuente=ml` del tab Ventas?
+
+**Hecho (v0.172.0):** las dos de imágenes quedaron completas en kubera —
+`ml_image_edit_backlog` 12,592/12,592 y `amazon_imagenes` 678/678— y se
+corrigieron **21,816 fechas** de la bitácora que apuntaban al día de la
+restauración del 24-jul en vez del día del evento.
+
+**Y `amazon_imagenes` NO es una caché regenerable**, aunque el plan la llamara
+así: cada fila es el resultado de descargar la imagen, convertir WebP→JPEG,
+escalar a ≥1000 px y a veces pasar por Real-ESRGAN. Perderla no es "se vuelve a
+consultar": es reprocesar y subir OTRA copia a WordPress con otro `wp_media_id`.
+
+**Falta:**
+
+1. Repuntar el único lector vivo, `imagenes_amazon._cache_get`, de
+   `amazon_imagenes` a `enrich.product_media`. Ojo con la llave: en MySQL la PK
+   es el hash de la URL (única global); en kubera el índice único es
+   `(sku, kind, source_url)`. El lector pregunta "¿ya procesé esta URL?" SIN
+   filtrar por SKU, así que el repunte tampoco debe filtrar.
+2. **Decisión de producto sobre `ventas_horarias` / `ventas_sync`:** con
+   `VENTAS_ML_REFRESH=false` esa caché **ya no se refresca** —última escritura
+   13-ago 22:18— y `?fuente=ml` la sirve **sin avisar que está detenida**. O se
+   retira la vista, o se le pone la advertencia. No es trabajo de migración.
+
+### ⚠️ Hallazgo del paso 4: el espejo puede perder filas EN SILENCIO
+
+Buscando por qué faltaban 156 imágenes de agosto (no de antes del espejo, como
+supuse: **del 4 al 13-ago**), se llegó al mecanismo:
+
+`kubera_mirror.espejar()` encola con `put_nowait`. Si la cola está llena
+(`_COLA_MAX = 500` por worker) el evento **se descarta**, y `_registrar()` lo
+anota **solo en un buffer en memoria de 500 eventos** — no en
+`espejo_kubera_log`, que es la tabla que sobrevive a un reinicio. Por eso el log
+de errores estaba vacío mientras faltaban filas.
+
+No está probado que ESAS 156 se hayan perdido así (el buffer murió con el
+reinicio), pero el canal de pérdida silenciosa **sí está probado, en el código**.
+Pendiente: que un descarte por cola llena se persista y se pueda reprocesar,
+igual que cualquier otro error del espejo.
 
 ### PASO 5 — Bitácoras
 

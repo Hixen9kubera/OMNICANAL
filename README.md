@@ -9874,3 +9874,67 @@ por un reporte. Salió a la luz porque el corte de channel encendió la primera
 fuente y nadie volvió a mirar la segunda.
 
 Sin migraciones ni variables nuevas. Versión 0.171.0.
+
+### v0.172.0 — Paso 4: la historia de las dos tablas de imágenes, y 21,816 fechas mentirosas
+
+**Lo que se completó.** `ml_image_edit_backlog` → `ops.channel_submissions`
+(faltaban 368) y `amazon_imagenes` → `enrich.product_media` (faltaban 156). Las
+dos quedaron 1:1: **12,592/12,592** y **678/678**.
+
+**Una hipótesis mía que la medición tumbó.** Di por hecho que lo faltante era
+historia anterior al espejo, como en las 44 bajas de Amazon. Las fechas dijeron
+otra cosa: las 156 imágenes son **del 4 al 13 de agosto**, con el espejo
+encendido y la tabla en `KUBERA_MIRROR_TABLAS`. No era historia: era pérdida
+reciente.
+
+**El mecanismo, que sí quedó probado en el código.** `kubera_mirror.espejar()`
+encola con `put_nowait`; si la cola está llena (`_COLA_MAX = 500` por worker) el
+evento **se descarta**, y `_registrar()` lo anota **solo en un buffer en memoria
+de 500 eventos**, no en `espejo_kubera_log` —la tabla que sobrevive al
+reinicio—. Por eso el log de errores estaba vacío mientras faltaban 156 filas.
+Verificado además que las 156 no estaban bajo otro SKU: faltaban de verdad.
+
+No está probado que esas 156 se hayan ido por ahí (el buffer murió con un
+reinicio). Lo que está probado es que **el canal de pérdida silenciosa existe**.
+Queda anotado como pendiente: un descarte por cola llena debe persistirse y
+poder reprocesarse, como cualquier otro error del espejo.
+
+**Y de paso, el defecto grande: 21,816 eventos fechados el día equivocado.**
+
+    ml_image_edit_backlog  11,978
+    ml_backlog              5,556
+    amazon_backlog          4,282
+                           ──────
+                           21,816   promedio 47 días de desfase, el peor 128
+
+El 24-jul un `TRUNCATE CASCADE` de `etl_core_products` vació la bitácora y se
+reconstruyó con `backfill_channel_submissions`. Ese backfill llenaba
+`submitted_at` con la fecha real pero **no pasaba nada para `created_at`**, que
+tomó su `default now()`. Resultado: eventos de marzo figurando como del 24-jul.
+
+Es el MISMO defecto de `crear_logs` (60 filas, hasta 17.6 h) a 360 veces la
+escala — allá lo produjo un reproceso ocasional, aquí una restauración completa.
+Allá SÍ hizo daño porque el historial busca el último evento por SKU e invirtió
+el estado de 50; aquí todavía no hay quien ordene por esa columna (verificado:
+solo la tocan scripts, con `exists`). Se arregla antes de que lo haya, porque
+esta bitácora es lo que va a quedar cuando MySQL se retire, y un archivo
+histórico con las fechas mal no es un archivo histórico.
+
+Corregido: `created_at := submitted_at` en las 21,816. La bitácora pasó de
+empezar el 24-jul a abarcar **del 17-mar al 14-ago**. Y la causa raíz quedó
+tapada: `_up_channel_submissions` ahora acepta `creado` —igual que
+`_up_process_log`, donde el arreglo ya existía— y los tres payloads del backfill
+lo pasan. Sin eso, el próximo backfill volvería a sellar mal.
+
+**Corrección al plan:** `amazon_imagenes` **no es una caché regenerable**. Cada
+fila es descargar la imagen, WebP→JPEG, escalar a ≥1000 px y a veces Real-ESRGAN.
+Perder una no es "se vuelve a consultar": es reprocesar y subir OTRA copia a
+WordPress con otro `wp_media_id`.
+
+**Nota de llaves, para quien repunte el lector:** en MySQL la PK de
+`amazon_imagenes` es el SHA-1 de la URL, **única global**; en kubera el índice
+único es `(sku, kind, source_url)`. La misma URL usada por dos SKUs es UNA fila
+allá y DOS aquí. No es pérdida y los conteos no tienen por qué cuadrar — el
+lector pregunta "¿ya procesé esta URL?" sin filtrar por SKU.
+
+Sin migraciones ni variables nuevas. Versión 0.172.0.

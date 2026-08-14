@@ -383,15 +383,23 @@ def _up_channel_submissions(cur, p: dict[str, Any]) -> None:
                     (detail_ref,))
         if cur.fetchone():
             return
+    # `creado`: la hora del EVENTO, no la de esta escritura. Es la MISMA
+    # corrección que ya lleva `_up_process_log` (ver su nota) y que aquí faltaba.
+    # Para el camino en vivo da igual —el espejo corre en un hilo, décimas—,
+    # pero un BACKFILL de una bitácora vieja entra semanas después: sin esto,
+    # 368 ediciones de imagen de julio quedarían selladas con la fecha de la
+    # copia y se leerían como si hubieran pasado hoy. Si el llamador no la
+    # manda, el default de la columna sigue aplicando.
     cur.execute(
         """insert into ops.channel_submissions
              (canal, cuenta, sku, submission_id, operacion, status, success,
-              error_resumen, detail_ref, submitted_at, published_at)
-           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+              error_resumen, detail_ref, submitted_at, published_at, created_at)
+           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,coalesce(%s, now()))""",
         (p.get("canal"), p.get("cuenta"), p.get("sku"),
          p.get("submission_id"), p.get("operacion"), p.get("status"),
          p.get("success"), (p.get("error_resumen") or "")[:500] or None,
-         detail_ref, p.get("submitted_at"), p.get("published_at")),
+         detail_ref, p.get("submitted_at"), p.get("published_at"),
+         p.get("creado")),
     )
 
 
@@ -862,7 +870,7 @@ def backfill_channel_submissions(tabla: str = "ml_backlog", max_items: int = 100
                     "status": f.get("ml_status"), "success": bool(f["success"]),
                     "error_resumen": f.get("error"),
                     "detail_ref": f"mysql:ml_backlog:{f['id']}",
-                    "submitted_at": f.get("created_at"),
+                    "submitted_at": f.get("created_at"), "creado": f.get("created_at"),
                     "published_at": f.get("published_at")}
     elif tabla == "amazon_backlog":
         filas = db.fetch_all(
@@ -876,7 +884,7 @@ def backfill_channel_submissions(tabla: str = "ml_backlog", max_items: int = 100
                     "status": f.get("status"), "success": bool(f["success"]),
                     "error_resumen": None if f["success"] else f"{f.get('issue_count') or 0} issues",
                     "detail_ref": f"mysql:amazon_backlog:{f['id']}",
-                    "submitted_at": f.get("submitted_at"),
+                    "submitted_at": f.get("submitted_at"), "creado": f.get("submitted_at"),
                     "published_at": f.get("published_at")}
     elif tabla == "ml_image_edit_backlog":
         filas = db.fetch_all(
@@ -892,7 +900,7 @@ def backfill_channel_submissions(tabla: str = "ml_backlog", max_items: int = 100
                     "success": bool(f.get("gemini_success")),
                     "error_resumen": f.get("gemini_error"),
                     "detail_ref": f"mysql:ml_image_edit_backlog:{f['id']}",
-                    "submitted_at": f.get("created_at")}
+                    "submitted_at": f.get("created_at"), "creado": f.get("created_at")}
     else:
         return {"ok": False, "motivo": f"tabla no soportada: {tabla!r}"}
 
