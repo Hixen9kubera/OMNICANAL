@@ -5,8 +5,7 @@
     "buildCommand": "pip install pymysql psycopg2-binary"
   },
   "deploy": {
-    "startCommand": "python -c \"print('deltas-orders RETIRADO 13-ago-2026 (racha 21/14 cumplida): pedidos_ml esta congelada a proposito -paso 1 del desmantelamiento- y compararla reportaria divergencia por construccion. Ademas su regla 4 (solo_en_supabase = delta) quedo INVERTIDA por el corte F6: channel.orders se escribe PRIMERO y pedidos_ml despues, asi que una fila solo en Supabase ya no es anomalia, es el espejo yendo atras. Reactivar = restaurar startCommand en railway.deltas-orders.json.')\"",
-    "cronSchedule": "15 7 * * *",
+    "startCommand": "python -c \"print('deltas-orders RETIRADO 13-ago-2026 (racha 21/14 cumplida): pedidos_ml esta congelada a proposito -paso 1 del desmantelamiento- y compararla reportaria divergencia por construccion. Ademas su regla 4 (solo_en_supabase = delta) quedo INVERTIDA por el corte F6: channel.orders se escribe PRIMERO y pedidos_ml despues, asi que una fila solo en Supabase ya no es anomalia, es el espejo yendo atras. Reactivar = restaurar startCommand y cronSchedule en railway.deltas-orders.json.')\"",
     "restartPolicyType": "NEVER"
   }
 }

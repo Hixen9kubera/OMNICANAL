@@ -10002,6 +10002,56 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.188.0 — El cron de deltas-orders llevaba tres días retirado en el papel y vivo en Railway
+
+El chequeo diario de arneses encontró actas de `orders-deltas` del 13, 14 y
+15-ago en `migration.reconciliation_runs`. Ese dominio está en
+`_DOMINIOS_RETIRADOS` desde el 12-ago, y el comentario que lo declara dice, con
+todas sus letras, que los retirados *«no generan acta»*.
+
+Generaba acta todos los días. Y no un aviso de retiro: la comparación completa.
+Los logs de Railway del 15-ago lo muestran de punta a punta — arranca 07:17,
+`Pasada 1: mysql_fríos=15115 supabase=16734`, espera 75 s para reconfirmar 1,511
+sospechosos, y a las 07:19 escribe `Acta registrada → resultado: con_deltas`.
+
+**Se había retirado dos veces y ninguna sirvió.** El 12-ago (v0.107.0) se le
+puso un aviso de retiro en `railway-deltas.json`; el 13-ago (v0.135.0) otro, ya
+en `railway.deltas-orders.json`. El servicio hasta muestra ese aviso como su
+`startCommand`. Pero **un cron de Railway re-ejecuta el último deployment
+EXITOSO**, y el de este servicio seguía siendo uno del **29-jul** (`913f205`),
+anterior a los dos retiros. Editar el config file cambia lo que correría en el
+*próximo* deployment; mientras no haya deployment nuevo, el cron repite el
+binario viejo, con el `startCommand` viejo adentro.
+
+Por qué los otros dos sí murieron, y no por donde se creía: `deltas-costos` se
+quedó **sin `cronSchedule`** (su `startCommand` sigue siendo
+`python scripts/comparar_costos.py`, el script de verdad) y `deltas-channel`
+tiene su deployment en **`SKIPPED`**, así que no hay nada que re-ejecutar. O
+sea que ninguno de los tres se detuvo por el aviso de retiro que se les escribió.
+
+Retirado de verdad quitándole el `cronSchedule` por API — que **sí** toma efecto
+sin deployment, al revés de lo que decía CLAUDE.md — y borrándolo también de
+`railway.deltas-orders.json` para que un rebuild futuro no lo resucite. No se
+forzó un redeploy a propósito: reconstruir justo este servicio es lo que el
+24-jul lo levantó como un segundo backend rogue.
+
+**Lo que se estaba midiendo mientras tanto:** nada útil, y cada día peor. La
+comparación mira `pedidos_ml`, congelada a propósito desde el 13-ago, contra
+`channel.orders`, que sigue viva. El lado congelado quedó clavado en 15,115 y el
+vivo pasó de 15,940 a 16,734 en un solo día. Los 400 divergentes que reportó son
+casi todos el mismo dibujo (`estado_wc processing vs completed`): pedidos que
+avanzaron en kubera y que MySQL ya no puede enterarse. La brecha crece sola —
+justamente la alarma que suena todos los días y enseña a ignorarla.
+
+No timbró en Slack porque `_DOMINIOS_RETIRADOS` lo excluye del vigilante de
+ausencias. Estaba escribiendo en una tabla de producción sin que nadie lo viera.
+
+CLAUDE.md corregido con lo medido: cómo se retira un cron de verdad, por qué el
+`startCommand` no alcanza, y que `railway-deltas.json` quedó huérfano (el
+`configFile` del servicio apunta a `railway.deltas-orders.json` desde el
+13-ago). La regla que queda: **un cron está muerto cuando deja de aparecer su
+efecto, no cuando su `startCommand` dice que está retirado.**
+
 ### v0.186.0 — El renglón de Inmovilizado dice que es una FAMILIA, y dónde están las piezas
 
 Eduardo, viendo la hoja: *«¿por qué aparece CAM-0030? el SKU es padre y no va a

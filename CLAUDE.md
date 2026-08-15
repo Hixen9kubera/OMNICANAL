@@ -264,16 +264,33 @@ Los flags `SUPABASE_READ_*` siguen siendo la reversa de las lecturas y los
 
 ### Los crons de deltas están RETIRADOS
 
-`deltas-costos`, `deltas-channel` y `deltas-orders` ya no comparan nada: su
-`startCommand` imprime un aviso de retiro. Están en `_DOMINIOS_RETIRADOS`
-(`routers/migracion.py`) para que el vigilante de ausencias no avise "Acta NO
-generada hoy" a las 08:00 UTC. **Regla: el dominio se apunta como retirado en
-el mismo commit que lo apaga** (a channel se le olvidó y avisó a las 2 a.m.).
+`deltas-costos`, `deltas-channel` y `deltas-orders` ya no comparan nada. Están
+en `_DOMINIOS_RETIRADOS` (`routers/migracion.py`) para que el vigilante de
+ausencias no avise "Acta NO generada hoy" a las 08:00 UTC. **Regla: el dominio
+se apunta como retirado en el mismo commit que lo apaga** (a channel se le
+olvidó y avisó a las 2 a.m.).
 
-Ojo con los crons de Railway: su horario y comando viven en su
-`railwayConfigFile`, no en el servicio. Cambiar `cronSchedule` por API NO
-funciona; solo un push re-resuelve el archivo. Y `deltas-orders` usa
-`railway-deltas.json` (nombre fuera de patrón).
+⚠️ **Cambiar el `startCommand` NO retira un cron. Quitarle el `cronSchedule`,
+sí.** Medido el 15-ago-2026: `deltas-orders` siguió corriendo
+`comparar_orders.py` COMPLETO y escribiendo acta todos los días (07:17→07:19)
+*después* de sus dos commits de retiro — el del 12-ago (`railway-deltas.json`)
+y el del 13-ago (`railway.deltas-orders.json`). La razón: **un cron de Railway
+re-ejecuta el último deployment EXITOSO**, y el de este servicio seguía siendo
+uno del 29-jul (`913f205`), anterior a los dos retiros. Editar el config file
+solo cambia lo que correría en el *próximo* deployment; mientras no haya
+deployment nuevo, el cron repite el binario viejo. Los otros dos sí se
+detuvieron, y por eso: `deltas-costos` se quedó sin `cronSchedule` y
+`deltas-channel` tiene su deployment en `SKIPPED`.
+
+Retirado de verdad el 15-ago quitándole el `cronSchedule` por API (que **sí**
+toma efecto sin deployment) y borrándolo también del config file, para que un
+rebuild futuro no lo resucite. Su `configFile` es `railway.deltas-orders.json`
+desde el 13-ago; `railway-deltas.json` (el del nombre fuera de patrón) quedó
+huérfano y ya no lo lee nadie.
+
+**Cómo se verifica que un cron está muerto de verdad:** no por su
+`startCommand`, sino porque dejó de aparecer su efecto — aquí, filas nuevas en
+`migration.reconciliation_runs`.
 
 ### F8 — lo que falta para cerrar del todo
 
