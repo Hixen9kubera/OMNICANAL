@@ -10684,3 +10684,43 @@ el error exacto de producción. Sin eso, un arnés que pasa no prueba nada.
 Gracias a quien lo reportó con el log, la línea y el diagnóstico ya hecho.
 
 Sin migraciones ni variables nuevas. Versión 0.182.0.
+
+### v0.187.0 — Paso 0: las casas nuevas ya existen en producción, y siguen vacías de tráfico
+
+Aplicado a producción `0022_candados_fanout.sql` y copiado el estado. **Nada
+encendido**: es la mitad inerte del paso 0, a propósito.
+
+    channel.orders.stock_compensado_at / stock_revertido_at   ← 2 columnas
+    ops.fulfillment_operations                                ← tabla nueva
+    ops.fba_watermark                                         ← tabla nueva
+
+Copiado y verificado: **6 compensaciones · 17 operaciones · 99 marcas de agua**,
+todas con su fecha real preservada (no la de la copia — la lección de las 21,816
+filas de `ops.channel_submissions`).
+
+**La verificación que más importa no es que los números cuadren, es que NO
+cuadren donde no deben:** 96 de las 99 marcas siguen difiriendo del `stock_fba`
+de `channel.listings`. Si fueran 0, significaría que alguien las recalculó desde
+el barrido y volvió a meter el doble conteo que `stock_full.py` documenta.
+
+**Por qué «sin encender» aquí es sólido.** No depende de que nadie mueva un
+interruptor: **el interruptor no existe**. Verificado línea por línea:
+
+- los candados vivos siguen leyendo `fanout_log` (`pedidos_ml.py:393`,
+  `stock_full.py:137` y `:372`),
+- **nada llama a `candados_read`** — cero referencias en `services/` y `routers/`,
+- **no hay variable en `config.py`** que pudiera activarlo.
+
+Encenderlo requiere un cambio de código deliberado, no un flag que alguien mueva
+por error.
+
+**Se sube también para que quede REGISTRADO que `0022` ya está aplicada.** Una
+migración aplicada a mano y no anotada en el repo es una invitación a que alguien
+la vuelva a correr. El código de este commit es inerte —scripts que nadie llama y
+documentación—, pero el hecho que registra no lo es.
+
+Lo que falta del paso 0: conectar los candados detrás de un flag apagado → días
+de doble lectura → encender (**toca inventario, regla 3**). Y ya en el paso 5,
+quitar el `CREATE TABLE IF NOT EXISTS` y repuntar los 8 escritores.
+
+Sin variables nuevas. Versión 0.187.0.

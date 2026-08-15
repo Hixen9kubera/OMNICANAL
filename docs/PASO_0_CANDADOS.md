@@ -4,9 +4,29 @@
 > consejo** (opus, sonnet, haiku) y corregido con lo que encontraron. Informes en
 > `agents/counselors/1786735774-revisin-paso-0-*`.
 >
-> Estado: migración `0022` y gemelas **aplicadas SOLO EN SANDBOX**, las 6 pruebas
-> pasan, y **ningún candado usa todavía el código nuevo**. Orden acordado con
-> Eduardo: planteamiento → sandbox → verificación → recién entonces el cambio.
+> Estado (14-ago, tarde): migración `0022` **APLICADA A PRODUCCIÓN** y el estado
+> copiado — 6 compensaciones, 17 operaciones y 99 marcas de agua, verificadas—.
+> Las 8 pruebas de sandbox pasan.
+>
+> **Y AUN ASÍ NO HAY NADA ENCENDIDO**, que es el punto de haberlo hecho en dos
+> tiempos. No depende de que nadie mueva un interruptor: **el interruptor no
+> existe**. Verificado línea por línea:
+>
+> - los candados vivos siguen leyendo `fanout_log` (`pedidos_ml.py:393`,
+>   `stock_full.py:137` y `:372`),
+> - **nada llama a `candados_read`** — cero referencias en `services/` y
+>   `routers/`,
+> - **no hay variable en `config.py`** que pudiera activarlo.
+>
+> Encenderlo requiere un cambio de código deliberado. Hoy las tablas nuevas
+> están llenas y calladas.
+>
+> **Su precondición YA ESTÁ EN PRODUCCIÓN**: v0.178.0 movió el registro de la
+> venta antes de la compensación, que es lo que permite que el candado propague
+> sin crear duplicados. Verificado con tráfico real.
+>
+> Lo que falta: conectar los candados detrás de un flag apagado → días de doble
+> lectura → encender (**toca inventario, regla 3**).
 
 ## 🛑 BLOQUEANTE — el paso 0 no se puede ejecutar como estaba escrito
 
