@@ -127,6 +127,29 @@ Mientras el seam esté apagado, el bloque 3 sale `n/d` — es la línea base, no
 aprobación. **No se repunta ningún lector del grupo 4 hasta que ese bloque
 muestre tráfico real por la vía `publicar`.**
 
+### `verificar_tokens_ml.py` — el del paso 6
+
+```bash
+python backend/scripts/verificar_tokens_ml.py
+```
+
+Contesta una sola pregunta: **¿hay otro proceso renovando los tokens de ML?**
+Si lo hay, migrarlos le quita el piso — y como ML **rota el `refresh_token` en
+cada uso**, dos renovadores no divergen: se invalidan mutuamente y la cuenta
+pierde la sesión.
+
+Solo lectura, y **nunca imprime un token ni el `client_secret`**: fechas,
+longitudes y una huella de 8 hex que solo dice si el valor cambió.
+
+Dos señales independientes: el desfase entre los `updated_at` de las dos tablas,
+y —la que más vale— **la huella del `refresh_token`**, que no depende del reloj.
+
+⚠️ **Sin renovaciones en la ventana, una racha limpia NO es evidencia**: nadie
+escribió, ni nosotros ni un tercero. El script lo dice en vez de dar un verde
+vacío. Es el mismo error que un "0 avisos" de un panel que nadie abrió.
+
+**Retiro:** cuando los tokens vivan en kubera y `ml_tokens` sea archivo.
+
 ---
 
 ## 🔑 La regla que decide si un arnés sobrevive al corte
@@ -220,7 +243,7 @@ commit que lo crea.
 
 ```json
 {
-  "version": "2026-08-16",
+  "version": "2026-08-16b",
   "cwd": "OMNICANAL",
   "activos": [
     {
@@ -254,6 +277,16 @@ commit que lo crea.
       "leer_salida": false,
       "nota": "Con el seam apagado el bloque 3 sale n/d: es linea base. No repuntar lectores del grupo 4 hasta ver trafico por la via 'publicar'.",
       "retiro": "cuando los 25 lectores esten repuntados y ml_progress sea archivo"
+    },
+    {
+      "id": "paso6_tokens_ml",
+      "cmd": "python backend/scripts/verificar_tokens_ml.py",
+      "cadencia": "diaria",
+      "solo_lectura": true,
+      "codigo_salida_confiable": true,
+      "leer_salida": true,
+      "nota": "Busca un segundo renovador de tokens de ML. SIN renovaciones en la ventana, una racha limpia no prueba nada - el script lo avisa. Nunca imprime secretos.",
+      "retiro": "cuando los tokens vivan en kubera y ml_tokens sea archivo"
     }
   ],
   "retirados": [

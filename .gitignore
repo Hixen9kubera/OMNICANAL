@@ -68,3 +68,4 @@ ambiguos.json
 # pero se ignora también aquí por si alguien lo copia al proyecto.
 .competencia-chrome/
 verificacion_competencia/
+.tokens_ml_observaciones.jsonl

@@ -10875,3 +10875,60 @@ retiran con el robot, pero conviene confirmarlo y no asumirlo), `MCPPruebaWOO`, 
 el SQL armado dinámicamente, que este método no ve.
 
 Sin cambios de código. Versión 0.190.0.
+
+### v0.191.0 — Paso 6: el verificador que decide si es seguro migrar los tokens de ML
+
+Sin tocar tokens. Lo que se agrega es **la forma de saber si se pueden tocar**.
+Plan completo en [docs/PASO_6_TOKENS.md](docs/PASO_6_TOKENS.md).
+
+**El barrido, cerrado.** Son **cuatro consultas**, todas en `meli.py` (`:424` y
+`:434` leen; `:486` y `:492` escriben), más `meli.py:246` que lee el token
+vigente y `alertas.py:392` que vigila la frescura. Nada más en todo el repo:
+lo demás son comentarios y el censo del espejo. `tiktok.py` NO toca estas tablas
+—reusa la misma `DB_ENCRYPTION_KEY`, que es otra cosa—.
+
+**Por qué este paso no se parece a los anteriores.** ML **rota el
+`refresh_token` en cada uso**: no es un dato que se copia, es una credencial que
+se consume. Dos renovadores no divergen — **se invalidan mutuamente y la cuenta
+pierde la sesión**. En cambio la doble ESCRITURA sí es segura, y es lo que ya
+hace `meli.py`: refresca UNA vez y guarda el resultado en las dos tablas. El
+peligro no es escribir en dos lados; es *refrescar* en dos.
+
+Por eso la pregunta a contestar no es *"¿coinciden los datos?"* sino **"¿hay
+otro renovador vivo?"**.
+
+**El bloqueo P3 hay que re-medirlo, no heredarlo.** El esquema v4 dejó
+`ops.ml_tokens` creada y bloqueada *"hasta acuerdo con el dueño de
+`ml_tokens_dashboard` (sistema externo)"*. Ese supuesto es de julio. Hoy:
+`MLREgisterDaily` —el candidato obvio— **no se despliega desde el 26-may**, y
+las dos tablas tienen el **mismo `updated_at` al segundo** y la **misma huella
+de `refresh_token`**: firma de un único escritor, el nuestro. Pero "no observé a
+nadie" no es "no hay nadie", que es la lección de toda esta migración.
+
+**`verificar_tokens_ml.py`** (nuevo, solo lectura). **Nunca imprime un token ni
+el `client_secret`**: fechas, longitudes y una huella de 8 hex que solo dice si
+el valor cambió. Dos señales independientes:
+
+- el desfase entre los `updated_at` de las dos tablas;
+- **la huella del `refresh_token`**, que vale más porque no depende del reloj:
+  como ML lo rota en cada uso, huellas distintas significan que alguien renovó
+  por su cuenta.
+
+Y acumula evidencia entre corridas. **El criterio para desbloquear P3 exige
+renovaciones reales**: sin ellas, una racha limpia no prueba nada —nadie
+escribió, ni nosotros ni un tercero— y el script lo dice en vez de dar un verde
+vacío. Es el mismo error que el "0 avisos" de un panel que nadie había abierto.
+
+Línea base: las dos cuentas con Δ = 0 s y huellas idénticas. Verificado que el
+chequeo tiene dientes.
+
+**Dato que habilita el diseño original**: `supabase_vault` está instalado y el
+esquema `vault` existe, con **0 secretos**. `ops.ml_tokens` tiene **0 filas**. La
+casa está construida y vacía.
+
+**Y una tarea que NO es de migración y va ANTES**: `ml_tokens_dashboard` guarda
+el `client_secret` de la app de ML, y ese secreto **está expuesto en el repo
+externo `publicador`** (pendiente #9, sin rotar). Moverlo a Vault sin rotarlo lo
+cambia de lugar sin dejar de estar comprometido.
+
+Sin migraciones ni variables nuevas. Versión 0.191.0.
