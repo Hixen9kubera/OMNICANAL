@@ -10774,3 +10774,52 @@ de doble lectura → encender (**toca inventario, regla 3**). Y ya en el paso 5,
 quitar el `CREATE TABLE IF NOT EXISTS` y repuntar los 8 escritores.
 
 Sin variables nuevas. Versión 0.187.0.
+
+### v0.189.0 — El latido `padron` medía altas y decía "el cron no corrió"
+
+Encontrado corriendo el chequeo diario de arneses: `vigilar_congelacion.py`
+marcaba **`[ALTO] padron — 58.7 h`** con el mensaje *"el ETL de las 06:15 no dio
+de alta nada — revisar el cron"*.
+
+**El cron corrió perfecto.** Las actas lo dicen:
+
+    core-etl-v2   ok   2026-08-16 06:17
+    core-etl-v2   ok   2026-08-15 06:17
+
+Lo que pasó es que no hubo productos nuevos que dar de alta — el último fue el
+14-ago. El latido mide `max(created_at)` de `core.products`, o sea **cuándo entró
+el último producto NUEVO**, y lo reportaba como **cuándo corrió el ETL**. Son
+cosas distintas: sin altas, el contador crece 1:1 con el reloj y cruza el umbral
+solo, sin que nada haya empeorado.
+
+Es la tercera vez que aparece el mismo defecto en este proyecto y ya tiene su
+frase escrita dos veces en ese mismo archivo: **un umbral absoluto sobre algo que
+crece con el calendario mide el paso del tiempo, no la salud.** Los otros dos
+casos fueron `turno_sync` (misma solución) y la métrica de retraso del arnés del
+paso 3, que se construyó y se tiró el mismo día.
+
+**Se retira sin reemplazo, y no se pierde vigilancia**: `alertas._revisar_actas`
+ya vigila ESE MISMO ETL cada 15 min contra `migration.reconciliation_runs`
+—verificado: `core-etl-v2` es el único dominio en su lista de vigilados— y avisa
+por Slack *"Acta de Maestro (ETL) NO generada hoy"* si el cron falla. Eso mide lo
+que el latido decía medir, y mejor.
+
+**No se borra la línea, se neutraliza** — mismo trato que `turno_sync`. Sigue
+mostrando el dato como `[ n/d] padron  último producto nuevo hace N h`, fuera del
+veredicto y con la explicación al lado. Borrarla haría que dentro de unos meses
+alguien la vuelva a agregar sin saber que ya se descartó y por qué.
+
+Actualizados también el manifiesto de [docs/ARNESES.md](docs/ARNESES.md)
+(`alarma_si_contiene` pierde `[ALTO] padron`) y las instrucciones del agente
+diario, que tenía ese latido en su tabla como alarma grave.
+
+**Lo que se gana:** los tres arneses quedan **sin falsas alarmas conocidas**.
+`costos`, `turno_sync` y ahora `padron` están marcados como benignos, así que a
+partir de aquí *si algo suena, es real*. Una alarma que suena todos los días sin
+consecuencia no es precaución: entrena a la gente a ignorar el tablero —
+exactamente lo que el propio instructivo del chequeo advierte.
+
+Verificado corriéndolo: pasa de `REVISAR lo marcado ALTO` (exit 1) a
+`todo late` (exit 0), con los mismos datos y sin tocar nada más.
+
+Sin migraciones ni variables nuevas. Versión 0.189.0.

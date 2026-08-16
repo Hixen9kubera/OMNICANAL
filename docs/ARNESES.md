@@ -53,9 +53,25 @@ El agente tiene que **leer qué latido falló**, no el código:
 |---|---|
 | `pedidos` (tope 6 h) | **SÍ.** Ventas paradas o el flujo roto |
 | las tres congeladas | **SÍ**, si alguna dice `AÚN ESCRIBIENDO` en vez de `congelada`: algo volvió a escribir MySQL |
-| `padron` (tope 30 h) | **SÍ.** El ETL de las 06:15 no corrió |
 | `costos` (tope 72 h) | **NO por sí solo.** Benigno en fines de semana |
 | `turno_sync` | **NO.** Sale `n/d` a propósito (`_MIDE_COBERTURA = False`): la métrica que medía resultó inválida |
+| `padron` | **NO — ya no puede sonar.** Retirado del veredicto el 16-ago (ver abajo); ahora sale `n/d` informativo |
+
+**`padron` se retiró, y vale la pena saber por qué**: medía `max(created_at)` de
+`core.products` —*cuándo entró el último producto nuevo*— y lo reportaba como
+*"el ETL de las 06:15 no corrió"*. Medido el 16-ago marcaba ALTO con 58.7 h,
+mientras las actas mostraban `core-etl-v2 ok` el 15 y el 16 a las 06:17: **el
+cron corrió los dos días**, simplemente no hubo altas. Sin altas, el contador
+crece 1:1 con el reloj y cruza el umbral solo — el mismo defecto que invalidó
+`turno_sync`.
+
+**No se perdió vigilancia**: `alertas._revisar_actas` ya vigila ESE MISMO ETL
+cada 15 min contra `migration.reconciliation_runs` (`core-etl-v2` está en sus
+dominios) y avisa por Slack *"Acta de Maestro (ETL) NO generada hoy"* si el cron
+falla. Eso mide lo que el latido decía medir.
+
+Con esto, **los tres arneses quedan sin falsas alarmas conocidas**. Es lo que
+hace que valga la pena leer el reporte: si algo suena, es real.
 
 Retiro: nunca mientras kubera sea la fuente de verdad.
 
@@ -204,7 +220,7 @@ commit que lo crea.
 
 ```json
 {
-  "version": "2026-08-14",
+  "version": "2026-08-16",
   "cwd": "OMNICANAL",
   "activos": [
     {
@@ -214,8 +230,8 @@ commit que lo crea.
       "solo_lectura": true,
       "codigo_salida_confiable": false,
       "leer_salida": true,
-      "alarma_si_contiene": ["[ALTO] pedidos", "[ALTO] padron", "AÚN ESCRIBIENDO"],
-      "ignorar_si_solo": ["[ALTO] costos", "[ n/d] turno_sync"],
+      "alarma_si_contiene": ["[ALTO] pedidos", "AÚN ESCRIBIENDO"],
+      "ignorar_si_solo": ["[ALTO] costos", "[ n/d] turno_sync", "[ n/d] padron"],
       "nota": "El codigo 1 es rutinario. Decide el latido, no el exit code.",
       "retiro": "nunca mientras kubera sea la fuente de verdad"
     },

@@ -71,7 +71,9 @@ UMBRALES = {
     "pedidos": (6, "no entran pedidos (puede ser noche o día flojo; contrastar "
                    "con el tab de Ventas antes de alarmarse)"),
     "costos": (72, "nadie ha recalculado un costo (normal si no se usó el panel)"),
-    "padron": (30, "el ETL de las 06:15 no dio de alta nada — revisar el cron"),
+    # `padron` SALIÓ de aquí el 16-ago: medía altas de productos y se reportaba
+    # como "el cron no corrió". Ver la nota larga en `main()`. Su vigilancia real
+    # la hace `alertas._revisar_actas` contra las actas del ETL.
 }
 
 
@@ -135,8 +137,36 @@ def main() -> None:
     todo_ok &= _linea("pedidos", c.fetchone()["t"])
     c.execute("select max(updated_at) t from costing.costos_finales")
     todo_ok &= _linea("costos", c.fetchone()["t"])
+    # `padron` ya NO entra al veredicto, por la MISMA razón que `turno_sync`:
+    # medía una cosa y se reportaba como otra.
+    #
+    # Mide `max(created_at)` de `core.products` = cuándo entró el ÚLTIMO PRODUCTO
+    # NUEVO. Y su mensaje decía "el ETL de las 06:15 no dio de alta nada — revisar
+    # el cron", que es una conclusión distinta: el ETL puede correr perfecto y no
+    # tener nada que dar de alta. Medido el 16-ago: marcaba ALTO con 58.7 h,
+    # y las actas mostraban `core-etl-v2 ok` el 15 y el 16 a las 06:17. El cron
+    # corrió los dos días; simplemente no hubo altas desde el 14-ago.
+    #
+    # Sin altas, el contador crece 1:1 con el reloj y cruza el umbral solo. Un
+    # umbral absoluto sobre algo que crece con el calendario mide el paso del
+    # tiempo, no la salud — misma frase que ya está escrita arriba para
+    # `turno_sync`, y el mismo error.
+    #
+    # NO SE PIERDE VIGILANCIA, y por eso se puede quitar sin reemplazo:
+    # `alertas._revisar_actas` ya vigila ESE MISMO ETL cada 15 min contra
+    # `migration.reconciliation_runs` —verificado: `core-etl-v2` está en los
+    # dominios vigilados— y avisa por Slack "Acta de Maestro (ETL) NO generada
+    # hoy" si el cron no corre. Eso mide lo que este latido decía medir.
+    #
+    # La línea se conserva como INFORMATIVA y no se borra: borrarla haría que
+    # dentro de unos meses alguien la vuelva a agregar sin saber que ya se
+    # descartó y por qué.
     c.execute("select max(created_at) t from core.products")
-    todo_ok &= _linea("padron", c.fetchone()["t"])
+    h_padron = _horas(c.fetchone()["t"])
+    print(f"  [ n/d] padron       último producto nuevo hace "
+          f"{f'{h_padron:.1f} h' if h_padron is not None else 'nunca'}")
+    print("         (informativo: mide ALTAS, no si el ETL corrió — de eso avisa "
+          "alertas._revisar_actas por Slack)")
     pg.close()
 
     # 5. ¿El apagado tomó efecto? Las tablas del espejo deben estar QUIETAS.
