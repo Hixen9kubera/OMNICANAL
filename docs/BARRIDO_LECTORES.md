@@ -14,31 +14,68 @@
 |---|---|---|
 | `frontend/` | **0** | **limpio** — todo pasa por la API |
 | `backend/scripts/` | 14 en 33 archivos | la mayoría es andamiaje de la propia migración; **5 scripts operativos no estaban en la lista** |
-| `MonitoreoOperaciones` | **7** | ⚠️ el plan decía **1**. Es el dashboard entero |
-| `MLREgisterDaily` | **1, y ESCRIBE** | 🛑 es el renovador de tokens de ML |
+| **`backend/services/meli.py`** | `ml_tokens`, `ml_tokens_dashboard` | 🛑 **el bloqueador, y es NUESTRO** |
+| `MonitoreoOperaciones` | 7 | lee mucho más de lo documentado, pero **sin deploy desde el 23-jun** |
+| `MLREgisterDaily` | 1, y escribe | **sin deploy desde el 26-may** — ya no es el renovador |
 | `Aplicacion_Excel`, `personal` | 0 | limpio (los aciertos eran la palabra "productos" en prosa y `pymysql` dentro de `.venv`) |
 | `publicador`, `KuberaPipelineV1.0` | — | se retiran con el robot de Alibaba (decisión del 23-jul) |
 
-## 🛑 Lo más grave: los tokens de Mercado Libre
+> **Corregido el 16-ago, el mismo día.** La primera versión de este documento
+> señalaba a `MLREgisterDaily` como el bloqueador de los tokens. Eduardo avisó
+> que ese servicio y `MonitoreoOperaciones` ya no operan, y al medirlo tenía
+> razón. **El bloqueador no desapareció: se movió, y resultó estar en casa.**
+> Abajo, con lo medido.
 
-`MLREgisterDaily/backend/app/db/mysql_tokens.py` **lee y ESCRIBE `ml_tokens`**
-en el MySQL que se va a retirar:
+## 🛑 Lo más grave: los tokens de Mercado Libre — y el culpable somos nosotros
 
-```python
-SELECT cuenta AS nickname, access_token, refresh_token FROM ml_tokens
-UPDATE ml_tokens SET access_token=%s, refresh_token=%s WHERE cuenta=%s
+**Los tres números que lo definen**, medidos el 16-ago:
+
+    ops.ml_tokens (kubera)     0 filas          ← la casa nueva está VACÍA
+    MySQL ml_tokens            2 filas, 16:35   ← escritas HOY
+    MySQL ml_tokens_dashboard  2 filas, 16:35
+
+La tabla en kubera existe desde hace tiempo, con columnas pensadas para Vault
+(`vault_access_secret`, `vault_refresh_secret`), y **nunca se llenó**. Toda la
+autenticación de Mercado Libre vive en MySQL.
+
+**Y quién las escribió a las 16:35: nuestro propio backend.**
+
+```
+backend/services/meli.py:486
+  UPDATE ml_tokens SET access_token=%s, refresh_token=%s, updated_at=NOW() WHERE cuenta=%s
+backend/services/meli.py:492
+  UPDATE ml_tokens_dashboard SET ...
 ```
 
-Es el único escritor de esa tabla, y la regla 8 de la casa dice que *"los tokens
-los renueva un proceso externo irregular"* — **es éste**.
+Es la auto-sanación de la **regla 8**: ante un 401 de ML, el backend renueva el
+token y lo guarda. Y lo lee de ahí también — `meli.py:424` saca `app_id` y
+`client_secret` de `ml_tokens_dashboard`, y `meli.py:434` el `refresh_token` de
+`ml_tokens`. **La cadena completa de autenticación está en MySQL.**
 
-**Si el esquema se retira sin mover esto, los tokens de ML dejan de renovarse y
-se cae toda la integración**: webhooks de ventas, publicación, sync de
-inventario, competencia. No es un panel que se congela: es la arteria.
+### Por qué la primera versión de este documento se equivocó de culpable
 
-Ya estaba anotado como PASO 6 ("tokens a Vault, junto con apagar
-MLREgisterDaily"), pero como una tarea de limpieza. **No lo es: es un bloqueador
-del retiro del esquema**, y hay que subirlo de categoría.
+Señalé a `MLREgisterDaily` porque su código efectivamente lee y escribe
+`ml_tokens` (`backend/app/db/mysql_tokens.py`), y la regla 8 habla de "un proceso
+externo irregular". Pero **ese servicio no se despliega desde el 26-may-2026**, y
+sus commits recientes son de archivo de ventas y de competidores: el repo se
+reutilizó para otra cosa. No hay ningún clon suyo como servicio aparte.
+
+La conclusión —*retirar MySQL mata la autenticación de ML*— **era correcta**. El
+culpable, no. Me quedé con el primer código que encajaba con la regla 8 y no
+seguí buscando dentro de casa.
+
+**Y la diferencia importa, a favor.** Creía que había que coordinar con otro
+equipo y un servicio ajeno. Es nuestro código, en nuestro repo: se resuelve solo,
+sin depender de nadie, y sin prisa mientras MySQL siga vivo.
+
+Sigue siendo **bloqueador del retiro del esquema** y no una tarea de limpieza —
+lo que cambia es que ahora tiene dueño. Son "nada más autentificadores", sí, pero
+sin ellos no hay llamada a la API de ML: se van los webhooks de ventas, publicar,
+el sync de inventario y competencia.
+
+**Qué hay que hacer**: llenar `ops.ml_tokens` y repuntar las cuatro consultas de
+`meli.py` (dos lecturas, dos escrituras). Es el PASO 6, y ya no depende de "mover
+tokens a Vault" ni de apagar un servicio ajeno.
 
 ## ⚠️ `MonitoreoOperaciones` lee SIETE tablas, no una
 
@@ -56,11 +93,15 @@ CLAUDE.md dice *"lee `productos` de MySQL"*. Medido en su código:
 
 `ml_backlog` es su columna vertebral: casi todos sus KPIs salen de ahí.
 
-Eso cambia la decisión pendiente. No es *"repuntar `productos` o avisar que ese
-panel se congela"*: es que **el panel entero deja de funcionar**. Y tres de las
-tablas que consume (`scraping_alibaba`, `atributos_ia`, `costos_ml`) son del
-robot de Alibaba, que está desconectado desde el 23-jul — o sea que esa sección
-de su dashboard ya muestra historia congelada aunque MySQL siga vivo.
+**Pero el servicio no se despliega desde el 23-jun-2026**, y Eduardo confirma que
+ya no opera. Así que la decisión pendiente se simplifica: no hay nada que
+repuntar — **hay que confirmarlo y darlo de baja formalmente**.
+
+Lo que sí conviene saber antes de apagarlo: tres de las tablas que consume
+(`scraping_alibaba`, `atributos_ia`, `costos_ml`) son del robot de Alibaba,
+desconectado desde el 23-jul. O sea que **si alguien todavía abre ese tablero,
+lleva meses leyendo historia congelada** — y eso vale la pena decirlo antes de
+que alguien tome una decisión con esos números.
 
 ## `backend/scripts/` — separar andamiaje de operación
 
@@ -90,14 +131,29 @@ funcionar sin aviso el día del retiro.
 
 ## Lo que el barrido confirma del método
 
-Las tres veces que este proyecto midió en vez de suponer, el número cambió:
+Las veces que este proyecto midió en vez de suponer, el número cambió:
 
 - los lectores del grupo 4 eran **25 y no 19**,
 - `ml_progress` estaba **viva**, no congelada,
-- y ahora `MonitoreoOperaciones` lee **7 tablas y no 1**, y los scripts son
-  **13 y no 8**.
+- `MonitoreoOperaciones` lee **7 tablas y no 1**,
+- y los scripts de mantenimiento son **13 y no 8**.
 
-Ningún conteo se movió a la baja. **La estimación de memoria siempre subestimó.**
+Ningún conteo se movió a la baja: **la estimación de memoria siempre subestimó.**
+
+**Y una lección distinta, del error del mismo día.** Contar bien no alcanza:
+este documento contó bien las tablas de `ml_tokens` y aun así **atribuyó mal el
+riesgo**, porque me quedé con el primer código que encajaba con la regla 8
+—un repo externo— y no seguí buscando dentro de casa. El número era correcto y
+la conclusión también; el dueño, no.
+
+Lo que lo destapó no fue otra medición: fue que **Eduardo dijo "ese servicio ya
+no opera"** y eso obligó a preguntar *"entonces quién escribió a las 16:35"*.
+Sin esa pregunta, el documento habría mandado a coordinar con un equipo ajeno
+para arreglar algo que está en nuestro propio `meli.py`.
+
+Moraleja para el próximo barrido: **cuando una tabla resulte estar viva, la
+siguiente pregunta no es "¿quién la lee?" sino "¿quién la escribió la última
+vez?"** — esa segunda pregunta apunta al dueño real.
 
 ## Qué queda por barrer
 
