@@ -313,3 +313,107 @@ def vistos_amazon() -> dict[str, Any]:
         out[str(f["sku"])] = (
             ts.astimezone(timezone.utc).replace(tzinfo=None) if ts else None)
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PASO 3 — Gemelas de "¿está publicado y con qué id?"
+#
+# Reemplazan las seis lecturas de `ml_progress` / `amazon_progress` del BLOQUE 1
+# (`studio`, `presencia`, `publicar`). Ver docs/PLAN_31_TABLAS.md.
+#
+# SE PUEDEN REPUNTAR PORQUE EL SEAM YA FUNCIONA: medido el 16-ago, 22
+# publicaciones llegaron a `channel.listings` con mediana de 2 s. Antes de eso,
+# `ml_progress` era lo único que conocía una publicación recién nacida durante
+# hasta 15 min, y repuntar habría convertido "publicado hace 30 s" en "sin
+# publicar". El orden importaba.
+#
+# DOS EQUIVALENCIAS MEDIDAS, no supuestas
+# ---------------------------------------
+# 1. **Amazon "publicado" NO se puede leer del `listing_id`.** 268 de sus 1,606
+#    publicaciones PUBLISHED no tienen ASIN: Amazon no lo asigna al publicar.
+#    `channel_read.presencia()` filtra por `listing_id`, así que se las come —
+#    por eso estas gemelas miran `status`.
+#
+#    Y hace falta MIRAR DOS COLUMNAS, no una. Medido contra los 1,791 registros
+#    de `amazon_progress`:
+#
+#      status IN (PUBLISHED, ACCEPTED, ACTIVE)      →  50 discrepancias
+#      situacion IN (BUYABLE, DISCOVERABLE, …)      → 322
+#      tiene listing_id                             → 278
+#      **status OR situacion**                      →   4
+#
+#    Los 50 del primer intento son publicaciones del 28-jul al 13-ago que en
+#    kubera tienen ASIN y `situacion` BUYABLE/DISCOVERABLE pero `status` NULL:
+#    las dos columnas las llenan caminos distintos —`situacion` la trae el sync
+#    desde la API de Amazon, `status` venía de la bitácora del publicador— y
+#    ninguna sola cubre todo. Elegir una era elegir mal.
+#
+#    Y las 4 que quedan NO son error: en 3 de ellas MySQL dice PUBLISHED del
+#    28-jul y kubera dice `closed` del 3-ago. La bitácora congeló el EVENTO de
+#    publicación; kubera vio que la publicación se cerró después. **Kubera tiene
+#    razón**, igual que con los MLM republicados.
+#
+# 2. **ML "publicado" es tener `listing_id`**, igual que el original
+#    (`ml_item_id IS NOT NULL AND <> ''`). `situacion='closed'` NO se filtra
+#    aquí a propósito: el original tampoco lo hacía, y una publicación cerrada
+#    SÍ existió — quien quiera distinguirlo tiene `situacion` en la respuesta.
+_AMZ_PUBLICADO = ("PUBLISHED", "ACCEPTED", "ACTIVE")        # columna `status`
+_AMZ_VIVA = ("BUYABLE", "DISCOVERABLE", "PUBLISHED")        # columna `situacion`
+
+
+def publicaciones_ml(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """{ sku: [{cuenta, item_id, url, situacion}] } — solo las que tienen id.
+
+    Gemela de las tres lecturas de `ml_progress` que preguntan "¿en qué cuentas
+    está publicado y con qué MLM?" (`studio.py:108`, `presencia.py:101`,
+    `publicar.py:154`).
+    """
+    if not skus:
+        return {}
+    filas = sdb.fetch_all(
+        """select l.sku::text as sku, a.legacy_code as cuenta,
+                  l.listing_id as item_id, l.url, l.situacion
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre'
+              and l.sku = any(%s::citext[])
+              and nullif(l.listing_id, '') is not null
+            order by a.legacy_code""",
+        ([str(s) for s in skus],))
+    res: dict[str, list[dict[str, Any]]] = {}
+    for f in filas:
+        res.setdefault(f["sku"], []).append(
+            {"cuenta": f["cuenta"], "item_id": f["item_id"],
+             "url": f["url"], "situacion": f["situacion"]})
+    return res
+
+
+def estado_amazon(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """{ sku: {publicado, asin, status, product_type} } — gemela de las tres
+    lecturas de `amazon_progress` (`studio.py:124`, `presencia.py:119`,
+    `publicar.py:259`).
+
+    `publicado` sale del STATUS y no del ASIN: ver la nota de arriba, 268
+    publicaciones vivas no tienen ASIN.
+    """
+    if not skus:
+        return {}
+    return {
+        f["sku"]: {
+            # LAS DOS COLUMNAS: ninguna sola cubre el catálogo (ver la nota
+            # de arriba — mirar solo `status` dejaba 50 publicaciones vivas
+            # marcadas como no publicadas).
+            "publicado": (str(f["status"] or "").upper() in _AMZ_PUBLICADO
+                          or str(f["situacion"] or "").upper() in _AMZ_VIVA),
+            "situacion": f["situacion"],
+            "asin": f["item_id"] or None,
+            "status": f["status"],
+            "product_type": f["product_type"],
+        }
+        for f in sdb.fetch_all(
+            """select l.sku::text as sku, l.listing_id as item_id,
+                      l.status, l.situacion, l.product_type
+                 from channel.listings l
+                where l.canal = 'amazon' and l.sku = any(%s::citext[])""",
+            ([str(s) for s in skus],))
+    }

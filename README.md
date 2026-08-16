@@ -10989,3 +10989,58 @@ Solo el de tokens estaba realmente esperando eventos. El del seam no esperaba
 nada: estaba roto.
 
 Sin migraciones ni variables nuevas. Versión 0.192.0.
+
+### v0.193.0 — Paso 3, bloque 1: las gemelas medidas y los 50 `product_type` rescatados
+
+**Nada repuntado todavía.** Los seis sitios siguen leyendo MySQL; lo que se
+agrega son las gemelas, su arnés y el dato que faltaba para que la paridad sea
+real.
+
+**Se puede empezar porque el seam ya funciona** (medido: 2 s de mediana). Antes,
+`ml_progress` era lo único que conocía una publicación recién nacida durante
+hasta 15 min, y repuntar habría convertido "publicado hace 30 s" en "sin
+publicar". El orden importaba.
+
+**Gemelas nuevas** en `channel_read`: `publicaciones_ml(skus)` y
+`estado_amazon(skus)`. Cubren los seis sitios del bloque 1 (`studio.py:108/124`,
+`presencia.py:101/119`, `publicar.py:154/259`), que preguntan lo mismo de seis
+formas.
+
+**ML: paridad perfecta.** Las 1,979 publicaciones de `ml_progress` existen en
+kubera. Los 76 con MLM distinto son republicaciones donde kubera tiene el vivo.
+
+**Amazon: elegí mal la columna y el arnés lo cachó.** La primera gemela leía
+"publicado" de `status` y daba **50 falsos negativos**. Medido sobre los 1,791:
+
+    solo `status`        →  50 discrepancias
+    solo `situacion`     → 322
+    solo `listing_id`    → 278
+    **`status` O `situacion`** →   4
+
+Las dos columnas las llenan caminos distintos —`situacion` la trae el sync desde
+la API de Amazon, `status` venía de la bitácora del publicador— y **ninguna sola
+cubre el catálogo**. Elegir una era elegir mal, y el número lo dijo.
+
+De las 4 que quedaban, **3 son kubera teniendo razón**: MySQL dice PUBLISHED del
+28-jul y kubera dice `closed` del 3-ago. La bitácora congela el EVENTO; kubera
+refleja el estado vivo. Mismo arbitraje que con los MLM republicados, ahora
+escrito en el arnés.
+
+**Y el hueco que sí había que tapar: 50 `product_type` que solo vivían en la
+bitácora.** No es un dato decorativo — la **regla 2** define la prioridad al
+publicar en Amazon como *panel > histórico `amazon_progress` > detección por
+título*, así que sin rescatarlos esos 50 caían a la detección automática, que es
+justo lo que publicó una máquina sexual en "Máquinas de Coser".
+
+`rescatar_product_type_amazon.py` **solo rellena, nunca pisa**
+(`where product_type is null`): si kubera ya tiene valor, ese vale más porque lo
+trajo el sync desde Amazon. Corrido: **50 de 50, cero pisados, cero distintos**.
+La paridad de `product_type` pasó de 50 diferencias a **0**.
+
+**Queda 1 caso de 1,791 sin resolver**: `MUN-0023-MUL`, que la bitácora da por
+publicado el 6-ago y cuya fila de Amazon en kubera está vacía —sin ASIN, sin
+estado—. Amazon nunca lo reportó. No bloquea el repunte: es 1 entre 1,791 y la
+dirección es la conservadora (se vería como no publicado, que es lo que el canal
+dice).
+
+Sin migraciones ni variables nuevas. Versión 0.193.0.
