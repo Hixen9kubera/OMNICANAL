@@ -10823,3 +10823,55 @@ Verificado corriéndolo: pasa de `REVISAR lo marcado ALTO` (exit 1) a
 `todo late` (exit 0), con los mismos datos y sin tocar nada más.
 
 Sin migraciones ni variables nuevas. Versión 0.189.0.
+
+### v0.190.0 — El barrido de lectores: los tokens de ML son un bloqueador, no una limpieza
+
+Hecha la tarea que el consejo marcó como **requisito antes de borrar cualquier
+tabla**. Hasta hoy el barrido solo cubría `backend/services/` y
+`backend/routers/`: cada "cero lectores" fuera de ahí era una hipótesis.
+Documento completo en [docs/BARRIDO_LECTORES.md](docs/BARRIDO_LECTORES.md).
+
+Método: SQL real (`FROM`/`JOIN`/`INTO`/`UPDATE`/`CREATE TABLE`), no menciones en
+prosa. 38 tablas en cuatro superficies.
+
+**🛑 El hallazgo que cambia una prioridad.** `MLREgisterDaily` **lee y ESCRIBE
+`ml_tokens`** en el MySQL que se va a retirar:
+
+    SELECT cuenta AS nickname, access_token, refresh_token FROM ml_tokens
+    UPDATE ml_tokens SET access_token=%s, refresh_token=%s WHERE cuenta=%s
+
+Es el único escritor de esa tabla, y es el "proceso externo irregular" que
+menciona la regla 8. **Si el esquema se retira sin mover esto, los tokens de ML
+dejan de renovarse y se cae la integración entera** — webhooks de ventas,
+publicación, sync de inventario, competencia. No es un panel que se congela: es
+la arteria. Estaba anotado como PASO 6 de limpieza; **sube a bloqueador del
+retiro**.
+
+**⚠️ `MonitoreoOperaciones` lee SIETE tablas, no una.** CLAUDE.md decía "lee
+`productos`". Medido: `ml_backlog` (su columna vertebral — casi todos sus KPIs y
+el export a Excel), `amazon_progress`, `amazon_backlog`, `scraping_alibaba`,
+`atributos_ia`, `costos_ml` y `productos`. La decisión pendiente deja de ser
+"repuntar una tabla o avisar que se congela": **el panel entero deja de
+funcionar**. Y tres de esas tablas son del robot de Alibaba, desconectado desde
+el 23-jul, así que esa sección ya muestra historia congelada.
+
+**Los scripts de mantenimiento son 13, no 8.** Aparecieron cinco que no estaban
+en la lista: `corregir_stock_amazon`, `actualizar_comision`,
+`backfill_dims_validados`, `competencia_analisis` y `reporte_sync_desde_ml`.
+Ninguno es flujo vivo —se corren a mano— pero dejarán de funcionar sin aviso.
+
+**✅ El frontend está limpio: cero tablas.** Todo pasa por la API, como debía
+ser. `Aplicacion_Excel` y `personal` también (sus aciertos eran la palabra
+"productos" en prosa y `pymysql` dentro de un `.venv`).
+
+**Lo que el barrido dice del método, y es lo que más vale.** Las tres veces que
+este proyecto midió en vez de suponer, el número cambió: los lectores del grupo 4
+eran 25 y no 19; `ml_progress` estaba viva y no congelada; y ahora
+`MonitoreoOperaciones` lee 7 y no 1, y los scripts son 13 y no 8. **Ningún conteo
+se movió a la baja — la estimación de memoria siempre subestimó.**
+
+Queda anotado lo que NO se barrió: `publicador` y `KuberaPipelineV1.0` (se
+retiran con el robot, pero conviene confirmarlo y no asumirlo), `MCPPruebaWOO`, y
+el SQL armado dinámicamente, que este método no ve.
+
+Sin cambios de código. Versión 0.190.0.
