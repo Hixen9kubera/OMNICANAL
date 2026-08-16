@@ -17,30 +17,47 @@ QUÉ MIDE
    distinto que ya existen entre `ml_progress` y `channel.listings` (SKUs
    republicados) son la prueba de que esto pasa de verdad.
 
-3. **El reparto de la vía.** `channel.listing_history.detectado_via` dice quién
-   escribió cada cambio. Con el seam encendido debe aparecer `publicar`; si
-   sigue todo en `sync`, el seam no está corriendo aunque el flag diga que sí.
+3. **¿ESCRIBIÓ EL SEAM?** — el desfase entre la hora de publicación y el
+   `updated_at` de esa fila en `channel.listings`. Segundos = lo escribió el
+   seam; minutos = lo alcanzó el sync de 15 min.
 
-4. **El retraso que se está eliminando.** Distancia entre `published_at` del
-   publicador y el `updated_at` de la publicación en kubera. Es el hueco que
-   el seam existe para cerrar, y el número que debería desplomarse al
-   encenderlo.
+4. **El síntoma del hueco**: publicaciones que el publicador da por vivas y que
+   en kubera no tienen `listing_id`.
+
+⚠️ EL BLOQUE 3 ESTUVO ROTO, Y VALE LA PENA SABERLO
+--------------------------------------------------
+Su primera versión buscaba el rastro en `channel.listing_history.detectado_via
+= 'publicar'`. **Ese trigger solo registra seis columnas** —`price`,
+`stock_own`, `stock_full`, `situacion`, `is_fulfillment` y `status`— y el seam,
+para Mercado Libre, escribe `listing_id` y `url`: ninguna está en la lista.
+
+Resultado: el 16-ago reportaba *"el seam está APAGADO"* con el flag encendido y
+14 publicaciones llegando a kubera **en 1-3 segundos**. Un detector ciego para el
+caso exacto que venía a detectar.
+
+Es el cuarto caso del mismo defecto en este proyecto (`turno_sync`, `padron`, la
+métrica de retraso que se tiró el 14-ago, y éste): **medir una señal que la cosa
+medida no puede producir.** Los tres primeros se detectaron midiendo; éste, por
+una pregunta de Eduardo.
 
 LO QUE ESTE ARNÉS **NO** PUEDE DECIR
 ------------------------------------
-Con el seam apagado, los puntos 1, 2 y 4 miden el mundo de hoy — sirven como
-LÍNEA BASE, no como aprobación. El punto 3 solo tiene sentido encendido. No se
-enciende la lectura de ningún lector del grupo 4 hasta que el punto 3 muestre
-tráfico real por la vía `publicar`.
+- Sin publicaciones en la ventana del bloque 3, **no opina** — y lo dice. Un
+  "sin datos" no es un verde.
+- El bloque 3 solo JUZGA lo publicado dentro de `--ventana-seam-h` (48 h por
+  defecto). Lo anterior al seam es historia: incluirlo hacía reprobar por
+  publicaciones que obviamente alcanzó el barrido, y un rojo mal calculado es
+  tan inútil como un verde vacío.
 
 Uso:
   ...python backend/scripts/comparar_seam_publicar.py
-  ...python backend/scripts/comparar_seam_publicar.py --dias 30
+  ...python backend/scripts/comparar_seam_publicar.py --dias 30 --ventana-seam-h 24
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import psycopg2
@@ -67,6 +84,8 @@ def cargar(nombre: str) -> dict[str, str]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dias", type=int, default=14)
+    ap.add_argument("--ventana-seam-h", type=int, default=48,
+                    help="solo se JUZGAN las publicaciones de esta ventana; las anteriores al seam son historia")
     args = ap.parse_args()
 
     E = cargar(".env")
@@ -147,22 +166,89 @@ def main() -> None:
     for f in falta_am[:5]:
         print(f"        falta: {f['sku']} status={f['status']}")
 
-    # ── 3. ¿Está corriendo el seam? ─────────────────────────────────────────
-    print("\n── 3. quién escribió (channel.listing_history.detectado_via) ──")
+    # ── 3. ¿ESCRIBIÓ EL SEAM? — medido por el RELOJ, no por la bitácora ─────
+    #
+    # ⚠️ LA PRIMERA VERSIÓN DE ESTE BLOQUE ERA UN DETECTOR CIEGO: reportaba
+    # "el seam está APAGADO" con el flag ENCENDIDO y funcionando (16-ago).
+    #
+    # Buscaba el rastro en `channel.listing_history.detectado_via = 'publicar'`.
+    # Pero ese trigger solo registra SEIS columnas —`price`, `stock_own`,
+    # `stock_full`, `situacion`, `is_fulfillment` y `status`— y el seam, para
+    # Mercado Libre, escribe **`listing_id` y `url`**: ninguna está en esa lista.
+    # O sea que el seam podía funcionar perfecto sin dejar una sola fila donde
+    # este arnés lo buscaba. Medido el 16-ago: 14 publicaciones llegaron a kubera
+    # en 1-3 s y el bloque seguía diciendo "apagado".
+    #
+    # Cuarto caso del mismo defecto en este proyecto (`turno_sync`, `padron`, la
+    # métrica de retraso que se tiró el 14-ago, y éste): **medir una señal que la
+    # cosa medida NO PUEDE producir.**
+    #
+    # LO QUE SE MIDE AHORA: el desfase entre la hora en que el publicador
+    # registró la publicación y el `updated_at` de su fila en `channel.listings`.
+    #
+    #   ≤ UMBRAL_SEAM_SEG → escribió el SEAM (medido: 1-3 s)
+    #   >  UMBRAL         → lo alcanzó el SYNC de 15 min; el seam no actuó
+    #
+    # Vale porque una publicación NUEVA trae un `listing_id` que la fila no
+    # tenía, así que el upsert sí la toca. En una REPUBLICACIÓN con el mismo id
+    # no cambia nada y la fila no se mueve — por eso solo cuentan las que traen
+    # el id del publicador, que son las que sí debieron tocarse.
+    # SOLO SE JUZGA LO PUBLICADO DENTRO DE LA VENTANA, y esto tampoco es un
+    # detalle: la primera versión de este cálculo juzgó los 14 días completos y
+    # reprobó con "82 por el sync" — publicaciones ANTERIORES a que el seam
+    # existiera, que obviamente las alcanzó el barrido. Medir bien y juzgar mal
+    # da un rojo tan inútil como un verde vacío.
+    UMBRAL_SEAM_SEG = 60
+    print(f"\n── 3. ¿escribió el SEAM? (desfase publicación → channel.listings, "
+          f"últimas {args.ventana_seam_h} h) ──")
+    corte = datetime.utcnow() - timedelta(hours=args.ventana_seam_h)
+    medibles, por_seam, por_sync, viejas = [], [], [], 0
+    for f in nuevas_ml:
+        r = kb.get(("mercado_libre", str(f["cuenta"]).upper(), str(f["sku"]).lower()))
+        if not r or not f["published_at"] or not r["updated_at"]:
+            continue
+        if str(r["listing_id"] or "") != str(f["ml_item_id"]):
+            continue                      # republicación: la fila no debía moverse
+        d = (r["updated_at"].replace(tzinfo=None) - f["published_at"]).total_seconds()
+        if d < 0:
+            continue
+        if f["published_at"] < corte:
+            viejas += 1
+            continue                      # anterior al seam: es historia, no juicio
+        medibles.append(d)
+        (por_seam if d <= UMBRAL_SEAM_SEG else por_sync).append((f["sku"], d))
+
+    if not medibles:
+        print(f"  [ n/d] ninguna publicación en las últimas {args.ventana_seam_h} h "
+              f"— el arnés NO puede opinar")
+        print(f"         (no es un verde: es ausencia de evidencia. Publicar un "
+              f"producto lo desbloquea)")
+        if viejas:
+            print(f"         [info] {viejas} publicaciones más viejas quedaron fuera "
+                  f"del juicio, a propósito")
+    else:
+        medibles.sort()
+        print(f"        {len(medibles)} publicaciones en la ventana · mediana "
+              f"{medibles[len(medibles) // 2]:.0f}s · peor {max(medibles):.0f}s"
+              + (f" · {viejas} más viejas ignoradas" if viejas else ""))
+        for sku, d in por_sync[:4]:
+            print(f"        tardó {d:.0f}s: {sku} — la alcanzó el sync, no el seam")
+        check("el seam está escribiendo (desfase de segundos, no de minutos)",
+              bool(por_seam) and not por_sync,
+              f"{len(por_seam)} por el seam · {len(por_sync)} por el sync")
+
+    # La bitácora se sigue mostrando, pero INFORMATIVA y con su límite dicho:
+    # sirve para ver las otras vías vivas, no para juzgar el seam de ML.
     with pg.cursor() as c:
-        c.execute("""select detectado_via, count(*), count(distinct sku), max(changed_at)
+        c.execute("""select detectado_via, count(*), max(changed_at)
                        from channel.listing_history
                       where changed_at > now() - (%s || ' days')::interval
                       group by 1 order by 2 desc""", (args.dias,))
         vias = c.fetchall()
-    for v, n, skus, ult in vias:
-        print(f"        {str(v):<14} {n:6,} cambios · {skus:5,} SKUs · último {str(ult)[:16]}")
-    por_publicar = next((n for v, n, _, _ in vias if v == "publicar"), 0)
-    if por_publicar:
-        check("el seam está escribiendo", True, f"{por_publicar:,} cambios por la vía 'publicar'")
-    else:
-        print("  [ n/d] sin tráfico por la vía 'publicar' — el seam está APAGADO "
-              "(esperado hasta que se encienda SUPABASE_SEAM_PUBLICAR)")
+    print("        [info] vías en listing_history: "
+          + " · ".join(f"{v or '(vacía)'} {n:,}" for v, n, _ in vias))
+    print("        (NO registra `listing_id` ni `url`, así que no puede ver el "
+          "seam de ML — ver el comentario del código)")
 
     # ── 4. El síntoma observable del hueco ──────────────────────────────────
     #

@@ -10932,3 +10932,60 @@ externo `publicador`** (pendiente #9, sin rotar). Moverlo a Vault sin rotarlo lo
 cambia de lugar sin dejar de estar comprometido.
 
 Sin migraciones ni variables nuevas. Versión 0.191.0.
+
+### v0.192.0 — El arnés del paso 3 era un detector ciego: el seam SÍ funcionaba
+
+**El seam de publicación lleva dos días funcionando y el arnés decía que estaba
+apagado.** Medido: **22 publicaciones en 48 h llegaron a `channel.listings` con
+una mediana de 2 segundos** y la peor en 23 s. Antes eso tardaba hasta 15 min.
+
+**Por qué el arnés no lo veía.** Su bloque 3 buscaba el rastro en
+`channel.listing_history.detectado_via = 'publicar'`. Pero ese trigger **solo
+registra seis columnas** —`price`, `stock_own`, `stock_full`, `situacion`,
+`is_fulfillment` y `status`— y el seam, para Mercado Libre, escribe
+**`listing_id` y `url`**: ninguna de las dos está en esa lista.
+
+Construí un detector ciego para el caso exacto que venía a detectar, y encima
+reportaba "APAGADO" con el flag encendido. Peor que no medir: **medir y mentir**.
+
+**Es el cuarto caso del mismo defecto en este proyecto:**
+
+| | Medía | Se leía como |
+|---|---|---|
+| `turno_sync` | cuándo cambió el dato | cuándo se revisó |
+| `padron` | último producto nuevo | si el ETL corrió |
+| la métrica de retraso (tirada el 14-ago) | tiempo hasta el próximo cambio | retraso del seam |
+| **bloque 3 del paso 3** | cambios en 6 columnas | **si el seam escribió** |
+
+Los tres primeros salieron midiendo. **Éste salió de una pregunta de Eduardo**
+—"¿está igual con los arneses?"— que obligó a contar publicaciones en vez de
+confiar en el detector.
+
+**Lo que mide ahora**: el desfase entre la hora de publicación y el `updated_at`
+de esa fila en `channel.listings`. Segundos = seam; minutos = lo alcanzó el
+sync. Es la misma pregunta, pero contra una fuente que **sí registra lo que el
+seam toca**.
+
+**Y un segundo error, cometido y corregido en la misma sesión**: la primera
+versión del cálculo juzgaba los 14 días completos y reprobaba con "82 por el
+sync" — publicaciones ANTERIORES a que el seam existiera, que obviamente alcanzó
+el barrido. Ahora solo juzga lo publicado dentro de `--ventana-seam-h` (48 h) y
+dice cuántas ignoró. **Medir bien y juzgar mal da un rojo tan inútil como un
+verde vacío.**
+
+Se conserva la vista de vías de `listing_history` como informativa, con su límite
+escrito al lado: no puede ver el seam de ML.
+
+**Estado real de los cuatro arneses**, que era la pregunta de fondo:
+
+| Arnés | ¿Tiene eventos que observar? |
+|---|---|
+| Latido | sí — 787 pedidos en 24 h |
+| Paso 2 · foto | sí — 14,639 filas reescritas |
+| Paso 3 · seam | **sí, 22 publicaciones** — y el arnés no las veía |
+| Paso 6 · tokens | casi no — 2 renovaciones en 24 h; ahí sí falta ventana |
+
+Solo el de tokens estaba realmente esperando eventos. El del seam no esperaba
+nada: estaba roto.
+
+Sin migraciones ni variables nuevas. Versión 0.192.0.
