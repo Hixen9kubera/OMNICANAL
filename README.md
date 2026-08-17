@@ -10101,6 +10101,56 @@ del top con su desglose. Los totales no se mueven: esto solo agrega
 explicación, no cambia ningún número.
 
 Sin migraciones ni variables nuevas. Versión 0.186.0.
+### v0.197.0 — Walmart: 3,331 reglas de campo, y las 5 correcciones que el CSV no llevaba
+
+Cierra el pendiente #7 de `docs/WALMART_ENTREGA_A_OMNICANAL.md`: los atributos
+por categoría de Walmart MX entran a `channel.field_requirements`, que es de
+donde el panel pinta el semáforo y de donde la IA saca las listas cerradas.
+
+| Canal | Reglas | Obligatorios | Categorías |
+|---|---|---|---|
+| Amazon | 64,125 | 3,354 | 553 |
+| **Walmart** | **3,331** | **446** | **76** |
+| Mercado Libre | 2,765 | 2,765 | 1,059 |
+| Temu | 2,086 | 546 | 145 |
+| TikTok | 1,779 | 1,767 | 760 |
+
+**Walmart no tiene API de atributos** — es la diferencia con sus hermanos. En
+TikTok se piden con `GET /categories/{id}/attributes`; aquí ese endpoint no
+existe (`POST /v3/items/spec` da 404 con credenciales MX y en Global está
+marcado "US only"). La fuente es el esquema público `MX_MP_ITEM_INTL_SPEC.json`
+(3.9 MB, se descarga sin credenciales — verificado: HTTP 200, 3,958,699 bytes).
+Por eso las filas quedan con `fuente='manual'`: no es una API que se
+reconsulte en caliente, es un archivo con versión, y llamarlo `api` invitaría a
+creer que se refresca solo.
+
+**LO QUE ESTE COMMIT AGREGA A LA ENTREGA.** `CORRECCIONES_MEDIDAS` declara
+**nueve** correcciones de producción y el CSV solo llevaba **cuatro**. Las cinco
+que faltaban son campos que el esquema 3.19 **no lista** para esa categoría, así
+que no había fila donde colgar el veredicto — y son justo las más caras, porque
+cuatro son `RECHAZADO`:
+
+| Categoría | Campo | Veredicto | Evidencia |
+|---|---|---|---|
+| Electrónicos | `modelNumber` | RECHAZADO | *85 de 85 muertos, 7-ago* |
+| Accesorios Electrónicos | `modelNumber` | RECHAZADO | *5 feeds de 85* |
+| Almacenamiento | `gender` | RECHAZADO | *83 de 83 muertos* |
+| Juguetes | `countPerPack` | RECHAZADO | *33 de 33 muertos* |
+| Otros Electrónicos | `wattage` | OBLIGATORIO | *sonda 7-ago* |
+
+Son campos que **matan el lote entero** si se mandan. Dejarlos fuera de la tabla
+era perder lo único que no se puede deducir del archivo: lo medido contra
+producción. Ahora entran como filas propias, marcadas `solo_medicion: true` y
+con su evidencia, para que quien las lea entienda por qué existen.
+
+**`(todas)` se traduce a `'*'`**, la convención que ya usan los otros canales
+para "aplica a cualquier categoría"; sin eso el semáforo no encontraría los 24
+campos comunes. Y el veredicto de producción viaja dentro de
+`valores_permitidos` junto a la etiqueta en español, la lista cerrada y los
+límites — todo lo que la IA necesita para elegir sin inventar.
+
+---
+
 ### v0.196.0 — Walmart: los 445 atributos obligatorios, y el contenido que llevamos mal en los 221 publicados
 
 **El hueco.** Temu y TikTok ya piden los atributos obligatorios de cada
