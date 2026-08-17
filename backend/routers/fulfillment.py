@@ -950,20 +950,43 @@ top as (
     from lineas l
     left join est e on e.cuenta = l.cuenta and e.sku = l.sku
    where %(estado)s::text is null or coalesce(e.estado, 'otra') = %(estado)s
+),
+g as (
+  -- RANKING POR SKU, SUMANDO LAS CUENTAS (Eduardo, 14-ago). La lista "General"
+  -- se armaba en el navegador fundiendo los dos top-10 por cuenta, y eso tiene
+  -- dos defectos: repetía el SKU una vez por cuenta (TEC-2162-NEG salía en el
+  -- 2º y el 4º lugar) y, peor, PODÍA PERDER productos — un SKU con 200 piezas
+  -- en cada cuenta no entra a ningún top-10 por separado y aun así es de los
+  -- más vendidos sumado. Un top que sale de fundir dos listas ya recortadas no
+  -- es el top. Se ordena aquí, sobre el total del SKU.
+  select sku,
+         row_number() over (order by sum(uds) desc, sum(ingreso) desc) as rn_g
+    from top
+   group by sku
 )
+-- Se traen las filas por cuenta de los DOS conjuntos: las del top de cada
+-- cuenta (para sus pestañas) y todas las del top general (para poder fundirlas
+-- con su envío y sus visitas, que se miden por publicación y por cuenta).
 select t.cuenta, t.sku::text as sku, t.titulo, t.uds,
        round(t.ingreso, 2)                         as ingreso,
        round(t.comision / nullif(t.uds_com, 0), 2) as comision_unit,
+       -- Crudos ADEMÁS del promedio: fundir dos cuentas exige volver a
+       -- ponderar, y promediar promedios da un número que no es de nadie.
+       round(t.comision, 2)                        as comision_total,
+       t.uds_com::int                              as uds_com,
        coalesce(t.estado, 'otra')                  as estado,
        coalesce(t.precio_activo, t.precio_cualquiera) as precio_pub,
        t.precio_lista,
        t.listing_ids,
        coalesce(cv.costo_total, cf.costo_unitario) as costo_base,
-       cf.costo_fee_envio                          as envio_estimado
+       cf.costo_fee_envio                          as envio_estimado,
+       t.rn::int                                   as rn,
+       g.rn_g::int                                 as rn_g
   from top t
+  join g on g.sku = t.sku
   left join costing.costos_validados cv on cv.sku = t.sku
   left join costing.costos_finales  cf on cf.sku = t.sku and cf.canal = 'mercado_libre'
- where t.rn <= %(limite)s
+ where t.rn <= %(limite)s or g.rn_g <= %(limite)s
  order by t.cuenta, t.uds desc
 """)
 
@@ -1073,40 +1096,64 @@ async def margenes_reales(
         else:
             uds_sin[ks] = uds_sin.get(ks, 0) + int(l["uds"])
 
-    cuentas: dict[str, list[dict[str, Any]]] = {}
-    pendientes_total = 0
-    for f in top:
-        ks = (f["cuenta"], f["sku"])
-        uds = int(f["uds"] or 0)
-        precio = round(float(f["ingreso"]) / uds, 2) if uds else None
-        cub, sin = uds_cub.get(ks, 0), uds_sin.get(ks, 0)
-        pendientes_total += sin
-        envio_u = round(envio_acum[ks] / cub, 2) if cub else None
-        costo = None if f["costo_base"] is None else float(f["costo_base"])
-        com = None if f["comision_unit"] is None else float(f["comision_unit"])
+    # UNA SOLA FUNCIÓN ARMA LAS DOS VISTAS (Eduardo, 14-ago). `grupo` trae las
+    # filas por cuenta de un mismo SKU: una sola para las pestañas de cuenta,
+    # las dos para la lista General. Si cada vista hiciera su propia aritmética,
+    # el mismo SKU acabaría con dos márgenes distintos según dónde se mire.
+    #
+    # Todo se RE-PONDERA sobre los crudos; nada se promedia de promedios.
+    def armar(grupo: list[dict[str, Any]]) -> dict[str, Any]:
+        claves = [(g["cuenta"], g["sku"]) for g in grupo]
+        uds = sum(int(g["uds"] or 0) for g in grupo)
+        ingreso = sum(float(g["ingreso"]) for g in grupo)
+        precio = round(ingreso / uds, 2) if uds else None
+        cub = sum(uds_cub.get(k, 0) for k in claves)
+        sin = sum(uds_sin.get(k, 0) for k in claves)
+        envio_u = round(sum(envio_acum.get(k, 0.0) for k in claves) / cub, 2) if cub else None
+        # El costo base viene de costing por SKU: es el mismo en las dos cuentas.
+        costo = next((float(g["costo_base"]) for g in grupo
+                      if g["costo_base"] is not None), None)
+        # Comisión por unidad = comisión total ÷ unidades QUE TRAEN comisión.
+        com_tot = sum(float(g["comision_total"] or 0) for g in grupo)
+        com_uds = sum(int(g["uds_com"] or 0) for g in grupo)
+        com = round(com_tot / com_uds, 2) if com_uds else None
+        # ESTADO ACROSS CUENTAS: si en una está activa, el producto SE PUEDE
+        # comprar — eso es lo que describe la etiqueta. Misma regla que usa el
+        # CTE `est` dentro de una cuenta, ahora aplicada entre cuentas.
+        estados = {g["estado"] for g in grupo}
+        est_final = ("activa" if "activa" in estados
+                     else "pausada" if "pausada" in estados else "otra")
+        # Los precios de la publicación se toman de una cuenta donde esté
+        # ACTIVA: el precio de una pausada no es el que ve el comprador.
+        viva = [g for g in grupo if g["estado"] == "activa"] or grupo
         fila: dict[str, Any] = {
-            "sku": f["sku"], "titulo": f["titulo"], "uds": uds,
-            "ingreso": float(f["ingreso"]), "precio_prom": precio,
+            "sku": grupo[0]["sku"], "titulo": grupo[0]["titulo"], "uds": uds,
+            "ingreso": round(ingreso, 2), "precio_prom": precio,
             "costo_base": costo, "comision_unit": com,
             "envio_unit": envio_u,
-            "envio_estimado": None if f["envio_estimado"] is None
-                              else float(f["envio_estimado"]),
+            "envio_estimado": next((float(g["envio_estimado"]) for g in grupo
+                                    if g["envio_estimado"] is not None), None),
             "cobertura_envio_pct": round(cub / uds * 100) if uds else 0,
             "uds_sin_envio": sin,
-            # Situación de la publicación en ESTA cuenta: 'activa', 'pausada' u
-            # 'otra' (incluye el SKU que ya no tiene publicación viva).
-            "estado": f["estado"],
-            "precio_pub": None if f["precio_pub"] is None else float(f["precio_pub"]),
-            "precio_lista": None if f["precio_lista"] is None else float(f["precio_lista"]),
+            "estado": est_final,
+            "precio_pub": next((float(g["precio_pub"]) for g in viva
+                                if g["precio_pub"] is not None), None),
+            "precio_lista": next((float(g["precio_lista"]) for g in viva
+                                  if g["precio_lista"] is not None), None),
+            # En qué cuentas vendió: la lista General ya no lleva una etiqueta
+            # por renglón, así que el renglón tiene que decir de dónde sale.
+            "cuentas": sorted({g["cuenta"] for g in grupo}),
         }
-        # Visitas: se suman las publicaciones del SKU en ESA cuenta. `dias_datos`
-        # es cuántos días trajo ML de verdad — la ventana no siempre viene
-        # completa, y presumir 30 días falsearía la conversión.
-        ids_pub = [str(i) for i in (f["listing_ids"] or [])]
-        vis = [visitas.get(i) for i in ids_pub]
-        listas = [v for v in vis if v and v.get("visitas") is not None]
+        # Visitas: se suman TODAS las publicaciones del SKU en las cuentas del
+        # grupo. `dias_datos` es cuántos días trajo ML de verdad — la ventana no
+        # siempre viene completa, y presumir 30 días falsearía la conversión.
+        ids_pub = [str(i) for g in grupo for i in (g["listing_ids"] or [])]
+        listas = [v for v in (visitas.get(i) for i in ids_pub)
+                  if v and v.get("visitas") is not None]
         # Todo o nada, igual que en la tabla: con una medición a medias el
-        # porcentaje sale falso (ver _visitas_en_filas).
+        # porcentaje sale falso (ver _visitas_en_filas). Al fundir cuentas la
+        # regla se endurece sola — falta UNA publicación de cualquiera y el
+        # renglón se queda sin conversión, que es lo correcto.
         if ids_pub and len(listas) == len(ids_pub):
             total_vis = sum(int(v["visitas"]) for v in listas)
             fila["visitas"] = total_vis
@@ -1124,11 +1171,33 @@ async def margenes_reales(
         else:
             fila["costo_final"] = fila["ganancia_unit"] = None
             fila["margen_pct"] = fila["ganancia_total"] = None
-        cuentas.setdefault(f["cuenta"], []).append(fila)
+        return fila
+
+    # Las pestañas por cuenta: solo el top DE ESA cuenta (`rn`), un SKU por
+    # renglón y su estado en esa cuenta.
+    cuentas: dict[str, list[dict[str, Any]]] = {}
+    for f in top:
+        if int(f["rn"]) <= limite:
+            cuentas.setdefault(f["cuenta"], []).append(armar([f]))
+
+    # La lista General: un renglón por SKU, con las cuentas fundidas, ordenada
+    # por el ranking que ya calculó el SQL sobre el total del SKU.
+    por_sku: dict[str, list[dict[str, Any]]] = {}
+    for f in top:
+        if int(f["rn_g"]) <= limite:
+            por_sku.setdefault(f["sku"], []).append(f)
+    general = sorted((armar(g) for g in por_sku.values()),
+                     key=lambda x: (-x["uds"], -x["ingreso"]))
+
+    # `pendientes` cuenta unidades sin envío real UNA vez por (cuenta, SKU): si
+    # se sumara por vista, un SKU que sale en las dos se contaría doble y el
+    # frontend refrescaría de más esperando un cero que no llega.
+    pendientes_total = sum(uds_sin.values())
 
     return {
         "dias": dias,
         "estado": estado,
+        "general": general,
         "cuentas": [{"cuenta": c, "filas": filas} for c, filas in sorted(cuentas.items())],
         "pendientes": pendientes_total,
         "consultadas": consultadas,

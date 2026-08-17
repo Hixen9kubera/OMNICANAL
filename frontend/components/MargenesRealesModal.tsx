@@ -36,10 +36,18 @@ interface Fila {
   margen_pct: number | null; ganancia_total: number | null;
   estado: string | null;   // 'activa' | 'pausada' | 'otra'
   visitas: number | null; visitas_dias: number | null; cr_pct: number | null;
+  /* En qué cuentas vendió. En la lista General un renglón puede venir de las
+     dos, y entonces el estado ya es el resuelto entre ambas. */
+  cuentas?: string[];
 }
 interface Respuesta {
   dias: number; pendientes: number; consultadas: number; nota: string;
   estado: string | null;
+  /* Lista General: UN renglón por SKU, con las cuentas ya fundidas y ordenada
+     por el total del SKU. La calcula el backend a propósito — fundirla aquí
+     desde los dos top-10 por cuenta repetía SKUs y podía perder productos que
+     solo son grandes sumados (Eduardo, 14-ago). */
+  general: Fila[];
   cuentas: { cuenta: string; filas: Fila[] }[];
 }
 
@@ -51,10 +59,12 @@ const fNum = (v: number | string | null | undefined, dec = 0) =>
 const NOMBRE_CUENTA: Record<string, string> = {
   BEKURA: "Kubera (BEKURA)", SANCORFASHION: "San Corpe (SANCORFASHION)",
 };
-// Etiqueta corta por fila para la vista GENERAL (Eduardo, 6-ago: "Ambas" es
-// UNA lista con las primeras 10 y una etiqueta que las diferencie, no las dos
-// tablas al mismo tiempo). El mismo SKU puede aparecer dos veces — una por
-// cuenta — porque cada publicación tiene su propio precio, comisión y envío.
+// Etiqueta corta por fila para la vista GENERAL (Eduardo, 6-ago: "Ambas" es UNA
+// lista con las primeras 10, no las dos tablas al mismo tiempo).
+//
+// Desde el 14-ago hay UN renglón POR SKU: los chips dicen en qué cuentas vendió
+// —pueden ser los dos— y las cifras vienen sumadas. Antes el mismo SKU salía dos
+// veces, una por cuenta, y competía consigo mismo por un lugar del top.
 const CHIP_CUENTA: Record<string, { ini: string; clase: string }> = {
   BEKURA: { ini: "BK", clase: "bg-indigo-50 text-indigo-700" },
   SANCORFASHION: { ini: "SC", clase: "bg-sky-50 text-sky-700" },
@@ -160,7 +170,7 @@ function Envio({ f }: { f: Fila }) {
   );
 }
 
-type FilaConCuenta = Fila & { cuenta?: string };
+
 
 /* VISITAS y CONVERSIÓN. Es el par que explica por qué un producto vende poco:
    sin visitas el problema es de visibilidad (precio, posición, publicidad); con
@@ -198,8 +208,10 @@ function Visitas({ f }: { f: Fila }) {
   );
 }
 
-function TablaCuenta({ titulo, sub, filas }: {
-  titulo: string; sub: string; filas: FilaConCuenta[];
+function TablaCuenta({ titulo, sub, filas, conCuentas }: {
+  titulo: string; sub: string; filas: Fila[];
+  /* Solo la lista General muestra de qué cuentas viene cada renglón. */
+  conCuentas?: boolean;
 }) {
   return (
     <section className="rounded-2xl border border-slate-200 bg-white">
@@ -231,17 +243,20 @@ function TablaCuenta({ titulo, sub, filas }: {
           </thead>
           <tbody>
             {filas.map((f, i) => (
-              <tr key={`${f.cuenta ?? ""}${f.sku}`} className="border-b border-slate-50 hover:bg-slate-50/60">
+              <tr key={f.sku} className="border-b border-slate-50 hover:bg-slate-50/60">
                 <td className="px-3 py-2 text-slate-400">{i + 1}</td>
                 <td className="max-w-[240px] px-3 py-2">
                   <div className="flex items-center gap-1.5">
                     <span className="font-semibold text-slate-800">{f.sku}</span>
-                    {f.cuenta && CHIP_CUENTA[f.cuenta] && (
-                      <span title={NOMBRE_CUENTA[f.cuenta] ?? f.cuenta}
-                            className={`rounded px-1 text-[9px] font-bold ${CHIP_CUENTA[f.cuenta].clase}`}>
-                        {CHIP_CUENTA[f.cuenta].ini}
+                    {/* Un chip POR CUENTA donde vendió. En la pestaña de una
+                        cuenta sobra —el título ya lo dice— y solo sale en la
+                        General, que ahora trae un renglón por SKU. */}
+                    {conCuentas && (f.cuentas ?? []).map((c) => CHIP_CUENTA[c] && (
+                      <span key={c} title={NOMBRE_CUENTA[c] ?? c}
+                            className={`rounded px-1 text-[9px] font-bold ${CHIP_CUENTA[c].clase}`}>
+                        {CHIP_CUENTA[c].ini}
                       </span>
-                    )}
+                    ))}
                     {(() => {
                       const e = CHIP_ESTADO[f.estado ?? "otra"] ?? CHIP_ESTADO.otra;
                       return (
@@ -332,12 +347,11 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
     cargar(dias, estado);
   }, [dias, estado, cargar]);
 
-  // "Ambas" = UNA lista general: se funden las dos cuentas, se reordena por
-  // unidades y se corta en 10; la etiqueta BK/SC diferencia cada fila.
-  const general: FilaConCuenta[] = (data?.cuentas ?? [])
-    .flatMap((c) => c.filas.map((f) => ({ ...f, cuenta: c.cuenta })))
-    .sort((a, b) => b.uds - a.uds || b.ingreso - a.ingreso)
-    .slice(0, 10);
+  // "Ambas" = UNA lista general, YA FUNDIDA POR EL BACKEND: un renglón por SKU
+  // con las cuentas sumadas y el estado resuelto entre ellas. Antes se armaba
+  // aquí juntando los dos top-10 y reordenando, lo que repetía el SKU una vez
+  // por cuenta y podía perder productos grandes solo en la suma.
+  const general: Fila[] = data?.general ?? [];
   const cuentasVisibles = (data?.cuentas ?? []).filter((c) => c.cuenta === cuenta);
   const sufijoEstado = estado === "TODAS" ? ""
     : estado === "activa" ? " activas" : " pausadas";
@@ -439,8 +453,8 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
           {cuenta === "TODAS" ? (
             data && (
               <TablaCuenta titulo="General"
-                           sub={`top ${general.length} de ambas cuentas${sufijoEstado} por unidades vendidas`}
-                           filas={general} />
+                           sub={`top ${general.length} por SKU${sufijoEstado}, sumando ambas cuentas`}
+                           filas={general} conCuentas />
             )
           ) : (
             cuentasVisibles.map((c) => (

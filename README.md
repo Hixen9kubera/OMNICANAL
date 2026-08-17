@@ -10002,6 +10002,64 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.199.0 — «Productos más vendidos»: un renglón por SKU, y el top ya no pierde productos
+
+Pedido de Eduardo: en la lista **General** que se muestre *«nada más por SKU de
+ambas cuentas, y si está pausada en una y encendida en otra, que se vea como en
+la tabla general»*. `TEC-2162-NEG` salía dos veces —2º y 4º lugar— y
+`TEC-0778-NEG` también, una BK PAUSADA y otra SC ACTIVA.
+
+**Y buscándolo apareció algo peor.** La lista General se armaba **en el
+navegador**, fundiendo los dos top-10 por cuenta y reordenando. Eso no solo
+repetía SKUs: **perdía productos**. Un SKU con 80 piezas en cada cuenta no entra
+al top-10 de ninguna por separado, y sumado sí es de los más vendidos. Un top que
+sale de fundir dos listas ya recortadas no es el top.
+
+**Medido en el clon de producción, la versión vieja dejaba fuera 455 unidades**
+repartidas en 8 de los 10 SKUs del top real, y a uno lo hacía **invisible por
+completo**:
+
+| SKU | uds reales | lo que sumaban las pestañas | perdidas |
+|---|---|---|---|
+| `TEC-1606-NEG` | 164 | **0** | 164 |
+| `TEC-0778-NEG` | 243 | 173 | 70 |
+| `VAR-0456-NEG` | 160 | 90 | 70 |
+| `TEC-0551-PLU` | 211 | 150 | 61 |
+| `TEC-0982-ROS` | 158 | 108 | 50 |
+
+`TEC-1606-NEG` es el 8º producto más vendido y no aparecía en ninguna parte.
+
+**El ranking se muda al backend.** Un CTE `g` numera por SKU sumando las cuentas,
+y la consulta trae las filas por cuenta de los dos conjuntos: el top de cada
+cuenta (para sus pestañas) y todas las del top general (para poder fundirlas con
+su envío y sus visitas, que se miden por publicación y por cuenta).
+
+**Una sola función arma las dos vistas.** `armar(grupo)` recibe las filas por
+cuenta de un mismo SKU: una para las pestañas, las dos para General. Si cada
+vista hiciera su aritmética, el mismo SKU acabaría con dos márgenes distintos
+según dónde se mire. Todo se **re-pondera sobre los crudos**: por eso la consulta
+ahora devuelve `comision_total` y `uds_com` además del promedio — promediar
+promedios da un número que no es de nadie. El precio promedio sale de
+`ingreso ÷ unidades` del total, y el envío real de
+`suma de cobros ÷ unidades cubiertas`.
+
+**El estado entre cuentas** usa la misma regla que ya usaba el CTE `est` dentro
+de una cuenta: **si en alguna está activa, el producto se puede comprar**, y eso
+es lo que describe la etiqueta. Los precios de publicación se toman de una cuenta
+donde esté activa — el precio de una pausada no es el que ve el comprador.
+
+Las **visitas** se suman entre cuentas con la regla de todo-o-nada endurecida:
+falta la medición de UNA publicación de cualquiera de las dos y el renglón se
+queda sin conversión, que es lo correcto.
+
+**Verificado contra el clon de producción:** 10 renglones, **0 duplicados**;
+`TEC-2165-NEG-2PZ` con estados `{activa, pausada}` resuelve a **ACTIVA**; y el
+cuadre unidad por unidad de los SKUs visibles en las dos pestañas (uds, ingreso,
+precio promedio y estado) da 2 de 2 sin diferencias. En pantalla, cada renglón
+lleva sus chips `BK`/`SC` y una sola etiqueta de estado.
+
+Sin migraciones ni variables nuevas. Versión 0.199.0.
+
 ### v0.188.0 — El cron de deltas-orders llevaba tres días retirado en el papel y vivo en Railway
 
 El chequeo diario de arneses encontró actas de `orders-deltas` del 13, 14 y
