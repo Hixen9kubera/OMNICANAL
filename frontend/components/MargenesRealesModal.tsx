@@ -31,6 +31,9 @@ import { CUENTA_DOT, CUENTA_INI, CUENTA_NOMBRE } from "@/lib/canales";
 interface Fila {
   sku: string; titulo: string | null; uds: number; ingreso: number;
   precio_prom: number | null; costo_base: number | null;
+  /* El flete de importación YA está sumado dentro de `costo_base`; viaja
+     aparte solo para avisar cuando vale 0. */
+  costo_flete: number | null;
   comision_unit: number | null; envio_unit: number | null;
   envio_estimado: number | null; cobertura_envio_pct: number;
   uds_sin_envio: number; precio_pub: number | null; precio_lista: number | null;
@@ -328,10 +331,26 @@ function TablaCuenta({ titulo, sub, filas, conCuentas }: {
                 <td className="px-3 py-2 text-right font-semibold tabular-nums text-slate-700">{fNum(f.uds)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-600">{fMoney(f.ingreso)}</td>
                 <td className="px-3 py-2 text-right"><Precio f={f} /></td>
-                <td className="px-3 py-2 text-right tabular-nums text-slate-700"
-                    title="costos_validados.costo_total (producto + flete marítimo)">
-                  {fMoney(f.costo_base, 2)}
-                </td>
+                {/* SIN FLETE: el costo base ES producto + flete de importación,
+                    así que un flete en cero es un costo al que le falta un
+                    pedazo grande —31% del total en promedio— y el margen sale
+                    optimista sin que nada lo diga (Eduardo, 14-ago). */}
+                {(() => {
+                  const sinFlete = f.costo_flete != null && f.costo_flete <= 0
+                                   && f.costo_base != null;
+                  return (
+                    <td className={`px-3 py-2 text-right tabular-nums ${
+                      sinFlete ? "text-amber-600" : "text-slate-700"}`}
+                        title={sinFlete
+                          ? "SIN FLETE DE IMPORTACIÓN: el costo es solo el del producto. "
+                            + "El flete pesa 31% del costo en promedio, así que el margen "
+                            + "de este renglón sale mejor de lo que es."
+                          : "costos_validados.costo_total (producto + flete de importación)"}>
+                      {fMoney(f.costo_base, 2)}
+                      {sinFlete && <span className="ml-0.5 font-bold">⚠</span>}
+                    </td>
+                  );
+                })()}
                 <td className="px-3 py-2 text-right tabular-nums text-slate-700"
                     title="sale_fee promedio que ML cobró de verdad en los pedidos del período">
                   {fMoney(f.comision_unit, 2)}

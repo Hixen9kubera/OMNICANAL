@@ -361,6 +361,17 @@ filas as (
          -- de "—" a margen 61.8%%). OJO: los porcentajes en comentarios DENTRO
          -- del SQL van escapados (%%%%) — psycopg2 los lee como marcadores.
          coalesce(cv.costo_total, cf.costo_unitario) as costo,
+         -- EL FLETE DE IMPORTACIÓN YA VA DENTRO DE ESE COSTO (verificado el
+         -- 14-ago: costo_total = costo_producto + costo_cbm en 15,429 de 15,429
+         -- filas con total, y costo_unitario igual en 4,376 de 4,376). No se
+         -- suma otra vez — se expone SOLO para poder avisar cuando falta.
+         --
+         -- Y falta en 401 SKUs del catálogo. Importa porque el flete pesa
+         -- 31.1%% del costo en promedio: un SKU sin él parece 31%% más barato de
+         -- lo que es, y su margen sale optimista sin que nada lo diga. Caso
+         -- MAN-0495-BLN: producto $741, flete $0, y SÍ tiene medidas
+         -- (90x36x45) — no es que no se pueda calcular, es que no se capturó.
+         coalesce(cv.costo_cbm, cf.costo_cbm)        as costo_flete,
          -- PRECIO DE REFERENCIA de todo el bloque de margen: el REALIZADO
          -- cuando hubo ventas (ingreso ÷ uds, ya ponderado entre cuentas) y el
          -- publicado cuando no las hubo — el mismo criterio que usa la celda de
@@ -979,6 +990,9 @@ select t.cuenta, t.sku::text as sku, t.titulo, t.uds,
        t.precio_lista,
        t.listing_ids,
        coalesce(cv.costo_total, cf.costo_unitario) as costo_base,
+       -- El flete de importación YA está sumado dentro de `costo_base` (ver la
+       -- nota de `_BASE`): viaja aparte solo para avisar cuando vale 0.
+       coalesce(cv.costo_cbm, cf.costo_cbm)        as costo_flete,
        cf.costo_fee_envio                          as envio_estimado,
        t.rn::int                                   as rn,
        g.rn_g::int                                 as rn_g
@@ -1113,6 +1127,8 @@ async def margenes_reales(
         # El costo base viene de costing por SKU: es el mismo en las dos cuentas.
         costo = next((float(g["costo_base"]) for g in grupo
                       if g["costo_base"] is not None), None)
+        flete = next((float(g["costo_flete"]) for g in grupo
+                      if g["costo_flete"] is not None), None)
         # Comisión por unidad = comisión total ÷ unidades QUE TRAEN comisión.
         com_tot = sum(float(g["comision_total"] or 0) for g in grupo)
         com_uds = sum(int(g["uds_com"] or 0) for g in grupo)
@@ -1129,7 +1145,7 @@ async def margenes_reales(
         fila: dict[str, Any] = {
             "sku": grupo[0]["sku"], "titulo": grupo[0]["titulo"], "uds": uds,
             "ingreso": round(ingreso, 2), "precio_prom": precio,
-            "costo_base": costo, "comision_unit": com,
+            "costo_base": costo, "costo_flete": flete, "comision_unit": com,
             "envio_unit": envio_u,
             "envio_estimado": next((float(g["envio_estimado"]) for g in grupo
                                     if g["envio_estimado"] is not None), None),

@@ -111,6 +111,9 @@ interface Fila {
   // margen y el orden de la tabla hablen del mismo número.
   precio_ref: number | null;
   costo: number | null;
+  /* El flete de importación YA está sumado dentro de `costo`. Viaja aparte solo
+     para poder avisar cuando vale 0 — ver CostoBase. */
+  costo_flete: number | null;
   // Cobros del marketplace por unidad (Eduardo, 5-ago): la comisión es la REAL
   // de los pedidos del período — por eso puede faltar (SKU sin ventas, o
   // Amazon, que aún la registra en cero). Con ellos sale el margen NETO.
@@ -953,15 +956,33 @@ function CostoBase({ fila, dias }: { fila: Fila; dias: number }) {
       </PanelHover>
     );
   const dudoso = precio != null && costoImplausible(precio, v);
+  // SIN FLETE. El costo base ES producto + flete de importación, así que un
+  // flete en cero no es "no aplica": es un costo al que le falta un pedazo, y
+  // uno grande —31% del total en promedio—. El margen sale optimista y nada lo
+  // decía (Eduardo, 14-ago).
+  const flete = fila.costo_flete == null ? null : Number(fila.costo_flete);
+  const sinFlete = flete != null && flete <= 0;
   return (
     <PanelHover panel={
       <>
         <span className="block font-semibold text-white">Costo base</span>
         <Renglon etiqueta="Por pieza" valor={fMoney(v, 2)} />
+        {flete != null && flete > 0 && (
+          <Renglon etiqueta="…del cual, flete" valor={fMoney(flete, 2)}
+                   detalle={`${fNum(100 * flete / v, 0)}%`} tenue />
+        )}
         <span className="mt-1.5 block text-slate-400">
           Producto + flete de importación, del costeo validado. Es uno solo por
           producto: no cambia entre cuentas ni entre canales.
         </span>
+        {sinFlete && (
+          <span className="mt-1 block text-amber-300">
+            SIN FLETE DE IMPORTACIÓN: este costo es solo el del producto. El
+            flete pesa 31% del costo en promedio, así que el margen y la
+            ganancia de este renglón salen mejores de lo que son. Se captura en
+            el costeo — no es que no se pueda calcular.
+          </span>
+        )}
         {dudoso && (
           <span className="mt-1 block text-amber-300">
             Ojo: es {fNum(v / precio!, 1)}× el precio al que se vendió
@@ -971,7 +992,10 @@ function CostoBase({ fila, dias }: { fila: Fila; dias: number }) {
         )}
       </>
     }>
-      <div className="tabular-nums text-slate-700">{fMoney(v, 2)}</div>
+      <div className={`tabular-nums ${sinFlete ? "text-amber-600" : "text-slate-700"}`}>
+        {fMoney(v, 2)}
+        {sinFlete && <span className="ml-0.5 font-bold">⚠</span>}
+      </div>
     </PanelHover>
   );
 }

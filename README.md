@@ -10002,6 +10002,67 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.202.0 — El flete ya estaba en el Costo Base; lo que faltaba era avisar cuándo NO está
+
+Eduardo pidió **sumarle el flete al Costo Base** en la tabla de Análisis y en
+Productos más vendidos, y marcar con advertencia los que no lo tengan.
+
+**La primera mitad no se hizo, y a propósito: el flete YA está adentro.**
+Verificado **contra producción** antes de tocar nada:
+
+| tabla | filas | `costo = producto + flete` |
+|---|---|---|
+| `costing.costos_validados` | 15,431 con total | **15,431** |
+| `costing.costos_finales` | 4,376 | **4,376** |
+
+Sumarlo otra vez habría inflado el costo ~31% y hundido todos los márgenes. El
+contrato ya estaba escrito en el propio código (*«Costo Base = producto + flete
+de importación»*), y los datos lo confirman fila por fila.
+
+**La segunda mitad sí hacía falta, y es real.** El flete pesa **31.1% del costo
+en promedio**, así que un flete en cero no es «no aplica»: es un costo al que le
+falta un tercio, con el margen saliendo optimista y nada que lo diga. Son **403
+SKUs del catálogo** (medido en producción), y entre ellos `MAN-0495-BLN`
+(producto $741, flete $0) — que **sí tiene medidas** (90×36×45), o sea que no es
+que no se pueda calcular, es que no se capturó.
+
+Ahora ese renglón sale en **ámbar con ⚠** en las dos vistas, y la tarjeta del
+Costo Base explica qué significa.
+
+**Y de paso, la tarjeta ahora abre el costo**: `…del cual, flete $X (N%)`. Eso
+contesta sola una pregunta que venía apareciendo todo el día — por qué tantos
+SKUs salen con «COSTO DUDOSO»:
+
+| SKU | producto | flete | flete % | pista |
+|---|---|---|---|---|
+| `TEC-0393-ROS` | $190 | **$1,148** | **86%** | piezas/caja = **0.53** |
+| `JUEG-0012-MUL` | $19 | $571 | **97%** | piezas/caja = **0.33** |
+| `TEC-0793-NEG-4PZ` | $107 | $603 | 85% | caja 84×33×60, 27.7 kg |
+| `MUE-0163-TEL` | $94 | $179 | 66% | **39.36 kg** en 12 L |
+| `CAS-0005-BLN` | **$0** | $96 | 100% | sin costo de producto |
+
+No es que el producto sea caro: **es el flete, y el flete está inflado por
+defectos de captura ya documentados** — el divisor `piezas_por_caja` fraccionario
+(0.33 multiplica el flete por 3) y el peso de la CAJA capturado como el de la
+pieza (el mismo que la columna Peso marca en ámbar desde v0.175.0). Aparece
+además una tercera clase: **cuatro SKUs con `costo_producto` en 0**, donde el
+«costo» es puro flete.
+
+**19 de los SKUs que vendieron en 30 días traen el flete arriba del 60%** del
+costo (medido en producción, no en el clon).
+
+**Ojo con medir esto en el sandbox.** El clon trae el costeo del 24-jul y
+producción recostea a mano: `TEC-0794-NEG-8PZ-GUANTS` estaba en 47×32×**61 cm**
+con flete **$332.61**, y el 17-ago se corrigió a 47×32×**8.71 cm** con flete
+**$98.25** — el costo base cayó de $466 a **$233**. Un número de costeo leído del
+clon puede tener semanas.
+
+Backend: `costo_flete` viaja en `_BASE` y en `_SQL_MARGEN_REAL_TOP` **sin
+sumarse a nada** — existe solo para poder avisar. En la vista fundida por SKU se
+toma el primero no nulo, porque el costeo es por SKU y no cambia entre cuentas.
+
+Sin migraciones ni variables nuevas. Versión 0.202.0.
+
 ### v0.200.0 — Las cuentas se ven igual en las dos pantallas, y se ve en cuál está activa
 
 Eduardo, sobre el renglón fundido de v0.199.0: *«que se vea en cuál de las 2
