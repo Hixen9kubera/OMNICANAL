@@ -383,12 +383,11 @@ function ordenarSubs(
   });
 }
 
-const ORDENES: { id: Orden; label: string }[] = [
-  { id: "visitas_desc", label: "Más visitas primero" },
-  { id: "visitas_asc", label: "Menos visitas primero" },
-  { id: "unidades_desc", label: "Más vendidos primero" },
-  { id: "unidades_asc", label: "Menos vendidos primero" },
-];
+// El orden de NUESTROS SKUs dentro de cada subcategoría es fijo: más visitas
+// primero. El selector se retiró — quien compara contra el mercado quiere ver
+// arriba lo que más tráfico tiene, y las otras tres opciones no se usaban. El
+// orden de las SUBCATEGORÍAS sí se elige, y ése es el que decide dónde mirar.
+const ORDEN_SKUS: Orden = "visitas_desc";
 
 /**
  * Ordena nuestros SKUs por visitas o unidades.
@@ -1542,7 +1541,6 @@ export default function CompetenciaPage() {
   // Rango de visitas: dos extremos, como el de precios de Airbnb. `null` = abierto.
   const [vMin, setVMin] = useState<number | null>(null);
   const [vMax, setVMax] = useState<number | null>(null);
-  const [orden, setOrden] = useState<Orden>("visitas_desc");
   const [ordenSub, setOrdenSub] = useState<OrdenSub>("defecto");
   // Solo los SKUs que aparecen en el top de su subcategoría.
   const [soloTop, setSoloTop] = useState(false);
@@ -1638,15 +1636,24 @@ export default function CompetenciaPage() {
 
       const subs = r.subcategorias
         .filter((s) => !fSub || s.categoria_id === fSub)
-        .map((s) => ({ ...s, skus: ordenar(s.skus.filter(admite), orden) }))
-        .filter((s) => s.skus.length > 0 || (trozos.length === 0 && vMin === null && vMax === null));
+        .map((s) => ({ ...s, skus: ordenar(s.skus.filter(admite), ORDEN_SKUS) }))
+        // Una subcategoría sin SKUs que pasen el filtro se conserva SOLO cuando no
+        // hay filtro que justifique esconderla — así el árbol completo sigue
+        // navegable. Pero `soloTop` sí es un filtro: si se pide "solo donde
+        // estamos en el top", una subcategoría donde NO estamos no tiene nada que
+        // hacer ahí. Sin esta condición el botón no filtraba nada.
+        .filter(
+          (s) =>
+            s.skus.length > 0 ||
+            (!soloTop && trozos.length === 0 && vMin === null && vMax === null),
+        );
 
       return {
         ...r,
         subcategorias: ordenarSubs(subs, ordenSub),
         skus: ordenar(
           r.skus.filter((x) => admite(x) && (!fSub || x.categoria_id === fSub)),
-          orden,
+          ORDEN_SKUS,
         ),
       };
     })
@@ -1769,19 +1776,6 @@ export default function CompetenciaPage() {
             title="Ordena las SUBCATEGORÍAS: para encontrar nichos de ticket alto y mucha demanda"
           >
             {ORDENES_SUB.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={orden}
-            onChange={(e) => setOrden(e.target.value as Orden)}
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
-            title="Ordena nuestros SKUs dentro de cada subcategoría. Los no medidos van al final."
-          >
-            {ORDENES.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
               </option>
