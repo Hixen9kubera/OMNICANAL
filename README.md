@@ -10990,6 +10990,54 @@ nada: estaba roto.
 
 Sin migraciones ni variables nuevas. Versión 0.192.0.
 
+### v0.195.0 — Competencia: "Solo top" no filtraba, y un comando cierra una categoría
+
+**El botón "Solo top" contaba bien y no escondía nada.** La condición que
+conserva una subcategoría era `s.skus.length > 0 || (sin filtro de SKU ni de
+rango)`. Esa segunda mitad existe para que el árbol siga navegable cuando no hay
+filtro — pero `soloTop` ES un filtro, y al no contarlo como tal la rama derecha
+se cumplía siempre y pasaban las 922 subcategorías. Ahora, con el botón activo,
+una subcategoría donde NO estamos en el top desaparece de la lista: de 26 raíces
+y 922 subcategorías quedan 1 y 1.
+
+Y lo que deja ver es la línea base del objetivo: de **5,243 posiciones del top
+capturadas en 26 categorías, ocupamos exactamente UNA** — TEC-1768-BLN, #12 de
+Ganchos para Cortinas. Verificado que no es un fallo del marcado: cruzar nuestras
+publicaciones contra los `externo_id` de todos los rankings da esa misma
+coincidencia y ninguna más.
+
+**Fuera el selector de orden de SKUs.** El orden dentro de cada subcategoría
+queda fijo en "más visitas primero", que ya era el default; las otras tres
+opciones no aportaban. El orden de las SUBCATEGORÍAS se conserva — ése es el que
+decide dónde mirar.
+
+**`scripts/competencia_cerrar_raiz.py`** encadena los cuatro pasos que se corrían
+a mano: prender los SKUs de la raíz, capturar el top de la raíz y de cada
+subcategoría por Apify, proponer términos con IA y medirlos. Es REANUDABLE —cada
+paso salta lo ya hecho y nada se paga dos veces— y `--pendientes` descubre solo
+las raíces con trabajo, ordenadas de menor a mayor para que un fallo se vea en
+los primeros minutos y no a las tres horas.
+
+Ese orden se ganó a golpes: lanzado con `nohup … &`, el lote recorrió 20
+categorías en 10 minutos sin hacer NADA. `subprocess.run(cmd)` heredaba stdin y
+con `nohup` ese descriptor queda cerrado, así que cada Python hijo moría con
+«Fatal Python error: init_sys_streams». Lo peor no fue el fallo sino que era
+invisible: el script imprimía su resumen con los contadores en cero y seguía.
+Ahora va `stdin=DEVNULL` y se registra el código de salida de cada paso.
+
+**Un SKU con comilla perdía su término.** `TEC-1284-NEG-27"` se quedaba sin
+término general y no era el prompt: el modelo NORMALIZA el SKU al repetirlo y
+devolvía `TEC-1284-NEG-27`. El cruce exacto no lo encontraba y lo descartaba en
+silencio. `proponer()` reconcilia por forma normalizada antes de darlo por
+perdido. De paso, `_correr_actor` ya dice POR QUÉ falla: "Expecting value: line 1
+column 1" era `r.json()` sobre una respuesta HTML de Apify, y el mensaje no
+decía nada.
+
+Estado de la captura: 26 categorías raíz con SKUs, 5,243 posiciones de ranking y
+922 subcategorías vigiladas. Versión 0.195.0.
+
+---
+
 ### v0.194.0 — Los tres pendientes que no eran técnicos, medidos
 
 Solo documentación: ninguna migración, ninguna variable, ningún flujo tocado.
