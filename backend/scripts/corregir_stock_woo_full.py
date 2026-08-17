@@ -50,9 +50,46 @@ async def main() -> int:
     ap.add_argument("--aplicar", action="store_true")
     args = ap.parse_args()
 
+    # ── CANDADO (17-ago): este script está SUPERADO, y aplicarlo hace daño ────
+    # Aquí el problema NO es que lea una tabla congelada (el `FULL=` de la salida
+    # sale de `canal_inventario`, detenida el 13-ago, pero es DECORATIVO: solo
+    # se imprime, no decide nada).
+    #
+    # El problema es la premisa. Este script empuja Woo = Odoo, el VALOR
+    # ABSOLUTO, sobre una lista de SKUs congelada en un archivo del 27-jul. Y
+    # desde el 17-jul Woo es la fuente de verdad de las VENTAS, que Odoo no
+    # registra: alinear Woo a Odoo le devuelve el stock que Woo bajó PORQUE
+    # VENDIÓ. Es exactamente lo que bloquea `odoo_watch.py:159` y lo que
+    # `sync_odoo_woo_seguro` se escribió para no hacer.
+    #
+    # Su corrección original (los 172 SKUs de la auditoría) ya se aplicó el
+    # 27-jul. Re-correrlo hoy no repite ese arreglo: infla inventario.
+    # Va ANTES de abrir el JSON a propósito: si el archivo no está, el mensaje
+    # que hay que leer es el del candado, no un stack trace de FileNotFound.
+    # Texto en ASCII: la consola de Windows abre en cp1252.
+    if args.aplicar:
+        log.info("""
+------------------------------------------------------------------------
+  [!] ESTE SCRIPT NO SE APLICA MAS - quedo superado el 28-jul
+------------------------------------------------------------------------
+  Empuja Woo = Odoo (valor ABSOLUTO) sobre una lista congelada en un
+  archivo del 27-jul. Desde el 17-jul Woo es la fuente de verdad de las
+  ventas y Odoo no las registra, asi que alinear Woo a Odoo le devuelve
+  el stock que Woo bajo porque VENDIO.
+
+  En su lugar:  python -m scripts.sync_odoo_woo_seguro --aplicar
+                (excluye los huecos que se explican por ventas)
+
+  El dry-run sigue disponible para diagnostico: quitale --aplicar.
+------------------------------------------------------------------------
+""")
+        return 2
+
     skus = json.load(open(CLASIF, encoding="utf-8"))["confirmados_full"]
-    log.info("Corrección Woo = Odoo (stock que ya está en FULL) · %s · %d SKU(s)\n",
-             "APLICANDO" if args.aplicar else "DRY-RUN", len(skus))
+    log.info("Correccion Woo = Odoo (stock que ya esta en FULL) · DRY-RUN · %d SKU(s)",
+             len(skus))
+    log.info("  (ojo: la columna FULL= sale de canal_inventario, congelada el "
+             "13-ago - es informativa y esta vieja)\n")
 
     # Odoo (verdad para este grupo)
     uid = odoo._uid()

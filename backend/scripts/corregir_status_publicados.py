@@ -87,6 +87,19 @@ async def aplicar(items: list[dict]) -> dict:
 
 
 def main() -> None:
+    # CANDADO (16-ago): el padrón de "¿está publicado en algún canal?" sale de
+    # `canal_inventario`, congelada el 13-ago 04:23. Dos maneras de equivocarse,
+    # y la segunda es la que cuesta: una publicación que se CERRÓ después del
+    # 13-ago sigue apareciendo como viva, y este script pondría su producto en
+    # `publish` — visible en chunche.shop, según su propio docstring— por un
+    # canal que ya no existe.
+    from scripts import _candado_congelado
+    _candado_congelado.exigir_viva(
+        "canal_inventario", va_a_escribir="--aplicar" in sys.argv,
+        que_decide="qué productos están publicados en algún canal y por lo "
+                   "tanto deben pasar de draft a `publish` (visibles en la tienda)",
+        alternativa="channel.listings, que es donde vive el estado de los "
+                    "canales desde el corte (services/channel_read.py)")
     items = candidatos()
     print(f"Productos publicados en algún canal pero en draft/inprogress: {len(items)}")
     d = sum(1 for x in items if x["estado"] == "draft")

@@ -149,29 +149,100 @@ La frescura de cada tabla, medida el 16-ago:
 | `amazon_progress` · `amazon_imagenes` | 13-ago | quietas, pero por falta de altas |
 | `productos` | 15-ago 17:27 | **viva** — la escribe `odoo_watch` |
 
-Cruzando las dos tablas:
+### ⚠️ Y la lista de "5 congelados" estaba mal — se corrigió leyendo el código
 
-**Los 5 que leen una foto DETENIDA — correrlos hoy da respuestas equivocadas:**
-`sync_odoo_woo_seguro` · `actualizar_comision` · `backfill_dims_validados` ·
-`corregir_stock_woo_full` · `corregir_status_publicados`.
+La primera versión de esta sección clasificó por **qué tabla toca cada script**.
+Al ir a ponerles el candado y abrir los archivos, dos de los cinco acusados no
+tenían el defecto, y otros que estaban en el grupo "sano" sí:
 
-Es exactamente el patrón que costó los 964 pedidos fantasma: **una tabla
-congelada no contesta "no sé", contesta con seguridad lo que era cierto el
-13-ago.** La diferencia es que aquellos corrían solos y estos los dispara una
-persona — el daño depende de quién los invoque, no del calendario.
+| Script | Lo que decía | Lo que dice el código |
+|---|---|---|
+| `actualizar_comision` | lee `costos_finales` congelada | **lee kubera** (`filas_objetivo` → `sdb`) y escribe por el camino F6. Ya estaba migrado. |
+| `backfill_dims_validados` | lee `costos_finales` congelada | lee MySQL **a propósito**: rescata los `largo/alto/ancho/peso` que solo viven ahí. Es arqueología, como los `rescatar_*`. |
+| `corregir_stock_woo_full` | lee congelado para decidir | su `canal_inventario` es **decorativo** (solo se imprime). Su defecto es otro y peor. |
+| `alinear_ml_drop` | tabla viva | lee `stock_real` del caché **congelado** — estaba en el grupo equivocado |
 
-**Los 6 que leen tablas vivas** (`alinear_ml_drop`, `alinear_amazon_drop`,
-`sincronizar_ml_huerfanas`, `corregir_stock_amazon`, `competencia_analisis`,
-`reporte_sync_desde_ml`) sí se rompen el día del retiro, no antes.
+**El error de método:** clasifiqué por la tabla que aparece en el `FROM`, no por
+si esa lectura **decide una escritura**. Son dos preguntas distintas, y la
+segunda es la única que importa — es la misma lección de CLAUDE.md
+(*"busca quién la LEE PARA DECIDIR"*) aplicada a medias. Contar tablas es barato;
+leer el código es lo que dice quién se equivoca.
 
-**`marcar_amazon_muertas` es el caso aparte, y el modelo a seguir**: ya escribe
-en los dos lados —`UPDATE canal_inventario` y después
-`channel_mirror.backfill_situacion(...)` a kubera—. Solo hay que quitarle la
-mitad de MySQL. Es el único de los 13 que empezó a migrarse solo.
+### La clasificación buena, y el candado que le puso cada uno
 
-**Orden sugerido:** ponerle un candado a los 5 congelados (que aborten al
-arrancar, con el motivo) **antes** de repuntar nada. Un script roto que falla
-ruidosamente es inofensivo; uno roto que contesta, no.
+**Abortan al aplicar** (leen congelado y con eso deciden qué escribir):
+
+| Script | Qué decide mal | Candado |
+|---|---|---|
+| `sync_odoo_woo_seguro` | a qué SKUs **no** subirles stock porque el hueco se explica por ventas | aborta con `--aplicar` |
+| `corregir_status_publicados` | qué productos pasar a `publish` (**visibles en la tienda**) | aborta con `--aplicar` |
+
+`sync_odoo_woo_seguro` es el peor de los 13, y por una razón que no se ve en una
+foto: **su protección se vacía sola con el calendario.** La regla de exclusión
+pregunta por ventas en `NOW() - INTERVAL 30 DAY`; la ventana avanza y los datos
+se quedan en el 13-ago. Hoy cubre parte; **en un mes dará `ventas = 0` para todo,
+ninguna exclusión se disparará, y el script se convertirá en el sync ciego que
+existe para no ser.** Sin un solo error en pantalla.
+
+**Superado, se archiva de hecho:**
+
+- `corregir_stock_woo_full` — empuja **Woo = Odoo absoluto** sobre una lista
+  congelada en un archivo del 27-jul (que además ya no está en el repo). Desde
+  el 17-jul Woo es la fuente de verdad de las ventas y Odoo no las registra:
+  alinear Woo a Odoo devuelve el stock que Woo bajó **porque vendió**. Es lo que
+  bloquea `odoo_watch.py:159` y lo que `sync_odoo_woo_seguro` se escribió para
+  no hacer. Su corrección original ya se aplicó una vez. Aborta con `--aplicar`
+  y manda al reemplazo.
+
+**No necesitaba aborto, necesitaba que se le quite el atajo:**
+
+- `alinear_ml_drop` — ya traía su propio camino honesto (`--en-vivo`, que le
+  pregunta a ML por cada publicación). El caché era solo el default barato. Ahora
+  `--aplicar` **exige** `--en-vivo`; el dry-run sobre caché se conserva con un
+  cartel, porque sirve para ver el tamaño del problema.
+
+**Punto ciego, sin candado** — leen el caché congelado solo para armar la LISTA
+de candidatos, y después preguntan **en vivo** al canal antes de escribir. Fallan
+por omisión (dejan de ver lo nuevo), no actuando mal:
+
+`marcar_amazon_muertas` · `alinear_amazon_drop` · `publicar_walmart` ·
+`sincronizar_ml_huerfanas`
+
+`alinear_amazon_drop` lo dice en un comentario propio: *"el estado del caché
+nunca decide si se escribe"*. Trancarlos sería ruido.
+
+**`marcar_amazon_muertas` sigue siendo el modelo**: ya escribe en los dos lados
+—`UPDATE canal_inventario` y después `channel_mirror.backfill_situacion(...)`—.
+Solo hay que quitarle la mitad de MySQL.
+
+### Cómo es el candado
+
+`backend/scripts/_candado_congelado.py`. **Mide** la edad real de la tabla en el
+momento de correr, en vez de llevar la fecha escrita a mano: si mañana alguien
+repunta el script o resucita la tabla, **el candado se quita solo**. Una fecha
+hardcodeada hay que ir a borrarla, y lo que se olvida borrar se vuelve un bloqueo
+sin dueño.
+
+- tabla viva → se aparta en silencio
+- congelada + dry-run → deja pasar con un cartel de qué no creerle
+- congelada + va a escribir → **aborta (exit 2)** con el motivo y la alternativa
+- **no se pudo medir + va a escribir → aborta igual** (falla cerrada)
+
+Bloquea la **escritura**, no el diagnóstico: un dry-run que solo imprime es
+inofensivo y sirve para entender.
+
+`costos_finales` **no está** en el mapa del candado aunque también esté detenida,
+y la razón es la trampa que este proyecto ya pisó cuatro veces: sus escrituras
+legítimas siempre fueron esporádicas (14 filas el 5-ago, 2 el 10-ago, ninguna
+varios días), así que un umbral de frescura sobre ella **mediría el paso del
+calendario, no si alguien la escribe**. Solo entran tablas que, vivas, se
+escribían al menos cada hora — `canal_inventario` cada 15 min, `pedidos_ml` por
+cada venta. Ese es el requisito para que `MAX(fecha)` distinga *muerta* de
+*tranquila*.
+
+Pruebas: `backend/scripts/probar_candado_congelado.py`, 7 checks. La que más
+importa es la de falla cerrada — un `except` que dejara pasar la escritura sería
+el mismo defecto que el candado viene a tapar.
 
 ## Lo que el barrido confirma del método
 

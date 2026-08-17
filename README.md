@@ -11122,6 +11122,88 @@ nada: estaba roto.
 
 Sin migraciones ni variables nuevas. Versión 0.192.0.
 
+### v0.198.0 — El candado de los scripts que le preguntan a una tabla muerta
+
+Cuatro scripts de mantenimiento decidían qué escribir en Woo, ML o Amazon
+consultando tablas de MySQL congeladas el 13-ago. **No fallaban: contestaban.**
+Es el mecanismo de los 964 pedidos fantasma, con la única diferencia de que a
+estos los dispara una persona.
+
+**El candado** (`backend/scripts/_candado_congelado.py`) **mide** la edad real de
+la tabla al correr, en vez de llevar la fecha a mano: si mañana se repunta el
+script o revive la tabla, se quita solo. Bloquea la **escritura** y deja pasar el
+**dry-run** —un dry-run que solo imprime es inofensivo y sirve para entender— y
+si no puede medir con `--aplicar`, **aborta igual**: dejar pasar una escritura
+porque falló la comprobación sería el mismo defecto que viene a tapar.
+
+| Script | Candado |
+|---|---|
+| `sync_odoo_woo_seguro` | aborta con `--aplicar` |
+| `corregir_status_publicados` | aborta con `--aplicar` |
+| `corregir_stock_woo_full` | aborta: superado por `sync_odoo_woo_seguro` |
+| `alinear_ml_drop` | `--aplicar` ahora exige `--en-vivo` |
+
+**El peor de los cuatro se degradaba solo.** `sync_odoo_woo_seguro` existe para
+NO resucitar mercancía vendida: excluye los SKUs cuyo hueco de stock se explica
+por ventas de los últimos 30 días. Pero pregunta por `NOW() - INTERVAL 30 DAY`, y
+la ventana avanza con el calendario mientras `pedidos_ml` se quedó en el 13-ago.
+Hoy cubre parte. **En un mes daría `ventas = 0` para todo, ninguna exclusión se
+dispararía, y se convertiría en el sync ciego que existe para no ser** — sin un
+solo error en pantalla.
+
+`corregir_stock_woo_full` resultó estar superado, no roto: empuja Woo = Odoo
+absoluto sobre una lista de un archivo del 27-jul que ya no está en el repo.
+Su lectura de `canal_inventario` es decorativa (solo se imprime).
+
+`alinear_ml_drop` no necesitaba aborto: **ya traía su propio camino honesto**
+(`--en-vivo` le pregunta a ML por cada publicación). El caché era el atajo
+barato. Ahora `--aplicar` lo exige.
+
+**Y la lista de "5 congelados" de v0.194.0 estaba mal.** Al abrir los archivos
+para trancarlos, dos de los cinco acusados no tenían el defecto:
+`actualizar_comision` **lee kubera** y ya escribe por el camino F6;
+`backfill_dims_validados` lee MySQL **a propósito** (rescata dims que solo viven
+ahí). Y `alinear_ml_drop`, que estaba en el grupo "sano", sí leía congelado. El
+error de método: clasifiqué por la tabla del `FROM`, no por si esa lectura
+**decide una escritura** — la lección de CLAUDE.md aplicada a medias. Contar
+tablas es barato; leer el código es lo que dice quién se equivoca.
+
+**Cuatro scripts NO llevan candado a propósito** (`marcar_amazon_muertas`,
+`alinear_amazon_drop`, `publicar_walmart`, `sincronizar_ml_huerfanas`): usan el
+caché congelado solo para armar la lista de candidatos y después preguntan en
+vivo al canal. Fallan por omisión, no actuando mal. Trancarlos sería ruido.
+
+**`costos_finales` quedó FUERA del mapa del candado** aunque también esté
+detenida: sus escrituras legítimas siempre fueron esporádicas (14 filas el 5-ago,
+2 el 10-ago, ninguna varios días), así que un umbral de frescura sobre ella
+mediría el paso del calendario, no si alguien la escribe. Es la trampa que este
+proyecto ya pisó cuatro veces. Solo entran tablas que, vivas, se escribían al
+menos cada hora.
+
+**Dos tropiezos del propio candado, conservados en el código porque valen.** La
+primera versión abortaba por un `UnicodeEncodeError` de un `─` decorativo: sí
+abortó, pero por el crash, no por decisión — una guarda que se cae por un
+carácter de adorno no es una guarda. El parche fue un `except UnicodeEncodeError`
+que **nunca dispara**, porque la consola de Windows no levanta la excepción:
+reemplaza en silencio y el mensaje sale picado (`apag?n`) justo cuando más
+importa entenderlo. La versión final no pregunta si la consola aguanta: manda
+algo que aguanta cualquiera (translitera NFKD).
+
+Pruebas nuevas: `probar_candado_congelado.py`, **7 checks, todos en verde**,
+incluida la de falla cerrada y la de la consola cp1252.
+
+⚠️ **Hallazgo aparte, sin tocar** (apareció midiendo, no lo buscaba):
+`HERR-0104-EST` tiene fila de costos en **MySQL** (hoy 07:16) y **ninguna** en
+`costing.costos_finales` de kubera, aunque sí está en `core.products`. Es el
+único SKU así de 4,377. Cuarenta minutos antes, `EDU-0004-PLA` fue al revés
+—kubera sí, MySQL no—, que es lo correcto bajo el corte F6. Mismo día, resultados
+opuestos: apunta a una rama condicional en el camino de costos de Crear. **No se
+tocó nada**; queda anotado para revisar.
+
+Sin migraciones ni variables nuevas. Versión 0.198.0.
+
+---
+
 ### v0.195.0 — Competencia: "Solo top" no filtraba, y un comando cierra una categoría
 
 **El botón "Solo top" contaba bien y no escondía nada.** La condición que

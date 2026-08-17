@@ -139,6 +139,20 @@ async def _escribir(aplicar: list) -> dict:
 
 def main() -> None:
     aplicar_real = "--aplicar" in sys.argv
+    # CANDADO (16-ago): la regla de exclusión de arriba se apoya ENTERAMENTE en
+    # `pedidos_ml`, congelada el 13-ago. Y este caso es el peor de todos porque
+    # se degrada solo: la ventana `NOW() - 30 DAY` avanza con el calendario
+    # mientras los datos se quedan quietos, así que la protección se vacía sin
+    # avisar. Hoy cubre parte de la ventana; en un mes dará `ventas=0` para
+    # TODO, ninguna exclusión se disparará, y este script se convertirá en el
+    # sync ciego que existe para no ser — resucitando mercancía vendida.
+    from scripts import _candado_congelado
+    _candado_congelado.exigir_viva(
+        "pedidos_ml", va_a_escribir=aplicar_real,
+        que_decide="a qué SKUs NO subirles el stock porque el hueco se explica "
+                   "por ventas recientes",
+        alternativa="repuntar `_ventas_recientes` a channel.orders "
+                    "(services/orders_write.py ya lee de ahí)")
     r = calcular()
     ap, ex = r["aplicar"], r["excluidos"]
     sube = [a for a in ap if a[2] > a[1]]

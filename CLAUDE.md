@@ -331,12 +331,22 @@ kubera.
    lista completa y su clasificación por peligro está en
    [docs/BARRIDO_LECTORES.md](docs/BARRIDO_LECTORES.md).
 
-   ⚠️ **Cinco de ellos ya son peligrosos HOY, no el día del retiro**, porque
-   leen tablas que llevan congeladas desde el 13-ago: `sync_odoo_woo_seguro`
-   (`pedidos_ml`), `actualizar_comision` y `backfill_dims_validados`
-   (`costos_finales`), `corregir_stock_woo_full` y `corregir_status_publicados`
-   (`canal_inventario`). Correr uno de esos es pedirle a una foto detenida que
-   decida — el patrón exacto de los 964 pedidos fantasma.
+   ✅ **Los peligrosos ya están trancados (v0.198.0).** Cuatro decidían con datos
+   congelados; el candado vive en `backend/scripts/_candado_congelado.py`, mide la
+   frescura real (así se quita solo si la tabla revive), **bloquea la escritura y
+   deja pasar el dry-run**, y falla CERRADO si no puede medir:
+
+   | Script | Candado |
+   |---|---|
+   | `sync_odoo_woo_seguro` | aborta con `--aplicar` — su exclusión por ventas **se vacía sola** con el calendario |
+   | `corregir_status_publicados` | aborta con `--aplicar` (publicaba en la tienda por canales muertos) |
+   | `corregir_stock_woo_full` | aborta: superado por `sync_odoo_woo_seguro` |
+   | `alinear_ml_drop` | `--aplicar` ahora exige `--en-vivo` |
+
+   Los otros cuatro que leen el caché congelado (`marcar_amazon_muertas`,
+   `alinear_amazon_drop`, `publicar_walmart`, `sincronizar_ml_huerfanas`) **no
+   llevan candado a propósito**: solo lo usan para armar la lista de candidatos y
+   después preguntan en vivo al canal. Fallan por omisión, no actuando mal.
 2. **Archivo de congelados**: tablas del robot Alibaba (`scraping_alibaba`,
    `atributos_ia`, `imagenes_producto`, `productos`), `legacy_costos_ml`, seeds
    de `fx_rates`/`pricing_params`, `marketplace_identity` y su cron.

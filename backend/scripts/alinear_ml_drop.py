@@ -164,7 +164,38 @@ def main() -> None:
     aplicar = "--aplicar" in sys.argv
     limite, offset = _arg("--limite"), _arg("--offset", 0) or 0
 
-    todos = candidatos(en_vivo="--en-vivo" in sys.argv)
+    # CANDADO (16-ago): este script no necesita aborto, necesita que se le quite
+    # el atajo. Su camino barato lee `stock_real` del CACHÉ `canal_inventario`,
+    # congelado el 13-ago; comparar ese número contra el Woo de hoy y escribirle
+    # la diferencia a ML es corregir el presente con una foto vieja.
+    #
+    # Pero el script ya trae su propio camino honesto: `--en-vivo` le pregunta a
+    # ML por cada publicación. Así que con --aplicar el `--en-vivo` deja de ser
+    # opcional. El dry-run sobre caché se conserva: es barato y sirve para ver
+    # el tamaño del problema, siempre que nadie le crea el veredicto.
+    en_vivo = "--en-vivo" in sys.argv
+    # Texto en ASCII a proposito: la consola de Windows abre en cp1252 y un
+    # caracter de adorno tira la guarda entera (ver scripts/_candado_congelado.py).
+    if aplicar and not en_vivo:
+        print("""
+------------------------------------------------------------------------
+  [!] con --aplicar hace falta --en-vivo
+------------------------------------------------------------------------
+  Sin --en-vivo el stock de ML sale del cache `canal_inventario`,
+  CONGELADO el 13-ago-2026 04:23 (apagon de espejos). Escribirle a ML la
+  diferencia entre una foto vieja y el Woo de hoy corrige el presente
+  con el pasado.
+
+  Correr:  python -m scripts.alinear_ml_drop --aplicar --en-vivo
+------------------------------------------------------------------------
+""")
+        sys.exit(2)
+    if not en_vivo:
+        print("  [!] cache `canal_inventario` congelado el 13-ago: los numeros de\n"
+              "      abajo son de ese dia. Un \"0 desalineadas\" aqui no significa\n"
+              "      nada. Usa --en-vivo para el veredicto real.\n")
+
+    todos = candidatos(en_vivo=en_vivo)
     mas = [c for c in todos if c["actual"] > c["objetivo"]]
     menos = [c for c in todos if c["actual"] < c["objetivo"]]
     print(f"Publicaciones ML DROP desalineadas: {len(todos)}")
