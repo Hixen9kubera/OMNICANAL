@@ -27,6 +27,8 @@ import MargenesRealesModal from "@/components/MargenesRealesModal";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
+import PanelHover from "@/components/PanelHover";
+import { CANAL_CORTO, CUENTA_DOT, CUENTA_INI } from "@/lib/canales";
 
 /* ── Tipos ─────────────────────────────────────────────────────────────── */
 
@@ -177,11 +179,9 @@ const fMoney = (n: number | null | undefined, dec = 0) =>
 const fNum = (n: number | null | undefined, dec = 0) =>
   n == null ? "—" : Number(n).toLocaleString("es-MX", { maximumFractionDigits: dec });
 
-const CUENTA_DOT: Record<string, string> = {
-  BEKURA: "bg-sky-500",
-  SANCORFASHION: "bg-violet-500",
-  AMAZON: "bg-amber-500",
-};
+/* CUENTA_DOT, CUENTA_INI y CANAL_CORTO se mudaron a lib/canales.ts (14-ago):
+   el popup de "Productos más vendidos" pinta las mismas cuentas y tenía sus
+   propios colores. */
 const ESTADO_CHIP: Record<string, string> = {
   activa: "bg-emerald-100 text-emerald-700",
   pausada: "bg-amber-100 text-amber-700",
@@ -317,10 +317,6 @@ const AYUDA_VENTA_KPI = {
   texto: "Venta BRUTA del período: no descuenta la comisión del marketplace, ni el costo, ni el envío. Es la suma exacta de las barras de la gráfica, incluida la venta de publicaciones ya cerradas, y el último día va en curso. ¿No cuadra con el panel de Mercado Libre? Aquí las canceladas se excluyen y los días se cortan con horario de México; ML las incluye y corta su ventana distinto.",
 };
 
-/* Iniciales de cuenta para las etiquetas compactas de precio */
-const CUENTA_INI: Record<string, string> = {
-  BEKURA: "BK", SANCORFASHION: "SC", AMAZON: "AMZ", GENERAL: "WOO",
-};
 
 /* PRECIO DE VENTA por canal. Solo cuenta la publicación ACTIVA (contrato de
    José): si varias activas comparten precio se muestra uno con sus etiquetas;
@@ -484,49 +480,6 @@ function VisitasCR({ fila, dias }: { fila: Fila; dias: number }) {
    cuenta —de dónde sale el número y con qué se compara— que en renglones se lee
    de un vistazo y en un párrafo no se lee. */
 
-/* ── PANEL AL PASAR EL CURSOR ──────────────────────────────────────────────
-   Un `title` nativo solo sabe pintar texto corrido, y comisión y envío no son
-   un número: son un número POR CANAL. Este panel muestra el desglose sin pedir
-   un clic (Eduardo, 10-ago) — abrir una ventana modal para leer dos renglones
-   sería peor que el problema.
-
-   Va POSICIONADO FIJO calculando el rect de la celda, no `absolute`: la tabla
-   vive dentro de un contenedor con overflow-x-auto y un panel absoluto quedaría
-   recortado por su borde (misma razón que en components/Ayuda.tsx). Y se pinta
-   ARRIBA de la celda cuando no cabe abajo, que es lo normal en las últimas
-   filas de la página. */
-function PanelHover({ children, panel, ancho = 290 }: {
-  children: React.ReactNode; panel: React.ReactNode; ancho?: number;
-}) {
-  const [pos, setPos] = useState<{ x: number; y: number; arriba: boolean } | null>(null);
-  const abrir = useCallback((el: HTMLElement) => {
-    const r = el.getBoundingClientRect();
-    const medio = ancho / 2 + 8;
-    const x = Math.min(Math.max(r.left + r.width / 2, medio), window.innerWidth - medio);
-    const arriba = r.bottom + 190 > window.innerHeight;
-    setPos({ x, y: arriba ? r.top - 8 : r.bottom + 8, arriba });
-  }, [ancho]);
-  return (
-    <span className="inline-block w-full cursor-help"
-          onMouseEnter={(e) => abrir(e.currentTarget)}
-          onMouseLeave={() => setPos(null)}>
-      {children}
-      {pos && (
-        <span
-          role="tooltip"
-          style={{
-            left: pos.x, top: pos.y, width: ancho,
-            transform: `translateX(-50%)${pos.arriba ? " translateY(-100%)" : ""}`,
-          }}
-          className="pointer-events-none fixed z-50 block whitespace-normal break-words rounded-lg bg-slate-900 px-3 py-2 text-left text-[11px] font-normal normal-case leading-snug tracking-normal text-slate-100 shadow-xl"
-        >
-          {panel}
-        </span>
-      )}
-    </span>
-  );
-}
-
 /* SIN COSTO PERO VENDIENDO. De los 13,475 SKUs listados, 5,493 no tienen costo
    capturado — marcarlos todos sería ruido y se dejaría de ver la marca. Pero
    solo ~126 de ellos VENDIERON en el período, y esos son otra cosa: ahí ya se
@@ -621,9 +574,6 @@ function FiltroMultiple({ etiqueta, opciones, valor, onChange }: {
   );
 }
 
-const CANAL_CORTO: Record<string, string> = {
-  mercado_libre: "Meli", amazon: "Amazon", general: "Web",
-};
 
 /* UDS · $VENTA. Las dos cifras de la celda son del PERÍODO elegido arriba y
    suman todas las cuentas, que es justo lo que no se ve mirando el número.

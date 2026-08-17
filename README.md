@@ -10002,6 +10002,49 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.200.0 — Las cuentas se ven igual en las dos pantallas, y se ve en cuál está activa
+
+Eduardo, sobre el renglón fundido de v0.199.0: *«que se vea en cuál de las 2
+cuentas está activa si aplica el caso, o que muestre que en ambas está activa o
+en ninguna»*, y *«que se vea con los colores como en la tabla general y su
+tarjeta»*.
+
+**El problema real eran dos paletas para lo mismo.** El popup pintaba iniciales
+`BK` en índigo y `SC` en celeste; la tabla de Análisis pinta puntos, `BK` en
+celeste y `SC` en violeta. El mismo SKU se veía de dos maneras según dónde se
+mirara, y el celeste significaba una cuenta en una pantalla y otra en la otra.
+
+**Se comparte el código, no se copia.** `PanelHover` sale de `analisis/page.tsx`
+a `components/PanelHover.tsx`, y `CUENTA_DOT` / `CUENTA_INI` / `CANAL_CORTO` a
+`lib/canales.ts`. Dos copias del mismo panel se separan a la primera corrección
+que solo se haga en una — que es exactamente cómo nacieron las dos paletas.
+
+**El popup usa ahora el mismo patrón que la tabla:** los puntos de color por
+cuenta y, al pasar el cursor, la tarjeta con el censo cuenta por cuenta
+(`● Meli · BK — pausada`), cerrando con la lectura de conjunto.
+
+**La etiqueta de estado se queda CORTA.** Se probó escribiendo el alcance
+—`ACTIVA SOLO EN BK`, `EN NINGUNA`, `ACTIVA EN AMBAS`— y Eduardo pidió quitarlo:
+sobra. Los puntos ya dicen en qué cuentas está y la tarjeta cuál está activa, así
+que el texto largo repetía lo mismo, ensanchaba el renglón y obligaba a partirlo
+en dos líneas. Queda `ACTIVA` / `PAUSADA` / `SIN PUB.` como en la tabla.
+
+**Un hallazgo del propio cambio:** de los 10 más vendidos, **7 están a la venta
+en una sola cuenta** y 2 en ninguna. Solo uno está activo en ambas. Eso no se
+veía cuando el SKU salía dos veces compitiendo consigo mismo.
+
+**Verificado contra el clon de producción:** los puntos salen celeste/violeta
+como en la tabla, con el estado por cuenta correcto en datos reales
+(`TEC-0778-NEG` activa en las dos, `MUE-0163-TEL` solo en Sancor,
+`TEC-2162-NEG` en ninguna). La tabla de Análisis sigue montando sus
+`PanelHover` después de la mudanza (10 por fila) y `next build` compila las 19
+rutas. **No se pudo probar la apertura de la tarjeta con el cursor**: el panel
+del navegador no estaba desplegado, y el disparo sintético del evento tampoco
+abre la tarjeta YA EXISTENTE de la tabla —o sea que es límite de la prueba, no
+del cambio—.
+
+Sin migraciones ni variables nuevas. Versión 0.200.0.
+
 ### v0.199.0 — «Productos más vendidos»: un renglón por SKU, y el top ya no pierde productos
 
 Pedido de Eduardo: en la lista **General** que se muestre *«nada más por SKU de

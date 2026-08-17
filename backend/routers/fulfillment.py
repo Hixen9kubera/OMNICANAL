@@ -1143,6 +1143,11 @@ async def margenes_reales(
             # En qué cuentas vendió: la lista General ya no lleva una etiqueta
             # por renglón, así que el renglón tiene que decir de dónde sale.
             "cuentas": sorted({g["cuenta"] for g in grupo}),
+            # …Y EN CUÁL ESTÁ ACTIVA (Eduardo, 14-ago). El estado resuelto de
+            # arriba dice que se puede comprar, pero no DÓNDE: un SKU activo en
+            # Sancor y pausado en Bekura se leía igual que uno activo en las
+            # dos, y la acción que pide cada caso es distinta.
+            "estado_cuenta": {g["cuenta"]: g["estado"] for g in grupo},
         }
         # Visitas: se suman TODAS las publicaciones del SKU en las cuentas del
         # grupo. `dias_datos` es cuántos días trajo ML de verdad — la ventana no

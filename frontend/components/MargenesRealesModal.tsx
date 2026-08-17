@@ -25,6 +25,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BadgePercent, RefreshCw, Tag, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
+import PanelHover from "@/components/PanelHover";
+import { CUENTA_DOT, CUENTA_INI, CUENTA_NOMBRE } from "@/lib/canales";
 
 interface Fila {
   sku: string; titulo: string | null; uds: number; ingreso: number;
@@ -39,6 +41,9 @@ interface Fila {
   /* En qué cuentas vendió. En la lista General un renglón puede venir de las
      dos, y entonces el estado ya es el resuelto entre ambas. */
   cuentas?: string[];
+  /* …y cómo está en CADA una: {BEKURA: 'pausada', SANCORFASHION: 'activa'}.
+     El estado resuelto dice que se puede comprar, no dónde. */
+  estado_cuenta?: Record<string, string>;
 }
 interface Respuesta {
   dias: number; pendientes: number; consultadas: number; nota: string;
@@ -56,19 +61,70 @@ const fMoney = (v: number | string | null | undefined, dec = 0) =>
 const fNum = (v: number | string | null | undefined, dec = 0) =>
   v == null ? "—" : Number(v).toLocaleString("es-MX", { minimumFractionDigits: dec, maximumFractionDigits: dec });
 
-const NOMBRE_CUENTA: Record<string, string> = {
-  BEKURA: "Kubera (BEKURA)", SANCORFASHION: "San Corpe (SANCORFASHION)",
-};
+/* Los colores y las iniciales salen de lib/canales.ts, los MISMOS que la tabla
+   de Análisis (Eduardo, 14-ago). Antes este popup tenía su propia paleta —BK en
+   índigo, SC en celeste— y la tabla otra —BK celeste, SC violeta—, así que el
+   mismo SKU se veía de dos maneras según dónde se mirara. */
+const NOMBRE_CUENTA = CUENTA_NOMBRE;
 // Etiqueta corta por fila para la vista GENERAL (Eduardo, 6-ago: "Ambas" es UNA
 // lista con las primeras 10, no las dos tablas al mismo tiempo).
 //
 // Desde el 14-ago hay UN renglón POR SKU: los chips dicen en qué cuentas vendió
 // —pueden ser los dos— y las cifras vienen sumadas. Antes el mismo SKU salía dos
 // veces, una por cuenta, y competía consigo mismo por un lugar del top.
-const CHIP_CUENTA: Record<string, { ini: string; clase: string }> = {
-  BEKURA: { ini: "BK", clase: "bg-indigo-50 text-indigo-700" },
-  SANCORFASHION: { ini: "SC", clase: "bg-sky-50 text-sky-700" },
-};
+/* PUNTOS DE CUENTA CON SU TARJETA — el mismo patrón que la tabla de Análisis.
+   Los puntitos dicen EN CUÁNTAS cuentas está el SKU, pero no cuáles ni cómo, y
+   "está en dos cuentas" con una pausada se leía igual que con las dos vendiendo
+   (Eduardo, 14-ago). La tarjeta abre el censo, cuenta por cuenta. */
+function PuntosCuenta({ f }: { f: Fila }) {
+  const ctas = f.cuentas ?? [];
+  const porCta = f.estado_cuenta ?? {};
+  const puntos = (
+    <span className="flex items-center gap-0.5">
+      {ctas.map((c) => (
+        <span key={c} className={`h-2 w-2 rounded-full ${CUENTA_DOT[c] ?? "bg-slate-400"}`} />
+      ))}
+    </span>
+  );
+  if (!ctas.length) return puntos;
+  const venden = ctas.filter((c) => porCta[c] === "activa").length;
+  return (
+    <PanelHover ancho={300} panel={
+      <>
+        <span className="block font-semibold text-white">
+          Vendió en {ctas.length} {ctas.length === 1 ? "cuenta" : "cuentas"}
+        </span>
+        {ctas.map((c) => {
+          const vende = porCta[c] === "activa";
+          return (
+            <span key={c} className="mt-1 flex items-baseline justify-between gap-3">
+              <span className="truncate">
+                <span className={vende ? "text-emerald-300" : "text-slate-400"}>●</span>
+                {" "}Meli · {CUENTA_INI[c] ?? c}
+              </span>
+              <span className={`shrink-0 ${vende ? "text-emerald-300" : "text-slate-400"}`}>
+                {porCta[c] === "activa" ? "activa"
+                 : porCta[c] === "pausada" ? "pausada" : "sin publicación"}
+              </span>
+            </span>
+          );
+        })}
+        <span className="mt-1.5 block text-slate-400">
+          {venden === 0
+            ? "Ninguna puede comprarse ahora mismo: vendió en el período pero hoy no está a la venta en ningún lado."
+            : venden === ctas.length
+              ? "Se puede comprar en todas."
+              : `${venden} de ${ctas.length} se puede comprar; en la otra existe pero no vende.`}
+        </span>
+      </>
+    }>{puntos}</PanelHover>
+  );
+}
+
+/* La etiqueta de estado se quedó CORTA a propósito (Eduardo, 14-ago). Se probó
+   con el alcance escrito —"ACTIVA SOLO EN BK", "EN NINGUNA"— y sobra: los
+   puntos de arriba ya dicen en qué cuentas está y su tarjeta cuál está activa,
+   así que el texto largo repetía lo mismo y ensanchaba el renglón. */
 
 /* Situación de la publicación en esa cuenta. Importa para leer el margen: una
    pausada ya no está sangrando aunque su fila siga en rojo, y una activa con
@@ -251,12 +307,11 @@ function TablaCuenta({ titulo, sub, filas, conCuentas }: {
                     {/* Un chip POR CUENTA donde vendió. En la pestaña de una
                         cuenta sobra —el título ya lo dice— y solo sale en la
                         General, que ahora trae un renglón por SKU. */}
-                    {conCuentas && (f.cuentas ?? []).map((c) => CHIP_CUENTA[c] && (
-                      <span key={c} title={NOMBRE_CUENTA[c] ?? c}
-                            className={`rounded px-1 text-[9px] font-bold ${CHIP_CUENTA[c].clase}`}>
-                        {CHIP_CUENTA[c].ini}
-                      </span>
-                    ))}
+                    {/* Puntos + tarjeta, igual que en la tabla. En la pestaña
+                        de una cuenta sobra: el título ya dice cuál es. */}
+                    {conCuentas && (
+                      <span className="shrink-0"><PuntosCuenta f={f} /></span>
+                    )}
                     {(() => {
                       const e = CHIP_ESTADO[f.estado ?? "otra"] ?? CHIP_ESTADO.otra;
                       return (
