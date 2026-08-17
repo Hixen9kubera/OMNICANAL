@@ -313,16 +313,30 @@ kubera.
 1b. **La foto de stock de Odoo NO tiene casa en kubera.** `odoo_watch` compara
    contra `productos.stock_odoo` (MySQL) y la escribe cada 30 min — o sea que
    `productos` NO está del todo congelada. `core.products` no tiene esa columna.
-   Al retirar el esquema, ese vigilante se queda sin dónde guardar. Decisión
-   pendiente: darle casa o **apagarlo** (Odoo está en retiro y Woo es la fuente
-   de verdad del stock; hoy solo vigila 4,786 de los 13,030 SKUs de Odoo porque
-   su lista dejó de crecer el 23-jul).
+   Al retirar el esquema, ese vigilante se queda sin dónde guardar.
 
-1c. **Los 8 scripts de mantenimiento** que se corren a mano y todavía leen
-   MySQL: `alinear_ml_drop`, `alinear_amazon_drop`, `marcar_amazon_muertas`,
-   `corregir_status_publicados`, `corregir_stock_woo_full`,
-   `sincronizar_ml_huerfanas`, `publicar_walmart`, `sync_odoo_woo_seguro`.
-   Repuntar o archivar antes del retiro del esquema.
+   **Medido el 16-ago**: vigila **5,381 SKUs** (los 5,381 tienen foto), y está
+   **vivo**: 518 avisos de campana en total, **76 en los últimos 7 días**, el
+   más reciente el 15-ago 17:27. Su `auto_push` está apagado **y no se puede
+   encender**: `odoo_watch.py:159` lo bloquea si `stock_watch` está encendido,
+   porque este empuje manda el valor ABSOLUTO de Odoo y resucitaría mercancía
+   vendida. **Su único producto son los avisos.**
+
+   Decisión pendiente: darle casa (`ops.odoo_stock_photo`, mismo molde que
+   `ops.stock_watch_photo`) o **apagarlo**. La pregunta que la decide no es
+   técnica: **¿quién lee esos 76 avisos por semana y qué hace con ellos?**
+
+1c. **Los 13 scripts de mantenimiento** que se corren a mano y todavía leen
+   MySQL (eran 8 en la lista vieja; el barrido del 16-ago encontró 5 más). La
+   lista completa y su clasificación por peligro está en
+   [docs/BARRIDO_LECTORES.md](docs/BARRIDO_LECTORES.md).
+
+   ⚠️ **Cinco de ellos ya son peligrosos HOY, no el día del retiro**, porque
+   leen tablas que llevan congeladas desde el 13-ago: `sync_odoo_woo_seguro`
+   (`pedidos_ml`), `actualizar_comision` y `backfill_dims_validados`
+   (`costos_finales`), `corregir_stock_woo_full` y `corregir_status_publicados`
+   (`canal_inventario`). Correr uno de esos es pedirle a una foto detenida que
+   decida — el patrón exacto de los 964 pedidos fantasma.
 2. **Archivo de congelados**: tablas del robot Alibaba (`scraping_alibaba`,
    `atributos_ia`, `imagenes_producto`, `productos`), `legacy_costos_ml`, seeds
    de `fx_rates`/`pricing_params`, `marketplace_identity` y su cron.
@@ -333,9 +347,15 @@ kubera.
    `Documents/respaldos_kubera_ml`, hecho el 11-ago sin tablas de tokens).
    WordPress se queda: vive en el mismo hosting y el panel lo lee directo.
 5. **MIGRACION_FINAL.md**: el acta de defunción con el mapa de qué quedó dónde.
-6. **Un lector externo pendiente**: `MonitoreoOperaciones` (servicio Railway)
-   lee `productos` de MySQL. Cuando se retire el esquema hay que repuntarlo a
-   `core.products` o avisar que ese panel se congela.
+6. ~~**Un lector externo pendiente**: `MonitoreoOperaciones`~~ — **SE RETIRA**
+   (decisión de Eduardo, 16-ago-2026). Lee 7 tablas, no 1
+   (`ml_backlog`, `amazon_progress`, `amazon_backlog`, `scraping_alibaba`,
+   `atributos_ia`, `costos_ml`, `productos`), pero **no se despliega desde el
+   23-jun** y ya no opera. **No hay nada que repuntar**: se da de baja el
+   servicio en Railway. Antes de apagarlo conviene avisar que tres de sus
+   tablas (`scraping_alibaba`, `atributos_ia`, `costos_ml`) son del robot de
+   Alibaba, desconectado desde el 23-jul — quien todavía abriera ese tablero
+   llevaba meses leyendo historia congelada.
 
 ### Reglas que siguen vigentes
 

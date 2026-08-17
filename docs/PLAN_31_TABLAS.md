@@ -185,6 +185,36 @@ que ya tiene `listing_id`, `url`, `status`, `situacion` y `product_type`. Lo
 una persona. El split del consejo sigue siendo correcto, pero su riesgo es de
 archivo histórico, no de una decisión automática que se equivoque.
 
+#### El caso `MUN-0023-MUL` — resuelto: no es de migración
+
+La única discrepancia de Amazon que quedaba (1 de 1,791). Medido el 16-ago:
+
+- La bitácora dice **publicado el 6-ago 22:00**, `product_type=COSTUME_OUTFIT`,
+  `success=1`, `status=PUBLISHED`.
+- `amazon_backlog` id 4332 guarda la respuesta cruda de Amazon:
+  **`status: ACCEPTED`**, `issues: []`.
+- En kubera, su fila de Amazon es **el único cascarón completamente vacío de
+  las 1,791**: sin `listing_id`, sin `status`, sin `situacion`, sin ASIN. Todas
+  las demás traen al menos una de esas.
+- El producto **sí existe**: publicado en las dos cuentas de ML
+  (`MLM3264126815`, `MLM3264126789`, pausadas) y vivo en TikTok.
+
+**La causa es del publicador, no de la migración:** `ACCEPTED` en la Listings
+Items API significa *"recibí tu envío"*, no *"tu publicación está viva"*.
+Nuestro publicador lo anota como `PUBLISHED, success=1` en el acto. En los 10
+días siguientes el sync de 15 min **nunca** reportó ese SKU: la publicación
+nunca llegó a existir.
+
+**No bloquea el paso 3.** La gemela contesta lo mismo que el lector viejo, que
+es su trabajo. Queda como pendiente de producto: **el publicador confunde
+"aceptado" con "publicado"**, y este SKU es el caso donde la diferencia se ve.
+
+> ⚠️ Un intento de confirmarlo contra Amazon desde local devolvió `None` —
+> pero **no era evidencia**: el `.env` local no tiene credenciales de SP-API,
+> así que "no encontrado" y "no pude preguntar" salen idénticos. La conclusión
+> de arriba se sostiene solo en los datos. Mismo error de familia que medir un
+> latido con una señal que la cosa medida no emite.
+
 **Falta:** doble lectura con log de discrepancia en los 25 sitios, repunte por
 archivo empezando por los de menos riesgo (`studio`, `presencia`, `publicar`) y
 dejando `inventario` al final (8 sitios, mueve stock).

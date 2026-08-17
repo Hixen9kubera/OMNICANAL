@@ -10990,6 +10990,54 @@ nada: estaba roto.
 
 Sin migraciones ni variables nuevas. Versión 0.192.0.
 
+### v0.194.0 — Los tres pendientes que no eran técnicos, medidos
+
+Solo documentación: ninguna migración, ninguna variable, ningún flujo tocado.
+Lo que cambia es que tres decisiones que estaban escritas de memoria ahora
+tienen número.
+
+**`MonitoreoOperaciones` SE RETIRA** (decisión de Eduardo). Leía 7 tablas y no
+1, pero no se despliega desde el 23-jun. No hay nada que repuntar: se da de
+baja. Deja de ser bloqueador del retiro del esquema. Vale avisar antes de
+apagarlo que tres de sus tablas son del robot de Alibaba, desconectado desde el
+23-jul — quien abriera ese tablero llevaba meses leyendo historia congelada.
+
+**Los 13 scripts de mantenimiento: cinco ya están rotos, no lo estarán.** El
+plan decía que dejarían de servir *el día del retiro*. Al cruzar cada script
+con la frescura real de la tabla que lee, cinco (`sync_odoo_woo_seguro`,
+`actualizar_comision`, `backfill_dims_validados`, `corregir_stock_woo_full`,
+`corregir_status_publicados`) leen tablas **congeladas desde el 10 y el
+13-ago**. Correrlos hoy no falla: contesta con seguridad lo que era cierto hace
+seis días — el patrón de los 964 pedidos fantasma, con la única diferencia de
+que a estos los dispara una persona. Propuesta: candado que aborte al arrancar
+**antes** de repuntar nada. `marcar_amazon_muertas` es la excepción y el
+modelo: ya escribe en los dos lados.
+
+**`odoo_watch` está vivo, y su único producto son avisos.** 5,381 SKUs
+vigilados, 76 avisos de campana en 7 días. Su `auto_push` no solo está apagado:
+**no se puede encender** —`odoo_watch.py:159` lo bloquea porque manda el valor
+ABSOLUTO de Odoo y resucitaría mercancía vendida—. Así que darle casa en kubera
+(`ops.odoo_stock_photo`, mismo molde que `ops.stock_watch_photo`) es un trabajo
+conocido de ~5 pasos, y la pregunta que decide si vale la pena no es técnica:
+quién lee esos avisos y qué hace con ellos.
+
+**`MUN-0023-MUL` resuelto: no era de migración.** La bitácora lo da por
+publicado el 6-ago; la respuesta cruda de Amazon guardada en `amazon_backlog`
+dice **`ACCEPTED`**, que significa *"recibí tu envío"*, no *"tu publicación está
+viva"*. Nuestro publicador lo anota como `PUBLISHED, success=1` en el acto. En
+kubera su fila es **el único cascarón totalmente vacío de las 1,791**, y en 10
+días el sync nunca lo reportó. El producto existe —vivo en las dos cuentas de
+ML y en TikTok—; la publicación de Amazon nunca llegó a existir. No bloquea el
+paso 3: la gemela contesta igual que el lector viejo, que es su trabajo. Queda
+como pendiente de producto.
+
+Y una nota de método: el intento de confirmarlo preguntándole a Amazon desde
+local devolvió `None`, **y no era evidencia** — el `.env` local no tiene
+credenciales de SP-API, así que "no existe" y "no pude preguntar" salen
+idénticos. Se descartó y la conclusión se sostiene solo en datos.
+
+Sin migraciones ni variables nuevas. Versión 0.194.0.
+
 ### v0.193.0 — Paso 3, bloque 1: las gemelas medidas y los 50 `product_type` rescatados
 
 **Nada repuntado todavía.** Los seis sitios siguen leyendo MySQL; lo que se

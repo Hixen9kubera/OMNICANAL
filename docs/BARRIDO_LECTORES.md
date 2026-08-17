@@ -97,6 +97,10 @@ CLAUDE.md dice *"lee `productos` de MySQL"*. Medido en su código:
 ya no opera. Así que la decisión pendiente se simplifica: no hay nada que
 repuntar — **hay que confirmarlo y darlo de baja formalmente**.
 
+> ✅ **DECIDIDO (Eduardo, 16-ago-2026): se retira.** No hay repunte, no hay
+> migración de sus tablas: se da de baja el servicio en Railway. Deja de ser un
+> bloqueador del retiro del esquema.
+
 Lo que sí conviene saber antes de apagarlo: tres de las tablas que consume
 (`scraping_alibaba`, `atributos_ia`, `costos_ml`) son del robot de Alibaba,
 desconectado desde el 23-jul. O sea que **si alguien todavía abre ese tablero,
@@ -126,8 +130,48 @@ Lo que sí es **operación** y hay que repuntar o archivar:
 | **`competencia_analisis`** | `categorias_ml`, `ml_progress`, `productos` | **NO** |
 | **`reporte_sync_desde_ml`** | `ml_progress` | **NO** |
 
-**Son 13, no 8.** Ninguno es un flujo vivo —se corren a mano— pero dejarán de
-funcionar sin aviso el día del retiro.
+**Son 13, no 8.** Ninguno es un flujo vivo: se corren a mano.
+
+### 🛑 Y la lista de 13 esconde algo peor que "dejarán de servir"
+
+El plan decía *"dejarán de funcionar sin aviso el día del retiro"*. **Eso es
+falso para cinco de ellos, y a favor del riesgo: ya están rotos hoy.**
+
+La frescura de cada tabla, medida el 16-ago:
+
+| Tabla que leen | Última escritura | Qué significa |
+|---|---|---|
+| `pedidos_ml` | **13-ago** | congelada con el apagón de espejos |
+| `costos_finales` | **10-ago** | congelada |
+| `canal_inventario` | **13-ago 04:23** | congelada — la hora exacta del apagón |
+| `categorias_ml` | **29-jun** | nadie la escribe desde el 22-jul |
+| `ml_progress` · `ml_backlog` | 16-ago 05:41 | **vivas** — el publicador sigue |
+| `amazon_progress` · `amazon_imagenes` | 13-ago | quietas, pero por falta de altas |
+| `productos` | 15-ago 17:27 | **viva** — la escribe `odoo_watch` |
+
+Cruzando las dos tablas:
+
+**Los 5 que leen una foto DETENIDA — correrlos hoy da respuestas equivocadas:**
+`sync_odoo_woo_seguro` · `actualizar_comision` · `backfill_dims_validados` ·
+`corregir_stock_woo_full` · `corregir_status_publicados`.
+
+Es exactamente el patrón que costó los 964 pedidos fantasma: **una tabla
+congelada no contesta "no sé", contesta con seguridad lo que era cierto el
+13-ago.** La diferencia es que aquellos corrían solos y estos los dispara una
+persona — el daño depende de quién los invoque, no del calendario.
+
+**Los 6 que leen tablas vivas** (`alinear_ml_drop`, `alinear_amazon_drop`,
+`sincronizar_ml_huerfanas`, `corregir_stock_amazon`, `competencia_analisis`,
+`reporte_sync_desde_ml`) sí se rompen el día del retiro, no antes.
+
+**`marcar_amazon_muertas` es el caso aparte, y el modelo a seguir**: ya escribe
+en los dos lados —`UPDATE canal_inventario` y después
+`channel_mirror.backfill_situacion(...)` a kubera—. Solo hay que quitarle la
+mitad de MySQL. Es el único de los 13 que empezó a migrarse solo.
+
+**Orden sugerido:** ponerle un candado a los 5 congelados (que aborten al
+arrancar, con el motivo) **antes** de repuntar nada. Un script roto que falla
+ruidosamente es inofensivo; uno roto que contesta, no.
 
 ## Lo que el barrido confirma del método
 
