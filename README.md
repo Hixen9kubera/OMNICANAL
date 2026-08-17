@@ -10202,6 +10202,63 @@ del top con su desglose. Los totales no se mueven: esto solo agrega
 explicación, no cambia ningún número.
 
 Sin migraciones ni variables nuevas. Versión 0.186.0.
+### v0.198.0 — Walmart deja de ser una maqueta: 235 artículos y sus 75 categorías
+
+Piezas 1 y 2. La pestaña Walmart mostraba datos de EJEMPLO encima de una cuenta
+con 237 artículos reales. Ahora lee `channel.listings`, como TikTok y Temu.
+
+**El cliente** (`services/walmart.py`, solo lectura). Autenticación en dos pasos:
+Basic `client_id:secret` → `POST /v3/token` → el token viaja en
+`WM_SEC.ACCESS_TOKEN`. Las otras tres cabeceras (`WM_SVC.NAME`,
+`WM_QOS.CORRELATION_ID`, `WM_MARKET: mx`) son obligatorias en TODAS las llamadas
+y sin ellas la API contesta 400 sin decir cuál falta. Se pagina con `offset`.
+
+**El censo**: 237 declarados, 237 traídos, 2 de prueba omitidos
+(`PRUEBA-IMG-*`), **235 reales**.
+
+| Estado | Artículos |
+|---|---|
+| PUBLISHED | 207 |
+| UNPUBLISHED | 27 |
+| SYSTEM_PROBLEM | 1 |
+
+**Lo bueno de este canal:** el estado es una PALABRA. En Temu hubo que
+decodificar siete números cruzando totales del Seller Center; aquí el panel
+puede afirmar qué está publicado.
+
+**⚠️ LA TRAMPA DE WALMART: dos taxonomías que no se tocan.** El canal usa dos
+clasificaciones distintas y **no comparten un solo valor** (medido: 100
+`productType` contra 76 categorías del esquema, **0 en común**):
+
+| | Qué es | Ejemplos | Dónde vive |
+|---|---|---|---|
+| `productType` | lo que Walmart ASIGNÓ tras publicar; la hoja fina | "Licuadoras", "Abanicos de Mano" | `listings.category_id` |
+| categoría del esquema | la que decide **qué campos exige** | "Electrónicos", "Juguetes" | `field_requirements.categoria_id` |
+
+Cruzarlas devuelve **cero filas sin dar error** — el mismo defecto que en Amazon
+(`product_type` vs `category_id`). Por eso `walmart_panel.categoria_esquema()`
+no adivina: resuelve con los MISMOS patrones que usa el publicador
+(`CATEGORIAS_AUTORIZADAS`), para que el semáforo y el alta no puedan
+contradecirse.
+
+**Y lo que el censo destapó:** **105 de 235 artículos están en «Por Defecto»**.
+Eso no es una categoría, es el hueco — Walmart no supo dónde ponerlos. Casi la
+mitad del catálogo está sin categorizar.
+
+**Las 75 categorías** entran a `channel.categories` desde la MISMA fuente que
+indexa los requisitos, y con su disponibilidad real:
+
+| Disponibilidad | Categorías |
+|---|---|
+| **AUTORIZADA** (exención probada) | **3** — Disfraces · Cocina, Decoración y Otros · Electrónicos |
+| POR_CONFIRMAR | 6 |
+| SIN_EXENCION | 66 |
+
+Esa columna importa: publicar en una categoría sin exención de UPC es un lote
+que rebota. El selector puede ofrecer las 75, pero solo 3 están probadas.
+
+---
+
 ### v0.197.0 — Walmart: 3,331 reglas de campo, y las 5 correcciones que el CSV no llevaba
 
 Cierra el pendiente #7 de `docs/WALMART_ENTREGA_A_OMNICANAL.md`: los atributos

@@ -96,9 +96,9 @@ MARKETPLACES: dict[str, CanalConfig] = {
         "color": "#0071DC",       # azul Walmart
         "color_texto": "#FFFFFF",
         "acento": "#FFC220",      # amarillo Walmart
-        "habilitado": False,
-        "origen": Origen.EJEMPLO,
-        "descripcion": "Próximamente — pendiente de credenciales.",
+        "habilitado": True,
+        "origen": Origen.DB,
+        "descripcion": "Catálogo de Walmart Marketplace MX.",
     },
     Canal.TEMU: {
         "id": Canal.TEMU,

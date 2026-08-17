@@ -114,7 +114,16 @@ async def listar_productos(
             estados=estados_lista, skus_filtro=skus_lista)
         total_pages = _paginas(total, per_page)
 
-    else:  # walmart / shein  → ejemplos
+    elif canal == Canal.WALMART.value:
+        # `channel.listings` en kubera, como TikTok y Temu. Antes caía en
+        # `ejemplos.py` con 235 artículos reales publicados.
+        from services import walmart_panel
+        items_raw, total = walmart_panel.listar(
+            page, per_page, search, solo_publicados, orden=orden,
+            estados=estados_lista, skus_filtro=skus_lista)
+        total_pages = _paginas(total, per_page)
+
+    else:  # shein  → ejemplos
         items_raw, total = ejemplos.listar(canal, page, per_page, search)
         total_pages = _paginas(total, per_page)
 
@@ -323,6 +332,23 @@ async def detalle_producto(sku: str, refrescar: bool = False):
             # alguien ve "Temu 3/2" en pantalla, es que ese aún no se decodifica.
             estado=tm["estado"], situacion=tm.get("situacion"),
             extra={"cuenta": "TEMU"},
+        ))
+
+    # Walmart MX (kubera). Mismo trato que TikTok y Temu.
+    from services import walmart_panel
+    wm = walmart_panel.datos_de(sku)
+    if wm:
+        detalle.canales.append(DetalleCanal(
+            canal=Canal.WALMART.value,
+            publicado=wm["publicado"], item_id=wm["item_id"], url=wm["url"],
+            precio=wm["precio"], precio_base=wm["precio_base"],
+            # Walmart no devuelve stock en /v3/items: se muestra vacío en vez
+            # de un 0 que se leería como "agotado".
+            stock=wm["stock"], stock_real=wm["stock"],
+            full=False, full_label=None,
+            categoria_id=wm["categoria_id"], categoria_path=wm["categoria_path"],
+            estado=wm["estado"], situacion=wm.get("situacion"),
+            extra={"cuenta": "WALMART"},
         ))
 
     return detalle

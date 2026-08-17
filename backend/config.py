@@ -469,6 +469,13 @@ class Settings(BaseSettings):
     temu_access_token: str = ""
     temu_api_base: str = "https://openapi-b-global.temu.com/openapi/router"
 
+    # ── WALMART MX (marketplace.walmartapis.com) ─────────────────────────────
+    # Basic (id:secret) → /v3/token. El token dura poco, así que se pide por
+    # llamada en vez de cachearlo: pedirlo es barato y un token vencido en
+    # caché es un fallo intermitente de los que cuesta reproducir.
+    wm_client_id: str = ""
+    wm_client_secret: str = ""
+
     # Vigilante de Odoo: compara qty_available contra la última foto
     # (productos.stock_odoo) cada N minutos; los cambios van a la campana.
     # Con auto_push=true además empuja el stock nuevo a Woo (activar solo

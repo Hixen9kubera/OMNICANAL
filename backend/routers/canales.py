@@ -59,6 +59,9 @@ async def listar_canales(incluir_totales: bool = True):
             # dos de sus siete códigos están verificados (ver temu_panel).
             from services import temu_panel
             total = temu_panel.contar_publicados() if incluir_totales else None
+        elif cfg["id"] == Canal.WALMART.value:
+            from services import walmart_panel
+            total = walmart_panel.contar_publicados() if incluir_totales else None
         salida.append(CanalInfo(**cfg, total_productos=total, subcuentas=subs))
     return salida
 
