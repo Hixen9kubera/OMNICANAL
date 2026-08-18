@@ -10002,6 +10002,41 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.211.0 — El tamaño sale del nombre y se vuelve columna, en palabras
+
+Pedido de Eduardo (18-ago): una columna que diga **Chico / Mediano / Grande** y
+quitar la etiqueta pegada al nombre del producto.
+
+**Por qué la etiqueta estorbaba donde estaba.** El chip `M` vivía junto al SKU
+compitiendo por espacio con los puntos de cuenta y la marca de peso divergente,
+en una celda ya truncada — y siendo un dato de PRODUCTO, no de identidad. Como
+etiqueta tampoco se podía ordenar por ella.
+
+**Las letras siguen siendo el formato de la API.** El filtro y el orden viajan
+como `S/M/L/XL` igual que siempre; las palabras viven solo en la pantalla.
+Cambiar el código en el backend habría roto el filtro y cualquier enlace
+guardado, para ganar nada.
+
+| código | columna | corte |
+|---|---|---|
+| `S` | Chico | lado mayor < 30 cm |
+| `M` | Mediano | < 60 cm |
+| `L` | Grande | < 120 cm |
+| `XL` | **Extra grande** | ≥ 120 cm |
+| `S/C` | — | sin medidas capturadas |
+
+`XL` necesitaba nombre: el pedido mencionaba tres palabras y las categorías son
+cuatro. El filtro de arriba habla ahora el mismo idioma que la columna.
+
+**Ordena por el lado mayor REAL, no por la palabra.** Alfabéticamente `L` va
+antes que `M` y que `S` — justo al revés del tamaño. Se agrega `lado_mayor` al
+CTE `filas` y `_ORDEN` mapea `tam → lado_mayor`, así que además ordena bien
+DENTRO de una misma categoría. Verificado en los dos sentidos: descendente
+arranca en `CAM-0003-MAD` (199 cm) y ascendente en los `S/C` sin medidas.
+
+La tabla pasa de 17 a 18 columnas y **sigue cabiendo sin scroll** a 1642 px: la
+columna nueva se compensa con el espacio que liberó el chip.
+
 ### v0.210.0 — El reporte FBA se refresca solo cada mañana
 
 Cierre de la pestaña (Eduardo, 18-ago): un cron diario pide el reporte a la

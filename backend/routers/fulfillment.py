@@ -102,6 +102,9 @@ _ORDEN = {
     "ancho": ("ancho", "desc"),
     "alto": ("alto", "desc"),
     "peso": ("peso", "desc"),
+    # La columna Tamaño (Chico/Mediano/Grande) ordena por el lado mayor, no
+    # por la letra — ver la nota de `lado_mayor` en `_BASE`.
+    "tam": ("lado_mayor", "desc"),
 }
 _DIRS = {"asc", "desc"}
 
@@ -330,6 +333,12 @@ filas as (
          -- Medidas y publicaciones: alimentan las dos tarjetas de la columna
          -- Producto (el chip de tamaño y los puntos de cuenta).
          t.largo, t.ancho, t.alto, t.peso,
+         -- Para ordenar por TAMAÑO. No se ordena por la letra: alfabéticamente
+         -- L va antes que M y que S, que es justo al revés del tamaño. Se
+         -- ordena por el lado que DECIDE la letra, y de paso ordena bien
+         -- dentro de una misma categoría.
+         greatest(coalesce(t.largo,0), coalesce(t.ancho,0),
+                  coalesce(t.alto,0))                as lado_mayor,
          l.publicaciones,
          case when l.alguna_activa then 'activa'
               when l.alguna_pausada then 'pausada'

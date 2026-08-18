@@ -222,6 +222,7 @@ const AYUDA: Record<string, { titulo: string; texto: string }> = {
   precio: { titulo: "Precio de venta", texto: "Lo que de VERDAD se cobró en promedio durante el período: el dinero vendido dividido entre las piezas. Ya viene ponderado, así que si un producto se vende en dos cuentas a precios distintos, pesa más la que más vendió. Si no hubo ventas en el período se muestra el precio de la publicación activa, por cuenta. Haz clic para ver el desglose por canal." },
   costo: { titulo: "Costo base", texto: "Lo que cuesta traer una pieza: producto más flete de importación, del costeo validado. Es uno solo por producto — no cambia entre cuentas ni entre canales. Vacío significa que a ese SKU todavía no se le captura el costo, y sin él no hay margen que calcular." },
   comision: { titulo: "Comisión por unidad", texto: "Lo que Mercado Libre cobró DE VERDAD por vender una pieza en el período, no una tasa supuesta: sale de la comisión registrada en cada pedido, así que ya trae la del canal donde se vendió. Sale vacía cuando el producto no vendió en el período (sin venta no hay comisión que leer) o cuando solo vende en Amazon, que todavía la reporta en cero." },
+  tamano: { titulo: "Tamaño", texto: "La categoría del bulto, del LADO MÁS LARGO del producto: menos de 30 cm es Chico, menos de 60 Mediano, menos de 120 Grande, y de ahí para arriba Extra grande. De ese mismo lado sale el flete de importación, así que un producto que salta de categoría suele saltar también de costo. Vacío significa que no se le han capturado medidas: sin ellas no hay categoría ni flete calculable. Ordena por el lado más largo real, no por la palabra." },
   medidas: { titulo: "Largo · Ancho · Alto", texto: "Las medidas de la PIEZA en centímetros, capturadas en el costeo. De ellas salen dos cosas: la letra del tamaño (S/M/L/XL), que se toma del lado más largo —por eso ese lado va resaltado en el renglón—, y el flete de importación. Un SKU sin medidas no tiene ni categoría de tamaño ni flete calculable: aparece con guiones y su costo de importación se queda corto. Los cortes de la letra son 30, 60 y 120 cm." },
   peso: { titulo: "Peso por pieza", texto: "El peso de UNA pieza en kilos, capturado en el costeo. Es lo que alimenta el envío estimado, así que un peso mal capturado infla el costo de todos los pedidos de ese SKU. Cuando sale en ÁMBAR es que el peso no cuadra con el volumen —más de 1.5 kg por litro—, y casi siempre significa lo mismo: se capturó el peso de la CAJA master como si fuera el de una pieza. Es un defecto conocido del catálogo, ~536 SKUs, y ordenar por esta columna es la forma de irlos sacando." },
   envio: { titulo: "Envío por unidad", texto: "Lo que Mercado Libre te cobró por mandar el paquete, promediado por pieza. Cuando dice REAL es el cobro del embarque consultado a Mercado Libre; cuando dice EST es el estimado por peso y medidas, que se equivoca en las dos direcciones y se va sustituyendo solo conforme se consultan los pedidos. El asterisco avisa que solo una parte de las piezas ya tiene el cobro real. En carritos con varios productos el cobro del paquete se reparte entre las piezas." },
@@ -688,15 +689,33 @@ function estadoPublicacion(canal: string, situacion: string | null) {
   return { texto: s ? s : "sin estado", vende: false };
 }
 
-/* CHIP DE TAMAÑO. La letra sale del LADO MÁS LARGO (menos de 30 cm es S, menos
-   de 60 M, menos de 120 L, de ahí para arriba XL). Volvió a ser una etiqueta
-   muda a propósito (Eduardo, 14-ago): las medidas que antes solo se veían
-   pasando el cursor ahora son columnas propias, y repetirlas en una tarjeta
-   eran dos formas de contar lo mismo. */
-function ChipTamano({ fila }: { fila: Fila }) {
+/* TAMAÑO EN PALABRAS. La categoría sale del LADO MÁS LARGO (menos de 30 cm es
+   chico, menos de 60 mediano, menos de 120 grande, de ahí para arriba extra
+   grande) y desde el 18-ago vive en su PROPIA COLUMNA, no como etiqueta pegada
+   al nombre (Eduardo): junto al SKU competía por espacio con los puntos de
+   cuenta y no se podía ordenar por ella.
+
+   Las LETRAS siguen siendo el formato de la API —el filtro y el orden viajan
+   como S/M/L/XL— y las palabras viven solo aquí, en la pantalla. Cambiar el
+   código en el backend habría roto el filtro y los enlaces guardados. */
+const TAMANO: Record<string, { txt: string; clase: string }> = {
+  S:     { txt: "Chico",        clase: "text-slate-500" },
+  M:     { txt: "Mediano",      clase: "text-slate-600" },
+  L:     { txt: "Grande",       clase: "text-slate-700" },
+  XL:    { txt: "Extra grande", clase: "font-semibold text-slate-800" },
+  "S/C": { txt: "—",            clase: "text-slate-300" },
+};
+
+function CeldaTamano({ fila }: { fila: Fila }) {
+  const t = TAMANO[fila.tam] ?? TAMANO["S/C"];
+  const l = Number(fila.largo ?? 0), a = Number(fila.ancho ?? 0), h = Number(fila.alto ?? 0);
+  const mayor = Math.max(l, a, h);
   return (
-    <span className="rounded bg-slate-100 px-1 py-px text-[9px] font-bold text-slate-500">
-      {fila.tam}
+    <span className={`whitespace-nowrap text-[11px] ${t.clase}`}
+          title={mayor > 0
+            ? `Su lado más largo mide ${fNum(mayor, 1)} cm. Los cortes son 30, 60 y 120 cm.`
+            : "Sin medidas capturadas: no hay de dónde sacar la categoría"}>
+      {t.txt}
     </span>
   );
 }
@@ -2076,7 +2095,8 @@ export default function FulfillmentPage() {
               etiqueta="Tamaño"
               valor={tam}
               onChange={(v) => { setTam(v); setPagina(0); }}
-              opciones={[["S", "S"], ["M", "M"], ["L", "L"], ["XL", "XL"], ["S/C", "S/C — sin medidas"]]}
+              opciones={[["S", "Chico"], ["M", "Mediano"], ["L", "Grande"],
+                         ["XL", "Extra grande"], ["S/C", "Sin medidas"]]}
             />
           </div>
           <label className="flex items-center gap-2">
@@ -2160,6 +2180,7 @@ export default function FulfillmentPage() {
                     de dinero: describen el bulto, no el resultado del período.
                     Cada una ordena por su cuenta — es la forma de barrer el
                     catálogo por tamaño, que la tarjeta vieja no permitía. */}
+                <Th id="tam" compacto info="tamano" {...th}>Tamaño</Th>
                 <Th id="largo" right compacto info="medidas" {...th}>Largo</Th>
                 <Th id="ancho" right compacto {...th}>Ancho</Th>
                 <Th id="alto" right compacto {...th}>Alto</Th>
@@ -2194,12 +2215,10 @@ export default function FulfillmentPage() {
                   <td className="max-w-[185px] px-2 py-1.5">
                     <div className="flex items-center gap-1.5">
                       <span className="font-mono text-[12px] font-semibold text-indigo-600">{f.sku}</span>
-                      {/* Los puntos y el chip dejan de ser adornos: cada uno
-                          abre su tarjeta. Van en un contenedor propio porque
-                          PanelHover ocupa todo el ancho de su padre y sin esto
-                          se comerían el renglón. */}
+                      {/* Los puntos abren su tarjeta. Van en un contenedor
+                          propio porque PanelHover ocupa todo el ancho de su
+                          padre y sin esto se comerían el renglón. */}
                       <span className="shrink-0"><PuntosCuenta fila={f} /></span>
-                      <span className="shrink-0"><ChipTamano fila={f} /></span>
                       <MarcaDosProductos div={f.peso_divergente} />
                     </div>
                     <div className="truncate text-[11px] text-slate-500" title={f.titulo ?? ""}>{f.titulo ?? "—"}</div>
@@ -2218,8 +2237,11 @@ export default function FulfillmentPage() {
                     )}
                     <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${TIPO_CHIP[f.tipo]}`}>{tipoLabel(f)}</span>
                   </td>
-                  {/* MEDIDAS. `mayor` decide la letra del chip; se resalta para
-                      que la clasificación se pueda comprobar de un vistazo. */}
+                  <td className="whitespace-nowrap px-1 py-1.5">
+                    <CeldaTamano fila={f} />
+                  </td>
+                  {/* MEDIDAS. `mayor` decide la categoría; se resalta para que
+                      la clasificación se pueda comprobar de un vistazo. */}
                   {(() => {
                     const l = Number(f.largo ?? 0), an = Number(f.ancho ?? 0), al = Number(f.alto ?? 0);
                     const mayor = Math.max(l, an, al);
@@ -2299,7 +2321,7 @@ export default function FulfillmentPage() {
                 </tr>
               ))}
               {tabla && tabla.items.length === 0 && (
-                <tr><td colSpan={17} className="px-3 py-10 text-center text-slate-400">Sin resultados con estos filtros.</td></tr>
+                <tr><td colSpan={18} className="px-3 py-10 text-center text-slate-400">Sin resultados con estos filtros.</td></tr>
               )}
             </tbody>
           </table>
