@@ -10002,6 +10002,60 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.208.0 — Amazon FBA deja de ser placeholder: inventario, cobertura y plan de envío
+
+Pedido de Eduardo (18-ago): desarrollar la pestaña `/analisis/fba` con el
+prompt original de José (prompt 1, pieza FBA) y el export **"Manage FBA
+Inventory"** de Seller Central que compartió (1,258 SKUs).
+
+**La fuente es el reporte subido, no el sync — y la diferencia es enorme.** El
+sync de inventario veía **20 SKUs con FBA (1,299 uds)**; el reporte fresco trae
+**101 SKUs con 2,224 uds en bodega MÁS 3,426 EN CAMINO** (inbound), que la API
+de summaries que usamos ni reporta por separado. El reporte además trae el
+**ASIN** de los 1,258 (bloqueo #1 histórico de la pestaña) y el **volumen por
+unidad medido por Amazon** — verificado que viene en cm³ contra dimensiones
+conocidas del costeo.
+
+**Piezas nuevas:**
+
+- **Migración 0023** — `ops.fba_snapshot` (mismo carácter que
+  `ops.stock_watch_photo`: foto operativa, no caché). Aplicada al **sandbox**;
+  producción con el visto de Eduardo, como manda el encabezado de la 0020.
+- **`POST /api/fba/reporte`** — sube el CSV (cp1252 verificado, TAB detectado,
+  valida columnas con error legible). Cada subida REEMPLAZA la foto en una
+  sola transacción (delete+insert): snapshot, no historial.
+- **`GET /api/fba`** — el tablero: foto FBA ⋈ ventas de Amazon del período ⋈
+  costeo. Por SKU: disponible/reservado/en camino, venta diaria, **cobertura**
+  (disponible ÷ venta diaria) con el semáforo del restock original
+  (**14/30/50 días** → crítico/alerta/ok, arriba sobrado), y el **plan de
+  envío**: piezas para dejar N días de cobertura descontando lo disponible y
+  lo que ya viene en camino, con su volumen en m³ usando la medida de Amazon.
+  `AGOTADO` va aparte y primero: vende y FBA está en cero.
+- **La página** — KPIs, subida del reporte ahí mismo, filtros por urgencia,
+  ASIN como liga a amazon.com.mx, y la sección "venden en Amazon y NO están
+  en FBA" (los candidatos que el reporte no puede ver).
+- **Divergencia de volumen** ⚠ — Amazon midió la unidad empaquetada; ~10-15%
+  arriba del costeo es empaque, 2× es captura mala. Misma lógica que el peso
+  de la báscula de ML. Caso `ACC-0091-AST-PLA`: 509 cm³ medidos por Amazon
+  contra 21,318 del costeo.
+
+**Del prompt original quedan FUERA a propósito**: capacidad contratada (no
+vive en ningún lado ni la trae el reporte) y tier por peso (sin la tabla de
+tarifas de Amazon el tier es un adorno). El repo fuente de José no está en
+esta máquina; se construyó desde la descripción del prompt.
+
+**Verificado en el sandbox con el CSV real**: subida 200 (1,258 SKUs), KPIs
+exactos contra el perfil medido a mano del archivo (2,173 disponibles, 51
+reservadas, 3,426 en camino), 110 filas en el tablero, filtros 10/110/31, y
+la página renderizando de punta a punta. **La foto que revela**: 10 SKUs
+venden y están AGOTADOS en FBA (encabeza `MUE-0307-GRI`, 36 uds/60d), 31
+tienen stock sin una venta (2,144 de las 2,173 uds disponibles), y 67 SKUs
+están llegando (en tránsito). Lo que vende no está, y lo que está no vende.
+
+⚠ **Para encender en producción falta aplicar la migración 0023** (una tabla
+nueva en `ops`; no toca nada existente). Hasta entonces la pestaña contesta
+503/error de tabla al subir.
+
 ### v0.207.2 — TikTok repite seller_sku: el censo colapsa duplicados antes del upsert
 
 Segunda corrida real (18:47): `ON CONFLICT DO UPDATE cannot affect row a
