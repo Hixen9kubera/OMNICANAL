@@ -10002,6 +10002,42 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.204.0 — El acta decía cuántos rompieron la racha, no cuáles
+
+`seam_gap` es un número, y un número no se puede atender. El 18-ago la alerta
+sonó con 31 y para saber qué SKUs eran hubo que ir a los logs del cron en
+Railway: el ETL arma la lista, la imprime y el acta se queda solo con el total.
+Ahora `reconciliation_runs.conteos` guarda `seam_gap_skus`, y de la MISMA lista
+salen el stdout y el acta, para que no puedan contar cosas distintas.
+
+Antes de guardarla había que arreglarla, porque tal como estaba habría guardado
+menos de lo que rompe:
+
+**1. No incluía las altas.** `seam_gap = len(inserts) + len(updates_seam)`, pero
+`muestra_seam_gap` solo miraba `updates_seam`. Un día cuyo hueco fueran puras
+altas —el 13-ago fueron 3, el 14-ago 4— habría dejado en el acta una lista
+**vacía** junto a un `seam_gap` distinto de cero: el acta contradiciéndose sola.
+Y un SKU que nace sin pasar por el panel es justo lo que el seam debía cubrir.
+
+**2. Se recortaba en silencio, en 15.** Con el gap de 31 del 18-ago se habrían
+guardado 15 y quien leyera el acta creería que ya los vio todos. Ahora se guardan
+todos y, si algún día no cupieran (tope 500), el acta dice cuántos se quedaron
+fuera en `seam_gap_omitidos`. Un recorte mudo es la misma clase de mentira que ya
+invalidó `turno_sync`, `padron` y la métrica de retraso del seam.
+
+Cada fila lleva su `tipo`, que es lo que dice dónde mirar: `alta` o `update` (con
+los `campos` que difieren) en core; `asignacion_alta`, `asignacion_cambio` o
+`nodo_del_panel` en categorías.
+
+**Va en los dos ETLs.** El de categorías tenía el hueco idéntico —el acta
+guardaba el total de sus tres sumandos y ninguno de los nombres— y también salió
+`con_deltas` el 18-ago. Arreglar solo uno dejaba medio auditor mudo.
+
+Dry-run contra el sandbox: en core la lista da 6 y cuadra con
+`insertar + updates_seam`; en categorías da 58 y cuadra con los tres sumandos
+(38 cambios de asignación, 12 altas, 8 nodos del panel). `seam_gap_omitidos` 0 en
+ambos.
+
 ### v0.203.0 — La alerta del acta nombraba un espejo que ya no existe
 
 El aviso de Slack decía *"hay deltas MySQL↔Supabase"* y, si faltaba el acta,

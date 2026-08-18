@@ -428,6 +428,32 @@ def main() -> None:
     # que son trabajo normal del ETL (odoo_id, wc_parent_id, source…).
     updates_seam = [f for f in updates if not set(f["_difs"]).isdisjoint(CAMPOS_SEAM)]
 
+    # QUIÉNES rompieron la racha, con nombre y apellido. `seam_gap` es un número
+    # y un número no se puede atender: el 18-ago-2026 sonó la alerta con 31 y
+    # para saber cuáles había que ir a los logs de este cron en Railway.
+    #
+    # Se arma UNA sola lista y de ella salen el stdout y el acta, para que no
+    # puedan contar cosas distintas. Dos cuidados que la vieja `muestra_seam_gap`
+    # no tenía:
+    #
+    #  1. INCLUYE LAS ALTAS. `seam_gap` las suma (un SKU que nace sin pasar por
+    #     el panel es exactamente lo que el seam debía cubrir), pero la muestra
+    #     solo miraba `updates_seam`. Un día cuyo hueco fueran puras altas —el
+    #     13-ago fueron 3, el 14-ago 4— habría guardado una lista VACÍA junto a
+    #     un seam_gap distinto de cero: el acta contradiciéndose sola.
+    #  2. NO SE RECORTA EN SILENCIO. Si algún día no cupieran, el acta dice
+    #     cuántos se quedaron fuera. Una lista de 15 guardada para un gap de 31
+    #     se lee como "ya están todos" y es la misma clase de mentira que este
+    #     ETL ya se comió tres veces (turno_sync, padron, la métrica de retraso).
+    SEAM_GAP_MAX_ACTA = 500
+    seam_gap_filas = (
+        [{"sku": f["sku"], "tipo": "alta", "status": f["status"], "source": f["source"]}
+         for f in inserts]
+        + [{"sku": f["sku"], "tipo": "update", "campos": f["_difs"]}
+           for f in updates_seam])
+    seam_gap_omitidos = max(0, len(seam_gap_filas) - SEAM_GAP_MAX_ACTA)
+    seam_gap_filas = seam_gap_filas[:SEAM_GAP_MAX_ACTA]
+
     reporte = {
         "modo": modo, "destino": ref[:8] + "…",
         "fuentes": {"woocommerce": len(t_woo), "productos_retirada": len(t_productos),
@@ -442,9 +468,10 @@ def main() -> None:
         "muestra_inserts": [{"sku": f["sku"], "status": f["status"], "source": f["source"]}
                              for f in inserts[:15]],
         "muestra_updates": [{"sku": f["sku"], "campos": f["_difs"]} for f in updates[:10]],
-        # La muestra que importa cuando suena la alerta: quién rompió la racha.
-        "muestra_seam_gap": [{"sku": f["sku"], "campos": f["_difs"]}
-                              for f in updates_seam[:15]],
+        # Quién rompió la racha. Va COMPLETA (ver seam_gap_filas) y es la misma
+        # que se guarda en el acta.
+        "seam_gap_skus": seam_gap_filas,
+        "seam_gap_omitidos": seam_gap_omitidos,
         "muestra_aliases": dict(list(aliases_nuevos.items())[:10]),
     }
 
@@ -512,6 +539,8 @@ def main() -> None:
                     values (%s, 'ETL v2 incremental core.products (sin truncate)', %s, %s, %s)""",
                  (FASE, json.dumps({**reporte["plan"], "core_products_final": n_final,
                                     "seam_gap": seam_gap,
+                                    "seam_gap_skus": seam_gap_filas,
+                                    "seam_gap_omitidos": seam_gap_omitidos,
                                     "updates_fuera_de_seam": len(updates) - len(updates_seam),
                                     "issues_nuevas": len(issues_escribibles),
                                     "nombre_no_coincide_informativo": tally_issues.get("nombre_no_coincide", 0),

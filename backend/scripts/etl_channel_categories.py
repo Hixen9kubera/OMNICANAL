@@ -260,6 +260,19 @@ def main() -> None:
         else:
             asig_igual += 1
 
+    # Los tres sumandos de `seam_gap`, cada uno con su nombre: una asignación
+    # que el seam del panel debió escribir (alta o cambio) y un nodo del árbol
+    # que nació del panel. El acta guardaba solo el total.
+    SEAM_GAP_MAX_ACTA = 500
+    seam_gap_filas = (
+        [{"sku": s, "tipo": "asignacion_alta", "cat": c, "source": f}
+         for s, _, c, f in asig_ins]
+        + [{"sku": s, "tipo": "asignacion_cambio", "cat": c, "source": f}
+           for s, _, c, f in asig_upd]
+        + [{"cat": cid, "tipo": "nodo_del_panel"} for cid in arbol_ins_seam])
+    seam_gap_omitidos = max(0, len(seam_gap_filas) - SEAM_GAP_MAX_ACTA)
+    seam_gap_filas = seam_gap_filas[:SEAM_GAP_MAX_ACTA]
+
     reporte = {
         "modo": modo, "canal": CANAL,
         "arbol": {"insertar": len(arbol_ins), "actualizar": len(arbol_upd),
@@ -271,6 +284,11 @@ def main() -> None:
                           "sin_cambio": asig_igual, "del_panel": len(t_panel)},
         "descartes": dict(tally), "issues_nuevas": len(issues_nuevas),
         "muestra_asig": [{"sku": s, "cat": c, "source": f} for s, _, c, f in asig_ins[:10]],
+        # Quién rompió la racha, con nombre. Mismo criterio que el ETL de core:
+        # la lista cubre los TRES sumandos de `seam_gap` y no se recorta en
+        # silencio. Sin esto el acta dice "4" y no hay forma de atenderlo.
+        "seam_gap_skus": seam_gap_filas,
+        "seam_gap_omitidos": seam_gap_omitidos,
     }
 
     if not args.real:
@@ -327,6 +345,8 @@ def main() -> None:
                  (FASE, json.dumps({**reporte["arbol"], **reporte["asignaciones"],
                                     "arbol_final": n_arbol, "asignaciones_final": n_asig,
                                     "seam_gap": seam_gap,
+                                    "seam_gap_skus": seam_gap_filas,
+                                    "seam_gap_omitidos": seam_gap_omitidos,
                                     "arbol_fuera_de_seam": len(arbol_ins) - len(arbol_ins_seam)
                                                            + len(arbol_upd),
                                     "issues_nuevas": len(issues_nuevas)}, default=str),
