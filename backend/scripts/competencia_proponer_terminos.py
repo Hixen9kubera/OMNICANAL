@@ -72,14 +72,17 @@ def main() -> int:
               "enrich.market_sku_config y no hay a dónde.")
         return 2
 
+    # Sin JOIN a market_sku_config: desde la 0023 la vista deriva SKUs de
+    # channel.listings que pueden NO tener fila de config todavía — el JOIN los
+    # dejaría sin término para siempre. La vista ya expone termino_general y
+    # termino_origen; la fila de config la crea `proponer_termino` al escribir.
     cond = ("" if args.rehacer
-            else " AND cfg.termino_id IS NULL")
+            else " AND v.termino_general IS NULL")
     filas = supabase_db.fetch_all(f"""
         SELECT v.sku, v.nombre, v.categoria_nombre, v.ruta
           FROM enrich.market_skus_v v
-          JOIN enrich.market_sku_config cfg ON cfg.sku = v.sku AND cfg.canal = v.canal
          WHERE v.raiz_id = %s AND v.activo
-           AND cfg.termino_origen IS DISTINCT FROM 'manual'
+           AND v.termino_origen IS DISTINCT FROM 'manual'
            AND v.nombre IS NOT NULL
                {cond}
          ORDER BY v.sku""", (raiz,))

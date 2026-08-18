@@ -342,17 +342,25 @@ def activar_raiz(raiz_id: str, activo: bool = True,
     `channel.categories.root_id`), no de una columna propia: así una categoría
     reclasificada por ML no deja SKUs prendidos en la raíz vieja.
 
-    Devuelve cuántas filas cambiaron. Es idempotente: el `AND activo IS DISTINCT
-    FROM` hace que correrlo dos veces no toque nada la segunda.
+    Desde la 0023 la vista deriva su base de channel.listings, así que un SKU
+    recién publicado puede NO tener fila en market_sku_config todavía (su
+    activo=true es el default de la vista). Por eso esto es un INSERT…ON
+    CONFLICT y no un UPDATE: apagar una raíz también debe alcanzar a esos, y la
+    decisión humana necesita fila donde persistir.
+
+    Devuelve cuántas filas cambiaron. Es idempotente: el `WHERE … IS DISTINCT
+    FROM` del UPDATE hace que correrlo dos veces no toque nada la segunda
+    (las altas nuevas de la primera corrida ya quedaron con el valor pedido).
     """
     return supabase_db.execute(
-        "UPDATE enrich.market_sku_config c "
-        "   SET activo = %s, updated_at = now() "
+        "INSERT INTO enrich.market_sku_config (sku, canal, activo, updated_at) "
+        "SELECT v.sku, v.canal, %s, now() "
         "  FROM enrich.market_skus_v v "
-        " WHERE v.sku = c.sku AND v.canal = c.canal "
-        "   AND v.raiz_id = %s AND c.canal = %s "
-        "   AND c.activo IS DISTINCT FROM %s",
-        (activo, raiz_id, canal, activo))
+        " WHERE v.raiz_id = %s AND v.canal = %s "
+        "ON CONFLICT (sku, canal) DO UPDATE "
+        "   SET activo = EXCLUDED.activo, updated_at = now() "
+        " WHERE market_sku_config.activo IS DISTINCT FROM EXCLUDED.activo",
+        (activo, raiz_id, canal))
 
 
 def _id_de_termino(cur, termino: str, canal: str, origen: str | None = None,
@@ -383,26 +391,44 @@ def _id_de_termino(cur, termino: str, canal: str, origen: str | None = None,
 
 def actualizar_termino(sku: str, termino: str, canal: str = CANAL_DEFAULT) -> bool:
     """Corrección manual del término de un SKU. Marca origen='manual' en la
-    ASIGNACIÓN para que una propuesta posterior de la IA no la pise."""
+    ASIGNACIÓN para que una propuesta posterior de la IA no la pise.
+
+    INSERT…ON CONFLICT (no UPDATE) desde la 0023: un SKU derivado de
+    channel.listings puede no tener fila de config aún, y la corrección la crea.
+    El SELECT contra core.products conserva el contrato viejo: un SKU que no
+    existe devuelve False (rowcount 0) en vez de reventar por la FK."""
     with supabase_db.get_cursor() as cur:
         tid = _id_de_termino(cur, termino, canal, origen="manual")
         cur.execute(
-            "UPDATE enrich.market_sku_config "
-            "   SET termino_id = %s, termino_origen = 'manual', updated_at = now() "
-            " WHERE sku = %s AND canal = %s", (tid, sku, canal))
+            "INSERT INTO enrich.market_sku_config "
+            "      (sku, canal, termino_id, termino_origen, updated_at) "
+            "SELECT p.sku, %s, %s, 'manual', now() "
+            "  FROM core.products p WHERE p.sku = %s "
+            "ON CONFLICT (sku, canal) DO UPDATE "
+            "   SET termino_id = EXCLUDED.termino_id, "
+            "       termino_origen = 'manual', updated_at = now()",
+            (canal, tid, sku))
         return cur.rowcount > 0
 
 
 def proponer_termino(sku: str, termino: str, canal: str = CANAL_DEFAULT) -> bool:
-    """Término propuesto por la IA. NO pisa una corrección humana previa."""
+    """Término propuesto por la IA. NO pisa una corrección humana previa.
+
+    Mismo INSERT…ON CONFLICT que `actualizar_termino`; el WHERE del UPDATE
+    conserva la regla de siempre: 'manual' gana sobre cualquier propuesta."""
     with supabase_db.get_cursor() as cur:
         tid = _id_de_termino(cur, termino, canal, origen="ia")
         cur.execute(
-            "UPDATE enrich.market_sku_config "
-            "   SET termino_id = %s, termino_origen = COALESCE(termino_origen, 'ia'), "
+            "INSERT INTO enrich.market_sku_config "
+            "      (sku, canal, termino_id, termino_origen, updated_at) "
+            "SELECT p.sku, %s, %s, 'ia', now() "
+            "  FROM core.products p WHERE p.sku = %s "
+            "ON CONFLICT (sku, canal) DO UPDATE "
+            "   SET termino_id = EXCLUDED.termino_id, "
+            "       termino_origen = COALESCE(market_sku_config.termino_origen, 'ia'), "
             "       updated_at = now() "
-            " WHERE sku = %s AND canal = %s "
-            "   AND (termino_origen IS DISTINCT FROM 'manual')", (tid, sku, canal))
+            " WHERE market_sku_config.termino_origen IS DISTINCT FROM 'manual'",
+            (canal, tid, sku))
         return cur.rowcount > 0
 
 
