@@ -10002,6 +10002,35 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.209.0 — El reporte FBA se trae solo: botón «Traer de Amazon»
+
+Fase 2 de la pestaña (Eduardo, 18-ago: *«continuemos con la implementación»*).
+La subida manual del CSV queda, y aparece el camino sin manos: **la Reports API
+de SP-API** genera el mismo reporte (`GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA`,
+verificado: son exactamente las columnas del export de Seller Central) y el
+backend lo descarga y lo carga al terminar.
+
+**Un solo código para las dos puertas.** El parseo y el guardado se mudan del
+router a `services/fba_reporte.py`: la subida manual y el refresco automático
+pasan por las MISMAS funciones. Si un día se corrige uno y no el otro, la
+pestaña diría cosas distintas según cómo entró el dato — por eso no hay copia.
+
+**El refresco corre en segundo plano.** Amazon tarda de uno a varios minutos en
+generar el reporte; `POST /api/fba/refrescar` dispara y contesta de inmediato,
+un `asyncio.Lock` impide dos refrescos encimados, y la página va leyendo el
+avance (`solicitando → esperando → descargando → listo`) refrescándose sola
+cada 10 s hasta que el snapshot aterriza. Todo el HTTP es httpx **async**
+(regla 11); el guardado sale a hilo.
+
+**Si falla, falla legible y sin daño**: el estado dice por qué (probado en el
+sandbox sin credenciales: *«sin credenciales de Amazon en este ambiente»*) y el
+snapshot cargado **no se toca** — el parser valida columnas antes de escribir,
+y el guardado es una transacción.
+
+Verificado en el sandbox: disparo → error limpio → snapshot intacto (1,258
+SKUs del CSV siguen ahí); página con los dos botones y el aviso. La prueba con
+credenciales reales solo puede pasar en producción — se corre al desplegar.
+
 ### v0.208.0 — Amazon FBA deja de ser placeholder: inventario, cobertura y plan de envío
 
 Pedido de Eduardo (18-ago): desarrollar la pestaña `/analisis/fba` con el

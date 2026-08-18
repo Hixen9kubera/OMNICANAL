@@ -15,7 +15,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, Upload } from "lucide-react";
+import { CloudDownload, RefreshCw, Upload } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 
 interface FilaFba {
@@ -30,6 +30,9 @@ interface FilaFba {
 }
 interface Tablero {
   reporte: { archivo: string | null; subido_at: string | null; skus: number } | null;
+  /* Avance del refresco por SP-API: Amazon tarda minutos en generar el
+     reporte, así que corre en segundo plano y la página lo va leyendo. */
+  refresco?: { fase: string; detalle: string | null };
   dias: number; objetivo: number;
   kpis: {
     skus_con_stock: number; disponibles: number; reservadas: number;
@@ -79,6 +82,7 @@ export default function FbaPage() {
   const [filtro, setFiltro] = useState("accion");
   const [cargando, setCargando] = useState(true);
   const [subiendo, setSubiendo] = useState(false);
+  const [pidiendo, setPidiendo] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -115,6 +119,31 @@ export default function FbaPage() {
     }
   }, [cargar]);
 
+  const refrescando = ["arrancando", "solicitando", "esperando", "descargando"]
+    .includes(data?.refresco?.fase ?? "");
+
+  /* Mientras Amazon genera el reporte, la página se refresca sola cada 10 s
+     para ver el avance y cargar el snapshot nuevo cuando aterrice. */
+  useEffect(() => {
+    if (!refrescando) return;
+    const t = setInterval(() => { void cargar(); }, 10_000);
+    return () => clearInterval(t);
+  }, [refrescando, cargar]);
+
+  const pedirAmazon = useCallback(async () => {
+    setPidiendo(true); setErr(null);
+    try {
+      const r = await fetchSesion(`${API_BASE}/api/fba/refrescar`, { method: "POST" });
+      const cuerpo = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(cuerpo?.detail ?? `API ${r.status}`);
+      await cargar();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPidiendo(false);
+    }
+  }, [cargar]);
+
   const grupos = FILTROS.find((f) => f.id === filtro)?.grupos ?? [];
   const filas = (data?.filas ?? []).filter(
     (f) => !grupos.length || grupos.includes(f.semaforo));
@@ -132,6 +161,16 @@ export default function FbaPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => void pedirAmazon()}
+            disabled={pidiendo || refrescando}
+            title="Pide el reporte a Amazon por su API y lo carga al terminar (tarda unos minutos)"
+            className="flex items-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-600 disabled:opacity-50">
+            <CloudDownload size={13} />
+            {refrescando
+              ? (data?.refresco?.fase === "esperando" ? "Amazon lo genera…" : "Trayendo…")
+              : "Traer de Amazon"}
+          </button>
           <input ref={inputRef} type="file" accept=".csv,.txt" className="hidden"
                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void subir(f); }} />
           <button
@@ -148,6 +187,12 @@ export default function FbaPage() {
         </div>
       </div>
 
+      {data?.refresco?.fase === "error" && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12px] text-amber-800">
+          El refresco desde Amazon falló: {data.refresco.detalle ?? "sin detalle"}.
+          El reporte cargado no se tocó — puedes subirlo a mano mientras tanto.
+        </div>
+      )}
       {err && (
         <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {err}
