@@ -339,16 +339,28 @@ def _revisar_actas() -> None:
         # que repetir el aviso cada ventana solo es ruido. La recuperación
         # (vuelve a 'ok') sí se anuncia — antes había que ir a mirar /migracion.
         resuelto = f"*Acta de {etiqueta}* de vuelta en `ok` — racha a salvo."
+        # EL TEXTO NOMBRABA UNA COSA QUE YA NO EXISTE (18-ago-2026). Decía
+        # "deltas MySQL↔Supabase" y "cron deltas" de cuando estos dominios eran
+        # los crons `deltas-*`. Esos están retirados y ya no escriben acta: los
+        # únicos que llegan hasta aquí son los dos ETLs de las 06:15, que NO
+        # abren MySQL desde la v0.129.0 — comparan Woo y Odoo vivos contra
+        # kubera. Lo que reportan es `seam_gap`: lo que cambió en la fuente y
+        # ningún seam en vivo alcanzó a cubrir.
+        #
+        # No era cosmético. Con ese nombre el aviso se leía como residuo del
+        # espejo apagado —algo que ya se dio por muerto— y por eso se ignoraba,
+        # justo cuando es el ÚNICO auditor del seam que queda vivo.
         if acta is None:
             avisar_estado(f"acta:{dom}", "ausente",
                           f"*Acta de {etiqueta} NO generada hoy* (ya pasan de las "
                           f"{settings.alertas_actas_hora_utc}:00 UTC). Revisar el "
-                          f"cron deltas en Railway.", texto_ok=resuelto)
+                          f"cron de las 06:15 en Railway.", texto_ok=resuelto)
         else:
             avisar_estado(f"acta:{dom}", acta["resultado"],
                           f"*Acta de {etiqueta} salió `{acta['resultado']}`* — hay "
-                          f"deltas MySQL↔Supabase. Ver /migracion (una re-corrida "
-                          f"en cero el mismo día rescata la racha).",
+                          f"cambios en Woo que ningún seam cubrió (`seam_gap`). "
+                          f"Ver /migracion (una re-corrida en cero el mismo día "
+                          f"rescata la racha).",
                           texto_ok=resuelto)
 
 

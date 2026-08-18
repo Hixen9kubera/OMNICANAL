@@ -10002,6 +10002,37 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.203.0 — La alerta del acta nombraba un espejo que ya no existe
+
+El aviso de Slack decía *"hay deltas MySQL↔Supabase"* y, si faltaba el acta,
+*"revisar el cron deltas en Railway"*. Las dos frases quedaron sin referente:
+los crons `deltas-*` están retirados y ya no escriben acta, así que los únicos
+dominios que llegan a ese aviso son los dos ETLs de las 06:15 — y ésos **no
+abren MySQL desde la v0.129.0**: comparan Woo y Odoo vivos contra kubera.
+
+Lo que reportan se llama `seam_gap`: lo que cambió en la fuente y ningún seam en
+vivo alcanzó a cubrir. El texto ahora lo dice así.
+
+No es cosmético. Con el nombre viejo el aviso se leía como residuo del espejo
+apagado —algo que ya se dio por muerto— y se ignoraba, siendo que es el único
+auditor del seam que queda vivo. Se descubrió preguntando justamente eso:
+*"¿no habíamos apagado ya todas las alertas de deltas?"*.
+
+Caso del 18-ago-2026 que lo destapó: `core-etl-v2` salió `con_deltas` con
+`seam_gap=31`, y los 31 eran **el mismo campo, `name`**, en SKUs de variante
+(`CAM-0004-*`, `ACC-0883-*`, `DEC-0153-*`, `DEC-0182-*`, `TEC-0066-*`…). Sus
+productos padre se renombraron en Woo entre las 17:15 del 17-ago y las 05:28 del
+18-ago; Woo dispara `product.updated` del padre pero no uno por variación, así
+que el nombre derivado de cada variante se quedó viejo en `core.products` hasta
+que el ETL lo corrigió a las 06:17. Verificado contra WordPress: después de la
+corrida los 67 registros tocados coinciden exactamente con `wp_posts`.
+
+Queda anotado, sin tocar: **el acta no guarda `muestra_seam_gap`**. El ETL la
+arma y la imprime, pero `reconciliation_runs.conteos` solo recibe contadores, así
+que cuando suena la alerta no hay forma de saber *cuáles* SKUs la rompieron sin
+ir a los logs del cron en Railway. Es lo que hace falta para que el aviso sea
+accionable.
+
 ### v0.202.0 — El flete ya estaba en el Costo Base; lo que faltaba era avisar cuándo NO está
 
 Eduardo pidió **sumarle el flete al Costo Base** en la tabla de Análisis y en
