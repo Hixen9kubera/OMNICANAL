@@ -10002,6 +10002,31 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.211.1 — La columna Tamaño con colores, y por qué NO son verde/ámbar/rojo
+
+Pedido de Eduardo: *«ponlo por colores dependiendo de su tamaño»*. Revisado en
+el sandbox antes de subir, como lo pidió.
+
+| categoría | color |
+|---|---|
+| Chico | gris (`slate-100`) |
+| Mediano | celeste (`sky-100`) |
+| Grande | índigo (`indigo-100`) |
+| Extra grande | fucsia (`fuchsia-100`) |
+| sin medidas | guion tenue, **sin chip** |
+
+**Se evitaron a propósito el verde, el ámbar y el rojo.** En esta tabla ya
+significan margen sano, aviso y pérdida; un tamaño en rojo se leería como un
+problema, y ser grande no es un defecto — es un costo de flete más alto. La
+rampa va de neutro a intenso, que se entiende como «cada vez más» en lugar de
+«cada vez peor». El color aquí es una ESCALA, no un semáforo.
+
+**«Sin medidas» no lleva chip**: pintarle un color lo haría parecer una
+categoría más y es justo lo contrario — la ausencia del dato.
+
+Verificado en el sandbox: las cinco categorías presentes con su color y sin
+scroll horizontal.
+
 ### v0.211.0 — El tamaño sale del nombre y se vuelve columna, en palabras
 
 Pedido de Eduardo (18-ago): una columna que diga **Chico / Mediano / Grande** y

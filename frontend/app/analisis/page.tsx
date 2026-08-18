@@ -698,23 +698,34 @@ function estadoPublicacion(canal: string, situacion: string | null) {
    Las LETRAS siguen siendo el formato de la API —el filtro y el orden viajan
    como S/M/L/XL— y las palabras viven solo aquí, en la pantalla. Cambiar el
    código en el backend habría roto el filtro y los enlaces guardados. */
+/* EL COLOR ES UNA ESCALA, NO UN SEMÁFORO (Eduardo, 18-ago: "ponlo por colores").
+   Se evitan a propósito el verde, el ámbar y el rojo: en esta tabla ya
+   significan margen sano, aviso y pérdida, y un tamaño en rojo se leería como
+   un problema — ser grande no es un defecto, es un costo de flete más alto.
+   La rampa va de neutro a intenso (gris → celeste → índigo → fucsia): se
+   entiende como "cada vez más", que es justo lo que la columna mide. */
 const TAMANO: Record<string, { txt: string; clase: string }> = {
-  S:     { txt: "Chico",        clase: "text-slate-500" },
-  M:     { txt: "Mediano",      clase: "text-slate-600" },
-  L:     { txt: "Grande",       clase: "text-slate-700" },
-  XL:    { txt: "Extra grande", clase: "font-semibold text-slate-800" },
-  "S/C": { txt: "—",            clase: "text-slate-300" },
+  S:     { txt: "Chico",        clase: "bg-slate-100 text-slate-600" },
+  M:     { txt: "Mediano",      clase: "bg-sky-100 text-sky-800" },
+  L:     { txt: "Grande",       clase: "bg-indigo-100 text-indigo-800" },
+  XL:    { txt: "Extra grande", clase: "bg-fuchsia-100 text-fuchsia-800" },
+  "S/C": { txt: "—",            clase: "" },
 };
 
 function CeldaTamano({ fila }: { fila: Fila }) {
   const t = TAMANO[fila.tam] ?? TAMANO["S/C"];
   const l = Number(fila.largo ?? 0), a = Number(fila.ancho ?? 0), h = Number(fila.alto ?? 0);
   const mayor = Math.max(l, a, h);
+  // Sin medidas NO lleva chip: pintar un vacío de color lo haría parecer una
+  // categoría más, y es la ausencia del dato.
+  if (!(mayor > 0))
+    return (
+      <span className="text-[11px] text-slate-300"
+            title="Sin medidas capturadas: no hay de dónde sacar la categoría">—</span>
+    );
   return (
-    <span className={`whitespace-nowrap text-[11px] ${t.clase}`}
-          title={mayor > 0
-            ? `Su lado más largo mide ${fNum(mayor, 1)} cm. Los cortes son 30, 60 y 120 cm.`
-            : "Sin medidas capturadas: no hay de dónde sacar la categoría"}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold ${t.clase}`}
+          title={`Su lado más largo mide ${fNum(mayor, 1)} cm. Los cortes son 30, 60 y 120 cm.`}>
       {t.txt}
     </span>
   );
