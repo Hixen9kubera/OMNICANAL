@@ -10002,6 +10002,15 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.207.2 — TikTok repite seller_sku: el censo colapsa duplicados antes del upsert
+
+Segunda corrida real (18:47): `ON CONFLICT DO UPDATE cannot affect row a
+second time` — TikTok permite VARIOS productos con el mismo seller_sku
+(re-publicados) y dos filas con la misma llave en un `execute_values` truenan.
+El censo ahora deduplica por producto (la paginación puede repetir) y por SKU
+con prioridad del status que vende (ACTIVATE > PENDING > DRAFT > FAILED), y
+anota cuántos colapsó. Versión 0.207.2.
+
 ### v0.207.1 — El censo de TikTok tronaba en el upsert (11 valores, 12 columnas)
 
 La primera pasada real del censo (18-ago 18:40, encendido con dale de Brandon)

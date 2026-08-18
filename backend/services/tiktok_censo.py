@@ -98,6 +98,19 @@ async def censar() -> dict[str, Any]:
         if not page_token or not lote:
             break
 
+    # Dedupe por PRODUCTO (la paginación puede repetir) y después por SKU:
+    # TikTok permite varios productos con el mismo seller_sku (re-publicados),
+    # y dos filas con la misma llave (sku, account, canal) en un solo
+    # execute_values truenan con "ON CONFLICT DO UPDATE cannot affect row a
+    # second time" (pasó en la corrida real de las 18:47). Se queda UNA fila
+    # por SKU: gana el status que vende (ACTIVATE > PENDING > DRAFT > FAILED).
+    unicos: dict[str, dict[str, Any]] = {}
+    for p in productos:
+        pid = str(p.get("id") or "")
+        if pid and pid not in unicos:
+            unicos[pid] = p
+    productos = list(unicos.values())
+
     filas, ilegibles = [], 0
     for p in productos:
         f = _parsear(p)
@@ -105,6 +118,21 @@ async def censar() -> dict[str, Any]:
             ilegibles += 1
         else:
             filas.append(f)
+    _PRIORIDAD = {"ACTIVATE": 3, "PENDING": 2, "DRAFT": 1, "FAILED": 0}
+    por_sku: dict[str, tuple] = {}
+    duplicados = 0
+    for f in filas:
+        previa = por_sku.get(f[0])
+        if previa is None:
+            por_sku[f[0]] = f
+        else:
+            duplicados += 1
+            if _PRIORIDAD.get(f[2] or "", -1) > _PRIORIDAD.get(previa[2] or "", -1):
+                por_sku[f[0]] = f
+    filas = list(por_sku.values())
+    if duplicados:
+        log.info("censo tiktok: %d seller_sku duplicados colapsados (gana el "
+                 "status que vende)", duplicados)
     if productos and not filas:
         # Forma de respuesta inesperada: mejor un warning con las llaves reales
         # que un censo silenciosamente vacío.
