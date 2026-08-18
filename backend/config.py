@@ -442,6 +442,13 @@ class Settings(BaseSettings):
     # órdenes/día un poll de 5 min es tiempo real en la práctica). FBA nace
     # protegido (almacén de Amazon); MFN descuenta bodega en Woo.
     pedidos_amazon_enabled: bool = True
+    # Refresco DIARIO del reporte FBA (pestaña /analisis/fba, Eduardo 18-ago):
+    # pide "Manage FBA Inventory" a la Reports API cada mañana y reemplaza
+    # ops.fba_snapshot. Nace ENCENDIDO por pedido explícito; se apaga con la
+    # variable, sin deploy, como todo flujo. La hora va en UTC porque el
+    # scheduler corre en UTC: 13 UTC = 07:00 de México.
+    fba_refresco_auto: bool = True
+    fba_refresco_hora_utc: int = 13
     pedidos_amazon_min: int = 5
     # Pedidos de Temu/TikTok vía M2E Cloud (order/find por canal). El token se
     # genera en M2E: Settings → Catalog → API. Sondeo suave (volumen ~0 aún).

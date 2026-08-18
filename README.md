@@ -10002,6 +10002,25 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.210.0 — El reporte FBA se refresca solo cada mañana
+
+Cierre de la pestaña (Eduardo, 18-ago): un cron diario pide el reporte a la
+Reports API a las **13:10 UTC (07:10 de México)** y reemplaza el snapshot antes
+de que empiece el día. Nace **encendido** por pedido explícito — la reversa es
+`FBA_REFRESCO_AUTO=false` (o mover `FBA_REFRESCO_HORA_UTC`), sin deploy, como
+todo flujo.
+
+El job usa `refrescar_programado`, que a diferencia del botón ESPERA el candado
+si hay un refresco corriendo en vez de saltárselo: el diario no debe perderse
+por coincidir con un clic. Sin credenciales de Amazon (staging) marca el error
+legible y no toca el snapshot — el mismo comportamiento ya probado.
+
+La fase 2 quedó verificada de punta a punta en producción el mismo día: disparo
+manual a las 20:17, Amazon generó el reporte 50275020683 en ~30 s, y el
+snapshot pasó de 1,258 SKUs (CSV de la mañana) a 1,259 (fresco). La comparación
+entre las dos fotos capturó el movimiento del día: ~1,950 unidades pasaron de
+"en camino" a "disponibles" — Amazon recibió el embarque durante la jornada.
+
 ### v0.209.0 — El reporte FBA se trae solo: botón «Traer de Amazon»
 
 Fase 2 de la pestaña (Eduardo, 18-ago: *«continuemos con la implementación»*).

@@ -189,6 +189,23 @@ def iniciar() -> None:
     # tiktok.llamar y no depende de este job: esto solo evita que un canal sin
     # tráfico llegue con el token muerto a su siguiente escritura (pasó el
     # 15-ago: 3 días caído en silencio).
+    # Reporte FBA: refresco diario por la Reports API (Eduardo, 18-ago). No
+    # depende de MySQL — lee de Amazon y escribe ops.fba_snapshot en kubera.
+    # Sin credenciales de Amazon el refresco marca error legible y no toca el
+    # snapshot, así que en staging es inocuo.
+    if settings.fba_refresco_auto:
+        from services import fba_reporte
+        _scheduler.add_job(
+            fba_reporte.refrescar_programado,
+            "cron",
+            hour=settings.fba_refresco_hora_utc,
+            minute=10,
+            id="fba_reporte_diario",
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Refresco diario del reporte FBA a las %02d:10 UTC.",
+                 settings.fba_refresco_hora_utc)
     if settings.tiktok_refresh_enabled and settings.mysql_enabled:
         from services import tiktok as _tk
         _scheduler.add_job(

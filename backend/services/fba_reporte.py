@@ -208,6 +208,14 @@ async def _refrescar() -> None:
         _marcar("error", f"{type(exc).__name__}: {exc}")
 
 
+async def refrescar_programado() -> None:
+    """Entrada del CRON diario (scheduler). A diferencia del botón, si hay un
+    refresco corriendo ESPERA el candado en vez de saltarse — el job diario no
+    debe perderse por coincidir con un clic."""
+    async with _lock:
+        await _refrescar()
+
+
 async def refrescar_en_fondo() -> dict[str, Any]:
     """Dispara el refresco si no hay uno corriendo. Contesta de inmediato."""
     if _lock.locked():
