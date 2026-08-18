@@ -141,7 +141,12 @@ async def censar() -> dict[str, Any]:
                     [(sku, cuenta_id, CANAL, pid, status, audit, precio, stock,
                       False, "MXN", CUENTA)
                      for sku, pid, status, audit, precio, stock in lote],
-                    page_size=300)
+                    page_size=300,
+                    # 11 valores + now() = las 12 columnas del INSERT. Sin el
+                    # template, execute_values manda 11 expresiones y Postgres
+                    # contesta "INSERT has more target columns than expressions"
+                    # (pasó en la primera pasada real, 18-ago 18:40).
+                    template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())")
         return len(filas)
 
     escritas = await asyncio.to_thread(_upsert)

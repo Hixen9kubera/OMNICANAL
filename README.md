@@ -10002,6 +10002,15 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.207.1 — El censo de TikTok tronaba en el upsert (11 valores, 12 columnas)
+
+La primera pasada real del censo (18-ago 18:40, encendido con dale de Brandon)
+paginó las 13 páginas con el token recién auto-renovado — **el auto-refresh
+reactivo quedó probado en producción: se sanó solo a las 18:28, tres minutos
+después del deploy** — y murió al escribir: `INSERT has more target columns
+than expressions`. Faltaba el `template` de `execute_values` con el `now()`
+final (el mismo que `cargar_tiktok` sí lleva). Una línea. Versión 0.207.1.
+
 ### v0.207.0 — Auditoría del fan-out: dos escritores muertos, un tramo roto, y el mapa que faltaba
 
 Nadie había dibujado el fan-out completo. Al dibujarlo (encargo de Brandon,
