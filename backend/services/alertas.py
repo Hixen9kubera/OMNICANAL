@@ -67,6 +67,7 @@ _COOLDOWN_MIN: dict[str, int] = {
     "acta": 360,           # una acta ausente se re-avisa a lo mucho 2-3 veces/día
     "silencio_ventas": 240,
     "tokens_rancios": 360,
+    "token_tiktok": 360,
     # Duplicados: 60 min. Corto a propósito — mientras sigan naciendo copias hay
     # dinero moviéndose, y el aviso se apaga solo cuando dejan de aparecer.
     "pedidos_duplicados": 60,
@@ -418,6 +419,38 @@ def _revisar_tokens_rancios() -> None:
                nivel="🟡")
 
 
+def _revisar_token_tiktok() -> None:
+    """
+    El access_token de TikTok dura ~7 días. Cuando venció el 15-ago nadie se
+    enteró en 3 días: este vigilante solo miraba ML y el canal murió en
+    silencio (4 errores 105002 en el fan-out). Desde v0.207 hay auto-refresh
+    reactivo en `tiktok.llamar`, pero si el canal pasa días sin tráfico el
+    token puede llegar vencido a la siguiente escritura — este aviso es la red
+    para enterarse ANTES.
+    """
+    from services import db
+    try:
+        fila = db.fetch_one(
+            "SELECT expira FROM tiktok_tokens ORDER BY updated_at DESC LIMIT 1")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("vigilante token tiktok: %s", exc)
+        return
+    expira = (fila or {}).get("expira")
+    if not expira:
+        return
+    restante_h = (expira - datetime.now(timezone.utc).replace(tzinfo=None)
+                  ).total_seconds() / 3600
+    if restante_h <= 24:
+        estado_txt = (f"VENCIDO hace {-restante_h:.0f} h" if restante_h < 0
+                      else f"vence en {restante_h:.0f} h")
+        avisar("token_tiktok",
+               f"*Token de TikTok {estado_txt}.* El auto-refresh de "
+               f"`tiktok.llamar` lo renueva al primer uso, pero sin tráfico "
+               f"nadie lo toca. Renovar a mano: "
+               f"`POST /api/tiktok/token/refrescar` o esperar la próxima "
+               f"escritura del fan-out.", nivel="🟡")
+
+
 # Ventana del vigilante de duplicados: se mira la COPIA más nueva. 24 h da
 # margen para que un hueco del scheduler no deje pasar un episodio, y el
 # enfriamiento de `avisar()` evita que se repita el mismo aviso todo el día.
@@ -498,7 +531,7 @@ async def vigilante() -> None:
     if not disponible():
         return
     for revision in (_revisar_actas, _revisar_silencio_ventas, _revisar_tokens_rancios,
-                     _revisar_duplicados):
+                     _revisar_token_tiktok, _revisar_duplicados):
         try:
             revision()
         except Exception as exc:  # noqa: BLE001

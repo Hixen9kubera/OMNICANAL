@@ -281,3 +281,24 @@ async def explorar(sku: str = Query(..., description="SKU de WooCommerce")) -> d
 async def estado(_: None = Depends(requiere_api_key)) -> dict:
     """Diagnóstico. No devuelve el token, solo si hay conexión y su vigencia."""
     return tiktok.estado()
+
+
+@router.post("/token/refrescar")
+async def token_refrescar(_: None = Depends(requiere_api_key)) -> dict:
+    """
+    Renueva el access_token A MANO (el reactivo vive en tiktok.llamar y el
+    proactivo en el scheduler tras TIKTOK_REFRESH_ENABLED). Existe porque el
+    token venció el 15-ago y la única reparación era tocar la BD a mano.
+    """
+    nuevo = await tiktok.refrescar_y_guardar()
+    return {"ok": bool(nuevo), "estado": tiktok.estado()}
+
+
+@router.post("/censo")
+async def censo(_: None = Depends(requiere_api_key)) -> dict:
+    """
+    Corre el censo del catálogo TikTok → channel.listings una vez, a mano.
+    Es el mismo job de TIKTOK_CENSO_ENABLED; correrlo aquí no exige el flag.
+    """
+    from services import tiktok_censo
+    return await tiktok_censo.censar()

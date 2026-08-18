@@ -306,6 +306,21 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
             if str(f.get("estado_canal") or "").upper() != "ACTIVATE":
                 motivo = (f"status={f.get('estado_canal') or 'desconocido'} — "
                           "no está a la venta en TikTok")
+        elif canal == "temu":
+            # Temu es DROP-only (decisión 18-ago) y sus estados vienen CRUDOS
+            # (`4/7`, `2/8`…): la tabla temu.ESTADOS solo distingue con certeza
+            # Incompleto y Borrador (no publicados). La política acordada: a lo
+            # PUBLICADO se le escribe stock aunque no se sepa si está activo o
+            # inactivo — es bodega nuestra y no hay riesgo de sobreventa por
+            # escribir de más. Un código NUNCA visto se omite (falla cerrada):
+            # si Temu estrena estados, primero se decodifican.
+            from services import temu as _temu
+            cod = str(f.get("estado_canal") or "")
+            etiqueta = _temu.ESTADOS.get(cod)
+            if etiqueta in ("Incompleto", "Borrador"):
+                motivo = f"Temu {cod} = {etiqueta} — no publicado"
+            elif etiqueta is None:
+                motivo = f"Temu status '{cod or '?'}' desconocido — no se escribe a ciegas"
         elif situacion not in _SITUACIONES_VIVAS:
             motivo = f"situacion={situacion or 'desconocida'} (escribirle la REACTIVARÍA)"
         elif not identificador:
@@ -522,9 +537,18 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, st
 # stock no da error y no vende nada.
 _ALMACEN_VENTAS_TIKTOK = "7647893424175580935"
 
+# ARQUITECTURA DE CANALES (decisión de Brandon, 18-ago-2026):
+#   · ML, Amazon y Walmart se manejan con su fulfillment (FULL / FBA / WFS) —
+#     esas bodegas las administra cada plataforma y este fan-out no las toca.
+#     AMAZON está FUERA de FANOUT_CANALES a propósito: no se le alimenta stock
+#     (su escritor queda solo para el one-shot de limpieza
+#     scripts/apagar_amazon_fantasma.py). Las DROP pausadas de ML sí siguen
+#     recibiendo stock (higiene para el día que alguna reactive).
+#   · TikTok y Temu (después SHEIN) son ÚNICAMENTE DROP: el destino real.
 _ESCRITORES = {"mercado_libre": _escribir_ml, "amazon": _escribir_amazon,
                "tiktok": _escribir_tiktok}
-# temu: se suma aquí cuando su escritura esté probada. En dry-run igual aparece
+# temu: se suma aquí cuando el sondeo canario (scripts/sondear_temu_stock.py)
+# confirme la forma de `bg.local.goods.stock.edit`. En dry-run igual aparece
 # en el plan, así se ve el alcance completo.
 
 
@@ -566,6 +590,13 @@ def plan(sku: str) -> dict[str, Any]:
             accion["accion"] = "omitir"
             accion["omitido_por"] = ("FANOUT_TIKTOK apagado — el escritor está "
                                      "listo, falta encenderlo")
+        elif (d["canal"] or "").lower() == "temu" and not settings.fanout_temu:
+            # Mismo candado que TikTok, pero aquí falta ADEMÁS el escritor:
+            # `bg.local.goods.stock.edit` jamás se ha llamado y su forma se
+            # confirma con scripts/sondear_temu_stock.py antes de construirlo.
+            accion["accion"] = "omitir"
+            accion["omitido_por"] = ("FANOUT_TEMU apagado — falta sondear "
+                                     "stock.edit y construir el escritor")
         elif (d["canal"] or "").lower() not in _ESCRITORES:
             accion["accion"] = "omitir"
             accion["omitido_por"] = f"sin escritor implementado para '{d['canal']}'"

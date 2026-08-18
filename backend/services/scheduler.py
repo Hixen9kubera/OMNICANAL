@@ -184,6 +184,39 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Espejo DROP → channel.listings cada %s min.", settings.drop_mirror_min)
+    # Token de TikTok: renovación PROACTIVA (~7 días de vida; renueva si faltan
+    # <24 h). La renovación REACTIVA (105002 → refresh → reintento) vive en
+    # tiktok.llamar y no depende de este job: esto solo evita que un canal sin
+    # tráfico llegue con el token muerto a su siguiente escritura (pasó el
+    # 15-ago: 3 días caído en silencio).
+    if settings.tiktok_refresh_enabled and settings.mysql_enabled:
+        from services import tiktok as _tk
+        _scheduler.add_job(
+            _tk.refrescar_si_urge,
+            "interval",
+            minutes=settings.tiktok_refresh_min,
+            id="tiktok_token",
+            next_run_time=datetime.now() + timedelta(seconds=210),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Refresh proactivo de token TikTok cada %s min.",
+                 settings.tiktok_refresh_min)
+    # Censo de TikTok → channel.listings (status + stock vivos). Sin esto el
+    # espejo se congela en el último censo manual y las activaciones de
+    # tk_activar.py (escritorio) son invisibles para el fan-out.
+    if settings.tiktok_censo_enabled and settings.mysql_enabled:
+        from services import tiktok_censo
+        _scheduler.add_job(
+            tiktok_censo.censar,
+            "interval",
+            minutes=settings.tiktok_censo_min,
+            id="tiktok_censo",
+            next_run_time=datetime.now() + timedelta(seconds=300),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Censo de TikTok cada %s min.", settings.tiktok_censo_min)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no

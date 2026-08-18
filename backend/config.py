@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # decidido. Con este flag el deploy es INERTE y encenderlo es un acto
     # explícito. Para escribir hacen falta las dos cosas.
     fanout_tiktok: bool = False
+    # Mismo patrón para Temu (canal DROP-only por decisión del 18-ago). Nace
+    # apagado y se queda así hasta que el sondeo canario de
+    # `bg.local.goods.stock.edit` confirme la forma del escritor
+    # (scripts/sondear_temu_stock.py) y el escritor exista en _ESCRITORES.
+    fanout_temu: bool = False
 
     # ── Creación de productos (Alibaba → Woo) ─────────────────
     apify_api_key: str = ""
@@ -459,6 +464,21 @@ class Settings(BaseSettings):
     tiktok_redirect_uri: str = (
         "https://backendomnicanal-production.up.railway.app/api/tiktok/callback"
     )
+    # Renovación PROACTIVA del access_token (~7 días de vida). La reactiva
+    # (105002 → refresh → reintento, en tiktok.llamar) va SIEMPRE encendida,
+    # igual que la regla 8 de ML; este job solo evita que un canal sin tráfico
+    # llegue con el token vencido a su siguiente escritura. Nace apagado
+    # (regla 3); no depende de TIKTOK_ENABLED a propósito — producción escribe
+    # stock con ese flag en false y atarlo repetiría el apagón del 15-ago.
+    tiktok_refresh_enabled: bool = False
+    tiktok_refresh_min: int = 360          # cada 6 h; renueva si faltan <24 h
+    # Censo periódico del catálogo TikTok → channel.listings (status + stock).
+    # Sin él, el espejo se congela en el último censo manual y el fan-out
+    # decide "sin_cambio" contra una foto vieja — y las activaciones que corre
+    # `tk_activar.py` desde el escritorio son invisibles (597 DRAFT que pueden
+    # estar YA a la venta). Nace apagado (regla 3).
+    tiktok_censo_enabled: bool = False
+    tiktok_censo_min: int = 120
 
     # ── TEMU (mallId 635517742093915, regionId 128) ──────────────────────────
     # Token de larga vida emitido en el Seller Center: Temu no usa el baile de

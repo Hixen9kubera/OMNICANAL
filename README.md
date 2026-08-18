@@ -10002,6 +10002,87 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.207.0 — Auditoría del fan-out: dos escritores muertos, un tramo roto, y el mapa que faltaba
+
+Nadie había dibujado el fan-out completo. Al dibujarlo (encargo de Brandon,
+auditoría con verificación adversarial — **[docs/AUDITORIA_FANOUT.md](docs/AUDITORIA_FANOUT.md)**,
+ahí vive el diagrama y toda la evidencia) apareció el titular: **de los tres
+escritores, solo Mercado Libre estaba vivo.**
+
+- **Amazon murió el 29-jul 17:13** por un desfase de vocabulario: v0.33.0
+  empezó a guardar el estado REAL (`BUYABLE`/`DISCOVERABLE`) en `situacion` y
+  `_SITUACIONES_VIVAS` nunca aprendió las palabras nuevas — la guarda descarta
+  un BUYABLE con el motivo falso "escribirle la REACTIVARÍA" ANTES de llegar a
+  la lectura en vivo que sí sabía. Inversión perversa: solo las filas MUERTAS
+  (PUBLISHED rancio del COALESCE) pasaban la guarda.
+- **TikTok murió el ~15-ago**: el access_token dura ~7 días y `refrescar()`
+  llevaba desde el 8-ago sin UN SOLO llamador. 4 errores `105002` y 3 días de
+  silencio — las alertas tampoco vigilaban TikTok.
+- **El tramo «delta de Odoo → canales» no existía**: `stock_watch` aplicaba el
+  delta a Woo pero no encolaba, y la foto lo absorbía. 755 deltas, 48 llegaron
+  a canales — todos de carambola. Peor: si la escritura a Woo FALLABA, la foto
+  absorbía igual y el delta se perdía para siempre (ORG-0785: 60 pzas).
+
+#### La decisión de arquitectura (Brandon, 18-ago)
+
+**ML/Amazon/Walmart = fulfillment** (FULL/FBA/WFS; sus bodegas). **Amazon SALE
+del fan-out** — no se le alimenta stock (`FANOUT_CANALES=mercado_libre,tiktok`,
+ya guardado en Railway; aplica con este deploy). Las DROP pausadas de ML SÍ
+siguen (higiene para el día que reactiven). **TikTok/Temu (después SHEIN) =
+ÚNICAMENTE DROP**: el destino real.
+
+#### Lo construido
+
+1. **Tramo Odoo→canales CERRADO** (`stock_watch.py`): `_escribir_woo` ahora
+   reporta QUÉ SKUs quedaron escritos OK (lee los errores POR ÍTEM del batch,
+   no solo el status); cada delta aplicado se ENCOLA al fan-out
+   (`motivo="delta de Odoo aplicado"`); la foto absorbe SOLO lo escrito OK —
+   lo fallido conserva memoria y se reintenta, con la falla anotada.
+2. **TikTok se auto-sana** (la regla 8 de ML, aplicada): `tiktok.llamar`
+   detecta `105002`, refresca con `refrescar_y_guardar()` (UPDATE por
+   `shop_id` — NUNCA `guardar()`, cuyo respaldo insertaría una fila con
+   `shop_cipher=NULL` y rompería el canal al revés) y reintenta UNA vez.
+   Además: job proactivo `tiktok_token` (`TIKTOK_REFRESH_ENABLED`, nace
+   apagado), `POST /api/tiktok/token/refrescar`, y el vigilante de Slack ahora
+   avisa si el token vence en <24 h.
+3. **Censo de TikTok por API** (`services/tiktok_censo.py`, job
+   `TIKTOK_CENSO_ENABLED` nace apagado, `POST /api/tiktok/censo`): el hueco
+   grande no era el token — son los 599 DRAFT del espejo que `tk_activar.py`
+   activa desde el ESCRITORIO sin reflejar: publicaciones ya a la venta que el
+   fan-out omite como borrador. Sobreventa en potencia, medida (11 omisiones
+   14-18 ago).
+4. **Alineación inicial** (`POST /api/fanout/alinear?canal=…&confirmar=true`):
+   el fan-out es 100% por evento y no tenía barrido — revivir el token no
+   recupera nada retroactivamente. Encola los vivos del canal (TikTok: 285
+   ACTIVATE, solo ~24 divergen) y cada SKU pasa por TODAS las guardas.
+5. **Temu, piezas inertes**: entra a `channel_read.CANALES` (por fin visible
+   para `_destinos`, aunque sea para omitirse con motivo), rama propia
+   DROP-only (a lo PUBLICADO se le escribe aunque el código crudo `4/7` no
+   distinga activo/inactivo; `Incompleto`/`Borrador`/desconocido = falla
+   cerrada), candado `FANOUT_TEMU` (nace apagado), `_reflejar` en
+   `publicar_temu` (las altas nuevas dejan de ser invisibles hasta el
+   siguiente censo manual), y la sonda **`scripts/sondear_temu_stock.py`**:
+   `bg.local.goods.stock.edit` JAMÁS se ha llamado (parámetros NO VERIFICADOS)
+   — el canario de 1 SKU confirma su forma antes de construir `_escribir_temu`.
+6. **One-shot Amazon** (`scripts/apagar_amazon_fantasma.py`, decisión: qty 0
+   SOLO a los 5 BUYABLE MFN con 878 pzas fantasma): el dry-run verificó EN
+   VIVO y encontró que **el problema ya se había apagado solo** — 4 de 5 dan
+   HTTP 404 (Amazon los eliminó; el caché estaba rancio) y `CONS-0016-EST` ya
+   está DISCOVERABLE. Cero escrituras; 5 verificaciones selladas en
+   `fanout_log` (`apagar_mfn`). Las 419 DISCOVERABLE con cantidad no se tocan
+   (decisión).
+
+**Cancelaciones/devoluciones** quedan documentadas, no tocadas: ninguna
+dispara el fan-out directo (la guarda exige `accion=="creado"`); Woo repone
+solo y `stock_watch` lo atrapa como `woo_cambio` ~20 min después. Y el candado
+de cancelación de CLAUDE.md resultó VESTIGIO: la meta no persiste por REST; la
+defensa real es la reversión de compensación.
+
+**Orden de encendido propuesto** (cada dale por separado): refrescar token →
+alinear TikTok → flags de refresh/censo → sonda Temu → escritor → FANOUT_TEMU.
+
+Versión 0.207.0.
+
 ### v0.204.0 — El acta decía cuántos rompieron la racha, no cuáles
 
 `seam_gap` es un número, y un número no se puede atender. El 18-ago la alerta

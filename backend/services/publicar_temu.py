@@ -336,6 +336,53 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
 
     goods_id = str(res.get("goodsId") or res.get("goods_id") or "")
     log.info("TEMU alta %s → goodsId %s", sku, goods_id or "(sin id)")
+    _reflejar(sku, goods_id, payload, armado["categoria_id"])
     return {"ok": True, "canal": CANAL, "sku": sku, "goods_id": goods_id,
             "categoria_id": armado["categoria_id"],
             "avisos": armado["avisos"], "respuesta": res}
+
+
+def _reflejar(sku: str, goods_id: str, payload: dict[str, Any],
+              categoria_id: str | int | None) -> None:
+    """
+    Deja el alta en `channel.listings` para que el panel (y el fan-out) la
+    vean YA — el gemelo de `publicar_tiktok._reflejar`.
+
+    Sin esto, cada publicación nueva era INVISIBLE hasta el siguiente re-run
+    manual de `cargar_temu`: el 14-ago se publicaron ~160 productos por lote y
+    hubo que re-correr el censo esa misma tarde solo para que aparecieran. El
+    `status` se deja NULL a propósito: el estado crudo real (`4/7`…) lo asigna
+    Temu al procesar y solo el censo lo sabe — inventar uno aquí ataría el
+    fan-out a un dato falso.
+    """
+    try:
+        from services import supabase_db as sdb
+        sku_alta = (payload.get("skuList") or [{}])[0]
+        precio = None
+        try:
+            precio = float(((sku_alta.get("price") or {}).get("basePrice")
+                            or {}).get("amount") or 0) or None
+        except (TypeError, ValueError):
+            pass
+        stock = None
+        try:
+            stock = int(sku_alta.get("quantity")) if sku_alta.get("quantity") is not None else None
+        except (TypeError, ValueError):
+            pass
+        sdb.execute(
+            """insert into channel.listings
+                 (sku, account_id, canal, listing_id, price, stock_own,
+                  is_fulfillment, category_id, currency, store_name, updated_at)
+               select %s::citext, a.id, %s, %s, %s, %s, false, %s, 'MXN', 'Temu', now()
+                 from core.accounts a
+                where a.channel_id=%s and a.legacy_code=%s
+               on conflict (sku, account_id, canal) do update set
+                 listing_id=excluded.listing_id,
+                 price=coalesce(excluded.price, channel.listings.price),
+                 stock_own=coalesce(excluded.stock_own, channel.listings.stock_own),
+                 category_id=coalesce(excluded.category_id, channel.listings.category_id),
+                 updated_at=now()""",
+            (sku, CANAL, goods_id or None, precio, stock,
+             str(categoria_id) if categoria_id else None, CANAL, CUENTA))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo reflejar %s en channel.listings: %s", sku, exc)

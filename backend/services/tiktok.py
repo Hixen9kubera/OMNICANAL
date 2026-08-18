@@ -40,13 +40,15 @@ apagado los endpoints responden 503 y NO se llama a TikTok.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
 import logging
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -219,6 +221,106 @@ async def refrescar(refresh_token: str) -> dict[str, Any]:
     return cuerpo.get("data") or {}
 
 
+# ── Auto-refresh (la regla 8 de ML, aplicada a TikTok) ───────────────────────
+#
+# POR QUÉ EXISTE (auditoría 18-ago). El access_token dura ~7 días y `refrescar`
+# llevaba desde el 8-ago escrito SIN UN SOLO LLAMADOR: el token venció el 15-ago
+# a las 00:06 y el canal murió en silencio — el fan-out acumuló 4 errores
+# `105002 Expired credentials` y nadie se enteró en 3 días (alertas tampoco lo
+# vigilaba). El refresh_token sí vive (~99 años según `refresh_expira`), así que
+# la reparación siempre estuvo a una llamada de distancia.
+
+_refresh_lock = threading.Lock()
+_refresh_ts: dict[str, float] = {}      # shop_id → epoch del último refresh
+_REFRESH_VENTANA_S = 120.0              # anti-estampida: las ráfagas comparten refresh
+
+
+def _fila_token(shop_id: str | None) -> dict[str, Any] | None:
+    if shop_id:
+        return db.fetch_one(
+            "SELECT shop_id, refresh_token, expira FROM tiktok_tokens WHERE shop_id=%s",
+            (shop_id,))
+    return db.fetch_one(
+        "SELECT shop_id, refresh_token, expira FROM tiktok_tokens "
+        "ORDER BY updated_at DESC LIMIT 1")
+
+
+async def refrescar_y_guardar(shop_id: str | None = None) -> str | None:
+    """
+    Refresca el access_token y lo PERSISTE. Devuelve el token nuevo (o None).
+
+    ⚠️ NUNCA usar `guardar()` para esto: sin `tiendas` su respaldo inserta una
+    fila NUEVA con el open_id como shop_id y `shop_cipher=NULL` — y como
+    `access_token()`/`cipher()` leen la fila más reciente, el canal quedaría
+    con token bueno y cipher perdido ("TikTok sin token o sin shop_cipher").
+    Aquí se hace UPDATE por shop_id y el cipher ni se toca.
+
+    Anti-estampida: el fan-out procesa en ráfagas por SKU; si otro hilo
+    refrescó hace <2 min, se reusa su resultado (TikTok no rota el
+    refresh_token, así que un doble refresh sería inofensivo — solo caro).
+    """
+    _asegurar_tabla()
+    fila = await asyncio.to_thread(_fila_token, shop_id)
+    if not fila or not fila.get("refresh_token"):
+        log.warning("TikTok: no hay refresh_token guardado; no se puede renovar.")
+        return None
+    clave = str(fila["shop_id"])
+    with _refresh_lock:
+        reciente = (time.time() - _refresh_ts.get(clave, 0)) < _REFRESH_VENTANA_S
+        if not reciente:
+            _refresh_ts[clave] = time.time()
+    if reciente:
+        return await asyncio.to_thread(access_token, clave)
+
+    refresh = _descifrar(fila["refresh_token"])
+    data = await refrescar(refresh)
+    access = data.get("access_token")
+    if not access:
+        log.warning("TikTok: el refresh respondió sin access_token: %s", data)
+        return None
+
+    def _persistir() -> None:
+        db.execute(
+            """UPDATE tiktok_tokens
+               SET access_token=%s,
+                   refresh_token=COALESCE(%s, refresh_token),
+                   expira=%s,
+                   refresh_expira=COALESCE(%s, refresh_expira),
+                   updated_at=%s
+               WHERE shop_id=%s""",
+            (_cifrar(access),
+             _cifrar(data["refresh_token"]) if data.get("refresh_token") else None,
+             _a_datetime(data.get("access_token_expire_in")),
+             _a_datetime(data.get("refresh_token_expire_in")),
+             datetime.now(timezone.utc).replace(tzinfo=None), clave))
+
+    await asyncio.to_thread(_persistir)
+    log.info("TikTok: access_token renovado para shop %s (expira %s).",
+             clave, _a_datetime(data.get("access_token_expire_in")))
+    return access
+
+
+async def refrescar_si_urge(margen_horas: int = 24) -> dict[str, Any]:
+    """
+    Job del scheduler: renueva ANTES de que caduque (margen configurable).
+
+    No depende de `tiktok_enabled`: producción escribe stock con ese flag en
+    false (el fan-out usa el token directo), así que atar el refresh al flag
+    repetiría el apagón silencioso del 15-ago.
+    """
+    _asegurar_tabla()
+    fila = await asyncio.to_thread(_fila_token, None)
+    if not fila:
+        return {"ok": False, "motivo": "sin token guardado"}
+    expira = fila.get("expira")
+    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+    if expira and (expira - ahora) > timedelta(hours=margen_horas):
+        return {"ok": True, "accion": "vigente", "expira": str(expira)}
+    nuevo = await refrescar_y_guardar(str(fila["shop_id"]))
+    return {"ok": bool(nuevo), "accion": "renovado" if nuevo else "fallo",
+            "expira_previa": str(expira or "")}
+
+
 # ── Llamadas firmadas a la Open API ───────────────────────────────────────────
 #
 # TikTok NO se conforma con el token: firma cada petición. Sin esto no se puede
@@ -246,7 +348,7 @@ def _firmar(ruta: str, params: dict[str, Any], cuerpo: str = "") -> str:
 
 async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
                  cuerpo: dict[str, Any] | None = None,
-                 metodo: str = "GET") -> dict[str, Any]:
+                 metodo: str = "GET", _reintento: bool = False) -> dict[str, Any]:
     """
     Una llamada firmada. Devuelve el `data` de la respuesta.
 
@@ -255,6 +357,12 @@ async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
 
     OJO con `timestamp`: TikTok solo acepta una ventana de [ahora−5min, ahora+30s].
     Un reloj desfasado devuelve `36009004 Invalid timestamp` y parece otra cosa.
+
+    AUTO-SANA en `105002 Expired credentials` (el 401 de TikTok): refresca el
+    token, lo persiste y reintenta UNA vez — con token RE-LEÍDO, no el argumento
+    (el argumento es justo el vencido). Cubre a TODOS los consumidores: fan-out,
+    publicador, atributos, pedidos. Es la misma medicina que `meli.obtener_orden`
+    (regla 8): el canal murió 3 días por no tenerla.
     """
     p: dict[str, Any] = dict(params or {})
     p["app_key"] = settings.tiktok_app_key
@@ -271,6 +379,13 @@ async def llamar(ruta: str, token: str, params: dict[str, Any] | None = None,
         raise RuntimeError(f"TikTok devolvió algo que no es JSON (HTTP {r.status_code}): "
                            f"{r.text[:200]}")
     if j.get("code") not in (0, "0"):
+        if str(j.get("code")) == "105002" and not _reintento:
+            log.warning("TikTok %s: token vencido (105002); refrescando y "
+                        "reintentando una vez.", ruta)
+            nuevo = await refrescar_y_guardar()
+            if nuevo:
+                return await llamar(ruta, nuevo, params, cuerpo, metodo,
+                                    _reintento=True)
         raise RuntimeError(f"TikTok {ruta} → code={j.get('code')} "
                            f"{j.get('message')} (request_id={j.get('request_id')})")
     return j.get("data") or {}

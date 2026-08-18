@@ -115,3 +115,52 @@ def inventario_pendientes(limite: int = Query(50, ge=1, le=500)):
                             'woo_cambio_registro','stock_watch_freno')
            ORDER BY id DESC LIMIT %s""", (limite,))
     return {"eventos": filas, "total": len(filas)}
+
+
+@router.post("/alinear")
+def alinear(canal: str = Query(..., description="tiktok | mercado_libre | temu"),
+            confirmar: bool = Query(False, description="Sin true solo cuenta, no encola"),
+            limite: int = Query(0, ge=0, le=5000, description="0 = sin tope")):
+    """
+    Alineación inicial de un canal: encola en el fan-out TODOS los SKUs con
+    publicación viva en ese canal, para que la primera sincronización no
+    espere a que cada SKU se venda o se mueva (el fan-out no tiene barrido
+    propio: es 100% por evento).
+
+    No escribe nada por sí mismo: ENCOLA, y cada SKU pasa por plan() con todas
+    sus guardas (dry-run, FANOUT_CANALES, pausas, DESCONOCIDO≠0…). Con
+    `confirmar=false` solo devuelve cuántos SKUs encolaría.
+
+    Nació para la corrida inicial de TikTok tras revivir el token (18-ago):
+    285 ACTIVATE, de los cuales solo ~24 divergían de Woo.
+    """
+    from services import supabase_db as sdb
+    canal = (canal or "").strip().lower()
+    filtros = {
+        # TikTok: `status` es quien dice si está a la venta (ACTIVATE).
+        "tiktok": "canal='tiktok' and status='ACTIVATE'",
+        # ML: activas y pausadas DROP (las FULL las descarta el propio fan-out,
+        # pero se filtran aquí para no encolar de más).
+        "mercado_libre": ("canal='mercado_libre' and situacion in ('active','paused') "
+                          "and coalesce(is_fulfillment,false)=false"),
+        # Temu: DROP-only por decisión (18-ago); vivo = tiene goodsId. Los
+        # estados crudos no distinguen activo/inactivo y aquí no bloquean —
+        # la rama de temu en _destinos aplica la política fina.
+        "temu": "canal='temu' and coalesce(listing_id,'') <> ''",
+    }
+    if canal not in filtros:
+        return {"ok": False, "motivo": f"canal '{canal}' sin alineación definida",
+                "canales": sorted(filtros)}
+    filas = sdb.fetch_all(
+        f"select distinct sku from channel.listings where {filtros[canal]}"
+        + (f" limit {int(limite)}" if limite else ""))
+    skus = [str(f["sku"]) for f in filas]
+    if confirmar and skus:
+        fanout_stock.encolar_varios(skus, motivo=f"alineacion inicial {canal}")
+    return {"ok": True, "canal": canal, "skus": len(skus),
+            "encolados": len(skus) if confirmar else 0,
+            "confirmar": confirmar,
+            "habilitado": fanout_stock.habilitado(),
+            "dry_run": fanout_stock.dry_run(),
+            "nota": ("encolados; ver /api/fanout/estado" if confirmar
+                     else "conteo solamente — repetir con confirmar=true")}

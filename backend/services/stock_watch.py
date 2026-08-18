@@ -217,24 +217,50 @@ def _leer_woo() -> dict[str, dict[str, Any]]:
     return fuera
 
 
-async def _escribir_woo(cambios: list[tuple[str, int, dict]]) -> int:
-    """Aplica los destinos calculados a Woo por REST (nunca DML sobre wp_*)."""
+async def _escribir_woo(cambios: list[tuple[str, int, dict]]) -> tuple[int, set[str]]:
+    """Aplica los destinos calculados a Woo por REST (nunca DML sobre wp_*).
+
+    Devuelve (cuántos se escribieron, QUÉ SKUs quedaron escritos OK). El
+    conjunto importa tanto como el conteo: la foto solo debe absorber los SKUs
+    realmente escritos — absorber un fallo pierde el delta de Odoo PARA SIEMPRE
+    y en silencio (pasó de verdad: ORG-0785 se quedó sin 60 pzas y TEC-0965 sin
+    14 porque el batch falló y la foto dio el destino por hecho).
+
+    Woo responde 200 al batch aunque un ítem individual truene: cada elemento
+    de `update` puede traer su propio `error`. Por eso se revisa ítem por ítem
+    y no solo el status del lote.
+    """
     from services import woocommerce
     simples, variaciones = [], {}
+    id_a_sku = {int(w["id"]): sku for sku, _d, w in cambios}
     for _sku, destino, w in cambios:
         upd = {"id": w["id"], "manage_stock": True, "stock_quantity": destino}
         if w["tipo"] == "product_variation" and w["padre"]:
             variaciones.setdefault(w["padre"], []).append(upd)
         else:
             simples.append(upd)
-    hechos = 0
+
+    def _oks(respuesta: Any, lote: list[dict]) -> set[str]:
+        """SKUs OK de un batch: sin campo `error` en su elemento de respuesta."""
+        try:
+            filas = (respuesta or {}).get("update") or []
+            con_error = {int(f["id"]) for f in filas
+                         if f.get("id") is not None and f.get("error")}
+            return {id_a_sku[int(u["id"])] for u in lote
+                    if int(u["id"]) in id_a_sku and int(u["id"]) not in con_error}
+        except Exception:  # noqa: BLE001 — respuesta ilegible: se asume el lote OK
+            return {id_a_sku[int(u["id"])] for u in lote if int(u["id"]) in id_a_sku}
+
+    hechos, ok_skus = 0, set()
     async with woocommerce._client() as cli:
         for i in range(0, len(simples), 50):
             lote = simples[i:i + 50]
             try:
                 r = await cli.post("/products/batch", json={"update": lote}, timeout=300.0)
                 if r.status_code in (200, 201):
-                    hechos += len(lote)
+                    escritos = _oks(r.json(), lote)
+                    ok_skus |= escritos
+                    hechos += len(escritos)
             except Exception as exc:  # noqa: BLE001
                 log.warning("stock_watch: batch simples falló: %s", exc)
             await asyncio.sleep(0.5)
@@ -243,11 +269,13 @@ async def _escribir_woo(cambios: list[tuple[str, int, dict]]) -> int:
                 r = await cli.post(f"/products/{padre}/variations/batch",
                                    json={"update": lote}, timeout=300.0)
                 if r.status_code in (200, 201):
-                    hechos += len(lote)
+                    escritos = _oks(r.json(), lote)
+                    ok_skus |= escritos
+                    hechos += len(escritos)
             except Exception as exc:  # noqa: BLE001
                 log.warning("stock_watch: batch variaciones de %s falló: %s", padre, exc)
             await asyncio.sleep(0.5)
-    return hechos
+    return hechos, ok_skus
 
 
 async def revisar(forzar: bool = False) -> dict[str, Any]:
@@ -327,14 +355,17 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
             return dict(_ultimo)
 
         # ── APLICAR ───────────────────────────────────────────────────────
-        escritos = 0
+        escritos, deltas_ok = 0, set()
         if deltas and not solo_registro():
-            escritos = await _escribir_woo(deltas)
+            escritos, deltas_ok = await _escribir_woo(deltas)
+        fallidos = ({s for s, _d, _w in deltas} - deltas_ok) if not solo_registro() else set()
         for sku, destino, w in deltas[:200]:
+            fallo = sku in fallidos
             await asyncio.to_thread(
                 _anotar, sku, "odoo_delta" if not solo_registro() else "odoo_delta_registro",
                 f"delta de Odoo (foto {foto.get(sku, {}).get('odoo')} -> {od[sku]})",
-                f"Woo {w['stock']} -> {destino}")
+                f"Woo {w['stock']} -> {destino}"
+                + (" (ESCRITURA FALLÓ — se reintenta la próxima pasada)" if fallo else ""))
 
         encolados = 0
         for sku, ant, ahora_wo in movidos_woo:
@@ -344,9 +375,25 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
             if not solo_registro():
                 fanout_stock.encolar(sku, motivo="cambio de stock en Woo")
                 encolados += 1
+        # DELTAS DE ODOO → CANALES (cierre del tramo prometido en la cabecera).
+        # Hasta v0.206 los deltas aplicados a Woo NO se encolaban y la foto los
+        # absorbía: la siguiente pasada veía Woo == foto y los canales jamás se
+        # enteraban (medido: 48 de 755 llegaron, y solo porque una venta
+        # concurrente encoló el mismo SKU). El peor caso era revivir de 0 — un
+        # canal en 0 no vende, y sin venta no había disparo. Ej. real: PAS-0018
+        # 130→0 el 18-ago, invisible para TikTok. Se encola SOLO lo escrito OK:
+        # el fan-out relee Woo en vivo, así que empuja el valor ya aplicado.
+        for sku in sorted(deltas_ok):
+            fanout_stock.encolar(sku, motivo="delta de Odoo aplicado")
+            encolados += 1
 
         # ── GUARDAR FOTO ──────────────────────────────────────────────────
-        # Aplicado: la foto del SKU tocado es su destino y Odoo queda absorbido.
+        # Aplicado: la foto del SKU tocado es su destino y Odoo queda absorbido
+        # — pero SOLO si su escritura fue OK. Un delta cuya escritura FALLÓ
+        # conserva la foto vieja EN LOS DOS LADOS (woo y odoo): así la próxima
+        # pasada recalcula el mismo delta y lo reintenta. Antes se absorbía
+        # todo, hasta lo fallido, y el delta se perdía para siempre y en
+        # silencio (ORG-0785: 60 pzas; TEC-0965: +14).
         #
         # SOLO REGISTRO: la foto NO absorbe lo pendiente. Si absorbiera, un delta
         # de Odoo observado en modo registro desaparecería (la siguiente pasada
@@ -357,12 +404,16 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         # sigue sin aplicarse.
         pend_odoo = {s for s, _, _ in deltas}
         pend_woo = {s for s, _, _ in movidos_woo}
-        destinos = {s: d for s, d, _ in deltas} if not solo_registro() else {}
+        destinos = {s: d for s, d, _ in deltas
+                    if s in deltas_ok} if not solo_registro() else {}
         filas = []
         for s, w in wo.items():
             if solo_registro():
                 v_woo = foto[s]["woo"] if s in pend_woo and s in foto else w["stock"]
                 v_odoo = foto[s]["odoo"] if s in pend_odoo and s in foto else od.get(s)
+            elif s in fallidos and s in foto:
+                # Escritura fallida: se conserva la memoria para reintentar.
+                v_woo, v_odoo = w["stock"], foto[s]["odoo"]
             else:
                 v_woo, v_odoo = destinos.get(s, w["stock"]), od.get(s)
             filas.append((s, v_woo, v_odoo))

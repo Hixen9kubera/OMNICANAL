@@ -36,8 +36,14 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
   (canal AFN) nacen con `_order_stock_reduced=yes` → NO tocan bodega (salen del
   almacén del marketplace). No-FULL / MFN / Temu / TikTok SÍ descuentan
   (`PEDIDOS_WC_DESCUENTA_STOCK=true` desde el día 1, decisión de Brandon).
-  Candado de cancelación: a un pedido protegido se le quita la marca ANTES de
-  cancelarlo (si no, Woo "devolvería" stock que nunca salió).
+  Candado de cancelación: quitar la marca `_order_stock_reduced` antes de
+  cancelar es un VESTIGIO (la REST de Woo no persiste esa meta — hallazgo
+  v0.25); la defensa real es la REVERSIÓN de compensación
+  (`pedidos_ml.py::_compensar_stock_protegido(signo=-1)`), que solo corre si
+  hubo compensación previa y foto de `_reduced_stock` tomada a tiempo.
+  Auditoría 18-ago: NINGUNA cancelación dispara el fan-out directo (la guarda
+  exige `accion=="creado"`); la reposición de Woo la atrapa `stock_watch` como
+  `woo_cambio` ~20 min después.
 - **Tab VENTAS del panel = 100% `pedidos_ml`** (fuente `pedidos`): General suma
   todas las cuentas; el canal filtra; comparativa semanal desde el 24-jul
   ("s/ base" antes). `?fuente=ml` conserva la vista histórica de la API de ML
@@ -117,6 +123,8 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 | Atributos ML (IA) | `backend/services/ml_atributos.py` | Prompt canónico + DeepSeek; guarda metas `ml_attr_<ID>` (lo que lee el publisher) |
 | Tipo Amazon (picker) | `backend/routers/publicar.py` + `frontend/components/TipoAmazonPicker.tsx` | Ver/buscar/guardar product type; prioridad panel |
 | Sync Odoo→Woo | `backend/services/sync_woo.py` (`POST /api/sync/woo`) | Barrido stock+costos, solo diferencias |
+| Fan-out stock DROP | `backend/services/fanout_stock.py` + `routers/fanout.py` + `docs/AUDITORIA_FANOUT.md` | Woo→canales por evento (cola+debounce). ARQUITECTURA 18-ago: ML/Amazon/Walmart = fulfillment (Amazon FUERA de FANOUT_CANALES); TikTok/Temu(/SHEIN) = DROP-only. TikTok con auto-refresh 105002 (v0.207); Temu espera sondeo de `stock.edit` (`FANOUT_TEMU` off). Alineación inicial: `POST /api/fanout/alinear` |
+| Censo TikTok | `backend/services/tiktok_censo.py` (`POST /api/tiktok/censo`, job tras `TIKTOK_CENSO_ENABLED`) | status+stock vivos en channel.listings; sin él, las activaciones de `tk_activar.py` (escritorio) son invisibles → sobreventa en potencia |
 | Espejo kubera + /migracion | `backend/services/kubera_mirror.py` + `routers/migracion.py` + `frontend/app/migracion/` | Dual-write PROPIO (v0.13.0) de los escritores sin cobertura del compañero hacia la BD kubera (esquema v4); censo hardcodeado, errores en `espejo_kubera_log`, panel en tiempo real (+racha de actas v0.14.0). Pool 6 + reproceso de errores pendientes (v0.15.2, Eduardo) y despacho por cola acotada + 2 workers (v0.15.3). GAP de pedidos CERRADO en v0.16.0: `channel.orders` aplicada por Eduardo (2026-07-22) y seam en `pedidos_ml.sincronizar`, ENCENDIDO el 23-jul (dale de Eduardo). Backfills one-shot idempotentes vía `POST /api/migracion/backfill/*`: `product-media` (254 imágenes históricas) y `channel-orders` (3,546 pedidos desde el 13-may, 0 fallos; por tandas con `offset` — la corrida completa excede el timeout del proxy). `channel.orders` está COMPLETO: histórico + flujo vivo (v0.16.1–v0.16.3) |
 
 **Tablas propias en MySQL (`u531713409_kubera_ml`)**: `pedidos_ml`,
@@ -433,9 +441,10 @@ kubera.
    **GTIN real** (2, BEKURA).
 4. **TikTok**: re-autorizar conexión en M2E (Brandon).
 5. **Comisión de Amazon** en pedidos = 0 (falta Finances API).
-6. **Fan-out de stock a otros canales** tras venta no-FULL (diseñado, no
-   construido) y **webhook de WooCommerce** para ventas web (no construido —
-   las ventas web NO aparecen en el tab aún).
+6. **Fan-out de stock**: CONSTRUIDO y vivo desde el 28-jul (ver fila del mapa
+   y docs/AUDITORIA_FANOUT.md; auditado y reorientado a DROP el 18-ago,
+   v0.207). Sigue pendiente el **webhook de WooCommerce** para ventas web (no
+   construido — las ventas web NO aparecen en el tab aún).
 7. **SKUs reciclados** con título distinto en ML vs Woo: `TEC-0492-MUL`,
    `ORG-0398-NEG`, `ORG-0579-*`, y (detectados 22-jul) `ORG-0934`,
    `MAN-0490-DOR`. Caso especial `EST-0091`: es DOS productos — cómoda en

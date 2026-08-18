@@ -32,7 +32,11 @@ from services import supabase_db as sdb
 # no tiene escritor de TikTok y `FANOUT_CANALES` no lo incluye, así que sus
 # destinos se OMITEN con motivo escrito ("sin escritor implementado") en vez de
 # recibir stock. Verificado antes de agregarlo aquí.
-CANALES = ("mercado_libre", "amazon", "tiktok")
+# temu entró el 18-ago (decisión: canal DROP-only). Verificado ANTES de
+# agregarlo, igual que con tiktok: sin escritor en _ESCRITORES y con
+# FANOUT_TEMU apagado, sus 352 filas solo producen "omitir" con motivo escrito
+# — visibles en dry-run/simulación, cero escrituras.
+CANALES = ("mercado_libre", "amazon", "tiktok", "temu")
 _SEL = """
     select l.sku, l.canal,
            case when a.legacy_code in ('AMAZON','GENERAL') then '' else a.legacy_code end as cuenta,
