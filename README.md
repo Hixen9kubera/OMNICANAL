@@ -11936,6 +11936,29 @@ dice).
 
 Sin migraciones ni variables nuevas. Versión 0.193.0.
 
+### v0.213.1 — Se cierra la ventana de core-etl-v2, con su respuesta
+
+La ventana se abrió el 14-ago para comprobar si la v0.164.0 cerró el hueco de
+los padres. **Sirvió**: 15, 16 y 17-ago salieron `ok` con `seam_gap=0`, y desde
+el arreglo no ha faltado un solo producto — `insertar=0` en los dos días rojos
+que siguieron.
+
+El 18 y 19 salieron `con_deltas` por OTRA causa, benigna: alguien renombró cinco
+familias en Woo (18-ago, 18:13→21:24) y **al renombrar un padre WooCommerce no
+manda evento por cada variación** — ni siquiera les mueve `post_modified`, siguen
+marcadas en julio. El nombre de las variantes queda viejo unas horas hasta que el
+ETL de medianoche lo cura: el acta avisa de algo que ella misma acaba de
+arreglar. Verificado en las cinco familias (`BAS-0506`, `DEC-0185`, `JUGU-0128`,
+`MUE-0160`, `ORG-0655`).
+
+Vuelve a `_DOMINIOS_SIN_ALERTA`. Con esto **ningún dominio timbra por actas** —
+hay que mirar /migracion a mano, y queda escrito en el código.
+
+Si algún día se quiere cerrar ese hueco: avisar de las variantes al renombrar el
+padre, el mismo arreglo de la v0.103.0 al revés. Impacto bajo. Versión 0.213.1.
+
+---
+
 ### v0.213.0 — Un auditor de costeo que mide en dinero, y la pantalla de Costos deja de esconder lo que no tiene costo
 
 Sesión de costos (Eduardo, 18-ago): construir lo que **detecta, mide y hace

@@ -93,20 +93,32 @@ _DOMINIOS_RETIRADOS = {"channel-deltas", "costing-deltas", "orders-deltas"}
 #
 # Reactivar = quitar el dominio de este conjunto.
 #
-# VENTANA ABIERTA A PROPÓSITO (14-ago-2026, pedido de Eduardo): `core-etl-v2`
-# SALE del conjunto por un par de días para comprobar si la v0.164.0 cerró el
-# hueco de los padres. Es la única forma de saberlo sin entrar a /migracion a
-# mano: si el acta sale `ok` dos días seguidos, el arreglo sirvió.
+# VENTANA DEL 14 AL 19-AGO-2026 — CERRADA, con su respuesta.
+# Se sacó `core-etl-v2` del conjunto para comprobar si la v0.164.0 (el candado
+# que sellaba antes de escribir) cerró el hueco de los padres. Sirvió:
 #
-#   · sale `ok`      → el arreglo funcionó; decidir si se deja vigilado (que es
-#                      lo sano: es el único auditor del seam) o se vuelve a callar.
-#   · sale con_deltas→ queda otro hueco; mirar qué SKUs insertó el ETL, igual
-#                      que el 14-ago (las altas de core.products a la hora de la
-#                      corrida dicen exactamente cuáles).
+#   14-ago  con_deltas  seam_gap=4   insertar=4   <- los padres que faltaban
+#   15-ago  ok          seam_gap=0
+#   16-ago  ok          seam_gap=0                <- tres días limpios
+#   17-ago  ok          seam_gap=0
+#   18-ago  con_deltas  seam_gap=31  insertar=0
+#   19-ago  con_deltas  seam_gap=14  insertar=0
 #
-# REVISAR EL 16-AGO-2026. Si nadie lo mira, la ventana se queda abierta sola —
-# que tampoco es grave, pero entonces vuelve el aviso diario que se pidió callar.
-_DOMINIOS_SIN_ALERTA = {"categorias-etl"}
+# Desde el arreglo NO ha faltado un solo producto: `insertar=0` los dos días
+# rojos. Esos dos son OTRA cosa, y benigna: alguien renombró cinco familias en
+# Woo (18-ago, 18:13→21:24) y al renombrar un padre WooCommerce NO manda evento
+# por cada variación — ni siquiera les mueve la fecha, siguen marcadas en julio.
+# El nombre de las variantes queda viejo unas horas y el ETL de medianoche lo
+# cura. El acta avisa de algo que ella misma acaba de arreglar.
+#
+# Por eso vuelve a callarse: mientras siga así, cada renombrado con variantes
+# manda una alerta roja sin nada que atender, y eso es lo que enseña a ignorar
+# las alertas de verdad.
+#
+# Si algún día se quiere cerrar TAMBIÉN ese hueco: avisar de las variantes
+# cuando se renombra el padre, que es el mismo arreglo de la v0.103.0 al revés.
+# Impacto bajo — solo nombres, y se corrigen esa misma noche.
+_DOMINIOS_SIN_ALERTA = {"core-etl-v2", "categorias-etl"}
 
 
 @router.get("/deltas")
