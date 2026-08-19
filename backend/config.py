@@ -573,6 +573,17 @@ class Settings(BaseSettings):
     slack_webhook_url: str = ""
     # Vigilante de ausencias (actas faltantes, silencio de ventas): cada N min.
     alertas_min: int = 15
+
+    # RECONSTRUCTOR DE PEDIDOS (Woo → kubera). La red de seguridad que reemplaza
+    # a MySQL: si kubera no respondió al registrar una venta, el pedido igual
+    # quedó en Woo y esto lo apunta después. NACE ENCENDIDO por decisión de
+    # Eduardo (19-ago-2026) — sin él, apagar MySQL deja las ventas sin colchón y
+    # el registro incompleto reabre la puerta a los pedidos duplicados.
+    # Solo INSERTA lo que falta; jamás reescribe una venta ya registrada.
+    # Reversa: RECONSTRUIR_ORDERS_ENABLED=false, sin deploy.
+    reconstruir_orders_enabled: bool = True
+    reconstruir_orders_min: int = 60
+    reconstruir_orders_dias: int = 2
     # Hora UTC a partir de la cual una acta diaria ausente es alarma (los crons
     # corren 06:30/06:47/07:15 UTC; a las 07:45 ya deberían estar las 3).
     alertas_actas_hora_utc: int = 8

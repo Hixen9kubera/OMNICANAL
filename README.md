@@ -10002,6 +10002,45 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.217.0 — Woo reconstruye el registro: el colchón que reemplaza a MySQL
+
+Decisión de Eduardo (19-ago). Hoy, si kubera no responde al registrar una venta,
+la atrapa MySQL: el pedido cae en `pedidos_ml` y el reintento se encola en
+`espejo_kubera_log`. **Las dos tablas son de la base que se está retirando**, así
+que al apagarla el colchón se va con ella.
+
+**Y no se puede confiar en que el canal reintente** — se verificó en el código
+antes de decidir: el webhook de ML contesta **200 SIEMPRE**, a propósito, porque
+devolver otra cosa hace que ML deshabilite el topic tras una hora y las ventas
+dejen de entrar en silencio. El procesamiento ocurre DESPUÉS de esa respuesta,
+así que cuando la escritura falla, ML ya se olvidó. La primera opción evaluada
+—"aceptarlo, ML reintenta"— se descartó por eso.
+
+Lo que se pierde tampoco es cosmético: el apunte ES el candado de idempotencia.
+Sin él, el siguiente aviso de esa orden no encuentra rastro y crea otro pedido —
+así nacieron los 964 fantasma del 12-ago.
+
+`reconstruir_orders_desde_woo.py` cierra el hueco por el otro lado: **el pedido
+ya está en Woo**, con `_ml_order_id`, cuenta, importes y estado. Se compara
+contra `channel.orders` y se inserta lo que falte; de paso repunta los que
+apuntan a un pedido en papelera. NO reescribe filas sanas — los importes de una
+venta registrada son históricos.
+
+Corre solo cada hora sobre una ventana de 2 días (`RECONSTRUIR_ORDERS_ENABLED`,
+`_MIN`, `_DIAS`; reversa sin deploy). Ventana corta a propósito: el hueco que
+importa es el de las últimas horas, no el historial.
+
+**Probado de punta a punta contra producción**: se borró a propósito la fila de
+una venta real (`2000017828639636`, BEKURA, $79.00) y el script la detectó, la
+reconstruyó y quedó **idéntica en los diez campos** — canal, cuenta, id externo,
+pedido de Woo, ambos estados, total, comisión, fulfillment y SKUs.
+
+La primera versión dejaba `skus` en NULL, lo que habría dejado la venta sin
+atribuir en el tab de Ventas; salió en esa misma prueba. Los SKUs se resuelven
+por `_variation_id` (o `_product_id` si es simple) contra el postmeta. Versión 0.217.0.
+
+---
+
 ### v0.216.0 — Las ocho cantidades del reporte FBA, y el KPI que decía lo que no era
 
 Eduardo revisó las referencias de las columnas del reporte y cachó dos huecos.

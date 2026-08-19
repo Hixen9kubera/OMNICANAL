@@ -248,6 +248,25 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Censo de Temu cada %s min.", settings.temu_censo_min)
+    # RECONSTRUCTOR DE PEDIDOS: rellena channel.orders con lo que exista en Woo
+    # y le falte al registro. Es el colchón que reemplaza a MySQL — el webhook de
+    # ML contesta 200 SIEMPRE (si no, ML deshabilita el topic), así que el canal
+    # NO reintenta: si la escritura a kubera falla, nadie más lo va a apuntar.
+    # Y un apunte perdido no es cosmético: es el candado de idempotencia, sin el
+    # cual el siguiente aviso duplica el pedido. Ver el script para el detalle.
+    if getattr(settings, "reconstruir_orders_enabled", False):
+        from scripts.reconstruir_orders_desde_woo import reconstruir
+        _scheduler.add_job(
+            lambda: reconstruir(settings.reconstruir_orders_dias),
+            "interval",
+            minutes=settings.reconstruir_orders_min,
+            id="reconstruir_orders",
+            next_run_time=datetime.now() + timedelta(seconds=300),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Reconstructor de pedidos Woo→kubera cada %s min (ventana %s días).",
+                 settings.reconstruir_orders_min, settings.reconstruir_orders_dias)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no
