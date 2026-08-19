@@ -537,6 +537,108 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, st
 # stock no da error y no vende nada.
 _ALMACEN_VENTAS_TIKTOK = "7647893424175580935"
 
+# Convergencia de Temu: su lectura va con retraso, así que cada escritura se
+# verifica y se corrige. 8 s cubre con margen los ~5 s medidos; 3 intentos
+# bastan para un desfase y su corrección sin volverse un bucle.
+_TEMU_ESPERA_S = 8.0
+_TEMU_INTENTOS = 3
+
+
+def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
+    """
+    Stock a UN producto de Temu (canal DROP-only, decisión 18-ago).
+
+    LO QUE EL SONDEO CANARIO DEJÓ ESCRITO (18-ago, ACC-0017-MUL — la primera
+    escritura de stock a Temu en la historia del proyecto):
+
+    1. `bg.local.goods.stock.edit` edita por DIFERENCIA (`stockDiff`), NO por
+       valor absoluto — lo contrario del contrato del fan-out. Se vuelve
+       absoluto LEYENDO el stock vivo justo antes: `bg.local.goods.list.query`
+       con `goodsIdList` filtra a UN goods SIN `goodsSearchType` (pasarlo con
+       la cubeta equivocada devuelve vacío en silencio). diff = objetivo − vivo.
+    2. La respuesta trae DOS veredictos y se exigen AMBOS: `operateResult`
+       (global) y `skuStockEditStatusInfoList[].stockEditStatus` (por SKU).
+    3. **La lectura es EVENTUALMENTE CONSISTENTE, en los dos sentidos.** Medido
+       en el canario: tras bajar 100→99 la lectura siguió contestando 100
+       varios segundos, y tras subir tardó ~5 s en mostrarlo. Un diff calculado
+       sobre una lectura rancia escribe un valor equivocado — y si la lectura
+       rancia coincide con el objetivo, ni siquiera escribe (pasó: el canario
+       se quedó en 99 creyendo que tenía 100). Por eso cada operación CONVERGE:
+       se escribe, se espera, se relee y se corrige el resto, hasta
+       `_TEMU_INTENTOS` veces. Es lento a propósito; el stock mal escrito sale
+       más caro que unos segundos.
+    4. La carrera venta-entre-lectura-y-escritura se autocorrige: esa venta
+       regresa por pedidos (M2E) y dispara otra pasada con el Woo ya nuevo.
+    """
+    import time as _t
+
+    from services import temu as tm
+
+    if not item_id:
+        return False, "sin goodsId de Temu"
+    if not tm.disponible():
+        return False, "Temu no configurado (faltan TEMU_*)"
+    try:
+        goods_id = int(str(item_id))
+    except (TypeError, ValueError):
+        return False, f"goodsId ilegible: {item_id!r}"
+
+    def _leer() -> tuple[int | None, list, str | None]:
+        res = _en_hilo(
+            lambda: tm.llamar("bg.local.goods.list.query",
+                              {"pageNo": 1, "pageSize": 10,
+                               "goodsIdList": [goods_id]}),
+            "lectura temu")
+        lote = res.get("goodsList") or []
+        fila = next((g for g in lote
+                     if str(g.get("goodsId")) == str(goods_id)), None)
+        if fila is None:
+            return None, [], "el goods no aparece en el listado (¿eliminado?)"
+        return fila.get("quantity"), (fila.get("skuIdList") or []), None
+
+    objetivo = int(cantidad)
+    try:
+        actual, ids, err = _leer()
+        if err:
+            return False, err
+        if actual is None or not ids:
+            return False, "listado sin quantity o sin skuIdList (no se escribe a ciegas)"
+        if len(ids) > 1:
+            # Multi-variante: repartir el stock DROP entre variantes no está
+            # definido (hoy 151/152 del catálogo tienen 1 sola). Falla cerrada.
+            return False, f"{len(ids)} variantes — repartir stock no está definido"
+        sku_id, inicial, escrituras = int(ids[0]), int(actual), 0
+
+        for intento in range(_TEMU_INTENTOS):
+            diff = objetivo - int(actual)
+            if diff != 0:
+                r = _en_hilo(
+                    lambda d=diff: tm.llamar("bg.local.goods.stock.edit", {
+                        "goodsId": goods_id,
+                        "skuStockChangeList": [{"skuId": sku_id, "stockDiff": d}]}),
+                    "stock temu")
+                por_sku = (r.get("skuStockEditStatusInfoList") or [{}])[0]
+                if not (r.get("operateResult") and por_sku.get("stockEditStatus")):
+                    return False, (f"Temu no aplicó: operateResult={r.get('operateResult')} "
+                                   f"skuStatus={por_sku.get('stockEditStatus')} "
+                                   f"{por_sku.get('errorMsg') or ''}")
+                escrituras += 1
+            # Verificación SIEMPRE, incluso si el diff dio 0: la lectura que lo
+            # calculó pudo venir rancia.
+            _t.sleep(_TEMU_ESPERA_S)
+            actual, _ids, err = _leer()
+            if err:
+                return False, f"escrito, pero no se pudo verificar: {err}"
+            if actual is not None and int(actual) == objetivo:
+                if escrituras == 0:
+                    return True, f"ok (ya tenía {objetivo} en vivo)"
+                return True, (f"ok ({inicial}→{objetivo}"
+                              + (f", {escrituras} ajustes)" if escrituras > 1 else ")"))
+        return False, (f"no convergió tras {_TEMU_INTENTOS} intentos: "
+                       f"quedó en {actual}, objetivo {objetivo}")
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
 # ARQUITECTURA DE CANALES (decisión de Brandon, 18-ago-2026):
 #   · ML, Amazon y Walmart se manejan con su fulfillment (FULL / FBA / WFS) —
 #     esas bodegas las administra cada plataforma y este fan-out no las toca.
@@ -546,10 +648,7 @@ _ALMACEN_VENTAS_TIKTOK = "7647893424175580935"
 #     recibiendo stock (higiene para el día que alguna reactive).
 #   · TikTok y Temu (después SHEIN) son ÚNICAMENTE DROP: el destino real.
 _ESCRITORES = {"mercado_libre": _escribir_ml, "amazon": _escribir_amazon,
-               "tiktok": _escribir_tiktok}
-# temu: se suma aquí cuando el sondeo canario (scripts/sondear_temu_stock.py)
-# confirme la forma de `bg.local.goods.stock.edit`. En dry-run igual aparece
-# en el plan, así se ve el alcance completo.
+               "tiktok": _escribir_tiktok, "temu": _escribir_temu}
 
 
 # ── Núcleo: calcular el plan de un SKU ───────────────────────────────────────
@@ -591,12 +690,12 @@ def plan(sku: str) -> dict[str, Any]:
             accion["omitido_por"] = ("FANOUT_TIKTOK apagado — el escritor está "
                                      "listo, falta encenderlo")
         elif (d["canal"] or "").lower() == "temu" and not settings.fanout_temu:
-            # Mismo candado que TikTok, pero aquí falta ADEMÁS el escritor:
-            # `bg.local.goods.stock.edit` jamás se ha llamado y su forma se
-            # confirma con scripts/sondear_temu_stock.py antes de construirlo.
+            # Mismo candado que TikTok. El escritor existe desde el sondeo
+            # canario del 18-ago (`_escribir_temu`); encenderlo es un acto
+            # explícito, nunca efecto secundario de un deploy.
             accion["accion"] = "omitir"
-            accion["omitido_por"] = ("FANOUT_TEMU apagado — falta sondear "
-                                     "stock.edit y construir el escritor")
+            accion["omitido_por"] = ("FANOUT_TEMU apagado — el escritor está "
+                                     "listo, falta encenderlo")
         elif (d["canal"] or "").lower() not in _ESCRITORES:
             accion["accion"] = "omitir"
             accion["omitido_por"] = f"sin escritor implementado para '{d['canal']}'"

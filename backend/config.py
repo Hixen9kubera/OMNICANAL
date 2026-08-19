@@ -486,6 +486,10 @@ class Settings(BaseSettings):
     # estar YA a la venta). Nace apagado (regla 3).
     tiktok_censo_enabled: bool = False
     tiktok_censo_min: int = 120
+    # Censo gemelo para Temu (temu_censo.py). Intervalo más laxo a propósito:
+    # el presupuesto de API de Temu es más estricto y su catálogo cambia menos.
+    temu_censo_enabled: bool = False
+    temu_censo_min: int = 240
 
     # ── TEMU (mallId 635517742093915, regionId 128) ──────────────────────────
     # Token de larga vida emitido en el Seller Center: Temu no usa el baile de

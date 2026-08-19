@@ -10002,6 +10002,42 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.214.0 — Temu entra al fan-out: el endpoint que nunca se había llamado, y su trampa
+
+Temu abrió su lista blanca de IPs y con el dale de Brandon se corrió el
+**canario de `bg.local.goods.stock.edit`** — la primera escritura de stock a
+Temu del proyecto. Lo que el manual daba por "enganche listo" resultó tener
+tres cosas que ninguna doc decía:
+
+1. **Edita por DIFERENCIA, no por valor absoluto** — lo contrario del contrato
+   del fan-out. Las formas con `targetStockAvailable`, `targetStock` y
+   `outSkuId` devuelven `150010003 Invalid Request Parameters`; la que pasa es
+   `{"goodsId": <int>, "skuStockChangeList": [{"skuId": <int>, "stockDiff": <int>}]}`.
+   Se vuelve absoluto leyendo el stock vivo justo antes: `list.query` con
+   `goodsIdList` filtra a UN goods **sin** `goodsSearchType` (pasarlo con la
+   cubeta equivocada devuelve vacío EN SILENCIO).
+2. **Doble veredicto**: la respuesta trae `operateResult` (global) y
+   `skuStockEditStatusInfoList[].stockEditStatus` (por SKU). Se exigen ambos.
+3. 🔴 **La lectura es eventualmente consistente EN LOS DOS SENTIDOS, y eso
+   descuadra el stock.** Medido en el canario: tras bajar 100→99 la lectura
+   siguió contestando **100** varios segundos. La primera versión del escritor
+   calculó el diff sobre ese valor rancio, concluyó "ya está en 100" y no
+   escribió: **el canario se quedó en 99 creyendo estar en 100.** Justo el tipo
+   de error que un canario existe para encontrar.
+
+**La respuesta: cada escritura CONVERGE.** `_escribir_temu` escribe, espera 8 s,
+relee y corrige el resto — hasta 3 intentos —, y verifica **siempre**, incluso
+cuando el diff dio 0, porque la lectura que lo calculó pudo venir rancia. Es
+lento a propósito: el stock mal escrito sale más caro que unos segundos.
+Probado en vivo, neto cero: reparar 99→100, no-op, 100→97 y 97→100.
+
+También entra **`services/temu_censo.py`** (gemelo del de TikTok, flag
+`TEMU_CENSO_ENABLED`, cada 4 h): sin él las 352 filas seguían congeladas en el
+`cargar_temu` manual del 14-ago. Y `temu` ya está en `_ESCRITORES`, así que el
+único candado que queda es `FANOUT_TEMU`.
+
+Versión 0.214.0.
+
 ### v0.212.0 — Los dos últimos scripts que envenenaban el pooler
 
 Hoy tumbaron dos escrituras de negocio en producción: el registro de la venta

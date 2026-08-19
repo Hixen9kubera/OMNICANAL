@@ -234,6 +234,20 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Censo de TikTok cada %s min.", settings.tiktok_censo_min)
+    # Censo de Temu → channel.listings (status crudo + stock vivos). Sin esto,
+    # el espejo de Temu se congela en el último `cargar_temu` manual.
+    if settings.temu_censo_enabled and settings.mysql_enabled:
+        from services import temu_censo
+        _scheduler.add_job(
+            temu_censo.censar,
+            "interval",
+            minutes=settings.temu_censo_min,
+            id="temu_censo",
+            next_run_time=datetime.now() + timedelta(seconds=390),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Censo de Temu cada %s min.", settings.temu_censo_min)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no

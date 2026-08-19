@@ -1,6 +1,19 @@
 """
 sondear_temu_stock.py — Sonda CANARIO de `bg.local.goods.stock.edit` (Temu).
 
+✅ SONDA CONCLUIDA (18-ago-2026, canario ACC-0017-MUL, neto cero). El contrato
+verificado quedó implementado en `fanout_stock._escribir_temu`:
+  · cuerpo: {"goodsId": <int>, "skuStockChangeList": [{"skuId": <int>,
+    "stockDiff": <int>}]} — edita por DIFERENCIA (las formas con
+    targetStockAvailable/targetStock/outSkuId dan `150010003`).
+  · lectura viva de UN goods: `bg.local.goods.list.query` con `goodsIdList`
+    y SIN `goodsSearchType` (con cubeta equivocada devuelve vacío).
+  · doble veredicto en la respuesta: `operateResult` Y
+    `skuStockEditStatusInfoList[].stockEditStatus`.
+  · bajadas instantáneas, subidas visibles ~5 s después (no verificar releyendo).
+Este script queda como herramienta de re-verificación por si Temu cambia el
+contrato — ya no hay nada que adivinar en operación normal.
+
 POR QUÉ EXISTE. El fan-out va a escribirle stock a Temu (canal DROP-only,
 decisión 18-ago), pero el endpoint de escritura JAMÁS se ha llamado: el manual
 lo nombra como enganche y su anexo adversario lo marca «parámetros, límites de
@@ -87,11 +100,17 @@ async def main() -> int:
     if antes:
         _pinta("publicación ANTES (censo)", antes)
         sku_id = None
-        for k in ("skuList", "goodsSkuList", "skus"):
-            lst = antes.get(k) or []
-            if lst:
-                sku_id = (lst[0] or {}).get("skuId") or (lst[0] or {}).get("sku_id")
-                break
+        # `skuIdList` viene al nivel del goods; las listas de variantes traen
+        # {skuId, skuSn, stock} (verificado con ACC-0017-MUL el 18-ago).
+        ids = antes.get("skuIdList") or []
+        if ids:
+            sku_id = ids[0]
+        else:
+            for k in ("skuList", "goodsSkuList", "skus", "goodsSkuQuantityList"):
+                lst = antes.get(k) or []
+                if lst:
+                    sku_id = (lst[0] or {}).get("skuId") or (lst[0] or {}).get("sku_id")
+                    break
         print(f"\nskuId visible en el listado: {sku_id or 'NO (el listado no lo trae)'}")
     else:
         sku_id = None
