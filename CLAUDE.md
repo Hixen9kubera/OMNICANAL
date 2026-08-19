@@ -108,6 +108,24 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
     vuelca la pila cuando el latido se atrasa. Buscar `EVENT LOOP ATASCADO` en
     los logs de Railway.
 
+11. **NUNCA marcar la SESIÓN como read-only contra kubera/Supabase.** El DSN
+    apunta al **pooler en modo transacción (6543)**, donde las conexiones de
+    servidor **se comparten entre clientes**: un `cn.set_session(readonly=True)`
+    o un `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` se queda pegado
+    en la conexión y lo hereda el siguiente que la tome — que puede ser el
+    backend de producción registrando una venta. Reventó dos veces
+    (`ReadOnlySqlTransaction: cannot execute INSERT in a read-only transaction`):
+    el 12-ago mató el ETL de categorías, y del 17 al 19-ago tiró la escritura de
+    PEDIDOS y de CHANNEL a MySQL. **El script termina y el daño sigue vivo.**
+    Si de verdad necesitas la garantía de solo-lectura en un diagnóstico:
+    márcala **por transacción** (`BEGIN; SET TRANSACTION READ ONLY; …;
+    ROLLBACK;`, muere con el commit), o conéctate al **5432** donde la conexión
+    es tuya, o simplemente no marques nada si solo haces `SELECT`.
+    `supabase_db` (v0.215.0) desinfecta y reintenta al detectar el error, pero
+    esa es una red de seguridad, **no un permiso**: no evita envenenar el pool
+    ni el ruido de alertas mientras tanto. Y si ves `ReadOnlySqlTransaction` en
+    un log, no busques el bug en producción — busca qué diagnóstico corrió antes.
+
 ## Mapa rápido de piezas propias
 
 | Pieza | Archivo | Qué hace |
