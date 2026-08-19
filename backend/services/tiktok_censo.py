@@ -141,7 +141,7 @@ async def censar() -> dict[str, Any]:
                     sorted((productos[0] or {}).keys()))
         return {"ok": False, "motivo": "respuesta ilegible", "crudos": len(productos)}
 
-    def _upsert() -> int:
+    def _upsert() -> tuple[int, list[str]]:
         from psycopg2.extras import execute_values
         cuenta = sdb.fetch_one(
             "select id from core.accounts where channel_id=%s and legacy_code=%s",
@@ -149,10 +149,18 @@ async def censar() -> dict[str, Any]:
         if not cuenta:
             raise RuntimeError("core.accounts no tiene la cuenta KUBERA de tiktok")
         cuenta_id = cuenta["id"]
+        # FK a core.products: un SKU publicado en el canal que no está en el
+        # catálogo maestro reventaría el censo COMPLETO por una fila (le pasó al
+        # censo de Temu con KBL-12). Se filtran y se reportan.
+        conocidos = {str(r["sku"]) for r in sdb.fetch_all(
+            "select sku from core.products where sku = any(%s)",
+            ([f[0] for f in filas],))}
+        huerfanos = sorted({f[0] for f in filas} - conocidos)
+        lista = [f for f in filas if f[0] in conocidos]
         with sdb.get_cursor() as cur:
             cur.execute("select set_config('app.via', 'tiktok_censo', true)")
-            for i in range(0, len(filas), 300):
-                lote = filas[i:i + 300]
+            for i in range(0, len(lista), 300):
+                lote = lista[i:i + 300]
                 execute_values(cur, """
                     insert into channel.listings
                         (sku, account_id, canal, listing_id, status, situacion,
@@ -175,11 +183,16 @@ async def censar() -> dict[str, Any]:
                     # contesta "INSERT has more target columns than expressions"
                     # (pasó en la primera pasada real, 18-ago 18:40).
                     template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())")
-        return len(filas)
+        return len(lista), huerfanos
 
-    escritas = await asyncio.to_thread(_upsert)
+    escritas, huerfanos = await asyncio.to_thread(_upsert)
     activate = sum(1 for f in filas if f[2] == "ACTIVATE")
     salida = {"ok": True, "productos": len(productos), "escritas": escritas,
-              "activate": activate, "ilegibles": ilegibles, "paginas": paginas}
+              "activate": activate, "ilegibles": ilegibles, "paginas": paginas,
+              "huerfanos": len(huerfanos), "huerfanos_skus": huerfanos[:20]}
     log.info("censo tiktok: %s", salida)
+    if huerfanos:
+        log.warning("censo tiktok: %d SKU(s) publicados SIN producto en el "
+                    "catálogo maestro (no entran a channel.listings): %s",
+                    len(huerfanos), ", ".join(huerfanos[:20]))
     return salida

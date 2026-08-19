@@ -74,7 +74,7 @@ async def censar() -> dict[str, Any]:
                     "primero: %s", len(productos), sorted((productos[0] or {}).keys()))
         return {"ok": False, "motivo": "respuesta ilegible", "crudos": len(productos)}
 
-    def _upsert() -> int:
+    def _upsert() -> tuple[int, list[str]]:
         from psycopg2.extras import execute_values
         cuenta = sdb.fetch_one(
             "select id from core.accounts where channel_id=%s and legacy_code=%s",
@@ -82,10 +82,19 @@ async def censar() -> dict[str, Any]:
         if not cuenta:
             raise RuntimeError("core.accounts no tiene la cuenta TEMU de temu")
         cuenta_id = cuenta["id"]
+        # `channel.listings.sku` tiene FK a `core.products`: un SKU publicado en
+        # Temu que no está en el catálogo maestro (visto: KBL-12) reventaba el
+        # censo COMPLETO por una fila. Se filtran y se reportan — inventarles un
+        # producto sería peor que no verlos.
+        conocidos = {str(r["sku"]) for r in sdb.fetch_all(
+            "select sku from core.products where sku = any(%s)",
+            ([f[0] for f in filas],))}
+        huerfanos = sorted({f[0] for f in filas} - conocidos)
+        lista = [f for f in filas if f[0] in conocidos]
         with sdb.get_cursor() as cur:
             cur.execute("select set_config('app.via', 'temu_censo', true)")
-            for i in range(0, len(filas), 300):
-                lote = filas[i:i + 300]
+            for i in range(0, len(lista), 300):
+                lote = lista[i:i + 300]
                 execute_values(cur, """
                     insert into channel.listings
                         (sku, account_id, canal, listing_id, status, price,
@@ -106,10 +115,15 @@ async def censar() -> dict[str, Any]:
                     # tiktok_censo v0.207.1: sin template, Postgres cuenta de
                     # menos y truena.
                     template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())")
-        return len(filas)
+        return len(lista), huerfanos
 
-    escritas = await asyncio.to_thread(_upsert)
+    escritas, huerfanos = await asyncio.to_thread(_upsert)
     salida = {"ok": True, "productos": len(productos), "escritas": escritas,
-              "ilegibles": ilegibles, "duplicados": duplicados}
+              "ilegibles": ilegibles, "duplicados": duplicados,
+              "huerfanos": len(huerfanos), "huerfanos_skus": huerfanos[:20]}
     log.info("censo temu: %s", salida)
+    if huerfanos:
+        log.warning("censo temu: %d SKU(s) publicados en Temu SIN producto en el "
+                    "catálogo maestro (no entran a channel.listings): %s",
+                    len(huerfanos), ", ".join(huerfanos[:20]))
     return salida

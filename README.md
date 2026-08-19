@@ -10043,6 +10043,21 @@ lectura miente); fuera de esa ventana un "ya está en su valor" se resuelve en
 0.6 s. Si el desfase lo causó una venta en Temu, su propio pedido dispara otra
 pasada y se corrige solo.
 
+**Y una lección del primer censo real de Temu**: `channel.listings.sku` tiene
+FK a `core.products`, así que UN SKU publicado en el canal sin producto en el
+catálogo maestro reventaba el censo COMPLETO (`ForeignKeyViolation` con
+`KBL-12`). Los dos censos —Temu y TikTok— ahora filtran esos huérfanos, los
+cuentan y los nombran en el log en vez de morirse. En Temu son 14 y todos son
+de prueba: `KBL-*`, `KBPROBE-*`, `KBTEST-0812A`.
+
+**Alineación inicial de Temu** (19-ago): 354 publicaciones revisadas, **6
+escrituras, 0 errores**. Dos ventas perdidas reactivadas (`CAS-0005-BLN` 0→107,
+`ORG-0431-MUL` 0→30, verificadas en vivo) y la única sobreventa vendible
+apagada (`MASC-0069-TEL` 7→0, con Odoo en 0). Los otros 293 productos están en
+estado `2/8 = Incompleto`: no venden, y la política DROP-only los omite con
+motivo escrito — entre ellos `ORG-0476-MUL`, que declara 16 piezas sin
+respaldo pero no se puede comprar.
+
 Versión 0.214.0.
 
 ### v0.212.0 — Los dos últimos scripts que envenenaban el pooler
