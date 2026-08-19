@@ -10002,6 +10002,26 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.217.1 — El reconstructor deja rastro de lo que escribió
+
+Salió al verificarlo en producción. La v0.217.0 devolvía un dict que nadie leía
+y se tragaba su propia salida, así que **no había forma de saber si había
+insertado algo**: para descartar inserciones espurias hubo que comparar conteos
+a mano, y ni así quedaba limpio — el registro sube solo porque entran ventas.
+
+Un proceso que ESCRIBE en el registro de ventas y no dice qué escribió es justo
+lo que este arreglo existe para evitar.
+
+Ahora: `INFO` con el resumen cuando no hay nada que hacer (lo normal, cada hora)
+y `WARNING` cuando de verdad tocó el registro, con el conteo. Un fallo se
+registra y devuelve `ok=False` en vez de tumbar el scheduler.
+
+La verificación de fondo sí quedó hecha: el reconstructor ve **0 faltantes** en
+su ventana, y por construcción **no puede inventar una venta** — solo inserta
+pedidos que ya existen en WooCommerce y traen `_ml_order_id`. Versión 0.217.1.
+
+---
+
 ### v0.217.0 — Woo reconstruye el registro: el colchón que reemplaza a MySQL
 
 Decisión de Eduardo (19-ago). Hoy, si kubera no responde al registrar una venta,

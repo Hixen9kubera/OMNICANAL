@@ -34,6 +34,7 @@ segundo en cero.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -205,6 +206,12 @@ def reconstruir(dias: int = 2) -> dict:
     Ventana de 2 días por omisión: el hueco que interesa cerrar es el de las
     últimas horas (kubera caída al registrar), no el historial. Barrer 15 días
     cada vez sería pagar la consulta grande para encontrar siempre cero.
+
+    DEJA RASTRO EN EL LOG. La primera versión se tragaba la salida y devolvía un
+    dict que nadie leía: al verificarla en producción no había forma de saber si
+    había insertado algo o no, y hubo que deducirlo comparando conteos. Un
+    proceso que ESCRIBE en el registro de ventas y no dice qué escribió es
+    exactamente lo que este arreglo existe para evitar.
     """
     import contextlib, io as _io
     salida = _io.StringIO()
@@ -215,11 +222,24 @@ def reconstruir(dias: int = 2) -> dict:
             main()
     except SystemExit:
         pass
+    except Exception as exc:  # noqa: BLE001 — un fallo aquí jamás tumba el scheduler
+        logging.getLogger("omnicanal.reconstruir").warning(
+            "reconstructor Woo→kubera falló: %s", exc)
+        return {"ok": False, "salida": f"error: {exc}"}
     finally:
         sys.argv = argv
+
     texto = salida.getvalue()
+    log = logging.getLogger("omnicanal.reconstruir")
+    resumen = next((l for l in reversed(texto.splitlines()) if l.strip()), "")
+    # Silencio cuando no hay nada que hacer (es lo normal, cada hora); ruido
+    # solo cuando de verdad tocó el registro.
+    if "APLICADO" in texto:
+        log.warning("reconstructor Woo→kubera ESCRIBIÓ: %s", resumen)
+    else:
+        log.info("reconstructor Woo→kubera: %s", resumen)
     return {"ok": "siguen faltando=0" in texto or "al día" in texto,
-            "salida": texto.strip().splitlines()[-1] if texto.strip() else ""}
+            "salida": resumen}
 
 
 if __name__ == "__main__":
