@@ -107,8 +107,7 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
     `services/vigilante_loop.py`: late dentro del loop y, desde un hilo aparte,
     vuelca la pila cuando el latido se atrasa. Buscar `EVENT LOOP ATASCADO` en
     los logs de Railway.
-
-11. **NUNCA marcar la SESIÓN como read-only contra kubera/Supabase.** El DSN
+13. **NUNCA marcar la SESIÓN como read-only contra kubera/Supabase.** El DSN
     apunta al **pooler en modo transacción (6543)**, donde las conexiones de
     servidor **se comparten entre clientes**: un `cn.set_session(readonly=True)`
     o un `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` se queda pegado
