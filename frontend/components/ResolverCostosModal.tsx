@@ -34,6 +34,7 @@ import {
   corregirEmpateResolver,
   estadoResolver,
   guardarResolver,
+  mensajeDeError,
 } from "@/lib/api";
 import type {
   ResolverCandidato,
@@ -91,7 +92,7 @@ export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void
         await capturarFilaResolver(jid, indice, { [campo]: valor });
         setEst(await estadoResolver(jid));
       } catch (e) {
-        setError((e as Error).message);
+        setError(mensajeDeError(e, "No se pudo capturar el dato."));
       }
     },
     [jid],
@@ -109,7 +110,7 @@ export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void
       const r = await fn();
       setJid(r.id);
     } catch (e) {
-      setError((e as Error).message);
+      setError(mensajeDeError(e, "No se pudo arrancar el análisis."));
     } finally {
       setSubiendo(false);
     }
@@ -127,7 +128,8 @@ export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void
         setEst(e);
         if (e.paso !== "listo" && e.paso !== "error") setTimeout(tick, 2500);
       } catch (e) {
-        if (vivo) setError((e as Error).message);
+        if (vivo)
+          setError(mensajeDeError(e, "Se perdió el contacto con el análisis."));
       }
     };
     tick();
@@ -143,7 +145,7 @@ export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void
         await corregirEmpateResolver(jid, indice, sku.trim() || null);
         setEst(await estadoResolver(jid));
       } catch (e) {
-        setError((e as Error).message);
+        setError(mensajeDeError(e, "No se pudo corregir el empate."));
       }
     },
     [jid],
@@ -194,7 +196,7 @@ export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void
         setError(null);
         window.alert(partes.join(" · "));
       } catch (e) {
-        setError((e as Error).message);
+        setError(mensajeDeError(e, "No se pudieron guardar los costos."));
       } finally {
         setGuardando(false);
       }

@@ -1053,10 +1053,37 @@ export function corridaCompetencia(signal?: AbortSignal) {
 // Todas pasan por fetchSesion: un fetch pelón NO manda el token y devuelve 401
 // con el enforcement encendido.
 
+/**
+ * Tope de tamaño del packing list, ESPEJO de `_MAX_MB` en
+ * backend/routers/resolver.py. Si allá se mueve, aquí también.
+ *
+ * Se revisa ANTES de subir a propósito: el archivo tarda segundos en viajar y
+ * el backend solo puede medirlo cuando ya llegó completo, así que sin esta
+ * revisión el usuario espera la subida entera para que le digan que no. La
+ * copia es deliberada; la desincronización es segura en la dirección que
+ * importa (si el backend acepta más, aquí solo se rechaza de más y el mensaje
+ * dice el número).
+ */
+const PACKING_MAX_MB = 100;
+
 export async function analizarPackingArchivo(
   archivo: File,
   opts: { costoContenedor?: number; tipoCambio?: number; contenedor?: string } = {},
 ): Promise<{ id: string; paso: string; paso_label: string }> {
+  const mb = archivo.size / 1024 / 1024;
+  if (mb > PACKING_MAX_MB) {
+    // Mismo status y misma forma que el del backend: el modal no distingue de
+    // dónde vino el rechazo, solo muestra el `detail`.
+    throw new ApiError(
+      413,
+      "/api/resolver/analizar",
+      `El archivo pesa ${mb.toFixed(1)} MB y el máximo es ${PACKING_MAX_MB} MB. ` +
+        `Casi todo el peso son las fotos embebidas: en Excel, Formato de imagen → ` +
+        `Comprimir imágenes → 150 ppp, aplicar a todas, y guardar. NO las borres: ` +
+        `el empate por imagen las usa.`,
+    );
+  }
+
   const fd = new FormData();
   fd.append("archivo", archivo);
   if (opts.contenedor) fd.append("contenedor", opts.contenedor);

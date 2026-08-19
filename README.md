@@ -12244,3 +12244,77 @@ tienen fila. Opcional y apagado por defecto: el frontend no cambia y ya dibuja
 bien los nulos (`precioMXN` devuelve "—").
 
 Sin migraciones ni variables nuevas. Versión 0.213.0.
+
+
+### v0.218.0 — El Resolver de costos rechazaba justo los archivos para los que fue construido
+
+**Síntoma:** subir el packing list en el modal "Resolver costos desde packing
+list" (tab Costos) devolvía un banner con `API 413: /api/resolver/analizar`. Sin
+causa, sin qué hacer. La liga de Google Drive daba lo mismo.
+
+#### Qué era
+
+No fue Railway, ni CORS, ni el token. El 413 lo emitía **nuestro propio
+backend**. Logs de deploy del 19-ago, producción:
+
+    17:35:48  OPTIONS /api/resolver/analizar-url   200 OK
+    17:35:54  POST    /api/resolver/analizar-url   413 Request Entity Too Large
+    17:35:59  OPTIONS /api/resolver/analizar       200 OK
+    17:36:05  POST    /api/resolver/analizar       413 Request Entity Too Large
+    17:36:32  POST    /api/resolver/analizar       413   (reintento)
+    17:37:29  POST    /api/resolver/analizar       413   (reintento)
+
+Tres cosas que cierran el diagnóstico: el **OPTIONS dio 200** (la ruta existe y
+la puerta de identidad no bloqueó), la **liga de Drive también dio 413** —pasa
+por el mismo `_arrancar`, sin subida de por medio, así que el archivo pesa de
+más *por sí solo* y no es overhead del multipart—, y entre el OPTIONS y el 413
+pasaron **6 segundos**: el archivo se subió COMPLETO y después se rechazó.
+
+El tope era `_MAX_MB = 25` en `backend/routers/resolver.py`.
+
+#### Por qué 25 MB era el número equivocado
+
+Estos packing lists llevan **la foto de cada producto embebida**, y el pipeline
+las necesita: `packing_parser.extraer_imagenes` las saca del ZIP a mano (openpyxl
+no las ve con ancla `oneCellAnchor`) y la segunda pasada del empate las usa
+cuando el texto no alcanza — el proveedor escribe "Auriculares" y el catálogo
+dice "Audífonos Invisibles Bluetooth", cero palabras en común, y la foto sí lo
+resuelve. Un contenedor real son 1,052 renglones con ~133 fotos distintas.
+
+O sea: **el tope peleaba contra el propio diseño de la herramienta.** El archivo
+grande no era el caso raro, era el caso normal.
+
+#### Los tres cambios
+
+1. **`_MAX_MB` 25 → 100** (`backend/routers/resolver.py`). Medido antes de
+   subirlo: el contenedor de Railway tiene **límite de 24 GB de RAM y usa 0.32
+   GB** (pico 0.51 en 3 h). Lo que se queda 3 h en memoria son las
+   **miniaturas** de `packing_resolver._miniatura` (≤90 KB c/u), no las fotos
+   originales, y los trabajos ya estaban acotados a 12. No hay riesgo de
+   memoria. El mensaje del 413 ahora dice cuánto pesó, cuál es el tope y **qué
+   hacer** (comprimir imágenes a 150 ppp en Excel), con la advertencia de no
+   borrarlas.
+
+2. **Revisión del tamaño ANTES de subir** (`frontend/lib/api.ts`). El backend
+   solo puede medir el archivo cuando ya llegó completo; sin esto el usuario
+   espera la subida entera para que le digan que no. La constante
+   `PACKING_MAX_MB` es espejo declarado de `_MAX_MB` y lanza un `ApiError` con
+   la misma forma que el del backend, para que el modal no tenga que distinguir
+   de dónde vino el rechazo.
+
+3. **El `detail` deja de tirarse a la basura** (`ResolverCostosModal.tsx`).
+   FastAPI mandaba "El archivo pesa más de 25 MB." y el modal mostraba
+   `(e as Error).message`, que es el genérico `API 413: /ruta`. El helper
+   `mensajeDeError()` existía en `lib/api.ts` exactamente para esto y no se
+   estaba usando en NINGUNO de los 5 `catch` del modal. Migrados los cinco: la
+   explicación del backend llega al usuario en cualquier fallo del Resolver, no
+   solo en este.
+
+#### Nota de versión
+
+`backend/main.py` venía en `0.214.0` mientras los commits ya iban en `v0.215.1`
+(y en `0.217.1` al momento del rebase).
+Se alinea a **0.218.0** en los dos lugares (el rebase encontró upstream en 0.217.1).
+
+Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
+Versión 0.218.0.

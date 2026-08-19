@@ -26,7 +26,19 @@ from services import packing_comparador, packing_drive, packing_resolver
 log = logging.getLogger("omnicanal.routers.resolver")
 router = APIRouter(prefix="/api/resolver", tags=["resolver"])
 
-_MAX_MB = 25
+# Tope de tamaño del .xlsx. NO es un número de adorno: estos packing lists
+# llevan la FOTO de cada producto embebida —el parser las saca del ZIP a mano y
+# el empate por imagen las necesita cuando el texto no alcanza ("Auriculares"
+# del proveedor contra "Audífonos Invisibles Bluetooth" del catálogo)—, así que
+# un contenedor real con cientos de fotos pesa decenas de MB. Con el tope en 25
+# la herramienta rechazaba justo los archivos para los que fue construida
+# (medido el 19-ago-2026: cuatro 413 seguidos, y también por la liga de Drive,
+# que pasa por aquí mismo).
+#
+# 100 MB cabe de sobra: el contenedor de Railway tiene 24 GB de RAM y usa 0.3.
+# Lo que se queda 3 h en memoria son las MINIATURAS (≤90 KB c/u), no las fotos
+# originales — ver packing_resolver._miniatura.
+_MAX_MB = 100
 
 
 class AnalizarUrlReq(BaseModel):
@@ -69,7 +81,12 @@ def _arrancar(datos: bytes, nombre: str, contenedor: str | None,
     if not datos:
         raise HTTPException(400, "El archivo llegó vacío.")
     if len(datos) > _MAX_MB * 1024 * 1024:
-        raise HTTPException(413, f"El archivo pesa más de {_MAX_MB} MB.")
+        raise HTTPException(
+            413,
+            f"El archivo pesa {len(datos) / 1024 / 1024:.1f} MB y el máximo es "
+            f"{_MAX_MB} MB. Casi todo el peso son las fotos embebidas: en Excel, "
+            f"Formato de imagen → Comprimir imágenes → 150 ppp, aplicar a todas, "
+            f"y guardar. NO las borres: el empate por imagen las usa.")
     try:
         return packing_resolver.iniciar(
             datos, nombre, contenedor=contenedor,
