@@ -10036,6 +10036,13 @@ También entra **`services/temu_censo.py`** (gemelo del de TikTok, flag
 `cargar_temu` manual del 14-ago. Y `temu` ya está en `_ESCRITORES`, así que el
 único candado que queda es `FANOUT_TEMU`.
 
+**Costo domado**: verificar con 8 s de espera en CADA SKU dejaría una
+alineación de 352 productos tapando la cola ~1 h. La espera ahora solo aplica
+si NOSOTROS escribimos ese producto en los últimos 90 s (que es cuando su
+lectura miente); fuera de esa ventana un "ya está en su valor" se resuelve en
+0.6 s. Si el desfase lo causó una venta en Temu, su propio pedido dispara otra
+pasada y se corrige solo.
+
 Versión 0.214.0.
 
 ### v0.212.0 — Los dos últimos scripts que envenenaban el pooler

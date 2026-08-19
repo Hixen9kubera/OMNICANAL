@@ -542,6 +542,14 @@ _ALMACEN_VENTAS_TIKTOK = "7647893424175580935"
 # bastan para un desfase y su corrección sin volverse un bucle.
 _TEMU_ESPERA_S = 8.0
 _TEMU_INTENTOS = 3
+# Cuánto dura la desconfianza en la lectura DESPUÉS de que nosotros escribimos
+# ese mismo producto. Fuera de esa ventana la lectura es fiable y un "no hay
+# nada que hacer" se resuelve al instante — sin esto, una alineación de 352
+# SKUs esperaría 8 s por cada uno (≈1 h) y dejaría la cola tapada para las
+# ventas reales. Si el desfase viene de una venta en Temu (no de nosotros), el
+# pedido correspondiente dispara otra pasada y se corrige solo.
+_TEMU_VENTANA_RANCIA_S = 90.0
+_temu_escrito_en: dict[int, float] = {}   # goodsId → epoch de nuestra última escritura
 
 
 def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]:
@@ -609,6 +617,12 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]
             return False, f"{len(ids)} variantes — repartir stock no está definido"
         sku_id, inicial, escrituras = int(ids[0]), int(actual), 0
 
+        # Atajo seguro: si NOSOTROS no tocamos este goods hace poco, la lectura
+        # es de fiar y un objetivo ya cumplido no necesita verificación.
+        if (int(actual) == objetivo
+                and (_t.time() - _temu_escrito_en.get(goods_id, 0.0)) > _TEMU_VENTANA_RANCIA_S):
+            return True, f"ok (ya tenía {objetivo} en vivo)"
+
         for intento in range(_TEMU_INTENTOS):
             diff = objetivo - int(actual)
             if diff != 0:
@@ -623,6 +637,7 @@ def _escribir_temu(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, str]
                                    f"skuStatus={por_sku.get('stockEditStatus')} "
                                    f"{por_sku.get('errorMsg') or ''}")
                 escrituras += 1
+                _temu_escrito_en[goods_id] = _t.time()
             # Verificación SIEMPRE, incluso si el diff dio 0: la lectura que lo
             # calculó pudo venir rancia.
             _t.sleep(_TEMU_ESPERA_S)
