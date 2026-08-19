@@ -10002,6 +10002,53 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.216.0 — Las ocho cantidades del reporte FBA, y el KPI que decía lo que no era
+
+Eduardo revisó las referencias de las columnas del reporte y cachó dos huecos.
+Tenía razón en los dos.
+
+**Las identidades, verificadas SKU por SKU** en los 1,258 del reporte, sin una
+sola excepción:
+
+```
+fulfillable + reserved + unsellable = afn-warehouse-quantity   (2,224)
+warehouse   + inbound(3)            = afn-total-quantity       (5,650)
+```
+
+**Hueco 1: `afn-total-quantity` no se leía.** De las ocho columnas de cantidad,
+la 0023 tomó siete. Migración **0024** (aditiva, con default) le da columna.
+Se guarda aunque sea derivable: si algún día una identidad deja de cumplirse,
+tener el número original de Amazon es lo único que permite notarlo.
+
+**Hueco 2 — el más serio: el KPI mentía por definición.** Decía *"Disponibles
+en FBA"* y mostraba `fulfillable`, que **no es** la cantidad en inventario:
+deja fuera lo reservado y lo no vendible. Quien comparara la pestaña contra
+Seller Central veía otro número y no tenía cómo saber por qué. En el snapshot
+de producción del 18-ago la diferencia era de **118 unidades**.
+
+Ahora son cuatro KPIs con su nombre correcto: **En inventario** (`warehouse`,
+el que cuadra con Seller Central), **Disponibles** (`fulfillable`), **En
+camino** (`inbound`) y **Declarado en FULL** (`total`). Cada uno lleva su
+nombre de columna de Amazon en la ayuda.
+
+**Y una corrección de fondo:** `sin_venta_uds` contaba solo lo vendible. Lo que
+paga almacenaje sin vender es **todo lo que está en bodega** — una pieza
+reservada o no vendible también ocupa lugar. Ahora usa `warehouse`.
+
+Se conserva `fulfillable` donde sí corresponde: la **cobertura** y el **plan de
+envío** miden contra lo que puede venderse, no contra lo que ocupa espacio.
+Son preguntas distintas y ahora cada una usa su número.
+
+De paso, el KPI *Volumen del plan* advierte en su ayuda que es volumen de
+PRODUCTO y no de espacio en bodega — Amazon mide la ocupación con otro criterio
+y sale bastante mayor (hallazgo del consejo, 18-ago; pendiente de resolver).
+
+**Verificado de punta a punta en el sandbox**: subido el CSV real, las dos
+identidades cuadran contra el archivo (2,224 y 5,650), **cero filas rotas**, y
+los ocho KPIs en pantalla con sus valores.
+
+⚠️ **Producción necesita la migración 0024** antes de este deploy.
+
 ### v0.215.0 — El backend deja de depender de que nadie envenene el pooler
 
 Tercera vez en dos días que una escritura de negocio truena con

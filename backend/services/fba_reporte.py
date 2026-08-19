@@ -47,6 +47,7 @@ _TIMEOUT_TOTAL_S = 15 * 60
 # decir QUÉ columna falta, no reventar con un KeyError.
 COLS = {
     "sku", "fnsku", "asin", "product-name", "your-price",
+    "afn-total-quantity",
     "afn-fulfillable-quantity", "afn-reserved-quantity",
     "afn-unsellable-quantity", "afn-warehouse-quantity",
     "afn-inbound-working-quantity", "afn-inbound-shipped-quantity",
@@ -70,7 +71,20 @@ def _f(v: Any) -> float | None:
 
 
 def parsear(texto: str, nombre: str) -> list[tuple]:
-    """CSV/TSV del reporte → filas para `guardar`. ValueError si no es él."""
+    """CSV/TSV del reporte → filas para `guardar`. ValueError si no es él.
+
+    LAS OCHO CANTIDADES Y CÓMO SE RELACIONAN (verificado SKU por SKU en los
+    1,258 del reporte del 18-ago, sin una sola excepción):
+
+        fulfillable + reserved + unsellable = afn-warehouse-quantity
+        warehouse   + inbound(3)            = afn-total-quantity
+
+    `warehouse` es lo que HOY está físicamente en la bodega y paga almacenaje;
+    `total` es todo lo comprometido con FBA, incluido lo que va en camino.
+    `total_quantity` se guarda aunque sea derivable: si algún día una de las
+    dos identidades deja de cumplirse, tener el número original de Amazon es
+    lo único que permite notarlo (Eduardo, 18-ago).
+    """
     sep = "\t" if "\t" in texto.splitlines()[0] else ","
     lector = csv.DictReader(io.StringIO(texto), delimiter=sep)
     faltan = COLS - set(lector.fieldnames or [])
@@ -97,6 +111,7 @@ def parsear(texto: str, nombre: str) -> list[tuple]:
             _n(r.get("afn-inbound-shipped-quantity")),
             _n(r.get("afn-inbound-receiving-quantity")),
             _f(r.get("per-unit-volume")),
+            _n(r.get("afn-total-quantity")),
             nombre[:200],
         ))
     if not filas:
@@ -110,14 +125,14 @@ def guardar(filas: list[tuple]) -> int:
     with sdb.get_cursor() as cur:
         cur.execute("delete from ops.fba_snapshot")
         args = b",".join(
-            cur.mogrify("(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", f)
+            cur.mogrify("(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)", f)
             for f in filas
         )
         cur.execute(
             b"insert into ops.fba_snapshot (sku, fnsku, asin, product_name,"
             b" price, fulfillable, reserved, unsellable, warehouse,"
             b" inbound_working, inbound_shipped, inbound_receiving,"
-            b" per_unit_volume, report_name) values " + args
+            b" per_unit_volume, total_quantity, report_name) values " + args
         )
         return cur.rowcount
 

@@ -92,7 +92,7 @@ with ventas as (
      and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s
    group by 1)
 select f.sku::text as sku, f.asin, f.product_name, f.price,
-       f.fulfillable, f.reserved, f.unsellable,
+       f.fulfillable, f.reserved, f.unsellable, f.warehouse, f.total_quantity,
        (f.inbound_working + f.inbound_shipped + f.inbound_receiving)::int as en_camino,
        f.per_unit_volume,
        coalesce(v.uds, 0)  as uds_periodo,
@@ -183,6 +183,11 @@ async def tablero(
             "precio": None if r["price"] is None else float(r["price"]),
             "disponible": disp, "reservado": int(r["reserved"] or 0),
             "no_vendible": int(r["unsellable"] or 0), "en_camino": en_camino,
+            # `warehouse` = fulfillable + reserved + unsellable: lo que HOY
+            # ocupa espacio y paga almacenaje. `disponible` es solo lo
+            # vendible, que es lo correcto para cobertura pero NO para espacio.
+            "en_inventario": int(r["warehouse"] or 0),
+            "declarado": int(r["total_quantity"] or 0),
             "uds_periodo": uds, "uds_dia": round(vel, 2) if vel else None,
             "ultima_venta": r["ultima_venta"],
             "cobertura_dias": cobertura, "semaforo": semaforo,
@@ -206,11 +211,21 @@ async def tablero(
         "dias": dias, "objetivo": objetivo,
         "kpis": {
             "skus_con_stock": len(con_stock),
+            # EN INVENTARIO vs DISPONIBLES (Eduardo, 18-ago). Hasta hoy el KPI
+            # decía "Disponibles en FBA" y mostraba `fulfillable`, que NO es la
+            # cantidad en inventario: deja fuera reservado y no vendible. Quien
+            # comparara contra Seller Central veía otro número sin saber por
+            # qué. Ahora van los dos, cada uno con su nombre.
+            "en_inventario": sum(x["en_inventario"] for x in filas),
             "disponibles": sum(x["disponible"] for x in filas),
             "reservadas": sum(x["reservado"] for x in filas),
             "en_camino": sum(x["en_camino"] for x in filas),
+            "declarado": sum(x["declarado"] for x in filas),
             "sin_venta_skus": len(sin_venta),
-            "sin_venta_uds": sum(x["disponible"] for x in sin_venta),
+            # Lo que paga almacenaje sin vender es TODO lo que está en bodega,
+            # no solo lo vendible: una pieza reservada o no vendible también
+            # ocupa lugar.
+            "sin_venta_uds": sum(x["en_inventario"] for x in sin_venta),
             "plan_uds": sum(x["sugerido"] for x in filas),
             "plan_m3": round(sum(x["vol_envio_m3"] or 0 for x in filas), 2),
         },

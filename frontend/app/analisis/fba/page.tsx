@@ -22,6 +22,9 @@ interface FilaFba {
   sku: string; titulo: string | null; asin: string | null;
   precio: number | null;
   disponible: number; reservado: number; no_vendible: number; en_camino: number;
+  /* `en_inventario` = disponible + reservado + no vendible: lo que HOY ocupa
+     espacio y paga almacenaje. `declarado` suma además lo que va en camino. */
+  en_inventario: number; declarado: number;
   uds_periodo: number; uds_dia: number | null; ultima_venta: string | null;
   cobertura_dias: number | null; semaforo: string;
   sugerido: number; vol_envio_m3: number | null;
@@ -35,8 +38,9 @@ interface Tablero {
   refresco?: { fase: string; detalle: string | null };
   dias: number; objetivo: number;
   kpis: {
-    skus_con_stock: number; disponibles: number; reservadas: number;
-    en_camino: number; sin_venta_skus: number; sin_venta_uds: number;
+    skus_con_stock: number; en_inventario: number; disponibles: number;
+    reservadas: number; en_camino: number; declarado: number;
+    sin_venta_skus: number; sin_venta_uds: number;
     plan_uds: number; plan_m3: number;
   } | null;
   filas: FilaFba[];
@@ -217,17 +221,29 @@ export default function FbaPage() {
       {data?.kpis && (
         <>
           {/* KPIs */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
             {([
-              ["Disponibles en FBA", fN(data.kpis.disponibles), "unidades listas para venderse"],
-              ["En camino", fN(data.kpis.en_camino), "unidades inbound: en preparación, embarcadas o recibiéndose"],
+              ["En inventario", fN(data.kpis.en_inventario),
+               "afn-warehouse-quantity: lo que HOY está físicamente en la bodega de Amazon "
+               + "y paga almacenaje = disponibles + reservadas + no vendibles. Es el número "
+               + "que cuadra con Seller Central"],
+              ["Disponibles", fN(data.kpis.disponibles),
+               "afn-fulfillable-quantity: solo lo que puede venderse ahora. Es menor que "
+               + "«En inventario» porque lo reservado y lo no vendible ocupan lugar pero no se venden"],
+              ["En camino", fN(data.kpis.en_camino),
+               "afn-inbound: en preparación, embarcadas o recibiéndose. Todavía no ocupan bodega"],
+              ["Declarado en FULL", fN(data.kpis.declarado),
+               "afn-total-quantity: todo lo comprometido con FBA = en inventario + en camino"],
               ["SKUs con stock", fN(data.kpis.skus_con_stock), "productos con al menos una pieza disponible"],
               ["Sin venta", `${fN(data.kpis.sin_venta_skus)} · ${fN(data.kpis.sin_venta_uds)}u`,
-               "SKUs con stock FBA y cero ventas en el período — pagan almacenaje sin devolver nada"],
+               "SKUs con stock FBA y cero ventas en el período — pagan almacenaje sin devolver nada. "
+               + "Las unidades cuentan TODO lo que está en bodega, no solo lo vendible"],
               ["Plan de envío", `${fN(data.kpis.plan_uds)}u`,
                `piezas para dejar ${data.objetivo} días de cobertura, descontando lo disponible y lo en camino`],
               ["Volumen del plan", `${fN(data.kpis.plan_m3, 2)} m³`,
-               "volumen del envío sugerido, con el volumen por unidad que mide Amazon"],
+               "volumen del envío sugerido, con el volumen por unidad que mide Amazon. "
+               + "OJO: es volumen de PRODUCTO, no de espacio en bodega — Amazon mide la ocupación "
+               + "con otro criterio y sale bastante mayor"],
             ] as [string, string, string][]).map(([et, v, ayuda]) => (
               <div key={et} title={ayuda}
                    className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
@@ -313,7 +329,10 @@ export default function FbaPage() {
                       <td className="px-2 py-1.5 text-right tabular-nums text-slate-600">
                         {f.precio ? `$${fN(f.precio, 2)}` : "—"}
                       </td>
-                      <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-slate-700">{fN(f.disponible)}</td>
+                      <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-slate-700"
+                          title={`En inventario (ocupa bodega): ${fN(f.en_inventario)} · declarado en FULL: ${fN(f.declarado)}`}>
+                        {fN(f.disponible)}
+                      </td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-slate-400">{f.reservado || "—"}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-indigo-600">{f.en_camino || "—"}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums text-slate-600"
