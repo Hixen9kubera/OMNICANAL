@@ -326,7 +326,17 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
             # Ya no hay falla cerrada por estado desconocido: el peor caso de
             # escribirle a un estado raro es un error registrado, y el peor caso
             # de NO escribirle es vender lo que no existe.
-            pass
+            #
+            # EXCEPCIÓN medida el 19-ago: los BORRADORES (`5/None`) NO aceptan
+            # `stock.edit` — Temu contesta «Goods commit have not submitted».
+            # No es una precaución nuestra: es una negativa del canal, así que
+            # se omiten con motivo en vez de acumular errores en cada venta.
+            # (Los Incompletos `2/8`/`3/2`/`3/3` SÍ aceptan: canario TEC-2187-MET.)
+            from services import temu as _temu
+            cod = str(f.get("estado_canal") or "")
+            if _temu.ESTADOS.get(cod) == "Borrador":
+                motivo = (f"Temu {cod} = Borrador — sin enviar, el canal rechaza "
+                          "editarle stock")
         elif situacion not in _SITUACIONES_VIVAS:
             motivo = f"situacion={situacion or 'desconocida'} (escribirle la REACTIVARÍA)"
         elif not identificador:
@@ -536,6 +546,17 @@ def _escribir_tiktok(cuenta: str, item_id: str, cantidad: int) -> tuple[bool, st
         # `tiktok.llamar` ya traduce el `code` del cuerpo a excepción: TikTok
         # responde HTTP 200 aunque haya fallado, y confundirlos es el error
         # clásico con esta API.
+        #
+        # 12052901 = «Operation Not Allowed» sobre el producto. Se resume a una
+        # línea legible: el texto original ocupa 300 caracteres y el `resultado`
+        # de fanout_log corta en 255, así que el motivo real quedaba fuera.
+        # Medido el 19-ago en 3 productos que el GET reporta en DRAFT y que aun
+        # así el canal se niega a editar — no es un fallo nuestro, es una
+        # negativa suya, y solo se resuelve tocándolos en el Seller Center.
+        txt = str(exc)
+        if "12052901" in txt:
+            return False, ("TikTok NO permite editarle stock a este producto "
+                           "(12052901) — hay que tocarlo en el Seller Center")
         return False, f"{type(exc).__name__}: {exc}"
 
 

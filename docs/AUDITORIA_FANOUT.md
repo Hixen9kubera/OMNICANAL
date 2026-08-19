@@ -1,9 +1,9 @@
 # Auditoría del fan-out de stock — y su reorientación a DROP
 
-> Hecha el 18-ago-2026 sobre código + `fanout_log` (12,690 filas desde el
-> 24-jul) + `channel.listings` en vivo + SP-API/TikTok en vivo. Cada afirmación
-> lleva su evidencia; los dos hallazgos centrales pasaron verificación
-> adversarial. Las correcciones de esta auditoría entraron en **v0.207.0**.
+> Auditoría del 18-ago-2026 sobre código + `fanout_log` + `channel.listings` +
+> las APIs en vivo, con verificación adversarial de los hallazgos centrales.
+> **Actualizado el 19-ago** con el estado final: los tres canales DROP vivos y
+> sincronizados (v0.207 → v0.215). Cada afirmación lleva su evidencia.
 
 ## El titular
 
@@ -26,22 +26,29 @@ Y la decisión de arquitectura que salió de revisarlo (Brandon, 18-ago):
 - **TikTok y Temu (después SHEIN) son ÚNICAMENTE DROP** — el destino real del
   fan-out.
 
+**Cómo quedó (19-ago):** los tres canales DROP escriben
+(`FANOUT_CANALES=mercado_libre,tiktok,temu`), Amazon está fuera por decisión, y
+desde v0.215 **se sincroniza todo lo que existe en el canal** — no solo lo que
+está a la venta. Un borrador con stock de hace dos semanas es una sobreventa
+esperando el día que alguien lo publique, y en TikTok se publican ~300 al día
+desde un script de escritorio.
+
 ## El diagrama completo (lo que nunca se había dibujado)
 
 ```mermaid
 flowchart TB
     subgraph EVENTOS["EVENTOS que encolan"]
-        V["Venta no-FULL<br/>pedido NUEVO<br/>(todos los canales)"]
-        W["Cambio de stock en Woo<br/>(stock_watch, foto vs foto,<br/>~20 min)"]
-        OD["Delta de Odoo aplicado<br/>(stock_watch — NUEVO v0.207,<br/>antes se perdía)"]
+        V["Venta no-FULL, pedido NUEVO<br/>(ML · Amazon · TikTok · Temu)"]
+        W["Cambio de stock en Woo<br/>(stock_watch, foto vs foto, ~20 min)"]
+        OD["Delta de Odoo aplicado<br/>(v0.207 — antes se perdía)"]
         F["Movimiento FULL / ingreso FBA<br/>(stock_full — HOY solo-registro)"]
-        M["Manual: POST /api/fanout/encolar<br/>y /alinear (NUEVO v0.207)"]
+        M["Manual: POST /api/fanout/encolar<br/>y /alinear"]
     end
 
-    subgraph NOENTRA["NO encolan (verificado)"]
-        C1["Cancelación<br/>(accion=actualizado nunca pasa<br/>la guarda; Woo repone solo →<br/>la atrapa stock_watch ~20 min)"]
-        C2["Devolución/reembolso<br/>(no existe código)"]
-        C3["Webhook de Woo<br/>(solo escribe core.products)"]
+    subgraph NOENTRA["NO encolan (verificado contra fanout_log)"]
+        C1["Cancelación → Woo repone solo,<br/>la atrapa stock_watch ~20 min"]
+        C2["Devolución (no existe código)"]
+        C3["Webhook de Woo (solo core.products)"]
     end
 
     V --> Q
@@ -51,30 +58,26 @@ flowchart TB
     M --> Q
 
     Q["COLA con debounce 5 s<br/>(se encola el SKU, nunca un delta)"] --> P
-
     P["plan(): lee stock VIVO de Woo<br/>objetivo = stock − reserva"] --> D{"_destinos()<br/>channel.listings (kubera)"}
 
-    D -->|es_full| X1["✋ FULL/FBA: bodega del<br/>marketplace, no se toca"]
-    D -->|ML pausada| MLP["pasa: status+stock juntos<br/>conservan la pausa"]
-    D -->|TikTok ≠ ACTIVATE| X2["✋ no está a la venta"]
-    D -->|Temu Incompleto/Borrador<br/>o código desconocido| X3["✋ no publicado /<br/>no se escribe a ciegas"]
-    D -->|situacion ∉ vivas| X4["✋ 'REACTIVARÍA'<br/>(aquí murió Amazon:<br/>BUYABLE ∉ {active,published,publish})"]
-    D -->|Amazon| X5["✋ FUERA por decisión 18-ago<br/>(antes: lectura en vivo BUYABLE)"]
+    D -->|"es_full / FBA / WFS"| X1["✋ bodega del marketplace:<br/>ML FULL, Amazon FBA, Walmart WFS"]
+    D -->|Amazon| X5["✋ FUERA por decisión 18-ago<br/>(fulfillment-only, no se le alimenta)"]
+    D -->|"TikTok DELETED"| X2["✋ el producto ya no existe"]
+    D -->|"ML activa o PAUSADA"| MLP["pasa: status+stock en la MISMA<br/>petición conservan la pausa"]
+    D -->|"TikTok ACTIVATE o DRAFT<br/>Temu publicado o Incompleto"| TODO["v0.215: se sincroniza TODO<br/>lo que existe en el canal<br/>(un borrador rancio = sobreventa dormida)"]
 
     MLP --> G
-    D -->|vivo| G{"guardas de plan()"}
-    G -->|"stock canal DESCONOCIDO"| X6["✋ ≠ 0: no se escribe a ciegas"]
-    G -->|"canal ya tiene N"| X7["= sin_cambio (mata el eco)"]
+    TODO --> G{"guardas de plan()"}
+    G -->|"stock del canal DESCONOCIDO"| X6["✋ ≠ 0: no se escribe a ciegas"]
+    G -->|"el canal ya tiene N"| X7["= sin_cambio (mata el eco)"]
     G -->|"∉ FANOUT_CANALES"| X8["✋ canal no habilitado"]
-    G -->|"FANOUT_TIKTOK/TEMU off"| X9["✋ candado por canal"]
-    G -->|sin escritor| X10["✋ p.ej. temu hasta el sondeo"]
     G -->|escribir| E{"¿DRY_RUN?"}
 
     E -->|sí| S["simulada (bitácora)"]
-    E -->|no| ESC["ESCRITORES"]
-    ESC --> ML["ML: PUT item<br/>status+stock (pausa blindada)"]
-    ESC --> TK["TikTok: sku_id en vivo +<br/>almacén de VENTAS<br/>(105002 → auto-refresh v0.207)"]
-    ESC -.futuro, tras sondeo.-> TM["Temu: bg.local.goods.stock.edit"]
+    E -->|no| ESC["ESCRITORES · FANOUT_CANALES =<br/>mercado_libre · tiktok · temu"]
+    ESC --> ML2["ML: PUT /items<br/>status+stock juntos (pausa blindada)"]
+    ESC --> TK["TikTok: lee sku_id en vivo +<br/>almacén de VENTAS<br/>105002 → auto-refresh y reintento"]
+    ESC --> TM["Temu: stock.edit por DIFERENCIA<br/>lee vivo → diff → escribe → CONVERGE<br/>(su lectura miente ~8 s tras escribir)"]
 ```
 
 Los caminos que mueren son la mayoría y es a propósito: en 30 días, 838
