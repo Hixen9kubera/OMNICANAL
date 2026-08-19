@@ -296,31 +296,37 @@ def _destinos(sku: str) -> list[dict[str, Any]]:
             # reactivaría, que es lo que bloqueaba estas 2,278 publicaciones.
             pass
         elif canal == "tiktok":
-            # TikTok no cabe en `_SITUACIONES_VIVAS`, y forzarlo habría sido un
-            # error silencioso: su `situacion` es el veredicto de la AUDITORÍA
-            # (APPROVED/FAILED/NONE/PRE_APPROVED) y quien dice si está a la venta
-            # es `status` (ACTIVATE). Hoy APPROVED coincide con ACTIVATE en las
-            # 900 publicaciones, pero es coincidencia del dato, no una regla:
-            # meter "approved" en la lista de vivas ataba el fan-out a esa
-            # casualidad. Se mira `estado_canal`, que es el campo que manda.
-            if str(f.get("estado_canal") or "").upper() != "ACTIVATE":
-                motivo = (f"status={f.get('estado_canal') or 'desconocido'} — "
-                          "no está a la venta en TikTok")
+            # TikTok no cabe en `_SITUACIONES_VIVAS`: su `situacion` es el
+            # veredicto de la AUDITORÍA (APPROVED/FAILED/…) y quien dice si está
+            # a la venta es `status`. Se mira `estado_canal`, que es el campo
+            # que manda.
+            #
+            # DESDE EL 19-ago SE SINCRONIZA TODO, no solo lo ACTIVATE (pedido de
+            # Brandon: 100% de trackeo de stock). Un borrador con stock rancio es
+            # una sobreventa esperando el día que alguien lo publique —
+            # `tk_activar.py` activa ~300/día desde el escritorio. Canario en
+            # vivo antes de cambiarlo (TEC-2187-MET, 52→0): el producto siguió
+            # en DRAFT, escribir inventario NO lo activa. Es la misma decisión
+            # que con las pausadas de ML, y por la misma razón.
+            #
+            # DELETED queda fuera: el producto ya no existe y escribirle solo
+            # produce errores.
+            est = str(f.get("estado_canal") or "").upper()
+            if est == "DELETED":
+                motivo = "status=DELETED — el producto ya no existe en TikTok"
         elif canal == "temu":
             # Temu es DROP-only (decisión 18-ago) y sus estados vienen CRUDOS
-            # (`4/7`, `2/8`…): la tabla temu.ESTADOS solo distingue con certeza
-            # Incompleto y Borrador (no publicados). La política acordada: a lo
-            # PUBLICADO se le escribe stock aunque no se sepa si está activo o
-            # inactivo — es bodega nuestra y no hay riesgo de sobreventa por
-            # escribir de más. Un código NUNCA visto se omite (falla cerrada):
-            # si Temu estrena estados, primero se decodifican.
-            from services import temu as _temu
-            cod = str(f.get("estado_canal") or "")
-            etiqueta = _temu.ESTADOS.get(cod)
-            if etiqueta in ("Incompleto", "Borrador"):
-                motivo = f"Temu {cod} = {etiqueta} — no publicado"
-            elif etiqueta is None:
-                motivo = f"Temu status '{cod or '?'}' desconocido — no se escribe a ciegas"
+            # (`4/7`, `2/8`…). Hasta el 19-ago solo se escribía a lo publicado;
+            # AHORA SE SINCRONIZA TODO (mismo pedido de 100% de trackeo que en
+            # TikTok, y mismo canario: TEC-2187-MET 52→0 en estado Incompleto,
+            # sin que Temu lo publicara). Un Incompleto con stock viejo es una
+            # sobreventa dormida: el día que alguien lo complete, sale a vender
+            # con la cifra de hace semanas.
+            #
+            # Ya no hay falla cerrada por estado desconocido: el peor caso de
+            # escribirle a un estado raro es un error registrado, y el peor caso
+            # de NO escribirle es vender lo que no existe.
+            pass
         elif situacion not in _SITUACIONES_VIVAS:
             motivo = f"situacion={situacion or 'desconocida'} (escribirle la REACTIVARÍA)"
         elif not identificador:
