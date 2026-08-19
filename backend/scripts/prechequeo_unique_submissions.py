@@ -81,9 +81,18 @@ def main() -> int:
     print(f"DESTINO: {DESTINO}\n")
     colisiones = None
     con = psycopg2.connect(DSN)
-    con.set_session(readonly=True, autocommit=True)
+    # CANDADO POR TRANSACCIÓN, NO POR SESIÓN. `set_session(readonly=True)` deja
+    # el ajuste pegado a la conexión, y estas DSN entran por el pooler de
+    # Supabase en modo TRANSACCIÓN: varios clientes se turnan la MISMA conexión
+    # del servidor, así que el candado lo hereda quien la tome después. El
+    # 18-ago-2026 tumbó dos escrituras de negocio en producción — el registro de
+    # una venta y una tanda de 75 publicaciones — con
+    # `ReadOnlySqlTransaction: cannot execute INSERT in a read-only transaction`.
+    # `set transaction read only` muere con la transacción y no contamina.
+    con.autocommit = False
     try:
         with con.cursor() as cur:
+            cur.execute("set transaction read only")
             for titulo, sql in CONSULTAS:
                 cur.execute(sql)
                 filas = cur.fetchall()
@@ -96,6 +105,7 @@ def main() -> int:
                     colisiones = filas[0][0]
                 print()
     finally:
+        con.rollback()   # cierra la transacción de solo-lectura sin escribir
         con.close()
 
     print("=" * 70)

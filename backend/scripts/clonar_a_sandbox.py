@@ -223,7 +223,13 @@ def main() -> None:
     # channel.listings, y el sandbox rechazó las publicaciones de esa 5ª cuenta
     # por llave foránea. Leer todo en una transacción REPEATABLE READ garantiza
     # que las 21 tablas vengan del mismo instante y el clon sea consistente.
-    ori.set_session(readonly=True, autocommit=False,
+    # El aislamiento SÍ va en la sesión (lo necesita la foto consistente), pero
+    # el candado de solo-lectura NO: `readonly=True` se queda pegado a la
+    # conexión y estas DSN entran por el pooler en modo TRANSACCIÓN, donde la
+    # hereda el siguiente cliente. El 18-ago-2026 eso tumbó dos escrituras de
+    # negocio en producción. Va abajo como `set transaction read only`, que
+    # muere con la transacción y protege igual el origen.
+    ori.set_session(autocommit=False,
                     isolation_level=psycopg2.extensions.ISOLATION_LEVEL_REPEATABLE_READ)
     # JSON SIN DESERIALIZAR. Por omisión psycopg2 convierte json/jsonb a objetos
     # de Python al leer, y al reinsertarlos se adaptan como texto plano: el valor
@@ -244,6 +250,10 @@ def main() -> None:
         return cur.fetchone() is not None
 
     with ori.cursor() as co, des.cursor() as cd:
+        # Primera sentencia de la transacción del ORIGEN: protege producción
+        # igual que el `readonly` de sesión que había antes, pero muere con la
+        # transacción en vez de quedarse pegado a la conexión del pooler.
+        co.execute("set transaction read only")
         faltan_ori = [t for t, _ in tablas if not existe(co, t)]
         faltan_des = [t for t, _ in tablas if not existe(cd, t)]
     if faltan_ori:

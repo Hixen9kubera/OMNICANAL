@@ -10002,6 +10002,40 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.212.0 — Los dos últimos scripts que envenenaban el pooler
+
+Hoy tumbaron dos escrituras de negocio en producción: el registro de la venta
+`SANCORFASHION:2000018007891622` y una tanda de 75 publicaciones de CHANNEL,
+las dos con `ReadOnlySqlTransaction: cannot execute INSERT in a read-only
+transaction`. Ninguna se perdió —la resiliencia hizo su trabajo: MySQL absorbió
+y el sync auto-sanó— pero el camino primario falló.
+
+**La causa ya estaba documentada** (v0.115.2, tras el incidente del 13-ago):
+`set_session(readonly=True)` parece prudente y es lo contrario. Las DSN entran
+por el pooler de Supabase en modo TRANSACCIÓN, donde varios clientes se turnan
+la MISMA conexión del servidor, así que un ajuste de SESIÓN se queda pegado y lo
+hereda quien la tome después — aquí, el backend registrando una venta.
+
+Aquel barrido arregló `cargar_requisitos_amazon`, `cargar_requisitos_ml` y
+`actualizar_sandbox`, pero **se le escaparon dos**:
+
+- `prechequeo_unique_submissions.py` — lee `SUPABASE_DB_URL` (producción) y
+  ponía el candado en la sesión. El más probable de los dos: se corre a mano
+  para decidir si crear el índice único.
+- `clonar_a_sandbox.py` — `readonly=True` sobre la conexión de ORIGEN, que por
+  diseño es producción. Se conserva el `REPEATABLE READ` de sesión (lo necesita
+  la foto consistente); solo se muda el candado de lectura.
+
+Los dos pasan a `set transaction read only`, que muere con la transacción.
+
+**Verificado ejecutando el prechequeo corregido contra producción**: corre igual
+y deja 0 de 12 conexiones en solo-lectura. Antes, ese mismo script dejaba la
+conexión marcada para el siguiente cliente.
+
+No queda ningún `set_session(readonly=True)` en el repo. Versión 0.212.0.
+
+---
+
 ### v0.211.1 — La columna Tamaño con colores, y por qué NO son verde/ámbar/rojo
 
 Pedido de Eduardo: *«ponlo por colores dependiendo de su tamaño»*. Revisado en
