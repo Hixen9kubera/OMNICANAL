@@ -793,13 +793,16 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
 
 # ── Costos: listado (tabla del menú Costos) + regeneración en bulk ──────────────
 
+# El SKU sale de `productos` (p), que desde v0.213.0 es el lado izquierdo del
+# listado; lo de `costos_validados` (v) puede venir NULL. MySQL no tiene
+# NULLS LAST: se emula con `col IS NULL` como primer criterio (0 = tiene valor).
 _ORDEN_COSTOS = {
-    "reciente": "v.created_at DESC",
-    "sku_asc": "v.sku ASC",
-    "sku_desc": "v.sku DESC",
-    "costo_desc": "v.costo_total DESC",
-    "costo_asc": "v.costo_total ASC",
-    "contenedor": "v.contenedor ASC, v.sku ASC",
+    "reciente": "v.created_at IS NULL, v.created_at DESC, p.sku ASC",
+    "sku_asc": "p.sku ASC",
+    "sku_desc": "p.sku DESC",
+    "costo_desc": "v.costo_total IS NULL, v.costo_total DESC",
+    "costo_asc": "v.costo_total IS NULL, v.costo_total ASC",
+    "contenedor": "v.contenedor IS NULL, v.contenedor ASC, p.sku ASC",
 }
 
 
@@ -811,24 +814,31 @@ def costos_listado(
     contenedor: str | None = Query(None),
     orden: str = Query("reciente"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
+    sin_costo: bool = Query(False, description="Solo los productos que AÚN no tienen fila de costo"),
 ):
-    """Tabla de costos por SKU (costos_validados + precios + nombre + contenedor)."""
+    """
+    Tabla de costos por SKU (productos + costos_validados + precios + contenedor).
+
+    El listado nace de PRODUCTOS, no de costos_validados: un SKU sin costear
+    tiene que poder verse y capturarse aquí, que es el único lugar donde se
+    captura. Ver la nota larga en `costing_read.listado`.
+    """
     skus_lista = [s.strip() for s in (skus or "").split(",") if s.strip()]
 
     # F5: filas desde kubera (misma forma) con fallback a MySQL
     rows = total = None
     if settings.supabase_read_costing:
         rows, total = costing_read.listado(
-            page, per_page, search, contenedor, orden, skus_lista)
+            page, per_page, search, contenedor, orden, skus_lista, sin_costo)
         lecturas_fuente.anotar("costing", "kubera")
 
     if rows is None:
         where, params = [], []
         if search:
-            where.append("(v.sku LIKE %s OR p.nombre LIKE %s)")
+            where.append("(p.sku LIKE %s OR p.nombre LIKE %s)")
             params += [f"%{search}%", f"%{search}%"]
         if skus_lista:
-            or_grupo = " OR ".join(["(v.sku LIKE %s OR p.nombre LIKE %s)"] * len(skus_lista))
+            or_grupo = " OR ".join(["(p.sku LIKE %s OR p.nombre LIKE %s)"] * len(skus_lista))
             where.append(f"({or_grupo})")
             for t in skus_lista:
                 like_t = f"%{t}%"
@@ -836,22 +846,24 @@ def costos_listado(
         if contenedor:
             where.append("v.contenedor = %s")
             params.append(contenedor)
+        if sin_costo:
+            where.append("v.sku IS NULL")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         orden_sql = _ORDEN_COSTOS.get(orden, _ORDEN_COSTOS["reciente"])
 
         total = db.fetch_scalar(
-            f"SELECT COUNT(*) FROM costos_validados v "
-            f"LEFT JOIN productos p ON p.sku = v.sku {where_sql}", tuple(params)) or 0
+            f"SELECT COUNT(*) FROM productos p "
+            f"LEFT JOIN costos_validados v ON v.sku = p.sku {where_sql}", tuple(params)) or 0
         offset = (page - 1) * per_page
         rows = db.fetch_all(
-            f"""SELECT v.sku, p.nombre, v.contenedor,
+            f"""SELECT p.sku, p.nombre, v.contenedor,
                        v.largo, v.alto, v.ancho, v.peso,
                        v.costo_producto, v.costo_cbm, v.costo_total,
                        f.costo_unitario, f.precio_base, f.precio_sugerido,
                        f.costo_comision, f.costo_fee_envio, f.ml_cat_id
-                FROM costos_validados v
-                LEFT JOIN productos p ON p.sku = v.sku
-                LEFT JOIN costos_finales f ON f.sku = v.sku
+                FROM productos p
+                LEFT JOIN costos_validados v ON v.sku = p.sku
+                LEFT JOIN costos_finales f ON f.sku = p.sku
                 {where_sql} ORDER BY {orden_sql} LIMIT %s OFFSET %s""",
             tuple(params + [per_page, offset]))
 

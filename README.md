@@ -11935,3 +11935,92 @@ dirección es la conservadora (se vería como no publicado, que es lo que el can
 dice).
 
 Sin migraciones ni variables nuevas. Versión 0.193.0.
+
+### v0.213.0 — Un auditor de costeo que mide en dinero, y la pantalla de Costos deja de esconder lo que no tiene costo
+
+Sesión de costos (Eduardo, 18-ago): construir lo que **detecta, mide y hace
+visible** los errores de datos del costeo. No corrige nada — la corrección la
+hace el equipo en el sistema de costeo.
+
+#### 1. `backend/scripts/auditar_costeo.py`
+
+**Solo lectura** contra producción (`readonly=True` en la sesión de psycopg2).
+
+La tarifa de flete es **fija: 7,500 $/m³, no cambia por embarque** (confirmado
+por Eduardo). Eso vuelve el flete una **función pura del volumen**:
+
+    flete_correcto = (largo × alto × ancho / 1e6) × 7500
+
+y por lo tanto **auditar el flete es auditar las dimensiones por pieza**. No hay
+tarifa que averiguar ni contenedor que consultar.
+
+**Los umbrales absolutos no bastaban.** De los **65 SKUs** cuyo costo modelado es
+≥2× el precio al que **realmente se vendieron** en 60 días, los detectores
+clásicos (`densidad > 1.5`, `piezas_por_caja < 1`, `costo_producto = 0`) explican
+**solo 14**. Los otros 51 pasaban limpios, y lo que les pasa no es el flete: es
+`costo_producto`.
+
+**Cumplimiento medido:** solo **3,095 de 15,393 SKUs (20%)** están hoy en la
+tarifa. **6,940 (45%)** están por debajo del 10% de ella —casi siempre porque el
+flete se dividió entre `piezas_por_caja` al cargarlo— y 1,589 por arriba.
+
+⚠️ Sobre las ventas de 60 días eso da **$2.56M de flete no reconocido**, pero
+**ese número no es una meta**: aplicarlo pondría el costo de lo vendido en $9.06M
+contra $6.26M de ingreso. Y no es problema de volúmenes — en los 370 SKUs
+vendidos donde **Amazon mide la unidad por su cuenta**, los nuestros quedan a
+**3%** de los suyos ($2.83M vs $2.93M de flete) y aun así el costo sale en 150%
+del ingreso. O `costo_producto` está inflado (35% del catálogo trae USD redondo
+×19, buena parte raspada del scraper de Alibaba) o la tarifa no aplica igual a
+todo. Queda como pregunta para costeo.
+
+**Hallazgo de dominio:** las dimensiones son de la **PIEZA**, no de la caja
+master — contra `ops.fba_snapshot.per_unit_volume` (757 SKUs) la razón mediana es
+**0.86×**; dividir entre `piezas_por_caja` la deja en 0.03–0.09×.
+
+Cinco bloques: censo pesado por flete, partición de contenedores, cumplimiento de
+la tarifa, SKUs fuera de ella por dinero, y contraste contra Amazon. `--dias`
+mueve la ventana, `--top` el largo de cada listado, `--tsv` lo vuelca a archivo.
+
+#### 2. La pantalla de Costos ahora nace de PRODUCTOS
+
+Eduardo buscó `HERR-0029-GRI-AZL-3P` y salió "Sin resultados", mientras Análisis
+lo mostraba **activo, con 147 unidades vendidas y $5,859**. La tabla nacía de
+`costos_validados` con un `FROM`, no con un join hacia ella — así que **un SKU sin
+fila de costo no existía para esa pantalla**. Y como es el único lugar donde se
+captura el costo, tampoco se podía dar de alta desde ahí: el buscador nunca lo
+encontraba. Círculo cerrado.
+
+```sql
+FROM core.products p
+LEFT JOIN costing.costos_validados v ON v.sku = p.sku
+LEFT JOIN costing.costos_finales   f ON f.sku = p.sku AND f.canal = 'mercado_libre'
+```
+
+**El hueco:** **123 SKUs vendieron 1,996 unidades y $469,546 en 60 días sin fila
+de costo**; en el catálogo completo son **6,461 productos**. 89 son productos
+simples, 26 variantes cuyo padre tampoco tiene, 7 variantes cuyo padre sí —el
+caso de Eduardo: las **12 variantes** de `HERR-0029` cuelgan del padre `wc_id
+87010`, el padre tiene costo y ninguna variante lo tiene.
+
+**Y explica el patrón de fondo:** costeo nunca fue un paso obligatorio. La columna
+`core.products.source` muestra que **6,465 productos nunca pasaron por costos y
+5,614 de ellos están publicados** — entraron por Odoo/Woo y el ETL de las 06:15
+los ingiere igual. Análisis lee `channel.listings` y `channel.sales_daily_completa`;
+el costo entra como subselect que devuelve NULL si no hay fila (los "—" del panel).
+
+**Verificado:** voltear el join no pierde nada (los 15,837 de `costos_validados`
+tienen producto, 0 huérfanos) ni duplica (22,298 filas para 22,298 SKUs distintos
+— `costos_finales` se filtra por canal, su otra mitad de PK, P4). El filtro por
+contenedor sigue devolviendo lo mismo (1,617 en `MRKU3085279 - 85`). El listado
+pasa de 15,837 a 22,298 filas.
+
+**El orden lleva `NULLS LAST`**: con el LEFT JOIN las columnas de `v` pueden venir
+NULL y Postgres las pone **primero** en `DESC` — sin eso, los 6,461 sin costear
+tapaban la vista por defecto. La ruta MySQL de respaldo lo emula con
+`col IS NULL` como primer criterio. El orden por SKU pasa a `p.sku`.
+
+Se suma `sin_costo=true` a `GET /api/crear/costos`, que deja solo los que no
+tienen fila. Opcional y apagado por defecto: el frontend no cambia y ya dibuja
+bien los nulos (`precioMXN` devuelve "—").
+
+Sin migraciones ni variables nuevas. Versión 0.213.0.

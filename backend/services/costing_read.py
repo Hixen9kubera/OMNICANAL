@@ -27,14 +27,18 @@ from services import supabase_db as sdb
 
 CANAL = "mercado_libre"
 
-# Mismo contrato de orden que _ORDEN_COSTOS del router (v = costos_validados)
+# Mismo contrato de orden que _ORDEN_COSTOS del router.
+# El SKU sale de `core.products` (p), que desde v0.213.0 es el lado izquierdo del
+# listado; lo de `costos_validados` (v) puede venir NULL, de ahí los NULLS LAST:
+# sin ellos, Postgres pone los NULL primero en DESC y los SKUs sin costear
+# tapaban el listado por defecto.
 ORDEN = {
-    "reciente": "v.created_at DESC",
-    "sku_asc": "v.sku ASC",
-    "sku_desc": "v.sku DESC",
-    "costo_desc": "v.costo_total DESC",
-    "costo_asc": "v.costo_total ASC",
-    "contenedor": "v.contenedor ASC, v.sku ASC",
+    "reciente": "v.created_at DESC NULLS LAST, p.sku ASC",
+    "sku_asc": "p.sku ASC",
+    "sku_desc": "p.sku DESC",
+    "costo_desc": "v.costo_total DESC NULLS LAST",
+    "costo_asc": "v.costo_total ASC NULLS LAST",
+    "contenedor": "v.contenedor ASC NULLS LAST, p.sku ASC",
 }
 
 
@@ -74,38 +78,58 @@ def pct_comision_categoria(cat_id: str) -> float | None:
 
 
 def listado(page: int, per_page: int, search: str | None, contenedor: str | None,
-            orden: str, skus_lista: list[str]) -> tuple[list[dict], int]:
-    """(rows, total) con las MISMAS columnas/alias que el SELECT MySQL del router."""
+            orden: str, skus_lista: list[str],
+            sin_costo: bool = False) -> tuple[list[dict], int]:
+    """
+    (rows, total) con las MISMAS columnas/alias que el SELECT MySQL del router.
+
+    Desde v0.213.0 el lado izquierdo es `core.products`, no `costos_validados`.
+    Antes la tabla nacía de costos_validados, así que un SKU sin fila ahí era
+    INVISIBLE en la pantalla de Costos aunque estuviera publicado y vendiendo —
+    y como la pantalla es el único lugar donde se captura, no había manera de
+    darlo de alta desde ahí. Medido el 18-ago-2026: 123 SKUs con ventas en 60
+    días ($469,546) no aparecían, y 6,461 productos del catálogo no tienen fila
+    de costo. Con el LEFT JOIN salen en blanco y se pueden capturar.
+
+    El cruce no pierde nada: los 15,837 de costos_validados tienen producto en
+    core.products (verificado, 0 huérfanos).
+
+    `sin_costo=True` deja solo los que NO tienen fila de costo — el filtro para
+    trabajar el hueco.
+    """
     where, params = [], []
     if search:
-        where.append("(v.sku ilike %s or p.name ilike %s)")
+        where.append("(p.sku ilike %s or p.name ilike %s)")
         params += [f"%{search}%", f"%{search}%"]
     if skus_lista:
-        or_grupo = " or ".join(["(v.sku ilike %s or p.name ilike %s)"] * len(skus_lista))
+        or_grupo = " or ".join(["(p.sku ilike %s or p.name ilike %s)"] * len(skus_lista))
         where.append(f"({or_grupo})")
         for t in skus_lista:
             like_t = f"%{t}%"
             params += [like_t, like_t]
     if contenedor:
+        # Filtrar por contenedor implica tener fila de costo: el contenedor vive ahí.
         where.append("v.contenedor = %s")
         params.append(contenedor)
+    if sin_costo:
+        where.append("v.sku is null")
     where_sql = ("where " + " and ".join(where)) if where else ""
     orden_sql = ORDEN.get(orden, ORDEN["reciente"])
 
     total = sdb.fetch_scalar(
-        f"select count(*) from costing.costos_validados v "
-        f"left join core.products p on p.sku = v.sku {where_sql}",
+        f"select count(*) from core.products p "
+        f"left join costing.costos_validados v on v.sku = p.sku {where_sql}",
         tuple(params)) or 0
     offset = (page - 1) * per_page
     rows = sdb.fetch_all(
-        f"""select v.sku, p.name as nombre, v.contenedor,
+        f"""select p.sku, p.name as nombre, v.contenedor,
                    v.largo, v.alto, v.ancho, v.peso,
                    v.costo_producto, v.costo_cbm, v.costo_total,
                    f.costo_unitario, f.precio_base, f.precio_sugerido,
                    f.costo_comision, f.costo_fee_envio, f.ml_cat_id
-            from costing.costos_validados v
-            left join core.products p on p.sku = v.sku
-            left join costing.costos_finales f on f.sku = v.sku and f.canal = %s
+            from core.products p
+            left join costing.costos_validados v on v.sku = p.sku
+            left join costing.costos_finales f on f.sku = p.sku and f.canal = %s
             {where_sql} order by {orden_sql} limit %s offset %s""",
         tuple([CANAL] + params + [per_page, offset]))
     return rows, int(total)
