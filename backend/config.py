@@ -117,10 +117,11 @@ class Settings(BaseSettings):
     # decidido. Con este flag el deploy es INERTE y encenderlo es un acto
     # explícito. Para escribir hacen falta las dos cosas.
     fanout_tiktok: bool = False
-    # Mismo patrón para Temu (canal DROP-only por decisión del 18-ago). Nace
-    # apagado y se queda así hasta que el sondeo canario de
-    # `bg.local.goods.stock.edit` confirme la forma del escritor
-    # (scripts/sondear_temu_stock.py) y el escritor exista en _ESCRITORES.
+    # Mismo patrón para Temu (canal DROP-only por decisión del 18-ago).
+    # ENCENDIDO el 19-ago: el sondeo canario confirmó la forma de
+    # `bg.local.goods.stock.edit` (edita por DIFERENCIA) y `_escribir_temu` ya
+    # vive en _ESCRITORES. El flag se queda porque sigue siendo el interruptor
+    # para apagar las escrituras a Temu sin tocar código ni deploy.
     fanout_temu: bool = False
 
     # ── Creación de productos (Alibaba → Woo) ─────────────────
