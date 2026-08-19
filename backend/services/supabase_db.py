@@ -65,6 +65,54 @@ def _get_pool():
     return _pool
 
 
+def _es_solo_lectura(exc: Exception) -> bool:
+    """True si el error es el candado de solo-lectura heredado por el pooler."""
+    return "read-only transaction" in str(exc).lower()
+
+
+def _desinfectar() -> int:
+    """
+    Quita el candado de solo-lectura que otro cliente dejó pegado en las
+    conexiones del pooler. Devuelve cuántas destrabó.
+
+    POR QUÉ HACE FALTA. Un script que lee producción con `set_session(readonly=
+    True)` deja ese ajuste en la conexión del SERVIDOR, no en la suya: el pooler
+    transaccional la recicla y la hereda el siguiente cliente. Si ese siguiente
+    es el backend registrando una venta, la escritura truena con
+    `ReadOnlySqlTransaction` — pasó tres veces entre el 18 y el 19-ago-2026
+    (dos ventas y una tanda de 75 publicaciones de CHANNEL).
+
+    Los scripts del repo ya usan `set transaction read only`, que muere con la
+    transacción; pero cualquier script suelto fuera del repo puede volver a
+    envenenar, así que el backend no puede depender de que nadie se equivoque.
+    Destrabar aquí además limpia la conexión para todos los demás.
+    """
+    limpias = 0
+    for _ in range(6):
+        try:
+            conn = _get_pool().connection()
+        except Exception:  # noqa: BLE001
+            break
+        try:
+            conn.rollback()
+            cur = conn.cursor()
+            cur.execute("show default_transaction_read_only")
+            fila = cur.fetchone()
+            valor = next(iter(fila.values())) if isinstance(fila, dict) else fila[0]
+            if str(valor) == "on":
+                cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE")
+                conn.commit()
+                limpias += 1
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            conn.close()
+    if limpias:
+        log.warning("pooler: %d conexión(es) venían con el candado de "
+                    "solo-lectura de otro cliente; destrabadas", limpias)
+    return limpias
+
+
 @contextmanager
 def get_cursor() -> Iterator[Any]:
     """Cursor de una conexión del POOL; se devuelve al pool al salir."""
@@ -73,8 +121,21 @@ def get_cursor() -> Iterator[Any]:
         cur = conn.cursor()
         yield cur
         conn.commit()
-    except Exception:
+    except Exception as exc:
         conn.rollback()
+        # CANDADO HEREDADO. Si la conexión venía marcada de solo-lectura por
+        # otro cliente del pooler, esta operación ya está perdida —pero la
+        # SIGUIENTE no tiene por qué serlo—. Se destraban las conexiones aquí
+        # mismo, así el reintento de la cola y todo lo que venga detrás pasan.
+        # Sin esto, una sola conexión envenenada tumbaba escrituras durante
+        # minutos: tres veces entre el 18 y el 19-ago-2026.
+        # No se reintenta aquí porque el cuerpo del `with` ya corrió; el
+        # reintento transparente vive en execute()/execute_returning().
+        if _es_solo_lectura(exc):
+            try:
+                _desinfectar()
+            except Exception:  # noqa: BLE001 — jamás tapa el error original
+                pass
         raise
     finally:
         conn.close()  # con PooledDB, DEVUELVE la conexión al pool
@@ -100,6 +161,23 @@ def fetch_scalar(sql: str, params: tuple | dict | None = None) -> Any:
     return next(iter(row.values()))
 
 
+def _reintentar_si_solo_lectura(fn):
+    """
+    Corre `fn`; si truena por el candado heredado, destraba y reintenta UNA vez.
+
+    Solo envuelve ESCRITURAS: una lectura no se ve afectada por el candado. El
+    reintento es seguro porque `fn` no llegó a escribir nada — Postgres rechazó
+    la sentencia antes de aplicarla.
+    """
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001
+        if not _es_solo_lectura(exc):
+            raise
+        _desinfectar()
+        return fn()
+
+
 def execute(sql: str, params: tuple | dict | None = None) -> int:
     """Ejecuta INSERT/UPDATE/DELETE. Devuelve filas afectadas (commit incluido).
 
@@ -107,17 +185,21 @@ def execute(sql: str, params: tuple | dict | None = None) -> int:
     1 = fila nueva insertada; 0 = era un duplicado (la base lo descartó) — es
     la base del conteo de webhooks duplicados sin lógica extra en el código.
     """
-    with get_cursor() as cur:
-        cur.execute(sql, params)
-        return cur.rowcount
+    def _hacer() -> int:
+        with get_cursor() as cur:
+            cur.execute(sql, params)
+            return cur.rowcount
+    return _reintentar_si_solo_lectura(_hacer)
 
 
 def execute_returning(sql: str, params: tuple | dict | None = None) -> dict[str, Any] | None:
     """Ejecuta una escritura con RETURNING y devuelve la fila (o None si no hubo)."""
-    with get_cursor() as cur:
-        cur.execute(sql, params)
-        row = cur.fetchone()
-        return dict(row) if row else None
+    def _hacer() -> dict[str, Any] | None:
+        with get_cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return dict(row) if row else None
+    return _reintentar_si_solo_lectura(_hacer)
 
 
 def ping() -> bool:

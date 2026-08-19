@@ -10002,6 +10002,39 @@ detectable es mejor que perder la venta.
 Sandbox 8/8 (`probar_reclamo_pedidos.py`): el primero gana y el segundo pierde,
 el reclamo nace con wc_order_id NULL, liberar suelta el vacío y respeta el
 completado, y tras completar `wc_order_id_previo` contesta el id real. Versión 0.176.0.
+### v0.215.0 — El backend deja de depender de que nadie envenene el pooler
+
+Tercera vez en dos días que una escritura de negocio truena con
+`ReadOnlySqlTransaction`: dos ventas (`SANCORFASHION:2000018007891622`,
+`BEKURA:2000018018413328`) y una tanda de 75 publicaciones de CHANNEL. Ninguna
+se perdió —MySQL absorbió y la cola completó— pero el camino primario falló.
+
+**Corrección a mi diagnóstico de la v0.212.0**: arreglar los dos scripts del repo
+NO bastó. Volvió a pasar después, así que la fuente está fuera del repo — un
+script suelto de alguna sesión. Perseguir al culpable no funcionó dos veces
+seguidas; el backend no puede depender de que nadie se equivoque.
+
+Dos defensas en `supabase_db`:
+
+- **`execute` / `execute_returning` reintentan solos.** Si truena por el candado
+  heredado, destraban las conexiones del pooler y repiten UNA vez. El reintento
+  es seguro: Postgres rechazó la sentencia antes de aplicarla, así que no hay
+  escritura a medias.
+- **`get_cursor` desinfecta al detectar el error.** No puede reintentar —el
+  cuerpo del `with` ya corrió— pero destraba las conexiones antes de propagar,
+  así el reintento de la cola y todo lo que venga detrás sí pasan. Sin esto, una
+  conexión envenenada tumbaba escrituras durante minutos.
+
+Cero costo cuando todo va bien: no hay sentencia extra en el camino feliz, solo
+en el de error.
+
+**Probado envenenando el pool a propósito**: con 11 de 14 conexiones trabadas,
+`execute()` salió adelante y dejó el pool en 6; una segunda ronda lo dejó en 0.
+No quedó ejercitado el camino de desinfección de `get_cursor` (le tocó una
+conexión limpia al primer intento). Versión 0.215.0.
+
+---
+
 ### v0.214.0 — Temu entra al fan-out: el endpoint que nunca se había llamado, y su trampa
 
 Temu abrió su lista blanca de IPs y con el dale de Brandon se corrió el
