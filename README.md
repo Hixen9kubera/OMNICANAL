@@ -12318,3 +12318,88 @@ Se alinea a **0.218.0** en los dos lugares (el rebase encontró upstream en 0.21
 
 Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
+
+
+### v0.220.0 — La tabla de Costos deja de hablar de precios, y el desglose se puede sumar con la vista
+
+Sesión de costos con Brandon (19-ago). La pantalla captura COSTOS, pero cerraba
+con dos columnas de PRECIO y abría el desglose con el precio de venta: se leía
+como una tabla de precios que además traía costos. Y el desglose no se podía
+auditar — había que creerle.
+
+#### 1. Tipo de cambio: un solo default, 19
+
+`DEFAULT_TC` en la tabla decía **18.5** y `TIPO_CAMBIO_DEFAULT` en el Resolver y
+en `packing_costos` decía **19**. El mismo costo en dólares daba dos costos en
+pesos según por dónde entrara la captura, con **2.7% de diferencia**. Ahora los
+tres dicen 19.
+
+⚠️ Efecto visible: la columna en dólares es una CONVERSIÓN DE VUELTA de lo
+guardado (que son pesos), así que las filas viejas cambian de rótulo sin que su
+costo se mueva — ROP-0481 pasa de "$75" a "$73.03" siendo los mismos $1,387.50.
+
+#### 2. Columnas: fuera los precios, entra el costo en pesos
+
+Quedan **contenedor · dimensiones · peso (kg) · costo prod. USD · costo prod.
+MXN · flete CBM · costo unitario**. Se van "P. regular" y "P. oferta".
+
+El costo de producto en PESOS no estaba y es el que de verdad se guarda: la
+columna en dólares es la captura, y la conversión vivía nada más en la cabeza
+de quien miraba. Con las dos juntas, la fila **se suma con la vista**:
+$1,387.50 + $30.00 = $1,417.50.
+
+Cada columna de dinero lleva ahora su viñeta con la operación que la produce
+("costo USD × tipo de cambio", "volumen m³ × $7,500", "costo prod. MXN + flete
+CBM"), en vez de dejarla en la descripción de la página.
+
+Regenerar sigue calculando y sincronizando precios a WooCommerce: lo que se
+quitó es la COLUMNA, no el cálculo.
+
+#### 3. Los seis recuadros, en el orden en que se acumula el costo
+
+Antes: `Precio base · Costo base · Comisión /u · Envío real /u · Costo final ·
+Margen`. Dos rótulos mentían por omisión — "Costo base" ya traía el flete
+sumado adentro y "Precio base" era en realidad el de OFERTA (el regular iba de
+nota) — así que las seis casillas no cerraban con nadie: no había de dónde ver
+salir el costo final, ni contra qué se sacaba el margen.
+
+Ahora: **1 costo producto → 2 costo flete → 3 comisión ML → 4 envío real →
+5 costo final → 6 margen neto**, numerados, y debajo las dos fórmulas escritas
+CON LOS NÚMEROS de las casillas:
+
+    • Costo final = $1,387.50 + $30.00 + $534.83 + $110.00 + $438.84 = $2,501.17
+    • Margen neto = ($3,181.57 − $2,501.17) ÷ $3,181.57 = 21.4%
+
+El IVA no tiene casilla —son seis costos, no siete— pero aparece en la nota del
+costo final y en la fórmula: sin él la suma dejaba $438.84 sin explicar.
+
+#### 4. Los siete centavos que aparecían al seleccionar
+
+Salió al poner las dos columnas juntas: **seleccionar** ROP-0481 cambiaba su
+costo de $1,387.50 a $1,387.**57**, y "Regenerar y guardar" escribía ese número
+en la base aunque nadie hubiera tocado nada.
+
+La causa es la ida y vuelta: $1,387.50 ÷ 19 = $73.03 **redondeado a centavos**,
+y ×19 regresa como $1,387.57. El defecto ya existía —la columna "Costo" lo
+mostraba desde siempre— pero era invisible sin el valor original al lado.
+
+`prodMxnDe()` lo cierra con una regla simple: si el campo en dólares sigue
+siendo idéntico al que se sembró, no hubo captura y manda el valor GUARDADO.
+Solo se convierte lo que de verdad se tecleó. Va por el mismo camino la columna
+que se muestra y el payload que se escribe, para que no puedan divergir.
+
+#### Lo que NO se tocó, por decisión de Brandon
+
+- El **peso volumétrico sigue en /5000** (esquema real de ML).
+- La **tabla de tarifas de envío** es la última de Mercado Libre y se queda.
+
+Verificado en el navegador contra un mock con las cifras reales del contenedor
+(no se levantó el backend local: su scheduler tocaría producción). `tsc
+--noEmit` y `next build` limpios. Frontend solamente; sin migraciones ni
+variables. Versión 0.220.0.
+
+> El **0.219.0 queda reservado** para el commit de Walmart (variantes
+> agrupadas + enum del esquema), que se quedó en la rama local
+> `walmart-pendiente` a la espera del visto bueno: publicar en Walmart
+> es flujo vivo y la regla 3 pide el dale antes del push. Por eso
+> `main.py` salta de 0.218.0 a 0.220.0 — no es un número perdido.

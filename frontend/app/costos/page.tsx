@@ -27,7 +27,14 @@ const PER_PAGE = 50;
 const COLOR = "#4F46E5";
 const ACENTO = "#818CF8";
 const TARIFA_CBM = 7500; // $/m³ (contenedor estándar) — igual que el backend
-const DEFAULT_TC = 18.5; // tipo de cambio USD→MXN por defecto (editable)
+/** Viñeta bajo el rótulo de una columna: la operación que produce ese número. */
+const NOTA_TH =
+  "mt-0.5 text-[9px] font-normal normal-case tracking-normal text-slate-400";
+// Tipo de cambio USD→MXN por defecto (editable en la barra de abajo).
+// Es el MISMO que el del Resolver (packing_costos.TIPO_CAMBIO_DEFAULT y
+// ResolverCostosModal): tenerlos distintos hacía que el mismo costo en
+// dólares diera dos costos en pesos según por dónde entrara la captura.
+const DEFAULT_TC = 19;
 const mxnToUsd = (v: number | null | undefined, tc: number) =>
   v == null ? "" : String(Math.round((v / (tc || DEFAULT_TC)) * 100) / 100);
 
@@ -101,6 +108,27 @@ const seedEdicion = (r: CostoRow, tc: number): Edicion => ({
   largo: s(r.largo), ancho: s(r.ancho), alto: s(r.alto), peso: s(r.peso),
   costo_producto: mxnToUsd(r.costo_producto, tc),
 });
+
+/**
+ * Costo de producto en PESOS de una fila, respetando lo que el usuario tecleó.
+ *
+ * El campo se captura en DÓLARES pero lo que se guarda son pesos, y la ida y
+ * vuelta no es exacta: $1,387.50 ÷ 19 = $73.03 redondeado, y ×19 regresa como
+ * $1,387.57. Siete centavos que aparecían con solo SELECCIONAR la fila, y que
+ * "Regenerar y guardar" escribía en la base aunque nadie hubiera tocado nada.
+ * Con la columna en pesos al lado de la de dólares el desfase quedó a la vista.
+ *
+ * La regla: si el campo sigue siendo idéntico al que se sembró, no hubo
+ * captura y manda el valor GUARDADO. Solo se convierte lo que de verdad se
+ * tecleó.
+ */
+function prodMxnDe(r: CostoRow, ed: Edicion | undefined, tc: number): number | null {
+  if (!ed) return r.costo_producto;
+  const usd = (ed.costo_producto ?? "").trim();
+  if (usd === mxnToUsd(r.costo_producto, tc)) return r.costo_producto;
+  const v = n(usd);
+  return v != null ? Math.round(v * tc * 100) / 100 : r.costo_producto;
+}
 
 export default function CostosPage() {
   // "Resolver": compara un packing list contra estos costos. Vive aquí porque
@@ -252,15 +280,17 @@ export default function CostosPage() {
   // edita. costo_producto se ingresa en USD → se convierte a MXN con el TC.
   function vivo(r: CostoRow) {
     const ed = ediciones[r.sku];
-    if (!seleccion.has(r.sku) || !ed) return { cbm: r.costo_cbm, costo: r.costo_unitario };
+    if (!seleccion.has(r.sku) || !ed)
+      return { cbm: r.costo_cbm, costo: r.costo_unitario, prodMxn: r.costo_producto };
     // Siempre se calcula sobre la PIEZA: en modo "caja" se deriva primero.
     const pz = porPieza(ed);
     const l = pz.largo || null, a = pz.ancho || null, h = pz.alto || null;
-    const cpUsd = n(ed.costo_producto);
-    const cpMxn = cpUsd != null ? cpUsd * tcNum() : null;
+    // Redondeado a centavos ANTES de sumar: la columna "Costo unitario" tiene
+    // que ser exactamente la suma de las dos columnas que tiene a la izquierda.
+    const cpMxn = prodMxnDe(r, ed, tcNum());
     const cbm = l && a && h ? Math.round((l * a * h) / 1_000_000 * TARIFA_CBM * 100) / 100 : r.costo_cbm;
     const costo = cpMxn != null && cbm != null ? Math.round((cpMxn + cbm) * 100) / 100 : r.costo_unitario;
-    return { cbm, costo };
+    return { cbm, costo, prodMxn: cpMxn };
   }
 
   async function regenerarBulk() {
@@ -272,10 +302,17 @@ export default function CostosPage() {
       const items = [...seleccion].map((sku) => {
         const ed = ediciones[sku] ?? ({} as Edicion);
         const pz = porPieza(ed);
-        const cpUsd = n(ed.costo_producto ?? "");
+        const fila = rows.find((x) => x.sku === sku);
         return {
           sku,
-          costo_producto: cpUsd != null ? Math.round(cpUsd * tc * 100) / 100 : null, // USD→MXN
+          // Mismo camino que la columna en pesos: lo tecleado se convierte, lo
+          // no tocado se conserva tal cual está guardado.
+          costo_producto: fila
+            ? prodMxnDe(fila, ed, tc)
+            : (() => {
+                const v = n(ed.costo_producto ?? "");
+                return v != null ? Math.round(v * tc * 100) / 100 : null;
+              })(),
           // Se guarda SIEMPRE la pieza: costos_validados es por unidad.
           largo: pz.largo || null,
           ancho: pz.ancho || null,
@@ -420,23 +457,25 @@ export default function CostosPage() {
                 <th className="px-4 py-3 font-semibold">SKU / Producto</th>
                 <th className="px-3 py-3 font-semibold">Contenedor</th>
                 <th className="px-3 py-3 font-semibold">Dimensiones (cm)</th>
-                <th className="px-3 py-3 text-right font-semibold">Peso</th>
-                {/* La frontera entre monedas cae aquí: esta columna es la
-                    única en dólares; las cuatro siguientes son pesos. */}
+                <th className="px-3 py-3 text-right font-semibold">Peso (kg)</th>
+                {/* La frontera entre monedas cae aquí: la primera es la CAPTURA
+                    en dólares, la de junto es esa misma cifra ya convertida —
+                    que es la que se guarda y la que suma. */}
                 <th className="bg-amber-50/40 px-3 py-3 text-right font-semibold">
                   <TituloMoneda moneda="USD">Costo prod.</TituloMoneda>
+                  <div className={NOTA_TH}>lo que se le paga al proveedor</div>
+                </th>
+                <th className="bg-amber-50/20 px-3 py-3 text-right font-semibold">
+                  <TituloMoneda moneda="MXN">Costo prod.</TituloMoneda>
+                  <div className={NOTA_TH}>costo USD × tipo de cambio</div>
                 </th>
                 <th className="px-3 py-3 text-right font-semibold">
                   <TituloMoneda moneda="MXN">Flete CBM</TituloMoneda>
+                  <div className={NOTA_TH}>volumen m³ × ${TARIFA_CBM.toLocaleString("es-MX")}</div>
                 </th>
                 <th className="px-3 py-3 text-right font-semibold">
-                  <TituloMoneda moneda="MXN">Costo</TituloMoneda>
-                </th>
-                <th className="px-3 py-3 text-right font-semibold">
-                  <TituloMoneda moneda="MXN">P. regular</TituloMoneda>
-                </th>
-                <th className="px-3 py-3 text-right font-semibold">
-                  <TituloMoneda moneda="MXN">P. oferta</TituloMoneda>
+                  <TituloMoneda moneda="MXN">Costo unitario</TituloMoneda>
+                  <div className={NOTA_TH}>costo prod. MXN + flete CBM</div>
                 </th>
               </tr>
             </thead>
@@ -444,16 +483,16 @@ export default function CostosPage() {
               {cargando || (rows.length === 0 && primeraCarga.current) ? (
                 Array.from({ length: 10 }).map((_, i) => (
                   <tr key={i} className="border-b border-slate-100">
-                    <td colSpan={10} className="px-4 py-4"><div className="h-5 w-full animate-pulse rounded bg-slate-100" /></td>
+                    <td colSpan={9} className="px-4 py-4"><div className="h-5 w-full animate-pulse rounded bg-slate-100" /></td>
                   </tr>
                 ))
               ) : rows.length === 0 ? (
-                <tr><td colSpan={10} className="px-4 py-16 text-center text-slate-400">Sin resultados.</td></tr>
+                <tr><td colSpan={9} className="px-4 py-16 text-center text-slate-400">Sin resultados.</td></tr>
               ) : (
                 rows.map((r) => {
                   const sel = seleccion.has(r.sku);
                   const ed = ediciones[r.sku];
-                  const { cbm, costo } = vivo(r);
+                  const { cbm, costo, prodMxn } = vivo(r);
                   return (
                     <Fragment key={r.sku}>
                     <tr className={["border-b transition-colors", sel ? "border-transparent bg-indigo-50/50" : "border-slate-100 hover:bg-slate-50"].join(" ")}>
@@ -550,10 +589,9 @@ export default function CostosPage() {
                       <td className="px-3 py-3 text-right text-slate-600">
                         {sel && ed ? <CeldaInput value={ed.peso} onChange={(v) => setEdicion(r.sku, "peso", v)} align="right" /> : (r.peso ?? "—")}
                       </td>
-                      {/* Costo producto — la ÚNICA columna en dólares de la
-                          tabla: se captura en USD y se guarda en MXN (×TC).
-                          Va en ámbar para que no se confunda con las cuatro
-                          columnas de pesos que tiene a la derecha. */}
+                      {/* Costo producto en DÓLARES: es la captura. Va en
+                          ámbar para que no se confunda con las columnas de
+                          pesos que tiene a la derecha. */}
                       <td className="bg-amber-50/30 px-3 py-3 text-right text-slate-600">
                         {sel && ed
                           ? <EntradaMoneda moneda="USD" compacto alineado="right"
@@ -564,11 +602,14 @@ export default function CostosPage() {
                               ? <span className="font-medium text-amber-700">${mxnToUsd(r.costo_producto, tcNum())}</span>
                               : "—")}
                       </td>
-                      {/* Flete CBM + Costo — en vivo si está seleccionado */}
+                      {/* Costo producto en PESOS: la conversión de la celda
+                          anterior con el TC de la barra de abajo. Es el número
+                          que se guarda y el que suma al costo unitario, así que
+                          se muestra en vez de dejarlo implícito. */}
+                      <td className={["bg-amber-50/20 px-3 py-3 text-right", sel ? "font-medium text-indigo-600" : "text-slate-600"].join(" ")}>{precioMXN(prodMxn)}</td>
+                      {/* Flete CBM + Costo unitario — en vivo si está seleccionado */}
                       <td className={["px-3 py-3 text-right", sel ? "font-semibold text-indigo-600" : "text-slate-600"].join(" ")}>{precioMXN(cbm)}</td>
                       <td className={["px-3 py-3 text-right font-semibold", sel ? "text-indigo-700" : "text-slate-800"].join(" ")}>{precioMXN(costo)}</td>
-                      <td className="px-3 py-3 text-right text-slate-600">{precioMXN(r.precio_base)}</td>
-                      <td className="px-3 py-3 text-right font-semibold text-slate-900">{precioMXN(r.precio_sugerido)}</td>
                     </tr>
                     {/* Desglose: de dónde sale el precio y qué se lleva cada
                         quien. Va en la misma línea —no en un panel aparte—
@@ -576,7 +617,7 @@ export default function CostosPage() {
                     {sel && (
                       <tr className="border-b border-slate-100 bg-indigo-50/50">
                         <td />
-                        <td colSpan={9} className="px-4 pb-3">
+                        <td colSpan={8} className="px-4 pb-3">
                           <Desglose calc={desglose[r.sku]} pendiente={!(r.sku in desglose)} />
                         </td>
                       </tr>
@@ -669,9 +710,23 @@ export default function CostosPage() {
 
 // Input compacto para editar una celda de la tabla.
 /**
- * El renglón de desglose: precio de venta a la izquierda, y a la derecha todo
- * lo que se le resta hasta llegar a la ganancia. Los números vienen del
- * backend (`/preview`), incluida la comisión de la categoría real de ML.
+ * El renglón de desglose: los costos EN EL ORDEN EN QUE SE ACUMULAN, de lo que
+ * se le paga al proveedor hasta lo que queda.
+ *
+ *   producto → flete → comisión → envío → costo final → margen
+ *
+ * Antes abría con el precio de venta y mezclaba rótulos ("Costo base" ya traía
+ * el flete sumado adentro; "Precio base" era en realidad el de oferta), así que
+ * las seis casillas no se podían sumar con la vista: no había cómo saber de
+ * dónde salía el costo final ni contra qué se sacaba el margen.
+ *
+ * Por eso debajo van las dos fórmulas ESCRITAS CON LOS NÚMEROS de las casillas,
+ * no con símbolos. Todo lo que se muestra tiene que poder comprobarse sumando
+ * lo que se ve; la única cifra que no tiene casilla propia —el IVA— se nombra
+ * igual, en la nota y en la fórmula.
+ *
+ * Los números vienen del backend (`/preview`), incluida la comisión de la
+ * categoría real de ML.
  */
 function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; pendiente: boolean }) {
   if (pendiente) {
@@ -692,43 +747,85 @@ function Desglose({ calc, pendiente }: { calc: CostoCalculo | null | undefined; 
       </div>
     );
   }
-  // Lo que de verdad cuesta poner la pieza en manos del cliente: el costo
-  // aterrizado más lo que se llevan ML y la paquetería.
+  const producto = calc.costo_producto ?? 0;
+  const flete = calc.costo_cbm ?? 0;
+  // El IVA no lleva casilla propia —son seis costos, no siete— pero SÍ está
+  // dentro del costo final. Se nombra en la nota y en la fórmula para que la
+  // suma cierre: callarlo dejaba cientos de pesos sin explicar.
   const costoFinal = Math.round(
-    ((calc.costo_unitario ?? 0) + calc.costo_comision + calc.costo_fee_envio + calc.iva_mnt) * 100,
+    (producto + flete + calc.costo_comision + calc.costo_fee_envio + calc.iva_mnt) * 100,
   ) / 100;
-  const margen = calc.precio_sugerido ? calc.ganancia_neta / calc.precio_sugerido : 0;
+  // Se recalcula con las cifras YA REDONDEADAS que están a la vista, en vez de
+  // usar `ganancia_neta` del backend: son el mismo número, pero así la fórmula
+  // de abajo cuadra al centavo con lo que el usuario lee.
+  const precio = calc.precio_sugerido;
+  const neto = Math.round((precio - costoFinal) * 100) / 100;
+  const margen = precio ? neto / precio : 0;
+  const tonoMargen =
+    margen <= 0 ? "text-rose-600" : margen < 0.15 ? "text-amber-600" : "text-emerald-600";
 
   const celdas: { rotulo: string; valor: string; tono?: string; nota?: string }[] = [
-    // El backend llama `precio_base` al precio TACHADO y `precio_sugerido` al
-    // de oferta. El margen se calcula sobre el de oferta, que es al que se
-    // vende de verdad — así que ese es el que encabeza el desglose.
-    { rotulo: "Precio base", valor: precioMXN(calc.precio_sugerido), tono: "text-slate-900",
-      nota: `oferta · regular ${precioMXN(calc.precio_base)}` },
-    { rotulo: "Costo base", valor: precioMXN(calc.costo_unitario),
-      nota: `producto + flete ${precioMXN(calc.costo_cbm)}` },
-    { rotulo: "Comisión /u", valor: precioMXN(calc.costo_comision),
-      nota: `${(calc.pct_comision * 100).toFixed(1)}%${calc.comision_estimada ? " estimada" : ""}` },
-    { rotulo: "Envío real /u", valor: precioMXN(calc.costo_fee_envio),
-      nota: calc.incluir_envio ? undefined : "no se suma" },
-    { rotulo: "Costo final", valor: precioMXN(costoFinal), tono: "text-slate-900",
-      nota: `incluye IVA ${precioMXN(calc.iva_mnt)}` },
-    { rotulo: "Margen", valor: `${(margen * 100).toFixed(1)}%`,
-      tono: margen <= 0 ? "text-rose-600" : margen < 0.15 ? "text-amber-600" : "text-emerald-600",
-      nota: `${precioMXN(calc.ganancia_neta)} neto` },
+    { rotulo: "1 · Costo producto", valor: precioMXN(producto),
+      nota: "lo pagado al proveedor, en pesos" },
+    { rotulo: "2 · Costo flete", valor: precioMXN(flete),
+      nota: `${calc.volumen_m3 ?? 0} m³ × $${calc.tarifa_cbm_m3.toLocaleString("es-MX")}` },
+    { rotulo: "3 · Comisión ML", valor: precioMXN(calc.costo_comision),
+      nota: `${(calc.pct_comision * 100).toFixed(1)}% de la categoría${calc.comision_estimada ? " · estimada" : ""}` },
+    { rotulo: "4 · Envío real", valor: precioMXN(calc.costo_fee_envio),
+      nota: calc.incluir_envio ? "tarifa ML por peso y precio" : "no se suma" },
+    { rotulo: "5 · Costo final", valor: precioMXN(costoFinal), tono: "text-slate-900",
+      nota: `suma de 1 a 4 + IVA ${precioMXN(calc.iva_mnt)}` },
+    { rotulo: "6 · Margen neto", valor: `${(margen * 100).toFixed(1)}%`, tono: tonoMargen,
+      nota: `${precioMXN(neto)} netos por pieza` },
   ];
 
   return (
-    <div className="flex flex-wrap items-stretch gap-1.5">
-      {celdas.map((c) => (
-        <div key={c.rotulo} className="min-w-[104px] flex-1 rounded-lg border border-indigo-100 bg-white px-2.5 py-1.5">
-          <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">{c.rotulo}</div>
-          <div className={`font-mono text-xs font-semibold ${c.tono ?? "text-slate-700"}`}>{c.valor}</div>
-          {c.nota && <div className="truncate text-[9px] text-slate-400" title={c.nota}>{c.nota}</div>}
-        </div>
-      ))}
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-stretch gap-1.5">
+        {celdas.map((c) => (
+          <div key={c.rotulo} className="min-w-[124px] flex-1 rounded-lg border border-indigo-100 bg-white px-2.5 py-1.5">
+            <div className="text-[9px] font-semibold uppercase tracking-wide text-slate-400">{c.rotulo}</div>
+            <div className={`font-mono text-xs font-semibold ${c.tono ?? "text-slate-700"}`}>{c.valor}</div>
+            {c.nota && <div className="truncate text-[9px] text-slate-400" title={c.nota}>{c.nota}</div>}
+          </div>
+        ))}
+      </div>
+
+      {/* Las dos fórmulas, con los números de las casillas de arriba puestos en
+          su lugar. Es la diferencia entre "confía en el 21.4%" y "míralo". */}
+      <ul className="space-y-0.5 text-[10px] leading-relaxed text-slate-500">
+        <li>
+          <span className="text-slate-400">•</span>{" "}
+          <span className="font-semibold text-slate-600">Costo final</span>
+          {" = "}
+          <span className="font-mono">
+            {precioMXN(producto)} + {precioMXN(flete)} + {precioMXN(calc.costo_comision)}
+            {" + "}
+            {precioMXN(calc.costo_fee_envio)} + {precioMXN(calc.iva_mnt)}
+            {" = "}
+            <span className="font-semibold text-slate-800">{precioMXN(costoFinal)}</span>
+          </span>{" "}
+          <span className="text-slate-400">(producto + flete + comisión + envío + IVA)</span>
+        </li>
+        <li>
+          <span className="text-slate-400">•</span>{" "}
+          <span className="font-semibold text-slate-600">Margen neto</span>
+          {" = ("}
+          <span className="font-mono">
+            {precioMXN(precio)} − {precioMXN(costoFinal)}
+          </span>
+          {") ÷ "}
+          <span className="font-mono">{precioMXN(precio)}</span>
+          {" = "}
+          <span className={`font-mono font-semibold ${tonoMargen}`}>{(margen * 100).toFixed(1)}%</span>{" "}
+          <span className="text-slate-400">
+            (precio de venta en ML menos el costo final, sobre el precio)
+          </span>
+        </li>
+      </ul>
+
       {calc.comision_estimada && (
-        <div className="flex items-center gap-1 px-1 text-[10px] text-amber-600">
+        <div className="flex items-center gap-1 text-[10px] text-amber-600">
           <AlertTriangle size={11} /> comisión de respaldo: sin categoría de ML
         </div>
       )}
