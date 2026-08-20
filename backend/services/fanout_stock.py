@@ -814,19 +814,17 @@ def _persistir(evento: dict[str, Any]) -> None:
         # (20-ago): si el espejo va DENTRO del try del INSERT a MySQL y DESPUES
         # de el, el dia del corte MySQL revienta y el espejo nunca corre — el
         # evento se pierde sin que nadie se entere.
-        if settings.supabase_write_fanout_log:
-            _CAMPOS = ("ts", "sku", "motivo", "dry_run", "stock_drop", "objetivo",
-                       "canal", "cuenta", "item_id", "accion", "stock_canal",
-                       "resultado", "ms")
-            try:
-                from services import fanout_read
-                for f in filas:
-                    d = dict(zip(_CAMPOS, f))
-                    d["dry_run"] = bool(d["dry_run"])
-                    fanout_read.registrar(d)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("fanout_log: no se pudo espejar %s a kubera: %s",
-                            evento.get("sku"), exc)
+        # Por el MISMO ayudante que los otros tres escritores. Tener aqui una
+        # copia propia fue lo que dejo `stock_full` sin espejar: cuatro sitios
+        # escriben esta bitacora y solo uno se habia enterado.
+        _CAMPOS = ("ts", "sku", "motivo", "dry_run", "stock_drop", "objetivo",
+                   "canal", "cuenta", "item_id", "accion", "stock_canal",
+                   "resultado", "ms")
+        from services import fanout_read
+        for f in filas:
+            d = dict(zip(_CAMPOS, f))
+            d["dry_run"] = bool(d["dry_run"])
+            fanout_read.espejar(**d)
 
         with db.get_cursor() as cur:
             cur.executemany(

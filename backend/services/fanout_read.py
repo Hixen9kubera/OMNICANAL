@@ -20,9 +20,12 @@ cuál rompió qué. Queda anotado como trabajo aparte.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from services import supabase_db as sdb
+
+log = logging.getLogger("omnicanal.fanout_read")
 
 _COLS = ("ts, sku::text as sku, motivo, dry_run, stock_drop, objetivo, canal, "
          "cuenta, item_id, accion, stock_canal, resultado, ms")
@@ -112,3 +115,34 @@ def censo() -> dict[str, Any]:
         """select count(*) as filas, count(distinct sku) as skus,
                   min(ts) as desde, max(ts) as hasta
              from ops.fanout_log""") or {}
+
+
+def espejar(**campos) -> None:
+    """Manda UN evento de la bitácora a kubera. Lo llaman los CUATRO escritores.
+
+    POR QUÉ UN AYUDANTE Y NO CUATRO COPIAS
+    --------------------------------------
+    Porque ya se desalineó una vez. `fanout_log` la escriben cuatro sitios —
+    `fanout_stock._persistir`, `pedidos_ml._compensar_stock_protegido`,
+    `stock_full._registrar` y `stock_watch._anotar`— y el primer intento espejó
+    **solo el primero**. El censo decía 11 escritores y aun así se hizo uno.
+
+    Se vio enseguida y con datos: al encender la escritura doble llegaron 4
+    eventos a kubera mientras MySQL sumaba 14. Los que faltaban eran todos
+    `full_ignorado` — o sea, los de `stock_full`.
+
+    Con un solo punto de entrada, el próximo escritor que aparezca tiene un lugar
+    obvio al que llamar, y el que se olvide se nota comparando totales.
+
+    NO LEVANTA: el llamador ya está dentro de su propio `try`, y perder una línea
+    de bitácora nunca debe tumbar un movimiento de stock. Pero avisa en WARNING —
+    en DEBUG fue como el defecto de la caché de imágenes se escondió.
+    """
+    from config import settings
+    if not settings.supabase_write_fanout_log:
+        return
+    try:
+        registrar(campos)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fanout_log: no se pudo espejar %s/%s a kubera: %s",
+                    campos.get("sku"), campos.get("accion"), exc)

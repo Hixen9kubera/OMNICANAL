@@ -157,9 +157,18 @@ def main() -> None:
           e is None and err is not None
           and all(str(x["resultado"]).startswith("ERROR") for x in err),
           f"{len(err or [])} filas, todas ERROR")
-    check("  y trae MENOS que el historial completo",
-          err is not None and h is not None and len(err) < len(h),
-          f"{len(err or [])} de {len(h or [])}")
+    # OJO: comparar los LARGOS no sirve. Con la tabla llena las dos consultas
+    # topan en el limite y dan 50 = 50 — este chequeo pasaba con 2 filas de
+    # prueba y reprobo en cuanto hubo datos de verdad. Una prueba que solo
+    # funciona con la tabla vacia no es una prueba.
+    #
+    # Lo que demuestra que el filtro EXCLUYE es que el historial completo traiga
+    # al menos una fila que NO es error. Eso no depende del tope.
+    check("  y el filtro EXCLUYE (el historial completo trae no-errores)",
+          h is not None
+          and any(not str(x["resultado"] or "").startswith("ERROR") for x in h),
+          f"{sum(1 for x in (h or []) if not str(x['resultado'] or '').startswith('ERROR'))}"
+          f" de {len(h or [])} no son error")
 
     r, e = con("supabase_read_fanout_log", True, fanout_stock.resumen)
     check("resumen() agrupa por accion y por canal",
@@ -200,6 +209,45 @@ def main() -> None:
           pi is not None
           and all(x["accion"] in fanout_read._ACCIONES_INVENTARIO for x in pi)
           and not any(x["accion"].startswith(("full_", "fba_")) for x in pi))
+
+    # ── LOS CUATRO ESCRITORES, no solo uno ──────────────────────────────────
+    # El primer intento espejo SOLO `_persistir`, y al encender la escritura
+    # doble en produccion llegaron 4 eventos a kubera mientras MySQL sumaba 14:
+    # faltaban todos los `full_ignorado`, o sea los de `stock_full`. Cuatro
+    # sitios escriben esta bitacora y el censo lo decia; se hizo uno.
+    #
+    # Esta prueba existe para que eso no se pueda repetir en silencio.
+    print()
+    from services import pedidos_ml, stock_full, stock_watch  # noqa: F401
+    import inspect
+    faltan = []
+    for mod, fn in ((fanout_stock, "_persistir"),
+                    (stock_full, "_registrar"),
+                    (stock_watch, "_anotar"),
+                    (pedidos_ml, "_compensar_stock_protegido")):
+        try:
+            fuente = inspect.getsource(getattr(mod, fn))
+        except Exception:  # noqa: BLE001
+            faltan.append(f"{mod.__name__}.{fn} (no se pudo leer)")
+            continue
+        if "fanout_read.espejar" not in fuente:
+            faltan.append(f"{mod.__name__}.{fn}")
+    check("los CUATRO escritores de fanout_log pasan por el mismo espejo",
+          not faltan, f"sin espejar: {faltan}" if faltan else
+          "fanout_stock, stock_full, stock_watch y pedidos_ml")
+
+    # Y que de verdad escriba: se llama al de stock_full, que era el olvidado.
+    settings.supabase_write_fanout_log = True
+    try:
+        stock_full._registrar(_SKU, "PRUEBA-op-espejo", "AMAZON", "full_ignorado",
+                              5, 5, "PRUEBA sin efecto")
+    finally:
+        settings.supabase_write_fanout_log = False
+    hay = sdb.fetch_one(
+        "select accion from ops.fanout_log where sku=%s and accion='full_ignorado'",
+        (_SKU,))
+    check("  y stock_full (el que faltaba) llega de verdad a kubera", bool(hay),
+          str(hay))
 
     from services import db
     check("el pool de MySQL nunca se creo", db._pool is None)

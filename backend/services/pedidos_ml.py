@@ -363,6 +363,18 @@ async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
             log.info("FULL/FBA #%s: devueltas %d pza(s) de %s a Woo (%s→%s)",
                      wc_id, n, sku, actual, destino)
     # Bitácora (misma tabla del panel; NO se crea tabla nueva)
+    from services import fanout_read
+    for d in devueltos:
+        fanout_read.espejar(
+            ts=datetime.now(timezone.utc).replace(tzinfo=None), sku=d["sku"],
+            motivo=f"compensacion FULL/FBA pedido {order_id}", dry_run=False,
+            canal="woocommerce", cuenta=cuenta, item_id=str(wc_id)[:64],
+            accion=("full_compensado_revertido" if signo < 0 else "full_compensado")
+                   if d["ok"] else "full_compensado_error",
+            resultado=((f"Cancelado: Woo repuso {d['unidades']} pza(s) que nunca "
+                        f"salieron -> restadas ({d['woo']})") if signo < 0 else
+                       (f"Woo habia descontado {d['unidades']} pza(s) de un pedido "
+                        f"FULL/FBA -> devueltas ({d['woo']})"))[:255], ms=0)
     try:
         fanout_stock._asegurar_schema()
         with db.get_cursor() as cur:

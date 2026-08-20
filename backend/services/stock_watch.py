@@ -177,6 +177,12 @@ def _guardar_foto(filas: list[tuple[str, int | None, int | None]]) -> None:
 
 def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
     """Bitácora en `fanout_log` (la que ya pinta el Dashboard)."""
+    from services import fanout_read
+    _ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+    fanout_read.espejar(ts=_ahora, sku=sku[:64], motivo=motivo[:255],
+                        dry_run=bool(solo_registro()), canal="woocommerce",
+                        cuenta="ODOO", accion=accion, resultado=resultado[:255],
+                        ms=0)
     try:
         from services import fanout_stock
         fanout_stock._asegurar_schema()
@@ -186,7 +192,7 @@ def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
                    (ts, sku, motivo, dry_run, stock_drop, objetivo, canal, cuenta,
                     item_id, accion, stock_canal, resultado, ms)
                    VALUES (%s,%s,%s,%s,NULL,NULL,%s,%s,NULL,%s,NULL,%s,0)""",
-                (datetime.now(timezone.utc).replace(tzinfo=None), sku[:64], motivo[:255],
+                (_ahora, sku[:64], motivo[:255],
                  1 if solo_registro() else 0, "woocommerce", "ODOO", accion, resultado[:255]))
     except Exception as exc:  # noqa: BLE001
         log.warning("stock_watch: no se pudo anotar %s: %s", sku, exc)

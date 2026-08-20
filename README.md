@@ -12320,6 +12320,54 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.234.0 — El espejo cubría UNO de los cuatro escritores, y se vio al encenderlo
+
+Paso 1 de los cuatro: **`SUPABASE_WRITE_FANOUT_LOG=true` encendida en
+producción**. Y lo primero que hizo la verificación fue destapar un defecto mío.
+
+#### Cuatro eventos contra catorce
+
+Al encender, el vigilante contó: **4 eventos llegaron a `ops.fanout_log`
+mientras MySQL sumaba 14**. Los que faltaban eran todos `full_ignorado`.
+
+`fanout_log` la escriben **cuatro sitios** —`fanout_stock._persistir`,
+`stock_full._registrar`, `stock_watch._anotar` y
+`pedidos_ml._compensar_stock_protegido`— y yo había espejado **solo el primero**.
+
+Lo peor no es el olvido: **el censo del día anterior decía 11 escritores, yo lo
+escribí en el análisis, y aun así hice uno.** Medir y no actuar sobre lo medido
+es peor que no medir.
+
+Ahora los cuatro pasan por un **único ayudante**, `fanout_read.espejar`. No es
+estilo: tener una copia propia en cada sitio es exactamente lo que dejó a
+`stock_full` fuera. Con un solo punto de entrada, el próximo escritor tiene un
+lugar obvio al que llamar y el que se olvide se nota comparando totales.
+
+Y una prueba nueva que **lee el código fuente de los cuatro** y falla si alguno
+no llama al espejo. Ese defecto ya no se puede repetir en silencio.
+
+#### La prueba que solo funcionaba con la tabla vacía
+
+`historial(solo_errores)` se verificaba comparando largos: *el filtrado trae
+menos que el completo*. Pasaba con las 2 filas de prueba y **reprobó en cuanto
+hubo datos de verdad** — con 19,649 filas las dos consultas topan en el límite
+de 50 y dan `50 = 50`.
+
+Una prueba que solo funciona con la tabla vacía no es una prueba. Ahora verifica
+que el historial completo traiga al menos una fila que **no** sea error, que es
+lo que demuestra que el filtro excluye — y no depende del tope.
+
+#### Lo que sí salió bien
+
+La verificación se hizo **con datos, no con el código de salida**: el vigilante
+distinguía tres desenlaces —espejo vivo, espejo muerto, fan-out quieto— y avisaba
+en los tres. Fue esa tercera columna, "MySQL +14 · kubera +4", la que delató el
+hueco. Un vigilante que solo mirara "¿llegó algo?" habría dicho que sí.
+
+Las cinco suites del sandbox, en verde. Versión 0.234.0.
+
+---
+
 ### v0.233.0 — El historial deja de decir "backend" y empieza a decir quién
 
 Eduardo pidió rastrear quién crea qué producto y quién mueve qué costo. La

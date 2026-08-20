@@ -207,7 +207,14 @@ def _registrar(sku: str, operacion_id: str, cuenta: str, accion: str,
             candados_read.marcar_aplicada(operacion_id, sku, cuenta, accion)
         except Exception as exc:  # noqa: BLE001
             log.warning("no se pudo sellar la operacion %s: %s", operacion_id, exc)
-    from services import db, fanout_stock
+    from services import db, fanout_read, fanout_stock
+    _ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+    # Espejo PRIMERO y aparte: si MySQL no esta, el evento igual queda.
+    fanout_read.espejar(ts=_ahora, sku=sku or "?", motivo="movimiento FULL/FBA",
+                        dry_run=False, stock_drop=antes, objetivo=despues,
+                        canal="mercado_libre", cuenta=cuenta,
+                        item_id=str(operacion_id)[:64], accion=accion,
+                        stock_canal=antes, resultado=resultado[:255], ms=0)
     fanout_stock._asegurar_schema()
     try:
         with db.get_cursor() as cur:
@@ -216,7 +223,7 @@ def _registrar(sku: str, operacion_id: str, cuenta: str, accion: str,
                    (ts, sku, motivo, dry_run, stock_drop, objetivo, canal, cuenta,
                     item_id, accion, stock_canal, resultado, ms)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                (datetime.now(timezone.utc).replace(tzinfo=None), sku or "?",
+                (_ahora, sku or "?",
                  "movimiento FULL/FBA", 0, antes, despues, "mercado_libre",
                  cuenta, str(operacion_id)[:64], accion, antes,
                  resultado[:255], 0))
