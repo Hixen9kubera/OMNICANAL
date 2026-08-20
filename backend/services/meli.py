@@ -139,6 +139,17 @@ def listar(
     `skus_filtro`: términos separados por coma ("Filtrar SKUs"), filtra Y busca
     a la vez (SKU completo, parcial o palabra del nombre).
     """
+    # PASO 3 · BLOQUE 2 (19-ago). La rejilla entera sale de channel.listings.
+    # Sin try/except: si kubera no contesta, la tabla debe romperse, no salir
+    # vacia con cara de "no hay publicaciones".
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        filas, total = channel_read.rejilla_ml(
+            page=page, per_page=per_page, search=search,
+            solo_publicados=solo_publicados, cuenta=cuenta, orden=orden,
+            estados=estados, skus_filtro=skus_filtro)
+        return [_normalizar(f) for f in filas], total
+
     offset = (page - 1) * per_page
     like = f"%{search}%" if search else None
     # Filtro de estado: publicado (success=1) / inactivo (success<>1)
@@ -205,6 +216,9 @@ def _con_precio_kubera(items: list[dict[str, Any]], costing_read) -> list[dict[s
 
 
 def contar_publicados(cuenta: str | None = None) -> int:
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        return channel_read.contar_publicados_ml(cuenta)
     try:
         if cuenta:
             return int(db.fetch_scalar(

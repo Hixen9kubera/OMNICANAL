@@ -12320,6 +12320,72 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.222.0 — Paso 3, bloque 2: las rejillas de ML y Amazon, y la respuesta al corte de golpe
+
+Los 7 sitios que faltaban de `meli.py` (4) y `amazon.py` (3) ya leen de
+`channel.listings`, detrás de la misma bandera del bloque 1. Con esto **13 de
+los 25 lectores del paso 3 están repuntados**.
+
+Estos no eran consultas puntuales como el bloque 1: son las **tablas paginadas**
+del panel, con su búsqueda, sus filtros, su orden y su conteo. Las gemelas
+devuelven filas con las llaves de MySQL a propósito, para que `_normalizar()` de
+cada servicio se reuse sin tocar y el contrato con el frontend no se mueva.
+
+**El repunte arregla un hueco que ya existía.** El `LEFT JOIN productos` de las
+consultas viejas dejó de cubrir la rejilla hace tiempo:
+
+| | `productos` (MySQL) | `core.products` (kubera) |
+|---|---|---|
+| filas de ML con nombre | 65% | **99%** |
+| filas de Amazon con nombre | 69% | **100%** |
+| SKUs que solo conoce MySQL | — | **0** |
+
+Un tercio de las filas salía mostrando el SKU pelón. Y kubera además conoce más
+publicaciones: **4,849 de ML contra 4,253** en la bitácora.
+
+**Lo que cambia de significado, y está escrito en el código:** la columna
+`stock` de la rejilla venía de `productos.stock_odoo`, la foto del vigilante de
+Odoo, que **no tiene casa en kubera** (es la decisión pendiente de `odoo_watch`).
+Ahora sale de `channel.listings.stock_own`. No es un parche: la rejilla lista
+PUBLICACIONES de un canal, y el stock que importa ahí es el del canal, no el del
+almacén de un sistema en retiro que además solo cubría 1,251 de los 1,798 SKUs
+de Amazon. Pero es visible y por eso se dice.
+
+**Y dos cosas se caen solas:** `p.categorias` se seleccionaba y nadie lo usaba
+—`_normalizar` lo tira—, y el `LEFT JOIN costos_finales` era vestigial desde el
+paso 0, porque el precio y la categoría ya se pisaban después con
+`_con_precio_kubera`. Ahora se leen de una vez, en la misma consulta.
+
+Pruebas: `probar_bloque2_sandbox.py`, **29 checks en verde**. No basta con que
+la rejilla conteste: se verifica la forma de la fila, que el total no dependa de
+la página, que la búsqueda filtre de verdad, que dos páginas seguidas no repitan,
+que `solo_publicados` sea subconjunto y que el orden por precio salga ordenado.
+Una rejilla que trae las filas correctas pero pagina mal está rota igual.
+
+#### ¿Se puede apagar MySQL DE GOLPE? — `probar_corte_total.py`
+
+Eduardo lo preguntó y la respuesta ahora es medida, no estimada. El sandbox
+corre sin MySQL, así que se prenden **las 8 banderas `supabase_read_*` a la vez**
+—el corte total— y se recorre lo que el panel usa.
+
+**11 caminos PASAN · 3 mienten · 0 truenan.**
+
+Y ese "0 truenan" es justo el problema. Apagar MySQL hoy **no tiraría el sistema:
+lo dejaría contestando con seguridad tres cosas falsas**.
+
+| Camino | Contestaría | Qué significa |
+|---|---|---|
+| `meli._access_token` | `None` | **sin tokens no hay API de ML**: se van ventas, publicar, sync y competencia |
+| `stock_full._ya_procesada` | `False` | *"no lo he hecho"* → mueve mercancía **dos veces** |
+| `competencia_captura._nuestras_publicaciones` | `{}` | *"no tenemos publicaciones"* |
+
+Son exactamente los pasos 6, 0 y el bloque 3 del paso 3. **El corte de golpe es
+viable, pero solo después de esos tres** — y ninguno es grande. Lo que hasta hoy
+era una lista de pasos por hacer ahora es una lista de tres cosas medidas.
+
+Sin migraciones ni variables nuevas (`SUPABASE_READ_PUBLICACIONES` es la misma
+del bloque 1). Versión 0.222.0.
+
 ### v0.221.0 — Paso 3, bloque 1: los seis lectores repuntados, con la bandera apagada
 
 Las seis lecturas de `ml_progress` / `amazon_progress` de `studio` (2),

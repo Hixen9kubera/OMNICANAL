@@ -421,3 +421,184 @@ def estado_amazon(skus: list[str]) -> dict[str, dict[str, Any]]:
                 where l.canal = 'amazon' and l.sku = any(%s::citext[])""",
             ([str(s) for s in skus],))
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PASO 3 · BLOQUE 2 — las REJILLAS de Mercado Libre y Amazon
+# ═══════════════════════════════════════════════════════════════════════════
+# Gemelas de `meli.listar` / `meli.contar_publicados` y sus dos equivalentes en
+# `amazon.py`: los 7 sitios del bloque 2. A diferencia del bloque 1 —consultas
+# puntuales— aquí lo que se repunta es la TABLA PAGINADA del panel, con su
+# búsqueda, sus filtros, su orden y su conteo.
+#
+# DEVUELVEN FILAS CON LAS LLAVES DE MySQL, a propósito. Así `_normalizar()` de
+# cada servicio se reusa SIN TOCAR y el contrato con el frontend no se mueve:
+# lo único que cambia es de dónde salieron los datos.
+#
+# LO QUE MEJORA, MEDIDO (19-ago)
+# ------------------------------
+# El `LEFT JOIN productos` de las consultas viejas ya no cubría la rejilla:
+#
+#     nombre desde `productos` (MySQL)    ML  65%   ·  Amazon  69%
+#     nombre desde `core.products`        ML  99%   ·  Amazon 100%
+#     SKUs que SOLO conoce MySQL           0        ·  0
+#
+# O sea que un tercio de las filas salía hoy sin nombre, mostrando el SKU pelón.
+# El repunte no es neutral: tapa ese hueco.
+#
+# LO QUE CAMBIA DE SIGNIFICADO, Y HAY QUE SABERLO
+# -----------------------------------------------
+# La columna `stock` de la rejilla venía de `productos.stock_odoo`, la foto del
+# vigilante de Odoo. **Esa columna no tiene casa en kubera** (es la decisión
+# pendiente de `odoo_watch`), así que aquí sale de `channel.listings.stock_own`.
+#
+# No es un parche: es más correcto. La rejilla lista PUBLICACIONES de un canal,
+# y el stock que importa ahí es el del canal —lo que se está ofreciendo—, no el
+# del almacén de un sistema en retiro que además solo cubría 1,251 de los 1,798
+# SKUs de Amazon. Pero es un cambio VISIBLE y por eso está escrito aquí.
+#
+# LO QUE SE CAE SOLO
+# ------------------
+# `p.categorias` se seleccionaba y **nadie lo usaba** (`_normalizar` lo tira).
+# Y el `LEFT JOIN costos_finales` era vestigial desde el paso 0: el precio y la
+# categoría se pisan después con `_con_precio_kubera`, que ya lee kubera. Aquí
+# se leen de una vez, en la misma consulta.
+
+_PUB_ML = ("nullif(l.listing_id,'') is not null "
+           "and lower(coalesce(l.situacion,'')) <> 'closed'")
+_PUB_AMZ = ("upper(coalesce(l.status,'')) = any(%(pub)s) "
+            "or upper(coalesce(l.situacion,'')) = any(%(viva)s)")
+
+_REJILLA_ML = """
+    select l.sku::text                       as sku,
+           p.wc_id                           as wc_id,
+           p.odoo_id                         as odoo_id,
+           p.name                            as nombre,
+           cf.precio_sugerido                as precio,
+           cf.precio_base                    as precio_base,
+           cf.ml_cat_id                      as ml_cat_id,
+           l.stock_own                       as stock_odoo,
+           a.legacy_code                     as cuenta,
+           l.listing_id                      as ml_item_id,
+           l.url                             as ml_url,
+           (nullif(l.listing_id,'') is not null
+            and lower(coalesce(l.situacion,'')) <> 'closed') as publicado
+      from channel.listings l
+      join core.accounts a on a.id = l.account_id
+      left join core.products p on p.sku = l.sku
+      left join costing.costos_finales cf
+             on cf.sku = l.sku and cf.canal = 'mercado_libre'
+     where l.canal = 'mercado_libre'
+"""
+
+_REJILLA_AMZ = """
+    select l.sku::text                       as sku,
+           p.wc_id                           as wc_id,
+           p.odoo_id                         as odoo_id,
+           p.name                            as nombre,
+           cf.precio_sugerido                as precio,
+           l.stock_own                       as stock_odoo,
+           l.listing_id                      as asin,
+           l.product_type                    as product_type,
+           l.status                          as status,
+           (upper(coalesce(l.status,'')) = any(%(pub)s)
+            or upper(coalesce(l.situacion,'')) = any(%(viva)s)) as publicado,
+           l.updated_at                      as published_at
+      from channel.listings l
+      left join core.products p on p.sku = l.sku
+      left join costing.costos_finales cf
+             on cf.sku = l.sku and cf.canal = 'mercado_libre'
+     where l.canal = 'amazon'
+"""
+
+# Mismo orden que `_ORDEN_ML` / `_ORDEN_AMZ`, traducido. `stock` ahora ordena
+# por el stock del canal (ver la nota de arriba).
+_ORDEN = {
+    "stock_desc": "stock_own desc nulls last",
+    "stock_asc": "stock_own asc nulls last",
+    "precio_desc": "precio desc nulls last",
+    "precio_asc": "precio asc nulls last",
+}
+
+
+def _filtros(base, *, search, solo_publicados, cuenta, estados, skus_filtro,
+             pub_expr):
+    """Arma el WHERE compartido por las dos rejillas. Devuelve (sql, params)."""
+    sql, params = base, {}
+    if search:
+        sql += " and (p.name ilike %(like)s or l.sku::text ilike %(like)s)"
+        params["like"] = f"%{search}%"
+    if cuenta:
+        sql += " and a.legacy_code = %(cuenta)s"
+        params["cuenta"] = cuenta
+    if solo_publicados:
+        sql += f" and ({pub_expr})"
+    if estados:
+        if "publicado" in estados and "inactivo" not in estados:
+            sql += f" and ({pub_expr})"
+        elif "inactivo" in estados and "publicado" not in estados:
+            sql += f" and not ({pub_expr})"
+    terminos = [t.strip() for t in (skus_filtro or []) if t.strip()]
+    if terminos:
+        piezas = []
+        for n, t in enumerate(terminos):
+            piezas.append(f"(p.name ilike %(sku_{n})s or l.sku::text ilike %(sku_{n})s)")
+            params[f"sku_{n}"] = f"%{t}%"
+        sql += " and (" + " or ".join(piezas) + ")"
+    return sql, params
+
+
+def _pagina(sql, params, orden, per_page, page, orden_default):
+    """Conteo + página. El ORDER BY va por ALIAS, no por la expresión: los
+    alias existen en el select externo y así el orden no depende de que la
+    columna siga llamándose igual adentro."""
+    total = sdb.fetch_all(f"select count(*) as n from ({sql}) t", params)[0]["n"]
+    orden_sql = _ORDEN.get(orden, orden_default)
+    filas = sdb.fetch_all(
+        f"select * from ({sql}) t order by {orden_sql} "
+        f"limit %(limit)s offset %(offset)s",
+        {**params, "limit": per_page, "offset": (page - 1) * per_page})
+    return [dict(f) for f in filas], int(total)
+
+
+def rejilla_ml(*, page, per_page, search=None, solo_publicados=False,
+               cuenta=None, orden="reciente", estados=None, skus_filtro=None):
+    """Gemela de `meli.listar`. Filas con las llaves que espera `_normalizar`."""
+    sql, params = _filtros(_REJILLA_ML, search=search,
+                           solo_publicados=solo_publicados, cuenta=cuenta,
+                           estados=estados, skus_filtro=skus_filtro,
+                           pub_expr=_PUB_ML)
+    return _pagina(sql, params, orden, per_page, page,
+                   "publicado desc, sku")
+
+
+def rejilla_amazon(*, page, per_page, search=None, solo_publicados=False,
+                   orden="reciente", estados=None, skus_filtro=None):
+    """Gemela de `amazon.listar`."""
+    sql, params = _filtros(_REJILLA_AMZ, search=search,
+                           solo_publicados=solo_publicados, cuenta=None,
+                           estados=estados, skus_filtro=skus_filtro,
+                           pub_expr=_PUB_AMZ)
+    params.update({"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)})
+    return _pagina(sql, params, orden, per_page, page,
+                   "publicado desc, published_at desc nulls last")
+
+
+def contar_publicados_ml(cuenta=None):
+    """Gemela de `meli.contar_publicados` (sus DOS ramas: con y sin cuenta)."""
+    sql = f"""select count(*) as n from channel.listings l
+                join core.accounts a on a.id = l.account_id
+               where l.canal = 'mercado_libre' and ({_PUB_ML})"""
+    params = {}
+    if cuenta:
+        sql += " and a.legacy_code = %(cuenta)s"
+        params["cuenta"] = cuenta
+    return int(sdb.fetch_all(sql, params)[0]["n"])
+
+
+def contar_publicados_amazon():
+    """Gemela de `amazon.contar_publicados`."""
+    return int(sdb.fetch_all(
+        f"""select count(*) as n from channel.listings l
+             where l.canal = 'amazon' and ({_PUB_AMZ})""",
+        {"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)})[0]["n"])

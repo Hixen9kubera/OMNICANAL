@@ -150,6 +150,16 @@ def listar(
     estados: list[str] | None = None,
     skus_filtro: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
+    # PASO 3 · BLOQUE 2 (19-ago). Ver la nota larga en channel_read: la columna
+    # `stock` deja de ser la foto de Odoo y pasa a ser el stock del canal.
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        filas, total = channel_read.rejilla_amazon(
+            page=page, per_page=per_page, search=search,
+            solo_publicados=solo_publicados, orden=orden, estados=estados,
+            skus_filtro=skus_filtro)
+        return [_normalizar(f) for f in filas], total
+
     offset = (page - 1) * per_page
     like = f"%{search}%" if search else None
     estado_sql = ""
@@ -178,6 +188,9 @@ def listar(
 
 
 def contar_publicados() -> int:
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        return channel_read.contar_publicados_amazon()
     try:
         return int(db.fetch_scalar(
             "SELECT COUNT(*) FROM amazon_progress WHERE success = 1"
