@@ -1001,6 +1001,121 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.244.0 — El reporte de inventario por fin tiene pesos, y a precio de venta
+
+Valeria (CAM) arma a mano un corte del valor del inventario en FULL
+(`valor_inventario_full_kubera_20260813`): cruza el reporte `stock_general_full`
+de ML con los precios de la tienda pública, publicación por publicación. Eduardo
+pidió medir qué tanto se parece al nuestro y, con eso, **afinar el reporte de la
+tab Reportes** — no el de Análisis, cuyo problema es otro (costos capturados
+mal).
+
+**La medición.** El corte de ese archivo es el 13-ago-2026 15:09, así que la
+comparación no se hizo contra el dato de hoy: `channel.listing_history` guarda
+cada cambio de `stock_full` desde el 17-jul, y con eso se **reconstruyó nuestro
+inventario a esa hora**.
+
+Las UNIDADES coinciden. De sus 363 publicaciones tenemos 357; en 298 el número
+es idéntico (83.5%) y en 339 la diferencia es de 5 piezas o menos (95%). Sus
+12,263 unidades contra nuestras 11,959 — 97.5%. Valuadas con SUS precios, las
+nuestras dan $5,909,266 contra $5,999,662: **98.5%**.
+
+Los PRECIOS no, y el error era nuestro. Solo 14% coincidían. Para saber quién
+tenía razón se fue al único juez que no opina — a cuánto se vendieron de verdad
+esos SKUs, según `channel.order_items` (265 SKUs con venta real, 6 al 20 de
+agosto):
+
+| precio | mediana contra la venta real | dentro de ±10% |
+|---|---|---|
+| el de la CAM | **1.029×** | 62% |
+| el nuestro (`channel.listings.price`) | **1.710×** | 16% |
+
+La causa: `/items/{id}.price` **no baja cuando la promoción la monta una campaña
+de ML**. Ese campo es el de LISTA. El que el comprador paga vive en
+`/items/{id}/sale_price?context=channel_marketplace` — un endpoint que el repo
+YA usaba, pero solo en Competencia, donde estaba documentado con el mismo
+hallazgo: CAM-0030-IND, lista $7,755.92 contra $3,899 de venta en
+SANCORFASHION. Ese $3,899 es exactamente el número del reporte de Valeria.
+
+**Por qué esto desbloquea el reporte.** El libro de inventario decía, en su
+propia portada: *"SIN VALOR EN DINERO, a propósito: el costo capturado es un
+precio de lista en dólares en cerca de un tercio del catálogo"*. Correcto — y
+por eso Inmovilizado mostraba unidades y no pesos. Pero **el precio de anaquel
+no depende del costo**: valuar a precio de venta esquiva el problema entero. Es
+justo lo que hace la CAM, y es lo que ahora hace el reporte.
+
+**Lo que se construyó**
+
+- `0025_listings_price_sale.sql`: `channel.listings` gana `price_sale` y
+  `price_sale_at`. No reemplaza a `price` — que difieran ES el dato: mide el
+  descuento vivo. `price_sale_at` existe para distinguir "hoy no hay promoción"
+  de "nadie ha preguntado", que sin la fecha se ven igual.
+- `inventario._leer_precio_venta()`: una llamada más por publicación en el
+  barrido, detrás del flag **`ML_PRECIO_VENTA` (nace APAGADO)**. Devuelve None
+  ante cualquier fallo, y None significa "no observado": el espejo conserva el
+  valor anterior en vez de grabar un falso NULL.
+- `channel_mirror.escribir_tanda()` lo persiste con el mismo `coalesce` que el
+  resto, y `price_sale` entra en la comparación de solo-si-cambió para que el
+  trigger de historia lo registre.
+- `_SQL_INV_BASE` valúa cada publicación con `coalesce(price_sale, price)`. El
+  valor se calcula **por publicación** (piezas × su propio precio) y luego se
+  suma: promediar precios y multiplicar por el total daría un número que no es
+  de nadie cuando las dos cuentas venden distinto. El `max()` por publicación
+  es el mismo que ya protegía al stock del doble conteo padre/hijo.
+- `_SQL_INV_VALOR` + hoja **«Valor en FULL»**: TODO lo que ocupa FULL, venda o
+  no, con su valor. Es el corte de la CAM. Inmovilizado e Invisible son
+  subconjuntos suyos y ganan su propia columna de valor.
+- Lo que todavía se valuó con precio de LISTA va **en ámbar**, con el aviso en
+  el renglón, en el encabezado de la hoja y en la portada. No se esconde: sin
+  esos renglones el total no cuadraría, y el reporte tiene que ser auditable
+  como el de la CAM — que hace lo mismo con sus 7 publicaciones "pendientes de
+  revisión".
+- El endpoint de vista previa devuelve el bloque `valor` con el total, el
+  `% de la meta anual` ($15M, la misma contra la que mide la CAM) y cuánto de
+  ese total sigue en precio de lista.
+- **La hoja de valor dice cuándo el renglón es una FAMILIA.** Un SKU padre no
+  vende nunca —vende su variante—, así que "0 vendidas · nunca" se leía como un
+  error del reporte en vez de como el hecho de la familia entera (Eduardo,
+  20-ago, sobre CAM-0030). Lleva la columna «Dónde está el stock» que
+  Inmovilizado ya tenía, y el aviso nombra al padre como tal.
+
+**El patrón padre/hijo, medido** (20-ago-2026, todo el histórico):
+
+| tipo de SKU | vendió | stock en FULL |
+|---|---|---|
+| suelto, sin variantes | 19,195 uds | 21,411 uds |
+| **hijo** | **2,952 uds** | 5,865 uds |
+| **padre** | **25 uds** | **1,913 uds** |
+
+Los padres tienen 1,913 piezas y 25 unidades vendidas en toda la historia: la
+regla "el padre no vende" se sostiene. De las 38 publicaciones registradas bajo
+un padre con stock, **36 (1,788 uds) son la MISMA publicación registrada también
+bajo un hijo** —el `max()` por `listing_id` del CTE `pub` ya las deduplica— y
+solo 2 (125 uds) son de padre puro. El motor agrupaba bien; lo que faltaba era
+decirlo en la hoja. 50 de los 332 renglones del corte son familias.
+
+**Cobertura y costo.** El barrido toma 60 publicaciones por cuenta cada 15 min:
+son ~120 llamadas extra por corrida y el catálogo de ML (4,977 publicaciones)
+queda cubierto en ~10 horas. Mientras el flag esté apagado, `price_sale` se
+queda NULL, el `coalesce` cae a `price` y el reporte sale completo pero todo en
+ámbar — que es la verdad de ese momento.
+
+**Verificado contra el sandbox**, acotado a SANCORFASHION para comparar directo
+con la CAM: 332 publicaciones, **12,045 unidades (97.7% de sus 12,329)** y
+**$8,679,181** a precio de lista — 0.6% de diferencia contra los $8,623,671 que
+la medición independiente había calculado por otro camino. Todo en ámbar, como
+debe estar hasta que el sync observe.
+
+**Lo que NO se pudo probar**: el sync. ML responde con página de bloqueo a las
+llamadas desde la máquina de trabajo, con token válido o sin él. La primera
+observación real solo se puede ver en producción.
+
+**Tres huecos nuestros que salieron de paso** (no se tocan aquí, quedan
+anotados): 4 publicaciones del reporte de la CAM no existen en
+`channel.listings` (`ORG-0852-BLN` y las sillas `SIL-0021-BLN`, `SIL-0022-BEI`,
+`SIL-0023-NEG`); 41 de las 357 no tienen `store_name` aunque sí `account_id`; y
+`ORG-0841-AZL-L` lo tenemos sin la talla, como `ORG-0841`.
+
 ### v0.243.0 — La firma se perdía justo en las altas de producto
 
 Eduardo pidió una prueba de que el paso 2 funcionaba. La prueba encontró que

@@ -188,6 +188,37 @@ async def _leer_ml_item(
         return None
 
 
+async def _leer_precio_venta(
+    cli: httpx.AsyncClient, item_id: str, token: str, cuenta: str | None = None
+) -> float | None:
+    """
+    El precio que el comprador PAGA hoy, con la promoción ya aplicada.
+
+    `/items/{id}.price` NO sirve para esto: cuando el descuento lo monta una
+    campaña de ML, ese campo se queda en el de lista. Medido el 20-ago-2026
+    contra 265 SKUs con venta real en `channel.order_items`, la mediana de
+    `price` estaba en 1.71x lo transado; el de este endpoint, en 1.03x.
+
+    Devuelve None ante CUALQUIER fallo, y None significa "no observado" — el
+    espejo conserva el valor anterior en vez de grabar un falso NULL.
+    """
+    ruta = f"/items/{item_id}/sale_price"
+    par = {"context": "channel_marketplace"}
+    try:
+        r = await cli.get(ruta, params=par, headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 401 and cuenta:
+            nuevo_tok = meli.refrescar_token(cuenta)
+            if nuevo_tok:
+                r = await cli.get(ruta, params=par,
+                                  headers={"Authorization": f"Bearer {nuevo_tok}"})
+        if r.status_code != 200:
+            return None
+        v = (r.json() or {}).get("amount")
+        return float(v) if v not in (None, "") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _sku_de_item(item: dict[str, Any]) -> str | None:
     """
     SKU de una publicación de ML leyéndolo del PROPIO item, en orden:
@@ -386,9 +417,16 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
             logistic = (item.get("shipping") or {}).get("logistic_type")
             es_full = logistic == "fulfillment"
             qty = item.get("available_quantity")
+            # Una llamada más por publicación, y solo si el flag está encendido:
+            # es el único lugar donde ML dice el precio con la campaña aplicada.
+            precio_venta = (
+                await _leer_precio_venta(cli, lst["ml_item_id"], token, cuenta)
+                if settings.ml_precio_venta else None
+            )
             rows.append({
                 "sku": sku, "canal": "mercado_libre", "cuenta": cuenta,
                 "item_id": lst["ml_item_id"], "precio": item.get("price"), "precio_base": _precio_lista(item),
+                "precio_venta": precio_venta,
                 "stock_real": 0 if es_full else qty,
                 "stock_full": qty if es_full else 0,
                 "stock_fba": None,

@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     # Resultados por búsqueda. Con detalle son $0.025/item (trae descripción y
     # unidades vendidas); sin detalle $0.003 pero sin esos dos campos.
     competencia_top: int = 25
+    # Pedir a ML el precio CON promoción (/items/{id}/sale_price) en cada pasada
+    # del sync. Cuesta una llamada extra por publicación; apagarlo deja
+    # price_sale congelado en su último valor, nunca en NULL.
+    ml_precio_venta: bool = False
     competencia_con_detalle: bool = True
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────

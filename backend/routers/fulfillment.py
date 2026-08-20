@@ -2008,7 +2008,17 @@ lst as (
          l.canal, l.situacion, a.legacy_code as cta, l.listing_id::text as pub_id,
          coalesce(l.stock_own, 0)  as stock_own,
          coalesce(l.stock_full, 0) as stock_full,
-         coalesce(l.stock_fba, 0)  as stock_fba
+         coalesce(l.stock_fba, 0)  as stock_fba,
+         -- VALUAR A PRECIO DE VENTA, NO A COSTO (Eduardo, 20-ago-2026). El
+         -- costo capturado no es de fiar en ~1/3 del catálogo, y por eso este
+         -- reporte nunca tuvo pesos. El precio de anaquel no depende de ese
+         -- dato: es lo que el inventario vale si se vende.
+         -- `price_sale` es lo que el comprador PAGA; `price` es el de LISTA y
+         -- su mediana está en 1.71x lo transado (medido contra 265 SKUs con
+         -- venta real). El coalesce hace que el reporte salga desde el día uno,
+         -- y `price_sale is null` marca el renglón que todavía se valuó caro.
+         coalesce(l.price_sale, l.price) as precio,
+         (l.price_sale is null)          as precio_crudo
     from channel.listings l
     join core.accounts a on a.id = l.account_id
     left join padres pa on pa.hijo = l.sku::text
@@ -2042,6 +2052,11 @@ pub as (
          coalesce(max(sku_real) filter (where es_hijo), max(sku_real)) as sku_real,
          max(stock_full) as stock_full,
          max(stock_fba)  as stock_fba,
+         -- `max` por el mismo motivo que el stock: padre e hijo son la MISMA
+         -- publicación, no dos. Y basta que UNA de las dos filas traiga el
+         -- precio observado para que el renglón deje de estar crudo.
+         max(precio)      as precio,
+         bool_and(precio_crudo) as precio_crudo,
          -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
          -- 'buyable'/'published'. Contar solo 'active' marcaba como invisibles
          -- 3 SKUs que sí estaban a la venta en Amazon.
@@ -2093,6 +2108,15 @@ s as (
          sum(p.stock_full) filter (where p.cta = 'BEKURA')::int        as full_bk,
          sum(p.stock_full) filter (where p.cta = 'SANCORFASHION')::int as full_sc,
          sum(p.stock_fba)::int                                 as fba,
+         -- El valor es por PUBLICACIÓN (piezas x su propio precio) y luego se
+         -- suma: promediar precios y multiplicar por el total daría un número
+         -- que no es de nadie cuando las dos cuentas venden a distinto precio.
+         sum(p.stock_full * p.precio)
+           filter (where p.canal = 'mercado_libre')             as valor_full,
+         sum(p.stock_full) filter (where p.canal = 'mercado_libre'
+                                     and p.precio is null)::int as uds_sin_precio,
+         bool_and(p.precio_crudo) filter (where p.canal = 'mercado_libre'
+                                            and p.stock_full > 0) as precio_crudo,
          count(*) filter (where p.viva)::int                   as activas,
          count(*) filter (where p.pausada)::int                as pausadas,
          count(*) filter (where p.canal <> 'general')::int     as pubs,
@@ -2119,6 +2143,8 @@ s as (
 _SQL_INV_INMOVILIZADO = _SQL_INV_BASE + """
 select s.sku, coalesce(p.name, '') as titulo,
        s.full_total, s.full_bk, s.full_sc, s.propio,
+       round(s.valor_full, 2) as valor_full,
+       s.uds_sin_precio, s.precio_crudo,
        s.activas, s.pausadas, s.cuentas,
        -- El renglón es la FAMILIA, no el SKU padre: `variantes` dice cuántas
        -- cubre (0 = producto simple) y `full_detalle` en cuál está el stock.
@@ -2136,11 +2162,41 @@ select s.sku, coalesce(p.name, '') as titulo,
  order by s.full_total desc, s.propio desc
 """
 
+# VALOR DEL INVENTARIO EN FULL, a precio de venta. Replica el corte que la CAM
+# armaba a mano (`valor_inventario_full_kubera_20260813`): cruzaba el reporte
+# `stock_general_full` de ML con los precios de la tienda pública, publicación
+# por publicación. Al comparar el suyo contra el nuestro reconstruido a esa hora
+# (20-ago-2026) las UNIDADES coincidieron al 98.5% — 298 de 357 publicaciones
+# con el número idéntico. Lo que no coincidía era el precio, y el error era
+# nuestro: ver la nota de `lst`.
+#
+# Este reporte NO filtra por venta: es todo lo que ocupa FULL, venda o no. El
+# Inmovilizado es un subconjunto suyo — el que además no vendió en el período.
+_SQL_INV_VALOR = _SQL_INV_BASE + """
+select s.sku, coalesce(p.name, '') as titulo,
+       s.full_total, s.full_bk, s.full_sc,
+       round(s.valor_full, 2) as valor_full,
+       s.uds_sin_precio, s.precio_crudo,
+       s.activas, s.pausadas, s.cuentas,
+       (select count(*) from padres where padre = s.sku)::int as variantes,
+       s.full_detalle,
+       coalesce(v30.uds, 0)::int as uds_periodo,
+       vh.ult_hist::text as ultima_venta
+  from s
+  left join v30 on v30.sku = s.sku
+  left join vh  on vh.sku  = s.sku
+  left join core.products p on p.sku = s.sku
+ where s.full_total > 0
+ order by s.valor_full desc nulls last, s.full_total desc
+"""
+
 # Vendió y NO tiene una sola publicación activa, teniendo stock con qué surtir.
 _SQL_INV_INVISIBLE = _SQL_INV_BASE + """
 select s.sku, coalesce(p.name, '') as titulo,
        v30.uds as uds_periodo, v30.ult::text as ultima_venta,
        s.propio, s.full_total, s.fba,
+       round(s.valor_full, 2) as valor_full,
+       s.uds_sin_precio, s.precio_crudo,
        (s.propio + s.full_total + s.fba)::int as stock_total,
        s.pausadas, s.pubs, s.cuentas
   from s
@@ -2217,13 +2273,47 @@ async def _datos_reporte(d1: str, d2: str, cuenta: str | None) -> tuple:
     return hojas, pubs, ventas, censo
 
 
-def _datos_inventario(dias: int, cuenta: str | None) -> tuple[list, list]:
-    """Las dos poblaciones accionables. Compartido por la descarga y su previa,
-    por lo mismo que `_datos_reporte`: una previa que arma sus propios datos
-    acaba prometiendo un archivo distinto del que llega."""
+def _datos_inventario(dias: int, cuenta: str | None) -> tuple[list, list, list]:
+    """Las dos poblaciones accionables MÁS el censo de valor. Compartido por la
+    descarga y su previa, por lo mismo que `_datos_reporte`: una previa que arma
+    sus propios datos acaba prometiendo un archivo distinto del que llega."""
     par = {"dias": dias, "cuenta": cuenta}
     return (sdb.fetch_all(_SQL_INV_INMOVILIZADO, par),
-            sdb.fetch_all(_SQL_INV_INVISIBLE, par))
+            sdb.fetch_all(_SQL_INV_INVISIBLE, par),
+            sdb.fetch_all(_SQL_INV_VALOR, par))
+
+
+# Meta anual contra la que la CAM mide el inventario en su corte. Vive aquí y no
+# en la BD porque es un objetivo comercial, no un dato observado: cambiarlo es
+# una decisión, no un refresco.
+_META_ANUAL_MXN = 15_000_000
+
+
+def _resumen_valor(filas: list) -> dict:
+    """Los números de portada del corte de valor.
+
+    `uds_sin_precio` y `precio_crudo` NO se esconden: sin ellos el total se lee
+    como un hecho cerrado cuando puede estar valuado con precio de LISTA, que
+    corre 1.71x arriba de lo transado. La CAM hace lo mismo en su archivo
+    (7 publicaciones 'pendientes de revisión', 105 unidades) y por eso su total
+    es auditable."""
+    val = sum(float(f["valor_full"] or 0) for f in filas)
+    uds = sum(int(f.get("full_total") or 0) for f in filas)
+    crudas = [f for f in filas if f.get("precio_crudo")]
+    return {
+        "publicaciones": len(filas),
+        "unidades_full": uds,
+        "valor": round(val, 2),
+        "meta_anual": _META_ANUAL_MXN,
+        "pct_meta": round(100 * val / _META_ANUAL_MXN, 1) if _META_ANUAL_MXN else None,
+        # Lo que todavía se valuó con precio de lista: el total de arriba baja
+        # cuando el sync termine de observarlas.
+        "skus_precio_crudo": len(crudas),
+        "uds_precio_crudo": sum(int(f.get("full_total") or 0) for f in crudas),
+        "valor_precio_crudo": round(sum(float(f["valor_full"] or 0) for f in crudas), 2),
+        # Y lo que no se pudo valuar en absoluto (ninguna publicación con precio).
+        "uds_sin_precio": sum(int(f.get("uds_sin_precio") or 0) for f in filas),
+    }
 
 
 @router.get("/inventario/excel/preview")
@@ -2237,12 +2327,24 @@ async def inventario_excel_preview(
     if cuenta and cuenta not in _CUENTAS:
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
     try:
-        inm, inv = await asyncio.to_thread(_datos_inventario, dias, cuenta)
+        inm, inv, val = await asyncio.to_thread(_datos_inventario, dias, cuenta)
         return {
             "dias": dias,
+            "valor": {
+                **_resumen_valor(val),
+                "top": [{"sku": f["sku"], "titulo": (f.get("titulo") or "")[:60],
+                         "full": int(f.get("full_total") or 0),
+                         "valor": float(f["valor_full"] or 0),
+                         "crudo": bool(f.get("precio_crudo")),
+                         "uds_periodo": int(f.get("uds_periodo") or 0)}
+                        for f in val[:5]],
+            },
             "inmovilizado": {
                 "skus": len(inm),
                 "unidades_full": sum(int(f.get("full_total") or 0) for f in inm),
+                "valor": round(sum(float(f["valor_full"] or 0) for f in inm), 2),
+                "uds_precio_crudo": sum(int(f.get("full_total") or 0)
+                                        for f in inm if f.get("precio_crudo")),
                 "nunca_vendieron": sum(1 for f in inm if not f.get("ultima_venta")),
                 # `variantes` y `donde` viajan a la vista previa para que el
                 # renglón se lea como lo que es —una FAMILIA— y no como el SKU
@@ -2251,6 +2353,8 @@ async def inventario_excel_preview(
                          "full": int(f.get("full_total") or 0),
                          "propio": int(f.get("propio") or 0),
                          "variantes": int(f.get("variantes") or 0),
+                         "valor": float(f.get("valor_full") or 0),
+                         "crudo": bool(f.get("precio_crudo")),
                          "donde": [
                              {"sku": d.get("sku"), "cuenta": d.get("cuenta"),
                               "uds": int(d.get("uds") or 0)}
@@ -2261,6 +2365,7 @@ async def inventario_excel_preview(
                 "skus": len(inv),
                 "unidades_vendidas": sum(int(f.get("uds_periodo") or 0) for f in inv),
                 "stock_disponible": sum(int(f.get("stock_total") or 0) for f in inv),
+                "valor": round(sum(float(f["valor_full"] or 0) for f in inv), 2),
                 "top": [{"sku": f["sku"], "titulo": (f.get("titulo") or "")[:60],
                          "uds": int(f.get("uds_periodo") or 0),
                          "stock": int(f.get("stock_total") or 0),
@@ -2293,11 +2398,11 @@ async def inventario_excel(
     try:
         from services import reporte_inventario_xlsx
 
-        inm, inv = await asyncio.to_thread(_datos_inventario, dias, cuenta)
-        log.info("inventario: %d inmovilizados / %d invisibles (%d días)",
-                 len(inm), len(inv), dias)
+        inm, inv, val = await asyncio.to_thread(_datos_inventario, dias, cuenta)
+        log.info("inventario: %d inmovilizados / %d invisibles / %d con stock "
+                 "en FULL (%d días)", len(inm), len(inv), len(val), dias)
         datos = await asyncio.to_thread(
-            reporte_inventario_xlsx.construir, inm, inv, dias, cuenta)
+            reporte_inventario_xlsx.construir, inm, inv, val, dias, cuenta)
         nombre = f"inventario_accionable_{dias}d.xlsx"
         return Response(
             content=datos,

@@ -101,13 +101,18 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                 cur.execute(
                     """insert into channel.listings
                          (sku, account_id, canal, listing_id, price, price_base,
+                          price_sale, price_sale_at,
                           stock_own, stock_full, is_fulfillment, situacion,
                           logistic_type, stock_fba, currency)
-                       values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       values (%s, %s, %s, %s, %s, %s,
+                               %s, case when %s is null then null else now() end,
+                               %s, %s, %s, %s, %s, %s, %s)
                        on conflict (sku, account_id, canal) do update set
                          listing_id = coalesce(excluded.listing_id, listings.listing_id),
                          price = coalesce(excluded.price, listings.price),
                          price_base = coalesce(excluded.price_base, listings.price_base),
+                         price_sale = coalesce(excluded.price_sale, listings.price_sale),
+                         price_sale_at = coalesce(excluded.price_sale_at, listings.price_sale_at),
                          stock_own = coalesce(excluded.stock_own, listings.stock_own),
                          stock_full = coalesce(excluded.stock_full, listings.stock_full),
                          is_fulfillment = excluded.is_fulfillment,
@@ -116,7 +121,7 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                          stock_fba = coalesce(excluded.stock_fba, listings.stock_fba),
                          currency = coalesce(excluded.currency, listings.currency)
                        where (listings.listing_id,
-                              listings.price, listings.price_base,
+                              listings.price, listings.price_base, listings.price_sale,
                               listings.stock_own, listings.stock_full,
                               listings.is_fulfillment, listings.situacion,
                               listings.logistic_type, listings.stock_fba, listings.currency)
@@ -124,6 +129,7 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                              (coalesce(excluded.listing_id, listings.listing_id),
                               coalesce(excluded.price, listings.price),
                               coalesce(excluded.price_base, listings.price_base),
+                              coalesce(excluded.price_sale, listings.price_sale),
                               coalesce(excluded.stock_own, listings.stock_own),
                               coalesce(excluded.stock_full, listings.stock_full),
                               excluded.is_fulfillment,
@@ -136,6 +142,10 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                      # de mercado_libre; en los demás canales viaja NULL y el
                      # coalesce conserva lo que hubiera
                      r.get("precio_base"),
+                     # precio CON promoción y su marca de tiempo. Va dos veces:
+                     # el segundo %s solo decide si se sella price_sale_at, para
+                     # no mover la fecha cuando el lector no observó nada.
+                     r.get("precio_venta"), r.get("precio_venta"),
                      r.get("stock_real"), stock_full, bool(r.get("es_full")),
                      r.get("situacion"),
                      r.get("logistica"), r.get("stock_fba"), r.get("moneda")),
