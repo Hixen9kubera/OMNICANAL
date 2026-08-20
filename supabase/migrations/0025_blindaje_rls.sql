@@ -19,7 +19,10 @@
 --     0022_candados_fanout      → fulfillment_operations,
 --                                 fba_watermark           ...... sin RLS
 --     0023_ops_fba_snapshot     → fba_snapshot            ...... sin RLS
---     0024_ops_tiktok_tokens    → tiktok_tokens           ...... sin RLS
+--     0027_ops_tiktok_tokens    → tiktok_tokens           ...... YA CORREGIDA
+--                                 (el equipo le puso su RLS en el origen tras
+--                                  esta auditoría; la migración se renumeró de
+--                                  0024 a 0027 en el camino)
 --
 --   Ocho tablas en cinco migraciones. `ops.tiktok_tokens` guarda tokens de
 --   OAuth de TikTok, así que ésa importa más que las demás.
