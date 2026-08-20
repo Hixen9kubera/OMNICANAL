@@ -12320,6 +12320,64 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.228.0 — La tabla de TikTok en producción, ya blindada de nacimiento
+
+`0027_ops_tiktok_tokens.sql` **aplicada a producción** el 20-ago, después de
+verificar contra la sesión de seguridad. Ocho comprobaciones, todas en verde:
+
+| | |
+|---|---|
+| La tabla existe | ✅ |
+| Nace con RLS activado | ✅ |
+| Cero políticas (deny-by-default real) | ✅ |
+| Cero grants de `anon`/`authenticated` | ✅ |
+| Vacía — no se insertó nada | ✅ 0 filas |
+| `ops` pasó de 10 a 11 tablas | ✅ +1, ninguna otra tocada |
+| **Tablas de `ops` sin RLS** | ✅ **0 de 11** |
+| Re-aplicarla no cambia nada | ✅ idempotente |
+
+Producción sana al terminar: 45 pedidos en 2 h, 1,285 publicaciones actualizadas
+en 30 min, `/api/health` en verde con `base_datos: true`.
+
+#### Lo que se verificó antes de aplicar, y por qué
+
+La vez pasada (0026, los tokens de ML) apliqué sin contrastar `main` contra la
+base. Salió bien **por suerte**: `main` no describía el estado real y yo no lo
+sabía. Esta vez el contraste se hizo primero.
+
+La sesión de seguridad publicó su trabajo como rama
+`origin/seguridad/blindaje-rls`, **no fusionada a main**. Se trajo su archivo y
+se comparó objeto por objeto contra la base de producción:
+
+    RLS en tablas       10 de 10 aplicadas
+    revoke anon/auth     2 de 2 sin grants
+    security_invoker    10 de 10 vistas
+
+**22 de 22.** El archivo describe exactamente lo que está puesto. Con eso, la
+0027 podía aplicarse: es una tabla nueva e independiente, y trae su propio RLS.
+
+#### Colisión de números, otra vez y de otra forma
+
+Las dos sesiones renumeramos al mismo tiempo y **las dos caímos en `0025`**. Su
+trabajo ya estaba aplicado a producción, así que el número es suyo; las mías
+pasaron a `0026` y `0027`.
+
+#### Y un vigilante que se avisaba a sí mismo
+
+Para avisar cuándo entrara su rama se dejó un `until` en segundo plano — y quedó
+**en segundo plano dos veces**: la tarea que el sistema vigilaba era el envoltorio
+(`sleep 2; echo`), que termina enseguida y con **código 0**. El sistema dio la
+tarea por completada a los dos segundos. El vigilante seguía vivo, funcionando y
+**sin forma de despertar a nadie**.
+
+Es el mismo defecto que persigue toda esta migración —el silencio pareciendo
+éxito— construido esta vez por mí, y con el agravante de que un `exit 0` se ve
+*mejor* que un error. Lo delató mirar la SALIDA en vez del código: decía
+`vigilante armado`, que es lo que imprime el envoltorio, no lo que imprimiría un
+hallazgo. Rearmado sin envoltorio y con la condición probada en vivo.
+
+Sin variables nuevas. Versión 0.228.0.
+
 ### v0.227.0 — Mis migraciones nacían sin RLS, y alguien tuvo que limpiar detrás
 
 **NO se aplicó nada a producción.** Esto es lo previo a hacerlo, coordinado con
