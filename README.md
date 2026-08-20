@@ -12320,6 +12320,73 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.223.0 — Paso 3 CERRADO: competencia, inventario, y 81 publicaciones con dos dueños
+
+Los 12 sitios que faltaban —`competencia_captura` (4) e `inventario` (8)— ya
+leen de `channel.listings`. **Los 25 lectores del paso 3 están repuntados**,
+todos detrás de `SUPABASE_READ_PUBLICACIONES`.
+
+`inventario` se dejó al final a propósito: es el único bloque cuyas lecturas
+deciden **a qué publicaciones se les escribe stock**. Un hueco en los otros se
+ve en una pantalla; aquí se ve en la bodega.
+
+**Una traducción que había que verificar, no suponer.** En MySQL el universo a
+recorrer salía de `success = 1` —"la publicación nació bien", un hecho del
+pasado— y ahora sale del estado de hoy, excluyendo `closed`. Para decidir a
+quién visitar la buena es la segunda: recorrer publicaciones cerradas gasta
+llamadas a la API y reabre filas que el barrido de cierre ya había apagado.
+
+Pero la misma traducción sería un error en los otros dos usos, y por eso están
+separadas: `respaldo_identidad_ml` y `dueno_de_item_ml` **no filtran `closed`**.
+Si ML nos habla de un ítem cerrado, hay que poder decir de quién es. Es
+identidad, no elegibilidad. Igual en competencia: una publicación pausada o
+cerrada **sigue siendo nuestra**, y filtrarla nos haría aparecer como
+competencia de nosotros mismos.
+
+#### El hallazgo: 81 publicaciones de ML apuntan a dos SKUs
+
+Lo destapó la prueba, no una búsqueda. El universo de BEKURA traía 2,259 filas y
+el respaldo de identidad 2,230 llaves: el diccionario estaba aplastando 29
+entradas. Medido contra producción, son **81 `listing_id` con más de un SKU**, y
+el patrón es siempre el mismo — el SKU padre y su variante reclaman la misma
+publicación:
+
+    MLM2834787057  →  TEC-0199   y  TEC-0199-NEG-VER
+    MLM2872692223  →  CUNA-0011  y  CUNA-0011-GRI
+    MLM2873927053  →  SIL-0015   y  SIL-0015-BLN
+
+**La versión de MySQL tenía exactamente la misma forma**, así que el repunte no
+lo introduce: lo destapa. Pero pesa más aquí, porque de ese respaldo sale la
+identidad con la que `inventario` decide a qué SKU escribirle stock, y si gana
+el equivocado el stock aterriza en el producto que no es.
+
+Lo que sí cambia: antes ganaba **el último que saliera de la consulta** —o sea,
+el azar—. Ahora gana **el SKU más corto** (en todos los casos medidos, el padre)
+y cada colisión se anota en el log con nombre y apellido, para que se puedan
+arreglar en vez de perderse.
+
+Y una corrección de la propia prueba: el chequeo comparaba el largo de una LISTA
+contra el de un DICCIONARIO, así que medía las colisiones creyendo que medía la
+cobertura. La cobertura se mide por `item_id`, y por `item_id` da 0 huecos.
+
+Pruebas: `probar_bloque34_sandbox.py`, **21 checks en verde**, más los bloques 1
+y 2 corridos de nuevo sin regresiones.
+
+#### El corte de golpe: quedan DOS
+
+Con los 25 lectores repuntados, `probar_corte_total.py` pasa de 11 a **12 caminos
+que viven sin MySQL**. Siguen 0 los que truenan, y bajan a **2 los que mienten**:
+
+| Camino | Contestaría | Qué significa |
+|---|---|---|
+| `meli._access_token` | `None` | **sin tokens no hay API de ML** |
+| `stock_full._ya_procesada` | `False` | *"no lo he hecho"* → mueve mercancía **dos veces** |
+
+Son el paso 6 y el paso 0. **Nada más.** Después de esos dos, MySQL se apaga de
+una.
+
+Sin migraciones ni variables nuevas. Versión 0.223.0.
+
 ### v0.222.0 — Paso 3, bloque 2: las rejillas de ML y Amazon, y la respuesta al corte de golpe
 
 Los 7 sitios que faltaban de `meli.py` (4) y `amazon.py` (3) ya leen de

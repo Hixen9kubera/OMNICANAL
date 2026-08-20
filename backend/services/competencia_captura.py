@@ -61,6 +61,12 @@ def limpiar_cache_unidades() -> None:
 
 def _nuestras_publicaciones() -> dict[str, dict[str, str]]:
     """{ ml_item_id: {sku, cuenta} } de TODO lo publicado en ML (ambas cuentas)."""
+    # PASO 3 · BLOQUE 3 (19-ago). Sin try/except: si esto sale vacio, TODA la
+    # competencia aparece como ajena y el panel diria que no tenemos ninguna
+    # publicacion compitiendo. Es mejor que truene.
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        return channel_read.publicaciones_ml_por_item()
     try:
         filas = db.fetch_all(
             "SELECT ml_item_id, sku, cuenta FROM ml_progress "
@@ -188,15 +194,25 @@ async def refrescar_visitas_propias(skus: list[str] | None = None) -> dict[str, 
         return {"ok": False, "motivo": "No hay SKUs vigilados que refrescar."}
 
     # 1. Lo que cree nuestra tabla (solo para comparar).
-    marcas = ",".join(["%s"] * len(objetivo))
-    try:
-        en_bd = {(r["sku"], r["cuenta"]): r["ml_item_id"] for r in db.fetch_all(
-            f"SELECT sku, cuenta, ml_item_id FROM ml_progress "
-            f"WHERE sku IN ({marcas}) AND ml_item_id IS NOT NULL AND ml_item_id <> ''",
-            tuple(objetivo))}
-    except Exception as exc:  # noqa: BLE001
-        log.warning("No se pudo leer ml_progress: %s", exc)
-        en_bd = {}
+    # PASO 3 · BLOQUE 3. Este SI conserva el try/except: su resultado es "lo que
+    # cree nuestra tabla", puro contraste contra ML, que es la autoridad de esta
+    # funcion. Un hueco aqui empeora un diagnostico; no decide nada.
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        en_bd = {(s, p["cuenta"]): p["item_id"]
+                 for s, pubs in channel_read.publicaciones_ml(objetivo).items()
+                 for p in pubs}
+    else:
+        marcas = ",".join(["%s"] * len(objetivo))
+        try:
+            en_bd = {(r["sku"], r["cuenta"]): r["ml_item_id"] for r in db.fetch_all(
+                f"SELECT sku, cuenta, ml_item_id FROM ml_progress "
+                f"WHERE sku IN ({marcas}) AND ml_item_id IS NOT NULL "
+                f"AND ml_item_id <> ''",
+                tuple(objetivo))}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("No se pudo leer ml_progress: %s", exc)
+            en_bd = {}
 
     # 2. Lo que dice ML, que es la autoridad. Una búsqueda por (sku, cuenta).
     pares = [(sku, tok, etiqueta) for sku in objetivo for tok, etiqueta in CUENTAS]
@@ -418,7 +434,13 @@ def skus_de_categoria(categoria_id: str) -> dict[str, Any]:
     # Publicaciones de los que NO están vigilados, desde la bitácora del publicador.
     faltan = [s for s in todos if s not in medidas]
     progreso: dict[str, list[dict[str, Any]]] = {}
-    if faltan:
+    if faltan and settings.supabase_read_publicaciones:
+        from services import channel_read
+        for s, pubs in channel_read.publicaciones_ml_vivas(faltan).items():
+            progreso[s] = [{"sku": s, "cuenta": p["cuenta"],
+                            "ml_item_id": p["item_id"], "ml_url": p["url"]}
+                           for p in pubs]
+    elif faltan:
         try:
             marcas = ",".join(["%s"] * len(faltan))
             for r in db.fetch_all(
@@ -788,16 +810,27 @@ def sembrar_skus(skus: list[str], con_ia: bool = True) -> dict[str, Any]:
     # kubera; `ml_progress` es la bitácora del publicador, sigue viva en MySQL
     # y se lee igual que siempre. Se juntan en Python porque ya no comparten
     # base de datos.
-    publicaciones = db.fetch_all(f"""
-        SELECT sku,
-               MAX(CASE WHEN cuenta = 'BEKURA' THEN ml_item_id END) AS item_bekura,
-               MAX(ml_item_id) AS item_cualquiera,
-               MAX(CASE WHEN cuenta = 'BEKURA' THEN 'BEKURA' END) AS tiene_bekura
-          FROM ml_progress
-         WHERE sku IN ({marcas}) AND ml_item_id IS NOT NULL AND ml_item_id <> ''
-         GROUP BY sku
-    """, tuple(skus))
-    por_sku = {r["sku"]: r for r in publicaciones}
+    # PASO 3 · BLOQUE 3. El GROUP BY de arriba se arma en Python: son a lo mucho
+    # dos cuentas por SKU, y asi la gemela no tiene que replicar los tres MAX.
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        por_sku = {}
+        for s, pubs in channel_read.publicaciones_ml(skus).items():
+            bek = next((p["item_id"] for p in pubs if p["cuenta"] == "BEKURA"), None)
+            por_sku[s] = {"sku": s, "item_bekura": bek,
+                          "item_cualquiera": bek or pubs[0]["item_id"],
+                          "tiene_bekura": "BEKURA" if bek else None}
+    else:
+        publicaciones = db.fetch_all(f"""
+            SELECT sku,
+                   MAX(CASE WHEN cuenta = 'BEKURA' THEN ml_item_id END) AS item_bekura,
+                   MAX(ml_item_id) AS item_cualquiera,
+                   MAX(CASE WHEN cuenta = 'BEKURA' THEN 'BEKURA' END) AS tiene_bekura
+              FROM ml_progress
+             WHERE sku IN ({marcas}) AND ml_item_id IS NOT NULL AND ml_item_id <> ''
+             GROUP BY sku
+        """, tuple(skus))
+        por_sku = {r["sku"]: r for r in publicaciones}
 
     if core_write.activo() and categorias_write.activo():
         maestra = core_read.nombres_y_wc(skus)

@@ -19,10 +19,13 @@ legadas — no son equivalentes; 'general' se unifica en el corte (F6).
 """
 from __future__ import annotations
 
+import logging
 from datetime import timezone
 from typing import Any
 
 from services import supabase_db as sdb
+
+log = logging.getLogger("omnicanal.channel_read")
 
 # `tiktok` entra el 13-ago con las 900 publicaciones del censo. Con esto sus
 # puntos aparecen en la vista General (`presencia`) y su precio/stock enriquece
@@ -602,3 +605,164 @@ def contar_publicados_amazon():
         f"""select count(*) as n from channel.listings l
              where l.canal = 'amazon' and ({_PUB_AMZ})""",
         {"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)})[0]["n"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PASO 3 · BLOQUE 3 — Competencia
+# ═══════════════════════════════════════════════════════════════════════════
+# Los 4 sitios de `competencia_captura.py` preguntan la misma cosa que el bloque
+# 1 —"¿qué publicaciones de ML tiene este SKU?"— salvo uno, que la pregunta AL
+# REVÉS: dado un item_id que vimos en los resultados de competencia, ¿es
+# nuestro? Ese necesita el índice invertido y sobre TODO el catálogo, no sobre
+# una lista de SKUs; los otros tres reusan `publicaciones_ml`.
+
+def publicaciones_ml_por_item() -> dict[str, dict[str, str]]:
+    """
+    { item_id: {sku, cuenta} } de TODAS las publicaciones de ML.
+
+    Gemela de `competencia_captura._nuestras_publicaciones`. Sirve para marcar
+    "esta publicación de la competencia en realidad es nuestra".
+
+    NO filtra por `situacion`: una publicación pausada o cerrada **sigue siendo
+    nuestra**, y de eso se trata la pregunta. Filtrarla haría que apareciéramos
+    como competencia de nosotros mismos.
+    """
+    filas = sdb.fetch_all(
+        """select l.listing_id as item_id, l.sku::text as sku,
+                  a.legacy_code as cuenta
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre'
+              and nullif(l.listing_id, '') is not null""")
+    return {f["item_id"]: {"sku": f["sku"], "cuenta": f["cuenta"] or ""}
+            for f in filas}
+
+
+def publicaciones_ml_vivas(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """
+    Como `publicaciones_ml`, pero solo las que siguen VIVAS en el canal.
+
+    Existe para el sitio que en MySQL filtraba `success = 1`. Ojo con la
+    traducción: `success` es "la publicación se creó bien" —un hecho del pasado,
+    congelado— mientras que aquí se pregunta por el estado de hoy. Una
+    publicación que nació bien y después se cerró tiene `success = 1` en la
+    bitácora y `situacion = 'closed'` en kubera. **Gana kubera**, que es el
+    mismo arbitraje por recencia de todo este paso.
+    """
+    return {sku: vivas for sku, pubs in publicaciones_ml(skus).items()
+            if (vivas := [p for p in pubs
+                          if str(p.get("situacion") or "").lower() != "closed"])}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PASO 3 · BLOQUE 4 — Inventario (el último, y el que mueve stock)
+# ═══════════════════════════════════════════════════════════════════════════
+# Los 8 sitios de `inventario.py`. Va al final del paso 3 a propósito: es el
+# único bloque cuyas lecturas deciden A QUÉ PUBLICACIONES se les va a escribir
+# stock, así que un hueco aquí no se ve en una pantalla — se ve en la bodega.
+#
+# Los 8 son cuatro preguntas repetidas:
+#   · el UNIVERSO a recorrer, por cuenta (ML) y global (Amazon)
+#   · el respaldo de identidad {item_id: sku} cuando ML no trae SKU legible
+#   · "¿este SKU existe en el canal?" antes de pedirle el detalle
+#   · "¿de quién es este item_id?" cuando ML avisa por webhook
+#
+# UNA TRADUCCIÓN QUE NO ES OBVIA: en MySQL el universo salía de `success = 1`,
+# que es "la publicación se creó bien" — un hecho del pasado, congelado. Aquí se
+# usa el estado de HOY y se excluye `closed`. Es la diferencia entre "nació bien"
+# y "sigue viva", y para decidir a quién visitar la buena es la segunda: recorrer
+# publicaciones cerradas gasta llamadas a la API y vuelve a abrir filas que el
+# barrido de cierre ya había apagado.
+
+def universo_ml(cuenta: str) -> list[dict[str, Any]]:
+    """[{sku, ml_item_id}] de las publicaciones VIVAS de una cuenta de ML."""
+    return [dict(f) for f in sdb.fetch_all(
+        """select l.sku::text as sku, l.listing_id as ml_item_id
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre' and a.legacy_code = %(c)s
+              and nullif(l.listing_id, '') is not null
+              and lower(coalesce(l.situacion, '')) <> 'closed'""",
+        {"c": cuenta})]
+
+
+def universo_amazon() -> list[dict[str, Any]]:
+    """[{sku, asin, status}] de las publicaciones vivas de Amazon."""
+    return [dict(f) for f in sdb.fetch_all(
+        f"""select l.sku::text as sku, l.listing_id as asin, l.status
+              from channel.listings l
+             where l.canal = 'amazon' and ({_PUB_AMZ})""",
+        {"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)})]
+
+
+def respaldo_identidad_ml(cuenta: str) -> dict[str, str]:
+    """{ item_id: sku } de una cuenta — el respaldo cuando ML no trae SKU.
+
+    Aquí NO se filtra `closed`: si ML nos está hablando de un item, queremos
+    saber de quién es aunque ya esté cerrado. Es identidad, no elegibilidad.
+
+    ⚠️ HAY COLISIONES REALES, y este diccionario las aplasta. Medido en
+    producción el 19-ago: **81 `listing_id` de ML apuntan a dos SKUs distintos**,
+    y el patrón es siempre el mismo — el SKU base y su variante reclaman la misma
+    publicación (`TEC-0199` y `TEC-0199-NEG-VER`, `CUNA-0011` y `CUNA-0011-GRI`).
+
+    La versión de MySQL tenía exactamente la misma forma, así que esto **no lo
+    introduce el repunte**: lo destapa. Pero importa más aquí que allá, porque de
+    este respaldo sale la identidad con la que `inventario` decide **a qué SKU
+    escribirle stock**, y si gana el equivocado el stock aterriza en el producto
+    que no es.
+
+    Lo que sí cambia: antes ganaba el último que saliera de la consulta —o sea,
+    el azar—. Ahora **gana el SKU más corto**, que en todos los casos medidos es
+    el padre, y las colisiones se anotan en el log con nombre y apellido para que
+    alguien pueda arreglarlas en vez de que se pierdan en silencio.
+    """
+    filas = sdb.fetch_all(
+        """select l.listing_id as item_id, l.sku::text as sku
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre' and a.legacy_code = %(c)s
+              and nullif(l.listing_id, '') is not null
+            order by length(l.sku::text), l.sku::text""",
+        {"c": cuenta})
+    res: dict[str, str] = {}
+    choques: list[str] = []
+    for f in filas:
+        if f["item_id"] in res:
+            choques.append(f"{f['item_id']}={res[f['item_id']]}|{f['sku']}")
+            continue                      # el primero gana: el SKU más corto
+        res[f["item_id"]] = f["sku"]
+    if choques:
+        log.warning("respaldo_identidad_ml(%s): %d item_id con mas de un SKU; "
+                    "gana el mas corto. %s", cuenta, len(choques),
+                    ", ".join(choques[:5]))
+    return res
+
+
+def dueno_de_item_ml(item_id: str) -> dict[str, str] | None:
+    """{sku, cuenta} del item, o None. Lo usa el webhook de ML.
+
+    Sin filtrar por situación, por lo mismo que arriba: ML avisa de items
+    cerrados y pausados, y hay que poder atenderlos.
+    """
+    filas = sdb.fetch_all(
+        """select l.sku::text as sku, a.legacy_code as cuenta
+             from channel.listings l
+             join core.accounts a on a.id = l.account_id
+            where l.canal = 'mercado_libre' and l.listing_id = %(i)s
+            limit 1""", {"i": str(item_id)})
+    return {"sku": filas[0]["sku"], "cuenta": filas[0]["cuenta"]} if filas else None
+
+
+def existe_en_amazon(sku: str) -> bool:
+    """¿Este SKU tiene fila de Amazon? Gemela del `SELECT 1 FROM amazon_progress`.
+
+    Deliberadamente NO exige que esté publicado: la pregunta del llamador es
+    "¿vale la pena pedirle el detalle a Amazon?", y un SKU con fila pero sin
+    estado (los cascarones) sí vale — es justo el caso que hay que resolver
+    preguntándole al canal.
+    """
+    return bool(sdb.fetch_all(
+        """select 1 from channel.listings
+            where canal = 'amazon' and sku = %(s)s::citext limit 1""",
+        {"s": str(sku)}))
