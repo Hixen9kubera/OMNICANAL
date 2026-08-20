@@ -38,6 +38,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from config import settings
+from services import precios_venta
 from services import supabase_db as sdb
 
 
@@ -2289,6 +2290,36 @@ def _datos_inventario(dias: int, cuenta: str | None) -> tuple[list, list, list]:
 _META_ANUAL_MXN = 15_000_000
 
 
+_SQL_FRESCURA = """
+select min(price_sale_at) desde, max(price_sale_at) hasta,
+       count(*) filter (where price_sale_at is not null) observadas,
+       count(*) total
+  from channel.listings l
+  join core.accounts a on a.id = l.account_id
+ where l.canal = 'mercado_libre' and coalesce(l.stock_full, 0) > 0
+   and lower(coalesce(l.situacion, '')) <> 'closed'
+   and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
+"""
+
+
+def _frescura(cuenta: str | None) -> dict:
+    """Cuándo se leyeron los precios que este corte va a usar.
+
+    Es la prueba de que el número es una FOTO y no un mosaico: si `desde` y
+    `hasta` están a minutos, todos los precios son de la misma ventana. Si
+    están a horas, el corte mezcla momentos y hay que refrescar antes de
+    firmarlo."""
+    f = (sdb.fetch_all(_SQL_FRESCURA, {"cuenta": cuenta}) or [{}])[0]
+    d, h = f.get("desde"), f.get("hasta")
+    return {
+        "desde": d.isoformat() if d else None,
+        "hasta": h.isoformat() if h else None,
+        "ventana_min": round((h - d).total_seconds() / 60, 1) if d and h else None,
+        "observadas": int(f.get("observadas") or 0),
+        "total": int(f.get("total") or 0),
+    }
+
+
 def _resumen_valor(filas: list) -> dict:
     """Los números de portada del corte de valor.
 
@@ -2332,6 +2363,8 @@ async def inventario_excel_preview(
             "dias": dias,
             "valor": {
                 **_resumen_valor(val),
+                "frescura": await asyncio.to_thread(_frescura, cuenta),
+                "refresco": precios_venta.estado(),
                 "top": [{"sku": f["sku"], "titulo": (f.get("titulo") or "")[:60],
                          "full": int(f.get("full_total") or 0),
                          "valor": float(f["valor_full"] or 0),
@@ -2377,6 +2410,25 @@ async def inventario_excel_preview(
     except Exception as exc:  # noqa: BLE001
         log.warning("inventario/excel/preview falló: %s", exc)
         raise HTTPException(502, f"no se pudo calcular la vista previa: {exc}") from exc
+
+
+@router.post("/inventario/precios/refrescar")
+async def inventario_precios_refrescar(cuenta: str | None = Query(None)) -> dict[str, Any]:
+    """Trae de ML el precio de venta de TODO lo que el corte va a valuar.
+
+    El sync progresivo también los observa, pero tarda ~10 h en cubrir el
+    catálogo y gasta la mayor parte del turno en publicaciones pausadas sin
+    stock (medido: de sus primeras 133, solo 12 tenían piezas en FULL). Un
+    corte de valor es una FOTO, así que sus precios se leen todos ahora.
+
+    Contesta DE INMEDIATO: son ~800 llamadas y corren en segundo plano. El
+    avance se lee en el bloque `valor.refresco` de la vista previa.
+    """
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS:
+        raise HTTPException(400, f"cuenta inválida: {cuenta}")
+    return await precios_venta.refrescar_en_fondo(cuenta)
 
 
 @router.get("/inventario/excel")

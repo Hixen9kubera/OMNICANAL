@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.245.0 — Un valor es una foto, no un mosaico
+
+Eduardo, al ver el reporte de v0.244.0: *"¿al generar el reporte no es ideal
+traer todos los precios de golpe? porque al final de cuentas irán cambiando los
+precios"*. Tenía razón, y la primera corrida real del sync lo probó con
+números en vez de con argumento.
+
+**Lo que midió esa corrida.** De las 133 publicaciones que el barrido alcanzó en
+su primer turno, **12 estaban activas y 12 tenían stock en FULL**; las otras 121
+eran pausadas con cero piezas. El orden del barrido es *"primero lo que nunca se
+ha visto, luego lo más viejo"* —correcto para mantener el catálogo al día— pero
+eso lo hace gastar el turno en publicaciones muertas. De las **761
+publicaciones con stock**, las únicas que entran al valor, llevaba 12. Y
+ninguno de los cinco casos con la brecha de precio más grande que se había
+medido (`CAM-0030-IND`, `TEC-0794`, `TEC-1138-VER`, `TEC-1810-BLN`,
+`MUE-0163-TEL`) había sido tocado.
+
+O sea: el sync paga el costo de las 4,977 del catálogo para entregar tarde las
+761 que el reporte necesita — y aun entonces el resultado sería un **mosaico**,
+con unos precios de las 15:00 y otros de las 06:00. Las ofertas de ML traen
+cuenta regresiva: un precio de hace diez horas puede ser de una promoción que ya
+terminó. El propio archivo de la CAM lo dice en su metodología: *"Es una foto
+del momento"*.
+
+**`services/precios_venta.py`** refresca SOLO las publicaciones que el corte va
+a valuar, en una pasada: 761 en total, 330 si se filtra una cuenta. Sigue el
+molde de la pestaña FBA —dispara, contesta de inmediato, la página lee el
+avance— porque una petición HTTP que espere ~800 llamadas se pasa del timeout
+del proxy, cosa que ya ocurrió con el backfill de `channel.orders`. Por tandas
+de 80 con 8 en paralelo, guardando cada tanda: si truena a la mitad, lo ya
+consultado queda.
+
+**El sync NO se retira.** Cada quien mantiene lo suyo: el barrido deja la
+columna al día en todo el catálogo, que es lo que los márgenes y el panel
+necesitan y que no exige atomicidad; el reporte se refresca a sí mismo cuando
+va a valuar. Los dos escriben la misma columna y el más reciente gana — que es
+lo correcto, porque ambos escriben lo que ML acaba de decir.
+
+**`price_sale_at` deja de ser una curiosidad y pasa a ser la prueba.** La
+tarjeta de valor muestra en qué VENTANA se leyeron los precios del corte. Si son
+minutos, es una foto; si pasa de media hora, se marca en ámbar y lo dice: *"se
+leyeron a lo largo de 3.4 h, no en un mismo momento — refresca antes de
+firmarlo"*. Sin ese dato nadie puede saber si el total es de un instante o de
+varios, y un número que se presenta a dirección tiene que poder auditarse.
+
+- `POST /api/fulfillment/inventario/precios/refrescar` (opcional `?cuenta=`)
+- El bloque `valor` de la vista previa gana `frescura` (desde, hasta,
+  `ventana_min`, observadas/total) y `refresco` (fase y avance)
+- Botón «Traer precios de ML» con el avance en vivo; la previa se re-pide sola
+  cada 4 s mientras corre y se detiene al terminar
+- Si falta el token de ML de alguna cuenta, ABORTA en vez de seguir con las
+  demás: un corte a medias se ve completo, y eso es peor que no tenerlo
+
+**Verificado contra producción, solo lectura**: las tres consultas nuevas
+corren (761 publicaciones objetivo, 330 de Sancor) y el UPDATE compila sin
+ejecutarse; `tsc` limpio.
+
 ### v0.244.0 — El reporte de inventario por fin tiene pesos, y a precio de venta
 
 Valeria (CAM) arma a mano un corte del valor del inventario en FULL

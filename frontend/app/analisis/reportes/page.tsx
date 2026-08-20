@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, Boxes, Download, Eye, FileSpreadsheet, FileText, X } from "lucide-react";
+import { AlertTriangle, Boxes, Download, Eye, FileSpreadsheet, FileText, RefreshCw, X } from "lucide-react";
 import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
 import FulfillmentPendiente from "@/components/FulfillmentPendiente";
 
@@ -213,8 +213,23 @@ function VistaPrevia({ p, cargando, error }: {
    INVISIBLE    = el mercado sí lo quiere y no se lo estamos ofreciendo.       */
 interface PreviewInv {
   dias: number;
+  /* El corte de VALOR: todo lo que ocupa FULL, valuado a precio de venta.
+     `frescura` es lo que lo vuelve firmable — dice en qué ventana se leyeron
+     los precios. Si `ventana_min` son minutos, el número es una foto; si son
+     horas, es un mosaico y hay que refrescar antes de presentarlo. */
+  valor?: {
+    publicaciones: number; unidades_full: number; valor: number;
+    meta_anual: number; pct_meta: number | null;
+    skus_precio_crudo: number; uds_precio_crudo: number;
+    valor_precio_crudo: number; uds_sin_precio: number;
+    frescura: { desde: string | null; hasta: string | null;
+                ventana_min: number | null; observadas: number; total: number };
+    refresco: { fase: string; detalle: string | null;
+                vistas: number; objetivo: number };
+  };
   inmovilizado: {
     skus: number; unidades_full: number; nunca_vendieron: number;
+    valor: number; uds_precio_crudo: number;
     /* `variantes` > 0 = el renglón es una FAMILIA y el sku de la izquierda es
        el padre, que nunca vende por sí mismo; `donde` dice en qué variante y
        cuenta están las piezas (Eduardo, 14-ago, sobre CAM-0030). */
@@ -225,6 +240,7 @@ interface PreviewInv {
   };
   invisible: {
     skus: number; unidades_vendidas: number; stock_disponible: number;
+    valor: number;
     top: { sku: string; titulo: string; uds: number; stock: number;
            ultima_venta: string | null }[];
   };
@@ -239,6 +255,7 @@ function TarjetaInventario() {
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [bajando, setBajando] = useState(false);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -261,7 +278,18 @@ function TarjetaInventario() {
       }
     }, 450);
     return () => { clearTimeout(t); ctrl.abort(); };
-  }, [cuenta, dias]);
+  }, [cuenta, dias, tick]);
+
+  // Mientras el refresco de precios corre, la previa se vuelve a pedir sola:
+  // el botón muestra el avance (vistas/objetivo) y ese número solo cambia si
+  // alguien pregunta. Sin esto habría que recargar a mano para ver si terminó.
+  const refrescando = previa?.valor?.refresco.fase === "arrancando"
+                   || previa?.valor?.refresco.fase === "consultando";
+  useEffect(() => {
+    if (!refrescando) return;
+    const i = setInterval(() => setTick((n) => n + 1), 4000);
+    return () => clearInterval(i);
+  }, [refrescando]);
 
   const q = new URLSearchParams({ dias: String(dias) });
   if (cuenta) q.set("cuenta", cuenta);
@@ -336,7 +364,8 @@ function TarjetaInventario() {
           {error}
         </p>
       )}
-      <PreviaInventario p={previa} cargando={cargando} dias={dias} />
+      <PreviaInventario p={previa} cargando={cargando} dias={dias}
+                        onPedido={() => setTick((n) => n + 1)} />
     </div>
   );
 }
@@ -388,8 +417,130 @@ function BloqueInv({ titulo, subtitulo, cifras, top, tono }: {
   );
 }
 
-function PreviaInventario({ p, cargando, dias }: {
-  p: PreviewInv | null; cargando: boolean; dias: number;
+/* El corte de VALOR y, sobre todo, DE CUÁNDO SON SUS PRECIOS.
+
+   Un valor es una foto. El sync progresivo observa `price_sale` a lo largo de
+   ~10 h y gasta la mayor parte del turno en publicaciones pausadas sin stock
+   (medido en la primera corrida: de 133, solo 12 tenían piezas en FULL). Si el
+   corte se arma con eso, mezcla precios de las 15:00 con precios de las 06:00 —
+   y las ofertas de ML traen cuenta regresiva. Por eso el botón: refresca SOLO
+   lo que el corte va a valuar, ~760 publicaciones, en una pasada. */
+function TarjetaValor({ v, onPedido }: {
+  v: PreviewInv["valor"]; onPedido: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [pidiendo, setPidiendo] = useState(false);
+  if (!v) return null;
+  const r = v.refresco;
+  const corriendo = r.fase === "arrancando" || r.fase === "consultando";
+  const crudo = v.skus_precio_crudo > 0;
+  const vent = v.frescura.ventana_min;
+  // Mosaico = los precios del corte se leyeron a lo largo de más de media hora.
+  const mosaico = vent != null && vent > 30;
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Valor del inventario en FULL
+          </p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-slate-800">
+            {money(v.valor)}
+            {v.pct_meta != null && (
+              <span className="ml-2 text-sm font-medium text-slate-400">
+                {v.pct_meta}% de la meta anual
+              </span>
+            )}
+          </p>
+          <p className="mt-0.5 text-[13px] text-slate-500">
+            {v.publicaciones.toLocaleString("es-MX")} publicaciones ·{" "}
+            {v.unidades_full.toLocaleString("es-MX")} unidades · a precio de
+            venta, no al costo
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={pidiendo || corriendo}
+          onClick={async () => {
+            setPidiendo(true); setError(null);
+            try {
+              const r2 = await fetchSesion(
+                `${API_BASE}/api/fulfillment/inventario/precios/refrescar`,
+                { method: "POST" });
+              if (!r2.ok) throw new Error(`El servidor respondió ${r2.status}`);
+            } catch (e) {
+              setError(mensajeDeError(e, "No se pudo pedir el refresco."));
+            } finally { setPidiendo(false); onPedido(); }
+          }}
+          className="flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-sm font-medium text-indigo-700 shadow-sm transition-colors hover:bg-indigo-100 disabled:cursor-wait disabled:opacity-60">
+          <RefreshCw size={15} className={corriendo ? "animate-spin" : ""} />
+          {corriendo
+            ? `Leyendo precios… ${r.vistas}/${r.objetivo || "?"}`
+            : "Traer precios de ML"}
+        </button>
+      </div>
+
+      {error && (
+        <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-700">{error}</p>
+      )}
+      {r.fase === "error" && (
+        <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-[13px] text-rose-700">
+          El último refresco falló: {r.detalle}
+        </p>
+      )}
+
+      {/* La frescura es lo que hace firmable el número: sin ella nadie sabe si
+          los precios son del mismo momento o de momentos distintos. */}
+      <p className="mt-2 text-[12px] text-slate-500">
+        Precios leídos: {v.frescura.observadas.toLocaleString("es-MX")} de{" "}
+        {v.frescura.total.toLocaleString("es-MX")} publicaciones con stock
+        {vent != null && (
+          <> · en una ventana de{" "}
+            <b className={mosaico ? "text-amber-600" : "text-slate-600"}>
+              {vent < 60 ? `${vent} min` : `${(vent / 60).toFixed(1)} h`}
+            </b>
+          </>
+        )}
+      </p>
+
+      {crudo && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            <b>{v.skus_precio_crudo.toLocaleString("es-MX")}</b> renglones
+            ({v.uds_precio_crudo.toLocaleString("es-MX")} unidades,{" "}
+            {money(v.valor_precio_crudo)}) siguen valuados a precio de{" "}
+            <b>LISTA</b>: todavía no se les lee el precio con promoción y su
+            valor corre alto — mediana medida, 1.71 veces lo que de verdad se
+            transa. Dale a «Traer precios de ML» antes de presentar esta cifra.
+          </span>
+        </p>
+      )}
+      {mosaico && !crudo && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            Estos precios se leyeron a lo largo de{" "}
+            {vent != null && vent >= 60 ? `${(vent / 60).toFixed(1)} h` : `${vent} min`}, no en
+            un mismo momento. Las promociones de Mercado Libre tienen cuenta
+            regresiva, así que el total mezcla instantes. Refresca antes de
+            firmarlo.
+          </span>
+        </p>
+      )}
+      {v.uds_sin_precio > 0 && (
+        <p className="mt-1 text-[12px] text-slate-500">
+          {v.uds_sin_precio.toLocaleString("es-MX")} unidades sin ningún precio
+          quedan FUERA del total.
+        </p>
+      )}
+    </div>
+  );
+}
+
+
+function PreviaInventario({ p, cargando, dias, onPedido }: {
+  p: PreviewInv | null; cargando: boolean; dias: number; onPedido: () => void;
 }) {
   if (!p) {
     return (
@@ -405,6 +556,8 @@ function PreviaInventario({ p, cargando, dias }: {
   }
   const m = (n: number) => n.toLocaleString("es-MX");
   return (
+    <>
+    <TarjetaValor v={p.valor} onPedido={onPedido} />
     <div className={`mt-4 grid min-h-[168px] gap-4 transition-opacity sm:grid-cols-2 ${
       cargando ? "opacity-50" : "opacity-100"}`}>
       <BloqueInv
@@ -440,6 +593,7 @@ function PreviaInventario({ p, cargando, dias }: {
         }))}
       />
     </div>
+    </>
   );
 }
 
