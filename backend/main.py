@@ -178,7 +178,7 @@ app.include_router(resolver.router)
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.240.0",
+        "version": "0.241.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
