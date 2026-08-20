@@ -12320,6 +12320,47 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.232.0 — Las 19,649 filas de la bitácora, y el `ms` que se estaba redondeando
+
+Respaldo hecho: **sandbox primero, producción después**, las dos verificadas
+contra el origen.
+
+    ops.fanout_log   19,649 filas · 24-jul → 20-ago · 1,626 SKUs
+    total, por accion (17) y muestra de 200 fila por fila: cero diferencias
+
+#### El defecto que solo vio el cotejo fila por fila
+
+La primera corrida en sandbox dio **el total exacto** y **los conteos por acción
+exactos** — y aun así 58 de las 200 filas de la muestra no coincidían.
+
+Era `ms`: en MySQL es `decimal(10,1)` y yo lo declaré `integer`. **1470.7 llegaba
+como 1471.** El respaldo decía "copié 19,647 filas" y era cierto; el dato estaba
+cambiado igual.
+
+Es justo para lo que sirve verificar **contra el origen y no contra el propio
+contador del script**. Un respaldo que se declara exitoso por lo que él mismo
+insertó no prueba nada — la misma trampa que un arnés que se mide contra sí
+mismo. Corregido a `numeric(10,1)`, borrado el respaldo redondeado del sandbox y
+repetido: **0 diferencias**.
+
+#### El ancla que hace el respaldo repetible
+
+La bitácora **no tiene llave natural**: dos intentos del mismo SKU con el mismo
+resultado son DOS eventos, no uno repetido. Poner una llave sobre el contenido
+perdería justo lo que se quiere ver.
+
+Pero sin ancla, una segunda corrida duplicaría las 19,649 y nadie lo notaría
+hasta ver el dashboard contando doble. Y hace falta una segunda corrida, porque
+la secuencia tiene un hueco inevitable:
+
+    respaldo  →  (aquí siguen entrando eventos)  →  se enciende la doble escritura
+
+Se agregó `mysql_id` con un índice único parcial. Los eventos nuevos van `NULL`
+—y en Postgres un único admite varios NULL—, así que la escritura doble no se
+estorba. Con eso el respaldo se puede repetir para cubrir el hueco.
+
+Producción sana al terminar. Las banderas siguen apagadas. Versión 0.232.0.
+
 ### v0.231.0 — La bitácora del fan-out, que se nos quedó fuera al migrar el candado
 
 El hueco que destapó el censo, cerrado. **Sandbox primero, producción después.**

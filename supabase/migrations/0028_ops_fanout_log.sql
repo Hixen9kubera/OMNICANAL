@@ -57,7 +57,7 @@ create table if not exists ops.fanout_log (
     accion      text,
     stock_canal integer,
     resultado   text,
-    ms          integer
+    ms          numeric(10,1)
 );
 
 -- Los tres caminos por los que se consulta, y nada más.
@@ -83,3 +83,40 @@ comment on column ops.fanout_log.resultado is
 -- deny-by-default. `service_role` tiene `rolbypassrls`, asi que el backend y los
 -- crons no se enteran.
 alter table ops.fanout_log enable row level security;
+
+-- ── El ancla del respaldo: `mysql_id` ───────────────────────────────────────
+-- La bitacora NO tiene llave natural: dos intentos del mismo SKU con el mismo
+-- resultado son DOS eventos, no uno repetido. Poner una llave sobre el contenido
+-- perderia justo lo que se quiere ver.
+--
+-- Pero eso deja el respaldo sin red: una segunda corrida duplicaria las 19,616
+-- filas y nadie lo notaria hasta ver el dashboard contando doble.
+--
+-- `mysql_id` guarda el `id` de la fila original y lleva un UNICO. Con eso el
+-- respaldo es idempotente (`on conflict do nothing`) y —lo que importa mas— se
+-- puede correr OTRA VEZ para cubrir el hueco entre el respaldo y el momento en
+-- que se encienda la escritura doble, sin miedo a repetir lo ya copiado.
+--
+-- Va NULL en los eventos nuevos, y en Postgres un UNICO admite varios NULL, asi
+-- que la escritura doble no se estorba.
+alter table ops.fanout_log add column if not exists mysql_id bigint;
+create unique index if not exists ux_fanout_log_mysql_id
+    on ops.fanout_log (mysql_id) where mysql_id is not null;
+
+comment on column ops.fanout_log.mysql_id is
+  'id de la fila original en el MySQL kubera_ml. Solo lo traen las filas del '
+  'respaldo; los eventos nuevos van NULL. Es lo que hace el respaldo repetible.';
+
+-- ── `ms` es DECIMAL(10,1) en MySQL, no un entero ────────────────────────────
+-- Lo destapo la verificacion del respaldo: 58 de 200 filas de la muestra no
+-- coincidian campo por campo, y era siempre `ms` — 1470.7 llegaba como 1471.
+-- Los TOTALES cuadraban y los conteos POR ACCION tambien; solo el cotejo fila
+-- por fila lo vio.
+--
+-- Es exactamente para lo que sirve verificar contra el ORIGEN y no contra el
+-- propio contador del script: "copie 19,647 filas" era cierto y aun asi el dato
+-- estaba cambiado.
+--
+-- Un `alter` aparte para que la 0028 se pueda re-aplicar sobre una base que ya
+-- la tenia con `integer`.
+alter table ops.fanout_log alter column ms type numeric(10,1);
