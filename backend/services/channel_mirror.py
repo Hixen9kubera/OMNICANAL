@@ -24,11 +24,11 @@ comparar_channel.py) porque MySQL ya no lo observa.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Callable
 
 from config import settings
+from core import actor
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.channel_mirror")
@@ -52,10 +52,8 @@ def corte_activo() -> bool:
 def en_hilo(fn: Callable, *args) -> None:
     if not activo():
         return
-    try:
-        asyncio.get_running_loop().run_in_executor(None, fn, *args)
-    except RuntimeError:
-        fn(*args)
+    # Delega en core.actor: `run_in_executor` NO se lleva los contextvars.
+    actor.en_hilo(fn, *args)
 
 
 def _cuenta_uuid(canal: str, cuenta: str) -> str | None:
@@ -214,10 +212,7 @@ def escribir_primario(rows: list[dict[str, Any]],
             except Exception:  # noqa: BLE001
                 pass
 
-    try:
-        asyncio.get_running_loop().run_in_executor(None, _inverso)
-    except RuntimeError:
-        _inverso()
+    actor.en_hilo(_inverso)
 
 
 def backfill_situacion(situacion: str = "closed", canal: str | None = None,

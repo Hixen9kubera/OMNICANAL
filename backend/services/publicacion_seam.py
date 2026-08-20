@@ -66,11 +66,11 @@ después.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
 from config import settings
+from core import actor
 from services import channel_mirror
 from services import supabase_db as sdb
 
@@ -142,10 +142,7 @@ def registrar(canal: str, cuenta: str, sku: str, *, listing_id: str | None = Non
             log.warning("seam publicar falló (%s %s): %s", sku, canal, exc)
             channel_mirror._registrar_issue(sku, f"seam publicar fallo: {exc}")
 
-    try:
-        asyncio.get_running_loop().run_in_executor(None, _trabajo)
-    except RuntimeError:
-        _trabajo()
+    actor.en_hilo(_trabajo)
 
 
 def estado() -> dict[str, Any]:

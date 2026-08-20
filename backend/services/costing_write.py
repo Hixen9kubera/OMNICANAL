@@ -26,11 +26,11 @@ duplica el SQL de MySQL, solo decide el orden y la resiliencia.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Callable
 
 from config import settings
+from core import actor
 from services import costing_mirror, supabase_db as sdb
 
 log = logging.getLogger("omnicanal.costing_write")
@@ -43,10 +43,9 @@ def activo() -> bool:
 
 
 def _en_hilo(fn: Callable, *args) -> None:
-    try:
-        asyncio.get_running_loop().run_in_executor(None, fn, *args)
-    except RuntimeError:  # sin loop (contexto síncrono puro): directo
-        fn(*args)
+    # Delega en core.actor: `run_in_executor` NO se lleva los contextvars, y por
+    # aquí pasan las escrituras de costos — justo las que hay que atribuir.
+    actor.en_hilo(fn, *args)
 
 
 def _espejo_inverso_mysql(tabla: str, sku: str, escribir_mysql: Callable[[], None]) -> None:

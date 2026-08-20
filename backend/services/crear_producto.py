@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from config import settings
+from core import actor
 from services import (categorias_write, channel_read, costing_read, costing_write,
                       costos, db, meli, woocommerce, wp_db)
 
@@ -129,12 +130,9 @@ def _set(sku: str, estado: str, paso: str, **extra: Any) -> None:
         "actualizado": time.time(), **extra,
     }
     log.info("crear[%s] %s: %s", sku, estado, paso)
-    try:
-        # sin bloquear el event loop (la escritura va a MySQL en Hostinger)
-        asyncio.get_running_loop().run_in_executor(
-            None, _persistir_log, sku, estado, paso, extra)
-    except RuntimeError:
-        _persistir_log(sku, estado, paso, extra)
+    # sin bloquear el event loop (la escritura va a MySQL en Hostinger).
+    # Vía core.actor para que el hilo conserve quién pidió la creación.
+    actor.en_hilo(_persistir_log, sku, estado, paso, extra)
 
 
 def progreso() -> list[dict[str, Any]]:
