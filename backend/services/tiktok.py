@@ -115,6 +115,18 @@ def _cifrar(valor: str) -> str:
     return f.encrypt(valor.encode()).decode()
 
 
+def _cifrar_o_no(valor: str) -> str:
+    """Cifra si hay llave; si no, devuelve el valor tal cual.
+
+    SOLO para pruebas en ambientes sin `DB_ENCRYPTION_KEY`. `_cifrar` se niega a
+    seguir sin llave —y hace bien, porque en produccion esa negativa es lo que
+    evita guardar un token en claro— pero esa misma negativa impide probar el
+    mecanismo en el sandbox, donde no hay nada que proteger.
+    """
+    f = _fernet()
+    return f.encrypt(valor.encode()).decode() if f else valor
+
+
 def _descifrar(valor: str | None) -> str | None:
     if not valor:
         return None
@@ -236,6 +248,11 @@ _REFRESH_VENTANA_S = 120.0              # anti-estampida: las ráfagas comparten
 
 
 def _fila_token(shop_id: str | None) -> dict[str, Any] | None:
+    # PASO 6b (20-ago): kubera. Sin try/except — si no se puede leer, es mejor
+    # que truene que renovar a ciegas.
+    if settings.supabase_read_tokens:
+        from services import tokens_read
+        return tokens_read.tiktok_leer(shop_id)
     if shop_id:
         return db.fetch_one(
             "SELECT shop_id, refresh_token, expira FROM tiktok_tokens WHERE shop_id=%s",
@@ -295,6 +312,21 @@ async def refrescar_y_guardar(shop_id: str | None = None) -> str | None:
              datetime.now(timezone.utc).replace(tzinfo=None), clave))
 
     await asyncio.to_thread(_persistir)
+    # PASO 6b: el MISMO valor tambien a kubera. `shop_cipher` NO se manda: aqui
+    # no cambia, y `tiktok_guardar` lo conserva con coalesce — pisarlo con NULL
+    # es justo el fallo disfrazado que documenta la 0024.
+    if settings.supabase_write_tokens:
+        try:
+            from services import tokens_read
+            await asyncio.to_thread(
+                tokens_read.tiktok_guardar, clave, _cifrar(access),
+                refresh_token=(_cifrar(data["refresh_token"])
+                               if data.get("refresh_token") else None),
+                expira=_a_datetime(data.get("access_token_expire_in")),
+                refresh_expira=_a_datetime(data.get("refresh_token_expire_in")))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no se pudo espejar el token de TikTok a kubera: %s", exc)
+
     log.info("TikTok: access_token renovado para shop %s (expira %s).",
              clave, _a_datetime(data.get("access_token_expire_in")))
     return access
@@ -523,6 +555,18 @@ def guardar(data: dict[str, Any],
              t.get("cipher") or t.get("shop_cipher"),
              access_c, refresh_c, expira, refresh_expira, ahora),
         )
+        # PASO 6b: espejo a kubera del mismo upsert.
+        if settings.supabase_write_tokens:
+            try:
+                from services import tokens_read
+                tokens_read.tiktok_guardar(
+                    str(t.get("id") or t.get("shop_id") or "default"), access_c,
+                    seller_name=(t.get("name") or seller), open_id=open_id,
+                    shop_cipher=(t.get("cipher") or t.get("shop_cipher")),
+                    refresh_token=refresh_c, expira=expira,
+                    refresh_expira=refresh_expira, cuando=ahora)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("no se pudo espejar la tienda de TikTok a kubera: %s", exc)
         guardadas += 1
     log.info("TikTok: token guardado para %s (%d tienda/s)", seller or open_id, guardadas)
     return guardadas
@@ -530,12 +574,14 @@ def guardar(data: dict[str, Any],
 
 def estado() -> dict[str, Any]:
     """Diagnóstico sin exponer el token: ¿hay conexión viva y hasta cuándo?"""
+    from services import tokens_read
     try:
-        _asegurar_tabla()
-        filas = db.fetch_all(
-            "SELECT seller_name, shop_id, expira, refresh_expira, updated_at "
-            "FROM tiktok_tokens ORDER BY updated_at DESC"
-        )
+        if not settings.supabase_read_tokens:
+            _asegurar_tabla()
+        filas = (tokens_read.tiktok_listar() if settings.supabase_read_tokens
+                 else db.fetch_all(
+                     "SELECT seller_name, shop_id, expira, refresh_expira, updated_at "
+                     "FROM tiktok_tokens ORDER BY updated_at DESC"))
     except Exception as exc:  # noqa: BLE001
         return {"configurado": False, "error": str(exc), "tiendas": []}
     ahora = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -568,6 +614,12 @@ def cipher(shop_id: str | None = None) -> str | None:
     `/authorization/202309/shops`, y sin él una conexión con token válido
     contesta 'shop_cipher is required' y parece un problema de permisos.
     """
+    # PASO 6b: este es EL sitio que falla disfrazado. Sin cipher, TikTok
+    # contesta "shop_cipher is required" con un token perfectamente valido y
+    # parece un problema de permisos. Ver la migracion 0024.
+    if settings.supabase_read_tokens:
+        from services import tokens_read
+        return (tokens_read.tiktok_leer(shop_id) or {}).get("shop_cipher") or None
     try:
         _asegurar_tabla()
         if shop_id:
@@ -584,6 +636,10 @@ def cipher(shop_id: str | None = None) -> str | None:
 
 def access_token(shop_id: str | None = None) -> str | None:
     """Access token descifrado de una tienda (o el más reciente)."""
+    # PASO 6b.
+    if settings.supabase_read_tokens:
+        from services import tokens_read
+        return _descifrar((tokens_read.tiktok_leer(shop_id) or {}).get("access_token"))
     try:
         _asegurar_tabla()
         if shop_id:

@@ -96,6 +96,7 @@ def limpiar() -> None:
     sdb.execute("delete from ops.fulfillment_operations where operacion_id = %s", (_OP,))
     sdb.execute("delete from ops.fba_watermark where sku = %s", ("PRUEBA-SKU-FBA",))
     sdb.execute("delete from ops.ml_tokens where cuenta = %s", (_CUENTA_T,))
+    sdb.execute("delete from ops.tiktok_tokens where shop_id like %s", ("PRUEBA-%",))
 
 
 def main() -> None:
@@ -221,6 +222,50 @@ def main() -> None:
     if not (settings.meli_app_id and settings.meli_client_secret):
         print("  ⚠ En este ambiente no estan, y sin ellas `_credenciales_refresh` no")
         print("    puede renovar leyendo de kubera. Es PRERREQUISITO en Railway.")
+
+    # ══ PASO 6b — TikTok, el tercer almacen de credenciales ═════════════════
+    raya = "=" * 70
+    print("\n" + raya + "\n  PASO 6b - los tokens de TikTok (fallan disfrazados)\n" + raya)
+    from services import tiktok
+    _SHOP = "PRUEBA-shop-7000000000"
+
+    v, e_v = con("supabase_read_tokens", False, tiktok.cipher, _SHOP)
+    print("  cipher('%s') apagada y sin MySQL -> %s" % (_SHOP, v))
+    check("apagada sin MySQL: None. TikTok dira «shop_cipher is required»",
+          e_v is None and v is None,
+          "y eso PARECE un problema de permisos — se rompe disfrazado")
+
+    at_c = tiktok._cifrar_o_no("PRUEBA-tt-access")
+    rt_c = tiktok._cifrar_o_no("PRUEBA-tt-refresh")
+    tokens_read.tiktok_guardar(_SHOP, at_c, seller_name="PRUEBA", open_id="oid",
+                               shop_cipher="CIPHER-DE-PRUEBA", refresh_token=rt_c)
+    n, e_n = con("supabase_read_tokens", True, tiktok.cipher, _SHOP)
+    check("prendida: el cipher vuelve", e_n is None and n == "CIPHER-DE-PRUEBA",
+          str(e_n) if e_n else str(n))
+    n2, e2 = con("supabase_read_tokens", True, tiktok.access_token, _SHOP)
+    check("y el access_token vuelve DESCIFRADO",
+          e2 is None and n2 == "PRUEBA-tt-access", str(e2) if e2 else "ok")
+
+    # LO QUE MAS IMPORTA DE ESTA TABLA: renovar NO puede borrar el cipher.
+    # TikTok no siempre lo devuelve al renovar, y pisarlo con NULL deja la
+    # conexion con un token bueno y sin poder llamar a nada — el fallo
+    # disfrazado que documenta la migracion 0024.
+    tokens_read.tiktok_guardar(_SHOP, tiktok._cifrar_o_no("PRUEBA-tt-access-2"))
+    fila = tokens_read.tiktok_leer(_SHOP)
+    check("renovar SIN mandar cipher NO lo borra",
+          fila["shop_cipher"] == "CIPHER-DE-PRUEBA",
+          "quedo %r" % (fila["shop_cipher"],))
+    check("y el access_token si se actualizo",
+          tiktok._descifrar(fila["access_token"]) == "PRUEBA-tt-access-2")
+    check("el refresh_token tampoco se perdio",
+          tiktok._descifrar(fila["refresh_token"]) == "PRUEBA-tt-refresh")
+
+    cc = tokens_read.tiktok_censo()
+    check("el censo de TikTok no expone tokens",
+          not [x for x in cc
+               if any(str(y or "").startswith("gAAAAA") for y in x.values())],
+          str(cc[:1]))
+
 
     limpiar()
     print(f"\n  (limpieza: las filas PRUEBA- se borraron del sandbox)")

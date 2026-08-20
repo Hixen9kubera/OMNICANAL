@@ -12320,6 +12320,63 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.225.0 — TikTok: el tercer almacén de credenciales, el que nadie había contado
+
+No lo buscábamos. Salió del triaje de los 95 `try/except` que se tragan un fallo
+de MySQL: de 15 sospechosos, catorce se cayeron al abrirlos —ocho ya cubiertos
+por bandera, seis inofensivos— y quedó **uno solo, que no estaba en ninguna lista
+del plan**.
+
+`tiktok_tokens` vive en el MySQL que estamos retirando. Una fila, escrita el
+18-ago: **viva**. Y kubera no tenía dónde ponerla — solo existía `ops.ml_tokens`.
+
+Es la misma lección de siempre: creíamos que el bloqueador de credenciales era
+uno y eran dos. **Ningún conteo de esta migración se ha movido a la baja.**
+
+#### Por qué es peor que el de ML, aunque sea más chico
+
+El de Mercado Libre falla de frente: sin token, no hay llamada. **El de TikTok
+falla disfrazado.** Sin `shop_cipher`, TikTok contesta `shop_cipher is required`
+aunque el token sea perfectamente válido — y el propio comentario del código ya
+lo advertía desde antes:
+
+> *"sin él una conexión con token válido contesta 'shop_cipher is required' y
+> parece un problema de permisos"*
+
+O sea que el día del corte, alguien perdería horas revisando permisos en el panel
+de TikTok mientras el problema está en una tabla que borramos.
+
+#### Lo que se hizo
+
+Migración **0024**: `ops.tiktok_tokens`, con `shop_id` de PK. En MySQL la tabla
+tiene un `id AUTO_INCREMENT` que **no lee nadie** —todas las consultas van por
+`shop_id` o por `updated_at`— y un autoincrement que nadie lee solo sirve para
+que dos filas de la misma tienda puedan coexistir.
+
+Cuatro lecturas y dos escrituras repuntadas en `services/tiktok.py`, detrás de
+las mismas banderas del paso 6. Las llaves de la app (`tiktok_app_key`,
+`tiktok_app_secret`) **no se copian**: ya viven en variables de entorno, mismo
+criterio que el `client_secret` de ML en la 0023.
+
+**El detalle que decide si esto funciona:** al renovar, `tiktok_guardar` conserva
+el `shop_cipher` con `coalesce` en vez de pisarlo. TikTok no siempre lo devuelve
+en la respuesta de refresh, y escribirlo como NULL dejaría la conexión con un
+token bueno y sin poder llamar a nada. Es exactamente el fallo disfrazado, pero
+provocado por nosotros. El propio `refrescar_y_guardar` ya cargaba esa cicatriz
+en su docstring; aquí se respeta.
+
+Pruebas: **7 checks nuevos** dentro de `probar_candados_tokens_sandbox.py` (21 en
+total). El que más importa: *renovar sin mandar cipher NO lo borra*.
+
+Y un ayudante nuevo, `tiktok._cifrar_o_no`, **solo para pruebas**: `_cifrar` se
+niega a seguir sin `DB_ENCRYPTION_KEY` —y hace bien, porque en producción esa
+negativa es lo que evita guardar un token en claro— pero esa misma negativa
+impedía probar el mecanismo en el sandbox, donde no hay nada que proteger.
+
+Migración **0024 aplicada solo al SANDBOX**. Sin variables nuevas: usa
+`SUPABASE_WRITE_TOKENS` / `SUPABASE_READ_TOKENS`, las dos en `false`.
+Versión 0.225.0.
+
 ### v0.224.0 — Los dos últimos: el candado de bodega y los tokens de ML
 
 Con esto **`probar_corte_total.py` pasa de 12 a 14 de 14**: ningún camino

@@ -128,3 +128,88 @@ def censo() -> list[dict[str, Any]]:
     return [{"cuenta": f["cuenta"], "updated_at": f["updated_at"],
              "h_access": huella(f["access_token"]),
              "h_refresh": huella(f["refresh_token"])} for f in filas]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  TIKTOK — el tercer almacen de credenciales (PASO 6b)
+# ═══════════════════════════════════════════════════════════════════════════
+# Aparecio en el triaje de los 95 `try/except`, no en el plan. Mismo molde que
+# ML, con dos diferencias que importan:
+#
+# 1. NO hay arbitraje por recencia. En ML se compara `updated_at` entre tres
+#    fuentes porque un tercero podia renovar; aqui el unico escritor es nuestro
+#    `tiktok.refrescar_y_guardar`. Inventar un arbitraje donde no hay dos
+#    escritores es agregar una pieza que nadie puede verificar.
+#
+# 2. Se guarda MAS que el token: `shop_cipher` es un parametro obligatorio de
+#    casi toda la API, y sin el una conexion con token valido contesta
+#    "shop_cipher is required". Perder esa columna rompe TikTok disfrazado de
+#    problema de permisos.
+
+def tiktok_leer(shop_id: str | None = None) -> dict[str, Any] | None:
+    """La fila de una tienda, o la mas reciente. Los tokens vuelven CIFRADOS."""
+    cols = ("shop_id, seller_name, open_id, shop_cipher, access_token, "
+            "refresh_token, expira, refresh_expira, updated_at")
+    if shop_id:
+        return sdb.fetch_one(
+            f"select {cols} from ops.tiktok_tokens where shop_id = %s",
+            (str(shop_id),))
+    return sdb.fetch_one(
+        f"select {cols} from ops.tiktok_tokens order by updated_at desc limit 1")
+
+
+def tiktok_listar() -> list[dict[str, Any]]:
+    """Todas las tiendas, para el diagnostico. SIN tokens: solo fechas."""
+    return sdb.fetch_all(
+        """select shop_id, seller_name, expira, refresh_expira, updated_at
+             from ops.tiktok_tokens order by updated_at desc""")
+
+
+def tiktok_guardar(shop_id: str, access_token: str, *, seller_name=None,
+                   open_id=None, shop_cipher=None, refresh_token=None,
+                   expira=None, refresh_expira=None,
+                   cuando: datetime | None = None) -> int:
+    """Guarda o actualiza una tienda.
+
+    `shop_cipher` se conserva si viene vacio (`coalesce`): TikTok no siempre lo
+    devuelve al renovar, y pisarlo con NULL dejaria la conexion con un token
+    bueno y sin poder llamar a nada. Ese es exactamente el modo de fallo
+    disfrazado que documenta la migracion 0024.
+    """
+    from config import settings as _s
+    en_claro = [n for n, v in (("access", access_token), ("refresh", refresh_token))
+                if v and not str(v).startswith("gAAAAA")]
+    if en_claro:
+        if _s.db_encryption_key:
+            raise ValueError(
+                f"tokens_read.tiktok_guardar({shop_id}): {'/'.join(en_claro)} NO "
+                f"viene cifrado y SI hay DB_ENCRYPTION_KEY.")
+        log.warning("tiktok_guardar(%s): sin DB_ENCRYPTION_KEY, %s sin cifrar.",
+                    shop_id, "/".join(en_claro))
+    return sdb.execute(
+        """insert into ops.tiktok_tokens
+             (shop_id, seller_name, open_id, shop_cipher, access_token,
+              refresh_token, expira, refresh_expira, updated_at)
+           values (%s,%s,%s,%s,%s,%s,%s,%s, coalesce(%s, now()))
+           on conflict (shop_id) do update set
+             seller_name    = coalesce(excluded.seller_name, tiktok_tokens.seller_name),
+             open_id        = coalesce(excluded.open_id, tiktok_tokens.open_id),
+             shop_cipher    = coalesce(excluded.shop_cipher, tiktok_tokens.shop_cipher),
+             access_token   = excluded.access_token,
+             refresh_token  = coalesce(excluded.refresh_token, tiktok_tokens.refresh_token),
+             expira         = coalesce(excluded.expira, tiktok_tokens.expira),
+             refresh_expira = coalesce(excluded.refresh_expira, tiktok_tokens.refresh_expira),
+             updated_at     = excluded.updated_at""",
+        (str(shop_id), seller_name, open_id, shop_cipher, access_token,
+         refresh_token, expira, refresh_expira, cuando))
+
+
+def tiktok_censo() -> list[dict[str, Any]]:
+    """Fechas y huellas, jamas valores."""
+    filas = sdb.fetch_all(
+        "select shop_id, shop_cipher, access_token, refresh_token, updated_at "
+        "from ops.tiktok_tokens order by shop_id")
+    return [{"shop_id": f["shop_id"], "updated_at": f["updated_at"],
+             "tiene_cipher": bool(f["shop_cipher"]),
+             "h_access": huella(f["access_token"]),
+             "h_refresh": huella(f["refresh_token"])} for f in filas]
