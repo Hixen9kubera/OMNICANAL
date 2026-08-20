@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.242.0 — Paso 2 del rastro: quién creó qué producto
+
+El paso 1 (v0.233.0) tendió el cable: el backend ya le dice a la base quién pide
+cada operación. Los costos quedaron atribuidos solos, porque el trigger de
+`cost_history` leía ese valor desde su primera versión. Faltaba la otra mitad de
+lo que se pidió — **quién crea qué producto** — y ahí `ops.process_log` no tenía
+dónde guardarlo, aunque es donde viven las 2,821 creaciones.
+
+#### Cero líneas de Python
+
+`ops.process_log` la escriben cinco lugares distintos y todos listan sus columnas
+explícitamente. Una columna con **valor por omisión** que lee el mismo ajuste que
+deja el cable se llena sola en los cinco, sin tocar ninguno. Si mañana aparece un
+sexto escritor, también queda cubierto.
+
+#### La trampa que solo se vio midiendo
+
+Postgres evalúa el default **una vez** al agregar la columna y guarda ese
+resultado como valor de las filas que ya existían. Si la migración corriera en
+una sesión con `app.usuario` puesto —y el cable lo pone en toda petición del
+panel— **las 3,416 filas históricas habrían quedado firmadas por quien corrió la
+migración**. Una mentira con fecha atrasada, dentro de la tabla que existe para
+no mentir.
+
+Se separó en dos `alter`: primero la columna sin default, después el default.
+Probado en el peor escenario a propósito —con el actor puesto— y las históricas
+quedan nulas. Aplicado en producción: **0 de 3,416 firmadas**, que es la verdad:
+de antes del cable no hay registro de quién fue.
+
+#### Además
+
+- `fn_cost_history` ahora guarda `NULL` en vez de cadena vacía cuando no hay
+  persona. `current_setting(…, true)` devuelve `''` en cuanto el ajuste se tocó
+  una vez en esa conexión, y quedaban dos formas de decir lo mismo. Se verificó
+  que la función viva en producción era idéntica a la nueva salvo por ese
+  cambio, para no pisar el trabajo de nadie.
+- Vista `ops.rastro_autoria`: junta el historial de costos y la bitácora de
+  procesos en una sola ventanilla. `select * from ops.rastro_autoria where
+  sku = 'ABC-123' order by cuando desc`. Nace con `security_invoker = on`, como
+  exige la prueba de CI de la 0025.
+
+#### Fuera de alcance
+
+`channel.listing_history` se deja como está: sus 178,000 filas son casi todas de
+procesos automáticos, así que el "quién" sería una máquina el 98% de las veces.
+Y esto no ve a quien entra directo por el dashboard de Supabase — eso es del
+modelo de roles.
+
 ### v0.241.0 — La nota del secreto estaba mal, y los repos son públicos
 
 Se fue a rotar el `client_secret` de ML que CLAUDE.md daba por expuesto en el
