@@ -12406,9 +12406,17 @@ operación que no existe devuelve `False`, y ese `False` es la respuesta
 **correcta**. Una sonda que no distingue "no existe el camino" de "la tabla está
 vacía" comete el mismo error que persigue. Ahora siembra, pregunta y limpia.
 
-Migración **0023 aplicada al SANDBOX**, no a producción. Variables nuevas:
-`SUPABASE_READ_CANDADOS`, `SUPABASE_WRITE_TOKENS`, `SUPABASE_READ_TOKENS`, las
-tres en `false` y sin definir en Railway. Versión 0.224.0.
+Migración **0023 aplicada a SANDBOX y a PRODUCCIÓN** (20-ago, con el dale de
+Eduardo). Es aditiva sobre una tabla VACÍA —dos columnas nullable— y ninguna
+bandera está encendida, así que nadie las lee ni las escribe todavía.
+Verificado tras aplicar: las 2 columnas existen, la tabla sigue con 0 filas,
+`ml_tokens` fue la única tabla de `ops` que cambió, y re-aplicarla no agrega nada
+(idempotente). Producción sana al terminar: 764 pedidos en las últimas 24 h, el
+más reciente 2 minutos antes.
+
+Variables nuevas: `SUPABASE_READ_CANDADOS`, `SUPABASE_WRITE_TOKENS`,
+`SUPABASE_READ_TOKENS`, las tres en `false` y sin definir en Railway.
+Versión 0.224.0.
 
 ### v0.223.0 — Paso 3 CERRADO: competencia, inventario, y 81 publicaciones con dos dueños
 
