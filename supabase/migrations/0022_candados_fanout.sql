@@ -142,3 +142,16 @@ comment on table ops.fba_watermark is
   'vio el vigilante al procesar un evento. Usar la del sync hacía contar dos '
   'veces el mismo ingreso. Migrada de MySQL fanout_log (99 marcas que estaban '
   'dentro de texto libre) el 14-ago-2026.';
+
+-- ── RLS: la tabla nace blindada ─────────────────────────────────────────────
+-- Mismo patron que `0022_blindaje_rls.sql` (auditoria del 19-ago): RLS activada
+-- y CERO politicas = deny-by-default de verdad. `service_role` tiene
+-- `rolbypassrls`, asi que el backend y los crons no se enteran.
+--
+-- Va AQUI y no en una migracion de limpieza posterior por lo que enseño esa
+-- auditoria: diez tablas habian nacido sin RLS y solo estaban contenidas por la
+-- lista de esquemas que expone PostgREST — configuracion que vive FUERA del
+-- esquema y se cambia con un clic. Tres de esas diez las cree yo. Una tabla que
+-- nace blindada no depende de que alguien se acuerde despues.
+alter table ops.fulfillment_operations         enable row level security;
+alter table ops.fba_watermark                  enable row level security;

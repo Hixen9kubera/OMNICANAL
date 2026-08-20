@@ -102,3 +102,15 @@ comment on column ops.stock_watch_photo.actualizado is
 -- El espejo del DROP barre por "los que tienen stock de Woo".
 create index if not exists ix_stock_watch_photo_woo
     on ops.stock_watch_photo (sku) where stock_woo is not null;
+
+-- ── RLS: la tabla nace blindada ─────────────────────────────────────────────
+-- Mismo patron que `0022_blindaje_rls.sql` (auditoria del 19-ago): RLS activada
+-- y CERO politicas = deny-by-default de verdad. `service_role` tiene
+-- `rolbypassrls`, asi que el backend y los crons no se enteran.
+--
+-- Va AQUI y no en una migracion de limpieza posterior por lo que enseño esa
+-- auditoria: diez tablas habian nacido sin RLS y solo estaban contenidas por la
+-- lista de esquemas que expone PostgREST — configuracion que vive FUERA del
+-- esquema y se cambia con un clic. Tres de esas diez las cree yo. Una tabla que
+-- nace blindada no depende de que alguien se acuerde despues.
+alter table ops.stock_watch_photo              enable row level security;

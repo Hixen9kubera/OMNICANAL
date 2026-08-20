@@ -63,3 +63,15 @@ comment on column ops.tiktok_tokens.shop_cipher is
   'Parametro obligatorio de casi toda la API de TikTok que no sea catalogo '
   'publico. Sin el, una conexion con token VALIDO contesta "shop_cipher is '
   'required" y parece un problema de permisos: falla disfrazado.';
+
+-- ── RLS: la tabla nace blindada ─────────────────────────────────────────────
+-- Mismo patron que `0022_blindaje_rls.sql` (auditoria del 19-ago): RLS activada
+-- y CERO politicas = deny-by-default de verdad. `service_role` tiene
+-- `rolbypassrls`, asi que el backend y los crons no se enteran.
+--
+-- Va AQUI y no en una migracion de limpieza posterior por lo que enseño esa
+-- auditoria: diez tablas habian nacido sin RLS y solo estaban contenidas por la
+-- lista de esquemas que expone PostgREST — configuracion que vive FUERA del
+-- esquema y se cambia con un clic. Tres de esas diez las cree yo. Una tabla que
+-- nace blindada no depende de que alguien se acuerde despues.
+alter table ops.tiktok_tokens                  enable row level security;

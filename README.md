@@ -12320,6 +12320,66 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.227.0 — Mis migraciones nacían sin RLS, y alguien tuvo que limpiar detrás
+
+**NO se aplicó nada a producción.** Esto es lo previo a hacerlo, coordinado con
+la sesión de seguridad (Eduardo, 20-ago).
+
+#### Lo que encontré al ir a verificar
+
+La auditoría del 19-ago blindó **10 tablas que "nacieron sin RLS"**
+(`0022_blindaje_rls.sql`). Al cruzarlo con mis migraciones: **tres de esas diez
+las creé yo** — `ops.stock_watch_photo` (0021), `ops.fulfillment_operations` y
+`ops.fba_watermark` (0022).
+
+No es que se me olvidara una vez: **ninguna de mis migraciones traía RLS**. Cinco
+tablas creadas, cero blindadas. Alguien tuvo que pasar detrás a arreglarlo.
+
+Y el patrón se repetía: `0026_ops_tiktok_tokens.sql`, escrita ayer, creaba
+`ops.tiktok_tokens` igual de desnuda. La memoria de esa sesión ya lo había
+anticipado: *"`ops.tiktok_tokens` existe SOLO en el sandbox y sin RLS. La
+migración que la promueva a producción debe traerle su RLS."*
+
+#### El arreglo, de raíz y no de parche
+
+Las tres migraciones ahora traen su `enable row level security` **en el mismo
+archivo que crea la tabla**, con cero políticas — deny-by-default de verdad,
+igual que el patrón de la auditoría.
+
+Va ahí y no en una limpieza posterior por lo que enseñó esa misma auditoría: esas
+diez tablas **solo estaban contenidas por la lista de esquemas que expone
+PostgREST**, que es configuración que vive FUERA del esquema y se cambia con un
+clic. **Una tabla que nace blindada no depende de que alguien se acuerde
+después.**
+
+Se aplicó el RLS faltante a `ops.tiktok_tokens` en el sandbox. Ahora los dos
+ambientes coinciden: **11 de 11 tablas de `ops` con RLS y cero grants de
+`anon`/`authenticated`**.
+
+Y se verificó lo que hacía falta verificar: **el RLS no rompe nada**. Las tres
+suites del sandbox siguen en verde, incluido el censo de las 73 rutas. Era lo
+esperado —`service_role` tiene `rolbypassrls`— pero esperado no es medido.
+
+#### Colisión de números, resuelta
+
+Con varias sesiones trabajando a la vez había **cuatro números duplicados**
+(0004, 0018, 0023 ×3, 0024 ×2). Mis dos se renumeraron a `0025` y `0026` para
+dejar libres los de la otra rama. Quedan tres duplicados heredados, todos
+anteriores y ya aplicados.
+
+#### Lo que falta antes de tocar producción
+
+`0022_blindaje_rls.sql` **está aplicada a la base de producción pero su archivo
+vive en la rama `feat/competencia-censo-automatico`, no en `main`**. Hasta que
+esa rama entre, `main` no describe el estado real de la base — y una migración
+que se aplica desde un `main` incompleto puede pisar o contradecir lo que ya está
+puesto.
+
+Por eso **la 0026 de TikTok se queda esperando**. El orden correcto es: entra su
+rama → `main` refleja la base → se aplica.
+
+Sin variables nuevas. Versión 0.227.0.
+
 ### v0.226.0 — El corte medido contra las 73 pantallas, y la red que se queda sin piso
 
 Dos piezas para poder cambiar de golpe: **el censo de verdad** y **el suelo de la
