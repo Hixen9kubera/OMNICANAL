@@ -299,6 +299,33 @@ reinicio), pero el canal de pérdida silenciosa **sí está probado, en el códi
 Pendiente: que un descarte por cola llena se persista y se pueda reprocesar,
 igual que cualquier otro error del espejo.
 
+### ⚠️ TRAMPA en el PASO 5: `SUPABASE_READ_WEBHOOKS` NO se puede prender
+
+Medido el 20-ago, buscando qué más se podía encender mientras se esperaba otra
+cosa. La bandera existe, el código está escrito y parecía un paso pendiente más.
+**No lo es.**
+
+Las dos tablas dejaron de servir para lo mismo:
+
+| | eventos de hoy |
+|---|---|
+| MySQL `webhook_eventos` | **3** — solo los avisos de stock de `odoo_watch` |
+| kubera `ops.webhook_events` | **12,047** — shipments 4,134 · orders_v2 2,318 · payments 1,381 · invoices 1,198 · items 956 … |
+
+Desde `WEBHOOK_GUARDA_MYSQL=false`, MySQL dejó de recibir el tráfico de webhooks
+y quedó recibiendo **solo la campana**: los cambios de stock de Odoo, que son
+avisos con forma de aviso. Kubera, en cambio, recibe **el chorro completo**.
+
+Así que prender la bandera no repunta una lectura: **cambia una campana curada
+por una manguera**. El contador del frontend pasaría de 3 a 12,047 y la lista
+serían veinte notificaciones de envíos.
+
+**Lo que hace falta antes es un filtro**, no un repunte. La campana necesita
+decidir qué topics son notificación (`stock_cambio` de odoo, ventas, errores) y
+cuáles son tráfico. Hasta entonces la bandera se queda apagada **a propósito**, y
+esto queda escrito para que nadie la vea en la lista de pendientes y la prenda
+creyendo que es trámite.
+
 ### PASO 5 — Bitácoras
 
 La campana (`webhook_eventos`, 3 endpoints) y `fanout_log`. **Después del paso
