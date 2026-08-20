@@ -751,6 +751,44 @@ def _asegurar_tabla_log() -> bool:
     return _tabla_log_lista
 
 
+def _ultimo_recurso(origen_py: str, funcion: str, tabla_kubera: str,
+                    operacion: str, clave: str | None, exc: Exception,
+                    payload: dict[str, Any], motivo: str) -> None:
+    """
+    Cuando NO hay dónde guardar el error: la última red, y es el log.
+
+    POR QUÉ EXISTE
+    --------------
+    `espejo_kubera_log` vive en MySQL A PROPÓSITO: es lo que sobrevive cuando
+    kubera está caída. El día que se retire ese esquema, ese "a propósito" se
+    queda sin piso — kubera caída **y** MySQL apagado deja el evento sin ningún
+    lado donde caer, y se pierde en silencio.
+
+    Silencio es lo único inaceptable. Los logs de Railway sí sobreviven al
+    contenedor, así que el evento sale por ahí en UNA sola línea, con prefijo
+    fijo y el payload completo en JSON: no es reprocesable con un botón, pero se
+    puede recuperar a mano — que es infinitamente mejor que no enterarse.
+
+    NO ES UN REEMPLAZO de la tabla. Es el suelo, para que la caída tenga fondo.
+    Buscar en Railway: `ESPEJO-PERDIDO`.
+
+    Historia que justifica conservar la red en alguna forma: 60 eventos en
+    julio (`TooManyConnectionsError`, 22-23-jul) y 6 el 17-ago en una ventana de
+    37 segundos. No es una tabla decorativa: ha atrapado cosas.
+    """
+    try:
+        pj = json.dumps(payload, ensure_ascii=False, default=str)[:_MAX_PAYLOAD_JSON]
+    except Exception:  # noqa: BLE001
+        pj = str(payload)[:_MAX_PAYLOAD_JSON]
+    log.error(
+        "ESPEJO-PERDIDO %s",
+        json.dumps({"origen": origen_py, "funcion": funcion,
+                    "destino": tabla_kubera, "operacion": operacion,
+                    "clave": clave, "error": f"{type(exc).__name__}: {exc}"[:300],
+                    "no_se_pudo_guardar_porque": motivo[:200],
+                    "payload": pj}, ensure_ascii=False, default=str))
+
+
 def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
                      tabla_kubera: str, operacion: str, clave: str | None,
                      exc: Exception, payload: dict[str, Any]) -> None:
@@ -777,6 +815,8 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
         )
     except Exception as exc2:  # noqa: BLE001
         log.warning("no se pudo persistir el error del espejo: %s", exc2)
+        _ultimo_recurso(origen_py, funcion, tabla_kubera, operacion, clave, exc,
+                        payload, motivo=f"{type(exc2).__name__}: {exc2}")
     # Alerta push a Slack (import tardío, jamás rompe el flujo del espejo).
     try:
         from services import alertas

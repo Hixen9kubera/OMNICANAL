@@ -12320,6 +12320,89 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.226.0 — El corte medido contra las 73 pantallas, y la red que se queda sin piso
+
+Dos piezas para poder cambiar de golpe: **el censo de verdad** y **el suelo de la
+resiliencia**.
+
+#### El censo: 73 rutas, no 14 sondas
+
+`probar_corte_total.py` sondea 14 caminos elegidos a mano. Es una MUESTRA — y en
+esta migración ya pasó tres veces que una muestra dijera que estaba todo y el
+censo dijera otra cosa: los lectores del grupo 4 eran **25 y no 19**,
+`MonitoreoOperaciones` leía **7 tablas y no 1**, los scripts de mantenimiento eran
+**13 y no 8**. Ningún conteo se movió a la baja.
+
+`probar_corte_endpoints.py` levanta la app COMPLETA contra el sandbox con
+`MYSQL_ENABLED=false` —el mundo de después del retiro— y llama a **todas** las
+rutas GET. Resultado:
+
+| | |
+|---|---|
+| **Truenan por el corte** | **0** |
+| Viven | 36 |
+| 503 del guardia de MySQL (honesto) | 7 |
+| 4xx por parámetro faltante | 13 |
+| Vacías | 13 — todas explicadas |
+| Fallan por falta de credenciales del sandbox | 4 |
+
+**Y la sonda se equivocó dos veces antes de servir, en direcciones opuestas.**
+La primera versión recorría `app.routes` y encontró **2 rutas**: esta versión de
+FastAPI envuelve cada router incluido en un `_IncludedRouter` en vez de
+aplanarlo. Dio todo en verde con el 3% del sistema — *un censo que no censa es
+peor que no tenerlo, porque tranquiliza*. Se arregló leyendo el OpenAPI de la
+propia app.
+
+La segunda marcó **4 rutas como rotas** —entre ellas `/api/productos`, la
+pantalla principal— y las cuatro fallaban porque el sandbox **no tiene
+credenciales de WooCommerce**, no por el corte. Una falsa alarma es tan inútil
+como un falso verde. Ahora se apartan con nombre propio (`SIN-WOO`), y para eso
+la sonda usa `raise_server_exceptions=True`: sin eso, todo llega como un 500
+genérico y no hay forma de distinguir "el corte lo rompió" de "al ambiente le
+falta una credencial".
+
+Un detalle que ilustra el problema entero del corte: esa misma falta de
+credenciales hace **tronar** a 4 rutas y devolver **lista vacía** a
+`/api/productos/_categorias/lista`, que tiene un `except → []`. Misma causa,
+distinta honestidad.
+
+#### La red que se queda sin piso
+
+`espejo_kubera_log` vive en MySQL **a propósito**: es lo que sobrevive cuando
+kubera está caída. Al retirar el esquema, ese "a propósito" se queda sin piso —
+kubera caída **y** MySQL apagado deja el evento sin ningún lado donde caer.
+
+Y no es una tabla decorativa: **60 eventos en julio** (`TooManyConnectionsError`,
+22-23-jul) y **6 el 17-ago en una ventana de 37 segundos**.
+
+Se agrega `_ultimo_recurso`: cuando no hay dónde guardar, el evento sale por el
+log de Railway en una línea con prefijo fijo (`ESPEJO-PERDIDO`) y el payload
+completo. No es reprocesable con un botón, pero se recupera a mano — que es
+infinitamente mejor que no enterarse. **No reemplaza la tabla: le pone fondo a la
+caída.**
+
+#### Y de paso, se cerró el misterio de `HERR-0104-EST`
+
+En v0.195.0 quedó anotado un SKU con costos en MySQL y ninguno en kubera, como
+posible defecto del flujo de Crear. **No lo era.** El `espejo_kubera_log` tenía
+la respuesta: 6 eventos de `ModuleNotFoundError: No module named 'psycopg2'`
+entre las 07:15:41 y las 07:16:18 del 17-ago — 37 segundos en que un proceso no
+pudo hablar con kubera. Los 6 quedaron resueltos.
+
+O sea: no fue un defecto del camino de costos, fue un tropiezo transitorio, y
+**la red hizo exactamente su trabajo**. Es el mejor argumento para no dejarla sin
+piso.
+
+#### Sobre `alertas_estado`, la otra tabla "a propósito"
+
+Medida antes de decidir: `alertas.py` ya tiene una capa **en memoria**
+(`_ultimo_envio`, `_suprimidas`, `_estados`); MySQL solo la hace sobrevivir a un
+reinicio. Perderla no apaga las alertas — cuesta **un aviso duplicado en Slack
+después de un deploy**. No amerita infraestructura nueva: puede morir con el
+esquema. Queda dicho para que sea una decisión y no un descuido.
+
+Sin migraciones ni variables nuevas. Versión 0.226.0.
+
 ### v0.225.0 — TikTok: el tercer almacén de credenciales, el que nadie había contado
 
 No lo buscábamos. Salió del triaje de los 95 `try/except` que se tragan un fallo
