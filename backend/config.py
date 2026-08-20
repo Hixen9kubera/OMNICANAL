@@ -595,6 +595,18 @@ class Settings(BaseSettings):
     # Condición de seguridad heredada: el día que se le quite el "solo registro"
     # al vigilante FULL, esto tiene que estar encendido y verificado.
     supabase_read_candados: bool = False
+    # ESCRITURA de las marcas, aparte de la LECTURA. Si no existiera, las
+    # escrituras irian detras de la bandera de lectura y kubera nunca podria
+    # ponerse al dia ANTES de encenderla — el huevo y la gallina.
+    #
+    # Se vio midiendo, no razonando: al comparar los tres candados antes de
+    # encender, 10 SKUs tenian la marca de agua del FBA distinta. Las de kubera
+    # eran del 12-ago (la copia inicial) y MySQL habia seguido avanzando, porque
+    # `_marcar_agua_fba` solo escribia con la bandera de LECTURA prendida.
+    #
+    # Con esta, el orden vuelve a ser el de siempre: escribir en los dos lados,
+    # comparar unos dias, y solo entonces mover la lectura.
+    supabase_write_candados: bool = False
 
     # ── La BITACORA del fan-out, aparte del CANDADO ──────────────────────────
     # Bandera propia y NO la de los candados, a proposito: es el hallazgo del

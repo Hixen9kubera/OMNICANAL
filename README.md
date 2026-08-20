@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.238.0 — El candado NO se encendió: 10 marcas de agua estaban desfasadas
+
+Paso 4, y la comprobación previa dijo **que no**. Vale más que si hubiera dicho
+que sí.
+
+#### Los dos primeros candados, perfectos
+
+    operaciones de bodega   MySQL 17  ·  kubera 17   — cero faltantes
+    compensacion por pedido MySQL  6  ·  kubera  6   — cero faltantes
+
+#### El tercero, no
+
+**10 SKUs con la marca de agua del FBA distinta.** : MySQL 40,
+kubera 20. : MySQL 179, kubera 120.
+
+Y esa no es un "sí/no" como las otras dos: es el número contra el que se calcula
+`subio = fba_ahora - marca`. Con la marca atrasada, el vigilante ve un ingreso
+que no ocurrió y **le descuenta a Woo piezas que nunca entraron**. Encenderlo así
+habría movido inventario mal en 10 productos.
+
+#### La causa era un error de diseño mío
+
+**Todas las escrituras de los candados estaban detrás de la bandera de LECTURA.**
+O sea: kubera no podía ponerse al día antes de encender, y no se podía encender
+sin que estuviera al día. El huevo y la gallina.
+
+Los otros dos candados se salvaron de casualidad: sus marcas se copiaron el
+12-ago y desde entonces hubo pocos eventos (17 y 6). La del FBA la mueve un
+vigilante cada 20 minutos, y por eso se despegó.
+
+Arreglado con el mismo patrón que usa toda la migración y que aquí rompí: una
+bandera de ESCRITURA aparte (`SUPABASE_WRITE_CANDADOS`). Escribir en los dos
+lados, comparar unos días, y solo entonces mover la lectura.
+
+#### Y una herramienta que faltaba
+
+`comparar_candados.py` compara los tres contra producción y **separa las dos
+direcciones del error**, porque no pesan igual:
+
+    MySQL SI · kubera NO  →  el movimiento SE REPITE. Solo esto reprueba.
+    MySQL NO · kubera SI  →  el movimiento se omite; se ve en el stock.
+
+`resincronizar_marcas_fba.py` puso las 99 al día —sandbox primero, producción
+después— y la comparación quedó en verde: **99 de 99 coinciden**.
+
+**El paso 4 se parte en dos**: 4a encender la escritura, dejarla correr y
+comparar; 4b encender la lectura. Versión 0.238.0.
+
 ### v0.237.0 — Paso 3: el dashboard del fan-out ya lee de kubera
 
 **`SUPABASE_READ_FANOUT_LOG=true` encendida.** Las cuatro pantallas del fan-out

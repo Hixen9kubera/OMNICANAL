@@ -409,7 +409,9 @@ def _sellar_candado(que: str, cuenta: str, order_id: str) -> None:
     Lo que NO lleva except es la LECTURA (`_ya_compensado`): ahí un error
     silencioso decide mover mercancía.
     """
-    if not settings.supabase_read_candados:
+    # Escribir la marca va por su PROPIA bandera: si dependiera de la de
+    # lectura, kubera no podria ponerse al dia antes de encenderla.
+    if not (settings.supabase_read_candados or settings.supabase_write_candados):
         return
     try:
         from services import candados_read

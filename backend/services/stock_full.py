@@ -185,7 +185,9 @@ def _marcar_agua_fba(sku: str, valor: int) -> None:
     arreglarse a escondidas dentro de una migración. Anotado para tratarlo
     aparte.
     """
-    if not settings.supabase_read_candados:
+    # Escribir la marca va por su PROPIA bandera: si dependiera de la de
+    # lectura, kubera no podria ponerse al dia antes de encenderla.
+    if not (settings.supabase_read_candados or settings.supabase_write_candados):
         return
     try:
         from services import candados_read
@@ -200,7 +202,8 @@ def _registrar(sku: str, operacion_id: str, cuenta: str, accion: str,
     # llama también con `resultado` de error —para que quede en la bitácora— y
     # sellar ahí volvería a sellar movimientos fallidos, que es exactamente lo
     # que el filtro `NOT LIKE 'ERROR%'` de MySQL existía para evitar.
-    if (settings.supabase_read_candados and accion in _ACCIONES_APLICADAS
+    if ((settings.supabase_read_candados or settings.supabase_write_candados)
+            and accion in _ACCIONES_APLICADAS
             and not str(resultado or "").upper().startswith("ERROR")):
         try:
             from services import candados_read
