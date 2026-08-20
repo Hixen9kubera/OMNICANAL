@@ -12320,6 +12320,67 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.221.0 — Paso 3, bloque 1: los seis lectores repuntados, con la bandera apagada
+
+Las seis lecturas de `ml_progress` / `amazon_progress` de `studio` (2),
+`presencia` (2) y `publicar` (2) ya tienen camino a `channel.listings`, detrás de
+**`SUPABASE_READ_PUBLICACIONES`, que nace en `false`**. No se encendió nada en
+Railway.
+
+**La prueba se hizo en el SANDBOX, y por una razón que sirve para los tres
+bloques que faltan: el sandbox corre con `MYSQL_ENABLED=false`, o sea que ya ES
+el mundo de después del retiro del esquema.** No hubo que simular la caída de
+MySQL — el ambiente la trae puesta desde la decisión del 15-jul.
+
+Las dos corridas lado a lado son el argumento entero del paso 3:
+
+| | apagada, sin MySQL | prendida, sin MySQL |
+|---|---|---|
+| `studio.estado_publicacion` | `{ml: [], amazon: {publicado: False}}` | 2 cuentas + ASIN + `PUBLISHED` |
+| `publicar._ml_publicaciones` | `[]` | las 2 cuentas |
+| `publicar._product_type_amazon` | `None` | `PA_SYSTEM` |
+
+Los seis sitios envuelven su consulta en `try/except → vacío`. **Sin MySQL no
+fallan: contestan "no está publicado".** Es el defecto de los 964 pedidos
+fantasma —una fuente no disponible diciendo "no" en vez de "no sé"— y la columna
+izquierda es, literalmente, lo que pasaría hoy si se retirara el esquema. El
+tercer renglón es el más caro: ese `None` tira el SKU al escalón de detección por
+título de la regla 2, que es lo que publicó una máquina de coser en la categoría
+equivocada.
+
+**Hallazgo del repunte: `presencia` no es un lector plano, es una RED.** Sus dos
+bloques corren DESPUÉS del primario y solo agregan lo que kubera no vio
+(`channel_read.presencia()` exige `listing_id` no vacío, y Amazon no asigna el
+ASIN al publicar). Repuntarlos como si fueran lectores los habría vuelto un
+duplicado inútil del primario; borrarlos habría abierto el hueco. Se les cambió
+la fuente y se les dejó la guardia — y la prueba lo confirmó: con la bandera
+prendida la red aporta **+1 canal que el primario no veía**, sin inflar ninguno
+de los que ya contaba.
+
+**Ninguna gemela lleva `try/except`.** Los originales lo tenían porque MySQL era
+opcional y la bitácora una red. Aquí un fallo significa que la fuente de verdad
+no contesta, y devolver "no publicado" sería afirmar lo que no se sabe.
+
+Y una corrección de la propia prueba, que vale conservar: el primer chequeo del
+doble conteo reprobaba con `n > 1`, pero **`n=2` en Mercado Libre es legítimo**
+—el SKU está publicado en BEKURA y en SANCORFASHION—. Reprobaba **igual con la
+bandera apagada**, que es la señal de que el defecto estaba en la prueba y no en
+lo probado. El chequeo bueno compara las dos corridas: la red nueva puede AGREGAR
+canales que el primario no vio (para eso existe), pero no puede INFLAR uno que ya
+contaba.
+
+Pruebas nuevas: `probar_bloque1_sandbox.py`, **12 checks en verde**. La paridad
+contra PRODUCCIÓN sigue en `comparar_publicaciones_bloque1.py`: ML 0 pares
+desconocidos de 2,024 SKUs, `product_type` 0 diferencias, y la única discrepancia
+sigue siendo `MUN-0023-MUL` (el caso ya explicado: Amazon respondió `ACCEPTED` y
+la publicación nunca existió).
+
+**Falta para cerrar el bloque:** encender la bandera en producción, que es
+decisión de Eduardo. Después, los bloques 2-4.
+
+Sin migraciones. Variable nueva `SUPABASE_READ_PUBLICACIONES` (default `false`,
+sin definir en Railway). Versión 0.221.0.
+
 ### v0.220.0 — La tabla de Costos deja de hablar de precios, y el desglose se puede sumar con la vista
 
 Sesión de costos con Brandon (19-ago). La pantalla captura COSTOS, pero cerraba

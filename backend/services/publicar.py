@@ -149,6 +149,14 @@ def _ml_publicaciones(sku: str | None) -> list[dict[str, Any]]:
     """
     if not sku:
         return []
+    # PASO 3 · BLOQUE 1 (17-ago). Sin try/except a propósito: si kubera no
+    # contesta, "no hay publicaciones" sería una MENTIRA con consecuencias —
+    # este resultado decide a qué cuentas se les manda la actualización.
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        pubs = channel_read.publicaciones_ml([sku]).get(sku, [])
+        por_cuenta: dict[str, str] = {p["cuenta"]: p["item_id"] for p in pubs}
+        return [{"cuenta": c, "item_id": i} for c, i in por_cuenta.items()]
     try:
         rows = db.fetch_all(
             """SELECT cuenta, ml_item_id FROM ml_progress
@@ -257,6 +265,13 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
 def _product_type_amazon(sku: str | None) -> str | None:
     if not sku:
         return None
+    # PASO 3 · BLOQUE 1 (17-ago). Este es el escalón de EN MEDIO de la regla 2
+    # (panel > histórico > detección por título): si devuelve None de más, el
+    # SKU cae a detección automática, que es lo que publicó una máquina de coser
+    # en la categoría equivocada. Por eso tampoco lleva try/except.
+    if settings.supabase_read_publicaciones:
+        from services import channel_read
+        return (channel_read.estado_amazon([sku]).get(sku) or {}).get("product_type")
     try:
         row = db.fetch_one(
             """SELECT product_type FROM amazon_progress

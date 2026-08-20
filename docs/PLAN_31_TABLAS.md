@@ -215,9 +215,41 @@ es su trabajo. Queda como pendiente de producto: **el publicador confunde
 > de arriba se sostiene solo en los datos. Mismo error de familia que medir un
 > latido con una señal que la cosa medida no emite.
 
-**Falta:** doble lectura con log de discrepancia en los 25 sitios, repunte por
-archivo empezando por los de menos riesgo (`studio`, `presencia`, `publicar`) y
-dejando `inventario` al final (8 sitios, mueve stock).
+**BLOQUE 1 REPUNTADO (17-ago, v0.221.0) — bandera APAGADA.** Los seis sitios de
+`studio` (2), `presencia` (2) y `publicar` (2) ya tienen su camino a
+`channel.listings` detrás de `SUPABASE_READ_PUBLICACIONES`, que nace en `false`.
+
+La prueba se hizo **en el sandbox, y por una razón que vale reusar en los demás
+bloques**: el sandbox corre con `MYSQL_ENABLED=false`, o sea que **ya es el mundo
+de después del retiro del esquema**. No hay que simular la caída de MySQL — el
+ambiente la trae puesta. Las dos corridas lado a lado (`probar_bloque1_sandbox.py`,
+12 checks en verde) muestran el argumento entero del paso 3:
+
+| | bandera APAGADA, sin MySQL | bandera PRENDIDA, sin MySQL |
+|---|---|---|
+| `studio.estado_publicacion` | `{ml: [], amazon: {publicado: False}}` | 2 cuentas + ASIN + PUBLISHED |
+| `publicar._ml_publicaciones` | `[]` | las 2 cuentas |
+| `publicar._product_type_amazon` | `None` | `PA_SYSTEM` |
+
+Los seis envuelven su consulta en `try/except → vacío`, así que sin MySQL **no
+fallan: contestan "no está publicado"**. Es el defecto de los 964 fantasma, y la
+columna izquierda es lo que pasaría hoy si se retirara el esquema.
+
+Dos hallazgos del repunte:
+
+1. **`presencia` no es un lector plano: es una RED.** Sus dos bloques corren
+   DESPUÉS del primario y solo agregan lo que kubera no vio (`channel_read.presencia()`
+   exige `listing_id` no vacío, y Amazon no asigna el ASIN al publicar). No se
+   borran: se les cambia la fuente y se les deja la guardia. La prueba lo
+   confirmó — con la bandera prendida la red aporta **+1 canal que el primario
+   no veía**, sin inflar ninguno de los que ya contaba.
+2. **Ninguna gemela lleva `try/except`.** Los originales lo tenían porque MySQL
+   era opcional y la bitácora una red; aquí un fallo significa que la fuente de
+   verdad no contesta, y devolver "no publicado" sería afirmar lo que no se sabe.
+
+**Falta:** días con la bandera encendida en producción (decisión de Eduardo),
+y después los bloques 2-4: `meli` (4) + `amazon` (3), `competencia_captura` (4) e
+`inventario` al final (8 sitios, mueve stock).
 
 ### PASO 4 — Cachés de verdad — **EN CURSO**
 

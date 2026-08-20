@@ -560,6 +560,24 @@ class Settings(BaseSettings):
     supabase_write_stock_watch: bool = False
     supabase_read_stock_watch: bool = False
 
+    # ── PASO 3, BLOQUE 1: las seis lecturas de ml_progress / amazon_progress ──
+    # `studio.estado_publicacion` (2) · `presencia` (2) · `publicar` (2). Las
+    # seis preguntan lo mismo con formas distintas: "¿en qué canales está
+    # publicado este SKU, con qué id, y de qué tipo en Amazon?".
+    #
+    # APAGADO = MySQL manda, igual que hasta hoy. ENCENDIDO = contestan las
+    # gemelas de `channel_read` (channel.listings).
+    #
+    # Es LECTURA pura: no escribe en ningún canal, así que no cae en la regla 3.
+    # Lo que sí cambia es de dónde sale lo que el panel MUESTRA como publicado.
+    #
+    # Por qué se puede ahora y no antes: hasta el 16-ago `ml_progress` era lo
+    # único que conocía una publicación recién nacida durante hasta 15 min (lo
+    # que tardaba el sync). Repuntar antes del seam habría convertido
+    # "publicado hace 30 segundos" en "sin publicar". Con el seam midiendo 2 s
+    # de mediana esa ventana desapareció.
+    supabase_read_publicaciones: bool = False
+
     # ── F2: espejo del DROP (bodega propia) → channel.listings 'general' ──
     # Lee stock_watch_foto (la que ya refresca el vigilante de arriba) y la
     # espeja a la BD kubera. NO mueve inventario: solo copia lo que Woo ya

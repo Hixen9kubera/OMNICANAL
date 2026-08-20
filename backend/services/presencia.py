@@ -19,6 +19,34 @@ from services import alertas, channel_read, db, lecturas_fuente
 log = logging.getLogger("omnicanal.presencia")
 
 
+def _red_desde_kubera(skus: list[str], acc: dict, _agregar) -> None:
+    """
+    La red de lo recién publicado, desde channel.listings (PASO 3, bloque 1).
+
+    Reemplaza los dos bloques de `ml_progress` / `amazon_progress`. Conserva
+    literalmente la guardia de los originales —si el primario ya marcó ese canal
+    para ese SKU, NO se vuelve a agregar— porque `_agregar` no reemplaza: SUMA.
+    Sin esa guardia cada SKU presente en las dos vueltas salía con n=2 para una
+    sola publicación (1,387 SKUs, medido el 14-ago).
+
+    Sin try/except: si kubera no contesta, la vista debe romperse, no mostrar
+    "sin publicar" con cara de certeza.
+    """
+    from services import channel_read
+    for sku, pubs in channel_read.publicaciones_ml(skus).items():
+        if Canal.MERCADO_LIBRE.value in acc.get(sku, {}):
+            continue
+        for pub in pubs:
+            _agregar(sku, Canal.MERCADO_LIBRE.value, True,
+                     pub.get("item_id"), pub.get("url"))
+    for sku, est in channel_read.estado_amazon(skus).items():
+        if not est.get("publicado") or Canal.AMAZON.value in acc.get(sku, {}):
+            continue
+        asin = est.get("asin")
+        _agregar(sku, Canal.AMAZON.value, True, asin,
+                 f"https://www.amazon.com.mx/dp/{asin}" if asin else None)
+
+
 def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     """
     Devuelve { sku: [ {canal, publicado, item_id, url, n}, ... ] } para el lote,
@@ -95,6 +123,19 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     #
     # Tampoco se pierde la URL: la de los puntos de esta vista no se usa, y el
     # enlace "Ver publicación" del Estudio sale de studio.metadata, no de aquí.
+    # PASO 3 · BLOQUE 1 (17-ago). OJO: estos dos bloques NO son lectores planos,
+    # son la RED de lo recién publicado que el primario todavía no alcanzó
+    # (`channel_read.presencia()` exige `listing_id` no vacío, y Amazon no
+    # asigna el ASIN al publicar). Por eso el repunte NO los borra: les cambia
+    # la fuente y les deja la guardia intacta.
+    #
+    # Con la bandera encendida la red sale de las gemelas, que NO exigen
+    # `listing_id` —miran `status`/`situacion`—, así que sigue tapando el mismo
+    # hueco sin depender de MySQL.
+    if settings.supabase_read_publicaciones:
+        _red_desde_kubera(list(skus), acc, _agregar)
+        return {sku: list(canales.values()) for sku, canales in acc.items()}
+
     try:
         rows = db.fetch_all(
             f"""SELECT sku, ml_item_id, ml_url, success

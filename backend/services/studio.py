@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from config import settings
 from services import db
 
 log = logging.getLogger("omnicanal.studio")
@@ -96,12 +97,44 @@ def _resolver_wc_id(sku: str) -> int | None:
     return None
 
 
+def _estado_publicacion_kubera(sku: str) -> dict[str, Any]:
+    """
+    Lo mismo que `estado_publicacion`, desde channel.listings.
+
+    NO lleva try/except a propósito. El de abajo existía porque MySQL podía
+    estar caído y la bitácora era opcional; aquí un fallo significa que la
+    fuente de verdad no contesta, y devolver `{"publicado": False}` sería
+    afirmar "no está publicado" cuando lo cierto es "no sé" — el defecto que
+    costó los 964 pedidos fantasma. Que truene y se vea.
+    """
+    from services import channel_read
+    pubs = channel_read.publicaciones_ml([sku]).get(sku, [])
+    vistas: set[str] = set()
+    ml: list[dict[str, Any]] = []
+    for p in pubs:
+        if p["cuenta"] in vistas:
+            continue
+        vistas.add(p["cuenta"])
+        ml.append({"cuenta": p["cuenta"], "item_id": p["item_id"]})
+    a = channel_read.estado_amazon([sku]).get(sku)
+    amazon = {"publicado": bool(a and a["publicado"]),
+              "asin": (a or {}).get("asin"),
+              "status": (a or {}).get("status")}
+    return {"ml": ml, "amazon": amazon}
+
+
 def estado_publicacion(sku: str) -> dict[str, Any]:
     """
     Estado REAL de publicación por canal (fuente de verdad en DB):
       - ml: [{cuenta, item_id}] desde ml_progress (cuentas donde está publicado)
       - amazon: {publicado, asin, status} desde amazon_progress
     """
+    # PASO 3 · BLOQUE 1 (17-ago): con `supabase_read_publicaciones` estas dos
+    # lecturas salen de channel.listings en vez de las bitácoras del publicador.
+    # Se repuntan JUNTAS porque son la misma pregunta partida en dos canales.
+    if settings.supabase_read_publicaciones:
+        return _estado_publicacion_kubera(sku)
+
     ml: list[dict[str, Any]] = []
     try:
         rows = db.fetch_all(
