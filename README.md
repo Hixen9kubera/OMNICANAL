@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.239.0 — Paso 4a: escritura de los candados encendida, y el vigilante que la prueba
+
+`SUPABASE_WRITE_CANDADOS=true` en producción. Las marcas de los tres candados se
+escriben ahora en los dos lados; **la lectura sigue en MySQL**.
+
+#### Por qué comparar ahora no probaría nada
+
+Los dos lados coinciden — pero acaban de resincronizarse. **Coincidirían igual
+con la escritura muerta.** Lo único que separa "vivo" de "empatados por la
+resincronización" es que algo SE MUEVA.
+
+`vigilar_marcas_candados.py` espera exactamente eso: vigila la marca de agua del
+FBA, que es la que avanza seguido, y cuando MySQL cambie alguna comprueba si
+kubera la siguió. Avisa en los tres desenlaces —siguió, no siguió, y **nada se
+movió**— porque el tercero no prueba nada y decirlo importa tanto como lo demás.
+
+Es la misma forma que el vigilante de los tokens, y por la misma razón: un
+vigilante que solo habla con buenas noticias deja el silencio significando dos
+cosas a la vez.
+
+#### Lo que falta para 4b
+
+Días con las marcas moviéndose y kubera siguiéndolas. Solo entonces la lectura.
+No hay prisa que valga aquí: encender la lectura con una marca atrasada le
+descuenta a Woo piezas que nunca entraron, que es justo lo que la comprobación
+previa atrapó en 10 SKUs.
+
+Versión 0.239.0.
+
 ### v0.238.0 — El candado NO se encendió: 10 marcas de agua estaban desfasadas
 
 Paso 4, y la comprobación previa dijo **que no**. Vale más que si hubiera dicho
