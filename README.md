@@ -10103,6 +10103,39 @@ por `_variation_id` (o `_product_id` si es simple) contra el postmeta. Versión 
 
 ---
 
+### v0.236.0 — La tabla de estados de Temu decía 63 a la venta donde hay 51
+
+Un censo propio de Brandon contradijo al del panel: clasificaba `ACC-0017-MUL`
+como Incompleto donde nosotros decíamos publicado. Al verificarlo salió que el
+equivocado era **nuestro** mapeo — y de paso, que su Excel tenía la columna
+invertida en 339 de 354 filas.
+
+**Cómo se resolvió, y por qué esta vez sí es un hecho:** las CUBETAS del listado
+(`goodsSearchType`) SON las pestañas del Seller Center y son disjuntas. Se censó
+cada una completa y se anotó qué códigos viven dentro:
+
+    cubeta 1 → 304: 2/8 (226) · 3/3 (38) · 3/2 (28) · 2/4 (9) · 3/1 (3)   Incompleto
+    cubeta 4 →  51: 4/7 (51)                                              Activo/Inactivo
+    cubeta 5 →  15: 5/None                                                Borrador
+    cubeta 6 →   1: 6/None                                                sin identificar
+
+`2/4` y `3/1` estaban como "Activo o inactivo" y son INCOMPLETOS: de ahí el 63
+contra 51. Se quitan también `4/10` y `4/11`, que nadie ha visto nunca en las
+cuatro cubetas y estaban ahí por analogía con `4/7` — la misma clase de
+suposición que rompió la tabla. Nace `temu.VENDIBLES` para que «cuántos venden»
+tenga UNA respuesta en todo el sistema.
+
+**Verificación de inventarios el 20-ago, todo leído en vivo:**
+
+    Odoo → Woo    13,029 de 13,031 alineados (2 con ventas en curso)
+    Woo → TikTok  1,063 coinciden · 8 no · de los que VENDEN: 280 de 280
+    Woo → Temu      352 coinciden · 4 no · de los que VENDEN:  51 de 51
+
+**Cero desalineados entre lo que está a la venta.** Los 12 restantes son
+borradores y desactivados que los canales no dejan editar.
+
+Versión 0.236.0.
+
 ### v0.216.0 — Las ocho cantidades del reporte FBA, y el KPI que decía lo que no era
 
 Eduardo revisó las referencias de las columnas del reporte y cachó dos huecos.

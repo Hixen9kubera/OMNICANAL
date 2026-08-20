@@ -67,21 +67,47 @@ PAGE_SIZE = 100
 # ⚠️ Los conteos se MUEVEN mientras Temu procesa un lote (entre dos censos con
 # minutos de diferencia, 2/8 pasó de 129 a 133): el cruce vale por la suma, no
 # por el número exacto de un momento.
+# CORREGIDO EL 20-ago CON EVIDENCIA DIRECTA, y la corrección importa: la tabla
+# anterior clasificaba `2/4` y `3/1` como "Activo o inactivo" cuando son
+# INCOMPLETOS, así que el panel reportaba 63 publicaciones a la venta en Temu
+# donde hay 51. Salió a la luz porque un censo de Brandon contradijo al nuestro.
+#
+# CÓMO SE VERIFICÓ (y cómo se re-verifica): las CUBETAS del listado
+# (`goodsSearchType`) SON las pestañas del Seller Center, y son disjuntas. Se
+# censó cada una completa y se anotó qué códigos aparecen dentro:
+#
+#     cubeta 1 → 304 productos: 2/8 (226) · 3/3 (38) · 3/2 (28) · 2/4 (9) · 3/1 (3)
+#     cubeta 4 →  51 productos: 4/7 (51)
+#     cubeta 5 →  15 productos: 5/None (15)
+#     cubeta 6 →   1 producto : 6/None (1)
+#
+# O sea: la cubeta manda y el código de estado solo la acompaña. Si aparece un
+# código nuevo, se pregunta en qué cubeta cae — no se adivina por su forma.
+# `4/10` y `4/11` salen de la tabla: NADIE los ha visto en las cuatro cubetas;
+# estaban por analogía con `4/7`, que es justo el tipo de suposición que rompió
+# esta tabla la primera vez.
 ESTADOS = {
+    # Cubeta 1 — Incompleto (les falta información para publicarse)
     "2/8": "Incompleto",
-    "3/2": "Incompleto",
     "3/3": "Incompleto",
-    "5/None": "Borrador",
-    # Los de abajo caen en el cubo "Activo / Inactivo" del Seller Center. NO se
-    # distingue activo de inactivo con lo que se sabe hoy, así que no se afirma:
-    # por eso el fan-out sigue sin escribirle a Temu.
+    "3/2": "Incompleto",
+    "2/4": "Incompleto",
+    "3/1": "Incompleto",
+    # Cubeta 4 — el cubo "Activo / Inactivo" del Seller Center. Temu NO
+    # distingue uno de otro ni por API ni en su panel, así que no se afirma cuál
+    # es: son los 51 que PUEDEN estar vendiendo.
     "4/7": "Activo o inactivo",
-    "4/10": "Activo o inactivo",
-    "4/11": "Activo o inactivo",
-    "2/4": "Activo o inactivo",
-    "3/1": "Activo o inactivo",
-    "6/None": "Activo o inactivo",
+    # Cubeta 5 — Borrador: ni siquiera se enviaron. `stock.edit` los RECHAZA
+    # ("Goods commit have not submitted"), por eso el fan-out los omite.
+    "5/None": "Borrador",
+    # Cubeta 6 — un solo producto y sin nombre conocido en el panel. Se deja
+    # dicho como lo que es en vez de inventarle una etiqueta.
+    "6/None": "Cubeta 6 (sin identificar)",
 }
+
+# Los que pueden estar a la venta. Se define aquí y no en cada consumidor para
+# que "cuántos venden" tenga UNA sola respuesta en todo el sistema.
+VENDIBLES = {"4/7"}
 
 
 def _cfg(nombre: str) -> str:
