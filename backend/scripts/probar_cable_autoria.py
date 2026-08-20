@@ -126,6 +126,42 @@ def main() -> int:
                cur.fetchone()["u"], "escribe@kubera.mx")
     actor.limpiar()
 
+    print("\n=== 7. la COLA del espejo kubera conserva la firma ===")
+    # El caso que casi se escapa, y el que más importa: por aquí van las ALTAS
+    # DE PRODUCTO. `kubera_mirror` no lanza el trabajo, lo ENCOLA, y lo recoge un
+    # hilo daemon que arrancó mucho antes de que existiera esta petición. Y
+    # encima usa su PROPIO pool, que no pasa por `supabase_db.get_cursor`. Eran
+    # dos fugas encadenadas: la primera pierde el contexto, la segunda nunca
+    # manda la firma. Con cualquiera de las dos, las creaciones salen sin firmar.
+    #
+    # Necesita KUBERA_DB_URL apuntando al SANDBOX y el espejo encendido; si no,
+    # se omite en vez de fallar.
+    import time
+    from services import kubera_mirror as km
+
+    if not (os.environ.get("KUBERA_DB_URL") and km.activo("crear_logs")):
+        print("  [--] omitida: falta KUBERA_DB_URL o el espejo está apagado")
+    else:
+        sku_p = "ZZ-PRUEBA-COLA"
+        actor.fijar("prueba.cola@kubera.mx")
+        km.espejar("prueba", "probar_cable_autoria", "crear_logs",
+                   "ops.process_log", "insert",
+                   {"sku": sku_p, "estado": "ok", "paso": "alta de prueba"},
+                   clave=sku_p)
+        actor.limpiar()          # la petición se fue; el worker sigue trabajando
+        fila = None
+        for _ in range(40):
+            time.sleep(0.5)
+            fila = sdb.fetch_one(
+                "select actor from ops.process_log where sku::text = %s "
+                "order by id desc limit 1", (sku_p,))
+            if fila:
+                break
+        _check("la fila que escribió el hilo de la cola va firmada",
+               (fila or {}).get("actor"), "prueba.cola@kubera.mx")
+        sdb.execute("delete from ops.process_log where sku::text = %s", (sku_p,))
+        print("        (fila de prueba borrada)")
+
     print(f"\nRESULTADO: {'TODO BIEN' if fallas == 0 else f'{fallas} FALLA(S)'}")
     return 1 if fallas else 0
 

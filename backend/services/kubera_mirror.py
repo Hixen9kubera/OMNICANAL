@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from config import settings
+from core import actor
 
 log = logging.getLogger("omnicanal.kubera_mirror")
 
@@ -279,9 +280,12 @@ def _asegurar_workers() -> list[queue.Queue]:
 
 def _worker(q: queue.Queue) -> None:
     while True:
-        args = q.get()
+        ctx, args = q.get()
         try:
-            _trabajar(*args)
+            # `ctx.run` le pone al hilo el contexto de QUIEN ENCOLÓ. Sin esto el
+            # worker escribe con el contexto vacío de su arranque y el actor se
+            # pierde — ver core/actor.py::capturar.
+            ctx.run(_trabajar, *args)
         except Exception as exc:  # noqa: BLE001 — cinturón: _trabajar ya captura todo
             log.warning("worker del espejo kubera: %s", exc)
         finally:
@@ -309,7 +313,9 @@ def espejar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
         colas = _asegurar_workers()
         idx = hash((tabla_mysql, clave or "")) % len(colas)
         try:
-            colas[idx].put_nowait(args)
+            # Viaja la FOTO del contexto junto al trabajo: el worker es un hilo
+            # daemon que arrancó antes que esta petición y no hereda nada.
+            colas[idx].put_nowait((actor.capturar(), args))
         except queue.Full:
             exc = ColaLlenaError(f"cola llena ({_COLA_MAX} pendientes)")
             _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
@@ -368,6 +374,12 @@ def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
             # SET LOCAL (transaccional): compatible con el pooler 6543.
             cur.execute("select set_config('statement_timeout', '4000', true)")
             cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+            # Quién pidió esto. Este pool es PROPIO de kubera_mirror y no pasa
+            # por supabase_db.get_cursor, así que el cable de v0.233.0 nunca se
+            # disparaba aquí — y por aquí pasan las ALTAS DE PRODUCTO. Cadena
+            # vacía queda como NULO gracias al `nullif` del default (0029).
+            cur.execute("select set_config('app.usuario', %s, true)",
+                        (actor.actual(),))
             upsert(cur, payload)
         conn.commit()
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
@@ -880,6 +892,11 @@ def reprocesar_errores(max_items: int = 500) -> dict[str, Any]:
                 with conn.cursor() as cur:
                     cur.execute("select set_config('statement_timeout', '4000', true)")
                     cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+                    # EN BLANCO a propósito: esto reaplica eventos VIEJOS. Firmar
+                    # con quien lanzó el reproceso diría que esa persona hizo algo
+                    # que no hizo. Del autor original no hay registro, y "no se
+                    # sabe" es la respuesta honesta.
+                    cur.execute("select set_config('app.usuario', '', true)")
                     upsert(cur, payload)
                 conn.commit()
             finally:

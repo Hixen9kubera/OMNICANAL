@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.243.0 — La firma se perdía justo en las altas de producto
+
+Eduardo pidió una prueba de que el paso 2 funcionaba. La prueba encontró que
+**no**, para el caso que más importaba.
+
+La columna `ops.process_log.actor` se llenaba sola, sí — pero solo para quien
+escribe pasando por `supabase_db.get_cursor`. Las **altas de producto** no pasan
+por ahí, y tenían **dos fugas encadenadas**:
+
+1. `kubera_mirror` no lanza el trabajo: lo **encola**, y lo recoge un hilo daemon
+   que arrancó mucho antes de que existiera la petición. Un hilo que ya existe no
+   hereda contexto: nace con el del arranque, vacío.
+2. Y aunque lo heredara, ese módulo usa **su propio pool** de conexiones. Nunca
+   pasa por `get_cursor`, así que la firma jamás se enviaba a la base.
+
+Con cualquiera de las dos, las creaciones salían sin firmar. Con las dos, doble.
+
+#### El arreglo
+
+- `actor.capturar()` toma la foto del contexto al encolar; el worker la aplica
+  con `ctx.run(...)`. Es la pareja obligada cuando el trabajo cruza una **cola**
+  hacia un hilo que ya existía — `en_hilo()` no sirve ahí porque nada se lanza.
+- Los dos sitios donde `kubera_mirror` abre cursor ahora mandan `app.usuario`
+  junto al `app.via` que ya mandaban. Una línea al lado de la que ya estaba.
+- El del **reproceso** va en blanco a propósito: reaplica eventos viejos, y
+  firmarlos con quien lanzó el reproceso diría que esa persona hizo algo que no
+  hizo. "No se sabe" es la respuesta honesta.
+
+#### La prueba que lo habría atrapado
+
+`probar_cable_autoria.py` gana un séptimo caso que usa el espejo **real**, su
+cola real y sus hilos reales contra el sandbox, y exige que la fila salga
+firmada. Los siete en verde. Sin ese caso, el defecto se habría descubierto
+dentro de meses, consultando una bitácora vacía y creyéndole.
+
 ### v0.242.0 — Paso 2 del rastro: quién creó qué producto
 
 El paso 1 (v0.233.0) tendió el cable: el backend ya le dice a la base quién pide

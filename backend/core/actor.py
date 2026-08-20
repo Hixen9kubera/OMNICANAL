@@ -75,6 +75,25 @@ def limpiar() -> None:
     _actor.set("")
 
 
+def capturar() -> contextvars.Context:
+    """
+    Foto del contexto actual, para cruzar una COLA hacia un hilo que YA EXISTÍA.
+
+    `en_hilo()` no sirve cuando el trabajo no se lanza: se ENCOLA, y lo recoge un
+    hilo daemon que arrancó mucho antes de que existiera esta petición. Ese hilo
+    nunca hereda nada — se quedó con el contexto vacío del arranque.
+
+    Es el caso de `kubera_mirror`, y es por donde pasan las creaciones de
+    producto. Medido: sin esto el hilo de la cola lee cadena vacía, así que las
+    altas quedarían sin firmar justo en la tabla que existe para saber quién las
+    hizo.
+
+    Se usa en pareja: `actor.capturar()` al encolar, y `ctx.run(fn, *args)` en el
+    worker. La foto se toma AQUÍ, donde el actor todavía existe.
+    """
+    return contextvars.copy_context()
+
+
 def en_hilo(fn: Callable, *args) -> None:
     """
     `run_in_executor` que SÍ se lleva el contexto (y con él, el actor).
