@@ -795,6 +795,19 @@ def _persistir_error(origen_py: str, funcion: str, tabla_mysql: str,
     """El error se guarda en MySQL (LOCAL): sobrevive aunque kubera esté caída."""
     try:
         if not _asegurar_tabla_log():
+            # EL AGUJERO QUE TENIA LA RED (visto el 20-ago probando la cache de
+            # imagenes sin MySQL). Este `return` se saltaba `_ultimo_recurso`, y
+            # es JUSTO el camino del corte: sin MySQL, `_asegurar_tabla_log`
+            # devuelve False y el evento se perdia en silencio — el mismo
+            # silencio que el ultimo recurso existe para romper.
+            #
+            # La red la puse yo dos dias antes y la probe por el camino de la
+            # EXCEPCION, no por el del `return`. Una red con dos entradas y una
+            # sola probada no es una red.
+            _ultimo_recurso(origen_py, funcion, tabla_kubera, operacion, clave,
+                            exc, payload,
+                            motivo="no hay donde guardar el log del espejo "
+                                   "(espejo_kubera_log no disponible)")
             return
         from services import db
         try:

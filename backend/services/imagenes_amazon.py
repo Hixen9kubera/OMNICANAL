@@ -116,6 +116,32 @@ def _cache_get(src_url: str) -> Optional[str]:
 
 def _cache_put(sku: str, src_url: str, amz_url: str, media_id: int,
                ancho: int, alto: int, metodo: str) -> None:
+    # EL ESPEJO VA PRIMERO, Y APARTE. (PASO 4, corregido el 20-ago.)
+    #
+    # Antes iba DENTRO del mismo `try` que el INSERT a MySQL y DESPUÉS de él, así
+    # que un fallo de MySQL se llevaba el espejo por delante. El día del corte
+    # —`MYSQL_ENABLED=false`— eso significa que la imagen se procesa, se sube a
+    # WordPress y **no queda cacheada en ningún lado**: a la vuelta siguiente se
+    # reprocesa y se sube OTRA copia con otro `wp_media_id`.
+    #
+    # No es "se vuelve a consultar": cada fila de esta caché es una descarga, una
+    # conversión WebP→JPEG, un escalado a ≥1000 px y a veces una pasada por
+    # Real-ESRGAN. Perderla cuesta trabajo Y ensucia la galería.
+    #
+    # Y el `except` de abajo registraba en DEBUG, invisible en producción: el
+    # daño habría sido silencioso además de caro. Ahora avisa en WARNING.
+    try:
+        from services import kubera_mirror
+        kubera_mirror.espejar(
+            "services/imagenes_amazon.py", "_cache_put",
+            "amazon_imagenes", "enrich.product_media", "UPSERT",
+            {"sku": sku, "kind": "amazon", "source_url": src_url,
+             "cdn_url": amz_url}, clave=sku)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("imagen %s: no se pudo espejar a enrich.product_media (%s). "
+                    "Si tampoco entra a MySQL, se reprocesara y subira otra copia.",
+                    sku, exc)
+
     _asegurar_tabla()
     try:
         db.execute(
@@ -126,14 +152,10 @@ def _cache_put(sku: str, src_url: str, amz_url: str, media_id: int,
                  ancho=VALUES(ancho), alto=VALUES(alto), metodo=VALUES(metodo)""",
             (_hash(src_url), sku, src_url, amz_url, media_id, ancho, alto, metodo),
         )
-        # Espejo kubera: la imagen procesada viaja a enrich.product_media.
-        from services import kubera_mirror
-        kubera_mirror.espejar(
-            "services/imagenes_amazon.py", "_cache_put",
-            "amazon_imagenes", "enrich.product_media", "UPSERT",
-            {"sku": sku, "kind": "amazon", "source_url": src_url,
-             "cdn_url": amz_url}, clave=sku)
     except Exception as exc:  # noqa: BLE001
+        # Con el corte hecho esto SIEMPRE fallara (503) y es lo esperado: para
+        # entonces el espejo de arriba ya guardo lo que importa. En DEBUG a
+        # proposito, para no llenar el log de lo que ya se sabe.
         log.debug("amazon_imagenes cache put (ignorado): %s", exc)
 
 

@@ -12320,6 +12320,73 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.229.0 — La caché de imágenes: el lector ya estaba migrado, el escritor moría en el corte
+
+Eduardo pidió repuntar el lector de imágenes de Amazon **y verificar antes que de
+verdad se use**. La verificación cambió el trabajo entero.
+
+#### El lector no había que tocarlo
+
+Ya estaba migrado y **encendido en producción** (`SUPABASE_READ_MEDIA=true`),
+con `services/media_read.py` escrito desde el paso 4. Mi lista de pendientes
+venía arrastrando ese punto desde hacía días, desactualizada.
+
+Y sí se usa: **41 imágenes en 7 días**, la más reciente ayer. Con paridad exacta:
+
+    MySQL amazon_imagenes        714 filas · última 19-ago 16:28:49
+    kubera enrich.product_media  714 filas · última 19-ago 16:28:49
+
+Mismo conteo, mismo segundo.
+
+#### El escritor sí, y el daño era caro y silencioso
+
+`_cache_put` tenía el espejo a `enrich.product_media` **dentro del mismo `try`
+que el `INSERT` a MySQL y después de él**. Con `MYSQL_ENABLED=false`, el
+`db.execute` revienta y **el espejo nunca corre**: la imagen se procesa, se sube
+a WordPress y no queda cacheada en ningún lado. A la vuelta siguiente se
+reprocesa y se sube **otra copia con otro `wp_media_id`**.
+
+Cada fila de esa caché es una descarga, una conversión WebP→JPEG, un escalado a
+≥1000 px y a veces una pasada por Real-ESRGAN. **No es "se vuelve a consultar":
+es trabajo perdido y una galería sucia.**
+
+Y el `except` registraba en **DEBUG** — invisible en producción. Silencioso
+además de caro.
+
+Ahora el espejo va **primero y aparte**: no depende de que MySQL exista, y su
+fallo avisa en WARNING. El `INSERT` a MySQL quedó después, con su `except` en
+debug a propósito: después del corte fallará siempre y eso ya se sabe.
+
+#### Y la red que puse hace dos días tenía un agujero
+
+Lo destapó esta misma prueba. `_persistir_error` empieza así:
+
+    if not _asegurar_tabla_log():
+        return          # ← se saltaba _ultimo_recurso
+
+Sin MySQL, `_asegurar_tabla_log` devuelve `False` y el evento se perdía **en el
+silencio exacto que el último recurso existe para romper**. Y ese es justo el
+camino del corte.
+
+**La red la escribí yo el 20-ago y la probé por el camino de la excepción, no por
+el del `return`.** Una red con dos entradas y una sola probada no es una red.
+Tapado: ahora las dos entradas llegan al último recurso, y en la corrida de
+prueba se ve la línea `ESPEJO-PERDIDO` con el payload completo.
+
+#### La prueba también reprobó por su culpa antes de servir
+
+La primera versión usó un SKU inventado y falló por la llave foránea de
+`enrich.product_media` hacia `core.products` — midiendo su propio defecto, no el
+del código. Ahora toma un SKU real del sandbox y limpia solo por `source_url`,
+sin tocar las imágenes de verdad de ese producto.
+
+`probar_cache_imagenes_sandbox.py`, **6 checks en verde**, incluido el ciclo
+completo —guardar sin MySQL, volver a leer, encontrarlo— que es la única prueba
+que vale, y que la búsqueda sea por URL y **no** por SKU (en MySQL la PK es el
+hash de la URL, global: filtrar por SKU reprocesaría las imágenes compartidas).
+
+Las ocho suites del sandbox, en verde. Sin variables nuevas. Versión 0.229.0.
+
 ### v0.228.0 — La tabla de TikTok en producción, ya blindada de nacimiento
 
 `0027_ops_tiktok_tokens.sql` **aplicada a producción** el 20-ago, después de
