@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.235.0 — El respaldo y el espejo escribían lo mismo, y nadie los deduplicaba
+
+Paso 2 de los cuatro: el hueco cerrado. **19,835 filas, cero eventos contados dos
+veces.**
+
+#### El defecto que apareció al juntar las dos piezas
+
+ hacía el respaldo idempotente **contra sí mismo**: correrlo dos veces
+no duplicaba nada. Pero no lo protegía del **espejo**, que desde el paso 1
+escribe los mismos eventos por otro camino y sin ese id.
+
+O sea: cada corrida del respaldo volvía a copiar lo que el espejo ya había
+dejado. Medido en producción antes de arreglarlo: **47 filas duplicadas**, y
+creciendo con cada corrida.
+
+Ninguna de las dos piezas estaba mal por separado. El defecto vivía **en la
+juntura** — y por eso no lo vio ni la prueba del respaldo ni la del espejo, que
+se probaron cada una por su lado.
+
+#### El arreglo, y su límite dicho
+
+Tras respaldar, se borran las filas del espejo **dentro de la ventana ya
+respaldada**: el respaldo es la copia autoritativa de ese rango, porque viene con
+el id de origen.
+
+El corte va por tiempo. Si un evento del espejo cae justo en el instante del
+corte pero corresponde a un id posterior, se borra de más — **y la siguiente
+corrida lo trae de vuelta con su id**. Se pierde una copia duplicada, nunca el
+evento.
+
+#### Y una verificación que medía lo que no era
+
+La comprobación de totales solo miraba las filas respaldadas, así que **daba
+verde con 47 duplicados en la tabla**. Cierto y aun así inútil: lo que le importa
+al dashboard no es cuánto se copió, sino cuánto hay.
+
+Ahora verifica la tabla completa —— y
+distingue lo que sí sobra de lo que solo llegó después. Contar como duplicado un
+evento que MySQL todavía no tenía sería el error contrario.
+
+Sandbox primero, producción después. Versión 0.235.0.
+
 ### v0.8.1 — Los pedidos se ven en la pestaña VENTAS
 
 `/api/ventas/horario` ahora incluye `pedidos_wc`: los pedidos ML→WC creados en el

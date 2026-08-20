@@ -121,6 +121,28 @@ def main() -> None:
             print(f"    … {min(i + _LOTE, len(filas)):6d}/{len(filas)}", flush=True)
     pg.commit()
 
+    # ── Quitar lo que el ESPEJO ya habia puesto en esta misma ventana ───────
+    # El ancla hace idempotente el RESPALDO contra si mismo, pero no lo protege
+    # del ESPEJO: los dos escriben los mismos eventos. Desde que la escritura
+    # doble esta encendida, cada corrida del respaldo vuelve a copiar lo que el
+    # espejo ya dejo — y el dashboard contaria doble.
+    #
+    # El respaldo es la copia AUTORITATIVA de su ventana (viene con el id de
+    # origen), asi que las filas del espejo dentro de esa ventana sobran.
+    #
+    # El corte va por `ts <= el maximo respaldado`. Si un evento del espejo cae
+    # justo en ese instante pero corresponde a un id posterior, se borra de mas
+    # — y la siguiente corrida lo trae de vuelta con su mysql_id. Se pierde una
+    # copia duplicada, nunca el evento.
+    with pg.cursor() as c:
+        c.execute("select max(ts) from ops.fanout_log where mysql_id is not null")
+        corte = c.fetchone()[0]
+        c.execute("delete from ops.fanout_log where mysql_id is null and ts <= %s",
+                  (corte,))
+        quitadas = c.rowcount
+    pg.commit()
+    print(f"  duplicadas del espejo, quitadas: {quitadas} (corte {corte})")
+
     # ── Verificacion CONTRA EL ORIGEN ───────────────────────────────────────
     print(f"\n── verificacion ──\n  filas nuevas insertadas: {metidas}")
     ok = True
@@ -137,8 +159,20 @@ def main() -> None:
         ok &= bool(cond)
         print(f"  [{'OK  ' if cond else 'FALLA'}] {etiqueta}" + (f" — {detalle}" if detalle else ""))
 
-    check("el total coincide con el origen", total == len(origen),
+    check("el total respaldado coincide con el origen", total == len(origen),
           f"kubera {total} · MySQL {len(origen)}")
+    with pg.cursor() as c:
+        c.execute("select count(*) from ops.fanout_log")
+        tabla = c.fetchone()[0]
+        c.execute("select count(*) from ops.fanout_log where mysql_id is null")
+        solo_espejo = c.fetchone()[0]
+    # LO QUE DE VERDAD IMPORTA PARA EL DASHBOARD: que la TABLA no tenga de mas.
+    # Las del espejo POSTERIORES al corte no son duplicados — son eventos que
+    # MySQL todavia no tenia cuando se leyo. Contarlas como sobrantes seria el
+    # error contrario.
+    check("la tabla no cuenta ningun evento dos veces",
+          tabla == total + solo_espejo,
+          f"tabla {tabla} = respaldo {total} + espejo posterior {solo_espejo}")
     difs = [(a, src_acc.get(a, 0), dest_acc.get(a, 0))
             for a in set(src_acc) | set(dest_acc)
             if src_acc.get(a, 0) != dest_acc.get(a, 0)]
