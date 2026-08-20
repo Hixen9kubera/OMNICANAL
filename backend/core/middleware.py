@@ -60,6 +60,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from config import settings
+from core import actor as core_actor
 from core import identidad as core_identidad
 from core import rbac
 
@@ -140,6 +141,13 @@ async def identidad(request: Request, call_next):
         # Se deja en el request para que los routers y la futura bitácora sepan
         # quién llamó sin volver a resolverlo.
         request.state.identidad = quien
+        # Y se deja también en el contexto, que es como llega hasta el cursor:
+        # `supabase_db.get_cursor` lo recoge y lo pone donde los triggers de
+        # historial lo leen. La "futura bitácora" de la línea de arriba es esto.
+        # Ojo: las rutas abiertas salen por la guarda 2 y nunca llegan aquí, así
+        # que webhooks y healthcheck siguen escribiendo sin nombre — igual que
+        # hasta hoy, y a propósito: ML no manda credencial.
+        core_actor.fijar(quien.actor)
 
         # Sin API_KEY configurada el sistema queda abierto, como hasta hoy. Es
         # el estado por defecto para que un despliegue sin variables no rompa.

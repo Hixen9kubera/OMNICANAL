@@ -31,6 +31,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from config import settings
+from core import actor
 
 log = logging.getLogger("omnicanal.supabase")
 
@@ -113,12 +114,54 @@ def _desinfectar() -> int:
     return limpias
 
 
+def _marcar_actor(conn, cur) -> None:
+    """
+    Deja el nombre de quien pide donde los triggers de historial lo leen.
+
+    `set_config(..., true)` = LOCAL a la transacción: se limpia sola al terminar.
+    Es la forma obligada aquí — un `SET` de sesión se quedaría pegado en una
+    conexión COMPARTIDA del pooler 6543 y el siguiente cliente heredaría el
+    nombre. O sea: la venta que registre el backend quedaría firmada por la
+    última persona que usó el panel. Ese es el mismo mecanismo que ya tumbó las
+    escrituras con el candado de solo-lectura, pero en vez de romper, MIENTE —
+    y una bitácora que miente se consulta igual y se le cree.
+
+    COSTO, dicho de frente: cuando SÍ hay actor, esto agrega un viaje a la base
+    por cada `get_cursor()`. En Railway, que está en la misma región que el
+    pooler, son ~1-2 ms. Y no lo paga lo que más consulta: los crons, sondeos,
+    backfills y scripts corren sin petición detrás, así que no tienen actor y
+    salen por el `return` de abajo sin mandar nada. Lo pagan las peticiones de
+    una persona en el panel, que ya gastan cientos de milisegundos hablándole a
+    Woo y a ML — ahí un viaje más es ruido.
+
+    Si algún día un endpoint interactivo hace cientos de escrituras en un ciclo
+    y esto se nota, el arreglo es diferir la firma hasta la primera sentencia
+    que escriba (envolviendo el cursor), no quitarla. No se hizo hoy porque
+    sería optimizar sin un problema medido.
+    """
+    quien = actor.actual()
+    if not quien:
+        return
+    try:
+        cur.execute("select set_config('app.usuario', %s, true)", (quien,))
+    except Exception as exc:  # noqa: BLE001
+        # Perder la atribución NO puede costar la operación. Se deshace la
+        # transacción a medias (si no, la consulta de verdad heredaría el estado
+        # abortado) y se sigue sin firma, que es como se venía trabajando.
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning("no se pudo marcar el actor '%s': %s", quien, exc)
+
+
 @contextmanager
 def get_cursor() -> Iterator[Any]:
     """Cursor de una conexión del POOL; se devuelve al pool al salir."""
     conn = _get_pool().connection()
     try:
         cur = conn.cursor()
+        _marcar_actor(conn, cur)
         yield cur
         conn.commit()
     except Exception as exc:

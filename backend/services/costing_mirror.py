@@ -23,12 +23,12 @@ que el periodo de comparación (job de deltas) esté en marcha.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Callable
 
 from config import settings
+from core import actor
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.costing_mirror")
@@ -50,10 +50,9 @@ def en_hilo(fn: Callable, *args) -> None:
     """Ejecuta el espejo fuera del event loop (y fuera del camino crítico)."""
     if not activo():
         return
-    try:
-        asyncio.get_running_loop().run_in_executor(None, fn, *args)
-    except RuntimeError:  # sin loop (contexto síncrono puro): directo
-        fn(*args)
+    # Delega en core.actor: `run_in_executor` NO se lleva los contextvars, y sin
+    # eso el historial de costos saldría sin nombre justo aquí.
+    actor.en_hilo(fn, *args)
 
 
 def _registrar_issue(tabla: str, sku: str, motivo: str) -> None:
@@ -73,7 +72,12 @@ def _atribuir(cur, accion: str, origen: str) -> None:
         "select set_config('app.accion', %s, true), "
         "       set_config('app.usuario', %s, true), "
         "       set_config('app.formula_ver', %s, true)",
-        (accion or "auto", origen or "backend", FORMULA_VER),
+        # La PERSONA gana sobre la etiqueta del proceso. Sin esto, este
+        # set_config corre DESPUÉS del de get_cursor y lo pisaría: el historial
+        # seguiría diciendo "backend" aunque el cable ya funcionara.
+        # Cuando no hay persona (cron, recálculo nocturno) se conserva `origen`,
+        # que es la información que se venía guardando.
+        (accion or "auto", actor.actual() or origen or "backend", FORMULA_VER),
     )
 
 

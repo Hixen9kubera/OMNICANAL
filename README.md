@@ -12320,6 +12320,55 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.233.0 — El historial deja de decir "backend" y empieza a decir quién
+
+Eduardo pidió rastrear quién crea qué producto y quién mueve qué costo. La
+auditoría encontró que **estaba medio construido y nadie lo terminó de conectar**:
+el trigger de `costing.cost_history` ya guarda
+`current_setting('app.usuario')`, y el docstring de `Identidad.actor` dice
+literalmente "lo que va a la bitácora de auditoría". Faltaba el cable entre los
+dos. En 105 registros de historial, `cambiado_por` solo decía `backend` (67) o
+nada (38) — nunca una persona.
+
+#### El cable
+
+`core/actor.py` (nuevo) guarda el nombre en un `ContextVar`; el middleware lo
+deja al resolver la identidad y `supabase_db.get_cursor` lo recoge y lo manda con
+`set_config('app.usuario', …, true)` antes de cada operación. Los triggers ya
+estaban esperándolo: los costos quedan atribuidos sin tocar un router.
+
+#### La trampa que casi lo deja en blanco justo donde importa
+
+`asyncio.to_thread` copia el contexto al hilo, pero
+`loop.run_in_executor(None, fn)` **no**. Y por ahí pasaban los seis servicios que
+más importan para la auditoría: `costing_write`, `costing_mirror`,
+`crear_producto`, `orders_write`, `channel_mirror` y `publicacion_seam`. Sin
+arreglarlo, la bitácora se habría visto funcionando mientras dejaba en blanco lo
+único que se quería registrar — peor que no tenerla, porque se consulta igual y
+se le cree. Los seis ahora pasan por `actor.en_hilo()`, que sí se lleva el
+contexto. La prueba 5 del script deja el contraste medido.
+
+#### La regla 13, otra vez
+
+La firma va con `set_config(..., true)`, LOCAL a la transacción. Un `SET` de
+sesión se quedaría pegado a una conexión COMPARTIDA del pooler 6543 y el
+siguiente cliente heredaría el nombre: la venta que registre el backend saldría
+firmada por la última persona que usó el panel. Mismo mecanismo que el candado de
+solo-lectura de agosto, pero en vez de romper, **miente**.
+`backend/scripts/probar_cable_autoria.py` lo comprueba contra el sandbox por el
+6543: marca una transacción y luego exige que 8 cursores nuevos no vean el
+nombre. Seis pruebas, todas en verde.
+
+#### Costo y alcance
+
+Cuando hay actor se agrega un viaje a la base por `get_cursor()` (~1-2 ms en
+Railway, misma región). **No lo pagan los crons, sondeos ni backfills**: corren
+sin petición detrás, así que no tienen actor y salen sin mandar nada.
+
+Fuera de alcance por ahora: `ops.process_log` y `channel.listing_history` no
+tienen columna de autor todavía (paso 2), y esto **no** ve a quien entra directo
+por el dashboard de Supabase — eso es del modelo de roles.
+
 ### v0.232.0 — Las 19,649 filas de la bitácora, y el `ms` que se estaba redondeando
 
 Respaldo hecho: **sandbox primero, producción después**, las dos verificadas

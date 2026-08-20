@@ -26,12 +26,12 @@ Revertir = SUPABASE_WRITE_ORDERS=false (vuelve el dual-write clásico).
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timezone
 from typing import Any, Callable
 
 from config import settings
+from core import actor
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.orders_write")
@@ -113,10 +113,8 @@ def ultimo_actualizado(cuenta: str):
 
 
 def _en_hilo(fn: Callable, *args) -> None:
-    try:
-        asyncio.get_running_loop().run_in_executor(None, fn, *args)
-    except RuntimeError:
-        fn(*args)
+    # Delega en core.actor: `run_in_executor` NO se lleva los contextvars.
+    actor.en_hilo(fn, *args)
 
 
 def _espejo_inverso_mysql(clave: str, escribir_mysql: Callable[[], None]) -> None:
