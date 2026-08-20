@@ -92,7 +92,37 @@ const COLOR_ACCION: Record<string, string> = {
   full_ignorado: "bg-slate-50 text-slate-400 border-slate-200",
   full_sospechoso: "bg-rose-100 text-rose-800 border-rose-300",
   full_sin_sku: "bg-rose-50 text-rose-600 border-rose-200",
+  // Cadena Odoo -> Woo -> canales
+  odoo_delta: "bg-blue-50 text-blue-700 border-blue-200",
+  odoo_delta_registro: "bg-violet-50 text-violet-700 border-violet-200",
+  odoo_master: "bg-indigo-50 text-indigo-700 border-indigo-200",
+  woo_cambio: "bg-cyan-50 text-cyan-700 border-cyan-200",
+  woo_cambio_registro: "bg-violet-50 text-violet-700 border-violet-200",
+  stock_watch_freno: "bg-rose-100 text-rose-800 border-rose-300",
 };
+
+interface MovOdoo {
+  ts: string; sku: string; accion: string; motivo: string | null;
+  resultado: string | null; canal: string | null;
+  stock_drop: number | null; objetivo: number | null;
+}
+interface Desalineado {
+  sku: string; stock_odoo: number; stock_woo: number; brecha: number;
+  actualizado: string;
+}
+interface OdooMonitor {
+  vigilante: { estado?: string; habilitado: boolean; solo_registro: boolean;
+               tope: number; ts?: string; deltas?: number; movidos?: number;
+               escritos?: number; encolados?: number };
+  horas: number;
+  movimientos: MovOdoo[];
+  resumen: Record<string, number>;
+  por_canal: { canal: string; accion: string; n: number }[];
+  errores: { canal: string; sku: string; resultado: string; ts: string }[];
+  foto: { skus?: number; discrepan?: number | string; odoo_negativo?: number | string;
+          woo_negativo?: number | string; ultima_foto?: string };
+  desalineados: Desalineado[];
+}
 
 interface TipoObservado {
   tipo: string;
@@ -112,18 +142,21 @@ interface Observacion {
 export default function DashboardPage() {
   const [d, setD] = useState<Estado | null>(null);
   const [obs, setObs] = useState<Observacion | null>(null);
+  const [odoo, setOdoo] = useState<OdooMonitor | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [soloErrores, setSoloErrores] = useState(false);
 
   const cargar = useCallback(async () => {
     try {
-      const [r, ro] = await Promise.all([
+      const [r, ro, rod] = await Promise.all([
         fetchSesion(`${API_BASE}/api/fanout/estado`, { cache: "no-store" }),
         fetchSesion(`${API_BASE}/api/fanout/full/observacion?horas=24`, { cache: "no-store" }),
+        fetchSesion(`${API_BASE}/api/fanout/odoo/monitor?horas=24`, { cache: "no-store" }),
       ]);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setD(await r.json());
       if (ro.ok) setObs(await ro.json());
+      if (rod.ok) setOdoo(await rod.json());
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "error");
@@ -189,6 +222,144 @@ export default function DashboardPage() {
           <div className="mb-4 flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             <AlertTriangle size={16} /> No se pudo leer el estado: {error}
           </div>
+        )}
+
+        {/* ── VIGILANCIA DE ODOO (el master del inventario) ───────────────
+            El stock depende de Odoo al 100%: aquí se ve cada movimiento suyo,
+            si llegó a Woo y si Woo lo repartió a los canales. Refresca sola
+            cada 10 s junto con el resto del panel. */}
+        {odoo && (
+          <section className="mb-6">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="flex items-center gap-2 text-lg font-bold text-slate-800">
+                  <Warehouse size={18} className="text-blue-600" />
+                  Inventario en vivo · Odoo → Woo → canales
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Odoo es el master. Cada movimiento suyo debe llegar a Woo y de ahí
+                  a TikTok, Temu y Mercado Libre.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Estadillo
+                  icono={odoo.vigilante.habilitado ? <Power size={14} /> : <PauseCircle size={14} />}
+                  texto={odoo.vigilante.habilitado ? "Vigilante encendido" : "Vigilante apagado"}
+                  tono={odoo.vigilante.habilitado ? "ok" : "off"}
+                />
+                {odoo.vigilante.solo_registro && (
+                  <Estadillo icono={<Eye size={14} />} texto="Solo registro" tono="warn" />
+                )}
+              </div>
+            </div>
+
+            <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+              <Metrica titulo="SKUs vigilados" valor={odoo.foto.skus ?? 0} icono={<Package size={16} />} />
+              <Metrica titulo="Movimientos de Odoo (24 h)" valor={odoo.resumen["odoo_delta"] ?? 0} icono={<ArrowRightLeft size={16} />} />
+              <Metrica titulo="Cambios en Woo (24 h)" valor={odoo.resumen["woo_cambio"] ?? 0} icono={<Activity size={16} />} />
+              <Metrica titulo="Odoo ≠ Woo ahora" valor={Number(odoo.foto.discrepan ?? 0)} icono={<AlertTriangle size={16} />} tono={Number(odoo.foto.discrepan ?? 0) > 0 ? "warn" : "ok"} />
+              <Metrica titulo="Stock negativo" valor={Number(odoo.foto.odoo_negativo ?? 0) + Number(odoo.foto.woo_negativo ?? 0)} icono={<AlertTriangle size={16} />} tono={Number(odoo.foto.odoo_negativo ?? 0) + Number(odoo.foto.woo_negativo ?? 0) > 0 ? "err" : "ok"} />
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <Tarjeta titulo={`Discrepancias Odoo vs Woo (${odoo.desalineados.length})`}>
+                {odoo.desalineados.length === 0 ? (
+                  <div className="flex items-center gap-2 py-3 text-sm text-emerald-700">
+                    <CheckCircle2 size={16} /> Todo alineado con el master.
+                  </div>
+                ) : (
+                  <div className="max-h-64 overflow-auto">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-white text-[10px] uppercase tracking-wide text-slate-400">
+                        <tr>
+                          <th className="p-1.5 text-left">SKU</th>
+                          <th className="p-1.5 text-right">Odoo</th>
+                          <th className="p-1.5 text-right">Woo</th>
+                          <th className="p-1.5 text-right">Brecha</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {odoo.desalineados.map((x) => (
+                          <tr key={x.sku} className="border-t border-slate-100">
+                            <td className="p-1.5 font-mono text-[11px]">{x.sku}</td>
+                            <td className="p-1.5 text-right font-semibold text-slate-700">{x.stock_odoo}</td>
+                            <td className="p-1.5 text-right text-slate-500">{x.stock_woo}</td>
+                            <td className={`p-1.5 text-right font-bold ${x.brecha > 0 ? "text-amber-600" : "text-rose-600"}`}>
+                              {x.brecha > 0 ? `+${x.brecha}` : x.brecha}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Tarjeta>
+
+              <Tarjeta titulo="Movimientos recientes">
+                {odoo.movimientos.length === 0 ? (
+                  <div className="py-3 text-sm text-slate-400">Sin movimientos en la ventana.</div>
+                ) : (
+                  <div className="max-h-64 space-y-1 overflow-auto">
+                    {odoo.movimientos.map((m, i) => (
+                      <div key={`${m.ts}-${m.sku}-${i}`} className="flex items-center gap-2 border-b border-slate-50 py-1 text-xs">
+                        <span className="w-[92px] shrink-0 font-mono text-[10px] text-slate-400">
+                          {m.ts?.slice(5, 16).replace("T", " ")}
+                        </span>
+                        <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${COLOR_ACCION[m.accion] ?? "bg-slate-50 text-slate-500 border-slate-200"}`}>
+                          {m.accion}
+                        </span>
+                        <span className="w-[150px] shrink-0 truncate font-mono text-[11px] text-slate-700">{m.sku}</span>
+                        <span className="truncate text-slate-500" title={m.resultado ?? ""}>{m.resultado}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Tarjeta>
+            </div>
+
+            {odoo.por_canal.length > 0 && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {["mercado_libre", "tiktok", "temu", "amazon"].map((canal) => {
+                  const filas = odoo.por_canal.filter((c) => c.canal === canal);
+                  if (!filas.length) return null;
+                  const esc = filas.find((f) => f.accion === "escribir")?.n ?? 0;
+                  const sc = filas.find((f) => f.accion === "sin_cambio")?.n ?? 0;
+                  const om = filas.find((f) => f.accion === "omitir")?.n ?? 0;
+                  return (
+                    <div key={canal} className="rounded-xl border border-slate-200 bg-white p-3">
+                      <div className="mb-1.5 text-xs font-bold uppercase tracking-wide text-slate-600">
+                        {canal.replace("_", " ")}
+                      </div>
+                      <div className="flex items-baseline gap-3 text-xs">
+                        <span className="font-bold text-emerald-600">{esc}</span>
+                        <span className="text-slate-400">escritas</span>
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-slate-400">
+                        {sc} sin cambio · {om} omitidas
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {odoo.errores.length > 0 && (
+              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3">
+                <div className="mb-1.5 flex items-center gap-2 text-xs font-bold text-rose-800">
+                  <AlertTriangle size={14} /> {odoo.errores.length} error(es) al escribir a los canales
+                </div>
+                <div className="max-h-32 space-y-0.5 overflow-auto">
+                  {odoo.errores.map((e, i) => (
+                    <div key={i} className="flex gap-2 text-[11px] text-rose-700">
+                      <span className="w-[70px] shrink-0 font-mono text-rose-400">{e.canal}</span>
+                      <span className="w-[140px] shrink-0 font-mono">{e.sku}</span>
+                      <span className="truncate">{e.resultado}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {/* Métricas */}

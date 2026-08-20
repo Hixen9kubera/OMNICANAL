@@ -174,3 +174,73 @@ def alinear(canal: str = Query(..., description="tiktok | mercado_libre | temu")
             "dry_run": fanout_stock.dry_run(),
             "nota": ("encolados; ver /api/fanout/estado" if confirmar
                      else "conteo solamente — repetir con confirmar=true")}
+
+
+@router.get("/odoo/monitor")
+def odoo_monitor(horas: int = Query(24, ge=1, le=168),
+                 limite: int = Query(80, ge=10, le=400)):
+    """
+    Vigilancia EN VIVO de la cadena Odoo → Woo → canales DROP.
+
+    Existe porque el inventario depende de Odoo al 100%: cualquier movimiento
+    del master tiene que verse, quedar auditado y poder revisarse después. Lee
+    de `fanout_log` (bitácora del fan-out) y de `stock_watch_foto` (la foto que
+    compara Woo contra Odoo en cada pasada); no llama a Odoo, así que es barato
+    y se puede refrescar cada pocos segundos desde el panel.
+    """
+    from services import db, stock_watch
+
+    filas = db.fetch_all(
+        """SELECT ts, sku, accion, motivo, resultado, canal, stock_drop, objetivo
+           FROM fanout_log
+           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
+             AND accion IN ('odoo_delta','odoo_delta_registro','woo_cambio',
+                            'woo_cambio_registro','odoo_master','stock_watch_freno')
+           ORDER BY id DESC LIMIT %s""", (horas, limite))
+
+    resumen = {r["accion"]: r["n"] for r in db.fetch_all(
+        """SELECT accion, COUNT(*) n FROM fanout_log
+           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
+             AND accion IN ('odoo_delta','woo_cambio','odoo_master')
+           GROUP BY accion""", (horas,))}
+    canales = db.fetch_all(
+        """SELECT canal, accion, COUNT(*) n FROM fanout_log
+           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR AND canal IS NOT NULL
+             AND accion IN ('escribir','sin_cambio','omitir')
+           GROUP BY canal, accion""", (horas,))
+    errores = db.fetch_all(
+        """SELECT canal, sku, LEFT(resultado, 150) resultado, ts FROM fanout_log
+           WHERE ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
+             AND resultado LIKE 'ERROR%%' ORDER BY id DESC LIMIT 20""", (horas,))
+
+    # La foto de stock_watch ya trae Woo y Odoo lado a lado: de ahí salen las
+    # discrepancias SIN volver a preguntarle a Odoo.
+    try:
+        foto = db.fetch_one(
+            """SELECT COUNT(*) skus,
+                      SUM(stock_woo <> stock_odoo) discrepan,
+                      SUM(stock_odoo < 0) odoo_negativo,
+                      SUM(stock_woo < 0) woo_negativo,
+                      MAX(actualizado) ultima_foto
+               FROM stock_watch_foto
+               WHERE stock_woo IS NOT NULL AND stock_odoo IS NOT NULL""") or {}
+        desalineados = db.fetch_all(
+            """SELECT sku, stock_odoo, stock_woo, (stock_woo - stock_odoo) brecha,
+                      actualizado
+               FROM stock_watch_foto
+               WHERE stock_woo IS NOT NULL AND stock_odoo IS NOT NULL
+                 AND stock_woo <> stock_odoo
+               ORDER BY ABS(stock_woo - stock_odoo) DESC LIMIT 25""")
+    except Exception:  # noqa: BLE001 — la foto es opcional
+        foto, desalineados = {}, []
+
+    return {
+        "vigilante": stock_watch.estado(),
+        "horas": horas,
+        "movimientos": filas,
+        "resumen": resumen,
+        "por_canal": canales,
+        "errores": errores,
+        "foto": foto,
+        "desalineados": desalineados,
+    }
