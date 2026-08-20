@@ -2003,6 +2003,22 @@ vh as (
    where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
      and i.sku is not null
    group by 1),
+med_cat as (
+  -- La mediana se saca de TODA la categoría, no solo de lo que tiene stock:
+  -- con stock quedan 2 o 3 comparables y la mediana no dice nada.
+  select pc.sku::text as sku, m.mediana
+    from channel.product_category pc
+    join (select pc2.category_id,
+                 percentile_cont(0.5) within group (
+                   order by coalesce(l2.price_sale, l2.price)) as mediana
+            from channel.listings l2
+            join channel.product_category pc2
+              on pc2.sku = l2.sku and pc2.channel_id = 'mercado_libre'
+           where l2.canal = 'mercado_libre'
+             and coalesce(l2.price_sale, l2.price) > 0
+           group by 1 having count(*) >= 5) m
+      on m.category_id = pc.category_id
+   where pc.channel_id = 'mercado_libre'),
 lst as (
   select coalesce(pa.padre, l.sku::text) as clave, l.sku::text as sku_real,
          (pa.padre is not null) as es_hijo,
@@ -2019,10 +2035,19 @@ lst as (
          -- venta real). El coalesce hace que el reporte salga desde el día uno,
          -- y `price_sale is null` marca el renglón que todavía se valuó caro.
          coalesce(l.price_sale, l.price) as precio,
-         (l.price_sale is null)          as precio_crudo
+         (l.price_sale is null)          as precio_crudo,
+         -- PRECIO INVEROSÍMIL: más de 10x la mediana de SU categoría, y solo
+         -- cuando esa categoría tiene al menos 5 comparables para que la
+         -- mediana signifique algo. No dice "está mal" —eso lo decide un
+         -- humano— dice "no se parece a nada de su tipo". Caso medido:
+         -- MUE-0248-NEG-NISSAN, unas manijas de puerta a $72,278 contra una
+         -- mediana de $907 en su categoría: 79.7x, y jamás vendió una pieza.
+         (mc.mediana is not null
+          and coalesce(l.price_sale, l.price) > mc.mediana * 10) as precio_raro
     from channel.listings l
     join core.accounts a on a.id = l.account_id
     left join padres pa on pa.hijo = l.sku::text
+    left join med_cat mc on mc.sku = l.sku::text
    where lower(coalesce(l.situacion, '')) <> 'closed'
      and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)),
 pub as (
@@ -2058,6 +2083,7 @@ pub as (
          -- precio observado para que el renglón deje de estar crudo.
          max(precio)      as precio,
          bool_and(precio_crudo) as precio_crudo,
+         bool_or(precio_raro)   as precio_raro,
          -- "Viva" se dice distinto en cada canal: ML usa 'active', Amazon usa
          -- 'buyable'/'published'. Contar solo 'active' marcaba como invisibles
          -- 3 SKUs que sí estaban a la venta en Amazon.
@@ -2114,6 +2140,11 @@ s as (
          -- que no es de nadie cuando las dos cuentas venden a distinto precio.
          sum(p.stock_full * p.precio)
            filter (where p.canal = 'mercado_libre')             as valor_full,
+         sum(p.stock_full * p.precio)
+           filter (where p.cta = 'BEKURA')                      as valor_bk,
+         sum(p.stock_full * p.precio)
+           filter (where p.cta = 'SANCORFASHION')               as valor_sc,
+         bool_or(p.precio_raro) filter (where p.stock_full > 0) as precio_raro,
          sum(p.stock_full) filter (where p.canal = 'mercado_libre'
                                      and p.precio is null)::int as uds_sin_precio,
          bool_and(p.precio_crudo) filter (where p.canal = 'mercado_libre'
@@ -2177,7 +2208,9 @@ _SQL_INV_VALOR = _SQL_INV_BASE + """
 select s.sku, coalesce(p.name, '') as titulo,
        s.full_total, s.full_bk, s.full_sc,
        round(s.valor_full, 2) as valor_full,
-       s.uds_sin_precio, s.precio_crudo,
+       round(s.valor_bk, 2) as valor_bk, round(s.valor_sc, 2) as valor_sc,
+       s.uds_sin_precio, s.precio_crudo, s.precio_raro,
+       (vh.ult_hist is null) as nunca_vendio,
        s.activas, s.pausadas, s.cuentas,
        (select count(*) from padres where padre = s.sku)::int as variantes,
        s.full_detalle,
@@ -2320,7 +2353,7 @@ def _frescura(cuenta: str | None) -> dict:
     }
 
 
-def _resumen_valor(filas: list) -> dict:
+def _resumen_valor(filas: list) -> dict:  # noqa: C901
     """Los números de portada del corte de valor.
 
     `uds_sin_precio` y `precio_crudo` NO se esconden: sin ellos el total se lee
@@ -2331,10 +2364,44 @@ def _resumen_valor(filas: list) -> dict:
     val = sum(float(f["valor_full"] or 0) for f in filas)
     uds = sum(int(f.get("full_total") or 0) for f in filas)
     crudas = [f for f in filas if f.get("precio_crudo")]
+    # SIN EVIDENCIA DE VENTA. La pregunta que un valor de inventario tiene que
+    # poder contestar no es solo "¿cuánto vale?" sino "¿a ese precio se vende?".
+    # Medido el 20-ago-2026: el 49% del valor —61% en Bekura— está en SKUs que
+    # jamás han vendido una pieza. Sin este renglón el total se lee como
+    # patrimonio realizable cuando la mitad nunca lo ha demostrado.
+    nunca = [f for f in filas if f.get("nunca_vendio")]
+    raras = [f for f in filas if f.get("precio_raro")]
+    # CONCENTRACIÓN. Si unas pocas publicaciones cargan el total, el número no
+    # describe al inventario: describe a esas pocas. Medido: las 5 más caras
+    # aportaban el 19%.
+    top5 = sorted((float(f["valor_full"] or 0) for f in filas), reverse=True)[:5]
+    def _pct(x: float) -> int | None:
+        return round(100 * x / val) if val else None
     return {
         "publicaciones": len(filas),
         "unidades_full": uds,
         "valor": round(val, 2),
+        "por_cuenta": [
+            {"cuenta": c, "etiqueta": e,
+             "valor": round(sum(float(f.get(k) or 0) for f in filas), 2),
+             "unidades": sum(int(f.get(u) or 0) for f in filas)}
+            for c, e, k, u in (("BEKURA", "Bekura", "valor_bk", "full_bk"),
+                               ("SANCORFASHION", "Sancor", "valor_sc", "full_sc"))
+        ],
+        "sin_venta": {
+            "publicaciones": len(nunca),
+            "unidades": sum(int(f.get("full_total") or 0) for f in nunca),
+            "valor": round(sum(float(f["valor_full"] or 0) for f in nunca), 2),
+            "pct": _pct(sum(float(f["valor_full"] or 0) for f in nunca)),
+        },
+        "precio_raro": {
+            "publicaciones": len(raras),
+            "valor": round(sum(float(f["valor_full"] or 0) for f in raras), 2),
+            "pct": _pct(sum(float(f["valor_full"] or 0) for f in raras)),
+            "casos": [{"sku": f["sku"], "valor": float(f["valor_full"] or 0)}
+                      for f in sorted(raras, key=lambda x: -float(x["valor_full"] or 0))[:3]],
+        },
+        "top5_pct": _pct(sum(top5)),
         "meta_anual": _META_ANUAL_MXN,
         "pct_meta": round(100 * val / _META_ANUAL_MXN, 1) if _META_ANUAL_MXN else None,
         # Lo que todavía se valuó con precio de lista: el total de arriba baja

@@ -253,8 +253,9 @@ def _hoja_valor(wb: Workbook, filas: list[dict], dias: int) -> None:
     """
     ws = wb.create_sheet("Valor en FULL")
     cabs = ["SKU", "Título", "Dónde está el stock", "En FULL", "FULL Bekura",
-            "FULL Sancor", "Valor a precio de venta", "Activas", "Pausadas",
-            "Cuentas", f"Vendidas ({dias}d)", "Última venta", "Aviso"]
+            "FULL Sancor", "Valor a precio de venta", "Valor Bekura",
+            "Valor Sancor", "Activas", "Pausadas", "Cuentas",
+            f"Vendidas ({dias}d)", "Última venta", "Aviso"]
     val = _mxn(filas)
     uds = sum(int(f.get("full_total") or 0) for f in filas)
     crudas = [f for f in filas if f.get("precio_crudo")]
@@ -279,22 +280,35 @@ def _hoja_valor(wb: Workbook, filas: list[dict], dias: int) -> None:
                   "promoción. ")
                + (f"{sin_precio:,} unidades no tienen ningún precio y quedan "
                   f"FUERA del total." if sin_precio else ""),
-               {1: 22, 2: 40, 3: 46, 4: 10, 5: 12, 6: 12, 7: 22, 8: 10,
-                9: 10, 10: 16, 11: 14, 12: 12, 13: 60})
+               {1: 22, 2: 40, 3: 46, 4: 10, 5: 12, 6: 12, 7: 22, 8: 14,
+                9: 14, 10: 10, 11: 10, 12: 16, 13: 14, 14: 12, 15: 64})
     for i, f in enumerate(filas):
         r = 4 + i
         ws.cell(r, 1, f.get("sku") or "").font = _f()
         ws.cell(r, 2, (f.get("titulo") or "")[:120]).font = _f()
         ws.cell(r, 3, _donde(f)).font = _f(size=9)
         for c, k in ((4, "full_total"), (5, "full_bk"), (6, "full_sc"),
-                     (8, "activas"), (9, "pausadas"), (11, "uds_periodo")):
+                     (10, "activas"), (11, "pausadas"), (13, "uds_periodo")):
             ws.cell(r, c, int(f.get(k) or 0)).font = _f()
             ws.cell(r, c).number_format = _INT
         _celda_valor(ws, r, 7, f)
-        ws.cell(r, 10, _cuentas(f.get("cuentas"))).font = _f()
-        ws.cell(r, 12, f.get("ultima_venta") or "nunca").font = _f()
+        # El valor abierto por cuenta: el corte que la CAM arma a mano es de
+        # UNA tienda, y sin estas dos columnas su total no se puede reconciliar
+        # contra el nuestro, que es de dos (Eduardo, 20-ago).
+        for c, k in ((8, "valor_bk"), (9, "valor_sc")):
+            ws.cell(r, c, round(float(f.get(k) or 0), 2)).font = _f()
+            ws.cell(r, c).number_format = _MXN
+        ws.cell(r, 12, _cuentas(f.get("cuentas"))).font = _f()
+        ws.cell(r, 14, f.get("ultima_venta") or "nunca").font = _f()
         avisos = []
-        # PRIMERO qué es el renglón. Un padre no vende NUNCA —vende su
+        if f.get("precio_raro"):
+            avisos.append("PRECIO FUERA DE ESCALA — más de 10 veces la mediana "
+                          "de su categoría; suele ser un error de captura y "
+                          "aquí se está contando como patrimonio")
+        if f.get("nunca_vendio"):
+            avisos.append("NUNCA HA VENDIDO una pieza: el precio existe, la "
+                          "prueba de que alguien lo paga no")
+        # DESPUÉS qué es el renglón. Un padre no vende NUNCA —vende su
         # variante— así que sin decirlo, "0 vendidas · nunca" se lee como un
         # error del reporte en vez de como el hecho de la familia entera.
         # Medido el 20-ago-2026 sobre todo el histórico: los SKUs padre suman
@@ -316,7 +330,7 @@ def _hoja_valor(wb: Workbook, filas: list[dict], dias: int) -> None:
             avisos.append(f"sin vender en {dias} días"
                           + (" —ni el padre ni una sola variante—" if variantes else "")
                           + " · también sale en Inmovilizado")
-        ws.cell(r, 13, " · ".join(avisos)).font = _f(size=9)
+        ws.cell(r, 15, " · ".join(avisos)).font = _f(size=9)
 
 
 def construir(inmovilizado: list[dict], invisible: list[dict],

@@ -1001,6 +1001,62 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.246.0 — Una tienda no son dos, y la mitad de ese valor nunca ha vendido
+
+Eduardo, viendo el panel: *"del reporte de Valeria marcan 6 millones si
+vendiéramos lo que hay en full y en nuestro panel salen 15 millones"*.
+
+**No estaban peleados: son alcances distintos.** El archivo de la CAM es de
+SANCORFASHION solamente. El panel abría en CONSOLIDADO, que es Sancor más
+Bekura — y Bekura es más del doble.
+
+| | publicaciones | unidades | valor |
+|---|---|---|---|
+| Sancor | 297 | 9,847 | $4,844,554 |
+| Bekura | 413 | 17,412 | $11,073,837 |
+| Consolidado | 609 | 27,259 | $15,918,391 |
+
+Contra su corte, por unidad: **$492 nuestro contra $487 suyo, 1% de
+diferencia**. La brecha entre sus $6M y nuestros $4.8M es que pasó una semana y
+se vendieron 2,482 piezas. Nada estaba mal; faltaba decir de qué tienda hablaba
+cada número.
+
+Se agregó también una precisión de vocabulario que el propio archivo de la CAM
+tiene bien y el panel no: **eso no son ganancias**. Es lo que se COBRARÍA si se
+vendiera todo, antes del costo, del flete, de la comisión, del envío y del IVA.
+La tarjeta ahora lo dice en el subtítulo.
+
+**Y lo que salió al revisar el total.** Tres cosas que un valor de inventario
+tiene que confesar y no confesaba:
+
+- **El 44% del valor está en SKUs que jamás han vendido una pieza** —
+  $7,070,395 en 165 publicaciones. Un valor de inventario tiene que contestar
+  "¿a ese precio se vende?", no solo "¿cuánto vale?". Sin ese renglón el total
+  se lee como patrimonio realizable cuando casi la mitad nunca lo ha demostrado.
+- **Precios fuera de escala.** `MUE-0248-NEG-NISSAN` —unas manijas interiores de
+  puerta— está a $72,278 contra una mediana de $907 en su categoría: **79.7×**,
+  y nunca vendió. Aporta $289,114 al total. La regla no dice "está mal": dice
+  "no se parece a nada de su tipo", con más de 10× la mediana de su categoría y
+  solo cuando esa categoría tiene ≥5 comparables para que la mediana signifique
+  algo.
+- **Concentración**: las 5 publicaciones más caras son el **23%** del total. El
+  número describe a esas cinco tanto como al inventario.
+
+Un caso que la regla NO marca, a propósito: `TEC-0264-NAR` (polipasto 1
+tonelada) a $38,202, que aporta $1,528,092 —el 10% del total— y jamás vendió.
+Su categoría tiene mediana de $21,121, así que 1.8× no lo delata. Cae en el
+aviso de "nunca ha vendido", que es lo que los datos SÍ sostienen. Marcarlo como
+error de captura sería una afirmación que la evidencia no respalda.
+
+- El bloque `valor` gana `por_cuenta`, `sin_venta`, `precio_raro` y `top5_pct`
+- La tarjeta muestra el desglose por cuenta SIEMPRE, aun filtrando
+- La hoja «Valor en FULL» gana «Valor Bekura» y «Valor Sancor», y sus avisos
+  nombran el precio fuera de escala y el nunca-vendió
+
+**Verificado contra producción, solo lectura**: 607 renglones; Bekura
+$11,074,870 + Sancor $4,844,057 = $15,918,927, cuadra al peso con el total.
+`tsc` limpio y el Excel se construye con sus 15 columnas.
+
 ### v0.245.0 — Un valor es una foto, no un mosaico
 
 Eduardo, al ver el reporte de v0.244.0: *"¿al generar el reporte no es ideal

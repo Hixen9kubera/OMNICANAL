@@ -222,6 +222,18 @@ interface PreviewInv {
     meta_anual: number; pct_meta: number | null;
     skus_precio_crudo: number; uds_precio_crudo: number;
     valor_precio_crudo: number; uds_sin_precio: number;
+    por_cuenta: { cuenta: string; etiqueta: string;
+                  valor: number; unidades: number }[];
+    /* Cuánto del valor está en SKUs que jamás vendieron una pieza. Un valor de
+       inventario tiene que contestar "¿a ese precio se vende?", no solo
+       "¿cuánto vale?". */
+    sin_venta: { publicaciones: number; unidades: number;
+                 valor: number; pct: number | null };
+    /* Más de 10x la mediana de su categoría: no dice "está mal", dice "no se
+       parece a nada de su tipo". */
+    precio_raro: { publicaciones: number; valor: number; pct: number | null;
+                   casos: { sku: string; valor: number }[] };
+    top5_pct: number | null;
     frescura: { desde: string | null; hasta: string | null;
                 ventana_min: number | null; observadas: number; total: number };
     refresco: { fase: string; detalle: string | null;
@@ -454,9 +466,26 @@ function TarjetaValor({ v, onPedido }: {
           </p>
           <p className="mt-0.5 text-[13px] text-slate-500">
             {v.publicaciones.toLocaleString("es-MX")} publicaciones ·{" "}
-            {v.unidades_full.toLocaleString("es-MX")} unidades · a precio de
-            venta, no al costo
+            {v.unidades_full.toLocaleString("es-MX")} unidades · lo que se
+            COBRARÍA si se vendiera todo, antes de costos — no es ganancia
           </p>
+          {/* El desglose por cuenta va SIEMPRE, aunque se esté filtrando: el
+              reporte que la CAM arma a mano es de una sola tienda, y sin esta
+              línea su $6M se compara contra un total de dos y no cuadra
+              (Eduardo, 20-ago). */}
+          {v.por_cuenta.some((c) => c.valor > 0) && (
+            <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+              {v.por_cuenta.filter((c) => c.valor > 0).map((c) => (
+                <span key={c.cuenta} className="text-[13px] text-slate-600">
+                  <b className="font-semibold">{c.etiqueta}</b>{" "}
+                  {money(c.valor)}
+                  <span className="text-slate-400">
+                    {" "}· {c.unidades.toLocaleString("es-MX")} uds
+                  </span>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -503,6 +532,37 @@ function TarjetaValor({ v, onPedido }: {
         )}
       </p>
 
+      {v.sin_venta.pct != null && v.sin_venta.pct >= 15 && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-slate-100 px-3 py-2 text-[13px] text-slate-700">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-slate-500" />
+          <span>
+            <b>{v.sin_venta.pct}% de este valor</b> ({money(v.sin_venta.valor)},{" "}
+            {v.sin_venta.unidades.toLocaleString("es-MX")} unidades en{" "}
+            {v.sin_venta.publicaciones} publicaciones) está en productos que
+            <b> nunca han vendido una sola pieza</b>. El precio existe; la
+            prueba de que alguien lo paga, no.
+          </span>
+        </p>
+      )}
+      {v.precio_raro.publicaciones > 0 && (
+        <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>
+            <b>{v.precio_raro.publicaciones}</b>{" "}
+            {v.precio_raro.publicaciones === 1 ? "publicación aporta" : "publicaciones aportan"}{" "}
+            {money(v.precio_raro.valor)} ({v.precio_raro.pct}%) con un precio de
+            más de 10 veces la mediana de su categoría —{" "}
+            {v.precio_raro.casos.map((c) => c.sku).join(", ")}. Revísalas antes
+            de usar el total: un precio así suele ser un error de captura.
+          </span>
+        </p>
+      )}
+      {v.top5_pct != null && v.top5_pct >= 20 && (
+        <p className="mt-1 text-[12px] text-slate-500">
+          Concentrado: las 5 publicaciones más caras son el {v.top5_pct}% del
+          total. El número describe a esas cinco tanto como al inventario.
+        </p>
+      )}
       {crudo && (
         <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
