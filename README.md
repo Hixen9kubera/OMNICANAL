@@ -12320,6 +12320,66 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.230.0 — Censo de las 38 tablas: dejar de encontrar las minas pisándolas
+
+Eduardo lo pidió como corrección de método, y tenía razón. Los defectos del corte
+venían apareciendo **de uno en uno, tropezando** —los tokens de TikTok, la trampa
+de `SUPABASE_READ_WEBHOOKS`, el escritor de la caché de imágenes, el agujero en
+la propia red de seguridad—: cuatro en dos días, todos por casualidad al hacer
+otra cosa. Eso no escala.
+
+`censo_tablas_mysql.py` recorre **la base**, no mi memoria: qué tablas existen,
+cuándo se escribió cada una, qué funciones las leen y las escriben, cuáles
+DECIDEN algo y cuáles se tragan el error. Análisis completo en
+[docs/ANALISIS_CORTE_38_TABLAS.md](docs/ANALISIS_CORTE_38_TABLAS.md).
+
+#### El 60% del problema no existe
+
+| | |
+|---|---|
+| MUERTA | 10 |
+| SIN FECHA / VACÍA | 7 |
+| QUIETA | 13 |
+| **VIVA** | **8** |
+
+**Once tablas del robot de Alibaba tienen cero lectores y cero escritores.** Se
+archivan sin ceremonia. El corte no las nota.
+
+#### El hueco que destapó: `fanout_log`
+
+19,616 filas, escrita hace minutos, **9 lectores y 11 escritores**.
+
+Las dos lecturas que DECIDEN ya están cubiertas por `SUPABASE_READ_CANDADOS`.
+Pero hay **cuatro lectores más que nadie había contado** —las pantallas de
+observación del fan-out— y el destino que construimos **no las cubre**:
+`ops.fulfillment_operations` guarda la MARCA de idempotencia, no la BITÁCORA.
+
+Migramos el candado y dejamos fuera el historial. Son dos cosas distintas en la
+misma tabla — **exactamente el error de origen que el consejo ya había señalado
+para los dos candados**, repetido por nosotros un nivel más arriba.
+
+Y un escritor que no estaba en ninguna lista: `apagar_amazon_fantasma.py`. Van
+tres veces que el conteo de escritores de esa tabla sube.
+
+#### Y `productos` se está escribiendo ahora mismo
+
+`odoo_watch` le mete `stock_odoo` cada 30 minutos. Es **la única tabla VIVA cuyo
+destino sigue sin decidir**, y el plan la trata como congelada. No lo está.
+
+#### `categorias_ml`: muerta hace 52 días, con 7 lectores
+
+Última escritura el 29-jun. No es un problema del corte: **es un problema de
+hoy**. Esos lectores ya están leyendo una tabla de hace dos meses.
+
+#### El límite de la herramienta, dicho a tiempo
+
+Marca por heurística y **no sabe de banderas**: su lista de "riesgo" incluye
+tablas ya cubiertas. Sirve para no perder nada de vista, no para dictar
+veredictos — cada marca hay que abrirla, igual que en el triaje de los 95. Se
+dice aquí para que nadie lea el conteo como si fuera una medición.
+
+Sin variables nuevas. Versión 0.230.0.
+
 ### v0.229.0 — La caché de imágenes: el lector ya estaba migrado, el escritor moría en el corte
 
 Eduardo pidió repuntar el lector de imágenes de Amazon **y verificar antes que de
