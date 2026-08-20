@@ -6,8 +6,9 @@ POR QUÉ EXISTE
 --------------
 Auditoría del 2026-08-19: desde la 0020, cinco migraciones crearon ocho tablas y
 NINGUNA activó su RLS (`0020_enrich_margenes`, `0021_ops_stock_watch_photo`,
-`0022_candados_fanout`, `0023_ops_fba_snapshot`, `0024_ops_tiktok_tokens` — ésta
-última guarda tokens de OAuth de TikTok). La `0025_blindaje_rls` cerró el hueco y
+`0022_candados_fanout`, `0023_ops_fba_snapshot`, `0027_ops_tiktok_tokens` — ésta
+última guarda tokens de OAuth de TikTok, y fue la que el equipo corrigió en su
+origen al ver la auditoría). La `0025_blindaje_rls` cerró el resto y
 dejó un barrido idempotente, pero un barrido es paliativo: mientras las
 migraciones nuevas sigan naciendo sin candado, el hueco se reabre solo.
 
