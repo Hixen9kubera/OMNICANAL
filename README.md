@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.237.0 — Paso 3: el dashboard del fan-out ya lee de kubera
+
+**`SUPABASE_READ_FANOUT_LOG=true` encendida.** Las cuatro pantallas del fan-out
+—historial, resumen, movimientos FULL/FBA y pendientes de inventario— salen ahora
+de `ops.fanout_log`. Es pantalla, no mercancía: reversible con la misma variable.
+
+#### Antes de encender, la paridad no cuadraba
+
+MySQL 20,131 · kubera 20,061. **70 eventos de diferencia** — y encenderlo así
+habría dejado el dashboard mostrando de menos sin que nadie supiera por qué.
+
+Al abrirlo, los 70 eran de tres acciones (`escribir`, `omitir`, `sin_cambio`) y
+**todos de una ventana de 26 segundos**, la del despliegue anterior. Los otros
+cinco tipos coincidían exactamente.
+
+Esa es la lección que deja: **el espejo no cubre las ventanas de despliegue.**
+Mientras el contenedor se reinicia, MySQL sigue recibiendo lo que el proceso
+alcanzó a escribir y el espejo no. No es un defecto del espejo — es que hay dos
+escritores y uno se reinicia.
+
+**El respaldo repetible es la reparación**, y funcionó exactamente para eso: al
+volver a correrlo, los 70 volvieron con su `mysql_id` y la diferencia quedó en
+—1, que es un evento que MySQL todavía no tenía cuando se leyó.
+
+Queda dicho para el corte: **hasta que MySQL se apague, cada despliegue abre un
+hueco pequeño y el respaldo lo cierra.** Después del corte no hay hueco posible,
+porque el espejo pasa a ser el único escritor.
+
+Verificado tras encender: despliegue en SUCCESS, salud en verde, cero errores en
+los logs, y el espejo siguió escribiendo (14 eventos nuevos tras el reinicio).
+
+Versión 0.237.0.
+
 ### v0.235.0 — El respaldo y el espejo escribían lo mismo, y nadie los deduplicaba
 
 Paso 2 de los cuatro: el hueco cerrado. **19,835 filas, cero eventos contados dos
