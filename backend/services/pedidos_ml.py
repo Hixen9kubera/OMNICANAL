@@ -386,8 +386,46 @@ async def _compensar_stock_protegido(wc_id: int, order_id: str, cuenta: str,
     return {"ok": True, "compensado": sum(d["unidades"] for d in devueltos), "detalle": devueltos}
 
 
-def _ya_compensado(wc_id: int) -> bool:
-    """¿Ya le devolvimos el stock a este pedido? (evita compensar dos veces)."""
+def _sellar_candado(que: str, cuenta: str, order_id: str) -> None:
+    """Deja la marca en kubera tras compensar o revertir.
+
+    Va en su propio try/except, y aquí SÍ corresponde: la marca es constancia
+    de algo que YA pasó en Woo. Si falla, lo peor es que la próxima vuelta
+    compense otra vez —malo, pero visible en el stock— mientras que romper aquí
+    dejaría la venta a medias por no poder escribir una bitácora.
+
+    Lo que NO lleva except es la LECTURA (`_ya_compensado`): ahí un error
+    silencioso decide mover mercancía.
+    """
+    if not settings.supabase_read_candados:
+        return
+    try:
+        from services import candados_read
+        if que == "compensado":
+            candados_read.marcar_compensado("mercado_libre", cuenta, order_id)
+        else:
+            candados_read.marcar_revertido("mercado_libre", cuenta, order_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo sellar el candado %s de %s: %s", que, order_id, exc)
+
+
+def _ya_compensado(wc_id: int, cuenta: str | None = None,
+                   order_id: str | None = None) -> bool:
+    """¿Ya le devolvimos el stock a este pedido? (evita compensar dos veces).
+
+    PASO 0 (19-ago). Con `supabase_read_candados` la respuesta sale de
+    `channel.orders` y **PROPAGA si la base falla**. El `except → False` de
+    abajo es el defecto que este paso viene a quitar: convierte "no pude
+    preguntar" en "no lo he hecho", y eso COMPENSA DE NUEVO — le devuelve al
+    almacén piezas que nunca salieron.
+
+    Se busca por la PK `(canal, cuenta, external_order_id)` y no por `wc_id`:
+    desde el reclamo (v0.176.0) `wc_order_id` es NULL a propósito mientras el
+    pedido está reclamado y todavía no creado, que es justo el momento revuelto.
+    """
+    if settings.supabase_read_candados and cuenta and order_id:
+        from services import candados_read
+        return candados_read.ya_compensado("mercado_libre", cuenta, str(order_id))
     try:
         return bool(db.fetch_one(
             "SELECT id FROM fanout_log WHERE item_id=%s AND accion='full_compensado' LIMIT 1",
@@ -640,15 +678,18 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
             rev = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"],
                                                    signo=-1, filas=foto_previa)
             if rev.get("compensado"):
+                _sellar_candado("revertido", orden["cuenta"], str(order_id))
                 log.info("Pedido %s cancelado: revertidas %d pza(s) de la compensación",
                          order_id, rev["compensado"])
         except Exception as exc:  # noqa: BLE001
             log.warning("reversión de compensación de %s falló: %s", order_id, exc)
 
-    if protegido and payload["status"] != "cancelled" and not _ya_compensado(wc_id):
+    if (protegido and payload["status"] != "cancelled"
+            and not _ya_compensado(wc_id, orden["cuenta"], str(order_id))):
         try:
             comp = await _compensar_stock_protegido(wc_id, str(order_id), orden["cuenta"])
             if comp.get("compensado"):
+                _sellar_candado("compensado", orden["cuenta"], str(order_id))
                 log.info("Pedido %s (FULL/FBA): compensadas %d pza(s) que Woo había descontado",
                          order_id, comp["compensado"])
         except Exception as exc:  # noqa: BLE001 — nunca rompe la venta

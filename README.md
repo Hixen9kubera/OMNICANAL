@@ -12320,6 +12320,96 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.224.0 — Los dos últimos: el candado de bodega y los tokens de ML
+
+Con esto **`probar_corte_total.py` pasa de 12 a 14 de 14**: ningún camino
+sondeado depende ya de MySQL. Cero truenan, **cero mienten**.
+
+Los dos son distintos de los 25 lectores del paso 3, y por eso se dejaron al
+final: aquéllos muestran cosas en una pantalla; **el candado decide si se mueve
+mercancía y los tokens deciden si hay API de Mercado Libre**.
+
+#### PASO 0 — el candado (`SUPABASE_READ_CANDADOS`, nace apagado)
+
+Las tablas ya estaban en producción y llenas desde el 14-ago; lo que faltaba era
+que alguien las llamara. Ahora las llaman tres sitios:
+
+- `pedidos_ml._ya_compensado` → `channel.orders`, **buscando por la PK**
+  `(canal, cuenta, external_order_id)` y no por `wc_order_id`, que desde el
+  reclamo (v0.176.0) es NULL a propósito justo en el momento revuelto.
+- `stock_full._ya_procesada` → `ops.fulfillment_operations`.
+- La marca de agua del FBA → `ops.fba_watermark`.
+
+**Se van tres defectos de una vez.** El `except → False`, que convierte "no pude
+preguntar" en "no lo he hecho" y aplica el movimiento otra vez. El
+`_asegurar_schema()` con su `CREATE TABLE IF NOT EXISTS fanout_log`, por el que
+**el propio lector recreaba la tabla vacía y después le preguntaba** —respuesta
+garantizada: "no lo hice", para todos—. Y el regex.
+
+**El regex era el peor de los tres.** La referencia del vigilante de FBA salía de
+sacarle un número al TEXTO de un mensaje (`"FBA subió A→B (+N)"`) con
+`re.search(r"→\s*(\d+)")`. Cambiar esa frase rompía la referencia en silencio.
+Ahora es una columna.
+
+Y al matarlo apareció algo que no se veía: **la marca de agua se escribía sola**,
+porque el mismo texto que la guardaba era el que el regex leía. Al quitar el
+regex hay que escribirla explícitamente — y con el mismo criterio que tenía, que
+incluye avanzar también cuando la escritura a Woo **falla** (`fba_error`). Eso
+significa que un ingreso cuyo empuje falla se da por visto y no se reintenta. **No
+lo introduce este cambio** —lleva ahí desde que existe el vigilante— y por eso se
+conserva y se anota, en vez de arreglarse a escondidas dentro de una migración.
+
+#### PASO 6 — los tokens (`SUPABASE_WRITE_TOKENS` / `SUPABASE_READ_TOKENS`)
+
+Migración **0023**: `ops.ml_tokens` se había creado para Vault
+(`vault_access_secret`) y llevaba vacía desde entonces. Ir a Vault ahora sería
+mezclar dos proyectos; lo que desbloquea el retiro es mucho más chico —que el
+token pueda guardarse ahí igual que hoy se guarda en MySQL, cifrado con la misma
+llave Fernet—. Las columnas de Vault se quedan, sin usar, para esa mudanza.
+
+**Lo que NO se copia, a propósito: `app_id` y `client_secret`.** Ese
+`client_secret` es justo el que está expuesto en el repo `publicador` y pendiente
+de rotación, y copiarlo a una tabla nueva sería esparcir un secreto quemado.
+Salen de `MELI_APP_ID` / `MELI_CLIENT_SECRET`, que es donde va un secreto. El
+código ya tenía ese camino: era el respaldo de `_credenciales_refresh`, y pasa a
+ser el principal.
+
+**La regla que da forma a todo el módulo: ML rota el `refresh_token` en cada
+uso.** Dos procesos que renuevan no se desincronizan — se invalidan mutuamente, y
+el siguiente refresh muere con `invalid_grant`. De ahí que ESCRIBIR en los dos
+lados sea seguro (es el mismo valor, calculado una vez) y RENOVAR desde los dos
+no lo sea. Por eso `tokens_read` no tiene una sola función que llame a la API:
+solo guarda y lee. El único renovador sigue siendo uno.
+
+Y el arbitraje por recencia no se reemplaza, **se extiende**: kubera entra a la
+misma comparación de `updated_at` que ya hacía `_access_token` entre las dos
+tablas de MySQL. Mientras haya doble escritura empatan; el día que MySQL se
+apague, kubera gana sola sin que nadie mueva un flag.
+
+**Un riesgo que apareció midiendo:** `meli._enc(f, v)` devuelve el valor **tal
+cual** cuando no hay llave Fernet. O sea que si `DB_ENCRYPTION_KEY` faltara, los
+tokens se escribirían EN CLARO —en MySQL y en kubera— sin un solo error.
+Verificado: las 4 filas de producción están cifradas. Y `tokens_read.guardar`
+ahora **se niega** a escribir un valor sin cifrar cuando hay llave configurada.
+
+#### Las pruebas
+
+`probar_candados_tokens_sandbox.py`, **14 checks en verde**. Escribe en el
+sandbox porque es la única forma de probar un candado —hay que sellarlo y volver
+a preguntar—, aborta si el DSN es de producción, y los tokens que usa son
+cadenas inventadas. La rama que más importa: **con la BD caída, `_ya_procesada`
+PROPAGA** en vez de contestar "no lo he hecho".
+
+**Y una corrección de la sonda del corte total.** Marcaba los dos como VACIO, pero
+por falta de datos en el sandbox, no por falta de camino: `_ya_procesada` de una
+operación que no existe devuelve `False`, y ese `False` es la respuesta
+**correcta**. Una sonda que no distingue "no existe el camino" de "la tabla está
+vacía" comete el mismo error que persigue. Ahora siembra, pregunta y limpia.
+
+Migración **0023 aplicada al SANDBOX**, no a producción. Variables nuevas:
+`SUPABASE_READ_CANDADOS`, `SUPABASE_WRITE_TOKENS`, `SUPABASE_READ_TOKENS`, las
+tres en `false` y sin definir en Railway. Versión 0.224.0.
+
 ### v0.223.0 — Paso 3 CERRADO: competencia, inventario, y 81 publicaciones con dos dueños
 
 Los 12 sitios que faltaban —`competencia_captura` (4) e `inventario` (8)— ya

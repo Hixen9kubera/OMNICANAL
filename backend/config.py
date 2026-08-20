@@ -578,6 +578,42 @@ class Settings(BaseSettings):
     # de mediana esa ventana desapareció.
     supabase_read_publicaciones: bool = False
 
+    # ── PASO 0: los DOS candados que viven en `fanout_log` ───────────────────
+    # APAGADO = se leen de MySQL, igual que hoy. ENCENDIDO = `channel.orders`
+    # (compensación por pedido), `ops.fulfillment_operations` (operaciones de
+    # bodega) y `ops.fba_watermark` (la marca de agua del FBA).
+    #
+    # ⚠️ ESTOS NO SON LECTURA DE PANTALLA: deciden si se MUEVE MERCANCÍA.
+    # Un candado que contesta "no lo he hecho" cuando sí lo hizo mueve stock dos
+    # veces. Encenderlo es regla 3 — necesita el dale de Brandon.
+    #
+    # Y hay un agravante que este flag no arregla solo: `fanout_stock.py` tiene
+    # un `CREATE TABLE IF NOT EXISTS fanout_log`, así que si esa tabla se borra
+    # **el propio lector la recrea vacía y después le pregunta**. Respuesta
+    # garantizada: "no lo hice". Ese CREATE hay que quitarlo ANTES del retiro.
+    #
+    # Condición de seguridad heredada: el día que se le quite el "solo registro"
+    # al vigilante FULL, esto tiene que estar encendido y verificado.
+    supabase_read_candados: bool = False
+
+    # ── PASO 6: los tokens de Mercado Libre ──────────────────────────────────
+    # WRITE = el par cifrado se guarda tambien en `ops.ml_tokens`. Es SEGURO
+    # aunque MySQL siga mandando: es el MISMO valor, calculado una sola vez por
+    # `meli.refrescar_token`. Lo que no se puede duplicar es la RENOVACION (ML
+    # rota el refresh_token en cada uso y dos renovadores se invalidan), y este
+    # flag no crea un segundo renovador — solo un segundo destino de escritura.
+    #
+    # READ = `_access_token` y `_credenciales_refresh` consideran a kubera en el
+    # arbitraje por recencia. Mientras haya doble escritura empatan; el dia que
+    # MySQL se apague, kubera gana sola.
+    #
+    # ⚠️ PRERREQUISITO del READ: `MELI_APP_ID` y `MELI_CLIENT_SECRET` definidas
+    # en Railway. El `client_secret` NO se copia a kubera a proposito — es el que
+    # esta expuesto en el repo `publicador` y pendiente de rotacion; copiarlo a
+    # una tabla nueva seria esparcir un secreto quemado.
+    supabase_write_tokens: bool = False
+    supabase_read_tokens: bool = False
+
     # ── F2: espejo del DROP (bodega propia) → channel.listings 'general' ──
     # Lee stock_watch_foto (la que ya refresca el vigilante de arriba) y la
     # espeja a la BD kubera. NO mueve inventario: solo copia lo que Woo ya

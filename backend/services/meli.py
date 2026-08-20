@@ -257,6 +257,17 @@ def _access_token(cuenta: str | None = None) -> str | None:
     """
     try:
         candidatos = []
+        # PASO 6 (19-ago): kubera entra al MISMO arbitraje por recencia, no lo
+        # reemplaza. Mientras haya doble escritura los tres empatan; el dia que
+        # MySQL se apague, kubera gana sola y nadie tiene que mover un flag.
+        if settings.supabase_read_tokens:
+            try:
+                from services import tokens_read
+                fila = tokens_read.leer(cuenta)
+                if fila and fila.get("access_token"):
+                    candidatos.append(fila)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("tokens de kubera no disponibles: %s", exc)
         for tabla in ("ml_tokens_dashboard", "ml_tokens"):
             try:
                 if cuenta:
@@ -443,6 +454,20 @@ def _credenciales_refresh(cuenta: str) -> tuple[str, str, str] | None:
         log.warning("No se pudo leer ml_tokens_dashboard(%s): %s", cuenta, exc)
 
     if settings.meli_app_id and settings.meli_client_secret:
+        # PASO 6: con la bandera, el refresh_token sale de kubera. El app_id y el
+        # client_secret salen del ENTORNO y no de una tabla — este era el camino
+        # de respaldo y pasa a ser el principal. Ver la nota de la migracion
+        # 0023: el client_secret de `ml_tokens_dashboard` es el que esta expuesto
+        # en el repo `publicador`, y copiarlo a kubera seria esparcirlo.
+        if settings.supabase_read_tokens:
+            try:
+                from services import tokens_read
+                fila = tokens_read.leer(cuenta)
+                if fila and fila.get("refresh_token"):
+                    return (settings.meli_app_id, settings.meli_client_secret,
+                            _dec(f, fila["refresh_token"]))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("refresh_token de kubera no disponible (%s): %s", cuenta, exc)
         try:
             row = db.fetch_one(
                 "SELECT refresh_token FROM ml_tokens WHERE cuenta=%s LIMIT 1", (cuenta,))
@@ -509,6 +534,16 @@ def refrescar_token(cuenta: str) -> str | None:
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("No se pudo sincronizar ml_tokens_dashboard(%s): %s", cuenta, exc)
+
+        # PASO 6: el MISMO par cifrado tambien a kubera. Escribir en los dos
+        # lados es seguro; lo que no se puede duplicar es la RENOVACION, y esto
+        # no renueva nada: guarda lo que ya se renovo una sola vez, arriba.
+        if settings.supabase_write_tokens:
+            try:
+                from services import tokens_read
+                tokens_read.guardar(cuenta, enc_at, enc_rt)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("no se pudo espejar el token de %s a kubera: %s", cuenta, exc)
 
         log.info("Token ML %s renovado.", cuenta)
         return nuevo

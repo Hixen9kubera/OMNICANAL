@@ -129,6 +129,27 @@ _ACCIONES_APLICADAS = ("full_ingreso", "full_retiro", "fba_ingreso")
 
 
 def _ya_procesada(operacion_id: str) -> bool:
+    """¿Ya aplicamos este movimiento de bodega? Protege `full_ingreso`,
+    `full_retiro` y `fba_ingreso` — mercancía REAL.
+
+    PASO 0 (19-ago). Con `supabase_read_candados` sale de
+    `ops.fulfillment_operations` y **PROPAGA**. Dos defectos se van con eso:
+
+    1. El `except → False` de abajo: "no pude preguntar" contestado como "no lo
+       he hecho" APLICA EL MOVIMIENTO OTRA VEZ.
+    2. El `_asegurar_schema()` de la línea siguiente, que tiene un
+       `CREATE TABLE IF NOT EXISTS fanout_log`: si la tabla se borrara, **el
+       propio lector la recrea vacía y después le pregunta**. Respuesta
+       garantizada: "no lo hice", para todos.
+
+    Ya no hace falta el filtro `resultado NOT LIKE 'ERROR%'`: en la tabla nueva
+    un intento fallido simplemente no deja fila. La regla que lo motivó —un 502
+    del WAF no debe sellar el movimiento para siempre (auditoría 27-jul)— se
+    conserva; lo que cambia es que deja de depender de leer un texto.
+    """
+    if settings.supabase_read_candados:
+        from services import candados_read
+        return candados_read.ya_aplicada(operacion_id)
     from services import db, fanout_stock
     fanout_stock._asegurar_schema()
     ph = ",".join(["%s"] * len(_ACCIONES_APLICADAS))
@@ -144,8 +165,48 @@ def _ya_procesada(operacion_id: str) -> bool:
         return False
 
 
+def _marcar_agua_fba(sku: str, valor: int) -> None:
+    """Avanza la marca de agua del FBA a lo que ACABAMOS de ver.
+
+    En el mundo de MySQL esto pasaba SOLO: `_registrar` escribía el texto
+    "FBA subió A→B" y en la vuelta siguiente el regex sacaba la B. Al matar el
+    regex hay que escribirla a mano, y aquí es donde toca — `ahora` está en
+    mano, sin tener que sacarlo de una frase.
+
+    CUÁNDO AVANZA: siempre que se haya visto y decidido, igual que antes. El
+    regex leía `accion LIKE 'fba_%'`, que incluye `fba_ingreso_sim` (modo solo
+    registro) y también `fba_error`. Se conserva ese comportamiento a propósito:
+    un repunte debe contestar lo mismo, no lo que uno cree que debería.
+
+    ⚠️ Pero conviene saber lo que se está conservando: **con `fba_error` la
+    marca avanza igual**, o sea que si la escritura a Woo falla, ese ingreso se
+    da por visto y no se reintenta. No es un defecto que introduzca este cambio
+    —lleva ahí desde que existe el vigilante— y por eso se conserva en vez de
+    arreglarse a escondidas dentro de una migración. Anotado para tratarlo
+    aparte.
+    """
+    if not settings.supabase_read_candados:
+        return
+    try:
+        from services import candados_read
+        candados_read.marcar_fba(sku, int(valor), cuenta="AMAZON")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo avanzar la marca de agua FBA de %s: %s", sku, exc)
+
+
 def _registrar(sku: str, operacion_id: str, cuenta: str, accion: str,
                antes: int | None, despues: int | None, resultado: str) -> None:
+    # PASO 0: la marca en kubera SOLO en el camino de éxito. `_registrar` se
+    # llama también con `resultado` de error —para que quede en la bitácora— y
+    # sellar ahí volvería a sellar movimientos fallidos, que es exactamente lo
+    # que el filtro `NOT LIKE 'ERROR%'` de MySQL existía para evitar.
+    if (settings.supabase_read_candados and accion in _ACCIONES_APLICADAS
+            and not str(resultado or "").upper().startswith("ERROR")):
+        try:
+            from services import candados_read
+            candados_read.marcar_aplicada(operacion_id, sku, cuenta, accion)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no se pudo sellar la operacion %s: %s", operacion_id, exc)
     from services import db, fanout_stock
     fanout_stock._asegurar_schema()
     try:
@@ -367,18 +428,28 @@ async def revisar_fba() -> dict[str, Any]:
         # nuevo → descuento repetido. La referencia es lo que ESTE vigilante vio la
         # última vez, guardado en su propia bitácora (`fanout_log`, sin tabla nueva).
         previos: dict[str, int] = {}
-        try:
-            for r in db.fetch_all(
-                """SELECT f.sku, f.resultado FROM fanout_log f
-                   JOIN (SELECT sku, MAX(id) mx FROM fanout_log
-                         WHERE accion LIKE 'fba_%%' GROUP BY sku) u ON u.mx = f.id"""):
-                # el resultado guarda "FBA subió A→B (+N)…": la referencia es B
-                import re as _re
-                m = _re.search(r"→\s*(\d+)", str(r["resultado"] or ""))
-                if m:
-                    previos[r["sku"]] = int(m.group(1))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("stock_full: sin foto previa de FBA (%s)", exc)
+        # PASO 0 (19-ago): la marca de agua sale de `ops.fba_watermark`, una
+        # COLUMNA. Lo que había aquí leía el número sacándolo con una expresión
+        # regular del TEXTO de `resultado` ("FBA subió A→B (+N)"): cambiar esa
+        # frase —o que un resultado saliera con otro formato— rompía la
+        # referencia en silencio y el vigilante volvía a ver el mismo ingreso
+        # como nuevo. Un dato que se parsea de un mensaje no es un dato.
+        if settings.supabase_read_candados:
+            from services import candados_read
+            previos.update(candados_read.marcas_fba())
+        else:
+            try:
+                for r in db.fetch_all(
+                    """SELECT f.sku, f.resultado FROM fanout_log f
+                       JOIN (SELECT sku, MAX(id) mx FROM fanout_log
+                             WHERE accion LIKE 'fba_%%' GROUP BY sku) u ON u.mx = f.id"""):
+                    # el resultado guarda "FBA subió A→B (+N)…": la referencia es B
+                    import re as _re
+                    m = _re.search(r"→\s*(\d+)", str(r["resultado"] or ""))
+                    if m:
+                        previos[r["sku"]] = int(m.group(1))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stock_full: sin foto previa de FBA (%s)", exc)
         # Semilla para los SKUs que este vigilante nunca ha visto: el valor del sync.
         # PASO 0 (12-ago-2026): la semilla sale de kubera. Con `canal_inventario`
         # congelada, un SKU visto por primera vez se compararía contra su foto del
@@ -434,6 +505,7 @@ async def revisar_fba() -> dict[str, Any]:
                        actual, propuesto,
                        f"FBA subió {antes_fba}→{ahora} (+{subio}): SOLO-REGISTRO — "
                        f"restaría a Woo {actual}→{propuesto} (no se escribió)")
+            _marcar_agua_fba(sku, ahora)
             aplicados.append({"sku": sku, "piezas": subio, "woo": f"{actual}→{propuesto}",
                               "solo_registro": True})
             continue
@@ -441,6 +513,7 @@ async def revisar_fba() -> dict[str, Any]:
         _registrar(sku, f"fba:{sku}:{ahora}", "AMAZON",
                    "fba_ingreso" if ok else "fba_error", antes, despues,
                    f"FBA subió {antes_fba}→{ahora} (+{subio}) → Woo {antes}→{despues} ({det})")
+        _marcar_agua_fba(sku, ahora)          # avanza tambien con error: ver la nota
         if ok:
             aplicados.append({"sku": sku, "piezas": subio, "woo": f"{antes}→{despues}"})
             fanout_stock.encolar(sku, motivo="ingreso a FBA")

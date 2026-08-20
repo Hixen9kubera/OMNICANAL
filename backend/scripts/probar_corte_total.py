@@ -70,8 +70,11 @@ if (settings.supabase_db_url or "").split("postgres.")[-1][:8] == "tukwcvsi":
 if settings.mysql_enabled:
     sys.exit("ABORT: MYSQL_ENABLED quedo encendido.")
 
-# EL CORTE TOTAL: todas las banderas de lectura, a la vez.
-_BANDERAS = [n for n in dir(settings) if n.startswith("supabase_read_")]
+# EL CORTE TOTAL: todas las banderas de lectura, a la vez. Se incluyen tambien
+# las de escritura de tokens, porque sin doble escritura kubera nunca tendria el
+# par y la sonda mediria una tabla vacia en vez del mecanismo.
+_BANDERAS = [n for n in dir(settings)
+             if n.startswith("supabase_read_") or n == "supabase_write_tokens"]
 for n in _BANDERAS:
     setattr(settings, n, True)
 
@@ -133,22 +136,35 @@ def main() -> None:
     from services import competencia_captura, orders_write, stock_full
     sonda("orders_write.wc_order_id_previo (candado de idempotencia)",
           lambda: orders_write.wc_order_id_previo("0000000000"),
-          # None aqui es la respuesta CORRECTA (esa orden no existe). Lo que
-          # importa es que no truene: el candado tiene que poder preguntar.
           lambda r: False)
     sonda("competencia_captura._nuestras_publicaciones",
           lambda: competencia_captura._nuestras_publicaciones())
-    sonda("stock_full._ya_procesada (candado de bodega — PASO 0)",
-          lambda: stock_full._ya_procesada("sonda-inexistente")
-          if hasattr(stock_full, "_ya_procesada") else "sin_funcion",
-          # `False` = "no lo he hecho". Sin fanout_log esa respuesta es una
-          # MENTIRA que mueve mercancia dos veces. Por eso False cuenta como
-          # VACIO, no como PASA.
-          lambda r: r is False or r == "sin_funcion")
 
-    from services import meli as _m
-    sonda("meli._access_token (LOS TOKENS — paso 6)",
-          lambda: _m._access_token("BEKURA"), lambda r: not r)
+    # ── Las dos sondas que hay que hacer CON DATO ───────────────────────────
+    # Preguntar en seco no sirve: `_ya_procesada` de una operacion que no
+    # existe devuelve False, y ese False es la respuesta CORRECTA. Una sonda que
+    # no distingue "no existe el camino" de "la tabla esta vacia" comete el
+    # mismo error que persigue — asi que aqui se SIEMBRA, se pregunta y se
+    # limpia. Es la unica forma de que un candado se pueda sondear.
+    from services import candados_read, tokens_read, meli as _m
+    _OP = "SONDA-corte-total"
+    _CTA = "SONDA-CUENTA"
+    try:
+        candados_read.marcar_aplicada(_OP, "SONDA-SKU", "AMAZON", "fba_ingreso")
+        sonda("stock_full._ya_procesada (candado de bodega — PASO 0)",
+              lambda: stock_full._ya_procesada(_OP),
+              # Con la operacion YA sellada, la respuesta correcta es True.
+              # False aqui significaria que el candado no recuerda: mercancia
+              # movida dos veces.
+              lambda r: r is not True)
+        f = _m._fernet()
+        tokens_read.guardar(_CTA, _m._enc(f, "SONDA-no-es-un-token"),
+                            _m._enc(f, "SONDA-refresh"))
+        sonda("meli._access_token (LOS TOKENS — paso 6)",
+              lambda: _m._access_token(_CTA), lambda r: not r)
+    finally:
+        sdb.execute("delete from ops.fulfillment_operations where operacion_id=%s", (_OP,))
+        sdb.execute("delete from ops.ml_tokens where cuenta=%s", (_CTA,))
 
     # ── Reporte ─────────────────────────────────────────────────────────────
     print(f"\n{'=' * 74}")
