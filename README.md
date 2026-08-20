@@ -1001,6 +1001,49 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.240.0 — El comodín de CORS era la puerta, no la red de seguridad
+
+Auditoría de seguridad del 19-ago. `main.py` traía hardcodeado:
+
+    allow_origin_regex=r"https://.*\.(railway\.app|up\.railway\.app|vercel\.app)$"
+
+con `allow_credentials=True`. Eso acepta peticiones de **cualquier** página
+alojada en `vercel.app` o en un subdominio de Railway — dominios que cualquiera
+consigue gratis y en minutos.
+
+Y no era una red de seguridad por si acaso: **era la puerta**. En producción
+`CORS_ORIGINS` solo traía `localhost:3000`, así que el panel entraba por el
+comodín. La lista no servía para nada.
+
+#### Por qué importa aunque hoy no se pueda explotar
+
+La API se autentica con el header `X-API-Key`, y el navegador no lo manda solo:
+una página atacante lograría hablarle a la API, pero como desconocida, y la
+puerta de identidad le contesta 401. El problema es el futuro. `allow_credentials`
+ya está en `True`, esperando: el día que la sesión viva en una cookie, esa misma
+página podría hacer peticiones **con la sesión de quien la visite** y leer las
+respuestas. El hoyo se cava hoy y alguien se cae dentro en seis meses, haciendo
+un cambio de sesión perfectamente razonable.
+
+#### El comodín se muda a una variable
+
+`CORS_ORIGIN_REGEX`, vacía por omisión. Manda la lista, y el comodín queda como
+**escotilla**: si al apretarlo se cae algo que nadie documentó, se reabre
+poniendo el patrón en Railway — sin tocar código y sin desplegar, como los demás
+candados de la casa. Y de paso queda a la vista en las variables en vez de
+escondido en una línea de `main.py`.
+
+#### El orden importa, y está probado
+
+`backend/scripts/probar_cors.py` corre tres escenarios contra la app real: con la
+lista y sin comodín (el panel entra, `vercel.app` y `*.up.railway.app` no
+entran), **sin el dominio en la lista** (el panel se queda fuera — el error que
+hay que evitar), y con la escotilla puesta (todo vuelve). Los tres en verde.
+
+**Requisito para desplegar**: `CORS_ORIGINS` tiene que traer ya
+`https://frontendomnicanal-production.up.railway.app`. Si no, el panel pierde el
+permiso. Se hace en dos pasos, cada uno reversible por su cuenta.
+
 ### v0.239.0 — Paso 4a: escritura de los candados encendida, y el vigilante que la prueba
 
 `SUPABASE_WRITE_CANDADOS=true` en producción. Las marcas de los tres candados se

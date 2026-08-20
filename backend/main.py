@@ -106,7 +106,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.239.0",
+    version="0.240.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -130,7 +130,24 @@ app.middleware("http")(identidad)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
-    allow_origin_regex=r"https://.*\.(railway\.app|up\.railway\.app|vercel\.app)$",
+    # El comodín se fue del código y vive en CORS_ORIGIN_REGEX, vacío por
+    # omisión. Antes decía
+    #     https://.*\.(railway\.app|up\.railway\.app|vercel\.app)$
+    # y no era una red de seguridad: era la puerta. En producción
+    # `CORS_ORIGINS` solo traía localhost, así que el panel entraba por el
+    # comodín — y por el mismo hueco entraba cualquier página publicada en
+    # vercel.app o en un subdominio de Railway, que se consiguen gratis y en
+    # minutos, con `allow_credentials=True` puesto.
+    #
+    # Hoy el daño estaría acotado porque la API se autentica con el header
+    # X-API-Key y el navegador no lo manda solo. El día que la sesión viva en
+    # una cookie, esa misma página podría hablarle a la API CON la sesión de
+    # quien la visite. Se cierra antes de que ese día llegue.
+    #
+    # Requisito para desplegar esto: `CORS_ORIGINS` tiene que traer ya el
+    # dominio real del panel. Si no, el panel se queda sin permiso. Ver
+    # docs/PLAN_SEGURIDAD_BD.md §3.5 para el orden de los pasos.
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -161,7 +178,7 @@ app.include_router(resolver.router)
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.239.0",
+        "version": "0.240.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

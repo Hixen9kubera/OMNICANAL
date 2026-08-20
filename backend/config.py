@@ -214,6 +214,19 @@ class Settings(BaseSettings):
     app_env: str = "development"
     # Orígenes permitidos para el frontend Next.js
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Comodín de CORS. VACÍO a propósito: hasta la v0.239 esto estaba HARDCODEADO
+    # en main.py como `https://.*\.(railway\.app|up\.railway\.app|vercel\.app)$`,
+    # o sea que la API aceptaba peticiones de CUALQUIER página alojada en esos
+    # dominios — y cualquiera puede publicar una en minutos, gratis. El panel
+    # entraba por ahí, no por `cors_origins`, que en producción solo traía
+    # localhost.
+    #
+    # Ahora la lista manda y el comodín es la ESCOTILLA: si al apretarlo algo
+    # que nadie documentó se queda fuera, se vuelve a abrir poniendo el patrón
+    # en esta variable — sin tocar código y sin desplegar, como los demás
+    # candados de la casa. Y queda a la vista en Railway, en vez de escondido
+    # en una línea de main.py.
+    cors_origin_regex: str = ""
 
     # Cuántos EMBARQUES consulta a ML la tabla de /analisis por carga, para
     # cambiar el envío ESTIMADO por el cobro REAL (v0.85.0). Cada pedido cuesta
