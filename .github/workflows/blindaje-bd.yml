@@ -1,0 +1,66 @@
+# Blindaje de la BD — la red del código.
+#
+# POR QUÉ: auditoría del 2026-08-19. Desde la 0020, cinco migraciones crearon
+# ocho tablas y ninguna activó su RLS; una de ellas guarda tokens de OAuth de
+# TikTok. La 0025 cerró el hueco, pero un arreglo puntual no evita el siguiente:
+# esto lo detiene en el PR, que es donde cuesta un minuto y no una auditoría.
+#
+# NO NECESITA SECRETOS. El modo estático lee `supabase/migrations/` y las
+# interpreta; nunca se conecta a ninguna base. Por eso puede correr en cualquier
+# PR sin exponer nada.
+#
+# Este es el primer workflow del repo. Es deliberadamente mínimo: sin matrices,
+# sin caché, sin dependencias — solo Python de sistema y la librería estándar.
+
+name: Blindaje BD
+
+on:
+  pull_request:
+    paths:
+      - 'supabase/migrations/**'
+      - 'backend/scripts/verificar_rls.py'
+      - '.github/workflows/blindaje-bd.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'backend/scripts/verificar_rls.py'
+      - '.github/workflows/blindaje-bd.yml'
+  workflow_dispatch:        # para poder correrlo a mano desde la pestaña Actions
+
+permissions:
+  contents: read
+
+jobs:
+  rls:
+    name: Toda tabla nueva nace con su candado
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revisar las migraciones
+        run: python3 backend/scripts/verificar_rls.py
+
+      # Una prueba que no puede fallar no prueba nada. Este paso ensucia el
+      # árbol a propósito con una tabla sin RLS y exige que el verificador la
+      # cace. Si algún día alguien rompe el parser —un regex de más, un `re.I`
+      # de menos— el paso anterior seguiría en verde y nadie se enteraría. Éste
+      # no.
+      - name: Comprobar que el verificador sí muerde
+        run: |
+          set -u
+          trampa='supabase/migrations/9999_trampa_del_verificador.sql'
+          cat > "$trampa" <<'SQL'
+          -- Migración FALSA, solo para CI. La borra el mismo paso que la crea.
+          create table if not exists ops.zz_trampa_del_verificador (id int);
+          SQL
+
+          if python3 backend/scripts/verificar_rls.py; then
+            rm -f "$trampa"
+            echo "::error::El verificador NO detectó una tabla sin RLS. Está roto."
+            exit 1
+          fi
+          rm -f "$trampa"
+          echo "Bien: el verificador detectó la tabla sin RLS y falló como debe."
