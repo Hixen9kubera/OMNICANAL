@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
+from config import settings
+
 from services import fanout_stock
 
 router = APIRouter(prefix="/api/fanout", tags=["fanout"])
@@ -42,12 +44,16 @@ def full_observacion(horas: int = Query(24, ge=1, le=168)):
     los conocidos se comportan como dice la tabla de decisión.
     """
     from services import db, stock_full
-    filas = db.fetch_all(
-        """SELECT accion, resultado, sku, cuenta, stock_drop, objetivo, ts
-           FROM fanout_log
-           WHERE (accion LIKE 'full_%%' OR accion LIKE 'fba_%%')
-             AND ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
-           ORDER BY id DESC""", (horas,))
+    if settings.supabase_read_fanout_log:
+        from services import fanout_read
+        filas = fanout_read.movimientos_full(horas)
+    else:
+        filas = db.fetch_all(
+            """SELECT accion, resultado, sku, cuenta, stock_drop, objetivo, ts
+               FROM fanout_log
+               WHERE (accion LIKE 'full_%%' OR accion LIKE 'fba_%%')
+                 AND ts >= UTC_TIMESTAMP() - INTERVAL %s HOUR
+               ORDER BY id DESC""", (horas,))
     # El tipo de ML viene al inicio del resultado ("TRANSFER_DELIVERY x2: …").
     tipos: dict[str, dict] = {}
     for f in filas:
@@ -109,11 +115,15 @@ async def inventario_revisar(
 def inventario_pendientes(limite: int = Query(50, ge=1, le=500)):
     """Lo que el vigilante de inventario propuso/aplicó, más reciente primero."""
     from services import db
-    filas = db.fetch_all(
-        """SELECT ts, sku, accion, motivo, resultado, dry_run FROM fanout_log
-           WHERE accion IN ('odoo_delta','odoo_delta_registro','woo_cambio',
-                            'woo_cambio_registro','stock_watch_freno')
-           ORDER BY id DESC LIMIT %s""", (limite,))
+    if settings.supabase_read_fanout_log:
+        from services import fanout_read
+        filas = fanout_read.pendientes_inventario(limite)
+    else:
+        filas = db.fetch_all(
+            """SELECT ts, sku, accion, motivo, resultado, dry_run FROM fanout_log
+               WHERE accion IN ('odoo_delta','odoo_delta_registro','woo_cambio',
+                                'woo_cambio_registro','stock_watch_freno')
+               ORDER BY id DESC LIMIT %s""", (limite,))
     return {"eventos": filas, "total": len(filas)}
 
 

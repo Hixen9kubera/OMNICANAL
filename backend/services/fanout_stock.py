@@ -810,6 +810,24 @@ def _persistir(evento: dict[str, Any]) -> None:
                evento.get("objetivo"), None, None, "", "sin_destinos", None,
                str(evento.get("detalle") or "sin publicaciones vivas")[:255],
                evento.get("ms"))]
+        # ESPEJO PRIMERO, Y APARTE. La leccion de `imagenes_amazon._cache_put`
+        # (20-ago): si el espejo va DENTRO del try del INSERT a MySQL y DESPUES
+        # de el, el dia del corte MySQL revienta y el espejo nunca corre — el
+        # evento se pierde sin que nadie se entere.
+        if settings.supabase_write_fanout_log:
+            _CAMPOS = ("ts", "sku", "motivo", "dry_run", "stock_drop", "objetivo",
+                       "canal", "cuenta", "item_id", "accion", "stock_canal",
+                       "resultado", "ms")
+            try:
+                from services import fanout_read
+                for f in filas:
+                    d = dict(zip(_CAMPOS, f))
+                    d["dry_run"] = bool(d["dry_run"])
+                    fanout_read.registrar(d)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("fanout_log: no se pudo espejar %s a kubera: %s",
+                            evento.get("sku"), exc)
+
         with db.get_cursor() as cur:
             cur.executemany(
                 """INSERT INTO fanout_log
@@ -922,6 +940,9 @@ def encolar_varios(skus: list[str], motivo: str = "venta") -> None:
 
 def historial(limite: int = 100, solo_errores: bool = False) -> list[dict[str, Any]]:
     """Bitácora PERSISTIDA (sobrevive deploys). Es lo que pinta el dashboard."""
+    if settings.supabase_read_fanout_log:
+        from services import fanout_read
+        return fanout_read.historial(limite, solo_errores)
     from services import db
     _asegurar_schema()
     where = "WHERE resultado LIKE 'ERROR%%'" if solo_errores else ""
@@ -938,6 +959,9 @@ def historial(limite: int = 100, solo_errores: bool = False) -> list[dict[str, A
 
 def resumen() -> dict[str, Any]:
     """Totales acumulados desde la tabla (no desde memoria)."""
+    if settings.supabase_read_fanout_log:
+        from services import fanout_read
+        return fanout_read.resumen()
     from services import db
     _asegurar_schema()
     try:

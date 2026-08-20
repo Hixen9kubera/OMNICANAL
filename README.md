@@ -12320,6 +12320,69 @@ Sin migraciones, sin variables nuevas, sin flujos encendidos ni apagados.
 Versión 0.218.0.
 
 
+### v0.231.0 — La bitácora del fan-out, que se nos quedó fuera al migrar el candado
+
+El hueco que destapó el censo, cerrado. **Sandbox primero, producción después.**
+
+`fanout_log` guardaba dos cosas distintas en la misma tabla: la MARCA de
+idempotencia —*¿ya moví esta mercancía?*— y la BITÁCORA —*qué se intentó, con
+qué stock, con qué resultado*—. La migración 0022 se llevó la marca y **dejó el
+historial sin casa**. Cuatro pantallas del fan-out se habrían quedado en blanco
+el día del corte.
+
+Es exactamente el error que el consejo nos había señalado para los dos candados
+—*"dos conceptos distintos en una tabla porque ya existe y es cómoda"*—,
+cometido por nosotros un nivel más arriba, **mientras arreglábamos justo eso**.
+
+#### Tabla propia, y no `ops.process_log`
+
+El plan mandaba las bitácoras a `process_log`, que guarda el detalle en un JSON.
+Pero estos lectores no leen filas: **agrupan**.
+
+    GROUP BY accion · GROUP BY canal, accion · WHERE resultado LIKE 'ERROR%'
+
+Eso pide columnas. Meterlo en `process_log` obligaría a desenterrar cada campo
+del JSON en cada carga del dashboard — y sería, otra vez, guardar dos cosas
+distintas en el mismo lugar porque ya existe.
+
+#### Dos banderas, no una — y ese es el punto
+
+`SUPABASE_READ_FANOUT_LOG` va **aparte** de `SUPABASE_READ_CANDADOS`. Separar las
+tablas sin separar el permiso no habría servido de nada: mover una **pantalla** no
+necesita el dale de Brandon, mover **mercancía** sí. Con una sola bandera, el
+dashboard quedaría rehén de la aprobación del candado.
+
+Y el espejo va **primero y aparte** del `INSERT` a MySQL — la lección de
+`imagenes_amazon._cache_put` de esta misma mañana, aplicada antes de repetirla.
+
+#### Dos defectos que la prueba encontró en mi propio código
+
+**Un `%` sin duplicar.** `historial(solo_errores)` devolvía **cero**: con
+parámetros, psycopg2 lee `%` como el inicio de un hueco y `'ERROR%'` queda como
+un placeholder roto. No truena — devuelve vacío. Lo delató que `resumen()`
+contara 1 error mientras `historial` traía 0: **el mismo `LIKE` funcionando en un
+lado y fallando en el otro**. `resumen` va sin parámetros, por eso se salvaba.
+Igual en `movimientos_full`, que reventaba con *tuple index out of range*.
+
+**Un chequeo que pasaba en falso.** `pendientes_inventario` daba OK con cero
+filas, porque `all()` sobre una lista vacía devuelve `True`. No estaba probando
+nada. Ahora se siembra una acción del vigilante para que **tenga algo que
+encontrar**, y se verifica además que no cuele las que no son suyas.
+
+Pruebas: `probar_fanout_log_sandbox.py`, **16 checks en verde**. Las nueve suites
+del sandbox, en verde.
+
+#### Producción
+
+Migración **0028 aplicada**, con las ocho comprobaciones: existe, nace con RLS,
+cero políticas, cero grants, vacía, 4 índices, `ops` de 11 a 12 tablas, cero
+tablas de `ops` sin RLS, idempotente.
+
+**Las dos banderas nacen apagadas.** Falta encender la escritura doble y, para
+que el dashboard tenga historia y no solo lo nuevo, copiar las 19,616 filas.
+
+Versión 0.231.0.
+
 ### v0.230.0 — Censo de las 38 tablas: dejar de encontrar las minas pisándolas
 
 Eduardo lo pidió como corrección de método, y tenía razón. Los defectos del corte

@@ -596,6 +596,20 @@ class Settings(BaseSettings):
     # al vigilante FULL, esto tiene que estar encendido y verificado.
     supabase_read_candados: bool = False
 
+    # ── La BITACORA del fan-out, aparte del CANDADO ──────────────────────────
+    # Bandera propia y NO la de los candados, a proposito: es el hallazgo del
+    # censo del 20-ago. `fanout_log` guardaba dos cosas distintas —la marca de
+    # idempotencia y el historial— y la migracion 0022 se llevo solo la marca,
+    # dejando cuatro lectores huerfanos.
+    #
+    # Separarlas en dos banderas separa tambien el permiso: mover una PANTALLA
+    # no necesita el dale de Brandon; mover MERCANCIA si. Con una sola bandera,
+    # el dashboard quedaria rehen de la aprobacion del candado.
+    supabase_read_fanout_log: bool = False
+    # Escritura doble de la bitacora. Segura sola: es el mismo evento en dos
+    # lados, y la bitacora no decide nada.
+    supabase_write_fanout_log: bool = False
+
     # ── PASO 6: los tokens de Mercado Libre ──────────────────────────────────
     # WRITE = el par cifrado se guarda tambien en `ops.ml_tokens`. Es SEGURO
     # aunque MySQL siga mandando: es el MISMO valor, calculado una sola vez por
