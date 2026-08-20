@@ -487,9 +487,29 @@ kubera.
    one-shot al corte / retiro). El `publicador` externo se retira con él.
    `core.products` pierde su fuente → el seam Crear → core.products es el
    bloqueador del corte (82 SKUs ya faltantes; ver README aviso 23-jul).
-9. Seguridad heredada: API sin auth real (la de José va en rollout gradual);
-   `client_secret` de ML expuesto en el repo externo `publicador` (rotación
-   manual pendiente).
+9. Seguridad heredada: API sin auth real (la de José va en rollout gradual).
+
+   ~~`client_secret` de ML expuesto en el repo `publicador`~~ — **VERIFICADO EL
+   20-AGO: en el código de hoy NO hay ningún secreto.** `config.py` lee todo de
+   variables de entorno y `.env.example` tiene los valores vacíos. La nota llevaba
+   desde julio y estaba desactualizada; la rotación baja de "agujero abierto" a
+   higiene. **Falta revisar el HISTORIAL de git**, que no se miró.
+
+   ⚠️ **Lo que SÍ está abierto, y no lo decía ninguna nota: los SIETE repos de
+   `Hixen9kubera` son PÚBLICOS** — `publicador`, `OMNICANAL`,
+   `KuberaPipelineV1.0`, `MonitoreoOperaciones`, `MLREgisterDaily`,
+   `MCPPruebaWOO`, `Aplicacion_Excel`. No hay un secreto filtrado hoy, pero es la
+   condición que convierte cualquier descuido futuro en filtración inmediata, y
+   es la razón por la que la auditoría del 19-ago tuvo que barrer el historial
+   entero. Decisión pendiente de Eduardo.
+
+   Si se rota el `client_secret`: es el de la app **`8902165405612832`** —la
+   ARTERIA, la de los webhooks de ventas—, vive en claro en `MELI_CLIENT_SECRET`
+   de Railway, y **la app es de una cuenta DevCenter aparte**. El riesgo está en
+   el ORDEN: el secreto solo sirve para RENOVAR, así que los tokens vigentes
+   aguantan unas horas; si el nuevo no está en Railway antes de que caduquen, la
+   renovación falla y **paran las ventas de ML**. Secuencia: regenerar en
+   DevCenter → actualizar Railway de inmediato → `verificar_tokens_ml.py`.
 
 ## Playbooks de diagnóstico exprés
 

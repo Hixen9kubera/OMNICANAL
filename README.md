@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.241.0 — La nota del secreto estaba mal, y los repos son públicos
+
+Se fue a rotar el `client_secret` de ML que CLAUDE.md daba por expuesto en el
+repo `publicador`, y la verificación previa cambió la conclusión.
+
+#### En el código de hoy NO hay ningún secreto
+
+`config.py` lee **todo** de variables de entorno. `.env.example` tiene los
+valores vacíos. La nota llevaba ahí desde julio y estaba desactualizada.
+
+Corregida en CLAUDE.md, con lo que falta dicho: **el historial de git no se
+revisó**, así que la duda se cierra a medias.
+
+#### Lo que sí está abierto, y no lo decía ninguna nota
+
+**Los SIETE repositorios de `Hixen9kubera` son PÚBLICOS** — `publicador`,
+`OMNICANAL`, `KuberaPipelineV1.0`, `MonitoreoOperaciones`, `MLREgisterDaily`,
+`MCPPruebaWOO` y `Aplicacion_Excel`.
+
+No hay un secreto filtrado hoy. Pero es la condición que convierte cualquier
+descuido futuro en filtración inmediata — y explica por qué la auditoría del
+19-ago tuvo que barrer el historial entero en vez de confiar en el `.gitignore`.
+Decisión pendiente.
+
+#### Y quedó escrito cómo se rota, para cuando toque
+
+El secreto es el de la app **`8902165405612832`**: la ARTERIA, la de los webhooks
+de ventas. Vive en claro en Railway y **la app es de una cuenta DevCenter
+aparte**. El riesgo está en el ORDEN: el secreto solo sirve para RENOVAR, así que
+los tokens vigentes aguantan unas horas; si el nuevo no está en Railway antes de
+que caduquen, **paran las ventas de ML**.
+
+#### Del corte: `categorias_ml` cerrada
+
+El censo la había marcado —muerta hace 52 días y con 7 lectores—. Verificados uno
+por uno: los tres de `competencia_captura` van detrás de `categorias_write`,
+`crear_producto` y `studio` ya estaban comprobados, `etl_core_products` está
+retirado con candado y el séptimo es un script de mantenimiento. **Ninguno queda
+suelto.**
+
+Y `probar_corte_total.py` sigue en **14 de 14**: cero truenan, cero mienten.
+
+Versión 0.241.0.
+
+---
+
 ### v0.240.0 — El comodín de CORS era la puerta, no la red de seguridad
 
 Auditoría de seguridad del 19-ago. `main.py` traía hardcodeado:
