@@ -2323,32 +2323,66 @@ def _datos_inventario(dias: int, cuenta: str | None) -> tuple[list, list, list]:
 _META_ANUAL_MXN = 15_000_000
 
 
+# El BLOQUE es la lectura masiva: el refresco lee las ~790 publicaciones de un
+# tirón, así que la enorme mayoría de las marcas de tiempo caen juntas. Se ancla
+# en la MEDIANA y no en el máximo ni en el mínimo — un par de rezagadas mueven
+# los extremos, nunca el centro.
+_MIN_BLOQUE = 10
+
 _SQL_FRESCURA = """
-select min(price_sale_at) desde, max(price_sale_at) hasta,
-       count(*) filter (where price_sale_at is not null) observadas,
-       count(*) total
-  from channel.listings l
-  join core.accounts a on a.id = l.account_id
- where l.canal = 'mercado_libre' and coalesce(l.stock_full, 0) > 0
-   and lower(coalesce(l.situacion, '')) <> 'closed'
-   and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
+with p as (
+  select l.price_sale_at as t
+    from channel.listings l
+    join core.accounts a on a.id = l.account_id
+   where l.canal = 'mercado_libre' and coalesce(l.stock_full, 0) > 0
+     and lower(coalesce(l.situacion, '')) <> 'closed'
+     and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)),
+t as (
+  select count(*) total, count(p.t) observadas,
+         percentile_disc(0.5) within group (order by p.t) ancla,
+         min(p.t) desde, max(p.t) hasta
+    from p)
+select t.total, t.observadas, t.ancla, t.desde, t.hasta, b.*
+  from t, lateral (
+    select count(*) en_bloque, min(p.t) bloque_desde, max(p.t) bloque_hasta
+      from p
+     where p.t between t.ancla - make_interval(mins => %(margen)s)
+                   and t.ancla + make_interval(mins => %(margen)s)) b
 """
 
 
 def _frescura(cuenta: str | None) -> dict:
     """Cuándo se leyeron los precios que este corte va a usar.
 
-    Es la prueba de que el número es una FOTO y no un mosaico: si `desde` y
-    `hasta` están a minutos, todos los precios son de la misma ventana. Si
-    están a horas, el corte mezcla momentos y hay que refrescar antes de
-    firmarlo."""
-    f = (sdb.fetch_all(_SQL_FRESCURA, {"cuenta": cuenta}) or [{}])[0]
-    d, h = f.get("desde"), f.get("hasta")
+    Es la prueba de que el número es una FOTO. La primera versión reportaba el
+    RANGO (`máximo − mínimo`) y era una métrica frágil: medía el peor caso, no
+    la foto. Medido el 21-ago-2026 — 783 de 788 publicaciones leídas en el
+    mismo minuto y 5 releídas después estiraban el rango a 4.7 horas, así que
+    el 99.4% del corte se marcaba en rojo por cinco renglones (Eduardo).
+
+    Lo que se reporta ahora es el BLOQUE: cuántas cayeron juntas y cuántas se
+    quedaron fuera. «783 de 788 en el mismo minuto» describe el corte; «una
+    ventana de 4.7 h» lo calumnia."""
+    f = (sdb.fetch_all(_SQL_FRESCURA,
+                       {"cuenta": cuenta, "margen": _MIN_BLOQUE}) or [{}])[0]
+    d, h, anc = f.get("desde"), f.get("hasta"), f.get("ancla")
+    bd, bh = f.get("bloque_desde"), f.get("bloque_hasta")
+    obs = int(f.get("observadas") or 0)
+    bloque = int(f.get("en_bloque") or 0)
     return {
         "desde": d.isoformat() if d else None,
         "hasta": h.isoformat() if h else None,
-        "ventana_min": round((h - d).total_seconds() / 60, 1) if d and h else None,
-        "observadas": int(f.get("observadas") or 0),
+        "bloque_at": anc.isoformat() if anc else None,
+        "en_bloque": bloque,
+        "fuera_de_bloque": max(obs - bloque, 0),
+        # Qué tan apretado es el bloque EN SÍ — no el rango global. Sin esto,
+        # "783 juntas" no dice si fue en un minuto o en veinte; con el rango
+        # global diría lo que dice la rezagada, que es justo el error viejo.
+        "ventana_min": round((bh - bd).total_seconds() / 60, 1) if bd and bh else None,
+        # El rango completo se conserva, pero como dato de contexto: ya no es
+        # lo que decide si el corte se marca.
+        "rango_min": round((h - d).total_seconds() / 60, 1) if d and h else None,
+        "observadas": obs,
         "total": int(f.get("total") or 0),
     }
 

@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.248.0 — La métrica de frescura medía el peor caso, no la foto
+
+Quedó anotada como pendiente en v0.247.0 y Eduardo pidió cerrarla.
+
+La ventana se calculaba como **`máximo − mínimo`** sobre las marcas de tiempo de
+todas las publicaciones del corte. Con eso, **una sola** publicación releída
+arruinaba el número aunque el resto fuera del mismo segundo. Medido en
+producción: 783 de 786 publicaciones leídas a las 22:18:59 y **2 releídas
+después** daban una "ventana" de **387.9 minutos** — 6.5 horas de rojo para un
+corte cuyo 99.7% era de un mismo minuto. La métrica no describía el corte: lo
+calumniaba.
+
+**Ahora se reporta el BLOQUE.** El refresco lee las ~790 publicaciones de un
+tirón, así que la enorme mayoría de las marcas caen juntas. Se ancla en la
+**mediana** —no en el máximo ni en el mínimo: un par de rezagadas mueven los
+extremos, nunca el centro— y se cuenta cuántas caen a ±10 min de ella.
+
+| | antes | ahora |
+|---|---|---|
+| Consolidado | "ventana de 387.9 min" | **783 en el mismo minuto · 2 releídas después** |
+| Bekura | "ventana de 1.0 min" | 444 en el mismo minuto · ninguna fuera |
+
+Y `ventana_min` pasa a medir **lo apretado del bloque**, no el rango global —
+que es lo que su propio comentario ya prometía y no cumplía. El rango completo
+se conserva como `rango_min`, de contexto, pero ya no decide nada.
+
+**El ámbar cambia de regla.** Antes saltaba con el rango > 30 min, o sea con una
+rezagada. Ahora salta si el bloque MISMO se leyó a lo largo de más de media
+hora, o si más del **5%** quedó fuera de él. Un puñado sobre cientos no cuenta:
+ese era exactamente el error.
+
 ### v0.247.0 — El sync deja de observar precios: tenía un solo lector
 
 Eduardo, viendo que la foto del corte se ensuciaba sola: *"me parece muy

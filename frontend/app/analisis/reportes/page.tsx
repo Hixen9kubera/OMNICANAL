@@ -234,8 +234,14 @@ interface PreviewInv {
     precio_raro: { publicaciones: number; valor: number; pct: number | null;
                    casos: { sku: string; valor: number }[] };
     top5_pct: number | null;
+    /* `en_bloque` es la lectura masiva del refresco; `fuera_de_bloque` son las
+       que alguien releyó después. `ventana_min` mide lo apretado del BLOQUE, no
+       el rango global: con el rango, una sola rezagada marcaba en rojo un corte
+       cuyo 99.4% era del mismo minuto (Eduardo, 21-ago). */
     frescura: { desde: string | null; hasta: string | null;
-                ventana_min: number | null; observadas: number; total: number };
+                bloque_at: string | null; en_bloque: number;
+                fuera_de_bloque: number; ventana_min: number | null;
+                rango_min: number | null; observadas: number; total: number };
     refresco: { fase: string; detalle: string | null;
                 vistas: number; objetivo: number };
   };
@@ -447,9 +453,14 @@ function TarjetaValor({ v, onPedido }: {
   const r = v.refresco;
   const corriendo = r.fase === "arrancando" || r.fase === "consultando";
   const crudo = v.skus_precio_crudo > 0;
-  const vent = v.frescura.ventana_min;
-  // Mosaico = los precios del corte se leyeron a lo largo de más de media hora.
-  const mosaico = vent != null && vent > 30;
+  const f = v.frescura;
+  const vent = f.ventana_min;
+  // Mosaico = el corte NO es una foto. Dos formas de dejar de serlo: que el
+  // bloque mismo se haya leído a lo largo de mucho rato, o que una parte
+  // apreciable se haya releído fuera de él. Un puñado de rezagadas sobre
+  // cientos no cuenta — ese fue el error de la métrica vieja.
+  const sueltas = f.observadas ? f.fuera_de_bloque / f.observadas : 0;
+  const mosaico = (vent != null && vent > 30) || sueltas > 0.05;
   return (
     <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -522,14 +533,20 @@ function TarjetaValor({ v, onPedido }: {
       {/* La frescura es lo que hace firmable el número: sin ella nadie sabe si
           los precios son del mismo momento o de momentos distintos. */}
       <p className="mt-2 text-[12px] text-slate-500">
-        Precios leídos: {v.frescura.observadas.toLocaleString("es-MX")} de{" "}
-        {v.frescura.total.toLocaleString("es-MX")} publicaciones con stock
+        Precios leídos: {f.observadas.toLocaleString("es-MX")} de{" "}
+        {f.total.toLocaleString("es-MX")} publicaciones con stock
         {vent != null && (
-          <> · en una ventana de{" "}
-            <b className={mosaico ? "text-amber-600" : "text-slate-600"}>
-              {vent < 60 ? `${vent} min` : `${(vent / 60).toFixed(1)} h`}
+          <> · <b className={mosaico ? "text-amber-600" : "text-slate-600"}>
+              {f.en_bloque.toLocaleString("es-MX")}
+              {vent < 1.5 ? " en el mismo minuto"
+                          : vent < 60 ? ` dentro de ${vent} min`
+                                      : ` dentro de ${(vent / 60).toFixed(1)} h`}
             </b>
           </>
+        )}
+        {f.fuera_de_bloque > 0 && (
+          <> · {f.fuera_de_bloque} releíd{f.fuera_de_bloque === 1 ? "a" : "as"}{" "}
+            después</>
         )}
       </p>
 
@@ -581,11 +598,14 @@ function TarjetaValor({ v, onPedido }: {
         <p className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
           <span>
-            Estos precios se leyeron a lo largo de{" "}
-            {vent != null && vent >= 60 ? `${(vent / 60).toFixed(1)} h` : `${vent} min`}, no en
-            un mismo momento. Las promociones de Mercado Libre tienen cuenta
-            regresiva, así que el total mezcla instantes. Refresca antes de
-            firmarlo.
+            {sueltas > 0.05
+              ? <>{f.fuera_de_bloque} de {f.observadas} publicaciones se releyeron
+                  fuera de la lectura masiva, así que el total mezcla instantes.</>
+              : <>El corte se leyó a lo largo de{" "}
+                  {vent != null && vent >= 60 ? `${(vent / 60).toFixed(1)} h` : `${vent} min`},
+                  no en un mismo momento.</>}
+            {" "}Las promociones de Mercado Libre tienen cuenta regresiva:
+            refresca antes de firmarlo.
           </span>
         </p>
       )}
