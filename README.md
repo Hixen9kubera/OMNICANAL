@@ -1044,7 +1044,7 @@ nulo: no hay índice sobre `estado_canal` que se pueda invalidar (los cuatro de
 `channel.orders` son sobre la PK, `creado_at`, `wc_order_id` y `cuenta`), y el
 plan estimado sube de 2,858 a 2,911 — 1.9%, mismo tipo de nodo.
 
-**Alcance: 12 sitios, uno por copia del mismo filtro.** 10 en
+**Alcance: 13 sitios, uno por copia del mismo filtro.** 10 en
 `backend/routers/fulfillment.py` (`_BASE`, `_SQL_CANALES`, `_SQL_MARGEN_LINEAS`,
 `_SQL_MARGEN_TOP`, `_SQL_MARGEN_REAL_TOP`, `_SQL_MARGEN_REAL_LINEAS`,
 `_SQL_TABLA_ENVIO_LINEAS`, `_SQL_CAT_LINEAS` y dos en `_SQL_INV_BASE`) y 2 en
@@ -1052,9 +1052,34 @@ plan estimado sube de 2,858 a 2,911 — 1.9%, mismo tipo de nodo.
 van fijados a `mercado_libre` o `amazon` y hoy no cambian ninguna fila — se
 alinean para que el filtro sea uno solo y no vuelva a divergir.
 
-**`channel.sales_daily` tiene el mismo bug y NO se tocó aquí**
-(`supabase/migrations/0005_order_items_sales_daily.sql:62`): es una vista, o sea
-dominio de datos. Queda en el handoff abierto a omni-datos del 2026-08-21.
+**El sitio 13 vive en SQL: `channel.sales_daily`**
+(`supabase/migrations/0005_order_items_sales_daily.sql:62`). Es una vista, o sea
+dominio de datos, y venía en el handoff a omni-datos del 2026-08-21. Se resuelve
+con `supabase/migrations/0030_sales_daily_cancelado_sin_caja.sql` —nueva,
+idempotente, `create or replace view`, no toca tablas ni datos— y **viaja en esta
+misma versión a propósito**: si el código saliera sin la vista, el panel y la base
+darían números distintos para el mismo período, que es justo lo que este arreglo
+viene a cerrar.
+
+Medido contra producción el 2026-08-21, en lectura, sobre la salida de la PROPIA
+vista (no la del reporte de márgenes, que es la tabla de más arriba):
+
+| | Antes | Después | Delta |
+|---|---:|---:|---:|
+| Filas que emite | 7,347 | 7,321 | **−26** |
+| `units_sold` | 22,607 | 22,581 | **−26** |
+| `revenue` | $7,213,321.44 | $7,207,718.12 | **−$5,603.32** |
+| `sale_fee` | $1,162,963.88 | $1,162,963.88 | **±0.00** |
+
+`sale_fee` no se mueve ni un centavo: esas 26 líneas tienen comisión 0.
+`channel.sales_daily_completa` (migración `0007`) hereda el arreglo sin tocarse —
+hace `union` sobre esta vista y no tiene filtro propio—, y no hay ninguna otra
+vista, función o vista materializada en producción que mencione `estado_canal`.
+Probado en el sandbox con cobayas sembradas y borradas (el clon es del 13-ago y no
+trae ninguna de las 26 filas): sale la de `tiktok`/`CANCELLED`, se quedan dentro
+`AWAITING_SHIPMENT`, `paid` y `partially_refunded`, y sigue fuera
+`amazon`/`Canceled`. La migración re-afirma `security_invoker=on` (que le puso
+`0025_blindaje_rls.sql:123`) y el `grant select` a `service_role`.
 
 **Lo que esta versión NO hace, por decisión de Eduardo.** El mismo barrido
 encontró 77 pedidos en `partially_refunded` ($51,552.94, ML, desde el 16-jun)
@@ -1071,6 +1096,20 @@ hay que sumarla a la lista a mano. El pendiente conocido es Amazon
 `Unfulfillable`, que `pedidos_amazon.py:45` ya trata como cancelado del lado de
 Woo pero que aquí contaría como venta — 0 filas al 2026-08-21, así que es
 prevención, no deuda.
+
+Y hay una salida de fondo que esta versión NO toma: **la columna canónica ya
+existe**. `channel.orders.estado_wc` está poblada al 100% —0 NULLs en toda la
+historia— y las cuatro formas de cancelar caen todas en `cancelled`:
+`amazon`/`Canceled` 38, `mercado_libre`/`cancelled` 2,765, `tiktok`/`cancelled` 1
+y `tiktok`/`CANCELLED` 26. Medido sobre la misma data, `lower(estado_canal) not
+in (…)` y `coalesce(estado_wc,'') <> 'cancelled'` dan **exactamente lo mismo**:
+18,640 líneas y $7,208,212.99 los dos, **0 discrepancias en ambos sentidos**, y
+`partially_refunded` tampoco se mueve (su `estado_wc` es `pending`, no
+`cancelled`). Filtrar por `estado_wc` sería inmune a la caja **y** al vocabulario
+—incluido `Unfulfillable`, y lo que traigan Walmart y Shein, que ya están dados
+de alta en `core.channels`—. Migrar los 13 sitios a esa columna es decisión
+pendiente de Eduardo; queda en el handoff omni-datos → omni-backend del
+2026-08-21.
 
 ### v0.249.0 — Se desarma el reporte de valor: le pusimos precio a algo que se resistía a tenerlo
 
