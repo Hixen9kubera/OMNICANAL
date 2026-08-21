@@ -1001,6 +1001,77 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.250.0 — Una cancelación de TikTok gritaba en MAYÚSCULAS y el reporte no la oía
+
+Salió de una pregunta de devoluciones y terminó siendo otra cosa: **26 pedidos
+cancelados de TikTok se estaban contando como venta** en el reporte de márgenes,
+en el tablero de canales, en el de categorías y en el de inventario.
+
+**La causa es de una sola letra.** Cada canal escribe `channel.orders.estado_canal`
+con la capitalización NATIVA de su API, y esa columna es `text`, no `citext`:
+
+| Canal | Lo que escribe | Dónde nace |
+|---|---|---|
+| Mercado Libre | `cancelled` | `pedidos_ml.py:79` |
+| Amazon | `Canceled` | `pedidos_amazon.py:44` |
+| **TikTok** | **`CANCELLED`** | `pedidos_tiktok.py:55` |
+
+El filtro estaba escrito literal —`not in ('cancelled', 'invalid', 'Canceled')`—
+y cubría exactamente los dos canales que existían cuando se escribió. TikTok se
+conectó el 13-ago y sus cancelaciones empezaron a entrar al universo de ventas
+cinco días después, sin que nada fallara ni avisara. **Es un modo de falla
+silencioso: no hay error, hay un número más grande.**
+
+**Medido contra producción el 2026-08-21** (lectura, ventana de 90 días, la
+forma real de `_SQL_MARGEN_LINEAS`):
+
+| | Antes | Después | Delta |
+|---|---:|---:|---:|
+| Líneas | 18,638 | 18,612 | **−26** |
+| Piezas | 22,582 | 22,556 | **−26** |
+| Ingreso reportado | $7,205,203.57 | $7,199,600.25 | **−$5,603.32** |
+
+Las 26 filas que salen son **una sola combinación**: `tiktok` / `CANCELLED`. Nada
+más se mueve. (Sumadas por `orders.total` en vez de por línea son $5,895.32; la
+diferencia es flete y líneas sin SKU, que el reporte ya excluía.)
+
+**Por qué `lower()` y no normalizar al escribir.** Arreglar `pedidos_tiktok.py`
+para que guarde minúsculas solo compone lo que se escriba de mañana en adelante:
+las 26 filas ya están guardadas en MAYÚSCULAS y seguirían contando como venta
+hasta que alguien corriera un backfill. `lower()` en la comparación cubre lo ya
+escrito **y** lo que venga, sin tocar un solo dato ni pedir DDL. El costo es
+nulo: no hay índice sobre `estado_canal` que se pueda invalidar (los cuatro de
+`channel.orders` son sobre la PK, `creado_at`, `wc_order_id` y `cuenta`), y el
+plan estimado sube de 2,858 a 2,911 — 1.9%, mismo tipo de nodo.
+
+**Alcance: 12 sitios, uno por copia del mismo filtro.** 10 en
+`backend/routers/fulfillment.py` (`_BASE`, `_SQL_CANALES`, `_SQL_MARGEN_LINEAS`,
+`_SQL_MARGEN_TOP`, `_SQL_MARGEN_REAL_TOP`, `_SQL_MARGEN_REAL_LINEAS`,
+`_SQL_TABLA_ENVIO_LINEAS`, `_SQL_CAT_LINEAS` y dos en `_SQL_INV_BASE`) y 2 en
+`backend/routers/fba.py`. Siete podían ver filas de TikTok; los otros cinco ya
+van fijados a `mercado_libre` o `amazon` y hoy no cambian ninguna fila — se
+alinean para que el filtro sea uno solo y no vuelva a divergir.
+
+**`channel.sales_daily` tiene el mismo bug y NO se tocó aquí**
+(`supabase/migrations/0005_order_items_sales_daily.sql:62`): es una vista, o sea
+dominio de datos. Queda en el handoff abierto a omni-datos del 2026-08-21.
+
+**Lo que esta versión NO hace, por decisión de Eduardo.** El mismo barrido
+encontró 77 pedidos en `partially_refunded` ($51,552.94, ML, desde el 16-jun)
+que también se cuentan al 100%. **No se tocan todavía**, y la razón es buena:
+esos $51,552.94 son el valor TOTAL de los pedidos, no el monto reembolsado — y
+hoy no guardamos en ninguna parte cuánto se reembolsó. Sacar el pedido entero
+cambia el error de signo en vez de corregirlo: en un reembolso PARCIAL queda
+venta buena adentro. Espera a que exista el monto. Una cancelación, en cambio,
+es una cancelación completa y no tiene esa ambigüedad.
+
+**Riesgo residual, dicho para que no se repita.** Esto arregla la
+CAPITALIZACIÓN, no el VOCABULARIO. Si un canal usa otra PALABRA para cancelar,
+hay que sumarla a la lista a mano. El pendiente conocido es Amazon
+`Unfulfillable`, que `pedidos_amazon.py:45` ya trata como cancelado del lado de
+Woo pero que aquí contaría como venta — 0 filas al 2026-08-21, así que es
+prevención, no deuda.
+
 ### v0.249.0 — Se desarma el reporte de valor: le pusimos precio a algo que se resistía a tenerlo
 
 Eduardo, después de cinco versiones: *"creo que no estamos haciendo las cosas

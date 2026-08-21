@@ -80,6 +80,13 @@ async def refrescar() -> dict[str, Any]:
     return await fba_reporte.refrescar_en_fondo()
 
 
+# CANCELADOS en minusculas: ver la nota larga en routers/fulfillment.py (junto a
+# `_mx`). Resumen: cada canal escribe `estado_canal` con SU capitalizacion y la
+# columna es `text`; el filtro literal dejaba pasar `CANCELLED` de TikTok como
+# venta. Aqui las consultas ya van fijadas a `o.canal = 'amazon'`, asi que hoy
+# no cambia ninguna fila — se alinea para que el filtro sea uno solo en todo el
+# backend y no vuelva a divergir.
+
 _SQL_TABLERO = """
 with ventas as (
   select i.sku::text as sku, sum(i.cantidad)::int as uds,
@@ -87,7 +94,7 @@ with ventas as (
     from channel.order_items i
     join channel.orders o using (canal, cuenta, external_order_id)
    where o.canal = 'amazon'
-     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and i.sku is not null
      and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s
    group by 1)
@@ -116,7 +123,7 @@ select i.sku::text as sku, max(i.titulo) as titulo, sum(i.cantidad)::int as uds
   from channel.order_items i
   join channel.orders o using (canal, cuenta, external_order_id)
  where o.canal = 'amazon'
-   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
    and i.sku is not null
    and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s
    and not exists (select 1 from ops.fba_snapshot f where f.sku = i.sku)

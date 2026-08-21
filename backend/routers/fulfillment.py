@@ -129,6 +129,22 @@ def _mx(sql: str) -> str:
     return sql.replace("current_date", _HOY_MX)
 
 
+# CANCELADOS: la comparacion va en MINUSCULAS a proposito. Cada canal escribe
+# `estado_canal` con la capitalizacion NATIVA de su API y la columna es `text`,
+# no `citext`: ML manda `cancelled`, Amazon `Canceled` (pedidos_amazon.py:44) y
+# TikTok `CANCELLED` (pedidos_tiktok.py:55). El filtro literal solo cubria los
+# dos primeros, asi que las cancelaciones de TikTok entraban al universo COMO
+# VENTA. Medido contra produccion el 2026-08-21: 26 pedidos del 18 al 21-ago,
+# $5,895.32 por `orders.total` y **$5,603.32** de ingreso que salen del
+# reporte (la diferencia es flete y lineas sin SKU, que ya se excluian). Con lower() quedan cubiertas las filas YA ESCRITAS —no hace falta
+# backfill— y tambien el canal que se conecte manana.
+#
+# OJO: esto arregla la CAPITALIZACION, no el VOCABULARIO. Si un canal usa otra
+# PALABRA para cancelar, hay que sumarla a la lista. Pendiente conocido: Amazon
+# `Unfulfillable`, que pedidos_amazon.py:45 ya trata como cancelado del lado de
+# Woo pero que aqui contaria como venta (0 filas al 2026-08-21).
+
+
 # CTEs compartidos del clon: listings agregados POR SKU + ventas del período.
 # %(dias)s = período; %(cuenta)s = filtro de cuenta (None = todas).
 _BASE = _mx("""
@@ -272,7 +288,7 @@ com_canal as (
   join channel.orders o using (canal, cuenta, external_order_id)
   where (o.creado_at at time zone 'America/Mexico_City')::date
         > current_date - %(dias)s::int
-    and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+    and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
     and coalesce(i.comision, 0) > 0
     and i.sku is not null
     and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
@@ -719,7 +735,7 @@ com as (
    where i.sku = %(sku)s::citext
      and (o.creado_at at time zone 'America/Mexico_City')::date
          > current_date - %(dias)s::int
-     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and coalesce(i.comision, 0) > 0
    group by 1, 2
 ),
@@ -838,7 +854,7 @@ select (o.creado_at at time zone 'America/Mexico_City')::date::text as fecha,
    -- resumen. Un pedido cancelado no es una venta — es su reverso; y una línea
    -- sin SKU no tiene costo con el cual sacarle margen. La columna `estado`
    -- sigue sirviendo: quedan paid, Shipped, partially_refunded, Pending.
-   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
    and i.sku is not null
    and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
    and (%(canal)s::text  is null or o.canal  = %(canal)s)
@@ -860,7 +876,7 @@ with lineas as (
     from channel.order_items i
     join channel.orders o using (canal, cuenta, external_order_id)
    where (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s::int
-     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and i.sku is not null
    group by i.sku
 )
@@ -956,7 +972,7 @@ lineas as (
     join channel.orders o using (canal, cuenta, external_order_id)
    where o.canal = 'mercado_libre'
      and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s::int
-     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and i.sku is not null
    group by 1, 2
 ),
@@ -1023,7 +1039,7 @@ select o.cuenta, o.external_order_id, i.sku::text as sku, sum(i.cantidad)::int a
     on t.c = o.cuenta and t.s = i.sku::text
  where o.canal = 'mercado_libre'
    and (o.creado_at at time zone 'America/Mexico_City')::date > current_date - %(dias)s::int
-   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
  group by 1, 2, 3
 """)
 
@@ -1404,7 +1420,7 @@ select o.cuenta, o.external_order_id, i.sku::text as sku,
    and i.sku = any(%(skus)s::citext[])
    and (o.creado_at at time zone 'America/Mexico_City')::date
        > current_date - %(dias)s::int
-   and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
    and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
  group by 1, 2, 3
 """)
@@ -1702,7 +1718,7 @@ _SQL_CAT_LINEAS = """
     join channel.orders o using (canal, cuenta, external_order_id)
    where (o.creado_at at time zone 'America/Mexico_City')::date
          between %(desde)s::date and %(hasta)s::date
-     and coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+     and lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and i.sku is not null
      and (%(cuenta)s::text is null or o.cuenta = %(cuenta)s)
 """
@@ -1988,7 +2004,7 @@ v30 as (
     from channel.order_items i
     join channel.orders o using (canal, cuenta, external_order_id)
     left join padres pa on pa.hijo = i.sku::text
-   where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   where lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and i.sku is not null
      and (o.creado_at at time zone 'America/Mexico_City')::date
          > current_date - %(dias)s
@@ -1999,7 +2015,7 @@ vh as (
     from channel.order_items i
     join channel.orders o using (canal, cuenta, external_order_id)
     left join padres pa on pa.hijo = i.sku::text
-   where coalesce(o.estado_canal, '') not in ('cancelled', 'invalid', 'Canceled')
+   where lower(coalesce(o.estado_canal, '')) not in ('cancelled', 'invalid', 'canceled')
      and i.sku is not null
    group by 1),
 lst as (
