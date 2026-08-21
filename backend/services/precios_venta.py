@@ -1,14 +1,12 @@
 """
 Refresco A LA MEDIDA del corte de valor: los precios de venta, todos de golpe.
 
-POR QUÉ EXISTE, si el sync ya observa `price_sale` (Eduardo, 20-ago-2026).
+POR QUÉ NO LO HACE EL SYNC (Eduardo, 20-ago-2026).
 
 El sync progresivo toma 60 publicaciones por cuenta cada 15 min y las ordena
-"primero lo que nunca se ha visto, luego lo más viejo". Eso mantiene el catálogo
-al día y le sirve al panel y a los márgenes, que no necesitan que todos los
-precios sean del mismo segundo.
-
-A un reporte de VALUACIÓN sí le hace falta. Medido en la primera corrida real:
+"primero lo que nunca se ha visto, luego lo más viejo". Ese orden es correcto
+para mantener el catálogo al día, pero no sirve para valuar. Medido en su
+primera corrida real:
 de las 133 publicaciones que alcanzó, 12 estaban activas y 12 tenían stock en
 FULL; las otras 121 eran pausadas con cero piezas. De las 796 publicaciones con
 stock —las únicas que entran al valor— llevaba 12. Y ninguno de los cinco casos
@@ -24,9 +22,19 @@ Este módulo refresca SOLO las publicaciones que el reporte va a valuar, en una
 pasada. Después, `price_sale_at` deja de ser una curiosidad y pasa a ser la
 prueba: todos los precios del Excel se leyeron en la misma ventana de minutos.
 
-El sync NO se retira: cada quien mantiene lo suyo. Los dos escriben la misma
-columna con el mismo `coalesce`, y el más reciente gana — que es lo correcto,
-porque ambos escriben lo que ML acaba de decir.
+ESTE ES EL ÚNICO CAMINO desde el 20-ago-2026 (decisión de Eduardo). El flag
+`ML_PRECIO_VENTA` del sync quedó apagado: `price_sale` tiene un solo lector —el
+reporte de valor— así que observarlo cada 15 minutos era pagar ~11,500 llamadas
+diarias por un dato que nadie mira entre corte y corte.
+
+Y había un costo peor que el volumen. Con los dos escribiendo, el barrido volvía
+a tocar publicaciones que este refresco ya había leído y les sellaba una fecha
+nueva: medido, 5 de 788 bastaban para estirar la ventana de 1 minuto a 4.7
+horas. El dato de esas 5 era MÁS fresco, pero el corte dejaba de ser simultáneo
+— y para un valor, la simultaneidad es lo que lo hace comparable consigo mismo.
+
+Lo ya observado por el sync no se pierde: sigue en la columna y el `coalesce`
+lo usa como respaldo mientras nadie pida un refresco.
 
 Regla 11 de la casa: todo HTTP por httpx ASYNC; el guardado (psycopg2,
 bloqueante) sale a un hilo con asyncio.to_thread.

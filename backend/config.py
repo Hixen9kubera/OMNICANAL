@@ -149,8 +149,21 @@ class Settings(BaseSettings):
     # unidades vendidas); sin detalle $0.003 pero sin esos dos campos.
     competencia_top: int = 25
     # Pedir a ML el precio CON promoción (/items/{id}/sale_price) en cada pasada
-    # del sync. Cuesta una llamada extra por publicación; apagarlo deja
-    # price_sale congelado en su último valor, nunca en NULL.
+    # del sync. APAGADO A PROPÓSITO desde el 20-ago-2026 (decisión de Eduardo):
+    # `price_sale` tiene UN SOLO lector —la consulta del reporte de valor en
+    # fulfillment._SQL_INV_BASE— y ese reporte trae su propio refresco a la
+    # medida (services/precios_venta.py), que lee las ~790 publicaciones que va
+    # a valuar en unos dos minutos.
+    #
+    # Encenderlo hacía ~11,500 llamadas diarias a ML para mantener al día una
+    # columna que nadie mira entre corte y corte, y además ENSUCIABA el corte:
+    # el barrido volvía a tocar publicaciones que el refresco ya había leído y
+    # les sellaba una fecha nueva, así que la foto dejaba de ser simultánea sin
+    # que el dato mejorara para nadie.
+    #
+    # Encenderlo otra vez solo tiene sentido si `price_sale` gana lectores que
+    # necesiten el precio al día SIN pedirlo — los márgenes del panel, por
+    # ejemplo. Hoy no los tiene.
     ml_precio_venta: bool = False
     competencia_con_detalle: bool = True
 

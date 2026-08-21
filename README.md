@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.247.0 — El sync deja de observar precios: tenía un solo lector
+
+Eduardo, viendo que la foto del corte se ensuciaba sola: *"me parece muy
+innecesario el sync, esto no creo que necesitemos esta información, sino de
+manera rápida cuando el usuario quiera el reporte"*.
+
+**Tenía razón, y el argumento se comprueba con un grep.** `price_sale` tiene
+UN SOLO lector en todo el sistema: la consulta del reporte de valor
+(`fulfillment._SQL_INV_BASE`). Ni los márgenes, ni la tabla de Análisis, ni el
+fan-out. Y ese reporte trae su propio refresco a la medida desde v0.245.0.
+
+O sea que el flag `ML_PRECIO_VENTA` hacía **~11,500 llamadas diarias a ML** para
+mantener al día una columna que nadie mira entre corte y corte.
+
+**Y el costo peor no era el volumen: era que ensuciaba el corte.** Con los dos
+escribiendo la misma columna, el barrido volvía a tocar publicaciones que el
+refresco ya había leído y les sellaba fecha nueva. Medido: **5 de 788 bastaban
+para estirar la ventana de 1 minuto a 4.7 horas**. El dato de esas 5 era MÁS
+fresco —el sync no empeoraba nada— pero el corte dejaba de ser simultáneo, y
+para un valor la simultaneidad es lo que lo hace comparable consigo mismo.
+
+`ML_PRECIO_VENTA` queda en `false` en producción, y el porqué quedó escrito
+junto al flag y en el encabezado del módulo: apagado A PROPÓSITO, no por
+descuido. Vuelve a tener sentido encenderlo solo si `price_sale` gana lectores
+que necesiten el precio al día SIN pedirlo.
+
+Lo ya observado por el sync (2,676 publicaciones) **no se pierde**: sigue en la
+columna y el `coalesce` lo usa de respaldo mientras nadie pida un refresco.
+
+**Queda pendiente una métrica frágil.** La ventana se calcula como
+`máximo − mínimo`, así que una sola publicación releída la arruina aunque las
+otras 787 sean del mismo minuto. Con un solo escritor deja de dispararse sola,
+pero sigue midiendo el peor caso en vez de la foto: lo honesto sería reportar
+cuántas caen en el mismo bloque.
+
 ### v0.246.0 — Una tienda no son dos, y la mitad de ese valor nunca ha vendido
 
 Eduardo, viendo el panel: *"del reporte de Valeria marcan 6 millones si

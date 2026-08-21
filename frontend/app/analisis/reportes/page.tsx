@@ -431,12 +431,13 @@ function BloqueInv({ titulo, subtitulo, cifras, top, tono }: {
 
 /* El corte de VALOR y, sobre todo, DE CUÁNDO SON SUS PRECIOS.
 
-   Un valor es una foto. El sync progresivo observa `price_sale` a lo largo de
-   ~10 h y gasta la mayor parte del turno en publicaciones pausadas sin stock
-   (medido en la primera corrida: de 133, solo 12 tenían piezas en FULL). Si el
-   corte se arma con eso, mezcla precios de las 15:00 con precios de las 06:00 —
-   y las ofertas de ML traen cuenta regresiva. Por eso el botón: refresca SOLO
-   lo que el corte va a valuar, ~760 publicaciones, en una pasada. */
+   Un valor es una foto, y el botón es la ÚNICA forma de tomarla: desde el
+   20-ago-2026 el sync ya no observa precios (ver services/precios_venta.py).
+   Refresca solo lo que el corte va a valuar, ~790 publicaciones, en unos dos
+   minutos, y las deja todas leídas dentro del mismo minuto.
+
+   Si la ventana sale grande, el corte mezcla instantes y no es comparable
+   consigo mismo: las ofertas de ML traen cuenta regresiva. */
 function TarjetaValor({ v, onPedido }: {
   v: PreviewInv["valor"]; onPedido: () => void;
 }) {
