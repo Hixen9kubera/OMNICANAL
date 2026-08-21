@@ -149,11 +149,10 @@ class Settings(BaseSettings):
     # unidades vendidas); sin detalle $0.003 pero sin esos dos campos.
     competencia_top: int = 25
     # Pedir a ML el precio CON promoción (/items/{id}/sale_price) en cada pasada
-    # del sync. APAGADO A PROPÓSITO desde el 20-ago-2026 (decisión de Eduardo):
-    # `price_sale` tiene UN SOLO lector —la consulta del reporte de valor en
-    # fulfillment._SQL_INV_BASE— y ese reporte trae su propio refresco a la
-    # medida (services/precios_venta.py), que lee las ~790 publicaciones que va
-    # a valuar en unos dos minutos.
+    # del sync. APAGADO A PROPÓSITO. Al 21-ago-2026 `price_sale` NO TIENE
+    # LECTORES: el reporte de valor que lo consumía se desarmó (README v0.249.0)
+    # y el arreglo del margen de Análisis, que es donde de verdad hace falta,
+    # está revertido (v0.244.0 en el historial).
     #
     # Encenderlo hacía ~11,500 llamadas diarias a ML para mantener al día una
     # columna que nadie mira entre corte y corte, y además ENSUCIABA el corte:

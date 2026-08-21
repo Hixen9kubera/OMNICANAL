@@ -1001,6 +1001,73 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.249.0 — Se desarma el reporte de valor: le pusimos precio a algo que se resistía a tenerlo
+
+Eduardo, después de cinco versiones: *"creo que no estamos haciendo las cosas
+bien, creo que estamos intentando implementar algo que realmente no viene al
+caso, o no estamos planteando bien la situación"*. Tenía razón. Esta entrada
+existe para que nadie lo reconstruya sin leer primero por qué se quitó.
+
+**Dónde se desvió.** La pregunta original era de DIAGNÓSTICO: *"¿qué tanta
+similitud tenemos con el reporte de la CAM?"*. Se contestó en el primer pase —
+unidades 98.5%, precios 71% arriba, el error era nuestro. Ahí terminaba. Todo lo
+que vino después dio por sentado que la respuesta era "entonces replica su
+reporte", y eso nadie lo estableció.
+
+**Por qué el reporte no debía existir.** El libro decía a propósito *"sin valor
+en dinero"*, y eso se tomó como una limitación que había que superar. Era una
+decisión correcta. Valuar a precio de anaquel un inventario donde **el 44% nunca
+ha vendido una sola pieza** produce un número que no es patrimonio: un polipasto
+de $38,202 que jamás vendió no vale $38,202, vale lo que alguien pague, y nadie
+ha pagado. Se le puso número a algo que se resistía, y luego hicieron falta
+CUATRO advertencias —precio de lista, nunca vendió, precio fuera de escala,
+concentración— para que ese número no engañara. **Cuando un dato necesita cuatro
+avisos para no mentir, la pregunta no es cómo mejorar los avisos.**
+
+Y el `% de la meta anual` era el síntoma más claro: dividía un STOCK (lo que hay
+hoy) entre un FLUJO (ventas de doce meses) y daba 106%, que se lee como
+cumplimiento. El cumplimiento real, medido sobre 90 días de ventas de ML, va en
+**192%** ($28.8M de ritmo anual contra $15M de meta). El panel mostraba la mitad
+del número que la gente creía leer.
+
+**Qué se quitó** (revertido a su estado de v0.243.0):
+
+- `_SQL_INV_VALOR` y la hoja «Valor en FULL»
+- las columnas de valor de Inmovilizado e Invisible
+- el bloque `valor` de la vista previa, con `frescura`, `por_cuenta`,
+  `sin_venta`, `precio_raro` y `top5_pct`
+- `TarjetaValor` y su botón, el sondeo de avance, y el endpoint
+  `POST /inventario/precios/refrescar`
+
+**Qué se conserva, y por qué.** El hallazgo de todo esto NO fue el reporte: fue
+que **`channel.listings.price` está 71% arriba de lo que la gente paga**, porque
+`/items/{id}.price` no baja cuando la promoción la monta una campaña de ML.
+Ese campo alimenta el MARGEN del panel de Análisis, que se sigue calculando
+contra un precio que nadie cobra. Así que se quedan:
+
+- la migración `0025` (`price_sale`, `price_sale_at`) — columnas aditivas,
+  nadie las lee hoy
+- `services/precios_venta.py` — DORMIDO, con su encabezado explicando qué hace
+  falta para revivirlo. Probado en producción: 794 de 794, sin un 429
+- el helper del sync y su flag `ML_PRECIO_VENTA`, apagado
+- las 2,676 publicaciones ya observadas, como dato
+
+**Lo que queda pendiente de verdad**: corregir el precio en
+`fulfillment._BASE` y `_SQL_MARGEN_REAL_TOP`, que es donde se toman decisiones
+todos los días. Ese arreglo llegó a estar escrito y se revirtió porque el
+alcance de ese día era otro — está en el historial, v0.244.0.
+
+**Lo medido que sobrevive a la reversión**, por si sirve de insumo:
+
+| | |
+|---|---|
+| Unidades contra el corte de la CAM | 98.5% (298 de 357 idénticas) |
+| Precio nuestro contra la venta real | 1.71× (el de la CAM, 1.03×) |
+| Valor en FULL a precio real | $16.8M — Bekura $11.1M, Sancor $4.8M |
+| De eso, que nunca vendió nada | 44% |
+| Ritmo de venta real de ML | $28.8M anuales |
+| El inventario en meses de venta | 7.0 meses |
+
 ### v0.248.0 — La métrica de frescura medía el peor caso, no la foto
 
 Quedó anotada como pendiente en v0.247.0 y Eduardo pidió cerrarla.

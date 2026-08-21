@@ -1,40 +1,33 @@
 """
-Refresco A LA MEDIDA del corte de valor: los precios de venta, todos de golpe.
+DORMIDO — no lo llama nadie hoy. Léase antes de borrarlo o de revivirlo.
 
-POR QUÉ NO LO HACE EL SYNC (Eduardo, 20-ago-2026).
+QUÉ HACE. Lee de ML el precio que el comprador PAGA
+(`/items/{id}/sale_price?context=channel_marketplace`) para las publicaciones
+con stock en FULL, y lo guarda en `channel.listings.price_sale`. En segundo
+plano, por tandas, ~790 publicaciones en unos dos minutos. Probado en
+producción el 20-ago-2026: 794 de 794, todas 200, sin un solo 429.
 
-El sync progresivo toma 60 publicaciones por cuenta cada 15 min y las ordena
-"primero lo que nunca se ha visto, luego lo más viejo". Ese orden es correcto
-para mantener el catálogo al día, pero no sirve para valuar. Medido en su
-primera corrida real:
-de las 133 publicaciones que alcanzó, 12 estaban activas y 12 tenían stock en
-FULL; las otras 121 eran pausadas con cero piezas. De las 796 publicaciones con
-stock —las únicas que entran al valor— llevaba 12. Y ninguno de los cinco casos
-con la brecha de precio más grande había sido tocado.
+POR QUÉ EXISTE. Porque `channel.listings.price` NO es lo que la gente paga.
+`/items/{id}.price` se queda en el precio de LISTA cuando la promoción la monta
+una CAMPAÑA de ML. Medido contra 265 SKUs con venta real en
+`channel.order_items`: la mediana de `price` está en **1.71x lo transado**, la
+de `sale_price` en 1.03x. No es una diferencia de matiz.
 
-O sea: el barrido paga el costo de las 4,977 del catálogo para entregar tarde
-las 796 que el reporte necesita, y aun entonces el resultado sería un mosaico
-—unos precios de las 15:00 y otros de las 06:00— cuando lo que se firma es una
-FOTO. Las ofertas de ML traen cuenta regresiva: un precio de hace diez horas
-puede ser de una promoción que ya terminó.
+POR QUÉ ESTÁ DORMIDO. Se construyó para un reporte de valor del inventario en
+FULL que se DESARMÓ el 21-ago-2026 (decisión de Eduardo — ver la entrada
+v0.249.0 del README). Al desarmarlo, `price_sale` se quedó sin lectores.
 
-Este módulo refresca SOLO las publicaciones que el reporte va a valuar, en una
-pasada. Después, `price_sale_at` deja de ser una curiosidad y pasa a ser la
-prueba: todos los precios del Excel se leyeron en la misma ventana de minutos.
+CUÁNDO REVIVIRLO. Cuando se corrija el precio donde de verdad decide: el
+MARGEN del panel de Análisis. Hoy `fulfillment._BASE` y
+`_SQL_MARGEN_REAL_TOP` calculan contra `price`, o sea contra un precio que
+nadie cobra, y el margen sale optimista. Ese arreglo llegó a estar escrito
+—`coalesce(price_sale, price)` en los cuatro lectores— y se revirtió porque el
+alcance de ese día era otro. Está en el historial: v0.244.0.
 
-ESTE ES EL ÚNICO CAMINO desde el 20-ago-2026 (decisión de Eduardo). El flag
-`ML_PRECIO_VENTA` del sync quedó apagado: `price_sale` tiene un solo lector —el
-reporte de valor— así que observarlo cada 15 minutos era pagar ~11,500 llamadas
-diarias por un dato que nadie mira entre corte y corte.
-
-Y había un costo peor que el volumen. Con los dos escribiendo, el barrido volvía
-a tocar publicaciones que este refresco ya había leído y les sellaba una fecha
-nueva: medido, 5 de 788 bastaban para estirar la ventana de 1 minuto a 4.7
-horas. El dato de esas 5 era MÁS fresco, pero el corte dejaba de ser simultáneo
-— y para un valor, la simultaneidad es lo que lo hace comparable consigo mismo.
-
-Lo ya observado por el sync no se pierde: sigue en la columna y el `coalesce`
-lo usa como respaldo mientras nadie pida un refresco.
+Para revivirlo hacen falta tres cosas y ninguna es este archivo: un lector que
+necesite el precio real, un disparador (endpoint o botón), y decidir quién lo
+mantiene al día. El flag `ML_PRECIO_VENTA` del sync sigue existiendo y sigue
+apagado a propósito — ver la nota en `config.py`.
 
 Regla 11 de la casa: todo HTTP por httpx ASYNC; el guardado (psycopg2,
 bloqueante) sale a un hilo con asyncio.to_thread.

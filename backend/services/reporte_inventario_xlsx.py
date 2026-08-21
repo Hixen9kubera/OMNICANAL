@@ -37,7 +37,6 @@ _CAB_FILL = PatternFill("solid", fgColor="1F3864")
 _AVISO_FILL = PatternFill("solid", fgColor="FFF2CC")
 _GRAVE_FILL = PatternFill("solid", fgColor="FCE4E4")
 _INT = "#,##0"
-_MXN = '"$"#,##0'
 
 # WooCommerce NO va aquí a propósito: no es un canal de venta sino nuestro
 # puente de registro, y la consulta ya lo excluye de la lista de cuentas. Si
@@ -97,31 +96,12 @@ def _encabezar(ws, cabs: list[str], nota: str, anchos: dict[int, int]) -> None:
         ws.column_dimensions[get_column_letter(c)].width = w
 
 
-def _mxn(filas: list[dict]) -> float:
-    """Suma del valor a precio de venta de un conjunto de renglones."""
-    return sum(float(f.get("valor_full") or 0) for f in filas)
-
-
-def _celda_valor(ws, r: int, col: int, f: dict) -> None:
-    """El valor del renglón, y la advertencia cuando todavía es precio de LISTA.
-
-    `precio_crudo` significa que a NINGUNA de las publicaciones de ese SKU se le
-    ha leído el precio con promoción, así que la cifra corre alto —medido, 1.71x
-    lo que de verdad se transa—. Se muestra igual, en ámbar: esconderla dejaría
-    el total sin cuadrar, y el reporte tiene que ser auditable como el de la CAM.
-    """
-    ws.cell(r, col, round(float(f.get("valor_full") or 0), 2)).font = _f()
-    ws.cell(r, col).number_format = _MXN
-    if f.get("precio_crudo"):
-        ws.cell(r, col).fill = _AVISO_FILL
-
-
 def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
     ws = wb.create_sheet("Inmovilizado")
     cabs = ["SKU", "Título", "Dónde está el stock", "En FULL", "FULL Bekura",
             "FULL Sancor", "En bodega propia", "Publicaciones activas",
             "Pausadas", "Cuentas", "Última venta", "Días sin vender",
-            "Valor en FULL", "Diagnóstico"]
+            "Diagnóstico"]
     total_uds = sum(int(f.get("full_total") or 0) for f in filas)
     nunca = sum(1 for f in filas if not f.get("ultima_venta"))
     _encabezar(ws, cabs,
@@ -130,17 +110,15 @@ def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
                f"todos los días, venda o no. {len(filas):,} SKUs, "
                f"{total_uds:,} unidades; {nunca:,} nunca han vendido nada. "
                f"Ordenado por unidades: arriba está lo que más renta paga sin "
-               f"devolver nada. Vale {_mxn(filas):,.0f} pesos A PRECIO DE "
-               f"VENTA: no al costo —que no es de fiar en ~30% del catálogo— "
-               f"sino a lo que se cobraría si se vendiera hoy, con la promoción "
-               f"de Mercado Libre ya aplicada. No incluye el stock parado en "
-               f"bodega propia (ese no paga renta). En un producto con variantes "
+               f"devolver nada. No incluye el stock parado en bodega propia "
+               f"(ese no paga renta) ni valor en dinero (el costo capturado no "
+               f"es de fiar en ~30% del catálogo). En un producto con variantes "
                f"el renglón es la FAMILIA COMPLETA —el SKU de la izquierda es "
                f"el padre, que nunca vende por sí mismo— y la columna «Dónde "
                f"está el stock» dice en qué variante y en qué cuenta están las "
                f"piezas.",
                {1: 22, 2: 42, 3: 46, 4: 10, 5: 12, 6: 12, 7: 16, 8: 18,
-                9: 10, 10: 16, 11: 12, 12: 14, 13: 15, 14: 62})
+                9: 10, 10: 16, 11: 12, 12: 14, 13: 62})
     for i, f in enumerate(filas):
         r = 4 + i
         dias_sin = f.get("dias_sin_vender")
@@ -178,18 +156,14 @@ def _hoja_inmovilizado(wb: Workbook, filas: list[dict], dias: int) -> None:
         if int(f.get("variantes") or 0):
             aviso += (f" · la cuenta cubre al padre y a sus "
                       f"{int(f['variantes'])} variantes")
-        _celda_valor(ws, r, 13, f)
-        if f.get("precio_crudo"):
-            aviso += " · VALUADO A PRECIO DE LISTA: la cifra corre alto"
-        ws.cell(r, 14, aviso).font = _f(size=9)
+        ws.cell(r, 13, aviso).font = _f(size=9)
 
 
 def _hoja_invisible(wb: Workbook, filas: list[dict], dias: int) -> None:
     ws = wb.create_sheet("Invisible")
     cabs = ["SKU", "Título", f"Vendió ({dias}d)", "Uds/día", "En bodega propia",
             "En FULL", "En FBA", "Stock total", "Cobertura (días)",
-            "Publicaciones pausadas", "Cuentas", "Última venta",
-            "Valor en FULL", "Diagnóstico"]
+            "Publicaciones pausadas", "Cuentas", "Última venta", "Diagnóstico"]
     uds = sum(int(f.get("uds_periodo") or 0) for f in filas)
     _encabezar(ws, cabs,
                f"INVISIBLE — vendió en los últimos {dias} días y hoy NO tiene "
@@ -199,11 +173,9 @@ def _hoja_invisible(wb: Workbook, filas: list[dict], dias: int) -> None:
                f"Lo pausado SIN stock queda FUERA a propósito: está agotado, "
                f"que es la razón correcta para pausar, y pertenece a Reponer. "
                f"Es el problema más barato de arreglar: no hay que comprar ni "
-               f"mover nada, solo reactivar. Lo que está en FULL vale "
-               f"{_mxn(filas):,.0f} pesos a precio de venta y hoy no se le "
-               f"ofrece a nadie.",
+               f"mover nada, solo reactivar.",
                {1: 22, 2: 46, 3: 12, 4: 9, 5: 16, 6: 10, 7: 9, 8: 12, 9: 15,
-                10: 20, 11: 16, 12: 12, 13: 15, 14: 64})
+                10: 20, 11: 16, 12: 12, 13: 64})
     for i, f in enumerate(filas):
         r = 4 + i
         u = int(f.get("uds_periodo") or 0)
@@ -228,117 +200,20 @@ def _hoja_invisible(wb: Workbook, filas: list[dict], dias: int) -> None:
         ws.cell(r, 12, f.get("ultima_venta") or "").font = _f()
         for c in (3, 5, 6, 7, 8, 10):
             ws.cell(r, c).number_format = _INT
-        _celda_valor(ws, r, 13, f)
-        ws.cell(r, 14,
+        ws.cell(r, 13,
                 f"PAUSADA CON STOCK — vendió {u:,} unidades en {dias} días y "
                 f"hoy tiene {stock:,} disponibles sin ninguna publicación "
                 f"activa; reactivar o entender por qué se pausó"
-                + (" · su valor está a precio de LISTA: corre alto"
-                   if f.get("precio_crudo") else "")
                 ).font = _f(size=9)
         ws.cell(r, 8).fill = _AVISO_FILL
 
 
-def _hoja_valor(wb: Workbook, filas: list[dict], dias: int) -> None:
-    """TODO el inventario en FULL valuado a precio de venta.
-
-    Replica el corte que la CAM armaba a mano cruzando el reporte
-    `stock_general_full` de ML con los precios de la tienda pública. Al comparar
-    su archivo del 13-ago contra el nuestro reconstruido a esa misma hora, las
-    UNIDADES coincidieron al 98.5% (298 de 357 publicaciones con el número
-    idéntico); lo que no coincidía era el precio, y el error era nuestro.
-
-    Las otras dos hojas son subconjuntos de esta: Inmovilizado es lo que además
-    no vendió, Invisible lo que además no tiene publicación activa.
-    """
-    ws = wb.create_sheet("Valor en FULL")
-    cabs = ["SKU", "Título", "Dónde está el stock", "En FULL", "FULL Bekura",
-            "FULL Sancor", "Valor a precio de venta", "Valor Bekura",
-            "Valor Sancor", "Activas", "Pausadas", "Cuentas",
-            f"Vendidas ({dias}d)", "Última venta", "Aviso"]
-    val = _mxn(filas)
-    uds = sum(int(f.get("full_total") or 0) for f in filas)
-    crudas = [f for f in filas if f.get("precio_crudo")]
-    sin_precio = sum(int(f.get("uds_sin_precio") or 0) for f in filas)
-    _encabezar(ws, cabs,
-               f"VALOR DEL INVENTARIO EN FULL a precio de venta — lo que se "
-               f"cobraría si se vendiera hoy, con la promoción de Mercado Libre "
-               f"ya aplicada. {len(filas):,} publicaciones con stock, "
-               f"{uds:,} unidades, {val:,.0f} pesos. NO es el costo: el costo "
-               f"capturado no es de fiar en cerca de un tercio del catálogo, y "
-               f"por eso este libro nunca tuvo pesos. El precio de anaquel no "
-               f"depende de ese dato. "
-               + (f"OJO: {len(crudas):,} publicaciones "
-                  f"({sum(int(f.get('full_total') or 0) for f in crudas):,} "
-                  f"unidades, {_mxn(crudas):,.0f} pesos) siguen valuadas con "
-                  f"precio de LISTA porque todavía no se les lee el precio con "
-                  f"promoción: van en ámbar y su valor corre ALTO —mediana "
-                  f"medida, 1.71 veces lo que de verdad se transa—. El total "
-                  f"baja cuando el sync termine de observarlas. "
-                  if crudas else
-                  "Todas las publicaciones tienen leído su precio con "
-                  "promoción. ")
-               + (f"{sin_precio:,} unidades no tienen ningún precio y quedan "
-                  f"FUERA del total." if sin_precio else ""),
-               {1: 22, 2: 40, 3: 46, 4: 10, 5: 12, 6: 12, 7: 22, 8: 14,
-                9: 14, 10: 10, 11: 10, 12: 16, 13: 14, 14: 12, 15: 64})
-    for i, f in enumerate(filas):
-        r = 4 + i
-        ws.cell(r, 1, f.get("sku") or "").font = _f()
-        ws.cell(r, 2, (f.get("titulo") or "")[:120]).font = _f()
-        ws.cell(r, 3, _donde(f)).font = _f(size=9)
-        for c, k in ((4, "full_total"), (5, "full_bk"), (6, "full_sc"),
-                     (10, "activas"), (11, "pausadas"), (13, "uds_periodo")):
-            ws.cell(r, c, int(f.get(k) or 0)).font = _f()
-            ws.cell(r, c).number_format = _INT
-        _celda_valor(ws, r, 7, f)
-        # El valor abierto por cuenta: el corte que la CAM arma a mano es de
-        # UNA tienda, y sin estas dos columnas su total no se puede reconciliar
-        # contra el nuestro, que es de dos (Eduardo, 20-ago).
-        for c, k in ((8, "valor_bk"), (9, "valor_sc")):
-            ws.cell(r, c, round(float(f.get(k) or 0), 2)).font = _f()
-            ws.cell(r, c).number_format = _MXN
-        ws.cell(r, 12, _cuentas(f.get("cuentas"))).font = _f()
-        ws.cell(r, 14, f.get("ultima_venta") or "nunca").font = _f()
-        avisos = []
-        if f.get("precio_raro"):
-            avisos.append("PRECIO FUERA DE ESCALA — más de 10 veces la mediana "
-                          "de su categoría; suele ser un error de captura y "
-                          "aquí se está contando como patrimonio")
-        if f.get("nunca_vendio"):
-            avisos.append("NUNCA HA VENDIDO una pieza: el precio existe, la "
-                          "prueba de que alguien lo paga no")
-        # DESPUÉS qué es el renglón. Un padre no vende NUNCA —vende su
-        # variante— así que sin decirlo, "0 vendidas · nunca" se lee como un
-        # error del reporte en vez de como el hecho de la familia entera.
-        # Medido el 20-ago-2026 sobre todo el histórico: los SKUs padre suman
-        # 25 unidades vendidas contra 2,952 de los hijos.
-        variantes = int(f.get("variantes") or 0)
-        if variantes:
-            avisos.append(f"FAMILIA de {variantes} variantes — el SKU de la "
-                          f"izquierda es el PADRE y no vende por sí mismo; las "
-                          f"piezas y las ventas son de sus variantes (columna "
-                          f"«Dónde está el stock»). Los números de este "
-                          f"renglón son de la familia COMPLETA")
-        if f.get("precio_crudo"):
-            avisos.append("VALUADO A PRECIO DE LISTA — todavía no se lee su "
-                          "precio con promoción; la cifra corre alto")
-        if int(f.get("uds_sin_precio") or 0):
-            avisos.append(f"{int(f['uds_sin_precio']):,} unidades sin ningún "
-                          f"precio: NO están en el valor de la izquierda")
-        if not int(f.get("uds_periodo") or 0):
-            avisos.append(f"sin vender en {dias} días"
-                          + (" —ni el padre ni una sola variante—" if variantes else "")
-                          + " · también sale en Inmovilizado")
-        ws.cell(r, 15, " · ".join(avisos)).font = _f(size=9)
-
-
 def construir(inmovilizado: list[dict], invisible: list[dict],
-              valor: list[dict], dias: int, cuenta: str | None) -> bytes:
+              dias: int, cuenta: str | None) -> bytes:
     wb = Workbook()
     portada = wb["Sheet"]
     portada.title = "Cómo leer"
-    portada["A1"] = "Inventario en FULL: valor y acciones"
+    portada["A1"] = "Inventario accionable"
     portada["A1"].font = _f(bold=True, size=12)
     portada["A2"] = (f"Período: últimos {dias} días · "
                      f"Cuenta: {TIENDA.get(cuenta or '', cuenta) or 'todas'}")
@@ -357,17 +232,10 @@ def construir(inmovilizado: list[dict], invisible: list[dict],
         "lo estamos ofreciendo. Vendió, tiene stock, y ninguna publicación "
         "está activa. La acción es reactivar, o entender por qué se pausó.",
         "",
-        f"VALOR EN FULL ({len(valor):,} publicaciones) — todo lo que ocupa "
-        f"FULL, venda o no, valuado en {_mxn(valor):,.0f} pesos. Las otras dos "
-        f"hojas son subconjuntos de esta.",
-        "",
-        "EL VALOR VA A PRECIO DE VENTA, NO A COSTO. Este libro no tenía pesos "
-        "porque el costo capturado es un precio de lista en dólares en cerca "
-        "de un tercio del catálogo, y valorizar así daría una cifra inventada. "
-        "El precio de anaquel no depende de ese dato: es lo que se cobraría si "
-        "se vendiera hoy, con la promoción de Mercado Libre ya aplicada. Lo "
-        "que todavía se valuó con precio de LISTA va en ámbar y corre alto "
-        "—mediana medida, 1.71 veces lo que de verdad se transa—.",
+        "SIN VALOR EN DINERO, a propósito: el costo capturado es un precio de "
+        "lista en dólares en cerca de un tercio del catálogo, así que "
+        "valorizar el inventario daría una cifra inventada. Lo que sí es "
+        "medible: cuánto hay, dónde está y cuánto lleva sin moverse.",
         "",
         "El stock propio se cuenta UNA vez por SKU, no por publicación: la "
         "misma bodega se ve desde cada publicación, y sumarlas contaría la "
@@ -378,7 +246,6 @@ def construir(inmovilizado: list[dict], invisible: list[dict],
         portada.cell(i, 1).alignment = Alignment(wrap_text=True, vertical="top")
     portada.column_dimensions["A"].width = 118
 
-    _hoja_valor(wb, valor, dias)
     _hoja_inmovilizado(wb, inmovilizado, dias)
     _hoja_invisible(wb, invisible, dias)
 
