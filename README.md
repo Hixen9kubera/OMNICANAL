@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.254.0 — Métricas: KPI de activas con visitas bajas, snapshot de hoy
+
+Cuarto KPI del tab Métricas: **"Activas con visitas bajas (0-100)"** — número
+y % de publicaciones activas de ML cuyas visitas quedan en ese rango, por
+cuenta y consolidado.
+
+Primer diseño (24-ago) proponía capturarlas EN VIVO por rango de semana
+(`/items/visits?date_from=&date_to=`, endpoint distinto al que ya usa
+`competencia_ml.visitas()`) con una tabla de caché nueva. Jose lo frenó:
+**sin tabla nueva y sin llamadas a ML** — el KPI se arma con lo que YA vive en
+`enrich.market_listing_metrics.visits_30d` (Competencia: cron mensual +
+refrescos manuales bajo demanda). Medido contra producción antes de
+publicar: 419 activas en BEKURA (320 con visitas medidas, 234 en 0-100) y 430
+en SANCORFASHION (288 medidas, 168 en 0-100).
+
+Es un SNAPSHOT (mismo espíritu que ticket promedio): no depende de la semana
+seleccionada arriba, y no confunde `NULL` ("nunca medido", `sin_medir`) con
+"cero visitas" — la mitad del catálogo activo aún no tiene ese dato porque
+`visits_30d` solo cubre los SKUs vigilados en Competencia, no el catálogo
+completo. Ver la fila de `enrich.market_listing_metrics` en el mapa de piezas
+del proyecto.
+
 ### 0.253.0 — El margen del grupo, en «Productos más vendidos»
 
 Eduardo pidió el margen promedio de los 10 productos que se están mostrando, en

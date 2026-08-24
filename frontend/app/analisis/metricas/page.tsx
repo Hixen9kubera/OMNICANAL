@@ -5,7 +5,7 @@
  * Corpe), por semana ISO 8601 (lunes-domingo) con comparativo vs la semana
  * anterior.
  *
- * Catálogo de KPIs en vez de tarjetas fijas (Jose, 24-ago): hoy solo hay 3,
+ * Catálogo de KPIs en vez de tarjetas fijas (Jose, 24-ago): hoy solo hay 4,
  * pero se van a ir sumando con el tiempo. Arriba, "KPIs principales" muestra
  * como máximo 6 — los que estén fijados (localStorage, por navegador). Abajo,
  * "Todos los KPIs" es el catálogo completo con un botón para fijar/desfijar
@@ -14,9 +14,12 @@
  *
  * Activaciones = `date_published` (fecha real de ML, migración 0031) dentro
  * del rango — no transiciones de `situacion`. Pausas sí vienen de
- * `channel.listing_history`. Ticket promedio es un SNAPSHOT de hoy (listings
- * activos), no una reconstrucción histórica del precio en la semana — las
- * tres decisiones se validaron con Jose antes de construir esto.
+ * `channel.listing_history`. Ticket promedio y Visitas bajas son SNAPSHOT de
+ * hoy (listings activos), no reconstrucciones históricas dentro de la
+ * semana — decisiones validadas con Jose antes de construir esto. Visitas
+ * bajas en particular NO dispara mediciones nuevas: usa lo que ya está
+ * capturado en `enrich.market_listing_metrics` (Competencia), así que
+ * `sin_medir` puede ser una porción real del catálogo activo.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -42,6 +45,11 @@ interface Resp {
   };
   ticket_promedio: {
     consolidado: number | null; por_cuenta: Record<string, number>; snapshot_at: string;
+  };
+  visitas_bajas: {
+    total: number; medidas: number; sin_medir: number; bajas: number; pct: number | null;
+    por_cuenta: Record<string, { total: number; medidas: number; bajas: number; pct: number | null }>;
+    snapshot_at: string;
   };
 }
 
@@ -116,6 +124,20 @@ const KPIS: KpiDef[] = [
       pie: `snapshot de hoy · ${fFechaHora(d.ticket_promedio.snapshot_at)}`,
       tone: "text-emerald-600",
     }),
+  },
+  {
+    id: "visitas_bajas", titulo: "Activas con visitas bajas (0-100)", grupo: "Visitas",
+    calcular: (d, cuenta) => {
+      const v = cuenta ? d.visitas_bajas.por_cuenta[cuenta] : undefined;
+      const bajas = v ? v.bajas : d.visitas_bajas.bajas;
+      const total = v ? v.total : d.visitas_bajas.total;
+      const pct = v ? v.pct : d.visitas_bajas.pct;
+      return {
+        value: fNum(bajas),
+        pie: `${pct ?? "—"}% de ${fNum(total)} activas · snapshot de hoy`,
+        tone: "text-rose-600",
+      };
+    },
   },
 ];
 
