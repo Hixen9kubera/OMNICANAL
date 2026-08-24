@@ -77,7 +77,8 @@
      "stock_fba:integer:null",
      "currency:text:null",
      "category_id:text:null",
-     "store_name:text:null"
+     "store_name:text:null",
+     "date_published:timestamp with time zone:null"
     ],
     "constraints": {
      "FOREIGN KEY": 3,

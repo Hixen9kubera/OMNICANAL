@@ -103,10 +103,10 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                          (sku, account_id, canal, listing_id, price, price_base,
                           price_sale, price_sale_at,
                           stock_own, stock_full, is_fulfillment, situacion,
-                          logistic_type, stock_fba, currency)
+                          logistic_type, stock_fba, currency, date_published)
                        values (%s, %s, %s, %s, %s, %s,
                                %s, case when %s is null then null else now() end,
-                               %s, %s, %s, %s, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s)
                        on conflict (sku, account_id, canal) do update set
                          listing_id = coalesce(excluded.listing_id, listings.listing_id),
                          price = coalesce(excluded.price, listings.price),
@@ -119,12 +119,14 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                          situacion = coalesce(excluded.situacion, listings.situacion),
                          logistic_type = coalesce(excluded.logistic_type, listings.logistic_type),
                          stock_fba = coalesce(excluded.stock_fba, listings.stock_fba),
-                         currency = coalesce(excluded.currency, listings.currency)
+                         currency = coalesce(excluded.currency, listings.currency),
+                         date_published = coalesce(listings.date_published, excluded.date_published)
                        where (listings.listing_id,
                               listings.price, listings.price_base, listings.price_sale,
                               listings.stock_own, listings.stock_full,
                               listings.is_fulfillment, listings.situacion,
-                              listings.logistic_type, listings.stock_fba, listings.currency)
+                              listings.logistic_type, listings.stock_fba, listings.currency,
+                              listings.date_published)
                          is distinct from
                              (coalesce(excluded.listing_id, listings.listing_id),
                               coalesce(excluded.price, listings.price),
@@ -136,7 +138,8 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                               coalesce(excluded.situacion, listings.situacion),
                               coalesce(excluded.logistic_type, listings.logistic_type),
                               coalesce(excluded.stock_fba, listings.stock_fba),
-                              coalesce(excluded.currency, listings.currency))""",
+                              coalesce(excluded.currency, listings.currency),
+                              coalesce(listings.date_published, excluded.date_published))""",
                     (sku, cuenta_id, canal, r.get("item_id"), r.get("precio"),
                      # precio de lista (el tachado de ML): solo lo trae el lector
                      # de mercado_libre; en los demás canales viaja NULL y el
@@ -148,7 +151,11 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                      r.get("precio_venta"), r.get("precio_venta"),
                      r.get("stock_real"), stock_full, bool(r.get("es_full")),
                      r.get("situacion"),
-                     r.get("logistica"), r.get("stock_fba"), r.get("moneda")),
+                     r.get("logistica"), r.get("stock_fba"), r.get("moneda"),
+                     # fecha real de publicación (date_created de ML): se captura
+                     # una sola vez, nunca se pisa (coalesce hacia el valor ya
+                     # guardado) — ver comment on column de la migración 0023.
+                     r.get("fecha_publicacion")),
                 )
 
 

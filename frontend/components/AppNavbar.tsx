@@ -21,6 +21,7 @@ import {
   Tags,
   Trophy,
   Webhook,
+  Gauge,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -76,6 +77,8 @@ const ITEMS: NavItem[] = [
         descripcion: "Pareto histórico: qué SKUs sostienen la venta" },
       { label: "Amazon FBA", href: "/analisis/fba", icon: BarChart3,
         descripcion: "Capacidad de bodega y plan de envío" },
+      { label: "Métricas", href: "/analisis/metricas", icon: Gauge,
+        descripcion: "KPIs de publicaciones: activaciones, pausas y ticket promedio" },
       { label: "Reportes", href: "/analisis/reportes", icon: FileText,
         descripcion: "Descargas en CSV y Excel" },
     ],

@@ -432,6 +432,7 @@ async def sincronizar_ml(cuenta: str, limite: int = 60) -> dict[str, Any]:
                 "stock_fba": None,
                 "es_full": 1 if es_full else 0,
                 "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
+                "fecha_publicacion": item.get("date_created"),
             })
     n = await _upsert_async(rows)
     salida = {"canal": "mercado_libre", "cuenta": cuenta, "ok": True, "actualizados": n}
@@ -615,6 +616,7 @@ async def _sync_ml_sku(sku: str) -> list[dict[str, Any]]:
                     "stock_full": qty if es_full else 0,
                     "stock_fba": None, "es_full": 1 if es_full else 0,
                     "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
+                    "fecha_publicacion": item.get("date_created"),
                 })
     except Exception as exc:  # noqa: BLE001
         log.warning("sync ML sku %s: %s", sku, exc)
@@ -700,6 +702,7 @@ async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
         "stock_real": 0 if es_full else qty, "stock_full": qty if es_full else 0,
         "stock_fba": None, "es_full": 1 if es_full else 0,
         "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
+        "fecha_publicacion": item.get("date_created"),
     }])
     return {"ok": True, "sku": sku, "cuenta": cuenta, "item_id": item_id}
 

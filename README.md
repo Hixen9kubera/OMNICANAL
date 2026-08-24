@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.251.0 — Nuevo tab Métricas: activaciones, pausas y ticket promedio de ML
+
+Análisis suma una quinta pestaña, **Métricas** (`/analisis/metricas`): KPIs de
+publicaciones de Mercado Libre por cuenta (Bekura / San Corpe / consolidado),
+por semana ISO 8601 (lunes-domingo, con flechas prev/next) y rango libre.
+
+**Hallazgo que abrió el trabajo:** `channel.listings` nunca guardó la fecha
+real de publicación de un listing — solo `updated_at` (última vez que el sync
+la tocó). La fecha real vive en la API de Mercado Libre (`date_created` de
+`GET /items/{id}`), que el sync ya pedía y descartaba. Se agregó
+`channel.listings.date_published` (migración 0031, nullable, idempotente) y
+`services/inventario.py` la captura ahora en sus tres rutas de lectura de
+`/items`; `channel_mirror.escribir_tanda` la persiste con `coalesce` — se
+graba una sola vez y nunca se pisa.
+
+Las 4,719 publicaciones de ML que ya existían no tenían de dónde sacar esa
+fecha retroactivamente más que preguntándole a ML: `backend/scripts/
+backfill_fecha_publicacion_ml.py` (dry-run por default, `--real` +
+`--acepto-destino`) las recorrió por cuenta vía el multiget `/items?ids=` (20
+por lote, mismo ritmo que `sincronizar_ml_huerfanas.py`) y rellenó 4,716
+(3 fallidas, listings ya no accesibles en ML).
+
+Los 3 KPIs:
+- **Publicaciones activadas** — cuenta por `date_published` dentro del rango
+  (el evento real de alta, no una transición de estado).
+- **Publicaciones pausadas**, con su fecha — sale de `channel.listing_history`
+  (`campo='situacion', valor_nuevo='paused'`), que ya existía.
+- **Ticket promedio** de publicaciones activas — snapshot de HOY
+  (`avg(price)` con `situacion='active'`), no una reconstrucción histórica del
+  precio en la semana: se decidió así a propósito (más simple, siempre
+  disponible) y se etiqueta como snapshot en la propia tarjeta.
+
+Los tres llevan comparativo contra la semana ISO anterior (delta %).
+
+**Catálogo de KPIs, no tarjetas fijas** (pedido de Jose): arriba, "KPIs
+principales" muestra como máximo 6 — los que el usuario tenga fijados
+(`localStorage`, por navegador); abajo, "Todos los KPIs" es el catálogo
+completo con un botón para fijar/desfijar cada uno. Con solo 3 KPIs hoy se ven
+los tres arriba, pero sumar el próximo es agregar una entrada al catálogo, no
+rediseñar la página.
+
+Verificado en modo lectura contra producción antes y después del backfill
+(conteos y deltas reales, ver ejemplos en el propio commit); `tsc --noEmit`
+limpio. La migración 0031 y el backfill son los únicos cambios de escritura;
+el resto es lectura/UI.
+
 ### v0.250.0 — Una cancelación de TikTok gritaba en MAYÚSCULAS y el reporte no la oía
 
 Salió de una pregunta de devoluciones y terminó siendo otra cosa: **26 pedidos
