@@ -267,6 +267,83 @@ function Visitas({ f }: { f: Fila }) {
   );
 }
 
+/* MARGEN DEL GRUPO — el de los renglones que se están viendo (Eduardo, 21-ago).
+
+   SE PONDERA, NO SE PROMEDIA. Promediar los porcentajes de las 10 filas daría
+   un número que no es de nadie: un SKU con 151 unidades pesaría igual que uno
+   con 667. El margen del conjunto es la ganancia TOTAL sobre la venta TOTAL,
+   que es la misma regla que ya usa `comision_total` en el backend.
+
+   Y SE EXCLUYE EL COSTO DUDOSO, por lo que explica lib/margen.ts: un costo
+   capturado por encima de 1.5× el precio no es una pérdida, es un dato malo.
+   Medido en la vista de arriba: con TEC-0393-ROS dentro —costo $1,338 contra
+   precio $127— el grupo da −36.9%; sin él, −12.7%. Veinticuatro puntos de
+   diferencia por UNA fila mal capturada. Meterla haría del encabezado la misma
+   mentira que el módulo se construyó para evitar; ocultar que se excluyó sería
+   la otra mitad del problema, así que el conteo va al lado. */
+function margenDelGrupo(filas: Fila[]) {
+  const utiles = filas.filter(
+    (f) => f.margen_pct != null && f.ingreso != null && f.ganancia_total != null);
+  const buenas = utiles.filter(
+    (f) => !(f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base)));
+  const suma = (xs: Fila[], k: "ingreso" | "ganancia_total") =>
+    xs.reduce((a, f) => a + Number(f[k] ?? 0), 0);
+  const pct = (xs: Fila[]) => {
+    const v = suma(xs, "ingreso");
+    return v ? (100 * suma(xs, "ganancia_total")) / v : null;
+  };
+  return {
+    pct: pct(buenas),
+    pctConDudosos: pct(utiles),
+    usadas: buenas.length,
+    total: filas.length,
+    dudosas: utiles.length - buenas.length,
+    sinDato: filas.length - utiles.length,
+    venta: suma(buenas, "ingreso"),
+    ganancia: suma(buenas, "ganancia_total"),
+  };
+}
+
+function MargenGrupo({ filas }: { filas: Fila[] }) {
+  const m = margenDelGrupo(filas);
+  if (m.pct == null) return null;
+  const neg = m.pct < 0;
+  return (
+    <div
+      className="ml-auto flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5"
+      title={
+        `Margen del grupo = ganancia total (${fMoney(m.ganancia)}) ÷ venta total ` +
+        `(${fMoney(m.venta)}). Ponderado por lo vendido, no es el promedio de los ` +
+        `porcentajes: un producto que vendió 600 piezas no puede pesar lo mismo que ` +
+        `uno que vendió 150.` +
+        (m.dudosas
+          ? `
+
+Quedan FUERA ${m.dudosas} con costo dudoso (más de 1.5× el precio de ` +
+            `venta): ahí el rojo es del dato, no del producto. Con esos adentro daría ` +
+            `${fNum(m.pctConDudosos, 1)}%.`
+          : "") +
+        (m.sinDato ? `
+
+${m.sinDato} sin margen calculable (falta costo o comisión).` : "")
+      }>
+      <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+        Margen del grupo
+      </span>
+      <span className={`text-base font-bold tabular-nums ${
+        neg ? "text-red-500" : "text-emerald-600"}`}>
+        {fNum(m.pct, 1)}%
+      </span>
+      {(m.dudosas > 0 || m.sinDato > 0) && (
+        <span className="text-[10px] text-slate-400">
+          {m.usadas} de {m.total}
+        </span>
+      )}
+    </div>
+  );
+}
+
+
 function TablaCuenta({ titulo, sub, filas, conCuentas }: {
   titulo: string; sub: string; filas: Fila[];
   /* Solo la lista General muestra de qué cuentas viene cada renglón. */
@@ -278,6 +355,7 @@ function TablaCuenta({ titulo, sub, filas, conCuentas }: {
         <Tag size={15} className="text-indigo-500" />
         <h2 className="text-sm font-bold text-slate-800">{titulo}</h2>
         <span className="text-xs text-slate-400">{sub}</span>
+        <MargenGrupo filas={filas} />
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[13px]">

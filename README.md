@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.253.0 — El margen del grupo, en «Productos más vendidos»
+
+Eduardo pidió el margen promedio de los 10 productos que se están mostrando, en
+el encabezado del popup. Lo interesante fue CÓMO calcularlo: las tres formas
+razonables dan tres números muy distintos, y dos de ellos mienten.
+
+| cálculo | sobre el top 10 de 30 días |
+|---|---|
+| promedio simple de los 10 porcentajes | **−111.8%** |
+| ponderado, con el costo dudoso dentro | −36.9% |
+| **ponderado, sin el costo dudoso** | **−12.7%** |
+
+**Se pondera, no se promedia.** Promediar los porcentajes hace que un SKU de 151
+unidades pese igual que uno de 667, y el resultado no describe a nadie. El
+margen del conjunto es la ganancia TOTAL sobre la venta TOTAL — la misma regla
+que el backend ya aplica en `comision_total`.
+
+**Y se excluye el costo dudoso**, por lo que `lib/margen.ts` documenta desde el
+6-ago: un costo capturado por encima de 1.5× el precio no es una pérdida, es un
+dato malo. En esta vista `TEC-0393-ROS` —costo $1,338 contra precio $127—
+aportaba −$244,723 él solo y movía el grupo **24 puntos**. Meterlo haría del
+encabezado la misma mentira que ese módulo se construyó para evitar.
+
+Ocultar que se excluyó sería la otra mitad del problema, así que el conteo va al
+lado del número («9 de 10») y el tooltip dice cuáles quedaron fuera, por qué, y
+cuánto daría el grupo con ellos dentro.
+
 ### v0.252.0 — El KPI «Activos» no contaba activos
 
 Eduardo: *"en el panel de análisis tengo números diferentes para activas totales
