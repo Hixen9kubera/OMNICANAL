@@ -187,8 +187,24 @@ with l as (
              'price', l.price, 'full', l.is_fulfillment))
                                                     as publicaciones,
          max(l.updated_at)                          as precio_visto_at,
-         bool_or(l.situacion = 'active')            as alguna_activa,
-         bool_or(l.situacion = 'paused')            as alguna_pausada,
+         -- "VIVA" SE DICE DISTINTO EN CADA CANAL (Eduardo, 21-ago-2026). ML usa
+         -- 'active'; Amazon usa 'buyable'/'published'. Contar solo 'active'
+         -- dejaba a Amazon con CERO activos: sus 1,798 publicaciones caían
+         -- todas en "otra" y el KPI de la pestaña AMAZON mostraba 0 teniendo
+         -- 138 a la venta. Es la misma definición que ya usaba
+         -- `_SQL_INV_BASE` desde el 14-ago; aquí faltaba.
+         -- `discoverable` (1,253) NO cuenta: la publicación se encuentra, pero
+         -- no hay oferta comprable — es el equivalente de una pausada.
+         bool_or((l.canal = 'mercado_libre'
+                  and lower(coalesce(l.situacion, '')) = 'active')
+              or (l.canal = 'amazon'
+                  and lower(coalesce(l.situacion, '')) in ('buyable', 'published')))
+                                                    as alguna_activa,
+         bool_or((l.canal = 'mercado_libre'
+                  and lower(coalesce(l.situacion, '')) = 'paused')
+              or (l.canal = 'amazon'
+                  and lower(coalesce(l.situacion, '')) = 'discoverable'))
+                                                    as alguna_pausada,
          max(pr.name)                               as titulo
   from channel.listings l
   join core.accounts a on a.id = l.account_id
@@ -592,11 +608,26 @@ async def dashboard(
         kpis = await _fetch_one(
             _BASE + """
             select count(*)::int                                   as productos,
-                   count(*) filter (where estado = 'activa')::int  as activos,
-                   count(*) filter (where estado = 'activa'
+                   -- ACTIVOS se cuenta con `situacion_chip`, NO con `estado`
+                   -- (Eduardo, 21-ago-2026). `estado` es un cubo de TRES donde
+                   -- "no vendió en el período" le GANA a "está activa":
+                   --     case when v.uds = 0        then 'no_venta'
+                   --          when alguna_activa    then 'activa'
+                   --          else 'pausada'
+                   -- así que una publicación viva sin ventas en la ventana caía
+                   -- en `no_venta` y NO se contaba. Medido: el KPI decía 497
+                   -- cuando había 736 activas — 239 activas sin venta en 60 días
+                   -- quedaban fuera de su propio KPI. `situacion_chip` sí es el
+                   -- estado puro del listado, y ya se usaba dos renglones abajo
+                   -- para `listadas_activas`: eran dos definiciones de "activa"
+                   -- conviviendo en la MISMA consulta.
+                   count(*) filter (where situacion_chip = 'activa')::int as activos,
+                   count(*) filter (where situacion_chip = 'activa'
                                      and tiene_full_agg)::int      as activos_full,
                    coalesce(sum(stock_full), 0)::bigint            as stock_full,
                    coalesce(sum(stock_propio), 0)::bigint          as stock_propio,
+                   -- Mismo criterio que `activos` (antes diferían): se conserva
+                   -- el nombre porque lo consume el bloque `skus` de abajo.
                    count(*) filter (where situacion_chip = 'activa')::int as listadas_activas,
                    count(*) filter (where situacion_chip = 'activa'
                                      and stock_full = 0
@@ -608,9 +639,15 @@ async def dashboard(
                       (select count(distinct sku)::int from channel.listings
                         where canal in ('mercado_libre','amazon'))       as skus_listados""")
         cuentas = await _fetch_all(
-            """select a.legacy_code as cuenta, count(*)::int as listings
+            """-- MISMO UNIVERSO QUE LA TABLA (Eduardo, 21-ago-2026): la pastilla
+               -- contaba TODO, incluidas las cerradas, mientras `_BASE` las
+               -- excluye. Bekura decía 2,472 y la tabla 2,462: los 10 de
+               -- diferencia eran publicaciones cerradas. Un número al lado del
+               -- otro que no cuadraba por 10 invita a desconfiar de los dos.
+               select a.legacy_code as cuenta, count(*)::int as listings
                from channel.listings l join core.accounts a on a.id = l.account_id
                where l.canal in ('mercado_libre','amazon')
+                 and lower(coalesce(l.situacion, '')) <> 'closed'
                group by 1 order by 1""")
         serie = await _fetch_all(
             _mx("""select date, sum(units_sold)::int as unidades,

@@ -312,6 +312,21 @@ function Kpi({ label, value, tone, ayuda }: {
 /* Dos textos, no uno compartido: "cuenta piezas, no pedidos" es cierto de las
    UNIDADES y no dice nada de los pesos; "es venta bruta" es al revés. Un solo
    tooltip para ambos KPIs sería medio correcto en cada uno. */
+const AYUDA_ACTIVOS_KPI = {
+  titulo: "Activos",
+  texto: "SKUs con al menos una publicación a la venta HOY, en el alcance elegido. " +
+    "Es el estado del listado y NO depende de si vendió: un producto activo sin ventas " +
+    "en el período cuenta igual. En Mercado Libre «a la venta» es 'active'; en Amazon es " +
+    "'buyable' o 'published' — 'discoverable' no cuenta, porque la publicación se " +
+    "encuentra pero no se puede comprar. " +
+    "OJO CON SUMAR: General NO es la suma de las cuentas, y no le falta nada. Este KPI " +
+    "cuenta SKUs, y un mismo SKU puede estar activo en Bekura, en Sancor y en Amazon a la " +
+    "vez; en General se cuenta UNA sola vez. Por eso sumar las tres pestañas siempre da de " +
+    "más. Si lo que buscas es cuántas PUBLICACIONES hay —eso sí es aditivo, porque una " +
+    "publicación pertenece a una sola cuenta— ése es otro número: una publicación con " +
+    "variantes agrupa varios SKUs.",
+};
+
 const AYUDA_UDS_KPI = {
   titulo: "Cómo se cuentan las unidades",
   texto: "Cuenta PIEZAS, no pedidos: un pedido de 3 piezas suma 3 — la mayor parte del total viene de compras múltiples. Es la suma exacta de las barras de la gráfica, incluida la venta de publicaciones ya cerradas, y el último día va en curso. ¿No cuadra con el panel de Mercado Libre? Aquí las canceladas se excluyen y los días se cortan con horario de México; ML las incluye y corta su ventana distinto.",
@@ -2046,7 +2061,8 @@ export default function FulfillmentPage() {
         {/* Fila 2: KPIs del período */}
         <div className="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
           <Kpi label="Productos" value={fNum(dash?.kpis.productos)} />
-          <Kpi label="Activos" value={fNum(dash?.kpis.activos)} tone="text-emerald-600" />
+          <Kpi label="Activos" value={fNum(dash?.kpis.activos)} tone="text-emerald-600"
+               ayuda={AYUDA_ACTIVOS_KPI} />
           <Kpi label="Activos FULL" value={fNum(dash?.kpis.activos_full)} tone="text-emerald-600" />
           <Kpi label="Stock FULL" value={fNum(dash?.kpis.stock_full)} />
           <Kpi label="Stock propio" value={fNum(dash?.kpis.stock_propio)} tone="text-violet-600" />

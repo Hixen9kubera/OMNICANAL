@@ -1001,6 +1001,59 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.252.0 — El KPI «Activos» no contaba activos
+
+Eduardo: *"en el panel de análisis tengo números diferentes para activas totales
+y por cuenta"*. Eran **tres defectos distintos** conviviendo, y los tres se
+reprodujeron contra producción antes de tocar nada.
+
+**1. El KPI contaba un cubo de ventas, no el estado del listado.**
+`activos` se calculaba con `estado`, que es un cubo de TRES donde *"no vendió en
+el período"* le GANA a *"está activa"*:
+
+```
+case when v.uds = 0     then 'no_venta'
+     when alguna_activa then 'activa'
+     else 'pausada'
+```
+
+Así que una publicación viva sin ventas en la ventana caía en `no_venta` y
+quedaba **fuera de su propio KPI**. Medido: el panel decía **497** cuando había
+**736** activas en ML — 239 activas sin venta en 60 días no se contaban. Y lo
+más delator: `situacion_chip`, que sí es el estado puro, ya existía **en la
+misma consulta**, dos renglones abajo, alimentando `listadas_activas`. Había dos
+definiciones de "activa" conviviendo en el mismo SELECT.
+
+**2. Amazon tenía CERO activos.** `alguna_activa` era
+`bool_or(situacion = 'active')`, y Amazon no usa `active`: usa `buyable` y
+`published`. Sus 1,798 publicaciones caían todas en "otra", así que la pestaña
+AMAZON mostraba **0 activos teniendo 138 a la venta**. Es exactamente la lección
+que `_SQL_INV_BASE` ya tenía escrita desde el 14-ago —*«viva» se dice distinto en
+cada canal*— y que aquí faltaba. `discoverable` (1,253) NO cuenta: la publicación
+se encuentra pero no hay oferta comprable, es el equivalente de una pausada.
+
+**3. La pastilla de cada cuenta contaba otro universo.** Mostraba TODAS las
+publicaciones, incluidas las cerradas, mientras la tabla las excluye. Bekura
+decía 2,472 y la tabla 2,462: los 10 de diferencia eran cerradas. Dos números
+uno al lado del otro que no cuadran por 10 invitan a desconfiar de los dos.
+
+**Cómo queda** (verificado contra producción, solo lectura):
+
+| alcance | pastilla | Productos | Activos | Activos FULL |
+|---|---|---|---|---|
+| General | — | 2,760 | **841** | 708 |
+| Bekura | 2,462 | 2,462 ✓ | 395 | 395 |
+| Sancor | 2,506 | 2,506 ✓ | 431 | 359 |
+| Amazon | 1,509 | 1,509 ✓ | **138** | 16 |
+
+La pastilla ahora cuadra al número con «Productos» en las tres cuentas.
+
+**Lo que NO se "arregló", porque no estaba roto:** General sigue sin ser la suma
+de las pestañas, y está bien. El KPI cuenta SKUs, y un mismo SKU puede estar
+activo en Bekura, en Sancor y en Amazon a la vez; en General se cuenta una sola
+vez. Eso quedó explicado en la ayuda del KPI, sin cifras que caduquen, junto con
+la diferencia entre contar SKUs y contar publicaciones.
+
 ### v0.251.0 — Nuevo tab Métricas: activaciones, pausas y ticket promedio de ML
 
 Análisis suma una quinta pestaña, **Métricas** (`/analisis/metricas`): KPIs de
