@@ -1003,7 +1003,9 @@ cerrados devuelven `category_id.not_modifiable`).
 
 ### v0.255.0 — La marca de "ya revisé este costeo"
 
-Dos columnas en `costing.costos_validados` (migración **0032**, NO APLICADA):
+Dos columnas en `costing.costos_validados` (migración **0032**, aplicada a
+sandbox y producción el 25-ago-2026, ANTES del deploy — el `SELECT` del listado
+ya nombra `revisado_at`):
 `revisado_at` (vacío = pendiente) y `revisado_por` (quién). Endpoints
 `POST`/`DELETE /api/crear/costos/{sku}/revisar`, y en el listado un filtro
 `revisado=no|si|movido` más las columnas para pintarlo.
