@@ -1001,6 +1001,102 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.257.0 — Publicaciones por tienda, y el margen contra el precio que de verdad se está cobrando
+
+La pestaña Omnicanal podía decir en qué canales vive un producto, pero no
+contestaba la pregunta operativa: **"si vendo una AHORA, a este precio, ¿cuánto
+gano?"**. Este endpoint la contesta. Es lectura pura: no escribe en kubera, no
+habla con ningún marketplace y no toca un solo flujo vivo.
+
+Tres endpoints nuevos, todos en `GET`:
+
+- `/api/publicaciones` — página filtrable (canal, tienda, estado, con oferta,
+  búsqueda, orden) + el censo de cobertura del mismo filtro.
+- `/api/publicaciones/estados` — qué estados existen en cada canal, con el
+  valor CRUDO al lado.
+- `/api/publicaciones/cobertura` — solo el censo, para el encabezado.
+
+**Este margen NO es el de Análisis, y es a propósito.** Análisis calcula el
+margen REALIZADO (contra el promedio de las ventas que ya ocurrieron); éste
+calcula el PROSPECTIVO (contra el precio que la publicación cobra hoy). Son dos
+preguntas distintas: un SKU que vendió bien el mes pasado y hoy está en una
+campaña al 55% tiene el primero sano y el segundo malo, y es el segundo el que
+dice si conviene dejar la campaña encendida. Decisión de Eduardo, deliberada y
+con el realizado a la vista. No armonizarlos.
+
+**"Activa" se define canal por canal, y tres canales tienen trampa.** El
+censo del 24-ago sobre 21,848 filas de `channel.listings`:
+
+| canal | columna que manda | activas | la trampa |
+|---|---|---|---|
+| mercado_libre | `situacion` | 846 | — |
+| amazon | `situacion` | 138 | `DISCOVERABLE` (1,253) se ve en el catálogo pero **no se puede comprar**: contarlas infla el número 10× |
+| tiktok | `status` | **0** | sus 283 `APPROVED` son de la AUDITORÍA; en `status` están `SELLER_DEACTIVATED`. Leer `situacion` reportaría 283 publicaciones que nadie puede comprar |
+| temu | `status` | 59 *(puede estar activa)* | Temu contesta códigos y su cubeta `4/7` es literalmente "Activo o inactivo": no distingue una cosa de la otra |
+| walmart | `status` | 207 | el estado no vive en `situacion` (toda NULL) sino en `status` |
+| general | — | n/a | Woo es la FUENTE del catálogo, no un canal de venta: 13,121 de sus filas son catálogo, no publicaciones |
+
+Las definiciones no se re-declaran: salen de `tiktok_panel.ESTADO_VIVO`,
+`walmart_panel.ESTADO_VIVO` y `temu.VENDIBLES`, que ya eran la respuesta única
+de la casa. **Un canal sin estado utilizable NO devuelve 0 en silencio**:
+devuelve su bucket con la nota escrita, y un canal sin una sola fila sigue
+apareciendo en ceros — un cero se lee como "no hay activas" y eso sería mentira.
+
+**El margen solo es honesto en Mercado Libre, y hacen falta CUATRO cosas.**
+`costing.costos_finales` tiene PK `(sku, canal)` (P4) y hoy solo existen filas
+de `mercado_libre`. El costo de ML existe para muchas publicaciones de Amazon y
+TikTok, y usarlo ahí sería fácil y estaría mal: la comisión y el fee de envío
+son distintos por marketplace. Por eso **el costo de ML ni siquiera viaja en los
+canales sin costo propio** — si el dato no está, nadie puede derivar de él un
+margen que no existe. Se marca `margen_motivo="sin_costo_del_canal"`.
+
+Los cuatro requisitos: costo del propio canal, `pct_comision`, **peso** y precio.
+El peso sorprende y es el que más muerde: `costos._peso_efectivo` sustituye el
+peso faltante por 0.5 kg, que es de los renglones más baratos de la tarifa, así
+que un margen sin peso sale optimista sin avisar (18.5 pp de más en el caso
+medido). Con los cuatro, de las **846 activas de ML quedan 461 (54.5%)**; los
+385 restantes: 358 sin fila de costos, 19 sin comisión, 8 sin peso.
+`margen_pct` vale `null` + motivo cuando no se puede saber. **Nunca 0**: 0
+significa "gana cero".
+
+**El fee de envío se RECALCULA al precio real.** Es el punto que más fácil se
+hace mal. `costos_finales.costo_fee_envio` se calculó al `precio_sugerido`, y el
+precio real puede caer en otro tramo de la tarifa de ML. Caso del censo:
+`ACC-0027-VER` tiene sugerido $3,072.44 (tramo "$999+") y cobra $53.55 (tramo
+"$0–98.99") — heredar el fee guardado le cobraría **$41.50 de más**. Se hace lo
+mismo que `costos.aplicar_precio_manual`, y la prueba contrasta las dos
+funciones fila por fila.
+
+**La oferta tiene TRES estados, no dos.** `price_sale` es lo que el comprador
+paga y NO baja en `price` cuando la promoción la monta una campaña de ML. De las
+3,029 filas con el campo poblado, **solo 610 traen descuento real**: pintar
+oferta cada vez que el campo existe pintaría 2,419 ofertas falsas.
+
+- `desconocida` — `price_sale IS NULL`: nadie ha preguntado. **No es "sin oferta".**
+- `sin_oferta` — se observó y no había promoción.
+- `con_oferta` — `price_sale < price`.
+
+Y la observación **está vieja**: el máximo `price_sale_at` es el 21-ago 04:46 y
+quien lo escribe (`services/precios_venta.py`) sigue DORMIDO. Por eso
+`oferta_vista_at` y `oferta_dias` viajan siempre y el contrato con el frontend
+los marca obligatorios: una oferta sin fecha al lado se lee como "hoy".
+
+**Lo que el número destapó** (producción, lectura, 24-ago): de las 461 activas
+de ML con margen calculable, **211 (45.8%) pierden dinero en cada venta** al
+precio que están cobrando. Separado por oferta: con oferta la mediana es −6.6%
+(151 de 267 bajo costo); sin oferta, +22.8%. Y el dato que justifica todo el
+encargo: **80 publicaciones (30% de las que traen oferta) se ven rentables al
+precio de lista y pierden dinero al precio vigente**. En 264 de 267 el margen
+empeora al medirlo contra lo que de verdad se cobra.
+
+Archivos: `backend/services/publicaciones_panel.py` (nuevo, toda la
+interpretación y el porqué de cada regla), `backend/routers/publicaciones.py`
+(nuevo), `backend/main.py` (registro + versión).
+
+Nota de esquema: `channel.listings.date_published` existe en producción y **no**
+en el sandbox; no se pide, para que la prueba en sandbox no dependa de una
+columna que solo está de un lado (handoff a omni-datos).
+
 ### v0.256.0 — La etiqueta VALIDADO, donde se leen los márgenes
 
 El chip `ChipRevision` en las DOS vistas que sacan conclusiones de dinero: la

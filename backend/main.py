@@ -23,8 +23,8 @@ from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (auth, canales, competencia, crear, fanout, fba, fulfillment, ia,
-                     imagenes, metricas, migracion, productos, publicar, resolver, sync,
-                     ventas, tiktok, webhooks)
+                     imagenes, metricas, migracion, productos, publicaciones,
+                     publicar, resolver, sync, ventas, tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
 
 logging.basicConfig(
@@ -106,7 +106,7 @@ app = FastAPI(
         "y su estado en cada marketplace (Mercado Libre, Amazon, TikTok, Walmart, "
         "Temu, Shein)."
     ),
-    version="0.256.0",
+    version="0.257.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -173,13 +173,15 @@ app.include_router(metricas.router)
 app.include_router(tiktok.router)
 # Resolver: packing list vs costos_validados (herramienta de /costos).
 app.include_router(resolver.router)
+# Publicaciones por tienda + margen prospectivo (pestaña Omnicanal). Lectura pura.
+app.include_router(publicaciones.router)
 
 
 @app.get("/", tags=["meta"])
 def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
-        "version": "0.256.0",
+        "version": "0.257.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
