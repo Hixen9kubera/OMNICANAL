@@ -39,9 +39,9 @@ from pydantic import BaseModel, Field
 from config import settings
 from core.seguridad import requiere_api_key
 from models.schemas import Paginacion, Producto, RespuestaProductos
-from services import (alertas, bitacora_read, categorias_write, core_write, costing_read, costos,
-                      creacion, crear_producto, db, kubera_mirror, lecturas_fuente,
-                      woocommerce)
+from services import (alertas, bitacora_read, categorias_write, core_write, costing_read,
+                      costing_write, costos, creacion, crear_producto, db, kubera_mirror,
+                      lecturas_fuente, woocommerce)
 
 log = logging.getLogger("omnicanal.routers.crear")
 router = APIRouter(prefix="/api/crear", tags=["crear"])
@@ -750,6 +750,36 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     return True
 
 
+@router.post("/costos/{sku}/revisar")
+async def costos_marcar_revisado(sku: str):
+    """
+    Marca este costeo como REVISADO contra el packing list (migración 0032).
+
+    Marcar no es guardar: no toca ningún número, ninguna fórmula y ningún
+    precio. Va aparte de `/recalcular` justo por eso — se debe poder confirmar
+    "ya lo verifiqué y está bien" sin editar nada, que es el caso mayoritario
+    de una revisión.
+
+    Quién queda firmado sale del cable de la v0.233.0 (`app.usuario`), no del
+    cuerpo de la petición: el cliente no elige a nombre de quién firma.
+    """
+    fila = await run_in_threadpool(costing_write.marcar_revisado, sku, True)
+    if fila is None:
+        raise HTTPException(
+            404, f"{sku} no tiene fila de costeo: no hay nada que marcar como "
+                 f"revisado. Captúrale el costo primero.")
+    return {"ok": True, **fila}
+
+
+@router.delete("/costos/{sku}/revisar")
+async def costos_quitar_revisado(sku: str):
+    """Quita la marca de revisado. No toca ningún costo."""
+    fila = await run_in_threadpool(costing_write.marcar_revisado, sku, False)
+    if fila is None:
+        raise HTTPException(404, f"{sku} no tiene fila de costeo.")
+    return {"ok": True, **fila}
+
+
 @router.post("/costos/{sku}/recalcular")
 async def costos_recalcular(sku: str, req: RecalcularCostos):
     """
@@ -815,6 +845,10 @@ def costos_listado(
     orden: str = Query("reciente"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
     sin_costo: bool = Query(False, description="Solo los productos que AÚN no tienen fila de costo"),
+    revisado: str | None = Query(
+        None, pattern="^(si|no|movido)$",
+        description="Marca de revisión (0032): 'no' = falta revisar · 'si' = ya "
+                    "revisado · 'movido' = se revisó y la fila se tocó después"),
 ):
     """
     Tabla de costos por SKU (productos + costos_validados + precios + contenedor).
@@ -829,8 +863,20 @@ def costos_listado(
     rows = total = None
     if settings.supabase_read_costing:
         rows, total = costing_read.listado(
-            page, per_page, search, contenedor, orden, skus_lista, sin_costo)
+            page, per_page, search, contenedor, orden, skus_lista, sin_costo,
+            revisado)
         lecturas_fuente.anotar("costing", "kubera")
+
+    # La marca de revisión (0032) solo existe en kubera: MySQL `costos_validados`
+    # quedó congelada con el corte del 13-ago y no tiene esas columnas. Filtrar
+    # por ella en el fallback devolvería la lista COMPLETA como si nada faltara,
+    # así que se dice en vez de mentir.
+    if rows is None and revisado:
+        raise HTTPException(
+            status_code=503,
+            detail="El filtro de revisión necesita la lectura desde kubera "
+                   "(SUPABASE_READ_COSTING). MySQL no tiene esas columnas.",
+        )
 
     if rows is None:
         where, params = [], []

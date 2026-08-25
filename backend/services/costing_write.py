@@ -131,6 +131,46 @@ def guardar_finales(sku: str, fila: dict[str, Any],
               _primaria, escribir_mysql)
 
 
+def marcar_revisado(sku: str, revisado: bool = True) -> dict[str, Any] | None:
+    """
+    Pone o quita la marca de "ya revisé este costeo" (migración 0032).
+
+    NO pasa por el dual-write ni por ``_escribir``, a propósito: las columnas
+    ``revisado_at``/``revisado_por`` solo existen en kubera. La tabla
+    ``costos_validados`` de MySQL quedó congelada con el corte del 13-ago y no
+    las tiene, así que espejarlas sería escribir a un lugar que no las entiende.
+
+    Tampoco toca ningún número del costeo — por eso no llama a ``_atribuir``
+    ni dispara nada de ``cost_history``: no hay cambio de costo que historiar.
+    La firma sale del cable de la v0.233.0 (``app.usuario``, puesto por
+    ``supabase_db.get_cursor`` desde ``core/actor.py``), leído aquí mismo en el
+    UPDATE. Si no hay persona detrás (cron, script), queda NULO — que es la
+    verdad, no "backend".
+
+    Devuelve la fila con la marca, o ``None`` si el SKU no tiene costeo: marcar
+    como revisado algo que no existe no es un caso válido, y un silencio ahí
+    haría creer al panel que se guardó.
+    """
+    sql = (
+        """update costing.costos_validados
+              set revisado_at  = now(),
+                  revisado_por = nullif(current_setting('app.usuario', true), '')
+            where sku = %s
+        returning sku::text as sku, revisado_at, revisado_por"""
+        if revisado else
+        """update costing.costos_validados
+              set revisado_at = null, revisado_por = null
+            where sku = %s
+        returning sku::text as sku, revisado_at, revisado_por"""
+    )
+    with sdb.get_cursor() as cur:
+        cur.execute(sql, (sku,))
+        fila = cur.fetchone()
+    if fila is None:
+        log.info("marcar_revisado(%s): sin fila en costos_validados", sku)
+    return dict(fila) if fila else None
+
+
 def registrar_log(sku: str, accion: str, origen: str, detalle: dict[str, Any],
                   escribir_mysql: Callable[[], None]) -> None:
     """Bitácora bajo el corte: ops.process_log primaria, costos_logs espejo.

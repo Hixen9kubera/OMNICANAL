@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.255.0 — La marca de "ya revisé este costeo"
+
+Dos columnas en `costing.costos_validados` (migración **0032**, NO APLICADA):
+`revisado_at` (vacío = pendiente) y `revisado_por` (quién). Endpoints
+`POST`/`DELETE /api/crear/costos/{sku}/revisar`, y en el listado un filtro
+`revisado=no|si|movido` más las columnas para pintarlo.
+
+**Marcar no es guardar.** Va aparte de `/recalcular` a propósito: el caso
+mayoritario de una revisión es confirmar que el dato ya estaba bien, sin editar
+nada. No toca ningún costo, fórmula ni precio.
+
+**Qué NO se construyó, y por qué.** El primer diseño era una tabla
+`revision_costeo` con snapshot en `jsonb` para poder contestar "¿sigue válida la
+marca?" y "¿QUÉ cambió?". Dos rondas de revisión externa lo respaldaron — y se
+descartó al aclararse el alcance: el equipo **no va a cambiar los costos**, solo
+distinguir lo procesado de lo pendiente. Toda esa maquinaria resolvía la
+invalidación, y sin cambios que invalidar no tiene objeto. El estudio quedó en
+`agents/counselors/1787608711-ronda-2-*`, con lo único que vale rescatar de él:
+si algún día hace falta, la comparación va por CONTENCIÓN (`snapshot <@ actual`),
+no por igualdad, o agregar una columna al costeo invalida todas las marcas de
+golpe.
+
+**"¿Se movió después?" sale gratis:** `updated_at > revisado_at`, sin columna
+nueva. Medido en el sandbox: marcar deja ambas fechas iguales (`now()` es la
+hora de la transacción) y un cambio posterior sí la levanta. Efecto secundario
+documentado en la migración: marcar mueve `updated_at`, así que ese campo pasa a
+significar "se tocó la fila", no "cambió el costeo".
+
+**Sin tocar Python para la firma.** El cable de la v0.233.0 ya deja
+`app.usuario`; el `update` de la marca lo lee ahí mismo. Sin persona detrás
+queda NULO — no "backend".
+
+**Filtro sin fallback silencioso:** pedir `revisado=` cuando la lectura cae a
+MySQL devuelve 503 con el motivo. Esas columnas solo existen en kubera; filtrar
+en MySQL habría devuelto la lista completa como si nada faltara.
+
 ### v0.254.0 — Métricas: KPI de activas con visitas bajas, snapshot de hoy
 
 Cuarto KPI del tab Métricas: **"Activas con visitas bajas (0-100)"** — número

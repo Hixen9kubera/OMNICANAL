@@ -79,7 +79,8 @@ def pct_comision_categoria(cat_id: str) -> float | None:
 
 def listado(page: int, per_page: int, search: str | None, contenedor: str | None,
             orden: str, skus_lista: list[str],
-            sin_costo: bool = False) -> tuple[list[dict], int]:
+            sin_costo: bool = False,
+            revisado: str | None = None) -> tuple[list[dict], int]:
     """
     (rows, total) con las MISMAS columnas/alias que el SELECT MySQL del router.
 
@@ -113,6 +114,14 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
         params.append(contenedor)
     if sin_costo:
         where.append("v.sku is null")
+    # Marca de revisión (0032). `movido` son los que se tocaron DESPUÉS de
+    # revisarse: no es un error, es un aviso de que hay que volver a mirarlos.
+    if revisado == "si":
+        where.append("v.revisado_at is not null")
+    elif revisado == "no":
+        where.append("v.sku is not null and v.revisado_at is null")
+    elif revisado == "movido":
+        where.append("v.revisado_at is not null and v.updated_at > v.revisado_at")
     where_sql = ("where " + " and ".join(where)) if where else ""
     orden_sql = ORDEN.get(orden, ORDEN["reciente"])
 
@@ -126,7 +135,10 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
                    v.largo, v.alto, v.ancho, v.peso,
                    v.costo_producto, v.costo_cbm, v.costo_total,
                    f.costo_unitario, f.precio_base, f.precio_sugerido,
-                   f.costo_comision, f.costo_fee_envio, f.ml_cat_id
+                   f.costo_comision, f.costo_fee_envio, f.ml_cat_id,
+                   v.revisado_at, v.revisado_por,
+                   (v.revisado_at is not null and v.updated_at > v.revisado_at)
+                     as revision_movida
             from core.products p
             left join costing.costos_validados v on v.sku = p.sku
             left join costing.costos_finales f on f.sku = p.sku and f.canal = %s

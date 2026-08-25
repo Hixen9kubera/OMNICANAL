@@ -389,7 +389,9 @@
      "currency:text:notnull",
      "fx_rate_used:numeric:null",
      "created_at:timestamp with time zone:notnull",
-     "updated_at:timestamp with time zone:notnull"
+     "updated_at:timestamp with time zone:notnull",
+     "revisado_at:timestamp with time zone:null",
+     "revisado_por:text:null"
     ],
     "constraints": {
      "FOREIGN KEY": 1,
