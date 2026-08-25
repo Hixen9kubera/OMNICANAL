@@ -1146,3 +1146,111 @@ export interface ResolverGuardado {
   saltados: { sku?: string; fila?: number; motivo: string }[];
   errores: { sku: string; error: string }[];
 }
+
+// ── Publicaciones por tienda (pestaña Omnicanal) ─────────────────────────────
+//
+// Contrato CERRADO del backend (`GET /api/publicaciones`, v0.251.0). Los tres
+// vocabularios de abajo son cerrados: si el canal manda un valor nuevo, el
+// backend lo mete en `desconocido`/`desconocida` con el crudo al lado; NUNCA
+// lo aplasta a "activa" ni a "sin oferta". El front tampoco debe hacerlo.
+
+/** Estado NORMALIZADO. Cada canal usa su propio crudo; esto es lo que se pinta. */
+export type EstadoNormalizado =
+  | "activa"              // se puede comprar AHORA
+  | "puede_estar_activa"  // el canal no distingue activo de inactivo (Temu)
+  | "no_comprable"        // existe y se ve, pero no se vende (Amazon DISCOVERABLE)
+  | "pausada"
+  | "en_revision"
+  | "borrador"
+  | "rechazada"
+  | "cerrada"
+  | "sin_estado"          // el canal no reporta — NO es "no hay"
+  | "desconocido";        // valor nuevo que nadie mapeó
+
+/**
+ * TRES estados, no dos. `desconocida` = nadie le ha preguntado al canal por el
+ * precio de campaña; decir "sin oferta" ahí sería inventar una observación.
+ */
+export type OfertaEstado = "con_oferta" | "sin_oferta" | "desconocida";
+
+/** Por qué NO se puede saber el margen. Llega junto a `margen_pct: null`. */
+export type MargenMotivo =
+  | "sin_costo_del_canal"
+  | "sin_comision"
+  | "sin_peso"
+  | "sin_precio";
+
+export interface Publicacion {
+  sku: string;
+  titulo: string | null;
+  canal: string;
+  /** `legacy_code` de la cuenta: BEKURA, SANCORFASHION, AMAZON, KUBERA… */
+  tienda: string | null;
+  listing_id: string | null;
+  url: string | null;
+  estado: EstadoNormalizado;
+  /** El valor tal cual lo manda el canal. Se muestra cuando `estado` es `desconocido`. */
+  estado_crudo: string | null;
+  precio_lista: number | null;
+  /** Contra ESTO se calcula el margen: la oferta si la hay, si no el de lista. */
+  precio_vigente: number | null;
+  moneda: string;
+  oferta_estado: OfertaEstado;
+  oferta_precio: number | null;
+  oferta_desc_pct: number | null;
+  oferta_vista_at: string | null;
+  /** Antigüedad de la observación, en días. OBLIGATORIO junto a la oferta. */
+  oferta_dias: number | null;
+  /** `null` = NO SE PUEDE SABER (ver `margen_motivo`). Jamás tratarlo como 0. */
+  margen_pct: number | null;
+  roi: number | null;
+  ganancia_neta: number | null;
+  margen_motivo: MargenMotivo | null;
+  costo_unitario: number | null;
+  costo_comision: number | null;
+  costo_fee_envio: number | null;
+  iva_mnt: number | null;
+  pct_comision: number | null;
+  comision_estimada: number | null;
+  stock_own: number | null;
+  stock_full: number | null;
+  stock_fba: number | null;
+  es_full: boolean | null;
+  visto_at: string | null;
+}
+
+/** El censo de UN canal. Aparece SIEMPRE, aunque venga en ceros. */
+export interface CoberturaCanal {
+  canal: string;
+  publicaciones: number;
+  activas: number;
+  con_margen: number;
+  sin_margen: number;
+  /** `null` = no aplica (0 publicaciones). NO es 0%. */
+  pct_con_margen: number | null;
+  motivos: Record<string, number>;
+  con_oferta: number;
+  sin_oferta: number;
+  oferta_desconocida: number;
+  oferta_mas_vieja_dias: number | null;
+  /** Por qué este canal cuenta lo que cuenta. Se pinta junto al número. */
+  nota: string | null;
+}
+
+export interface CoberturaPublicaciones {
+  publicaciones: number;
+  con_margen: number;
+  sin_margen: number;
+  pct_con_margen: number | null;
+  canales: CoberturaCanal[];
+  /** Texto listo del backend: este margen es PROSPECTIVO, no realizado. */
+  aviso: string;
+}
+
+export interface PublicacionesResp {
+  total: number;
+  page: number;
+  per_page: number;
+  items: Publicacion[];
+  cobertura: CoberturaPublicaciones;
+}

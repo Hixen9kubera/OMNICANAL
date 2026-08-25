@@ -4,6 +4,7 @@ import { haySesion, refrescar, token } from "./sesion";
 
 import type {
   CanalInfo,
+  CoberturaPublicaciones,
   CompetenciaCorrida,
   CompetenciaEstado,
   CompetenciaSku,
@@ -31,6 +32,7 @@ import type {
   GenerarIAResp,
   ProgresoImagenes,
   MejorarResp,
+  PublicacionesResp,
   PublicarPreview,
   PublicarReq,
   PublicarResultado,
@@ -1182,3 +1184,65 @@ export function guardarResolver(
     editados,
   });
 }
+
+// ── Publicaciones por tienda (pestaña Omnicanal) ─────────────────────────────
+//
+// Lectura pura. Los tres endpoints son GET y no tocan ningún flujo vivo. Toda
+// la interpretación —qué es "activa" en cada canal, cuándo hay oferta, cuándo
+// se puede calcular el margen— la hace el backend: aquí NO se recalcula nada.
+
+export interface PublicacionesParams {
+  canal?: string | null;
+  /** `legacy_code` de la cuenta: BEKURA, SANCORFASHION, AMAZON, KUBERA… */
+  tienda?: string | null;
+  estado?: string | null;
+  soloActivas?: boolean;
+  soloConOferta?: boolean;
+  q?: string | null;
+  orden?: string;
+  page?: number;
+  perPage?: number;
+}
+
+function queryPublicaciones(p: PublicacionesParams): string {
+  const qs = new URLSearchParams();
+  if (p.canal) qs.set("canal", p.canal);
+  if (p.tienda) qs.set("tienda", p.tienda);
+  // `solo_activas` y `estado` son excluyentes en el backend (el atajo gana):
+  // no se manda el segundo cuando está puesto el primero, para no sugerir un
+  // filtro que no se está aplicando.
+  if (p.soloActivas) qs.set("solo_activas", "true");
+  else if (p.estado) qs.set("estado", p.estado);
+  if (p.soloConOferta) qs.set("solo_con_oferta", "true");
+  if (p.q) qs.set("q", p.q);
+  if (p.orden) qs.set("orden", p.orden);
+  qs.set("page", String(p.page ?? 1));
+  qs.set("per_page", String(p.perPage ?? 50));
+  return qs.toString();
+}
+
+/** Una página de publicaciones + el censo de cobertura de ESE mismo filtro. */
+export function listarPublicaciones(
+  params: PublicacionesParams,
+  signal?: AbortSignal,
+): Promise<PublicacionesResp> {
+  return getJSON(`/api/publicaciones?${queryPublicaciones(params)}`, signal);
+}
+
+/** Solo el censo, sin traer las filas. Para el encabezado. */
+export function coberturaPublicaciones(
+  canal?: string | null,
+  tienda?: string | null,
+  signal?: AbortSignal,
+): Promise<CoberturaPublicaciones> {
+  const qs = new URLSearchParams();
+  if (canal) qs.set("canal", canal);
+  if (tienda) qs.set("tienda", tienda);
+  return getJSON(`/api/publicaciones/cobertura?${qs.toString()}`, signal);
+}
+
+// `GET /api/publicaciones/estados` existe en el backend (qué estados hay en
+// cada canal, con el crudo al lado) y NO se envuelve aquí: hoy nadie lo pinta.
+// Lo que explicaba —por qué un canal cuenta 0 activas— viaja en la `nota` de
+// `cobertura`, que sí se muestra. Envolverlo "por si acaso" sería código muerto
+// en la frontera con backend, que es justo donde más caro sale.

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   X,
+  AlertTriangle,
   ExternalLink,
   RefreshCw,
   Truck,
@@ -11,16 +12,40 @@ import {
   ChevronRight,
   ImageIcon,
 } from "lucide-react";
-import type { CanalInfo, Producto } from "@/lib/types";
-import { refrescarCanal } from "@/lib/api";
+import type {
+  CanalInfo,
+  DetalleCanal,
+  Producto,
+  Publicacion,
+} from "@/lib/types";
+import { listarPublicaciones, refrescarCanal } from "@/lib/api";
 import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
 import { ChipMoneda, type Moneda } from "./Moneda";
+import PublicacionesDelCanal from "./PublicacionesDelCanal";
 
 interface Props {
   sku: string | null;
   producto?: Producto | null;
   canales: CanalInfo[];
   onClose: () => void;
+}
+
+/**
+ * Los estados cuyo significado NO se entiende sin la nota del canal: "puede
+ * estar activa" (Temu no distingue), "no comprable" (Amazon DISCOVERABLE) y los
+ * dos que admiten no saber. Con el resto la nota sobra y solo hace ruido.
+ */
+const ESTADOS_QUE_PIDEN_NOTA = new Set([
+  "puede_estar_activa",
+  "no_comprable",
+  "sin_estado",
+  "desconocido",
+]);
+
+/** La cuenta a la que pertenece la tarjeta, cuando el detalle la distingue. */
+function cuentaDe(c: DetalleCanal): string | null {
+  const v = (c.extra as Record<string, unknown> | undefined)?.cuenta;
+  return typeof v === "string" && v ? v : null;
 }
 
 function precioMXN(v: number | null): string {
@@ -36,7 +61,77 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
   const { data, cargando, recargar } = useDetalleProducto(sku, producto);
   const [refrescando, setRefrescando] = useState<string | null>(null);
 
+  // Las publicaciones de ESTE SKU, una por listing y no una por canal: el
+  // precio vigente, la oferta y el margen se miden por publicación en
+  // `services/publicaciones_panel.py`. Lectura pura (GET), sin recálculo aquí.
+  const [pubs, setPubs] = useState<Publicacion[]>([]);
+  const [avisoMargen, setAvisoMargen] = useState<string>("");
+  const [notas, setNotas] = useState<Record<string, string | null>>({});
+  const [pubsFallaron, setPubsFallaron] = useState(false);
+
+  useEffect(() => {
+    if (!sku) return;
+    const ctrl = new AbortController();
+    setPubs([]);
+    setPubsFallaron(false);
+    // `q` busca por SUBCADENA en sku/título/listing_id: un SKU que es prefijo
+    // de otro traería publicaciones ajenas (693 SKUs del catálogo lo son). Se
+    // filtra por igualdad exacta aquí; el backend no tiene un filtro por SKU.
+    listarPublicaciones({ q: sku, perPage: 500 }, ctrl.signal)
+      .then((r) => {
+        const mio = sku.trim().toUpperCase();
+        setPubs(r.items.filter((p) => (p.sku ?? "").trim().toUpperCase() === mio));
+        setAvisoMargen(r.cobertura?.aviso ?? "");
+        setNotas(
+          Object.fromEntries(
+            (r.cobertura?.canales ?? []).map((c) => [c.canal, c.nota]),
+          ),
+        );
+      })
+      .catch((exc) => {
+        if (exc?.name === "AbortError") return;
+        // Si esto falla, la tarjeta vuelve a mostrar el precio del detalle. Lo
+        // que NO se hace es dejar el hueco callado: sin precio ni aviso, el
+        // cajón se leería como "esta publicación no tiene precio".
+        setPubsFallaron(true);
+      });
+    return () => ctrl.abort();
+  }, [sku]);
+
   const cfg = (id: string) => canales.find((c) => c.id === id);
+
+  // Reparto de publicaciones por tarjeta. El detalle trae UNA tarjeta por
+  // cuenta en Mercado Libre (`extra.cuenta`), así que ahí el reparto va por
+  // canal Y cuenta; en el resto, por canal.
+  const pubsDe = (c: DetalleCanal): Publicacion[] => {
+    const cta = cuentaDe(c);
+    return pubs.filter(
+      (p) => p.canal === c.canal && (!cta || p.tienda === cta),
+    );
+  };
+
+  // Publicaciones que ninguna tarjeta reclamó. Existen: el detalle de ML
+  // muestra UNA por cuenta (`cuentas_vistas` en el backend), así que un SKU con
+  // dos listados en la MISMA cuenta tenía uno invisible. Se pintan aparte en
+  // vez de desaparecer.
+  //
+  // Mientras el detalle sigue en camino NO se marca ninguna: al abrir el cajón
+  // `data` es el parcial de la lista y trae 0 canales, así que TODAS parecerían
+  // huérfanas por un instante. Etiquetar de "otra publicación" a una normal es
+  // afirmar algo falso, aunque dure un segundo.
+  const reclamadas = new Set<Publicacion>();
+  for (const c of data?.canales ?? []) for (const p of pubsDe(c)) reclamadas.add(p);
+  const huerfanas = cargando ? [] : pubs.filter((p) => !reclamadas.has(p));
+  const gruposHuerfanos = huerfanas.reduce<Record<string, Publicacion[]>>((acc, p) => {
+    (acc[p.canal] ||= []).push(p);
+    return acc;
+  }, {});
+
+  /** La nota del canal, solo cuando explica un estado que sin ella no se entiende. */
+  const notaSi = (canal: string, lista: Publicacion[]): string | null =>
+    lista.some((p) => ESTADOS_QUE_PIDEN_NOTA.has(p.estado))
+      ? notas[canal] ?? null
+      : null;
 
   // Suma de piezas en bodegas de marketplace del SKU (FULL de cada cuenta ML +
   // FBA de Amazon). Se muestra junto al stock real en la tarjeta General.
@@ -125,16 +220,32 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
               <RefreshCw size={12} className="animate-spin" /> Actualizando…
             </div>
           )}
+          {/* Decirlo es obligatorio: sin este aviso, un canal sin su bloque de
+              precio y margen se lee como "esta publicación no tiene precio". */}
+          {pubsFallaron && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                No se pudieron leer las publicaciones por tienda: abajo va el
+                precio del detalle, <strong>sin oferta ni margen</strong>. No
+                significa que no haya descuento.
+              </span>
+            </div>
+          )}
 
-          {data?.canales.map((c) => {
+          {data?.canales.map((c, idx) => {
             const info = cfg(c.canal);
             const color = info?.color ?? "#64748b";
             const texto = info?.color_texto ?? "#fff";
             const refrescable = c.canal === "mercado_libre" || c.canal === "amazon";
+            const misPubs = pubsDe(c);
 
             return (
               <section
-                key={c.canal}
+                // La llave lleva la cuenta: Mercado Libre trae UNA tarjeta por
+                // cuenta y con `c.canal` a secas React veía dos hijos con la
+                // misma llave.
+                key={`${c.canal}-${cuentaDe(c) ?? c.item_id ?? idx}`}
                 className="overflow-hidden rounded-xl border border-slate-200 bg-white"
               >
                 {/* Encabezado del canal */}
@@ -191,15 +302,24 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                   const esGeneral = c.canal === "general";
                   const conFullFba = esGeneral && fullFbaTotal > 0;
                   const stockReal = c.stock_real ?? c.stock;
+                  // El precio sale del bloque de publicaciones cuando lo hay:
+                  // ahí es UNO POR PUBLICACIÓN, con su oferta. Un "Precio" de
+                  // canal al lado tendría que elegir uno de los dos de un SKU
+                  // con dos listados y contradecir al bloque de abajo.
+                  const conPrecio = misPubs.length === 0;
+                  const columnas =
+                    (conPrecio ? 1 : 0) + 1 + (esML || esAmazon || conFullFba ? 1 : 0);
                   return (
                     <>
                       <div
                         className={[
                           "grid divide-x divide-slate-100 border-b border-slate-100",
-                          esML || esAmazon || conFullFba ? "grid-cols-3" : "grid-cols-2",
+                          columnas >= 3 ? "grid-cols-3" : columnas === 2 ? "grid-cols-2" : "grid-cols-1",
                         ].join(" ")}
                       >
-                        <Metric icon={<Tag size={14} />} label="Precio" moneda="MXN" valor={precioMXN(c.precio)} />
+                        {conPrecio && (
+                          <Metric icon={<Tag size={14} />} label="Precio" moneda="MXN" valor={precioMXN(c.precio)} />
+                        )}
                         <Metric
                           icon={<Boxes size={14} />}
                           label="Stock real"
@@ -257,6 +377,15 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                   );
                 })()}
 
+                {/* Lo que cobra HOY cada publicación de este canal, y lo que
+                    deja si se vende una ahora. Por publicación, no por canal. */}
+                <PublicacionesDelCanal
+                  pubs={misPubs}
+                  aviso={avisoMargen}
+                  nota={notaSi(c.canal, misPubs)}
+                  color={color}
+                />
+
                 {/* Categoría multinivel */}
                 <div className="px-4 py-3">
                   <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -297,6 +426,47 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                     )}
                   </div>
                 )}
+              </section>
+            );
+          })}
+
+          {/* Publicaciones que el detalle 360° no trae. El detalle muestra una
+              tarjeta por CUENTA de Mercado Libre, así que un segundo listado en
+              la misma cuenta no tenía dónde verse — y puede ser justo el que
+              está vendiendo. Se pinta aparte antes que esconderlo. */}
+          {Object.entries(gruposHuerfanos).map(([canal, lista]) => {
+            const info = cfg(canal);
+            const color = info?.color ?? "#64748b";
+            const texto = info?.color_texto ?? "#fff";
+            return (
+              <section
+                key={`huerfanas-${canal}`}
+                className="overflow-hidden rounded-xl border border-slate-200 bg-white"
+              >
+                <header
+                  className="flex items-center justify-between px-4 py-2.5"
+                  style={{ backgroundColor: color, color: texto }}
+                >
+                  <div className="flex items-center gap-2 font-bold">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: texto }}
+                    />
+                    {info?.label ?? canal}
+                  </div>
+                  <span
+                    className="rounded-full bg-black/20 px-2 py-0.5 text-[11px] font-bold"
+                    title="Esta publicación existe en el canal, pero el detalle 360° no la lista (muestra una por cuenta)."
+                  >
+                    otra publicación
+                  </span>
+                </header>
+                <PublicacionesDelCanal
+                  pubs={lista}
+                  aviso={avisoMargen}
+                  nota={notaSi(canal, lista)}
+                  color={color}
+                />
               </section>
             );
           })}

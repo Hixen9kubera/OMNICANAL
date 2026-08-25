@@ -12,6 +12,7 @@ import ProductGrid from "@/components/ProductGrid";
 import ProductList from "@/components/ProductList";
 import ProductControls, { type Vista } from "@/components/ProductControls";
 import ProductDetailDrawer from "@/components/ProductDetailDrawer";
+import ResumenPublicacionesCanal from "@/components/ResumenPublicacionesCanal";
 
 import { listarCanales, listarProductos, listarCategorias, type CategoriaWC } from "@/lib/api";
 import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
@@ -290,6 +291,18 @@ export default function OmnicanalPage() {
                     : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
                 ].join(" ")}
                 style={soloPublicados ? { backgroundColor: tema.color, color: tema.texto } : undefined}
+                // "Publicado" NO es "activo", y este filtro cuenta lo primero:
+                // en Mercado Libre deja pasar las PAUSADAS y en Amazon las
+                // DISCOVERABLE, que se ven y no se venden. El criterio de cada
+                // canal está en el renglón de abajo (censo de publicaciones) y
+                // todavía no se puede filtrar por él (falta en /api/productos).
+                title={
+                  "Deja las que existen en el canal: `listing_id` presente y no cerrada.\n"
+                  + "INCLUYE pausadas y, en Amazon, las que se ven pero no se pueden "
+                  + "comprar (DISCOVERABLE).\n"
+                  + "Cuántas están ACTIVAS de verdad, con el criterio del canal, sale "
+                  + "en el renglón de abajo."
+                }
               >
                 <Filter size={15} />
                 Solo publicados
@@ -354,6 +367,16 @@ export default function OmnicanalPage() {
             textoColor={tema.texto}
           />
         </div>
+
+        {/* Censo del canal: cuántas publicaciones hay y cuántas están ACTIVAS
+            con el criterio de ESTE canal. Va aquí, arriba de la lista, y no en
+            otra pestaña: es el encabezado de lo que se está mirando. En General
+            no aplica —Woo es la fuente del catálogo, no un canal de venta. */}
+        {!esGeneral && (
+          <div className="mt-4">
+            <ResumenPublicacionesCanal canal={canal} cuenta={cuenta} color={tema.color} />
+          </div>
+        )}
 
         {/* Paginación superior */}
         <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">

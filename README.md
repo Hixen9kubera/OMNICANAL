@@ -1001,6 +1001,82 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.258.0 — El precio y el margen de CADA publicación, dentro del producto
+
+La v0.257.0 dejó el dato listo en tres endpoints y nadie lo pintaba. El primer
+intento fue una **pestaña aparte** con su tabla; se descartó antes de publicarse
+(Eduardo, 24-ago): partía la información en dos lugares y obligaba a cruzar de
+memoria el producto que se está mirando con un renglón de otra pantalla. Esta
+versión pone lo mismo **dentro del cajón del producto**, que es donde se decide
+si se sube un precio o se baja una publicación.
+
+**Qué aparece ahora en cada tarjeta de canal del cajón (`ProductDetailDrawer`):**
+
+- **Una entrada por PUBLICACIÓN, no una por canal.** Un mismo SKU vive varias
+  veces en el mismo canal y a precios distintos. El cajón ya traía una tarjeta
+  por cuenta de Mercado Libre; ahora cada una muestra sus publicaciones con su
+  `listing_id`, su tienda y su estado normalizado.
+- **El precio que la publicación cobra HOY.** Con oferta viva: precio de lista
+  tachado, precio vigente, el `−%` y **la antigüedad de la observación** (ámbar
+  arriba de 2 días). Sin oferta observada dice "sin observar", que NO es lo
+  mismo que "sin oferta".
+- **El margen contra ESE precio** —el de oferta si la hay— con la ganancia neta
+  al lado y el desglose (ROI, costo, comisión, envío, IVA) en el tooltip.
+
+**El caso que lo explica, medido en el sandbox (MUE-0018-CAF):**
+
+| Publicación | Estado | Precio de lista | Cobra hoy | Margen | Ganancia |
+|---|---|---|---|---|---|
+| ML · Kubera `MLM4598217552` | pausada | $1,919.00 | $1,919.00 | +35.7 % | $685.81 |
+| ML · San Corpe `MLM2657205355` | activa | $2,236.07 | **$1,341.64** (−40 %) | +19.6 % | $262.75 |
+
+Mismo SKU, mismo costo ($438.85), **dos márgenes distintos** — y el de la que
+está vendiendo es casi la mitad del de la que está apagada. La rejilla de
+Omnicanal mostraba **$1,215.77** para las dos: es
+`costing.costos_finales.precio_sugerido`, el precio que *debería* tener, no el
+que cobra (`_REJILLA_ML`/`meli.listar`). Y la tarjeta del cajón mostraba
+$2,236.07 sin decir que el comprador paga $1,341.64, porque
+`canal_inventario`/`channel.listings` da `l.price` y la oferta vive en
+`price_sale`.
+
+**Lo que la pantalla NO hace, que es el punto:**
+
+- **No recalcula.** Estado, oferta y margen llegan resueltos de
+  `GET /api/publicaciones`; `lib/publicaciones.ts` elige palabras y colores.
+- **No convierte `margen_pct: null` en 0 %.** Sale "sin dato" con su motivo
+  (`sin costo del canal` en Amazon, TikTok, Temu y Walmart, que no tienen costo
+  propio a propósito).
+- **No dice "sin oferta" cuando nadie observó.** Son TRES estados.
+- **No esconde una publicación.** El detalle 360° lista UNA por cuenta de ML:
+  un segundo listado en la misma cuenta no tenía dónde verse. Ahora, lo que
+  ninguna tarjeta reclama se pinta aparte, marcado "otra publicación".
+- **No pinta dos precios que se contradigan.** Donde hay bloque de
+  publicaciones, la métrica "Precio" de la tarjeta desaparece: era una sola
+  cifra para un canal que puede tener varias.
+- **Aplica la regla de la casa del costo dudoso** (`lib/margen.ts`, 1.5×): el
+  margen va en ámbar con ⚠ y "costo dudoso" en vez del rojo que se lee como un
+  hecho. Medido: TEC-0757-NEG sale −449.9 % con un costo 5.1× el precio.
+
+**Arriba de la lista, un renglón de censo por canal** (`/api/publicaciones/
+cobertura`): cuántas publicaciones hay, **cuántas están activas con el criterio
+de ESE canal** y sobre cuántas se puede calcular margen. Existe porque
+"publicado" y "activo" no son lo mismo: el filtro "Solo publicados" de la lista
+cuenta también las **pausadas** de ML y las **DISCOVERABLE** de Amazon (se ven,
+no se venden). Medido en el sandbox para Kubera/BEKURA: 2,269 publicadas, 506
+activas, 1,387 con margen calculable (61.1 %).
+
+**El filtro por "activas del canal" NO entró, y es a propósito.**
+`GET /api/productos` no sabe filtrar con ese criterio —lo aplica
+`services/publicaciones_panel.py`, que la rejilla no usa— y hacerlo desde el
+front obligaría a filtrar la página en vez del universo, que es exactamente la
+clase de número que este trabajo existe para no producir. Queda como handoff
+abierto a `omni-backend`; mientras tanto el renglón de censo dice cuántas son.
+
+**Ojo con el sandbox**: su foto de TikTok es más vieja que la de producción (900
+filas contra 1,223, con `status = ACTIVATE`), así que ahí una publicación sale
+"Activa" donde producción da 0 activas. La pantalla pinta lo que el backend
+normaliza; el desfase es el handoff abierto a `omni-datos`.
+
 ### v0.257.0 — Publicaciones por tienda, y el margen contra el precio que de verdad se está cobrando
 
 La pestaña Omnicanal podía decir en qué canales vive un producto, pero no
