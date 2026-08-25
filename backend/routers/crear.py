@@ -933,6 +933,13 @@ def costos_listado(
             "precio_base": _f(r["precio_base"]),
             "precio_sugerido": _f(r["precio_sugerido"]),
             "ml_cat_id": r.get("ml_cat_id"),
+            # Marca de revisión (0032). El fallback MySQL no las trae: ahí van
+            # nulas, y el filtro `revisado=` ya devuelve 503 antes de llegar
+            # aquí, así que el panel nunca ve un "sin revisar" que sea mentira.
+            "revisado_at": (r["revisado_at"].isoformat()
+                            if r.get("revisado_at") else None),
+            "revisado_por": r.get("revisado_por"),
+            "revision_movida": bool(r.get("revision_movida")),
         })
     total_pages = max(1, (total + per_page - 1) // per_page)
     return {

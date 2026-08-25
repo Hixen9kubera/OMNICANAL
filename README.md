@@ -1001,6 +1001,13 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.255.1 — La marca sí llega al panel
+
+`costos_listado` reconstruye cada fila con campos explícitos, así que
+`revisado_at`/`revisado_por` se caían antes de la respuesta: el filtro
+funcionaba (probado en producción) pero la pantalla no tenía con qué pintar la
+marca. Se agregan al item, tolerando que el fallback MySQL no las traiga.
+
 ### v0.255.0 — La marca de "ya revisé este costeo"
 
 Dos columnas en `costing.costos_validados` (migración **0032**, aplicada a
