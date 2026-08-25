@@ -818,7 +818,10 @@ async def costos_recalcular(sku: str, req: RecalcularCostos):
             log.warning("Sync Woo del costo de %s falló (el costo SÍ se guardó): %s",
                         sku, exc)
     return {"ok": True, "sku": sku, "finales": fila,
-            "sincronizado_woo": synced, "sync_error": sync_error}
+            "sincronizado_woo": synced, "sync_error": sync_error,
+            "costo_bloqueado": bool(fila.get("costo_bloqueado")),
+            "aviso": ("El COSTO de este SKU esta validado y no se movio; solo se "
+                      "recalculo el precio.") if fila.get("costo_bloqueado") else None}
 
 
 # ── Costos: listado (tabla del menú Costos) + regeneración en bulk ──────────────

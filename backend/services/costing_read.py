@@ -61,6 +61,20 @@ def validados(sku: str) -> dict[str, Any] | None:
         "select * from costing.costos_validados where sku = %s", (sku,))
 
 
+def bloqueado(sku: str) -> dict[str, Any] | None:
+    """
+    ``{revisado_at, revisado_por}`` si el costo del SKU esta VALIDADO, o None.
+
+    Un costo validado se reconstruyo a mano desde el packing list y no debe
+    moverse: el candado real vive en el UPSERT
+    (``costing_mirror.upsert_validados``); esto es para poder AVISARLO en la
+    pantalla en vez de que el usuario crea que guardo y no paso nada.
+    """
+    return sdb.fetch_one(
+        "select revisado_at, revisado_por from costing.costos_validados "
+        " where sku = %s and revisado_at is not null", (sku,))
+
+
 def detalle(sku: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """(finales, validados) del SKU — superset de columnas del par MySQL."""
     return finales(sku), validados(sku)

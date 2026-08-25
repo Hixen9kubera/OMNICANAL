@@ -460,6 +460,11 @@ def _guardar_finales(sku: str, base: dict[str, Any], pricing: dict[str, Any],
 
 
 def _guardar_validados(sku: str, base: dict[str, Any]) -> None:
+    # El UPSERT de kubera ya rechaza la fila bloqueada; esto evita el viaje y
+    # deja rastro de que se intento.
+    if base.get("_bloqueado"):
+        log.info("costo de %s NO se reescribe: tiene candado de validado", sku)
+        return
     """
     UPSERT del costo base editado en costos_validados (dims/peso/costo_producto/
     costo_cbm/costo_total). Sólo toca esas columnas: contenedor/cajas/etc. de una
@@ -496,6 +501,35 @@ def _guardar_validados(sku: str, base: dict[str, Any]) -> None:
     _mysql()
     # Dual-write F3: espejo a costing.costos_validados.
     costing_mirror.en_hilo(costing_mirror.espejar_validados, sku, fila_kb)
+
+
+def costo_bloqueado(sku: str) -> dict[str, Any] | None:
+    """``{revisado_at, revisado_por}`` si el costo del SKU esta VALIDADO."""
+    try:
+        return costing_read.bloqueado(sku)
+    except Exception as exc:  # noqa: BLE001
+        # Falla ABIERTO a proposito: si no se puede consultar el candado, el
+        # UPSERT sigue protegiendo la fila. Lo unico que se pierde es el aviso.
+        log.warning("no se pudo consultar el candado de %s: %s", sku, exc)
+        return None
+
+
+def marcar_validado(sku: str, quien: str) -> None:
+    """Pone el candado: el costo de este SKU deja de recalcularse."""
+    with sdb.get_cursor() as cur:
+        cur.execute(
+            "update costing.costos_validados "
+            "   set revisado_at = now(), revisado_por = %s "
+            " where sku = %s", (quien, sku))
+
+
+def liberar_validado(sku: str) -> None:
+    """Quita el candado. Sin estado oculto: es poner la marca en null."""
+    with sdb.get_cursor() as cur:
+        cur.execute(
+            "update costing.costos_validados "
+            "   set revisado_at = null, revisado_por = null "
+            " where sku = %s", (sku,))
 
 
 def _preparar_base(sku: str, overrides: dict[str, Any] | None,
@@ -537,6 +571,16 @@ def _preparar_base(sku: str, overrides: dict[str, Any] | None,
                 base[k] = float(cf[k])
             except (TypeError, ValueError):
                 pass
+    # CANDADO: con el costo validado, lo guardado manda sobre los overrides y
+    # sobre el auto_cbm. El precio SI se sigue recalculando -- lo que se congela
+    # es el COSTO, no el margen ni la comision.
+    if costo_bloqueado(sku):
+        base["_bloqueado"] = True
+        cat = (overrides or {}).get("ml_cat_id") or _resolver_cat_ml(sku)
+        base["costo_unitario"] = round(
+            float(base.get("costo_producto") or 0) + float(base.get("costo_cbm") or 0), 2)
+        return base, cat
+
     cbm_manual = False
     if overrides:
         for k, v in overrides.items():
@@ -701,6 +745,7 @@ def computar(sku: str, overrides: dict[str, Any] | None = None,
         "margen": margen,
         "incluir_envio": incluir_envio,
         "tarifa_cbm_m3": TARIFA_CBM_M3,
+        "costo_bloqueado": bool(base.get("_bloqueado")),
         **pricing,
     }
 
@@ -789,6 +834,8 @@ def recalcular(sku: str, overrides: dict[str, Any] | None = None,
 
     _guardar_validados(sku, base)
     fila = _guardar_finales(sku, base, pricing, cat)
+    if calc.get("_bloqueado"):
+        fila = {**fila, "costo_bloqueado": True}
     _log_costo(sku, "manual", "recalculo",
                {"overrides": overrides or {}, "incluir_envio": incluir_envio,
                 "margen": margen, "auto_cbm": auto_cbm, "base": base, "pricing": pricing})

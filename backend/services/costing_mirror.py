@@ -97,7 +97,22 @@ def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
     """Upsert de costing.costos_validados a nivel cursor (lo comparten el espejo
     F3, el corte F6 de costing_write y el reproceso de espejo_kubera_log).
     Solo las columnas que costos.py toca; contenedor/cajas/etc. de la fila
-    existente se conservan, igual que en MySQL."""
+    existente se conservan, igual que en MySQL.
+
+    CANDADO DE COSTO VALIDADO (21-ago-2026, Brandon): si la fila tiene
+    ``revisado_at``, el UPDATE no la toca. Un costo reconstruido a mano desde el
+    packing list —con su renglon verificado por imagen— no puede quedar a merced
+    del siguiente "Regenerar", que lo recalcularia desde las dimensiones y lo
+    pisaria en silencio.
+
+    La guarda vive AQUI, en el SQL, y no en quien llama: por esta funcion pasan
+    el espejo, el corte F6 y el reproceso de errores, y basta que uno se olvide
+    para perder el dato. Misma leccion que el candado de provisionales en
+    ``packing_comparador.guardar``: la invariante no se delega.
+
+    Para liberar un SKU basta poner ``revisado_at = null``; no hay estado oculto.
+    El INSERT no se bloquea (una fila que no existe no tiene nada que proteger).
+    """
     cur.execute(
         """insert into costing.costos_validados
              (sku, largo, alto, ancho, peso, costo_producto, costo_cbm, costo_total)
@@ -107,7 +122,8 @@ def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
              largo = excluded.largo, alto = excluded.alto, ancho = excluded.ancho,
              peso = excluded.peso, costo_producto = excluded.costo_producto,
              costo_cbm = excluded.costo_cbm, costo_total = excluded.costo_total
-           where (costos_validados.largo, costos_validados.alto,
+           where costos_validados.revisado_at is null
+             and (costos_validados.largo, costos_validados.alto,
                   costos_validados.ancho, costos_validados.peso,
                   costos_validados.costo_producto, costos_validados.costo_cbm,
                   costos_validados.costo_total)
