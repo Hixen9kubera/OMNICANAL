@@ -144,8 +144,9 @@ def marcar_revisado(sku: str, revisado: bool = True) -> dict[str, Any] | None:
     ni dispara nada de ``cost_history``: no hay cambio de costo que historiar.
     La firma sale del cable de la v0.233.0 (``app.usuario``, puesto por
     ``supabase_db.get_cursor`` desde ``core/actor.py``), leído aquí mismo en el
-    UPDATE. Si no hay persona detrás (cron, script), queda NULO — que es la
-    verdad, no "backend".
+    UPDATE. Probado contra producción: persona con Bearer → su correo; máquina
+    con X-API-Key → ``servicio``; sin cable (SQL directo, cron) → NULO. Nunca
+    "backend", que era la etiqueta que borraba la diferencia.
 
     Devuelve la fila con la marca, o ``None`` si el SKU no tiene costeo: marcar
     como revisado algo que no existe no es un caso válido, y un silencio ahí

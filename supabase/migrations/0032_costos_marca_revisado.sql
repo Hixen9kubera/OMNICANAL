@@ -64,10 +64,17 @@
 -- pone SOLO quien revisa, en el `update` de abajo.
 --
 -- El valor sale del mismo cable de la v0.233.0 que ya alimenta a
--- `cost_history`: `supabase_db.get_cursor` deja `app.usuario` con la persona
--- que pidió la operación (`core/actor.py`), y `costing_mirror._atribuir` la
--- respeta por encima de la etiqueta del proceso. No hace falta tocar Python
+-- `cost_history`: `supabase_db.get_cursor` deja `app.usuario` con quien pidió
+-- la operación (`core/actor.py`), y `costing_mirror._atribuir` respeta a la
+-- persona por encima de la etiqueta del proceso. No hace falta tocar Python
 -- para que esto quede firmado.
+--
+-- QUÉ QUEDA FIRMADO, medido contra producción el 25-ago:
+--   · persona con Bearer de Supabase → su correo (`brandon@kubera.mx`)
+--   · máquina con X-API-Key          → `servicio`  ← NO es nulo
+--   · sin cable (SQL directo, cron)  → NULO
+-- O sea que un marcado hecho por integración queda distinguible de uno hecho
+-- por una persona, sin tener que adivinarlo.
 --
 -- QUÉ **NO** HACE
 -- ---------------
