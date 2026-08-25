@@ -145,13 +145,46 @@ Pintar oferta cada vez que el campo existe pintaría 2,419 ofertas falsas.
 
   price_sale IS NULL          → `desconocida`  — nadie ha preguntado
   price_sale >= price         → `sin_oferta`   — se miró y no había
-  price_sale <  price         → `con_oferta`   — hay descuento vivo
+  price_sale <  price         → `con_oferta`   — hubo descuento cuando se miró
 
 Y **la observación está vieja**: el máximo `price_sale_at` en producción es
 2026-08-21 04:46 UTC. Quien las escribe (`services/precios_venta.py`) está
 DORMIDO — no lo dispara nadie. Por eso `oferta_vista_at` y `oferta_dias` viajan
 SIEMPRE que hay oferta y el contrato con el frontend los marca obligatorios: una
 oferta sin fecha al lado se lee como "hoy", y puede llevar días muerta.
+
+═══════════════════════════════════════════════════════════════════════════════
+Y UNA CUARTA PREGUNTA: ¿esa oferta está CONFIRMADA?
+═══════════════════════════════════════════════════════════════════════════════
+
+Los tres estados de arriba no bastaban. Hasta v0.261.0 el precio vigente salía
+de `coalesce(price_sale, price)` sin preguntar CUÁNDO se observó el descuento,
+así que una promoción terminada se seguía aplicando al margen para siempre.
+Caso medido: `ACC-0302-GRI` / `MLM2870356893`, activa, `price` $260.99,
+`price_sale` $117.45 sellado el 20-ago y la fila refrescada el 24-ago. El panel
+decía "cobra $117.45, −55%, margen −76.3%". ML cobraba $260.99 y ganaba dinero.
+
+No era un caso: **665 publicaciones de ML, 665 sin confirmar, 0 confirmadas**
+(medido el 25-ago-2026 contra producción). Descuento fantasma promedio 38.21%.
+
+La regla nueva —y el detalle mecánico de por qué `updated_at` sirve de contra
+qué medirlo— está en `_oferta`. En una línea:
+
+    una oferta que no se confirmó NO se aplica: se muestra y se marca.
+
+Qué viaja al frontend, y por qué son campos separados:
+
+  oferta_confirmada     bool | None  — None solo cuando es `desconocida`
+  oferta_precio         se APLICA (precio_vigente, margen). None si no confirmada
+  oferta_desc_pct       idem — lo que apaga el "−55%" de la pantalla
+  oferta_precio_visto   lo OBSERVADO, confirmado o no. Nunca se borra
+  oferta_desc_pct_visto idem
+
+`oferta_estado` sigue teniendo TRES valores y ni uno más: es un vocabulario
+CERRADO que el frontend indexa (`OFERTA_UI[p.oferta_estado]`), y meterle un
+cuarto valor tumbaría la pestaña. Lo no confirmado sigue siendo `con_oferta`
+—porque el descuento existió y esconderlo sería la mentira simétrica— con
+`oferta_confirmada: false` al lado.
 
 Regla 11 de la casa: nada de HTTP aquí. Esto es lectura de kubera y aritmética.
 """
@@ -384,27 +417,83 @@ OFERTA_SIN = "sin_oferta"
 OFERTA_DESCONOCIDA = "desconocida"
 
 
-def _oferta(price: Any, price_sale: Any, price_sale_at: Any) -> dict[str, Any]:
+def _utc(ts: Any) -> datetime | None:
+    """timestamptz → aware en UTC. Cualquier otra cosa → None."""
+    if not isinstance(ts, datetime):
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _oferta(price: Any, price_sale: Any, price_sale_at: Any,
+            visto_at: Any) -> dict[str, Any]:
     """
-    Los tres estados de la oferta. `desconocida` NO es `sin_oferta`: significa
-    que nadie le ha preguntado a ML por el precio de campaña de esa publicación.
+    Los tres estados de la oferta, y si está CONFIRMADA.
+
+    `desconocida` NO es `sin_oferta`: significa que nadie le ha preguntado a ML
+    por el precio de campaña de esa publicación.
+
+    CONFIRMADA — la pregunta que faltaba. `price_sale_at` existía desde la
+    migración 0025 y NINGÚN lector lo consultaba, así que una promoción muerta
+    se aplicaba para siempre: el espejo conserva `price_sale` con
+    `coalesce(excluded.price_sale, listings.price_sale)`
+    (`channel_mirror.escribir_tanda`) y el refresco por webhook nunca manda
+    `precio_venta`. Medido en producción el 25-ago-2026: **665 publicaciones de
+    ML con descuento, 665 sin confirmar y CERO confirmadas**; el `price_sale_at`
+    más nuevo del catálogo entero era del 21-ago 04:46 — una sola corrida de
+    `precios_venta.py` que nunca se repitió. El descuento promedio que se estaba
+    aplicando era 38.21% ($357.30 por publicación) contra un precio que ML
+    cobraba completo.
+
+        confirmada  ⇔  price_sale_at >= listings.updated_at
+
+    Léase: la oferta se observó DESPUÉS del último cambio de esa fila. Si la
+    publicación cambió (precio, stock, situación) y nadie volvió a preguntar por
+    la promoción, lo guardado ya no está confirmado.
+
+    Ojo con lo que `updated_at` mide de verdad: el upsert compartido solo
+    dispara el UPDATE cuando un campo de negocio cambió (`is distinct from`), y
+    el trigger `trg_touch_listings` sella `updated_at` en ese UPDATE. Así que es
+    "último CAMBIO", no "última mirada" — el criterio es conservador en la
+    dirección correcta (`updated_at` posterior prueba que sí hubo una pasada que
+    no tocó la oferta), pero una publicación que nunca cambia no envejece su
+    oferta sola. Hoy ese hueco está VACÍO: 0 filas con
+    `price_sale_at >= updated_at` en todo el catálogo.
+
+    Lo no confirmado se MARCA, no se borra ni se pisa: `channel.listing_history`
+    no audita `price_sale`, así que un valor sobreescrito no se puede
+    reconstruir. Por eso `oferta_precio_visto` viaja siempre y
+    `oferta_precio` —el que SÍ se aplica al margen— solo cuando está confirmada.
     """
     p = _num(price)
     ps = _num(price_sale)
     if ps is None:
-        return {"oferta_estado": OFERTA_DESCONOCIDA, "oferta_precio": None,
-                "oferta_desc_pct": None, "oferta_vista_at": None,
-                "oferta_dias": None}
-    dias = None
-    if isinstance(price_sale_at, datetime):
-        ref = price_sale_at if price_sale_at.tzinfo else price_sale_at.replace(
-            tzinfo=timezone.utc)
-        dias = round((datetime.now(timezone.utc) - ref).total_seconds() / 86400, 1)
+        return {"oferta_estado": OFERTA_DESCONOCIDA, "oferta_confirmada": None,
+                "oferta_precio": None, "oferta_desc_pct": None,
+                "oferta_precio_visto": None, "oferta_desc_pct_visto": None,
+                "oferta_vista_at": None, "oferta_dias": None}
+    vista = _utc(price_sale_at)
+    dias = (round((datetime.now(timezone.utc) - vista).total_seconds() / 86400, 1)
+            if vista else None)
+    cambio = _utc(visto_at)
+    # Sin fecha de observación no hay nada que confirmar: se trata como vieja.
+    confirmada = bool(vista and (cambio is None or vista >= cambio))
     hay = p is not None and p > 0 and ps < p
+    if not hay:
+        return {"oferta_estado": OFERTA_SIN, "oferta_confirmada": confirmada,
+                "oferta_precio": None, "oferta_desc_pct": None,
+                "oferta_precio_visto": None, "oferta_desc_pct_visto": None,
+                "oferta_vista_at": price_sale_at, "oferta_dias": dias}
+    pct = round((p - ps) / p, 4)
     return {
-        "oferta_estado": OFERTA_CON if hay else OFERTA_SIN,
-        "oferta_precio": round(ps, 2) if hay else None,
-        "oferta_desc_pct": round((p - ps) / p, 4) if hay else None,
+        "oferta_estado": OFERTA_CON,
+        "oferta_confirmada": confirmada,
+        # Lo que se APLICA (precio vigente y margen). Vacío si no se confirmó.
+        "oferta_precio": round(ps, 2) if confirmada else None,
+        "oferta_desc_pct": pct if confirmada else None,
+        # Lo que se OBSERVÓ, confirmado o no. Es la evidencia de que existió y
+        # lo que la pantalla pinta como "sin confirmar".
+        "oferta_precio_visto": round(ps, 2),
+        "oferta_desc_pct_visto": pct,
         "oferta_vista_at": price_sale_at,
         "oferta_dias": dias,
     }
@@ -560,12 +649,17 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
     estado = normalizar_estado(canal, r.get("situacion_cruda"),
                                r.get("status_crudo"))
     oferta = _oferta(r.get("precio_lista"), r.get("price_sale"),
-                     r.get("price_sale_at"))
+                     r.get("price_sale_at"), r.get("visto_at"))
 
-    # Precio vigente = lo que el comprador paga. Regla de la migración 0025:
-    # coalesce(price_sale, price). Si nunca se observó, lo único que hay es el
-    # de lista — y eso es exactamente lo que dice `oferta_estado`.
-    pv = _num(r.get("price_sale"))
+    # Precio vigente = lo que el comprador paga. La migración 0025 dice
+    # `coalesce(price_sale, price)`, pero ese coalesce NO pregunta CUÁNDO se
+    # observó la oferta: aplicaba promociones muertas para siempre. Una oferta
+    # que no se confirmó NO se aplica — el margen va contra el de lista, que es
+    # lo que ML está cobrando. Si nunca se observó nada, el de lista es lo único
+    # que hay, y eso es exactamente lo que dice `oferta_estado`.
+    pv = (_num(r.get("price_sale"))
+          if oferta["oferta_estado"] == OFERTA_CON and oferta["oferta_confirmada"]
+          else None)
     if pv is None:
         pv = _num(r.get("precio_lista"))
 
@@ -648,7 +742,10 @@ def _clave_orden(orden: str):
         "sku": ("sku", False), "precio_desc": ("precio_vigente", True),
         "precio_asc": ("precio_vigente", False),
         "margen_desc": ("margen_pct", True), "margen_asc": ("margen_pct", False),
-        "descuento_desc": ("oferta_desc_pct", True),
+        # Por el descuento OBSERVADO, confirmado o no: ordenar es navegar, no
+        # cobrar. Con `oferta_desc_pct` (solo lo confirmado) las 665 ofertas sin
+        # confirmar caerían al final y el orden no serviría para nada.
+        "descuento_desc": ("oferta_desc_pct_visto", True),
         "reciente": ("visto_at", True),
     }
     campo, rev = campos.get(orden, ("sku", False))
@@ -682,7 +779,8 @@ def _clave_orden(orden: str):
 def _fila_censo(canal: str) -> dict[str, Any]:
     return {"canal": canal, "publicaciones": 0, "activas": 0,
             "con_margen": 0, "sin_margen": 0, "motivos": {},
-            "con_oferta": 0, "sin_oferta": 0, "oferta_desconocida": 0,
+            "con_oferta": 0, "oferta_sin_confirmar": 0,
+            "sin_oferta": 0, "oferta_desconocida": 0,
             "oferta_mas_vieja_dias": None, "nota": NOTA_CANAL.get(canal)}
 
 
@@ -716,6 +814,11 @@ def _cobertura_de(filas: list[dict[str, Any]],
             c["con_margen"] += 1
         if f["oferta_estado"] == OFERTA_CON:
             c["con_oferta"] += 1
+            # Cuántas de esas ofertas NO se pueden creer. Va en el censo y no
+            # solo en cada fila porque es el número que dice si el refresco de
+            # precios está vivo: 665 de 665 sin confirmar el 25-ago-2026.
+            if not f.get("oferta_confirmada"):
+                c["oferta_sin_confirmar"] += 1
             d = f.get("oferta_dias")
             if d is not None and (c["oferta_mas_vieja_dias"] is None
                                   or d > c["oferta_mas_vieja_dias"]):
@@ -733,18 +836,23 @@ def _cobertura_de(filas: list[dict[str, Any]],
                                if c["publicaciones"] else None)
     tot = sum(c["publicaciones"] for c in canales)
     con = sum(c["con_margen"] for c in canales)
+    sin_conf = sum(c["oferta_sin_confirmar"] for c in canales)
     return {
         "publicaciones": tot,
         "con_margen": con,
         "sin_margen": tot - con,
         "pct_con_margen": round(con / tot, 4) if tot else None,
+        "ofertas_sin_confirmar": sin_conf,
         "canales": canales,
         # Se dice aquí y no solo en la documentación porque el que lee la
         # respuesta no lee el módulo.
         "aviso": ("El margen es PROSPECTIVO: contra el precio que la publicación "
                   "cobra hoy, no contra el promedio de las ventas realizadas "
                   "(eso es el panel de Análisis). Solo se calcula donde hay "
-                  "costo del PROPIO canal: hoy únicamente Mercado Libre."),
+                  "costo del PROPIO canal: hoy únicamente Mercado Libre. "
+                  "Una oferta SIN CONFIRMAR (observada antes del último cambio "
+                  "de la publicación) se muestra pero NO se aplica: el margen "
+                  "va contra el precio de lista."),
     }
 
 

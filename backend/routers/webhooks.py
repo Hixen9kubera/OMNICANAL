@@ -31,6 +31,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -66,6 +67,63 @@ CREATE TABLE IF NOT EXISTS webhook_eventos (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 _schema_ok = False
+
+
+# ── Qué publicación trae el aviso ─────────────────────────────────────────────
+#
+# ML NO manda un recurso con forma única: el id del ítem puede ir al final, a
+# media ruta, o con un sufijo detrás. `resource.rsplit("/", 1)[-1]` —lo que
+# había— solo acierta cuando el id es el ÚLTIMO segmento. Censo de 4 días de
+# producción (al 25-ago-2026):
+#
+#   items             /items/{id}                              6,064  ✅ acertaba
+#   items_prices      /items/{id}/prices                       1,651  ❌ daba "prices"
+#   price_suggestion  /suggestions/items/{id}/details              60  ❌ daba "details"
+#   public_offers     /seller-promotions/offers/OFFER-{id}-{n}  3,716  ← otro recurso
+#
+# Los 1,651 de `items_prices` fallaban el 100% de las veces y llevaban días así:
+# `refrescar_ml_item_id("prices")` no encuentra dueño y el aviso se tira. Nadie
+# lo notó porque el receptor contesta 200 pase lo que pase —a propósito, para
+# que ML no reintente ni deshabilite el topic—, así que un fallo de proceso se
+# ve EXACTAMENTE igual que un éxito desde fuera. Esa es la razón de `/ml/salud`.
+#
+# `public_offers` queda FUERA a propósito: `OFFER-MLM123-456` no es una ruta de
+# ítem sino una promoción, con el id incrustado en el del offer. Es otro recurso
+# y otra resolución; no se abre aquí.
+_ID_ITEM = re.compile(r"/items/(ML[A-Z]\d+)")
+
+
+def _item_id_de(resource: str) -> str | None:
+    """El id de la publicación que trae el aviso, venga donde venga en la ruta."""
+    m = _ID_ITEM.search(resource or "")
+    return m.group(1) if m else None
+
+
+# ── Señal por topic ───────────────────────────────────────────────────────────
+#
+# Marcador en memoria, por proceso, de qué le pasó a cada topic desde el
+# arranque. Existe por lo de arriba: con el 200 incondicional, un topic roto al
+# 100% es invisible. Se pierde al redeployar y da igual — la pregunta que
+# contesta es "¿ESTE backend está procesando lo que le llega?". El histórico ya
+# vive en `ops.webhook_events.resultado`, que nadie mira porque no hay resumen.
+_salud: dict[str, dict[str, Any]] = {}
+
+
+def _anotar_salud(topic: str | None, resultado: str, *, fallo: bool,
+                  sin_accion: bool) -> None:
+    t = _salud.setdefault(str(topic or "(sin topic)"),
+                          {"recibidos": 0, "fallos": 0, "sin_accion": 0,
+                           "ultimo": None, "ultimo_at": None,
+                           "ultimo_fallo": None, "ultimo_fallo_at": None})
+    t["recibidos"] += 1
+    t["ultimo"] = resultado[:200]
+    t["ultimo_at"] = datetime.now(timezone.utc).isoformat()
+    if sin_accion:
+        t["sin_accion"] += 1
+    if fallo:
+        t["fallos"] += 1
+        t["ultimo_fallo"] = resultado[:200]
+        t["ultimo_fallo_at"] = t["ultimo_at"]
 
 
 def _asegurar_schema() -> None:
@@ -212,6 +270,12 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
     resource = payload.get("resource") or ""
     sku = None
     resultado = ""
+    # Para `/ml/salud`: "no se pudo hacer lo que este aviso pedía" vs "este
+    # topic no lo atiende nadie todavía". Son cosas distintas y se cuentan
+    # aparte; confundirlas es lo que dejó 1,651 fallos escondidos entre miles
+    # de "registrado sin acción".
+    fallo = False
+    sin_accion = False
     try:
         # MOVIMIENTOS DE BODEGA FULL: ML nos avisa en SEGUNDOS y lo estábamos
         # tirando ("registrado sin acción"). Resolviendo la operación se sabe si
@@ -225,25 +289,53 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
             resultado = (f"FULL {r.get('tipo')} x{r.get('cantidad')} → Woo "
                          f"{r.get('antes')}→{r.get('despues')}" if r.get("ok") and r.get("sku")
                          else f"FULL: {r.get('accion') or r.get('motivo')}")
+            fallo = not r.get("ok")
         # OJO: ML manda el topic con GUION MEDIO (`stock-locations`) y el recurso
         # es `/user-products/…`, no `/items/…`. El filtro viejo pedía guion bajo
         # y un item, así que NUNCA entraba (verificado en logs de producción).
-        elif topic in ("items", "items_prices", "stock_locations", "stock-locations") \
+        elif topic in ("items", "items_prices", "price_suggestion",
+                       "stock_locations", "stock-locations") \
                 and ("/items/" in resource or "/user-products/" in resource):
             if "/user-products/" in resource:
                 # Cambió el reparto bodega-propia / bodega-ML de un user product.
                 # El movimiento en sí llega por `fbm_stock_operations` (con tipo y
                 # cantidad); aquí solo se deja constancia.
                 resultado = "stock-locations: reparto propio/FULL notificado"
-            elif settings.sync_enabled:
+            elif not settings.sync_enabled:
+                resultado = "item: sync apagado (modo pedidos)"
+            elif not (item_id := _item_id_de(resource)):
+                # No se tira en silencio: si ML estrena una forma de recurso,
+                # esto sale en `/ml/salud` como fallo con la ruta al lado.
+                fallo = True
+                resultado = f"item: no se pudo sacar el id de '{resource[:80]}'"
+            else:
+                # `items_prices` es, literalmente, el aviso de "cambió el precio
+                # de esta publicación". Es el ÚNICO topic que además pide el
+                # precio CON promoción, y no es un extra: sin él este refresco
+                # actualiza el precio de LISTA y deja la oferta sin confirmar, o
+                # sea que con la regla nueva ESCONDERÍA más ofertas de las que
+                # arregla (ver `publicaciones_panel._oferta`). La llamada de más
+                # sale ~413 veces al día, contra las ~11,500 diarias que costaría
+                # encender ML_PRECIO_VENTA en el barrido completo.
+                con_precio = topic == "items_prices"
                 # Refresco del espejo canal_inventario: es "sincronización de datos
                 # con ML" — respeta el interruptor global (modo puros pedidos).
-                item_id = resource.rsplit("/", 1)[-1]
-                r = await inventario.refrescar_ml_item_id(item_id)
+                r = await inventario.refrescar_ml_item_id(
+                    item_id, con_precio_venta=con_precio)
                 sku = r.get("sku")
-                resultado = "item actualizado" if r.get("ok") else f"item: {r.get('motivo')}"
-            else:
-                resultado = "item: sync apagado (modo pedidos)"
+                if not r.get("ok"):
+                    fallo = True
+                    resultado = f"item: {r.get('motivo')}"
+                elif not con_precio:
+                    resultado = "item actualizado"
+                elif r.get("precio_venta") is not None:
+                    resultado = f"item actualizado · oferta ${r['precio_venta']}"
+                else:
+                    # 200 del item pero el precio de venta no se pudo leer. NO
+                    # es fallo del aviso (el ítem sí se refrescó) pero tampoco
+                    # es éxito completo: la oferta se queda sin confirmar y hay
+                    # que poder verlo sin abrir los logs.
+                    resultado = "item actualizado · ML no dio precio de oferta"
         elif topic == "orders_v2" and "/orders/" in resource:
             # La ORDEN siempre se trae (sin ella no hay pedido); el refresco de
             # los ítems en canal_inventario es sync y respeta el interruptor.
@@ -275,11 +367,21 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
                     if rp.get("sin_mapear"):
                         resultado += f" · SKU sin mapear: {','.join(rp['sin_mapear'])}"
                 else:
+                    fallo = True
                     resultado += f" · pedido WC falló: {rp.get('motivo')}"
+            elif settings.pedidos_wc_enabled and not orden:
+                # El síntoma silencioso de la regla 8: sin la orden no hay
+                # pedido, y hoy solo se distingue por la AUSENCIA del sufijo
+                # "pedido WC #" en el log.
+                fallo = True
+                resultado += " · pedido WC falló: no se pudo traer la orden"
         else:
+            sin_accion = True
             resultado = f"topic '{topic}' registrado (sin acción de stock)"
     except Exception as exc:  # noqa: BLE001
+        fallo = True
         resultado = f"error: {exc}"
+    _anotar_salud(topic, resultado, fallo=fallo, sin_accion=sin_accion)
     if evento_id:
         _actualizar(evento_id, sku, resultado)
     await asyncio.to_thread(_actualizar_supabase, sb_id, sku, resultado)
@@ -363,6 +465,41 @@ async def estado_registro():
 async def ping_ml():
     """Prueba de accesibilidad (ML valida que la URL responda)."""
     return {"ok": True, "servicio": "webhook Mercado Libre", "listo": True}
+
+
+@router.get("/ml/salud")
+async def salud_ml():
+    """
+    Qué le pasó a cada topic de ML desde que arrancó ESTE proceso.
+
+    Existe porque el receptor contesta **200 pase lo que pase** —decisión
+    deliberada: si a ML se le devuelve otra cosa reintenta una hora y luego
+    DESHABILITA el topic, y ahí sí se dejan de capturar ventas—. El precio de
+    esa guarda es que desde fuera un fallo de proceso se ve idéntico a un éxito.
+    Así estuvo `items_prices`: **1,651 avisos, el 100% fallando**, durante días,
+    sin una sola señal.
+
+    `fallos` es "no se pudo hacer lo que el aviso pedía". `sin_accion` es "este
+    topic todavía no lo atiende nadie" (hoy: `public_offers`). Un topic con
+    `fallos == recibidos` es una arteria tapada; uno con `sin_accion` alto es
+    una decisión pendiente.
+
+    En memoria y por proceso: un redeploy lo pone en cero. El histórico está en
+    `ops.webhook_events.resultado`.
+    """
+    topics = sorted(
+        ({"topic": k, **v} for k, v in _salud.items()),
+        key=lambda t: (-t["fallos"], -t["recibidos"]))
+    return {
+        "registro_activo": _registro_activo,
+        "sync_enabled": settings.sync_enabled,
+        "recibidos": sum(t["recibidos"] for t in topics),
+        "fallos": sum(t["fallos"] for t in topics),
+        "topics": topics,
+        "nota": ("Contadores en memoria desde el arranque de este proceso; un "
+                 "redeploy los reinicia. El receptor responde 200 SIEMPRE a "
+                 "propósito, así que ésta es la única señal de proceso que hay."),
+    }
 
 
 # ── Lecturas: MySQL (hoy) o Supabase (Fase 5, tras flag) ─────────────────────

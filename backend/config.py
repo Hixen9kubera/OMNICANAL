@@ -149,20 +149,25 @@ class Settings(BaseSettings):
     # unidades vendidas); sin detalle $0.003 pero sin esos dos campos.
     competencia_top: int = 25
     # Pedir a ML el precio CON promoción (/items/{id}/sale_price) en cada pasada
-    # del sync. APAGADO A PROPÓSITO. Al 21-ago-2026 `price_sale` NO TIENE
-    # LECTORES: el reporte de valor que lo consumía se desarmó (README v0.249.0)
-    # y el arreglo del margen de Análisis, que es donde de verdad hace falta,
-    # está revertido (v0.244.0 en el historial).
+    # del sync. SIGUE APAGADO, pero la razón CAMBIÓ — v0.261.0.
     #
-    # Encenderlo hacía ~11,500 llamadas diarias a ML para mantener al día una
-    # columna que nadie mira entre corte y corte, y además ENSUCIABA el corte:
-    # el barrido volvía a tocar publicaciones que el refresco ya había leído y
-    # les sellaba una fecha nueva, así que la foto dejaba de ser simultánea sin
-    # que el dato mejorara para nadie.
+    # Lo que decía esta nota hasta el 25-ago: "`price_sale` NO TIENE LECTORES".
+    # Ya los tiene. El margen de la pestaña Omnicanal
+    # (`publicaciones_panel._oferta`) lo lee y decide con él, y desde v0.261.0
+    # además pregunta CUÁNDO se observó: una oferta más vieja que el último
+    # cambio de la publicación se marca sin confirmar y NO se aplica.
     #
-    # Encenderlo otra vez solo tiene sentido si `price_sale` gana lectores que
-    # necesiten el precio al día SIN pedirlo — los márgenes del panel, por
-    # ejemplo. Hoy no los tiene.
+    # Sigue apagado porque este barrido es el instrumento equivocado: hacía
+    # ~11,500 llamadas diarias a ML y ENSUCIABA el corte (volvía a tocar
+    # publicaciones que el refresco ya había leído y les sellaba fecha nueva,
+    # así que la foto dejaba de ser simultánea). La vía correcta es el aviso:
+    # el webhook del topic `items_prices` (~413 al día) pide el precio de oferta
+    # solo de la publicación que ML dice que cambió — ver
+    # `inventario.refrescar_ml_item_id(con_precio_venta=True)`.
+    #
+    # Encenderlo tendría sentido como BARRIDO de arranque, para confirmar de
+    # golpe las que llevan días sin aviso. Eso es una decisión con acta, no un
+    # default.
     ml_precio_venta: bool = False
     competencia_con_detalle: bool = True
 

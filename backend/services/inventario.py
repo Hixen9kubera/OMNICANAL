@@ -663,10 +663,26 @@ async def _sync_woo_sku(sku: str) -> list[dict[str, Any]]:
         return []
 
 
-async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
+async def refrescar_ml_item_id(item_id: str, *,
+                               con_precio_venta: bool = False) -> dict[str, Any]:
     """
     Refresca UN ítem de Mercado Libre por su id (lo usa el webhook cuando ML avisa
     que un item cambió). Busca la cuenta/SKU en ml_progress y actualiza el cache.
+
+    `con_precio_venta` pide ADEMÁS `/items/{id}/sale_price` y lo guarda en
+    `channel.listings.price_sale`, sellando `price_sale_at`. Lo enciende el
+    webhook del topic `items_prices` y NADIE MÁS, porque es una llamada extra a
+    ML por aviso.
+
+    Por qué hace falta, y por qué justo aquí: `item.price` se queda en el precio
+    de LISTA cuando la promoción la monta una campaña de ML, así que este
+    refresco actualizaba el precio de lista y NUNCA tocaba la oferta. Combinado
+    con el `coalesce(excluded.price_sale, listings.price_sale)` del espejo, una
+    promoción muerta sobrevivía para siempre — 665 así el 25-ago-2026. Desde
+    v0.261.0 el panel deja de aplicar toda oferta que no se confirmó, y si este
+    camino refrescara el precio de lista SIN traer la oferta, cada aviso de ML
+    dejaría la promoción sin confirmar: escondería más ofertas de las que
+    arregla. El aviso que dice "cambió el precio" tiene que traer el precio.
     """
     # PASO 3 · BLOQUE 4. Lo llama el webhook de ML: si aqui no se resuelve el
     # dueño, el aviso se descarta y esa publicacion no se refresca.
@@ -686,9 +702,13 @@ async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": "sin token"}
+    precio_venta = None
     try:
         async with httpx.AsyncClient(base_url=_ML_API, timeout=20.0) as cli:
             item = await _leer_ml_item(cli, item_id, token, cuenta)
+            # En el MISMO cliente: una conexión, dos lecturas.
+            if item and con_precio_venta:
+                precio_venta = await _leer_precio_venta(cli, item_id, token, cuenta)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "motivo": str(exc)}
     if not item:
@@ -699,12 +719,17 @@ async def refrescar_ml_item_id(item_id: str) -> dict[str, Any]:
     await _upsert_async([{
         "sku": sku, "canal": "mercado_libre", "cuenta": cuenta,
         "item_id": item_id, "precio": item.get("price"), "precio_base": _precio_lista(item),
+        # None = "no observado" y el upsert conserva lo anterior (contrato de la
+        # migración 0025): un fallo de red JAMÁS borra la oferta guardada, y
+        # tampoco la re-sella como si se hubiera confirmado.
+        "precio_venta": precio_venta,
         "stock_real": 0 if es_full else qty, "stock_full": qty if es_full else 0,
         "stock_fba": None, "es_full": 1 if es_full else 0,
         "logistica": logistic, "situacion": item.get("status"), "moneda": "MXN",
         "fecha_publicacion": item.get("date_created"),
     }])
-    return {"ok": True, "sku": sku, "cuenta": cuenta, "item_id": item_id}
+    return {"ok": True, "sku": sku, "cuenta": cuenta, "item_id": item_id,
+            "precio_venta": precio_venta}
 
 
 async def sincronizar_sku(sku: str) -> dict[str, Any]:

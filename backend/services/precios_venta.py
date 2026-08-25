@@ -17,17 +17,37 @@ POR QUÉ ESTÁ DORMIDO. Se construyó para un reporte de valor del inventario en
 FULL que se DESARMÓ el 21-ago-2026 (decisión de Eduardo — ver la entrada
 v0.249.0 del README). Al desarmarlo, `price_sale` se quedó sin lectores.
 
-CUÁNDO REVIVIRLO. Cuando se corrija el precio donde de verdad decide: el
-MARGEN del panel de Análisis. Hoy `fulfillment._BASE` y
-`_SQL_MARGEN_REAL_TOP` calculan contra `price`, o sea contra un precio que
-nadie cobra, y el margen sale optimista. Ese arreglo llegó a estar escrito
-—`coalesce(price_sale, price)` en los cuatro lectores— y se revirtió porque el
-alcance de ese día era otro. Está en el historial: v0.244.0.
+⚠️ ESO YA NO ES CIERTO (v0.261.0, 25-ago-2026). `price_sale` SÍ tiene lector: el
+margen de la pestaña Omnicanal (`publicaciones_panel._oferta`). Y su única
+corrida —la del 20/21-ago, desde este archivo— es exactamente la que dejó **665
+ofertas rancias** aplicándose al margen durante cuatro días, porque nadie
+volvió a correrlo y ningún lector preguntaba por `price_sale_at`. Ahora el panel
+pregunta: lo observado antes del último cambio de la publicación se marca **sin
+confirmar** y NO se aplica.
 
-Para revivirlo hacen falta tres cosas y ninguna es este archivo: un lector que
-necesite el precio real, un disparador (endpoint o botón), y decidir quién lo
-mantiene al día. El flag `ML_PRECIO_VENTA` del sync sigue existiendo y sigue
-apagado a propósito — ver la nota en `config.py`.
+Moraleja de este archivo, y por eso queda escrita aquí: **una foto de precios
+sin quien la repita es una mentira con fecha de caducidad.** Correrlo una vez
+fue peor que no correrlo nunca.
+
+CUÁNDO REVIVIRLO. El refresco al día ya NO depende de este barrido: lo hace el
+webhook del topic `items_prices` (~413 avisos/día), que pide el precio de oferta
+solo de la publicación que ML dice que cambió —
+`inventario.refrescar_ml_item_id(con_precio_venta=True)`.
+
+Lo que este archivo todavía puede aportar es un **barrido de arranque**: las
+publicaciones que llevan días sin aviso no se confirman solas, y una pasada
+completa las pondría al día de golpe. Eso sigue necesitando un disparador
+(endpoint o botón) y ACTA — escribe a producción y a la API de ML.
+
+Falta también el margen del panel de Análisis: `fulfillment._BASE` y
+`_SQL_MARGEN_REAL_TOP` siguen calculando contra `price`, o sea contra un precio
+que nadie cobra. Ese arreglo llegó a estar escrito —`coalesce(price_sale,
+price)` en los cuatro lectores— y se revirtió (v0.244.0). Cuando se retome:
+copiar la regla de `_oferta`, NO el coalesce pelón — es justo el coalesce sin
+fecha el que causó esto.
+
+El flag `ML_PRECIO_VENTA` del sync sigue existiendo y sigue apagado a propósito
+— ver la nota en `config.py`.
 
 Regla 11 de la casa: todo HTTP por httpx ASYNC; el guardado (psycopg2,
 bloqueante) sale a un hilo con asyncio.to_thread.

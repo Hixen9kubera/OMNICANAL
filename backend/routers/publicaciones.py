@@ -11,13 +11,20 @@ hay oferta, cuándo se puede calcular el margen) vive en
 `services/publicaciones_panel.py`, con el porqué de cada regla y el censo que la
 respalda.
 
-Las tres cosas que hay que saber antes de pintar esto:
+Las cuatro cosas que hay que saber antes de pintar esto:
 
   1. El margen es PROSPECTIVO (contra el precio que la publicación cobra hoy),
      no realizado. El panel de Análisis contesta la otra pregunta.
   2. `margen_pct: null` significa "no se puede saber", con `margen_motivo` al
      lado. NUNCA se devuelve 0 por falta de datos.
   3. `oferta_estado` tiene TRES valores. `desconocida` no es `sin_oferta`.
+  4. Una oferta puede estar SIN CONFIRMAR (`oferta_confirmada: false`): se
+     observó antes del último cambio de la publicación, así que nadie sabe si
+     sigue viva. Esas NO se aplican — `precio_vigente` y el margen van contra
+     el precio de lista, y `oferta_precio` / `oferta_desc_pct` llegan en null.
+     Lo observado no se pierde: viaja en `oferta_precio_visto` /
+     `oferta_desc_pct_visto` para pintarlo marcado. El censo trae el conteo en
+     `cobertura.ofertas_sin_confirmar` (665 de 665 el 25-ago-2026).
 """
 from __future__ import annotations
 

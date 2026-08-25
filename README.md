@@ -1001,6 +1001,130 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.261.0 — Una oferta que no se confirmó no se aplica (y el aviso de ML que la confirma)
+
+Dos partes que van juntas a propósito: **la mitad defensiva sola escondería más
+ofertas de las que arregla**, y la mitad del webhook sola seguiría aplicando
+descuentos rancios.
+
+#### El problema, medido
+
+`ACC-0302-GRI` / `MLM2870356893`, activa. La fila decía `price` $260.99,
+`price_sale` $117.45 sellado el **20-ago**, y la fila entera refrescada el
+**24-ago**. El panel pintaba "cobra $117.45, −55%, margen **−76.35%**". Se
+comprobó contra la API de ML el 25-ago: **ML cobra $260.99 y no tiene ninguna
+promoción**. El margen real es +4.79%.
+
+No era un caso. Medido en producción el 25-ago-2026:
+
+- **665 publicaciones de ML con descuento guardado. 665 sin confirmar. CERO
+  confirmadas.** El `price_sale_at` más nuevo de todo el catálogo era del
+  **21-ago 04:46** — una sola corrida de `precios_venta.py` que nunca se repitió.
+- Descuento fantasma promedio **38.21%** ($357.30 por publicación).
+- De las 376 con margen calculable, **210 salían en negativo; ahora salen 90**.
+  **120 publicaciones pasaban por "pierde dinero" sin perderlo.**
+
+La causa es mecánica y estaba diseñada así: el sync refresca la fila y **nunca
+escribe `price_sale`**; el espejo lo conserva con
+`coalesce(excluded.price_sale, listings.price_sale)`
+(`channel_mirror.escribir_tanda`) y `inventario.refrescar_ml_item_id` actualiza
+`price` sin mandar `precio_venta`. Una oferta muerta sobrevivía para siempre.
+`price_sale_at` existía desde la migración 0025 justo para esto y **ningún
+lector lo consultaba**.
+
+#### Parte A — el panel deja de creerle a una oferta sin confirmar
+
+    confirmada  ⇔  price_sale_at >= listings.updated_at
+
+Si la publicación cambió después de que se observó la promoción y nadie volvió a
+preguntar, la oferta **no se aplica**: `precio_vigente` y el margen van contra el
+precio de LISTA, y la oferta se muestra **marcada**, no borrada.
+
+Nada se pisa ni se sobreescribe: `channel.listing_history` **no audita
+`price_sale`**, así que un valor pisado no se podría reconstruir. Por eso hay
+campos separados en la respuesta de `GET /api/publicaciones`:
+
+| Campo | Qué es |
+|---|---|
+| `oferta_confirmada` | `true` / `false` / `null` (solo cuando es `desconocida`) |
+| `oferta_precio`, `oferta_desc_pct` | lo que **se aplica**. `null` si no está confirmada |
+| `oferta_precio_visto`, `oferta_desc_pct_visto` | lo **observado**, confirmado o no. Nunca se vacía |
+| `cobertura.ofertas_sin_confirmar` | el conteo, por canal y total |
+
+`oferta_estado` sigue teniendo **tres** valores y ni uno más: el frontend lo
+indexa (`OFERTA_UI[p.oferta_estado]`) y un cuarto valor tumbaría la pestaña. Lo
+no confirmado sigue siendo `con_oferta` con `oferta_confirmada: false` al lado —
+esconderlo sería la mentira simétrica.
+
+**Hoy esto apaga las 665**, porque ninguna está confirmada. Es lo correcto:
+mejor sin descuento que con uno falso. Vuelven solas cuando el refresco
+funcione, que es la Parte B.
+
+#### Parte B — reabrir el canal por el que ML ya nos avisa
+
+`webhooks.py` sacaba el id con `resource.rsplit("/", 1)[-1]`, que solo acierta
+cuando el id es el último segmento. Censo de 4 días de producción:
+
+| Topic | Recurso | Avisos | Con `rsplit` |
+|---|---|---|---|
+| `items` | `/items/{id}` | 6,064 | ✅ el id |
+| `items_prices` | `/items/{id}/prices` | 1,651 | ❌ `"prices"` — **fallaba 1651/1651** |
+| `price_suggestion` | `/suggestions/items/{id}/details` | 60 | ❌ `"details"` |
+| `public_offers` | `/seller-promotions/offers/OFFER-{id}-{n}` | 3,716 | ni siquiera es un ítem |
+
+Ahora el id sale de una expresión regular (`/items/(ML[A-Z]\d+)`), que cubre las
+tres formas de ítem. `price_suggestion` entra al refresco; `public_offers` queda
+**fuera a propósito** (es otro recurso y otra resolución — es lo siguiente).
+
+**Y lo crítico, que es donde las dos partes se cruzan:** que `items_prices`
+resuelva el id no basta. Terminaba en `refrescar_ml_item_id`, que actualiza el
+precio de LISTA y no manda `precio_venta`; con la regla de la Parte A, cada
+aviso habría dejado la oferta **sin confirmar** — escondiendo más ofertas, no
+menos. Así que `refrescar_ml_item_id` acepta `con_precio_venta=True`, lo enciende
+**solo** el topic `items_prices`, y pide `/items/{id}/sale_price` en la misma
+conexión. El aviso que dice "cambió el precio" ahora trae el precio. Son ~413
+llamadas extra al día, contra las ~11,500 diarias que costaría encender
+`ML_PRECIO_VENTA` en el barrido completo.
+
+Un cambio más, sin el cual la Parte B no confirmaría nada: el candado
+`is distinct from` del upsert compartido no miraba `price_sale_at`, así que
+volver a observar una oferta **que no cambió de precio** no disparaba el UPDATE
+y la fecha se quedaba vieja — la promoción habría quedado "sin confirmar" para
+siempre aunque acabáramos de comprobar que sigue viva. Verificado contra las
+21,848 filas de producción: con `precio_venta` en NULL dispara en **0** filas
+(no-op exacto para el sync, Amazon, Woo y los backfills) y con una observación
+real dispara en las 21,848, que es justo lo que se quiere.
+
+#### Y una señal, porque el silencio era el verdadero defecto
+
+El receptor contesta **200 pase lo que pase**, a propósito: si a ML se le
+devuelve otra cosa, reintenta una hora y luego **deshabilita el topic**, y ahí sí
+se dejan de capturar ventas. El precio de esa guarda es que desde fuera un fallo
+se ve idéntico a un éxito — por eso 1,651 avisos llevaban días rotos sin que
+nadie lo notara. Nuevo `GET /api/webhooks/ml/salud`: recibidos, **fallos** y
+`sin_accion` por topic desde el arranque del proceso, con el último error y su
+hora. Un topic con `fallos == recibidos` es una arteria tapada. En memoria; el
+histórico sigue en `ops.webhook_events.resultado`.
+
+#### Lo que este cambio NO arregla
+
+Comprobado contra la API de ML sobre 18 publicaciones el 25-ago: **2 tenían la
+oferta muerta y en 11 más el precio guardado ya no era el real** (en las dos
+direcciones: `TEC-0963-NEG` guardaba $71.18 y ML cobra $229.00; `MAN-0490-DOR`
+guardaba $2,812.03 y ML cobra $2,199.00). O sea que el dato guardado está
+equivocado en ~72% de la muestra y **no sirve para calcular un margen** — que es
+justo lo que dice "sin confirmar".
+
+Pero en las 5 que sí coincidían, y en las que ML cobra **menos** que lo guardado,
+el margen contra el precio de lista queda **optimista**. Es el intercambio que
+se eligió a conciencia: el panel deja de afirmar un número falso y pasa a
+afirmar el único que puede sostener, marcando lo que no sabe. Lo cierra la Parte
+B a medida que lleguen los avisos.
+
+Queda un hueco conocido: una promoción que **termina** puede avisarse por
+`public_offers` (3,716 en 4 días) y no por `items_prices`. Ese topic es lo
+siguiente y no se abre aquí.
+
 ### v0.260.0 — El chip "Solo activas" en la pestaña Omnicanal
 
 La v0.259.0 le enseñó a `GET /api/productos` a filtrar por "activa **del

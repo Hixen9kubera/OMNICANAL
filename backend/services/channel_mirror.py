@@ -121,8 +121,23 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                          stock_fba = coalesce(excluded.stock_fba, listings.stock_fba),
                          currency = coalesce(excluded.currency, listings.currency),
                          date_published = coalesce(listings.date_published, excluded.date_published)
+                       -- `price_sale_at` entra en la comparación, y no es
+                       -- simetría cosmética: SIN esto, volver a observar una
+                       -- oferta que NO cambió de precio no dispara el UPDATE, y
+                       -- la fecha se queda vieja. Con la regla de oferta
+                       -- confirmada (`publicaciones_panel._oferta`, v0.261.0)
+                       -- esa promoción quedaría marcada "sin confirmar" PARA
+                       -- SIEMPRE aunque acabáramos de comprobar que sigue viva.
+                       -- Observar es el hecho que se registra, no solo cambiar.
+                       -- Es un NO-OP para todos los escritores de hoy: cuando
+                       -- `precio_venta` viaja NULL —el sync con ML_PRECIO_VENTA
+                       -- apagado, Amazon, Woo, los backfills— el `case when`
+                       -- deja `excluded.price_sale_at` en NULL, el coalesce
+                       -- devuelve el valor guardado y no hay diferencia que
+                       -- detectar. Solo se mueve cuando alguien SÍ observó.
                        where (listings.listing_id,
                               listings.price, listings.price_base, listings.price_sale,
+                              listings.price_sale_at,
                               listings.stock_own, listings.stock_full,
                               listings.is_fulfillment, listings.situacion,
                               listings.logistic_type, listings.stock_fba, listings.currency,
@@ -132,6 +147,7 @@ def escribir_tanda(cur, rows: list[dict[str, Any]]) -> None:
                               coalesce(excluded.price, listings.price),
                               coalesce(excluded.price_base, listings.price_base),
                               coalesce(excluded.price_sale, listings.price_sale),
+                              coalesce(excluded.price_sale_at, listings.price_sale_at),
                               coalesce(excluded.stock_own, listings.stock_own),
                               coalesce(excluded.stock_full, listings.stock_full),
                               excluded.is_fulfillment,
