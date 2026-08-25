@@ -90,13 +90,28 @@ def _normalizar(r: dict[str, Any]) -> dict[str, Any]:
 def listar(page: int = 1, per_page: int = 40, search: str | None = None,
            solo_publicados: bool = False, orden: str = "reciente",
            estados: list[str] | None = None,
-           skus_filtro: list[str] | None = None) -> tuple[list[dict[str, Any]], int]:
-    """Publicaciones de TikTok con los filtros de la pantalla. (items, total)."""
+           skus_filtro: list[str] | None = None,
+           solo_activas: bool = False) -> tuple[list[dict[str, Any]], int]:
+    """
+    Publicaciones de TikTok con los filtros de la pantalla. (items, total).
+
+    `solo_activas` usa el criterio de `publicaciones_panel`, que en este canal
+    coincide con `ESTADO_VIVO` — y por eso NO se escribe aparte: se pide, para
+    que el día que TikTok cambie de vocabulario los dos filtros se muevan
+    juntos. HOY devuelve CERO en producción y no es una falla: las 283
+    publicaciones `APPROVED` están `SELLER_DEACTIVATED`.
+    """
     where, params = [], {"canal": CANAL}
     if search:
         where.append("(l.sku::text ilike %(like)s or p.name ilike %(like)s)")
         params["like"] = f"%{search}%"
-    if solo_publicados or (estados and "publicado" in estados and "inactivo" not in estados):
+    if solo_activas:
+        from services import publicaciones_panel
+        frag = publicaciones_panel.filtro_sql_activas(CANAL)
+        if frag:
+            where.append(frag[0])
+            params.update(frag[1])
+    elif solo_publicados or (estados and "publicado" in estados and "inactivo" not in estados):
         where.append("l.status = %(vivo)s")
         params["vivo"] = ESTADO_VIVO
     elif estados and "inactivo" in estados and "publicado" not in estados:

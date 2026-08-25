@@ -94,8 +94,17 @@ def _normalizar(r: dict[str, Any]) -> dict[str, Any]:
 def listar(page: int = 1, per_page: int = 40, search: str | None = None,
            solo_publicados: bool = False, orden: str = "reciente",
            estados: list[str] | None = None,
-           skus_filtro: list[str] | None = None) -> tuple[list[dict[str, Any]], int]:
-    """Publicaciones de Temu con los filtros de la pantalla. (items, total)."""
+           skus_filtro: list[str] | None = None,
+           solo_activas: bool = False) -> tuple[list[dict[str, Any]], int]:
+    """
+    Publicaciones de Temu con los filtros de la pantalla. (items, total).
+
+    `solo_activas` es el único filtro de estado que este canal admite, y NO
+    afirma que vendan: se queda con la cubeta `VENDIBLES` (`4/7`, 59 de 461),
+    que en el propio Seller Center se llama literalmente "Activo o inactivo".
+    Por eso `publicaciones_panel` las marca `puede_estar_activa` y el censo
+    viaja con su `NOTA_CANAL`: el filtro acota, no promete.
+    """
     where, params = [], {"canal": CANAL}
     if search:
         where.append("(l.sku::text ilike %(like)s or p.name ilike %(like)s)")
@@ -103,9 +112,15 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
     if skus_filtro:
         where.append("l.sku::text = any(%(skus)s)")
         params["skus"] = list(skus_filtro)
+    if solo_activas:
+        from services import publicaciones_panel
+        frag = publicaciones_panel.filtro_sql_activas(CANAL)
+        if frag:
+            where.append(frag[0])
+            params.update(frag[1])
     # `solo_publicados` no filtra nada aquí a propósito: todas las filas de esta
-    # tabla SON publicaciones de Temu. El día que se sepa qué código vende, este
-    # es el lugar donde se filtra.
+    # tabla SON publicaciones de Temu. Lo que faltaba era distinguir cuáles
+    # PUEDEN venderse, y eso es `solo_activas` (arriba).
 
     filtro = (" and " + " and ".join(where)) if where else ""
     orden_sql = _ORDEN.get(orden, _ORDEN["reciente"])

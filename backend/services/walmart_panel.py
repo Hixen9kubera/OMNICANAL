@@ -95,8 +95,15 @@ def _normalizar(r: dict[str, Any]) -> dict[str, Any]:
 def listar(page: int = 1, per_page: int = 40, search: str | None = None,
            solo_publicados: bool = False, orden: str = "reciente",
            estados: list[str] | None = None,
-           skus_filtro: list[str] | None = None) -> tuple[list[dict[str, Any]], int]:
-    """Publicaciones de Walmart con los filtros de la pantalla. (items, total)."""
+           skus_filtro: list[str] | None = None,
+           solo_activas: bool = False) -> tuple[list[dict[str, Any]], int]:
+    """
+    Publicaciones de Walmart con los filtros de la pantalla. (items, total).
+
+    `solo_activas` usa el criterio de `publicaciones_panel`, que aquí coincide
+    con `ESTADO_VIVO` (`PUBLISHED`, 207 de 235). Se pide en vez de re-escribirse
+    para que los dos filtros no puedan separarse.
+    """
     where, params = [], {"canal": CANAL}
     if search:
         where.append("(l.sku::text ilike %(like)s or p.name ilike %(like)s)")
@@ -104,7 +111,13 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
     if skus_filtro:
         where.append("l.sku::text = any(%(skus)s)")
         params["skus"] = list(skus_filtro)
-    if solo_publicados or (estados and "publicado" in estados and "inactivo" not in estados):
+    if solo_activas:
+        from services import publicaciones_panel
+        frag = publicaciones_panel.filtro_sql_activas(CANAL)
+        if frag:
+            where.append(frag[0])
+            params.update(frag[1])
+    elif solo_publicados or (estados and "publicado" in estados and "inactivo" not in estados):
         where.append("upper(l.status) = %(vivo)s")
         params["vivo"] = ESTADO_VIVO
     elif estados and "inactivo" in estados and "publicado" not in estados:

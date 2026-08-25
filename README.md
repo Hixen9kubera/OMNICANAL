@@ -1001,6 +1001,128 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.259.0 — "Solo activas": filtrar por lo que de verdad se puede comprar, canal por canal
+
+La rejilla de Omnicanal ya podía filtrar por **"Solo publicados"**, y esa palabra
+contaba otra cosa. Medido en producción el 25-ago, cuenta Kubera/BEKURA de
+Mercado Libre: **2,332 publicadas contra 418 activas**. En Amazon: **1,668
+publicadas contra 138 activas**, porque las **1,253 `DISCOVERABLE`** se ven en el
+catálogo y **no se pueden comprar**. Quien apretaba ese botón para ver "lo que
+está vendiendo" veía cinco veces más de lo que hay.
+
+`GET /api/productos` acepta ahora **`solo_activas`**, con el criterio de
+`services/publicaciones_panel.py` — el mismo de la pestaña de publicaciones —
+aplicado en los cinco listadores: `meli.listar`, `amazon.listar`,
+`tiktok_panel.listar`, `temu_panel.listar` y `walmart_panel.listar`.
+
+**Va en el backend porque el filtro tiene que aplicarse DONDE SE PAGINA.** Desde
+el frontend solo se podrían filtrar las 40 filas ya descargadas, y eso diría
+"3 resultados" en un canal con cientos: un número de página presentado como
+número del catálogo.
+
+**El criterio no se volvió a escribir.** Ése era el riesgo real: ya existían dos
+definiciones de "publicado" (`channel_read._PUB_ML` y `_AMZ_VIVA`) que contestan
+otra pregunta con la misma palabra, y una tercera habría sido peor. El WHERE se
+**deriva** corriendo el propio normalizador de `publicaciones_panel` sobre la
+tabla de cada canal (`valores_activos` → `filtro_sql_activas`), así que tocar
+`_MAPA_AMAZON` mueve el filtro de la rejilla en el mismo commit. Para poder
+derivarlo, las cinco tablas de estados salieron de dentro de los `_estado_*` y
+subieron a constantes de módulo; el comportamiento es idéntico y está probado
+así (abajo).
+
+Qué queda, por canal, medido en producción el 25-ago:
+
+| canal | filas | "solo publicados" | **"solo activas"** | de dónde sale |
+|---|---|---|---|---|
+| mercado_libre | 4,989 | 4,706 | **845–851** | `situacion = active` |
+| amazon | 1,798 | 1,668 | **138** | `situacion` BUYABLE/PUBLISHED |
+| tiktok | 1,223 | — | **0** | `status = ACTIVATE` |
+| temu | 461 | 461 (no filtraba) | **59** | `status = 4/7` |
+| walmart | 235 | 207 | **207** | `status = PUBLISHED` |
+
+**El cero de TikTok es la respuesta, no una falla.** Sus 283 publicaciones
+`APPROVED` están todas `SELLER_DEACTIVATED`: pasaron la auditoría y el vendedor
+las apagó. La respuesta trae la `nota` del canal para que la pantalla pueda
+decir por qué, en vez de pintar un cero mudo.
+
+**Temu acota, no promete.** Su cubeta `4/7` se llama literalmente "Activo o
+inactivo" en su propio Seller Center: el filtro deja 59 de 461, y esas 59 son
+las que PUEDEN estar vendiendo. `publicaciones_panel` las marca
+`puede_estar_activa` y la `nota` lo dice.
+
+**Y el canal que no puede contestar no devuelve cero en silencio.** En `general`
+(WooCommerce) y en `shein` la pregunta no tiene sentido —Woo es la FUENTE del
+catálogo, no un canal de venta, y sus filas no traen estado de publicación—, así
+que la lista **no se filtra** y la respuesta lo dice. Lo mismo si alguien apagara
+`SUPABASE_READ_PUBLICACIONES`: la rejilla volvería a la bitácora de MySQL, que
+solo sabe `success=1` ("el publicador la subió"), y el filtro se reporta como
+NO aplicado en vez de contar pausadas como activas.
+
+Eso viaja en un bloque nuevo y aditivo de la respuesta, `filtro_activas`
+(`null` mientras nadie pida el filtro, así que nada cambia para quien no lo use):
+
+    filtro_activas: {
+      solo_activas: bool          // lo que se pidió
+      aplicado: bool              // si el canal pudo evaluar el criterio
+      campo: "situacion" | "status" | null
+      valores: string[]           // los valores crudos que cuentan como activa
+      nota: string | null         // la trampa del canal, o el porqué de no aplicarlo
+    }
+
+`aplicado: true` + `total: 0` significa **"cero es la respuesta"**;
+`aplicado: false` significa **"la lista NO está filtrada, aunque se haya
+pedido"**. Los dos hay que pintarlos distinto.
+
+**`solo_activas` MANDA sobre `solo_publicados` y sobre `estados`** (no se suman
+con AND): son dos respuestas a la misma pregunta y solo una es la del canal.
+Sumarlas mezclaría las dos definiciones en un número que no es ninguna.
+
+**Dos cosas que hay que saber al leer el número:**
+
+1. **La cifra de ML se mueve sola.** `channel.listings` está viva: el sync de 15
+   minutos tocó **126 filas de ML en una hora** durante la prueba, y el conteo de
+   activas pasó de 851 a 845 en cuarenta minutos. Un número de activas hay que
+   medirlo el día que se diga, no citarlo de aquí. Por eso el arnés compara
+   contra una referencia medida en la MISMA corrida y no contra una constante.
+2. **En ML el filtro cuenta FILAS, no publicaciones distintas.** Hay **89
+   `listing_id` de ML colgados de DOS filas** (SKU padre + SKU variante, `wc_id`
+   distinto), así que las ~851 filas activas son **815 publicaciones distintas**.
+   No lo introduce este cambio —`solo_publicados` ya contaba igual— pero se dice.
+   En 9 de esos 89 pares las dos filas **se contradicen** (una `active`, otra
+   `paused`, y la del SKU padre trae `updated_at` viejo). Handoff abierto a
+   `omni-datos`; los otros cuatro canales no tienen duplicados.
+
+Archivos: `backend/services/publicaciones_panel.py` (las tablas suben a módulo +
+`valores_activos` + `filtro_sql_activas`), `backend/services/channel_read.py`
+(`solo_activas` en las dos rejillas), `backend/services/meli.py` y
+`amazon.py` (paso del parámetro + `puede_filtrar_activas`),
+`tiktok_panel.py` · `temu_panel.py` · `walmart_panel.py`,
+`backend/routers/productos.py` (el parámetro y el bloque `filtro_activas`),
+`backend/models/schemas.py` (`FiltroActivas`).
+
+**Flujo vivo que toca: ninguno.** Es un parámetro de lectura, opcional, y sin él
+todo se comporta exactamente igual que antes. No escribe en kubera, no habla con
+ningún marketplace, no toca stock ni pedidos ni precios.
+
+Probado contra **producción en solo lectura** (5432, sin `set_session`): 277
+casos de equivalencia del normalizador refactorizado contra el viejo sobre los 46
+pares `(situacion, status)` que existen en las 21,848 filas de
+`channel.listings`, más los bordes — **0 discrepancias**, y **0** entre el WHERE
+en SQL y `ESTADOS_VIVOS` en Python; 22 aserciones de los cinco listadores
+(totales contra referencia SQL de la misma corrida, cada fila devuelta
+verificada en la base por `(listing_id, sku)`, precedencia sobre
+`solo_publicados`/`estados`, paginación en tres páginas); y 14 por HTTP sobre una
+app mínima con solo este router — sin `lifespan`, o sea sin scheduler ni
+webhooks. `EXPLAIN ANALYZE` del conteo que pagina: mismo `Index Scan` de
+`idx_channel_listings_canal`, **4.5 ms** contra 8.5 ms de `solo_publicados`. Sin
+índice nuevo.
+
+**Lo que NO se probó:** la pantalla. El sandbox no está disponible y el filtro
+todavía no tiene chip en el frontend — el contrato para conectarlo va como
+handoff a `omni-frontend`, junto con la única condición que lo protege: el chip
+**no** se ofrece en la pestaña General, porque ahí un cero entraría al reintento
+de arranque en frío de `frontend/app/omnicanal/page.tsx:144`.
+
 ### v0.258.0 — El precio y el margen de CADA publicación, dentro del producto
 
 La v0.257.0 dejó el dato listo en tres endpoints y nadie lo pintaba. El primer

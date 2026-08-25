@@ -109,6 +109,26 @@ class Paginacion(BaseModel):
     tiene_siguiente: bool
 
 
+class FiltroActivas(BaseModel):
+    """
+    Qué pasó con `solo_activas` en ESTA petición.
+
+    Existe porque el filtro puede devolver CERO con toda la razón (TikTok no
+    tiene una sola publicación comprable hoy) y porque hay caminos de lectura
+    donde no se puede evaluar. Un cero sin esto al lado se lee como "todavía no
+    cargó" o como "no hay nada", y las dos lecturas son falsas.
+
+    `aplicado=True` + `paginacion.total=0`  →  el cero es LA RESPUESTA.
+    `aplicado=False`                        →  la lista NO está filtrada, aunque
+                                               se haya pedido; hay que decirlo.
+    """
+    solo_activas: bool                  # lo que pidió quien llamó
+    aplicado: bool                      # si el canal pudo evaluar el criterio
+    campo: str | None = None            # `situacion` o `status` — no es el mismo
+    valores: list[str] = []             # los valores crudos que cuentan como activa
+    nota: str | None = None             # la trampa del canal, o el porqué de no aplicarlo
+
+
 class RespuestaProductos(BaseModel):
     canal: str
     items: list[Producto]
@@ -116,6 +136,8 @@ class RespuestaProductos(BaseModel):
     # False mientras el índice se sigue construyendo (carga progresiva):
     # el total y el orden pueden crecer/acomodarse en los siguientes segundos.
     completo: bool = True
+    # Sólo viaja cuando se pidió `solo_activas`; `None` = nadie lo pidió.
+    filtro_activas: FiltroActivas | None = None
 
 
 class SubCuentaInfo(BaseModel):

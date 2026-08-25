@@ -525,8 +525,17 @@ _ORDEN = {
 
 
 def _filtros(base, *, search, solo_publicados, cuenta, estados, skus_filtro,
-             pub_expr):
-    """Arma el WHERE compartido por las dos rejillas. Devuelve (sql, params)."""
+             pub_expr, activas=None):
+    """
+    Arma el WHERE compartido por las dos rejillas. Devuelve (sql, params).
+
+    `activas` es el `(expr, params)` de `publicaciones_panel.filtro_sql_activas`
+    y cuando viene MANDA sobre `solo_publicados` y sobre `estados`: son dos
+    respuestas a la misma pregunta y sólo una es la del canal. `pub_expr`
+    contesta "¿existe en el marketplace?" (una pausada de ML y una DISCOVERABLE
+    de Amazon cuentan); `activas` contesta "¿se puede comprar HOY?". Sumarlas
+    con AND mezclaría las dos definiciones en un número que no es ninguna.
+    """
     sql, params = base, {}
     if search:
         sql += " and (p.name ilike %(like)s or l.sku::text ilike %(like)s)"
@@ -534,9 +543,13 @@ def _filtros(base, *, search, solo_publicados, cuenta, estados, skus_filtro,
     if cuenta:
         sql += " and a.legacy_code = %(cuenta)s"
         params["cuenta"] = cuenta
-    if solo_publicados:
+    if activas:
+        expr_act, params_act = activas
+        sql += f" and ({expr_act})"
+        params.update(params_act)
+    elif solo_publicados:
         sql += f" and ({pub_expr})"
-    if estados:
+    if estados and not activas:
         if "publicado" in estados and "inactivo" not in estados:
             sql += f" and ({pub_expr})"
         elif "inactivo" in estados and "publicado" not in estados:
@@ -564,24 +577,38 @@ def _pagina(sql, params, orden, per_page, page, orden_default):
     return [dict(f) for f in filas], int(total)
 
 
+def _activas(canal, solo_activas):
+    """El WHERE de "se puede comprar HOY", derivado del normalizador de
+    `publicaciones_panel`. Import perezoso: ese módulo lee `costos` y subirlo
+    al encabezado haría ciclo."""
+    if not solo_activas:
+        return None
+    from services import publicaciones_panel
+    return publicaciones_panel.filtro_sql_activas(canal)
+
+
 def rejilla_ml(*, page, per_page, search=None, solo_publicados=False,
-               cuenta=None, orden="reciente", estados=None, skus_filtro=None):
+               cuenta=None, orden="reciente", estados=None, skus_filtro=None,
+               solo_activas=False):
     """Gemela de `meli.listar`. Filas con las llaves que espera `_normalizar`."""
     sql, params = _filtros(_REJILLA_ML, search=search,
                            solo_publicados=solo_publicados, cuenta=cuenta,
                            estados=estados, skus_filtro=skus_filtro,
-                           pub_expr=_PUB_ML)
+                           pub_expr=_PUB_ML,
+                           activas=_activas("mercado_libre", solo_activas))
     return _pagina(sql, params, orden, per_page, page,
                    "publicado desc, sku")
 
 
 def rejilla_amazon(*, page, per_page, search=None, solo_publicados=False,
-                   orden="reciente", estados=None, skus_filtro=None):
+                   orden="reciente", estados=None, skus_filtro=None,
+                   solo_activas=False):
     """Gemela de `amazon.listar`."""
     sql, params = _filtros(_REJILLA_AMZ, search=search,
                            solo_publicados=solo_publicados, cuenta=None,
                            estados=estados, skus_filtro=skus_filtro,
-                           pub_expr=_PUB_AMZ)
+                           pub_expr=_PUB_AMZ,
+                           activas=_activas("amazon", solo_activas))
     params.update({"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)})
     return _pagina(sql, params, orden, per_page, page,
                    "publicado desc, published_at desc nulls last")

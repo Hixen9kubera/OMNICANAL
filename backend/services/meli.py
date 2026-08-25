@@ -131,6 +131,7 @@ def listar(
     orden: str = "reciente",
     estados: list[str] | None = None,
     skus_filtro: list[str] | None = None,
+    solo_activas: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Devuelve (items, total) desde el cache MySQL.
@@ -138,6 +139,9 @@ def listar(
     `orden` ordena por stock/precio. `estados` filtra publicado/inactivo.
     `skus_filtro`: términos separados por coma ("Filtrar SKUs"), filtra Y busca
     a la vez (SKU completo, parcial o palabra del nombre).
+    `solo_activas`: sólo lo que se puede comprar HOY (`situacion='active'`),
+    criterio de `publicaciones_panel`. Requiere la rejilla de kubera — ver
+    `puede_filtrar_activas`.
     """
     # PASO 3 · BLOQUE 2 (19-ago). La rejilla entera sale de channel.listings.
     # Sin try/except: si kubera no contesta, la tabla debe romperse, no salir
@@ -147,7 +151,8 @@ def listar(
         filas, total = channel_read.rejilla_ml(
             page=page, per_page=per_page, search=search,
             solo_publicados=solo_publicados, cuenta=cuenta, orden=orden,
-            estados=estados, skus_filtro=skus_filtro)
+            estados=estados, skus_filtro=skus_filtro,
+            solo_activas=solo_activas)
         return [_normalizar(f) for f in filas], total
 
     offset = (page - 1) * per_page
@@ -213,6 +218,19 @@ def _con_precio_kubera(items: list[dict[str, Any]], costing_read) -> list[dict[s
         i["precio_base"] = _f(p.get("precio_base"))
         i["categoria_id"] = p.get("ml_cat_id") or i.get("categoria_id")
     return items
+
+
+def puede_filtrar_activas() -> bool:
+    """
+    Si `solo_activas` se puede contestar en ESTE camino de lectura.
+
+    La rejilla vieja sale de `ml_progress` (MySQL), que sólo sabe `success=1`:
+    "el publicador la subió", no "se puede comprar". Ahí el filtro no se puede
+    aplicar, y la respuesta correcta es DECIRLO — filtrar por `success` con la
+    etiqueta de "activas" sería contar pausadas como activas, que es justo el
+    número que este filtro existe para no dar.
+    """
+    return bool(settings.supabase_read_publicaciones)
 
 
 def contar_publicados(cuenta: str | None = None) -> int:

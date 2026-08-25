@@ -149,7 +149,12 @@ def listar(
     orden: str = "reciente",
     estados: list[str] | None = None,
     skus_filtro: list[str] | None = None,
+    solo_activas: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
+    """`solo_activas`: sólo lo comprable HOY (`situacion` BUYABLE/PUBLISHED),
+    criterio de `publicaciones_panel`. DISCOVERABLE queda FUERA: se ve en el
+    catálogo y no se puede comprar. Requiere la rejilla de kubera — ver
+    `puede_filtrar_activas`."""
     # PASO 3 · BLOQUE 2 (19-ago). Ver la nota larga en channel_read: la columna
     # `stock` deja de ser la foto de Odoo y pasa a ser el stock del canal.
     if settings.supabase_read_publicaciones:
@@ -157,7 +162,7 @@ def listar(
         filas, total = channel_read.rejilla_amazon(
             page=page, per_page=per_page, search=search,
             solo_publicados=solo_publicados, orden=orden, estados=estados,
-            skus_filtro=skus_filtro)
+            skus_filtro=skus_filtro, solo_activas=solo_activas)
         return [_normalizar(f) for f in filas], total
 
     offset = (page - 1) * per_page
@@ -185,6 +190,12 @@ def listar(
     except Exception as exc:  # noqa: BLE001
         log.error("Error listando Amazon desde DB: %s", exc)
         return [], 0
+
+
+def puede_filtrar_activas() -> bool:
+    """Igual que en `meli`: `amazon_progress` (MySQL) sólo sabe `success=1`, o
+    sea "el publicador la subió". La buyability vive en `channel.listings`."""
+    return bool(settings.supabase_read_publicaciones)
 
 
 def contar_publicados() -> int:

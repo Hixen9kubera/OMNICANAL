@@ -202,77 +202,93 @@ DESCONOCIDO = "desconocido"            # valor nuevo que nadie ha mapeado
 ESTADOS_VIVOS = (ACTIVA, PUEDE_ESTAR_ACTIVA)
 
 
-def _estado_ml(situacion: str | None, _status: str | None) -> str:
-    return {
-        "active": ACTIVA,
-        "paused": PAUSADA,
-        "under_review": EN_REVISION,
-        "closed": CERRADA,
-        "inactive": PAUSADA,   # ML lo usa para publicaciones apagadas; 2 filas
-    }.get((situacion or "").lower(), SIN_ESTADO if not situacion else DESCONOCIDO)
+# ── Valor crudo del canal → estado normalizado ──────────────────────────
+#
+# Estas tablas están a nivel de módulo, y no escondidas dentro de cada
+# `_estado_*`, porque tienen DOS lectores: el normalizador de aquí (Python, fila
+# por fila) y el filtro `solo_activas` de la rejilla de `/api/productos` (SQL,
+# en el WHERE que PAGINA). Escribir la misma regla dos veces es exactamente cómo
+# nacieron `channel_read._PUB_ML` y `_AMZ_VIVA`, que contestan otra pregunta con
+# la misma palabra. Aquí el SQL no se escribe a mano: se DERIVA de estas tablas
+# corriendo el propio normalizador (`valores_activos` → `filtro_sql_activas`).
 
-
-def _estado_amazon(situacion: str | None, _status: str | None) -> str:
-    # `situacion` es la buyability de la oferta. `status` es el resultado del
-    # envío del listing (PUBLISHED/INVALID/…) y NO dice si se puede comprar.
-    return {
-        "BUYABLE": ACTIVA,
-        "PUBLISHED": ACTIVA,
-        "DISCOVERABLE": NO_COMPRABLE,   # 1,253 — visible en el catálogo, sin buy box
-        "CLOSED": CERRADA,
-    }.get((situacion or "").upper(), SIN_ESTADO if not situacion else DESCONOCIDO)
-
-
-def _estado_tiktok(_situacion: str | None, status: str | None) -> str:
-    from services.tiktok_panel import ESTADO_VIVO   # "ACTIVATE"
-    s = (status or "").upper()
-    if s == ESTADO_VIVO:
-        return ACTIVA
-    return {
-        "DRAFT": BORRADOR,
-        "PENDING": EN_REVISION,
-        "FAILED": RECHAZADA,
-        "SELLER_DEACTIVATED": PAUSADA,   # pasó auditoría y el vendedor la apagó
-        "DELETED": CERRADA,
-    }.get(s, SIN_ESTADO if not status else DESCONOCIDO)
-
-
-def _estado_temu(_situacion: str | None, status: str | None) -> str:
-    from services.temu import ESTADOS, VENDIBLES
-    codigo = status or ""
-    if codigo in VENDIBLES:
-        return PUEDE_ESTAR_ACTIVA
-    if codigo == "5/None":
-        return BORRADOR
-    if codigo in ESTADOS:
-        return PAUSADA          # las cubetas "Incompleto": existen y no venden
-    return SIN_ESTADO if not codigo else DESCONOCIDO
-
-
-def _estado_walmart(_situacion: str | None, status: str | None) -> str:
-    from services.walmart_panel import ESTADO_VIVO   # "PUBLISHED"
-    s = (status or "").upper()
-    if s == ESTADO_VIVO:
-        return ACTIVA
-    return {
-        "UNPUBLISHED": PAUSADA,
-        "SYSTEM_PROBLEM": RECHAZADA,
-    }.get(s, SIN_ESTADO if not status else DESCONOCIDO)
-
-
-def _estado_general(_situacion: str | None, _status: str | None) -> str:
-    # Woo no es canal de venta: su fila describe el catálogo, no una publicación.
-    return SIN_ESTADO
-
-
-_NORMALIZADORES = {
-    "mercado_libre": _estado_ml,
-    "amazon": _estado_amazon,
-    "tiktok": _estado_tiktok,
-    "temu": _estado_temu,
-    "walmart": _estado_walmart,
-    "general": _estado_general,
+_MAPA_ML = {
+    "active": ACTIVA,
+    "paused": PAUSADA,
+    "under_review": EN_REVISION,
+    "closed": CERRADA,
+    "inactive": PAUSADA,   # ML lo usa para publicaciones apagadas; 2 filas
 }
+
+# `situacion` es la buyability de la oferta. `status` es el resultado del envío
+# del listing (PUBLISHED/INVALID/…) y NO dice si se puede comprar.
+_MAPA_AMAZON = {
+    "BUYABLE": ACTIVA,
+    "PUBLISHED": ACTIVA,
+    "DISCOVERABLE": NO_COMPRABLE,   # 1,253 — visible en el catálogo, sin buy box
+    "CLOSED": CERRADA,
+}
+
+# El valor VIVO de TikTok y de Walmart NO se re-declara aquí: vive en
+# `tiktok_panel.ESTADO_VIVO` y `walmart_panel.ESTADO_VIVO`, que son la respuesta
+# única de la casa. Por eso estas dos tablas se completan en `_mapa()`.
+_MAPA_TIKTOK_RESTO = {
+    "DRAFT": BORRADOR,
+    "PENDING": EN_REVISION,
+    "FAILED": RECHAZADA,
+    "SELLER_DEACTIVATED": PAUSADA,   # pasó auditoría y el vendedor la apagó
+    "DELETED": CERRADA,
+}
+
+_MAPA_WALMART_RESTO = {
+    "UNPUBLISHED": PAUSADA,
+    "SYSTEM_PROBLEM": RECHAZADA,
+}
+
+# Qué COLUMNA decide en cada canal, y cómo se pliega la caja antes de buscarla
+# en la tabla. NO es la misma columna en todos —ML y Amazon deciden por
+# `situacion`; TikTok, Temu y Walmart por `status`— y confundirlas es la trampa
+# que este módulo existe para no repetir. Temu no pliega nada: sus códigos son
+# literales ("4/7"). Un canal con columna `None` NO puede contestar la pregunta.
+_DECIDE: dict[str, tuple[str | None, str | None]] = {
+    "mercado_libre": ("situacion", "lower"),
+    "amazon":        ("situacion", "upper"),
+    "tiktok":        ("status",    "upper"),
+    "temu":          ("status",    None),
+    "walmart":       ("status",    "upper"),
+    # Woo no es canal de venta: su fila describe el catálogo, no una publicación.
+    "general":       (None,        None),
+}
+
+
+def _mapa(canal: str) -> dict[str, str]:
+    """La tabla completa del canal. Los imports son perezosos a propósito: las
+    constantes vivas son de sus módulos y subirlas al encabezado haría ciclo."""
+    if canal == "mercado_libre":
+        return _MAPA_ML
+    if canal == "amazon":
+        return _MAPA_AMAZON
+    if canal == "tiktok":
+        from services.tiktok_panel import ESTADO_VIVO   # "ACTIVATE"
+        return {ESTADO_VIVO: ACTIVA, **_MAPA_TIKTOK_RESTO}
+    if canal == "temu":
+        from services.temu import ESTADOS, VENDIBLES
+        # Mismo orden de precedencia que tenía el `if` de antes: `VENDIBLES`
+        # gana, `5/None` es borrador, y el resto de las cubetas ("Incompleto")
+        # existe y no vende.
+        return {c: (PUEDE_ESTAR_ACTIVA if c in VENDIBLES
+                    else BORRADOR if c == "5/None"
+                    else PAUSADA)
+                for c in {*ESTADOS, *VENDIBLES}}
+    if canal == "walmart":
+        from services.walmart_panel import ESTADO_VIVO   # "PUBLISHED"
+        return {ESTADO_VIVO: ACTIVA, **_MAPA_WALMART_RESTO}
+    return {}
+
+
+def _plegar(crudo: str | None, pliegue: str | None) -> str:
+    v = crudo or ""
+    return v.lower() if pliegue == "lower" else v.upper() if pliegue == "upper" else v
 
 # Por qué un canal puede no reportar estado. Viaja en el censo para que el
 # frontend NUNCA tenga que pintar un 0 sin explicación.
@@ -293,8 +309,72 @@ NOTA_CANAL = {
 
 def normalizar_estado(canal: str, situacion: str | None,
                       status: str | None) -> str:
-    fn = _NORMALIZADORES.get(canal)
-    return fn(situacion, status) if fn else DESCONOCIDO
+    """
+    El estado normalizado de UNA publicación. Vocabulario cerrado: un valor
+    nuevo del canal cae en `desconocido` con el crudo al lado, nunca se aplasta
+    a `activa`. Un canal que no reporta estado devuelve `sin_estado`, que NO es
+    "no hay": es "no sé", y viaja con su `NOTA_CANAL`.
+    """
+    if canal not in _DECIDE:
+        return DESCONOCIDO
+    columna, pliegue = _DECIDE[canal]
+    if columna is None:
+        return SIN_ESTADO
+    crudo = situacion if columna == "situacion" else status
+    return _mapa(canal).get(_plegar(crudo, pliegue),
+                            SIN_ESTADO if not crudo else DESCONOCIDO)
+
+
+# ── El mismo criterio, pero en SQL (para la rejilla que PAGINA) ──────────────
+#
+# `/api/publicaciones` puede filtrar en Python porque se trae el universo del
+# canal (~8,700 filas) y corta la página después. La rejilla de
+# `/api/productos` NO puede: pagina en SQL sobre hasta 13k filas, y filtrar
+# después de paginar diría "3 resultados" en un canal con cientos. De ahí que el
+# criterio tenga que existir también como WHERE.
+#
+# Lo que NO se hace es volver a escribirlo. `valores_activos` corre el
+# normalizador de arriba sobre la tabla del canal y devuelve los valores crudos
+# que salen vivos; el WHERE se arma con esa lista. Cambiar `_MAPA_AMAZON` mueve
+# el filtro de la rejilla en el mismo commit, sin que nadie tenga que acordarse.
+
+
+def valores_activos(canal: str) -> list[str] | None:
+    """
+    Los valores CRUDOS con los que ESTE canal dice "se puede comprar", ya
+    plegados como los compara `normalizar_estado`.
+
+    `None` significa que el canal no decide por ninguna columna (Woo/`general`,
+    o un canal que aquí no existe): no es una lista vacía, es "no puedo
+    contestar". Quien reciba `None` tiene que decirlo, no filtrar a cero.
+    """
+    if canal not in _DECIDE or _DECIDE[canal][0] is None:
+        return None
+    return sorted(v for v, estado in _mapa(canal).items()
+                  if estado in ESTADOS_VIVOS)
+
+
+def filtro_sql_activas(canal: str, alias: str = "l",
+                       clave: str = "pp_activas") -> tuple[str, dict] | None:
+    """
+    (fragmento de WHERE, params) para quedarse SOLO con lo que se puede comprar
+    en `canal`, o `None` si el canal no puede contestar.
+
+    `alias` es el de `channel.listings` en la consulta que lo va a pegar, y
+    `clave` el nombre del parámetro (para no chocar con los que ya arma cada
+    rejilla). Una lista vacía se traduce a `false` explícito —cero filas, con
+    respuesta— y nunca a "no filtres".
+    """
+    vivos = valores_activos(canal)
+    if vivos is None:
+        return None
+    if not vivos:
+        return "false", {}
+    columna, pliegue = _DECIDE[canal]
+    col = f"coalesce({alias}.{columna},'')"
+    if pliegue:
+        col = f"{pliegue}({col})"
+    return f"{col} = any(%({clave})s)", {clave: vivos}
 
 
 # ── Oferta ────────────────────────────────────────────────────────────────────

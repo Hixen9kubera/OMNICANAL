@@ -22,6 +22,7 @@ from core.marketplaces import Canal, config_canal, es_canal_valido
 from models.schemas import (
     DetalleCanal,
     DetalleProducto,
+    FiltroActivas,
     Paginacion,
     Producto,
     RespuestaProductos,
@@ -34,6 +35,59 @@ router = APIRouter(prefix="/api/productos", tags=["productos"])
 PER_PAGE_DEFAULT = 40
 PER_PAGE_MAX = 100
 
+# ── "Solo activas" — por qué vive aquí y no en el frontend ────────────────────
+#
+# El filtro tiene que aplicarse DONDE SE PAGINA. Hecho en la pantalla filtraría
+# las 40 filas que ya se bajaron y diría "3 resultados" en un canal que tiene
+# cientos: un número de página presentado como número del catálogo.
+#
+# El criterio NO se escribe aquí: es el de `services/publicaciones_panel.py`
+# (`activa` + `puede_estar_activa`), el mismo que usa la pestaña de
+# publicaciones. Ojo con la palabra: "publicado" y "activo" NO son lo mismo.
+# `solo_publicados` contesta "¿existe en el marketplace?" y cuenta las pausadas
+# de ML y las 1,253 DISCOVERABLE de Amazon, que se ven y no se pueden comprar.
+#
+# Y hay canales que NO pueden contestar la pregunta. Ésos no devuelven cero en
+# silencio —un cero se lee como "no hay activas"— sino `aplicado=False` con la
+# nota. Los que SÍ pueden y dan cero (TikTok hoy) devuelven cero de verdad.
+_NOTA_NO_APLICA = {
+    "general": "Woo (chunche.shop) es la FUENTE del catálogo y del stock, no un "
+               "canal de venta: sus filas no traen estado de publicación, así "
+               "que aquí no hay nada que se pueda llamar 'activa'.",
+    "ejemplos": "Este canal todavía se pinta con datos de ejemplo: no sale de "
+                "`channel.listings` y no tiene estado de publicación real.",
+    "mysql": "La rejilla está leyendo la bitácora de MySQL "
+             "(SUPABASE_READ_PUBLICACIONES apagado), que sólo sabe si el "
+             "publicador subió la publicación — no si se puede comprar. El "
+             "filtro no se aplicó: la lista viene SIN filtrar.",
+}
+
+
+def _filtro_activas(canal: str, pedido: bool) -> FiltroActivas | None:
+    """El bloque `filtro_activas` de la respuesta. `None` si nadie lo pidió."""
+    if not pedido:
+        return None
+    from services import publicaciones_panel as pp
+
+    vivos = pp.valores_activos(canal)
+    campo = pp._DECIDE.get(canal, (None, None))[0]  # noqa: SLF001
+    nota = pp.NOTA_CANAL.get(canal)
+
+    if vivos is None:                       # el canal no decide por ninguna columna
+        motivo = _NOTA_NO_APLICA["general"] if canal == Canal.GENERAL.value \
+            else _NOTA_NO_APLICA["ejemplos"]
+        return FiltroActivas(solo_activas=True, aplicado=False, nota=motivo)
+
+    if canal == Canal.MERCADO_LIBRE.value and not meli.puede_filtrar_activas():
+        return FiltroActivas(solo_activas=True, aplicado=False,
+                             nota=_NOTA_NO_APLICA["mysql"])
+    if canal == Canal.AMAZON.value and not amazon.puede_filtrar_activas():
+        return FiltroActivas(solo_activas=True, aplicado=False,
+                             nota=_NOTA_NO_APLICA["mysql"])
+
+    return FiltroActivas(solo_activas=True, aplicado=True, campo=campo,
+                         valores=vivos, nota=nota)
+
 
 @router.get("", response_model=RespuestaProductos)
 async def listar_productos(
@@ -41,7 +95,8 @@ async def listar_productos(
     page: int = Query(1, ge=1),
     per_page: int = Query(PER_PAGE_DEFAULT, ge=1, le=PER_PAGE_MAX),
     search: str | None = Query(None, description="Búsqueda por SKU o nombre"),
-    solo_publicados: bool = Query(False, description="Solo items publicados en el canal"),
+    solo_publicados: bool = Query(False, description="Solo items publicados en el canal (incluye pausadas de ML y DISCOVERABLE de Amazon)"),
+    solo_activas: bool = Query(False, description="Solo publicaciones que se pueden comprar HOY, con el criterio de cada canal (publicaciones_panel). Manda sobre solo_publicados y estados"),
     cuenta: str | None = Query(None, description="Cuenta ML: BEKURA (Kubera) o SANCORFASHION (San Corpe)"),
     orden: str = Query("reciente", description="reciente | stock_desc | stock_asc | precio_desc | precio_asc"),
     estados: str | None = Query(None, description="Filtro de estado, coma-separado: publicado,inactivo"),
@@ -54,6 +109,12 @@ async def listar_productos(
 
     estados_lista = [e.strip() for e in estados.split(",")] if estados else None
     skus_lista = [s for s in (skus or "").split(",") if s.strip()] or None
+
+    # Se resuelve ANTES de listar: si el canal (o el camino de lectura) no puede
+    # evaluar el criterio, no se filtra y se dice — nunca se devuelve un cero
+    # sin explicación.
+    filtro_activas = _filtro_activas(canal, solo_activas)
+    activas = bool(filtro_activas and filtro_activas.aplicado)
 
     if canal == Canal.GENERAL.value:
         items_raw, total, total_pages = await woocommerce.listar_productos(
@@ -86,12 +147,14 @@ async def listar_productos(
 
     elif canal == Canal.MERCADO_LIBRE.value:
         items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta,
-                                       orden=orden, estados=estados_lista, skus_filtro=skus_lista)
+                                       orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+                                       solo_activas=activas)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.AMAZON.value:
         items_raw, total = amazon.listar(page, per_page, search, solo_publicados,
-                                         orden=orden, estados=estados_lista, skus_filtro=skus_lista)
+                                         orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+                                         solo_activas=activas)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.TIKTOK.value:
@@ -101,7 +164,7 @@ async def listar_productos(
         from services import tiktok_panel
         items_raw, total = tiktok_panel.listar(
             page, per_page, search, solo_publicados, orden=orden,
-            estados=estados_lista, skus_filtro=skus_lista)
+            estados=estados_lista, skus_filtro=skus_lista, solo_activas=activas)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.TEMU.value:
@@ -111,7 +174,7 @@ async def listar_productos(
         from services import temu_panel
         items_raw, total = temu_panel.listar(
             page, per_page, search, solo_publicados, orden=orden,
-            estados=estados_lista, skus_filtro=skus_lista)
+            estados=estados_lista, skus_filtro=skus_lista, solo_activas=activas)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.WALMART.value:
@@ -120,7 +183,7 @@ async def listar_productos(
         from services import walmart_panel
         items_raw, total = walmart_panel.listar(
             page, per_page, search, solo_publicados, orden=orden,
-            estados=estados_lista, skus_filtro=skus_lista)
+            estados=estados_lista, skus_filtro=skus_lista, solo_activas=activas)
         total_pages = _paginas(total, per_page)
 
     else:  # shein  → ejemplos
@@ -164,7 +227,8 @@ async def listar_productos(
         tiene_anterior=page > 1,
         tiene_siguiente=page < total_pages,
     )
-    return RespuestaProductos(canal=canal, items=items, paginacion=paginacion)
+    return RespuestaProductos(canal=canal, items=items, paginacion=paginacion,
+                              filtro_activas=filtro_activas)
 
 
 @router.get("/_categorias/lista")
