@@ -1108,12 +1108,17 @@ histórico sigue en `ops.webhook_events.resultado`.
 
 #### Lo que este cambio NO arregla
 
-Comprobado contra la API de ML sobre 18 publicaciones el 25-ago: **2 tenían la
-oferta muerta y en 11 más el precio guardado ya no era el real** (en las dos
+Comprobado contra la API de ML sobre **17 publicaciones activas** el 25-ago
+(GET a `/items/{id}` y `/items/{id}/sale_price`, 17/17 con HTTP 200): **2 tenían
+la oferta muerta y en 10 más el precio guardado ya no era el real** — en las dos
 direcciones: `TEC-0963-NEG` guardaba $71.18 y ML cobra $229.00; `MAN-0490-DOR`
-guardaba $2,812.03 y ML cobra $2,199.00). O sea que el dato guardado está
-equivocado en ~72% de la muestra y **no sirve para calcular un margen** — que es
-justo lo que dice "sin confirmar".
+guardaba $2,812.03 y ML cobra $2,199.00. O sea que el dato guardado está
+equivocado en **12 de 17** y **no sirve para calcular un margen** — que es justo
+lo que dice "sin confirmar".
+
+Ojo con la lectura fácil: la mayoría de esas ofertas **sí existen**, lo que está
+mal es el precio. `ACC-0302-GRI`, el caso que abrió esto, es de los dos que de
+verdad ya no tienen promoción.
 
 Pero en las 5 que sí coincidían, y en las que ML cobra **menos** que lo guardado,
 el margen contra el precio de lista queda **optimista**. Es el intercambio que
