@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.256.0 — La etiqueta VALIDADO, donde se leen los márgenes
+
+El chip `ChipRevision` en las DOS vistas que sacan conclusiones de dinero: la
+tabla de **Análisis** y el popup **"Productos más vendidos"**. Componente
+compartido a propósito — ya hay precedente de lo que cuesta duplicar un chip
+entre esas dos (`PanelHover` nació de eso).
+
+**Por qué ahí y no en Costos.** Toda la columna de margen de ambas descansa
+sobre `costo`, y hasta ahora un margen calculado sobre un costo verificado
+contra el packing list se leía **idéntico** a uno calculado sobre un costo que
+nadie ha mirado. El chip es lo que separa esas dos lecturas.
+
+**Tres estados, no dos.** El tercero es el que un "validado sí/no" no sabe
+decir: `VALIDADO ⚠` = se validó y la fila **se tocó después**, así que la marca
+sigue puesta pero ya no describe los números en pantalla. Sale de
+`updated_at > revisado_at`, sin columna nueva.
+
+**El "sin marca" no se pinta.** Hoy son las 15,838 filas; llenar las tablas de
+chips grises sería ruido. Se señala lo verificado, no lo pendiente — para eso
+está el filtro `revisado=no` en Costos.
+
+En el backend, `cv.revisado_at`/`revisado_por` se suman a los dos SELECT que ya
+unían `costos_validados` (`_BASE` de la tabla y `_SQL_MARGEN_REAL_TOP`); en el
+popup la marca es por SKU, así que se toma del primer renglón del grupo que la
+traiga — igual que `costo_base`, que ya se resolvía así entre cuentas.
+
 ### v0.255.1 — La marca sí llega al panel
 
 `costos_listado` reconstruye cada fila con campos explícitos, así que

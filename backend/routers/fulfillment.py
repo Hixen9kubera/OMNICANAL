@@ -413,6 +413,14 @@ filas as (
          -- MAN-0495-BLN: producto $741, flete $0, y SÍ tiene medidas
          -- (90x36x45) — no es que no se pueda calcular, es que no se capturó.
          coalesce(cv.costo_cbm, cf.costo_cbm)        as costo_flete,
+         -- Marca de revisión del costeo (0032). Toda la columna de margen de
+         -- esta tabla descansa sobre `costo`, y hasta ahora no había forma de
+         -- ver si ese costo fue verificado contra el packing list o si nadie
+         -- lo ha mirado nunca. `revision_movida` = se revisó y la fila se tocó
+         -- después: la marca sigue puesta pero ya no describe estos números.
+         cv.revisado_at, cv.revisado_por,
+         (cv.revisado_at is not null and cv.updated_at > cv.revisado_at)
+                                                     as revision_movida,
          -- PRECIO DE REFERENCIA de todo el bloque de margen: el REALIZADO
          -- cuando hubo ventas (ingreso ÷ uds, ya ponderado entre cuentas) y el
          -- publicado cuando no las hubo — el mismo criterio que usa la celda de
@@ -1056,6 +1064,13 @@ select t.cuenta, t.sku::text as sku, t.titulo, t.uds,
        -- nota de `_BASE`): viaja aparte solo para avisar cuando vale 0.
        coalesce(cv.costo_cbm, cf.costo_cbm)        as costo_flete,
        cf.costo_fee_envio                          as envio_estimado,
+       -- Marca de revisión del costeo (0032). Sin ella, la tabla no distingue
+       -- un margen calculado sobre un costo verificado contra el packing list
+       -- de uno calculado sobre un costo que nadie ha mirado — y son
+       -- conclusiones de peso muy distinto.
+       cv.revisado_at, cv.revisado_por,
+       (cv.revisado_at is not null and cv.updated_at > cv.revisado_at)
+                                                   as revision_movida,
        t.rn::int                                   as rn,
        g.rn_g::int                                 as rn_g
   from top t
@@ -1226,6 +1241,14 @@ async def margenes_reales(
             # Sancor y pausado en Bekura se leía igual que uno activo en las
             # dos, y la acción que pide cada caso es distinta.
             "estado_cuenta": {g["cuenta"]: g["estado"] for g in grupo},
+            # Marca de revisión del costeo (0032). Es por SKU, así que basta el
+            # primer renglón del grupo que la traiga — las dos cuentas comparten
+            # la misma fila de costeo, igual que `costo_base`.
+            "revisado_at": next((g["revisado_at"].isoformat() for g in grupo
+                                 if g.get("revisado_at")), None),
+            "revisado_por": next((g["revisado_por"] for g in grupo
+                                  if g.get("revisado_por")), None),
+            "revision_movida": any(g.get("revision_movida") for g in grupo),
         }
         # Visitas: se suman TODAS las publicaciones del SKU en las cuentas del
         # grupo. `dias_datos` es cuántos días trajo ML de verdad — la ventana no

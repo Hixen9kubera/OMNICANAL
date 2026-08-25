@@ -26,6 +26,7 @@ import { AlertTriangle, BadgePercent, RefreshCw, Tag, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import PanelHover from "@/components/PanelHover";
+import ChipRevision from "@/components/ChipRevision";
 import { CUENTA_DOT, CUENTA_INI, CUENTA_NOMBRE } from "@/lib/canales";
 
 interface Fila {
@@ -47,6 +48,11 @@ interface Fila {
   /* …y cómo está en CADA una: {BEKURA: 'pausada', SANCORFASHION: 'activa'}.
      El estado resuelto dice que se puede comprar, no dónde. */
   estado_cuenta?: Record<string, string>;
+  /* Marca de validación del costeo (0032). El margen de este renglón sale de
+     `costo_base`, así que importa si ese costo fue verificado o nadie lo miró. */
+  revisado_at?: string | null;
+  revisado_por?: string | null;
+  revision_movida?: boolean;
 }
 interface Respuesta {
   dias: number; pendientes: number; consultadas: number; nota: string;
@@ -402,6 +408,9 @@ function TablaCuenta({ titulo, sub, filas, conCuentas }: {
                         </span>
                       );
                     })()}
+                    <ChipRevision revisadoAt={f.revisado_at}
+                                  revisadoPor={f.revisado_por}
+                                  movida={f.revision_movida} />
                   </div>
                   <div className="truncate text-[11px] text-slate-400">{f.titulo ?? ""}</div>
                 </td>

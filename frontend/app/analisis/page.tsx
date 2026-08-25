@@ -28,6 +28,7 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
 import PanelHover from "@/components/PanelHover";
+import ChipRevision from "@/components/ChipRevision";
 import { CANAL_CORTO, CUENTA_DOT, CUENTA_INI } from "@/lib/canales";
 
 /* ── Tipos ─────────────────────────────────────────────────────────────── */
@@ -114,6 +115,12 @@ interface Fila {
   /* El flete de importación YA está sumado dentro de `costo`. Viaja aparte solo
      para poder avisar cuando vale 0 — ver CostoBase. */
   costo_flete: number | null;
+  /* Marca de validación del costeo (0032). Toda la columna de margen sale de
+     `costo`: importa si ese costo fue verificado contra el packing list o si
+     nadie lo ha mirado. `revision_movida` = se validó y la fila cambió después. */
+  revisado_at?: string | null;
+  revisado_por?: string | null;
+  revision_movida?: boolean;
   // Cobros del marketplace por unidad (Eduardo, 5-ago): la comisión es la REAL
   // de los pedidos del período — por eso puede faltar (SKU sin ventas, o
   // Amazon, que aún la registra en cero). Con ellos sale el margen NETO.
@@ -2247,6 +2254,9 @@ export default function FulfillmentPage() {
                           padre y sin esto se comerían el renglón. */}
                       <span className="shrink-0"><PuntosCuenta fila={f} /></span>
                       <MarcaDosProductos div={f.peso_divergente} />
+                      <ChipRevision revisadoAt={f.revisado_at}
+                                    revisadoPor={f.revisado_por}
+                                    movida={f.revision_movida} />
                     </div>
                     <div className="truncate text-[11px] text-slate-500" title={f.titulo ?? ""}>{f.titulo ?? "—"}</div>
                   </td>
