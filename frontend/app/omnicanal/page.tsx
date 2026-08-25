@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, Filter, RotateCw, Sparkles, Layers, Loader2 } from "lucide-react";
+import {
+  Search, Filter, RotateCw, Sparkles, Layers, Loader2,
+  ShoppingCart, AlertTriangle, Info,
+} from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import MarketplaceTabs from "@/components/MarketplaceTabs";
@@ -15,7 +18,7 @@ import ProductDetailDrawer from "@/components/ProductDetailDrawer";
 import ResumenPublicacionesCanal from "@/components/ResumenPublicacionesCanal";
 
 import { listarCanales, listarProductos, listarCategorias, type CategoriaWC } from "@/lib/api";
-import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
+import type { CanalInfo, FiltroActivas, Paginacion, Producto } from "@/lib/types";
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
 
 const PER_PAGE = 40;
@@ -37,6 +40,14 @@ export default function OmnicanalPage() {
   const [skusInput, setSkusInput] = useState("");
   const [skusFiltro, setSkusFiltro] = useState("");
   const [soloPublicados, setSoloPublicados] = useState(false);
+  // "Solo activas": lo que se puede COMPRAR hoy, con el criterio de cada canal.
+  // Excluyente con `soloPublicados` porque en el backend `solo_activas` MANDA
+  // sobre él (no se suman con AND): tenerlos encendidos a la vez mostraría un
+  // chip que no está haciendo nada.
+  const [soloActivas, setSoloActivas] = useState(false);
+  // Qué hizo el backend con la petición del filtro. `null` = nadie lo pidió.
+  // NO es decorativo: distingue "0 activas de verdad" de "no se pudo filtrar".
+  const [filtroActivas, setFiltroActivas] = useState<FiltroActivas | null>(null);
   const [cargando, setCargando] = useState(true);
   // Arranque en frío del backend: el índice puede tardar varios segundos en
   // construirse. "0 resultados" en ese momento no significa catálogo vacío.
@@ -63,6 +74,22 @@ export default function OmnicanalPage() {
     [canales, canal],
   );
   const esGeneral = canal === GENERAL;
+
+  // ── Las DOS lecturas de `filtro_activas` ────────────────────────────
+  // Se separan a propósito: pintarlas igual es exactamente el error que el
+  // bloque existe para evitar.
+  //   · `aplicado: false` → la lista NO está filtrada aunque se haya pedido.
+  //     Callarlo hace creer al usuario que está viendo activas cuando ve todo.
+  //   · `aplicado: true` + total 0 → el CERO ES LA RESPUESTA (TikTok hoy).
+  //     Nunca "no encontrados" ni "preparando": el canal sí contestó.
+  const activasNoAplicado = soloActivas && !!filtroActivas && !filtroActivas.aplicado;
+  const activasCeroReal =
+    soloActivas && !!filtroActivas && filtroActivas.aplicado
+    && pag.total === 0 && !cargando;
+  // La `nota` del canal cuando el filtro SÍ se aplicó: es la que explica el
+  // salto de Amazon (1,668 publicados → 138 activas) y el cero de TikTok.
+  const activasNota =
+    soloActivas && filtroActivas?.aplicado ? filtroActivas.nota : null;
 
   const tema: CanalTheme = useMemo(() => {
     const fb = THEME_FALLBACK[canal] ?? THEME_FALLBACK.general;
@@ -123,6 +150,7 @@ export default function OmnicanalPage() {
         search: busqueda || undefined,
         skus: skusFiltro || undefined,
         soloPublicados,
+        soloActivas,
         cuenta: esGeneral ? null : cuenta,
         orden,
         estados,
@@ -137,6 +165,9 @@ export default function OmnicanalPage() {
       .then((r) => {
         setProductos(r.items);
         setPag(r.paginacion);
+        // Viene sólo si se pidió el filtro. Se guarda SIEMPRE (aunque sea
+        // `null`) para no arrastrar la nota de una petición anterior.
+        setFiltroActivas(r.filtro_activas ?? null);
         // Sin búsqueda/filtro y 0 resultados → probablemente el índice todavía
         // se está construyendo (arranque en frío). Reintenta en vez de mostrar
         // "no encontrados". Solo aplica al canal GENERAL (WooCommerce);
@@ -166,7 +197,9 @@ export default function OmnicanalPage() {
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [canal, page, busqueda, skusFiltro, soloPublicados, cuenta, esGeneral, orden, estados, categoria]);
+    // `soloActivas` va aquí SÍ O SÍ: sin él, encender el chip no vuelve a
+    // pedir y la rejilla se queda igual — se ve como que el filtro no sirve.
+  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -181,6 +214,12 @@ export default function OmnicanalPage() {
     setCuenta(def);
     // Marketplaces: por defecto mostrar solo publicados
     setSoloPublicados(nuevo !== GENERAL);
+    // "Solo activas" arranca apagado en cada pestaña. Además de higiene, es lo
+    // que sostiene la invariante de la que depende el reintento de abajo: el
+    // chip no existe en General y tampoco puede llegar encendido desde otro
+    // canal, así que `esGeneral && soloActivas` es inalcanzable.
+    setSoloActivas(false);
+    setFiltroActivas(null);
     // Reiniciar filtros que dependen del canal
     setCategoria(null);
     setEstados([]);
@@ -277,36 +316,75 @@ export default function OmnicanalPage() {
             {/* Leyenda de canales (solo en GENERAL, donde están los puntos) */}
             {esGeneral && <ChannelLegend canales={canales} />}
 
-            {/* Toggle solo publicados (marketplaces) */}
+            {/* Toggles de marketplace. "Publicado" y "ACTIVO" no son lo mismo y
+                por eso son dos chips, no uno. Ninguno se ofrece en GENERAL: Woo
+                es la FUENTE del catálogo y del stock, no un canal de venta, así
+                que no tiene estado de publicación que filtrar (el backend
+                contestaría `aplicado: false`). */}
             {!esGeneral && (
-              <button
-                onClick={() => {
-                  setSoloPublicados((v) => !v);
-                  setPage(1);
-                }}
-                className={[
-                  "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
-                  soloPublicados
-                    ? "border-transparent text-white"
-                    : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                ].join(" ")}
-                style={soloPublicados ? { backgroundColor: tema.color, color: tema.texto } : undefined}
-                // "Publicado" NO es "activo", y este filtro cuenta lo primero:
-                // en Mercado Libre deja pasar las PAUSADAS y en Amazon las
-                // DISCOVERABLE, que se ven y no se venden. El criterio de cada
-                // canal está en el renglón de abajo (censo de publicaciones) y
-                // todavía no se puede filtrar por él (falta en /api/productos).
-                title={
-                  "Deja las que existen en el canal: `listing_id` presente y no cerrada.\n"
-                  + "INCLUYE pausadas y, en Amazon, las que se ven pero no se pueden "
-                  + "comprar (DISCOVERABLE).\n"
-                  + "Cuántas están ACTIVAS de verdad, con el criterio del canal, sale "
-                  + "en el renglón de abajo."
-                }
-              >
-                <Filter size={15} />
-                Solo publicados
-              </button>
+              <>
+                <button
+                  onClick={() => {
+                    const nuevo = !soloPublicados;
+                    setSoloPublicados(nuevo);
+                    // Excluyentes: en el backend `solo_activas` MANDA sobre
+                    // `solo_publicados` (no se suman con AND), así que dejar
+                    // los dos encendidos pintaría un chip que no filtra nada.
+                    if (nuevo) setSoloActivas(false);
+                    setPage(1);
+                  }}
+                  className={[
+                    "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                    soloPublicados
+                      ? "border-transparent text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  ].join(" ")}
+                  style={soloPublicados ? { backgroundColor: tema.color, color: tema.texto } : undefined}
+                  // "Publicado" NO es "activo", y este filtro cuenta lo primero:
+                  // en Mercado Libre deja pasar las PAUSADAS y en Amazon las
+                  // DISCOVERABLE, que se ven y no se venden. Para lo segundo
+                  // está el chip de al lado.
+                  title={
+                    "Deja las que existen en el canal: `listing_id` presente y no cerrada.\n"
+                    + "INCLUYE pausadas y, en Amazon, las que se ven pero no se pueden "
+                    + "comprar (DISCOVERABLE).\n"
+                    + "Para quedarte sólo con las que se pueden comprar hoy, usa "
+                    + "«Solo activas»."
+                  }
+                >
+                  <Filter size={15} />
+                  Solo publicados
+                </button>
+
+                <button
+                  onClick={() => {
+                    const nuevo = !soloActivas;
+                    setSoloActivas(nuevo);
+                    if (nuevo) setSoloPublicados(false);
+                    else setFiltroActivas(null);
+                    setPage(1);
+                  }}
+                  className={[
+                    "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                    soloActivas
+                      ? "border-transparent text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  ].join(" ")}
+                  style={soloActivas ? { backgroundColor: tema.color, color: tema.texto } : undefined}
+                  title={
+                    "Deja sólo lo que se puede COMPRAR hoy, con el criterio de cada canal.\n"
+                    + "En Amazon el corte es grande y es CORRECTO: sus 1,253 DISCOVERABLE "
+                    + "se ven en el catálogo y no se pueden comprar (1,668 publicados → "
+                    + "138 activas).\n"
+                    + "En TikTok da 0, y también es correcto: sus 283 APPROVED están "
+                    + "SELLER_DEACTIVATED.\n"
+                    + "Manda sobre «Solo publicados»: encender éste apaga aquél."
+                  }
+                >
+                  <ShoppingCart size={15} />
+                  Solo activas
+                </button>
+              </>
             )}
 
             {/* Buscador */}
@@ -378,6 +456,31 @@ export default function OmnicanalPage() {
           </div>
         )}
 
+        {/* LECTURA 1 — se pidió el filtro y el canal NO pudo aplicarlo. Lo que
+            se ve abajo es el catálogo SIN filtrar: hay que decirlo, o el chip
+            encendido miente. */}
+        {activasNoAplicado && (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+            <span>
+              <strong>La lista de abajo NO está filtrada por activas.</strong>{" "}
+              Se pidió el filtro y este canal no puede evaluarlo, así que estás
+              viendo el catálogo completo.
+              {filtroActivas?.nota ? ` ${filtroActivas.nota}` : null}
+            </span>
+          </div>
+        )}
+
+        {/* LECTURA 2 — el filtro SÍ se aplicó: la nota explica la trampa del
+            canal (el salto de Amazon, el cero de TikTok, el "puede estar
+            activa" de Temu). */}
+        {activasNota && (
+          <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-600">
+            <Info size={14} className="mt-0.5 shrink-0 text-slate-400" />
+            <span>{activasNota}</span>
+          </div>
+        )}
+
         {/* Paginación superior */}
         <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
           <Pagination pag={pag} color={tema.color} textoColor={tema.texto} onPage={irPagina} />
@@ -385,7 +488,28 @@ export default function OmnicanalPage() {
 
         {/* Productos: mosaico o lista */}
         <div className="mt-5">
-          {vista === "mosaico" ? (
+          {activasCeroReal ? (
+            // El canal contestó y la respuesta es CERO. Va aquí, en lugar de la
+            // rejilla, porque ProductGrid/ProductList dirían "No se encontraron
+            // productos · Prueba con otra búsqueda" — que se lee como "no hay
+            // nada" o "todavía no carga", y las dos lecturas son falsas.
+            <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-slate-300 bg-white py-24 text-center">
+              <ShoppingCart size={48} className="text-slate-300" strokeWidth={1.3} />
+              <p className="text-base font-semibold text-slate-600">
+                0 activas en este canal
+              </p>
+              <p className="max-w-xl px-6 text-sm text-slate-500">
+                No es un error ni una carga a medias: el canal sí contestó la
+                pregunta y la respuesta es cero. Hoy no hay ninguna publicación
+                que se pueda comprar aquí.
+              </p>
+              {filtroActivas?.nota && (
+                <p className="max-w-xl px-6 text-xs text-slate-400">
+                  {filtroActivas.nota}
+                </p>
+              )}
+            </div>
+          ) : vista === "mosaico" ? (
             <ProductGrid
               productos={productos}
               canal={canal}

@@ -79,10 +79,41 @@ export interface RespuestaProductosBase {
   completo?: boolean;
 }
 
+/**
+ * Qué pasó con `solo_activas` en ESTA petición. Llega sólo si se pidió el
+ * filtro; `null`/ausente el resto del tiempo.
+ *
+ * LAS DOS LECTURAS NO SE PUEDEN CONFUNDIR — es la razón de que el bloque
+ * exista, no un detalle de forma:
+ *
+ *   `aplicado: true` + `paginacion.total === 0`
+ *     → el CERO ES LA RESPUESTA. Es el caso de TikTok hoy (sus 283 APPROVED
+ *       están SELLER_DEACTIVATED). Se pinta "0 activas" + la `nota`, NUNCA
+ *       "no encontrados" ni "preparando el catálogo".
+ *
+ *   `aplicado: false`
+ *     → la lista NO está filtrada, aunque se haya pedido. Pasa en `general`
+ *       (Woo es la fuente del catálogo, no un canal de venta) y pasaría en ML
+ *       o Amazon si se apagara SUPABASE_READ_PUBLICACIONES. El chip no puede
+ *       quedar encendido a secas: hay que decir la `nota`, o el usuario cree
+ *       que ve activas y está viendo todo.
+ *
+ * Contrato cerrado por omni-backend (handoff 2026-08-25) ·
+ * `backend/models/schemas.py::FiltroActivas`.
+ */
+export interface FiltroActivas {
+  solo_activas: boolean;              // lo que se pidió
+  aplicado: boolean;                  // si el canal pudo evaluar el criterio
+  campo: "situacion" | "status" | null; // no es la misma columna en cada canal
+  valores: string[];                  // los valores crudos que cuentan como activa
+  nota: string | null;                // la trampa del canal, o el porqué de no aplicarlo
+}
+
 export interface RespuestaProductos extends RespuestaProductosBase {
   canal: string;
   items: Producto[];
   paginacion: Paginacion;
+  filtro_activas?: FiltroActivas | null;
 }
 
 export interface SubCuentaInfo {

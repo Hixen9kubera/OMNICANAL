@@ -1001,6 +1001,79 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.260.0 — El chip "Solo activas" en la pestaña Omnicanal
+
+La v0.259.0 le enseñó a `GET /api/productos` a filtrar por "activa **del
+canal**". Faltaba el interruptor: el filtro existía y nadie podía encenderlo.
+Este cambio es **sólo la pantalla** — no toca backend, ni SQL, ni ningún flujo
+vivo.
+
+**El chip.** Va junto a "Solo publicados", con el mismo aspecto, y manda
+`solo_activas=true`. Los dos chips son **excluyentes**: encender uno apaga el
+otro. No es cosmética — en el backend `solo_activas` MANDA sobre
+`solo_publicados` y sobre `estados` (no se suman con AND), así que dejar los dos
+encendidos pintaría un chip que no está filtrando nada.
+
+**Por qué NO se ofrece en la pestaña General.** Va dentro del mismo
+`{!esGeneral && …}` que ya envolvía a "Solo publicados". Woo (chunche.shop) es la
+FUENTE del catálogo y del stock, no un canal de venta: sus filas no traen estado
+de publicación, así que ahí no hay nada que se pueda llamar "activa". El backend
+contestaría `aplicado: false`, y un chip encendido sin efecto es peor que no
+tenerlo.
+
+**Las DOS lecturas de `filtro_activas`, que no se pueden confundir.** Es el
+corazón del cambio:
+
+| caso | qué significa | qué pinta el panel |
+|---|---|---|
+| `aplicado: true` + total 0 | **el cero ES la respuesta** | "0 activas en este canal" + la `nota`. Nunca "no encontrados" ni "preparando" |
+| `aplicado: false` | **la lista NO está filtrada**, aunque se pidió | aviso ámbar arriba de la rejilla, con la `nota` |
+
+El caso del cero es **TikTok hoy**: sus 283 `APPROVED` están
+`SELLER_DEACTIVATED` —existen y no se pueden comprar—. La rejilla compartida
+(`ProductGrid` / `ProductList`) habría dicho *"No se encontraron productos ·
+Prueba con otra búsqueda"*, que se lee como "no hay nada" o como "todavía no
+carga", y las dos lecturas son falsas. Por eso el bloque de cero **sustituye** a
+la rejilla en vez de configurarla: esos dos componentes los comparten Productos
+y Crear, y no se tocaron.
+
+El caso de `aplicado: false` pasa en `general` y en `shein`, y pasaría en ML o
+Amazon si se apagara `SUPABASE_READ_PUBLICACIONES`. Callarlo haría creer al
+usuario que está viendo activas cuando está viendo el catálogo entero.
+
+**El salto de Amazon va explicado, no escondido.** Amazon pasa de **1,668
+publicados a 138 activas**, y eso sorprende: sus **1,253 DISCOVERABLE** se ven en
+el catálogo y no se pueden comprar. La explicación viaja en la `nota` del propio
+backend y se pinta debajo de los chips, además del tooltip. Es para que nadie lo
+reporte como bug.
+
+Cuentas del día (25-ago, producción): Mercado Libre **850**, Walmart **207**,
+Amazon **138**, Temu **59**, TikTok **0**. Ojo con el número de ML: cuenta FILAS
+de `channel.listings`, y hay 89 `listing_id` colgados de dos filas (SKU padre +
+variante), así que ~851 filas son ~815 publicaciones. La tabla está viva y la
+cifra se mueve sola — hay que medirla el día que se diga.
+
+**El detalle fácil de olvidar.** `soloActivas` va en el arreglo de dependencias
+del `useCallback` que carga la rejilla. Sin eso, encender el chip no vuelve a
+pedir y la pantalla se queda igual: se ve exactamente como si el filtro no
+sirviera.
+
+**El reintento de arranque en frío NO se tocó.** Esa guarda reintenta 45 veces
+cuando el total llega en 0, y con este filtro hay ceros legítimos. No hizo falta
+añadirle nada: ya exige `esGeneral`, el chip no existe en General y se apaga en
+cada cambio de canal, así que `esGeneral && soloActivas` es inalcanzable. El
+reintento sigue igual de frágil ante errores de red que antes — ese problema es
+previo y ajeno a este cambio.
+
+**Archivos:** `frontend/app/omnicanal/page.tsx` (estado, chip, las dos lecturas,
+dependencias), `frontend/lib/api.ts` (`soloActivas` → `solo_activas=true`),
+`frontend/lib/types.ts` (`FiltroActivas`).
+
+**Probado:** `tsc --noEmit` limpio y `next build` completo (20 rutas). **NO se
+verificó en pantalla**: no hay sandbox y no se apunta a producción. El único
+backend levantado en la máquina es v0.252.0 y su `/api/productos` todavía no
+acepta `solo_activas`, así que no podía ejercitar el chip.
+
 ### v0.259.0 — "Solo activas": filtrar por lo que de verdad se puede comprar, canal por canal
 
 La rejilla de Omnicanal ya podía filtrar por **"Solo publicados"**, y esa palabra

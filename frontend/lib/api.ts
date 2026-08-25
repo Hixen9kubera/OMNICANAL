@@ -190,6 +190,12 @@ export interface ListarParams {
   perPage?: number;
   search?: string;
   soloPublicados?: boolean;
+  // "Solo activas": las que se pueden COMPRAR hoy, con el criterio de cada
+  // canal (`publicaciones_panel`). NO es `soloPublicados`: ése cuenta las
+  // pausadas de ML y las DISCOVERABLE de Amazon, que se ven y no se venden.
+  // El backend lo aplica DONDE PAGINA y MANDA sobre `soloPublicados` y
+  // `estados` — no se suman con AND.
+  soloActivas?: boolean;
   cuenta?: string | null;
   orden?: string;
   estados?: string[];
@@ -208,6 +214,7 @@ export function listarProductos(
   q.set("per_page", String(p.perPage ?? 40));
   if (p.search) q.set("search", p.search);
   if (p.soloPublicados) q.set("solo_publicados", "true");
+  if (p.soloActivas) q.set("solo_activas", "true");
   if (p.cuenta) q.set("cuenta", p.cuenta);
   if (p.orden && p.orden !== "reciente") q.set("orden", p.orden);
   if (p.estados && p.estados.length) q.set("estados", p.estados.join(","));
