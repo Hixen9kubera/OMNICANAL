@@ -33,6 +33,7 @@ import requests
 from config import settings
 from services import (alertas, core_read, costing_mirror, costing_read,
                       costing_write, db, lecturas_fuente, meli)
+from services import supabase_db as sdb
 
 log = logging.getLogger("uvicorn.error")
 
