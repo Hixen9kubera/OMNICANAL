@@ -79,7 +79,7 @@ _schema_ok = False
 #   items             /items/{id}                              6,064  ✅ acertaba
 #   items_prices      /items/{id}/prices                       1,651  ❌ daba "prices"
 #   price_suggestion  /suggestions/items/{id}/details              60  ❌ daba "details"
-#   public_offers     /seller-promotions/offers/OFFER-{id}-{n}  3,716  ← otro recurso
+#   public_offers     /seller-promotions/offers/OFFER-{id}-{n}  3,716  ← v0.262.0
 #
 # Los 1,651 de `items_prices` fallaban el 100% de las veces y llevaban días así:
 # `refrescar_ml_item_id("prices")` no encuentra dueño y el aviso se tira. Nadie
@@ -87,15 +87,50 @@ _schema_ok = False
 # que ML no reintente ni deshabilite el topic—, así que un fallo de proceso se
 # ve EXACTAMENTE igual que un éxito desde fuera. Esa es la razón de `/ml/salud`.
 #
-# `public_offers` queda FUERA a propósito: `OFFER-MLM123-456` no es una ruta de
-# ítem sino una promoción, con el id incrustado en el del offer. Es otro recurso
-# y otra resolución; no se abre aquí.
+# ── public_offers: por qué se abre, y por dónde ───────────────────────────────
+#
+# v0.261.0 lo dejó fuera diciendo "otro recurso, otra resolución". Lo primero es
+# cierto; lo segundo resultó falso, y hay que decir por qué para que nadie
+# vuelva a intentar el camino caro.
+#
+# Se probó el camino "correcto" —preguntarle a ML por el offer— y ML LO CIERRA:
+#
+#   GET /seller-promotions/offers/OFFER-MLM3042206569-12903282222
+#       ?promotion_type=lightning&app_version=v2
+#   → 404 {"message":"Seller Lightning Offers are not available in Open Platform"}
+#
+# (sin `app_version` contesta 400 "Invalid app_version"; medido contra
+# producción el 25-ago-2026 con el token de BEKURA). O sea: la promoción que más
+# duele —la oferta relámpago— NO se puede consultar por su id desde la API
+# abierta. Si la resolución dependiera de ese recurso, este topic seguiría
+# muerto.
+#
+# No hace falta. **El id de la publicación viene DENTRO del id del offer**:
+# `OFFER-{item}-{n}`. Censado sobre los 1,263 recursos distintos de
+# `public_offers` en `ops.webhook_events`: 1,263 de 1,263 casan el patrón, 0 no
+# casan, y salen 748 publicaciones distintas (742 existen en channel.listings).
+# La resolución es una regex, cero llamadas de más.
+#
+# Y lo que ese aviso significa es exactamente el hueco que quedaba abierto:
+# `items_prices` avisa cuando cambia el precio de LISTA; `public_offers` avisa
+# cuando una promoción EMPIEZA o TERMINA, que es el cambio que `item.price` no
+# refleja. Caso que lo destapó (MLM3042206569 / ACC-0001-AZL, medido el 25-ago):
+#
+#   /items/MLM3042206569              price 229   original_price 382
+#   /items/MLM3042206569/sale_price   amount  99  regular_amount 382
+#                                     promotion_type "lightning"
+#                                     promotion_id  OFFER-MLM3042206569-12903282222
+#
+# ...y ese OFFER es, letra por letra, el que llegó por webhook a las 06:09 UTC.
+# El aviso traía la respuesta; nadie lo abría.
 _ID_ITEM = re.compile(r"/items/(ML[A-Z]\d+)")
+_ID_OFERTA = re.compile(r"/seller-promotions/offers/OFFER-(ML[A-Z]\d+)-")
 
 
 def _item_id_de(resource: str) -> str | None:
     """El id de la publicación que trae el aviso, venga donde venga en la ruta."""
-    m = _ID_ITEM.search(resource or "")
+    r = resource or ""
+    m = _ID_ITEM.search(r) or _ID_OFERTA.search(r)
     return m.group(1) if m else None
 
 
@@ -294,8 +329,10 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
         # es `/user-products/…`, no `/items/…`. El filtro viejo pedía guion bajo
         # y un item, así que NUNCA entraba (verificado en logs de producción).
         elif topic in ("items", "items_prices", "price_suggestion",
+                       "public_offers",
                        "stock_locations", "stock-locations") \
-                and ("/items/" in resource or "/user-products/" in resource):
+                and ("/items/" in resource or "/user-products/" in resource
+                     or "/seller-promotions/offers/" in resource):
             if "/user-products/" in resource:
                 # Cambió el reparto bodega-propia / bodega-ML de un user product.
                 # El movimiento en sí llega por `fbm_stock_operations` (con tipo y
@@ -309,15 +346,26 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
                 fallo = True
                 resultado = f"item: no se pudo sacar el id de '{resource[:80]}'"
             else:
-                # `items_prices` es, literalmente, el aviso de "cambió el precio
-                # de esta publicación". Es el ÚNICO topic que además pide el
-                # precio CON promoción, y no es un extra: sin él este refresco
-                # actualiza el precio de LISTA y deja la oferta sin confirmar, o
-                # sea que con la regla nueva ESCONDERÍA más ofertas de las que
-                # arregla (ver `publicaciones_panel._oferta`). La llamada de más
-                # sale ~413 veces al día, contra las ~11,500 diarias que costaría
-                # encender ML_PRECIO_VENTA en el barrido completo.
-                con_precio = topic == "items_prices"
+                # Los DOS topics de precio piden además el precio CON
+                # promoción, y no es un extra: sin él este refresco actualiza el
+                # precio de LISTA y deja la oferta sin confirmar, o sea que con
+                # la regla de v0.261.0 ESCONDERÍA más ofertas de las que arregla
+                # (ver `publicaciones_panel._oferta`). El aviso que dice "cambió
+                # el precio" tiene que traer el precio.
+                #
+                #   items_prices   ~190/día   cambió el precio de LISTA
+                #   public_offers  ~570/día   empezó o terminó una PROMOCIÓN
+                #
+                # Medido sobre `ops.webhook_events` (22→25-ago-2026): 556 y 2,294
+                # avisos, 232 y 1,263 recursos distintos. Son ~760 pares de
+                # llamadas al día (item + sale_price) contra las ~11,500 diarias
+                # que costaría encender ML_PRECIO_VENTA en el barrido completo, y
+                # llegan repartidas a lo largo del día en vez de en avalancha.
+                #
+                # `public_offers` es el que de verdad cierra el hueco: tocó 545
+                # de las 775 publicaciones ACTIVAS de ML en tres días y medio
+                # (70%), contra 186 de `items_prices` (24%). Juntos, 557 (72%).
+                con_precio = topic in ("items_prices", "public_offers")
                 # Refresco del espejo canal_inventario: es "sincronización de datos
                 # con ML" — respeta el interruptor global (modo puros pedidos).
                 r = await inventario.refrescar_ml_item_id(
@@ -480,9 +528,15 @@ async def salud_ml():
     sin una sola señal.
 
     `fallos` es "no se pudo hacer lo que el aviso pedía". `sin_accion` es "este
-    topic todavía no lo atiende nadie" (hoy: `public_offers`). Un topic con
-    `fallos == recibidos` es una arteria tapada; uno con `sin_accion` alto es
-    una decisión pendiente.
+    topic todavía no lo atiende nadie". Un topic con `fallos == recibidos` es una
+    arteria tapada; uno con `sin_accion` alto es una decisión pendiente.
+
+    Los DOS topics de precio ya se atienden (v0.262.0: `public_offers` era el
+    último con `sin_accion` masivo — 2,294 avisos en tres días y medio). Lo que
+    hay que mirar en ellos no es solo `fallos`, sino el `ultimo`: un
+    "item actualizado · ML no dio precio de oferta" repetido significa que el
+    refresco corre pero la oferta se sigue quedando sin confirmar, y ese caso NO
+    cuenta como fallo a propósito (el ítem sí se refrescó).
 
     En memoria y por proceso: un redeploy lo pone en cero. El histórico está en
     `ops.webhook_events.resultado`.

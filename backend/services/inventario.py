@@ -670,9 +670,10 @@ async def refrescar_ml_item_id(item_id: str, *,
     que un item cambió). Busca la cuenta/SKU en ml_progress y actualiza el cache.
 
     `con_precio_venta` pide ADEMÁS `/items/{id}/sale_price` y lo guarda en
-    `channel.listings.price_sale`, sellando `price_sale_at`. Lo enciende el
-    webhook del topic `items_prices` y NADIE MÁS, porque es una llamada extra a
-    ML por aviso.
+    `channel.listings.price_sale`, sellando `price_sale_at`. Lo encienden los
+    DOS topics de precio de ML y nadie más, porque es una llamada extra por
+    aviso: `items_prices` (cambió el precio de lista, ~190/día) y `public_offers`
+    (empezó o terminó una promoción, ~570/día — v0.262.0).
 
     Por qué hace falta, y por qué justo aquí: `item.price` se queda en el precio
     de LISTA cuando la promoción la monta una campaña de ML, así que este
@@ -683,6 +684,14 @@ async def refrescar_ml_item_id(item_id: str, *,
     camino refrescara el precio de lista SIN traer la oferta, cada aviso de ML
     dejaría la promoción sin confirmar: escondería más ofertas de las que
     arregla. El aviso que dice "cambió el precio" tiene que traer el precio.
+
+    Y `item.price` no falla solo con las campañas de ML: tampoco es el precio de
+    LISTA cuando el vendedor tiene su propia campaña. Son TRES precios distintos
+    y aquí se guardan los tres — `precio` (item.price), `precio_base`
+    (item.original_price, vía `_precio_lista`) y `precio_venta`
+    (sale_price.amount). Muestra viva del 25-ago-2026, 60 publicaciones activas
+    contra la API de ML: `item.price` coincidía con `item.price` guardado 60/60,
+    pero solo 19/60 con lo que ML COBRA — mediana 1.443x, máximo 4.85x.
     """
     # PASO 3 · BLOQUE 4. Lo llama el webhook de ML: si aqui no se resuelve el
     # dueño, el aviso se descarta y esa publicacion no se refresca.

@@ -131,6 +131,77 @@ un precio a mano — y por la misma razón, escrita ahí: *"El fee de envío se
 re-evalúa porque en ML depende del precio."*
 
 ═══════════════════════════════════════════════════════════════════════════════
+LOS TRES PRECIOS DE ML — cuál es la lista, cuál el vigente, cuál la oferta
+═══════════════════════════════════════════════════════════════════════════════
+
+Esto se documentó mal hasta v0.261.0 y por eso la pantalla mintió dos días
+seguidos. La pregunta "¿cuánto cuesta esta publicación?" tiene TRES respuestas
+distintas en Mercado Libre, y ninguna de las tres se llama como uno esperaría:
+
+  ML                        kubera                  qué es
+  ────────────────────────  ──────────────────────  ─────────────────────────────
+  item.original_price       listings.price_base     LA LISTA. Lo que ML tacha.
+   (= sale_price.regular_    → `precio_lista`       NULL si no hay campaña de
+      amount, casi siempre)                         vendedor, y entonces
+                                                    `_precio_lista` cae a price.
+  item.price                listings.price          El precio del VENDEDOR tras
+   (= item.base_price)       → `precio_ml`          SUS campañas. NO es la lista
+                                                    y NO es lo que se cobra.
+  sale_price.amount         listings.price_sale     LO QUE EL COMPRADOR PAGA.
+   (?context=channel_        → `precio_vigente`     Es el único que ve las
+      marketplace)              si está confirmado  campañas de ML.
+
+Medición que lo fijó (25-ago-2026, 60 publicaciones ACTIVAS de ML consultadas en
+vivo contra la API mientras se leía su fila de kubera):
+
+  price_base == la lista real de ML hoy      59 de 60
+  price      == item.price de ML hoy         60 de 60   ← el sync es FIEL
+  price      == lo que ML COBRA hoy          19 de 60   ← y aun así miente
+  mediana price / cobrado                     1.443     p90 2.95   máx 4.85
+  mediana price_base / cobrado                1.681     (sería peor todavía)
+  mediana price_sale (del 20-ago) / cobrado   1.015     pero rango 0.37–10.9
+
+En 41 de las 60 había una promoción VIVA que `item.price` no refleja: 31
+`custom`, 14 `marketplace_campaign`, 2 `lightning`.
+
+El caso que lo destapó — `MLM3042206569` / `ACC-0001-AZL`, activa:
+
+    /items/MLM3042206569               price 229   original_price 382
+    /items/MLM3042206569/sale_price    amount  99  regular_amount 382
+                                       promotion_type "lightning"  (−74%)
+    /seller-promotions/items/…         C-MLM1325864 SELLER_CAMPAIGN
+                                       "ALWAYS ON AGOSTO" status started
+                                       price 229 → vigente hasta el 31-ago
+
+El 229 **no es un promocional viejo pegado**: es una campaña de vendedor VIVA. Y
+el 382 es la lista de verdad. Simplemente ninguno de los dos es lo que ML cobra
+hoy, que son $99. El panel decía "cobra $229, sin oferta, margen +51%".
+
+CONSECUENCIAS, y por qué se resolvió así:
+
+  1. `precio_lista` sale de `price_base`, no de `price`. Antes el número tachado
+     de la pantalla era el precio de campaña del vendedor, no la lista.
+  2. El descuento se mide contra la LISTA, que es contra lo que lo mide ML
+     (−74%, no −57%). 111 filas pasan de `sin_oferta` a `con_oferta` y ninguna
+     al revés.
+  3. `precio_vigente` se sigue devolviendo siempre —la pantalla necesita un
+     número— pero llega con `precio_vigente_confirmado`. Cuando es `false` el
+     margen **se calcula igual y se MARCA**: `margen_aviso:
+     "precio_sin_confirmar"` y `margen_contra: "precio_ml"`. Decisión de
+     Eduardo (25-ago), y es la misma que ya tomó el 6-ago para el costo
+     implausible en `frontend/lib/margen.ts`: apagarlo dejaba 789 de 806
+     publicaciones activas de ML sin margen, y *"un SKU marcado desaparecía del
+     análisis y con él la sospecha de que ALGO pasa ahí"*. Lo que sigue
+     prohibido es pintarlo como si fuera cierto.
+
+     OJO al contrato: esto estrena la combinación **margen presente CON
+     advertencia**. `margen_motivo` NO se toca — sigue apareciendo solo cuando
+     `margen_pct` es None. La advertencia viaja en campos propios.
+  4. Lo que enciende el margen de vuelta NO es esperar al sync —la fila del caso
+     se había refrescado dos horas antes y seguía mal— sino el webhook de
+     precios pidiendo `sale_price`. Ver `routers/webhooks.py`.
+
+═══════════════════════════════════════════════════════════════════════════════
 LA OFERTA: tres estados, no dos
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -424,7 +495,7 @@ def _utc(ts: Any) -> datetime | None:
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def _oferta(price: Any, price_sale: Any, price_sale_at: Any,
+def _oferta(precio_lista: Any, price_sale: Any, price_sale_at: Any,
             visto_at: Any) -> dict[str, Any]:
     """
     Los tres estados de la oferta, y si está CONFIRMADA.
@@ -463,8 +534,25 @@ def _oferta(price: Any, price_sale: Any, price_sale_at: Any,
     no audita `price_sale`, así que un valor sobreescrito no se puede
     reconstruir. Por eso `oferta_precio_visto` viaja siempre y
     `oferta_precio` —el que SÍ se aplica al margen— solo cuando está confirmada.
+
+    CONTRA QUÉ SE MIDE EL DESCUENTO — v0.262.0. Hasta v0.261.0 el denominador era
+    `l.price`, y `l.price` NO es el precio de lista: es el precio del VENDEDOR
+    después de sus propias campañas (`SELLER_CAMPAIGN`, `DEAL`…). La lista —lo
+    que ML tacha— vive en `l.price_base`, que sale de `item.original_price`
+    (`inventario._precio_lista`). Con el denominador viejo el panel decía −57%
+    donde ML dice −74%, porque ML mide contra la lista.
+
+    Medido el 25-ago-2026 contra `MLM3042206569` (ACC-0001-AZL), en vivo:
+    `item.price` 229 · `item.original_price` 382 · `sale_price.amount` 99 ·
+    `sale_price.regular_amount` 382. El 229 no es un fósil pegado: es la campaña
+    "ALWAYS ON AGOSTO" (`GET /seller-promotions/items/{id}?app_version=v2`,
+    status `started`, hasta el 31-ago). Ninguno de los dos es lo que se cobra.
+
+    Efecto del cambio de denominador sobre las 4,989 filas de ML: **111 pasan de
+    `sin_oferta` a `con_oferta` y NINGUNA al revés** — son publicaciones con
+    campaña de vendedor viva cuyo descuento el panel no pintaba.
     """
-    p = _num(price)
+    p = _num(precio_lista)
     ps = _num(price_sale)
     if ps is None:
         return {"oferta_estado": OFERTA_DESCONOCIDA, "oferta_confirmada": None,
@@ -502,6 +590,18 @@ def _oferta(price: Any, price_sale: Any, price_sale_at: Any,
 # ── Margen ────────────────────────────────────────────────────────────────────
 
 SIN_COSTO_CANAL = "sin_costo_del_canal"
+# ── Vocabulario del AVISO (no del motivo) ──────────────────────────────
+#
+# `margen_motivo` contesta "por qué NO hay margen". Esto contesta otra cosa:
+# "sí hay margen, pero tómalo con reserva, y ésta es la reserva". Son campos
+# distintos a propósito — ver `_enriquecer`.
+PRECIO_SIN_CONFIRMAR = "precio_sin_confirmar"
+
+# Contra qué precio se calculó el margen. Se dice explícitamente en vez de dejar
+# que el lector lo deduzca de `precio_vigente_confirmado`: quien pinta el número
+# necesita poder nombrar el precio sin recomponer la regla.
+PRECIO_COBRADO = "precio_cobrado"   # price_sale confirmado — lo que ML cobra
+PRECIO_ML = "precio_ml"             # price — el techo conocido, sin confirmar
 SIN_COMISION = "sin_comision"
 SIN_PESO = "sin_peso"
 SIN_PRECIO = "sin_precio"
@@ -596,7 +696,11 @@ select l.sku::text                       as sku,
        l.url                             as url,
        l.situacion                       as situacion_cruda,
        l.status                          as status_crudo,
-       l.price                           as precio_lista,
+       -- TRES precios, no dos. `l.price` NO es el de lista y NO es el que se
+       -- cobra: es el precio del VENDEDOR despues de SUS propias campanas. Ver
+       -- el bloque "LOS TRES PRECIOS DE ML" del encabezado.
+       l.price                           as precio_ml,
+       coalesce(l.price_base, l.price)   as precio_lista,
        l.price_sale                      as price_sale,
        l.price_sale_at                   as price_sale_at,
        l.currency                        as moneda,
@@ -651,22 +755,73 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
     oferta = _oferta(r.get("precio_lista"), r.get("price_sale"),
                      r.get("price_sale_at"), r.get("visto_at"))
 
-    # Precio vigente = lo que el comprador paga. La migración 0025 dice
-    # `coalesce(price_sale, price)`, pero ese coalesce NO pregunta CUÁNDO se
-    # observó la oferta: aplicaba promociones muertas para siempre. Una oferta
-    # que no se confirmó NO se aplica — el margen va contra el de lista, que es
-    # lo que ML está cobrando. Si nunca se observó nada, el de lista es lo único
-    # que hay, y eso es exactamente lo que dice `oferta_estado`.
-    pv = (_num(r.get("price_sale"))
-          if oferta["oferta_estado"] == OFERTA_CON and oferta["oferta_confirmada"]
-          else None)
-    if pv is None:
-        pv = _num(r.get("precio_lista"))
+    # ── Precio vigente = lo que el comprador paga HOY ────────────────────
+    #
+    # Solo `price_sale` sabe eso, y solo si se confirmó. Ojo: se usa también
+    # cuando la oferta salió `sin_oferta`, no solo con descuento — una
+    # observación confirmada que dice "hoy se cobra el de lista" ES la respuesta
+    # a la pregunta, no una ausencia de respuesta.
+    ps_obs = _num(r.get("price_sale"))
+    confirmado = bool(ps_obs is not None and oferta["oferta_confirmada"])
+    pv = ps_obs if confirmado else _num(r.get("precio_ml"))
+
+    # ── ¿Se puede creer ese número? ───────────────────────────────────────────
+    #
+    # En Mercado Libre, mientras nadie confirme la promoción, NO — y esto no es
+    # cautela teórica. Muestra viva del 25-ago-2026, 60 publicaciones activas
+    # consultadas contra la API de ML en el momento:
+    #
+    #   l.price == item.price de ML       60 de 60   ← el sync es FIEL
+    #   l.price == lo que ML cobra hoy    19 de 60   ← y aun así miente
+    #   mediana l.price / lo cobrado       1.443     p90 2.95   máx 4.85
+    #
+    # O sea: el espejo está bien y el campo es el equivocado. En 41 de 60 había
+    # promoción viva (31 `custom`, 14 `marketplace_campaign`, 2 `lightning`) que
+    # `item.price` no refleja. `price_base` sería peor todavía (mediana 1.681).
+    #
+    # QUÉ SE HACE CON ESO — decisión de Eduardo, 25-ago-2026: **el margen se
+    # MUESTRA MARCADO, no se apaga.** La primera versión de este arreglo lo
+    # apagaba (`margen_pct: null` con motivo) y dejaba 789 de 806 publicaciones
+    # activas de ML sin margen. Se descartó por la misma razón —y es literalmente
+    # la misma decisión, tomada por la misma persona— que está escrita en
+    # `frontend/lib/margen.ts` para el costo implausible el 6-ago:
+    #
+    #   "antes la celda se quedaba vacía. Ocultar el número salía peor — un SKU
+    #    marcado desaparecía del análisis y con él la sospecha de que ALGO pasa
+    #    ahí, aunque no sepamos cuánto. Ahora se muestra el margen y la
+    #    ganancia, con el aviso de que el costo puede estar mal: el lector
+    #    decide. Lo que sigue prohibido es pintarlos como si fueran ciertos."
+    #
+    # Cámbiese "costo" por "precio" y es este caso. Una columna vacía no se
+    # consulta, y lo que no se consulta no se corrige.
+    #
+    # CÓMO VIAJA, y por qué NO va en `margen_motivo`: el contrato viejo dice
+    # que `margen_motivo` acompaña a un `margen_pct` NULO ("no se puede saber,
+    # y por esto"). Meter aquí un motivo con el margen PRESENTE rompería esa
+    # lectura y el frontend indexa por ese campo. Así que la advertencia es un
+    # campo aparte, con vocabulario propio y cerrado:
+    #
+    #   margen_pct     el número, calculado como siempre     (NO cambia)
+    #   margen_motivo  solo cuando margen_pct es None        (NO cambia)
+    #   margen_aviso   el número SÍ está, pero tómalo con reserva   ← NUEVO
+    #   margen_contra  contra qué precio se calculó                 ← NUEVO
+    #
+    # `None` en `margen_aviso` = nada que advertir. Fuera de ML no hay capa de
+    # promoción que observar (`price_base` está NULL en los otros cinco canales,
+    # medido), así que ahí nunca se marca.
+    conf_precio = confirmado if canal == "mercado_libre" else None
 
     m = margen_de(precio=pv, costo_unitario=r.get("costo_unitario"),
                   pct_comision=r.get("pct_comision"), peso=r.get("peso"),
                   largo=r.get("largo"), ancho=r.get("ancho"),
                   alto=r.get("alto"), canal=canal)
+    # El aviso se pone solo si HAY número que advertir: marcar una celda vacía
+    # no dice nada y ensuciaría el censo de avisos.
+    marcado = conf_precio is False and m["margen_pct"] is not None
+    m = {**m,
+         "margen_aviso": PRECIO_SIN_CONFIRMAR if marcado else None,
+         "margen_contra": (None if m["margen_pct"] is None
+                           else PRECIO_COBRADO if confirmado else PRECIO_ML)}
 
     return {
         "sku": r["sku"],
@@ -677,9 +832,17 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
         "url": r.get("url"),
         "estado": estado,
         "estado_crudo": r.get("situacion_cruda") or r.get("status_crudo"),
+        # El de LISTA de verdad: `price_base` (item.original_price), el número
+        # que ML tacha. Hasta v0.261.0 este campo traía `l.price`.
         "precio_lista": (round(_num(r.get("precio_lista")), 2)
                          if _num(r.get("precio_lista")) is not None else None),
+        # El precio del VENDEDOR tras SUS campañas — ni la lista ni lo cobrado.
+        # Viaja para poder pintar los tres niveles y para que no se pierda el
+        # dato que hasta v0.261.0 salía (mal) llamado `precio_lista`.
+        "precio_ml": (round(_num(r.get("precio_ml")), 2)
+                      if _num(r.get("precio_ml")) is not None else None),
         "precio_vigente": round(pv, 2) if pv is not None else None,
+        "precio_vigente_confirmado": conf_precio,
         "moneda": r.get("moneda") or "MXN",
         "stock_own": r.get("stock_own"),
         "stock_full": r.get("stock_full"),
@@ -778,8 +941,9 @@ def _clave_orden(orden: str):
 
 def _fila_censo(canal: str) -> dict[str, Any]:
     return {"canal": canal, "publicaciones": 0, "activas": 0,
-            "con_margen": 0, "sin_margen": 0, "motivos": {},
+            "con_margen": 0, "sin_margen": 0, "motivos": {}, "avisos": {},
             "con_oferta": 0, "oferta_sin_confirmar": 0,
+            "precio_sin_confirmar": 0,
             "sin_oferta": 0, "oferta_desconocida": 0,
             "oferta_mas_vieja_dias": None, "nota": NOTA_CANAL.get(canal)}
 
@@ -812,6 +976,13 @@ def _cobertura_de(filas: list[dict[str, Any]],
             c["motivos"][mot] = c["motivos"].get(mot, 0) + 1
         else:
             c["con_margen"] += 1
+        if f.get("precio_vigente_confirmado") is False:
+            c["precio_sin_confirmar"] += 1
+        # Los avisos van en su propio conteo, no dentro de `motivos`: una fila
+        # marcada SÍ tiene margen y ya entró en `con_margen`. Mezclarlos haría
+        # que los dos números dejaran de sumar.
+        if f.get("margen_aviso"):
+            c["avisos"][f["margen_aviso"]] = c["avisos"].get(f["margen_aviso"], 0) + 1
         if f["oferta_estado"] == OFERTA_CON:
             c["con_oferta"] += 1
             # Cuántas de esas ofertas NO se pueden creer. Va en el censo y no
@@ -837,12 +1008,17 @@ def _cobertura_de(filas: list[dict[str, Any]],
     tot = sum(c["publicaciones"] for c in canales)
     con = sum(c["con_margen"] for c in canales)
     sin_conf = sum(c["oferta_sin_confirmar"] for c in canales)
+    precio_sin_conf = sum(c["precio_sin_confirmar"] for c in canales)
     return {
         "publicaciones": tot,
         "con_margen": con,
         "sin_margen": tot - con,
         "pct_con_margen": round(con / tot, 4) if tot else None,
         "ofertas_sin_confirmar": sin_conf,
+        # El termómetro del refresco de precios: cuántas publicaciones no tienen
+        # una observación válida de lo que ML cobra hoy. Si esto no baja tras un
+        # deploy, el webhook de precios no está llegando.
+        "precio_sin_confirmar": precio_sin_conf,
         "canales": canales,
         # Se dice aquí y no solo en la documentación porque el que lee la
         # respuesta no lee el módulo.
@@ -851,8 +1027,13 @@ def _cobertura_de(filas: list[dict[str, Any]],
                   "(eso es el panel de Análisis). Solo se calcula donde hay "
                   "costo del PROPIO canal: hoy únicamente Mercado Libre. "
                   "Una oferta SIN CONFIRMAR (observada antes del último cambio "
-                  "de la publicación) se muestra pero NO se aplica: el margen "
-                  "va contra el precio de lista."),
+                  "de la publicación) se muestra pero NO se aplica. Y en Mercado "
+                  "Libre, mientras el precio vigente no esté confirmado el margen "
+                  "SÍ se calcula pero llega MARCADO "
+                  "(`margen_aviso: precio_sin_confirmar`): sale contra "
+                  "`precio_ml`, que sobreestima lo que ML cobra en 1.44x de "
+                  "mediana (60 publicaciones vivas, 25-ago-2026). Es referencia, "
+                  "no un hecho — mismo trato que el costo implausible."),
     }
 
 

@@ -11,7 +11,7 @@ hay oferta, cuándo se puede calcular el margen) vive en
 `services/publicaciones_panel.py`, con el porqué de cada regla y el censo que la
 respalda.
 
-Las cuatro cosas que hay que saber antes de pintar esto:
+Las seis cosas que hay que saber antes de pintar esto:
 
   1. El margen es PROSPECTIVO (contra el precio que la publicación cobra hoy),
      no realizado. El panel de Análisis contesta la otra pregunta.
@@ -25,6 +25,37 @@ Las cuatro cosas que hay que saber antes de pintar esto:
      Lo observado no se pierde: viaja en `oferta_precio_visto` /
      `oferta_desc_pct_visto` para pintarlo marcado. El censo trae el conteo en
      `cobertura.ofertas_sin_confirmar` (665 de 665 el 25-ago-2026).
+  5. Hay TRES precios y ninguno se llama como uno esperaría (v0.262.0):
+
+       precio_lista   lo que ML TACHA          `listings.price_base`
+       precio_ml      el precio del VENDEDOR   `listings.price`
+                      tras SUS campañas
+       precio_vigente  lo que el comprador PAGA `listings.price_sale` si está
+                       confirmado; si no, cae a `precio_ml` y viene MARCADO
+
+     `precio_vigente_confirmado` (bool | null) dice si ese último número se
+     puede creer. `null` = no aplica (canal sin capa de promoción).
+     `cobertura.precio_sin_confirmar` lleva el conteo (789 de 806 activas de ML
+     el 25-ago, antes de abrir `public_offers`; baja solo con los avisos).
+  6. **Un margen puede venir MARCADO** — y ésta es la combinación nueva de
+     v0.262.0, la que puede tumbar a quien asuma el contrato viejo:
+
+       margen_pct     el número. NO cambia.
+       margen_motivo  por qué NO hay margen. Sigue apareciendo SOLO cuando
+                      `margen_pct` es null. **Esa regla no cambió.**
+       margen_aviso   NUEVO. "sí hay número, pero tómalo con reserva".
+                      Vocabulario cerrado; hoy un solo valor:
+                      "precio_sin_confirmar". Viene CON `margen_pct` presente.
+       margen_contra  NUEVO. contra qué precio se calculó:
+                      "precio_cobrado" (price_sale confirmado) o
+                      "precio_ml" (el techo conocido, sin confirmar).
+
+     Medido: `price` sobreestima lo que ML cobra en 1.44x de mediana (p90 2.95,
+     máx 4.85; 60 publicaciones vivas, 25-ago-2026). Por eso se marca. El trato
+     es el MISMO que ya recibe el costo implausible en `frontend/lib/margen.ts`:
+     ámbar y ⚠, no el rojo/verde que se lee como un hecho. El censo trae el
+     conteo por canal en `cobertura.canales[].avisos` — aparte de `motivos`,
+     porque una fila marcada SÍ cuenta en `con_margen`.
 """
 from __future__ import annotations
 

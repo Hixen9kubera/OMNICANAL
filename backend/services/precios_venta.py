@@ -29,10 +29,18 @@ Moraleja de este archivo, y por eso queda escrita aquí: **una foto de precios
 sin quien la repita es una mentira con fecha de caducidad.** Correrlo una vez
 fue peor que no correrlo nunca.
 
-CUÁNDO REVIVIRLO. El refresco al día ya NO depende de este barrido: lo hace el
-webhook del topic `items_prices` (~413 avisos/día), que pide el precio de oferta
-solo de la publicación que ML dice que cambió —
-`inventario.refrescar_ml_item_id(con_precio_venta=True)`.
+CUÁNDO REVIVIRLO. El refresco al día ya NO depende de este barrido: lo hacen los
+webhooks de los DOS topics de precio de ML — `items_prices` (~190 avisos/día,
+cambió el precio de lista) y `public_offers` (~570/día, empezó o terminó una
+promoción; abierto en v0.262.0). Los dos llaman a
+`inventario.refrescar_ml_item_id(con_precio_venta=True)` solo para la
+publicación que ML dice que cambió.
+
+Cobertura medida (25-ago-2026, sobre 3 días y medio de `ops.webhook_events`):
+`public_offers` tocó 545 de las 775 publicaciones ACTIVAS de ML (70%),
+`items_prices` 186 (24%), juntos 557 (72%). **Quedan 130 activas (17%) que no
+recibieron ningún aviso de ningún tipo**: ésas no se confirman solas y son
+exactamente para lo que sirve el barrido de abajo.
 
 Lo que este archivo todavía puede aportar es un **barrido de arranque**: las
 publicaciones que llevan días sin aviso no se confirman solas, y una pasada

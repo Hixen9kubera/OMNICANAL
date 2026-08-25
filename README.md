@@ -1001,6 +1001,201 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.262.0 — El aviso de promoción de ML, y cuál de los tres precios es cuál
+
+v0.261.0 dejó dos cosas sin cerrar y las dos se notaron el mismo día: dejó fuera
+el topic `public_offers` ("otro recurso, otra resolución") y siguió tratando
+`channel.listings.price` como si fuera el precio de lista. Con las dos abiertas,
+el panel seguía mintiendo aunque la fila estuviera fresca.
+
+#### El caso que lo destapó
+
+`MLM3042206569` / `ACC-0001-AZL`, activa, fila refrescada **dos horas antes**:
+
+| | |
+|---|---|
+| lo que el panel decía | cobra **$229**, "Sin oferta", margen **+51%** |
+| lo que ML cobraba | **$99**, Oferta Relámpago, **−74%**, con reloj |
+
+No era un problema de frescura: esperar al sync no lo arreglaba, porque el sync
+no estaba leyendo el precio promocional.
+
+#### Parte A — se abre `public_offers` (2,294 avisos en 3 días y medio)
+
+Todos llegaban con `resultado = "topic 'public_offers' registrado (sin acción)"`.
+Es el aviso de que una promoción **empieza o termina** — justo lo que
+`items_prices` (que avisa del precio de LISTA) no cubre.
+
+Se probó primero el camino que parecía correcto, preguntarle a ML por el offer, y
+**ML lo cierra**:
+
+```
+GET /seller-promotions/offers/OFFER-MLM3042206569-12903282222
+    ?promotion_type=lightning&app_version=v2
+→ 404 {"message":"Seller Lightning Offers are not available in Open Platform"}
+```
+
+(sin `app_version` contesta `400 Invalid app_version`). O sea: la promoción que
+más duele —la relámpago— **no se puede consultar por su id** desde la API
+abierta. Si la resolución dependiera de ese recurso, el topic seguiría muerto.
+
+No hace falta: **el id de la publicación viene dentro del id del offer**,
+`OFFER-{item}-{n}`. Censado sobre los 1,263 recursos distintos de `public_offers`
+en `ops.webhook_events`: **1,263 de 1,263 casan el patrón, 0 no casan**, y salen
+748 publicaciones distintas (742 existen en `channel.listings`). La resolución es
+una regex y **cero llamadas de más**.
+
+El aviso pasa por el mismo camino que `items_prices` desde v0.261.0:
+`inventario.refrescar_ml_item_id(item_id, con_precio_venta=True)`, que pide
+`/items/{id}` **y** `/items/{id}/sale_price` con una sola conexión.
+
+**Cobertura medida** sobre las 775 publicaciones ACTIVAS de ML (3 días y medio de
+log):
+
+| aviso | publicaciones distintas alcanzadas |
+|---|---|
+| `public_offers` | 545 (**70%**) |
+| `items_prices` | 186 (24%) |
+| cualquiera de los dos | 557 (**72%**) |
+| ninguno, de ningún tipo | **130 (17%)** ← éstas no se confirman solas |
+
+Costo: ~570 avisos/día × 2 llamadas = **~1,140 llamadas diarias**, repartidas en
+el día. El barrido completo (`ML_PRECIO_VENTA`) costaría ~11,500 de golpe, y por
+eso sigue apagado. El 18% de los avisos repite el mismo ítem dentro de 60 s
+(415 de 2,308); no se dedup porque el topic `items` ya convive con un 37% de
+repetición sin problema y el upsert es idempotente.
+
+#### Parte B — cuál de los tres precios es cuál
+
+El hallazgo que reencuadra todo: **`price` no es un promocional viejo pegado. Es
+fiel a ML. El campo simplemente no es el que hay que leer.**
+
+Muestra viva del 25-ago-2026 — 60 publicaciones activas de ML consultadas contra
+la API en el mismo momento en que se leía su fila de kubera:
+
+| medición | resultado |
+|---|---|
+| `price_base` == la lista real de ML hoy | **59 de 60** |
+| `price` == `item.price` de ML hoy | **60 de 60** ← el sync es fiel |
+| `price` == lo que ML **cobra** hoy | **19 de 60** ← y aun así miente |
+| mediana `price` / lo cobrado | **1.443** (p90 2.95 · máx 4.85) |
+| mediana `price_base` / lo cobrado | 1.681 (sería peor) |
+| mediana `price_sale` del 20-ago / lo cobrado | 1.015, pero rango 0.37–10.9 |
+
+En 41 de las 60 había una promoción **viva** que `item.price` no refleja: 31
+`custom`, 14 `marketplace_campaign`, 2 `lightning`.
+
+Los tres precios, y dónde vive cada uno:
+
+| ML | kubera | campo del panel | qué es |
+|---|---|---|---|
+| `item.original_price` | `listings.price_base` | `precio_lista` | **la lista**, lo que ML tacha |
+| `item.price` | `listings.price` | `precio_ml` | el precio del **vendedor** tras SUS campañas |
+| `sale_price.amount` | `listings.price_sale` | `precio_vigente` | **lo que el comprador paga** |
+
+En el caso: `original_price` 382 (lista), `price` 229 — que es la campaña de
+vendedor **"ALWAYS ON AGOSTO"**, `status: started` hasta el 31-ago, verificada en
+`/seller-promotions/items/{id}?app_version=v2` — y `sale_price.amount` 99.
+Ninguno de los dos primeros es lo que se cobra.
+
+Qué cambia en `/api/publicaciones`:
+
+1. **`precio_lista` sale de `price_base`**, no de `price`. El número tachado de la
+   pantalla era el precio de campaña del vendedor, no la lista.
+2. **El descuento se mide contra la lista**, que es contra lo que lo mide ML
+   (−74%, no −57%). Efecto sobre las 4,989 filas de ML: **111 pasan de
+   `sin_oferta` a `con_oferta` y ninguna al revés** — publicaciones con campaña de
+   vendedor viva cuyo descuento el panel no pintaba.
+3. **Campo nuevo `precio_ml`**: el dato que hasta ahora salía (mal) llamado
+   `precio_lista`. No se pierde nada.
+4. **Campo nuevo `precio_vigente_confirmado`** (`bool | null`). `precio_vigente`
+   se sigue devolviendo siempre —la pantalla necesita un número, y ése es el techo
+   conocido— pero llega marcado. `null` = no aplica (los otros cinco canales no
+   tienen capa de promoción; `price_base` está NULL en los 16,859 registros de
+   amazon/general/temu/tiktok/walmart, medido).
+5. **Cuando `precio_vigente_confirmado` es `false`, el margen se MARCA — no se
+   apaga.** Campos nuevos `margen_aviso: "precio_sin_confirmar"` y
+   `margen_contra: "precio_ml"`.
+
+   La primera versión de este arreglo lo apagaba (`margen_pct: null` con motivo) y
+   dejaba **789 de 806 publicaciones activas de ML sin margen**. Eduardo lo cambió a
+   marcado, y es **la misma decisión que ya había tomado el 6-ago** para el costo
+   implausible, escrita en `frontend/lib/margen.ts`:
+
+   > "antes la celda se quedaba vacía. Ocultar el número salía peor — un SKU
+   > marcado desaparecía del análisis y con él la sospecha de que ALGO pasa ahí,
+   > aunque no sepamos cuánto. (…) Lo que sigue prohibido es pintarlos como si
+   > fueran ciertos."
+
+   **El detalle del contrato, y es el que puede tumbar al frontend**: esto estrena
+   la combinación **margen presente CON advertencia**. `margen_motivo` NO cambia —
+   sigue apareciendo solo cuando `margen_pct` es `null`. La advertencia viaja en
+   campos propios para no romper esa lectura:
+
+   | campo | cuándo | valores |
+   |---|---|---|
+   | `margen_motivo` | solo si `margen_pct` es null | igual que antes |
+   | `margen_aviso` | solo si `margen_pct` **existe** | `"precio_sin_confirmar"` \| null |
+   | `margen_contra` | siempre que haya margen | `"precio_cobrado"` \| `"precio_ml"` |
+
+   Trato en pantalla: **ámbar y ⚠**, el mismo que ya usa el costo implausible. No
+   hay vocabulario nuevo que inventar.
+6. **`cobertura.precio_sin_confirmar`** — el termómetro del refresco de precios (789
+   de 806 activas de ML el 25-ago) — y **`cobertura.canales[].avisos`**, el conteo de
+   marcadas. Va **aparte de `motivos`** a propósito: una fila marcada SÍ cuenta en
+   `con_margen`, y mezclarlas haría que los dos números dejaran de sumar. Medido
+   ahora mismo en ML: 453 con margen, **430 de ellas marcadas**.
+
+#### La prueba de que el mecanismo funciona
+
+v0.261.0 se desplegó esta mañana con `items_prices` ya arreglado, y a las 17:11
+UTC producción tenía **13 observaciones nuevas de `price_sale`, 11 de ellas
+confirmadas** — las primeras desde el 21-ago. Y muestran exactamente el hueco:
+
+```
+MLM4726805786  price 1,260.00   price_sale   499.00   (−60%, invisible en price)
+MLM2814234965  price   149.00   price_sale    46.00
+MLM5535888552  price 1,195.34   price_sale   753.00   ← coincide con la lectura
+                                                        directa a la API de ML
+```
+
+`public_offers` es el mismo camino con **3.5x el volumen y 3x el alcance**.
+
+#### Por qué marcar y no apagar
+
+Se implementó primero la versión dura (margen en `null`) y se descartó con el
+número delante: **789 de 806 activas de ML** se habrían quedado sin margen. Una
+columna vacía no se consulta, y lo que no se consulta no se corrige — que es
+exactamente el argumento con el que se resolvió el caso gemelo del costo
+implausible hace tres semanas. El número marcado sigue siendo útil: dice el techo
+(`precio_ml`), y dice que es un techo.
+
+#### Lo que esto NO arregla
+
+- **130 publicaciones activas (17%) no reciben ningún aviso de ML.** Ésas no se
+  confirman solas: necesitan un barrido de arranque. `services/precios_venta.py`
+  sigue siendo la herramienta, sigue dormido y sigue necesitando acta.
+- **La confirmación es frágil por diseño**: `price_sale_at >= updated_at`, y
+  `updated_at` se mueve con cualquier cambio de la fila (stock incluido). Una
+  publicación que cambia de stock después de observarse su promoción vuelve a
+  "sin confirmar" aunque la promoción siga viva. Es conservador en la dirección
+  correcta, pero significa que el margen de ML va a parpadear hasta que el
+  refresco por aviso alcance el ritmo de los cambios.
+- **El margen del panel de Análisis sigue calculando contra `price`**
+  (`fulfillment._BASE`, `_SQL_MARGEN_REAL_TOP`). Ahí el error medido es el mismo
+  1.443x. Es otro dominio y otra acta.
+
+#### Archivos
+
+- `backend/routers/webhooks.py` — `_ID_OFERTA`, `_item_id_de` acepta las dos
+  formas, `public_offers` entra a la rama de refresco con `con_precio_venta=True`.
+- `backend/services/publicaciones_panel.py` — bloque "LOS TRES PRECIOS DE ML" en
+  el encabezado, `_BASE` lee `price_base`, `_oferta` mide contra la lista,
+  `_enriquecer` marca el precio y apaga el margen, censo nuevo.
+- `backend/routers/publicaciones.py` — el contrato que lee el frontend, punto 5.
+- `backend/services/inventario.py`, `backend/services/precios_venta.py` — notas al
+  día (ya son dos topics, y qué queda fuera de su alcance).
+
 ### v0.261.0 — Una oferta que no se confirmó no se aplica (y el aviso de ML que la confirma)
 
 Dos partes que van juntas a propósito: **la mitad defensiva sola escondería más
