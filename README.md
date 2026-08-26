@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.274.0 — Un solo "Ver publicación" por tarjeta
+
+Lo notó Eduardo apenas salió la v0.273.0: la tarjeta del canal quedó con **dos
+enlaces que llevan al mismo lado** — el "Ver esta publicación" del recuadro de
+la publicación y el "Ver publicación" del pie, junto al id.
+
+Y sí son el mismo: Mercado Libre da **una tarjeta por cuenta**, y ninguna cuenta
+tiene dos publicaciones del mismo SKU (0 pares `(sku, cuenta)` con más de una
+en producción, 26-ago). Dentro de una tarjeta los dos enlaces apuntaban siempre
+al mismo artículo.
+
+Se apaga el del recuadro y se queda el del pie, que va pegado al id.
+
+**Pero no se borra**: `PublicacionesDelCanal` se usa en DOS lugares, y el
+segundo son las **publicaciones huérfanas** —las que existen en el canal pero el
+detalle 360° no lista, porque muestra una por cuenta—, que se pintan **sin pie**.
+Ahí ese enlace es el único camino a la publicación; quitarlo a secas habría
+reintroducido el mismo bug que la v0.273.0 acaba de arreglar, sólo que en otro
+conjunto. Por eso la prop `conEnlace` nace en `true` y sólo se apaga desde la
+tarjeta por canal. Versión 0.274.0.
+
+---
+
 ### v0.273.0 — "Ver publicación" deja de esconderse (y de mentir)
 
 Lo reportó Eduardo: una publicación **activa** de ML sin forma de abrirla desde

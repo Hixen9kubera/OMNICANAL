@@ -450,6 +450,8 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                   nota={notaSi(c.canal, misPubs)}
                   color={color}
                   cargando={pubsCargando}
+                  // El pie de esta sección ya trae el mismo enlace junto al id.
+                  conEnlace={false}
                   // La confirmación es contra Mercado Libre y sólo de ML: decir
                   // "confirmando precio" en la tarjeta de Amazon sería afirmar
                   // algo que no está pasando.

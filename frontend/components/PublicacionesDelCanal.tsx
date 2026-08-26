@@ -211,6 +211,17 @@ interface Props {
    * mismo. Sólo Mercado Libre, y sólo al abrir el cajón.
    */
   confirmando?: boolean;
+  /**
+   * Dibujar el "Ver esta publicación" de cada tarjeta. Se apaga en las tarjetas
+   * por canal, donde el pie de la sección YA trae el mismo enlace junto al id:
+   * Mercado Libre da UNA tarjeta por cuenta y ninguna cuenta tiene dos
+   * publicaciones del mismo SKU (0 pares en producción, 26-ago-2026), así que
+   * los dos enlaces llevaban exactamente al mismo lado.
+   *
+   * Se queda ENCENDIDO —el default— en las publicaciones huérfanas, que se
+   * pintan sin pie: ahí este enlace es el único camino a la publicación.
+   */
+  conEnlace?: boolean;
 }
 
 export default function PublicacionesDelCanal({
@@ -220,6 +231,7 @@ export default function PublicacionesDelCanal({
   color,
   cargando,
   confirmando,
+  conEnlace = true,
 }: Props) {
   // Mientras la respuesta viene en camino el bloque NO se desvanece. Confirmar
   // el precio contra Mercado Libre agrega ~1 s a la apertura, y un hueco mudo
@@ -298,7 +310,7 @@ export default function PublicacionesDelCanal({
               </div>
             </div>
 
-            {enlacePublicacion(p.canal, p.listing_id, p.url) && (
+            {conEnlace && enlacePublicacion(p.canal, p.listing_id, p.url) && (
               <div className="mt-2 flex justify-end">
                 <a
                   href={enlacePublicacion(p.canal, p.listing_id, p.url)!}
