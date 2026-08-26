@@ -932,3 +932,105 @@ def categorias_producto() -> dict[int, dict[str, Any]]:
                 JOIN {P}term_taxonomy tt ON tt.term_id = t.term_id
                 WHERE tt.taxonomy = 'product_cat'""")
     }
+
+
+def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
+    """
+    URL de la imagen principal por `wc_id`, **incluidas las VARIANTES**.
+
+    Existe porque el REST `/products?include=` NO devuelve variaciones — está
+    documentado en `woocommerce.listar_productos` ("el include no devuelve, p.
+    ej. variantes"). En las vistas POR CANAL el listado es por publicación, y lo
+    publicado casi siempre es la variante, así que `imagenes_por_wc_id` (que va
+    por REST) devolvía vacío y TODA variante salía con el recuadro gris: 7,411
+    tarjetas, y 6,882 de ellas con su foto propia esperando en la librería de
+    medios (medido el 26-ago-2026).
+
+    Una variante sin `_thumbnail_id` propio HEREDA la del padre, que es lo mismo
+    que hace WooCommerce al pintar la ficha (529 variantes están en ese caso).
+
+    Tres queries por lote, no una por id: es el mismo criterio que
+    `variantes_por_padre`, que existe justamente para no volver al N+1.
+    """
+    ids = [int(i) for i in wc_ids if i]
+    if not ids:
+        return {}
+    P = _prefix()
+
+    def _thumbs(post_ids: list[int]) -> dict[int, int]:
+        salida: dict[int, int] = {}
+        for i in range(0, len(post_ids), 500):
+            chunk = post_ids[i:i + 500]
+            ph = ",".join(["%s"] * len(chunk))
+            for r in _fetch_all(
+                f"""SELECT post_id, meta_value FROM {P}postmeta
+                    WHERE meta_key = '_thumbnail_id' AND post_id IN ({ph})
+                      AND meta_value NOT IN ('', '0')""",
+                tuple(chunk)):
+                try:
+                    salida[int(r["post_id"])] = int(r["meta_value"])
+                except (TypeError, ValueError):
+                    continue
+        return salida
+
+    propio = _thumbs(ids)
+
+    # Los que no tienen imagen propia: se hereda la del padre (si lo tienen).
+    huerfanos = [i for i in ids if i not in propio]
+    padre_de: dict[int, int] = {}
+    if huerfanos:
+        for i in range(0, len(huerfanos), 500):
+            chunk = huerfanos[i:i + 500]
+            ph = ",".join(["%s"] * len(chunk))
+            for r in _fetch_all(
+                f"""SELECT ID, post_parent FROM {P}posts
+                    WHERE ID IN ({ph}) AND post_parent <> 0""",
+                tuple(chunk)):
+                padre_de[int(r["ID"])] = int(r["post_parent"])
+        thumbs_padre = _thumbs(sorted(set(padre_de.values())))
+        for hijo, padre in padre_de.items():
+            if padre in thumbs_padre:
+                propio[hijo] = thumbs_padre[padre]
+
+    if not propio:
+        return {}
+
+    # Adjunto -> URL. `guid` es la URL que WordPress guarda para el archivo;
+    # si viniera vacía se arma desde `_wp_attached_file`.
+    adjuntos = sorted(set(propio.values()))
+    urls: dict[int, str] = {}
+    base = _base_uploads()
+    for i in range(0, len(adjuntos), 500):
+        chunk = adjuntos[i:i + 500]
+        ph = ",".join(["%s"] * len(chunk))
+        for r in _fetch_all(
+            f"""SELECT p.ID, p.guid,
+                       (SELECT meta_value FROM {P}postmeta
+                         WHERE post_id = p.ID AND meta_key = '_wp_attached_file'
+                         LIMIT 1) AS archivo
+                  FROM {P}posts p WHERE p.ID IN ({ph})""",
+            tuple(chunk)):
+            u = (r.get("guid") or "").strip()
+            if not u and r.get("archivo") and base:
+                u = f"{base}/{str(r['archivo']).lstrip('/')}"
+            if u:
+                urls[int(r["ID"])] = u
+
+    return {wc: urls[adj] for wc, adj in propio.items() if adj in urls}
+
+
+def _base_uploads() -> str:
+    """`https://…/wp-content/uploads`, de las opciones de WordPress."""
+    P = _prefix()
+    try:
+        filas = _fetch_all(
+            f"""SELECT option_name, option_value FROM {P}options
+                WHERE option_name IN ('siteurl', 'upload_url_path', 'upload_path')""")
+    except Exception:  # noqa: BLE001
+        return ""
+    o = {r["option_name"]: (r["option_value"] or "").strip() for r in filas}
+    if o.get("upload_url_path"):
+        return o["upload_url_path"].rstrip("/")
+    if o.get("siteurl"):
+        return f"{o['siteurl'].rstrip('/')}/wp-content/uploads"
+    return ""

@@ -574,6 +574,22 @@ async def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
     ids = [str(i) for i in wc_ids if i]
     if not ids:
         return {}
+
+    # RUTA RÁPIDA: la DB de WordPress resuelve TODO el lote en 3 queries y —lo
+    # importante— también las VARIANTES, que el REST `/products?include=` no
+    # devuelve (ver la nota en listar_productos). Sin esto, en las vistas por
+    # canal toda variante salía sin imagen: son 7,411 tarjetas, 6,882 con foto
+    # propia disponible (26-ago-2026). El REST queda de respaldo.
+    from services import wp_db
+    if wp_db.disponible():
+        try:
+            porwp = await asyncio.to_thread(
+                wp_db.imagenes_por_wc_id, [int(i) for i in ids])
+            if porwp:
+                return porwp
+        except Exception as exc:  # noqa: BLE001
+            log.warning("imágenes por wp_db fallaron (%s); respaldo REST", exc)
+
     salida: dict[int, str] = {}
     # WooCommerce limita include/per_page a 100; los lotes vienen de a ≤40.
     async with _client() as cli:

@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.275.0 — Las variantes recuperan su foto en las vistas por canal
+
+Lo reportó Eduardo con `ACC-0091-AST-PLA`: recuadro gris en la tarjeta, pero la
+foto SÍ aparecía al abrir el cajón. No faltaba el archivo — `principal_ACC-0091-AST-PLA-1.jpg`
+estaba en la librería de medios y cargaba a la primera.
+
+**La causa**: en las vistas POR CANAL el listado es por publicación, y lo
+publicado casi siempre es la **variante**. La imagen se rellenaba con
+`imagenes_por_wc_id`, que va por REST a `/products?include=` — y ese endpoint
+**no devuelve variaciones**. Está documentado desde antes en `listar_productos`
+("el include no devuelve, p. ej. variantes"); lo que faltaba era atar cabos: el
+include se comía los ids de variante en silencio y devolvía el mapa vacío, así
+que la tarjeta recibía `imagen: null` y pintaba el placeholder. Por el camino
+de `skus=` sí salía, y de ahí que el cajón la mostrara: son consultas distintas.
+
+**Alcance**: las **7,411** variantes vivas del catálogo, y **6,882** de ellas con
+foto propia esperando (26-ago-2026).
+
+`wp_db.imagenes_por_wc_id` resuelve el lote completo contra la base de
+WordPress en 3 queries, variantes incluidas, y una variante sin
+`_thumbnail_id` propio **hereda la del padre** —lo mismo que hace WooCommerce al
+pintar la ficha— para cubrir las 529 que están en ese caso. El REST queda de
+respaldo. Es el mismo criterio de `variantes_por_padre`: por lote, no N+1.
+
+Medido: lote de 400 variantes → **392 con imagen (98%) en 0.90 s**, y las URLs
+de la muestra devuelven 200. Las 8 restantes son variantes cuyo padre tampoco
+tiene foto. Versión 0.275.0.
+
+---
+
 ### v0.274.0 — Un solo "Ver publicación" por tarjeta
 
 Lo notó Eduardo apenas salió la v0.273.0: la tarjeta del canal quedó con **dos
