@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.273.0 — "Ver publicación" deja de esconderse (y de mentir)
+
+Lo reportó Eduardo: una publicación **activa** de ML sin forma de abrirla desde
+el panel. No era el estado — el botón sólo se dibujaba si `channel.listings.url`
+venía lleno, y ahí estaba vacío. En las dos filas de ese SKU, de hecho: la
+activa y la pausada.
+
+**El campo no aportaba nada.** Lo guardado es
+`https://articulo.mercadolibre.com.mx/MLM-3167708699`: el `listing_id` con un
+guion. El panel tenía todo para armarlo y aun así escondía el botón esperando
+una columna que es el mismo número escrito de otra forma. Sin botón, sin aviso,
+sin nada — se leía como si la publicación no existiera.
+
+**Y en 496 casos apuntaba a la publicación equivocada.** Al comparar los 3,511
+enlaces guardados de ML contra el id de su propia fila, 496 llevaban a OTRO
+artículo (la fila `MLM2648520635` guardaba un url a `MLM-5540995904`). Se
+explica solo: el sync refresca `listing_id` cada 15 min desde la API de ML,
+mientras que `url` se escribió una única vez al publicar y nadie lo volvió a
+tocar — si la publicación se elimina y se re-crea, el id cambia y el url queda
+apuntando a la muerta. Por eso `lib/enlaces.ts` **construye desde el id** y deja
+el url guardado como último recurso, no al revés.
+
+Los formatos salieron de los enlaces YA guardados, no de adivinar: reproducen
+**3,015/3,511** en ML (las 496 restantes son justo las stale) y **902/902** en
+TikTok. Amazon usa el ASIN, que es su propio `listing_id`. **Temu y Walmart
+quedan fuera a propósito**: no hay ni una fila con url de la cual sacar el
+formato, y un enlace inventado que da 404 es peor que no tener botón.
+
+Aplicado en los tres lugares que dibujan el enlace: `ProductDetailDrawer`,
+`PublicacionesDelCanal` (el de la captura) y `ProductStudio`.
+
+Medido contra producción: **ML pasa de 552 a 777 de 777 activas con enlace**,
+Amazon de 0 a 1,387, TikTok de 902 a 1,223, y se corrigen los 496 stale. Sólo
+frontend; no toca datos.
+
+---
+
 ### v0.271.0 — Las dos alarmas del costeo se mudan a su propio canal
 
 La v0.269.0 dejó dos revisiones diarias del costeo —margen negativo y top 10 con
