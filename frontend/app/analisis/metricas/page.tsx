@@ -5,7 +5,7 @@
  * Corpe), por semana ISO 8601 (lunes-domingo) con comparativo vs la semana
  * anterior.
  *
- * Catálogo de KPIs en vez de tarjetas fijas (Jose, 24-ago): hoy solo hay 4,
+ * Catálogo de KPIs en vez de tarjetas fijas (Jose, 24-ago): hoy solo hay 5,
  * pero se van a ir sumando con el tiempo. Arriba, "KPIs principales" muestra
  * como máximo 6 — los que estén fijados (localStorage, por navegador). Abajo,
  * "Todos los KPIs" es el catálogo completo con un botón para fijar/desfijar
@@ -23,6 +23,10 @@
  *
  * "Publicaciones pausadas" existió y se quitó (Jose, 26-ago): no la quería
  * en ninguna tienda. El backend ya no la calcula.
+ *
+ * Costo validado = `costing.costos_validados.revisado_at` dentro del rango.
+ * Es el único KPI que NO se filtra por cuenta: esa tabla es por SKU, sin
+ * columna de cuenta/canal (a diferencia de todo lo demás en este tab).
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -32,6 +36,9 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 interface ItemActivacion {
   sku: string; cuenta: string; listing_id: string | null;
   date_published: string; situacion: string | null; titulo: string | null;
+}
+interface ItemCostoValidado {
+  sku: string; revisado_at: string; revisado_por: string | null;
 }
 interface Resp {
   periodo: { desde: string; hasta: string; semana_iso: number; anio_iso: number };
@@ -46,6 +53,9 @@ interface Resp {
     total: number; medidas: number; sin_medir: number; bajas: number; pct: number | null;
     por_cuenta: Record<string, { total: number; medidas: number; bajas: number; pct: number | null }>;
     snapshot_at: string;
+  };
+  costos_validados: {
+    total: number; delta_pct: number | null; items: ItemCostoValidado[];
   };
 }
 
@@ -127,6 +137,13 @@ const KPIS: KpiDef[] = [
         tone: "text-rose-600",
       };
     },
+  },
+  {
+    id: "costos_validados", titulo: "Costo validado", grupo: "Costos",
+    calcular: (d) => ({
+      value: fNum(d.costos_validados.total),
+      tone: "text-sky-600",
+    }),
   },
 ];
 
@@ -310,7 +327,7 @@ export default function MetricasPage() {
               {principales.map((k) => {
                 const r = k.calcular(datos, cuenta);
                 const activo = kpiActivo === k.id;
-                const clicable = k.id === "activaciones";
+                const clicable = k.id === "activaciones" || k.id === "costos_validados";
                 return (
                   <button key={k.id} type="button"
                           onClick={() => clicable && setKpiActivo(activo ? null : k.id)}
@@ -319,6 +336,7 @@ export default function MetricasPage() {
                     <Kpi label={k.titulo} value={r.value}
                          pie={r.pie ?? (
                            k.id === "activaciones" ? <Delta pct={datos.activaciones.delta_pct} />
+                           : k.id === "costos_validados" ? <Delta pct={datos.costos_validados.delta_pct} />
                            : undefined
                          )}
                          tone={r.tone} />
@@ -335,6 +353,9 @@ export default function MetricasPage() {
 
           {tablaActiva === "activaciones" && (
             <TablaActivaciones items={datos.activaciones.items} />
+          )}
+          {tablaActiva === "costos_validados" && (
+            <TablaCostosValidados items={datos.costos_validados.items} />
           )}
 
           <div>
@@ -409,6 +430,41 @@ function TablaActivaciones({ items }: { items: ItemActivacion[] }) {
             {items.length === 0 && (
               <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-slate-400">
                 Ninguna activación en este rango.
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TablaCostosValidados({ items }: { items: ItemCostoValidado[] }) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="border-b border-slate-100 px-4 py-2.5 text-xs font-semibold text-slate-600">
+        Costos validados en el rango ({items.length})
+      </div>
+      <div className="max-h-80 overflow-y-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-100 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
+              <th className="px-3 py-2 text-left font-semibold">SKU</th>
+              <th className="px-3 py-2 text-left font-semibold">Revisado por</th>
+              <th className="px-3 py-2 text-left font-semibold">Fecha</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((it, i) => (
+              <tr key={`${it.sku}-${i}`} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
+                <td className="px-3 py-2 font-mono text-[11px] text-slate-700">{it.sku}</td>
+                <td className="px-3 py-2 text-[11px] text-slate-500">{it.revisado_por ?? "—"}</td>
+                <td className="px-3 py-2 text-[11px] text-slate-500">{fFechaHora(it.revisado_at)}</td>
+              </tr>
+            ))}
+            {items.length === 0 && (
+              <tr><td colSpan={3} className="px-3 py-8 text-center text-sm text-slate-400">
+                Ningún costo validado en este rango.
               </td></tr>
             )}
           </tbody>

@@ -1001,6 +1001,18 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.278.0 — Métricas: KPI de costo validado
+
+Quinto KPI del tab: **"Costo validado"**, contando `costing.costos_validados`
+con `revisado_at` dentro del rango seleccionado (semana ISO o rango libre),
+con comparativo vs la semana anterior. Es el ÚNICO KPI del tab que NO se
+filtra por cuenta — esa tabla es por SKU, sin columna de tienda/canal.
+
+`revisado_at`/`revisado_por` son columnas nuevas de `costos_validados`
+(el flujo apenas empezó a llenarse: 10 de 15,838 filas al momento de
+publicar esto) — `revisado_por` es el actor que validó, persona o proceso
+(p. ej. `resolver-packing-list`).
+
 ### v0.277.0 — Métricas: se quita "Publicaciones pausadas"
 
 Jose, 26-ago: no quería ese KPI en ninguna tienda. Se retira del catálogo del

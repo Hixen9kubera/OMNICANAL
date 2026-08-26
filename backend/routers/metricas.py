@@ -5,8 +5,13 @@ Mercado Libre por cuenta (BEKURA / SANCORFASHION / consolidado).
   GET /api/analisis/metricas → activaciones (por fecha REAL de publicación,
                                 date_published, migración 0031), ticket
                                 promedio y visitas bajas (snapshot de
-                                listings activos), con comparativo vs la
-                                semana anterior donde aplica.
+                                listings activos), y costo validado (por
+                                costing.costos_validados.revisado_at), con
+                                comparativo vs la semana anterior donde
+                                aplica.
+
+`costos_validados` NO se filtra por cuenta (`costing.costos_validados` es por
+SKU, sin cuenta/canal) — a diferencia del resto de los KPIs de este endpoint.
 
 Semana por default = semana ISO 8601 actual (lunes-domingo, hora CDMX) si no
 se pasan `desde`/`hasta` — mismo espíritu que ventas.py (rango + comparativo
@@ -65,6 +70,19 @@ select a.legacy_code as cuenta, l.price
   join core.accounts a on a.id = l.account_id
  where l.canal = 'mercado_libre' and l.situacion = 'active' and l.price is not null
    and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
+"""
+
+# KPI "costo validado": `costing.costos_validados` no tiene cuenta/canal — es
+# por SKU, compartido — así que este KPI no se filtra por tienda, a
+# diferencia del resto del tab. `revisado_at` es NUEVO (recién empezó a
+# llenarse, 10 de 15,838 filas al 25-ago) y `revisado_por` es el actor que
+# validó (persona o proceso, p. ej. "resolver-packing-list").
+_SQL_COSTOS_VALIDADOS = """
+select cv.sku, cv.revisado_at, cv.revisado_por
+  from costing.costos_validados cv
+ where cv.revisado_at is not null
+   and (cv.revisado_at at time zone 'America/Mexico_City')::date between %(desde)s and %(hasta)s
+ order by cv.revisado_at desc
 """
 
 # KPI "visitas bajas": SNAPSHOT con lo que YA está capturado en
@@ -159,11 +177,13 @@ async def metricas(
     d1_prev, d2_prev = d1 - timedelta(days=7), d2 - timedelta(days=7)
 
     (activaciones, activaciones_prev, ticket_rows,
-     visitas_rows) = await asyncio.gather(
+     visitas_rows, costos_validados, costos_validados_prev) = await asyncio.gather(
         _fetch_all(_SQL_ACTIVACIONES, {"desde": d1, "hasta": d2, "cuenta": cta}),
         _fetch_all(_SQL_ACTIVACIONES, {"desde": d1_prev, "hasta": d2_prev, "cuenta": cta}),
         _fetch_all(_SQL_TICKET, {"cuenta": cta}),
         _fetch_all(_SQL_VISITAS_BAJAS, {"cuenta": cta}),
+        _fetch_all(_SQL_COSTOS_VALIDADOS, {"desde": d1, "hasta": d2}),
+        _fetch_all(_SQL_COSTOS_VALIDADOS, {"desde": d1_prev, "hasta": d2_prev}),
     )
     visitas_bajas = _visitas_bajas(visitas_rows)
 
@@ -203,5 +223,10 @@ async def metricas(
             # Snapshot de HOY con lo que ya se sabe (no dispara medición
             # nueva) — mismo espíritu que ticket_promedio.
             "snapshot_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "costos_validados": {
+            "total": len(costos_validados),
+            "delta_pct": _delta_pct(len(costos_validados), len(costos_validados_prev)),
+            "items": costos_validados,
         },
     }
