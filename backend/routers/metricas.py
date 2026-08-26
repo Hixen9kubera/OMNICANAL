@@ -3,11 +3,10 @@ metricas.py — API del tab Métricas de Análisis: KPIs de publicaciones de
 Mercado Libre por cuenta (BEKURA / SANCORFASHION / consolidado).
 
   GET /api/analisis/metricas → activaciones (por fecha REAL de publicación,
-                                date_published, migración 0031), pausas (por
-                                channel.listing_history), ticket promedio y
-                                visitas bajas (snapshot de listings activos),
-                                con comparativo vs la semana anterior donde
-                                aplica.
+                                date_published, migración 0031), ticket
+                                promedio y visitas bajas (snapshot de
+                                listings activos), con comparativo vs la
+                                semana anterior donde aplica.
 
 Semana por default = semana ISO 8601 actual (lunes-domingo, hora CDMX) si no
 se pasan `desde`/`hasta` — mismo espíritu que ventas.py (rango + comparativo
@@ -58,19 +57,6 @@ select l.sku, a.legacy_code as cuenta, l.listing_id,
        between %(desde)s and %(hasta)s
    and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
  order by l.date_published desc
-"""
-
-_SQL_PAUSAS = """
-select h.sku, a.legacy_code as cuenta,
-       (h.changed_at at time zone 'America/Mexico_City') as changed_at,
-       pr.name as titulo
-  from channel.listing_history h
-  left join core.accounts a on a.id = h.account_id
-  left join core.products pr on pr.sku = h.sku
- where h.canal = 'mercado_libre' and h.campo = 'situacion' and h.valor_nuevo = 'paused'
-   and (h.changed_at at time zone 'America/Mexico_City')::date between %(desde)s and %(hasta)s
-   and (%(cuenta)s::text is null or a.legacy_code = %(cuenta)s)
- order by h.changed_at desc
 """
 
 _SQL_TICKET = """
@@ -172,12 +158,10 @@ async def metricas(
 
     d1_prev, d2_prev = d1 - timedelta(days=7), d2 - timedelta(days=7)
 
-    (activaciones, pausas, activaciones_prev, pausas_prev, ticket_rows,
+    (activaciones, activaciones_prev, ticket_rows,
      visitas_rows) = await asyncio.gather(
         _fetch_all(_SQL_ACTIVACIONES, {"desde": d1, "hasta": d2, "cuenta": cta}),
-        _fetch_all(_SQL_PAUSAS, {"desde": d1, "hasta": d2, "cuenta": cta}),
         _fetch_all(_SQL_ACTIVACIONES, {"desde": d1_prev, "hasta": d2_prev, "cuenta": cta}),
-        _fetch_all(_SQL_PAUSAS, {"desde": d1_prev, "hasta": d2_prev, "cuenta": cta}),
         _fetch_all(_SQL_TICKET, {"cuenta": cta}),
         _fetch_all(_SQL_VISITAS_BAJAS, {"cuenta": cta}),
     )
@@ -206,12 +190,6 @@ async def metricas(
             "por_cuenta": _por_cuenta(activaciones),
             "delta_pct": _delta_pct(len(activaciones), len(activaciones_prev)),
             "items": activaciones,
-        },
-        "pausas": {
-            "total": len(pausas),
-            "por_cuenta": _por_cuenta(pausas),
-            "delta_pct": _delta_pct(len(pausas), len(pausas_prev)),
-            "items": pausas,
         },
         "ticket_promedio": {
             "consolidado": ticket_consolidado,

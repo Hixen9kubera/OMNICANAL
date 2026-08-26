@@ -1001,6 +1001,14 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.277.0 — Métricas: se quita "Publicaciones pausadas"
+
+Jose, 26-ago: no quería ese KPI en ninguna tienda. Se retira del catálogo del
+tab Métricas — backend (`_SQL_PAUSAS`, el fetch y la clave `pausas` de la
+respuesta) y frontend (`ItemPausa`, `TablaPausas`, la entrada del catálogo y
+su comparativo semanal). El endpoint queda con 3 KPIs: activaciones, ticket
+promedio y visitas bajas.
+
 ### 0.275.0 — Las variantes recuperan su foto en las vistas por canal
 
 Lo reportó Eduardo con `ACC-0091-AST-PLA`: recuadro gris en la tarjeta, pero la

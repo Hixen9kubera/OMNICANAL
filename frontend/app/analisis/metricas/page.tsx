@@ -13,13 +13,16 @@
  * reestructurar la página.
  *
  * Activaciones = `date_published` (fecha real de ML, migración 0031) dentro
- * del rango — no transiciones de `situacion`. Pausas sí vienen de
- * `channel.listing_history`. Ticket promedio y Visitas bajas son SNAPSHOT de
- * hoy (listings activos), no reconstrucciones históricas dentro de la
- * semana — decisiones validadas con Jose antes de construir esto. Visitas
- * bajas en particular NO dispara mediciones nuevas: usa lo que ya está
- * capturado en `enrich.market_listing_metrics` (Competencia), así que
- * `sin_medir` puede ser una porción real del catálogo activo.
+ * del rango — no transiciones de `situacion`. Ticket promedio y Visitas
+ * bajas son SNAPSHOT de hoy (listings activos), no reconstrucciones
+ * históricas dentro de la semana — decisiones validadas con Jose antes de
+ * construir esto. Visitas bajas en particular NO dispara mediciones nuevas:
+ * usa lo que ya está capturado en `enrich.market_listing_metrics`
+ * (Competencia), así que `sin_medir` puede ser una porción real del
+ * catálogo activo.
+ *
+ * "Publicaciones pausadas" existió y se quitó (Jose, 26-ago): no la quería
+ * en ninguna tienda. El backend ya no la calcula.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -30,18 +33,11 @@ interface ItemActivacion {
   sku: string; cuenta: string; listing_id: string | null;
   date_published: string; situacion: string | null; titulo: string | null;
 }
-interface ItemPausa {
-  sku: string; cuenta: string; changed_at: string; titulo: string | null;
-}
 interface Resp {
   periodo: { desde: string; hasta: string; semana_iso: number; anio_iso: number };
   activaciones: {
     total: number; por_cuenta: Record<string, number>;
     delta_pct: number | null; items: ItemActivacion[];
-  };
-  pausas: {
-    total: number; por_cuenta: Record<string, number>;
-    delta_pct: number | null; items: ItemPausa[];
   };
   ticket_promedio: {
     consolidado: number | null; por_cuenta: Record<string, number>; snapshot_at: string;
@@ -108,13 +104,6 @@ const KPIS: KpiDef[] = [
     calcular: (d, cuenta) => ({
       value: fNum(cuenta ? d.activaciones.por_cuenta[cuenta] ?? 0 : d.activaciones.total),
       tone: "text-indigo-600",
-    }),
-  },
-  {
-    id: "pausas", titulo: "Publicaciones pausadas", grupo: "Publicaciones",
-    calcular: (d, cuenta) => ({
-      value: fNum(cuenta ? d.pausas.por_cuenta[cuenta] ?? 0 : d.pausas.total),
-      tone: "text-amber-600",
     }),
   },
   {
@@ -321,7 +310,7 @@ export default function MetricasPage() {
               {principales.map((k) => {
                 const r = k.calcular(datos, cuenta);
                 const activo = kpiActivo === k.id;
-                const clicable = k.id === "activaciones" || k.id === "pausas";
+                const clicable = k.id === "activaciones";
                 return (
                   <button key={k.id} type="button"
                           onClick={() => clicable && setKpiActivo(activo ? null : k.id)}
@@ -330,7 +319,6 @@ export default function MetricasPage() {
                     <Kpi label={k.titulo} value={r.value}
                          pie={r.pie ?? (
                            k.id === "activaciones" ? <Delta pct={datos.activaciones.delta_pct} />
-                           : k.id === "pausas" ? <Delta pct={datos.pausas.delta_pct} />
                            : undefined
                          )}
                          tone={r.tone} />
@@ -347,9 +335,6 @@ export default function MetricasPage() {
 
           {tablaActiva === "activaciones" && (
             <TablaActivaciones items={datos.activaciones.items} />
-          )}
-          {tablaActiva === "pausas" && (
-            <TablaPausas items={datos.pausas.items} />
           )}
 
           <div>
@@ -424,45 +409,6 @@ function TablaActivaciones({ items }: { items: ItemActivacion[] }) {
             {items.length === 0 && (
               <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-slate-400">
                 Ninguna activación en este rango.
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function TablaPausas({ items }: { items: ItemPausa[] }) {
-  return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-100 px-4 py-2.5 text-xs font-semibold text-slate-600">
-        Publicaciones pausadas en el rango ({items.length})
-      </div>
-      <div className="max-h-80 overflow-y-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-slate-100 bg-slate-50 text-[10px] uppercase tracking-wider text-slate-500">
-              <th className="px-3 py-2 text-left font-semibold">SKU</th>
-              <th className="px-3 py-2 text-left font-semibold">Producto</th>
-              <th className="px-3 py-2 text-left font-semibold">Cuenta</th>
-              <th className="px-3 py-2 text-left font-semibold">Fecha de pausa</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((it, i) => (
-              <tr key={`${it.sku}-${it.cuenta}-${i}`} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
-                <td className="px-3 py-2 font-mono text-[11px] text-slate-700">{it.sku}</td>
-                <td className="truncate px-3 py-2 text-[12px] text-slate-600" title={it.titulo ?? ""}>
-                  {it.titulo ?? <span className="text-slate-300">sin título</span>}
-                </td>
-                <td className="px-3 py-2 text-[11px] text-slate-500">{it.cuenta}</td>
-                <td className="px-3 py-2 text-[11px] text-slate-500">{fFechaHora(it.changed_at)}</td>
-              </tr>
-            ))}
-            {items.length === 0 && (
-              <tr><td colSpan={4} className="px-3 py-8 text-center text-sm text-slate-400">
-                Ninguna pausa en este rango.
               </td></tr>
             )}
           </tbody>
