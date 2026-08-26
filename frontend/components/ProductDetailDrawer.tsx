@@ -20,6 +20,7 @@ import type {
   RefrescoPrecio,
 } from "@/lib/types";
 import { listarPublicaciones, refrescarCanal } from "@/lib/api";
+import { enlacePublicacion } from "@/lib/enlaces";
 import { motivoRefresco } from "@/lib/publicaciones";
 import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
 import { ChipMoneda, type Moneda } from "./Moneda";
@@ -482,9 +483,9 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                     <span className="font-mono text-xs text-slate-500">
                       {c.item_id ?? ""}
                     </span>
-                    {c.url && (
+                    {enlacePublicacion(c.canal, c.item_id, c.url) && (
                       <a
-                        href={c.url}
+                        href={enlacePublicacion(c.canal, c.item_id, c.url)!}
                         target="_blank"
                         rel="noreferrer"
                         className="flex items-center gap-1 text-xs font-semibold"

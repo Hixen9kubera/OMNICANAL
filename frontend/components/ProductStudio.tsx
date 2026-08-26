@@ -72,6 +72,7 @@ import {
   type ProductoIA,
 } from "@/lib/api";
 import { aNumero } from "@/lib/numeros";
+import { enlacePublicacion } from "@/lib/enlaces";
 import { ChipMoneda, TONO, type Moneda } from "@/components/Moneda";
 import CategoriaMLPicker from "./CategoriaMLPicker";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
@@ -454,6 +455,12 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const datosCanal: DetalleCanal | undefined = useMemo(
     () => data?.canales.find((c) => c.canal === canal),
     [data, canal],
+  );
+  // El url guardado falta en muchas publicaciones y en otras apunta a una
+  // publicación vieja (ver lib/enlaces.ts); se arma desde el id.
+  const enlaceCanal = useMemo(
+    () => enlacePublicacion(canal, datosCanal?.item_id, datosCanal?.url),
+    [canal, datosCanal],
   );
   const esGeneral = canal === GENERAL;
   const esAmazon = canal === AMAZON;
@@ -1347,7 +1354,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                         )}
                         {datosCanal?.full && <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700">{datosCanal.full_label ?? "FULL"}</span>}
                       </div>
-                      {datosCanal?.url && <a href={datosCanal.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs font-semibold" style={{ color: tema.acento }}>Ver publicación <ExternalLink size={12} /></a>}
+                      {enlaceCanal && <a href={enlaceCanal} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs font-semibold" style={{ color: tema.acento }}>Ver publicación <ExternalLink size={12} /></a>}
                     </>
                   ) : (
                     <span className="text-sm font-medium text-slate-500">Este producto <strong>no está publicado</strong> en {canalInfo?.label}. Puedes generar el contenido optimizado.</span>

@@ -25,6 +25,7 @@
 import { AlertTriangle, ExternalLink, RefreshCw, Tag } from "lucide-react";
 
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
+import { enlacePublicacion } from "@/lib/enlaces";
 import {
   ESTADO_UI,
   MOTIVO_CORTO,
@@ -297,10 +298,10 @@ export default function PublicacionesDelCanal({
               </div>
             </div>
 
-            {p.url && (
+            {enlacePublicacion(p.canal, p.listing_id, p.url) && (
               <div className="mt-2 flex justify-end">
                 <a
-                  href={p.url}
+                  href={enlacePublicacion(p.canal, p.listing_id, p.url)!}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center gap-1 text-[11px] font-semibold"
