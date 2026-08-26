@@ -32,6 +32,28 @@ comparación se conserva aquí extendida a kubera: gana el más reciente de los
 tres, venga de donde venga. Mientras haya doble escritura, empatan; el día que
 MySQL se apague, kubera gana por default sin que nadie cambie nada.
 
+LAS FECHAS VUELVEN SIN ZONA, A PROPOSITO
+----------------------------------------
+Costo una caida en produccion el 25-ago. MySQL entrega `datetime` SIN zona;
+Postgres guarda `timestamptz` y lo entrega CON zona. Python se niega a comparar
+los dos, y `meli._access_token` hace exactamente eso:
+
+    mejor = max(candidatos, key=lambda r: r["updated_at"])
+
+con kubera y las dos tablas de MySQL en la misma lista. Al encender
+`SUPABASE_READ_TOKENS` eso reventaba, el `except` de mas afuera lo tragaba y la
+funcion **devolvia None**: no un token viejo, NINGUN token. La bitacora se lleno
+de "No se pudo leer token ML" y Mercado Libre se quedo sin credencial.
+
+Una gemela tiene que ser INDISTINGUIBLE de la original, y el tipo es parte del
+contrato tanto como el valor. Por eso cada columna de fecha sale con
+`at time zone 'utc'`: se convierte en la BASE, sin zona y en UTC, igual que
+MySQL. Arreglarlo en los cinco lugares que comparan fechas hubiera sido correr
+detras del problema; el defecto vivia aqui.
+
+Lo prueba `probar_tipos_tokens_sandbox.py`, que compara TIPOS y no valores —
+que es justo lo que las pruebas anteriores no miraban.
+
 NUNCA IMPRIME UN TOKEN
 ----------------------
 Ni completo ni parcial. Las funciones de diagnóstico devuelven fechas y huellas
@@ -67,11 +89,13 @@ def leer(cuenta: str | None = None) -> dict[str, Any] | None:
     """
     if cuenta:
         return sdb.fetch_one(
-            """select cuenta, access_token, refresh_token, updated_at
+            """select cuenta, access_token, refresh_token,
+                      (updated_at at time zone 'utc') as updated_at
                  from ops.ml_tokens where cuenta = %s
                 order by updated_at desc nulls last limit 1""", (cuenta,))
     return sdb.fetch_one(
-        """select cuenta, access_token, refresh_token, updated_at
+        """select cuenta, access_token, refresh_token,
+                  (updated_at at time zone 'utc') as updated_at
              from ops.ml_tokens
             order by updated_at desc nulls last limit 1""")
 
@@ -123,7 +147,8 @@ def guardar(cuenta: str, access_token: str, refresh_token: str,
 def censo() -> list[dict[str, Any]]:
     """Para el arnés: fechas y huellas, jamás valores."""
     filas = sdb.fetch_all(
-        "select cuenta, access_token, refresh_token, updated_at from ops.ml_tokens "
+        "select cuenta, access_token, refresh_token, "
+        "       (updated_at at time zone 'utc') as updated_at from ops.ml_tokens "
         "order by cuenta")
     return [{"cuenta": f["cuenta"], "updated_at": f["updated_at"],
              "h_access": huella(f["access_token"]),
@@ -149,7 +174,10 @@ def censo() -> list[dict[str, Any]]:
 def tiktok_leer(shop_id: str | None = None) -> dict[str, Any] | None:
     """La fila de una tienda, o la mas reciente. Los tokens vuelven CIFRADOS."""
     cols = ("shop_id, seller_name, open_id, shop_cipher, access_token, "
-            "refresh_token, expira, refresh_expira, updated_at")
+            "refresh_token, "
+            "(expira at time zone 'utc') as expira, "
+            "(refresh_expira at time zone 'utc') as refresh_expira, "
+            "(updated_at at time zone 'utc') as updated_at")
     if shop_id:
         return sdb.fetch_one(
             f"select {cols} from ops.tiktok_tokens where shop_id = %s",
@@ -161,7 +189,10 @@ def tiktok_leer(shop_id: str | None = None) -> dict[str, Any] | None:
 def tiktok_listar() -> list[dict[str, Any]]:
     """Todas las tiendas, para el diagnostico. SIN tokens: solo fechas."""
     return sdb.fetch_all(
-        """select shop_id, seller_name, expira, refresh_expira, updated_at
+        """select shop_id, seller_name,
+                  (expira at time zone 'utc') as expira,
+                  (refresh_expira at time zone 'utc') as refresh_expira,
+                  (updated_at at time zone 'utc') as updated_at
              from ops.tiktok_tokens order by updated_at desc""")
 
 
@@ -207,7 +238,8 @@ def tiktok_guardar(shop_id: str, access_token: str, *, seller_name=None,
 def tiktok_censo() -> list[dict[str, Any]]:
     """Fechas y huellas, jamas valores."""
     filas = sdb.fetch_all(
-        "select shop_id, shop_cipher, access_token, refresh_token, updated_at "
+        "select shop_id, shop_cipher, access_token, refresh_token, "
+        "       (updated_at at time zone 'utc') as updated_at "
         "from ops.tiktok_tokens order by shop_id")
     return [{"shop_id": f["shop_id"], "updated_at": f["updated_at"],
              "tiene_cipher": bool(f["shop_cipher"]),

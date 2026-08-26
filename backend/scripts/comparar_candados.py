@@ -23,6 +23,11 @@ LOS TRES CANDADOS, Y SUS LLAVES DISTINTAS
      OJO: en MySQL la llave es el `wc_id` de Woo; en kubera es
      (canal, cuenta, external_order_id). No se comparan directo — hay que pasar
      por `channel.orders.wc_order_id`.
+     OJO 2: una compensación puede REVERTIRSE. kubera lo guarda como dos fechas
+     (`stock_compensado_at` / `stock_revertido_at`) y solo cuenta la vigente;
+     MySQL lo guarda como dos FILAS. Preguntar por la fila 'full_compensado' sin
+     mirar la reversión daba por vigente algo ya deshecho, y esta comparación
+     reprobaba con los dos lados diciendo lo mismo. Mide la ÚLTIMA acción.
   3. marca de agua del FBA   texto de `resultado`  ↔  ops.fba_watermark
      Aquí no hay "sí/no": hay un NÚMERO, y un número distinto también mueve
      stock de más o de menos.
@@ -44,6 +49,11 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 _APLICADAS = ("full_ingreso", "full_retiro", "fba_ingreso")
+_COMPENSADO = "full_compensado"
+# OJO: MySQL declara `accion` con 20 caracteres y NO esta en modo estricto,
+# asi que "full_compensado_revertido" se guardo TRUNCADO. Se compara contra
+# lo que la tabla realmente contiene, no contra lo que el codigo quiso escribir.
+_REVERTIDO = "full_compensado_reve"
 _ok = True
 
 
@@ -94,9 +104,19 @@ def main() -> None:
     # ── 2. Compensacion por pedido ──────────────────────────────────────────
     print("\n── 2. compensacion de stock por pedido ──")
     with my.cursor() as c:
-        c.execute("""SELECT DISTINCT item_id FROM fanout_log
-                      WHERE accion = 'full_compensado' AND item_id <> ''""")
-        wc_mysql = {str(r["item_id"]) for r in c.fetchall()}
+        # Un pedido compensado y luego REVERTIDO ya no esta compensado. Hay que
+        # mirar la ULTIMA accion de cada pedido, no si alguna vez hubo una:
+        # preguntar solo por 'full_compensado' daba por vigente una compensacion
+        # ya deshecha y reprobaba la comparacion con los dos lados diciendo
+        # exactamente lo mismo (pedido 131941, 25-ago-2026).
+        c.execute("""SELECT f.item_id, f.accion FROM fanout_log f
+                      JOIN (SELECT item_id, MAX(id) mx FROM fanout_log
+                             WHERE accion IN (%s, %s) AND item_id <> ''
+                             GROUP BY item_id) u ON u.mx = f.id""",
+                  (_COMPENSADO, _REVERTIDO))
+        ultima = {str(r["item_id"]): str(r["accion"]) for r in c.fetchall()}
+    wc_mysql = {w for w, a in ultima.items() if a == _COMPENSADO}
+    wc_revertidos = {w for w, a in ultima.items() if a != _COMPENSADO}
     with pg.cursor() as c:
         # La llave NO es la misma: MySQL guarda el wc_id de Woo, kubera la PK del
         # pedido. Se traduce por `channel.orders.wc_order_id`.
@@ -110,6 +130,9 @@ def main() -> None:
     print(f"     MySQL dice compensados: {len(wc_mysql):5d}   "
           f"kubera: {len(kubera_comp):5d}")
     print(f"     de los de MySQL, kubera conoce el pedido: {len(conocidos)}")
+    if wc_revertidos:
+        print(f"     [info] {len(wc_revertidos)} compensacion(es) REVERTIDA(S) en "
+              f"MySQL — no cuentan como vigentes: {sorted(wc_revertidos)[:4]}")
     check("ningun pedido compensado en MySQL aparece SIN compensar en kubera",
           not peligro2,
           f"{len(peligro2)} se COMPENSARIAN OTRA VEZ: {sorted(peligro2)[:4]}"

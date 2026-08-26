@@ -1001,6 +1001,89 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.264.0 — El comparador de candados daba un rojo falso, y TikTok se quedó sin llave
+
+Dos cosas chicas que bloqueaban dos banderas, y un hallazgo que no bloquea nada
+pero está costando inventario.
+
+**El comparador daba un rojo falso.** `comparar_candados.py` es la revisión previa
+a encender `SUPABASE_READ_CANDADOS`, y reprobaba por el pedido `131941`. Los dos
+lados decían exactamente lo mismo: compensado 15:37, revertido 20:22. El que se
+equivocaba era el juez.
+
+Una compensación puede deshacerse. kubera lo guarda como dos fechas y solo cuenta
+la vigente; MySQL lo guarda como dos FILAS. El comparador preguntaba
+"¿existe una fila `full_compensado`?" sin mirar si después vino la reversión —
+daba por vigente algo ya deshecho. Ahora mide la **última** acción de cada pedido.
+
+Con eso: 6 contra 6, y veredicto verde.
+
+Trampa que quedó documentada en el propio script: **MySQL declara `accion` con 20
+caracteres y no está en modo estricto**, así que `full_compensado_revertido` se
+guardó truncado como `full_compensado_reve`. Se compara contra lo que la tabla
+realmente contiene, no contra lo que el código quiso escribir.
+
+**TikTok tenía el token y no la llave.** El espejo funciona —se comprobó: los dos
+lados con la misma fecha al segundo—, pero `ops.tiktok_tokens` estaba sin
+`shop_cipher`, `seller_name` ni `open_id`.
+
+No es un bug. Hay dos caminos que escriben la tienda: la autorización manda todo,
+y la renovación manda solo el token **a propósito** (el cipher no cambia al
+renovar, y pisarlo con NULL rompería la conexión — migración 0024). La tienda se
+autorizó antes de encender `SUPABASE_WRITE_TOKENS`; desde entonces solo ha habido
+renovaciones. La fila nació sin identidad y ninguna renovación futura se la iba a
+dar.
+
+Importa porque `shop_cipher` **falla disfrazado**: sin él, un token válido recibe
+`shop_cipher is required`, que se lee como un problema de permisos. El día del
+corte, TikTok se apaga así.
+
+`sembrar_identidad_tiktok.py` copia solo la identidad y solo donde falta
+(`coalesce`, nunca pisa), jamás toca los tokens, y verifica contra el origen.
+`probar_sembrar_identidad_tiktok.py` lo prueba en sandbox con un `seller_name`
+equivocado a propósito: si el script lo respeta, el `coalesce` protege; si lo
+corrige, el mismo bug podría pisar un cipher bueno. 9 de 9 en verde.
+
+**Incidente: encender la lectura de tokens dejó a ML sin credencial 3.5 min.**
+Se prendió `SUPABASE_READ_TOKENS` en producción a las 00:00 UTC del 26-ago y la
+bitácora se llenó de `No se pudo leer token ML: can't compare offset-naive and
+offset-aware datetimes`. Se apagó a las 00:04 y se normalizó solo.
+
+El valor estaba perfecto —los tokens se habían verificado campo por campo el día
+anterior—. El **tipo** no. MySQL entrega `datetime` sin zona; Postgres entrega
+`timestamptz`, con zona. Y `meli._access_token` mete los dos en la misma lista:
+
+```python
+mejor = max(candidatos, key=lambda r: r["updated_at"])
+```
+
+Python se niega a comparar naive con aware, el `except` de más afuera se lo tragó
+y la función devolvió **`None`** — no un token viejo: ninguno. El mismo choque
+tiró `/api/tiktok/estado` con un 500, y habría matado el refresh proactivo de
+TikTok, que hace `expira - ahora`.
+
+Arreglado en la gemela, no en los cinco lugares que comparan fechas: cada columna
+de fecha de `tokens_read` sale con `at time zone 'utc'`. **Una gemela tiene que
+ser indistinguible de la original, y el tipo es parte del contrato tanto como el
+valor.** Perseguir los call sites habría sido correr detrás del problema.
+
+Por qué las pruebas no lo vieron: comparaban valores. `probar_tipos_tokens_sandbox.py`
+compara **tipos**, y reproduce el `max()` exacto que falló. Se comprobó que se
+pone roja al quitar el arreglo — con el mismo mensaje que salió en producción.
+
+**Hallazgo, sin arreglar todavía: la reversión no tiene candado.** Mirando el
+pedido `131941` se ve que la reversión corrió **cuatro veces** (20:18:42, :49,
+:56 y 20:22:50) y cada vuelta le restó una pieza a Woo en `ORG-0842-PLA`:
+194 → 190. Solo una pieza había entrado.
+
+La causa está en dos ramas vecinas de `pedidos_ml._sincronizar_serializado`: la
+compensación pregunta `_ya_compensado(...)` antes de actuar; la reversión no
+pregunta nada. `_sellar_candado("revertido", ...)` escribe la marca, pero
+**nadie la lee** — `candados_read` no tiene `ya_revertido`. El candado se pone y
+no se usa, en el único movimiento que no lo consulta.
+
+Woo sigue hoy con 190 donde debería tener 193.
+
 ### v0.262.0 — El aviso de promoción de ML, y cuál de los tres precios es cuál
 
 v0.261.0 dejó dos cosas sin cerrar y las dos se notaron el mismo día: dejó fuera
