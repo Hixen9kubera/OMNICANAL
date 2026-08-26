@@ -755,6 +755,22 @@ class Settings(BaseSettings):
     # notificador entero es un no-op (apagable sin deploy). La URL es la llave
     # del canal: SOLO como variable de Railway, nunca en el repo.
     slack_webhook_url: str = ""
+    # Canal APARTE, solo para las DOS revisiones diarias del costeo (margen
+    # negativo · top 10 con costo sin verificar) → #avisos-costos. No son
+    # incidentes: un margen negativo se lee con calma, "los pedidos pararon" se
+    # atiende ya. Mezclados, el canal de incidentes se vuelve ilegible y el de
+    # costos no llega a existir.
+    #
+    # VACÍA = CAE A `slack_webhook_url` Y NO CAMBIA NADA. Ésa es la razón de que
+    # el código pueda entrar a producción ANTES de que el webhook exista: el día
+    # que se ponga la variable en Railway, las dos alarmas se mudan solas sin
+    # otro deploy. El ruteo vive en `alertas._WEBHOOK_POR_TIPO`.
+    #
+    # Misma regla que la de arriba: la URL es la LLAVE del canal — solo como
+    # variable de Railway, nunca en el repo ni en el chat. Cómo se genera:
+    # api.slack.com/apps → la app de Kubera → Incoming Webhooks → Add New
+    # Webhook to Workspace → elegir #avisos-costos.
+    slack_webhook_costos: str = ""
     # Vigilante de ausencias (actas faltantes, silencio de ventas): cada N min.
     alertas_min: int = 15
 

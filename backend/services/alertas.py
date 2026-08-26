@@ -58,6 +58,13 @@ Anti-spam, en dos capas (v0.31.0 — antes se colaba una alerta por deploy):
 
 Sin SLACK_WEBHOOK_URL todo el módulo es un no-op: se enciende/apaga con la pura
 variable, sin deploy.
+
+DOS CANALES, CON CAÍDA AL DE SIEMPRE (v0.271.0). Casi todo va a
+#alertas-omnicanal (`SLACK_WEBHOOK_URL`). Las DOS revisiones diarias del costeo
+van a #avisos-costos (`SLACK_WEBHOOK_COSTOS`), porque no son incidentes: un
+margen negativo se lee con calma; "los pedidos pararon" se atiende ya.
+Si `SLACK_WEBHOOK_COSTOS` está vacía, esas dos caen a `SLACK_WEBHOOK_URL` y
+suena todo donde sonaba antes. El ruteo vive en `_WEBHOOK_POR_TIPO`, abajo.
 """
 from __future__ import annotations
 
@@ -97,7 +104,56 @@ _estados: dict[str, str] = {}          # tipo → último estado visto (respaldo
 
 
 def disponible() -> bool:
+    """
+    ¿Está encendido el notificador? Es el interruptor del MÓDULO ENTERO.
+
+    Mide SOLO `SLACK_WEBHOOK_URL`, y a propósito: es la misma pregunta que
+    contestaba antes de que existiera el segundo canal, así que el vigilante y
+    los tres `avisar*` se prenden y se apagan exactamente igual que siempre.
+
+    El filo, dicho aquí para que nadie lo descubra en caliente: poner SOLO
+    `SLACK_WEBHOOK_COSTOS` y vaciar ésta NO deja vivas las alarmas de costos —
+    apaga el módulo completo, ellas incluidas. Las dos variables no son
+    alternativas: la de costos es un DESVÍO sobre un notificador encendido.
+    """
     return bool(settings.slack_webhook_url)
+
+
+# ── A QUÉ CANAL VA CADA TIPO ──────────────────────────────────────────────────
+# Por omisión TODO va a `SLACK_WEBHOOK_URL` (#alertas-omnicanal). Las dos
+# revisiones diarias del costeo van a #avisos-costos porque no comparten
+# urgencia con el resto: nadie tiene que saltar por un margen negativo, pero sí
+# hay que leerlo. Revueltas con "los pedidos pararon", se pierden las dos cosas.
+#
+# EL RUTEO VA POR `tipo`, NO POR UN ARGUMENTO EN CADA LLAMADA, y no es pereza:
+# cada una de estas revisiones llama a `avisar_estado` DOS veces —la alarma y su
+# "resuelto"—, así que con un parámetro en el call site basta olvidarlo en uno
+# para que el 🔴 salga en un canal y el ✅ en el otro, y entonces el canal de
+# costos acumula alarmas que nunca se ven cerrar. Con la tabla, el par no se
+# puede separar: la llave es la misma que ya identifica a la alarma.
+#
+# SIN LA VARIABLE NUEVA NO CAMBIA NADA: `_webhook_de` cae a la de siempre y las
+# dos siguen sonando en #alertas-omnicanal, igual que hoy. Por eso esto se puede
+# publicar antes de que el webhook exista.
+#
+# El valor es el NOMBRE del campo de `settings`, no la URL: una URL aquí sería
+# un secreto en el repo.
+_WEBHOOK_POR_TIPO: dict[str, str] = {
+    "margen_negativo": "slack_webhook_costos",
+    "top_costo_sin_revisar": "slack_webhook_costos",
+}
+
+
+def _webhook_de(tipo: str) -> str:
+    """URL del canal de este `tipo`, con caída al canal general."""
+    # Se corta en `:` igual que el enfriamiento (`acta:<dominio>`,
+    # `publicar_500:<sku>`) para que un tipo con sufijo herede el canal de su
+    # familia. Ojo: `_toca_hoy` sella con `<tipo>:corrida`, que nunca se manda a
+    # Slack — solo se guarda el estado —, así que no hay riesgo de que el latch
+    # diario se cuele por aquí.
+    campo = _WEBHOOK_POR_TIPO.get(tipo.split(":")[0])
+    propio = getattr(settings, campo, "") if campo else ""
+    return propio or settings.slack_webhook_url
 
 
 # ── Candado PERSISTENTE (sobrevive a los deploys) ─────────────────────────────
@@ -204,11 +260,17 @@ def _guardar_estado(tipo: str, estado: str) -> None:
         log.warning("alertas: no se pudo guardar el estado de %s (%s)", tipo, exc)
 
 
-def _post_slack(texto: str) -> None:
-    """POST crudo al webhook. Corre SIEMPRE en hilo aparte; nunca lanza."""
+def _post_slack(texto: str, url: str) -> None:
+    """
+    POST crudo al webhook. Corre SIEMPRE en hilo aparte; nunca lanza.
+
+    La URL llega como argumento —y no se lee de `settings` aquí— porque quien
+    decide el canal es el `tipo` de la alerta, y eso se resuelve en el hilo que
+    llama, con `_webhook_de`.
+    """
     try:
         import httpx
-        r = httpx.post(settings.slack_webhook_url, json={"text": texto}, timeout=10)
+        r = httpx.post(url, json={"text": texto}, timeout=10)
         if r.status_code != 200:
             log.warning("Slack respondió %s: %s", r.status_code, r.text[:120])
     except Exception as exc:  # noqa: BLE001
@@ -239,7 +301,8 @@ def avisar(tipo: str, texto: str, nivel: str = "🔴") -> bool:
         if extra:
             texto += f"  _(+{extra} repetidas silenciadas)_"
         threading.Thread(
-            target=_post_slack, args=(f"{nivel} {texto}",), daemon=True
+            target=_post_slack, args=(f"{nivel} {texto}", _webhook_de(tipo)),
+            daemon=True
         ).start()
         return True
     except Exception as exc:  # noqa: BLE001
@@ -285,7 +348,8 @@ def avisar_estado(tipo: str, estado: str, texto: str, texto_ok: str | None = Non
                 _sellar(tipo, estado)
                 mensaje, marca = texto, nivel
         threading.Thread(
-            target=_post_slack, args=(f"{marca} {mensaje}",), daemon=True
+            target=_post_slack, args=(f"{marca} {mensaje}", _webhook_de(tipo)),
+            daemon=True
         ).start()
         return True
     except Exception as exc:  # noqa: BLE001
@@ -1029,6 +1093,10 @@ def resumen_estado() -> dict[str, Any]:
     with _lock:
         return {
             "webhook_configurado": disponible(),
+            # Booleano, NUNCA la URL: este resumen es de diagnóstico y la URL es
+            # la llave del canal. False aquí = las dos alarmas del costeo siguen
+            # cayendo a #alertas-omnicanal, que es el comportamiento de siempre.
+            "webhook_costos_configurado": bool(settings.slack_webhook_costos),
             "candado_persistente": _persistente(),
             "persistido": [
                 {"tipo": f["tipo"], "estado": f.get("estado"),

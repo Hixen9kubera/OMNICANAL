@@ -1001,6 +1001,90 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.271.0 — Las dos alarmas del costeo se mudan a su propio canal
+
+La v0.269.0 dejó dos revisiones diarias del costeo —margen negativo y top 10 con
+el costo sin verificar— sonando en el mismo canal que "los pedidos pararon" y
+"los tokens de ML están rancios". No comparten urgencia: un margen negativo se
+lee con calma y se acciona en el panel; un token muerto se atiende ya. Revueltos,
+el canal de incidentes se vuelve ilegible y el de costos nunca llega a existir.
+Esta versión las manda a **`#avisos-costos`**, y ninguna otra alarma se mueve.
+
+**El problema no era el destino, era que había UNA sola variable.**
+`SLACK_WEBHOOK_URL` la usaba todo `alertas.py`: apuntarla a otro canal habría
+mudado también el silencio de ventas, los tokens rancios, los pedidos
+duplicados y las actas de migración. Así que la variable nueva no reemplaza a la
+vieja — la **desvía** para dos tipos de alerta.
+
+**La regla que hace esto seguro de publicar: `SLACK_WEBHOOK_COSTOS` vacía = cae
+a `SLACK_WEBHOOK_URL`.** Con la variable sin poner, el comportamiento es
+**idéntico** al de hoy: las dos alarmas del costeo siguen sonando en
+`#alertas-omnicanal`, como si esta versión no existiera. Por eso el código puede
+entrar a producción **antes** de que el webhook exista. El día que la URL se
+ponga en Railway, las dos se mudan solas **sin otro deploy** (Railway reinicia el
+servicio al guardar la variable, y `settings` se lee al arrancar).
+
+**El ruteo va por `tipo`, no por un argumento en cada llamada.** Vive en una
+tabla, `alertas._WEBHOOK_POR_TIPO`, con las dos únicas llaves que se desvían:
+
+```python
+_WEBHOOK_POR_TIPO = {
+    "margen_negativo":       "slack_webhook_costos",
+    "top_costo_sin_revisar": "slack_webhook_costos",
+}
+```
+
+El valor es el **nombre del campo de `settings`**, nunca una URL: una URL aquí
+sería un secreto en el repo. Y la tabla no es pereza — cada una de esas dos
+revisiones llama a `avisar_estado` **dos veces**, la alarma (🔴/🟡) y su
+"resuelto" (✅). Con un parámetro en el call site basta olvidarlo en uno para que
+la alarma salga en un canal y su cierre en el otro, y entonces `#avisos-costos`
+acumula alarmas que nunca se ven cerrar. Con la tabla el par **no se puede
+separar**: la llave de ruteo es la misma que ya identifica a la alarma. La clave
+se corta en `:` igual que el enfriamiento, así que un tipo con sufijo hereda el
+canal de su familia; el latch diario que `_toca_hoy` sella como
+`<tipo>:corrida` nunca se manda a Slack, solo se guarda, así que no se cuela.
+
+**`disponible()` no se tocó, y ahí hay un filo que conviene saber antes que
+descubrirlo en caliente.** Sigue midiendo solo `SLACK_WEBHOOK_URL`, porque es el
+interruptor del módulo entero (`vigilante()` y los tres `avisar*` salen temprano
+si está vacía). O sea: poner **solo** `SLACK_WEBHOOK_COSTOS` y vaciar la otra
+**no** deja vivas las alarmas de costos — apaga todo, ellas incluidas. Las dos
+variables no son alternativas: la de costos es un **desvío** sobre un notificador
+que ya está encendido.
+
+**La campana del panel no cambia.** `_campana` sigue corriendo solo si
+`avisar_estado` devolvió `True` — el acoplamiento conocido, que es otro pendiente
+y no se tocó aquí. Vale la pena decir por qué el cambio no lo empeora: el POST a
+Slack vive en un hilo aparte y **nunca** decide el valor de retorno, así que un
+`SLACK_WEBHOOK_COSTOS` mal escrito o un webhook revocado dejan la alarma sin
+llegar a Slack pero **sí** en la campana. El aviso no se pierde de los dos lados
+por la misma causa.
+
+#### Cómo se genera el webhook (lo hace Eduardo, no el backend)
+
+1. `api.slack.com/apps` → la app de Kubera (ya creada).
+2. **Incoming Webhooks** → activarlo si no lo está.
+3. **Add New Webhook to Workspace** → elegir el canal **`#avisos-costos`**.
+4. Copiar la URL (`https://hooks.slack.com/services/...`).
+5. Pegarla en **Railway**, servicio `BackendOmnicanal`, como
+   `SLACK_WEBHOOK_COSTOS`.
+
+**La URL va DIRECTO a Railway: nunca al repo, nunca a un `.env` versionado,
+nunca al chat.** Es la llave del canal — cualquiera que la tenga puede escribir
+ahí. Es la misma regla que ya rige a `SLACK_WEBHOOK_URL`.
+
+**Verificar que quedó puesta sin exponerla:** `alertas.resumen_estado()` trae
+`webhook_costos_configurado`, un booleano. `false` = las dos alarmas siguen
+cayendo a `#alertas-omnicanal`.
+
+**Reversa:** borrar `SLACK_WEBHOOK_COSTOS` en Railway. Las dos alarmas vuelven a
+`#alertas-omnicanal` al reiniciar el servicio, sin deploy y sin revert.
+
+**Archivos:** `backend/config.py` (`slack_webhook_costos`),
+`backend/services/alertas.py` (`_WEBHOOK_POR_TIPO`, `_webhook_de`, `_post_slack`
+recibe la URL como argumento, `resumen_estado`).
+
 ### v0.270.0 — El interruptor que faltaba: el cajón pide el precio de hoy
 
 La v0.267.0 dejó al backend sabiendo confirmar el precio de Mercado Libre
