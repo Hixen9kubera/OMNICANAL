@@ -774,7 +774,13 @@ def asegurar_finales(sku: str, cat_id: str = "",
     if not base or base["costo_unitario"] <= 0:
         log.info("asegurar_finales(%s): sin costo en costos_validados", sku)
         return cf  # puede ser None; no hay con qué calcular
-    cat = cat_id or (cf or {}).get("ml_cat_id") or ""
+    # `_resolver_cat_ml` es la MISMA búsqueda que hace `recalcular` (mapa de
+    # kubera → postmeta de Woo → categoría del padre si es variante). Faltaba
+    # aquí, y por eso el cálculo automático se rendía teniendo el dato a la
+    # mano: de los 166 SKUs activos con costo validado y sin costo final, los
+    # 166 tienen su categoría en `channel.product_category` (26-ago-2026), 80
+    # de ellos sin categoría en la publicación pero sí en el mapa.
+    cat = cat_id or (cf or {}).get("ml_cat_id") or _resolver_cat_ml(sku)
     if not cat:
         log.info("asegurar_finales(%s): sin categoría ML para calcular comisión", sku)
         return cf

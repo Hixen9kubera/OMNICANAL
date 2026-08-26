@@ -1031,6 +1031,40 @@ tiene foto. Versión 0.275.0.
 
 ---
 
+### v0.276.0 — El costeo automático deja de rendirse teniendo la categoría a la mano
+
+Lo encontró Eduardo con `TEC-0393-ROS`: insignia **VALIDADO** en la tabla y
+"sin costo del canal" en el cajón. Son dos tablas distintas —
+`costos_validados` es la materia prima, `costos_finales` el resultado por
+canal— y validar la primera no llena la segunda.
+
+**La causa era una línea.** Para calcular el costo final hace falta la comisión
+de ML, que depende de la categoría. Hay dos caminos y sólo uno la buscaba:
+
+    recalcular        cat = overrides → cf → _resolver_cat_ml(sku)   ✔
+    asegurar_finales  cat = cat_id    → cf → ""                      �’ se rinde
+
+`_resolver_cat_ml` (mapa de kubera → postmeta de Woo → categoría del padre si
+es variante) ya existía y ya tenía el dato: de los **166** SKUs activos con
+costo validado y sin costo final, **los 166** tienen su categoría guardada en
+`channel.product_category` — 80 de ellos sin categoría en la publicación pero
+sí en el mapa. Se estaba tirando el cálculo con la respuesta encima de la mesa.
+
+**Hacían falta dos cosas**, porque `asegurar_finales` se llama SÓLO al crear un
+producto: la línea arregla los nuevos, y `scripts/backfill_costos_finales.py`
+(dry-run por default) arregla los que ya existen.
+
+**Guarda de plausibilidad**: el backfill SALTA todo SKU con
+`piezas_por_caja < 1`. Un divisor menor que uno no divide, multiplica el flete
+— y son justo los dos casos que aparecieron: `TEC-0393-ROS` (0.53, casi el
+doble) y `TEC-0400-MET` (0.04, veinticinco veces). Calcularlos daría un costo
+inflado con cara de dato bueno; se listan para revisarlos a mano.
+
+Simulacro sobre producción: **164 de 166 calcularían limpio** — 0 sin categoría,
+0 sin costo, 0 fallos — y 2 saltados. Versión 0.276.0.
+
+---
+
 ### v0.274.0 — Un solo "Ver publicación" por tarjeta
 
 Lo notó Eduardo apenas salió la v0.273.0: la tarjeta del canal quedó con **dos
