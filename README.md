@@ -1001,6 +1001,109 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.270.0 — El interruptor que faltaba: el cajón pide el precio de hoy
+
+La v0.267.0 dejó al backend sabiendo confirmar el precio de Mercado Libre
+contra ML antes de contestar. Nadie se lo pedía: `refrescar` es opcional y el
+frontend no lo mandaba, así que en producción llevaba tres versiones haciendo
+**cero** llamadas a ML. Esta versión es la línea que lo enciende, del lado que
+sabe cuándo se abre un cajón.
+
+**Por qué importa.** El panel estaba calculando margen contra `l.price`, que no
+baja cuando la promoción la monta una campaña de ML. Medido el 26-ago sobre un
+mismo SKU, dos publicaciones:
+
+```
+sin refrescar   MLM5199880128 BEKURA         $260.99  sin confirmar
+                MLM2870356893 SANCORFASHION  $260.99  sin confirmar
+refrescar=true  MLM5199880128 BEKURA         $169.00  CONFIRMADO
+                MLM2870356893 SANCORFASHION  $117.45  CONFIRMADO
+```
+
+El precio que se mostraba no era ninguno de los dos. El encargo de Eduardo era
+textual: *"debemos conseguir 100% de fiabilidad en cuanto entremos a revisar un
+producto en omnicanal, debe tener el mismo precio en tienda."*
+
+**Qué cambió, en una línea.** `ProductDetailDrawer` manda `refrescar: true` en
+su llamada a `/api/publicaciones`. Todo lo demás de esta entrada es lo que hubo
+que cuidar alrededor.
+
+**De dónde sale, y de dónde NO.** El disparo vive en el cajón y **sólo** en el
+cajón. En todo el frontend hay exactamente un llamador de
+`listarPublicaciones`, y es ése: la rejilla no lo usa (usa `listarProductos`),
+así que recorrer una lista no puede convertirse en cientos de llamadas a ML —
+una apertura son 1 o 2, cien filas serían doscientas. El backend además arma el
+objetivo con `sku = q` exacto, pero ese cinturón no es el filtro: el filtro es
+no mandarlo desde una rejilla.
+
+**Una confirmación por apertura.** El arreglo de dependencias del efecto
+(`[sku]`) ya impide que un re-render vuelva a preguntar; encima hay un candado
+explícito (`refrescadoPara`) para que siga siendo verdad si alguien le suma una
+dependencia al efecto. Se limpia al cerrar el cajón, así que volver a abrir el
+mismo SKU vuelve a confirmar — y allá el piso de 5 minutos decide si de verdad
+hay que molestar a ML. El piso cuida el **gasto**; el candado cuida el
+**parpadeo**, que es otra cosa.
+
+**Los tres casos, pintados distinto.**
+
+1. **Se confirmó** (`al_dia: true`, `estado: ok`) — los precios de siempre,
+   ahora ciertos. Sin ruido visual: no se decora lo que ya se esperaba.
+2. **No hacía falta** (`piso`, o `sin_publicaciones`) — también `al_dia: true`,
+   también sin ruido. No es un error, y tratarlo como tal enseñaría a ignorar
+   el aviso del caso 3.
+3. **No se pudo** (`al_dia: false`: ML no contestó, timeout, falta token, o
+   unas publicaciones contestaron y otras no) — **el cajón abre igual, con lo
+   guardado, marcado**. Aviso ámbar con ⚠ y el porqué en palabras
+   (`motivoRefresco`), el mismo trato que ya se le da al costo implausible, no
+   un rojo/verde que se lee como un hecho.
+
+Lo que **nunca** pasa es que esto se convierta en un error de carga. El
+`.catch` del cajón sigue siendo para otra cosa —que se caiga la petición
+entera—; que la confirmación no se lograra llega en la respuesta **buena**, con
+los mismos precios que habría traído sin refrescar. Un cajón que no abre es
+peor que uno con el dato de hace una hora.
+
+**`al_dia` es lo único que se mira, y no se recalcula.** El backend lo arma con
+`estado ∈ {ok, piso, sin_publicaciones}` **y** `sin_respuesta = 0` **y**
+`omitidas_tope = 0`. Derivarlo aquí a mano significaría que el día que entre un
+caso nuevo el booleano lo absorbe y la condición del front se queda vieja sin
+avisar. Del bloque `refresco`, `al_dia` es además el único campo obligatorio:
+el resto se lee con opcionales y `motivoRefresco` funciona aunque no venga
+ninguno.
+
+**El segundo que cuesta.** Confirmar contra ML agrega ~1 s a la apertura (1,023
+ms medidos de punta a punta con dos llamadas; el techo del endpoint es 6 s de
+presupuesto + 4 s por llamada). El cajón **no se bloquea**: `useDetalleProducto`
+sigue pintando al instante lo que traía la lista. Lo que se agregó es que el
+bloque de precios ya no es un hueco mudo mientras espera —un hueco donde va el
+precio se lee como "esta publicación no tiene precio"—: ahora lleva esqueleto y
+etiqueta. La etiqueta distingue canal por canal, porque la confirmación es
+contra Mercado Libre: en la tarjeta de ML dice "Confirmando precio con el
+canal…" y en las demás "Cargando publicaciones…". Decir que se está
+confirmando el precio de Amazon sería afirmar algo que no está pasando.
+
+Detalle de carrera que vale la pena: el indicador se apaga en un `finally`
+guardado con `ctrl.signal.aborted`. Sin esa guarda, cambiar de producto con el
+cajón abierto dejaba que la promesa **vieja** apagara el indicador de la
+apertura nueva.
+
+**Archivos.** `frontend/components/ProductDetailDrawer.tsx` (el disparo, el
+candado, el aviso), `frontend/components/PublicacionesDelCanal.tsx` (esqueleto
+en vez de nada), `frontend/lib/api.ts` (`refrescar` en `PublicacionesParams`;
+se omite cuando es falso, y sin el parámetro el backend contesta exactamente
+igual que siempre), `frontend/lib/types.ts` (`RefrescoPrecio`,
+`RefrescoEstado`, `PublicacionesResp.refresco`) y
+`frontend/lib/publicaciones.ts` (`motivoRefresco`, el vocabulario).
+
+**Lo que queda pendiente y no entró aquí.** El backend manda, publicación por
+publicación, `precio_vigente_confirmado`, `oferta_confirmada` y
+`margen_aviso: "precio_sin_confirmar"`. El frontend **no consume ninguno de los
+tres todavía**: hoy el aviso de "sin confirmar" es del cajón entero, no de la
+publicación suelta. Con `al_dia: false` por respuesta parcial —unas
+publicaciones confirmaron y otras no— el aviso es honesto pero grueso. Marcar
+renglón por renglón es el siguiente paso, y es trabajo de frontend: los datos
+ya están viajando.
+
 ### v0.269.0 — Dos alarmas que solo hablan de lo que se puede sostener
 
 Dos revisiones diarias nuevas en `backend/services/alertas.py`. Van juntas

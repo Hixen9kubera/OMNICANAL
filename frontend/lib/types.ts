@@ -1278,10 +1278,66 @@ export interface CoberturaPublicaciones {
   aviso: string;
 }
 
+/**
+ * Por qué el refresco quedó como quedó. Vocabulario CERRADO del backend
+ * (`services/precio_al_abrir.py`). Es para EXPLICAR, no para decidir: lo que
+ * se mira es `al_dia`.
+ */
+export type RefrescoEstado =
+  | "ok"                 // se le preguntó a ML y contestó
+  | "piso"               // observado hace menos de 5 min: no hacía falta preguntar
+  | "sin_publicaciones"  // el SKU no tiene publicaciones vivas de ML
+  | "apagado"            // PRECIO_AL_ABRIR o SYNC_ENABLED en false
+  | "no_aplica"          // no se mandó `q`
+  | "sin_token"          // la cuenta no tiene token
+  | "fallo"
+  | "timeout";
+
+/**
+ * `refresco` — confirmación del precio de ML CONTRA ML, hecha antes de
+ * contestar. Sólo viene cuando se pidió `refrescar=true`, y hoy eso ocurre en
+ * UN solo lugar: al abrir el cajón de un producto (`ProductDetailDrawer`).
+ * Nunca desde una rejilla — una apertura son 1 o 2 llamadas a ML, cien filas
+ * serían doscientas.
+ *
+ * `al_dia` es EL ÚNICO campo obligatorio del bloque y lo único que hay que
+ * mirar. **No lo recalcules** a partir de `estado`: el backend lo arma con
+ * `estado ∈ {ok, piso, sin_publicaciones}` Y sin fallos ni omisiones por tope,
+ * así que cuando entre un caso nuevo el booleano lo absorbe y una condición
+ * escrita a mano aquí se quedaría vieja sin avisar.
+ *
+ * `al_dia: false` NO es un error de carga: la respuesta trae exactamente los
+ * mismos precios que traería sin refrescar. Se pinta lo guardado DICIENDO que
+ * es lo guardado.
+ */
+export interface RefrescoPrecio {
+  /** "Todo lo que se muestra de ML para este SKU está confirmado ahora mismo." */
+  al_dia: boolean;
+  estado?: RefrescoEstado;
+  /** Publicaciones de ML vivas de ese SKU. */
+  publicaciones?: number;
+  /** A cuántas se les preguntó a ML. */
+  preguntadas?: number;
+  /** Cuántas quedaron selladas. */
+  confirmadas?: number;
+  /** De ésas, cuántas traían otro número. */
+  cambiaron?: number;
+  /** ML no contestó, o falta el token de esa cuenta. */
+  sin_respuesta?: number;
+  /** El piso de 5 min las salvó: no hacía falta preguntar. */
+  omitidas_piso?: number;
+  /** Tope por producto (hoy nunca: máximo 2 por SKU). */
+  omitidas_tope?: number;
+  ms?: number;
+  detalle?: string | null;
+}
+
 export interface PublicacionesResp {
   total: number;
   page: number;
   per_page: number;
   items: Publicacion[];
   cobertura: CoberturaPublicaciones;
+  /** Sólo con `refrescar=true`. Ver `RefrescoPrecio`. */
+  refresco?: RefrescoPrecio;
 }

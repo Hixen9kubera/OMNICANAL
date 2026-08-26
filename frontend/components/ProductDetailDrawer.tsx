@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   X,
   AlertTriangle,
@@ -17,8 +17,10 @@ import type {
   DetalleCanal,
   Producto,
   Publicacion,
+  RefrescoPrecio,
 } from "@/lib/types";
 import { listarPublicaciones, refrescarCanal } from "@/lib/api";
+import { motivoRefresco } from "@/lib/publicaciones";
 import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
 import { ChipMoneda, type Moneda } from "./Moneda";
 import PublicacionesDelCanal from "./PublicacionesDelCanal";
@@ -69,19 +71,54 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
   const [notas, setNotas] = useState<Record<string, string | null>>({});
   const [pubsFallaron, setPubsFallaron] = useState(false);
 
+  // Abrir el cajón CONFIRMA el precio de ML contra ML antes de pintarlo (el
+  // encargo de Eduardo: "debe tener el mismo precio en tienda"). Lo hace el
+  // backend —`refrescar=true`, v0.267.0—; de este lado sólo se dispara, se
+  // espera sin bloquear el resto, y se dice cuándo NO se pudo.
+  const [refresco, setRefresco] = useState<RefrescoPrecio | null>(null);
+  const [pubsCargando, setPubsCargando] = useState(false);
+  const [confirmandoPrecio, setConfirmandoPrecio] = useState(false);
+  /** El SKU cuya apertura ya pidió confirmación. Ver el candado en el efecto. */
+  const refrescadoPara = useRef<string | null>(null);
+
   useEffect(() => {
-    if (!sku) return;
+    if (!sku) {
+      // Cerrar el cajón cierra la apertura: volver a abrir ESTE mismo SKU
+      // vuelve a pedir confirmación, y allá el piso de 5 minutos decide si de
+      // verdad hay que molestar a Mercado Libre.
+      refrescadoPara.current = null;
+      // Y no se deja encendido el indicador de una apertura que ya terminó.
+      setPubsCargando(false);
+      setConfirmandoPrecio(false);
+      return;
+    }
     const ctrl = new AbortController();
     setPubs([]);
     setPubsFallaron(false);
+    setRefresco(null);
+    setPubsCargando(true);
+
+    // UNA confirmación por apertura. Hoy ya lo garantiza el arreglo de
+    // dependencias (`[sku]`: un re-render no vuelve a entrar aquí); el candado
+    // explícito es para que siga siendo verdad si alguien le suma una
+    // dependencia al efecto. El piso de 5 min del backend cuida el GASTO, no
+    // el parpadeo del indicador — eso se cuida aquí.
+    const pedirRefresco = refrescadoPara.current !== sku;
+    refrescadoPara.current = sku;
+    setConfirmandoPrecio(pedirRefresco);
+
     // `q` busca por SUBCADENA en sku/título/listing_id: un SKU que es prefijo
     // de otro traería publicaciones ajenas (693 SKUs del catálogo lo son). Se
     // filtra por igualdad exacta aquí; el backend no tiene un filtro por SKU.
-    listarPublicaciones({ q: sku, perPage: 500 }, ctrl.signal)
+    // `refrescar` NO usa esa búsqueda: del otro lado el objetivo se arma con
+    // `sku = q` exacto, y sale de aquí y sólo de aquí — nunca de la rejilla.
+    listarPublicaciones({ q: sku, perPage: 500, refrescar: pedirRefresco }, ctrl.signal)
       .then((r) => {
         const mio = sku.trim().toUpperCase();
         setPubs(r.items.filter((p) => (p.sku ?? "").trim().toUpperCase() === mio));
         setAvisoMargen(r.cobertura?.aviso ?? "");
+        // Sin `refrescar` el bloque no viene, y entonces no hay nada que decir.
+        setRefresco(r.refresco ?? null);
         setNotas(
           Object.fromEntries(
             (r.cobertura?.canales ?? []).map((c) => [c.canal, c.nota]),
@@ -93,7 +130,18 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
         // Si esto falla, la tarjeta vuelve a mostrar el precio del detalle. Lo
         // que NO se hace es dejar el hueco callado: sin precio ni aviso, el
         // cajón se leería como "esta publicación no tiene precio".
+        //
+        // Ojo: esto es que se caiga la PETICIÓN ENTERA. Que la confirmación
+        // contra ML no se lograra NO entra aquí — eso llega en `refresco` con
+        // la respuesta buena y se pinta como aviso, no como error de carga.
         setPubsFallaron(true);
+      })
+      .finally(() => {
+        // Si el cajón ya cambió de SKU, esta promesa es la VIEJA: apagar aquí
+        // apagaría el indicador de la apertura nueva.
+        if (ctrl.signal.aborted) return;
+        setPubsCargando(false);
+        setConfirmandoPrecio(false);
       });
     return () => ctrl.abort();
   }, [sku]);
@@ -229,6 +277,22 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                 No se pudieron leer las publicaciones por tienda: abajo va el
                 precio del detalle, <strong>sin oferta ni margen</strong>. No
                 significa que no haya descuento.
+              </span>
+            </div>
+          )}
+          {/* El precio de ML se pidió confirmar y NO se pudo. Se muestra lo
+              guardado DICIENDO que es lo guardado: ámbar y ⚠, el mismo trato
+              que el costo implausible, nunca rojo/verde que se lee como un
+              hecho. Un cajón que no abre es peor que uno con el dato de hace
+              una hora, así que esto jamás es un error de carga.
+              `al_dia` es lo ÚNICO que se mira: no se deduce de `estado`. */}
+          {refresco && !refresco.al_dia && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+              <span>
+                Precios de Mercado Libre <strong>sin confirmar</strong>:{" "}
+                {motivoRefresco(refresco)}. Abajo va lo último guardado, que
+                puede no ser lo que la tienda cobra en este momento.
               </span>
             </div>
           )}
@@ -384,6 +448,11 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                   aviso={avisoMargen}
                   nota={notaSi(c.canal, misPubs)}
                   color={color}
+                  cargando={pubsCargando}
+                  // La confirmación es contra Mercado Libre y sólo de ML: decir
+                  // "confirmando precio" en la tarjeta de Amazon sería afirmar
+                  // algo que no está pasando.
+                  confirmando={confirmandoPrecio && c.canal === "mercado_libre"}
                 />
 
                 {/* Categoría multinivel */}

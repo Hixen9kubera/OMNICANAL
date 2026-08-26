@@ -22,7 +22,7 @@
  * regla de cuándo un costo no se puede creer.
  */
 
-import { AlertTriangle, ExternalLink, Tag } from "lucide-react";
+import { AlertTriangle, ExternalLink, RefreshCw, Tag } from "lucide-react";
 
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
 import {
@@ -203,10 +203,42 @@ interface Props {
   nota?: string | null;
   /** Color del canal, para el enlace. */
   color: string;
+  /** Las publicaciones vienen en camino. Pinta esqueleto en vez de nada. */
+  cargando?: boolean;
+  /**
+   * Además, a ESTE canal se le está confirmando el precio contra el canal
+   * mismo. Sólo Mercado Libre, y sólo al abrir el cajón.
+   */
+  confirmando?: boolean;
 }
 
-export default function PublicacionesDelCanal({ pubs, aviso, nota, color }: Props) {
-  if (!pubs.length) return null;
+export default function PublicacionesDelCanal({
+  pubs,
+  aviso,
+  nota,
+  color,
+  cargando,
+  confirmando,
+}: Props) {
+  // Mientras la respuesta viene en camino el bloque NO se desvanece. Confirmar
+  // el precio contra Mercado Libre agrega ~1 s a la apertura, y un hueco mudo
+  // justo donde va el precio se lee como "esta publicación no tiene precio".
+  // El resto del cajón ya está pintado: esto NO bloquea nada más.
+  if (!pubs.length) {
+    if (!cargando && !confirmando) return null;
+    return (
+      <div className="border-b border-slate-100 bg-slate-50/40 px-4 py-3">
+        <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          <RefreshCw size={11} className="shrink-0 animate-spin" />
+          {confirmando ? "Confirmando precio con el canal…" : "Cargando publicaciones…"}
+        </div>
+        <div
+          className="h-[4.5rem] animate-pulse rounded-lg border border-slate-200 bg-white"
+          aria-hidden
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="border-b border-slate-100 bg-slate-50/40 px-4 py-3">

@@ -24,6 +24,8 @@ import type {
   EstadoNormalizado,
   MargenMotivo,
   OfertaEstado,
+  RefrescoEstado,
+  RefrescoPrecio,
 } from "./types";
 
 /** Tono visual de un estado. El color concreto lo pone el componente. */
@@ -164,6 +166,48 @@ export const MOTIVO_CORTO: Record<MargenMotivo | "desconocido", string> = {
   sin_precio: "sin precio",
   desconocido: "sin motivo",
 };
+
+// ── Confirmación del precio al abrir el cajón ────────────────────────────────
+
+/**
+ * Por qué NO se pudo confirmar el precio contra Mercado Libre. Sólo se usan
+ * los estados que dejan `al_dia: false`; `ok`, `piso` y `sin_publicaciones` no
+ * necesitan explicación porque no se avisa nada cuando todo está al día.
+ */
+const REFRESCO_MOTIVO: Partial<Record<RefrescoEstado, string>> = {
+  apagado: "la confirmación en vivo está apagada",
+  sin_token: "falta el token de esa cuenta de Mercado Libre",
+  fallo: "Mercado Libre no contestó",
+  timeout: "Mercado Libre tardó más de la cuenta",
+  no_aplica: "no se pidió la confirmación",
+};
+
+/**
+ * El porqué, en palabras de quien lo lee. Llamarlo SOLO cuando
+ * `refresco.al_dia === false`.
+ *
+ * El caso mixto es el que importa y por eso va primero: `estado: "ok"` con
+ * `sin_respuesta > 0` significa que a unas publicaciones ML sí les contestó y a
+ * otras no. El aviso habla de las que NO, que son las que obligan a leer el
+ * número con reserva.
+ *
+ * Todos los campos menos `al_dia` son opcionales en el contrato, así que aquí
+ * no se asume que ninguno venga.
+ */
+export function motivoRefresco(r: RefrescoPrecio): string {
+  if (r.sin_respuesta && r.sin_respuesta > 0) {
+    return r.sin_respuesta === 1
+      ? "una publicación no contestó"
+      : `${r.sin_respuesta} publicaciones no contestaron`;
+  }
+  if (r.omitidas_tope && r.omitidas_tope > 0) {
+    return "se alcanzó el tope de consultas por producto";
+  }
+  return (
+    (r.estado && REFRESCO_MOTIVO[r.estado])
+    ?? "Mercado Libre no confirmó el precio"
+  );
+}
 
 // ── Canales y tiendas ────────────────────────────────────────────────────────
 

@@ -1209,6 +1209,18 @@ export interface PublicacionesParams {
   orden?: string;
   page?: number;
   perPage?: number;
+  /**
+   * Confirma CONTRA Mercado Libre el precio de las publicaciones del SKU
+   * **exactamente igual** a `q`, antes de contestar. Es lo ÚNICO que escribe en
+   * este endpoint.
+   *
+   * Va sólo desde el cajón del producto (`ProductDetailDrawer`). **Nunca desde
+   * una rejilla ni desde un listado**: una apertura son 1 o 2 llamadas a ML;
+   * cien filas serían doscientas. El backend se defiende armando el objetivo
+   * con `sku = q` exacto (una `q` que sólo sea parte de un título refresca
+   * cero), pero ese cinturón no es el filtro: el filtro es no mandarlo.
+   */
+  refrescar?: boolean;
 }
 
 function queryPublicaciones(p: PublicacionesParams): string {
@@ -1225,6 +1237,9 @@ function queryPublicaciones(p: PublicacionesParams): string {
   if (p.orden) qs.set("orden", p.orden);
   qs.set("page", String(p.page ?? 1));
   qs.set("per_page", String(p.perPage ?? 50));
+  // Se omite cuando es falso: sin el parámetro, el backend contesta exactamente
+  // igual que siempre y ni siquiera arma el bloque `refresco`.
+  if (p.refrescar) qs.set("refrescar", "true");
   return qs.toString();
 }
 
