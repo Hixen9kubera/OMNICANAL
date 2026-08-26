@@ -267,6 +267,45 @@ def iniciar() -> None:
         )
         log.info("Reconstructor de pedidos Woo→kubera cada %s min (ventana %s días).",
                  settings.reconstruir_orders_min, settings.reconstruir_orders_dias)
+    # Barrido de precios de venta de ML (v0.267.0). Confirma `price_sale` de las
+    # activas preguntando `/items/{id}/sale_price`. NO reemplaza a los webhooks
+    # de precio: ellos dan LATENCIA (segundos cuando ML avisa), esto da
+    # COBERTURA (las 341 de 745 activas que en 3 días no recibieron ni un aviso
+    # y por ese camino nunca se confirman). Ver services/precios_venta.py.
+    #
+    # Dos jobs y no uno: el de ARRANQUE hace una pasada completa para drenar el
+    # atraso acumulado mientras el backend estuvo abajo; el GOTEO mantiene. Los
+    # dos comparten el mismo candado, así que no pueden solaparse.
+    if settings.sync_enabled and settings.precios_venta_barrido:
+        from services import precios_venta
+        if settings.precios_venta_arranque:
+            _scheduler.add_job(
+                precios_venta.barrido_arranque,
+                "date",
+                run_date=datetime.now() + timedelta(seconds=180),
+                id="precios_venta_arranque",
+                max_instances=1,
+            )
+        _scheduler.add_job(
+            precios_venta.barrido_periodico,
+            "interval",
+            hours=1,
+            id="precios_venta_goteo",
+            # A los 15 min del boot, para no pisarse con el barrido de arranque
+            # ni con la primera pasada del sync.
+            next_run_time=datetime.now() + timedelta(minutes=15),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Barrido de precios de venta ML: %s por hora (ciclo ~%.1f h) "
+                 "· pasada completa al arrancar=%s.",
+                 settings.precios_venta_por_hora,
+                 745 / max(settings.precios_venta_por_hora, 1),
+                 settings.precios_venta_arranque)
+    else:
+        log.info("Barrido de precios de venta ML APAGADO "
+                 "(PRECIOS_VENTA_BARRIDO=%s, SYNC_ENABLED=%s).",
+                 settings.precios_venta_barrido, settings.sync_enabled)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no

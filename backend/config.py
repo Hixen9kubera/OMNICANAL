@@ -168,7 +168,40 @@ class Settings(BaseSettings):
     # Encenderlo tendría sentido como BARRIDO de arranque, para confirmar de
     # golpe las que llevan días sin aviso. Eso es una decisión con acta, no un
     # default.
+    #
+    # Y ese barrido ya existe, PERO NO ES ESTE FLAG — v0.267.0. Vive en
+    # `services/precios_venta.py` y se enciende con `PRECIOS_VENTA_BARRIDO`
+    # (abajo). La diferencia no es cosmética: aquel hacía ~11,500 llamadas
+    # diarias porque preguntaba en CADA pasada del sync y por CADA publicación;
+    # el barrido pregunta una vez por publicación cada 9.3 h, ordenando por la
+    # más rancia, y con eso cuesta ~1,920/día. Este flag sigue apagado.
     ml_precio_venta: bool = False
+
+    # ── Barrido de precios de venta de ML (v0.267.0) ──────────
+    # Confirma `channel.listings.price_sale` de las publicaciones ACTIVAS de ML
+    # preguntando `/items/{id}/sale_price`. Es lo que hace que el margen del
+    # panel Omnicanal se calcule contra lo que ML COBRA y no contra el precio de
+    # lista. Ver el encabezado de `services/precios_venta.py`.
+    #
+    # NACE APAGADO a propósito: toca flujo vivo (llamadas a ML + escritura a
+    # channel.listings) y encenderlo es una decisión con acta y dale de Brandon.
+    # Respeta SYNC_ENABLED por encima de este flag.
+    #
+    # Por qué hace falta aunque los webhooks de precio funcionen: medido el
+    # 26-ago-2026 sobre los 3 días que retiene ops.webhook_events, 341 de las
+    # 745 activas (46%) NO recibieron ningún aviso de precio, y ninguna de esas
+    # 341 estaba confirmada. Un aviso solo llega cuando algo cambia; el barrido
+    # es lo único que alcanza a las que nadie mueve.
+    precios_venta_barrido: bool = False
+    # Cuántas publicaciones pide el goteo por hora. 80 → ciclo completo de 9.3 h
+    # sobre las 745 activas, ~1,920 llamadas/día (la mitad de lo que ya gastan
+    # los avisos de precio). La confirmación caduca a las ~48 h —medido: 0
+    # activas con updated_at de más de 48 h— así que por debajo de ~32/h el
+    # ciclo (23 h) deja de alcanzar para las que cambian a diario.
+    precios_venta_por_hora: int = 80
+    # Pasada COMPLETA una sola vez al arrancar, para no esperar un ciclo entero
+    # a que se drene el atraso acumulado mientras el backend estuvo abajo.
+    precios_venta_arranque: bool = True
     competencia_con_detalle: bool = True
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────

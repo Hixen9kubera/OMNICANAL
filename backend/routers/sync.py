@@ -11,6 +11,13 @@ sync.py — Endpoints del sistema de sincronización de inventario.
 
   GET  /api/sync/estado
        → Resumen del cache (cuántos SKU por canal, última actualización).
+
+  POST /api/sync/precios-venta?cuenta=&limite=
+  GET  /api/sync/precios-venta
+       → Barrido que CONFIRMA el precio de venta de las activas de ML
+         (`/items/{id}/sale_price` → `channel.listings.price_sale`). El GET es
+         lectura pura. Ver services/precios_venta.py para el porqué y la
+         cadencia; el scheduler ya lo corre solo si PRECIOS_VENTA_BARRIDO=true.
 """
 from __future__ import annotations
 
@@ -73,6 +80,48 @@ async def leer(
     if canal in ("amazon", "todos"):
         resultados.append(await inventario.sincronizar_amazon(limite))
     return {"ok": True, "resultados": resultados}
+
+
+@router.post("/precios-venta")
+async def precios_venta_barrer(
+    cuenta: str | None = Query(None, description="Cuenta ML (BEKURA/SANCORFASHION)"),
+    limite: int | None = Query(None, ge=1, le=2000,
+                               description="Las N más rancias. Sin límite = pasada completa."),
+):
+    """
+    Dispara el BARRIDO de precios de venta de ML y contesta de inmediato.
+
+    Es el mismo trabajo que hace el scheduler (`precios_venta.barrido_periodico`)
+    pero a mano: sirve para drenar el atraso sin esperar al ciclo, o para barrer
+    una sola cuenta. NO espera a que termine — son cientos de llamadas a ML y la
+    petición se pasaría del timeout del proxy. El avance se lee con el GET.
+
+    Escribe `channel.listings.price_sale` y habla con ML, así que obedece las
+    mismas dos llaves que el job: `SYNC_ENABLED` y `PRECIOS_VENTA_BARRIDO`.
+    Con cualquiera apagada no hace nada y lo dice.
+    """
+    from services import precios_venta
+    if not settings.sync_enabled:
+        return {"ok": False, "motivo": "SYNC_ENABLED apagado (modo puros pedidos)"}
+    if not settings.precios_venta_barrido:
+        return {"ok": False, "motivo": "PRECIOS_VENTA_BARRIDO apagado"}
+    estado_actual = await precios_venta.refrescar_en_fondo(
+        cuenta=cuenta, limite=limite, motivo="manual")
+    return {"ok": True, "estado": estado_actual}
+
+
+@router.get("/precios-venta")
+def precios_venta_estado():
+    """Avance del barrido de precios de venta. Lectura pura, no dispara nada."""
+    from services import precios_venta
+    return {
+        "encendido": bool(settings.sync_enabled and settings.precios_venta_barrido),
+        "sync_enabled": settings.sync_enabled,
+        "barrido": settings.precios_venta_barrido,
+        "por_hora": settings.precios_venta_por_hora,
+        "pasada_al_arrancar": settings.precios_venta_arranque,
+        "estado": precios_venta.estado(),
+    }
 
 
 @router.get("/plan")

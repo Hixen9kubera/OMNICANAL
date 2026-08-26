@@ -1001,6 +1001,140 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.268.0 — El aviso da latencia; la cobertura hay que barrerla
+
+El 46% de las publicaciones activas de ML **no recibe ningún aviso de precio**, y
+por ese camino no se van a confirmar nunca. Este release revive
+`services/precios_venta.py` —dormido desde el 21-ago— como el barrido que las
+alcanza. **Nace APAGADO** (`PRECIOS_VENTA_BARRIDO=false`).
+
+**El agujero, medido el 26-ago-2026 contra producción.** Las v0.261.0 y v0.262.0
+abrieron los dos topics de precio de ML y funcionan: cuando ML avisa, la
+publicación se confirma en segundos. Pero un aviso solo llega cuando algo
+CAMBIA, y sobre la ventana completa que retiene `ops.webhook_events` (3 días,
+23→26 de agosto):
+
+| | publicaciones |
+|---|---|
+| activas de ML | **745** |
+| recibieron algún aviso de precio | 404 (54%) |
+| **no recibieron ninguno** | **341 (46%)** — y **0** de ellas confirmadas |
+| nunca observadas (`price_sale` NULL) | 64 |
+
+Ese 46% depende de la ventana, y la ventana es corta porque
+`ops.webhook_events` **retiene 3 días**. Sobre los dos días COMPLETOS de la
+muestra (24 y 25) el hueco sube a 381 (51%); sobre el día de más tráfico
+(25-ago, 1,722 avisos) a 456 (61%). En ningún corte baja del 45%.
+
+**Y no contradice el "130 activas (17%)" de la v0.261.0: contesta otra
+pregunta.** Aquél contaba las que no recibían aviso de NINGÚN tipo —hoy son 173
+(23%), mismo orden— pero `orders_v2`, `shipments`, `items` y los demás **no
+confirman la oferta**: solo `items_prices` y `public_offers` disparan
+`con_precio_venta=True` en `routers/webhooks.py`. La pregunta que importa es
+cuántas no reciben aviso de PRECIO, y ésas son 341.
+
+Y hay un segundo agujero que no se veía: **la confirmación caduca sola.**
+`updated_at` se mueve con cualquier cambio de la fila, y entonces la oferta
+guardada vuelve a quedar sin confirmar aunque nadie la haya tocado. De las 745
+activas, **ninguna tiene `updated_at` con más de 48 h** (315 cambiaron en 24 h,
+439 en 48 h). O sea: la confirmación del catálogo entero caduca en menos de dos
+días, y una pasada única —la del 20-ago, que dejó 665 ofertas rancias
+aplicándose al margen— no arregla nada. Es la moraleja que el propio archivo
+traía escrita, ahora con número: *una foto de precios sin quien la repita es una
+mentira con fecha de caducidad.*
+
+**Cuánto cuesta hoy ese agujero.** Pasada completa EN SECO, 745 GET a ML sin
+escribir una sola fila, con la regla exacta del panel
+(`precio_vigente = price_sale` si está confirmada, si no `l.price`):
+
+    433 de 745 (58%) muestran un precio_vigente que ML NO cobra
+      mediana 1.89x · promedio 1.99x · máximo 5.00x
+      423 de esas 433 están INFLADAS — el panel cree que cobra ~2x de más,
+      así que el margen que enseña es optimista
+      262 de ellas tienen costo, o sea que hoy enseñan un margen equivocado
+
+Casos: `MLM3019141297` panel $195.72 / ML $39.14 · `MLM5158233112` panel
+$2,185.56 / ML $437.11 · `MLM2909176803` panel $72,278.49 / ML $799.00.
+
+**Las dos correcciones al archivo dormido.**
+
+1. **El filtro.** `_SQL_OBJETIVO` filtraba `stock_full > 0` — nació para VALUAR
+   el inventario en FULL, no para mantener precios, y no es el mismo conjunto:
+   680 con stock FULL contra 745 activas; **68 activas sin stock en FULL** que el
+   filtro viejo no miraba y **3 con stock FULL que ni siquiera están activas**.
+   Ahora el universo es *activa*, y con el MISMO criterio que el panel: el WHERE
+   sale de `publicaciones_panel.filtro_sql_activas('mercado_libre')`, no de un
+   `situacion <> 'closed'` escrito aparte. Cambiar el mapa de estados mueve el
+   barrido en el mismo commit. El **costo no decide quién entra, decide quién va
+   primero**: de las 745 activas, 456 tienen costo en `costing.costos_finales` y
+   289 no; sin costo no hay margen que corregir hoy, pero el costo puede cargarse
+   mañana y son 289 llamadas sobre un presupuesto barato, así que van al final de
+   la cola y no fuera de ella.
+
+2. **La cadencia**, elegida midiendo y no suponiendo:
+
+   | | llamadas a ML por día |
+   |---|---|
+   | `ML_PRECIO_VENTA` en el sync (rechazado en su día) | ~11,500 |
+   | los webhooks de precio, **hoy** | ~3,444 |
+   | **este barrido, 80 por hora** | **~1,920** |
+
+   Sí: el barrido cuesta **poco más de la mitad de lo que ya se gasta en los
+   avisos**. Por dos razones. Una, **`/items/{id}/sale_price` trae los DOS
+   precios en el mismo cuerpo** — `amount` (lo que se paga) y `regular_amount`
+   (la lista) — así que no hace falta pedir además `/items/{id}` como hace el
+   camino del webhook, que por eso cuesta dos llamadas por aviso. Verificado
+   contra 40 publicaciones vivas: 40/40 en 200, 33 traían `regular_amount` y
+   **33/33 coincidían al centavo con el `price_base` guardado**; las 7 con
+   `regular_amount` nulo no tenían promoción. Dos, el barrido no repite la misma
+   publicación 32 veces al día como sí hacen los avisos (`price` cambió 2,962
+   veces en 24 h repartidas entre 91 SKUs).
+
+   Se eligió **goteo por hora** y no pasada completa cada N horas. A igual
+   presupuesto dan la misma edad máxima —80/h son 745/80 = **9.3 h de ciclo**—
+   pero el goteo no choca con el sync de 15 min, degrada suave, y no le manda a
+   ML 745 peticiones en 11 segundos (medido: 745/745 en 200 en 11.0 s, 67.9
+   pub/s). El orden es **la más rancia primero**, que es lo que lo hace converger
+   sin coordinarse con nadie: la que un webhook acaba de confirmar se va sola al
+   final de la cola. 9.3 h de ciclo contra 48 h de caducidad deja margen; por
+   debajo de ~32/h el ciclo (23 h) deja de alcanzar para las que cambian a
+   diario. Aparte va el **barrido de ARRANQUE**: una pasada completa 3 min
+   después del boot, para no esperar un ciclo entero a drenar el atraso.
+
+**Lo que NO se pisa.** `channel.listing_history` no audita `price_sale`
+(`channel.fn_listing_history` solo registra price, stock_own, stock_full,
+is_fulfillment, status y situacion): lo que este barrido sobreescriba **no se
+puede reconstruir**. De ahí que un `None` de ML jamás se escriba (contrato de la
+0025: NULL = "no observado"), que cada cambio de valor salga al log con el antes
+y el después —hoy el único rastro que queda—, y que `app.via` se marque
+`barrido_precios` para que el día que alguien sume `price_sale` al trigger esas
+filas no salgan rotuladas 'sync' (handoff abierto a omni-datos). Tampoco se
+escribe `price_base`: `regular_amount` se usa solo para VIGILAR el denominador
+—si ML dice una lista distinta a la guardada se cuenta en `denominador_movido`
+(27 de 745 en la pasada de prueba)— porque dos escritores para una columna que
+nadie audita es cómo se pierden datos en silencio, y el sync de 15 min sigue
+siendo su único dueño.
+
+**Por qué esto confirma.** `_SQL_GUARDAR` sella `price_sale_at = now()` y el
+trigger `trg_touch_listings` sella `updated_at = now()` en el MISMO UPDATE;
+`now()` es la hora de la transacción, así que salen idénticos y
+`price_sale_at >= updated_at` —la regla de `publicaciones_panel._oferta`— se
+cumple. No es casualidad: cambiar ese trigger a `clock_timestamp()` dejaría
+`updated_at` un microsegundo después y **no se confirmaría nada**.
+
+**Cómo se enciende y cómo se apaga.** `PRECIOS_VENTA_BARRIDO` (nace en `false`),
+`PRECIOS_VENTA_POR_HORA` (80) y `PRECIOS_VENTA_ARRANQUE` (`true`). `SYNC_ENABLED`
+manda por encima de las tres: hablar con ML para refrescar catálogo es justo lo
+que ese interruptor apaga, igual que hace el webhook de items. Apagar
+`PRECIOS_VENTA_BARRIDO` corta lo que ENTRA, no la tanda que ya está en vuelo
+(≤80 publicaciones, ~2 s). Y hay disparo a mano:
+`POST /api/sync/precios-venta?cuenta=&limite=` (contesta de inmediato, obedece
+las dos llaves) con `GET /api/sync/precios-venta` para ver el avance.
+
+Archivos: `backend/services/precios_venta.py` (reescrito),
+`backend/services/scheduler.py` (dos jobs), `backend/routers/sync.py` (dos
+endpoints), `backend/config.py` (tres variables + la nota de `ML_PRECIO_VENTA`,
+que sigue apagado y ahora dice por qué NO es este barrido).
 ### v0.267.0 — El precio se confirma al abrir el producto, no cuando toque
 
 Eduardo lo pidió en una línea: *"debemos conseguir 100% de fiabilidad en cuanto
@@ -1481,6 +1615,9 @@ implausible hace tres semanas. El número marcado sigue siendo útil: dice el te
 - **130 publicaciones activas (17%) no reciben ningún aviso de ML.** Ésas no se
   confirman solas: necesitan un barrido de arranque. `services/precios_venta.py`
   sigue siendo la herramienta, sigue dormido y sigue necesitando acta.
+  > **Corregido en v0.267.0** (y el barrido ya existe). Ese 17% contaba las que
+  > no reciben aviso de NINGÚN tipo, pero solo `items_prices` y `public_offers`
+  > confirman la oferta. Las que no reciben aviso de PRECIO son **46%**.
 - **La confirmación es frágil por diseño**: `price_sale_at >= updated_at`, y
   `updated_at` se mueve con cualquier cambio de la fila (stock incluido). Una
   publicación que cambia de stock después de observarse su promoción vuelve a
