@@ -554,7 +554,17 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                                        "value": "no"}]})
                     # Foto ANTES de cancelar: al reponer, Woo BORRA
                     # `_reduced_stock` y después ya no habría qué revertir.
-                    if _ya_compensado(wc_id):
+                    #
+                    # Se pasan `cuenta` y `order_id` A PROPÓSITO: sin ellos
+                    # `_ya_compensado` ni intenta kubera y cae al MySQL que
+                    # estamos retirando, con bandera o sin ella. El día del
+                    # corte contestaba `False` por el `except` — sin foto no hay
+                    # reversión, y Woo se queda con piezas repuestas dos veces.
+                    #
+                    # Que PROPAGUE si kubera falla es deliberado, igual que en el
+                    # otro punto de llamada: aquí un "no sé" convertido en "no"
+                    # se paga en inventario. No envolver esto en un try.
+                    if _ya_compensado(wc_id, orden.get("cuenta"), str(order_id)):
                         try:
                             foto_previa = _leer_reducido(wc_id)
                         except Exception:  # noqa: BLE001

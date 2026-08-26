@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.265.0 — El otro punto de llamada del candado se iba a MySQL con bandera y todo
+
+`pedidos_ml` pregunta `_ya_compensado` en **dos** lugares. El de la compensación
+le pasa la cuenta y el número de pedido; el de la **cancelación** (línea 567) solo
+le pasaba el `wc_id`. Y sin esos dos datos la función ni siquiera entra a la rama
+de kubera:
+
+```python
+if settings.supabase_read_candados and cuenta and order_id:   # <- nunca se cumplía
+    return candados_read.ya_compensado(...)
+```
+
+Se iba derecho al MySQL que estamos retirando, con `SUPABASE_READ_CANDADOS`
+encendido o apagado. Por eso encender la bandera no lo destapó: ese punto se
+comportaba igual en los dos casos.
+
+Donde sí importa es en el corte. Sin MySQL contestaba `False` por el `except`; sin
+esa respuesta no se toma la foto previa a cancelar, sin foto no corre la reversión,
+y Woo se queda con las piezas que repuso por su cuenta. La sonda del corte no lo
+cubría: `probar_corte_total` mide `stock_full._ya_procesada`, que es el otro candado.
+
+Ahora recibe `cuenta` y `order_id`. Que **propague** si kubera falla es deliberado
+y queda dicho en el código, para que nadie lo envuelva en un `try` amable: aquí un
+"no sé" convertido en "no" se paga en inventario.
+
+`probar_candado_cancelacion_sandbox.py` lo prueba en el sandbox, que corre con
+`MYSQL_ENABLED=false` — el mundo de después del corte, sin simular nada. Con un
+pedido compensado sembrado en kubera, la forma arreglada contesta `True` y la
+vieja `False`. La segunda no es un fallo de la prueba: es la demostración de por
+qué había que cambiar la llamada.
+
+Encendidas en producción este mismo día, ya sobre v0.264.0: `SUPABASE_READ_TOKENS`
+y `SUPABASE_READ_CANDADOS`. Los tokens se comprobaron por un detalle que no admite
+duda — `/api/tiktok/estado` devuelve `2026-08-24 19:23:03.972908`, y esos
+microsegundos solo los guarda Postgres; MySQL tiene esa misma fecha sin fracción.
+No prueba que la bandera esté puesta: prueba de dónde salió el dato.
+
 ### v0.264.0 — El comparador de candados daba un rojo falso, y TikTok se quedó sin llave
 
 Dos cosas chicas que bloqueaban dos banderas, y un hallazgo que no bloquea nada
