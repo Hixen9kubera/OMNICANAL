@@ -1001,6 +1001,220 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.269.0 — Dos alarmas que solo hablan de lo que se puede sostener
+
+Dos revisiones diarias nuevas en `backend/services/alertas.py`. Van juntas
+porque comparten compuerta, patrón y motivo.
+
+**El problema que resuelven es el de siempre al revés.** No falta información
+sobre márgenes: sobra. Una alarma de "margen negativo" a secas tenía, medido el
+26-ago, cientos de casos que reportar — y ninguno se puede sostener todavía,
+por dos razones que este README ya documenta:
+
+- **el precio está inflado**: `l.price` no baja cuando la promoción la monta
+  una campaña de ML (de 60 publicaciones activas muestreadas el 25-ago, solo 19
+  coincidían con lo que ML cobra; mediana del cociente 1.443, p90 2.95);
+- **el costo está inventado**: ~30% del catálogo trae un `costo_producto` que es
+  un precio en dólares redondeado ×19, no un costo medido. TEC-0406-AZL
+  "cuesta" 111× su precio.
+
+Una alarma que escupe cientos de casos que ya sabemos mal medidos se deja de
+abrir a la tercera mañana, y entonces deja de avisar también de los que sí
+importan. Las dos nuevas están construidas para no llegar a esa tercera mañana.
+
+#### Alarma 1 — margen negativo de lo EVALUABLE
+
+Tres reglas, y las tres son restricciones a propósito:
+
+1. **Avisa de cambios, no de estado.** Reúsa `alertas.avisar_estado` con la
+   huella del conjunto, exactamente como `_revisar_duplicados`: suena cuando el
+   conjunto CAMBIA y se calla mientras sea el mismo caso. No hay un segundo
+   mecanismo de anti-spam.
+2. **Solo alarma sobre lo evaluable**, con dos compuertas:
+   - **precio confirmado** — `price_sale_at >= listings.updated_at`, la misma
+     regla de `publicaciones_panel._oferta`. Sin confirmar, el precio es un
+     techo, no lo que ML cobra;
+   - **costo verificado** — `costing.costos_validados.revisado_at` no nulo (la
+     marca de la migración 0032) y la fila sin moverse desde entonces. Una
+     revisión que quedó atrás ya no cubre los números de hoy.
+
+   Lo que no pasa las dos **no desaparece**: va como conteo agregado, con el
+   motivo, sin lista. Un número que dice "hay 1,182 que no sé medir" es
+   información; una lista de 1,182 es basura. Los motivos son excluyentes y en
+   orden fijo, para que la suma dé exactamente el total.
+3. **Dice por qué es negativo.** Un negativo por **costo dudoso** (la regla de
+   la casa: costo > 1.5× el precio, `frontend/lib/margen.ts`) pide revisar el
+   COSTEO; uno por **pérdida real** pide mover el PRECIO. Son acciones
+   opuestas: sin la distinción, la alarma manda a bajar publicaciones sanas.
+
+   Detalle que vale la pena: un "costo dudoso" que llega hasta aquí YA pasó la
+   compuerta de verificado — alguien lo comparó contra el packing list y aun
+   así supera al precio por más de 1.5×. Eso no es el ruido de siempre: o la
+   revisión se hizo mal, o el precio se desplomó después. Es más grave, no
+   menos.
+
+La aritmética del margen **no se reimplementa**: es `publicaciones_panel.
+margen_de`, la misma que pinta la pestaña Omnicanal. Lo único propio es un
+SELECT más angosto que el `_BASE` de allá, para que la alarma no se cuelgue de
+un archivo que está cambiando por otro lado.
+
+#### Alarma 2 — un producto entra al top 10 y su costo no está validado
+
+Un costo dudoso en un producto que vende 5 piezas es ruido; en uno que vende 600
+decide dinero. Esta alarma no mide el costo: mide **dónde importa** que esté mal.
+
+**El ranking no se reescribe.** Se corre `_SQL_MARGEN_REAL_TOP` de
+`routers/fulfillment.py` —el mismo que alimenta la pantalla de Márgenes
+reales— y se lee su `rn_g`, el ranking por SKU sumando las cuentas. Ese `rn_g`
+existe porque fundir dos top-10 por cuenta ya causó un incidente: un SKU con 200
+piezas en cada cuenta no entra a ningún top-10 por separado y aun así es de los
+más vendidos. Escribir un segundo top 10 aquí habría repetido ese error.
+
+Trampa que costó una relectura: esa consulta devuelve **una fila por CUENTA**,
+así que las unidades hay que sumarlas por SKU. Quedarse con la primera fila da
+el número de una sola cuenta — MUE-0163-TEL sale con 17 uds en una y es el #1
+del catálogo.
+
+La ventana (30 d) y el tamaño (10) son los mismos que trae por omisión
+`GET /api/fulfillment/margenes-reales`, para que la alerta y la pantalla nunca
+se contradigan.
+
+#### Y también en la campana del panel
+
+Slack es donde vive la alerta, pero Eduardo mira el panel. Un aviso que solo
+existe en un canal que el destinatario no abre no es un aviso. Así que las dos
+revisiones, además del mensaje de Slack, dejan una fila en la campana.
+
+**Se escribe en las DOS tablas que la campana puede leer**, y no es cinturón y
+tirantes: `GET /api/webhooks/notificaciones` lee MySQL `webhook_eventos` **o**
+kubera `ops.webhook_events` según `SUPABASE_READ_WEBHOOKS`. Escribir en una sola
+ataría la visibilidad de la alarma a una decisión que no es suya — el día que
+ese flag cambie, el aviso desaparecería de la campana sin que nadie tocara
+`alertas.py`.
+
+**A kubera se escribe DIRECTO, no por el espejo.** `odoo_watch._avisar_campana`
+manda su evento con `kubera_mirror.espejar(...)` y **eso hoy no llega**:
+`espejar` arranca con `activo("webhook_eventos")`, que consulta
+`KUBERA_MIRROR_TABLAS`, y esa tabla no está en el CSV. Por eso
+`ops.webhook_events` tiene **0 filas de canal `odoo`** mientras MySQL acumula
+754. Copiar ese patrón habría hecho que la alarma nunca llegara a kubera sin que
+nadie se enterara —el espejo falla en silencio a propósito—. Y el espejo es
+andamiaje de la migración que se retira en F8: colgar código nuevo de él es ir
+hacia atrás cuando kubera ya es la fuente de verdad.
+
+La idempotencia sale gratis de la UNIQUE `(env, canal, topic, external_id,
+delivery_id)`: la huella del conjunto va como `external_id` y la fecha como
+`delivery_id`, así que el mismo aviso el mismo día no se duplica aunque el
+proceso se reinicie a media corrida. **Probado en el sandbox**: tres escrituras,
+dos filas.
+
+**`procesado = true`, y no es la mentira que parece.** La pregunta obvia es si
+se hereda el `procesado=1` que `odoo_watch` escribe al insertar (754 de 754
+"procesados" sin que nadie los abra). Pero en esa tabla `procesado` no significa
+"alguien lo leyó": va con `intentos`, `next_retry_at` y `procesado_at`, o sea
+que significa **"queda trabajo pendiente sobre esta fila"**. Sobre una alarma no
+queda ninguno. `false` le inventaría a la columna un significado que no tiene
+—la misma deriva que dejó ilegible a `stock_cambio`— y además la metería en
+`idx_webhook_events_pendientes`, el índice de la cola de reintentos: hoy nadie
+la consume (verificado), pero el día que se escriba ese consumidor se pondría a
+reintentar una alarma. El "¿ya lo vi?" de la campana no vive en la base: vive en
+el `localStorage` del navegador, y es por persona.
+
+#### La campana está leyendo la tabla equivocada — medido
+
+| | MySQL `webhook_eventos` (lo que lee HOY) | kubera `ops.webhook_events` |
+|---|---|---|
+| mercado_libre | 1,424 · **congelado desde el 6-jul** | 67,939 · último: hoy |
+| odoo | 754 · último: hoy | **0** |
+
+Por eso la campana solo enseña `stock_cambio` de Odoo: es lo único vivo de ese
+lado. Los eventos de ML están en la otra tabla. El diagnóstico es correcto.
+
+**Pero encender `SUPABASE_READ_WEBHOOKS` no hace visible la alarma: la
+entierra.** `ops.webhook_events` tiene retención de 3 días (migración 0004) y en
+esa ventana hay 67,939 eventos:
+
+- **1,079 eventos en la última hora**. La campana muestra 20 → sus veinte
+  espacios rotan **cada ~66 segundos**. Una alarma que suena 2 veces al día
+  sería visible alrededor de un minuto y después quedaría sepultada para
+  siempre.
+- **35.6% (24,171 de 67,939) saldría como texto crudo**: nueve topics de ML no
+  tienen etiqueta en `etiquetaTopic` — `payments` (7,372), `invoices` (6,563),
+  `fbm_stock_operations` (3,806), `stock-locations` (3,119), `public_offers`
+  (2,409), `public_candidates` (779) y tres más.
+
+O sea que el flag cambia "una campana llena de ruido de Odoo" por "una campana
+con 22,651 eventos al día, un tercio de ellos ilegibles". Es un cambio que hay
+que decidir aparte, con su propio trabajo de frontend (filtro o prioridad), y
+**no es requisito para que la alarma se vea**: por eso se escribe en las dos
+tablas.
+
+#### La etiqueta que falta, y por qué esto se probó en vez de suponerlo
+
+`NotificationBell.tsx` pinta en negritas `etiquetaTopic(topic)` y, si el topic
+no está en su mapa, **saca el string crudo** — que es exactamente lo que se ve
+hoy con `stock_cambio`. Los dos topics nuevos (`margen_negativo` y
+`top_costo_sin_revisar`) todavía no tienen etiqueta. Verificado escribiendo de
+verdad en el sandbox y renderizando con el mapa real:
+
+```
+sin la etiqueta:   [margen_negativo]  <-- texto crudo
+con la etiqueta:   [Margen negativo]  1 en margen negativo · 1 pérdida real…
+```
+
+Handoff a omni-frontend con las dos etiquetas y los nueve topics de ML que ya
+están sin nombre. Hasta que aterrice, el renglón de `resultado` —que sí se lee—
+carga la información: cuántas, de qué tipo y cuál es la peor.
+
+#### Una vez al día, y que sobreviva a los deploys
+
+Las dos van en el job que ya existe (`alertas.vigilante`, cada `ALERTAS_MIN`) y
+se auto-limitan a una corrida diaria con `_toca_hoy`, sellada en
+`alertas_estado`. **No llevan job `cron` propio a propósito**: uno se saltaría
+el día entero si el deploy cae en su hora. Y el sello va a la base y no a RAM
+por la misma razón que el candado de enfriamiento — el proceso muere en cada
+deploy de Railway, que fue el bug de los 3 avisos en 30 min del 29-jul.
+
+El sello se pone **después** de una corrida exitosa: si la consulta truena, se
+reintenta en 15 min en vez de perder el aviso del día.
+
+Hora: `ALERTAS_COSTOS_HORA_UTC`, 15 UTC por omisión = 9 a.m. CDMX. Son avisos
+que alguien tiene que leer y accionar, no incidentes; a las 2 a.m. nadie los
+abre.
+
+#### Cuántas dispararían el primer día — medido, no estimado
+
+Contra producción (solo `SELECT`, 5432), con Slack stubbeado:
+
+| | |
+|---|---|
+| Alarma 1 | **1** publicación: `HERR-0029-GRI-AZL-3P` (ML/BEKURA), margen −70%, precio $40.00 contra costo $27.27 → **pérdida real** |
+| Alarma 1, universo | 2 evaluadas de 1,184 comprables · 1,182 sin evaluar (404 canal sin costo propio · 769 costo sin verificar · 8 precio sin confirmar · 1 sin comisión/peso/precio) |
+| Alarma 2 | **7** de los 10 más vendidos, sin `revisado_at` |
+| Churn de la alarma 2 | el conjunto cambió **1 vez en 14 días** (ventana de 30 d desplazada día a día) |
+
+**8 avisos el primer día, en 2 mensajes.** Después, silencio hasta que algo
+cambie.
+
+**Lo que estos números también dicen, y hay que decirlo:** la compuerta que hoy
+manda es la del costo. Solo **10 SKUs de 15,838** tienen `revisado_at` — la
+revisión arrancó el 25-ago con la migración 0032. Mientras eso no avance, la
+alarma 1 evalúa 2 publicaciones de 781 activas de ML y su silencio significa
+"casi nada es evaluable", **no** "no hay problema". Por eso el conteo agregado
+viaja siempre, también cuando no hay ninguna negativa: "0 en negativo" sobre 2
+evaluadas no significa lo mismo que sobre 781, y sin ese renglón las dos se leen
+igual. Las dos alarmas se refuerzan: la 2 dice qué costos verificar primero, y
+cada costo verificado agranda el universo de la 1.
+
+De paso quedó medido que la compuerta de precio **ya no está muerta**: el
+docstring de `_oferta` decía "0 filas con `price_sale_at >= updated_at` en todo
+el catálogo" (25-ago) y hoy hay 202, con observaciones de hoy mismo.
+
+**Reversa, pieza por pieza:** `SLACK_WEBHOOK_URL` vacío apaga el módulo entero
+sin deploy, campana incluida (`_campana` solo se llama cuando el aviso de Slack
+salió). Para apagar solo estas dos revisiones, `ALERTAS_COSTOS_HORA_UTC=24`
+nunca abre la compuerta horaria. Las filas ya escritas en la campana se van
+solas: 3 días de retención en kubera. Y el código, con revert del commit.
 ### v0.268.0 — El aviso da latencia; la cobertura hay que barrerla
 
 El 46% de las publicaciones activas de ML **no recibe ningún aviso de precio**, y

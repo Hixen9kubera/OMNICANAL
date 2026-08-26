@@ -28,6 +28,20 @@ si algo FALTA avisa el que vigila):
       mientras se creaban 964. Se cuenta en WooCommerce porque channel.orders
       tiene llave por orden y un duplicado la sobreescribe: ahí es invisible.
 
+  DIARIAS del costeo (mismo job, una sola corrida al día vía `_toca_hoy`;
+  ver el bloque "REVISIONES DIARIAS DEL COSTEO" más abajo):
+    · Margen NEGATIVO de lo evaluable: solo publicaciones con precio
+      CONFIRMADO y costo VERIFICADO; lo demás va como conteo agregado. Dice si
+      el negativo es pérdida real o costo dudoso, porque piden acciones
+      opuestas.
+    · Top 10 de más vendidos con el costo SIN VERIFICAR: un costo dudoso en un
+      producto que vende 5 piezas es ruido; en uno que vende 600 decide dinero.
+
+  Estas dos, ADEMÁS de Slack, dejan el aviso en la CAMPANA del panel (`_campana`
+  más abajo): Slack es donde vive la alerta, pero el panel es donde mira
+  Eduardo. Se escribe en las DOS tablas que la campana puede leer para que el
+  aviso no dependa de cómo esté `SUPABASE_READ_WEBHOOKS`.
+
 Anti-spam, en dos capas (v0.31.0 — antes se colaba una alerta por deploy):
 
   1. Candado de enfriamiento POR TIPO, PERSISTIDO en MySQL (`alertas_estado`).
@@ -48,6 +62,7 @@ variable, sin deploy.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -526,12 +541,473 @@ def _revisar_duplicados() -> None:
         recordatorio_h=168)
 
 
+# ── La alarma también en la CAMPANA del panel ─────────────────────────────────
+#
+# POR QUÉ. Slack es donde vive la alerta, pero Eduardo mira el panel. Un aviso
+# que solo existe en un canal que el destinatario no abre no es un aviso.
+#
+# SE ESCRIBE EN LAS DOS TABLAS, Y NO ES CINTURÓN Y TIRANTES. La campana
+# (`GET /api/webhooks/notificaciones`) lee MySQL `webhook_eventos` **o** kubera
+# `ops.webhook_events` según `SUPABASE_READ_WEBHOOKS`, que hoy está en `false`.
+# Escribir en una sola ataría la visibilidad de la alarma a una decisión que no
+# es suya: el día que ese flag cambie, el aviso desaparecería de la campana sin
+# que nadie tocara este archivo.
+#
+# A KUBERA SE ESCRIBE DIRECTO, NO POR EL ESPEJO. `odoo_watch._avisar_campana`
+# manda su evento con `kubera_mirror.espejar(...)`, y eso HOY NO LLEGA: `espejar`
+# empieza por `activo("webhook_eventos")`, que consulta `KUBERA_MIRROR_TABLAS`, y
+# esa tabla no está en el CSV. Por eso `ops.webhook_events` tiene **0 filas de
+# canal 'odoo'** (medido el 26-ago) mientras MySQL acumula 754. Copiar ese patrón
+# habría hecho que esta alarma nunca llegara a kubera y nadie se enterara —el
+# espejo falla en silencio a propósito—. Además el espejo es andamiaje de la
+# migración y se retira en F8: colgar código nuevo de él es ir hacia atrás
+# cuando kubera YA es la fuente de verdad.
+#
+# `procesado = True`, Y NO ES LA MENTIRA QUE PARECE. La pregunta obvia es si se
+# hereda el `procesado=1` que `odoo_watch` escribe al insertar (754 de 754
+# "procesados" sin que nadie los abra). Pero en esta tabla `procesado` no
+# significa "alguien lo leyó": va acompañada de `intentos`, `next_retry_at` y
+# `procesado_at`, o sea que significa **"queda trabajo pendiente sobre esta
+# fila"**. Sobre una alarma no queda ninguno —el evento ES la notificación, no
+# hay nada que reprocesar—, así que `True` es correcto y `False` le inventaría a
+# la columna un significado que no tiene, que es justo la deriva que dejó
+# ilegible a `stock_cambio`.
+#
+# Y `False` tiene un filo: metería la fila en `idx_webhook_events_pendientes`
+# (`where not procesado`), el índice de la cola de reintentos. Hoy NADIE la
+# consume —verificado con grep: no existe el consumidor—, pero el día que se
+# escriba se pondría a reintentar una alarma que no es un webhook.
+#
+# El "¿ya lo vi?" de la campana no vive en la base: vive en el `localStorage`
+# del navegador (`omnicanal_ult_notif`), y es por persona.
+#
+# LO QUE LA CAMPANA PINTA DE CADA FILA (`frontend/components/NotificationBell.tsx`):
+#   · negritas  = `etiquetaTopic(topic)` y, si el topic no está en su mapa,
+#                 **sale el string crudo** — es exactamente lo que Eduardo ve
+#                 con `stock_cambio`. Los dos topics de abajo TODAVÍA NO tienen
+#                 etiqueta: handoff a omni-frontend del 26-ago-2026. Hasta que
+#                 aterrice, el renglón de `resultado` es el que se lee.
+#   · subtítulo = `resultado`, truncado a UNA línea → tiene que ser corto.
+#   · chip      = `sku`.
+_CAMPANA_CANAL = "alertas"
+
+
+def _campana(topic: str, resultado: str, huella: str,
+             sku: str | None = None) -> None:
+    """
+    Deja el aviso en la campana del panel. Best-effort: jamás lanza.
+
+    Se llama SOLO cuando `avisar_estado` devolvió True, o sea cuando el aviso de
+    Slack salió de verdad. Así hay UN solo punto de decisión —el de "esto
+    cambió"— y la campana no puede terminar contando una historia distinta a la
+    del canal.
+
+    `huella` viaja como `external_id` y la fecha como `delivery_id`: la UNIQUE
+    `(env, canal, topic, external_id, delivery_id)` de `ops.webhook_events` hace
+    la idempotencia sola, así que el mismo aviso el mismo día no se duplica
+    aunque el proceso se reinicie a media corrida.
+    """
+    ahora = datetime.now(timezone.utc)
+    texto = resultado[:255]
+    try:
+        if settings.mysql_enabled:
+            from services import db
+            db.execute(
+                """INSERT INTO webhook_eventos
+                   (canal, topic, resource, user_id, cuenta, sku, procesado,
+                    resultado, recibido)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (_CAMPANA_CANAL, topic, huella, None, None, sku, 1, texto,
+                 ahora.replace(tzinfo=None)))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alertas: campana MySQL falló (%s)", exc)
+    try:
+        from services import supabase_db as sdb
+        if sdb.disponible():
+            sdb.execute(
+                """insert into ops.webhook_events
+                     (env, canal, topic, external_id, delivery_id, sku,
+                      payload, procesado, resultado, recibido_at, procesado_at)
+                   values (%s,%s,%s,%s,%s,%s,%s::jsonb,true,%s,%s,%s)
+                   on conflict (env, canal, topic, external_id, delivery_id)
+                   do nothing""",
+                (settings.app_env, _CAMPANA_CANAL, topic, huella, _hoy_utc(),
+                 sku, json.dumps({"huella": huella, "resultado": resultado},
+                                 ensure_ascii=False),
+                 texto, ahora, ahora))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alertas: campana kubera falló (%s)", exc)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REVISIONES DIARIAS DEL COSTEO
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Las dos de abajo van juntas porque comparten compuerta, patrón y motivo.
+#
+# EL ERROR QUE NO SE QUISO COMETER. Una alarma de "margen negativo" a secas
+# tenía, medido el 26-ago-2026, cientos de casos que reportar. Y ninguno se
+# puede sostener todavía, por dos razones ya documentadas en el repo:
+#
+#   · EL PRECIO ESTÁ INFLADO. `l.price` NO baja cuando la promoción la monta
+#     una campaña de ML. Muestra viva del 25-ago: de 60 publicaciones activas,
+#     `l.price` coincidía con lo que ML cobra en 19; la mediana del cociente es
+#     1.443 y el p90 2.95 (docstring de `publicaciones_panel._oferta`). Un
+#     margen calculado contra ese precio sale negativo por construcción.
+#   · EL COSTO ESTÁ INVENTADO. ~30% del catálogo trae un `costo_producto` que
+#     es un precio en dólares redondeado ×19, no un costo medido
+#     (`frontend/lib/margen.ts`). TEC-0406-AZL "cuesta" 111× su precio.
+#
+# Una alarma que escupe cientos de casos que YA SABEMOS mal medidos se deja de
+# abrir a la tercera mañana — y entonces deja de avisar también de los que sí
+# importan. Por eso estas dos revisiones se construyen sobre tres reglas:
+#
+#   1. AVISAN DE CAMBIOS, NO DE ESTADO. Vía `avisar_estado` con la huella del
+#      conjunto, igual que `_revisar_duplicados`. No "estas 211 están en
+#      negativo" todos los días para siempre, sino "el conjunto cambió".
+#   2. SOLO ALARMAN SOBRE LO EVALUABLE. Dos compuertas —precio CONFIRMADO y
+#      costo VERIFICADO— y lo que no las pasa NO desaparece: va como conteo
+#      agregado, sin lista y sin ruido. Un número que dice "hay 779 que no sé
+#      medir" es información; una lista de 779 es basura.
+#   3. DICEN POR QUÉ. Un negativo por costo dudoso pide REVISAR EL COSTEO; uno
+#      por pérdida real pide MOVER EL PRECIO. Son acciones opuestas: sin la
+#      distinción, la alarma manda a bajar publicaciones sanas.
+#
+# LO QUE ESTO NO ES: un medidor de cuántas publicaciones pierden dinero. Ese
+# número lo da `publicaciones_panel` para la pestaña Omnicanal. Aquí solo se
+# alarma de lo que se puede sostener.
+
+
+def _hoy_utc() -> str:
+    """Fecha de hoy en UTC, 10 caracteres — cabe en `alertas_estado.estado`."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _toca_hoy(tipo: str, hora_utc: int) -> bool:
+    """
+    ¿Le toca correr HOY a esta revisión diaria?
+
+    El vigilante despierta cada `ALERTAS_MIN` (15 min). Sin esta compuerta, las
+    dos consultas de abajo —que barren 30 días de `channel.order_items` y las
+    ~5,000 publicaciones de ML— correrían unas 64 veces al día para contestar
+    exactamente lo mismo.
+
+    El sello va en la MISMA tabla `alertas_estado` y por la MISMA razón que el
+    candado de enfriamiento: el proceso MUERE en cada deploy de Railway, y un
+    latch en RAM dejaría pasar otra corrida en cada arranque (el bug de los 3
+    avisos en 30 min del 29-jul). Usa un `tipo` aparte (`…:corrida`) para no
+    pisar el `estado`, que lleva la huella del conjunto.
+
+    Se sella DESPUÉS de una corrida exitosa, a propósito: si la consulta truena
+    —kubera caída, timeout— el latch no queda puesto y se reintenta en 15 min,
+    en vez de perder el aviso del día entero.
+    """
+    if datetime.now(timezone.utc).hour < hora_utc:
+        return False
+    clave = f"{tipo}:corrida"
+    return (_fila(clave).get("estado") or _estados.get(clave)) != _hoy_utc()
+
+
+def _sellar_corrida(tipo: str) -> None:
+    _guardar_estado(f"{tipo}:corrida", _hoy_utc())
+
+
+# 1.5× ES LA REGLA DE LA CASA y su dueño es `frontend/lib/margen.ts`
+# (`FACTOR_COSTO_IMPLAUSIBLE`; Eduardo lo bajó de 3× a 1.5× el 11-ago-2026).
+# Se re-declara aquí porque no hay forma de importar TypeScript desde Python, y
+# tiene que ser EL MISMO número: si el panel pinta ⚠ "tómalo con reserva" y la
+# alerta del mismo SKU dice "pérdida real", el equipo recibe dos veredictos
+# opuestos del mismo dato. Quien mueva el de allá tiene que mover este.
+_FACTOR_COSTO_DUDOSO = 1.5
+
+# Motivos de por qué una publicación NO se pudo evaluar. Son EXCLUYENTES y se
+# aplican en este orden, para que la suma dé exactamente el total: un conteo
+# con motivos que se traslapan no se puede leer.
+_NO_EVAL = {
+    "canal": "el canal no tiene costo propio",
+    "costo": "costo sin verificar",
+    "precio": "precio sin confirmar",
+    "insumos": "sin comisión/peso/precio",
+}
+
+
+def _censo_margen() -> dict[str, Any] | None:
+    """
+    Recorre lo COMPRABLE hoy en los cinco canales de venta y parte el universo
+    en dos: lo evaluable (con su margen) y lo que no, con el motivo.
+
+    LAS DOS COMPUERTAS
+
+      · PRECIO CONFIRMADO — `price_sale_at >= listings.updated_at`. Léase: la
+        promoción se observó DESPUÉS del último cambio de esa fila. La regla es
+        de `publicaciones_panel._oferta` (`oferta_confirmada`) y aquí va en SQL
+        porque así el filtro es barato; SI ALLÁ CAMBIA, ESTO SE MUEVE CON ELLA.
+        Sin confirmar, el precio es un techo, no lo que ML cobra.
+      · COSTO VERIFICADO — `costing.costos_validados.revisado_at` no nulo (la
+        marca de la migración 0032: "lo comparé contra el packing list") Y la
+        fila sin moverse desde entonces (`updated_at <= revisado_at`). Una
+        revisión que quedó atrás ya no cubre los números de hoy.
+
+    La aritmética del margen NO se reimplementa: es `publicaciones_panel.
+    margen_de`, la misma que pinta la pestaña Omnicanal. Lo único propio es el
+    SELECT, y es más angosto que el `_BASE` de allá (no pide url, stock ni
+    situación cruda) — así esta alarma no se cuelga de un archivo que está
+    cambiando por otro lado.
+    """
+    from services import publicaciones_panel as pp
+    from services import supabase_db as sdb
+    if not sdb.disponible():
+        return None
+
+    partes: list[str] = []
+    params: dict[str, Any] = {}
+    for canal in pp.CANALES_VENTA:
+        filtro = pp.filtro_sql_activas(canal, alias="l", clave=f"act_{canal}")
+        if filtro is None:
+            # El canal no decide por ninguna columna. NO se filtra a cero en
+            # silencio: se queda fuera del censo (y sin costo propio, no habría
+            # entrado a lo evaluable de todos modos).
+            continue
+        frag, par = filtro
+        partes.append(f"(l.canal = '{canal}' and {frag})")
+        params.update(par)
+    if not partes:
+        return None
+
+    sql = f"""
+    select l.sku::text as sku, l.canal as canal, a.legacy_code as tienda,
+           p.name as titulo,
+           l.price as precio_ml, l.price_sale as price_sale,
+           (l.price_sale is not null and l.price_sale_at >= l.updated_at)
+                                                          as precio_confirmado,
+           (v.revisado_at is not null
+            and (v.updated_at is null or v.updated_at <= v.revisado_at))
+                                                          as costo_verificado,
+           f.costo_unitario as costo_unitario, f.pct_comision as pct_comision,
+           v.peso as peso, v.largo as largo, v.ancho as ancho, v.alto as alto
+      from channel.listings l
+      join core.accounts a on a.id = l.account_id
+      left join core.products      p on p.sku = l.sku
+      left join costing.costos_finales   f on f.sku = l.sku and f.canal = l.canal
+      left join costing.costos_validados v on v.sku = l.sku
+     where ({' or '.join(partes)})
+    """
+    filas = sdb.fetch_all(sql, params)
+
+    negativas: list[dict[str, Any]] = []
+    motivos: dict[str, int] = {k: 0 for k in _NO_EVAL}
+    evaluadas = 0
+    for r in filas:
+        canal = r["canal"]
+        # El orden importa: los motivos son excluyentes y se cuentan una vez.
+        if canal not in pp.CANALES_CON_COSTO:
+            motivos["canal"] += 1
+            continue
+        if not r["costo_verificado"]:
+            motivos["costo"] += 1
+            continue
+        if not r["precio_confirmado"]:
+            motivos["precio"] += 1
+            continue
+        # Con la compuerta de precio puesta, el precio vigente ES `price_sale`:
+        # no hay que elegir entre dos candidatos como en el panel.
+        precio = r["price_sale"]
+        m = pp.margen_de(precio=precio, costo_unitario=r["costo_unitario"],
+                         pct_comision=r["pct_comision"], peso=r["peso"],
+                         largo=r["largo"], ancho=r["ancho"], alto=r["alto"],
+                         canal=canal)
+        if m["margen_pct"] is None:
+            motivos["insumos"] += 1
+            continue
+        evaluadas += 1
+        if m["margen_pct"] >= 0:
+            continue
+        cu, pv = float(r["costo_unitario"]), float(precio)
+        negativas.append({
+            "sku": r["sku"], "canal": canal, "tienda": r.get("tienda"),
+            "precio": round(pv, 2), "costo": round(cu, 2),
+            "margen_pct": round(m["margen_pct"] * 100, 1),
+            # POR QUÉ es negativo, que es lo que decide la ACCIÓN. Ojo: un
+            # "costo dudoso" que llega hasta aquí YA pasó la compuerta de
+            # verificado — alguien lo comparó contra el packing list y aun así
+            # supera al precio por más de 1.5×. Eso no es el ruido de siempre:
+            # o la revisión se hizo mal, o el precio se desplomó después.
+            "dudoso": cu > pv * _FACTOR_COSTO_DUDOSO,
+        })
+    return {"negativas": negativas, "motivos": motivos, "evaluadas": evaluadas,
+            "universo": len(filas)}
+
+
+def _revisar_margen_negativo() -> None:
+    """Publicaciones EVALUABLES cuyo margen se fue a negativo. Una vez al día."""
+    tipo = "margen_negativo"
+    if not _toca_hoy(tipo, settings.alertas_costos_hora_utc):
+        return
+    censo = _censo_margen()
+    if censo is None:
+        return
+    _sellar_corrida(tipo)
+
+    negativas = censo["negativas"]
+    sin_eval = censo["universo"] - censo["evaluadas"]
+    # El conteo agregado viaja SIEMPRE, también cuando no hay ninguna negativa:
+    # "0 en negativo" sobre 2 evaluadas de 781 no significa lo mismo que sobre
+    # 781 de 781, y sin este renglón las dos se leen igual.
+    cola = (f"\n_Evaluadas {censo['evaluadas']} de {censo['universo']} "
+            f"publicaciones comprables; {sin_eval} sin evaluar_")
+    if sin_eval:
+        detalle = " · ".join(f"{censo['motivos'][k]} {_NO_EVAL[k]}"
+                             for k in _NO_EVAL if censo["motivos"][k])
+        cola += f" — {detalle}."
+
+    if not negativas:
+        if avisar_estado(tipo, "ok", "",
+                         texto_ok=f"*Sin publicaciones evaluables en margen "
+                                  f"negativo.*{cola}"):
+            _campana("margen_negativo",
+                     "Sin publicaciones evaluables en margen negativo",
+                     f"ok:{_hoy_utc()}")
+        return
+
+    # La huella es del CONJUNTO (sku+canal), no de su tamaño: si entra una nueva
+    # cambia y vuelve a sonar —que es justo lo que hay que saber— y mientras sea
+    # el mismo caso hay silencio. Va hasheada porque `estado` es varchar(30).
+    claves = sorted(f"{n['sku']}|{n['canal']}" for n in negativas)
+    huella = "neg{}:{}".format(
+        len(claves), hashlib.sha1("|".join(claves).encode()).hexdigest()[:12])
+
+    lineas = []
+    for n in sorted(negativas, key=lambda x: x["margen_pct"])[:10]:
+        que = (f"COSTO DUDOSO — el costo verificado sigue siendo "
+               f"{n['costo'] / n['precio']:.1f}× el precio: revisar el COSTEO, "
+               f"no bajar la publicación"
+               if n["dudoso"] else
+               "pérdida real — el precio no cubre costo + comisión + envío")
+        lineas.append(f"· `{n['sku']}` {n['canal']}/{n['tienda']} — "
+                      f"margen {n['margen_pct']}% (precio ${n['precio']:,.2f} · "
+                      f"costo ${n['costo']:,.2f}) → {que}")
+    mas = f"\n_…y {len(negativas) - 10} más._" if len(negativas) > 10 else ""
+
+    hablo = avisar_estado(
+        tipo, huella,
+        f"*{len(negativas)} publicación(es) evaluable(s) con margen NEGATIVO.*\n"
+        + "\n".join(lineas) + mas +
+        "\n_Lista completa de hoy: esto suena cuando el CONJUNTO cambia, no "
+        "todos los días._" + cola,
+        texto_ok=f"*Ninguna publicación evaluable en margen negativo.*{cola}",
+        # Semanal: un margen negativo sin atender no cambia de urgencia cada
+        # 24 h, y la revisión ya corre una sola vez al día.
+        recordatorio_h=168)
+    if hablo:
+        # El resumen de la campana NO es el texto de Slack recortado: ahí solo
+        # cabe UNA línea. Dice cuántas, de qué tipo y cuál es la peor — que es
+        # lo que decide si vale la pena abrir el panel ahora mismo.
+        peor = min(negativas, key=lambda x: x["margen_pct"])
+        dud = sum(1 for x in negativas if x["dudoso"])
+        _campana("margen_negativo",
+                 f"{len(negativas)} en margen negativo · "
+                 f"{len(negativas) - dud} pérdida real, {dud} costo dudoso · "
+                 f"peor {peor['margen_pct']}% ({peor['sku']})",
+                 huella, sku=peor["sku"])
+
+
+# Ventana y tamaño del top: los MISMOS que trae por omisión
+# `GET /api/fulfillment/margenes-reales`, para que la alerta y la pantalla nunca
+# se contradigan. Si esto dice "TEC-X está en el top 10", el panel lo tiene que
+# estar mostrando en el top 10.
+_TOP_DIAS = 30
+_TOP_LIMITE = 10
+
+
+def _revisar_top_sin_costo_revisado() -> None:
+    """
+    Un SKU entra al top 10 de más vendidos y su costo NO está verificado.
+
+    LA LÓGICA: un costo dudoso en un producto que vende 5 piezas es ruido; en
+    uno que vende 600 decide dinero. Esta alarma no mide el costo — mide dónde
+    IMPORTA que esté mal.
+
+    EL RANKING NO SE REESCRIBE. Se corre `_SQL_MARGEN_REAL_TOP` de
+    `routers/fulfillment.py`, el mismo que alimenta la pantalla de Márgenes
+    reales, y se lee su `rn_g`: el ranking por SKU SUMANDO las cuentas. Ese
+    `rn_g` existe porque fundir dos top-10 por cuenta ya causó un incidente —un
+    SKU con 200 piezas en cada cuenta no entra a ningún top-10 por separado y
+    aun así es de los más vendidos—. Escribir un segundo top 10 aquí repetiría
+    exactamente ese error.
+
+    Ojo con `t.uds`: la consulta devuelve una fila POR CUENTA, así que las
+    unidades hay que SUMARLAS por SKU. Quedarse con la primera fila da el número
+    de una sola cuenta (MUE-0163-TEL sale con 17 uds en una y es el #1 del
+    catálogo).
+    """
+    tipo = "top_costo_sin_revisar"
+    if not _toca_hoy(tipo, settings.alertas_costos_hora_utc):
+        return
+    from routers.fulfillment import _SQL_MARGEN_REAL_TOP
+    from services import supabase_db as sdb
+    if not sdb.disponible():
+        return
+    filas = sdb.fetch_all(_SQL_MARGEN_REAL_TOP,
+                          {"dias": _TOP_DIAS, "limite": _TOP_LIMITE,
+                           "estado": None})
+    _sellar_corrida(tipo)
+
+    top: dict[str, dict[str, Any]] = {}
+    for f in filas:
+        if not f.get("rn_g") or f["rn_g"] > _TOP_LIMITE:
+            continue
+        d = top.setdefault(f["sku"], {"rn": f["rn_g"], "uds": 0,
+                                      "revisado": bool(f.get("revisado_at")),
+                                      "movida": bool(f.get("revision_movida"))})
+        d["uds"] += int(f.get("uds") or 0)
+    if not top:
+        return   # sin ventas en la ventana: no hay ranking del que hablar
+    # "Sin verificar" incluye la revisión que quedó ATRÁS: si la fila se movió
+    # después de marcarse, la marca ya no cubre los números de hoy.
+    sin_rev = {s: d for s, d in top.items() if not d["revisado"] or d["movida"]}
+    ok_txt = (f"*Los {len(top)} más vendidos ya tienen el costo verificado* "
+              f"({_TOP_DIAS} d).")
+    if not sin_rev:
+        if avisar_estado(tipo, "ok", "", texto_ok=ok_txt):
+            _campana("top_costo_sin_revisar",
+                     f"Los {len(top)} más vendidos ya tienen el costo "
+                     f"verificado", f"ok:{_hoy_utc()}")
+        return
+
+    claves = sorted(sin_rev)
+    huella = "top{}:{}".format(
+        len(claves), hashlib.sha1("|".join(claves).encode()).hexdigest()[:12])
+    lineas = " · ".join(
+        f"#{d['rn']} `{s}` ({d['uds']} uds"
+        f"{', revisión movida' if d['movida'] else ''})"
+        for s, d in sorted(sin_rev.items(), key=lambda kv: kv[1]["rn"]))
+    hablo = avisar_estado(
+        tipo, huella,
+        f"*{len(sin_rev)} de los {len(top)} más vendidos tienen el costo SIN "
+        f"VERIFICAR* (ventana de {_TOP_DIAS} d, el mismo ranking que Márgenes "
+        f"reales).\n{lineas}\n"
+        f"_Un costo dudoso en un producto que vende 5 piezas es ruido; en estos "
+        f"decide dinero. Verificar contra el packing list y marcarlo en Costos "
+        f"(`revisado_at`). Suena cuando el conjunto CAMBIA, no todos los días._",
+        texto_ok=ok_txt, nivel="🟡", recordatorio_h=168)
+    if hablo:
+        peor = min(sin_rev.items(), key=lambda kv: kv[1]["rn"])
+        _campana("top_costo_sin_revisar",
+                 f"{len(sin_rev)} de los {len(top)} más vendidos con el costo "
+                 f"sin verificar · el más vendido de ellos es el "
+                 f"#{peor[1]['rn']}",
+                 huella, sku=peor[0])
+
+
 async def vigilante() -> None:
     """Job del scheduler: cada revisión es independiente y best-effort."""
     if not disponible():
         return
     for revision in (_revisar_actas, _revisar_silencio_ventas, _revisar_tokens_rancios,
-                     _revisar_token_tiktok, _revisar_duplicados):
+                     _revisar_token_tiktok, _revisar_duplicados,
+                     # Diarias: se auto-limitan con `_toca_hoy`, no con la
+                     # frecuencia del job (ver el bloque de arriba).
+                     _revisar_margen_negativo, _revisar_top_sin_costo_revisado):
         try:
             revision()
         except Exception as exc:  # noqa: BLE001

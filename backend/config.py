@@ -773,6 +773,12 @@ class Settings(BaseSettings):
     alertas_actas_hora_utc: int = 8
     # Horas sin ventas nuevas (en horario hábil CDMX) que disparan la alerta.
     alertas_silencio_horas: int = 4
+    # Hora UTC a partir de la cual corren las DOS revisiones diarias del costeo
+    # (margen negativo · top 10 con costo sin verificar). 15 UTC = 9 a.m. CDMX:
+    # son avisos que alguien tiene que LEER y accionar, no incidentes — a las
+    # 2 a.m. nadie los abre. Corren una sola vez al día (`alertas._toca_hoy`),
+    # aunque el vigilante despierte cada `alertas_min`.
+    alertas_costos_hora_utc: int = 15
 
     @property
     def cors_origins_list(self) -> list[str]:

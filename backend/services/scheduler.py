@@ -310,6 +310,12 @@ def iniciar() -> None:
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no
     # pasan por aquí — avisan solos en el momento. Ver services/alertas.py.
+    #
+    # El mismo job lleva las dos revisiones DIARIAS del costeo (margen negativo
+    # y top 10 con costo sin verificar). No llevan job propio a propósito: se
+    # auto-limitan a una corrida al día con `alertas._toca_hoy`, sellada en
+    # `alertas_estado` para que sobreviva a los deploys de Railway. Un job
+    # `cron` aparte se saltaría el día entero si el deploy cae en su hora.
     from services import alertas
     if alertas.disponible():
         _scheduler.add_job(
