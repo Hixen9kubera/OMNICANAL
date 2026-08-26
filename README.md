@@ -1001,6 +1001,62 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.266.0 — La sonda del corte no sabía lo que no miraba
+
+Decía **14/14** y todo verde. No decía sobre cuántos. Y el 25-ago se encontró a
+mano un punto ciego —`_ya_compensado` desde la cancelación— que la sonda daba por
+cubierto sin haberlo tocado nunca.
+
+Un reporte que dice "14 de 14" sin denominador miente igual que un lector que
+contesta «no hay» cuando quiso decir «no pude preguntar». Solo que lo comete el
+que vigila.
+
+**El mapa.** Se recorrió el árbol de sintaxis del backend buscando cada `try` que
+llama `db.fetch_*` y cuyo `except` devuelve algo vacío (`False`, `None`, `[]`,
+`{}`, `0`). Salen **27 lugares** donde el MySQL que se retira contesta un valor
+falso si falla. Quedan fuera los que leen WordPress (`wp_db`), que no se retira.
+Ese mapa vive ahora dentro del script, con el estado de cada uno.
+
+**Lo que se amplió.** De 14 sondas a 27 renglones: 21 sondeados y 6 fuera a
+propósito, cada uno con su razón escrita (dos llaman a la API viva de ML y de
+Amazon, y una sonda no debe salir a la red; el registro de errores del espejo vive
+en MySQL a propósito y se pierde el día del corte, asumido).
+
+**Un cuarto estado: SIN DATO.** Una sonda que no pudo correr porque el sandbox no
+tenía con qué preguntar no es verde. Contarla como `PASA` sería cometer, dentro
+del vigilante, el defecto que persigue.
+
+**También se prenden las banderas de escritura.** No escriben nada —aquí solo se
+llaman lectores— pero hay lecturas colgadas de ellas: `costos._comision_categoria_db`
+solo consulta kubera si `costing_write.activo()`, que mira `supabase_write_costing`.
+Con las de escritura apagadas la sonda reportaba VACÍO un camino que en producción
+funciona. Una falsa alarma gasta igual de caro que un falso verde.
+
+**Lo que encontró apenas se amplió** — 4 caminos que no sobreviven:
+
+| | |
+|---|---|
+| `studio._categoria_mysql` | lee `categorias_ml` sin ninguna rama a kubera |
+| `packing_comparador.buscar_contenedor` | lee `costos_validados` directo |
+| `packing_comparador.candidatos` | idem |
+| `packing_comparador.buscar_sku` | idem |
+
+El de Studio tiene arreglo corto: `crear_producto._categoria_curada` ya pasa por
+`channel_read.categoria_curada`, y le falta a la gemela devolver `ruta` y
+`cat1..cat4`. El comparador de packing no tiene gemela todavía.
+
+Y 1 sin poder medirse: `imagenes_amazon._cache_get`, porque `enrich.product_media`
+está **vacía en el sandbox** aunque producción tenga 738 filas. Es un hueco del
+clon, no del código.
+
+Tres de los primeros hallazgos eran defectos de la sonda misma y se corrigieron
+antes de reportarlos: `marcar_compensado` solo hace `UPDATE` y sin sembrar el
+pedido sellaba cero filas; la columna es `source_url`, no `url`; y la categoría no
+vive en `core.products`.
+
+El script ahora sale con código distinto de cero cuando algo no sobrevive, para
+que no dependa de que alguien lea el texto.
+
 ### v0.265.0 — El otro punto de llamada del candado se iba a MySQL con bandera y todo
 
 `pedidos_ml` pregunta `_ya_compensado` en **dos** lugares. El de la compensación
