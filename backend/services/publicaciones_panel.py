@@ -527,8 +527,16 @@ def _oferta(precio_lista: Any, price_sale: Any, price_sale_at: Any,
     "último CAMBIO", no "última mirada" — el criterio es conservador en la
     dirección correcta (`updated_at` posterior prueba que sí hubo una pasada que
     no tocó la oferta), pero una publicación que nunca cambia no envejece su
-    oferta sola. Hoy ese hueco está VACÍO: 0 filas con
-    `price_sale_at >= updated_at` en todo el catálogo.
+    oferta sola.
+
+    Ese hueco ya NO está vacío (medido 26-ago-2026: **202 filas confirmadas** de
+    4,726 publicaciones vivas de ML, contra 0 el 25-ago). Lo llenan los dos
+    caminos que sellan `price_sale` y `price_sale_at` en el MISMO UPDATE, así
+    que `now()` —hora de transacción— sale idéntico en las dos columnas y el
+    trigger `trg_touch_listings` no puede dejarlas desalineadas: los webhooks de
+    precio (v0.262.0) y, desde v0.267.0, el refresco al abrir el cajón de un
+    producto (`services/precio_al_abrir.py`), que confirma las 1 o 2
+    publicaciones de ese SKU antes de contestar.
 
     Lo no confirmado se MARCA, no se borra ni se pisa: `channel.listing_history`
     no audita `price_sale`, así que un valor sobreescrito no se puede

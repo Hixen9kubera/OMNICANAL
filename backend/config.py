@@ -228,6 +228,42 @@ class Settings(BaseSettings):
     # Apagado = comportamiento idéntico al de siempre. Encenderlo = dale de
     # Brandon (flujo vivo, regla 3).
     sync_desde_ml: bool = False
+
+    # ── Refresco de precio AL ABRIR el cajón de un producto ───
+    # `services/precio_al_abrir.py`. Al abrir el cajón de un SKU se le pregunta
+    # a ML el precio que cobra por SUS publicaciones (1 o 2 llamadas: ningún SKU
+    # del catálogo tiene más de dos) y se confirma antes de contestar.
+    #
+    # Encendido NO significa que se llame a ML: sólo actúa si la petición trae
+    # `refrescar=true` en `GET /api/publicaciones`, y hoy quien lo manda es el
+    # cajón del panel y nadie más. Con el frontend sin cambiar, esto es 0
+    # llamadas. Apagarlo (`PRECIO_AL_ABRIR=false`) deja el cajón exactamente
+    # como estaba: lee lo guardado, marcado "sin confirmar" cuando toca.
+    #
+    # Respeta además `SYNC_ENABLED` — es sincronización de datos con ML, igual
+    # que el refresco del webhook.
+    precio_al_abrir: bool = True
+    # EL PISO. Si la publicación se observó hace menos de esto, no se vuelve a
+    # preguntar. 5 min sale de medir el ritmo de cambio real: el barrido en seco
+    # del 26-ago vio cambiar 392 de 745 publicaciones respecto de observaciones
+    # de ~5 días antes (~10%/día), así que en 5 minutos la probabilidad de que
+    # lo guardado ya no sirva es del orden de 0.04%. Subirlo ahorra llamadas y
+    # afloja la promesa; bajarlo no compra casi nada porque el piso duro manda.
+    precio_al_abrir_piso_min: int = 5
+    # PISO DURO. Ni aunque la observación esté "sin confirmar" se pregunta dos
+    # veces en menos de esto. Es el tope contra el cajón reabierto en bucle.
+    precio_al_abrir_piso_duro_s: int = 60
+    # Tope de llamadas por apertura. Hoy no muerde (máximo 2 publicaciones por
+    # SKU, medido); está para que un SKU raro no convierta una apertura en una
+    # ráfaga.
+    precio_al_abrir_max: int = 6
+    precio_al_abrir_en_paralelo: int = 3
+    # Timeout de CADA llamada y presupuesto de TODO el refresco. Cortos a
+    # propósito: detrás hay una persona esperando a que abra el cajón, y un
+    # cajón que no abre es peor que uno con el dato de hace una hora.
+    precio_al_abrir_timeout_s: float = 4.0
+    precio_al_abrir_presupuesto_s: float = 6.0
+
     # Guardado de notificaciones de webhooks en la tabla (se puede pausar en runtime)
     webhook_registro: bool = True
 

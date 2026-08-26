@@ -1001,6 +1001,102 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.267.0 — El precio se confirma al abrir el producto, no cuando toque
+
+Eduardo lo pidió en una línea: *"debemos conseguir 100% de fiabilidad en cuanto
+entremos a revisar un producto en omnicanal, debe tener el mismo precio en
+tienda."* Hasta hoy el cajón mostraba lo último que alguien hubiera observado, y
+lo decía marcado — pero marcado no es lo mismo que correcto.
+
+**El hueco, medido en vivo el 26-ago-2026 sobre `MLM5473713768`**
+(ACC-0562-NEG-MATTE, BEKURA): el panel mostraba `precio_vigente` **$219.00** con
+el aviso "sin confirmar", y ML cobraba **$99.00** en ese mismo instante. 2.2x de
+diferencia en el número que se usa para juzgar si un producto deja dinero.
+
+Ninguno de los tres caminos que ya escriben `price_sale` contesta la pregunta
+"¿cuánto cuesta ESTE producto que estoy mirando?":
+
+| Camino | Qué cubre | Por qué no alcanza |
+|---|---|---|
+| Webhooks `items_prices` / `public_offers` | la publicación que ML dice que cambió | 72% de las activas; 130 no reciben aviso nunca |
+| Barrido completo (`precios_venta.py`) | las ~745 con stock FULL | 9.3 h por vuelta: puede llevar horas sin pasar |
+| Sync de 15 min | `price` | `price` no es lo que se cobra (mediana 1.44x) |
+
+**Lo nuevo: `GET /api/publicaciones?q=<SKU>&refrescar=true`.** Antes de leer, le
+pregunta a ML el precio que cobra por las publicaciones de ese SKU exacto y lo
+guarda. Son **1 o 2 llamadas por producto** — ningún SKU del catálogo tiene más
+de dos publicaciones de ML (474 con una, 2,126 con dos, medido el 26-ago) — y es
+**una sola llamada por publicación**: `GET /items/{id}/sale_price` devuelve
+`amount` **y** `regular_amount` en el mismo cuerpo. El camino del webhook gasta
+dos porque además refresca stock y situación; aquí no hace falta.
+
+Contra el mismo SKU, por HTTP, antes y después:
+
+    sin refrescar     MLM5199880128 BEKURA         $260.99  sin confirmar
+                      MLM2870356893 SANCORFASHION  $260.99  sin confirmar
+    refrescar=true    MLM5199880128 BEKURA         $169.00  CONFIRMADO
+                      MLM2870356893 SANCORFASHION  $117.45  CONFIRMADO
+
+Dos publicaciones del mismo producto, dos precios distintos, y el que se
+mostraba no era ninguno de los dos.
+
+**El piso, que es lo que impide que esto sea un martillo.** Si la publicación se
+observó hace menos de `PRECIO_AL_ABRIR_PISO_MIN` (5 min), no se vuelve a
+preguntar: se devuelve lo guardado, que ya está confirmado. Cinco minutos sale
+de medir el ritmo real de cambio (~10%/día por publicación, del barrido en seco
+del 26-ago): en cinco minutos la probabilidad de que lo guardado ya no sirva es
+del orden de 0.04%. Hay un segundo piso, DURO, de 60 s, para que un cajón
+reabierto en bucle no pregunte cada vez cuando el sync le tira la confirmación.
+
+**Y el objetivo se arma con el SKU EXACTO** (`l.sku = q`, citext), no con la
+búsqueda. Medido: `q=ACC-03` devuelve 86 publicaciones y dispara **cero**
+llamadas a ML. Recorrer una lista no puede convertirse en cientos de llamadas.
+
+**Un fallo de ML no rompe la pantalla.** Timeout de 4 s por llamada, presupuesto
+de 6 s para todo el refresco, y ninguna excepción sale del servicio: si ML falla,
+tarda o no hay token, el cajón abre igual con lo guardado y el bloque `refresco`
+dice qué pasó. Un cajón que no abre es peor que uno con el dato de hace una hora.
+
+**La confirmación se sella de verdad**, y se verificó en vez de suponerlo: el
+panel cree lo que cumple `price_sale_at >= updated_at`, el UPDATE pone
+`price_sale_at = now()` y `trg_touch_listings` pone `updated_at = now()` — la
+misma hora de transacción. Probado contra el sandbox: **delta 0.000000 s**,
+`confirmada = true` en las dos filas del par padre/variante (el UPDATE va por
+`listing_id`, así que las 89 publicaciones que cuelgan de dos filas quedan
+coherentes), y **cero filas nuevas** en `listing_history`.
+
+Lo que el frontend recibe es un bloque `refresco` con un solo campo que necesita
+mirar: **`al_dia`** (bool) — "todo lo que se muestra de ML para este SKU está
+confirmado contra ML ahora mismo". `estado` trae el porqué con vocabulario
+cerrado: `ok`, `piso`, `sin_publicaciones`, `apagado`, `no_aplica`, `sin_token`,
+`fallo`, `timeout`.
+
+Cuatro cosas que NO hace, a propósito:
+
+1. **No pisa `price_sale` a ciegas.** `channel.listing_history` no audita esa
+   columna (handoff abierto a omni-datos): lo sobreescrito no se reconstruye. Por
+   eso cada cambio de valor deja una línea de log — hoy es el único rastro— y un
+   `None` de ML jamás se escribe (`None` es "no observado", no "sin promoción").
+2. **No renueva el token de ML.** Ante un 401 se rinde y el cajón abre con lo
+   guardado. El webhook y el barrido sí se auto-sanan; éste no, porque hay una
+   persona esperando a que abra la pantalla.
+3. **No escribe `price_base`** aunque `regular_amount` venga servido en la misma
+   respuesta. Esa columna tampoco se audita y no está fallando (coincidió al
+   centavo en las 33 de la muestra). Cuando no coincide, queda una línea de log.
+4. **No se enciende solo.** Aunque `PRECIO_AL_ABRIR` nace en `true`, sin el
+   `refrescar=true` de la petición esto es **cero llamadas a ML**: con el
+   frontend sin cambiar, el comportamiento es idéntico al de v0.266.1.
+
+Respeta `SYNC_ENABLED` (es sincronización de datos con ML, igual que el refresco
+del webhook). **Reversa**: `PRECIO_AL_ABRIR=false` en Railway, sin deploy; corta
+lo que entra desde la siguiente petición.
+
+Archivos: `backend/services/precio_al_abrir.py` (nuevo),
+`backend/routers/publicaciones.py`, `backend/config.py`. La nota de
+`publicaciones_panel._oferta` que decía "0 filas confirmadas en todo el catálogo"
+se corrigió: son 202 de 4,726 al 26-ago, y este camino es el segundo que las
+produce.
+
 ### v0.266.1 — De los 4 rojos, dos eran código muerto
 
 Eduardo preguntó lo correcto antes de dejarme arreglar nada: **¿en verdad se
