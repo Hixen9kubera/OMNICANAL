@@ -106,6 +106,17 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/resolver", "operador"),
     ("POST", "/api/resolver", "operador"),
     ("PATCH", "/api/resolver", "operador"),
+    # Análisis · stock, ventas y MARGEN con los cobros del canal. Va en
+    # `operador` y no en `lectura` por el mismo criterio que /api/fulfillment:
+    # expone costo y margen, que no son para el nivel de solo-lectura.
+    #
+    # ⚠️ FALTABA POR COMPLETO. `/api/analisis` no estaba listado, así que TODO
+    # lo que cuelga de ahí caía al default de admin (decisión 1: lo no listado
+    # nace cerrado). El síntoma fue un KAM viendo "Métricas" en el menú, entrando
+    # y topándose con un 403 — el backend bloqueaba y el frontend no escondía.
+    # Medido el 26-ago al encender RBAC_ENFORCED: 3 rechazos, todos de
+    # `GET /api/analisis/metricas`, todos del mismo usuario.
+    ("GET", "/api/analisis", "operador"),
     # Competencia · sembrar SKUs, correr el rastreo, ajustar términos
     ("GET", "/api/competencia", "operador"),
     ("POST", "/api/competencia", "operador"),

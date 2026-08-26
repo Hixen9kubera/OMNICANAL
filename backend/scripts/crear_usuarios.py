@@ -62,6 +62,7 @@ EQUIPO: tuple[tuple[str, str, str], ...] = (
     ("Brandon Grajales",  "brandon@kubera.mx",           "admin"),
     ("Eduardo",           "eduardo@kubera.mx",           "admin"),
     ("José",              "jose@kubera.mx",              "admin"),
+    ("Alejandro",         "alejandro@kubera.mx",         "operador"),
     ("Andrea Pardo",      "andrea.pardo@kubera.mx",      "operador"),
     ("Cinthya",           "cinthya@kubera.mx",           "operador"),
     ("Denisse Jaimes",    "denisse.jaimes@kubera.mx",    "operador"),
