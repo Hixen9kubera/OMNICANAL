@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.266.1 — De los 4 rojos, dos eran código muerto
+
+Eduardo preguntó lo correcto antes de dejarme arreglar nada: **¿en verdad se
+usan?** Un renglón en rojo no significa que haya que repuntarlo. Significa que
+hay que averiguar quién lo llama.
+
+| Camino | ¿Alguien lo llama? |
+|---|---|
+| `studio._categoria_mysql` | **sí, y decide** |
+| `packing_comparador.buscar_sku` | sí, `ResolverCostosModal` |
+| `packing_comparador.buscar_contenedor` | **cero llamadores** |
+| `packing_comparador.candidatos` | **cero llamadores** |
+
+Los dos últimos no los invoca nadie: ni el backend, ni el frontend, ni un script.
+Pasan al mapa como `no_aplica` con esa razón escrita. Migrar algo que nadie
+ejecuta cuesta igual que migrar algo que sí, y no arregla nada.
+
+**El de Studio es el que importa, y más de lo que parecía.** `GET /api/productos/
+{sku}/studio` recibió tráfico real hoy (`KIT-0514-EST`, 00:37). Lo que devuelve
+`categoria_ml` no es decorativo: `ProductStudio.tsx` lo usa para **prellenar el
+selector de categoría**, y al publicar manda `ml_cat_id: catMlId || meta?.
+categoria_ml?.category_id`. Sin MySQL, ese campo llega vacío y la publicación sale
+con categoría nula — el mismo modo de falla que el comentario de al lado ya
+documenta para TikTok: *"devuelve cero filas SIN dar error"*.
+
+La gemela ya existe a medias: `crear_producto._categoria_curada` pasa por
+`channel_read.categoria_curada`. Le falta devolver `ruta` y `cat1..cat4`.
+
+`imagenes_amazon._cache_get` sigue como SIN DATO, pero no está desamparado: tiene
+su propia prueba en `probar_cache_imagenes_sandbox.py`. Lo que falta es dato en el
+clon, no cobertura.
+
+Quedan **2 caminos** que no sobreviven, no 4.
+
 ### v0.266.0 — La sonda del corte no sabía lo que no miraba
 
 Decía **14/14** y todo verde. No decía sobre cuántos. Y el 25-ago se encontró a

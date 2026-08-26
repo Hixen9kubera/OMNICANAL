@@ -102,6 +102,11 @@ _RES: list[tuple[str, str, str]] = []
 #
 # estado: "sondeado"  -> hay una sonda abajo con ese mismo nombre
 #         "no_aplica" -> deliberadamente fuera, con razon
+#
+# Un renglon en rojo NO significa "hay que repuntarlo". Primero hay que
+# preguntar si alguien lo llama: de los 4 que salieron rojos al ampliar,
+# DOS eran codigo muerto. Migrar algo que nadie ejecuta cuesta lo mismo
+# que migrar algo que si, y no arregla nada.
 _MAPA: list[tuple[str, str, str]] = [
     # ── deciden: si contestan mal, se mueve mercancia o dinero ──────────────
     ("pedidos_ml._ya_compensado",            "sondeado", ""),
@@ -122,8 +127,6 @@ _MAPA: list[tuple[str, str, str]] = [
     ("competencia_captura._nuestras_publicaciones", "sondeado", ""),
     ("fanout_stock.historial",               "sondeado", ""),
     ("fanout_stock.resumen",                 "sondeado", ""),
-    ("packing_comparador.buscar_contenedor", "sondeado", ""),
-    ("packing_comparador.candidatos",        "sondeado", ""),
     ("packing_comparador.buscar_sku",        "sondeado", ""),
     ("alertas._fila",                        "sondeado", ""),
     # ── fuera, a proposito ──────────────────────────────────────────────────
@@ -139,6 +142,11 @@ _MAPA: list[tuple[str, str, str]] = [
     ("alertas._revisar_tokens_rancios", "no_aplica",
      "lo cubre alertas._fila: mismo lector, misma tabla"),
     ("alertas._revisar_token_tiktok", "no_aplica", "idem"),
+    ("packing_comparador.buscar_contenedor", "no_aplica",
+     "CODIGO MUERTO: cero llamadores en todo el repo (backend y frontend)."
+     " Repuntarlo seria migrar algo que nadie ejecuta"),
+    ("packing_comparador.candidatos", "no_aplica",
+     "CODIGO MUERTO: idem, cero llamadores"),
 ]
 
 
@@ -267,17 +275,9 @@ def main() -> None:
     sonda("fanout_stock.resumen", lambda: fanout_stock.resumen())
     sonda("alertas._fila", lambda: alertas._fila("stock"), lambda r: r is None)
 
-    cont = _uno("""select contenedor::text from costing.costos_validados
-                    where nullif(contenedor,'') is not null limit 1""")
-    if cont:
-        sonda("packing_comparador.buscar_contenedor",
-              lambda: packing_comparador.buscar_contenedor(str(cont)[:4]))
-        sonda("packing_comparador.candidatos",
-              lambda: packing_comparador.candidatos(str(cont)))
-    else:
-        sin_dato("packing_comparador.buscar_contenedor",
-                 "el sandbox no tiene contenedores costeados")
-        sin_dato("packing_comparador.candidatos", "idem")
+    # Solo `buscar_sku`: es el unico de packing_comparador que alguien llama
+    # (ResolverCostosModal, el empate a mano). `buscar_contenedor` y
+    # `candidatos` tienen CERO llamadores en el repo — ver el mapa.
     sonda("packing_comparador.buscar_sku", lambda: packing_comparador.buscar_sku(sku))
 
     # ── Las sondas que hay que hacer CON DATO ───────────────────────────────
