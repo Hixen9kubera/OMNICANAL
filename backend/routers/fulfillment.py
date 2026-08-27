@@ -38,7 +38,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from config import settings
-from services import supabase_db as sdb
+from services import costos, supabase_db as sdb
 
 
 # ── Las lecturas de kubera, FUERA del event loop ────────────────────────────
@@ -796,10 +796,24 @@ costo as (
 )
 select v.canal, v.cuenta, v.uds, v.ingreso, v.precio_prom, v.ultima_venta,
        c.costo,
+       -- BRUTO SIN IVA (Eduardo, 27-ago). El precio de venta trae IVA y el costo
+       -- NO —`costos_validados` es mercancía + flete, sin un solo impuesto—, así
+       -- que compararlos crudos mezcla dos monedas: contaba como ganancia el IVA
+       -- que solo se le pasa al SAT. Inflaba ~14 puntos, y el castigo NO es
+       -- parejo: pega más fuerte donde el margen es flaco. El punto de quiebre
+       -- está en 13.79 puntos — todo lo que ANTES mostrara menos que eso estaba
+       -- perdiendo dinero y se pintaba en verde. Medido sobre 60 días: de 582
+       -- SKUs en positivo, 54 pasan a pérdida ($1,095,431 de venta).
+       --
+       -- El IVA de importación NO se resta del costo a propósito: es acreditable
+       -- (se recupera contra el IVA cobrado), así que nunca fue un costo. Por eso
+       -- solo se ajusta el precio. Confirmado con Eduardo: los $525,000 del
+       -- contenedor son SIN IVA.
        case when c.costo is not null
-            then round(v.ingreso - v.uds * c.costo, 2) end as ganancia,
+            then round(v.ingreso / (1 + %(iva)s) - v.uds * c.costo, 2) end as ganancia,
        case when v.precio_prom > 0 and c.costo is not null
-            then round((v.precio_prom - c.costo) / v.precio_prom * 100, 1)
+            then round(((v.precio_prom / (1 + %(iva)s)) - c.costo)
+                       / (v.precio_prom / (1 + %(iva)s)) * 100, 1)
             end as margen_pct,
        -- y lo mismo ya con los cobros del canal encima
        round(m.comision / nullif(m.uds_com, 0), 2)         as comision_unit,
@@ -1322,7 +1336,9 @@ async def resumen_canales(
     ponderado + historial de cambios de precio de la publicación."""
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
-    p = {"sku": sku, "dias": dias}
+    # El IVA sale de costos.IVA_RATE, no de un 0.16 suelto: el motor de precios
+    # ya lo tiene y dos definiciones se separan el día que alguna cambie.
+    p = {"sku": sku, "dias": dias, "iva": costos.IVA_RATE}
     try:
         canales = await _fetch_all(_SQL_CANALES, p)
         cambios = await _fetch_all(_SQL_CAMBIOS_PRECIO, {"sku": sku})

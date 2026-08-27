@@ -67,3 +67,34 @@ export function avisoCostoImplausible(precio: number, costoBase: number): string
     `de mover el precio o dar de baja el producto.`
   );
 }
+
+/* ── Margen BRUTO, sin IVA ──────────────────────────────────────────────────
+   El precio de venta trae IVA; el costo de `costos_validados` NO (es mercancía
+   + flete, sin un solo impuesto). Compararlos crudos cuenta como ganancia el
+   IVA que solo se le pasa al SAT: infla ~14 puntos.
+
+   El IVA de importación NO se le resta al costo a propósito — es ACREDITABLE,
+   o sea que se recupera contra el IVA cobrado y por lo tanto nunca fue un
+   costo. Solo se ajusta el precio. (Confirmado con Eduardo el 27-ago: los
+   $525,000 del contenedor son sin IVA.)
+
+   El punto de quiebre: un margen de 13.79% con la fórmula vieja es CERO con
+   ésta. Todo lo que antes se pintaba por debajo de eso estaba perdiendo dinero
+   en verde. */
+export const IVA_RATE = 0.16;
+
+/** Lo que de verdad entra a Kubera: el precio de lista sin el IVA del SAT. */
+export function precioSinIva(precio: number): number {
+  return precio / (1 + IVA_RATE);
+}
+
+/** Margen bruto en %, o null si falta un insumo. NO descuenta comisión ni envío. */
+export function margenBruto(
+  precio: number | null | undefined,
+  costo: number | null | undefined,
+): number | null {
+  const p = Number(precio ?? 0), c = Number(costo ?? 0);
+  if (!(p > 0) || !(c > 0)) return null;
+  const neto = precioSinIva(p);
+  return ((neto - c) / neto) * 100;
+}

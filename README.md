@@ -1001,6 +1001,31 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.282.0 — El margen bruto deja de contar el IVA como ganancia
+
+En los DOS lugares donde vive el bruto: la fila de Omnicanal y el modal de
+Precio/Margen de Análisis (`/api/fulfillment/canales`). Antes comparaba el
+precio **con IVA** contra un costo **sin IVA** —`costos_validados` es mercancía
++ flete, sin un solo impuesto—, así que contaba como ganancia los pesos que solo
+se le pasan al SAT.
+
+**Inflaba ~14 puntos, y el castigo NO es parejo:** pega más fuerte donde el
+margen es flaco. El punto de quiebre está en 13.79: todo lo que antes mostrara
+menos que eso estaba perdiendo dinero **y se pintaba en verde**. Medido sobre 60
+días de venta real: de 582 SKUs en positivo, **54 pasan a pérdida**
+($1,095,431 de venta). TEC-2162-NEG pasa de 14.1 a 0.4 con 459 unidades vendidas.
+
+**El IVA de importación NO se le resta al costo, a propósito**: es acreditable
+—se recupera contra el IVA cobrado—, así que nunca fue un costo. Solo se ajusta
+el precio. Eduardo confirmó que los $525,000 del contenedor son sin IVA.
+
+Helpers compartidos en `lib/margen.ts` (`IVA_RATE`, `precioSinIva`,
+`margenBruto`) y, en el backend, el IVA sale de `costos.IVA_RATE` en vez de un
+0.16 suelto. El tooltip ahora explica el desglose en pesos en vez de advertir.
+
+**No se toca el margen NETO** de la tabla de Análisis: ese ya descuenta comisión
+y envío, y su tratamiento del IVA merece su propia revisión.
+
 ### v0.281.0 — El botón que le busca su renglón a cada SKU publicado en ML
 
 El "Resolver" de la pantalla de Costos siempre fue **packing-list-primero**:

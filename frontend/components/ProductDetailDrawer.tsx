@@ -22,7 +22,8 @@ import type {
 import { listarPublicaciones, refrescarCanal } from "@/lib/api";
 import { enlacePublicacion } from "@/lib/enlaces";
 import { motivoRefresco } from "@/lib/publicaciones";
-import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
+import { avisoCostoImplausible, costoImplausible, margenBruto,
+         precioSinIva } from "@/lib/margen";
 import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
 import { ChipMoneda, type Moneda } from "./Moneda";
 import PublicacionesDelCanal from "./PublicacionesDelCanal";
@@ -459,23 +460,26 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                         const precio = c.precio;
                         if (!(costo && costo > 0) || !(precio && precio > 0)) return null;
                         const dudoso = costoImplausible(precio, costo);
-                        const pct = ((precio - costo) / precio) * 100;
-                        const deja = precio - costo;
+                        // SIN IVA: el precio lo trae y el costo no. Ver lib/margen.
+                        const neto = precioSinIva(precio);
+                        const pct = margenBruto(precio, costo) ?? 0;
+                        const deja = neto - costo;
                         const ayuda = dudoso
                           ? avisoCostoImplausible(precio, costo)
-                          : `Margen BRUTO: (precio − costo) ÷ precio.
+                          : `De los ${precioMXN(precio)} que paga el cliente, `
+                            + `${precioMXN(precio - neto)} son IVA que va al SAT.
 `
-                            + `Costo = producto + flete de importación (${precioMXN(costo)}); `
-                            + `NO descuenta comisión del canal ni envío — para eso está Análisis.
+                            + `Entra a Kubera: ${precioMXN(neto)} — costo `
+                            + `${precioMXN(costo)} (producto + flete) = ${precioMXN(deja)}.
 `
-                            + `Ojo: el precio lleva IVA y el costo no, así que el bruto real `
-                            + `es algo menor.`;
+                            + `NO descuenta comisión del canal ni envío: para eso está el `
+                            + `margen neto de Análisis.`;
                         return (
                           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2 text-xs"
                                title={ayuda}>
                             <span className="text-slate-500">
                               Margen bruto{" "}
-                              <span className="text-slate-400">(sin comisiones)</span>
+                              <span className="text-slate-400">(sin IVA ni comisiones)</span>
                             </span>
                             <span className="flex items-center gap-2">
                               <span className="text-slate-400">{precioMXN(deja)} / u</span>
