@@ -6,6 +6,7 @@ import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 import { ChipMoneda } from "./Moneda";
+import ChipRevision from "./ChipRevision";
 
 interface Props {
   producto: Producto;
@@ -118,8 +119,11 @@ export default function ProductCard({
           </div>
         )}
 
-        {/* Badge de estado del canal */}
-        <div className="absolute left-2.5 top-2.5 flex gap-1.5">
+        {/* Badge de estado del canal + validación del costeo.
+            flex-col: el chip de VALIDADO va DEBAJO del de publicado (pedido de
+            Eduardo). items-start para que cada uno mida lo suyo y no se estiren
+            al ancho del más largo. */}
+        <div className="absolute left-2.5 top-2.5 flex flex-col items-start gap-1">
           {producto.publicado ? (
             <span
               className="flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-bold text-white shadow-sm"
@@ -132,6 +136,10 @@ export default function ProductCard({
               <PackageX size={11} /> Sin publicar
             </span>
           )}
+          {/* Solo se pinta si está validado; sin marca no ocupa lugar. */}
+          <ChipRevision revisadoAt={producto.revisado_at}
+                        revisadoPor={producto.revisado_por}
+                        movida={producto.revision_movida} />
         </div>
 
         {/* FULL / FBA */}

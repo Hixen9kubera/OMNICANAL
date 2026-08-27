@@ -198,6 +198,35 @@ def contenedores_por_sku(skus: list[str]) -> dict[str, str]:
     return salida
 
 
+def revisados_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    ``{ sku: {revisado_at, revisado_por, movida} }`` para los SKUs YA revisados.
+
+    Gemela por lotes de `contenedores_por_sku`: mismos 800 por tanda (el límite
+    de placeholders es el mismo) y misma forma de índice para el citext.
+
+    Devuelve SOLO los revisados. Un SKU ausente del dict = sin revisar, que es
+    el caso mayoritario (15,838 de 15,838 al abrir la migración 0032) y que no
+    tiene sentido acarrear como miles de valores nulos hasta el navegador.
+    """
+    salida: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 800):
+        chunk = skus[i:i + 800]
+        idx = {s.lower(): s for s in chunk}
+        for r in sdb.fetch_all(
+            """select sku::text as sku, revisado_at, revisado_por,
+                      (updated_at > revisado_at) as movida
+                 from costing.costos_validados
+                where sku = any(%s::citext[]) and revisado_at is not null""",
+                (chunk,)):
+            salida[idx.get(r["sku"].lower(), r["sku"])] = {
+                "revisado_at": r["revisado_at"],
+                "revisado_por": r.get("revisado_por"),
+                "movida": bool(r.get("movida")),
+            }
+    return salida
+
+
 def costos_todos() -> dict[str, float]:
     """
     { sku: costo_unitario } (respaldo costo_producto) de TODO el catálogo.

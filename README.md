@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.279.0 — La etiqueta VALIDADO también en las tarjetas
+
+`ChipRevision` en `ProductCard`, **debajo del badge de Publicado** (pedido de
+Eduardo). El contenedor de badges pasa de `flex` a `flex flex-col items-start`
+para que se apilen en vez de ponerse en fila.
+
+El dato llega por una gemela por lotes de `contenedores_por_sku`:
+`costing_read.revisados_por_sku()` devuelve **solo los validados** — un SKU
+ausente del dict es "pendiente", que es el caso mayoritario y no tiene sentido
+acarrear como miles de nulos hasta el navegador.
+
+En `routers/productos.py` va después de armar `items_raw`, así que cubre TODOS
+los canales por igual (la tarjeta es la misma en todos), y es **best-effort**:
+si costeo no responde, las tarjetas salen sin etiqueta en vez de tumbar el
+listado, que es la vista principal del panel.
+
+Verificado contra el sandbox con el panel local: el chip queda apilado bajo
+"Publicado", alineado a la izquierda, y solo aparece en los SKUs marcados.
+
 ### v0.278.0 — Métricas: KPI de costo validado
 
 Quinto KPI del tab: **"Costo validado"**, contando `costing.costos_validados`

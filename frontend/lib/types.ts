@@ -63,6 +63,11 @@ export interface Producto {
   // Si es padre: sus variantes (vista Crear Productos)
   variantes: VarianteResumen[];
   origen: string;
+  /* Marca de validación del costeo (0032). Ausente = pendiente: el backend
+     solo manda estos campos cuando el SKU está validado. */
+  revisado_at?: string | null;
+  revisado_por?: string | null;
+  revision_movida?: boolean;
 }
 
 export interface Paginacion {

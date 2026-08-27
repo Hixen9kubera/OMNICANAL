@@ -27,7 +27,8 @@ from models.schemas import (
     Producto,
     RespuestaProductos,
 )
-from services import amazon, ejemplos, inventario, meli, presencia, publicar, studio, woocommerce
+from services import (amazon, costing_read, ejemplos, inventario, meli, presencia,
+                      publicar, studio, woocommerce)
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -217,6 +218,24 @@ async def listar_productos(
             # El stock mostrado en la tarjeta es el real (lo que se sincroniza)
             if datos.get("stock_real") is not None:
                 it["stock"] = datos["stock_real"]
+
+    # Marca de validación del costeo (0032). Va después de armar `items_raw`
+    # para cubrir TODOS los canales por igual — la tarjeta es la misma en todos.
+    # Best-effort: si costeo no responde, las tarjetas salen sin la etiqueta en
+    # vez de romper el listado, que es la vista principal del panel.
+    try:
+        skus_pag = [it["sku"] for it in items_raw if it.get("sku")]
+        if skus_pag:
+            marcas = await asyncio.to_thread(costing_read.revisados_por_sku, skus_pag)
+            for it in items_raw:
+                m = marcas.get(it.get("sku") or "")
+                if not m:
+                    continue
+                it["revisado_at"] = m["revisado_at"].isoformat() if m["revisado_at"] else None
+                it["revisado_por"] = m["revisado_por"]
+                it["revision_movida"] = m["movida"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("marca de revisión no disponible (el listado sigue): %s", exc)
 
     items = [Producto(**i) for i in items_raw]
     paginacion = Paginacion(

@@ -90,6 +90,12 @@ class Producto(BaseModel):
     costo: float | None = None
     valor: float | None = None
     contenedor: str | None = None  # nº de contenedor (costos_validados)
+    # Marca de validación del costeo (migración 0032). Se manda SOLO cuando el
+    # SKU está validado: ausente = pendiente, que es el caso mayoritario y no
+    # tiene sentido acarrear como miles de nulos hasta el navegador.
+    revisado_at: str | None = None
+    revisado_por: str | None = None
+    revision_movida: bool = False
 
     # Tipo de producto en WooCommerce: simple | variable (padre) | variation
     tipo: str | None = None
