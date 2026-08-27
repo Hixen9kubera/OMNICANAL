@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.283.0 — La categoría que Mercado Libre nunca sugiere, ahora se puede pegar
+
+Eduardo pidió publicar en **Hogar, Muebles y Jardín › Baños › Lavabos para Baño**
+y esa categoría no aparecía en el picker del Estudio. No era un permiso ni un
+dato faltante: el buscador por nombre llama a `domain_discovery`, que **es un
+PREDICTOR de categoría, no un índice del árbol**. Le das texto y contesta dónde
+*cree* que va el producto.
+
+Medido con siete consultas —`lavabo`, `lavamanos`, `ovalín`, `lavabo para baño`,
+títulos completos—: **en ninguna** devuelve `MLM31513`. Lo que sí devuelve,
+siempre, son otras dos categorías **con el nombre idéntico** y hasta el mismo
+`catalog_domain` (`MLM-BATHROOM_SINKS`):
+
+| ID | Ruta |
+| --- | --- |
+| MLM189323 | Construcción › Mobiliario para Baños › Lavabos para Baño |
+| MLM455948 | Accesorios para Vehículos › Náuticos › Interior de Cabina › Lavabos para Baño |
+| **MLM31513** | **Hogar, Muebles y Jardín › Baños › Lavabos para Baño** ← la que se quería |
+
+Las tres son hoja, `status: enabled` y `listing_allowed: true`; MLM31513 tiene
+15,377 publicaciones. Desde el panel se leía el nombre correcto y se elegía el
+árbol equivocado, **sin ninguna señal de que fueran distintas**.
+
+Ahora, si lo tecleado trae un ID (`MLM31513`, o una URL de ML que lo contenga),
+el picker lo resuelve por lookup directo en vez de buscar por nombre. El
+endpoint que traduce ID → nombre + ruta (`/api/crear/categorias-ml/{id}`) **ya
+existía** desde que se cableó el breadcrumb de categorías viejas; lo único que
+faltaba era poder llegarle desde la interfaz. **Cero cambios en el backend.**
+
+Verificado en el navegador contra sandbox: tecleando `lavabo` siguen saliendo
+las dos de siempre; pegando `MLM31513` sale la tercera con su breadcrumb de tres
+niveles, y al elegirla el `onChange` entrega el ID correcto.
+
+Al guardarla, `categorias_write.registrar` crea la fila en `channel.categories`
+junto con la asignación (`source='panel'`) — hoy MLM31513 no está en esa tabla:
+solo tiene 2,723 categorías de ML, las que ya usa algún SKU. Nace al elegirla.
+
+**Pendiente detectado, no corregido aquí:** las rutas escritas por el panel usan
+`>` como separador y las del ETL usan `›` (U+203A). Hay **78 filas con `>`
+contra 2,642 con `›`**, y `competencia_supabase.py` declara U+203A como el
+separador de la casa.
+
 ### v0.282.1 — El margen bruto ya no contradice a la publicación de abajo
 
 La fila de margen de Omnicanal usaba `c.precio`, el precio del CANAL. La tarjeta

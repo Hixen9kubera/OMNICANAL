@@ -55,19 +55,35 @@ export default function CategoriaMLPicker({ value, pathInicial, onChange, acento
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, pathInicial?.length]);
 
+  // Si lo tecleado TRAE UN ID (MLM31513, o una URL de ML que lo contenga) se
+  // resuelve por lookup directo en vez de buscar por nombre.
+  //
+  // Motivo (medido 25-ago): el buscador por nombre usa `domain_discovery`, que
+  // es un PREDICTOR de categoría, no un índice del árbol. Hay categorías
+  // perfectamente publicables que NUNCA sugiere. Caso real: MLM31513
+  // "Hogar, Muebles y Jardín > Baños > Lavabos para Baño" — hoja, status
+  // enabled, listing_allowed true, 15,377 publicaciones — y aun así buscar
+  // "lavabo", "lavamanos" u "ovalín" solo devuelve MLM189323 (Construcción) y
+  // MLM455948 (Accesorios Náuticos). Sin esta salida esas categorías son
+  // INALCANZABLES desde el panel.
+  const idSuelto = q.trim().match(/\bMLM\d{3,}\b/i)?.[0]?.toUpperCase() ?? "";
+
   // Búsqueda con debounce.
   useEffect(() => {
-    if (q.trim().length < 2) { setRes([]); return; }
+    if (!idSuelto && q.trim().length < 2) { setRes([]); return; }
     const ctrl = new AbortController();
     const t = setTimeout(() => {
       setBuscando(true);
-      buscarCategoriasML(q.trim(), ctrl.signal)
-        .then((r) => { setRes(r.resultados); setAbierto(true); })
+      const pedido = idSuelto
+        ? obtenerCategoriaML(idSuelto, ctrl.signal).then((c) => [c])
+        : buscarCategoriasML(q.trim(), ctrl.signal).then((r) => r.resultados);
+      pedido
+        .then((r) => { setRes(r); setAbierto(true); })
         .catch(() => setRes([]))
         .finally(() => setBuscando(false));
     }, 350);
     return () => { clearTimeout(t); ctrl.abort(); };
-  }, [q]);
+  }, [q, idSuelto]);
 
   function elegir(c: CategoriaMLResult) {
     setSel(c);
@@ -107,14 +123,14 @@ export default function CategoriaMLPicker({ value, pathInicial, onChange, acento
       {/* Buscador por nombre */}
       <div className="relative mt-2">
         <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-slate-500">
-          <Search size={13} /> Buscar otra categoría por nombre
+          <Search size={13} /> Buscar otra categoría por nombre o pegar su ID
         </div>
         <div className="relative">
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onFocus={() => res.length && setAbierto(true)}
-            placeholder="ej. dispensador, taladro, silla…"
+            placeholder="ej. dispensador, taladro, silla… o MLM31513"
             className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
             style={{ outlineColor: acento }}
           />
@@ -122,7 +138,11 @@ export default function CategoriaMLPicker({ value, pathInicial, onChange, acento
         </div>
         {abierto && (res.length > 0 || buscando) && (
           <div className="absolute z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
-            {!buscando && res.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">Sin resultados.</div>}
+            {!buscando && res.length === 0 && (
+              <div className="px-3 py-2 text-xs text-slate-400">
+                {idSuelto ? `Mercado Libre no reconoce ${idSuelto}.` : "Sin resultados. Si conoces el ID de la categoría, pégalo aquí."}
+              </div>
+            )}
             {res.map((c) => (
               <button
                 key={c.category_id}
