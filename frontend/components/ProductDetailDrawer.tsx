@@ -22,6 +22,7 @@ import type {
 import { listarPublicaciones, refrescarCanal } from "@/lib/api";
 import { enlacePublicacion } from "@/lib/enlaces";
 import { motivoRefresco } from "@/lib/publicaciones";
+import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
 import { useDetalleProducto, invalidarDetalle } from "@/lib/useDetalleProducto";
 import { ChipMoneda, type Moneda } from "./Moneda";
 import PublicacionesDelCanal from "./PublicacionesDelCanal";
@@ -438,6 +439,58 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                           )}
                         </div>
                       )}
+
+                      {/* MARGEN BRUTO — precio del canal contra el costo del SKU,
+                          SIN comisión ni envío (pedido de Eduardo). El neto ya
+                          vive en Análisis; aquí interesa "cuánto deja el producto
+                          antes de que el marketplace cobre lo suyo".
+
+                          Misma fórmula que el `margen_pct` de Análisis —
+                          (precio − costo) / precio— a propósito: si aquí se
+                          dividiera el precio entre 1.16 para descontar el IVA, el
+                          MISMO SKU mostraría dos márgenes distintos en dos
+                          pantallas y nadie sabría cuál creer. La advertencia del
+                          IVA va en el tooltip, que es donde no estorba.
+
+                          El costo es del SKU, no del canal: la misma cifra en
+                          todas las tarjetas, y solo cambia el precio. */}
+                      {(() => {
+                        const costo = data?.costo ?? null;
+                        const precio = c.precio;
+                        if (!(costo && costo > 0) || !(precio && precio > 0)) return null;
+                        const dudoso = costoImplausible(precio, costo);
+                        const pct = ((precio - costo) / precio) * 100;
+                        const deja = precio - costo;
+                        const ayuda = dudoso
+                          ? avisoCostoImplausible(precio, costo)
+                          : `Margen BRUTO: (precio − costo) ÷ precio.
+`
+                            + `Costo = producto + flete de importación (${precioMXN(costo)}); `
+                            + `NO descuenta comisión del canal ni envío — para eso está Análisis.
+`
+                            + `Ojo: el precio lleva IVA y el costo no, así que el bruto real `
+                            + `es algo menor.`;
+                        return (
+                          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2 text-xs"
+                               title={ayuda}>
+                            <span className="text-slate-500">
+                              Margen bruto{" "}
+                              <span className="text-slate-400">(sin comisiones)</span>
+                            </span>
+                            <span className="flex items-center gap-2">
+                              <span className="text-slate-400">{precioMXN(deja)} / u</span>
+                              <span className={[
+                                "rounded px-1.5 py-0.5 font-bold tabular-nums",
+                                dudoso ? "bg-amber-50 text-amber-700"
+                                       : pct >= 0 ? "bg-emerald-50 text-emerald-700"
+                                                  : "bg-rose-50 text-rose-700",
+                              ].join(" ")}>
+                                {dudoso && "⚠ "}{pct.toFixed(1)}%
+                              </span>
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </>
                   );
                 })()}

@@ -294,8 +294,21 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         # Puede existir en el cache aunque no en WooCommerce
         base = {"sku": sku, "nombre": sku}
 
+    # Costo del SKU para el margen BRUTO de las tarjetas. `costo_total` de
+    # costos_validados = costo_producto + flete de importación prorrateado; es
+    # el mismo contrato que usa Análisis, así que los dos números coinciden.
+    # Best-effort: sin costo la tarjeta simplemente no pinta el margen.
+    costo_sku = None
+    try:
+        cv = await asyncio.to_thread(costing_read.validados, sku)
+        if cv and cv.get("costo_total"):
+            costo_sku = float(cv["costo_total"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("costo para el margen de %s no disponible: %s", sku, exc)
+
     detalle = DetalleProducto(
         sku=sku,
+        costo=costo_sku,
         wc_id=base.get("wc_id"),
         nombre=base.get("nombre", sku),
         imagen=base.get("imagen"),

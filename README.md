@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.280.0 — Margen bruto en las tarjetas de Omnicanal
+
+Fila nueva bajo el Total de cada tarjeta de canal: **(precio − costo) ÷ precio**,
+sin comisión ni envío (pedido de Eduardo: "el margen de costos sin comisiones").
+El neto ya vive en Análisis; aquí interesa cuánto deja el producto ANTES de que
+el marketplace cobre lo suyo. Muestra también los pesos por unidad.
+
+**Misma fórmula que el `margen_pct` de Análisis, a propósito.** Lo correcto
+sería dividir el precio entre 1.16 —el precio lleva IVA y el costo no—, pero
+entonces el MISMO SKU mostraría dos márgenes distintos en dos pantallas y nadie
+sabría cuál creer. La advertencia va en el tooltip, no en el número.
+
+**El costo es del SKU, no del canal**, así que la cifra cambia solo por el
+precio de cada tarjeta. `DetalleProducto.costo` existía en el esquema desde
+siempre y **nunca se llenaba**: ahora sale de `costos_validados.costo_total`
+(producto + flete prorrateado), en best-effort — sin costo la fila no se pinta.
+
+Reusa el candado de `lib/margen.ts`: con un costo >1.5× el precio la cifra sale
+en ÁMBAR con ⚠ y el aviso de "tómalo con reserva", nunca en rojo/verde que se
+lee como un hecho. Verificado contra el sandbox con el panel local: ACC-0001-AZL
+95.8% en verde, TEC-0393-ROS −318.2% en ámbar (costo 4.2× el precio).
+
 ### v0.279.0 — La etiqueta VALIDADO también en las tarjetas
 
 `ChipRevision` en `ProductCard`, **debajo del badge de Publicado** (pedido de
