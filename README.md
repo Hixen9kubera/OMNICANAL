@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.282.1 — El margen bruto ya no contradice a la publicación de abajo
+
+La fila de margen de Omnicanal usaba `c.precio`, el precio del CANAL. La tarjeta
+**esconde ese precio a propósito** cuando hay publicaciones —su comentario lo
+dice desde antes: *"hay uno POR publicación, con su oferta; un Precio de canal
+al lado tendría que elegir uno de los dos y contradecir al bloque de abajo"*— y
+el margen que agregué en v0.280.0 salía justo de ahí.
+
+Reportado por Eduardo con la captura que lo prueba: MUE-0163-TEL mostraba
+**48.5%** mientras su publicación, tres centímetros abajo, decía **−7.5%**. El
+precio de canal era $355.20; el que la tienda cobra hoy, $337.00 (oferta de −65
+desde $960).
+
+Ahora la fila se acota con la MISMA condición que el precio (`conPrecio`): solo
+aparece en tarjetas SIN publicaciones —General/Woo—, donde el precio del canal
+sí es el precio y no hay comisión que lo desmienta. En Mercado Libre y Amazon el
+bloque de publicaciones ya contesta mejor: precio real, oferta y margen con los
+cobros del canal encima.
+
 ### v0.282.0 — El margen bruto deja de contar el IVA como ganancia
 
 En los DOS lugares donde vive el bruto: la fila de Omnicanal y el modal de

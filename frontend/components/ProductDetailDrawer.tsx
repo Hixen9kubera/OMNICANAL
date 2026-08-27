@@ -459,6 +459,19 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                         const costo = data?.costo ?? null;
                         const precio = c.precio;
                         if (!(costo && costo > 0) || !(precio && precio > 0)) return null;
+                        // MISMA REGLA QUE EL PRECIO (`conPrecio`, arriba): cuando la
+                        // tarjeta trae publicaciones, el precio del CANAL no es el que
+                        // cobra la tienda — el de verdad, con su oferta, vive en cada
+                        // publicación, y hay uno POR publicación. Un margen sacado del
+                        // precio de canal contradice al bloque de abajo, que es
+                        // exactamente lo que ese comentario advertía y yo pasé por alto:
+                        // MUE-0163-TEL mostraba 48.5% aquí mientras su publicación decía
+                        // −7.5% (oferta a $337 desde $960, y con la comisión encima).
+                        //
+                        // Donde SÍ sirve es en General/Woo, que no tiene publicaciones:
+                        // ahí el precio del canal ES el precio, y no hay comisión que lo
+                        // desmienta. Por eso no se borra la fila, se acota.
+                        if (!conPrecio) return null;
                         const dudoso = costoImplausible(precio, costo);
                         // SIN IVA: el precio lo trae y el costo no. Ver lib/margen.
                         const neto = precioSinIva(precio);
