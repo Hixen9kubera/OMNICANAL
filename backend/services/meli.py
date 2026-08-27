@@ -600,6 +600,49 @@ async def refrescar_item(item_id: str, cuenta: str | None = None) -> dict[str, A
     }
 
 
+async def titulo_y_foto(item_id: str, cuenta: str | None = None) -> dict[str, Any]:
+    """
+    ``{titulo, foto_url, foto}`` de una publicación: el título y la PRIMERA foto.
+
+    Existe porque :func:`refrescar_item` —que consulta el mismo ``/items/{id}``—
+    devuelve precio, stock, estado y categoría pero **no** trae ni ``title`` ni
+    ``pictures``: los descarta al armar su diccionario, y agregárselos ahí
+    cambiaría la forma que ya consumen el sync y el panel.
+
+    Es el insumo del último peldaño del empate contra el packing list: cuando la
+    foto de Odoo no sirve (18% de los publicados no tiene), lo único que queda
+    para reconocer el producto es cómo se ve en su propio anuncio.
+
+    Nunca levanta: un fallo aquí solo significa que ese SKU se queda sin ese
+    peldaño, no que el análisis completo se caiga.
+    """
+    token = _access_token(cuenta)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    salida: dict[str, Any] = {"titulo": "", "foto_url": None, "foto": None}
+    try:
+        async with httpx.AsyncClient(base_url=_API, timeout=30.0) as cli:
+            r = await cli.get(f"/items/{item_id}", headers=headers)
+            r.raise_for_status()
+            item = r.json()
+            salida["titulo"] = item.get("title") or ""
+            fotos = item.get("pictures") or []
+            if not fotos:
+                return salida
+            url = fotos[0].get("secure_url") or fotos[0].get("url")
+            salida["foto_url"] = url
+            if not url:
+                return salida
+            # La foto vive en mlstatic, no en la API: cliente aparte, sin el
+            # base_url ni el Bearer (que ahí sobra).
+            async with httpx.AsyncClient(timeout=30.0) as cli_img:
+                ri = await cli_img.get(url)
+                ri.raise_for_status()
+                salida["foto"] = ri.content
+    except Exception as exc:  # noqa: BLE001
+        log.warning("titulo_y_foto %s falló: %s", item_id, exc)
+    return salida
+
+
 async def _category_path(
     cli: httpx.AsyncClient, cat_id: str | None, headers: dict
 ) -> list[dict[str, Any]]:

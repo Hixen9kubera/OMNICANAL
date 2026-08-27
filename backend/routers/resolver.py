@@ -21,10 +21,28 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
+from config import settings
 from services import packing_comparador, packing_drive, packing_resolver
 
 log = logging.getLogger("omnicanal.routers.resolver")
 router = APIRouter(prefix="/api/resolver", tags=["resolver"])
+
+
+def _exigir_costing_kubera() -> None:
+    """
+    Corta si no hay lectura de costos desde kubera.
+
+    Reemplaza a un ``_exigir_supabase()`` que se llamaba en dos endpoints y **no
+    existía en ningún archivo del repo**: los dos levantaban ``NameError`` antes
+    de tocar nada, así que el empate manual por búsqueda de catálogo y la
+    captura de renglón llevaban semanas devolviendo 500 sin que nadie lo
+    reportara. Se cambia por la guarda que se quiso poner, con su 503.
+    """
+    if not settings.supabase_read_costing:
+        raise HTTPException(
+            503, "Esta acción necesita la lectura de costos desde kubera "
+                 "(SUPABASE_READ_COSTING).")
+
 
 # Tope de tamaño del .xlsx. NO es un número de adorno: estos packing lists
 # llevan la FOTO de cada producto embebida —el parser las saca del ZIP a mano y
@@ -160,7 +178,7 @@ def buscar_sku(jid: str, q: str = Query(..., min_length=2)):
     queda huérfano. Cada resultado dice con qué contenedor está hoy y **en qué
     renglones de este análisis ya se usó**, para no asignarlo a ciegas.
     """
-    _exigir_supabase()
+    _exigir_costing_kubera()
     resultados = packing_comparador.buscar_sku(q)
 
     e = packing_resolver.estado(jid) or {}
@@ -217,7 +235,7 @@ def capturar(jid: str, req: CapturaReq):
     sobre el CBM total, así que cambiar las unidades de una fila mueve el costo
     de todas.
     """
-    _exigir_supabase()
+    _exigir_costing_kubera()
     datos = req.model_dump(exclude_none=True)
     datos.pop("indice", None)
     if not datos:

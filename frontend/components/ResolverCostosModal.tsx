@@ -26,6 +26,14 @@ import {
   X,
 } from "lucide-react";
 
+import CeldaNum from "@/components/resolver/CeldaNum";
+import {
+  COLOR,
+  COSTO_CONTENEDOR_DEFAULT,
+  ESTADO_ESTILO,
+  TIPO_CAMBIO_DEFAULT,
+  mxn,
+} from "@/components/resolver/comunes";
 import {
   analizarPackingArchivo,
   analizarPackingUrl,
@@ -43,25 +51,6 @@ import type {
   ResolverSkuBuscado,
   ResolverValores,
 } from "@/lib/types";
-
-const COLOR = "#4F46E5";
-const COSTO_CONTENEDOR_DEFAULT = 525000;
-const TIPO_CAMBIO_DEFAULT = 19;
-
-const mxn = (v: number | null | undefined) =>
-  v == null
-    ? "—"
-    : new Intl.NumberFormat("es-MX", {
-        style: "currency",
-        currency: "MXN",
-        maximumFractionDigits: 2,
-      }).format(v);
-
-const ESTADO_ESTILO: Record<string, { chip: string; label: string }> = {
-  nuevo: { chip: "bg-sky-50 text-sky-700", label: "nuevo" },
-  igual: { chip: "bg-emerald-50 text-emerald-700", label: "igual" },
-  revisar: { chip: "bg-amber-50 text-amber-800", label: "revisar" },
-};
 
 export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void }) {
   const [jid, setJid] = useState<string | null>(null);
@@ -686,48 +675,6 @@ export default function ResolverCostosModal({ onCerrar }: { onCerrar: () => void
   );
 }
 
-/** Celda numérica editable de la fila que SÍ se va a guardar. */
-function CeldaNum({
-  valor,
-  decimales = 2,
-  editado = false,
-  onCambio,
-}: {
-  valor: number | null | undefined;
-  decimales?: number;
-  /** Capturado a mano: se resalta y el solucionador ya no lo sobreescribe. */
-  editado?: boolean;
-  onCambio: (v: number) => void;
-}) {
-  const [texto, setTexto] = useState<string | null>(null);
-  const mostrado = texto ?? (valor == null || valor === 0 ? "" : String(valor));
-  return (
-    <input
-      value={mostrado}
-      inputMode="decimal"
-      onChange={(e) => setTexto(e.target.value)}
-      onBlur={() => {
-        if (texto === null) return;
-        const n = Number(texto);
-        setTexto(null);
-        if (!Number.isNaN(n) && n !== valor) onCambio(n);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-      }}
-      placeholder="—"
-      className={[
-        "w-full rounded border px-1 py-0.5 text-right text-xs tabular-nums",
-        "hover:border-slate-300 focus:border-indigo-400 focus:outline-none",
-        editado
-          ? "border-indigo-300 bg-indigo-50 font-semibold text-indigo-800"
-          : "border-transparent bg-white/70",
-      ].join(" ")}
-      title={`${decimales} decimales`}
-    />
-  );
-}
-
 /**
  * Un producto = dos renglones apilados.
  *
@@ -754,7 +701,7 @@ function ParComparacion({
 }) {
   const est = ESTADO_ESTILO[f.estado] ?? ESTADO_ESTILO.igual;
   const n = f.nuevo;
-  const editado = (c: string) => (f as unknown as {campos_editados?: string[]}).campos_editados?.includes(c);
+  const editado = (c: string) => f.campos_editados?.includes(c);
 
   // Derivados que se muestran pero no se capturan: se calculan aquí para que la
   // tabla cuadre a la vista sin esperar el viaje al servidor.

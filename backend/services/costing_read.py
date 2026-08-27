@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from services import channel_read
 from services import supabase_db as sdb
 
 CANAL = "mercado_libre"
@@ -91,10 +92,20 @@ def pct_comision_categoria(cat_id: str) -> float | None:
     return float(row["pct_comision"]) if row and row.get("pct_comision") else None
 
 
+# "Publicado en Mercado Libre" NO se redacta aquí: se pide. La insignia de esta
+# tabla, su chip "Solo publicados en ML" y el validador de costos tienen que
+# contestar lo MISMO, y cuando cada uno tenía su propio WHERE dejaron de
+# hacerlo: la insignia decía "no publicado" de 76 SKUs que el validador sí
+# aceptaba. La definición —y el porqué de `situacion` sobre `status`, y el
+# porqué de dejar fuera `under_review`— vive en channel_read.
+_EXISTE_PUB_ML = channel_read.sql_publicado_ml("p.sku")
+
+
 def listado(page: int, per_page: int, search: str | None, contenedor: str | None,
             orden: str, skus_lista: list[str],
             sin_costo: bool = False,
-            revisado: str | None = None) -> tuple[list[dict], int]:
+            revisado: str | None = None,
+            solo_publicados_ml: bool = False) -> tuple[list[dict], int]:
     """
     (rows, total) con las MISMAS columnas/alias que el SELECT MySQL del router.
 
@@ -136,6 +147,8 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
         where.append("v.sku is not null and v.revisado_at is null")
     elif revisado == "movido":
         where.append("v.revisado_at is not null and v.updated_at > v.revisado_at")
+    if solo_publicados_ml:
+        where.append(_EXISTE_PUB_ML)
     where_sql = ("where " + " and ".join(where)) if where else ""
     orden_sql = ORDEN.get(orden, ORDEN["reciente"])
 
@@ -152,7 +165,8 @@ def listado(page: int, per_page: int, search: str | None, contenedor: str | None
                    f.costo_comision, f.costo_fee_envio, f.ml_cat_id,
                    v.revisado_at, v.revisado_por,
                    (v.revisado_at is not null and v.updated_at > v.revisado_at)
-                     as revision_movida
+                     as revision_movida,
+                   {_EXISTE_PUB_ML} as publicado_ml
             from core.products p
             left join costing.costos_validados v on v.sku = p.sku
             left join costing.costos_finales f on f.sku = p.sku and f.canal = %s
@@ -224,6 +238,38 @@ def revisados_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
                 "revisado_por": r.get("revisado_por"),
                 "movida": bool(r.get("movida")),
             }
+    return salida
+
+
+def validados_de(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    ``{ sku: {nombre, contenedor, costo_*, dimensiones, revisado_at, ...} }``.
+
+    El costo GUARDADO de un lote de SKUs, con el nombre del producto pegado.
+    Es lo que el validador de publicados necesita para tres cosas a la vez:
+    contrastar el costo nuevo contra el viejo, saber si el candado de COSTO
+    VALIDADO ya está puesto (``revisado_at``), y conservar el costo de producto
+    cuando el packing list viene sin precios.
+
+    Sale de `core.products` por la izquierda, igual que el listado: un SKU sin
+    fila de costo tiene que aparecer con todo en nulo, no desaparecer.
+    """
+    salida: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 800):
+        chunk = [str(s) for s in skus[i:i + 800] if s]
+        if not chunk:
+            continue
+        idx = {s.lower(): s for s in chunk}
+        for r in sdb.fetch_all(
+            """select p.sku::text as sku, p.name as nombre, v.contenedor,
+                      v.largo, v.alto, v.ancho, v.peso,
+                      v.costo_producto, v.costo_cbm, v.costo_total,
+                      v.revisado_at, v.revisado_por,
+                      (v.sku is not null) as tiene_costo
+                 from core.products p
+                 left join costing.costos_validados v on v.sku = p.sku
+                where p.sku = any(%s::citext[])""", (chunk,)):
+            salida[idx.get(r["sku"].lower(), r["sku"])] = dict(r)
     return salida
 
 

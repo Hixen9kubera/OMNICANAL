@@ -366,6 +366,19 @@ export interface CostoRow {
   precio_base: number | null;
   precio_sugerido: number | null;
   ml_cat_id: string | null;
+  // Marca de COSTO VALIDADO. El backend ya las devolvía (routers/crear.py) y el
+  // tipo no las declaraba: el front iba atrás del contrato.
+  revisado_at?: string | null;
+  revisado_por?: string | null;
+  revision_movida?: boolean;
+  /**
+   * ¿Tiene publicación viva en Mercado Libre? (`situacion in ('active','paused')`).
+   *
+   * `null` NO es "no está publicado": es "no se pudo saber" —el listado cayó al
+   * fallback de MySQL, que está congelado desde el 13-ago y contestaría con la
+   * foto de agosto—. Una tabla detenida contesta con seguridad lo que ya no sabe.
+   */
+  publicado_ml?: boolean | null;
 }
 
 export interface CostosListResp {
@@ -1091,6 +1104,12 @@ export interface ResolverFila {
   actual: ResolverActual | null;
   /** Qué le falta para poder guardarse (dimensiones de pieza, peso, unidades). */
   faltantes?: string[];
+  /**
+   * Campos capturados a mano en este renglón. El solucionador los trata como
+   * DATO y ya no los sobreescribe; la tabla los resalta. Se leía con un cast
+   * que evadía el tipo — ahora está declarado.
+   */
+  campos_editados?: string[];
 }
 
 export interface ResolverResumen {
@@ -1181,6 +1200,206 @@ export interface ResolverGuardado {
   escritos: number;
   saltados: { sku?: string; fila?: number; motivo: string }[];
   errores: { sku: string; error: string }[];
+}
+
+// ── Validar costo de PUBLICADOS EN MERCADO LIBRE (flujo SKU-primero) ──
+//
+// Es el Resolver al REVÉS. El de siempre es packing-list-primero: cargas un
+// xlsx y empatas sus renglones contra los SKUs del contenedor. Este arranca de
+// los SKUs —solo los que tienen publicación viva en Mercado Libre— y a cada uno
+// le busca su renglón en el packing list que le toca.
+//
+// REGLA CRÍTICA DE NEGOCIO: el proceso aplica ÚNICAMENTE a productos publicados
+// en Mercado Libre. El filtro de esta pantalla es comodidad; la regla la aplica
+// el backend al arrancar el trabajo y OTRA VEZ antes de escribir. Un `curl` se
+// salta cualquier filtro de pantalla.
+//
+// Como el Resolver viejo, el trabajo vive ~3 h en MEMORIA del backend y no se
+// persiste. Lo único que se escribe es el guardado que el usuario confirma.
+
+/** Por qué un SKU seleccionado quedó fuera del lote. */
+export type MotivoOmitido =
+  | "no_publicado_ml"
+  | "sin_odoo"
+  | "sin_contenedor"
+  | "duplicado"
+  | string;
+
+export interface PublicadoOmitido {
+  sku: string;
+  motivo: MotivoOmitido;
+  detalle: string;
+}
+
+/** Pronóstico de UN SKU antes de gastar un peso de IA. */
+export interface PreflightElegible {
+  sku: string;
+  publicado_ml: boolean;
+  /** "BEKURA" | "SANCORFASHION" — puede haber publicación en las dos cuentas. */
+  cuentas: string[];
+  /** "active" | "paused" | "under_review" */
+  situaciones: string[];
+  /** Un SKU padre nunca aparece en un packing list: se expande a sus variantes. */
+  padre: boolean;
+  variantes: string[];
+  contenedor: string | null;
+  fuente_contenedor: "kubera" | "odoo" | "ambas" | null;
+  /** Odoo y kubera dicen contenedores distintos: desempata la imagen. */
+  fuentes_en_desacuerdo: boolean;
+  /** Cuántos packing lists de Drive se le encontraron a ese contenedor. */
+  archivos: number;
+  foto_odoo: boolean;
+  /** Si no es null, ya tiene COSTO VALIDADO y el candado está puesto. */
+  revisado_at: string | null;
+}
+
+export interface PreflightResumen {
+  pedidos: number;
+  elegibles: number;
+  omitidos: number;
+  expandidos: number;
+  con_contenedor: number;
+  sin_contenedor: number;
+  con_foto_odoo: number;
+  ya_validados: number;
+  /** max(updated_at) de channel.listings en ML — si envejece, el filtro miente. */
+  listings_ml_actualizado?: string | null;
+}
+
+export interface PreflightResp {
+  elegibles: PreflightElegible[];
+  omitidos: PublicadoOmitido[];
+  resumen: PreflightResumen;
+}
+
+/** Peldaño que resolvió el empate (o por qué no se resolvió). */
+export type EstadoPublicado =
+  | "sha256"      // la foto de Odoo y la del packing list son el MISMO archivo
+  | "dhash"       // se parecen lo suficiente (≤8/64) y con margen sobre el 2º
+  | "ia"          // foto de la publicación de ML + veredicto de visión
+  | "sin_match"   // nadie resolvió: lo decide un humano viendo las fotos
+  | "sin_insumo"; // faltó el insumo (sin contenedor, sin foto, sin archivo)
+
+export interface PublicadoCandidatoIA {
+  fila: number;
+  por_que: string;
+  confianza: string;
+}
+
+export interface PublicadoVeredicto {
+  fila: number;
+  mismo_producto: boolean;
+  confianza: string;
+  por_que: string;
+}
+
+/** Una fila del resultado: un SKU con el renglón que se le encontró. */
+export interface FilaPublicado {
+  // identidad
+  sku: string;
+  padre: string | null;
+  nombre: string | null;
+  titulo_ml: string | null;
+  item_id_ml: string | null;
+  cuenta_ml: string | null;
+  situacion_ml: string | null;
+
+  // veredicto
+  estado: EstadoPublicado;
+  /** 0 = foto de Odoo · 1 = léxico (informativo, NO decide) · 2 = IA */
+  peldano: number | null;
+  detalle: string;
+  confianza: "alta" | "media" | "baja" | null;
+  lexico: number | null;
+
+  // origen del renglón
+  fuente: "kubera" | "odoo" | "share" | "manual" | null;
+  ref: string | null;
+  file_id: string | null;
+  archivo: string | null;
+  fila_excel: number | null;
+  producto_chn: string | null;
+  /** Filas que comparten cartón: sobre ellas se reparte el flete, por pieza. */
+  grupo: number[];
+
+  // números
+  precio_usd: number | null;
+  piezas_grupo: number | null;
+  cbm_pieza: number | null;
+  peso_total: number | null;
+  peso_pieza: number | null;
+  flete: number | null;
+  producto_mxn: number | null;
+  costo: number | null;
+  /** De dónde salió el costo de producto: del packing list o del ya guardado. */
+  origen_prod: "packing_list" | "kubera" | null;
+  caja_lwh: [number, number, number] | null;
+  pieza_lwh: [number, number, number] | null;
+
+  // contraste con lo que hay hoy en costos_validados
+  costo_viejo: number | null;
+  peso_viejo: number | null;
+  revisado_at: string | null;
+
+  // fotos (data URI) y candidatos para decidir a mano
+  img_odoo: string | null;
+  img_ml: string | null;
+  img_pl: string | null;
+  cands_ia: PublicadoCandidatoIA[];
+  cands_img: Record<string, string>;
+  cands_txt: Record<string, string>;
+  veredicto: PublicadoVeredicto[];
+}
+
+export interface PublicadosResumen {
+  total: number;
+  resueltos: number;
+  sha256: number;
+  dhash: number;
+  ia: number;
+  sin_match: number;
+  sin_insumo: number;
+  ya_validados: number;
+}
+
+export interface PublicadosGuardado {
+  escritos: number;
+  detalle: { sku: string; costo: number | null; costo_anterior: number | null }[];
+  saltados: { sku: string; motivo: string; detalle?: string }[];
+  errores: { sku: string; error: string }[];
+}
+
+export interface PublicadosOpciones {
+  tarifa_mxn_m3: number;
+  tipo_cambio: number;
+  usar_ia: boolean;
+}
+
+export interface PublicadosEstado {
+  id: string;
+  /** encolado|validando|expandiendo|ruteando|bajando|indexando|escalera|calculando|listo|error */
+  paso: string;
+  paso_label: string;
+  actual: number;
+  total: number;
+  creado_en?: string | null;
+  expira_en?: string | null;
+  opciones?: PublicadosOpciones;
+  filas: FilaPublicado[];
+  omitidos: PublicadoOmitido[];
+  avisos: string[];
+  resumen?: PublicadosResumen;
+  guardado?: PublicadosGuardado | null;
+  error?: string | null;
+}
+
+/** Lo que devuelve el POST que arranca el trabajo. */
+export interface PublicadosArranque {
+  id: string;
+  paso: string;
+  paso_label: string;
+  total?: number;
+  omitidos?: PublicadoOmitido[];
 }
 
 // ── Publicaciones por tienda (pestaña Omnicanal) ─────────────────────────────

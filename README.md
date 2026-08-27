@@ -1001,6 +1001,147 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.281.0 — El botón que le busca su renglón a cada SKU publicado en ML
+
+El "Resolver" de la pantalla de Costos siempre fue **packing-list-primero**:
+cargas un xlsx de un contenedor y se empatan sus 1,000 renglones contra el
+catálogo. Sirve cuando llega un embarque. No sirve cuando la pregunta es la
+contraria y es la que se hace a diario: *este producto que está vivo en Mercado
+Libre, ¿de dónde salió su costo?*
+
+Esta versión agrega el flujo **SKU-primero**. Se seleccionan SKUs en la tabla de
+Costos, y a cada uno se le busca SU renglón en el packing list que le toca:
+`POST /api/costos-publicados` arranca el trabajo, `GET /{jid}` lo polea, y el
+único write es `POST /{jid}/guardar` con la lista explícita que el usuario
+aprobó. El análisis vive en memoria 3 h y no se guarda, igual que el Resolver.
+
+**Por qué solo Mercado Libre.** Es la regla que fijó Brandon, y no vive en el
+botón: vive en el backend y se aplica **tres veces**. (1) El listado marca
+`publicado_ml` para que el panel no ofrezca lo que no puede procesar —eso es
+comodidad, no la regla—. (2) `POST /api/costos-publicados` re-valida cada SKU
+recibido y devuelve los rechazados en `omitidos` con su motivo. (3)
+`POST /{jid}/guardar` **vuelve a preguntar justo antes de escribir**: el trabajo
+dura 3 h, una publicación pudo cerrarse en el ínterin, el `jid` es adivinable
+por API y la escritura es lo irreversible. La selección de la tabla sobrevive al
+cambio de página y de filtros, así que un botón que filtrara solo en pantalla
+haría creer al usuario que validó 40 cuando validó 12.
+
+**El predicado, y por qué NO es `status`.** Publicado en ML es
+`canal='mercado_libre'` y `situacion in ('active','paused')`. `situacion` es el
+ciclo de vida que reporta ML; `status` es la bitácora de nuestro publicador y
+miente para esta pregunta: hay **267 filas con `situacion is null` que traen
+`status='error'`** (138 SKUs que nunca llegaron a existir en ML), y filtrar por
+`status='published'` dejaría fuera **1,590 filas vivas** cuyo `status` es nulo.
+Los tres tamaños del universo: `active` 694 · **`active`+`paused` 2,524 (el
+elegido)** · `+under_review` 2,600, de los cuales **2,514 aún no tienen costo
+validado**. Se incluye `paused` porque una pausada conserva su `listing_id` y se
+reactiva con un PUT — es justo el producto al que le urge el costo bien antes de
+reactivarlo. `under_review` queda como casilla opcional apagada por default.
+
+**La escalera**, por SKU, parando en el primer peldaño que resuelve:
+
+| # | Qué compara | Cuándo acepta |
+|---|---|---|
+| 0 | foto de Odoo (`image_1920`) vs fotos embebidas del PL | sha256 idéntico, o dHash ≤ 8/64 **con margen ≥ 4 bits** sobre el segundo candidato |
+| 1 | léxico del título de ML vs texto del renglón | **nunca**: se calcula y se reporta, sirve para recortar el catálogo |
+| 2 | IA de título (Sonnet) → hasta 5 renglones; IA de foto del anuncio de ML (Haiku) sobre esos | `mismo_producto`, con el segundo eje `titulo_concuerda` |
+
+El margen del peldaño 0 se calcula **deduplicando por sha256**: un packing list
+que repite la misma foto en varios renglones daría margen 0 y mataría el peldaño
+sin razón. Y el peldaño 2 recorre **todos** los archivos del SKU sin cortar en el
+primero: cuando las fuentes de contenedor discrepan, el bueno puede ser el
+segundo, que es justo el caso que la escalera existe para cubrir. `image_1920` y
+no `image_1024` porque el sha256 solo empata a resolución idéntica; pedir la
+chica degrada gratis el peldaño barato al caro.
+
+La muestra medida fue **9 sha256 + 1 IA sobre 10 SKUs escogidos a mano**. Eso
+**no es una tasa de éxito**: son diez casos elegidos, todos con foto en Odoo y
+con su packing list localizado.
+
+**El bug del flete por caja.** Todo se empareja POR CAJA:
+`piezas_en_caja = total_fila / num_cajas`, `piezas_grupo` es la suma del cartón
+compartido, y de ahí `cbm_por_pieza = cbm_caja / piezas_grupo` y
+`peso_pieza = peso_caja / piezas_grupo`. Mezclar el CBM TOTAL del renglón con las
+piezas de UNA caja multiplica el flete por el número de cajas: **TEC-0393-ROS
+tenía $1,338.23 guardado contra $79.02 reales.** Por eso el `cbm_por_pieza` que
+devuelve `packing_parser.leer()` **no se usa** aquí — viene envenenado por ese
+factor cuando la columna de piezas es "por caja", y `normalizar_semantica` no lo
+corrige después. El módulo nuevo (`packing_indice.py`) re-lee las columnas con
+sus propios patrones, tres correcciones incluidas: el encabezado se **localiza**
+(el script a mano leía la fila 1 fija, y con un membrete arriba todas las
+columnas salen `None`, el flete cae a CERO **sin error** y un costo bajo se
+vuelve un precio bajo), la hoja es `wb.active`, y los grupos de cartón se
+calculan en una pasada y no por renglón.
+
+**La tarifa es FIJA: 7,500 MXN/m³** (avalada por Brandon el 21-ago) más
+`precio_usd × 19`. Difiere a propósito de `packing_costos.calcular`, que
+prorratea 525,000 MXN entre el CBM del archivo: ese prorrateo necesita el
+contenedor COMPLETO y aquí hay uno o unos pocos SKUs. Con 70 m³ coinciden; con un
+archivo parcial, no. Cuando el packing list viene sin precios (PL puro), el costo
+de producto **se conserva** el que ya está en kubera y se dice en `origen_prod`.
+
+**El orden del candado, que es donde muerde.** Al guardar: liberar → escribir →
+marcar. `costing_mirror.upsert_validados` lleva `where costos_validados.
+revisado_at is null` DENTRO del `ON CONFLICT DO UPDATE`, así que con el candado
+puesto el UPDATE **se descarta en silencio, sin error**: el usuario ve "guardado"
+y el costo sigue siendo el viejo. Un SKU ya validado que no venga en
+`liberar_candado` se salta con motivo `ya_validado` y su fecha. Y sí se marca
+COSTO VALIDADO al terminar: un costo reconstruido desde el papel del embarque y
+verificado por imagen no puede quedar a merced del siguiente "Regenerar".
+Se escribe a **kubera y solo a kubera** (`escribir_mysql` es un noop
+deliberado): la `costos_validados` de MySQL está congelada desde el 13-ago y
+escribir ahí no mueve ningún precio — por eso tampoco se reusó
+`packing_comparador.guardar()`, que hace exactamente eso.
+
+**Tres arreglos de paso:**
+
+- **`_exigir_supabase()` no existía.** Se llamaba en dos endpoints del Resolver
+  viejo (`/{jid}/buscar-sku` y `/{jid}/fila`) y no está definido en ningún
+  archivo del repo: los dos levantaban `NameError` **en 500 permanente desde
+  hacía semanas**, o sea que el empate manual por búsqueda de catálogo y la
+  captura de renglón llevaban tiempo caídos sin que nadie lo reportara. Ahora es
+  la guarda que se quiso poner, con su 503.
+- **El interstitial moderno de antivirus de Drive.** `packing_drive` solo
+  reconocía la página vieja (la que traía `confirm=<token>` en la cadena); la de
+  hoy es un `<form>` con `name="uuid"` y la condición no disparaba, así que los
+  packing lists GRANDES —los que traen las fotos de las que depende toda la
+  escalera— rebotaban como "lo que se descargó no es un .xlsx". Se resuelve
+  pidiendo el binario por `drive.usercontent` con `confirm=t`.
+- **Timeout de 120 s → 900 s** y User-Agent de navegador. Un packing list con
+  fotos pesa decenas de MB (el mayor medido: 113 MB) y con 120 s la descarga
+  moría a media transferencia, con un error que apuntaba al lado equivocado.
+
+**Cobertura honesta, y por eso hay pronóstico.** `POST /preflight` no crea
+trabajo ni gasta IA: dice cuántos son elegibles, cuántos se omiten y por qué,
+cuántos tienen contenedor y foto, cuántos ya están validados, y **cuándo se
+actualizó `channel.listings` por última vez** (la alimenta el sync de 15 min: si
+`SYNC_ENABLED` se apaga, el filtro empieza a contestar con una foto vieja).
+Los números que hay que tener presentes: **371 SKUs sin contenedor en ninguna
+fuente**, **~18% sin foto en Odoo**, **162 donde Odoo y kubera se contradicen**
+(por eso se prueban las dos referencias y desempata la imagen, y la fila lo
+marca) y **305 padres** que hay que expandir a variantes — un padre nunca aparece
+en un packing list, y `core.products.has_variations`/`parent_sku` vienen vacíos
+para los 2,524, así que la expansión va contra Odoo. De Odoo se toman **solo** la
+foto y a qué contenedor pertenece el SKU; sus números no se usan para nada.
+
+Para los que se quedan sin ruteo hay escape: `POST /{jid}/archivo` con la liga
+del packing list a mano. Hace falta porque el inventario de la carpeta de Drive
+se lee **raspando la página pública** (no hay service account de Google en el
+repo): hoy expone 97 de los archivos y Google puede cambiar ese HTML sin avisar.
+
+**Prueba de aceptación**: los 10 SKUs del análisis a mano dan **los mismos
+números por el camino nuevo** — MUE-0163-TEL $185.48 fila 8 · TEC-0393-ROS $79.02
+fila 13 · ORG-0319-PLA $166.14 fila 34 (por IA) · HERR-0029-GRI-AZL-3P $32.65
+fila 28 · ORG-0382-GRI-XL $29.53 fila 140 · JUGU-0039-MUL $27.48 fila 41 ·
+ORG-0379-NEG-3N $70.08 fila 69 · MUE-0393-BLN $73.85 fila 63 · TEC-1817-NEG-LED
+$50.31 fila 109 · TEC-1114-CAF $88.22 fila 91.
+
+⚠️ **Antes de encender**: este flujo escribe costos que alimentan `costos_finales`
+→ precio sugerido → precio en ML, Amazon, TikTok, Temu y Walmart. Un empate
+equivocado no se queda en la pantalla: sale al mercado. Hay tope de **200 SKUs
+por tanda** (con 2,524 elegibles y IA por SKU, un "seleccionar todo" es una
+factura) y la confianza `baja` no se puede aprobar en lote.
+
 ### v0.280.0 — Margen bruto en las tarjetas de Omnicanal
 
 Fila nueva bajo el Total de cada tarjeta de canal: **(precio − costo) ÷ precio**,

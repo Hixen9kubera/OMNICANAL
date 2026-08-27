@@ -395,6 +395,132 @@ def publicaciones_ml(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     return res
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# "PUBLICADO EN MERCADO LIBRE" — LA DEFINICIÓN ÚNICA (v0.281.0)
+# ══════════════════════════════════════════════════════════════════════════════
+# Vive aquí y SOLO aquí. La consumen los cuatro lugares que tienen que contestar
+# lo mismo: la insignia de la tabla de Costos, el chip "Solo publicados en ML",
+# el arranque del validador y el candado de antes de escribir. Hasta el 26-ago
+# había tres redacciones distintas —una por sitio— y el panel decía "no
+# publicado" de 76 SKUs que el botón sí dejaba validar y escribirles costo bajo
+# el candado. Una insignia que miente sobre lo que el botón hace es peor que no
+# tener insignia.
+#
+# Decide `situacion`, NO `status`, y esto NO es un detalle de gusto:
+#
+#   · `situacion` es el ciclo de vida que reporta ML (active/paused/closed/
+#     under_review/inactive) y lo refresca el sync de 15 min;
+#   · `status` es la bitácora de NUESTRO publicador (published/error/null) y
+#     MIENTE para esta pregunta: 267 filas con `situacion is null` traen
+#     `status='error'` — 138 SKUs que nunca llegaron a existir en ML—, y filtrar
+#     por `status='published'` dejaría fuera 1,590 filas VIVAS cuyo `status` es
+#     nulo (publicaciones que el sync descubrió, no que este backend creó).
+#
+# `paused` entra a propósito: una pausada conserva su listing_id y se reactiva
+# con un PUT — es justo el producto al que le urge el costo bien ANTES de
+# reactivarlo.
+#
+# `under_review` queda FUERA, y ya no hay flag para meterlo. Es el estado de una
+# publicación que ML todavía está juzgando: puede terminar activa o puede no
+# existir nunca. Este flujo ESCRIBE —deja el costo bajo el candado de COSTO
+# VALIDADO, que después nadie mueve sin liberarlo a mano—, así que ante la duda
+# se elige lo conservador; y sobre todo, es lo que el panel LLAMA publicado.
+# Poder marcar una casilla y validar 76 SKUs que la insignia de al lado declara
+# no publicados es justo el defecto que esto cierra. Si algún día hay que
+# incluirlos, se cambia esta tupla y cambian los cuatro sitios a la vez.
+#
+# Y ojo: esto NO es lo mismo que `publicaciones_ml`, que sigue arriba SIN filtrar
+# situación y NO se toca. Aquella contesta "¿en qué cuentas existe/existió este
+# SKU y con qué MLM?" —una pregunta de identidad, donde una cerrada sigue
+# contando— y devuelve `situacion` para que el llamador distinga. Ésta contesta
+# "¿puedo escribirle el costo hoy?". Son dos preguntas distintas y por eso dan
+# números distintos: 2,603 contra 2,524, medido el 26-ago-2026.
+#
+# Universo medido ese día: active 692 · active+paused 2,524 · +under_review
+# 2,600, y 76 SKUs cuyo ÚNICO listing es `under_review`. `closed` (14) y
+# `situacion is null` quedan siempre fuera.
+_SIT_PUBLICADO_ML = ("active", "paused")
+
+
+def sql_publicado_ml(col_sku: str = "p.sku") -> str:
+    """
+    La MISMA definición, escrita como ``exists (…)`` para quien no puede llamar
+    a :func:`publicados_ml` porque necesita filtrar y pintar dentro de un solo
+    SELECT paginado (la tabla de Costos: `costing_read.listado`).
+
+    Es una SUBCONSULTA y no un join a propósito: hay SKUs con dos publicaciones
+    de ML (3,742 filas `paused` sobre 2,296 SKUs) y la tabla tiene que seguir
+    dando una fila por SKU.
+
+    Las situaciones se interpolan como literales porque salen de una constante
+    NUESTRA, no del cliente; `col_sku` es el nombre de columna del llamador y por
+    eso también es código, no dato.
+    """
+    sits = ", ".join(f"'{s}'" for s in _SIT_PUBLICADO_ML)
+    return f"""exists (
+    select 1 from channel.listings l
+     where l.sku = {col_sku}
+       and l.canal = 'mercado_libre'
+       and nullif(l.listing_id, '') is not null
+       and lower(coalesce(l.situacion, '')) in ({sits}))"""
+
+
+def publicados_ml(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """
+    ``{ sku: [{cuenta, item_id, url, situacion}] }`` de los SKUs VIVOS en ML.
+
+    Se diferencia de :func:`publicaciones_ml` en que aquí "publicado" quiere
+    decir *vivo hoy*, no *tiene id*: es el filtro que decide qué SKUs puede tocar
+    el validador de costos, y por eso excluye `closed`, `under_review` y las
+    filas fantasma.
+
+    Un SKU que no aparezca en el resultado NO está publicado en ML — y esa es la
+    regla que el endpoint usa para rechazarlo. La llave del diccionario respeta
+    la que mandó el llamador (kubera usa citext; el cruce de vuelta, no).
+    """
+    if not skus:
+        return {}
+    sits = list(_SIT_PUBLICADO_ML)
+    res: dict[str, list[dict[str, Any]]] = {}
+    limpios = [str(s).strip() for s in skus if str(s or "").strip()]
+    for i in range(0, len(limpios), 800):      # mismo lote que el resto del módulo
+        chunk = limpios[i:i + 800]
+        idx = {s.lower(): s for s in chunk}
+        filas = sdb.fetch_all(
+            """select l.sku::text as sku, a.legacy_code as cuenta,
+                      l.listing_id as item_id, l.url, l.situacion
+                 from channel.listings l
+                 join core.accounts a on a.id = l.account_id
+                where l.canal = 'mercado_libre'
+                  and l.sku = any(%s::citext[])
+                  and nullif(l.listing_id, '') is not null
+                  and lower(coalesce(l.situacion, '')) = any(%s)
+                order by a.legacy_code""",
+            (chunk, sits))
+        for f in filas:
+            llave = idx.get(f["sku"].lower(), f["sku"])
+            res.setdefault(llave, []).append(
+                {"cuenta": f["cuenta"], "item_id": f["item_id"],
+                 "url": f["url"], "situacion": f["situacion"]})
+    return res
+
+
+def frescura_listings_ml() -> str | None:
+    """
+    ``max(updated_at)`` de las filas de ML, en ISO, o ``None``.
+
+    La alimenta el sync de 15 min (`SYNC_ENABLED`). Si ese flag se apaga —ya
+    pasó del 17 al 20-jul y congeló la observación 3 días— el filtro de
+    publicados empieza a contestar con una foto vieja, y una foto detenida
+    contesta con seguridad lo que ya no sabe. Por eso el pronóstico la enseña.
+    """
+    fila = sdb.fetch_one(
+        "select max(updated_at) as ultimo from channel.listings "
+        " where canal = 'mercado_libre'")
+    ultimo = (fila or {}).get("ultimo")
+    return ultimo.isoformat() if ultimo else None
+
+
 def estado_amazon(skus: list[str]) -> dict[str, dict[str, Any]]:
     """{ sku: {publicado, asin, status, product_type} } — gemela de las tres
     lecturas de `amazon_progress` (`studio.py:124`, `presencia.py:119`,

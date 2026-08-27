@@ -27,12 +27,17 @@ import type {
   CostoPreviewResp,
   CostosListResp,
   DetalleProducto,
+  FilaPublicado,
   GaleriaResp,
   GeneradorDef,
   GenerarIAResp,
   ProgresoImagenes,
   MejorarResp,
+  PreflightResp,
   PublicacionesResp,
+  PublicadosArranque,
+  PublicadosEstado,
+  PublicadosGuardado,
   PublicarPreview,
   PublicarReq,
   PublicarResultado,
@@ -284,6 +289,12 @@ export interface ListarCostosParams {
   contenedor?: string;
   orden?: string;
   skus?: string; // "Filtrar SKUs": lista separada por comas, filtra y busca a la vez
+  /** Solo SKUs con publicación viva en Mercado Libre (`situacion in active/paused`). */
+  soloPublicadosMl?: boolean;
+  /** Solo los que todavía no tienen costo capturado. */
+  sinCosto?: boolean;
+  /** Filtro por la marca de COSTO VALIDADO. */
+  revisado?: "si" | "no" | "movido";
 }
 
 export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promise<CostosListResp> {
@@ -294,6 +305,9 @@ export function listarCostos(p: ListarCostosParams, signal?: AbortSignal): Promi
   if (p.contenedor) q.set("contenedor", p.contenedor);
   if (p.orden) q.set("orden", p.orden);
   if (p.skus) q.set("skus", p.skus);
+  if (p.soloPublicadosMl) q.set("solo_publicados_ml", "true");
+  if (p.sinCosto) q.set("sin_costo", "true");
+  if (p.revisado) q.set("revisado", p.revisado);
   return getJSON<CostosListResp>(`/api/crear/costos?${q.toString()}`, signal);
 }
 
@@ -1190,6 +1204,111 @@ export function guardarResolver(
     skus,
     editados,
   });
+}
+
+// ── Validar costo de PUBLICADOS EN MERCADO LIBRE (SKU-primero) ───────────────
+//
+// El Resolver al revés: en vez de cargar un packing list y buscarle SKUs a sus
+// renglones, se parte de SKUs publicados en ML y a cada uno se le busca su
+// renglón. Mismo molde de trabajo largo: POST arranca → devuelve `jid` → la UI
+// polea `GET /{jid}` cada 2.5 s hasta `listo` / `error`.
+//
+// La regla de que SOLO aplica a publicados en Mercado Libre vive en el backend
+// (al arrancar y otra vez antes de escribir). Lo de aquí es comodidad para que
+// el usuario no seleccione lo que no se puede procesar.
+
+/**
+ * Pronóstico ANTES de arrancar: quién entra, quién queda fuera y por qué,
+ * cuántos tienen contenedor y cuántos tienen foto en Odoo. No crea trabajo y
+ * no cuesta IA.
+ */
+export function preflightPublicados(
+  skus: string[],
+  signal?: AbortSignal,
+): Promise<PreflightResp> {
+  const path = "/api/costos-publicados/preflight";
+  return fetchSesion(
+    `${BASE}${path}`,
+    { method: "POST", body: JSON.stringify({ skus }), signal },
+    { "Content-Type": "application/json" },
+  ).then(async (res) => {
+    if (!res.ok) throw await errorDeRespuesta(res, path);
+    return res.json();
+  });
+}
+
+/** Arranca la escalera de empate sobre los SKUs dados. */
+export function arrancarPublicados(opts: {
+  skus: string[];
+  tarifaMxnM3?: number;
+  tipoCambio?: number;
+  usarIa?: boolean;
+}): Promise<PublicadosArranque> {
+  return postJSON<PublicadosArranque>("/api/costos-publicados", {
+    skus: opts.skus,
+    tarifa_mxn_m3: opts.tarifaMxnM3,
+    tipo_cambio: opts.tipoCambio,
+    usar_ia: opts.usarIa,
+  });
+}
+
+export function estadoPublicados(
+  id: string,
+  signal?: AbortSignal,
+): Promise<PublicadosEstado> {
+  return getJSON<PublicadosEstado>(
+    `/api/costos-publicados/${encodeURIComponent(id)}`,
+    signal,
+  );
+}
+
+/**
+ * Corrección humana: "no es ese renglón, es el 34". El backend re-costea ese
+ * SKU contra la fila elegida y marca la fila como `fuente: "manual"`.
+ */
+export async function corregirFilaPublicados(
+  id: string,
+  sku: string,
+  fileId: string,
+  filaExcel: number,
+): Promise<FilaPublicado> {
+  const path = `/api/costos-publicados/${encodeURIComponent(id)}/fila`;
+  const res = await fetchSesion(
+    `${BASE}${path}`,
+    { method: "PATCH", body: JSON.stringify({ sku, file_id: fileId, fila_excel: filaExcel }) },
+    { "Content-Type": "application/json" },
+  );
+  if (!res.ok) throw await errorDeRespuesta(res, path);
+  return res.json();
+}
+
+/**
+ * Escape para los SKUs sin contenedor conocido: pegar a mano la liga del
+ * packing list de Drive. Re-corre la escalera solo para ese SKU.
+ */
+export function archivoPublicados(
+  id: string,
+  sku: string,
+  url: string,
+): Promise<{ id: string; paso: string; paso_label: string }> {
+  return postJSON(`/api/costos-publicados/${encodeURIComponent(id)}/archivo`, { sku, url });
+}
+
+/**
+ * Lo único que ESCRIBE. `liberar_candado` es el subconjunto de `skus` cuyo
+ * COSTO VALIDADO se des-marca antes de escribir: con el candado puesto el
+ * UPDATE se descarta EN SILENCIO (`where revisado_at is null` vive dentro del
+ * UPSERT) y el usuario creería que guardó.
+ */
+export function guardarPublicados(
+  id: string,
+  skus: string[],
+  liberarCandado: string[] = [],
+): Promise<PublicadosGuardado> {
+  return postJSON<PublicadosGuardado>(
+    `/api/costos-publicados/${encodeURIComponent(id)}/guardar`,
+    { skus, liberar_candado: liberarCandado },
+  );
 }
 
 // ── Publicaciones por tienda (pestaña Omnicanal) ─────────────────────────────

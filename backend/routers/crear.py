@@ -852,6 +852,10 @@ def costos_listado(
         None, pattern="^(si|no|movido)$",
         description="Marca de revisión (0032): 'no' = falta revisar · 'si' = ya "
                     "revisado · 'movido' = se revisó y la fila se tocó después"),
+    solo_publicados_ml: bool = Query(
+        False, description="Solo los SKUs VIVOS en Mercado Libre "
+                           "(situacion active/paused) — el universo del "
+                           "validador de costos de publicados"),
 ):
     """
     Tabla de costos por SKU (productos + costos_validados + precios + contenedor).
@@ -867,7 +871,7 @@ def costos_listado(
     if settings.supabase_read_costing:
         rows, total = costing_read.listado(
             page, per_page, search, contenedor, orden, skus_lista, sin_costo,
-            revisado)
+            revisado, solo_publicados_ml)
         lecturas_fuente.anotar("costing", "kubera")
 
     # La marca de revisión (0032) solo existe en kubera: MySQL `costos_validados`
@@ -879,6 +883,17 @@ def costos_listado(
             status_code=503,
             detail="El filtro de revisión necesita la lectura desde kubera "
                    "(SUPABASE_READ_COSTING). MySQL no tiene esas columnas.",
+        )
+
+    # "Publicado en ML" vive en channel.listings (kubera). El fallback MySQL ni
+    # siquiera tiene esa tabla, así que filtrar por ahí devolvería la lista
+    # completa como si el filtro se hubiera aplicado. Falla CERRADO.
+    if rows is None and solo_publicados_ml:
+        raise HTTPException(
+            status_code=503,
+            detail="El filtro de publicados en Mercado Libre necesita la "
+                   "lectura desde kubera (SUPABASE_READ_COSTING): "
+                   "channel.listings no existe en MySQL.",
         )
 
     if rows is None:
@@ -943,6 +958,12 @@ def costos_listado(
                             if r.get("revisado_at") else None),
             "revisado_por": r.get("revisado_por"),
             "revision_movida": bool(r.get("revision_movida")),
+            # None ≠ False: el fallback MySQL no puede contestar esta pregunta
+            # (channel.listings no existe ahí) y decir "no está publicado"
+            # sería inventar. `null` significa "no se sabe", y el panel lo
+            # pinta distinto en vez de deshabilitar el botón por mentira.
+            "publicado_ml": (bool(r["publicado_ml"])
+                             if r.get("publicado_ml") is not None else None),
         })
     total_pages = max(1, (total + per_page - 1) // per_page)
     return {

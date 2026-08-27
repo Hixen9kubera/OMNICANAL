@@ -96,13 +96,17 @@ def estado(jid: str) -> dict[str, Any] | None:
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────
-def _miniatura(datos: bytes | None) -> str | None:
+def _miniatura(datos: bytes | None, lado: int = 120) -> str | None:
     """
     Foto del renglón como data URI, para enseñarla en la tabla sin Storage.
 
     Se reduce con Pillow; si no está instalado se manda el original salvo que sea
     muy pesado. Sin esto, un contenedor de 1000 fotos hace la respuesta JSON
     inmanejable.
+
+    ``lado`` es parámetro desde v0.281.0: el validador de publicados enseña las
+    fotos más grandes (la comparación la hace un humano de un vistazo, no una
+    tabla de 1000 renglones). El default es el de siempre y nadie más se entera.
     """
     if not datos:
         return None
@@ -113,7 +117,7 @@ def _miniatura(datos: bytes | None) -> str | None:
         from PIL import Image
 
         im = Image.open(io.BytesIO(datos)).convert("RGB")
-        im.thumbnail((120, 120))
+        im.thumbnail((lado, lado))
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=72)
         crudo, mime = buf.getvalue(), "image/jpeg"

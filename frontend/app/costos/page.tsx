@@ -13,28 +13,35 @@ import {
   Layers,
   Box,
   Sparkles,
+  PackageSearch,
+  ShoppingBag,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
 import ResolverCostosModal from "@/components/ResolverCostosModal";
+import ValidarPublicadosModal from "@/components/ValidarPublicadosModal";
 import CajaMasterPanel from "@/components/CajaMasterPanel";
 import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
+import {
+  ACENTO,
+  COLOR,
+  TARIFA_CBM,
+  TIPO_CAMBIO_DEFAULT,
+} from "@/components/resolver/comunes";
 import { listarCostos, contenedoresCosto, costoBulk, costoPreview } from "@/lib/api";
 import type { CostoRow, ContenedorInfo, Paginacion, CostoBulkResp, CostoCalculo } from "@/lib/types";
 
 const PER_PAGE = 50;
-const COLOR = "#4F46E5";
-const ACENTO = "#818CF8";
-const TARIFA_CBM = 7500; // $/m³ (contenedor estándar) — igual que el backend
 /** Viñeta bajo el rótulo de una columna: la operación que produce ese número. */
 const NOTA_TH =
   "mt-0.5 text-[9px] font-normal normal-case tracking-normal text-slate-400";
 // Tipo de cambio USD→MXN por defecto (editable en la barra de abajo).
-// Es el MISMO que el del Resolver (packing_costos.TIPO_CAMBIO_DEFAULT y
-// ResolverCostosModal): tenerlos distintos hacía que el mismo costo en
-// dólares diera dos costos en pesos según por dónde entrara la captura.
-const DEFAULT_TC = 19;
+// Vive en components/resolver/comunes.ts junto con TARIFA_CBM y el color: es el
+// MISMO que usan los dos modales de resolución. Tenerlo duplicado hacía que el
+// mismo costo en dólares diera dos costos en pesos según por dónde entrara la
+// captura.
+const DEFAULT_TC = TIPO_CAMBIO_DEFAULT;
 const mxnToUsd = (v: number | null | undefined, tc: number) =>
   v == null ? "" : String(Math.round((v / (tc || DEFAULT_TC)) * 100) / 100);
 
@@ -134,6 +141,15 @@ export default function CostosPage() {
   // "Resolver": compara un packing list contra estos costos. Vive aquí porque
   // su resultado se escribe justo en esta tabla.
   const [resolverAbierto, setResolverAbierto] = useState(false);
+  // "Validar costo de PUBLICADOS EN ML": el mismo trabajo, pero al revés — parte
+  // de los SKUs seleccionados y a cada uno le busca su renglón en el packing
+  // list. Solo aplica a productos con publicación viva en Mercado Libre.
+  const [publicadosAbierto, setPublicadosAbierto] = useState(false);
+  // Explicación en vez de un botón muerto cuando no hay nada seleccionado.
+  const [avisoPublicados, setAvisoPublicados] = useState<string | null>(null);
+  // Chip "Solo publicados en ML": el filtro lo resuelve el backend (`exists`
+  // contra channel.listings) porque la lista de publicaciones no cabe aquí.
+  const [soloPublicadosMl, setSoloPublicadosMl] = useState(false);
   // SKU cuya CAJA MASTER se está capturando (null = panel cerrado).
   const [cajaMaster, setCajaMaster] = useState<string | null>(null);
   const [rows, setRows] = useState<CostoRow[]>([]);
@@ -226,6 +242,7 @@ export default function CostosPage() {
       {
         page, perPage: PER_PAGE, search: busqueda || undefined,
         skus: skusFiltro || undefined, contenedor: contenedor || undefined, orden,
+        soloPublicadosMl: soloPublicadosMl || undefined,
       },
       ctrl.signal,
     )
@@ -233,7 +250,7 @@ export default function CostosPage() {
       .catch((exc) => { if (exc?.name !== "AbortError") primeraCarga.current = false; })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, contenedor, orden]);
+  }, [page, busqueda, skusFiltro, contenedor, orden, soloPublicadosMl]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -292,6 +309,36 @@ export default function CostosPage() {
     const costo = cpMxn != null && cbm != null ? Math.round((cpMxn + cbm) * 100) / 100 : r.costo_unitario;
     return { cbm, costo, prodMxn: cpMxn };
   }
+
+  /**
+   * Abre "Validar costo de PUBLICADOS EN ML" con lo que esté seleccionado.
+   *
+   * NO se pre-filtra aquí a propósito. La selección sobrevive al cambio de
+   * página y de filtros, y `rows` solo tiene las 50 visibles: filtrar con eso
+   * dejaría fuera SKUs seleccionados en otra página sin decir nada. El modal
+   * pregunta al backend cuáles están publicados y ENSEÑA los que quedan fuera
+   * con su motivo antes de arrancar.
+   */
+  function abrirPublicados() {
+    if (seleccion.size === 0) {
+      setAvisoPublicados(
+        "Marca primero las casillas de los SKUs que quieres validar. El proceso " +
+          "corre sobre lo seleccionado, y únicamente sobre productos publicados " +
+          "en Mercado Libre.",
+      );
+      return;
+    }
+    setAvisoPublicados(null);
+    setPublicadosAbierto(true);
+  }
+
+  // Solo informativo, para el rótulo del botón: de los seleccionados que están
+  // a la vista, cuántos NO tienen publicación en ML. `publicado_ml === null`
+  // (el backend no pudo saberlo) no cuenta como "no publicado".
+  const noPublicadosVisibles = useMemo(
+    () => rows.filter((r) => seleccion.has(r.sku) && r.publicado_ml === false).length,
+    [rows, seleccion],
+  );
 
   async function regenerarBulk() {
     if (seleccion.size === 0 || bulkRun) return;
@@ -359,13 +406,47 @@ export default function CostosPage() {
             <div className="text-right">
               <div className="text-4xl font-black tabular-nums">{new Intl.NumberFormat("es-MX").format(pag.total)}</div>
               <div className="text-xs font-semibold uppercase tracking-wide opacity-80">SKUs con costo</div>
-              <button
-                onClick={() => setResolverAbierto(true)}
-                title="Compara un packing list de contenedor contra estos costos"
-                className="mt-2 flex items-center gap-2 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/25"
-              >
-                <Sparkles size={14} /> Resolver desde packing list
-              </button>
+              {/* Dos caminos al mismo destino, en direcciones opuestas:
+                  · Resolver  → packing-list-primero (cargas el xlsx)
+                  · Validar   → SKU-primero (partes de lo seleccionado)
+                  El segundo lleva su alcance ESCRITO, no solo en el tooltip:
+                  confundirlos es el riesgo real de esta pantalla. */}
+              <div className="mt-2 flex flex-col items-end gap-2">
+                <button
+                  onClick={() => setResolverAbierto(true)}
+                  title="Compara un packing list de contenedor contra estos costos"
+                  className="flex items-center gap-2 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/25"
+                >
+                  <Sparkles size={14} /> Resolver desde packing list
+                </button>
+                <button
+                  onClick={abrirPublicados}
+                  title={
+                    seleccion.size === 0
+                      ? "Selecciona SKUs en la tabla: el proceso corre sobre lo seleccionado, y solo sobre lo publicado en Mercado Libre"
+                      : "Le busca a cada SKU su renglón en el packing list — foto de Odoo, dHash y, si hace falta, la foto de la publicación de ML con IA"
+                  }
+                  className="flex items-center gap-2 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/25"
+                >
+                  <PackageSearch size={14} />
+                  <span className="text-left leading-tight">
+                    Validar costo desde packing list
+                    <span className="block text-[10px] font-bold uppercase tracking-wide text-white/85">
+                      solo productos publicados en Mercado Libre
+                    </span>
+                  </span>
+                  {seleccion.size > 0 && (
+                    <span className="rounded-full bg-white/25 px-1.5 py-0.5 text-[10px] font-bold tabular-nums">
+                      {seleccion.size}
+                    </span>
+                  )}
+                </button>
+                {avisoPublicados && (
+                  <p className="max-w-xs text-right text-[11px] leading-snug text-white/90">
+                    {avisoPublicados}
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -404,6 +485,21 @@ export default function CostosPage() {
                 ))}
               </select>
             </div>
+            {/* El filtro lo resuelve el backend con un `exists` contra
+                channel.listings: "publicado" en ML lo decide `situacion`
+                (active/paused), no el `status` de nuestro publicador. */}
+            <button
+              onClick={() => { setSoloPublicadosMl((v) => !v); setPage(1); }}
+              title="Solo SKUs con publicación viva en Mercado Libre (activa o pausada) — que es el universo del botón de validar costo"
+              className={[
+                "flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                soloPublicadosMl
+                  ? "border-indigo-300 bg-indigo-50 text-indigo-700"
+                  : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
+              ].join(" ")}
+            >
+              <ShoppingBag size={15} /> Solo publicados en ML
+            </button>
             <select value={orden} onChange={(e) => { setOrden(e.target.value); setPage(1); }}
               className="rounded-lg border border-slate-200 bg-white py-2 px-3 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: ACENTO }}>
               <option value="reciente">Más reciente</option>
@@ -513,6 +609,18 @@ export default function CostosPage() {
                           >
                             <Box size={13} />
                           </button>
+                          {/* Solo se pinta lo que SÍ está publicado. `null` es
+                              "no se pudo saber" (el listado cayó al fallback
+                              congelado), no "no está publicado": por eso no
+                              lleva marca de ningún tipo. */}
+                          {r.publicado_ml === true && (
+                            <span
+                              title="Publicado en Mercado Libre — entra en la validación de costo desde packing list"
+                              className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-700"
+                            >
+                              ML
+                            </span>
+                          )}
                         </div>
                         {r.nombre && <div className="line-clamp-1 max-w-[240px] text-xs text-slate-600">{r.nombre}</div>}
                       </td>
@@ -668,6 +776,22 @@ export default function CostosPage() {
               <input type="checkbox" checked={envioBulk} onChange={(e) => setEnvioBulk(e.target.checked)} className="h-4 w-4 accent-indigo-600" />
               Sumar envío
             </label>
+            {/* Espejo del botón del banner: aquí es donde el usuario está
+                mirando el contador de la selección. */}
+            <button
+              onClick={abrirPublicados}
+              title={
+                seleccion.size === 0
+                  ? "Selecciona SKUs en la tabla. Solo se procesan los publicados en Mercado Libre."
+                  : noPublicadosVisibles > 0
+                    ? `${noPublicadosVisibles} de los seleccionados a la vista NO están publicados en ML: el modal te dirá cuáles quedan fuera antes de arrancar.`
+                    : "Le busca a cada SKU publicado en ML su renglón en el packing list"
+              }
+              className="flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-50"
+            >
+              <PackageSearch size={16} />
+              Validar costo · publicados en ML ({seleccion.size})
+            </button>
             <button onClick={regenerarBulk} disabled={seleccion.size === 0 || bulkRun}
               className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
               style={{ backgroundColor: COLOR }}>
@@ -680,6 +804,20 @@ export default function CostosPage() {
 
       {resolverAbierto && (
         <ResolverCostosModal onCerrar={() => setResolverAbierto(false)} />
+      )}
+
+      {publicadosAbierto && (
+        <ValidarPublicadosModal
+          skus={[...seleccion]}
+          onCerrar={() => setPublicadosAbierto(false)}
+          onGuardado={() => {
+            // Mismo cierre que `regenerarBulk`: lo escrito ya no es "pendiente",
+            // así que la selección y las capturas huérfanas se van con él.
+            setSeleccion(new Set());
+            setEdiciones({});
+            cargar();
+          }}
+        />
       )}
 
       {cajaMaster && (

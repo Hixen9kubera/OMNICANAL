@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     # con IA" del Estudio NO depende de esta variable: ahí lo dispara una
     # persona.
     amazon_ia_en_crear: bool = False
+
+    # ── Packing lists en Google Drive ─────────────────────────
+    # Carpeta donde viven los packing lists de los contenedores. El validador de
+    # costos de publicados la LISTA para saber qué archivo le toca a cada SKU;
+    # el Resolver clásico no la necesita (ahí el usuario pega la liga).
+    # La carpeta está compartida como "cualquiera con el enlace": no hay service
+    # account de Google en el repo, y por eso el inventario se lee de la página
+    # pública — ver packing_drive_carpeta.
+    pl_drive_carpeta_id: str = "1PstK1At4DwUH0QUsIOXr9Zgb2TZJHgrM"
     # Lo mismo para TikTok. Ojo: al crear, el producto todavía NO está publicado
     # en TikTok, así que no tiene categoría y sus atributos no se pueden pedir —
     # se genera el título y la descripción, y los atributos entran cuando el SKU
