@@ -62,6 +62,7 @@ from fastapi.responses import JSONResponse
 from config import settings
 from core import actor as core_actor
 from core import identidad as core_identidad
+from core import rate_limit
 from core import rbac
 
 log = logging.getLogger("omnicanal.auth")
@@ -122,6 +123,36 @@ def es_ruta_abierta(ruta: str) -> bool:
             or r.startswith(_PREFIJOS_ABIERTOS))
 
 
+async def _es_vendedor_ml(request: Request) -> bool:
+    """
+    ¿Este POST trae un `user_id` de nuestros vendedores de ML?
+
+    Lee el cuerpo y lo RE-INYECTA para que el endpoint pueda volver a leerlo:
+    en Starlette el cuerpo es un stream de un solo uso, así que sin esto el
+    webhook recibiría un cuerpo vacío. Es el patrón estándar; se prueba en vivo
+    que `recibir_ml` sigue viendo su payload.
+
+    Falla hacia el carril GENERAL (más estricto): si el cuerpo no es un JSON
+    legible o no trae user_id, se trata como desconocido. Nunca lanza.
+    """
+    if request.method != "POST":
+        return False
+    try:
+        cuerpo = await request.body()
+        # Re-inyecta el cuerpo consumido para el endpoint de abajo.
+        async def _receive() -> dict:
+            return {"type": "http.request", "body": cuerpo, "more_body": False}
+        request._receive = _receive  # noqa: SLF001 — patrón conocido de Starlette
+
+        if not cuerpo:
+            return False
+        import json
+        uid = str(json.loads(cuerpo).get("user_id", "") or "")
+        return uid in settings.webhook_ml_vendedores_set
+    except Exception:  # noqa: BLE001 — cuerpo ilegible → carril general
+        return False
+
+
 async def identidad(request: Request, call_next):
     """
     Puerta única de la API. El orden de las guardas es deliberado y frágil:
@@ -131,6 +162,28 @@ async def identidad(request: Request, call_next):
         # --- Guarda 1: preflight de CORS. Sin esto el panel muere. ---
         if request.method == "OPTIONS":
             return await call_next(request)
+
+        # --- Guarda 0.5: freno de ráfagas para los WEBHOOKS. ---
+        # Va aquí, ANTES de la lista blanca, porque el webhook vive en esa lista
+        # y hay que contarlo antes de dejarlo pasar. SOLO los webhooks: el
+        # healthcheck de Railway (`/api/health`) golpea sin parar y NO debe
+        # frenarse nunca — un 429 ahí mete al backend en bucle de reinicio
+        # (regla 1 del encabezado). Por eso el filtro es el prefijo exacto.
+        #
+        # DOS CARRILES: si el POST trae un `user_id` de nuestros vendedores, va
+        # por el carril de ML (1200/min, inalcanzable); el resto, por el general
+        # (150/min). Ver core/rate_limit.py. Apagable con WEBHOOK_RATE_LIMIT=false.
+        if (settings.webhook_rate_limit
+                and request.url.path.startswith("/api/webhooks/")):
+            es_ml = await _es_vendedor_ml(request)
+            ip = rate_limit.ip_de(request)
+            if not rate_limit.permite(ip, es_ml=es_ml):
+                carril = "ML" if es_ml else "general"
+                log.warning("RATE-LIMIT 429 [%s]: %s floodeó %s", carril, ip,
+                            request.url.path)
+                return JSONResponse(status_code=429, content={
+                    "detail": "Demasiadas peticiones; intenta más tarde."},
+                    headers={"Retry-After": "10"})
 
         # --- Guarda 2: rutas abiertas. ANTES de mirar auth_enforced. ---
         if es_ruta_abierta(request.url.path):

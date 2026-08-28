@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.294.0 — Freno de ráfagas para los webhooks, con dos carriles
+
+Auditoría de seguridad: un POST a `/api/webhooks/ml` no pide credencial (ML no
+puede mandar nuestro token) y NADA contaba cuántos llegaban. Una prueba en vivo
+mandó 20 golpes seguidos y ninguno se frenó. Un flood puede saturar el backend,
+llenar la base de basura y quemar llamadas a ML con nuestro token.
+
+#### Calibrado con datos y con dos carriles (idea de Eduardo)
+
+Medido en 72 h de producción: normal 15/min, pico real de ML 111/min (ráfaga de
+hasta 20/seg). En vez de un límite único, dos carriles —apretar al desconocido,
+dar aire al conocido—, distinguiendo por el `user_id` del vendedor que ML manda
+en el payload (más robusto que la IP, que en ML es de AWS y cambia):
+
+  · CARRIL GENERAL — 150/min (burst 60): todo POST sin user_id conocido.
+  · CARRIL ML — 1200/min (burst 300): vendedores conocidos, 11× su pico.
+
+Probado en vivo (sandbox): flood de un desconocido (200 golpes) → 128 frenados;
+flood con user_id de ML → los 200 pasan; ML entra mientras el desconocido es
+aplastado (carriles separados por IP).
+
+#### La regla que no se toca: nunca cortar a ML
+
+Un no-200 al webhook hace que ML reintente 1 h y luego DESHABILITE el topic —
+ventas que dejan de entrar sin error visible. Por eso el carril de ML es 11× su
+pico (inalcanzable) y el freno es POR IP: el flood de un atacante llena SU cubo.
+Se consideró un cubo global de respaldo y se DESCARTÓ: un global que se agota
+frenaría a ML.
+
+#### Detalles
+
+- `core/rate_limit.py`: token bucket en memoria por (IP, carril). Falla ABIERTO:
+  un bug deja pasar, nunca tumba el sitio.
+- El freno va en el middleware, SOLO sobre `/api/webhooks/`. El healthcheck de
+  Railway jamás se toca (un 429 ahí = bucle de reinicio). Verificado 50/50.
+- El `user_id` viaja en el cuerpo del POST; el middleware lo lee y RE-INYECTA el
+  cuerpo para que el endpoint lo relea. Verificado en vivo: `recibir_ml` procesa
+  su payload igual (200, sin errores).
+- Apagable sin deploy: `WEBHOOK_RATE_LIMIT=false`. Vendedores: `WEBHOOK_ML_VENDEDORES`.
+
+Matiz honesto: los user_id están en el repo público; un atacante que los lea se
+cuela al carril de ML (1200 sigue siendo límite, y el general frena a los bots).
+La identificación fuerte del remitente es el paso 2, pendiente.
+
 ### v0.293.0 — Las fotos de la comparación dejan de ser estampillas
 
 La pantalla ya enseñaba las tres fotos (Odoo · publicación de ML · packing list),

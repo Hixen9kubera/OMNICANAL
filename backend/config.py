@@ -328,6 +328,19 @@ class Settings(BaseSettings):
 
     # Guardado de notificaciones de webhooks en la tabla (se puede pausar en runtime)
     webhook_registro: bool = True
+    # Freno de ráfagas de los webhooks (rate limit por IP). Encendido por
+    # defecto: el límite es tan holgado que ML nunca lo alcanza. Apagar sin
+    # deploy con WEBHOOK_RATE_LIMIT=false si alguna vez frena tráfico legítimo.
+    webhook_rate_limit: bool = True
+    # user_id de los vendedores de ML (CSV). Un webhook que trae uno de estos va
+    # por el carril generoso (1200/min); el resto, por el general (150/min).
+    # Son los mismos IDs de `webhooks._USER_A_CUENTA` — vive en config para poder
+    # sumar una cuenta nueva sin deploy.
+    webhook_ml_vendedores: str = "3072519654,3064478475"
+
+    @property
+    def webhook_ml_vendedores_set(self) -> frozenset[str]:
+        return frozenset(v.strip() for v in self.webhook_ml_vendedores.split(",") if v.strip())
 
     # ── App ───────────────────────────────────────────────────
     app_env: str = "development"
