@@ -1001,6 +1001,56 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.290.0 — Alistamiento del corte: los datos ya están del otro lado
+
+`probar_corte_total.py` prueba que el **código** vive sin MySQL, en el sandbox.
+Faltaba la otra mitad, y no la puede contestar una prueba en el sandbox: **¿los
+datos ya están del otro lado, en producción, hoy?** Si MySQL recibió una
+escritura hace 3 minutos y su destino en kubera trae 3 días de atraso, apagarlo
+pierde esos 3 días.
+
+`alistar_corte.py` compara, tabla por tabla viva, la última escritura de MySQL
+contra la de su destino en kubera. Solo lectura, contra producción.
+
+**Resultado del 28-ago: 14 de 14 al día, desfase 0 minutos.** Cero atrasados,
+cero sin medir. Los datos están completos del otro lado.
+
+Lo único que bloquea el corte son **dos lecturas apagadas**:
+
+| Bandera | Qué pasa si se corta sin ella |
+|---|---|
+| `SUPABASE_READ_STOCK_WATCH` | el vigilante de inventario **aborta cada pasada** |
+| `SUPABASE_READ_WEBHOOKS` | la campana se queda muda |
+
+La primera no es opcional —`stock_watch._foto()` propaga el error a propósito,
+así que sin fuente la pasada se cae entera— y es flujo vivo: necesita el dale de
+Brandon. La segunda sí lo es, pero encenderla no es lo obvio: kubera tiene 12,047
+eventos donde MySQL tiene 3, así que la campana pasaría de muda a manguera.
+Necesita un filtro antes.
+
+**La frescura se decide por DATOS, no por nombre de columna.** Tres veces seguidas
+el script se equivocó solo, y las tres quedaron escritas en el código:
+
+- emparejó `fanout_log` con `ops.fulfillment_operations` —que es el **candado**,
+  17 filas contra 32,506— y reportó 31 días de atraso que no existían
+- eligió la columna de fecha por nombre y en `ops.webhook_events` agarró
+  `next_retry_at`, vacía en las 71,018 filas: reportó "kubera VACÍO" sobre una
+  tabla **más fresca** que MySQL
+- ya midiendo por datos, en `tiktok_tokens` ganó `refresh_expira`, que cae en
+  **2125**: una fecha futura no mide frescura, es un vencimiento
+
+Ahora pregunta cuál columna trae el dato más nuevo **que no esté en el futuro**.
+A eso no se le puede mentir con un nombre.
+
+Y en Windows el CLI de Railway es `railway.cmd`: `subprocess` con el nombre pelón
+falla como si no estuviera instalado, y la sección de banderas salía SIN MEDIR.
+
+**[docs/PROCEDIMIENTO_CORTE.md](docs/PROCEDIMIENTO_CORTE.md)** es el runbook del
+día: prerrequisitos, los pasos, qué verificar en los primeros 15 minutos, cómo
+volver atrás, y lo que se pierde a sabiendas — sobre todo la red que avisa si
+kubera se cae, que vive en MySQL a propósito y no puede mudarse al lado que
+vigila.
+
 ### v0.289.0 — El Estudio publicaba en la categoría que adivinó el predictor
 
 `studio._categoria_mysql` era el **último lector de `categorias_ml` sin
