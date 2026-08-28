@@ -86,7 +86,7 @@ MARGEN_DHASH = 4           # ventaja mínima sobre el segundo candidato
 MODELO_TITULO = "claude-sonnet-4-5"
 MODELO_FOTO = comp.MODELO_VISION       # haiku: es la misma pregunta de siempre
 _LADO_IA = 420
-_LADO_FOTO_UI = 190
+_LADO_FOTO_UI = 360
 _LADO_CAND_UI = 150
 _MAX_CANDIDATOS_IA = 5
 

@@ -568,8 +568,14 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
                 </div>
               </div>
 
-              <div className="overflow-hidden rounded-xl border border-slate-200">
-                <table className="w-full text-xs">
+              {/* Scroll HORIZONTAL, no `overflow-hidden`. Con las fotos a 72 px
+                  la tabla ya no cabe en el modal, y `overflow-hidden` no la
+                  recorta: hace que las columnas se repartan el ancho a la
+                  fuerza y aplasten lo que no quepa —las miniaturas salían de
+                  34×71 en vez de 72×72—. Con `min-w` la tabla conserva su
+                  tamaño y se desliza. */}
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
+                <table className="w-full min-w-[1180px] text-xs">
                   <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="w-9 px-2 py-2" />
@@ -1060,35 +1066,35 @@ function FilaResultado({
             comparación que hay que hacer —¿es el mismo producto?— quedaba
             escondida detrás de un clic. Cada miniatura lleva su letra debajo
             para saber cuál es cuál sin pasar el mouse. */}
-        <td className="px-2 py-2 align-top">
+        <td className="w-[248px] min-w-[248px] px-3 py-3 align-top">
           <button
             onClick={onAbrir}
             title="Ver las tres fotos en grande y el veredicto"
-            className="flex items-start gap-1"
+            className="flex items-start gap-2"
           >
             {([
               ["O", f.img_odoo, "Odoo"],
               ["ML", f.img_ml, "publicación de Mercado Libre"],
               ["PL", f.img_pl, "renglón del packing list"],
             ] as const).map(([letra, src, que]) => (
-              <span key={letra} className="flex flex-col items-center gap-0.5">
+              <span key={letra} className="flex shrink-0 flex-col items-center gap-0.5">
                 {src ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={src}
                     alt={que}
                     title={`Foto de ${que}`}
-                    className="h-11 w-11 rounded border border-slate-200 object-cover"
+                    className="h-[72px] w-[72px] shrink-0 rounded-lg border border-slate-200 bg-slate-50 object-contain p-0.5"
                   />
                 ) : (
                   <span
                     title={`Sin foto de ${que}`}
-                    className="flex h-11 w-11 items-center justify-center rounded border border-dashed border-slate-200 bg-slate-50 text-slate-300"
+                    className="flex h-[72px] w-[72px] shrink-0 items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50 text-slate-300"
                   >
                     <ImageIcon size={12} />
                   </span>
                 )}
-                <span className="text-[8px] font-bold uppercase text-slate-400">
+                <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">
                   {letra}
                 </span>
               </span>

@@ -1001,6 +1001,34 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.293.0 — Las fotos de la comparación dejan de ser estampillas
+
+La pantalla ya enseñaba las tres fotos (Odoo · publicación de ML · packing list),
+pero a un tamaño en el que no se podía comparar nada — que es todo su propósito.
+
+**Las miniaturas de la fila pasan de 44 a 70 px** y el panel expandido de 208 a
+338. La resolución que manda el backend sube de 190 a 360 px (`_LADO_FOTO_UI`),
+porque antes se estaban escalando hacia arriba: más grandes y más borrosas.
+
+**Y la causa de fondo era el `overflow-hidden` de la tabla.** No recorta: obliga
+a las columnas a repartirse el ancho. Con las fotos a 72 px la tabla ya no cabía
+en el modal, así que el navegador las exprimió a **34×71** — alto correcto, ancho
+aplastado— mientras el CSS pedía 72×72. Se arregla con tres cosas a la vez:
+`overflow-x-auto` con `min-w` en la tabla (que además le da al usuario la barra
+para moverse), `shrink-0` en cada miniatura —sin él, un item de `flex` se encoge
+aunque tenga ancho fijo— y ancho reservado en la celda.
+
+**`object-contain`, no `cover`.** Recortar la foto para que llene el cuadro puede
+tijeretear justo el detalle que distingue un producto de otro; a 44 px con
+`cover`, de una regadera solo se veía el tubo.
+
+**El panel expandido pasa a dos columnas de verdad**: las fotos en rejilla a la
+izquierda, el veredicto con su propia columna a la derecha. Antes era un
+`flex-wrap` de cajas fijas, así que en un modal de 1800 px las tres ocupaban el
+primer tercio y el resto quedaba vacío. Con tope de 340 px: sin él la rejilla las
+estiraba a 1265 px y volvían a verse borrosas — más grandes, pero peores para lo
+único que importa ahí.
+
 ### v0.292.0 — Los avisos de Odoo nunca llegaron a kubera, y la campana iba a ahogarse
 
 Eduardo preguntó lo correcto: *«¿eso no se hace ya en kubera de alguna manera?»*.
