@@ -169,7 +169,7 @@ const MAX_RONDAS = 8;
    que algo pasa ahí. El ámbar es deliberado — no es el rojo/verde que se lee
    como veredicto, es "esto está en duda". */
 function Margen({ f }: { f: Fila }) {
-  const dudoso = f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base);
+  const dudoso = f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base, f.revisado_at);
   if (f.margen_pct == null) {
     return (
       <span className="text-slate-300"
@@ -291,7 +291,7 @@ function margenDelGrupo(filas: Fila[]) {
   const utiles = filas.filter(
     (f) => f.margen_pct != null && f.ingreso != null && f.ganancia_total != null);
   const buenas = utiles.filter(
-    (f) => !(f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base)));
+    (f) => !(f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base, f.revisado_at)));
   const suma = (xs: Fila[], k: "ingreso" | "ganancia_total") =>
     xs.reduce((a, f) => a + Number(f[k] ?? 0), 0);
   const pct = (xs: Fila[]) => {
@@ -451,10 +451,10 @@ function TablaCuenta({ titulo, sub, filas, conCuentas }: {
                     en ámbar, cuando el costo del que sale está en duda. */}
                 <td className={`px-3 py-2 text-right font-bold tabular-nums ${
                     f.ganancia_total == null ? "text-slate-300"
-                    : (f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base))
+                    : (f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base, f.revisado_at))
                       ? "text-amber-600"
                       : f.ganancia_total < 0 ? "text-red-500" : "text-emerald-600"}`}
-                    title={f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base)
+                    title={f.precio_prom != null && costoImplausible(f.precio_prom, f.costo_base, f.revisado_at)
                            ? avisoCostoImplausible(f.precio_prom, f.costo_base!) : undefined}>
                   {fMoney(f.ganancia_total)}
                 </td>

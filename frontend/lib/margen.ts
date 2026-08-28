@@ -45,11 +45,32 @@
 /** Arriba de este múltiplo, el costo deja de ser una cifra y pasa a ser un bug. */
 export const FACTOR_COSTO_IMPLAUSIBLE = 1.5;
 
-/** ¿El costo de esta fila es tan alto frente al precio que no se puede creer? */
+/**
+ * ¿El costo de esta fila es tan alto frente al precio que no se puede creer?
+ *
+ * LA MARCA DE REVISADO GANA (Eduardo, 28-ago). El factor de 1.5× es un
+ * DETECTOR: adivina que un costo está mal porque se ve raro. La marca de
+ * `revisado_at` (migración 0032) es un HECHO: una persona abrió ese costeo,
+ * lo comparó y firmó. Cuando existe el hecho, la adivinanza sobra — y peor,
+ * se contradice con la etiqueta VALIDADO que la fila muestra al lado.
+ *
+ * Caso que lo destapó: ORG-0319-PLA, con VALIDADO y "COSTO DUDOSO" a la vez.
+ * Es un producto que de verdad vende bajo costo (−127.7% con costo $166.14
+ * contra un precio de $99.91), y el ámbar hacía dudar del dato en vez de
+ * dejar ver el problema. Un costo revisado que sale en rojo no es un dato
+ * sospechoso: es una pérdida confirmada, y así hay que pintarla.
+ *
+ * Ojo con lo que esto NO hace: no vuelve bueno un costo. Si alguien marca
+ * como revisado un costeo malo, la marca calla la alerta — por eso la firma
+ * (`revisado_por`) importa y por eso la marca se cae sola cuando el costo se
+ * vuelve a tocar (`updated_at > revisado_at`).
+ */
 export function costoImplausible(
   precio: number | null | undefined,
   costoBase: number | null | undefined,
+  revisadoAt?: string | null,
 ): boolean {
+  if (revisadoAt) return false;
   const p = Number(precio ?? 0);
   const c = Number(costoBase ?? 0);
   if (!(p > 0) || !(c > 0)) return false;

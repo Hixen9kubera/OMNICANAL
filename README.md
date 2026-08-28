@@ -1001,6 +1001,68 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.301.0 — El margen bruto como tarjeta, y el costo validado calla la alerta
+
+Dos cambios pedidos por Eduardo el 28-ago, los dos sobre la misma idea: que la
+pantalla no se contradiga a sí misma.
+
+**1. El margen bruto de General usa el diseño de tarjeta de los canales.**
+
+Era un renglón fino (`Margen bruto · $263.40 / u · 59.0%`) al lado de tarjetas
+que muestran lo mismo con otra forma. Ahora usa el molde de
+`PublicacionesDelCanal`: contenedor blanco con borde, dos columnas con etiqueta
+en mayúsculas, el número grande en verde/rojo/ámbar y el peso por unidad debajo.
+
+Con eso el precio se MUDÓ del mosaico de arriba a la tarjeta. No es cosmético:
+con publicaciones el precio ya vivía en su tarjeta (hay uno por publicación, con
+su oferta), y dejarlo también arriba lo pintaba dos veces. Ahora la regla es una
+sola — **el precio SIEMPRE está en una tarjeta, y el mosaico de arriba es solo
+existencias**.
+
+Verificado contra el sandbox con `MUE-0163-TEL`: precio $517.85, costo $272.76 →
+`517.85/1.16 − 272.76 = $173.66`, o sea **+38.9%**. Mercado Libre NO la muestra:
+ahí sigue mandando la tarjeta de publicación con su margen neto, que es la regla
+que ya existía desde v0.282.1.
+
+**2. La marca de revisado gana sobre el detector de costo implausible.**
+
+`costoImplausible()` (el factor 1.5× de v0.280.0) pinta en ÁMBAR con ⚠ y el texto
+"COSTO DUDOSO" cuando el costo capturado supera al precio por más de ese factor.
+El problema: una fila podía mostrar el chip **VALIDADO** y "COSTO DUDOSO" al
+mismo tiempo, diciendo dos cosas opuestas sobre el mismo dato.
+
+El caso que lo destapó es `ORG-0319-PLA`: costo $166.14 contra un precio de
+$99.91 y margen −127.7%. **Sí pierde dinero.** El ámbar hacía dudar del dato en
+vez de dejar ver el problema.
+
+La regla ahora vive en un solo lugar, `lib/margen.ts`: `costoImplausible()` toma
+un tercer argumento `revisadoAt` y devuelve `false` cuando existe. El 1.5× es un
+DETECTOR —adivina que un costo está mal porque se ve raro—; `revisado_at`
+(migración 0032) es un HECHO: una persona abrió ese costeo y lo firmó. Cuando
+está el hecho, la adivinanza sobra.
+
+Aplica en la tabla de Análisis (3 celdas: costo base, margen y ganancia), en el
+top 10 de márgenes, en la tarjeta de producto y en la tarjeta de publicación por
+canal. Para la última hubo que exponer `revisado_at` en el payload de
+`publicaciones_panel` — una columna, porque ese query **ya hacía el join** con
+`costos_validados`.
+
+**Queda fuera a propósito el margen por CATEGORÍA** (`analisis/categorias`): ahí
+cada renglón es la suma de varios SKUs y no existe "un" costo revisado para una
+rama entera. Callar la alerta con la firma de uno solo sería mentir sobre los
+demás.
+
+Probado en el sandbox con el peor caso del catálogo, `TEC-0393-ROS` (costo
+$1,338.23 contra precio $123.61 — **10.8×**): al marcarlo desaparecen el ⚠ y el
+"COSTO DUDOSO", y el margen pasa de ámbar a rojo (−1,022.2%). El caso contrario
+sigue vivo: `MUE-0137-NEG`, dudoso y SIN marcar, conserva su aviso.
+
+**Lo que esto NO hace, y está escrito en el código**: no vuelve bueno un costo.
+Si alguien marca como revisado un costeo malo, la marca calla la alerta. Por eso
+importan las dos protecciones que ya existían — la firma queda registrada
+(`revisado_por`) y la marca se cae sola cuando el costo se vuelve a tocar
+(`updated_at > revisado_at`).
+
 ### v0.300.0 — La casilla "solo lo que hay que mirar" se estaba callando el peor caso
 
 Brandon preguntó para qué sirve la casilla, y al ir a contestarlo salió que

@@ -729,7 +729,13 @@ select l.sku::text                       as sku,
        v.peso                            as peso,
        v.largo                           as largo,
        v.ancho                           as ancho,
-       v.alto                            as alto
+       v.alto                            as alto,
+       -- La firma de "ya revisé este costeo" (migración 0032). Viaja para que
+       -- el frontend calle la alerta de COSTO DUDOSO cuando una persona ya
+       -- verificó el costo: el 1.5× es un detector, esto es un hecho.
+       -- La columna existe en producción Y en el sandbox (0032 se aplicó en
+       -- los dos el 25-ago), a diferencia de `date_published` de arriba.
+       v.revisado_at                     as revisado_at
   from channel.listings l
   join core.accounts a on a.id = l.account_id
   left join core.products p on p.sku = l.sku
@@ -835,6 +841,7 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
         "sku": r["sku"],
         "titulo": r.get("titulo"),
         "canal": canal,
+        "revisado_at": r.get("revisado_at"),
         "tienda": r.get("tienda"),
         "listing_id": r.get("listing_id"),
         "url": r.get("url"),

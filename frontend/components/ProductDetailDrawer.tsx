@@ -8,7 +8,6 @@ import {
   RefreshCw,
   Truck,
   Boxes,
-  Tag,
   ChevronRight,
   ImageIcon,
 } from "lucide-react";
@@ -369,24 +368,22 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                   const esGeneral = c.canal === "general";
                   const conFullFba = esGeneral && fullFbaTotal > 0;
                   const stockReal = c.stock_real ?? c.stock;
-                  // El precio sale del bloque de publicaciones cuando lo hay:
-                  // ahí es UNO POR PUBLICACIÓN, con su oferta. Un "Precio" de
-                  // canal al lado tendría que elegir uno de los dos de un SKU
-                  // con dos listados y contradecir al bloque de abajo.
+                  // El precio SIEMPRE vive en una tarjeta, nunca en el mosaico:
+                  // con publicaciones es UNO POR PUBLICACIÓN, con su oferta (un
+                  // "Precio" de canal al lado tendría que elegir uno de los dos
+                  // de un SKU con dos listados y contradecir al bloque de
+                  // abajo); y sin publicaciones lo pinta la tarjeta de margen
+                  // bruto de más abajo. Por eso el mosaico es solo existencias.
                   const conPrecio = misPubs.length === 0;
-                  const columnas =
-                    (conPrecio ? 1 : 0) + 1 + (esML || esAmazon || conFullFba ? 1 : 0);
+                  const columnas = 1 + (esML || esAmazon || conFullFba ? 1 : 0);
                   return (
                     <>
                       <div
                         className={[
                           "grid divide-x divide-slate-100 border-b border-slate-100",
-                          columnas >= 3 ? "grid-cols-3" : columnas === 2 ? "grid-cols-2" : "grid-cols-1",
+                          columnas === 2 ? "grid-cols-2" : "grid-cols-1",
                         ].join(" ")}
                       >
-                        {conPrecio && (
-                          <Metric icon={<Tag size={14} />} label="Precio" moneda="MXN" valor={precioMXN(c.precio)} />
-                        )}
                         <Metric
                           icon={<Boxes size={14} />}
                           label="Stock real"
@@ -441,70 +438,109 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                         </div>
                       )}
 
-                      {/* MARGEN BRUTO — precio del canal contra el costo del SKU,
-                          SIN comisión ni envío (pedido de Eduardo). El neto ya
-                          vive en Análisis; aquí interesa "cuánto deja el producto
-                          antes de que el marketplace cobre lo suyo".
+                      {/* MARGEN BRUTO — mismo diseño de tarjeta que usan los
+                          canales para el margen neto (`PublicacionesDelCanal`),
+                          pero con el BRUTO (pedido de Eduardo, 28-ago).
 
-                          Misma fórmula que el `margen_pct` de Análisis —
-                          (precio − costo) / precio— a propósito: si aquí se
-                          dividiera el precio entre 1.16 para descontar el IVA, el
-                          MISMO SKU mostraría dos márgenes distintos en dos
-                          pantallas y nadie sabría cuál creer. La advertencia del
-                          IVA va en el tooltip, que es donde no estorba.
+                          Por qué copiar ese diseño y no dejar el renglón fino:
+                          es el mismo tipo de dato —precio de hoy + lo que deja
+                          si vendo uno— y leerlo con dos formas distintas hacía
+                          que pareciera otra cosa. Aquí no hay publicaciones que
+                          listar, así que la tarjeta es una sola y sin chip de
+                          estado, pero las dos columnas y su tipografía son las
+                          mismas a propósito.
 
-                          El costo es del SKU, no del canal: la misma cifra en
-                          todas las tarjetas, y solo cambia el precio. */}
-                      {(() => {
+                          El PRECIO se mudó aquí desde el mosaico de arriba: con
+                          publicaciones el precio ya vivía en su tarjeta, y
+                          dejarlo también arriba lo pintaba dos veces en la misma
+                          pantalla. Ahora el precio SIEMPRE está en una tarjeta
+                          —la de la publicación o ésta— y el mosaico de arriba es
+                          solo de existencias.
+
+                          SIN IVA: el precio lo trae y el costo de
+                          `costos_validados` no (es mercancía + flete, sin un
+                          impuesto). El IVA de importación NO se le resta al
+                          costo porque es ACREDITABLE — se recupera. Ver
+                          `lib/margen.ts`.
+
+                          NO descuenta comisión ni envío: para eso está el margen
+                          neto. Por eso la etiqueta lo dice. */}
+                      {conPrecio && (() => {
                         const costo = data?.costo ?? null;
                         const precio = c.precio;
                         if (!(costo && costo > 0) || !(precio && precio > 0)) return null;
-                        // MISMA REGLA QUE EL PRECIO (`conPrecio`, arriba): cuando la
-                        // tarjeta trae publicaciones, el precio del CANAL no es el que
-                        // cobra la tienda — el de verdad, con su oferta, vive en cada
-                        // publicación, y hay uno POR publicación. Un margen sacado del
-                        // precio de canal contradice al bloque de abajo, que es
-                        // exactamente lo que ese comentario advertía y yo pasé por alto:
-                        // MUE-0163-TEL mostraba 48.5% aquí mientras su publicación decía
-                        // −7.5% (oferta a $337 desde $960, y con la comisión encima).
-                        //
-                        // Donde SÍ sirve es en General/Woo, que no tiene publicaciones:
-                        // ahí el precio del canal ES el precio, y no hay comisión que lo
-                        // desmienta. Por eso no se borra la fila, se acota.
-                        if (!conPrecio) return null;
-                        const dudoso = costoImplausible(precio, costo);
-                        // SIN IVA: el precio lo trae y el costo no. Ver lib/margen.
+                        // La marca de revisado viaja en la fila de la rejilla
+                        // (`Producto`), no en el detalle: `DetalleProducto` no
+                        // la trae. Si el cajón se abrió sin esa fila, no hay
+                        // marca que leer y la alerta se comporta como antes.
+                        const dudoso = costoImplausible(precio, costo,
+                                                        producto?.revisado_at);
                         const neto = precioSinIva(precio);
                         const pct = margenBruto(precio, costo) ?? 0;
                         const deja = neto - costo;
+                        const perdida = pct < 0;
                         const ayuda = dudoso
                           ? avisoCostoImplausible(precio, costo)
                           : `De los ${precioMXN(precio)} que paga el cliente, `
-                            + `${precioMXN(precio - neto)} son IVA que va al SAT.
-`
+                            + `${precioMXN(precio - neto)} son IVA que va al SAT.\n`
                             + `Entra a Kubera: ${precioMXN(neto)} — costo `
-                            + `${precioMXN(costo)} (producto + flete) = ${precioMXN(deja)}.
-`
+                            + `${precioMXN(costo)} (producto + flete) = ${precioMXN(deja)}.\n`
                             + `NO descuenta comisión del canal ni envío: para eso está el `
                             + `margen neto de Análisis.`;
                         return (
-                          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2 text-xs"
-                               title={ayuda}>
-                            <span className="text-slate-500">
-                              Margen bruto{" "}
-                              <span className="text-slate-400">(sin IVA ni comisiones)</span>
-                            </span>
-                            <span className="flex items-center gap-2">
-                              <span className="text-slate-400">{precioMXN(deja)} / u</span>
-                              <span className={[
-                                "rounded px-1.5 py-0.5 font-bold tabular-nums",
-                                dudoso ? "bg-amber-50 text-amber-700"
-                                       : pct >= 0 ? "bg-emerald-50 text-emerald-700"
-                                                  : "bg-rose-50 text-rose-700",
-                              ].join(" ")}>
-                                {dudoso && "⚠ "}{pct.toFixed(1)}%
-                              </span>
-                            </span>
+                          <div className="border-b border-slate-100 bg-slate-50/40 px-4 py-3">
+                            {/* El encabezado del bloque, con el mismo peso que el
+                                "Publicación" de los canales que sí las tienen. */}
+                            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                              {esGeneral ? "Tienda" : "Este canal"}
+                            </div>
+                            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+                              <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                                    Precio que cobra hoy
+                                  </div>
+                                  <div className="text-base font-bold tabular-nums text-slate-800">
+                                    {precioMXN(precio)}
+                                  </div>
+                                </div>
+                                <div>
+                                  <div
+                                    className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400"
+                                    title="Margen BRUTO: lo que deja el producto antes de que el canal cobre comisión y envío."
+                                  >
+                                    Margen bruto
+                                  </div>
+                                  <div className="leading-tight" title={ayuda}>
+                                    <div
+                                      className={[
+                                        "flex items-center gap-1 text-base font-black tabular-nums",
+                                        dudoso ? "text-amber-600"
+                                               : perdida ? "text-rose-600"
+                                                         : "text-emerald-700",
+                                      ].join(" ")}
+                                    >
+                                      {dudoso && <AlertTriangle size={13} className="shrink-0" />}
+                                      {pct >= 0 ? "+" : ""}{pct.toFixed(1)} %
+                                    </div>
+                                    <div
+                                      className={[
+                                        "mt-1 text-[11px] font-semibold tabular-nums",
+                                        dudoso ? "text-amber-600"
+                                               : perdida ? "text-rose-500"
+                                                         : "text-slate-500",
+                                      ].join(" ")}
+                                    >
+                                      {dudoso ? "costo dudoso"
+                                              : `${precioMXN(deja)} de ganancia`}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="mt-2 text-[10px] text-slate-400">
+                                sin IVA · no descuenta comisión ni envío
+                              </div>
+                            </div>
                           </div>
                         );
                       })()}

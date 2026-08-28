@@ -151,7 +151,7 @@ function Margen({ p, aviso }: { p: Publicacion; aviso?: string }) {
   // del rojo que se lee como un hecho. Aquí pesa más que en Análisis, porque
   // esta tarjeta es donde alguien decide bajar una publicación — y el 30% del
   // catálogo trae como costo un precio en dólares redondeado (×19).
-  const dudoso = costoImplausible(p.precio_vigente, p.costo_unitario);
+  const dudoso = costoImplausible(p.precio_vigente, p.costo_unitario, p.revisado_at);
   const desglose =
     p.roi !== null
       ? `ROI sobre el costo: ${fmtPctFirmado(p.roi)} · costo ${fmtMoneda(

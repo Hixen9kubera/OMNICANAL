@@ -1439,6 +1439,9 @@ export interface Publicacion {
   sku: string;
   titulo: string | null;
   canal: string;
+  /** Firma de "ya revisé este costeo" (mig. 0032). Con ella, la alerta de
+      costo dudoso se calla: el 1.5× adivina, esto es un hecho. */
+  revisado_at?: string | null;
   /** `legacy_code` de la cuenta: BEKURA, SANCORFASHION, AMAZON, KUBERA… */
   tienda: string | null;
   listing_id: string | null;

@@ -1007,7 +1007,7 @@ function CostoBase({ fila, dias }: { fila: Fila; dias: number }) {
         <div className={sinCostoVendiendo(fila) ? "font-semibold text-amber-500" : "text-slate-400"}>—</div>
       </PanelHover>
     );
-  const dudoso = precio != null && costoImplausible(precio, v);
+  const dudoso = precio != null && costoImplausible(precio, v, fila.revisado_at);
   // SIN FLETE. El costo base ES producto + flete de importación, así que un
   // flete en cero no es "no aplica": es un costo al que le falta un pedazo, y
   // uno grande —31% del total en promedio—. El margen sale optimista y nada lo
@@ -1228,7 +1228,7 @@ function Margen({ fila }: { fila: Fila }) {
   // Costo poco creíble: el margen SÍ se pinta, pero en ámbar y con ⚠ (Eduardo,
   // 6-ago). Ocultarlo sacaba al SKU del análisis junto con la señal de que algo
   // pasa ahí; el ámbar dice "esto está en duda" sin fingir un veredicto.
-  const dudoso = costoImplausible(precio, costo);
+  const dudoso = costoImplausible(precio, costo, fila.revisado_at);
   const final = fila.costo_final == null ? null : Number(fila.costo_final);
   const com = fila.comision_unit == null ? 0 : Number(fila.comision_unit);
   const envio = fila.envio_unit == null ? 0 : Number(fila.envio_unit);
@@ -1279,7 +1279,7 @@ function Ganancia({ fila }: { fila: Fila }) {
         <div className="text-slate-300">—</div>
       </PanelHover>
     );
-  const dudoso = precio != null && costoImplausible(precio, fila.costo);
+  const dudoso = precio != null && costoImplausible(precio, fila.costo, fila.revisado_at);
   return (
     <PanelHover panel={
       <>
