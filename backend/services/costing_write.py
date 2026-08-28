@@ -172,6 +172,68 @@ def marcar_revisado(sku: str, revisado: bool = True) -> dict[str, Any] | None:
     return dict(fila) if fila else None
 
 
+def guardar_caja_compartida(
+    sku: str, contenedor: str, archivo: str, renglones: list[int], *,
+    skus_grupo: list[str] | None = None,
+    piezas_grupo: float | None = None,
+    cbm_grupo: float | None = None,
+    cbm_origen: str | None = None,
+    nota: str | None = None,
+) -> dict[str, Any] | None:
+    """
+    De DÓNDE salió el costo: el archivo y los renglones exactos del packing list.
+
+    Es la procedencia que `costos_validados` no podía guardar. Ahí el costo es
+    una cifra sin origen: si mañana no cuadra, no hay forma de volver al renglón
+    que la produjo. Aquí queda el rastro para poder auditarla.
+
+    La llave es ``(sku, contenedor_base)``, y ``contenedor_base`` es una columna
+    GENERADA que le quita el sufijo de embarque (``MRKU4831449 - 88`` →
+    ``MRKU4831449``). Eso resuelve el desencuentro de toda la vida: el packing
+    list trae el código pelón y ``costos_validados`` lo guarda sufijado. Por eso
+    el mismo embarque capturado de las dos formas cae en la MISMA fila y se
+    corrige en vez de duplicarse.
+
+    Y por eso mismo **dos contenedores son dos filas**: el mismo SKU en un
+    embarque posterior tiene otro ``contenedor_base``, con su propio archivo,
+    sus propios renglones y su propia fecha. Ninguna pisa a la otra — que es
+    justo lo que unas columnas en ``costos_validados`` no podían hacer.
+
+    ``renglones`` va como viene del Excel (1-based, los que ve el humano) y la
+    tabla exige al menos uno. Cuando el cartón se comparte son TODOS los del
+    grupo, no solo el del SKU: el flete se repartió entre esos renglones y sin
+    ellos el número no se puede reconstruir.
+
+    No pasa por el dual-write: la tabla solo existe en kubera.
+    """
+    filas = [int(r) for r in (renglones or []) if r is not None]
+    if not filas:
+        raise ValueError(f"{sku}: no se puede registrar procedencia sin renglones")
+    with sdb.get_cursor() as cur:
+        cur.execute(
+            """insert into costing.caja_compartida
+                   (sku, contenedor, archivo, renglones,
+                    skus_grupo, piezas_grupo, cbm_grupo, cbm_origen, nota)
+               values (%s, %s, %s, %s, %s, %s, %s,
+                       coalesce(%s, 'no_parseado'), %s)
+               on conflict (sku, contenedor_base) do update
+                  set contenedor   = excluded.contenedor,
+                      archivo      = excluded.archivo,
+                      renglones    = excluded.renglones,
+                      skus_grupo   = excluded.skus_grupo,
+                      piezas_grupo = excluded.piezas_grupo,
+                      cbm_grupo    = excluded.cbm_grupo,
+                      cbm_origen   = excluded.cbm_origen,
+                      nota         = excluded.nota,
+                      updated_at   = now()
+            returning sku::text as sku, contenedor_base, renglones, archivo""",
+            (sku, contenedor, archivo, filas,
+             skus_grupo or None,
+             piezas_grupo, cbm_grupo, cbm_origen, nota))
+        fila = cur.fetchone()
+    return dict(fila) if fila else None
+
+
 def registrar_log(sku: str, accion: str, origen: str, detalle: dict[str, Any],
                   escribir_mysql: Callable[[], None]) -> None:
     """Bitácora bajo el corte: ops.process_log primaria, costos_logs espejo.

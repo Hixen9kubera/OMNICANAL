@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 import uuid
@@ -675,6 +676,7 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
         "file_id": None, "archivo": None, "fila_excel": None,
         "producto_chn": None, "grupo": [],
         "precio_usd": None, "piezas_grupo": None, "cbm_pieza": None,
+        "cbm_origen": None,
         "peso_total": None, "peso_pieza": None, "flete": None,
         "producto_mxn": None, "costo": None, "origen_prod": None,
         "caja_lwh": None, "pieza_lwh": None,
@@ -814,6 +816,9 @@ def _aplicar_renglon(fila: dict[str, Any], ix: packing_indice.Indice, *,
         "precio_usd": _r(dd["precio_usd"], 4),
         "piezas_grupo": _r(dd["piezas_grupo"], 3),
         "cbm_pieza": _r(dd["cbm_por_pieza"], 6),
+        # De dónde salió el volumen: lo necesita la procedencia para no acabar
+        # diciendo "no_parseado" de un renglón que sí se parseó.
+        "cbm_origen": dd.get("cbm_origen"),
         "caja_lwh": [_r(x, 2) for x in dd["caja_lwh"]],
         "pieza_lwh": [_r(x, 2) for x in dd["pieza_lwh"]],
         "peso_total": _r(dd["peso_total"], 3),
@@ -1081,6 +1086,87 @@ def agregar_archivo(jid: str, sku: str, url: str) -> dict[str, Any] | None:
 
 
 # ── Guardado (lo ÚNICO que escribe) ──────────────────────────────────────────
+# `cbm_origen` de este módulo → el vocabulario que acepta la tabla. Son dos
+# preguntas distintas metidas en una columna, así que el orden importa: si el
+# cartón se COMPARTE eso manda, porque es lo que obliga a repartir el flete y lo
+# que hace falta saber para releer el número. Solo cuando la caja es de un solo
+# SKU tiene sentido decir de qué columna salió su volumen.
+_CBM_ORIGEN = {
+    "volumen_total": "total_volume",
+    "columna_caja": "caja_propia",
+    "medidas": "caja_propia",
+    "sin_datos": "sin_datos",
+}
+
+
+# Igual que `carpeta.RE_COD` pero con las ramas ordenadas de MÁS a MENOS
+# específica, y es local a propósito: `RE_COD` lo usa el emparejado de archivos,
+# donde compara por prefijo y un dígito de menos no le duele. Aquí sí duele,
+# porque el código truncado se vuelve parte de la LLAVE de la tabla.
+_RE_CONTENEDOR = re.compile(
+    r"(?:SZLS\d{6,9}"          # el prefijo propio, antes que la forma genérica
+    r"|[A-Z]{4}[A-Z0-9]{8,14}"  # ONEYNB5BEK841700 y parientes
+    r"|[A-Z]{4}\d{6,7}"         # el contenedor estándar: MRKU3436938
+    r"|\d{9,12})")
+
+
+def _contenedor_de(archivo: str, ref: str) -> str:
+    """
+    El código de contenedor que le corresponde a ESTE archivo.
+
+    Se saca del NOMBRE DEL ARCHIVO, no de la referencia con la que se salió a
+    buscar, y la razón es que a veces no son el mismo embarque: la escalera
+    prueba las referencias de kubera y de Odoo, y el renglón puede aparecer en
+    el archivo de la otra. JUGU-0039-MUL se resolvió en
+    ``SZLS50224700=CI&PL`` mientras Odoo decía ``TXGU7222939 contenedor 7``.
+    Guardar el segundo junto al primero sería una procedencia que se contradice
+    sola, y el punto de esta tabla es poder volver al renglón.
+
+    La referencia queda de respaldo, y solo si trae un código reconocible: el
+    texto libre de Odoo (``MRKU3436938 contenedor 9``) no sirve tal cual porque
+    ``contenedor_base`` solo quita el sufijo ``- N``, así que ese ruido se
+    quedaría pegado en la llave y el mismo embarque abriría dos filas.
+
+    Y se toma el match MÁS LARGO, no el primero: ``RE_COD`` es una alternancia
+    y en Python gana la rama que empata antes, no la que empata más. Con
+    ``SZLS50214600`` la rama genérica ``[A-Z]{4}\\d{6,7}`` se lleva
+    ``SZLS5021460`` y se come el último dígito — un código truncado abre una
+    fila nueva por cada variante y rompe justo lo que la llave pretende unir.
+    """
+    for cand in (archivo, ref):
+        cands = [m.group(0) for m in _RE_CONTENEDOR.finditer((cand or "").upper())]
+        if cands:
+            return max(cands, key=len)
+    return comp.normalizar_contenedor(ref or "")
+
+
+def _registrar_procedencia(sku: str, fila: dict[str, Any]) -> None:
+    """Deja el archivo y los renglones de los que salió el costo de este SKU."""
+    archivo = (fila.get("archivo") or "").strip()
+    contenedor = _contenedor_de(archivo, fila.get("ref") or "")
+    # `grupo` trae el cartón COMPARTIDO; vacío significa caja propia, y entonces
+    # el renglón es uno: el suyo. La tabla exige al menos uno.
+    renglones = [int(r) for r in (fila.get("grupo") or []) if r] or (
+        [int(fila["fila_excel"])] if fila.get("fila_excel") else [])
+    if not (archivo and contenedor and renglones):
+        raise ValueError("falta archivo, contenedor o renglón")
+
+    compartida = len(renglones) > 1
+    origen = ("caja_compartida" if compartida
+              else _CBM_ORIGEN.get(fila.get("cbm_origen") or "", "no_parseado"))
+    piezas = fila.get("piezas_grupo")
+    cbm_pieza = fila.get("cbm_pieza")
+    costing_write.guardar_caja_compartida(
+        sku, contenedor, archivo, renglones,
+        piezas_grupo=float(piezas) if piezas else None,
+        # El CBM del CARTÓN, que es lo que se repartió: por pieza × piezas.
+        cbm_grupo=(round(float(cbm_pieza) * float(piezas), 6)
+                   if cbm_pieza and piezas else None),
+        cbm_origen=origen,
+        nota=f"validador de publicados · {fila.get('estado') or '—'}"
+             + (f" · peldaño {fila['peldano']}" if fila.get("peldano") else ""))
+
+
 def guardar(jid: str, skus: list[str],
             liberar_candado: list[str] | None = None) -> dict[str, Any] | None:
     """
@@ -1218,6 +1304,18 @@ def guardar(jid: str, skus: list[str],
             continue
 
         escritos += 1
+
+        # ── De dónde salió este costo ────────────────────────────────────────
+        # El costo por sí solo es una cifra sin origen: si mañana no cuadra, no
+        # hay cómo volver al renglón que lo produjo. Aquí queda el archivo y los
+        # renglones exactos. Va DESPUÉS de contar el escrito y en su propio try
+        # porque es RASTRO, no el dato: que falle la bitácora no puede tumbar un
+        # costo que ya quedó bien guardado.
+        try:
+            _registrar_procedencia(sku, fila)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("procedencia de %s no registrada: %s", sku, exc)
+
         detalle.append({"sku": sku, "costo": fila.get("costo"),
                         "costo_anterior": fila.get("costo_viejo")})
 

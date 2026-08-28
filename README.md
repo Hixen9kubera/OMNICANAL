@@ -1001,6 +1001,60 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.286.0 — De dónde salió cada costo, y quién ya lo validó
+
+Dos huecos que se veían al usar el validador de publicados: el costo no decía de
+dónde había salido, y la tabla de Costos no distinguía lo verificado de lo que
+nadie había mirado.
+
+**La procedencia se guarda.** Al escribir un costo, `packing_publicados` deja en
+`costing.caja_compartida` el archivo y los RENGLONES exactos del packing list de
+los que salió. Hasta ahora el costo era una cifra sin origen: si mañana no
+cuadraba, no había forma de volver al renglón que la produjo. Cuando el cartón se
+comparte se guardan TODOS los renglones del grupo, no solo el del SKU — el flete
+se repartió entre ésos y sin ellos el número no se reconstruye. Va en su propio
+`try` y después de contar el escrito: es rastro, no el dato, y que falle la
+bitácora no puede tumbar un costo bien guardado.
+
+Medido: **el 36% de los renglones vive en un cartón compartido** (2,990 de 8,334
+en 32 packing lists), con cartones de hasta 25 renglones. No es un caso raro.
+
+**El contenedor se saca del NOMBRE DEL ARCHIVO, no de la referencia.** A veces no
+son el mismo embarque: la escalera prueba las referencias de kubera y de Odoo, y
+el renglón puede aparecer en el archivo de la otra. JUGU-0039-MUL se resolvió en
+`SZLS50224700=CI&PL` mientras Odoo decía `TXGU7222939 contenedor 7`; guardar el
+segundo junto al primero sería una procedencia que se contradice sola.
+
+Y se toma el match **más largo**, no el primero: `RE_COD` es una alternancia y en
+Python gana la rama que empata antes, no la que empata más. Con `SZLS50214600` la
+rama genérica `[A-Z]{4}\d{6,7}` se llevaba `SZLS5021460` y se comía el último
+dígito — y ese código es parte de la LLAVE, así que un dígito de menos abre una
+fila por variante y rompe justo lo que la llave pretende unir. Verificado contra
+los 10 contenedores reales, cero fallos.
+
+`cbm_origen` deja de mentir: el módulo ya sabía de dónde salió el volumen, pero el
+dato no viajaba en la fila y todo se guardaba como `no_parseado`. Ahora dice
+`caja_compartida`, `total_volume` o `caja_propia`, y el cartón compartido manda —
+es lo que obliga a repartir el flete.
+
+**El chip de VALIDADO llega a la tabla de Costos.** Es el MISMO `ChipRevision` que
+pinta Análisis, no uno parecido: importa que "validado" se lea igual en las dos
+pantallas. El backend ya devolvía `revisado_at`/`revisado_por`/`revision_movida`
+desde la migración 0032 y `CostoRow` ya los declaraba; lo único que faltaba era
+pintarlos. Sin la marca, la tabla no distinguía un costo reconstruido contra el
+packing list —que está BLINDADO, "Regenerar y guardar" no lo pisa— de uno que
+nadie ha mirado.
+
+Los tres estados, no dos: sin marca, `VALIDADO`, y `VALIDADO ⚠` para el caso que
+un "sí/no" no sabe decir — se validó y DESPUÉS alguien movió el costo, así que la
+marca sigue puesta y ya no describe los números que estás viendo. TEC-0393-ROS
+está hoy en ese estado.
+
+Ojo al probar en local: **`SUPABASE_READ_COSTING` viene en `false` por defecto**, y
+con eso apagado el listado cae al fallback de MySQL congelado, donde `revisado_at`
+y `publicado_ml` NO EXISTEN. El chip sale vacío y el botón no sabe quién está
+publicado — no por un bug, sino por estar leyendo la base equivocada.
+
 ### 0.285.0 — El pool entregaba conexiones muertas y nadie lo comprobaba
 
 Alerta del 28-ago 01:05: *"Escritura de CHANNEL cayó a MySQL (tanda de 75):

@@ -22,6 +22,7 @@ import Pagination from "@/components/Pagination";
 import ResolverCostosModal from "@/components/ResolverCostosModal";
 import ValidarPublicadosModal from "@/components/ValidarPublicadosModal";
 import CajaMasterPanel from "@/components/CajaMasterPanel";
+import ChipRevision from "@/components/ChipRevision";
 import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
 import {
   ACENTO,
@@ -621,6 +622,15 @@ export default function CostosPage() {
                               ML
                             </span>
                           )}
+                          {/* El MISMO chip que pinta Análisis, no uno parecido:
+                              ya hubo precedente de lo que cuesta duplicar una
+                              etiqueta, y aquí importa que "validado" se lea
+                              igual en las dos pantallas. */}
+                          <ChipRevision
+                            revisadoAt={r.revisado_at}
+                            revisadoPor={r.revisado_por}
+                            movida={r.revision_movida}
+                          />
                         </div>
                         {r.nombre && <div className="line-clamp-1 max-w-[240px] text-xs text-slate-600">{r.nombre}</div>}
                       </td>
