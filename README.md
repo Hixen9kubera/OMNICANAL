@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.302.0 — La columna "Costo unitario" vuelve a ser la suma de sus dos vecinas
+
+La cabecera de esa columna promete `costo prod. MXN + flete CBM`, y el comentario
+del código lo repetía: *"la columna «Costo unitario» tiene que ser exactamente la
+suma de las dos columnas que tiene a la izquierda"*. Pero esa garantía vivía
+**solo en el camino de edición**: el renglón en reposo pintaba
+`costos_finales.costo_unitario`, que es una FOTO guardada. Bastaba con que esa
+tabla quedara vieja para que el renglón no cuadrara consigo mismo.
+
+Lo destapó Eduardo mirando `ORG-0319-PLA`: la pantalla decía `$102.98 + $63.16 =
+$167.37`. La suma es `$166.14`. El $167.37 se había grabado el **24-jul** y no se
+recalculó cuando el costo se validó el 25-ago.
+
+**Medido contra producción el 28-ago: 26 de 4,130 SKUs (0.6%)** no cuadraban. La
+mediana de la diferencia era CERO —casi todo el catálogo coincide al centavo—
+pero los que fallaban lo hacían en grande, y 25 de los 26 por más de un peso:
+
+| SKU | Suma real | Pintaba | Diferencia |
+|---|---|---|---|
+| `TEC-0572-NEG` | $2,003.22 | $542.31 | $1,460.91 |
+| `TEC-0384-PLA` | $88.00 | $1,265.38 | $1,177.38 |
+| `MUN-0065-ROS` | $503.43 | $60.12 | $443.31 |
+
+`TEC-0384-PLA` es el que más urge: Brandon lo validó el 28-ago en **$88.00** y
+esta pantalla seguía diciendo **$1,265.38**. Quien fije un precio leyendo eso lo
+pone 14× más caro.
+
+Son dos poblaciones distintas: **17 son viejos** (ambas fechas del 24-jul, sin
+firma — nunca coincidieron) y **9 son recientes**, donde alguien validó el costo
+y `costos_finales` no se recalculó.
+
+**El arreglo**: `vivo()` ahora suma en los dos caminos, editando o no, con un
+helper compartido (`sumaEnCentavos`) para que la aritmética sea idéntica.
+`costo_unitario` queda de RESPALDO, solo para el renglón al que le falta uno de
+los dos sumandos: ahí no hay suma que hacer y una foto vieja es mejor que un
+hueco.
+
+La suma va **en centavos enteros** a propósito: `102.98 + 63.16` en pesos da
+`166.14000000000001`. Redondear cada sumando a centavos —como se pintan— y sumar
+enteros hace que la columna de la derecha sea exactamente lo que el ojo suma a su
+izquierda.
+
+Verificado en el sandbox: 35 de 35 renglones visibles cumplen la invariante, y
+`TEC-1816-NEG` —uno de los seis que allá diferían por un centavo— pasa a mostrar
+`$84.55 + $4.56 = $89.11` en vez del `$89.10` que tenía guardado.
+
+**Esto NO recalcula nada**: solo deja de pintar el número viejo. Los 26 SKUs
+siguen con su `costos_finales` desfasado, y eso importa porque de ahí salen el
+**precio sugerido** y el **envío estimado**. Va como reporte al equipo de costeo,
+que es quien corrige en el sistema.
+
 ### v0.301.0 — El margen bruto como tarjeta, y el costo validado calla la alerta
 
 Dos cambios pedidos por Eduardo el 28-ago, los dos sobre la misma idea: que la

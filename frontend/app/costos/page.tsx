@@ -132,6 +132,23 @@ const seedEdicion = (r: CostoRow, tc: number): Edicion => ({
  * captura y manda el valor GUARDADO. Solo se convierte lo que de verdad se
  * tecleó.
  */
+/**
+ * Producto + flete, sumados EN CENTAVOS ENTEROS.
+ *
+ * Cada sumando se redondea a centavos ANTES de sumar —que es como se pintan las
+ * dos columnas— y la suma se hace en enteros para que no aparezca la basura de
+ * los flotantes (`102.98 + 63.16` da `166.14000000000001` sumando en pesos).
+ * Así la columna de la derecha es EXACTAMENTE lo que el ojo suma a su izquierda.
+ *
+ * `respaldo` solo se usa cuando falta uno de los dos sumandos.
+ */
+function sumaEnCentavos(
+  a: number | null, b: number | null, respaldo: number | null,
+): number | null {
+  if (a == null || b == null) return respaldo;
+  return (Math.round(a * 100) + Math.round(b * 100)) / 100;
+}
+
 function prodMxnDe(r: CostoRow, ed: Edicion | undefined, tc: number): number | null {
   if (!ed) return r.costo_producto;
   const usd = (ed.costo_producto ?? "").trim();
@@ -301,18 +318,34 @@ export default function CostosPage() {
 
   // Cálculo en vivo (CBM = vol×7500 MXN, costo = producto_MXN + CBM) mientras se
   // edita. costo_producto se ingresa en USD → se convierte a MXN con el TC.
+  //
+  // La columna "Costo unitario" es SIEMPRE la suma de las dos que tiene a la
+  // izquierda — se esté editando el renglón o no. Hasta ahora esa garantía
+  // vivía solo en el camino de edición: el renglón en reposo pintaba
+  // `costos_finales.costo_unitario`, que es una FOTO guardada, y bastaba con
+  // que esa tabla quedara vieja para que el renglón no cuadrara consigo mismo.
+  //
+  // Medido contra producción el 28-ago: 26 de 4,130 SKUs (0.6%) no cuadraban.
+  // La mediana de la diferencia era CERO —casi todos coinciden al centavo— pero
+  // los que fallaban lo hacían en grande: `TEC-0384-PLA`, validado por Brandon
+  // en $88.00, se pintaba aquí en $1,265.38. Quien fije un precio leyendo eso
+  // lo pone 14× más caro.
+  //
+  // `costo_unitario` queda de RESPALDO, solo para el renglón al que le falta
+  // una de las dos piezas: ahí no hay suma que hacer y una foto vieja es mejor
+  // que un hueco.
   function vivo(r: CostoRow) {
     const ed = ediciones[r.sku];
     if (!seleccion.has(r.sku) || !ed)
-      return { cbm: r.costo_cbm, costo: r.costo_unitario, prodMxn: r.costo_producto };
+      return { cbm: r.costo_cbm,
+               costo: sumaEnCentavos(r.costo_producto, r.costo_cbm, r.costo_unitario),
+               prodMxn: r.costo_producto };
     // Siempre se calcula sobre la PIEZA: en modo "caja" se deriva primero.
     const pz = porPieza(ed);
     const l = pz.largo || null, a = pz.ancho || null, h = pz.alto || null;
-    // Redondeado a centavos ANTES de sumar: la columna "Costo unitario" tiene
-    // que ser exactamente la suma de las dos columnas que tiene a la izquierda.
     const cpMxn = prodMxnDe(r, ed, tcNum());
     const cbm = l && a && h ? Math.round((l * a * h) / 1_000_000 * TARIFA_CBM * 100) / 100 : r.costo_cbm;
-    const costo = cpMxn != null && cbm != null ? Math.round((cpMxn + cbm) * 100) / 100 : r.costo_unitario;
+    const costo = sumaEnCentavos(cpMxn, cbm, r.costo_unitario);
     return { cbm, costo, prodMxn: cpMxn };
   }
 
