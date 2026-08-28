@@ -16,10 +16,15 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
 
 ## ESTADO OPERATIVO ACTUAL (la verdad desde el 17-jul-2026)
 
-- **WooCommerce es la FUENTE DE VERDAD de ventas E inventario.** Odoo está en
-  retiro: su stock se cargó a Woo el 17-jul (525 correcciones) y un vigilante
-  (`odoo_watch`, cada 30 min) solo AVISA de cambios en Odoo por la campana
-  (auto_push APAGADO para no pisar a Woo).
+- **VENTAS: WooCommerce es la fuente de verdad. INVENTARIO: ODOO es el MASTER**
+  (decisión de Brandon, 20-ago-2026 — antes lo era Woo y esta línea decía lo
+  contrario). La cadena es `Odoo → Woo → canales DROP`: desde el 28-ago
+  `STOCK_WATCH_ABSOLUTO=true` hace que Woo COPIE `max(0, free_qty)` en vez de
+  aplicar deltas. El delta divergía sin remedio (conserva la diferencia de base
+  para siempre) y **no veía las RESERVAS**: `VIA-0024-NEG` tenía 30 piezas con
+  29 comprometidas en borradores —1 vendible— y Woo ofrecía 14. Se vuelve a
+  delta con la misma variable, sin deploy, si Odoo dejara de registrar salidas.
+  `odoo_watch` (cada 30 min) sigue solo AVISANDO por la campana.
 - **Cada venta se congela como PEDIDO de WooCommerce** con el precio real de
   venta, comisión y neto en metas `_ml_*` (los precios de catálogo cambian a
   diario; el pedido es el registro histórico). Tabla de control: `pedidos_ml`
