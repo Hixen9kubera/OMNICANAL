@@ -85,6 +85,18 @@ const ESTADO_ODOO: Record<string, { txt: string; clase: string }> = {
   cancel: { txt: "Cancelada", clase: "bg-rose-100 text-rose-800" },
 };
 
+/** Las acciones que NO dejaron una orden en Odoo. Se rotulan aparte porque
+ *  confundir una simulación con una orden real es el peor error que puede
+ *  cometer quien lee esta pantalla. */
+const ACCION: Record<string, { txt: string; clase: string }> = {
+  simulado: { txt: "Simulación", clase: "border border-dashed border-slate-400 text-slate-500" },
+  nacio_cancelada: { txt: "Nació cancelada", clase: "bg-rose-50 text-rose-700" },
+  sku_sin_producto: { txt: "SKU sin producto", clase: "bg-rose-100 text-rose-800" },
+  apagado: { txt: "Apagado", clase: "bg-slate-100 text-slate-600" },
+  error: { txt: "Error", clase: "bg-rose-100 text-rose-800" },
+  no_se_pudo_cancelar: { txt: "No se pudo cancelar", clase: "bg-amber-100 text-amber-800" },
+};
+
 /** Los campos que viajan a Odoo en cada orden. Es la respuesta a "¿qué
  *  necesita el sistema para generar la orden de venta?" — y por eso dice de
  *  dónde sale cada uno, no solo cómo se llama. */
@@ -314,18 +326,25 @@ export default function AutomatizacionPage() {
 
         <div className="space-y-3">
           {ordenes.map((o) => {
-            const est = ESTADO_ODOO[o.estado ?? ""] ?? {
-              txt: o.accion,
-              clase: "bg-slate-100 text-slate-700",
-            };
+            const simulado = o.accion === "simulado";
+            // El estado de Odoo manda cuando la orden existe; si no existe,
+            // lo que hay que rotular es POR QUÉ no existe.
+            const est =
+              ESTADO_ODOO[o.estado ?? ""] ??
+              ACCION[o.accion] ?? { txt: o.accion, clase: "bg-slate-100 text-slate-700" };
             const parcial = o.cobertura === "parcial";
             return (
               <article
                 key={`${o.canal}-${o.external_order_id}`}
-                className="overflow-hidden rounded-xl border bg-white"
+                className={`overflow-hidden rounded-xl border bg-white ${
+                  simulado ? "border-dashed opacity-90" : ""
+                }`}
                 style={parcial ? { borderColor: "#fcd34d" } : undefined}
               >
-                <div className="h-0.5 w-full" style={{ background: TT.cian }} />
+                <div
+                  className="h-0.5 w-full"
+                  style={{ background: simulado ? "#cbd5e1" : TT.cian }}
+                />
                 <div className="p-4">
                   <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
                     <span className="font-mono text-base font-semibold">
@@ -334,6 +353,11 @@ export default function AutomatizacionPage() {
                     <span className={`rounded-full px-2.5 py-0.5 text-xs ${est.clase}`}>
                       {est.txt}
                     </span>
+                    {simulado && (
+                      <span className="text-xs italic text-slate-400">
+                        no se escribió en Odoo
+                      </span>
+                    )}
                     <span className="flex items-center gap-1 text-slate-500">
                       <Warehouse className="h-3.5 w-3.5" />
                       {o.almacen ?? "—"}

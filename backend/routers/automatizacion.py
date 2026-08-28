@@ -113,6 +113,73 @@ def ordenes_odoo(
     return {"ordenes": odoo_ventas_log.historial(limite, canal, solo_problemas)}
 
 
+@router.post("/backfill")
+async def backfill(
+    dias: int = Query(7, ge=1, le=30),
+    canal: str = Query("tiktok", description="tiktok | temu"),
+):
+    """
+    Rellena la bitácora con lo que el automatismo HABRÍA hecho en los últimos
+    N días. **No escribe una sola línea en Odoo.**
+
+    PARA QUÉ SIRVE. Sin esto, la pestaña nace vacía y hay que esperar a que
+    caigan ventas nuevas para ver algo — y con TikTok vendiendo ~6 al día, ver
+    un ejemplo de cada caso (creada, parcial, sin producto, nació cancelada)
+    puede tomar días. Esto reproduce la semana pasada de una vez.
+
+    LAS FILAS QUEDAN MARCADAS COMO `simulado`, y eso no es un detalle: quien
+    abra el tab tiene que poder distinguir de un golpe lo que de verdad pasó de
+    lo que se reconstruyó. Una simulación que se ve idéntica a la realidad es
+    peor que no tenerla.
+
+    Aplica la MISMA decisión que el seam, para que lo que se ve aquí sea lo que
+    va a pasar cuando se encienda — incluida la rama `nacio_cancelada`, que es
+    la mitad del volumen.
+
+    Idempotente: la llave es (canal, external_order_id), así que correrlo dos
+    veces no duplica.
+    """
+    from services import odoo_ventas_log, supabase_db as sdb
+
+    def _correr() -> dict:
+        ventas = sdb.fetch_all(f"""
+            select o.external_order_id id, o.estado_wc, o.creado_at,
+                   (extract(epoch from (o.actualizado_at - o.creado_at)) < 10) nacio_asi,
+                   json_agg(json_build_object(
+                       'sku', i.sku::text, 'cantidad', i.cantidad,
+                       'precio_unitario', i.precio_unitario, 'titulo', i.titulo)
+                       order by i.linea) items
+              from channel.orders o
+              join channel.order_items i
+                on i.canal = o.canal and i.external_order_id = o.external_order_id
+             where o.canal = %(c)s
+               and o.creado_at >= now() - interval '{int(dias)} days'
+             group by 1, 2, 3, 4
+             order by o.creado_at desc""", {"c": canal})
+
+        cuenta: dict[str, int] = {}
+        escritas = 0
+        for v in ventas:
+            if v["estado_wc"] == "cancelled" and v["nacio_asi"]:
+                # Misma rama que el seam: la venta apareció ya muerta.
+                r = {"ok": True, "accion": "nacio_cancelada", "canal": canal,
+                     "order_id": v["id"],
+                     "motivo": "la venta apareció ya cancelada: no se crea orden"}
+            else:
+                r = odoo_ventas.crear_orden(canal, v["id"],
+                                            v["creado_at"].isoformat(),
+                                            v["items"], dry_run=True)
+            acc = r.get("accion") or "error"
+            cuenta[acc] = cuenta.get(acc, 0) + 1
+            if odoo_ventas_log.registrar(canal, v["id"], r, v["items"]):
+                escritas += 1
+        return {"ok": True, "ventas_revisadas": len(ventas), "filas_escritas": escritas,
+                "por_accion": cuenta, "dias": dias, "canal": canal,
+                "nota": "simulación: NADA se escribió en Odoo"}
+
+    return await asyncio.to_thread(_correr)
+
+
 @router.get("/simular")
 async def simular(
     venta: str = Query(..., description="external_order_id de la venta"),

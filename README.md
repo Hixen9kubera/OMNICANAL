@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.297.0 — La pestaña de Automatización se puede llenar sin esperar ventas
+
+La pestaña nace vacía y solo se puebla cuando cae una venta nueva. Con TikTok
+vendiendo ~6 al día y **más de la mitad naciendo canceladas**, ver un ejemplo de
+cada caso podía tomar días — justo cuando lo que hace falta es revisar que el
+automatismo decide bien ANTES de encenderlo.
+
+`POST /api/automatizacion/backfill?dias=7` reproduce la ventana pedida aplicando
+**la misma decisión que el seam**, incluida la rama `nacio_cancelada`. Medido
+sobre los últimos 7 días: 40 ventas → 18 simuladas + 22 nacidas canceladas, y
+3 de las 18 con cobertura parcial, todas del mismo SKU (`COC-0145-NEG`, el que
+Gaby no podía confirmar: 0 piezas en los tres almacenes).
+
+**NADA se escribe en Odoo**: usa `dry_run=True`, que ignora las banderas por
+construcción. Idempotente por `(canal, external_order_id)`.
+
+**Y las filas quedan rotuladas `Simulación`**, con la tarjeta en línea punteada y
+un "no se escribió en Odoo" al lado. No es cosmética: una simulación que se ve
+idéntica a una orden real es peor que no tenerla — quien abre el tab a decidir
+tiene que distinguirlas de un golpe. De paso, las acciones que NO dejan orden
+(`nacio_cancelada`, `sku_sin_producto`, `no_se_pudo_cancelar`) dejan de salir
+como texto crudo y se rotulan con su color.
+
+Sigue pendiente la migración 0033: sin sus tablas esto revisa las ventas y
+escribe 0 filas (verificado: degrada con aviso, no revienta).
+
 ### v0.296.0 — El tutorial de Costos, dentro de la propia pantalla
 
 Los dos botones de Costos se confunden entre sí, y confundirlos es el riesgo
