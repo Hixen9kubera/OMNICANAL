@@ -22,7 +22,7 @@ from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
-from routers import (auth, automatizacion, canales, competencia, costos_publicados,
+from routers import (auth, canales, competencia, costos_publicados,
                      crear, fanout,
                      fba, fulfillment, ia, imagenes, metricas, migracion,
                      productos, publicaciones, publicar, resolver, sync, ventas,
@@ -182,7 +182,6 @@ app.include_router(costos_publicados.router)
 app.include_router(publicaciones.router)
 # Automatización: las órdenes de venta que el panel crea en Odoo (TikTok/Temu),
 # con la foto del stock al momento de cada venta.
-app.include_router(automatizacion.router)
 
 
 @app.get("/", tags=["meta"])
