@@ -58,7 +58,15 @@ def _get_pool():
             mincached=1,
             maxcached=4,
             blocking=True,
-            ping=1,  # psycopg2: 1 = ping al tomar del pool
+            # OJO: este ping NO SIRVE con psycopg2 y se deja solo por no
+            # cambiar el comportamiento del pool. Sus conexiones no tienen
+            # método `ping()`; DBUtils lo intenta, recibe AttributeError y
+            # entonces hace `self._ping = 0` y `reconnect = False` — apaga la
+            # comprobación PARA SIEMPRE en esa conexión (verificado en vivo el
+            # 28-ago-2026: `_ping` vale 0 tras la primera consulta).
+            # Consecuencia: el pool entrega conexiones muertas sin avisar. Quien
+            # cubre eso es `_reintentar_transitorio`, más abajo.
+            ping=1,
             dsn=settings.supabase_db_url,
             cursor_factory=RealDictCursor,
             connect_timeout=10,
@@ -69,6 +77,43 @@ def _get_pool():
 def _es_solo_lectura(exc: Exception) -> bool:
     """True si el error es el candado de solo-lectura heredado por el pooler."""
     return "read-only transaction" in str(exc).lower()
+
+
+def _es_conexion_muerta(exc: Exception) -> bool:
+    """
+    True si el pool entregó una conexión que ya estaba cerrada del otro lado.
+
+    Pasa porque el pool NO comprueba que sigan vivas (ver la nota del `ping` en
+    `_get_pool`): cuando Supavisor recicla, reinicia o hace failover, la
+    conexión del servidor muere y el siguiente cliente se la encuentra cerrada.
+    DBUtils tiene failover propio y `InterfaceError` sí está en su lista, pero
+    solo cubre la ejecución del cursor — si la conexión muere al confirmar o a
+    media tanda, el error sale entero. Alerta real: "Escritura de CHANNEL cayó a
+    MySQL (tanda de 75): InterfaceError: connection already closed"
+    (28-ago-2026, 01:05).
+    """
+    t = str(exc).lower()
+    return ("connection already closed" in t
+            or "connection is closed" in t
+            or "server closed the connection" in t
+            or "ssl connection has been closed" in t
+            or "connection not open" in t)
+
+
+def _reiniciar_pool() -> None:
+    """
+    Tira el pool entero; la siguiente llamada lo reconstruye con conexiones
+    nuevas. Es a lo bruto a propósito: si una del lote está muerta, lo más
+    probable es que las hermanas del mismo servidor también lo estén, y
+    devolver la muerta al pool solo la reparte al siguiente que pase.
+    """
+    global _pool
+    viejo, _pool = _pool, None
+    if viejo is not None:
+        try:
+            viejo.close()
+        except Exception:  # noqa: BLE001 — cerrar el pool viejo es cortesía
+            pass
 
 
 def _desinfectar() -> int:
@@ -184,17 +229,24 @@ def get_cursor() -> Iterator[Any]:
         conn.close()  # con PooledDB, DEVUELVE la conexión al pool
 
 
+# Las LECTURAS también se reintentan, pero solo por conexión muerta: el candado
+# de solo-lectura no las afecta (leer es justo lo que sí deja hacer). Repetir un
+# SELECT no tiene efectos secundarios, así que el reintento es gratis.
 def fetch_all(sql: str, params: tuple | dict | None = None) -> list[dict[str, Any]]:
-    with get_cursor() as cur:
-        cur.execute(sql, params)
-        return [dict(r) for r in cur.fetchall()]
+    def _hacer() -> list[dict[str, Any]]:
+        with get_cursor() as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+    return _reintentar_transitorio(_hacer)
 
 
 def fetch_one(sql: str, params: tuple | dict | None = None) -> dict[str, Any] | None:
-    with get_cursor() as cur:
-        cur.execute(sql, params)
-        row = cur.fetchone()
-        return dict(row) if row else None
+    def _hacer() -> dict[str, Any] | None:
+        with get_cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return dict(row) if row else None
+    return _reintentar_transitorio(_hacer)
 
 
 def fetch_scalar(sql: str, params: tuple | dict | None = None) -> Any:
@@ -204,21 +256,40 @@ def fetch_scalar(sql: str, params: tuple | dict | None = None) -> Any:
     return next(iter(row.values()))
 
 
-def _reintentar_si_solo_lectura(fn):
+def _reintentar_transitorio(fn):
     """
-    Corre `fn`; si truena por el candado heredado, destraba y reintenta UNA vez.
+    Corre `fn`; si truena por un fallo TRANSITORIO de la conexión, lo cura y
+    reintenta UNA vez. Dos fallos distintos, misma respuesta:
 
-    Solo envuelve ESCRITURAS: una lectura no se ve afectada por el candado. El
-    reintento es seguro porque `fn` no llegó a escribir nada — Postgres rechazó
-    la sentencia antes de aplicarla.
+      · CANDADO HEREDADO de solo-lectura → `_desinfectar()` y reintentar.
+        Seguro: Postgres rechazó la sentencia ANTES de aplicarla, así que `fn`
+        no llegó a escribir nada.
+
+      · CONEXIÓN MUERTA que el pool entregó → `_reiniciar_pool()` y reintentar.
+        Seguro por la misma razón: si la conexión estaba cerrada al tomarla, no
+        se aplicó nada. Y si murió a media transacción, Postgres la deshace al
+        perder la sesión — no queda media escritura.
+
+    UNA sola vez. Si el segundo intento también truena, no es transitorio y el
+    error sube: el llamador cae a MySQL y avisa, que es el comportamiento que ya
+    existía.
     """
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001
-        if not _es_solo_lectura(exc):
+        if _es_solo_lectura(exc):
+            _desinfectar()
+        elif _es_conexion_muerta(exc):
+            log.warning("conexión muerta del pool; se reconstruye y reintenta: %s", exc)
+            _reiniciar_pool()
+        else:
             raise
-        _desinfectar()
         return fn()
+
+
+# Nombre viejo: lo usaba el arreglo del candado (v0.215.0) antes de que el
+# reintento cubriera también la conexión muerta.
+_reintentar_si_solo_lectura = _reintentar_transitorio
 
 
 def execute(sql: str, params: tuple | dict | None = None) -> int:
@@ -232,7 +303,7 @@ def execute(sql: str, params: tuple | dict | None = None) -> int:
         with get_cursor() as cur:
             cur.execute(sql, params)
             return cur.rowcount
-    return _reintentar_si_solo_lectura(_hacer)
+    return _reintentar_transitorio(_hacer)
 
 
 def execute_returning(sql: str, params: tuple | dict | None = None) -> dict[str, Any] | None:
@@ -242,7 +313,7 @@ def execute_returning(sql: str, params: tuple | dict | None = None) -> dict[str,
             cur.execute(sql, params)
             row = cur.fetchone()
             return dict(row) if row else None
-    return _reintentar_si_solo_lectura(_hacer)
+    return _reintentar_transitorio(_hacer)
 
 
 def ping() -> bool:

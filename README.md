@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.285.0 — El pool entregaba conexiones muertas y nadie lo comprobaba
+
+Alerta del 28-ago 01:05: *"Escritura de CHANNEL cayó a MySQL (tanda de 75):
+InterfaceError: connection already closed"*. No es el candado de solo-lectura
+(v0.215.0) ni el timeout por candado: es una conexión que el pool entregó ya
+cerrada del otro lado.
+
+**El `ping` del pool era letra muerta.** La configuración decía
+`ping=1,  # psycopg2: 1 = ping al tomar del pool` — y eso no ocurre. Las
+conexiones de psycopg2 **no tienen `ping()`**; DBUtils lo intenta, recibe
+`AttributeError` y entonces hace `self._ping = 0` y `reconnect = False`:
+apaga la comprobación PARA SIEMPRE. Verificado en vivo contra una conexión del
+pool real: `_ping` vale **0** tras la primera consulta. O sea que el pool nunca
+comprobó que estuvieran vivas.
+
+**Por qué el failover de DBUtils no bastó.** Sí existe y `InterfaceError` sí
+está en su lista (`_failures`), pero solo envuelve los métodos del CURSOR. Si
+la conexión muere **entre la última sentencia y el `commit`**, el error sale
+entero — que es justo lo que se reprodujo: matar la conexión antes del commit
+da `InterfaceError: connection already closed` y DBUtils no lo recupera,
+mientras que matarla antes de un `execute` sí lo recupera solo.
+
+`_reintentar_transitorio` (antes `_reintentar_si_solo_lectura`) ahora cubre
+los dos fallos transitorios con la misma forma: candado heredado →
+`_desinfectar()`; conexión muerta → `_reiniciar_pool()`. UNA sola vez; si el
+segundo intento truena, el error sube y el llamador cae a MySQL como siempre.
+Reintentar es seguro en ambos casos: nada se aplicó — Postgres rechaza la
+sentencia antes (candado) o deshace la transacción al perder la sesión (muerte).
+
+Se extiende también a las LECTURAS (`fetch_all` / `fetch_one`, y `fetch_scalar`
+por herencia): el candado no las afecta, pero una conexión muerta sí, y repetir
+un SELECT no tiene efectos secundarios. Versión 0.285.0.
+
+---
+
 ### v0.283.0 — La categoría que Mercado Libre nunca sugiere, ahora se puede pegar
 
 Eduardo pidió publicar en **Hogar, Muebles y Jardín › Baños › Lavabos para Baño**
