@@ -819,14 +819,19 @@ export default function CostosPage() {
       {publicadosAbierto && (
         <ValidarPublicadosModal
           skus={[...seleccion]}
-          onCerrar={() => setPublicadosAbierto(false)}
-          onGuardado={() => {
-            // Mismo cierre que `regenerarBulk`: lo escrito ya no es "pendiente",
-            // así que la selección y las capturas huérfanas se van con él.
+          // La selección se limpia AL CERRAR, no al guardar. El modal se monta
+          // con `skus={[...seleccion]}`, así que vaciarla a media sesión le
+          // cambiaba la clave por debajo y lo reiniciaba al pronóstico: se
+          // veía como si la ventana se cerrara sola justo después de escribir,
+          // y se llevaba el resumen de lo que se saltó antes de poder leerlo.
+          onCerrar={() => {
+            setPublicadosAbierto(false);
             setSeleccion(new Set());
             setEdiciones({});
-            cargar();
           }}
+          // Guardar solo REFRESCA la tabla de atrás; la ventana se queda viva
+          // para poder corregir los que no entraron.
+          onGuardado={() => cargar()}
         />
       )}
 

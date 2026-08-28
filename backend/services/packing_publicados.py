@@ -695,6 +695,23 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
                            "(sin contenedor conocido o el archivo no se pudo leer)")
         return fila
 
+    # ── La publicación de ML: SIEMPRE, no solo cuando la escalera falla ──
+    # Antes esto vivía dentro del peldaño de IA, así que un empate por sha256
+    # llegaba a la pantalla sin foto de Mercado Libre y no había con qué
+    # contrastarlo. Y es al revés de lo que conviene: el empate exacto es
+    # justamente el que nadie va a mirar dos veces, así que si resultó ser la
+    # foto equivocada —un SKU reciclado, una foto repetida entre renglones— se
+    # va derecho al catálogo. Poder ver las tres (Odoo · publicación · packing
+    # list) es lo que vuelve auditable la pantalla.
+    #
+    # Cuesta una llamada por SKU y `cache_ml` la comparte entre variantes del
+    # mismo padre; frente a las dos llamadas de modelo del peldaño de IA, es
+    # barato.
+    _ml = _publicacion_ml(sku, pubs, cache_ml)
+    fila["titulo_ml"] = _ml.get("titulo") or None
+    if _ml.get("foto"):
+        fila["img_ml"] = packing_resolver._miniatura(_ml["foto"], _LADO_FOTO_UI)
+
     # ── Peldaño 0: la foto de Odoo ──
     mejor = None
     d0_reportado: int | None = None
@@ -726,10 +743,7 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
     veredicto: list[dict[str, Any]] = []
     fid_ia: str | None = None
     if mejor is None and usar_ia:
-        ml = _publicacion_ml(sku, pubs, cache_ml)
-        fila["titulo_ml"] = ml.get("titulo") or None
-        if ml.get("foto"):
-            fila["img_ml"] = packing_resolver._miniatura(ml["foto"], _LADO_FOTO_UI)
+        ml = _ml                       # ya se trajo arriba, para todos los SKUs
         if ml.get("titulo") and ml.get("foto"):
             tokens = [t for t in _norm(ml["titulo"]).split()
                       if len(t) > 2 and t not in _VACIAS]

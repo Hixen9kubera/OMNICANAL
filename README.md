@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.291.0 — Las tres fotos a la vista, y el aviso deja de ser del navegador
+
+Tres cosas que salieron de usar la pantalla, no de leerla.
+
+**La foto de Mercado Libre se trae SIEMPRE.** Vivía dentro del peldaño de IA
+(`if mejor is None and usar_ia`), así que un empate por sha256 llegaba a la
+pantalla sin foto de la publicación y no había con qué contrastarlo. Es al revés
+de lo que conviene: el empate exacto es justamente el que nadie va a mirar dos
+veces, y si resultó ser la foto equivocada —un SKU reciclado, una foto repetida
+entre renglones— se va derecho al catálogo. Cuesta una llamada por SKU, que
+`cache_ml` comparte entre variantes del mismo padre; frente a las dos llamadas de
+modelo del peldaño de IA, es barato.
+
+**La columna FOTO enseña las tres**, con su letra debajo (O · ML · PL). Antes
+pintaba `img_pl || img_odoo || img_ml` — la primera que hubiera—, así que la
+comparación que hay que hacer quedaba escondida detrás de un clic.
+
+**El aviso de guardado es un popup de la aplicación**, no `window.confirm`. El
+del navegador se lee como un error del sitio, no deja formatear nada —y lo que se
+va a pisar es una tabla, no una tira de texto— y hay navegadores que lo suprimen.
+Ahora enseña cuántos SKUs, la suma de los costos nuevos, a cuáles se les va a
+LIBERAR el candado (con sus nombres) y cuáles se van a SALTAR. El resumen de
+después también: una tabla con cada SKU saltado y su motivo, en vez de un
+`window.alert`.
+
+**Y la ventana ya no se cierra sola al guardar.** Ése era el defecto de fondo:
+`onGuardado` limpiaba la selección de la tabla, y como el modal se monta con
+`skus={[...seleccion]}`, vaciarla le cambiaba la clave por debajo y lo reiniciaba
+al pronóstico — se veía como si se cerrara sola, y se llevaba el resumen antes de
+poder leerlo. Ahora guardar solo REFRESCA la tabla de atrás; la selección se
+limpia al CERRAR, y los que se saltaron se pueden corregir ahí mismo.
+
+Las fotos no se guardan en ningún lado: viajan como `data:` URI dentro del JSON
+del trabajo, generadas al vuelo desde la memoria del job (que dura 3 h). No hay
+tabla, no hay Storage, no hay archivo en disco — la pantalla es de un solo uso y
+las fotos se mueren con ella.
+
 ### v0.290.0 — Alistamiento del corte: los datos ya están del otro lado
 
 `probar_corte_total.py` prueba que el **código** vive sin MySQL, en el sandbox.

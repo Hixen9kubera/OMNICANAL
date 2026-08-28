@@ -55,6 +55,7 @@ import type {
   FilaPublicado,
   PreflightResp,
   PublicadoOmitido,
+  PublicadosGuardado,
 } from "@/lib/types";
 
 interface Props {
@@ -181,6 +182,16 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
   const [vista, setVista] = useState<"todos" | "revisar" | "resueltos">("todos");
   const [guardando, setGuardando] = useState(false);
   const [urlManual, setUrlManual] = useState<Record<string, string>>({});
+  // El aviso de "esto escribe en la base" y el resumen de lo que pasó viven
+  // DENTRO de la pantalla, no en un `window.confirm`. El del navegador se ve
+  // como un error del sitio, no se puede leer con calma —es una sola tira de
+  // texto— y en algunos navegadores ni sale. Aquí lo importante es que se
+  // entienda qué se va a pisar antes de apretar.
+  const [confirmar, setConfirmar] = useState<{
+    lista: FilaPublicado[]; total: number;
+    conCandado: FilaPublicado[]; bloqueados: FilaPublicado[];
+  } | null>(null);
+  const [resultado, setResultado] = useState<PublicadosGuardado | null>(null);
   const [ocupado, setOcupado] = useState<string | null>(null);
   // El sembrado de aprobados se hace UNA vez al terminar: si se repitiera en
   // cada poll, borraría las casillas que el usuario ya movió a mano.
@@ -267,45 +278,37 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
     [jid, urlManual, releer, setError],
   );
 
-  const guardar = useCallback(async () => {
+  /** Paso 1: enseñar qué se va a escribir. No toca la base. */
+  const guardar = useCallback(() => {
     if (!jid || !aprobados.size) return;
     const lista = filas.filter((f) => aprobados.has(f.sku));
-    const conCandado = lista.filter((f) => f.revisado_at && liberar.has(f.sku));
-    const bloqueados = lista.filter((f) => f.revisado_at && !liberar.has(f.sku));
-    const total = lista.reduce((a, f) => a + (f.costo ?? 0), 0);
-    const ok = window.confirm(
-      `Se van a escribir ${lista.length} SKUs en costos_validados `
-      + `(${mxn(total)} en costos nuevos, sumados).\n\n`
-      + `Esto reemplaza el costo actual de esos productos y afecta el precio `
-      + `sugerido de Mercado Libre, Amazon, TikTok, Temu y Walmart.\n\n`
-      + (conCandado.length
-        ? `${conCandado.length} tienen COSTO VALIDADO y se les va a LIBERAR el candado antes de escribir.\n`
-        : "")
-      + (bloqueados.length
-        ? `${bloqueados.length} tienen COSTO VALIDADO sin liberar: esos se van a saltar.\n`
-        : "")
-      + `\nCada SKU escrito queda marcado como COSTO VALIDADO.\n\n¿Continuar?`,
-    );
-    if (!ok) return;
+    setConfirmar({
+      lista,
+      total: lista.reduce((a, f) => a + (f.costo ?? 0), 0),
+      conCandado: lista.filter((f) => f.revisado_at && liberar.has(f.sku)),
+      bloqueados: lista.filter((f) => f.revisado_at && !liberar.has(f.sku)),
+    });
+  }, [jid, aprobados, liberar, filas]);
+
+  /** Paso 2: escribir de verdad, ya con el visto bueno. */
+  const escribir = useCallback(async () => {
+    if (!jid) return;
+    setConfirmar(null);
     setGuardando(true);
     try {
       const r = await guardarPublicados(jid, [...aprobados], [...liberar]);
-      const partes = [`${r.escritos} SKUs escritos`];
-      if (r.saltados.length) partes.push(`${r.saltados.length} saltados`);
-      if (r.errores.length) partes.push(`${r.errores.length} con error`);
-      const detalle = [
-        ...r.saltados.map((s) => `· ${s.sku} — ${s.detalle || motivoTexto(s.motivo)}`),
-        ...r.errores.map((s) => `· ${s.sku} — ${s.error}`),
-      ];
-      window.alert(partes.join(" · ") + (detalle.length ? `\n\n${detalle.join("\n")}` : ""));
+      setResultado(r);
       setError(null);
+      // Refresca la tabla de atrás, pero la ventana SE QUEDA: el resumen dice
+      // qué se saltó y por qué, y cerrarla aquí lo tiraba antes de leerlo.
       if (r.escritos > 0) onGuardado?.();
+      if (r.escritos > 0) await releer();
     } catch (e) {
       setError(mensajeDeError(e, "No se pudieron guardar los costos."));
     } finally {
       setGuardando(false);
     }
-  }, [jid, aprobados, liberar, filas, onGuardado, setError]);
+  }, [jid, aprobados, liberar, onGuardado, releer, setError]);
 
   const toggleAprobado = (sku: string) =>
     setAprobados((p) => {
@@ -631,6 +634,125 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
           )}
         </div>
       </div>
+
+      {/* ── Los dos avisos que antes eran del NAVEGADOR ─────────────────────
+          `window.confirm` y `window.alert` no servían aquí: se ven como un
+          error del sitio, no dejan formatear nada —lo que se va a pisar es una
+          tabla, no una tira de texto— y hay navegadores que los suprimen. Van
+          encima del modal (z-60) y NO lo cierran: el resumen tiene que poder
+          leerse con las filas todavía a la vista. */}
+      {confirmar && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <ShieldAlert size={20} className="text-amber-500" />
+              <h3 className="text-base font-bold text-slate-800">
+                Vas a escribir {confirmar.lista.length} costo
+                {confirmar.lista.length === 1 ? "" : "s"}
+              </h3>
+            </div>
+            <p className="mb-3 text-sm text-slate-600">
+              Reemplaza el costo actual de esos productos y mueve el precio
+              sugerido en <b>Mercado Libre, Amazon, TikTok, Temu y Walmart</b>.
+              Cada uno queda marcado como <b>COSTO VALIDADO</b>.
+            </p>
+            <div className="mb-3 rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-500">SKUs</span>
+                <b className="text-slate-800">{confirmar.lista.length}</b>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Suma de los costos nuevos</span>
+                <b className="text-slate-800">{mxn(confirmar.total)}</b>
+              </div>
+            </div>
+            {confirmar.conCandado.length > 0 && (
+              <p className="mb-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800">
+                <Lock size={12} className="mr-1 inline" />
+                A <b>{confirmar.conCandado.length}</b> se les va a{" "}
+                <b>liberar el candado</b> antes de escribir:{" "}
+                {confirmar.conCandado.map((f) => f.sku).join(", ")}
+              </p>
+            )}
+            {confirmar.bloqueados.length > 0 && (
+              <p className="mb-2 rounded-lg bg-slate-100 p-2.5 text-xs text-slate-600">
+                <b>{confirmar.bloqueados.length}</b> tienen COSTO VALIDADO sin
+                liberar y <b>se van a saltar</b>:{" "}
+                {confirmar.bloqueados.map((f) => f.sku).join(", ")}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmar(null)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={escribir}
+                className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-white"
+                style={{ background: COLOR }}
+              >
+                <Save size={14} /> Escribir {confirmar.lista.length}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {resultado && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              {resultado.escritos > 0 ? (
+                <Check size={20} className="text-emerald-500" />
+              ) : (
+                <AlertTriangle size={20} className="text-amber-500" />
+              )}
+              <h3 className="text-base font-bold text-slate-800">
+                {resultado.escritos} costo
+                {resultado.escritos === 1 ? "" : "s"} escrito
+                {resultado.escritos === 1 ? "" : "s"}
+              </h3>
+            </div>
+            {(resultado.saltados.length > 0 || resultado.errores.length > 0) && (
+              <div className="mb-3 overflow-y-auto rounded-lg border border-slate-200">
+                <table className="w-full text-xs">
+                  <tbody>
+                    {resultado.saltados.map((x) => (
+                      <tr key={`s-${x.sku}`} className="border-b border-slate-100 last:border-0">
+                        <td className="px-3 py-2 font-mono text-slate-600">{x.sku}</td>
+                        <td className="px-3 py-2 text-amber-700">
+                          se saltó — {x.detalle || motivoTexto(x.motivo)}
+                        </td>
+                      </tr>
+                    ))}
+                    {resultado.errores.map((x) => (
+                      <tr key={`e-${x.sku}`} className="border-b border-slate-100 last:border-0">
+                        <td className="px-3 py-2 font-mono text-slate-600">{x.sku}</td>
+                        <td className="px-3 py-2 text-rose-700">error — {x.error}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="mb-4 text-xs text-slate-500">
+              La ventana sigue abierta a propósito: el análisis vive en memoria y
+              los que se saltaron se pueden corregir aquí mismo.
+            </p>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setResultado(null)}
+                className="rounded-lg px-4 py-2 text-sm font-semibold text-white"
+                style={{ background: COLOR }}
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -933,20 +1055,44 @@ function FilaResultado({
             className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
           />
         </td>
+        {/* LAS TRES, no la primera que haya. Antes esta celda pintaba
+            `img_pl || img_odoo || img_ml` y enseñaba UNA sola: justo la
+            comparación que hay que hacer —¿es el mismo producto?— quedaba
+            escondida detrás de un clic. Cada miniatura lleva su letra debajo
+            para saber cuál es cuál sin pasar el mouse. */}
         <td className="px-2 py-2 align-top">
-          <button onClick={onAbrir} title="Ver las tres fotos y el veredicto">
-            {f.img_pl || f.img_odoo || f.img_ml ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={(f.img_pl || f.img_odoo || f.img_ml) as string}
-                alt=""
-                className="h-11 w-11 rounded border border-slate-200 object-cover"
-              />
-            ) : (
-              <div className="flex h-11 w-11 items-center justify-center rounded bg-slate-100 text-slate-300">
-                <ImageIcon size={14} />
-              </div>
-            )}
+          <button
+            onClick={onAbrir}
+            title="Ver las tres fotos en grande y el veredicto"
+            className="flex items-start gap-1"
+          >
+            {([
+              ["O", f.img_odoo, "Odoo"],
+              ["ML", f.img_ml, "publicación de Mercado Libre"],
+              ["PL", f.img_pl, "renglón del packing list"],
+            ] as const).map(([letra, src, que]) => (
+              <span key={letra} className="flex flex-col items-center gap-0.5">
+                {src ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={src}
+                    alt={que}
+                    title={`Foto de ${que}`}
+                    className="h-11 w-11 rounded border border-slate-200 object-cover"
+                  />
+                ) : (
+                  <span
+                    title={`Sin foto de ${que}`}
+                    className="flex h-11 w-11 items-center justify-center rounded border border-dashed border-slate-200 bg-slate-50 text-slate-300"
+                  >
+                    <ImageIcon size={12} />
+                  </span>
+                )}
+                <span className="text-[8px] font-bold uppercase text-slate-400">
+                  {letra}
+                </span>
+              </span>
+            ))}
           </button>
         </td>
         <td className="max-w-[220px] px-2 py-2 align-top">
