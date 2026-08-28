@@ -583,9 +583,36 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         # El reclamo se suelta si no llegó a pedido: dejarlo puesto haría que
         # el siguiente aviso viera "ya reclamada" y no la creara NUNCA — la
         # venta se perdería en silencio, peor que el duplicado que se evita.
+        #
+        # PERO ANTES SE LE PREGUNTA A WOO (28-ago-2026). "Falló" no significa
+        # "no se creó": si el POST llega, Woo crea el pedido y la RESPUESTA se
+        # pierde (timeout, corte), desde aquí se ve igual que un fallo. Soltar
+        # el reclamo en ese caso no evita perder la venta —ya está vendida—,
+        # GARANTIZA el duplicado: el reintento no encuentra registro y crea
+        # otro. Fue lo que pasó con las dos órdenes de Amazon de esa madrugada:
+        # 702-4138910-3750634 → #134246 huérfano + #134247, con 48 s entre el
+        # pedido y la fila del reclamo.
+        #
+        # Si Woo YA lo tiene, el reclamo se queda puesto: el siguiente aviso cae
+        # en la adopción que ya existe arriba (`pedido_por_ml_order_id`) y
+        # completa el registro sobre el pedido que hay. Ni venta perdida ni
+        # duplicado. Si Woo no lo tiene, se suelta como siempre.
         if reclamo_mio:
-            await asyncio.to_thread(
-                orders_write.liberar, cnl, cta, str(order_id))
+            ya_en_woo = None
+            try:
+                from services import wp_db  # local: evita ciclo de importación
+                ya_en_woo = await asyncio.to_thread(
+                    wp_db.pedido_por_ml_order_id, str(order_id))
+            except Exception:  # noqa: BLE001 — sin respuesta se decide como antes
+                ya_en_woo = None
+            if ya_en_woo:
+                log.warning(
+                    "orden %s: falló DESPUÉS de crear #%s en Woo; el reclamo se "
+                    "queda puesto para que el reintento lo adopte en vez de "
+                    "duplicarlo (%s)", order_id, ya_en_woo, exc)
+            else:
+                await asyncio.to_thread(
+                    orders_write.liberar, cnl, cta, str(order_id))
         return {"ok": False, "motivo": f"error al crear pedido: {exc}"}
 
     # ORDEN (v0.177.0): el REGISTRO va ANTES de la compensación, no al revés

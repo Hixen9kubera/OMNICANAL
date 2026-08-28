@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.287.0 — "Falló" no es lo mismo que "no se creó"
+
+Dos órdenes de Amazon duplicadas la madrugada del 28-ago:
+`702-4138910-3750634` → #134246 + #134247 y `702-6678336-2181835` → #134251 +
+#134252. El candado de idempotencia (v0.176.0) **no estaba ausente ni roto**:
+`channel.orders` tenía UNA sola fila por orden y su llave única aguantó. El
+problema es que la fila nació **48 segundos DESPUÉS** del primer pedido.
+
+**Lo que pasa.** El reclamo se pide antes de crear, correcto. Pero si la
+creación truena, el `except` suelta el reclamo — y lo soltaba **también cuando
+Woo ya había creado el pedido**. Ése es el caso real: el POST llega, Woo crea, y
+la RESPUESTA se pierde (timeout, corte). Desde el backend se ve idéntico a un
+fallo. Se suelta el reclamo, el reintento no encuentra registro, y crea otro.
+El primero queda huérfano en Woo sin que nadie se entere.
+
+El comentario viejo defendía el intercambio: *"dejarlo puesto haría que el
+siguiente aviso no la creara NUNCA — la venta se perdería en silencio, peor que
+el duplicado"*. Es cierto, pero hay una tercera salida: **preguntarle a Woo
+antes de soltar**. Si Woo ya lo tiene, el reclamo se queda puesto y el siguiente
+aviso cae en la adopción que YA existía arriba (`pedido_por_ml_order_id`), que
+completa el registro sobre el pedido que hay. Ni venta perdida ni duplicado. Si
+Woo no lo tiene, se suelta como siempre.
+
+Verificado con las órdenes reales: `pedido_por_ml_order_id` encuentra los
+pedidos de **Amazon** por `_ml_order_id` e ignora la papelera (702-6678336…
+→ #134252, con #134251 ya en papelera). Y las dos ramas probadas contra
+producción: sin pedido en Woo el reclamo se suelta; con pedido, sobrevive.
+
+Los dos huérfanos (#134246, #134251) fueron a papelera. **Ninguno descontó
+stock** —los cuatro son FBA— así que no hubo nada que compensar; el script
+comprueba `_reduced_stock` y aborta si alguno hubiera descontado. Versión 0.287.0.
+
+---
+
 ### v0.286.0 — De dónde salió cada costo, y quién ya lo validó
 
 Dos huecos que se veían al usar el validador de publicados: el costo no decía de
