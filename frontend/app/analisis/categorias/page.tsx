@@ -25,7 +25,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ChevronRight, Loader2, Search, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
-import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
+import { avisoCostoImplausible, costoImplausible, tonoMargen } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
 
 interface CuentaVenta { cuenta: string; uds: number; venta: number }
@@ -139,7 +139,7 @@ function CeldaMargen({ venta, ventaMedible, costoFinal, costoBase, bold }: {
   const tono = dudoso
     ? "text-amber-600"
     : m.parcial ? "text-slate-400"
-    : m.pct < 20 ? "text-red-500" : "text-emerald-600";
+    : tonoMargen(m.pct);
   return (
     <span className={`inline-flex items-center gap-0.5 tabular-nums ${bold ? "font-bold" : "font-semibold"} ${tono}`}
           title={dudoso ? avisoCostoImplausible(ventaMedible, costoBase ?? 0) + "\n\n" + m.titulo

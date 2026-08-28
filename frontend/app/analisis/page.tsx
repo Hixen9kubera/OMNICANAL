@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BadgePercent, CalendarDays, RefreshCw, X } from "lucide-react";
 import MargenesRealesModal from "@/components/MargenesRealesModal";
 import { API_BASE, fetchSesion } from "@/lib/api";
-import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
+import { avisoCostoImplausible, costoImplausible, tonoMargen } from "@/lib/margen";
 import Ayuda from "@/components/Ayuda";
 import PanelHover from "@/components/PanelHover";
 import ChipRevision from "@/components/ChipRevision";
@@ -1244,7 +1244,7 @@ function Margen({ fila }: { fila: Fila }) {
              + ` (${fMoney(precio, 2)})`}
     >
       <div className={`flex items-center justify-end gap-1 font-semibold tabular-nums ${
-          dudoso ? "text-amber-600" : m < 20 ? "text-red-500" : "text-emerald-600"}`}>
+          dudoso ? "text-amber-600" : tonoMargen(m)}`}>
         {dudoso && <AlertTriangle size={11} className="shrink-0" />}
         {fNum(m, 1)}%
       </div>
@@ -1704,7 +1704,7 @@ function ModalCanales({ fila, onClose }: { fila: Fila; onClose: () => void }) {
 
   const g = datos?.global;
   const tonoM = (m: number | null) =>
-    m == null ? "text-slate-300" : m < 20 ? "text-red-500" : "text-emerald-600";
+    tonoMargen(m);
 
   return (
     <div

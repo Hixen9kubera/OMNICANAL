@@ -119,3 +119,44 @@ export function margenBruto(
   const neto = precioSinIva(p);
   return ((neto - c) / neto) * 100;
 }
+
+/**
+ * EL COLOR DE UN MARGEN: verde si gana, rojo si pierde (Eduardo, 21-ago-2026).
+ *
+ * ANTES el umbral era 20%: `margen < 20 ? rojo : verde`. La intención era buena
+ * —avisar de un margen delgado— pero el efecto era mentir sobre el signo. Un
+ * producto que dejaba 15.5% se pintaba EXACTAMENTE igual que uno que perdía
+ * 30%, y el rojo se lee como "este producto pierde dinero". En la vista del
+ * 21-ago había cinco renglones positivos (2.9%, 5.1%, 8.6%, 15.5%, 15.6%)
+ * pintados como pérdidas.
+ *
+ * El color contesta UNA pregunta —¿gana o pierde?— y la contesta bien. Qué tan
+ * delgado es el margen ya lo dice la cifra, que está ahí al lado.
+ *
+ * El ámbar NO entra aquí: está reservado para el costo dudoso
+ * (`costoImplausible`), que es una afirmación distinta —"no te fíes de este
+ * número"— y mezclarla con la escala de bueno/malo las vuelve ilegibles a las
+ * dos. Por eso quien llama evalúa el ámbar ANTES de pedir este tono.
+ *
+ * Vive aquí y no en cada página porque la regla estaba copiada en cuatro
+ * lugares (tabla de Análisis, desglose por canal, popup de más vendidos y
+ * Categorías) y ya habían empezado a divergir.
+ *
+ * ⚠ EL COLOR ES FIEL A LA CIFRA; LA CIFRA TODAVÍA NO LO ES. `margen_pct` y
+ * `margen_neto_pct` comparan un precio CON IVA contra costos SIN IVA, así que
+ * vienen ~14 puntos altos (ver `margenBruto` arriba: el equilibrio real cae en
+ * 13.79% de esta escala, no en 0). Medido el 21-ago sobre el top 10 de 30 días:
+ * MUE-0163-TEL muestra +3.8% y es −11.6%; TEC-0794-…GUANTS +1.9% y es −13.8%;
+ * TEC-0552-NEG +8.7% y es −5.9%. Tres de diez cambian de signo, y esos tres se
+ * pintan VERDES perdiendo dinero.
+ *
+ * Eduardo lo decidió así el 21-ago sabiendo esto: el umbral de 20% mentía sobre
+ * el signo de TODOS los renglones entre 0 y 20, y esto miente sobre tres. La
+ * cura no es otro umbral —el 20 le atinaba al equilibrio por accidente y por
+ * seis puntos— sino descontarle el IVA al margen. Cuando eso pase, esta función
+ * queda correcta sin tocarle una línea.
+ */
+export function tonoMargen(margen: number | null | undefined): string {
+  if (margen == null || !Number.isFinite(Number(margen))) return "text-slate-300";
+  return Number(margen) < 0 ? "text-red-500" : "text-emerald-600";
+}

@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BadgePercent, RefreshCw, Tag, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
-import { avisoCostoImplausible, costoImplausible } from "@/lib/margen";
+import { avisoCostoImplausible, costoImplausible, tonoMargen } from "@/lib/margen";
 import PanelHover from "@/components/PanelHover";
 import ChipRevision from "@/components/ChipRevision";
 import { CUENTA_DOT, CUENTA_INI, CUENTA_NOMBRE } from "@/lib/canales";
@@ -182,7 +182,7 @@ function Margen({ f }: { f: Fila }) {
     <div title={dudoso ? avisoCostoImplausible(f.precio_prom!, f.costo_base!) : undefined}>
       <div className={`flex items-center justify-end gap-1 font-bold tabular-nums ${
           dudoso ? "text-amber-600"
-          : f.margen_pct < 20 ? "text-red-500" : "text-emerald-600"}`}>
+          : tonoMargen(f.margen_pct)}`}>
         {dudoso && <AlertTriangle size={11} className="shrink-0" />}
         {fNum(f.margen_pct, 1)}%
       </div>
@@ -313,7 +313,6 @@ function margenDelGrupo(filas: Fila[]) {
 function MargenGrupo({ filas }: { filas: Fila[] }) {
   const m = margenDelGrupo(filas);
   if (m.pct == null) return null;
-  const neg = m.pct < 0;
   return (
     <div
       className="ml-auto flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5"
@@ -336,8 +335,7 @@ ${m.sinDato} sin margen calculable (falta costo o comisión).` : "")
       <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
         Margen del grupo
       </span>
-      <span className={`text-base font-bold tabular-nums ${
-        neg ? "text-red-500" : "text-emerald-600"}`}>
+      <span className={`text-base font-bold tabular-nums ${tonoMargen(m.pct)}`}>
         {fNum(m.pct, 1)}%
       </span>
       {(m.dudosas > 0 || m.sinDato > 0) && (

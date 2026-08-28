@@ -3843,6 +3843,44 @@ Ocultar que se excluyó sería la otra mitad del problema, así que el conteo va
 lado del número («9 de 10») y el tooltip dice cuáles quedaron fuera, por qué, y
 cuánto daría el grupo con ellos dentro.
 
+### 0.254.0 — El margen se pinta por el SIGNO, no por un umbral
+
+Eduardo: *"que el margen cuando sea positivo sea verde y si es negativo se
+vuelva rojo"*.
+
+La regla era `margen < 20 ? rojo : verde`. La intención era buena —avisar de un
+margen delgado— pero el efecto era **mentir sobre el signo**: un producto que
+deja 15.5% se pintaba EXACTAMENTE igual que uno que pierde 30%, y el rojo se lee
+como "este producto pierde dinero". En la vista del 21-ago había **cinco
+renglones positivos pintados como pérdidas** (2.9%, 5.1%, 8.6%, 15.5%, 15.6%).
+
+El color contesta UNA pregunta —¿gana o pierde?— y ahora la contesta bien. Qué
+tan delgado es el margen ya lo dice la cifra, que está al lado.
+
+**El ámbar no se toca**: sigue reservado para el costo dudoso, que es una
+afirmación distinta —"no te fíes de este número"— y mezclarla con la escala de
+bueno/malo las vuelve ilegibles a las dos. Quien pinta evalúa el ámbar ANTES de
+pedir el tono.
+
+La regla estaba **copiada en cuatro lugares** (tabla de Análisis, desglose por
+canal, popup de más vendidos y Categorías) y ya había empezado a divergir. Ahora
+vive en `lib/margen.ts::tonoMargen()`, junto al umbral del costo dudoso, que es
+el otro juicio de color de la casa.
+
+**LO QUE ESTE CAMBIO NO ARREGLA, Y SE DECIDIÓ SABIÉNDOLO.** El margen que se
+pinta compara un precio CON IVA contra costos SIN IVA (el hallazgo de la sesión
+de márgenes, v0.303–v0.304), así que viene ~14 puntos alto: el equilibrio real
+cae en **13.79%** de esta escala, no en 0. Medido sobre el top 10 de 30 días,
+**tres de diez cambian de signo** al quitarle el IVA — `MUE-0163-TEL` muestra
++3.8% y es −11.6%; `TEC-0794-…GUANTS` +1.9% y es −13.8%; `TEC-0552-NEG` +8.7% y
+es −5.9%. Esos tres quedan pintados de verde perdiendo dinero.
+
+Se subió igual, con el dato sobre la mesa (Eduardo, 21-ago): el umbral de 20%
+mentía sobre el signo de TODOS los renglones entre 0 y 20, y esto miente sobre
+tres. La cura no es mover el umbral —el 20 le atinaba al equilibrio por
+accidente y por seis puntos— sino **descontarle el IVA al margen**. Cuando eso
+pase, `tonoMargen()` queda correcta sin tocarle una línea.
+
 ### v0.252.0 — El KPI «Activos» no contaba activos
 
 Eduardo: *"en el panel de análisis tengo números diferentes para activas totales
