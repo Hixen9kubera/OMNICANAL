@@ -826,8 +826,9 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                 if orden.get("guia") or orden.get("paqueteria"):
                     from services import odoo_ventas_log as _log
                     await asyncio.to_thread(
-                        _log.actualizar_guia, canal_venta, str(order_id),
-                        orden.get("guia") or "", orden.get("paqueteria") or "")
+                        _log.actualizar_guia, canal_venta, orden["cuenta"],
+                        str(order_id), orden.get("guia") or "",
+                        orden.get("paqueteria") or "")
             if r_odoo is not None:
                 log.info("Odoo venta %s %s → %s", canal_venta, order_id,
                          r_odoo.get("accion") or r_odoo.get("motivo"))
@@ -837,9 +838,9 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                 # creada y eso es lo que no se puede perder.
                 from services import odoo_ventas_log
                 await asyncio.to_thread(
-                    odoo_ventas_log.registrar, canal_venta, str(order_id), r_odoo,
-                    orden.get("items", []), orden.get("guia") or "",
-                    orden.get("paqueteria") or "")
+                    odoo_ventas_log.registrar, canal_venta, orden["cuenta"],
+                    str(order_id), r_odoo, orden.get("items", []),
+                    orden.get("guia") or "", orden.get("paqueteria") or "")
     except Exception as exc:  # noqa: BLE001 — nunca rompe la venta
         log.warning("orden de venta en Odoo no creada para %s: %s", order_id, exc)
 

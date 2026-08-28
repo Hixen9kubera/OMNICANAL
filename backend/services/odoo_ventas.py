@@ -228,10 +228,14 @@ def elegir_almacen(lineas: list[dict[str, Any]],
     "stock al momento de la venta" y es irrepetible: dentro de 20 minutos ya no
     se puede reconstruir.
     """
+    # LA FOTO SE LLAVEA POR ID DE ALMACÉN, NO POR NOMBRE. El nombre es una
+    # etiqueta que alguien puede editar en Odoo cualquier martes; el id no. Con
+    # llaves por nombre, renombrar "TEXCO II" hacía que la foto se guardara en
+    # NULL **en silencio** — y esa foto es justo el dato irrecuperable.
     foto: dict[str, dict[str, float]] = {}
     for ln in lineas:
         por_alm = libres.get(ln["product_id"], {})
-        foto[ln["sku"]] = {nombre: por_alm.get(wid, 0.0) for wid, nombre in _ALMACENES}
+        foto[ln["sku"]] = {str(wid): por_alm.get(wid, 0.0) for wid, _n in _ALMACENES}
 
     mejor: dict[str, Any] | None = None
     for wid, nombre in _ALMACENES:

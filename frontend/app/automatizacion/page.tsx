@@ -38,9 +38,16 @@ interface Linea {
   imagen: string | null;
   cantidad: number;
   precio_unitario: number | null;
-  stock_texco: number | null;
-  stock_texco2: number | null;
+  /** La foto del stock del momento, llaveada por ID de almacén — no por
+   *  nombre: el nombre se puede renombrar en Odoo, el id no. */
+  stock_libre: Record<string, number> | null;
 }
+
+/** Los almacenes que mira el automatismo, en su orden de preferencia. */
+const ALMACENES: Array<[string, string]> = [
+  ["135", "TEXCO"],
+  ["150", "TEXCO II"],
+];
 
 interface OrdenOdoo {
   canal: string;
@@ -449,12 +456,16 @@ export default function AutomatizacionPage() {
                                 : "—"}
                             </td>
                             <td className="py-2 text-right text-xs">
-                              {l.stock_texco == null && l.stock_texco2 == null ? (
+                              {!l.stock_libre ? (
                                 <span className="text-slate-400">sin medir</span>
                               ) : (
                                 <span className="text-slate-600">
-                                  TEXCO <b>{l.stock_texco ?? 0}</b> · TEXCO II{" "}
-                                  <b>{l.stock_texco2 ?? 0}</b>
+                                  {ALMACENES.map(([id, nombre], j) => (
+                                    <span key={id}>
+                                      {j > 0 && " · "}
+                                      {nombre} <b>{l.stock_libre?.[id] ?? 0}</b>
+                                    </span>
+                                  ))}
                                 </span>
                               )}
                             </td>

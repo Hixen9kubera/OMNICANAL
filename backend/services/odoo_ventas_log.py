@@ -30,12 +30,12 @@ from typing import Any
 
 log = logging.getLogger("omnicanal.odoo_ventas_log")
 
-_COLS = ("canal, external_order_id, odoo_order_id, odoo_name, estado, accion, "
-         "almacen_id, almacen, cobertura, guia, paqueteria, total, motivo, "
-         "creado_at, actualizado_at")
+_COLS = ("canal, cuenta, external_order_id, odoo_order_id, odoo_name, estado, "
+         "accion, almacen_id, almacen, cobertura, guia, paqueteria, total, "
+         "motivo, creado_at, actualizado_at")
 
 
-def registrar(canal: str, order_id: str, resultado: dict[str, Any],
+def registrar(canal: str, cuenta: str, order_id: str, resultado: dict[str, Any],
               items: list[dict[str, Any]] | None = None,
               guia: str = "", paqueteria: str = "") -> bool:
     """
@@ -44,6 +44,11 @@ def registrar(canal: str, order_id: str, resultado: dict[str, Any],
     `resultado` es lo que devolvió `odoo_ventas.crear_orden`/`cancelar_orden`.
     `items` son las líneas normalizadas de la venta — de ahí salen la imagen y
     las unidades; el stock sale de `resultado["stock_foto"]`.
+
+    LA LLAVE ES (canal, cuenta, external_order_id). La `cuenta` entra porque un
+    id de orden solo es único DENTRO de una cuenta: el mismo canal con dos
+    tiendas puede repetir el número, y sin ella la segunda venta pisaría a la
+    primera. Es la misma llave que ya usa `channel.orders`.
     """
     from services import supabase_db as sdb
 
@@ -52,10 +57,10 @@ def registrar(canal: str, order_id: str, resultado: dict[str, Any],
         with sdb.get_cursor() as cur:
             cur.execute(
                 f"""insert into ops.odoo_sale_orders ({_COLS})
-                    values (%(canal)s, %(oid)s, %(odoo_id)s, %(nombre)s, %(estado)s,
-                            %(accion)s, %(alm_id)s, %(alm)s, %(cob)s, %(guia)s,
-                            %(paq)s, %(total)s, %(motivo)s, now(), now())
-                    on conflict (canal, external_order_id) do update set
+                    values (%(canal)s, %(cuenta)s, %(oid)s, %(odoo_id)s, %(nombre)s,
+                            %(estado)s, %(accion)s, %(alm_id)s, %(alm)s, %(cob)s,
+                            %(guia)s, %(paq)s, %(total)s, %(motivo)s, now(), now())
+                    on conflict (canal, cuenta, external_order_id) do update set
                         odoo_order_id = coalesce(excluded.odoo_order_id,
                                                  ops.odoo_sale_orders.odoo_order_id),
                         odoo_name     = coalesce(excluded.odoo_name,
@@ -74,7 +79,7 @@ def registrar(canal: str, order_id: str, resultado: dict[str, Any],
                     -- almacen/cobertura/total NO se re-tocan: son de la decisión
                     -- original y describen el momento en que se creó la orden.
                 """,
-                {"canal": canal, "oid": str(order_id),
+                {"canal": canal, "cuenta": cuenta, "oid": str(order_id),
                  "odoo_id": resultado.get("odoo_id"),
                  "nombre": resultado.get("nombre"),
                  "estado": resultado.get("estado"),
@@ -84,40 +89,57 @@ def registrar(canal: str, order_id: str, resultado: dict[str, Any],
                  "paq": paqueteria or "", "total": resultado.get("total"),
                  "motivo": resultado.get("motivo")})
 
+            import json as _json
             for n, it in enumerate(items or [], start=1):
                 sku = (it.get("sku") or "").strip()
                 if not sku:
                     continue
+                # La tabla tiene CHECK (cantidad > 0). Una línea en 0 haría
+                # fallar el INSERT, y por la llave foránea de las líneas al
+                # encabezado se caería la transacción ENTERA — perdiendo la fila
+                # y con ella la foto de stock, que es lo irrecuperable. Se salta
+                # la línea rara y se conserva el resto.
+                cant = int(it.get("cantidad") or 1)
+                if cant <= 0:
+                    log.warning("odoo_ventas_log: línea %s de %s/%s con cantidad "
+                                "%s — se omite (la tabla exige > 0)",
+                                sku, canal, order_id, cant)
+                    continue
+                # La foto va COMPLETA como jsonb, llaveada por id de almacén.
+                # Así sumar o quitar una bodega no obliga a migrar columnas, y
+                # renombrarla en Odoo no rompe nada.
                 f = foto.get(sku) or {}
                 cur.execute(
                     """insert into ops.odoo_sale_order_items
-                           (canal, external_order_id, linea, sku, titulo, imagen,
-                            cantidad, precio_unitario, stock_texco, stock_texco2)
-                       values (%(canal)s, %(oid)s, %(n)s, %(sku)s, %(tit)s, %(img)s,
-                               %(cant)s, %(pu)s, %(s1)s, %(s2)s)
-                       on conflict (canal, external_order_id, linea) do update set
+                           (canal, cuenta, external_order_id, linea, sku, titulo,
+                            imagen, cantidad, precio_unitario, stock_libre)
+                       values (%(canal)s, %(cuenta)s, %(oid)s, %(n)s, %(sku)s,
+                               %(tit)s, %(img)s, %(cant)s, %(pu)s, %(libre)s::jsonb)
+                       on conflict (canal, cuenta, external_order_id, linea)
+                       do update set
                            titulo = excluded.titulo,
                            imagen = coalesce(nullif(excluded.imagen, ''),
                                              ops.odoo_sale_order_items.imagen),
                            cantidad = excluded.cantidad,
                            precio_unitario = excluded.precio_unitario
-                       -- stock_texco / stock_texco2 NO se actualizan JAMÁS.
-                       -- Son la foto del instante de la venta; refrescarlas con
-                       -- el valor de hoy las vuelve inútiles.
+                       -- stock_libre NO se actualiza JAMÁS. Es la foto del
+                       -- instante de la venta; refrescarla con el valor de hoy
+                       -- la vuelve inútil.
                     """,
-                    {"canal": canal, "oid": str(order_id), "n": n, "sku": sku,
+                    {"canal": canal, "cuenta": cuenta, "oid": str(order_id),
+                     "n": n, "sku": sku,
                      "tit": (it.get("titulo") or "")[:300] or None,
                      "img": it.get("imagen") or "",
-                     "cant": int(it.get("cantidad") or 1),
+                     "cant": cant,
                      "pu": it.get("precio_unitario"),
-                     "s1": f.get("TEXCO"), "s2": f.get("TEXCO II")})
+                     "libre": _json.dumps(f) if f else None})
         return True
     except Exception as exc:  # noqa: BLE001 — una bitácora no tumba una venta
         log.warning("odoo_ventas_log.registrar(%s, %s): %s", canal, order_id, exc)
         return False
 
 
-def actualizar_guia(canal: str, order_id: str, guia: str,
+def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
                     paqueteria: str = "") -> bool:
     """
     Refresca SOLO la guía y la paquetería de una venta ya registrada.
@@ -144,10 +166,12 @@ def actualizar_guia(canal: str, order_id: str, guia: str,
                   set guia = coalesce(nullif(%(g)s, ''), guia),
                       paqueteria = coalesce(nullif(%(p)s, ''), paqueteria),
                       actualizado_at = now()
-                where canal = %(c)s and external_order_id = %(o)s
+                where canal = %(c)s and cuenta = %(cu)s
+                  and external_order_id = %(o)s
                   and (coalesce(guia, '') is distinct from %(g)s
                        or coalesce(paqueteria, '') is distinct from %(p)s)""",
-            {"c": canal, "o": str(order_id), "g": guia or "", "p": paqueteria or ""})
+            {"c": canal, "cu": cuenta, "o": str(order_id),
+             "g": guia or "", "p": paqueteria or ""})
         return bool(n)
     except Exception as exc:  # noqa: BLE001
         log.debug("odoo_ventas_log.actualizar_guia(%s, %s): %s", canal, order_id, exc)
@@ -170,17 +194,18 @@ def historial(limite: int = 100, canal: str | None = None,
                      "or o.cobertura = 'parcial')")
     try:
         filas = sdb.fetch_all(
-            f"""select o.canal, o.external_order_id, o.odoo_order_id, o.odoo_name,
-                       o.estado, o.accion, o.almacen, o.cobertura, o.guia,
-                       o.paqueteria, o.total, o.motivo, o.creado_at,
+            f"""select o.canal, o.cuenta, o.external_order_id, o.odoo_order_id,
+                       o.odoo_name, o.estado, o.accion, o.almacen, o.cobertura,
+                       o.guia, o.paqueteria, o.total, o.motivo, o.creado_at,
                        coalesce(
                          (select json_agg(json_build_object(
                              'sku', i.sku, 'titulo', i.titulo, 'imagen', i.imagen,
                              'cantidad', i.cantidad, 'precio_unitario', i.precio_unitario,
-                             'stock_texco', i.stock_texco, 'stock_texco2', i.stock_texco2)
+                             'stock_libre', i.stock_libre)
                              order by i.linea)
                             from ops.odoo_sale_order_items i
                            where i.canal = o.canal
+                             and i.cuenta = o.cuenta
                              and i.external_order_id = o.external_order_id),
                          '[]'::json) as lineas
                   from ops.odoo_sale_orders o

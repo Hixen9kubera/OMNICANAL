@@ -136,14 +136,14 @@ async def backfill(
     va a pasar cuando se encienda — incluida la rama `nacio_cancelada`, que es
     la mitad del volumen.
 
-    Idempotente: la llave es (canal, external_order_id), así que correrlo dos
-    veces no duplica.
+    Idempotente: la llave es (canal, cuenta, external_order_id), así que
+    correrlo dos veces no duplica.
     """
     from services import odoo_ventas_log, supabase_db as sdb
 
     def _correr() -> dict:
         ventas = sdb.fetch_all(f"""
-            select o.external_order_id id, o.estado_wc, o.creado_at,
+            select o.external_order_id id, o.cuenta, o.estado_wc, o.creado_at,
                    (extract(epoch from (o.actualizado_at - o.creado_at)) < 10) nacio_asi,
                    json_agg(json_build_object(
                        'sku', i.sku::text, 'cantidad', i.cantidad,
@@ -154,10 +154,10 @@ async def backfill(
                 on i.canal = o.canal and i.external_order_id = o.external_order_id
              where o.canal = %(c)s
                and o.creado_at >= now() - interval '{int(dias)} days'
-             group by 1, 2, 3, 4
+             group by 1, 2, 3, 4, 5
              order by o.creado_at desc""", {"c": canal})
 
-        cuenta: dict[str, int] = {}
+        conteo: dict[str, int] = {}
         escritas = 0
         for v in ventas:
             if v["estado_wc"] == "cancelled" and v["nacio_asi"]:
@@ -170,11 +170,11 @@ async def backfill(
                                             v["creado_at"].isoformat(),
                                             v["items"], dry_run=True)
             acc = r.get("accion") or "error"
-            cuenta[acc] = cuenta.get(acc, 0) + 1
-            if odoo_ventas_log.registrar(canal, v["id"], r, v["items"]):
+            conteo[acc] = conteo.get(acc, 0) + 1
+            if odoo_ventas_log.registrar(canal, v["cuenta"], v["id"], r, v["items"]):
                 escritas += 1
         return {"ok": True, "ventas_revisadas": len(ventas), "filas_escritas": escritas,
-                "por_accion": cuenta, "dias": dias, "canal": canal,
+                "por_accion": conteo, "dias": dias, "canal": canal,
                 "nota": "simulación: NADA se escribió en Odoo"}
 
     return await asyncio.to_thread(_correr)

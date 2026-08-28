@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.299.0 — La bitácora se alinea al esquema que aplicó Eduardo
+
+Las tres tablas de la 0033 ya están en kubera, pero **no como las propuse**: la
+revisión les agregó `cuenta` a las dos llaves primarias y cambió las dos
+columnas `stock_texco`/`stock_texco2` por un solo `stock_libre` jsonb. Con el
+código como estaba, `registrar()` fallaba en CADA venta de TikTok — y fallaba en
+silencio, porque su `except` solo advierte.
+
+**`cuenta` en la llave** es la corrección de fondo: un id de orden solo es único
+DENTRO de una cuenta. Es la misma llave que ya usa `channel.orders`.
+
+**La foto pasa a llavearse por ID de almacén, no por nombre** (`{"135": 97,
+"150": 0}`). El nombre es una etiqueta que alguien puede editar en Odoo
+cualquier martes; renombrar "TEXCO II" hacía que la foto se guardara en NULL sin
+avisar — y esa foto es justo el dato que no se puede recuperar después. De paso,
+sumar una bodega deja de ser una migración de columnas.
+
+Siete sitios: `elegir_almacen`, `_COLS`, los dos INSERT, `actualizar_guia`,
+`historial` y las dos llamadas del seam. Más el backfill y el frontend, que
+ahora pinta los almacenes desde una lista en vez de dos columnas fijas.
+
+**DOS COSAS QUE LA REVISIÓN NO MENCIONÓ Y QUE SÍ IMPORTAN**, encontradas al leer
+el esquema aplicado en vez de la descripción:
+
+  · `medido_at` es `NOT NULL` pero trae `default now()`, así que se puede omitir.
+  · Las líneas tienen `CHECK (cantidad > 0)` **y una llave foránea al
+    encabezado**. Una línea en cero haría fallar su INSERT y, por la foránea,
+    se caería la transacción entera — perdiendo el encabezado y la foto. Ahora
+    esa línea se omite con aviso y el resto se guarda.
+
+Validado con `EXPLAIN` contra el esquema real (planifica sin escribir): los dos
+INSERT, el UPDATE de la guía y la consulta de `historial`.
+
 ### v0.298.0 — El error de una carga ya no mancha los datos de la otra
 
 Visto en la pantalla al revisar la pestaña de Automatización con datos reales:
