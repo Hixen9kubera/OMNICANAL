@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.303.0 — En General el margen bruto se mide contra el precio de LISTA
+
+`c.precio` del canal General trae el precio REBAJADO de la tienda, no el de
+lista. La tarjeta de margen bruto (v0.301.0) lo tomaba tal cual, así que medía
+el producto contra su propia promoción: `ORG-0319-PLA` salía en **−41.3%**
+comparando su costo de $166.14 contra los $136.42 de la oferta, cuando su precio
+de lista son $166.20.
+
+Contra la lista el mismo SKU da **−15.9%**. La diferencia —25 puntos— no es
+ruido: **es el costo de la promoción**, y merece leerse aparte del margen del
+producto. Mezclados no se puede saber si lo que está mal es el costo o la
+decisión de rebajar.
+
+La tarjeta ahora dice `PRECIO DE LISTA $166.20` con `hoy cobra $136.42` debajo,
+y el margen va contra la lista. **La rebaja no se calla**: el margen de arriba no
+la incluye, y quien lea la tarjeta tiene que poder ver que hoy se cobra menos. El
+tooltip lo dice con todas sus letras — *"OJO: hoy la tienda cobra $136.42, así
+que lo que deja HOY es menos. Este margen mide el producto, no la promoción."*
+
+**Solo en General, a propósito** (decisión de Eduardo). Es el único canal cuyo
+precio sale de la tienda propia; en los marketplaces el "precio de lista" es del
+canal y significa otra cosa, así que ahí se sigue midiendo contra lo que se
+cobra. Extenderlo es cambiar una condición.
+
+La rebaja solo se anuncia si de verdad baja el precio (`precioHoy < precio`), y
+sin `precio_base` la tarjeta cae al precio de siempre: un canal sin lista se
+comporta como antes.
+
+Verificado en el sandbox: `ORG-0319-PLA` pinta `$166.20 / hoy cobra $136.42 /
+−16.8%` (allá el costo guardado es $167.37; con el de producción, $166.14, da
+−15.9%).
+
 ### v0.302.0 — La columna "Costo unitario" vuelve a ser la suma de sus dos vecinas
 
 La cabecera de esa columna promete `costo prod. MXN + flete CBM`, y el comentario

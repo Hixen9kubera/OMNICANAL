@@ -467,7 +467,25 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                           neto. Por eso la etiqueta lo dice. */}
                       {conPrecio && (() => {
                         const costo = data?.costo ?? null;
-                        const precio = c.precio;
+                        // EN GENERAL EL MARGEN VA CONTRA EL PRECIO DE LISTA, no
+                        // contra el de la oferta (Eduardo, 28-ago). `c.precio`
+                        // trae el precio REBAJADO de la tienda —$136.42 en
+                        // ORG-0319-PLA— y medir el producto contra su propia
+                        // promoción mezcla dos cosas: el margen del producto y
+                        // la decisión de rebajarlo. Con la lista ($166.20) ese
+                        // SKU pasa de −41.3% a −15.9%, y la diferencia ES el
+                        // costo de la promoción, que merece leerse aparte.
+                        //
+                        // Solo en General, a propósito: es el único canal cuyo
+                        // precio sale de la tienda propia. En los demás el
+                        // precio de lista viene del marketplace y significa
+                        // otra cosa, así que ahí se sigue midiendo contra lo
+                        // que se cobra. Extenderlo es cambiar la condición.
+                        const precioHoy = c.precio;
+                        const precio = esGeneral ? (c.precio_base ?? c.precio) : c.precio;
+                        // Solo se anuncia la rebaja si de verdad baja el precio.
+                        const rebajado = esGeneral && precioHoy != null && precio != null
+                                         && precioHoy < precio - 0.005;
                         if (!(costo && costo > 0) || !(precio && precio > 0)) return null;
                         // La marca de revisado viaja en la fila de la rejilla
                         // (`Producto`), no en el detalle: `DetalleProducto` no
@@ -481,10 +499,16 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                         const perdida = pct < 0;
                         const ayuda = dudoso
                           ? avisoCostoImplausible(precio, costo)
-                          : `De los ${precioMXN(precio)} que paga el cliente, `
+                          : `De los ${precioMXN(precio)} `
+                            + `${esGeneral ? "de lista" : "que paga el cliente"}, `
                             + `${precioMXN(precio - neto)} son IVA que va al SAT.\n`
                             + `Entra a Kubera: ${precioMXN(neto)} — costo `
                             + `${precioMXN(costo)} (producto + flete) = ${precioMXN(deja)}.\n`
+                            + (rebajado
+                               ? `OJO: hoy la tienda cobra ${precioMXN(precioHoy)}, así que `
+                                 + `lo que deja HOY es menos. Este margen mide el producto, `
+                                 + `no la promoción.\n`
+                               : "")
                             + `NO descuenta comisión del canal ni envío: para eso está el `
                             + `margen neto de Análisis.`;
                         return (
@@ -498,11 +522,20 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                               <div className="grid grid-cols-2 gap-3">
                                 <div>
                                   <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                                    Precio que cobra hoy
+                                    {esGeneral ? "Precio de lista" : "Precio que cobra hoy"}
                                   </div>
                                   <div className="text-base font-bold tabular-nums text-slate-800">
                                     {precioMXN(precio)}
                                   </div>
+                                  {/* La rebaja NO se calla: el margen de arriba
+                                      no la incluye, y quien lea la tarjeta tiene
+                                      que poder ver que hoy se está cobrando
+                                      menos. */}
+                                  {rebajado && (
+                                    <div className="mt-1 text-[11px] tabular-nums text-slate-500">
+                                      hoy cobra {precioMXN(precioHoy)}
+                                    </div>
+                                  )}
                                 </div>
                                 <div>
                                   <div
