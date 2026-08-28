@@ -244,3 +244,49 @@ def odoo_monitor(horas: int = Query(24, ge=1, le=168),
         "foto": foto,
         "desalineados": desalineados,
     }
+
+
+@router.get("/diagnostico/ip")
+async def diagnostico_ip():
+    """
+    Con qué IP SALE este backend a internet, preguntado a tres servicios.
+
+    Existe porque las listas blancas por IP (Temu, TikTok) son un punto único de
+    falla y el egress de Railway YA se movió dos veces: primero de
+    162.220.232.251 a 152.55.177.181, y el 27-ago los rechazos `5000003
+    NOT_IN_IP_WHITE_LIST` de Temu volvieron a aparecer con las tres IPs
+    estáticas dadas de alta. Adivinar cuál es la IP de salida cuesta horas;
+    preguntarla cuesta una llamada.
+
+    Se consultan TRES ecos: si contestan distinto, es que la salida rota entre
+    varias IPs (Railway las declara `Shared`) y la lista blanca necesita todas.
+    """
+    import asyncio
+
+    import httpx
+
+    ECOS = {"ipify": "https://api.ipify.org?format=json",
+            "aws": "https://checkip.amazonaws.com",
+            "ifconfig": "https://ifconfig.me/ip"}
+
+    async def eco(nombre: str, url: str) -> tuple[str, str]:
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as cli:
+                r = await cli.get(url)
+                t = r.text.strip()
+                if t.startswith("{"):
+                    t = (r.json() or {}).get("ip", t)
+                return nombre, t
+        except Exception as exc:  # noqa: BLE001
+            return nombre, f"error: {type(exc).__name__}"
+
+    res = dict(await asyncio.gather(*(eco(n, u) for n, u in ECOS.items())))
+    vistas = {v for v in res.values() if not v.startswith("error")}
+    return {
+        "ip_de_salida": res,
+        "coinciden": len(vistas) == 1,
+        "ips_distintas_vistas": sorted(vistas),
+        "nota": ("Todas las IPs que aparezcan aquí deben estar en la lista "
+                 "blanca de Temu y de TikTok. Railway las marca 'Shared': "
+                 "puede rotar entre ellas."),
+    }
