@@ -563,14 +563,32 @@ def _leer_de_supabase() -> bool:
     return (settings.supabase_read_webhooks or not settings.mysql_enabled) and sdb.disponible()
 
 
-def _eventos_supabase(limite: int) -> list[dict[str, Any]]:
+# Los canales que una PERSONA lee en la campana. El resto es tráfico de
+# máquinas: shipments, payments, invoices e items de ML, que en kubera son
+# 11,621 al día contra los 845 avisos de Odoo de toda la historia.
+#
+# En MySQL esto no se notaba porque `webhook_eventos` dejó de recibir eventos de
+# ML el 6-jul (`WEBHOOK_GUARDA_MYSQL=false`) y nadie los echó de menos en dos
+# meses. Al pasar la campana a kubera —que sí los guarda todos— la lista se
+# volvería una manguera y los avisos que sí importan quedarían sepultados en el
+# primer segundo.
+_CANALES_CAMPANA = ("odoo", "alertas")
+
+
+def _eventos_supabase(limite: int, todos: bool = False) -> list[dict[str, Any]]:
     """Lee ops.webhook_events con la MISMA forma que la tabla MySQL (la campana
-    del frontend no distingue el origen): external_id→resource, recibido_at→recibido."""
+    del frontend no distingue el origen): external_id→resource, recibido_at→recibido.
+
+    `todos=True` quita el filtro de canales — es lo que usa `/ml/log`, que existe
+    justo para ver el tráfico crudo.
+    """
+    filtro = "" if todos else "where canal = any(%(c)s)"
     return sdb.fetch_all(
-        """select id, canal, topic, external_id as resource, cuenta, sku,
-                  procesado, resultado, recibido_at as recibido
-           from ops.webhook_events order by id desc limit %s""",
-        (limite,),
+        f"""select id, canal, topic, external_id as resource, cuenta, sku,
+                   procesado, resultado, recibido_at as recibido
+            from ops.webhook_events {filtro}
+            order by id desc limit %(n)s""",
+        {"n": limite, "c": list(_CANALES_CAMPANA)},
     )
 
 
@@ -579,7 +597,7 @@ async def log_ml(limite: int = Query(50, ge=1, le=200)):
     """Últimas notificaciones recibidas (para ver tus pruebas en vivo)."""
     if _leer_de_supabase():
         try:
-            eventos = await asyncio.to_thread(_eventos_supabase, limite)
+            eventos = await asyncio.to_thread(_eventos_supabase, limite, True)
             return {"total": len(eventos), "eventos": eventos, "origen": "supabase"}
         except Exception as exc:  # noqa: BLE001
             log.warning("lectura Supabase falló, caigo a MySQL: %s", exc)
@@ -599,9 +617,14 @@ async def notificaciones(limite: int = Query(20, ge=1, le=100)):
     if _leer_de_supabase():
         try:
             eventos = await asyncio.to_thread(_eventos_supabase, limite)
+            # El contador lleva EL MISMO filtro que la lista. Contar todo y
+            # mostrar poco pinta un globito con 11,621 sobre una campana que
+            # tiene tres avisos: el número dejaría de significar nada.
             total_hoy = await asyncio.to_thread(
                 sdb.fetch_scalar,
-                "select count(*) from ops.webhook_events where recibido_at >= current_date",
+                """select count(*) from ops.webhook_events
+                    where recibido_at >= current_date and canal = any(%s)""",
+                (list(_CANALES_CAMPANA),),
             )
             return {"eventos": eventos, "total_hoy": int(total_hoy or 0), "origen": "supabase"}
         except Exception as exc:  # noqa: BLE001

@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.292.0 — Los avisos de Odoo nunca llegaron a kubera, y la campana iba a ahogarse
+
+Eduardo preguntó lo correcto: *«¿eso no se hace ya en kubera de alguna manera?»*.
+Sí, en parte — y medirlo destapó dos cosas, una peor de lo que yo había dicho y
+otra mejor.
+
+**Lo mejor: las alertas no dependían de MySQL.** Yo había escrito que al apagarlo
+perdíamos «la red que avisa si kubera se cae». **Falso.** `alertas.py` manda a
+**Slack** (`#alertas-omnicanal`), y Slack no sabe de bases de datos. En MySQL vive
+solo `alertas_estado`, el candado anti-spam, y el propio código degrada al candado
+en memoria cuando no está. Consecuencia real del corte: tras cada despliegue puede
+colarse un aviso repetido. **Ruido, no silencio.**
+
+**Lo peor: los avisos de Odoo nunca llegaron a kubera.** Medido el 28-ago:
+
+| Canal | MySQL | kubera |
+|---|---|---|
+| `odoo` — los avisos de stock | **845** | **0** |
+| `alertas` | 6 | 6 |
+| `mercado_libre` | 1,424, congelados desde el **6-jul** | 71,350 · **11,621 hoy** |
+
+`odoo_watch._avisar_campana` mandaba su evento por `kubera_mirror.espejar`, que
+arranca preguntando `activo("webhook_eventos")` — y esa tabla no está en
+`KUBERA_MIRROR_TABLAS`. **Se descartaba en silencio**, que es justo lo que el
+espejo hace a propósito cuando una tabla no está en su lista.
+
+Y son los únicos que alguien lee: los de Mercado Libre en MySQL llevan dos meses
+congelados y nadie los echó de menos. La campana de hoy **son** los avisos de Odoo.
+
+Ahora escribe **directo a kubera, primero y en su propio `try`** — no colgado del
+éxito de MySQL, que es la lección de `imagenes_amazon._cache_put`, donde el espejo
+vivía dentro del `try` de MySQL y murió el día que MySQL se apagó. Mismo patrón
+que `alertas._campana`, que por eso sí está en los dos lados (6 y 6).
+
+**Y el filtro.** `_leer_de_supabase()` ya cambia sola cuando MySQL se apaga —la
+bandera `SUPABASE_READ_WEBHOOKS` ni hace falta para el corte—, pero sin filtro la
+campana pasaba de muda a manguera: 11,621 eventos de máquina al día sepultando
+tres avisos que sí se leen. Ahora `/api/webhooks/notificaciones` muestra solo los
+canales que una persona lee (`odoo`, `alertas`) y **el contador lleva el mismo
+filtro** — contar todo y mostrar poco pintaría un globito con 11,621 sobre una
+campana con tres avisos. `/api/webhooks/ml/log` sigue viendo el tráfico crudo,
+que para eso existe.
+
+`probar_campana_odoo_sandbox.py`: **7/7 con MySQL apagado**. La quinta prueba
+mide el reintento dentro de UNA pasada, no dos pasadas — dos pasadas que reportan
+el mismo SKU son dos eventos legítimos (el stock pudo ir 3→8, volver y cambiar
+otra vez), y una llave por día como la de `alertas._campana` los perdería. La
+primera versión de esa prueba estaba mal y se corrigió antes de reportarla.
+
+Con esto la campana queda **mejor que hoy**: hoy muestra Mercado Libre congelado
+desde julio.
+
 ### v0.291.0 — Las tres fotos a la vista, y el aviso deja de ser del navegador
 
 Tres cosas que salieron de usar la pantalla, no de leerla.

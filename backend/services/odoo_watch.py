@@ -25,13 +25,14 @@ con Odoo.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from config import settings
-from services import db, kubera_mirror, odoo
+from services import db, odoo
 
 log = logging.getLogger("omnicanal.odoo_watch")
 
@@ -76,6 +77,50 @@ def _avisar_campana(cambios: list[tuple[str, int, int | None]]) -> None:
         if len(cambios) > _MAX_EVENTOS_CAMPANA:
             filas.append(("odoo", "stock_cambio", "varios", None, None, None, 1,
                           f"Odoo: {len(cambios)} SKUs cambiaron de stock", ahora))
+    # ── A KUBERA, DIRECTO Y PRIMERO ─────────────────────────────────────────
+    #
+    # Antes esto viajaba por `kubera_mirror.espejar`, y NUNCA LLEGO: `espejar`
+    # arranca preguntando `activo("webhook_eventos")`, que consulta la lista
+    # `KUBERA_MIRROR_TABLAS`, y esa tabla no esta en el CSV. Se descartaba en
+    # silencio —el espejo falla callado a proposito— asi que el 28-ago MySQL
+    # tenia 845 avisos de canal 'odoo' y kubera CERO.
+    #
+    # Y son justo los que alguien lee: los eventos de Mercado Libre en MySQL
+    # estan congelados desde el 6-jul, o sea que la campana de hoy son estos.
+    # El dia del corte se perdian con la bandera prendida o apagada.
+    #
+    # Va PRIMERO y en su PROPIO try, no colgado del exito de MySQL: esa es la
+    # leccion de `imagenes_amazon._cache_put`, donde el espejo vivia dentro del
+    # try de MySQL y murio el dia que MySQL se apago. Mismo patron que
+    # `alertas._campana`, que si esta en los dos lados (6 y 6).
+    #
+    # `delivery_id` lleva el segundo, no el dia: el stock de un SKU puede
+    # cambiar varias veces en la misma jornada y la UNIQUE
+    # (env, canal, topic, external_id, delivery_id) los colapsaria en uno.
+    try:
+        from services import supabase_db as sdb
+        if sdb.disponible():
+            sello = ahora.isoformat(timespec="seconds")
+            for (canal, topic, resource, _uid, _cta, sku, _proc,
+                 resultado, recibido) in filas:
+                sdb.execute(
+                    """insert into ops.webhook_events
+                         (env, canal, topic, external_id, delivery_id, sku,
+                          payload, procesado, resultado, recibido_at,
+                          procesado_at)
+                       values (%s,%s,%s,%s,%s,%s,%s::jsonb,true,%s,%s,%s)
+                       on conflict (env, canal, topic, external_id, delivery_id)
+                       do nothing""",
+                    (settings.app_env, canal, topic, resource, sello, sku,
+                     json.dumps({"resource": resource, "resultado": resultado},
+                                ensure_ascii=False),
+                     resultado, recibido, recibido))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("odoo_watch: campana kubera fallo: %s", exc)
+
+    # ── Y a MySQL, mientras siga encendido ──────────────────────────────────
+    if not settings.mysql_enabled:
+        return
     try:
         with db.get_cursor() as cur:
             cur.executemany(
@@ -83,17 +128,6 @@ def _avisar_campana(cambios: list[tuple[str, int, int | None]]) -> None:
                    (canal, topic, resource, user_id, cuenta, sku, procesado,
                     resultado, recibido)
                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""", filas)
-        # Espejo kubera (fase de descubrimiento): tras el INSERT exitoso, cada
-        # evento de campana viaja a ops.webhook_events. Nunca rompe el flujo.
-        for canal, topic, resource, _uid, cuenta, sku, procesado, resultado, recibido in filas:
-            kubera_mirror.espejar(
-                "services/odoo_watch.py", "_avisar_campana",
-                "webhook_eventos", "ops.webhook_events", "INSERT",
-                {"canal": canal, "topic": topic, "external_id": resource,
-                 "cuenta": cuenta, "sku": sku, "procesado": bool(procesado),
-                 "resultado": resultado, "recibido": recibido,
-                 "payload": {"resource": resource, "resultado": resultado}},
-                clave=sku or resource)
     except Exception as exc:  # noqa: BLE001
         log.warning("odoo_watch: no se pudo avisar en campana: %s", exc)
 

@@ -76,20 +76,26 @@ _PAREJAS: list[tuple[str, str]] = [
 # Lo que se pierde el dia del corte, a sabiendas. No es una lista de pendientes:
 # es lo que ya se decidio sacrificar, escrito para que nadie lo descubra despues.
 _SE_PIERDE: list[tuple[str, str]] = [
-    ("La red que avisa si kubera se cae",
-     "`espejo_kubera_log` y `alertas_estado` viven en MySQL A PROPOSITO: registran "
-     "los fallos del espejo, asi que no pueden vivir del lado que vigilan. Al "
-     "apagar MySQL dejamos de tener ese aviso automatico."),
+    ("El candado anti-spam de las alertas (NO las alertas)",
+     "Corregido el 28-ago: las alertas salen por SLACK, no por MySQL, asi que "
+     "apagarlo NO las calla. En MySQL vive solo `alertas_estado`, el candado de "
+     "enfriamiento, y el propio codigo degrada al candado en memoria cuando no "
+     "esta. Consecuencia real: tras cada despliegue puede colarse un aviso "
+     "repetido. Ruido, no silencio. `espejo_kubera_log` si se pierde, pero es "
+     "el registro para REPROCESAR errores del espejo, que es andamiaje de la "
+     "migracion y se retira en F8 de todas formas."),
     ("Los 13 scripts de mantenimiento",
      "Leen MySQL directo. Los cuatro peligrosos ya estan trancados con "
      "`_candado_congelado`; el resto simplemente deja de funcionar."),
     ("El buscador manual del Resolver",
      "`packing_comparador.buscar_sku` no tiene gemela. La pantalla de empate a "
      "mano se ve vacia. Es visible y no mueve mercancia."),
-    ("La campana, si SUPABASE_READ_WEBHOOKS sigue apagada",
-     "Se queda sin eventos. Encenderla es OTRO problema: kubera tiene 12,047 "
-     "eventos contra los 3 de MySQL, asi que la campana pasaria de muda a "
-     "manguera. Necesita un filtro ANTES, no el dia del corte."),
+    ("(RESUELTO 28-ago) La campana",
+     "Ya no se pierde. `_leer_de_supabase()` cambia SOLA cuando MySQL se apaga "
+     "--no hace falta la bandera--, `odoo_watch` ahora escribe directo a kubera "
+     "(antes se descartaba en el espejo: 845 avisos en MySQL contra 0 en "
+     "kubera) y la campana filtra a los canales que una persona lee, para no "
+     "ahogarse con los 11,621 eventos diarios de ML."),
 ]
 
 def cargar() -> dict[str, str]:
