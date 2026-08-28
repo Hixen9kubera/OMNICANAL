@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Truck,
   Boxes,
+  Tag,
   ChevronRight,
   ImageIcon,
 } from "lucide-react";
@@ -375,15 +376,33 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
                   // abajo); y sin publicaciones lo pinta la tarjeta de margen
                   // bruto de más abajo. Por eso el mosaico es solo existencias.
                   const conPrecio = misPubs.length === 0;
-                  const columnas = 1 + (esML || esAmazon || conFullFba ? 1 : 0);
+                  // GENERAL NO LLEVA PRECIO NI MARGEN (Eduardo, 28-ago): solo el
+                  // costo unitario junto al stock. Es el almacén, no un canal de
+                  // venta —Woo es la fuente del inventario, y su precio ya vive
+                  // en la tarjeta de la rejilla—, así que un margen ahí invita a
+                  // juzgar el producto con un precio que nadie usa para vender.
+                  // Los canales que sí venden conservan su tarjeta de margen.
+                  const costoUnit = data?.costo ?? null;
+                  const conCosto = esGeneral && costoUnit != null && costoUnit > 0;
+                  const columnas = (conCosto ? 1 : 0) + 1
+                                   + (esML || esAmazon || conFullFba ? 1 : 0);
                   return (
                     <>
                       <div
                         className={[
                           "grid divide-x divide-slate-100 border-b border-slate-100",
-                          columnas === 2 ? "grid-cols-2" : "grid-cols-1",
+                          columnas >= 3 ? "grid-cols-3"
+                            : columnas === 2 ? "grid-cols-2" : "grid-cols-1",
                         ].join(" ")}
                       >
+                        {conCosto && (
+                          <Metric
+                            icon={<Tag size={14} />}
+                            label="Costo unitario"
+                            moneda="MXN"
+                            valor={precioMXN(costoUnit)}
+                          />
+                        )}
                         <Metric
                           icon={<Boxes size={14} />}
                           label="Stock real"
@@ -465,7 +484,7 @@ export default function ProductDetailDrawer({ sku, producto, canales, onClose }:
 
                           NO descuenta comisión ni envío: para eso está el margen
                           neto. Por eso la etiqueta lo dice. */}
-                      {conPrecio && (() => {
+                      {conPrecio && !esGeneral && (() => {
                         const costo = data?.costo ?? null;
                         const precio = c.precio;
                         if (!(costo && costo > 0) || !(precio && precio > 0)) return null;

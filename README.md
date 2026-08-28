@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.306.0 — General deja de tener precio y margen: solo costo unitario y stock
+
+`General` no es un canal de venta: es el almacén. Woo es la fuente del
+inventario, y el precio de la tienda ya vive en la tarjeta de la rejilla. Tener
+ahí un margen bruto invitaba a juzgar el producto contra un precio que nadie usa
+para vender — y encima contra el REBAJADO, que fue lo que hizo que
+`ORG-0319-PLA` saliera en −41.3% mezclando el margen del producto con el costo de
+su promoción (ver v0.303.0 y su reversa en v0.304.0).
+
+La tarjeta de "TIENDA" (precio + margen bruto) **desaparece en General**. En su
+lugar, el mosaico de arriba estrena un `COSTO UNITARIO` junto al `STOCK REAL`:
+
+    COSTO UNITARIO   |   STOCK REAL
+    MXN $166.14      |   1,836 u
+
+Es el mismo `costos_validados.costo_total` que ya usaba el margen — producto +
+flete de importación, sin un solo impuesto. Solo se pinta si hay costo (>0); sin
+él, el mosaico queda como estaba.
+
+**Los canales que SÍ venden conservan su tarjeta de margen** (`conPrecio &&
+!esGeneral`): ahí el precio del canal es el precio al que se vende y el margen
+significa algo. La condición es de una palabra si algún día se quiere lo mismo
+en otro lado.
+
+Verificado en el sandbox con `ORG-0319-PLA`: el bloque de General pinta
+`COSTO UNITARIO $167.37 · STOCK REAL 1,836 u` y ni `TIENDA` ni `MARGEN BRUTO`
+aparecen ya en el cajón (allá el costo guardado es $167.37; en producción,
+$166.14).
+
 ### v0.304.0 — Revertido: en General el margen vuelve a medirse contra el precio cobrado
 
 Se revierte v0.303.0 completa (decisión de Eduardo, 28-ago). La tarjeta de
