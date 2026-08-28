@@ -759,6 +759,90 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
     except Exception as exc:  # noqa: BLE001
         log.warning("fan-out no encolado para %s: %s", order_id, exc)
 
+    # ORDEN DE VENTA EN ODOO (TikTok/Temu). Odoo ya recibe solas las ventas de
+    # ML por `meli_oerp`; las de estos canales se capturaban A MANO. Ver
+    # services/odoo_ventas.py — ahí está la decisión de "Odoo descuenta" y por
+    # qué el almacén se elige por stock en vez de fijarse.
+    #
+    # VA AQUÍ y no en `pedidos_tiktok`/`pedidos_temu` por lo mismo que el
+    # fan-out: a esta altura el candado por orden y el RECLAMO entre procesos ya
+    # corrieron, así que dos avisos simultáneos de la misma venta no pueden
+    # crear dos órdenes. Y `accion == "creado"` distingue la venta nueva del
+    # re-aviso, que es la misma guarda que usa el fan-out.
+    #
+    # EN UN HILO (regla 11): XML-RPC es bloqueante y esto son varios viajes a
+    # Odoo. Dentro de la corrutina congelaría el backend ENTERO en cada venta.
+    # Fire-and-forget: una venta no se cae porque Odoo no contestó.
+    try:
+        from services import odoo_ventas
+        canal_venta = _ESPEJO_ORIGEN.get(
+            orden["cuenta"], (str(orden.get("detalle") or "").lower(), "", ""))[0]
+        # El filtro por canal se resuelve AQUÍ porque sale de `settings` y no
+        # cuesta nada. El INTERRUPTOR no: vive en kubera y su lectura bloquea,
+        # así que se consulta dentro de `crear_orden`/`cancelar_orden`, que ya
+        # corren en un hilo. Con esto, una venta de ML —que nunca va a Odoo— ni
+        # siquiera toca la base.
+        if canal_venta in odoo_ventas.canales():
+            cancelada = payload["status"] == "cancelled"
+            if accion == "creado" and not cancelada:
+                r_odoo = await asyncio.to_thread(
+                    odoo_ventas.crear_orden, canal_venta, str(order_id),
+                    orden.get("fecha"), orden.get("items", []))
+            elif accion == "creado" and cancelada:
+                # NACIÓ CANCELADA, y esto NO es un caso raro (auditoría 28-ago):
+                # el 32% de las cancelaciones de TikTok aparecen por primera vez
+                # ya canceladas —~8 al día— porque el comprador nunca pagó
+                # (medido: 21 de 21 con `paid_time` vacío, canceladas por SYSTEM
+                # con motivo "Cliente atrasado con el pago").
+                #
+                # `accion == "creado"` significa "no había pedido de Woo previo",
+                # NO "la venta está viva". Con el `elif` de antes, la rama de
+                # cancelar era inalcanzable en la primera vista y estas ventas
+                # abrían una orden en Odoo por una compra que nunca existió —
+                # y nada la cancelaba después, porque CANCELLED es terminal y no
+                # llega un segundo aviso. En el escalón 4 eso sería una reserva
+                # mordiendo stock vendible, acumulándose sin auto-sanarse.
+                #
+                # No se llama a Odoo: no hay nada que crear ni que cancelar. Se
+                # registra para que la pestaña las muestre — durante la fase de
+                # observación son justo la señal que hay que poder distinguir de
+                # una venta real.
+                r_odoo = {"ok": True, "accion": "nacio_cancelada",
+                          "canal": canal_venta, "order_id": str(order_id),
+                          "motivo": "la venta apareció ya cancelada: no se crea "
+                                    "orden en Odoo"}
+            elif cancelada:
+                # El marketplace canceló una venta que SÍ existió: la orden de
+                # Odoo se cancela también. Dejarla viva deja al almacén
+                # surtiendo lo que nadie compró y la reserva mordiendo stock.
+                r_odoo = await asyncio.to_thread(
+                    odoo_ventas.cancelar_orden, canal_venta, str(order_id))
+            else:
+                r_odoo = None
+                # La venta ya existía y solo cambió de estado. No hay nada que
+                # hacer en Odoo, pero la GUÍA puede venir en este aviso y no en
+                # el primero (etiqueta generada después, o envío rehecho). Sin
+                # esto, la columna se quedaba vacía para siempre.
+                if orden.get("guia") or orden.get("paqueteria"):
+                    from services import odoo_ventas_log as _log
+                    await asyncio.to_thread(
+                        _log.actualizar_guia, canal_venta, str(order_id),
+                        orden.get("guia") or "", orden.get("paqueteria") or "")
+            if r_odoo is not None:
+                log.info("Odoo venta %s %s → %s", canal_venta, order_id,
+                         r_odoo.get("accion") or r_odoo.get("motivo"))
+                # La bitácora del tab de Automatización. Va DESPUÉS y aparte:
+                # la foto de stock que trae `r_odoo` solo existe en este
+                # instante, pero si guardarla falla, la orden de Odoo ya está
+                # creada y eso es lo que no se puede perder.
+                from services import odoo_ventas_log
+                await asyncio.to_thread(
+                    odoo_ventas_log.registrar, canal_venta, str(order_id), r_odoo,
+                    orden.get("items", []), orden.get("guia") or "",
+                    orden.get("paqueteria") or "")
+    except Exception as exc:  # noqa: BLE001 — nunca rompe la venta
+        log.warning("orden de venta en Odoo no creada para %s: %s", order_id, exc)
+
     return {"ok": True, "accion": accion, "wc_order_id": wc_id, "ml_order_id": order_id,
             "cuenta": orden["cuenta"], "estado_wc": payload["status"],
             "estado_ml": orden.get("estado"), "total": orden["total"],

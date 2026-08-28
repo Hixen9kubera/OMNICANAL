@@ -101,7 +101,11 @@ const ITEMS: NavItem[] = [
     soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
   // Análisis como /analisis/reportes.
-  { id: "automatizacion", label: "Automatización", icon: Workflow, proximamente: true },
+  // Deja de ser "próximamente" (28-ago): ya muestra las órdenes de venta que el
+  // panel crea en Odoo por cada venta de TikTok/Temu. Solo admin, por lo mismo
+  // que Webhooks: la orden trae la guía del comprador.
+  { id: "automatizacion", label: "Automatización", icon: Workflow,
+    href: "/automatizacion", soloAdmin: true },
 ];
 
 export default function AppNavbar() {

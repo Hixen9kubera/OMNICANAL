@@ -92,6 +92,12 @@ def _normalizar(o: dict[str, Any]) -> dict[str, Any]:
             "cantidad": 1,
             "precio_unitario": float(it.get("sale_price") or it.get("original_price") or 0),
             "precio_lista": float(it.get("original_price") or 0),
+            # La imagen que VIO EL COMPRADOR, tal cual la sirve TikTok
+            # (confirmado contra órdenes reales el 28-ago-2026: `sku_image` viene
+            # en cada línea). Se guarda en la bitácora de órdenes de Odoo para
+            # que quien revisa el tab reconozca el producto de un vistazo, sin
+            # tener que ir a buscarlo por SKU.
+            "imagen": it.get("sku_image") or "",
             # La comisión llega en `platform_discount`/`payment` según el evento
             # y no está confirmada contra una venta real: se deja en 0 antes que
             # apuntar un número que nadie verificó. Mismo criterio que Amazon.
@@ -131,6 +137,14 @@ def _normalizar(o: dict[str, Any]) -> dict[str, Any]:
         # descuenta. Ponerlo en True lo protegería como si fuera FULL/FBA y el
         # inventario se quedaría alto tras cada venta.
         "es_full": False,
+        # LA GUÍA, y ya viene desde la venta (verificado el 28-ago-2026 contra
+        # dos órdenes reales: `tracking_number` está en el encabezado Y en cada
+        # línea desde `AWAITING_COLLECTION`, con `shipping_provider` = "Estafeta
+        # MX"). No hace falta esperar a un evento posterior de empaque.
+        # `fulfillment_type` = FULFILLMENT_BY_SELLER confirma de paso lo que ya
+        # asumía este módulo: la mercancía sale de NUESTRA bodega.
+        "guia": o.get("tracking_number") or "",
+        "paqueteria": o.get("shipping_provider") or "",
         "pago_estado": o.get("status"),
         "pago_fecha": fecha,
         "comprador": {"id": o.get("user_id"), "nick": "",

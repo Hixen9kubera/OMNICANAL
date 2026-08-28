@@ -1001,6 +1001,73 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.295.0 — La venta de TikTok se vuelve orden de venta en Odoo (inerte)
+
+Odoo ya recibía solas las ventas de Mercado Libre —5,214 órdenes `ML <id>` que
+crea `meli_oerp`—, pero las de TikTok, Temu y Shein las capturaba **a mano**
+Gabriela: 214 + 98 + 420 órdenes, todas sin `client_order_ref`. En 7 días creó
+**257 de las 305** órdenes de venta de toda la instancia: el 84%.
+
+Esto hace para TikTok lo que `meli_oerp` hace para ML. **Se despliega APAGADO**:
+todas las banderas nacen abajo y la tabla del interruptor no existe todavía, así
+que `habilitado()` cae en `False` y el código es inerte.
+
+**EL HALLAZGO QUE CAMBIÓ EL DISEÑO: hoy se descuenta DOS VECES.** Medido en
+producción el 26-ago:
+
+    03:03–03:10  Gaby captura 6 pzas de MUN-0023-MUL (ventas de TikTok)
+    03:18:42     stock_watch: "delta de Odoo (foto 103 -> 97)" → Woo 39 -> 33
+
+…y esas ventas YA le habían bajado su pieza a Woo al volverse pedido. Del 21 al
+26-ago, `stock_watch` le quitó **95 piezas de ese solo SKU** por deltas de Odoo.
+Por eso la escalera de encendido termina en "Woo deja de descontar", no empieza
+ahí.
+
+**EL ALMACÉN SE ELIGE POR STOCK, NO POR COSTUMBRE.** `VIA-0024-NEG` tiene 0
+libres en TEXCO y 30 físicas en TEXCO II. Fijar TEXCO haría nacer la orden en un
+almacén sin mercancía; Odoo la confirma igual (NO bloquea por falta de stock —
+probado con 10,000 piezas), el picking se queda en `confirmed` sin reservar
+nunca y `free_qty` no baja. O sea: sobreventa silenciosa. Ahora se lee `free_qty`
+con `context={"warehouse": id}` y gana el primero que cubra la orden completa; si
+ninguno la cubre, queda marcado `cobertura: parcial` y sale en ámbar.
+
+**LO QUE ATRAPÓ LA AUDITORÍA, Y ERA CARO.** El seam decía
+`if accion == "creado" … elif cancelled`. Pero `accion == "creado"` significa
+"no había pedido de Woo previo", **no** "la venta está viva". Una venta
+`UNPAID → CANCELLED` llega virgen al seam y entraba por la primera rama; la de
+cancelar nunca se evaluaba, y `CANCELLED` es terminal. Medido: **44 de las 136
+cancelaciones (32%, ~8 al día) nacen canceladas**, y 21 de 21 verificadas contra
+la API viva traen `paid_time` vacío, canceladas por SYSTEM con motivo "Cliente
+atrasado con el pago". En el escalón 4 serían reservas mordiendo stock vendible
+por ventas que nadie pagó, acumulándose sin auto-sanarse. Arreglado: nacer
+cancelada cae en `nacio_cancelada` y no toca Odoo.
+
+Y `cancelar_orden` **mentía**: en Odoo 17 una orden con entrega en `done` o
+factura publicada no se cancela —devuelve el asistente `sale.order.cancel`— y
+devolvíamos "cancelada" sin releer nada. Ahora pasa `disable_cancel_warning`,
+**relee el estado** y devuelve `no_se_pudo_cancelar` si no quedó en `cancel`.
+
+**EL INTERRUPTOR NO VIVE EN RAILWAY**, y es a propósito: cambiar una variable
+reinicia el contenedor (un botón de pánico no puede costar eso), y un apagado en
+memoria se deshace solo en el siguiente deploy — la peor propiedad posible para
+un kill switch. Vive en `ops.automatizacion_flags` con quién y por qué; la
+variable de entorno queda como valor por omisión. Caché de 30 s porque
+`habilitado()` se consulta en cada venta, incluidas las ~3,700 semanales de ML.
+
+**LO QUE HAY QUE HACER ANTES DE ENCENDER**, en este orden:
+
+1. Aplicar la migración **0033** en kubera. Sin ella la bitácora falla en
+   silencio: las órdenes se crearían pero la pestaña quedaría ciega — y la foto
+   del stock del momento de la venta **es irrecuperable**.
+2. Gabriela deja de capturar TikTok. Sus 214 órdenes no llevan
+   `client_order_ref`, así que la idempotencia **no las puede ver** y se
+   duplicarían.
+3. Avisar al almacén: TEXCO II tiene 38 órdenes contra 6,205 de TEXCO, y
+   ninguna a `tiktokshop`. Va a empezar a recibir menudeo.
+
+Piezas: `services/odoo_ventas.py`, `services/odoo_ventas_log.py`,
+`routers/automatizacion.py`, `app/automatizacion/page.tsx`, el seam en
+`pedidos_ml.py` y la migración `0033_ops_odoo_sale_orders.sql`.
 ### v0.294.0 — Freno de ráfagas para los webhooks, con dos carriles
 
 Auditoría de seguridad: un POST a `/api/webhooks/ml` no pide credencial (ML no
