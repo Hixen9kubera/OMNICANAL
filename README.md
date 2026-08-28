@@ -1001,6 +1001,22 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.298.0 — El error de una carga ya no mancha los datos de la otra
+
+Visto en la pantalla al revisar la pestaña de Automatización con datos reales:
+un banner rojo de «Failed to fetch» **encima de las 40 tarjetas bien cargadas**.
+
+`cargar()` limpiaba el error al EMPEZAR y no al terminar bien. Con dos cargas en
+vuelo —lo normal en desarrollo, donde React monta el efecto dos veces, y posible
+en producción con un fallo pasajero de red— la que fallaba dejaba su banner
+puesto y la que tenía éxito no lo quitaba. El resultado es de los peores que
+puede dar una pantalla de decisión: un error visible junto a datos correctos
+hace dudar de los datos.
+
+Una línea: `setError(null)` también en el camino de éxito. Verificado en el
+navegador — antes: banner presente con 40 tarjetas; después: sin banner, 40
+tarjetas.
+
 ### v0.297.0 — La pestaña de Automatización se puede llenar sin esperar ventas
 
 La pestaña nace vacía y solo se puebla cuando cae una venta nueva. Con TikTok

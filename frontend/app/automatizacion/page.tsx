@@ -146,6 +146,11 @@ export default function AutomatizacionPage() {
       if (!e.ok || !o.ok) throw new Error(`HTTP ${e.status} / ${o.status}`);
       setEstado(await e.json());
       setOrdenes((await o.json()).ordenes ?? []);
+      // Limpiar el error AQUÍ, no solo al empezar. Con dos cargas en vuelo —lo
+      // normal en desarrollo, y posible en producción con un fallo pasajero— la
+      // que falla dejaba su banner rojo encima de los datos que la otra sí
+      // trajo. Un error visible junto a datos correctos hace dudar de los datos.
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "no se pudo cargar");
     } finally {
