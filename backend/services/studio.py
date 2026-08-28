@@ -61,6 +61,37 @@ def _dinero_mysql(sku: str) -> dict[str, Any]:
 
 
 def _categoria_mysql(sku: str) -> dict[str, Any] | None:
+    """La categoría de ML del SKU, con su ruta y sus niveles.
+
+    ERA EL ULTIMO LECTOR DE `categorias_ml` SIN REPUNTAR (26-ago). Sus otros
+    cinco lectores —`costos._cat_ml_de`, `crear_producto._categoria_curada` y
+    los tres de `competencia_captura`— ya pasaban por kubera desde el 12-ago.
+    Escritores no tiene ninguno: la tabla esta congelada desde el 22-jul.
+
+    NO ERA SOLO EL CORTE. `categorias_ml` y `channel.product_category`
+    discrepan en **2,270 SKUs**, y en todos los muestreados MySQL traia la
+    categoria que ADIVINO el predictor contra la que un humano corrigio en el
+    panel. Por regla de la casa la eleccion humana manda. Este lector le estaba
+    dando al Estudio la del predictor, y de ahi salen dos cosas: el selector de
+    categoria que se prellena, y el `ml_cat_id` que se manda al publicar.
+
+    Si kubera no contesta se devuelve None en vez de propagar, igual que la
+    gemela de `crear_producto`: esto se ensambla dentro de `metadata`, y
+    reventar aqui dejaria la ficha entera del producto sin abrir por un solo
+    campo. El precio no queda a la intemperie — `costos._cat_ml_de` resuelve la
+    categoria por su cuenta cuando el formulario la manda vacia.
+    """
+    from services import categorias_write
+    if categorias_write.activo():
+        try:
+            from services import channel_read
+            cat = (channel_read.categorias_de([sku]) or {}).get(sku)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("studio._categoria_mysql(%s) desde kubera: %s", sku, exc)
+            return None
+        if not cat:
+            return None
+        return _armar_categoria(cat)
     try:
         cat = db.fetch_one(
             """SELECT category_id, category_name, ruta, cat1, cat2, cat3, cat4
@@ -72,6 +103,15 @@ def _categoria_mysql(sku: str) -> dict[str, Any] | None:
         return None
     if not cat:
         return None
+    return _armar_categoria(cat)
+
+
+def _armar_categoria(cat: dict[str, Any]) -> dict[str, Any]:
+    """Los niveles, en el mismo formato viniera de donde viniera.
+
+    Compartido a proposito: dos copias de este armado es como una gemela
+    empieza a contestar distinto de su original sin que nadie lo note.
+    """
     niveles = [
         cat[c] for c in ("cat1", "cat2", "cat3", "cat4")
         if cat.get(c) and str(cat[c]).lower() != "none"

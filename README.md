@@ -1001,6 +1001,62 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.289.0 — El Estudio publicaba en la categoría que adivinó el predictor
+
+`studio._categoria_mysql` era el **último lector de `categorias_ml` sin
+repuntar**. Los otros cinco pasaron a kubera el 12-ago; escritores no tiene
+ninguno desde el 22-jul. Censo completo, no muestreo:
+
+| Lector | Estado |
+|---|---|
+| `costos._cat_ml_de` | ya en kubera |
+| `crear_producto._categoria_curada` | ya en kubera |
+| `competencia_captura.skus_de_categoria` | ya en kubera |
+| `competencia_captura` (catálogo por categoría) | ya en kubera |
+| `competencia_captura` (JOIN de tres tablas) | ya en kubera |
+| **`studio._categoria_mysql`** | **era el hueco** |
+
+**No era solo el corte.** Medido hoy contra producción:
+
+```
+MySQL categorias_ml    12,399 SKUs
+kubera product_category 13,780 SKUs
+con categoría DISTINTA   2,279
+  de esos, kubera dice 'panel':  2,279   (todos)
+```
+
+Los 2,279 sin excepción: MySQL trae `predictor` y kubera trae `panel`. Y por
+regla de la casa la elección humana manda sobre cualquier detector. Ejemplos:
+
+```
+mun-0041-tel    MySQL MLM113782 (predictor) -> kubera MLM85068  (panel)
+tec-0231-neg    MySQL MLM162997 (predictor) -> kubera MLM1733   (panel)
+```
+
+De este lector salen dos cosas en `ProductStudio.tsx`: el **selector de
+categoría que se prellena** y el `ml_cat_id` que se manda al publicar. Así que
+para esos 2,279 SKUs el Estudio venía mostrando —y publicando— la categoría que
+un humano ya había corregido. kubera además conoce **1,382 SKUs** que MySQL ni
+tiene.
+
+La gemela ya existía: `channel_read.categorias_de` devuelve exactamente las
+columnas que hacían falta (`category_id`, `category_name`, `ruta`, `cat1..cat4`).
+Solo faltaba usarla.
+
+El armado de los niveles se sacó a `_armar_categoria`, compartido por los dos
+caminos — dos copias de ese armado es como una gemela empieza a contestar
+distinto de su original sin que nadie lo note.
+
+Si kubera no contesta se devuelve `None` en vez de propagar, y está razonado en
+el código: esto se ensambla dentro de `metadata`, y reventar ahí dejaría la ficha
+entera del producto sin abrir por un solo campo. El precio no queda a la
+intemperie — `costos._cat_ml_de` resuelve la categoría por su cuenta cuando el
+formulario la manda vacía.
+
+`probar_categoria_studio_sandbox.py`: 6/6 con MySQL apagado, incluida la
+comprobación de que con la bandera apagada devuelve `None` — o sea, que el hueco
+era real. La sonda del corte baja a **1 VACIO** (`packing_comparador.buscar_sku`).
+
 ### 0.287.0 — "Falló" no es lo mismo que "no se creó"
 
 Dos órdenes de Amazon duplicadas la madrugada del 28-ago:
