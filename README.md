@@ -1001,6 +1001,65 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.296.0 — El tutorial de Costos, dentro de la propia pantalla
+
+Los dos botones de Costos se confunden entre sí, y confundirlos es el riesgo
+real de esa pantalla: **Validar costo** arregla DE DÓNDE SALE el costo (contra
+el packing list) y **Regenerar y guardar** decide QUÉ PRECIO sale de ese costo
+(y lo empuja a WooCommerce). Hacerlos al revés produce un precio impecable
+calculado sobre un costo inventado. Hasta ahora eso solo estaba en la cabeza de
+quien lo había hecho antes.
+
+Botón **Cómo validar costos** en el banner de `/costos` → abre
+`ComoValidarCostosModal` con el recorrido completo y las cinco capturas reales
+del caso `TEC-0492-MUL`: medidas mal capturadas (20.4×19×13.5, "Chico", margen
+−11.1 %) → validación contra el packing list → medidas reales (4.4×41×29,
+"Mediano") → regeneración → el margen sigue en rojo, pero ahora ese −11.4 % SÍ
+significa algo.
+
+#### Decisiones
+
+- **Botón, no pestaña.** La página no tiene barra de pestañas; meter una solo
+  para esto obligaba a inventar una navegación que no existe.
+- **Va del lado del TEXTO**, no junto a los dos botones de la derecha: es lo
+  que se lee, no una tercera acción que compita con ellas.
+- **Contenido estático**: no pide nada al backend ni toca la selección de la
+  tabla, así que se abre con el panel a medio trabajo sin perder nada.
+- **Las capturas se sirven desde `public/ayuda/costos/`**, no embebidas. El
+  bundle de `/costos` pasó de ~26 kB a 31.8 kB de JS; embebidas habría cargado
+  320 kB de PNG a cada sesión, incluida la mayoría que nunca abre el tutorial.
+
+#### Detalles de layout que costaron una vuelta
+
+- La cabecera era `sticky top-0`, pero el contenedor con scroll era el de
+  AFUERA: un `sticky` se ancla a su ancestro con scroll, así que se pegaba al
+  borde de la ventana y se despegaba de la tarjeta, flotando sobre el contenido.
+  Ahora la tarjeta se acota a la altura de la ventana y scrollea el CUERPO, con
+  cabecera y pie fijos dentro — en un tutorial largo, la ✕ y el "Entendido"
+  siempre a la mano.
+- **Centrar una imagen más grande que su contenedor** tiene trampa: con
+  `justify-center` a secas el navegador recorta el inicio y ese trozo queda
+  inalcanzable. El envoltorio del visor se mide con `w-max` (crece hasta la
+  imagen) y `min-w-full`/`min-h-full` (nunca menor que la pantalla): si cabe se
+  centra, y si no, el envoltorio ya es del tamaño de la imagen y centrar no
+  recorta nada.
+- Las capturas son de ~1,568 px de ancho y pocas decenas de alto: escaladas al
+  ancho del modal el texto de adentro es ilegible, así que se abren a tamaño
+  real con un clic y por debajo de 760 px se desplazan en vez de encogerse más.
+- **Esc cierra una capa a la vez.** Con una captura abierta, Esc cerraba el
+  tutorial POR DEBAJO y dejaba al usuario mirando una imagen suelta. El visor se
+  marca con `data-visor-abierto` y el Esc del tutorial se abstiene mientras esa
+  marca exista. El clic en la imagen ya no cierra (molestaba al desplazarse por
+  una captura ancha); el clic en el fondo sí.
+
+#### Verificación
+
+Sandbox (`APP_ENV=staging`, candado de ambiente confirmando `yvootpbz…`), con
+las 50 filas de la primera página cargadas. Comprobado el centrado en los dos
+casos (imagen que cabe y que no), el scroll interno en 1440×1000, 1900×900 y
+móvil 375×812 sin desbordar el body a lo ancho, las 5/5 capturas cargando, y
+`tsc --noEmit` + `next build` limpios.
+
 ### v0.295.0 — La venta de TikTok se vuelve orden de venta en Odoo (inerte)
 
 Odoo ya recibía solas las ventas de Mercado Libre —5,214 órdenes `ML <id>` que

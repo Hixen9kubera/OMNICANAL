@@ -15,12 +15,14 @@ import {
   Sparkles,
   PackageSearch,
   ShoppingBag,
+  BookOpen,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
 import ResolverCostosModal from "@/components/ResolverCostosModal";
 import ValidarPublicadosModal from "@/components/ValidarPublicadosModal";
+import ComoValidarCostosModal from "@/components/ComoValidarCostosModal";
 import CajaMasterPanel from "@/components/CajaMasterPanel";
 import ChipRevision from "@/components/ChipRevision";
 import { ChipMoneda, EntradaMoneda, TituloMoneda } from "@/components/Moneda";
@@ -146,6 +148,9 @@ export default function CostosPage() {
   // de los SKUs seleccionados y a cada uno le busca su renglón en el packing
   // list. Solo aplica a productos con publicación viva en Mercado Libre.
   const [publicadosAbierto, setPublicadosAbierto] = useState(false);
+  // El tutorial. Es contenido estático: no toca la selección ni pide nada al
+  // backend, así que puede abrirse con el panel a medio trabajo.
+  const [comoAbierto, setComoAbierto] = useState(false);
   // Explicación en vez de un botón muerto cuando no hay nada seleccionado.
   const [avisoPublicados, setAvisoPublicados] = useState<string | null>(null);
   // Chip "Solo publicados en ML": el filtro lo resuelve el backend (`exists`
@@ -403,6 +408,16 @@ export default function CostosPage() {
                 Todos los SKUs con su costo por pieza. Edita medidas y costo inicial, regenera
                 (CBM = volumen × $7.500/m³ → costo → precios) y guarda en la base + WooCommerce.
               </p>
+              {/* El tutorial vive del lado del TEXTO, no junto a los dos botones
+                  de la derecha: es lo que se lee, no una tercera acción que
+                  compita con ellos. Confundir "Validar" con "Regenerar" es el
+                  riesgo real de esta pantalla, y esto es lo que lo explica. */}
+              <button
+                onClick={() => setComoAbierto(true)}
+                className="mt-3 flex items-center gap-2 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/25"
+              >
+                <BookOpen size={14} /> Cómo validar costos
+              </button>
             </div>
             <div className="text-right">
               <div className="text-4xl font-black tabular-nums">{new Intl.NumberFormat("es-MX").format(pag.total)}</div>
@@ -811,6 +826,10 @@ export default function CostosPage() {
           </div>
         </div>
       </div>
+
+      {comoAbierto && (
+        <ComoValidarCostosModal onCerrar={() => setComoAbierto(false)} />
+      )}
 
       {resolverAbierto && (
         <ResolverCostosModal onCerrar={() => setResolverAbierto(false)} />
