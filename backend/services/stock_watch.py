@@ -10,18 +10,30 @@ huecos que hacían imposible el "todo sincronizado":
    y éste último está apagado.) De paso, eso dejaba el *ratchet*: el fan-out
    podía llevar una publicación a 0 pero nunca revivirla al volver mercancía.
 
-2. **El sync Odoo→Woo empuja el VALOR ABSOLUTO.** Eso era correcto cuando Odoo
-   era el maestro, pero desde el 17-jul **Woo es la fuente de verdad de las
-   VENTAS** y Odoo ya no registra esas bajas. Poner `Woo = Odoo` le devuelve el
-   stock a lo que Woo bajó PORQUE VENDIÓ: resucita mercancía vendida. Es
-   exactamente por eso que `odoo_watch.auto_push` seguía apagado.
+2. **El sync Odoo→Woo empuja el VALOR ABSOLUTO.** En julio eso era un defecto:
+   Woo era la fuente de verdad de las VENTAS y Odoo no registraba esas bajas,
+   así que `Woo = Odoo` resucitaba mercancía vendida. Se cambió a DELTAS.
 
-La solución es tratar a Odoo como un ORIGEN DE CAMBIOS, no como el valor
-verdadero: Woo conserva su absoluto (que trae las ventas) y Odoo aporta solo su
-DELTA (llegaron 50, salieron 17 a FULL). Si Odoo no cambia, Woo no se toca, así
-que el escenario de resurrección **no puede ocurrir por construcción**.
+DOS MODOS, Y EL CORRECTO DEPENDE DE QUIÉN MANDA (`STOCK_WATCH_ABSOLUTO`)
+------------------------------------------------------------------------
+El 20-ago Brandon fijó la arquitectura: **Odoo es el master**, Woo el
+intermediario, los canales DROP el destino. Con esa regla el delta dejó de
+servir, y el 27-ago se midió por qué:
 
-    Odoo ──(delta)──► Woo ──(cualquier cambio)──► Amazon / ML   [vía fan-out]
+  · **Arrastra la diferencia de base para siempre.** `JAR-0031-NEG` bajó 12 en
+    Odoo y 12 en Woo —el delta se aplicó perfecto— y aun así quedó Odoo 0 vs
+    Woo 23, porque venían de bases distintas. El delta nunca cierra esa brecha.
+  · **No ve las RESERVAS.** `free_qty` = físico − reservado, y una orden en
+    borrador reserva. `VIA-0024-NEG` tenía 30 piezas con 29 comprometidas —una
+    vendible— y Woo ofrecía 14. Es la mercancía "vendida que no existe" que
+    detectó Gaby.
+
+    ABSOLUTO:  Odoo ──(free_qty)──► Woo ──► TikTok · Temu · ML   [vía fan-out]
+    DELTA:     Odoo ──(variación)─► Woo ──► …            (modo anterior)
+
+El absoluto solo es seguro porque Odoo registra las salidas. Si algún día Odoo
+dejara de verlas, volvería el escenario de resurrección — y por eso el modo se
+cambia con UNA VARIABLE, sin deploy.
 
 El segundo tramo se dispara con CUALQUIER cambio de stock en Woo comparado
 contra la foto anterior, venga de donde venga: venta, delta de Odoo, ingreso a
@@ -83,6 +95,8 @@ def tope() -> int:
 def estado() -> dict[str, Any]:
     return {**_ultimo, "habilitado": habilitado(),
             "solo_registro": solo_registro(), "tope": tope(),
+            "modo": "absoluto (Odoo master)" if getattr(settings, "stock_watch_absoluto", False)
+                    else "delta (Woo conserva su base)",
             "foto_en_kubera": kubera_escribe(), "foto_decide_kubera": kubera_decide()}
 
 
@@ -330,15 +344,40 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
             log.info("stock_watch: foto base levantada con %d SKUs (sin escribir)", len(filas))
             return dict(_ultimo)
 
-        # ── 1) DELTAS DE ODOO → Woo ───────────────────────────────────────
+        # ── 1) ODOO → Woo ─────────────────────────────────────────────────
+        #
+        # DOS MODOS, y el correcto depende de QUIÉN es la fuente de verdad:
+        #
+        # ABSOLUTO (`STOCK_WATCH_ABSOLUTO=true`, desde el 28-ago): Woo COPIA el
+        #   `free_qty` de Odoo. Es el modo que corresponde a "Odoo es el master"
+        #   (decisión de Brandon, 20-ago). Corrige la diferencia venga de donde
+        #   venga y respeta las RESERVAS, que es lo que el delta no podía ver.
+        #
+        # DELTA (el modo viejo): Woo conserva su propio absoluto y Odoo solo
+        #   aporta su variación. Era lo correcto cuando Woo mandaba —mandar el
+        #   absoluto habría resucitado mercancía vendida— pero arrastra para
+        #   siempre la diferencia de base: medido el 27-ago, JAR-0031-NEG bajó
+        #   12 en Odoo y 12 en Woo (delta perfecto) y aun así quedó Odoo 0 vs
+        #   Woo 23, porque venían de bases distintas. Además `free_qty` descuenta
+        #   lo reservado y el delta no: VIA-0024-NEG tenía 30 piezas físicas con
+        #   29 comprometidas en órdenes, o sea 1 vendible, y Woo ofrecía 14.
+        #
+        # El modo se cambia con una variable, sin deploy: si el absoluto resulta
+        # equivocado, se vuelve al delta en un minuto.
+        absoluto = bool(getattr(settings, "stock_watch_absoluto", False))
         deltas: list[tuple[str, int, dict]] = []
         for sku, ahora_od in od.items():
-            ant = foto.get(sku, {}).get("odoo")
             w = wo.get(sku)
-            if ant is None or w is None or w["stock"] is None or ahora_od == ant:
+            if w is None or w["stock"] is None:
                 continue
-            delta = ahora_od - ant
-            destino = max(0, w["stock"] + delta)
+            if absoluto:
+                # `od` ya viene con max(0, …) aplicado arriba.
+                destino = ahora_od
+            else:
+                ant = foto.get(sku, {}).get("odoo")
+                if ant is None or ahora_od == ant:
+                    continue
+                destino = max(0, w["stock"] + (ahora_od - ant))
             if destino != w["stock"]:
                 deltas.append((sku, destino, w))
 

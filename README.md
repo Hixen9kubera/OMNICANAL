@@ -13022,6 +13022,36 @@ por `_variation_id` (o `_product_id` si es simple) contra el postmeta. Versión 
 
 ---
 
+### v0.284.0 — Odoo→Woo pasa de DELTA a ABSOLUTO: el master manda de verdad
+
+Gaby reportó cuatro SKUs con «mercancía vendida que no existe» y la pregunta de
+Brandon fue la correcta: *¿el fan-out estaba mandando el free_qty?* **No.** El
+fan-out mandó siempre lo que Woo decía —sin fallar una— pero Woo no era
+free_qty, y la bitácora explica por qué.
+
+**El delta se aplicaba PERFECTO y aun así divergía.** `JAR-0031-NEG` el 27-ago:
+Odoo bajó 12 (12→0) y Woo bajó 12 (35→23). Delta correcto, resultado Odoo 0 vs
+Woo 23 — venían de bases distintas y el delta conserva esa brecha para siempre.
+
+**Y el delta no ve las RESERVAS.** `free_qty` = físico − reservado, y una orden
+en borrador reserva. `VIA-0024-NEG`: 30 piezas físicas, 29 comprometidas en 24
+borradores, **1 vendible** — y Woo ofrecía 14. Eso es exactamente lo que Gaby
+estaba viendo.
+
+El delta era lo correcto cuando Woo mandaba (mandar el absoluto resucitaba
+mercancía vendida). Con **Odoo como master** (decisión del 20-ago) el criterio
+se invierte: `STOCK_WATCH_ABSOLUTO=true` hace que Woo COPIE `max(0, free_qty)`.
+Se cambia con una variable, sin deploy, porque el absoluto solo es seguro
+mientras Odoo registre las salidas.
+
+**Corrida del 28-ago:** 28 SKUs corregidos (12 bajan 85 pzas, 16 suben 610) y
+**54 escrituras a los canales, 0 errores**. Los cuatro de Gaby quedaron en su
+valor real: `COC-0145-NEG` 25→0, `JAR-0031-NEG` 23→0, `VIA-0024-NEG` 14→1,
+`TEC-2355-NEG` 78→77. Y salió a la venta mercancía parada: `EST-0088-ROJ-BLN`
+0→360 y `ETQ-0492-BLN` 0→144.
+
+Versión 0.284.0.
+
 ### v0.236.0 — La tabla de estados de Temu decía 63 a la venta donde hay 51
 
 Un censo propio de Brandon contradijo al del panel: clasificaba `ACC-0017-MUL`

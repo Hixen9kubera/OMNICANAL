@@ -113,6 +113,26 @@ class Settings(BaseSettings):
     # y contabilidad: los pedidos de TikTok DESCUENTAN stock, porque la
     # mercancía sale de nuestra bodega.
     pedidos_tiktok_enabled: bool = False
+
+    # ── ÓRDENES DE VENTA EN ODOO (TikTok / Temu) ──────────────────────────
+    # La venta del marketplace se vuelve orden de venta en Odoo, como ya pasa
+    # con Mercado Libre vía `meli_oerp`. Ver services/odoo_ventas.py.
+    #
+    # LAS CUATRO BANDERAS SON UNA ESCALERA, y hay que subirla en orden:
+    #   1. ENABLED=true + SOLO_REGISTRO=true  → calcula todo, no escribe nada.
+    #      Sirve para comparar contra lo que Gabriela captura a mano.
+    #   2. SOLO_REGISTRO=false                → crea la orden en BORRADOR.
+    #      Antes de este paso, Gabriela DEBE dejar de capturar TikTok: si los
+    #      dos escriben, se duplican las órdenes.
+    #   3. `proteger_stock` para tiktok/temu  → Woo deja de descontar.
+    #      ESTE es el paso que mueve inventario vivo (regla 3).
+    #   4. CONFIRMAR=true                     → Odoo reserva y `free_qty` baja.
+    odoo_ventas_enabled: bool = False
+    odoo_ventas_solo_registro: bool = True
+    odoo_ventas_confirmar: bool = False
+    # A qué canales aplica. Temu se suma cuando se sepa por qué solo entraron 2
+    # ventas por la tubería contra 49 capturas manuales.
+    odoo_ventas_canales: str = "tiktok"
     # ¿El webhook de Temu CREA pedidos en WooCommerce? Apagado: el receptor
     # registra, descifra y verifica la firma, pero no escribe. Ojo con lo que
     # NO se puede hacer aunque se encienda: Temu no expone el importe del
@@ -656,6 +676,12 @@ class Settings(BaseSettings):
     # CORTACIRCUITOS: si una pasada ve más cambios que esto, NO aplica nada y
     # avisa. Una edición masiva en Odoo no puede vaciar todos los canales.
     stock_watch_tope: int = 300
+    # ¿Woo COPIA el free_qty de Odoo (absoluto) o solo aplica su variación
+    # (delta)? El absoluto es el modo que corresponde a "Odoo es el master":
+    # corrige la diferencia venga de donde venga y respeta las reservas, que el
+    # delta no ve. Nace apagado; encenderlo cambia lo que se publica en las
+    # tiendas y por eso es un acto explícito (regla 3).
+    stock_watch_absoluto: bool = False
     # ── PASO 2 de la migración: la foto sale de MySQL (ops.stock_watch_photo).
     # DOS flags y no uno, y se encienden en ESTE orden con días de por medio:
     #
