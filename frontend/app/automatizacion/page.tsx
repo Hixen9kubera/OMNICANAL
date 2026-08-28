@@ -321,7 +321,10 @@ export default function AutomatizacionPage() {
             checked={soloProblemas}
             onChange={(ev) => setSoloProblemas(ev.target.checked)}
           />
-          Solo lo que hay que mirar (sin crear, o sin respaldo de inventario)
+          Solo lo que necesita que alguien actúe
+          <span className="text-slate-400">
+            — sin crear, sin respaldo de inventario, o quedó viva tras cancelarse
+          </span>
         </label>
 
         {error && (

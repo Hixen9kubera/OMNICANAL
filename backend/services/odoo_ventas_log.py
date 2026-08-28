@@ -188,10 +188,24 @@ def historial(limite: int = 100, canal: str | None = None,
         donde.append("o.canal = %(canal)s")
         params["canal"] = canal
     if solo_problemas:
-        # Lo que alguien tiene que MIRAR: no se creó, o se creó sin respaldo de
-        # inventario (que es sobreventa esperando a ocurrir).
-        donde.append("(o.accion in ('error','sku_sin_producto') "
-                     "or o.cobertura = 'parcial')")
+        # Lo que alguien TIENE QUE HACER ALGO AL RESPECTO. El criterio no es
+        # "salió raro", es "queda trabajo pendiente para una persona":
+        #
+        #   error / sku_sin_producto  → la orden NO se creó: el almacén no se
+        #                               enteró de una venta que sí ocurrió.
+        #   no_se_pudo_cancelar       → TikTok canceló pero Odoo se negó (ya
+        #                               tiene entrega hecha o factura). La orden
+        #                               sigue VIVA para una venta muerta y hay
+        #                               que cancelarla a mano.
+        #   cobertura parcial         → se creó sin respaldo de inventario: la
+        #                               reserva no va a ocurrir y el stock no
+        #                               bajará solo. Sobreventa esperando.
+        #
+        # Quedan FUERA a propósito las que no piden nada: `nacio_cancelada`
+        # (la venta llegó muerta, no hay nada que hacer), `apagado`, `simulado`,
+        # `ya_existia`, `ya_cancelada` y `sin_orden`.
+        donde.append("(o.accion in ('error','sku_sin_producto',"
+                     "'no_se_pudo_cancelar') or o.cobertura = 'parcial')")
     try:
         filas = sdb.fetch_all(
             f"""select o.canal, o.cuenta, o.external_order_id, o.odoo_order_id,

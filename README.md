@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.300.0 — La casilla "solo lo que hay que mirar" se estaba callando el peor caso
+
+Brandon preguntó para qué sirve la casilla, y al ir a contestarlo salió que
+mentía por omisión. Filtraba por:
+
+    accion in ('error','sku_sin_producto')  OR  cobertura = 'parcial'
+
+…pero el código emite **diez** acciones distintas, y la que faltaba es la que
+más urge: **`no_se_pudo_cancelar`**. Es el caso en que TikTok canceló la venta y
+Odoo se NEGÓ a cancelar la orden —porque ya tiene entrega hecha o factura
+publicada—, así que **la orden sigue viva para una venta que ya no existe**. El
+almacén surtiría mercancía que nadie compró, y la casilla que existe justamente
+para sacar eso a la luz lo estaba escondiendo.
+
+Se coló porque esa acción nació después: la agregó la auditoría (v0.295.0),
+cuando se descubrió que `cancelar_orden` devolvía "cancelada" sin releer el
+estado. Se arregló el reporte y se olvidó el filtro.
+
+El criterio queda escrito en el código: no es "salió raro", es **"queda trabajo
+pendiente para una persona"**. Quedan fuera a propósito `nacio_cancelada` (la
+venta llegó muerta, no hay nada que hacer), `apagado`, `simulado`, `ya_existia`,
+`ya_cancelada` y `sin_orden`.
+
+Y la etiqueta pasa a decir lo que hace: «Solo lo que necesita que alguien actúe
+— sin crear, sin respaldo de inventario, o quedó viva tras cancelarse».
+
 ### v0.299.0 — La bitácora se alinea al esquema que aplicó Eduardo
 
 Las tres tablas de la 0033 ya están en kubera, pero **no como las propuse**: la
