@@ -1035,6 +1035,35 @@ comprueba `_reduced_stock` y aborta si alguno hubiera descontado. Versión 0.287
 
 ---
 
+### 0.288.0 — El reintento de la v0.285.0 no cubría justo el camino que sonaba
+
+La alerta volvió con la v0.285.0 ya desplegada: *"Escritura de CHANNEL cayó a
+MySQL (tanda de 75): InterfaceError: connection already closed"* (~06:10 del
+28-ago). No porque el arreglo estuviera mal, sino porque **no cubría ese
+camino**: `_reintentar_transitorio` envolvía `execute()`, `execute_returning()`
+y los `fetch_*`, pero los escritores por TANDA (`channel_mirror`,
+`costing_mirror`, `core_write`, `costing_write`) abren su cursor DIRECTO con
+`with sdb.get_cursor()` para encadenar `set_config` + upserts en una
+transacción — y por ahí el reintento nunca los vio.
+
+Se expone `sdb.reintentar_transitorio` como API pública y la tanda primaria de
+channel se envuelve completa. Es seguro: todo el `with` es UNA transacción — si
+murió a medias, Postgres la deshizo y el segundo intento parte de cero.
+Reproducido en vivo: matar la conexión a MEDIA tanda (tras el `set_config`)
+→ con el arreglo completa al intento 2.
+
+**Y una corrección al diagnóstico de esta madrugada.** Las 4,994 filas que
+aparecieron en `canal_inventario` entre la 01:19 y las 06:22 NO eran rescates
+del respaldo: son `services/inventario.py`, la CACHÉ de inventario en vivo que
+alimenta la UI, que escribe esa tabla DIRECTO — 80 filas de Amazon + 160 de ML
+por ciclo de 15 min, de reloj (`:04/:05, :19/:20, :34/:35, :49/:50`), sobre
+2,067 SKUs en rotación. `canal_inventario` tiene DOS escritores: el espejo
+inverso (retirado, `CHANNEL_ESPEJO_INVERSO=false`) y esta caché (viva y
+legítima). Los rescates reales de la noche fueron los 2-3 de las alertas, no
+miles: kubera nunca estuvo "fallando la mitad de las tandas". Versión 0.288.0.
+
+---
+
 ### v0.286.0 — De dónde salió cada costo, y quién ya lo validó
 
 Dos huecos que se veían al usar el validador de publicados: el costo no decía de

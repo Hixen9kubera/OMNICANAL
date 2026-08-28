@@ -291,6 +291,19 @@ def _reintentar_transitorio(fn):
 # reintento cubriera también la conexión muerta.
 _reintentar_si_solo_lectura = _reintentar_transitorio
 
+# API PÚBLICA del reintento (28-ago-2026). El hueco que dejó la v0.285.0: el
+# reintento solo envolvía execute()/execute_returning()/fetch_*(), pero los
+# escritores por TANDA (channel_mirror, costing_mirror, core_write,
+# costing_write) abren su cursor DIRECTO con `with sdb.get_cursor()` para
+# encadenar set_config + upserts en una transacción — y por ahí el reintento
+# nunca los vio. Resultado real: la alerta "Escritura de CHANNEL cayó a MySQL
+# (tanda de 75): InterfaceError: connection already closed" volvió a sonar a
+# las ~06:10 del 28-ago con la v0.285.0 YA desplegada. El reintento es seguro
+# para esas tandas por la misma razón de siempre: todo el `with` es UNA
+# transacción — si murió a medias, Postgres la deshizo, y el segundo intento
+# parte de cero.
+reintentar_transitorio = _reintentar_transitorio
+
 
 def execute(sql: str, params: tuple | dict | None = None) -> int:
     """Ejecuta INSERT/UPDATE/DELETE. Devuelve filas afectadas (commit incluido).

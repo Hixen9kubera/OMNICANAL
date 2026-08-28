@@ -204,10 +204,19 @@ def escribir_primario(rows: list[dict[str, Any]],
     MySQL desfasado ese ciclo (log + issue + Slack) y también se auto-sana."""
     if not rows:
         return
-    try:
+
+    def _escribir() -> None:
+        # Todo en UNA transacción: si muere a medias, Postgres la deshace y el
+        # reintento parte de cero. `reintentar_transitorio` cura el candado
+        # heredado y la conexión muerta del pool; sin él, este camino era el
+        # único escritor frecuente al que la v0.285.0 no cubría (abre el cursor
+        # directo para encadenar el set_config) y la alerta siguió sonando.
         with sdb.get_cursor() as cur:
             cur.execute("select set_config('app.via', 'corte_channel', true)")
             escribir_tanda(cur, rows)
+
+    try:
+        sdb.reintentar_transitorio(_escribir)
     except Exception as exc:  # noqa: BLE001
         log.warning("primaria kubera channel falló — MySQL aguanta y el "
                     "siguiente ciclo sana: %s", exc)
