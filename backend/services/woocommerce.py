@@ -231,7 +231,7 @@ async def listar_productos(
             # NO se dispara si hay filtro de SKUs: este fallback pregunta a Woo
             # SOLO con `search`, así que resucitaba el catálogo entero ignorando
             # la lista. Con "bolsas" + un SKU concreto devolvía los 142 de
-            # "bolsas" (destapado el 28-ago al filtrar por costo validado). Con
+            # "bolsas" (destapado el 31-ago al filtrar por costo validado). Con
             # una lista de SKUs activa, "no hay nada" es una RESPUESTA, no un
             # fallo de la ruta de base — y el complemento por SKU exacto de más
             # abajo ya cubre lo que la maestra no conoce.
@@ -257,7 +257,7 @@ async def listar_productos(
             # ya resolvió la base MANDA. Este complemento pregunta por SKU
             # exacto sin mirar `search`, así que devolvía un producto que
             # NO casa con lo buscado — al filtrar por costo validado y
-            # escribir "bolsas" salía un SKU de audífonos (28-ago).
+            # escribir "bolsas" salía un SKU de audífonos (31-ago).
             if skus and page == 1 and not search:
                 # Solo los términos que la búsqueda NO resolvió ya como SKU
                 # exacto: si todos están, la llamada extra sobra (perf 05-ago).

@@ -1325,6 +1325,35 @@ def guardar(jid: str, skus: list[str],
 
         escritos += 1
 
+        # ── Y el PRECIO que sale de ese costo ────────────────────────────────
+        # Guardar el costo validado NO bastaba: `costing.costos_finales` —donde
+        # viven `costo_unitario`, el PRECIO SUGERIDO y el ENVÍO ESTIMADO— se
+        # quedaba con la foto vieja. Medido contra producción el 31-ago: 12 SKUs
+        # validados el 25 y el 28 seguían con un `costos_finales` de fechas
+        # anteriores, y el peor era `TEC-0384-PLA` — validado por Brandon en
+        # $88.00 mientras el sistema seguía pensándolo en $1,265.38, o sea 14×
+        # más caro para quien fijara un precio leyendo eso.
+        #
+        # `recalcular` es el camino canónico (el mismo del botón "Regenerar" de
+        # la pantalla de Costos) y NO pisa lo que el humano acaba de aprobar: su
+        # escritura a `costos_validados` cae en el candado que se acaba de
+        # reponer (`where revisado_at is null`) y se descarta. Lo único que
+        # mueve es `costos_finales`. Import local para no meter un ciclo:
+        # `costos` ya importa media capa de servicios.
+        #
+        # BEST-EFFORT y VISIBLE: el costo validado YA quedó guardado y un fallo
+        # aquí no puede deshacerlo — pero tampoco se calla, porque un precio
+        # sugerido viejo es justamente lo que veníamos a arreglar.
+        precio_ok = False
+        try:
+            from services import costos as _costos
+            precio_ok = bool(_costos.recalcular(sku))
+            if not precio_ok:
+                log.info("costo de %s guardado, pero sin precio derivable "
+                         "(sin categoría ML o sin comisión)", sku)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("precio sugerido de %s NO recalculado: %s", sku, exc)
+
         # ── De dónde salió este costo ────────────────────────────────────────
         # El costo por sí solo es una cifra sin origen: si mañana no cuadra, no
         # hay cómo volver al renglón que lo produjo. Aquí queda el archivo y los
@@ -1337,7 +1366,11 @@ def guardar(jid: str, skus: list[str],
             log.warning("procedencia de %s no registrada: %s", sku, exc)
 
         detalle.append({"sku": sku, "costo": fila.get("costo"),
-                        "costo_anterior": fila.get("costo_viejo")})
+                        "costo_anterior": fila.get("costo_viejo"),
+                        # False = el costo quedó guardado pero su precio
+                        # sugerido sigue siendo el viejo. La pantalla puede
+                        # decirlo en vez de dar el guardado por completo.
+                        "precio_recalculado": precio_ok})
 
     resultado = {"escritos": escritos, "detalle": detalle,
                  "saltados": saltados, "errores": errores}

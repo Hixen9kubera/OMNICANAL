@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.311.0 — Validar un costo ahora también recalcula su precio sugerido
+
+Guardar el costo validado NO bastaba: `costing.costos_finales` —donde viven
+`costo_unitario`, el **precio sugerido** y el **envío estimado**— se quedaba con
+la foto vieja. El validador de publicados escribía `costos_validados` y ahí
+terminaba.
+
+Medido contra producción el 31-ago: **12 SKUs** validados el 25 y el 28 seguían
+con un `costos_finales` de fechas anteriores. El peor, `TEC-0384-PLA`: validado
+por Brandon en **$88.00** mientras el sistema seguía pensándolo en **$1,265.38**
+— 14× más caro para quien fijara un precio leyendo eso.
+
+`packing_publicados.guardar` llama ahora a `costos.recalcular(sku)` después de
+escribir y marcar. Es el camino canónico (el mismo del botón "Regenerar" de
+Costos) y **no pisa lo que el humano acaba de aprobar**: su escritura a
+`costos_validados` cae en el candado que se acaba de reponer (`where revisado_at
+is null`) y se descarta. Lo único que mueve es `costos_finales`.
+
+Va **best-effort y visible**: el costo validado ya quedó guardado y un fallo aquí
+no puede deshacerlo, pero tampoco se calla — cada fila del resultado trae
+`precio_recalculado`, así que la pantalla puede decir "el costo se guardó, su
+precio sugerido no" en vez de dar el guardado por completo.
+
+**No publica nada.** `recalcular` persiste en la BD; empujar precios a Woo es
+`_sync_woo_costo`, que vive en el router de Crear y no se toca aquí.
+
+Verificado en el sandbox con `MUN-0065-ROS`:
+
+    ANTES    costo_total 503.43 (validado) · costo_unitario 60.12 · sugerido $284.91
+    DESPUÉS  costo_total 503.43 (INTACTO)  · costo_unitario 503.43 · sugerido $1,237.21
+
+El costo aprobado por la persona no se movió y el precio derivado se corrigió 4×.
+
+**Una trampa de staging, de paso.** La primera corrida de esta prueba no cambió
+nada en el sandbox: `env.staging` no traía `SUPABASE_WRITE_COSTING`, cuyo default
+es `False`, así que `costos.py` mandaba las escrituras de costos al **MySQL de
+producción** en vez de a kubera. En Railway está en `true`. Queda puesta en
+`env.staging` con la explicación al lado — cualquier prueba de costos en local
+estaba escribiendo al lugar equivocado.
+
 ### v0.310.0 — El filtro "Costo validado" pasa a TODAS las pestañas
 
 `revisado` nació acotado a General (v0.309.0). Se abre a los seis canales porque
