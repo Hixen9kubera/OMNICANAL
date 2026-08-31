@@ -2816,6 +2816,65 @@ _TIENDAS: tuple[dict[str, str], ...] = (
      "ven": "WALMART",       "label": "Kubera · Walmart"},
 )
 
+
+
+# ── DROP OFF: los SKUs con respaldo físico ──────────────────────────────────
+# FOTO FIJA del 2026-08-31, tomada de Odoo por XML-RPC (solo lectura).
+#
+# POR QUÉ ESTÁ HARDCODEADA Y NO SE CONSULTA. El stock POR ALMACÉN de Odoo NO
+# EXISTE en kubera: el barrido de columnas encontró solo
+# `ops.stock_watch_photo.stock_odoo`, que es el TOTAL de Odoo (no dice de qué
+# almacén), y `ops.odoo_sale_orders.almacen`, que es de órdenes de venta, no de
+# stock de producto. Así que hoy no hay forma de leerlo en vivo desde la BD, y
+# consultar Odoo por XML-RPC dentro de la petición metería una llamada
+# bloqueante de red en el camino de la pantalla (regla 11 de la casa).
+#
+# QUÉ SE MIDIÓ EN ODOO (2026-08-31, solo lectura):
+#   · Almacén `DROP OFF` (id 142, código DROP), activo, con 297 ubicaciones
+#     internas propias (DROP/FERRAFORME/A/1/N1…).
+#   · 97 SKUs con stock ahí, 11,171 piezas.
+#   · NO hay tag ni campo que marque DROP: los 7 `product.tag` no tienen nada
+#     de Drop, `meli_channel_mkt` está vacío en los 12,386 productos, y
+#     `product.template.warehouse_id` apunta a DROP(142) en LOS 12,386 — es el
+#     default de todos, así que filtrar por él daría el catálogo entero.
+#   · La ruta `[582] DROP OFF: suministrar de TEXCO` es asignable por producto
+#     pero solo la tienen 2 productos: no se usa como marcador.
+#
+# ⚠ ESTO CADUCA. Es una foto: los SKUs entran y salen del almacén. Pendiente con
+# el equipo: llevar el stock por almacén de Odoo a kubera (mismo molde que
+# `ops.stock_watch_photo`, con una columna de almacén) y leerlo de ahí.
+DROP_OFF_FOTO = "2026-08-31"
+DROP_OFF_PIEZAS = 11171
+DROP_OFF_SKUS: tuple[str, ...] = (
+    "ACC-0302-GRI", "ACC-0305-18", "ACC-0356-BLN", "ACC-0374-AVEO-17",
+    "BEB-0021-AZL", "CAM-0003-MAD", "CAM-0005-NEG", "CORR-0010-MAD",
+    "CUNA-0002-MUL", "EST-0049-NEG", "JUEG-0018-50MIL", "JUEG-0031-NEG",
+    "JUGU-0034-BLN", "JUGU-0035-MUL", "JUGU-0039-MUL", "JUGU-0077-MUL",
+    "JUGU-0165-MUL", "JUGU-0199-ROS", "JUGU-0217-AZL", "MASC-0039-GRI",
+    "MASC-0042-GRI", "MASC-0085-MUL-16OZ", "MES-0046-CAF", "MES-0066-MAD",
+    "MUE-0100-MET", "MUE-0143-CAF", "MUE-0150-MET", "MUE-0213-NEG",
+    "MUE-0214-GRI", "MUE-0248-NEG-NISSAN", "MUE-0271-VER-GRI",
+    "MUE-0306-MUL-200M", "MUE-0358-BLN", "OFI-0039-NEG", "OFI-0047-AZL",
+    "OFI-0078-NEG", "OFI-0112-NEG", "OFI-0118-NEG", "OFI-0178-GRI",
+    "ORG-0196-VIN", "ORG-0265-PLA", "ORG-0266-GRI", "ORG-0281-CAF",
+    "ORG-0377-PLA", "ORG-0384-NEG", "ORG-0460-GRI-10K",
+    "ROP-0297-AZLMAR-30", "ROP-0297-AZLMAR-31", "ROP-0297-AZLMAR-33",
+    "ROP-0297-AZLMAR-36", "ROP-0297-CAQ-30", "ROP-0297-CAQ-31",
+    "ROP-0297-CAQ-32", "ROP-0297-CAQ-33", "ROP-0297-CAQ-34",
+    "ROP-0297-CAQ-35", "ROP-0297-CAQ-36", "ROP-0297-GRI-30",
+    "ROP-0297-GRI-31", "ROP-0297-GRI-32", "ROP-0297-GRI-33",
+    "ROP-0297-GRI-35", "ROP-0297-GRI-36", "ROP-0297-NEG-30",
+    "ROP-0297-NEG-31", "ROP-0297-NEG-32", "ROP-0297-NEG-33",
+    "ROP-0297-NEG-36", "ROP-0298-GRI-L", "ROP-0300-GRI-L", "ROP-0300-GRI-M",
+    "ROP-0309-MUL", "SIL-0008-NEG", "SIL-0028-NEG", "TEC-0028-ROS",
+    "TEC-0057-NEG", "TEC-0068-NEG", "TEC-0370-NEG", "TEC-0370-ROS",
+    "TEC-0502-MET", "TEC-0582-MET", "TEC-0596-MET", "TEC-0601-ROJ",
+    "TEC-0604-AMA", "TEC-0697-MET", "TEC-0834-NEG", "TEC-0948-ACE",
+    "TEC-1089-NISSAN-2.4L", "TEC-1278-NEG-699DSP", "TEC-1478-MUL",
+    "TEC-1588-NEG", "TEC-1782-VER", "TEC-2337-NAR-01T", "VAR-0436-NEG-6C",
+    "VAR-0441-NEG-11CM", "VAR-0455-EST", "VEH-0024-ROJ"
+)
+
 _ACTIVA_SQL = """
       (l.canal='mercado_libre' and lower(coalesce(l.situacion,''))='active')
    or (l.canal='amazon' and lower(coalesce(l.situacion,'')) in ('discoverable','buyable','published'))
@@ -2909,6 +2968,37 @@ async def rentabilidad_drop(
                         coalesce(%(desde)s::date, current_date - %(dias)s::int + 1)
                         and coalesce(%(hasta)s::date, current_date)) x
             group by 1,2"""), p)
+        # DROP OFF: la lista de SKUs es una foto fija (ver arriba), pero el
+        # ESTADO de sus publicaciones se lee EN VIVO — que es la parte que
+        # cambia todos los días y la que interesa.
+        p["dropoff"] = list(DROP_OFF_SKUS)
+        dropoff = await _fetch_all(_mx(f"""
+            with act as (
+              select l.sku::text as sku, l.canal,
+                     coalesce(a.legacy_code,'?') as cuenta,
+                     coalesce(l.is_fulfillment,false) as es_full,
+                     ({_ACTIVA_SQL}) as activa
+              from channel.listings l
+              left join core.accounts a on a.id = l.account_id
+              where l.canal = any(%(canales)s) and l.sku::text = any(%(dropoff)s)
+            )
+            select canal, cuenta,
+                   count(distinct sku) filter (where activa and not es_full)::int as activos_drop,
+                   count(distinct sku) filter (where activa)::int                 as activos,
+                   count(distinct sku)::int                                       as con_publicacion
+            from act group by 1,2"""), p)
+        dropoff_tot = await _fetch_one(_mx(f"""
+            with act as (
+              select l.sku::text as sku, coalesce(l.is_fulfillment,false) as es_full,
+                     ({_ACTIVA_SQL}) as activa
+              from channel.listings l
+              where l.canal = any(%(canales)s) and l.sku::text = any(%(dropoff)s)
+            )
+            select count(distinct sku)::int                                    as con_publicacion,
+                   count(distinct sku) filter (where activa)::int              as activos,
+                   count(distinct sku) filter (where activa and not es_full)::int as activos_drop,
+                   count(distinct sku) filter (where activa and es_full)::int   as activos_full
+            from act"""), p)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -2919,6 +3009,7 @@ async def rentabilidad_drop(
     V = {(f["canal"], f["cuenta"]): f for f in ventas}
     C = {(f["canal"], f["cuenta"]): f for f in cancel}
     D = {(f["canal"], f["cuenta"]): f for f in devol}
+    DO = {(f["canal"], f["cuenta"]): f for f in dropoff}
     pct = lambda a, b: (round(float(a) / float(b) * 100, 2) if b else None)  # noqa: E731
 
     tiendas = []
@@ -2951,6 +3042,13 @@ async def rentabilidad_drop(
             "dev_piezas": dev_pz, "dev_valor": dev_val,
             "dev_descartadas": int(de.get("descartadas") or 0),
             "pct_devol": pct(dev_val, ing),
+            # De los SKUs con respaldo físico en DROP OFF, cuántos están
+            # ACTIVOS en DROP en esta tienda. El % es sobre el total de la
+            # foto, para que las tiendas se puedan comparar entre sí.
+            "dropoff_activos_drop": int((DO.get((t["canal"], t["pub"])) or {}).get("activos_drop") or 0),
+            "dropoff_con_pub": int((DO.get((t["canal"], t["pub"])) or {}).get("con_publicacion") or 0),
+            "dropoff_pct": pct((DO.get((t["canal"], t["pub"])) or {}).get("activos_drop") or 0,
+                               len(DROP_OFF_SKUS)),
         })
 
     tot = lambda c: sum(x[c] or 0 for x in tiendas)  # noqa: E731
@@ -2974,6 +3072,17 @@ async def rentabilidad_drop(
             "dev_valor": dev_t, "dev_piezas": tot("dev_piezas"),
             "pct_devol": pct(dev_t, ing_t),
             "activas_drop": tot("activas_drop"),
+        },
+        "drop_off": {
+            "skus": len(DROP_OFF_SKUS),
+            "piezas": DROP_OFF_PIEZAS,
+            "foto": DROP_OFF_FOTO,
+            "en_vivo": False,   # la lista es fija; el estado de publicaciones NO
+            "con_publicacion": int((dropoff_tot or {}).get("con_publicacion") or 0),
+            "activos": int((dropoff_tot or {}).get("activos") or 0),
+            "activos_drop": int((dropoff_tot or {}).get("activos_drop") or 0),
+            "activos_full": int((dropoff_tot or {}).get("activos_full") or 0),
+            "almacen": "DROP OFF (Odoo id 142, código DROP)",
         },
         "tiendas": tiendas,
     }

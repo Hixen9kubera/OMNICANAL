@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.317.0 — Drop: los SKUs con respaldo físico en el almacén DROP OFF
+
+Debajo de los tres KPIs entra una banda con el almacén **DROP OFF** de Odoo: qué
+SKUs tienen mercancía detrás, cuáles se están vendiendo, y el detalle por tienda.
+
+**Lo que se encontró en Odoo** (2026-08-31, solo lectura por XML-RPC):
+
+  * Almacén **`DROP OFF`** (id 142, código `DROP`), activo, con **297
+    ubicaciones internas** propias (`DROP/FERRAFORME/A/1/N1`…).
+    **97 SKUs con stock, 11,171 piezas.**
+  * **NO hay tag ni campo que marque DROP.** Los 7 `product.tag` del sistema no
+    tienen nada de Drop (son *Código de barras, CRITICO, ALTO, Requiere
+    Revisión* y tres códigos de barras), `meli_channel_mkt` ("Channels") está
+    vacío en los 12,386 productos, y las `product.category` son de tipo de
+    producto, no de canal.
+  * ⚠ **`product.template.warehouse_id` es una trampa**: apunta a `DROP(142)` en
+    **LOS 12,386 productos**. Es el default de todos, así que filtrar por él
+    devolvería el catálogo entero como "Drop".
+  * La ruta `[582] DROP OFF: suministrar de TEXCO` es asignable por producto,
+    pero solo **2** productos la tienen: no se usa como marcador.
+
+**La lista va FIJA en el código y aquí está el por qué.** El stock POR ALMACÉN de
+Odoo no existe en kubera: el barrido de columnas encontró `ops.stock_watch_photo.
+stock_odoo` (el TOTAL de Odoo, sin decir de qué almacén) y `ops.odoo_sale_orders.
+almacen` (de órdenes de venta, no de stock). Consultar Odoo por XML-RPC dentro de
+la petición metería una llamada bloqueante de red en el camino de la pantalla
+(regla 11). **Pendiente con el equipo**: llevar el stock por almacén a kubera,
+mismo molde que `ops.stock_watch_photo` con una columna de almacén.
+
+**El estado de las publicaciones SÍ se lee en vivo** — es la parte que cambia a
+diario. Medido:
+
+    97 SKUs en DROP OFF
+    → 67 con publicación   (30 sin publicar)
+    → 55 ACTIVOS vendiéndose en algún marketplace
+    → 52 activos en Drop · 19 también activos en FULL
+
+    Activos en Drop, por tienda:
+      San Corpe · Amazon    47   48.5%
+      Kubera · Temu         20   20.6%
+      Kubera · Walmart       6    6.2%
+      San Corpe · ML         5    5.2%
+      Kubera · ML            0    0.0%   (67 con publicación, ninguna activa en Drop)
+      Kubera · TikTok        0    0.0%   (40 con publicación, ninguna activa)
+
+**El almacén de Odoo NO equivale al `is_fulfillment` del panel**, y la pantalla
+lo dice: 19 de esos SKUs están activos en FULL. El almacén dice DÓNDE ESTÁ la
+mercancía; `is_fulfillment` dice CÓMO SE VENDE. Son dos dimensiones distintas.
+
+El % es sobre los 97 para que las tiendas se comparen entre sí; un SKU puede
+estar activo en varias, así que los renglones no suman 100%.
+
 ### v0.316.0 — Drop por TIENDA: publicaciones activas y lo que generan
 
 El corte pasa de canal a **tienda** (José, 31-ago), con Mercado Libre separado

@@ -75,6 +75,7 @@ interface TiendaDrop {
   can_lineas: number; can_valor: number; pct_cancel: number | null;
   dev_piezas: number; dev_valor: number; dev_descartadas: number;
   pct_devol: number | null;
+  dropoff_activos_drop: number; dropoff_con_pub: number; dropoff_pct: number | null;
 }
 interface RespDrop {
   periodo: { dias: number | null; desde: string | null; hasta: string | null };
@@ -84,6 +85,11 @@ interface RespDrop {
     can_valor: number; can_lineas: number; pct_cancel: number | null;
     dev_valor: number; dev_piezas: number; pct_devol: number | null;
     activas_drop: number;
+  };
+  drop_off: {
+    skus: number; piezas: number; foto: string; en_vivo: boolean;
+    con_publicacion: number; activos: number;
+    activos_drop: number; activos_full: number; almacen: string;
   };
   tiendas: TiendaDrop[];
 }
@@ -479,6 +485,102 @@ function BloqueDrop({ d }: { d: RespDrop }) {
              pie={`${fM(t.dev_valor, 2)} · ${fN(t.dev_piezas)} piezas`}
              ayuda="Valor devuelto ÷ ingresos DROP. Cosa DISTINTA de la cancelación: aquí la venta sí se completó y luego se deshizo. No cuentan los reclamos cancelados ni los fallidos." />
       </div>
+
+      {/* ── DROP OFF: el respaldo físico ────────────────────────────────
+          Va debajo de los KPIs porque contesta la pregunta que ellos dejan
+          abierta: de todo lo que se publica en Drop, ¿cuánto tiene mercancía
+          detrás? La LISTA de SKUs es una foto fija de Odoo (el stock por
+          almacén no existe en kubera); el ESTADO de sus publicaciones se lee
+          en vivo, y es la parte que cambia a diario. */}
+      {d.drop_off && (
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-800">
+              Almacén DROP OFF · SKUs con respaldo físico
+            </p>
+            <span className="rounded-full bg-white/70 px-2 py-0.5 text-[10px] font-semibold text-indigo-700"
+                  title={`El stock por almacén de Odoo NO está en kubera: esta lista es una foto tomada el ${d.drop_off.foto} y hay que pedirle al equipo llevarla a la BD. El estado de las publicaciones SÍ se lee en vivo.`}>
+              foto del {d.drop_off.foto} · pendiente automatizar
+            </span>
+          </div>
+          <div className="mt-2 grid gap-3 sm:grid-cols-4">
+            <div>
+              <p className="text-[9.5px] font-semibold uppercase tracking-wide text-indigo-500">
+                En DROP OFF
+              </p>
+              <p className="text-2xl font-extrabold tabular-nums text-indigo-900">
+                {fN(d.drop_off.skus)}
+              </p>
+              <p className="text-[10px] tabular-nums text-indigo-500">
+                {fN(d.drop_off.piezas)} piezas
+              </p>
+            </div>
+            <div>
+              <p className="text-[9.5px] font-semibold uppercase tracking-wide text-indigo-500">
+                Con publicación
+              </p>
+              <p className="text-2xl font-extrabold tabular-nums text-indigo-900">
+                {fN(d.drop_off.con_publicacion)}
+              </p>
+              <p className="text-[10px] text-indigo-500">
+                {fN(d.drop_off.skus - d.drop_off.con_publicacion)} sin publicar
+              </p>
+            </div>
+            <div>
+              <p className="text-[9.5px] font-semibold uppercase tracking-wide text-indigo-500">
+                Activos vendiéndose
+              </p>
+              <p className="text-2xl font-extrabold tabular-nums text-emerald-700">
+                {fN(d.drop_off.activos)}
+              </p>
+              <p className="text-[10px] text-indigo-500">
+                en cualquier marketplace
+              </p>
+            </div>
+            <div>
+              <p className="text-[9.5px] font-semibold uppercase tracking-wide text-indigo-500">
+                Activos en Drop
+              </p>
+              <p className="text-2xl font-extrabold tabular-nums text-indigo-900">
+                {fN(d.drop_off.activos_drop)}
+              </p>
+              <p className="text-[10px] text-indigo-500"
+                 title="Un mismo SKU puede tener stock en DROP OFF y publicaciones FULL: el almacén dice dónde está la mercancía, no cómo se vende.">
+                {fN(d.drop_off.activos_full)} también en FULL
+              </p>
+            </div>
+          </div>
+          {/* El detalle por tienda de esos SKUs */}
+          <div className="mt-3 border-t border-indigo-200/60 pt-2">
+            <p className="text-[9.5px] font-semibold uppercase tracking-wide text-indigo-500">
+              De esos {fN(d.drop_off.skus)}, activos en Drop por tienda
+            </p>
+            <div className="mt-1.5 space-y-1">
+              {[...d.tiendas]
+                .sort((a, b) => b.dropoff_activos_drop - a.dropoff_activos_drop)
+                .map((x) => (
+                  <div key={x.tienda} className="flex items-center gap-2">
+                    <span className="w-40 shrink-0 truncate text-[11px] text-indigo-800">
+                      {x.label}
+                    </span>
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-indigo-100">
+                      <div className="h-full rounded-full bg-indigo-500"
+                           style={{ width: `${Math.min(x.dropoff_pct ?? 0, 100)}%` }} />
+                    </div>
+                    <span className="w-24 shrink-0 text-right text-[11px] tabular-nums text-indigo-900">
+                      <b>{fN(x.dropoff_activos_drop)}</b> · {fP(x.dropoff_pct)}
+                    </span>
+                  </div>
+                ))}
+            </div>
+            <p className="mt-1.5 text-[10px] text-indigo-500">
+              El % es sobre los {fN(d.drop_off.skus)} de DROP OFF, para que las
+              tiendas se puedan comparar entre sí. Un SKU puede estar activo en
+              varias tiendas, así que los renglones no suman 100%.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Un cuadro por tienda */}
       <div>
