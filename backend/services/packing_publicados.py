@@ -676,6 +676,7 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
         "file_id": None, "archivo": None, "fila_excel": None,
         "producto_chn": None, "grupo": [],
         "precio_usd": None, "piezas_grupo": None, "cbm_pieza": None,
+        "piezas_fila": None, "cajas": None,
         "cbm_origen": None,
         "peso_total": None, "peso_pieza": None, "flete": None,
         "producto_mxn": None, "costo": None, "origen_prod": None,
@@ -829,6 +830,11 @@ def _aplicar_renglon(fila: dict[str, Any], ix: packing_indice.Indice, *,
         "producto_chn": ix.texto_fila(fe), "grupo": dd["grupo"],
         "precio_usd": _r(dd["precio_usd"], 4),
         "piezas_grupo": _r(dd["piezas_grupo"], 3),
+        # Los crudos del renglon, para que la pantalla pueda ENSENAR de donde
+        # salio el numero: "300 piezas en 40 cajas" dice mucho mas que un 7.5
+        # suelto, y es lo que permite cachar un packing list mal capturado.
+        "piezas_fila": _r(dd["piezas_fila"], 3),
+        "cajas": _r(dd["cajas"], 3),
         "cbm_pieza": _r(dd["cbm_por_pieza"], 6),
         # De dónde salió el volumen: lo necesita la procedencia para no acabar
         # diciendo "no_parseado" de un renglón que sí se parseó.

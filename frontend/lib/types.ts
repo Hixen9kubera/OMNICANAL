@@ -1325,6 +1325,9 @@ export interface FilaPublicado {
   // números
   precio_usd: number | null;
   piezas_grupo: number | null;
+  /** Los crudos del renglon: piezas TOTALES y cuantos cartones. */
+  piezas_fila: number | null;
+  cajas: number | null;
   cbm_pieza: number | null;
   peso_total: number | null;
   peso_pieza: number | null;

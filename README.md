@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.307.0 — La tabla del validador deja de pedir fe
+
+Cuatro cosas que Brandon pidio al usarla, y las cuatro son de lo mismo: poder
+COMPROBAR el numero en vez de creerselo.
+
+**Moneda explicita en cada columna de dinero.** `Producto USD -> MXN`, `Flete
+MXN`, `Costo nuevo MXN`, `Costo hoy MXN`, `Peso/pz kg`. Y bajo el monto en pesos
+sale el precio unitario en dolares tal como viene en el packing list, cuando el
+archivo lo trae.
+
+**Las dimensiones se parten en dos columnas.** `Caja cm · del PL` con las medidas
+del carton tal como estan en el archivo, y `Pieza cm · derivada` con lo que se
+guarda. Antes solo se veia la derivada, sin manera de verificar de donde salia:
+para VIA-0023-NEG, 52x44x38 del carton contra 19.2x16.2x14.0 por pieza.
+
+**El numero de renglon, grande.** Es el dato con el que se vuelve al Excel a
+comprobar, y estaba en 10 px perdido entre el nombre del archivo y el ruteo.
+Ademas, cuando el carton es compartido ahora lista TODAS las filas del grupo, no
+solo cuantas son: son las filas entre las que se repartio el flete.
+
+**Las piezas, con su origen.** La columna ensena `80 pz / 4 cajas = 20.0 / caja`
+y debajo, separado, las piezas del grupo. Ese desglose es lo que permite cachar
+un packing list mal capturado ANTES de escribir: un `4000 pz / 1 caja` se ve mal
+a simple vista, mientras que el 4000 solo no dice nada. `piezas_fila` y `cajas`
+ya los calculaba `Indice.datos()`; solo faltaba pasarlos a la fila.
+
+La tabla crece a 1,400 px de ancho minimo, dentro del `overflow-x-auto` que se
+puso en la v0.293.0.
+
 ### v0.306.0 — General deja de tener precio y margen: solo costo unitario y stock
 
 `General` no es un canal de venta: es el almacén. Woo es la fuente del

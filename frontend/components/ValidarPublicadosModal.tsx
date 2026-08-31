@@ -575,7 +575,7 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
                   34×71 en vez de 72×72—. Con `min-w` la tabla conserva su
                   tamaño y se desliza. */}
               <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="w-full min-w-[1180px] text-xs">
+                <table className="w-full min-w-[1400px] text-xs">
                   <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
                     <tr>
                       <th className="w-9 px-2 py-2" />
@@ -583,20 +583,39 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
                       <th className="px-2 py-2 text-left font-semibold">SKU / Publicación</th>
                       <th className="px-2 py-2 text-left font-semibold">Cómo empató</th>
                       <th className="px-2 py-2 text-left font-semibold">Renglón</th>
-                      <th className="px-1 py-2 text-right font-semibold" title="Piezas que comparten cartón">
-                        Pz/grupo
+                      <th className="px-1 py-2 text-right font-semibold" title="Arriba, lo que dice el packing list: piezas del renglón entre cartones. Abajo, las piezas que comparten el cartón, que es entre las que se reparte el flete.">
+                        Piezas
+                        <div className="font-normal normal-case text-slate-400">del PL / grupo</div>
                       </th>
                       <th className="px-1 py-2 text-right font-semibold">CBM/pz</th>
-                      <th className="px-1 py-2 text-right font-semibold">Pieza cm</th>
-                      <th className="px-1 py-2 text-right font-semibold">Peso/pz</th>
-                      <th className="px-1 py-2 text-right font-semibold" title="precio USD × TC">
+                      <th className="px-1 py-2 text-right font-semibold" title="Medidas del CARTÓN, tal como vienen en el packing list.">
+                        Caja cm
+                        <div className="font-normal normal-case text-slate-400">del PL</div>
+                      </th>
+                      <th className="px-1 py-2 text-right font-semibold" title="Medidas por PIEZA: el volumen del cartón repartido entre sus piezas. Es lo que se guarda.">
+                        Pieza cm
+                        <div className="font-normal normal-case text-slate-400">derivada</div>
+                      </th>
+                      <th className="px-1 py-2 text-right font-semibold">
+                        Peso/pz
+                        <div className="font-normal normal-case text-slate-400">kg</div>
+                      </th>
+                      <th className="px-1 py-2 text-right font-semibold" title="Precio del packing list en USD por el tipo de cambio.">
                         Producto
+                        <div className="font-normal normal-case text-slate-400">USD → MXN</div>
                       </th>
-                      <th className="px-1 py-2 text-right font-semibold" title="CBM/pieza × tarifa">
+                      <th className="px-1 py-2 text-right font-semibold" title="CBM por pieza por la tarifa.">
                         Flete
+                        <div className="font-normal normal-case text-slate-400">MXN</div>
                       </th>
-                      <th className="px-1 py-2 text-right font-semibold">Costo nuevo</th>
-                      <th className="px-1 py-2 text-right font-semibold">Costo hoy</th>
+                      <th className="px-1 py-2 text-right font-semibold">
+                        Costo nuevo
+                        <div className="font-normal normal-case text-slate-400">MXN</div>
+                      </th>
+                      <th className="px-1 py-2 text-right font-semibold">
+                        Costo hoy
+                        <div className="font-normal normal-case text-slate-400">MXN</div>
+                      </th>
                       <th className="px-2 py-2 text-center font-semibold">Candado</th>
                     </tr>
                   </thead>
@@ -1139,10 +1158,22 @@ function FilaResultado({
           {f.archivo ? (
             <>
               <div className="truncate" title={f.archivo}>{f.archivo}</div>
-              <div className="text-slate-400">
-                fila {f.fila_excel ?? "—"}
-                {f.grupo?.length > 1 ? ` · caja con ${f.grupo.length} renglones` : ""}
+              {/* El número de fila es el dato con el que se vuelve al Excel a
+                  comprobar: va grande, no perdido entre lo demás. */}
+              <div className="mt-0.5 flex items-baseline gap-1">
+                <span className="text-[9px] uppercase text-slate-400">fila</span>
+                <span className="text-[15px] font-bold leading-none text-slate-700">
+                  {f.fila_excel ?? "—"}
+                </span>
               </div>
+              {f.grupo?.length > 1 && (
+                <div
+                  className="mt-0.5 text-amber-700"
+                  title={`El cartón lo comparten los renglones ${f.grupo.join(", ")}: el flete se reparte entre las piezas de todos.`}
+                >
+                  cartón compartido · filas {f.grupo.join(", ")}
+                </div>
+              )}
               {f.fuente && <div className="text-slate-400">ruteo: {f.fuente}</div>}
             </>
           ) : (
@@ -1150,12 +1181,29 @@ function FilaResultado({
           )}
         </td>
         <td className="px-1 py-2 text-right align-top tabular-nums text-slate-600">
-          {num(f.piezas_grupo, 1)}
+          {/* Lo CRUDO primero: "300 pz en 40 cajas" deja ver de dónde sale el
+              7.5, y es lo que permite cachar un packing list mal capturado. */}
+          {f.piezas_fila != null && f.cajas ? (
+            <div className="text-[10px] text-slate-500">
+              {num(f.piezas_fila, 0)} pz &divide; {num(f.cajas, 0)} cajas
+              <div className="text-slate-400">
+                = {num(f.piezas_fila / f.cajas, 1)} / caja
+              </div>
+            </div>
+          ) : (
+            <div className="text-[10px] text-slate-400">&mdash;</div>
+          )}
+          <div className="mt-1 border-t border-slate-100 pt-1 font-semibold text-slate-700">
+            {num(f.piezas_grupo, 1)}
+          </div>
         </td>
         <td className="px-1 py-2 text-right align-top tabular-nums text-slate-600">
           {num(f.cbm_pieza, 6)}
         </td>
-        <td className="px-1 py-2 text-right align-top tabular-nums text-slate-600">
+        <td className="px-1 py-2 text-right align-top tabular-nums text-slate-500">
+          {lwh(f.caja_lwh)}
+        </td>
+        <td className="px-1 py-2 text-right align-top font-semibold tabular-nums text-slate-700">
           {lwh(f.pieza_lwh)}
         </td>
         <td className="px-1 py-2 text-right align-top tabular-nums text-slate-600">
@@ -1163,6 +1211,14 @@ function FilaResultado({
         </td>
         <td className="px-1 py-2 text-right align-top tabular-nums text-slate-600">
           {mxn(f.producto_mxn)}
+          {f.precio_usd != null && f.precio_usd > 0 && (
+            <div
+              className="text-[10px] text-slate-400"
+              title="Precio unitario tal como viene en el packing list."
+            >
+              {f.precio_usd.toFixed(2)} USD
+            </div>
+          )}
           {f.origen_prod === "kubera" && (
             <div className="text-[9px] text-amber-600" title="El packing list no trae precio unitario: se conservó el costo de producto que ya estaba guardado.">
               conservado
