@@ -241,6 +241,34 @@ def revisados_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
     return salida
 
 
+def skus_revisados(limite: int = 2000) -> list[str]:
+    """
+    TODOS los SKUs con la marca de costo validado (migración 0032).
+
+    Al revés que ``revisados_por_sku``, que pregunta por un lote conocido: aquí
+    no hay lote, la pregunta es "¿cuáles están validados?" — la que necesita el
+    filtro de Omnicanal para poder PAGINAR sobre ese subconjunto. Filtrar
+    después de traer la página daría totales mentirosos.
+
+    El ``limite`` no es una optimización, es un candado. Del otro lado la lista
+    se convierte en un término LIKE por SKU (``woocommerce._buscar_wc_ids_db``),
+    así que 2,000 validados ya son 4,000 comodines en un solo WHERE contra el
+    MySQL de WordPress. Hoy hay **19** marcados y el catálogo son ~15,800, o sea
+    que falta muchísimo para acercarse; cuando se acerque, lo que toca no es
+    subir el número sino cambiar ese camino por un ``IN`` de SKUs exactos.
+    El llamador AVISA cuando el tope corta — un filtro que devuelve de menos sin
+    decirlo es peor que no tenerlo.
+    """
+    filas = sdb.fetch_all(
+        """select sku::text as sku
+             from costing.costos_validados
+            where revisado_at is not null
+            order by revisado_at desc
+            limit %s""",
+        (limite,))
+    return [f["sku"] for f in filas]
+
+
 def validados_de(skus: list[str]) -> dict[str, dict[str, Any]]:
     """
     ``{ sku: {nombre, contenedor, costo_*, dimensiones, revisado_at, ...} }``.

@@ -104,6 +104,7 @@ async def listar_productos(
     categoria: int | None = Query(None, description="ID de categoría WooCommerce (canal general)"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
     vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
+    revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Canal general"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
@@ -116,6 +117,40 @@ async def listar_productos(
     # sin explicación.
     filtro_activas = _filtro_activas(canal, solo_activas)
     activas = bool(filtro_activas and filtro_activas.aplicado)
+
+    # SOLO COSTO VALIDADO. El filtro se resuelve ANTES de listar y se convierte
+    # en el filtro de SKUs que Woo ya sabía aplicar: así la PAGINACIÓN y el
+    # TOTAL salen del subconjunto correcto. Filtrar después de traer la página
+    # daría "3 productos" en una vista que dice tener 40.
+    #
+    # Se cruza con `skus_lista` en vez de reemplazarlo: si el usuario ya venía
+    # filtrando SKUs, pedir "validados" debe ACOTAR lo suyo, no borrárselo. Y
+    # `search` sigue vivo aparte — del otro lado son dos condiciones unidas por
+    # AND (`woocommerce._buscar_wc_ids_db`).
+    revisado_truncado = False
+    if revisado:
+        try:
+            marcados = await asyncio.to_thread(costing_read.skus_revisados)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("filtro de costo validado no disponible: %s", exc)
+            raise HTTPException(
+                503, "No se pudo leer la marca de costo validado. Quita el "
+                     "filtro para seguir viendo el catálogo.")
+        revisado_truncado = len(marcados) >= 2000
+        if skus_lista:
+            pedidos = {t.strip().lower() for t in skus_lista}
+            marcados = [s for s in marcados if s.lower() in pedidos]
+        # Sin un solo validado NO se llama a Woo con la lista vacía: `skus=[]`
+        # es falsy allá y el filtro desaparecería, devolviendo el catálogo
+        # entero justo cuando la respuesta correcta es "ninguno".
+        if not marcados:
+            return RespuestaProductos(
+                canal=canal, items=[], filtro_activas=filtro_activas,
+                revisado_truncado=revisado_truncado,
+                paginacion=Paginacion(page=page, per_page=per_page, total=0,
+                                      total_pages=0, tiene_anterior=False,
+                                      tiene_siguiente=False))
+        skus_lista = marcados
 
     if canal == Canal.GENERAL.value:
         items_raw, total, total_pages = await woocommerce.listar_productos(
@@ -247,7 +282,8 @@ async def listar_productos(
         tiene_siguiente=page < total_pages,
     )
     return RespuestaProductos(canal=canal, items=items, paginacion=paginacion,
-                              filtro_activas=filtro_activas)
+                              filtro_activas=filtro_activas,
+                              revisado_truncado=revisado_truncado)
 
 
 @router.get("/_categorias/lista")

@@ -144,6 +144,10 @@ class RespuestaProductos(BaseModel):
     completo: bool = True
     # Sólo viaja cuando se pidió `solo_activas`; `None` = nadie lo pidió.
     filtro_activas: FiltroActivas | None = None
+    # True cuando el filtro de COSTO VALIDADO topó su límite (2,000 SKUs) y
+    # por lo tanto la lista puede estar incompleta. Un filtro que devuelve de
+    # menos sin decirlo es peor que no tenerlo.
+    revisado_truncado: bool = False
 
 
 class SubCuentaInfo(BaseModel):

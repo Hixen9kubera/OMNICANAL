@@ -1,6 +1,6 @@
 "use client";
 
-import { LayoutGrid, List, ArrowDownWideNarrow } from "lucide-react";
+import { LayoutGrid, List, ArrowDownWideNarrow, BadgeCheck } from "lucide-react";
 import type { CategoriaWC } from "@/lib/api";
 
 export type Vista = "mosaico" | "lista";
@@ -16,6 +16,9 @@ interface Props {
   onCategoria: (c: number | null) => void;
   estados: string[];
   onEstados: (e: string[]) => void;
+  /** Solo productos con el COSTO VALIDADO. Solo aplica en General. */
+  revisado: boolean;
+  onRevisado: (v: boolean) => void;
   color: string;
   textoColor: string;
 }
@@ -35,7 +38,8 @@ const ESTADOS = [
 
 export default function ProductControls({
   vista, onVista, orden, onOrden, esGeneral,
-  categorias, categoria, onCategoria, estados, onEstados, color, textoColor,
+  categorias, categoria, onCategoria, estados, onEstados, revisado, onRevisado,
+  color, textoColor,
 }: Props) {
   const toggleEstado = (v: string) => {
     onEstados(estados.includes(v) ? estados.filter((e) => e !== v) : [...estados, v]);
@@ -96,6 +100,28 @@ export default function ProductControls({
               <option key={c.id} value={c.id}>{c.nombre} ({c.count})</option>
             ))}
           </select>
+        )}
+
+        {/* COSTO VALIDADO — solo General: la marca vive en costos_validados y
+            el backend la cruza contra el catálogo de la tienda. Se acumula con
+            la búsqueda y con "Filtrar SKUs" en vez de reemplazarlas, así que
+            sirve para acotar una búsqueda que ya venías haciendo. */}
+        {esGeneral && (
+          <button
+            onClick={() => onRevisado(!revisado)}
+            title={revisado
+              ? "Mostrando SOLO los productos cuyo costo ya fue revisado y firmado."
+              : "Filtrar a los productos cuyo costo ya fue revisado y firmado (etiqueta VALIDADO)."}
+            className={[
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+              revisado
+                ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+            ].join(" ")}
+          >
+            <BadgeCheck size={14} className="shrink-0" />
+            Costo validado
+          </button>
         )}
       </div>
 

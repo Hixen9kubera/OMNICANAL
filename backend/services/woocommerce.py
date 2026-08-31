@@ -226,8 +226,16 @@ async def listar_productos(
                     data = [by_id[i] for i in wc_ids if i in by_id]  # preserva el orden
                     total = total_db
                     total_pages = max(1, (total_db + per_page - 1) // per_page)
-            # Fallback SKU exacto / nombre si la DB no resolvió (p. ej. solo search)
-            if not data and search:
+            # Fallback SKU exacto / nombre si la DB no resolvió (p. ej. solo search).
+            #
+            # NO se dispara si hay filtro de SKUs: este fallback pregunta a Woo
+            # SOLO con `search`, así que resucitaba el catálogo entero ignorando
+            # la lista. Con "bolsas" + un SKU concreto devolvía los 142 de
+            # "bolsas" (destapado el 28-ago al filtrar por costo validado). Con
+            # una lista de SKUs activa, "no hay nada" es una RESPUESTA, no un
+            # fallo de la ruta de base — y el complemento por SKU exacto de más
+            # abajo ya cubre lo que la maestra no conoce.
+            if not data and search and not skus:
                 if " " not in search.strip():
                     rs = await cli.get("/products", params={**params, "sku": search.strip()})
                     if rs.status_code == 200 and rs.json():
@@ -245,7 +253,12 @@ async def listar_productos(
             # términos sin espacios se consultan ADEMÁS a Woo por SKU exacto en
             # una sola llamada (?sku=a,b,c) — el mismo plan B que ya tiene
             # `search`. Solo en la página 1 para no duplicar el total al paginar.
-            if skus and page == 1:
+            # `not search`: con un término de búsqueda escrito, el AND que
+            # ya resolvió la base MANDA. Este complemento pregunta por SKU
+            # exacto sin mirar `search`, así que devolvía un producto que
+            # NO casa con lo buscado — al filtrar por costo validado y
+            # escribir "bolsas" salía un SKU de audífonos (28-ago).
+            if skus and page == 1 and not search:
                 # Solo los términos que la búsqueda NO resolvió ya como SKU
                 # exacto: si todos están, la llamada extra sobra (perf 05-ago).
                 ya_exactos = {str(p.get("sku") or "").strip().upper() for p in data}

@@ -64,6 +64,11 @@ export default function OmnicanalPage() {
   const [orden, setOrden] = useState("reciente");
   const [estados, setEstados] = useState<string[]>([]);
   const [categoria, setCategoria] = useState<number | null>(null);
+  // "Costo validado": solo los productos con la marca `revisado_at`
+  // (migración 0032). Vive solo en General — es donde el backend puede
+  // cruzar la marca contra el catálogo de la tienda y paginar sobre el
+  // subconjunto. Se acumula con la búsqueda y con "Filtrar SKUs".
+  const [revisado, setRevisado] = useState(false);
   const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
 
   const topRef = useRef<HTMLDivElement>(null);
@@ -155,6 +160,7 @@ export default function OmnicanalPage() {
         orden,
         estados,
         categoria: esGeneral ? categoria : null,
+        revisado: esGeneral ? revisado : false,
         // Omnicanal es la vista de CONTROL: muestra TODO el catálogo, incluidos
         // los drafts. Esconderlos hacía invisible un producto en draft pero VIVO
         // en un canal (TEC-1841-ROS vendió estando oculto; ver v0.29.0).
@@ -199,7 +205,7 @@ export default function OmnicanalPage() {
     return () => ctrl.abort();
     // `soloActivas` va aquí SÍ O SÍ: sin él, encender el chip no vuelve a
     // pedir y la rejilla se queda igual — se ve como que el filtro no sirve.
-  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria]);
+  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria, revisado]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -223,6 +229,7 @@ export default function OmnicanalPage() {
     // Reiniciar filtros que dependen del canal
     setCategoria(null);
     setEstados([]);
+    setRevisado(false);
     setOrden("reciente");
     // Buscador y "Filtrar SKUs": cada pestaña empieza limpia (evita que un
     // filtro de un canal se reaplique sin querer al cambiar a otro).
@@ -441,6 +448,8 @@ export default function OmnicanalPage() {
             onCategoria={(c) => { setCategoria(c); setPage(1); }}
             estados={estados}
             onEstados={(e) => { setEstados(e); setPage(1); }}
+            revisado={revisado}
+            onRevisado={(v) => { setRevisado(v); setPage(1); }}
             color={tema.color}
             textoColor={tema.texto}
           />

@@ -1001,6 +1001,56 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.309.0 — Filtro "Costo validado" en Omnicanal (y dos fugas del filtro de SKUs)
+
+Un chip en la barra de Omnicanal (solo General) que deja ver únicamente los
+productos con la marca de COSTO VALIDADO (`revisado_at`, migración 0032). Pedido
+de Eduardo: la etiqueta ya se pintaba en la tarjeta, pero no había forma de
+BUSCAR por ella.
+
+**Se resuelve ANTES de listar, no después.** `costing_read.skus_revisados()`
+trae los SKUs marcados y se pasan como filtro de SKUs a WooCommerce, que es el
+que pagina. Filtrar la página ya traída habría dado totales mentirosos ("3
+productos" en una vista que dice tener 40). Y se CRUZA con lo que el usuario ya
+tuviera puesto —búsqueda y "Filtrar SKUs"— en vez de reemplazarlo: pedir
+"validados" ACOTA lo tuyo.
+
+El límite de 2,000 SKUs no es optimización, es candado: del otro lado cada SKU
+se vuelve un `LIKE`, así que 2,000 son 4,000 comodines en un solo WHERE contra
+el MySQL de WordPress. Hoy hay **19** marcados de ~15,800, o sea que falta
+muchísimo; cuando se acerque, lo que toca no es subir el número sino cambiar ese
+camino por un `IN` de SKUs exactos. Si el tope corta, la respuesta lo DICE
+(`revisado_truncado`) — un filtro que devuelve de menos en silencio es peor que
+no tenerlo.
+
+**Dos fugas preexistentes del filtro de SKUs, destapadas al probar esto:**
+
+1. `woocommerce.listar_productos` tenía un fallback —"si la base no resolvió y
+   hay `search`, pregúntale a Woo"— que consultaba **solo con `search`,
+   ignorando la lista de SKUs**. Con "bolsas" + un SKU concreto devolvía los
+   **142** de "bolsas". Ahora ese fallback no se dispara si hay filtro de SKUs:
+   ahí "no hay nada" es una RESPUESTA, no un fallo de la ruta de base.
+
+2. El complemento por SKU exacto (`if skus and page == 1`) preguntaba a Woo por
+   los SKUs **sin mirar `search`**, así que devolvía productos que no casaban con
+   lo buscado — filtrando por validado y escribiendo "bolsas" salía un SKU de
+   audífonos. Ahora solo corre cuando NO hay término de búsqueda: con uno
+   escrito, el AND que ya resolvió la base MANDA.
+
+Las dos afectaban al "Filtrar SKUs" de siempre, no solo al filtro nuevo.
+
+Verificado contra el sandbox, endpoint y UI:
+
+    revisado=true                    -> 1  (TEC-0393-ROS, el único marcado)
+    revisado=true & search=audifonos -> 1  (casa: es audífonos)
+    revisado=true & search=bolsas    -> 0  (no casa)
+    revisado=true & skus=ORG-0319-PLA-> 0  (ese no está marcado)
+    skus=TEC-0393-ROS & search=bolsas-> 0  (antes devolvía 1)
+    search=bolsas                    -> 59 (sin tocar)
+
+Y en pantalla: el chip enciende en verde y la rejilla pasa de 38 tarjetas a 1;
+al apagarlo vuelve a 38.
+
 ### v0.308.0 — Se retira la pestaña de Migración
 
 La pidió Eduardo el 28-ago: la migración F6 está cerrada (kubera es el registro,

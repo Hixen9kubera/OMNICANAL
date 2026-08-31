@@ -206,6 +206,9 @@ export interface ListarParams {
   estados?: string[];
   categoria?: number | null;
   skus?: string; // "Filtrar SKUs": lista separada por comas, filtra y busca a la vez
+  // Solo productos con el COSTO VALIDADO (marca `revisado_at`, mig. 0032).
+  // Se ACUMULA con `search` y `skus`: el backend los cruza, no los reemplaza.
+  revisado?: boolean;
   vista?: "productos" | "crear" | "omnicanal";
 }
 
@@ -225,6 +228,7 @@ export function listarProductos(
   if (p.estados && p.estados.length) q.set("estados", p.estados.join(","));
   if (p.categoria) q.set("categoria", String(p.categoria));
   if (p.skus) q.set("skus", p.skus);
+  if (p.revisado) q.set("revisado", "true");
   // Qué pestaña pide el listado: reparte el catálogo por estado de WooCommerce.
   // productos = publish/pending/ready · crear = draft/inprogress · omnicanal = todos.
   if (p.vista) q.set("vista", p.vista);
