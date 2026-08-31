@@ -21,6 +21,7 @@ import {
   Trophy,
   Webhook,
   Gauge,
+  PackageX,
   type LucideIcon,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -78,6 +79,8 @@ const ITEMS: NavItem[] = [
         descripcion: "Capacidad de bodega y plan de envío" },
       { label: "Métricas", href: "/analisis/metricas", icon: Gauge,
         descripcion: "KPIs de publicaciones: activaciones, pausas y ticket promedio" },
+      { label: "Rentabilidad", href: "/analisis/rentabilidad", icon: PackageX,
+        descripcion: "Devoluciones sobre ventas, por SKU y por tienda" },
       { label: "Reportes", href: "/analisis/reportes", icon: FileText,
         descripcion: "Descargas en CSV y Excel" },
     ],

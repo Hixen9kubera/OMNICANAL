@@ -69,3 +69,8 @@ ambiguos.json
 .competencia-chrome/
 verificacion_competencia/
 .tokens_ml_observaciones.jsonl
+
+# Reportes y volcados de sondeo: llevan datos de COMPRADORES (user_id,
+# direcciones de envío de las devoluciones). Este repo es PÚBLICO — un
+# `git add .` los publicaría. Nunca se versionan.
+reportes/

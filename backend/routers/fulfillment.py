@@ -2536,3 +2536,177 @@ async def categorias_excel(
     except Exception as exc:  # noqa: BLE001
         log.warning("categorias/excel falló: %s", exc)
         raise HTTPException(502, f"no se pudo generar el Excel: {exc}") from exc
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  RENTABILIDAD · DEVOLUCIONES
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Fuente: `channel.returns` (creada el 31-ago-2026). Antes de ella las
+# devoluciones NO existían en kubera: el barrido de las 73 tablas no encontró
+# ninguna columna `return|devol|refund|claim`, y ni `cancelled` ni
+# `partially_refunded` sirven de sustituto (cancelar no es devolver, y en el
+# segundo el valor es el total del pedido).
+#
+# TRES COSAS QUE ESTA VISTA TIENE QUE HACER BIEN O MIENTE
+#
+# 1. EL MISMO UNIVERSO EN EL NUMERADOR Y EN EL DENOMINADOR. Las devoluciones que
+#    hoy se capturan son SOLO de Mercado Libre, así que las ventas se filtran a
+#    `canal='mercado_libre'`. Comparar devoluciones de ML contra las ventas de
+#    todos los canales diluiría el porcentaje hacia abajo.
+#
+# 2. EL MISMO DÍA. Las dos series salen de vistas que ya convierten a
+#    America/Mexico_City (`sales_daily_completa` y `returns_daily`), y se
+#    filtran por su columna `date`. Restar timestamps crudos contra
+#    `current_date` mezclaría husos y movería ventas de un día al otro.
+#
+# 3. DECIR CUÁNDO NO SABE. `channel.returns` arranca donde arrancó su backfill;
+#    las ventas vienen desde diciembre. Si el período pedido empieza ANTES de la
+#    cobertura de devoluciones, el porcentaje sale artificialmente bajo — no
+#    porque no hubo devoluciones, sino porque no se capturaron. La respuesta
+#    lleva `cobertura` y `parcial` para que la pantalla lo diga en vez de pintar
+#    un 0% tranquilizador. Es la lección de los 964 pedidos fantasma: una fuente
+#    incompleta que contesta con seguridad lo que ya no sabe.
+#
+# OJO CON LA ASIMETRÍA DE FECHAS, que no es un bug y no se puede "arreglar":
+# las ventas se fechan cuando se VENDIÓ y las devoluciones cuando se ABRIÓ EL
+# RECLAMO (claim.date_created, decisión de José). En una misma ventana, parte de
+# las devoluciones corresponde a ventas anteriores. El porcentaje es "devuelto
+# en el período / vendido en el período", NO la tasa de devolución de una
+# cohorte. Para lo segundo habría que fechar por la venta y esperar a que la
+# ventana madure.
+_CUENTAS_DEV = {"BEKURA", "SANCORFASHION"}
+
+# Las dos series comparten este filtro. Va aquí una sola vez para que no puedan
+# separarse: si una filtra por canal y la otra no, el porcentaje queda roto.
+_UNIVERSO = ("canal = 'mercado_libre' "
+             "and (%(cuenta)s::text is null or cuenta = %(cuenta)s)")
+
+
+@router.get("/rentabilidad/devoluciones")
+async def rentabilidad_devoluciones(
+    dias: int = Query(7, ge=1, le=365),
+    cuenta: str | None = Query(None),
+) -> dict[str, Any]:
+    """
+    KPIs de devoluciones contra ventas + tabla por SKU.
+
+    Devuelve los dos pares que pidió José (valor y unidades) con su porcentaje,
+    el desglose por tienda y la tabla por SKU ordenable. `parcial=true` avisa que
+    el período excede la cobertura de `channel.returns` y el % está subestimado.
+    """
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    if cuenta and cuenta not in _CUENTAS_DEV:
+        raise HTTPException(400, f"cuenta sin devoluciones: {cuenta}")
+    p = {"dias": dias, "cuenta": cuenta}
+    try:
+        ventas = await _fetch_one(_mx(f"""
+            select coalesce(sum(units_sold), 0)::bigint as unidades,
+                   coalesce(sum(revenue), 0)::numeric   as ingresos
+            from channel.sales_daily_completa
+            where date > current_date - %(dias)s::int and {_UNIVERSO}"""), p)
+
+        dev = await _fetch_one(_mx(f"""
+            select coalesce(sum(returns_count), 0)::int     as devoluciones,
+                   coalesce(sum(units_returned), 0)::bigint as unidades,
+                   coalesce(sum(value_returned), 0)::numeric as valor,
+                   -- Lo RESTABLE de las ventas: el resto ya salió por cancelled
+                   -- y descontarlo otra vez sería doble descuento.
+                   coalesce(sum(case when venta_contaba
+                                     then value_returned else 0 end), 0)::numeric
+                                                            as valor_restable
+            from channel.returns_daily
+            where date > current_date - %(dias)s::int and {_UNIVERSO}"""), p)
+
+        # Hasta dónde alcanza lo capturado. Sin esto la pantalla no puede
+        # distinguir "no hubo devoluciones" de "no las tenemos".
+        cob = await _fetch_one(_mx("""
+            select min(date) as desde, max(date) as hasta,
+                   coalesce(sum(returns_count), 0)::int as total,
+                   (current_date - %(dias)s::int) as periodo_desde,
+                   current_date as hoy
+            from channel.returns_daily where canal = 'mercado_libre'"""), p)
+
+        por_tienda = await _fetch_all(_mx(f"""
+            select cuenta,
+                   sum(returns_count)::int      as devoluciones,
+                   sum(units_returned)::bigint  as unidades,
+                   round(sum(value_returned), 2) as valor
+            from channel.returns_daily
+            where date > current_date - %(dias)s::int and {_UNIVERSO}
+            group by 1 order by 4 desc"""), p)
+
+        # La tabla: devoluciones por SKU, y al lado lo VENDIDO del mismo SKU en
+        # la misma ventana — sin eso, un SKU con 3 devoluciones de 500 ventas se
+        # ve igual de mal que uno con 3 de 4.
+        tabla = await _fetch_all(_mx(f"""
+            with dev as (
+              select sku,
+                     sum(units_returned)::bigint   as uds_devueltas,
+                     sum(value_returned)           as valor_devuelto,
+                     sum(returns_count)::int       as devoluciones,
+                     bool_or(is_full)              as tiene_full,
+                     bool_or(not is_full)          as tiene_drop,
+                     array_agg(distinct cuenta order by cuenta) as tiendas,
+                     array_remove(array_agg(distinct resolucion_motivo),
+                                  null)            as motivos
+              from channel.returns_daily
+              where date > current_date - %(dias)s::int and {_UNIVERSO}
+              group by 1
+            ), ven as (
+              select sku, sum(units_sold)::bigint as uds_vendidas,
+                     sum(revenue) as ingresos
+              from channel.sales_daily_completa
+              where date > current_date - %(dias)s::int and {_UNIVERSO}
+              group by 1
+            )
+            select d.sku::text                       as sku,
+                   pr.name                           as titulo,
+                   d.uds_devueltas,
+                   round(d.valor_devuelto, 2)        as valor_devuelto,
+                   d.devoluciones,
+                   case when d.tiene_full and d.tiene_drop then 'mixto'
+                        when d.tiene_full then 'full' else 'drop' end as tipo,
+                   d.tiendas, d.motivos,
+                   coalesce(v.uds_vendidas, 0)       as uds_vendidas,
+                   round(coalesce(v.ingresos, 0), 2) as ingresos,
+                   case when coalesce(v.uds_vendidas, 0) > 0
+                        then round(100.0 * d.uds_devueltas / v.uds_vendidas, 1)
+                   end                               as pct_uds
+            from dev d
+            left join ven v on v.sku = d.sku
+            left join core.products pr on pr.sku = d.sku
+            order by d.valor_devuelto desc nulls last"""), p)
+
+        pct = lambda a, b: (round(float(a) / float(b) * 100, 2) if b else None)  # noqa: E731
+        # `parcial`: el período pide más atrás de lo que hay capturado.
+        parcial = bool(cob and cob["desde"] and cob["periodo_desde"]
+                       and cob["desde"] > cob["periodo_desde"])
+        return {
+            "ambiente": settings.app_env,
+            "periodo": {"dias": dias,
+                        "desde": str(cob["periodo_desde"]) if cob else None,
+                        "hasta": str(cob["hoy"]) if cob else None},
+            "cobertura": {"desde": str(cob["desde"]) if cob and cob["desde"] else None,
+                          "hasta": str(cob["hasta"]) if cob and cob["hasta"] else None,
+                          "total": (cob or {}).get("total", 0)},
+            "parcial": parcial,
+            "kpis": {
+                "ingresos": float(ventas["ingresos"] or 0),
+                "devuelto_valor": float(dev["valor"] or 0),
+                "pct_valor": pct(dev["valor"], ventas["ingresos"]),
+                "unidades": int(ventas["unidades"] or 0),
+                "devuelto_unidades": int(dev["unidades"] or 0),
+                "pct_unidades": pct(dev["unidades"], ventas["unidades"]),
+                "devoluciones": int(dev["devoluciones"] or 0),
+                "valor_restable": float(dev["valor_restable"] or 0),
+            },
+            "por_tienda": por_tienda,
+            "tabla": tabla,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("rentabilidad/devoluciones falló: %s", exc)
+        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc

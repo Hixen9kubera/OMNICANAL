@@ -1001,6 +1001,69 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.312.0 — Análisis de Rentabilidad: qué se devuelve, y contra qué se compara
+
+Pestaña nueva `/analisis/rentabilidad` con la sub-pestaña **Devoluciones** (Drop
+y Fulfillment quedan anunciadas y explícitamente vacías: una pestaña que finge
+funcionar es peor que una que dice qué falta).
+
+**El agujero que cierra.** Las devoluciones NO existían en kubera. El barrido de
+las 73 tablas buscando cualquier columna `return|devol|refund|claim` dio CERO
+resultados, y los dos candidatos obvios no sirven de sustituto: `cancelled` es
+cancelación (la mayoría nunca se envió) y en `partially_refunded` el valor es el
+total del pedido, no lo reembolsado. Mientras tanto el aviso llegaba todos los
+días —el webhook `post_purchase` entró 2,324 veces en 3 días con
+`actions:["claims"]`— y caía en el `else` de `routers/webhooks.py:428`, con
+`ops.webhook_events` purgándose a los 3 días.
+
+**La fuente.** `GET /post-purchase/v1/claims/search?type=returns` (el `range` de
+fechas solo vale acompañado de `type`/`stage`/`status`; solo da 400
+`atLeastOneFilterProvided`). Histórico disponible: **341 BEKURA + 380
+SANCORFASHION**. El detalle del claim trae `resolution` y el recurso
+`/post-purchase/v2/claims/{id}/returns` trae `orders[]`, `status_money` y
+`shipments[]`. El puente a la venta es `claim.resource_id` =
+`channel.orders.external_order_id`: **empató 61/61** en los 7 días medidos.
+
+**Tabla `channel.returns`** (creada el 31-ago, sin archivo de migración por
+decisión de José; su diseño vive en los `comment on column`). Dos trampas que
+los datos destaparon y que están documentadas dentro de la BD:
+
+  * **La PK va por `claim_id`, no por `returns.id`** — ese llega en **0** en las
+    devoluciones `low_cost` (ML reembolsa sin pedir el retorno), y habría
+    colisionado el primer día. `claim_id` es único 62/62.
+  * **`es_fulfillment` se copia de `order_items`, nunca de `orders`.** Esa
+    discrepa en el **40.11%** de las líneas de ML (10,941 de 27,280), siempre en
+    el mismo sentido (orders=false / items=true; el inverso no existe). Leyendo
+    la de `orders` el tablero reportaba **2 devoluciones FULL de 62**; con la
+    buena son **59**. Un 3% contra un 95%: la conclusión se invierte.
+
+**Lo que la pantalla dice en voz alta.** `channel.returns` arranca donde arrancó
+su backfill, pero las ventas vienen desde diciembre: pedir 30 días con 7
+capturados da un porcentaje artificialmente bajo. Medido: a 7 días el valor
+devuelto es **2.75%** de los ingresos; a 30 días cae a **0.76%** por puro hueco
+de datos. El endpoint devuelve `cobertura` y `parcial`, y la pantalla pinta un
+banner ámbar en vez de un 0% tranquilizador — la lección de los 964 pedidos
+fantasma: una fuente incompleta que contesta con seguridad lo que no sabe.
+
+También expone el matiz que evita restar de más: de los $49,181 devueltos en 7
+días, solo **$34,448 son restables** de las ventas. El resto corresponde a
+órdenes ya canceladas, que `sales_daily` había descontado; restar el total sería
+contarlo dos veces (columna `venta_contaba`).
+
+**Asimetría de fechas, que no es un bug.** Las ventas se fechan cuando se
+vendió; las devoluciones, cuando se abrió el reclamo (`claim.date_created`,
+decisión de José — `claim.date_closed` NO EXISTE en la API, ni en el search ni
+en el detalle; el cierre es `resolution.date_created`). El % es "devuelto en el
+período / vendido en el período", no la tasa de devolución de una cohorte.
+
+Piezas nuevas: `GET /api/fulfillment/rentabilidad/devoluciones` (numerador y
+denominador filtrados al MISMO universo —solo ML— para que el % no se diluya),
+`backend/scripts/sondear_devoluciones_ml.py` y
+`backend/scripts/backfill_devoluciones_ml.py` (dry-run por default, idempotente).
+
+Pendiente: el consumo del webhook `post_purchase` —enciende flujo vivo, va con
+el dale de Brandon— y el backfill de las 721 históricas.
+
 ### v0.311.0 — Validar un costo ahora también recalcula su precio sugerido
 
 Guardar el costo validado NO bastaba: `costing.costos_finales` —donde viven

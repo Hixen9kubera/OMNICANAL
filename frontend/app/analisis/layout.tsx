@@ -21,7 +21,7 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { BarChart3, Boxes, Clock, FileText, Gauge, Star, TriangleAlert } from "lucide-react";
+import { BarChart3, Boxes, Clock, FileText, Gauge, PackageX, Star, TriangleAlert } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
 
@@ -33,6 +33,7 @@ const SECCIONES = [
   { href: "/analisis/estrellas", label: "Estrellas", icon: Star },
   { href: "/analisis/fba", label: "Amazon FBA", icon: BarChart3 },
   { href: "/analisis/metricas", label: "Métricas", icon: Gauge },
+  { href: "/analisis/rentabilidad", label: "Rentabilidad", icon: PackageX },
   { href: "/analisis/reportes", label: "Reportes", icon: FileText },
 ];
 // La entrada VENTAS del submenú vive en /ventas (página autónoma con su propio
