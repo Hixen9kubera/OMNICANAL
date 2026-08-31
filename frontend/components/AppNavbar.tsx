@@ -17,7 +17,6 @@ import {
   ChevronDown,
   Workflow,
   Calculator,
-  Database,
   Tags,
   Trophy,
   Webhook,
@@ -90,8 +89,6 @@ const ITEMS: NavItem[] = [
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
   { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard",
-    soloAdmin: true },
-  { id: "migracion", label: "Migración", icon: Database, href: "/migracion",
     soloAdmin: true },
   // Solo admin: el log de TikTok trae datos del comprador (su scope
   // `seller.order.info` viene marcado como información personal).

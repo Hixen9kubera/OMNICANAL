@@ -1001,6 +1001,23 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.308.0 — Se retira la pestaña de Migración
+
+La pidió Eduardo el 28-ago: la migración F6 está cerrada (kubera es el registro,
+los espejos retirados) y el panel que la vigilaba en vivo ya cumplió su ciclo.
+
+Se va **solo la interfaz**: `frontend/app/migracion/` y su entrada del navbar
+(con el icono `Database`, que nadie más usaba). El typecheck confirma que
+ningún otro componente la referenciaba.
+
+**El backend NO se toca a propósito.** `routers/migracion.py` no es la
+pantalla: ahí viven las actas de los ETLs auditores (`core-etl-v2`,
+`categorias-etl`), los dominios retirados/sin-alerta y los backfills one-shot.
+Los ETLs le siguen escribiendo cada madrugada; quitarlo rompería las actas, no
+la pestaña. Su retiro es una decisión aparte, con F8. Versión 0.308.0.
+
+---
+
 ### v0.307.0 — La tabla del validador deja de pedir fe
 
 Cuatro cosas que Brandon pidio al usarla, y las cuatro son de lo mismo: poder
