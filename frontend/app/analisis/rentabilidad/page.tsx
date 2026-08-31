@@ -31,7 +31,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDown, ArrowUp, Info, PackageX, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, CalendarDays, Info, PackageX, RefreshCw, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 
 // ── Contratos ───────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ interface Fila {
   pct_uds: number | null;
 }
 interface Resp {
-  periodo: { dias: number; desde: string | null; hasta: string | null };
+  periodo: { dias: number | null; desde: string | null; hasta: string | null };
   cobertura: { desde: string | null; hasta: string | null; total: number };
   parcial: boolean;
   kpis: {
@@ -96,6 +96,12 @@ type Col = "valor_devuelto" | "uds_devueltas" | "pct_uds" | "uds_vendidas" | "sk
 export default function RentabilidadPage() {
   const [sub, setSub] = useState<string>("devoluciones");
   const [dias, setDias] = useState(7);
+  // Rango explícito del calendario. Vacío = manda el preset de días. Los dos
+  // conviven a propósito: el preset es el atajo diario y el rango sirve para
+  // cuadrar contra un corte concreto.
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const rango = !!(desde && hasta);
   const [cuenta, setCuenta] = useState<string | null>(null);
   const [data, setData] = useState<Resp | null>(null);
   const [cargando, setCargando] = useState(true);
@@ -108,6 +114,7 @@ export default function RentabilidadPage() {
     try {
       const q = new URLSearchParams({ dias: String(dias) });
       if (cuenta) q.set("cuenta", cuenta);
+      if (desde && hasta) { q.set("desde", desde); q.set("hasta", hasta); }
       const r = await fetchSesion(
         `${API_BASE}/api/fulfillment/rentabilidad/devoluciones?${q}`,
         { cache: "no-store" });
@@ -118,7 +125,7 @@ export default function RentabilidadPage() {
     } finally {
       setCargando(false);
     }
-  }, [dias, cuenta]);
+  }, [dias, cuenta, desde, hasta]);
 
   useEffect(() => { void cargar(); }, [cargar]);
 
@@ -196,15 +203,48 @@ export default function RentabilidadPage() {
           {/* ── Filtros ──────────────────────────────────────────────── */}
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
             <div className="flex flex-wrap items-center gap-4">
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Período</span>
                 {PERIODOS.map((d) => (
-                  <button key={d} onClick={() => setDias(d)}
+                  <button key={d}
+                    onClick={() => { setDias(d); setDesde(""); setHasta(""); }}
                     className={`rounded-lg px-2.5 py-1 text-xs font-semibold ${
-                      dias === d ? "bg-slate-800 text-white" : "text-slate-500 hover:bg-slate-100"}`}>
+                      dias === d && !rango
+                        ? "bg-slate-800 text-white"
+                        : "text-slate-500 hover:bg-slate-100"}`}>
                     {d}d
                   </button>
                 ))}
+                {/* Calendario: el datepicker NATIVO del navegador (con su Clear
+                    y su Today). Mismo patrón que Métricas, Categorías y
+                    Reportes — un date picker propio aquí sería una cuarta forma
+                    de elegir fechas en el mismo panel. */}
+                <span className="mx-1 h-4 w-px bg-slate-200" />
+                <div className={`flex items-center gap-1.5 rounded-xl border px-1.5 py-0.5 ${
+                  rango ? "border-slate-800 bg-slate-50" : "border-slate-200"}`}>
+                  <CalendarDays size={13} className="text-slate-400" />
+                  <input type="date" value={desde} max={hasta || undefined}
+                         onChange={(e) => setDesde(e.target.value)}
+                         className="rounded-lg border-0 bg-transparent px-1 py-1 text-sm text-slate-700 focus:outline-none" />
+                  <span className="text-slate-400">–</span>
+                  <input type="date" value={hasta} min={desde || undefined}
+                         onChange={(e) => setHasta(e.target.value)}
+                         className="rounded-lg border-0 bg-transparent px-1 py-1 text-sm text-slate-700 focus:outline-none" />
+                  {(desde || hasta) && (
+                    <button onClick={() => { setDesde(""); setHasta(""); }}
+                            title="Quitar el rango y volver al período en días"
+                            className="rounded p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                {/* Media fecha no pide nada: se avisa en vez de mostrar un
+                    número que no corresponde a lo que el usuario cree. */}
+                {(desde || hasta) && !rango && (
+                  <span className="text-[11px] font-medium text-amber-600">
+                    falta la {desde ? "fecha final" : "fecha inicial"}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Tienda</span>

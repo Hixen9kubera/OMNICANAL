@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import date as _date
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -2582,11 +2583,25 @@ _CUENTAS_DEV = {"BEKURA", "SANCORFASHION"}
 _UNIVERSO = ("canal = 'mercado_libre' "
              "and (%(cuenta)s::text is null or cuenta = %(cuenta)s)")
 
+# La VENTANA, en un solo fragmento para las cuatro consultas. Acepta las dos
+# formas de pedir el período: los presets (`dias`) y el rango del calendario
+# (`desde`/`hasta`). El `coalesce` hace que el rango gane cuando viene, sin
+# duplicar el SQL — si cada consulta armara su propia ventana, tarde o temprano
+# una filtraría distinto y el porcentaje quedaría roto.
+#
+# `current_date - dias + 1` y no `> current_date - dias`: son la misma ventana
+# (7 días = hoy y los 6 anteriores), pero escrita como BETWEEN para que la misma
+# expresión cubra ambos casos.
+_VENTANA = ("date between coalesce(%(desde)s::date, current_date - %(dias)s::int + 1) "
+            "and coalesce(%(hasta)s::date, current_date)")
+
 
 @router.get("/rentabilidad/devoluciones")
 async def rentabilidad_devoluciones(
     dias: int = Query(7, ge=1, le=365),
     cuenta: str | None = Query(None),
+    desde: _date | None = Query(None, description="rango explícito; gana sobre `dias`"),
+    hasta: _date | None = Query(None),
 ) -> dict[str, Any]:
     """
     KPIs de devoluciones contra ventas + tabla por SKU.
@@ -2599,13 +2614,15 @@ async def rentabilidad_devoluciones(
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     if cuenta and cuenta not in _CUENTAS_DEV:
         raise HTTPException(400, f"cuenta sin devoluciones: {cuenta}")
-    p = {"dias": dias, "cuenta": cuenta}
+    if desde and hasta and desde > hasta:
+        raise HTTPException(400, "el rango está invertido: 'desde' es posterior a 'hasta'")
+    p = {"dias": dias, "cuenta": cuenta, "desde": desde, "hasta": hasta}
     try:
         ventas = await _fetch_one(_mx(f"""
             select coalesce(sum(units_sold), 0)::bigint as unidades,
                    coalesce(sum(revenue), 0)::numeric   as ingresos
             from channel.sales_daily_completa
-            where date > current_date - %(dias)s::int and {_UNIVERSO}"""), p)
+            where {_VENTANA} and {_UNIVERSO}"""), p)
 
         dev = await _fetch_one(_mx(f"""
             select coalesce(sum(returns_count), 0)::int     as devoluciones,
@@ -2617,15 +2634,16 @@ async def rentabilidad_devoluciones(
                                      then value_returned else 0 end), 0)::numeric
                                                             as valor_restable
             from channel.returns_daily
-            where date > current_date - %(dias)s::int and {_UNIVERSO}"""), p)
+            where {_VENTANA} and {_UNIVERSO}"""), p)
 
         # Hasta dónde alcanza lo capturado. Sin esto la pantalla no puede
         # distinguir "no hubo devoluciones" de "no las tenemos".
         cob = await _fetch_one(_mx("""
             select min(date) as desde, max(date) as hasta,
                    coalesce(sum(returns_count), 0)::int as total,
-                   (current_date - %(dias)s::int) as periodo_desde,
-                   current_date as hoy
+                   coalesce(%(desde)s::date,
+                            current_date - %(dias)s::int + 1) as periodo_desde,
+                   coalesce(%(hasta)s::date, current_date)    as periodo_hasta
             from channel.returns_daily where canal = 'mercado_libre'"""), p)
 
         por_tienda = await _fetch_all(_mx(f"""
@@ -2634,7 +2652,7 @@ async def rentabilidad_devoluciones(
                    sum(units_returned)::bigint  as unidades,
                    round(sum(value_returned), 2) as valor
             from channel.returns_daily
-            where date > current_date - %(dias)s::int and {_UNIVERSO}
+            where {_VENTANA} and {_UNIVERSO}
             group by 1 order by 4 desc"""), p)
 
         # La tabla: devoluciones por SKU, y al lado lo VENDIDO del mismo SKU en
@@ -2652,13 +2670,13 @@ async def rentabilidad_devoluciones(
                      array_remove(array_agg(distinct resolucion_motivo),
                                   null)            as motivos
               from channel.returns_daily
-              where date > current_date - %(dias)s::int and {_UNIVERSO}
+              where {_VENTANA} and {_UNIVERSO}
               group by 1
             ), ven as (
               select sku, sum(units_sold)::bigint as uds_vendidas,
                      sum(revenue) as ingresos
               from channel.sales_daily_completa
-              where date > current_date - %(dias)s::int and {_UNIVERSO}
+              where {_VENTANA} and {_UNIVERSO}
               group by 1
             )
             select d.sku::text                       as sku,
@@ -2685,9 +2703,9 @@ async def rentabilidad_devoluciones(
                        and cob["desde"] > cob["periodo_desde"])
         return {
             "ambiente": settings.app_env,
-            "periodo": {"dias": dias,
+            "periodo": {"dias": None if (desde or hasta) else dias,
                         "desde": str(cob["periodo_desde"]) if cob else None,
-                        "hasta": str(cob["hoy"]) if cob else None},
+                        "hasta": str(cob["periodo_hasta"]) if cob else None},
             "cobertura": {"desde": str(cob["desde"]) if cob and cob["desde"] else None,
                           "hasta": str(cob["hasta"]) if cob and cob["hasta"] else None,
                           "total": (cob or {}).get("total", 0)},

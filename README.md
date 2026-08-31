@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.313.0 — El período de Rentabilidad acepta un rango de fechas
+
+Los presets (7/15/30/60/90 días) contestan "¿cómo vamos?", pero no sirven para
+cuadrar contra un corte concreto. Se suma el **calendario** al filtro de
+Período, con el mismo patrón que ya usan Métricas, Categorías y Reportes: dos
+`<input type="date">` y el datepicker NATIVO del navegador (el que trae su
+propio *Clear* y *Today*). Un date picker propio habría sido una cuarta forma de
+elegir fechas en el mismo panel.
+
+Los dos modos conviven: elegir un preset limpia el rango, y poner un rango apaga
+el preset. La ✕ del recuadro devuelve el control a los días.
+
+**El rango se manda solo cuando está COMPLETO.** Con media fecha el backend
+rellenaría el otro extremo con el default de `dias` y el resultado sería una
+mezcla de las dos formas de pedir el período — un número imposible de
+interpretar que además se ve perfectamente normal. Mientras falte una fecha, la
+UI lo dice ("falta la fecha final") y sigue consultando por días.
+
+En el backend, la ventana pasa a ser **un solo fragmento SQL** (`_VENTANA`) que
+cubre ambos casos con un `coalesce`, compartido por las cinco consultas del
+endpoint. Estaba repetido cinco veces: si una hubiera filtrado distinto, el
+numerador y el denominador del porcentaje habrían dejado de hablar del mismo
+período sin que nada fallara. Un rango invertido responde **400** en vez de una
+ventana vacía que parece "no hubo devoluciones".
+
+Verificado contra producción: preset de 7d, rango de 8 días, rango de UN solo
+día (29-ago: 3.13% del ingreso, 11 devoluciones), rango que excede la cobertura
+(marca `parcial`) y rango invertido (400).
+
 ### v0.312.0 — Análisis de Rentabilidad: qué se devuelve, y contra qué se compara
 
 Pestaña nueva `/analisis/rentabilidad` con la sub-pestaña **Devoluciones** (Drop
