@@ -1001,6 +1001,44 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.314.0 — Rentabilidad: cuánto de eso es FULL y cuánto es DROP
+
+Debajo de cada fila de KPIs entra una banda más chica con el desglose por modelo
+logístico, alineada con las tres tarjetas de arriba: la de montos desglosa
+dinero, la de unidades desglosa piezas. Tres columnas, no dos:
+
+  * **vendido por tipo** — cuánto de la venta del período salió de cada modelo.
+  * **devuelto por tipo** — cómo se reparte lo devuelto entre FULL y DROP.
+  * **tasa de devolución** — devuelto ÷ vendido **del mismo tipo**.
+
+La tercera es la que importa y la única que NO se deduce de las otras dos.
+Medido a 7 días: FULL es el **99.42%** de los ingresos y el **98.47%** de lo
+devuelto —o sea, proporcional—, pero las tasas no se parecen:
+
+    FULL   tasa 2.71% en valor · 1.32% en unidades
+    DROP   tasa 7.21% en valor · 15.0% en unidades
+
+DROP es medio punto porcentual de la venta y se devuelve varias veces más, en
+proporción. Con una sola de las otras dos columnas eso queda invisible: FULL
+domina todo y parece que no hay nada que ver.
+
+**El número frágil se marca como frágil.** El 15% de DROP son 3 piezas de 20
+vendidas. Por debajo de 50 unidades la tasa se pinta con `~` y el conteo entre
+paréntesis, y el tooltip dice por qué: un porcentaje sobre 20 piezas no sostiene
+una decisión. Sin eso, la banda invita a rediseñar la operación de DROP por un
+ruido de tres unidades.
+
+Los porcentajes se calculan en el BACKEND, en la misma pasada que los totales.
+Si los armara el front, cada tarjeta podría elegir su propio denominador; y si
+el desglose saliera de otra ventana que los KPIs, las partes no sumarían el
+total y no habría forma de saber cuál creer. Verificado que cuadra al centavo:
+FULL + DROP = total en ingresos, devuelto, unidades y unidades devueltas.
+
+El desglose usa `is_full` de `sales_daily_completa`, que sale de
+`bool_or(i.es_fulfillment)` — la MISMA columna de `order_items` que se copia a
+`channel.returns`. Con `orders.es_fulfillment` el numerador y el denominador
+habrían usado criterios distintos (discrepan en el 40.11% de las líneas).
+
 ### v0.313.0 — El período de Rentabilidad acepta un rango de fechas
 
 Los presets (7/15/30/60/90 días) contestan "¿cómo vamos?", pero no sirven para

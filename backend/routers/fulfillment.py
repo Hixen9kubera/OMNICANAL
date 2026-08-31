@@ -2646,6 +2646,27 @@ async def rentabilidad_devoluciones(
                    coalesce(%(hasta)s::date, current_date)    as periodo_hasta
             from channel.returns_daily where canal = 'mercado_libre'"""), p)
 
+        # FULL vs DROP, en las dos series. `is_full` de sales_daily_completa sale
+        # de `bool_or(i.es_fulfillment)` (order_items), la MISMA columna que se
+        # copia a channel.returns — así el numerador y el denominador del % por
+        # tipo hablan del mismo criterio. Usar orders.es_fulfillment aquí
+        # rompería la comparación: discrepa en el 40.11% de las líneas.
+        ventas_tipo = await _fetch_all(_mx(f"""
+            select coalesce(is_full, false)             as full,
+                   coalesce(sum(units_sold), 0)::bigint as unidades,
+                   coalesce(sum(revenue), 0)::numeric   as ingresos
+            from channel.sales_daily_completa
+            where {_VENTANA} and {_UNIVERSO}
+            group by 1"""), p)
+        dev_tipo = await _fetch_all(_mx(f"""
+            select coalesce(is_full, false)                 as full,
+                   coalesce(sum(units_returned), 0)::bigint as unidades,
+                   coalesce(sum(value_returned), 0)::numeric as valor,
+                   coalesce(sum(returns_count), 0)::int      as devoluciones
+            from channel.returns_daily
+            where {_VENTANA} and {_UNIVERSO}
+            group by 1"""), p)
+
         por_tienda = await _fetch_all(_mx(f"""
             select cuenta,
                    sum(returns_count)::int      as devoluciones,
@@ -2698,6 +2719,30 @@ async def rentabilidad_devoluciones(
             order by d.valor_devuelto desc nulls last"""), p)
 
         pct = lambda a, b: (round(float(a) / float(b) * 100, 2) if b else None)  # noqa: E731
+
+        def _tipo(full: bool) -> dict[str, Any]:
+            """Una cara del desglose: lo vendido y lo devuelto de ese tipo."""
+            v = next((x for x in ventas_tipo if bool(x["full"]) is full), None)
+            d = next((x for x in dev_tipo if bool(x["full"]) is full), None)
+            ing = float((v or {}).get("ingresos") or 0)
+            uds = int((v or {}).get("unidades") or 0)
+            dev_val = float((d or {}).get("valor") or 0)
+            dev_uds = int((d or {}).get("unidades") or 0)
+            return {
+                "ingresos": ing, "unidades": uds,
+                "devuelto_valor": dev_val, "devuelto_unidades": dev_uds,
+                "devoluciones": int((d or {}).get("devoluciones") or 0),
+                # Participación DENTRO del total del período (cuánto del pastel).
+                "pct_ingresos": pct(ing, ventas["ingresos"]),
+                "pct_unidades": pct(uds, ventas["unidades"]),
+                "pct_devuelto_valor": pct(dev_val, dev["valor"]),
+                "pct_devuelto_unidades": pct(dev_uds, dev["unidades"]),
+                # TASA de devolución de ese tipo: lo devuelto sobre lo vendido
+                # del MISMO tipo. Es la comparación que dice si FULL se devuelve
+                # más que DROP — y no se puede derivar de las anteriores.
+                "tasa_valor": pct(dev_val, ing),
+                "tasa_unidades": pct(dev_uds, uds),
+            }
         # `parcial`: el período pide más atrás de lo que hay capturado.
         parcial = bool(cob and cob["desde"] and cob["periodo_desde"]
                        and cob["desde"] > cob["periodo_desde"])
@@ -2720,6 +2765,7 @@ async def rentabilidad_devoluciones(
                 "devoluciones": int(dev["devoluciones"] or 0),
                 "valor_restable": float(dev["valor_restable"] or 0),
             },
+            "por_tipo": {"full": _tipo(True), "drop": _tipo(False)},
             "por_tienda": por_tienda,
             "tabla": tabla,
         }

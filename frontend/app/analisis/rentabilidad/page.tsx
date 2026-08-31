@@ -52,6 +52,13 @@ interface Resp {
     unidades: number; devuelto_unidades: number; pct_unidades: number | null;
     devoluciones: number; valor_restable: number;
   };
+  por_tipo: Record<"full" | "drop", {
+    ingresos: number; unidades: number;
+    devuelto_valor: number; devuelto_unidades: number; devoluciones: number;
+    pct_ingresos: number | null; pct_unidades: number | null;
+    pct_devuelto_valor: number | null; pct_devuelto_unidades: number | null;
+    tasa_valor: number | null; tasa_unidades: number | null;
+  }>;
   por_tienda: { cuenta: string; devoluciones: number; unidades: number; valor: number }[];
   tabla: Fila[];
 }
@@ -306,6 +313,14 @@ export default function RentabilidadPage() {
                      tono={k.pct_valor != null && k.pct_valor >= 3 ? "rojo" : "neutro"}
                      ayuda="Valor devuelto ÷ ingresos del período. Las ventas se fechan cuando se vendió y las devoluciones cuando se abrió el reclamo, así que parte de lo devuelto corresponde a ventas anteriores al período." />
               </div>
+              {data.por_tipo && (
+                <Desglose
+                  tipo={data.por_tipo}
+                  fmt={(v) => fM(v, 2)}
+                  campo="ingresos" campoDev="devuelto_valor"
+                  pct="pct_ingresos" pctDev="pct_devuelto_valor" tasa="tasa_valor"
+                />
+              )}
               <div className="grid gap-3 sm:grid-cols-3">
                 <Kpi titulo="Unidades totales" valor={fN(k.unidades)}
                      ayuda="Piezas vendidas en Mercado Libre en el período." />
@@ -316,6 +331,14 @@ export default function RentabilidadPage() {
                      tono={k.pct_unidades != null && k.pct_unidades >= 3 ? "rojo" : "neutro"}
                      ayuda="Unidades devueltas ÷ unidades vendidas. Suele ser MENOR que el % de dinero: lo que se devuelve es más caro que el promedio del catálogo." />
               </div>
+              {data.por_tipo && (
+                <Desglose
+                  tipo={data.por_tipo}
+                  fmt={(v) => fN(v)}
+                  campo="unidades" campoDev="devuelto_unidades"
+                  pct="pct_unidades" pctDev="pct_devuelto_unidades" tasa="tasa_unidades"
+                />
+              )}
 
               {/* Lo restable: el matiz que evita restar de más */}
               <div className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[12px] text-slate-600 shadow-sm">
@@ -434,6 +457,71 @@ export default function RentabilidadPage() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* Desglose FULL / DROP debajo de una fila de KPIs, alineado con sus tres
+   columnas: participación en el total, participación en lo devuelto, y la TASA
+   de devolución de cada tipo.
+
+   La tasa es la columna que importa y la única que no se deduce de las otras
+   dos: FULL puede ser el 99% de la venta y aun así devolverse menos, en
+   proporción, que un DROP chico. Con volúmenes bajos es frágil (3 de 20 son
+   15%), así que por debajo de 50 unidades vendidas se marca con ~ y lo dice el
+   tooltip — un porcentaje sobre 20 piezas no sostiene una decisión. */
+function Desglose({ tipo, fmt, campo, campoDev, pct, pctDev, tasa }: {
+  tipo: Resp["por_tipo"];
+  fmt: (v: number) => string;
+  campo: "ingresos" | "unidades";
+  campoDev: "devuelto_valor" | "devuelto_unidades";
+  pct: "pct_ingresos" | "pct_unidades";
+  pctDev: "pct_devuelto_valor" | "pct_devuelto_unidades";
+  tasa: "tasa_valor" | "tasa_unidades";
+}) {
+  const CARAS = [
+    { k: "full" as const, txt: "FULL", chip: "bg-indigo-50 text-indigo-700" },
+    { k: "drop" as const, txt: "DROP", chip: "bg-sky-50 text-sky-700" },
+  ];
+  const Celda = ({ titulo, render, ayuda }: {
+    titulo: string; ayuda?: string;
+    render: (t: Resp["por_tipo"]["full"]) => React.ReactNode;
+  }) => (
+    <div className="px-3 py-2" title={ayuda}>
+      <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400">{titulo}</p>
+      <div className="mt-1 space-y-0.5">
+        {CARAS.map((c) => (
+          <div key={c.k} className="flex items-center justify-between gap-2">
+            <span className={`rounded px-1 py-px text-[9px] font-bold ${c.chip}`}>{c.txt}</span>
+            <span className="tabular-nums text-[11.5px] text-slate-700">{render(tipo[c.k])}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  const frágil = (t: Resp["por_tipo"]["full"]) => t.unidades > 0 && t.unidades < 50;
+  return (
+    <div className="grid divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50/60
+                    sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+      <Celda titulo="vendido por tipo"
+             ayuda="Cuánto de la venta del período salió de cada modelo logístico"
+             render={(t) => <>{fmt(t[campo])}
+               <span className="ml-1 text-slate-400">{t[pct] == null ? "" : `· ${fN(t[pct], 1)}%`}</span></>} />
+      <Celda titulo="devuelto por tipo"
+             ayuda="Cómo se reparte lo devuelto entre FULL y DROP"
+             render={(t) => <><span className="font-semibold text-red-600">{fmt(t[campoDev])}</span>
+               <span className="ml-1 text-slate-400">{t[pctDev] == null ? "" : `· ${fN(t[pctDev], 1)}%`}</span></>} />
+      <Celda titulo="tasa de devolución"
+             ayuda="Devuelto ÷ vendido DEL MISMO TIPO. Es la comparación que dice si FULL se devuelve más que DROP; no se puede deducir de las otras dos columnas. Con menos de 50 unidades vendidas se marca ~ porque el porcentaje es frágil."
+             render={(t) => (
+               <span className={`font-semibold ${
+                 t[tasa] != null && t[tasa]! >= 5 ? "text-red-600" : "text-slate-700"}`}>
+                 {frágil(t) && <span className="text-slate-400">~</span>}
+                 {fP(t[tasa])}
+                 {frágil(t) && <span className="ml-1 text-[9px] font-normal text-slate-400">
+                   ({fN(t.unidades)}u)</span>}
+               </span>
+             )} />
     </div>
   );
 }
