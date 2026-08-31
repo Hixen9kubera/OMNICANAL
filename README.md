@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.315.0 — Rentabilidad · Drop: cancelaciones y devoluciones, separadas
+
+Se retira la sub-pestaña **Fulfillment** (José, 31-ago): la pregunta que importa
+es DROP, porque en TikTok, Temu y Walmart es el 100% de la operación. Y entra la
+sub-pestaña **Drop**, con Woo (`general`) FUERA — son 13,161 productos de
+catálogo interno, no publicaciones de marketplace, y su volumen aplasta
+cualquier porcentaje.
+
+**Cancelaciones y devoluciones van en bloques SEPARADOS.** Son dos fracasos
+distintos: la cancelación es una venta que nunca se completó, la devolución es
+una que se completó y se deshizo. Mezclarlas esconde las dos. Hoy no se puede
+distinguir un fallo de bodega de una cancelación del comprador —la API no da el
+motivo— así que se cuentan todas como fallo nuestro, que es el criterio
+conservador, y la pantalla lo dice.
+
+**DOS denominadores para el % de cancelación, porque uno solo miente:**
+
+    canal              cancelado    s/ bruto DROP   s/ bruto CANAL
+    TikTok             $26,025.71       59.44%          59.44%
+    Mercado Libre      $97,059.20       59.91%           1.30%
+    Amazon              $2,230.25      100.00%         100.00%
+
+En ML, DROP es ~1% de la venta: medido contra el canal completo se diluye a 1.3%
+y parece que no pasa nada; contra su propio DROP son **59.9%**. En TikTok los dos
+coinciden porque todo es DROP. Medido a 30 días: **el 60% de lo que se intenta
+vender por DROP se cancela** ($125,315 de $208,625).
+
+**Los reclamos que no ocurrieron dejan de contar como devolución.** Hallazgo del
+31-ago: de las 3 devoluciones DROP, dos eran de la MISMA orden y la MISMA pieza
+—un reclamo `return_cancelled` y otro `item_returned` -, así que la tasa decía
+15% en unidades donde la real era 10%. `return_cancelled` y `failed` se excluyen
+de la tasa y se reportan aparte con `(−n)`.
+
+**"Activa" no significa lo mismo en cada canal**, y la traducción viaja en la
+respuesta para que se pueda auditar: ML `active`, Amazon
+`discoverable/buyable/published`, TikTok `ACTIVATE`, Walmart `PUBLISHED`, y Temu
+manda códigos numéricos (`3/2`, `4/7`) SIN traducir — ahí se aproxima con "tiene
+stock" y se marca como aproximación. Un "% activas" sin decir qué cuenta como
+activa es un número que nadie puede revisar. El censo viejo se marca con ⚠ por
+canal (Walmart va con foto del 17-ago).
+
+Lo que este trabajo destapó y NO se pudo construir: el **punto de equilibrio**
+quedó fuera porque exige margen, y con la regla de usar solo costos validados
+hay **20 costos validados de 15,838 SKUs (0.13%)** y **ninguno** de los 18 SKUs
+que vendieron por DROP. Sin costo confiable no hay margen; con costos sin
+validar, `ACC-0250-NEG` da −983% de margen (costo $1,524/ud contra venta de
+$148/ud) y envenenaría el tablero.
+
 ### v0.314.0 — Rentabilidad: cuánto de eso es FULL y cuánto es DROP
 
 Debajo de cada fila de KPIs entra una banda más chica con el desglose por modelo
