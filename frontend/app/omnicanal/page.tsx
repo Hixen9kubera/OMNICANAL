@@ -65,9 +65,10 @@ export default function OmnicanalPage() {
   const [estados, setEstados] = useState<string[]>([]);
   const [categoria, setCategoria] = useState<number | null>(null);
   // "Costo validado": solo los productos con la marca `revisado_at`
-  // (migración 0032). Vive solo en General — es donde el backend puede
-  // cruzar la marca contra el catálogo de la tienda y paginar sobre el
-  // subconjunto. Se acumula con la búsqueda y con "Filtrar SKUs".
+  // (migración 0032). Vale en TODAS las pestañas: el costo validado es del
+  // SKU, no de la publicación, y el backend lo cruza contra el filtro de
+  // SKUs que cada canal ya aplicaba. Se acumula con la búsqueda y con
+  // "Filtrar SKUs" en vez de reemplazarlos.
   const [revisado, setRevisado] = useState(false);
   const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
 
@@ -160,7 +161,7 @@ export default function OmnicanalPage() {
         orden,
         estados,
         categoria: esGeneral ? categoria : null,
-        revisado: esGeneral ? revisado : false,
+        revisado,
         // Omnicanal es la vista de CONTROL: muestra TODO el catálogo, incluidos
         // los drafts. Esconderlos hacía invisible un producto en draft pero VIVO
         // en un canal (TEC-1841-ROS vendió estando oculto; ver v0.29.0).

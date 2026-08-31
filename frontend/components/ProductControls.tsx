@@ -102,12 +102,14 @@ export default function ProductControls({
           </select>
         )}
 
-        {/* COSTO VALIDADO — solo General: la marca vive en costos_validados y
-            el backend la cruza contra el catálogo de la tienda. Se acumula con
-            la búsqueda y con "Filtrar SKUs" en vez de reemplazarlas, así que
-            sirve para acotar una búsqueda que ya venías haciendo. */}
-        {esGeneral && (
-          <button
+        {/* COSTO VALIDADO — en TODAS las pestañas: la marca es del SKU, no de
+            la publicación, así que "¿ya revisamos su costo?" tiene sentido lo
+            mismo en la tienda que en Mercado Libre o Amazon. El backend la
+            cruza contra el filtro de SKUs que cada canal ya aplicaba, y se
+            acumula con la búsqueda y con "Filtrar SKUs" en vez de
+            reemplazarlas: sirve para acotar una búsqueda que ya venías
+            haciendo. */}
+        <button
             onClick={() => onRevisado(!revisado)}
             title={revisado
               ? "Mostrando SOLO los productos cuyo costo ya fue revisado y firmado."
@@ -121,8 +123,7 @@ export default function ProductControls({
           >
             <BadgeCheck size={14} className="shrink-0" />
             Costo validado
-          </button>
-        )}
+        </button>
       </div>
 
       {/* Filtro inteligente de estado — visible en vista LISTA */}

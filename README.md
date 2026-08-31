@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.310.0 — El filtro "Costo validado" pasa a TODAS las pestañas
+
+`revisado` nació acotado a General (v0.309.0). Se abre a los seis canales porque
+el backend **ya lo soportaba**: el filtro se resuelve antes de listar y se
+convierte en `skus_lista`, que las seis ramas de `listar_productos` reciben tal
+cual (`skus=` en Woo, `skus_filtro=` en los marketplaces). Lo único que lo
+cerraba era la UI.
+
+Y tiene sentido que valga en todas: **la marca es del SKU, no de la
+publicación**. "¿Ya revisamos su costo?" se pregunta igual en la tienda que en
+Mercado Libre o Amazon — y ahí es donde más importa, porque es donde se vende.
+
+Verificado contra el sandbox, canal por canal (un solo SKU marcado allá):
+
+    general         7,285 → 1
+    mercado_libre   4,849 → 2   (dos publicaciones del mismo SKU, una por cuenta)
+    amazon          1,790 → 1
+    tiktok            900 → 0   (ese SKU no está en TikTok)
+    temu / walmart      0 → 0   (canales vacíos)
+
+El **2** de Mercado Libre no es un duplicado: esa pestaña lista por
+PUBLICACIÓN, y el SKU vive en BEKURA y en SANCORFASHION. Es la misma aritmética
+que ya tenía la vista sin el filtro.
+
+En pantalla: en la pestaña de Mercado Libre el chip enciende en verde y la
+rejilla pasa de 40 tarjetas a 1.
+
 ### v0.309.0 — Filtro "Costo validado" en Omnicanal (y dos fugas del filtro de SKUs)
 
 Un chip en la barra de Omnicanal (solo General) que deja ver únicamente los

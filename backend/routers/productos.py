@@ -104,7 +104,7 @@ async def listar_productos(
     categoria: int | None = Query(None, description="ID de categoría WooCommerce (canal general)"),
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
     vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
-    revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Canal general"),
+    revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Todos los canales"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
@@ -119,9 +119,13 @@ async def listar_productos(
     activas = bool(filtro_activas and filtro_activas.aplicado)
 
     # SOLO COSTO VALIDADO. El filtro se resuelve ANTES de listar y se convierte
-    # en el filtro de SKUs que Woo ya sabía aplicar: así la PAGINACIÓN y el
-    # TOTAL salen del subconjunto correcto. Filtrar después de traer la página
-    # daría "3 productos" en una vista que dice tener 40.
+    # en el filtro de SKUs que cada canal ya sabía aplicar: así la PAGINACIÓN y
+    # el TOTAL salen del subconjunto correcto. Filtrar después de traer la
+    # página daría "3 productos" en una vista que dice tener 40.
+    #
+    # Vale para TODOS los canales, no solo General: el costo validado es del
+    # SKU, no de la publicación, y las seis ramas de abajo reciben la misma
+    # `skus_lista` (`skus=` en Woo, `skus_filtro=` en los marketplaces).
     #
     # Se cruza con `skus_lista` en vez de reemplazarlo: si el usuario ya venía
     # filtrando SKUs, pedir "validados" debe ACOTAR lo suyo, no borrárselo. Y
