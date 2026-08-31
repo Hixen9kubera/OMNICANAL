@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.316.0 — Drop por TIENDA: publicaciones activas y lo que generan
+
+El corte pasa de canal a **tienda** (José, 31-ago), con Mercado Libre separado
+por cuenta: Bekura y San Corpe son dos negocios distintos y promediarlos
+esconde a los dos. Arriba quedan **solo tres cifras** —ventas Drop de todos los
+canales, % de cancelaciones y % de devoluciones— y la tabla por canal se
+reemplaza por un cuadro por tienda con sus publicaciones **ACTIVAS** en Drop.
+
+⚠ **La misma tienda se llama distinto en cada lado.** En `channel.listings` la
+tienda de TikTok es `KUBERA` (su `legacy_code`), pero en `channel.orders` y en
+las ventas es `TIKTOK`. Unir publicaciones con ingresos "por cuenta" a secas deja
+a TikTok con publicaciones y sin ingresos. Por eso el censo de tiendas es
+EXPLÍCITO en el código, con el nombre que usa cada lado — es la única forma de
+que el join no dependa de que dos sistemas hayan elegido la misma palabra.
+
+**La columna que hace hablar a los cuadros es INGRESO POR PUBLICACIÓN ACTIVA.**
+Sin ella todas las tiendas se ven parecidas; con ella, lo medido a 30 días:
+
+    tienda                activas Drop     ingresos     $/activa
+    San Corpe · ML                  68    $64,955.28      955.22
+    Kubera · TikTok                  1    $17,756.93   17,756.93
+    Kubera · Temu                  389       $598.11        1.54
+    San Corpe · Amazon           1,369         $0.00           —
+    Kubera · Walmart               207         $0.00           —
+    Kubera · ML                      0         $0.00           —
+
+**1,965 publicaciones activas en Drop —Amazon, Temu y Walmart— generaron $598 en
+30 días.** Las 68 de San Corpe ML generaron $64,955. Y TikTok factura $17,757
+con UNA publicación activa: las que vendían quedaron en `DRAFT`, `DELETED` o
+`SELLER_DEACTIVATED`. Bekura tiene CERO Drop activo y aun así 100% de
+cancelación en el período: vendía Drop, se canceló todo, y quedó pausado.
+
+Las tiendas con publicaciones activas y cero ventas se marcan en ámbar con el
+conteo, porque es la situación que la pantalla existe para delatar.
+
 ### v0.315.0 — Rentabilidad · Drop: cancelaciones y devoluciones, separadas
 
 Se retira la sub-pestaña **Fulfillment** (José, 31-ago): la pregunta que importa

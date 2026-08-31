@@ -66,27 +66,26 @@ interface Resp {
 /* FULFILLMENT se retiró (José, 31-ago): la pregunta que importa es DROP —
    TikTok, Temu y Walmart no tienen Full, así que ahí el modelo es el 100% de su
    operación y su tasa de éxito decide si el canal gana o pierde dinero. */
-interface CanalDrop {
-  canal: string; activa_def: string | null; censo: string | null;
-  publicaciones: number; pub_drop: number; pub_activas: number; pub_drop_activas: number;
-  pct_drop: number | null; pct_drop_activas: number | null;
+interface TiendaDrop {
+  tienda: string; label: string; canal: string;
+  activa_def: string | null; censo: string | null;
+  activas_drop: number; activas: number; pub_drop: number;
   skus_vendidos: number; uds_drop: number; ingresos_drop: number;
-  can_lineas: number; can_uds: number; can_valor: number; bruto_drop: number;
-  pct_perdido_drop: number | null; pct_perdido_canal: number | null;
-  dev_devoluciones: number; dev_piezas: number; dev_valor: number;
-  dev_descartadas: number;
-  tasa_dev_uds: number | null; tasa_dev_valor: number | null;
+  ingreso_por_activa: number | null;
+  can_lineas: number; can_valor: number; pct_cancel: number | null;
+  dev_piezas: number; dev_valor: number; dev_descartadas: number;
+  pct_devol: number | null;
 }
 interface RespDrop {
   periodo: { dias: number | null; desde: string | null; hasta: string | null };
   nota_woo: string;
   totales: {
-    pub_drop: number; pub_drop_activas: number; uds_drop: number; ingresos_drop: number;
-    can_lineas: number; can_valor: number; pct_perdido_drop: number | null;
-    dev_devoluciones: number; dev_piezas: number; dev_valor: number;
-    tasa_dev_uds: number | null; tasa_dev_valor: number | null;
+    ingresos_drop: number; uds_drop: number;
+    can_valor: number; can_lineas: number; pct_cancel: number | null;
+    dev_valor: number; dev_piezas: number; pct_devol: number | null;
+    activas_drop: number;
   };
-  canales: CanalDrop[];
+  tiendas: TiendaDrop[];
 }
 
 const SUBTABS = [
@@ -448,172 +447,132 @@ export default function RentabilidadPage() {
 
 
 
-/* ── DROP por canal ────────────────────────────────────────────────────────
-   Tres bloques SEPARADOS a propósito (José, 31-ago): el dinero que genera, las
-   CANCELACIONES y las DEVOLUCIONES. Son tres fracasos distintos —una venta que
-   nunca se completó no es lo mismo que una que se completó y se deshizo— y
-   mezclarlos esconde los tres.
+/* ── DROP por TIENDA ───────────────────────────────────────────────────────
+   Arriba, SOLO tres cifras (José, 31-ago): las ventas DROP de todos los canales,
+   el % de cancelaciones y el % de devoluciones. Abajo, un cuadro por tienda con
+   sus publicaciones ACTIVAS en DROP y lo que generan — Mercado Libre separado
+   por cuenta, porque Bekura y San Corpe son dos negocios distintos.
 
-   El % de cancelación se muestra con DOS denominadores porque una sola cifra
-   miente: sobre el bruto DROP dice la salud del modelo; sobre el bruto del
-   canal dice el impacto en el negocio. En Mercado Libre, DROP es ~1% de la
-   venta, así que sus cancelaciones medidas contra el canal completo se diluyen
-   a 1.3% y parece que no pasa nada; contra su propio DROP son 59.9%. */
+   La columna que hace hablar a los cuadros es INGRESO POR PUBLICACIÓN ACTIVA:
+   sin ella, 1,369 publicaciones activas y $0 de venta se ven igual que 68
+   publicaciones que facturan $64,955. */
 function BloqueDrop({ d }: { d: RespDrop }) {
   const t = d.totales;
-  const NOMBRE: Record<string, string> = {
-    mercado_libre: "Mercado Libre", amazon: "Amazon",
-    tiktok: "TikTok", temu: "Temu", walmart: "Walmart",
-  };
-  const censoViejo = (c: CanalDrop) =>
+  const censoViejo = (c: TiendaDrop) =>
     !!c.censo && (Date.now() - new Date(`${c.censo}T12:00:00`).getTime()) > 3 * 864e5;
-  const hay = d.canales.filter((c) => c.publicaciones > 0 || c.uds_drop > 0 || c.can_lineas > 0);
+  // Las que más facturan primero; las que no venden nada, al final.
+  const tiendas = [...d.tiendas].sort((a, b) => b.ingresos_drop - a.ingresos_drop);
 
   return (
     <div className="space-y-4">
-      {/* Lo que genera */}
-      <div className="grid gap-3 sm:grid-cols-4">
-        <Kpi titulo="Publicaciones en Drop" valor={fN(t.pub_drop)}
-             pie={`${fN(t.pub_drop_activas)} activas`}
-             ayuda="Publicaciones con modelo DROP (surtimos nosotros). Woo queda fuera: es catálogo interno, no publicaciones de marketplace." />
-        <Kpi titulo="Unidades vendidas" valor={fN(t.uds_drop)}
-             ayuda="Piezas vendidas por DROP en el período (sin contar las canceladas)." />
-        <Kpi titulo="Ingresos Drop" valor={fM(t.ingresos_drop, 2)}
-             ayuda="Ventas efectivas de DROP en el período." />
-        <Kpi titulo="Perdido por cancelación" valor={fP(t.pct_perdido_drop)}
-             tono={t.pct_perdido_drop != null && t.pct_perdido_drop >= 10 ? "rojo" : "neutro"}
-             pie={`${fM(t.can_valor, 2)} de ${fM(t.ingresos_drop + t.can_valor, 2)}`}
-             ayuda="Valor cancelado ÷ bruto intentado (efectivo + cancelado). Es la proporción de lo que se vendió por DROP que nunca llegó a cobrarse." />
+      {/* Los TRES KPIs */}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Kpi titulo="Ventas Drop · todos los canales" valor={fM(t.ingresos_drop, 2)}
+             pie={`${fN(t.uds_drop)} uds · ${fN(t.activas_drop)} publicaciones activas`}
+             ayuda="Ventas efectivas por DROP en el período, sumando todos los canales. Woo queda fuera: es catálogo interno." />
+        <Kpi titulo="% Cancelaciones" valor={fP(t.pct_cancel)}
+             tono={t.pct_cancel != null && t.pct_cancel >= 10 ? "rojo" : "neutro"}
+             pie={`${fM(t.can_valor, 2)} · ${fN(t.can_lineas)} líneas`}
+             ayuda="Valor cancelado ÷ bruto intentado (efectivo + cancelado). De todo lo que se vendió por DROP, esto se cayó. Hoy no se puede distinguir un fallo de bodega de una cancelación del comprador: la API no da el motivo." />
+        <Kpi titulo="% Devoluciones" valor={fP(t.pct_devol)}
+             tono={t.pct_devol != null && t.pct_devol >= 5 ? "rojo" : "neutro"}
+             pie={`${fM(t.dev_valor, 2)} · ${fN(t.dev_piezas)} piezas`}
+             ayuda="Valor devuelto ÷ ingresos DROP. Cosa DISTINTA de la cancelación: aquí la venta sí se completó y luego se deshizo. No cuentan los reclamos cancelados ni los fallidos." />
       </div>
 
-      {/* Cancelaciones y devoluciones, en cajas separadas */}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-2xl border border-red-200 bg-red-50/40 px-4 py-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-red-700">
-            Cancelaciones · fallos nuestros
-          </p>
-          <p className="mt-1 flex items-baseline gap-3">
-            <span className="text-2xl font-extrabold tabular-nums text-red-700">
-              {fN(t.can_lineas)}
-            </span>
-            <span className="text-sm font-semibold tabular-nums text-red-600">
-              {fM(t.can_valor, 2)}
-            </span>
-          </p>
-          <p className="mt-1 text-[11px] text-red-700/80">
-            Hoy no se puede distinguir un fallo de bodega de una cancelación del
-            comprador: la API no da el motivo. Se cuentan todas como fallo
-            nuestro, que es el criterio conservador.
-          </p>
-        </div>
-        <div className="rounded-2xl border border-amber-200 bg-amber-50/40 px-4 py-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-800">
-            Devoluciones de Drop
-          </p>
-          <p className="mt-1 flex items-baseline gap-3">
-            <span className="text-2xl font-extrabold tabular-nums text-amber-800">
-              {fN(t.dev_piezas)}
-            </span>
-            <span className="text-sm font-semibold tabular-nums text-amber-700">
-              {fM(t.dev_valor, 2)}
-            </span>
-            <span className="text-[12px] tabular-nums text-amber-700">
-              tasa {fP(t.tasa_dev_uds)} uds · {fP(t.tasa_dev_valor)} valor
-            </span>
-          </p>
-          <p className="mt-1 text-[11px] text-amber-800/80">
-            Cosa distinta de la cancelación: aquí la venta SÍ se completó y luego
-            se deshizo. No cuentan los reclamos cancelados ni los fallidos — esos
-            existieron como reclamo, no como devolución.
-          </p>
-        </div>
-      </div>
+      {/* Un cuadro por tienda */}
+      <div>
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          Por tienda · publicaciones activas en Drop y lo que generan
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {tiendas.map((x) => {
+            const muerta = x.activas_drop > 0 && x.ingresos_drop === 0;
+            return (
+              <div key={x.tienda}
+                   className={`rounded-2xl border bg-white px-4 py-3 shadow-sm ${
+                     muerta ? "border-amber-300" : "border-slate-200"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[13px] font-bold text-slate-800">{x.label}</p>
+                  {censoViejo(x) && (
+                    <span className="text-amber-600" title={`Censo de publicaciones del ${x.censo}: estos conteos son una foto vieja`}>⚠</span>
+                  )}
+                </div>
 
-      {/* Tabla por canal */}
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-4 py-2.5">
-          <p className="text-sm font-bold text-slate-800">Drop por canal</p>
-          <p className="text-[11px] text-slate-400">{d.nota_woo}</p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div>
+                    <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400">
+                      Activas en Drop
+                    </p>
+                    <p className="text-xl font-extrabold tabular-nums text-slate-800"
+                       title={x.activa_def ? `"Activa" aquí = ${x.activa_def}` : undefined}>
+                      {fN(x.activas_drop)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400">
+                      Ingresos Drop
+                    </p>
+                    <p className={`text-xl font-extrabold tabular-nums ${
+                      x.ingresos_drop > 0 ? "text-emerald-600" : "text-slate-300"}`}>
+                      {fM(x.ingresos_drop, 2)}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-2 space-y-1 border-t border-slate-100 pt-2 text-[11px]">
+                  <Linea etiqueta="$ por activa"
+                         valor={x.ingreso_por_activa == null ? "—" : fM(x.ingreso_por_activa, 2)}
+                         ayuda="Ingresos DROP ÷ publicaciones activas en DROP. Lo que rinde cada publicación viva." />
+                  <Linea etiqueta="Unidades · SKUs"
+                         valor={`${fN(x.uds_drop)} · ${fN(x.skus_vendidos)}`} />
+                  <Linea etiqueta="Cancelaciones" tono="rojo"
+                         valor={x.can_lineas ? `${fN(x.can_lineas)} · ${fM(x.can_valor, 2)} · ${fP(x.pct_cancel)}` : "—"}
+                         ayuda="Líneas canceladas, su valor, y el % sobre el bruto intentado de esta tienda." />
+                  <Linea etiqueta="Devoluciones" tono="ambar"
+                         valor={x.dev_piezas
+                           ? `${fN(x.dev_piezas)} pzas · ${fM(x.dev_valor, 2)} · ${fP(x.pct_devol)}`
+                           : "—"}
+                         ayuda={x.dev_descartadas > 0
+                           ? `${x.dev_descartadas} reclamo(s) cancelado(s) o fallido(s), excluidos`
+                           : undefined} />
+                </div>
+
+                {muerta && (
+                  <p className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-[10.5px] text-amber-800">
+                    {fN(x.activas_drop)} publicaciones activas y cero ventas en el período.
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-[12px]">
-            <thead className="bg-slate-50">
-              <tr className="text-[10px] uppercase tracking-wide text-slate-400">
-                <th className="px-2 py-1.5 text-left" />
-                <th className="border-l border-slate-200 px-2 py-1.5 text-center" colSpan={3}>Publicaciones</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-center" colSpan={3}>Vendido</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-center text-red-500" colSpan={4}>Cancelado</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-center text-amber-600" colSpan={3}>Devuelto</th>
-              </tr>
-              <tr className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-2 py-1.5 text-left">Canal</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-right">total</th>
-                <th className="px-2 py-1.5 text-right">drop</th>
-                <th className="px-2 py-1.5 text-right">activas</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-right">SKUs</th>
-                <th className="px-2 py-1.5 text-right">uds</th>
-                <th className="px-2 py-1.5 text-right">ingresos</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-right">líneas</th>
-                <th className="px-2 py-1.5 text-right">valor</th>
-                <th className="px-2 py-1.5 text-right" title="Valor cancelado ÷ bruto DROP: la salud del modelo DROP en este canal">% s/drop</th>
-                <th className="px-2 py-1.5 text-right" title="Valor cancelado ÷ bruto del CANAL completo: el impacto en el negocio">% s/canal</th>
-                <th className="border-l border-slate-200 px-2 py-1.5 text-right">piezas</th>
-                <th className="px-2 py-1.5 text-right">valor</th>
-                <th className="px-2 py-1.5 text-right">tasa uds</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {hay.map((c) => (
-                <tr key={c.canal} className="hover:bg-slate-50/60">
-                  <td className="whitespace-nowrap px-2 py-1.5 font-semibold text-slate-700">
-                    {NOMBRE[c.canal] ?? c.canal}
-                    {censoViejo(c) && (
-                      <span className="ml-1 text-amber-600"
-                            title={`El censo de publicaciones es del ${c.censo}: estos conteos son una foto vieja`}>
-                        ⚠
-                      </span>
-                    )}
-                  </td>
-                  <td className="border-l border-slate-100 px-2 py-1.5 text-right tabular-nums text-slate-500">{fN(c.publicaciones)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">{fN(c.pub_drop)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-800"
-                      title={c.activa_def ? `"Activa" en este canal = ${c.activa_def}` : undefined}>
-                    {fN(c.pub_drop_activas)}
-                  </td>
-                  <td className="border-l border-slate-100 px-2 py-1.5 text-right tabular-nums text-slate-500">{fN(c.skus_vendidos)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">{fN(c.uds_drop)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-800">{fM(c.ingresos_drop, 2)}</td>
-                  <td className="border-l border-slate-100 px-2 py-1.5 text-right tabular-nums text-red-600">{fN(c.can_lineas)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-red-600">{fM(c.can_valor, 2)}</td>
-                  <td className={`px-2 py-1.5 text-right font-semibold tabular-nums ${
-                    c.pct_perdido_drop != null && c.pct_perdido_drop >= 20 ? "text-red-700" : "text-slate-600"}`}>
-                    {fP(c.pct_perdido_drop)}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-400">{fP(c.pct_perdido_canal)}</td>
-                  <td className="border-l border-slate-100 px-2 py-1.5 text-right tabular-nums text-amber-700">
-                    {fN(c.dev_piezas)}
-                    {c.dev_descartadas > 0 && (
-                      <span className="ml-1 text-[9px] text-slate-400"
-                            title={`${c.dev_descartadas} reclamo(s) cancelado(s) o fallido(s), excluidos de la tasa`}>
-                        (−{c.dev_descartadas})
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-amber-700">{fM(c.dev_valor, 2)}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums text-slate-600">{fP(c.tasa_dev_uds)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-400">
-          "Activa" no significa lo mismo en cada canal (pasa el cursor por la
-          columna): ML usa <code>active</code>, Amazon{" "}
+        <p className="mt-2 text-[11px] text-slate-400">
+          {d.nota_woo} · "Activa" no significa lo mismo en cada canal (pasa el
+          cursor por el número): ML usa <code>active</code>, Amazon{" "}
           <code>discoverable/buyable</code>, TikTok <code>ACTIVATE</code>,
           Walmart <code>PUBLISHED</code>, y Temu manda códigos numéricos sin
           traducir — ahí se aproxima con "tiene stock".
         </p>
       </div>
+    </div>
+  );
+}
+
+/* Renglón etiqueta→valor de los cuadros de tienda. */
+function Linea({ etiqueta, valor, ayuda, tono }: {
+  etiqueta: string; valor: string; ayuda?: string; tono?: "rojo" | "ambar";
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2" title={ayuda}>
+      <span className="text-slate-400">{etiqueta}</span>
+      <span className={`tabular-nums ${
+        valor === "—" ? "text-slate-300"
+        : tono === "rojo" ? "font-semibold text-red-600"
+        : tono === "ambar" ? "font-semibold text-amber-700"
+        : "font-semibold text-slate-700"}`}>
+        {valor}
+      </span>
     </div>
   );
 }

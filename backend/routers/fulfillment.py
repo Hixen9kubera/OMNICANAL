@@ -2780,39 +2780,42 @@ async def rentabilidad_devoluciones(
 #  RENTABILIDAD · DROP
 # ══════════════════════════════════════════════════════════════════════════════
 #
-# La pregunta (José, 31-ago): cuántos productos tenemos en DROP, cuánto dinero
-# generan, y cuánto se pierde en el camino. FULFILLMENT se retiró de la pantalla
-# porque en TikTok, Temu y Walmart el DROP es el 100% de la operación: ahí su
-# tasa de éxito decide si el canal gana o pierde.
+# La pregunta (José, 31-ago): cuántas publicaciones ACTIVAS hay en DROP por
+# TIENDA y cuánto dinero genera cada una. Mercado Libre va separado por cuenta
+# —Bekura y San Corpe son dos negocios distintos— y el resto de los canales
+# tiene una sola tienda cada uno.
 #
-# CANCELACIONES Y DEVOLUCIONES VAN SEPARADAS (José, 31-ago). Son dos fracasos
-# distintos: la cancelación es una venta que nunca se completó (hoy el proxy de
-# "fallo nuestro", sin poder distinguir el motivo — la API no lo da) y la
-# devolución es una venta que se completó y se deshizo. Mezclarlas esconde las
-# dos.
+# ⚠ LA MISMA TIENDA SE LLAMA DISTINTO EN CADA LADO. En `channel.listings` la
+# tienda de TikTok es `KUBERA` (su `legacy_code` en core.accounts), pero en
+# `channel.orders` y en las ventas es `TIKTOK`. Unir publicaciones con ingresos
+# "por cuenta" a secas deja a TikTok con publicaciones y sin ingresos, o al
+# revés. Por eso el censo de tiendas es EXPLÍCITO aquí abajo, con el nombre que
+# usa cada lado: es la única forma de que el join no dependa de que dos sistemas
+# hayan elegido la misma palabra.
 #
-# DOS DENOMINADORES, porque son dos preguntas distintas y una sola miente:
-#   · % sobre el BRUTO DROP  → la salud del modelo DROP en ese canal.
-#   · % sobre el bruto CANAL → el impacto en el negocio.
-# En Mercado Libre, DROP es ~1% de la venta: medir sus cancelaciones contra el
-# total del canal las diluye a 1.3% y parece que no pasa nada. Medidas contra el
-# propio DROP, el mismo dato es otro. En TikTok los dos coinciden porque todo
-# es DROP.
+# WOO (canal `general`) queda FUERA por decisión de José: son 13,161 productos
+# de catálogo interno, no publicaciones de marketplace.
 #
-# WOO (canal `general`) QUEDA FUERA por decisión de José: son 13,161 productos
-# del catálogo interno, no publicaciones de un marketplace, y su volumen aplasta
-# cualquier porcentaje.
-#
-# "ACTIVA" NO TIENE UNA DEFINICIÓN COMÚN: cada canal usa su vocabulario
-# (`active` en ML, `discoverable`/`buyable` en Amazon, `ACTIVATE` en TikTok,
-# `PUBLISHED` en Walmart, y Temu usa códigos numéricos que NO sabemos traducir —
-# ahí se usa "tiene stock" como aproximación y se marca). La traducción viaja en
-# la respuesta para que la pantalla pueda mostrarla: un "% activas" sin decir qué
-# cuenta como activa es un número que nadie puede auditar.
-_CANALES_DROP = ("mercado_libre", "amazon", "tiktok", "temu", "walmart")
+# SOLO PUBLICACIONES ACTIVAS (José, 31-ago). Y "activa" no significa lo mismo en
+# cada canal: la traducción vive en `_ACTIVA_SQL` y viaja en la respuesta para
+# que la pantalla pueda mostrarla. Un "% activas" sin decir qué cuenta como
+# activa es un número que nadie puede auditar.
+_TIENDAS: tuple[dict[str, str], ...] = (
+    {"id": "BEKURA",        "canal": "mercado_libre", "pub": "BEKURA",
+     "ven": "BEKURA",        "label": "Kubera · ML"},
+    {"id": "SANCORFASHION", "canal": "mercado_libre", "pub": "SANCORFASHION",
+     "ven": "SANCORFASHION", "label": "San Corpe · ML"},
+    {"id": "AMAZON",        "canal": "amazon",        "pub": "AMAZON",
+     "ven": "AMAZON",        "label": "San Corpe · Amazon"},
+    # OJO: en listings es KUBERA, en ventas es TIKTOK.
+    {"id": "TIKTOK",        "canal": "tiktok",        "pub": "KUBERA",
+     "ven": "TIKTOK",        "label": "Kubera · TikTok"},
+    {"id": "TEMU",          "canal": "temu",          "pub": "TEMU",
+     "ven": "TEMU",          "label": "Kubera · Temu"},
+    {"id": "WALMART",       "canal": "walmart",       "pub": "WALMART",
+     "ven": "WALMART",       "label": "Kubera · Walmart"},
+)
 
-# Cómo se llama "activa" en cada canal. Vive aquí, en un solo lugar, y se
-# publica en la respuesta.
 _ACTIVA_SQL = """
       (l.canal='mercado_libre' and lower(coalesce(l.situacion,''))='active')
    or (l.canal='amazon' and lower(coalesce(l.situacion,'')) in ('discoverable','buyable','published'))
@@ -2828,10 +2831,10 @@ _ACTIVA_DOC = {
     "temu": "stock_own > 0 — APROXIMACIÓN: Temu manda códigos (3/2, 4/7) sin traducir",
 }
 
-# Una devolución con resolución `return_cancelled` NO ocurrió, y `failed` tampoco.
-# Se registran (el reclamo existió) pero no cuentan como devolución consumada:
-# medido el 31-ago, de 3 devoluciones DROP una era un reclamo cancelado de la
-# MISMA orden y pieza que otro — contarla subía la tasa de 10% a 15%.
+# Un reclamo con resolución `return_cancelled` NO ocurrió, y uno `failed`
+# tampoco. Se registran (el reclamo existió) pero no son devoluciones: medido el
+# 31-ago, de 3 devoluciones DROP dos eran de la MISMA orden y la MISMA pieza —un
+# reclamo cancelado y otro cumplido—, y contar las dos subía la tasa de 10% a 15%.
 _DEV_NO_OCURRIO = ("return_cancelled",)
 
 
@@ -2841,70 +2844,63 @@ async def rentabilidad_drop(
     desde: _date | None = Query(None),
     hasta: _date | None = Query(None),
 ) -> dict[str, Any]:
-    """Publicaciones, dinero, cancelaciones y devoluciones de DROP, por canal."""
+    """Por TIENDA: publicaciones ACTIVAS en DROP e ingresos DROP. Más tres
+    totales globales: ventas DROP de todos los canales, % de cancelaciones y
+    % de devoluciones."""
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     if desde and hasta and desde > hasta:
         raise HTTPException(400, "el rango está invertido")
+    canales = sorted({t["canal"] for t in _TIENDAS})
     p = {"dias": dias, "desde": desde, "hasta": hasta,
-         "canales": list(_CANALES_DROP), "no_ocurrio": list(_DEV_NO_OCURRIO)}
-    # La misma ventana del resto de la pestaña, pero sin el filtro de cuenta
-    # (aquí el corte es por canal).
+         "canales": canales, "no_ocurrio": list(_DEV_NO_OCURRIO)}
     ventana = ("date between coalesce(%(desde)s::date, current_date - %(dias)s::int + 1) "
                "and coalesce(%(hasta)s::date, current_date)")
     ventana_ord = ("(o.creado_at at time zone 'America/Mexico_City')::date between "
                    "coalesce(%(desde)s::date, current_date - %(dias)s::int + 1) "
                    "and coalesce(%(hasta)s::date, current_date)")
     try:
+        # Publicaciones ACTIVAS en DROP, por canal×cuenta-de-listings.
         pubs = await _fetch_all(_mx(f"""
-            select l.canal,
-                   count(*)::int                                                  as total,
-                   count(*) filter (where coalesce(l.is_fulfillment,false)=false)::int as drop_,
-                   count(*) filter (where {_ACTIVA_SQL})::int                      as activas,
+            select l.canal, coalesce(a.legacy_code,'?') as cuenta,
                    count(*) filter (where coalesce(l.is_fulfillment,false)=false
-                                      and ({_ACTIVA_SQL}))::int                    as drop_activas,
-                   max(l.updated_at)::date                                         as censo
+                                      and ({_ACTIVA_SQL}))::int as activas_drop,
+                   count(*) filter (where {_ACTIVA_SQL})::int    as activas,
+                   count(*) filter (where coalesce(l.is_fulfillment,false)=false)::int as drop_,
+                   max(l.updated_at)::date                        as censo
             from channel.listings l
+            left join core.accounts a on a.id = l.account_id
             where l.canal = any(%(canales)s)
-            group by 1"""), p)
+            group by 1,2"""), p)
 
-        # Ventas EFECTIVAS (sales_daily ya excluye canceladas), del canal y de DROP.
         ventas = await _fetch_all(_mx(f"""
-            select canal,
-                   coalesce(sum(units_sold),0)::bigint                as uds_canal,
-                   coalesce(sum(revenue),0)::numeric                  as ing_canal,
+            select canal, cuenta,
                    coalesce(sum(units_sold) filter (where coalesce(is_full,false)=false),0)::bigint as uds_drop,
                    coalesce(sum(revenue)    filter (where coalesce(is_full,false)=false),0)::numeric as ing_drop,
                    count(distinct sku) filter (where coalesce(is_full,false)=false)::int as skus_drop
             from channel.sales_daily_completa
             where {ventana} and canal = any(%(canales)s)
-            group by 1"""), p)
+            group by 1,2"""), p)
 
-        # CANCELACIONES de DROP, y también las del canal completo (para el
-        # denominador de impacto).
         cancel = await _fetch_all(_mx(f"""
-            select o.canal,
-                   count(*) filter (where i.es_fulfillment=false)::int              as lineas_drop,
-                   coalesce(sum(i.cantidad) filter (where i.es_fulfillment=false),0)::bigint as uds_drop,
-                   coalesce(sum(i.precio_unitario*i.cantidad)
-                            filter (where i.es_fulfillment=false),0)::numeric        as valor_drop,
-                   coalesce(sum(i.precio_unitario*i.cantidad),0)::numeric            as valor_canal
+            select o.canal, o.cuenta,
+                   count(*)::int                                       as lineas,
+                   coalesce(sum(i.cantidad),0)::bigint                  as uds,
+                   coalesce(sum(i.precio_unitario*i.cantidad),0)::numeric as valor
             from channel.orders o
             join channel.order_items i using (canal,cuenta,external_order_id)
             where o.canal = any(%(canales)s) and {ventana_ord}
+              and i.es_fulfillment = false
               and lower(coalesce(o.estado_canal,'')) in ('cancelled','invalid','canceled')
-            group by 1"""), p)
+            group by 1,2"""), p)
 
-        # DEVOLUCIONES de DROP. Las que NO ocurrieron (reclamo cancelado, fallido)
-        # se cuentan aparte: existieron como reclamo pero no como devolución.
-        devol = await _fetch_all(_mx(f"""
-            select canal,
-                   count(*) filter (where not descartada)::int                        as devoluciones,
-                   coalesce(sum(piezas) filter (where not descartada),0)::bigint      as piezas,
-                   coalesce(sum(valor)  filter (where not descartada),0)::numeric     as valor,
-                   count(*) filter (where descartada)::int                            as descartadas,
-                   coalesce(sum(valor)  filter (where descartada),0)::numeric         as valor_descartado
-            from (select canal, piezas, valor,
+        devol = await _fetch_all(_mx("""
+            select canal, cuenta,
+                   count(*) filter (where not descartada)::int                   as devoluciones,
+                   coalesce(sum(piezas) filter (where not descartada),0)::bigint as piezas,
+                   coalesce(sum(valor)  filter (where not descartada),0)::numeric as valor,
+                   count(*) filter (where descartada)::int                       as descartadas
+            from (select canal, cuenta, piezas, valor,
                          (coalesce(resolucion_motivo,'') = any(%(no_ocurrio)s)
                           or lower(coalesce(estado,'')) = 'failed') as descartada
                   from channel.returns
@@ -2912,72 +2908,72 @@ async def rentabilidad_drop(
                     and (creado_at at time zone 'America/Mexico_City')::date between
                         coalesce(%(desde)s::date, current_date - %(dias)s::int + 1)
                         and coalesce(%(hasta)s::date, current_date)) x
-            group by 1"""), p)
+            group by 1,2"""), p)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
         log.warning("rentabilidad/drop falló: %s", exc)
         raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
 
-    ix = lambda filas: {f["canal"]: f for f in filas}  # noqa: E731
-    P, V, C, D = ix(pubs), ix(ventas), ix(cancel), ix(devol)
+    P = {(f["canal"], f["cuenta"]): f for f in pubs}
+    V = {(f["canal"], f["cuenta"]): f for f in ventas}
+    C = {(f["canal"], f["cuenta"]): f for f in cancel}
+    D = {(f["canal"], f["cuenta"]): f for f in devol}
     pct = lambda a, b: (round(float(a) / float(b) * 100, 2) if b else None)  # noqa: E731
 
-    canales = []
-    for canal in _CANALES_DROP:
-        pu, ve, ca, de = P.get(canal, {}), V.get(canal, {}), C.get(canal, {}), D.get(canal, {})
-        ing_drop = float(ve.get("ing_drop") or 0)
-        uds_drop = int(ve.get("uds_drop") or 0)
-        can_val = float(ca.get("valor_drop") or 0)
-        can_uds = int(ca.get("uds_drop") or 0)
-        # BRUTO = lo que se intentó vender: lo efectivo más lo que se canceló.
-        bruto_drop = ing_drop + can_val
-        bruto_canal = float(ve.get("ing_canal") or 0) + float(ca.get("valor_canal") or 0)
-        dev_pz = int(de.get("piezas") or 0)
+    tiendas = []
+    for t in _TIENDAS:
+        # Cada lado con SU nombre de la tienda (ver el aviso de arriba).
+        pu = P.get((t["canal"], t["pub"]), {})
+        ve = V.get((t["canal"], t["ven"]), {})
+        ca = C.get((t["canal"], t["ven"]), {})
+        de = D.get((t["canal"], t["ven"]), {})
+        ing = float(ve.get("ing_drop") or 0)
+        uds = int(ve.get("uds_drop") or 0)
+        can_val = float(ca.get("valor") or 0)
         dev_val = float(de.get("valor") or 0)
-        canales.append({
-            "canal": canal,
-            "activa_def": _ACTIVA_DOC.get(canal),
+        dev_pz = int(de.get("piezas") or 0)
+        tiendas.append({
+            "tienda": t["id"], "label": t["label"], "canal": t["canal"],
+            "activa_def": _ACTIVA_DOC.get(t["canal"]),
             "censo": str(pu["censo"]) if pu.get("censo") else None,
-            "publicaciones": int(pu.get("total") or 0),
+            "activas_drop": int(pu.get("activas_drop") or 0),
+            "activas": int(pu.get("activas") or 0),
             "pub_drop": int(pu.get("drop_") or 0),
-            "pub_activas": int(pu.get("activas") or 0),
-            "pub_drop_activas": int(pu.get("drop_activas") or 0),
-            "pct_drop": pct(pu.get("drop_") or 0, pu.get("total") or 0),
-            "pct_drop_activas": pct(pu.get("drop_activas") or 0, pu.get("activas") or 0),
             "skus_vendidos": int(ve.get("skus_drop") or 0),
-            "uds_drop": uds_drop, "ingresos_drop": ing_drop,
-            # CANCELACIONES — su propio bloque, no mezclado con devoluciones.
-            "can_lineas": int(ca.get("lineas_drop") or 0),
-            "can_uds": can_uds, "can_valor": can_val,
-            "bruto_drop": bruto_drop,
-            "pct_perdido_drop": pct(can_val, bruto_drop),
-            "pct_perdido_canal": pct(can_val, bruto_canal),
-            # DEVOLUCIONES — bloque aparte.
-            "dev_devoluciones": int(de.get("devoluciones") or 0),
+            "uds_drop": uds, "ingresos_drop": ing,
+            # Ingreso por publicación activa: lo que rinde cada una. Con 1,369
+            # activas y $0 de venta (Amazon), esta columna lo grita.
+            "ingreso_por_activa": (round(ing / int(pu["activas_drop"]), 2)
+                                   if pu.get("activas_drop") else None),
+            "can_lineas": int(ca.get("lineas") or 0), "can_valor": can_val,
+            "pct_cancel": pct(can_val, ing + can_val),
             "dev_piezas": dev_pz, "dev_valor": dev_val,
             "dev_descartadas": int(de.get("descartadas") or 0),
-            "tasa_dev_uds": pct(dev_pz, uds_drop),
-            "tasa_dev_valor": pct(dev_val, ing_drop),
+            "pct_devol": pct(dev_val, ing),
         })
-    tot = lambda c: sum(x[c] or 0 for x in canales)  # noqa: E731
+
+    tot = lambda c: sum(x[c] or 0 for x in tiendas)  # noqa: E731
+    ing_t, can_t, dev_t = tot("ingresos_drop"), tot("can_valor"), tot("dev_valor")
     return {
         "ambiente": settings.app_env,
         "periodo": {"dias": None if (desde or hasta) else dias,
                     "desde": str(desde) if desde else None,
                     "hasta": str(hasta) if hasta else None},
-        "nota_woo": "El canal `general` (WooCommerce) queda fuera: es catálogo "
-                    "interno, no publicaciones de marketplace.",
+        "nota_woo": "Woo (canal `general`) queda fuera: es catálogo interno, no "
+                    "publicaciones de marketplace.",
+        # Los TRES únicos KPIs de arriba (José, 31-ago).
         "totales": {
-            "pub_drop": tot("pub_drop"), "pub_drop_activas": tot("pub_drop_activas"),
-            "uds_drop": tot("uds_drop"), "ingresos_drop": tot("ingresos_drop"),
-            "can_lineas": tot("can_lineas"), "can_valor": tot("can_valor"),
-            "pct_perdido_drop": pct(tot("can_valor"),
-                                    tot("ingresos_drop") + tot("can_valor")),
-            "dev_devoluciones": tot("dev_devoluciones"),
-            "dev_piezas": tot("dev_piezas"), "dev_valor": tot("dev_valor"),
-            "tasa_dev_uds": pct(tot("dev_piezas"), tot("uds_drop")),
-            "tasa_dev_valor": pct(tot("dev_valor"), tot("ingresos_drop")),
+            "ingresos_drop": ing_t,
+            "uds_drop": tot("uds_drop"),
+            "can_valor": can_t, "can_lineas": tot("can_lineas"),
+            # Cancelado sobre el BRUTO intentado (efectivo + cancelado): así el
+            # porcentaje no puede pasar de 100 y se lee como "de todo lo que
+            # se vendió, esto se cayó".
+            "pct_cancel": pct(can_t, ing_t + can_t),
+            "dev_valor": dev_t, "dev_piezas": tot("dev_piezas"),
+            "pct_devol": pct(dev_t, ing_t),
+            "activas_drop": tot("activas_drop"),
         },
-        "canales": canales,
+        "tiendas": tiendas,
     }
