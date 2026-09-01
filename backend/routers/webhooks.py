@@ -896,6 +896,18 @@ def _temu_firma_ok(cabeceras: dict[str, str], claro: str | None) -> bool | None:
     los eventos legítimos — es el mismo error que casi cuesta el canal en
     TikTok. Además, de los dos ejemplos oficiales uno incluye `x-tm-ext-param` y
     el otro no, así que se calculan LAS DOS variantes y basta con que una cuadre.
+
+    ✅ CONFIRMADO CONTRA UN MENSAJE REAL el 2026-09-01. Hasta entonces esto
+    estaba verificado solo contra la documentación — que, como dice el párrafo
+    de arriba, está equivocada. El mensaje de prueba que Brandon disparó desde
+    la consola de Temu llegó con `firma=True` y descifró limpio:
+
+        POST /api/webhooks/temu 200 OK
+        {"msg_id": "b3c1d934-…", "data": "1788283814241"}
+
+    O sea que el descifrado, el orden (descifrar ANTES de firmar) y las dos
+    variantes de la cadena están bien. El ping no trae orden, así que
+    `id_de_evento` devuelve None y no crea nada: eso es lo correcto.
     """
     firmada = (cabeceras.get("x-tm-signature") or "").strip().lower()
     if not firmada or not settings.temu_app_secret:
