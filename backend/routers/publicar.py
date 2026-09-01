@@ -97,6 +97,28 @@ async def preview(req: PublicarRequest) -> dict[str, Any]:
     return await publicar.preview(req.a_dict())
 
 
+def _anotar_seguro(req, estado: str, inicio: float, **extra) -> None:
+    """
+    Anota en la bitácora SIN poder afectar a la publicación. Nunca lanza.
+
+    ⚠️ POR QUÉ EXISTE ESTA FUNCIÓN Y NO UNA LLAMADA DIRECTA. El 1-sep-2026 la
+    llamada directa TUMBÓ CUATRO PUBLICACIONES REALES: pasaba
+    `req.precio_regular`, un campo que vive en OTRO modelo, y el AttributeError
+    saltaba al ARMAR los argumentos — antes de entrar a `bitacora.anotar`, que sí
+    es segura por dentro. El `except Exception` del endpoint lo atrapaba y lo
+    re-lanzaba, así que el producto quedaba publicado y el usuario veía "error".
+
+    La lección: que el destino sea a prueba de fallos NO basta si el camino hasta
+    él puede reventar. Todo lo que toque `req` va aquí dentro.
+    """
+    try:
+        bitacora.anotar(bitacora.PUBLICAR, "confirmar",
+                        sku=getattr(req, "sku", None), estado=estado,
+                        duracion_s=round(time.monotonic() - inicio, 2), **extra)
+    except Exception:  # noqa: BLE001
+        log.exception("la bitácora falló; la operación NO se ve afectada")
+
+
 @router.post("/confirmar")
 async def confirmar(req: PublicarRequest) -> dict[str, Any]:
     # Un fallo aquí llega al usuario como el genérico "ERROR DE CONEXIÓN" y
@@ -116,24 +138,23 @@ async def confirmar(req: PublicarRequest) -> dict[str, Any]:
     inicio = time.monotonic()
     try:
         r = await publicar.confirmar(req.a_dict())
-        bitacora.anotar(bitacora.PUBLICAR, "confirmar", sku=req.sku,
-                        canal=req.canal, cuenta=req.cuenta,
-                        detalle={"wc_id": req.wc_id,
-                                 "precio": req.precio_regular},
-                        duracion_s=round(time.monotonic() - inicio, 2))
+        _anotar_seguro(req, "ok", inicio, canal=getattr(req, "canal", None),
+                       cuenta=getattr(req, "cuenta", None),
+                       detalle={"wc_id": getattr(req, "wc_id", None)})
         return r
     except HTTPException as exc:
         # Validación rechazada: es el caso más común y el que más dice al
         # auditar — el usuario intentó y el canal (o nuestra guarda) dijo no.
-        bitacora.anotar(bitacora.PUBLICAR, "confirmar", sku=req.sku,
-                        estado="rechazado", canal=req.canal, cuenta=req.cuenta,
-                        detalle={"http": exc.status_code,
-                                 "motivo": str(exc.detail)[:300]},
-                        duracion_s=round(time.monotonic() - inicio, 2))
+        _anotar_seguro(req, "rechazado", inicio,
+                       canal=getattr(req, "canal", None),
+                       cuenta=getattr(req, "cuenta", None),
+                       detalle={"http": exc.status_code,
+                                 "motivo": str(exc.detail)[:300]})
         raise  # errores controlados (validación): ya llegan legibles al modal
     except Exception as exc:
-        bitacora.anotar(bitacora.PUBLICAR, "confirmar", sku=req.sku,
-                        estado="error", canal=req.canal, cuenta=req.cuenta,
+        _anotar_seguro(req, "error", inicio,
+                       canal=getattr(req, "canal", None),
+                       cuenta=getattr(req, "cuenta", None),
                         detalle={"excepcion": f"{type(exc).__name__}: {str(exc)[:200]}"},
                         duracion_s=round(time.monotonic() - inicio, 2))
         try:

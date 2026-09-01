@@ -96,11 +96,25 @@ def anotar(proceso: str, accion: str, *, sku: str | None = None,
     sirve para contar productividad y NO sirve para auditar — que es la mitad
     del encargo.
     """
-    cuerpo = dict(detalle or {})
-    if canal:
-        cuerpo["canal"] = canal
-    if cuenta:
-        cuerpo["cuenta"] = cuenta
+    # ⚠️ TODO el armado va dentro del try, no solo el INSERT. El 1-sep esta
+    # funcion era segura por dentro y aun asi TUMBO CUATRO PUBLICACIONES REALES:
+    # el call site pasaba `req.precio_regular`, un campo que no existe en ese
+    # modelo, y el AttributeError salta ANTES de entrar aqui. La publicacion ya
+    # habia funcionado; el usuario vio "error" igual.
+    #
+    # De ahi dos reglas, y la segunda es la que faltaba:
+    #   · el helper no revienta  ← ya estaba
+    #   · NI SIQUIERA armar sus argumentos puede reventar  ← esto es nuevo
+    # Por eso el call site tambien envuelve, y `serializar` tolera cualquier cosa.
+    try:
+        cuerpo = dict(detalle or {})
+        if canal:
+            cuerpo["canal"] = canal
+        if cuenta:
+            cuerpo["cuenta"] = cuenta
+    except Exception as exc:  # noqa: BLE001
+        log.warning("detalle ilegible en la bitácora (%s/%s): %s", proceso, accion, exc)
+        cuerpo = {}
     core_actor.en_hilo(
         _escribir, proceso, origen, accion, sku, estado,
         json.dumps(cuerpo, ensure_ascii=False, default=str) if cuerpo else None,
