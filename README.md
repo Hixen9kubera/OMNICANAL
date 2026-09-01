@@ -17810,3 +17810,48 @@ falta.
 Costo: 1.2 s para las 1,129 filas. Aditiva: no toca ningún objeto existente.
 Aplicada a producción y verificada — 1,129 categorías, 505 con venta, 638 con
 ranking. Versión 0.322.0.
+
+---
+
+### v0.323.0 — El sondeo gratis que dice dónde NO hay nada que raspar (Eduardo)
+
+Mercado Libre **no publica lista de más vendidos de todas las categorías**, y
+raspar una que no la tiene cuesta lo mismo que raspar una que sí y devuelve nada.
+`GET /highlights/MLM/category/{id}` lo dice **gratis, en una llamada**.
+
+`scripts/competencia_highlights.py` sondea las 1,129 categorías activas en
+**2.7 minutos** con 8 en paralelo, y guarda el resultado en
+`enrich.market_highlights` (migración 0041). Corre encadenado al refresco de
+visitas en el servicio `competencia-visitas`: **7 minutos diarios en total, $0.**
+
+**El reparto, medido en la primera corrida:**
+
+| | Categorías | Venden | Venta 30d |
+|---|---:|---:|---:|
+| Con ranking en ML | 921 | 447 | $5,596,659 |
+| **Sin ranking** | **208** | **58** | **$890,428** |
+
+Esos $890 k **no los cubre ningún presupuesto**: no hay ranking que capturar.
+Encabezan Castillos ($217 k), Bombas de Agua ($139 k) y Pistolas para Limpieza
+Textil ($107 k) — tres de las que más venden y que "nunca se capturaron". No era
+descuido. Su instrumento es el término de búsqueda, no el ranking.
+
+**Y la cola real queda en 302 categorías** —venden, tienen ranking, y llevan más
+de 14 días sin captura o nunca la tuvieron— que suman **$3,990,004** de venta de
+30 días. Una pasada completa cuesta **$2.11**.
+
+`enrich.market_highlights` guarda **una fila por categoría, sin histórico**: ~800
+KB en total. Una foto diaria habría sido ~280 MB al año para responder preguntas
+que hoy nadie hace. Lo que el plan sí necesita —"¿se movió el top desde nuestra
+última captura?"— lo contesta `cambio_en` con una huella del top-10.
+
+**Dos distinciones que el módulo no puede perder, y quedaron explícitas:**
+`capturado_en` es el último INTENTO y siempre avanza; `cambio_en` sólo se mueve
+cuando la huella cambió de verdad. Y **si la llamada falla no se escribe la
+fila**: `n = 0` significa "ML dice que no hay ranking", nunca "no pude
+preguntar" — un cero falso se lee como "no insistas" y manda a no capturar justo
+donde hay dinero.
+
+La vista de prioridad (0040) gana `tiene_ranking_ml` y `top_cambio_en`, con las
+tres consultas que habilitan documentadas en la migración: qué sí conviene
+raspar, qué nunca, y cuáles se movieron desde la última captura. Versión 0.323.0.
