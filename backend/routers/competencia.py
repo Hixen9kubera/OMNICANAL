@@ -51,6 +51,13 @@ class TerminoReq(BaseModel):
     termino_general: str
 
 
+class RankingsReq(BaseModel):
+    """Qué raspar. `solo` o `todo`: uno de los dos, nunca por omisión."""
+    solo: list[str] | None = None
+    todo: bool = False          # opt-in EXPLÍCITO al barrido completo
+    forzar: bool = False        # ignora el candado de días
+
+
 @router.get("/estado")
 def estado():
     """Diagnóstico honesto: qué fuentes hay y qué NO se puede medir, con el motivo."""
@@ -333,17 +340,87 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None, limite: int =
     }
 
 
-@router.post("/rankings")
-async def capturar_rankings():
-    """
-    Raspa el top 10 de más vendidos de la categoría raíz y de la última categoría
-    de cada SKU vigilado. Se agrupa por CATEGORÍA, así que 8 SKUs son 8 páginas.
+# Días que una categoría queda "recién capturada". Debajo de esto el botón se
+# niega: dos personas mirando productos distintos de la misma categoría no deben
+# pagar dos veces la misma página.
+DIAS_CANDADO = 3
 
-    Barato: el navegador cobra por cómputo (~$0.007/página), no por item.
+
+def _validar_solo(cats: list[str], forzar: bool) -> tuple[list[str], list[str]]:
     """
-    r = await competencia_captura.capturar_rankings_categorias()
+    Filtra la lista del botón contra la realidad, y explica cada descarte.
+
+    Son TRES candados, y cada uno existe por una razón medida:
+
+    1. **Lista blanca.** Sólo categorías que aparecen en
+       `market_categoria_prioridad_v`, o sea donde tenemos publicación viva. Sin
+       esto, `capturar_rankings_categorias` acepta CUALQUIER cadena y la raspa
+       como 'hoja': un POST que gasta dinero con lista arbitraria, en una API sin
+       auth real, es un hueco por el que se va el presupuesto.
+
+    2. **Sin ranking, no se raspa.** Si `/highlights` dijo que ML no publica lista
+       ahí (0041), raspar devuelve nada y cuesta igual. Medido el 1-sep: 208 de
+       1,129 categorías están en ese caso.
+
+    3. **Candado de días.** Una categoría con 127 SKUs la pueden pedir 127
+       personas; la página es la misma y el cobro también.
+    """
+    if not cats:
+        return [], []
+    filas = competencia_store.prioridad(cats)
+    conocidas = {f["categoria_id"]: f for f in filas}
+
+    ok, descartes = [], []
+    for c in cats:
+        f = conocidas.get(c)
+        if not f:
+            descartes.append(f"{c}: no es una categoría nuestra con publicación viva.")
+            continue
+        if f.get("tiene_ranking_ml") is False:
+            descartes.append(f"{c} ({f.get('categoria_nombre')}): Mercado Libre no "
+                             "publica más vendidos de esta categoría. Raspar no "
+                             "traería nada.")
+            continue
+        d = f.get("dias_sin_captura")
+        if d is not None and d < DIAS_CANDADO and not forzar:
+            descartes.append(f"{c} ({f.get('categoria_nombre')}): se actualizó hace "
+                             f"{d} día(s). Se puede volver a pedir en "
+                             f"{DIAS_CANDADO - d}.")
+            continue
+        ok.append(c)
+
+    # Si NADA pasó, es un error: el usuario pidió algo y no va a ocurrir.
+    if not ok:
+        raise HTTPException(422, " ".join(descartes) or "Nada que capturar.")
+    # Si pasó algo pero se cayeron otras, NO es error — pero hay que decirlo.
+    # Descartar en silencio es lo que produce el reporte "el botón no hizo nada".
+    return ok, descartes
+
+
+@router.post("/rankings")
+async def capturar_rankings(req: RankingsReq | None = None):
+    """
+    Raspa el top de más vendidos. **Es la única operación del módulo que cuesta
+    dinero**: ~$0.007 por categoría, cobrado por página, no por item.
+
+    Hay que decir QUÉ raspar. Antes esta ruta no aceptaba parámetro y siempre
+    barría todo: con el catálogo de hoy son ~1,129 páginas, **unos $8 y 8.5 horas
+    por llamada**. Ahora el barrido completo es `todo: true`, explícito, y el uso
+    normal —el botón del panel— manda `solo: ["MLM…"]`.
+    """
+    req = req or RankingsReq()
+    if not req.solo and not req.todo:
+        raise HTTPException(
+            422, "Falta decir qué raspar: `solo: [categoria_id]` para una o "
+                 "`todo: true` para el barrido completo (~1,129 páginas, ~$8).")
+    solo, descartes = (_validar_solo(req.solo or [], req.forzar)
+                       if req.solo else (None, []))
+
+    r = await competencia_captura.capturar_rankings_categorias(solo=solo)
     if not r.get("ok"):
         raise HTTPException(400, r.get("motivo") or "La captura falló.")
+    r["categorias_pedidas"] = solo
+    r["descartadas"] = descartes
     return r
 
 

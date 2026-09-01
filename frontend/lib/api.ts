@@ -1011,14 +1011,27 @@ export function rankingCategoria(
   );
 }
 
-/** Raspa los más vendidos de la raíz y la hoja de cada SKU vigilado. */
-export function capturarRankingsCompetencia() {
+/**
+ * Raspa los más vendidos. **Es lo único del módulo que cuesta dinero**: ~$0.007
+ * por categoría, cobrado por página.
+ *
+ * Hay que decir QUÉ raspar. `solo` es el uso normal —el botón del panel—; el
+ * barrido completo exige `todo: true` y son ~1,129 páginas, unos $8 y 8.5 horas.
+ * El backend valida contra la lista de categorías nuestras, se niega si ML no
+ * publica ranking ahí, y aplica un candado de días; lo que descarte viene en
+ * `descartadas` para poder decirlo en pantalla en vez de no hacer nada.
+ */
+export function capturarRankingsCompetencia(
+  opts: { solo?: string[]; todo?: boolean; forzar?: boolean } = {},
+) {
   return postJSON<{
     ok: boolean;
     categorias: number;
     con_datos: number;
     avisos: string[];
-  }>("/api/competencia/rankings", {});
+    categorias_pedidas: string[] | null;
+    descartadas: string[];
+  }>("/api/competencia/rankings", opts);
 }
 
 // detalleCompetencia PODADA (paso 6): GET /detalle se retiró del backend y

@@ -106,6 +106,26 @@ def publicaciones(sku: str | None = None) -> list[dict[str, Any]]:
     return filas
 
 
+def prioridad(categorias: list[str] | None = None) -> list[dict[str, Any]]:
+    """
+    `enrich.market_categoria_prioridad_v` — una fila por subcategoría ACTIVA.
+
+    De aquí salen el top 5 por venta y el bottom 5 por tráfico sin venta, y es la
+    lista blanca del botón de refresco: si una categoría no está aquí, no es
+    nuestra o no tiene publicación viva, y no hay por qué pagar por raspar.
+
+    Trae también `tiene_ranking_ml` (¿ML publica más vendidos ahí?) y
+    `dias_sin_captura`, que son los otros dos candados del botón.
+    """
+    sql = "SELECT * FROM enrich.market_categoria_prioridad_v"
+    params: tuple = ()
+    if categorias:
+        sql += " WHERE categoria_id = ANY(%s)"
+        params = (list(categorias),)
+    sql += " ORDER BY pesos_30d DESC NULLS LAST"
+    return supabase_db.fetch_all(sql, params)
+
+
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
     sql = ("SELECT * FROM enrich.market_bestsellers "

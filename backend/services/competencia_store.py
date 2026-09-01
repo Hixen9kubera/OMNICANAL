@@ -144,6 +144,19 @@ def reemplazar_ranking(categoria_id: str, nivel: str, periodo: str,
         "y no hay a dónde. Define la variable antes de capturar.")
 
 
+def prioridad(categorias: list[str] | None = None) -> list[dict[str, Any]]:
+    """
+    Las subcategorías activas ordenadas por dinero. Sin fallback: la vista vive
+    en kubera y no hay gemela local.
+    """
+    r = _remoto()
+    if r:
+        return r.prioridad(categorias)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: la vista de prioridad vive en "
+        "enrich.market_categoria_prioridad_v y no hay de dónde leerla.")
+
+
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
     r = _remoto()

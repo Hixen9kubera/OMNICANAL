@@ -17855,3 +17855,44 @@ donde hay dinero.
 La vista de prioridad (0040) gana `tiene_ranking_ml` y `top_cambio_en`, con las
 tres consultas que habilitan documentadas en la migración: qué sí conviene
 raspar, qué nunca, y cuáles se movieron desde la última captura. Versión 0.323.0.
+
+---
+
+### v0.324.0 — El botón de refresco, con los tres candados que le faltaban (Eduardo)
+
+`POST /api/competencia/rankings` **no aceptaba parámetro**: siempre barría todo.
+Con el catálogo de hoy son ~1,129 páginas, **unos $8 y 8.5 horas por llamada**, en
+una API sin auth real. Nadie lo había disparado sólo porque el frontend no lo
+llamaba — `capturarRankingsCompetencia()` existía en `lib/api.ts` sin consumidor.
+
+Ahora **hay que decir qué raspar**: `solo: ["MLM…"]` para una categoría, o
+`todo: true` —explícito— para el barrido completo. Sin ninguno de los dos, 422 con
+el motivo. El default peligroso desaparece.
+
+**Tres candados antes de gastar**, cada uno por una razón medida:
+
+1. **Lista blanca** contra `market_categoria_prioridad_v`: sólo categorías nuestras
+   con publicación viva. Sin esto `capturar_rankings_categorias` acepta cualquier
+   cadena y la raspa como 'hoja'. Probado: `MLM999999` y `'; drop table` se
+   rechazan.
+2. **Sin ranking, no se raspa.** Si `/highlights` dijo que ML no publica lista ahí
+   (0041), raspar cuesta igual y devuelve nada. Son 208 de 1,129 categorías.
+   Probado con Castillos, que vende $217 k y no tiene ranking.
+3. **Candado de días** (3): una categoría con 127 SKUs la pueden pedir 127
+   personas y la página es la misma. `forzar: true` lo salta.
+
+**Y lo descartado se reporta.** Si de tres categorías pasa una, la respuesta trae
+`descartadas` con el motivo de cada una. Descartar en silencio es lo que produce el
+reporte "el botón no hizo nada".
+
+**En pantalla**, el botón vive en el bloque *"Más vendidos de …"*, no en cada SKU:
+**Apify cobra por PÁGINA y la página es la de la categoría**. Un botón por producto
+pagaría la misma página varias veces —hay 2.21 SKUs por categoría, y 127 en la más
+grande—. Puesto ahí se ve desde el producto (el bloque está abierto) y se cobra una
+vez. Al lado dice *"actualizado hace N días"*.
+
+De paso, `RankingCategoria` gana `capturado_en`: el backend ya lo mandaba y el tipo
+no lo declaraba, así que el panel no podía decir qué tan vieja era la captura.
+
+Nuevo lector `competencia_store.prioridad()` sobre la vista de la 0040, que es la
+lista blanca. Versión 0.324.0.

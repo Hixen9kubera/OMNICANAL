@@ -20,6 +20,7 @@ import {
   TrendingUp,
   Ban,
   Pause,
+  RefreshCw,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
@@ -31,6 +32,7 @@ import {
   sugerirSubcategoria,
   terminosSubcategoria,
   vistaCompetencia,
+  capturarRankingsCompetencia,
 } from "@/lib/api";
 import type {
   CompetenciaDetalleSku,
@@ -1284,12 +1286,98 @@ function Cabeza() {
 }
 
 /** Una fila de subcategoría: se despliega y muestra el nicho y luego lo nuestro. */
+/**
+ * El botón que vuelve a raspar UNA subcategoría.
+ *
+ * Vive aquí —en el bloque de "más vendidos"— y no en cada SKU, porque **Apify
+ * cobra por PÁGINA y la página es la de la categoría**. Un botón por producto
+ * pagaría la misma página varias veces: hay 2.21 SKUs por categoría, y en la más
+ * grande son 127. Puesto aquí se ve desde el producto —el bloque está abierto—
+ * y se cobra una sola vez.
+ *
+ * Dice cuándo se actualizó y por qué no se puede volver a pedir, en vez de
+ * quedarse mudo: un botón que no hace nada sin explicar se reporta como bug.
+ */
+function BotonRefrescar({
+  categoriaId,
+  capturadoEn,
+  onListo,
+}: {
+  categoriaId: string | null;
+  capturadoEn: string | null;
+  onListo: () => void;
+}) {
+  const [corriendo, setCorriendo] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [fallo, setFallo] = useState(false);
+
+  if (!categoriaId) return null;
+
+  const dias = capturadoEn
+    ? Math.floor((Date.now() - new Date(capturadoEn).getTime()) / 86400000)
+    : null;
+
+  async function pedir() {
+    setCorriendo(true);
+    setMsg(null);
+    setFallo(false);
+    try {
+      const r = await capturarRankingsCompetencia({ solo: [categoriaId!] });
+      const desc = r.descartadas?.length ? r.descartadas.join(" ") : null;
+      setMsg(desc ?? `Listo: ${r.con_datos ?? 0} publicaciones.`);
+      setFallo(Boolean(desc));
+      if (!desc) onListo();
+    } catch (e) {
+      setFallo(true);
+      // El backend explica el motivo (recién capturada, ML no publica ranking,
+      // no es nuestra). Se muestra tal cual: es más útil que "error".
+      setMsg(e instanceof Error ? e.message : "No se pudo actualizar.");
+    } finally {
+      setCorriendo(false);
+    }
+  }
+
+  return (
+    <span className="ml-auto flex items-center gap-2 normal-case">
+      {dias !== null ? (
+        <span className="font-normal text-slate-400">
+          actualizado hace {dias} {dias === 1 ? "día" : "días"}
+        </span>
+      ) : null}
+      <button
+        type="button"
+        onClick={pedir}
+        disabled={corriendo}
+        title="Vuelve a leer los más vendidos de esta subcategoría. Cuesta ~$0.007."
+        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+      >
+        {corriendo ? (
+          <Loader2 size={10} className="animate-spin" />
+        ) : (
+          <RefreshCw size={10} />
+        )}
+        {corriendo ? "Actualizando…" : "Actualizar"}
+      </button>
+      {msg ? (
+        <span
+          className={`max-w-[26rem] truncate font-normal ${fallo ? "text-amber-600" : "text-emerald-600"}`}
+          title={msg}
+        >
+          {msg}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+
 function BloqueSubcategoria({
   sub,
   abiertoSku,
   detalle,
   cargandoDetalle,
   onAbrirSku,
+  onRefrescado,
   filtrando = false,
 }: {
   sub: CompetenciaSubcategoria;
@@ -1297,6 +1385,8 @@ function BloqueSubcategoria({
   detalle: CompetenciaDetalleSku | null;
   cargandoDetalle: boolean;
   onAbrirSku: (sku: string) => void;
+  /** Tras raspar una subcategoría hay que releer la vista: el ranking cambió. */
+  onRefrescado: () => void;
   /** Hay algún filtro activo: se abre solo, si no el resultado queda escondido. */
   filtrando?: boolean;
 }) {
@@ -1391,6 +1481,11 @@ function BloqueSubcategoria({
                   · {sub.n_ranking} publicaciones
                 </span>
               ) : null}
+              <BotonRefrescar
+                categoriaId={sub.categoria_id}
+                capturadoEn={sub.top?.[0]?.capturado_en ?? null}
+                onListo={onRefrescado}
+              />
             </div>
             {sub.top.length === 0 ? (
               <div className="py-3 text-center text-xs text-slate-400">
@@ -1450,6 +1545,7 @@ function BloqueRaiz({
   detalle,
   cargandoDetalle,
   onAbrirSku,
+  onRefrescado,
   filtrando = false,
 }: {
   r: CompetenciaRaiz;
@@ -1457,6 +1553,7 @@ function BloqueRaiz({
   detalle: CompetenciaDetalleSku | null;
   cargandoDetalle: boolean;
   onAbrirSku: (sku: string) => void;
+  onRefrescado: () => void;
   filtrando?: boolean;
 }) {
   return (
@@ -1516,6 +1613,7 @@ function BloqueRaiz({
             detalle={detalle}
             cargandoDetalle={cargandoDetalle}
             onAbrirSku={onAbrirSku}
+            onRefrescado={onRefrescado}
             filtrando={filtrando}
           />
         ))}
@@ -1959,6 +2057,7 @@ export default function CompetenciaPage() {
               detalle={detalle}
               cargandoDetalle={cargandoDetalle}
               onAbrirSku={abrirSku}
+              onRefrescado={() => cargar()}
               filtrando={hayFiltro}
             />
           ))

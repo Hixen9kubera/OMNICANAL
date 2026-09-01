@@ -816,6 +816,10 @@ export interface RankingCategoria {
   item_categoria_nombre: string | null;
   es_nuestro: number;
   sku_nuestro: string | null;
+  /** Cuándo se raspó esta fila. El backend ya lo mandaba (sale de
+   *  `enrich.market_bestsellers`); el tipo no lo declaraba, así que el panel
+   *  no podía decir qué tan vieja es la captura. */
+  capturado_en: string | null;
 }
 
 /** Un SKU nuestro con su posición frente al mercado de su subcategoría. */
