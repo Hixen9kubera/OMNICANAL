@@ -18024,6 +18024,49 @@ reportó con su dinero, como debía. Versión 0.328.0.
 
 ---
 
+### v0.332.0 — Se quita el respaldo local de Competencia, que no existía (Eduardo)
+
+Hallazgo del perfilado de la v0.331.0. `competencia_store` prometía un respaldo
+que **no estaba escrito en ninguna parte**, y lo prometía dos veces:
+
+```python
+def disponible() -> bool:
+    """Siempre: en el peor caso está el archivo local, no hay credencial que falte."""
+    return True
+...
+    return _listar_skus_local(solo_activos)   # ← no definida en NINGÚN archivo
+```
+
+Sin `SUPABASE_DB_URL`, `listar_skus()` no caía a un archivo local: reventaba con
+`NameError: name '_listar_skus_local' is not defined`. Y `disponible()` seguía
+contestando `True`, así que `/estado` —cuyo docstring dice literalmente
+*"diagnóstico honesto"*— publicaba `supabase: true` mientras nada funcionaba.
+
+En producción no se dispara nunca, porque `SUPABASE_DB_URL` siempre está. Pero un
+respaldo que no existe es peor que no tener respaldo: **hace que el diagnóstico
+mienta justo el día que hace falta.**
+
+Se quita la promesa:
+
+- `disponible()` devuelve `_remoto() is not None` — lo que de verdad hay.
+- `listar_skus()` levanta el mismo `RuntimeError` explícito que sus hermanas
+  (`prioridad`, `ranking_categoria`): dice qué variable falta y en qué tabla vive
+  el dato.
+
+Verificado en los dos sentidos: **sin** DSN `disponible()` da `False` y
+`listar_skus()` levanta el error con mensaje legible en vez del `NameError`;
+**con** DSN nada cambia — `True` y los 2,798 SKUs de siempre. `/estado` es el
+único llamador (`routers/competencia.py:70`) y el campo está declarado en
+`types.ts` pero no se dibuja, así que la UI no se mueve.
+
+#### Y una corrección al número de la v0.331.0
+
+El título de esa entrada dice "ahora en 6" y ese era el número del **sandbox**.
+Medido contra **producción** ya desplegada: **17.4 s, 14.8 s, 11.4 s** (venía de
+55 s). Es una mejora de 3–5×, no de 25× — las 25× eran de la parte de nichos, que
+ya dejó de mandar: ahora el tiempo se lo llevan `competencia_store.vista()` y el
+traslado del JSON. Si hay que seguir bajándolo, ahí está el siguiente escalón.
+
 ### v0.331.0 — El tab de Competencia abría en 55 s; ahora en 6 (Eduardo)
 
 `GET /api/competencia/vista` tardaba **55 s** en producción. Medido antes de

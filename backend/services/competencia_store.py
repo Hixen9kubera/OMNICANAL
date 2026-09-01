@@ -26,8 +26,19 @@ log = logging.getLogger("omnicanal.competencia.store")
 
 
 def disponible() -> bool:
-    """Siempre: en el peor caso está el archivo local, no hay credencial que falte."""
-    return True
+    """
+    ¿Hay de dónde leer? Es lo que `/estado` publica como `supabase`.
+
+    Devolvía `True` SIEMPRE, apoyada en que "en el peor caso está el archivo
+    local". **Ese respaldo no existía**: `listar_skus` llamaba a
+    `_listar_skus_local`, que no está definido en ningún archivo del repo, así
+    que sin `SUPABASE_DB_URL` la caída habría sido un `NameError` —no un
+    fallback— y `/estado`, que se anuncia como "diagnóstico honesto", habría
+    seguido reportando `supabase: true` mientras nada funcionaba.
+
+    Ahora contesta lo que de verdad hay.
+    """
+    return _remoto() is not None
 
 
 def _remoto():
@@ -57,10 +68,18 @@ _CAMPOS_SKU = ("sku", "nombre", "origen_nombre", "categoria_id", "categoria_nomb
                "cuenta", "publicado_ml", "termino_general", "termino_origen", "activo")
 
 def listar_skus(solo_activos: bool = True) -> list[dict[str, Any]]:
+    """
+    Los SKUs vigilados. Sin fallback: llamaba a `_listar_skus_local`, que NO
+    EXISTE, así que el "respaldo local" era un `NameError` con un mensaje que no
+    decía nada. Se levanta el mismo error explícito que sus hermanas
+    (`prioridad`, `ranking_categoria`), que dice qué falta y dónde vive el dato.
+    """
     r = _remoto()
     if r:
         return r.listar_skus(solo_activos)
-    return _listar_skus_local(solo_activos)
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: los SKUs vigilados viven en "
+        "enrich.market_sku_config y no hay de dónde leerlos.")
 
 def actualizar_termino(sku: str, termino: str) -> bool:
     """Corrección manual: marca origen='manual' para que la IA no lo vuelva a pisar.
