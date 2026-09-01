@@ -17728,3 +17728,43 @@ cualquier escritura parcial futura sólo puede agregar información, nunca tapar
 que ya había. De paso el precio mejora: vuelve el `sale_price` medido ($899 en el
 caso de Licuadoras) en lugar del precio de lista de `channel.listings` ($2,016).
 Detectado y corregido el mismo día. Versión 0.320.0.
+
+---
+
+### v0.321.0 — Competencia era lo único que seguía sacando su token de ML de MySQL (Eduardo)
+
+Salió al montar el cron de visitas: al darle sólo credenciales de kubera, el
+script no conseguía token. La causa es una palabra en minúsculas.
+
+Las dos tablas de tokens guardan la cuenta en **MAYÚSCULAS** — `ops.ml_tokens` en
+kubera y `ml_tokens`/`ml_tokens_dashboard` en MySQL. Todo el resto de la app las
+pide así (`costos.DEFAULT_ACCOUNT = "BEKURA"`). **Competencia las pide en
+minúsculas**: `_CUENTA_DEFAULT = "bekura"`, y `CUENTAS` igual.
+
+Funcionaba de casualidad: **MySQL compara sin distinguir mayúsculas** por su
+collation, así que `WHERE cuenta='bekura'` encontraba `'BEKURA'`. **Postgres no**
+—su columna es `text`— y devolvía nada. Medido:
+
+    _access_token('BEKURA')  → TOKEN OK   (sólo con Supabase)
+    _access_token('bekura')  → nada
+
+O sea que, con `SUPABASE_READ_TOKENS=true` y todo, este módulo seguía sacando su
+token de MySQL sin que nadie lo supiera. **El día que F8 retire ese esquema,
+Competencia se habría quedado sin token** y el síntoma —"sin token de ML"— habría
+apuntado al lugar equivocado, igual que en el incidente del 12-ago.
+
+`competencia_ml._token` normaliza la cuenta a mayúsculas antes de pedirla, y
+`_olvidar_token` usa la misma llave para no dejar entradas huérfanas en la caché.
+Verificado sin una sola credencial de MySQL: los dos tokens resuelven, `/visits`
+devuelve 7,057 y `/trends` 48 términos.
+
+Con eso, al servicio `competencia-visitas` se le quitaron `DB_HOST`, `DB_NAME`,
+`DB_USER`, `DB_PASSWORD` y `DB_PORT`: le quedan sólo `SUPABASE_DB_URL`,
+`SUPABASE_READ_TOKENS` y `DB_ENCRYPTION_KEY` (la llave Fernet, que pese al nombre
+no es de MySQL). Un cron menos atado al esquema que se va a retirar.
+
+**Aviso para el equipo:** Railway **deprecó los `railway.*.json`** ("Config as Code
+is deprecated, use Infrastructure as Code `.railway/railway.ts`"). Los servicios
+viejos conservan el suyo, pero los nuevos ya no lo aceptan: `competencia-visitas`
+lleva su horario y su comando **en el servicio**, no en el archivo. El JSON queda
+en el repo como documentación de la intención. Versión 0.321.0.

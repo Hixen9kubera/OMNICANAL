@@ -85,19 +85,43 @@ _cache_token: dict[str, tuple[float, str | None]] = {}
 
 
 def _token(cuenta: str) -> str | None:
+    """
+    El token de esa cuenta, con caché corta en proceso.
+
+    LA CUENTA SE NORMALIZA A MAYÚSCULAS, y no es cosmético. Este módulo maneja
+    la cuenta en minúsculas (`_CUENTA_DEFAULT = "bekura"`, `CUENTAS` en
+    `competencia_captura`), pero las dos tablas de tokens la guardan en
+    MAYÚSCULAS: `ops.ml_tokens` en kubera y `ml_tokens`/`ml_tokens_dashboard`
+    en MySQL.
+
+    Funcionaba de casualidad: **MySQL compara sin distinguir mayúsculas** por su
+    collation, así que `WHERE cuenta='bekura'` encontraba 'BEKURA'. **Postgres
+    NO** — su columna es `text` y distingue. Resultado medido el 1-sep-2026:
+
+        _access_token('BEKURA')  → TOKEN OK   (solo con Supabase)
+        _access_token('bekura')  → nada
+
+    O sea que, con `SUPABASE_READ_TOKENS=true` y todo, **este módulo era el
+    único de la app que seguía sacando su token de MySQL** — el resto pide la
+    cuenta en mayúsculas (`costos.DEFAULT_ACCOUNT = "BEKURA"`) y sí la halla en
+    kubera. El día que F8 retire el esquema viejo, Competencia se habría quedado
+    sin token y el síntoma —"sin token de ML"— habría apuntado al lugar
+    equivocado.
+    """
     import time as _t
-    hit = _cache_token.get(cuenta)
+    clave = (cuenta or "").upper() or None
+    hit = _cache_token.get(clave)
     if hit:
         edad, valor = _t.monotonic() - hit[0], hit[1]
         if edad < (_TTL_TOKEN if valor else _TTL_SIN_TOKEN):
             return valor
-    tok = meli._access_token(cuenta)
-    _cache_token[cuenta] = (_t.monotonic(), tok)
+    tok = meli._access_token(clave)
+    _cache_token[clave] = (_t.monotonic(), tok)
     return tok
 
 
 def _olvidar_token(cuenta: str) -> None:
-    _cache_token.pop(cuenta, None)
+    _cache_token.pop((cuenta or '').upper() or None, None)
 
 
 def _get(ruta: str, params: dict[str, Any] | None = None,
