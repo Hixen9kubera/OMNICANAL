@@ -18024,6 +18024,62 @@ reportó con su dinero, como debía. Versión 0.328.0.
 
 ---
 
+### v0.331.0 — El tab de Competencia abría en 55 s; ahora en 6 (Eduardo)
+
+`GET /api/competencia/vista` tardaba **55 s** en producción. Medido antes de
+tocar nada, no supuesto:
+
+| | |
+|---|---|
+| `competencia_store.vista()` | 5.7 s |
+| `nichos_del_top()` × 28 raíces | **140.8 s** ← el 96% |
+
+**El defecto: dos consultas dentro de un bucle que no dependían del bucle.**
+`nichos_del_top` corre una vez por raíz, y adentro pedía (a) los SKUs vigilados
+—los mismos 2,798 siempre, 1.4 s cada vez— y (b) el catálogo de sus nichos. Con
+28 raíces son **56 viajes a la base para contestar 2 preguntas**.
+
+Es el MISMO patrón que ya había mordido en esta función: una versión anterior
+resolvía la subcategoría llamando a la API de ML dentro del bucle y la página
+pasó de 2 s a agotar 150 s. Aquello se arregló guardando el dato; esto se
+arregla sacando la consulta del bucle. **Lo que no depende de la iteración, no
+va dentro de la iteración.**
+
+**El arreglo.** Se parte en tres:
+
+- `_nichos_crudos(raiz, tope)` — el agrupamiento por subcategoría, sin tocar la
+  base. Existe para que las dos funciones de abajo compartan la lógica en vez de
+  duplicarla.
+- `contexto_nichos(arbol)` — **un** `listar_skus` y **una** consulta de catálogo
+  con los ids de todas las raíces juntas. 56 consultas → 2.
+- `nichos_del_top(raiz, tope, *, catalogo=None, vigilados=None)` — los recibe
+  hechos. Si no se los dan, se los calcula solo: el comportamiento de antes queda
+  intacto para cualquier llamador de una sola categoría.
+
+**Resultado, medido contra producción:**
+
+| | antes | ahora |
+|---|---|---|
+| nichos (28 raíces) | 140.8 s | 5.6 s — **25×** |
+| catálogo (99 ids únicos) | 4.44 s / 24 consultas | 0.20 s / 1 consulta |
+| endpoint completo | 146.5 s | 11.3 s |
+
+End-to-end contra el sandbox, con el catálogo resolviendo de verdad: **8.5 s la
+primera corrida, 5.9 s la segunda.**
+
+**La salida es IDÉNTICA**, y se verificó en dos partes porque una sola no
+alcanzaba: el árbol completo por el camino nuevo contra el viejo (0 diferencias),
+y aparte la consulta de catálogo batcheada contra la de raíz en raíz (99
+categorías, 1,044 SKUs, 0 diferencias). Hizo falta separarlas porque en el perfil
+local `categorias_write.activo()` era `False` y el catálogo salía en 0 por los dos
+caminos: habría comparado dos ceros y cantado victoria.
+
+**Hallazgo aparte, NO arreglado:** `competencia_store.listar_skus()` llama a
+`_listar_skus_local()`, que **no está definido en ningún lado**. Sólo se dispara
+si falta `SUPABASE_DB_URL`, así que en producción nunca ocurre — pero
+`disponible()` promete "en el peor caso está el archivo local" y ese respaldo es
+un `NameError`.
+
 ### v0.330.0 — El encabezado de Competencia dice de cuándo es CADA dato (Eduardo)
 
 La caja de arriba del tab hablaba de una sola fecha —la del ranking— cuando el

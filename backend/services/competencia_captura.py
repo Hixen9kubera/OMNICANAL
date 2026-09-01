@@ -620,48 +620,27 @@ def sugerir_palabras_subcategoria(categoria_id: str,
     }
 
 
-def nichos_del_top(raiz: dict[str, Any], tope: int = 5) -> list[dict[str, Any]]:
+def _nichos_crudos(raiz: dict[str, Any],
+                   tope: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
-    Los nichos donde SÍ conviene competir, dictados por el top de la categoría
-    padre y no por nuestro inventario.
+    El agrupamiento por subcategoria, SIN tocar la base de datos.
 
-    Se recorre el ranking de la raíz en orden (#1, #2, #3…), se agrupa por
-    subcategoría —#5 y #6 son los dos Cargadores de Baterías, así que cuentan como
-    UN nicho— y a cada uno se le pega cuántos SKUs tenemos ahí. La pregunta que
-    contesta es "¿tenemos con qué pelear el #1?", y a veces la respuesta es no:
-    en MLM1747 el #4 es aceite de motor (MLM187678) y en catálogo tenemos CERO.
-
-    Los SKUs se cuentan sobre `categorias_ml`, el catálogo COMPLETO, no sobre los
-    8 vigilados: el hallazgo suele ser que el nicho #1 tiene 15 productos nuestros
-    y solo uno está bajo observación.
-
-    La entrada de tipo ITEM del ranking queda sin nicho: /items de un ajeno es 403
-    y no hay otra ruta para saber su categoría. Se reporta como hueco, no se omite.
+    Se separo de `nichos_del_top` para que el calculo de que nichos hay se pueda
+    hacer dos veces —una para juntar los ids de TODO el arbol y otra para armar
+    la salida de cada raiz— sin duplicar la logica ni pagar dos veces las
+    consultas. Devuelve (nichos ordenados, filas sin subcategoria).
     """
     top = raiz.get("top") or []
-
-    # Los nichos NO dependen del raspado: posición y categoría son 100% API
-    # (/highlights + /products/{id}/items). El ranking raspado solo aporta la FICHA
-    # del líder (título, foto, precio), y si falta se usa lo que tenga la fila.
-    #
-    # Esto importa: las filas capturadas con el actor de Apify no traen `id_pagina`,
-    # así que el join con /highlights no las alcanzaba y Hogar y Jardín salía con 0
-    # nichos. Resolviendo por API el resultado ya no depende de con qué se raspó.
     if not top:
-        return []
+        return [], []
 
-    # SOLO DATOS GUARDADOS. Esta función corre en cada carga de /vista, y una
-    # versión anterior resolvía la subcategoría llamando a la API de ML aquí: con
-    # 26 raíces eran cientos de llamadas por request y la página pasó de responder
-    # en 2 s a agotar 150 s en producción. La resolución vive en la CAPTURA
-    # (`_subcategoria_de_cada_fila`), que deja `item_categoria_id` en la tabla.
     nichos: dict[str, dict[str, Any]] = {}
     sin_categoria: list[dict[str, Any]] = []
     for fila in sorted(top, key=lambda x: x.get("posicion") or 99):
         cid = fila.get("item_categoria_id")
         if not cid:
             # Tipo ITEM (/items de un ajeno es 403) o ranking capturado antes de
-            # que se guardara la subcategoría. Se cuenta, no se inventa.
+            # que se guardara la subcategoria. Se cuenta, no se inventa.
             sin_categoria.append(fila)
             continue
         if cid not in nichos:
@@ -675,31 +654,112 @@ def nichos_del_top(raiz: dict[str, Any], tope: int = 5) -> list[dict[str, Any]]:
         else:
             nichos[cid]["otras_posiciones"].append(fila.get("posicion"))
 
-    orden = sorted(nichos.values(), key=lambda n: n["posicion"] or 99)[:tope]
+    return sorted(nichos.values(), key=lambda n: n["posicion"] or 99)[:tope], sin_categoria
+
+
+def contexto_nichos(arbol: list[dict[str, Any]], tope: int = 5) -> dict[str, Any]:
+    """
+    Todo lo que `nichos_del_top` necesita de la BD, resuelto UNA SOLA VEZ para el
+    arbol completo.
+
+    ── POR QUE EXISTE ──────────────────────────────────────────────────────────
+    `nichos_del_top` corre una vez POR RAIZ, y adentro hacia dos cosas que no
+    dependen de la raiz en la que va: traer los SKUs vigilados (los mismos 2,798
+    siempre) y consultar el catalogo. Con 28 raices eso son **56 viajes a la base
+    para contestar 2 preguntas**.
+
+    Medido el 1-sep-2026: `/api/competencia/vista` tardaba 55 s en produccion, y
+    el 96% era esto. En el perfil local `competencia_store.vista()` son 6.2 s y
+    `nichos_del_top` x28 son 135 s; un solo `listar_skus` cuesta 1.4 s, asi que
+    multiplicarlo por raiz es la mayor parte de la espera.
+
+    Es el MISMO patron que ya habia mordido aqui: una version anterior resolvia
+    la subcategoria llamando a la API de ML dentro del bucle y la pagina paso de
+    2 s a agotar 150 s. Aquello se arreglo guardando el dato; esto se arregla
+    sacando la consulta del bucle. La leccion se repite: **lo que no depende de
+    la iteracion, no va dentro de la iteracion.**
+    """
+    # Los ids de nicho de TODAS las raices, para pedirlos en una sola consulta.
+    cids: list[str] = []
+    for raiz in arbol:
+        orden, _ = _nichos_crudos(raiz, tope)
+        cids.extend(n["categoria_id"] for n in orden)
+    cids = sorted(set(cids))
+
+    catalogo: dict[str, list[dict[str, Any]]] = {c: [] for c in cids}
+    if cids:
+        try:
+            if categorias_write.activo():
+                for cid, skus_cat in channel_read.skus_por_categorias(cids).items():
+                    catalogo[cid] = [{"sku": s} for s in skus_cat]
+            else:
+                marcas = ",".join(["%s"] * len(cids))
+                for f in db.fetch_all(
+                    f"SELECT sku, category_id FROM categorias_ml WHERE category_id IN ({marcas}) "
+                    f"ORDER BY sku", tuple(cids)):
+                    catalogo.setdefault(f["category_id"], []).append({"sku": f["sku"]})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("No se pudo contar el catalogo por categoria: %s", exc)
+
+    # Los vigilados, indexados por subcategoria. UNA vez, no una por raiz.
+    vigilados: dict[str, list[str]] = {}
+    try:
+        for s in competencia_store.listar_skus(False):
+            if s.get("categoria_id"):
+                vigilados.setdefault(s["categoria_id"], []).append(s["sku"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudieron listar los SKUs vigilados: %s", exc)
+
+    return {"catalogo": catalogo, "vigilados": vigilados}
+
+
+def nichos_del_top(raiz: dict[str, Any], tope: int = 5, *,
+                   catalogo: dict[str, list[dict[str, Any]]] | None = None,
+                   vigilados: dict[str, list[str]] | None = None) -> list[dict[str, Any]]:
+    """
+    Los nichos donde SI conviene competir, dictados por el top de la categoria
+    padre y no por nuestro inventario.
+
+    Se recorre el ranking de la raiz en orden (#1, #2, #3…), se agrupa por
+    subcategoria —#5 y #6 son los dos Cargadores de Baterias, asi que cuentan como
+    UN nicho— y a cada uno se le pega cuantos SKUs tenemos ahi. La pregunta que
+    contesta es "¿tenemos con que pelear el #1?", y a veces la respuesta es no:
+    en MLM1747 el #4 es aceite de motor (MLM187678) y en catalogo tenemos CERO.
+
+    Los SKUs se cuentan sobre `categorias_ml`, el catalogo COMPLETO, no sobre los
+    8 vigilados: el hallazgo suele ser que el nicho #1 tiene 15 productos nuestros
+    y solo uno esta bajo observacion.
+
+    La entrada de tipo ITEM del ranking queda sin nicho: /items de un ajeno es 403
+    y no hay otra ruta para saber su categoria. Se reporta como hueco, no se omite.
+
+    ⚠️ `catalogo` y `vigilados` vienen de `contexto_nichos(arbol)`, que los resuelve
+    UNA vez para todo el arbol. Quien recorra varias raices DEBE pasarlos: sin
+    ellos cada llamada vuelve a consultar la base y el endpoint se va a 55 s.
+    Si no se pasan, se calculan para esta raiz sola — el comportamiento de antes,
+    intacto para cualquier llamador de una sola categoria.
+
+    SOLO DATOS GUARDADOS. Una version anterior resolvia la subcategoria llamando a
+    la API de ML aqui: con 26 raices eran cientos de llamadas por request y la
+    pagina paso de responder en 2 s a agotar 150 s en produccion. La resolucion
+    vive en la CAPTURA (`_subcategoria_de_cada_fila`), que deja `item_categoria_id`
+    en la tabla.
+    """
+    # Los nichos NO dependen del raspado: posicion y categoria son 100% API
+    # (/highlights + /products/{id}/items). El ranking raspado solo aporta la FICHA
+    # del lider (titulo, foto, precio), y si falta se usa lo que tenga la fila.
+    #
+    # Esto importa: las filas capturadas con el actor de Apify no traen `id_pagina`,
+    # asi que el join con /highlights no las alcanzaba y Hogar y Jardin salia con 0
+    # nichos. Resolviendo por API el resultado ya no depende de con que se raspo.
+    orden, sin_categoria = _nichos_crudos(raiz, tope)
     if not orden:
         return []
 
-    # ¿Qué tenemos en catálogo en cada nicho? Una sola consulta para todos.
-    cids = [n["categoria_id"] for n in orden]
-    catalogo: dict[str, list[dict[str, Any]]] = {c: [] for c in cids}
-    try:
-        if categorias_write.activo():
-            for cid, skus_cat in channel_read.skus_por_categorias(cids).items():
-                catalogo[cid] = [{"sku": s} for s in skus_cat]
-        else:
-            marcas = ",".join(["%s"] * len(cids))
-            for f in db.fetch_all(
-                f"SELECT sku, category_id FROM categorias_ml WHERE category_id IN ({marcas}) "
-                f"ORDER BY sku", tuple(cids)):
-                catalogo.setdefault(f["category_id"], []).append({"sku": f["sku"]})
-    except Exception as exc:  # noqa: BLE001
-        log.warning("No se pudo contar el catálogo por categoría: %s", exc)
-
-    # ¿Y cuáles de esos ya están bajo observación?
-    vigilados: dict[str, list[str]] = {}
-    for s in competencia_store.listar_skus(False):
-        if s.get("categoria_id"):
-            vigilados.setdefault(s["categoria_id"], []).append(s["sku"])
+    if catalogo is None or vigilados is None:
+        ctx = contexto_nichos([raiz], tope)
+        catalogo = ctx["catalogo"] if catalogo is None else catalogo
+        vigilados = ctx["vigilados"] if vigilados is None else vigilados
 
     for n in orden:
         cid = n["categoria_id"]
@@ -708,11 +768,11 @@ def nichos_del_top(raiz: dict[str, Any], tope: int = 5) -> list[dict[str, Any]]:
         n["skus_catalogo"] = [m["sku"] for m in mios[:12]]
         n["skus_vigilados"] = vigilados.get(cid) or []
         n["tenemos"] = bool(mios)
-        # El hueco que importa: hay producto en catálogo pero nadie lo mide.
+        # El hueco que importa: hay producto en catalogo pero nadie lo mide.
         n["sin_vigilancia"] = bool(mios) and not n["skus_vigilados"]
 
     if sin_categoria:
-        log.info("nichos_del_top: %s entradas del ranking sin subcategoría "
+        log.info("nichos_del_top: %s entradas del ranking sin subcategoria "
                  "(son de tipo ITEM, /items ajeno es 403)", len(sin_categoria))
     return orden
 

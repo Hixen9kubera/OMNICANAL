@@ -198,8 +198,12 @@ def vista(canal: str = "mercado_libre"):
     # mientras enseñaba títulos, fotos y precios — un aviso que se contradecía solo.
     capturas = [x["capturado_en"] for r in arbol
                 for x in (r.get("top") or []) if x.get("capturado_en")]
+    # El contexto de los nichos (catalogo + vigilados) se resuelve UNA vez para
+    # todo el arbol. Antes cada raiz lo volvia a consultar: 56 viajes a la base
+    # para 2 preguntas, y el endpoint tardaba 55 s.
+    ctx = competencia_captura.contexto_nichos(arbol, tope=5)
     for r in arbol:
-        r["nichos"] = competencia_captura.nichos_del_top(r, tope=5)
+        r["nichos"] = competencia_captura.nichos_del_top(r, tope=5, **ctx)
     # Las otras dos fechas que el encabezado muestra. En try porque son
     # DECORATIVAS: si la consulta falla, el tab se dibuja igual con sus datos.
     try:
