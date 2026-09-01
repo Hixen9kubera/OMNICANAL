@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
   LayoutDashboard,
   Package,
   Share2,
@@ -95,6 +96,9 @@ const ITEMS: NavItem[] = [
     soloAdmin: true },
   // Solo admin: el log de TikTok trae datos del comprador (su scope
   // `seller.order.info` viene marcado como información personal).
+  // Monitoreo va SIN soloAdmin a proposito: el equipo debe poder ver su
+  // propio avance. No expone costos ni margenes, solo autoria.
+  { id: "monitoreo", label: "Monitoreo", icon: Activity, href: "/monitoreo" },
   { id: "webhooks", label: "Webhooks", icon: Webhook, href: "/webhooks",
     soloAdmin: true },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
