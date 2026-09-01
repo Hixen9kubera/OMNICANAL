@@ -17931,3 +17931,41 @@ hacía semanas—, así que reventaba en la línea 56 antes de medir nada; su
 decía que la corrida mensual la disparaba ese cron: ahora dice la verdad — **lo
 único que corre solo es el cron gratis de las 12:00 UTC, y el raspado con Apify no
 lo dispara nadie automáticamente.** Versión 0.325.0.
+
+---
+
+### v0.326.0 — El barrido mensual se detiene por DINERO, no por número de categorías (Eduardo)
+
+`scripts/competencia_barrido.py` + servicio `competencia-barrido`, **día 1 de cada
+mes a las 13:00 UTC** (después del sondeo gratis de las 12:00, para que la cola
+venga fresca). Es **el único proceso del módulo que gasta**.
+
+**El tope va en dólares — $9 al mes — y no en categorías, a propósito.** Apify no
+cobra por página: cobra por tiempo de cómputo más el proxy, así que una categoría
+puede costar el doble que otra según lo que tarde en cargar. Un tope de "N
+categorías" no acota el gasto; uno de "$9" sí, y además sobrevive a que el
+catálogo crezca: si mañana hay 2,000 categorías, el barrido no gasta el doble —
+gasta lo mismo y cubre menos, empezando por lo que más vende.
+
+**Y el gasto se mide, no se estima.** Entre tanda y tanda relee de
+`ops.process_log` lo que Apify ya cobró (v0.325.0) y se detiene ahí.
+
+**La cola** sale de `market_categoria_prioridad_v` ordenada por pesos de 30 días:
+vende algo, `tiene_ranking_ml` es cierto —si ML no publica lista, raspar no trae
+nada— y lleva más de 14 días sin captura. Hoy son **302 categorías con
+$3,998,238 de venta detrás**; al costo medido de $0.015 caben todas en ~$4.53, o
+sea que el tope de $9 es techo, no restricción.
+
+**Dos guardias antes de gastar.** El crédito de la CUENTA —que se comparte con el
+scraper de Alibaba de `crear_producto`—: si quedan menos de $10, no empieza. Sin
+ese chequeo `_correr_actor` devuelve `[]` ante cualquier fallo y el diagnóstico
+dice "bloqueo intermitente, vale reintentar", que es el consejo contrario al
+correcto cuando lo que pasó es que se acabó el crédito. Y el gasto de la propia
+corrida, releído entre tandas.
+
+**Lo que no alcanzó se reporta**, con su dinero. Un barrido que se calla lo que
+dejó fuera se lee como "ya cubrimos todo".
+
+Con esto el módulo queda así: **lo gratis corre a diario** (visitas y sondeo, 7
+min), **lo caro corre una vez al mes con tope**, y **el botón** cubre el "lo
+necesito ahora" a una categoría por clic. Versión 0.326.0.
