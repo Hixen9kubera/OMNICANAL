@@ -244,11 +244,12 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
 
   /** "No es ese renglón, es el 34." */
   const corregir = useCallback(
-    async (sku: string, fileId: string | null, filaExcel: number) => {
+    async (sku: string, fileId: string | null, filaExcel: number,
+           precioUsd?: number) => {
       if (!jid || !fileId) return;
       setOcupado(sku);
       try {
-        await corregirFilaPublicados(jid, sku, fileId, filaExcel);
+        await corregirFilaPublicados(jid, sku, fileId, filaExcel, precioUsd);
         await releer();
       } catch (e) {
         setError(mensajeDeError(e, "No se pudo cambiar el renglón."));
@@ -642,6 +643,11 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
                           onToggleLiberar={() => toggleLiberar(f.sku)}
                           onAbrir={() => setAbierto(abierto === f.sku ? null : f.sku)}
                           onElegirFila={(fila) => corregir(f.sku, f.file_id, fila)}
+                          onPrecio={(usd) =>
+                            f.fila_excel != null
+                              ? corregir(f.sku, f.file_id, f.fila_excel, usd)
+                              : undefined
+                          }
                         />
                       ))
                     )}
@@ -1038,7 +1044,9 @@ function Casilla({ rotulo, valor, nota, tono }: {
 function FilaResultado({
   f, aprobado, liberado, abierto, ocupado, urlManual,
   onUrlManual, onMandarArchivo, onToggleAprobado, onToggleLiberar, onAbrir, onElegirFila,
+  onPrecio,
 }: {
+  onPrecio: (usd: number) => void;
   f: FilaPublicado;
   aprobado: boolean;
   liberado: boolean;
@@ -1211,12 +1219,42 @@ function FilaResultado({
         </td>
         <td className="px-1 py-2 text-right align-top tabular-nums text-slate-600">
           {mxn(f.producto_mxn)}
-          {f.precio_usd != null && f.precio_usd > 0 && (
-            <div
-              className="text-[10px] text-slate-400"
-              title="Precio unitario tal como viene en el packing list."
-            >
-              {f.precio_usd.toFixed(2)} USD
+          {/* El unitario se puede TECLEAR. Hace falta por los packing lists
+              PUROS —los que no traen columna de precio—, donde el costo se
+              quedaba con el valor viejo de kubera o la fila salía incompleta y
+              no se podía guardar. Con la factura del proveedor enfrente,
+              capturarlo es más rápido y más fiable que ir a buscarlo.
+              Se manda al backend, que recalcula producto y costo con el MISMO
+              camino que el resto: aquí no se hace aritmética de precios. */}
+          <div className="mt-0.5 flex items-center justify-end gap-1">
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              defaultValue={f.precio_usd != null && f.precio_usd > 0 ? f.precio_usd : ""}
+              disabled={ocupado || f.fila_excel == null}
+              placeholder="USD"
+              title={
+                f.fila_excel == null
+                  ? "Primero hay que empatarlo con un renglón."
+                  : "Precio unitario en dólares. Enter para recalcular producto y costo."
+              }
+              onKeyDown={(e) => {
+                if (e.key !== "Enter") return;
+                const v = Number((e.target as HTMLInputElement).value);
+                if (v > 0) onPrecio(v);
+              }}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (v > 0 && v !== f.precio_usd) onPrecio(v);
+              }}
+              className="w-[68px] rounded border border-slate-200 bg-white px-1 py-0.5 text-right text-[10px] tabular-nums outline-none focus:border-indigo-400 disabled:bg-slate-50 disabled:text-slate-300"
+            />
+            <span className="text-[9px] text-slate-400">USD</span>
+          </div>
+          {f.precio_manual && (
+            <div className="text-[9px] font-semibold text-indigo-600" title="El unitario lo capturaste tú, no salió del archivo.">
+              capturado
             </div>
           )}
           {f.origen_prod === "kubera" && (

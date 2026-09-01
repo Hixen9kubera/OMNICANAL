@@ -676,7 +676,7 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
         "file_id": None, "archivo": None, "fila_excel": None,
         "producto_chn": None, "grupo": [],
         "precio_usd": None, "piezas_grupo": None, "cbm_pieza": None,
-        "piezas_fila": None, "cajas": None,
+        "piezas_fila": None, "cajas": None, "precio_manual": False,
         "cbm_origen": None,
         "peso_total": None, "peso_pieza": None, "flete": None,
         "producto_mxn": None, "costo": None, "origen_prod": None,
@@ -813,8 +813,18 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
 
 def _aplicar_renglon(fila: dict[str, Any], ix: packing_indice.Indice, *,
                      idx_foto: int | None = None, fila_excel: int | None = None,
-                     guardado: dict[str, Any], tarifa: float, tc: float) -> None:
-    """Cuelga de la fila el renglón elegido y sus números."""
+                     guardado: dict[str, Any], tarifa: float, tc: float,
+                     precio_usd: float | None = None) -> None:
+    """
+    Cuelga de la fila el renglón elegido y sus números.
+
+    ``precio_usd`` es la captura a mano y MANDA sobre lo que diga el archivo.
+    Existe por los packing lists PUROS —los que no traen columna de precio—,
+    donde el costo de producto se quedaba con el valor viejo de kubera o, si no
+    había ninguno, la fila salía incompleta y no se podía guardar. Con la
+    factura del proveedor a la vista, teclear el unitario es más rápido y más
+    fiable que ir a buscar de dónde más sacarlo.
+    """
     fe = fila_excel if fila_excel is not None else ix.idx_de_fila.get(idx_foto)
     if fe is None:
         fila["detalle"] += " · la foto no está anclada a ningún renglón legible"
@@ -823,6 +833,11 @@ def _aplicar_renglon(fila: dict[str, Any], ix: packing_indice.Indice, *,
     if idx_foto is None:
         idx_foto = ix.fila_de_idx.get(fe)
     dd = ix.datos(fe)
+    if precio_usd is not None:
+        # Se inyecta en los datos del renglón, no después: así `costo_de` lo
+        # trata como cualquier otro precio del archivo y el `origen_prod` que
+        # devuelve queda coherente con lo que se está usando.
+        dd = {**dd, "precio_usd": float(precio_usd)}
     costo = packing_indice.costo_de(dd, tarifa, tc,
                                     _f(guardado.get("costo_producto")))
     fila.update({
@@ -844,7 +859,15 @@ def _aplicar_renglon(fila: dict[str, Any], ix: packing_indice.Indice, *,
         "peso_total": _r(dd["peso_total"], 3),
         "peso_pieza": _r(dd["peso_pieza"], 3),
         "flete": costo["flete"], "producto_mxn": costo["producto_mxn"],
-        "origen_prod": costo["origen_prod"], "costo": costo["costo"],
+        # "manual" y no "packing_list": el archivo no traia ese precio, lo puso
+        # una persona. Decir que salio del PL seria una mentira pequena pero
+        # justo de las que despues nadie puede desmentir.
+        "origen_prod": ("manual" if precio_usd is not None
+                        else costo["origen_prod"]),
+        "costo": costo["costo"],
+        # Deja constancia de que el unitario lo puso una persona: la UI lo
+        # marca y el guardado no tiene por qué distinguirlo de los demás.
+        "precio_manual": precio_usd is not None,
         "img_pl": (packing_resolver._miniatura(ix.fotos[idx_foto]["crudo"],
                                                _LADO_FOTO_UI)
                    if idx_foto is not None and idx_foto in ix.fotos else None),
@@ -985,7 +1008,8 @@ def _ia_foto(titulo: str, foto_ml: bytes, ix: packing_indice.Indice,
 
 # ── Correcciones a mano ──────────────────────────────────────────────────────
 def corregir_fila(jid: str, sku: str, file_id: str | None,
-                  fila_excel: int) -> dict[str, Any] | None:
+                  fila_excel: int,
+                  precio_usd: float | None = None) -> dict[str, Any] | None:
     """
     "No es ese renglón, es el 34."
 
@@ -1022,7 +1046,12 @@ def corregir_fila(jid: str, sku: str, file_id: str | None,
         nueva["estado"], nueva["peldano"] = "ia", 2
     _aplicar_renglon(nueva, ix, fila_excel=fila_excel,
                      guardado=guardado.get(sku.strip().upper()) or {},
-                     tarifa=opciones["tarifa_mxn_m3"], tc=opciones["tipo_cambio"])
+                     tarifa=opciones["tarifa_mxn_m3"], tc=opciones["tipo_cambio"],
+                     precio_usd=precio_usd)
+    if precio_usd is not None:
+        nueva["detalle"] = ("precio unitario capturado a mano"
+                            if fila.get("fila_excel") == fila_excel
+                            else "renglón y precio elegidos a mano")
     with _lock:
         t = _trabajos.get(jid)
         if not t:

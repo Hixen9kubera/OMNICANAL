@@ -1288,11 +1288,19 @@ export async function corregirFilaPublicados(
   sku: string,
   fileId: string,
   filaExcel: number,
+  /** Precio unitario USD capturado a mano. Omitido = el del archivo manda. */
+  precioUsd?: number,
 ): Promise<FilaPublicado> {
   const path = `/api/costos-publicados/${encodeURIComponent(id)}/fila`;
   const res = await fetchSesion(
     `${BASE}${path}`,
-    { method: "PATCH", body: JSON.stringify({ sku, file_id: fileId, fila_excel: filaExcel }) },
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        sku, file_id: fileId, fila_excel: filaExcel,
+        ...(precioUsd != null ? { precio_usd: precioUsd } : {}),
+      }),
+    },
     { "Content-Type": "application/json" },
   );
   if (!res.ok) throw await errorDeRespuesta(res, path);

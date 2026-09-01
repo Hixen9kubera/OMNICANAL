@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.343.0 — El precio unitario se puede teclear
+
+El validador ya sabia costear, pero no tenia como capturar el dato cuando el
+archivo no lo trae. En un packing list **puro** —sin columna de precio— el costo
+de producto se quedaba con el valor viejo de kubera (la etiqueta `conservado`) y,
+si no habia ninguno, la fila salia incompleta y no se podia guardar. La unica
+salida era ir a buscar el precio a otro lado.
+
+Ahora la celda de Producto lleva un campo de dolares. Se teclea el unitario, se
+manda al backend con Enter o al salir del campo, y **el backend recalcula** — el
+navegador no hace aritmetica de precios: el mismo `costo_de` de siempre, para que
+el numero salga por el mismo camino que todos los demas.
+
+Medido contra el endpoint real con VIA-0023-NEG: capturar `90.00` da producto
+$1,710.00 (90 x 19) y costo $1,742.60 (mas el flete de $32.60), y `origen_prod`
+pasa de `kubera` a `manual`.
+
+**`manual`, no `packing_list`.** El archivo no traia ese precio: decir que salio
+del PL seria una mentira chica, pero de las que despues nadie puede desmentir. La
+fila tambien viaja con `precio_manual`, que es lo que la pantalla usa para
+marcarla `capturado`.
+
+Tope de $100,000 USD en el router, con `gt=0`: de este campo sale un costo que se
+blinda con el candado de COSTO VALIDADO, asi que un dedazo de ceros de mas no
+deberia poder escribirse. Verificado: negativo y cero devuelven 422.
+
 ### v0.340.0 — Temu recupera una vía de ingesta: sondeo por su propia API
 
 Temu se quedó **sin ninguna forma de enterarse de una venta**: M2E desinstalado

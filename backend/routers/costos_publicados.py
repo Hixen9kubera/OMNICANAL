@@ -51,6 +51,7 @@ _MAX_SKUS = 1_000
 # magnitud de los valores avalados (7,500 MXN/m³ y 19 MXN/USD).
 _TARIFA_MAX = 1_000_000.0
 _TC_MAX = 1_000.0
+_USD_MAX = 100_000.0   # tope del unitario capturado a mano
 
 
 def _exigir_kubera() -> None:
@@ -122,6 +123,10 @@ class FilaReq(BaseModel):
     sku: str
     file_id: str | None = None
     fila_excel: int
+    # Precio unitario USD capturado a mano. `None` = respeta el del archivo.
+    # Con cota superior porque de aquí sale un costo que se blinda con el
+    # candado: un dedazo de más ceros no debería poder escribirse.
+    precio_usd: float | None = Field(default=None, gt=0, le=_USD_MAX)
 
 
 class ArchivoReq(BaseModel):
@@ -220,7 +225,7 @@ def corregir(jid: str, req: FilaReq):
     """
     try:
         fila = packing_publicados.corregir_fila(
-            jid, req.sku, req.file_id, req.fila_excel)
+            jid, req.sku, req.file_id, req.fila_excel, req.precio_usd)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:  # noqa: BLE001

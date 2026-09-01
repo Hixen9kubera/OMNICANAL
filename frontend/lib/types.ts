@@ -1347,6 +1347,8 @@ export interface FilaPublicado {
   precio_usd: number | null;
   piezas_grupo: number | null;
   /** Los crudos del renglon: piezas TOTALES y cuantos cartones. */
+  /** El unitario USD lo capturo una persona, no el archivo. */
+  precio_manual?: boolean;
   piezas_fila: number | null;
   cajas: number | null;
   cbm_pieza: number | null;
