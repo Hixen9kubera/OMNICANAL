@@ -1001,6 +1001,83 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.345.0 — El panel mostraba precios de agosto: ahora manda el sync (Eduardo)
+
+Eduardo abrió dos publicaciones nuestras en Mercado Libre y las comparó con el
+panel:
+
+| publicación | panel decía | ML de verdad |
+|---|---|---|
+| MLM5108809642 (BEKURA) | **$184** | **$70.61** — 2.6× |
+| MLM5108968738 (SANCORFASHION) | **`active`** | **"no está disponible"** |
+
+Las dos estaban **bien** en `channel.listings` —el sync de 15 min las había
+tocado ese mismo día, 17:40 y 06:37— y **mal** en el panel.
+
+**La causa: la foto mensual le ganaba al sync.**
+
+```sql
+COALESCE(m.sale_price, l.price) AS precio   -- la FOTO primero
+m.estado                                    -- el estado NUNCA miraba el sync
+```
+
+`m.*` es `market_listing_metrics`, una foto **mensual** que escribe la captura de
+rankings. El `COALESCE` sólo caía al sync cuando la foto venía vacía — y hay foto
+para 3,117 publicaciones, así que el panel mostraba agosto.
+
+**Medido sobre esas 3,117:** 436 con el estado equivocado, 709 con el precio
+equivocado, y **235 mostrándose 30% o más caras de lo que ML cobra**.
+
+#### Y `price` no es lo que se cobra
+
+La parte que hacía falta saber para no arreglarlo mal. Las tres columnas de
+`channel.listings` no son sinónimos:
+
+- `price` — lo que escribe el sync. **NO es lo que paga el cliente.**
+- `price_sale` — lo que ML **cobra** (`/items/{id}/sale_price` → `amount`). Un
+  `None` de ML jamás se escribe ahí, así que un valor no nulo siempre es real.
+- `price_base` — el precio de lista, el tachado.
+
+Verificado en los dos casos: BEKURA `price=282.42` / `price_sale=70.61`;
+SANCORFASHION `price=270` / `price_base=399`. Ya había mordido antes —está
+documentado en `precio_al_abrir.py`: MLM5473713768 mostraba $219 mientras ML
+cobraba $99—. Mismo defecto, otra pantalla.
+
+#### Migración 0042
+
+El sync manda; la foto es el respaldo. Se **invierte** el `COALESCE`, no se
+borra: lo que el sync no alcanzó a tocar sigue mostrando su foto, vieja pero
+real, en vez de un hueco.
+
+También el join pasa de `store_name` a `account_id`: ese texto libre viene NULL
+en parte del catálogo y dejaba 24 publicaciones sin datos vivos (6,017 de 6,042
+contra 6,041 de 6,042).
+
+Se agrega `precio_confirmado_en` para que la UI pueda decir de cuándo es el
+precio. Va **al final** porque `create or replace view` sólo deja agregar
+columnas ahí — ponerla en medio intenta renombrar `url` y falla.
+
+Aplicada al sandbox y a producción, con guarda de rollback si cambiaba el conteo
+de filas: **4,828 filas antes y después, sin nulos.** BEKURA pasa a $70.61 y
+SANCORFASHION a `paused`, que es lo que ML dice. **436 filas cambian de estado y
+810 de precio.**
+
+⚠️ El sandbox validó la MECÁNICA pero no los valores: su `channel.listings` es
+del clon y no trae el `price_sale` de hoy. Para probar precios hay que
+re-clonarla.
+
+#### Y el barrido no refrescaba las raíces
+
+Hallazgo aparte de la misma sesión. El ranking se guarda en dos niveles y
+`competencia_barrido.py` arma su lote desde la vista de prioridad, que es **por
+subcategoría**: nunca devuelve una raíz. Así que aunque el cron corriera a
+diario, **jamás pediría una** — y la raíz es lo PRIMERO que se ve al abrir el
+tab.
+
+Medido: 287 hojas refrescadas el 1-sep, y las 24 raíces entre el 5 y el 18 de
+agosto; tres nunca capturadas. No era costo: refrescarlas todas cuesta **$0.08**.
+Ahora `raices()` las mete a la cola, primero.
+
 ### v0.344.0 — Automatización se parte por canal: una pestaña para TikTok y otra para Temu
 
 Temu entra a la pestaña **apagado**, con su propio interruptor y sus propias

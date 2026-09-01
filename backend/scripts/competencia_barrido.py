@@ -86,6 +86,50 @@ def cola(dias: int = DIAS_VIEJO) -> list[dict[str, Any]]:
             order by pesos_30d desc nulls last""", (dias,))
 
 
+def raices(dias: int = DIAS_VIEJO) -> list[dict[str, Any]]:
+    """
+    Las categorías RAÍZ que ameritan refrescarse.
+
+    ── POR QUÉ VAN APARTE DE `cola()` ──────────────────────────────────────────
+    `enrich.market_categoria_prioridad_v` es **por SUBCATEGORÍA**: nunca devuelve
+    una raíz. Como este barrido arma su lote desde ahí y se la pasa a
+    `capturar_rankings_categorias(solo=…)`, **jamás pidió una raíz** — y la raíz
+    es justo lo PRIMERO que se ve al abrir el tab ("MÁS VENDIDOS DE HOGAR,
+    MUEBLES Y JARDÍN").
+
+    Medido el 1-sep-2026: las 24 raíces estaban capturadas entre el 5 y el 18 de
+    agosto, hasta 27 días de atraso, mientras 287 hojas se habían refrescado ese
+    mismo día. No era una decisión de costo: era un hueco. Refrescarlas TODAS
+    cuesta **$0.08** al costo medido.
+
+    El nivel se resuelve solo: `capturar_rankings_categorias` ya sabe cuáles ids
+    son raíz —los deriva de los SKUs vigilados— así que basta con nombrarlas.
+
+    Sin `pesos_30d`: una raíz agrega a todas sus hojas y sumarlo aquí duplicaría
+    el dinero que ya cuenta la cola. Van primero por ser pocas y baratas, no por
+    dinero.
+    """
+    return supabase_db.fetch_all(
+        """with r as (
+             select distinct raiz_id from enrich.market_skus_v where raiz_id is not null
+           )
+           select r.raiz_id                                   as categoria_id,
+                  coalesce(max(c.name), r.raiz_id)            as categoria_nombre,
+                  0::numeric                                  as pesos_30d,
+                  0                                           as unidades_30d,
+                  (current_date - max(b.capturado_en)::date)  as dias_sin_captura
+             from r
+             left join channel.categories c
+                    on c.category_id = r.raiz_id and c.channel_id = 'mercado_libre'
+             left join enrich.market_bestsellers b
+                    on b.categoria_id = r.raiz_id and b.canal = 'mercado_libre'
+                   and b.nivel = 'raiz'
+            group by r.raiz_id
+           having max(b.capturado_en) is null
+               or (current_date - max(b.capturado_en)::date) > %s
+            order by 5 desc nulls first""", (dias,))
+
+
 def credito_disponible() -> float | None:
     """Cuánto le queda a la CUENTA este ciclo. None si no se pudo saber."""
     try:
@@ -130,7 +174,11 @@ def main() -> int:
         print("ERROR: sin APIFY_API_KEY. El barrido es lo único que necesita a Apify.")
         return 2
 
-    pendientes = cola(args.dias)
+    # Las RAÍCES van primero: son ~24, cuestan centavos y son lo primero que se
+    # ve al abrir el tab. Iban quedando fuera porque la vista de prioridad es por
+    # subcategoría — ver `raices()`.
+    pendientes = raices(args.dias) + cola(args.dias)
+    n_raices = sum(1 for f in pendientes if f["pesos_30d"] == 0)
     if not pendientes:
         print(f"Nada que raspar: ninguna categoría vende y lleva más de {args.dias} "
               "días sin captura. Es una buena noticia.")
@@ -138,7 +186,8 @@ def main() -> int:
 
     por_cat = competencia_scraper.costo_medido_por_pagina()
     caben = int(args.tope / por_cat) if por_cat else 0
-    print(f"  en la cola      : {len(pendientes)} categorías · "
+    print(f"  en la cola      : {len(pendientes)} categorías "
+          f"({n_raices} raíces + {len(pendientes) - n_raices} subcategorías) · "
           f"${sum(f['pesos_30d'] or 0 for f in pendientes):,.0f} de venta detrás")
     print(f"  costo medido    : ${por_cat:.4f} por categoría")
     print(f"  tope            : ${args.tope:.2f}  →  alcanza para ~{caben}")
