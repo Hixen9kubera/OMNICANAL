@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.335.0 — El sondeo de Temu decía lo contrario de lo que había medido
+
+Brandon corrió el sondeo desde el panel y el resultado fue el mejor posible:
+**`bg.order.list.v2.get` RESPONDE**. Temu sí nos deja listar órdenes desde
+producción, que era la pregunta que decidía si el canal se puede automatizar.
+
+Y encima de esa buena noticia, mi propio veredicto imprimía *"la IP de este
+servidor NO está en la lista blanca de Temu"*. **Falso, y contradicho por su
+propia tabla**: si la IP estuviera fuera, todas las filas darían `5000003`; que
+una conteste ya prueba que entra.
+
+DOS DEFECTOS, uno encima del otro:
+
+1. **La sonda de la puerta estaba mal armada.** Mandaba `{"page": 1}` sin
+   `goodsSearchType`. El código real (`temu.listar_productos`) usa
+   `goodsSearchType` como ENTERO —de cadena da `3000000`— y la página es
+   `pageNo`: **`page` se ignora EN SILENCIO**. Falló por forma, no por red.
+2. **El veredicto se apoyaba en esa sonda**, no en la que decide. Ahora se
+   apoya en el listado de órdenes, y la IP se juzga por el síntoma correcto:
+   fuera de la lista blanca solo si NINGUNA responde y alguna trae `5000003`.
+
+Una sonda mal armada que concluye algo falso es peor que no tener sonda: manda
+a buscar el problema al lugar equivocado. Aquí habría mandado a pedir un trámite
+de IPs que no hacía falta.
+
+De paso, la tabla ahora muestra el MOTIVO junto al código —un "falla" a secas no
+distingue "IP fuera" de "faltó un parámetro"— y, cuando el listado responde,
+reporta **cuántas órdenes declara Temu** y qué campos trae cada una. Ese número
+contra las 2 que vio nuestra tubería es el tamaño real del hueco.
+
+Lo que sigue confirmado en rojo: los importes siguen bloqueados con `3000032`
+(los dos endpoints), y ninguno de los tres nombres de guía existe.
+
 ### v0.334.0 — Preguntarle a Temu si ya se puede, desde donde sí se puede preguntar
 
 La pregunta "¿se puede automatizar Temu?" no se podía contestar desde una

@@ -185,7 +185,16 @@ async def backfill(
 # "cualquier endpoint de Temu" sería una llave para escribirle al marketplace
 # desde el panel. Aquí solo se puede preguntar lo que está en esta tabla.
 _SONDEO_TEMU: list[tuple[str, str, dict]] = [
-    ("puerta", "bg.local.goods.list.query", {"page": 1, "pageSize": 1}),
+    # Los parámetros son los que usa `temu.listar_productos`, no una versión
+    # inventada: `goodsSearchType` es OBLIGATORIO y va como ENTERO (de cadena
+    # devuelve 3000000), y la página es `pageNo` — `page` se ignora EN SILENCIO.
+    # La primera versión de esta sonda mandaba `page` y sin `goodsSearchType`,
+    # fallaba por forma, y como el veredicto se apoyaba en ella, el panel dijo
+    # "la IP no está en la lista blanca" cuando la IP estaba perfectamente bien
+    # y Temu SÍ contestaba el listado de órdenes. Una sonda mal armada que
+    # concluye algo falso es peor que no tener sonda.
+    ("puerta", "bg.local.goods.list.query",
+     {"goodsSearchType": 3, "pageNo": 1, "pageSize": 1}),
     # LO QUE DECIDE TODO: sin un listado de órdenes no hay forma de ENTERARSE
     # de una venta de Temu, y sin eso no hay nada que automatizar.
     ("ordenes", "bg.order.list.v2.get", {"pageNumber": 1, "pageSize": 10}),
@@ -227,8 +236,9 @@ async def temu_sondeo():
         fila: dict = {"grupo": grupo, "endpoint": tipo}
         try:
             r = await asyncio.wait_for(temu.llamar(tipo, params), timeout=25)
-            fila.update(ok=True, llaves=sorted(r.keys())[:12] if isinstance(r, dict) else None,
-                        muestra=str(r)[:400])
+            fila.update(ok=True,
+                        llaves=sorted(r.keys())[:12] if isinstance(r, dict) else None)
+            fila["_crudo"] = r if isinstance(r, dict) else None
         except asyncio.TimeoutError:
             fila.update(ok=False, error="timeout a los 25 s")
         except Exception as exc:  # noqa: BLE001
@@ -239,15 +249,52 @@ async def temu_sondeo():
                                      if c in msg), None))
         resultados.append(fila)
 
-    puerta = next((r for r in resultados if r["grupo"] == "puerta"), {})
+    # Si el listado contestó, se extrae LO QUE IMPORTA: cuántas órdenes tiene
+    # Temu de verdad. Ese número contra las 2 que vio nuestra tubería es el
+    # tamaño real del hueco. Se sacan CONTEOS Y NOMBRES DE CAMPO, no el
+    # contenido: una orden trae domicilio y nombre del comprador, y esto no es
+    # el lugar para volcarlos.
+    resumen_ordenes: dict | None = None
+    exitosa = next((r for r in resultados
+                    if r["grupo"] == "ordenes" and r.get("ok")), None)
+    if exitosa and isinstance(exitosa.get("_crudo"), dict):
+        d = exitosa["_crudo"]
+        lista = next((v for v in d.values() if isinstance(v, list)), [])
+        total = next((v for k, v in d.items()
+                      if isinstance(v, int) and "total" in k.lower()), None)
+        resumen_ordenes = {
+            "endpoint": exitosa["endpoint"],
+            "total_declarado": total,
+            "en_esta_pagina": len(lista),
+            "campos_por_orden": sorted(lista[0].keys())[:30] if lista and isinstance(lista[0], dict) else [],
+        }
+    for r in resultados:
+        r.pop("_crudo", None)
+
+    # EL VEREDICTO SE APOYA EN LO QUE DECIDE, que es el listado de órdenes — no
+    # en la sonda de la puerta. Y la IP se juzga por el SÍNTOMA correcto: si
+    # estuviera fuera de la lista blanca, TODAS fallarían con 5000003; que una
+    # sola conteste ya prueba que la IP entra.
     ordenes = [r for r in resultados if r["grupo"] == "ordenes"]
-    veredicto = (
-        "la IP de este servidor NO está en la lista blanca de Temu"
-        if not puerta.get("ok") else
-        "SE PUEDE: Temu deja listar órdenes" if any(r.get("ok") for r in ordenes) else
-        "NO se puede todavía: la API responde, pero no deja LISTAR órdenes"
-    )
-    return {"veredicto": veredicto, "resultados": resultados}
+    alguna_responde = any(r.get("ok") for r in resultados)
+    # Basta con que UNA falle por IP y ninguna conteste: los endpoints que
+    # devuelven otro código lo hacen por parámetros o por permisos, no por red.
+    # Exigir que TODAS traigan 5000003 dejaba el diagnóstico mudo en cuanto una
+    # sonda tuviera mal un parámetro.
+    hay_ip_fuera = any(r.get("codigo") == "5000003" for r in resultados)
+    if hay_ip_fuera and not alguna_responde:
+        veredicto = ("la IP de este servidor NO está en la lista blanca de Temu: "
+                     "ninguna llamada pasa")
+    elif any(r.get("ok") for r in ordenes):
+        veredicto = ("SE PUEDE: Temu deja LISTAR órdenes desde este servidor. "
+                     "El camino para automatizar Temu está abierto.")
+    elif alguna_responde:
+        veredicto = ("La API responde, pero NO deja listar órdenes: sin listado "
+                     "no hay forma de enterarse de una venta de Temu.")
+    else:
+        veredicto = "Ninguna llamada respondió; ver el error de cada fila."
+    return {"veredicto": veredicto, "resultados": resultados,
+            "ordenes": resumen_ordenes}
 
 
 @router.get("/simular")

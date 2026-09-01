@@ -75,6 +75,13 @@ interface SondeoTemu {
     codigo?: string | null;
     error?: string;
   }>;
+  /** Solo si Temu dejó listar: cuántas órdenes declara y qué campos trae. */
+  ordenes?: {
+    endpoint: string;
+    total_declarado: number | null;
+    en_esta_pagina: number;
+    campos_por_orden: string[];
+  } | null;
 }
 
 interface Estado {
@@ -366,6 +373,19 @@ export default function AutomatizacionPage() {
               <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium">
                 {temu.veredicto}
               </p>
+              {temu.ordenes && (
+                <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                  Temu declara{" "}
+                  <b>{temu.ordenes.total_declarado ?? "—"}</b> órdenes
+                  {" "}(esta página trae {temu.ordenes.en_esta_pagina}) vía{" "}
+                  <code className="font-mono text-xs">{temu.ordenes.endpoint}</code>.
+                  {temu.ordenes.campos_por_orden.length > 0 && (
+                    <span className="mt-1 block text-xs text-emerald-800">
+                      Campos por orden: {temu.ordenes.campos_por_orden.join(", ")}
+                    </span>
+                  )}
+                </p>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[520px] text-xs">
                   <tbody>
@@ -373,12 +393,20 @@ export default function AutomatizacionPage() {
                       <tr key={r.endpoint} className="border-t">
                         <td className="py-1.5 pr-3 text-slate-400">{r.grupo}</td>
                         <td className="py-1.5 pr-3 font-mono">{r.endpoint}</td>
+                        {/* El motivo va junto al veredicto: un "falla" a secas
+                            no distingue "la IP está fuera" de "le faltó un
+                            parámetro", y esa diferencia es todo el diagnóstico. */}
                         <td className="py-1.5">
                           {r.ok ? (
                             <span className="text-emerald-700">responde</span>
                           ) : (
                             <span className="text-rose-700">
                               {r.codigo ?? "falla"}
+                              {r.error && (
+                                <span className="ml-2 font-normal text-slate-400">
+                                  {r.error.slice(0, 90)}
+                                </span>
+                              )}
                             </span>
                           )}
                         </td>
