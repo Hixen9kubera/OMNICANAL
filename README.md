@@ -18048,6 +18048,44 @@ reportó con su dinero, como debía. Versión 0.328.0.
 
 ---
 
+### v0.334.0 — Cada categoría dice cuándo se capturó SU ranking (Eduardo)
+
+El encabezado mostraba **una** fecha para todo el árbol, tomada del **máximo**. O
+sea que siempre pintaba más fresco de lo que estaba: decía *"hace 14 días (18 de
+agosto)"* mientras el bloque abierto —Deportes y Fitness— era del **13**.
+
+Al medirlo resultó peor de lo que parecía. Las capturas del árbol van del **5 al
+18 de agosto**, casi dos semanas de dispersión, y el encabezado anunciaba la punta
+fresca:
+
+| raíz | capturado |
+|---|---|
+| Hogar, Muebles y Jardín | 5 de agosto — **27 días** |
+| Accesorios para Vehículos | 5 de agosto — **27 días** |
+| Deportes y Fitness | 13 de agosto — 19 días |
+| Ropa, Bolsas y Calzado | 18 de agosto — 14 días |
+
+Y 19 días bastaron para que el top de Deportes se renovara **entero** (v0.333.0:
+0 de 5 posiciones coincidían con `/highlights` en vivo). Con 27, lo que muestran
+Hogar y Accesorios es historia.
+
+**El cambio, en dos capas:**
+
+- **Cada bloque** —raíz y subcategoría— trae `<CapturaDeCategoria>` junto a su
+  título: *"· capturado hace 27 días (5 de agosto)"*, en ámbar pasados los 40
+  (el ranking se raspa una vez al mes; con el umbral de las visitas estaría en
+  alerta permanente siendo lo normal).
+- **El encabezado** pasa del máximo al **mínimo** — la punta vieja, que es la que
+  acota cuánto puede estar desfasado lo que ves — y añade *"el más viejo"* cuando
+  las dos puntas no caen el mismo día. `/vista` manda ahora `capturado_desde`
+  además de `capturado_en`.
+
+De paso se sacan `diasDesde`, `textoRelativo` y `diaYMes` a helpers: `Frescura`
+los duplicaba en línea y el componente nuevo los necesitaba iguales.
+
+Verificado en el sandbox: encabezado *"Ranking capturado hace 27 días (5 de
+agosto) el más viejo"* y cada bloque con la suya —27, 14, 27, 19, 19, 14—.
+
 ### v0.333.0 — El desplegable de nichos nunca funcionó en producción (Eduardo)
 
 Lo cachó Eduardo mirando la pantalla: la insignia decía **"46 SKUs en catálogo"**

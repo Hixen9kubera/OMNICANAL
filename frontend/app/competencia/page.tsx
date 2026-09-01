@@ -1498,6 +1498,7 @@ function BloqueSubcategoria({
                   · {sub.n_ranking} publicaciones
                 </span>
               ) : null}
+              <CapturaDeCategoria iso={sub.top?.[0]?.capturado_en ?? null} />
               <BotonRefrescar
                 categoriaId={sub.categoria_id}
                 capturadoEn={sub.top?.[0]?.capturado_en ?? null}
@@ -1585,8 +1586,9 @@ function BloqueRaiz({
 
       {/* ── Nivel 1: el top de la categoría padre ── */}
       <div className="mb-4 rounded-lg bg-white p-3 ring-1 ring-slate-200">
-        <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           <Crown size={12} /> Más vendidos de {r.raiz_nombre}
+          <CapturaDeCategoria iso={r.top?.[0]?.capturado_en ?? null} />
         </div>
         {r.top.length === 0 ? (
           <div className="py-4 text-center text-xs text-slate-400">
@@ -1649,6 +1651,59 @@ function aFecha(iso: string): Date {
   return new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00` : iso);
 }
 
+/** Días de CALENDARIO entre `iso` y hoy. Null si no hay fecha. */
+function diasDesde(iso: string | null): number | null {
+  if (!iso) return null;
+  const d = aFecha(iso);
+  const hoy = new Date();
+  const soloDia = (x: Date) =>
+    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  return Math.round((soloDia(hoy) - soloDia(d)) / 86400000);
+}
+
+/** "hoy" / "ayer" / "hace N días". */
+function textoRelativo(dias: number): string {
+  return dias <= 0 ? "hoy" : dias === 1 ? "ayer" : `hace ${dias} días`;
+}
+
+/** El día y el mes, sin año: "13 de agosto". */
+function diaYMes(iso: string): string {
+  return aFecha(iso).toLocaleDateString("es-MX", { day: "numeric", month: "long" });
+}
+
+/**
+ * Cuándo se capturó el ranking DE ESTA CATEGORÍA, junto a su encabezado.
+ *
+ * ── POR QUÉ NO ALCANZA CON LA FECHA DE ARRIBA ───────────────────────────────
+ * El encabezado de la página muestra una fecha para todo el árbol, y eso siempre
+ * pinta más fresco de lo que está. El 1-sep-2026 decía "hace 14 días (18 de
+ * agosto)" mientras el top de Deportes y Fitness era del **13** — 19 días.
+ *
+ * Y esos 19 días no son un detalle: cotejado ese mismo día contra `/highlights`
+ * en vivo, el top se había renovado ENTERO — 0 de 5 posiciones coincidían, ni en
+ * la misma posición ni en ninguna otra. La fecha del árbol no sirve para decidir
+ * si lo que estás viendo todavía vale. La de la categoría sí.
+ *
+ * Ámbar a los 40 días porque el ranking se raspa una vez al mes; con el umbral de
+ * las visitas (2 días) estaría en alerta permanente siendo lo normal.
+ */
+function CapturaDeCategoria({ iso }: { iso: string | null }) {
+  const dias = diasDesde(iso);
+  if (dias === null)
+    return (
+      <span className="font-normal normal-case text-slate-400">· sin capturar</span>
+    );
+  return (
+    <span
+      className={`font-normal normal-case ${
+        dias > 40 ? "text-amber-700" : "text-slate-400"
+      }`}
+    >
+      · capturado {textoRelativo(dias)} ({diaYMes(iso!)})
+    </span>
+  );
+}
+
 /**
  * Una de las tres fechas del encabezado.
  *
@@ -1665,11 +1720,14 @@ function Frescura({
   verbo,
   iso,
   viejoEnDias,
+  sufijo,
 }: {
   etiqueta: string;
   verbo: string;
   iso: string | null;
   viejoEnDias: number;
+  /** Aclaración corta al final, p. ej. "el más viejo". */
+  sufijo?: string | null;
 }) {
   if (!iso) {
     return (
@@ -1678,14 +1736,8 @@ function Frescura({
       </span>
     );
   }
-  const d = aFecha(iso);
-  // Días de CALENDARIO, no de 24 h: algo de ayer a las 23:00 es "ayer", no
-  // "hace 1 día" a veces y "hoy" otras según la hora a la que se mire.
-  const hoy = new Date();
-  const soloDia = (x: Date) =>
-    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const dias = Math.round((soloDia(hoy) - soloDia(d)) / 86400000);
-  const relativo = dias <= 0 ? "hoy" : dias === 1 ? "ayer" : `hace ${dias} días`;
+  const dias = diasDesde(iso)!;
+  const relativo = textoRelativo(dias);
   const viejo = dias > viejoEnDias;
   return (
     <span className={viejo ? "text-amber-700" : undefined}>
@@ -1697,7 +1749,7 @@ function Frescura({
       </span>
       <span className="text-slate-400">
         {" "}
-        ({d.toLocaleDateString("es-MX", { day: "numeric", month: "long" })})
+        ({diaYMes(iso)}){sufijo ? ` ${sufijo}` : ""}
       </span>
     </span>
   );
@@ -1709,6 +1761,7 @@ export default function CompetenciaPage() {
   // Los tres en ISO CRUDO: <Frescura> necesita la fecha para calcular "hace N
   // días", así que formatear aquí obligaba a guardar el dato dos veces.
   const [capturado, setCapturado] = useState<string | null>(null);
+  const [capturadoDesde, setCapturadoDesde] = useState<string | null>(null);
   const [ventasHasta, setVentasHasta] = useState<string | null>(null);
   const [visitasMedidas, setVisitasMedidas] = useState<string | null>(null);
   const [puedeRefrescar, setPuedeRefrescar] = useState(true);
@@ -1740,6 +1793,7 @@ export default function CompetenciaPage() {
         const r = await vistaCompetencia(canal, signal);
         setRaices(r.raices);
         setCapturado(r.capturado_en);
+        setCapturadoDesde(r.capturado_desde);
         setVentasHasta(r.ventas_hasta);
         setVisitasMedidas(r.visitas_medidas);
         setPuedeRefrescar(r.puede_refrescar);
@@ -2096,11 +2150,22 @@ export default function CompetenciaPage() {
                   viejoEnDias={2}
                 />
                 <span className="text-slate-300">·</span>
+                {/* La punta VIEJA, no la fresca. Con el máximo, el encabezado
+                    decía "hace 14 días" mientras la categoría abierta era de
+                    hace 19 — y en esos 19 días el top de ML se había renovado
+                    entero. Cada bloque trae además la suya. */}
                 <Frescura
                   etiqueta="Ranking"
                   verbo="capturado"
-                  iso={capturado}
+                  iso={capturadoDesde ?? capturado}
                   viejoEnDias={40}
+                  sufijo={
+                    capturadoDesde &&
+                    capturado &&
+                    diaYMes(capturadoDesde) !== diaYMes(capturado)
+                      ? "el más viejo"
+                      : null
+                  }
                 />
               </div>
               {!puedeRefrescar ? (

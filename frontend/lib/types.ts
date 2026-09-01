@@ -910,8 +910,10 @@ export interface CompetenciaNicho {
 export interface CompetenciaVista {
   canal: string;
   raices: CompetenciaRaiz[];
-  /** Cuándo se raspó el ranking. Lo que importa en una vista de solo lectura. */
+  /** La captura MÁS RECIENTE del árbol. Optimista: no es la de la categoría que estás viendo. */
   capturado_en: string | null;
+  /** La captura MÁS VIEJA del árbol. Es la que acota cuánto puede estar desfasado lo que ves. */
+  capturado_desde: string | null;
   /**
    * Hasta qué DÍA llegan las ventas. Es COBERTURA, no frescura: sales_daily no
    * guarda cuándo se trajo el dato, solo el día que cubre. Llega sin hora

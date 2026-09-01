@@ -214,7 +214,12 @@ def vista(canal: str = "mercado_libre"):
     return {
         "canal": canal,
         "raices": arbol,
+        # Las DOS puntas. `capturado_en` (el maximo) siempre pinta mas fresco de
+        # lo que esta: el 1-sep-2026 decia "18 de agosto" mientras Deportes y
+        # Fitness era del 13. `capturado_desde` es el mas viejo, que es el que
+        # acota de verdad cuanto puede estar mintiendo lo que ves.
         "capturado_en": max(capturas) if capturas else None,
+        "capturado_desde": min(capturas) if capturas else None,
         # Cobertura, no frescura — ver el docstring de competencia_supabase.
         "ventas_hasta": fresco.get("ventas_hasta"),
         "visitas_medidas": fresco.get("visitas_medidas"),
