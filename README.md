@@ -1025,6 +1025,28 @@ Versión 0.346.0.
 
 ---
 
+### v0.348.0 — Estar apagado ya no significa perder la foto del inventario
+
+La migración 0033 lleva días aplicada y la bitácora ha estado escribiendo. Al
+mirarla salió el daño: **29 ventas registradas entre el 29-ago y el 1-sep, las
+30 líneas con `stock_libre` en NULL.**
+
+`crear_orden` devolvía en cuanto veía el interruptor abajo, ANTES de resolver
+productos y almacén. La fila quedaba hueca: sin almacén, sin cobertura y sin la
+foto de stock — que es **el único dato irrecuperable de toda la tabla**. Guía e
+imagen sí estaban, porque vienen de la venta y no de Odoo. Esas 29 fotos ya no
+se pueden reconstruir; quedan en "sin medir", que al menos no miente.
+
+Ahora **apagado se comporta como el modo observación**: calcula producto,
+almacén, cobertura y foto, y no escribe una línea en Odoo. Cuesta dos o tres
+llamadas XML-RPC por venta (~6 al día en TikTok) y a cambio la fila sirve para
+algo. Verificado con el maestro abajo: `accion=apagado`, almacén TEXCO,
+`{"135": 40, "150": 0}`, `odoo_id=None`.
+
+El rótulo distingue POR QUÉ no se escribió, que no es lo mismo para quien mira:
+`apagado` (el maestro), `canal_apagado` (ese canal), `solo_registro`
+(observando a propósito) y `simulado` (lo pidió una persona).
+
 ### v0.347.0 — Se retira el sondeo de Temu: ya contestó su pregunta
 
 `GET /api/automatizacion/temu/sondeo` y su panel existían para contestar UNA

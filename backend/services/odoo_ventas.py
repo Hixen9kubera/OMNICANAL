@@ -400,20 +400,27 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
     # consulta a kubera que BLOQUEA, y el seam corre en la corrutina de la venta
     # (regla 11). `dry_run` lo salta a propósito — simular tiene que funcionar
     # con la automatización apagada, que es justo cuando se quiere simular.
-    if not dry_run and not habilitado():
-        return {"ok": False, "accion": "apagado", "canal": canal,
-                "order_id": order_id,
-                "motivo": "el interruptor de órdenes en Odoo está apagado"}
-    # El canal se decide AQUÍ, dentro del hilo, por lo mismo que el interruptor
-    # general: es una lectura a kubera y bloquea. El seam solo pre-filtra con la
-    # constante `_CANALES_POSIBLES`, que no toca la base.
-    if not dry_run and not canal_activo(canal):
-        return {"ok": False, "accion": "canal_apagado", "canal": canal,
-                "order_id": order_id,
-                "motivo": f"el canal {canal} está apagado en Automatización"}
+    #
+    # ⚠️ APAGADO **NO ES SALIR CORRIENDO**, y esto costó datos. La primera
+    # versión devolvía aquí mismo, antes de resolver productos y almacén, así
+    # que la bitácora guardaba una fila hueca: sin almacén, sin cobertura y —lo
+    # grave— **sin la foto de stock**. Medido el 1-sep: 29 ventas registradas
+    # entre el 29-ago y el 1-sep, las 30 líneas con `stock_libre` en NULL. Esa
+    # foto es el único dato irrecuperable de toda la tabla; veinte minutos
+    # después ya no se puede reconstruir.
+    #
+    # Ahora apagado se comporta como el modo observación: calcula TODO y no
+    # escribe en Odoo. Cuesta dos o tres llamadas XML-RPC por venta (~6 al día
+    # en TikTok), y a cambio la fila sirve para algo y no se pierde nada.
+    apagado_general = not dry_run and not habilitado()
+    # El canal se decide AQUÍ por lo mismo que el general: es una lectura a
+    # kubera y bloquea. El seam solo pre-filtra con `_CANALES_POSIBLES`.
+    apagado_canal = not dry_run and not apagado_general and not canal_activo(canal)
+
     if confirmar is None:
         confirmar = bool(getattr(settings, "odoo_ventas_confirmar", False))
-    solo_registro = dry_run or bool(getattr(settings, "odoo_ventas_solo_registro", True))
+    solo_registro = (dry_run or apagado_general or apagado_canal
+                     or bool(getattr(settings, "odoo_ventas_solo_registro", True)))
     partner = _PARTNER.get(canal)
     if not partner:
         return {"ok": False, "motivo": f"canal '{canal}' sin partner configurado"}
@@ -482,8 +489,21 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
             # Modo observación: se calculó TODO —producto, almacén, foto de
             # stock, payload— y no se escribe. Es lo que permite comparar contra
             # las capturas de Gabriela sin riesgo.
-            return {"ok": True, "accion": "simulado" if dry_run else "solo_registro",
-                    "canal": canal,
+            # El rótulo dice POR QUÉ no se escribió, que es lo que necesita
+            # saber quien mira el tab: no es lo mismo "lo simulé yo" que "el
+            # canal está apagado".
+            accion = ("simulado" if dry_run
+                      else "apagado" if apagado_general
+                      else "canal_apagado" if apagado_canal
+                      else "solo_registro")
+            motivos = {
+                "apagado": "el interruptor general está apagado: se midió el "
+                           "stock y no se escribió en Odoo",
+                "canal_apagado": f"el canal {canal} está apagado: se midió el "
+                                 "stock y no se escribió en Odoo",
+            }
+            return {"ok": True, "accion": accion, "canal": canal,
+                    "motivo": motivos.get(accion),
                     "order_id": order_id, "almacen": alm["almacen"],
                     "almacen_id": alm["almacen_id"], "cobertura": alm["cobertura"],
                     "stock_foto": alm["stock_foto"], "payload": vals,

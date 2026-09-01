@@ -141,6 +141,8 @@ const ACCION: Record<string, { txt: string; clase: string }> = {
   nacio_cancelada: { txt: "Nació cancelada", clase: "bg-rose-50 text-rose-700" },
   sku_sin_producto: { txt: "SKU sin producto", clase: "bg-rose-100 text-rose-800" },
   apagado: { txt: "Apagado", clase: "bg-slate-100 text-slate-600" },
+  canal_apagado: { txt: "Canal apagado", clase: "bg-slate-100 text-slate-600" },
+  solo_registro: { txt: "Observando", clase: "bg-sky-50 text-sky-700" },
   error: { txt: "Error", clase: "bg-rose-100 text-rose-800" },
   no_se_pudo_cancelar: { txt: "No se pudo cancelar", clase: "bg-amber-100 text-amber-800" },
 };
