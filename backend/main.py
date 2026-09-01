@@ -97,6 +97,26 @@ async def lifespan(app: FastAPI):
              "ENCENDIDO" if settings.pedidos_tiktok_enabled else "apagado",
              "ENCENDIDO" if settings.fanout_tiktok else "apagado",
              sorted(_fs._canales_activos()) if _fs._canales_activos() else "TODOS")  # noqa: SLF001
+    # TEMU, por la MISMA razón que TikTok, y con un motivo extra: su webhook
+    # está aprobado y encendido en la consola de Temu desde el 2026-08-12, pero
+    # `PEDIDOS_TEMU_ENABLED` no existía en Railway — así que los eventos se
+    # recibían, se les verificaba la firma, y se DESCARTABAN. Un flujo que
+    # depende de una variable ausente falla en silencio; imprimirla al arrancar
+    # es la única forma honesta de saber en qué estado quedó.
+    log.info("Temu · pedidos por webhook: %s · sondeo de ventas: %s (solo_registro=%s) · "
+             "fan-out de stock: %s · censo: %s",
+             "ENCENDIDO" if settings.pedidos_temu_enabled else "apagado",
+             "ENCENDIDO" if getattr(settings, "pedidos_temu_sondeo_enabled", False) else "apagado",
+             getattr(settings, "pedidos_temu_sondeo_solo_registro", True),
+             "ENCENDIDO" if settings.fanout_temu else "apagado",
+             "ENCENDIDO" if settings.temu_censo_enabled else "apagado")
+    # Y las órdenes de venta en Odoo, que son el otro flujo que mueve papel real.
+    log.info("Órdenes de venta en Odoo · interruptor: %s · solo_registro: %s · "
+             "confirmar: %s · canales: %s",
+             "ENCENDIDO" if settings.odoo_ventas_enabled else "apagado",
+             settings.odoo_ventas_solo_registro,
+             settings.odoo_ventas_confirmar,
+             settings.odoo_ventas_canales)
     yield
     scheduler.detener()
 
@@ -109,7 +129,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.341.0",
+    version="0.342.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -190,7 +210,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.341.0",
+        "version": "0.342.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
