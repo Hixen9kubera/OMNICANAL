@@ -106,6 +106,9 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/resolver", "operador"),
     ("POST", "/api/resolver", "operador"),
     ("PATCH", "/api/resolver", "operador"),
+    # Monitoreo · quién hizo qué. En `operador` para que el equipo vea su
+    # propio avance; no expone costos ni márgenes, solo autoría.
+    ("GET", "/api/monitoreo", "operador"),
     # Análisis · stock, ventas y MARGEN con los cobros del canal. Va en
     # `operador` y no en `lectura` por el mismo criterio que /api/fulfillment:
     # expone costo y margen, que no son para el nivel de solo-lectura.

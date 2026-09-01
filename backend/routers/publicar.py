@@ -8,12 +8,14 @@ publicar.py — Paso 4: actualizar la publicación en el canal seleccionado.
 """
 from __future__ import annotations
 
+import time
+
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
-from services import publicar
+from services import bitacora, publicar
 
 router = APIRouter(prefix="/api/publicar", tags=["publicar"])
 
@@ -100,11 +102,40 @@ async def confirmar(req: PublicarRequest) -> dict[str, Any]:
     # Un fallo aquí llega al usuario como el genérico "ERROR DE CONEXIÓN" y
     # rara vez se reporta → alerta push a Slack con el contexto completo, para
     # enterarnos antes (o aunque nadie reporte). El error se re-lanza igual.
+    #
+    # BITÁCORA DE PERSONA (1-sep-2026, pedido de Brandon): aquí es donde se sabe
+    # QUIÉN publicó. `ops.channel_submissions` guarda el qué y el cuándo pero no
+    # tiene columna de usuario, así que sin esto no se puede contestar "cuántas
+    # publicaciones lleva Thalía". El actor sale del contexto que fijó el
+    # middleware; ninguna firma tuvo que cambiar.
+    #
+    # Se anota el ÉXITO Y EL FALLO a propósito: para medir productividad bastan
+    # los éxitos, para AUDITAR hace falta saber qué se intentó. Y va después de
+    # la operación, nunca antes: anotar primero registraría intentos que el
+    # validador rechazó sin llegar al canal.
+    inicio = time.monotonic()
     try:
-        return await publicar.confirmar(req.a_dict())
-    except HTTPException:
+        r = await publicar.confirmar(req.a_dict())
+        bitacora.anotar(bitacora.PUBLICAR, "confirmar", sku=req.sku,
+                        canal=req.canal, cuenta=req.cuenta,
+                        detalle={"wc_id": req.wc_id,
+                                 "precio": req.precio_regular},
+                        duracion_s=round(time.monotonic() - inicio, 2))
+        return r
+    except HTTPException as exc:
+        # Validación rechazada: es el caso más común y el que más dice al
+        # auditar — el usuario intentó y el canal (o nuestra guarda) dijo no.
+        bitacora.anotar(bitacora.PUBLICAR, "confirmar", sku=req.sku,
+                        estado="rechazado", canal=req.canal, cuenta=req.cuenta,
+                        detalle={"http": exc.status_code,
+                                 "motivo": str(exc.detail)[:300]},
+                        duracion_s=round(time.monotonic() - inicio, 2))
         raise  # errores controlados (validación): ya llegan legibles al modal
     except Exception as exc:
+        bitacora.anotar(bitacora.PUBLICAR, "confirmar", sku=req.sku,
+                        estado="error", canal=req.canal, cuenta=req.cuenta,
+                        detalle={"excepcion": f"{type(exc).__name__}: {str(exc)[:200]}"},
+                        duracion_s=round(time.monotonic() - inicio, 2))
         try:
             from services import alertas
             alertas.avisar(
