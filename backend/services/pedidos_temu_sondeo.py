@@ -26,6 +26,24 @@ de catálogo.
 Además el listado trae `thumbUrl` (imagen) e `inventoryDeductionWarehouseId`
 (de qué bodega descontó Temu) — dos cosas que se creían no disponibles.
 
+LA GUÍA: EXISTE, PERO NO EN LA ORDEN (medido el 1-sep, y vale la pena guardarlo
+porque la herramienta que lo descubrió ya se retiró)
+──────────────────────────────────────────────────────────────────────────────
+El número de rastreo NO viene dentro del pedido: se buscó en toda la respuesta,
+en los dos vocabularios —`trackingNumber` y el chino `mailNo`/`waybill`— y no
+aparece. Pero los endpoints de envío sí existen, y hay que leer los CÓDIGOS para
+verlo, porque un "falla" a secas los confunde:
+
+    bg.logistics.shipment.v2.get   120012016  "The parentOrder or Order is invalid"
+    bg.order.shippinginfo.v2.get   180020003  "Invalid param"
+    bg.logistics.shipment.get      3000037    "interface upgraded to higher version"
+    bg.order.shippinginfo.get      3000004    "type has been sunset"
+    bg.shipping.order.get          3000003    "type not exists"   ← este sí no existe
+
+Los dos primeros contestan **"me faltan los parámetros"**, no "no existo": se
+habían llamado con `{}`. O sea que la guía se obtiene con una SEGUNDA llamada
+por orden, pasando `parentOrderSn` y `orderSn`. No está implementado todavía.
+
 LO QUE TEMU NO DA, Y ESTÁ ASUMIDO
 ─────────────────────────────────
 El **precio real cobrado**: `bg.order.amount.query` y `temu.order.amount.v2.query`

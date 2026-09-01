@@ -1025,6 +1025,32 @@ Versión 0.346.0.
 
 ---
 
+### v0.347.0 — Se retira el sondeo de Temu: ya contestó su pregunta
+
+`GET /api/automatizacion/temu/sondeo` y su panel existían para contestar UNA
+cosa: **¿se puede automatizar Temu?**. Ya está contestada —sí— así que se van,
+con su detector de guía y su tabla de sondas. Una herramienta de diagnóstico que
+se queda después de resolver su caso se vuelve código que nadie mantiene y que
+la próxima sesión tiene que entender para nada.
+
+**LO QUE APRENDIÓ SE MUDA A DONDE SIRVE**, que es el encabezado de
+`pedidos_temu_sondeo.py`, antes de borrar el código que lo produjo. En
+particular lo de la guía, que es lo más fácil de leer mal:
+
+    bg.logistics.shipment.v2.get   120012016  "The parentOrder or Order is invalid"
+    bg.order.shippinginfo.v2.get   180020003  "Invalid param"
+    bg.shipping.order.get          3000003    "type not exists"   ← este sí no existe
+
+Los dos primeros dicen **"me faltan los parámetros"**, no "no existo" — se
+habían llamado con `{}`. La guía NO viene dentro del pedido (se buscó en los
+dos vocabularios, `trackingNumber` y el chino `mailNo`/`waybill`), pero se
+obtiene con una segunda llamada pasando `parentOrderSn` y `orderSn`. Sin
+implementar todavía.
+
+Queda registrado también lo demás: Temu declara 96 órdenes contra las 2 que vio
+la tubería, el listado trae `thumbUrl` e `inventoryDeductionWarehouseId`, y los
+importes siguen en `3000032`.
+
 ### v0.345.0 — El panel mostraba precios de agosto: ahora manda el sync (Eduardo)
 
 Eduardo abrió dos publicaciones nuestras en Mercado Libre y las comparó con el
