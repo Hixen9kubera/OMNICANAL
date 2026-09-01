@@ -126,6 +126,40 @@ def prioridad(categorias: list[str] | None = None) -> list[dict[str, Any]]:
     return supabase_db.fetch_all(sql, params)
 
 
+def frescura(canal: str = "mercado_libre") -> dict[str, Any]:
+    """
+    De cuándo son los tres datos que el tab refresca solo: visitas, ventas y
+    ranking. Una sola consulta porque el encabezado los muestra juntos.
+
+    ⚠️ LAS TRES FECHAS NO SIGNIFICAN LO MISMO, y confundirlas es cómo se
+    construye un medidor que miente en verde:
+
+    · `visitas_medidas`  — `metrics_updated_at`. Es CUÁNDO SE MIDIERON. Desde
+      v0.322.0 esa columna solo avanza si de verdad se escribió una visita o una
+      unidad, así que no la mueve un upsert que no trajo dato.
+
+    · `ranking_capturado` — `capturado_en`. Es CUÁNDO SE RASPÓ.
+
+    · `ventas_hasta`     — `channel.sales_daily` NO tiene columna de "cuándo se
+      trajo": solo el día que cubre. Así que esto es COBERTURA, no frescura, y
+      la UI lo dice con esas palabras. A las 2 a.m. sin ventas todavía dirá
+      "hasta ayer", que es literalmente cierto — el webhook escribe en segundos,
+      pero un día sin ventas no genera fila. Poner aquí un `now()` disfrazado de
+      frescura sería exactamente la mentira de la 0038.
+    """
+    sql = """
+        SELECT
+          (SELECT max(date) FROM channel.sales_daily
+            WHERE canal = %s)                                  AS ventas_hasta,
+          (SELECT max(metrics_updated_at) FROM enrich.market_listing_metrics
+            WHERE canal = %s AND visits_30d IS NOT NULL)       AS visitas_medidas,
+          (SELECT max(capturado_en) FROM enrich.market_bestsellers
+            WHERE canal = %s)                                  AS ranking_capturado
+    """
+    filas = supabase_db.fetch_all(sql, (canal, canal, canal))
+    return dict(filas[0]) if filas else {}
+
+
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
     sql = ("SELECT * FROM enrich.market_bestsellers "

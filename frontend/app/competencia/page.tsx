@@ -1628,10 +1628,78 @@ function BloqueRaiz({
   );
 }
 
+/**
+ * `ventas_hasta` llega como fecha SIN hora ("2026-09-01"). `new Date()` la lee
+ * como medianoche UTC, que en México son las 18:00 del día ANTERIOR: la caja
+ * diría "31 de agosto" teniendo datos del 1 de septiembre. Se le pega la hora
+ * local para que se lea como el día que es.
+ */
+function aFecha(iso: string): Date {
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00` : iso);
+}
+
+/**
+ * Una de las tres fechas del encabezado.
+ *
+ * Cada fuente se refresca a un ritmo DISTINTO, así que cada una trae su propio
+ * umbral de "esto ya está viejo": las visitas corren a diario, las ventas
+ * entran por webhook en segundos y el ranking se raspa una vez al mes. Un solo
+ * umbral pintaría el ranking en ámbar todos los meses siendo lo normal.
+ *
+ * Sin dato dice "sin medir", NO una fecha inventada: un hueco honesto vale más
+ * que un número que miente.
+ */
+function Frescura({
+  etiqueta,
+  verbo,
+  iso,
+  viejoEnDias,
+}: {
+  etiqueta: string;
+  verbo: string;
+  iso: string | null;
+  viejoEnDias: number;
+}) {
+  if (!iso) {
+    return (
+      <span className="text-slate-400">
+        {etiqueta}: <span className="italic">sin medir</span>
+      </span>
+    );
+  }
+  const d = aFecha(iso);
+  // Días de CALENDARIO, no de 24 h: algo de ayer a las 23:00 es "ayer", no
+  // "hace 1 día" a veces y "hoy" otras según la hora a la que se mire.
+  const hoy = new Date();
+  const soloDia = (x: Date) =>
+    new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dias = Math.round((soloDia(hoy) - soloDia(d)) / 86400000);
+  const relativo = dias <= 0 ? "hoy" : dias === 1 ? "ayer" : `hace ${dias} días`;
+  const viejo = dias > viejoEnDias;
+  return (
+    <span className={viejo ? "text-amber-700" : undefined}>
+      {etiqueta} {verbo}{" "}
+      <span
+        className={`font-medium ${viejo ? "text-amber-800" : "text-slate-800"}`}
+      >
+        {relativo}
+      </span>
+      <span className="text-slate-400">
+        {" "}
+        ({d.toLocaleDateString("es-MX", { day: "numeric", month: "long" })})
+      </span>
+    </span>
+  );
+}
+
 export default function CompetenciaPage() {
   const [canal, setCanal] = useState("mercado_libre");
   const [raices, setRaices] = useState<CompetenciaRaiz[]>([]);
+  // Los tres en ISO CRUDO: <Frescura> necesita la fecha para calcular "hace N
+  // días", así que formatear aquí obligaba a guardar el dato dos veces.
   const [capturado, setCapturado] = useState<string | null>(null);
+  const [ventasHasta, setVentasHasta] = useState<string | null>(null);
+  const [visitasMedidas, setVisitasMedidas] = useState<string | null>(null);
   const [puedeRefrescar, setPuedeRefrescar] = useState(true);
   const [estado, setEstado] = useState<CompetenciaEstado | null>(null);
   const [cargando, setCargando] = useState(true);
@@ -1660,15 +1728,9 @@ export default function CompetenciaPage() {
       try {
         const r = await vistaCompetencia(canal, signal);
         setRaices(r.raices);
-        setCapturado(
-          r.capturado_en
-            ? new Date(r.capturado_en).toLocaleDateString("es-MX", {
-                day: "numeric",
-                month: "long",
-                year: "numeric",
-              })
-            : null,
-        );
+        setCapturado(r.capturado_en);
+        setVentasHasta(r.ventas_hasta);
+        setVisitasMedidas(r.visitas_medidas);
         setPuedeRefrescar(r.puede_refrescar);
         if (r.aviso) setAvisos([r.aviso]);
       } catch (e) {
@@ -2004,18 +2066,39 @@ export default function CompetenciaPage() {
             fotos y precios de la competencia. El navegador no hace falta para
             MOSTRAR —los datos ya están capturados— sino para REFRESCAR, y eso pasa
             una vez al mes desde una máquina con Chrome. Lo accionable es la fecha. */}
-        {capturado ? (
+        {capturado || ventasHasta || visitasMedidas ? (
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
             <Info size={14} className="mt-0.5 shrink-0 text-slate-400" />
             <div>
-              Ranking de la competencia capturado el{" "}
-              <span className="font-medium text-slate-800">{capturado}</span>.
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <Frescura
+                  etiqueta="Visitas"
+                  verbo="medidas"
+                  iso={visitasMedidas}
+                  viejoEnDias={2}
+                />
+                <span className="text-slate-300">·</span>
+                <Frescura
+                  etiqueta="Ventas"
+                  verbo="hasta"
+                  iso={ventasHasta}
+                  viejoEnDias={2}
+                />
+                <span className="text-slate-300">·</span>
+                <Frescura
+                  etiqueta="Ranking"
+                  verbo="capturado"
+                  iso={capturado}
+                  viejoEnDias={40}
+                />
+              </div>
               {!puedeRefrescar ? (
-                <>
-                  {" "}Este servidor no puede refrescarlo: el ranking solo se obtiene
-                  raspando (la API de ML responde 403 en publicaciones ajenas) y eso
-                  corre una vez al mes desde una máquina con navegador.
-                </>
+                <div className="mt-1">
+                  El ranking no se puede refrescar desde aquí: falta la API key de
+                  Apify. Se obtiene raspando —la API de ML responde 403 en
+                  publicaciones ajenas— y eso corre en la infraestructura de Apify,
+                  no en este servidor.
+                </div>
               ) : null}
             </div>
           </div>

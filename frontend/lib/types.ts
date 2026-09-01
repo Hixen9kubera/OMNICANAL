@@ -912,6 +912,14 @@ export interface CompetenciaVista {
   raices: CompetenciaRaiz[];
   /** Cuándo se raspó el ranking. Lo que importa en una vista de solo lectura. */
   capturado_en: string | null;
+  /**
+   * Hasta qué DÍA llegan las ventas. Es COBERTURA, no frescura: sales_daily no
+   * guarda cuándo se trajo el dato, solo el día que cubre. Llega sin hora
+   * ("2026-09-01"), así que hay que parsearla como local — ver aFecha().
+   */
+  ventas_hasta: string | null;
+  /** Cuándo se MIDIERON las visitas (timestamp real, no el último toque). */
+  visitas_medidas: string | null;
   /** Este servidor puede refrescar el ranking (tiene navegador). En Railway: no. */
   puede_refrescar: boolean;
   aviso: string | null;

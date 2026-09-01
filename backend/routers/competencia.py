@@ -200,10 +200,20 @@ def vista(canal: str = "mercado_libre"):
                 for x in (r.get("top") or []) if x.get("capturado_en")]
     for r in arbol:
         r["nichos"] = competencia_captura.nichos_del_top(r, tope=5)
+    # Las otras dos fechas que el encabezado muestra. En try porque son
+    # DECORATIVAS: si la consulta falla, el tab se dibuja igual con sus datos.
+    try:
+        fresco = competencia_store.frescura(canal)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo leer la frescura: %s", exc)
+        fresco = {}
     return {
         "canal": canal,
         "raices": arbol,
         "capturado_en": max(capturas) if capturas else None,
+        # Cobertura, no frescura — ver el docstring de competencia_supabase.
+        "ventas_hasta": fresco.get("ventas_hasta"),
+        "visitas_medidas": fresco.get("visitas_medidas"),
         # Con Apify el raspado ya no depende de que ESTE servidor tenga Chrome:
         # corre en su infraestructura. Alcanza con la API key.
         "puede_refrescar": competencia_scraper.disponible(),

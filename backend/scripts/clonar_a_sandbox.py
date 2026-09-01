@@ -90,6 +90,31 @@ TABLAS: list[tuple[str, str | None]] = [
     ("ops.process_log", "created_at"),
     ("ops.migration_issues", "created_at"),
     ("migration.reconciliation_runs", "created_at"),
+
+    # ── ENRICH — sin esto, COMPETENCIA se valida A CIEGAS ────────────────────
+    # La lista cubría core/channel/costing/analytics/ops y NO tocaba `enrich`,
+    # que es donde vive TODO el tab de Competencia. El sandbox tenía las vistas
+    # pero CERO filas de métricas, así que cualquier cambio de esa pantalla se
+    # soltaba a producción sin haberse visto nunca renderizado.
+    #
+    # No es hipotético: el botón de refresco (v0.324.0) salió así —la lógica
+    # probada y `tsc` en verde— y traía un defecto visual que solo apareció al
+    # abrirlo en pantalla, ya en producción (v0.327.0).
+    #
+    # Van al FINAL porque `market_highlights` referencia `core.channels(id)`,
+    # que se clona arriba.
+    # ⚠️ EL ORDEN IMPORTA: `market_search_term` es PADRE de `market_sku_config`
+    # y de `market_search_results`. Ponerlo después revienta con
+    # "termino_id=(1199) is not present in table market_search_term".
+    # Todo lo demás solo referencia `core.*`, que se clona arriba.
+    ("enrich.market_search_term", None),     # PADRE — va primero
+    ("enrich.market_sku_config", None),      # el estado humano: qué se vigila
+    ("enrich.market_search_results", None),  # lo que devolvió cada búsqueda
+    ("enrich.market_listing_metrics", None), # visitas y unidades por publicación
+    ("enrich.market_bestsellers", None),     # el ranking raspado
+    ("enrich.market_highlights", None),      # el sondeo gratis de ML
+    ("enrich.market_terms", None),           # los términos más buscados
+    ("enrich.product_media", None),          # las fotos: sin esto el tab sale gris
 ]
 
 # Nunca. Ver el encabezado.

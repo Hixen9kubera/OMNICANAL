@@ -157,6 +157,17 @@ def prioridad(categorias: list[str] | None = None) -> list[dict[str, Any]]:
         "enrich.market_categoria_prioridad_v y no hay de dónde leerla.")
 
 
+def frescura(canal: str = "mercado_libre") -> dict[str, Any]:
+    """
+    Las tres fechas del encabezado. NO levanta si no hay remoto: es un dato
+    decorativo y una fecha ausente no puede tumbar el tab entero.
+    """
+    r = _remoto()
+    if r:
+        return r.frescura(canal)
+    return {}
+
+
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
     r = _remoto()

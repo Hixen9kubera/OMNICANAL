@@ -18024,6 +18024,57 @@ reportó con su dinero, como debía. Versión 0.328.0.
 
 ---
 
+### v0.330.0 — El encabezado de Competencia dice de cuándo es CADA dato (Eduardo)
+
+La caja de arriba del tab hablaba de una sola fecha —la del ranking— cuando el
+módulo se alimenta de **tres** fuentes que se refrescan a ritmos distintos. Ahora
+las muestra las tres:
+
+> ⓘ Visitas medidas **hoy** (1 de septiembre) · Ventas hasta **hace 19 días**
+> (13 de agosto) · Ranking capturado **hace 14 días** (18 de agosto)
+
+**Cada una con su propio umbral de alerta**, porque un umbral único mentiría: las
+visitas corren a diario y las ventas entran por webhook en segundos (ámbar a los
+2 días), pero el ranking se raspa una vez al mes (ámbar a los 40). Con un solo
+número, el ranking saldría en alerta todos los meses siendo lo normal.
+
+**Ventas dice "hasta", no "medidas", a propósito.** `channel.sales_daily` no
+guarda cuándo se trajo el dato, sólo el día que cubre: es COBERTURA, no frescura.
+A las 2 a.m. sin ventas todavía dirá "hasta ayer", que es literalmente cierto.
+Poner ahí un `now()` disfrazado de frescura sería exactamente la mentira que la
+0038 costó descubrir.
+
+**La trampa de zona horaria.** `ventas_hasta` llega sin hora (`"2026-08-13"`) y
+`new Date()` la lee como medianoche UTC — las 18:00 del día ANTERIOR en México.
+La caja habría dicho "12 de agosto" teniendo datos del 13. `aFecha()` le pega la
+hora local. Verificado en pantalla: dice 13.
+
+`capturado_en` **no cambió**: sigue saliendo del árbol, no de la tabla, para no
+mover en silencio un número que ya se venía leyendo.
+
+**Y el mensaje de "no se puede refrescar" estaba desactualizado**: culpaba a un
+navegador ausente cuando con Apify el raspado corre en su infraestructura. Ahora
+dice lo que de verdad falta: la API key.
+
+#### El sandbox estaba CIEGO para Competencia
+
+`clonar_a_sandbox.py` cubría `core`, `channel`, `costing`, `analytics` y `ops` —
+y **no tocaba el esquema `enrich`**, que es donde vive todo el tab. El sandbox
+tenía las vistas y **cero filas** de métricas, así que cualquier cambio de esa
+pantalla se soltaba a producción sin haberse visto nunca renderizado. Así salió
+el botón de refresco (v0.324.0) con el defecto visual que sólo apareció al
+abrirlo, ya en producción (v0.327.0).
+
+Se agregan 8 tablas de `enrich`. ⚠️ **El orden importa**: `market_search_term` es
+padre de `market_sku_config` y de `market_search_results`, y ponerlo después
+revienta con `termino_id=(1199) is not present`. Clonadas: 34,688 filas.
+
+Verificado en el sandbox a 1280 y 768 px: envuelve a dos renglones, sin desbordar
+y sin cortar texto. Colores confirmados contra el DOM, no a ojo.
+
+**Observación aparte, sin arreglar:** `GET /api/competencia/vista` tarda **55 s**.
+Es previo a este cambio, pero es mucho para la pantalla de entrada.
+
 ### v0.329.0 — Barrido de lectores sin deduplicar por periodo (Eduardo)
 
 Después de que el corte de mes tumbara el cron dos veces —una en la vista (0039) y
