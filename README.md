@@ -1587,6 +1587,30 @@ importan las dos protecciones que ya existían — la firma queda registrada
 (`revisado_por`) y la marca se cae sola cuando el costo se vuelve a tocar
 (`updated_at > revisado_at`).
 
+### v0.301.0 — Preguntarle a Temu si ya se puede, desde donde sí se puede preguntar
+
+La pregunta "¿se puede automatizar Temu?" no se podía contestar desde una
+laptop: la lista blanca de Temu solo trae la IP de salida de Railway, así que
+desde cualquier otro lado TODA llamada devuelve `5000003 NOT_IN_IP_WHITE_LIST` —
+verificado hoy otra vez. Producción sí puede (su censo corre a diario).
+
+`GET /api/automatizacion/temu/sondeo` corre una batería FIJA de llamadas de
+lectura y devuelve el código de error de cada una, que es justo el dato buscado:
+`3000032` = el endpoint existe pero nos falta permiso; `5000003` = la IP está
+fuera. Con botón en la pestaña, para poder repetirlo cuando cambie algo del lado
+de Temu en vez de tener que pedirlo.
+
+**La fila que decide es la segunda: si Temu nos deja LISTAR órdenes.** M2E está
+desinstalado y prohibido, y el webhook depende de cuatro trámites ajenos
+(compliance, alta de la URL, autorización del vendedor, carga de IPs). Si
+tampoco hay listado, no existe forma de enterarse de una venta de Temu y no hay
+nada que automatizar. Si responde, el camino queda abierto y lo demás es código
+nuestro.
+
+La lista de llamadas es fija y el endpoint NO acepta el nombre del método desde
+fuera: un proxy hacia "cualquier endpoint de Temu" sería una llave para
+escribirle al marketplace desde el panel.
+
 ### v0.300.0 — La casilla "solo lo que hay que mirar" se estaba callando el peor caso
 
 Brandon preguntó para qué sirve la casilla, y al ir a contestarlo salió que

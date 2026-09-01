@@ -66,6 +66,17 @@ interface OrdenOdoo {
   lineas: Linea[];
 }
 
+interface SondeoTemu {
+  veredicto: string;
+  resultados: Array<{
+    grupo: string;
+    endpoint: string;
+    ok: boolean;
+    codigo?: string | null;
+    error?: string;
+  }>;
+}
+
 interface Estado {
   odoo_ventas: {
     encendido: boolean;
@@ -135,6 +146,8 @@ export default function AutomatizacionPage() {
   const [soloProblemas, setSoloProblemas] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verParams, setVerParams] = useState(false);
+  const [temu, setTemu] = useState<SondeoTemu | null>(null);
+  const [sondeando, setSondeando] = useState(false);
   const [confirmarApagado, setConfirmarApagado] = useState(false);
   const [moviendo, setMoviendo] = useState(false);
   const [motivo, setMotivo] = useState("");
@@ -168,6 +181,19 @@ export default function AutomatizacionPage() {
   useEffect(() => {
     void cargar();
   }, [cargar]);
+
+  const sondearTemu = useCallback(async () => {
+    setSondeando(true);
+    try {
+      const r = await fetchSesion(`${API_BASE}/api/automatizacion/temu/sondeo`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setTemu(await r.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "no se pudo sondear Temu");
+    } finally {
+      setSondeando(false);
+    }
+  }, []);
 
   const mover = useCallback(async (encendido: boolean, porque = "") => {
     setMoviendo(true);
@@ -311,6 +337,56 @@ export default function AutomatizacionPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+        </section>
+
+        {/* ¿Y Temu? La pregunta se contesta desde el servidor porque la lista
+            blanca de Temu solo trae la IP de Railway: desde cualquier otra
+            máquina toda llamada devuelve 5000003 y no se puede saber nada. */}
+        <section className="mb-6 rounded-xl border bg-white p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">¿Se puede automatizar Temu?</h2>
+              <p className="text-xs text-slate-500">
+                Le pregunta a Temu si nos deja listar órdenes. Solo lectura.
+              </p>
+            </div>
+            <button
+              onClick={() => void sondearTemu()}
+              disabled={sondeando}
+              className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              {sondeando && <Loader2 className="h-4 w-4 animate-spin" />}
+              Preguntar
+            </button>
+          </div>
+          {temu && (
+            <div className="mt-3 space-y-2">
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium">
+                {temu.veredicto}
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-xs">
+                  <tbody>
+                    {temu.resultados.map((r) => (
+                      <tr key={r.endpoint} className="border-t">
+                        <td className="py-1.5 pr-3 text-slate-400">{r.grupo}</td>
+                        <td className="py-1.5 pr-3 font-mono">{r.endpoint}</td>
+                        <td className="py-1.5">
+                          {r.ok ? (
+                            <span className="text-emerald-700">responde</span>
+                          ) : (
+                            <span className="text-rose-700">
+                              {r.codigo ?? "falla"}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </section>

@@ -180,6 +180,76 @@ async def backfill(
     return await asyncio.to_thread(_correr)
 
 
+# Las llamadas del sondeo de Temu. La lista es FIJA y toda de lectura: el
+# endpoint no acepta el nombre del método desde fuera, porque un proxy hacia
+# "cualquier endpoint de Temu" sería una llave para escribirle al marketplace
+# desde el panel. Aquí solo se puede preguntar lo que está en esta tabla.
+_SONDEO_TEMU: list[tuple[str, str, dict]] = [
+    ("puerta", "bg.local.goods.list.query", {"page": 1, "pageSize": 1}),
+    # LO QUE DECIDE TODO: sin un listado de órdenes no hay forma de ENTERARSE
+    # de una venta de Temu, y sin eso no hay nada que automatizar.
+    ("ordenes", "bg.order.list.v2.get", {"pageNumber": 1, "pageSize": 10}),
+    ("ordenes", "bg.order.list.get", {"pageNumber": 1, "pageSize": 10}),
+    # Estaban bloqueados con 3000032 (API sensible, requiere permiso de Temu).
+    ("importes", "bg.order.amount.query", {"parentOrderSnList": ["X"]}),
+    ("importes", "temu.order.amount.v2.query", {"parentOrderSnList": ["X"]}),
+    # Nunca se encontró endpoint de guía; se prueban los nombres plausibles
+    # para poder decir con evidencia que no existe, en vez de suponerlo.
+    ("guia", "bg.logistics.shipment.get", {}),
+    ("guia", "bg.order.shippinginfo.get", {}),
+    ("guia", "bg.shipping.order.get", {}),
+]
+
+
+@router.get("/temu/sondeo")
+async def temu_sondeo():
+    """
+    ¿Se puede ya automatizar Temu? Pregunta y contesta con evidencia.
+
+    POR QUÉ ES UN ENDPOINT Y NO UN SCRIPT. La lista blanca de IPs de Temu solo
+    trae la salida de Railway, así que desde una laptop TODA llamada devuelve
+    `5000003 NOT_IN_IP_WHITE_LIST` y no se puede saber nada. Desde aquí sí.
+
+    LA PREGUNTA QUE IMPORTA es la segunda fila: **si Temu nos deja LISTAR
+    órdenes**. M2E está desinstalado y el webhook depende de cuatro trámites
+    ajenos; si tampoco hay listado, no existe forma de enterarse de una venta de
+    Temu y no hay nada que automatizar. Si el listado responde, el camino está
+    abierto y el resto es código nuestro.
+
+    Solo lectura, lista de llamadas fija, y ningún fallo se propaga: cada
+    intento reporta su código de error, que es justamente el dato buscado
+    (`3000032` = existe pero nos falta permiso; `5000003` = IP fuera).
+    """
+    from services import temu
+
+    resultados = []
+    for grupo, tipo, params in _SONDEO_TEMU:
+        fila: dict = {"grupo": grupo, "endpoint": tipo}
+        try:
+            r = await asyncio.wait_for(temu.llamar(tipo, params), timeout=25)
+            fila.update(ok=True, llaves=sorted(r.keys())[:12] if isinstance(r, dict) else None,
+                        muestra=str(r)[:400])
+        except asyncio.TimeoutError:
+            fila.update(ok=False, error="timeout a los 25 s")
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc)
+            fila.update(ok=False, error=msg[:300],
+                        codigo=next((c for c in ("5000003", "3000032", "3000031",
+                                                 "3000025", "3000012")
+                                     if c in msg), None))
+        resultados.append(fila)
+
+    puerta = next((r for r in resultados if r["grupo"] == "puerta"), {})
+    ordenes = [r for r in resultados if r["grupo"] == "ordenes"]
+    veredicto = (
+        "la IP de este servidor NO está en la lista blanca de Temu"
+        if not puerta.get("ok") else
+        "SE PUEDE: Temu deja listar órdenes" if any(r.get("ok") for r in ordenes) else
+        "NO se puede todavía: la API responde, pero no deja LISTAR órdenes"
+    )
+    return {"veredicto": veredicto, "resultados": resultados}
+
+
 @router.get("/simular")
 async def simular(
     venta: str = Query(..., description="external_order_id de la venta"),
