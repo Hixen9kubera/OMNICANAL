@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.346.0 — El Blindaje BD mordió de verdad: 0043 cura lo que 0040/0041 dejaron sin candado
+
+Eduardo reportó el workflow «Blindaje BD» en rojo. **No estaba fallando: estaba
+haciendo su trabajo** — reproducido local paso por paso (mismo verificador,
+misma trampa del canario):
+
+  · `enrich.market_highlights` (0041) nació **sin RLS** — y es justo la clase
+    de incidente que motivó el workflow en la auditoría del 19-ago.
+  · `enrich.market_categoria_prioridad_v` (0040) nació **sin
+    `security_invoker`**: atendía con el gafete de su dueño (postgres,
+    BYPASSRLS) y le entregaba todo a quien preguntara.
+
+La **0043** cierra ambos con el patrón de la casa (0025): RLS activa + cero
+políticas — solo pasa quien hace bypass, que es exactamente quien debe leer
+enrich (backend y cron de Competencia entran como postgres; verificado que el
+frontend no toca enrich con la llave anon). El canario sigue mordiendo.
+
+**Aplicada también a producción**, no solo al archivo: catálogo verificado
+antes/después (`relrowsecurity` False→True, la vista ganó
+`{security_invoker=on}`) y la lectura del backend intacta (1,133 filas).
+Versión 0.346.0.
+
+---
+
 ### v0.345.0 — El panel mostraba precios de agosto: ahora manda el sync (Eduardo)
 
 Eduardo abrió dos publicaciones nuestras en Mercado Libre y las comparó con el
