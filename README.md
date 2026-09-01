@@ -17623,3 +17623,52 @@ Bloque 3"): los cuatro puntos que leen esa bitácora están detrás de
 `SUPABASE_READ_PUBLICACIONES`, que en Railway producción está en `true`, así que
 ninguno se ejecuta. El hallazgo salió de leer una copia local atrasada. Versión
 0.312.0.
+
+---
+
+### v0.319.0 — Las unidades del panel de Competencia salían de la fuente equivocada (Eduardo)
+
+`competencia_captura._unidades_por_item` tiene dos fuentes y lo dice en su propio
+docstring: **primero `channel.order_items`** —nuestros pedidos, exacto y gratis— y
+sólo si falta `SUPABASE_DB_URL`, un barrido de la API de ML que existe "para cuando
+se corre en local".
+
+**Las 3,118 filas de `market_listing_metrics` tienen `fuente_unidades = 'ml_api'`.
+Ni una usó nuestros pedidos.** Toda la medición guardada salió del respaldo, y el
+respaldo subcuenta.
+
+El caso que lo destapó fue TEC-2162-NEG, en Licuadoras. Con los **mismos item_id**
+que la medición conoce y en la **misma ventana** que midió:
+
+| | BEKURA | SANCORFASHION | total |
+|---|---|---|---|
+| guardado | 23 | 26 | **49** |
+| real | 307 | 224 | **531** |
+
+No es que el dato estuviera viejo: nació mal, y por once veces. Y no es un caso
+aislado — de 545 SKUs comparables, **124 aparecen con menos de la mitad de lo que
+vendieron y 60 aparecen en cero habiendo vendido**.
+
+**El arreglo.** La vista deja de leer `market_listing_metrics.units_30d` y agrega
+`channel.sales_daily` de los últimos 30 días, cruzando por `(item_id, cuenta)` — la
+misma llave que usa `_unidades_por_item`. Verificado: cruza 972 filas con o sin la
+cuenta, y las únicas dos cuentas que aparecen en ventas son BEKURA y SANCORFASHION.
+
+`sales_daily` ya excluye cancelados, ya agrupa en hora de México, y se alimenta del
+webhook de ML que escribe en segundos: **el número queda siempre al día, sin cron y
+sin costo.** La vista pasa de 486 ms a 588 ms para sus 4,803 filas.
+
+Impacto medido antes de aplicar: **2,587 filas cambian**, el total pasa de 13,553 a
+21,139 unidades, y **460 filas que decían cero sí habían vendido**. Las 189 que
+decían venta y quedan en cero no son un error: son ventas que la foto vieja alcanzó
+y que ya salieron de la ventana de 30 días.
+
+**Dos cambios de significado, a propósito.** `unidades_30d` ya no es NULL nunca:
+ahora es 0 de verdad. La regla "None, NO 0" era correcta cuando las unidades salían
+de una medición que podía no haber corrido; ya no, porque `sales_daily` cubre todas
+las ventas de ML y la ausencia de fila significa "vendió cero". **Esto no aplica a
+las visitas**, que siguen en NULL cuando nadie midió — ahí la regla sigue viva. Y
+`fuente_unidades` pasa a `'pedidos'`, porque si no habría quedado mintiendo.
+
+La foto histórica no se toca: `market_listing_metrics.units_30d` sigue ahí con lo
+que midió cada mes; simplemente el panel ya no la lee. Versión 0.319.0.
