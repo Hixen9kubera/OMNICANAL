@@ -77,14 +77,28 @@ def top_alcanzable(raices: list[str]) -> list[dict]:
              count(*)                                                 n_top
         from enrich.market_bestsellers
        group by 1),
-      -- Una fila por SKU: se queda la publicación con MÁS visitas, que es la que
-      -- de verdad compite. Sumar las dos tiendas inflaría el tráfico de un SKU
-      -- por estar publicado dos veces.
-      mio as (
-        select distinct on (m.sku) m.sku, m.cuenta, m.listing_id, m.estado,
-               m.sale_price, m.list_price, m.visits_30d, m.units_30d, m.title
+      -- DOS pasos, y el orden importa.
+      --
+      -- 1) `ultimo`: una fila por (sku, cuenta) con el PERIODO MÁS RECIENTE.
+      --    `market_listing_metrics` guarda una foto POR MES (su PK lleva
+      --    `periodo`). Sin este paso, desde el día 1 de cada mes cada
+      --    publicación aparece dos veces y el paso 2 podía quedarse con la foto
+      --    de agosto por tener más visitas que la de septiembre a medio llenar.
+      --    El 1-sep-2026 este mismo descuido tumbó el cron de visitas.
+      --
+      -- 2) `mio`: de las publicaciones YA colapsadas por mes, la de MÁS visitas.
+      --    Sumar las dos tiendas inflaría el tráfico de un SKU por estar
+      --    publicado dos veces.
+      ultimo as (
+        select distinct on (m.sku, m.cuenta) m.sku, m.cuenta, m.listing_id,
+               m.estado, m.sale_price, m.list_price, m.visits_30d, m.units_30d,
+               m.title
           from enrich.market_listing_metrics m
-         order by m.sku, m.visits_30d desc nulls last)
+         order by m.sku, m.cuenta, m.periodo desc),
+      mio as (
+        select distinct on (u.sku) u.*
+          from ultimo u
+         order by u.sku, u.visits_30d desc nulls last)
     select v.sku, v.nombre, v.categoria_id, v.categoria_nombre, v.termino_general,
            mio.cuenta, mio.listing_id, mio.estado, mio.title,
            mio.sale_price::float precio, mio.visits_30d visitas, mio.units_30d unidades,
@@ -112,7 +126,16 @@ def sin_visitas(raices: list[str]) -> list[dict]:
     return sdb.fetch_all(f"""
     with top as (select categoria_id,
                         percentile_cont(0.5) within group (order by precio) p50
-                   from enrich.market_bestsellers where precio > 0 group by 1)
+                   from enrich.market_bestsellers where precio > 0 group by 1),
+    -- Una fila por (sku, cuenta): la foto del mes MÁS RECIENTE. El join de abajo
+    -- iba crudo contra la tabla, que es MENSUAL, así que desde el día 1 cada
+    -- publicación salía repetida en el reporte — y con la fila de septiembre a
+    -- medio llenar contando como "sin visitas".
+    ultimo as (
+      select distinct on (m.sku, m.cuenta) m.sku, m.cuenta, m.listing_id,
+             m.estado, m.sale_price, m.visits_30d, m.units_30d, m.title
+        from enrich.market_listing_metrics m
+       order by m.sku, m.cuenta, m.periodo desc)
     select v.sku, v.nombre, v.categoria_id, v.categoria_nombre, v.termino_general,
            m.cuenta, m.listing_id, m.estado, m.title,
            m.sale_price::float precio, m.visits_30d visitas, m.units_30d unidades,
@@ -122,7 +145,7 @@ def sin_visitas(raices: list[str]) -> list[dict]:
            case when m.estado = 'active' then 'activa sin tráfico'
                 else 'pausada' end causa
       from enrich.market_skus_v v
-      join enrich.market_listing_metrics m on m.sku = v.sku
+      join ultimo m on m.sku = v.sku
       left join top t on t.categoria_id = v.categoria_id
      where v.raiz_id in {marc} and v.activo
        and coalesce(m.visits_30d, 0) = 0

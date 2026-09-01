@@ -18021,3 +18021,42 @@ por $0.942** —de un tope de $9— y dejó **287 categorías con ranking del d�
 telemetría de v0.325.0 ya da el costo REAL: **$0.0032 por categoría**, cinco veces
 más barato que los $0.015 que se venían estimando. Y las 20 que no alcanzó las
 reportó con su dinero, como debía. Versión 0.328.0.
+
+---
+
+### v0.329.0 — Barrido de lectores sin deduplicar por periodo (Eduardo)
+
+Después de que el corte de mes tumbara el cron dos veces —una en la vista (0039) y
+otra en el script de visitas (v0.328.0)— valía más cerrar la clase entera que
+seguir apagando fuegos.
+
+**La clase es chica.** De los cinco esquemas, sólo **dos tablas** llevan una
+columna de periodo en su llave primaria:
+
+| Tabla | Llave | Estado |
+|---|---|---|
+| `enrich.market_listing_metrics` | `(sku, canal, cuenta, periodo)` | duplica ×1.9 hoy |
+| `enrich.listing_visits` | `(listing_id, dias)` | otro patrón: `dias` es el tamaño de ventana, y sus únicos lectores son scripts sueltos |
+
+**Los lectores de `market_listing_metrics`, uno por uno:**
+
+- `routers/metricas.py` — **ya estaba bien.** Tiene `distinct on (sku, cuenta) …
+  order by periodo desc` y hasta el comentario que lo anticipa: *"hoy solo hay un
+  mes cargado, pero la tabla es mensual y algún día tendrá más de uno"*. Ese día
+  llegó y el KPI de visitas bajas no se movió.
+- `scripts/competencia_visitas.py` — arreglado en v0.328.0.
+- `services/competencia_supabase.py` — es el ESCRITOR, no aplica.
+- **`scripts/competencia_analisis.py` — tenía el bug, en dos lugares.**
+
+En `top_alcanzable`, el `distinct on (m.sku)` ordenaba por visitas **mezclando
+meses**: podía quedarse con la foto de agosto por tener más visitas que la de
+septiembre a medio llenar. Ahora son dos pasos, y el orden importa: primero
+colapsar por periodo, después elegir la publicación con más tráfico.
+
+En `sin_visitas`, el join iba **crudo contra la tabla**, sin deduplicar nada: cada
+publicación salía repetida en el reporte, y la fila del mes nuevo —vacía por
+definición— contaba como "sin visitas". Ahora entra por el mismo CTE.
+
+Verificado contra producción con Deportes y Fitness: `top_alcanzable` 133 filas /
+133 llaves, `sin_visitas` 187 / 187. **Cero duplicados en los dos.** Versión
+0.329.0.
