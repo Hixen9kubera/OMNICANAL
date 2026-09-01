@@ -72,8 +72,20 @@ CONCURRENCIA = 8
 
 def objetivo(limite: int | None = None) -> list[dict[str, Any]]:
     """Las publicaciones medidas que siguen vivas, con su item_id."""
+    # ⚠ `distinct on (sku, cuenta)`: `market_listing_metrics` guarda UNA FILA POR
+    # MES (su PK lleva `periodo`). Sin esto, desde el día 1 cada publicación sale
+    # DOS veces y se mide dos veces.
+    #
+    # Pasó el 1-sep-2026 y tumbó el cron: pidió 5,732 filas para 2,935
+    # publicaciones reales, el doble de llamadas hizo que ML empezara a limitar
+    # por tasa, 4,397 volvieron vacías y la guarda de salud abortó la corrida —
+    # y con ella el sondeo de /highlights, que va encadenado.
+    #
+    # Es el MISMO error que la 0039 arregló en la vista. Éste no estaba cubierto
+    # porque el script consulta la TABLA, no la vista.
     sql = """
-        select m.sku::text as sku, m.canal, m.cuenta, m.periodo,
+        select distinct on (m.sku, m.cuenta)
+               m.sku::text as sku, m.canal, m.cuenta, m.periodo,
                coalesce(m.listing_id, l.listing_id) as ml_item_id,
                m.visits_30d as visitas_previas,
                m.metrics_updated_at::date as medido_el
@@ -84,7 +96,7 @@ def objetivo(limite: int | None = None) -> list[dict[str, Any]]:
            and lower(l.situacion) in ('active', 'paused')
            and nullif(l.listing_id, '') is not null
          where m.canal = 'mercado_libre'
-         order by m.sku, m.cuenta
+         order by m.sku, m.cuenta, m.periodo desc
     """
     if limite:
         sql += f" limit {int(limite)}"

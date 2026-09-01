@@ -17987,3 +17987,37 @@ ABDOMINALES» en tres renglones y encima cortaba el mensaje a la mitad, con un
 Ahora el mensaje va **debajo**, en su propio renglón y completo, y el encabezado
 lleva `flex-wrap` para que nada le parta el título. Verificado en el navegador a
 768 px con el mensaje puesto. Versión 0.327.0.
+
+---
+
+### v0.328.0 — El corte de mes tumbó el cron de visitas, y se llevó una tanda del barrido (Eduardo)
+
+Primer día 1 con los crons puestos, y el corte de mes cobró dos veces.
+
+**El cron de visitas (12:00 UTC) reventó.** `market_listing_metrics` guarda una
+fila POR MES —su PK lleva `periodo`— y desde hoy hay agosto y septiembre. La
+consulta de `objetivo()` no deduplicaba: pidió **5,732 filas para 2,935
+publicaciones reales**. El doble de llamadas hizo que Mercado Libre empezara a
+limitar por tasa, **4,397 volvieron vacías**, la guarda de salud abortó con
+código ≠ 0 — correctamente — y como el `startCommand` encadena con `&&`, **el
+sondeo de `/highlights` tampoco corrió**.
+
+Es el MISMO error que la 0039 arregló en la vista. Éste no estaba cubierto porque
+el script consulta la TABLA, no la vista. Ahora lleva
+`distinct on (sku, cuenta) … order by periodo desc`: verificado contra
+producción, 2,935 filas para 2,935 publicaciones, **cero duplicados**.
+
+**El barrido (13:00 UTC) sí funcionó**, pero perdió una tanda entera. Falló con
+`duplicate key … (mercado_libre, MLM455588, hoja, 9) already exists`: la PK de
+`market_bestsellers` es `(canal, categoria_id, nivel, posicion)` y
+`_enriquecer_ranking` **sobreescribe la posición** con la de `/highlights`, así
+que dos filas pueden caer en la misma. `reemplazar_ranking` deduplicaba sólo por
+`externo_id`. Ahora deduplica también por posición, y `capturar_rankings_categorias`
+envuelve **cada categoría en su propio try**: el raspado ya se pagó, así que una
+que falle al guardarse no puede llevarse a las otras 19 del lote.
+
+**Lo que sí salió bien, y hay que anotarlo:** el barrido capturó **279 categorías
+por $0.942** —de un tope de $9— y dejó **287 categorías con ranking del día**. La
+telemetría de v0.325.0 ya da el costo REAL: **$0.0032 por categoría**, cinco veces
+más barato que los $0.015 que se venían estimando. Y las 20 que no alcanzó las
+reportó con su dinero, como debía. Versión 0.328.0.

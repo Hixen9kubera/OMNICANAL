@@ -287,12 +287,23 @@ def reemplazar_ranking(categoria_id: str, nivel: str, periodo: str,
     `periodo` se acepta por compatibilidad con la firma del store y no se
     escribe: la tabla nueva no tiene esa columna.
     """
-    listas, vistos = [], set()
+    # Se deduplica por externo_id Y POR POSICIÓN. La PK es
+    # (canal, categoria_id, nivel, posicion), y `_enriquecer_ranking`
+    # SOBREESCRIBE la posición con la de /highlights: dos filas distintas pueden
+    # terminar en la misma. Deduplicar sólo por id dejaba pasar el choque y el
+    # INSERT reventaba.
+    #
+    # Costó una tanda entera el 1-sep-2026: "duplicate key ... (mercado_libre,
+    # MLM455588, hoja, 9) already exists" mató las 20 categorías del lote.
+    # Se conserva la PRIMERA de cada posición, que viene en el orden del ranking.
+    listas, vistos, posiciones = [], set(), set()
     for f in filas:
         ident = f.get("externo_id")
-        if not ident or ident in vistos or f.get("posicion") is None:
+        pos = f.get("posicion")
+        if not ident or ident in vistos or pos is None or pos in posiciones:
             continue
         vistos.add(ident)
+        posiciones.add(pos)
         d = {k: f.get(k) for k in _COLS_BEST}
         d.update(canal=canal, categoria_id=categoria_id, nivel=nivel)
         d["es_nuestro"] = bool(f.get("es_nuestro"))

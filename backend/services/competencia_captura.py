@@ -974,11 +974,18 @@ async def capturar_rankings_categorias(periodo: str | None = None,
         for cat, filas in parcial.items():
             if not filas:
                 continue
-            _marcar(filas, nuestras)
-            nivel = nivel_de.get(cat, "hoja")
-            await _enriquecer_ranking(cat, filas, nivel)
-            guardados[cat] = competencia_store.reemplazar_ranking(
-                cat, nivel, periodo, filas)
+            # Cada categoría en su propio try: el raspado ya se PAGÓ, así que una
+            # que falle al guardarse no puede llevarse a las otras 19 de la tanda.
+            # El 1-sep-2026 una colisión de PK hizo exactamente eso.
+            try:
+                _marcar(filas, nuestras)
+                nivel = nivel_de.get(cat, "hoja")
+                await _enriquecer_ranking(cat, filas, nivel)
+                guardados[cat] = competencia_store.reemplazar_ranking(
+                    cat, nivel, periodo, filas)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("no se pudo guardar el ranking de %s: %s", cat, exc)
+                avisos.append(f"{cat}: se raspó pero no se pudo guardar ({exc}).")
 
     # Términos más buscados: una llamada por categoría, gratis, sin navegador.
     for cat in nivel_de:
