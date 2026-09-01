@@ -899,8 +899,10 @@ function SkusDeCategoria({ categoriaId }: { categoriaId: string }) {
           Nuestros SKUs
         </span>
         <span className="text-slate-400">
-          {datos.n_total} en catálogo · {datos.n_publicados} publicados ·{" "}
-          {datos.n_vigilados} medidos
+          {datos.n_publicados} publicados · {datos.n_vigilados} medidos
+          {datos.n_sin_publicar
+            ? ` · ${datos.n_sin_publicar} sin publicar, fuera de la lista`
+            : ""}
         </span>
       </div>
       <div className="overflow-x-auto">
@@ -1237,8 +1239,18 @@ function FilaNicho({ n }: { n: CompetenciaNicho }) {
           {n.tenemos ? (
             <>
               <div className="flex items-center gap-1.5">
+                {/* PUBLICADOS, no el catálogo entero: un SKU sin publicar no
+                    compite en este nicho, y contarlo decía que estábamos mejor
+                    posicionados de lo que estamos. En Mochilas la insignia decía
+                    "20 SKUs en catálogo" y el publicado era UNO; en Tenis decía
+                    363 y compiten 127. */}
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
-                  {n.n_catalogo} {n.n_catalogo === 1 ? "SKU" : "SKUs"} en catálogo
+                  {n.n_catalogo}{" "}
+                  {n.solo_publicados === false
+                    ? "en catálogo"
+                    : n.n_catalogo === 1
+                      ? "publicado"
+                      : "publicados"}
                 </span>
                 {n.sin_vigilancia ? (
                   <span
@@ -1249,18 +1261,39 @@ function FilaNicho({ n }: { n: CompetenciaNicho }) {
                   </span>
                 ) : null}
               </div>
+              {/* Los que se quedaron fuera se dicen, no se esconden: recortar
+                  en silencio se lee como "no hay más". */}
+              {n.n_sin_publicar ? (
+                <div className="mt-0.5 text-[10px] text-slate-400">
+                  y {n.n_sin_publicar} sin publicar
+                </div>
+              ) : null}
               <div className="mt-0.5 truncate font-mono text-[10px] text-slate-500">
                 {n.skus_catalogo.slice(0, 3).join(" · ")}
                 {n.n_catalogo > 3 ? ` +${n.n_catalogo - 3}` : ""}
               </div>
             </>
           ) : (
-            <span
-              className="inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-800"
-              title="No tenemos ningún SKU en esta categoría: es un hueco de catálogo"
-            >
-              <Ban size={9} /> no tenemos
-            </span>
+            <>
+              {/* DOS huecos distintos, y confundirlos manda a la acción
+                  equivocada: "sin publicar" se cierra prendiendo lo que ya
+                  tenemos; "no tenemos" se cierra consiguiendo producto. */}
+              <span
+                className="inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-800"
+                title={
+                  n.n_sin_publicar
+                    ? "Tenemos producto en catálogo pero ninguno publicado aquí"
+                    : "No tenemos ningún SKU en esta categoría: es un hueco de catálogo"
+                }
+              >
+                <Ban size={9} /> {n.n_sin_publicar ? "sin publicar" : "no tenemos"}
+              </span>
+              {n.n_sin_publicar ? (
+                <div className="mt-0.5 text-[10px] text-slate-400">
+                  {n.n_sin_publicar} en catálogo, ninguno publicado
+                </div>
+              ) : null}
+            </>
           )}
         </div>
       </button>

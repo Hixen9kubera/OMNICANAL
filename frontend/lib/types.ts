@@ -903,8 +903,12 @@ export interface CompetenciaNicho {
   skus_catalogo: string[];
   skus_vigilados: string[];
   tenemos: boolean;
-  /** Hay producto nuestro pero nadie lo está midiendo. */
+  /** Hay producto nuestro PUBLICADO pero nadie lo está midiendo. */
   sin_vigilancia: boolean;
+  /** SKUs de este nicho que tenemos en catálogo pero NO están publicados en ML. */
+  n_sin_publicar?: number;
+  /** `false` = `n_catalogo` es el CATÁLOGO entero: no se pudo filtrar por publicados. */
+  solo_publicados?: boolean;
 }
 
 export interface CompetenciaVista {
@@ -942,9 +946,12 @@ export interface CompetenciaSkuDeCategoria {
 export interface CompetenciaSkusSub {
   categoria_id: string;
   skus: CompetenciaSkuDeCategoria[];
+  /** El CATÁLOGO entero de la categoría. `skus` solo trae los publicados. */
   n_total?: number;
   n_vigilados?: number;
   n_publicados?: number;
+  /** Cuántos quedaron fuera de la lista por no estar publicados en ML. */
+  n_sin_publicar?: number;
   aviso?: string;
   error?: string;
 }

@@ -18107,6 +18107,59 @@ reportó con su dinero, como debía. Versión 0.328.0.
 
 ---
 
+### v0.337.0 — Competencia cuenta lo PUBLICADO, no el catálogo entero (Eduardo)
+
+Pedido de Eduardo mirando el desplegable: renglones y renglones de SKUs marcados
+`sin publicar`, con todo en "—" porque no hay nada que medir. Un SKU que no está
+publicado **no compite en ese nicho**, así que contarlo decía que estábamos mejor
+posicionados de lo que estamos.
+
+Medido antes de cambiar nada:
+
+| nicho | decía | compiten |
+|---|---|---|
+| Termos | 46 | **8** |
+| Mochilas | 20 | **1** |
+| Tenis | 363 | **127** |
+| Sillas | 9 | 9 |
+
+Y en todo el tab: de **13,788** SKUs mapeados a alguna categoría de ML, sólo
+**2,502 (18%)** tienen publicación viva. El 82% inflaba los conteos.
+
+**El filtro es `('active','paused')`, no "distinta de closed".** No es lo mismo:
+hoy hay 208 publicaciones en `under_review`, 2 `inactive` y 267 sin estado. Se usa
+el mismo filtro canónico que `competencia_visitas.objetivo()` y la vista de
+prioridad, para que las tres cuenten igual.
+
+**Los dos lados a la vez**, para no recrear el descuadre de la v0.333.0:
+
+- `channel_read.skus_publicados_por_categorias()` — nuevo, con el join a
+  `channel.listings`.
+- La insignia del nicho dice **"8 publicados"** y debajo **"y 38 sin publicar"**:
+  el número no desaparece en silencio, cambia de renglón.
+- El desplegable lista **sólo publicados**, y filtra ANTES de resolver nombres y
+  fotos en Woo — que es lo caro: en Tenis se ahorra 236 de 363.
+- Su encabezado dice cuántos quedaron fuera: *"8 publicados · 8 medidos · 38 sin
+  publicar, fuera de la lista"*.
+
+**Dos huecos que se veían iguales y ahora no:** `no tenemos` (no hay producto en
+catálogo — se cierra consiguiéndolo) y `sin publicar` (lo hay, apagado — se cierra
+publicándolo). Confundirlos manda a la acción equivocada. En Hogar: Espejos y
+Toldos son lo primero; Toallas, Sábanas y Termos lo segundo.
+
+**Y la rama legado no miente.** Cuando `categorias_write.activo()` es `False` se
+lee `categorias_ml`, que no sabe de publicaciones. Ahí el contexto devuelve
+`filtrado: False` y la insignia vuelve a decir *"en catálogo"*: se detectó justo
+así — el sandbox tomaba esa rama y mostraba "359 publicados" siendo el catálogo.
+
+Verificado contra producción, insignia contra desplegable y con las dos sumas
+cuadrando (`publicados + sin publicar = catálogo`) en los cinco nichos, y **0
+filas sin publicar** coladas en la lista.
+
+⚠️ `env.staging` gana `SUPABASE_WRITE_CATEGORIAS=true` para que el sandbox tome la
+misma rama que producción. Ese archivo **no está versionado**: quien clone el repo
+tiene que agregárselo o validará una rama que no es la que corre.
+
 ### v0.334.0 — Cada categoría dice cuándo se capturó SU ranking (Eduardo)
 
 El encabezado mostraba **una** fecha para todo el árbol, tomada del **máximo**. O

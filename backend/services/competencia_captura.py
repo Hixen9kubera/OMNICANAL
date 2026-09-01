@@ -423,6 +423,27 @@ def skus_de_categoria(categoria_id: str) -> dict[str, Any]:
     if not todos:
         return {"categoria_id": categoria_id, "skus": []}
 
+    # SOLO LOS QUE COMPITEN. Un SKU sin publicar no pelea en ese nicho, y llenaba
+    # la tabla de renglones con todo en "—": en Tenis eran 236 de 363. Se filtra
+    # ANTES de resolver nombres y fotos en Woo, que es lo caro.
+    # `n_total` conserva el catálogo entero y `n_sin_publicar` dice cuántos se
+    # quedaron fuera: recortar en silencio se lee como "no hay más".
+    catalogo_total = len(todos)
+    try:
+        if categorias_write.activo():
+            vivos = set(channel_read.skus_publicados_por_categorias(
+                [categoria_id]).get(categoria_id) or [])
+            todos = [s for s in todos if s in vivos]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("skus_de_categoria(%s): no se pudo filtrar por publicados: %s",
+                    categoria_id, exc)
+    if not todos:
+        return {"categoria_id": categoria_id, "skus": [], "n_total": catalogo_total,
+                "n_publicados": 0, "n_vigilados": 0,
+                "n_sin_publicar": catalogo_total,
+                "aviso": f"Los {catalogo_total} SKUs de esta categoría están sin "
+                         "publicar en ML: ninguno compite todavía."}
+
     vigilados = {s["sku"]: s for s in competencia_store.listar_skus(False)
                  if s.get("categoria_id") == categoria_id}
     medidas: dict[str, list[dict[str, Any]]] = {}
@@ -501,9 +522,11 @@ def skus_de_categoria(categoria_id: str) -> dict[str, Any]:
     return {
         "categoria_id": categoria_id,
         "skus": salida,
-        "n_total": len(salida),
+        # `n_total` es el CATÁLOGO entero; `salida` sólo trae los publicados.
+        "n_total": catalogo_total,
         "n_vigilados": sum(1 for s in salida if s["vigilado"]),
-        "n_publicados": sum(1 for s in salida if s["publicado"]),
+        "n_publicados": len(salida),
+        "n_sin_publicar": catalogo_total - len(salida),
         "aviso": ("Los SKUs sin vigilancia muestran su publicación pero no sus "
                   "visitas ni ventas: esos datos solo salen de medirlos."),
     }
@@ -694,13 +717,32 @@ def contexto_nichos(arbol: list[dict[str, Any]], tope: int = 5) -> dict[str, Any
         cids.extend(n["categoria_id"] for n in orden)
     cids = sorted(set(cids))
 
+    # ⚠️ `catalogo` son los SKUs PUBLICADOS, no el catálogo entero. Un SKU sin
+    # publicar no compite en ese nicho, así que contarlo dice que estamos mejor
+    # posicionados de lo que estamos: en Mochilas el panel decía "20 SKUs" y el
+    # publicado era UNO. `sin_publicar` guarda los que se quedaron fuera para que
+    # el número no desaparezca en silencio — se muestra al lado.
     catalogo: dict[str, list[dict[str, Any]]] = {c: [] for c in cids}
+    sin_publicar: dict[str, int] = {c: 0 for c in cids}
+    # ¿El conteo son PUBLICADOS o el catálogo entero? La rama legado no lo puede
+    # saber, y decir "publicados" ahí sería inventar. Viaja hasta la UI para que
+    # etiquete lo que de verdad está contando.
+    filtrado = False
     if cids:
         try:
             if categorias_write.activo():
-                for cid, skus_cat in channel_read.skus_por_categorias(cids).items():
+                filtrado = True
+                total = channel_read.skus_por_categorias(cids)
+                for cid, skus_cat in channel_read.skus_publicados_por_categorias(cids).items():
                     catalogo[cid] = [{"sku": s} for s in skus_cat]
+                    sin_publicar[cid] = max(0, len(total.get(cid) or []) - len(skus_cat))
             else:
+                # Camino legado (MySQL). `categorias_ml` no sabe de publicaciones,
+                # así que aquí NO se puede filtrar: cuenta el catálogo entero y lo
+                # DECLARA con `filtrado = False`. Etiquetarlo "publicados" sería
+                # exactamente el defecto que este cambio vino a quitar.
+                log.info("contexto_nichos: sin kubera, el conteo es de CATÁLOGO, "
+                         "no de publicados (categorias_ml no sabe de publicaciones)")
                 marcas = ",".join(["%s"] * len(cids))
                 for f in db.fetch_all(
                     f"SELECT sku, category_id FROM categorias_ml WHERE category_id IN ({marcas}) "
@@ -718,12 +760,15 @@ def contexto_nichos(arbol: list[dict[str, Any]], tope: int = 5) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudieron listar los SKUs vigilados: %s", exc)
 
-    return {"catalogo": catalogo, "vigilados": vigilados}
+    return {"catalogo": catalogo, "vigilados": vigilados,
+            "sin_publicar": sin_publicar, "filtrado": filtrado}
 
 
 def nichos_del_top(raiz: dict[str, Any], tope: int = 5, *,
                    catalogo: dict[str, list[dict[str, Any]]] | None = None,
-                   vigilados: dict[str, list[str]] | None = None) -> list[dict[str, Any]]:
+                   vigilados: dict[str, list[str]] | None = None,
+                   sin_publicar: dict[str, int] | None = None,
+                   filtrado: bool | None = None) -> list[dict[str, Any]]:
     """
     Los nichos donde SI conviene competir, dictados por el top de la categoria
     padre y no por nuestro inventario.
@@ -764,19 +809,25 @@ def nichos_del_top(raiz: dict[str, Any], tope: int = 5, *,
     if not orden:
         return []
 
-    if catalogo is None or vigilados is None:
+    if catalogo is None or vigilados is None or sin_publicar is None:
         ctx = contexto_nichos([raiz], tope)
         catalogo = ctx["catalogo"] if catalogo is None else catalogo
         vigilados = ctx["vigilados"] if vigilados is None else vigilados
+        sin_publicar = ctx["sin_publicar"] if sin_publicar is None else sin_publicar
+        filtrado = ctx["filtrado"] if filtrado is None else filtrado
 
     for n in orden:
         cid = n["categoria_id"]
-        mios = catalogo.get(cid) or []
+        mios = catalogo.get(cid) or []          # PUBLICADOS, no el catálogo entero
         n["n_catalogo"] = len(mios)
+        n["n_sin_publicar"] = (sin_publicar or {}).get(cid, 0)
+        # False = el número es del CATÁLOGO, no de lo publicado. La UI cambia la
+        # etiqueta en vez de afirmar algo que no se midió.
+        n["solo_publicados"] = bool(filtrado)
         n["skus_catalogo"] = [m["sku"] for m in mios[:12]]
         n["skus_vigilados"] = vigilados.get(cid) or []
         n["tenemos"] = bool(mios)
-        # El hueco que importa: hay producto en catalogo pero nadie lo mide.
+        # El hueco que importa: hay producto PUBLICADO pero nadie lo mide.
         n["sin_vigilancia"] = bool(mios) and not n["skus_vigilados"]
 
     if sin_categoria:

@@ -213,6 +213,40 @@ def skus_de_categoria(category_id: str) -> list[str]:
             order by sku""", (category_id,))]
 
 
+def skus_publicados_por_categorias(ids: list[str]) -> dict[str, list[str]]:
+    """
+    `{ category_id: [sku, …] }` pero SOLO los que tienen publicación VIVA en ML.
+
+    ── POR QUÉ NO ALCANZA `skus_por_categorias` ────────────────────────────────
+    Ésa devuelve el mapa de catálogo entero, y en Competencia eso engaña: un SKU
+    que no está publicado NO compite en ese nicho, así que contarlo dice que
+    estamos mejor posicionados de lo que estamos. Medido el 1-sep-2026: de los
+    13,788 SKUs mapeados a alguna categoría de ML, **sólo 2,502 (18%) tienen
+    publicación viva**. En Mochilas el panel decía "20 SKUs en catálogo" y el
+    publicado era **uno**; en Tenis decía 363 y compiten 127.
+
+    ── EL FILTRO ES `('active','paused')`, NO "distinta de closed" ─────────────
+    Son cosas distintas y la diferencia no es teórica: hoy hay 208 publicaciones
+    en `under_review`, 2 en `inactive` y 267 sin estado. "No cerrada" las metería
+    a todas. Se usa el mismo filtro canónico que `competencia_visitas.objetivo()`
+    y la vista de prioridad, para que las tres cuenten lo mismo.
+    """
+    salida: dict[str, list[str]] = {c: [] for c in ids}
+    if not ids:
+        return salida
+    for r in sdb.fetch_all(
+        """select distinct pc.category_id, pc.sku::text as sku
+             from channel.product_category pc
+             join channel.listings l
+               on l.sku = pc.sku and l.canal = 'mercado_libre'
+              and lower(l.situacion) in ('active', 'paused')
+              and nullif(l.listing_id, '') is not null
+            where pc.channel_id = 'mercado_libre' and pc.category_id = any(%s)
+            order by pc.category_id, sku""", (list(ids),)):
+        salida.setdefault(r["category_id"], []).append(str(r["sku"]))
+    return salida
+
+
 def skus_por_categorias(ids: list[str]) -> dict[str, list[str]]:
     """{ category_id: [sku, …] } para varios nichos de una sola consulta."""
     salida: dict[str, list[str]] = {c: [] for c in ids}
