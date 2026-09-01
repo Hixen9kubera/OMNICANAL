@@ -112,6 +112,56 @@ async def _traer(parent_sn: str) -> dict[str, Any] | None:
         return None
 
 
+async def _traer_guia(parent_sn: str, order_sn: str | None) -> tuple[str, str]:
+    """
+    (guía, paquetería) de una orden de Temu. Cadenas vacías si no se pudo.
+
+    HACE FALTA UNA SEGUNDA LLAMADA, y esto costó entenderlo. La guía **NO viene
+    en el pedido**: se buscó en toda la respuesta de `bg.order.detail.v2.get` y
+    del listado, en los dos vocabularios —`trackingNumber` en inglés y
+    `mailNo`/`waybill` en el chino de paquetería— y no aparece.
+
+    Los endpoints de envío sí existen, pero hay que leer los CÓDIGOS de error
+    para verlo, porque un "falla" a secas los confunde con los inexistentes:
+
+        bg.logistics.shipment.v2.get   120012016  "The parentOrder or Order is invalid"
+        bg.order.shippinginfo.v2.get   180020003  "Invalid param"
+        bg.shipping.order.get          3000003    "type not exists"  ← este sí no existe
+
+    Los dos primeros decían **"me faltan los parámetros"**, no "no existo": se
+    estaban llamando sin `parentOrderSn`/`orderSn`. Con ellos contestan.
+    Verificado contra una orden real el 2026-09-01:
+
+        shipmentInfoDTO[].trackingNumber = JMX600983301165
+        shipmentInfoDTO[].carrierName    = J&T express
+
+    FALLA SUAVE a propósito: sin guía la venta se registra igual y la columna
+    queda vacía. Que Temu no conteste no puede costar un pedido — y la guía
+    llega tarde de todos modos (Temu la asigna al generar la etiqueta).
+    """
+    from services import temu
+
+    for tipo in ("bg.logistics.shipment.v2.get", "bg.order.shippinginfo.v2.get"):
+        params = {k: v for k, v in (("parentOrderSn", str(parent_sn)),
+                                    ("orderSn", order_sn)) if v}
+        try:
+            r = await temu.llamar(tipo, params)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("pedidos_temu: %s no dio guía de %s: %s",
+                      tipo, parent_sn, str(exc)[:120])
+            continue
+        envios = (r or {}).get("shipmentInfoDTO") or []
+        if isinstance(envios, dict):
+            envios = [envios]
+        for e in envios:
+            if not isinstance(e, dict):
+                continue
+            guia = str(e.get("trackingNumber") or "").strip()
+            if guia:
+                return guia, str(e.get("carrierName") or "").strip()
+    return "", ""
+
+
 def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
     """Detalle de Temu → el dict que espera `pedidos_ml.construir_payload`."""
     padre = det.get("parentOrderMap") or {}
@@ -203,6 +253,15 @@ async def procesar(parent_sn: str) -> dict[str, Any]:
     if not any(i["sku"] for i in orden["items"]):
         return {"ok": False, "id": parent_sn,
                 "motivo": "la orden no trae extCode (SKU) en ninguna línea"}
+
+    # LA GUÍA, en su propia llamada. Ver `_traer_guia`: no viene en el pedido y
+    # hace falta pedirla aparte con `parentOrderSn` + `orderSn`. Va DESPUÉS de
+    # comprobar que hay SKU: si la venta no sirve, no vale la pena el viaje.
+    orden["guia"], orden["paqueteria"] = await _traer_guia(
+        parent_sn, ((det.get("orderList") or [{}])[0] or {}).get("orderSn"))
+    if orden["guia"]:
+        log.info("TEMU orden %s · guía %s (%s)", parent_sn,
+                 orden["guia"], orden["paqueteria"] or "sin paquetería")
 
     estado_num = orden.pop("_estado_num", None)
     try:

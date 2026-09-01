@@ -120,6 +120,7 @@ interface SondeoTemu {
     campos_del_padre?: string[];
     /** ¿La guía viene dentro de la propia orden? */
     guia_en_la_orden: boolean;
+    guia_en_envio?: boolean;
     guia_con_valor: boolean;
     campos_de_guia: Array<{ campo: string; con_valor: boolean; valor: string | null }>;
   } | null;
@@ -557,11 +558,11 @@ export default function AutomatizacionPage() {
                   }`}
                 >
                   <b>Guía:</b>{" "}
-                  {temu.ordenes.guia_con_valor
-                    ? "SÍ viene en la orden, y con valor."
-                    : temu.ordenes.guia_en_la_orden
-                      ? "el campo existe pero llega vacío en esta orden."
-                      : "NO aparece dentro de la orden."}
+                  {temu.ordenes.guia_en_la_orden
+                    ? "viene DENTRO de la orden."
+                    : temu.ordenes.guia_en_envio
+                      ? "NO viene en la orden — sale de la 2ª llamada, la de envío."
+                      : "no aparece por ningún lado."}
                   {temu.ordenes.campos_de_guia?.length > 0 && (
                     <span className="mt-1 block font-mono text-xs">
                       {temu.ordenes.campos_de_guia

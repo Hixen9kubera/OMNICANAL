@@ -319,7 +319,12 @@ async def temu_sondeo():
             "campos_del_renglon": (sorted(renglones[0].keys())[:30]
                                    if renglones and isinstance(renglones[0], dict) else []),
         }
+        # DOS FUENTES DISTINTAS, y confundirlas fue un error real: el rótulo
+        # decía "SÍ viene en la orden" cuando la guía venía de la llamada de
+        # envío. `guias` es lo que trae el PEDIDO; `guias_envio`, lo que trae
+        # el endpoint de logística.
         guias = _buscar_guia(d)
+        guias_envio: list = []
 
         # LA GUÍA, SEGUNDO INTENTO: con una orden DE VERDAD.
         # El sondeo del 1-sep dejó claro que dos endpoints de envío existen y
@@ -343,7 +348,7 @@ async def temu_sondeo():
                     fila.update(ok=True,
                                 llaves=sorted(r2.keys())[:12] if isinstance(r2, dict) else None)
                     if encontrados:
-                        guias.extend(encontrados)
+                        guias_envio.extend(encontrados)
                 except asyncio.TimeoutError:
                     fila.update(ok=False, error="timeout a los 25 s")
                 except Exception as exc:  # noqa: BLE001
@@ -359,8 +364,9 @@ async def temu_sondeo():
             "en_esta_pagina": len(lista),
             "campos_por_orden": sorted(primera.keys())[:30],
             "guia_en_la_orden": bool(guias),
-            "guia_con_valor": any(g["con_valor"] for g in guias),
-            "campos_de_guia": guias,
+            "guia_en_envio": bool(guias_envio),
+            "guia_con_valor": any(g["con_valor"] for g in guias + guias_envio),
+            "campos_de_guia": guias + guias_envio,
             **detalle,
         }
     for r in resultados:

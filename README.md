@@ -1001,6 +1001,34 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.354.0 — Temu SÍ da la guía, y ya se pide
+
+Contestado con una orden real, que era lo que faltaba:
+
+    shipmentInfoDTO[].trackingNumber = JMX600983301165
+    shipmentInfoDTO[].carrierName    = J&T express
+    shipmentInfoDTO[].carrierId      = 202398511
+
+`bg.logistics.shipment.v2.get` y `bg.order.shippinginfo.v2.get` **responden** en
+cuanto se les pasa `parentOrderSn` + `orderSn`. Sus errores anteriores
+—`120012016` y `180020003`— decían "me faltan los parámetros", no "no existo";
+distinguirlos de los `3000003 type not exists` era todo el asunto.
+
+`pedidos_temu._traer_guia` hace esa segunda llamada al crear el pedido. **Falla
+suave**: sin guía la venta se registra igual y la columna queda vacía — que Temu
+no conteste no puede costar un pedido. Va después de comprobar que hay SKU: si
+la venta no sirve, no vale el viaje.
+
+**Y SE CORRIGE UN RÓTULO QUE MENTÍA.** El sondeo decía *"la guía SÍ viene en la
+orden"* cuando venía de la llamada de envío: `guias` mezclaba las dos fuentes en
+la misma lista. Ahora se cuentan por separado (`guia_en_la_orden` vs
+`guia_en_envio`) y la pantalla dice *"NO viene en la orden — sale de la 2ª
+llamada"*, que es la verdad y además es la que le importa a quien vaya a
+implementarlo.
+
+Con esto Temu queda igual que TikTok salvo en el precio real, que sigue en
+`3000032` y es trámite.
+
 ### v0.352.0 — Vuelve el sondeo de Temu: quedaba una pregunta sin contestar
 
 Se retiró en v0.347.0 dando por buena una inferencia, y no lo era. Sobre la guía
