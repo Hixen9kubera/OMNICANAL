@@ -81,6 +81,12 @@ interface SondeoTemu {
     total_declarado: number | null;
     en_esta_pagina: number;
     campos_por_orden: string[];
+    campos_del_renglon?: string[];
+    campos_del_padre?: string[];
+    /** ¿La guía viene dentro de la propia orden? */
+    guia_en_la_orden: boolean;
+    guia_con_valor: boolean;
+    campos_de_guia: Array<{ campo: string; con_valor: boolean; valor: string | null }>;
   } | null;
 }
 
@@ -379,9 +385,37 @@ export default function AutomatizacionPage() {
                   <b>{temu.ordenes.total_declarado ?? "—"}</b> órdenes
                   {" "}(esta página trae {temu.ordenes.en_esta_pagina}) vía{" "}
                   <code className="font-mono text-xs">{temu.ordenes.endpoint}</code>.
-                  {temu.ordenes.campos_por_orden.length > 0 && (
-                    <span className="mt-1 block text-xs text-emerald-800">
-                      Campos por orden: {temu.ordenes.campos_por_orden.join(", ")}
+                  {temu.ordenes.campos_del_renglon &&
+                    temu.ordenes.campos_del_renglon.length > 0 && (
+                      <span className="mt-1 block text-xs text-emerald-800">
+                        Campos del renglón: {temu.ordenes.campos_del_renglon.join(", ")}
+                      </span>
+                    )}
+                </p>
+              )}
+              {/* LA PREGUNTA DIRECTA, contestada sin que nadie lea listas de
+                  campos: ¿viene la guía dentro de la orden? */}
+              {temu.ordenes && (
+                <p
+                  className={`rounded-lg px-3 py-2 text-sm ${
+                    temu.ordenes.guia_con_valor
+                      ? "bg-emerald-50 text-emerald-900"
+                      : temu.ordenes.guia_en_la_orden
+                        ? "bg-amber-50 text-amber-900"
+                        : "bg-rose-50 text-rose-900"
+                  }`}
+                >
+                  <b>Guía:</b>{" "}
+                  {temu.ordenes.guia_con_valor
+                    ? "SÍ viene en la orden, y con valor."
+                    : temu.ordenes.guia_en_la_orden
+                      ? "el campo existe pero llega vacío en esta orden."
+                      : "NO aparece dentro de la orden."}
+                  {temu.ordenes.campos_de_guia?.length > 0 && (
+                    <span className="mt-1 block font-mono text-xs">
+                      {temu.ordenes.campos_de_guia
+                        .map((g) => `${g.campo}${g.valor ? " = " + g.valor : " (vacío)"}`)
+                        .join(" · ")}
                     </span>
                   )}
                 </p>

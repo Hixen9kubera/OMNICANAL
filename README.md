@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.338.0 — La pregunta de la guía se contesta sola
+
+Brandon solo necesita saber una cosa de Temu: **si aparece la guía**. Hasta
+ahora eso obligaba a leer una lista de campos y deducirlo. Ahora el sondeo lo
+dice con todas sus letras: *"SÍ viene en la orden, y con valor"*, *"el campo
+existe pero llega vacío"* o *"NO aparece dentro de la orden"*.
+
+**Se busca DENTRO de la orden, no solo en endpoints de envío.** Si Temu ya manda
+la guía en el propio pedido, no hace falta ninguna llamada extra — y ese caso se
+estaba pasando por alto al probar solo nombres de endpoints.
+
+**El detector busca en los dos vocabularios.** `trackingNumber` es el nombre
+inglés; esta familia de APIs usa además `mailNo`, `waybill`, `expressNo`. Buscar
+solo el inglés habría dado un "no aparece" falso — el mismo tipo de error que ya
+cometí dos veces hoy con esta misma pantalla.
+
+Probado con seis casos sintéticos, 6/6: guía anidada con valor, vocabulario
+chino, campo vacío, paquetería sin número, y dos que NO deben disparar. El
+detector vive a nivel de módulo justamente para poder probarlo; dentro del
+endpoint no se podía.
+
 ### v0.336.0 — Temu tiene 96 órdenes y nosotros vimos 2. Y la guía sí existe.
 
 El sondeo desde producción contestó lo que importaba: **`bg.order.list.v2.get`

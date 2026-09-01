@@ -221,6 +221,33 @@ _SONDEO_TEMU: list[tuple[str, str, dict]] = [
 ]
 
 
+# ¿APARECE LA GUÍA? Se busca DENTRO de la orden, no solo en endpoints de
+# envío: si Temu ya la manda en el propio pedido, no hace falta ninguna
+# llamada extra. Se rastrean los nombres que usa esta familia de APIs —
+# `trackingNumber` y `mailNo`/`waybill` (el vocabulario chino de paquetería)
+# son los dos frentes, y buscar solo el inglés dejaría fuera la mitad.
+_CLAVES_GUIA = ("tracking", "waybill", "mailno", "expressno", "shipno",
+                "logisticsno", "deliveryno", "shipmentno", "expresscompany",
+                "shippingcompany", "logisticscompany", "carrier")
+
+def _buscar_guia(nodo, ruta="", hallazgos=None, hondo=0):
+    """Recorre la respuesta buscando algo que se parezca a una guía."""
+    if hallazgos is None:
+        hallazgos = []
+    if hondo > 6 or len(hallazgos) > 20:
+        return hallazgos
+    if isinstance(nodo, dict):
+        for k, v in nodo.items():
+            aqui = f"{ruta}.{k}" if ruta else k
+            if any(c in k.lower() for c in _CLAVES_GUIA):
+                hallazgos.append({"campo": aqui, "con_valor": bool(v),
+                                  "valor": str(v)[:40] if v else None})
+            _buscar_guia(v, aqui, hallazgos, hondo + 1)
+    elif isinstance(nodo, list) and nodo:
+        _buscar_guia(nodo[0], f"{ruta}[]", hallazgos, hondo + 1)
+    return hallazgos
+
+
 @router.get("/temu/sondeo")
 async def temu_sondeo():
     """
@@ -286,11 +313,15 @@ async def temu_sondeo():
             "campos_del_renglon": (sorted(renglones[0].keys())[:30]
                                    if renglones and isinstance(renglones[0], dict) else []),
         }
+        guias = _buscar_guia(d)
         resumen_ordenes = {
             "endpoint": exitosa["endpoint"],
             "total_declarado": total,
             "en_esta_pagina": len(lista),
             "campos_por_orden": sorted(primera.keys())[:30],
+            "guia_en_la_orden": bool(guias),
+            "guia_con_valor": any(g["con_valor"] for g in guias),
+            "campos_de_guia": guias,
             **detalle,
         }
     for r in resultados:
