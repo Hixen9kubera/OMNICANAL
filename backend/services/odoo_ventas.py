@@ -314,6 +314,83 @@ def libre_por_almacen(product_ids: list[int]) -> dict[int, dict[int, float]]:
     return salida
 
 
+def planear_almacenes(lineas: list[dict[str, Any]],
+                      libres: dict[int, dict[int, float]]) -> dict[str, Any]:
+    """
+    De qué almacén sale cada pieza. Puede devolver MÁS DE UNA parte.
+
+    LAS TRES REGLAS (Brandon, 2026-09-01), en este orden:
+
+      1. **Si un almacén solo cubre la orden completa, se usa ése**, aunque el
+         otro también tenga. Gana TEXCO por preferencia.
+      2. **Si solo uno alcanza, van TODAS las piezas ahí** — no se parte por
+         gusto. Pide 3, TEXCO tiene 2 y TEXCO II tiene 10 → las 3 a TEXCO II.
+      3. **Si ninguno alcanza solo, se PARTE**: pide 3, TEXCO tiene 2 y TEXCO II
+         tiene 1 → dos órdenes, una de 2 en TEXCO y otra de 1 en TEXCO II.
+
+    La 2 es la que evita el error tentador: repartir en cuanto el primero no
+    alcanza, y acabar con dos entregas donde bastaba una.
+
+    Devuelve `partes` (una por almacén con piezas asignadas), la `cobertura`
+    —`completa`, `dividida` o `parcial`— y la FOTO del stock, que es del momento
+    y no se puede reconstruir después.
+    """
+    foto: dict[str, dict[str, float]] = {}
+    for ln in lineas:
+        por_alm = libres.get(ln["product_id"], {})
+        foto[ln["sku"]] = {str(wid): por_alm.get(wid, 0.0) for wid, _n in _ALMACENES}
+
+    def _libre(ln, wid) -> int:
+        return int(libres.get(ln["product_id"], {}).get(wid, 0) or 0)
+
+    # ── Reglas 1 y 2: ¿algún almacén, SOLO, cubre todo? ────────────────────
+    for wid, nombre in _ALMACENES:
+        if all(_libre(ln, wid) >= int(ln["cantidad"]) for ln in lineas):
+            return {"partes": [{"almacen_id": wid, "almacen": nombre,
+                                "lineas": [dict(l) for l in lineas]}],
+                    "cobertura": "completa", "stock_foto": foto, "faltante": {}}
+
+    # ── Regla 3: ninguno alcanza solo → se reparte, por preferencia ────────
+    restante = {id(ln): int(ln["cantidad"]) for ln in lineas}
+    partes: list[dict[str, Any]] = []
+    for wid, nombre in _ALMACENES:
+        asignadas = []
+        for ln in lineas:
+            falta = restante[id(ln)]
+            if falta <= 0:
+                continue
+            toma = min(_libre(ln, wid), falta)
+            if toma > 0:
+                asignadas.append({**ln, "cantidad": toma})
+                restante[id(ln)] -= toma
+        if asignadas:
+            partes.append({"almacen_id": wid, "almacen": nombre, "lineas": asignadas})
+
+    faltante = {ln["sku"]: restante[id(ln)] for ln in lineas if restante[id(ln)] > 0}
+    if faltante:
+        # No hay en NINGÚN almacén. Las piezas huérfanas se cuelgan de la
+        # primera parte —o de TEXCO si no hubo ninguna— y la orden queda marcada
+        # `parcial`: que el almacén VEA la venta y sepa que le falta mercancía
+        # es mejor que no enterarse. Es sobreventa, y la pantalla la pinta ámbar.
+        if not partes:
+            partes = [{"almacen_id": _ALMACENES[0][0], "almacen": _ALMACENES[0][1],
+                       "lineas": []}]
+        destino = partes[0]
+        for ln in lineas:
+            sobra = restante[id(ln)]
+            if sobra <= 0:
+                continue
+            ya = next((x for x in destino["lineas"] if x["sku"] == ln["sku"]), None)
+            if ya:
+                ya["cantidad"] += sobra
+            else:
+                destino["lineas"].append({**ln, "cantidad": sobra})
+
+    return {"partes": partes, "stock_foto": foto, "faltante": faltante,
+            "cobertura": ("parcial" if faltante
+                          else "dividida" if len(partes) > 1 else "completa")}
+
+
 def elegir_almacen(lineas: list[dict[str, Any]],
                    libres: dict[int, dict[int, float]]) -> dict[str, Any]:
     """
@@ -451,47 +528,51 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
                    "titulo": i.get("titulo") or ""}
                   for i in items if (i.get("sku") or "").strip()]
 
-        # 3 · El almacén, por stock. Y la foto irrepetible del inventario.
+        # 3 · El plan de almacenes. Puede salir MÁS DE UNA parte: ver
+        #     `planear_almacenes` para las tres reglas.
         libres = libre_por_almacen([l["product_id"] for l in lineas])
-        alm = elegir_almacen(lineas, libres)
+        plan = planear_almacenes(lineas, libres)
+        partes = plan["partes"]
 
-        # 4 · El payload. Se arma ANTES de decidir si se escribe, a propósito:
-        #     así el modo observación puede DEVOLVERLO y se puede revisar
-        #     exactamente lo que se le mandaría a Odoo, campo por campo, sin
-        #     escribir nada. Un "simulador" que no enseña el payload obliga a
-        #     confiar en que el código hace lo que dice.
-        vals = {
-            "partner_id": partner,
-            "warehouse_id": alm["almacen_id"],
-            "client_order_ref": str(order_id),      # ← la llave de idempotencia
-            "origin": f"{_ETIQUETA.get(canal, canal)} {order_id}",
-            "note": (f"Creada automáticamente desde {_ETIQUETA.get(canal, canal)} "
-                     f"(orden {order_id}). Panel Omnicanal."),
-            "order_line": [(0, 0, {
-                "product_id": l["product_id"],
-                "product_uom_qty": l["cantidad"],
-                "price_unit": l["precio"],
-                "name": (f"[{l['sku']}] {l['titulo']}"[:400] or l["sku"]),
-            }) for l in lineas],
-        }
-        # La fecha de la VENTA, no la de captura: si no, la contabilidad y
-        # cualquier reporte por día quedan corridos (mismo error que deformó el
-        # tab de Ventas con un backfill fechado "hoy").
-        if fecha:
-            try:
-                vals["date_order"] = (datetime.fromisoformat(str(fecha))
-                                      .astimezone(timezone.utc)
-                                      .strftime("%Y-%m-%d %H:%M:%S"))
-            except Exception:  # noqa: BLE001
-                pass
+        def _payload(parte: dict, ref: str) -> dict:
+            v = {
+                "partner_id": partner,
+                "warehouse_id": parte["almacen_id"],
+                "client_order_ref": ref,          # ← la llave de idempotencia
+                "origin": f"{_ETIQUETA.get(canal, canal)} {order_id}",
+                "note": (f"Creada automáticamente desde {_ETIQUETA.get(canal, canal)} "
+                         f"(orden {order_id}). Panel Omnicanal."
+                         + (f" Surtido dividido: parte desde {parte['almacen']}."
+                            if len(partes) > 1 else "")),
+                "order_line": [(0, 0, {
+                    "product_id": l["product_id"],
+                    "product_uom_qty": l["cantidad"],
+                    "price_unit": l["precio"],
+                    "name": (f"[{l['sku']}] {l['titulo']}"[:400] or l["sku"]),
+                }) for l in parte["lineas"]],
+            }
+            # La fecha de la VENTA, no la de captura: si no, la contabilidad y
+            # cualquier reporte por día quedan corridos.
+            if fecha:
+                try:
+                    v["date_order"] = (datetime.fromisoformat(str(fecha))
+                                       .astimezone(timezone.utc)
+                                       .strftime("%Y-%m-%d %H:%M:%S"))
+                except Exception:  # noqa: BLE001
+                    pass
+            return v
+
+        # LA REFERENCIA CUANDO SE PARTE. Con una sola parte se conserva el id a
+        # secas —así las órdenes viejas siguen encontrándose—; al dividir, cada
+        # parte lleva su propio sufijo. Si las dos llevaran el mismo ref, la
+        # idempotencia encontraría la primera y NUNCA crearía la segunda: media
+        # venta se quedaría sin surtir, en silencio.
+        refs = [str(order_id) if len(partes) == 1 else f"{order_id}#{i}"
+                for i in range(1, len(partes) + 1)]
 
         if solo_registro:
-            # Modo observación: se calculó TODO —producto, almacén, foto de
-            # stock, payload— y no se escribe. Es lo que permite comparar contra
-            # las capturas de Gabriela sin riesgo.
-            # El rótulo dice POR QUÉ no se escribió, que es lo que necesita
-            # saber quien mira el tab: no es lo mismo "lo simulé yo" que "el
-            # canal está apagado".
+            # Modo observación: se calculó TODO —producto, almacenes, foto de
+            # stock, payloads— y no se escribe.
             accion = ("simulado" if dry_run
                       else "apagado" if apagado_general
                       else "canal_apagado" if apagado_canal
@@ -504,32 +585,61 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
             }
             return {"ok": True, "accion": accion, "canal": canal,
                     "motivo": motivos.get(accion),
-                    "order_id": order_id, "almacen": alm["almacen"],
-                    "almacen_id": alm["almacen_id"], "cobertura": alm["cobertura"],
-                    "stock_foto": alm["stock_foto"], "payload": vals,
+                    "order_id": order_id,
+                    "almacen": " + ".join(p["almacen"] for p in partes),
+                    "almacen_id": partes[0]["almacen_id"],
+                    "cobertura": plan["cobertura"], "faltante": plan["faltante"],
+                    "stock_foto": plan["stock_foto"],
+                    "payload": [_payload(p, r) for p, r in zip(partes, refs)],
+                    "partes": [{"almacen": p["almacen"],
+                                "lineas": [{"sku": l["sku"], "cantidad": l["cantidad"]}
+                                           for l in p["lineas"]]} for p in partes],
                     "lineas": [{"sku": l["sku"], "cantidad": l["cantidad"],
                                 "precio": l["precio"]} for l in lineas]}
 
-        oid = _kw("sale.order", "create", [vals])
-        creada = _kw("sale.order", "read", [[oid], ["name", "state", "amount_total"]])[0]
-        accion = "creada"
+        # 4 · Crear. UNA orden por parte, cada una con su propio candado: si la
+        #     segunda falla, la primera ya quedó y el reintento solo crea la que
+        #     falta (su ref todavía no existe).
+        creadas: list[dict[str, Any]] = []
+        for parte, ref in zip(partes, refs):
+            previa = buscar_por_ref(canal, ref)
+            if previa:
+                creadas.append({"odoo_id": previa["id"], "nombre": previa["name"],
+                                "estado": previa["state"], "almacen": parte["almacen"],
+                                "ya_existia": True})
+                continue
+            oid = _kw("sale.order", "create", [_payload(parte, ref)])
+            leida = _kw("sale.order", "read",
+                        [[oid], ["name", "state", "amount_total"]])[0]
+            # 5 · Confirmar (aquí es donde Odoo RESERVA y `free_qty` baja).
+            if confirmar:
+                _kw("sale.order", "action_confirm", [[oid]])
+                leida = _kw("sale.order", "read",
+                            [[oid], ["name", "state", "amount_total"]])[0]
+            creadas.append({"odoo_id": oid, "nombre": leida["name"],
+                            "estado": leida["state"], "total": leida["amount_total"],
+                            "almacen": parte["almacen"], "ya_existia": False})
 
-        # 5 · Confirmar (aquí es donde Odoo RESERVA y `free_qty` baja).
-        if confirmar:
-            _kw("sale.order", "action_confirm", [[oid]])
-            creada = _kw("sale.order", "read",
-                         [[oid], ["name", "state", "amount_total"]])[0]
-            accion = "confirmada"
+        accion = ("ya_existia" if all(c["ya_existia"] for c in creadas)
+                  else "confirmada" if confirmar else "creada")
+        log.info("Odoo %s: venta %s → %s en %s (cobertura %s)", canal, order_id,
+                 ", ".join(c["nombre"] for c in creadas),
+                 " + ".join(c["almacen"] for c in creadas), plan["cobertura"])
 
-        log.info("Odoo %s: orden %s %s (venta %s, almacén %s, cobertura %s)",
-                 canal, creada["name"], accion, order_id,
-                 alm["almacen"], alm["cobertura"])
-        return {"ok": True, "accion": accion, "odoo_id": oid,
-                "nombre": creada["name"], "estado": creada["state"],
-                "total": creada["amount_total"], "canal": canal,
-                "order_id": order_id, "almacen": alm["almacen"],
-                "almacen_id": alm["almacen_id"], "cobertura": alm["cobertura"],
-                "stock_foto": alm["stock_foto"],
+        # La bitácora guarda UNA fila por venta (su llave es la venta), así que
+        # con surtido dividido los nombres van juntos: "S37010 + S37011". Se
+        # prefiere eso a inventar una fila por parte, que rompería la llave.
+        return {"ok": True, "accion": accion,
+                "odoo_id": creadas[0]["odoo_id"],
+                "nombre": " + ".join(c["nombre"] for c in creadas),
+                "estado": creadas[0]["estado"],
+                "total": sum(float(c.get("total") or 0) for c in creadas),
+                "canal": canal, "order_id": order_id,
+                "almacen": " + ".join(c["almacen"] for c in creadas),
+                "almacen_id": partes[0]["almacen_id"],
+                "cobertura": plan["cobertura"], "faltante": plan["faltante"],
+                "stock_foto": plan["stock_foto"],
+                "ordenes": creadas,
                 "lineas": [{"sku": l["sku"], "cantidad": l["cantidad"],
                             "precio": l["precio"]} for l in lineas]}
     except Exception as exc:  # noqa: BLE001 — jamás rompe la venta

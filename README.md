@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.355.0 — Surtido dividido: cuando ningún almacén alcanza, se parte la orden
+
+Las tres reglas del almacén, tal como las fijó Brandon (1-sep):
+
+  1. Si un almacén **solo** cubre la orden completa, se usa ése. Gana TEXCO por
+     preferencia cuando los dos alcanzan.
+  2. Si solo el segundo alcanza, van **todas** las piezas ahí. Pide 3, TEXCO
+     tiene 2 y TEXCO II tiene 10 → las 3 a TEXCO II. **No se parte por gusto.**
+  3. Si ninguno alcanza solo, **se parte**: pide 3, TEXCO tiene 2 y TEXCO II
+     tiene 1 → dos órdenes, una de 2 en TEXCO y otra de 1 en TEXCO II.
+
+La 2 es la que evita el error tentador —repartir en cuanto el primero no
+alcanza— que acabaría con dos entregas donde bastaba una.
+
+**LA REFERENCIA TUVO QUE CAMBIAR PARA PODER PARTIR.** `client_order_ref` es el
+candado de idempotencia; si las dos partes llevaran el mismo, la búsqueda
+encontraría la primera y **nunca crearía la segunda**: media venta sin surtir, en
+silencio. Con una sola parte se conserva el id a secas (las órdenes viejas
+siguen encontrándose); al dividir, cada parte lleva su sufijo `#1`, `#2`, y cada
+una tiene su propio candado — si la segunda falla, el reintento solo crea la que
+falta.
+
+La bitácora guarda **una fila por venta** (su llave es la venta), así que con
+surtido dividido los nombres van juntos: `S37010 + S37011`, almacén
+`TEXCO + TEXCO II`.
+
+En la pantalla, `dividida` va en **azul y no en ámbar**: no es un problema, es
+surtido desde dos almacenes. Mezclarla con la sobreventa haría que se ignoraran
+las dos.
+
+Probado con 8 escenarios, 8/8 — incluidos los dos ejemplos de Brandon y el de
+varios SKUs en la misma venta, donde cada uno se reparte distinto.
+
 ### v0.354.0 — Temu SÍ da la guía, y ya se pide
 
 Contestado con una orden real, que era lo que faltaba:

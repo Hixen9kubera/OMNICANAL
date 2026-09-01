@@ -696,8 +696,18 @@ export default function AutomatizacionPage() {
                   {parcial && (
                     <p className="mb-3 flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
                       <AlertTriangle className="h-4 w-4 shrink-0" />
-                      Ningún almacén cubría la orden completa: la reserva no va a
+                      Ni sumando los dos almacenes alcanzaba: la reserva no va a
                       ocurrir y el stock no bajará solo.
+                    </p>
+                  )}
+                  {/* DIVIDIDA no es un problema, es surtido desde los dos
+                      almacenes. Va en azul, no en ámbar: mezclarla con la
+                      sobreventa haría que se ignoraran las dos. */}
+                  {o.cobertura === "dividida" && (
+                    <p className="mb-3 flex items-center gap-2 rounded-lg bg-sky-50 px-3 py-2 text-xs text-sky-800">
+                      <Warehouse className="h-4 w-4 shrink-0" />
+                      Surtido dividido: ningún almacén tenía la orden completa,
+                      así que se creó una orden por almacén.
                     </p>
                   )}
                   {o.motivo && (
