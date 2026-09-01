@@ -17969,3 +17969,21 @@ dejó fuera se lee como "ya cubrimos todo".
 Con esto el módulo queda así: **lo gratis corre a diario** (visitas y sondeo, 7
 min), **lo caro corre una vez al mes con tope**, y **el botón** cubre el "lo
 necesito ahora" a una categoría por clic. Versión 0.326.0.
+
+---
+
+### v0.327.0 — El mensaje del botón de refresco baja a su propia línea (Eduardo)
+
+Arreglo de lo que se vio al abrir por fin la pantalla. El botón «Actualizar»
+(v0.324.0) se soltó a producción sin haberse renderizado nunca: la lógica estaba
+probada y `tsc` pasaba, pero nadie lo había mirado.
+
+Y tenía un defecto visual real. El mensaje de respuesta —el que explica por qué no
+se pudo, tipo *"se actualizó hace 1 día, se puede volver a pedir en 2"*— iba **en
+la misma fila** que el título. A 768 px eso partía «MÁS VENDIDOS DE RUEDA PARA
+ABDOMINALES» en tres renglones y encima cortaba el mensaje a la mitad, con un
+`truncate` que se comía justo la parte útil.
+
+Ahora el mensaje va **debajo**, en su propio renglón y completo, y el encabezado
+lleva `flex-wrap` para que nada le parta el título. Verificado en el navegador a
+768 px con el mensaje puesto. Versión 0.327.0.

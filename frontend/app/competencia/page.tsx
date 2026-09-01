@@ -1337,7 +1337,11 @@ function BotonRefrescar({
     }
   }
 
+  // El mensaje va en su PROPIA línea, no dentro de la fila del encabezado.
+  // Puesto en línea, a 768 px partía el título en tres renglones y se cortaba a
+  // la mitad — se vio en la captura del 1-sep antes de soltarlo.
   return (
+    <>
     <span className="ml-auto flex items-center gap-2 normal-case">
       {dias !== null ? (
         <span className="font-normal text-slate-400">
@@ -1358,15 +1362,17 @@ function BotonRefrescar({
         )}
         {corriendo ? "Actualizando…" : "Actualizar"}
       </button>
-      {msg ? (
-        <span
-          className={`max-w-[26rem] truncate font-normal ${fallo ? "text-amber-600" : "text-emerald-600"}`}
-          title={msg}
-        >
-          {msg}
-        </span>
-      ) : null}
     </span>
+    {msg ? (
+      <span
+        className={`mt-1 w-full basis-full text-[11px] font-normal normal-case ${
+          fallo ? "text-amber-600" : "text-emerald-600"
+        }`}
+      >
+        {msg}
+      </span>
+    ) : null}
+    </>
   );
 }
 
@@ -1474,7 +1480,7 @@ function BloqueSubcategoria({
         <div className="border-t border-slate-100">
           {/* PRIMERO el mercado: los más vendidos de la subcategoría. */}
           <div className="bg-slate-50/60 px-3 py-3">
-            <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
               <Crown size={12} /> Más vendidos de {sub.categoria_nombre}
               {sub.n_ranking ? (
                 <span className="font-normal normal-case text-slate-400">
