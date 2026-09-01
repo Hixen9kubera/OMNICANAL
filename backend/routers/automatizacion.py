@@ -202,11 +202,22 @@ _SONDEO_TEMU: list[tuple[str, str, dict]] = [
     # Estaban bloqueados con 3000032 (API sensible, requiere permiso de Temu).
     ("importes", "bg.order.amount.query", {"parentOrderSnList": ["X"]}),
     ("importes", "temu.order.amount.v2.query", {"parentOrderSnList": ["X"]}),
-    # Nunca se encontró endpoint de guía; se prueban los nombres plausibles
-    # para poder decir con evidencia que no existe, en vez de suponerlo.
+    # LA GUÍA SÍ EXISTE, solo que no con estos nombres. El sondeo del 1-sep lo
+    # destapó leyendo los CÓDIGOS en vez de quedarse en "falla":
+    #   3000037 "interface upgrade requirements" → el endpoint existe y hay una
+    #           versión más nueva que hay que usar.
+    #   3000004 "type has been sunset"           → existía y se retiró: tiene
+    #           sucesor.
+    #   3000003 "type not exists"                → ese nombre nunca existió.
+    # O sea que dos de los tres apuntan a un reemplazo. Se prueban las variantes
+    # de versión para encontrarlo.
     ("guia", "bg.logistics.shipment.get", {}),
+    ("guia", "bg.logistics.shipment.v2.get", {}),
     ("guia", "bg.order.shippinginfo.get", {}),
-    ("guia", "bg.shipping.order.get", {}),
+    ("guia", "bg.order.shippinginfo.v2.get", {}),
+    ("guia", "bg.logistics.shipment.v2.query", {}),
+    ("guia", "bg.order.logistics.v2.get", {}),
+    ("guia", "bg.logistics.online.shippingservice.get", {}),
 ]
 
 
@@ -243,7 +254,7 @@ async def temu_sondeo():
             fila.update(ok=False, error="timeout a los 25 s")
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
-            fila.update(ok=False, error=msg[:300],
+            fila.update(ok=False, error=msg[:600],
                         codigo=next((c for c in ("5000003", "3000032", "3000031",
                                                  "3000025", "3000012")
                                      if c in msg), None))
@@ -262,11 +273,25 @@ async def temu_sondeo():
         lista = next((v for v in d.values() if isinstance(v, list)), [])
         total = next((v for k, v in d.items()
                       if isinstance(v, int) and "total" in k.lower()), None)
+        primera = lista[0] if lista and isinstance(lista[0], dict) else {}
+        # Se baja UN NIVEL MÁS. El primer corte solo veía el sobre
+        # (`orderList`, `parentOrderMap`) y eso no dice si la orden trae SKU,
+        # cantidad o dinero — que es lo único que decide si se puede armar el
+        # pedido sin una segunda llamada por venta.
+        renglones = primera.get("orderList") or []
+        detalle = {
+            "campos_del_sobre": sorted(primera.keys())[:20],
+            "campos_del_padre": sorted((primera.get("parentOrderMap") or {}).keys())[:25],
+            "renglones_en_la_primera": len(renglones),
+            "campos_del_renglon": (sorted(renglones[0].keys())[:30]
+                                   if renglones and isinstance(renglones[0], dict) else []),
+        }
         resumen_ordenes = {
             "endpoint": exitosa["endpoint"],
             "total_declarado": total,
             "en_esta_pagina": len(lista),
-            "campos_por_orden": sorted(lista[0].keys())[:30] if lista and isinstance(lista[0], dict) else [],
+            "campos_por_orden": sorted(primera.keys())[:30],
+            **detalle,
         }
     for r in resultados:
         r.pop("_crudo", None)

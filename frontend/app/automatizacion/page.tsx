@@ -404,7 +404,7 @@ export default function AutomatizacionPage() {
                               {r.codigo ?? "falla"}
                               {r.error && (
                                 <span className="ml-2 font-normal text-slate-400">
-                                  {r.error.slice(0, 90)}
+                                  {r.error}
                                 </span>
                               )}
                             </span>

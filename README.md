@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.336.0 — Temu tiene 96 órdenes y nosotros vimos 2. Y la guía sí existe.
+
+El sondeo desde producción contestó lo que importaba: **`bg.order.list.v2.get`
+responde y Temu declara 96 órdenes**. Nuestra tubería registró **2**. Ese es el
+tamaño real del hueco — 94 ventas que nunca llegaron.
+
+**Y me equivoqué al decir que no hay endpoint de guía.** Lo dije leyendo "falla"
+sin mirar el código, y los códigos dicen otra cosa:
+
+    bg.logistics.shipment.get   3000037  "interface upgrade requirements"
+    bg.order.shippinginfo.get   3000004  "type has been sunset"
+    bg.shipping.order.get       3000003  "type not exists"
+
+Solo el TERCERO significa que no existe. Los otros dos significan **"existe y
+hay una versión nueva"**. Se suman cuatro variantes de versión al sondeo para
+encontrarla, y el mensaje de error deja de recortarse a 90 caracteres: puede
+NOMBRAR el reemplazo, y cortarlo era tirar la respuesta.
+
+El resumen del listado también baja un nivel. El primer corte solo veía el sobre
+(`orderList`, `parentOrderMap`), que no dice si la orden trae SKU, cantidad o
+dinero — y de eso depende si el pedido se puede armar sin una segunda llamada
+por venta. Ahora reporta los campos del renglón y del padre.
+
+Sigue en rojo lo único que Temu no da: los importes, con `3000032` en los dos
+endpoints.
+
 ### v0.335.0 — El sondeo de Temu decía lo contrario de lo que había medido
 
 Brandon corrió el sondeo desde el panel y el resultado fue el mejor posible:
