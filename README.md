@@ -18024,6 +18024,63 @@ reportó con su dinero, como debía. Versión 0.328.0.
 
 ---
 
+### v0.333.0 — El desplegable de nichos nunca funcionó en producción (Eduardo)
+
+Lo cachó Eduardo mirando la pantalla: la insignia decía **"46 SKUs en catálogo"**
+y listaba `ACC-0235`, `ACC-0235-AZLMAR`…, y al desplegar la misma fila decía
+**"No tenemos SKUs en esta categoría."** Las dos cosas, una encima de la otra.
+
+**La causa: `UnboundLocalError`.** `skus_de_categoria()` usa `channel_read` en la
+línea 416, y 22 líneas más abajo tenía un `from services import channel_read`
+redundante —ya estaba importado a nivel de módulo—. En Python eso convierte el
+nombre en **local para todo el cuerpo de la función**, así que el uso anterior
+falla antes de llegar al import:
+
+```
+UnboundLocalError: cannot access local variable 'channel_read'
+```
+
+La función abortaba entera y devolvía `{"skus": [], "error": ...}`. **Nunca
+funcionó en producción**: se dispara siempre que `categorias_write.activo()` es
+`True`, que es el caso en producción. Verificado contra la API en vivo antes de
+tocar nada: las cinco subcategorías de Deportes y Fitness devolvían el error.
+
+**El segundo defecto, que lo hizo invisible durante meses:** el frontend pintaba
+`skus.length === 0` como *"No tenemos SKUs en esta categoría"* **sin mirar
+`datos.error`**, que ya venía en el tipo. Un fallo se mostraba como un hecho de
+negocio — la misma familia de defecto que la 0038 y que el `disponible()` de la
+0332. Ahora el error se dice con su motivo.
+
+**Barrido del backend completo** en vez de parchar solo el que ardía: 26 imports
+locales que sombrean un nombre de módulo, de los cuales **exactamente 1 revienta**
+(éste — los otros 25 importan antes de usar). Se quitan también los redundantes de
+`competencia_captura.py`, que son la misma trampa esperando un reordenamiento.
+
+**Verificado, insignia contra desplegable:**
+
+| nicho | insignia | desplegable |
+|---|---|---|
+| Suplementos Alimenticios | 0 | 0 |
+| Termos | 46 | **46** |
+| Mochilas | 20 | **20** |
+| Tenis | 363 | **363** |
+| Sillas | 9 | **9** |
+
+#### De paso, cotejo del top contra ML en vivo
+
+El top de Deportes y Fitness (`MLM1276`) se capturó el **13-ago**. Comparado hoy
+(1-sep) contra `/highlights` en vivo, por `id_pagina`, que es el identificador del
+mismo espacio: **0 de 5 posiciones coinciden, y 0 de 5 aparecen en cualquier
+posición.** El top se renovó por completo en 19 días.
+
+Lo que la pantalla muestra es fiel a lo guardado —los 14 renglones cuadran uno por
+uno con el panel— pero lo guardado es una foto de agosto. Concuerda con lo que
+midió el sondeo de la 0041: 583 de 1,133 categorías movieron su top en un día.
+
+**Y el encabezado es optimista:** dice "Ranking capturado hace 14 días (18 de
+agosto)" porque toma el **máximo de todo el árbol**, pero la categoría que estás
+viendo es del 13-ago. Una fecha por categoría sería lo honesto. Anotado, no hecho.
+
 ### v0.332.0 — Se quita el respaldo local de Competencia, que no existía (Eduardo)
 
 Hallazgo del perfilado de la v0.331.0. `competencia_store` prometía un respaldo

@@ -874,6 +874,17 @@ function SkusDeCategoria({ categoriaId }: { categoriaId: string }) {
         <Loader2 size={12} className="animate-spin" /> Cargando SKUs…
       </div>
     );
+  // Un FALLO no es un "no tenemos". El endpoint devuelve {skus: [], error} cuando
+  // no pudo leer, y esto pintaba las dos cosas igual: durante meses dijo "No
+  // tenemos SKUs en esta categoría" mientras la insignia de arriba decía "46 SKUs
+  // en catálogo" y el backend reventaba con UnboundLocalError. Un hueco se dice;
+  // no se disfraza de dato.
+  if (datos.error)
+    return (
+      <div className="px-3 py-3 text-[11px] text-rose-700">
+        No se pudieron leer nuestros SKUs de esta categoría: {datos.error}
+      </div>
+    );
   if (datos.skus.length === 0)
     return (
       <div className="px-3 py-3 text-[11px] text-slate-400">

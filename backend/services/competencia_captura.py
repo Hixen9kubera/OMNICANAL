@@ -65,7 +65,6 @@ def _nuestras_publicaciones() -> dict[str, dict[str, str]]:
     # competencia aparece como ajena y el panel diria que no tenemos ninguna
     # publicacion compitiendo. Es mejor que truene.
     if settings.supabase_read_publicaciones:
-        from services import channel_read
         return channel_read.publicaciones_ml_por_item()
     try:
         filas = db.fetch_all(
@@ -435,7 +434,16 @@ def skus_de_categoria(categoria_id: str) -> dict[str, Any]:
     faltan = [s for s in todos if s not in medidas]
     progreso: dict[str, list[dict[str, Any]]] = {}
     if faltan and settings.supabase_read_publicaciones:
-        from services import channel_read
+        # ⚠️ NO reimportar `channel_read` aquí. Ya está a nivel de módulo, y un
+        # `from services import channel_read` dentro de la función lo convierte
+        # en LOCAL para TODO el cuerpo — incluida la línea de arriba que lo usa
+        # ANTES. Resultado: `UnboundLocalError: cannot access local variable
+        # 'channel_read'`, la función entera abortaba y devolvía
+        # {"skus": [], "error": ...}.
+        #
+        # El tab lo pintaba como "No tenemos SKUs en esta categoría" mientras la
+        # insignia de arriba decía "46 SKUs en catálogo": la insignia sale de
+        # `nichos_del_top` (que sí funcionaba) y el desplegable de aquí.
         for s, pubs in channel_read.publicaciones_ml_vivas(faltan).items():
             progreso[s] = [{"sku": s, "cuenta": p["cuenta"],
                             "ml_item_id": p["item_id"], "ml_url": p["url"]}
