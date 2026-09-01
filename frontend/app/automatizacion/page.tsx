@@ -32,6 +32,41 @@ import AppNavbar from "@/components/AppNavbar";
    no para el fondo — el resto del panel es claro y romperlo despistaría. */
 const TT = { cian: "#25F4EE", rojo: "#FE2C55", negro: "#010101" };
 
+/* El interruptor GENERAL es neutro a propósito: manda sobre los dos canales, y
+   pintarlo con la marca de uno haría creer que solo aplica a ése. */
+const NEUTRO = "#0F172A";
+
+/** Un canal, con su marca. El acento se usa para el switch y el filo de sus
+ *  tarjetas; el fondo del panel sigue siendo claro. */
+const CANALES = [
+  {
+    id: "tiktok",
+    nombre: "TikTok Shop",
+    acento: TT.cian,
+    tinta: TT.negro,
+    // El rótulo de marca: TikTok parte su nombre en cian y magenta.
+    marca: (
+      <span className="rounded px-2 py-0.5 text-xs font-semibold text-white"
+            style={{ background: TT.negro }}>
+        Tik<span style={{ color: TT.cian }}>Tok</span>
+        <span style={{ color: TT.rojo }}> Shop</span>
+      </span>
+    ),
+  },
+  {
+    id: "temu",
+    nombre: "Temu",
+    acento: "#FB7701",          // el naranja de Temu
+    tinta: "#E8590C",
+    marca: (
+      <span className="rounded px-2 py-0.5 text-xs font-semibold text-white"
+            style={{ background: "#FB7701" }}>
+        Temu
+      </span>
+    ),
+  },
+] as const;
+
 interface Linea {
   sku: string;
   titulo: string | null;
@@ -101,6 +136,12 @@ interface Estado {
     confirmar: boolean;
     canales: string[];
     escalon: string;
+    canales_estado?: Record<string, {
+      encendido: boolean;
+      persistido: boolean;
+      actualizado_por: string | null;
+      motivo: string | null;
+    }>;
   };
   resumen: {
     total_30d: number;
@@ -132,25 +173,54 @@ const ACCION: Record<string, { txt: string; clase: string }> = {
  *  necesita el sistema para generar la orden de venta?" — y por eso dice de
  *  dónde sale cada uno, no solo cómo se llama. */
 const PARAMETROS = [
-  { campo: "partner_id", valor: "tiktokshop (1739238)",
+  { campo: "partner_id", valor: "tiktokshop (1739238) · temu (1738206)",
     fuente: "fijo por canal — el mismo que ya usa Gaby. El comprador real NO entra a Odoo (es dato personal y quien envía es el marketplace)" },
   { campo: "warehouse_id", valor: "TEXCO (135) o TEXCO II (150)",
     fuente: "SE ELIGE leyendo free_qty por almacén: gana el primero que cubra la orden completa" },
-  { campo: "client_order_ref", valor: "id de la orden de TikTok",
+  { campo: "client_order_ref", valor: "id de la orden del canal",
     fuente: "la llave de idempotencia — impide crear la misma venta dos veces" },
-  { campo: "origin", valor: "TikTok <id>",
+  { campo: "origin", valor: "TikTok <id> · Temu <id>",
     fuente: "etiqueta legible para quien surte" },
   { campo: "date_order", valor: "fecha de la VENTA",
     fuente: "no la de captura: si no, los cortes por día quedan corridos" },
   { campo: "order_line.product_id", valor: "producto de Odoo",
     fuente: "se resuelve por default_code = nuestro SKU. Si UNA línea no resuelve, NO se crea la orden a medias" },
   { campo: "order_line.product_uom_qty", valor: "unidades",
-    fuente: "TikTok manda una línea por pieza; se agrupan por (SKU, precio)" },
-  { campo: "order_line.price_unit", valor: "precio realmente cobrado",
-    fuente: "sale_price de TikTok — no el de catálogo" },
-  { campo: "order_line.name", valor: "[SKU] título de TikTok",
+    fuente: "TikTok manda una línea por pieza y se agrupan por (SKU, precio); Temu ya manda la cantidad" },
+  { campo: "order_line.price_unit", valor: "TikTok: el cobrado · Temu: el de catálogo",
+    fuente: "TikTok da `sale_price`; Temu NO expone importes (3000032), así que se usa el precio publicado" },
+  { campo: "order_line.name", valor: "[SKU] título del canal",
     fuente: "el título con el que el comprador lo compró, no el del ERP" },
 ];
+
+/** El interruptor. Uno solo, reusado por el maestro y por cada canal, para que
+ *  todos se vean y se comporten igual; lo único que cambia es el color. */
+function Switch({
+  activo, color, etiqueta, ocupado, onClick,
+}: {
+  activo: boolean;
+  color: string;
+  etiqueta: string;
+  ocupado: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={ocupado}
+      role="switch"
+      aria-checked={activo}
+      aria-label={etiqueta}
+      className="relative h-7 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50"
+      style={{ width: "3.25rem", background: activo ? color : "#cbd5e1" }}
+    >
+      <span
+        className="absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all"
+        style={{ left: activo ? "calc(100% - 1.5rem)" : "0.25rem" }}
+      />
+    </button>
+  );
+}
 
 export default function AutomatizacionPage() {
   const [estado, setEstado] = useState<Estado | null>(null);
@@ -159,9 +229,14 @@ export default function AutomatizacionPage() {
   const [soloProblemas, setSoloProblemas] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verParams, setVerParams] = useState(false);
+  // La pestaña activa. Cada canal tiene su propio interruptor, sus propias
+  // órdenes y sus propios contadores: mezclarlos en una sola lista hacía
+  // imposible contestar "¿cómo va TikTok?" sin leer canal por canal.
+  const [canal, setCanal] = useState<string>("tiktok");
   const [temu, setTemu] = useState<SondeoTemu | null>(null);
   const [sondeando, setSondeando] = useState(false);
   const [confirmarApagado, setConfirmarApagado] = useState(false);
+  const [confirmarCanal, setConfirmarCanal] = useState<string | null>(null);
   const [moviendo, setMoviendo] = useState(false);
   const [motivo, setMotivo] = useState("");
 
@@ -170,9 +245,9 @@ export default function AutomatizacionPage() {
     setError(null);
     try {
       const [e, o] = await Promise.all([
-        fetchSesion(`${API_BASE}/api/automatizacion/estado`),
+        fetchSesion(`${API_BASE}/api/automatizacion/estado?canal=${canal}`),
         fetchSesion(
-          `${API_BASE}/api/automatizacion/ordenes-odoo?limite=200` +
+          `${API_BASE}/api/automatizacion/ordenes-odoo?limite=200&canal=${canal}` +
             (soloProblemas ? "&solo_problemas=true" : ""),
         ),
       ]);
@@ -189,7 +264,7 @@ export default function AutomatizacionPage() {
     } finally {
       setCargando(false);
     }
-  }, [soloProblemas]);
+  }, [soloProblemas, canal]);
 
   useEffect(() => {
     void cargar();
@@ -208,16 +283,19 @@ export default function AutomatizacionPage() {
     }
   }, []);
 
-  const mover = useCallback(async (encendido: boolean, porque = "") => {
+  const mover = useCallback(async (encendido: boolean, porque = "",
+                                   canal?: string) => {
     setMoviendo(true);
     try {
       const url = `${API_BASE}/api/automatizacion/interruptor?encendido=${encendido}` +
-        (porque ? `&motivo=${encodeURIComponent(porque)}` : "");
+        (porque ? `&motivo=${encodeURIComponent(porque)}` : "") +
+        (canal ? `&canal=${encodeURIComponent(canal)}` : "");
       const r = await fetchSesion(url, { method: "POST" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       if (!j.ok) throw new Error(j.motivo ?? "no se pudo mover el interruptor");
       setConfirmarApagado(false);
+      setConfirmarCanal(null);
       setMotivo("");
       await cargar();
     } catch (err) {
@@ -242,18 +320,15 @@ export default function AutomatizacionPage() {
 
         <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="flex items-center gap-2 text-2xl font-semibold">
+            <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold">
               Automatización
-              <span
-                className="rounded-full px-2.5 py-0.5 text-xs font-semibold text-white"
-                style={{ background: TT.negro }}
-              >
-                Tik<span style={{ color: TT.cian }}>Tok</span>
-                <span style={{ color: TT.rojo }}> Shop</span>
-              </span>
+              {CANALES.map((c) => (
+                <span key={c.id}>{c.marca}</span>
+              ))}
             </h1>
             <p className="text-sm text-slate-500">
-              Cada venta de TikTok se vuelve orden de venta en Odoo, sola.
+              Cada venta se vuelve orden de venta en Odoo, sola. Cada canal se
+              enciende por separado.
             </p>
           </div>
           <button
@@ -268,26 +343,21 @@ export default function AutomatizacionPage() {
         {/* ── EL INTERRUPTOR ─────────────────────────────────────────────── */}
         {ov && (
           <section
-            className="mb-6 rounded-xl border p-4"
-            style={{ background: on ? TT.negro : "#fff", borderColor: on ? TT.negro : undefined }}
+            className="mb-6 overflow-hidden rounded-xl border"
+            style={{ background: on ? NEUTRO : "#fff", borderColor: on ? NEUTRO : undefined }}
           >
-            <div className="flex flex-wrap items-center justify-between gap-4">
+            {/* EL MAESTRO. Neutro a propósito: manda sobre los dos canales, y
+                pintarlo con la marca de uno haría creer que solo aplica a ése. */}
+            <div className="flex flex-wrap items-center justify-between gap-4 p-4">
               <div className={on ? "text-white" : ""}>
                 <div className="flex items-center gap-3">
-                  <button
+                  <Switch
+                    activo={on}
+                    color="#34D399"
+                    etiqueta="Generación automática de órdenes de venta en Odoo"
+                    ocupado={moviendo}
                     onClick={() => (on ? setConfirmarApagado(true) : void mover(true))}
-                    disabled={moviendo}
-                    role="switch"
-                    aria-checked={on}
-                    aria-label="Generación automática de órdenes de venta en Odoo"
-                    className="relative h-7 w-13 shrink-0 rounded-full transition-colors disabled:opacity-50"
-                    style={{ width: "3.25rem", background: on ? TT.cian : "#cbd5e1" }}
-                  >
-                    <span
-                      className="absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all"
-                      style={{ left: on ? "calc(100% - 1.5rem)" : "0.25rem" }}
-                    />
-                  </button>
+                  />
                   <span className="text-base font-semibold">
                     {on ? "Generando órdenes en Odoo" : "Generación apagada"}
                   </span>
@@ -311,8 +381,85 @@ export default function AutomatizacionPage() {
                 </div>
               </div>
             </div>
+
+            {/* PESTAÑAS POR CANAL, al estilo de Productos y Omnicanal: la
+                pastilla toma el color de la marca cuando está activa. Cada
+                pestaña trae SUS órdenes, SU interruptor y SUS contadores.
+                Mezclarlos hacía imposible contestar "¿cómo va TikTok?" sin
+                leer canal por canal. */}
+            <div className={`flex flex-wrap items-center gap-2 border-t px-4 py-3 ${
+              on ? "border-slate-700" : ""}`}>
+              {CANALES.map((c) => {
+                const activa = c.id === canal;
+                const ec = ov.canales_estado?.[c.id];
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setCanal(c.id)}
+                    aria-pressed={activa}
+                    className={[
+                      "flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-semibold transition-all",
+                      activa ? "scale-[1.02]" : "hover:-translate-y-0.5",
+                    ].join(" ")}
+                    style={
+                      activa
+                        ? { background: c.acento, color: c.id === "tiktok" ? "#000" : "#fff",
+                            borderColor: c.acento, boxShadow: `0 6px 16px -6px ${c.acento}` }
+                        : { borderColor: c.acento,
+                            color: on ? "#E2E8F0" : "#374151",
+                            background: on ? "transparent" : "#fff" }
+                    }
+                  >
+                    {/* El punto dice si ESE canal está encendido, aunque no sea
+                        la pestaña abierta: si no, había que entrar a cada una
+                        para saberlo. */}
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ background: ec?.encendido ? "#22C55E" : "#94A3B8" }}
+                      title={ec?.encendido ? "encendido" : "apagado"}
+                    />
+                    {c.nombre}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* EL INTERRUPTOR DEL CANAL ABIERTO */}
+            {(() => {
+              const c = CANALES.find((x) => x.id === canal)!;
+              const ec = ov.canales_estado?.[canal];
+              const cOn = !!ec?.encendido;
+              return (
+                <div className={`flex flex-wrap items-center gap-3 border-t px-4 py-3 ${
+                  on ? "border-slate-700" : ""}`}>
+                  <Switch
+                    activo={cOn}
+                    color={c.acento}
+                    etiqueta={`Órdenes de Odoo para ${c.nombre}`}
+                    ocupado={moviendo}
+                    onClick={() => (cOn ? setConfirmarCanal(c.id) : void mover(true, "", c.id))}
+                  />
+                  {c.marca}
+                  <span className={`text-sm ${on ? "text-slate-200" : "text-slate-700"}`}>
+                    {cOn ? "creando órdenes en Odoo" : "apagado"}
+                  </span>
+                  {!on && cOn && (
+                    <span className="text-xs italic text-slate-400">
+                      — el interruptor general está abajo, así que no corre
+                    </span>
+                  )}
+                  <span className="ml-auto text-xs text-slate-400">
+                    {ec?.persistido && ec.actualizado_por
+                      ? `${ec.actualizado_por}${ec.motivo ? ` — ${ec.motivo}` : ""}`
+                      : "por omisión"}
+                  </span>
+                </div>
+              );
+            })()}
+
             {estado.resumen.nota && (
-              <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <p className="m-4 mt-0 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 {estado.resumen.nota} — falta aplicar la migración 0033 en kubera.
               </p>
             )}
@@ -357,6 +504,7 @@ export default function AutomatizacionPage() {
         {/* ¿Y Temu? La pregunta se contesta desde el servidor porque la lista
             blanca de Temu solo trae la IP de Railway: desde cualquier otra
             máquina toda llamada devuelve 5000003 y no se puede saber nada. */}
+        {canal === "temu" && (
         <section className="mb-6 rounded-xl border bg-white p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -452,6 +600,7 @@ export default function AutomatizacionPage() {
             </div>
           )}
         </section>
+        )}
 
         <label className="mb-4 flex w-fit items-center gap-2 text-sm text-slate-600">
           <input
@@ -632,6 +781,79 @@ export default function AutomatizacionPage() {
       {/* ── ADVERTENCIA AL APAGAR ─────────────────────────────────────────
           No pregunta "¿seguro?" — dice qué deja de pasar y quién carga con
           ello. Un diálogo que solo pide confirmación se contesta sin leer. */}
+      {/* Apagar UN canal: la advertencia dice qué se detiene y qué sigue. */}
+      {confirmarCanal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+            <div
+              className="h-1 w-full rounded-t-xl"
+              style={{
+                background:
+                  CANALES.find((c) => c.id === confirmarCanal)?.acento ?? TT.rojo,
+              }}
+            />
+            <div className="p-5">
+              <div className="mb-3 flex items-start justify-between gap-4">
+                <h2 className="flex items-center gap-2 text-lg font-semibold">
+                  <AlertTriangle className="h-5 w-5" style={{ color: TT.rojo }} />
+                  Vas a apagar {CANALES.find((c) => c.id === confirmarCanal)?.nombre}
+                </h2>
+                <button
+                  onClick={() => setConfirmarCanal(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-slate-100"
+                  aria-label="Cerrar"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <ul className="mb-4 space-y-2 text-sm text-slate-700">
+                <li>
+                  · Las ventas de ese canal <b>seguirán entrando</b> como pedido de
+                  WooCommerce. Solo se detiene la orden de venta en Odoo.
+                </li>
+                <li>
+                  · <b>El otro canal no se toca</b> — por eso cada uno tiene su
+                  interruptor.
+                </li>
+                <li>
+                  · A partir de ahí <b>alguien tiene que capturarlas a mano</b>. Si
+                  nadie lo hace, el almacén no se entera de la venta.
+                </li>
+                <li>· Las órdenes ya creadas <b>se quedan</b>. Esto no borra nada.</li>
+              </ul>
+              <label className="mb-4 block text-sm">
+                <span className="mb-1 block text-slate-600">
+                  ¿Por qué lo apagas? Queda en la bitácora.
+                </span>
+                <input
+                  value={motivo}
+                  onChange={(e) => setMotivo(e.target.value)}
+                  placeholder="p. ej. órdenes duplicadas, Odoo caído…"
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                />
+              </label>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setConfirmarCanal(null)}
+                  className="rounded-lg border px-4 py-2 text-sm hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => void mover(false, motivo, confirmarCanal)}
+                  disabled={moviendo}
+                  className="flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  style={{ background: TT.rojo }}
+                >
+                  {moviendo && <Loader2 className="h-4 w-4 animate-spin" />}
+                  Sí, apagar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmarApagado && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">

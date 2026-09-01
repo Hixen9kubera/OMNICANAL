@@ -141,15 +141,96 @@ def habilitado(refrescar: bool = False) -> bool:
     return bool(_cache["valor"])
 
 
+# ── El interruptor POR CANAL ────────────────────────────────────────────────
+# Cada canal tiene su propia fila en `ops.automatizacion_flags` con la llave
+# `odoo_ventas_canal_<canal>`. No hizo falta migración: la tabla ya es
+# (flag, valor), justo la forma que esto necesita.
+#
+# POR QUÉ POR CANAL Y NO UNA LISTA. TikTok y Temu no están en el mismo punto:
+# TikTok lleva semanas de observación y Temu acaba de estrenar su webhook. Un
+# solo interruptor obligaría a encenderlos juntos, y apagar Temu por un
+# problema suyo se llevaría a TikTok por delante.
+_cache_canales: dict[str, dict[str, Any]] = {}
+
+
+def _flag_canal(canal: str) -> str:
+    return f"{_FLAG}_canal_{canal}"
+
+
+def canal_activo(canal: str, refrescar: bool = False) -> bool:
+    """¿Está encendido ESE canal? ⚠️ BLOQUEA: llamar desde un hilo."""
+    canal = (canal or "").lower()
+    if canal not in _CANALES_POSIBLES:
+        return False
+    c = _cache_canales.setdefault(canal, {"valor": None, "ts": 0.0})
+    ahora = time.time()
+    if refrescar or c["valor"] is None or (ahora - c["ts"]) > _TTL:
+        fila = None
+        from services import supabase_db as sdb
+        try:
+            fila = sdb.fetch_one(
+                "select valor, motivo, actualizado_por from ops.automatizacion_flags "
+                "where flag = %(f)s", {"f": _flag_canal(canal)})
+        except Exception as exc:  # noqa: BLE001
+            log.debug("odoo_ventas: interruptor de %s no legible (%s)", canal, exc)
+        if fila:
+            c.update(valor=bool(fila["valor"]), persistido=True,
+                     por=fila.get("actualizado_por"), motivo=fila.get("motivo"))
+        else:
+            # Sin fila: manda la variable de entorno, que es el valor por omisión.
+            crudo = str(getattr(settings, "odoo_ventas_canales", "") or "")
+            porom = {x.strip().lower() for x in crudo.split(",") if x.strip()}
+            c.update(valor=canal in porom, persistido=False, por=None, motivo=None)
+        c["ts"] = ahora
+    return bool(c["valor"])
+
+
+def fijar_canal(canal: str, encendido: bool, quien: str = "",
+                motivo: str = "") -> dict[str, Any]:
+    """Mueve el switch de UN canal. Nunca lanza."""
+    from services import supabase_db as sdb
+    canal = (canal or "").lower()
+    if canal not in _CANALES_POSIBLES:
+        return {"ok": False, "motivo": f"canal '{canal}' no soportado"}
+    try:
+        sdb.execute(
+            """insert into ops.automatizacion_flags
+                   (flag, valor, motivo, actualizado_at, actualizado_por)
+               values (%(f)s, %(v)s, %(m)s, now(), %(q)s)
+               on conflict (flag) do update set
+                   valor = excluded.valor, motivo = excluded.motivo,
+                   actualizado_at = now(), actualizado_por = excluded.actualizado_por""",
+            {"f": _flag_canal(canal), "v": bool(encendido),
+             "m": (motivo or "")[:300] or None, "q": (quien or "")[:120] or None})
+        log.warning("Órdenes de venta en Odoo · canal %s: %s por %s%s", canal,
+                    "ENCENDIDO" if encendido else "APAGADO", quien or "?",
+                    f" — {motivo}" if motivo else "")
+        return {"ok": True, **estado_interruptor()}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("no se pudo mover el interruptor del canal %s", canal)
+        return {**estado_interruptor(), "ok": False, "motivo": str(exc)[:300]}
+
+
 def estado_interruptor() -> dict[str, Any]:
-    """Lo que pinta el switch: valor, de dónde sale, y quién lo movió."""
+    """Lo que pinta el switch: el general, y el de cada canal."""
     habilitado(refrescar=True)
+    canales_estado = {}
+    for c in sorted(_CANALES_POSIBLES):
+        canal_activo(c, refrescar=True)
+        d = _cache_canales.get(c, {})
+        canales_estado[c] = {
+            "encendido": bool(d.get("valor")),
+            "persistido": bool(d.get("persistido")),
+            "actualizado_por": d.get("por"),
+            "motivo": d.get("motivo"),
+        }
     return {
         "encendido": bool(_cache["valor"]),
         "persistido": bool(_cache.get("persistido")),
         "por_omision": bool(getattr(settings, "odoo_ventas_enabled", False)),
         "actualizado_por": _cache.get("por"),
         "motivo": _cache.get("motivo"),
+        "canales_estado": canales_estado,
     }
 
 
@@ -180,9 +261,24 @@ def fijar_interruptor(encendido: bool, quien: str = "",
         return {**estado_interruptor(), "ok": False, "motivo": str(exc)[:300]}
 
 
+# Los canales que este módulo SABE atender. Es una constante y no una consulta
+# a propósito: el seam la usa como filtro barato en CADA venta —incluidas las
+# ~3,700 semanales de Mercado Libre, que nunca van a Odoo por aquí— y una
+# lectura a kubera ahí dentro bloquearía la corrutina de la venta (regla 11).
+# La decisión REAL por canal se toma dentro del hilo, en `crear_orden`.
+_CANALES_POSIBLES = frozenset({"tiktok", "temu"})
+
+
+def canales_posibles() -> frozenset[str]:
+    return _CANALES_POSIBLES
+
+
 def canales() -> set[str]:
-    crudo = str(getattr(settings, "odoo_ventas_canales", "") or "")
-    return {c.strip().lower() for c in crudo.split(",") if c.strip()}
+    """Los canales encendidos HOY. El switch por canal manda; la variable de
+    entorno es el valor por omisión.
+
+    ⚠️ BLOQUEA: llamar desde un hilo, nunca dentro de una corrutina."""
+    return {c for c in _CANALES_POSIBLES if canal_activo(c)}
 
 
 # ── Resolución de producto ──────────────────────────────────────────────────
@@ -308,6 +404,13 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
         return {"ok": False, "accion": "apagado", "canal": canal,
                 "order_id": order_id,
                 "motivo": "el interruptor de órdenes en Odoo está apagado"}
+    # El canal se decide AQUÍ, dentro del hilo, por lo mismo que el interruptor
+    # general: es una lectura a kubera y bloquea. El seam solo pre-filtra con la
+    # constante `_CANALES_POSIBLES`, que no toca la base.
+    if not dry_run and not canal_activo(canal):
+        return {"ok": False, "accion": "canal_apagado", "canal": canal,
+                "order_id": order_id,
+                "motivo": f"el canal {canal} está apagado en Automatización"}
     if confirmar is None:
         confirmar = bool(getattr(settings, "odoo_ventas_confirmar", False))
     solo_registro = dry_run or bool(getattr(settings, "odoo_ventas_solo_registro", True))

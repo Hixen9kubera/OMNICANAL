@@ -27,7 +27,8 @@ router = APIRouter(prefix="/api/automatizacion", tags=["automatizacion"])
 
 
 @router.get("/estado")
-async def estado():
+async def estado(canal: str | None = Query(None, description="acota los contadores "
+                                                            "a esa pestaña")):
     """
     En qué escalón va el encendido, y qué ha pasado en 30 días.
 
@@ -54,7 +55,7 @@ async def estado():
                     else "4 · creando y confirmando (Odoo reserva)"
                 ),
             },
-            "resumen": odoo_ventas_log.resumen(),
+            "resumen": odoo_ventas_log.resumen(canal),
         }
     return await asyncio.to_thread(_leer)
 
@@ -63,6 +64,8 @@ async def estado():
 async def interruptor(
     encendido: bool = Query(..., description="true enciende, false apaga"),
     motivo: str = Query("", description="por qué se apaga (queda en la bitácora)"),
+    canal: str | None = Query(None, description="tiktok | temu. Sin canal, mueve "
+                                                "el interruptor GENERAL"),
     request: Request = None,  # noqa: B008
 ):
     """
@@ -91,6 +94,9 @@ async def interruptor(
         quien = str(getattr(ident, "actor", "") or "")
     except Exception:  # noqa: BLE001
         pass
+    if canal:
+        return await asyncio.to_thread(
+            odoo_ventas.fijar_canal, canal, bool(encendido), quien, motivo)
     return await asyncio.to_thread(
         odoo_ventas.fijar_interruptor, bool(encendido), quien, motivo)
 

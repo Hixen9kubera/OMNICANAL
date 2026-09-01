@@ -782,7 +782,7 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         # así que se consulta dentro de `crear_orden`/`cancelar_orden`, que ya
         # corren en un hilo. Con esto, una venta de ML —que nunca va a Odoo— ni
         # siquiera toca la base.
-        if canal_venta in odoo_ventas.canales():
+        if canal_venta in odoo_ventas.canales_posibles():
             cancelada = payload["status"] == "cancelled"
             if accion == "creado" and not cancelada:
                 r_odoo = await asyncio.to_thread(

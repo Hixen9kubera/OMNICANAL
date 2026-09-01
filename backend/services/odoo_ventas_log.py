@@ -232,15 +232,27 @@ def historial(limite: int = 100, canal: str | None = None,
         return []
 
 
-def resumen() -> dict[str, Any]:
-    """Los contadores de arriba del tab."""
+def resumen(canal: str | None = None) -> dict[str, Any]:
+    """
+    Los contadores de arriba del tab.
+
+    `canal` los acota a esa pestaña. Sin él salen los de todos los canales
+    juntos, que era lo correcto cuando había una sola lista y deja de serlo en
+    cuanto la pantalla se parte por canal: un contador que suma TikTok y Temu
+    debajo de la pestaña de Temu miente sobre lo que se está mirando.
+    """
     from services import supabase_db as sdb
+    params: dict[str, Any] = {}
+    donde = "creado_at >= now() - interval '30 days'"
+    if canal:
+        donde += " and canal = %(canal)s"
+        params["canal"] = canal
     try:
         filas = sdb.fetch_all(
-            """select accion, cobertura, count(*) n
+            f"""select accion, cobertura, count(*) n
                  from ops.odoo_sale_orders
-                where creado_at >= now() - interval '30 days'
-                group by 1, 2""")
+                where {donde}
+                group by 1, 2""", params)
         total = sum(f["n"] for f in filas)
         # El GROUP BY es por (accion, cobertura), así que una misma acción
         # aparece en VARIAS filas — una por cobertura. Construir el dict por

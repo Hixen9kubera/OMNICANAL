@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.344.0 — Automatización se parte por canal: una pestaña para TikTok y otra para Temu
+
+Temu entra a la pestaña **apagado**, con su propio interruptor y sus propias
+órdenes, al estilo de Productos y Omnicanal: pastillas con el color de la marca
+—negro/cian/magenta para TikTok, naranja `#FB7701` para Temu— y un punto que
+dice si ESE canal está encendido aunque no sea la pestaña abierta, para no
+tener que entrar a cada una.
+
+**UN INTERRUPTOR POR CANAL, no una lista.** TikTok y Temu no están en el mismo
+punto: uno lleva semanas de observación, el otro estrenó webhook hoy. Con un
+solo switch, apagar Temu por un problema suyo se habría llevado a TikTok por
+delante. Cada canal se guarda en su propia fila de `ops.automatizacion_flags`
+(`odoo_ventas_canal_<canal>`) — sin migración: la tabla ya era (flag, valor).
+
+**EL FILTRO DE CANAL NO PUEDE TOCAR LA BASE.** Corre en CADA venta, incluidas
+las ~3,700 semanales de Mercado Libre que nunca van a Odoo, y una lectura a
+kubera ahí dentro bloquearía la corrutina de la venta (regla 11). Por eso el
+seam pre-filtra con una CONSTANTE (`_CANALES_POSIBLES`) y la decisión real por
+canal se toma dentro del hilo, en `crear_orden`, junto al interruptor general.
+
+Los contadores también se acotan: un "últimos 30 días" que suma TikTok y Temu
+debajo de la pestaña de Temu miente sobre lo que se está mirando.
+
+El panel de "¿Se puede automatizar Temu?" pasa a vivir solo en su pestaña, y la
+tabla de parámetros deja de hablar como si todo fuera TikTok: el precio dice
+"TikTok: el cobrado · Temu: el de catálogo", que es la verdad.
+
 ### v0.343.0 — El precio unitario se puede teclear
 
 El validador ya sabia costear, pero no tenia como capturar el dato cuando el
