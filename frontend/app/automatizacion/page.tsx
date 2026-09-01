@@ -101,6 +101,30 @@ interface OrdenOdoo {
   lineas: Linea[];
 }
 
+interface SondeoTemu {
+  veredicto: string;
+  resultados: Array<{
+    grupo: string;
+    endpoint: string;
+    ok: boolean;
+    codigo?: string | null;
+    error?: string;
+  }>;
+  /** Solo si Temu dejó listar: cuántas órdenes declara y qué campos trae. */
+  ordenes?: {
+    endpoint: string;
+    total_declarado: number | null;
+    en_esta_pagina: number;
+    campos_por_orden: string[];
+    campos_del_renglon?: string[];
+    campos_del_padre?: string[];
+    /** ¿La guía viene dentro de la propia orden? */
+    guia_en_la_orden: boolean;
+    guia_con_valor: boolean;
+    campos_de_guia: Array<{ campo: string; con_valor: boolean; valor: string | null }>;
+  } | null;
+}
+
 interface Estado {
   odoo_ventas: {
     encendido: boolean;
@@ -211,6 +235,8 @@ export default function AutomatizacionPage() {
   // órdenes y sus propios contadores: mezclarlos en una sola lista hacía
   // imposible contestar "¿cómo va TikTok?" sin leer canal por canal.
   const [canal, setCanal] = useState<string>("tiktok");
+  const [temu, setTemu] = useState<SondeoTemu | null>(null);
+  const [sondeando, setSondeando] = useState(false);
   const [confirmarApagado, setConfirmarApagado] = useState(false);
   const [confirmarCanal, setConfirmarCanal] = useState<string | null>(null);
   const [moviendo, setMoviendo] = useState(false);
@@ -245,6 +271,19 @@ export default function AutomatizacionPage() {
   useEffect(() => {
     void cargar();
   }, [cargar]);
+
+  const sondearTemu = useCallback(async () => {
+    setSondeando(true);
+    try {
+      const r = await fetchSesion(`${API_BASE}/api/automatizacion/temu/sondeo`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setTemu(await r.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "no se pudo sondear Temu");
+    } finally {
+      setSondeando(false);
+    }
+  }, []);
 
   const mover = useCallback(async (encendido: boolean, porque = "",
                                    canal?: string) => {
@@ -464,6 +503,107 @@ export default function AutomatizacionPage() {
           )}
         </section>
 
+
+        {/* ¿Y Temu? La pregunta se contesta desde el servidor porque la lista
+            blanca de Temu solo trae la IP de Railway: desde cualquier otra
+            máquina toda llamada devuelve 5000003 y no se puede saber nada. */}
+        {canal === "temu" && (
+        <section className="mb-6 rounded-xl border bg-white p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold">¿Se puede automatizar Temu?</h2>
+              <p className="text-xs text-slate-500">
+                Le pregunta a Temu si nos deja listar órdenes. Solo lectura.
+              </p>
+            </div>
+            <button
+              onClick={() => void sondearTemu()}
+              disabled={sondeando}
+              className="flex items-center gap-2 rounded-lg border px-3 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+            >
+              {sondeando && <Loader2 className="h-4 w-4 animate-spin" />}
+              Preguntar
+            </button>
+          </div>
+          {temu && (
+            <div className="mt-3 space-y-2">
+              <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-medium">
+                {temu.veredicto}
+              </p>
+              {temu.ordenes && (
+                <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                  Temu declara{" "}
+                  <b>{temu.ordenes.total_declarado ?? "—"}</b> órdenes
+                  {" "}(esta página trae {temu.ordenes.en_esta_pagina}) vía{" "}
+                  <code className="font-mono text-xs">{temu.ordenes.endpoint}</code>.
+                  {temu.ordenes.campos_del_renglon &&
+                    temu.ordenes.campos_del_renglon.length > 0 && (
+                      <span className="mt-1 block text-xs text-emerald-800">
+                        Campos del renglón: {temu.ordenes.campos_del_renglon.join(", ")}
+                      </span>
+                    )}
+                </p>
+              )}
+              {/* LA PREGUNTA DIRECTA, contestada sin que nadie lea listas de
+                  campos: ¿viene la guía dentro de la orden? */}
+              {temu.ordenes && (
+                <p
+                  className={`rounded-lg px-3 py-2 text-sm ${
+                    temu.ordenes.guia_con_valor
+                      ? "bg-emerald-50 text-emerald-900"
+                      : temu.ordenes.guia_en_la_orden
+                        ? "bg-amber-50 text-amber-900"
+                        : "bg-rose-50 text-rose-900"
+                  }`}
+                >
+                  <b>Guía:</b>{" "}
+                  {temu.ordenes.guia_con_valor
+                    ? "SÍ viene en la orden, y con valor."
+                    : temu.ordenes.guia_en_la_orden
+                      ? "el campo existe pero llega vacío en esta orden."
+                      : "NO aparece dentro de la orden."}
+                  {temu.ordenes.campos_de_guia?.length > 0 && (
+                    <span className="mt-1 block font-mono text-xs">
+                      {temu.ordenes.campos_de_guia
+                        .map((g) => `${g.campo}${g.valor ? " = " + g.valor : " (vacío)"}`)
+                        .join(" · ")}
+                    </span>
+                  )}
+                </p>
+              )}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-xs">
+                  <tbody>
+                    {temu.resultados.map((r) => (
+                      <tr key={r.endpoint} className="border-t">
+                        <td className="py-1.5 pr-3 text-slate-400">{r.grupo}</td>
+                        <td className="py-1.5 pr-3 font-mono">{r.endpoint}</td>
+                        {/* El motivo va junto al veredicto: un "falla" a secas
+                            no distingue "la IP está fuera" de "le faltó un
+                            parámetro", y esa diferencia es todo el diagnóstico. */}
+                        <td className="py-1.5">
+                          {r.ok ? (
+                            <span className="text-emerald-700">responde</span>
+                          ) : (
+                            <span className="text-rose-700">
+                              {r.codigo ?? "falla"}
+                              {r.error && (
+                                <span className="ml-2 font-normal text-slate-400">
+                                  {r.error}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </section>
+        )}
 
         <label className="mb-4 flex w-fit items-center gap-2 text-sm text-slate-600">
           <input

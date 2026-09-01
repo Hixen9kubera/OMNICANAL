@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.352.0 — Vuelve el sondeo de Temu: quedaba una pregunta sin contestar
+
+Se retiró en v0.347.0 dando por buena una inferencia, y no lo era. Sobre la guía
+se había concluido *"existe, con una segunda llamada"* leyendo los códigos de
+error —`120012016 The parentOrder or Order is invalid` y `180020003 Invalid
+param`, que son "me faltan los parámetros" y no "no existo"—. **Pero nunca se
+obtuvo una guía de Temu.** Ni una.
+
+La versión con la llamada de orden real (`parentOrderSn` + `orderSn`) llegó a
+desplegarse en v0.339.0 y se retiró antes de correrla. Se restaura tal cual
+estaba: lista el primer pedido real, le pregunta a los dos endpoints de envío
+con sus parámetros de verdad, y pasa el detector de guía sobre la respuesta.
+
+"El endpoint no dice que no exista" y "el endpoint devuelve la guía" no son lo
+mismo, y presentarlos como equivalentes es exactamente la clase de conclusión
+que este sondeo existe para evitar.
+
+Se va otra vez cuando esa pregunta esté contestada — con la respuesta guardada
+en el encabezado de `pedidos_temu_sondeo.py`, como se hizo la vez pasada.
+
 ### v0.351.0 — El precio dice de cuándo es (Eduardo)
 
 Cierra lo que dejó abierto la 0042: la vista ya traía `precio_confirmado_en` y la
