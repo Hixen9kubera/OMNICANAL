@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.339.0 — La guía de Temu existe: el endpoint solo pedía parámetros
+
+El sondeo con orden real. Los tres endpoints de envío que dan `3000003 type not
+exists` de verdad no existen, pero **dos dan algo muy distinto**:
+
+    bg.logistics.shipment.v2.get   120012016  "The parentOrder or Order is invalid"
+    bg.order.shippinginfo.v2.get   180020003  "Invalid param"
+
+Eso no es "no existe" ni "sin permiso": es **"me faltan los parámetros"** — se
+llamaron con `{}`. Ahora el sondeo toma el primer pedido del listado y les
+pregunta con `parentOrderSn` y `orderSn` de verdad.
+
+**Y el listado de órdenes trae más de lo que se creía.** Sus campos:
+
+    productList (→ extCode = nuestro SKU) · quantity · orderStatus · orderSn
+    orderCreateTime · orderShippingTime · thumbUrl (LA IMAGEN)
+    inventoryDeductionWarehouseId / …Name  ·  fulfillmentType
+
+Dos que cambian el diseño: **`thumbUrl` da la imagen del producto** —se creía
+que Temu no la daba— y **`inventoryDeductionWarehouseId` dice de qué bodega
+descontó Temu**, que es justo lo que el automatismo decide a mano para TikTok.
+
+Sigue en rojo solo el dinero: `3000032` en los dos endpoints de importes, con el
+mensaje que dice qué hacer — *"ask for seller to authorize this api in seller
+center"*. Es trámite, no código.
+
 ### v0.338.0 — La pregunta de la guía se contesta sola
 
 Brandon solo necesita saber una cosa de Temu: **si aparece la guía**. Hasta

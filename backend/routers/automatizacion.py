@@ -314,6 +314,39 @@ async def temu_sondeo():
                                    if renglones and isinstance(renglones[0], dict) else []),
         }
         guias = _buscar_guia(d)
+
+        # LA GUÍA, SEGUNDO INTENTO: con una orden DE VERDAD.
+        # El sondeo del 1-sep dejó claro que dos endpoints de envío existen y
+        # solo rechazaban la llamada por falta de parámetros —`120012016 The
+        # parentOrder or Order is invalid` y `180020003 Invalid param`—, muy
+        # distinto de los `3000003 type not exists` de los otros tres. Así que
+        # se toma el primer pedido del listado y se les pregunta en serio.
+        padre = (primera.get("parentOrderMap") or {}).get("parentOrderSn")
+        hijo = (renglones[0].get("orderSn") if renglones and isinstance(renglones[0], dict)
+                else None)
+        if padre or hijo:
+            for tipo in ("bg.logistics.shipment.v2.get", "bg.order.shippinginfo.v2.get"):
+                fila = {"grupo": "guia (con orden real)", "endpoint": tipo}
+                try:
+                    r2 = await asyncio.wait_for(
+                        temu.llamar(tipo, {k: v for k, v in
+                                           (("parentOrderSn", padre), ("orderSn", hijo))
+                                           if v}),
+                        timeout=25)
+                    encontrados = _buscar_guia(r2) if isinstance(r2, dict) else []
+                    fila.update(ok=True,
+                                llaves=sorted(r2.keys())[:12] if isinstance(r2, dict) else None)
+                    if encontrados:
+                        guias.extend(encontrados)
+                except asyncio.TimeoutError:
+                    fila.update(ok=False, error="timeout a los 25 s")
+                except Exception as exc:  # noqa: BLE001
+                    m = str(exc)
+                    fila.update(ok=False, error=m[:600],
+                                codigo=next((c for c in ("5000003", "3000032", "3000003",
+                                                         "3000037", "3000004")
+                                             if c in m), None))
+                resultados.append(fila)
         resumen_ordenes = {
             "endpoint": exitosa["endpoint"],
             "total_declarado": total,
