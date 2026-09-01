@@ -17768,3 +17768,45 @@ is deprecated, use Infrastructure as Code `.railway/railway.ts`"). Los servicios
 viejos conservan el suyo, pero los nuevos ya no lo aceptan: `competencia-visitas`
 lleva su horario y su comando **en el servicio**, no en el archivo. El JSON queda
 en el repo como documentación de la intención. Versión 0.321.0.
+
+---
+
+### v0.322.0 — Una vista que ordena las subcategorías por lo que de verdad vendemos ahí (Eduardo)
+
+El tab de Competencia ordena las subcategorías por mediana de precio, por visitas
+del mercado y por volumen del nicho. **Nunca por lo que nosotros vendemos ahí**,
+que es justo la pregunta: ¿dónde vale la pena mirar a la competencia?
+
+`enrich.market_categoria_prioridad_v` — una fila por subcategoría **activa**
+(1,129 de las 1,212 del censo), con SKUs y publicaciones, unidades y pesos de 30
+días, nuestras visitas, y del ranking capturado su tamaño, su antigüedad, la
+mediana de precio del nicho, sus visitas y su volumen. **El top 5 y el bottom 5
+son un `order by … limit 5` sobre ella.** Sin script, sin cron y sin gasto.
+
+Las cinco decisiones y sus porqués están en la cabecera de la migración. Las dos
+que más cuestan si se ignoran:
+
+**Se agrupa por `categoria_id`, nunca por nombre.** Hay categorías distintas que
+se llaman igual —dos "Soportes"— y agrupar por nombre las fusiona y cambia el
+orden del top.
+
+⚠️ **`vivas` agrega UNA fila por SKU, no una por publicación.** Con una por
+publicación, el SKU que está en las dos tiendas se duplica en el join y **las
+ventas salen al doble**: el primer borrador de esta misma vista daba 954 unidades
+en Licuadoras cuando son 478. El conteo de publicaciones viaja como columna, no
+como filas. Quedó como control de verificación en la migración.
+
+**Se exponen las dos medidas de demanda, a propósito.** `visitas_30d` son las
+nuestras: frescas —las refresca `competencia_visitas.py` a diario— y con cobertura
+completa de lo medido. `visitas_mercado` es la suma del top de la competencia:
+mide demanda con independencia de qué tan mal lo estemos haciendo, pero sólo
+existe donde hay ranking capturado (638 de 1,129). Decide quien lee, no la vista.
+
+Falta `tiene_ranking_ml` —si ML publica lista de más vendidos de esa categoría—,
+que es el filtro que evita pagar raspados imposibles y llega con el sondeo diario
+de `/highlights`. No se agrega vacía: una columna que miente es peor que una que
+falta.
+
+Costo: 1.2 s para las 1,129 filas. Aditiva: no toca ningún objeto existente.
+Aplicada a producción y verificada — 1,129 categorías, 505 con venta, 638 con
+ranking. Versión 0.322.0.
