@@ -47,6 +47,26 @@ interface Movimiento {
   duracion_s: number | null;
 }
 
+/**
+ * Cada proceso tiene su propio verbo. Decir "publicado" de un recalculo de costo
+ * es simplemente falso, y era lo que hacia esta pantalla hasta el 1-sep.
+ */
+const RESULTADO_OK: Record<string, string> = {
+  publicar: "publicado",
+  costos: "costo validado",
+  crear: "producto creado",
+  precio: "precio editado",
+  stock: "stock editado",
+};
+
+/** Lo que se muestra en la columna CANAL cuando el movimiento no es de canal. */
+const TIPO: Record<string, string> = {
+  costos: "Costos",
+  crear: "Crear productos",
+  precio: "Precio",
+  stock: "Stock",
+};
+
 const NOMBRE_CANAL: Record<string, string> = {
   mercado_libre: "Mercado Libre",
   amazon: "Amazon",
@@ -63,6 +83,31 @@ function bonito(etiqueta: string): string {
   const cuenta = partes[1];
   const n = NOMBRE_CANAL[canal] ?? canal;
   return cuenta ? n + " · " + cuenta : n;
+}
+
+/**
+ * El desglose de la tarjeta: los movimientos SIN canal se agrupan por tipo, no
+ * bajo un "Sin canal" que no dice nada. Un KAM que valido 18 costos deberia ver
+ * "Costos 18", no "Sin canal 18".
+ */
+function desglose(u: Usuario): Array<[string, PorCanal]> {
+  const salida: Record<string, PorCanal> = {};
+  for (const [etiqueta, d] of Object.entries(u.canales)) {
+    if (etiqueta !== "(sin canal)") {
+      salida[bonito(etiqueta)] = d;
+    }
+  }
+  // Lo que no tiene canal se reparte por proceso, que es lo que de verdad es.
+  const sinCanal = u.canales["(sin canal)"];
+  if (sinCanal) {
+    for (const [proc, d] of Object.entries(u.procesos)) {
+      if (proc === "publicar") continue;   // publicar siempre trae canal
+      const k = TIPO[proc] ?? proc;
+      salida[k] = { total: (salida[k]?.total ?? 0) + d.total,
+                    exitos: (salida[k]?.exitos ?? 0) + d.exitos };
+    }
+  }
+  return Object.entries(salida).sort((a, b) => b[1].total - a[1].total);
 }
 
 function persona(correo: string): string {
@@ -134,11 +179,12 @@ export default function MonitoreoPage() {
               Monitoreo &middot; actividad del equipo
             </p>
             <h1 className="mt-1 text-2xl font-bold text-slate-900">
-              Qui&eacute;n public&oacute; qu&eacute;
+              Qui&eacute;n hizo qu&eacute;
             </h1>
             <p className="mt-1 max-w-xl text-sm text-slate-600">
-              Publicaciones por persona y canal. Los movimientos autom&aacute;ticos
-              &mdash;fan-out, sondeos, Odoo&mdash; no aparecen: no los hizo nadie.
+              Publicaciones, costos validados y productos creados, por persona.
+              Los movimientos autom&aacute;ticos &mdash;fan-out, sondeos, Odoo&mdash; no
+              aparecen: no los hizo nadie.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -200,7 +246,7 @@ export default function MonitoreoPage() {
               </div>
               <div className="bg-white p-4">
                 <p className="font-mono text-xs uppercase tracking-wider text-slate-500">
-                  Publicaciones
+                  Completados
                 </p>
                 <p className="mt-1 text-2xl font-bold tabular-nums text-slate-900">
                   {exitosGeneral}
@@ -266,14 +312,12 @@ export default function MonitoreoPage() {
                     </div>
 
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {Object.entries(u.canales)
-                        .sort((a, b) => b[1].total - a[1].total)
-                        .map(([etiqueta, d]) => (
+                      {desglose(u).map(([etiqueta, d]) => (
                           <span
                             key={etiqueta}
                             className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2.5 py-1 text-xs text-slate-700"
                           >
-                            {bonito(etiqueta)}
+                            {etiqueta}
                             <b className="tabular-nums">{d.exitos}</b>
                             {d.total > d.exitos && (
                               <span className="text-amber-700">{"de " + d.total}</span>
@@ -303,7 +347,7 @@ export default function MonitoreoPage() {
                     <th className="px-3 py-2 font-semibold">Cu&aacute;ndo</th>
                     <th className="px-3 py-2 font-semibold">Qui&eacute;n</th>
                     <th className="px-3 py-2 font-semibold">SKU</th>
-                    <th className="px-3 py-2 font-semibold">Canal</th>
+                    <th className="px-3 py-2 font-semibold">Canal / tipo</th>
                     <th className="px-3 py-2 font-semibold">Resultado</th>
                   </tr>
                 </thead>
@@ -323,15 +367,26 @@ export default function MonitoreoPage() {
                         {m.sku ?? "—"}
                       </td>
                       <td className="whitespace-nowrap px-3 py-2 text-slate-600">
-                        {NOMBRE_CANAL[m.canal ?? ""] ?? m.canal ?? "—"}
-                        {m.cuenta && (
-                          <span className="text-slate-400">{" · " + m.cuenta}</span>
+                        {m.canal ? (
+                          <>
+                            {NOMBRE_CANAL[m.canal] ?? m.canal}
+                            {m.cuenta && (
+                              <span className="text-slate-400">{" · " + m.cuenta}</span>
+                            )}
+                          </>
+                        ) : (
+                          /* Sin canal no es un hueco: es que la accion no es de
+                             canal. Decir QUE fue vale mas que un guion. */
+                          <span className="text-slate-500">
+                            {TIPO[m.proceso] ?? m.proceso}
+                          </span>
                         )}
                       </td>
                       <td className="whitespace-nowrap px-3 py-2">
-                        {m.estado === "ok" ? (
+                        {["ok", "completado", "succeeded"].includes(m.estado) ? (
                           <span className="inline-flex items-center gap-1 text-emerald-700">
-                            <CheckCircle2 className="h-3.5 w-3.5" /> publicado
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            {" " + (RESULTADO_OK[m.proceso] ?? "hecho")}
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-rose-700">
