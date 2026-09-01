@@ -17672,3 +17672,59 @@ las visitas**, que siguen en NULL cuando nadie midió — ahí la regla sigue vi
 
 La foto histórica no se toca: `market_listing_metrics.units_30d` sigue ahí con lo
 que midió cada mes; simplemente el panel ya no la lee. Versión 0.319.0.
+
+---
+
+### v0.320.0 — Las visitas de Competencia se refrescan solas, y la vista deja de poder taparse a sí misma (Eduardo)
+
+Cierra el arreglo de las ventas (v0.319.0): las unidades ya salían de nuestros
+pedidos en vivo, pero las **visitas** seguían siendo las del 12-ago. Numerador
+nuevo con denominador de hace 19 días daba conversiones imposibles — **101 filas
+con más unidades que visitas** y 122 por encima del 50%.
+
+**`scripts/competencia_visitas.py`**, con su cron `railway.competencia-visitas.json`
+a las **12:00 UTC** (6 AM en México, para que el panel amanezca al día). Gratis:
+una llamada a `/visits` por publicación, sin Apify.
+
+No reusa `POST /api/competencia/visitas-propias`, y no por gusto:
+
+1. Ése pide **tres llamadas por publicación** —`items_por_sku`, `detalle_item` y
+   `visitas_30d`—, unas 14,000 en total. Aquí el `listing_id` ya se sabe: basta
+   **una**, y son 2,936.
+2. Ése **no acota la concurrencia**: sus `asyncio.gather` lanzan miles de
+   `to_thread` contra el ThreadPoolExecutor por defecto, el mismo que usa todo el
+   backend para hablarle a la base (regla 11 de la casa; costó el apagón del
+   13-ago). Éste lleva `Semaphore(8)`.
+3. Ése es HTTP y muere en el timeout del proxy.
+
+**Cadencia: una vez al día y punto.** `/visits/time_window` devuelve una ventana
+MÓVIL de 30 días; correrlo dos veces el mismo día agrega un día y quita otro.
+
+**Alcance acotado a propósito:** sólo las publicaciones que ya tienen fila en
+`market_listing_metrics`. Crear filas para las 1,685 del espejo las movería a la
+rama medida de la vista, cuyo join es `l.store_name = mm.cuenta`, y `store_name`
+viene NULL en 1,052 listings: **1,040 se quedarían sin precio**. Ampliar cobertura
+exige antes cambiar ese join a `account_id`.
+
+Primera corrida: **2,936 publicaciones en 4 minutos**, 2,780 con dato, 1,051
+cambian. El campeón de Licuadoras pasó de 396 a **7,054 visitas** en BEKURA y de
+3,580 a **10,043** en SANCORFASHION. Las conversiones imposibles bajaron de 101 a
+9 y las mayores al 50% de 122 a 10.
+
+**`metrics_updated_at` deja de mentir en verde.** Se escribía `now()` siempre,
+aunque las columnas medidas llegaran en NULL — el COALESCE protege el valor, no la
+marca de tiempo. Una corrida con el token de ML caído habría estampado el catálogo
+entero como "medido hoy". Ahora sólo avanza si de verdad llegó una medición.
+
+**Y la 0039, que salió de un error propio.** La primera corrida cruzó la medianoche
+UTC, así que `guardar_publicaciones` calculó `periodo = 2026-09-01` e **insertó
+2,780 filas nuevas con sólo `visits_30d`**. El desempate de la 0037 —pensado para
+una fila nueva completamente vacía— prefirió esas filas por ser del mes más
+reciente, y **los títulos de la vista cayeron de 3,118 a 338**.
+
+La 0039 deja de elegir una FILA y elige un VALOR: por cada columna, el más reciente
+que no sea nulo. Así el título de agosto y las visitas de septiembre conviven, y
+cualquier escritura parcial futura sólo puede agregar información, nunca tapar la
+que ya había. De paso el precio mejora: vuelve el `sale_price` medido ($899 en el
+caso de Licuadoras) en lugar del precio de lista de `channel.listings` ($2,016).
+Detectado y corregido el mismo día. Versión 0.320.0.

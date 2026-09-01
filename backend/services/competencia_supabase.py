@@ -504,7 +504,18 @@ def guardar_publicaciones(filas: list[dict[str, Any]]) -> int:
                 "  list_price = COALESCE(EXCLUDED.list_price, market_listing_metrics.list_price), "
                 "  visits_30d = COALESCE(EXCLUDED.visits_30d, market_listing_metrics.visits_30d), "
                 "  units_30d  = COALESCE(EXCLUDED.units_30d,  market_listing_metrics.units_30d), "
-                "  metrics_updated_at = now()",
+                # La marca de tiempo SOLO avanza si de verdad llegó una medición.
+                # Antes era `now()` a secas y eso dejaba una mentira en verde: una
+                # corrida con el token de ML caído escribe las tres columnas en
+                # NULL —el COALESCE las protege— pero estampaba la fila como
+                # "medida hoy". El panel entero se veía fresco con datos viejos, y
+                # cualquier cola de prioridad que se ordene por antigüedad se
+                # ordenaría con esa mentira.
+                "  metrics_updated_at = CASE WHEN EXCLUDED.visits_30d IS NOT NULL "
+                "                              OR EXCLUDED.units_30d  IS NOT NULL "
+                "                              OR EXCLUDED.sale_price IS NOT NULL "
+                "                            THEN now() "
+                "                            ELSE market_listing_metrics.metrics_updated_at END",
                 (f["sku"], f.get("canal") or "mercado_libre", f["cuenta"],
                  f.get("ml_item_id") or f.get("listing_id"), f.get("titulo") or f.get("title"),
                  f.get("estado"), f.get("precio"), f.get("precio_lista"),
