@@ -71,9 +71,43 @@ def _huella(entradas: list[dict[str, Any]]) -> str | None:
 
 
 def objetivo(limite: int | None = None) -> list[str]:
-    """Las categorías ACTIVAS, las de más dinero primero."""
-    sql = ("select categoria_id from enrich.market_categoria_prioridad_v "
-           "order by pesos_30d desc, unidades_30d desc")
+    """
+    Las categorías ACTIVAS, las de más dinero primero — y las RAÍCES antes que
+    todas.
+
+    ⚠️ LAS RAÍCES VAN APARTE. `market_categoria_prioridad_v` es por
+    SUBCATEGORÍA: nunca devuelve una raíz. Este sondeo leía sólo de ahí, así que
+    **jamás sondeó una raíz** — y la raíz es lo primero que se ve al abrir el
+    tab. Medido el 1-sep-2026: 1,133 subcategorías sondeadas y las 27 raíces en
+    blanco, o sea que de ellas no se podía saber ni si ML publica ranking ni si
+    el top se había movido.
+
+    Es el mismo punto ciego que tenía `competencia_barrido.py`, y por la misma
+    razón: los dos arman su lista desde esa vista. Aquí ni siquiera había excusa
+    de costo — `/highlights` es gratis.
+
+    Las raíces van primero por ser pocas y por ser la portada, no por dinero: una
+    raíz agrega a todas sus hojas y ordenarla por pesos la pondría siempre arriba
+    sin que eso signifique nada.
+    """
+    sql = ("""
+        with raices as (
+          select distinct raiz_id as categoria_id
+            from enrich.market_skus_v where raiz_id is not null
+        ),
+        hojas as (
+          select categoria_id, pesos_30d, unidades_30d
+            from enrich.market_categoria_prioridad_v
+           where categoria_id not in (select categoria_id from raices)
+        )
+        select categoria_id from (
+          select categoria_id, 0 as orden, null::numeric as pesos, null::int as unid
+            from raices
+          union all
+          select categoria_id, 1, pesos_30d, unidades_30d from hojas
+        ) x
+        order by orden, pesos desc nulls last, unid desc nulls last
+    """)
     if limite:
         sql += f" limit {int(limite)}"
     return [f["categoria_id"] for f in supabase_db.fetch_all(sql)]

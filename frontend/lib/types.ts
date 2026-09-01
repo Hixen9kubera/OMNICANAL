@@ -842,7 +842,17 @@ export interface CompetenciaSkuVista extends CompetenciaFilaSku {
   en_top: boolean;
 }
 
-export interface CompetenciaSubcategoria {
+/** Avisos que salen del sondeo GRATIS de /highlights, para cualquier categoría. */
+export interface AvisosDelTop {
+  /** ¿ML publica ranking ahí? `null` = todavía no se ha sondeado. */
+  ml_publica?: boolean | null;
+  /** Cuándo cambió el top de ML por última vez. */
+  top_cambio_en?: string | null;
+  /** ML se movió DESPUÉS de nuestra captura: lo que se ve ya no es lo de allá. */
+  top_movido?: boolean | null;
+}
+
+export interface CompetenciaSubcategoria extends AvisosDelTop {
   categoria_id: string | null;
   categoria_nombre: string;
   ruta: string | null;
@@ -869,7 +879,7 @@ export interface CompetenciaSubcategoria {
   pos_en_raiz: number | null;
 }
 
-export interface CompetenciaRaiz {
+export interface CompetenciaRaiz extends AvisosDelTop {
   raiz_id: string | null;
   raiz_nombre: string;
   n_skus: number;

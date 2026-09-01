@@ -187,6 +187,20 @@ def frescura(canal: str = "mercado_libre") -> dict[str, Any]:
     return {}
 
 
+def movimiento_del_top(canal: str = "mercado_libre") -> dict[str, dict[str, Any]]:
+    """
+    El sondeo de `/highlights` por categoría. NO levanta si no hay remoto: sin él
+    la vista pierde dos avisos, no los datos.
+    """
+    r = _remoto()
+    if r:
+        try:
+            return r.movimiento_del_top(canal)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("No se pudo leer el sondeo de /highlights: %s", exc)
+    return {}
+
+
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
     r = _remoto()
@@ -414,11 +428,33 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
     rk = rankings_por_categoria()
     nterm = conteo_terminos()
 
+    # El sondeo GRATIS de /highlights, una consulta para todo el árbol. De aquí
+    # salen `top_movido` (¿ML se movió desde que pagamos por raspar?) y
+    # `ml_publica` (¿hay ranking ahí, o raspar sería tirar dinero?).
+    hl = movimiento_del_top(canal)
+
+    def _avisos(destino: dict[str, Any], cid: str | None,
+                top: list[dict[str, Any]]) -> None:
+        """Cuelga `ml_publica`, `top_cambio_en` y `top_movido` en una categoría."""
+        h = hl.get(cid) if cid else None
+        # None = todavía no se ha sondeado. NO es lo mismo que False.
+        destino["ml_publica"] = ((h.get("n") or 0) > 0) if h else None
+        cambio = h.get("cambio_en") if h else None
+        destino["top_cambio_en"] = cambio
+        nuestra = max((x["capturado_en"] for x in top if x.get("capturado_en")),
+                      default=None)
+        try:
+            destino["top_movido"] = bool(cambio and nuestra and cambio > nuestra)
+        except TypeError:
+            # Fechas de tipos distintos: mejor no afirmar nada que afirmar mal.
+            destino["top_movido"] = None
+
     out = []
     for r in raices.values():
         # Ranking y términos de la raíz.
         r["top"] = rk.get((r["raiz_id"], "raiz"), [])[:10] if r["raiz_id"] else []
         r["terminos_raiz"] = nterm.get(r["raiz_id"], 0) if r["raiz_id"] else 0
+        _avisos(r, r["raiz_id"], r["top"])
 
         for cid, sub in r["subcategorias"].items():
             top = rk.get((cid, "hoja"), [])[:20] if sub["categoria_id"] else []
@@ -441,7 +477,12 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
             # publica" y TODAS las revisadas sí tenían ranking y términos en ML.
             # El mensaje viejo mandaba a no reintentar justo donde sí había datos.
             sub["sin_capturar"] = not top and not sub["n_terminos"]
-            sub["sin_datos_ml"] = sub["sin_capturar"]
+            _avisos(sub, sub["categoria_id"], top)
+            # AHORA SÍ se pueden distinguir. El comentario de arriba pedía esto:
+            # el sondeo de /highlights dice si ML publica ranking ahí, y con eso
+            # "no lo hemos capturado" deja de confundirse con "ahí no hay nada".
+            # `ml_publica is False` es afirmativo: ML contestó y vino vacío.
+            sub["sin_datos_ml"] = sub["ml_publica"] is False
             # Volumen del NICHO: lo que se vende al mes en toda la subcategoría,
             # sumando el top. `vendidos` es cota inferior (ML redondea a "+50mil"),
             # así que sirve para ordenar nichos, no como cifra exacta.

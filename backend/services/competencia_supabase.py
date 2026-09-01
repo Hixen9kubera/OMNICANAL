@@ -160,6 +160,32 @@ def frescura(canal: str = "mercado_libre") -> dict[str, Any]:
     return dict(filas[0]) if filas else {}
 
 
+def movimiento_del_top(canal: str = "mercado_libre") -> dict[str, dict[str, Any]]:
+    """
+    `enrich.market_highlights` entera, indexada por categoría. Una sola consulta
+    para todo el árbol; son ~1,133 filas de ~800 bytes.
+
+    ── PARA QUÉ ────────────────────────────────────────────────────────────────
+    Contesta las dos preguntas que la vista no podía contestar sola, y las dos
+    salen GRATIS del sondeo diario de `/highlights`:
+
+    1. **¿Se movió el top desde que lo capturamos?** La pantalla decía cuándo se
+       raspó, pero no si eso sigue vigente. Medido el 1-sep-2026 en Cables de
+       Audio y Video: capturado el 18-ago, y el top había cambiado ESE MISMO DÍA
+       a las 15:24 — sólo 2 de 20 posiciones seguían iguales.
+
+    2. **¿ML publica ranking ahí?** `vista()` sólo sabía lo que tenía guardado, y
+       su propio comentario lo admitía: 174 de 176 subcategorías salían como "ML
+       no publica" cuando en realidad SÍ tenían ranking; el mensaje mandaba a no
+       reintentar justo donde había datos. `n = 0` lo resuelve, y nunca se
+       escribe por un error de la llamada (ver 0041).
+    """
+    sql = ("SELECT categoria_id, n, cambio_en, capturado_en "
+           "FROM enrich.market_highlights WHERE canal = %s")
+    return {f["categoria_id"]: dict(f)
+            for f in supabase_db.fetch_all(sql, (canal,))}
+
+
 def ranking_categoria(categoria_id: str, nivel: str | None = None,
                       limite: int = 10) -> list[dict[str, Any]]:
     sql = ("SELECT * FROM enrich.market_bestsellers "

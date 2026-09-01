@@ -1457,7 +1457,10 @@ function BloqueSubcategoria({
         {abierta ? (
           <ChevronDown size={15} className="shrink-0 text-slate-400" />
         ) : (
-          <ChevronRight size={15} className="shrink-0 text-slate-300" />
+          /* slate-400, no 300: el estado CERRADO es el que tiene que invitar
+             a hacer clic, y era el más tenue de los dos. Se confundía con una
+             categoría que no se despliega. */
+          <ChevronRight size={15} className="shrink-0 text-slate-400" />
         )}
         {sub.pos_en_raiz ? (
           <span
@@ -1531,7 +1534,10 @@ function BloqueSubcategoria({
                   · {sub.n_ranking} publicaciones
                 </span>
               ) : null}
-              <CapturaDeCategoria iso={sub.top?.[0]?.capturado_en ?? null} />
+              <CapturaDeCategoria
+                iso={sub.top?.[0]?.capturado_en ?? null}
+                movido={sub.top_movido}
+              />
               <BotonRefrescar
                 categoriaId={sub.categoria_id}
                 capturadoEn={sub.top?.[0]?.capturado_en ?? null}
@@ -1540,8 +1546,13 @@ function BloqueSubcategoria({
             </div>
             {sub.top.length === 0 ? (
               <div className="py-3 text-center text-xs text-slate-400">
+                {/* `sin_datos_ml` ya NO significa "no lo hemos capturado": desde
+                    que el sondeo de /highlights corre a diario significa que ML
+                    CONTESTÓ y no publica ranking ahí. Son acciones opuestas —una
+                    es "córrele la captura", la otra es "no gastes"— y el texto
+                    tenía que cambiar con el dato. */}
                 {sub.sin_datos_ml
-                  ? "Todavía no capturamos esta categoría. Puede que ML sí publique su ranking — la vista solo sabe lo que hay guardado."
+                  ? "Mercado Libre no publica ranking de esta categoría. Raspar aquí no traería nada."
                   : "Sin ranking guardado. Corre «Más vendidos»."}
               </div>
             ) : (
@@ -1621,7 +1632,10 @@ function BloqueRaiz({
       <div className="mb-4 rounded-lg bg-white p-3 ring-1 ring-slate-200">
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
           <Crown size={12} /> Más vendidos de {r.raiz_nombre}
-          <CapturaDeCategoria iso={r.top?.[0]?.capturado_en ?? null} />
+          <CapturaDeCategoria
+            iso={r.top?.[0]?.capturado_en ?? null}
+            movido={r.top_movido}
+          />
         </div>
         {r.top.length === 0 ? (
           <div className="py-4 text-center text-xs text-slate-400">
@@ -1720,20 +1734,46 @@ function diaYMes(iso: string): string {
  * Ámbar a los 40 días porque el ranking se raspa una vez al mes; con el umbral de
  * las visitas (2 días) estaría en alerta permanente siendo lo normal.
  */
-function CapturaDeCategoria({ iso }: { iso: string | null }) {
+function CapturaDeCategoria({
+  iso,
+  movido,
+}: {
+  iso: string | null;
+  /**
+   * El sondeo GRATIS de /highlights vio que ML movió su top DESPUÉS de nuestra
+   * captura. Es la única forma de saber si lo que estás viendo sigue vigente sin
+   * volver a pagar por raspar — y el dato ya estaba guardado, sólo que la
+   * pantalla no lo decía.
+   *
+   * Medido el 1-sep-2026 en Cables de Audio y Video: capturado el 18-ago y el
+   * top había cambiado ESE MISMO DÍA; sólo 2 de 20 posiciones seguían iguales.
+   * En todo el tab, 423 de 1,218 subcategorías estaban en esa situación.
+   */
+  movido?: boolean | null;
+}) {
   const dias = diasDesde(iso);
   if (dias === null)
     return (
       <span className="font-normal normal-case text-slate-400">· sin capturar</span>
     );
   return (
-    <span
-      className={`font-normal normal-case ${
-        dias > 40 ? "text-amber-700" : "text-slate-400"
-      }`}
-    >
-      · capturado {textoRelativo(dias)} ({diaYMes(iso!)})
-    </span>
+    <>
+      <span
+        className={`font-normal normal-case ${
+          dias > 40 ? "text-amber-700" : "text-slate-400"
+        }`}
+      >
+        · capturado {textoRelativo(dias)} ({diaYMes(iso!)})
+      </span>
+      {movido ? (
+        <span
+          className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold normal-case text-amber-800"
+          title="El sondeo diario de ML detectó que este top cambió DESPUÉS de nuestra captura. Lo que ves ya no es lo que ML muestra."
+        >
+          ML ya se movió
+        </span>
+      ) : null}
+    </>
   );
 }
 

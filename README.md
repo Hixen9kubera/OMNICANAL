@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.349.0 — El panel ya sabía que el top estaba viejo, y no lo decía (Eduardo)
+
+Eduardo preguntó cómo verificar que las categorías top estén al día. La respuesta
+era incómoda: **no se podía**. La pantalla decía CUÁNDO se capturó, pero no si eso
+seguía vigente — y eso es otra cosa.
+
+Lo incómodo de verdad: **el dato ya estaba guardado**. El sondeo diario de
+`/highlights` es gratis y anota cuándo cambió el top de cada categoría
+(`cambio_en`, migración 0041). Comparado con nuestra captura da la respuesta
+exacta, sin gastar un peso.
+
+Comprobado con su ejemplo, Cables de Audio y Video (`MLM437891`):
+
+| | |
+|---|---|
+| Nuestra captura (pagada) | 18-ago 06:57 |
+| El top de ML cambió | **1-sep 15:24** |
+| Coincidencias en la misma posición | **2 de 20** |
+
+En todo el tab: **440 de 1,218 subcategorías** tienen el top movido desde su
+captura.
+
+**Lo que se agrega:** `movimiento_del_top()` —una consulta para el árbol entero—
+y tres campos por categoría: `ml_publica`, `top_cambio_en` y `top_movido`. En la
+pantalla, una pastilla ámbar **"ML ya se movió"** junto a la fecha de captura.
+
+#### Y el sondeo tampoco veía las raíces
+
+Tercera vez que aparece el mismo punto ciego. `competencia_highlights.py` armaba
+su lista desde `market_categoria_prioridad_v`, que es **por subcategoría**: 1,133
+sondeadas y las 27 raíces en blanco. De ellas no se podía saber ni si ML publica
+ranking ni si el top se movió. Aquí ni siquiera había excusa de costo —
+`/highlights` no cuesta—. Ahora son 1,161 y las raíces van primero.
+
+#### `sin_datos_ml` decía lo contrario de lo que sabía
+
+El comentario de `vista()` lo admitía: *"Esta vista NO puede distinguir «no lo
+capturamos» de «ML no publica»"*, y medía 174 de 176 subcategorías mal
+etiquetadas. Con el sondeo **sí se puede**: `n = 0` es afirmativo, y nunca se
+escribe por un error de la llamada. El campo cambia de significado y **el texto
+de la pantalla cambia con él** — antes decía "todavía no capturamos, puede que ML
+sí publique"; ahora dice "ML no publica ranking aquí, raspar no traería nada".
+Son acciones opuestas, y dejar el texto viejo con el dato nuevo habría sido peor
+que no tocarlo.
+
+#### Un detalle de un carácter
+
+La flechita de desplegar usaba `slate-300` cerrada y `slate-400` abierta: **el
+estado que invita a hacer clic era el más tenue de los dos**. Por eso las
+subcategorías parecían "no desplegarse" — sí lo hacen, y la pista era invisible.
+Las dos en `slate-400`.
+
+#### El barrido de septiembre
+
+Corrido con las raíces ya incluidas: **27 de 27 raíces** y 340 subcategorías
+capturadas el 1-sep, por **$1.21** de los $29 incluidos del ciclo.
+
 ### 0.346.0 — El Blindaje BD mordió de verdad: 0043 cura lo que 0040/0041 dejaron sin candado
 
 Eduardo reportó el workflow «Blindaje BD» en rojo. **No estaba fallando: estaba
