@@ -37,6 +37,7 @@ disponible de un competidor. Por eso el detalle se pide solo del top N.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import urllib.parse
 import re
@@ -45,6 +46,7 @@ from typing import Any
 import httpx
 
 from config import settings
+from services import supabase_db
 
 log = logging.getLogger("omnicanal.competencia.scraper")
 
@@ -73,6 +75,42 @@ def _proxy() -> dict[str, Any]:
         "apifyProxyGroups": ["RESIDENTIAL"],
         "apifyProxyCountry": settings.apify_proxy_pais,
     }
+
+
+def _registrar_gasto(actor: str, datos: dict[str, Any],
+                     payload: dict[str, Any] | None = None) -> None:
+    """
+    Deja en `ops.process_log` lo que Apify cobró por esta corrida.
+
+    POR QUÉ: **Apify no cobra por página, cobra por tiempo de cómputo** (más el
+    proxy residencial aparte). Medido el 1-sep-2026 sobre el historial de la
+    cuenta: **$36.07 en 176 corridas**, $0.205 de promedio, y una corrida de 235 s
+    costó $0.0993. La documentación del módulo dice "~$0.007 por página" y
+    `costo_estimado` calcula por ITEM: las dos miden la cosa equivocada.
+
+    Con esta bitácora, en una semana se sabe el costo REAL por categoría y se deja
+    de estimar. También se registran las corridas FALLIDAS: son las que más
+    importan, porque gastan igual y no traen nada.
+
+    Nunca revienta: una bitácora que tumba la captura es peor que no tenerla.
+    """
+    try:
+        st = datos.get("stats") or {}
+        urls = len((payload or {}).get("startUrls") or []) or None
+        supabase_db.execute(
+            "INSERT INTO ops.process_log "
+            "  (proceso, origen, accion, estado, detalle, duracion_s, actor) "
+            "VALUES ('competencia', 'apify', 'raspado', %s, %s::jsonb, %s, %s)",
+            (str(datos.get("status") or "?").lower(),
+             json.dumps({"usd": datos.get("usageTotalUsd"),
+                         "compute_units": st.get("computeUnits"),
+                         "urls": urls,
+                         "run_id": datos.get("id"),
+                         "dataset": datos.get("defaultDatasetId")}),
+             round((st.get("durationMillis") or 0) / 1000, 1),
+             actor))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo registrar el gasto de Apify: %s", exc)
 
 
 async def _correr_actor(actor: str, payload: dict[str, Any],
@@ -121,8 +159,16 @@ async def _correr_actor(actor: str, payload: dict[str, Any],
                     if datos.get("status") not in ("RUNNING", "READY"):
                         break
 
+                # El gasto REAL de la corrida, tal como Apify lo cobró. Antes se
+                # tiraba: `datos` sólo se miraba para el `status`. Sin esto no hay
+                # forma de saber cuánto cuesta de verdad una categoría — sólo la
+                # estimación de `costo_estimado`, que además mide lo que no es
+                # (ver su docstring).
+                _registrar_gasto(actor, datos, payload)
+
                 if datos.get("status") != "SUCCEEDED":
-                    log.warning("Apify %s terminó en %s", actor, datos.get("status"))
+                    log.warning("Apify %s terminó en %s (usd=%s)", actor,
+                                datos.get("status"), datos.get("usageTotalUsd"))
                     raise RuntimeError(f"terminó en {datos.get('status')}")
 
                 rd = await cli.get(
@@ -600,8 +646,35 @@ async def mas_vendidos_categorias(categorias: list[str],
     return out
 
 
-def costo_estimado(busquedas: int, items_por_busqueda: int,
-                   con_detalle: bool = True) -> float:
-    """Gasto estimado de Apify en USD, para reportarlo antes y después de correr."""
-    por_item = COSTO_ITEM_DETALLE if con_detalle else COSTO_ITEM
-    return round(busquedas * items_por_busqueda * por_item, 3)
+def costo_medido_por_pagina(defecto: float = 0.015) -> float:
+    """
+    Cuánto cuesta de verdad raspar UNA categoría, según lo que Apify ya cobró.
+
+    Sale de `ops.process_log`, que `_registrar_gasto` llena en cada corrida. Sin
+    datos suficientes devuelve `defecto` — 1.5 centavos, que es el orden de
+    magnitud medido el 1-sep ($36.07 en 176 corridas, ~20 categorías por corrida).
+
+    Reemplaza a `costo_estimado`, que calculaba `búsquedas × items × $0.025` con
+    la tarifa del actor especializado que se retiró el 13-ago. Ese número no
+    estaba desactualizado: medía lo que no es. **Apify cobra por tiempo de
+    cómputo, no por item ni por página.** Un presupuesto no se dirige con un
+    medidor que mide otra cosa.
+    """
+    try:
+        fila = supabase_db.fetch_one(
+            "SELECT sum((detalle->>'usd')::numeric) AS usd, "
+            "       sum(coalesce((detalle->>'urls')::int, 20)) AS urls "
+            "  FROM ops.process_log "
+            " WHERE proceso = 'competencia' AND accion = 'raspado' "
+            "   AND detalle->>'usd' IS NOT NULL "
+            "   AND created_at > now() - interval '90 days'")
+        if fila and fila.get("usd") and fila.get("urls"):
+            return round(float(fila["usd"]) / float(fila["urls"]), 4)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo leer el costo medido: %s", exc)
+    return defecto
+
+
+def costo_estimado(categorias: int) -> float:
+    """Gasto estimado de raspar `categorias`, al costo REAL medido."""
+    return round(categorias * costo_medido_por_pagina(), 3)

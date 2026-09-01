@@ -10,10 +10,15 @@ competencia.py — Competencia en Mercado Libre (MVP, 10 SKUs).
   GET    /api/competencia/corrida       → cuándo se midió por última vez y cuánto costó
   POST   /api/competencia/correr        → dispara la corrida (para pruebas; en prod es un cron)
 
-La corrida mensual la dispara un **cron de Railway** (`backend/railway.competencia.json`
-→ `scripts/competencia_cron.py`), no un scheduler embebido: el web es un solo
-proceso y si se reinicia el día 1, un cron en proceso no dispara ese mes.
-`POST /correr` existe para probar a mano.
+Lo que corre SOLO es el cron `competencia-visitas` de Railway, 12:00 UTC, y es
+GRATIS: refresca las visitas de 30 días y sondea `/highlights`. **El raspado con
+Apify —lo único que cuesta— no lo dispara nadie automáticamente**: sale del botón
+del panel, una categoría a la vez.
+
+(`scripts/competencia_cron.py` y su `railway.competencia.json` se borraron el
+1-sep-2026: llamaban a `competencia_store.RUTA_DB` y a `competencia_captura.correr()`,
+borrados hacía semanas, así que reventaban en la línea 56 antes de medir nada. No
+tenían servicio en Railway.)
 """
 from __future__ import annotations
 
@@ -69,8 +74,10 @@ def estado():
         "scraper_apify": competencia_scraper.disponible(),
         "top_por_busqueda": settings.competencia_top,
         "con_detalle": settings.competencia_con_detalle,
-        "costo_por_busqueda_usd": competencia_scraper.costo_estimado(
-            1, settings.competencia_top, settings.competencia_con_detalle),
+        # Lo que cuesta raspar UNA categoría, MEDIDO de lo que Apify ya cobró
+        # (ops.process_log). Antes era una estimación por item con la tarifa de un
+        # actor retirado: medía lo que no es.
+        "costo_por_categoria_usd": competencia_scraper.costo_medido_por_pagina(),
         "limites": {
             "posicion_organica": "Solo por scraper: GET /sites/MLM/search responde 403.",
             "ficha_ajena": "GET /items/{id} de un competidor responde 403; título, "

@@ -17896,3 +17896,38 @@ no lo declaraba, así que el panel no podía decir qué tan vieja era la captura
 
 Nuevo lector `competencia_store.prioridad()` sobre la vista de la 0040, que es la
 lista blanca. Versión 0.324.0.
+
+---
+
+### v0.325.0 — Dejar de estimar el costo de Apify y empezar a medirlo (Eduardo)
+
+`costo_estimado` calculaba `búsquedas × items × $0.025`. No estaba
+desactualizado: **medía lo que no es.** Esa tarifa era del actor especializado que
+se retiró el 13-ago, y sobre todo **Apify no cobra por item ni por página: cobra
+por tiempo de cómputo**, más el proxy residencial aparte.
+
+Medido contra la facturación real de la cuenta el 1-sep-2026:
+
+    gasto histórico de Competencia:  $36.07 en 176 corridas
+    promedio por corrida:            $0.205  (hasta 20 categorías por corrida)
+    una corrida de 235 s costó:      $0.0993 · 0.13 compute units
+
+O sea **entre $0.01 y $0.02 por categoría**, no los $0.007 de la documentación.
+
+`_registrar_gasto` deja en `ops.process_log` el `usageTotalUsd`, los compute
+units, la duración y las URLs de **cada** corrida — también de las FALLIDAS, que
+son las que más importan porque gastan igual y no traen nada. `datos` ya venía en
+la respuesta de Apify y sólo se le miraba el `status`.
+
+`costo_medido_por_pagina()` lee esa bitácora de los últimos 90 días y devuelve el
+costo real por categoría; sin datos cae a $0.015, el orden de magnitud medido. Y
+`costo_estimado(categorias)` pasa a apoyarse en ella. `GET /estado` deja de
+reportar `costo_por_busqueda_usd` y reporta `costo_por_categoria_usd`.
+
+**Y se borran dos muertos.** `scripts/competencia_cron.py` llamaba a
+`competencia_store.RUTA_DB` y a `competencia_captura.correr()` —los dos borrados
+hacía semanas—, así que reventaba en la línea 56 antes de medir nada; su
+`railway.competencia.json` no tenía servicio en Railway. El docstring del router
+decía que la corrida mensual la disparaba ese cron: ahora dice la verdad — **lo
+único que corre solo es el cron gratis de las 12:00 UTC, y el raspado con Apify no
+lo dispara nadie automáticamente.** Versión 0.325.0.
