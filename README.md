@@ -17575,3 +17575,51 @@ variables. Versión 0.220.0.
 > `walmart-pendiente` a la espera del visto bueno: publicar en Walmart
 > es flujo vivo y la regla 3 pide el dale antes del push. Por eso
 > `main.py` salta de 0.218.0 a 0.220.0 — no es un número perdido.
+
+---
+
+### v0.318.0 — El corte de mes dejaba de duplicar el panel de Competencia (Eduardo)
+
+`enrich.market_listing_metrics` tiene **`periodo` en la PK** y guarda una foto por
+mes (`date_trunc('month', now())` en `guardar_publicaciones`). Pero
+`market_publicaciones_v` —la que 0023 dejó como vista del tab— **no filtra
+`periodo`**: devuelve todas las filas de la tabla.
+
+Mientras sólo hubo un mes guardado no se notó. Medido el 31-ago-2026: 3,118 filas,
+un único periodo `2026-08-01`, la vista entera en 4,787. **El día 1 la primera
+escritura crea la fila del mes nuevo con `title`, `visits_30d` y `units_30d` en
+NULL** —el COALESCE del upsert protege dentro de una fila, no entre meses— y desde
+ahí la vista devuelve **dos filas por (sku, cuenta)**.
+
+Simulado contra producción con un septiembre ficticio, sin escribir nada: la rama
+medida pasa de 3,118 a 6,236 filas, con las 3,118 llaves duplicadas. Y se propaga:
+`listar_skus` elige el item de referencia bajo `ORDER BY sku, cuenta`, que no
+desempata por periodo; `vista()` pinta cada tienda dos veces; y
+`precio_ref = min(precios)` toma el más bajo de los dos meses — que es de donde
+sale `brecha`, la columna que manda en el tab.
+
+**El arreglo es un `distinct on (sku, canal, cuenta)` y el ORDEN es el arreglo:**
+primero las filas que tienen medición, después el periodo más reciente. Un
+`order by periodo desc` a secas —la corrección obvia— habría elegido la fila vacía
+del mes nuevo y dejado el panel entero en "—" hasta que una captura completa
+terminara. Cambiar duplicados por huecos no es arreglar.
+
+Hoy no cambia nada: la vista nueva devuelve **exactamente** el mismo conjunto que
+la vieja (`except` en los dos sentidos, 0 y 0). Es una vacuna, no una cirugía. La
+rama del espejo se copia de la 0023 sin un solo cambio.
+
+Aplicada a producción el 31-ago por el **5432** —el pooler en modo transacción no
+sostiene DDL— y con rollback automático si fallaba cualquiera de las cuatro
+verificaciones: quedó en 4,787 filas, 3,118 con medición, 0 llaves duplicadas y la
+tabla base intacta con su único periodo. La definición previa se capturó de la base
+un segundo antes de aplicar, en
+`supabase/propuestas/0037_reversa_market_publicaciones_v.sql`.
+
+**Lo que este commit NO trae, y conviene saber por qué.** El mismo repaso señaló
+`_nuestras_publicaciones()` leyendo `ml_progress` con un `except` que devuelve `{}`
+—que junto al DELETE+INSERT de `reemplazar_ranking` habría borrado las coronas del
+panel en silencio—. **Ya estaba resuelto** desde el 19-ago (v0.223.0, "Paso 3 ·
+Bloque 3"): los cuatro puntos que leen esa bitácora están detrás de
+`SUPABASE_READ_PUBLICACIONES`, que en Railway producción está en `true`, así que
+ninguno se ejecuta. El hallazgo salió de leer una copia local atrasada. Versión
+0.312.0.
