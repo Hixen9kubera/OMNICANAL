@@ -560,6 +560,9 @@ function FilasSku({
                 {mxn(t.precio_lista)}
               </div>
             ) : null}
+            {t?.precio != null ? (
+              <PrecioConfirmado iso={t.precio_confirmado_en} />
+            ) : null}
           </td>
           <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
             {num(t?.visitas_30d)}
@@ -1005,6 +1008,9 @@ function SkusDeCategoria({ categoriaId }: { categoriaId: string }) {
                       </td>
                       <td className="py-2 pr-3 text-right text-xs font-medium tabular-nums text-slate-900">
                         {mxn(t?.precio)}
+                        {t?.precio != null ? (
+                          <PrecioConfirmado iso={t.precio_confirmado_en} />
+                        ) : null}
                       </td>
                       <td className="py-2 pr-3 text-right text-xs tabular-nums text-slate-600">
                         {num(t?.visitas_30d)}
@@ -1716,6 +1722,54 @@ function textoRelativo(dias: number): string {
 /** El día y el mes, sin año: "13 de agosto". */
 function diaYMes(iso: string): string {
   return aFecha(iso).toLocaleDateString("es-MX", { day: "numeric", month: "long" });
+}
+
+/**
+ * De cuándo es el precio que se está mostrando.
+ *
+ * ── POR QUÉ HACE FALTA ──────────────────────────────────────────────────────
+ * Un precio sin fecha se lee como "el de ahora", y muchos no lo son. Medido el
+ * 1-sep-2026 sobre las 4,828 publicaciones del tab:
+ *
+ *   751  confirmadas en las últimas 6 h
+ *   198  hoy (6-24 h)
+ *    69  1-3 días
+ *   240  3-7 días
+ * 2,180  MÁS DE 7 DÍAS
+ * 1,390  NUNCA confirmadas
+ *
+ * O sea que sólo el 21% tiene un precio confirmado en 24 h.
+ *
+ * ── LOS TRES ESTADOS NO SON DOS ─────────────────────────────────────────────
+ * `null` NO es "viejo": es que ese precio nunca se confirmó contra ML y lo que
+ * se muestra viene de `channel.listings.price`, que **no es lo que se cobra**
+ * (`price_sale` sí lo es — ver `precio_al_abrir.py`). Presentarlo igual que uno
+ * confirmado hace tres días sería mentir por omisión, que es justo lo que la
+ * migración 0042 vino a corregir.
+ *
+ * Ámbar pasado UN día: el barrido de precios tarda ~9.3 h por vuelta y los
+ * webhooks cubren el 72% de las activas, así que algo sano se confirma dentro
+ * del día.
+ */
+function PrecioConfirmado({ iso }: { iso?: string | null }) {
+  if (!iso)
+    return (
+      <div
+        className="text-[10px] text-amber-700"
+        title="Este precio nunca se confirmó contra Mercado Libre: sale del sync de 15 min, que NO refleja promociones. El que se cobra puede ser más bajo."
+      >
+        sin confirmar
+      </div>
+    );
+  const dias = diasDesde(iso)!;
+  return (
+    <div
+      className={`text-[10px] ${dias > 1 ? "text-amber-700" : "text-slate-400"}`}
+      title={`Precio confirmado contra Mercado Libre el ${diaYMes(iso)}`}
+    >
+      conf. {textoRelativo(dias)}
+    </div>
+  );
 }
 
 /**

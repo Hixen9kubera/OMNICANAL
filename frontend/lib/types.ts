@@ -765,6 +765,12 @@ export interface PublicacionPropia {
   precio: number | null;
   /** El de LISTA. Puede ser muy superior: $7,756 contra $3,294 reales. */
   precio_lista: number | null;
+  /**
+   * Cuándo se confirmó `precio` contra ML (`/items/{id}/sale_price`).
+   * `null` = NUNCA se confirmó: el precio mostrado sale de `channel.listings.price`,
+   * que no es necesariamente lo que el comprador paga.
+   */
+  precio_confirmado_en?: string | null;
   estado: string | null;
   visitas_30d: number | null;        // API de ML
   unidades_30d: number | null;       // de los pedidos

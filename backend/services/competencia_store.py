@@ -302,6 +302,11 @@ def tabla() -> list[dict[str, Any]]:
                 "imagen": p.get("imagen"),
                 "precio": p.get("precio"),
                 "precio_lista": p.get("precio_lista"),
+                # De cuándo es ese precio. `None` = nunca se confirmó contra ML,
+                # así que lo que se muestra viene de `channel.listings.price`, que
+                # NO es lo que se cobra (ver precio_al_abrir.py). La pantalla lo
+                # dice en vez de presentar los dos casos igual.
+                "precio_confirmado_en": p.get("precio_confirmado_en"),
                 "estado": p.get("estado"),
                 "visitas_30d": vis,
                 "unidades_30d": uni,

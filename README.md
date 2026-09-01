@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.351.0 — El precio dice de cuándo es (Eduardo)
+
+Cierra lo que dejó abierto la 0042: la vista ya traía `precio_confirmado_en` y la
+pantalla no lo usaba, así que cada precio se leía como "el de ahora".
+
+**Medido antes de diseñarlo**, sobre las 4,828 publicaciones del tab:
+
+| confirmado | filas |
+|---|---|
+| últimas 6 h | 751 |
+| hoy (6-24 h) | 198 |
+| 1-3 días | 69 |
+| 3-7 días | 240 |
+| **más de 7 días** | **2,180** |
+| **nunca** | **1,390** |
+
+Sólo el **21%** tiene un precio confirmado dentro de las 24 h.
+
+**Son TRES estados, no dos.** `null` no es "viejo": es que ese precio nunca se
+confirmó contra ML y lo que se muestra sale de `channel.listings.price`, que
+**no es lo que se cobra**. Presentarlo igual que uno confirmado hace tres días
+sería mentir por omisión — justo lo que la 0042 vino a corregir. Por eso dice
+"sin confirmar", con su motivo en el tooltip.
+
+Ámbar pasado UN día, no antes: el barrido de precios tarda ~9.3 h por vuelta y
+los webhooks cubren el 72% de las activas, así que algo sano se confirma dentro
+del día.
+
+Verificado contra el DOM en el sandbox, no a ojo: `conf. hoy` y `conf. ayer` en
+slate (965 filas); todo lo de 2+ días y `sin confirmar` en ámbar `rgb(180,83,9)`
+(3,863 filas).
+
+#### El sandbox ya puede validar precios
+
+Era la limitación que quedó anotada en la 0042. Al re-clonar `channel.listings`
+salieron dos cosas encima:
+
+- **El esquema se había desviado**: al sandbox le faltaba `date_published`, y la
+  migración que la agrega (`0031`) nunca se le aplicó. Aplicada.
+- **`--solo` con UNA tabla rompe llaves foráneas**: `channel.listings` referencia
+  `core.accounts`, y el sandbox no tenía una cuenta que producción sí. Hay que
+  nombrar las tablas padre en la misma corrida — el clonador respeta el orden de
+  `TABLAS`, pero sólo entre las que se le piden.
+
+Clonadas `core.accounts` + `core.products` + `channel.listings`: 44,395 filas. El
+sandbox ya espeja los precios de producción.
+
 ### v0.349.0 — El panel ya sabía que el top estaba viejo, y no lo decía (Eduardo)
 
 Eduardo preguntó cómo verificar que las categorías top estén al día. La respuesta
