@@ -55,6 +55,10 @@ log = logging.getLogger("omnicanal.bitacora")
 PUBLICAR = "publicar"
 PRECIO = "precio"
 STOCK = "stock"
+# `costos` ya existia antes de este modulo: lo escriben crear_producto y el
+# recalculo del panel. Se reusa el mismo nombre para que la pestana muestre
+# el historico junto con lo nuevo, en vez de partir la vista en dos.
+COSTO = "costos"
 
 
 def _escribir(proceso: str, origen: str, accion: str, sku: str | None,

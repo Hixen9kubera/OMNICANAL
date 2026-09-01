@@ -21,7 +21,7 @@ from services import supabase_db
 log = logging.getLogger("omnicanal.monitoreo")
 
 # Procesos que nacen de un botón. Ver services/bitacora.py.
-_DE_PERSONA = ("publicar", "precio", "stock")
+_DE_PERSONA = ("publicar", "costos", "precio", "stock")
 
 # Dos correos, una persona (Brandon, 5-ago). Se fusionan al MOSTRAR.
 _MISMA_PERSONA = {"sancorpethalia@kubera.mx": "thalias@kubera.mx"}

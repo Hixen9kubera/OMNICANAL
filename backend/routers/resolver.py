@@ -22,7 +22,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from config import settings
-from services import packing_comparador, packing_drive, packing_resolver
+from services import bitacora, packing_comparador, packing_drive, packing_resolver
 
 log = logging.getLogger("omnicanal.routers.resolver")
 router = APIRouter(prefix="/api/resolver", tags=["resolver"])
@@ -266,7 +266,18 @@ def guardar(jid: str, req: GuardarReq):
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("Guardar costos falló")
+        bitacora.anotar(bitacora.COSTO, "validar", estado="error",
+                        detalle={"jid": jid, "skus": len(req.skus or []),
+                                 "excepcion": f"{type(exc).__name__}: {str(exc)[:180]}"})
         raise HTTPException(502, f"No se pudieron guardar los costos: {exc}")
     if r is None:
         raise HTTPException(404, "Análisis no encontrado o todavía sin resultado.")
+    # BITÁCORA DE PERSONA: validar un costo cambia el precio de venta de cada
+    # canal, así que es de las acciones que más importa poder atribuir. Va con
+    # `sku=None` porque una validación toca VARIOS a la vez; cuántos y cuáles
+    # quedan en el detalle.
+    bitacora.anotar(bitacora.COSTO, "validar",
+                    detalle={"jid": jid, "skus": len(req.skus or []),
+                             "editados": len(req.editados or []),
+                             "guardados": (r or {}).get("guardados")})
     return r
