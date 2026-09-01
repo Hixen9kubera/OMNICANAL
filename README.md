@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.340.0 — Temu recupera una vía de ingesta: sondeo por su propia API
+
+Temu se quedó **sin ninguna forma de enterarse de una venta**: M2E desinstalado
+y prohibido, y el webhook dependiente de trámites en su consola. Mientras tanto
+Gabriela capturaba a mano. Medido: **Temu declara 96 órdenes, la tubería vio 2**.
+
+`pedidos_temu_sondeo.revisar()` sondea `bg.order.list.v2.get` — que el sondeo
+del 1-sep confirmó que responde — y entrega cada venta a `pedidos_ml.sincronizar`,
+el mismo sitio donde nacen todos los pedidos. **No reimplanta el normalizador**:
+el listado devuelve la MISMA forma que `bg.order.detail.v2.get`, así que reusa
+`pedidos_temu._normalizar`, que ya sabe leerla.
+
+**EL TOPE DE RETROCESO ES LA PIEZA QUE EVITA UN ACCIDENTE.** La marca de agua de
+Temu está en el **11-ago** —la última venta que alcanzó a entrar por M2E—, así
+que "desde la última registrada" habría barrido tres semanas en el primer
+encendido: ~96 pedidos de Woo de golpe, 96 órdenes de Odoo duplicando las que
+Gabriela ya capturó, y el descuento de stock de mercancía que salió hace
+semanas. La marca sirve para **no repetir trabajo, no para recuperar historia**;
+se acota a 2 días y el histórico se pide aparte con `desde` explícito.
+
+Verificado: sin tope la marca salía en 2026-08-11 (21 días atrás); con tope, en
+2.0 días.
+
+Nace apagado y, aun encendido, arranca en `SOLO_REGISTRO`: cuenta y clasifica
+sin crear nada.
+
 ### v0.339.0 — La guía de Temu existe: el endpoint solo pedía parámetros
 
 El sondeo con orden real. Los tres endpoints de envío que dan `3000003 type not

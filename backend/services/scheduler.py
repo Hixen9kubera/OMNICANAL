@@ -106,6 +106,24 @@ def iniciar() -> None:
         )
         log.info("Sondeo de pedidos M2E (Temu/TikTok) cada %s min.",
                  settings.pedidos_m2e_min)
+    # Sondeo de ventas de TEMU por su propia API. Reemplaza a M2E, que quedó
+    # desinstalado y prohibido: sin esto Temu no tiene NINGUNA vía de ingesta y
+    # sus ventas solo entran si alguien las captura a mano.
+    # Ver services/pedidos_temu_sondeo.py — arranca en modo solo-registro.
+    if getattr(settings, "pedidos_temu_sondeo_enabled", False):
+        from services import pedidos_temu_sondeo
+        _scheduler.add_job(
+            pedidos_temu_sondeo.revisar,
+            "interval",
+            minutes=settings.pedidos_temu_sondeo_min,
+            id="pedidos_temu_sondeo",
+            next_run_time=datetime.now() + timedelta(seconds=120),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Sondeo de ventas Temu cada %s min (solo_registro=%s).",
+                 settings.pedidos_temu_sondeo_min,
+                 settings.pedidos_temu_sondeo_solo_registro)
     # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
     # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
     if settings.odoo_watch_enabled and settings.mysql_enabled:

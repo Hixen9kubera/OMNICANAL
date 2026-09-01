@@ -139,6 +139,25 @@ class Settings(BaseSettings):
     # pedido (API bloqueada con 3000032), así que el pedido se crea con el
     # precio de CATÁLOGO y eso queda dicho en el registro.
     pedidos_temu_enabled: bool = False
+
+    # ── SONDEO DE VENTAS DE TEMU (su propia API) ──────────────────────────
+    # Temu se quedó SIN ninguna vía de ingesta: M2E está desinstalado y el
+    # webhook depende de cuatro trámites ajenos. Medido el 1-sep: Temu declara
+    # 96 órdenes y la tubería vio 2 — las 94 restantes las capturó Gabriela a
+    # mano. Ver services/pedidos_temu_sondeo.py.
+    #
+    # Nace APAGADO y, aunque se encienda, arranca en SOLO_REGISTRO: cuenta y
+    # clasifica sin crear nada. Encenderlo de verdad crea pedidos de Woo y
+    # descuenta stock, y eso lleva el dale de Brandon (regla 3).
+    pedidos_temu_sondeo_enabled: bool = False
+    pedidos_temu_sondeo_solo_registro: bool = True
+    pedidos_temu_sondeo_min: int = 15
+    # Tope de retroceso de la marca de agua. La de Temu está en el 11-ago (la
+    # última venta que entró por M2E), así que sin tope el primer encendido
+    # barrería semanas: ~96 pedidos de Woo de una sentada, duplicando lo que
+    # Gabriela ya capturó. La marca evita repetir trabajo; NO es para recuperar
+    # historia — eso se pide aparte con `desde` explícito.
+    pedidos_temu_sondeo_max_dias: int = 2
     # ¿El fan-out ESCRIBE stock en TikTok? Interruptor propio, aparte de
     # `FANOUT_CANALES`, y a propósito: el valor de esa lista no se puede leer
     # desde fuera de Railway, así que si TikTok dependiera solo de ella un deploy
