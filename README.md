@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.374.0 — El botón de raspado no estaba roto: la pantalla tiraba su explicación (Eduardo)
+
+Eduardo: *"Al presionar el botón para el scrappeo de categoría y actualizar sale
+API 422: /api/competencia/rankings"*.
+
+**No era un fallo del botón ni del backend.** Reproducido contra producción con
+una categoría real:
+
+```
+POST /api/competencia/rankings  {"solo":["MLM191382"]}
+→ 422  {"detail":"MLM191382 (Carritos para Mandados): se actualizó hace
+         0 día(s). Se puede volver a pedir en 3."}
+```
+
+Es el **candado de `DIAS_CANDADO = 3`** haciendo su trabajo: el barrido pasó por
+ahí el 1-sep y raspar otra vez el 2 costaría dinero por la misma página. El
+backend lo explica con nombre, motivo y cuándo se puede volver a pedir.
+
+**Lo que fallaba es que esa explicación no llegaba a la pantalla.** El `catch` del
+botón usaba `e.message`, y el `message` de un `ApiError` es —por construcción—
+`` `API ${status}: ${path}` ``: la ruta y el código, nunca la razón. La razón
+viaja en `e.detail`, y para eso existe `mensajeDeError(e, respaldo)`, que ya
+usaban otros seis archivos.
+
+La ironía está escrita en el propio archivo, tres líneas más arriba del bug:
+*"un botón que no hace nada sin explicar se reporta como bug"*. Explicaba. La
+explicación se tiraba.
+
+**Arreglados los cinco sitios del tab** (el botón de refresco, las dos
+sugerencias de IA, la carga de la vista y la del detalle). Ahora un candado se
+lee como lo que es —*"se puede volver a pedir en 3"*— y no como una falla.
+
+⚠️ **El mismo descuido vive en ~20 sitios más de la app** (Análisis, FBA,
+Rentabilidad, Automatización, Crear, Dashboard). No se tocaron aquí porque son
+pantallas que este cambio no puede verificar; queda como barrido aparte.
+
+Verificado en sandbox interceptando la llamada con el 422 EXACTO de producción:
+la pantalla muestra el texto del backend en vez del código HTTP.
+
 ### v0.373.0 — La Red viva: el flujo de kubera late en Operaciones (Eduardo)
 
 Eduardo: *"quiero visualización del tráfico de datos y endpoints que alimentan a

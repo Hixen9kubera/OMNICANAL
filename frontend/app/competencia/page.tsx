@@ -35,6 +35,7 @@ import {
   terminosSubcategoria,
   vistaCompetencia,
   capturarRankingsCompetencia,
+  mensajeDeError,
 } from "@/lib/api";
 import type {
   CompetenciaDetalleSku,
@@ -797,7 +798,7 @@ function DetalleSku({
                 try {
                   setSug(await sugerirSubcategoria(d.categoria_id));
                 } catch (e) {
-                  setFallo(e instanceof Error ? e.message : "La IA no pudo sugerir.");
+                  setFallo(mensajeDeError(e, "La IA no pudo sugerir."));
                 } finally {
                   setPidiendo(false);
                 }
@@ -1092,7 +1093,7 @@ function BarraTerminos({ categoriaId }: { categoriaId: string }) {
             try {
               setSug(await sugerirSubcategoria(categoriaId));
             } catch (e) {
-              setFallo(e instanceof Error ? e.message : "La IA no pudo sugerir.");
+              setFallo(mensajeDeError(e, "La IA no pudo sugerir."));
             } finally {
               setPidiendo(false);
             }
@@ -1382,8 +1383,16 @@ function BotonRefrescar({
     } catch (e) {
       setFallo(true);
       // El backend explica el motivo (recién capturada, ML no publica ranking,
-      // no es nuestra). Se muestra tal cual: es más útil que "error".
-      setMsg(e instanceof Error ? e.message : "No se pudo actualizar.");
+      // no es nuestra) y viene en `detail`. Hay que sacarlo con `mensajeDeError`:
+      // el `message` de un ApiError es "API 422: /api/competencia/rankings" —
+      // la ruta y el código, no la razón.
+      //
+      // PASÓ: el 2-sep-2026 se reportó como bug del botón. No lo era. El backend
+      // contestaba "se actualizó hace 0 día(s). Se puede volver a pedir en 3" —
+      // el candado de DIAS_CANDADO haciendo su trabajo— y la pantalla enseñaba
+      // el error crudo. Este archivo ya advertía que "un botón que no hace nada
+      // sin explicar se reporta como bug"; explicaba, y la explicación se tiraba.
+      setMsg(mensajeDeError(e, "No se pudo actualizar."));
     } finally {
       setCorriendo(false);
     }
@@ -2143,7 +2152,7 @@ export default function CompetenciaPage() {
         if (r.aviso) setAvisos([r.aviso]);
       } catch (e) {
         if (!signal?.aborted)
-          setError(e instanceof Error ? e.message : "No se pudo cargar la vista.");
+          setError(mensajeDeError(e, "No se pudo cargar la vista."));
       } finally {
         setCargando(false);
       }
@@ -2174,7 +2183,7 @@ export default function CompetenciaPage() {
     try {
       setDetalle(await detalleSkuCompetencia(sku));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo cargar el detalle.");
+      setError(mensajeDeError(e, "No se pudo cargar el detalle."));
     } finally {
       setCargandoDetalle(false);
     }
