@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.371.0 — Guardar contenido borraba el eje de variación de 172 padres
+
+Brandon pidió separar `TEC-0935` y `CAM-0030` en variantes para Amazon. Al medir
+salió que **los SKUs ya existen** —`TEC-0935-ROS`/`-AZLMAR`, y las cuatro medidas
+de `CAM-0030`— y que lo roto es otra cosa: **el padre perdió su atributo de
+variación**. Los 30 atributos de `TEC-0935` tienen `is_variation=0`, la REST
+devuelve `attributes: []` en las dos variaciones y el selector de color de la
+tienda no existe.
+
+**La causa está en `guardar_contenido_wc` y sigue viva**, así que no es historia:
+
+```python
+preservar = [a for a in actuales if a.get("id")]   # ← 0 es FALSY
+```
+
+Ese filtro conserva los atributos de TAXONOMÍA. Pero **los ejes de variación de
+este catálogo son atributos LOCALES** (`id=0`, `is_taxonomy=0`), porque así los
+crea `variables.py`. Cada vez que alguien guardaba contenido con atributos, el
+eje se iba en silencio.
+
+Lo más incómodo: **el docstring prometía exactamente lo contrario** — *"Así no se
+rompen las variantes de un producto variable"*. Nadie iba a sospechar de esta
+función leyéndola.
+
+**Radio medido el 2-sep: 172 de los 1,503 padres variables del catálogo,
+107 de ellos en `publish`**, con daño ocurrido el mismo día de la medición.
+
+El arreglo preserva `id > 0` **o** `variation: true`, y añade dos cosas que no
+estaban:
+
+- **si el GET de los atributos actuales falla, NO se tocan los atributos.**
+  Antes, un 500 de Woo dejaba `preservar` vacío y el PUT mandaba solo los custom:
+  el mismo borrado, por otra puerta;
+- un custom con el mismo nombre que un eje preservado se descarta en vez de
+  duplicarlo (dos atributos homónimos y Woo elige uno sin avisar).
+
+Probado con el cliente HTTP suplantado, 8 de 8: el eje local sobrevive, la
+taxonomía sobrevive, el custom viejo sí se reemplaza, el nuevo entra, no se
+duplica un nombre que ya es eje, un GET fallido no toca nada pero el título sí se
+guarda, y un nombre vacío se ignora.
+
+**Esto NO repara los 172 padres ya dañados** — solo deja de romper más. La
+reparación es aparte y toca decidirla con Brandon, SKU por SKU: el eje hay que
+reconstruirlo con los valores correctos, y en 34 casos medidos los dos "colores"
+de un padre son productos DISTINTOS.
+
 ### v0.370.0 — Operaciones se come a Monitoreo y a Webhooks (Eduardo)
 
 Tres pestañas sueltas en la barra —**Operaciones**, **Monitoreo** y

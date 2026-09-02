@@ -1809,9 +1809,25 @@ async def guardar_contenido_wc(
       - `descripcion`  → description
       - `atributos`    → atributos CUSTOM ([{nombre, valor}]).
 
-    Los atributos por TAXONOMÍA (id>0, incluidos los que definen variaciones) se
-    PRESERVAN tal cual; solo se reemplazan los custom (id=0). Así no se rompen las
-    variantes de un producto variable.
+    Se PRESERVAN tal cual dos clases de atributo; solo se reemplaza el resto:
+      · los de TAXONOMÍA (`id > 0`), y
+      · **cualquiera con `variation: true`, tenga el id que tenga.**
+
+    ⚠️ LA SEGUNDA CONDICIÓN FALTABA, Y ESE ERA EL BUG. Este docstring prometía
+    "así no se rompen las variantes de un producto variable" y el código hacía
+    justo lo contrario: filtraba por `a.get("id")`, que es FALSY cuando el id es
+    0 — y los ejes de variación de este catálogo son atributos **LOCALES**
+    (`id=0`, `is_taxonomy=0`), porque así los crea `variables.py`. Guardar
+    contenido con `atributos` borraba el eje: el padre dejaba de ofrecer
+    variantes, las hijas devolvían `attributes: []` y el selector de color de la
+    tienda desaparecía.
+
+    Medido el 2026-09-02: **172 de los 1,503 padres variables del catálogo
+    estaban así, 107 de ellos en `publish`** — entre otros TEC-0935 (licuadora,
+    Rosa/Azul Marino) y CAM-0030 (colchón, 4 medidas), que es donde salió.
+
+    Si un atributo custom trae el MISMO nombre que uno preservado, se descarta:
+    duplicarlo dejaría dos atributos homónimos y Woo elige uno sin avisar.
     """
     payload: dict[str, Any] = {}
     if titulo is not None:
@@ -1821,23 +1837,40 @@ async def guardar_contenido_wc(
 
     async with _client() as cli:
         if atributos is not None:
-            actuales: list[dict[str, Any]] = []
             r = await cli.get(f"/products/{wc_id}", params={"_fields": "id,attributes"})
-            if r.status_code == 200:
-                actuales = r.json().get("attributes") or []
-            preservar = [a for a in actuales if a.get("id")]  # taxonomía / variación
-            custom = [
-                {
-                    "id": 0,
-                    "name": (a.get("nombre") or "").strip(),
-                    "options": [str(a.get("valor") or "")],
-                    "visible": True,
-                    "variation": False,
-                }
-                for a in atributos
-                if (a.get("nombre") or "").strip()
-            ]
-            payload["attributes"] = preservar + custom
+            if r.status_code != 200:
+                # No se pudo leer lo que ya hay. Mandar solo los custom BORRARÍA
+                # los ejes de variación, que es justo el daño que este cambio
+                # viene a impedir: sin la lista actual, "preservar" es vacío.
+                # Mejor no tocar los atributos que romperlos a ciegas.
+                log.warning("guardar_contenido_wc %d: no pude leer los atributos "
+                            "actuales (%d); NO los toco para no romper variantes",
+                            wc_id, r.status_code)
+            else:
+                actuales: list[dict[str, Any]] = r.json().get("attributes") or []
+                # Taxonomía (id>0) O eje de variación (variation=true, aunque sea
+                # local con id=0). Lo segundo es lo que faltaba — ver docstring.
+                preservar = [a for a in actuales
+                             if a.get("id") or a.get("variation")]
+                ya = {str(a.get("name") or "").strip().lower() for a in preservar}
+                custom = []
+                for a in atributos:
+                    nombre = (a.get("nombre") or "").strip()
+                    if not nombre:
+                        continue
+                    if nombre.lower() in ya:
+                        log.info("guardar_contenido_wc %d: '%s' ya existe como "
+                                 "atributo de variación/taxonomía; no se duplica",
+                                 wc_id, nombre)
+                        continue
+                    custom.append({
+                        "id": 0,
+                        "name": nombre,
+                        "options": [str(a.get("valor") or "")],
+                        "visible": True,
+                        "variation": False,
+                    })
+                payload["attributes"] = preservar + custom
 
         if not payload:
             return False
