@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.375.0 — El candado del raspado baja a 1 día, y deja de parecer una falla (Eduardo)
+
+Eduardo: *"bájalo a 1 día y avisa en la guía y también cuando presionen el botón
+de nuevo"*.
+
+**El candado.** `DIAS_CANDADO` era 3, y con el barrido ya quincenal (v0.372.0)
+eso volvía el botón inútil justo cuando más se quiere: recién pasado el barrido
+del día 1 o el 16, toda categoría fresca rebotaba tres días. Con **1** sólo se
+bloquea el MISMO día —que es el abuso que importa, dos personas pidiendo la
+misma página la misma tarde— y el resto de la quincena el botón sirve para lo
+que existe: reaccionar cuando el aviso dice que el top ya se movió.
+
+**«No ahora» dejó de vestirse de error.** `_validar_solo` devolvía 422 para sus
+tres rechazos, y no son lo mismo:
+
+| | |
+|---|---|
+| **409** | el candado de días — es TEMPORAL y mañana se resuelve solo |
+| **422** | no es nuestra, o ML no publica ranking ahí — esperar no lo arregla |
+
+Si se piden varias y sólo algunas están bajo candado, manda el 422: el pedido no
+es puramente temporal.
+
+**El panel los pinta distinto.** El botón tenía dos desenlaces —verde o ámbar— y
+ahora tiene tres: un candado sale en **gris**, como lo que es (una respuesta,
+no un fallo), y el error de verdad sigue en ámbar. Verificado en sandbox:
+
+```
+409 → text-slate-500   "Bobinas: se actualizó hace 0 día(s). Se puede volver a pedir en 1."
+422 → text-amber-600   "MLM999: no es una categoría nuestra con publicación viva."
+```
+
+**Y avisa antes de apretarlo**: el tooltip del botón ahora dice *"sólo se puede
+una vez al día por categoría"*, y la guía trae un aviso propio que aclara la
+parte que se malinterpreta — *ese mensaje en gris no es un error, es la
+respuesta: ya está fresco*.
+
+Verificado contra los datos de producción: candado solo → 409, inexistente →
+422, mezcla → 422, y una categoría de 20 días sin captura pasa y se raspa.
+
 ### v0.374.0 — El botón de raspado no estaba roto: la pantalla tiraba su explicación (Eduardo)
 
 Eduardo: *"Al presionar el botón para el scrappeo de categoría y actualizar sale

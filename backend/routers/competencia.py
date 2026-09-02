@@ -369,7 +369,15 @@ def ranking_categoria(categoria_id: str, nivel: str | None = None, limite: int =
 # Días que una categoría queda "recién capturada". Debajo de esto el botón se
 # niega: dos personas mirando productos distintos de la misma categoría no deben
 # pagar dos veces la misma página.
-DIAS_CANDADO = 3
+#
+# ERA 3, y con el barrido QUINCENAL (v0.372.0) eso volvía el botón inútil justo
+# cuando más se quiere usar: recién pasado el barrido del día 1 o el 16, toda
+# categoría fresca rebotaba durante tres días. Eduardo lo bajó a 1 el
+# 2-sep-2026. Con 1, sólo se bloquea el MISMO día —que es el abuso que importa,
+# dos personas pidiendo la misma página en la misma tarde— y el resto de la
+# quincena el botón sirve para lo que existe: reaccionar cuando el aviso dice
+# que el top ya se movió.
+DIAS_CANDADO = 1
 
 
 def _validar_solo(cats: list[str], forzar: bool) -> tuple[list[str], list[str]]:
@@ -396,16 +404,21 @@ def _validar_solo(cats: list[str], forzar: bool) -> tuple[list[str], list[str]]:
     filas = competencia_store.prioridad(cats)
     conocidas = {f["categoria_id"]: f for f in filas}
 
-    ok, descartes = [], []
+    # `solo_candado` distingue "todavía no" de "esto no va a pasar nunca". Ver el
+    # raise de abajo: el primero es un 409 y el segundo un 422, y el panel los
+    # pinta distinto — un candado no es una falla.
+    ok, descartes, solo_candado = [], [], True
     for c in cats:
         f = conocidas.get(c)
         if not f:
             descartes.append(f"{c}: no es una categoría nuestra con publicación viva.")
+            solo_candado = False
             continue
         if f.get("tiene_ranking_ml") is False:
             descartes.append(f"{c} ({f.get('categoria_nombre')}): Mercado Libre no "
                              "publica más vendidos de esta categoría. Raspar no "
                              "traería nada.")
+            solo_candado = False
             continue
         d = f.get("dias_sin_captura")
         if d is not None and d < DIAS_CANDADO and not forzar:
@@ -415,9 +428,18 @@ def _validar_solo(cats: list[str], forzar: bool) -> tuple[list[str], list[str]]:
             continue
         ok.append(c)
 
-    # Si NADA pasó, es un error: el usuario pidió algo y no va a ocurrir.
+    # Si NADA pasó, hay que decirlo — pero no todo "no" es del mismo tipo:
+    #
+    #   409  el candado de días. Es TEMPORAL y se resuelve solo mañana. El panel
+    #        lo muestra como aviso, no como falla.
+    #   422  no es nuestra, o ML no publica ranking ahí. Volver a pedirlo mañana
+    #        no cambia nada.
+    #
+    # Se separan porque se veían igual, y un candado presentado como error se
+    # reporta como bug (pasó el 2-sep-2026 con "API 422: /api/competencia/rankings").
     if not ok:
-        raise HTTPException(422, " ".join(descartes) or "Nada que capturar.")
+        raise HTTPException(409 if solo_candado and descartes else 422,
+                            " ".join(descartes) or "Nada que capturar.")
     # Si pasó algo pero se cayeron otras, NO es error — pero hay que decirlo.
     # Descartar en silencio es lo que produce el reporte "el botón no hizo nada".
     return ok, descartes

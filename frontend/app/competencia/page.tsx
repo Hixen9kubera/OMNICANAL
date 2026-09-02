@@ -36,6 +36,7 @@ import {
   vistaCompetencia,
   capturarRankingsCompetencia,
   mensajeDeError,
+  ApiError,
 } from "@/lib/api";
 import type {
   CompetenciaDetalleSku,
@@ -1362,7 +1363,15 @@ function BotonRefrescar({
 }) {
   const [corriendo, setCorriendo] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [fallo, setFallo] = useState(false);
+  /**
+   * Tres desenlaces, no dos.
+   *
+   * `aviso` es el candado de días (409): la petición estaba bien, sólo que
+   * todavía no toca. Pintarlo igual que un fallo hacía que se reportara como
+   * bug — pasó el 2-sep-2026. Se separa del `error` de verdad (no es nuestra,
+   * ML no publica ranking ahí), que no mejora esperando.
+   */
+  const [tono, setTono] = useState<"ok" | "aviso" | "error">("ok");
 
   if (!categoriaId) return null;
 
@@ -1373,15 +1382,17 @@ function BotonRefrescar({
   async function pedir() {
     setCorriendo(true);
     setMsg(null);
-    setFallo(false);
+    setTono("ok");
     try {
       const r = await capturarRankingsCompetencia({ solo: [categoriaId!] });
       const desc = r.descartadas?.length ? r.descartadas.join(" ") : null;
       setMsg(desc ?? `Listo: ${r.con_datos ?? 0} publicaciones.`);
-      setFallo(Boolean(desc));
+      setTono(desc ? "error" : "ok");
       if (!desc) onListo();
     } catch (e) {
-      setFallo(true);
+      // 409 = el candado de días: se raspó hoy y mañana ya se puede. Es un
+      // AVISO, no una falla, y el backend dice exactamente cuándo volver.
+      setTono(e instanceof ApiError && e.status === 409 ? "aviso" : "error");
       // El backend explica el motivo (recién capturada, ML no publica ranking,
       // no es nuestra) y viene en `detail`. Hay que sacarlo con `mensajeDeError`:
       // el `message` de un ApiError es "API 422: /api/competencia/rankings" —
@@ -1413,7 +1424,7 @@ function BotonRefrescar({
         type="button"
         onClick={pedir}
         disabled={corriendo}
-        title="Vuelve a leer los más vendidos de esta subcategoría. Cuesta ~$0.007."
+        title="Vuelve a leer los más vendidos de esta subcategoría. Cuesta ~$0.007, y sólo se puede una vez al día por categoría."
         className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
       >
         {corriendo ? (
@@ -1427,7 +1438,11 @@ function BotonRefrescar({
     {msg ? (
       <span
         className={`mt-1 w-full basis-full text-[11px] font-normal normal-case ${
-          fallo ? "text-amber-600" : "text-emerald-600"
+          tono === "error"
+            ? "text-amber-600"
+            : tono === "aviso"
+              ? "text-slate-500"
+              : "text-emerald-600"
         }`}
       >
         {msg}

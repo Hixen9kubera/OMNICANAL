@@ -358,6 +358,16 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
               esa categoría te importa. No vale la pena por curiosidad: el barrido del
               día 1 o el 16 ya la va a cubrir.
             </Cuidado>
+            <Cuidado titulo="Una vez al día por categoría">
+              Si ya se raspó hoy, el botón <b>no vuelve a cobrar</b>: contesta cuándo se
+              actualizó y te deja pedirlo mañana. Dos personas mirando productos
+              distintos de la misma categoría pagarían la misma página dos veces, y eso
+              es lo que evita.
+              <br />
+              <br />
+              Ese mensaje aparece en gris debajo del botón. <b>No es un error</b> — es la
+              respuesta: ya está fresco.
+            </Cuidado>
           </section>
 
           {/* ── 4 · Vistas ── */}
