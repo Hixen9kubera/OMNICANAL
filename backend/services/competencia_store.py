@@ -440,7 +440,24 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
 
     def _avisos(destino: dict[str, Any], cid: str | None,
                 top: list[dict[str, Any]]) -> None:
-        """Cuelga `ml_publica`, `top_cambio_en` y `top_movido` en una categoría."""
+        """
+        Cuelga los avisos del sondeo en una categoría: si ML publica ranking ahí,
+        cuándo se movió, y **CUÁNTO** se movió.
+
+        ── POR QUÉ EL "CUÁNTO" ─────────────────────────────────────────────────
+        "ML ya se movió" no distingue un empujón de un vuelco. Que el #7 se
+        intercambie con el #8 y que cambie el #1 son la misma pastilla, y llevan
+        a decisiones opuestas: lo primero no vale una recaptura, lo segundo sí.
+
+        Medido el 1-sep-2026: de las 470 categorías capturadas ESE MISMO DÍA, 198
+        ya salían como movidas — el 42%. Con ese volumen, un aviso que no gradúa
+        se vuelve ruido y se deja de mirar.
+
+        Se compara POSICIÓN POR POSICIÓN contra lo que el sondeo diario ya tiene
+        guardado (`market_highlights.entradas`): ni una llamada más, ni un peso.
+        El join es por `id_pagina`, que es el id que devuelve /highlights — el
+        `externo_id` del raspador es la publicación, otro espacio de ids.
+        """
         h = hl.get(cid) if cid else None
         # None = todavía no se ha sondeado. NO es lo mismo que False.
         destino["ml_publica"] = ((h.get("n") or 0) > 0) if h else None
@@ -453,6 +470,30 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
         except TypeError:
             # Fechas de tipos distintos: mejor no afirmar nada que afirmar mal.
             destino["top_movido"] = None
+
+        # ── Cuánto se movió ────────────────────────────────────────────────
+        destino["top_movidas"] = None
+        destino["top_comparadas"] = None
+        destino["top_primero_cambio"] = None
+        # LA VENTANA ES EL TOP 10, la misma de `TOPE_HUELLA`. Sin acotarla se
+        # comparaban las 20 posiciones y el aviso decía "19 de 19 movidas" —
+        # cierto, pero midiendo un tramo donde el orden es ruido y que no es el
+        # que dispara la pastilla.
+        VENTANA = 10
+        vivo = {e.get("p"): e.get("id") for e in ((h or {}).get("entradas") or [])
+                if e.get("p") and e.get("id") and e["p"] <= VENTANA}
+        nuestro = {x.get("posicion"): x.get("id_pagina") for x in top
+                   if x.get("posicion") and x.get("id_pagina")
+                   and x["posicion"] <= VENTANA}
+        # Sólo las posiciones que están en AMBOS: una que sólo tenemos nosotros
+        # no se movió, es que ML dejó de publicarla, y contarla como movimiento
+        # inflaría el aviso justo donde menos se sabe.
+        comunes = sorted(set(vivo) & set(nuestro))
+        if comunes:
+            destino["top_comparadas"] = len(comunes)
+            destino["top_movidas"] = sum(1 for p in comunes if vivo[p] != nuestro[p])
+            if 1 in comunes:
+                destino["top_primero_cambio"] = vivo[1] != nuestro[1]
 
     out = []
     for r in raices.values():

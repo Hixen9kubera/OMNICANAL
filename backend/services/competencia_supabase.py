@@ -180,7 +180,10 @@ def movimiento_del_top(canal: str = "mercado_libre") -> dict[str, dict[str, Any]
        reintentar justo donde había datos. `n = 0` lo resuelve, y nunca se
        escribe por un error de la llamada (ver 0041).
     """
-    sql = ("SELECT categoria_id, n, cambio_en, capturado_en "
+    # `entradas` viene incluida: es lo que permite decir CUÁNTAS posiciones se
+    # movieron en vez de sólo que algo se movió. Son ~800 KB para las 1,161
+    # categorías y no salen del servidor — de aquí sólo viajan los conteos.
+    sql = ("SELECT categoria_id, n, cambio_en, capturado_en, entradas "
            "FROM enrich.market_highlights WHERE canal = %s")
     return {f["categoria_id"]: dict(f)
             for f in supabase_db.fetch_all(sql, (canal,))}

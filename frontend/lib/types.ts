@@ -856,6 +856,12 @@ export interface AvisosDelTop {
   top_cambio_en?: string | null;
   /** ML se movió DESPUÉS de nuestra captura: lo que se ve ya no es lo de allá. */
   top_movido?: boolean | null;
+  /** Cuántas posiciones del top 10 son distintas hoy. `null` = no comparable. */
+  top_movidas?: number | null;
+  /** Sobre cuántas se comparó (las que están en ambos lados). */
+  top_comparadas?: number | null;
+  /** El #1 cambió. Es la señal fuerte: el resto puede ser reacomodo. */
+  top_primero_cambio?: boolean | null;
 }
 
 export interface CompetenciaSubcategoria extends AvisosDelTop {

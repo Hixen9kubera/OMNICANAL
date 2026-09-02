@@ -1543,6 +1543,9 @@ function BloqueSubcategoria({
               <CapturaDeCategoria
                 iso={sub.top?.[0]?.capturado_en ?? null}
                 movido={sub.top_movido}
+                movidas={sub.top_movidas}
+                comparadas={sub.top_comparadas}
+                primeroCambio={sub.top_primero_cambio}
               />
               <BotonRefrescar
                 categoriaId={sub.categoria_id}
@@ -1641,6 +1644,9 @@ function BloqueRaiz({
           <CapturaDeCategoria
             iso={r.top?.[0]?.capturado_en ?? null}
             movido={r.top_movido}
+            movidas={r.top_movidas}
+            comparadas={r.top_comparadas}
+            primeroCambio={r.top_primero_cambio}
           />
         </div>
         {r.top.length === 0 ? (
@@ -1893,6 +1899,9 @@ function PrecioConfirmado({ iso }: { iso?: string | null }) {
 function CapturaDeCategoria({
   iso,
   movido,
+  movidas,
+  comparadas,
+  primeroCambio,
 }: {
   iso: string | null;
   /**
@@ -1906,6 +1915,20 @@ function CapturaDeCategoria({
    * En todo el tab, 423 de 1,218 subcategorías estaban en esa situación.
    */
   movido?: boolean | null;
+  /**
+   * CUÁNTO se movió, no sólo que se movió.
+   *
+   * "ML ya se movió" no distingue un empujón de un vuelco: que el #7 y el #8 se
+   * intercambien y que cambie el #1 pintaban la misma pastilla, y llevan a
+   * decisiones opuestas. Con 198 de 470 categorías movidas el mismo día de su
+   * captura, un aviso que no gradúa se vuelve ruido y se deja de mirar.
+   *
+   * Sale de comparar posición por posición contra el sondeo diario, que ya está
+   * guardado: ni una llamada más.
+   */
+  movidas?: number | null;
+  comparadas?: number | null;
+  primeroCambio?: boolean | null;
 }) {
   const dias = diasDesde(iso);
   if (dias === null)
@@ -1921,12 +1944,29 @@ function CapturaDeCategoria({
       >
         · capturado {textoRelativo(dias)} ({diaYMes(iso!)})
       </span>
-      {movido ? (
+      {/* Se prefiere la CUENTA sobre la fecha: `movido` sale de comparar
+          `cambio_en` contra nuestra captura, y eso puede prenderse por un cambio
+          que después se revirtió o por una posición fuera del top 10. La cuenta
+          compara lo que hay HOY contra lo que mostramos. Cuando no se puede
+          comparar, se cae a la señal vieja en vez de callar. */}
+      {(movidas ?? 0) > 0 || (movidas === null && movido) ? (
         <span
-          className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold normal-case text-amber-800"
-          title="El sondeo diario de ML detectó que este top cambió DESPUÉS de nuestra captura. Lo que ves ya no es lo que ML muestra."
+          className={`rounded px-1.5 py-0.5 text-[9px] font-bold normal-case ${
+            primeroCambio
+              ? "bg-amber-200 text-amber-900"
+              : "bg-amber-100 text-amber-800"
+          }`}
+          title={
+            movidas != null && comparadas != null
+              ? `Comparado hoy contra Mercado Libre: ${movidas} de las ${comparadas} posiciones del top son distintas${primeroCambio ? ", incluido el #1" : ""}.`
+              : "El sondeo diario detectó que este top cambió después de nuestra captura."
+          }
         >
-          ML ya se movió
+          {primeroCambio
+            ? "el #1 cambió"
+            : movidas != null && comparadas != null
+              ? `${movidas} de ${comparadas} movidas`
+              : "ML ya se movió"}
         </span>
       ) : null}
     </>

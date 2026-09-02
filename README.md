@@ -1001,6 +1001,71 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.364.0 — El tope del barrido se mide contra Apify, no contra nosotros (Eduardo)
+
+Eduardo pidió rastrear el consumo de Apify del 1-sep. Al cruzar por `run_id` la
+lista de corridas de Apify contra `ops.process_log` salió que **nuestra bitácora
+subcuenta 2.3x**:
+
+| | |
+|---|---|
+| Lo que registramos | **$1.3966** |
+| Lo que Apify cobró | **$3.2140** |
+
+Las mismas 25 corridas. Corrida por corrida el factor va de **1.0x a 5.1x**, así
+que ni siquiera se corrige con una constante.
+
+**La causa:** `_registrar_gasto` lee `usageTotalUsd` en el instante en que la
+corrida TERMINA, y Apify sigue liquidando después — el proxy residencial y la
+transferencia se contabilizan al cerrar. Se ve en el desglose de una corrida:
+`PROXY_RESIDENTIAL_TRANSFER_GBYTES` pesa casi tanto como el cómputo.
+
+**Por qué importa:** con el tope en $9 y subcontando 2.3x, el barrido habría
+gastado **~$20 creyendo que iba en $9**. Un tope que se mide con la regla
+equivocada no es un tope.
+
+#### Lo que cambia
+
+- **`gasto_del_ciclo()`** lee `/v2/users/me/usage/monthly` de Apify. El gasto de
+  la corrida es la diferencia contra la línea base tomada al arrancar, así que el
+  tope no se confunde con lo que ya llevaba el mes.
+- **El respaldo, si Apify no contesta**, sigue siendo `ops.process_log` — pero se
+  compara contra **un tercio del tope**, porque subcuenta. Más vale cubrir de
+  menos que gastar de más sin enterarse.
+- **`costo_real_por_categoria()`** calcula la capacidad con lo liquidado: una
+  llamada trae las últimas corridas con su costo cerrado y se cruzan por `run_id`
+  contra nuestra bitácora, que es la única que sabe cuántas URLs llevaba cada
+  una. El barrido pasa de anunciar *"$0.0029 por categoría, alcanza para ~3,103"*
+  a **"$0.0067, alcanza para ~1,349"**.
+
+`ops.process_log` se sigue escribiendo: da el desglose por proceso y por
+categoría que la API de la cuenta no da. Sólo deja de ser la fuente del TOPE.
+
+#### Y de paso, qué más gasta en esa cuenta
+
+El cruce contestó una pregunta que nadie había hecho. El 1-sep se gastaron
+**$3.3055** en 55 corridas:
+
+| actor | corridas | costo |
+|---|---|---|
+| `apify/playwright-scraper` — Competencia | 25 | $3.2140 |
+| `happitap/alibaba-product-scraper` — Crear Productos | 30 | $0.0915 |
+
+Comparten cuenta, como decía el encabezado del barrido. El de Alibaba corre en
+ráfagas (17 veces entre las 04:07 y 04:21) y cuesta $0.0031 por corrida.
+
+#### Números corregidos
+
+Todo lo que se dijo hoy sobre costos estaba subcontado:
+
+| | se dijo | es |
+|---|---|---|
+| Por categoría | $0.0029 | **$0.0067** |
+| Barrido de octubre | $1.20–$1.60 | **~$3.20** |
+| Raspar a diario | $41/mes | **~$96/mes** |
+
+Sigue cabiendo en los $29 incluidos del plan STARTER, pero el diario ya no.
+
 ### v0.363.0 — El KAM ya puede validar costos (y otros tres 403 que nadie había visto)
 
 Andrea, a las 20:28: *"Bran, me sale esto"* — `Tu rol (operador) no alcanza para
