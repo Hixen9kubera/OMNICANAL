@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.361.0 — Las vistas de Competencia salen de a una (Eduardo)
+
+La v0.357.0 soltó las cinco de golpe. Se recortan a dos:
+
+| se dibuja | |
+|---|---|
+| **Todas** | 1,218 |
+| **Nos ven y no compran** | 46 |
+
+Las otras tres —`ML ya se movió` (386), `Producto apagado` (54) y `ML no publica
+ranking` (214)— quedan como **propuesta**: escritas, medidas y con su conteo
+funcionando, pero sin dibujar.
+
+**Por qué de a una.** Cada vista cambia cómo se lee el tab. Con cinco puestas al
+mismo tiempo no hay forma de saber cuál ayudó y cuál sólo hizo ruido — y dos de
+ellas (`ML ya se movió`, `ML no publica`) no son tareas sino advertencias, que es
+un tipo de tarjeta distinto y merece decidirse aparte.
+
+**Cómo se enciende una:** quitarle `propuesta: true`. La lógica, el conteo y el
+filtro de los desplegables ya funcionan para las cinco — sólo no se renderizan.
+
+Verificado en sandbox: se dibujan dos, y el filtro sigue podando (Hogar pasa de
+415 a 4, y el desplegable de 28 raíces a 16).
+
 ### 0.358.0 — 0044: el Blindaje BD mordió por TERCERA vez en el mismo flujo
 
 El workflow volvió a rojo tras la cura de la v0.346.0, y otra vez no era el

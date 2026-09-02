@@ -1761,6 +1761,15 @@ const VISTAS: {
   titulo: string;
   detalle: string;
   tono: "neutro" | "ambar";
+  /**
+   * `true` = escrita y medida, pero NO se dibuja todavía.
+   *
+   * Se sueltan de a una, no las cinco de golpe: cada vista cambia cómo se lee el
+   * tab, y con cinco puestas al mismo tiempo no hay forma de saber cuál ayudó.
+   * La lógica y el conteo ya funcionan — quitar esta línea es todo lo que hace
+   * falta para encender cualquiera.
+   */
+  propuesta?: boolean;
   cumple: (s: CompetenciaSubcategoria) => boolean;
 }[] = [
   {
@@ -1774,6 +1783,7 @@ const VISTAS: {
   {
     id: "movido",
     titulo: "ML ya se movió",
+    propuesta: true,
     detalle: "El top cambió después de nuestra captura: lo que ves ya no es lo que hay.",
     tono: "ambar",
     cumple: (s) => s.top_movido === true,
@@ -1781,6 +1791,7 @@ const VISTAS: {
   {
     id: "sin_publicar",
     titulo: "Producto apagado",
+    propuesta: true,
     detalle: "Tenemos SKUs aquí y alguno no está publicado en ninguna tienda.",
     tono: "neutro",
     cumple: (s) => (s.skus ?? []).some((k) => (k.tiendas ?? []).length === 0),
@@ -1788,6 +1799,7 @@ const VISTAS: {
   {
     id: "sin_ranking",
     titulo: "ML no publica ranking",
+    propuesta: true,
     detalle: "Mercado Libre no lista más vendidos ahí: raspar sería tirar dinero.",
     tono: "neutro",
     cumple: (s) => s.ml_publica === false,
@@ -2246,7 +2258,16 @@ export default function CompetenciaPage() {
             los acotadores después. Cada una lleva su conteo para que se vea si
             vale la pena entrar antes de entrar. */}
         <div className="mt-5 flex flex-wrap items-stretch gap-2.5">
-          {[{ id: "todas" as VistaId, titulo: "Todas", detalle: "El árbol completo, sin acotar.", tono: "neutro" as const }, ...VISTAS].map(
+          {[
+            {
+              id: "todas" as VistaId,
+              titulo: "Todas",
+              detalle: "El árbol completo, sin acotar.",
+              tono: "neutro" as const,
+            },
+            // Sólo las que NO están en propuesta. Ver el comentario de VISTAS.
+            ...VISTAS.filter((v) => !v.propuesta),
+          ].map(
             (v) => {
               const activa = vista === v.id;
               const n = conteoVista(v.id);
