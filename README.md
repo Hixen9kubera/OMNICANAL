@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.358.0 — 0044: el Blindaje BD mordió por TERCERA vez en el mismo flujo
+
+El workflow volvió a rojo tras la cura de la v0.346.0, y otra vez no era el
+workflow: la `0043_market_highlights_hist` (bitácora del TOP 5 de Competencia)
+creó `enrich.market_highlights_hist` **sin RLS**. Ya son tres del mismo flujo:
+la vista de la 0040, la tabla de la 0041, y ahora ésta.
+
+La **0044** la blinda con el patrón de siempre (RLS + cero políticas) y quedó
+**aplicada en producción** con catálogo verificado (False→True; la tabla está
+recién nacida, 0 filas).
+
+**Colisión de numeración, anotada y decidida**: hay DOS migraciones `0043_*`
+(`blindaje_enrich` y `market_highlights_hist`) — sesiones concurrentes del
+mismo día. No se renombra ninguna: ambas ya están aplicadas y su orden relativo
+es indistinto; la 0044 corta la ambigüedad hacia adelante.
+
+Se le avisó a la sesión de Competencia el patrón completo, para que la CUARTA
+tabla nazca con su candado puesto en la misma migración. Versión 0.358.0.
+
+---
+
 ### v0.357.0 — Competencia entra por la pregunta, y el sondeo deja de mentir (Eduardo)
 
 Tres cosas que salieron de la misma sesión.
