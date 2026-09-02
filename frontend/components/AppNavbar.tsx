@@ -41,6 +41,14 @@ interface SubItem {
   href: string;
   icon: LucideIcon;
   descripcion: string;
+  /**
+   * Solo para admin, igual que en `NavItem` pero por ENTRADA. Existe porque
+   * Operaciones agrupa dos pantallas de admin (el panel y Webhooks) con una
+   * que el equipo entero debe ver (Monitoreo): sin esto, marcar el padre como
+   * admin le quitaría Monitoreo a todos, y no marcarlo dejaría a la vista dos
+   * pantallas que el backend les niega.
+   */
+  soloAdmin?: boolean;
 }
 
 interface NavItem {
@@ -92,15 +100,33 @@ const ITEMS: NavItem[] = [
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
-  { id: "dashboard", label: "Operaciones", icon: LayoutDashboard, href: "/dashboard",
-    soloAdmin: true },
-  // Solo admin: el log de TikTok trae datos del comprador (su scope
-  // `seller.order.info` viene marcado como información personal).
-  // Monitoreo va SIN soloAdmin a proposito: el equipo debe poder ver su
-  // propio avance. No expone costos ni margenes, solo autoria.
-  { id: "monitoreo", label: "Monitoreo", icon: Activity, href: "/monitoreo" },
-  { id: "webhooks", label: "Webhooks", icon: Webhook, href: "/webhooks",
-    soloAdmin: true },
+  // OPERACIONES absorbió a MONITOREO y WEBHOOKS como entradas de su submenú
+  // (Eduardo, 27-ago), con el mismo molde que Análisis. Las tres rutas NO
+  // cambian: las páginas son autónomas y solo se cuelgan de aquí.
+  //
+  // El padre NO lleva `soloAdmin` aunque dos de sus tres entradas sí, y esa
+  // asimetría es el punto delicado del cambio: Monitoreo tiene que seguir
+  // viéndose para todo el equipo. El filtro por rol pasó a vivir en cada
+  // ENTRADA, y `visibles` reapunta el href del padre a la primera que la
+  // persona sí puede abrir — si no, un no-admin caería en /dashboard, que el
+  // backend le niega.
+  {
+    id: "operaciones", label: "Operaciones", icon: LayoutDashboard,
+    href: "/dashboard",
+    submenu: [
+      { label: "Operaciones", href: "/dashboard", icon: LayoutDashboard,
+        soloAdmin: true,
+        descripcion: "Monitor del fan-out de stock DROP hacia los canales" },
+      // SIN soloAdmin a propósito: el equipo debe poder ver su propio avance.
+      // No expone costos ni márgenes, solo autoría.
+      { label: "Monitoreo", href: "/monitoreo", icon: Activity,
+        descripcion: "Quién hizo qué en el panel, cuándo y en qué canal" },
+      // Solo admin: el log de TikTok trae datos del comprador (su scope
+      // `seller.order.info` viene marcado como información personal).
+      { label: "Webhooks", href: "/webhooks", icon: Webhook, soloAdmin: true,
+        descripcion: "Qué webhooks existen, si están vivos y qué han recibido" },
+    ],
+  },
   { id: "facturas", label: "Facturas", icon: FileText, proximamente: true,
     soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
@@ -129,7 +155,23 @@ export default function AppNavbar() {
   }, []);
 
   const rol = yo?.autenticado ? yo.rol : null;
-  const visibles = ITEMS.filter((i) => !i.soloAdmin || rol === null || rol === "admin");
+  // `rol === null` es "todavía no sé quién eres" (o sesión sin autenticar): se
+  // muestra todo, igual que antes. La autoridad real es core/rbac.py.
+  const puedeAdmin = rol === null || rol === "admin";
+  const visibles = ITEMS
+    .filter((i) => !i.soloAdmin || puedeAdmin)
+    .map((i) => {
+      if (!i.submenu) return i;
+      const submenu = i.submenu.filter((s) => !s.soloAdmin || puedeAdmin);
+      // El padre apunta a la PRIMERA entrada que esta persona sí puede abrir.
+      // Sin esto, un no-admin haría clic en "Operaciones" y aterrizaría en
+      // /dashboard, que el backend le niega — la pestaña se vería viva y no lo
+      // estaría para él.
+      return { ...i, submenu, href: submenu[0]?.href ?? i.href };
+    })
+    // Un grupo cuyas entradas son todas de admin desaparece entero para el
+    // resto, en vez de quedar como una pestaña que no lleva a ningún lado.
+    .filter((i) => !i.submenu || i.submenu.length > 0);
 
   // Quién está usando el panel. Con una contraseña compartida entre varias
   // personas, ver el correo propio es la única forma de notar que se entró con
@@ -281,7 +323,10 @@ export default function AppNavbar() {
 
       {/* Panel del submenú — FIJO (fuera del <nav> con overflow) */}
       {menu && (() => {
-        const item = ITEMS.find((i) => i.id === menu.id);
+        // `visibles` y NO `ITEMS`: aquí es donde se pintan las entradas, así que
+        // buscar en la lista cruda le mostraría a un no-admin las opciones que
+        // el filtro por rol ya le había quitado de la barra.
+        const item = visibles.find((i) => i.id === menu.id);
         if (!item?.submenu) return null;
         return (
           <div

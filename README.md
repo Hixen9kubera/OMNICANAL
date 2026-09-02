@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.370.0 — Operaciones se come a Monitoreo y a Webhooks (Eduardo)
+
+Tres pestañas sueltas en la barra —**Operaciones**, **Monitoreo** y
+**Webhooks**— pasan a ser una sola, con el mismo molde que Análisis: la pestaña
+padre es **Operaciones** y las otras dos cuelgan de su submenú al pasar el
+cursor. Las tres rutas **no cambian** (`/dashboard`, `/monitoreo`,
+`/webhooks`): las páginas son autónomas y solo se cuelgan de ahí.
+
+**Lo delicado no era juntarlas, era el rol.** `Operaciones` y `Webhooks` son
+`soloAdmin`; **Monitoreo no lo es, a propósito** — el equipo tiene que poder ver
+su propio avance. Con el filtro viviendo solo en la pestaña padre, las dos
+salidas eran malas: marcarla `soloAdmin` le quitaba Monitoreo a todo el equipo,
+y no marcarla dejaba a la vista dos pantallas que el backend les niega.
+
+Por eso `soloAdmin` bajó también al nivel de **entrada** (`SubItem`), y el
+cálculo de `visibles` hace tres cosas:
+
+1. filtra las entradas del submenú por rol;
+2. **reapunta el `href` del padre a la primera entrada que esa persona sí puede
+   abrir** — sin esto un KAM haría clic en "Operaciones" y aterrizaría en
+   `/dashboard`, que el backend le niega: la pestaña se vería viva sin estarlo;
+3. esconde el grupo entero si todas sus entradas quedaron fuera, en vez de
+   dejar una pestaña que no lleva a ningún lado.
+
+Y el panel del submenú pasó a leer de `visibles` y no de `ITEMS`: buscar en la
+lista cruda le habría mostrado a un no-admin justo las opciones que el filtro
+acababa de quitarle de la barra.
+
+Verificado en el navegador contra el sandbox, en los dos roles: como admin salen
+las tres entradas y `/monitoreo` marca activa la pestaña Operaciones; forzando
+un rol sin admin, el submenú queda solo con Monitoreo y el `href` del padre pasa
+a `/monitoreo`.
+
+Nada de backend: solo `frontend/components/AppNavbar.tsx`.
+
 ### v0.369.0 — El inventario de Drive estaba a cinco archivos de completo
 
 TEC-0410-BLN salio "sin insumos" con el mensaje *"sin contenedor conocido o el
