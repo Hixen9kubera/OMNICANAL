@@ -21,9 +21,11 @@ import {
   Ban,
   Pause,
   RefreshCw,
+  BookOpen,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
+import ComoLeerCompetenciaModal from "@/components/ComoLeerCompetenciaModal";
 import {
   detalleSkuCompetencia,
   estadoCompetencia,
@@ -2120,6 +2122,7 @@ export default function CompetenciaPage() {
   const [soloTop, setSoloTop] = useState(false);
   // La VISTA de trabajo. Entra ANTES que los filtros finos: primero la pregunta.
   const [vista, setVista] = useState<VistaId>("todas");
+  const [comoAbierto, setComoAbierto] = useState(false);
 
   const [abiertoSku, setAbiertoSku] = useState<string | null>(null);
   const [detalle, setDetalle] = useState<CompetenciaDetalleSku | null>(null);
@@ -2345,8 +2348,18 @@ export default function CompetenciaPage() {
               </h1>
               <p className="mt-1 max-w-2xl text-sm opacity-90">
                 Dónde estamos frente al mercado, por categoría y por subcategoría.
-                El ranking se refresca cada mes; las visitas y las ventas, a diario.
+                El ranking se refresca cada quincena; las visitas y las ventas, a diario.
               </p>
+              {/* El tutorial va del lado del TEXTO, no junto a los controles: es
+                  lo que se lee, no una acción más. Y va aquí arriba porque la
+                  pregunta que contesta —«¿esto de cuándo es?»— se hace antes de
+                  tocar nada. */}
+              <button
+                onClick={() => setComoAbierto(true)}
+                className="mt-3 flex items-center gap-2 rounded-xl bg-white/15 px-3 py-2 text-xs font-semibold text-white ring-1 ring-white/30 backdrop-blur hover:bg-white/25"
+              >
+                <BookOpen size={14} /> Cómo leer Competencia
+              </button>
             </div>
             <div className="text-right">
               <div className="text-4xl font-black tabular-nums">
@@ -2741,6 +2754,10 @@ export default function CompetenciaPage() {
           ))
         )}
       </main>
+
+      {comoAbierto && (
+        <ComoLeerCompetenciaModal onCerrar={() => setComoAbierto(false)} />
+      )}
     </>
   );
 }

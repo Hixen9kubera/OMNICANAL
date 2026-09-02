@@ -75,8 +75,21 @@ logging.basicConfig(level=logging.WARNING,
 from config import settings  # noqa: E402
 from services import competencia_captura, competencia_scraper, supabase_db  # noqa: E402
 
-TOPE_USD = 9.0        # el presupuesto mensual de Competencia
-DIAS_VIEJO = 14       # debajo de esto la captura todavía sirve
+# TOPE POR CORRIDA, no por mes — y desde que el barrido es QUINCENAL (2-sep-2026,
+# Eduardo) la diferencia importa: dos corridas al mes ponen el techo del ciclo en
+# $18, no en $9. El gasto REAL de una corrida es otra cosa: el barrido del
+# 1-sep-2026 cubrió 482 categorías y Apify cobró $3.21, así que el tope no se
+# alcanza y sirve de freno de emergencia, no de presupuesto.
+TOPE_USD = 9.0
+
+# Debajo de esto la captura todavía sirve.
+#
+# ⚠️ NO SUBIR DE 12 MIENTRAS EL CRON SEA QUINCENAL (días 1 y 16). El hueco más
+# CORTO entre corridas no son 15 días sino 13 — del 16 de febrero al 1 de marzo—,
+# así que con el 14 de antes la corrida del 1 de marzo no habría encontrado NADA
+# vencido y se habría ido en blanco sin fallar. Un barrido que no raspa nada y
+# termina en verde es peor que uno que truena.
+DIAS_VIEJO = 12
 TANDA = 20            # igual que _TANDA_RANKING: una corrida de Apify
 RESERVA_CUENTA = 10.0 # si a la cuenta le quedan menos de esto, no se empieza
 
@@ -263,7 +276,7 @@ def main() -> int:
     ap.add_argument("--dias", type=int, default=DIAS_VIEJO)
     args = ap.parse_args()
 
-    print("═══ Competencia · barrido mensual ═══")
+    print("═══ Competencia · barrido quincenal ═══")
     if not supabase_db.disponible():
         print("ERROR: sin SUPABASE_DB_URL.")
         return 2

@@ -6,7 +6,7 @@
   },
   "deploy": {
     "startCommand": "python scripts/competencia_barrido.py --real --tope 9",
-    "cronSchedule": "0 13 1 * *",
+    "cronSchedule": "0 13 1,16 * *",
     "restartPolicyType": "NEVER"
   }
 }

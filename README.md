@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.372.0 — La guía de Competencia, y el raspado pasa a quincenal (Eduardo)
+
+Eduardo: *"Hay que hacer una guía para el usuario así como en costos, especificando
+cada cuánto se hace el refresh… también cambia el periodo de raspado cada quincena
+en vez de mensual"*.
+
+**La guía.** `ComoLeerCompetenciaModal` se abre desde el banner del tab, igual que
+`Cómo validar costos`. Mismo chrome (Esc cierra, capturas clicables a tamaño real,
+contenido estático que no toca el backend), pero **el cuerpo no son pasos
+numerados**: abre con la tabla de cadencias. En Costos el riesgo es confundir dos
+botones y por eso empieza por los botones; aquí el riesgo es creer que todo está
+igual de fresco, y eso se consulta más de lo que se aprende.
+
+Las cinco capturas son del tab de verdad, a 2x, y viven en
+`public/ayuda/competencia/` como las de Costos. Lo que la guía deja dicho:
+
+| dato | cada cuánto | ¿cuesta? |
+|---|---|---|
+| Visitas de 30 días | diario, 6:00 a.m. | no |
+| Estado y precio | cada 15 minutos | no |
+| Ventas de 30 días | al momento de vender | no |
+| ¿ML publica ranking? / ¿ya se movió? | diario, 6:00 a.m. | no |
+| Ranking «más vendidos» | **quincenal, días 1 y 16** | **sí** |
+
+Y desarma los tres sellos del encabezado, que parecen lo mismo y no lo son:
+*visitas medidas* es cuándo se MIDIERON, *ranking capturado* cuándo se RASPÓ, y
+*ventas hasta* hasta qué día CUBRE — no cuándo se trajo.
+
+**El raspado, de mensual a quincenal.** Cron a `0 13 1,16 * *`, cambiado también en
+`railway.competencia-barrido.json` para que un rebuild futuro no resucite el
+mensual.
+
+**Y un defecto que la quincena habría destapado hasta febrero.** El barrido sólo
+raspa lo que lleva más de `DIAS_VIEJO` días sin captura, y estaba en 14. Pero el
+hueco más CORTO entre corridas quincenales no son 15 días sino **13** —del 16 de
+febrero al 1 de marzo—, así que la corrida del 1 de marzo no habría encontrado nada
+vencido y se habría ido **en blanco, en verde, sin fallar**. Umbral a 12, que cubre
+el hueco corto con un día de holgura.
+
+**El gasto, medido y no estimado.** El barrido del 1-sep cubrió 482 categorías y
+Apify cobró $3.21 (nuestra bitácora decía $1.40 — subcuenta 2.3x, ver v0.364.0).
+Dos al mes son ~$6.42, holgado dentro de los $29 incluidos del plan. Pero `--tope 9`
+es **por corrida**, así que el techo del ciclo pasó de $9 a $18: el comentario que
+lo llamaba "presupuesto mensual" dejó de ser cierto y ahora lo dice.
+
 ### v0.371.0 — Guardar contenido borraba el eje de variación de 172 padres
 
 Brandon pidió separar `TEC-0935` y `CAM-0030` en variantes para Amazon. Al medir
