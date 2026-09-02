@@ -46,6 +46,20 @@ DOS DECISIONES QUE IMPORTAN
    entere. Lo mismo con los métodos: solo se listan los que la app usa, así que
    un PUT o un DELETE nuevo también nace cerrado.
 
+   ⚠️ **Pero "lo reporta un KAM" NO es una forma de enterarse: es un incidente.**
+   Van tres, y todos igual — alguien trabajando se topa con un 403 y lo manda por
+   Slack: `/api/analisis` (26-ago), `/api/costos-publicados` y el `PUT` del
+   Estudio (1-sep). Nacer cerrado sigue siendo lo correcto; lo que faltaba era
+   ENTERARSE sin esperar a que alguien se atore.
+
+       python backend/scripts/auditar_rbac.py
+
+   Lista TODA ruta declarada y marca las que caen al default por omisión. Se
+   corre al agregar un endpoint: la respuesta puede ser "sí, es de admin", pero
+   tiene que ser una respuesta, no un olvido. Y ojo con el detalle que costó los
+   dos casos del 1-sep: **la regla es por (método, prefijo)**, así que listar el
+   `POST` no cubre el `PUT` ni el `DELETE` del mismo recurso.
+
 2. **Los GET son de `lectura` salvo excepción.** Leer el catálogo no es
    sensible. Costos y márgenes sí, y por eso `/api/crear/costos` y
    `/api/fulfillment` (que devuelve `costo` y `margen_pct`) piden `operador`
@@ -83,12 +97,40 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/webhooks/ml/log", "admin"),
     ("GET", "/api/auditoria", "admin"),                  # la bitácora misma
     ("POST", "/api/crear/destrabar", "admin"),           # fuerza un lote atorado
+    # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
+    # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
+    # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;
+    # mientras hubiera 27 rutas "por omisión" legítimas, las ilegítimas se
+    # escondían entre ellas. No cambia ningún permiso: ya era admin.
+    ("GET", "/api/automatizacion", "admin"),             # órdenes de venta en Odoo
+    ("POST", "/api/automatizacion", "admin"),
+    ("POST", "/api/sync/precios-venta", "admin"),        # barrido de precios
+    ("GET", "/api/tiktok", "admin"),                     # tokens y censo de la tienda
+    ("POST", "/api/tiktok", "admin"),
+    # Los receptores de webhook (ML, Temu, TikTok, Woo) los llama el
+    # marketplace, SIN sesión: salen por la guarda 2 del middleware
+    # (`es_ruta_abierta`) y nunca llegan a esta tabla. Lo de aquí solo aplica a
+    # quien los llame CON sesión —el panel, un script— y ya era admin.
+    ("GET", "/api/webhooks", "admin"),
+    ("POST", "/api/webhooks", "admin"),
 
     # ══ OPERADOR (KAM) — sus seis pestañas, completas ════════════════════════
     # Análisis · trae `costo` y `margen_pct`, por eso no baja a lectura.
     ("GET", "/api/fulfillment", "operador"),
+    # Omnicanal · las publicaciones por canal, con su `margen_pct` — mismo
+    # criterio que /api/fulfillment. Es la pestaña entera y el cajón de detalle
+    # del producto; caía a admin por omisión, o sea rota para los nueve KAM.
+    ("GET", "/api/publicaciones", "operador"),
+    # Análisis → Amazon FBA · el tablero y la subida del CSV de Seller Central.
+    # Vive dentro de un submenú que el KAM ya tiene abierto.
+    ("GET", "/api/fba", "operador"),
+    ("POST", "/api/fba", "operador"),
     # Productos · contenido, título, descripción, imágenes
     ("POST", "/api/productos", "operador"),
+    # El Estudio guarda el contenido POR CANAL con PUT, no con POST. Mismo
+    # trabajo, mismo rol; faltaba el verbo. Sin esta línea, "Guardar" en el
+    # Estudio era 403 para todo el equipo.
+    ("PUT", "/api/productos", "operador"),
     ("POST", "/api/imagenes", "operador"),
     # Omnicanal · refrescar el estado de un SKU en un canal
     ("POST", "/api/canales", "operador"),
@@ -102,10 +144,20 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # Costos · ver el P&L y recalcular precios, incluido el masivo
     ("GET", "/api/crear/costos", "operador"),
     ("POST", "/api/crear/costos", "operador"),           # /preview, /recalcular y /bulk
+    # …y QUITAR la marca de COSTO VALIDADO. Iba en admin por descuido: el POST
+    # que la PONE estaba listado y el DELETE que la quita no, así que un KAM
+    # podía marcar y no desmarcar. Un candado que solo cierra no es un candado.
+    ("DELETE", "/api/crear/costos", "operador"),
     # Costos · "Resolver": compara un packing list contra costos_validados.
     ("GET", "/api/resolver", "operador"),
     ("POST", "/api/resolver", "operador"),
     ("PATCH", "/api/resolver", "operador"),
+    # Costos · "Validar publicados": el Resolver al revés (se parte de los SKUs
+    # publicados en ML y a cada uno se le busca su renglón del packing list).
+    # Es el mismo trabajo que /api/resolver, con la misma escritura al final.
+    ("GET", "/api/costos-publicados", "operador"),
+    ("POST", "/api/costos-publicados", "operador"),
+    ("PATCH", "/api/costos-publicados", "operador"),
     # Monitoreo · quién hizo qué. En `operador` para que el equipo vea su
     # propio avance; no expone costos ni márgenes, solo autoría.
     ("GET", "/api/monitoreo", "operador"),

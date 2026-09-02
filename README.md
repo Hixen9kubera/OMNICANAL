@@ -1001,6 +1001,68 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.363.0 — El KAM ya puede validar costos (y otros tres 403 que nadie había visto)
+
+Andrea, a las 20:28: *"Bran, me sale esto"* — `Tu rol (operador) no alcanza para
+esta operación; se requiere admin`. En los logs de Railway, la línea exacta:
+
+```
+02:28:51 RBAC 403: andrea.pardo@kubera.mx (operador) intentó
+         POST /api/costos-publicados/preflight — se requiere admin
+```
+
+`/api/costos-publicados` es **"Validar costo de productos publicados en ML"**, el
+botón de la pestaña Costos. Nunca estuvo en la tabla de `core/rbac.py`, así que
+caía al default —`admin`— por omisión, no por decisión. Su gemelo `/api/resolver`,
+que hace el mismo trabajo con el packing list al derecho, sí estaba listado.
+
+**Al auditar la tabla entera aparecieron tres 403 más, dos de ellos sin detonar:**
+
+| Ruta | Qué rompía | Por qué caía a admin |
+|---|---|---|
+| `POST /api/costos-publicados/*` | validar costos de publicados | nunca listada |
+| `DELETE /api/crear/costos/{sku}/revisar` | QUITAR la marca COSTO VALIDADO | solo el `POST` que la pone estaba listado |
+| `PUT /api/productos/{sku}/canal/{canal}/contenido` | "Guardar" en el Estudio | solo el `POST` de `/api/productos` estaba listado |
+| `GET /api/publicaciones*` | pestaña **Omnicanal** entera + el cajón de detalle | nunca listada |
+| `GET/POST /api/fba` | **Análisis → Amazon FBA** | nunca listada |
+
+Las dos últimas son pestañas que el navbar **sí le muestra** al KAM: nueve
+personas con la puerta pintada y cerrada con llave.
+
+**El patrón, que es lo que había que arreglar.** La regla es por
+`(método, prefijo)`, y tres de los cinco casos son el mismo descuido: listar el
+`POST` y olvidar el `PUT` o el `DELETE` del mismo recurso. Un candado que solo
+cierra no es un candado — un KAM podía marcar un costo como validado y no
+desmarcarlo.
+
+Que lo no listado nazca cerrado sigue siendo correcto. Lo que estaba mal era
+**cómo nos enterábamos**: van tres incidentes (`/api/analisis` el 26-ago, estos
+dos el 1-sep) y los tres los descubrió alguien que no podía trabajar. Ahora hay
+una forma de preguntar antes:
+
+```bash
+python backend/scripts/auditar_rbac.py
+```
+
+Lista las 170 rutas declaradas y marca las que caen al default sin que nadie lo
+haya decidido. No levanta la app ni toca la base: parsea los decoradores y los
+pasa por la misma tabla que usa el middleware. Sale con código 1 si hay
+huérfanas, listo para un hook — **no enchufado a ninguno todavía**, a propósito:
+primero había que dejarlo en verde o nacería en rojo y se aprendería a ignorar.
+
+Para llegar a cero se listaron también las 27 que ya pedían admin por omisión y
+está bien que lo pidan (Automatización, Webhooks, tokens de TikTok, el barrido de
+precios). **Eso no mueve ningún permiso**: ya eran admin. Los sirve de otra
+manera — mientras hubiera 27 huérfanas legítimas, las ilegítimas se escondían
+entre ellas.
+
+Los receptores de webhook (ML, Temu, TikTok, Woo) salen por la guarda 2 del
+middleware y nunca llegan a esta tabla; listarlos no los toca.
+
+Verificado: 23 de 23 casos, los 12 que debían abrirse y los 11 que NO debían
+moverse (`sync/woo`, `fanout`, `auditoría`, backfills, `webhooks/pausar`,
+interruptores de Odoo, tokens). El auditor pasa de 33 huérfanas a 0.
+
 ### v0.362.0 — La bitácora mira el top 10, no el 5 (Eduardo)
 
 Pedido de Eduardo, y al ir a hacerlo salió que **5 era el número equivocado desde
