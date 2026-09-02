@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.368.0 — La vista escondía 9 de las 16 que buscaba (Eduardo)
+
+Corrección de la v0.367.0, el mismo día. Eduardo pidió sembrar las 1,766
+publicaciones que el cron nunca había medido; con los datos ya completos la
+vista se pudo juzgar de verdad, y estaba mal calibrada.
+
+**La siembra primero.** El cron corrió con el objetivo ampliado:
+
+| | antes | después |
+|---|---|---|
+| filas medidas | 2,930 | **4,683** de 4,702 |
+| activas sin medir | 217 | **1** |
+| pausadas sin medir | 1,549 | **8** |
+| activas con cero medido | 4 | **16** |
+
+Y de paso, la validación de que la distinción `null` ≠ `0` era la correcta:
+antes, exigir medición daba 3 subcategorías y no exigirla daba 83. Ahora dan
+**7 y 8** — convergieron solas al desaparecer los nulos.
+
+**El error de calibración.** `cumple` pedía que **todas** las activas de la
+subcategoría estuvieran en cero. Con eso, de las 16 publicaciones invisibles
+sólo asomaban 7: las otras **9 conviven con una publicación que sí recibe
+tráfico**, y la subcategoría entera quedaba fuera.
+
+La unidad de la pregunta de Eduardo era la PUBLICACIÓN —*"publicaciones activas
+pero que no tengan visitas"*—; la subcategoría es sólo dónde se dibuja. Pedir
+"alguna activa en cero" da **15 subcategorías de 1,226 (el 1%)** y no pierde
+ninguna de las 16. Sigue siendo una vista, no un cajón.
+
+El `=== 0` estricto se conserva: una publicación sin medir tiene `null` y no
+cuenta. La protección no estaba en exigir que todas estuvieran medidas — estaba
+en el operador.
+
+**Las 16 que salen hoy**, para que la vista tenga a quién señalar:
+`ORG-0852-BLN`, `CALZ-0130-BLN-GRI-38`, `TEC-0226-PLA`, `HERR-0379-ROJ`,
+`HERR-0387-ROJ`, `TEC-1031-NEG`, `SIL-0021-BLN`, `ELEC-0149-4RE-BLN`,
+`TEC-2352-GRI` (en las dos cuentas), `COM-0081-ROS`, `BEB-0126-BLN`,
+`MES-0086-NEG`, `SIL-0023-NEG`, `TEC-0191-PLA`, `TEC-1815-NUDE`.
+
+⚠️ **Al contarlas, filtrar el periodo.** Un conteo sin `periodo =
+date_trunc('month', now())` daba 94 en vez de 16: `market_listing_metrics`
+guarda una fila POR MES y las 78 de agosto se sumaban. Es la misma trampa que
+la 0039 arregló en la vista y que el 1-sep tumbó el cron.
+
 ### v0.367.0 — "Publicada y nadie la ve", y el cron que sólo miraba lo que ya conocía (Eduardo)
 
 Eduardo: *"Arma un botón filtro para buscar publicaciones activas pero que no

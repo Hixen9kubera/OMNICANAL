@@ -1769,43 +1769,43 @@ function visitasComprables(s: CompetenciaSubcategoria): number {
 }
 
 /**
- * Publicaciones ACTIVAS de la subcategoría que ya se midieron y dieron CERO.
+ * Cuántas publicaciones ACTIVAS de la subcategoría se midieron y dieron CERO.
  *
- * Devuelve `null` cuando no se puede opinar — y esa distinción es la vista
- * entera, no un detalle.
- *
- * ── null NO ES CERO ─────────────────────────────────────────────────────────
+ * ── EL `=== 0` ES ESTRICTO A PROPÓSITO: null NO ES CERO ─────────────────────
  * `visitas_30d` vacío significa "nunca se midió", no "nadie la vio". Tratarlos
  * igual es el defecto que costó tres días de cron en v0.366.0 (un 429 se leía
- * como "el token está roto") y que la v0.359.0 arregló en la sonda de
- * highlights. Aquí sería peor todavía: la vista existe justo para señalar
- * publicaciones invisibles, así que confundir "no la ve nadie" con "no
- * preguntamos" la volvería un generador de trabajo falso.
+ * como "el token está roto") y que v0.359.0 arregló en la sonda de highlights.
+ * Aquí sería peor: la vista existe para señalar publicaciones invisibles, así
+ * que confundir "no la ve nadie" con "no preguntamos" la vuelve un generador
+ * de trabajo falso.
  *
- * Medido el 2-sep-2026 sobre las 703 publicaciones activas del árbol:
+ * **Y se midió, no se supuso.** El 2-sep-2026 había 217 activas sin medir
+ * nunca. Preguntándole a ML por las 215 que seguían vivas, una por una:
  *
- *      4  con visitas medidas EN CERO
- *    217  SIN medir nunca  (el 31%)
+ *    206  con visitas  (mediana 99)
+ *      9  EN CERO de verdad
+ *      0  no se pudo medir
  *
- * Contando los `null` como ceros la vista pasaba de 3 subcategorías a 83. Esas
- * 80 de diferencia no son hallazgos: son publicaciones a las que nadie les ha
- * preguntado. El hueco viene de `competencia_visitas.objetivo()`, que arranca
- * desde `market_listing_metrics` y por eso sólo refresca lo que ya conoce.
+ * O sea que contarlas como ceros habría señalado 217 publicaciones
+ * "invisibles" donde hay 9 — **un error de 23x**, y del lado caro.
+ *
+ * ── EL HUECO YA ESTÁ TAPADO ────────────────────────────────────────────────
+ * Venía de `competencia_visitas.objetivo()`, que arrancaba desde
+ * `market_listing_metrics` y por eso sólo refrescaba lo que ya conocía. Desde
+ * v0.367.0 arranca desde `channel.listings`. Tras la siembra del 2-sep quedan
+ * 702 activas con **1** sin medir (eran 217) y **16** con cero medido (eran 4).
+ *
+ * La prueba de que la distinción era la correcta: antes, exigir medición daba
+ * 3 subcategorías y no exigirla daba 83. Ahora dan 7 y 8 — convergieron solas
+ * al desaparecer los nulos.
  */
-function activasMedidasSinTrafico(
-  s: CompetenciaSubcategoria,
-): { activas: number; sinMedir: number; visitas: number } {
-  let activas = 0;
-  let sinMedir = 0;
-  let visitas = 0;
+function activasEnCero(s: CompetenciaSubcategoria): number {
+  let n = 0;
   for (const k of s.skus ?? [])
-    for (const tienda of k.tiendas ?? []) {
-      if ((tienda.estado ?? "").toLowerCase() !== "active") continue;
-      activas += 1;
-      if (tienda.visitas_30d == null) sinMedir += 1;
-      else visitas += tienda.visitas_30d;
-    }
-  return { activas, sinMedir, visitas };
+    for (const tienda of k.tiendas ?? [])
+      if ((tienda.estado ?? "").toLowerCase() === "active" && tienda.visitas_30d === 0)
+        n += 1;
+  return n;
 }
 
 const VISTAS: {
@@ -1839,14 +1839,21 @@ const VISTAS: {
       "Activa, ya medida, y el contador de visitas en cero. No es que no compren: no llegan.",
     tono: "ambar",
     /**
-     * Se exige que TODAS las activas estén medidas, no sólo alguna. Con una sin
-     * medir no se sabe si la subcategoría recibe tráfico o no, y una vista que
-     * dice "nadie la ve" sin haber mirado no vale nada.
+     * ALGUNA activa en cero, no todas.
+     *
+     * La primera versión pedía que TODAS las activas de la subcategoría
+     * estuvieran en cero, y **escondía más de la mitad de lo que se buscaba**:
+     * de las 16 publicaciones invisibles sólo asomaban 7, porque las otras 9
+     * conviven con una publicación que sí recibe tráfico. La unidad de la
+     * pregunta es la PUBLICACIÓN; la subcategoría es sólo donde se dibuja.
+     *
+     * Con "alguna" salen 15 subcategorías de 1,226 (el 1%) y no se pierde
+     * ninguna de las 16 — sigue siendo una vista, no un cajón.
+     *
+     * El `=== 0` estricto es lo que mantiene la distinción: una publicación sin
+     * medir tiene `null` y NO cuenta. Ver `activasEnCero`.
      */
-    cumple: (s) => {
-      const { activas, sinMedir, visitas } = activasMedidasSinTrafico(s);
-      return activas > 0 && sinMedir === 0 && visitas === 0;
-    },
+    cumple: (s) => activasEnCero(s) > 0,
   },
   {
     id: "movido",
