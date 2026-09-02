@@ -175,8 +175,11 @@ def main() -> int:
     print(f"\n  guardadas: {guardadas} filas")
 
     if ok < len(filas) / 2:
-        print(f"\nERROR: sólo {ok} de {len(filas)} trajeron visitas. Algo está mal "
-              "con el token de ML o con la API; no es una corrida sana.")
+        print(f"\nERROR: sólo {ok} de {len(filas)} trajeron visitas; no es una "
+              "corrida sana.")
+        print("  Antes de sospechar del token, busca 429 en los logs: la API de ML limita")
+        print("  por aplicación y el backend comparte ese cupo. `competencia_ml._get` ya")
+        print("  reintenta con espera; si aun así se abandonan llamadas, baja CONCURRENCIA.")
         return 1
     print("\nListo.")
     return 0

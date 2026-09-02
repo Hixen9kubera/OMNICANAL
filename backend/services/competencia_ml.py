@@ -30,7 +30,9 @@ Los 403 de arriba NO son errores transitorios: no hay que reintentarlos ni
 from __future__ import annotations
 
 import logging
+import random
 import re
+import time
 from typing import Any
 
 import requests
@@ -83,6 +85,39 @@ _TTL_TOKEN = 300.0          # segundos
 _TTL_SIN_TOKEN = 30.0
 _cache_token: dict[str, tuple[float, str | None]] = {}
 
+# ESPERAS ANTE UN 429, y por qué existen.
+#
+# La API de ML limita por aplicación, no por cuenta ni por endpoint, así que
+# TODO lo que corre a la vez comparte el mismo cupo: el backend en producción,
+# el cron de visitas y el de barrido. Un 429 no significa que algo esté roto —
+# significa "ahora no".
+#
+# COSTÓ TRES DÍAS DE CRON: el 31-ago, 1-sep y 2-sep de 2026 el cron de visitas
+# terminó en CRASHED. Medido el 2-sep reproduciendo la corrida entera, la
+# respuesta era 429 en 553 de 2,936 llamadas a 16/s desde una laptop, y en
+# 1,974 de 2,936 a 70/s desde Railway. Dosis-respuesta limpia: cuanto más
+# rápido, más 429.
+#
+# Y no se veía. El 429 caía en el `log.info` del final de `_get`, que con el
+# logger sin configurar (nivel WARNING) NO SE IMPRIME. Los logs salían limpios,
+# la llamada devolvía None, y la guarda de sanidad concluía "algo está mal con
+# el token de ML" — el lugar equivocado, otra vez.
+#
+# El backoff además se autorregula: los hilos que esperan dejan de pedir, y eso
+# es justo lo que baja el ritmo por debajo del límite sin tener que adivinarlo.
+_ESPERAS_429 = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def _espera_429(r: Any, intento: int) -> float:
+    """Lo que pide ML en `Retry-After`, o la espera exponencial con jitter."""
+    cab = (r.headers or {}).get("Retry-After") or ""
+    try:
+        if cab.strip():
+            return min(float(cab), 30.0)
+    except ValueError:
+        pass
+    return _ESPERAS_429[intento] + random.uniform(0, 0.4)
+
 
 def _token(cuenta: str) -> str | None:
     """
@@ -125,11 +160,16 @@ def _olvidar_token(cuenta: str) -> None:
 
 
 def _get(ruta: str, params: dict[str, Any] | None = None,
-         cuenta: str = _CUENTA_DEFAULT, _reintentado: bool = False) -> Any | None:
+         cuenta: str = _CUENTA_DEFAULT, _reintentado: bool = False,
+         _intento_429: int = 0) -> Any | None:
     """
     GET contra la API de ML. Renueva el token una sola vez ante un 401, igual que
     `costos.pct_comision_ml`. Un 403 se registra en DEBUG y no se reintenta: es
     permiso denegado por diseño de ML, no un token caduco.
+
+    Un 429 SÍ se reintenta con espera creciente (ver `_ESPERAS_429`): es el
+    límite de ritmo de la API, compartido por toda la aplicación, y es la causa
+    real de que el cron de visitas se cayera tres días seguidos.
     """
     token = _token(cuenta)
     if not token:
@@ -157,7 +197,16 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
         # Esperado para items ajenos. Que no ensucie los logs de producción.
         log.debug("ML GET %s → 403 (recurso ajeno, sin permiso)", ruta)
         return None
-    log.info("ML GET %s → %s %s", ruta, r.status_code, r.text[:150])
+    if r.status_code == 429:
+        if _intento_429 < len(_ESPERAS_429):
+            time.sleep(_espera_429(r, _intento_429))
+            return _get(ruta, params, cuenta, _reintentado, _intento_429 + 1)
+        # WARNING, no INFO: si se abandona una llamada por límite de ritmo, eso
+        # tiene que verse en los logs de producción. Ver `_ESPERAS_429`.
+        log.warning("ML GET %s → 429 tras %d esperas; se abandona",
+                    ruta, len(_ESPERAS_429))
+        return None
+    log.warning("ML GET %s → %s %s", ruta, r.status_code, r.text[:150])
     return None
 
 

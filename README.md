@@ -1001,6 +1001,64 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.366.0 — El cron de visitas no tenía roto el token: lo estaban limitando (Eduardo)
+
+Eduardo: *"Puedes revisar porque fallo otra vez el cron? ya van 3 veces seguidas
+que falla"*.
+
+El 31-ago, 1-sep y 2-sep el cron de visitas terminó en CRASHED con el mismo
+mensaje: *"sólo 962 de 2936 trajeron visitas. Algo está mal con el token de ML"*.
+**El token estaba bien.** La API contestaba **429 Too many requests**.
+
+**Por qué no se veía.** El 429 caía en el `log.info` del final de
+`competencia_ml._get`. Con el logger sin configurar —nivel WARNING— eso **no se
+imprime**. Los logs salían limpios: ni una advertencia entre las 1,974 llamadas
+perdidas. La llamada devolvía `None`, y la guarda de sanidad leía ese `None`
+como "el token no sirve" y acusaba al lugar equivocado. Es el mismo defecto que
+v0.359.0 corrigió en la sonda de highlights: **no distinguir "no pude preguntar"
+de una respuesta**.
+
+**La medición, reproduciendo la corrida entera dos veces:**
+
+| dónde | ritmo | 429 | perdidas |
+|---|---|---|---|
+| laptop | 16/s | 553 | 19% |
+| Railway (el cron) | 70/s | 1,974 | **67%** |
+
+Dosis-respuesta limpia, y sin acantilado: las 429 empiezan a la llamada ~600 y
+crecen parejo. No es una cuota diaria que se agota — es ritmo instantáneo. El
+límite de ML es **por aplicación**, así que el backend en producción y los dos
+crons de Competencia comparten el mismo cupo; el cron no compite contra sí
+mismo, compite contra todo lo que corre a esa hora.
+
+**El arreglo, en `_get` y no en el cron**, porque el 429 lo pueden recibir las
+visitas, las reseñas, los highlights y el barrido por igual:
+
+- **El 429 se reintenta** con espera creciente (0.5, 1, 2, 4, 8 s), respetando
+  `Retry-After` si ML lo manda. El backoff **se autorregula**: los hilos que
+  esperan dejan de pedir, y eso baja el ritmo por debajo del límite sin tener
+  que adivinar cuál es.
+- **Los no-200 pasan de `log.info` a `log.warning`.** Un fallo silencioso que
+  tarda tres días en atribuirse no es un fallo barato.
+- **La guarda dejó de acusar al token.** Ahora dice dónde mirar: *"busca 429 en
+  los logs; la API limita por aplicación y el backend comparte ese cupo"*.
+
+**Verificado a escala completa contra producción, con el código parcheado:**
+
+| | antes | después |
+|---|---|---|
+| con dato | 2,383 | **2,936 de 2,936** |
+| sin dato | 553 | **0** |
+| llamadas abandonadas tras 5 esperas | — | 0 |
+| duración | 2.6 min | 4.1 min |
+
+Los 4 minutos son el precio de las esperas, y para un cron diario es barato.
+
+**Un efecto secundario que sí importa para el dato:** de las 2,936, **1,973 son
+un cero legítimo** —publicaciones pausadas, que no reciben visitas—. Antes esas
+filas se caían junto con las fallidas y conservaban su número de agosto. Ahora
+se guarda el 0, que es lo cierto.
+
 ### 0.365.0 — La alarma del costo miraba una pestaña de tres
 
 Eduardo: *"incluye en las alertas para costos validados en el top vendidos los
