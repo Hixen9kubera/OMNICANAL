@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
+import RedVivaWidget from "@/components/RedVivaWidget";
 
 interface Accion {
   canal: string | null;
@@ -223,6 +224,11 @@ export default function DashboardPage() {
             <AlertTriangle size={16} /> No se pudo leer el estado: {error}
           </div>
         )}
+
+        {/* ── RED VIVA (propuesta C) ──────────────────────────────────────
+            La miniatura con semáforo: dice desde aquí si vale la pena abrir
+            /flujo. Sondea cada 30 s, aparte del refresco del dashboard. */}
+        <RedVivaWidget />
 
         {/* ── VIGILANCIA DE ODOO (el master del inventario) ───────────────
             El stock depende de Odoo al 100%: aquí se ve cada movimiento suyo,

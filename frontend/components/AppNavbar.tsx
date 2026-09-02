@@ -24,6 +24,7 @@ import {
   Gauge,
   PackageX,
   type LucideIcon,
+  Network,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 import { cerrarSesion, quienSoy, type Usuario } from "@/lib/sesion";
@@ -121,6 +122,10 @@ const ITEMS: NavItem[] = [
       // No expone costos ni márgenes, solo autoría.
       { label: "Monitoreo", href: "/monitoreo", icon: Activity,
         descripcion: "Quién hizo qué en el panel, cuándo y en qué canal" },
+      // SIN soloAdmin, como Monitoreo: solo agregados y bitácoras de flujo,
+      // nada de costos ni márgenes.
+      { label: "Red viva", href: "/flujo", icon: Network,
+        descripcion: "El flujo de datos de kubera, en tiempo real" },
       // Solo admin: el log de TikTok trae datos del comprador (su scope
       // `seller.order.info` viene marcado como información personal).
       { label: "Webhooks", href: "/webhooks", icon: Webhook, soloAdmin: true,

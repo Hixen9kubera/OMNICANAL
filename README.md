@@ -1001,6 +1001,62 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.373.0 — La Red viva: el flujo de kubera late en Operaciones (Eduardo)
+
+Eduardo: *"quiero visualización del tráfico de datos y endpoints que alimentan a
+la database… como si pudiera visualizar una especie de red gráfica viva"*. Nació
+como herramienta local (`Documents/GitHub/flujo-vivo`, fuera del repo) y esta
+versión la porta al panel como sub-tab de Operaciones: **/flujo**, sin
+`soloAdmin` — enseña agregados y bitácoras, nunca costos ni márgenes.
+
+**Qué se ve.** Un grafo de fuerzas en canvas con TODA la base: canales externos
+(rombos) → procesos (rectángulos: webhooks, sondeos, crones, fan-out) → las
+tablas de los 9 esquemas (círculos, radio por filas, color por esquema), con las
+llaves foráneas como telaraña tenue y los flujos como aristas que emiten
+partículas al ritmo real. Anillo pulsante = la tabla recibió escrituras en el
+último sondeo. Clic en un nodo → sus últimos 8 eventos. Doble clic → reencuadre.
+
+**Dos temas en la misma página** (botón en el encabezado, persistido en
+localStorage): «sala de control» (fondo oscuro — partículas y anillos leen
+mejor) y «clara» (vocabulario del panel, flujo índigo, fila de 5 estadísticas
+arriba como el dashboard). Mismo motor, paleta parametrizada.
+
+**De dónde salen las señales** (`routers/flujo.py`, 3 GET):
+
+| señal | fuente | para qué |
+|---|---|---|
+| caudal por tabla | `pg_stat_user_tables` (delta entre sondeos) | que laten las 56+ tablas sin conocer sus columnas |
+| flujos por cable | bitácoras de `ops` con ventana de 15 min | partículas y conteos por canal |
+| **silencios** | cadencia esperada POR CABLE (`CADENCIA_MIN`) | la lección de los 964 fantasma: lo grave es el flujo que calla; un umbral genérico de 1 h enmascara a los que laten cada minuto. El último evento real (sin ventana) solo se consulta cuando hay silencio |
+| salud | tokens ML/TikTok, webhooks sin procesar, pg_cron, última venta por canal | los tokens ML se juzgan por `updated_at` (regla 8); `expires_at` viene nulo |
+
+El cableado proceso→tabla va A MANO en `CABLES`: las FKs son reglas de
+integridad, no dicen quién escribe — el flujo vive en el código y los crones.
+Endpoints **síncronos a propósito** (`def`, no `async`): `sdb` es psycopg2 y en
+corrutina bloquearía el loop entero (regla 11, el apagón del 13-ago). Salud con
+caché de 30 s para que el pulso quede en ~1 s. Estado en memoria del proceso
+(historial de sparkline, marca de silencios stat): muere con el contenedor, a
+propósito.
+
+**El widget del dashboard** (`RedVivaWidget`): miniatura en vivo + semáforo
+(rojo si algo en salud está mal, ámbar si hay silencios) + 3 números + «Abrir la
+red». Sondea cada 30 s por su cuenta.
+
+**Tres mañas de canvas-en-React que costaron la tarde**, documentadas en
+`RedViva.tsx` para no repetirlas: (1) React registra `onWheel` PASIVO — su
+`preventDefault` no frena el scroll y la página se desplazaba junto con el
+zoom; el listener va nativo con `passive:false`. (2) En pestañas ocultas u
+ocluidas el rAF no dispara NUNCA: la física corre en `setInterval` y el rAF
+solo pinta, con pintado de respaldo si lleva >250 ms muerto. (3) La tarjeta del
+grafo tomaba su altura del flex (= la barra lateral): cada tarjeta de detalle
+que abría el usuario agrandaba el grafo y la página; ahora tiene altura propia
+(`100vh-190px`, `sticky`) y la barra se desplaza sola.
+
+Probado contra el SANDBOX con sus datos reales, y el sandbox contó su propia
+historia sin tocar nada: última venta ML en rojo (el clon es de ayer),
+`fanout_log` cazado por Silencios (congelado desde el 20-ago) y los webhooks
+«sin rastro» (la tabla no se clonó). Exactamente el trabajo del tablero.
+
 ### v0.372.0 — La guía de Competencia, y el raspado pasa a quincenal (Eduardo)
 
 Eduardo: *"Hay que hacer una guía para el usuario así como en costos, especificando
