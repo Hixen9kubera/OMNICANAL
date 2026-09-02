@@ -1022,6 +1022,35 @@ tabla nazca con su candado puesto en la misma migración. Versión 0.358.0.
 
 ---
 
+### 0.360.0 — El verificador aprende la regla que le faltaba: el replace despoja
+
+La sesión de Competencia, al adoptar el patrón de blindaje, encontró el CUARTO
+hueco — uno que el workflow **no podía ver**: su 0042 le arrancó el
+`security_invoker` a `market_publicaciones_v` con un `create or replace view`
+que no dice una palabra de seguridad (curado en su 0045). Y de paso me corrigió:
+mi aviso decía "tu 0042 ya lo hace bien" — al revés, la 0042 es justo la que lo
+deshizo.
+
+**La doctrina del verificador estaba equivocada.** Su comentario afirmaba que
+"`create or replace view` conserva las reloptions" y por eso la simulación
+usaba `setdefault`: un replace sobre vista blindada conservaba el escudo que en
+la realidad se pierde. Lo dirimí midiendo, no leyendo: en el Postgres de
+Supabase, una vista con `security_invoker=on` queda `(sin opciones)` tras el
+replace (probado en transacción revertida, cero huella).
+
+**El arreglo**: en la simulación, todo `create or replace view` RESETEA el
+escudo de esa vista — salvo `with (security_invoker = on)` inline — y la cura
+posterior con `alter view` re-blinda, como siempre. Cuatro escenarios probados:
+las 46 migraciones en verde (la 0045 cura), **sin la 0045 el verificador ahora
+caza a la 0042** (la prueba de regresión del caso real), la trampa nueva de
+replace muerde, y la trampa original de tablas sigue mordiendo.
+
+Y como una prueba que no puede fallar no prueba nada, el workflow gana su
+**segundo canario**: un replace sin re-blindaje tiene que poner el CI en rojo.
+Versión 0.360.0.
+
+---
+
 ### v0.357.0 — Competencia entra por la pregunta, y el sondeo deja de mentir (Eduardo)
 
 Tres cosas que salieron de la misma sesión.

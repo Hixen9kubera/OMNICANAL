@@ -45,9 +45,14 @@ Al final, cualquier tabla que siga existiendo en un esquema de negocio y sin RLS
 es una violación, y se reporta CON LA MIGRACIÓN QUE LA CREÓ para que el arreglo
 sea obvio.
 
-Las vistas se revisan igual, contra `security_invoker`. `create or replace view`
-NO cuenta como reinicio: Postgres conserva las reloptions al reemplazar la
-definición.
+Las vistas se revisan igual, contra `security_invoker` — con una regla que
+costó el cuarto hueco aprender: **`create or replace view` RESETEA las
+reloptions**. Medido el 1-sep-2026 en el Postgres de Supabase; una versión
+anterior de este script afirmaba lo contrario, y por eso la 0042 despojó a
+`market_publicaciones_v` sin que nada sonara (curada en la 0045, hallazgo de la
+sesión de Competencia). Todo replace deja la vista DESPROTEGIDA hasta que un
+`alter view … set (security_invoker = on)` — o el `with (security_invoker=on)`
+inline del propio create — la vuelva a blindar en alguna migración.
 
 LÍMITE CONOCIDO, DICHO DE FRENTE
 --------------------------------
@@ -90,8 +95,8 @@ ID = r"[a-z_][a-z0-9_]*"
 _CREAR_TABLA = re.compile(
     rf"\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?({ID})\.({ID})", re.I)
 _CREAR_VISTA = re.compile(
-    rf"\bcreate\s+(?:or\s+replace\s+)?(?:materialized\s+)?view\s+"
-    rf"(?:if\s+not\s+exists\s+)?({ID})\.({ID})", re.I)
+    rf"\bcreate\s+(or\s+replace\s+)?(?:materialized\s+)?view\s+"
+    rf"(?:if\s+not\s+exists\s+)?({ID})\.({ID})(?:\s+with\s*\(([^)]*)\))?", re.I)
 _TIRAR_TABLA = re.compile(
     rf"\bdrop\s+table\s+(?:if\s+exists\s+)?({ID})\.({ID})", re.I)
 _TIRAR_VISTA = re.compile(
@@ -181,11 +186,24 @@ class Esquema:
                 self.tablas.setdefault(
                     (sch, nom), {"protegido": False, "origen": migracion})
             elif tipo == "crear_vista":
-                sch, nom = g[0].lower(), g[1].lower()
-                # `create or replace view` conserva las reloptions en Postgres,
-                # así que no reinicia security_invoker.
-                self.vistas.setdefault(
-                    (sch, nom), {"protegido": False, "origen": migracion})
+                reemplaza = bool(g[0])
+                sch, nom = g[1].lower(), g[2].lower()
+                opts = (g[3] or "").lower()
+                inline = bool(re.search(
+                    r"security_invoker\s*=\s*(on|true)", opts))
+                # LA TRAMPA SILENCIOSA (0042 → 0045): `create or replace view`
+                # RESETEA las reloptions — medido el 1-sep-2026 en el Postgres
+                # de Supabase (una vista con security_invoker=on quedó sin
+                # opciones tras el replace, dentro de una transacción
+                # revertida). El comentario que vivía aquí afirmaba lo
+                # contrario, y ese error de doctrina dejó pasar el despojo de
+                # market_publicaciones_v sin que el workflow sonara. Un replace
+                # deja la vista DESPROTEGIDA salvo que traiga el
+                # `with (security_invoker = on)` inline; la cura posterior con
+                # `alter view … set (…)` la vuelve a blindar, como siempre.
+                if reemplaza or (sch, nom) not in self.vistas:
+                    self.vistas[(sch, nom)] = {
+                        "protegido": inline, "origen": migracion}
             elif tipo == "tirar_tabla":
                 self.tablas.pop((g[0].lower(), g[1].lower()), None)
             elif tipo == "tirar_vista":

@@ -64,3 +64,25 @@ jobs:
           fi
           rm -f "$trampa"
           echo "Bien: el verificador detectó la tabla sin RLS y falló como debe."
+
+      # Segundo canario, por el CUARTO hueco (0042 → 0045): `create or replace
+      # view` RESETEA las reloptions en Postgres y despoja el security_invoker
+      # de una vista YA blindada, sin que la migración diga una palabra de
+      # seguridad. El verificador aprendió esa regla el 1-sep-2026 — y este
+      # paso comprueba que no la olvide: replace sin re-blindar = rojo.
+      - name: Comprobar que también muerde el replace de vistas
+        run: |
+          set -u
+          trampa='supabase/migrations/9998_trampa_replace_vista.sql'
+          cat > "$trampa" <<'SQL'
+          -- Migración FALSA, solo para CI. La borra el mismo paso que la crea.
+          create or replace view enrich.market_skus_v as select 1 as x;
+          SQL
+
+          if python3 backend/scripts/verificar_rls.py; then
+            rm -f "$trampa"
+            echo "::error::El verificador NO detectó el replace que despoja el security_invoker. Está roto."
+            exit 1
+          fi
+          rm -f "$trampa"
+          echo "Bien: el verificador detectó el replace sin re-blindaje y falló como debe."
