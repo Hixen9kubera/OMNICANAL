@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.376.0 — El top de ML se guardaba incompleto: faltaba 1 de cada 5, y eran las grandes (Eduardo)
+
+Eduardo, viendo Disfraces Completos: *"¿por qué solo salen 4 si se scrappearon los 20?"*.
+
+**El raspador sí trajo los 20.** Leído del dataset que Apify conserva de esa
+corrida: `n: 20`. Se perdían en nuestro código, en una línea:
+
+```python
+ident = it.get("wid") or it.get("id_pagina")
+if not ident:
+    continue          # ← aquí morían 16 de 20
+```
+
+ML mezcla **dos formas de tarjeta** en el mismo top. Las de producto
+(`/p/MLM…`, `/up/MLMU…`) traen `wid` e `id_pagina`; las de **ITEM** —el enlace
+directo `…/MLM-2278403811-titulo-_JM`— vienen con **ambos en None**, porque el
+actor los lee de atributos que esa tarjeta no tiene. Toda tarjeta ITEM moría en
+ese `continue`.
+
+Y `_pagina_y_tipo` ya sabía resolverlo — devuelve `('MLM2278403811', 'ITEM')`,
+que es **exactamente** el id con el que `/highlights` lista esa publicación.
+Sólo que corría **nueve líneas después** del descarte. El arreglo es moverlo
+antes.
+
+**Cuánto se perdía**, medido sobre las 749 categorías con ranking guardado:
+
+| | |
+|---|---|
+| entradas en el top de ML | 13,307 |
+| las que guardábamos | 10,471 (79%) |
+| de tipo ITEM | 2,465 (19%) |
+| **guardadas de tipo ITEM** | **0** |
+
+Cero, nunca, no al azar. Y lo que se perdía **no era la cola**: en Disfraces
+Completos el #1 descartado tenía **31,722 visitas** y el #3 que sí guardábamos,
+**2,580**. Se enseñaba el pedazo menos relevante del mercado y el encabezado
+decía «4 publicaciones» como si el top fuera ese.
+
+**Sobre las visitas de esas filas.** Primero se supuso que quedarían sin
+contador —una tarjeta ITEM no trae `wid`, que es lo que sirve para pedir visitas
+y reseñas—. **Se midió y era falso**: el id del URL ES el item real y la API
+contesta igual para publicaciones ajenas.
+
+```
+MLM2278403811   31,722 visitas   1,360 reseñas   (el #1 que se descartaba)
+MLM2347429335   16,140 visitas   1,554 reseñas
+MLM2573280402   10,391 visitas   1,662 reseñas
+```
+
+Así que se recuperan completas: precio, título, foto, vendidos, calificación,
+visitas y reseñas.
+
 ### v0.375.0 — El candado del raspado baja a 1 día, y deja de parecer una falla (Eduardo)
 
 Eduardo: *"bájalo a 1 día y avisa en la guía y también cuando presionen el botón

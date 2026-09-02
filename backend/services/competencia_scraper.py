@@ -605,7 +605,34 @@ async def mas_vendidos_categorias(categorias: list[str],
         cat = str(pagina.get("url", "")).rsplit("/", 1)[-1]
         normalizadas = []
         for i, it in enumerate((pagina.get("items") or [])[:limite], start=1):
-            ident = it.get("wid") or it.get("id_pagina")
+            # EL ID SE SACA DEL URL ANTES DE DESCARTAR NADA, y ese orden es el
+            # arreglo entero.
+            #
+            # ML mezcla DOS formas de tarjeta en el mismo top. Las de producto
+            # (`/p/MLM…`, `/up/MLMU…`) traen `wid` e `id_pagina`; las de ITEM
+            # —el enlace directo `…/MLM-2278403811-titulo-_JM`— vienen con AMBOS
+            # en None, porque el actor los lee de atributos que esa tarjeta no
+            # tiene. Con `ident` calculado sólo desde esos dos campos, TODA
+            # tarjeta ITEM moría en el `continue` de aquí abajo.
+            #
+            # Medido el 2-sep-2026 sobre las 749 categorías con ranking:
+            #
+            #     entradas en el top de ML ....... 13,307
+            #     las que guardábamos ............ 10,471  (79%)
+            #     de tipo ITEM .................... 2,465  (19%)
+            #     guardadas de tipo ITEM .............. 0
+            #
+            # Cero, nunca. Y no se perdía al azar: en «Disfraces Completos» eran
+            # 16 de 20, y el #1 descartado tenía 31,722 visitas contra 2,580 del
+            # #3 que sí guardábamos. Se enseñaba el pedazo MENOS relevante del
+            # mercado y el panel decía "4 publicaciones" como si el top fuera ese.
+            #
+            # `_pagina_y_tipo` ya sabía resolverlo —devuelve ('MLM2278403811',
+            # 'ITEM') para ese URL, que es exactamente el id con el que
+            # /highlights lista la publicación— sólo que corría NUEVE LÍNEAS
+            # DESPUÉS del descarte.
+            id_pagina, tipo = _pagina_y_tipo(it.get("url"))
+            ident = it.get("wid") or it.get("id_pagina") or id_pagina
             if not ident:
                 continue
             score, vendidos = _de_accesible(it.get("accesible"))
@@ -615,7 +642,6 @@ async def mas_vendidos_categorias(categorias: list[str],
                     vendidos = vendidos if vendidos is not None else _vendidos(et.replace("|", ""))
                 elif score is None:
                     score = _score(et)
-            id_pagina, tipo = _pagina_y_tipo(it.get("url"))
             normalizadas.append({
                 "externo_id": ident,
                 # El id de la RUTA y el tipo: los necesita
