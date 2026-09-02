@@ -134,6 +134,53 @@ async def sondear(cats: list[str]) -> dict[str, list[dict[str, Any]] | None]:
     return out
 
 
+def sano(res: dict[str, list[dict[str, Any]] | None]) -> tuple[bool, str]:
+    """
+    ¿Esta corrida se puede creer? Devuelve (ok, motivo).
+
+    ── EL AGUJERO QUE TAPA ─────────────────────────────────────────────────────
+    `mas_vendidos_categoria` devuelve `[]` en DOS casos que no son el mismo:
+
+      · ML contestó y no publica ranking ahí   → n = 0 es la verdad
+      · no hubo token y la llamada no se hizo  → n = 0 es una MENTIRA
+
+    El `except` de `sondear` sólo atrapa el segundo caso cuando LEVANTA. Y no
+    levanta: `meli._access_token` registra "Sin token de ML para la cuenta X" y
+    sigue, así que la respuesta vacía baja por el camino del éxito.
+
+    Visto el 1-sep-2026 al correr el sondeo contra el sandbox, que no tiene
+    tokens —el clonador se niega a copiarlos, y hace bien—: **1,161 de 1,161
+    categorías se escribieron como "ML no publica ranking"**, borrando las 947
+    que sí lo tienen. En producción eso apagaría el barrido entero: `n = 0` es
+    justo la señal de "no gastes aquí".
+
+    Es la regla de la 0041 —"nunca escribir 0 por un error"— rota por una puerta
+    que esa migración no previó: no un fallo, sino un vacío silencioso.
+
+    ── EL UMBRAL ───────────────────────────────────────────────────────────────
+    Se compara contra lo que YA sabemos, no contra un número fijo: si antes había
+    N categorías con ranking y ahora hay menos de la mitad, algo se rompió del
+    lado nuestro. ML no deja de publicar 500 rankings de un día para otro.
+    """
+    con_ranking = sum(1 for v in res.values() if v)
+    if not res:
+        return False, "no se sondeó ninguna categoría"
+    if con_ranking == 0:
+        return False, ("NINGUNA de las %d categorías devolvió ranking. Eso no pasa "
+                       "en la realidad: revisa el token de ML antes de creerle a "
+                       "esta corrida." % len(res))
+    try:
+        antes = supabase_db.fetch_all(
+            "select count(*) as n from enrich.market_highlights "
+            "where canal = %s and n > 0", (CANAL,))[0]["n"]
+    except Exception:  # noqa: BLE001
+        antes = 0
+    if antes and con_ranking < antes / 2:
+        return False, (f"sólo {con_ranking} categorías con ranking contra {antes} "
+                       "que ya teníamos. Una caída así es nuestra, no de ML.")
+    return True, ""
+
+
 def guardar(res: dict[str, list[dict[str, Any]] | None]) -> tuple[int, int]:
     """Upsert. Devuelve (filas escritas, cuántas cambiaron de huella)."""
     escritas = cambios = 0
@@ -163,6 +210,33 @@ def guardar(res: dict[str, list[dict[str, Any]] | None]) -> tuple[int, int]:
             escritas += 1
             if fila and fila.get("cambio"):
                 cambios += 1
+
+            # ── LA BITÁCORA (0043): una fila POR DÍA con el top 5 ───────────
+            # Va en el mismo cursor y la misma transacción que el upsert de
+            # arriba: si una falla, no queda una medición a medias.
+            #
+            # SÓLO los ids del top 5, sin ficha: la foto completa pesaba 280 MB
+            # al año y por eso la 0041 la rechazó. Así son ~50 MB.
+            #
+            # `on conflict do update` y no `do nothing`: si el sondeo corre dos
+            # veces el mismo día, la buena es la ÚLTIMA. Con `do nothing` el día
+            # se quedaría con la primera y la medición mediría el pasado.
+            top5 = [e.get("id") for e in entradas[:5] if e.get("id")]
+            cur.execute(
+                """insert into enrich.market_highlights_hist
+                       (canal, categoria_id, top5, huella5, n)
+                   values (%s, %s, %s::jsonb, %s, %s)
+                   on conflict (canal, categoria_id, dia) do update set
+                       top5         = excluded.top5,
+                       huella5      = excluded.huella5,
+                       n            = excluded.n,
+                       capturado_en = now()""",
+                (CANAL, cid, json.dumps(top5, separators=(",", ":")),
+                 # La posición va EXPLÍCITA: `_huella` ordena por `p`, y sin
+                 # ella el orden dependía de que el sort de Python sea estable
+                 # — cierto hoy, pero no es algo en lo que apoyarse.
+                 _huella([{"id": i, "p": k} for k, i in enumerate(top5, 1)]),
+                 len(entradas)))
     return escritas, cambios
 
 
@@ -200,8 +274,16 @@ def main() -> int:
         print("\n--dry-run: no se escribió nada. Corre con --real para guardar.")
         return 0
 
+    # ANTES de escribir: un 0 que en realidad es "no pude preguntar" apaga el
+    # barrido entero, porque `n = 0` es la señal de "no gastes aquí". Ver `sano()`.
+    ok, motivo = sano(res)
+    if not ok:
+        print(f"\nABORTADO, no se escribió nada: {motivo}")
+        return 1
+
     escritas, cambios = guardar(res)
     print(f"\n  escritas: {escritas} · con el top movido desde la vez pasada: {cambios}")
+    print(f"  bitácora del top 5: {escritas} filas para hoy")
 
     if err > len(cats) / 4:
         print(f"\nERROR: {err} de {len(cats)} fallaron. No es una corrida sana.")

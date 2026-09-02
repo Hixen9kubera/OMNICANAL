@@ -1001,6 +1001,103 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.357.0 — Competencia entra por la pregunta, y el sondeo deja de mentir (Eduardo)
+
+Tres cosas que salieron de la misma sesión.
+
+#### 1 · Las VISTAS: la pregunta primero, el filtro después
+
+La barra tenía seis controles sueltos y ninguno contestaba lo que se le
+preguntaba al tab. Encontrar "dónde nos ven y no nos compran" exigía saber de
+antemano que eso se arma cruzando visitas contra unidades — o sea, saber la
+respuesta antes de preguntarla.
+
+Ahora hay cinco vistas, cada una una PREGUNTA de negocio con su conteo real:
+
+| vista | qué muestra |
+|---|---|
+| Todas | 1,218 |
+| **Nos ven y no compran** | **46** — publicación activa, tráfico, cero ventas |
+| ML ya se movió | 386 — el top cambió después de nuestra captura |
+| Producto apagado | 54 — tenemos SKUs sin publicar |
+| ML no publica ranking | 214 — ahí no hay nada que raspar |
+
+Todas se calculan EN EL NAVEGADOR sobre el árbol ya cargado: ni una petición más.
+
+⚠️ **"Ranking vencido" estaba en el boceto y se cayó al medirla**: agarraba 627 de
+1,218, el 51% del árbol. Una vista que selecciona la mitad de todo no es una
+vista.
+
+⚠️ **Y "Nos ven y no compran" pasó de 74 a 46 por una corrección de fondo**: sumaba
+las visitas de publicaciones PAUSADAS y en `under_review`, donde el visitante no
+es que no comprara — **es que no podía**. 28 de las 74 eran falsas (Bongs,
+Smartbands, Grúas para Pacientes). Ahora sólo cuenta tráfico de publicaciones
+`active`.
+
+**Los desplegables siguen la vista.** Salían del árbol crudo, así que con una
+vista puesta ofrecían "Hogar, Muebles y Jardín (415)" cuando quedaban 6, y
+elegirlo daba una lista vacía sin explicar por qué. Ahora cuelgan del árbol con
+la vista aplicada — pero NO del totalmente filtrado, o cada desplegable se
+borraría a sí mismo. Y si la raíz elegida no sobrevive a la vista nueva, se
+suelta sola.
+
+#### 2 · El BANNER que faltaba
+
+Competencia era la ÚNICA página del panel sin él. Mismo molde que Crear
+Productos y Costos: gradiente 120° `#4F46E5` → `#818CF8`, `rounded-3xl`, el
+círculo blanco al 20% y el contador grande.
+
+#### 3 · El sondeo escribía "ML no publica" cuando no podía preguntar
+
+El defecto más serio de los tres, y salió por accidente al correr el sondeo
+contra el sandbox.
+
+`mas_vendidos_categoria` devuelve `[]` en DOS casos que no son el mismo:
+
+- ML contestó y no publica ranking ahí → `n = 0` es la verdad
+- **no hubo token y la llamada no se hizo → `n = 0` es una MENTIRA**
+
+El `except` de `sondear` sólo atrapa el segundo cuando LEVANTA, y no levanta:
+`meli._access_token` registra "Sin token de ML para la cuenta X" y sigue, así que
+la respuesta vacía baja por el camino del éxito.
+
+Medido: contra el sandbox —que no tiene tokens, porque el clonador se niega a
+copiarlos y hace bien— **escribió 1,161 de 1,161 categorías como "ML no publica",
+borrando las 947 que sí lo tienen**. En producción eso apagaría el barrido
+entero: `n = 0` es justo la señal de "no gastes aquí".
+
+Es la regla de la 0041 —"nunca escribir 0 por un error"— rota por una puerta que
+esa migración no previó: no un fallo, sino un **vacío silencioso**.
+
+`sano()` compara contra lo que ya sabemos y aborta ANTES de escribir: si ninguna
+categoría devolvió ranking, o si caen a menos de la mitad de las que teníamos, no
+se escribe nada. ML no deja de publicar 500 rankings de un día para otro.
+Verificado en ese mismo escenario: abortó con el motivo y el dato sobrevivió.
+
+#### 4 · Migración 0043 — la bitácora del top 5
+
+"¿Cada cuánto conviene refrescar el ranking?" depende de cuánto se mueve, y **no
+lo sabemos**: `market_highlights` guarda una fila por categoría, así que dice
+CUÁNDO cambió por última vez, no cuántas veces. El 1-sep el sondeo reportó 583
+categorías movidas en su primera corrida y 137 en la segunda del mismo día — ese
+salto es la prueba de que sin serie no se distingue rotación de ruido de arranque,
+y sobre esa duda está apoyada una decisión de gasto ($1.37 al mes contra $41).
+
+`enrich.market_highlights_hist` guarda **una fila por día con el top 5, sólo los
+ids**. La foto completa que la 0041 rechazó pesaba 280 MB al año; ésta pesa ~50 MB
+y contesta exactamente lo que se preguntó.
+
+Escribe una fila POR DÍA siempre, no sólo cuando cambia: con sólo los cambios, un
+hueco significaría "no cambió" o "no se sondeó", y son cosas distintas.
+
+Verificado en sandbox con datos sintéticos —el sondeo real no puede correr ahí
+por los tokens—: guarda 5 de 7 entradas, la corrida fallida no se escribe, "ML no
+publica" sí, correrla dos veces el mismo día actualiza sin duplicar, y cambiar el
+orden cambia la huella.
+
+**No la lee ninguna pantalla.** Es una medición para decidir la cadencia y se
+apaga cuando la decisión esté tomada.
+
 ### v0.355.0 — Surtido dividido: cuando ningún almacén alcanza, se parte la orden
 
 Las tres reglas del almacén, tal como las fijó Brandon (1-sep):

@@ -1704,6 +1704,96 @@ function aFecha(iso: string): Date {
   return new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00` : iso);
 }
 
+/**
+ * Las VISTAS de trabajo: cada una es una PREGUNTA de negocio, no un filtro.
+ *
+ * ── POR QUÉ EXISTEN ─────────────────────────────────────────────────────────
+ * La barra tenía seis controles sueltos y ninguno contestaba lo que se le
+ * preguntaba al tab. Encontrar "dónde nos ven y no nos compran" exigía saber de
+ * antemano que eso se arma cruzando visitas contra unidades — o sea, saber la
+ * respuesta antes de preguntarla.
+ *
+ * Todas se calculan EN EL NAVEGADOR sobre el árbol ya cargado: ni una petición
+ * más. Los datos ya venían, sólo que no había cómo pedirlos.
+ *
+ * ⚠️ "Ranking vencido" estaba en el boceto y SE CAYÓ al medirla: agarraba 627 de
+ * 1,218 subcategorías, el 51% del árbol. Una vista que selecciona la mitad de
+ * todo no es una vista. La mayoría eran categorías que no venden nada y que el
+ * barrido salta a propósito — el hueco real ya lo dice `ML ya se movió`.
+ */
+type VistaId = "todas" | "sin_venta" | "movido" | "sin_publicar" | "sin_ranking";
+
+/** Suma un campo sobre los SKUs de una subcategoría. */
+function sumaSub(
+  s: CompetenciaSubcategoria,
+  campo: "visitas_30d" | "unidades_30d",
+): number {
+  return (s.skus ?? []).reduce((a, k) => a + (k[campo] ?? 0), 0);
+}
+
+/**
+ * Visitas que llegaron a una publicación que se PODÍA COMPRAR.
+ *
+ * ⚠️ No es lo mismo que `sumaSub(s, "visitas_30d")`, y la diferencia invalida la
+ * vista: ese total incluye las visitas de publicaciones PAUSADAS, donde el
+ * visitante no es que no comprara — es que no podía. Medido el 1-sep-2026: de
+ * las 74 subcategorías que la vista daba como "nos ven y no compran", **29 (el
+ * 39%) tenían TODO su tráfico en pausadas** (Bongs, Smartbands, Grúas para
+ * Pacientes). Sólo 45 eran el hallazgo de verdad.
+ *
+ * `under_review` tampoco cuenta: tampoco se puede comprar ahí.
+ */
+function visitasComprables(s: CompetenciaSubcategoria): number {
+  return (s.skus ?? []).reduce(
+    (a, k) =>
+      a +
+      (k.tiendas ?? []).reduce(
+        (b, t) =>
+          b + ((t.estado ?? "").toLowerCase() === "active" ? (t.visitas_30d ?? 0) : 0),
+        0,
+      ),
+    0,
+  );
+}
+
+const VISTAS: {
+  id: VistaId;
+  titulo: string;
+  detalle: string;
+  tono: "neutro" | "ambar";
+  cumple: (s: CompetenciaSubcategoria) => boolean;
+}[] = [
+  {
+    id: "sin_venta",
+    titulo: "Nos ven y no compran",
+    detalle: "Publicación activa con tráfico y cero ventas. Aquí conviene mirar al de enfrente.",
+    tono: "neutro",
+    cumple: (s) =>
+      sumaSub(s, "unidades_30d") === 0 && visitasComprables(s) > 0,
+  },
+  {
+    id: "movido",
+    titulo: "ML ya se movió",
+    detalle: "El top cambió después de nuestra captura: lo que ves ya no es lo que hay.",
+    tono: "ambar",
+    cumple: (s) => s.top_movido === true,
+  },
+  {
+    id: "sin_publicar",
+    titulo: "Producto apagado",
+    detalle: "Tenemos SKUs aquí y alguno no está publicado en ninguna tienda.",
+    tono: "neutro",
+    cumple: (s) => (s.skus ?? []).some((k) => (k.tiendas ?? []).length === 0),
+  },
+  {
+    id: "sin_ranking",
+    titulo: "ML no publica ranking",
+    detalle: "Mercado Libre no lista más vendidos ahí: raspar sería tirar dinero.",
+    tono: "neutro",
+    cumple: (s) => s.ml_publica === false,
+  },
+];
+
 /** Días de CALENDARIO entre `iso` y hoy. Null si no hay fecha. */
 function diasDesde(iso: string | null): number | null {
   if (!iso) return null;
@@ -1907,6 +1997,8 @@ export default function CompetenciaPage() {
   const [ordenSub, setOrdenSub] = useState<OrdenSub>("defecto");
   // Solo los SKUs que aparecen en el top de su subcategoría.
   const [soloTop, setSoloTop] = useState(false);
+  // La VISTA de trabajo. Entra ANTES que los filtros finos: primero la pregunta.
+  const [vista, setVista] = useState<VistaId>("todas");
 
   const [abiertoSku, setAbiertoSku] = useState<string | null>(null);
   const [detalle, setDetalle] = useState<CompetenciaDetalleSku | null>(null);
@@ -1992,8 +2084,17 @@ export default function CompetenciaPage() {
       const admite = (x: CompetenciaSkuVista) =>
         pasa(x.sku) && enRango(x.visitas_30d) && (!soloTop || x.en_top);
 
+      const enVista =
+        vista === "todas"
+          ? () => true
+          : VISTAS.find((v) => v.id === vista)!.cumple;
+
       const subs = r.subcategorias
         .filter((s) => !fSub || s.categoria_id === fSub)
+        // La vista se evalúa sobre la subcategoría COMPLETA, antes de podarle los
+        // SKUs: si se evaluara después, filtrar por SKU cambiaría qué vistas
+        // aplican y el conteo del botón dejaría de cuadrar con lo que se ve.
+        .filter(enVista)
         .map((s) => ({ ...s, skus: ordenar(s.skus.filter(admite), ORDEN_SKUS) }))
         // Una subcategoría sin SKUs que pasen el filtro se conserva SOLO cuando no
         // hay filtro que justifique esconderla — así el árbol completo sigue
@@ -2035,8 +2136,17 @@ export default function CompetenciaPage() {
     return Math.ceil(maxVisitas / escala) * escala;
   })();
 
+  // Los conteos salen del árbol CRUDO, no del filtrado: si cambiaran al filtrar,
+  // el número dejaría de decir cuántas hay y pasaría a decir cuántas quedan.
+  const subsTodas = raices.flatMap((r) => r.subcategorias ?? []);
+  const conteoVista = (id: VistaId) =>
+    id === "todas"
+      ? subsTodas.length
+      : subsTodas.filter(VISTAS.find((v) => v.id === id)!.cumple).length;
+
   const hayFiltro = Boolean(
-    fRaiz || fSub || fSku || vMin !== null || vMax !== null || soloTop,
+    fRaiz || fSub || fSku || vMin !== null || vMax !== null || soloTop ||
+      vista !== "todas",
   );
   // Cuántos están en el top, para que el botón diga si vale la pena apretarlo.
   const nEnTop = raices.reduce(
@@ -2044,8 +2154,48 @@ export default function CompetenciaPage() {
     0,
   );
 
+  /**
+   * El árbol con SOLO la vista aplicada. De aquí salen las OPCIONES de los dos
+   * desplegables.
+   *
+   * ── POR QUÉ NO DEL ÁRBOL CRUDO ────────────────────────────────────────────
+   * Salían de `raices`, así que con una vista puesta seguían ofreciendo
+   * categorías que la vista ya había descartado, y con sus conteos SIN filtrar:
+   * "Nos ven y no compran" dejaba 74 subcategorías y el desplegable seguía
+   * diciendo "Hogar, Muebles y Jardín (415)". Elegir esa opción daba una lista
+   * vacía sin explicar por qué.
+   *
+   * ── Y POR QUÉ NO DE `raicesFiltradas` ─────────────────────────────────────
+   * Porque ése ya aplicó `fRaiz` y `fSub`: cada desplegable se borraría a sí
+   * mismo — al elegir una raíz, el desplegable de raíces se quedaría con esa
+   * sola opción y no habría cómo volver. Las opciones reflejan la vista, no la
+   * selección propia.
+   */
+  const raicesEnVista =
+    vista === "todas"
+      ? raices
+      : raices
+          .map((r) => ({
+            ...r,
+            subcategorias: (r.subcategorias ?? []).filter(
+              VISTAS.find((v) => v.id === vista)!.cumple,
+            ),
+          }))
+          .filter((r) => r.subcategorias.length > 0);
+
+  /**
+   * Cuántos SKUs quedan bajo esa raíz. Con la vista en "todas" es el número de
+   * siempre (`n_skus`) para no mover lo que ya se leía; con una vista puesta se
+   * suma sólo lo que sobrevive, en la MISMA unidad — un desplegable que cambia
+   * de unidad según el estado es peor que uno que no filtra.
+   */
+  const skusDeRaiz = (r: CompetenciaRaiz) =>
+    vista === "todas"
+      ? r.n_skus
+      : (r.subcategorias ?? []).reduce((a, s) => a + s.n_skus, 0);
+
   // Las subcategorías que se pueden elegir dependen de la raíz seleccionada.
-  const subsDisponibles = raices
+  const subsDisponibles = raicesEnVista
     .filter((r) => !fRaiz || r.raiz_id === fRaiz)
     .flatMap((r) => r.subcategorias);
 
@@ -2053,14 +2203,119 @@ export default function CompetenciaPage() {
     <>
       <AppNavbar />
       <main className="mx-auto max-w-[1400px] px-4 py-6">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">Competencia</h1>
-            <p className="text-sm text-slate-500">
-              Dónde estamos frente al mercado, por categoría y por subcategoría.
-            </p>
+        {/* BANNER — el mismo molde que Crear Productos, Costos y Omnicanal:
+            gradiente 120° del índigo de la casa (#4F46E5 → #818CF8), rounded-3xl,
+            el círculo blanco al 20% arriba a la derecha y el contador grande.
+            Competencia era la ÚNICA página del panel sin él. */}
+        <div
+          className="relative overflow-hidden rounded-3xl p-6 shadow-card"
+          style={{
+            background: "linear-gradient(120deg, #4F46E5 0%, #818CF8 100%)",
+            color: "#FFFFFF",
+          }}
+        >
+          <div className="relative z-10 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.2em] opacity-80">
+                Centro Omnicanal · Competencia
+              </div>
+              <h1 className="mt-1 flex items-center gap-2 text-3xl font-extrabold tracking-tight">
+                <Target size={28} /> Competencia
+              </h1>
+              <p className="mt-1 max-w-2xl text-sm opacity-90">
+                Dónde estamos frente al mercado, por categoría y por subcategoría.
+                El ranking se refresca cada mes; las visitas y las ventas, a diario.
+              </p>
+            </div>
+            <div className="text-right">
+              <div className="text-4xl font-black tabular-nums">
+                {num(subsTodas.length)}
+              </div>
+              <div className="text-xs font-semibold uppercase tracking-wide opacity-80">
+                subcategorías
+              </div>
+            </div>
           </div>
+          <div
+            className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full opacity-20"
+            style={{ background: "#FFFFFF" }}
+          />
         </div>
+
+        {/* LAS VISTAS. Van ARRIBA de los filtros a propósito: la pregunta primero,
+            los acotadores después. Cada una lleva su conteo para que se vea si
+            vale la pena entrar antes de entrar. */}
+        <div className="mt-5 flex flex-wrap items-stretch gap-2.5">
+          {[{ id: "todas" as VistaId, titulo: "Todas", detalle: "El árbol completo, sin acotar.", tono: "neutro" as const }, ...VISTAS].map(
+            (v) => {
+              const activa = vista === v.id;
+              const n = conteoVista(v.id);
+              return (
+                <button
+                  key={v.id}
+                  onClick={() => {
+                    const nueva: VistaId = activa ? "todas" : v.id;
+                    setVista(nueva);
+                    // Si la raíz o la subcategoría elegidas no sobreviven a la
+                    // vista nueva, se sueltan: dejarlas puestas mostraba un árbol
+                    // vacío sin decir que la culpa era de un filtro invisible.
+                    if (nueva !== "todas") {
+                      const cumple = VISTAS.find((x) => x.id === nueva)!.cumple;
+                      const vivas = raices
+                        .map((r) => ({
+                          raiz: r.raiz_id ?? "",
+                          subs: (r.subcategorias ?? []).filter(cumple),
+                        }))
+                        .filter((x) => x.subs.length > 0);
+                      if (fRaiz && !vivas.some((x) => x.raiz === fRaiz)) setFRaiz("");
+                      if (
+                        fSub &&
+                        !vivas.some((x) =>
+                          x.subs.some((s) => s.categoria_id === fSub),
+                        )
+                      )
+                        setFSub("");
+                    }
+                  }}
+                  className={`flex min-w-[190px] flex-1 flex-col gap-0.5 rounded-2xl border p-3.5 text-left transition ${
+                    activa
+                      ? "border-indigo-600 bg-indigo-50"
+                      : "border-slate-200 bg-white hover:border-indigo-200"
+                  }`}
+                  title={v.detalle}
+                >
+                  <div
+                    className={`text-2xl font-extrabold tabular-nums leading-tight ${
+                      activa
+                        ? "text-indigo-700"
+                        : v.tono === "ambar"
+                          ? "text-amber-700"
+                          : "text-slate-900"
+                    }`}
+                  >
+                    {num(n)}
+                  </div>
+                  <div
+                    className={`text-[13.5px] font-bold ${
+                      activa ? "text-indigo-900" : "text-slate-900"
+                    }`}
+                  >
+                    {v.titulo}
+                  </div>
+                  <div
+                    className={`text-[11.5px] leading-snug ${
+                      activa ? "text-indigo-600" : "text-slate-400"
+                    }`}
+                  >
+                    {v.detalle}
+                  </div>
+                </button>
+              );
+            },
+          )}
+        </div>
+
+        <div className="mt-5" />
 
         {/* Canal: la categoría manda las búsquedas de competencia, y cada canal
             tiene su propia taxonomía — por eso el filtro va arriba de todo. */}
@@ -2095,9 +2350,9 @@ export default function CompetenciaPage() {
             className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
           >
             <option value="">Todas las categorías principales</option>
-            {raices.map((r) => (
+            {raicesEnVista.map((r) => (
               <option key={r.raiz_id ?? r.raiz_nombre} value={r.raiz_id ?? ""}>
-                {r.raiz_nombre} ({r.n_skus})
+                {r.raiz_nombre} ({num(skusDeRaiz(r))})
               </option>
             ))}
           </select>
@@ -2165,6 +2420,7 @@ export default function CompetenciaPage() {
                 setVMin(null);
                 setVMax(null);
                 setSoloTop(false);
+                setVista("todas");
               }}
               className="rounded-lg bg-white px-2.5 py-1.5 text-sm text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
             >
