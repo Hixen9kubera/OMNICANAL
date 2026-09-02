@@ -211,31 +211,39 @@ def guardar(res: dict[str, list[dict[str, Any]] | None]) -> tuple[int, int]:
             if fila and fila.get("cambio"):
                 cambios += 1
 
-            # ── LA BITÁCORA (0043): una fila POR DÍA con el top 5 ───────────
+            # ── LA BITÁCORA (0043 + 0044): una fila POR DÍA con el top ──────
             # Va en el mismo cursor y la misma transacción que el upsert de
             # arriba: si una falla, no queda una medición a medias.
             #
-            # SÓLO los ids del top 5, sin ficha: la foto completa pesaba 280 MB
-            # al año y por eso la 0041 la rechazó. Así son ~50 MB.
+            # ⚠️ LA VENTANA ES `TOPE_HUELLA`, LA MISMA QUE LA HUELLA DE ARRIBA.
+            # No es un detalle: esa huella es la que mueve `cambio_en`, y
+            # `cambio_en` es la que pinta "ML ya se movió" en el tab. Con una
+            # ventana distinta, un movimiento en la posición 7 prendería la
+            # pastilla y NO aparecería en la serie — dos números contestando la
+            # misma pregunta sin coincidir. Atado a la constante para que no se
+            # puedan separar sin que alguien lo decida.
+            #
+            # SÓLO los ids, sin ficha: la foto completa pesaba 280 MB al año y
+            # por eso la 0041 la rechazó. Así son ~50 MB.
             #
             # `on conflict do update` y no `do nothing`: si el sondeo corre dos
             # veces el mismo día, la buena es la ÚLTIMA. Con `do nothing` el día
             # se quedaría con la primera y la medición mediría el pasado.
-            top5 = [e.get("id") for e in entradas[:5] if e.get("id")]
+            top = [e.get("id") for e in entradas[:TOPE_HUELLA] if e.get("id")]
             cur.execute(
                 """insert into enrich.market_highlights_hist
-                       (canal, categoria_id, top5, huella5, n)
+                       (canal, categoria_id, top, huella_top, n)
                    values (%s, %s, %s::jsonb, %s, %s)
                    on conflict (canal, categoria_id, dia) do update set
-                       top5         = excluded.top5,
-                       huella5      = excluded.huella5,
+                       top          = excluded.top,
+                       huella_top   = excluded.huella_top,
                        n            = excluded.n,
                        capturado_en = now()""",
-                (CANAL, cid, json.dumps(top5, separators=(",", ":")),
+                (CANAL, cid, json.dumps(top, separators=(",", ":")),
                  # La posición va EXPLÍCITA: `_huella` ordena por `p`, y sin
                  # ella el orden dependía de que el sort de Python sea estable
                  # — cierto hoy, pero no es algo en lo que apoyarse.
-                 _huella([{"id": i, "p": k} for k, i in enumerate(top5, 1)]),
+                 _huella([{"id": i, "p": k} for k, i in enumerate(top, 1)]),
                  len(entradas)))
     return escritas, cambios
 
@@ -283,7 +291,7 @@ def main() -> int:
 
     escritas, cambios = guardar(res)
     print(f"\n  escritas: {escritas} · con el top movido desde la vez pasada: {cambios}")
-    print(f"  bitácora del top 5: {escritas} filas para hoy")
+    print(f"  bitácora del top {TOPE_HUELLA}: {escritas} filas para hoy")
 
     if err > len(cats) / 4:
         print(f"\nERROR: {err} de {len(cats)} fallaron. No es una corrida sana.")

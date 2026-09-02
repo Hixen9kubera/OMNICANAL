@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.362.0 — La bitácora mira el top 10, no el 5 (Eduardo)
+
+Pedido de Eduardo, y al ir a hacerlo salió que **5 era el número equivocado desde
+el principio**.
+
+`competencia_highlights.TOPE_HUELLA` vale **10** desde que existe, con su propio
+comentario: *"la huella mira el top 10: abajo el orden es ruido"*. Esa huella es
+la que mueve `market_highlights.cambio_en`, y `cambio_en` es la que pinta la
+pastilla **"ML ya se movió"** en el tab.
+
+Con la bitácora guardando 5 se habría medido durante dos semanas una ventana
+DISTINTA de la que dispara el aviso: un movimiento en la posición 7 habría
+prendido la pastilla y no habría aparecido en la serie. Dos números contestando
+la misma pregunta sin coincidir.
+
+Ahora el script guarda `entradas[:TOPE_HUELLA]` — **la misma constante**, así que
+no se pueden volver a separar sin que alguien lo decida.
+
+**Migración 0044.** Las columnas dejan de llevar el número en el nombre: `top5` →
+`top`, `huella5` → `huella_top`. Una columna llamada `top5` con diez entradas
+miente por su nombre, y quien la lea le va a creer al nombre antes que al
+comentario. Cuántos hay se sabe con `jsonb_array_length(top)`, que no puede
+desfasarse del contenido.
+
+Segura: la tabla se creó hoy y estaba VACÍA en producción — el script verifica
+que lo esté antes de renombrar.
+
+**Costo:** ~74 bytes por fila → ~148. Para 947 categorías, ~140 KB/día. Sigue
+siendo nada contra los 280 MB/año de la foto completa que la 0041 rechazó.
+
+Verificado en sandbox: guarda 10 de 13 entradas, la corrida fallida no se
+escribe, "ML no publica" sí, dos corridas el mismo día no duplican, y el orden
+invertido cambia la huella.
+
 ### v0.361.0 — Las vistas de Competencia salen de a una (Eduardo)
 
 La v0.357.0 soltó las cinco de golpe. Se recortan a dos:
