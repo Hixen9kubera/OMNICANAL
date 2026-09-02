@@ -1011,26 +1011,49 @@ def _revisar_top_sin_costo_revisado() -> None:
     from services import supabase_db as sdb
     if not sdb.disponible():
         return
-    filas = sdb.fetch_all(_SQL_MARGEN_REAL_TOP,
-                          {"dias": _TOP_DIAS, "limite": _TOP_LIMITE,
-                           "estado": None})
-    _sellar_corrida(tipo)
-
+    # LAS TRES PESTAÑAS, NO SOLO "Todas" (Eduardo, 21-ago-2026). El filtro de
+    # estado se aplica ANTES de numerar —pedir "activas" da el top 10 DE LAS
+    # ACTIVAS—, así que cada pestaña tiene su propio ranking y un SKU puede ser
+    # #3 entre las activas sin aparecer en el top 10 general, tapado por
+    # pausadas que venden más. Esos quedaban fuera de la alarma teniendo el
+    # costo sin verificar, que es justo lo que la alarma existe para atrapar.
+    #
+    # `None` va PRIMERO a propósito: cuando un SKU sale en varias pestañas se
+    # conserva la primera que lo vio, y la general es la que el lector abre por
+    # omisión — decir "#4 en Todas" ubica mejor que "#2 en Pausadas".
+    PESTANAS = ((None, "Todas"), ("activa", "Activas"), ("pausada", "Pausadas"))
     top: dict[str, dict[str, Any]] = {}
-    for f in filas:
-        if not f.get("rn_g") or f["rn_g"] > _TOP_LIMITE:
-            continue
-        d = top.setdefault(f["sku"], {"rn": f["rn_g"], "uds": 0,
-                                      "revisado": bool(f.get("revisado_at")),
-                                      "movida": bool(f.get("revision_movida"))})
-        d["uds"] += int(f.get("uds") or 0)
+    for est, etiqueta in PESTANAS:
+        filas = sdb.fetch_all(_SQL_MARGEN_REAL_TOP,
+                              {"dias": _TOP_DIAS, "limite": _TOP_LIMITE,
+                               "estado": est})
+        for f in filas:
+            if not f.get("rn_g") or f["rn_g"] > _TOP_LIMITE:
+                continue
+            sku = f["sku"]
+            d = top.get(sku)
+            if d is None:
+                d = top[sku] = {"rn": f["rn_g"], "uds": 0, "donde": etiqueta,
+                                "pestanas": [],
+                                "revisado": bool(f.get("revisado_at")),
+                                "movida": bool(f.get("revision_movida"))}
+            if etiqueta not in d["pestanas"]:
+                d["pestanas"].append(etiqueta)
+            # La consulta trae una fila POR CUENTA, así que las unidades se
+            # SUMAN dentro de la pestaña. Pero solo se acumulan las de la
+            # pestaña que registró al SKU: sumarlas entre pestañas contaría las
+            # mismas piezas dos y hasta tres veces (una activa sale en "Todas"
+            # y en "Activas").
+            if d["donde"] == etiqueta:
+                d["uds"] += int(f.get("uds") or 0)
+    _sellar_corrida(tipo)
     if not top:
         return   # sin ventas en la ventana: no hay ranking del que hablar
     # "Sin verificar" incluye la revisión que quedó ATRÁS: si la fila se movió
     # después de marcarse, la marca ya no cubre los números de hoy.
     sin_rev = {s: d for s, d in top.items() if not d["revisado"] or d["movida"]}
     ok_txt = (f"*Los {len(top)} más vendidos ya tienen el costo verificado* "
-              f"({_TOP_DIAS} d).")
+              f"({_TOP_DIAS} d, las tres pestañas).")
     if not sin_rev:
         if avisar_estado(tipo, "ok", "", texto_ok=ok_txt):
             _campana("top_costo_sin_revisar",
@@ -1041,25 +1064,39 @@ def _revisar_top_sin_costo_revisado() -> None:
     claves = sorted(sin_rev)
     huella = "top{}:{}".format(
         len(claves), hashlib.sha1("|".join(claves).encode()).hexdigest()[:12])
+    # El "#3" solo se entiende junto a SU pestaña: hay tres rankings y el mismo
+    # número significa cosas distintas en cada uno. Cuando el SKU sale en varias
+    # se listan todas: que esté en el top de "Activas" Y de "Todas" dice más
+    # que cualquiera de las dos por separado.
+    def _donde(d: dict[str, Any]) -> str:
+        ps = d["pestanas"]
+        return d["donde"] if len(ps) == 1 else " y ".join(ps)
+
     lineas = " · ".join(
-        f"#{d['rn']} `{s}` ({d['uds']} uds"
+        f"#{d['rn']} en {_donde(d)} `{s}` ({d['uds']} uds"
         f"{', revisión movida' if d['movida'] else ''})"
-        for s, d in sorted(sin_rev.items(), key=lambda kv: kv[1]["rn"]))
+        for s, d in sorted(sin_rev.items(),
+                           key=lambda kv: (kv[1]["donde"] != "Todas", kv[1]["rn"])))
     hablo = avisar_estado(
         tipo, huella,
         f"*{len(sin_rev)} de los {len(top)} más vendidos tienen el costo SIN "
-        f"VERIFICAR* (ventana de {_TOP_DIAS} d, el mismo ranking que Márgenes "
-        f"reales).\n{lineas}\n"
+        f"VERIFICAR* (ventana de {_TOP_DIAS} d, los mismos rankings que Márgenes "
+        f"reales — se miran las TRES pestañas: Todas, Activas y Pausadas, porque "
+        f"cada una numera aparte y un SKU puede ser de los más vendidos entre "
+        f"las activas sin entrar al top general).\n{lineas}\n"
         f"_Un costo dudoso en un producto que vende 5 piezas es ruido; en estos "
         f"decide dinero. Verificar contra el packing list y marcarlo en Costos "
         f"(`revisado_at`). Suena cuando el conjunto CAMBIA, no todos los días._",
         texto_ok=ok_txt, nivel="🟡", recordatorio_h=168)
     if hablo:
-        peor = min(sin_rev.items(), key=lambda kv: kv[1]["rn"])
+        # Ante empate manda la pestaña general: un #2 de Todas pesa más que
+        # un #2 de Pausadas.
+        peor = min(sin_rev.items(),
+                   key=lambda kv: (kv[1]["rn"], kv[1]["donde"] != "Todas"))
         _campana("top_costo_sin_revisar",
                  f"{len(sin_rev)} de los {len(top)} más vendidos con el costo "
                  f"sin verificar · el más vendido de ellos es el "
-                 f"#{peor[1]['rn']}",
+                 f"#{peor[1]['rn']} de {_donde(peor[1])}",
                  huella, sku=peor[0])
 
 

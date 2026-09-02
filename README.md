@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.365.0 — La alarma del costo miraba una pestaña de tres
+
+Eduardo: *"incluye en las alertas para costos validados en el top vendidos los
+que no estén en la pestaña tanto de activos como pausados; actualmente solo
+están los de Todas"*.
+
+`_revisar_top_sin_costo_revisado` corría `_SQL_MARGEN_REAL_TOP` con
+`estado: None` — la pestaña **Todas** y nada más. Pero **el filtro de estado se
+aplica ANTES de numerar** (está escrito en la propia consulta: *"pedir activas
+debe dar el top 10 DE LAS ACTIVAS"*), así que cada pestaña tiene su propio
+ranking. Un SKU puede ser el #8 entre las activas y no aparecer en el top
+general, tapado por pausadas que venden más.
+
+**Medido el 21-ago contra producción, y el resultado no admite matices:**
+
+| | |
+|---|---|
+| conjunto vigilado con las tres pestañas | 20 SKUs |
+| de ésos, sin costo verificado | 4 |
+| **que la alarma vieja cubría** | **0** |
+
+Los cuatro salían solo de Activas o de Pausadas: `TEC-2195-MUL-RGB` (#8 activas,
+107 uds), `TEC-1842-DOR` (#9 activas, 104), `TEC-0792-NEG` (#9 pausadas, 147) y
+`TEC-0799-NEG` (#10 pausadas, 143). Ese día la alarma habría dicho *"los 10 más
+vendidos ya tienen el costo verificado"* en verde, con cuatro sin verificar.
+
+**Lo que se cuidó al ampliarla**
+
+- **El ranking sigue sin reescribirse.** Se corre la MISMA consulta de la
+  pantalla, tres veces con distinto `estado`. La regla que ya traía el archivo
+  —*si esto dice "TEC-X está en el top 10", el panel lo tiene que estar
+  mostrando*— ahora aplica a las tres pestañas.
+- **Las unidades no se suman entre pestañas.** Una activa sale en "Todas" y en
+  "Activas"; acumular las dos contaría las mismas piezas dos veces. Cada SKU
+  acumula solo las de la pestaña que lo registró primero.
+- **El mensaje nombra la pestaña.** Un "#3" pelado ya no significa nada cuando
+  hay tres rankings: ahora dice *"#8 en Activas"*, y cuando el SKU sale en
+  varias, las lista todas — estar en el top de Activas Y de Todas dice más que
+  cualquiera por separado.
+- **La huella no cambió de forma**, así que la alarma sigue sonando cuando el
+  CONJUNTO cambia y no todos los días.
+
 ### v0.364.0 — El tope del barrido se mide contra Apify, no contra nosotros (Eduardo)
 
 Eduardo pidió rastrear el consumo de Apify del 1-sep. Al cruzar por `run_id` la
