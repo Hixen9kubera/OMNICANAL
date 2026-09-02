@@ -600,10 +600,32 @@ def _procesar(jid: str, objetivos: list[tuple[str, str]], cat: dict[str, str],
         for n, (padre, sku) in enumerate(objetivos, start=1):
             _marcar(jid, "escalera", n, len(objetivos))
             fids = [f for f, p in plan.items() if sku in p["skus"] and f in indices]
+            # POR QUE no hay archivo. Son tres situaciones muy distintas y hasta
+            # ahora las tres decian lo mismo, asi que el mensaje mandaba a
+            # revisar Odoo aunque Odoo estuviera bien: TEC-0410-BLN salio "sin
+            # contenedor conocido" teniendo `PCIU8538522 contenedor 23`, y lo
+            # que fallaba era que ese archivo no estaba en el inventario.
+            motivo_sin = None
+            if not fids:
+                en_plan = [f for f, q in plan.items() if sku in q["skus"]]
+                refs_sku = refs_de.get(sku) or []
+                if not refs_sku:
+                    motivo_sin = ("ni Odoo ni kubera dicen a que embarque "
+                                  "pertenece este SKU")
+                elif not en_plan:
+                    motivo_sin = (
+                        "el contenedor SI se conoce ("
+                        + ", ".join(r for _f, r in refs_sku)
+                        + ") pero su packing list no aparece en el inventario "
+                          "de Drive")
+                else:
+                    motivo_sin = ("su packing list se encontro pero no se pudo "
+                                  "bajar o leer")
             fila = _resolver_uno(
                 sku=sku, padre=(padre if padre != sku else None),
                 pubs=pubs.get(padre) or pubs.get(sku) or [],
                 fids=fids, indices=indices, huella_odoo=huellas_odoo.get(sku),
+                motivo_sin=motivo_sin,
                 refs=refs_de.get(sku) or [], guardado=guardados.get(sku) or {},
                 tarifa=tarifa, tc=tc, usar_ia=usar_ia, cache_ml=cache_ml)
             filas.append(fila)
@@ -658,6 +680,7 @@ def _resumen(filas: list[dict[str, Any]]) -> dict[str, int]:
 # ── Un SKU ───────────────────────────────────────────────────────────────────
 def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
                   fids: list[str], indices: dict[str, packing_indice.Indice],
+                  motivo_sin: str | None = None,
                   huella_odoo: dict[str, Any] | None,
                   refs: list[tuple[str, str]], guardado: dict[str, Any],
                   tarifa: float, tc: float, usar_ia: bool,
@@ -692,8 +715,11 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
     }
 
     if not fids:
-        fila["detalle"] = ("no hay packing list utilizable para este SKU "
-                           "(sin contenedor conocido o el archivo no se pudo leer)")
+        # El motivo CONCRETO cuando quien llama lo sabe. La frase generica solo
+        # queda para la correccion a mano, que entra por otro camino.
+        fila["detalle"] = motivo_sin or (
+            "no hay packing list utilizable para este SKU "
+            "(sin contenedor conocido o el archivo no se pudo leer)")
         return fila
 
     # ── La publicación de ML: SIEMPRE, no solo cuando la escalera falla ──

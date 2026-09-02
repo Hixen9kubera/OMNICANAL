@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.369.0 — El inventario de Drive estaba a cinco archivos de completo
+
+TEC-0410-BLN salio "sin insumos" con el mensaje *"sin contenedor conocido o el
+archivo no se pudo leer"*. Odoo estaba bien: traia `PCIU8538522 contenedor 23` y
+su foto. El archivo tambien existia en Drive. Lo que fallaba era la semilla del
+inventario, que tenia **188 archivos cuando la carpeta tiene 193**.
+
+Los cinco que faltaban son todos **nativos de Google Sheets**, sin extension
+`.xlsx`: `HAMU2152326=CI&PL`, `SZLS50224500=CI&PL`, `TLLU7697660`,
+`PCIU8538522=CI&PL` y `MRKU2433092=CI&PL`. Entre sus contenedores suman **53 SKUs
+publicados, los 53 sin validar**, que habrian salido igual de vacios.
+
+Semilla regenerada con los 193 (listado del conector de Drive, que si pagina).
+Verificado: TEC-0410-BLN ahora empata por **sha256** en `PCIU8538522=CI&PL` fila
+8, con 1,200 pz / 60 cajas = 20 por caja — que es exactamente lo que dice Odoo en
+"Unidades por caja master".
+
+**Y el mensaje deja de decir tres cosas distintas con la misma frase.** Ahora
+distingue: (a) ni Odoo ni kubera saben el embarque, (b) el contenedor SI se
+conoce —y lo dice— pero su packing list no aparece en el inventario, (c) el
+archivo se encontro pero no se pudo bajar o leer. El caso (b) era el de
+TEC-0410-BLN, y el mensaje viejo mandaba a revisar Odoo, que era justo lo unico
+que estaba bien.
+
+De paso, un contraste que confirma el costeo y desconfia de Odoo: nuestro CBM por
+pieza (0.006955) reproduce los DOS numeros de Odoo, pero Odoo los tiene
+etiquetados un nivel corrido — su "CBM por producto 0.14" es el CBM por CAJA
+(0.1391) y su "CBM por caja master 8.35" es el TOTAL del renglon (8.35). Costear
+con el 0.14 como si fuera por pieza daria $1,050 de flete en vez de $52.16.
+
+Esto NO cierra el pendiente de fondo: la semilla sigue siendo una foto. Un
+packing list subido despues vuelve a caer en el caso (b) — ahora con un mensaje
+que al menos lo dice. La solucion es darle credenciales de la API de Drive al
+backend.
+
 ### v0.368.0 — La vista escondía 9 de las 16 que buscaba (Eduardo)
 
 Corrección de la v0.367.0, el mismo día. Eduardo pidió sembrar las 1,766
