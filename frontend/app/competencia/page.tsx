@@ -1727,7 +1727,13 @@ function aFecha(iso: string): Date {
  * todo no es una vista. La mayoría eran categorías que no venden nada y que el
  * barrido salta a propósito — el hueco real ya lo dice `ML ya se movió`.
  */
-type VistaId = "todas" | "sin_venta" | "movido" | "sin_publicar" | "sin_ranking";
+type VistaId =
+  | "todas"
+  | "sin_venta"
+  | "sin_visitas"
+  | "movido"
+  | "sin_publicar"
+  | "sin_ranking";
 
 /** Suma un campo sobre los SKUs de una subcategoría. */
 function sumaSub(
@@ -1762,6 +1768,46 @@ function visitasComprables(s: CompetenciaSubcategoria): number {
   );
 }
 
+/**
+ * Publicaciones ACTIVAS de la subcategoría que ya se midieron y dieron CERO.
+ *
+ * Devuelve `null` cuando no se puede opinar — y esa distinción es la vista
+ * entera, no un detalle.
+ *
+ * ── null NO ES CERO ─────────────────────────────────────────────────────────
+ * `visitas_30d` vacío significa "nunca se midió", no "nadie la vio". Tratarlos
+ * igual es el defecto que costó tres días de cron en v0.366.0 (un 429 se leía
+ * como "el token está roto") y que la v0.359.0 arregló en la sonda de
+ * highlights. Aquí sería peor todavía: la vista existe justo para señalar
+ * publicaciones invisibles, así que confundir "no la ve nadie" con "no
+ * preguntamos" la volvería un generador de trabajo falso.
+ *
+ * Medido el 2-sep-2026 sobre las 703 publicaciones activas del árbol:
+ *
+ *      4  con visitas medidas EN CERO
+ *    217  SIN medir nunca  (el 31%)
+ *
+ * Contando los `null` como ceros la vista pasaba de 3 subcategorías a 83. Esas
+ * 80 de diferencia no son hallazgos: son publicaciones a las que nadie les ha
+ * preguntado. El hueco viene de `competencia_visitas.objetivo()`, que arranca
+ * desde `market_listing_metrics` y por eso sólo refresca lo que ya conoce.
+ */
+function activasMedidasSinTrafico(
+  s: CompetenciaSubcategoria,
+): { activas: number; sinMedir: number; visitas: number } {
+  let activas = 0;
+  let sinMedir = 0;
+  let visitas = 0;
+  for (const k of s.skus ?? [])
+    for (const tienda of k.tiendas ?? []) {
+      if ((tienda.estado ?? "").toLowerCase() !== "active") continue;
+      activas += 1;
+      if (tienda.visitas_30d == null) sinMedir += 1;
+      else visitas += tienda.visitas_30d;
+    }
+  return { activas, sinMedir, visitas };
+}
+
 const VISTAS: {
   id: VistaId;
   titulo: string;
@@ -1785,6 +1831,22 @@ const VISTAS: {
     tono: "neutro",
     cumple: (s) =>
       sumaSub(s, "unidades_30d") === 0 && visitasComprables(s) > 0,
+  },
+  {
+    id: "sin_visitas",
+    titulo: "Publicada y nadie la ve",
+    detalle:
+      "Activa, ya medida, y el contador de visitas en cero. No es que no compren: no llegan.",
+    tono: "ambar",
+    /**
+     * Se exige que TODAS las activas estén medidas, no sólo alguna. Con una sin
+     * medir no se sabe si la subcategoría recibe tráfico o no, y una vista que
+     * dice "nadie la ve" sin haber mirado no vale nada.
+     */
+    cumple: (s) => {
+      const { activas, sinMedir, visitas } = activasMedidasSinTrafico(s);
+      return activas > 0 && sinMedir === 0 && visitas === 0;
+    },
   },
   {
     id: "movido",

@@ -71,7 +71,35 @@ CONCURRENCIA = 8
 
 
 def objetivo(limite: int | None = None) -> list[dict[str, Any]]:
-    """Las publicaciones medidas que siguen vivas, con su item_id."""
+    """
+    TODAS las publicaciones vivas, con su item_id — estén medidas o no.
+
+    ── POR QUÉ ARRANCA DESDE `channel.listings` Y NO DESDE LAS MÉTRICAS ────────
+    Antes empezaba `from enrich.market_listing_metrics`, así que **sólo
+    refrescaba lo que ya conocía**: una publicación que nunca tuvo fila no
+    entraba nunca, y sin fila nunca la tendría. Un lazo cerrado.
+
+    Medido el 2-sep-2026 contra producción:
+
+        situación      vivas    sin medir NUNCA
+        active           703        217   (31%)
+        paused         3,999      1,549
+        ─────────────────────────────────────
+        total          4,702      1,766   (38%)
+
+    El cron creía cubrir el catálogo y cubría el 62%.
+
+    ── LO QUE DESTAPÓ EL HUECO ────────────────────────────────────────────────
+    La vista "Publicada y nadie la ve" del tab de Competencia, que busca activas
+    con cero visitas. Con 217 activas sin medir no se puede distinguir "no la ve
+    nadie" de "no preguntamos", y contar los nulos como ceros la inflaba de 3
+    subcategorías a 83 — 80 hallazgos falsos.
+
+    ── COSTO ──────────────────────────────────────────────────────────────────
+    4,702 llamadas en vez de 2,936 (+60%): de ~4 min a ~6.5. La API de ML limita
+    por ritmo, no por volumen, y `competencia_ml._get` ya reintenta el 429 con
+    espera (v0.366.0), así que el precio es tiempo, no filas perdidas.
+    """
     # ⚠ `distinct on (sku, cuenta)`: `market_listing_metrics` guarda UNA FILA POR
     # MES (su PK lleva `periodo`). Sin esto, desde el día 1 cada publicación sale
     # DOS veces y se mide dos veces.
@@ -84,19 +112,19 @@ def objetivo(limite: int | None = None) -> list[dict[str, Any]]:
     # Es el MISMO error que la 0039 arregló en la vista. Éste no estaba cubierto
     # porque el script consulta la TABLA, no la vista.
     sql = """
-        select distinct on (m.sku, m.cuenta)
-               m.sku::text as sku, m.canal, m.cuenta, m.periodo,
+        select distinct on (l.sku, a.legacy_code)
+               l.sku::text as sku, l.canal, a.legacy_code as cuenta, m.periodo,
                coalesce(m.listing_id, l.listing_id) as ml_item_id,
                m.visits_30d as visitas_previas,
                m.metrics_updated_at::date as medido_el
-          from enrich.market_listing_metrics m
-          join core.accounts a on a.legacy_code = m.cuenta
-          join channel.listings l
-            on l.sku = m.sku and l.canal = m.canal and l.account_id = a.id
+          from channel.listings l
+          join core.accounts a on a.id = l.account_id
+          left join enrich.market_listing_metrics m
+            on m.sku = l.sku and m.canal = l.canal and m.cuenta = a.legacy_code
+         where l.canal = 'mercado_libre'
            and lower(l.situacion) in ('active', 'paused')
            and nullif(l.listing_id, '') is not null
-         where m.canal = 'mercado_libre'
-         order by m.sku, m.cuenta, m.periodo desc
+         order by l.sku, a.legacy_code, m.periodo desc nulls last
     """
     if limite:
         sql += f" limit {int(limite)}"

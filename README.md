@@ -1001,6 +1001,60 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.367.0 — "Publicada y nadie la ve", y el cron que sólo miraba lo que ya conocía (Eduardo)
+
+Eduardo: *"Arma un botón filtro para buscar publicaciones activas pero que no
+tengan visitas"*.
+
+**La vista es de una línea. El problema estaba debajo.**
+
+Al medirla antes de escribirla salió que sólo **4 de las 703 publicaciones
+activas** tenían visitas medidas en cero… y **217 (el 31%) no tenían visitas
+medidas de ninguna clase**. Con esos nulos contados como ceros la vista pasaba
+de 3 subcategorías a 83.
+
+Y no era una diferencia de criterio, era falsa. Preguntándole a ML por esas 215
+activas sin medir, una por una:
+
+| | |
+|---|---|
+| con visitas (mediana 99) | 206 |
+| **en cero de verdad** | **9** |
+| no se pudo medir | 0 |
+
+Contar los nulos como ceros habría señalado 217 publicaciones "invisibles"
+donde hay 9. **Un error de 23x**, y en la dirección peor: trabajo inventado.
+Es el mismo defecto que v0.359.0 corrigió en la sonda de highlights y v0.366.0
+en el 429 — **"no pregunté" no es una respuesta**.
+
+**De dónde salía el hueco.** `competencia_visitas.objetivo()` empezaba
+`from enrich.market_listing_metrics`: sólo refrescaba lo que ya conocía. Una
+publicación sin fila no entraba nunca, y sin entrar nunca tendría fila. Un lazo
+cerrado, y su docstring lo decía sin que nadie lo leyera así — *"las
+publicaciones MEDIDAS que siguen vivas"*.
+
+| situación | vivas | sin medir nunca |
+|---|---|---|
+| active | 703 | 217 (31%) |
+| paused | 3,999 | 1,549 |
+| **total** | **4,702** | **1,766 (38%)** |
+
+El cron creía cubrir el catálogo y cubría el 62%.
+
+**Lo que cambia**
+
+- **La consulta arranca desde `channel.listings`** y hace LEFT JOIN contra las
+  métricas, así que una publicación nueva se mide la primera vez que el cron
+  corre. 4,702 llamadas en vez de 2,936 (+60%): de ~4 min a ~6.5. Como el 429
+  ya se reintenta con espera (v0.366.0), el precio es tiempo, no filas perdidas.
+- **La vista `sin_visitas`** exige que **todas** las activas de la subcategoría
+  estén medidas, no sólo alguna. Con una sin medir no se sabe si hay tráfico, y
+  una vista que dice "nadie la ve" sin haber mirado no vale nada.
+
+**Verificado en sandbox**: el botón dibuja, cuenta 4, y al activarlo el árbol
+queda en esas 4 subcategorías exactas (Bobinas, Calentadores de Cera, Sensores
+MAP y una de Salud) repartidas en 4 raíces. Typecheck en verde.
+
 ### v0.366.0 — El cron de visitas no tenía roto el token: lo estaban limitando (Eduardo)
 
 Eduardo: *"Puedes revisar porque fallo otra vez el cron? ya van 3 veces seguidas
