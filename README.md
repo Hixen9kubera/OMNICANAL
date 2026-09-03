@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.382.0 — La guía de Competencia se puso al día, y dejó de mentir (Eduardo)
+
+Eduardo: *"puedes añadir lo nuevo a la guía?"*.
+
+**Lo primero no fue añadir, fue corregir.** La guía afirmaba en TRES lugares —el
+subtítulo del encabezado, el título de una sección y un comentario— que el botón
+«Actualizar» era *"lo único que cuesta dinero"*. Desde v0.377.0 eso es falso: el
+botón «Medir» de la búsqueda general también cobra. Una guía que miente sobre
+dónde se gasta es peor que no tenerla.
+
+- subtítulo → *"Sólo dos botones cobran, y cobran cosas distintas."*
+- sección 3 → *"Los dos botones que cuestan dinero"*
+
+**Dos filas nuevas en la tabla de cadencias**, que pasa de cinco a siete:
+
+| qué | cada cuánto | costo |
+|---|---|---|
+| Términos más buscados | diario · 6:00 a.m. | gratis (v0.378.0) |
+| Búsqueda general | sólo si lo pides, con «Medir» | ~$0.007 por término |
+
+**Una sección nueva: «Competencia directa»**, que nunca estuvo en la guía y es la
+que más confunde — dos mitades que parecen una y tienen economías opuestas. Se
+explican lado a lado: la izquierda se paga por TÉRMINO (80 términos cubren 522
+SKUs) y la derecha se refresca sola y gratis. Con la advertencia de que ML
+publica el **ORDEN, no el volumen**.
+
+**Dos avisos nuevos:**
+
+- *«Medir» y «Actualizar» no son el mismo botón* — cuestan casi lo mismo pero
+  traen cosas distintas, y apretar uno no refresca lo del otro. Es el mismo
+  riesgo que la guía de Costos ataca de frente.
+- *Un «0 de N cubiertos» no siempre es culpa del título* — si el SKU está en la
+  categoría equivocada se compara contra las búsquedas de otro producto. Caso
+  real que lo motivó: un chispero clasificado en «Kits de Seguridad»,
+  midiéndose contra búsquedas de cámaras de vigilancia.
+
+**Captura nueva** `06-competencia-directa.png`, del tab real a 2x, donde se ve el
+botón «Medir» y el sello de frescura funcionando («medido hace 29 días»).
+
+Verificado en sandbox: 7 secciones, 7 filas de cadencia, 5 avisos y las 6
+imágenes cargando. Typecheck en verde.
+
 ### v0.381.0 — ESCALÓN 2: TikTok y Temu ya crean la orden de venta en Odoo
 
 Dale de Brandon (2-sep): *"debe estar activo el automático tanto para Temu y

@@ -34,6 +34,7 @@ import {
   DollarSign,
   Eye,
   Filter,
+  Search,
   X,
   ZoomIn,
 } from "lucide-react";
@@ -248,8 +249,8 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
           <div className="flex-1">
             <h2 className="text-base font-bold text-slate-900">Cómo leer Competencia</h2>
             <p className="text-xs text-slate-500">
-              Casi todo se actualiza solo. Lo único que cuesta dinero es volver a raspar
-              un ranking.
+              Casi todo se actualiza solo. Sólo dos botones cobran, y cobran cosas
+              distintas.
             </p>
           </div>
           <button
@@ -305,6 +306,12 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
                 fuente="API de ML · gratis"
               />
               <Cadencia
+                que="Términos más buscados"
+                detalle="lo que la gente escribe en el buscador de esa categoría"
+                cuando="Diario · 6:00 a.m."
+                fuente="API de ML · gratis"
+              />
+              <Cadencia
                 cuesta
                 que="Ranking «más vendidos»"
                 detalle="el top real de cada categoría"
@@ -312,6 +319,14 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
                 cuandoDetalle="los días 1 y 16, 7:00 a.m."
                 fuente="Raspado · ~$0.0067 por categoría"
                 fuenteDetalle="unos $3.20 por barrido"
+              />
+              <Cadencia
+                cuesta
+                que="Búsqueda general"
+                detalle="qué sale en ML al buscar el término de un SKU"
+                cuando="Sólo si lo pides"
+                cuandoDetalle="con el botón «Medir»"
+                fuente="Raspado · ~$0.007 por término"
               />
             </div>
           </section>
@@ -341,11 +356,14 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
             </div>
           </section>
 
-          {/* ── 3 · Lo único que cuesta ── */}
+          {/* ── 3 · Lo que cuesta. Eran dos afirmaciones falsas desde v0.377.0:
+                 el subtítulo y este título decían "lo único", y desde que existe
+                 el botón «Medir» de la búsqueda general son DOS. Una guía que
+                 miente sobre dónde se gasta es peor que no tenerla. ── */}
           <section className="flex flex-col gap-3">
             <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800">
               <DollarSign size={15} className="text-slate-400" />
-              Lo único que cuesta dinero: el botón «Actualizar»
+              Los dos botones que cuestan dinero
             </h3>
             <Captura
               src={`${BASE}/04-mas-vendidos.png`}
@@ -357,6 +375,12 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
               <b>$0.0067</b>. Vale la pena cuando el aviso dice que el top ya se movió y
               esa categoría te importa. No vale la pena por curiosidad: el barrido del
               día 1 o el 16 ya la va a cubrir.
+            </Cuidado>
+            <Cuidado titulo="«Medir» y «Actualizar» no son el mismo botón">
+              <b>Actualizar</b> vuelve a raspar el <b>ranking de la categoría</b>;{" "}
+              <b>Medir</b> vuelve a buscar <b>un término</b>. Cuestan casi lo mismo
+              —~$0.0067 y ~$0.007— pero traen cosas distintas, y apretar uno no
+              refresca lo del otro.
             </Cuidado>
             <Cuidado titulo="Una vez al día por categoría">
               Si ya se raspó hoy, el botón <b>no vuelve a cobrar</b>: contesta cuándo se
@@ -463,6 +487,55 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
                 </p>
               </div>
             </div>
+          </section>
+
+          {/* ── 7 · Competencia directa. Nunca estuvo en la guía, y es la
+                 parte que más confunde: dos mitades que parecen una y tienen
+                 economías opuestas —una gratis y diaria, la otra de pago y a
+                 demanda—. ── */}
+          <section className="flex flex-col gap-3">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-800">
+              <Search size={15} className="text-slate-400" />
+              Competencia directa: dos mitades que no se parecen
+            </h3>
+            <Captura
+              src={`${BASE}/06-competencia-directa.png`}
+              alt="La sección Competencia directa: búsqueda general a la izquierda y los términos más buscados a la derecha"
+              pie="Izquierda: lo que se paga. Derecha: lo que se refresca solo."
+            />
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border-t-[3px] border-amber-500 bg-amber-50 p-4 ring-1 ring-amber-200">
+                <div className="text-xs font-bold text-amber-800">
+                  Izquierda · Búsqueda general
+                </div>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+                  Qué sale en Mercado Libre al buscar el término de ese SKU. Se paga{" "}
+                  <b>por término, no por SKU</b>: 80 términos cubren 522 SKUs, así que
+                  medir uno sirve a todos los que lo comparten. Botón <b>«Medir»</b>,
+                  ~$0.007, una vez al día por término. Tarda entre uno y dos minutos —
+                  es el raspado, no la pantalla.
+                </p>
+              </div>
+              <div className="rounded-xl border-t-[3px] border-indigo-600 bg-slate-50 p-4 ring-1 ring-slate-200">
+                <div className="text-xs font-bold text-indigo-700">
+                  Derecha · Top 10 términos más buscados
+                </div>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
+                  Lo que la gente escribe en el buscador de esa categoría, en orden de
+                  volumen. Se refresca solo, a diario, y <b>no cuesta</b>. Ojo: ML
+                  publica el <b>ORDEN, no el número</b> — el #1 se busca más que el #2,
+                  pero no se sabe cuántas veces.
+                </p>
+              </div>
+            </div>
+            <Cuidado titulo="Un «0 de 40 cubiertos» no siempre es culpa del título">
+              Ese contador dice cuántos de esos términos aparecen <b>completos</b> en
+              alguno de nuestros títulos. Pero si el SKU está en la <b>categoría
+              equivocada</b>, se está comparando contra las búsquedas de otro producto
+              y ahí nunca va a haber un ✓ por más que se mejore el título. Caso real:
+              un chispero clasificado en «Kits de Seguridad», midiéndose contra
+              búsquedas de cámaras de vigilancia.
+            </Cuidado>
           </section>
         </div>
 
