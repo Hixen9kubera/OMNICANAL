@@ -467,6 +467,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const esML = canal === "mercado_libre";
   const esTikTok = canal === "tiktok";
   const esTemu = canal === "temu";
+  const esWalmart = canal === "walmart";
   // Los canales cuyo "Mejorar con IA" devuelve parte: qué no se aplicó, qué
   // marcas se sustituyeron y cuántos obligatorios de su categoría cubre.
   const conParteIA = esAmazon || esTikTok || esTemu;
@@ -686,12 +687,17 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // para crear y para actualizar, pero en Temu un alta repetida devuelve
   // 150010090 y QUEMA el SKU para siempre. Por eso el backend consulta
   // `out.sn.check` antes de mandar nada y la vista previa lo advierte.
-  const puedeActualizar = esML || esAmazon || esTikTok || esTemu;
+  // Walmart entra en v0.202.0. Su botón NO dice "publicado" cuando termina:
+  // Walmart contesta con un feedId y el veredicto llega minutos después. Dar
+  // por bueno el envío fue lo que produjo los "9 feeds sin fallos" del 4-ago
+  // que en realidad fueron cero.
+  const puedeActualizar = esML || esAmazon || esTikTok || esTemu || esWalmart;
   const tiktokPublicado = Boolean(datosCanal?.item_id);
   const temuPublicado = Boolean(datosCanal?.item_id);
   const accionLabel =
     (esML && mlPublicado) || (esAmazon && amazonPublicado) ||
-    (esTikTok && tiktokPublicado) || (esTemu && temuPublicado)
+    (esTikTok && tiktokPublicado) || (esTemu && temuPublicado) ||
+    (esWalmart && Boolean(datosCanal?.item_id))
       ? "Actualizar en" : "Publicar a";
 
   const numOrNull = (v: string) => aNumero(v);

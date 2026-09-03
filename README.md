@@ -1001,6 +1001,73 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.387.0 — El botón de publicar en Walmart, y Juguetes por fin puede entrar
+
+Pieza 5 de Walmart: `preview()` / `confirmar()` como los demás canales, pero con
+tres cosas que son propias de este canal y que cambian el diseño del botón.
+
+**El payload es el del publicador por tandas, literal.** Se importan `_item()` y
+`_sobre()` de `scripts/publicar_walmart.py`, que ya están verificados contra
+feeds reales y llevan dentro cada corrección que costó un lote: máximo 2
+decimales en peso y medidas, la poda de campos por categoría, la clave SAT y la
+exención de UPC. Reescribirlos habría creado una segunda verdad.
+
+**⚠️ EL CANDADO DEL PRESUPUESTO.** Walmart admite **10 feeds POR HORA** de
+`MP_ITEM_INTL`. Un botón que manda un feed por producto quema la hora en diez
+clics, y lo que sigue muere con `REQUEST_THRESHOLD_VIOLATED` — que es
+exactamente lo que tumbó **19 de 24 productos sin que sus datos tuvieran nada
+malo**. Así que este publicador **cuenta antes de mandar**: mira los feeds de la
+última hora en `ops.channel_submissions` y se niega cuando no queda cuota,
+diciendo desde cuándo se libera. Es el único canal donde el panel frena al
+usuario, y frenarlo sale más barato que perder el intento. Si la bitácora no se
+puede leer, deja pasar y avisa: bloquear por no poder medir dejaría el canal
+inservible ante un fallo de la base.
+
+**Aquí no existe "publicado".** Walmart contesta con un `feedId`, no con un
+veredicto; el resultado llega minutos después y se consulta por SKU. El panel
+dice **"feed enviado"**, porque dar por bueno el envío fue lo que produjo los
+"9 feeds sin fallos" del 4-ago que en realidad fueron cero.
+
+**El botón clasifica IGUAL que la tanda — y no lo hacía.** `candidatos()`
+descarta por PREFIJO DE SKU a los de otra familia aunque el texto coincida
+(media electrónica dice "iluminación" en el título sin ser de hogar). El panel
+clasificaba solo por texto, así que habría mandado a "Cocina" justo los
+productos que la tanda excluye, **con la clave SAT y la lista blanca de otra
+categoría**. Ahora el prefijo manda en las dos rutas. Y el "no aplica" dejó de
+ser genérico: nombra el SKU, su categoría de Woo, en cuáles SÍ se puede
+publicar hoy y cuáles esperan su ticket.
+
+#### Juguetes pasa a AUTORIZADA — con la mitad del riesgo cerrada, no las dos
+
+Walmart confirmó por ticket la carga sin UPC para "Juguetes" (2-sep). Son **53
+SKUs que estaban esperando** y es la primera categoría que entra con la exención
+probada **por escrito** y no por un feed que pasó.
+
+**Pero el UPC no fue lo que mató a los 33 del 7-ago.** Los mató `countPerPack`
+—que **no existe** en el bloque "Juguetes" del esquema, verificado— y dos
+campos que el esquema PUBLICADO no declara obligatorios y producción sí exige:
+`activity` (array, mínimo 1) y `productLine` (string). El `required` oficial de
+esa categoría son 7 campos y ninguno de los dos aparece: es el mismo desfase de
+versión que ya mordió en "Cocina, Decoración y Otros".
+
+Y ahí estaba el detalle que habría repetido el fracaso completo: **la lista
+blanca PODA, no crea.** La configuración vieja ya declaraba `activity` y
+`productLine` en `campos_visible`, pero `_item()` arma `visible` con un
+diccionario FIJO de 8 claves y luego filtra — nunca los emitió. Declararlos no
+servía de nada. Ahora `_item()` sabe construirlos cuando la categoría los pide.
+
+Probado contra producción con `JUG-0004-EST`: cae en "Juguetes" por prefijo,
+sale con `activity: ["Juego"]`, `productLine: "Ferrahome"`, `gender: "Unisex"`,
+SAT `60141000` y **sin** `countPerPack`.
+
+**Sigue siendo un piloto.** Esa corrección está DEDUCIDA del mensaje de error,
+no comprobada por un feed exitoso: el primer envío de Juguetes va de a un SKU.
+
+Categorías publicables: 3 → **4** (Disfraces · Cocina, Decoración y Otros ·
+Electrónicos · **Juguetes**).
+
+---
+
 ### v0.386.0 — Pestaña INVENTARIO: el libro de bodega que solo existía dentro de Odoo
 
 Encargo de Brandon: *"Odoo va a desaparecer y necesitamos el control de nuestro

@@ -202,6 +202,42 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
             "assembledProductLength", "assembledProductWidth",
             "assembledProductHeight", "assembledProductWeight"),
     },
+    # ── JUGUETES (ticket del 2-sep-2026) ─────────────────────────────
+    # Walmart confirmó por ticket la carga sin UPC para esta categoría. Es la
+    # PRIMERA que entra aquí con la exención probada por escrito y no por un
+    # feed que pasó — lo cual cierra la mitad del riesgo, no las dos.
+    #
+    # ⚠️ LA OTRA MITAD SIGUE ABIERTA. Los 33 del 7-ago no murieron por el UPC:
+    # murieron por `countPerPack` (que NO existe en el bloque "Juguetes" del
+    # esquema — verificado) y por dos obligatorios que el esquema PUBLICADO no
+    # declara pero producción sí exige: `activity` y `productLine`. Su
+    # `required` oficial son 7 campos y ninguno de los dos aparece; es el mismo
+    # desfase de versión que ya mordió en "Cocina, Decoración y Otros".
+    # Esa corrección está DEDUCIDA del mensaje de error, no comprobada: el
+    # primer envío de esta categoría sigue siendo un piloto de 1 SKU.
+    "toys_other": {
+        "clave_visible": "Juguetes",
+        # El número de folio vive en el ticket (2-sep-2026) y falta capturarlo.
+        # Es SOLO para la bitácora: no viaja en el feed — la exención se ejerce
+        # con `productIdType: GTIN / productId: CUSTOM`, igual que las otras tres.
+        "folio_exencion": "ticket 2-sep-2026 (folio por capturar)",
+        # 60141000 = "Juguetes", clase 6014 del segmento 60 del c_ClaveProdServ
+        # (el mismo segmento que 60141401 "Disfraces o accesorios").
+        "clave_sat": 60141000,
+        "pide_genero": True,
+        # `gender` SÍ es obligatorio aquí — está en el `required` oficial— y es
+        # lista CERRADA: Unisex / Niño / Niña / Mujer / Hombre. `_genero()` ya
+        # devuelve solo de esa lista.
+        "prefijos_sku": ("JUGU", "JUG"),
+        "patron_categoria": "uguete|eluche|didactic|didáctic",
+        "patron_titulo": "uguete|eluche|didactic|didáctic",
+        # SIN `countPerPack`: no existe en este bloque y tumbó los 33 completos.
+        "campos_visible": (
+            "material", "colorCategory", "modelNumber",
+            "assembledProductLength", "assembledProductWidth",
+            "assembledProductHeight", "assembledProductWeight",
+            "size", "gender", "activity", "productLine"),
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,19 +267,6 @@ CATEGORIAS_POR_CONFIRMAR: dict[str, dict] = {
             "assembledProductLength", "assembledProductWidth",
             "assembledProductHeight", "assembledProductWeight", "size"),
         "skus_esperando": 129,
-    },
-    "toys_other": {
-        "clave_visible": "Juguetes",
-        "evidencia": "❓ NINGUNA — los 33 murieron en 'countPerPack' + dos "
-                     "obligatorios que el esquema no declara",
-        "que_falta": "piloto de 1 SKU sin `countPerPack` y CON `activity` "
-                     "(Actividad) y `productLine` (Linea de Producto)",
-        "campos_visible": (
-            "material", "colorCategory", "modelNumber",
-            "assembledProductLength", "assembledProductWidth",
-            "assembledProductHeight", "assembledProductWeight",
-            "size", "gender", "activity", "productLine"),
-        "skus_esperando": 53,
     },
     "electronics_accessories": {
         "clave_visible": "Accesorios Electrónicos",
@@ -625,6 +648,24 @@ def _item(p: dict, imgs: list[str], categoria: str, cfg: dict) -> dict:
     if cfg.get("pide_genero"):
         visible["size"] = _attr(atrs, "talla") or "Unitalla"
         visible["gender"] = _genero(_attr(atrs, "genero"), p.get("name"))
+
+    # Los dos campos que el esquema NO declara obligatorios y producción SÍ
+    # exige en "Juguetes". Se arman solo si la categoría los pide: fuera de
+    # ella son campos de más, y un campo de más tumba el artículo.
+    #
+    # ⚠️ Sin esto, declararlos en `campos_visible` no sirve de nada: la lista
+    # blanca de abajo PODA, no crea. Los 33 juguetes del 7-ago se iban a volver
+    # a caer exactamente igual.
+    blanca_cfg = cfg.get("campos_visible") or ()
+    if "activity" in blanca_cfg:
+        # array de strings, minItems 1 (esquema oficial).
+        visible["activity"] = [(_attr(atrs, "actividad")
+                                or cfg.get("activity_default", "Juego"))[:600]]
+    if "productLine" in blanca_cfg:
+        # string libre. La marca es el único valor real que tenemos.
+        visible["productLine"] = (atrs.get("BRAND")
+                                  or cfg.get("product_line_default")
+                                  or "Ferrahome")[:400]
 
     # LA PODA. Un solo campo de más tumba el artículo y arrastra el lote (85/85
     # por `modelNumber`, 83/83 por `gender`, 33/33 por `countPerPack`). Si la

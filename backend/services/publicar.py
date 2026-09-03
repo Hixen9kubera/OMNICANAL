@@ -189,8 +189,11 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
     if canal == "temu":
         from services import publicar_temu
         return await publicar_temu.preview(req)
+    if canal == "walmart":
+        from services import publicar_walmart
+        return await publicar_walmart.preview(req)
     return {"ok": False, "canal": canal,
-            "motivo": "Canal no soportado todavía (ML, Amazon, TikTok y Temu)."}
+            "motivo": "Canal no soportado todavía (ML, Amazon, TikTok, Temu y Walmart)."}
 
 
 async def _payload_crear_ml(req: dict[str, Any]) -> dict[str, Any] | None:
@@ -464,8 +467,11 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     if canal == "temu":
         from services import publicar_temu
         return await publicar_temu.confirmar(req)
+    if canal == "walmart":
+        from services import publicar_walmart
+        return await publicar_walmart.confirmar(req)
     return {"ok": False,
-            "motivo": "Canal no soportado todavía (ML, Amazon, TikTok y Temu)."}
+            "motivo": "Canal no soportado todavía (ML, Amazon, TikTok, Temu y Walmart)."}
 
 
 def _error_ml(resp: dict[str, Any]) -> str | None:
