@@ -1001,6 +1001,19 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.383.0 — Fuera el aviso del «0 de N cubiertos» (Eduardo)
+
+Eduardo: *"elimina el aviso final"*.
+
+Se quita de la guía el `Cuidado` que explicaba que un «0 de N cubiertos» puede
+venir de una categoría mal asignada y no de los títulos. Sólo eso; el resto de la
+sección «Competencia directa» —las dos mitades, la captura y la advertencia de
+que ML publica el ORDEN y no el volumen— se queda igual.
+
+El hecho que describía sigue siendo cierto y sigue sin medirse: cuántos SKUs
+están clasificados en una categoría que no les corresponde. Medirlo es gratis
+(sólo lecturas) y quedó pendiente.
+
 ### v0.382.0 — La guía de Competencia se puso al día, y dejó de mentir (Eduardo)
 
 Eduardo: *"puedes añadir lo nuevo a la guía?"*.

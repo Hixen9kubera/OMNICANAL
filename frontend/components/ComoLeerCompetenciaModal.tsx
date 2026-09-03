@@ -528,14 +528,6 @@ export default function ComoLeerCompetenciaModal({ onCerrar }: { onCerrar: () =>
                 </p>
               </div>
             </div>
-            <Cuidado titulo="Un «0 de 40 cubiertos» no siempre es culpa del título">
-              Ese contador dice cuántos de esos términos aparecen <b>completos</b> en
-              alguno de nuestros títulos. Pero si el SKU está en la <b>categoría
-              equivocada</b>, se está comparando contra las búsquedas de otro producto
-              y ahí nunca va a haber un ✓ por más que se mejore el título. Caso real:
-              un chispero clasificado en «Kits de Seguridad», midiéndose contra
-              búsquedas de cámaras de vigilancia.
-            </Cuidado>
           </section>
         </div>
 
