@@ -1001,6 +1001,66 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.388.0 — Inventario sigue el diseño 1b, y aparece la columna que solo Odoo tenía
+
+Brandon, viendo la pestaña contra los artboards: *"el primero es de cuando
+seleccionas el producto, es la Ficha del SKU, y el otro es de movimientos o
+trazabilidad, y me falta seguir el diseño del inicio."* El cajón (1d) y la
+trazabilidad (1f) ya estaban; faltaba el **inicio** de la 1b.
+
+**LO QUE SE AGREGÓ DE LA 1b:** el banner morado con las tres pastillas de estado
+(la cadena, el último empuje y los SKUs vigilados) y el contador grande a la
+derecha — mismo tratamiento que el banner de Omnicanal, así que la pestaña deja
+de verse como un injerto. Barra de herramientas con búsqueda, filtro de SKUs,
+selector de bodega y cuatro órdenes. Paginación de 40. Y las columnas tal como
+las dibujó el diseño: **Empaque** como factor (`24 pzs/caja`) con el contenedor
+debajo, **Piezas** en verde o rojo, **Ubicación**, y **Woo ↔ físico** resuelto a
+una sola píldora.
+
+**LA COLUMNA NUEVA: UBICACIÓN, A NIVEL DE RACK.** No estaba en la versión
+anterior porque no sabía de dónde sacarla. Sale de `stock.quant` de Odoo, que
+guarda la jerarquía completa —`TEXCO/FERRAFORME/J/28/N1`,
+`TEX2/FERRAFORME/BLOQUE W/FILA 2/T19`— y es **el único lugar del sistema donde
+existe**: ni WooCommerce ni kubera tienen la noción de rack. Son 30,982
+ubicaciones y 9,805 quants, y es otra cosa que se pierde entera el día que Odoo
+se apague. `odoo.ubicaciones_por_sku` las devuelve por SKU, ordenadas por
+cantidad, y el cajón las lista en «Dónde está» como pide la 1d.
+
+Con ellas se vuelven visibles las piezas **NO VENDIBLES**: `TEC-0009-PLA` tiene
+3 en el rack `J-28-N1`, 2 en CUARENTENA y 1 en SCRAP. Las tres últimas están en
+el edificio y Odoo las excluye de `qty_available`; la tabla las marca en rojo en
+vez de sumarlas y mentir.
+
+**LA PÍLDORA DE CUADRE** resuelve la columna a una sola cosa, de peor a menos
+malo: `Activo sin stock` (publicaciones vivas con cero piezas — sobreventa
+esperando a pasar) → `Woo ±N` → `Sin alta` / `Sin Odoo` → `Cuadra`. Los dos
+primeros son también chips de la banda de alertas. Caso real que aparece solo:
+`EST-0091`, el SKU reciclado que documenta CLAUDE.md, sale como *Activo sin
+stock*.
+
+**DOS COSAS DEL DISEÑO QUE NO SE COPIARON LITERAL, Y ESTÁ EN EL CÓDIGO POR QUÉ:**
+
+1. El banner del diseño dice *«La bodega es la fuente de verdad»* y *«Odoo: solo
+   lectura histórica»*. **Hoy es exactamente al revés**, y está medido:
+   `stock_watch` copia el `free_qty` de Odoo a Woo en cada pasada. Rotularlo como
+   dice el diseño sería escribir en pantalla lo contrario de lo que hace el
+   sistema. El banner dice lo que ES; la frase del diseño describe el destino y
+   se pondrá el día que la cadena se invierta de verdad.
+2. **«Conteo físico» y «Entrada por packing list» escriben stock.** Van pintados
+   —son del diseño— pero deshabilitados, y su `title` dice qué falta: hoy un
+   ajuste humano se revierte solo en ≤20 min y la bitácora culparía a Odoo de
+   haberlo borrado. Necesitan la decisión de precedencia. «Exportar» queda igual
+   hasta que el catálogo completo pagine en el backend.
+
+También: el renglón «pedidas N» del historial ya solo sale cuando N > 0. Los
+traspasos internos dejan `product_qty` en 0 y «pedidas 0» era ruido en cada
+fila. El caso que sí importa se sigue viendo: `TEC-2348-MUL`, entrada de **496
+recibidas contra 3,548 pedidas**, firmada por Brandon el 19-jul.
+
+Archivos: `backend/services/odoo.py` (`ubicaciones_por_sku`, `_rack`),
+`backend/services/inventario_maestro.py` (ubicaciones, `_cuadre`,
+`_ultimo_empuje`), `frontend/app/inventario/page.tsx`, `frontend/lib/types.ts`.
+
 ### v0.387.0 — El botón de publicar en Walmart, y Juguetes por fin puede entrar
 
 Pieza 5 de Walmart: `preview()` / `confirmar()` como los demás canales, pero con

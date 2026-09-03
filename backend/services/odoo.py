@@ -447,6 +447,85 @@ def _anotar_recepciones(detalle: dict[str, dict[str, Any]]) -> None:
             d["recepcion_ref"] = m.get("reference") or m.get("origin") or ""
 
 
+def ubicaciones_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """
+    DÓNDE ESTÁ cada SKU, a nivel de rack.
+
+    ``{ SKU: [{bodega, rack, ubicacion, piezas, reservado, vendible}] }``,
+    de mayor a menor cantidad.
+
+    Odoo guarda la ubicación completa con jerarquía —``TEXCO/FERRAFORME/J/28/N1``,
+    ``TEX2/FERRAFORME/BLOQUE W/FILA 2/T19``— y es el ÚNICO lugar del sistema
+    donde existe: ni Woo ni kubera tienen la noción de rack. Son 30,982
+    ubicaciones y 9,805 quants; por eso es también lo que se pierde entero el
+    día que Odoo se apague.
+
+    `vendible=False` marca CUARENTENA y SCRAP: están dentro del edificio y en
+    ubicación `internal`, pero Odoo las excluye de `qty_available` (ver
+    `_vendible`). Se devuelven igual —la pieza existe y bodega la va a
+    encontrar en el rack— pero marcadas, porque no se pueden vender.
+    """
+    limpios = [s for s in {(x or "").strip() for x in skus} if s]
+    if not limpios:
+        return {}
+    uid = _uid()
+    if not uid:
+        return {}
+    salida: dict[str, list[dict[str, Any]]] = {}
+    LOTE = 150
+    for i in range(0, len(limpios), LOTE):
+        chunk = limpios[i:i + LOTE]
+        try:
+            quants = _models().execute_kw(
+                settings.odoo_db, uid, settings.odoo_password,
+                "stock.quant", "search_read",
+                [[["product_id.default_code", "in", chunk],
+                  ["location_id.usage", "=", "internal"]]],
+                {"fields": ["product_id", "location_id", "quantity",
+                            "reserved_quantity"]},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Odoo ubicaciones_por_sku falló (lote %d): %s",
+                        i // LOTE + 1, exc)
+            continue
+        ubic = _ubicaciones(sorted({u for q in quants
+                                    if (u := _id_de(q.get("location_id")))}))
+        for q in quants:
+            if not (q.get("quantity") or 0):
+                continue
+            etiqueta = _nombre_de(q.get("product_id"))
+            sku = (etiqueta.split("]")[0].lstrip("[").strip()
+                   if "[" in etiqueta else "")
+            if not sku:
+                continue
+            completo = _nombre_de(q.get("location_id"))
+            u = ubic.get(_id_de(q.get("location_id")), ("", ""))
+            salida.setdefault(sku, []).append({
+                "bodega": u[1] or "sin almacén",
+                "rack": _rack(completo, u[1]),
+                "ubicacion": completo,
+                "piezas": float(q.get("quantity") or 0),
+                "reservado": float(q.get("reserved_quantity") or 0),
+                "vendible": _vendible(u),
+            })
+    for filas in salida.values():
+        filas.sort(key=lambda f: (-f["vendible"], -f["piezas"]))
+    return salida
+
+
+def _rack(completo: str, bodega: str) -> str:
+    """``TEXCO/FERRAFORME/J/28/N1`` → ``J-28-N1``.
+
+    Se quitan los dos primeros tramos (el almacén y el nombre de la nave, que
+    se repiten en todas las filas y solo gastan ancho de columna) y el resto se
+    une con guiones, que es como el equipo escribe un rack.
+    """
+    partes = [p.strip() for p in (completo or "").split("/") if p.strip()]
+    if len(partes) <= 2:
+        return partes[-1] if partes else ""
+    return "-".join(partes[2:])
+
+
 def movimientos_por_sku(sku: str, limite: int = 400) -> list[dict[str, Any]]:
     """
     EL LIBRO DE BODEGA de un SKU: entradas, ventas, devoluciones, ajustes,

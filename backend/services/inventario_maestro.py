@@ -96,6 +96,7 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
 
     woo = wp_db.maestro_por_sku(pedidos)
     od = odoo.detalle_por_sku(pedidos)
+    ubis = odoo.ubicaciones_por_sku(pedidos)
     costos = _costos(pedidos)
     canales = _canales(pedidos)
     proceso = _ultimo_proceso(pedidos)
@@ -105,12 +106,14 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     for sku in pedidos:
         salida.append(_fila(sku, woo.get(sku), od.get(sku), costos.get(sku),
                             canales.get(sku, []), proceso.get(sku),
-                            imgs.get((woo.get(sku) or {}).get("wc_id"))))
+                            imgs.get((woo.get(sku) or {}).get("wc_id")),
+                            ubis.get(sku, [])))
     return salida
 
 
 def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
-          pubs: list[dict], plog: dict | None, imagen: str | None) -> dict[str, Any]:
+          pubs: list[dict], plog: dict | None, imagen: str | None,
+          ubicaciones: list[dict]) -> dict[str, Any]:
     es_variacion = bool(w and w["tipo"] == "variacion")
     es_padre = bool(w and w["n_hijas"] > 0)
 
@@ -181,6 +184,14 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "recepcion_dias": _dias((o or {}).get("recepcion_desde")),
         "recepcion_ref": (o or {}).get("recepcion_ref"),
 
+        # dónde está — a nivel de rack, y es dato que SOLO existe en Odoo
+        "ubicaciones": ubicaciones,
+        "bodegas": sorted({u["bodega"] for u in ubicaciones if u["vendible"]}),
+        "rack": ubicaciones[0]["rack"] if ubicaciones else "",
+        "bodega": ubicaciones[0]["bodega"] if ubicaciones else "",
+        "n_ubicaciones": len(ubicaciones),
+        "no_vendible": sum(u["piezas"] for u in ubicaciones if not u["vendible"]) or None,
+
         "odoo_duplicado": bool((o or {}).get("duplicado")),
         "odoo_archivado": bool(o and not o.get("activo")),
         "status_wc": (w or {}).get("status") or "",
@@ -191,7 +202,37 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
                      "fulfillment": bool(p.get("is_fulfillment"))} for p in pubs],
     }
     fila["etapas"] = _etapas(fila, w, c, pubs, plog)
+    fila["cuadre"] = _cuadre(fila, pubs)
     return fila
+
+
+def _cuadre(f: dict[str, Any], pubs: list[dict]) -> dict[str, str]:
+    """
+    La columna «Woo ↔ físico» del diseño, resuelta a UNA píldora.
+
+    El orden es de peor a menos malo, porque la celda solo puede decir una cosa
+    y hay que decir la que duele: publicado sin stock es una sobreventa esperando
+    a pasar; un descuadre es un número mal; «cuadra» es lo aburrido.
+    """
+    activos = [p for p in pubs
+               if str(p.get("status") or "").lower() in ("published", "active")]
+    if activos and not (f["stock_odoo"] or 0):
+        return {"estado": "peligro", "etiqueta": "Activo sin stock",
+                "detalle": f"{len(activos)} publicaciones vivas y 0 piezas"}
+    if f["descuadre"]:
+        d = f["descuadre"]
+        return {"estado": "peligro", "etiqueta": f"Woo {d:+d}",
+                "detalle": "WooCommerce no coincide con el disponible de Odoo"}
+    if not f["existe_en_woo"]:
+        return {"estado": "aviso", "etiqueta": "Sin alta",
+                "detalle": "no existe en WooCommerce"}
+    if not f["existe_en_odoo"]:
+        return {"estado": "aviso", "etiqueta": "Sin Odoo",
+                "detalle": "no existe en Odoo: sin existencias que comparar"}
+    if f["stock_woo"] is None:
+        return {"estado": "neutro", "etiqueta": "Sin gestión",
+                "detalle": "WooCommerce no gestiona stock de este SKU"}
+    return {"estado": "ok", "etiqueta": "Cuadra", "detalle": ""}
 
 
 def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
@@ -222,10 +263,15 @@ def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
         "full": suma("stock_full"),
         "fba": suma("stock_fba"),
         "completos": completos,
+        "no_vendible": suma("no_vendible"),
+        "bodegas": sorted({b for f in filas_ for b in f["bodegas"]}),
+        "ultimo_empuje": _ultimo_empuje(),
         "alertas": {
             "sin_alta": sum(1 for f in filas_ if not f["existe_en_woo"]),
             "sin_odoo": sum(1 for f in filas_ if not f["existe_en_odoo"]),
             "invisibles": sum(1 for f in filas_ if f["invisible_en_tienda"]),
+            "activo_sin_stock": sum(
+                1 for f in filas_ if f["cuadre"]["etiqueta"] == "Activo sin stock"),
             "descuadre": sum(1 for f in filas_ if f["descuadre"]),
             "recepcion_vencida": sum(1 for f in filas_
                                      if (f["recepcion_dias"] or 0) > 30),
@@ -449,15 +495,45 @@ def _mov(m: dict[str, Any]) -> dict[str, Any]:
         "almacen": m["almacen_destino"] or m["almacen_origen"] or "",
         "quien": m["quien"],
         "interno": m["causa"] in _RUIDO,
-        # Cuando lo pedido y lo hecho no coinciden hay algo que contar: es el
+        # Cuando lo PEDIDO y lo HECHO no coinciden hay algo que contar: es el
         # 6.2% de los movimientos, y es de donde salen los faltantes de embarque.
-        "pedido": m["pedido"] if abs(m["pedido"] - m["cantidad"]) > 0.5 else None,
+        # Caso real: TEC-2348-MUL, recepción con 3,548 pedidas y 496 recibidas.
+        # Se exige `pedido > 0` porque los traspasos internos lo dejan en 0 y
+        # "pedidas 0" no le dice nada a nadie: sería ruido en cada renglón.
+        "pedido": (m["pedido"] if m["pedido"] > 0
+                   and abs(m["pedido"] - m["cantidad"]) > 0.5 else None),
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LECTURAS DE APOYO
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _ultimo_empuje() -> dict[str, Any]:
+    """Cuándo corrió por última vez el vigilante que copia Odoo→Woo, y a cuántos
+    SKUs les escribió.
+
+    Es el rótulo del banner. Sin él, la pestaña muestra un número sin decir de
+    cuándo es — y el de Odoo puede tener hasta 20 minutos de retraso frente a
+    lo que Woo está publicando ahora mismo.
+    """
+    vacio = {"cuando": None, "skus": None, "escrituras": None}
+    try:
+        foto = sdb.fetch_one(
+            "select max(actualizado) as cuando, count(*) as skus "
+            "from ops.stock_watch_photo")
+        esc = sdb.fetch_one(
+            "select count(*) as n from ops.fanout_log "
+            "where accion = 'escribir' and ts > now() - interval '24 hours'")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("inventario: último empuje no disponible: %s", exc)
+        return vacio
+    return {
+        "cuando": _iso((foto or {}).get("cuando")),
+        "skus": (foto or {}).get("skus"),
+        "escrituras": (esc or {}).get("n"),
+    }
+
 
 def _costos(skus: list[str]) -> dict[str, dict[str, Any]]:
     """Contenedor, cajas y piezas por caja.

@@ -1700,6 +1700,17 @@ export interface FilaInventario {
   recepcion_dias: number | null;
   recepcion_ref: string | null;
 
+  /** Dónde está, a nivel de rack. SOLO existe en Odoo: ni Woo ni kubera
+   *  tienen la noción de ubicación. Ordenado por vendible y cantidad. */
+  ubicaciones: UbicacionSku[];
+  bodegas: string[];
+  /** El rack y la bodega de la ubicación principal (la de más piezas). */
+  rack: string;
+  bodega: string;
+  n_ubicaciones: number;
+  /** Piezas en CUARENTENA o SCRAP: están en el edificio y no se pueden vender. */
+  no_vendible: number | null;
+
   odoo_duplicado: boolean;
   odoo_archivado: boolean;
   status_wc: string;
@@ -1707,6 +1718,24 @@ export interface FilaInventario {
   modificado: string;
   canales: CanalDelSku[];
   etapas: Record<ClaveEtapa, Etapa>;
+  /** La columna «Woo ↔ físico», resuelta a una sola píldora. */
+  cuadre: Cuadre;
+}
+
+export interface UbicacionSku {
+  bodega: string;
+  rack: string;
+  ubicacion: string;
+  piezas: number;
+  reservado: number;
+  /** false = cuarentena o scrap: Odoo las excluye de qty_available. */
+  vendible: boolean;
+}
+
+export interface Cuadre {
+  estado: "ok" | "aviso" | "peligro" | "neutro";
+  etiqueta: string;
+  detalle: string;
 }
 
 export interface ResumenInventario {
@@ -1718,10 +1747,15 @@ export interface ResumenInventario {
   full: number;
   fba: number;
   completos: number;
+  no_vendible: number;
+  bodegas: string[];
+  /** Cuándo corrió el vigilante que copia Odoo→Woo. El banner lo rotula. */
+  ultimo_empuje: { cuando: string | null; skus: number | null; escrituras: number | null };
   alertas: {
     sin_alta: number;
     sin_odoo: number;
     invisibles: number;
+    activo_sin_stock: number;
     descuadre: number;
     recepcion_vencida: number;
     sin_fotos: number;
