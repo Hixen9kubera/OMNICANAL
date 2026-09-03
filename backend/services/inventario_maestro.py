@@ -36,9 +36,11 @@ líneas en Mercado Libre y 2 en Amazon entre el 25-jun y el 28-ago.
 
 LAS TRES MENTIRAS QUE ESTA PESTAÑA TIENE PROHIBIDO REPETIR
 -----------------------------------------------------------
-1. **`incoming_qty` no es "mercancía en camino".** El 99.7% de las 11,843
-   recepciones abiertas llevan 91-180 días vencidas y NINGUNA está programada a
-   futuro: son recepciones de mayo-junio que nadie validó. Aquí se pinta como
+1. **`incoming_qty` no es "mercancía en camino".** Lo envenenan **30 recepciones
+   huérfanas** de mayo-junio que nadie cerró (11,843 renglones de producto entre
+   las 30), y eso infla el entrante de 2,837 SKUs: el 30% de los padres. El
+   flujo SÍ funciona —379 recepciones validadas en los últimos 30 días—, así que
+   no hay nada que rediseñar: hay 30 documentos que cerrar. Aquí se pinta como
    `recepcion_abierta` con su fecha y sus días, nunca como "llegando".
 2. **Una variación `publish` bajo un padre no publicado NO SE VE.** Son 4,498
    de 7,329. Se marca con `invisible_en_tienda`.

@@ -305,12 +305,14 @@ def ping() -> bool:
 #    pedido el libro dice 3,498 y sumando lo hecho dice 446, que es EXACTAMENTE
 #    el `qty_available`. Aquí se usa SIEMPRE `quantity`.
 #
-# 2. `incoming_qty` NO es "mercancía en camino". El 99.7% de las 11,843
-#    recepciones abiertas llevan 91-180 días vencidas y NINGUNA está programada
-#    a futuro: son recepciones de mayo-junio que nadie validó. Por eso
-#    `detalle_por_sku` devuelve además la FECHA de la recepción más vieja, para
-#    que la pestaña pueda decir "abierta desde el 13-may" en vez de mentir con
-#    un "llegando".
+# 2. `incoming_qty` NO es "mercancía en camino". Lo envenenan **30 recepciones
+#    huérfanas** de mayo-junio que nadie cerró: 11,843 renglones de producto
+#    entre las 30, que inflan el entrante de 2,837 SKUs (el 30% de los padres).
+#    El flujo de recepción SÍ funciona —379 validadas en los últimos 30 días,
+#    16 en las últimas 24 h—, así que no es una falla de proceso: son 30
+#    documentos tirados. Por eso `detalle_por_sku` devuelve además la FECHA de
+#    la recepción más vieja: la pestaña dice "abierta desde el 13-may" en vez
+#    de mentir con un "llegando".
 #
 # 3. `free_qty = qty_available − reservado_en_ubicaciones_internas`, exacto a la
 #    pieza sobre 26,999 productos. `reserved_quantity` NO es campo de

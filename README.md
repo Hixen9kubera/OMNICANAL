@@ -1177,11 +1177,16 @@ Crear dice literalmente qué falta (`… → PENDING (falta: precio)`).
 
 **SEIS DEFECTOS QUE LA MEDICIÓN DESTAPÓ Y LA PESTAÑA AHORA HACE VISIBLES:**
 
-1. **`incoming_qty` NO es "mercancía en camino".** El 99.7% de las 11,843
-   recepciones abiertas llevan 91-180 días vencidas y **ninguna** está
-   programada a futuro: son recepciones de mayo-junio que nadie validó. Son
-   845,143 piezas y **2,837 SKUs activos, el 30% de los padres**. La pestaña
-   dice "recepción abierta desde hace N días", nunca "llegando".
+1. **`incoming_qty` NO es "mercancía en camino".** Lo envenenan **30
+   recepciones huérfanas** de mayo-junio que nadie cerró, y eso infla el entrante
+   de **2,837 SKUs activos: el 30% de los padres**. La pestaña dice "recepción
+   abierta desde hace N días", nunca "llegando".
+   ⚠️ *Corregido el 3-sep tras la revisión de Brandon: esta línea decía "11,843
+   recepciones abiertas". Eran 11,843 RENGLONES DE PRODUCTO repartidos entre 30
+   documentos. El flujo de recepción funciona con normalidad —379 validadas en
+   los últimos 30 días, 16 en las últimas 24 h—, así que no es una falla de
+   proceso sino 30 documentos tirados. Contar el renglón e informar el documento
+   infló el problema por dos órdenes de magnitud.*
 2. **Una variación `publish` bajo un padre no publicado NO SE VE en la tienda.**
    Son **4,498 de 7,329** — contar por status propio sobreestima lo visible
    5.4×. Dos de los diez del piloto están así y cualquier tablero ingenuo los
