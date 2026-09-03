@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.379.0 — `conocimientoGeneral`: el saber del panel, aparte y sin salida a producción
+
+Decisión de Brandon. Existe una carpeta donde vive, POR APARTE, lo que OMNICANAL
+sabe hacer, para que el equipo tome esas funciones y resuelva tareas chicas de
+KAM **sin que nada llegue a producción**. Sus cuatro reglas, textuales:
+
+1. antes de construir un proceso nuevo, buscar ahí si ya se puede;
+2. jamás modificar el código de producción — si falta algo, se crea código
+   NUEVO ahí dentro (ejemplo suyo: `IMAGENES_IA/`);
+3. se puede clonar el repositorio, nunca tocar producción;
+4. todo se comparte entre chats. **Y JAMÁS TOCAR PRODUCCIÓN.**
+
+**LA IDEA DE LA RAMA ES DE BRANDON Y ES LA QUE HACE QUE FUNCIONE.** Vive en la
+rama `conocimiento`, y **Railway despliega solo desde `main`**: no puede llegar a
+producción *por construcción*, no por una regla que alguien recuerde.
+
+Se le agregó una cosa que la rama sola no resuelve: **un worktree**. Varios chats
+trabajan a la vez en la carpeta del repo; un `git checkout conocimiento` ahí le
+cambiaría los archivos bajo los pies a todos. Así que la rama vive en
+`Escritorio\omnicanal-conocimiento`, carpeta distinta, mismo repositorio.
+
+**La traducción técnica de "jamás tocar producción"**, que es lo que la vuelve
+comprobable: *los scripts LEEN y producen ARCHIVOS*. No escriben en Woo, kubera,
+Odoo ni ningún marketplace. Un generador de contenido deja un `.json` y un
+`.csv`; **aplicarlo se hace desde el panel, que registra quién fue.** Esa
+trazabilidad es justo lo que se pierde con un script suelto.
+
+`verificar_aislamiento.py` lo comprueba en cuatro frentes —escrituras, secretos
+(el repo es PÚBLICO), imports desde producción, y que estés en la rama correcta—
+y sale con código 1 si algo falla. **Probado contra siete trampas sembradas: las
+caza las siete**, y no se queja de un `os.environ["WC_CONSUMER_SECRET"]`, que es
+correcto. No pretende ser a prueba de balas: no ve texto armado en pedazos ni
+llamadas indirectas. Es red contra el descuido; la protección de verdad es la
+rama.
+
+Aquí en `main` solo queda **la regla 14 de CLAUDE.md**, que es el puntero. Sin
+ella la regla 1 no puede cumplirse: ningún chat buscaría en una carpeta que no
+sabe que existe.
+
 ### v0.378.0 — Los términos más buscados eran gratis y estaban secuestrados (Eduardo)
 
 Eduardo: *"suéltalos también, mientras sean gratis y podamos hacerlo con el cron

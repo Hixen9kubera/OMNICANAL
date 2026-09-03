@@ -130,6 +130,31 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
     ni el ruido de alertas mientras tanto. Y si ves `ReadOnlySqlTransaction` en
     un log, no busques el bug en producción — busca qué diagnóstico corrió antes.
 
+14. **ANTES DE CONSTRUIR UN PROCESO NUEVO, BUSCA EN `conocimientoGeneral`.**
+    Regla de Brandon (3-sep-2026). Vive en la **rama `conocimiento`**, en su
+    propio worktree —`Escritorio\omnicanal-conocimiento`— para que varios chats
+    puedan seguir en `main` sin que les cambien los archivos bajo los pies:
+
+    ```bash
+    cd C:\Users\diaz2\OneDrive\Escritorio\omnicanal-conocimiento
+    cat conocimientoGeneral/INDICE.md
+    ```
+
+    Es el catálogo de lo que el panel YA sabe hacer, extraído para que el equipo
+    lo reuse en tareas chicas de KAM. **Railway despliega solo desde `main`, así
+    que nada de esa rama puede llegar a producción** — no es una regla que se
+    pueda olvidar, es el disparador del despliegue.
+
+    Las cuatro reglas de esa carpeta, en corto: (1) buscar ahí primero; (2)
+    jamás modificar producción — si falta algo, se crea código NUEVO ahí dentro;
+    (3) se puede clonar el repo, nunca tocar producción; (4) todo se comparte
+    entre chats por git. Traducción técnica: **sus scripts LEEN y producen
+    ARCHIVOS; no escriben en Woo, kubera, Odoo ni ningún marketplace.** Lo
+    comprueba `python conocimientoGeneral/verificar_aislamiento.py`.
+
+    ⚠️ **`conocimientoGeneral/` NO debe aparecer en `main`.** Si lo ves aquí,
+    algo se mezcló: deshazlo antes de seguir.
+
 ## Mapa rápido de piezas propias
 
 | Pieza | Archivo | Qué hace |
