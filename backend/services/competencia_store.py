@@ -481,6 +481,13 @@ def vista(canal: str = "mercado_libre") -> list[dict[str, Any]]:
         destino["top_movidas"] = None
         destino["top_comparadas"] = None
         destino["top_primero_cambio"] = None
+        # CUÁNTAS PUBLICA ML EN TOTAL, que casi nunca son 10. Medido el 3-sep-2026
+        # sobre las 960 categorías con ranking: 856 tienen entre 11 y 20 entradas
+        # y sólo 13 tienen exactamente 10. Sin este número el panel decía "las 10
+        # posiciones del top" —falso para el 89%: 10 es la VENTANA que se compara,
+        # no el tamaño del top— y para las 91 categorías con menos de 10 tampoco
+        # se sabía si el corte lo puso la ventana o ML.
+        destino["top_tamano"] = (h or {}).get("n")
         # LA VENTANA ES EL TOP 10, la misma de `TOPE_HUELLA`. Sin acotarla se
         # comparaban las 20 posiciones y el aviso decía "19 de 19 movidas" —
         # cierto, pero midiendo un tramo donde el orden es ruido y que no es el

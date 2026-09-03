@@ -860,6 +860,9 @@ export interface AvisosDelTop {
   top_movidas?: number | null;
   /** Sobre cuántas se comparó (las que están en ambos lados). */
   top_comparadas?: number | null;
+  /** Cuántas entradas publica ML en total. 856 de 960 categorías tienen entre
+   *  11 y 20, así que `top_comparadas` es la VENTANA, no el tamaño del top. */
+  top_tamano?: number | null;
   /** El #1 cambió. Es la señal fuerte: el resto puede ser reacomodo. */
   top_primero_cambio?: boolean | null;
 }

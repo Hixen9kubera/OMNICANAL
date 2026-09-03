@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.384.0 — El aviso del top decía «de 10» cuando casi ningún top tiene 10 (Eduardo)
+
+Eduardo: *"hay que cambiar ese aviso conforme al top, ya que no todos los tops
+tienen 10"*.
+
+La pastilla decía *"5 de 10 movidas"* y el tooltip *"5 de las 10 posiciones del
+top son distintas"*. El 10 no salía de un literal —ya venía de
+`top_comparadas`— pero la **redacción** afirmaba que ése era el tamaño del top.
+Medido el 3-sep-2026 sobre las 960 categorías con ranking:
+
+| entradas que publica ML | categorías |
+|---|---|
+| 11–20 | **856** |
+| 10 exactas | 13 |
+| 6–9 | 62 |
+| 1–5 | 29 |
+
+O sea que *"las 10 posiciones del top"* era falso para el **89%**: ahí 10 es la
+VENTANA que se compara —`TOPE_HUELLA`, deliberada, porque comparar las 20 daba
+"19 de 19 movidas" midiendo un tramo donde el orden es ruido— y no el tamaño del
+top. Y para las 91 categorías con menos de 10, el texto tampoco dejaba ver si el
+corte lo puso la ventana o el propio ML.
+
+`top_tamano` (el `n` del sondeo, que ya se tenía) baja al panel y el aviso se
+adapta:
+
+```
+top=20, comparadas=10 → "2 de las 10 primeras"
+   "…cambiaron 2 de las 10 primeras posiciones. El top tiene 20; más abajo el
+    orden es ruido y no se compara."
+
+top=10, comparadas=10 → "7 de 10 movidas"
+   "…cambiaron 7 de las 10 posiciones que ML publica aquí."
+```
+
+Verificado con los dos casos reales de producción. Typecheck en verde.
+
 ### v0.383.0 — Fuera el aviso del «0 de N cubiertos» (Eduardo)
 
 Eduardo: *"elimina el aviso final"*.

@@ -1693,6 +1693,7 @@ function BloqueSubcategoria({
                 movido={sub.top_movido}
                 movidas={sub.top_movidas}
                 comparadas={sub.top_comparadas}
+                tamano={sub.top_tamano}
                 primeroCambio={sub.top_primero_cambio}
               />
               <BotonRefrescar
@@ -1794,6 +1795,7 @@ function BloqueRaiz({
             movido={r.top_movido}
             movidas={r.top_movidas}
             comparadas={r.top_comparadas}
+            tamano={r.top_tamano}
             primeroCambio={r.top_primero_cambio}
           />
         </div>
@@ -2117,6 +2119,7 @@ function CapturaDeCategoria({
   iso,
   movido,
   movidas,
+  tamano,
   comparadas,
   primeroCambio,
 }: {
@@ -2144,6 +2147,8 @@ function CapturaDeCategoria({
    * guardado: ni una llamada más.
    */
   movidas?: number | null;
+  /** Cuántas publica ML EN TOTAL. Casi nunca son 10: ver el comentario del title. */
+  tamano?: number | null;
   comparadas?: number | null;
   primeroCambio?: boolean | null;
 }) {
@@ -2175,14 +2180,23 @@ function CapturaDeCategoria({
           }`}
           title={
             movidas != null && comparadas != null
-              ? `Comparado hoy contra Mercado Libre: ${movidas} de las ${comparadas} posiciones del top son distintas${primeroCambio ? ", incluido el #1" : ""}.`
+              ? // «del top» era falso para el 89% de las categorías: 856 de 960
+                // publican entre 11 y 20 entradas y sólo 13 tienen exactamente
+                // 10. Ese número es la VENTANA que se compara, no el tamaño del
+                // top. Con `tamano` se puede decir cuál de las dos cosas es.
+                (tamano != null && tamano > comparadas
+                  ? `Comparado hoy contra Mercado Libre: cambiaron ${movidas} de las ${comparadas} primeras posiciones. El top tiene ${tamano}; más abajo el orden es ruido y no se compara.`
+                  : `Comparado hoy contra Mercado Libre: cambiaron ${movidas} de las ${comparadas} posiciones que ML publica aquí.`) +
+                (primeroCambio ? " Incluido el #1." : "")
               : "El sondeo diario detectó que este top cambió después de nuestra captura."
           }
         >
           {primeroCambio
             ? "el #1 cambió"
             : movidas != null && comparadas != null
-              ? `${movidas} de ${comparadas} movidas`
+              ? tamano != null && tamano > comparadas
+                ? `${movidas} de las ${comparadas} primeras`
+                : `${movidas} de ${comparadas} movidas`
               : "ML ya se movió"}
         </span>
       ) : null}
