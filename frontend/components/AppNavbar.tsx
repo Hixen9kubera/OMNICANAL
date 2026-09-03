@@ -25,6 +25,7 @@ import {
   PackageX,
   type LucideIcon,
   Network,
+  Warehouse,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 import { cerrarSesion, quienSoy, type Usuario } from "@/lib/sesion";
@@ -97,6 +98,9 @@ const ITEMS: NavItem[] = [
   },
   { id: "productos", label: "Productos", icon: Package, href: "/productos" },
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
+  // Catálogo maestro de bodega: existencias, empaque y trazabilidad. Lectura
+  // pura, así que la ve todo el equipo (en rbac.py su GET es de `lectura`).
+  { id: "inventario", label: "Inventario", icon: Warehouse, href: "/inventario" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",

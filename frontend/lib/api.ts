@@ -37,6 +37,8 @@ import type {
   PublicacionesResp,
   PublicadosArranque,
   PublicadosEstado,
+  InventarioResp,
+  MovimientosResp,
   PublicadosGuardado,
   PublicarPreview,
   PublicarReq,
@@ -1433,3 +1435,46 @@ export function coberturaPublicaciones(
 // Lo que explicaba —por qué un canal cuenta 0 activas— viaja en la `nota` de
 // `cobertura`, que sí se muestra. Envolverlo "por si acaso" sería código muerto
 // en la frontera con backend, que es justo donde más caro sale.
+
+/* ─────────────────────────────────────────────────────────────────────────
+   INVENTARIO · Catálogo Maestro
+   Los dos endpoints son GET y pasan por `getJSON`, o sea por `fetchSesion`:
+   un `fetch` pelón NO manda el token y devuelve 401 con el enforcement
+   encendido (incidente del 5-ago, ver el docstring de `fetchSesion`).
+   ───────────────────────────────────────────────────────────────────────── */
+
+/**
+ * La tabla del catálogo maestro. Sin `skus` devuelve los 10 del piloto que
+ * Brandon fijó como sonda.
+ *
+ * Tarda ~4 s para 10 SKUs porque cruza WooCommerce, Odoo y kubera EN VIVO —
+ * la regla de la casa prohíbe cruzar contra `canal_inventario`, que ya escondió
+ * 754 publicaciones de Mercado Libre. Conviene llamarla con `AbortController`.
+ */
+export function listarInventario(
+  skus?: string[],
+  signal?: AbortSignal,
+): Promise<InventarioResp> {
+  const qs = new URLSearchParams();
+  if (skus?.length) qs.set("skus", skus.join(","));
+  const cola = qs.toString();
+  return getJSON(`/api/inventario${cola ? `?${cola}` : ""}`, signal);
+}
+
+/**
+ * El libro de bodega de un SKU. `causa` por omisión es `"reales"`, que esconde
+ * los pasos internos PICK/PACK de Odoo — son mayoría (91 de 117 renglones en
+ * un SKU medido) y no mueven saldo. `"todo"` los incluye.
+ */
+export function movimientosInventario(
+  sku: string,
+  causa = "reales",
+  limite = 200,
+  signal?: AbortSignal,
+): Promise<MovimientosResp> {
+  const qs = new URLSearchParams({ causa, limite: String(limite) });
+  return getJSON(
+    `/api/inventario/${encodeURIComponent(sku)}/movimientos?${qs.toString()}`,
+    signal,
+  );
+}

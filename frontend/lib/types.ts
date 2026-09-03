@@ -1621,3 +1621,157 @@ export interface PublicacionesResp {
   /** Sólo con `refrescar=true`. Ver `RefrescoPrecio`. */
   refresco?: RefrescoPrecio;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   INVENTARIO · Catálogo Maestro
+   La fila es el SKU de WooCommerce — padres y variaciones en la misma tabla.
+   Todo es de LECTURA: la pestaña no escribe stock en ninguna parte.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/** Estado de una de las cinco etapas del tablero. */
+export type EstadoEtapa = "listo" | "parcial" | "pendiente" | "bloqueado" | "na";
+
+/** Las cinco etapas que pidió Brandon, en orden. */
+export type ClaveEtapa =
+  | "en_proceso" | "fotos" | "variantes" | "validado" | "enviado_full";
+
+export interface Etapa {
+  estado: EstadoEtapa;
+  etiqueta: string;
+  detalle: string;
+  /** De dónde salió el dato. Se muestra para poder discutirlo, no solo verlo. */
+  fuente: string;
+  n?: number;
+  dias?: number;
+  dias_quieto?: number;
+  peldano?: number;
+  ultimo_paso?: string | null;
+  ultimo_actor?: string | null;
+  ultimo_at?: string | null;
+}
+
+export interface CanalDelSku {
+  canal: string;
+  status: string | null;
+  listing_id: string | null;
+  fulfillment: boolean;
+}
+
+export interface FilaInventario {
+  sku: string;
+  existe_en_woo: boolean;
+  existe_en_odoo: boolean;
+  nombre: string;
+  imagen: string | null;
+  wc_id: number | null;
+  odoo_id: number | null;
+
+  tipo: "producto" | "variacion" | "sin_alta";
+  es_padre: boolean;
+  n_hijas: number;
+  padre_sku: string | null;
+  padre_status: string | null;
+  /** Variación `publish` cuyo padre NO lo está: no se ve en la tienda. */
+  invisible_en_tienda: boolean;
+
+  contenedor: string;
+  /** El código mostrado es una referencia de booking, no un contenedor ISO. */
+  contenedor_es_booking: boolean;
+  embarque: string;
+  contenedor_odoo: string;
+  contenedor_costo: string;
+  contenedor_discrepa: boolean;
+  cajas: number | null;
+  piezas_por_caja: number | null;
+  /** cajas × piezas por caja: lo que el packing list dice que debe llegar. */
+  piezas_declaradas: number | null;
+
+  stock_woo: number | null;
+  stock_odoo: number | null;
+  stock_fisico: number | null;
+  reservado: number | null;
+  stock_full: number | null;
+  stock_fba: number | null;
+  descuadre: number | null;
+
+  /** Recepción ABIERTA en Odoo. No es "en camino": ver `recepcion_dias`. */
+  recepcion_piezas: number | null;
+  recepcion_desde: string;
+  recepcion_dias: number | null;
+  recepcion_ref: string | null;
+
+  odoo_duplicado: boolean;
+  odoo_archivado: boolean;
+  status_wc: string;
+  creado: string;
+  modificado: string;
+  canales: CanalDelSku[];
+  etapas: Record<ClaveEtapa, Etapa>;
+}
+
+export interface ResumenInventario {
+  skus: number;
+  disponible: number;
+  fisico: number;
+  reservado: number;
+  en_recepcion: number;
+  full: number;
+  fba: number;
+  completos: number;
+  alertas: {
+    sin_alta: number;
+    sin_odoo: number;
+    invisibles: number;
+    descuadre: number;
+    recepcion_vencida: number;
+    sin_fotos: number;
+    sin_costo: number;
+    contenedor_discrepa: number;
+    odoo_duplicado: number;
+  };
+  por_etapa: Record<ClaveEtapa, Record<EstadoEtapa, number>>;
+}
+
+export interface InventarioResp {
+  items: FilaInventario[];
+  total: number;
+  piloto: string[];
+  es_piloto: boolean;
+  resumen: ResumenInventario;
+}
+
+export type CausaMovimiento =
+  | "entrada" | "venta" | "envio_full" | "devolucion" | "ajuste"
+  | "traspaso" | "preparacion" | "merma" | "cuarentena" | "otro";
+
+export interface Movimiento {
+  fecha: string;
+  causa: CausaMovimiento;
+  /** Firmado: + entra a bodega, − sale. 0 en pasos internos. */
+  delta: number;
+  cantidad: number;
+  saldo: number | null;
+  documento: string;
+  referencia: string;
+  /** Vacío en ventas y devoluciones: ahí la contraparte es una persona. */
+  contraparte: string;
+  origen: string;
+  destino: string;
+  almacen: string;
+  quien: string;
+  /** Paso interno PICK/PACK de Odoo: no mueve saldo, se pliega por omisión. */
+  interno: boolean;
+  /** Solo cuando lo pedido y lo hecho NO coinciden (el 6.2% de los casos). */
+  pedido: number | null;
+}
+
+export interface MovimientosResp {
+  sku: string;
+  movimientos: Movimiento[];
+  total: number;
+  saldo_libro: number;
+  saldo_odoo: number;
+  /** false = el libro no reproduce el saldo de Odoo. Se avisa, no se disimula. */
+  cuadra: boolean | null;
+  por_causa: Record<string, number>;
+}

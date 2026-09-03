@@ -24,7 +24,7 @@ from core.middleware import identidad
 from models.schemas import HealthCheck
 from routers import (auth, automatizacion, canales, competencia, costos_publicados, flujo, monitoreo,
                      crear, fanout,
-                     fba, fulfillment, ia, imagenes, metricas, migracion,
+                     fba, fulfillment, ia, imagenes, inventario, metricas, migracion,
                      productos, publicaciones, publicar, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
@@ -145,7 +145,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.385.0",
+    version="0.386.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -221,6 +221,10 @@ app.include_router(publicaciones.router)
 # Automatización: las órdenes de venta que el panel crea en Odoo (TikTok/Temu),
 # con la foto del stock al momento de cada venta.
 app.include_router(automatizacion.router)
+# Inventario · Catálogo Maestro: qué hay, dónde está, en qué caja vino y qué se
+# movió. LECTURA PURA — no escribe stock en ninguna parte (ver la cabecera de
+# services/inventario_maestro.py para el porqué medido).
+app.include_router(inventario.router)
 
 
 @app.get("/", tags=["meta"])
@@ -228,7 +232,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.385.0",
+        "version": "0.386.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

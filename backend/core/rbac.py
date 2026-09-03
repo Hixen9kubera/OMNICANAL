@@ -188,6 +188,15 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/ia", "lectura"),
     ("GET", "/api/auth", "lectura"),
     ("GET", "/api/webhooks/notificaciones", "lectura"),  # la campana del panel
+    # Inventario · Catálogo Maestro: existencias, empaque y trazabilidad. Va en
+    # LECTURA y no en OPERADOR porque su respuesta NO trae costo ni margen —
+    # lleva contenedor, cajas y piezas por caja, que son logística, no dinero.
+    # Es literalmente el rol que el archivo describe arriba: "solo mira ventas e
+    # inventario". Y solo hay GET: la pestaña no escribe stock (ver la cabecera
+    # de services/inventario_maestro.py). El día que se agregue el POST de
+    # entrada por packing list, necesita SU PROPIA línea aquí — listar el GET no
+    # cubre el POST, que es exactamente lo que produjo los tres 403 por sorpresa.
+    ("GET", "/api/inventario", "lectura"),
 )
 
 # Índice ordenado por prefijo más largo: la regla específica gana.

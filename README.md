@@ -1001,6 +1001,113 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.386.0 — Pestaña INVENTARIO: el libro de bodega que solo existía dentro de Odoo
+
+Encargo de Brandon: *"Odoo va a desaparecer y necesitamos el control de nuestro
+inventario. Va a desaparecer el Packing List en Bodega."* Pidió una tabla del
+catálogo (imagen, contenedor, cajas, piezas, variantes), un botón de historial
+por renglón, y —en el mismo hilo— un tablero de estatus por SKU: *"de 10 solo
+seis pudimos procesar; quiero mantener trazabilidad de en qué estatus están.
+En proceso (con time), fotos, variantes, validado, enviado full."* Piloto de 10
+SKUs, sin barridos completos hasta que él lo apruebe.
+
+**NACE VISOR, Y ESO ESTÁ MEDIDO.** No escribe stock en ninguna parte. Tres
+razones, en orden de peso: (1) el saldo inicial ya existe y es auditable —
+`free_qty` de Odoo reproduce EXACTO el saldo reconstruido desde su propio libro
+en **150 de 150 SKUs** de una muestra al azar; (2) contar la bodega a mano
+serían 1,164,329 piezas en 30,982 ubicaciones a nivel de rack, y eso lo hace el
+equipo de Inventarios de Odoo, cuyos nombres ya firman los 10,935 ajustes; (3)
+si la pestaña fuera master, `stock_watch` tendría que leerla a ella e invertir
+la cadena `Odoo → Woo → canales` que Brandon fijó el 20-ago — eso es un cambio
+de flujo vivo, no una pantalla. Hoy un ajuste humano se revertiría solo en
+≤20 min **y la bitácora culparía a Odoo de haberlo borrado**.
+
+**LA CONTRADICCIÓN DE FONDO, RESUELTA.** Los informes trataban `free_qty` como
+"la verdad" mientras la memoria del proyecto decía que los datos de Odoo son
+"0% confiables (58% se autocontradicen)". No había contradicción: esa memoria
+habla de la FICHA del proveedor (`length × width × height` contra
+`cbm_master_box`), capturada a mano. El módulo de INVENTARIO es otra cosa —
+reconstruir el saldo desde los 55,956 `stock.move` en `done` reproduce
+`qty_available`. Odoo es un libro de partida doble auditable, y su historia de
+9 meses **no está copiada en ninguna parte**: es lo que se pierde el día que se
+apague.
+
+**LAS CINCO ETAPAS SE DERIVAN — CERO TABLAS NUEVAS.** El tablero funciona desde
+el primer minuto sin que nadie capture nada, y cada etapa declara su `fuente`
+en la UI para poder discutir el dato y no solo el color:
+
+| Etapa | De dónde sale |
+|---|---|
+| En proceso (con tiempo) | `wp_posts.post_status` + `post_date`/`post_modified`. WooCommerce ya tiene una escalera curada de cuatro peldaños: `draft` (4,504) → `pending` (657) → `ready` (128) → `publish` (1,996). `ready` no es de WordPress: la inventó el equipo el 8-feb-2026 |
+| Fotos | conteo de `_thumbnail_id` + `_product_image_gallery` |
+| Variantes | `wp_posts.post_parent` — nunca el nombre del SKU |
+| Validado | el candado `costing.costos_validados.revisado_at` |
+| Enviado FULL | `channel.listings.is_fulfillment` / `stock_full` / `stock_fba` |
+
+Y cuando hay dato, la etapa 1 muestra el último paso de `ops.process_log`, que
+es la única bitácora del panel con ACTOR y cuyo renglón final del pipeline de
+Crear dice literalmente qué falta (`… → PENDING (falta: precio)`).
+
+**SEIS DEFECTOS QUE LA MEDICIÓN DESTAPÓ Y LA PESTAÑA AHORA HACE VISIBLES:**
+
+1. **`incoming_qty` NO es "mercancía en camino".** El 99.7% de las 11,843
+   recepciones abiertas llevan 91-180 días vencidas y **ninguna** está
+   programada a futuro: son recepciones de mayo-junio que nadie validó. Son
+   845,143 piezas y **2,837 SKUs activos, el 30% de los padres**. La pestaña
+   dice "recepción abierta desde hace N días", nunca "llegando".
+2. **Una variación `publish` bajo un padre no publicado NO SE VE en la tienda.**
+   Son **4,498 de 7,329** — contar por status propio sobreestima lo visible
+   5.4×. Dos de los diez del piloto están así y cualquier tablero ingenuo los
+   pintaría en verde. Se marcan `invisible`.
+3. **`stock.move.product_qty` es lo PEDIDO; `quantity` es lo HECHO**, y difieren
+   en 3,470 de 55,956 movimientos (6.2%). Con `product_qty` la reconciliación
+   cae de 97.1% a 90.8%. Caso: `TEC-2348-MUL`, recepción de 3,548 pedidas contra
+   496 hechas. El historial usa `quantity` y avisa cuando no coinciden.
+4. **SCRAP y CUARENTENA son `internal` en Odoo pero no cuelgan de ningún
+   almacén**, y Odoo las excluye de `qty_available` — 11,083 piezas, parte del
+   "hueco de 33,732" que nadie había explicado. Contándolas como bodega el libro
+   no cerraba: `TEC-0009-PLA` daba 6 contra 3. Con la regla *interno **y** con
+   almacén*, el cuadre subió a **150 de 150**.
+5. **El contenedor de Odoo y el de `costos_validados` no discrepan: son cosas
+   distintas.** Odoo guarda la referencia del transitario (`SZLS50214500 cont
+   103`) y kubera el código ISO (`UETU7935912 - 103`). Se comparan por número de
+   EMBARQUE —la llave estable— y se muestran los dos.
+6. **5 SKUs tienen DOS productos activos en Odoo** y `listar_catalogo` se queda
+   con el último en silencio (`TEC-2241-MET`: 19 piezas en uno, 16 en otro; el
+   panel publica 16). Aquí gana el de mayor existencia y **se marca**.
+
+**PII.** El `partner_id` del picking es el COMPRADOR en ventas y devoluciones.
+El panel ya cifró esos nombres en los pedidos (v0.42.2, requisito de Temu):
+sacarlos de nuevo por una pestaña de bodega sería deshacerlo por la puerta de
+atrás. La contraparte solo se muestra cuando es una empresa (FULL, AMAZON, el
+proveedor). Lo que sí se muestra es el `origin` del movimiento, que es el id de
+la orden del marketplace, no una persona.
+
+**RUIDO.** Odoo entrega en tres pasos (PICK → PACK → OUT), así que una venta
+deja dos movimientos internos además de la salida: en `TEC-0004-BLN` son 91
+`preparacion` contra 19 ventas. Se separan de los traspasos DE VERDAD (que
+cruzan almacén, y sí importan) por `warehouse_id`, y el filtro por omisión los
+esconde.
+
+Archivos: `backend/services/inventario_maestro.py` (nuevo),
+`backend/routers/inventario.py` (nuevo), `backend/services/odoo.py`
+(`detalle_por_sku`, `movimientos_por_sku` y su clasificación de causas),
+`backend/services/wp_db.py` (`maestro_por_sku`), `backend/core/rbac.py`
+(`GET /api/inventario` → `lectura`: la respuesta no trae costo ni margen),
+`frontend/app/inventario/page.tsx` (nueva), `frontend/lib/types.ts`,
+`frontend/lib/api.ts`, `frontend/components/AppNavbar.tsx`.
+
+Los tres endpoints envuelven su trabajo en `asyncio.to_thread` (regla 11): el
+historial tarda ~1 s por SKU contra Odoo y síncrono congelaría el backend
+entero, no solo a quien lo pidió.
+
+**Lo que queda pendiente y es decisión de Brandon, no de código:** de dónde sale
+la lista de prioritarios (hoy los 10 son una constante a la vista, no un modelo
+de datos); por qué se abandonó `wp_kam_revision_tasks` el 20-jul, que son 2,701
+tareas asignadas a 9 personas y es el mismo tablero ya construido; y quién
+valida las recepciones de Odoo, que es lo que decide si "esperando mercancía"
+es una etapa o ruido.
+
 ### v0.385.0 — ESCALÓN 4: la orden nace CONFIRMADA, y "confirmada" hay que ganársela
 
 Dale de Brandon: *"¿puedes hacer que se confirme la orden de venta una vez se

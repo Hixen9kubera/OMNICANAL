@@ -1034,3 +1034,117 @@ def _base_uploads() -> str:
     if o.get("siteurl"):
         return f"{o['siteurl'].rstrip('/')}/wp-content/uploads"
     return ""
+
+
+def maestro_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    Todo lo que la pestaña INVENTARIO necesita de WooCommerce, en 3 consultas.
+
+    ``{ sku: {wc_id, tipo, parent_id, parent_sku, parent_status, parent_titulo,
+              status, titulo, creado, modificado, stock, gestiona_stock,
+              n_galeria, tiene_portada, n_hijas} }``
+
+    Por qué existe teniendo ya `productos_por_sku`: la pestaña necesita el
+    ESTADO y las FECHAS, que son la única señal viva de "en qué etapa va este
+    SKU y desde cuándo". WooCommerce lleva una escalera curada de cuatro
+    peldaños —`draft` → `pending` → `ready` → `publish`— donde `ready` no es de
+    WordPress (apareció el 8-feb-2026) y este repo ya la entiende
+    (`woocommerce._ESTADOS_LISTOS`). Sin `post_status` no hay tablero.
+
+    Y trae `parent_status` por una razón medida: **una variación `publish` bajo
+    un padre que no está publicado NO SE VE en la tienda**, y son 4,498 de las
+    7,329 variaciones publicadas. Contarlas como "publicadas" sobreestima lo
+    visible 5.4 veces. La pestaña tiene que poder decir "publicada, pero su
+    padre está en borrador".
+    """
+    limpios = [s.strip() for s in skus if s and s.strip()]
+    if not limpios:
+        return {}
+    P = _prefix()
+    salida: dict[str, dict[str, Any]] = {}
+
+    for i in range(0, len(limpios), 500):
+        chunk = limpios[i:i + 500]
+        ph = ",".join(["%s"] * len(chunk))
+        filas = _fetch_all(
+            f"""SELECT p.ID AS wc_id, p.post_type AS tipo, p.post_parent AS parent_id,
+                       p.post_status AS status, p.post_title AS titulo,
+                       p.post_date AS creado, p.post_modified AS modificado,
+                       sku.meta_value AS sku,
+                       stock.meta_value AS stock,
+                       manage.meta_value AS gestiona,
+                       thumb.meta_value AS thumb,
+                       gal.meta_value AS galeria
+                FROM {P}posts p
+                JOIN {P}postmeta sku
+                     ON sku.post_id = p.ID AND sku.meta_key = '_sku'
+                LEFT JOIN {P}postmeta stock
+                     ON stock.post_id = p.ID AND stock.meta_key = '_stock'
+                LEFT JOIN {P}postmeta manage
+                     ON manage.post_id = p.ID AND manage.meta_key = '_manage_stock'
+                LEFT JOIN {P}postmeta thumb
+                     ON thumb.post_id = p.ID AND thumb.meta_key = '_thumbnail_id'
+                LEFT JOIN {P}postmeta gal
+                     ON gal.post_id = p.ID AND gal.meta_key = '_product_image_gallery'
+                WHERE p.post_type IN ('product', 'product_variation')
+                  AND p.post_status <> 'trash'
+                  AND sku.meta_value IN ({ph})""",
+            tuple(chunk),
+        )
+        for r in filas:
+            try:
+                stock = int(float(r["stock"])) if r.get("stock") not in (None, "") else None
+            except (TypeError, ValueError):
+                stock = None
+            galeria = [x for x in (r.get("galeria") or "").split(",") if x.strip()]
+            salida[str(r["sku"]).strip()] = {
+                "wc_id": int(r["wc_id"]),
+                "tipo": "variacion" if r["tipo"] == "product_variation" else "producto",
+                "parent_id": int(r["parent_id"]) if r.get("parent_id") else None,
+                "parent_sku": None,
+                "parent_status": None,
+                "parent_titulo": None,
+                "status": r.get("status") or "",
+                "titulo": r.get("titulo") or "",
+                "creado": r.get("creado"),
+                "modificado": r.get("modificado"),
+                "stock": stock,
+                "gestiona_stock": (r.get("gestiona") == "yes"),
+                "tiene_portada": bool((r.get("thumb") or "").strip()),
+                "n_galeria": len(galeria),
+                "n_hijas": 0,
+            }
+
+    ids = [d["wc_id"] for d in salida.values()]
+    padres = sorted({d["parent_id"] for d in salida.values() if d["parent_id"]})
+
+    # 2ª consulta: la ficha del padre de cada variación.
+    if padres:
+        ph = ",".join(["%s"] * len(padres))
+        for r in _fetch_all(
+                f"""SELECT p.ID, p.post_status, p.post_title, sku.meta_value AS sku
+                    FROM {P}posts p
+                    LEFT JOIN {P}postmeta sku
+                         ON sku.post_id = p.ID AND sku.meta_key = '_sku'
+                    WHERE p.ID IN ({ph})""", tuple(padres)):
+            for d in salida.values():
+                if d["parent_id"] == int(r["ID"]):
+                    d["parent_sku"] = (r.get("sku") or "").strip() or None
+                    d["parent_status"] = r.get("post_status") or None
+                    d["parent_titulo"] = r.get("post_title") or None
+
+    # 3ª consulta: cuántas hijas tiene cada uno (así se sabe si ES padre; el
+    # nombre del SKU no lo dice y `core.products.has_variations` está en FALSE
+    # en las 22,389 filas, incluidos los 1,501 padres de verdad).
+    if ids:
+        ph = ",".join(["%s"] * len(ids))
+        for r in _fetch_all(
+                f"""SELECT post_parent, COUNT(*) AS n FROM {P}posts
+                    WHERE post_type = 'product_variation' AND post_status <> 'trash'
+                      AND post_parent IN ({ph})
+                    GROUP BY post_parent""", tuple(ids)):
+            for d in salida.values():
+                if d["wc_id"] == int(r["post_parent"]):
+                    d["n_hijas"] = int(r["n"])
+
+    return salida
