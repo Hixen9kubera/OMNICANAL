@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.381.0 — ESCALÓN 2: TikTok y Temu ya crean la orden de venta en Odoo
+
+Dale de Brandon (2-sep): *"debe estar activo el automático tanto para Temu y
+TikTok"*. En Railway, `ODOO_VENTAS_SOLO_REGISTRO=false`.
+
+    interruptor maestro ....... ENCENDIDO (1-sep 19:29)
+    canal tiktok .............. ENCENDIDO      canal temu ... ENCENDIDO
+    solo_registro ............. false   ← esto es lo que cambió
+    confirmar ................. false   → nace en BORRADOR, Odoo NO reserva
+
+**El paso 3 sigue pendiente a propósito**: Woo continúa descontando
+(`proteger_stock` apagado para estos canales), así que esto todavía no mueve
+inventario vivo. Riesgo aceptado y dicho: mientras Gabriela capture Temu a mano
+—el 27-ago capturó ~29— cada venta de Temu nacerá **dos veces**, porque sus
+órdenes no llevan `client_order_ref` y la idempotencia no las ve.
+
+**Y DE PASO, EL LOG DE ARRANQUE DEJA DE MENTIR.** La línea "Órdenes de venta en
+Odoo" imprimía las VARIABLES DE ENTORNO, pero en ejecución mandan
+`habilitado()` y `canal_activo()`, que leen `ops.automatizacion_flags`. El
+2-sep decía **"interruptor: apagado · canales: tiktok"** con el maestro
+encendido desde el día anterior y Temu también encendido.
+
+Es el peor sitio posible para un dato falso: esa línea existe porque un flag que
+solo vive en Railway no se puede verificar sin abrir Railway — y contestaba con
+la fuente equivocada. Ahora resuelve el estado real y deja el default entre
+paréntesis, igual que ya hacía `_canales_activos()` del fan-out tres líneas
+arriba. Las dos lecturas van en `asyncio.to_thread`: consultan Postgres y esto
+es una corrutina (regla 11).
+
+(El código salió en el commit anterior; esta entrada y la versión se quedaron
+fuera por un `&&` roto tras un heredoc.)
+
 ### v0.380.0 — La pestaña decía "no se creó la orden" de una venta de agosto
 
 Brandon, mirando el tab: *"mira este no se creó la orden de venta!!"*. La
