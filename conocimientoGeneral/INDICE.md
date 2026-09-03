@@ -1,5 +1,7 @@
 # ÍNDICE — qué se puede hacer ya
 
+> ¿Chat nuevo? El mensaje de arranque está en [PROMPT_INICIO.md](PROMPT_INICIO.md), y las reglas en [LEEME.md](LEEME.md).
+
 **Este archivo ES la regla 1.** Antes de construir cualquier proceso nuevo, se
 busca aquí. Si ya está, se usa. Si no está, se agrega — y **se registra aquí**,
 porque un trabajo que no aparece en el índice es un trabajo que el siguiente

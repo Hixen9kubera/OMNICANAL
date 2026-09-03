@@ -7,14 +7,28 @@ POR QUÉ EXISTE
 regla escrita se rompe el día que alguien tiene prisa, y nadie se entera hasta
 que un script "de prueba" cambió 300 precios. Esto la vuelve comprobable.
 
-Revisa CUATRO cosas y sale con código 1 si alguna falla:
+Revisa CINCO cosas y sale con código 1 si alguna falla:
 
   1. Que ningún archivo de aquí ESCRIBA en Woo, kubera, Odoo o un marketplace.
-  2. Que no haya secretos escritos (el repositorio es PÚBLICO).
+  2. Que no haya secretos escritos (un secreto en git es un secreto para siempre,
+     aunque el repositorio sea privado: queda en el historial).
   3. Que producción no importe nada de esta carpeta.
   4. Que estés parado en la rama `conocimiento`, no en `main`.
+  5. Que esta rama NO haya modificado ni un archivo fuera de
+     `conocimientoGeneral/` respecto a `main`.
 
     python conocimientoGeneral/verificar_aislamiento.py
+
+LA QUINTA ES LA MÁS IMPORTANTE Y LA MENOS OBVIA. Esta rama salió de `main`, así
+que **todo el código de producción está aquí**: `backend/`, `frontend/`, todo. Es
+a propósito —hay que poder LEERLO para extraer conocimiento— pero significa que
+alguien puede editar `backend/services/costos.py` en esta rama sin darse cuenta.
+
+Hoy eso no llega a producción, porque Railway despliega solo desde `main`. Pero
+el día que alguien mezcle esta rama —o simplemente copie un archivo de vuelta—
+ese cambio entra sin haber pasado por ninguna revisión. La comprobación 5 lo caza
+antes de que exista: **en esta rama, el código de producción se lee, no se
+toca.**
 
 LO QUE **NO** PUEDE VER, y hay que saberlo para no confiarse de más:
 
@@ -166,11 +180,74 @@ def revisar_rama() -> list[str]:
     return []
 
 
+def revisar_produccion_intacta() -> list[str]:
+    """¿Esta rama cambió algo FUERA de conocimientoGeneral/ respecto a main?
+
+    Se compara contra `origin/main` si existe (es la referencia compartida) y si
+    no, contra el `main` local. Si no hay ninguno de los dos —un clon de una
+    sola rama, que es justo como entra alguien de fuera— NO se puede comprobar,
+    y eso se dice en voz alta en vez de callarlo: un verificador que guarda
+    silencio cuando no sabe es peor que no tenerlo.
+    """
+    def _existe(ref: str) -> bool:
+        r = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref],
+                           cwd=RAIZ, capture_output=True, text=True)
+        return r.returncode == 0
+
+    base = next((r for r in ("origin/main", "main") if _existe(r)), None)
+    if base is None:
+        return ["no tengo `main` local ni `origin/main`, así que NO PUEDE "
+                "comprobarse que la rama no tocó producción. Trae la referencia "
+                "con: git fetch origin main:refs/remotes/origin/main"]
+    try:
+        r = subprocess.run(
+            ["git", "diff", "--name-only", f"{base}...HEAD",
+             "--", ".", ":(exclude)conocimientoGeneral"],
+            cwd=RAIZ, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"no pude comparar contra {base} ({exc}) — revísalo a mano"]
+    if r.returncode != 0:
+        return [f"git diff contra {base} falló: {(r.stderr or '').strip()[:200]}"]
+
+    tocados = {x.strip() for x in (r.stdout or "").splitlines() if x.strip()}
+
+    # Y lo que TODAVÍA NO ES COMMIT. `git diff base...HEAD` compara commits, así
+    # que un archivo de producción editado y sin guardar le pasa por debajo —
+    # exactamente el estado en el que alguien está a punto de romper la regla, y
+    # el momento en que avisar todavía sirve de algo. Se descubrió probando el
+    # verificador contra una trampa sembrada: no la cazó.
+    try:
+        s = subprocess.run(
+            ["git", "status", "--porcelain",
+             "--", ".", ":(exclude)conocimientoGeneral"],
+            cwd=RAIZ, capture_output=True, text=True, timeout=120)
+        for linea in (s.stdout or "").splitlines():
+            ruta = linea[3:].strip().strip('"')
+            if " -> " in ruta:            # renombrado: interesa el destino
+                ruta = ruta.split(" -> ", 1)[1]
+            if ruta:
+                tocados.add(ruta + "  (sin guardar)")
+    except (OSError, subprocess.SubprocessError) as exc:
+        tocados.add(f"no pude revisar los cambios sin guardar ({exc})")
+
+    if not tocados:
+        return []
+    orden = sorted(tocados)
+    fallos = [f"esta rama toca {len(orden)} archivo(s) de PRODUCCIÓN. "
+              f"Aquí el código de producción SE LEE, NO SE TOCA:"]
+    fallos += [f"  → {t}" for t in orden[:20]]
+    if len(orden) > 20:
+        fallos.append(f"  … y {len(orden) - 20} más")
+    fallos.append("Si el cambio es bueno, va a main por el camino normal, no por aquí.")
+    return fallos
+
+
 def main() -> int:
     bloques = [
         ("RAMA", revisar_rama()),
+        ("PRODUCCIÓN INTACTA EN ESTA RAMA", revisar_produccion_intacta()),
         ("ESCRITURAS A PRODUCCIÓN", revisar_escrituras()),
-        ("SECRETOS (el repo es PÚBLICO)", revisar_secretos()),
+        ("SECRETOS", revisar_secretos()),
         ("PRODUCCIÓN IMPORTANDO ESTA CARPETA", revisar_importaciones()),
     ]
     total = sum(len(f) for _, f in bloques)
