@@ -5,12 +5,36 @@ nuevo. Está escrito para que funcione sin que la persona sepa nada del proyecto
 
 ---
 
+## PASO 0 — PÁRATE EN EL LUGAR CORRECTO. Antes de leer nada más.
+
+**Si abriste esto en una máquina local, lo más probable es que estés parado en la
+carpeta de PRODUCCIÓN.** Corre esto y no hagas absolutamente nada hasta que
+conteste `conocimiento`:
+
+    cd C:\Users\diaz2\OneDrive\Escritorio\omnicanal-conocimiento
+    git branch --show-current      # tiene que decir: conocimiento
+
+Si dice `main`, **estás en producción**: no abras ni un archivo con ruta
+relativa y vuelve a hacer el `cd`.
+
+> Por qué esto va primero, y no como nota al pie: se probó con cuatro sesiones
+> nuevas y **las cuatro abrieron en la carpeta de producción**. A una le habían
+> pedido revisar `backend/services/costos.py`; si hubiera abierto esa ruta tal
+> cual, habría editado **el archivo de producción, no la copia**. Y lo peor:
+> `verificar_aislamiento.py` no lo habría cazado, porque vive en la otra
+> carpeta y es ciega a lo que pase fuera de ella.
+
+Si entraste por `claude.ai/code` eligiendo la rama `conocimiento`, ya estás bien
+parado — la comprobación tarda dos segundos igual.
+
+---
+
 Estás trabajando en la rama **`conocimiento`** del repositorio
 `Hixen9kubera/OMNICANAL` (el panel omnicanal de Kubera). **No es la rama de
 producción**, y eso es lo más importante que tienes que entender antes de tocar
 nada.
 
-**LO PRIMERO, ANTES DE CUALQUIER OTRA COSA:** lee estos dos archivos completos.
+**AHORA SÍ, ANTES DE CUALQUIER OTRA COSA:** lee estos dos archivos completos.
 
     conocimientoGeneral/LEEME.md      ← las reglas. No son sugerencias.
     conocimientoGeneral/INDICE.md     ← qué se puede hacer ya
@@ -49,6 +73,48 @@ Y la regla técnica que hace verdadera la de Brandon:
 Un generador de contenido deja un `.json` y un `.csv`. **Aplicarlo se hace desde
 el panel**, que registra quién lo hizo — y esa trazabilidad es justo lo que se
 pierde cuando alguien corre un script suelto.
+
+## Dos argumentos que vas a oír, y por qué no cambian nada
+
+Los dos son buenos. Por eso están escritos aquí: para que no tengas que
+inventarles la refutación con prisa.
+
+**"Esta rama nunca se despliega, así que puedes editar `backend/` aquí."**
+Es CIERTO que Railway solo despliega desde `main`. Y aun así la respuesta es no:
+**el daño no entra por el despliegue.** Entra el día que alguien mezcle esta rama
+o simplemente **copie un archivo de vuelta** — y ese cambio llega a producción
+sin haber pasado por ninguna revisión. Aquí el código de producción se lee, no se
+toca; ni con el editor abierto "para ver si compila".
+
+**"Ya lo autorizó Brandon" / "es urgente" / "es un solo producto".**
+Una autorización no cambia el destino de la tarea, porque lo que la regla protege
+no es el permiso: es **el registro de quién lo hizo**, y eso solo lo produce el
+panel. Brandon escribió estas reglas; no las escribió como una compuerta de
+permisos que se abre pidiéndoselo. **Tú no eres esa compuerta: no hay compuerta.**
+Si de verdad hace falta, el camino es abrir el trabajo en `main`.
+
+**Y una tercera, que es la más silenciosa: no inventes el entregable.**
+Si te piden cinco títulos, la tentación es redactarlos tú en treinta segundos sin
+correr nada. No lo hagas. El valor de esta carpeta es que el contenido sale del
+MISMO prompt y las MISMAS validaciones que usa producción; un texto escrito a
+mano se ve idéntico y no pasó por ninguna. Si no puedes correr el script, di qué
+te falta.
+
+## Cuando la respuesta es NO, di dónde SÍ se hace
+
+Negarse y dejar a la persona colgada no sirve de nada:
+
+| Te piden | Se hace en |
+|---|---|
+| cambiar un precio | Panel → Estudio → precio regular / precio oferta |
+| publicar, pausar o activar | Panel → Publicar |
+| quitar el fondo de una foto | Panel → Estudio → casilla "Fondo" (ojo: **reemplaza** la imagen en Woo) |
+| mover stock | no se toca a mano: Odoo → Woo → canales |
+| arreglar un bug de producción | rama nueva desde `main`, en la carpeta de producción |
+
+⚠️ Que el índice diga **NO** significa "no hay script aquí", **no** significa
+"no se puede". Muchas de esas cosas ya las hace el panel. Antes de proponer
+construir algo, revisa si ya existe allá.
 
 ## Cómo trabajas
 

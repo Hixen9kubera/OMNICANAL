@@ -1,6 +1,17 @@
+# Lo que produce un script se queda en la maquina de quien lo corrio.
 salidas/
 **/salidas/
-.env
-**/.env
 __pycache__/
 *.pyc
+
+# El .env REAL nunca se sube.
+.env
+**/.env
+
+# ...pero la PLANTILLA si, y hay que rescatarla a mano: el .gitignore de la raiz
+# ignora `.env.*` y solo perdona `.env.example` EN INGLES, asi que `.env.ejemplo`
+# quedaba fuera sin que nadie lo notara. Se descubrio en un simulacro: la unica
+# capacidad de la carpeta viajaba SIN su plantilla de llaves a quien la clonara.
+# Va aqui y no en el .gitignore de la raiz porque ese archivo es de PRODUCCION.
+!.env.ejemplo
+!**/.env.ejemplo

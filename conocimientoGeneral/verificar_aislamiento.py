@@ -7,12 +7,14 @@ POR QUÉ EXISTE
 regla escrita se rompe el día que alguien tiene prisa, y nadie se entera hasta
 que un script "de prueba" cambió 300 precios. Esto la vuelve comprobable.
 
-Revisa CINCO cosas y sale con código 1 si alguna falla:
+Revisa SEIS cosas y sale con código 1 si alguna falla:
 
   1. Que ningún archivo de aquí ESCRIBA en Woo, kubera, Odoo o un marketplace.
   2. Que no haya secretos escritos (un secreto en git es un secreto para siempre,
      aunque el repositorio sea privado: queda en el historial).
-  3. Que producción no importe nada de esta carpeta.
+  3. Que esta carpeta no IMPORTE código de producción (la escritura no viaja
+     en el código que copias: viaja en la función que llamas).
+  3b. Que producción no importe nada de esta carpeta.
   4. Que estés parado en la rama `conocimiento`, no en `main`.
   5. Que esta rama NO haya modificado ni un archivo fuera de
      `conocimientoGeneral/` respecto a `main`.
@@ -147,6 +149,43 @@ def revisar_secretos() -> list[str]:
     return fallos
 
 
+# ── 6 · Reusar código de producción ──────────────────────────────────────────
+#
+# EL HUECO QUE ESTO TAPA, y salió de un simulacro: un agente iba a "reusar" el
+# editor de imágenes de producción. Ese flujo termina en `subir_imagen_wp(...)`
+# y en un PUT a la galería — pero la primera es un POST hecho DENTRO de un
+# helper, así que la regex de escrituras no la ve. La escritura no viaja en el
+# código que copias: viaja en la función que llamas.
+#
+# Por eso la regla del LEEME es "cópialo, no lo importes", y esto la comprueba.
+_IMPORTA_PRODUCCION = [
+    (re.compile(r"^\s*(?:from|import)\s+(?:backend\.)?(?:services|routers|core|vendor)\b",
+                re.M),
+     "importa un módulo de producción"),
+    (re.compile(r"sys\.path[^\n]*\bbackend\b"), "mete backend/ en el sys.path"),
+    # Helpers de producción que ESCRIBEN. Llamar a uno es escribir, aunque el
+    # verbo HTTP no aparezca por ningún lado en tu archivo.
+    (re.compile(r"\b(subir_imagen_wp|reemplazar_imagenes_galeria|guardar_meta|"
+                r"guardar_contenido_wc|actualizar_stock|aplicar_precio_manual|"
+                r"upsert_validados|marcar_revisado)\s*\("),
+     "llama a un helper de producción que ESCRIBE"),
+]
+
+
+def revisar_reuso_de_produccion() -> list[str]:
+    fallos = []
+    for p in _archivos():
+        if p.suffix.lower() in {".md", ".json"}:
+            continue
+        for patron, que in _IMPORTA_PRODUCCION:
+            for n, linea in _lineas_con(p, patron):
+                fallos.append(
+                    f"{p.relative_to(RAIZ)}:{n}  {que}\n      {linea}\n"
+                    f"      → la regla es COPIAR lo que necesites, no importarlo: "
+                    f"una función de producción se lleva sus escrituras pegadas.")
+    return fallos
+
+
 def revisar_importaciones() -> list[str]:
     """¿Producción importa algo de aquí? Sería el fin de la separación."""
     fallos = []
@@ -247,6 +286,7 @@ def main() -> int:
         ("RAMA", revisar_rama()),
         ("PRODUCCIÓN INTACTA EN ESTA RAMA", revisar_produccion_intacta()),
         ("ESCRITURAS A PRODUCCIÓN", revisar_escrituras()),
+        ("REUSO DE CÓDIGO DE PRODUCCIÓN", revisar_reuso_de_produccion()),
         ("SECRETOS", revisar_secretos()),
         ("PRODUCCIÓN IMPORTANDO ESTA CARPETA", revisar_importaciones()),
     ]
