@@ -111,11 +111,27 @@ async def lifespan(app: FastAPI):
              "ENCENDIDO" if settings.fanout_temu else "apagado",
              "ENCENDIDO" if settings.temu_censo_enabled else "apagado")
     # Y las órdenes de venta en Odoo, que son el otro flujo que mueve papel real.
+    #
+    # ⚠️ ESTA LÍNEA MENTÍA, y de la peor forma: la que se lee para diagnosticar.
+    # Imprimía `settings.odoo_ventas_enabled` y `..._canales` —las VARIABLES DE
+    # ENTORNO—, pero en ejecución mandan `habilitado()` y `canal_activo()`, que
+    # leen las filas de `ops.automatizacion_flags`. El 2-sep-2026 decía
+    # "interruptor: apagado · canales: tiktok" con el maestro ENCENDIDO desde el
+    # día anterior y Temu también. Se resuelve el estado REAL, que es el punto
+    # entero de imprimirlo (mismo motivo que el `_canales_activos()` resuelto
+    # del fan-out, tres líneas más arriba).
+    #
+    # Va en `to_thread` porque las dos consultan Postgres (regla 11) y esto es
+    # una corrutina: síncronas detendrían el arranque entero.
+    from services import odoo_ventas as _ov
+    _ov_on = await asyncio.to_thread(_ov.habilitado, True)
+    _ov_canales = await asyncio.to_thread(_ov.canales)
     log.info("Órdenes de venta en Odoo · interruptor: %s · solo_registro: %s · "
-             "confirmar: %s · canales: %s",
-             "ENCENDIDO" if settings.odoo_ventas_enabled else "apagado",
+             "confirmar: %s · canales ACTIVOS: %s (por omisión: %s)",
+             "ENCENDIDO" if _ov_on else "apagado",
              settings.odoo_ventas_solo_registro,
              settings.odoo_ventas_confirmar,
+             sorted(_ov_canales) or "ninguno",
              settings.odoo_ventas_canales)
     yield
     scheduler.detener()
