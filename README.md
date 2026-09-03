@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.380.0 — La pestaña decía "no se creó la orden" de una venta de agosto
+
+Brandon, mirando el tab: *"mira este no se creó la orden de venta!!"*. La
+tarjeta mostraba `sin_orden`, un aviso rojo y la fecha **2/9/2026 5:39 p.m.**
+
+No falló nada. Esa venta —`585572145234216465`— es del **22 de agosto**, y lo
+que llegó hoy fue su **CANCELACIÓN**. El seam corrió la rama de cancelar,
+`buscar_por_ref` no encontró orden en Odoo (nunca hubo: en agosto el
+automatismo no existía) y devolvió `sin_orden`. El resultado correcto.
+
+Lo que estaba mal era **cómo se contaba**, y son dos defectos que se suman
+justo para producir una falsa alarma:
+
+**1 · La fecha era la nuestra, rotulada como del cliente.** La tarjeta imprimía
+`creado_at` de la bitácora —cuándo lo PROCESAMOS— con la etiqueta "venta". Una
+compra de agosto se leía como una venta de hoy. Ahora la consulta trae
+`venta_at` de `channel.orders` y manda ésa; cuando los dos días no coinciden se
+añade "· visto <fecha>", que es la única forma de que se entienda que llegó
+tarde en vez de esconderlo.
+
+**2 · `sin_orden` no estaba en la tabla de rótulos**, así que salía el nombre
+interno crudo sobre un recuadro rojo. Ahora dice **"Cancelada · no había
+orden"** en gris. Y con él entraron `ya_cancelada`, `ya_existia` y
+`solo_registro_cancelar`, que tenían el mismo hueco.
+
+**3 · El `motivo` deja de ser rojo cuando no hay nada que hacer.** Su lista es
+la MISMA que ya excluía `solo_problemas` —donde `sin_orden` estaba desde el
+principio, con su comentario explicando que no pide nada de nadie—. Es decir:
+el filtro ya sabía que esto no era un problema y la tarjeta lo pintaba como si
+lo fuera. Pintar de rojo lo que no hay que atender enseña a ignorar el rojo.
+
 ### v0.379.0 — `conocimientoGeneral`: el saber del panel, aparte y sin salida a producción
 
 Decisión de Brandon. Existe una carpeta donde vive, POR APARTE, lo que OMNICANAL

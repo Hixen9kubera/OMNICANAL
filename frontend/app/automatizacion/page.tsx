@@ -98,6 +98,9 @@ interface OrdenOdoo {
   total: number | null;
   motivo: string | null;
   creado_at: string;
+  /** Cuándo COMPRÓ el cliente. Puede ser null si la venta no está en
+   *  channel.orders; entonces se cae a `creado_at`, diciéndolo. */
+  venta_at: string | null;
   lineas: Linea[];
 }
 
@@ -170,7 +173,24 @@ const ACCION: Record<string, { txt: string; clase: string }> = {
   solo_registro: { txt: "Observando", clase: "bg-sky-50 text-sky-700" },
   error: { txt: "Error", clase: "bg-rose-100 text-rose-800" },
   no_se_pudo_cancelar: { txt: "No se pudo cancelar", clase: "bg-amber-100 text-amber-800" },
+  // El marketplace canceló una venta que NUNCA tuvo orden en Odoo — típico de
+  // ventas anteriores al automatismo. NO es un fallo: no había nada que
+  // cancelar. Faltaba en esta tabla y salía como un chip crudo "sin_orden"
+  // sobre un aviso rojo; se leía como "no se pudo crear la orden".
+  sin_orden: { txt: "Cancelada · no había orden", clase: "bg-slate-100 text-slate-600" },
+  ya_cancelada: { txt: "Ya estaba cancelada", clase: "bg-slate-100 text-slate-600" },
+  solo_registro_cancelar: { txt: "Observando · cancelación", clase: "bg-sky-50 text-sky-700" },
+  ya_existia: { txt: "Ya existía", clase: "bg-slate-100 text-slate-600" },
 };
+
+/** Acciones que NO piden nada de nadie. Su `motivo` es una explicación, no una
+ *  alarma, y por eso no va en rojo: pintar de rojo lo que no hay que atender
+ *  enseña a ignorar el rojo. Misma lista que excluye `solo_problemas`. */
+const SIN_PENDIENTE = new Set([
+  "sin_orden", "ya_cancelada", "ya_existia", "nacio_cancelada",
+  "apagado", "canal_apagado", "simulado", "solo_registro",
+  "solo_registro_cancelar",
+]);
 
 /** Los campos que viajan a Odoo en cada orden. Es la respuesta a "¿qué
  *  necesita el sistema para generar la orden de venta?" — y por eso dice de
@@ -689,7 +709,12 @@ export default function AutomatizacionPage() {
 
                     <span className="ml-auto text-xs text-slate-400">
                       venta {o.external_order_id} ·{" "}
-                      {new Date(o.creado_at).toLocaleString("es-MX")}
+                      {new Date(o.venta_at || o.creado_at).toLocaleString("es-MX")}
+                      {o.venta_at &&
+                        new Date(o.venta_at).toDateString() !==
+                          new Date(o.creado_at).toDateString() && (
+                          <> · visto {new Date(o.creado_at).toLocaleString("es-MX")}</>
+                        )}
                     </span>
                   </div>
 
@@ -711,7 +736,11 @@ export default function AutomatizacionPage() {
                     </p>
                   )}
                   {o.motivo && (
-                    <p className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">
+                    <p className={`mb-3 rounded-lg px-3 py-2 text-xs ${
+                      SIN_PENDIENTE.has(o.accion)
+                        ? "bg-slate-50 text-slate-600"
+                        : "bg-rose-50 text-rose-800"
+                    }`}>
                       {o.motivo}
                     </p>
                   )}

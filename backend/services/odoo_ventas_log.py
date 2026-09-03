@@ -211,6 +211,14 @@ def historial(limite: int = 100, canal: str | None = None,
             f"""select o.canal, o.cuenta, o.external_order_id, o.odoo_order_id,
                        o.odoo_name, o.estado, o.accion, o.almacen, o.cobertura,
                        o.guia, o.paqueteria, o.total, o.motivo, o.creado_at,
+                       -- CUÁNDO COMPRÓ EL CLIENTE, que NO es `creado_at`: ése es
+                       -- cuándo lo procesamos nosotros. La cancelación de una
+                       -- venta de agosto entra hoy, y con una sola fecha en
+                       -- pantalla se lee como una venta de hoy que falló. Pasó
+                       -- el 2-sep con la 585572145234216465 (compra del 22-ago).
+                       (select c.creado_at from channel.orders c
+                         where c.canal = o.canal and c.cuenta = o.cuenta
+                           and c.external_order_id = o.external_order_id) as venta_at,
                        coalesce(
                          (select json_agg(json_build_object(
                              'sku', i.sku, 'titulo', i.titulo, 'imagen', i.imagen,
