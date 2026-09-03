@@ -1005,9 +1005,13 @@ def procesar_sku(sku: str, cuenta: str, categoria_forzada: str, sin_ia: bool) ->
     ficha["contenido"]["titulo_caracteres"] = len(titulo)
     if len(titulo) > 60:
         ficha["avisos"].append(
-            f"El título propuesto trae {len(titulo)} caracteres y ML pide 60. El "
-            "prompt lo pide pero NADIE lo valida en producción (no existe "
-            "`ml_contenido.py`): se aplicaría tal cual.")
+            f"El título propuesto trae {len(titulo)} caracteres y ML pide 60. "
+            "TE LO VAN A CORTAR: en categorías de catálogo el publisher manda "
+            "family_name = title[:60] (vendor/ml_ready/publisher_core.py:363), "
+            "y el 99.95% de las altas medidas (5,918 de 5,921) van por ahí. El "
+            "panel además avisa antes de publicar (services/publicar.py:251). "
+            "Recórtalo tú y con criterio: si lo corta el código, se lleva lo "
+            "que hubiera quedado al final.")
     if not titulo:
         ficha["avisos"].append("La IA no devolvió título.")
 

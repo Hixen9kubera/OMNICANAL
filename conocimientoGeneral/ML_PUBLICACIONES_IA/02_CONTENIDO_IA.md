@@ -395,8 +395,19 @@ IMPORTANTE: el TÍTULO y la DESCRIPCIÓN actuales definen QUÉ ES el producto. S
   real: **`ACC-0653-CHE-13-16`**, faros de niebla con la categoría y los
   atributos de unos binoculares (producto clonado sin limpiar). La IA
   regeneraba "binoculares" porque leía la categoría.
-- **ML NO tiene validador de contenido.** No hay `ml_contenido.py`. El título
-  de 60 caracteres se pide en el prompt y nadie lo comprueba después.
+- **ML no tiene un módulo `ml_contenido.py`** que valide como el de Amazon…
+  **pero el límite de 60 caracteres SÍ se aplica, y de la peor manera.**
+  Corregido el 3-sep tras una auditoría: este documento decía *"nadie lo
+  comprueba después"* y era falso en las dos mitades.
+    · **Se avisa**: `services/publicar.py:30` define `ML_TITULO_MAX = 60`
+      y `:251-252` mete un aviso en el preview del panel.
+    · **Y se CORTA, en silencio**: `vendor/ml_ready/publisher_core.py:363`
+      manda `family_name = prod['title'][:60]` cuando la categoría es de
+      catálogo — que es el **99.95% de las altas medidas (5,918 de
+      5,921)**. Solo el `else` manda el título entero.
+  Por qué importa: quien leyera la versión vieja concluía *"pasarme de 60
+  no tiene consecuencia"*. La verdadera es *"te lo cortan sin avisar y se
+  lleva lo que quedara al final"*. Recórtalo tú, con criterio.
 - **ML SÍ tiene tratamiento especial de atributos** (`ia_generadores.py:384-407`):
   si el producto trae `ml_cat_id`, los atributos que propuso la IA **se
   descartan enteros** y se reemplazan por los de `ml_atributos.generar_atributos()`.

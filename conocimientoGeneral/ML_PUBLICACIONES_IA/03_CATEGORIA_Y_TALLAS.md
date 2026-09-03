@@ -1,10 +1,13 @@
 # Categoría de Mercado Libre y guías de tallas — cómo se decide de verdad
 
-> Extraído de producción el 2026-09-03, commit 1a7da7e.
+> Extraído de producción el 2026-09-03, entre los commits 1a7da7e (v0.371.0)
+> y 07cf6e4 (v0.380.0) — `main` avanzó 14 commits mientras se escribía esto.
+> Comprobado: NINGÚN archivo de ML cambió en esa ventana, así que las citas
+> `archivo:línea` de aquí siguen siendo válidas.
 > ESTO ES UNA COPIA DE CONSULTA. La verdad vive en main; si algo no cuadra,
 > gana main y hay que re-extraer.
 
-Backend en ese commit: `version="0.380.0"` (`backend/main.py:132`).
+Backend al cerrar: `version="0.380.0"` (`backend/main.py:132`).
 Sitio de ML: `MLM` (México) — `backend/config.py:265`.
 Cuentas: `BEKURA` ("Kubera") y `SANCORFASHION` ("San Corpe").
 

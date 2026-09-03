@@ -70,6 +70,21 @@ _ESCRITURAS = [
     (re.compile(r"set_session\s*\([^)]*readonly", re.I),
      "🔴 marca la sesión read-only — ENVENENA EL POOL COMPARTIDO de kubera "
      "(regla 13 de CLAUDE.md); usa BEGIN; SET TRANSACTION READ ONLY; ...; ROLLBACK;"),
+
+    # ── urllib ───────────────────────────────────────────────────────────────
+    # HUECO REAL, encontrado por una auditoría el 3-sep: los patrones de arriba
+    # buscan `.put(` / `.post(`, que es el idioma de `requests` y `httpx`. Pero
+    # el ÚNICO script de esta carpeta está escrito en `urllib`, donde el verbo
+    # viaja como argumento — y `urllib.request.Request(url, method="PUT")`
+    # salía VERDE. El guardián era ciego justo en el idioma de la casa.
+    (re.compile(r"""method\s*=\s*["'](PUT|PATCH|DELETE)["']""", re.I),
+     "escritura HTTP por urllib (method=PUT/PATCH/DELETE)"),
+    # El POST por urllib sí es legítimo aquí: así se le habla a la IA. Solo se
+    # marca cuando apunta a un destino que NO es la IA.
+    (re.compile(r"""Request\s*\([^)]*(woocommerce|wp-json|chunche|/products|/orders|"""
+                r"""mercadolibre|/items|sp-api|amazon|tiktokglobalshop|temu|walmart)"""
+                r"""[^)]*method\s*=\s*["']POST["']""", re.I | re.S),
+     "POST por urllib a un marketplace o a WooCommerce"),
 ]
 
 # ── 2 · Secretos ─────────────────────────────────────────────────────────────
