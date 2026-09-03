@@ -1107,14 +1107,24 @@ async def capturar_rankings_categorias(periodo: str | None = None,
                 avisos.append(f"{cat}: se raspó pero no se pudo guardar ({exc}).")
 
     # Términos más buscados: una llamada por categoría, gratis, sin navegador.
+    #
+    # TRES desenlaces, no dos. `tendencias` devuelve None cuando NO SE PUDO
+    # preguntar, y ese caso no se escribe: escribir [] ahí borra términos buenos.
+    # Pasó el 12-ago-2026 —la captura agotó la cuota de MySQL, el token dejó de
+    # leerse, `tendencias` devolvió [] y 54 de 158 subcategorías quedaron
+    # marcadas como "ML no publica términos" cuando sí los publica (Mancuernas
+    # MLM187612: 0 guardados, 50 en vivo)—. Hubo que escribir
+    # `competencia_terminos_faltantes.py` para repararlo a mano.
     for cat in nivel_de:
         t = await asyncio.to_thread(competencia_ml.tendencias, cat)
         if t:
             terminos[cat] = competencia_store.reemplazar_terminos(
                 cat, periodo, [{"termino": x["keyword"], "url": x.get("url")} for x in t])
+        elif t is None:
+            avisos.append(f"{cat}: no se pudo consultar /trends; los términos "
+                          "guardados se dejaron como estaban.")
         else:
-            # Mismo criterio que el ranking: ausencia de términos es un HECHO de
-            # ML, no un fallo nuestro. La vista lo muestra como "sin datos".
+            # [] SÍ es un hecho de ML: la categoría no tiene términos publicados.
             competencia_store.reemplazar_terminos(cat, periodo, [])
             avisos.append(f"{cat}: ML no publica términos de búsqueda de esta "
                           "categoría (/trends responde 404).")

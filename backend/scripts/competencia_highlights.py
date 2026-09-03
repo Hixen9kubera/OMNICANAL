@@ -55,7 +55,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.basicConfig(level=logging.WARNING,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-from services import competencia_ml, supabase_db  # noqa: E402
+from services import competencia_ml, competencia_store, supabase_db  # noqa: E402
 
 CANAL = "mercado_libre"
 CONCURRENCIA = 8      # medido: 134 ms por categoría, 2.5 min las 1,129
@@ -132,6 +132,56 @@ async def sondear(cats: list[str]) -> dict[str, list[dict[str, Any]] | None]:
 
     await asyncio.gather(*(una(c) for c in cats))
     return out
+
+
+async def refrescar_terminos(cats: list[str]) -> dict[str, int]:
+    """
+    Los términos más buscados de cada categoría, al día. → conteos por desenlace.
+
+    ── POR QUÉ VIVE AQUÍ ──────────────────────────────────────────────────────
+    Porque es GRATIS y estaba secuestrado por algo que cuesta. `/trends` es una
+    llamada a la API de ML, sin navegador y sin Apify, pero hasta hoy sólo se
+    refrescaba DENTRO de `capturar_rankings_categorias` — o sea que para ver
+    términos nuevos había que pagar un raspado de ranking. Con el barrido en
+    quincenal (v0.372.0), esa mitad de la pantalla envejecía hasta 15 días sin
+    ninguna razón técnica.
+
+    Este script ya recorre las mismas categorías, ya corre a diario encadenado a
+    las visitas, y ya no cuesta nada. Es su lugar.
+
+    ── LA REGLA QUE NO SE PUEDE ROMPER ────────────────────────────────────────
+    `tendencias()` distingue tres respuestas y aquí se respetan las tres:
+
+        lista  →  se guarda
+        []     →  ML no publica términos de esa categoría: se guarda el vacío,
+                  que es un HECHO y el panel lo muestra como "sin datos"
+        None   →  NO SE PUDO preguntar: no se toca nada
+
+    Confundir las dos últimas ya costó caro: el 12-ago-2026 la captura agotó la
+    cuota de MySQL, el token dejó de leerse, y 54 de 158 subcategorías quedaron
+    marcadas como "ML no publica términos" cuando sí los publica.
+    """
+    sem = asyncio.Semaphore(CONCURRENCIA)
+    cuenta = {"guardados": 0, "sin_terminos": 0, "no_se_pudo": 0}
+    periodo = competencia_store.periodo_actual()
+
+    async def una(cid: str) -> None:
+        async with sem:
+            t = await asyncio.to_thread(competencia_ml.tendencias, cid)
+        if t:
+            await asyncio.to_thread(
+                competencia_store.reemplazar_terminos, cid, periodo,
+                [{"termino": x["keyword"], "url": x.get("url")} for x in t])
+            cuenta["guardados"] += 1
+        elif t is None:
+            cuenta["no_se_pudo"] += 1
+        else:
+            await asyncio.to_thread(
+                competencia_store.reemplazar_terminos, cid, periodo, [])
+            cuenta["sin_terminos"] += 1
+
+    await asyncio.gather(*(una(c) for c in cats))
+    return cuenta
 
 
 def sano(res: dict[str, list[dict[str, Any]] | None]) -> tuple[bool, str]:
@@ -292,6 +342,15 @@ def main() -> int:
     escritas, cambios = guardar(res)
     print(f"\n  escritas: {escritas} · con el top movido desde la vez pasada: {cambios}")
     print(f"  bitácora del top {TOPE_HUELLA}: {escritas} filas para hoy")
+
+    # ── Los términos más buscados: gratis, y ya no atados al raspado ──
+    print("\n═══ Competencia · términos más buscados (/trends, gratis) ═══")
+    t1 = time.time()
+    ct = asyncio.run(refrescar_terminos(cats))
+    print(f"  refrescados en {(time.time() - t1)/60:.1f} min")
+    print(f"    con términos  : {ct['guardados']}")
+    print(f"    SIN términos  : {ct['sin_terminos']}   (ML no publica ahí)")
+    print(f"    no se pudo    : {ct['no_se_pudo']}   (no se tocaron: 'no sé' ≠ 'no hay')")
 
     if err > len(cats) / 4:
         print(f"\nERROR: {err} de {len(cats)} fallaron. No es una corrida sana.")

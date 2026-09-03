@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.378.0 — Los términos más buscados eran gratis y estaban secuestrados (Eduardo)
+
+Eduardo: *"suéltalos también, mientras sean gratis y podamos hacerlo con el cron
+diario de las visitas estaría bien"*.
+
+`/trends` es una llamada a la API de ML: sin navegador, sin Apify, **$0**. Pero
+sólo se refrescaba DENTRO de `capturar_rankings_categorias`, así que para ver
+términos nuevos había que pagar un raspado. Con el barrido en quincenal
+(v0.372.0), media pantalla envejecía hasta 15 días sin ninguna razón técnica.
+
+Ahora lo hace `competencia_highlights.py`, que ya recorre las mismas categorías,
+ya corre a diario encadenado a las visitas, y ya no cuesta nada.
+
+**Pero primero había que arreglar `tendencias()`, o el cron habría sido peor que
+el problema.** Su docstring pedía *"quien llame debe distinguir «sin datos en ML»
+de «no lo pudimos traer»"* — y el código **no daba con qué**:
+
+```python
+d = _get(ruta, None, cuenta)
+if not isinstance(d, list):
+    return []          # un 404, un timeout y un 429 daban lo MISMO
+```
+
+Y quien llamaba escribía `[]`, o sea **borraba los términos guardados**.
+
+**Ya había pasado.** El 12-ago-2026 la captura agotó la cuota de MySQL, el token
+dejó de leerse, `tendencias()` devolvió `[]` y **54 de 158 subcategorías**
+quedaron marcadas como "ML no publica términos" cuando sí los publica —
+Mancuernas (MLM187612): 0 guardados, 50 en vivo. Se escribió
+`competencia_terminos_faltantes.py` para repararlo a mano, sin quitar la causa.
+Diario, ese defecto habría borrado 1,062 categorías al primer tropiezo de red.
+
+**El contrato nuevo**, y `_get` gana un buzón opcional `estado` para poder
+cumplirlo (quien no lo pase no cambia en nada):
+
+| respuesta | significa | qué se hace |
+|---|---|---|
+| lista | ML publica términos | se guardan |
+| `[]` | 404: ML no publica ahí | se guarda el vacío — es un hecho |
+| **`None`** | **no se pudo preguntar** | **no se toca nada** |
+
+**Verificado contra ML en vivo**: Mancuernas devuelve 50 términos, Bujías 404 →
+`[]`, una categoría inventada 404 → `[]`. Y simulando los tres fallos —timeout,
+429 y 500— los tres dan `None` y no escriben. La corrida real sobre 3 categorías
+guardó 2 con 50 términos y 1 vacía, con los conteos cuadrando.
+
 ### v0.377.0 — Un botón para medir UNA búsqueda: de $5.47 y SSH, a $0.007 (Eduardo)
 
 Eduardo: *"la idea es colocar un botón para que la persona pueda rasparlo sin

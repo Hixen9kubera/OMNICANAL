@@ -161,11 +161,17 @@ def _olvidar_token(cuenta: str) -> None:
 
 def _get(ruta: str, params: dict[str, Any] | None = None,
          cuenta: str = _CUENTA_DEFAULT, _reintentado: bool = False,
-         _intento_429: int = 0) -> Any | None:
+         _intento_429: int = 0, estado: dict[str, int] | None = None) -> Any | None:
     """
     GET contra la API de ML. Renueva el token una sola vez ante un 401, igual que
     `costos.pct_comision_ml`. Un 403 se registra en DEBUG y no se reintenta: es
     permiso denegado por diseño de ML, no un token caduco.
+
+    `estado` es un buzón OPCIONAL: quien lo pase recibe ahí el código HTTP. Hace
+    falta porque `None` colapsa tres cosas distintas —404, 403 y «no se pudo
+    preguntar»— y hay al menos un caso donde la diferencia es todo: `tendencias`
+    debe escribir «ML no publica términos aquí» ante un 404 y NO TOCAR NADA ante
+    un fallo. Quien no lo pase no cambia en nada.
 
     Un 429 SÍ se reintenta con espera creciente (ver `_ESPERAS_429`): es el
     límite de ritmo de la API, compartido por toda la aplicación, y es la causa
@@ -184,6 +190,8 @@ def _get(ruta: str, params: dict[str, Any] | None = None,
         log.warning("ML GET %s error de red: %s", ruta, exc)
         return None
 
+    if estado is not None:
+        estado["code"] = r.status_code
     if r.status_code == 200:
         try:
             return r.json()
@@ -421,19 +429,26 @@ def tendencias(categoria_id: str | None = None,
     Keywords más buscados del sitio o de una categoría: lo que la gente ESCRIBE
     en el buscador, ordenado por volumen.
 
-    Devuelve [] tanto si la categoría no tiene términos como si ML responde 404.
-    El 404 NO es un fallo: hay categorías de las que ML no publica nada — Bujías
-    (MLM179785) y Cartuchos de Turbo (MLM458946) dan 404, y son exactamente las
-    mismas cuyo /highlights también viene vacío. Quien llame debe distinguir
-    "sin datos en ML" de "no lo pudimos traer".
+    → lista de términos si ML contesta.
+    → [] si ML responde 404: NO es un fallo, hay categorías de las que no publica
+      nada — Bujías (MLM179785) y Cartuchos de Turbo (MLM458946) dan 404, y son
+      exactamente las mismas cuyo /highlights también viene vacío.
+    → **None si no se pudo preguntar** (timeout, 429, token caído). Quien llame
+      NO debe escribir nada en ese caso: borraría datos buenos por un tropiezo.
     """
     ruta = f"/trends/{settings.ml_site_id}"
     if categoria_id:
         ruta += f"/{categoria_id}"
-    d = _get(ruta, None, cuenta)
-    if not isinstance(d, list):
-        return []
-    return [{"keyword": t.get("keyword"), "url": t.get("url")} for t in d if t.get("keyword")]
+    est: dict[str, int] = {}
+    d = _get(ruta, None, cuenta, estado=est)
+    if isinstance(d, list):
+        return [{"keyword": t.get("keyword"), "url": t.get("url")}
+                for t in d if t.get("keyword")]
+    # AQUÍ ESTABA EL HUECO: antes se devolvía [] pasara lo que pasara, así que
+    # un timeout o un 429 se leía como «ML no publica términos» y quien llamara
+    # BORRABA los términos guardados. El docstring de arriba ya pedía distinguir
+    # las dos cosas; el código no daba con qué.
+    return [] if est.get("code") == 404 else None
 
 
 # ── Catálogo: búsqueda por título y competidores del mismo producto ──────────
