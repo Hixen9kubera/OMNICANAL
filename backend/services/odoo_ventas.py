@@ -620,16 +620,35 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
                             "estado": leida["state"], "total": leida["amount_total"],
                             "almacen": parte["almacen"], "ya_existia": False})
 
-        accion = ("ya_existia" if all(c["ya_existia"] for c in creadas)
-                  else "confirmada" if confirmar else "creada")
-        log.info("Odoo %s: venta %s → %s en %s (cobertura %s)", canal, order_id,
+        # 6 · ¿QUÉ PASÓ DE VERDAD? No se dice "confirmada" porque se PIDIÓ
+        #     confirmar: se dice porque Odoo la dejó en `sale`. Es la misma
+        #     lección que `cancelar_orden` ya tenía escrita —`action_cancel` no
+        #     siempre cancela y contesta igual—, y aquí faltaba: una orden que
+        #     se queda en borrador NO reserva, así que `free_qty` no baja y el
+        #     stock sigue ofreciéndose. Reportarla como confirmada esconde
+        #     justo la sobreventa que confirmar venía a evitar.
+        sin_confirmar = [c for c in creadas
+                         if not c["ya_existia"] and c["estado"] != "sale"]
+        motivo = None
+        if all(c["ya_existia"] for c in creadas):
+            accion = "ya_existia"
+        elif confirmar and sin_confirmar:
+            accion = "no_se_pudo_confirmar"
+            motivo = ("Odoo dejó en '%s' a %s: no reserva, el stock se sigue "
+                      "ofreciendo. Hay que confirmarla a mano."
+                      % (sin_confirmar[0]["estado"],
+                         ", ".join(c["nombre"] for c in sin_confirmar)))
+            log.warning("Odoo %s: venta %s — %s", canal, order_id, motivo)
+        else:
+            accion = "confirmada" if confirmar else "creada"
+        log.info("Odoo %s: venta %s → %s en %s (cobertura %s, %s)", canal, order_id,
                  ", ".join(c["nombre"] for c in creadas),
-                 " + ".join(c["almacen"] for c in creadas), plan["cobertura"])
+                 " + ".join(c["almacen"] for c in creadas), plan["cobertura"], accion)
 
         # La bitácora guarda UNA fila por venta (su llave es la venta), así que
         # con surtido dividido los nombres van juntos: "S37010 + S37011". Se
         # prefiere eso a inventar una fila por parte, que rompería la llave.
-        return {"ok": True, "accion": accion,
+        return {"ok": not sin_confirmar, "accion": accion, "motivo": motivo,
                 "odoo_id": creadas[0]["odoo_id"],
                 "nombre": " + ".join(c["nombre"] for c in creadas),
                 "estado": creadas[0]["estado"],

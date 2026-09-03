@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.385.0 — ESCALÓN 4: la orden nace CONFIRMADA, y "confirmada" hay que ganársela
+
+Dale de Brandon: *"¿puedes hacer que se confirme la orden de venta una vez se
+crea?"*, para los dos canales. En Railway, `ODOO_VENTAS_CONFIRMAR=true`.
+
+**POR QUÉ SE SALTÓ EL ESCALÓN 3, Y POR QUÉ ESO ESTÁ BIEN.** El 3
+(`proteger_stock`: que el pedido de Woo deje de descontar) está escrito para el
+modo DELTA. Desde el 28-ago `stock_watch` corre en **ABSOLUTO**: Woo COPIA el
+`free_qty` de Odoo en cada pasada, sin condiciones (`destino = ahora_od`). El
+descuento propio de Woo ya no se suma a nada — se sobrescribe solo.
+
+Y al mirarlo salió que lo peligroso era lo contrario. **Sin confirmar, la venta
+no bajaba el inventario de forma durable:**
+
+    venta → Woo descuenta 1 (10 → 9)
+    Odoo crea el BORRADOR → no reserva, free_qty sigue en 10
+    stock_watch copia lo de Odoo → Woo VUELVE A 10   ← el descuento se deshace
+
+Una ventana de sobreventa de ~20 min por venta, abierta desde que se encendió
+el escalón 2. Confirmar es lo que la cierra: Odoo reserva, `free_qty` baja a 9,
+Woo copia 9 y se queda. El escalón 3 pasa de bloqueador a limpieza.
+
+**"CONFIRMADA" YA NO SE DICE POR HABERLO PEDIDO.** `crear_orden` marcaba
+`accion="confirmada"` cuando `confirmar` era true, sin mirar el resultado —
+exactamente el defecto que `cancelar_orden` ya tenía documentado ("`action_cancel`
+NO SIEMPRE CANCELA, y contesta igual"). Aquí el modo de fallo es peor: una orden
+que se queda en borrador **no reserva**, así que el stock se sigue ofreciendo, y
+llamarla confirmada esconde justo la sobreventa que confirmar venía a evitar.
+
+Ahora el estado se RELEE tras `action_confirm` y, si alguna parte no quedó en
+`sale`, la acción es **`no_se_pudo_confirmar`** con su motivo, `ok=False`, aviso
+en el log, rótulo ámbar y entrada en "solo lo que hay que mirar" — donde ya
+estaban `error`, `sku_sin_producto`, `no_se_pudo_cancelar` y la cobertura
+parcial. Se revisa por parte, así que un surtido dividido con una mitad sin
+confirmar tampoco pasa por bueno.
+
+**El riesgo que queda es Gabriela.** Con las órdenes confirmadas, si ella
+captura y confirma la misma venta, se reserva **dos veces** en Odoo — y eso ya
+no es transitorio. También cambia el trabajo del almacén: confirmar genera la
+ENTREGA, y TEXCO II casi no recibía.
+
 ### v0.384.0 — El aviso del top decía «de 10» cuando casi ningún top tiene 10 (Eduardo)
 
 Eduardo: *"hay que cambiar ese aviso conforme al top, ya que no todos los tops

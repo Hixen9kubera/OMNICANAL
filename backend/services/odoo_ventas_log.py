@@ -204,8 +204,13 @@ def historial(limite: int = 100, canal: str | None = None,
         # Quedan FUERA a propósito las que no piden nada: `nacio_cancelada`
         # (la venta llegó muerta, no hay nada que hacer), `apagado`, `simulado`,
         # `ya_existia`, `ya_cancelada` y `sin_orden`.
+        #   no_se_pudo_confirmar      → la orden existe pero se quedó en
+        #                               borrador: NO reserva, así que el stock
+        #                               se sigue ofreciendo. Sobreventa viva
+        #                               hasta que alguien la confirme a mano.
         donde.append("(o.accion in ('error','sku_sin_producto',"
-                     "'no_se_pudo_cancelar') or o.cobertura = 'parcial')")
+                     "'no_se_pudo_cancelar','no_se_pudo_confirmar') "
+                     "or o.cobertura = 'parcial')")
     try:
         filas = sdb.fetch_all(
             f"""select o.canal, o.cuenta, o.external_order_id, o.odoo_order_id,

@@ -173,6 +173,11 @@ const ACCION: Record<string, { txt: string; clase: string }> = {
   solo_registro: { txt: "Observando", clase: "bg-sky-50 text-sky-700" },
   error: { txt: "Error", clase: "bg-rose-100 text-rose-800" },
   no_se_pudo_cancelar: { txt: "No se pudo cancelar", clase: "bg-amber-100 text-amber-800" },
+  // La orden se creó pero Odoo NO la dejó en `sale`: no reserva, y el stock se
+  // sigue ofreciendo. Va en ámbar y entra en "solo lo que hay que mirar".
+  no_se_pudo_confirmar: { txt: "No se pudo confirmar", clase: "bg-amber-100 text-amber-800" },
+  confirmada: { txt: "Confirmada", clase: "bg-emerald-100 text-emerald-800" },
+  creada: { txt: "Creada", clase: "bg-slate-100 text-slate-700" },
   // El marketplace canceló una venta que NUNCA tuvo orden en Odoo — típico de
   // ventas anteriores al automatismo. NO es un fallo: no había nada que
   // cancelar. Faltaba en esta tabla y salía como un chip crudo "sin_orden"
