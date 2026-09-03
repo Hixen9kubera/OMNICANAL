@@ -247,6 +247,23 @@ def terminos_medidos(canal: str = "mercado_libre") -> set[str]:
         " WHERE canal = %s AND medido_en IS NOT NULL", (canal,))}
 
 
+def estado_termino(termino: str, canal: str = "mercado_libre") -> dict[str, Any] | None:
+    """
+    ¿Existe ese término y de cuándo es su medición? None si no está en el catálogo.
+
+    El botón del panel lo necesita para DOS cosas distintas: la lista blanca —no
+    se raspa una cadena arbitraria, que es dinero— y el candado de días. Devolver
+    None y "medido hace 0 días" son respuestas distintas y llevan a códigos HTTP
+    distintos (422 contra 409).
+    """
+    filas = supabase_db.fetch_all(
+        "SELECT termino, origen, medido_en, resultados, "
+        "       (now()::date - medido_en::date) AS dias "
+        "  FROM enrich.market_search_term "
+        " WHERE canal = %s AND lower(termino) = lower(%s) LIMIT 1", (canal, termino))
+    return filas[0] if filas else None
+
+
 def rankings_por_categoria() -> dict[tuple[str, str], list[dict[str, Any]]]:
     """
     TODO el ranking de una vez, agrupado por (categoria_id, nivel).

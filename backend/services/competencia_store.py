@@ -365,6 +365,12 @@ def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
         "No hay SUPABASE_DB_URL. Competencia vive 100%% en enrich.market_* "
         "de la BD kubera; este módulo ya no tiene modo local.")
 
+def estado_termino(termino: str) -> dict[str, Any] | None:
+    """Si el término existe en el catálogo, y de cuándo es su medición."""
+    r = _remoto()
+    return r.estado_termino(termino) if r else None
+
+
 def terminos_medidos() -> set[str]:
     """Qué términos ya tienen búsqueda. Es lo que evita volver a pagar por ellos."""
     r = _remoto()

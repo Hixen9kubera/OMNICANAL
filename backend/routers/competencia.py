@@ -63,6 +63,12 @@ class RankingsReq(BaseModel):
     forzar: bool = False        # ignora el candado de días
 
 
+class BusquedaReq(BaseModel):
+    """Qué término medir. Uno, no una lista: el botón mide lo que estás viendo."""
+    termino: str
+    forzar: bool = False        # ignora el candado de días
+
+
 @router.get("/estado")
 def estado():
     """Diagnóstico honesto: qué fuentes hay y qué NO se puede medir, con el motivo."""
@@ -265,9 +271,14 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
     # resultados en ML, mientras los términos cortos sí. Nadie busca así, y pagar
     # por consultas que vuelven vacías no tiene sentido.
     general = competencia_store.busqueda(fila.get("termino_general") or "", 10)
+    # DE CUÁNDO es esa búsqueda. Sin esto, una medición de hace 16 días se lee
+    # igual que una de hoy — el mismo defecto que la 0038 corrigió en el resto
+    # del tab. `None` significa "nunca se midió", que NO es lo mismo que "viejo".
+    est_term = competencia_store.estado_termino(fila.get("termino_general") or "")
 
     return {
         "busqueda_general": general,
+        "busqueda_medida_en": (est_term or {}).get("medido_en"),
         "sku": sku,
         "nombre": fila.get("nombre"),
         "imagen": fila.get("imagen"),
@@ -443,6 +454,59 @@ def _validar_solo(cats: list[str], forzar: bool) -> tuple[list[str], list[str]]:
     # Si pasó algo pero se cayeron otras, NO es error — pero hay que decirlo.
     # Descartar en silencio es lo que produce el reporte "el botón no hizo nada".
     return ok, descartes
+
+
+@router.post("/busqueda")
+async def capturar_busqueda(req: BusquedaReq):
+    """
+    Mide la BÚSQUEDA GENERAL de UN término. Cuesta ~$0.007 — una página.
+
+    ── POR QUÉ EXISTE ─────────────────────────────────────────────────────────
+    Hasta hoy esta mitad del tab sólo se podía medir desde la terminal
+    (`competencia_buscar_apify.py --execute`), y eso corre la COLA ENTERA. El
+    2-sep-2026 había 781 términos pendientes: refrescar uno costaba $5.47 y
+    entrar por SSH, así que nadie lo hacía — lo medido llevaba 16 días parado.
+    Con este botón, ese mismo término cuesta **$0.007**.
+
+    Y como la tabla es POR TÉRMINO, no por SKU, medir uno sirve a todos los SKUs
+    que lo comparten: 80 términos cubren 522 SKUs.
+
+    ── LOS DOS CANDADOS, Y POR QUÉ DAN CÓDIGOS DISTINTOS ──────────────────────
+    Igual que en `/rankings` (v0.375.0), porque la lección fue cara:
+
+      422  el término no está en el catálogo. Es un pedido mal hecho y esperar
+           no lo arregla. Además es la LISTA BLANCA: sin ella, un POST a una API
+           sin auth real raspa cualquier cadena y paga por ella.
+      409  se midió hace menos de `DIAS_CANDADO`. Es temporal, mañana se puede,
+           y el panel lo pinta como aviso en vez de como falla.
+    """
+    termino = (req.termino or "").strip()
+    if not termino:
+        raise HTTPException(422, "Falta el término a medir.")
+
+    est = competencia_store.estado_termino(termino)
+    if not est:
+        raise HTTPException(
+            422, f"«{termino}» no está en el catálogo de términos. Asígnalo a un "
+                 "SKU antes de medirlo: sólo se raspa lo que alguien pidió.")
+
+    dias = est.get("dias")
+    if dias is not None and dias < DIAS_CANDADO and not req.forzar:
+        raise HTTPException(
+            409, f"«{termino}» se midió hace {dias} día(s). Se puede volver a "
+                 f"pedir en {DIAS_CANDADO - dias}.")
+
+    guardadas = await competencia_captura.medir_busquedas([termino])
+    n = guardadas.get(termino, 0)
+    return {
+        "ok": True,
+        "termino": termino,
+        "filas": n,
+        # Cero filas NO es un fallo: hay búsquedas sin resultados en ML, y el
+        # término queda marcado como medido igual (ya se pagó). Quien llame lo
+        # dice con esas palabras en vez de mostrar un error.
+        "vacio": n == 0,
+    }
 
 
 @router.post("/rankings")

@@ -35,6 +35,7 @@ import {
   terminosSubcategoria,
   vistaCompetencia,
   capturarRankingsCompetencia,
+  capturarBusquedaCompetencia,
   mensajeDeError,
   ApiError,
 } from "@/lib/api";
@@ -635,12 +636,37 @@ function ResultadosBusqueda({ filas }: { filas: CompetenciaResultado[] }) {
  * Tampoco se muestra el largo en caracteres de los títulos ajenos: era ruido.
  */
 function DetalleSku({
-  d,
+  d: dProp,
   cargando,
 }: {
   d: CompetenciaDetalleSku | null;
   cargando: boolean;
 }) {
+  /**
+   * El detalle se recarga A SÍ MISMO después de medir una búsqueda.
+   *
+   * La alternativa era `onRefrescado`, que ya baja hasta aquí — pero ése recarga
+   * el ÁRBOL COMPLETO, y son ~17 MB de JSON. Volver a pedir un SKU tras una
+   * acción que ocurrió dentro de este mismo bloque es más barato y más honesto:
+   * lo que cambió está aquí adentro.
+   */
+  const [recargado, setRecargado] = useState<CompetenciaDetalleSku | null>(null);
+  const d = recargado ?? dProp;
+
+  // Al cambiar de SKU, lo recargado deja de aplicar.
+  useEffect(() => {
+    setRecargado(null);
+  }, [dProp?.sku]);
+
+  const recargarDetalle = useCallback(async () => {
+    if (!dProp?.sku) return;
+    try {
+      setRecargado(await detalleSkuCompetencia(dProp.sku));
+    } catch {
+      // Si la recarga falla, se queda lo que ya estaba en pantalla: el término
+      // SÍ se midió, y perder la vista sería peor que mostrarla un poco vieja.
+    }
+  }, [dProp?.sku]);
   const [sug, setSug] = useState<CompetenciaSugerenciaSub | null>(null);
   const [pidiendo, setPidiendo] = useState(false);
   const [fallo, setFallo] = useState<string | null>(null);
@@ -702,6 +728,11 @@ function DetalleSku({
             <span className="text-[10px] text-slate-400">
               {d.termino_origen === "manual" ? "corregido a mano" : "propuesto por IA"}
             </span>
+            <BotonMedirBusqueda
+              termino={d.termino_general}
+              medidoEn={d.busqueda_medida_en}
+              onListo={recargarDetalle}
+            />
           </div>
           {d.busqueda_general.length === 0 ? (
             /* El mensaje viejo explicaba por qué la API no sirve
@@ -1336,6 +1367,97 @@ function Cabeza() {
         <th className="pb-1 text-right font-medium">Conversión</th>
       </tr>
     </thead>
+  );
+}
+
+/**
+ * El botón que mide la BÚSQUEDA GENERAL de un término.
+ *
+ * Hermano de `BotonRefrescar`, y por la misma razón: hasta hoy esta mitad del
+ * tab sólo se podía medir corriendo la cola entera desde la terminal —781
+ * términos, $5.47— así que no se medía. Lo que se veía llevaba 16 días parado.
+ * Aquí cuesta **$0.007**, una página.
+ *
+ * Vive junto al término y no junto a cada resultado porque **se paga por
+ * TÉRMINO**: la tabla es por término, no por SKU, y 80 términos cubren 522
+ * SKUs. Un botón por resultado pagaría la misma consulta cinco veces.
+ */
+function BotonMedirBusqueda({
+  termino,
+  medidoEn,
+  onListo,
+}: {
+  termino: string | null;
+  medidoEn: string | null;
+  onListo: () => void;
+}) {
+  const [corriendo, setCorriendo] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [tono, setTono] = useState<"ok" | "aviso" | "error">("ok");
+
+  if (!termino) return null;
+
+  const dias = medidoEn === null ? null : diasDesde(medidoEn);
+
+  async function pedir() {
+    setCorriendo(true);
+    setMsg(null);
+    setTono("ok");
+    try {
+      const r = await capturarBusquedaCompetencia(termino!);
+      // Cero resultados NO es un fallo: hay búsquedas que ML no contesta con
+      // nada, y el término queda medido igual. Decirlo así evita que se reporte
+      // como error algo que ya se pagó y está bien.
+      setMsg(r.vacio ? "Medido: ML no devolvió resultados para ese término."
+                     : `Listo: ${r.filas} resultados.`);
+      setTono(r.vacio ? "aviso" : "ok");
+      if (!r.vacio) onListo();
+    } catch (e) {
+      // 409 = el candado de días. Aviso, no falla. Igual que en el de rankings.
+      setTono(e instanceof ApiError && e.status === 409 ? "aviso" : "error");
+      setMsg(mensajeDeError(e, "No se pudo medir."));
+    } finally {
+      setCorriendo(false);
+    }
+  }
+
+  return (
+    <>
+      <span className="ml-auto flex items-center gap-2">
+        <span className="text-[10px] font-normal text-slate-400">
+          {dias === null
+            ? "sin medir"
+            : `medido ${textoRelativo(dias)}`}
+        </span>
+        <button
+          type="button"
+          onClick={pedir}
+          disabled={corriendo}
+          title="Vuelve a buscar ese término en Mercado Libre. Cuesta ~$0.007, y sólo se puede una vez al día por término."
+          className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+        >
+          {corriendo ? (
+            <Loader2 size={10} className="animate-spin" />
+          ) : (
+            <RefreshCw size={10} />
+          )}
+          {corriendo ? "Midiendo…" : "Medir"}
+        </button>
+      </span>
+      {msg ? (
+        <span
+          className={`mt-1 w-full basis-full text-[11px] font-normal ${
+            tono === "error"
+              ? "text-amber-600"
+              : tono === "aviso"
+                ? "text-slate-500"
+                : "text-emerald-600"
+          }`}
+        >
+          {msg}
+        </span>
+      ) : null}
+    </>
   );
 }
 

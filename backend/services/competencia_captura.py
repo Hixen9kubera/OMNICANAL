@@ -1140,6 +1140,62 @@ async def capturar_rankings_categorias(periodo: str | None = None,
             "terminos": terminos, "avisos": avisos}
 
 
+async def medir_busquedas(terminos: list[str], limite: int = 10) -> dict[str, int]:
+    """
+    Mide la BÚSQUEDA GENERAL de estos términos y la guarda. → {término: filas}.
+
+    ── POR QUÉ VIVE AQUÍ Y NO EN EL SCRIPT ────────────────────────────────────
+    Porque ahora tiene dos consumidores: `competencia_buscar_apify.py`, que corre
+    la cola pendiente por tandas, y el botón del panel, que mide UNO. La receta
+    —raspar, pedir reseñas, pedir visitas, marcar lo nuestro, guardar— tiene
+    cinco pasos y ninguno es opcional: duplicarla es garantizar que dentro de un
+    mes una de las dos copias olvide un paso.
+
+    ── LO QUE CUESTA Y LO QUE NO ──────────────────────────────────────────────
+    Sólo el raspado cuesta: ~$0.007 por término, una página del navegador
+    genérico de Apify. Reseñas, rating y visitas salen GRATIS de la API de ML y
+    por eso se piden aparte en vez de pagar `includeProductDetail`, que cuesta 8x
+    por item.
+
+    Se puede llamar con varios términos y se agrupan en UNA corrida del actor: la
+    atribución es por URL, así que agrupar aquí SÍ funciona (con el actor viejo
+    de ML no: no etiquetaba de qué consulta venía cada resultado).
+
+    Un término que no devuelve nada NO es un fallo — hay búsquedas sin resultados
+    en ML— pero igual queda marcado como medido: ya se pagó y no hay que volver a
+    pagarlo. Por eso el valor puede ser 0 y aun así el término deja de estar
+    pendiente.
+    """
+    if not terminos:
+        return {}
+    res = await competencia_scraper.buscar_terminos(terminos, limite=limite)
+    periodo = competencia_store.periodo_actual()
+    nuestras = _nuestras_publicaciones()
+    guardadas: dict[str, int] = {}
+    for termino in terminos:
+        filas = res.get(termino) or []
+        if not filas:
+            guardadas[termino] = 0
+            continue
+        # Las reseñas van en HILOS, no en línea. `competencia_ml.reviews` usa
+        # `requests` —bloqueante— y esto ahora corre DENTRO del event loop del
+        # backend (el botón del panel), no en un script con su propio loop.
+        # Diez llamadas de ~0.3 s en línea congelan el servidor ENTERO tres
+        # segundos por término: es exactamente el defecto de la regla 11 que
+        # costó el apagón del 13-ago (v0.157.0–v0.162.0).
+        revs = await asyncio.gather(
+            *(asyncio.to_thread(competencia_ml.reviews, f["externo_id"]) for f in filas),
+            return_exceptions=True)
+        for f, r in zip(filas, revs):
+            if isinstance(r, dict):
+                f["reviews"] = r.get("reviews")
+                f["rating"] = f.get("rating") or r.get("rating")
+        await enriquecer_visitas(filas)
+        _marcar(filas, nuestras)
+        guardadas[termino] = competencia_store.reemplazar_busqueda(termino, periodo, filas)
+    return guardadas
+
+
 async def enriquecer_visitas(filas: list[dict[str, Any]]) -> int:
     """
     Visitas de 30 días para los resultados de una búsqueda. → cuántas se llenaron.

@@ -1001,6 +1001,66 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.377.0 — Un botón para medir UNA búsqueda: de $5.47 y SSH, a $0.007 (Eduardo)
+
+Eduardo: *"la idea es colocar un botón para que la persona pueda rasparlo sin
+necesidad de actualizar los de todas las categorías, ya que suena bastante caro"*.
+
+**Tenía razón, y era peor de lo que parecía.** La sección «Competencia directa»
+son DOS mitades con economías opuestas:
+
+| mitad | fuente | costo |
+|---|---|---|
+| Top 10 términos más buscados | API `/trends` de ML | **$0** |
+| Búsqueda general | navegador de Apify, 1 página por término | **~$0.007** |
+
+La de pago **sólo se podía correr desde la terminal** —`competencia_buscar_apify.py
+--execute`— y ese script corre la COLA ENTERA. Medido el 2-sep: 781 términos
+pendientes, **$5.47** y acceso por SSH para refrescar uno solo. Nadie lo hacía:
+lo medido llevaba **16 días** parado (última corrida, 18-ago).
+
+**El botón.** `POST /api/competencia/busqueda` mide UN término por ~$0.007. Y
+como la tabla es **por término y no por SKU**, medir uno sirve a todos los que lo
+comparten — 80 términos cubren 522 SKUs.
+
+Los mismos dos candados de `/rankings` (v0.375.0), con los mismos códigos:
+
+- **422** — el término no está en el catálogo. Es la LISTA BLANCA, y no es
+  cosmética: sin ella un POST a una API sin auth real raspa cualquier cadena y
+  la paga.
+- **409** — se midió hace menos de un día. Temporal; el panel lo pinta en gris.
+
+`filas: 0` tampoco es error: hay búsquedas que ML no contesta con nada y el
+término queda medido igual (ya se pagó).
+
+**Una función, dos consumidores.** La receta —raspar, reseñas, visitas, marcar lo
+nuestro, guardar— son cinco pasos y ninguno es opcional, así que se extrajo a
+`competencia_captura.medir_busquedas()`. El script la usa por tandas de 20 (la
+atribución del actor es por URL, así que agrupar SÍ funciona) y el botón con uno.
+Duplicarla era garantizar que en un mes una copia olvidara un paso.
+
+⚠️ **Y al extraerla apareció un incumplimiento de la regla 11.** El script pedía
+las reseñas en línea:
+
+```python
+for f in filas:
+    r = competencia_ml.reviews(f["externo_id"])   # requests, bloqueante
+```
+
+En un script con su propio loop da igual. **Dentro del backend no**: diez
+llamadas de ~0.3 s congelan el event loop —y con él, el servidor entero— tres
+segundos por término. Es exactamente el defecto del apagón del 13-ago
+(v0.157.0–v0.162.0). Ahora van en hilos con `asyncio.gather`.
+
+**El sello de frescura.** `detalle_sku` expone `busqueda_medida_en` y la sección
+dice «medido hace 16 días» o «sin medir». `null` es *nunca*, que no es lo mismo
+que *viejo* — la misma distinción de la 0038.
+
+**Verificado contra producción**: la lista blanca rechaza lo inventado, el
+candado se comporta con datos reales, y dos términos pendientes se midieron de
+verdad (10 filas cada uno, con visitas y precios). El botón tarda **50–96 s**: es
+el raspado de Apify, y la espera se muestra con el spinner.
+
 ### v0.376.0 — El top de ML se guardaba incompleto: faltaba 1 de cada 5, y eran las grandes (Eduardo)
 
 Eduardo, viendo Disfraces Completos: *"¿por qué solo salen 4 si se scrappearon los 20?"*.

@@ -1021,6 +1021,27 @@ export function rankingCategoria(
  * publica ranking ahí, y aplica un candado de días; lo que descarte viene en
  * `descartadas` para poder decirlo en pantalla en vez de no hacer nada.
  */
+/**
+ * Mide la BÚSQUEDA GENERAL de UN término. ~$0.007 — una página de Apify.
+ *
+ * Es lo único de esta sección que cuesta. Se guarda POR TÉRMINO, así que los
+ * SKUs que lo comparten lo reusan sin volver a pagar.
+ *
+ * El backend distingue dos negativas y hay que tratarlas distinto: **409** es el
+ * candado de días (temporal, mañana se puede) y **422** es que el término no
+ * está en el catálogo (esperar no lo arregla). `filas: 0` con `vacio: true`
+ * tampoco es un error: hay búsquedas sin resultados en ML y el término queda
+ * medido igual.
+ */
+export function capturarBusquedaCompetencia(termino: string, forzar = false) {
+  return postJSON<{
+    ok: boolean;
+    termino: string;
+    filas: number;
+    vacio: boolean;
+  }>("/api/competencia/busqueda", { termino, forzar });
+}
+
 export function capturarRankingsCompetencia(
   opts: { solo?: string[]; todo?: boolean; forzar?: boolean } = {},
 ) {

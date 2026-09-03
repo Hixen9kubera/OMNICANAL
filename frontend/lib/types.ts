@@ -1052,6 +1052,8 @@ export interface CompetenciaDetalleSku {
   /** Qué sale al buscar el TÉRMINO GENERAL. Se guarda POR TÉRMINO, así que los
    *  SKUs que comparten término comparten resultados — se mide y se paga una vez. */
   busqueda_general: CompetenciaResultado[];
+  /** Cuándo se midió esa búsqueda. `null` = NUNCA, que no es lo mismo que vieja. */
+  busqueda_medida_en: string | null;
   sin_datos_ml: boolean;
   aviso: string | null;
 }

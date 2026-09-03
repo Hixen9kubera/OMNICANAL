@@ -91,8 +91,6 @@ async def main() -> int:
     if not pendientes:
         return 0
 
-    periodo = competencia_store.periodo_actual()
-    nuestras = competencia_captura._nuestras_publicaciones()
     t0 = time.time()
     ok = vacios = 0
 
@@ -102,25 +100,20 @@ async def main() -> int:
     for ini in range(0, len(pendientes), TANDA):
         lote = pendientes[ini:ini + TANDA]
         try:
-            res = await competencia_scraper.buscar_terminos(lote, limite=args.top)
+            # La receta completa —raspar, reseñas, visitas, marcar lo nuestro,
+            # guardar— vive en `competencia_captura.medir_busquedas`, porque el
+            # botón del panel mide UN término por la misma puerta. Aquí sólo se
+            # arma la tanda.
+            guardadas = await competencia_captura.medir_busquedas(lote, limite=args.top)
         except Exception as exc:  # noqa: BLE001
             print(f"  ! tanda {ini}: {exc}", flush=True)
             continue
         for termino in lote:
-            filas = res.get(termino) or []
-            if not filas:
+            n = guardadas.get(termino, 0)
+            if n:
+                ok += n
+            else:
                 vacios += 1
-                continue
-            # Reseñas y visitas: GRATIS por la API de ML. `vendidos` y el rating
-            # ya vienen de la tarjeta, así que no hace falta el detalle de pago.
-            for f in filas:
-                r = competencia_ml.reviews(f["externo_id"])
-                if r:
-                    f["reviews"] = r.get("reviews")
-                    f["rating"] = f.get("rating") or r.get("rating")
-            await competencia_captura.enriquecer_visitas(filas)
-            competencia_captura._marcar(filas, nuestras)
-            ok += competencia_store.reemplazar_busqueda(termino, periodo, filas)
         print(f"  {min(ini + TANDA, len(pendientes)):>3}/{len(pendientes)} "
               f"· filas={ok} · vacías={vacios} · {time.time() - t0:.0f}s", flush=True)
 
