@@ -124,6 +124,24 @@ def iniciar() -> None:
         log.info("Sondeo de ventas Temu cada %s min (solo_registro=%s).",
                  settings.pedidos_temu_sondeo_min,
                  settings.pedidos_temu_sondeo_solo_registro)
+    # Sondeo de ventas de WALMART (pieza 6). Es SONDEO y no webhook porque
+    # `/v3/webhooks/subscriptions` devuelve 520 del lado de Walmart — el
+    # catálogo de eventos sí contesta, la suscripción no. Ver
+    # services/pedidos_walmart.py.
+    if getattr(settings, "pedidos_walmart_sondeo_enabled", False):
+        from services import pedidos_walmart
+        _scheduler.add_job(
+            pedidos_walmart.sondear,
+            "interval",
+            minutes=settings.pedidos_walmart_sondeo_min,
+            id="pedidos_walmart_sondeo",
+            next_run_time=datetime.now() + timedelta(seconds=150),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Sondeo de ventas Walmart cada %s min (solo_registro=%s).",
+                 settings.pedidos_walmart_sondeo_min,
+                 settings.pedidos_walmart_solo_registro)
     # Vigilante de Odoo: detecta cambios de qty_available (foto vs foto) y los
     # avisa en la campana; con auto_push los empuja a Woo. Ver odoo_watch.py.
     if settings.odoo_watch_enabled and settings.mysql_enabled:

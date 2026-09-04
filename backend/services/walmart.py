@@ -127,3 +127,89 @@ async def total_items() -> int | None:
     if r.status_code != 200:
         return None
     return r.json().get("totalItems")
+
+
+async def listar_pedidos(desde: str, tope: int = 200) -> list[dict[str, Any]]:
+    """
+    Las ventas desde una fecha (`YYYY-MM-DD`), paginadas.
+
+    ⚠️ Este endpoint NUNCA se había llamado. La primera vez contestó 8 ventas
+    reales entre el 14-ago y el 2-sep-2026 que nadie estaba ingiriendo.
+
+    Pagina con `nextCursorMark`, que llega en `meta` y se manda tal cual en
+    `cursor` — NO es un offset. Cuando el cursor deja de cambiar, se acabó (la
+    API repite el último en vez de devolver vacío, y sin ese corte esto gira
+    para siempre).
+    """
+    tk = await token()
+    salida: list[dict[str, Any]] = []
+    cursor: str | None = None
+    visto: set[str] = set()
+    async with httpx.AsyncClient(timeout=90.0) as cli:
+        while len(salida) < tope:
+            params: dict[str, str] = {"limit": "100", "createdStartDate": desde}
+            if cursor:
+                params["cursor"] = cursor
+            r = await cli.get(f"{HOST}/v3/orders", params=params,
+                              headers=_cabeceras(tk))
+            if r.status_code != 200:
+                log.warning("walmart.listar_pedidos: HTTP %s — %s",
+                            r.status_code, r.text[:200])
+                break
+            d = r.json()
+            lote = d.get("order") or []
+            salida.extend(lote)
+            cursor = (d.get("meta") or {}).get("nextCursorMark")
+            if not lote or not cursor or cursor in visto:
+                break
+            visto.add(cursor)
+    return salida[:tope]
+
+
+async def feed_estado(feed_id: str, con_detalle: bool = True) -> dict[str, Any]:
+    """
+    El VEREDICTO de un feed: qué SKU entró, cuál no y por qué.
+
+    Es la otra mitad del botón de publicar. Walmart contesta el envío con un
+    `feedId` y nada más; el resultado real llega minutos después y SOLO se sabe
+    preguntando aquí. Dar por bueno el acuse fue lo que produjo los "9 feeds sin
+    fallos" del 4-ago que en realidad fueron cero.
+
+    ⚠️ El detalle pagina y TOPA EN 50 entidades. Con lotes más grandes el
+    resumen por SKU sale INCOMPLETO **y en silencio** — por eso `TAM_LOTE` del
+    publicador por tandas es 50.
+    """
+    tk = await token()
+    async with httpx.AsyncClient(timeout=90.0) as cli:
+        r = await cli.get(f"{HOST}/v3/feeds/{feed_id}",
+                          params={"includeDetails": "true" if con_detalle else "false"},
+                          headers=_cabeceras(tk))
+    if r.status_code != 200:
+        return {"ok": False, "feed_id": feed_id,
+                "motivo": f"HTTP {r.status_code}: {r.text[:200]}"}
+    d = r.json()
+    articulos = []
+    for it in ((d.get("itemDetails") or {}).get("itemIngestionStatus") or []):
+        errores = [
+            {"tipo": e.get("type"), "campo": e.get("field"),
+             "codigo": e.get("code"), "mensaje": e.get("description")}
+            for e in ((it.get("ingestionErrors") or {}).get("ingestionError") or [])
+        ]
+        articulos.append({
+            "sku": it.get("sku"),
+            "estado": it.get("ingestionStatus"),
+            "item_id": it.get("itemid"),
+            "errores": errores,
+        })
+    return {
+        "ok": True, "feed_id": feed_id,
+        "estado": d.get("feedStatus"),
+        "recibidos": d.get("itemsReceived"),
+        "exitosos": d.get("itemsSucceeded"),
+        "fallidos": d.get("itemsFailed"),
+        "en_proceso": d.get("itemsProcessing"),
+        "enviado_at": d.get("feedSubmissionDate"),
+        "articulos": articulos,
+        # El corte de 50: si el feed traía más, este resumen está incompleto.
+        "detalle_completo": (d.get("itemsReceived") or 0) <= 50,
+    }

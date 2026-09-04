@@ -1001,6 +1001,86 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.393.0 — Pieza 6 de Walmart, y las 8 ventas que nadie estaba leyendo
+
+Al construir la ingesta se preguntó por primera vez `GET /v3/orders`. Contestó
+**8 ventas reales entre el 14-ago y el 2-sep-2026**, todas `fulfillmentType:
+S2H` —las surtimos NOSOTROS, no Walmart— y todas ya Shipped o Delivered.
+
+Ocho piezas salieron de la bodega y ni Woo ni Odoo se enteraron por esta vía. El
+canal vendía; nadie lo leía. Un canal así no da ningún síntoma: solo un
+inventario que no cuadra.
+
+#### No hay webhook, y no es por no buscarlo
+
+`GET /v3/webhooks/eventTypes` contesta **200** y trae el catálogo completo:
+`PO_CREATED`, `ORDER_STATUS_UPDATE`, `ORDER_UPDATES`, `OFFER_PUBLISHED`,
+`INVENTORY_OOS`, devoluciones. Pero `GET /v3/webhooks/subscriptions` devuelve
+**520 "Internal Error Occured"** con cualquier combinación de parámetros — y es
+del lado de ellos, no de las credenciales: el mismo token lee pedidos, feeds y
+catálogo sin un solo tropiezo. Sin poder listar ni crear suscripciones, el
+webhook no se puede registrar.
+
+Así que esto es un **sondeo**, como Amazon. El día que la suscripción funcione,
+`_normalizar()` se reusa tal cual: solo cambia quién lo dispara.
+
+#### La forma de México no es la de la documentación
+
+Medido contra las 8 órdenes reales:
+
+- `orderLines` es una **lista plana**, no `{"orderLine": [...]}`.
+- El estado vive en `orderLine.orderLineStatus` (**singular**, directo en la
+  línea), no en `orderLineStatuses.orderLineStatus`.
+
+Calcar el ejemplo de EE.UU. habría devuelto **cero líneas sin lanzar un solo
+error** — el peor modo de fallo posible en un traductor de ventas.
+
+#### Nace en SOLO REGISTRO, y es la decisión importante
+
+Crear hoy pedidos de ventas que se enviaron hace tres semanas descontaría
+piezas que ya salieron. Si el almacén ya ajustó a mano en Odoo, sería
+descontarlas **dos veces** — el mismo defecto que ya mordió en TikTok.
+
+Resulta que el candado ya existía: `DIAS_VENTA_VIEJA = 5` en `pedidos_ml`
+protege toda venta de 5 días o más. Medido sobre las 8: **6 quedan protegidas y
+solo las 2 recientes descontarían**. Aun así el sondeo arranca apagado y en
+solo-registro: primero se ven las ventas, encender el descuento es un dale
+aparte.
+
+#### WFS es el FULL de Walmart
+
+`isWFSEnabled: "Y"` → la mercancía ya está en el almacén de Walmart y esa venta
+**no** toca nuestra bodega, igual que ML FULL y Amazon FBA. Hoy las 8 son S2H,
+pero ya hay feeds `OMNI_WFSCONVERT` corriendo: alguien está convirtiendo SKUs a
+WFS, y esa línea es la que evitará descontar de más cuando lleguen.
+
+#### El veredicto del feed, que era la otra mitad del botón
+
+`walmart.feed_estado(feed_id)` devuelve qué SKU entró, cuál no y **con qué error
+exacto**. Verificado contra un feed real fallido: `DATA_ERROR` / campo `PDI` /
+*"You are not authorized to set up 'CUSTOM' Product IDs for UPC exemptions"* —
+que es, literal, la firma de una categoría sin exención.
+
+Marca `detalle_completo: false` cuando el feed traía más de 50 artículos: ahí el
+resumen por SKU sale **incompleto y en silencio**, que es la misma clase de
+falso positivo que produjo los "9 feeds sin fallos" del 4-ago.
+
+#### Tres endpoints
+
+| ruta | qué hace |
+|---|---|
+| `GET /api/automatizacion/walmart/pedidos?dias=30` | las ventas tal cual las cuenta Walmart, sin crear nada |
+| `POST /api/automatizacion/walmart/pedidos/sondear` | corre el sondeo a mano (`solo_registro=true` por omisión) |
+| `GET /api/automatizacion/walmart/feed/{feed_id}` | el veredicto por SKU de un feed |
+
+#### Y una nota que llevaba meses mintiendo
+
+Todos los pedidos decían **"Venta Mercado Libre #…"** en su nota — incluidos los
+de Amazon, Temu y TikTok. Ahora la etiqueta se deriva de `_ESPEJO_ORIGEN`, así
+que agregar un canal ya no puede dejar una nota falsa. `WALMART` entró a ese
+mapa: sin él, sus pedidos se habrían espejado a `channel.orders` sin canal.
+
+---
 ### v0.392.0 — Asignar un término general llevaba roto, y por eso 265 SKUs no tenían (Eduardo)
 
 Eduardo preguntó por qué un SKU no mostraba competencia directa. La respuesta

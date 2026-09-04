@@ -58,6 +58,15 @@ _ESPEJO_ORIGEN = {
     "AMAZON": ("amazon", "services/pedidos_amazon.py", "→ pedidos_ml.sincronizar"),
     "TEMU": ("temu", "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"),
     "TIKTOK": ("tiktok", "services/pedidos_m2e.py", "→ pedidos_ml.sincronizar"),
+    "WALMART": ("walmart", "services/pedidos_walmart.py", "→ pedidos_ml.sincronizar"),
+}
+
+# La etiqueta legible del canal para la nota del pedido. Se deriva del mapa de
+# arriba para que agregar un canal no deje una nota mintiendo — hasta hoy TODOS
+# los pedidos decían "Venta Mercado Libre", incluidos los de Amazon y Temu.
+_ETIQUETA_CANAL = {
+    "mercado_libre": "Mercado Libre", "amazon": "Amazon", "temu": "Temu",
+    "tiktok": "TikTok", "walmart": "Walmart",
 }
 
 _WC = f"{settings.wc_url.rstrip('/')}/wp-json/wc/v3"
@@ -249,9 +258,14 @@ async def construir_payload(orden: dict, forzar_estado: str | None = None,
         # PII: nombre y apellido van CIFRADOS (ver pii.py). Sin nombre real se
         # deja el marcador legible — no hay dato personal que proteger.
         "billing": {"first_name": pii.cifrar(comp.get("nombre")) or "Comprador",
-                    "last_name": pii.cifrar(comp.get("apellido")) or "Mercado Libre"},
-        "customer_note": (f"Venta Mercado Libre #{orden['id']} · {orden['cuenta']}"
-                          f"{' · FULL' if orden.get('es_full') else ''}"),
+                    "last_name": pii.cifrar(comp.get("apellido"))
+                    or _ETIQUETA_CANAL.get(
+                        (_ESPEJO_ORIGEN.get(orden.get("cuenta") or "")
+                         or ("mercado_libre",))[0], "Mercado Libre")},
+        "customer_note": (
+            f"Venta {_ETIQUETA_CANAL.get((_ESPEJO_ORIGEN.get(orden.get('cuenta') or '') or ('mercado_libre',))[0], 'Mercado Libre')}"
+            f" #{orden['id']} · {orden['cuenta']}"
+            f"{' · FULL' if orden.get('es_full') else ''}"),
         "line_items": lineas,
         "shipping_lines": ([{"method_id": "flat_rate", "method_title": "Envío Mercado Libre",
                              "total": f"{orden.get('envio_costo') or 0:.2f}"}]

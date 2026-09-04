@@ -158,6 +158,24 @@ class Settings(BaseSettings):
     # Gabriela ya capturó. La marca evita repetir trabajo; NO es para recuperar
     # historia — eso se pide aparte con `desde` explícito.
     pedidos_temu_sondeo_max_dias: int = 2
+
+    # ── SONDEO DE VENTAS DE WALMART (pieza 6) ─────────────────────
+    # NO hay webhook: `GET /v3/webhooks/eventTypes` contesta 200 con PO_CREATED y
+    # compañía, pero `/v3/webhooks/subscriptions` devuelve 520 "Internal Error
+    # Occured" con cualquier parámetro — fallo del lado de Walmart, no de las
+    # credenciales (el mismo token lee pedidos, feeds y catálogo). Sin poder
+    # listar ni crear suscripciones, esto tiene que ser sondeo.
+    #
+    # ⚠️ NACE EN SOLO_REGISTRO Y ES A PROPÓSITO. La primera consulta a
+    # `/v3/orders` destapó 8 ventas reales (14-ago a 2-sep) que nunca se
+    # ingirieron, todas S2H —las surtimos nosotros— y ya entregadas. Crear esos
+    # pedidos hoy descontaría piezas que salieron hace semanas, y si el almacén
+    # ya ajustó a mano en Odoo sería descontarlas DOS VECES (el defecto que ya
+    # mordió en TikTok). Encender el descuento lleva el dale de Brandon.
+    pedidos_walmart_sondeo_enabled: bool = False
+    pedidos_walmart_solo_registro: bool = True
+    pedidos_walmart_sondeo_min: int = 15
+    pedidos_walmart_max_dias: int = 7
     # ¿El fan-out ESCRIBE stock en TikTok? Interruptor propio, aparte de
     # `FANOUT_CANALES`, y a propósito: el valor de esa lista no se puede leer
     # desde fuera de Railway, así que si TikTok dependiera solo de ella un deploy

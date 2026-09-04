@@ -123,6 +123,18 @@ async def lifespan(app: FastAPI):
     #
     # Va en `to_thread` porque las dos consultan Postgres (regla 11) y esto es
     # una corrutina: síncronas detendrían el arranque entero.
+    # WALMART · pieza 6. Se imprime por la misma razón que Temu y TikTok, y con
+    # un motivo extra: la primera consulta a `/v3/orders` destapó 8 ventas
+    # reales que llevaban semanas sin ingerirse. Un canal que vende y no se lee
+    # no da ningún síntoma — solo un inventario que no cuadra.
+    log.info("Walmart · sondeo de ventas: %s (solo_registro=%s, cada %s min, "
+             "%s días hacia atrás) · webhook: NO DISPONIBLE "
+             "(/v3/webhooks/subscriptions da 520 del lado de Walmart)",
+             "ENCENDIDO" if getattr(settings, "pedidos_walmart_sondeo_enabled", False)
+             else "apagado",
+             getattr(settings, "pedidos_walmart_solo_registro", True),
+             getattr(settings, "pedidos_walmart_sondeo_min", 15),
+             getattr(settings, "pedidos_walmart_max_dias", 7))
     from services import odoo_ventas as _ov
     _ov_on = await asyncio.to_thread(_ov.habilitado, True)
     _ov_canales = await asyncio.to_thread(_ov.canales)
@@ -145,7 +157,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.392.0",
+    version="0.393.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -232,7 +244,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.392.0",
+        "version": "0.393.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

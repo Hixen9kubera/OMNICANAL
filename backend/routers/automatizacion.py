@@ -427,3 +427,73 @@ async def simular(
     # este endpoint dejaría de simular en cuanto se apagara SOLO_REGISTRO.
     return await asyncio.to_thread(
         odoo_ventas.crear_orden, canal, str(venta), None, items, False, True)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# WALMART · PIEZA 6
+# ═════════════════════════════════════════════════════════════════════════════
+@router.get("/walmart/feed/{feed_id:path}")
+async def walmart_feed(feed_id: str):
+    """
+    El VEREDICTO de un feed: qué SKU entró, cuál no y con qué error exacto.
+
+    Es la otra mitad del botón de publicar. Walmart contesta el envío con un
+    `feedId` y nada más; el resultado llega minutos después y solo se sabe
+    preguntando. Dar por bueno el acuse fue lo que produjo los "9 feeds sin
+    fallos" del 4-ago que en realidad fueron cero.
+
+    `{feed_id:path}` y no `{feed_id}`: los ids de Walmart llevan `@` y a veces
+    caracteres que un segmento normal no acepta.
+    """
+    from services import walmart
+    if not walmart.disponible():
+        return {"ok": False, "motivo": "Walmart no está configurado."}
+    return await walmart.feed_estado(feed_id)
+
+
+@router.get("/walmart/pedidos")
+async def walmart_pedidos(dias: int = 30):
+    """
+    Las ventas de Walmart TAL CUAL las cuenta Walmart, sin crear nada.
+
+    Existe porque este endpoint nunca se había llamado y la primera consulta
+    destapó 8 ventas reales sin ingerir. Aquí se ve la verdad del canal antes de
+    decidir si se enciende la ingesta.
+    """
+    from services import pedidos_walmart, walmart
+    if not walmart.disponible():
+        return {"ok": False, "motivo": "Walmart no está configurado."}
+    from datetime import datetime, timedelta, timezone
+    desde = (datetime.now(timezone.utc) - timedelta(days=dias)).strftime("%Y-%m-%d")
+    ordenes = await walmart.listar_pedidos(desde)
+    filas = []
+    for o in ordenes:
+        n = pedidos_walmart._normalizar(o)  # noqa: SLF001
+        filas.append({
+            "purchase_order": n["id"], "fecha": n["fecha"], "total": n["total"],
+            "estado_walmart": (n.get("_estados") or [None])[0],
+            "estado_wc": pedidos_walmart._ESTADOS_WC.get(  # noqa: SLF001
+                str((n.get("_estados") or [""])[0])),
+            "wfs": n.get("_wfs"),
+            "skus": [i["sku"] for i in n["items"]],
+            "guia": n.get("guia"), "paqueteria": n.get("paqueteria"),
+        })
+    return {"ok": True, "desde": desde, "total": len(filas), "pedidos": filas,
+            "ingesta": {
+                "encendida": bool(getattr(settings, "pedidos_walmart_sondeo_enabled", False)),
+                "solo_registro": bool(getattr(settings, "pedidos_walmart_solo_registro", True)),
+            }}
+
+
+@router.post("/walmart/pedidos/sondear")
+async def walmart_sondear(dias: int = 7, solo_registro: bool = True):
+    """
+    Corre el sondeo A MANO.
+
+    `solo_registro=True` por omisión y a propósito: el valor por omisión de un
+    endpoint que crea pedidos y mueve stock tiene que ser el inocuo. Pasarlo en
+    False es un acto deliberado, y aun así respeta `PEDIDOS_WALMART_SOLO_REGISTRO`
+    cuando se manda `None`.
+    """
+    from services import pedidos_walmart
+    return await pedidos_walmart.sondear(dias=dias, solo_registro=solo_registro)
