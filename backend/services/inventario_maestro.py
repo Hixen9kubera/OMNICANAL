@@ -61,8 +61,8 @@ LAS TRES MENTIRAS QUE ESTA PESTAÑA TIENE PROHIBIDO REPETIR
    flujo SÍ funciona —379 recepciones validadas en los últimos 30 días—, así que
    no hay nada que rediseñar: hay 30 documentos que cerrar. Aquí se pinta como
    `recepcion_abierta` con su fecha y sus días, nunca como "llegando".
-2. **Una variación `publish` bajo un padre no publicado NO SE VE.** Son 4,498
-   de 7,329. Se marca con `invisible_en_tienda`.
+2. **Las cajas no salen del packing list.** Ése dice lo que el proveedor
+   EMBARCÓ; aquí se muestra lo que HAY, derivado del físico de Odoo.
 3. **El contenedor de Odoo y el de `costos_validados` discrepan en el 37%** de
    los SKUs donde ambos existen, y no solo de formato. Se devuelven LOS DOS y
    se marca `contenedor_discrepa` — pintar uno solo sería inventar.
@@ -88,6 +88,21 @@ PILOTO: tuple[str, ...] = (
     "HERR-0146-EST", "VEH-0148-EST",
 )
 
+# Tres SKUs de REFERENCIA. Los diez del piloto no han llegado —cero piezas y
+# cero movimientos—, así que con ellos solos la trazabilidad se ve vacía y no
+# se entiende para qué sirve. Éstos se eligieron midiendo VARIEDAD, no volumen:
+# entre los tres aparecen las siete causas (entrada, venta, envío a FULL,
+# devolución, ajuste, traspaso y merma), los tres almacenes, y los tres estados
+# de la etapa «en proceso»:
+#
+#   MUE-0135-NEG  162 movs · recibido pero SIN RACK (ámbar) · TEXCO
+#   TEC-0008-AMR  108 movs · acomodado en J-28-N1 (verde)   · TEXCO
+#   TEC-0370-NEG  285 movs · acomodado en L-17-N3 (verde)   · DROP OFF, con traspaso
+#
+# Los tres CUADRAN contra Odoo, así que también sirven para comprobar que el
+# saldo del libro reproduce el que el panel publica.
+REFERENCIA: tuple[str, ...] = ("MUE-0135-NEG", "TEC-0008-AMR", "TEC-0370-NEG")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # LA TABLA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -101,7 +116,8 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     contra `canal_inventario`, `ml_progress` ni `amazon_progress`, porque el
     caché ya escondió 754 publicaciones de Mercado Libre.
     """
-    pedidos = [s.strip() for s in (skus or list(PILOTO)) if s and s.strip()]
+    pedidos = [s.strip() for s in (skus or list(PILOTO) + list(REFERENCIA))
+               if s and s.strip()]
     if not pedidos:
         return []
 
@@ -129,13 +145,7 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
 def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pubs: list[dict], plog: dict | None, imagen: str | None,
           ubicaciones: list[dict], hermanos: list[dict]) -> dict[str, Any]:
-    es_variacion = bool(w and w["tipo"] == "variacion")
     es_padre = bool(w and w["n_hijas"] > 0)
-
-    # Una variación publicada bajo un padre que no lo está es invisible en la
-    # tienda aunque su propio status diga `publish`. Son 4,498 de 7,329.
-    invisible = bool(es_variacion and w and w["status"] == "publish"
-                     and w.get("parent_status") != "publish")
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
     emp_costo = _empaque((c or {}).get("contenedor"))
@@ -179,6 +189,9 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
 
     fila = {
         "sku": sku,
+        # Marca los tres ejemplos con movimiento real, para que no se confundan
+        # con los diez SKUs que Brandon puso a prueba.
+        "es_referencia": sku in REFERENCIA,
         "existe_en_woo": w is not None,
         "existe_en_odoo": o is not None,
         # El nombre y la foto salen de ODOO: es el registro exacto del producto
@@ -195,7 +208,6 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "n_hijas": (w or {}).get("n_hijas") or 0,
         "padre_sku": (w or {}).get("parent_sku"),
         "padre_status": (w or {}).get("parent_status"),
-        "invisible_en_tienda": invisible,
 
         # VARIANTES SEGÚN ODOO: los SKUs que comparten `product_tmpl_id`.
         # No se deduce del texto del código — `JUGU-1153-MET` y
@@ -331,7 +343,6 @@ def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
         "alertas": {
             "sin_alta": sum(1 for f in filas_ if not f["existe_en_woo"]),
             "sin_odoo": sum(1 for f in filas_ if not f["existe_en_odoo"]),
-            "invisibles": sum(1 for f in filas_ if f["invisible_en_tienda"]),
             "activo_sin_stock": sum(
                 1 for f in filas_ if f["cuadre"]["etiqueta"] == "Activo sin stock"),
             "descuadre": sum(1 for f in filas_ if f["descuadre"]),
@@ -471,13 +482,19 @@ def _etapas(fila: dict, w: dict | None, c: dict | None,
     # ── 5 · ENVIADO ─────────────────────────────────────────────────────────
     # A la bodega del marketplace: FULL en Mercado Libre, FBA en Amazon, WFS en
     # Walmart. Se nombra CUÁL, porque no es lo mismo para quien surte.
+    # Se nombra el destino, y la cantidad SOLO si la hay: «FULL 0» se lee como
+    # un error de cálculo cuando en realidad quiere decir "está en FULL y ahora
+    # mismo sin piezas allá".
+    def _destino(nombre: str, piezas: float | None) -> str:
+        return f"{nombre} {piezas:.0f}" if piezas else nombre
+
     destinos: list[str] = []
     if (fila["stock_full"] or 0) > 0 or any(
             p.get("is_fulfillment") and p["canal"] == "mercado_libre" for p in pubs):
-        destinos.append(f"FULL {fila['stock_full'] or 0:.0f}")
+        destinos.append(_destino("FULL", fila["stock_full"]))
     if (fila["stock_fba"] or 0) > 0 or any(
             p.get("is_fulfillment") and p["canal"] == "amazon" for p in pubs):
-        destinos.append(f"FBA {fila['stock_fba'] or 0:.0f}")
+        destinos.append(_destino("FBA", fila["stock_fba"]))
     if any(p.get("is_fulfillment") and p["canal"] == "walmart" for p in pubs):
         destinos.append("WFS")
     if destinos:

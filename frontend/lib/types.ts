@@ -1682,8 +1682,8 @@ export interface FilaInventario {
   n_hijas: number;
   padre_sku: string | null;
   padre_status: string | null;
-  /** Variación `publish` cuyo padre NO lo está: no se ve en la tienda. */
-  invisible_en_tienda: boolean;
+  /** Uno de los tres SKUs de ejemplo con movimiento real. */
+  es_referencia: boolean;
 
   contenedor: string;
   /** De dónde salió: "odoo" (manda) o "costos_validados" (respaldo). */
@@ -1798,7 +1798,6 @@ export interface ResumenInventario {
   alertas: {
     sin_alta: number;
     sin_odoo: number;
-    invisibles: number;
     activo_sin_stock: number;
     descuadre: number;
     recepcion_vencida: number;

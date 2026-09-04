@@ -34,7 +34,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, ArrowLeftRight, ArrowUpDown, Boxes, Camera, CheckCircle2,
-  ChevronRight, ClipboardList, Clock, Container, Database, Download, EyeOff,
+  ChevronRight, ClipboardList, Clock, Container, Database, Download,
   History, Layers, Loader2, Lock, MapPin, Package, PackagePlus, PackageX,
   PackageSearch, RefreshCw, RotateCcw, ShieldAlert, Ship, ShoppingCart, Truck,
   X,
@@ -117,10 +117,10 @@ const ICONO_CAUSA: Record<string, typeof Package> = {
 
 /** Ventanas de la pantalla de trazabilidad. `null` = todo el histórico. */
 const VENTANAS = [
-  { v: 30, t: "Últimos 30 días" },
-  { v: 90, t: "Últimos 90 días" },
-  { v: 365, t: "Último año" },
   { v: 0, t: "Todo el histórico" },
+  { v: 365, t: "Último año" },
+  { v: 90, t: "Últimos 90 días" },
+  { v: 30, t: "Últimos 30 días" },
 ];
 
 const ORDENES = [
@@ -134,6 +134,16 @@ const POR_PAGINA = 40;
 
 const num = (v: number | null | undefined, guion = "—") =>
   v === null || v === undefined ? guion : Math.round(v).toLocaleString("es-MX");
+
+/** Como `num`, pero conserva decimales cuando redondear mentiría.
+ *  Las cajas se derivan (piezas ÷ factor) y salen fraccionarias: `MUE-0135-NEG`
+ *  tiene 1 pieza con factor 3, o sea 0.33 cajas. Redondeado se leía «0», que
+ *  es justo lo contrario de lo que pasa — hay mercancía. */
+const numCajas = (v: number | null | undefined) => {
+  if (v === null || v === undefined) return "—";
+  if (Number.isInteger(v)) return v.toLocaleString("es-MX");
+  return v < 10 ? v.toFixed(2).replace(/0$/, "") : Math.round(v).toLocaleString("es-MX");
+};
 
 /** «hace 4 min», como el banner del diseño. */
 function haceCuanto(iso: string | null): string {
@@ -200,7 +210,6 @@ export default function InventarioPage() {
       const pruebas: Record<string, (f: FilaInventario) => boolean> = {
         sin_alta: (f) => !f.existe_en_woo,
         sin_odoo: (f) => !f.existe_en_odoo,
-        invisibles: (f) => f.invisible_en_tienda,
         activo_sin_stock: (f) => f.cuadre.etiqueta === "Activo sin stock",
         descuadre: (f) => !!f.descuadre,
         recepcion_vencida: (f) => (f.recepcion_dias ?? 0) > 30,
@@ -420,7 +429,6 @@ function BandaAlertas({
 }) {
   const chips = [
     { k: "activo_sin_stock", t: "Sin stock y ACTIVO en canal", n: resumen.alertas.activo_sin_stock, tono: "peligro" },
-    { k: "invisibles", t: "Publicada pero invisible", n: resumen.alertas.invisibles, tono: "peligro" },
     { k: "descuadre", t: "Descuadre Woo ↔ físico", n: resumen.alertas.descuadre, tono: "peligro" },
     { k: "sin_alta", t: "Sin alta en Woo", n: resumen.alertas.sin_alta, tono: "peligro" },
     { k: "odoo_duplicado", t: "Duplicado en Odoo", n: resumen.alertas.odoo_duplicado, tono: "peligro" },
@@ -634,10 +642,10 @@ function Fila({
               variante
             </span>
           )}
-          {f.invisible_en_tienda && (
-            <span title={`Publicada, pero su padre está en ${f.padre_status}: no se ve en la tienda`}
-                  className="inline-flex items-center gap-1 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-bold text-rose-700">
-              <EyeOff className="h-3 w-3" /> invisible
+          {f.es_referencia && (
+            <span title="SKU de ejemplo con movimiento real: sirve para ver cómo funciona la trazabilidad"
+                  className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-bold text-violet-600">
+              ejemplo
             </span>
           )}
         </div>
@@ -685,10 +693,10 @@ function Fila({
       </td>
 
       <td className="px-3 py-2.5 text-right">
-        <div className="tabular-nums text-slate-700">{num(f.cajas)}</div>
+        <div className="tabular-nums text-slate-700">{numCajas(f.cajas)}</div>
         {!!f.cajas_por_llegar && (
           <div className="text-[10px] text-amber-700" title="Cajas de lo que sigue en recepción abierta">
-            +{num(f.cajas_por_llegar)} por llegar
+            +{numCajas(f.cajas_por_llegar)} por llegar
           </div>
         )}
       </td>
@@ -947,7 +955,7 @@ function Jerarquia({ fila }: { fila: FilaInventario }) {
             : fila.contenedor_fuente === "costos_validados" ? "según costos_validados"
               : undefined)}
         {signo("=")}
-        {paso("Cajas", num(fila.cajas), "en bodega")}
+        {paso("Cajas", numCajas(fila.cajas), "en bodega")}
         {signo("×")}
         {paso("Piezas / caja", fila.piezas_por_caja === null ? "—" : String(fila.piezas_por_caja),
           "caja master de Odoo")}
@@ -956,7 +964,7 @@ function Jerarquia({ fila }: { fila: FilaInventario }) {
       </div>
       {!!fila.cajas_por_llegar && (
         <p className="mt-1.5 text-[11px] text-slate-400">
-          Por llegar: {num(fila.recepcion_piezas)} piezas ≈ {num(fila.cajas_por_llegar)} cajas.
+          Por llegar: {num(fila.recepcion_piezas)} piezas ≈ {numCajas(fila.cajas_por_llegar)} cajas.
         </p>
       )}
       {fila.embarque && (
@@ -1246,7 +1254,11 @@ function Trazabilidad({
 }: { fila: FilaInventario; onCerrar: () => void }) {
   const [movs, setMovs] = useState<MovimientosResp | null>(null);
   const [causa, setCausa] = useState("reales");
-  const [dias, setDias] = useState(90);
+  // Por omisión, TODO el histórico. A 90 días `TEC-0370-NEG` enseñaba 6 de sus
+  // 285 movimientos y a 30 días ninguno: esconder el 96% de la historia en una
+  // pantalla que existe para auditar es lo contrario de lo que se quiere. El
+  // saldo corriente además solo se entiende desde el primer movimiento.
+  const [dias, setDias] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1377,9 +1389,18 @@ function Trazabilidad({
             <Loader2 className="mx-auto h-6 w-6 animate-spin" />
             <p className="mt-3 text-sm">Leyendo el libro de Odoo…</p>
           </div>
-        ) : !movs?.movimientos.length ? (
+        ) : !movs ? (
+          // No es lo mismo «no hay» que «no llegó»: si la petición se abortó
+          // (una recarga a medias, por ejemplo) decirlo evita concluir que un
+          // SKU con 285 movimientos no tiene ninguno.
           <p className="py-20 text-center text-sm text-slate-400">
-            Sin movimientos de este tipo en la ventana elegida.
+            No se alcanzó a cargar el historial. Vuelve a abrirlo.
+          </p>
+        ) : !movs.movimientos.length ? (
+          <p className="py-20 text-center text-sm text-slate-400">
+            Sin movimientos de este tipo
+            {movs.dias ? " en la ventana elegida" : ""}.
+            {movs.total_historico > 0 && !movs.dias && " Prueba otro filtro."}
           </p>
         ) : (
           <div className="divide-y divide-slate-100">
@@ -1440,7 +1461,18 @@ function RenglonTraza({ m }: { m: Movimiento }) {
         {m.delta > 0 ? "+" : ""}{m.delta === 0 ? "sin efecto" : num(m.delta)}
       </span>
 
-      <span className="w-20 shrink-0 text-right text-sm tabular-nums text-slate-500">
+      {/* Un saldo NEGATIVO es dato real, no un error de pantalla: significa que
+          alguien ajustó por debajo de cero y el libro quedó imposible hasta que
+          otro ajuste lo corrigió. Caso medido, TEC-0370-NEG: −18 sobre 6 piezas
+          el 11-jul, en rojo hasta el +20 del 5-ago. Se marca para que se vea que
+          la pantalla lo sabe. */}
+      <span
+        className={`w-20 shrink-0 text-right text-sm tabular-nums ${
+          (m.saldo ?? 0) < 0 ? "font-bold text-rose-600" : "text-slate-500"}`}
+        title={(m.saldo ?? 0) < 0
+          ? "El libro quedó en negativo aquí: hubo un ajuste por debajo de cero"
+          : undefined}
+      >
         {num(m.saldo)}
       </span>
 
