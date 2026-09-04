@@ -289,7 +289,90 @@ def _faltantes_sync(sku: str, canal: str, cuenta: str,
     if categoria:
         tiene.add("categoria_id")   # se resolvió arriba: por definición, está
 
+    # ── WALMART: SUS OBLIGATORIOS NO SE COMPRUEBAN COMO LOS DE NADIE ─────
+    #
+    # Aquí `campo_canonico` es NULL en todas sus filas, y la consulta de arriba
+    # trata "sin canónico" como "nadie puede llenarlo: siempre falta". Resultado
+    # medido en JUGU-0164-ROS: **30 obligatorios en rojo con el contenido ya
+    # generado**, incluidos los 9 que el propio generador acababa de reportar
+    # como 9/9 cubiertos. Dos pantallas de la misma app diciéndose lo contrario.
+    #
+    # Walmart guarda sus atributos como OBJETO (`{"gender": "Niña", ...}`), no
+    # como la lista `[{campo, valor}]` de ML y TikTok, así que se comprueba por
+    # CLAVE. Y sus obligatorios se parten en dos familias:
+    #   · los del bloque `Visible` de ESA categoría → los llena la IA o una
+    #     persona, y ahí sí tiene sentido pedirlos.
+    #   · todo lo demás (brand, price, sku, ShippingWeight, ProductTaxCode,
+    #     sellerWarranty…) → lo arma `_item()` del publicador con datos de Woo.
+    #     Pedirlos en el documento pinta en rojo cosas que SÍ van en el feed — la
+    #     misma leccción del 13-ago con MUN-0023-MUL en TikTok.
+    wm_visibles: set[str] = set()
+    wm_obligatorios: list[str] = []
+    wm_atrs: set[str] = set()
+    if canal == "walmart":
+        # La lista de obligatorios sale de `walmart_contenido.catalogo()`, NO de
+        # la consulta de arriba, y esa diferencia importa: `catalogo()` aplica
+        # las CORRECCIONES_MEDIDAS encima de la tabla. Leyendo la tabla cruda,
+        # el semáforo no pedía `activity` en "Ropa" — el campo exacto que tumbó
+        # el piloto del 4-sep— y hubiera dicho "Listo para Walmart" sobre un
+        # producto que Walmart iba a rechazar. Un verde falso es peor que un
+        # rojo falso.
+        try:
+            from services import walmart_contenido as _wc
+            _cat = _wc.catalogo(categoria or "")
+            wm_visibles = set(_cat["campos"])
+            wm_obligatorios = [c for c in _cat["obligatorios"]
+                               if c not in _cat["rechazados"]]
+        except Exception as exc:  # noqa: BLE001 — sin catálogo, se cae al crudo
+            log.warning("faltantes(walmart,%s): sin catálogo (%s); se usa la "
+                        "tabla cruda", categoria, exc)
+            wm_obligatorios = [f[0] for f in filas]
+            wm_visibles = set(wm_obligatorios)
+        cx2 = _pool().connection()
+        try:
+            with cx2.cursor() as cur2:
+                cur2.execute(
+                    """select contenido -> 'atributos' from enrich.channel_content
+                        where sku = %s and canal = %s and cuenta = %s""",
+                    (sku, canal, cuenta))
+                fila_a = cur2.fetchone()
+                crudo = fila_a[0] if fila_a else None
+                if isinstance(crudo, dict):
+                    wm_atrs = {k for k, v in crudo.items()
+                               if v not in (None, "", [], {})}
+                elif isinstance(crudo, list):   # por si alguien guarda la otra forma
+                    wm_atrs = {str(a.get("campo") or a.get("nombre") or "")
+                               for a in crudo if isinstance(a, dict)}
+        finally:
+            cx2.close()
+
     faltan, automaticos, cubiertos_fuera = [], [], []
+
+    if canal == "walmart":
+        etiquetas = {f[0]: (f[3] or f[0]) for f in filas}
+        for campo in sorted(wm_obligatorios):
+            if campo in wm_atrs:
+                cubiertos_fuera.append({"campo": campo, "canonico": "atributos"})
+            else:
+                faltan.append({"campo": campo, "canonico": None,
+                               "label": etiquetas.get(campo, campo)})
+        # Todo obligatorio que NO sea del bloque `Visible` de esta categoría lo
+        # arma `_item()` del publicador con datos de Woo (brand, price, sku,
+        # ShippingWeight, ProductTaxCode, sellerWarranty…). Pedirlos en el
+        # documento pinta en rojo cosas que SÍ van en el feed — la misma
+        # lección del 13-ago con MUN-0023-MUL en TikTok.
+        for campo, _canonico, _default, _label in filas:
+            if campo not in wm_visibles:
+                automaticos.append({"campo": campo,
+                                    "valor": "lo arma el publicador"})
+        return {
+            "estado": "ok" if not faltan else "incompleto",
+            "faltan": faltan, "automaticos": automaticos,
+            "del_producto": cubiertos_fuera,
+            "categoria": categoria,
+            "leido_at": leido_at.isoformat() if leido_at else None,
+        }
+
     for campo, canonico, default, label in filas:
         if canonico and canonico in tiene:
             cubiertos_fuera.append({"campo": campo, "canonico": canonico})

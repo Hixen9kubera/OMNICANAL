@@ -141,6 +141,35 @@ const FLAGS_IMG: { key: keyof FlagsImagen; label: string; Icon: LucideIcon }[] =
 // Límite de caracteres del TÍTULO por canal (para no exceder al publicar).
 // Mercado Libre: 60 (límite duro de ML). Amazon: 200 (límite duro de la API;
 // el estándar de Kubera es ~75, se marca en rojo al pasar el tope).
+/* ── Los atributos de WALMART no son pares texto/texto ────────────────
+ * Walmart devuelve un OBJETO con valores de tres formas distintas: texto
+ * ("Niña"), lista (["Juego imaginativo"]) y medida ({measure: 52, unit: "cm"}).
+ *
+ * Por eso NO entran al estado `atributos`, que es AtributoProducto[] —nombre y
+ * valor, ambos string—: meter una medida en una caja de texto y guardarla de
+ * vuelta la aplanaría a "[object Object]", y el feed saldría mal SIN dar error,
+ * que es justo el modo de fallo de este canal. Se muestran de SOLO LECTURA.
+ */
+function valorWalmart(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.map(valorWalmart).filter(Boolean).join(" · ");
+  if (typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if ("measure" in o) return `${o.measure} ${o.unit ?? ""}`.trim();
+    return JSON.stringify(o);
+  }
+  return String(v);
+}
+
+/** El objeto de Walmart → renglones legibles, en orden alfabético. */
+function atributosWalmart(v: unknown): { campo: string; valor: string }[] {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return [];
+  return Object.entries(v as Record<string, unknown>)
+    .map(([campo, val]) => ({ campo, valor: valorWalmart(val) }))
+    .filter((x) => x.valor !== "")
+    .sort((a, b) => a.campo.localeCompare(b.campo));
+}
+
 const LIMITE_TITULO: Record<string, number> = {
   mercado_libre: 60,
   amazon: 200,
@@ -427,10 +456,14 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     // del servidor le borraría trabajo sin avisar.
     setTitulo(stored?.titulo || (srv.titulo as string) || data?.nombre || "");
     setDescripcion(stored?.descripcion || (srv.descripcion as string) || data?.descripcion || "");
+    // ⚠️ `srv.atributos` de WALMART es un OBJETO, no un arreglo. Sin este
+    // guardia entraba tal cual al estado y el `.map()` del render reventaba en
+    // cuanto el contenido guardado llegaba del servidor.
+    const srvAtrs = Array.isArray(srv.atributos)
+      ? (srv.atributos as AtributoProducto[]) : undefined;
     setAtributos(
       (stored?.atributos && stored.atributos.length ? stored.atributos : null)
-      ?? (srv.atributos as AtributoProducto[] | undefined)
-      ?? meta?.atributos ?? [],
+      ?? srvAtrs ?? meta?.atributos ?? [],
     );
     setHighlights(stored?.highlights ?? (srv.highlights as string) ?? "");
     setBullets(stored?.bullets ?? (srv.bullets as string[]) ?? []);
@@ -617,7 +650,9 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       const c = mej.value.campos;
       if (c.titulo != null) setTitulo(c.titulo);
       if (c.descripcion != null) setDescripcion(c.descripcion);
-      if (c.atributos?.length) setAtributos(c.atributos);
+      // Solo si viene como ARREGLO. Walmart lo manda como objeto y se pinta
+      // aparte, de solo lectura (ver `atributosWalmart`).
+      if (Array.isArray(c.atributos) && c.atributos.length) setAtributos(c.atributos);
       if (c.highlights != null) setHighlights(c.highlights);
       if (c.bullets?.length) setBullets(c.bullets);
       if (c.backend_search_terms != null) setSearchTerms(c.backend_search_terms);
@@ -631,7 +666,8 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       iaCampos.current = {
         ...(c.titulo != null ? { titulo: c.titulo } : {}),
         ...(c.descripcion != null ? { descripcion: c.descripcion } : {}),
-        ...(c.atributos?.length ? { atributos: c.atributos } : {}),
+        ...(Array.isArray(c.atributos) && c.atributos.length
+          ? { atributos: c.atributos } : {}),
         ...(c.highlights != null ? { highlights: c.highlights } : {}),
         ...(c.bullets?.length ? { bullets: c.bullets } : {}),
         ...(c.backend_search_terms != null
@@ -664,7 +700,11 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
       .then((r) => { if (vivo && r.existe) setServidor(r.contenido); })
       .catch(() => { /* sin guardar todavía o BD caída: se sigue con Woo */ });
     return () => { vivo = false; };
-  }, [sku, canal, cuentaSel, esML]);
+    // `reporteIA` en las dependencias: "Mejorar con IA" GUARDA en el servidor,
+    // así que al terminar hay contenido nuevo que esta lectura todavía no tenía.
+    // Sin esto la tarjeta se quedaba con lo de antes y había que cerrar y
+    // volver a abrir el producto para ver lo que la IA acababa de escribir.
+  }, [sku, canal, cuentaSel, esML, reporteIA]);
 
   // El semáforo. Se recalcula tras guardar (`canalMsg` cambia) porque guardar es
   // justo lo que puede quitar campos de la lista de faltantes.
@@ -1318,6 +1358,66 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 </div>
               )}
             </div>
+          )}
+
+          {/* WALMART · EL CONTENIDO GENERADO, A LA VISTA.
+              Sus atributos no caben en las cajas de texto de arriba (hay
+              listas y medidas), y sin este bloque el panel decía "7 campos
+              guardados" sin enseñar UNO SOLO: el trabajo existía en la base y
+              era invisible. Es de SOLO LECTURA a propósito — ver
+              `atributosWalmart`. */}
+          {esWalmart && atributosWalmart(servidor?.atributos).length > 0 && (
+            <details open className="mt-2 rounded-xl border border-slate-200 bg-white p-3">
+              <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                Contenido de Walmart guardado
+                <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">
+                  {atributosWalmart(servidor?.atributos).length} atributo(s) · solo lectura
+                </span>
+              </summary>
+              <div className="mt-2 space-y-2 text-[12px]">
+                {typeof servidor?.titulo === "string" && (
+                  <div>
+                    <span className="text-slate-400">Título</span>
+                    <p className="text-slate-800">{servidor.titulo as string}</p>
+                  </div>
+                )}
+                {Array.isArray(servidor?.bullets) && (servidor.bullets as string[]).length > 0 && (
+                  <div>
+                    <span className="text-slate-400">Viñetas (máx. 50 caracteres cada una)</span>
+                    <ul className="ml-4 list-disc text-slate-700">
+                      {(servidor.bullets as string[]).map((b, i) => (
+                        <li key={i}>{b} <span className="text-slate-300">({b.length})</span></li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div>
+                  <span className="text-slate-400">Atributos de la categoría</span>
+                  <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1">
+                    {atributosWalmart(servidor?.atributos).map((a) => (
+                      <div key={a.campo} className="flex justify-between gap-2 border-b border-slate-50 py-0.5">
+                        <span className="font-mono text-[10.5px] text-slate-500">{a.campo}</span>
+                        <span className="text-right text-slate-800">{a.valor}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {Array.isArray(servidor?.caracteristicas) && (servidor.caracteristicas as string[]).length > 0 && (
+                  <div>
+                    <span className="text-slate-400">Características</span>
+                    <ul className="ml-4 list-disc text-slate-700">
+                      {(servidor.caracteristicas as string[]).map((c2, i) => <li key={i}>{c2}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {typeof servidor?.descripcion === "string" && (
+                  <div>
+                    <span className="text-slate-400">Descripción</span>
+                    <p className="whitespace-pre-wrap text-slate-700">{servidor.descripcion as string}</p>
+                  </div>
+                )}
+              </div>
+            </details>
           )}
         </div>
 

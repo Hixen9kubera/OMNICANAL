@@ -290,6 +290,21 @@ def _aplicar_ia(item: dict[str, Any], doc: dict[str, Any] | None, categoria: str
 
     # ── ATRIBUTOS: candados 1 y 2 ───────────────────────────────────────────
     atributos = c.get("atributos") or {}
+    if isinstance(atributos, list):
+        # El Estudio guarda los atributos como [{nombre, valor}] — es la forma
+        # de los OTROS canales. Si alguien edita y guarda desde ahí, aquí
+        # llegaría una lista y el `.items()` de abajo reventaría a media vista
+        # previa con un error que no explica nada. Se acepta la forma ajena en
+        # vez de exigir la propia: lo caro no es convertir, es que el botón
+        # falle sin decir por qué.
+        pares = {}
+        for a in atributos:
+            if not isinstance(a, dict):
+                continue
+            k = a.get("nombre") or a.get("name") or a.get("campo")
+            if k:
+                pares[k] = a.get("valor") if "valor" in a else a.get("value")
+        atributos = pares
     if atributos:
         otra = doc.get("categoria") or "otra categoría"
         if (doc.get("categoria") or "") != categoria:

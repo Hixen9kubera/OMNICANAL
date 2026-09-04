@@ -1001,6 +1001,79 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.406.0 — El contenido de Walmart existía y era invisible, y el semáforo mentía en los dos sentidos
+
+Brandon, con la captura del Estudio: *"le di al botón de mejorar con IA, sin
+embargo no me actualiza la tarjeta y no veo ningún contenido de walmart"*.
+
+La IA había funcionado: `JUGU-0164-ROS` tenía título, descripción, 6 viñetas, 13
+características, palabras clave y 11 atributos guardados en
+`enrich.channel_content`. **El panel decía "7 campos guardados" y no enseñaba ni
+uno.**
+
+#### Por qué no se veía
+
+Los atributos de Walmart son un **objeto** con valores de tres formas: texto
+(`"Niña"`), lista (`["Juego imaginativo"]`) y medida (`{measure: 52, unit: "cm"}`).
+El Estudio los aplicaba con:
+
+```js
+if (c.atributos?.length) setAtributos(c.atributos);
+```
+
+Un objeto no tiene `.length` → `undefined` → **la línea nunca corría**. Y en la
+carga desde el servidor pasaba lo contrario y peor: el objeto entraba tal cual a
+un estado tipado `AtributoProducto[]`, así que el `.map()` del render reventaba
+en cuanto el contenido guardado llegaba.
+
+**No se metieron a la fuerza en las cajas de texto.** Guardar una medida desde un
+`<input>` la aplanaría a `"[object Object]"` y el feed saldría mal **sin dar
+error**, que es el modo de fallo propio de este canal. Se pintan en su propio
+bloque, de solo lectura, con el valor formateado (`52 cm`, `Interior · Exterior`)
+y el largo de cada viñeta al lado —porque el tope de 50 caracteres es de este
+canal y conviene verlo—. El publicador, además, ahora acepta las dos formas: si
+alguien guarda desde el Estudio y llegan como lista, se convierten en vez de
+reventar a media vista previa.
+
+Y la tarjeta **se refresca sola**: "Mejorar con IA" escribe en el servidor, así
+que `reporteIA` entró a las dependencias de la lectura. Antes había que cerrar y
+reabrir el producto para ver lo que la IA acababa de escribir.
+
+#### 🔴 El semáforo estaba en rojo permanente… y podía ponerse verde en falso
+
+Medido en el mismo SKU: **30 obligatorios "faltantes" con el contenido ya
+generado**, incluidos los 9 que el propio generador reportaba como *9/9
+cubiertos*. Dos pantallas de la misma app diciéndose lo contrario.
+
+Dos causas:
+
+1. En Walmart `campo_canonico` es NULL en todas sus filas, y la consulta trataba
+   "sin canónico" como **"nadie puede llenarlo: siempre falta"**. Ahora se
+   comprueba por clave dentro del objeto de atributos, que es como Walmart los
+   guarda.
+2. De esos 30, **21 los arma `_item()` solo** con datos de Woo (brand, price,
+   sku, ShippingWeight, ProductTaxCode, sellerWarranty…). Pedirlos en el
+   documento pinta en rojo cosas que sí van en el feed — la misma lección del
+   13-ago con `MUN-0023-MUL` en TikTok. Pasan a "los llena el publicador solo",
+   que es una casilla que la UI ya tenía.
+
+Y el que faltaba en el otro sentido: la lista de obligatorios ahora sale de
+`walmart_contenido.catalogo()`, que aplica las **CORRECCIONES_MEDIDAS**. Leyendo
+la tabla cruda, el semáforo **no pedía `activity` en "Ropa"** — el campo exacto
+que tumbó el piloto del 4-sep— y habría dicho *"Listo para Walmart"* sobre un
+producto que Walmart iba a rechazar.
+
+Medido después del cambio:
+
+| SKU | categoría | contenido | antes | ahora |
+|---|---|---|---|---|
+| `JUGU-0164-ROS` | Juguetes | sí | 30 faltan | **ok** · 9 cubiertos · 21 automáticos |
+| `JUGU-0011` | Juguetes | no | 30 faltan | **incompleto** · faltan los 9 reales |
+| `ROP-0417-ROS` | Ropa | sí | 25 faltan | **ok** · 5 cubiertos |
+| `ROP-0415-ROS` | Ropa | no | 24 faltan (sin `activity`) | **incompleto** · los 5, **con `activity`** |
+
+---
+
 ### v0.405.0 — Kubera y San Corpe dejan de ser el mismo chip, y cada persona tiene su color
 
 Dos cosas que Brandon vio en la pantalla y yo no.
