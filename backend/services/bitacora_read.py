@@ -44,12 +44,25 @@ _ULTIMO = """
 
 
 def _fila(r: dict) -> dict[str, Any]:
-    """Forma idéntica a la del par MySQL, con wc_id fuera del detalle."""
+    """Forma idéntica a la del par MySQL, con wc_id fuera del detalle.
+
+    EL MENSAJE DE UN FALLO YA NO VIVE EN `accion`. Desde el 4-sep-2026,
+    `crear_producto._accion_y_mensaje` guarda `accion='error'` y manda el texto a
+    `detalle.mensaje` — antes el mensaje entero iba dentro de la columna de la
+    acción, así que cada error distinto era una "acción" distinta y no se podía
+    contar cuántas creaciones fallaron.
+
+    Aquí se deshace para quien lee: el `paso` que ve la pantalla de auditoría de
+    Crear vuelve a ser el mensaje cuando lo hay. Las filas ANTERIORES no tienen
+    `detalle.mensaje` y siguen saliendo por `accion`, así que las dos formas
+    conviven sin que nadie note el corte.
+    """
     det = dict(r.get("detalle") or {})
     det.pop("wc_id", None)
     wc = r.get("wc_id")
+    mensaje = det.pop("mensaje", None)
     return {"sku": r["sku"], "wc_id": int(wc) if wc else None,
-            "estado": r.get("estado"), "paso": r.get("paso"),
+            "estado": r.get("estado"), "paso": mensaje or r.get("paso"),
             "detalle": det or None, "creado": r.get("creado")}
 
 

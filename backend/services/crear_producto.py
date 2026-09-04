@@ -82,6 +82,42 @@ def asegurar_schema_logs() -> None:
         log.warning("no se pudo asegurar el schema de crear_logs: %s", exc)
 
 
+# Estados en los que `paso` NO es un paso: es el mensaje del fallo. Quien llama
+# a `_set` en un error le pasa el texto entero como si fuera el nombre del paso.
+_ESTADOS_DE_FALLO = ("error", "fallido", "cancelado")
+
+
+def _accion_y_mensaje(estado: str, paso: str) -> tuple[str, str | None]:
+    """Separa la ACCIÓN del MENSAJE. Devuelve (accion, mensaje_o_None).
+
+    ⚠️ EL DEFECTO QUE ESTO ARREGLA. Hasta el 4-sep-2026 `accion` recibía `paso`
+    tal cual, y cuando el paso ERA un error el texto entero acababa dentro de la
+    columna. Filas reales de la base:
+
+        accion = "Falta costo/precio: agrégalo en Costos antes de crear
+                  (el producto se dejó intacto)."                        ×41
+        accion = "Client error '403 Forbidden' for url 'https://api.apify.com/…'
+                  For more information check:"                            ×4
+
+    Cada mensaje distinto se volvía una "acción" distinta. Consecuencias medidas:
+    no se podía contestar *"cuántas creaciones fallaron"*, y la pestaña Monitoreo
+    enseñaba esos textos —saltos de línea incluidos— como si fueran nombres de
+    proceso.
+
+    El contrato bueno es el que ya usa `publicar`: **la acción se agrupa, el
+    mensaje va en el detalle.** Aquí la acción de un fallo es siempre `"error"`,
+    y el texto viaja en `detalle.mensaje`.
+
+    EL TEXTO NO SE PIERDE: `bitacora_read._fila` lo vuelve a poner como "paso"
+    para la pantalla de auditoría de Crear, que es quien lo muestra. Y las 2,487
+    filas viejas se quedan como están — no se reescribe historia.
+    """
+    limpio = (paso or "").strip()
+    if estado in _ESTADOS_DE_FALLO and limpio:
+        return "error", limpio
+    return limpio[:255], None
+
+
 def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> None:
     try:
         asegurar_schema_logs()
@@ -102,6 +138,17 @@ def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> N
                 (sku, extra.get("wc_id"), estado, (paso or "")[:255], detalle_json),
             )
             log_id = cur.lastrowid
+
+        # Kubera separa la acción del mensaje; MySQL se queda como estaba. Es
+        # deliberado: `crear_logs` está congelada y en retiro (F8), y reescribir
+        # su forma ahora sólo desalinearía la tabla vieja con sus 2,487 filas.
+        _accion, _mensaje = _accion_y_mensaje(estado, paso)
+        _detalle_kubera = dict(detalle)
+        if _mensaje:
+            _detalle_kubera["mensaje"] = _mensaje
+        if extra.get("wc_id"):
+            _detalle_kubera["wc_id"] = extra["wc_id"]
+
         # Espejo kubera: la bitácora de creación viaja a ops.process_log.
         from services import kubera_mirror
         kubera_mirror.espejar(
@@ -112,9 +159,10 @@ def _persistir_log(sku: str, estado: str, paso: str, extra: dict[str, Any]) -> N
             # el producto sigue vivo. Se excluía por error hasta el 12-ago-2026
             # (1,629 filas se rellenaron con backfill_crear_logs.py).
             {"proceso": "crear", "origen": "backend", "sku": sku,
-             "accion": (paso or "")[:255], "estado": estado,
-             "detalle": ({**detalle, "wc_id": extra["wc_id"]}
-                         if extra.get("wc_id") else (detalle or None)),
+             # La ACCIÓN se agrupa; el MENSAJE del fallo va en el detalle.
+             # Ver `_accion_y_mensaje`.
+             "accion": _accion, "estado": estado,
+             "detalle": (_detalle_kubera or None),
              "detail_ref": f"mysql:crear_logs:{log_id}" if log_id else None,
              # La hora del evento, para que un reproceso tardío de la cola no
              # se cuele como "lo más reciente" del SKU.

@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.402.0 — `crear` guardaba el error dentro de la columna de la acción
+
+Cuarto y último frente de "monitorear todos los movimientos".
+
+`accion` es la ACCIÓN. Pero cuando el paso ERA un error, el texto entero acababa
+dentro de la columna. Filas reales de la base:
+
+```
+accion = "Falta costo/precio: agrégalo en Costos antes de crear
+          (el producto se dejó intacto)."                        ×41
+accion = "Client error '403 Forbidden' for url 'https://api.apify.com/…'
+          For more information check:"                            ×4
+```
+
+Cada mensaje distinto se volvía **una "acción" distinta**. Dos consecuencias
+medidas: no se podía contestar *"cuántas creaciones fallaron"*, y la pestaña
+Monitoreo enseñaba esos textos —saltos de línea incluidos— como si fueran nombres
+de proceso.
+
+El contrato bueno ya existía, el de `publicar`: **la acción se agrupa, el mensaje
+va en el detalle.** Ahora la acción de un fallo es siempre `error` y el texto
+viaja en `detalle.mensaje`, sin el tope de 255 que tenía la columna.
+
+#### El texto NO se pierde, y las dos formas conviven
+
+`bitacora_read._fila` deshace la separación para quien lee: el "paso" que ve la
+pantalla de auditoría de Crear vuelve a ser el mensaje cuando lo hay. **Las 2,487
+filas viejas no tienen `detalle.mensaje` y siguen saliendo por `accion`**, así que
+las dos formas conviven sin que nadie note el corte. No se reescribe historia.
+
+MySQL (`crear_logs`) se queda como estaba, a propósito: está congelada y en retiro
+(F8), y cambiarle la forma ahora sólo la desalinearía con sus propias filas.
+
+Probado, **9 de 9**: los pasos normales pasan intactos, los tres estados de fallo
+separan acción y mensaje, una traza HTTP multilínea llega entera (134 caracteres,
+sin el recorte de 255), y —lo que importa— **una fila nueva y una vieja se leen
+igual en la pantalla**.
+
+---
+
+Con esto quedan cubiertos los cuatro frentes. Y salió que el quinto ya estaba
+hecho: `POST /api/publicar/confirmar` **despacha los cinco canales**, así que
+TikTok y Walmart publicados desde el panel ya se firmaban desde el 1-sep. Lo que
+faltaba en ellos era el rastro de envío y el actor en él, no la bitácora de
+persona.
+
+**Lo que sigue sin firma, y es lo único:** los scripts de escritorio de TikTok
+(`scratchpad\tk_publicar.py`, `tk_activar.py`), que no están en el repo. Son ~2,000
+publicaciones, y sólo se cierran moviendo esa alta al panel o trayendo los scripts
+al repo.
+
 ### v0.401.0 — Un script ya no puede publicar sin decir quién lo corre
 
 Tercer frente de "monitorear todos los movimientos". La 0046 le dio a
