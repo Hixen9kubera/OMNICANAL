@@ -127,9 +127,18 @@ async def lifespan(app: FastAPI):
     # un motivo extra: la primera consulta a `/v3/orders` destapó 8 ventas
     # reales que llevaban semanas sin ingerirse. Un canal que vende y no se lee
     # no da ningún síntoma — solo un inventario que no cuadra.
-    log.info("Walmart · sondeo de ventas: %s (solo_registro=%s, cada %s min, "
-             "%s días hacia atrás) · webhook: NO DISPONIBLE "
+    # ⚠️ SE IMPRIME `disponible()`, NO SOLO LA BANDERA. Es la misma lección que
+    # ya dejó escrita el renglón de las órdenes de Odoo doce líneas más abajo:
+    # una línea que anuncia "ENCENDIDO" leyendo la variable MIENTE cuando lo que
+    # manda es otra cosa. Aquí lo que manda son las credenciales: el 4-sep
+    # `WM_CLIENT_ID`/`WM_CLIENT_SECRET` no estaban en Railway y TODO Walmart
+    # —publicar, pedidos, veredictos— era inerte, con el flag en cualquier valor.
+    from services import walmart as _wm
+    log.info("Walmart · credenciales: %s · sondeo de ventas: %s "
+             "(solo_registro=%s, cada %s min, %s días hacia atrás) · "
+             "webhook: NO DISPONIBLE "
              "(/v3/webhooks/subscriptions da 520 del lado de Walmart)",
+             "OK" if _wm.disponible() else "AUSENTES (canal inerte)",
              "ENCENDIDO" if getattr(settings, "pedidos_walmart_sondeo_enabled", False)
              else "apagado",
              getattr(settings, "pedidos_walmart_solo_registro", True),
@@ -157,7 +166,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.397.0",
+    version="0.398.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -244,7 +253,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.397.0",
+        "version": "0.398.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

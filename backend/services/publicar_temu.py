@@ -273,24 +273,32 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     from services import temu
     sku = str(req.get("sku") or "").strip()
     if not temu.disponible():
+        await _anotar(sku, False, status="no_configurado",
+                      error="Temu no está configurado (faltan las TEMU_*).")
         return {"ok": False, "canal": CANAL, "sku": sku,
                 "motivo": "Temu no está configurado (faltan las TEMU_*)."}
     try:
         armado = await _armar(req)
     except Exception as exc:  # noqa: BLE001
+        await _anotar(sku, False, status="build_failed", error=exc)
         return {"ok": False, "canal": CANAL, "sku": sku, "motivo": str(exc)}
 
     # ── CANDADO 1: el SKU no puede estar ya dado de alta ─────────────────────
     try:
         ya = await temu.skus_ya_publicados([sku])
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "canal": CANAL, "sku": sku,
-                "motivo": f"No se pudo verificar si el SKU ya existe, y sin esa "
-                          f"comprobación no se publica: {exc}"}
+        motivo = (f"No se pudo verificar si el SKU ya existe, y sin esa "
+                  f"comprobación no se publica: {exc}")
+        await _anotar(sku, False, status="check_failed", error=motivo)
+        return {"ok": False, "canal": CANAL, "sku": sku, "motivo": motivo}
     if sku in ya:
-        return {"ok": False, "canal": CANAL, "sku": sku,
-                "motivo": f"El SKU ya existe en Temu (goodsId {ya[sku]}). No se "
-                          f"reintenta: un alta repetida lo quema para siempre.",
+        # ESTE es el aviso que antes se perdía. El goodsId de la publicación que
+        # ya existe se guarda en `submission_id`, que es donde se busca.
+        motivo = (f"El SKU ya existe en Temu (goodsId {ya[sku]}). No se "
+                  f"reintenta: un alta repetida lo quema para siempre.")
+        await _anotar(sku, False, status="duplicado", error=motivo,
+                      submission_id=str(ya[sku]))
+        return {"ok": False, "canal": CANAL, "sku": sku, "motivo": motivo,
                 "goods_id": ya[sku]}
 
     # ── Imágenes: Woo → JPEG 1000px → WordPress → Temu ───────────────────────
@@ -315,9 +323,12 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
             if imgs:
                 urls.append(imgs[0]["url"])
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "canal": CANAL, "sku": sku,
-                "motivo": f"Las imágenes no se pudieron preparar: {exc}"}
+        motivo = f"Las imágenes no se pudieron preparar: {exc}"
+        await _anotar(sku, False, status="images_failed", error=motivo)
+        return {"ok": False, "canal": CANAL, "sku": sku, "motivo": motivo}
     if not urls:
+        await _anotar(sku, False, status="sin_imagenes",
+                      error="Ninguna imagen se pudo subir a Temu.")
         return {"ok": False, "canal": CANAL, "sku": sku,
                 "motivo": "Ninguna imagen se pudo subir a Temu."}
 
@@ -331,15 +342,86 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     try:
         res = await temu.llamar("temu.local.goods.v3.add", payload, timeout=90.0)
     except Exception as exc:  # noqa: BLE001
+        await _anotar(sku, False, status="api_failed", error=exc)
         return {"ok": False, "canal": CANAL, "sku": sku, "motivo": str(exc),
                 "payload": payload}
 
     goods_id = str(res.get("goodsId") or res.get("goods_id") or "")
     log.info("TEMU alta %s → goodsId %s", sku, goods_id or "(sin id)")
+    # Un alta SIN goodsId no es un alta normal: se marca aparte y con la
+    # respuesta completa al lado, en vez de quedar indistinguible de las buenas.
+    await _anotar(sku, True, submission_id=goods_id or None,
+                  status="published" if goods_id else "published_sin_goods_id",
+                  error=None if goods_id else res)
     _reflejar(sku, goods_id, payload, armado["categoria_id"])
     return {"ok": True, "canal": CANAL, "sku": sku, "goods_id": goods_id,
             "categoria_id": armado["categoria_id"],
             "avisos": armado["avisos"], "respuesta": res}
+
+
+def _registrar(sku: str, ok: bool, *, status: str,
+               submission_id: str | None = None,
+               error: Any = None) -> None:
+    """
+    Una fila en `ops.channel_submissions` por cada intento. NUNCA revienta.
+
+    POR QUÉ EXISTE. Hasta el 4-sep-2026 Temu era el ÚNICO canal del panel que no
+    escribía ni una fila aquí: sus caminos de fallo devolvían `motivo` a la
+    pantalla y ahí se acababa la historia. El que más dolía es el candado del SKU
+    duplicado —"éste ya existe, no lo reintento"—, porque ese aviso vivía sólo en
+    la respuesta HTTP: quien no estuviera mirando en ese segundo no se enteraba
+    de que un SKU estuvo a un clic de quemarse para siempre.
+
+    EL ERROR VA COMPLETO. `error_resumen` es `text`, sin tope. Recortar tira justo
+    la parte que sirve: el código de Temu vive al final del mensaje
+    (`150011019 The input basePrice:null is incorrect`). Se aceptan texto,
+    excepción o el dict de respuesta, y la conversión ocurre AQUÍ DENTRO — que es
+    la lección del 1-sep: lo que puede tronar no puede vivir en el sitio de la
+    llamada.
+    """
+    try:
+        from services import supabase_db as sdb
+        if isinstance(error, BaseException):
+            texto = f"{type(error).__name__}: {error}"
+        elif isinstance(error, (dict, list)):
+            texto = json.dumps(error, ensure_ascii=False, default=str)
+        else:
+            texto = str(error) if error is not None else ""
+        ahora = datetime.now(timezone.utc)
+        sdb.execute(
+            """insert into ops.channel_submissions
+                 (canal, cuenta, sku, submission_id, operacion, status, success,
+                  error_resumen, detail_ref, submitted_at, published_at)
+               values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            # `create_product` es el MISMO verbo de las 307 filas que dejaron los
+            # lotes de `scripts/publicar_temu.py`: contar altas de Temu sigue
+            # siendo una sola consulta. `detail_ref` es lo que separa al panel de
+            # las tandas.
+            (CANAL, CUENTA, sku, submission_id or None, "create_product",
+             status, ok, texto or None, "panel:publicar",
+             ahora, ahora if ok else None))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudo registrar el envío de %s a Temu: %s", sku, exc)
+
+
+async def _anotar(sku: str, ok: bool, *, status: str,
+                  submission_id: str | None = None, error: Any = None) -> None:
+    """`_registrar` fuera del hilo del servidor, y a prueba de todo.
+
+    Dos cuidados, los dos con incidente detrás:
+
+      · **Fuera del event loop.** `sdb.execute` es psycopg2, que bloquea: llamarlo
+        dentro de una corrutina detiene el backend ENTERO mientras responde, no
+        sólo a quien publica (regla 11 de la casa, el apagón del 13-ago).
+      · **Se traga TODO, incluido el `to_thread`.** Registrar no puede cambiar el
+        resultado de una publicación que ya se hizo.
+    """
+    try:
+        import asyncio
+        await asyncio.to_thread(_registrar, sku, ok, status=status,
+                                submission_id=submission_id, error=error)
+    except Exception:  # noqa: BLE001
+        log.exception("la bitácora de Temu falló; la publicación NO se ve afectada")
 
 
 def _reflejar(sku: str, goods_id: str, payload: dict[str, Any],

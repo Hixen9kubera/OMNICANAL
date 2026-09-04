@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.398.0 — Temu deja de publicar a ciegas: cada intento escribe su fila y su error
+
+Era el **único canal del panel que no escribía ni una fila** en
+`ops.channel_submissions`. Sus caminos de fallo devolvían `motivo` a la pantalla y
+ahí se acababa la historia: a los tres días nadie podía decir qué se había
+intentado.
+
+El que más dolía es el candado del SKU duplicado — *"éste ya existe, no lo
+reintento: un alta repetida lo quema para siempre"* —, porque ese aviso vivía
+**sólo en la respuesta HTTP**. Quien no estuviera mirando la pantalla en ese
+segundo no se enteraba de que un SKU estuvo a un clic de quemarse. Ahora queda
+escrito, y el `goodsId` de la publicación que ya existe se guarda en
+`submission_id`, que es donde se busca.
+
+**Ocho puntos de registro**: sin configurar, el armado del payload, la
+comprobación de duplicado, el duplicado mismo, las imágenes (dos caminos), el
+envío, y el éxito. Un alta sin `goodsId` se marca aparte
+(`published_sin_goods_id`) con la respuesta completa al lado, en vez de quedar
+indistinguible de las buenas.
+
+**Tres reglas que ya costaron dinero en otros canales, aplicadas aquí:**
+
+1. **Registrar no puede alterar la publicación.** `_anotar` se traga todo —
+   incluida la conversión de la excepción a texto, que vive DENTRO de
+   `_registrar`. Es la lección del 1-sep: lo que puede tronar no puede estar en
+   el sitio de la llamada.
+2. **Fuera del event loop.** `sdb.execute` es psycopg2 y bloquea: llamarlo desde
+   una corrutina detiene el backend entero (regla 11, el apagón del 13-ago). Va
+   por `asyncio.to_thread`.
+3. **El error va COMPLETO.** `error_resumen` es `text` sin tope; recortar tira
+   justo la parte que sirve, porque el código de Temu vive al final del mensaje
+   (`150011019 The input basePrice:null is incorrect`).
+
+`operacion` se deja en `create_product`, el mismo verbo de las 307 filas que
+dejaron los lotes de `scripts/publicar_temu.py`: contar altas de Temu sigue
+siendo una sola consulta, y `detail_ref` es lo que separa al panel de las tandas.
+
+Probado sin red y sin base, **7 de 7**: los cuatro caminos de fallo con su estado
+propio, el `goodsId` del duplicado en su columna, un error de 576 caracteres que
+llega entero, y —el que importa— **reventando el registro a propósito, `confirmar`
+devuelve exactamente lo mismo que antes**.
+
+⚠️ **No probado**: el camino de imágenes y el del éxito, que exigen Woo y Temu
+vivos. Su código es el mismo patrón que los cuatro probados.
+
 ### v0.397.0 — Productos mostraba una COPIA del costo, y la copia se había quedado atrás (Eduardo)
 
 Primer paso de mover la pestaña **Productos** a leer de kubera. Cambian **dos
