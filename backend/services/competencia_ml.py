@@ -382,6 +382,62 @@ def visitas_30d(item_id: str, cuenta: str = _CUENTA_DEFAULT) -> int | None:
     return None if s is None else int(s["total"])
 
 
+TOPE_MULTIGET = 20      # el máximo que ML acepta en /items?ids=
+
+
+def datos_por_ids(item_ids: list[str],
+                  cuenta: str = _CUENTA_DEFAULT) -> dict[str, dict[str, str]]:
+    """
+    { item_id: {titulo, permalink} } de NUESTRAS publicaciones, en lotes.
+
+    ── POR QUÉ EN LOTE Y POR QUÉ SE PUEDE ──────────────────────────────────────
+    El encabezado de este módulo dice que `/items?ids=` (multiget) da 403 — y es
+    cierto **para items AJENOS**. Con el token de la cuenta dueña, los propios
+    pasan: medido el 4-sep-2026, 20 de 20 con `code: 200`. Eso convierte 4,702
+    llamadas en 236.
+
+    ── PARA QUÉ HACE FALTA ─────────────────────────────────────────────────────
+    `enrich.market_listing_metrics` guarda UNA FILA POR MES (su PK lleva
+    `periodo`), así que el 1 de cada mes nacen filas nuevas. Desde que el cron de
+    visitas es quien las crea (v0.367.0) y su carga sólo lleva visitas, el título
+    quedaba en NULL: **agosto 3,118 filas con título (100%), septiembre 4,741 con
+    CERO**. En el panel eso es la columna «Título de la tienda» vacía.
+
+    ── Y EL PERMALINK, QUE NO ES UN EXTRA ─────────────────────────────────────
+    El panel construía el enlace a mano —`…/MLM-5305506294-_JM`— y esa forma,
+    SIN el slug, ML la redirige al **catálogo** cuando el item es
+    `catalog_listing`. Ahí la oferta que gana es la de otro vendedor: Eduardo
+    apretaba la publicación de MES-0066-MAD y aterrizaba en la competencia.
+    El permalink que devuelve ML sí trae el slug y va a la nuestra.
+
+    Un item que el multiget no devuelva simplemente no aparece en el resultado:
+    no se inventa, y quien llame conserva lo que ya tenía.
+    """
+    out: dict[str, dict[str, str]] = {}
+    ids = [i for i in item_ids if i]
+    for ini in range(0, len(ids), TOPE_MULTIGET):
+        lote = ids[ini:ini + TOPE_MULTIGET]
+        d = _get("/items", {"ids": ",".join(lote),
+                            "attributes": "id,title,permalink"}, cuenta)
+        if not isinstance(d, list):
+            continue
+        for x in d:
+            if not isinstance(x, dict) or x.get("code") != 200:
+                continue
+            cuerpo = x.get("body") or {}
+            iid = cuerpo.get("id")
+            if not iid:
+                continue
+            datos = {}
+            if (cuerpo.get("title") or "").strip():
+                datos["titulo"] = cuerpo["title"].strip()
+            if (cuerpo.get("permalink") or "").strip():
+                datos["permalink"] = cuerpo["permalink"].strip()
+            if datos:
+                out[iid] = datos
+    return out
+
+
 def ruta_categoria(categoria_id: str,
                    cuenta: str = _CUENTA_DEFAULT) -> list[dict[str, str]]:
     """

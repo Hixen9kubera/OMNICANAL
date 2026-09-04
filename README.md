@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.417.0 — El título llevaba vacío desde el 1-sep, y el enlace abría al competidor (Eduardo)
+
+Dos fallos de una captura, con la misma raíz y un tercer hallazgo que resultó
+ser una falsa alarma.
+
+**1 · «Título de la tienda» vacío TODO el mes.**
+
+| periodo | filas | con título |
+|---|---|---|
+| agosto | 3,118 | **3,118 (100%)** |
+| septiembre | 4,741 | **0** |
+
+`market_listing_metrics` guarda **una fila por mes** (la PK lleva `periodo`), así
+que el día 1 nacen filas nuevas. Desde que el cron de visitas es quien las crea
+(v0.367.0) y su carga sólo llevaba visitas, el título quedaba en NULL hasta el
+mes siguiente. **Quitar el nombre del producto de la columna PRODUCTO (v0.416.0)
+lo dejó al descubierto**: antes ese nombre tapaba el hueco.
+
+**2 · El enlace abría la publicación de la competencia.** El panel construía
+`…/MLM-5305506294-_JM` a mano, y esa forma **sin el slug** ML la redirige al
+**catálogo** cuando el item es `catalog_listing` — donde la oferta que se ve es
+la del vendedor que gana la compra. En MES-0066-MAD ése era "meme", MercadoLíder.
+
+Las dos se arreglan con la misma llamada: `datos_por_ids` pide título y
+permalink por **multiget**. El encabezado del módulo decía que `/items?ids=` da
+403 — cierto **para items ajenos**; con el token de la cuenta dueña los propios
+pasan (20 de 20 medidos), y eso convierte 4,702 llamadas en 236, gratis.
+
+El permalink se escribe en `channel.listings.url` desde el cron porque **esa
+columna no tiene otro escritor**: `channel_mirror` no la toca. Y `urlPub` ahora
+prefiere el permalink guardado sobre el construido.
+
+**Relleno inmediato**, sin esperar al cron:
+
+```
+títulos : 0 → 4,741 de 4,741
+enlaces : 4,710 permalinks completos (235 cortos, 53 sin url)
+```
+
+**3 · El estado NO estaba mal.** ML dice `paused`, `available_quantity: 0`,
+sin tocarse desde el 12-jul; el panel decía lo mismo. La página que se vio era la
+del catálogo, con la oferta de otro vendedor — el mismo enredo del punto 2.
+
+**8 pruebas nuevas** (38 en total) para el parseo del multiget: la respuesta no
+es una lista de items sino de sobres `{code, body}`, y un sobre que no sea 200
+—un item ajeno vuelve 403— debe ignorarse en vez de colarse como un item sin
+datos. También se fija el corte en lotes de 20, que es tope de ML: sin partir, la
+llamada entera falla y se pierden los 4,700 títulos.
+
 ### v0.416.0 — El JSON de la IA se cortaba, y la columna PRODUCTO repetía (Eduardo)
 
 Tres cosas de una captura de Eduardo.

@@ -107,6 +107,12 @@ const urlRanking = (r: Partial<RankingCategoria>): string | null => {
  * redirige al permalink con slug. Sin esto la UI pintaba un enlace a "#".
  */
 const urlPub = (id: string | null | undefined, url: string | null | undefined) => {
+  // EL PERMALINK COMPLETO GANA, y el orden importa: antes se construía siempre
+  // `…/MLM-1234-_JM` y se ignoraba el guardado. Esa forma SIN SLUG ML la
+  // redirige al CATÁLOGO cuando el item es `catalog_listing`, y ahí la oferta
+  // que se ve es la del vendedor que gana la compra, no la nuestra. Reportado
+  // el 4-sep-2026: MES-0066-MAD abría la publicación de otro.
+  if (url && /-[^/]+-_JM(\?|$)/i.test(url)) return url;
   if (id && /^MLM\d{9,12}$/.test(id))
     return `https://articulo.mercadolibre.com.mx/MLM-${id.slice(3)}-_JM`;
   return url || null;

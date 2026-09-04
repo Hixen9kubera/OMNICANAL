@@ -196,8 +196,47 @@ def main() -> int:
 
     # Sólo las que TIENEN dato: una fila sin medición no debe tocar la tabla,
     # ni siquiera para mover su marca de tiempo (ver guardar_publicaciones).
+    # ── El TÍTULO va con las visitas, y no es un adorno ────────────────────
+    #
+    # `market_listing_metrics` guarda UNA FILA POR MES (la PK lleva `periodo`),
+    # así que el día 1 nacen filas nuevas. Desde que este cron es quien las crea
+    # (v0.367.0) y su carga sólo llevaba visitas, el título quedaba en NULL:
+    # AGOSTO 3,118 filas con título (100%), SEPTIEMBRE 4,741 con CERO. En el
+    # panel eso es la columna «Título de la tienda» vacía para todo el mes.
+    #
+    # Sale gratis y en lote: `/items?ids=` acepta 20 por llamada para las
+    # publicaciones PROPIAS, así que son ~236 llamadas y no 4,702.
+    tok_de = {etiqueta: tok for tok, etiqueta in CUENTAS}
+    datos: dict[str, dict[str, str]] = {}
+    for etiqueta, tok in tok_de.items():
+        ids = [f["ml_item_id"] for f in filas
+               if f.get("cuenta") == etiqueta and f.get("ml_item_id")]
+        if ids:
+            datos.update(competencia_ml.datos_por_ids(ids, tok))
+    print(f"  títulos traídos       : {len(datos)} de {len(filas)}")
+
+    # ── El PERMALINK, a `channel.listings.url` ─────────────────────────────
+    #
+    # Se escribe desde aquí y no desde el sync porque **esa columna no tiene
+    # otro escritor**: `channel_mirror` no la toca, así que no hay con quién
+    # pelearse. Lo que había guardado era la forma corta —`…/MLM-5305506294`,
+    # sin slug ni `_JM`— y ML la resuelve al CATÁLOGO cuando el item es
+    # `catalog_listing`: apretar nuestra publicación aterrizaba en la oferta de
+    # otro vendedor. El permalink de ML sí lleva a la nuestra.
+    urls = [(v["permalink"], k) for k, v in datos.items() if v.get("permalink")]
+    if urls:
+        with supabase_db.get_cursor() as cur:
+            for url, iid in urls:
+                cur.execute("UPDATE channel.listings SET url = %s "
+                            " WHERE canal = 'mercado_libre' AND listing_id = %s "
+                            "   AND url IS DISTINCT FROM %s", (url, iid, url))
+        print(f"  enlaces corregidos    : {len(urls)}")
+
     payload = [{"sku": f["sku"], "canal": f["canal"], "cuenta": f["cuenta"],
-                "ml_item_id": f["ml_item_id"], "visitas_30d": f["visitas_30d"]}
+                "ml_item_id": f["ml_item_id"], "visitas_30d": f["visitas_30d"],
+                # Sin título en el diccionario NO se manda la llave vacía: el
+                # COALESCE del upsert conserva el que ya hubiera.
+                "title": (datos.get(f["ml_item_id"]) or {}).get("titulo")}
                for f in filas if f.get("visitas_30d") is not None]
     guardadas = competencia_store.guardar_publicaciones(payload)
     print(f"\n  guardadas: {guardadas} filas")
