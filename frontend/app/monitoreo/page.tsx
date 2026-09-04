@@ -88,6 +88,10 @@ interface PubCanal {
   previa: number;
   /** Mandadas y sin veredicto del canal. Hoy sólo Walmart las produce. */
   sin_confirmar: number;
+  /** Las hizo un script que se declaró como tal (`--como automatico`). */
+  por_codigo: number;
+  /** Nadie las firmó: no se sabe si fue persona o código. */
+  sin_firma: number;
 }
 interface SinMovs { usuario: string; correo: string; nombre?: string | null }
 
@@ -569,7 +573,8 @@ function BandaMetas({ d }: { d: Resumen }) {
   const metas = [
     { clave: "general", titulo: "Costos validados",
       v: d.costos_semana?.actual ?? 0, previa: d.costos_semana?.previa ?? 0,
-      pendientes: 0, mudo: false },
+      pendientes: 0, persona: d.costos_semana?.actual ?? 0, codigo: 0,
+      sinFirma: 0, mudo: false },
     ...CANALES_META.map((canal) => {
       const p = d.publicaciones_semana.find((x) => x.canal === canal);
       return {
@@ -578,6 +583,9 @@ function BandaMetas({ d }: { d: Resumen }) {
         v: p?.nuevas ?? 0,
         previa: p?.previa ?? 0,
         pendientes: p?.sin_confirmar ?? 0,
+        persona: p?.con_actor ?? 0,
+        codigo: p?.por_codigo ?? 0,
+        sinFirma: p?.sin_firma ?? 0,
         mudo: d.canales_sin_registro.includes(canal),
       };
     }),
@@ -650,12 +658,28 @@ function BandaMetas({ d }: { d: Resumen }) {
                   {/* Walmart contesta con un feedId y juzga MINUTOS DESPUÉS. Se
                       cuentan —el trabajo se hizo— pero no se dan por buenas: de
                       sus veredictos resueltos, sólo 7 de 66 salieron bien. */}
-                  {m.pendientes > 0 && (
-                    <p className="mt-1 text-[10px] text-slate-400"
-                       title="El canal todavía no ha dicho si las acepta">
-                      {m.pendientes} sin confirmar
-                    </p>
-                  )}
+                  {/* DE DÓNDE VINO CADA UNA. Brandon publicó UNA a Walmart y
+                      vio 3: la pregunta "¿qué hice yo y qué fue de código?" no
+                      se puede contestar si el total va suelto. */}
+                  <p className="mt-1 flex flex-wrap gap-x-2 text-[10px] text-slate-400">
+                    {m.persona > 0 && (
+                      <span title="Las hizo una persona desde el panel">
+                        {m.persona} de persona
+                      </span>)}
+                    {m.codigo > 0 && (
+                      <span title="Las hizo un script que se declaró como automático">
+                        {m.codigo} de código
+                      </span>)}
+                    {m.sinFirma > 0 && (
+                      <span title="Nadie las firmó: no se sabe si fue persona o script"
+                            className="text-slate-400">
+                        {m.sinFirma} sin firma
+                      </span>)}
+                    {m.pendientes > 0 && (
+                      <span title="El canal todavía no ha dicho si las acepta">
+                        · {m.pendientes} sin confirmar
+                      </span>)}
+                  </p>
                 </>
               )}
             </div>

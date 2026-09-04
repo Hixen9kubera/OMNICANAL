@@ -52,9 +52,37 @@ _EXITO = ("ok", "completado", "succeeded")
 # Dos correos, una persona (Brandon, 5-ago). Se fusionan al MOSTRAR.
 _MISMA_PERSONA = {"sancorpethalia@kubera.mx": "thalias@kubera.mx"}
 
+# El centinela que deja `--como automatico` (core/actor.py). NO es una persona y
+# NO puede aparecer en la tabla de gente: sería un KAM fantasma llamado
+# "Automatico" con los números de todos los crons. Pero tampoco es NULL, y esa
+# es justo la distinción que Brandon pidió al ver 3 publicaciones de Walmart de
+# las que él sólo hizo una: qué fue a mano y qué fue de código.
+ACTOR_CODIGO = "automatico"
+
+
+#: Un correo dentro de una cadena que puede traer más cosas.
+_CORREO = __import__("re").compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
 
 def _persona(correo: str | None) -> str:
+    """El correo LIMPIO de quien hizo algo.
+
+    ⚠️ EL ACTOR A VECES LLEGA CON UNA NOTA PEGADA. Medido el 4-sep: nueve filas
+    con `actor = 'eduardo@kubera.mx (vía Claude, carga del 4-sep)'`. Alguien metió
+    una anotación dentro de la columna de la identidad — el mismo defecto que
+    `crear` tenía al guardar el mensaje de error dentro de `accion`.
+
+    El síntoma era visible y feo: **Eduardo salía DOS VECES en la tabla**, una
+    por cada forma de escribir su correo, con sus números partidos. Se extrae el
+    correo y las dos filas vuelven a ser la misma persona.
+
+    Si no hay ningún correo dentro, se devuelve la cadena tal cual: inventarle
+    una identidad sería peor que mostrar lo que hay.
+    """
     c = (correo or "").strip().lower()
+    m = _CORREO.search(c)
+    if m:
+        c = m.group(0)
     return _MISMA_PERSONA.get(c, c)
 
 
@@ -263,8 +291,15 @@ def publicaciones_semana() -> list[dict[str, Any]]:
                     where primera >= ({SEMANA} - interval '1 week'))
                select canal,
                       count(*) filter (where dia >= {SEMANA}::date) nuevas,
+                      -- Las TRES procedencias, separadas. Es la respuesta a
+                      -- "¿qué hice yo a mano y qué fue de código?".
                       count(*) filter (where dia >= {SEMANA}::date
-                                         and actor is not null) con_actor,
+                                         and actor is not null
+                                         and actor <> '{ACTOR_CODIGO}') con_actor,
+                      count(*) filter (where dia >= {SEMANA}::date
+                                         and actor = '{ACTOR_CODIGO}') por_codigo,
+                      count(*) filter (where dia >= {SEMANA}::date
+                                         and actor is null) sin_firma,
                       -- Las que se mandaron y el canal aún no ha juzgado. Se
                       -- cuentan para la meta —el trabajo se hizo— pero se
                       -- muestran aparte: dar por buena una pendiente de Walmart
@@ -376,12 +411,13 @@ def resumen(dias: int = 30) -> dict[str, Any]:
                       max(created_at) ultima
                  from ops.process_log
                 where proceso = any(%s)
-                  and actor is not null
+                  and actor is not null and actor <> %s
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
                 group by actor, proceso, canal, cuenta
                 order by total desc""",
-            (list(_EXITO), list(_DE_PERSONA), list(_INTERMEDIOS), dias),
+            (list(_EXITO), list(_DE_PERSONA), ACTOR_CODIGO,
+             list(_INTERMEDIOS), dias),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo leer el monitoreo: %s", exc)

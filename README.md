@@ -1074,6 +1074,60 @@ Medido después del cambio:
 
 ---
 
+### v0.411.0 — «¿Qué hice yo a mano y qué fue de código?»
+
+Brandon publicó **una** cosa a Walmart, vio **3**, y preguntó cuáles eran suyas.
+La pregunta destapó un hueco de diseño mío.
+
+Las tres, con nombre y hora:
+
+```
+04-sep 07:03  JUGU-0035-MUL   SIN FIRMA
+04-sep 07:03  ROP-0417-ROS    SIN FIRMA
+04-sep 16:48  JUGU-0164-ROS   brandon@kubera.mx   ← la suya
+```
+
+Las dos de las 07:03 son de una corrida del script de esa mañana, **antes** de que
+el `--como` existiera.
+
+#### El hueco: yo mismo había borrado la diferencia
+
+En v0.401.0 decidí que `--como automatico` dejara el actor **vacío**, razonando
+que "no hubo persona". Es verdad, pero **colapsa dos cosas distintas**:
+
+```
+NULL          no sabemos quién lo hizo
+'automatico'  lo hizo código, y alguien lo declaró así
+```
+
+Con NULL, la pregunta de Brandon no tiene respuesta. Y esta pantalla entera existe
+para que *"no lo sabemos"* no se confunda con otra cosa — así que el error era
+mío y en mi propia regla.
+
+Ahora `--como automatico` escribe el centinela. La tarjeta de cada canal desglosa
+las tres procedencias: **N de persona · N de código · N sin firma**.
+
+El centinela **no aparece en la tabla de gente**: sería un KAM fantasma llamado
+"Automatico" con los números de todos los crons.
+
+#### Y de paso: Eduardo salía dos veces
+
+Al medir apareció esto en la columna del actor:
+
+```
+eduardo@kubera.mx (vía Claude, carga del 4-sep)     9 filas, todas de hoy
+eduardo@kubera.mx                                   2 filas
+```
+
+Alguien metió **una anotación dentro de la columna de la identidad** — el mismo
+defecto que `crear` tenía al guardar el mensaje de error dentro de `accion`. El
+síntoma era visible: Eduardo con dos renglones y sus números partidos.
+
+`_persona` extrae el correo de la cadena, así que las dos formas vuelven a ser la
+misma persona — y el detalle conserva ambas, como con los dos correos de Thalía.
+Si no hay ningún correo dentro, se devuelve la cadena tal cual: inventarle una
+identidad sería peor que mostrar lo que hay.
+
 ### v0.410.0 — «Una recepción» eran dos, y un contenedor sin cotejar se leía como que cuadraba
 
 Brandon pidió el linaje de la ficha campo por campo, mandando el formulario de

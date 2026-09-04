@@ -167,10 +167,20 @@ def fijar_desde_cli(valor: str | None) -> str:
         raise SystemExit(2)
 
     if quien.lower() == AUTOMATICO:
-        # Vacío = NULL en la base. Es la verdad: no hubo persona detrás.
-        fijar("")
-        log.info("actor: automático (la bitácora quedará sin persona, a propósito)")
-        return ""
+        # ⚠️ SE ESCRIBE EL CENTINELA, NO VACÍO. La primera versión dejaba el
+        # actor en "" —o sea NULL en la base— razonando que "no hubo persona".
+        # Es verdad, pero **borra la diferencia entre dos cosas distintas**:
+        #
+        #     NULL          no sabemos quién lo hizo
+        #     'automatico'  lo hizo código, y alguien lo declaró así
+        #
+        # Brandon lo pidió con esas palabras, mirando 3 publicaciones de Walmart
+        # de las que él sólo había hecho una: *"¿qué hice yo a mano y qué fue de
+        # código?"*. Con NULL esa pregunta no se puede contestar — y toda esta
+        # pantalla existe para que "no lo sabemos" no se confunda con otra cosa.
+        fijar(AUTOMATICO)
+        log.info("actor: automático (queda firmado como código, no como persona)")
+        return AUTOMATICO
 
     if "@" not in quien or quien.startswith("@") or quien.endswith("@"):
         print(f"\n  '{quien}' no parece un correo. Usa tu correo de Kubera "
