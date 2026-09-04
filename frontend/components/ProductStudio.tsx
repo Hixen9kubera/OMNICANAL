@@ -505,6 +505,14 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // marcas se sustituyeron y cuántos obligatorios de su categoría cubre.
   const conParteIA = esAmazon || esTikTok || esTemu || esWalmart;
 
+  // Los atributos de Walmart que hay GUARDADOS para este SKU. Vienen del
+  // servidor (`enrich.channel_content`), que es la tabla de contenido POR
+  // CANAL: no son los de Woo ni se editan aquí (ver `atributosWalmart`).
+  const atrsWalmart = useMemo(
+    () => (canal === "walmart" ? atributosWalmart(servidor?.atributos) : []),
+    [canal, servidor],
+  );
+
   // Estado REAL de publicación (fuente de verdad en DB: ml_progress / amazon_progress).
   const mlCuentas = useMemo(
     () => (meta?.estado?.ml ?? []).map((p) => p.cuenta),
@@ -1360,65 +1368,6 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
             </div>
           )}
 
-          {/* WALMART · EL CONTENIDO GENERADO, A LA VISTA.
-              Sus atributos no caben en las cajas de texto de arriba (hay
-              listas y medidas), y sin este bloque el panel decía "7 campos
-              guardados" sin enseñar UNO SOLO: el trabajo existía en la base y
-              era invisible. Es de SOLO LECTURA a propósito — ver
-              `atributosWalmart`. */}
-          {esWalmart && atributosWalmart(servidor?.atributos).length > 0 && (
-            <details open className="mt-2 rounded-xl border border-slate-200 bg-white p-3">
-              <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
-                Contenido de Walmart guardado
-                <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">
-                  {atributosWalmart(servidor?.atributos).length} atributo(s) · solo lectura
-                </span>
-              </summary>
-              <div className="mt-2 space-y-2 text-[12px]">
-                {typeof servidor?.titulo === "string" && (
-                  <div>
-                    <span className="text-slate-400">Título</span>
-                    <p className="text-slate-800">{servidor.titulo as string}</p>
-                  </div>
-                )}
-                {Array.isArray(servidor?.bullets) && (servidor.bullets as string[]).length > 0 && (
-                  <div>
-                    <span className="text-slate-400">Viñetas (máx. 50 caracteres cada una)</span>
-                    <ul className="ml-4 list-disc text-slate-700">
-                      {(servidor.bullets as string[]).map((b, i) => (
-                        <li key={i}>{b} <span className="text-slate-300">({b.length})</span></li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <div>
-                  <span className="text-slate-400">Atributos de la categoría</span>
-                  <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1">
-                    {atributosWalmart(servidor?.atributos).map((a) => (
-                      <div key={a.campo} className="flex justify-between gap-2 border-b border-slate-50 py-0.5">
-                        <span className="font-mono text-[10.5px] text-slate-500">{a.campo}</span>
-                        <span className="text-right text-slate-800">{a.valor}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                {Array.isArray(servidor?.caracteristicas) && (servidor.caracteristicas as string[]).length > 0 && (
-                  <div>
-                    <span className="text-slate-400">Características</span>
-                    <ul className="ml-4 list-disc text-slate-700">
-                      {(servidor.caracteristicas as string[]).map((c2, i) => <li key={i}>{c2}</li>)}
-                    </ul>
-                  </div>
-                )}
-                {typeof servidor?.descripcion === "string" && (
-                  <div>
-                    <span className="text-slate-400">Descripción</span>
-                    <p className="whitespace-pre-wrap text-slate-700">{servidor.descripcion as string}</p>
-                  </div>
-                )}
-              </div>
-            </details>
-          )}
         </div>
 
         {/* Cuerpo */}
@@ -1876,6 +1825,68 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 </section>
               )}
 
+              {/* CAMPOS WALMART — mismo lugar y misma forma que los de Amazon.
+                  Las viñetas se editan aquí (son texto y se guardan bien); los
+                  ATRIBUTOS de la categoría NO, y por eso viven abajo, junto a
+                  los de Woo: llevan listas y medidas que una caja de texto
+                  aplanaría a "[object Object]" — y en Walmart eso se publica
+                  sin dar error. */}
+              {esWalmart && (
+                <section className="space-y-4 rounded-2xl border-2 p-4"
+                         style={{ borderColor: hexToRgba(tema.color, 0.5), background: tema.suave }}>
+                  <div className="text-[11px] font-bold uppercase tracking-[0.15em]"
+                       style={{ color: tema.acento }}>Campos Walmart</div>
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <label className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                        Viñetas de beneficio
+                      </label>
+                      {/* El tope de 50 es de ESTE canal — el más apretado del
+                          panel— y Walmart lo pide literal ("oraciones breves de
+                          50 caracteres"). Se enseña por viñeta, no al final. */}
+                      <span className="text-[11px] text-slate-400">máx. 50 caracteres c/u · mínimo 3</span>
+                    </div>
+                    <div className="space-y-2">
+                      {Array.from({ length: Math.max(bullets.length, 5) }).map((_, i) => {
+                        const largo = (bullets[i] ?? "").length;
+                        return (
+                          <div key={i} className="flex items-start gap-2">
+                            <span className="mt-2.5 h-1.5 w-1.5 shrink-0 rounded-full"
+                                  style={{ background: tema.acento }} />
+                            <div className="w-full">
+                              <textarea
+                                value={bullets[i] ?? ""}
+                                onChange={(e) => setBullet(i, e.target.value)}
+                                rows={2}
+                                placeholder={`Viñeta ${i + 1} (se llena al Mejorar con IA)`}
+                                className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2"
+                                style={{ outlineColor: tema.acento }}
+                              />
+                              {largo > 0 && (
+                                <span className={"text-[10.5px] " + (largo > 50 ? "font-semibold text-rose-600" : "text-slate-400")}>
+                                  {largo}/50{largo > 50 ? " · Walmart la recorta" : ""}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {Array.isArray(servidor?.caracteristicas)
+                    && (servidor.caracteristicas as string[]).length > 0 && (
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.15em] text-slate-500">
+                        Características
+                      </label>
+                      <ul className="ml-4 list-disc space-y-0.5 text-[12.5px] text-slate-700">
+                        {(servidor.caracteristicas as string[]).map((c2, i) => <li key={i}>{c2}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </section>
+              )}
+
               {/* PRECIOS + COSTO + STOCK.
                   Precio regular, precio oferta y COSTO se editan aquí y
                   "Guardar precio y costo" los persiste (costos_validados +
@@ -2091,18 +2102,60 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               </section>
 
               {/* ATRIBUTOS 1×1 (editables) — sin las filas basura de dimensiones/peso */}
-              {atributosVisibles.length > 0 && (
+              {(atributosVisibles.length > 0 || atrsWalmart.length > 0) && (
                 <section className="rounded-2xl border border-slate-200 bg-white p-4">
                   <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Atributos</div>
-                  <div className="grid gap-2">
-                    {atributosVisibles.map(({ a, i }) => (
-                      <div key={i} className="grid grid-cols-[160px,1fr] items-center gap-3">
-                        <span className="truncate text-xs font-semibold uppercase tracking-wide text-slate-400" title={a.nombre}>{a.nombre}</span>
-                        <input value={a.valor} onChange={(e) => setAtributo(i, e.target.value)}
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                  {atributosVisibles.length > 0 && (
+                    <div className="grid gap-2">
+                      {atributosVisibles.map(({ a, i }) => (
+                        <div key={i} className="grid grid-cols-[160px,1fr] items-center gap-3">
+                          <span className="truncate text-xs font-semibold uppercase tracking-wide text-slate-400" title={a.nombre}>{a.nombre}</span>
+                          <input value={a.valor} onChange={(e) => setAtributo(i, e.target.value)}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2" style={{ outlineColor: tema.acento }} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* LOS DE WALMART, DEBAJO Y APARTE.
+                      Arriba están los atributos de WooCommerce, que son del
+                      producto. Estos son los de la CATEGORÍA de Walmart y viven
+                      en `enrich.channel_content` — la tabla de contenido por
+                      canal—, no en Woo. Se pintan de SOLO LECTURA a propósito:
+                      sus valores llevan listas ("Interior · Exterior") y medidas
+                      ({measure, unit}), y una caja de texto los guardaría de
+                      vuelta como "[object Object]". En este canal eso no da
+                      error: se publica. */}
+                  {atrsWalmart.length > 0 && (
+                    <div className={atributosVisibles.length > 0
+                      ? "mt-4 border-t border-slate-100 pt-3" : ""}>
+                      <div className="mb-2 flex items-baseline justify-between">
+                        <span className="text-[11px] font-bold uppercase tracking-[0.15em]"
+                              style={{ color: tema.acento }}>
+                          Atributos de Walmart{faltantes?.categoria ? ` · ${faltantes.categoria}` : ""}
+                        </span>
+                        <span className="text-[11px] text-slate-400">
+                          {atrsWalmart.length} guardado(s) · solo lectura
+                        </span>
                       </div>
-                    ))}
-                  </div>
+                      <div className="grid gap-1.5">
+                        {atrsWalmart.map((a) => (
+                          <div key={a.campo} className="grid grid-cols-[160px,1fr] items-center gap-3">
+                            <span className="truncate font-mono text-[10.5px] uppercase tracking-wide text-slate-400"
+                                  title={a.campo}>{a.campo}</span>
+                            <span className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                              {a.valor}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[11px] text-slate-400">
+                        Los genera <strong>Mejorar con IA</strong> contra la lista cerrada de la
+                        categoría y viajan tal cual en el feed. Las medidas y el peso los
+                        toma el publicador de WooCommerce.
+                      </p>
+                    </div>
+                  )}
                 </section>
               )}
 

@@ -1074,6 +1074,35 @@ Medido después del cambio:
 
 ---
 
+### v0.407.0 — Las viñetas y los atributos de Walmart, donde deben ir
+
+Brandon: *"me muestra los atributos en un tag para pulsarlo y se despliega… debe
+mostrarse en la parte de abajo de atributos, y si hay viñetas mostrarlas en la
+tarjeta como lo hace Amazon con los bullet points"*. Tiene razón: el desplegable
+de v0.406.0 hacía visible el contenido, pero lo dejaba fuera de sitio.
+
+**Las viñetas suben a "Campos Walmart"**, calcado del bloque de Amazon: mismo
+lugar, mismo aspecto, editables. Con una diferencia que es de este canal — el
+contador va **por viñeta y no al final**, porque el tope son 50 caracteres (el
+más apretado del panel, y Walmart lo pide literal: *"oraciones breves de 50
+caracteres"*). Pasado de 50 se pinta en rojo y dice que Walmart la recorta.
+Debajo, las **características** que la IA extrajo.
+
+**Los atributos bajan a la sección ATRIBUTOS**, debajo de los de WooCommerce y
+separados por una línea. Arriba están los del PRODUCTO; abajo los de la
+CATEGORÍA de Walmart, que viven en `enrich.channel_content` —la tabla de
+contenido **por canal**, PK `(sku, canal, cuenta)`— y no en Woo.
+
+Siguen siendo de **solo lectura**, y no es pereza: sus valores llevan listas
+(`Interior · Exterior`) y medidas (`{measure, unit}`). Una caja de texto los
+guardaría de vuelta como `"[object Object]"`, y en Walmart eso **no da error: se
+publica**.
+
+Estado de la tabla al 4-sep: amazon 270 SKUs · tiktok 265 · **walmart 6** (6 con
+atributos, 5 con viñetas) · mercado_libre 3 · temu 3.
+
+---
+
 ### v0.405.0 — Kubera y San Corpe dejan de ser el mismo chip, y cada persona tiene su color
 
 Dos cosas que Brandon vio en la pantalla y yo no.
