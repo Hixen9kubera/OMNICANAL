@@ -1001,6 +1001,71 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.396.0 — Automatización rediseñada: 30 órdenes se recorren de un jalón
+
+Brandon encargó el rediseño a Claude Design y pasó el handoff. Se implementó en
+el codebase (no se copió el prototipo: son estilos inline de una herramienta de
+diseño; aquí van en Tailwind con los tokens del panel).
+
+**EL PROBLEMA.** Cada orden era una tarjeta enorme con su tabla de productos
+desplegada. Con 30 órdenes, todo pesaba lo mismo y las 2 que necesitaban
+atención se perdían entre las 28 que no.
+
+**LA DECISIÓN CENTRAL.** Hay 15 desenlaces y sólo 5 piden que alguien actúe.
+Ahora las tres familias se distinguen SIN LEER, con tres recursos apilados:
+
+    familia        barra izq.    punto      texto              motivo
+    pide acción    sí, en color  color      13.5px/700 color   visible
+    salió bien     verde pálido  #10B981    13.5px/600 gris    sólo si aporta
+    no pide nada   NINGUNA       #CBD5E1    13.5px/500 apagado visible, gris
+
+Los 7 inertes dejan de parecer fallos porque son **los únicos sin barra**. Y hay
+**dos rojos**: `#E11D48` para los errores de verdad y **ámbar** `#F59E0B` para
+*sin respaldo de inventario* — es grave, pero la orden existe y el cliente ya
+pagó. Un solo rojo volvía a aplanar lo que el rediseño vino a separar.
+
+**El renglón mide ~54 px** y el detalle abre **in-situ**, uno a la vez, no en
+modal: quien empaca vuelve a la lista sin perder su posición. Ahí viven el stock
+por almacén —TEXCO y TEXCO II **separados, nunca sumados**— con el aviso de que
+es una foto congelada, la cronología, y los botones de abrir en Odoo y copiar
+guía.
+
+**El surtido dividido tiene renglón propio**, con las dos órdenes indentadas
+("entrega 1 de 2") y el chip de que llevan **una sola guía**. Meterlo en la
+rejilla de 9 columnas partía `S37009 + S37010` en una celda de 88 px y perdía
+lo único que hay que entender: que son la misma venta.
+
+**EL PUENTE ENTRE CANALES, que el handoff dejó como pregunta abierta.** Con
+listas separadas por canal, un error en Temu no se ve mientras miras TikTok. El
+contador de la casilla suma **los dos**, y aparece una línea —"TikTok Shop tiene
+4 que requieren acción"— que lleva al canal donde está lo que no estás viendo.
+Se conservan las pestañas por canal (decisión de Brandon del 1-sep) en vez de
+apilar las dos listas como proponía el artboard.
+
+**"Sin ventas" es una pantalla afirmativa**, no un caso raro: es el estado real
+de hoy. Checklist verde de lo que sí funciona y, en ámbar, la causa de verdad —
+**1 publicación activa de 1,224** en TikTok. Sin publicaciones no hay ventas que
+automatizar, y un cero ahí no significa que el automatismo esté roto.
+
+**Backend, sólo lecturas nuevas:** `escalon_id` (el escalón en clave, para no
+parsear un rótulo en español), `odoo_url` (el enlace "Abrir en Odoo"),
+`publicaciones` (cuántas vivas por canal — `activas` va en `null` para Temu,
+cuyos códigos de status no están confirmados: un número inventado ahí haría
+creer que la tienda está cerrada sin base) y `dias` en la lista, que acota por
+fecha de PROCESO.
+
+**El selector de escalón se pinta pero no se mueve.** El escalón vive en
+variables de Railway, no en `ops.automatizacion_flags`, así que la pantalla
+puede leerlo y no cambiarlo. Se dibuja como recorrido, no como botones:
+prometer un control que no existe es peor que no tenerlo.
+
+**La pestaña se movió** al navbar entre Costos y Competencia. Estaba al final,
+detrás del scroll horizontal. Sin badge "Nuevo" a propósito: nadie lo quita
+después y a las semanas miente.
+
+Verificado en local contra un stub con los 15 desenlaces, el surtido dividido y
+la cobertura parcial: typecheck y build en verde.
+
 ### v0.395.0 — La bitácora contaba como éxito 7 publicaciones que Mercado Libre rechazó
 
 Bug mío, del código que escribí el 1-sep. Salió al mapear dónde falta registrar

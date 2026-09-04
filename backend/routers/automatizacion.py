@@ -17,12 +17,14 @@ seguro aunque todo esté encendido, porque nunca llama a `create`.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Query, Request
 
 from config import settings
 from services import odoo_ventas, odoo_ventas_log
 
+log = logging.getLogger("omnicanal.automatizacion")
 router = APIRouter(prefix="/api/automatizacion", tags=["automatizacion"])
 
 
@@ -54,10 +56,54 @@ async def estado(canal: str | None = Query(None, description="acota los contador
                     else "2 · creando en borrador" if not settings.odoo_ventas_confirmar
                     else "4 · creando y confirmando (Odoo reserva)"
                 ),
+                # El MISMO escalón en clave, para que la pantalla no tenga que
+                # partir la cadena de arriba para saber qué paso pintar. Un
+                # rótulo en español es para leerse; parsearlo se rompe en
+                # cuanto alguien le cambie una palabra.
+                "escalon_id": (
+                    "apagado" if not encendido
+                    else "observando" if settings.odoo_ventas_solo_registro
+                    else "creando" if not settings.odoo_ventas_confirmar
+                    else "creando_confirmando"
+                ),
+                # Para el enlace "Abrir en Odoo" del detalle. Es la URL pública
+                # de la instancia, no una credencial.
+                "odoo_url": (settings.odoo_url or "").rstrip("/"),
             },
             "resumen": odoo_ventas_log.resumen(canal),
+            "publicaciones": _publicaciones(),
         }
     return await asyncio.to_thread(_leer)
+
+
+def _publicaciones() -> dict[str, dict[str, int | None]]:
+    """
+    Cuántas publicaciones vivas tiene cada canal — el dato que contesta
+    "¿por qué no entra ninguna venta?" en la pantalla vacía.
+
+    OJO CON `activas`: sólo se cuenta donde SABEMOS qué significa el status.
+    TikTok usa `ACTIVATE` y está verificado. Temu guarda códigos compuestos
+    (`3/2`, `4/7`, `3/3`) cuyo significado no está confirmado, así que
+    devuelve None en vez de adivinar: un número inventado aquí haría creer
+    que la tienda está cerrada, o que está abierta, sin base.
+    """
+    from services import supabase_db as sdb
+    fuera: dict[str, dict[str, int | None]] = {}
+    try:
+        filas = sdb.fetch_all(
+            """select canal, count(*) total,
+                      count(*) filter (where status = 'ACTIVATE') activas
+                 from channel.listings
+                where canal in ('tiktok', 'temu')
+                group by canal""")
+        for f in filas:
+            fuera[f["canal"]] = {
+                "total": int(f["total"]),
+                "activas": int(f["activas"]) if f["canal"] == "tiktok" else None,
+            }
+    except Exception as exc:  # noqa: BLE001 — nunca rompe la pantalla
+        log.debug("automatizacion: no se pudieron contar publicaciones (%s)", exc)
+    return fuera
 
 
 @router.post("/interruptor")
@@ -104,6 +150,8 @@ async def interruptor(
 @router.get("/ordenes-odoo")
 def ordenes_odoo(
     limite: int = Query(100, ge=1, le=500),
+    dias: int | None = Query(None, ge=1, le=365,
+                             description="acota por fecha de PROCESO; sin él, todo"),
     canal: str | None = Query(None, description="tiktok | temu"),
     solo_problemas: bool = Query(False,
                                  description="solo lo que alguien tiene que mirar: "
@@ -116,7 +164,7 @@ def ordenes_odoo(
     Ese último dato no se puede pedir en vivo — `free_qty` ya cambió. Sale de la
     foto congelada en `ops.odoo_sale_order_items`.
     """
-    return {"ordenes": odoo_ventas_log.historial(limite, canal, solo_problemas)}
+    return {"ordenes": odoo_ventas_log.historial(limite, canal, solo_problemas, dias)}
 
 
 @router.post("/backfill")

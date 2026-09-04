@@ -179,7 +179,8 @@ def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
 
 
 def historial(limite: int = 100, canal: str | None = None,
-              solo_problemas: bool = False) -> list[dict[str, Any]]:
+              solo_problemas: bool = False,
+              dias: int | None = None) -> list[dict[str, Any]]:
     """Lo que pinta el tab: una fila por venta, con sus líneas anidadas."""
     from services import supabase_db as sdb
 
@@ -187,6 +188,11 @@ def historial(limite: int = 100, canal: str | None = None,
     if canal:
         donde.append("o.canal = %(canal)s")
         params["canal"] = canal
+    if dias:
+        # Se acota por la fecha en que NOSOTROS la procesamos, no por la de
+        # compra: "las últimas 24 h" quiere decir lo que el automatismo hizo
+        # en 24 h, y ahí puede aparecer la cancelación de una venta de agosto.
+        donde.append(f"o.creado_at >= now() - interval '{int(dias)} days'")
     if solo_problemas:
         # Lo que alguien TIENE QUE HACER ALGO AL RESPECTO. El criterio no es
         # "salió raro", es "queda trabajo pendiente para una persona":

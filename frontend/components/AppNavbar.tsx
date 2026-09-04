@@ -103,6 +103,12 @@ const ITEMS: NavItem[] = [
   { id: "inventario", label: "Inventario", icon: Warehouse, href: "/inventario" },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
+  // Va aquí, entre Costos y Competencia (handoff de diseño, 4-sep). Estaba al
+  // FINAL, detrás del scroll horizontal del navbar — la única pestaña que
+  // vigila un flujo vivo no puede ser también la única que hay que buscar.
+  // Solo admin, por lo mismo que Webhooks: la orden trae la guía del comprador.
+  { id: "automatizacion", label: "Automatización", icon: Workflow,
+    href: "/automatizacion", soloAdmin: true },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
   // OPERACIONES absorbió a MONITOREO y WEBHOOKS como entradas de su submenú
@@ -140,11 +146,6 @@ const ITEMS: NavItem[] = [
     soloAdmin: true },
   // "Reportes" se retiró del navbar (Eduardo, 29-jul): ahora vive dentro de
   // Análisis como /analisis/reportes.
-  // Deja de ser "próximamente" (28-ago): ya muestra las órdenes de venta que el
-  // panel crea en Odoo por cada venta de TikTok/Temu. Solo admin, por lo mismo
-  // que Webhooks: la orden trae la guía del comprador.
-  { id: "automatizacion", label: "Automatización", icon: Workflow,
-    href: "/automatizacion", soloAdmin: true },
 ];
 
 export default function AppNavbar() {
