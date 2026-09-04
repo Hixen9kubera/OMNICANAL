@@ -1074,6 +1074,53 @@ Medido después del cambio:
 
 ---
 
+### v0.414.0 — La llave equivocada dejó de decir solo "Invalid API key"
+
+**El síntoma.** Brandon corrió `crear_usuarios.py --aplicar` con la URL de kubera
+y la llave que tenía a mano. El script imprimió a las 14 personas y murió con:
+
+```
+No se pudo listar usuarios: HTTP 401 {"message":"Invalid API key",
+ "hint":"Double check your Supabase `anon` or `service_role` API key."}
+```
+
+El mensaje es cierto y a la vez lleva al lugar equivocado: suena a llave vencida,
+mal copiada o con un espacio de más. Se revisa la llave, se vuelve a pegar, falla
+otra vez.
+
+**Lo que pasaba de verdad.** Hay **dos proyectos de Supabase** y la llave era del
+otro. Se comprobó decodificando el JWT —sin necesidad de red, y sin imprimir el
+secreto—: el `ref` firmado dentro decía `xaxbkijcxzvrwyrqnjzi` (analytics)
+mientras `SUPABASE_URL` apuntaba a `tukwcvsitthplhswsblt` (kubera). Es la misma
+llave que trae el `.env` local, así que el error no fue un descuido: es lo que
+pasa por omisión en cualquier máquina de desarrollo del proyecto.
+
+**El arreglo.** `crear_usuarios.py` ahora lee ese sello ANTES de listar al equipo
+y antes de tocar la red, y aborta diciendo qué proyecto es cada cosa. Un JWT de
+Supabase no es opaco: su carga lleva `ref` (el proyecto) y `role` (`anon` o
+`service_role`), así que la pregunta "¿es la llave correcta?" tenía respuesta
+local todo este tiempo. Se agregan tres guardas:
+
+| Comprobación | Por qué |
+|---|---|
+| `ref` de la llave = `ref` de `SUPABASE_URL` | el 401 de ayer |
+| `role` = `service_role` | la `anon` rebota con el MISMO 401, por otra causa |
+| la base del perfil es la misma que la de la identidad | `core.usuarios.id` tiene FK a `auth.users`: con bases distintas el usuario nacería sin permisos |
+
+Ninguna imprime el secreto: solo el proyecto y el rol.
+
+**Fernando ya estaba dentro, y la llave foránea lo demuestra.** La alta no
+necesitaba el script: Fernando entró con Google el 3-sep a las 10:21 (CDMX), y
+ese ingreso creó su identidad en `auth.users` — sin contraseña, proveedor
+`google`. Lo que le faltaba era el PERFIL, y al insertarlo Brandon a mano quedó
+como `operador` (KAM). Que ese `INSERT` haya sido aceptado **es la prueba de que
+la identidad existía**: `usuarios_id_fkey` lo habría rechazado si no. Medido:
+14 perfiles, 0 sin identidad.
+
+Es la misma forma de las otras entradas de esta serie —`origen` metido dentro del
+nombre, el mensaje de error metido dentro de `accion`—: la respuesta ya estaba en
+los datos, y lo que faltaba era leerla en vez de deducirla.
+
 ### v0.413.0 — El QUIÉN y el POR DÓNDE son dos preguntas, y Fernando entra al equipo
 
 #### El origen, que faltaba

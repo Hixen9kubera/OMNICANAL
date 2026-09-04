@@ -42,9 +42,24 @@ seguridad de fila. Por eso NO va en el repo ni en un chat — se toma de Railway
 
 Es IDEMPOTENTE: a quien ya exista solo se le corrige el rol, no se le cambia la
 contraseña ni se duplica.
+
+⚠️ OJO CON *CUÁL* LLAVE (el error del 4-sep-2026)
+--------------------------------------------------
+Hay DOS proyectos de Supabase y sus llaves se parecen:
+
+    tukwcvsitthplhswsblt   kubera     ← el panel: auth.users y core.usuarios
+    xaxbkijcxzvrwyrqnjzi   analytics  ← otra cosa; es la que trae el .env local
+
+Con la llave de analytics y la URL de kubera, la API contesta
+`401 Invalid API key`. El mensaje es cierto y engañoso a la vez: suena a llave
+vencida o mal pegada, y lo que pasa es que es de otra base. Por eso el script
+ahora lo comprueba solo, leyendo el `ref` que el JWT lleva firmado dentro, antes
+de tocar la red.
 """
 from __future__ import annotations
 
+import base64
+import json
 import os
 import secrets
 import string
@@ -113,6 +128,32 @@ def contrasena() -> str:
     return "".join(secrets.choice(alfabeto) for _ in range(16))
 
 
+def _proyecto_de_url(url: str) -> str:
+    """`https://tukwcvsi....supabase.co` -> `tukwcvsi...`. Cadena vacia si no lo es."""
+    host = (url or "").strip().split("//", 1)[-1].split("/", 1)[0].lower()
+    return host.split(".", 1)[0] if host.endswith(".supabase.co") else ""
+
+
+def _sello_de_llave(llave: str) -> tuple[str, str]:
+    """
+    A qué PROYECTO pertenece la llave y con qué ROL, leído de ella misma.
+
+    Un JWT de Supabase no es opaco: su carga lleva `ref` (el proyecto) y `role`
+    (`anon` o `service_role`). O sea que se puede saber si es la llave
+    equivocada SIN preguntarle nada a la red — y sin imprimir el secreto.
+
+    Devuelve ('', '') si no se puede leer, para no convertir una llave con
+    formato raro en un bloqueo: de eso ya se encarga el 401.
+    """
+    try:
+        carga = (llave or "").strip().split(".")[1]
+        carga += "=" * (-len(carga) % 4)
+        d = json.loads(base64.urlsafe_b64decode(carga))
+        return str(d.get("ref") or "").lower(), str(d.get("role") or "").lower()
+    except Exception:  # noqa: BLE001
+        return "", ""
+
+
 def sql_perfiles(perfiles: list[tuple[str, str, str, str]]) -> str:
     """El INSERT que deja a cada quien con su rol. Idempotente."""
     filas = ",\n       ".join(
@@ -174,6 +215,47 @@ def main() -> int:
         print("Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY.")
         print("La segunda está en Railway → BackendOmnicanal → Variables.")
         return 1
+
+    # ── ¿ES LA LLAVE DE ESTE PROYECTO? ───────────────────────────────────
+    # Hay DOS proyectos de Supabase y el `.env` de cualquier máquina trae el de
+    # ANALYTICS (`xaxbkijc…`), no el de kubera. Pegar esa llave junto a la URL
+    # de kubera devuelve `401 Invalid API key`: cierto, pero engañoso — suena a
+    # llave vencida o mal copiada, cuando lo que pasa es que es de OTRA base.
+    # Costó una corrida el 4-sep-2026, y el mensaje no daba ninguna pista.
+    #
+    # El propio JWT lo dice, así que se comprueba ANTES de listar al equipo y
+    # antes de tocar la red. El secreto no se imprime: solo el proyecto y el rol.
+    proyecto = _proyecto_de_url(url)
+    ref, rol = _sello_de_llave(llave)
+    if proyecto and ref and ref != proyecto:
+        print()
+        print("  LA LLAVE ES DE OTRO PROYECTO.")
+        print()
+        print(f"      SUPABASE_URL apunta a   {proyecto}")
+        print(f"      y la llave es de        {ref}")
+        print()
+        print("  `tukwcvsitthplhswsblt` es kubera, la del panel;")
+        print("  `xaxbkijcxzvrwyrqnjzi` es analytics. El .env local trae la")
+        print("  segunda. La de kubera se toma de Railway, o del panel de")
+        print("  Supabase DE ESE PROYECTO → Settings → API keys.")
+        print()
+        return 1
+    if rol and rol != "service_role":
+        print()
+        print(f"  Esa llave tiene rol '{rol}', y hace falta 'service_role'.")
+        print("  La `anon` no puede crear usuarios: la rebota el mismo 401.")
+        print()
+        return 1
+
+    # El perfil NO se escribe por la API (ver `guardar_perfiles`), sino por
+    # conexión directa. Si esa base fuera otra, el INSERT chocaría contra la
+    # llave foránea a `auth.users` — quedaría la identidad sin permisos.
+    dsn = (os.environ.get("KUBERA_DB_URL") or os.environ.get("SUPABASE_DB_URL") or "")
+    if proyecto and dsn and proyecto not in dsn:
+        print()
+        print(f"  AVISO: la identidad se crearía en `{proyecto}`, pero")
+        print("  KUBERA_DB_URL/SUPABASE_DB_URL apuntan a otra base. El perfil")
+        print("  fallaría por llave foránea; abajo queda el SQL de rescate.")
 
     h = {"apikey": llave, "Authorization": f"Bearer {llave}",
          "Content-Type": "application/json"}
