@@ -1687,6 +1687,9 @@ export interface FilaInventario {
   contenedor_odoo: string;
   contenedor_costo: string;
   contenedor_discrepa: boolean;
+  /** Las dos fuentes tienen dato pero una no trae número de embarque: no hay
+   *  con qué cotejarlas. NO es lo mismo que "concuerdan". */
+  contenedor_no_comparable: boolean;
   cajas: number | null;
   piezas_por_caja: number | null;
   /** cajas × piezas por caja: lo que el packing list dice que debe llegar. */
@@ -1705,6 +1708,8 @@ export interface FilaInventario {
   recepcion_desde: string;
   recepcion_dias: number | null;
   recepcion_ref: string | null;
+  /** Cuántos DOCUMENTOS de recepción distintos tiene abiertos este SKU. */
+  recepcion_docs: number;
 
   /** Dónde está, a nivel de rack. SOLO existe en Odoo: ni Woo ni kubera
    *  tienen la noción de ubicación. Ordenado por vendible y cantidad. */
@@ -1767,6 +1772,7 @@ export interface ResumenInventario {
     sin_fotos: number;
     sin_costo: number;
     contenedor_discrepa: number;
+    contenedor_no_comparable: number;
     odoo_duplicado: number;
   };
   por_etapa: Record<ClaveEtapa, Record<EstadoEtapa, number>>;

@@ -386,6 +386,7 @@ def detalle_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
                 "activo": bool(r.get("active")),
                 "recepcion_desde": None,
                 "recepcion_ref": None,
+                "recepcion_docs": 0,
                 "duplicado": False,
             }
             # 5 SKUs tienen DOS productos ACTIVOS en Odoo (TEC-2241-MET,
@@ -443,10 +444,23 @@ def _anotar_recepciones(detalle: dict[str, dict[str, Any]]) -> None:
             # product_id viene como [id, "[SKU] Nombre"]; el SKU va entre corchetes.
             sku = etiqueta.split("]")[0].lstrip("[").strip() if "[" in etiqueta else ""
             d = detalle.get(sku)
-            if d is None or d["recepcion_desde"]:
+            if d is None:
+                continue
+            # Un SKU puede estar atorado en VARIAS recepciones, y decir "una"
+            # manda a cerrar un documento cuando hay dos. Caso real:
+            # ROP-0731-BLN tiene 167 piezas repartidas entre TEXCO/IN/00406
+            # (109, del 13-may, a TEXCO) y TEXCO/IN/01208 (58, del 26-may, a
+            # TEXCO II). Se cuentan los documentos DISTINTOS, no los renglones:
+            # los 16 renglones de la primera son sus 16 CAJAS.
+            ref = m.get("reference") or m.get("origin") or ""
+            d.setdefault("_refs", set()).add(ref)
+            d["recepcion_docs"] = len(d["_refs"])
+            if d["recepcion_desde"]:
                 continue          # ya tiene la más vieja: el order es date asc
             d["recepcion_desde"] = m.get("date")
-            d["recepcion_ref"] = m.get("reference") or m.get("origin") or ""
+            d["recepcion_ref"] = ref
+    for d in detalle.values():
+        d.pop("_refs", None)
 
 
 def ubicaciones_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:

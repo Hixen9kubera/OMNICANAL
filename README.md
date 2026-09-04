@@ -1074,6 +1074,108 @@ Medido después del cambio:
 
 ---
 
+### v0.409.0 — La publicación de Walmart sí estaba; la meta la borraba
+
+Brandon publicó un producto de prueba a Walmart y preguntó por qué no se veía —
+*"¿o se actualiza hasta que responda el status de activo en Walmart?"*. Le atinó.
+
+**La publicación sí quedó registrada, y firmada.** Es la primera de Walmart en
+toda su historia con actor, o sea que la instrumentación de v0.398–v0.402 funciona:
+
+```
+04-sep 16:48  JUGU-0164-ROS  alta  status=ENVIADO  success=NULL  brandon@kubera.mx
+```
+
+Lo que fallaba era el conteo de la meta, que exigía `success is true`.
+
+#### Por qué Walmart es distinto a los otros cuatro
+
+Contesta con un `feedId` y **el veredicto llega minutos después**. En el momento
+de publicar sólo se sabe que salió (`ENVIADO`), no si lo aceptaron.
+
+Y el camino del PANEL dispara y se olvida: `publicar_walmart.py:493` escribe
+`ENVIADO` y nadie vuelve a cerrarlo. El del SCRIPT sí espera (`:953`,
+`gano = estado in ("SUCCESS","PROCESSED")`) — por eso las 7 filas en SUCCESS que
+existen vienen todas de ahí.
+
+Medido, y es la razón de que el cambio sea seguro: **Walmart es el ÚNICO canal
+con nulos** — 65 de sus 131 filas. ML, Amazon, TikTok y Temu resuelven al
+instante, así que sus números no se mueven.
+
+```
+CANAL            TRUE   FALSE   NULL
+tiktok           1529     519      0
+mercado_libre     914      86      0
+temu              320       5      0
+amazon             58       0      0
+walmart             7      59     65
+```
+
+#### Se cuentan, pero NO se dan por buenas
+
+El filtro pasa a `success is not false`, así que el trabajo hecho aparece. Pero la
+tarjeta añade **"N sin confirmar"**, y no es un detalle: de los 66 veredictos de
+Walmart que sí se resolvieron, **sólo 7 salieron bien**. Dar por buena una
+pendiente sería optimista el 89% de las veces.
+
+Walmart pasó de `0 / 10` a `3 / 10 · 3 sin confirmar`, con la de Brandon firmada.
+
+#### ⚠️ Lo que esto NO arregla
+
+**Nada cierra el veredicto de una publicación hecha desde el panel.** Se queda en
+`ENVIADO` para siempre, así que nunca se sabrá si Walmart la aceptó. El script sí
+lo cierra; el panel no. Es el siguiente trabajo de ese canal y no lo resuelve esta
+versión.
+
+### v0.409.0 — «Una recepción» eran dos, y un contenedor sin cotejar se leía como que cuadraba
+
+Brandon pidió el linaje de la ficha campo por campo, mandando el formulario de
+Odoo de `ROP-0731-BLN` al lado de la pestaña. Rastrearlo destapó dos defectos —
+los dos de la misma familia: **la pantalla afirmando más de lo que sabía**.
+
+**1. «167 piezas en UNA recepción» eran DOS.** El aviso tomaba la fecha del
+movimiento pendiente más viejo y ponía todas las piezas debajo, en singular. En
+`ROP-0731-BLN` son:
+
+```
+TEXCO/IN/00406  13-may  16 renglones  →  109 pzas  → TEXCO
+TEXCO/IN/01208  26-may  12 renglones  →   58 pzas  → TEXCO II
+                                        ─────────
+                                           167
+```
+
+Tres de los diez SKUs del piloto tienen más de un documento abierto (2, 3 y 2).
+Mandar a cerrar «la recepción» cuando hay tres es mandar a medio cerrar el
+problema. Ahora `detalle_por_sku` cuenta DOCUMENTOS distintos —no renglones— y
+la UI dice «en 2 recepciones», con la más vieja nombrada.
+
+**Y de paso quedó confirmado que el packing list es correcto:** esos 16
+renglones de `TEXCO/IN/00406` son las **16 cajas** de `costos_validados`, cada
+una con su cantidad propia (13, 20, 10, 5, 2, 8, 7, 1, 5, 3, 4, 3, 15, 4, 2, 7),
+y suman **109** — exactamente el `16 × 6.81` que la ficha muestra como
+«declaradas». El `6.81` no es un número raro: es el promedio de cajas que traen
+entre 1 y 20 piezas. Odoo declara `units_per_master_box = 6`, que es el nominal
+del proveedor y no corresponde a ninguna caja real.
+
+**2. El cotejo de contenedor tenía dos resultados y necesita TRES.** En
+`ROP-0731-BLN`, Odoo guarda `SZLS50213900` y kubera `BEAU6268641 - 97`. Como el
+valor de Odoo no trae número de embarque, no había nada que comparar — y
+`contenedor_discrepa` se quedaba en `False`, que en la pantalla se lee como
+«concuerdan». **Callarse cuando no se puede comparar es peor que decir «no
+comparable».**
+
+Ahora son tres estados: `discrepa` (ambas traen embarque y difieren) ·
+`no_comparable` (ambas tienen dato pero una no trae embarque) · nada (coinciden,
+o solo hay una fuente). El chip «Contenedor sin cotejar» los filtra, y el
+tooltip explica la lectura probable: `BEAU6268641` es un contenedor ISO (4
+letras + 7 dígitos) y `SZLS50213900` no lo es — lo más seguro es que sean el
+booking y el contenedor del MISMO embarque. Pero eso no se puede probar, y la
+pantalla lo dice en vez de suponerlo.
+
+Archivos: `backend/services/odoo.py` (`recepcion_docs` en `_anotar_recepciones`),
+`backend/services/inventario_maestro.py` (`contenedor_no_comparable`),
+`frontend/lib/types.ts`, `frontend/app/inventario/page.tsx`.
+
 ### v0.408.0 — La meta baja a 10 por canal, y llega el semana contra semana
 
 Dos correcciones de Brandon: la meta de la semana es **mínimo 10 productos

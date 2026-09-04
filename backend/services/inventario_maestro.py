@@ -136,8 +136,20 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
     if es_booking:
         contenedor = emp_costo["crudo"] or emp_odoo["crudo"]
     embarque = emp_costo["embarque"] or emp_odoo["embarque"]
+
+    # El cotejo de contenedor tiene TRES resultados, no dos, y confundirlos hacía
+    # que la pestaña se callara justo cuando no sabía. Caso que lo destapó,
+    # ROP-0731-BLN: Odoo guarda 'SZLS50213900' (una referencia de booking, sin
+    # número de embarque) y kubera 'BEAU6268641 - 97' (contenedor ISO, embarque
+    # 97). Como Odoo no trae embarque, no hay nada que comparar — y la bandera
+    # de discrepancia quedaba en False, que se lee como "concuerdan".
+    #   discrepa      → los dos traen embarque y NO coinciden
+    #   no_comparable → las dos fuentes tienen dato pero una no trae embarque
+    #   (nada)        → coinciden, o solo hay una fuente
     discrepa = bool(emp_odoo["embarque"] and emp_costo["embarque"]
                     and emp_odoo["embarque"] != emp_costo["embarque"])
+    no_comparable = bool(not discrepa and emp_odoo["crudo"] and emp_costo["crudo"]
+                         and not (emp_odoo["embarque"] and emp_costo["embarque"]))
 
     full = sum(float(p.get("stock_full") or 0) for p in pubs)
     fba = sum(float(p.get("stock_fba") or 0) for p in pubs)
@@ -167,6 +179,7 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "contenedor_odoo": emp_odoo["crudo"],
         "contenedor_costo": emp_costo["crudo"],
         "contenedor_discrepa": discrepa,
+        "contenedor_no_comparable": no_comparable,
         "cajas": _num((c or {}).get("cajas")),
         "piezas_por_caja": _num((c or {}).get("piezas_por_caja")),
         "piezas_declaradas": _piezas_declaradas(c),
@@ -185,6 +198,7 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "recepcion_desde": _iso((o or {}).get("recepcion_desde")),
         "recepcion_dias": _dias((o or {}).get("recepcion_desde")),
         "recepcion_ref": (o or {}).get("recepcion_ref"),
+        "recepcion_docs": (o or {}).get("recepcion_docs") or 0,
 
         # dónde está — a nivel de rack, y es dato que SOLO existe en Odoo
         "ubicaciones": ubicaciones,
@@ -282,6 +296,8 @@ def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
             "sin_costo": sum(1 for f in filas_
                              if f["etapas"]["validado"]["estado"] == "pendiente"),
             "contenedor_discrepa": sum(1 for f in filas_ if f["contenedor_discrepa"]),
+            "contenedor_no_comparable": sum(
+                1 for f in filas_ if f["contenedor_no_comparable"]),
             "odoo_duplicado": sum(1 for f in filas_ if f["odoo_duplicado"]),
         },
         "por_etapa": {

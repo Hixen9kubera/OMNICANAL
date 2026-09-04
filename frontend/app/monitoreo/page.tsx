@@ -86,6 +86,8 @@ interface PubCanal {
   canal: string; nuevas: number; con_actor: number;
   /** La MISMA cuenta, en la semana anterior. Es la mitad de "week over week". */
   previa: number;
+  /** Mandadas y sin veredicto del canal. Hoy sólo Walmart las produce. */
+  sin_confirmar: number;
 }
 interface SinMovs { usuario: string; correo: string; nombre?: string | null }
 
@@ -567,7 +569,7 @@ function BandaMetas({ d }: { d: Resumen }) {
   const metas = [
     { clave: "general", titulo: "Costos validados",
       v: d.costos_semana?.actual ?? 0, previa: d.costos_semana?.previa ?? 0,
-      mudo: false },
+      pendientes: 0, mudo: false },
     ...CANALES_META.map((canal) => {
       const p = d.publicaciones_semana.find((x) => x.canal === canal);
       return {
@@ -575,6 +577,7 @@ function BandaMetas({ d }: { d: Resumen }) {
         titulo: NOMBRE_CANAL[canal] ?? canal,
         v: p?.nuevas ?? 0,
         previa: p?.previa ?? 0,
+        pendientes: p?.sin_confirmar ?? 0,
         mudo: d.canales_sin_registro.includes(canal),
       };
     }),
@@ -644,6 +647,15 @@ function BandaMetas({ d }: { d: Resumen }) {
                          style={{ width: `${pct}%`, background: c.punto,
                                   borderTop: `2px solid ${c.acento}` }} />
                   </div>
+                  {/* Walmart contesta con un feedId y juzga MINUTOS DESPUÉS. Se
+                      cuentan —el trabajo se hizo— pero no se dan por buenas: de
+                      sus veredictos resueltos, sólo 7 de 66 salieron bien. */}
+                  {m.pendientes > 0 && (
+                    <p className="mt-1 text-[10px] text-slate-400"
+                       title="El canal todavía no ha dicho si las acepta">
+                      {m.pendientes} sin confirmar
+                    </p>
+                  )}
                 </>
               )}
             </div>

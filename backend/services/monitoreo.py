@@ -243,12 +243,21 @@ def publicaciones_semana() -> list[dict[str, Any]]:
         return supabase_db.fetch_all(
             f"""with primeras as (
                  select canal, cuenta, sku, min(created_at) primera,
-                        (array_agg(actor order by created_at))[1] actor
+                        (array_agg(actor order by created_at))[1] actor,
+                        bool_or(success is true) confirmada
                    from ops.channel_submissions
-                  where success is true
+                  -- `is not false` y no `is true`: WALMART deja el veredicto
+                  -- en NULL. Contesta con un feedId y el resultado llega
+                  -- minutos después; el camino del PANEL dispara y se olvida
+                  -- (`publicar_walmart.py:493` escribe 'ENVIADO' y nadie
+                  -- vuelve). Medido: es el ÚNICO canal con nulos — 65 de 131.
+                  -- Exigir `is true` borraba del tablero publicaciones que sí
+                  -- se hicieron, y fue lo que dejó la meta de Walmart en 0 con
+                  -- un producto recién publicado a la vista en el renglón.
+                  where success is not false
                   group by canal, cuenta, sku),
                  fechadas as (
-                   select canal, actor,
+                   select canal, actor, confirmada,
                           (primera at time zone 'America/Mexico_City')::date dia
                      from primeras
                     where primera >= ({SEMANA} - interval '1 week'))
@@ -256,6 +265,13 @@ def publicaciones_semana() -> list[dict[str, Any]]:
                       count(*) filter (where dia >= {SEMANA}::date) nuevas,
                       count(*) filter (where dia >= {SEMANA}::date
                                          and actor is not null) con_actor,
+                      -- Las que se mandaron y el canal aún no ha juzgado. Se
+                      -- cuentan para la meta —el trabajo se hizo— pero se
+                      -- muestran aparte: dar por buena una pendiente de Walmart
+                      -- sería optimista de más, porque de sus 66 veredictos
+                      -- resueltos sólo 7 salieron bien.
+                      count(*) filter (where dia >= {SEMANA}::date
+                                         and not confirmada) sin_confirmar,
                       count(*) filter (where dia <  {SEMANA}::date) previa
                  from fechadas
                 group by canal order by nuevas desc, previa desc""")

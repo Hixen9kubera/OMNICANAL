@@ -207,6 +207,7 @@ export default function InventarioPage() {
         sin_fotos: (f) => f.etapas.fotos.estado === "pendiente",
         sin_costo: (f) => f.etapas.validado.estado === "pendiente",
         contenedor_discrepa: (f) => f.contenedor_discrepa,
+        contenedor_no_comparable: (f) => f.contenedor_no_comparable,
         odoo_duplicado: (f) => f.odoo_duplicado,
       };
       items = items.filter(pruebas[alerta] ?? (() => true));
@@ -426,7 +427,8 @@ function BandaAlertas({
     { k: "recepcion_vencida", t: "Recepción vencida", n: resumen.alertas.recepcion_vencida, tono: "aviso" },
     { k: "sin_fotos", t: "Sin fotos", n: resumen.alertas.sin_fotos, tono: "aviso" },
     { k: "sin_costo", t: "Sin costo", n: resumen.alertas.sin_costo, tono: "aviso" },
-    { k: "contenedor_discrepa", t: "Contenedor discrepa", n: resumen.alertas.contenedor_discrepa, tono: "" },
+    { k: "contenedor_discrepa", t: "Contenedor discrepa", n: resumen.alertas.contenedor_discrepa, tono: "aviso" },
+    { k: "contenedor_no_comparable", t: "Contenedor sin cotejar", n: resumen.alertas.contenedor_no_comparable, tono: "" },
     { k: "sin_odoo", t: "Sin producto en Odoo", n: resumen.alertas.sin_odoo, tono: "" },
   ].filter((c) => c.n > 0);
 
@@ -662,6 +664,14 @@ function Fila({
                   · discrepa
                 </span>
               )}
+              {f.contenedor_no_comparable && (
+                <span
+                  className="text-amber-700"
+                  title={`Sin cotejar: Odoo dice "${f.contenedor_odoo}" y costos "${f.contenedor_costo}", y una de las dos no trae número de embarque. Puede ser el booking y el contenedor del mismo embarque, o dos cosas distintas — no hay con qué saberlo.`}
+                >
+                  · sin cotejar
+                </span>
+              )}
             </>
           ) : "sin contenedor"}
         </div>
@@ -675,9 +685,13 @@ function Fila({
           {num(piezas)}
         </span>
         {!!f.recepcion_piezas && (
-          <div className="text-[10px] font-semibold text-amber-700"
-               title={`Recepción ${f.recepcion_ref ?? ""} ABIERTA desde ${f.recepcion_desde.slice(0, 10)} — no está programada a futuro`}>
-            +{num(f.recepcion_piezas)} en recepción · {f.recepcion_dias}d
+          <div
+            className="text-[10px] font-semibold text-amber-700"
+            title={`${f.recepcion_docs > 1 ? `${f.recepcion_docs} recepciones ABIERTAS` : `Recepción ${f.recepcion_ref ?? ""} ABIERTA`}; la más vieja desde ${f.recepcion_desde.slice(0, 10)} — ninguna programada a futuro`}
+          >
+            +{num(f.recepcion_piezas)} en{" "}
+            {f.recepcion_docs > 1 ? `${f.recepcion_docs} recepciones` : "recepción"}
+            {" · "}{f.recepcion_dias}d
           </div>
         )}
         {!!f.no_vendible && (
@@ -991,10 +1005,13 @@ function DondeEsta({ fila }: { fila: FilaInventario }) {
         {!!fila.recepcion_piezas && (
           <p className="mt-2 rounded-lg bg-amber-50 p-2 text-[11px] leading-snug text-amber-800 ring-1 ring-amber-200">
             <Ship className="mr-1 inline h-3 w-3" />
-            {num(fila.recepcion_piezas)} piezas en una recepción que sigue ABIERTA
-            {fila.recepcion_dias !== null && ` desde hace ${fila.recepcion_dias} días`}
-            {fila.recepcion_ref && ` (${fila.recepcion_ref})`}. No está programada a
-            futuro: es una recepción sin validar, no mercancía en camino.
+            {num(fila.recepcion_piezas)} piezas en{" "}
+            {fila.recepcion_docs > 1
+              ? `${fila.recepcion_docs} recepciones que siguen ABIERTAS`
+              : "una recepción que sigue ABIERTA"}
+            {fila.recepcion_dias !== null && `; la más vieja desde hace ${fila.recepcion_dias} días`}
+            {fila.recepcion_ref && ` (${fila.recepcion_ref})`}. Ninguna está
+            programada a futuro: son recepciones sin validar, no mercancía en camino.
           </p>
         )}
       </div>
