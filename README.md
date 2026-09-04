@@ -1001,6 +1001,82 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.397.0 — Productos mostraba una COPIA del costo, y la copia se había quedado atrás (Eduardo)
+
+Primer paso de mover la pestaña **Productos** a leer de kubera. Cambian **dos
+lecturas**, las dos con **respaldo a WooCommerce**; el resto se queda donde está.
+
+**EL COSTO ERA UNA COPIA, NO EL ORIGINAL.** La pestaña leía la meta `costo` de
+WordPress. Pero el editor del panel guarda en `costing.costos_validados` y
+*después* sincroniza Woo en un paso aparte que puede fallar — el propio panel lo
+dice: *"Costo guardado en la base, pero WooCommerce NO se actualizó"*. Por eso
+**Productos y Costos mostraban números distintos del MISMO SKU**, con casos como
+`VIA-0023-NEG`: $1,800.00 en una pestaña y $72.69 en la otra.
+
+Medido sobre los 2,800 productos del listado (4-sep-2026):
+
+```
+en las dos fuentes ....... 1,639   (de ellos 27 difieren de verdad;
+                                    otros 46 son de un centavo, redondeo)
+SOLO en kubera ...........   276   ← se veían VACÍOS teniendo costo
+SOLO en WordPress ........   248   ← por esto hay respaldo
+sin costo en ninguna .....   637
+```
+
+**El respaldo no es cautela, es aritmética:** leer solo kubera habría dejado en
+blanco 248 productos que hoy sí muestran costo. Con kubera + respaldo se pasa de
+**1,887 a 2,163** con costo visible, sin perder uno solo.
+
+**LA CATEGORÍA.** Woo tiene 1,703 categorías y **1,702 son raíz**: el árbol es
+plano y está mal asignado — un termo de acero en "Cocinas de Juguete", unas
+bolsas de Halloween en "Cabinas de Pintura". kubera tiene la de Mercado Libre
+con la ruta entera (4 niveles de media, hasta 7), que es justo lo que la UI ya
+sabía dibujar y nunca había podido. Cubre 2,674 de 2,800; los 126 restantes
+conservan la de Woo.
+
+**No se toca `categoria_id`**: el filtro de la pantalla es por categoría de WOO,
+y cambiarlo dejaría a la gente filtrando por una taxonomía y viendo otra. Solo
+cambia lo que se MUESTRA.
+
+**`channel_read.rutas_de()`**, nueva y gemela de `categorias_de()` sin
+reemplazarla: aquélla devuelve `cat1..cat4` porque replica la tabla vieja
+`categorias_ml`, y **corta las rutas a cuatro tramos**. Y parte solo por `›`,
+cuando `channel.categories.path` mezcla `›` (2,612 rutas) y `>` (122) — esas 122
+salían en un único bloque. `rutas_de` parte por los tres separadores y no tiene
+tope.
+
+**EL ARNÉS, que es la mitad del trabajo.** `backend/scripts/comparar_productos_
+kubera.py` compara los 2,800 campo por campo, antes contra después, y distingue
+lo que no es lo mismo: *idéntico* (obligatorio en nombre, estado y nº de
+variantes), *mejora* (antes vacío, ahora con valor), **regresión** (antes con
+valor, ahora vacío — condición de fallo) y *cambio*. Con la primera versión, sin
+respaldo, marcaba 248 regresiones de costo y 126 de categoría; con el respaldo
+queda en verde:
+
+```
+nombre        2,800 idénticos     estado    2,800 idénticos
+n_variantes     552 idénticos     categoría 2,800 con categoría, 0 regresiones
+costo         1,814 idénticos · 276 mejora · 73 cambio · 0 regresiones
+```
+
+Las dos lecturas van en `asyncio.to_thread` y en paralelo: abren psycopg2, que
+BLOQUEA, y esto corre dentro de la corrutina del listado (regla 11 — el mismo
+defecto costó el apagón del 13-ago). Y viajan en el MISMO lote que ya se arma
+para `presencia`, así que no cuestan una consulta más.
+
+**Lo que NO cambió, y por qué.** Precio y stock siguen saliendo del MySQL de
+Woo: kubera tiene el precio en 21 filas de 13,208 y `price_base`/`price_sale` en
+cero. El stock sí está en kubera y es idéntico (9,028 de 9,028 comprobados),
+pero con hasta 20 minutos de retraso y sin nada que ganar. Imagen y descripción
+corta tampoco: `enrich.product_media` cubre 1,713 de 2,800 y es un backfill.
+
+Tipo y variantes se quedan en Woo **a propósito**, aunque se pueden derivar de
+`core.products.wc_parent_id` con 2,799 de 2,800 de acierto: ya salen del mismo
+MySQL en 3-4 consultas desde la v0.212, la derivación no gana nada y es ciega a
+las variaciones sin SKU. Y de paso queda medido que **`core.products.
+has_variations` está muerta**: la llena el ETL desde una tabla congelada, así
+que cualquier intento de rellenarla se borra en la corrida de las 06:15.
+
 ### v0.396.0 — Automatización rediseñada: 30 órdenes se recorren de un jalón
 
 Brandon encargó el rediseño a Claude Design y pasó el handoff. Se implementó en

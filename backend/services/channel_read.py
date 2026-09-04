@@ -20,6 +20,7 @@ legadas — no son equivalentes; 'general' se unifica en el corte (F6).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import timezone
 from typing import Any
 
@@ -293,6 +294,57 @@ def categorias_de(skus: list[str]) -> dict[str, dict[str, Any]]:
                 "cat3": tramos[2] if len(tramos) > 2 else None,
                 "cat4": tramos[3] if len(tramos) > 3 else None,
             }
+    return salida
+
+
+def rutas_de(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """
+    ``{ sku: [{id, nombre}, ...] }`` — la ruta COMPLETA de la categoría de
+    Mercado Libre, en la forma que pinta el panel (`categoria_path`).
+
+    Gemela de `categorias_de`, pero NO la reemplaza: aquélla devuelve `cat1..
+    cat4` porque replica las columnas de la tabla vieja `categorias_ml`, y esa
+    forma **corta las rutas a cuatro tramos**. Las de ML llegan a siete (media
+    4.0, medido 4-sep-2026), así que para pintar el camino entero hace falta la
+    lista sin tope.
+
+    ⚠️ EL SEPARADOR NO ES UNO SOLO. `channel.categories.path` mezcla `›` (2,612
+    rutas) y `>` (122), y hay `→` en los canales que no son ML. Partir solo por
+    `›` —como hace `categorias_de`— deja esas 122 en un único tramo. Aquí se
+    parte por los tres.
+
+    Solo el ÚLTIMO tramo lleva `id`: ML da el id de la hoja, no el de cada
+    escalón. El panel usa `nombre` para dibujar, así que los intermedios van con
+    `id=None` y nadie los pierde.
+    """
+    salida: dict[str, list[dict[str, Any]]] = {}
+    for i in range(0, len(skus), 800):
+        chunk = [str(s) for s in skus[i:i + 800] if s]
+        if not chunk:
+            continue
+        idx = {s.lower(): s for s in chunk}
+        for r in sdb.fetch_all(
+            """select pc.sku::text as sku, pc.category_id,
+                      ct.name as category_name, ct.path
+                 from channel.product_category pc
+                 left join channel.categories ct
+                        on ct.category_id = pc.category_id
+                       and ct.channel_id = pc.channel_id
+                where pc.channel_id = 'mercado_libre'
+                  and pc.sku = any(%s::citext[])
+                  and nullif(pc.category_id, '') is not null""", (chunk,)):
+            tramos = [t.strip() for t in re.split(r"[›>→]", str(r.get("path") or ""))
+                      if t.strip()]
+            hoja = (r.get("category_name") or "").strip()
+            # Sin `path` queda al menos el nombre de la hoja: media ruta es más
+            # que ninguna, y es exactamente lo que hoy muestra Woo.
+            if not tramos and hoja:
+                tramos = [hoja]
+            if not tramos:
+                continue
+            ruta = [{"id": None, "nombre": t} for t in tramos]
+            ruta[-1]["id"] = r["category_id"]
+            salida[idx.get(r["sku"].lower(), r["sku"])] = ruta
     return salida
 
 

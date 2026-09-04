@@ -27,8 +27,8 @@ from models.schemas import (
     Producto,
     RespuestaProductos,
 )
-from services import (amazon, costing_read, ejemplos, inventario, meli, presencia,
-                      publicar, studio, woocommerce)
+from services import (amazon, channel_read, costing_read, ejemplos, inventario,
+                      meli, presencia, publicar, studio, woocommerce)
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -168,11 +168,58 @@ async def listar_productos(
         skus = [i["sku"] for i in items_raw]
         skus += [v["sku"] for i in items_raw for v in (i.get("variantes") or [])]
         pres = presencia.presencia_por_sku(skus)
+
+        # ── COSTO y CATEGORÍA desde kubera, con RESPALDO a lo de Woo ──────────
+        # Van en el MISMO lote que `presencia`, así que no cuestan un viaje más.
+        #
+        # COSTO. La pestaña mostraba la meta `costo` de WordPress, que es una
+        # COPIA: el editor guarda en `costing.costos_validados` y después
+        # sincroniza Woo en un paso aparte que puede fallar —el propio panel dice
+        # "Costo guardado en la base, pero WooCommerce NO se actualizó"—. Por eso
+        # Productos y Costos mostraban números distintos del MISMO SKU.
+        # Medido 4-sep-2026 sobre los 2,800 del listado: 1,639 en las dos
+        # fuentes, 276 SOLO en kubera (se veían vacíos teniendo costo) y 248 SOLO
+        # en Woo. De ahí el respaldo: leer solo kubera PERDERÍA esos 248.
+        # De los 1,639 compartidos, 27 difieren de verdad (46 más son de un
+        # centavo, redondeo) y 14 por más de $50 — ahí gana kubera, que es donde
+        # escribe el editor.
+        #
+        # CATEGORÍA. Woo tiene 1,703 categorías y 1,702 son raíz: el árbol es
+        # plano y está mal asignado (un termo de acero en "Cocinas de Juguete").
+        # kubera trae la de Mercado Libre con la ruta entera, que es la que el
+        # panel ya sabe dibujar. Cubre 2,674 de 2,800; los 126 restantes se
+        # quedan con la de Woo.
+        #
+        # NO se toca `categoria_id`: el filtro de la pantalla es por categoría de
+        # WOO, y cambiarlo por el id de ML dejaría a la gente filtrando por una
+        # taxonomía y viendo otra. Solo cambia lo que se MUESTRA.
+        # `to_thread` y no llamada directa: las dos abren psycopg2, que BLOQUEA,
+        # y esto corre dentro de la corrutina del listado (regla 11 — el mismo
+        # defecto costó el apagón del 13-ago). En paralelo porque son
+        # independientes: dos consultas, el tiempo de una.
+        costos_kub, rutas_kub = await asyncio.gather(
+            asyncio.to_thread(costing_read.validados_de, skus),
+            asyncio.to_thread(channel_read.rutas_de, skus),
+        )
+
+        def _costo_kubera(sku: str, actual: Any) -> Any:
+            fila = costos_kub.get(sku) or {}
+            valor = fila.get("costo_total")
+            return float(valor) if valor is not None else actual
+
         for it in items_raw:
             it["canales"] = pres.get(it["sku"], [])
             it["origen"] = "woocommerce"
+            it["costo"] = _costo_kubera(it["sku"], it.get("costo"))
+            it["categoria_path"] = rutas_kub.get(it["sku"]) or it.get("categoria_path") or []
             for v in (it.get("variantes") or []):
                 v["canales"] = pres.get(v["sku"], [])
+                # La variante con costo PROPIO en kubera muestra el suyo; la que
+                # no lo tiene conserva lo que traía de Woo (que ya hereda el del
+                # padre cuando la variación no captura el suyo).
+                v["costo"] = _costo_kubera(v["sku"], v.get("costo"))
+                v["costo_propio"] = (costos_kub.get(v["sku"]) or {}).get(
+                    "costo_total") is not None or bool(v.get("costo_propio"))
             # PUBLICADO = está en AL MENOS UN canal (regla del panel), no el
             # status de WooCommerce: un producto `inprogress` en Woo pero vivo en
             # Mercado Libre SÍ está publicado (caso CAM-0030, que salía "Sin
