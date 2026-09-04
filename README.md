@@ -1074,6 +1074,55 @@ Medido después del cambio:
 
 ---
 
+### v0.410.0 — «Una recepción» eran dos, y un contenedor sin cotejar se leía como que cuadraba
+
+Brandon pidió el linaje de la ficha campo por campo, mandando el formulario de
+Odoo de `ROP-0731-BLN` al lado de la pestaña. Rastrearlo destapó dos defectos —
+los dos de la misma familia: **la pantalla afirmando más de lo que sabía**.
+
+**1. «167 piezas en UNA recepción» eran DOS.** El aviso tomaba la fecha del
+movimiento pendiente más viejo y ponía todas las piezas debajo, en singular. En
+`ROP-0731-BLN` son:
+
+```
+TEXCO/IN/00406  13-may  16 renglones  →  109 pzas  → TEXCO
+TEXCO/IN/01208  26-may  12 renglones  →   58 pzas  → TEXCO II
+                                        ─────────
+                                           167
+```
+
+Tres de los diez SKUs del piloto tienen más de un documento abierto (2, 3 y 2).
+Mandar a cerrar «la recepción» cuando hay tres es mandar a medio cerrar el
+problema. Ahora `detalle_por_sku` cuenta DOCUMENTOS distintos —no renglones— y
+la UI dice «en 2 recepciones», con la más vieja nombrada.
+
+**Y de paso quedó confirmado que el packing list es correcto:** esos 16
+renglones de `TEXCO/IN/00406` son las **16 cajas** de `costos_validados`, cada
+una con su cantidad propia (13, 20, 10, 5, 2, 8, 7, 1, 5, 3, 4, 3, 15, 4, 2, 7),
+y suman **109** — exactamente el `16 × 6.81` que la ficha muestra como
+«declaradas». El `6.81` no es un número raro: es el promedio de cajas que traen
+entre 1 y 20 piezas. Odoo declara `units_per_master_box = 6`, que es el nominal
+del proveedor y no corresponde a ninguna caja real.
+
+**2. El cotejo de contenedor tenía dos resultados y necesita TRES.** En
+`ROP-0731-BLN`, Odoo guarda `SZLS50213900` y kubera `BEAU6268641 - 97`. Como el
+valor de Odoo no trae número de embarque, no había nada que comparar — y
+`contenedor_discrepa` se quedaba en `False`, que en la pantalla se lee como
+«concuerdan». **Callarse cuando no se puede comparar es peor que decir «no
+comparable».**
+
+Ahora son tres estados: `discrepa` (ambas traen embarque y difieren) ·
+`no_comparable` (ambas tienen dato pero una no trae embarque) · nada (coinciden,
+o solo hay una fuente). El chip «Contenedor sin cotejar» los filtra, y el
+tooltip explica la lectura probable: `BEAU6268641` es un contenedor ISO (4
+letras + 7 dígitos) y `SZLS50213900` no lo es — lo más seguro es que sean el
+booking y el contenedor del MISMO embarque. Pero eso no se puede probar, y la
+pantalla lo dice en vez de suponerlo.
+
+Archivos: `backend/services/odoo.py` (`recepcion_docs` en `_anotar_recepciones`),
+`backend/services/inventario_maestro.py` (`contenedor_no_comparable`),
+`frontend/lib/types.ts`, `frontend/app/inventario/page.tsx`.
+
 ### v0.409.0 — La publicación de Walmart sí estaba; la meta la borraba
 
 Brandon publicó un producto de prueba a Walmart y preguntó por qué no se veía —
@@ -1126,55 +1175,6 @@ Walmart pasó de `0 / 10` a `3 / 10 · 3 sin confirmar`, con la de Brandon firma
 `ENVIADO` para siempre, así que nunca se sabrá si Walmart la aceptó. El script sí
 lo cierra; el panel no. Es el siguiente trabajo de ese canal y no lo resuelve esta
 versión.
-
-### v0.409.0 — «Una recepción» eran dos, y un contenedor sin cotejar se leía como que cuadraba
-
-Brandon pidió el linaje de la ficha campo por campo, mandando el formulario de
-Odoo de `ROP-0731-BLN` al lado de la pestaña. Rastrearlo destapó dos defectos —
-los dos de la misma familia: **la pantalla afirmando más de lo que sabía**.
-
-**1. «167 piezas en UNA recepción» eran DOS.** El aviso tomaba la fecha del
-movimiento pendiente más viejo y ponía todas las piezas debajo, en singular. En
-`ROP-0731-BLN` son:
-
-```
-TEXCO/IN/00406  13-may  16 renglones  →  109 pzas  → TEXCO
-TEXCO/IN/01208  26-may  12 renglones  →   58 pzas  → TEXCO II
-                                        ─────────
-                                           167
-```
-
-Tres de los diez SKUs del piloto tienen más de un documento abierto (2, 3 y 2).
-Mandar a cerrar «la recepción» cuando hay tres es mandar a medio cerrar el
-problema. Ahora `detalle_por_sku` cuenta DOCUMENTOS distintos —no renglones— y
-la UI dice «en 2 recepciones», con la más vieja nombrada.
-
-**Y de paso quedó confirmado que el packing list es correcto:** esos 16
-renglones de `TEXCO/IN/00406` son las **16 cajas** de `costos_validados`, cada
-una con su cantidad propia (13, 20, 10, 5, 2, 8, 7, 1, 5, 3, 4, 3, 15, 4, 2, 7),
-y suman **109** — exactamente el `16 × 6.81` que la ficha muestra como
-«declaradas». El `6.81` no es un número raro: es el promedio de cajas que traen
-entre 1 y 20 piezas. Odoo declara `units_per_master_box = 6`, que es el nominal
-del proveedor y no corresponde a ninguna caja real.
-
-**2. El cotejo de contenedor tenía dos resultados y necesita TRES.** En
-`ROP-0731-BLN`, Odoo guarda `SZLS50213900` y kubera `BEAU6268641 - 97`. Como el
-valor de Odoo no trae número de embarque, no había nada que comparar — y
-`contenedor_discrepa` se quedaba en `False`, que en la pantalla se lee como
-«concuerdan». **Callarse cuando no se puede comparar es peor que decir «no
-comparable».**
-
-Ahora son tres estados: `discrepa` (ambas traen embarque y difieren) ·
-`no_comparable` (ambas tienen dato pero una no trae embarque) · nada (coinciden,
-o solo hay una fuente). El chip «Contenedor sin cotejar» los filtra, y el
-tooltip explica la lectura probable: `BEAU6268641` es un contenedor ISO (4
-letras + 7 dígitos) y `SZLS50213900` no lo es — lo más seguro es que sean el
-booking y el contenedor del MISMO embarque. Pero eso no se puede probar, y la
-pantalla lo dice en vez de suponerlo.
-
-Archivos: `backend/services/odoo.py` (`recepcion_docs` en `_anotar_recepciones`),
-`backend/services/inventario_maestro.py` (`contenedor_no_comparable`),
-`frontend/lib/types.ts`, `frontend/app/inventario/page.tsx`.
 
 ### v0.408.0 — La meta baja a 10 por canal, y llega el semana contra semana
 
