@@ -218,6 +218,18 @@ def cobertura(dias: int = 30) -> list[dict[str, Any]]:
         return []
 
 
+#: La meta semanal por canal, decidida por Brandon el 4-sep: **10 productos
+#: publicados**, del equipo entero, no por persona. Antes se leía "10 por KAM" y
+#: se multiplicaba por 9 → 90, que contra la realidad medida (Amazon 6, TikTok 1)
+#: no era una meta sino un reproche permanente.
+META_SEMANAL = 10
+
+#: La semana ISO en hora de CDMX, que es donde trabaja el equipo. Sin el
+#: `at time zone`, las publicaciones de la noche del domingo caerían en la
+#: semana siguiente y la comparativa saldría movida.
+_SEMANA = "date_trunc('week', (%s at time zone 'America/Mexico_City'))"
+
+
 def publicaciones_semana() -> list[dict[str, Any]]:
     """Altas NUEVAS por canal en la semana en curso, y si se pueden atribuir.
 
@@ -226,23 +238,55 @@ def publicaciones_semana() -> list[dict[str, Any]]:
     un PUT create-or-replace, y el 48.5% de sus altas históricas son repeticiones
     del mismo SKU. Contarlas infla ese canal casi al doble.
     """
+    SEMANA = "date_trunc('week', now() at time zone 'America/Mexico_City')"
     try:
         return supabase_db.fetch_all(
-            """with primeras as (
+            f"""with primeras as (
                  select canal, cuenta, sku, min(created_at) primera,
                         (array_agg(actor order by created_at))[1] actor
                    from ops.channel_submissions
                   where success is true
-                  group by canal, cuenta, sku)
+                  group by canal, cuenta, sku),
+                 fechadas as (
+                   select canal, actor,
+                          (primera at time zone 'America/Mexico_City')::date dia
+                     from primeras
+                    where primera >= ({SEMANA} - interval '1 week'))
                select canal,
-                      count(*) nuevas,
-                      count(*) filter (where actor is not null) con_actor
-                 from primeras
-                where primera >= date_trunc('week', now() at time zone 'America/Mexico_City')
-                group by canal order by nuevas desc""")
+                      count(*) filter (where dia >= {SEMANA}::date) nuevas,
+                      count(*) filter (where dia >= {SEMANA}::date
+                                         and actor is not null) con_actor,
+                      count(*) filter (where dia <  {SEMANA}::date) previa
+                 from fechadas
+                group by canal order by nuevas desc, previa desc""")
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudieron contar las altas de la semana: %s", exc)
         return []
+
+
+def costos_semana() -> dict[str, int]:
+    """Costos validados de esta semana y de la previa, para la comparativa.
+
+    Sale de `ops.process_log` y no de `costing.costos_validados.revisado_at`
+    porque aquí interesa el ACTO —alguien validó— y no el estado del SKU: un
+    costo puede volver a validarse, y las dos veces son trabajo hecho.
+    """
+    SEMANA = "date_trunc('week', now() at time zone 'America/Mexico_City')"
+    try:
+        f = supabase_db.fetch_all(
+            f"""select
+                  count(*) filter (
+                    where created_at >= {SEMANA}) actual,
+                  count(*) filter (
+                    where created_at >= {SEMANA} - interval '1 week'
+                      and created_at <  {SEMANA}) previa
+                 from ops.process_log
+                where proceso = 'costos' and actor is not null
+                  and estado <> all(%s)""", (list(_INTERMEDIOS),))
+        return {"actual": f[0]["actual"], "previa": f[0]["previa"]} if f else {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudieron contar los costos de la semana: %s", exc)
+        return {}
 
 
 def _series(dias: int) -> dict[str, list[int]]:
@@ -391,6 +435,8 @@ def resumen(dias: int = 30) -> dict[str, Any]:
             "canales_sin_registro": can_mudos,
             "cobertura": cob,
             "publicaciones_semana": publicaciones_semana(),
+            "costos_semana": costos_semana(),
+            "meta_semanal": META_SEMANAL,
             "sin_movimientos": _sin_movimientos(activos)}
 
 

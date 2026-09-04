@@ -1074,6 +1074,56 @@ Medido después del cambio:
 
 ---
 
+### v0.408.0 — La meta baja a 10 por canal, y llega el semana contra semana
+
+Dos correcciones de Brandon: la meta de la semana es **mínimo 10 productos
+publicados** por canal, y hay que **comparar contra la semana previa**.
+
+#### La meta era diez veces más grande de lo que debía
+
+Se leía *"10 Publicaciones Nuevas (por KAMs)"* y se multiplicaba por nueve
+personas → 90. Contra lo medido eso no era una meta, era **un reproche
+permanente**: Amazon lleva 12 esta semana y TikTok 1. Con la meta en 10, los
+números vuelven a significar algo.
+
+Ahora vive en el backend (`META_SEMANAL`), no en la pantalla: si cambia, cambia
+en un sitio.
+
+#### Semana contra semana, con la previa a la vista
+
+```
+                ESTA   PREVIA   DELTA
+Mercado Libre    195      104     +91   ✓
+Amazon            12        6      +6   ✓
+TikTok             1        0      +1
+Costos validados  91       36     +55
+```
+
+El número de la semana previa se muestra **al lado del delta**, no sólo la
+flecha: un `▲ 91` a secas no dice nada — podría ser una gran semana o una previa
+mala. Con `(104)` al lado se lee solo.
+
+La semana es **ISO en hora de CDMX**. Sin el `at time zone`, las publicaciones
+del domingo por la noche caerían en la semana siguiente y la comparativa saldría
+movida.
+
+Los costos se cuentan desde `ops.process_log` y no desde
+`costos_validados.revisado_at`, porque aquí interesa el **acto** —alguien
+validó— y no el estado del SKU: un costo puede volver a validarse, y las dos
+veces son trabajo hecho.
+
+#### ⚠️ El techo del gráfico ya no es el valor más alto
+
+Con la meta en 10 y Mercado Libre en 195, un eje pegado al máximo dejaría la
+línea de meta al **5% de la altura** —invisible— y a Amazon y TikTok como dos
+rayas de un píxel. La meta dejaría de significar algo justo en el gráfico que
+existe para medirla contra ella.
+
+El techo pasa a ser **3× la meta**, así que la línea queda a un tercio de la
+altura y los canales chicos se leen. Lo que se pasa se dibuja al tope **con el
+borde superior cortado**, y su número real va debajo siempre: no se esconde
+nada, se elige dónde poner la resolución.
+
 ### v0.407.0 — Las viñetas y los atributos de Walmart, donde deben ir
 
 Brandon: *"me muestra los atributos en un tag para pulsarlo y se despliega… debe

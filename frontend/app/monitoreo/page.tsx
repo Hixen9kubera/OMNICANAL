@@ -82,7 +82,11 @@ interface Usuario {
 interface Cobertura {
   proceso: string; filas: number; con_actor: number; personas: number;
 }
-interface PubCanal { canal: string; nuevas: number; con_actor: number }
+interface PubCanal {
+  canal: string; nuevas: number; con_actor: number;
+  /** La MISMA cuenta, en la semana anterior. Es la mitad de "week over week". */
+  previa: number;
+}
 interface SinMovs { usuario: string; correo: string; nombre?: string | null }
 
 interface Resumen {
@@ -95,6 +99,8 @@ interface Resumen {
   canales_sin_registro: string[];
   cobertura: Cobertura[];
   publicaciones_semana: PubCanal[];
+  costos_semana: { actual?: number; previa?: number };
+  meta_semanal: number;
   sin_movimientos: SinMovs[];
 }
 
@@ -461,7 +467,8 @@ export default function MonitoreoPage() {
             <div className="mt-4 grid grid-cols-2 gap-4">
               <TarjetaCobertura c={datos.cobertura} />
               <TarjetaCanales p={datos.publicaciones_semana}
-                              mudos={datos.canales_sin_registro} />
+                              mudos={datos.canales_sin_registro}
+                              meta={datos.meta_semanal ?? 10} />
             </div>
           </>
         )}
@@ -552,18 +559,25 @@ function Encabezado(p: {
  * de ellos, esa tarjeta se pinta con su color sin que nadie toque este archivo.
  */
 function BandaMetas({ d }: { d: Resumen }) {
-  const META_EQUIPO = 90;   // 10 por KAM × 9 personas
+  // La meta la manda el backend (META_SEMANAL): 10 productos publicados por
+  // canal, del EQUIPO. Antes se leía "10 por KAM" y se multiplicaba por 9 → 90,
+  // que contra lo medido (Amazon 12, TikTok 1) no era una meta sino un reproche.
+  const META = d.meta_semanal ?? 10;
 
-  const costos = d.cobertura.find((c) => c.proceso === "costos");
   const metas = [
     { clave: "general", titulo: "Costos validados",
-      v: costos?.con_actor ?? 0, mudo: false },
-    ...CANALES_META.map((canal) => ({
-      clave: canal,
-      titulo: NOMBRE_CANAL[canal] ?? canal,
-      v: d.publicaciones_semana.find((x) => x.canal === canal)?.nuevas ?? 0,
-      mudo: d.canales_sin_registro.includes(canal),
-    })),
+      v: d.costos_semana?.actual ?? 0, previa: d.costos_semana?.previa ?? 0,
+      mudo: false },
+    ...CANALES_META.map((canal) => {
+      const p = d.publicaciones_semana.find((x) => x.canal === canal);
+      return {
+        clave: canal,
+        titulo: NOMBRE_CANAL[canal] ?? canal,
+        v: p?.nuevas ?? 0,
+        previa: p?.previa ?? 0,
+        mudo: d.canales_sin_registro.includes(canal),
+      };
+    }),
   ];
 
   return (
@@ -573,13 +587,14 @@ function BandaMetas({ d }: { d: Resumen }) {
           Semana en curso · metas del equipo
         </p>
         <span className="text-[11px] text-slate-400">
-          meta 10 por KAM · ~{META_EQUIPO} de equipo
+          mínimo {META} publicados por canal · vs semana previa
         </span>
       </div>
       <div className="grid grid-cols-6 gap-4">
         {metas.map((m) => {
           const c = COLOR_CANAL[m.clave] ?? COLOR_CANAL.general;
-          const pct = Math.min(100, (m.v / META_EQUIPO) * 100);
+          const pct = Math.min(100, (m.v / META) * 100);
+          const delta = m.v - m.previa;
           return (
             <div key={m.clave}>
               <div className="flex items-center gap-1.5">
@@ -607,11 +622,21 @@ function BandaMetas({ d }: { d: Resumen }) {
                 <>
                   <div className="mt-[3px] flex items-baseline gap-1">
                     <span className="font-mono text-[15px] font-extrabold tabular-nums"
-                          style={{ color: m.v >= META_EQUIPO ? "#047857" : "#B45309" }}>
+                          style={{ color: m.v >= META ? "#047857" : "#B45309" }}>
                       {m.v}
                     </span>
                     <span className="font-mono text-[11px] tabular-nums text-slate-400">
-                      / {META_EQUIPO}
+                      / {META}
+                    </span>
+                    {/* SEMANA CONTRA SEMANA. Sin el "previa" al lado, un +91 no
+                        dice nada: podría ser una gran semana o una previa mala. */}
+                    <span className="ml-auto font-mono text-[10.5px] tabular-nums"
+                      title={`${m.v} esta semana contra ${m.previa} la previa`}
+                      style={{ color: delta > 0 ? "#047857"
+                             : delta < 0 ? "#B91C1C" : "#94A3B8" }}>
+                      {delta > 0 ? "▲" : delta < 0 ? "▼" : "="}
+                      {delta !== 0 && ` ${Math.abs(delta)}`}
+                      <span className="ml-1 text-slate-400">({m.previa})</span>
                     </span>
                   </div>
                   <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100">
@@ -1125,17 +1150,30 @@ function TarjetaCobertura({ c }: { c: Cobertura[] }) {
   );
 }
 
-function TarjetaCanales({ p, mudos }: { p: PubCanal[]; mudos: string[] }) {
-  const META = 90;
-  const ORDEN = ["mercado_libre", "amazon", "tiktok", "temu", "walmart"];
-  const filas = ORDEN.map((canal) => ({
-    canal,
-    n: p.find((x) => x.canal === canal)?.nuevas ?? 0,
-    mudo: mudos.includes(canal),
-  }));
+function TarjetaCanales({ p, mudos, meta }:
+  { p: PubCanal[]; mudos: string[]; meta: number }) {
+  const filas = CANALES_META.map((canal) => {
+    const f = p.find((x) => x.canal === canal);
+    return { canal, n: f?.nuevas ?? 0, previa: f?.previa ?? 0,
+             mudo: mudos.includes(canal) };
+  });
   const W = 106, H = 130;
-  const alto = (v: number) => Math.max(6, (Math.min(v, 200) / 200) * H);
-  const yMeta = H - alto(META);
+  /**
+   * ⚠️ EL TECHO DEL EJE ES 3× LA META, NO EL VALOR MÁS ALTO.
+   *
+   * Con la meta en 10 y Mercado Libre en 195, un eje pegado al máximo dejaría la
+   * línea de meta al 5% de la altura —invisible— y a Amazon y TikTok como dos
+   * rayas de un píxel. La meta dejaría de significar algo justo en el gráfico
+   * que existe para medirla contra ella.
+   *
+   * Con el techo en 3× la meta, la línea queda a un tercio de la altura y los
+   * canales chicos se leen. Lo que se pasa se dibuja al tope CON EL BORDE
+   * CORTADO, y su número real va debajo siempre: no se esconde nada, se elige
+   * dónde poner la resolución.
+   */
+  const TECHO = Math.max(meta * 3, 3);
+  const alto = (v: number) => Math.max(6, (Math.min(v, TECHO) / TECHO) * H);
+  const yMeta = H - alto(meta);
 
   return (
     <section className="rounded-lg bg-white p-[18px] ring-1 ring-slate-200">
@@ -1143,7 +1181,9 @@ function TarjetaCanales({ p, mudos }: { p: PubCanal[]; mudos: string[] }) {
         <p className="font-mono text-[10px] uppercase tracking-[.09em] text-slate-500">
           Publicaciones nuevas por canal · semana
         </p>
-        <span className="text-[11px] text-slate-400">meta de equipo ~{META}</span>
+        <span className="text-[11px] text-slate-400">
+          mínimo {meta} por canal
+        </span>
       </div>
       <svg width="100%" viewBox={`0 0 ${W * filas.length} ${H + 26}`}
            className="mt-3" role="img">
@@ -1170,12 +1210,19 @@ function TarjetaCanales({ p, mudos }: { p: PubCanal[]; mudos: string[] }) {
                 {f.mudo
                   ? `${NOMBRE_CANAL[f.canal]}: sin registro. Se publica con scripts `
                     + `de escritorio; el sistema no guarda quién los corrió.`
-                  : `${NOMBRE_CANAL[f.canal]}: ${f.n} publicaciones nuevas esta semana`}
+                  : `${NOMBRE_CANAL[f.canal]}: ${f.n} esta semana, `
+                    + `${f.previa} la previa. Mínimo ${meta}.`}
               </title>
               <rect x={x} y={y} width={72} height={h} rx="3"
                     fill={f.mudo ? "url(#rayado)" : c.punto}
                     stroke={f.mudo ? "#cbd5e1" : "none"}
                     strokeDasharray={f.mudo ? "4 3" : undefined} />
+              {/* Se pasó del techo: borde superior cortado, para que se vea que
+                  la barra sigue más allá del lienzo. El número real va abajo. */}
+              {!f.mudo && f.n > TECHO && (
+                <line x1={x - 2} y1={y} x2={x + 74} y2={y}
+                      stroke="#fff" strokeWidth="3" strokeDasharray="5 4" />
+              )}
               {/* El acento sólo si la barra pasa de 14 px: si no, tapa la barra
                   entera y Amazon (3 publicaciones) se ve como una raya negra. */}
               {!f.mudo && h > 14 && (
@@ -1189,7 +1236,9 @@ function TarjetaCanales({ p, mudos }: { p: PubCanal[]; mudos: string[] }) {
               <text x={x + 36} y={H + 23} textAnchor="middle"
                     className="fill-slate-400"
                     style={{ fontSize: 9, fontFamily: "ui-monospace,monospace" }}>
-                {f.mudo ? "sin registro" : f.n}
+                {f.mudo ? "sin registro"
+                        : `${f.n}  ${f.n - f.previa > 0 ? "▲" : f.n - f.previa < 0 ? "▼" : "="}`
+                          + `${f.n - f.previa !== 0 ? Math.abs(f.n - f.previa) : ""}`}
               </text>
             </g>
           );
