@@ -1001,6 +1001,65 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.389.0 — La trazabilidad sale de la ficha: resumen adentro, pantalla completa detrás del ⇅
+
+Brandon, comparando la pestaña con los artboards: *"la trazabilidad me gustaría
+que esté con este icono; una vez selecciones un producto y aparecerá esta
+pantalla. En la tercera imagen es como el resumen de movimientos."*
+
+Tenía las dos cosas mezcladas: el historial completo, con filtros y todo, metido
+dentro del cajón. Ahora son **dos capas**, como el diseño:
+
+**Dentro de la ficha (1d) — «Flujo de movimientos del SKU».** Un resumen de seis
+renglones con icono por tipo, fecha corta (`26 ago · 13:47`), concepto,
+documento, delta, saldo y quién. Cierra con `6 de 117 movimientos · saldo 43 ·
+cuadra con Odoo` y una salida: **Ver historial completo →**.
+
+**Detrás del ⇅ (1f) — «Trazabilidad · Movimientos».** Modal a pantalla completa
+con chips por tipo Y SU CONTEO, selector de ventana (30 / 90 días / año / todo),
+exportación a CSV y el pie de registro inmutable. Se llega desde el ⇅ de la
+tabla —sin pasar por la ficha— o desde el botón **Movimiento** de la cabecera de
+la ficha, que es donde el diseño lo puso.
+
+La columna Trazabilidad de la tabla queda con los dos botones del diseño:
+`🕐 Historial` abre la ficha, `⇅` salta directo a la pantalla completa.
+
+**LA VENTANA NO CORRE EL SALDO.** El backend acepta `dias`, pero el saldo
+corriente se calcula SIEMPRE sobre el libro completo y la ventana se aplica
+después. Si se filtrara antes, el renglón más viejo de la ventana arrancaría en
+cero y toda la columna quedaría corrida: con 90 días, `TEC-0004-BLN` arranca en
+270 —que es lo que tenía ese día— y no en 0.
+
+**Y LOS CHIPS CUENTAN LO QUE ABREN.** Primer intento: los contadores salían del
+histórico completo mientras la lista estaba acotada a 90 días, así que el chip
+decía «Entradas 1» y al pulsarlo abría una lista vacía —la entrada era de
+diciembre—. `por_causa` ahora se calcula sobre la ventana. Un contador que no
+coincide con lo que enseña al pulsarlo no es un detalle: es la pantalla
+enseñando a desconfiar de ella.
+
+**DOS CHIPS DEL DISEÑO QUE NO ESTÁN, Y ESTÁ BIEN QUE NO ESTÉN:**
+
+- **«Reservas»** — Odoo no registra las reservas como movimientos: son un campo
+  del quant. El chip existiría siempre vacío, que es peor que no existir. Lo
+  reservado sí se muestra, en la ficha.
+- **«Incluir histórico de Odoo»** — TODO el histórico es de Odoo; el panel no
+  escribe un solo movimiento, así que el toggle no separaría nada. En su lugar
+  va el que sí importa: **«Incluir pasos internos»**, que muestra u oculta los
+  PICK/PACK de Odoo — 91 de los 117 renglones de `TEC-0004-BLN`, y no mueven
+  saldo.
+
+El CSV se arma en el navegador con lo que ya está cargado: sin endpoint nuevo,
+sin su línea de RBAC y sin volver a pegarle a Odoo. Lleva BOM para que Excel no
+abra los acentos como mojibake.
+
+Se borró el componente `Historial` viejo, que quedó huérfano al partir la vista
+en dos (3,355 bytes). Código muerto en la frontera con el backend es justo lo
+que este repo ya documentó que sale caro.
+
+Archivos: `backend/services/inventario_maestro.py` (`dias`, `total_historico`,
+`por_causa` por ventana), `backend/routers/inventario.py`, `frontend/lib/api.ts`,
+`frontend/lib/types.ts`, `frontend/app/inventario/page.tsx`.
+
 ### v0.388.0 — Inventario sigue el diseño 1b, y aparece la columna que solo Odoo tenía
 
 Brandon, viendo la pestaña contra los artboards: *"el primero es de cuando

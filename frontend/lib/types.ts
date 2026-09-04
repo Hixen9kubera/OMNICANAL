@@ -1802,7 +1802,12 @@ export interface Movimiento {
 export interface MovimientosResp {
   sku: string;
   movimientos: Movimiento[];
+  /** Cuántos caen dentro del filtro y la ventana. */
   total: number;
+  /** Cuántos tiene el SKU en total, sin filtro ni ventana. */
+  total_historico: number;
+  /** Ventana pedida en días, o null si se pidió todo el histórico. */
+  dias: number | null;
   saldo_libro: number;
   saldo_odoo: number;
   /** false = el libro no reproduce el saldo de Odoo. Se avisa, no se disimula. */

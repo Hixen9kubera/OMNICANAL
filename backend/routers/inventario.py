@@ -103,6 +103,11 @@ async def movimientos(
         "reales", description="Filtro de causa. 'reales' (por omisión) esconde "
                               "los pasos internos PICK/PACK de Odoo."),
     limite: int = Query(200, ge=1, le=1000),
+    dias: int | None = Query(
+        None, ge=1, le=3650,
+        description="Ventana en días. Sin esto, todo el histórico. El SALDO se "
+                    "calcula siempre sobre el libro COMPLETO, no sobre la "
+                    "ventana: si no, el renglón más viejo arrancaría en cero."),
 ):
     """
     El historial de bodega de un SKU: entradas, ventas, envíos a FULL/FBA,
@@ -117,7 +122,7 @@ async def movimientos(
                                  f"Válidas: {', '.join(sorted(_CAUSAS))}")
     try:
         return await asyncio.to_thread(
-            inv.movimientos, sku, None if causa == "todo" else causa, limite)
+            inv.movimientos, sku, None if causa == "todo" else causa, limite, dias)
     except Exception as exc:  # noqa: BLE001
         log.exception("inventario.movimientos(%s) falló", sku)
         raise HTTPException(502, f"No se pudo leer el historial: {exc}") from exc

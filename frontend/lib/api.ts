@@ -1470,9 +1470,14 @@ export function movimientosInventario(
   sku: string,
   causa = "reales",
   limite = 200,
+  dias?: number | null,
   signal?: AbortSignal,
 ): Promise<MovimientosResp> {
   const qs = new URLSearchParams({ causa, limite: String(limite) });
+  // Sin `dias` el backend devuelve todo el histórico. El SALDO se calcula
+  // siempre sobre el libro completo, así que acotar la ventana no corre la
+  // columna de saldo — solo esconde renglones viejos.
+  if (dias) qs.set("dias", String(dias));
   return getJSON(
     `/api/inventario/${encodeURIComponent(sku)}/movimientos?${qs.toString()}`,
     signal,

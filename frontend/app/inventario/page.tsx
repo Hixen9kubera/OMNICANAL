@@ -33,15 +33,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, ArrowUpDown, Boxes, Camera, CheckCircle2, ChevronRight,
-  Clock, Container, Database, Download, EyeOff, Layers, Loader2, MapPin,
-  PackageSearch, RefreshCw, Ship, Truck, X,
+  AlertTriangle, ArrowLeftRight, ArrowUpDown, Boxes, Camera, CheckCircle2,
+  ChevronRight, ClipboardList, Clock, Container, Database, Download, EyeOff,
+  History, Layers, Loader2, Lock, MapPin, Package, PackagePlus, PackageX,
+  PackageSearch, RefreshCw, RotateCcw, ShieldAlert, Ship, ShoppingCart, Truck,
+  X,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import { listarInventario, mensajeDeError, movimientosInventario } from "@/lib/api";
 import type {
-  ClaveEtapa, Cuadre, EstadoEtapa, FilaInventario, InventarioResp,
+  ClaveEtapa, Cuadre, EstadoEtapa, FilaInventario, InventarioResp, Movimiento,
   MovimientosResp,
 } from "@/lib/types";
 
@@ -99,6 +101,28 @@ const COLOR_CAUSA: Record<string, string> = {
   cuarentena: "bg-rose-50 text-rose-700 ring-rose-200",
 };
 
+/** El icono de cada tipo de movimiento — la columna de la izquierda de la 1f. */
+const ICONO_CAUSA: Record<string, typeof Package> = {
+  entrada: PackagePlus,
+  venta: ShoppingCart,
+  envio_full: Truck,
+  devolucion: RotateCcw,
+  ajuste: ClipboardList,
+  traspaso: ArrowLeftRight,
+  preparacion: Package,
+  merma: PackageX,
+  cuarentena: ShieldAlert,
+  otro: Package,
+};
+
+/** Ventanas de la pantalla de trazabilidad. `null` = todo el histórico. */
+const VENTANAS = [
+  { v: 30, t: "Últimos 30 días" },
+  { v: 90, t: "Últimos 90 días" },
+  { v: 365, t: "Último año" },
+  { v: 0, t: "Todo el histórico" },
+];
+
 const ORDENES = [
   { v: "piezas", t: "Piezas: mayor a menor" },
   { v: "piezas_asc", t: "Piezas: menor a mayor" },
@@ -136,7 +160,12 @@ export default function InventarioPage() {
   const [orden, setOrden] = useState("piezas");
   const [alerta, setAlerta] = useState<string | null>(null);
   const [pagina, setPagina] = useState(1);
+  // Dos capas distintas a propósito, como pidió Brandon: el CAJÓN es la ficha
+  // del SKU con un RESUMEN de movimientos; el icono ⇅ abre la pantalla COMPLETA
+  // de trazabilidad. Se puede llegar a la segunda desde la tabla sin pasar por
+  // la primera, o desde el botón «Movimiento» de la ficha.
   const [abierto, setAbierto] = useState<FilaInventario | null>(null);
+  const [traza, setTraza] = useState<FilaInventario | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -237,7 +266,8 @@ export default function InventarioPage() {
           hayFiltroSkus={!!filtroSkus}
         />
 
-        <Tabla filas={visibles} cargando={cargando} onAbrir={setAbierto} />
+        <Tabla filas={visibles} cargando={cargando} onAbrir={setAbierto}
+               onTraza={setTraza} />
 
         <Paginacion pagina={pag} total={totalPaginas} skus={filtradas.length}
                     onPagina={setPagina} />
@@ -248,7 +278,11 @@ export default function InventarioPage() {
         </p>
       </main>
 
-      {abierto && <Cajon fila={abierto} onCerrar={() => setAbierto(null)} />}
+      {abierto && (
+        <Cajon fila={abierto} onCerrar={() => setAbierto(null)}
+               onTraza={() => setTraza(abierto)} />
+      )}
+      {traza && <Trazabilidad fila={traza} onCerrar={() => setTraza(null)} />}
     </div>
   );
 }
@@ -515,10 +549,11 @@ function BotonBloqueado({
 /* ────────────────────────────── la tabla (1b) ────────────────────────────── */
 
 function Tabla({
-  filas, cargando, onAbrir,
+  filas, cargando, onAbrir, onTraza,
 }: {
   filas: FilaInventario[]; cargando: boolean;
   onAbrir: (f: FilaInventario) => void;
+  onTraza: (f: FilaInventario) => void;
 }) {
   return (
     <div className="mt-3 overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-[0_1px_3px_rgba(16,24,40,.06)]">
@@ -553,14 +588,22 @@ function Tabla({
               </td>
             </tr>
           )}
-          {filas.map((f) => <Fila key={f.sku} f={f} onAbrir={onAbrir} />)}
+          {filas.map((f) => (
+            <Fila key={f.sku} f={f} onAbrir={onAbrir} onTraza={onTraza} />
+          ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-function Fila({ f, onAbrir }: { f: FilaInventario; onAbrir: (f: FilaInventario) => void }) {
+function Fila({
+  f, onAbrir, onTraza,
+}: {
+  f: FilaInventario;
+  onAbrir: (f: FilaInventario) => void;
+  onTraza: (f: FilaInventario) => void;
+}) {
   const piezas = f.stock_odoo;
   return (
     <tr className="group cursor-pointer align-middle hover:bg-slate-50/70" onClick={() => onAbrir(f)}>
@@ -686,10 +729,25 @@ function Fila({ f, onAbrir }: { f: FilaInventario; onAbrir: (f: FilaInventario) 
         </div>
       </td>
 
-      <td className="px-3 py-2.5 text-right">
-        <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 group-hover:border-indigo-200 group-hover:text-indigo-600">
-          Historial <ChevronRight className="h-3.5 w-3.5" />
-        </span>
+      {/* Dos botones, como el diseño: «Historial» abre la FICHA (con el resumen
+          de movimientos dentro) y el ⇅ salta directo a la pantalla completa de
+          trazabilidad, sin pasar por la ficha. */}
+      <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button" onClick={() => onAbrir(f)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:border-indigo-200 hover:text-indigo-600"
+          >
+            <History className="h-3.5 w-3.5" /> Historial
+          </button>
+          <button
+            type="button" onClick={() => onTraza(f)}
+            title="Ver la trazabilidad completa de este SKU"
+            className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 hover:border-indigo-200 hover:text-indigo-600"
+          >
+            <ArrowUpDown className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -729,9 +787,12 @@ function Paginacion({
 
 /* ──────────── el cajón: ficha del SKU (1d) + trazabilidad (1f) ──────────── */
 
-function Cajon({ fila, onCerrar }: { fila: FilaInventario; onCerrar: () => void }) {
+function Cajon({
+  fila, onCerrar, onTraza,
+}: {
+  fila: FilaInventario; onCerrar: () => void; onTraza: () => void;
+}) {
   const [movs, setMovs] = useState<MovimientosResp | null>(null);
-  const [causa, setCausa] = useState("reales");
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -741,19 +802,21 @@ function Cajon({ fila, onCerrar }: { fila: FilaInventario; onCerrar: () => void 
     return () => window.removeEventListener("keydown", onKey);
   }, [onCerrar]);
 
+  // Aquí solo se pide el RESUMEN: los últimos movimientos reales. El detalle
+  // completo, con filtros y ventana, vive en la pantalla de trazabilidad.
   useEffect(() => {
     const ctrl = new AbortController();
     setCargando(true);
     setError(null);
-    movimientosInventario(fila.sku, causa, 300, ctrl.signal)
+    movimientosInventario(fila.sku, "reales", 6, null, ctrl.signal)
       .then(setMovs)
       .catch((e: unknown) => {
         if ((e as { name?: string })?.name === "AbortError") return;
-        setError(mensajeDeError(e, "No se pudo leer el historial."));
+        setError(mensajeDeError(e, "No se pudo leer el flujo de movimientos."));
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [fila.sku, causa]);
+  }, [fila.sku]);
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -801,10 +864,19 @@ function Cajon({ fila, onCerrar }: { fila: FilaInventario; onCerrar: () => void 
               )}
             </div>
           </div>
-          <button type="button" onClick={onCerrar}
-                  className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* El botón del diseño 1d: salta a la trazabilidad completa. */}
+            <button
+              type="button" onClick={onTraza}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+            >
+              <ArrowUpDown className="h-4 w-4" /> Movimiento
+            </button>
+            <button type="button" onClick={onCerrar}
+                    className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </header>
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
@@ -812,43 +884,8 @@ function Cajon({ fila, onCerrar }: { fila: FilaInventario; onCerrar: () => void 
           <DondeEsta fila={fila} />
           <Etapas fila={fila} />
 
-          <section>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
-                Trazabilidad
-              </h3>
-              <select value={causa} onChange={(e) => setCausa(e.target.value)}
-                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 outline-none">
-                {CAUSAS.map((c) => <option key={c.v} value={c.v}>{c.t}</option>)}
-              </select>
-            </div>
-
-            {movs && movs.cuadra === false && (
-              <div className="mt-2 flex items-start gap-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200">
-                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                <span>
-                  El libro suma {num(movs.saldo_libro)} y Odoo publica {num(movs.saldo_odoo)}.
-                  La diferencia es real y hay que revisarla con Inventarios — no es
-                  un error de esta pantalla.
-                </span>
-              </div>
-            )}
-
-            {error && (
-              <div className="mt-2 rounded-lg bg-rose-50 p-2.5 text-xs text-rose-700 ring-1 ring-rose-200">
-                {error}
-              </div>
-            )}
-
-            {cargando ? (
-              <div className="py-10 text-center text-slate-400">
-                <Loader2 className="mx-auto h-5 w-5 animate-spin" />
-                <p className="mt-2 text-xs">Leyendo el libro de Odoo…</p>
-              </div>
-            ) : (
-              <Historial movs={movs} />
-            )}
-          </section>
+          <FlujoResumen movs={movs} cargando={cargando} error={error}
+                        onTraza={onTraza} />
         </div>
       </aside>
     </div>
@@ -1002,71 +1039,351 @@ function Etapas({ fila }: { fila: FilaInventario }) {
   );
 }
 
-function Historial({ movs }: { movs: MovimientosResp | null }) {
-  if (!movs || !movs.movimientos.length) {
-    return (
-      <p className="py-8 text-center text-xs text-slate-400">
-        Sin movimientos registrados en Odoo para este SKU.
-      </p>
-    );
-  }
+/* ─────────── resumen de movimientos DENTRO de la ficha (1d) ─────────── */
+
+/**
+ * «Flujo de movimientos del SKU»: los últimos seis renglones y una salida a la
+ * pantalla completa. Es un RESUMEN a propósito — el detalle con filtros,
+ * ventana y CSV vive en `Trazabilidad`, detrás del botón «Movimiento».
+ */
+function FlujoResumen({
+  movs, cargando, error, onTraza,
+}: {
+  movs: MovimientosResp | null;
+  cargando: boolean;
+  error: string | null;
+  onTraza: () => void;
+}) {
   return (
-    <>
-      <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200 bg-white">
-        <table className="w-full min-w-[560px] text-xs">
-          <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-400">
-            <tr>
-              <th className="px-2.5 py-2 text-left font-bold">Fecha</th>
-              <th className="px-2.5 py-2 text-left font-bold">Concepto</th>
-              <th className="px-2.5 py-2 text-left font-bold">Documento</th>
-              <th className="px-2.5 py-2 text-right font-bold">Cant.</th>
-              <th className="px-2.5 py-2 text-right font-bold">Saldo</th>
-              <th className="px-2.5 py-2 text-left font-bold">Quién</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {movs.movimientos.map((m, i) => (
-              <tr key={`${m.documento}-${m.fecha}-${i}`} className={m.interno ? "opacity-45" : ""}>
-                <td className="whitespace-nowrap px-2.5 py-2 tabular-nums text-slate-500">
-                  {m.fecha.slice(0, 10)}
-                </td>
-                <td className="px-2.5 py-2">
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ring-1 ${
-                    COLOR_CAUSA[m.causa] ?? "bg-slate-100 text-slate-600 ring-slate-200"}`}>
-                    {ETIQUETA_CAUSA[m.causa] ?? m.causa}
-                  </span>
-                  {m.contraparte && (
-                    <div className="mt-0.5 text-[10px] text-slate-400">{m.contraparte}</div>
-                  )}
-                </td>
-                <td className="px-2.5 py-2 font-mono text-[11px] text-slate-500">
-                  {m.documento || "—"}
-                  {m.referencia && <div className="text-[10px] text-slate-400">{m.referencia}</div>}
-                </td>
-                <td className="whitespace-nowrap px-2.5 py-2 text-right tabular-nums">
-                  <span className={
-                    m.delta > 0 ? "font-bold text-emerald-700"
-                      : m.delta < 0 ? "font-bold text-rose-700" : "text-slate-400"}>
-                    {m.delta > 0 ? "+" : ""}{m.delta === 0 ? "—" : num(m.delta)}
-                  </span>
-                  {m.pedido !== null && (
-                    <div className="text-[10px] text-amber-700" title="Lo pedido no coincide con lo recibido">
-                      pedidas {num(m.pedido)}
-                    </div>
-                  )}
-                </td>
-                <td className="px-2.5 py-2 text-right tabular-nums text-slate-600">{num(m.saldo)}</td>
-                <td className="px-2.5 py-2 text-[11px] text-slate-500">{m.quien || "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <section>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+          <History className="h-3.5 w-3.5" />
+          Flujo de movimientos del SKU
+        </h3>
+        <button
+          type="button" onClick={onTraza}
+          className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50"
+        >
+          Ver historial completo →
+        </button>
       </div>
-      <p className="mt-2 text-[11px] text-slate-400">
-        {movs.movimientos.length} de {movs.total} movimientos · saldo del libro{" "}
-        {num(movs.saldo_libro)}{movs.cuadra && " · cuadra con Odoo"}. Registro de
-        Odoo: un error se corrige con un ajuste, no borrando el renglón.
-      </p>
-    </>
+
+      {movs && movs.cuadra === false && (
+        <div className="mt-2 flex items-start gap-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            El libro suma {num(movs.saldo_libro)} y Odoo publica {num(movs.saldo_odoo)}.
+            La diferencia es real y hay que revisarla con Inventarios — no es un
+            error de esta pantalla.
+          </span>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-2 rounded-lg bg-rose-50 p-2.5 text-xs text-rose-700 ring-1 ring-rose-200">
+          {error}
+        </div>
+      )}
+
+      {cargando ? (
+        <div className="py-8 text-center text-slate-400">
+          <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+          <p className="mt-2 text-xs">Leyendo el libro de Odoo…</p>
+        </div>
+      ) : !movs?.movimientos.length ? (
+        <p className="mt-2 rounded-xl border border-slate-200 bg-white py-8 text-center text-xs text-slate-400">
+          Sin movimientos registrados en Odoo para este SKU.
+        </p>
+      ) : (
+        <>
+          <div className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white">
+            {movs.movimientos.map((m, i) => (
+              <RenglonResumen key={`${m.documento}-${m.fecha}-${i}`} m={m} />
+            ))}
+          </div>
+          <p className="mt-1.5 text-[11px] text-slate-400">
+            {movs.movimientos.length} de {num(movs.total_historico)} movimientos ·
+            saldo {num(movs.saldo_libro)}
+            {movs.cuadra && " · cuadra con Odoo"}
+          </p>
+        </>
+      )}
+    </section>
+  );
+}
+
+function RenglonResumen({ m }: { m: Movimiento }) {
+  const Icono = ICONO_CAUSA[m.causa] ?? Package;
+  return (
+    <div className="flex items-center gap-3 px-3 py-2">
+      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ${
+        COLOR_CAUSA[m.causa] ?? "bg-slate-100 text-slate-500 ring-slate-200"}`}>
+        <Icono className="h-3.5 w-3.5" />
+      </span>
+      <span className="w-24 shrink-0 text-[11px] tabular-nums text-slate-400">
+        {fechaCorta(m.fecha)}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-xs font-semibold text-slate-700">
+          {ETIQUETA_CAUSA[m.causa] ?? m.causa}
+          {m.contraparte ? ` · ${m.contraparte}` : ""}
+        </div>
+        <div className="truncate font-mono text-[10px] text-slate-400">
+          {m.documento}{m.referencia ? ` · ${m.referencia}` : ""}
+        </div>
+      </div>
+      <span className={`w-16 shrink-0 text-right text-xs font-bold tabular-nums ${
+        m.delta > 0 ? "text-emerald-700" : m.delta < 0 ? "text-rose-700" : "text-slate-300"}`}>
+        {m.delta > 0 ? "+" : ""}{m.delta === 0 ? "—" : num(m.delta)}
+      </span>
+      <span className="w-20 shrink-0 text-right text-[11px] tabular-nums text-slate-400">
+        saldo {num(m.saldo)}
+      </span>
+      <span className="w-24 shrink-0 truncate text-right text-[11px] text-slate-400">
+        {m.quien || "—"}
+      </span>
+    </div>
+  );
+}
+
+/** `2026-08-26T17:44:51` → `26 ago · 17:44`, como el diseño. */
+function fechaCorta(iso: string): string {
+  const d = new Date(iso.replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  const mes = ["ene", "feb", "mar", "abr", "may", "jun",
+               "jul", "ago", "sep", "oct", "nov", "dic"][d.getMonth()];
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${String(d.getDate()).padStart(2, "0")} ${mes} · ${hh}:${mm}`;
+}
+
+/* ───────────── TRAZABILIDAD · la pantalla completa (diseño 1f) ───────────── */
+
+/**
+ * Entradas, ventas, envíos a FULL/FBA, devoluciones, ajustes, traspasos y
+ * mermas de un SKU, con saldo corriente y exportable a CSV.
+ *
+ * Se abre desde el ⇅ de la tabla o desde «Movimiento» en la ficha. Es un modal
+ * a pantalla completa y no una ruta propia porque siempre se llega desde una
+ * fila: una URL `/inventario/<sku>/movimientos` obligaría a recargar toda la
+ * tabla al volver, que son otros 4 segundos contra tres bases.
+ *
+ * DOS CHIPS DEL DISEÑO QUE NO ESTÁN, Y ESTÁ BIEN QUE NO ESTÉN:
+ *   · «Reservas» — Odoo no registra las reservas como movimientos: son un campo
+ *     del quant. El chip existiría siempre vacío, que es peor que no existir.
+ *     Lo reservado sí se muestra, en la ficha.
+ *   · «Incluir histórico de Odoo» — TODO el histórico es de Odoo; el panel no
+ *     escribe un solo movimiento. En su lugar va el toggle que sí importa:
+ *     mostrar u ocultar los pasos internos PICK/PACK, que son la mayoría de los
+ *     renglones y no mueven saldo.
+ */
+function Trazabilidad({
+  fila, onCerrar,
+}: { fila: FilaInventario; onCerrar: () => void }) {
+  const [movs, setMovs] = useState<MovimientosResp | null>(null);
+  const [causa, setCausa] = useState("reales");
+  const [dias, setDias] = useState(90);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCerrar();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCerrar]);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setCargando(true);
+    setError(null);
+    movimientosInventario(fila.sku, causa, 1000, dias || null, ctrl.signal)
+      .then(setMovs)
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        setError(mensajeDeError(e, "No se pudo leer la trazabilidad."));
+      })
+      .finally(() => setCargando(false));
+    return () => ctrl.abort();
+  }, [fila.sku, causa, dias]);
+
+  // El CSV se arma en el navegador con lo que ya está cargado: no hace falta un
+  // endpoint nuevo (ni su línea de RBAC, ni volver a pegarle a Odoo).
+  const csv = useCallback(() => {
+    if (!movs?.movimientos.length) return;
+    const cab = ["fecha", "tipo", "concepto", "documento", "referencia",
+                 "contraparte", "almacen", "cantidad", "saldo", "quien"];
+    const esc = (v: unknown) => JSON.stringify(String(v ?? ""));
+    const cuerpo = movs.movimientos.map((m) => [
+      m.fecha, m.causa, ETIQUETA_CAUSA[m.causa] ?? m.causa, m.documento,
+      m.referencia, m.contraparte, m.almacen, m.delta, m.saldo ?? "", m.quien,
+    ].map(esc).join(","));
+    // El BOM va delante o Excel abre los acentos como mojibake.
+    const texto = "﻿" + [cab.map(esc).join(","), ...cuerpo].join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([texto], { type: "text/csv;charset=utf-8" }));
+    a.download = `movimientos_${fila.sku}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
+  }, [movs, fila.sku]);
+
+  const chip = (activo: boolean) =>
+    `rounded-full px-3 py-1.5 text-xs font-bold transition ${
+      activo ? "bg-indigo-600 text-white"
+             : "bg-white text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50"}`;
+
+  return (
+    <div className="fixed inset-0 z-[60] overflow-y-auto bg-slate-900/50 p-4 backdrop-blur-sm sm:p-8"
+         onClick={onCerrar}>
+      <div className="mx-auto max-w-5xl rounded-2xl bg-white shadow-2xl"
+           onClick={(e) => e.stopPropagation()}>
+        <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-6 py-5">
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-slate-400">
+              Trazabilidad
+            </p>
+            <h2 className="mt-0.5 flex flex-wrap items-baseline gap-2 text-2xl font-extrabold tracking-tight text-slate-900">
+              Movimientos
+              <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-sm font-bold text-slate-600">
+                {fila.sku}
+              </span>
+            </h2>
+            <p className="mt-0.5 truncate text-sm text-slate-500">{fila.nombre}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select value={dias} onChange={(e) => setDias(Number(e.target.value))}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 outline-none">
+              {VENTANAS.map((v) => <option key={v.v} value={v.v}>{v.t}</option>)}
+            </select>
+            <button
+              type="button" onClick={csv} disabled={!movs?.movimientos.length}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+            >
+              <Download className="h-4 w-4" /> CSV
+            </button>
+            <button type="button" onClick={onCerrar}
+                    className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </header>
+
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 px-6 py-3">
+          {CAUSAS.filter((c) => c.v !== "todo").map((c) => (
+            <button key={c.v} type="button" onClick={() => setCausa(c.v)}
+                    className={chip(causa === c.v)}>
+              {c.t}
+              {movs && c.v !== "reales" && (
+                <span className="ml-1 opacity-60">{movs.por_causa[c.v] ?? 0}</span>
+              )}
+            </button>
+          ))}
+          <button
+            type="button" onClick={() => setCausa(causa === "todo" ? "reales" : "todo")}
+            title="Los pasos PICK/PACK de Odoo: no mueven saldo y son la mayoría de los renglones"
+            className={`ml-auto flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold ${
+              causa === "todo" ? "bg-slate-800 text-white"
+                               : "bg-white text-slate-500 ring-1 ring-slate-200 hover:bg-slate-50"}`}
+          >
+            <Package className="h-3.5 w-3.5" />
+            Incluir pasos internos
+          </button>
+        </div>
+
+        {movs && movs.cuadra === false && (
+          <div className="mx-6 mt-4 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              El libro suma {num(movs.saldo_libro)} y Odoo publica {num(movs.saldo_odoo)}.
+              La diferencia es real y hay que revisarla con Inventarios — no es un
+              error de esta pantalla.
+            </span>
+          </div>
+        )}
+
+        {error && (
+          <div className="mx-6 mt-4 rounded-lg bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200">
+            {error}
+          </div>
+        )}
+
+        {cargando ? (
+          <div className="py-20 text-center text-slate-400">
+            <Loader2 className="mx-auto h-6 w-6 animate-spin" />
+            <p className="mt-3 text-sm">Leyendo el libro de Odoo…</p>
+          </div>
+        ) : !movs?.movimientos.length ? (
+          <p className="py-20 text-center text-sm text-slate-400">
+            Sin movimientos de este tipo en la ventana elegida.
+          </p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {movs.movimientos.map((m, i) => (
+              <RenglonTraza key={`${m.documento}-${m.fecha}-${i}`} m={m} />
+            ))}
+          </div>
+        )}
+
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 px-6 py-4 text-xs text-slate-400">
+          <span>
+            Mostrando {movs?.movimientos.length ?? 0} de{" "}
+            {num(movs?.total_historico)} movimientos
+            {movs ? ` · saldo ${num(movs.saldo_libro)}` : ""}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Lock className="h-3.5 w-3.5" />
+            Registro de Odoo, inmutable: un error se corrige con un ajuste, no
+            borrando el renglón.
+          </span>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RenglonTraza({ m }: { m: Movimiento }) {
+  const Icono = ICONO_CAUSA[m.causa] ?? Package;
+  return (
+    <div className={`flex flex-wrap items-center gap-3 px-6 py-3 hover:bg-slate-50/70 ${
+      m.interno ? "opacity-50" : ""}`}>
+      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ring-1 ${
+        COLOR_CAUSA[m.causa] ?? "bg-slate-100 text-slate-500 ring-slate-200"}`}>
+        <Icono className="h-4 w-4" />
+      </span>
+
+      <span className="w-28 shrink-0 text-xs tabular-nums text-slate-400">
+        {fechaCorta(m.fecha)}
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-semibold text-slate-800">
+          {ETIQUETA_CAUSA[m.causa] ?? m.causa}
+          {m.contraparte ? ` · ${m.contraparte}` : ""}
+        </div>
+        <div className="truncate text-xs text-slate-400">
+          <span className="font-mono">{m.documento || "—"}</span>
+          {m.referencia && <span className="font-mono"> · {m.referencia}</span>}
+          {m.almacen && ` · ${m.almacen}`}
+          {m.pedido !== null && (
+            <span className="text-amber-700"> · pedidas {num(m.pedido)}</span>
+          )}
+        </div>
+      </div>
+
+      <span className={`w-24 shrink-0 text-right text-sm font-bold tabular-nums ${
+        m.delta > 0 ? "text-emerald-700" : m.delta < 0 ? "text-rose-700" : "text-slate-300"}`}>
+        {m.delta > 0 ? "+" : ""}{m.delta === 0 ? "sin efecto" : num(m.delta)}
+      </span>
+
+      <span className="w-20 shrink-0 text-right text-sm tabular-nums text-slate-500">
+        {num(m.saldo)}
+      </span>
+
+      <span className="w-32 shrink-0 truncate text-right text-xs text-slate-400">
+        {m.quien || "—"}
+      </span>
+    </div>
   );
 }

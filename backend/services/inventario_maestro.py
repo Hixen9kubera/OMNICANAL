@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from services import odoo, supabase_db as sdb, wp_db
@@ -411,8 +411,8 @@ def _et(estado: str, etiqueta: str, detalle: str, fuente: str, **extra) -> dict[
 # EL HISTORIAL
 # ─────────────────────────────────────────────────────────────────────────────
 
-def movimientos(sku: str, causa: str | None = None,
-                limite: int = 400) -> dict[str, Any]:
+def movimientos(sku: str, causa: str | None = None, limite: int = 400,
+                dias: int | None = None) -> dict[str, Any]:
     """
     El libro de bodega de un SKU, del más reciente al más viejo, con SALDO
     corriente — que es lo que pide el diseño y lo que hace auditable la lista.
@@ -444,25 +444,42 @@ def movimientos(sku: str, causa: str | None = None,
     fisico = float(det.get("fisico") or 0)
     total = sum(m["delta"] for m in movs)
 
+    # La ventana se aplica DESPUÉS de calcular el saldo, nunca antes: el saldo
+    # corriente tiene que venir arrastrado desde el primer movimiento del SKU o
+    # el renglón más viejo de la ventana arrancaría en cero y toda la columna
+    # quedaría corrida.
+    en_ventana = movs
+    if dias and dias > 0:
+        corte = datetime.now(timezone.utc) - timedelta(days=dias)
+        en_ventana = [m for m in movs
+                      if (f := _fecha(m["fecha"])) is not None and f >= corte]
+
     if causa == "reales":
         # El filtro por omisión de la pestaña: todo menos los pasos internos.
-        visibles = [m for m in movs if m["causa"] not in _RUIDO]
+        visibles = [m for m in en_ventana if m["causa"] not in _RUIDO]
     elif causa:
-        visibles = [m for m in movs if m["causa"] == causa]
+        visibles = [m for m in en_ventana if m["causa"] == causa]
     else:
-        visibles = movs
+        visibles = en_ventana
+
     return {
         "sku": sku,
         "movimientos": [_mov(m) for m in visibles[:limite]],
         "total": len(visibles),
+        "total_historico": len(movs),
+        "dias": dias,
         "saldo_libro": total,
         "saldo_odoo": fisico,
         # Con la regla de vendible (ver odoo._vendible) esto cuadró en 150 de
         # 150 SKUs de una muestra al azar. Si aquí sale False, es un caso real
         # que Inventarios tiene que revisar — no un bug de la pestaña.
         "cuadra": abs(total - fisico) < 0.5 if movs else None,
-        "por_causa": {c: sum(1 for m in movs if m["causa"] == c)
-                      for c in sorted({m["causa"] for m in movs})},
+        # Sobre la VENTANA, no sobre el histórico: son los contadores de los
+        # chips, y un chip que dice "Entradas 1" tiene que enseñar una entrada
+        # al pulsarlo. Contando el histórico completo, con la ventana de 90 días
+        # ese chip abría una lista vacía.
+        "por_causa": {c: sum(1 for m in en_ventana if m["causa"] == c)
+                      for c in sorted({m["causa"] for m in en_ventana})},
     }
 
 
@@ -680,6 +697,19 @@ def _iso(v: Any) -> str:
     if isinstance(v, datetime):
         return v.isoformat()
     return str(v)
+
+
+def _fecha(v: Any) -> datetime | None:
+    """Fecha de Odoo (`'2026-08-26 17:44:51'`) o ISO, siempre en UTC."""
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    if not v:
+        return None
+    try:
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00").replace(" ", "T"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
 def _dias(v: Any) -> int | None:
