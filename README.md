@@ -1001,6 +1001,76 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.394.0 — Los dos pilotos, y los dos defectos que el botón traía escondidos
+
+Brandon: *"los 2 folios hay que hacer la prueba con 1 producto"*. Se hizo, y el
+piloto valió por partida doble: dio la prueba positiva que se buscaba **y**
+destapó dos defectos que ninguna prueba en seco habría enseñado.
+
+#### 🔴 El botón publicaba TODO a $1.00
+
+`_item()` lee `p["_precio_lista"]` — una marca que pone `ficha()` del publicador
+por tandas, **no un campo de WooCommerce**. El publicador del panel usa su propio
+`_producto()`, que nunca la ponía. Sin ella, `num(p.get("_precio_lista"), 1.0)`
+cae a su valor por omisión y el feed sale con **`price: 1.0`**.
+
+Medido: `JUG-0004-EST` se armaba a **$1.00 MXN** teniendo 269.05 en Woo.
+
+Walmart **no lo habría rechazado**: habría publicado el producto a un peso. De
+los errores que este panel puede cometer, es de los más caros — y es invisible en
+cualquier revisión que no mire el JSON campo por campo.
+
+Corregido con la MISMA regla de la tanda (el mayor precio de las variantes cuando
+el padre viene vacío), más un candado: sin precio de lista **no se arma el feed**.
+
+#### 🔴 El contenido de IA nunca llegaba al feed
+
+`enrich.channel_content` tiene PK `(sku, canal, cuenta)`. `walmart_ia` guarda con
+cuenta `""` —igual que Temu y TikTok— y el publicador leía con `"WALMART"`, que
+es la cuenta de `ops.channel_submissions`, **otra tabla**.
+
+`leer()` devolvía `None` siempre. El panel decía *"sin contenido generado"* con el
+contenido recién guardado, y el feed salía con el texto de Woo mientras todos
+creían lo contrario. Lo delató la vista previa del piloto: `con_ia: false` un
+segundo después de generar.
+
+#### ✅ Pijamas: la exención SÍ cubre `clothing_other`
+
+"Pijamas" no existe entre las 75 categorías del esquema. La puerta más cercana es
+**"Ropa"** (`clothing_other`), y la pregunta era si la exención del ticket la
+cubría o estaba dada a un anaquel más chico.
+
+El feed de `ROP-0417-ROS` **no trajo el error de PDI** (*"not authorized to set up
+'CUSTOM' Product IDs"*) sino uno de atributo faltante: **llegó más allá de la
+etapa donde muere una categoría sin exención.** Eso es prueba POSITIVA, que es
+justo lo que este repo exige y lo que "no apareció el error de UPC" por sí solo
+nunca da. "Ropa" entra a `EXENCION_PROBADA`.
+
+Se filtra **por patrón, no por prefijo de SKU**: `ROP` son 214 pijamas dentro de
+un catálogo de ropa mucho mayor, y con `prefijos_sku` entraría toda la ropa por
+una exención de pijamas.
+
+#### Y una tercera categoría con el mismo desfase de esquema
+
+La pijama murió en **`` `Actividad` is a required attribute ``** — el mismo campo
+no declarado que mató a los 33 juguetes. El `required` publicado de "Ropa" son
+cuatro (gender, material, colorCategory, countPerPack) y producción pide un
+quinto. Van ya **tres** categorías donde el esquema 3.19 miente sobre la 3.11:
+Cocina (`size`, `gender`), Juguetes (`activity`, `productLine`) y ahora Ropa
+(`activity`).
+
+`productLine` **no** se le manda a Ropa: no existe en ese bloque, y un campo de
+más tumba el artículo. Registrado en `CORRECCIONES_MEDIDAS` con su evidencia, de
+donde lo toman solos el publicador y el generador de contenido.
+
+#### El presupuesto, medido de punta a punta
+
+Tras los dos envíos, `ops.channel_submissions` marcó **2 usados / 8 restantes**
+con su hora de liberación correcta. El candado de los 10 feeds funciona con
+feeds reales, no solo en la prueba.
+
+---
+
 ### v0.393.0 — Pieza 6 de Walmart, y las 8 ventas que nadie estaba leyendo
 
 Al construir la ingesta se preguntó por primera vez `GET /v3/orders`. Contestó

@@ -80,10 +80,52 @@ async def _producto(sku: str) -> dict[str, Any] | None:
             })
             r.raise_for_status()
             data = r.json()
-            return data[0] if data else None
+            if not data:
+                return None
+            p = data[0]
+            # ⚠️ EL PRECIO DE LISTA, Y ES OBLIGATORIO PONERLO AQUÍ.
+            # `_item()` lee `p["_precio_lista"]` — una marca que pone `ficha()`
+            # del publicador por tandas, NO un campo de WooCommerce. Sin ella
+            # cae a su valor por omisión y **el feed sale a $1.00 MXN**:
+            # medido, JUG-0004-EST se armaba con `price: 1.0` teniendo 269.05
+            # en Woo. Walmart no lo rechazaría — publicaría el producto a un
+            # peso, que es de los errores más caros que este panel puede cometer.
+            p["_precio_lista"] = await _precio_lista(cli, p)
+            return p
     except Exception as exc:  # noqa: BLE001
         log.warning("publicar_walmart._producto(%s): %s", sku, exc)
         return None
+
+
+async def _precio_lista(cli: Any, p: dict[str, Any]) -> float | None:
+    """
+    El precio de LISTA, con la misma regla que el publicador por tandas.
+
+    En un producto variable el padre viene con el precio vacío, así que se
+    toma el MAYOR de sus variantes: es el que se anuncia y el que no está
+    descontado.
+    """
+    def _f(v: Any) -> float | None:
+        try:
+            x = float(v)
+            return x if x > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    precio = _f(p.get("regular_price"))
+    if precio is None and p.get("type") == "variable":
+        try:
+            rv = await cli.get(f"/products/{p['id']}/variations", params={
+                "per_page": 100, "_cb": "wmpub",
+                "_fields": "id,sku,regular_price,price"})
+            if rv.status_code == 200:
+                precios = [x for x in (_f(v.get("regular_price")) or _f(v.get("price"))
+                                       for v in rv.json()) if x]
+                if precios:
+                    precio = max(precios)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("publicar_walmart._precio_lista(%s): %s", p.get("sku"), exc)
+    return precio if precio is not None else _f(p.get("price"))
 
 
 def clasificar(sku: str, nombre: str, categorias_woo: str
@@ -302,6 +344,12 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
     imgs = [i.get("src") for i in (p.get("images") or []) if i.get("src")]
     if not imgs:
         raise RuntimeError("Sin imágenes: Walmart exige al menos la principal.")
+    # El candado del precio. `_item()` cae a 1.0 cuando no lo encuentra, y un
+    # producto publicado a un peso no da error: se vende.
+    if not p.get("_precio_lista"):
+        raise RuntimeError(
+            f"Sin precio de lista en WooCommerce para {sku}. NO se arma el feed: "
+            f"sin él el artículo saldría publicado a $1.00 y Walmart lo aceptaría.")
 
     item = await asyncio.to_thread(_item, p, imgs, clave, cfg)
 
@@ -311,7 +359,13 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
     avisos_ia: list[str] = []
     if req.get("usar_ia", True):
         from services import channel_content
-        doc = await channel_content.leer(sku, CANAL, CUENTA)
+        # ⚠️ CUENTA VACÍA, NO `CUENTA`. La PK de `enrich.channel_content` es
+        # (sku, canal, cuenta) y `walmart_ia` guarda con cuenta "" — igual que
+        # Temu y TikTok. Leer con "WALMART" (que es la cuenta de
+        # `ops.channel_submissions`, otra tabla) devolvía None SIEMPRE: el panel
+        # decía "sin contenido generado" con el contenido recién guardado, y el
+        # feed salía con el texto de Woo mientras todos creían lo contrario.
+        doc = await channel_content.leer(sku, CANAL, "")
         item, comparativa, avisos_ia = await asyncio.to_thread(
             _aplicar_ia, item, doc, cfg["clave_visible"], cfg,
             p.get("date_modified"))

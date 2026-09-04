@@ -238,6 +238,42 @@ CATEGORIAS_AUTORIZADAS: dict[str, dict] = {
             "assembledProductHeight", "assembledProductWeight",
             "size", "gender", "activity", "productLine"),
     },
+    # ── PIJAMAS (ticket del 2-sep-2026) ─────────────────────────────
+    # ⚠️ "Pijamas" NO EXISTE en el esquema. Se revisaron las 75 categorías: no
+    # está ni con ese nombre ni con ninguno equivalente. La puerta más cercana
+    # es "Ropa" (`clothing_other`), y por eso este renglón es un PILOTO: la
+    # exención dice "Pijamas" y Walmart pudo habérsela dado a un anaquel más
+    # chico que la categoría entera.
+    #
+    # POR ESO SE FILTRA POR PATRÓN Y **NO** POR PREFIJO DE SKU. `ROP` son 214
+    # pijamas... dentro de un catálogo de ropa mucho mayor. Con `prefijos_sku`
+    # entraría TODA la ropa por una exención de pijamas — justo el salto que ya
+    # costó un lote ("que no aparezca el error de UPC NO prueba nada").
+    #
+    # Y OJO CON LOS CAMPOS: el bloque "Ropa" **no tiene** `assembledProduct*`
+    # ni `size` — verificado contra el esquema. Mandarlos sería repetir
+    # exactamente lo de `countPerPack` en Juguetes, que tumbó 33 de 33. Sus
+    # obligatorios son solo cuatro: countPerPack, material, colorCategory y
+    # gender. La talla de ropa vive en campos por prenda (pantSize, shoeSize…),
+    # ninguno obligatorio y ninguno aplicable a un conjunto de pijama.
+    "clothing_other": {
+        "clave_visible": "Ropa",
+        "folio_exencion": "ticket 2-sep-2026 (folio por capturar)",
+        # 53102600 = "Ropa de dormir", clase del segmento 53. Es la clase de
+        # 53102601 (pijamas de niño) y 53102602 (de hombre).
+        "clave_sat": 53102600,
+        "pide_genero": True,
+        "patron_categoria": "ijama|amis[oó]n|ropa de dormir",
+        "patron_titulo": "ijama|amis[oó]n|ropa de dormir",
+        # `activity` va porque el PILOTO del 4-sep lo exigió, no porque el
+        # esquema lo diga: su `required` son cuatro y este no aparece. Mismo
+        # desfase que ya mordió en Juguetes y en Cocina.
+        # `productLine` NO se manda: no existe en el bloque "Ropa" (sí en
+        # "Juguetes"), y un campo de más tumba el artículo.
+        "campos_visible": (
+            "countPerPack", "material", "colorCategory", "modelNumber",
+            "gender", "activity"),
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

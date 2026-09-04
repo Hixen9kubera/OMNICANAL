@@ -79,10 +79,23 @@ CORRECCIONES_MEDIDAS: dict[tuple[str, str], tuple[str, str]] = {
         ("OBLIGATORIO", "`Género` is a required attribute — 3 SKUs de cocina, 5-ago"),
     ("Otros Electrónicos", "wattage"):
         ("OBLIGATORIO", "`Consumo en Watts` is a required attribute — sonda 7-ago"),
+    # MEDIDO EN EL PILOTO DEL 4-SEP. La pijama ROP-0417-ROS pasó el filtro de
+    # UPC —la exención de "Pijamas" SÍ cubre `clothing_other`— y murió en esto:
+    # el esquema publicado dice que "Ropa" pide 4 obligatorios (gender,
+    # material, colorCategory, countPerPack) y producción pide un quinto.
+    # `productLine` NO existe en este bloque; solo `activity`.
+    ("Ropa", "activity"):
+        ("OBLIGATORIO", "`Actividad` is a required attribute — piloto ROP-0417-ROS, 4-sep"),
 }
 
 # Categorías con exención de UPC PROBADA (un SKU llegó a SUCCESS por ahí).
-EXENCION_PROBADA = {"Disfraces", "Cocina, Decoración y Otros", "Electrónicos"}
+# "Ropa" entra con prueba POSITIVA del 4-sep: el feed de ROP-0417-ROS NO trajo
+# el error de PDI (`not authorized to set up 'CUSTOM' Product IDs`) sino uno de
+# atributo faltante — llegó MÁS ALLÁ de la etapa donde muere una categoría sin
+# exención. Es justo el tipo de evidencia que el encabezado de este archivo
+# exige y que "no apareció el error de UPC" por sí solo no da.
+EXENCION_PROBADA = {"Disfraces", "Cocina, Decoración y Otros", "Electrónicos",
+                    "Ropa"}
 EXENCION_NEGADA = {"Muebles", "Eléctricas", "Cables", "Electrodomésticos"}
 
 
