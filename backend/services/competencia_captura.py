@@ -559,6 +559,47 @@ def terminos_de_subcategoria(categoria_id: str, limite: int = 30) -> dict[str, A
     }
 
 
+def _objetos_completos(txt: str) -> list[dict[str, Any]]:
+    """
+    Los objetos `{...}` COMPLETOS que haya en un texto, aunque el JSON de afuera
+    esté cortado a la mitad.
+
+    ── POR QUÉ EXISTE ──────────────────────────────────────────────────────────
+    Reportado el 4-sep-2026: «La IA no devolvió JSON válido: Expecting ','
+    delimiter: line 22 column 128 (char 2671)». No era el modelo devolviendo
+    basura — era la respuesta CORTADA en `max_tokens`, y el parser tomaba hasta
+    el último `}` de un texto incompleto, que nunca cierra.
+
+    Una lista de palabras clave cortada a la mitad **sigue sirviendo**: 12 de 18
+    es mejor que un error rojo. Se recuperan las entradas enteras y se tira la
+    que quedó a medias, diciéndolo.
+
+    Recorre contando llaves en vez de usar una expresión regular porque los
+    valores traen llaves y comillas dentro; balancear es lo único que no se
+    confunde.
+    """
+    # Con una PILA, no con un contador de profundidad. La primera versión sólo
+    # emitía objetos de primer nivel, y eso no rescata nada del caso real: la
+    # llave de AFUERA —{"palabras": [...]}— es justo la que nunca cierra cuando
+    # la respuesta se corta. Las entradas viven ADENTRO, y cada `}` cierra la
+    # suya. La prueba `test_rescata_las_enteras_y_tira_la_cortada` lo atrapó.
+    import json as _json
+    out: list[dict[str, Any]] = []
+    pila: list[int] = []
+    for i, c in enumerate(txt):
+        if c == "{":
+            pila.append(i)
+        elif c == "}" and pila:
+            ini = pila.pop()
+            try:
+                d = _json.loads(txt[ini:i + 1])
+                if isinstance(d, dict):
+                    out.append(d)
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
 def sugerir_palabras_subcategoria(categoria_id: str,
                                   limite_terminos: int = 30) -> dict[str, Any]:
     """
@@ -589,6 +630,11 @@ def sugerir_palabras_subcategoria(categoria_id: str,
         "vocabulario que aparezca en los términos buscados o en los títulos de los "
         "líderes: NO inventes palabras nuevas. Agrupa las variantes (singular/plural, "
         "sinónimos) y para cada una di por qué conviene, en una frase corta.\n"
+        # EL TOPE ES PARTE DEL ARREGLO, no una preferencia: sin él el modelo
+        # devolvía una lista tan larga que se cortaba en `max_tokens` y el JSON
+        # llegaba roto. Doce palabras es más de lo que cabe en un título.
+        "Devuelve COMO MÁXIMO 12 palabras, las de más tráfico. La razón, en no "
+        "más de 12 palabras.\n"
         'Responde SOLO JSON: {"palabras":[{"palabra":"...","porque":"...",'
         '"variantes":["..."]}],"evitar":["..."]}'
     )
@@ -602,16 +648,26 @@ def sugerir_palabras_subcategoria(categoria_id: str,
         + "\n".join(f"- {t}" for t in lideres)
     )
 
-    res = ia_generadores._completar(system, usuario, max_tokens=1200)
+    # 2000 y no 1200: con 30 términos y 10 títulos líderes de entrada, la lista
+    # con su razón y sus variantes no cabía y se cortaba a media palabra.
+    res = ia_generadores._completar(system, usuario, max_tokens=2000)
     if not res.get("ok"):
         return {"ok": False, "motivo": f"La IA no respondió: {res.get('error')}"}
     txt = (res.get("texto") or "").strip()
+    truncado = False
+    import json as _json
     try:
-        import json as _json
         d = _json.loads(txt[txt.find("{"):txt.rfind("}") + 1])
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "motivo": f"La IA no devolvió JSON válido: {exc}",
-                "crudo": txt[:400]}
+    except Exception:  # noqa: BLE001
+        # Se cortó. Se rescatan las entradas enteras en vez de tirar todo: media
+        # lista de palabras clave sirve, un error rojo no.
+        sueltos = _objetos_completos(txt)
+        palabras_ok = [o for o in sueltos if o.get("palabra")]
+        if not palabras_ok:
+            return {"ok": False,
+                    "motivo": "La IA devolvió una respuesta que no se pudo leer.",
+                    "crudo": txt[:400]}
+        d, truncado = {"palabras": palabras_ok, "evitar": []}, True
 
     # Se marca cuáles de las palabras propuestas salen de verdad de la demanda
     # medida. Una palabra que no aparece en ningún término buscado ni en ningún

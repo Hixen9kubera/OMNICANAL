@@ -475,9 +475,11 @@ function FilasSku({
                     </span>
                   ) : null}
                 </div>
-                <div className="max-w-[220px] text-[11px] leading-snug text-slate-500">
-                  {s.nombre}
-                </div>
+                {/* El nombre del PRODUCTO se retiró de aquí (4-sep-2026, Eduardo).
+                    Estaba repetido: la columna «Título de la tienda» ya trae el
+                    título de cada publicación, que es el que importa —una tienda
+                    puede llamar al mismo SKU de dos maneras y competir por
+                    búsquedas distintas—. Aquí la identidad es el SKU. */}
                 {s.pausada_es_la_que_vende ? (
                   <span
                     className="mt-1 inline-flex items-center gap-1 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-800"

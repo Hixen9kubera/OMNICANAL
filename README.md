@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.416.0 — El JSON de la IA se cortaba, y la columna PRODUCTO repetía (Eduardo)
+
+Tres cosas de una captura de Eduardo.
+
+**1 · «La IA no devolvió JSON válido: Expecting ',' delimiter».** No era el
+modelo devolviendo basura: era la respuesta **cortada en `max_tokens`**, y el
+parser tomaba `txt[find("{"):rfind("}")+1]` de un texto incompleto — un recorte
+que nunca cierra. Once palabras clave buenas se tiraban junto con la doceava,
+que quedó a medias.
+
+Arreglado por tres lados, porque uno solo no basta:
+
+- **el tope se pide en el prompt** («COMO MÁXIMO 12 palabras»), que es lo que
+  evita que la lista se dispare;
+- **`max_tokens` de 1200 a 2000**, holgura para 30 términos y 10 títulos líderes
+  de entrada;
+- **`_objetos_completos` rescata lo entero** si aun así se corta. Media lista de
+  palabras clave sirve; un error rojo no.
+
+**2 · La columna PRODUCTO ya no repite el título.** Estaba el nombre del producto
+debajo del SKU, y «Título de la tienda» ya trae el de cada publicación — que es
+el que importa, porque una tienda puede llamar al mismo SKU de dos maneras y
+competir por búsquedas distintas. En la columna PRODUCTO la identidad es el SKU.
+
+**3 · El sync de 15 minutos: revisado, y está bien.** Comparadas **299
+publicaciones al azar contra la API de ML en vivo**:
+
+| | |
+|---|---|
+| coinciden | **298 (99.7%)** |
+| difieren | 1 |
+
+La única, `MASC-0059-NEG-XL`, se pausó en ML hace ~2 h y todavía no le tocaba
+turno. No es un fallo: el sync recorre en RONDA (`ORDER BY updated_at ASC`, ~80
+por corrida cada 15 min), así que con 5,264 publicaciones **una vuelta completa
+tarda unas 16 horas** y ése es el rezago máximo por diseño.
+
+De paso, las **267 publicaciones sin `situacion`**: 266 **no tienen
+`listing_id`** —nunca se publicaron en ML, así que no tener estado es correcto—
+y sólo **una** tiene publicación sin estado.
+
+**8 pruebas nuevas** para el rescate de JSON (30 en total). Una atrapó un bug en
+la primera versión del rescate antes de subirlo: contaba desde la llave de
+AFUERA, que es justo la que nunca cierra cuando la respuesta se corta, así que no
+rescataba nada. Va con una pila.
+
 ### 0.406.0 — El contenido de Walmart existía y era invisible, y el semáforo mentía en los dos sentidos
 
 Brandon, con la captura del Estudio: *"le di al botón de mejorar con IA, sin
