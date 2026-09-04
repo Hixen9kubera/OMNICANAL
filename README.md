@@ -1074,6 +1074,54 @@ Medido después del cambio:
 
 ---
 
+### v0.415.0 — Fuera el marcador «invisible», y tres SKUs de referencia con movimiento real
+
+Brandon: *«el formato de invisible quítalo, ya que no dependemos del status
+actual en WooCommerce; y adicional, ¿puedes buscar 3 SKUs con varios movimientos
+y ponerlo para tener la referencia de cómo funciona?»*
+
+**FUERA «INVISIBLE».** Marcaba las variaciones publicadas bajo un padre no
+publicado, y eso se leía de `wp_posts.post_status` — que dejó de mandar en
+v0.412.0. Se retira la bandera, su chip, su filtro, su alerta y el icono
+`EyeOff` que quedaba importado sin uso.
+
+**TRES SKUs DE REFERENCIA.** Los diez del piloto no han llegado —cero piezas y
+cero movimientos—, así que con ellos solos la trazabilidad se ve vacía y no se
+entiende para qué sirve. Se eligieron midiendo **variedad, no volumen**: entre
+los tres aparecen las siete causas (entrada, venta, envío a FULL, devolución,
+ajuste, traspaso y merma), los tres almacenes y los tres estados de «en proceso»:
+
+| SKU | Movs | Estado | Dónde |
+|---|---:|---|---|
+| `MUE-0135-NEG` | 162 | recibido pero **sin rack** (ámbar) | TEXCO |
+| `TEC-0008-AMR` | 108 | **acomodado** en `J-28-N1` (verde) | TEXCO |
+| `TEC-0370-NEG` | 285 | **acomodado** en `L-17-N3` (verde), con traspaso | DROP OFF |
+
+Los tres CUADRAN contra Odoo, así que también sirven de comprobación de que el
+saldo del libro reproduce el que el panel publica. Van marcados «ejemplo» para
+que no se confundan con los diez de la prueba.
+
+**TRES ARREGLOS QUE SALIERON AL PROBARLOS:**
+
+1. **La ventana por omisión del historial pasa de 90 días a TODO.** Con 90 días
+   `TEC-0370-NEG` mostraba **6 de sus 285** movimientos, y con 30 días ninguno.
+   Esconder el 96% de la historia en una pantalla que existe para auditar es lo
+   contrario de lo que se quiere, y el saldo corriente solo se entiende desde el
+   primer movimiento.
+2. **Las cajas ya no se redondean a cero.** `MUE-0135-NEG` tiene 1 pieza con
+   factor 3 — 0.33 cajas — y se leía «0», que es justo lo contrario de lo que
+   pasa: hay mercancía.
+3. **El saldo NEGATIVO se marca en rojo, porque es dato real.** En
+   `TEC-0370-NEG` alguien ajustó **−18 sobre 6 piezas** el 11-jul y el libro
+   quedó imposible hasta el +20 del 5-ago, cuyo propio texto dice *«Actualización
+   de Stock debido a que no se refleja ajustes previos de Sku»*. Un negativo sin
+   marcar se lee como un error de la pantalla; marcado, es el hallazgo. Y se
+   distingue «no hay movimientos» de «no se alcanzó a cargar».
+
+Además: **«FULL 0» ya no se imprime.** Se nombra el destino y la cantidad solo
+si la hay — «FULL 0» se leía como un error de cálculo cuando quería decir «está
+en FULL y ahora mismo sin piezas allá».
+
 ### v0.414.0 — La llave equivocada dejó de decir solo "Invalid API key"
 
 **El síntoma.** Brandon corrió `crear_usuarios.py --aplicar` con la URL de kubera
