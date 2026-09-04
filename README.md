@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.392.0 — Asignar un término general llevaba roto, y por eso 265 SKUs no tenían (Eduardo)
+
+Eduardo preguntó por qué un SKU no mostraba competencia directa. La respuesta
+corta era «no tiene término de búsqueda». La larga es que **no se le podía poner
+uno**.
+
+`POST /api/competencia/sembrar` —el único camino para asignar términos— reventaba
+antes de guardar nada:
+
+```
+File "/app/services/competencia_captura.py", line 1016, in sembrar_skus
+    guardados = competencia_store.guardar_skus(productos)
+AttributeError: module 'services.competencia_store' has no attribute 'guardar_skus'
+```
+
+`guardar_skus` **no existe** desde que el store pasó a Supabase. Nadie lo notó
+porque nadie llamaba esa ruta, y nadie la llamaba porque no funcionaba. Se
+destapó al intentar sembrar 18 SKUs el 4-sep-2026.
+
+**El arreglo.** Lo único que hoy hay que persistir es el término:
+`market_sku_config` es sólo estado humano y las vistas derivan nombre, categoría
+y publicación de `channel.listings`. Se usa `proponer_termino`, que ya existía y
+conserva la regla de siempre —*manual* gana sobre cualquier propuesta de la IA—.
+El resultado además distingue los que no se guardaron (`sin_termino`) de los que
+sí: rowcount 0 significa que el SKU no está en `core.products` o que ya tenía
+corrección humana, y ninguna de las dos es un éxito.
+
+**Las primeras pruebas del repo.** No había ninguna suite ni `pytest` instalado,
+así que van con `unittest` (biblioteca estándar, cero dependencias nuevas; pytest
+las descubre igual si algún día se adopta):
+
+    cd backend && python -m unittest discover -s tests -v
+
+**22 pruebas**, dos archivos:
+
+- `test_competencia_terminos.py` (17) — la limpieza del término, el parseo de lo
+  que devuelve el LLM, y el contrato que importa: **si la IA falla NO se inventa
+  un término**. Incluye el bug documentado del SKU `TEC-1284-NEG-27"`, que el
+  modelo devuelve sin la comilla y que el cruce exacto descartaba en silencio.
+- `test_competencia_sembrar.py` (5) — el tramo que estaba roto. Una prueba
+  comprueba que `proponer_termino` **existe**: es exactamente la que habría
+  atrapado el AttributeError, y ni el typecheck ni una revisión lo habrían visto.
+
+**Y la medición que decidió el alcance.** De los 265 SKUs sin término, sólo **18
+tienen publicación activa**; 215 están sólo pausados y 32 no tienen publicación.
+Sembrar los 265 sería trabajo para 247 SKUs que nadie puede comprar. Los 18
+activos sí valen: los 18 tienen tráfico (3,114 visitas en 30 días) y 9 venden.
+
 ### v0.391.0 — El contenido de IA entra al feed de Walmart, y se ve qué cambia antes de mandarlo
 
 v0.390.0 generaba y guardaba en `enrich.channel_content`; el feed se seguía

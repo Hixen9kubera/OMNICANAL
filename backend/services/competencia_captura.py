@@ -1013,10 +1013,46 @@ def sembrar_skus(skus: list[str], con_ia: bool = True) -> dict[str, Any]:
         p["termino_general"] = terminos.get(p["sku"])
         p["termino_origen"] = "ia"
 
-    guardados = competencia_store.guardar_skus(productos)
+    # ── Guardar. SÓLO el término. ──────────────────────────────────────────
+    #
+    # Antes esto era `competencia_store.guardar_skus(productos)`, y esa función
+    # NO EXISTE desde que el store pasó a Supabase. La ruta entera reventaba con
+    # `AttributeError: module 'services.competencia_store' has no attribute
+    # 'guardar_skus'` — o sea que POST /api/competencia/sembrar llevaba roto
+    # quién sabe cuánto, y como es el único camino para asignar un término, ésa
+    # es la razón de que 265 SKUs no tengan ninguno.
+    #
+    # Nadie lo notó porque nadie lo llamaba, y nadie lo llamaba porque no
+    # funcionaba. Se destapó el 4-sep-2026 al intentar sembrar 18 SKUs.
+    #
+    # El resto de `productos` —nombre, categoría, raíz, publicación— ya NO se
+    # guarda: `market_sku_config` es sólo estado humano y las vistas derivan lo
+    # demás de `channel.listings`. Persistir el término es todo lo que queda, y
+    # `proponer_termino` conserva la regla de siempre: 'manual' gana sobre
+    # cualquier propuesta de la IA.
+    guardados = 0
+    sin_termino: list[str] = []
+    for p in productos:
+        termino = p.get("termino_general")
+        if not termino:
+            sin_termino.append(p["sku"])
+            continue
+        try:
+            if competencia_store.proponer_termino(p["sku"], termino):
+                guardados += 1
+            else:
+                # rowcount 0: el SKU no está en `core.products` (el INSERT lo
+                # exige) o ya tenía un término corregido a mano. Ninguna de las
+                # dos es un error, pero hay que poder distinguirlas del éxito.
+                sin_termino.append(p["sku"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no se pudo guardar el término de %s: %s", p["sku"], exc)
+            sin_termino.append(p["sku"])
+
     return {
         "ok": True,
         "guardados": guardados,
+        "sin_termino": sorted(sin_termino),
         "nombre_desde_woo": sorted(de_woo),
         "sin_nombre": sin_nombre_en_ningun_lado,
         # Sin publicación en ML se pueden medir las búsquedas y el top de la
