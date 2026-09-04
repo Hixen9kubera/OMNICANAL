@@ -76,7 +76,7 @@ async def _producto(sku: str) -> dict[str, Any] | None:
                 "_fields": ("id,name,sku,type,parent_id,price,regular_price,"
                             "sale_price,stock_quantity,status,categories,brands,"
                             "images,description,short_description,attributes,"
-                            "permalink,weight,dimensions"),
+                            "permalink,weight,dimensions,date_modified"),
             })
             r.raise_for_status()
             data = r.json()
@@ -139,6 +139,143 @@ def clasificar(sku: str, nombre: str, categorias_woo: str
         f"Esperando su ticket en Seller Center: {pendientes or 'ninguna'}.")
 
 
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EL CONTENIDO GENERADO CON IA ENTRA AL FEED
+# ═════════════════════════════════════════════════════════════════════════════
+# Hasta v0.390.0 `walmart_ia` generaba y guardaba en `enrich.channel_content`, y
+# el feed se seguía armando SOLO desde Woo. Esto es lo que los une.
+#
+# Va AQUÍ y no dentro de `_item()` a propósito: `_item()` es del publicador por
+# TANDAS, que corre sin que nadie lo mire. La superposición se aplica después,
+# sobre lo que ya armó, y solo en el camino del BOTÓN — donde hay una vista
+# previa y una persona viendo qué cambia antes de gastar uno de los 10 feeds.
+#
+# TRES CANDADOS, y los tres existen por un modo de fallo concreto:
+#
+#   1. LOS ATRIBUTOS SOLO SI LA CATEGORÍA COINCIDE. El bloque `Visible` es
+#      distinto en cada categoría. Si el contenido se generó para "Juguetes" y
+#      el feed sale como "Electrónicos", esos atributos van al bloque
+#      equivocado — y Walmart no da error por eso: publica mal. El texto sí se
+#      usa (título y descripción no dependen de la categoría).
+#
+#   2. LA IA NO PISA LO QUE SALE DE WOO. Medidas, peso, modelo y talla los tiene
+#      el catálogo; que un modelo de lenguaje los "mejore" es justo la clase de
+#      dato inventado que aquí se publica sin dar error.
+#
+#   3. SI WOO CAMBIÓ DESPUÉS, SE AVISA. Un contenido de hace tres semanas puede
+#      describir un producto que ya no es ese — pasa con los SKUs reciclados.
+#      No se bloquea (a veces el cambio en Woo es irrelevante), se dice.
+_DE_WOO_NO_SE_TOCA = frozenset({
+    "assembledProductLength", "assembledProductWidth", "assembledProductHeight",
+    "assembledProductWeight", "countPerPack", "modelNumber", "size",
+})
+
+_TITULO_MAX = 200        # `productName.maxLength`
+_DESC_MAX = 3900         # tope de 4000 con margen, igual que `_item()`
+_BULLETS_MAX = 5
+_BULLET_MAX = 50         # "oraciones breves de 50 caracteres" (literal)
+
+
+def _corto(v: Any, n: int = 90) -> str:
+    """Un valor cualquiera, legible en una tabla de comparación."""
+    if isinstance(v, (list, dict)):
+        t = json.dumps(v, ensure_ascii=False)
+    else:
+        t = str(v if v is not None else "")
+    return t if len(t) <= n else t[:n - 1] + "…"
+
+
+def _aplicar_ia(item: dict[str, Any], doc: dict[str, Any] | None, categoria: str,
+                cfg: dict[str, Any], modificado_woo: str | None
+                ) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """
+    Superpone el contenido de la IA sobre el feed ya armado.
+
+    Devuelve (item, comparativa, avisos). La comparativa es lo que ve la persona
+    antes de mandar: campo, lo que iría de Woo, lo que iría de la IA.
+    """
+    comparativa: list[dict[str, Any]] = []
+    avisos: list[str] = []
+    if not doc or not (doc.get("contenido") or {}):
+        return item, comparativa, ["Sin contenido generado con IA: el feed sale "
+                                   "tal cual está en WooCommerce."]
+
+    c = doc["contenido"]
+    orderable = item.get("Orderable") or {}
+    clave = cfg["clave_visible"]
+    visible = (item.get("Visible") or {}).get(clave) or {}
+
+    # ── candado 3: ¿el contenido es de antes del último cambio en Woo? ───────
+    gen = doc.get("updated_at") or ""
+    if gen and modificado_woo and str(modificado_woo) > str(gen)[:19]:
+        avisos.append(f"⚠ El contenido se generó el {str(gen)[:16]} y Woo cambió "
+                      f"el {str(modificado_woo)[:16]}. Puede describir otra cosa "
+                      f"— vuelve a generarlo si el cambio fue de fondo.")
+
+    def anota(campo: str, woo: Any, ia: Any, usado: bool, nota: str = "") -> None:
+        comparativa.append({"campo": campo, "de_woo": _corto(woo),
+                            "de_ia": _corto(ia), "usado": usado, "nota": nota})
+
+    # ── TEXTO: no depende de la categoría, siempre se puede usar ─────────────
+    titulo = (c.get("titulo") or "").strip()
+    if titulo:
+        anota("productName", orderable.get("productName"), titulo, True)
+        orderable["productName"] = titulo[:_TITULO_MAX]
+
+    desc = (c.get("descripcion") or "").strip()
+    if desc:
+        anota("shortDescription", orderable.get("shortDescription"), desc, True)
+        orderable["shortDescription"] = desc[:_DESC_MAX]
+
+    # `keyFeatures` es donde más se gana: lo de Woo era el nombre del producto
+    # repetido más "Material: X". Estas son viñetas de beneficio, de 50
+    # caracteres, que es lo que Walmart pide literalmente.
+    bullets = [str(b).strip() for b in (c.get("bullets") or []) if str(b).strip()]
+    if bullets:
+        largas = [b for b in bullets if len(b) > _BULLET_MAX]
+        buenas = [b[:_BULLET_MAX] for b in bullets][:_BULLETS_MAX]
+        anota("keyFeatures", orderable.get("keyFeatures"), buenas, True,
+              f"{len(largas)} recortada(s) a {_BULLET_MAX}" if largas else "")
+        orderable["keyFeatures"] = buenas
+
+    # La MARCA no se toca: `_item()` la saca del atributo BRAND de Woo, y la IA
+    # contesta "Sin marca" cuando no la reconoce. Cambiar identidad por un "no
+    # sé" sería empeorar el dato, no mejorarlo.
+    if c.get("marca"):
+        anota("brand", orderable.get("brand"), c["marca"], False,
+              "la marca no se sustituye: se respeta la de Woo")
+
+    # ── ATRIBUTOS: candados 1 y 2 ───────────────────────────────────────────
+    atributos = c.get("atributos") or {}
+    if atributos:
+        otra = doc.get("categoria") or "otra categoría"
+        if (doc.get("categoria") or "") != categoria:
+            avisos.append(
+                f"Los atributos generados son de «{otra}» y este feed sale como "
+                f"«{categoria}»: NO se usan (irían a un bloque que no es el suyo, "
+                f"y Walmart publicaría mal sin dar error). El texto sí se "
+                f"aprovecha.")
+        else:
+            blanca = cfg.get("campos_visible")
+            for campo, valor in atributos.items():
+                if campo in _DE_WOO_NO_SE_TOCA:
+                    anota(campo, visible.get(campo), valor, False,
+                          "lo pone el catálogo, no la IA")
+                    continue
+                if blanca and campo not in blanca:
+                    anota(campo, visible.get(campo), valor, False,
+                          "fuera de la lista blanca de la categoría")
+                    continue
+                anota(campo, visible.get(campo), valor, True)
+                visible[campo] = valor
+
+    item["Orderable"] = orderable
+    if item.get("Visible"):
+        item["Visible"][clave] = visible
+    return item, comparativa, avisos
+
+
 def _categoria_cfg(p: dict[str, Any]) -> tuple[str | None, dict | None, str | None]:
     """`clasificar()` con lo que trae un producto de WooCommerce."""
     return clasificar(
@@ -167,9 +304,21 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("Sin imágenes: Walmart exige al menos la principal.")
 
     item = await asyncio.to_thread(_item, p, imgs, clave, cfg)
+
+    # EL CONTENIDO DE LA IA, superpuesto sobre lo que ya armo el publicador.
+    # `usar_ia: false` en la peticion lo desactiva sin tocar nada mas.
+    comparativa: list[dict[str, Any]] = []
+    avisos_ia: list[str] = []
+    if req.get("usar_ia", True):
+        from services import channel_content
+        doc = await channel_content.leer(sku, CANAL, CUENTA)
+        item, comparativa, avisos_ia = await asyncio.to_thread(
+            _aplicar_ia, item, doc, cfg["clave_visible"], cfg,
+            p.get("date_modified"))
+
     payload = await asyncio.to_thread(_sobre, clave, [item])
 
-    avisos: list[str] = []
+    avisos: list[str] = list(avisos_ia)
     pres = await asyncio.to_thread(_presupuesto)
     if pres.get("quedan") is not None:
         avisos.append(f"Presupuesto: quedan {pres['quedan']} de {FEEDS_POR_HORA} "
@@ -182,7 +331,9 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
                   f"{cfg.get('folio_exencion') or 'sin folio'} · SAT "
                   f"{cfg.get('clave_sat')}.")
     return {"payload": payload, "clave": clave, "cfg": cfg,
-            "avisos": avisos, "presupuesto": pres, "imagenes": len(imgs)}
+            "avisos": avisos, "presupuesto": pres, "imagenes": len(imgs),
+            "comparativa": comparativa,
+            "con_ia": bool([c for c in comparativa if c.get("usado")])}
 
 
 async def preview(req: dict[str, Any]) -> dict[str, Any]:
@@ -208,6 +359,11 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
                   or (item.get("Visible") or {}).get("productName"),
         "payload": armado["payload"],
         "presupuesto": armado["presupuesto"],
+        # Lo que ve la persona antes de gastar un feed: campo por campo, que
+        # iria de Woo y que iria de la IA. Sin esto, "usa el contenido de IA"
+        # seria un acto de fe.
+        "comparativa": armado["comparativa"],
+        "con_ia": armado["con_ia"],
         "avisos": armado["avisos"],
     }
 
@@ -278,6 +434,11 @@ async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "canal": CANAL, "sku": sku,
             "feed_id": feed_id, "item_id": feed_id,
             "categoria": armado["cfg"]["clave_visible"],
+            # `confirmar` arma con el MISMO `_armar` que la vista previa, asi
+            # que lo enviado es lo que se enseñó. Se repite aqui para que quede
+            # en la respuesta del envio, no solo en la del preview.
+            "con_ia": armado["con_ia"],
+            "comparativa": armado["comparativa"],
             # NO se dice "publicado": Walmart solo acusó recibo del feed.
             "estado": "ENVIADO",
             "avisos": armado["avisos"] + [

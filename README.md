@@ -1001,6 +1001,66 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.391.0 — El contenido de IA entra al feed de Walmart, y se ve qué cambia antes de mandarlo
+
+v0.390.0 generaba y guardaba en `enrich.channel_content`; el feed se seguía
+armando **solo** desde Woo. Esto los une, y le pone enfrente la comparativa a
+quien aprieta el botón.
+
+**La superposición se aplica DESPUÉS de `_item()` y solo en el camino del
+botón.** `_item()` es del publicador por TANDAS, que corre sin que nadie lo mire;
+meterle el contenido de IA ahí habría cambiado en silencio lo que publican las
+corridas masivas. Aquí hay una vista previa y una persona decidiendo antes de
+gastar uno de los 10 feeds de la hora.
+
+#### Tres candados, cada uno por un modo de fallo concreto
+
+1. **Los atributos, solo si la categoría coincide.** El bloque `Visible` es
+   distinto en cada categoría: un contenido generado para "Juguetes" metido en un
+   feed de "Electrónicos" va al bloque equivocado, y Walmart **no da error por
+   eso — publica mal**. El texto sí se aprovecha (título y descripción no
+   dependen de la categoría).
+2. **La IA no pisa lo que sale de Woo.** Medidas, peso, modelo y talla los tiene
+   el catálogo. Que un modelo de lenguaje los "mejore" es exactamente la clase de
+   dato inventado que en este canal se publica sin avisar.
+3. **Si Woo cambió después, se dice.** Un contenido de hace tres semanas puede
+   describir un producto que ya no es ese — pasa con los SKUs reciclados. Se
+   compara contra `date_modified` de Woo. No bloquea: avisa.
+
+Y la marca **no se sustituye**. `_item()` la saca del atributo BRAND; la IA
+contesta "Sin marca" cuando no reconoce ninguna. Cambiar identidad por un "no sé"
+empeora el dato. Aparece en la comparativa marcada como no aplicada, con su
+motivo — porque saber qué se propuso y **no** entró es la mitad útil de la tabla.
+
+#### Lo que gana un producto real
+
+`JUG-0004-EST`, medido de punta a punta:
+
+| campo | de Woo | del contenido de IA |
+|---|---|---|
+| `productName` | "Máquina burbujas blanca" | "Sin marca Máquina de Burbujas para Fiestas Infantiles Blanca" |
+| `keyFeatures` | `["Máquina burbujas blanca"]` — el nombre, repetido | 5 viñetas de beneficio de 28 a 38 caracteres |
+| `colorCategory` | `["Multicolor"]` | `["Blanco"]` |
+| `brand` | Ferrahome | (propuso "Sin marca", **no se aplica**) |
+| medidas | 10 cm / 0.3 kg | (**no se tocan**) |
+| `ageGroup`, `color` | — | (fuera de la lista blanca, **no entran**) |
+
+Ese `keyFeatures` es el pendiente que arrastraban los 221 publicados: iba el
+nombre del producto otra vez, donde Walmart pide "oraciones breves de 50
+caracteres" con el beneficio.
+
+#### En el panel
+
+Bloque nuevo en la vista previa, antes del payload: **Contenido de IA vs
+WooCommerce**, campo por campo, con lo de Woo tachado cuando la IA lo sustituye y
+en gris cuando no. Distintivo arriba: *se usa el contenido generado* o *sale tal
+cual de Woo*. `usar_ia: false` en la petición lo apaga sin tocar nada más.
+
+`confirmar()` arma con el MISMO `_armar()` que la vista previa: lo que se manda
+es lo que se enseñó.
+
+---
+
 ### v0.390.0 — El contenido con IA de Walmart, que llevaba dos semanas escrito y desconectado
 
 Pieza 4 de Walmart. `walmart_contenido.py` —529 líneas de prompts y validadores—

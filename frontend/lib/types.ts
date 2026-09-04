@@ -552,6 +552,12 @@ export interface PublicarPreview {
   descripcion?: string | null;
   cambios?: { etiqueta: string; valor: string }[];
   operaciones?: Record<string, number | boolean>;
+  // Walmart: campo por campo, que iria de Woo y que iria del contenido de IA.
+  // `usado:false` significa que la IA lo propuso y NO se aplico (con su motivo
+  // en `nota`) -- se enseña igual, porque "no se aplico y por que" es la mitad
+  // util de la comparativa.
+  comparativa?: { campo: string; de_woo: string; de_ia: string; usado: boolean; nota?: string }[];
+  con_ia?: boolean;
   // Solo en modo "crear" (ML): payload exacto de POST /items que arma publisher_core.
   modo?: string;
   payload?: Record<string, unknown> | null;
