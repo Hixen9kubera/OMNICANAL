@@ -38,7 +38,6 @@ que no es una categoría sino el hueco — Walmart no supo dónde ponerlos.
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from services import supabase_db as sdb
@@ -178,7 +177,8 @@ def datos_de(sku: str) -> dict[str, Any] | None:
 
 # ── La categoría del ESQUEMA (la que decide qué campos se exigen) ────────────
 
-def categoria_esquema(nombre: str | None, categoria_woo: str | None = None) -> str | None:
+def categoria_esquema(nombre: str | None, categoria_woo: str | None = None,
+                      sku: str | None = None) -> str | None:
     """
     Qué categoría del esquema le toca a un producto — la que indexa
     `channel.field_requirements`.
@@ -191,16 +191,17 @@ def categoria_esquema(nombre: str | None, categoria_woo: str | None = None) -> s
     Devuelve None cuando ninguna categoría autorizada aplica: ese producto no se
     puede publicar todavía, y decirlo es más útil que asignarle una al azar.
     """
-    texto = f"{nombre or ''} {categoria_woo or ''}"
-    if not texto.strip():
+    # Delegado en `publicar_walmart.clasificar`, que es LA regla. Esta función
+    # tenía su propia copia y se había quedado atrás: clasificaba solo por
+    # texto, sin mirar el prefijo del SKU, así que decía "Cocina" de productos
+    # que el publicador manda a "Electrónicos". Dos reglas para una decisión
+    # es una regla que se desincroniza.
+    if not f"{nombre or ''} {categoria_woo or ''}".strip() and not sku:
         return None
     try:
-        from scripts.publicar_walmart import CATEGORIAS_AUTORIZADAS
+        from services.publicar_walmart import clasificar
     except Exception as exc:  # noqa: BLE001
         log.warning("walmart_panel: no se pudo leer la config del publicador: %s", exc)
         return None
-    for cfg in CATEGORIAS_AUTORIZADAS.values():
-        patron = cfg.get("patron_titulo") or cfg.get("patron_categoria")
-        if patron and re.search(patron, texto, re.I):
-            return cfg.get("clave_visible")
-    return None
+    _clave, cfg, _motivo = clasificar(sku or "", nombre or "", categoria_woo or "")
+    return cfg.get("clave_visible") if cfg else None

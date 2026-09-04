@@ -470,7 +470,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const esWalmart = canal === "walmart";
   // Los canales cuyo "Mejorar con IA" devuelve parte: qué no se aplicó, qué
   // marcas se sustituyeron y cuántos obligatorios de su categoría cubre.
-  const conParteIA = esAmazon || esTikTok || esTemu;
+  const conParteIA = esAmazon || esTikTok || esTemu || esWalmart;
 
   // Estado REAL de publicación (fuente de verdad en DB: ml_progress / amazon_progress).
   const mlCuentas = useMemo(
@@ -1263,7 +1263,13 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
             <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px] leading-relaxed">
               {reporteIA.product_type && (
                 <div className="text-slate-500">
-                  {esAmazon ? "Tipo de Amazon" : "Categoría de TikTok"}{" "}
+                  {esAmazon
+                    ? "Tipo de Amazon"
+                    : esWalmart
+                      ? "Categoría de Walmart"
+                      : esTemu
+                        ? "Categoría de Temu"
+                        : "Categoría de TikTok"}{" "}
                   <strong className="text-slate-700">{reporteIA.product_type}</strong>
                   {reporteIA.product_type_origen ? ` (${reporteIA.product_type_origen})` : ""}
                   {reporteIA.requisitos?.estado === "sin_requisitos"
@@ -1280,7 +1286,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               )}
               {!!reporteIA.rechazados?.length && (
                 <div className="text-rose-700">
-                  <strong>No se aplicó</strong> (Amazon lo truncaría o lo ignoraría):
+                  <strong>No se aplicó</strong>{" "}
+                  {esWalmart
+                    ? "(Walmart lo publicaría mal o tumbaría el artículo)"
+                    : "(Amazon lo truncaría o lo ignoraría)"}:
                   <ul className="ml-3 list-disc">
                     {reporteIA.rechazados.map((r) => (
                       <li key={r.campo}>{r.campo}: {r.motivo}</li>

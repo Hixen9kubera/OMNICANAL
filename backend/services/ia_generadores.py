@@ -358,6 +358,12 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
     if canal == "temu":
         from services import temu_ia
         return await temu_ia.mejorar(producto)
+    # Walmart: mismo contrato. Su diferencia es de dónde salen los atributos —
+    # no hay API que los dé (`/v3/items/spec` es 404 en MX), así que vienen de
+    # `channel.field_requirements`, ya corregida con lo que producción demostró.
+    if canal == "walmart":
+        from services import walmart_ia
+        return await walmart_ia.mejorar(producto)
 
     cfg = _MEJORAR.get(canal) or _MEJORAR["mercado_libre"]
     user = (

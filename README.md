@@ -1001,6 +1001,82 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.390.0 — El contenido con IA de Walmart, que llevaba dos semanas escrito y desconectado
+
+Pieza 4 de Walmart. `walmart_contenido.py` —529 líneas de prompts y validadores—
+estaba en el repo desde el 17-ago y **nadie lo importaba**. Nace `walmart_ia.py`,
+el adaptador que faltaba, con el mismo contrato que Amazon, TikTok y Temu: el
+prompt PIDE, el código GARANTIZA.
+
+#### Lo que lo tenía muerto: leía un archivo que en Railway no existe
+
+`_spec()` abría `MX_MP_ITEM_INTL_SPEC.json` — 3.9 MB en el escritorio de Brandon.
+En producción reventaba con `RuntimeError` al primer uso. Ahora la fuente es
+**`channel.field_requirements`**, donde el cargador de la pieza 3 ya dejó las
+3,331 filas de las 76 categorías, y el archivo queda de respaldo para correrlo
+fuera del servidor.
+
+El cambio no es solo de disponibilidad: **en la tabla las CORRECCIONES_MEDIDAS ya
+están aplicadas.** El catálogo que ahora lee la IA dice, por sí solo, que en
+Juguetes `activity` y `productLine` son obligatorios y `countPerPack` está
+prohibido — que es exactamente lo que el publicador acababa de aprender por otro
+camino en v0.387.0. Las dos rutas coinciden sin que nadie las sincronice a mano.
+
+#### En qué se diferencia de los otros canales
+
+| | de dónde salen los atributos | qué pasa con un dato inventado |
+|---|---|---|
+| TikTok · Temu | se le preguntan al canal por API | el producto cae en Borrador y **se ve** |
+| Amazon | Definitions API → `channel.field_requirements` | el campo se ignora en silencio |
+| **Walmart** | **no hay API** (`/v3/items/spec` es 404 en MX) → la tabla | **se publica, y nadie se entera hasta que un cliente reclama** |
+
+Por eso aquí el prompt marca lo que no sabe con `[FALTA DATO]` y el validador lo
+**saca** en vez de mandarlo. Y por eso hay una lista de frases que **inactivan el
+producto** ("Garantizado", "efecto inmediato", promesas médicas, superlativos no
+comprobables): se buscan sin acentos y sin distinguir mayúsculas, porque así es
+como se cuelan. Las viñetas topan en **50 caracteres**, el límite más apretado de
+todo el panel — por eso la ronda de reparación se usa casi siempre.
+
+#### El aviso que habría nacido inservible
+
+La primera versión gritaba **"OBLIGATORIOS SIN LLENAR … Walmart RECHAZA el
+artículo"** en todos los productos, siempre, por las cuatro medidas ensambladas.
+Y eran mentira: esas no las pone la IA, las pone `_item()` desde Woo.
+
+Un aviso que sale siempre es un aviso que se ignora, y el día que falte uno de
+verdad nadie lo va a leer. Ahora se separan: los que le tocan a la IA (género,
+material, color, actividad, línea de producto) llevan el aviso duro; los que
+salen de Woo llevan otro que dice qué pasa si Woo no los tiene — **valor por
+omisión de 10 cm / 0.3 kg, y Walmart cobra flete volumétrico**.
+
+#### Una sola regla para clasificar, en un solo lugar
+
+`walmart_panel.categoria_esquema()` tenía su propia copia de la clasificación y
+se había quedado atrás: decidía solo por texto, sin mirar el prefijo del SKU.
+Decía "Cocina" de productos que el publicador manda a "Electrónicos". Ahora
+delega en `publicar_walmart.clasificar()`, que es **la** regla y la usan los
+tres: el botón de publicar, el semáforo del panel y el generador de contenido.
+Dos reglas para una decisión es una regla que se desincroniza.
+
+De paso, el bloque de reporte del Estudio deja de llamar "Categoría de TikTok" a
+la de Temu.
+
+#### Medido contra producción
+
+`JUG-0004-EST` (máquina de burbujas): cae en Juguetes, título de 60 caracteres,
+cinco viñetas de 23 a 38, cero rechazos, y llenó `activity`, `productLine`,
+`gender: "Unisex"`, `colorCategory: ["Blanco"]` y `ageGroup: ["Todas las Edades"]`
+copiando exacto de las listas cerradas. `COC-0011` 9/9 obligatorios,
+`TEC-0001-NAR` 5/5. `ORG-0001-EST` contesta con el "no aplica" que nombra su
+categoría de Woo y las cuatro puertas abiertas.
+
+⚠️ **PENDIENTE, y hay que decirlo: el publicador todavía NO consume este
+contenido.** `_item()` arma el feed desde Woo. Lo que se genera aquí se guarda en
+`enrich.channel_content` y ahí se queda hasta que se conecten — que es un cambio
+en lo que un botón manda de verdad, y va con su propio dale.
+
+---
+
 ### v0.389.0 — La trazabilidad sale de la ficha: resumen adentro, pantalla completa detrás del ⇅
 
 Brandon, comparando la pestaña con los artboards: *"la trazabilidad me gustaría

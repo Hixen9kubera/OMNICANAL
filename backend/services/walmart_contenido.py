@@ -121,14 +121,33 @@ def _palabras(t: str) -> set[str]:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# EL CATÁLOGO DE CAMPOS — leído del esquema una sola vez
-# ═════════════════════════════════════════════════════════════════════════════
+# EL CATÁLOGO DE CAMPOS
+#
+# ⚠️ DE DÓNDE SALE EN PRODUCCIÓN. El esquema oficial es un archivo de 3.9 MB que
+# vive en el escritorio de Brandon: en Railway NO EXISTE, y este módulo reventaba
+# con RuntimeError al primer uso. Por eso la fuente buena es
+# `channel.field_requirements`, donde el cargador ya dejó las 3,331 filas de las
+# 76 categorías — y con una ventaja sobre el archivo que no es solo estar
+# disponible: ahí las CORRECCIONES_MEDIDAS ya están aplicadas. `activity` sale
+# `obligatorio=true` en "Juguetes" aunque el `required` del archivo no lo
+# mencione, que es exactamente el desfase 3.19 contra 3.11 que ya costó dos lotes.
+#
+# El archivo se queda como RESPALDO, para correr esto fuera del servidor.
 _CANDIDATOS = [
     os.getenv("WM_SPEC_JSON", ""),
     r"C:\Users\diaz2\OneDrive\Escritorio\respaldo_payloads_20260812\MX_MP_ITEM_INTL_SPEC.json",
     "MX_MP_ITEM_INTL_SPEC.json",
 ]
 _cache: dict[str, Any] = {}
+
+# `tipo` de la tabla → `type` del esquema JSON, para que los validadores y
+# `_describe()` no tengan que saber de dónde vino el catálogo.
+_TIPOS = {
+    "string": "string", "cerrada": "string", "integer": "integer",
+    "number": "number", "object": "object",
+    "lista[string]": "array", "lista[cerrada]": "array", "lista[object]": "array",
+    "medida{measure,unit}": "object",
+}
 
 
 def _spec() -> dict:
@@ -146,8 +165,71 @@ def _spec() -> dict:
     return _cache["spec"]
 
 
-def campos(categoria: str) -> dict[str, dict]:
-    """Todos los campos del bloque `Visible` de esa categoría."""
+def _de_la_bd(categoria: str) -> dict[str, Any] | None:
+    """
+    El catálogo de esa categoría desde `channel.field_requirements`.
+
+    Devuelve None si la tabla no contesta o no tiene esa categoría, para que el
+    archivo pueda tomar el relevo. Solo el bloque `Visible`: es el que llena la
+    IA — el `Orderable` lo arma el publicador con datos de Woo.
+    """
+    try:
+        from services import supabase_db as sdb
+        filas = sdb.fetch_all(
+            """select campo, tipo, obligatorio, valores_permitidos
+                 from channel.field_requirements
+                where canal = 'walmart' and categoria_id = %s""", (categoria,))
+    except Exception:  # noqa: BLE001 — sin BD, que lo intente el archivo
+        return None
+    if not filas:
+        return None
+
+    campos_: dict[str, dict] = {}
+    obl: list[str] = []
+    veto: set[str] = set()
+    for f in filas:
+        vp = f.get("valores_permitidos") or {}
+        if (vp.get("bloque") or "Visible") != "Visible":
+            continue
+        campo = f["campo"]
+        if str(vp.get("veredicto_produccion") or "").upper() == "RECHAZADO":
+            veto.add(campo)
+        tipo = f.get("tipo") or "string"
+        base = _TIPOS.get(tipo, "string")
+        d: dict[str, Any] = {"type": base}
+        if vp.get("etiqueta_es"):
+            d["title"] = str(vp["etiqueta_es"]).strip()
+        if vp.get("descripcion"):
+            d["description"] = str(vp["descripcion"]).strip()
+        if vp.get("ejemplos"):
+            d["examples"] = str(vp["ejemplos"]).strip()
+        lista = [v.strip() for v in str(vp.get("lista_cerrada") or "").split("|")
+                 if v.strip()]
+        if tipo == "cerrada" and lista:
+            d["enum"] = lista
+        elif tipo == "lista[cerrada]" and lista:
+            d["items"] = {"type": "string", "enum": lista}
+        elif tipo == "lista[string]":
+            d["items"] = {"type": "string", "description": d.get("description", "")}
+        elif tipo == "medida{measure,unit}":
+            # La `lista_cerrada` de una medida son sus UNIDADES ("lb | kg | oz | g").
+            d["properties"] = {"measure": {"type": "number"},
+                               "unit": ({"enum": lista} if lista else {})}
+        # `max` es maxLength SOLO en los de texto. En una medida vale
+        # 10000000000000000, y tomarlo por límite de caracteres no filtra nada.
+        mx = str(vp.get("max") or "")
+        if base == "string" and mx.isdigit():
+            d["maxLength"] = int(mx)
+        campos_[campo] = d
+        if f.get("obligatorio"):
+            obl.append(campo)
+    if not campos_:
+        return None
+    return {"campos": campos_, "obligatorios": obl, "rechazados": veto,
+            "fuente": "channel.field_requirements"}
+
+
+def _del_archivo(categoria: str) -> dict[str, Any]:
     vis = (_spec()["properties"]["MPItem"]["items"]["properties"]
            ["Visible"]["properties"])
     g = vis.get(categoria)
@@ -157,24 +239,43 @@ def campos(categoria: str) -> dict[str, dict]:
             f"clave es la etiqueta EN ESPAÑOL exacta. Si le pegas mal, Walmart "
             f"cae en un spec genérico y pide atributos absurdos — ese es el "
             f"síntoma de categoría equivocada.")
-    return g.get("properties") or {}
+    return {"campos": g.get("properties") or {},
+            "obligatorios": list(g.get("required") or []),
+            "rechazados": set(), "fuente": "MX_MP_ITEM_INTL_SPEC.json"}
+
+
+def catalogo(categoria: str) -> dict[str, Any]:
+    """Campos, obligatorios, rechazados y de dónde salieron."""
+    memo = _cache.setdefault("cat", {})
+    if categoria in memo:
+        return memo[categoria]
+    cat = _de_la_bd(categoria) or _del_archivo(categoria)
+    # Las correcciones MEDIDAS se aplican siempre, venga de donde venga el
+    # catálogo: son evidencia de producción y ganan sobre cualquier esquema.
+    for (c, campo), (veredicto, _) in _correcciones().items():
+        if c != categoria:
+            continue
+        if veredicto == "OBLIGATORIO" and campo not in cat["obligatorios"]:
+            cat["obligatorios"].append(campo)
+        elif veredicto == "RECHAZADO":
+            cat["rechazados"].add(campo)
+    memo[categoria] = cat
+    return cat
+
+
+def campos(categoria: str) -> dict[str, dict]:
+    """Todos los campos del bloque `Visible` de esa categoría."""
+    return catalogo(categoria)["campos"]
 
 
 def obligatorios(categoria: str) -> list[str]:
-    """Obligatorios según el esquema MÁS los que producción exige de más."""
-    vis = (_spec()["properties"]["MPItem"]["items"]["properties"]
-           ["Visible"]["properties"])
-    req = list((vis.get(categoria) or {}).get("required") or [])
-    for (cat, campo), (veredicto, _) in _correcciones().items():
-        if cat == categoria and veredicto == "OBLIGATORIO" and campo not in req:
-            req.append(campo)
-    return req
+    """Obligatorios según la fuente MÁS los que producción exige de más."""
+    return list(catalogo(categoria)["obligatorios"])
 
 
 def rechazados(categoria: str) -> set[str]:
     """Campos que el esquema lista y producción RECHAZA. Nunca se mandan."""
-    return {campo for (cat, campo), (v, _) in _correcciones().items()
-            if cat == categoria and v == "RECHAZADO"}
+    return set(catalogo(categoria)["rechazados"])
 
 
 def _correcciones() -> dict:
@@ -196,7 +297,6 @@ def valores(categoria: str, campo: str) -> list[str]:
     if it.get("enum"):
         return list(it["enum"])
     return []
-
 
 def _describe(categoria: str, campo: str) -> str:
     d = campos(categoria).get(campo) or {}

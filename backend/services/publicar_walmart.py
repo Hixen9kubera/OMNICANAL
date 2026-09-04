@@ -86,19 +86,23 @@ async def _producto(sku: str) -> dict[str, Any] | None:
         return None
 
 
-def _categoria_cfg(p: dict[str, Any]) -> tuple[str | None, dict | None, str | None]:
+def clasificar(sku: str, nombre: str, categorias_woo: str
+               ) -> tuple[str | None, dict | None, str | None]:
     """
     Qué categoría AUTORIZADA le toca. Devuelve (clave, cfg, motivo del no).
 
-    Se usan los patrones del propio publicador: si el panel eligiera con otra
-    regla, el semáforo hablaría de una categoría y el feed iría con otra.
+    ⚠️ ESTA ES **LA** REGLA, y vive en un solo lugar a propósito. La usan el
+    botón de publicar, el semáforo del panel (`walmart_panel.categoria_esquema`)
+    y el generador de contenido con IA (`walmart_ia`). Si cada uno clasificara a
+    su manera, el semáforo diría verde sobre unos campos, la IA llenaría los de
+    otra categoría y el feed saldría con la clave SAT de una tercera.
     """
     import re
     from scripts.publicar_walmart import (CATEGORIAS_AUTORIZADAS,
                                           CATEGORIAS_POR_CONFIRMAR)
-    nombre = p.get("name") or ""
-    sku = p.get("sku") or ""
-    cats = " ".join(c.get("name") or "" for c in (p.get("categories") or []))
+    nombre = nombre or ""
+    sku = sku or ""
+    cats = categorias_woo or ""
     texto = f"{nombre} {cats}"
     familia = sku.split("-")[0].upper()
 
@@ -133,6 +137,13 @@ def _categoria_cfg(p: dict[str, Any]) -> tuple[str | None, dict | None, str | No
         f"(SKU {sku or 's/n'}, categorías en Woo: {cats.strip() or 'ninguna'}). "
         f"Hoy se puede publicar en: {autorizadas}. "
         f"Esperando su ticket en Seller Center: {pendientes or 'ninguna'}.")
+
+
+def _categoria_cfg(p: dict[str, Any]) -> tuple[str | None, dict | None, str | None]:
+    """`clasificar()` con lo que trae un producto de WooCommerce."""
+    return clasificar(
+        p.get("sku") or "", p.get("name") or "",
+        " ".join(c.get("name") or "" for c in (p.get("categories") or [])))
 
 
 async def _armar(req: dict[str, Any]) -> dict[str, Any]:
