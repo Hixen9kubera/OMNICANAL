@@ -1001,6 +1001,56 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.405.0 — Kubera y San Corpe dejan de ser el mismo chip, y cada persona tiene su color
+
+Dos cosas que Brandon vio en la pantalla y yo no.
+
+#### 1 · Tres chips que decían los tres «MELI»
+
+En el renglón de Andrea salían `MELI 3`, `MELI 2` y `MELI 1`. Son las dos cuentas
+de Mercado Libre más las filas sin cuenta — pero el chip mostraba sólo el canal y
+tiraba la cuenta, así que quedaban indistinguibles y parecía un error de datos.
+
+Ahora dicen **`MELI Kubera 3`** y **`MELI San Corpe 1`**. Los códigos internos no
+se enseñan: nadie dice *"publiqué en SANCORFASHION"*.
+
+**Y para lograrlo hubo que ir a buscar el dato a otro lado.** Medido: de las 60
+publicaciones de ML con actor, **53 no traen cuenta** — sólo 4 de SANCORFASHION y
+3 de BEKURA. No es un fallo del registro: **publicar en ML manda a las DOS cuentas
+de una vez**, así que la petición no tiene *una* cuenta que anotar.
+
+Pero el dato sí existe desde v0.395.0, en `detalle.resultados` — una entrada por
+cuenta, con su `ok` y su error, que es lo que contesta *"falló en BEKURA pero
+entró en SANCOR"*. `_canales_por_persona` expande esa lista con un `lateral
+jsonb_array_elements` y deriva el acierto por cuenta en vez del estado global.
+
+El chip sin cuenta **no se esconde**: son las filas anteriores a ese cambio, y lo
+dice en su título. Inventarles una cuenta sería peor que dejarlas sin etiqueta.
+
+#### 2 · Un color por persona
+
+Como en el diseño. Parece aleatorio y **no lo es**: sale de un hash del correo,
+así que una persona conserva su color entre recargas, rangos y filtros. Un color
+de verdad aleatorio cambiaría en cada render y destruiría lo único que aporta —
+reconocer a alguien de un vistazo antes de leer el nombre.
+
+**El hash solo no alcanzaba, y se midió**: con 12 colores y 11 personas las
+colisiones son frecuentes —el problema del cumpleaños— y en la primera versión
+**Cinthya y Eduardo salían del mismo color estando los dos en la tabla**.
+
+Repartir por posición en la lista tampoco sirve: quedarían siempre distintos,
+pero el color cambiaría cada vez que alguien entra o sale, y entonces no hay nada
+que aprender. La solución es un punto medio: **el hash propone y, si el lugar está
+tomado, se corre al siguiente libre**, recorriendo en orden alfabético para no
+depender de cómo lleguen los datos. Distintos siempre, y sólo cambia de color
+quien de verdad chocaba.
+
+El mapa se calcula con TODAS las personas, no con las filtradas: si no, marcar
+"Sólo con errores" le cambiaría el color a la gente.
+
+La paleta esquiva el verde, el ámbar y el rojo a propósito — esos tres ya
+significan algo aquí (acierto, parcial, error) y en un avatar serían ruido.
+
 ### v0.404.0 — Los cinco canales son metas de primera, con su color
 
 Pedido de Brandon: *"ya tenemos que Walmart, TikTok y Temu ya pueden capturarse,

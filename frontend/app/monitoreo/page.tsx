@@ -151,6 +151,107 @@ const COLOR_CANAL: Record<string,
 /** Los cinco canales que tienen meta semanal, en el orden del pliego. */
 const CANALES_META = ["mercado_libre", "amazon", "tiktok", "temu", "walmart"];
 
+/**
+ * El color del avatar de cada persona.
+ *
+ * Parece aleatorio y NO lo es, a propósito: sale de un hash del correo, así que
+ * una persona conserva SIEMPRE el mismo color — entre recargas, entre rangos y
+ * entre pantallas. Un color de verdad aleatorio cambiaría en cada render y
+ * destruiría lo único que aporta: que reconozcas a alguien de un vistazo antes
+ * de leer su nombre.
+ *
+ * La paleta esquiva a propósito el verde, el ámbar y el rojo: esos tres ya
+ * significan algo en esta pantalla (acierto, parcial, error) y reutilizarlos en
+ * un avatar los volvería ruido.
+ */
+const PALETA_PERSONA = [
+  { bg: "#EDE9FE", fg: "#5B21B6" },   // violeta
+  { bg: "#DBEAFE", fg: "#1E40AF" },   // azul
+  { bg: "#CFFAFE", fg: "#155E75" },   // cian
+  { bg: "#FCE7F3", fg: "#9D174D" },   // rosa
+  { bg: "#E0E7FF", fg: "#3730A3" },   // índigo
+  { bg: "#F3E8FF", fg: "#6B21A8" },   // púrpura
+  { bg: "#E2E8F0", fg: "#334155" },   // pizarra
+  { bg: "#CCFBF1", fg: "#115E59" },   // teal
+  { bg: "#FAE8FF", fg: "#86198F" },   // fucsia
+  { bg: "#E0F2FE", fg: "#075985" },   // celeste
+  { bg: "#EDE9FE", fg: "#4C1D95" },   // violeta oscuro
+  { bg: "#F1F5F9", fg: "#0F172A" },   // tinta
+];
+
+function _hash(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+/**
+ * Asigna un color a cada persona de la lista. Devuelve un mapa correo → color.
+ *
+ * EL HASH SOLO NO ALCANZA, y se midió: con 12 colores y 11 personas las
+ * colisiones son frecuentes —el problema del cumpleaños— y en la primera versión
+ * **Cinthya y Eduardo salían del mismo color estando los dos en la tabla**. Eso
+ * rompe justo lo único que el color aporta: reconocer a alguien de un vistazo
+ * antes de leer su nombre.
+ *
+ * Tampoco sirve repartir por posición en la lista: quedarían siempre distintos,
+ * pero el color de una persona cambiaría cada vez que otra entra o sale, y
+ * entonces no hay nada que aprender.
+ *
+ * Solución: el hash propone y, si el lugar ya está tomado, se corre al siguiente
+ * libre. La lista se recorre en orden alfabético para que el resultado no
+ * dependa de cómo vengan ordenados los datos. Así son SIEMPRE distintos dentro
+ * de la pantalla, y sólo cambia de color quien de verdad chocaba.
+ *
+ * Nota: la paleta esquiva el verde, el ámbar y el rojo a propósito — esos tres
+ * ya significan algo aquí (acierto, parcial, error) y en un avatar serían ruido.
+ */
+function coloresDe(correos: string[]): Record<string, { bg: string; fg: string }> {
+  const n = PALETA_PERSONA.length;
+  const tomados = new Set<number>();
+  const out: Record<string, { bg: string; fg: string }> = {};
+  for (const correo of [...correos].sort()) {
+    let i = _hash(correo) % n;
+    // Si hay más personas que colores, se permite repetir en vez de colgarse.
+    for (let k = 0; k < n && tomados.has(i); k++) i = (i + 1) % n;
+    tomados.add(i);
+    out[correo] = PALETA_PERSONA[i];
+  }
+  return out;
+}
+
+/**
+ * Cómo se llama cada cuenta para una persona. Los códigos internos no se
+ * enseñan: nadie dice "publiqué en SANCORFASHION".
+ */
+const NOMBRE_CUENTA: Record<string, string> = {
+  BEKURA: "Kubera", SANCORFASHION: "San Corpe",
+  AMAZON: "San Corpe", KUBERA: "Kubera", TEMU: "Temu", WALMART: "Walmart",
+};
+
+/**
+ * Los canales de una persona, UNO POR CANAL Y CUENTA.
+ *
+ * Mercado Libre tiene DOS cuentas —Kubera y San Corpe— y saber en cuál se
+ * publicó es media pregunta. La primera versión mostraba sólo el canal y tiraba
+ * la cuenta, así que salían tres chips seguidos que decían los tres «MELI», con
+ * 3, 2 y 1: ilegible, y parecía un error de datos.
+ *
+ * ⚠️ El chip SIN cuenta no es un error, y no hay que esconderlo: publicar en ML
+ * manda a las dos cuentas de una vez, así que la petición no tiene *una* cuenta
+ * y hasta v0.395.0 no se guardaba ninguna. Esas filas viejas se muestran sin
+ * etiqueta y lo dicen en el título — inventarles una cuenta sería peor.
+ */
+function porCanalYCuenta(canales: Usuario["canales"]) {
+  return Object.entries(canales)
+    .filter(([k]) => k !== "(sin canal)")
+    .map(([clave, v]) => {
+      const [canal, cuenta] = clave.split("·");
+      return { clave, canal, cuenta: cuenta || "", ...v };
+    })
+    .sort((a, b) => b.exitos - a.exitos);
+}
+
 const RANGOS = [
   { v: 30, t: "30 días" }, { v: 7, t: "Semana" }, { v: 1, t: "Hoy" },
 ];
@@ -318,6 +419,12 @@ export default function MonitoreoPage() {
   }, [datos, proceso, canal, soloErrores]);
 
   const procesos = datos?.procesos ?? [];
+  // Con TODAS las personas, no sólo las filtradas: si se calculara sobre la
+  // lista visible, marcar "Sólo con errores" le cambiaría el color a la gente.
+  const colores = useMemo(() => coloresDe([
+    ...(datos?.usuarios ?? []).map((u) => u.usuario),
+    ...(datos?.sin_movimientos ?? []).map((s) => s.usuario),
+  ]), [datos]);
   const totalErrores = (datos?.usuarios ?? []).reduce((s, u) => s + u.errores, 0);
 
   return (
@@ -346,7 +453,7 @@ export default function MonitoreoPage() {
         {estado === "ok" && datos && (
           <>
             <TablaPersonas
-              usuarios={usuarios} procesos={procesos} datos={datos}
+              usuarios={usuarios} procesos={procesos} datos={datos} colores={colores}
               abierta={abierta} setAbierta={setAbierta}
               movs={movs} errorAbierto={errorAbierto} setErrorAbierto={setErrorAbierto}
               inactivosAbierto={inactivosAbierto}
@@ -572,6 +679,7 @@ function Leyenda() {
 // ═══════════════════════════════════════════════════════════════════════════
 function TablaPersonas(p: {
   usuarios: Usuario[]; procesos: string[]; datos: Resumen;
+  colores: Record<string, { bg: string; fg: string }>;
   abierta: string | null; setAbierta: (s: string | null) => void;
   movs: Movimiento[];
   errorAbierto: string | null; setErrorAbierto: (s: string | null) => void;
@@ -606,8 +714,10 @@ function TablaPersonas(p: {
                          transition hover:bg-slate-50/60"
               style={{ gridTemplateColumns: cols, minHeight: 57 }}>
               <div className="flex items-center gap-2.5">
-                <div className="flex h-[34px] w-[34px] shrink-0 items-center justify-center
-                                rounded-xl bg-violet-100 text-[12px] font-bold text-violet-700">
+                <div className="flex h-[34px] w-[34px] shrink-0 items-center
+                                justify-center rounded-xl text-[12px] font-bold"
+                     style={{ background: p.colores[u.usuario]?.bg ?? "#E2E8F0",
+                              color: p.colores[u.usuario]?.fg ?? "#334155" }}>
                   {iniciales(u.usuario)}
                 </div>
                 <div className="min-w-0">
@@ -634,23 +744,27 @@ function TablaPersonas(p: {
               ))}
 
               <div className="flex flex-wrap gap-1">
-                {Object.entries(u.canales)
-                  .filter(([k]) => k !== "(sin canal)")
-                  .map(([k, v]) => {
-                    const base = k.split("·")[0];
-                    const c = COLOR_CANAL[base] ?? COLOR_CANAL.general;
-                    return (
-                      <span key={k} title={`${k}: ${v.exitos} de ${v.total}`}
-                        className="inline-flex items-center gap-1 rounded px-1.5 py-[2px]
-                                   text-[10.5px] font-semibold"
-                        style={{ background: c.bg, color: c.fg }}>
-                        <span className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: c.punto }} />
-                        {CORTO_CANAL[base] ?? base}
-                        <span className="font-mono tabular-nums">{v.exitos}</span>
-                      </span>
-                    );
-                  })}
+                {porCanalYCuenta(u.canales).map((v) => {
+                  const c = COLOR_CANAL[v.canal] ?? COLOR_CANAL.general;
+                  const cta = v.cuenta ? (NOMBRE_CUENTA[v.cuenta] ?? v.cuenta) : "";
+                  return (
+                    <span key={v.clave}
+                      title={`${NOMBRE_CANAL[v.canal] ?? v.canal}`
+                        + (cta ? ` · cuenta ${cta}` : " · sin cuenta registrada")
+                        + `: ${v.exitos} de ${v.total}`}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-[2px]
+                                 text-[10.5px] font-semibold"
+                      style={{ background: c.bg, color: c.fg,
+                               boxShadow: `inset 0 -2px 0 ${c.acento}33` }}>
+                      <span className="h-1.5 w-1.5 rounded-full"
+                            style={{ background: c.punto }} />
+                      {CORTO_CANAL[v.canal] ?? v.canal}
+                      {/* La cuenta, que es la mitad de la respuesta en ML. */}
+                      {cta && <span className="font-normal opacity-75">{cta}</span>}
+                      <span className="font-mono tabular-nums">{v.exitos}</span>
+                    </span>
+                  );
+                })}
                 {u.canales_sin_registro.length > 0 && (
                   <span style={RAYADO}
                     title={u.canales_sin_registro.map((c) => NOMBRE_CANAL[c] ?? c).join(", ")
@@ -678,7 +792,7 @@ function TablaPersonas(p: {
                 + (abierto ? "rotate-180" : "")} />
             </div>
 
-            {abierto && <Movimientos u={u} movs={p.movs}
+            {abierto && <Movimientos u={u} movs={p.movs} color={p.colores[u.usuario]}
                                      errorAbierto={p.errorAbierto}
                                      setErrorAbierto={p.setErrorAbierto} />}
           </div>
@@ -695,8 +809,9 @@ function TablaPersonas(p: {
               {p.datos.sin_movimientos.slice(0, 3).map((s) => (
                 <span key={s.correo}
                   className="flex h-6 w-6 items-center justify-center rounded-full
-                             border-2 border-[#fbfcfe] bg-slate-200 text-[9px]
-                             font-bold text-slate-500">
+                             border-2 border-[#fbfcfe] text-[9px] font-bold"
+                  style={{ background: p.colores[s.usuario]?.bg ?? "#E2E8F0",
+                           color: p.colores[s.usuario]?.fg ?? "#64748B" }}>
                   {iniciales(s.correo)}
                 </span>))}
             </div>
@@ -777,7 +892,7 @@ function textoDelError(m: Movimiento): string {
 }
 
 function Movimientos(p: {
-  u: Usuario; movs: Movimiento[];
+  u: Usuario; movs: Movimiento[]; color?: { bg: string; fg: string };
   errorAbierto: string | null; setErrorAbierto: (s: string | null) => void;
 }) {
   const [verbo, setVerbo] = useState("todo");
@@ -797,8 +912,10 @@ function Movimientos(p: {
     <div className="border-t border-slate-100 bg-slate-50/50 px-5 py-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
-          <div className="flex h-[38px] w-[38px] items-center justify-center rounded-xl
-                          bg-violet-100 text-[13px] font-bold text-violet-700">
+          <div className="flex h-[38px] w-[38px] items-center justify-center
+                          rounded-xl text-[13px] font-bold"
+               style={{ background: p.color?.bg ?? "#E2E8F0",
+                        color: p.color?.fg ?? "#334155" }}>
             {iniciales(p.u.usuario)}
           </div>
           <div>

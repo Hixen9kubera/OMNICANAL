@@ -141,6 +141,59 @@ def _procesos_sin_registro(dias: int) -> list[str]:
                   if f["filas"] > 0 and f["firmadas"] == 0)
 
 
+def _canales_por_persona(dias: int) -> dict[str, dict[str, dict[str, int]]]:
+    """Por persona → por canal·cuenta: éxitos e intentos.
+
+    ⚠️ POR QUÉ ESTO NO ES UN SIMPLE `group by detalle->>'cuenta'`. Medido el
+    4-sep: de las 60 publicaciones de Mercado Libre con actor, **53 no traen
+    cuenta** — sólo 4 de SANCORFASHION y 3 de BEKURA. No es un fallo del
+    registro: es que publicar en ML manda a las DOS cuentas de una vez, así que
+    la petición no tiene *una* cuenta que anotar y el campo sale vacío.
+
+    Pero el dato SÍ está, en otro lado: desde v0.395.0 el detalle guarda
+    `resultados: [{cuenta, ok, error}]`, una entrada por cuenta, porque es lo que
+    contesta *"falló en BEKURA pero entró en SANCOR"*. Aquí se expande esa lista
+    para que la pantalla pueda separar Kubera de San Corpe, que es justo lo que
+    no se podía ver: tres chips seguidos que decían los tres «MELI».
+
+    Cuando no hay ni `cuenta` ni `resultados` la fila cae en `''`, y la pantalla
+    la muestra sin cuenta en vez de inventarle una.
+    """
+    try:
+        filas = supabase_db.fetch_all(
+            """select actor,
+                      coalesce(detalle->>'canal', '(sin canal)') canal,
+                      coalesce(r.value->>'cuenta', detalle->>'cuenta', '') cuenta,
+                      count(*) total,
+                      count(*) filter (
+                        where case when r.value is not null
+                                   then (r.value->>'ok')::boolean
+                                   else estado = any(%s) end) exitos
+                 from ops.process_log
+                 left join lateral jsonb_array_elements(
+                        case when jsonb_typeof(detalle->'resultados') = 'array'
+                             then detalle->'resultados' else '[]'::jsonb end) r
+                        on true
+                where proceso = any(%s)
+                  and actor is not null
+                  and estado <> all(%s)
+                  and created_at >= now() - make_interval(days => %s)
+                group by actor, canal, cuenta""",
+            (list(_EXITO), list(_DE_PERSONA), list(_INTERMEDIOS), dias))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudieron leer los canales por persona: %s", exc)
+        return {}
+    out: dict[str, dict[str, dict[str, int]]] = {}
+    for f in filas:
+        if f["canal"] == "(sin canal)":
+            continue
+        u = out.setdefault(_persona(f["actor"]), {})
+        clave = f"{f['canal']}·{f['cuenta']}" if f["cuenta"] else f["canal"]
+        c = u.setdefault(clave, {"total": 0, "exitos": 0})
+        c["total"] += f["total"]; c["exitos"] += f["exitos"]
+    return out
+
+
 def cobertura(dias: int = 30) -> list[dict[str, Any]]:
     """Qué parte de cada proceso sabemos atribuir. El insumo de la tarjeta 1a.6.
 
@@ -303,6 +356,9 @@ def resumen(dias: int = 30) -> dict[str, Any]:
     con_filas = [c["proceso"] for c in cob]
     can_mudos = _canales_sin_registro(dias)
     series = _series(dias)
+    # Los canales salen de su propia consulta: la de arriba no puede separar
+    # BEKURA de SANCORFASHION porque `cuenta` viene vacía en el 88% de las filas.
+    por_canal = _canales_por_persona(dias)
     errores = _errores_por_persona(dias)
 
     for u in usuarios:
@@ -325,6 +381,7 @@ def resumen(dias: int = 30) -> dict[str, Any]:
                     else {"exitos": 0, "intentos": 0}
         u["celdas"] = celdas
         u["canales_sin_registro"] = can_mudos
+        u["canales"] = por_canal.get(u["usuario"], u["canales"])
 
     activos = {u["usuario"] for u in usuarios}
     return {"ok": True, "dias": dias, "usuarios": usuarios,
