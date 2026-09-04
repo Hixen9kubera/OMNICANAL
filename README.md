@@ -1001,6 +1001,44 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.404.0 — Los cinco canales son metas de primera, con su color
+
+Pedido de Brandon: *"ya tenemos que Walmart, TikTok y Temu ya pueden capturarse,
+así que intégralos respetando sus colores"*. Tiene razón — la banda de metas
+todavía los trataba como una nota al margen.
+
+Hasta ahora cabían tres (Costos, MELI, Amazon) y los otros tres vivían
+amontonados en un aviso de texto. Eso dejó de tener sentido en cuanto la
+instrumentación de v0.398–v0.402 los hizo capturables. **Ahora cada canal tiene
+su tarjeta y su color**, en el orden del pliego.
+
+Que hoy tres estén rayadas no es un estado permanente, es el estado de HOY — y se
+mide solo. **En cuanto entre la primera publicación firmada desde el panel, esa
+tarjeta se pinta con su color sin que nadie toque el archivo.** Lo dice la propia
+nota al pie de la banda, para que quien la lea sepa que no está viendo un
+veredicto sino un momento.
+
+Y se mantiene lo que no se puede perder: donde no hay firma **no se pinta un
+cero**. Un cero diría "no lo hizo" y sería mentira — ese canal sí publicó.
+
+#### Dos defectos que se vieron en la captura antes que en el código
+
+**1 · El acento no era el acento.** La franja superior de la barra usaba `fg`, que
+es el color del TEXTO del canal, no su segundo color de marca. Resultado: Mercado
+Libre salía con una raya **azul marino** (`#2D3277`) encima del amarillo. Su
+acento real es `#3483FA`. Ahora `COLOR_CANAL` lleva los cuatro campos separados,
+con la advertencia escrita para que no se vuelvan a confundir.
+
+Esa franja no es decorativa: **es la técnica para separar canales que comparten
+color**. TikTok y Shein son los dos `#111827` y sólo los distingue el acento.
+
+**2 · La etiqueta de la meta se salía del lienzo.** Con `x=0` sólo se veía la
+"m", pisada además por la propia línea punteada. La línea ahora arranca después
+del rótulo.
+
+Verificado: `tsc --noEmit` limpio, la ruta responde 200 sin errores, y los cinco
+canales con sus acentos (`3483FA`, `FE2C55`, `FFC220`) están en el bundle servido.
+
 ### v0.403.0 — La pestaña Monitoreo, con las tres lecturas
 
 El diseño de Claude Design, implementado. Y el punto de todo el trabajo de los

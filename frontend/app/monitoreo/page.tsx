@@ -123,16 +123,33 @@ const CORTO_CANAL: Record<string, string> = {
   mercado_libre: "MELI", amazon: "AMZ", tiktok: "TT", temu: "Tm",
   walmart: "WM", shein: "SH",
 };
-/** Los mismos hex de `frontend/lib/theme.ts` y `backend/core/marketplaces.py`. */
-const COLOR_CANAL: Record<string, { bg: string; fg: string; punto: string }> = {
-  mercado_libre: { bg: "#FFFBE0", fg: "#2D3277", punto: "#FFE600" },
-  amazon: { bg: "#FFF4E0", fg: "#131A22", punto: "#FF9900" },
-  tiktok: { bg: "#F1F1F4", fg: "#111827", punto: "#FE2C55" },
-  temu: { bg: "#FFF0E3", fg: "#7C2D12", punto: "#FB7701" },
-  walmart: { bg: "#E6F1FC", fg: "#0071DC", punto: "#0071DC" },
-  shein: { bg: "#F1F1F4", fg: "#111827", punto: "#7C3AED" },
-  general: { bg: "#EEF0FF", fg: "#4F46E5", punto: "#4F46E5" },
+/**
+ * Los mismos hex de `frontend/lib/theme.ts` y `backend/core/marketplaces.py`.
+ *
+ * `punto` es el color del canal, `fg` el texto legible sobre su fondo suave, y
+ * `acento` el SEGUNDO color de la marca.
+ *
+ * ⚠️ `acento` NO es `fg`, y confundirlos se ve feo: en la primera versión la
+ * franja superior de la barra usaba `fg`, así que Mercado Libre salía con una
+ * raya AZUL MARINO (#2D3277, que es su color de texto) encima del amarillo. El
+ * acento de ML es #3483FA. Se notó en la captura antes que en el código.
+ *
+ * El acento también es la técnica para separar canales que comparten color:
+ * TikTok y Shein son los dos #111827 y sólo los distingue esta franja.
+ */
+const COLOR_CANAL: Record<string,
+  { bg: string; fg: string; punto: string; acento: string }> = {
+  mercado_libre: { bg: "#FFFBE0", fg: "#2D3277", punto: "#FFE600", acento: "#3483FA" },
+  amazon: { bg: "#FFF4E0", fg: "#131A22", punto: "#FF9900", acento: "#232F3E" },
+  tiktok: { bg: "#F1F1F4", fg: "#111827", punto: "#111827", acento: "#FE2C55" },
+  temu: { bg: "#FFF0E3", fg: "#7C2D12", punto: "#FB7701", acento: "#FF5000" },
+  walmart: { bg: "#E6F1FC", fg: "#0071DC", punto: "#0071DC", acento: "#FFC220" },
+  shein: { bg: "#F1F1F4", fg: "#111827", punto: "#111827", acento: "#7C3AED" },
+  general: { bg: "#EEF0FF", fg: "#4F46E5", punto: "#4F46E5", acento: "#818CF8" },
 };
+
+/** Los cinco canales que tienen meta semanal, en el orden del pliego. */
+const CANALES_META = ["mercado_libre", "amazon", "tiktok", "temu", "walmart"];
 
 const RANGOS = [
   { v: 30, t: "30 días" }, { v: 7, t: "Semana" }, { v: 1, t: "Hoy" },
@@ -413,60 +430,109 @@ function Encabezado(p: {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-/** La capa secundaria: ~90 px. No le roba el protagonismo a la tabla. */
+/**
+ * La capa secundaria: las metas de la semana. ~90 px — no le roba el
+ * protagonismo a la tabla de personas, que es el eje.
+ *
+ * LOS CINCO CANALES SON METAS DE PRIMERA, no una nota al margen. Hasta el
+ * 4-sep aquí sólo cabían tres (Costos, MELI, Amazon) y TikTok, Temu y Walmart
+ * vivían amontonados en un aviso de texto. Dejó de tener sentido en cuanto la
+ * instrumentación de v0.398–v0.402 los hizo capturables: ahora cada uno tiene
+ * su tarjeta y su color.
+ *
+ * Que hoy tres estén rayadas no es un estado permanente, es el estado de HOY —
+ * y se mide solo. En cuanto entre la primera publicación firmada de cualquiera
+ * de ellos, esa tarjeta se pinta con su color sin que nadie toque este archivo.
+ */
 function BandaMetas({ d }: { d: Resumen }) {
   const META_EQUIPO = 90;   // 10 por KAM × 9 personas
-  const meli = d.publicaciones_semana.find((x) => x.canal === "mercado_libre");
-  const amz = d.publicaciones_semana.find((x) => x.canal === "amazon");
+
   const costos = d.cobertura.find((c) => c.proceso === "costos");
   const metas = [
-    { t: "Costos validados", v: costos?.con_actor ?? 0, canal: "general" },
-    { t: "Publicaciones MELI", v: meli?.nuevas ?? 0, canal: "mercado_libre" },
-    { t: "Publicaciones Amazon", v: amz?.nuevas ?? 0, canal: "amazon" },
+    { clave: "general", titulo: "Costos validados",
+      v: costos?.con_actor ?? 0, mudo: false },
+    ...CANALES_META.map((canal) => ({
+      clave: canal,
+      titulo: NOMBRE_CANAL[canal] ?? canal,
+      v: d.publicaciones_semana.find((x) => x.canal === canal)?.nuevas ?? 0,
+      mudo: d.canales_sin_registro.includes(canal),
+    })),
   ];
+
   return (
     <section className="mb-3 rounded-lg bg-white px-[18px] py-[14px] ring-1 ring-slate-200">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-baseline justify-between">
         <p className="font-mono text-[10px] uppercase tracking-[.09em] text-slate-500">
           Semana en curso · metas del equipo
         </p>
+        <span className="text-[11px] text-slate-400">
+          meta 10 por KAM · ~{META_EQUIPO} de equipo
+        </span>
       </div>
-      <div className="grid grid-cols-[repeat(3,1fr)_320px] gap-5">
+      <div className="grid grid-cols-6 gap-4">
         {metas.map((m) => {
+          const c = COLOR_CANAL[m.clave] ?? COLOR_CANAL.general;
           const pct = Math.min(100, (m.v / META_EQUIPO) * 100);
-          const c = COLOR_CANAL[m.canal];
           return (
-            <div key={m.t}>
-              <div className="flex items-baseline justify-between">
-                <span className="text-[13px] font-semibold text-slate-700">{m.t}</span>
-                <span className="font-mono text-[13px] font-bold tabular-nums"
-                      style={{ color: m.v >= META_EQUIPO ? "#047857" : "#B45309" }}>
-                  {m.v} <span className="text-slate-400">/ {META_EQUIPO}</span>
+            <div key={m.clave}>
+              <div className="flex items-center gap-1.5">
+                <span className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ background: c.punto,
+                               boxShadow: `inset 0 0 0 1px ${c.acento}` }} />
+                <span className="truncate text-[12.5px] font-semibold text-slate-700">
+                  {m.titulo}
                 </span>
               </div>
-              <div className="mt-1.5 h-2 rounded-full bg-slate-100">
-                <div className="h-full rounded-full"
-                     style={{ width: `${pct}%`, background: c.punto }} />
-              </div>
-              <p className="mt-1 text-[11px] text-slate-400">meta 10 por KAM</p>
+
+              {m.mudo ? (
+                <>
+                  {/* Sin firma todavía: NO se pinta un cero. Un cero diría "no
+                      lo hizo" y sería mentira — ese canal sí publicó. */}
+                  <div className="mt-1.5 h-2 rounded-full" style={RAYADO}
+                       title={`${m.titulo} publicó esta semana, pero ninguna de `
+                         + `esas publicaciones guardó quién la hizo.`} />
+                  <p className="mt-1 flex items-center gap-1 font-mono text-[9.5px]
+                                font-bold uppercase tracking-[.05em] text-slate-400">
+                    <Terminal className="h-2.5 w-2.5" />sin registro
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="mt-[3px] flex items-baseline gap-1">
+                    <span className="font-mono text-[15px] font-extrabold tabular-nums"
+                          style={{ color: m.v >= META_EQUIPO ? "#047857" : "#B45309" }}>
+                      {m.v}
+                    </span>
+                    <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                      / {META_EQUIPO}
+                    </span>
+                  </div>
+                  <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100">
+                    <div className="h-full rounded-full"
+                         style={{ width: `${pct}%`, background: c.punto,
+                                  borderTop: `2px solid ${c.acento}` }} />
+                  </div>
+                </>
+              )}
             </div>
           );
         })}
-        {/* La cuarta celda no es una meta: es la advertencia que evita la mentira. */}
-        <div className="border-l border-slate-200 pl-5">
-          <div className="flex items-start gap-2">
-            <Terminal className="mt-[2px] h-3.5 w-3.5 shrink-0 text-slate-400" />
-            <p className="text-[11.5px] leading-relaxed text-slate-500">
-              <span className="font-semibold text-slate-700">
-                {d.canales_sin_registro.length} metas sin medición por persona.
-              </span>{" "}
-              {d.canales_sin_registro.map((c) => NOMBRE_CANAL[c] ?? c).join(", ")}{" "}
-              se publican con scripts de escritorio: el sistema no guarda quién
-              los corrió. <strong>No se les asigna avance a nadie.</strong>
-            </p>
-          </div>
-        </div>
       </div>
+
+      {d.canales_sin_registro.length > 0 && (
+        <p className="mt-3 flex items-start gap-1.5 border-t border-slate-100 pt-2.5
+                      text-[11.5px] leading-relaxed text-slate-400">
+          <Terminal className="mt-[2px] h-3 w-3 shrink-0" />
+          <span>
+            {d.canales_sin_registro.map((c) => NOMBRE_CANAL[c] ?? c).join(", ")}{" "}
+            {d.canales_sin_registro.length === 1 ? "publicó" : "publicaron"} esta
+            semana, pero por un camino que no guarda quién lo hizo.{" "}
+            <strong className="text-slate-500">No se les asigna avance a nadie</strong>
+            {" "}— y en cuanto llegue la primera publicación firmada desde el panel,
+            su tarjeta se pinta sola.
+          </span>
+        </p>
+      )}
     </section>
   );
 }
@@ -971,9 +1037,11 @@ function TarjetaCanales({ p, mudos }: { p: PubCanal[]; mudos: string[] }) {
             <line x1="0" y1="0" x2="0" y2="8" stroke="#dde3ec" strokeWidth="4" />
           </pattern>
         </defs>
-        <line x1="0" y1={yMeta} x2={W * filas.length} y2={yMeta}
+        {/* La linea arranca despues del rotulo: con x1=0 el texto quedaba
+            pisado por la propia linea y cortado por el borde del viewBox. */}
+        <line x1="30" y1={yMeta} x2={W * filas.length} y2={yMeta}
               stroke="#cbd5e1" strokeDasharray="4 4" strokeWidth="1" />
-        <text x="2" y={yMeta - 4} className="fill-slate-400"
+        <text x="0" y={yMeta + 3} className="fill-slate-400"
               style={{ fontSize: 9, fontFamily: "ui-monospace,monospace" }}>meta</text>
         {filas.map((f, i) => {
           const c = COLOR_CANAL[f.canal];
@@ -994,7 +1062,7 @@ function TarjetaCanales({ p, mudos }: { p: PubCanal[]; mudos: string[] }) {
               {/* El acento sólo si la barra pasa de 14 px: si no, tapa la barra
                   entera y Amazon (3 publicaciones) se ve como una raya negra. */}
               {!f.mudo && h > 14 && (
-                <rect x={x} y={y} width={72} height={4} rx="2" fill={c.fg} />
+                <rect x={x} y={y} width={72} height={4} rx="2" fill={c.acento} />
               )}
               <text x={x + 36} y={H + 12} textAnchor="middle"
                     className="fill-slate-500"
