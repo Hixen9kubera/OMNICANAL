@@ -1001,6 +1001,68 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.401.0 — Un script ya no puede publicar sin decir quién lo corre
+
+Tercer frente de "monitorear todos los movimientos". La 0046 le dio a
+`ops.channel_submissions` la columna `actor`, pero **sólo se llena cuando hay
+sesión**: un script no pasa por el middleware, así que sus filas nacían nulas.
+Son 307 altas de Temu, 127 de Walmart y ~2,000 de TikTok sin dueño.
+
+#### El mecanismo, y por qué éste
+
+El criterio no fue cuál es más cómodo, sino **cuál es más difícil de saltarse sin
+querer**:
+
+| Opción | Por qué no |
+|---|---|
+| Variable de entorno sola | se olvida, y falla **en silencio** — justo lo que estamos eliminando |
+| Usuario de git | dice quién configuró la máquina, no quién corrió el script |
+| Preguntarlo al arrancar | rompe cualquier corrida no interactiva |
+| **`--como` obligatorio** | **elegida**: si falta, aborta antes de tocar nada |
+
+La concesión que lo hace viable: **`--como automatico` es una respuesta válida**
+para un cron, y deja el actor vacío a propósito — que en la base es NULL. Eso es
+la verdad: no hubo una persona.
+
+Se aceptan las dos, pero **no se acepta el silencio**. La diferencia entre "lo
+hizo Andrea", "lo hizo una máquina" y "no lo sabemos" es la razón de ser de la
+pestaña de Monitoreo; dejar que un olvido produzca la tercera cuando la respuesta
+era una de las dos primeras es el error que esto viene a impedir.
+
+**Se exige SIEMPRE, incluso en dry-run.** Una excepción —"salvo cuando no
+aplica"— es exactamente la costura donde se forma la costumbre de saltárselo.
+
+No se valida contra `core.usuarios` a propósito: obligaría a abrir la base antes
+de saber si el script puede correr, y un fallo de red se volvería *"no puedes
+publicar"*. Se comprueba la forma y se avisa de lo raro.
+
+#### Probado de punta a punta, contra producción y sin dejar rastro
+
+La cadena entera —`--como` → ContextVar → `get_cursor` → `set_config` → el valor
+por omisión de la columna— usando el `get_cursor` **real** y forzando su rollback
+desde dentro:
+
+```
+--como valeria@kubera.mx  ->  actor guardado = 'valeria@kubera.mx'
+--como automatico         ->  actor guardado = None
+```
+
+Más 9 de 9 casos del mecanismo: correo, `automatico` en mayúsculas y minúsculas,
+sin declarar, cadena vacía, algo que no es correo, desde la variable de entorno,
+`--como` ganándole al entorno, y un correo externo que avisa y sigue.
+
+#### Un defecto latente que salió de paso
+
+`scripts/publicar_walmart.py` **sólo corría si alguien ponía el `PYTHONPATH` a
+mano**: lanzándolo por su ruta, `sys.path[0]` es `scripts/` y ni `core` ni
+`services` se encuentran. Lo destapó el primer import temprano que se le agregó.
+Ahora lleva la misma línea que `publicar_temu.py` ya tenía.
+
+⚠️ **Los scripts de escritorio de TikTok siguen sin firma**: no están en el repo
+(`scratchpad\tk_publicar.py`, `tk_activar.py`). Son las ~2,000 publicaciones más
+grandes sin dueño, y la única forma de cerrarlas es moverlas al panel o traerlas
+al repo.
+
 ### v0.400.0 — Walmart entra a la pestaña de Ventas, y el paginado que creó 8 pedidos fantasma
 
 Dale de Brandon: *"dale con la ingesta de pedidos… y verlos representados en la

@@ -94,6 +94,98 @@ def capturar() -> contextvars.Context:
     return contextvars.copy_context()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# LOS SCRIPTS: quién corre algo que no tiene sesión
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# POR QUÉ HIZO FALTA. Un script no pasa por el middleware, así que el ContextVar
+# nace vacío y todo lo que escriba queda sin firmar. No es hipotético: 307 altas
+# de Temu, 127 de Walmart y ~2,000 de TikTok se publicaron desde scripts, y en
+# `ops.channel_submissions` no hay forma de saber quién las hizo.
+#
+# EL MECANISMO ELEGIDO, y por qué éste y no otro. El criterio no fue cuál es más
+# cómodo: fue **cuál es más difícil de saltarse SIN QUERER**.
+#
+#   · Variable de entorno sola      → se olvida, y falla en silencio. Descartada:
+#                                     el fallo silencioso es justo lo que estamos
+#                                     tratando de eliminar.
+#   · Usuario de git                → dice quién configuró la máquina, no quién
+#                                     corrió el script. En una compartida, miente.
+#   · Preguntarlo al arrancar       → rompe cualquier corrida no interactiva.
+#   · `--como` OBLIGATORIO          → ELEGIDA. Si falta, el script ABORTA antes
+#                                     de tocar nada, con un mensaje que dice qué
+#                                     escribir.
+#
+# LA CONCESIÓN QUE LO HACE VIABLE: un cron legítimo no debe quedar bloqueado, así
+# que `--como automatico` es una respuesta VÁLIDA — y deja el actor VACÍO a
+# propósito, que en la base es NULL. Eso es la verdad: no hubo una persona.
+#
+# Se aceptan las dos, pero **no se acepta el silencio**. La diferencia entre "lo
+# hizo Andrea", "lo hizo una máquina" y "no lo sabemos" es la razón de ser de
+# toda la pestaña de Monitoreo; dejar que un olvido produzca la tercera cuando la
+# respuesta era una de las dos primeras es el error que esto viene a impedir.
+
+AUTOMATICO = "automatico"
+
+_AYUDA = (
+    "Quién corre esto: tu correo (p. ej. andrea.pardo@kubera.mx), o "
+    f"'{AUTOMATICO}' si es un cron. También se puede dejar en la variable de "
+    "entorno OMNICANAL_ACTOR."
+)
+
+
+def agregar_argumento(parser) -> None:
+    """Le pone `--como` a un `argparse.ArgumentParser` de un script."""
+    parser.add_argument("--como", default=None, metavar="QUIEN", help=_AYUDA)
+
+
+def fijar_desde_cli(valor: str | None) -> str:
+    """
+    Fija el actor de un script. **Aborta si no se declaró.**
+
+    Devuelve el actor efectivo ('' cuando es automático, que en la base es NULL).
+    El orden es: lo que venga en `--como`, y si no, `OMNICANAL_ACTOR`.
+
+    No se valida contra `core.usuarios` a propósito: obligaría a abrir la base
+    antes de saber si el script puede correr, y un fallo de red se volvería "no
+    puedes publicar". Se comprueba la FORMA y se avisa de lo raro; el nombre real
+    lo audita después quien lea la bitácora.
+    """
+    import os
+    import sys
+
+    quien = (valor or os.environ.get("OMNICANAL_ACTOR") or "").strip()
+
+    if not quien:
+        print(
+            "\n  FALTA DECIR QUIÉN CORRE ESTO.\n\n"
+            "  Este script escribe en la bitácora, y una fila sin dueño no se\n"
+            "  puede auditar después. Agrega:\n\n"
+            "      --como tu.correo@kubera.mx\n"
+            f"      --como {AUTOMATICO}      (si lo dispara un cron, no una persona)\n",
+            file=sys.stderr)
+        raise SystemExit(2)
+
+    if quien.lower() == AUTOMATICO:
+        # Vacío = NULL en la base. Es la verdad: no hubo persona detrás.
+        fijar("")
+        log.info("actor: automático (la bitácora quedará sin persona, a propósito)")
+        return ""
+
+    if "@" not in quien or quien.startswith("@") or quien.endswith("@"):
+        print(f"\n  '{quien}' no parece un correo. Usa tu correo de Kubera "
+              f"o '{AUTOMATICO}'.\n", file=sys.stderr)
+        raise SystemExit(2)
+    if not quien.lower().endswith("@kubera.mx"):
+        # Se avisa y se sigue: bloquear aquí sería inventar una regla de negocio
+        # dentro de un ayudante de scripts.
+        log.warning("el actor '%s' no es de @kubera.mx — se registra igual", quien)
+
+    fijar(quien)
+    log.info("actor: %s", quien)
+    return quien
+
+
 def en_hilo(fn: Callable, *args) -> None:
     """
     `run_in_executor` que SÍ se lleva el contexto (y con él, el actor).

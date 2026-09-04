@@ -501,7 +501,15 @@ async def main() -> None:
     ap.add_argument("--aplicar", action="store_true",
                     help="sin esto, `publicar` solo lista (dry-run)")
     ap.add_argument("--lote", default=f"temu:lote:{datetime.now(timezone.utc):%Y%m%d}")
+    # QUIÉN corre esto. Las 307 altas que dejó este script en
+    # `ops.channel_submissions` no tienen dueño: un script no pasa por el
+    # middleware, así que nada firmaba sus filas. Se exige SIEMPRE, incluso en
+    # dry-run — una excepción ("salvo cuando no aplica") es exactamente la
+    # costura donde se forma la costumbre de saltárselo.
+    from core import actor
+    actor.agregar_argumento(ap)
     a = ap.parse_args()
+    actor.fijar_desde_cli(a.como)   # aborta si no se declaró
 
     if not temu.disponible():
         print("Temu no está configurado (faltan TEMU_APP_KEY/SECRET/TOKEN).")

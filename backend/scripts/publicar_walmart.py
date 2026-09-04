@@ -54,6 +54,12 @@ import uuid
 
 logging.disable(logging.WARNING)
 
+# `backend/` en la ruta, igual que en `publicar_temu.py`. Sin esto el script solo
+# corre si alguien puso el PYTHONPATH a mano: lanzándolo por su ruta, `sys.path[0]`
+# es `scripts/`, y ni `core` ni `services` se encuentran. Se descubrió al añadirle
+# el candado del actor, que fue el primer import que se hizo temprano.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:  # noqa: BLE001
@@ -980,6 +986,18 @@ class _Bitacora:
 
 
 async def main() -> int:
+    # QUIÉN corre esto. Las 127 altas que este script dejó en
+    # `ops.channel_submissions` no tienen dueño: un script no pasa por el
+    # middleware, así que nada firmaba sus filas. Se exige SIEMPRE, incluso sin
+    # `--aplicar` — una excepción ("salvo en dry-run") es la costura donde se
+    # forma la costumbre de saltárselo.
+    from core import actor
+    _como = None
+    if "--como" in sys.argv:
+        i = sys.argv.index("--como") + 1
+        _como = sys.argv[i] if i < len(sys.argv) else None
+    actor.fijar_desde_cli(_como)   # aborta si no se declaró
+
     aplicar = "--aplicar" in sys.argv
     # Sin --aplicar no se manda nada, así que no hay nada que registrar.
     bitacora = _Bitacora(aplicar and "--sin-bitacora" not in sys.argv)
