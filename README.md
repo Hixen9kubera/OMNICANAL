@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.399.0 — La tabla que guarda QUÉ se publicó ya guarda QUIÉN
+
+`ops.channel_submissions` lleva 26,344 envíos a los cinco marketplaces y **no
+tenía una sola columna de usuario**. Se sabía que un SKU se mandó a BEKURA a las
+14:32; no si fue Andrea o Cinthya.
+
+**Migración 0046, y no pide editar ni un publicador.** El cable ya estaba tendido
+desde la v0.233.0: `supabase_db.get_cursor` hace
+`set_config('app.usuario', …, true)` en la misma transacción del INSERT
+(`supabase_db.py:162`) y `kubera_mirror.py:381` hace lo mismo en la suya. Con la
+columna y su valor por omisión, **la firma aparece sola**.
+
+#### El orden de los dos pasos no es estilo, es el punto
+
+Postgres evalúa el default **una vez** al agregar la columna y se lo guarda a las
+filas que ya existían. Si la migración corriera en una sesión con `app.usuario`
+puesto —y el cable lo pone en toda petición del panel— **las 26,344 filas
+históricas habrían quedado firmadas por quien corriera la migración**. Una mentira
+con fecha atrasada, dentro de la tabla que existe justo para no mentir.
+
+Se agrega SIN default y se pone después, igual que la 0029 y por lo mismo.
+
+**Simulado en el peor escenario antes de aplicar**: con `app.usuario` puesto a
+propósito, dentro de una transacción con `ROLLBACK`. Las 26,344 históricas
+quedaron en NULL, el default quedó puesto, y una fila nueva se firmó sola. Después
+se aplicó de verdad y se verificó lo mismo: **0 filas firmadas por la migración**.
+
+#### Qué queda firmado y qué no — medido leyendo cada sitio que inserta
+
+**SÍ**, desde el primer envío: las altas de ML (`publicar_ready.py`), las
+actualizaciones de ML y las altas de Amazon (`publicar.py`), TikTok, Temu y
+Walmart desde el panel, y el espejo.
+
+**NO**, y hay que decirlo en voz alta: los procesos **sin sesión** —
+`scripts/publicar_temu.py` (307 altas), `scripts/publicar_walmart.py` (127), los
+scripts de rescate, y los de escritorio de TikTok, que ni siquiera están en el
+repo. Ahí `app.usuario` viene vacío y la fila nace NULA. **Ése es el siguiente
+trabajo**, y esta migración no lo resuelve ni pretende hacerlo.
+
+NULL significa **"no se sabe"**, que es la verdad. La pantalla de Monitoreo lo
+pinta rayado: *"no lo sabemos"* y *"no lo hizo"* no pueden verse iguales.
+
+Va con un índice parcial sobre `actor is not null` — hoy casi todas las filas son
+nulas y van a seguir siéndolo; indexarlas sería pagar por guardar el hueco.
+
 ### v0.398.0 — Temu deja de publicar a ciegas: cada intento escribe su fila y su error
 
 Era el **único canal del panel que no escribía ni una fila** en
