@@ -1001,6 +1001,81 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.400.0 — Walmart entra a la pestaña de Ventas, y el paginado que creó 8 pedidos fantasma
+
+Dale de Brandon: *"dale con la ingesta de pedidos… y verlos representados en la
+pestaña de ventas"*. La ingesta se construyó en v0.393.0; esto es lo que faltaba
+para que el dinero se VEA, más el incidente que salió al intentarlo.
+
+#### 🔴 EL PAGINADO DEVOLVÍA CADA VENTA DOS VECES
+
+`nextCursorMark` es una marca de **inicio**, no un "siguiente": cuando ya no hay
+más páginas, Walmart la devuelve igual y contesta **el mismo lote otra vez**. La
+primera versión cortaba comparando cursores, así que alcanzaba a dar una segunda
+vuelta: **16 órdenes para 8 ventas**.
+
+El llenado inicial creó con eso **8 pedidos de WooCommerce duplicados**
+(#139559–#139574). Se mandaron los 16 a la papelera —no borrados, recuperables— y
+se verificó línea por línea que **ninguno movió inventario**: `_reduced_stock`
+ausente en todas, porque el llenado corrió con protección de stock. El daño fue
+de registro, no de bodega.
+
+Ahora se corta por **contenido, no por cursor**: se llevan los `purchaseOrderId`
+ya vistos y, si una página no aporta ninguno nuevo, se acabó. Y hay una **segunda
+red** en `sondear()`, porque aquí un duplicado no es un dato repetido — es una
+venta contada dos veces en Ventas y, sin protección, una pieza descontada dos
+veces.
+
+#### El candado silencioso que impedía ver Walmart
+
+`_CUENTAS_PEDIDOS` en `ventas_ml.py` **no es un adorno: "General" NO suma la
+tabla, suma esas cuentas.** La lista viaja tal cual al `WHERE`, y `por_cuenta` se
+construye solo con ellas — lo que no esté ahí no aparece **ni en el desglose ni
+en el total**, sin dar un solo error. El dinero simplemente no existe.
+
+Es el mismo candado que tuvo a TikTok y Temu invisibles durante meses
+**guardando** pedidos. Cuatro cambios abren Walmart, y los cuatro hacen falta:
+
+| dónde | qué |
+|---|---|
+| `ventas_ml.py` | `WALMART` en `_CUENTAS_PEDIDOS` y en `etiquetas` |
+| `routers/ventas.py` | `"walmart": "WALMART"` en `_CANAL_ES_CUENTA` (antes: HTTP 400) |
+| `app/ventas/page.tsx` | la pestaña pasa de `habilitado: false` a `true` |
+| `app/ventas/page.tsx` | chip `WALMART` en `CHIPS_PEDIDOS`, con su tema azul |
+
+#### Protección de stock explícita para el primer llenado
+
+`procesar()` y `sondear()` aceptan `proteger_stock`. Las 8 ventas acumuladas ya
+salieron físicamente; si el almacén las ajustó a mano en Odoo, crearlas con
+descuento las restaría dos veces. `DIAS_VENTA_VIEJA` (5 días) cubre a 6 de las 8;
+esto cubre a **todas**. Medido antes de correr: con la bandera, las 8 quedan
+protegidas; sin ella, las 2 recientes descontarían.
+
+#### Tres silencios que se acabaron
+
+- **Sin credenciales el sondeo se rendía sin log y sin tocar `_ultimo`**: el
+  estado seguía diciendo "sin correr" mientras el arranque anunciaba ENCENDIDO.
+  Ahora deja `estado="sin_credenciales"` y un `log.warning`.
+- **El arranque imprimía la bandera, no el estado real.** Ahora imprime
+  `walmart.disponible()` — la misma lección que ya dejó escrita el renglón de las
+  órdenes de Odoo. Medido el 4-sep: `WM_CLIENT_ID`/`WM_CLIENT_SECRET` **no están
+  en Railway**, así que todo Walmart —publicar, pedidos, veredictos— es inerte en
+  producción con el flag en cualquier valor.
+- **Los descartes no se contaban.** `sin_mapear` y `sin_sku` solo dejaban un log:
+  una venta que Walmart cobró y que la tubería tiró se veía igual que una tarde
+  sin ventas. Ahora se cuentan por motivo en `estado()`.
+
+#### Por qué el llenado se hace desde PRODUCCIÓN, no desde una laptop
+
+La idempotencia de `pedidos_ml.sincronizar` se apoya en `orders_write.
+wc_order_id_previo`, que consulta `channel.orders` **en kubera**. Los flags de
+escritura a kubera solo existen en Railway: corriendo en local, el registro nunca
+se escribe, cada pasada "no encuentra" la venta anterior y **vuelve a crear**. Es
+la misma mecánica de los 964 pedidos fantasma del 12-ago — un `None` de una tabla
+que no sabe no significa "no existe", significa "ya no sé".
+
+---
+
 ### v0.399.0 — La tabla que guarda QUÉ se publicó ya guarda QUIÉN
 
 `ops.channel_submissions` lleva 26,344 envíos a los cinco marketplaces y **no

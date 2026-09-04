@@ -31,7 +31,8 @@ _MAX_DIAS = 31  # tope del rango: protege a ML y a la tabla de un rango loco
 # `ventas_ml`). El router los rechazaba con "aún sin ventas integradas" aunque
 # la capa de datos ya los contemplara: TikTok y Temu llevan meses guardando
 # pedidos ahí y el tab no los dejaba ver.
-_CANAL_ES_CUENTA = {"amazon": "AMAZON", "tiktok": "TIKTOK", "temu": "TEMU"}
+_CANAL_ES_CUENTA = {"amazon": "AMAZON", "tiktok": "TIKTOK", "temu": "TEMU",
+                    "walmart": "WALMART"}
 _CANALES_CON_VENTAS = {"general", "mercado_libre", *_CANAL_ES_CUENTA}
 
 
@@ -44,7 +45,7 @@ async def horario(
     fuente: str = Query("pedidos"),
 ):
     if canal not in _CANALES_CON_VENTAS:
-        # Walmart/Shein vendrán después; avisamos claro.
+        # Shein vendrá después; avisamos claro. (Walmart entró el 4-sep.)
         raise HTTPException(400, f"Canal '{canal}' aún sin ventas integradas.")
     cta = (cuenta or "").strip().upper() or None
     if canal in _CANAL_ES_CUENTA:

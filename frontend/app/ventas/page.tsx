@@ -39,15 +39,18 @@ import { THEME_FALLBACK, esClaro, hexToRgba, variablesTema } from "@/lib/theme";
  * pedidos YA están en la tabla de control, no cuando el canal existe.
  *
  * TikTok y Temu llevaban meses guardando pedidos ahí y seguían en "Pronto":
- * el dato estaba y el tab no lo dejaba ver. Se abren el 13-ago. Walmart y
- * Shein siguen sin entrada de pedidos, así que siguen en "Pronto". */
+ * el dato estaba y el tab no lo dejaba ver. Se abren el 13-ago.
+ *
+ * Walmart se abre el 4-sep, y su caso fue igual de callado: el canal llevaba
+ * vendiendo desde el 14-ago —8 ventas— sin que nadie leyera sus pedidos.
+ * Shein sigue sin entrada de pedidos, así que sigue en "Pronto". */
 const CANALES_VENTA = [
   { id: "general", label: "General", habilitado: true },
   { id: "mercado_libre", label: "Mercado Libre", habilitado: true },
   { id: "amazon", label: "Amazon", habilitado: true },
   { id: "tiktok", label: "TikTok Shop", habilitado: true },
   { id: "temu", label: "Temu", habilitado: true },
-  { id: "walmart", label: "Walmart", habilitado: false },
+  { id: "walmart", label: "Walmart", habilitado: true },
   { id: "shein", label: "Shein", habilitado: false },
 ] as const;
 
@@ -67,6 +70,7 @@ const CHIPS_PEDIDOS = [
   // vende nada.
   { id: "TIKTOK", label: "TikTok", tema: "tiktok" },
   { id: "TEMU", label: "Temu", tema: "temu" },
+  { id: "WALMART", label: "Walmart", tema: "walmart" },
 ] as const;
 
 type Metrica = "monto" | "pedidos" | "unidades";

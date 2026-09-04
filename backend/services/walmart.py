@@ -136,18 +136,27 @@ async def listar_pedidos(desde: str, tope: int = 200) -> list[dict[str, Any]]:
     ⚠️ Este endpoint NUNCA se había llamado. La primera vez contestó 8 ventas
     reales entre el 14-ago y el 2-sep-2026 que nadie estaba ingiriendo.
 
-    Pagina con `nextCursorMark`, que llega en `meta` y se manda tal cual en
-    `cursor` — NO es un offset. Cuando el cursor deja de cambiar, se acabó (la
-    API repite el último en vez de devolver vacío, y sin ese corte esto gira
-    para siempre).
+    ⚠️ EL PAGINADO REPITE LA MISMA PÁGINA, Y ESO SALIÓ CARO (4-sep-2026).
+    `nextCursorMark` es una marca de INICIO, no un "siguiente": cuando ya no hay
+    más, Walmart la devuelve igual y contesta **el mismo lote otra vez**. La
+    primera versión cortaba comparando cursores, así que alcanzaba a hacer una
+    segunda vuelta y devolvía **16 órdenes para 8 ventas**. Con eso el llenado
+    inicial creó 8 pedidos de Woo duplicados — que hubo que mandar a la papelera.
+
+    Por eso ahora se corta por el CONTENIDO, no por el cursor: se lleva registro
+    de los `purchaseOrderId` ya vistos y, si una página no aporta ninguno nuevo,
+    se acabó. Y la salida va deduplicada de todas formas: el que consume esto
+    crea PEDIDOS, y ahí un duplicado no es un dato de más, es dinero contado dos
+    veces.
     """
     tk = await token()
     salida: list[dict[str, Any]] = []
+    vistos: set[str] = set()
     cursor: str | None = None
-    visto: set[str] = set()
+    LIMITE = 100
     async with httpx.AsyncClient(timeout=90.0) as cli:
         while len(salida) < tope:
-            params: dict[str, str] = {"limit": "100", "createdStartDate": desde}
+            params: dict[str, str] = {"limit": str(LIMITE), "createdStartDate": desde}
             if cursor:
                 params["cursor"] = cursor
             r = await cli.get(f"{HOST}/v3/orders", params=params,
@@ -158,11 +167,16 @@ async def listar_pedidos(desde: str, tope: int = 200) -> list[dict[str, Any]]:
                 break
             d = r.json()
             lote = d.get("order") or []
-            salida.extend(lote)
+            nuevas = [o for o in lote
+                      if str(o.get("purchaseOrderId") or "") not in vistos]
+            for o in nuevas:
+                vistos.add(str(o.get("purchaseOrderId") or ""))
+            salida.extend(nuevas)
+            # Se acabó si: no vino nada, la página no aportó NADA nuevo (es la
+            # repetición), vino incompleta, o no hay cursor para seguir.
             cursor = (d.get("meta") or {}).get("nextCursorMark")
-            if not lote or not cursor or cursor in visto:
+            if not lote or not nuevas or len(lote) < LIMITE or not cursor:
                 break
-            visto.add(cursor)
     return salida[:tope]
 
 

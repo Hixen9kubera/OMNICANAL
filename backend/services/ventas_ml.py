@@ -398,8 +398,20 @@ def _pedidos_horario(cuentas: list[str], desde: date, hasta: date) -> dict:
             "cuenta_horas": cuenta_horas}
 
 
-# Cuentas que viven en pedidos_ml: 2 de ML + Amazon + Temu/TikTok (vía M2E).
-_CUENTAS_PEDIDOS = ("BEKURA", "SANCORFASHION", "AMAZON", "TEMU", "TIKTOK")
+# Cuentas que viven en pedidos_ml: 2 de ML + Amazon + Temu/TikTok + Walmart.
+#
+# ⚠️ ESTO NO ES UN ADORNO: "General" NO suma la tabla entera, suma ESTAS
+# cuentas. La lista viaja tal cual al WHERE (`o.cuenta = any(%s)` en
+# orders_read), y además `por_cuenta` se construye solo con ellas, así que lo
+# que no esté aquí no aparece NI en el desglose NI en el total — sin dar un
+# solo error. El dinero simplemente no existe para el panel.
+#
+# Es el mismo candado que tuvo a TikTok y Temu invisibles durante meses
+# GUARDANDO pedidos. Walmart entra el 4-sep-2026, con sus ventas ya en la
+# tabla: agregar un canal a la ingesta y olvidar este renglón es exactamente
+# cómo se construye un canal que vende y que nadie ve.
+_CUENTAS_PEDIDOS = ("BEKURA", "SANCORFASHION", "AMAZON", "TEMU", "TIKTOK",
+                    "WALMART")
 
 
 async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
@@ -443,7 +455,8 @@ async def resumen_pedidos(cuenta: str | None, desde: date, hasta: date) -> dict:
         }
 
     etiquetas = {"BEKURA": "Kubera", "SANCORFASHION": "San Corpe",
-                 "AMAZON": "Amazon", "TEMU": "Temu", "TIKTOK": "TikTok"}
+                 "AMAZON": "Amazon", "TEMU": "Temu", "TIKTOK": "TikTok",
+                 "WALMART": "Walmart"}
     cuentas_out = []
     for c in cuentas:
         ca, cp = act["cuentas"][c], prev["cuentas"][c]

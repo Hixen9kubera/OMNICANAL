@@ -63,7 +63,7 @@ _ESTADOS_WC: dict[str, str] = {
 }
 
 _ultimo: dict[str, Any] = {"estado": "sin correr", "ts": None, "pedidos": 0,
-                           "vistos": 0}
+                           "vistos": 0, "descartes": {}}
 
 
 def estado() -> dict[str, Any]:
@@ -181,9 +181,17 @@ def _normalizar(o: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def procesar(o: dict[str, Any], *, solo_registro: bool | None = None
-                   ) -> dict[str, Any]:
-    """Una orden ya traída → pedido de Woo. Nunca lanza."""
+async def procesar(o: dict[str, Any], *, solo_registro: bool | None = None,
+                   proteger_stock: bool = False) -> dict[str, Any]:
+    """
+    Una orden ya traída → pedido de Woo. Nunca lanza.
+
+    `proteger_stock=True` registra la venta SIN mover bodega. Es lo que hace
+    falta para el PRIMER llenado: las 8 ventas que Walmart llevaba acumuladas
+    ya salieron físicamente, y si el almacén las ajustó a mano en Odoo,
+    crearlas ahora con descuento las restaría dos veces. El candado de
+    `DIAS_VENTA_VIEJA` (5 días) cubre a las viejas solo; esto cubre a TODAS.
+    """
     from services import pedidos_ml
 
     orden = _normalizar(o)
@@ -217,22 +225,34 @@ async def procesar(o: dict[str, Any], *, solo_registro: bool | None = None
     # `proteger_stock` NO es lo contrario de `es_full`: es la protección extra
     # que `pedidos_ml` aplica al CANCELAR. Se deja como en los demás canales.
     r = await pedidos_ml.sincronizar(po, forzar_estado=destino, orden=orden,
-                                     proteger_stock=False)
+                                     proteger_stock=proteger_stock)
     if r.get("ok"):
         log.info("WALMART orden %s → pedido WC #%s (%s) · %s · guía %s",
                  po, r.get("wc_order_id"), r.get("accion"),
-                 "WFS (no descuenta)" if wfs else "S2H (descuenta)",
+                 "WFS (no descuenta)" if wfs
+                 else ("S2H protegido (no descuenta)" if proteger_stock
+                       else "S2H (descuenta)"),
                  orden.get("guia") or "sin guía")
     return r
 
 
-async def sondear(dias: int | None = None, *, solo_registro: bool | None = None
-                  ) -> dict[str, Any]:
+async def sondear(dias: int | None = None, *, solo_registro: bool | None = None,
+                  proteger_stock: bool = False) -> dict[str, Any]:
     """Trae las ventas recientes de Walmart y las procesa. Nunca lanza."""
     from services import walmart
 
     if not walmart.disponible():
-        return {"ok": False, "motivo": "Walmart no está configurado."}
+        # ⚠️ ESTO PASABA EN SILENCIO ABSOLUTO. Sin WM_CLIENT_ID/WM_CLIENT_SECRET
+        # el sondeo se rendía sin log y sin tocar `_ultimo`, así que el estado
+        # seguía diciendo "sin correr" mientras el arranque anunciaba ENCENDIDO.
+        # Medido el 4-sep: las credenciales NO estaban en Railway y el canal
+        # entero era inerte en producción sin una sola señal.
+        motivo = ("Walmart no está configurado: faltan WM_CLIENT_ID / "
+                  "WM_CLIENT_SECRET en el ambiente.")
+        _ultimo.update(estado="sin_credenciales",
+                       ts=datetime.now(timezone.utc).isoformat())
+        log.warning("WALMART sondeo NO corre — %s", motivo)
+        return {"ok": False, "motivo": motivo}
 
     dias = dias or int(getattr(settings, "pedidos_walmart_max_dias", 7) or 7)
     desde = (datetime.now(timezone.utc) - timedelta(days=dias)).strftime("%Y-%m-%d")
@@ -243,19 +263,48 @@ async def sondear(dias: int | None = None, *, solo_registro: bool | None = None
         log.warning("WALMART sondeo: no se pudieron leer los pedidos: %s", exc)
         return {"ok": False, "motivo": str(exc)}
 
+    # ⚠️ SEGUNDA RED CONTRA DUPLICADOS. `listar_pedidos` ya deduplica, pero el
+    # 4-sep su paginado devolvió el mismo lote dos veces y este bucle creó 8
+    # pedidos de Woo de más. Aquí un duplicado no es un dato repetido: es una
+    # venta contada dos veces en el tab de Ventas y, sin la protección de stock,
+    # una pieza descontada dos veces. Dos candados para el mismo fallo es barato.
+    unicas: list[dict[str, Any]] = []
+    ya: set[str] = set()
+    for o in ordenes:
+        po = str(o.get("purchaseOrderId") or "")
+        if po and po in ya:
+            log.warning("WALMART sondeo: la orden %s vino repetida en el listado; "
+                        "se ignora la copia.", po)
+            continue
+        ya.add(po)
+        unicas.append(o)
+    ordenes = unicas
+
     hechos, fallos = [], []
     for o in ordenes:
         try:
-            r = await procesar(o, solo_registro=solo_registro)
+            r = await procesar(o, solo_registro=solo_registro,
+                               proteger_stock=proteger_stock)
         except Exception as exc:  # noqa: BLE001
             r = {"ok": False, "id": str(o.get("purchaseOrderId") or ""),
                  "motivo": str(exc)}
         (hechos if r.get("ok") else fallos).append(r)
 
+    # Los descartes se CUENTAN por motivo. `sin_mapear` y `sin_sku` devuelven
+    # ok=False y hasta ahora solo dejaban un log: una venta que Walmart cobró y
+    # que la tubería tiró se veía igual que una tarde sin ventas. Con el conteo
+    # en `estado()`, el panel puede enseñar que algo se está cayendo.
+    descartes: dict[str, int] = {}
+    for f in fallos:
+        k = str(f.get("accion") or "error")
+        descartes[k] = descartes.get(k, 0) + 1
     _ultimo.update(estado="ok", ts=datetime.now(timezone.utc).isoformat(),
                    vistos=len(ordenes),
-                   pedidos=_ultimo.get("pedidos", 0) + len(hechos))
-    log.info("WALMART sondeo · %d orden(es) desde %s · %d procesadas · %d con aviso",
-             len(ordenes), desde, len(hechos), len(fallos))
+                   pedidos=_ultimo.get("pedidos", 0) + len(hechos),
+                   descartes=descartes)
+    log.info("WALMART sondeo · %d orden(es) desde %s · %d procesadas · %d con aviso%s",
+             len(ordenes), desde, len(hechos), len(fallos),
+             (" · descartes: " + ", ".join(f"{k}={v}" for k, v in descartes.items()))
+             if descartes else "")
     return {"ok": True, "desde": desde, "vistos": len(ordenes),
             "procesados": hechos, "avisos": fallos}
