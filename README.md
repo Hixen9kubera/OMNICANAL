@@ -1001,6 +1001,76 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.403.0 — La pestaña Monitoreo, con las tres lecturas
+
+El diseño de Claude Design, implementado. Y el punto de todo el trabajo de los
+últimos cuatro despliegues cabe en una frase:
+
+> **«No lo hizo» y «no lo sabemos» no pueden verse iguales.**
+
+Tres lecturas, no dos:
+
+```
+498 / 512      en color   ·  medido — éxitos sobre intentos
+0 / 0          en gris    ·  «no lo hizo» — medido, y fue cero
+▨ sin registro            ·  «no lo sabemos» — el proceso no guarda actor
+```
+
+La tercera es una **textura, no un color**. Un color más se leería como otro
+estado de la misma escala; el rayado se lee como *"esto no es una cifra"*. La
+leyenda vive **arriba de la tabla**, a la vista — no en un tooltip: es lo que
+vuelve creíble al tablero.
+
+#### El backend manda `null`, no `0` — y se MIDE
+
+`monitoreo.resumen` devuelve `null` en las celdas que no se pueden atribuir. Si
+alguna vez se colapsara ese `null` a cero, la pantalla perdería su razón de ser.
+
+Y el reparto **se mide en cada consulta**, no se cablea. Habría sido más fácil
+escribir `_SIN_REGISTRO = ("tiktok","temu","walmart")` y habría sido un error: la
+instrumentación de v0.398–v0.402 ya hace que esos canales firmen cuando se
+publica desde el panel, así que la lista mentiría al revés en cuanto llegara la
+primera firma. Un canal está mudo si tuvo envíos y **ninguna de las dos tablas**
+—`channel_submissions.actor` y `process_log`— supo decir quién.
+
+Medido hoy: salen `temu`, `tiktok` y `walmart`. Mercado Libre y Amazon NO, porque
+`process_log` los atribuye (60 de 60 y 2 de 2) aunque la columna nueva esté vacía.
+
+#### El error crudo, requisito explícito de Brandon
+
+`<pre>` seleccionable con el texto **completo, sin resumir ni recortar**, botón
+Copiar, y **sólo uno abierto a la vez** — los éxitos son la mayoría y no pueden
+quedar sepultados bajo el ruido. En Mercado Libre incluye el desglose por cuenta,
+que contesta *"falló en BEKURA pero entró en SANCOR"*.
+
+#### Lo demás que trae
+
+- **Columnas sólo de procesos que existen.** `precio` y `stock` están declarados
+  en `bitacora.py` y no tienen un solo call site: pintarles una columna de ceros
+  sería inventar una medición.
+- **Cobertura del registro**, donde **el track de la barra ES el rayado**: lo que
+  no sabemos es el fondo.
+- **Publicaciones por canal** con la meta punteada, y el acento del canal sólo si
+  la barra pasa de 14 px — sin esa guarda, Amazon (3 publicaciones) se ve como una
+  raya negra ilegible.
+- **Las personas sin movimientos**, en gris y con su advertencia: no existe tabla
+  que asigne KAM a canal, así que un cero ahí puede ser inactividad o trabajo por
+  un camino sin registro. Se enseña el hueco, no una acusación.
+- **Los cuatro estados** dibujados: ok, cargando con la geometría real del
+  renglón, error de fetch con la respuesta del servidor copiable, y vacío que
+  dice la verdad sobre cuándo empezó el registro.
+- **Cero dependencias nuevas**: sparklines, barras y rayado son SVG a mano.
+
+#### Y una corrección de la regla 11
+
+`routers/monitoreo.py` llamaba al servicio **de forma síncrona dentro de una
+corrutina**. Pesaba poco con una consulta; ahora son siete. Va por
+`asyncio.to_thread`: es el defecto exacto del apagón de cinco horas del 13-ago.
+
+**Verificado**: `tsc --noEmit` limpio, la ruta responde 200 sin errores de
+compilación, y el componente está en el bundle servido. ⚠️ **No verificado
+visualmente**: la pantalla exige sesión de Google y no inicié sesión.
+
 ### v0.402.0 — `crear` guardaba el error dentro de la columna de la acción
 
 Cuarto y último frente de "monitorear todos los movimientos".

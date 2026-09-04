@@ -9,6 +9,7 @@ que NO se expone aquí es nada de costos ni márgenes — solo quién hizo qué.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -22,8 +23,15 @@ router = APIRouter(prefix="/api/monitoreo", tags=["monitoreo"],
 
 @router.get("/resumen")
 async def resumen(dias: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
-    """Cuántas acciones lleva cada usuario, y en qué canal."""
-    return monitoreo.resumen(dias)
+    """Cuántas acciones lleva cada usuario, y en qué canal.
+
+    ⚠️ `to_thread` NO ES OPCIONAL. `monitoreo.resumen` habla con Postgres por
+    psycopg2, que BLOQUEA: llamarlo directo desde una corrutina detiene el event
+    loop —o sea, el backend ENTERO— mientras responde, no sólo a quien pidió
+    esto. Es la regla 11 de la casa y el defecto exacto del apagón de cinco horas
+    del 13-ago. Pesaba poco cuando era UNA consulta; desde el 4-sep son siete.
+    """
+    return await asyncio.to_thread(monitoreo.resumen, dias)
 
 
 @router.get("/movimientos")
@@ -34,5 +42,6 @@ async def movimientos(
     dias: int = Query(30, ge=1, le=365),
 ) -> dict[str, Any]:
     """El detalle: quién, qué, sobre qué SKU y cuándo."""
-    filas = monitoreo.movimientos(limite, usuario, canal, dias)
+    filas = await asyncio.to_thread(monitoreo.movimientos,
+                                    limite, usuario, canal, dias)
     return {"total": len(filas), "movimientos": filas}
