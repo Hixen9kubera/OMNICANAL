@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.395.0 — La bitácora contaba como éxito 7 publicaciones que Mercado Libre rechazó
+
+Bug mío, del código que escribí el 1-sep. Salió al mapear dónde falta registrar
+quién publica, y es del tipo peor: **silencioso y en la dirección cómoda.**
+
+`routers/publicar.py` anotaba `estado="ok"` **fijo**, sin mirar nunca el
+resultado. La suposición era "si no lanzó excepción, salió bien". Y es falsa:
+
+> **Los cinco publicadores avisan de sus fallos DEVOLVIENDO `{"ok": False,
+> "motivo": …}` con HTTP 200, no lanzando.** Nunca entraban al `except`.
+
+Medido antes de tocar nada, cruzando la bitácora contra `ops.channel_submissions`
+por SKU y ventana de ±150 s: **7 de las 60 filas marcadas "ok" eran fallos
+reales.** Con su error esperando del otro lado:
+
+```
+ACC-0275       Attribute [MAIN_COLOR] is not valid, item values [(null:['Negro'])]
+               · Attribute [GENDER] is not valid, item values [(null:['Hombre'])]
+TEC-1850-NEG   GTIN_INVALIDO: cuenta BEKURA requiere código de barras real
+```
+
+La pestaña Monitoreo se los estaba contando a Andrea y a Cinthya **como
+publicaciones logradas**. Es exactamente el reverso del incidente del 1-sep —
+aquel mostró errores donde hubo éxitos; éste mostraba éxitos donde hubo errores—
+y es peor, porque nadie se queja de un éxito de más.
+
+**Y un segundo bug que tapaba al primero**: la rama de `except Exception` pasaba
+`duracion_s` dos veces —una la calculaba `_anotar_seguro` y otra venía en
+`**extra`—, lo que es un `TypeError` al armar la llamada. El `try` de la propia
+función se lo tragaba y **esa rama no escribía ninguna fila**. Explica que
+`rechazado` tenga cero filas en toda la historia de la tabla.
+
+**El arreglo.** `_leer_resultado()` traduce lo que devolvió el publicador a
+estado + detalle, y se llama **desde dentro** de `_anotar_seguro`, nunca en el
+endpoint — la lección del 1-sep es que ni ARMAR los argumentos puede reventar. El
+estado ahora sale del resultado (`ok` / `fallido`), el motivo viaja en el
+`detalle`, y Mercado Libre además guarda el desglose por cuenta, que es lo que
+contesta *"falló en BEKURA pero entró en SANCOR"*.
+
+Eso es también la materia prima del **botón de "ver error"** que pidió Brandon:
+`GET /api/monitoreo/movimientos` ya devuelve la columna `detalle` completa
+(`services/monitoreo.py:122`), así que el dato está listo antes que la pantalla.
+
+Probado con el cliente y la bitácora suplantados, **12 de 12**: los seis casos de
+lectura del resultado —incluido un `resultados` con una cuenta caída—, un `req`
+que lanza `AttributeError` en CADA atributo sin tumbar nada, y el caso del
+`duracion_s` duplicado, que ahora sí escribe.
+
+**Lo ya escrito no se corrige**: las 7 filas viejas siguen diciendo "ok". Se
+pueden identificar con el mismo cruce contra `channel_submissions` si algún día
+se quiere reparar la historia.
+
 ### v0.394.0 — Los dos pilotos, y los dos defectos que el botón traía escondidos
 
 Brandon: *"los 2 folios hay que hacer la prueba con 1 producto"*. Se hizo, y el

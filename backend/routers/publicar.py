@@ -97,9 +97,51 @@ async def preview(req: PublicarRequest) -> dict[str, Any]:
     return await publicar.preview(req.a_dict())
 
 
-def _anotar_seguro(req, estado: str, inicio: float, **extra) -> None:
+def _leer_resultado(r: Any) -> tuple[str, dict[str, Any]]:
+    """
+    Traduce lo que DEVOLVIÓ el publicador a (estado, detalle). Nunca lanza.
+
+    ⚠️ ESTO FALTABA Y ERA UN AGUJERO GRANDE. Hasta el 4-sep la bitácora anotaba
+    `estado="ok"` fijo, sin mirar el resultado. Pero **los cinco publicadores
+    avisan de sus fallos DEVOLVIENDO `{"ok": False, "motivo": …}` con HTTP 200,
+    no lanzando** — así que jamás entraban al `except` y el fallo se registraba
+    como éxito.
+
+    Medido antes de arreglarlo: **7 de las 60 filas marcadas "ok" eran fallos
+    reales**, con el error esperando en `ops.channel_submissions` — un
+    `Attribute [MAIN_COLOR] is not valid` de ML y varios
+    `GTIN_INVALIDO: cuenta BEKURA requiere código de barras real`. La pestaña
+    Monitoreo se los estaba contando a Andrea y a Cinthya como publicaciones
+    logradas.
+
+    La firma de los publicadores es estable: `{"ok": bool, …}`, y Mercado Libre
+    añade `resultados: [{cuenta, ok, error}]` porque publica en dos cuentas.
+    """
+    if not isinstance(r, dict):
+        # No lo entendemos, pero volvió sin lanzar. Se dice lo que se sabe.
+        return "ok", {}
+    detalle: dict[str, Any] = {}
+    for llave in ("motivo", "error", "status"):
+        valor = r.get(llave)
+        if valor:
+            detalle[llave] = str(valor)[:500]
+    # Por cuenta: es lo que contesta "falló en BEKURA pero entró en SANCOR".
+    filas = r.get("resultados")
+    if isinstance(filas, list) and filas:
+        detalle["resultados"] = [
+            {"cuenta": f.get("cuenta"), "ok": f.get("ok"),
+             "error": str(f.get("error") or "")[:400]}
+            for f in filas[:6] if isinstance(f, dict)
+        ]
+    return ("ok" if r.get("ok") else "fallido"), detalle
+
+
+def _anotar_seguro(req, estado: str | None, inicio: float,
+                   resultado: Any = None, **extra) -> None:
     """
     Anota en la bitácora SIN poder afectar a la publicación. Nunca lanza.
+
+    Con `estado=None` lo deduce del `resultado` (ver `_leer_resultado`).
 
     ⚠️ POR QUÉ EXISTE ESTA FUNCIÓN Y NO UNA LLAMADA DIRECTA. El 1-sep-2026 la
     llamada directa TUMBÓ CUATRO PUBLICACIONES REALES: pasaba
@@ -109,9 +151,19 @@ def _anotar_seguro(req, estado: str, inicio: float, **extra) -> None:
     re-lanzaba, así que el producto quedaba publicado y el usuario veía "error".
 
     La lección: que el destino sea a prueba de fallos NO basta si el camino hasta
-    él puede reventar. Todo lo que toque `req` va aquí dentro.
+    él puede reventar. Todo lo que toque `req` o el resultado va AQUÍ DENTRO —
+    por eso `_leer_resultado` se llama desde adentro del try y no en el endpoint.
     """
     try:
+        if estado is None:
+            estado, del_resultado = _leer_resultado(resultado)
+            cuerpo = dict(extra.pop("detalle", None) or {})
+            cuerpo.update(del_resultado)
+            extra["detalle"] = cuerpo
+        # `duracion_s` se calcula aquí y NO se acepta por `extra`: pasarlo dos
+        # veces es un TypeError al armar la llamada, que este try se tragaba
+        # dejando la fila sin escribir. Es lo que le pasaba a la rama de error.
+        extra.pop("duracion_s", None)
         bitacora.anotar(bitacora.PUBLICAR, "confirmar",
                         sku=getattr(req, "sku", None), estado=estado,
                         duracion_s=round(time.monotonic() - inicio, 2), **extra)
@@ -138,7 +190,10 @@ async def confirmar(req: PublicarRequest) -> dict[str, Any]:
     inicio = time.monotonic()
     try:
         r = await publicar.confirmar(req.a_dict())
-        _anotar_seguro(req, "ok", inicio, canal=getattr(req, "canal", None),
+        # estado=None ⇒ lo decide el RESULTADO, no la ausencia de excepción.
+        # Ver `_leer_resultado`: los publicadores fallan devolviendo ok=False.
+        _anotar_seguro(req, None, inicio, resultado=r,
+                       canal=getattr(req, "canal", None),
                        cuenta=getattr(req, "cuenta", None),
                        detalle={"wc_id": getattr(req, "wc_id", None)})
         return r
