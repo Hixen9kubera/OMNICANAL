@@ -201,6 +201,9 @@ async def identidad(request: Request, call_next):
         # que webhooks y healthcheck siguen escribiendo sin nombre — igual que
         # hasta hoy, y a propósito: ML no manda credencial.
         core_actor.fijar(quien.actor)
+        # POR DÓNDE: todo lo que pasa por aquí entró por el panel. Los scripts
+        # fijan el suyo en `actor.fijar_desde_cli` (script / claude / cron).
+        core_actor.fijar_origen("panel")
 
         # Sin API_KEY configurada el sistema queda abierto, como hasta hoy. Es
         # el estado por defecto para que un despliegue sin variables no rompa.

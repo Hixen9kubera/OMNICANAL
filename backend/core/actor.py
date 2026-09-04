@@ -55,6 +55,17 @@ log = logging.getLogger("omnicanal.actor")
 _actor: contextvars.ContextVar[str] = contextvars.ContextVar(
     "omnicanal_actor", default="")
 
+# POR DÓNDE entró la operación: `panel`, `script`, `claude`, `cron`…
+#
+# Es una pregunta DISTINTA de quién la hizo, y hace falta separarlas. Brandon
+# publicó tres cosas a Walmart —una con el botón y dos corriendo código desde un
+# chat— y el tablero no podía distinguirlas. Sin este campo, la única salida es
+# la mala: meter la explicación dentro del nombre. Ya pasó — el 4-sep hubo nueve
+# filas con `actor = 'eduardo@kubera.mx (vía Claude, carga del 4-sep)'`, y el
+# efecto fue que Eduardo aparecía DOS VECES con sus números partidos.
+_origen: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "omnicanal_origen", default="")
+
 # `app.usuario` es text y no tiene límite, pero un valor absurdo solo puede venir
 # de un encabezado manipulado. Se recorta y ya.
 _TOPE = 200
@@ -70,9 +81,20 @@ def actual() -> str:
     return _actor.get()
 
 
+def fijar_origen(origen: str) -> None:
+    """Deja POR DÓNDE entró la operación. Ver el comentario de `_origen`."""
+    _origen.set((origen or "").strip().lower()[:_TOPE])
+
+
+def origen_actual() -> str:
+    """Por dónde entró, o cadena vacía si nadie lo fijó."""
+    return _origen.get()
+
+
 def limpiar() -> None:
     """Vuelve a 'nadie'. Útil en pruebas y en trabajos de fondo de larga vida."""
     _actor.set("")
+    _origen.set("")
 
 
 def capturar() -> contextvars.Context:
@@ -135,11 +157,15 @@ _AYUDA = (
 
 
 def agregar_argumento(parser) -> None:
-    """Le pone `--como` a un `argparse.ArgumentParser` de un script."""
+    """Le pone `--como` y `--via` a un `argparse.ArgumentParser` de un script."""
     parser.add_argument("--como", default=None, metavar="QUIEN", help=_AYUDA)
+    parser.add_argument("--via", default=None, metavar="DONDE",
+                        help="Por dónde se corre: script (por omisión), claude, "
+                             "cron. Es el compañero de --como: uno dice QUIÉN y "
+                             "el otro POR DÓNDE.")
 
 
-def fijar_desde_cli(valor: str | None) -> str:
+def fijar_desde_cli(valor: str | None, via: str | None = None) -> str:
     """
     Fija el actor de un script. **Aborta si no se declaró.**
 
@@ -153,6 +179,11 @@ def fijar_desde_cli(valor: str | None) -> str:
     """
     import os
     import sys
+
+    # El origen por omisión de un script es `script`. Se puede decir otra cosa
+    # con `--via claude` cuando lo corre un chat en nombre de alguien, que es el
+    # caso que Brandon pidió poder distinguir del botón del panel.
+    fijar_origen(via or os.environ.get("OMNICANAL_VIA") or "script")
 
     quien = (valor or os.environ.get("OMNICANAL_ACTOR") or "").strip()
 
@@ -179,6 +210,8 @@ def fijar_desde_cli(valor: str | None) -> str:
         # código?"*. Con NULL esa pregunta no se puede contestar — y toda esta
         # pantalla existe para que "no lo sabemos" no se confunda con otra cosa.
         fijar(AUTOMATICO)
+        if not (via or os.environ.get("OMNICANAL_VIA")):
+            fijar_origen("cron")   # sin persona y sin decir por dónde: es un cron
         log.info("actor: automático (queda firmado como código, no como persona)")
         return AUTOMATICO
 

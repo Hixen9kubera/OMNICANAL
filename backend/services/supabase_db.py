@@ -185,10 +185,16 @@ def _marcar_actor(conn, cur) -> None:
     sería optimizar sin un problema medido.
     """
     quien = actor.actual()
-    if not quien:
+    origen = actor.origen_actual()
+    if not quien and not origen:
         return
     try:
-        cur.execute("select set_config('app.usuario', %s, true)", (quien,))
+        # Los dos en la MISMA sentencia: un viaje a la base, no dos. `set_config`
+        # con `true` es LOCAL a la transacción — ver el aviso de arriba sobre por
+        # qué un SET de sesión aquí sería veneno en el pooler compartido.
+        cur.execute("select set_config('app.usuario', %s, true),"
+                    "       set_config('app.origen',  %s, true)",
+                    (quien or "", origen or ""))
     except Exception as exc:  # noqa: BLE001
         # Perder la atribución NO puede costar la operación. Se deshace la
         # transacción a medias (si no, la consulta de verdad heredaría el estado

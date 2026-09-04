@@ -66,6 +66,10 @@ EQUIPO: tuple[tuple[str, str, str], ...] = (
     ("Andrea Pardo",      "andrea.pardo@kubera.mx",      "operador"),
     ("Cinthya",           "cinthya@kubera.mx",           "operador"),
     ("Denisse Jaimes",    "denisse.jaimes@kubera.mx",    "operador"),
+    # Alta pedida por Brandon el 4-sep-2026. Entra como KAM, que es lo que son
+    # todos los no-admin; si debe ver Operaciones o Migración, se cambia aquí a
+    # 'admin' y se vuelve a correr — el script corrige el rol sin duplicar.
+    ("Fernando Ernesto",  "fernando@kubera.mx",          "operador"),
     ("Gabriela Ramírez",  "gabriela.ramirez@kubera.mx",  "operador"),
     ("Haim",              "haim@kubera.mx",              "operador"),
     ("Nancy Cruz",        "nancy.cruz@kubera.mx",        "operador"),

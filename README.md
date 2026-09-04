@@ -1074,6 +1074,54 @@ Medido después del cambio:
 
 ---
 
+### v0.413.0 — El QUIÉN y el POR DÓNDE son dos preguntas, y Fernando entra al equipo
+
+#### El origen, que faltaba
+
+Brandon publicó tres cosas a Walmart —una con el botón del panel y dos de prueba
+corriendo código desde un chat— y el tablero no podía distinguirlas. Textual:
+*"debe aparecer mi nombre y que los realicé con Claude, y no fue con función del
+botón publicar"*.
+
+Sin un campo para eso, la única salida es la mala: **meter la explicación dentro
+del nombre**. Y ya había pasado — el mismo día aparecieron nueve filas con
+
+```
+actor = 'eduardo@kubera.mx (vía Claude, carga del 4-sep)'
+```
+
+cuyo efecto visible era **Eduardo saliendo DOS VECES en la pantalla**, con sus
+números partidos. Es el mismo defecto que `crear` tenía guardando el mensaje de
+error dentro de `accion`: una columna que significa una cosa, usada para otra.
+
+**Migración 0047**, con el mismo mecanismo de la 0046 y la misma trampa evitada:
+`ops.channel_submissions` gana `origen`, que se llena solo desde un ajuste que el
+backend deja puesto. Ningún publicador cambia.
+
+- `core/actor.py` gana `fijar_origen` / `origen_actual`, y `--via` en los scripts.
+- El middleware marca `panel` a todo lo que entra por el panel.
+- Un script marca `script` por omisión, `claude` cuando lo corre un chat, y `cron`
+  cuando es `--como automatico` sin decir por dónde.
+- `supabase_db` manda los dos en **una sola sentencia**: un viaje a la base, no dos.
+
+`origen` no se confunde con `detail_ref`, que sigue apuntando al detalle (el
+`feedId` de Walmart, la fila de MySQL). Mezclarlos sería repetir el error que esto
+viene a arreglar.
+
+#### Fernando Ernesto, alta preparada
+
+`fernando@kubera.mx` se agrega a `scripts/crear_usuarios.py` como **operador**
+(KAM), que es lo que son todos los no-admin.
+
+**No se pudo ejecutar desde aquí, y es correcto que no se pueda.** `core.usuarios`
+tiene llave foránea a `auth.users`: el perfil no existe sin la identidad de
+Supabase Auth. Y el `.env` local lleva la llave de **analytics**
+(`xaxbkijcxzvrwyrqnjzi`), no la de kubera — crear el usuario con ella lo metería
+en el proyecto equivocado.
+
+La llave maestra de kubera vive en Railway y no debe pasar por un chat. El script
+es idempotente: a quien ya existe sólo le corrige el rol.
+
 ### v0.412.0 — Inventario deja de mirar a WooCommerce: manda Odoo, y las etapas cambian de significado
 
 Seis instrucciones de Brandon (4-sep) que reorientan la pestaña entera. La de
