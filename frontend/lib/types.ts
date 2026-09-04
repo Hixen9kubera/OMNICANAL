@@ -1648,6 +1648,11 @@ export interface Etapa {
   /** De dónde salió el dato. Se muestra para poder discutirlo, no solo verlo. */
   fuente: string;
   n?: number;
+  /** Etapa «en proceso»: piezas en rack y piezas en zona de paso. */
+  rack?: number;
+  stage?: number;
+  /** Etapa «variantes»: los SKUs hermanos. */
+  skus?: string[];
   dias?: number;
   dias_quieto?: number;
   peldano?: number;
@@ -1681,6 +1686,8 @@ export interface FilaInventario {
   invisible_en_tienda: boolean;
 
   contenedor: string;
+  /** De dónde salió: "odoo" (manda) o "costos_validados" (respaldo). */
+  contenedor_fuente: "odoo" | "costos_validados" | "";
   /** El código mostrado es una referencia de booking, no un contenedor ISO. */
   contenedor_es_booking: boolean;
   embarque: string;
@@ -1690,10 +1697,13 @@ export interface FilaInventario {
   /** Las dos fuentes tienen dato pero una no trae número de embarque: no hay
    *  con qué cotejarlas. NO es lo mismo que "concuerdan". */
   contenedor_no_comparable: boolean;
-  cajas: number | null;
+  /** Piezas por caja MASTER, de Odoo. Nunca del packing list. */
   piezas_por_caja: number | null;
-  /** cajas × piezas por caja: lo que el packing list dice que debe llegar. */
-  piezas_declaradas: number | null;
+  /** Cajas del físico de Odoo — derivadas: piezas ÷ piezas por caja. */
+  cajas: number | null;
+  /** Cajas de lo que está en recepción abierta. */
+  cajas_por_llegar: number | null;
+  cbm_caja: number | null;
 
   stock_woo: number | null;
   stock_odoo: number | null;
@@ -1721,6 +1731,18 @@ export interface FilaInventario {
   n_ubicaciones: number;
   /** Piezas en CUARENTENA o SCRAP: están en el edificio y no se pueden vender. */
   no_vendible: number | null;
+  /** Piezas en un rack designado, y piezas en zona de paso (STAGE/Salida). */
+  piezas_en_rack: number | null;
+  piezas_en_stage: number | null;
+
+  /** Variantes SEGÚN ODOO. `relacion` distingue el parentesco real
+   *  (misma plantilla) de la simple coincidencia de código base. */
+  variantes_odoo: VarianteOdoo[];
+  n_variantes_odoo: number;
+  odoo_tmpl_id: number | null;
+  odoo_creado: string;
+  odoo_modificado: string;
+  odoo_categoria: string;
 
   odoo_duplicado: boolean;
   odoo_archivado: boolean;
@@ -1733,6 +1755,15 @@ export interface FilaInventario {
   cuadre: Cuadre;
 }
 
+export interface VarianteOdoo {
+  sku: string;
+  nombre: string;
+  activo: boolean;
+  /** "plantilla" = misma product_tmpl_id en Odoo (parentesco real).
+   *  "codigo"    = solo comparte los dos primeros segmentos del SKU. */
+  relacion: "plantilla" | "codigo";
+}
+
 export interface UbicacionSku {
   bodega: string;
   rack: string;
@@ -1741,6 +1772,8 @@ export interface UbicacionSku {
   reservado: number;
   /** false = cuarentena o scrap: Odoo las excluye de qty_available. */
   vendible: boolean;
+  /** Zona de paso (STAGE / Salida / empaquetado) en vez de un rack designado. */
+  es_stage: boolean;
 }
 
 export interface Cuadre {

@@ -355,7 +355,9 @@ def detalle_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
                 {
                     "fields": ["default_code", "name", "qty_available", "free_qty",
                                "incoming_qty", "outgoing_qty", "container_numbers",
-                               "active"],
+                               "active", "sale_ok", "create_date", "write_date",
+                               "product_tmpl_id", "categ_id",
+                               "units_per_master_box", "cbm_master_box"],
                     # active_test:False para VER los archivados: 13,831 productos
                     # archivados guardan 22,262 piezas reales en racks. Ocultarlos
                     # haría que la pestaña dijera "no existe" de mercancía que sí
@@ -377,6 +379,19 @@ def detalle_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
             nuevo = {
                 "odoo_id": r.get("id"),
                 "nombre": r.get("name") or "",
+                "creado": r.get("create_date"),
+                "modificado": r.get("write_date"),
+                "vendible_flag": bool(r.get("sale_ok")),
+                "tmpl_id": _id_de(r.get("product_tmpl_id")),
+                "categoria": _nombre_de(r.get("categ_id")),
+                # El factor de caja MASTER, que es el que manda para contar
+                # cajas: las cajas se derivan del físico de Odoo, nunca del
+                # packing list (Brandon, 4-sep — el packing list dice lo que el
+                # proveedor embarcó; Odoo dice lo que HAY).
+                "piezas_por_caja": (float(r["units_per_master_box"])
+                                    if r.get("units_per_master_box") else None),
+                "cbm_caja": (float(r["cbm_master_box"])
+                             if r.get("cbm_master_box") else None),
                 "fisico": fisico,
                 "libre": libre,
                 "reservado": max(0.0, fisico - libre),
@@ -523,9 +538,191 @@ def ubicaciones_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
                 "piezas": float(q.get("quantity") or 0),
                 "reservado": float(q.get("reserved_quantity") or 0),
                 "vendible": _vendible(u),
+                "es_stage": _es_stage(completo),
             })
     for filas in salida.values():
-        filas.sort(key=lambda f: (-f["vendible"], -f["piezas"]))
+        filas.sort(key=lambda f: (-f["vendible"], f["es_stage"], -f["piezas"]))
+    return salida
+
+
+# Zonas de PASO dentro del almacén: la mercancía está recibida y es vendible,
+# pero nadie le asignó todavía un rack. Son 12 ubicaciones de 30,949 y guardan
+# **930,732 de las 1,163,459 piezas del inventario — el 80%**. Por eso importan:
+# «en proceso» significa exactamente esto, mercancía que llegó y sigue sin lugar.
+_ZONAS_DE_PASO = ("STAGE", "SALIDA", "ZONA DE EMPAQUETADO")
+
+
+def _es_stage(completo: str) -> bool:
+    """¿Esta ubicación es una zona de paso en vez de un rack designado?"""
+    u = (completo or "").upper()
+    return any(z in u for z in _ZONAS_DE_PASO)
+
+
+def variantes_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """
+    Los SKUs HERMANOS de cada uno, según Odoo: los que comparten
+    `product_tmpl_id`. ``{ SKU: [{sku, nombre, activo}] }`` sin incluirse a sí
+    mismo.
+
+    Esta es la jerarquía de Odoo y no coincide con la de WooCommerce. Medido:
+    de 12,289 plantillas con SKU activo, **269 agrupan más de un producto** (la
+    mayor tiene 29). El resto es un SKU por plantilla.
+
+    Ojo con el falso amigo: `JUGU-1153-MET` y `JUGU-1153-MET-B` PARECEN
+    variantes por el nombre y no lo son — viven en plantillas distintas (117750
+    y 117721). Agrupar por prefijo del SKU daría hermanos inventados; por eso
+    aquí se agrupa por `product_tmpl_id` y nunca por el texto del código.
+    """
+    limpios = [s for s in {(x or "").strip() for x in skus} if s]
+    if not limpios:
+        return {}
+    uid = _uid()
+    if not uid:
+        return {}
+    try:
+        propios = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "product.product", "search_read",
+            [[["default_code", "in", limpios]], ["default_code", "product_tmpl_id"]],
+            {"context": {"active_test": False}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo variantes_por_sku falló: %s", exc)
+        return {}
+    tmpl_de = {(p.get("default_code") or "").strip(): _id_de(p.get("product_tmpl_id"))
+               for p in propios}
+    tmpls = sorted({t for t in tmpl_de.values() if t})
+    if not tmpls:
+        return {}
+    try:
+        hermanos = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "product.product", "search_read",
+            [[["product_tmpl_id", "in", tmpls]],
+             ["default_code", "name", "product_tmpl_id", "active"]],
+            {"context": {"active_test": False}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo variantes_por_sku (hermanos) falló: %s", exc)
+        return {}
+    por_tmpl: dict[int, list[dict[str, Any]]] = {}
+    for h in hermanos:
+        por_tmpl.setdefault(_id_de(h.get("product_tmpl_id")), []).append({
+            "sku": (h.get("default_code") or "").strip(),
+            "nombre": h.get("name") or "",
+            "activo": bool(h.get("active")),
+            "relacion": "plantilla",
+        })
+    salida = {sku: sorted((h for h in por_tmpl.get(t, []) if h["sku"] != sku),
+                          key=lambda x: x["sku"])
+              for sku, t in tmpl_de.items() if t}
+    _sumar_por_codigo(salida, limpios)
+    return salida
+
+
+def _base_de(sku: str) -> str:
+    """`JUGU-1153-MET-B` → `JUGU-1153`: los dos primeros segmentos del código."""
+    p = [x for x in (sku or "").split("-") if x]
+    return "-".join(p[:2]) if len(p) >= 2 else (p[0] if p else "")
+
+
+def _sumar_por_codigo(salida: dict[str, list[dict[str, Any]]],
+                      skus: list[str]) -> None:
+    """
+    Agrega los SKUs que COMPARTEN CÓDIGO BASE, marcados aparte.
+
+    Es la relación que se ve al filtrar por SKU en la vista «Product Variants»
+    de Odoo: `JUGU-1153` devuelve `JUGU-1153-MET` y `JUGU-1153-MET-B`. Pero esos
+    dos viven en PLANTILLAS DISTINTAS (117750 y 117721), así que para Odoo no son
+    variantes — solo comparten prefijo.
+
+    Se devuelve marcado `relacion="codigo"` y NUNCA mezclado con las de
+    plantilla, por una razón con historia: agrupar por los dos primeros
+    segmentos es exactamente lo que hace `variables.py::parse_sku`, y eso ya
+    fusionó en WooCommerce 104 pares `-EST`/`-MET` bajo un solo padre, de los
+    cuales 34 son productos DISTINTOS (un refractómetro con una hebilla de
+    mancuerna, un cierra-puertas con una funda de palanca). El prefijo es una
+    PISTA, no un parentesco.
+    """
+    bases = {s: _base_de(s) for s in skus}
+    quiere = {b for b in bases.values() if b}
+    if not quiere:
+        return
+    uid = _uid()
+    if not uid:
+        return
+    try:
+        candidatos = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "product.product", "search_read",
+            [["|"] * (len(quiere) - 1)
+             + [["default_code", "=like", b + "-%"] for b in sorted(quiere)]
+             if len(quiere) > 1 else
+             [["default_code", "=like", next(iter(quiere)) + "-%"]],
+             ["default_code", "name", "active", "product_tmpl_id"]],
+            {"context": {"active_test": False}, "limit": 2000},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo _sumar_por_codigo falló: %s", exc)
+        return
+    por_base: dict[str, list[dict[str, Any]]] = {}
+    for c in candidatos:
+        cod = (c.get("default_code") or "").strip()
+        por_base.setdefault(_base_de(cod), []).append({
+            "sku": cod,
+            "nombre": c.get("name") or "",
+            "activo": bool(c.get("active")),
+            "relacion": "codigo",
+        })
+    for sku, base in bases.items():
+        ya = {h["sku"] for h in salida.get(sku, [])} | {sku}
+        extra = sorted((h for h in por_base.get(base, []) if h["sku"] not in ya),
+                       key=lambda x: x["sku"])
+        if extra:
+            salida.setdefault(sku, []).extend(extra)
+
+
+def miniaturas_por_sku(skus: list[str]) -> dict[str, str]:
+    """
+    ``{ SKU: "data:image/png;base64,…" }`` con la imagen de Odoo a 256 px.
+
+    Va como data-URI dentro del renglón, y no por un endpoint propio, por una
+    razón concreta: un `<img src="/api/…">` NO manda el token de sesión —es el
+    mismo motivo por el que `api.descargar()` existe— y con el enforcement
+    encendido devolvería 401. A 256 px cada imagen pesa unos pocos KB, así que
+    viaja bien en el JSON de una tabla de decenas de filas.
+
+    Se pide `image_256` y no `image_1920`: el 1920 de un solo SKU del piloto
+    pesa 375 KB en base64, y diez de ésos serían casi 4 MB por carga.
+    """
+    limpios = [s for s in {(x or "").strip() for x in skus} if s]
+    if not limpios:
+        return {}
+    uid = _uid()
+    if not uid:
+        return {}
+    salida: dict[str, str] = {}
+    LOTE = 50
+    for i in range(0, len(limpios), LOTE):
+        try:
+            filas = _models().execute_kw(
+                settings.odoo_db, uid, settings.odoo_password,
+                "product.product", "search_read",
+                [[["default_code", "in", limpios[i:i + LOTE]]],
+                 ["default_code", "image_256"]],
+                {"context": {"active_test": False}},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Odoo miniaturas_por_sku falló (lote %d): %s",
+                        i // LOTE + 1, exc)
+            continue
+        for f in filas:
+            sku = (f.get("default_code") or "").strip()
+            b64 = f.get("image_256")
+            if sku and b64:
+                # Odoo guarda PNG o JPEG indistintamente; el navegador lo
+                # resuelve solo, así que no hace falta olfatear el tipo.
+                salida[sku] = f"data:image/png;base64,{b64}"
     return salida
 
 

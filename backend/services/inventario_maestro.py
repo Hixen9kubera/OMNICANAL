@@ -22,8 +22,27 @@ Por eso aquí NO hay un solo INSERT ni un PUT a ningún canal. Cuando exista la
 captura humana (entrada por packing list), va en otro módulo y con el dale de
 Brandon, porque enciende un flujo.
 
-LA FILA ES EL SKU DE WOOCOMMERCE
+ODOO MANDA (Brandon, 4-sep-2026)
 --------------------------------
+Título, foto, contenedor, cajas, piezas por caja, ubicación y variantes salen de
+ODOO. WooCommerce entra en UN solo lugar —el descuadre— porque comparar necesita
+las dos cifras por definición. Su `post_status` está **prohibido** como señal de
+etapa: la escalera editorial de la tienda no dice nada del estado de la
+mercancía. Y las cajas nunca salen del packing list: ése dice lo que el
+proveedor EMBARCÓ, y aquí se muestra lo que HAY.
+
+LAS CINCO ETAPAS, con la definición de Brandon
+-----------------------------------------------
+  1. EN PROCESO · no se recibió en almacén, o se recibió y sigue sin rack.
+     Es la etapa que más pesa: de 1,163,459 piezas del inventario, **930,732
+     (el 80%) están en zonas de paso** y solo 221,644 en un rack designado.
+  2. FOTOS      · con una foto de Odoo basta.
+  3. VARIANTES  · qué SKUs son hermanos según Odoo, y cuántos.
+  4. VALIDADO   · el candado `revisado_at` que pone la pestaña Costos.
+  5. ENVIADO    · a FULL (ML), FBA (Amazon) o WFS (Walmart).
+
+LA FILA ES EL SKU
+-----------------
 Padres y variaciones en la misma tabla, con `es_padre`. Son 14,737 filas y cero
 colisiones de SKU entre los dos tipos. Las otras opciones se midieron y pierden:
 solo padres deja fuera 7,453 variaciones —que son las que tienen stock, porque
@@ -69,16 +88,6 @@ PILOTO: tuple[str, ...] = (
     "HERR-0146-EST", "VEH-0148-EST",
 )
 
-# Cuántas fotos se consideran "la etapa de fotos terminada". El catálogo tiene
-# 1,649 productos con 5 o más y 208 sin ninguna imagen: 4 es el corte que
-# separa "ya se trabajó" de "solo tiene la portada del scraping".
-_FOTOS_COMPLETAS = 4
-
-# La escalera de WooCommerce, de menos a más avanzado. `ready` no es de
-# WordPress: la inventó el equipo el 8-feb-2026 y el panel ya la entiende.
-_ESCALERA = {"draft": 0, "pending": 1, "ready": 2, "publish": 3}
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # LA TABLA
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,26 +105,30 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     if not pedidos:
         return []
 
-    woo = wp_db.maestro_por_sku(pedidos)
     od = odoo.detalle_por_sku(pedidos)
     ubis = odoo.ubicaciones_por_sku(pedidos)
+    hermanos = odoo.variantes_por_sku(pedidos)
+    imgs = odoo.miniaturas_por_sku(pedidos)
     costos = _costos(pedidos)
     canales = _canales(pedidos)
     proceso = _ultimo_proceso(pedidos)
-    imgs = wp_db.imagenes_por_wc_id([d["wc_id"] for d in woo.values()])
+    # WooCommerce ya NO manda en nada de esta pestaña (decisión de Brandon,
+    # 4-sep): se lee solo para el DESCUADRE, que por definición necesita las dos
+    # cifras. Su `post_status` está prohibido como señal de etapa.
+    woo = wp_db.maestro_por_sku(pedidos)
 
     salida = []
     for sku in pedidos:
         salida.append(_fila(sku, woo.get(sku), od.get(sku), costos.get(sku),
                             canales.get(sku, []), proceso.get(sku),
-                            imgs.get((woo.get(sku) or {}).get("wc_id")),
-                            ubis.get(sku, [])))
+                            imgs.get(sku), ubis.get(sku, []),
+                            hermanos.get(sku, [])))
     return salida
 
 
 def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pubs: list[dict], plog: dict | None, imagen: str | None,
-          ubicaciones: list[dict]) -> dict[str, Any]:
+          ubicaciones: list[dict], hermanos: list[dict]) -> dict[str, Any]:
     es_variacion = bool(w and w["tipo"] == "variacion")
     es_padre = bool(w and w["n_hijas"] > 0)
 
@@ -131,11 +144,21 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
     # ningún lado se muestra la referencia del transitario CRUDA y marcada
     # (`contenedor_es_booking`): dejar la celda vacía haría creer que no se
     # sabe de dónde vino la mercancía, cuando sí se sabe a medias.
-    contenedor = emp_costo["iso"] or emp_odoo["iso"]
-    es_booking = not contenedor
-    if es_booking:
-        contenedor = emp_costo["crudo"] or emp_odoo["crudo"]
-    embarque = emp_costo["embarque"] or emp_odoo["embarque"]
+    # ODOO MANDA, `costos_validados` es el respaldo (Brandon, 4-sep), y la
+    # pestaña DICE de cuál de los dos salió: sin eso, un número de contenedor es
+    # un número sin dueño, y las dos fuentes no siempre coinciden.
+    if emp_odoo["crudo"]:
+        contenedor = emp_odoo["iso"] or emp_odoo["crudo"]
+        embarque = emp_odoo["embarque"] or emp_costo["embarque"]
+        es_booking = not emp_odoo["iso"]
+        fuente = "odoo"
+    elif emp_costo["crudo"]:
+        contenedor = emp_costo["iso"] or emp_costo["crudo"]
+        embarque = emp_costo["embarque"]
+        es_booking = not emp_costo["iso"]
+        fuente = "costos_validados"
+    else:
+        contenedor, embarque, es_booking, fuente = "", "", False, ""
 
     # El cotejo de contenedor tiene TRES resultados, no dos, y confundirlos hacía
     # que la pestaña se callara justo cuando no sabía. Caso que lo destapó,
@@ -158,7 +181,9 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "sku": sku,
         "existe_en_woo": w is not None,
         "existe_en_odoo": o is not None,
-        "nombre": (w or {}).get("titulo") or (o or {}).get("nombre") or "",
+        # El nombre y la foto salen de ODOO: es el registro exacto del producto
+        # (Brandon, 4-sep). WooCommerce solo entra si Odoo no tiene la ficha.
+        "nombre": (o or {}).get("nombre") or (w or {}).get("titulo") or "",
         "imagen": imagen,
         "wc_id": (w or {}).get("wc_id"),
         "odoo_id": (o or {}).get("odoo_id"),
@@ -172,17 +197,34 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "padre_status": (w or {}).get("parent_status"),
         "invisible_en_tienda": invisible,
 
+        # VARIANTES SEGÚN ODOO: los SKUs que comparten `product_tmpl_id`.
+        # No se deduce del texto del código — `JUGU-1153-MET` y
+        # `JUGU-1153-MET-B` parecen hermanos y viven en plantillas distintas.
+        "variantes_odoo": hermanos,
+        "n_variantes_odoo": len(hermanos),
+        "odoo_tmpl_id": (o or {}).get("tmpl_id"),
+        "odoo_creado": _iso((o or {}).get("creado")),
+        "odoo_modificado": _iso((o or {}).get("modificado")),
+        "odoo_categoria": (o or {}).get("categoria") or "",
+
         # empaque
         "contenedor": contenedor,
+        "contenedor_fuente": fuente,
         "contenedor_es_booking": es_booking,
         "embarque": embarque,
         "contenedor_odoo": emp_odoo["crudo"],
         "contenedor_costo": emp_costo["crudo"],
         "contenedor_discrepa": discrepa,
         "contenedor_no_comparable": no_comparable,
-        "cajas": _num((c or {}).get("cajas")),
-        "piezas_por_caja": _num((c or {}).get("piezas_por_caja")),
-        "piezas_declaradas": _piezas_declaradas(c),
+        # CAJAS Y PIEZAS/CAJA VIENEN DE ODOO, NUNCA DEL PACKING LIST
+        # (Brandon, 4-sep): "es inventario existente en físico de odoo". El
+        # packing list dice lo que el proveedor EMBARCÓ; Odoo dice lo que HAY.
+        # Las cajas no son un campo: se derivan del físico entre el factor.
+        "piezas_por_caja": _num((o or {}).get("piezas_por_caja")),
+        "cajas": _cajas((o or {}).get("fisico"), (o or {}).get("piezas_por_caja")),
+        "cajas_por_llegar": _cajas((o or {}).get("entrante"),
+                                   (o or {}).get("piezas_por_caja")),
+        "cbm_caja": _num((o or {}).get("cbm_caja")),
 
         # existencias
         "stock_woo": (w or {}).get("stock"),
@@ -206,6 +248,10 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "rack": ubicaciones[0]["rack"] if ubicaciones else "",
         "bodega": ubicaciones[0]["bodega"] if ubicaciones else "",
         "n_ubicaciones": len(ubicaciones),
+        "piezas_en_rack": sum(u["piezas"] for u in ubicaciones
+                              if u["vendible"] and not u["es_stage"]) or None,
+        "piezas_en_stage": sum(u["piezas"] for u in ubicaciones
+                               if u["vendible"] and u["es_stage"]) or None,
         "no_vendible": sum(u["piezas"] for u in ubicaciones if not u["vendible"]) or None,
 
         "odoo_duplicado": bool((o or {}).get("duplicado")),
@@ -315,106 +361,137 @@ def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
 def _etapas(fila: dict, w: dict | None, c: dict | None,
             pubs: list[dict], plog: dict | None) -> dict[str, dict[str, Any]]:
     """
-    Las cinco etapas que pidió Brandon: en proceso (con tiempo), fotos,
-    variantes, validado, enviado full.
+    Las cinco etapas, con las definiciones que dio Brandon el 4-sep-2026:
 
-    TODAS SE DERIVAN de dato que ya existe — no hay tabla nueva, y ese es el
-    punto: el tablero funciona desde el primer minuto sin que nadie capture
-    nada. Cada etapa dice de dónde salió en `fuente`, para que se pueda
-    discutir el dato y no solo el color.
+      1. EN PROCESO   · todavía NO se recibió en almacén, o se recibió y sigue
+                        sin rack ni stage designado.
+      2. FOTOS        · con UNA foto basta: verde. Sin foto: rojo.
+      3. VARIANTES    · qué SKUs son variantes según Odoo, y cuántas.
+      4. VALIDADO     · el candado de la pestaña Costos: `revisado_at`.
+      5. ENVIADO      · si se mandó a FULL (ML), FBA (Amazon) o WFS (Walmart).
 
+    TODO sale de ODOO salvo las etapas 4 y 5, que viven en kubera porque el
+    candado de costos y el censo de canales están ahí. **`wp_posts.post_status`
+    quedó PROHIBIDO como señal de etapa** (Brandon, 4-sep): la escalera
+    editorial de WooCommerce no dice nada del estado real de la mercancía.
+
+    Cada etapa declara su `fuente` para poder discutir el dato, no solo el color.
     Estados: `listo` · `parcial` · `pendiente` · `na` · `bloqueado`.
     """
     e: dict[str, dict[str, Any]] = {}
 
-    # 1 · EN PROCESO (con tiempo)
-    if not w:
-        e["en_proceso"] = _et("bloqueado", "sin alta en WooCommerce",
-                              "no existe el producto", "wp_posts")
-    else:
-        dias = _dias(w.get("creado")) or 0
-        quieto = _dias(w.get("modificado")) or 0
-        peldano = _ESCALERA.get(w["status"], 0)
-        estado = "listo" if peldano >= 3 else ("parcial" if peldano >= 1 else "pendiente")
+    # ── 1 · EN PROCESO ──────────────────────────────────────────────────────
+    # No es una escalera editorial: es la pregunta de bodega. ¿Llegó? ¿Y si
+    # llegó, tiene lugar? Medido el 4-sep: de 1,163,459 piezas del inventario,
+    # **930,732 (el 80%) están en zonas de paso** —STAGE, Salida, Zona de
+    # empaquetado— y solo 221,644 en un rack designado. O sea que esta etapa,
+    # bien contada, es el problema más grande del almacén.
+    rack = fila["piezas_en_rack"] or 0
+    stage = fila["piezas_en_stage"] or 0
+    if not fila["existe_en_odoo"]:
+        e["en_proceso"] = _et("bloqueado", "sin producto en Odoo",
+                              "no hay ficha que recibir", "odoo product.product")
+    elif not rack and not stage:
+        detalle = "no se ha recibido en almacén"
+        if fila["recepcion_piezas"]:
+            d = fila["recepcion_dias"]
+            detalle = (f"{fila['recepcion_piezas']:.0f} pzas en recepción abierta"
+                       + (f" desde hace {d} días" if d else ""))
+        e["en_proceso"] = _et("pendiente", "sin recibir", detalle,
+                              "odoo stock.quant", rack=0, stage=0)
+    elif not rack:
         e["en_proceso"] = _et(
-            estado, w["status"],
-            f"{dias} días de alta · {quieto} sin tocar", "wp_posts.post_status",
-            dias=dias, dias_quieto=quieto, peldano=peldano)
-        if plog:
-            e["en_proceso"]["ultimo_paso"] = plog.get("accion")
-            e["en_proceso"]["ultimo_actor"] = plog.get("actor")
-            e["en_proceso"]["ultimo_at"] = _iso(plog.get("created_at"))
-
-    # 2 · FOTOS
-    if not w:
-        e["fotos"] = _et("bloqueado", "sin producto", "", "wp_postmeta")
+            "parcial", "recibido, sin rack",
+            f"{stage:.0f} pzas en zona de paso ({fila['bodega']}) — falta asignarles rack",
+            "odoo stock.quant", rack=0, stage=stage)
+    elif stage:
+        e["en_proceso"] = _et(
+            "parcial", "parcialmente acomodado",
+            f"{rack:.0f} pzas en rack y {stage:.0f} todavía en zona de paso",
+            "odoo stock.quant", rack=rack, stage=stage)
     else:
-        n = w["n_galeria"] + (1 if w["tiene_portada"] else 0)
-        if n >= _FOTOS_COMPLETAS:
-            estado = "listo"
-        elif n > 0:
-            estado = "parcial"
-        else:
-            estado = "pendiente"
-        e["fotos"] = _et(estado, "1 imagen" if n == 1 else f"{n} imágenes",
-                         "portada + galería" if w["tiene_portada"] else "sin portada",
-                         "wp_postmeta._thumbnail_id/_product_image_gallery", n=n)
+        e["en_proceso"] = _et(
+            "listo", "acomodado",
+            f"{rack:.0f} pzas en {fila['rack']} ({fila['bodega']})",
+            "odoo stock.quant", rack=rack, stage=0)
+    # El último paso registrado en el panel se muestra si lo hay: no decide el
+    # color, solo dice quién tocó el SKU por última vez.
+    if plog:
+        e["en_proceso"]["ultimo_paso"] = plog.get("accion")
+        e["en_proceso"]["ultimo_actor"] = plog.get("actor")
+        e["en_proceso"]["ultimo_at"] = _iso(plog.get("created_at"))
 
-    # 3 · VARIANTES
-    if not w:
-        e["variantes"] = _et("bloqueado", "sin producto", "", "wp_posts")
-    elif fila["invisible_en_tienda"]:
-        # El caso que un tablero ingenuo pintaría en verde y está roto.
+    # ── 2 · FOTOS ───────────────────────────────────────────────────────────
+    # Binario a propósito: con una foto basta. La imagen es la de Odoo, que es
+    # la representación exacta del producto registrado (Brandon, 4-sep).
+    if fila["imagen"]:
+        e["fotos"] = _et("listo", "con foto",
+                         "imagen del producto en Odoo", "odoo image_256")
+    else:
+        e["fotos"] = _et("pendiente", "sin foto",
+                         "el producto no tiene imagen en Odoo", "odoo image_256")
+
+    # ── 3 · VARIANTES ───────────────────────────────────────────────────────
+    # Solo informa: cuáles son y cuántas. Sin juicio de valor — un producto sin
+    # variantes no está peor que uno con ellas.
+    hermanos = fila["variantes_odoo"]
+    if not fila["existe_en_odoo"]:
+        e["variantes"] = _et("bloqueado", "sin producto en Odoo", "",
+                             "odoo product_tmpl_id")
+    elif hermanos:
+        # El detalle NO repite los SKUs: la UI los pinta como fichas debajo, con
+        # su relación. Ponerlos también aquí los mostraba dos veces seguidas.
+        de_plantilla = sum(1 for h in hermanos if h["relacion"] == "plantilla")
+        detalle = ("hermanos de la misma plantilla en Odoo" if de_plantilla
+                   else "comparten código base; en Odoo son plantillas distintas")
         e["variantes"] = _et(
-            "bloqueado", f"padre en {fila['padre_status']}",
-            "la variación está publicada pero su padre no: no se ve en la tienda",
-            "wp_posts.post_parent")
-    elif w["tipo"] == "variacion":
-        e["variantes"] = _et("listo", f"variante de {fila['padre_sku'] or '—'}",
-                             "", "wp_posts.post_parent")
-    elif fila["es_padre"]:
-        e["variantes"] = _et("listo", f"padre con {fila['n_hijas']} variantes",
-                             "", "wp_posts.post_parent")
+            "listo", f"{len(hermanos) + 1} SKUs", detalle,
+            "odoo product_tmpl_id", skus=[h["sku"] for h in hermanos])
     else:
-        e["variantes"] = _et("na", "producto simple",
-                             "no lleva variantes", "wp_posts.post_parent")
+        e["variantes"] = _et("na", "sin variantes",
+                             "único SKU de su plantilla en Odoo",
+                             "odoo product_tmpl_id", skus=[])
 
-    # 4 · VALIDADO — el candado COSTO VALIDADO
+    # ── 4 · VALIDADO ────────────────────────────────────────────────────────
+    # El candado que pone la pestaña Costos al validar: `revisado_at`.
     if not c:
         e["validado"] = _et("pendiente", "sin costo",
                             "no tiene renglón en costos_validados",
                             "costing.costos_validados")
     elif c.get("revisado_at"):
-        e["validado"] = _et("listo", _iso(c["revisado_at"])[:10],
-                            f"validado por {c.get('revisado_por') or '—'}",
+        e["validado"] = _et("listo", "validado",
+                            f"{_iso(c['revisado_at'])[:10]} por "
+                            f"{c.get('revisado_por') or '—'}",
                             "costing.costos_validados.revisado_at")
     else:
         e["validado"] = _et("parcial", "costo sin validar",
-                            "tiene costo pero nadie pasó el candado",
-                            "costing.costos_validados")
+                            "tiene costo pero nadie pasó el candado en Costos",
+                            "costing.costos_validados.revisado_at")
 
-    # 5 · ENVIADO FULL
-    ffm = [p for p in pubs
-           if p.get("is_fulfillment") or (p.get("stock_full") or 0) > 0
-           or (p.get("stock_fba") or 0) > 0]
-    if ffm:
-        e["enviado_full"] = _et(
-            "listo", ", ".join(sorted({p["canal"] for p in ffm})),
-            f"{fila['stock_full'] or 0:.0f} en FULL · {fila['stock_fba'] or 0:.0f} en FBA",
-            "channel.listings.is_fulfillment")
+    # ── 5 · ENVIADO ─────────────────────────────────────────────────────────
+    # A la bodega del marketplace: FULL en Mercado Libre, FBA en Amazon, WFS en
+    # Walmart. Se nombra CUÁL, porque no es lo mismo para quien surte.
+    destinos: list[str] = []
+    if (fila["stock_full"] or 0) > 0 or any(
+            p.get("is_fulfillment") and p["canal"] == "mercado_libre" for p in pubs):
+        destinos.append(f"FULL {fila['stock_full'] or 0:.0f}")
+    if (fila["stock_fba"] or 0) > 0 or any(
+            p.get("is_fulfillment") and p["canal"] == "amazon" for p in pubs):
+        destinos.append(f"FBA {fila['stock_fba'] or 0:.0f}")
+    if any(p.get("is_fulfillment") and p["canal"] == "walmart" for p in pubs):
+        destinos.append("WFS")
+    if destinos:
+        e["enviado_full"] = _et("listo", " · ".join(destinos),
+                                "en bodega del marketplace",
+                                "channel.listings.is_fulfillment")
     elif (fila["stock_odoo"] or 0) > 0:
-        e["enviado_full"] = _et("pendiente", "hay stock, no se ha enviado",
-                                "", "channel.listings")
-    elif fila["recepcion_piezas"]:
-        # NO se dice "en tránsito": la recepción está ABIERTA, que no es lo mismo.
-        d = fila["recepcion_dias"]
-        e["enviado_full"] = _et(
-            "bloqueado", "esperando mercancía",
-            f"{fila['recepcion_piezas']:.0f} pzas en recepción abierta"
-            + (f" desde hace {d} días" if d else ""),
-            "odoo stock.move pendiente")
+        e["enviado_full"] = _et("pendiente", "no enviado",
+                                "hay stock en bodega propia y no se ha mandado",
+                                "channel.listings.is_fulfillment")
     else:
-        e["enviado_full"] = _et("pendiente", "sin stock", "", "odoo")
+        e["enviado_full"] = _et("pendiente", "no enviado",
+                                "sin stock que enviar",
+                                "channel.listings.is_fulfillment")
     return e
 
 
@@ -675,20 +752,20 @@ def _empaque(crudo: Any) -> dict[str, str]:
             "crudo": texto[:60]}
 
 
-def _piezas_declaradas(c: dict | None) -> float | None:
-    """Cajas × piezas por caja: lo que el packing list dice que debería llegar.
+def _cajas(piezas: Any, por_caja: Any) -> float | None:
+    """Cuántas cajas son esas piezas, según el factor de Odoo.
 
-    Es la cifra contra la que se cuenta al recibir. Ojo con el divisor: hay
-    1,786 SKUs con `cajas = 0` y 29 con `piezas_por_caja` entre 0 y 1, y un
-    factor menor que uno multiplica el flete en vez de repartirlo. Por eso se
-    devuelve None en vez de un número absurdo.
+    Las cajas NO son un campo en Odoo: se derivan. Y se devuelve `None` —no
+    cero— cuando el factor falta o es 1, por dos motivos distintos:
+    `units_per_master_box` está poblado en el 75.3% del catálogo activo (9,926
+    de 13,189), y de ésos **644 valen 1**, que no describe una caja sino la
+    ausencia de dato. Un divisor inventado convierte una celda vacía en un
+    número que alguien va a creer.
     """
-    if not c:
+    p, f = _num(piezas), _num(por_caja)
+    if not p or not f or f < 1:
         return None
-    cajas, por_caja = _num(c.get("cajas")), _num(c.get("piezas_por_caja"))
-    if not cajas or not por_caja or por_caja < 1:
-        return None
-    return round(cajas * por_caja, 2)
+    return round(p / f, 2)
 
 
 def _descuadre(w: dict | None, o: dict | None) -> int | None:

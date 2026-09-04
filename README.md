@@ -1074,6 +1074,63 @@ Medido después del cambio:
 
 ---
 
+### v0.412.0 — Inventario deja de mirar a WooCommerce: manda Odoo, y las etapas cambian de significado
+
+Seis instrucciones de Brandon (4-sep) que reorientan la pestaña entera. La de
+fondo: *«Prohibido tocar los status de WordPress, no son una guía; únicamente
+Odoo es nuestro principal medio»*, y *«las cajas y las piezas deben ser tomadas
+de Odoo, jamás del packing list, ya que es inventario existente en físico»*.
+
+| Dato | Antes | Ahora |
+|---|---|---|
+| Título y foto | WordPress | **Odoo** (`name`, `image_256`) |
+| Contenedor | costos_validados | **Odoo**, con costos_validados de respaldo — y se dice de cuál salió |
+| Cajas y piezas/caja | packing list | **Odoo** (`units_per_master_box`; las cajas se derivan del físico) |
+| Etapa «en proceso» | `wp_posts.post_status` | **Odoo `stock.quant`**: ¿llegó?, ¿tiene rack? |
+| Etapa «fotos» | conteo de galería de Woo | **Odoo**: con una basta |
+| Etapa «variantes» | `post_parent` de Woo | **Odoo `product_tmpl_id`** |
+
+WooCommerce queda en UN solo lugar —el descuadre— porque comparar necesita las
+dos cifras por definición.
+
+**LA ETAPA «EN PROCESO» AHORA MIDE ALGO, Y ES EL HALLAZGO DE LA VERSIÓN.** Su
+definición nueva es la de bodega: *no se recibió, o se recibió y sigue sin rack*.
+Medido al implementarla: de **1,163,459 piezas del inventario, 930,732 —el
+80%— están en zonas de paso** (STAGE, Salida, Zona de empaquetado) y solo
+221,644 en un rack designado. Son 12 ubicaciones de 30,949 guardando cuatro
+quintas partes del almacén. La escalera editorial de WooCommerce que esta etapa
+usaba antes no decía nada de eso.
+
+**VARIANTES: DOS RELACIONES, ROTULADAS APARTE.** Odoo agrupa por
+`product_tmpl_id` — 269 plantillas de 12,289 tienen más de un SKU. Pero la
+pantalla «Product Variants» de Odoo que Brandon mandó filtra por PREFIJO, y ahí
+`JUGU-1153` devuelve `JUGU-1153-MET` y `JUGU-1153-MET-B`, que **viven en
+plantillas distintas (117750 y 117721)**. Se devuelven las dos relaciones con
+`relacion="plantilla"` o `"codigo"`, nunca mezcladas: agrupar por prefijo es
+exactamente lo que hace `variables.py::parse_sku`, y eso ya fusionó en Woo 104
+pares `-EST`/`-MET` de los cuales 34 son productos distintos.
+
+**LA FOTO VIAJA COMO DATA-URI, y no por un endpoint.** Un `<img src="/api/…">`
+NO manda el token de sesión —el mismo motivo por el que existe
+`api.descargar()`— y con el enforcement encendido daría 401. Se pide
+`image_256` y no `image_1920` porque el 1920 de un solo SKU del piloto pesa
+375 KB en base64: diez serían casi 4 MB por carga.
+
+**Las cajas se DERIVAN y se callan cuando no pueden.** Odoo no tiene un campo
+«cajas»: son piezas ÷ `units_per_master_box`. Ese factor está poblado en el
+75.3% del catálogo activo (9,926 de 13,189) y **644 de ésos valen 1**, que no
+describe una caja sino la falta del dato. Con factor ausente o igual a 1 se
+devuelve vacío en vez de un número que alguien creería.
+
+También: la etapa se llama **«Enviado»** y nombra el destino (FULL, FBA o WFS de
+Walmart), no «Enviado FULL». Y se retiraron `_ESCALERA` y `_FOTOS_COMPLETAS`,
+que quedaron muertas al salir WooCommerce.
+
+Archivos: `backend/services/odoo.py` (`variantes_por_sku`, `miniaturas_por_sku`,
+`_es_stage`, factor de caja), `backend/services/inventario_maestro.py`
+(`_etapas` reescrito, contenedor con procedencia, `_cajas`),
+`frontend/lib/types.ts`, `frontend/app/inventario/page.tsx`.
+
 ### v0.411.0 — «¿Qué hice yo a mano y qué fue de código?»
 
 Brandon publicó **una** cosa a Walmart, vio **3**, y preguntó cuáles eran suyas.

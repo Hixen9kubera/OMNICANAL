@@ -52,7 +52,7 @@ const ETAPAS: { clave: ClaveEtapa; titulo: string; icono: typeof Camera }[] = [
   { clave: "fotos", titulo: "Fotos", icono: Camera },
   { clave: "variantes", titulo: "Variantes", icono: Layers },
   { clave: "validado", titulo: "Validado", icono: CheckCircle2 },
-  { clave: "enviado_full", titulo: "Enviado FULL", icono: Truck },
+  { clave: "enviado_full", titulo: "Enviado", icono: Truck },
 ];
 
 const ESTILO_ETAPA: Record<EstadoEtapa, string> = {
@@ -644,7 +644,8 @@ function Fila({
         <div className="truncate text-xs text-slate-500">{f.nombre || "—"}</div>
       </td>
 
-      {/* EMPAQUE, como el diseño: el factor arriba, el contenedor abajo. */}
+      {/* EMPAQUE: el factor arriba, el contenedor abajo. Los dos de ODOO —
+          el packing list ya no manda aquí (Brandon, 4-sep). */}
       <td className="px-3 py-2.5">
         <div className="text-xs font-bold text-slate-700">
           {f.piezas_por_caja === null ? "sin factor" : `${f.piezas_por_caja} pzs/caja`}
@@ -657,6 +658,12 @@ function Fila({
               {f.embarque && <span>· emb. {f.embarque}</span>}
               {f.contenedor_es_booking && (
                 <span title="Es la referencia del transitario, no un contenedor ISO">· booking</span>
+              )}
+              {f.contenedor_fuente === "costos_validados" && (
+                <span className="text-slate-400"
+                      title="Odoo no tiene contenedor para este SKU; se muestra el de costos_validados">
+                  · de costos
+                </span>
               )}
               {f.contenedor_discrepa && (
                 <span className="text-rose-600"
@@ -677,7 +684,14 @@ function Fila({
         </div>
       </td>
 
-      <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">{num(f.cajas)}</td>
+      <td className="px-3 py-2.5 text-right">
+        <div className="tabular-nums text-slate-700">{num(f.cajas)}</div>
+        {!!f.cajas_por_llegar && (
+          <div className="text-[10px] text-amber-700" title="Cajas de lo que sigue en recepción abierta">
+            +{num(f.cajas_por_llegar)} por llegar
+          </div>
+        )}
+      </td>
 
       <td className="px-3 py-2.5 text-right">
         <span className={`font-bold tabular-nums ${
@@ -857,9 +871,12 @@ function Cajon({
                     Padre · {fila.n_hijas} variantes
                   </span>
                 )}
-                {fila.tipo === "variacion" && fila.padre_sku && (
-                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
-                    Variante de {fila.padre_sku}
+                {fila.n_variantes_odoo > 0 && (
+                  <span
+                    title="SKUs relacionados en Odoo (misma plantilla o mismo código base)"
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500"
+                  >
+                    {fila.n_variantes_odoo + 1} SKUs en Odoo
                   </span>
                 )}
                 {fila.etapas.validado.estado === "listo" && (
@@ -926,15 +943,25 @@ function Jerarquia({ fila }: { fila: FilaInventario }) {
       </h3>
       <div className="mt-2 flex gap-1">
         {paso("Contenedor", fila.contenedor || "—",
-          fila.embarque ? `embarque ${fila.embarque}` : (fila.contenedor_es_booking ? "referencia de booking" : undefined))}
+          fila.contenedor_fuente === "odoo" ? "según Odoo"
+            : fila.contenedor_fuente === "costos_validados" ? "según costos_validados"
+              : undefined)}
         {signo("=")}
-        {paso("Cajas", num(fila.cajas))}
+        {paso("Cajas", num(fila.cajas), "en bodega")}
         {signo("×")}
         {paso("Piezas / caja", fila.piezas_por_caja === null ? "—" : String(fila.piezas_por_caja),
-          "factor del packing list")}
+          "caja master de Odoo")}
         {signo("=")}
-        {paso("Declaradas", num(fila.piezas_declaradas), "lo que debería llegar", true)}
+        {paso("Piezas", num(fila.stock_fisico), "físico en Odoo", true)}
       </div>
+      {!!fila.cajas_por_llegar && (
+        <p className="mt-1.5 text-[11px] text-slate-400">
+          Por llegar: {num(fila.recepcion_piezas)} piezas ≈ {num(fila.cajas_por_llegar)} cajas.
+        </p>
+      )}
+      {fila.embarque && (
+        <p className="mt-1 text-[11px] text-slate-400">Embarque {fila.embarque}.</p>
+      )}
     </section>
   );
 }
@@ -1038,6 +1065,25 @@ function Etapas({ fila }: { fila: FilaInventario }) {
                   <span className="text-xs font-semibold">{e.etiqueta}</span>
                 </div>
                 {e.detalle && <div className="text-[11px] opacity-80">{e.detalle}</div>}
+                {clave === "variantes" && fila.variantes_odoo.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {fila.variantes_odoo.map((v) => (
+                      <span
+                        key={v.sku}
+                        title={`${v.nombre}${v.relacion === "plantilla"
+                          ? " · misma plantilla en Odoo"
+                          : " · solo comparte código base, NO son variantes en Odoo"}`}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                          v.relacion === "plantilla"
+                            ? "bg-white/70 ring-1 ring-current"
+                            : "bg-white/40 opacity-70"}`}
+                      >
+                        {v.sku}
+                        {v.relacion === "codigo" && " ·código"}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {e.ultimo_paso && (
                   <div className="mt-0.5 text-[11px] opacity-70">
                     último paso: {e.ultimo_paso}
