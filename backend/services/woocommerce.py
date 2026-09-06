@@ -175,7 +175,8 @@ async def listar_productos(
     """
     campos = (
         "id,name,sku,price,regular_price,sale_price,stock_quantity,"
-        "stock_status,status,type,categories,brands,images,short_description,permalink"
+        "stock_status,status,type,categories,brands,images,"
+        "short_description,description,permalink"
     )
     params: dict[str, Any] = {
         "per_page": per_page,
@@ -356,7 +357,11 @@ async def listar_productos(
                 "nombre": p.get("name", ""),
                 "imagen": _img(p),
                 "marca": _marca(p),
-                "descripcion_corta": _resumen(p.get("short_description")),
+                # Crear Productos solo llena `description` (la larga); nunca
+                # `short_description` (WooCommerce no la deriva sola). Sin este
+                # fallback, cualquier SKU recién regenerado se veía con foto y
+                # costo pero SIN descripción en la tarjeta (TEC-1639-NEG/VER).
+                "descripcion_corta": _resumen(p.get("short_description") or p.get("description")),
                 "precio": precio,
                 "precio_base": base,
                 "precio_oferta": _to_float(p.get("sale_price")),

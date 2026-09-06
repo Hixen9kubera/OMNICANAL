@@ -1001,6 +1001,21 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.420.0 — Productos seguía sin descripción tras el fix de la foto (v0.419.0)
+
+Con el cache-bust de v0.419.0 la tarjeta ya mostraba foto y costo frescos, pero
+la descripción seguía en blanco. Causa distinta a la del `_cb`: el flujo de
+Crear Productos (`crear_producto.py`) solo llena el campo `description` (la
+descripción larga que genera Claude) — nunca `short_description`, que
+WooCommerce no deriva solo. `listar_productos()` pintaba la tarjeta con
+`short_description` exclusivamente (y ni siquiera pedía `description` en
+`_fields`), así que cualquier SKU recién regenerado por IA salía sin
+descripción aunque la tuviera completa en Woo (TEC-1639-NEG/VER).
+
+Fix (`services/woocommerce.py`): se agrega `description` a los `_fields` de la
+lista, y `descripcion_corta` cae a `description` cuando `short_description`
+viene vacío. Solo lectura/UI.
+
 ### v0.419.0 — Productos mostraba el producto sin foto justo después de regenerarlo en Crear Productos
 
 Al regenerar un SKU en Crear Productos (nueva URL de Alibaba → título/imágenes/
