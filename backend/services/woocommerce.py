@@ -184,6 +184,12 @@ async def listar_productos(
         "orderby": "date",
         "order": "desc",
         "_fields": campos,
+        # `_cb` (cache-bust): LiteSpeed cachea chunche.shop y servía la galería/
+        # nombre/categoría VIEJOS un rato tras un guardado (mismo bug ya resuelto
+        # en galeria_producto/_producto_con_imagenes) — acá pegaba justo después
+        # de regenerar un SKU en Crear Productos: Productos seguía mostrando el
+        # producto sin imagen (TEC-1639-NEG/VER, sep-2026).
+        "_cb": str(time.time()),
     }
 
     usa_db = bool(

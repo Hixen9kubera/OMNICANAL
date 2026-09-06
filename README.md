@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.419.0 — Productos mostraba el producto sin foto justo después de regenerarlo en Crear Productos
+
+Al regenerar un SKU en Crear Productos (nueva URL de Alibaba → título/imágenes/
+categoría nuevos), la pestaña Productos seguía mostrando la tarjeta sin imagen
+ni datos nuevos por un rato, aunque WooCommerce ya tuviera todo actualizado
+(verificado leyendo el producto en vivo por API y por MySQL directo). Caso real:
+TEC-1639-NEG/VER, tres regeneraciones seguidas y ninguna se reflejaba.
+
+Causa: LiteSpeed cachea `chunche.shop`, incluida la respuesta de
+`GET /wp-json/wc/v3/products` que arma la lista de Productos —
+`listar_productos()` era el único lector de esa magnitud sin cache-bust.
+`galeria_producto`/`_producto_con_imagenes` ya cargaban este mismo bug de fondo
+y llevan `_cb` desde entonces; a `listar_productos()` nunca se le agregó.
+
+Fix (una línea, `services/woocommerce.py`): `_cb` (timestamp) en el `params`
+base que comparten TODAS las ramas de la función (categoría, búsqueda por DB,
+fallback por SKU/nombre, complemento de Filtrar SKUs, listado sin filtros) —
+fuerza lectura fresca en las seis. Solo lectura/UI.
+
 ### v0.418.0 — Fin de los productos "repetidos" al pegar SKUs de variante en Filtrar SKUs
 
 Pegar SKUs de VARIANTE (`DEC-0161-EST, DEC-0161-NEG, DEC-0161-ROJ`) en la caja
