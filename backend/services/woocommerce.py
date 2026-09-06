@@ -274,8 +274,17 @@ async def listar_productos(
                         vistos = {p["id"] for p in data}
                         # drafts fuera desde aquí: la vista los excluye igual (abajo),
                         # pero si contaran en `total` quedaría "1 producto" con lista vacía
+                        #
+                        # Y VARIACIONES fuera: Woo resuelve `?sku=DEC-0161-EST` a la
+                        # VARIACIÓN (type='variation', id propio ≠ el del padre), que
+                        # NO está en `vistos` (ahí está el padre DEC-0161) y pasaba el
+                        # filtro → se pintaba como tarjeta suelta ADEMÁS del padre que
+                        # ya la lista anidada. Ése era el "producto repetido" al pegar
+                        # SKUs de variante en Filtrar SKUs (ago-2026). La variante se
+                        # ve por su padre; el complemento solo suma productos reales.
                         extras = [p for p in rs.json()
-                                  if p["id"] not in vistos and p.get("status") != "draft"]
+                                  if p["id"] not in vistos and p.get("status") != "draft"
+                                  and p.get("type") != "variation"]
                         if estados:  # el complemento respeta el filtro de estado activo
                             permitidos = {v for e in estados for v in _ESTADOS_WC.get(e, [])}
                             extras = [p for p in extras if p.get("status") in permitidos]
@@ -475,17 +484,26 @@ def _buscar_wc_ids_wp(
             for t in terminos:
                 args += [f"%{t}%", f"%{t}%"]
 
+    # `_stock`/`_price` van por subconsulta correlacionada (no JOIN): 398 SKUs
+    # tienen más de una fila de meta `_price` en wp_postmeta (dato sucio de
+    # WordPress, ajeno a Omnicanal), así que un LEFT JOIN normal multiplicaba
+    # esa fila (producto duplicado en el listado, p. ej. COC-0153, ago-2026).
+    # MIN(meta_id) = la misma fila que `get_post_meta($id, $key, true)` de WP.
+    _stock_sub = (f"(SELECT stm.meta_value FROM {P}postmeta stm "
+                  f"WHERE stm.post_id=p.ID AND stm.meta_key='_stock' "
+                  f"ORDER BY stm.meta_id LIMIT 1)")
+    _precio_sub = (f"(SELECT prm.meta_value FROM {P}postmeta prm "
+                   f"WHERE prm.post_id=p.ID AND prm.meta_key='_price' "
+                   f"ORDER BY prm.meta_id LIMIT 1)")
     orden_sql = {
-        "stock_desc": "CAST(COALESCE(st.meta_value,0) AS SIGNED) DESC",
-        "stock_asc": "CAST(COALESCE(st.meta_value,0) AS SIGNED) ASC",
-        "precio_desc": "CAST(COALESCE(pr.meta_value,0) AS DECIMAL(12,2)) DESC",
-        "precio_asc": "CAST(COALESCE(pr.meta_value,0) AS DECIMAL(12,2)) ASC",
+        "stock_desc": f"CAST(COALESCE({_stock_sub},0) AS SIGNED) DESC",
+        "stock_asc": f"CAST(COALESCE({_stock_sub},0) AS SIGNED) ASC",
+        "precio_desc": f"CAST(COALESCE({_precio_sub},0) AS DECIMAL(12,2)) DESC",
+        "precio_asc": f"CAST(COALESCE({_precio_sub},0) AS DECIMAL(12,2)) ASC",
     }.get(orden, "p.post_date DESC")
 
     base = (f"""FROM {P}posts p
                 LEFT JOIN {P}postmeta sk ON sk.post_id=p.ID AND sk.meta_key='_sku'
-                LEFT JOIN {P}postmeta st ON st.post_id=p.ID AND st.meta_key='_stock'
-                LEFT JOIN {P}postmeta pr ON pr.post_id=p.ID AND pr.meta_key='_price'
                 WHERE {' AND '.join(where)}""")
     try:
         # COUNT e IDs EN PARALELO (antes en serie: ~0.8 s cada una contra

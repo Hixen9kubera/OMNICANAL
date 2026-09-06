@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.418.0 — Fin de los productos "repetidos" al pegar SKUs de variante en Filtrar SKUs
+
+Pegar SKUs de VARIANTE (`DEC-0161-EST, DEC-0161-NEG, DEC-0161-ROJ`) en la caja
+"Filtrar SKUs" de la pestaña Productos pintaba cada variante DOS veces: una
+anidada bajo su padre (`DEC-0161`, `variable`) y otra como tarjeta suelta.
+
+Causa: el complemento "plan-B" de `listar_productos` (que busca por `?sku=`
+exacto en Woo para alcanzar SKUs recientes que la maestra congelada no conoce)
+recibe los términos de variante que NO son el SKU del padre, y **WooCommerce
+resuelve `?sku=DEC-0161-EST` a la VARIACIÓN** (`type='variation'`, id propio
+`94634` ≠ el del padre `87794`, `parent_id=87794`). Ese id no estaba en `vistos`
+—ahí vivía el padre— y pasaba el filtro de estado, así que se agregaba como
+producto suelto encima del padre que ya la listaba. Pariente del bug de COC-0153
+(v. la nota de `_price` duplicado en `_buscar_wc_ids_wp`), pero por otra vía.
+
+Fix (una línea, `services/woocommerce.py`): el complemento excluye
+`type == "variation"`. La variante se ve por su padre; el `?sku=` solo suma
+productos reales (simples o padres) que la búsqueda no trajo. Un simple reciente
+fuera de la maestra se sigue sumando (no es `variation`). Solo lectura/UI.
+
 ### v0.417.0 — El título llevaba vacío desde el 1-sep, y el enlace abría al competidor (Eduardo)
 
 Dos fallos de una captura, con la misma raíz y un tercer hallazgo que resultó
