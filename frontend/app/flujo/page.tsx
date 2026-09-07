@@ -112,7 +112,9 @@ export default function FlujoPage() {
     return () => { if (timer.current) clearInterval(timer.current); };
   }, [sondear]);
 
-  const abrirNodo = useCallback(async (id: string) => {
+  const abrirNodo = useCallback(async (id: string | null) => {
+    // null = clic en el vacio del lienzo: soltar la seleccion y su tarjeta.
+    if (!id) { setNodo(null); return; }
     setNodo({ id, eventos: [] });
     try {
       const r = await fetchSesion(`${API_BASE}/api/flujo/nodo/${encodeURIComponent(id)}`,
@@ -310,7 +312,7 @@ export default function FlujoPage() {
               pantalla y la barra se desplaza por su cuenta. */}
           <div className={"relative h-[62vh] min-h-[480px] flex-1 overflow-hidden rounded-2xl lg:sticky lg:top-4 lg:h-[calc(100vh-190px)] "
             + (claro ? "bg-white shadow-card" : "bg-[#0B0F0E] ring-1 ring-slate-900/60")}>
-            <RedViva pulso={pulso} onNodo={abrirNodo} tema={tema} />
+            <RedViva pulso={pulso} onNodo={abrirNodo} tema={tema} seleccionado={nodo?.id ?? null} />
             <div className={"pointer-events-none absolute inset-x-0 bottom-0 flex flex-wrap items-center gap-x-4 gap-y-1 border-t px-4 py-2 text-[10px] "
               + (claro ? "border-slate-100 text-slate-500" : "border-[#1F2C2A] text-[#93A09D]")}>
               {LEYENDA[tema].map(([nombre, color]) => (
@@ -320,7 +322,7 @@ export default function FlujoPage() {
                 </span>
               ))}
               <span className={"ml-auto " + (claro ? "text-slate-400" : "text-[#5E6D6A]")}>
-                {claro ? "anillo índigo" : "anillo verde"} = escrituras · doble clic = encuadrar · clic en nodo = detalle
+                {claro ? "anillo índigo" : "anillo verde"} = escrituras · clic en nodo = detalle y sus caminos · doble clic = encuadrar
               </span>
             </div>
           </div>

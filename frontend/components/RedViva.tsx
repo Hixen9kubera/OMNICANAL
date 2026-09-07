@@ -56,11 +56,15 @@ const COLOR_CLARO: Record<string, string> = {
 const CARRIL: Record<string, number> = { externo: 0.09, proceso: 0.3, tabla: 0.68 };
 export type TemaRed = "oscuro" | "claro";
 
-export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscuro" }: {
+export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscuro",
+                                  seleccionado = null }: {
   pulso: PulsoRed | null;
-  onNodo?: (id: string) => void;
+  onNodo?: (id: string | null) => void;
   compacto?: boolean;
   tema?: TemaRed;
+  /** id del nodo cuya vecindad se resalta (lo controla la pagina: es el mismo
+   *  nodo cuyo detalle esta abierto en la barra lateral). */
+  seleccionado?: string | null;
 }) {
   const cvRef = useRef<HTMLCanvasElement>(null);
   // `compacto` entra a los efectos por ref: asi TODOS los efectos llevan deps
@@ -68,6 +72,7 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
   // sintoma fue un lienzo con closures viejas y medida congelada en cero).
   const compactoRef = useRef(compacto); compactoRef.current = compacto;
   const temaRef = useRef(tema); temaRef.current = tema;
+  const selRef = useRef(seleccionado); selRef.current = seleccionado;
   const st = useRef({
     nodos: [] as NodoRed[],
     aristas: [] as AristaRed[],
@@ -110,7 +115,9 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
         const pares = s.nodos.filter(m => m.clase === n.clase);
         n.ay = s.H * (0.1 + 0.8 * (pares.indexOf(n) + 0.5) / pares.length);
       }
-      if (n.x === undefined) { n.x = n.ax + (Math.random() - 0.5) * 60; n.y = n.ay! + (Math.random() - 0.5) * 60; }
+      if (!Number.isFinite(n.x as number) || !Number.isFinite(n.y as number)) {
+        n.x = n.ax + (Math.random() - 0.5) * 60; n.y = n.ay! + (Math.random() - 0.5) * 60;
+      }
       n.vx = n.vy = 0;
     }
   };
@@ -120,8 +127,11 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
     if (!s.nodos.length || !s.W || !s.H) return;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     for (const n of s.nodos) {
-      x0 = Math.min(x0, n.x ?? n.ax!); y0 = Math.min(y0, n.y ?? n.ay!);
-      x1 = Math.max(x1, n.x ?? n.ax!); y1 = Math.max(y1, n.y ?? n.ay!);
+      const px = Number.isFinite(n.x as number) ? n.x! : n.ax!;
+      const py = Number.isFinite(n.y as number) ? n.y! : n.ay!;
+      if (!Number.isFinite(px) || !Number.isFinite(py)) continue;
+      x0 = Math.min(x0, px); y0 = Math.min(y0, py);
+      x1 = Math.max(x1, px); y1 = Math.max(y1, py);
     }
     const cp = compactoRef.current;
     const m = cp ? 24 : 70;
@@ -129,24 +139,11 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
     // solo agranda un layout roto.
     const z = Math.max(0.25, Math.min(cp ? 2.5 : 1.3,
       Math.min(s.W / (x1 - x0 + 2 * m), s.H / (y1 - y0 + 2 * m))));
+    if (!Number.isFinite(z) || !Number.isFinite(x0 + x1 + y0 + y1)) return;
     s.camara = { z, x: s.W / 2 - z * (x0 + x1) / 2, y: s.H / 2 - z * (y0 + y1) / 2 };
   };
 
-  useEffect(() => {
-    let vivo = true;
-    (async () => {
-      try {
-        const r = await fetchSesion(`${API_BASE}/api/flujo/topologia`, { cache: "no-store" });
-        const t = await r.json();
-        if (!vivo) return;
-        const s = st.current;
-        s.nodos = t.nodos; s.aristas = t.aristas;
-        s.porId = new Map(s.nodos.map((n: NodoRed) => [n.id, n]));
-        s.necesitaAcomodo = true;
-      } catch { /* la página muestra su propio estado de conexión */ }
-    })();
-    return () => { vivo = false; };
-  }, []);
+
 
   useEffect(() => {
     const cv = cvRef.current;
@@ -188,7 +185,7 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
       const K_REP = 1400, K_ANCLA = 0.014, AMORT = 0.86;
       for (let i = 0; i < s.nodos.length; i++) {
         const a = s.nodos[i];
-        if (a === s.fijado) continue;
+        if (a === s.fijado || !Number.isFinite(a.x as number)) continue;
         for (let j = i + 1; j < s.nodos.length; j++) {
           const b = s.nodos[j];
           let dx = b.x! - a.x!, dy = b.y! - a.y!, d2 = dx * dx + dy * dy;
@@ -231,30 +228,62 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
       s.ultimaPintada = performance.now();
       const claro = temaRef.current === "claro";
       const paleta = claro ? COLOR_CLARO : COLOR;
+      // Con un nodo seleccionado, su vecindad (por FK Y por flujo) va a plena
+      // luz y el resto se atenua: la pregunta al hacer clic casi siempre es
+      // "¿de donde le llega y a donde va?", y en 70 nodos los caminos se
+      // pierden sin esto.
+      const sel = selRef.current ? s.porId.get(selRef.current) ?? null : null;
+      let vecinos: Set<string> | null = null;
+      if (sel) {
+        vecinos = new Set([sel.id]);
+        for (const e of s.aristas) {
+          if (e.de === sel.id) vecinos.add(e.a);
+          if (e.a === sel.id) vecinos.add(e.de);
+        }
+      }
+      const tocaSel = (e: AristaRed) => !!sel && (e.de === sel.id || e.a === sel.id);
       cx.clearRect(0, 0, s.W, s.H);
       cx.save(); cx.translate(s.camara.x, s.camara.y); cx.scale(s.camara.z, s.camara.z);
 
-      cx.strokeStyle = claro ? "rgba(148,163,184,0.32)" : "rgba(120,150,145,0.13)";
-      cx.lineWidth = 0.6;
-      cx.beginPath();
-      for (const e of s.aristas) {
-        if (e.clase !== "fk") continue;
-        const a = s.porId.get(e.de), b = s.porId.get(e.a);
-        if (!a || !b) continue;
-        cx.moveTo(a.x!, a.y!);
-        cx.quadraticCurveTo((a.x! + b.x!) / 2, (a.y! + b.y!) / 2 - 24, b.x!, b.y!);
+      for (const conectada of [false, true]) {
+        if (conectada && !sel) continue;
+        cx.strokeStyle = conectada
+          ? (claro ? "rgba(100,116,139,0.65)" : "rgba(170,200,195,0.45)")
+          : sel
+          ? (claro ? "rgba(148,163,184,0.12)" : "rgba(120,150,145,0.05)")
+          : (claro ? "rgba(148,163,184,0.32)" : "rgba(120,150,145,0.13)");
+        cx.lineWidth = conectada ? 1.2 : 0.6;
+        cx.beginPath();
+        for (const e of s.aristas) {
+          if (e.clase !== "fk" || tocaSel(e) !== conectada) continue;
+          const a = s.porId.get(e.de), b = s.porId.get(e.a);
+          if (!a || !b) continue;
+          cx.moveTo(a.x!, a.y!);
+          cx.quadraticCurveTo((a.x! + b.x!) / 2, (a.y! + b.y!) / 2 - 24, b.x!, b.y!);
+        }
+        cx.stroke();
       }
-      cx.stroke();
 
       for (const e of s.aristas) {
         if (e.clase !== "flujo") continue;
         const a = s.porId.get(e.de), b = s.porId.get(e.a);
         if (!a || !b) continue;
         const vivoE = !!(e.n && e.n > 0);
-        cx.strokeStyle = vivoE
-          ? (claro ? "rgba(79,70,229,0.40)" : "rgba(74,222,155,0.30)")
-          : (claro ? "rgba(148,163,184,0.22)" : "rgba(120,150,145,0.11)");
-        cx.lineWidth = vivoE ? 1.3 : 0.7;
+        const cerca = tocaSel(e);
+        if (sel && !cerca) {
+          cx.strokeStyle = claro ? "rgba(148,163,184,0.10)" : "rgba(120,150,145,0.05)";
+          cx.lineWidth = 0.6;
+        } else if (cerca) {
+          cx.strokeStyle = vivoE
+            ? (claro ? "rgba(79,70,229,0.80)" : "rgba(74,222,155,0.70)")
+            : (claro ? "rgba(100,116,139,0.55)" : "rgba(170,200,195,0.40)");
+          cx.lineWidth = vivoE ? 2.1 : 1.3;
+        } else {
+          cx.strokeStyle = vivoE
+            ? (claro ? "rgba(79,70,229,0.40)" : "rgba(74,222,155,0.30)")
+            : (claro ? "rgba(148,163,184,0.22)" : "rgba(120,150,145,0.11)");
+          cx.lineWidth = vivoE ? 1.3 : 0.7;
+        }
         cx.beginPath(); cx.moveTo(a.x!, a.y!); cx.lineTo(b.x!, b.y!); cx.stroke();
       }
 
@@ -262,14 +291,24 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
         const a = s.porId.get(p.e.de), b = s.porId.get(p.e.a);
         if (!a || !b) continue;
         const x = a.x! + (b.x! - a.x!) * p.t, y = a.y! + (b.y! - a.y!) * p.t;
+        const atenua = sel && !tocaSel(p.e) ? 0.15 : 1;
         cx.fillStyle = claro
-          ? `rgba(79,70,229,${0.8 * (1 - Math.abs(p.t - 0.5) * 1.1)})`
-          : `rgba(120,255,190,${0.85 * (1 - Math.abs(p.t - 0.5) * 1.1)})`;
+          ? `rgba(79,70,229,${atenua * 0.8 * (1 - Math.abs(p.t - 0.5) * 1.1)})`
+          : `rgba(120,255,190,${atenua * 0.85 * (1 - Math.abs(p.t - 0.5) * 1.1)})`;
         cx.beginPath(); cx.arc(x, y, 1.9, 0, 6.284); cx.fill();
       }
 
       for (const n of s.nodos) {
         const r = radio(n), col = paleta[n.grupo] || (claro ? "#64748b" : "#8B93A8");
+        cx.globalAlpha = vecinos && !vecinos.has(n.id) ? (claro ? 0.25 : 0.18) : 1;
+        if (n === sel) {
+          // Halo FIJO (no pulsante): marca cual esta abierto en la barra.
+          cx.strokeStyle = col; cx.lineWidth = 1.6;
+          cx.beginPath(); cx.arc(n.x!, n.y!, r + 5, 0, 6.284); cx.stroke();
+          cx.strokeStyle = claro ? "rgba(79,70,229,0.30)" : "rgba(228,232,230,0.25)";
+          cx.lineWidth = 1;
+          cx.beginPath(); cx.arc(n.x!, n.y!, r + 9, 0, 6.284); cx.stroke();
+        }
         if (n.escrituras && n.escrituras > 0) {
           const fase = (performance.now() / 620) % 1;
           cx.strokeStyle = claro
@@ -287,7 +326,7 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
         } else cx.arc(n.x!, n.y!, r, 0, 6.284);
         cx.fill(); cx.stroke();
 
-        const etiquetar = !compactoRef.current && (n.clase !== "tabla" || n === s.encima);
+        const etiquetar = !compactoRef.current && ((vecinos?.has(n.id) ?? false) || n.clase !== "tabla" || n === s.encima);
         if (etiquetar && s.camara.z > 0.55) {
           cx.fillStyle = n === s.encima
             ? (claro ? "#0f172a" : "#E4E8E6")
@@ -296,6 +335,7 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
           cx.textAlign = "left"; cx.fillText(n.etiqueta, n.x! + r + 5, n.y! + 3.5);
         }
       }
+      cx.globalAlpha = 1;
       cx.restore();
     };
 
@@ -304,6 +344,7 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
       // La UNICA fuente de verdad del tamano es este chequeo: si el canvas
       // cambio (montaje, flex, resize, doble montaje de dev), se mide y se
       // reacomoda aqui mismo. Nada de observers ni de adivinar tiempos.
+      if (!Number.isFinite(s.camara.z)) { s.camara = { x: 0, y: 0, z: 1 }; s.camaraTocada = false; s.necesitaAcomodo = true; }
       if (cv.clientWidth !== s.W || cv.clientHeight !== s.H || s.necesitaAcomodo) {
         medir();
         if (s.W > 2 && s.H > 2 && s.nodos.length) {
@@ -324,16 +365,31 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
     // volvia uno a la pestana y lo encontraba a medio acomodar. El interval
     // sigue corriendo (estrangulado a 1 Hz, suficiente para asentar) y el rAF
     // pinta lo que haya cuando haya cuadro.
+    let vivo = true;
+    (async () => {
+      try {
+        const r = await fetchSesion(`${API_BASE}/api/flujo/topologia`, { cache: "no-store" });
+        const t = await r.json();
+        if (!vivo) return;
+        const s2 = st.current;
+        s2.nodos = t.nodos; s2.aristas = t.aristas;
+        s2.porId = new Map(s2.nodos.map((n: NodoRed) => [n.id, n]));
+        s2.necesitaAcomodo = true;
+      } catch (err) { console.error('RedViva topologia:', err); }
+    })();
+
     const sim = setInterval(() => {
       avanzar();
       // Respaldo de pintado: hay entornos (paneles embebidos, ventanas
       // ocluidas) donde el rAF no dispara NUNCA. Si lleva >250 ms sin pintar,
       // pinta el interval — 1 fps de respaldo; el rAF manda cuando existe.
-      if (performance.now() - (st.current.ultimaPintada || 0) > 250) pintar();
+      try {
+        if (performance.now() - (st.current.ultimaPintada || 0) > 250) pintar();
+      } catch (err) { console.error('RedViva pintar:', err); }
     }, 33);
     const cuadro = () => { pintar(); raf = requestAnimationFrame(cuadro); };
     raf = requestAnimationFrame(cuadro);
-    return () => { clearInterval(sim); cancelAnimationFrame(raf); };
+    return () => { vivo = false; clearInterval(sim); cancelAnimationFrame(raf); };
   }, []);
 
   const aMundo = (ev: { clientX: number; clientY: number }) => {
@@ -368,8 +424,10 @@ export default function RedViva({ pulso, onNodo, compacto = false, tema = "oscur
       }}
       onMouseUp={e => {
         const s = st.current;
-        if (s.arrastre?.nodo && Math.hypot(e.clientX - s.arrastre.sx, e.clientY - s.arrastre.sy) < 5)
-          onNodo?.(s.arrastre.nodo.id);
+        const clicCorto = s.arrastre
+          && Math.hypot(e.clientX - s.arrastre.sx, e.clientY - s.arrastre.sy) < 5;
+        if (clicCorto && s.arrastre?.nodo) onNodo?.(s.arrastre.nodo.id);
+        else if (clicCorto) onNodo?.(null);
         s.arrastre = null; s.fijado = null;
       }}
       onDoubleClick={() => { st.current.camaraTocada = false; encuadrar(); }}

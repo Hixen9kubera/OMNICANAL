@@ -1001,6 +1001,31 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.425.0 — La Red viva ilumina los caminos del nodo elegido (Eduardo)
+
+Eduardo: *"cuando se seleccione alguno de los nodos, que se marque un poco más
+resaltado los caminos que tienen conectados con ese mismo nodo"*.
+
+Al hacer clic en un nodo, su vecindad completa —por flujo Y por llave foránea—
+sube a plena luz y el resto del grafo baja a penumbra: el nodo elegido lleva un
+halo fijo (distinto del anillo pulsante de escrituras, que sigue significando
+otra cosa), sus aristas engordan, y TODOS sus vecinos muestran etiqueta aunque
+sean tablas (que normalmente solo la enseñan al pasar el cursor). La pregunta
+del clic casi siempre es «¿de dónde le llega y a dónde va?», y en 70 nodos los
+caminos se perdían en la telaraña. Clic en el vacío suelta la selección y
+cierra la tarjeta de detalle — la misma selección gobierna ambas cosas (la
+página manda el id de la tarjeta abierta como prop `seleccionado`).
+
+De paso, dos blindajes que salieron de perseguir un lienzo en negro durante la
+prueba: (1) el fetch de topología se movió AL MISMO efecto que el loop de
+dibujo — con dos efectos separados, el modo estricto de React en dev más Fast
+Refresh llegaron a dejar los datos en una instancia y el loop en otra; (2) la
+física, el acomodo y el encuadre ahora se defienden con `Number.isFinite`: un
+tick fantasma de una versión anterior del módulo corrió `paso()` con posiciones
+indefinidas, el NaN se propagó a los 71 nodos y la cámara quedó envenenada sin
+remedio porque «curar» solo miraba `undefined`. Ahora cualquier posición o
+cámara no finita se re-siembra sola al siguiente acomodo.
+
 ### v0.424.0 — Las órdenes de compra antiguas, y cuánto llegó de cada una
 
 Brandon, sobre el bloque de recepciones abiertas: *«y también muéstrame de las
