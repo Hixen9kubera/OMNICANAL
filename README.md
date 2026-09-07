@@ -1001,6 +1001,17 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.428.0 — El widget de la Red viva sale del dashboard de fan-out (Eduardo)
+
+Eduardo, viendo el dashboard: *"quita esta red del fanout"*. La miniatura con
+semáforo (propuesta C de v0.373.0) vivía arriba del monitor de fan-out y ahí
+competía con lo que esa pantalla sí tiene que contestar. La Red viva queda
+donde respira completa: su propia sub-tab de Operaciones (/flujo).
+
+Se retira el uso Y el componente (`RedVivaWidget.tsx`): sin usos no se queda
+código muerto — está en el historial de git si algún día vuelve, junto con su
+sondeo propio de 30 s.
+
 ### v0.427.0 — El popup de más vendidos, al mismo caché
 
 Segunda mitad de la v0.426.0. Medido antes en producción, sobre las seis
