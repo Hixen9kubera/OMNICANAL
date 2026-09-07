@@ -1001,7 +1001,7 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
-### 0.425.0 — Análisis abría en 9 s; ahora en 0 salvo la primera
+### v0.426.0 — Análisis abría en 9 s; ahora en 0 salvo la primera
 
 Eduardo: *"la pestaña de análisis tarda mucho en cargar… darle más rapidez o
 conservar caché"*. Antes de tocar nada se midió contra producción, descartando
