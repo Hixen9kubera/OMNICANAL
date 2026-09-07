@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
+import { quienSoy } from "@/lib/sesion";
 
 /* ══════════════════════════════════════════════════════════════════════════
    TOKENS — del handoff. Se escriben una vez y nadie los adivina después.
@@ -920,6 +921,28 @@ export default function AutomatizacionPage() {
   const [moviendo, setMoviendo] = useState(false);
   const [motivo, setMotivo] = useState("");
 
+  /* VER NO ES MOVER. Desde el 7-sep-2026 la pestaña la ve todo el equipo
+     (Brandon), pero `POST /api/automatizacion/interruptor` sigue siendo de
+     admin en el RBAC: ese interruptor ENCIENDE Y APAGA la creación de órdenes
+     de venta en Odoo, que es un flujo vivo.
+
+     Sin esto el KAM vería un interruptor de aspecto normal y se llevaría un 403
+     al tocarlo — un permiso denegado disfrazado de error de la aplicación. Se
+     pinta apagado y con su motivo en el `title`.
+
+     `null` es "todavía no sé quién eres", y ahí se deja habilitado, igual que
+     hace AppNavbar: es cosmética, y quien manda de verdad es el RBAC. */
+  const [puedeMover, setPuedeMover] = useState<boolean | null>(null);
+  useEffect(() => {
+    void quienSoy().then((u) => {
+      setPuedeMover(!u.autenticado || u.rol === "admin");
+    }).catch(() => setPuedeMover(true));
+  }, []);
+  const bloqueado = puedeMover === false;
+  const motivoBloqueo = bloqueado
+    ? "Mover el interruptor es de admin: enciende y apaga la creación de órdenes en Odoo."
+    : undefined;
+
   /* LA CARGA TRAE LOS DOS CANALES, no sólo el visible. El contador del filtro
      tiene que sumar ambos: si el error está en Temu y estás viendo TikTok, sin
      eso no te enteras nunca. El recorte por canal se hace aquí, en memoria —
@@ -1043,7 +1066,7 @@ export default function AutomatizacionPage() {
               </div>
               <div className="flex shrink-0 items-center gap-[14px] border-t px-[22px] py-[18px] md:border-l md:border-t-0"
                    style={{ borderColor: "#eef1f6" }}>
-                {ov.encendido && (
+                {ov.encendido && !bloqueado && (
                   <button
                     type="button"
                     onClick={() => setConfirmar({ que: "general", encender: false })}
@@ -1053,12 +1076,14 @@ export default function AutomatizacionPage() {
                     <Power className="h-[15px] w-[15px]" />Apagar todo
                   </button>
                 )}
-                <Switch
-                  activo={ov.encendido}
-                  ocupado={moviendo}
-                  etiqueta="interruptor general"
-                  onClick={() => setConfirmar({ que: "general", encender: !ov.encendido })}
-                />
+                <span title={motivoBloqueo}>
+                  <Switch
+                    activo={ov.encendido}
+                    ocupado={moviendo || bloqueado}
+                    etiqueta="interruptor general"
+                    onClick={() => setConfirmar({ que: "general", encender: !ov.encendido })}
+                  />
+                </span>
               </div>
             </div>
 
@@ -1181,7 +1206,7 @@ export default function AutomatizacionPage() {
               ordenes={visibles}
               encendido={canalEncendido(canal)}
               escalonId={ov?.escalon_id ?? "apagado"}
-              moviendo={moviendo}
+              moviendo={moviendo || bloqueado}
               abierta={abierta}
               onAbrir={setAbierta}
               odooUrl={ov?.odoo_url ?? ""}

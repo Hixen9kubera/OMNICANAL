@@ -102,7 +102,24 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;
     # mientras hubiera 27 rutas "por omisión" legítimas, las ilegítimas se
     # escondían entre ellas. No cambia ningún permiso: ya era admin.
-    ("GET", "/api/automatizacion", "admin"),             # órdenes de venta en Odoo
+    # AUTOMATIZACIÓN — el KAM VE, el admin MUEVE (Brandon, 7-sep-2026).
+    #
+    # Se abren SOLO las dos lecturas que la pantalla carga, no el prefijo GET
+    # entero: el router tiene además `/walmart/pedidos`, `/walmart/feed/{id}`,
+    # `/temu/sondeo` y `/simular`, que son diagnósticos y pueden traer datos de
+    # una orden concreta. Abrir "todos los GET" habría sido más corto y habría
+    # regalado esos cuatro de paso — que es exactamente cómo se filtran los
+    # permisos sin que nadie lo decida.
+    #
+    # Los POST siguen siendo admin, y no es burocracia: `POST /interruptor`
+    # ENCIENDE Y APAGA flujos de negocio vivos (la creación de órdenes de venta
+    # en Odoo para TikTok y Temu). Ver el tablero es información; moverlo es una
+    # decisión de operación. La pantalla ahora enseña el interruptor en modo
+    # lectura a quien no es admin, para que la diferencia se vea antes de
+    # tocarlo y no en un 403.
+    ("GET", "/api/automatizacion/estado", "operador"),
+    ("GET", "/api/automatizacion/ordenes-odoo", "operador"),
+    ("GET", "/api/automatizacion", "admin"),             # el resto: diagnósticos
     ("POST", "/api/automatizacion", "admin"),
     ("POST", "/api/sync/precios-venta", "admin"),        # barrido de precios
     ("GET", "/api/tiktok", "admin"),                     # tokens y censo de la tienda

@@ -106,9 +106,17 @@ const ITEMS: NavItem[] = [
   // Va aquí, entre Costos y Competencia (handoff de diseño, 4-sep). Estaba al
   // FINAL, detrás del scroll horizontal del navbar — la única pestaña que
   // vigila un flujo vivo no puede ser también la única que hay que buscar.
-  // Solo admin, por lo mismo que Webhooks: la orden trae la guía del comprador.
+  // LA VE TODO EL EQUIPO desde el 7-sep-2026 (Brandon). Era soloAdmin "por lo
+  // mismo que Webhooks: la orden trae la guía del comprador", y eso resultó ser
+  // falso al revisarlo: lo que la pantalla carga son `/estado` y
+  // `/ordenes-odoo`, y ahí viaja la GUÍA y la paquetería, no el nombre ni la
+  // dirección de nadie. Los diagnósticos que sí traen una orden concreta
+  // (`/walmart/pedidos`, `/temu/sondeo`) siguen cerrados en el RBAC.
+  //
+  // El KAM ve el tablero; MOVER el interruptor sigue siendo de admin, y la
+  // propia pantalla lo enseña en modo lectura para que se note antes de tocarlo.
   { id: "automatizacion", label: "Automatización", icon: Workflow,
-    href: "/automatizacion", soloAdmin: true },
+    href: "/automatizacion" },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
   // OPERACIONES absorbió a MONITOREO y WEBHOOKS como entradas de su submenú

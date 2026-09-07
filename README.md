@@ -1001,6 +1001,49 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.429.0 — Automatizacion la ve el equipo; moverla sigue siendo de admin
+
+Brandon: *"los roles de las KAMS pueden ver el apartado de AUTOMATIZACIONES?
+necesito que la puedan ver"*. No podian: la pestana era `soloAdmin` en la barra
+y sus dos reglas de RBAC pedian admin.
+
+**LA RAZON QUE ESTABA ESCRITA ERA FALSA.** El comentario del navbar decia "Solo
+admin, por lo mismo que Webhooks: la orden trae la guia del comprador". Al
+revisarlo, lo que la pantalla carga son `/estado` y `/ordenes-odoo`, y el
+payload de esa consulta lleva canal, cuenta, ids de orden, estado, almacen,
+cobertura, **guia y paqueteria**, total y las lineas (sku, titulo, imagen,
+cantidad, precio, stock del momento). No hay nombre, direccion, correo ni
+telefono de nadie. La "guia" del comentario es el numero de rastreo, no la guia
+del comprador — dos cosas distintas con el mismo nombre.
+
+**VER NO ES MOVER, y la separacion es fina a proposito.** Se abren SOLO las dos
+lecturas que la pantalla usa, no el prefijo `GET` entero: el router tiene ademas
+`/walmart/pedidos`, `/walmart/feed/{id}`, `/temu/sondeo` y `/simular`, que son
+diagnosticos y si pueden traer una orden concreta. Abrir "todos los GET" era mas
+corto y habria regalado esos cuatro de paso — que es exactamente como se filtran
+los permisos sin que nadie lo decida.
+
+    GET  /api/automatizacion/estado         operador
+    GET  /api/automatizacion/ordenes-odoo   operador
+    GET  /api/automatizacion                admin      (el resto: diagnosticos)
+    POST /api/automatizacion                admin
+
+Los POST siguen siendo admin y no es burocracia: `POST /interruptor` ENCIENDE Y
+APAGA la creacion de ordenes de venta en Odoo para TikTok y Temu, que es un
+flujo de negocio vivo.
+
+**Y LA PANTALLA LO DICE ANTES DE QUE DUELA.** Sin esto el KAM veria un
+interruptor de aspecto normal y se llevaria un 403 al tocarlo: un permiso
+denegado disfrazado de error de la aplicacion. La pagina ahora pregunta el rol
+con `quienSoy()`, pinta los interruptores apagados con su motivo en el `title`, y
+no le ofrece "Apagar todo" a quien no puede. Mientras el rol no se conoce se deja
+habilitado, igual que hace AppNavbar: es cosmetica, y quien manda es el RBAC.
+
+⚠️ El auditor volvio a marcar **3 rutas sin clasificar** (`/api/flujo/pulso`,
+`/topologia`, `/nodo/{id}`), de otra sesion. Caen a admin por omision, asi que no
+hay hueco abierto — pero nadie lo decidio, que es justo lo que el auditor existe
+para no dejar pasar.
+
 ### v0.428.0 — El widget de la Red viva sale del dashboard de fan-out (Eduardo)
 
 Eduardo, viendo el dashboard: *"quita esta red del fanout"*. La miniatura con
