@@ -39,7 +39,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from config import settings
-from services import costos, supabase_db as sdb
+from services import cache_lectura, costos, supabase_db as sdb
 
 
 # ── Las lecturas de kubera, FUERA del event loop ────────────────────────────
@@ -606,84 +606,93 @@ async def meta() -> dict[str, Any]:
 async def dashboard(
     dias: int = Query(60, ge=7, le=180),
     cuenta: str | None = Query(None),
+    refrescar: bool = Query(False, description="ignora el caché y vuelve a consultar"),
 ) -> dict[str, Any]:
-    """KPIs del encabezado + conteos por cuenta + serie diaria para la gráfica."""
+    """KPIs del encabezado + conteos por cuenta + serie diaria para la gráfica.
+
+    CACHEADA 2 min, por lo mismo que `/tabla`: son cuatro consultas más contra
+    el pool de 6 que ya pelean los webhooks."""
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     if cuenta and cuenta not in _CUENTAS:
         raise HTTPException(400, f"cuenta inválida: {cuenta}")
-    p = _params(dias, cuenta)
-    try:
-        kpis = await _fetch_one(
-            _BASE + """
-            select count(*)::int                                   as productos,
-                   -- ACTIVOS se cuenta con `situacion_chip`, NO con `estado`
-                   -- (Eduardo, 21-ago-2026). `estado` es un cubo de TRES donde
-                   -- "no vendió en el período" le GANA a "está activa":
-                   --     case when v.uds = 0        then 'no_venta'
-                   --          when alguna_activa    then 'activa'
-                   --          else 'pausada'
-                   -- así que una publicación viva sin ventas en la ventana caía
-                   -- en `no_venta` y NO se contaba. Medido: el KPI decía 497
-                   -- cuando había 736 activas — 239 activas sin venta en 60 días
-                   -- quedaban fuera de su propio KPI. `situacion_chip` sí es el
-                   -- estado puro del listado, y ya se usaba dos renglones abajo
-                   -- para `listadas_activas`: eran dos definiciones de "activa"
-                   -- conviviendo en la MISMA consulta.
-                   count(*) filter (where situacion_chip = 'activa')::int as activos,
-                   count(*) filter (where situacion_chip = 'activa'
-                                     and tiene_full_agg)::int      as activos_full,
-                   coalesce(sum(stock_full), 0)::bigint            as stock_full,
-                   coalesce(sum(stock_propio), 0)::bigint          as stock_propio,
-                   -- Mismo criterio que `activos` (antes diferían): se conserva
-                   -- el nombre porque lo consume el bloque `skus` de abajo.
-                   count(*) filter (where situacion_chip = 'activa')::int as listadas_activas,
-                   count(*) filter (where situacion_chip = 'activa'
-                                     and stock_full = 0
-                                     and stock_propio = 0)::int    as activas_sin_stock
-            from (select f.*, (tipo in ('full','mixto')) as tiene_full_agg
-                  from filas f) x""", p)
-        skus = await _fetch_one(
-            """select (select count(*)::int from core.products)          as skus_catalogo,
-                      (select count(distinct sku)::int from channel.listings
-                        where canal in ('mercado_libre','amazon'))       as skus_listados""")
-        cuentas = await _fetch_all(
-            """-- MISMO UNIVERSO QUE LA TABLA (Eduardo, 21-ago-2026): la pastilla
-               -- contaba TODO, incluidas las cerradas, mientras `_BASE` las
-               -- excluye. Bekura decía 2,472 y la tabla 2,462: los 10 de
-               -- diferencia eran publicaciones cerradas. Un número al lado del
-               -- otro que no cuadraba por 10 invita a desconfiar de los dos.
-               select a.legacy_code as cuenta, count(*)::int as listings
-               from channel.listings l join core.accounts a on a.id = l.account_id
-               where l.canal in ('mercado_libre','amazon')
-                 and lower(coalesce(l.situacion, '')) <> 'closed'
-               group by 1 order by 1""")
-        serie = await _fetch_all(
-            _mx("""select date, sum(units_sold)::int as unidades,
-                      round(sum(revenue), 2) as venta
-               from channel.sales_daily_completa
-               where date > current_date - %(dias)s::int
-                 and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-               group by 1 order by 1"""), p)
-        # UDS/$VENTA del período se derivan de la MISMA serie que pinta la
-        # gráfica — un solo dato mostrado dos veces, no dos queries que
-        # "deberían" coincidir. Antes salían de `filas` (solo SKUs con
-        # publicación viva) y perdían la venta de publicaciones cerradas:
-        # 818 uds / $326k en la ventana de 7 días del 2-ago (Eduardo detectó
-        # el KPI en 2,564 con la gráfica sumando 3,243).
-        kpis["uds_periodo"] = sum(int(s["unidades"]) for s in serie)
-        kpis["venta_periodo"] = round(sum(float(s["venta"]) for s in serie), 2)
-        pct_activas = (round(kpis["listadas_activas"] / kpis["productos"] * 100)
-                       if kpis["productos"] else 0)
-        pct_sin_stock = (round(kpis["activas_sin_stock"] / kpis["listadas_activas"] * 100)
-                         if kpis["listadas_activas"] else 0)
-        return {"ambiente": settings.app_env, "dias": dias,
-                "skus": {**skus, "pct_activas": pct_activas,
-                         "pct_sin_stock": pct_sin_stock},
-                "kpis": kpis, "cuentas": cuentas, "serie": serie}
-    except Exception as exc:  # noqa: BLE001
-        log.warning("dashboard fulfillment falló: %s", exc)
-        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+    async def _producir() -> dict[str, Any]:
+        p = _params(dias, cuenta)
+        try:
+            kpis = await _fetch_one(
+                _BASE + """
+                select count(*)::int                                   as productos,
+                       -- ACTIVOS se cuenta con `situacion_chip`, NO con `estado`
+                       -- (Eduardo, 21-ago-2026). `estado` es un cubo de TRES donde
+                       -- "no vendió en el período" le GANA a "está activa":
+                       --     case when v.uds = 0        then 'no_venta'
+                       --          when alguna_activa    then 'activa'
+                       --          else 'pausada'
+                       -- así que una publicación viva sin ventas en la ventana caía
+                       -- en `no_venta` y NO se contaba. Medido: el KPI decía 497
+                       -- cuando había 736 activas — 239 activas sin venta en 60 días
+                       -- quedaban fuera de su propio KPI. `situacion_chip` sí es el
+                       -- estado puro del listado, y ya se usaba dos renglones abajo
+                       -- para `listadas_activas`: eran dos definiciones de "activa"
+                       -- conviviendo en la MISMA consulta.
+                       count(*) filter (where situacion_chip = 'activa')::int as activos,
+                       count(*) filter (where situacion_chip = 'activa'
+                                         and tiene_full_agg)::int      as activos_full,
+                       coalesce(sum(stock_full), 0)::bigint            as stock_full,
+                       coalesce(sum(stock_propio), 0)::bigint          as stock_propio,
+                       -- Mismo criterio que `activos` (antes diferían): se conserva
+                       -- el nombre porque lo consume el bloque `skus` de abajo.
+                       count(*) filter (where situacion_chip = 'activa')::int as listadas_activas,
+                       count(*) filter (where situacion_chip = 'activa'
+                                         and stock_full = 0
+                                         and stock_propio = 0)::int    as activas_sin_stock
+                from (select f.*, (tipo in ('full','mixto')) as tiene_full_agg
+                      from filas f) x""", p)
+            skus = await _fetch_one(
+                """select (select count(*)::int from core.products)          as skus_catalogo,
+                          (select count(distinct sku)::int from channel.listings
+                            where canal in ('mercado_libre','amazon'))       as skus_listados""")
+            cuentas = await _fetch_all(
+                """-- MISMO UNIVERSO QUE LA TABLA (Eduardo, 21-ago-2026): la pastilla
+                   -- contaba TODO, incluidas las cerradas, mientras `_BASE` las
+                   -- excluye. Bekura decía 2,472 y la tabla 2,462: los 10 de
+                   -- diferencia eran publicaciones cerradas. Un número al lado del
+                   -- otro que no cuadraba por 10 invita a desconfiar de los dos.
+                   select a.legacy_code as cuenta, count(*)::int as listings
+                   from channel.listings l join core.accounts a on a.id = l.account_id
+                   where l.canal in ('mercado_libre','amazon')
+                     and lower(coalesce(l.situacion, '')) <> 'closed'
+                   group by 1 order by 1""")
+            serie = await _fetch_all(
+                _mx("""select date, sum(units_sold)::int as unidades,
+                          round(sum(revenue), 2) as venta
+                   from channel.sales_daily_completa
+                   where date > current_date - %(dias)s::int
+                     and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
+                   group by 1 order by 1"""), p)
+            # UDS/$VENTA del período se derivan de la MISMA serie que pinta la
+            # gráfica — un solo dato mostrado dos veces, no dos queries que
+            # "deberían" coincidir. Antes salían de `filas` (solo SKUs con
+            # publicación viva) y perdían la venta de publicaciones cerradas:
+            # 818 uds / $326k en la ventana de 7 días del 2-ago (Eduardo detectó
+            # el KPI en 2,564 con la gráfica sumando 3,243).
+            kpis["uds_periodo"] = sum(int(s["unidades"]) for s in serie)
+            kpis["venta_periodo"] = round(sum(float(s["venta"]) for s in serie), 2)
+            pct_activas = (round(kpis["listadas_activas"] / kpis["productos"] * 100)
+                           if kpis["productos"] else 0)
+            pct_sin_stock = (round(kpis["activas_sin_stock"] / kpis["listadas_activas"] * 100)
+                             if kpis["listadas_activas"] else 0)
+            return {"ambiente": settings.app_env, "dias": dias,
+                    "skus": {**skus, "pct_activas": pct_activas,
+                             "pct_sin_stock": pct_sin_stock},
+                    "kpis": kpis, "cuentas": cuentas, "serie": serie}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("dashboard fulfillment falló: %s", exc)
+            raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+    datos, edad = await cache_lectura.con_cache(
+        "dashboard", {"dias": dias, "cuenta": cuenta}, _producir, refrescar=refrescar)
+    return {**datos, "_cache": {"edad_s": edad, "ttl_s": cache_lectura.TTL_S}}
 
 
 @router.get("/detalle")
@@ -1670,8 +1679,18 @@ async def tabla(
     # apaga las llamadas a ML sin deploy (la tabla sigue con lo ya cacheado).
     envios: int | None = Query(None, ge=0, le=500,
                                description="cuántos embarques consultar por carga (0 = solo caché)"),
+    # El botón "Actualizar" de la pestaña. Salta la LECTURA del caché pero
+    # igual GUARDA: quien lo aprieta paga la consulta y deja el caché tibio
+    # para los demás (ver services/cache_lectura.con_cache).
+    refrescar: bool = Query(False, description="ignora el caché y vuelve a consultar"),
 ) -> dict[str, Any]:
-    """Filas por SKU (agregado de cuentas) + sparkline 14 d por fila."""
+    """Filas por SKU (agregado de cuentas) + sparkline 14 d por fila.
+
+    CACHEADA 2 min (`services/cache_lectura`). Medido el 7-sep-2026: la consulta
+    tarda 1.7 s pero el endpoint 9, porque sus tres consultas compiten con los
+    webhooks por un pool de 6 conexiones. Servir de memoria no solo acelera esta
+    pestaña — le quita presión a ese pool. La antigüedad viaja en `_cache` para
+    que nadie lea un dato viejo creyéndolo de ahora."""
     if not sdb.disponible():
         raise HTTPException(503, "BD kubera no configurada en este ambiente")
     if cuenta and cuenta not in _CUENTAS:
@@ -1689,67 +1708,92 @@ async def tabla(
         raise HTTPException(400, f"tam inválido: {', '.join(malos)}")
     if dir and dir not in _DIRS:
         raise HTTPException(400, f"dir inválida: {dir}")
-    p = _params(dias, cuenta)
-    cond, extra = ["true"], {}
-    if estado:
-        cond.append("estado = %(estado)s"); extra["estado"] = estado
-    if tipo:
-        cond.append("tipo = %(tipo)s"); extra["tipo"] = tipo
-    if tams:
-        # Compatible con el valor suelto de antes: "L" llega como lista de uno.
-        cond.append("tam = any(%(tam)s)"); extra["tam"] = tams
-    if q:
-        cond.append("(sku::text ilike %(q)s or titulo ilike %(q)s)")
-        extra["q"] = f"%{q}%"
-    where = " and ".join(cond)
-    col, dir_natural = _ORDEN.get(orden, _ORDEN["venta"])
-    # `nulls last` en AMBAS direcciones: un SKU sin margen no es "el de menor
-    # margen", es uno del que no sabemos — va al final se ordene como se ordene.
-    orden_sql = f"{col} {dir or dir_natural} nulls last"
-    try:
-        total = await _fetch_scalar(
-            _BASE + f"select count(*) from filas where {where}", {**p, **extra})
-        items = await _fetch_all(
-            _BASE + f"""select * from filas where {where}
-                        order by {orden_sql}, sku limit %(limit)s offset %(offset)s""",
-            {**p, **extra, "limit": limit, "offset": offset})
-        # Sparkline: unidades por día (14 d) SOLO de los SKUs de esta página.
-        if items:
-            spark = await _fetch_all(
-                _mx("""select sku, date, sum(units_sold)::int as u
-                   from channel.sales_daily_completa
-                   where date > current_date - 14 and sku = any(%(skus)s::citext[])
-                     and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
-                   group by 1, 2"""),
-                {"skus": [str(i["sku"]) for i in items], "cuenta": cuenta})
-            from collections import defaultdict
-            from datetime import date, timedelta
-            por_sku: dict[str, dict] = defaultdict(dict)
-            for r in spark:
-                por_sku[str(r["sku"]).lower()][str(r["date"])] = r["u"]
-            hoy = date.today()
-            fechas = [str(hoy - timedelta(days=n)) for n in range(13, -1, -1)]
-            for i in items:
-                m = por_sku.get(str(i["sku"]).lower(), {})
-                i["spark"] = [m.get(f, 0) for f in fechas]
-            await _visitas_en_filas(items, dias, visitas)
-            await _pesos_en_filas(items, visitas)
-            pendientes = await _envio_real_en_filas(
-                items, dias, cuenta,
-                envios if envios is not None
-                else getattr(settings, "tabla_envio_real_presupuesto", 150))
-        else:
-            pendientes = 0
-        return {"total": int(total or 0), "items": items,
-                "limit": limit, "offset": offset, "dias": dias,
-                "orden": orden, "dir": dir or dir_natural,
-                # Piezas de ESTA página que todavía traen envío estimado. El
-                # frontend lo anuncia y refresca hasta que llegue a 0, igual que
-                # el popup de "Productos más vendidos".
-                "envios_pendientes": pendientes}
-    except Exception as exc:  # noqa: BLE001
-        log.warning("tabla fulfillment falló: %s", exc)
-        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+    # La llave del caché son los parámetros que CAMBIAN el resultado. `visitas`
+    # y `envios` NO entran: son presupuestos de llamadas a ML, no filtros —
+    # incluirlos partiría el caché en variantes que devuelven lo mismo.
+    _clave = {"dias": dias, "cuenta": cuenta, "estado": estado, "tipo": tipo,
+              "tam": tam, "q": q, "orden": orden, "dir": dir,
+              "limit": limit, "offset": offset}
+
+    async def _producir() -> dict[str, Any]:
+        p = _params(dias, cuenta)
+        cond, extra = ["true"], {}
+        if estado:
+            cond.append("estado = %(estado)s"); extra["estado"] = estado
+        if tipo:
+            cond.append("tipo = %(tipo)s"); extra["tipo"] = tipo
+        if tams:
+            # Compatible con el valor suelto de antes: "L" llega como lista de uno.
+            cond.append("tam = any(%(tam)s)"); extra["tam"] = tams
+        if q:
+            cond.append("(sku::text ilike %(q)s or titulo ilike %(q)s)")
+            extra["q"] = f"%{q}%"
+        where = " and ".join(cond)
+        col, dir_natural = _ORDEN.get(orden, _ORDEN["venta"])
+        # `nulls last` en AMBAS direcciones: un SKU sin margen no es "el de menor
+        # margen", es uno del que no sabemos — va al final se ordene como se ordene.
+        orden_sql = f"{col} {dir or dir_natural} nulls last"
+        try:
+            total = await _fetch_scalar(
+                _BASE + f"select count(*) from filas where {where}", {**p, **extra})
+            items = await _fetch_all(
+                _BASE + f"""select * from filas where {where}
+                            order by {orden_sql}, sku limit %(limit)s offset %(offset)s""",
+                {**p, **extra, "limit": limit, "offset": offset})
+            # Sparkline: unidades por día (14 d) SOLO de los SKUs de esta página.
+            if items:
+                spark = await _fetch_all(
+                    _mx("""select sku, date, sum(units_sold)::int as u
+                       from channel.sales_daily_completa
+                       where date > current_date - 14 and sku = any(%(skus)s::citext[])
+                         and (%(cuenta)s::text is null or cuenta = %(cuenta)s)
+                       group by 1, 2"""),
+                    {"skus": [str(i["sku"]) for i in items], "cuenta": cuenta})
+                from collections import defaultdict
+                from datetime import date, timedelta
+                por_sku: dict[str, dict] = defaultdict(dict)
+                for r in spark:
+                    por_sku[str(r["sku"]).lower()][str(r["date"])] = r["u"]
+                hoy = date.today()
+                fechas = [str(hoy - timedelta(days=n)) for n in range(13, -1, -1)]
+                for i in items:
+                    m = por_sku.get(str(i["sku"]).lower(), {})
+                    i["spark"] = [m.get(f, 0) for f in fechas]
+                await _visitas_en_filas(items, dias, visitas)
+                await _pesos_en_filas(items, visitas)
+                pendientes = await _envio_real_en_filas(
+                    items, dias, cuenta,
+                    envios if envios is not None
+                    else getattr(settings, "tabla_envio_real_presupuesto", 150))
+            else:
+                pendientes = 0
+            return {"total": int(total or 0), "items": items,
+                    "limit": limit, "offset": offset, "dias": dias,
+                    "orden": orden, "dir": dir or dir_natural,
+                    # Piezas de ESTA página que todavía traen envío estimado. El
+                    # frontend lo anuncia y refresca hasta que llegue a 0, igual que
+                    # el popup de "Productos más vendidos".
+                    "envios_pendientes": pendientes}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("tabla fulfillment falló: %s", exc)
+            raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+    datos, edad = await cache_lectura.con_cache(
+        "tabla", _clave, _producir, refrescar=refrescar,
+        # NO se condiciona a `envios_pendientes`. Fue el primer intento y estaba
+        # mal: ese contador no dice "esta petición sigue en curso" sino cuántas
+        # piezas del catálogo aún traen envío ESTIMADO, un rezago que se llena a
+        # lo largo de muchas cargas. Medido en sandbox: 6,924 pendientes, o sea
+        # que la guarda habría impedido guardar SIEMPRE y el caché no habría
+        # entrado nunca.
+        #
+        # Lo único que no se guarda es una respuesta vacía teniendo qué mostrar:
+        # eso no es una foto parcial, es una consulta que salió mal, y servirla
+        # 2 minutos convierte un tropiezo en una pestaña en blanco.
+        cachear_si=lambda d: bool(d.get("items")) or not d.get("total"))
+    # La antigüedad se anuncia SIEMPRE, aunque sea 0: así la pantalla puede
+    # decir "hace 40 s" sin adivinar si hubo caché o no.
+    return {**datos, "_cache": {"edad_s": edad, "ttl_s": cache_lectura.TTL_S}}
 
 
 # ── VENTAS POR CATEGORÍA ─────────────────────────────────────────────────────

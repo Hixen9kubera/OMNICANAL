@@ -1937,13 +1937,19 @@ export default function FulfillmentPage() {
      resultado se tira. */
   const cargaVigente = useRef(0);
 
-  const cargar = useCallback(async () => {
+  // `forzar` = el botón Actualizar. Las cargas AUTOMÁTICAS (la de cada 60 s y
+  // las de cambiar filtro) van sin él y se sirven del caché de 2 min del
+  // backend; el botón es la única que paga la consulta de verdad. Si el
+  // automático también forzara, el caché no serviría de nada: cada pestaña
+  // abierta seguiría cobrando sus 9 s cada minuto.
+  const cargar = useCallback(async (forzar = false) => {
     const mia = ++cargaVigente.current;
     setCargando(true); setErr(null);
     try {
       const qd = new URLSearchParams({ dias: String(dias) });
+      if (forzar) qd.set("refrescar", "1");
       if (cuenta) qd.set("cuenta", cuenta);
-      const qt = new URLSearchParams(qd);
+      const qt = new URLSearchParams(qd);   // hereda `refrescar` si lo hay
       if (estado) qt.set("estado", estado);
       if (tipo) qt.set("tipo", tipo);
       if (tam.length) qt.set("tam", tam.join(","));
@@ -2008,7 +2014,16 @@ export default function FulfillmentPage() {
   }, []);
   const [ultimo, setUltimo] = useState<number | null>(null);
   useEffect(() => { if (tabla) setUltimo(Date.now()); }, [tabla]);
-  const haceSeg = ultimo ? Math.max(0, Math.round((ahora - ultimo) / 1000)) : null;
+  // LA EDAD ES LA DEL DATO, NO LA DE LA PETICIÓN. Desde que el backend cachea
+  // 2 min, "pedí hace 5 s" y "este número es de hace 5 s" dejaron de ser lo
+  // mismo: la respuesta pudo venir de una consulta de hace 110 s. Sumar la
+  // edad que reporta el servidor (`_cache.edad_s`) al tiempo transcurrido desde
+  // que llegó es lo único que no miente — y es justo el dato que evita que
+  // alguien lea una cifra vieja creyéndola de ahora.
+  const edadCache = (tabla as { _cache?: { edad_s?: number } } | null)?._cache?.edad_s ?? 0;
+  const haceSeg = ultimo
+    ? Math.max(0, Math.round((ahora - ultimo) / 1000)) + edadCache
+    : null;
 
   const totalPag = tabla ? Math.max(1, Math.ceil(tabla.total / limit)) : 1;
 
@@ -2041,8 +2056,8 @@ export default function FulfillmentPage() {
             <Kpi label="% sin stock" value={dash?.skus ? `${dash.skus.pct_sin_stock}%` : "—"}
                  tone={dash?.skus && dash.skus.pct_sin_stock > 30 ? "text-red-500" : "text-emerald-600"} />
           </div>
-          <button onClick={() => void cargar()}
-                  title="Se actualiza solo cada 60 s (el precio y el stock de ML llegan por webhook)"
+          <button onClick={() => void cargar(true)}
+                  title={"Trae los datos de AHORA, saltándose el caché de 2 minutos del servidor. La pestaña ya se refresca sola cada 60 s, pero esas cargas sí pueden servirse de caché — por eso el contador mide la edad del DATO, no la de la última petición."}
                   className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm hover:bg-slate-100">
             <RefreshCw size={14} className={cargando ? "animate-spin" : ""} />
             {haceSeg == null ? "Actualizar" : haceSeg < 10 ? "Al día" : `hace ${haceSeg}s`}

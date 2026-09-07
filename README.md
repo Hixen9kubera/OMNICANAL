@@ -1001,6 +1001,62 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.425.0 — Análisis abría en 9 s; ahora en 0 salvo la primera
+
+Eduardo: *"la pestaña de análisis tarda mucho en cargar… darle más rapidez o
+conservar caché"*. Antes de tocar nada se midió contra producción, descartando
+una por una las causas fáciles:
+
+| medición | resultado | qué descarta |
+|---|---|---|
+| round-trip vacío (`GET /`) | **0.17 s** | no es la red |
+| el SQL de `/tabla`, medido directo | **1.4–1.7 s** | **no es la consulta** |
+| el endpoint `/tabla` completo | **8–13 s** | |
+| con las llamadas a ML apagadas | 7.7 s | solo 1.2 s eran ML |
+| pings a `/` MIENTRAS `/tabla` corre | **0.18 s** | **el event loop está SANO** |
+| cinco `/tabla` en paralelo | **21 s c/u** | se estorban entre sí |
+
+La consulta tarda 1.7 s y el endpoint 9. La diferencia no está en el SQL ni en
+el loop: está en la **capacidad para trabajo bloqueante**. El pool tiene 6
+conexiones, las consultas salen por `asyncio.to_thread` —~6 hilos en este
+contenedor— y el backend procesa webhooks de ML sin pausa. `/tabla` hace TRES
+consultas y compite por esos seis carriles contra todo lo demás. De ahí que
+cinco lecturas simultáneas no tarden 9 s cada una sino 21.
+
+**`services/cache_lectura.py`** — caché en memoria, 2 min, para `/tabla` y
+`/dashboard`. Ataca la causa y no solo el síntoma: cada lectura servida de
+memoria es una que **no toca el pool**, así que acelera la pestaña y de paso
+descongestiona los webhooks y el sync, que peleaban por el mismo cuello.
+
+**Medido en sandbox** con el backend local:
+
+    #1  3.23 s   (miss)
+    #2  0.00 s   #3  0.00 s   #4  0.00 s
+    refrescar=1  3.10 s   ← el botón
+    a los 120 s  4.96 s   ← el TTL caducó, vuelve a consultar
+
+**El botón "Actualizar" salta el caché** (`?refrescar=1`), pero **sí guarda**:
+quien lo aprieta paga la consulta y deja el caché tibio para los demás. Las
+cargas automáticas —la de cada 60 s y las de cambiar filtro— NO fuerzan; si lo
+hicieran, el caché no serviría de nada y cada pestaña abierta seguiría cobrando
+sus 9 s cada minuto.
+
+**El contador ahora mide la edad del DATO, no la de la petición.** Con caché,
+"pedí hace 5 s" y "este número es de hace 5 s" dejaron de ser lo mismo: la
+respuesta pudo venir de una consulta de hace 110 s. El botón suma `_cache.edad_s`
+al tiempo transcurrido. Es lo único que evita el único daño real de un caché —
+que alguien lea una cifra vieja creyéndola de ahora.
+
+**Un error propio que quedó documentado en el módulo.** El primer intento no
+guardaba mientras `envios_pendientes > 0`, creyendo que eso significaba "la
+respuesta sigue armándose". No lo era —es el rezago de piezas con envío
+estimado, **6,924** en la medición— así que la condición era siempre falsa y el
+caché no habría entrado NUNCA. Una guarda que nunca deja guardar no se nota: el
+caché simplemente no sirve, sin un solo error en los logs. Lo que sí se rechaza
+es una respuesta vacía teniendo qué mostrar — eso no es una foto parcial, es una
+consulta que salió mal, y servirla 2 minutos convierte un tropiezo en una
+pestaña en blanco.
+
 ### v0.425.0 — La Red viva ilumina los caminos del nodo elegido (Eduardo)
 
 Eduardo: *"cuando se seleccione alguno de los nodos, que se marque un poco más
