@@ -57,6 +57,9 @@ interface Fila {
 interface Respuesta {
   dias: number; pendientes: number; consultadas: number; nota: string;
   estado: string | null;
+  /* Edad del dato, no de la petición: el backend cachea 2 min y sin esto
+     "acabo de abrir el popup" se confundiría con "este número es de ahora". */
+  _cache?: { edad_s: number; ttl_s: number };
   /* Lista General: UN renglón por SKU, con las cuentas ya fundidas y ordenada
      por el total del SKU. La calcula el backend a propósito — fundirla aquí
      desde los dos top-10 por cuenta repetía SKUs y podía perder productos que
@@ -484,8 +487,15 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
   // El filtro de ESTADO viaja al backend, no se aplica aquí: el top se corta
   // en SQL, así que filtrar en el cliente dejaría "las que sobrevivan de 10"
   // en vez del top 10 de las activas.
-  const cargar = useCallback((d: number, est: FiltroEstado) => {
-    const q = `dias=${d}` + (est === "TODAS" ? "" : `&estado=${est}`);
+  // `forzar` salta el caché de 2 min del backend. Lo usan DOS cosas y por
+  // razones distintas: el botón "Actualizar" (el usuario quiere lo de ahora) y
+  // las RONDAS de relleno de envíos — una ronda que se sirviera del caché
+  // recibiría la misma respuesta con los mismos `pendientes` y giraría hasta
+  // agotar MAX_RONDAS sin avanzar un solo embarque. La primera apertura no
+  // fuerza: ahí es donde el caché ahorra los 5-14 s.
+  const cargar = useCallback((d: number, est: FiltroEstado, forzar = false) => {
+    const q = `dias=${d}` + (est === "TODAS" ? "" : `&estado=${est}`)
+            + (forzar ? "&refrescar=1" : "");
     fetchSesion(`${API_BASE}/api/fulfillment/margenes-reales?${q}`, { cache: "no-store" })
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((res: Respuesta) => {
@@ -494,7 +504,7 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
         // quedan pendientes, se vuelve a pedir y cada ronda avanza otro tanto.
         if (res.pendientes > 0 && rondas.current < MAX_RONDAS) {
           rondas.current += 1;
-          setTimeout(() => cargar(d, est), 2500);
+          setTimeout(() => cargar(d, est, true), 2500);
         }
       })
       .catch((e) => setError(String(e)));
@@ -552,6 +562,21 @@ export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) 
                   <RefreshCw size={11} className="animate-spin" />
                   consultando envíos — faltan {fNum(data.pendientes)} piezas
                 </span>
+              )}
+              {data && (
+                <button
+                  type="button"
+                  onClick={() => { rondas.current = 0; cargar(dias, estado, true); }}
+                  title={"Trae los datos de AHORA, saltándose el caché de 2 minutos del "
+                       + "servidor. El contador dice la edad del DATO: si el popup se abrió "
+                       + "hace un instante pero la consulta era de hace 100 s, eso es lo que "
+                       + "se muestra."}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-500 transition-colors hover:bg-slate-100">
+                  <RefreshCw size={11} />
+                  {(data._cache?.edad_s ?? 0) < 10
+                    ? "Al día"
+                    : `hace ${data._cache?.edad_s}s`}
+                </button>
               )}
             </div>
             <button onClick={cerrar} aria-label="Cerrar"

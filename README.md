@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.427.0 — El popup de más vendidos, al mismo caché
+
+Segunda mitad de la v0.426.0. Medido antes en producción, sobre las seis
+combinaciones que la pantalla puede pedir:
+
+    dias=7    5.2 s     dias=60   5.5 s     estado=activa    4.7 s
+    dias=30   8.2 s     dias=90   6.1 s     estado=pausada  14.2 s
+
+**En sandbox, después:** 1.96 s la primera, **0.00 s** las siguientes, y
+`refrescar=1` vuelve a consultar.
+
+**Las RONDAS de relleno fuerzan el refresco.** El modal vuelve a pedir mientras
+`pendientes > 0` para completar los envíos, y una ronda servida del caché
+recibiría la misma respuesta con los mismos pendientes: giraría hasta agotar
+`MAX_RONDAS` sin avanzar un embarque. Ahora pasan `refrescar=1`, que es
+exactamente lo que significan — "haz más trabajo", no "dame lo de antes".
+
+**Y por eso NO lleva guarda por `pendientes`.** El primer intento sí la puso, y
+sobra: con las rondas forzando, el problema que la guarda evitaba ya no existe.
+Dejarla habría repetido el error de `/tabla` — una condición que se vuelve
+falsa apaga el caché **en silencio**, sin un solo error en los logs. Y se ve
+cuán fácil pasa: en producción `pendientes` es 0 en las seis combinaciones,
+pero en el sandbox —caso de envíos vacío— es **3,474**, y ahí el caché no
+habría entrado jamás. Un caché que funciona o no según qué tan lleno esté
+otro caché es un caché que nadie puede razonar.
+
+El popup gana su propio contador de edad, con la misma regla que la tabla: dice
+la edad del DATO. Si se abrió hace un instante pero la consulta era de hace
+100 s, eso es lo que muestra.
+
 ### v0.426.0 — Análisis abría en 9 s; ahora en 0 salvo la primera
 
 Eduardo: *"la pestaña de análisis tarda mucho en cargar… darle más rapidez o

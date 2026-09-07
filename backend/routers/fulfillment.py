@@ -1140,200 +1140,226 @@ async def margenes_reales(
     limite: int = Query(10, ge=3, le=20),
     presupuesto: int = Query(250, ge=0, le=500),
     estado: str | None = Query(None, description="activa|pausada; omitido = ambas"),
+    refrescar: bool = Query(False, description="ignora el caché y vuelve a consultar"),
 ) -> dict[str, Any]:
     """Top de SKUs más vendidos POR CUENTA con margen sobre Costo Final y los
     tres cobros de Meli REALES: comisión (pedidos), envío (API de shipments,
     caché MySQL) y el precio realizado. `estado` filtra por la situación de la
     publicación ANTES de cortar el top. `pendientes` > 0 significa que el caché
     de envíos sigue llenándose — el frontend refresca hasta que llegue a 0."""
-    if not sdb.disponible():
-        raise HTTPException(503, "BD kubera no configurada en este ambiente")
-    if estado and estado not in _ESTADOS_PUB:
-        raise HTTPException(400, f"estado inválido: {estado}")
-    try:
-        top = await _fetch_all(_SQL_MARGEN_REAL_TOP,
-                            {"dias": dias, "limite": limite, "estado": estado})
-        pares_cs = [(f["cuenta"], f["sku"]) for f in top]
-        lineas = await _fetch_all(_SQL_MARGEN_REAL_LINEAS, {
+    async def _producir() -> dict[str, Any]:
+        if not sdb.disponible():
+            raise HTTPException(503, "BD kubera no configurada en este ambiente")
+        if estado and estado not in _ESTADOS_PUB:
+            raise HTTPException(400, f"estado inválido: {estado}")
+        try:
+            top = await _fetch_all(_SQL_MARGEN_REAL_TOP,
+                                {"dias": dias, "limite": limite, "estado": estado})
+            pares_cs = [(f["cuenta"], f["sku"]) for f in top]
+            lineas = await _fetch_all(_SQL_MARGEN_REAL_LINEAS, {
+                "dias": dias,
+                "cuentas": [c for c, _ in pares_cs],
+                "skus": [s for _, s in pares_cs]}) if pares_cs else []
+            ids = sorted({str(l["external_order_id"]) for l in lineas})
+            ordenes = await _fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
+
+        # Envío real: completar el caché (hasta `presupuesto` consultas) y leerlo.
+        pares_orden = [(l["cuenta"], str(l["external_order_id"])) for l in lineas]
+        pares_orden = sorted(set(pares_orden))
+        consultadas = 0
+        costos: dict[tuple[str, str], dict[str, Any]] = {}
+        if getattr(settings, "mysql_enabled", True) and pares_orden:
+            from services import envio_real
+            try:
+                if presupuesto:
+                    consultadas = await envio_real.completar(pares_orden, presupuesto)
+                # leer() es MySQL síncrono con ~15,000 pares (1.46 s medidos): en la
+                # corrutina congela el backend entero mientras dura.
+                costos = await asyncio.to_thread(envio_real.leer, pares_orden)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("envío real no disponible: %s", exc)
+
+        # VISITAS de cada publicación (ML las da por item, no por SKU) para poder
+        # sacar la conversión: unidades vendidas ÷ visitas, ambas del MISMO período.
+        # Solo Mercado Libre — Amazon no tiene equivalente por esta vía.
+        pares_pub = sorted({(f["cuenta"], str(i))
+                            for f in top for i in (f["listing_ids"] or [])})
+        visitas: dict[str, dict[str, Any]] = {}
+        if getattr(settings, "mysql_enabled", True) and pares_pub:
+            from services import visitas_ml
+            try:
+                if presupuesto:
+                    await visitas_ml.completar(pares_pub, dias)
+                visitas = visitas_ml.leer([i for _, i in pares_pub], dias)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("visitas no disponibles: %s", exc)
+
+        uds_orden = {(o["cuenta"], str(o["external_order_id"])): int(o["uds_orden"] or 0)
+                     for o in ordenes}
+        envio_acum: dict[tuple[str, str], float] = {}
+        uds_cub: dict[tuple[str, str], int] = {}
+        uds_sin: dict[tuple[str, str], int] = {}
+        for l in lineas:
+            ko = (l["cuenta"], str(l["external_order_id"]))
+            ks = (l["cuenta"], l["sku"])
+            fila = costos.get(ko)
+            if fila and fila.get("costo_vendedor") is not None:
+                total = uds_orden.get(ko) or int(l["uds"])
+                parte = float(fila["costo_vendedor"]) * int(l["uds"]) / max(total, 1)
+                envio_acum[ks] = envio_acum.get(ks, 0.0) + parte
+                uds_cub[ks] = uds_cub.get(ks, 0) + int(l["uds"])
+            else:
+                uds_sin[ks] = uds_sin.get(ks, 0) + int(l["uds"])
+
+        # UNA SOLA FUNCIÓN ARMA LAS DOS VISTAS (Eduardo, 14-ago). `grupo` trae las
+        # filas por cuenta de un mismo SKU: una sola para las pestañas de cuenta,
+        # las dos para la lista General. Si cada vista hiciera su propia aritmética,
+        # el mismo SKU acabaría con dos márgenes distintos según dónde se mire.
+        #
+        # Todo se RE-PONDERA sobre los crudos; nada se promedia de promedios.
+        def armar(grupo: list[dict[str, Any]]) -> dict[str, Any]:
+            claves = [(g["cuenta"], g["sku"]) for g in grupo]
+            uds = sum(int(g["uds"] or 0) for g in grupo)
+            ingreso = sum(float(g["ingreso"]) for g in grupo)
+            precio = round(ingreso / uds, 2) if uds else None
+            cub = sum(uds_cub.get(k, 0) for k in claves)
+            sin = sum(uds_sin.get(k, 0) for k in claves)
+            envio_u = round(sum(envio_acum.get(k, 0.0) for k in claves) / cub, 2) if cub else None
+            # El costo base viene de costing por SKU: es el mismo en las dos cuentas.
+            costo = next((float(g["costo_base"]) for g in grupo
+                          if g["costo_base"] is not None), None)
+            flete = next((float(g["costo_flete"]) for g in grupo
+                          if g["costo_flete"] is not None), None)
+            # Comisión por unidad = comisión total ÷ unidades QUE TRAEN comisión.
+            com_tot = sum(float(g["comision_total"] or 0) for g in grupo)
+            com_uds = sum(int(g["uds_com"] or 0) for g in grupo)
+            com = round(com_tot / com_uds, 2) if com_uds else None
+            # ESTADO ACROSS CUENTAS: si en una está activa, el producto SE PUEDE
+            # comprar — eso es lo que describe la etiqueta. Misma regla que usa el
+            # CTE `est` dentro de una cuenta, ahora aplicada entre cuentas.
+            estados = {g["estado"] for g in grupo}
+            est_final = ("activa" if "activa" in estados
+                         else "pausada" if "pausada" in estados else "otra")
+            # Los precios de la publicación se toman de una cuenta donde esté
+            # ACTIVA: el precio de una pausada no es el que ve el comprador.
+            viva = [g for g in grupo if g["estado"] == "activa"] or grupo
+            fila: dict[str, Any] = {
+                "sku": grupo[0]["sku"], "titulo": grupo[0]["titulo"], "uds": uds,
+                "ingreso": round(ingreso, 2), "precio_prom": precio,
+                "costo_base": costo, "costo_flete": flete, "comision_unit": com,
+                "envio_unit": envio_u,
+                "envio_estimado": next((float(g["envio_estimado"]) for g in grupo
+                                        if g["envio_estimado"] is not None), None),
+                "cobertura_envio_pct": round(cub / uds * 100) if uds else 0,
+                "uds_sin_envio": sin,
+                "estado": est_final,
+                "precio_pub": next((float(g["precio_pub"]) for g in viva
+                                    if g["precio_pub"] is not None), None),
+                "precio_lista": next((float(g["precio_lista"]) for g in viva
+                                      if g["precio_lista"] is not None), None),
+                # En qué cuentas vendió: la lista General ya no lleva una etiqueta
+                # por renglón, así que el renglón tiene que decir de dónde sale.
+                "cuentas": sorted({g["cuenta"] for g in grupo}),
+                # …Y EN CUÁL ESTÁ ACTIVA (Eduardo, 14-ago). El estado resuelto de
+                # arriba dice que se puede comprar, pero no DÓNDE: un SKU activo en
+                # Sancor y pausado en Bekura se leía igual que uno activo en las
+                # dos, y la acción que pide cada caso es distinta.
+                "estado_cuenta": {g["cuenta"]: g["estado"] for g in grupo},
+                # Marca de revisión del costeo (0032). Es por SKU, así que basta el
+                # primer renglón del grupo que la traiga — las dos cuentas comparten
+                # la misma fila de costeo, igual que `costo_base`.
+                "revisado_at": next((g["revisado_at"].isoformat() for g in grupo
+                                     if g.get("revisado_at")), None),
+                "revisado_por": next((g["revisado_por"] for g in grupo
+                                      if g.get("revisado_por")), None),
+                "revision_movida": any(g.get("revision_movida") for g in grupo),
+            }
+            # Visitas: se suman TODAS las publicaciones del SKU en las cuentas del
+            # grupo. `dias_datos` es cuántos días trajo ML de verdad — la ventana no
+            # siempre viene completa, y presumir 30 días falsearía la conversión.
+            ids_pub = [str(i) for g in grupo for i in (g["listing_ids"] or [])]
+            listas = [v for v in (visitas.get(i) for i in ids_pub)
+                      if v and v.get("visitas") is not None]
+            # Todo o nada, igual que en la tabla: con una medición a medias el
+            # porcentaje sale falso (ver _visitas_en_filas). Al fundir cuentas la
+            # regla se endurece sola — falta UNA publicación de cualquiera y el
+            # renglón se queda sin conversión, que es lo correcto.
+            if ids_pub and len(listas) == len(ids_pub):
+                total_vis = sum(int(v["visitas"]) for v in listas)
+                fila["visitas"] = total_vis
+                fila["visitas_dias"] = max((int(v["dias_datos"] or 0) for v in listas),
+                                           default=None) or None
+                fila["cr_pct"] = round(uds / total_vis * 100, 1) if total_vis else None
+            else:
+                fila["visitas"] = fila["visitas_dias"] = fila["cr_pct"] = None
+            if precio and costo is not None and com is not None and envio_u is not None:
+                cfinal = round(costo + com + envio_u, 2)
+                fila["costo_final"] = cfinal
+                fila["ganancia_unit"] = round(precio - cfinal, 2)
+                fila["margen_pct"] = round((precio - cfinal) / precio * 100, 1)
+                fila["ganancia_total"] = round((precio - cfinal) * uds, 2)
+            else:
+                fila["costo_final"] = fila["ganancia_unit"] = None
+                fila["margen_pct"] = fila["ganancia_total"] = None
+            return fila
+
+        # Las pestañas por cuenta: solo el top DE ESA cuenta (`rn`), un SKU por
+        # renglón y su estado en esa cuenta.
+        cuentas: dict[str, list[dict[str, Any]]] = {}
+        for f in top:
+            if int(f["rn"]) <= limite:
+                cuentas.setdefault(f["cuenta"], []).append(armar([f]))
+
+        # La lista General: un renglón por SKU, con las cuentas fundidas, ordenada
+        # por el ranking que ya calculó el SQL sobre el total del SKU.
+        por_sku: dict[str, list[dict[str, Any]]] = {}
+        for f in top:
+            if int(f["rn_g"]) <= limite:
+                por_sku.setdefault(f["sku"], []).append(f)
+        general = sorted((armar(g) for g in por_sku.values()),
+                         key=lambda x: (-x["uds"], -x["ingreso"]))
+
+        # `pendientes` cuenta unidades sin envío real UNA vez por (cuenta, SKU): si
+        # se sumara por vista, un SKU que sale en las dos se contaría doble y el
+        # frontend refrescaría de más esperando un cero que no llega.
+        pendientes_total = sum(uds_sin.values())
+
+        return {
             "dias": dias,
-            "cuentas": [c for c, _ in pares_cs],
-            "skus": [s for _, s in pares_cs]}) if pares_cs else []
-        ids = sorted({str(l["external_order_id"]) for l in lineas})
-        ordenes = await _fetch_all(_SQL_MARGEN_REAL_ORDENES, {"ids": ids}) if ids else []
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, f"lectura de la BD kubera falló: {exc}") from exc
-
-    # Envío real: completar el caché (hasta `presupuesto` consultas) y leerlo.
-    pares_orden = [(l["cuenta"], str(l["external_order_id"])) for l in lineas]
-    pares_orden = sorted(set(pares_orden))
-    consultadas = 0
-    costos: dict[tuple[str, str], dict[str, Any]] = {}
-    if getattr(settings, "mysql_enabled", True) and pares_orden:
-        from services import envio_real
-        try:
-            if presupuesto:
-                consultadas = await envio_real.completar(pares_orden, presupuesto)
-            # leer() es MySQL síncrono con ~15,000 pares (1.46 s medidos): en la
-            # corrutina congela el backend entero mientras dura.
-            costos = await asyncio.to_thread(envio_real.leer, pares_orden)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("envío real no disponible: %s", exc)
-
-    # VISITAS de cada publicación (ML las da por item, no por SKU) para poder
-    # sacar la conversión: unidades vendidas ÷ visitas, ambas del MISMO período.
-    # Solo Mercado Libre — Amazon no tiene equivalente por esta vía.
-    pares_pub = sorted({(f["cuenta"], str(i))
-                        for f in top for i in (f["listing_ids"] or [])})
-    visitas: dict[str, dict[str, Any]] = {}
-    if getattr(settings, "mysql_enabled", True) and pares_pub:
-        from services import visitas_ml
-        try:
-            if presupuesto:
-                await visitas_ml.completar(pares_pub, dias)
-            visitas = visitas_ml.leer([i for _, i in pares_pub], dias)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("visitas no disponibles: %s", exc)
-
-    uds_orden = {(o["cuenta"], str(o["external_order_id"])): int(o["uds_orden"] or 0)
-                 for o in ordenes}
-    envio_acum: dict[tuple[str, str], float] = {}
-    uds_cub: dict[tuple[str, str], int] = {}
-    uds_sin: dict[tuple[str, str], int] = {}
-    for l in lineas:
-        ko = (l["cuenta"], str(l["external_order_id"]))
-        ks = (l["cuenta"], l["sku"])
-        fila = costos.get(ko)
-        if fila and fila.get("costo_vendedor") is not None:
-            total = uds_orden.get(ko) or int(l["uds"])
-            parte = float(fila["costo_vendedor"]) * int(l["uds"]) / max(total, 1)
-            envio_acum[ks] = envio_acum.get(ks, 0.0) + parte
-            uds_cub[ks] = uds_cub.get(ks, 0) + int(l["uds"])
-        else:
-            uds_sin[ks] = uds_sin.get(ks, 0) + int(l["uds"])
-
-    # UNA SOLA FUNCIÓN ARMA LAS DOS VISTAS (Eduardo, 14-ago). `grupo` trae las
-    # filas por cuenta de un mismo SKU: una sola para las pestañas de cuenta,
-    # las dos para la lista General. Si cada vista hiciera su propia aritmética,
-    # el mismo SKU acabaría con dos márgenes distintos según dónde se mire.
-    #
-    # Todo se RE-PONDERA sobre los crudos; nada se promedia de promedios.
-    def armar(grupo: list[dict[str, Any]]) -> dict[str, Any]:
-        claves = [(g["cuenta"], g["sku"]) for g in grupo]
-        uds = sum(int(g["uds"] or 0) for g in grupo)
-        ingreso = sum(float(g["ingreso"]) for g in grupo)
-        precio = round(ingreso / uds, 2) if uds else None
-        cub = sum(uds_cub.get(k, 0) for k in claves)
-        sin = sum(uds_sin.get(k, 0) for k in claves)
-        envio_u = round(sum(envio_acum.get(k, 0.0) for k in claves) / cub, 2) if cub else None
-        # El costo base viene de costing por SKU: es el mismo en las dos cuentas.
-        costo = next((float(g["costo_base"]) for g in grupo
-                      if g["costo_base"] is not None), None)
-        flete = next((float(g["costo_flete"]) for g in grupo
-                      if g["costo_flete"] is not None), None)
-        # Comisión por unidad = comisión total ÷ unidades QUE TRAEN comisión.
-        com_tot = sum(float(g["comision_total"] or 0) for g in grupo)
-        com_uds = sum(int(g["uds_com"] or 0) for g in grupo)
-        com = round(com_tot / com_uds, 2) if com_uds else None
-        # ESTADO ACROSS CUENTAS: si en una está activa, el producto SE PUEDE
-        # comprar — eso es lo que describe la etiqueta. Misma regla que usa el
-        # CTE `est` dentro de una cuenta, ahora aplicada entre cuentas.
-        estados = {g["estado"] for g in grupo}
-        est_final = ("activa" if "activa" in estados
-                     else "pausada" if "pausada" in estados else "otra")
-        # Los precios de la publicación se toman de una cuenta donde esté
-        # ACTIVA: el precio de una pausada no es el que ve el comprador.
-        viva = [g for g in grupo if g["estado"] == "activa"] or grupo
-        fila: dict[str, Any] = {
-            "sku": grupo[0]["sku"], "titulo": grupo[0]["titulo"], "uds": uds,
-            "ingreso": round(ingreso, 2), "precio_prom": precio,
-            "costo_base": costo, "costo_flete": flete, "comision_unit": com,
-            "envio_unit": envio_u,
-            "envio_estimado": next((float(g["envio_estimado"]) for g in grupo
-                                    if g["envio_estimado"] is not None), None),
-            "cobertura_envio_pct": round(cub / uds * 100) if uds else 0,
-            "uds_sin_envio": sin,
-            "estado": est_final,
-            "precio_pub": next((float(g["precio_pub"]) for g in viva
-                                if g["precio_pub"] is not None), None),
-            "precio_lista": next((float(g["precio_lista"]) for g in viva
-                                  if g["precio_lista"] is not None), None),
-            # En qué cuentas vendió: la lista General ya no lleva una etiqueta
-            # por renglón, así que el renglón tiene que decir de dónde sale.
-            "cuentas": sorted({g["cuenta"] for g in grupo}),
-            # …Y EN CUÁL ESTÁ ACTIVA (Eduardo, 14-ago). El estado resuelto de
-            # arriba dice que se puede comprar, pero no DÓNDE: un SKU activo en
-            # Sancor y pausado en Bekura se leía igual que uno activo en las
-            # dos, y la acción que pide cada caso es distinta.
-            "estado_cuenta": {g["cuenta"]: g["estado"] for g in grupo},
-            # Marca de revisión del costeo (0032). Es por SKU, así que basta el
-            # primer renglón del grupo que la traiga — las dos cuentas comparten
-            # la misma fila de costeo, igual que `costo_base`.
-            "revisado_at": next((g["revisado_at"].isoformat() for g in grupo
-                                 if g.get("revisado_at")), None),
-            "revisado_por": next((g["revisado_por"] for g in grupo
-                                  if g.get("revisado_por")), None),
-            "revision_movida": any(g.get("revision_movida") for g in grupo),
+            "estado": estado,
+            "general": general,
+            "cuentas": [{"cuenta": c, "filas": filas} for c, filas in sorted(cuentas.items())],
+            "pendientes": pendientes_total,
+            "consultadas": consultadas,
+            "nota": "envío = cobro real de ML por embarque, prorrateado por unidad "
+                    "en carritos mixtos; no incluye cargos de almacenamiento FULL",
         }
-        # Visitas: se suman TODAS las publicaciones del SKU en las cuentas del
-        # grupo. `dias_datos` es cuántos días trajo ML de verdad — la ventana no
-        # siempre viene completa, y presumir 30 días falsearía la conversión.
-        ids_pub = [str(i) for g in grupo for i in (g["listing_ids"] or [])]
-        listas = [v for v in (visitas.get(i) for i in ids_pub)
-                  if v and v.get("visitas") is not None]
-        # Todo o nada, igual que en la tabla: con una medición a medias el
-        # porcentaje sale falso (ver _visitas_en_filas). Al fundir cuentas la
-        # regla se endurece sola — falta UNA publicación de cualquiera y el
-        # renglón se queda sin conversión, que es lo correcto.
-        if ids_pub and len(listas) == len(ids_pub):
-            total_vis = sum(int(v["visitas"]) for v in listas)
-            fila["visitas"] = total_vis
-            fila["visitas_dias"] = max((int(v["dias_datos"] or 0) for v in listas),
-                                       default=None) or None
-            fila["cr_pct"] = round(uds / total_vis * 100, 1) if total_vis else None
-        else:
-            fila["visitas"] = fila["visitas_dias"] = fila["cr_pct"] = None
-        if precio and costo is not None and com is not None and envio_u is not None:
-            cfinal = round(costo + com + envio_u, 2)
-            fila["costo_final"] = cfinal
-            fila["ganancia_unit"] = round(precio - cfinal, 2)
-            fila["margen_pct"] = round((precio - cfinal) / precio * 100, 1)
-            fila["ganancia_total"] = round((precio - cfinal) * uds, 2)
-        else:
-            fila["costo_final"] = fila["ganancia_unit"] = None
-            fila["margen_pct"] = fila["ganancia_total"] = None
-        return fila
 
-    # Las pestañas por cuenta: solo el top DE ESA cuenta (`rn`), un SKU por
-    # renglón y su estado en esa cuenta.
-    cuentas: dict[str, list[dict[str, Any]]] = {}
-    for f in top:
-        if int(f["rn"]) <= limite:
-            cuentas.setdefault(f["cuenta"], []).append(armar([f]))
-
-    # La lista General: un renglón por SKU, con las cuentas fundidas, ordenada
-    # por el ranking que ya calculó el SQL sobre el total del SKU.
-    por_sku: dict[str, list[dict[str, Any]]] = {}
-    for f in top:
-        if int(f["rn_g"]) <= limite:
-            por_sku.setdefault(f["sku"], []).append(f)
-    general = sorted((armar(g) for g in por_sku.values()),
-                     key=lambda x: (-x["uds"], -x["ingreso"]))
-
-    # `pendientes` cuenta unidades sin envío real UNA vez por (cuenta, SKU): si
-    # se sumara por vista, un SKU que sale en las dos se contaría doble y el
-    # frontend refrescaría de más esperando un cero que no llega.
-    pendientes_total = sum(uds_sin.values())
-
-    return {
-        "dias": dias,
-        "estado": estado,
-        "general": general,
-        "cuentas": [{"cuenta": c, "filas": filas} for c, filas in sorted(cuentas.items())],
-        "pendientes": pendientes_total,
-        "consultadas": consultadas,
-        "nota": "envío = cobro real de ML por embarque, prorrateado por unidad "
-                "en carritos mixtos; no incluye cargos de almacenamiento FULL",
-    }
+    # `presupuesto` NO entra en la llave: es cuántas llamadas a ML se permiten,
+    # no un filtro — incluirlo partiría el caché en variantes que devuelven lo
+    # mismo. Las rondas de relleno del modal pasan `refrescar=1`, que es su
+    # forma de decir "haz más trabajo", así que no necesitan llave propia.
+    datos, edad = await cache_lectura.con_cache(
+        "margenes-reales", {"dias": dias, "limite": limite, "estado": estado},
+        _producir, refrescar=refrescar)
+        # SIN GUARDA POR `pendientes`, y la decisión tiene historia. El primer
+        # intento la puso —"si faltan envíos, no congeles"— razonando que el
+        # modal volvería a preguntar y giraría sobre una copia que no avanza.
+        # El razonamiento era correcto pero la guarda sobra, porque el arreglo
+        # de verdad está del otro lado: las RONDAS de relleno pasan
+        # `refrescar=1` (ver MargenesRealesModal.cargar), así que nunca leen del
+        # caché y siempre avanzan.
+        #
+        # Y dejarla puesta era el mismo riesgo que ya mordió en `/tabla`: una
+        # condición que se vuelve falsa apaga el caché EN SILENCIO, sin un solo
+        # error. Medido: en producción `pendientes` es 0 en las seis
+        # combinaciones de la pantalla, pero en el sandbox —caché de envíos
+        # vacío— es 3,474, y ahí el caché no habría entrado jamás. Un caché que
+        # funciona o no según qué tan lleno esté otro caché es un caché que
+        # nadie puede razonar.
+    return {**datos, "_cache": {"edad_s": edad, "ttl_s": cache_lectura.TTL_S}}
 
 
 @router.get("/canales")
