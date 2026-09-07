@@ -36,7 +36,7 @@ import {
   AlertTriangle, ArrowLeftRight, ArrowUpDown, Boxes, Camera, CheckCircle2,
   ChevronRight, ClipboardList, Clock, Container, Database, Download,
   FileClock, History, Layers, Loader2, Lock, MapPin, Package, PackagePlus,
-  PackageX,
+  PackageX, ScrollText,
   PackageSearch, RefreshCw, RotateCcw, ShieldAlert, Ship, ShoppingCart, Truck,
   X,
 } from "lucide-react";
@@ -45,7 +45,7 @@ import AppNavbar from "@/components/AppNavbar";
 import { listarInventario, mensajeDeError, movimientosInventario } from "@/lib/api";
 import type {
   ClaveEtapa, Cuadre, EstadoEtapa, FilaInventario, InventarioResp, Movimiento,
-  MovimientosResp, RecepcionPendiente,
+  MovimientosResp, OrdenCompra, RecepcionPendiente,
 } from "@/lib/types";
 
 const ETAPAS: { clave: ClaveEtapa; titulo: string; icono: typeof Camera }[] = [
@@ -1403,6 +1403,7 @@ function Trazabilidad({
         </div>
 
         {!!movs?.pendientes?.length && <Pendientes filas={movs.pendientes} />}
+        {!!movs?.compras?.length && <Compras filas={movs.compras} />}
 
         {movs && movs.cuadra === false && (
           <div className="mx-6 mt-4 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
@@ -1577,6 +1578,94 @@ function Pendientes({ filas }: { filas: RecepcionPendiente[] }) {
         abajo. Son papeles que alguien tiene que validar en Odoo para que la
         mercancía entre.
       </p>
+    </section>
+  );
+}
+
+const ESTILO_VEREDICTO: Record<OrdenCompra["veredicto"], string> = {
+  completa: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+  parcial: "bg-amber-50 text-amber-800 ring-amber-200",
+  nada: "bg-rose-50 text-rose-700 ring-rose-200",
+  sobre: "bg-violet-50 text-violet-700 ring-violet-200",
+};
+
+const TEXTO_VEREDICTO: Record<OrdenCompra["veredicto"], string> = {
+  completa: "Completa",
+  parcial: "Parcial",
+  nada: "Nada recibido",
+  sobre: "Llegó de más",
+};
+
+/**
+ * El histórico de COMPRA del SKU: qué se pidió y cuánto llegó.
+ *
+ * Complementa al bloque de recepciones abiertas, que solo dice qué papeles
+ * están pendientes AHORA. La pregunta de bodega casi siempre es la comparación:
+ * de lo que se compró, cuánto entró.
+ *
+ * `sobre` no es un caso teórico — `TEC-0008-AMR` recibió 201 de 200 pedidas.
+ * Redondearlo a «completa» escondería una sobre-recepción, que es justo el tipo
+ * de descuadre que alguien tendría que revisar.
+ */
+function Compras({ filas }: { filas: OrdenCompra[] }) {
+  const pedido = filas.reduce((a, f) => a + f.pedido, 0);
+  const recibido = filas.reduce((a, f) => a + f.recibido, 0);
+  const pct = pedido ? Math.round((100 * recibido) / pedido) : 0;
+  return (
+    <section className="mx-6 mt-3 rounded-xl border border-slate-200 bg-white">
+      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 px-4 py-2.5">
+        <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-slate-500">
+          <ScrollText className="h-3.5 w-3.5" />
+          Órdenes de compra · {filas.length}
+        </h3>
+        <span className="text-xs text-slate-500">
+          {num(recibido)} recibidas de {num(pedido)} compradas ·{" "}
+          <b className={pct >= 100 ? "text-emerald-700"
+            : pct > 0 ? "text-amber-700" : "text-rose-700"}>{pct}%</b>
+        </span>
+      </header>
+
+      <div className="divide-y divide-slate-100">
+        {filas.map((f) => (
+          <div key={f.orden} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5">
+            <span className="w-24 shrink-0 font-mono text-xs font-bold text-slate-800">
+              {f.orden}
+            </span>
+            <span className="w-28 shrink-0 text-xs tabular-nums text-slate-400">
+              {f.fecha.slice(0, 10)}
+              {f.dias !== null && (
+                <span className="block text-[10px]">hace {f.dias} d</span>
+              )}
+            </span>
+            <span className="w-40 shrink-0 text-right text-sm tabular-nums text-slate-700">
+              <b>{num(f.recibido)}</b> de {num(f.pedido)}
+              {f.faltante > 0 && (
+                <span className="block text-[10px] font-semibold text-rose-600">
+                  faltan {num(f.faltante)}
+                </span>
+              )}
+            </span>
+            <span className={`shrink-0 rounded px-2 py-0.5 text-[11px] font-bold ring-1 ${ESTILO_VEREDICTO[f.veredicto]}`}>
+              {TEXTO_VEREDICTO[f.veredicto]}
+            </span>
+            <div className="min-w-0 flex-1 text-[11px] leading-snug text-slate-400">
+              <div>
+                {f.recepciones_validadas} de {f.recepciones}{" "}
+                {f.recepciones === 1 ? "recepción validada" : "recepciones validadas"}
+                {f.proveedor && ` · ${f.proveedor}`}
+              </div>
+              {f.documentos.length > 0 && (
+                <div className="font-mono opacity-80">
+                  {f.documentos
+                    .map((d) => `${d.documento}${d.estado === "done"
+                      ? ` ✓ ${d.validado.slice(0, 10)}` : ` (${d.estado})`}`)
+                    .join(" · ")}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }

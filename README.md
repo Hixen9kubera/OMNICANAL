@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.424.0 — Las órdenes de compra antiguas, y cuánto llegó de cada una
+
+Brandon, sobre el bloque de recepciones abiertas: *«y también muéstrame de las
+antiguas órdenes de compra, y cuántas se recibieron y si no se recibió parcial»*.
+
+El bloque anterior solo decía qué papeles están abiertos AHORA. Faltaba la otra
+mitad —y es la que contesta la pregunta de bodega, que casi siempre es la
+comparación: **de lo que se compró, cuánto entró.** Un SKU cuyas órdenes ya se
+recibieron enteras no tenía forma de enseñarlo.
+
+Ahora, debajo de las pendientes, va el histórico completo de compra del SKU:
+
+```
+ÓRDENES DE COMPRA · 1
+201 recibidas de 200 compradas · 101%
+
+P01975   2025-12-22 (hace 259 d)   201 de 200   Llegó de más
+         1 de 1 recepción validada · FERRAFORME MS
+         TEXCO/IN/00007 ✓ 2025-12-22
+```
+
+**EL VEREDICTO TIENE CUATRO VALORES, NO TRES**, porque los cuatro pasan de
+verdad: `completa`, `parcial`, `nada` y **`sobre`** — `TEC-0008-AMR` recibió
+**201 de 200 pedidas**. Redondear eso a «completa» escondería una
+sobre-recepción, que es justo el tipo de descuadre que alguien tendría que
+revisar. Se pinta en violeta y dice «Llegó de más».
+
+Cada orden muestra sus documentos de recepción con su estado, así que se ve de
+un vistazo cuál se validó y cuándo (`TEXCO/IN/00007 ✓ 2025-12-22`).
+
+Los datos salen de `purchase.order.line`, agrupados por orden: una misma OC
+parte el producto en decenas de renglones —`P03364` tiene **178 renglones de
+`JUGU-1153-MET`**, uno por caja— así que sin agrupar la lista sería ilegible.
+`qty_received` es la cifra oficial de Odoo y es la que se compara contra
+`product_qty`.
+
+Contraste que queda a la vista al abrir dos SKUs: `TEC-0370-NEG` compró 100 en
+dic-2025 y recibió 100 (**100%**); `JUGU-1153-MET` compró 992 en mayo repartidas
+en tres órdenes y **lleva 0% recibido**.
+
+Archivos: `backend/services/odoo.py` (`ordenes_compra_por_sku`),
+`backend/services/inventario_maestro.py` (`_compra`), `frontend/lib/types.ts`,
+`frontend/app/inventario/page.tsx`.
+
 ### v0.423.0 — «En 3 recepciones» no eran 3 lugares, y las órdenes de compra entran a la trazabilidad
 
 Eduardo preguntó en Slack (7-sep) qué significaba *«+992 en 3 recepciones»* en

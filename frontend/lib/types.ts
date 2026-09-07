@@ -1873,6 +1873,25 @@ export interface RecepcionPendiente {
   sku_en_parcial: boolean;
 }
 
+/** Una orden de compra que alguna vez pidió este SKU. */
+export interface OrdenCompra {
+  orden: string;
+  estado: string;
+  fecha: string;
+  dias: number | null;
+  proveedor: string;
+  pedido: number;
+  recibido: number;
+  faltante: number;
+  /** Renglones de la OC para este producto: suelen ser una por caja. */
+  renglones: number;
+  /** `sobre` existe de verdad: TEC-0008-AMR recibió 201 de 200 pedidas. */
+  veredicto: "completa" | "parcial" | "nada" | "sobre";
+  recepciones: number;
+  recepciones_validadas: number;
+  documentos: { documento: string; estado: string; validado: string }[];
+}
+
 export interface MovimientosResp {
   sku: string;
   movimientos: Movimiento[];
@@ -1880,6 +1899,9 @@ export interface MovimientosResp {
    *  OPCIONAL a propósito: en un deploy escalonado el frontend sale antes que
    *  el backend, y un campo ausente no debe tumbar la pantalla. */
   pendientes?: RecepcionPendiente[];
+  /** Histórico de compra del SKU. Opcional por la misma razón que `pendientes`:
+   *  en un deploy escalonado el frontend puede ir por delante del backend. */
+  compras?: OrdenCompra[];
   /** Cuántos caen dentro del filtro y la ventana. */
   total: number;
   /** Cuántos tiene el SKU en total, sin filtro ni ventana. */

@@ -546,6 +546,10 @@ def movimientos(sku: str, causa: str | None = None, limite: int = 400,
     # un SKU que aún no llega enseña un historial vacío teniendo cientos de
     # piezas prometidas. Entran como UNA FILA POR DOCUMENTO y con delta 0.
     pendientes = [_pendiente(p) for p in odoo.recepciones_pendientes_por_sku(sku)]
+    # Y el histórico de COMPRA: qué se pidió alguna vez y cuánto llegó. Es la
+    # otra mitad de la pregunta — sin esto, un SKU cuyas órdenes ya se
+    # recibieron enteras no tiene forma de enseñarlo.
+    compras = [_compra(c) for c in odoo.ordenes_compra_por_sku(sku)]
 
     # El saldo se calcula sobre TODO el libro y de más viejo a más nuevo; luego
     # se invierte. Calcularlo sobre la página visible daría un saldo que empieza
@@ -584,6 +588,7 @@ def movimientos(sku: str, causa: str | None = None, limite: int = 400,
         "sku": sku,
         "movimientos": [_mov(m) for m in visibles[:limite]],
         "pendientes": pendientes if muestra_pend else [],
+        "compras": compras if muestra_pend else [],
         "total": len(visibles),
         "total_historico": len(movs),
         "dias": dias,
@@ -649,6 +654,35 @@ def _pendiente(p: dict[str, Any]) -> dict[str, Any]:
         "sku_pedido": p.get("sku_pedido"),
         "sku_recibido": p.get("sku_recibido"),
         "sku_en_parcial": bool(p.get("sku_en_parcial")),
+    }
+
+
+def _compra(c: dict[str, Any]) -> dict[str, Any]:
+    """Una orden de compra del SKU, lista para pintarse.
+
+    `veredicto` tiene cuatro valores porque los cuatro pasan de verdad:
+    `completa`, `parcial`, `nada` y `sobre` — `TEC-0008-AMR` recibió 201 de 200
+    pedidas. Redondear eso a «completa» escondería una sobre-recepción, que es
+    justo el tipo de descuadre que alguien tendría que revisar.
+    """
+    return {
+        "orden": c["orden"],
+        "estado": c.get("estado") or "",
+        "fecha": _iso(c.get("fecha")),
+        "dias": _dias(c.get("fecha")),
+        "proveedor": c.get("proveedor") or "",
+        "pedido": c.get("pedido") or 0,
+        "recibido": c.get("recibido") or 0,
+        "faltante": c.get("faltante") or 0,
+        "renglones": c.get("renglones") or 0,
+        "veredicto": c.get("veredicto") or "nada",
+        "recepciones": c.get("recepciones") or 0,
+        "recepciones_validadas": c.get("recepciones_validadas") or 0,
+        "documentos": [
+            {"documento": d.get("documento") or "", "estado": d.get("estado") or "",
+             "validado": _iso(d.get("validado"))}
+            for d in (c.get("documentos") or [])
+        ],
     }
 
 

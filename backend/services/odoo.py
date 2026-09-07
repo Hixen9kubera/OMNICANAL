@@ -929,6 +929,107 @@ def _anotar_parcial(sku: str, recepciones: list[dict[str, Any]]) -> None:
         r["sku_en_parcial"] = bool(q.get("recibido"))
 
 
+def ordenes_compra_por_sku(sku: str) -> list[dict[str, Any]]:
+    """
+    TODAS las órdenes de compra que alguna vez pidieron este SKU, de la más
+    reciente a la más vieja, con cuánto se pidió y cuánto llegó de verdad.
+
+    Es el complemento de `recepciones_pendientes_por_sku`: aquélla contesta
+    «qué papeles están abiertos AHORA», ésta «qué se compró y cuánto entró». Sin
+    ella, un SKU cuyas compras ya se recibieron enteras no tiene forma de
+    enseñarlo — y la pregunta de bodega casi siempre es la comparación.
+
+    `qty_received` es la cifra oficial de Odoo y se agrupa por orden porque una
+    misma OC parte el producto en decenas de renglones: `P03364` tiene **178
+    renglones de `JUGU-1153-MET`**, uno por caja.
+
+    El veredicto sale de comparar pedido contra recibido, y contempla cuatro
+    casos porque los cuatro existen en los datos:
+      `completa` · `parcial` · `nada` · `sobre` (llegó de MÁS — `TEC-0008-AMR`
+      recibió 201 de 200 pedidas).
+    """
+    sku = (sku or "").strip()
+    if not sku:
+        return []
+    uid = _uid()
+    if not uid:
+        return []
+    try:
+        grupos = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "purchase.order.line", "read_group",
+            [[["product_id.default_code", "=", sku]],
+             ["product_qty", "qty_received"], ["order_id"]],
+            {"lazy": False},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo ordenes_compra_por_sku(%s) falló: %s", sku, exc)
+        return []
+    if not grupos:
+        return []
+
+    ids = sorted({i for g in grupos if (i := _id_de(g.get("order_id")))})
+    try:
+        ords = {o["id"]: o for o in _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "purchase.order", "read", [ids],
+            {"fields": ["name", "state", "date_order", "partner_id"]})}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo ordenes_compra (cabeceras) falló: %s", exc)
+        ords = {}
+
+    nombres = [o.get("name") for o in ords.values() if o.get("name")]
+    recepciones: dict[str, list[dict[str, Any]]] = {}
+    if nombres:
+        try:
+            for p in _models().execute_kw(
+                    settings.odoo_db, uid, settings.odoo_password,
+                    "stock.picking", "search_read", [[["origin", "in", nombres]]],
+                    {"fields": ["name", "state", "origin", "date_done"]}):
+                recepciones.setdefault(p.get("origin") or "", []).append({
+                    "documento": p.get("name") or "",
+                    "estado": p.get("state") or "",
+                    "validado": p.get("date_done"),
+                })
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Odoo ordenes_compra (pickings) falló: %s", exc)
+
+    salida: list[dict[str, Any]] = []
+    for g in grupos:
+        o = ords.get(_id_de(g.get("order_id")), {})
+        nombre = o.get("name") or _nombre_de(g.get("order_id"))
+        pedido = float(g.get("product_qty") or 0)
+        recibido = float(g.get("qty_received") or 0)
+        docs = recepciones.get(nombre, [])
+        validadas = [d for d in docs if d["estado"] == "done"]
+        if not pedido:
+            veredicto = "nada"
+        elif recibido > pedido + 0.001:
+            veredicto = "sobre"
+        elif recibido >= pedido:
+            veredicto = "completa"
+        elif recibido:
+            veredicto = "parcial"
+        else:
+            veredicto = "nada"
+        salida.append({
+            "orden": nombre,
+            "estado": o.get("state") or "",
+            "fecha": o.get("date_order"),
+            "proveedor": _nombre_de(o.get("partner_id")),
+            "pedido": pedido,
+            "recibido": recibido,
+            "faltante": max(0.0, pedido - recibido),
+            "renglones": g.get("__count") or 0,
+            "veredicto": veredicto,
+            "recepciones": len(docs),
+            "recepciones_validadas": len(validadas),
+            "documentos": sorted(docs, key=lambda d: d["documento"]),
+        })
+    salida.sort(key=lambda r: str(r.get("fecha") or ""), reverse=True)
+    return salida
+
+
 def movimientos_por_sku(sku: str, limite: int = 400) -> list[dict[str, Any]]:
     """
     EL LIBRO DE BODEGA de un SKU: entradas, ventas, devoluciones, ajustes,
