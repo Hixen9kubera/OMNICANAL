@@ -542,6 +542,10 @@ def movimientos(sku: str, causa: str | None = None, limite: int = 400,
 
     movs = odoo.movimientos_por_sku(sku, limite=max(limite, 2000))
     det = odoo.detalle_por_sku([sku]).get(sku) or {}
+    # Las recepciones ABIERTAS no son movimientos —nada se movió— pero sin ellas
+    # un SKU que aún no llega enseña un historial vacío teniendo cientos de
+    # piezas prometidas. Entran como UNA FILA POR DOCUMENTO y con delta 0.
+    pendientes = [_pendiente(p) for p in odoo.recepciones_pendientes_por_sku(sku)]
 
     # El saldo se calcula sobre TODO el libro y de más viejo a más nuevo; luego
     # se invierte. Calcularlo sobre la página visible daría un saldo que empieza
@@ -572,9 +576,14 @@ def movimientos(sku: str, causa: str | None = None, limite: int = 400,
     else:
         visibles = en_ventana
 
+    # Van ARRIBA y fuera del corte por causa: son el contexto de por qué el
+    # historial de abajo está vacío o corto. El filtro sí las respeta cuando se
+    # pide una causa concreta distinta de «entrada».
+    muestra_pend = (not causa or causa in ("reales", "todo", "entrada"))
     return {
         "sku": sku,
         "movimientos": [_mov(m) for m in visibles[:limite]],
+        "pendientes": pendientes if muestra_pend else [],
         "total": len(visibles),
         "total_historico": len(movs),
         "dias": dias,
@@ -602,6 +611,45 @@ _CONTRAPARTE_VISIBLE = {"envio_full", "entrada", "traspaso", "preparacion"}
 # mercancía entre almacenes ni cambian el saldo, y son mayoría: en TEC-0004-BLN,
 # 91 de 117 renglones. La pestaña los trae pero los pliega por omisión.
 _RUIDO = {"preparacion"}
+
+
+def _pendiente(p: dict[str, Any]) -> dict[str, Any]:
+    """Una recepción abierta, lista para pintarse junto al historial.
+
+    Trae las DOS fechas porque no dicen lo mismo y la diferencia importa:
+    `TEXCO/IN/01208` se creó el 28-ago con fecha programada del 26-may. Decir
+    «103 días vencida» describe mal un documento que tiene diez días de vida, y
+    decir «creado hace 10 días» esconde que promete mercancía de mayo. Se dan
+    las dos y que quien lo lea saque su conclusión.
+    """
+    return {
+        "documento": p["documento"],
+        "piezas": p["piezas"],
+        "renglones": p["renglones"],
+        "creado": _iso(p.get("creado")),
+        "creado_dias": _dias(p.get("creado")),
+        "creado_por": p.get("creado_por") or "",
+        "programado": _iso(p.get("programado")),
+        "programado_dias": _dias(p.get("programado")),
+        "socio": p.get("socio") or "",
+        "orden_compra": p.get("orden_compra") or "",
+        "destino": p.get("destino") or "",
+        "estado": p.get("estado") or "",
+        # ¿La ORDEN tuvo recepción parcial, y entró ESTE SKU en ella? Son dos
+        # preguntas distintas y hay que contestarlas por separado: P03364 sí
+        # recibió parcial (TEXCO/IN/00419 el 28-ago) y de JUGU-1153-MET no entró
+        # ni una pieza. El encabezado avanzó; el renglón no.
+        "oc_recepciones": p.get("oc_recepciones") or 0,
+        "oc_validadas": p.get("oc_validadas") or 0,
+        "oc_parcial": bool(p.get("oc_parcial")),
+        "oc_docs_validados": [
+            {"documento": d.get("documento") or "", "validado": _iso(d.get("validado"))}
+            for d in (p.get("oc_docs_validados") or [])
+        ],
+        "sku_pedido": p.get("sku_pedido"),
+        "sku_recibido": p.get("sku_recibido"),
+        "sku_en_parcial": bool(p.get("sku_en_parcial")),
+    }
 
 
 def _mov(m: dict[str, Any]) -> dict[str, Any]:

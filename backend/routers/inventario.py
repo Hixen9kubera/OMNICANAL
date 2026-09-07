@@ -116,6 +116,11 @@ async def movimientos(
     Sale de Odoo y solo de Odoo — es la única fuente de movimiento real que
     existe en la casa, y son 9 meses de historia que hoy no están copiados en
     ninguna parte. Tarda ~1 s por SKU, de ahí el `to_thread`.
+
+    Devuelve además `pendientes`: las recepciones ABIERTAS del SKU, una fila por
+    documento. No son movimientos —nada se movió— pero sin ellas un SKU que
+    todavía no llega enseña un historial vacío teniendo cientos de piezas
+    prometidas, que es justo la pregunta que la gente trae al abrir la pantalla.
     """
     if causa and causa not in _CAUSAS:
         raise HTTPException(400, f"Causa desconocida: {causa}. "

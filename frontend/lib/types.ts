@@ -1843,9 +1843,43 @@ export interface Movimiento {
   pedido: number | null;
 }
 
+/** Una recepción ABIERTA en Odoo: un documento, no un movimiento. */
+export interface RecepcionPendiente {
+  documento: string;
+  piezas: number;
+  /** Renglones de stock.move dentro del documento — suelen ser las cajas. */
+  renglones: number;
+  /** Cuándo NACIÓ el documento, y cuándo dice que debía llegar. No son lo
+   *  mismo: TEXCO/IN/01208 se creó el 28-ago con fecha programada del 26-may. */
+  creado: string;
+  creado_dias: number | null;
+  creado_por: string;
+  programado: string;
+  programado_dias: number | null;
+  socio: string;
+  orden_compra: string;
+  destino: string;
+  estado: string;
+
+  /** ¿La ORDEN DE COMPRA tuvo recepciones parciales? Cuenta sus documentos. */
+  oc_recepciones: number;
+  oc_validadas: number;
+  oc_parcial: boolean;
+  oc_docs_validados: { documento: string; validado: string }[];
+  /** Y de ESTE SKU, ¿entró algo en ellas? Son dos preguntas distintas: el
+   *  encabezado de la OC puede haber avanzado sin que este renglón avanzara. */
+  sku_pedido: number | null;
+  sku_recibido: number | null;
+  sku_en_parcial: boolean;
+}
+
 export interface MovimientosResp {
   sku: string;
   movimientos: Movimiento[];
+  /** Recepciones abiertas: nada se movió todavía, no afectan el saldo.
+   *  OPCIONAL a propósito: en un deploy escalonado el frontend sale antes que
+   *  el backend, y un campo ausente no debe tumbar la pantalla. */
+  pendientes?: RecepcionPendiente[];
   /** Cuántos caen dentro del filtro y la ventana. */
   total: number;
   /** Cuántos tiene el SKU en total, sin filtro ni ventana. */

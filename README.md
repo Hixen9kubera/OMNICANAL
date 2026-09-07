@@ -1001,6 +1001,61 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.423.0 — «En 3 recepciones» no eran 3 lugares, y las órdenes de compra entran a la trazabilidad
+
+Eduardo preguntó en Slack (7-sep) qué significaba *«+992 en 3 recepciones»* en
+la columna de Piezas. Brandon lo leyó como *«que se encuentran en 2 lugares»* y
+Eduardo notó la contradicción: *«no me hace sentido porque en ubicaciones dice
+sin ubicación en ambas»*. **Eduardo tenía razón, y el error era de redacción.**
+Poner «en» delante de un sustantivo lo convierte en un lugar; son DOCUMENTOS de
+recepción de Odoo, y la mercancía no está en ninguna parte.
+
+**LAS TRES COLUMNAS AHORA CUENTAN LO MISMO.** Piezas dice `+992 sin recibir` con
+`3 recepciones abiertas · 108 d` debajo. Cajas dice `sin recibir` en vez de «por
+llegar», que prometía tránsito. Ubicación dice **«no recibido»** en vez de «sin
+ubicación», que parecía un dato faltante. Y el KPI pasa de «En recepción» a
+**«Sin recibir»**.
+
+**LAS RECEPCIONES ABIERTAS ENTRAN AL HISTORIAL** (petición de Brandon: *«lo que
+sí estaría muy bien es ver esas creaciones de órdenes en movimientos»*). Antes,
+un SKU que no ha llegado abría la trazabilidad vacía teniendo cientos de piezas
+prometidas — que es justo la pregunta con la que la gente entra. Ahora van
+arriba, en ámbar, **una fila por DOCUMENTO**: las 992 piezas de `JUGU-1153-MET`
+son 214 renglones de `stock.move`, y volcarlos enterraría el libro. No suman al
+saldo y el bloque lo dice.
+
+**¿HUBO RECEPCIÓN PARCIAL, Y ENTRÓ ESTE PRODUCTO?** Las dos preguntas de Brandon,
+contestadas por separado porque **la segunda no se deduce de la primera**:
+
+```
+TEXCO/IN/01208 · 778 pzas · OC P03364
+  Recepción PARCIAL: la orden lleva 1 de 2 documentos validados
+                     (TEXCO/IN/00419 el 2026-08-28)
+  Este SKU NO entró en esa parcial: 0 piezas recibidas.
+```
+
+`P03364` sí recibió parcial —es el backorder clásico de Odoo: se valida una
+parte y lo que falta se va a un documento nuevo— y de `JUGU-1153-MET` no entró
+ni una pieza. El encabezado de la orden avanzó; el renglón no. Lo primero sale
+de contar los `stock.picking` de la OC; lo segundo, de `qty_received` en
+`purchase.order.line`, agrupado porque una OC parte el mismo producto en decenas
+de renglones (178 para este SKU, uno por caja).
+
+**Y ESO EXPLICA LA FECHA RETROACTIVA.** `TEXCO/IN/01208` se **creó el 28-ago**
+con fecha programada del **26-may**: nació ese día como backorder de la parcial.
+Decir «vencido hace 104 días» describe mal un papel de diez días de vida, así
+que se muestran las DOS fechas y se avisa en rojo cuando difieren más de un mes.
+
+**Un arreglo que salió al probarlo:** con el backend viejo corriendo, la página
+**reventaba entera** con `Cannot read properties of undefined`. Eso pasaría igual
+en un deploy real durante el minuto en que el frontend sale antes que el backend.
+El campo quedó opcional y su ausencia ya no tumba la pantalla.
+
+Archivos: `backend/services/odoo.py` (`recepciones_pendientes_por_sku`,
+`_anotar_parcial`), `backend/services/inventario_maestro.py`,
+`backend/routers/inventario.py`, `frontend/lib/types.ts`,
+`frontend/app/inventario/page.tsx`.
+
 ### v0.422.0 — El alta de Amazon por linea de comandos, con las tres compuertas que faltaban
 
 Brandon: *"publica unicamente las que tengan piezas, toma las imagenes y publica

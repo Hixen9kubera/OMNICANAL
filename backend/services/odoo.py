@@ -739,6 +739,196 @@ def _rack(completo: str, bodega: str) -> str:
     return "-".join(partes[2:])
 
 
+def recepciones_pendientes_por_sku(sku: str) -> list[dict[str, Any]]:
+    """
+    Las recepciones ABIERTAS de un SKU, **una fila por DOCUMENTO**.
+
+    Existe porque el libro de movimientos solo trae lo `done`, y un SKU que
+    todavía no ha llegado sale con el historial vacío aunque tenga cientos de
+    piezas prometidas: `JUGU-1153-MET` mostraba «sin movimientos» con 992 piezas
+    en tres recepciones. Aquí se ven, marcadas como lo que son — papeles
+    pendientes, no mercancía.
+
+    Se agrupa por documento a propósito. Esas 992 piezas son **214 renglones**
+    de `stock.move`; volcarlos uno por uno enterraría el historial real bajo
+    doscientas líneas que dicen lo mismo.
+
+    Trae DOS fechas y son distintas, lo cual importa: `creado` es cuándo nació
+    el documento y `programado` cuándo dice que debía llegar. En
+    `TEXCO/IN/01208` (778 piezas) difieren tres meses — se creó el 28-ago con
+    fecha programada del 26-may. Contar «103 días vencido» desde la programada
+    describe mal un papel que tiene diez días de vida.
+    """
+    sku = (sku or "").strip()
+    if not sku:
+        return []
+    uid = _uid()
+    if not uid:
+        return []
+    try:
+        movs = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "stock.move", "search_read",
+            [[["product_id.default_code", "=", sku],
+              ["state", "not in", ["done", "cancel", "draft"]]]],
+            {"fields": ["product_qty", "quantity", "picking_id", "reference",
+                        "origin", "state", "date", "location_dest_id"]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo recepciones_pendientes_por_sku(%s) falló: %s", sku, exc)
+        return []
+    if not movs:
+        return []
+
+    por_picking: dict[int, dict[str, Any]] = {}
+    sueltos: dict[str, dict[str, Any]] = {}
+    for m in movs:
+        pid = _id_de(m.get("picking_id"))
+        destino = _nombre_de(m.get("location_dest_id"))
+        piezas = float(m.get("product_qty") or 0)
+        if pid:
+            d = por_picking.setdefault(pid, {"piezas": 0.0, "renglones": 0,
+                                             "destino": destino})
+            d["piezas"] += piezas
+            d["renglones"] += 1
+        else:
+            # Movimiento pendiente sin picking: existe, y esconderlo sería
+            # perder piezas de la cuenta.
+            ref = m.get("reference") or "(sin documento)"
+            d = sueltos.setdefault(ref, {"piezas": 0.0, "renglones": 0,
+                                         "destino": destino,
+                                         "fecha": m.get("date"),
+                                         "origen": m.get("origin"),
+                                         "estado": m.get("state")})
+            d["piezas"] += piezas
+            d["renglones"] += 1
+
+    salida: list[dict[str, Any]] = []
+    if por_picking:
+        try:
+            fichas = _models().execute_kw(
+                settings.odoo_db, uid, settings.odoo_password,
+                "stock.picking", "read", [sorted(por_picking)],
+                {"fields": ["name", "state", "create_date", "create_uid",
+                            "scheduled_date", "partner_id", "origin",
+                            "picking_type_id"]},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Odoo recepciones (pickings) falló: %s", exc)
+            fichas = []
+        for f in fichas:
+            d = por_picking.get(f["id"], {})
+            salida.append({
+                "documento": f.get("name") or "",
+                "piezas": d.get("piezas", 0.0),
+                "renglones": d.get("renglones", 0),
+                "creado": f.get("create_date"),
+                "creado_por": _nombre_de(f.get("create_uid")),
+                "programado": f.get("scheduled_date"),
+                "socio": _nombre_de(f.get("partner_id")),
+                "orden_compra": f.get("origin") or "",
+                "tipo": _nombre_de(f.get("picking_type_id")),
+                "destino": d.get("destino", ""),
+                "estado": f.get("state") or "",
+            })
+    for ref, d in sueltos.items():
+        salida.append({
+            "documento": ref, "piezas": d["piezas"], "renglones": d["renglones"],
+            "creado": None, "creado_por": "", "programado": d.get("fecha"),
+            "socio": "", "orden_compra": d.get("origen") or "", "tipo": "",
+            "destino": d.get("destino", ""), "estado": d.get("estado") or "",
+        })
+    salida.sort(key=lambda r: str(r.get("creado") or r.get("programado") or ""),
+                reverse=True)
+    _anotar_parcial(sku, salida)
+    return salida
+
+
+def _anotar_parcial(sku: str, recepciones: list[dict[str, Any]]) -> None:
+    """
+    ¿La orden de compra ya tuvo una recepción PARCIAL, y este SKU entró en ella?
+
+    Es la pregunta de Brandon (7-sep) y la contesta un caso real: `P03364` tiene
+    DOS recepciones — `TEXCO/IN/00419`, validada el 28-ago, y `TEXCO/IN/01208`,
+    que quedó pendiente ese mismo día. Eso es el backorder de Odoo: se recibe
+    parte, y lo que falta se va a un documento nuevo. Por eso `IN/01208` tiene
+    fecha de creación del 28-ago con programada de mayo.
+
+    Y la segunda mitad de la pregunta importa igual: de esa parcial,
+    `JUGU-1153-MET` **no recibió ni una pieza**. Saber que la OC avanzó no dice
+    nada sobre este producto — hay que mirar el renglón, no el encabezado.
+
+    Se anotan dos cosas distintas y se rotulan distinto:
+      · `oc_parcial`      — la ORDEN tuvo entregas parciales
+      · `sku_en_parcial`  — de este SKU entró algo en ellas
+    """
+    ocs = sorted({r["orden_compra"] for r in recepciones if r.get("orden_compra")})
+    if not ocs:
+        return
+    uid = _uid()
+    if not uid:
+        return
+
+    # 1) Todas las recepciones de esas órdenes, para saber si hubo parcial.
+    por_oc: dict[str, dict[str, Any]] = {o: {"total": 0, "validados": 0,
+                                             "docs_validados": []} for o in ocs}
+    try:
+        pks = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "stock.picking", "search_read", [[["origin", "in", ocs]]],
+            {"fields": ["name", "state", "origin", "date_done"]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo _anotar_parcial (pickings) falló: %s", exc)
+        pks = []
+    for p in pks:
+        d = por_oc.get(p.get("origin") or "")
+        if d is None:
+            continue
+        d["total"] += 1
+        if p.get("state") == "done":
+            d["validados"] += 1
+            d["docs_validados"].append({
+                "documento": p.get("name") or "",
+                "validado": p.get("date_done"),
+            })
+
+    # 2) Cuánto de ESTE SKU lleva recibido cada orden. `qty_received` de la
+    #    línea de compra es la cifra oficial de Odoo; se agrupa porque una OC
+    #    parte el mismo producto en decenas de renglones (P03364 tiene 178 de
+    #    JUGU-1153-MET, uno por caja).
+    recibido: dict[str, dict[str, float]] = {}
+    try:
+        grupos = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "purchase.order.line", "read_group",
+            [[["order_id.name", "in", ocs], ["product_id.default_code", "=", sku]],
+             ["product_qty", "qty_received"], ["order_id"]],
+            {"lazy": False},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo _anotar_parcial (purchase.order.line) falló: %s", exc)
+        grupos = []
+    for g in grupos:
+        nombre = _nombre_de(g.get("order_id"))
+        recibido[nombre] = {"pedido": float(g.get("product_qty") or 0),
+                            "recibido": float(g.get("qty_received") or 0)}
+
+    for r in recepciones:
+        oc = r.get("orden_compra") or ""
+        d = por_oc.get(oc, {"total": 0, "validados": 0, "docs_validados": []})
+        q = recibido.get(oc, {})
+        r["oc_recepciones"] = d["total"]
+        r["oc_validadas"] = d["validados"]
+        # Parcial = la orden tiene entregas hechas Y todavía tiene pendientes.
+        r["oc_parcial"] = bool(d["validados"] and d["validados"] < d["total"])
+        r["oc_docs_validados"] = d["docs_validados"]
+        r["sku_pedido"] = q.get("pedido")
+        r["sku_recibido"] = q.get("recibido")
+        # OJO: que la ORDEN haya avanzado no dice que ESTE producto avanzara.
+        r["sku_en_parcial"] = bool(q.get("recibido"))
+
+
 def movimientos_por_sku(sku: str, limite: int = 400) -> list[dict[str, Any]]:
     """
     EL LIBRO DE BODEGA de un SKU: entradas, ventas, devoluciones, ajustes,

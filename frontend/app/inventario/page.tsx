@@ -35,7 +35,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, ArrowLeftRight, ArrowUpDown, Boxes, Camera, CheckCircle2,
   ChevronRight, ClipboardList, Clock, Container, Database, Download,
-  History, Layers, Loader2, Lock, MapPin, Package, PackagePlus, PackageX,
+  FileClock, History, Layers, Loader2, Lock, MapPin, Package, PackagePlus,
+  PackageX,
   PackageSearch, RefreshCw, RotateCcw, ShieldAlert, Ship, ShoppingCart, Truck,
   X,
 } from "lucide-react";
@@ -44,7 +45,7 @@ import AppNavbar from "@/components/AppNavbar";
 import { listarInventario, mensajeDeError, movimientosInventario } from "@/lib/api";
 import type {
   ClaveEtapa, Cuadre, EstadoEtapa, FilaInventario, InventarioResp, Movimiento,
-  MovimientosResp,
+  MovimientosResp, RecepcionPendiente,
 } from "@/lib/types";
 
 const ETAPAS: { clave: ClaveEtapa; titulo: string; icono: typeof Camera }[] = [
@@ -383,10 +384,12 @@ function Kpis({ resumen }: { resumen: InventarioResp["resumen"] }) {
     { t: "Disponible", v: resumen.disponible, p: "libre de venta en Odoo", i: Boxes, tono: "" },
     { t: "Reservado", v: resumen.reservado, p: "comprometido en pedidos", i: Layers, tono: "" },
     {
-      t: "En recepción", v: resumen.en_recepcion, i: Ship, tono: "aviso",
+      // «En recepción» se leía como un lugar. Es un ESTADO: piezas que Odoo
+      // tiene en documentos de recepción que nadie validó.
+      t: "Sin recibir", v: resumen.en_recepcion, i: Ship, tono: "aviso",
       p: resumen.alertas.recepcion_vencida
-        ? `${resumen.alertas.recepcion_vencida} recepciones vencidas`
-        : "recepciones abiertas",
+        ? `${resumen.alertas.recepcion_vencida} SKUs con recepción vencida`
+        : "en recepciones abiertas de Odoo",
     },
     { t: "FULL / FBA", v: resumen.full + resumen.fba, p: "bodega del marketplace", i: Truck, tono: "" },
     {
@@ -695,8 +698,11 @@ function Fila({
       <td className="px-3 py-2.5 text-right">
         <div className="tabular-nums text-slate-700">{numCajas(f.cajas)}</div>
         {!!f.cajas_por_llegar && (
-          <div className="text-[10px] text-amber-700" title="Cajas de lo que sigue en recepción abierta">
-            +{numCajas(f.cajas_por_llegar)} por llegar
+          <div
+            className="text-[10px] text-amber-700"
+            title="Las cajas que sumarían esas piezas cuando se validen. Todavía no están en bodega."
+          >
+            +{numCajas(f.cajas_por_llegar)} sin recibir
           </div>
         )}
       </td>
@@ -709,11 +715,23 @@ function Fila({
         {!!f.recepcion_piezas && (
           <div
             className="text-[10px] font-semibold text-amber-700"
-            title={`${f.recepcion_docs > 1 ? `${f.recepcion_docs} recepciones ABIERTAS` : `Recepción ${f.recepcion_ref ?? ""} ABIERTA`}; la más vieja desde ${f.recepcion_desde.slice(0, 10)} — ninguna programada a futuro`}
+            title={
+              `${num(f.recepcion_piezas)} piezas que NO están en bodega: siguen en ` +
+              `${f.recepcion_docs > 1
+                ? `${f.recepcion_docs} documentos de recepción abiertos en Odoo`
+                : `el documento de recepción ${f.recepcion_ref ?? ""}, abierto en Odoo`}` +
+              ` desde ${f.recepcion_desde.slice(0, 10)} y sin validar. ` +
+              `No son ubicaciones ni lugares — por eso la columna Ubicación dice ` +
+              `«no recibido». Ninguna está programada a futuro.`
+            }
           >
-            +{num(f.recepcion_piezas)} en{" "}
-            {f.recepcion_docs > 1 ? `${f.recepcion_docs} recepciones` : "recepción"}
-            {" · "}{f.recepcion_dias}d
+            +{num(f.recepcion_piezas)} sin recibir
+            <div className="font-normal opacity-80">
+              {f.recepcion_docs > 1
+                ? `${f.recepcion_docs} recepciones abiertas`
+                : "1 recepción abierta"}
+              {" · "}{f.recepcion_dias} d
+            </div>
           </div>
         )}
         {!!f.no_vendible && (
@@ -738,6 +756,12 @@ function Fila({
               {f.n_ubicaciones > 1 && ` +${f.n_ubicaciones - 1} más`}
             </div>
           </>
+        ) : f.recepcion_piezas ? (
+          // Si hay recepción abierta, «sin ubicación» sonaba a dato faltante y
+          // contradecía la celda de Piezas. Es la MISMA noticia: no ha llegado.
+          <span className="text-xs text-amber-700" title="No tiene ubicación porque todavía no se recibe en almacén">
+            no recibido
+          </span>
         ) : (
           <span className="text-xs text-slate-300">sin ubicación</span>
         )}
@@ -1040,13 +1064,16 @@ function DondeEsta({ fila }: { fila: FilaInventario }) {
         {!!fila.recepcion_piezas && (
           <p className="mt-2 rounded-lg bg-amber-50 p-2 text-[11px] leading-snug text-amber-800 ring-1 ring-amber-200">
             <Ship className="mr-1 inline h-3 w-3" />
-            {num(fila.recepcion_piezas)} piezas en{" "}
+            <b>{num(fila.recepcion_piezas)} piezas que todavía no están en bodega.</b>{" "}
+            Siguen en{" "}
             {fila.recepcion_docs > 1
-              ? `${fila.recepcion_docs} recepciones que siguen ABIERTAS`
-              : "una recepción que sigue ABIERTA"}
-            {fila.recepcion_dias !== null && `; la más vieja desde hace ${fila.recepcion_dias} días`}
-            {fila.recepcion_ref && ` (${fila.recepcion_ref})`}. Ninguna está
-            programada a futuro: son recepciones sin validar, no mercancía en camino.
+              ? `${fila.recepcion_docs} documentos de recepción abiertos en Odoo`
+              : "un documento de recepción abierto en Odoo"}
+            {fila.recepcion_dias !== null && `, el más viejo desde hace ${fila.recepcion_dias} días`}
+            {fila.recepcion_ref && ` (${fila.recepcion_ref})`}, y nadie los ha
+            validado. Por eso este SKU no tiene ubicación: no son lugares, son
+            papeles pendientes. Ninguno está programado a futuro, así que tampoco
+            es mercancía en camino.
           </p>
         )}
       </div>
@@ -1163,8 +1190,16 @@ function FlujoResumen({
           <p className="mt-2 text-xs">Leyendo el libro de Odoo…</p>
         </div>
       ) : !movs?.movimientos.length ? (
-        <p className="mt-2 rounded-xl border border-slate-200 bg-white py-8 text-center text-xs text-slate-400">
+        <p className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-6 text-center text-xs text-slate-400">
           Sin movimientos registrados en Odoo para este SKU.
+          {!!movs?.pendientes?.length && (
+            <span className="mt-1 block font-semibold text-amber-700">
+              Tiene {movs.pendientes?.length}{" "}
+              {movs.pendientes?.length === 1
+                ? "recepción abierta" : "recepciones abiertas"}
+              {" "}sin validar — míralas en el historial completo.
+            </span>
+          )}
         </p>
       ) : (
         <>
@@ -1367,6 +1402,8 @@ function Trazabilidad({
           </button>
         </div>
 
+        {!!movs?.pendientes?.length && <Pendientes filas={movs.pendientes} />}
+
         {movs && movs.cuadra === false && (
           <div className="mx-6 mt-4 flex items-start gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -1424,6 +1461,123 @@ function Trazabilidad({
         </footer>
       </div>
     </div>
+  );
+}
+
+/**
+ * Las recepciones ABIERTAS del SKU, arriba del libro.
+ *
+ * No son movimientos y por eso van aparte y no suman al saldo: son documentos
+ * que Odoo tiene creados y nadie validó, así que la mercancía no ha entrado a
+ * ninguna parte. Sin este bloque, un SKU que no ha llegado enseña un historial
+ * vacío teniendo cientos de piezas prometidas — que es justo la pregunta con la
+ * que la gente abre esta pantalla.
+ *
+ * Una fila por DOCUMENTO, no por renglón: las 992 piezas de `JUGU-1153-MET` son
+ * 214 renglones de `stock.move`, y volcarlos enterraría todo lo demás.
+ */
+function Pendientes({ filas }: { filas: RecepcionPendiente[] }) {
+  const piezas = filas.reduce((a, f) => a + f.piezas, 0);
+  return (
+    <section className="mx-6 mt-4 rounded-xl border border-amber-200 bg-amber-50/60">
+      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-amber-200 px-4 py-2.5">
+        <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-amber-800">
+          <FileClock className="h-3.5 w-3.5" />
+          Recepciones abiertas · {filas.length}{" "}
+          {filas.length === 1 ? "documento" : "documentos"}
+        </h3>
+        <span className="text-xs text-amber-700">
+          {num(piezas)} piezas prometidas · <b>ninguna ha entrado a bodega</b>
+        </span>
+      </header>
+
+      <div className="divide-y divide-amber-200/70">
+        {filas.map((f) => {
+          // Cuando el documento se creó MUCHO después de su fecha programada,
+          // «vencido hace N días» describe mal un papel recién nacido. Se avisa.
+          const retro =
+            f.creado_dias !== null && f.programado_dias !== null
+            && f.programado_dias - f.creado_dias > 30;
+          return (
+            <div key={f.documento}
+                 className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5">
+              <span className="w-40 shrink-0 font-mono text-xs font-bold text-amber-900">
+                {f.documento}
+              </span>
+              <span className="w-28 shrink-0 text-right text-sm font-bold tabular-nums text-amber-900">
+                {num(f.piezas)} pzas
+                <span className="ml-1 text-[10px] font-normal opacity-70">
+                  · {f.renglones} rengl.
+                </span>
+              </span>
+              <div className="min-w-0 flex-1 text-[11px] leading-snug text-amber-800">
+                <div>
+                  Creado {f.creado.slice(0, 10)}
+                  {f.creado_dias !== null && ` (hace ${f.creado_dias} d)`}
+                  {f.creado_por && ` por ${f.creado_por}`}
+                  {" · programado "}{f.programado.slice(0, 10)}
+                  {f.programado_dias !== null && ` (hace ${f.programado_dias} d)`}
+                </div>
+                <div className="opacity-75">
+                  {f.orden_compra && `OC ${f.orden_compra} · `}
+                  {f.socio}
+                  {f.destino && ` → ${f.destino}`}
+                </div>
+
+                {/* Las DOS preguntas de Brandon, y en este orden: ¿la orden
+                    recibió parcial?, y ¿entró este producto? La segunda no se
+                    deduce de la primera — P03364 recibió parcial el 28-ago y de
+                    JUGU-1153-MET no entró ni una pieza. */}
+                {f.oc_parcial ? (
+                  <div className="mt-0.5">
+                    <span className="font-semibold">
+                      Recepción PARCIAL: la orden lleva {f.oc_validadas} de{" "}
+                      {f.oc_recepciones} documentos validados
+                    </span>
+                    {f.oc_docs_validados.length > 0 && (
+                      <span className="opacity-75">
+                        {" ("}
+                        {f.oc_docs_validados
+                          .map((d) => `${d.documento} el ${d.validado.slice(0, 10)}`)
+                          .join(", ")}
+                        {")"}
+                      </span>
+                    )}
+                    <div className={f.sku_en_parcial
+                      ? "font-semibold text-emerald-700"
+                      : "font-semibold text-rose-700"}>
+                      {f.sku_en_parcial
+                        ? `Este SKU SÍ entró: ${num(f.sku_recibido)} de ${num(f.sku_pedido)} piezas ya recibidas.`
+                        : "Este SKU NO entró en esa parcial: 0 piezas recibidas."}
+                    </div>
+                  </div>
+                ) : f.oc_recepciones > 1 ? (
+                  <div className="mt-0.5 opacity-75">
+                    La orden tiene {f.oc_recepciones} recepciones y ninguna validada.
+                  </div>
+                ) : null}
+                {retro && (
+                  <div className="mt-0.5 font-semibold text-rose-700">
+                    Se creó {(f.programado_dias ?? 0) - (f.creado_dias ?? 0)} días
+                    DESPUÉS de su fecha programada: no lleva {f.programado_dias}{" "}
+                    días esperando, lleva {f.creado_dias}.
+                  </div>
+                )}
+              </div>
+              <span className="shrink-0 rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-800 ring-1 ring-amber-300">
+                {f.estado}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="border-t border-amber-200 px-4 py-2 text-[11px] text-amber-700">
+        No son movimientos: <b>no mueven el saldo</b> ni aparecen en el libro de
+        abajo. Son papeles que alguien tiene que validar en Odoo para que la
+        mercancía entre.
+      </p>
+    </section>
   );
 }
 
