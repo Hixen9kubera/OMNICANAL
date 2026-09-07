@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.422.0 — El alta de Amazon por linea de comandos, con las tres compuertas que faltaban
+
+Brandon: *"publica unicamente las que tengan piezas, toma las imagenes y publica
+con sus imagenes"*. El boton del panel publica UNO a la vez con el Estudio
+abierto; once productos son once oportunidades de saltarse un paso.
+
+`backend/scripts/publicar_amazon.py` NO reimplementa nada: llama a
+`publicar.preview` / `publicar.confirmar` —las mismas funciones del boton— y a
+`amazon_ia.mejorar`, que es el mismo "Mejorar con IA". `vendor/` no se toca. Sin
+`--aplicar` solo simula.
+
+Agrega las tres cosas que el camino del panel no hacia:
+
+**1. La compuerta de existencias.** El publicador hace lo contrario sin avisar:
+`attribute_mapper.py:178` es `stock = max(_safe_int(...), 1)`, asi que un SKU con
+CERO piezas se publica ofertando UNA. Se mide contra **Odoo** y con `free_qty`,
+no `qty_available`: la primera descuenta lo comprometido en borradores y la
+segunda no. No es teorico — VIA-0024-NEG tenia 30 piezas con 29 comprometidas,
+una vendible, y Woo ofrecia 14. Por eso NO se reusa `odoo.stock_por_sku`, que
+devuelve `qty_available` y aqui mentiria.
+
+**2. Las fotos de Mercado Libre.** Ocho SIL-00x no tienen ni una imagen en Woo:
+sus tres padres tienen 0 adjuntos y 0 caracteres de descripcion, y Odoo tampoco
+guarda foto. Lo unico que existe son sus anuncios de ML. `construir_prod` ahora
+respeta `campos["imagenes"]` — la misma regla que su propio docstring ya
+declaraba para titulo y descripcion, y que las imagenes eran el unico campo en
+no cumplir.
+
+⚠️ **La variante que se pide importa.** El `secure_url` del anuncio es la de
+**500 px** aunque el campo `max_size` diga 1024: la grande se pide aparte con
+`GET /pictures/{id}` y se elige la de mayor area. Medido: pidiendo la del anuncio,
+CERO de 14 imagenes pasaban el minimo de Amazon; pidiendo la variacion grande,
+las 14 pasan.
+
+**3. La firma.** `--como` es obligatorio y **`--via` viaja con el**. Los otros dos
+publicadores de scripts llaman `fijar_desde_cli(a.como)` y TIRAN el `--via`, asi
+que hoy no existe una sola fila que pueda decir "lo corrio un chat". Aqui se
+pasan los dos, y la corrida lo imprime: `corre: brandon@kubera.mx · via: claude`.
+
+**Lo que NO hace, a proposito:** elegir el tipo de producto de Amazon. Es la
+regla 2 de la casa. Si un SKU no lo tiene ni en su variante ni en su padre, se
+SALTA y se dice — nunca se deja caer al detector, que ante un titulo en espanol
+acaba devolviendo `HOME`.
+
+Medido en simulacion: CAM-0030-QUE y -MAT resuelven `MATTRESS (panel)` y mandan
+**9 imagenes cada uno, cuando antes de v0.421.0 habrian mandado 1**.
+
 ### v0.421.0 — Una variante publicaba con UNA foto y la categoria equivocada
 
 Brandon mando publicar 11 SKUs a Amazon. Antes de tocar el publicador se mapeo

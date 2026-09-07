@@ -369,6 +369,29 @@ def _f(v: Any) -> float:
         return 0.0
 
 
+def _imagenes_para(wc_id: int, campos: dict[str, Any]) -> list[str]:
+    """
+    Las URLs de imagen que van al canal.
+
+    Normalmente son las de WooCommerce —`wp_db.imagenes`, que desde v0.421.0 le
+    suma a la miniatura de la variante la galería de su padre—. Pero si `campos`
+    trae una lista propia, esa MANDA: es la misma regla que este archivo ya
+    aplica al título y a la descripción, y que su propio docstring declara.
+    Las imágenes eran el único campo que no la cumplía.
+
+    HACE FALTA PARA LO QUE NO TIENE NI UNA FOTO EN WOO. Los SIL-00x que Brandon
+    mandó publicar el 7-sep-2026 son el caso límite: sus tres padres tienen CERO
+    adjuntos y CERO caracteres de descripción, y Odoo tampoco guarda imagen de
+    ellos. Lo único que existe son sus publicaciones de Mercado Libre. Sin este
+    gancho la única salida era cargarlas a mano en WordPress.
+
+    Aquí NO se valida el tamaño: de eso se encarga `preparar_para_amazon`, que
+    reescala lo que no llegue a 1000 px y rehospeda lo que tenga que convertir.
+    """
+    propias = [str(u).strip() for u in (campos.get("imagenes") or []) if str(u).strip()]
+    return propias or wp_db.imagenes(wc_id)
+
+
 def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, Any]:
     """
     Reconstruye el dict que devuelve `wc_api.parse_product()`, leyendo de la BD
@@ -440,7 +463,7 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         "title":            titulo,
         "price":            precio,
         "description":      descripcion,
-        "images":           wp_db.imagenes(wc_id),
+        "images":           _imagenes_para(wc_id, campos),
         "weight":           _dim("peso", "_weight"),
         "length":           _dim("largo", "_length"),
         "width":            _dim("ancho", "_width"),
