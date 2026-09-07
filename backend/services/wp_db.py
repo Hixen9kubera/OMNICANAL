@@ -554,9 +554,9 @@ def atributos(wc_id: int) -> list[dict[str, Any]]:
     return _parse_product_attributes(metas.get("_product_attributes"))
 
 
-def imagenes(wc_id: int) -> list[str]:
-    """URLs de imágenes del producto (miniatura primero + galería), desde WP."""
-    metas = postmeta(wc_id, ["_thumbnail_id", "_product_image_gallery"])
+def _ids_de_imagen(post_id: int) -> list[int]:
+    """Los ids de adjunto de UN post: su miniatura primero, luego su galería."""
+    metas = postmeta(post_id, ["_thumbnail_id", "_product_image_gallery"])
     ids: list[int] = []
     if metas.get("_thumbnail_id") and str(metas["_thumbnail_id"]).isdigit():
         ids.append(int(metas["_thumbnail_id"]))
@@ -564,6 +564,39 @@ def imagenes(wc_id: int) -> list[str]:
         x = x.strip()
         if x.isdigit() and int(x) not in ids:
             ids.append(int(x))
+    return ids
+
+
+def imagenes(wc_id: int) -> list[str]:
+    """
+    URLs de imágenes del producto: miniatura primero, después la galería.
+
+    LA GALERÍA DE UNA VARIACIÓN VIVE EN SU PADRE, Y ESO NO ES UN DETALLE.
+    WooCommerce le da a cada variación su propia `_thumbnail_id` —la foto de
+    ESE color— pero `_product_image_gallery` solo existe en el producto padre.
+    Al leer un único post, una variante devolvía UNA imagen mientras el panel
+    mostraba nueve, y nadie lo notaba hasta ver el anuncio publicado.
+
+    Medido el 7-sep-2026 sobre los SKUs que Brandon mandó a Amazon:
+
+        104732  padre CAM-0030    miniatura + galería de 8
+        104741  CAM-0030-QUE      solo su miniatura
+        25109   padre TEC-0935    miniatura + galería de 3
+        25203   TEC-0935-ROS      solo su miniatura
+
+    El ORDEN importa: Amazon toma la primera como imagen principal, así que la
+    propia de la variante va delante —es la del color que se vende— y las del
+    padre la siguen. Los ids repetidos se descartan.
+
+    Para un producto simple `padre_de` devuelve None y esto se comporta igual
+    que antes.
+    """
+    ids = _ids_de_imagen(wc_id)
+    padre = padre_de(wc_id)
+    if padre:
+        for i in _ids_de_imagen(padre):
+            if i not in ids:
+                ids.append(i)
     if not ids:
         return []
     P = _prefix()

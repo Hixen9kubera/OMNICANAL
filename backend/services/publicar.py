@@ -289,17 +289,40 @@ def _product_type_amazon(sku: str | None) -> str | None:
 
 
 def _product_type_panel(wc_id: int | None) -> str | None:
-    """La elección HUMANA del panel (meta `amz_product_type` en Woo). Manda
-    sobre el histórico y el detector — misma regla que la categoría de ML."""
+    """
+    La elección HUMANA del panel (meta `amz_product_type` en Woo). Manda sobre
+    el histórico y el detector — misma regla que la categoría de ML.
+
+    SE BUSCA TAMBIÉN EN EL PADRE, y hay una razón estructural para eso: la meta
+    SIEMPRE se guarda en el producto padre. Medido el 7-sep-2026, de las 15 que
+    existen en el catálogo **las 15 están en posts `product` y ninguna en
+    `product_variation`** — porque el endpoint que las escribe
+    (`PUT /products/{id}`) responde 404 sobre una variación, y el picker se
+    traga ese error sin decir nada.
+
+    Pero lo que se PUBLICA es la variante. Leyendo solo su propio post, la
+    elección del panel resultaba invisible y el tipo caía al detector
+    automático, que ante un título en español acaba devolviendo `HOME`.
+    CAM-0030 está marcado MATTRESS en su padre: sus cuatro variantes se habrían
+    publicado como "HOME".
+
+    La variante manda si tiene la suya: si algún día se puede guardar ahí, esa
+    elección es más específica que la del padre.
+    """
     if not wc_id:
         return None
     try:
         from services import wp_db
         if not wp_db.disponible():
             return None
-        m = wp_db.postmeta(int(wc_id), ["amz_product_type"])
-        v = str(m.get("amz_product_type") or "").strip().upper()
-        return v or None
+        for pid in (int(wc_id), wp_db.padre_de(int(wc_id))):
+            if not pid:
+                continue
+            m = wp_db.postmeta(pid, ["amz_product_type"])
+            v = str(m.get("amz_product_type") or "").strip().upper()
+            if v:
+                return v
+        return None
     except Exception as exc:  # noqa: BLE001
         log.warning("_product_type_panel(%s): %s", wc_id, exc)
         return None

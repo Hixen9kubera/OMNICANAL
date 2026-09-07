@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.421.0 — Una variante publicaba con UNA foto y la categoria equivocada
+
+Brandon mando publicar 11 SKUs a Amazon. Antes de tocar el publicador se mapeo
+el camino completo, y el mapeo destapo dos defectos que habrian salido a Amazon
+sin que nadie los viera hasta ver el anuncio.
+
+**LA GALERIA DE UNA VARIACION VIVE EN SU PADRE.** `wp_db.imagenes(wc_id)` leia
+`_thumbnail_id` y `_product_image_gallery` del MISMO post. WooCommerce le da a
+cada variacion su propia miniatura —la foto de ese color— pero la galeria solo
+existe en el producto padre. Medido:
+
+    104732  padre CAM-0030    miniatura + galeria de 8
+    104741  CAM-0030-QUE      solo su miniatura
+    25109   padre TEC-0935    miniatura + galeria de 3
+    25203   TEC-0935-ROS      solo su miniatura
+
+Los once habrian salido **con una sola imagen cada uno**, mientras el panel
+mostraba nueve. Ahora la variante hereda la galeria del padre, y el ORDEN
+importa: Amazon toma la primera como principal, asi que la propia de la variante
+va delante —es la del color que se vende— y las del padre la siguen.
+CAM-0030-QUE pasa de 1 a 10 imagenes.
+
+**LA ELECCION DEL PANEL ERA INVISIBLE PARA LA VARIANTE.** `amz_product_type` se
+guarda SIEMPRE en el padre: de las 15 que existen en el catalogo, **las 15 estan
+en posts `product` y ninguna en `product_variation`**, porque el endpoint que la
+escribe (`PUT /products/{id}`) responde 404 sobre una variacion y el picker se
+traga ese error en un `catch` vacio.
+
+Pero lo que se publica es la VARIANTE. `_product_type_panel` leia solo su propio
+post, no encontraba nada, y el tipo caia al detector automatico — que toma las
+tres primeras palabras del titulo contra un indice en ingles y, si no pega,
+devuelve `HOME` fijo. **CAM-0030 esta marcado MATTRESS en su padre y sus cuatro
+variantes se habrian publicado como "HOME".** Ahora se busca en la variante y
+luego en el padre; la variante manda si algun dia tiene la suya.
+
+Es la regla 2 de la casa —la eleccion del panel MANDA sobre cualquier detector—
+que estaba escrita en el codigo pero no llegaba a aplicarse por leer el post
+equivocado.
+
 ### v0.420.0 — Productos seguía sin descripción tras el fix de la foto (v0.419.0)
 
 Con el cache-bust de v0.419.0 la tarjeta ya mostraba foto y costo frescos, pero
