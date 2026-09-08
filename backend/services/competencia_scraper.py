@@ -257,6 +257,34 @@ def _normalizar(it: dict[str, Any], posicion: int) -> dict[str, Any]:
     }
 
 
+# ── POR QUÉ LA URL DE BÚSQUEDA LLEVA ESTE SUFIJO ─────────────────────────────
+# Porque sin él ML manda algunas búsquedas a su muro de login, y con él no.
+#
+# `listado.mercadolibre.com.mx/<slug>` es la página INDEXABLE de ese slug —una
+# landing de SEO—, no «una búsqueda». Cuando el slug no corresponde a una que ML
+# quiera indexar, en vez de buscar responde `/gz/account-verification`. El sufijo
+# `_NoIndex_True` es la propia gramática de URLs de ML para decir «esto es una
+# consulta, no una página para el buscador», y entonces sí busca.
+#
+# MEDIDO el 8-sep-2026, todo en la misma corrida y con el mismo proxy:
+#
+#   «casco integral moto»  sin sufijo → MURO (8 de 8 intentos, nunca pasó)
+#                          con sufijo → OK, 60 tarjetas
+#   los 8 términos que alguna vez vieron el muro, con sufijo → 9 de 9 OK
+#
+# Y NO cambia lo que se mide, que era el riesgo real (la columna que se guarda es
+# la POSICIÓN orgánica). Contra-medición con línea base:
+#
+#   misma URL, dos corridas   «tenis hombre» → 2/10 en la misma posición
+#   las dos formas, misma corrida             → 10/10, en los dos términos
+#
+# O sea que el sufijo devuelve lo MISMO y en el mismo orden; lo que se mueve es
+# ML rotando resultados entre una petición y otra — y se mueve MUCHO más que el
+# sufijo. Eso también es un aviso sobre cuánto peso darle a la posición exacta:
+# el CONJUNTO de competidores es estable (8/10), el ORDEN no.
+_SUFIJO_BUSQUEDA = "_NoIndex_True"
+
+
 def _bloqueado_en(pag: dict[str, Any]) -> str | None:
     """URL que ML mandó a verificarse, o `None` si la página salió bien.
 
@@ -290,11 +318,11 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
       • VOLUMEN: la página trae ~48 orgánicos por término, no 5.
 
     Y corre desde la infraestructura de Apify con proxy residencial, así que el
-    muro de login que ML levanta contra nuestra IP no aplica… CASI SIEMPRE. Hay
-    URLs que ML manda a verificarse pase lo que pase: «casco integral moto» lo
-    hizo 45 veces seguidas mientras «tenis hombre», en la misma corrida y con el
-    mismo proxy, traía 48 resultados. Quien pase un set en `bloqueados` recibe
-    ahí esos términos y puede distinguirlos de los que de verdad no tienen nada.
+    muro de login que ML levanta contra nuestra IP no aplica. Lo que SÍ pasaba era
+    otra cosa y se arregló con `_SUFIJO_BUSQUEDA` (ver arriba): ML mandaba a
+    verificarse las búsquedas pedidas como página indexable. Quien pase un set en
+    `bloqueados` recibe ahí los términos que aun así no se pudieron ver — el muro
+    intermitente sigue existiendo y hay que poder distinguirlo de «no hay nada».
     """
     consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
     if not consultas:
@@ -303,7 +331,7 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
     urls, de_url = [], {}
     for q in consultas:
         slug = urllib.parse.quote(q.replace(" ", "-"))
-        u = f"https://listado.mercadolibre.com.mx/{slug}"
+        u = f"https://listado.mercadolibre.com.mx/{slug}{_SUFIJO_BUSQUEDA}"
         urls.append({"url": u})
         de_url[u.rstrip("/")] = q
 
@@ -337,7 +365,8 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
         if not q:
             # Respaldo: reconstruir el término desde el slug del URL.
             q = urllib.parse.unquote(
-                (pag.get("url") or "").rstrip("/").rsplit("/", 1)[-1]).replace("-", " ")
+                (pag.get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+            ).removesuffix(_SUFIJO_BUSQUEDA).replace("-", " ")
         filas = []
         for it in (pag.get("items") or [])[:limite]:
             f = _de_tarjeta(it)

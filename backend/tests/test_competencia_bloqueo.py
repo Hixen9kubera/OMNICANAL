@@ -37,12 +37,16 @@ from services import competencia_captura as CC  # noqa: E402
 from services import competencia_scraper as CS  # noqa: E402
 
 URL = "https://listado.mercadolibre.com.mx"
+# Los fixtures piden la URL EXACTA que construye el código: si el sufijo se
+# quitara de un lado y no del otro, la atribución por URL dejaría de cruzar y
+# todos los resultados se perderían en silencio. Por eso se importa, no se copia.
+SUF = CS._SUFIJO_BUSQUEDA
 
 
 def pagina(termino: str, n: int = 2) -> dict:
     """Página que salió bien: la `pageFunction` devolvió `{url, items}`."""
     slug = termino.replace(" ", "-")
-    return {"url": f"{URL}/{slug}",
+    return {"url": f"{URL}/{slug}{SUF}",
             "items": [{"posicion": i + 1,
                        "url": f"https://articulo.mercadolibre.com.mx/MLM-19999999{i}-x-_JM",
                        "titulo": f"{termino} {i}"} for i in range(n)]}
@@ -55,7 +59,7 @@ def muro(termino: str, reintentos: int = 8) -> dict:
     que NO trae `url` en la raíz —por eso el código viejo lo leía como una página
     sin término— y que la URL pedida sólo vive en `#debug`.
     """
-    slug = termino.replace(" ", "-")
+    slug = termino.replace(" ", "-") + SUF
     return {
         "#error": True,
         "#debug": {
@@ -75,7 +79,7 @@ class LeerElRegistroDeError(unittest.TestCase):
         """La cargada es `/gz/account-verification?go=…` y no se puede cruzar
         con ningún término. La pedida sí."""
         self.assertEqual(CS._bloqueado_en(muro("casco integral moto")),
-                         f"{URL}/casco-integral-moto")
+                         f"{URL}/casco-integral-moto{SUF}")
 
     def test_una_pagina_buena_no_es_bloqueo(self):
         self.assertIsNone(CS._bloqueado_en(pagina("tenis hombre")))
@@ -90,6 +94,45 @@ class LeerElRegistroDeError(unittest.TestCase):
         m = muro("x")
         m["#debug"]["url"] = f"{URL}/x/"
         self.assertEqual(CS._bloqueado_en(m), f"{URL}/x")
+
+
+class LaUrlLlevaElSufijo(unittest.TestCase):
+    """El sufijo `_NoIndex_True` es lo que evita el muro. Sin él, «casco integral
+    moto» murió 8 de 8 veces; con él pasó a la primera, junto con los otros 8
+    términos que alguna vez se muraron. Si alguien lo quita —parece decoración—
+    los muros vuelven, y vuelven en silencio."""
+
+    def _urls_pedidas(self, terminos):
+        vistas = {}
+
+        async def falso(payload, limite_lectura, util):
+            vistas["urls"] = [u["url"] for u in payload["startUrls"]]
+            return []
+
+        with mock.patch.object(CS, "_con_respaldo", falso):
+            asyncio.run(CS.buscar_terminos(terminos))
+        return vistas["urls"]
+
+    def test_la_url_lleva_noindex(self):
+        u = self._urls_pedidas(["casco integral moto"])[0]
+        self.assertEqual(u, f"{URL}/casco-integral-moto_NoIndex_True")
+
+    def test_el_termino_se_recupera_aunque_falte_la_atribucion(self):
+        """El respaldo reconstruye el término desde el slug; si no le quita el
+        sufijo, guarda «casco integral moto NoIndex True» como si fuera otro
+        término y la fila queda huérfana."""
+        pag = {"url": f"{URL}/casco-integral-moto_NoIndex_True",
+               "items": [{"posicion": 1,
+                          "url": "https://articulo.mercadolibre.com.mx/MLM-199999999-x-_JM",
+                          "titulo": "un casco"}]}
+
+        async def falso(payload, limite_lectura, util):
+            # Se devuelve una URL que NO está en `de_url` para forzar el respaldo.
+            return [{**pag, "url": pag["url"].replace("listado", "listado2")}]
+
+        with mock.patch.object(CS, "_con_respaldo", falso):
+            out = asyncio.run(CS.buscar_terminos(["casco integral moto"]))
+        self.assertEqual(list(out), ["casco integral moto"])
 
 
 class BuscarTerminosSeparaLosDosCeros(unittest.TestCase):

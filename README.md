@@ -1001,6 +1001,79 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.452.0 — ML no nos bloqueaba: le pedíamos la búsqueda por la puerta equivocada
+
+Eduardo: *«¿cómo podemos hacer que ML no nos bloquee? porque lo hace».* La
+respuesta resultó ser que **casi no lo hace**, y que lo que parecía un bloqueo
+era una URL mal pedida. Se arregla con **un sufijo**.
+
+**Primero, el tamaño real del problema.** Censo del historial completo de Apify
+(10-ago → 8-sep, 548 corridas, **796 páginas de búsqueda, 739 términos**):
+
+| | |
+|---|---|
+| páginas que vieron el muro | **21 de 796 → 2.6%** |
+| términos que lo vieron al menos una vez | **7 de 739 → 0.9%** |
+| de esos, los que después pasaron solos | 3 |
+
+Y **no estaban repartidos**: 12 de los 21 cayeron el 13-ago entre las 16:34 y las
+20:39, y los mismos términos pasaron sin problema **dos horas después**. O sea
+que el muro intermitente se cura esperando, no insistiendo — y el código insistía
+8 veces seguidas dentro de la misma corrida, que es la escala de tiempo
+equivocada.
+
+**Después, el caso que no se curaba.** «casco integral moto»: **8 de 8**, todas
+hoy, en corridas separadas a lo largo de 80 minutos, y con «casco para moto»
+pasando **dos minutos después**. Ese no era el muro intermitente.
+
+**La causa.** `listado.mercadolibre.com.mx/<slug>` no es «una búsqueda»: es la
+página **indexable** de ese slug, una landing de SEO. Cuando el slug no
+corresponde a una que ML quiera indexar, en vez de buscar responde
+`/gz/account-verification`. El sufijo **`_NoIndex_True`** —gramática propia de las
+URLs de ML— dice «esto es una consulta, no una página para el buscador», y
+entonces sí busca.
+
+**Medido, todo en la misma corrida y con el mismo proxy:**
+
+```
+casco-integral-moto                 → MURO   (8 de 8 históricos, nunca pasó)
+casco-integral-moto_NoIndex_True    → OK, 60 tarjetas
+```
+
+Y sobre **los 9 términos** que alguna vez vieron el muro —los 6 intermitentes,
+el que nunca pasó y dos controles— con sufijo: **9 de 9 OK**.
+
+**Lo que había que descartar antes de tocarlo: que cambiara lo que medimos.** La
+columna que se guarda es la POSICIÓN orgánica; si el sufijo alterara el ranking,
+las posiciones nuevas dejarían de ser comparables con las 1,058 guardadas. Se
+midió contra una **línea base** (la misma URL pedida dos veces):
+
+| Comparación | Misma posición en el top-10 |
+|---|---|
+| misma URL, dos corridas · «tenis hombre» | **2 / 10** |
+| misma URL, dos corridas · «tapetes para auto» | 7 / 10 |
+| **las dos formas, misma corrida** (los dos términos) | **10 / 10** |
+
+El sufijo devuelve **lo mismo y en el mismo orden**. Lo que se mueve es ML
+rotando resultados entre una petición y otra — y se mueve **mucho más** que el
+sufijo.
+
+⚠️ **Ese número de línea base es un hallazgo por su cuenta, y conviene leerlo
+así: la posición exacta que enseña el tab es ruidosa.** Dos peticiones idénticas
+con minutos de diferencia coinciden en 2 de 10 posiciones para un término amplio.
+El CONJUNTO de competidores es estable (8/10 los mismos ítems); el ORDEN no. Para
+decidir, sirve *quién* aparece, no *en qué número exacto*.
+
+**Lo que costó averiguarlo: $0.07** en cinco corridas de diagnóstico.
+
+**Lo que NO se tocó:** el muro intermitente sigue existiendo (2.6% antes del
+sufijo) y `estado='bloqueado'` de la v0.448.0 lo sigue registrando. Falta decidir
+si los bloqueados se reintentan **una vez, en un barrido posterior** — que es lo
+que la evidencia del 13-ago dice que funciona — en vez de nunca o siempre.
+
+2 pruebas nuevas (51 en total), incluida la que fija que el sufijo va en la URL:
+si alguien lo quita por parecer decoración, los muros vuelven en silencio.
+
 ### v0.451.0 — Piezas = free to use, y las cajas pasan a ser un COTEJO de tres
 
 Cuatro peticiones de Brandon del 8-sep. Una ya estaba hecha, dos destaparon
