@@ -31,15 +31,37 @@ etapa: la escalera editorial de la tienda no dice nada del estado de la
 mercancía. Y las cajas nunca salen del packing list: ése dice lo que el
 proveedor EMBARCÓ, y aquí se muestra lo que HAY.
 
-LAS CINCO ETAPAS, con la definición de Brandon
------------------------------------------------
-  1. EN PROCESO · no se recibió en almacén, o se recibió y sigue sin rack.
-     Es la etapa que más pesa: de 1,163,459 piezas del inventario, **930,732
-     (el 80%) están en zonas de paso** y solo 221,644 en un rack designado.
-  2. FOTOS      · con una foto de Odoo basta.
-  3. VARIANTES  · qué SKUs son hermanos según Odoo, y cuántos.
-  4. VALIDADO   · el candado `revisado_at` que pone la pestaña Costos.
-  5. ENVIADO    · a FULL (ML), FBA (Amazon) o WFS (Walmart).
+VALIDADO BODEGA · LOS CUATRO REQUISITOS (Brandon, 7-sep-2026)
+--------------------------------------------------------------
+Reemplazó a las cinco etapas viejas. **Un producto no está validado por bodega
+si le falta UNO SOLO de los cuatro.** No es un semáforo de avance: es una
+compuerta.
+
+  1. UBICACIÓN · tenerla significa que le dieron entrada y existe. Es el punto
+     que más pesa: de 1,163,459 piezas del inventario, **930,732 (el 80%) están
+     en zonas de paso** y solo 221,644 en un rack designado. Estar en zona de
+     paso SÍ cumple —entró—, pero se dice en el detalle.
+  2. STOCK     · «a la mano» (`qty_available`) y «disponible» (`free_qty`). Con
+     piezas a la mano y CERO disponibles el punto NO se cumple: está todo
+     reservado y no hay nada que vender.
+  3. FOTO      · la foto que manda bodega, y aplica SOLO a productos CON
+     variantes: ahí una imagen genérica no distingue cuál es cuál. Un producto
+     simple queda validado con la foto que ya tiene en Odoo.
+  4. SPECS     · la matriz por categoría. **En espera permanente por ahora**: no
+     se ha decidido el formato del Excel ni cómo llegará la información.
+
+Los estados son `listo` · `falta` · `espera` · `na`, y la diferencia entre
+`falta` y `espera` no es cosmética: `falta` culpa al producto, `espera` dice que
+el sistema todavía no tiene por dónde recibir el dato (bodega manda las fotos
+por Slack; el Excel de specs no existe). Mientras specs siga sin definirse,
+NINGÚN producto puede quedar validado del todo — que es exactamente lo pedido.
+
+LO QUE NO ES VALIDACIÓN DE BODEGA (`_comercial`)
+------------------------------------------------
+El candado `revisado_at` de la pestaña Costos y el envío a FULL (ML) / FBA
+(Amazon) / WFS (Walmart) siguen mostrándose, pero APARTE: contestan preguntas
+del área comercial, no de almacén, y meterlos entre los cuatro requisitos haría
+que un costo sin validar pareciera un problema de bodega.
 
 LA FILA ES EL SKU
 -----------------
@@ -275,7 +297,14 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
                      "listing_id": p.get("listing_id"),
                      "fulfillment": bool(p.get("is_fulfillment"))} for p in pubs],
     }
-    fila["etapas"] = _etapas(fila, w, c, pubs, plog)
+    fila["validacion_bodega"] = _validacion_bodega(fila, c)
+    fila["comercial"] = _comercial(fila, c, pubs)
+    # El último paso registrado en el panel: no valida nada, solo dice quién
+    # tocó el SKU por última vez.
+    fila["ultimo_paso"] = ({
+        "accion": plog.get("accion"), "actor": plog.get("actor"),
+        "fecha": _iso(plog.get("created_at")),
+    } if plog else None)
     fila["cuadre"] = _cuadre(fila, pubs)
     return fila
 
@@ -323,10 +352,8 @@ def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
     def suma(clave: str) -> float:
         return sum(f.get(clave) or 0 for f in filas_)
 
-    trabajo = ("fotos", "variantes", "validado", "enviado_full")
-    completos = sum(
-        1 for f in filas_
-        if all(f["etapas"][e]["estado"] in ("listo", "na") for e in trabajo))
+    # «Completos» pasa a significar VALIDADO BODEGA: los cuatro requisitos.
+    completos = sum(1 for f in filas_ if f["validacion_bodega"]["validado"])
 
     return {
         "skus": len(filas_),
@@ -348,123 +375,165 @@ def resumen(filas_: list[dict[str, Any]]) -> dict[str, Any]:
             "descuadre": sum(1 for f in filas_ if f["descuadre"]),
             "recepcion_vencida": sum(1 for f in filas_
                                      if (f["recepcion_dias"] or 0) > 30),
-            "sin_fotos": sum(1 for f in filas_
-                             if f["etapas"]["fotos"]["estado"] == "pendiente"),
+            "sin_ubicacion": sum(1 for f in filas_ if not f["n_ubicaciones"]),
+            "sin_fotos": sum(1 for f in filas_ if _punto(f, "foto") == "falta"),
             "sin_costo": sum(1 for f in filas_
-                             if f["etapas"]["validado"]["estado"] == "pendiente"),
+                             if f["comercial"]["validado"]["estado"] == "pendiente"),
             "contenedor_discrepa": sum(1 for f in filas_ if f["contenedor_discrepa"]),
             "contenedor_no_comparable": sum(
                 1 for f in filas_ if f["contenedor_no_comparable"]),
             "odoo_duplicado": sum(1 for f in filas_ if f["odoo_duplicado"]),
         },
-        "por_etapa": {
-            e: {est: sum(1 for f in filas_ if f["etapas"][e]["estado"] == est)
-                for est in ("listo", "parcial", "pendiente", "bloqueado", "na")}
-            for e in ("en_proceso", "fotos", "variantes", "validado", "enviado_full")
+        # Cuántos SKUs cumplen cada uno de los cuatro requisitos de bodega.
+        "por_punto": {
+            clave: {est: sum(1 for f in filas_ if _punto(f, clave) == est)
+                    for est in ("listo", "falta", "espera", "na")}
+            for clave in ("ubicacion", "stock", "foto", "specs")
         },
     }
+
+
+def _punto(fila: dict[str, Any], clave: str) -> str:
+    """El estado de uno de los cuatro requisitos de bodega, por su clave."""
+    for p in fila["validacion_bodega"]["puntos"]:
+        if p["clave"] == clave:
+            return p["estado"]
+    return ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LAS CINCO ETAPAS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _etapas(fila: dict, w: dict | None, c: dict | None,
-            pubs: list[dict], plog: dict | None) -> dict[str, dict[str, Any]]:
+def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
     """
-    Las cinco etapas, con las definiciones que dio Brandon el 4-sep-2026:
+    VALIDADO BODEGA: los CUATRO requisitos que definió Brandon el 7-sep-2026.
+    Un producto no está validado si le falta uno solo.
 
-      1. EN PROCESO   · todavía NO se recibió en almacén, o se recibió y sigue
-                        sin rack ni stage designado.
-      2. FOTOS        · con UNA foto basta: verde. Sin foto: rojo.
-      3. VARIANTES    · qué SKUs son variantes según Odoo, y cuántas.
-      4. VALIDADO     · el candado de la pestaña Costos: `revisado_at`.
-      5. ENVIADO      · si se mandó a FULL (ML), FBA (Amazon) o WFS (Walmart).
+      1. UBICACIÓN · tenerla significa que le dieron entrada y existe.
+      2. STOCK     · «a la mano» (`qty_available`) y «disponible» (`free_qty`).
+      3. FOTO      · la que manda bodega, y SOLO aplica a productos CON
+                     variantes. Un producto simple con su foto en Odoo ya
+                     cuenta como válido.
+      4. SPECS     · la matriz por categoría. EN ESPERA: no se ha decidido el
+                     formato del Excel ni cómo llegará la información.
 
-    TODO sale de ODOO salvo las etapas 4 y 5, que viven en kubera porque el
-    candado de costos y el censo de canales están ahí. **`wp_posts.post_status`
-    quedó PROHIBIDO como señal de etapa** (Brandon, 4-sep): la escalera
-    editorial de WooCommerce no dice nada del estado real de la mercancía.
+    Estados: `listo` · `falta` · `na` · `espera`.
 
-    Cada etapa declara su `fuente` para poder discutir el dato, no solo el color.
-    Estados: `listo` · `parcial` · `pendiente` · `na` · `bloqueado`.
+    Los puntos 3 y 4 dependen de canales que HOY NO EXISTEN —bodega manda la
+    foto por Slack, y el Excel de specs no tiene formato— así que se marcan
+    `espera` y no `falta`. La diferencia no es cosmética: `falta` culpa al
+    producto, `espera` dice que el sistema todavía no tiene por dónde recibirlo.
     """
+    puntos: list[dict[str, Any]] = []
+
+    # ── 1 · UBICACIÓN ───────────────────────────────────────────────────────
+    if fila["n_ubicaciones"]:
+        # Tener ubicación ya cumple: significa que entró. Que sea zona de paso
+        # en vez de rack se dice como detalle, no invalida — pero importa,
+        # porque el 80% del inventario vive así.
+        rack = fila["rack"] or ""
+        detalle = f"{rack} · {fila['bodega']}" if rack else fila["bodega"]
+        if fila["piezas_en_stage"] and not fila["piezas_en_rack"]:
+            detalle += " — en zona de paso, sin rack asignado"
+        elif fila["n_ubicaciones"] > 1:
+            detalle += f" y {fila['n_ubicaciones'] - 1} ubicación(es) más"
+        puntos.append(_pto("ubicacion", "Ubicación", "listo",
+                           "con ubicación", detalle, "odoo stock.quant"))
+    else:
+        pendiente = ""
+        if fila["recepcion_piezas"]:
+            pendiente = (f"{fila['recepcion_piezas']:.0f} pzas en recepción "
+                         f"abierta sin validar")
+        puntos.append(_pto("ubicacion", "Ubicación", "falta",
+                           "sin entrada",
+                           pendiente or "no se ha recibido en almacén",
+                           "odoo stock.quant"))
+
+    # ── 2 · STOCK ───────────────────────────────────────────────────────────
+    # Odoo separa dos cifras y las dos importan: «a la mano» es lo que está
+    # físicamente, «disponible» es lo que queda libre después de reservas.
+    mano = fila["stock_fisico"] or 0
+    disp = fila["stock_odoo"] or 0
+    if mano > 0 and disp > 0:
+        reservadas = mano - disp
+        puntos.append(_pto(
+            "stock", "Stock", "listo", f"{disp:.0f} disponibles",
+            f"{reservadas:.0f} comprometidas en pedidos" if reservadas > 0
+            else "el físico completo está libre de reservas",
+            "odoo qty_available / free_qty", mano=mano, disponible=disp))
+    elif mano > 0:
+        # Hay mercancía pero no se puede vender: el punto NO se cumple.
+        puntos.append(_pto(
+            "stock", "Stock", "falta", "todo comprometido",
+            "existe físicamente, pero está entero en pedidos o reservas",
+            "odoo qty_available / free_qty", mano=mano, disponible=disp))
+    else:
+        pendiente = ""
+        if fila["recepcion_piezas"]:
+            pendiente = (f" — {fila['recepcion_piezas']:.0f} pzas esperan "
+                         f"en recepción sin validar")
+        puntos.append(_pto(
+            "stock", "Stock", "falta", "sin stock",
+            "ni a la mano ni disponible" + pendiente,
+            "odoo qty_available / free_qty", mano=mano, disponible=disp))
+
+    # ── 3 · FOTO ────────────────────────────────────────────────────────────
+    # LA REGLA CONDICIONAL, y es la más fina de las cuatro: la foto que manda
+    # bodega aplica SOLO a productos con variantes, porque ahí una foto genérica
+    # no distingue cuál es cuál. Un producto simple queda validado con la foto
+    # que ya tiene en Odoo.
+    con_variantes = fila["n_variantes_odoo"] > 0
+    hay_foto = bool(fila["imagen"])
+    if not con_variantes:
+        if hay_foto:
+            puntos.append(_pto("foto", "Foto", "listo", "con foto",
+                               "producto simple: basta la imagen de Odoo",
+                               "odoo image_256"))
+        else:
+            puntos.append(_pto("foto", "Foto", "falta", "sin foto",
+                               "producto simple sin imagen en Odoo",
+                               "odoo image_256"))
+    elif hay_foto:
+        hermanos = ", ".join(h["sku"] for h in fila["variantes_odoo"][:3])
+        puntos.append(_pto(
+            "foto", "Foto", "espera", "espera foto de bodega",
+            f"tiene {fila['n_variantes_odoo'] + 1} variantes ({hermanos}): la "
+            f"imagen de Odoo no distingue cuál es cuál",
+            "bodega (Slack) — canal no construido"))
+    else:
+        puntos.append(_pto("foto", "Foto", "na", "N/A · sin imagen",
+                           "es variante y no tiene foto ni en Odoo ni de bodega",
+                           "bodega (Slack) — canal no construido"))
+
+    # ── 4 · SPECS ───────────────────────────────────────────────────────────
+    # Siempre en espera: bodega mandará una matriz por categoría, pero el
+    # formato del Excel y la vía de entrega están sin decidir (Brandon, 7-sep).
+    # Mientras eso no exista, NINGÚN producto puede quedar validado del todo —
+    # que es exactamente lo que se pidió.
+    puntos.append(_pto("specs", "Specs", "espera", "en espera",
+                       "matriz por categoría: falta definir el formato del "
+                       "Excel y cómo llega",
+                       "pendiente de definición"))
+
+    cumplidos = sum(1 for p in puntos if p["estado"] == "listo")
+    return {
+        "puntos": puntos,
+        "cumplidos": cumplidos,
+        "total": len(puntos),
+        "validado": cumplidos == len(puntos),
+        "faltantes": [p["titulo"] for p in puntos if p["estado"] != "listo"],
+    }
+
+
+def _comercial(fila: dict, c: dict | None,
+               pubs: list[dict]) -> dict[str, dict[str, Any]]:
+    """Lo que NO es validación de bodega pero sigue haciendo falta ver: el
+    candado de costo de la pestaña Costos, y si el SKU se mandó a la bodega de
+    algún marketplace. Se separan a propósito de los cuatro puntos: contestan
+    preguntas del área comercial, no de almacén."""
     e: dict[str, dict[str, Any]] = {}
 
-    # ── 1 · EN PROCESO ──────────────────────────────────────────────────────
-    # No es una escalera editorial: es la pregunta de bodega. ¿Llegó? ¿Y si
-    # llegó, tiene lugar? Medido el 4-sep: de 1,163,459 piezas del inventario,
-    # **930,732 (el 80%) están en zonas de paso** —STAGE, Salida, Zona de
-    # empaquetado— y solo 221,644 en un rack designado. O sea que esta etapa,
-    # bien contada, es el problema más grande del almacén.
-    rack = fila["piezas_en_rack"] or 0
-    stage = fila["piezas_en_stage"] or 0
-    if not fila["existe_en_odoo"]:
-        e["en_proceso"] = _et("bloqueado", "sin producto en Odoo",
-                              "no hay ficha que recibir", "odoo product.product")
-    elif not rack and not stage:
-        detalle = "no se ha recibido en almacén"
-        if fila["recepcion_piezas"]:
-            d = fila["recepcion_dias"]
-            detalle = (f"{fila['recepcion_piezas']:.0f} pzas en recepción abierta"
-                       + (f" desde hace {d} días" if d else ""))
-        e["en_proceso"] = _et("pendiente", "sin recibir", detalle,
-                              "odoo stock.quant", rack=0, stage=0)
-    elif not rack:
-        e["en_proceso"] = _et(
-            "parcial", "recibido, sin rack",
-            f"{stage:.0f} pzas en zona de paso ({fila['bodega']}) — falta asignarles rack",
-            "odoo stock.quant", rack=0, stage=stage)
-    elif stage:
-        e["en_proceso"] = _et(
-            "parcial", "parcialmente acomodado",
-            f"{rack:.0f} pzas en rack y {stage:.0f} todavía en zona de paso",
-            "odoo stock.quant", rack=rack, stage=stage)
-    else:
-        e["en_proceso"] = _et(
-            "listo", "acomodado",
-            f"{rack:.0f} pzas en {fila['rack']} ({fila['bodega']})",
-            "odoo stock.quant", rack=rack, stage=0)
-    # El último paso registrado en el panel se muestra si lo hay: no decide el
-    # color, solo dice quién tocó el SKU por última vez.
-    if plog:
-        e["en_proceso"]["ultimo_paso"] = plog.get("accion")
-        e["en_proceso"]["ultimo_actor"] = plog.get("actor")
-        e["en_proceso"]["ultimo_at"] = _iso(plog.get("created_at"))
-
-    # ── 2 · FOTOS ───────────────────────────────────────────────────────────
-    # Binario a propósito: con una foto basta. La imagen es la de Odoo, que es
-    # la representación exacta del producto registrado (Brandon, 4-sep).
-    if fila["imagen"]:
-        e["fotos"] = _et("listo", "con foto",
-                         "imagen del producto en Odoo", "odoo image_256")
-    else:
-        e["fotos"] = _et("pendiente", "sin foto",
-                         "el producto no tiene imagen en Odoo", "odoo image_256")
-
-    # ── 3 · VARIANTES ───────────────────────────────────────────────────────
-    # Solo informa: cuáles son y cuántas. Sin juicio de valor — un producto sin
-    # variantes no está peor que uno con ellas.
-    hermanos = fila["variantes_odoo"]
-    if not fila["existe_en_odoo"]:
-        e["variantes"] = _et("bloqueado", "sin producto en Odoo", "",
-                             "odoo product_tmpl_id")
-    elif hermanos:
-        # El detalle NO repite los SKUs: la UI los pinta como fichas debajo, con
-        # su relación. Ponerlos también aquí los mostraba dos veces seguidas.
-        de_plantilla = sum(1 for h in hermanos if h["relacion"] == "plantilla")
-        detalle = ("hermanos de la misma plantilla en Odoo" if de_plantilla
-                   else "comparten código base; en Odoo son plantillas distintas")
-        e["variantes"] = _et(
-            "listo", f"{len(hermanos) + 1} SKUs", detalle,
-            "odoo product_tmpl_id", skus=[h["sku"] for h in hermanos])
-    else:
-        e["variantes"] = _et("na", "sin variantes",
-                             "único SKU de su plantilla en Odoo",
-                             "odoo product_tmpl_id", skus=[])
-
-    # ── 4 · VALIDADO ────────────────────────────────────────────────────────
-    # El candado que pone la pestaña Costos al validar: `revisado_at`.
     if not c:
         e["validado"] = _et("pendiente", "sin costo",
                             "no tiene renglón en costos_validados",
@@ -479,12 +548,6 @@ def _etapas(fila: dict, w: dict | None, c: dict | None,
                             "tiene costo pero nadie pasó el candado en Costos",
                             "costing.costos_validados.revisado_at")
 
-    # ── 5 · ENVIADO ─────────────────────────────────────────────────────────
-    # A la bodega del marketplace: FULL en Mercado Libre, FBA en Amazon, WFS en
-    # Walmart. Se nombra CUÁL, porque no es lo mismo para quien surte.
-    # Se nombra el destino, y la cantidad SOLO si la hay: «FULL 0» se lee como
-    # un error de cálculo cuando en realidad quiere decir "está en FULL y ahora
-    # mismo sin piezas allá".
     def _destino(nombre: str, piezas: float | None) -> str:
         return f"{nombre} {piezas:.0f}" if piezas else nombre
 
@@ -501,15 +564,19 @@ def _etapas(fila: dict, w: dict | None, c: dict | None,
         e["enviado_full"] = _et("listo", " · ".join(destinos),
                                 "en bodega del marketplace",
                                 "channel.listings.is_fulfillment")
-    elif (fila["stock_odoo"] or 0) > 0:
-        e["enviado_full"] = _et("pendiente", "no enviado",
-                                "hay stock en bodega propia y no se ha mandado",
-                                "channel.listings.is_fulfillment")
     else:
-        e["enviado_full"] = _et("pendiente", "no enviado",
-                                "sin stock que enviar",
-                                "channel.listings.is_fulfillment")
+        e["enviado_full"] = _et(
+            "pendiente", "no enviado",
+            "hay stock en bodega propia y no se ha mandado"
+            if (fila["stock_odoo"] or 0) > 0 else "sin stock que enviar",
+            "channel.listings.is_fulfillment")
     return e
+
+
+def _pto(clave: str, titulo: str, estado: str, etiqueta: str, detalle: str,
+         fuente: str, **extra) -> dict[str, Any]:
+    return {"clave": clave, "titulo": titulo, "estado": estado,
+            "etiqueta": etiqueta, "detalle": detalle, "fuente": fuente, **extra}
 
 
 def _et(estado: str, etiqueta: str, detalle: str, fuente: str, **extra) -> dict[str, Any]:

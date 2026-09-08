@@ -1650,12 +1650,40 @@ export interface PublicacionesResp {
    Todo es de LECTURA: la pestaña no escribe stock en ninguna parte.
    ───────────────────────────────────────────────────────────────────────── */
 
-/** Estado de una de las cinco etapas del tablero. */
+/** Estado de un requisito de bodega.
+ *  `falta`  = el producto no lo cumple.
+ *  `espera` = el CANAL para recibirlo no existe todavía (foto de bodega, specs).
+ *  La diferencia importa: `falta` culpa al producto, `espera` al sistema. */
+export type EstadoPunto = "listo" | "falta" | "espera" | "na";
+
+/** Los cuatro requisitos de VALIDADO BODEGA (Brandon, 7-sep-2026). */
+export type ClavePunto = "ubicacion" | "stock" | "foto" | "specs";
+
+export interface PuntoBodega {
+  clave: ClavePunto;
+  titulo: string;
+  estado: EstadoPunto;
+  etiqueta: string;
+  detalle: string;
+  fuente: string;
+  /** Solo en el punto de stock. */
+  mano?: number;
+  disponible?: number;
+}
+
+export interface ValidacionBodega {
+  puntos: PuntoBodega[];
+  cumplidos: number;
+  total: number;
+  /** Solo true con los CUATRO requisitos cumplidos. */
+  validado: boolean;
+  faltantes: string[];
+}
+
+/** Estado de los indicadores que NO son de bodega (costo, envío a marketplace). */
 export type EstadoEtapa = "listo" | "parcial" | "pendiente" | "bloqueado" | "na";
 
-/** Las cinco etapas que pidió Brandon, en orden. */
-export type ClaveEtapa =
-  | "en_proceso" | "fotos" | "variantes" | "validado" | "enviado_full";
+export type ClaveEtapa = "validado" | "enviado_full";
 
 export interface Etapa {
   estado: EstadoEtapa;
@@ -1766,7 +1794,12 @@ export interface FilaInventario {
   creado: string;
   modificado: string;
   canales: CanalDelSku[];
-  etapas: Record<ClaveEtapa, Etapa>;
+  /** Los cuatro requisitos de bodega. Reemplazó a las cinco etapas viejas. */
+  validacion_bodega: ValidacionBodega;
+  /** Costo validado y envío a FULL/FBA/WFS: no son validación de almacén. */
+  comercial: Record<ClaveEtapa, Etapa>;
+  /** Último paso registrado en ops.process_log, si lo hay. */
+  ultimo_paso: { accion: string; actor: string | null; fecha: string } | null;
   /** La columna «Woo ↔ físico», resuelta a una sola píldora. */
   cuadre: Cuadre;
 }
@@ -1814,6 +1847,7 @@ export interface ResumenInventario {
   alertas: {
     sin_alta: number;
     sin_odoo: number;
+    sin_ubicacion: number;
     activo_sin_stock: number;
     descuadre: number;
     recepcion_vencida: number;
@@ -1823,7 +1857,8 @@ export interface ResumenInventario {
     contenedor_no_comparable: number;
     odoo_duplicado: number;
   };
-  por_etapa: Record<ClaveEtapa, Record<EstadoEtapa, number>>;
+  /** Cuántos SKUs cumplen cada uno de los cuatro requisitos. */
+  por_punto: Record<ClavePunto, Record<EstadoPunto, number>>;
 }
 
 export interface InventarioResp {

@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.442.0 — «Estatus de proceso» se convierte en VALIDADO BODEGA (4 requisitos)
+
+Brandon fijó el 7-sep la regla que faltaba: **un producto no puede darse por
+validado por bodega si no cumple CUATRO puntos.** Las cinco etapas viejas
+(en proceso / fotos / variantes / validado / enviado) eran un semáforo de avance
+—cada una vivía por su cuenta—; esto es una **compuerta**: falla uno, falla todo.
+
+Los cuatro, con su definición literal:
+
+| # | Punto | Qué lo cumple | Fuente |
+|---|---|---|---|
+| 1 | **Ubicación** | tenerla significa que le dieron entrada y existe | `odoo stock.quant` |
+| 2 | **Stock** | tiene piezas *y* están disponibles | `odoo qty_available / free_qty` |
+| 3 | **Foto** | la que manda bodega — **solo aplica a productos CON variantes** | bodega (Slack) |
+| 4 | **Specs** | la matriz por categoría — **en espera** | pendiente de definición |
+
+**La regla del punto 3 es la más fina y es condicional.** Un producto SIMPLE con
+su foto en Odoo ya cuenta como válido: la imagen lo representa entero. Un
+producto con VARIANTES no, porque una foto genérica no distingue cuál es cuál —
+ahí hace falta la que manda almacén. Y si es variante y no tiene ninguna imagen,
+sale **`N/A · sin imagen`**, que es lo que pidió Brandon: no es un reproche, es
+que no hay nada que validar todavía.
+
+**`falta` y `espera` no son el mismo color a propósito.** `falta` (rojo) culpa al
+producto: no tiene ubicación, no tiene stock. `espera` (ámbar) dice que **el
+canal para recibir el dato no existe todavía** — bodega manda las fotos por
+Slack y el Excel de specs no tiene formato decidido. Pintar de rojo algo que el
+sistema nunca pidió sería echarle la culpa al SKU de un hueco nuestro.
+
+Consecuencia medida y esperada: **hoy 0 de 13 SKUs quedan validados**, porque
+specs está en espera para todos. Eso NO es un bug — es la compuerta funcionando.
+El SKU que más avanza es `TEC-0008-AMR` con 3 de 4; `TEC-0370-NEG` va 2 de 4
+(tiene ubicación y 8 disponibles, pero es variante y su foto de Odoo no basta);
+y 10 de los 13 no tienen ubicación en bodega, que es el punto 1 y el que menos
+se puede saltar.
+
+Lo que **NO** es validación de almacén se separó a un bloque «Otros estados»: el
+candado `revisado_at` de la pestaña Costos y el envío a FULL / FBA / WFS.
+Contestan preguntas del área comercial, y mezclarlos con los cuatro haría que un
+costo sin validar pareciera un problema de bodega.
+
+En pantalla: la columna de la tabla pasa a llamarse **VALIDADO BODEGA** y trae
+los cuatro iconos más un contador `N/4`; el cajón lleva la lista con el detalle
+y la fuente de cada punto, y dice explícitamente cuáles faltan. Se suma el chip
+**«Sin ubicación en bodega»** a la banda de alertas, y el banner cuenta
+«N de M validados por bodega» en vez de «con las 4 etapas cerradas».
+
+Backend: `_etapas` se parte en `_validacion_bodega` y `_comercial`
+(`services/inventario_maestro.py`); el resumen cambia `por_etapa` por
+`por_punto` y `completos` pasa a significar «validado bodega».
+
 ### v0.441.0 — Inventario deja de colgar "no vendibles" bajo las piezas (Eduardo)
 
 La celda de **Piezas** de la tabla de Inventario traía un renglón rojo

@@ -44,15 +44,36 @@ import {
 import AppNavbar from "@/components/AppNavbar";
 import { listarInventario, mensajeDeError, movimientosInventario } from "@/lib/api";
 import type {
-  ClaveEtapa, Cuadre, EstadoEtapa, FilaInventario, InventarioResp, Movimiento,
-  MovimientosResp, OrdenCompra, RecepcionPendiente,
+  ClaveEtapa, ClavePunto, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
+  InventarioResp, Movimiento, MovimientosResp, OrdenCompra,
+  RecepcionPendiente,
 } from "@/lib/types";
 
+/** El estado de uno de los cuatro requisitos, por su clave. */
+function punto(f: FilaInventario, clave: ClavePunto): EstadoPunto | null {
+  return f.validacion_bodega.puntos.find((p) => p.clave === clave)?.estado ?? null;
+}
+
+/** Los cuatro requisitos de VALIDADO BODEGA, en el orden que los dio Brandon. */
+const PUNTOS: { clave: ClavePunto; icono: typeof Camera }[] = [
+  { clave: "ubicacion", icono: MapPin },
+  { clave: "stock", icono: Boxes },
+  { clave: "foto", icono: Camera },
+  { clave: "specs", icono: ClipboardList },
+];
+
+const ESTILO_PUNTO: Record<EstadoPunto, string> = {
+  listo: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  falta: "border-rose-200 bg-rose-50 text-rose-700",
+  // Ámbar y no rojo: el canal para recibir el dato todavía no existe, así que
+  // no es culpa del producto.
+  espera: "border-amber-200 bg-amber-50 text-amber-700",
+  na: "border-slate-200 bg-white text-slate-300",
+};
+
+/** Los dos indicadores que NO son de bodega. */
 const ETAPAS: { clave: ClaveEtapa; titulo: string; icono: typeof Camera }[] = [
-  { clave: "en_proceso", titulo: "En proceso", icono: Clock },
-  { clave: "fotos", titulo: "Fotos", icono: Camera },
-  { clave: "variantes", titulo: "Variantes", icono: Layers },
-  { clave: "validado", titulo: "Validado", icono: CheckCircle2 },
+  { clave: "validado", titulo: "Costo validado", icono: CheckCircle2 },
   { clave: "enviado_full", titulo: "Enviado", icono: Truck },
 ];
 
@@ -214,8 +235,9 @@ export default function InventarioPage() {
         activo_sin_stock: (f) => f.cuadre.etiqueta === "Activo sin stock",
         descuadre: (f) => !!f.descuadre,
         recepcion_vencida: (f) => (f.recepcion_dias ?? 0) > 30,
-        sin_fotos: (f) => f.etapas.fotos.estado === "pendiente",
-        sin_costo: (f) => f.etapas.validado.estado === "pendiente",
+        sin_ubicacion: (f) => !f.n_ubicaciones,
+        sin_fotos: (f) => punto(f, "foto") === "falta",
+        sin_costo: (f) => f.comercial.validado.estado === "pendiente",
         contenedor_discrepa: (f) => f.contenedor_discrepa,
         contenedor_no_comparable: (f) => f.contenedor_no_comparable,
         odoo_duplicado: (f) => f.odoo_duplicado,
@@ -360,7 +382,7 @@ function Banner({
                 piezas · {num(resumen.skus)} SKUs
               </div>
               <div className="mt-2 text-xs text-white/80">
-                {resumen.completos} de {resumen.skus} con las 4 etapas cerradas
+                {resumen.completos} de {resumen.skus} validados por bodega
               </div>
             </div>
           )}
@@ -435,6 +457,7 @@ function BandaAlertas({
     { k: "descuadre", t: "Descuadre Woo ↔ físico", n: resumen.alertas.descuadre, tono: "peligro" },
     { k: "sin_alta", t: "Sin alta en Woo", n: resumen.alertas.sin_alta, tono: "peligro" },
     { k: "odoo_duplicado", t: "Duplicado en Odoo", n: resumen.alertas.odoo_duplicado, tono: "peligro" },
+    { k: "sin_ubicacion", t: "Sin ubicación en bodega", n: resumen.alertas.sin_ubicacion, tono: "peligro" },
     { k: "recepcion_vencida", t: "Recepción vencida", n: resumen.alertas.recepcion_vencida, tono: "aviso" },
     { k: "sin_fotos", t: "Sin fotos", n: resumen.alertas.sin_fotos, tono: "aviso" },
     { k: "sin_costo", t: "Sin costo", n: resumen.alertas.sin_costo, tono: "aviso" },
@@ -581,7 +604,10 @@ function Tabla({
             <th className="px-3 py-3 text-right font-bold">Reserv.</th>
             <th className="px-3 py-3 text-left font-bold">Ubicación</th>
             <th className="px-3 py-3 text-left font-bold">Woo ↔ físico</th>
-            <th className="px-3 py-3 text-left font-bold">Etapas</th>
+            <th className="px-3 py-3 text-left font-bold"
+                title="Ubicación · Stock · Foto · Specs. Los cuatro requisitos para dar un producto por validado en bodega.">
+              Validado bodega
+            </th>
             <th className="px-3 py-3 text-right font-bold">Trazabilidad</th>
           </tr>
         </thead>
@@ -780,16 +806,28 @@ function Fila({
 
       <td className="px-3 py-2.5">
         <div className="flex items-center gap-1">
-          {ETAPAS.map(({ clave, titulo, icono: Icono }) => {
-            const e = f.etapas[clave];
+          {PUNTOS.map(({ clave, icono: Icono }) => {
+            const p = f.validacion_bodega.puntos.find((x) => x.clave === clave);
+            if (!p) return null;
             return (
               <span key={clave}
-                    title={`${titulo}: ${e.etiqueta}${e.detalle ? ` — ${e.detalle}` : ""}`}
-                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${ESTILO_ETAPA[e.estado]}`}>
+                    title={`${p.titulo}: ${p.etiqueta}${p.detalle ? ` — ${p.detalle}` : ""}`}
+                    className={`inline-flex h-6 w-6 items-center justify-center rounded-md border ${ESTILO_PUNTO[p.estado]}`}>
                 <Icono className="h-3.5 w-3.5" />
               </span>
             );
           })}
+          <span
+            title={f.validacion_bodega.validado
+              ? "Cumple los cuatro requisitos de bodega"
+              : `Falta: ${f.validacion_bodega.faltantes.join(", ")}`}
+            className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold tabular-nums ${
+              f.validacion_bodega.validado
+                ? "bg-emerald-100 text-emerald-700"
+                : "bg-slate-100 text-slate-500"}`}
+          >
+            {f.validacion_bodega.cumplidos}/{f.validacion_bodega.total}
+          </span>
         </div>
       </td>
 
@@ -915,7 +953,7 @@ function Cajon({
                     {fila.n_variantes_odoo + 1} SKUs en Odoo
                   </span>
                 )}
-                {fila.etapas.validado.estado === "listo" && (
+                {fila.comercial.validado.estado === "listo" && (
                   <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
                     Costo validado
                   </span>
@@ -949,7 +987,8 @@ function Cajon({
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
           <Jerarquia fila={fila} />
           <DondeEsta fila={fila} />
-          <Etapas fila={fila} />
+          <ValidacionBodega fila={fila} />
+          <Comercial fila={fila} />
 
           <FlujoResumen movs={movs} cargando={cargando} error={error}
                         onTraza={onTraza} />
@@ -1085,15 +1124,119 @@ function DondeEsta({ fila }: { fila: FilaInventario }) {
   );
 }
 
-function Etapas({ fila }: { fila: FilaInventario }) {
+/**
+ * VALIDADO BODEGA: los cuatro requisitos que definió Brandon el 7-sep-2026.
+ * Un producto NO está validado si le falta uno solo.
+ *
+ * Los puntos 3 y 4 dependen de canales que hoy no existen —bodega manda la foto
+ * por Slack, y el Excel de specs no tiene formato decidido— así que salen en
+ * `espera` y no en `falta`. La diferencia no es cosmética: `falta` culpa al
+ * producto, `espera` dice que el sistema todavía no tiene por dónde recibirlo.
+ * Mientras specs siga sin definirse, NINGÚN producto puede quedar validado del
+ * todo, que es exactamente lo que se pidió.
+ */
+function ValidacionBodega({ fila }: { fila: FilaInventario }) {
+  const v = fila.validacion_bodega;
+  return (
+    <section>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+          Validado bodega
+        </h3>
+        <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+          v.validado ? "bg-emerald-100 text-emerald-700"
+                     : "bg-slate-100 text-slate-500"}`}>
+          {v.validado ? "VALIDADO" : `${v.cumplidos} de ${v.total} requisitos`}
+        </span>
+      </div>
+
+      <div className="mt-2 space-y-1.5">
+        {PUNTOS.map(({ clave, icono: Icono }) => {
+          const p = fila.validacion_bodega.puntos.find((x) => x.clave === clave);
+          if (!p) return null;
+          return (
+            <div key={clave}
+                 className={`flex items-start gap-3 rounded-xl border p-2.5 ${ESTILO_PUNTO[p.estado]}`}>
+              <Icono className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="text-sm font-bold">{p.titulo}</span>
+                  <span className="text-xs font-semibold">{p.etiqueta}</span>
+                </div>
+                {p.detalle && <div className="text-[11px] opacity-80">{p.detalle}</div>}
+
+                {/* El stock lleva las DOS cifras que pidió Brandon: «a la mano»
+                    es lo que está físicamente y «disponible» lo que queda libre
+                    después de reservas. Cuando difieren, la diferencia ES la
+                    noticia. */}
+                {clave === "stock" && p.mano !== undefined && (
+                  <div className="mt-1 flex gap-3 text-[11px]">
+                    <span>A la mano <b className="tabular-nums">{num(p.mano)}</b></span>
+                    <span>Disponible <b className="tabular-nums">{num(p.disponible)}</b></span>
+                    {!!p.mano && p.disponible === 0 && (
+                      <span className="font-semibold">todo reservado</span>
+                    )}
+                  </div>
+                )}
+
+                {/* La foto solo se valida contra bodega cuando hay variantes:
+                    una imagen genérica no distingue cuál de ellas es. */}
+                {clave === "foto" && fila.variantes_odoo.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {fila.variantes_odoo.map((v2) => (
+                      <span
+                        key={v2.sku}
+                        title={`${v2.nombre}${v2.relacion === "plantilla"
+                          ? " · misma plantilla en Odoo"
+                          : " · solo comparte código base, NO son variantes en Odoo"}`}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${
+                          v2.relacion === "plantilla"
+                            ? "bg-white/70 ring-1 ring-current"
+                            : "bg-white/40 opacity-70"}`}
+                      >
+                        {v2.sku}
+                        {v2.relacion === "codigo" && " ·código"}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="mt-0.5 font-mono text-[10px] opacity-50">{p.fuente}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {!v.validado && (
+        <p className="mt-1.5 text-[11px] text-slate-400">
+          No se puede dar por validado sin los cuatro. Falta:{" "}
+          <b>{v.faltantes.join(", ")}</b>.
+        </p>
+      )}
+
+      {fila.ultimo_paso && (
+        <p className="mt-1 text-[11px] text-slate-400">
+          Último paso en el panel: {fila.ultimo_paso.accion}
+          {fila.ultimo_paso.actor ? ` · ${fila.ultimo_paso.actor}` : ""}
+          {fila.ultimo_paso.fecha ? ` · ${fila.ultimo_paso.fecha.slice(0, 10)}` : ""}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** Costo validado y envío a marketplace: NO son validación de almacén, así que
+ *  van aparte y en compacto para no competir con los cuatro requisitos. */
+function Comercial({ fila }: { fila: FilaInventario }) {
   return (
     <section>
       <h3 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
-        Estatus de proceso
+        Otros estados
       </h3>
-      <div className="mt-2 space-y-1.5">
+      <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
         {ETAPAS.map(({ clave, titulo, icono: Icono }) => {
-          const e = fila.etapas[clave];
+          const e = fila.comercial[clave];
           return (
             <div key={clave}
                  className={`flex items-start gap-3 rounded-xl border p-2.5 ${ESTILO_ETAPA[e.estado]}`}>
@@ -1104,32 +1247,6 @@ function Etapas({ fila }: { fila: FilaInventario }) {
                   <span className="text-xs font-semibold">{e.etiqueta}</span>
                 </div>
                 {e.detalle && <div className="text-[11px] opacity-80">{e.detalle}</div>}
-                {clave === "variantes" && fila.variantes_odoo.length > 0 && (
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {fila.variantes_odoo.map((v) => (
-                      <span
-                        key={v.sku}
-                        title={`${v.nombre}${v.relacion === "plantilla"
-                          ? " · misma plantilla en Odoo"
-                          : " · solo comparte código base, NO son variantes en Odoo"}`}
-                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${
-                          v.relacion === "plantilla"
-                            ? "bg-white/70 ring-1 ring-current"
-                            : "bg-white/40 opacity-70"}`}
-                      >
-                        {v.sku}
-                        {v.relacion === "codigo" && " ·código"}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {e.ultimo_paso && (
-                  <div className="mt-0.5 text-[11px] opacity-70">
-                    último paso: {e.ultimo_paso}
-                    {e.ultimo_actor ? ` · ${e.ultimo_actor}` : ""}
-                    {e.ultimo_at ? ` · ${e.ultimo_at.slice(0, 10)}` : ""}
-                  </div>
-                )}
                 {/* De dónde salió el dato: para poder discutirlo, no solo verlo. */}
                 <div className="mt-0.5 font-mono text-[10px] opacity-50">{e.fuente}</div>
               </div>
