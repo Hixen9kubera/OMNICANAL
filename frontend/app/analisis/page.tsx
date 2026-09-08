@@ -1928,6 +1928,20 @@ export default function FulfillmentPage() {
   // vive como botón junto al período, no como sub-pestaña (Eduardo, 6-ago).
   const [verMargenes, setVerMargenes] = useState(false);
 
+  // ── Llegar desde una alerta con el filtro ya puesto (Eduardo, 7-sep) ─────
+  // "Costo sin verificar" enlaza a `/analisis?skus=A,B,C`: el costo se revisa
+  // aquí, donde está el margen y el costo lado a lado, no en Omnicanal. Misma
+  // mecánica que /omnicanal: `window.location.search` en un efecto (sin
+  // <Suspense>) y SOLO al montar — después manda lo que se escriba en el campo.
+  // La lista va al buscador separada por coma; `cargar` la manda como `skus`.
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get("skus");
+    const lista = (p || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (!lista.length) return;
+    setQ(lista.join(", "));
+    setBusqueda(lista.join(","));
+  }, []);
+
   /* Carrera de respuestas. `cargar` no cancelaba nada: si el usuario cambia dos
      filtros seguidos salen dos peticiones y gana la que RESPONDA última, que no
      siempre es la última pedida — la tabla acaba mostrando un filtro que ya no
@@ -1953,7 +1967,9 @@ export default function FulfillmentPage() {
       if (estado) qt.set("estado", estado);
       if (tipo) qt.set("tipo", tipo);
       if (tam.length) qt.set("tam", tam.join(","));
-      if (busqueda) qt.set("q", busqueda);
+      // Con comas es una LISTA de SKUs exactos (viene de una alerta o se
+      // tecleó así); sin comas es la búsqueda libre de siempre.
+      if (busqueda) qt.set(busqueda.includes(",") ? "skus" : "q", busqueda);
       qt.set("orden", orden);
       qt.set("dir", dir);
       qt.set("limit", String(limit));
@@ -2156,7 +2172,7 @@ export default function FulfillmentPage() {
             </select>
           </label>
           <form className="ml-auto" onSubmit={(e) => { e.preventDefault(); setBusqueda(q.trim()); setPagina(0); }}>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar SKU o título…"
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar SKU o título… (varios SKUs: separados por coma)"
                    className="w-56 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-slate-700 shadow-sm outline-none focus:border-indigo-400" />
           </form>
           <span className="text-slate-500">{tabla ? `${fNum(tabla.total)} SKUs` : ""}</span>

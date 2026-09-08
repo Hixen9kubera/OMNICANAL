@@ -97,17 +97,24 @@ function DetalleAlerta({ topic, datos, error, onIr }: {
   }
 
   const esMargen = topic === "margen_negativo";
+  // A DÓNDE lleva cada alerta (Eduardo, 7-sep): el costo sin verificar se
+  // revisa en ANÁLISIS, que es donde el costo y el margen están lado a lado y
+  // desde donde se abre el costeo; Omnicanal es para la publicación. El margen
+  // negativo sigue yendo a la publicación, que es lo que hay que mover.
+  const esCosto = topic === "top_costo_sin_revisar";
+  const destino = esCosto ? "/analisis" : "/omnicanal";
+  const pantalla = esCosto ? "Análisis" : "Omnicanal";
   return (
     <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
-      {/* Un solo clic para verlas TODAS en Omnicanal: el filtro de esa pantalla
-          acepta la lista separada por comas. Es la acción principal — la lista
+      {/* Un solo clic para verlas TODAS: las dos pantallas aceptan `?skus=`
+          con la lista separada por comas. Es la acción principal — la lista
           de abajo es para atacar una en concreto. */}
       <Link
-        href={`/omnicanal?skus=${encodeURIComponent(datos.skus.join(","))}`}
+        href={`${destino}?skus=${encodeURIComponent(datos.skus.join(","))}`}
         onClick={onIr}
         className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-indigo-600 hover:text-indigo-700"
       >
-        Ver {datos.items.length === 1 ? "la publicación" : `las ${datos.items.length}`} en Omnicanal
+        Ver {datos.items.length === 1 ? (esCosto ? "el costo" : "la publicación") : `las ${datos.items.length}`} en {pantalla}
         <ArrowRight size={12} />
       </Link>
 
@@ -115,7 +122,7 @@ function DetalleAlerta({ topic, datos, error, onIr }: {
         {datos.items.map((it) => (
           <li key={`${it.sku}-${"canal" in it ? it.canal : it.rank}`}>
             <Link
-              href={`/omnicanal?skus=${encodeURIComponent(it.sku)}`}
+              href={`${destino}?skus=${encodeURIComponent(it.sku)}`}
               onClick={onIr}
               className="flex items-baseline justify-between gap-2 rounded px-1.5 py-1 hover:bg-white"
             >

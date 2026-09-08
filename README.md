@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.434.0 — La alerta "Costo sin verificar" lleva a Análisis, no a Omnicanal (Eduardo)
+
+La campana enlazaba las dos alertas de costo a `/omnicanal?skus=…`. Para
+"Costo sin verificar" era el lugar equivocado: el costo se revisa en
+**Análisis**, donde el costo y el margen están lado a lado y desde donde se
+abre el costeo. Omnicanal es la publicación. "Margen negativo" sigue yendo a
+Omnicanal, que es donde se mueve el precio.
+
+- `GET /api/fulfillment/tabla` acepta `skus=A,B,C` (lista EXACTA, manda sobre
+  `q`, que es un ILIKE de un término y no sabía recibir tres SKUs). Entra en la
+  llave del caché para no devolver la tabla de otro filtro.
+- `/analisis?skus=A,B,C` deja el buscador con la lista y filtra al montar,
+  con la misma mecánica que `/omnicanal` (sin `useSearchParams`, solo una vez).
+  En el buscador, una lista separada por comas es de SKUs exactos; sin comas
+  sigue siendo búsqueda libre.
+- En la campana, el enlace principal y los de cada SKU de "Costo sin verificar"
+  van a `/analisis`; el texto dice "Ver las 3 en Análisis".
+
+Verificado en el sandbox: `tabla?skus=…` devuelve exactamente esos SKUs y `q`
+sigue igual sin lista.
+
 ### v0.433.0 — El padre dice cuál de sus variantes tiene el costo validado (Eduardo)
 
 La tarjeta de `ROP-0266` (perchero, 2 variantes) no mostraba VALIDADO aunque

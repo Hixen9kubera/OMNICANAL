@@ -1689,6 +1689,12 @@ async def tabla(
     tipo: str | None = Query(None),
     tam: str | None = Query(None),
     q: str | None = Query(None, max_length=80),
+    # Lista EXACTA de SKUs separados por coma. Es lo que mandan las alertas de
+    # la campana ("Costo sin verificar" enlaza a /analisis?skus=A,B,C): `q` es
+    # un ILIKE de un solo término y no sabe recibir tres SKUs. Con lista, `q`
+    # se ignora.
+    skus: str | None = Query(None, max_length=2000,
+                             description="SKUs exactos separados por coma; manda sobre q"),
     orden: str = Query("venta"),
     dir: str | None = Query(None, description="asc|desc; omitido = natural"),
     limit: int = Query(50, ge=10, le=200),
@@ -1738,7 +1744,7 @@ async def tabla(
     # y `envios` NO entran: son presupuestos de llamadas a ML, no filtros —
     # incluirlos partiría el caché en variantes que devuelven lo mismo.
     _clave = {"dias": dias, "cuenta": cuenta, "estado": estado, "tipo": tipo,
-              "tam": tam, "q": q, "orden": orden, "dir": dir,
+              "tam": tam, "q": q, "skus": skus, "orden": orden, "dir": dir,
               "limit": limit, "offset": offset}
 
     async def _producir() -> dict[str, Any]:
@@ -1751,7 +1757,11 @@ async def tabla(
         if tams:
             # Compatible con el valor suelto de antes: "L" llega como lista de uno.
             cond.append("tam = any(%(tam)s)"); extra["tam"] = tams
-        if q:
+        lista_skus = [s.strip().upper() for s in (skus or "").split(",") if s.strip()]
+        if lista_skus:
+            cond.append("upper(sku::text) = any(%(skus_filtro)s::text[])")
+            extra["skus_filtro"] = lista_skus
+        elif q:
             cond.append("(sku::text ilike %(q)s or titulo ilike %(q)s)")
             extra["q"] = f"%{q}%"
         where = " and ".join(cond)
