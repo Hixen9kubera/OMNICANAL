@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.441.0 — Inventario deja de colgar "no vendibles" bajo las piezas (Eduardo)
+
+La celda de **Piezas** de la tabla de Inventario traía un renglón rojo
+—«3 no vendibles»— con las piezas en CUARENTENA y SCRAP. Se quita.
+
+No describía un descuadre: **Odoo ya excluye esas piezas de `qty_available`**,
+porque las dos ubicaciones son `internal` pero no cuelgan de ningún almacén
+(ver `odoo._vendible`). O sea que nunca estuvieron sumadas en la cifra de
+arriba, y ponerlas en rojo justo debajo se leía como si a esa cifra le faltara
+algo. Medido el 8-sep contra Odoo en vivo: son **3 ubicaciones**
+(`TEXCO/FERRAFORME/CUARENTENA` con 10,577 piezas, `TEXCO/FERRAFORME/SCRAP` con
+250, y `N1` vacía), **231 SKUs y 10,827 piezas** — y en **138 de esos SKUs es
+TODO su stock**, así que la etiqueta aparecía bajo un `0` y contaba la historia
+al revés.
+
+El dato **no se retira del backend**: `no_vendible` sigue viajando en la
+respuesta y `resumen.no_vendible` sigue sumándolo. Y se sigue viendo donde sí
+se puede accionar: el cajón lateral («Dónde está») marca la ubicación concreta,
+que es lo que le sirve a bodega — saber en qué rack está la pieza que no se
+puede vender, no cuántas hay.
+
+Solo frontend, una celda de la tabla.
+
 ### v0.440.0 — Las tarjetas de canal ya no llevan el costo (Eduardo)
 
 Cierra el reparto de la v0.438.0: **General muestra el costo; los canales, el

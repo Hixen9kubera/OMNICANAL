@@ -734,11 +734,15 @@ function Fila({
             </div>
           </div>
         )}
-        {!!f.no_vendible && (
-          <div className="text-[10px] text-rose-600" title="En cuarentena o scrap: están en bodega y no se pueden vender">
-            {num(f.no_vendible)} no vendibles
-          </div>
-        )}
+        {/* La etiqueta «N no vendibles» se quitó de la tabla (Eduardo, 8-sep). No
+            era un descuadre: son las piezas en CUARENTENA y SCRAP, que Odoo ya
+            excluye de `qty_available`, así que nunca estuvieron sumadas en la
+            cifra de arriba. Medido el 8-sep: 231 SKUs y 10,827 piezas —10,577 de
+            ellas en cuarentena—, y en 138 SKUs es TODO su stock. Colgarla en rojo
+            debajo de un cero se leía como si le faltaran piezas a la cifra.
+            El dato sigue viajando en `no_vendible` y se sigue viendo por
+            ubicación en el cajón («Dónde está»), que es donde se puede accionar:
+            ahí se sabe en qué rack está la pieza que no se puede vender. */}
       </td>
 
       <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">{num(f.reservado)}</td>
