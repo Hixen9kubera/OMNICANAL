@@ -223,14 +223,28 @@ export default function ProductCard({
                 de `costos_validados`, el mismo en todas las pestañas porque es
                 del SKU y no del canal. Va junto al precio para que el margen se
                 lea de un vistazo; sin costo no ocupa lugar. */}
-            {producto.costo != null && producto.costo > 0 && (
+            {producto.costo_rango ? (
+              /* Padre sin costeo propio: el rango de sus variantes, en vez de la
+                 meta vieja de Woo. Con una sola cifra (o todas iguales) no se
+                 pinta un rango de un solo número. */
+              <div
+                className="mt-0.5 text-[11px] font-semibold text-slate-600"
+                title={`Costo de sus variantes (${producto.costo_rango.n} de ${producto.costo_rango.total} con costeo en Costos). El padre no tiene costeo propio: el costo es de cada variante.`}
+              >
+                Costo{" "}
+                {producto.costo_rango.min === producto.costo_rango.max
+                  ? precioMXN(producto.costo_rango.min)
+                  : `${precioMXN(producto.costo_rango.min)} – ${precioMXN(producto.costo_rango.max)}`}
+                <span className="ml-1 font-normal text-slate-400">variantes</span>
+              </div>
+            ) : producto.costo != null && producto.costo > 0 ? (
               <div
                 className="mt-0.5 text-[11px] font-semibold text-slate-600"
                 title="Costo unitario de la pieza (producto + flete), el validado en Costos. Es el mismo en todos los canales."
               >
                 Costo {precioMXN(producto.costo)}
               </div>
-            )}
+            ) : null}
           </div>
 
           {/* Stock o puntos de canal */}

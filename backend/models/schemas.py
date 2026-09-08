@@ -57,6 +57,15 @@ class RevisionVariantes(BaseModel):
     skus: list[str] = Field(default_factory=list)
 
 
+class CostoRango(BaseModel):
+    """Padre sin costeo propio: el costo de sus variantes en kubera, de menor a
+    mayor. `n` de `total` variantes lo tienen; las demás siguen sin costear."""
+    min: float
+    max: float
+    n: int
+    total: int
+
+
 class Producto(BaseModel):
     """Producto proyectado al canal solicitado."""
     sku: str
@@ -103,6 +112,8 @@ class Producto(BaseModel):
     # valor = stock × costo (para padres, suma de sus variantes)
     costo: float | None = None
     valor: float | None = None
+    # Solo padres sin costeo propio cuyas variantes sí lo tienen en kubera.
+    costo_rango: CostoRango | None = None
     contenedor: str | None = None  # nº de contenedor (costos_validados)
     # Marca de validación del costeo (migración 0032). Se manda SOLO cuando el
     # SKU está validado: ausente = pendiente, que es el caso mayoritario y no

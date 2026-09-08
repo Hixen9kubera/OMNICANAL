@@ -68,6 +68,9 @@ export interface Producto {
   // Valor de inventario (Crear Productos): costo y valor = stock × costo
   costo: number | null;
   valor: number | null;
+  // Padre sin costeo propio: el costo de sus variantes en kubera, de menor a
+  // mayor (`n` de `total` variantes lo tienen). Ausente en los demás casos.
+  costo_rango?: { min: number; max: number; n: number; total: number } | null;
   contenedor: string | null; // nº de contenedor (costos_validados)
   // Tipo en WooCommerce: simple | variable (padre) | variation
   tipo: string | null;

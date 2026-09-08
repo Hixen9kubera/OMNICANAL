@@ -225,6 +225,23 @@ async def listar_productos(
                 v["costo"] = _costo_kubera(v["sku"], v.get("costo"))
                 v["costo_propio"] = (costos_kub.get(v["sku"]) or {}).get(
                     "costo_total") is not None or bool(v.get("costo_propio"))
+            # UN PADRE SIN COSTEO PROPIO MUESTRA EL RANGO DE SUS VARIANTES
+            # (Eduardo, 8-sep-2026). El padre nunca se costea —el packing list
+            # trae variantes—, así que `_costo_kubera` caía a la meta de Woo, que
+            # es vieja: ROP-0266 decía $1,162.30 con sus dos variantes validadas
+            # en $971 y $972.30. Solo cuenta el costo que las variantes tienen
+            # EN KUBERA (no el heredado de Woo, que sería el mismo número viejo
+            # dando la vuelta). Sin ninguna, se queda el respaldo de antes.
+            if (costos_kub.get(it["sku"]) or {}).get("costo_total") is None:
+                de_variantes = [
+                    float(costos_kub[v["sku"]]["costo_total"])
+                    for v in (it.get("variantes") or [])
+                    if (costos_kub.get(v.get("sku") or "") or {}).get("costo_total")
+                ]
+                if de_variantes:
+                    it["costo_rango"] = {"min": min(de_variantes), "max": max(de_variantes),
+                                         "n": len(de_variantes),
+                                         "total": len(it.get("variantes") or [])}
             # PUBLICADO = está en AL MENOS UN canal (regla del panel), no el
             # status de WooCommerce: un producto `inprogress` en Woo pero vivo en
             # Mercado Libre SÍ está publicado (caso CAM-0030, que salía "Sin
@@ -295,12 +312,31 @@ async def listar_productos(
         # Inventario en vivo cacheado (precio real + desglose stock_real/full/fba).
         inv = inventario.leer_inventario([it["sku"] for it in items_raw])
         for it in items_raw:
+            # EL PRECIO DE UNA TARJETA DE CANAL ES EL DE LA PUBLICACIÓN (Eduardo,
+            # 8-sep-2026): lo que COBRA hoy —con descuento si lo hay— y, tachado,
+            # su precio de lista. `precio_base` venía de `costos_finales`
+            # (el precio SUGERIDO por el costeo, no el del canal) y salía
+            # inflado: ROP-0266-DOR mostraba "$275 / ~~$2,610.23~~" cuando la
+            # publicación cobra $266.75 sobre una lista de $599. El sugerido no
+            # es un precio de canal y aquí no se pinta; sin publicación viva la
+            # tarjeta se queda sin tachado en vez de inventar uno.
+            it["precio_base"] = None
             clave = f"{canal}|{it.get('cuenta') or ''}"
             datos = inv.get(it["sku"], {}).get(clave)
             if not datos:
                 continue
             if datos.get("precio") is not None:
-                it["precio"] = float(datos["precio"])
+                lista = float(datos["precio"])
+                venta = datos.get("precio_venta")
+                cobra = float(venta) if venta is not None and float(venta) > 0 else lista
+                # El tachado es el mayor de lista/base que quede POR ENCIMA de lo
+                # que cobra: `price_base` es el `original_price` de la campaña de
+                # ML y `price` la lista; cuando no hay rebaja son iguales al
+                # cobrado y no se tacha nada.
+                base = datos.get("precio_lista")
+                candidatos = [x for x in (lista, float(base) if base else 0.0) if x > cobra]
+                it["precio"] = cobra
+                it["precio_base"] = max(candidatos) if candidatos else None
             it["stock_real"] = datos.get("stock_real")
             it["stock_full"] = datos.get("stock_full")
             it["stock_fba"] = datos.get("stock_fba")

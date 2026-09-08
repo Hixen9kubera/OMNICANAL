@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.437.0 — Rango de costo en padres y precio real de la publicación en las tarjetas de canal (Eduardo)
+
+Con la v0.435.0 la tarjeta de `ROP-0266` en General decía **"Costo $1,162.30"**.
+Ese número no es de kubera: el padre nunca se costea —el packing list trae
+variantes— y `GET /api/productos` caía al respaldo de la meta de Woo, que es
+vieja. Sus dos variantes validadas valen $971.00 y $972.30.
+
+Ahora, cuando el padre no tiene fila en `costos_validados` pero sus variantes
+sí, la respuesta lleva `costo_rango = {min, max, n, total}` y la tarjeta pinta
+**"Costo $971.00 – $972.30 variantes"** (una sola cifra si todas coinciden).
+Solo cuenta el costo que las variantes tienen EN KUBERA, no el heredado de Woo
+(sería el mismo número viejo dando la vuelta). Sin ninguna, se queda el
+respaldo de antes. `costo` y `valor` del padre no cambian: el rango es solo lo
+que se muestra.
+
+**Y el precio de las tarjetas de canal es el de la publicación.** La tarjeta
+de `ROP-0266-DOR` en Mercado Libre decía `$275.00` con `$2,610.23` tachado:
+ese tachado era `costos_finales.precio_base`, el precio **sugerido** por el
+costeo, no el del canal. Ahora `GET /api/productos` (pestañas de marketplace)
+pinta lo que la publicación **cobra hoy** (`price_sale` del seam, o `price`) y,
+tachado, su lista real (`price` / `price_base` de `channel.listings`) solo
+cuando queda por encima. `channel_read.leer_inventario` expone `precio_venta`
+y `precio_lista` para eso. Sin publicación viva no se tacha nada: un sugerido
+no es un precio de canal.
 ### v0.436.0 — El SKU que se elige en la alerta ya cambia el filtro (Eduardo)
 
 Se abría la alerta, se daba clic a un SKU de la lista y el filtro **seguía con

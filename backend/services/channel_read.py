@@ -45,6 +45,9 @@ _SEL = """
     select l.sku, l.canal,
            case when a.legacy_code in ('AMAZON','GENERAL') then '' else a.legacy_code end as cuenta,
            l.listing_id as item_id, l.price as precio, l.stock_own as stock_real,
+           -- lo que COBRA hoy (seam de sale_price) y el tachado de la campaña;
+           -- con los tres la tarjeta pinta "cobra / base" sin adivinar
+           l.price_sale as precio_venta, l.price_base as precio_lista,
            -- convención MySQL: amazon reporta en stock_fba y deja stock_full NULL
            -- (el espejo históricamente fusionó fba→stock_full; se normaliza aquí)
            case when l.canal = 'amazon' then null else l.stock_full end as stock_full,
