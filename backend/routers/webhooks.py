@@ -572,7 +572,22 @@ def _leer_de_supabase() -> bool:
 # meses. Al pasar la campana a kubera —que sí los guarda todos— la lista se
 # volvería una manguera y los avisos que sí importan quedarían sepultados en el
 # primer segundo.
-_CANALES_CAMPANA = ("odoo", "alertas")
+#
+# 7-sep: SALE `odoo` y la campana queda SOLO para alertas (Eduardo). El filtro
+# ya la protegía del volumen de ML, pero seguía mezclando dos cosas que no son
+# lo mismo. Medido en 30 días: 71 `stock_cambio` contra 8 alertas de costo.
+#
+#   `stock_cambio`     "Odoo: stock 86 → 85"  — informativo, nadie hace nada
+#   `margen_negativo`  8 publicaciones perdiendo dinero — pide acción HOY
+#
+# Puestos en la misma lista plana, el segundo se lee como el primero: en la
+# captura del 7-sep las cinco entradas visibles eran de stock y las dos alertas
+# del día quedaban debajo, con el mismo icono y el mismo peso visual.
+#
+# ⚠️ `odoo_watch` SIGUE ESCRIBIENDO sus eventos: esto quita la VISTA, no el
+# registro. Quedan en `ops.webhook_events` con canal `odoo` y se consultan
+# igual; lo que se retira es su derecho a interrumpir a una persona.
+_CANALES_CAMPANA = ("alertas",)
 
 
 def _eventos_supabase(limite: int, todos: bool = False) -> list[dict[str, Any]]:
@@ -629,15 +644,30 @@ async def notificaciones(limite: int = Query(20, ge=1, le=100)):
             return {"eventos": eventos, "total_hoy": int(total_hoy or 0), "origen": "supabase"}
         except Exception as exc:  # noqa: BLE001
             log.warning("lectura Supabase falló, caigo a MySQL: %s", exc)
+    # ⚠️ ESTE CAMINO NO FILTRABA POR CANAL, y es el que corre de verdad:
+    # `SUPABASE_READ_WEBHOOKS` no está definida en Railway, así que
+    # `_leer_de_supabase()` da False y la campana se sirve DESDE MySQL. El
+    # filtro `_CANALES_CAMPANA` solo vivía en la rama de Supabase, o sea que en
+    # producción no se aplicaba ninguno.
+    #
+    # Se descubrió probando en el sandbox: tras dejar `_CANALES_CAMPANA` en
+    # ("alertas",) la API seguía devolviendo `stock_cambio`. El filtro estaba
+    # bien; el problema es que lo leía la rama equivocada.
     _asegurar_schema()
+    marcas = ", ".join(["%s"] * len(_CANALES_CAMPANA))
     try:
         eventos = db.fetch_all(
-            """SELECT id, canal, topic, resource, cuenta, sku, resultado, recibido
-               FROM webhook_eventos ORDER BY id DESC LIMIT %s""",
-            (limite,),
+            f"""SELECT id, canal, topic, resource, cuenta, sku, resultado, recibido
+                FROM webhook_eventos WHERE canal IN ({marcas})
+                ORDER BY id DESC LIMIT %s""",
+            (*_CANALES_CAMPANA, limite),
         )
+        # El contador lleva el MISMO filtro que la lista, por lo mismo que en la
+        # rama de Supabase: contar todo y mostrar poco vuelve el número mentira.
         total_hoy = db.fetch_scalar(
-            "SELECT COUNT(*) FROM webhook_eventos WHERE recibido >= CURDATE()"
+            f"""SELECT COUNT(*) FROM webhook_eventos
+                 WHERE recibido >= CURDATE() AND canal IN ({marcas})""",
+            tuple(_CANALES_CAMPANA),
         ) or 0
     except Exception:  # noqa: BLE001
         eventos, total_hoy = [], 0

@@ -1,14 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, X, ShoppingCart, Package, Truck, RotateCw } from "lucide-react";
+import Link from "next/link";
+import {
+  Bell, X, ShoppingCart, Package, Truck, RotateCw,
+  TrendingDown, AlertTriangle, Check,
+} from "lucide-react";
 import { notificacionesWebhook } from "@/lib/api";
 import type { WebhookEvento } from "@/lib/types";
 
 const LS_KEY = "omnicanal_ult_notif";
 
+// Las alertas de DINERO se ven distinto del resto, a propósito: son las que
+// piden que alguien haga algo hoy. El resto de topics quedan por si vuelve a
+// entrar otro canal a la campana.
 function iconoTopic(topic: string | null) {
   switch (topic) {
+    case "margen_negativo": return <TrendingDown size={15} className="text-rose-500" />;
+    case "top_costo_sin_revisar": return <AlertTriangle size={15} className="text-amber-500" />;
     case "orders_v2": return <ShoppingCart size={15} className="text-emerald-500" />;
     case "items":
     case "items_prices": return <Package size={15} className="text-indigo-500" />;
@@ -19,6 +28,11 @@ function iconoTopic(topic: string | null) {
 
 function etiquetaTopic(topic: string | null): string {
   const map: Record<string, string> = {
+    margen_negativo: "Margen negativo",
+    top_costo_sin_revisar: "Costo sin verificar",
+    silencio_ventas: "Silencio de ventas",
+    pedidos_duplicados: "Pedidos duplicados",
+    tokens_rancios: "Tokens por vencer",
     orders_v2: "Venta",
     items: "Cambio de publicación",
     items_prices: "Cambio de precio",
@@ -27,7 +41,7 @@ function etiquetaTopic(topic: string | null): string {
     questions: "Pregunta",
     messages: "Mensaje",
   };
-  return topic ? (map[topic] ?? topic) : "Notificación";
+  return topic ? (map[topic] ?? topic) : "Aviso";
 }
 
 function hace(iso: string): string {
@@ -41,7 +55,6 @@ function hace(iso: string): string {
 
 export default function NotificationBell() {
   const [eventos, setEventos] = useState<WebhookEvento[]>([]);
-  const [totalHoy, setTotalHoy] = useState(0);
   const [abierto, setAbierto] = useState(false);
   const [ultVisto, setUltVisto] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
@@ -50,7 +63,6 @@ export default function NotificationBell() {
     notificacionesWebhook()
       .then((r) => {
         setEventos(r.eventos);
-        setTotalHoy(r.total_hoy);
       })
       .catch(() => {});
   }, []);
@@ -88,7 +100,7 @@ export default function NotificationBell() {
     <div className="relative" ref={ref}>
       <button
         onClick={abrir}
-        title="Notificaciones de Mercado Libre"
+        title="Alertas"
         className="relative flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
       >
         <Bell size={19} />
@@ -102,10 +114,13 @@ export default function NotificationBell() {
       {abierto && (
         <div className="absolute right-0 z-50 mt-2 w-96 animate-fade-in overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card-hover">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+            {/* "Alertas" y no "Notificaciones": desde el 7-sep aquí solo entra
+                lo que pide que alguien haga algo. Y sin el contador de "N hoy",
+                que sobre una lista casi siempre vacía solo decía "0". */}
             <div>
-              <h4 className="text-sm font-bold text-slate-800">Notificaciones</h4>
+              <h4 className="text-sm font-bold text-slate-800">Alertas</h4>
               <span className="text-[11px] text-slate-400">
-                {totalHoy} hoy · Mercado Libre en vivo
+                Avisos que piden acción
               </span>
             </div>
             <div className="flex items-center gap-1">
@@ -119,32 +134,58 @@ export default function NotificationBell() {
           </div>
 
           <div className="max-h-96 overflow-y-auto">
+            {/* El vacío es el estado SANO, no un error: la campana pasa la
+                mayor parte del tiempo así. Por eso dice "todo en orden" y no
+                "sin notificaciones todavía", que se lee como si algo fallara. */}
             {eventos.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-slate-400">
-                Sin notificaciones todavía.
+              <div className="px-6 py-10 text-center">
+                <Check size={22} className="mx-auto mb-2 text-emerald-500" />
+                <p className="text-sm font-medium text-slate-600">Todo en orden.</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-400">
+                  Aquí aparecen los márgenes en negativo, los costos sin
+                  verificar de lo más vendido y los avisos del sistema.
+                </p>
               </div>
             ) : (
-              eventos.map((e) => (
-                <div key={e.id} className="flex gap-3 border-b border-slate-50 px-4 py-2.5 hover:bg-slate-50">
-                  <div className="mt-0.5">{iconoTopic(e.topic)}</div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-semibold text-slate-700">
-                        {etiquetaTopic(e.topic)}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-slate-400">{hace(e.recibido)}</span>
+              eventos.map((e) => {
+                const fila = (
+                  <>
+                    <div className="mt-0.5">{iconoTopic(e.topic)}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-semibold text-slate-700">
+                          {etiquetaTopic(e.topic)}
+                        </span>
+                        <span className="shrink-0 text-[10px] text-slate-400">{hace(e.recibido)}</span>
+                      </div>
+                      {e.resultado && (
+                        <p className="text-xs leading-snug text-slate-500">{e.resultado}</p>
+                      )}
+                      {e.sku && (
+                        <span className="mt-0.5 inline-block rounded bg-slate-100 px-1.5 font-mono text-[10px] text-slate-500">
+                          {e.sku}
+                        </span>
+                      )}
                     </div>
-                    {e.resultado && (
-                      <p className="truncate text-xs text-slate-500">{e.resultado}</p>
-                    )}
-                    {e.sku && (
-                      <span className="mt-0.5 inline-block rounded bg-slate-100 px-1.5 font-mono text-[10px] text-slate-500">
-                        {e.sku}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))
+                  </>
+                );
+                const clase = "flex gap-3 border-b border-slate-50 px-4 py-2.5 hover:bg-slate-50";
+                // Con SKU la alerta LLEVA al producto: el aviso dice que algo
+                // está mal, y el clic es el camino a arreglarlo. Sin SKU (un
+                // aviso del sistema) no hay a dónde ir y no se hace clicable.
+                return e.sku ? (
+                  <Link
+                    key={e.id}
+                    href={`/omnicanal?skus=${encodeURIComponent(e.sku)}`}
+                    onClick={() => setAbierto(false)}
+                    className={clase}
+                  >
+                    {fila}
+                  </Link>
+                ) : (
+                  <div key={e.id} className={clase}>{fila}</div>
+                );
+              })
             )}
           </div>
         </div>

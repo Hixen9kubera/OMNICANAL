@@ -1001,6 +1001,59 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.430.0 — La campana deja de ser un feed y pasa a ser una señal (Eduardo)
+
+Primer paso hacia el panel de alertas por rol. La campana **solo muestra
+alertas**: fuera los cambios de stock de Odoo, fuera el "N hoy · Mercado Libre
+en vivo".
+
+**EL FILTRO EXISTÍA Y NO SE APLICABA.** `_CANALES_CAMPANA` vivía únicamente en
+la rama de Supabase del endpoint, pero **esa rama no corre**:
+`SUPABASE_READ_WEBHOOKS` no está definida en Railway, así que
+`_leer_de_supabase()` da `False` y la campana se sirve desde MySQL — donde la
+consulta **no filtraba por canal**. Se descubrió probando en el sandbox: tras
+dejar `_CANALES_CAMPANA` en `("alertas",)` la API seguía devolviendo
+`stock_cambio`. El filtro estaba bien; lo leía la rama equivocada.
+
+Ahora las dos ramas aplican el mismo filtro, lista y contador.
+
+**POR QUÉ SALE `odoo`.** Medido en 30 días: **71 `stock_cambio` contra 8 alertas**
+en kubera (677 contra 23 en MySQL, que guarda más historia). No es un problema
+de volumen — es que la lista plana mezclaba dos cosas de naturaleza distinta:
+
+```
+stock_cambio     "Odoo: stock 86 → 85"   informativo, nadie hace nada
+margen_negativo  8 publicaciones perdiendo dinero, peor −310%
+```
+
+Con el mismo icono y el mismo peso visual, el segundo se lee como el primero. En
+la captura del 7-sep las cinco entradas visibles eran de stock y las dos alertas
+del día quedaban debajo.
+
+⚠️ **`odoo_watch` SIGUE ESCRIBIENDO**: esto quita la VISTA, no el registro. Sus
+eventos siguen en `ops.webhook_events` y en `webhook_eventos` con canal `odoo`;
+lo que se retira es su derecho a interrumpir a una persona.
+
+**EL DISEÑO, porque la campana cambió de significado.** Una notificación es un
+"por si te interesa"; una alerta pide algo. Así que:
+
+- Se llama **Alertas**, no Notificaciones. Subtítulo: *"Avisos que piden acción"*.
+- **El vacío es el estado SANO** — la campana va a estar así casi siempre. Dice
+  *"Todo en orden"* con una palomita, y explica qué aparecería, en vez de "Sin
+  notificaciones todavía", que se lee como si algo estuviera roto.
+- **Las alertas de dinero se ven distinto**: `margen_negativo` con flecha hacia
+  abajo en rosa, `top_costo_sin_verificar` con triángulo ámbar.
+- **Cada alerta con SKU LLEVA al producto** (`/omnicanal?skus=…`): el aviso dice
+  que algo está mal y el clic es el camino a arreglarlo. Las que no traen SKU
+  —avisos del sistema— no se hacen clicables, porque no hay a dónde ir.
+- El texto deja de truncarse: `8 en margen negativo · 7 pérdida real, 1 costo
+  dudoso · peor −310.0% (ROP-0266-DOR)` no cabía en una línea, y era justo lo
+  que había que leer.
+
+Verificado en el sandbox con los dos estados: vacío, y con el historial real de
+alertas de MySQL. Ningún `stock_cambio` en la respuesta, y cada fila apuntando a
+`/omnicanal?skus=<sku>`.
+
 ### v0.429.0 — Automatizacion la ve el equipo; moverla sigue siendo de admin
 
 Brandon: *"los roles de las KAMS pueden ver el apartado de AUTOMATIZACIONES?
