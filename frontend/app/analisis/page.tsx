@@ -1931,16 +1931,30 @@ export default function FulfillmentPage() {
   // ── Llegar desde una alerta con el filtro ya puesto (Eduardo, 7-sep) ─────
   // "Costo sin verificar" enlaza a `/analisis?skus=A,B,C`: el costo se revisa
   // aquí, donde está el margen y el costo lado a lado, no en Omnicanal. Misma
-  // mecánica que /omnicanal: `window.location.search` en un efecto (sin
-  // <Suspense>) y SOLO al montar — después manda lo que se escriba en el campo.
-  // La lista va al buscador separada por coma; `cargar` la manda como `skus`.
+  // mecanica que /omnicanal: `window.location.search` en un efecto (sin
+  // <Suspense>), y SIN lista de dependencias, con `urlPuesta` de candado.
+  // Estando ya en /analisis, un clic en la campana es navegacion de CLIENTE:
+  // la URL cambia y el componente NO se vuelve a montar, asi que un efecto de
+  // montaje no se entera y el buscador se queda con el SKU anterior. Solo se
+  // pisa el campo cuando el valor de `skus` cambia, asi que borrarlo a mano no
+  // lo vuelve a llenar. La lista va al buscador separada por coma; `cargar` la
+  // manda como `skus`.
+  const urlPuesta = useRef<string | null>(null);
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search).get("skus");
-    const lista = (p || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const p = new URLSearchParams(window.location.search).get("skus") ?? "";
+    if (p === urlPuesta.current) return;
+    urlPuesta.current = p;
+
+    const lista = p.split(",").map((s) => s.trim()).filter(Boolean);
     if (!lista.length) return;
-    setQ(lista.join(", "));
-    setBusqueda(lista.join(","));
-  }, []);
+    // El mismo texto en los dos campos. Los espacios tras la coma no estorban:
+    // `fulfillment.py` recorta cada termino antes de consultar.
+    const texto = lista.join(", ");
+    setQ(texto);
+    setBusqueda(texto);
+    setPagina(0);   // igual que el submit del buscador: llegar a la pagina 3 de
+                    // un filtro que ya no existe muestra una tabla vacia
+  });
 
   /* Carrera de respuestas. `cargar` no cancelaba nada: si el usuario cambia dos
      filtros seguidos salen dos peticiones y gana la que RESPONDA última, que no

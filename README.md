@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.436.0 — El SKU que se elige en la alerta ya cambia el filtro (Eduardo)
+
+Se abría la alerta, se daba clic a un SKU de la lista y el filtro **seguía con
+el anterior**. Reportado por Eduardo sobre "Margen negativo": *"se queda solo
+al primero al haber seleccionado en la ficha de la alerta"*.
+
+La causa estaba en el efecto que lee `?skus=`, y el comentario que escribí
+encima lo decía sin que yo lo viera: *"Solo al MONTAR (`[]`)"*. Estando ya en
+la pestaña, un clic en la campana es **navegación de CLIENTE**: la URL cambia y
+el componente NO se vuelve a montar, así que un efecto de montaje no se entera.
+Solo funcionaba el PRIMER clic, el que llegaba desde otra pantalla.
+
+Ahora el efecto corre tras cada render y el candado es la URL misma: se pisa el
+campo solo cuando el valor de `skus` es DISTINTO al ya aplicado. Eso conserva
+lo que el `[]` protegía —**borrar el filtro a mano no lo vuelve a llenar**,
+porque la URL no cambió— sin quedarse sordo al segundo clic. Con un solo SKU
+además se cierra la ficha anterior antes de abrir la nueva: al saltar de un SKU
+a otro se quedaba abierta la del primero, contradiciendo al filtro.
+
+**Iba en las dos pestañas.** `/analisis` tenía el mismo efecto copiado de
+`/omnicanal` (v0.434.0), y desde ese mismo cambio "Costo sin verificar" aterriza
+ahí — o sea que el defecto cubría las dos alertas que Eduardo pidió, no una.
+Arregladas igual; en Análisis se resetea además la página, porque llegar a la
+página 3 de un filtro que ya no existe pinta una tabla vacía.
+
+Comprobado en el sandbox contra la campana de verdad, las cuatro conductas: los
+21 SKUs de "Ver las N" llenan el campo; un SKU suelto estando ya filtrado lo
+cambia (era el bug); el salto de un SKU a otro cambia la ficha y no deja la
+vieja; y borrar el campo con la URL intacta lo deja vacío.
+
 ### v0.435.0 — La tarjeta muestra el costo unitario de la pieza en todas las pestañas (Eduardo)
 
 La tarjeta de `TEC-0384-PLA` en Omnicanal mostraba `$2,754.66` (el precio de

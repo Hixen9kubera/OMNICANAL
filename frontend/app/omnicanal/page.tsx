@@ -65,25 +65,43 @@ export default function OmnicanalPage() {
   // mano: el aviso decía qué está mal y no llevaba a ningún lado.
   //
   // Se lee de `window.location.search` y no con `useSearchParams`: ese hook
-  // obliga a envolver la página en un <Suspense> para el render estático, y
-  // ninguna pantalla del panel lo usa todavía. Dentro de un efecto el código
-  // solo corre en el navegador, así que no hay nada que envolver.
+  // obliga a envolver la pagina en un <Suspense> para el render estatico, y
+  // ninguna pantalla del panel lo usa todavia. Dentro de un efecto el codigo
+  // solo corre en el navegador, asi que no hay nada que envolver.
   //
-  // Solo al MONTAR (`[]`): después manda lo que la persona escriba en el
-  // filtro. Si se releyera la URL en cada render, borrar el campo a mano lo
-  // volvería a llenar solo.
+  // SIN lista de dependencias: corre tras CADA render y decide con `urlPuesta`.
+  // Estando ya en /omnicanal, un clic en la campana es navegacion de CLIENTE:
+  // la URL cambia y el componente NO se vuelve a montar, asi que un efecto de
+  // montaje (`[]`) no se entera y el filtro se queda con lo anterior. El
+  // candado es la URL misma: solo se pisa el campo cuando el valor de `skus`
+  // es DISTINTO al ya aplicado, asi que borrarlo a mano no lo vuelve a llenar
+  // (la URL no cambio) y escribir en el no dispara nada.
   const abrirUnico = useRef<string | null>(null);
+  const urlPuesta = useRef<string | null>(null);
   useEffect(() => {
-    const q = new URLSearchParams(window.location.search).get("skus");
-    const lista = (q || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const q = new URLSearchParams(window.location.search).get("skus") ?? "";
+    if (q === urlPuesta.current) return;
+    urlPuesta.current = q;
+
+    const lista = q.split(",").map((s) => s.trim()).filter(Boolean);
     if (!lista.length) return;
-    setSkusInput(lista.join(", "));
-    setSkusFiltro(lista.join(","));
-    // Con UN solo SKU, además de filtrar se ABRE su ficha: venir de una alerta
-    // de un producto concreto y tener que dar otro clic es un paso de más. Con
-    // varios no se abre ninguna — elegir una de catorce sería arbitrario.
-    if (lista.length === 1) abrirUnico.current = lista[0].toLowerCase();
-  }, []);
+
+    // El mismo texto en los dos: el debounce de `skusInput` reescribe
+    // `skusFiltro` 500 ms despues y, si difieren, la pagina se recarga dos
+    // veces. El backend ya recorta los espacios (v0.432.0).
+    const texto = lista.join(", ");
+    setSkusInput(texto);
+    setSkusFiltro(texto);
+    setPage(1);
+
+    // Con UN solo SKU, ademas de filtrar se ABRE su ficha: venir de una alerta
+    // de un producto concreto y tener que dar otro clic es un paso de mas. Con
+    // varios no se abre ninguna -- elegir una de catorce seria arbitrario.
+    // La ficha vieja se cierra siempre: al saltar de un SKU a otro se quedaba
+    // abierta la del anterior, contradiciendo al filtro que ya cambio.
+    setSel(null);
+    abrirUnico.current = lista.length === 1 ? lista[0].toLowerCase() : null;
+  });
 
   // El detalle se abre cuando LLEGAN los productos, no al montar: en ese
   // momento todavía no existe la fila que hay que seleccionar.
