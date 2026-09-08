@@ -79,6 +79,28 @@ def hay_datos() -> bool:
         (list(CANALES),)))
 
 
+def hijos_por_wc_id(wc_ids: list[int]) -> dict[int, list[str]]:
+    """
+    ``{ wc_id del padre: [SKUs de sus variantes] }`` desde ``core.products``.
+
+    Se une por ``wc_parent_id`` y no por prefijo de SKU: es la única relación
+    padre→variante que kubera conserva viva (``parent_sku`` está muerta). Sirve
+    para que la tarjeta de un padre en un canal pueda hablar de sus variantes,
+    que en Mercado Libre son publicaciones propias con su propio precio.
+    """
+    ids = [int(x) for x in wc_ids if x]
+    if not ids:
+        return {}
+    out: dict[int, list[str]] = {}
+    for r in sdb.fetch_all(
+            """select wc_parent_id, sku::text as sku
+                 from core.products
+                where wc_parent_id = any(%s::bigint[])
+                order by sku""", (ids,)):
+        out.setdefault(int(r["wc_parent_id"]), []).append(r["sku"])
+    return out
+
+
 def leer_inventario(skus: list[str]) -> dict[str, dict[str, dict[str, Any]]]:
     if not skus:
         return {}

@@ -346,6 +346,43 @@ async def listar_productos(
             if datos.get("stock_real") is not None:
                 it["stock"] = datos["stock_real"]
 
+        # UN PADRE EN UN CANAL MUESTRA EL PRECIO DE SUS VARIANTES (Eduardo,
+        # 8-sep-2026). En Mercado Libre las variantes son publicaciones propias
+        # con su propio precio; la del padre suele ser una publicación vieja o
+        # pausada con un precio que ya no dice nada (ROP-0266 a $2,471.60 en
+        # BEKURA mientras ROP-0266-DOR cobra $498.04). Se buscan las variantes
+        # por `wc_parent_id` (la única relación viva) y se toma lo que COBRAN en
+        # ESTE canal y ESTA cuenta, sin las cerradas. Best-effort y en hilo: es
+        # una consulta más y no puede tumbar el listado. `precio`/`precio_base`
+        # del padre se conservan: el rango es lo que se muestra.
+        try:
+            wc_ids = [it["wc_id"] for it in items_raw if it.get("wc_id")]
+            hijos = (await asyncio.to_thread(channel_read.hijos_por_wc_id, wc_ids)
+                     if wc_ids else {})
+            skus_hijos = sorted({s for v in hijos.values() for s in v})
+            inv_h = (await asyncio.to_thread(inventario.leer_inventario, skus_hijos)
+                     if skus_hijos else {})
+            for it in items_raw:
+                lista_h = hijos.get(it.get("wc_id")) or []
+                if not lista_h:
+                    continue
+                clave = f"{canal}|{it.get('cuenta') or ''}"
+                cobran: list[float] = []
+                for s in lista_h:
+                    d = inv_h.get(s, {}).get(clave)
+                    if not d or d.get("precio") is None:
+                        continue
+                    if (d.get("situacion") or "").lower() == "closed":
+                        continue
+                    venta = d.get("precio_venta")
+                    cobran.append(float(venta) if venta is not None and float(venta) > 0
+                                  else float(d["precio"]))
+                if cobran:
+                    it["precio_rango"] = {"min": min(cobran), "max": max(cobran),
+                                          "n": len(cobran), "total": len(lista_h)}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("precio de variantes no disponible (el listado sigue): %s", exc)
+
     # Marca de validación del costeo (0032). Va después de armar `items_raw`
     # para cubrir TODOS los canales por igual — la tarjeta es la misma en todos.
     # Best-effort: si costeo no responde, las tarjetas salen sin la etiqueta en

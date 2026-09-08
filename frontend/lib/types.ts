@@ -71,6 +71,9 @@ export interface Producto {
   // Padre sin costeo propio: el costo de sus variantes en kubera, de menor a
   // mayor (`n` de `total` variantes lo tienen). Ausente en los demás casos.
   costo_rango?: { min: number; max: number; n: number; total: number } | null;
+  // Padre en una pestaña de canal: lo que cobran sus variantes ahí, de menor a
+  // mayor (`n` de `total` con publicación viva en ese canal/cuenta).
+  precio_rango?: { min: number; max: number; n: number; total: number } | null;
   contenedor: string | null; // nº de contenedor (costos_validados)
   // Tipo en WooCommerce: simple | variable (padre) | variation
   tipo: string | null;

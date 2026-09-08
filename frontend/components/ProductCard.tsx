@@ -246,6 +246,24 @@ export default function ProductCard({
                 </div>
               )
             ) : (
+              producto.precio_rango ? (
+                /* Padre en un canal (Eduardo, 8-sep): lo que cobran sus
+                   variantes ahí, no el precio de su propia publicación, que
+                   suele ser vieja o pausada. */
+                <div
+                  title={`Lo que cobran sus variantes en esta cuenta (${producto.precio_rango.n} de ${producto.precio_rango.total} con publicación viva). La publicación del padre cobra ${precioMXN(producto.precio)}.`}
+                >
+                  <div className="flex items-baseline gap-1 text-lg font-extrabold tracking-tight text-slate-900">
+                    {producto.precio_rango.min === producto.precio_rango.max
+                      ? precioMXN(producto.precio_rango.min)
+                      : `${precioMXN(producto.precio_rango.min)} – ${precioMXN(producto.precio_rango.max)}`}
+                    <ChipMoneda moneda="MXN" />
+                  </div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Precio · {producto.precio_rango.n} variante{producto.precio_rango.n === 1 ? "" : "s"}
+                  </div>
+                </div>
+              ) : (
               <>
                 {/* El chip va PEGADO al precio y no en un rótulo: en la tarjeta
                     la cifra viaja sola, sin encabezado que la contextualice. */}
@@ -264,6 +282,7 @@ export default function ProductCard({
                     solo lo que la publicación cobra y su lista tachada. El
                     costo vive en General y en el detalle. */}
               </>
+              )
             )}
           </div>
 

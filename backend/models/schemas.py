@@ -66,6 +66,15 @@ class CostoRango(BaseModel):
     total: int
 
 
+class PrecioRango(BaseModel):
+    """Padre visto desde un CANAL: lo que cobran sus variantes ahí, de menor a
+    mayor. `n` de `total` variantes tienen publicación viva en ese canal/cuenta."""
+    min: float
+    max: float
+    n: int
+    total: int
+
+
 class Producto(BaseModel):
     """Producto proyectado al canal solicitado."""
     sku: str
@@ -114,6 +123,8 @@ class Producto(BaseModel):
     valor: float | None = None
     # Solo padres sin costeo propio cuyas variantes sí lo tienen en kubera.
     costo_rango: CostoRango | None = None
+    # Solo padres en pestañas de canal con variantes publicadas ahí.
+    precio_rango: PrecioRango | None = None
     contenedor: str | None = None  # nº de contenedor (costos_validados)
     # Marca de validación del costeo (migración 0032). Se manda SOLO cuando el
     # SKU está validado: ausente = pendiente, que es el caso mayoritario y no

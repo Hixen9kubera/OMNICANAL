@@ -1001,6 +1001,26 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.447.0 — En los canales, el padre muestra lo que cobran sus variantes (Eduardo)
+
+En Mercado Libre las variantes son publicaciones propias con su propio precio,
+y la del padre suele ser una publicación vieja o pausada cuyo precio ya no dice
+nada: `ROP-0266` salía a `$2,471.60` en BEKURA mientras `ROP-0266-DOR` cobra
+`$498.04`. Ahora, en las pestañas de canal, la tarjeta de un padre muestra el
+**rango de lo que cobran sus variantes en esa cuenta** (`$266.75 – $498.04 ·
+PRECIO · 2 VARIANTES`; una sola cifra si coinciden), y el tooltip dice cuál es
+el precio de la publicación del padre.
+
+- Las variantes se buscan por `wc_parent_id` (`channel_read.hijos_por_wc_id`),
+  la única relación padre→variante viva en kubera, y se toma lo que cobran en
+  ESE canal y ESA cuenta (`price_sale` o `price`), sin las cerradas. En
+  `precio_rango = {min, max, n, total}`; `precio`/`precio_base` del padre no
+  cambian.
+- Best-effort y en hilo: una consulta más por página que no puede tumbar el
+  listado. Un padre sin variantes publicadas en esa cuenta sigue mostrando su
+  propio precio.
+- General no cambia: ahí el padre muestra el rango de costo (v0.437.0).
+
 ### v0.446.0 — ML no devolvía «cero»: devolvía el muro de login (corrección)
 
 Eduardo preguntó lo que yo no me había preguntado: *«¿por qué justo ese término
