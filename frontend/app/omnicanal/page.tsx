@@ -79,12 +79,31 @@ export default function OmnicanalPage() {
   const abrirUnico = useRef<string | null>(null);
   const urlPuesta = useRef<string | null>(null);
   useEffect(() => {
-    const q = new URLSearchParams(window.location.search).get("skus") ?? "";
-    if (q === urlPuesta.current) return;
-    urlPuesta.current = q;
+    const par = new URLSearchParams(window.location.search);
+    const q = par.get("skus") ?? "";
+    // El canal entra en la llave del candado: dos renglones de la MISMA alerta
+    // pueden traer el mismo SKU en cuentas distintas.
+    const llave = `${q}|${par.get("canal") ?? ""}|${par.get("cuenta") ?? ""}`;
+    if (llave === urlPuesta.current) return;
+    urlPuesta.current = llave;
 
     const lista = q.split(",").map((s) => s.trim()).filter(Boolean);
     if (!lista.length) return;
+
+    // La alerta manda a la PESTAÑA donde está el problema (Eduardo, 8-sep): el
+    // margen negativo lo causa una publicación de BEKURA o San Corpe, y en
+    // General ni siquiera se ve ese precio. Se llama a los setters sueltos y NO
+    // a `seleccionarCanal`, que además LIMPIA el filtro de SKUs — borraría lo
+    // que esta misma vuelta acaba de poner. De ahí solo se copia lo que hace
+    // falta para que la pestaña se vea como si la hubieran elegido a mano.
+    const canalUrl = par.get("canal");
+    if (canalUrl && canalUrl !== canal) {
+      setCanal(canalUrl);
+      setSoloPublicados(canalUrl !== GENERAL);
+    }
+    // Sin `cuenta` se queda en "Todas", que es lo correcto cuando la lista
+    // mezcla cuentas: fijar una escondería la mitad.
+    setCuenta(par.get("cuenta"));
 
     // El mismo texto en los dos: el debounce de `skusInput` reescribe
     // `skusFiltro` 500 ms despues y, si difieren, la pagina se recarga dos
@@ -101,6 +120,19 @@ export default function OmnicanalPage() {
     // abierta la del anterior, contradiciendo al filtro que ya cambio.
     setSel(null);
     abrirUnico.current = lista.length === 1 ? lista[0].toLowerCase() : null;
+
+    // Y SE LIMPIA LA URL (Eduardo, 8-sep). Recargar volvia a poner el SKU de la
+    // alerta, porque el filtro vivia en la direccion y F5 la conserva: quedabas
+    // atrapado en un producto sin manera obvia de salir. La alerta es un ATAJO
+    // de una vez, no un estado; una vez aplicada, la direccion vuelve a ser la
+    // pestana normal y recargar devuelve el catalogo completo.
+    // `replaceState` no es navegacion: no vuelve a disparar este efecto, y en el
+    // siguiente render la llave queda vacia y se sale antes de tocar nada. El
+    // segundo clic a la misma alerta sigue funcionando porque ese SI empuja una
+    // direccion nueva. Se conservan los demas parametros por si algun dia hay.
+    par.delete("skus"); par.delete("canal"); par.delete("cuenta");
+    const resto = par.toString();
+    window.history.replaceState(null, "", window.location.pathname + (resto ? `?${resto}` : ""));
   });
 
   // El detalle se abre cuando LLEGAN los productos, no al montar: en ese

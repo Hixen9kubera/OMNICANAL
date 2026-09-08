@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.439.0 — La alerta lleva a la CUENTA donde está el margen negativo (Eduardo)
+
+Dos peticiones de Eduardo sobre la misma ficha de alerta.
+
+**1. El clic aterrizaba en General.** El margen negativo lo causa UNA
+publicación, y esa publicación vive en una cuenta —BEKURA o San Corpe—. Caer
+en General obligaba a buscar el canal a mano, y ahí ni siquiera se ve el precio
+que provocó el margen: el de General es el de la tienda. Ahora el enlace lleva
+`canal` y `cuenta`, y la pestaña abre donde está el problema.
+
+No hizo falta tocar el backend: `/api/alertas/margen-negativo` ya devolvía
+`canal` y `tienda` por renglón, y sus valores son **los mismos ids que usan las
+pestañas** (`mercado_libre`, `BEKURA`/`SANCORFASHION`), así que no hay
+traducción de por medio. Hoy todo margen negativo es de Mercado Libre
+(`CANALES_CON_COSTO` tiene un solo canal), pero va escrito contra el dato del
+renglón, no contra esa constante.
+
+El enlace del GRUPO ("Ver las N") solo fija canal y cuenta si TODOS los
+renglones coinciden. Con cuentas mezcladas se queda en "Todas", que las muestra
+las dos: fijar una escondería media lista sin avisar.
+
+En la página se llaman los setters sueltos y NO `seleccionarCanal`, que además
+LIMPIA el filtro de SKUs — habría borrado lo que esa misma vuelta acababa de
+poner. De ahí solo se copia `soloPublicados`, que es lo que hace que la pestaña
+se vea como si la hubieran elegido a mano.
+
+**2. Recargar dejaba el SKU pegado.** El filtro vivía en la dirección y F5 la
+conserva, así que quedabas atrapado en un producto sin manera obvia de salir.
+La alerta es un ATAJO de una vez, no un estado: en cuanto se aplica, la
+dirección vuelve a ser la pestaña normal (`replaceState`) y recargar devuelve el
+catálogo completo. No rompe el segundo clic —ese sí empuja una dirección
+nueva— porque `replaceState` no es navegación y no vuelve a disparar el efecto.
+Mismo arreglo en `/analisis`.
+
+Comprobado en el sandbox: `?skus=ACC-0006-MUL&canal=mercado_libre&cuenta=SANCORFASHION`
+abre Mercado Libre con **San Corpe** activa y la ficha del SKU, la dirección
+queda en `/omnicanal`, y al recargar vuelve General sin filtro.
 ### v0.438.0 — En General la tarjeta muestra el costo, no el precio (Eduardo)
 
 En la pestaña General la cifra grande de la tarjeta era el precio de la tienda

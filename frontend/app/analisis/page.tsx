@@ -1954,6 +1954,14 @@ export default function FulfillmentPage() {
     setBusqueda(texto);
     setPagina(0);   // igual que el submit del buscador: llegar a la pagina 3 de
                     // un filtro que ya no existe muestra una tabla vacia
+
+    // Y se limpia la direccion: recargar volvia a poner el SKU de la alerta y
+    // quedabas atrapado en un producto. La alerta es un atajo de una vez, no un
+    // estado. `replaceState` no dispara el efecto otra vez.
+    const par2 = new URLSearchParams(window.location.search);
+    par2.delete("skus");
+    const resto = par2.toString();
+    window.history.replaceState(null, "", window.location.pathname + (resto ? `?${resto}` : ""));
   });
 
   /* Carrera de respuestas. `cargar` no cancelaba nada: si el usuario cambia dos

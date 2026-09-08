@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import {
   notificacionesWebhook, alertaMargenNegativo, alertaCostoSinValidar,
-  type AlertaMargenResp, type AlertaCostoResp,
+  type AlertaMargenResp, type AlertaCostoResp, type AlertaMargenItem,
 } from "@/lib/api";
 import type { WebhookEvento } from "@/lib/types";
 
@@ -104,13 +104,35 @@ function DetalleAlerta({ topic, datos, error, onIr }: {
   const esCosto = topic === "top_costo_sin_revisar";
   const destino = esCosto ? "/analisis" : "/omnicanal";
   const pantalla = esCosto ? "Análisis" : "Omnicanal";
+
+  // A QUÉ PESTAÑA lleva cada renglón (Eduardo, 8-sep). El margen negativo es de
+  // UNA publicación, y la publicación vive en una cuenta: BEKURA o San Corpe.
+  // Aterrizar en General obligaba a buscar el canal a mano, y ahí ni siquiera
+  // se ve el precio que causó el margen — el de General es el de la tienda.
+  // `canal` y `tienda` ya viajaban en la respuesta; solo faltaba usarlos, y sus
+  // valores son los MISMOS ids que usan las pestañas ("mercado_libre",
+  // "BEKURA"/"SANCORFASHION"), así que no hay traducción de por medio.
+  const margenes = esMargen ? (datos.items as AlertaMargenItem[]) : [];
+  const ruta = (skus: string[], canal?: string | null, cuenta?: string | null) => {
+    const q = new URLSearchParams({ skus: skus.join(",") });
+    if (canal) q.set("canal", canal);
+    if (cuenta) q.set("cuenta", cuenta);
+    return `${destino}?${q}`;
+  };
+  // El enlace del GRUPO puede mezclar cuentas, así que cada dato viaja solo si
+  // TODOS los renglones coinciden. Con cuentas distintas se queda en "Todas",
+  // que las muestra las dos: fijar una escondería media lista sin avisar.
+  const unanime = (k: "canal" | "tienda") => {
+    const v = margenes.map((i) => i[k]);
+    return v.length && v.every((x) => x === v[0]) ? v[0] : null;
+  };
   return (
     <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
       {/* Un solo clic para verlas TODAS: las dos pantallas aceptan `?skus=`
           con la lista separada por comas. Es la acción principal — la lista
           de abajo es para atacar una en concreto. */}
       <Link
-        href={`${destino}?skus=${encodeURIComponent(datos.skus.join(","))}`}
+        href={ruta(datos.skus, unanime("canal"), unanime("tienda"))}
         onClick={onIr}
         className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold text-indigo-600 hover:text-indigo-700"
       >
@@ -122,7 +144,7 @@ function DetalleAlerta({ topic, datos, error, onIr }: {
         {datos.items.map((it) => (
           <li key={`${it.sku}-${"canal" in it ? it.canal : it.rank}`}>
             <Link
-              href={`${destino}?skus=${encodeURIComponent(it.sku)}`}
+              href={ruta([it.sku], "canal" in it ? it.canal : null, "tienda" in it ? it.tienda : null)}
               onClick={onIr}
               className="flex items-baseline justify-between gap-2 rounded px-1.5 py-1 hover:bg-white"
             >
