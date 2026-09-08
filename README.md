@@ -1001,6 +1001,16 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.440.0 — Las tarjetas de canal ya no llevan el costo (Eduardo)
+
+Cierra el reparto de la v0.438.0: **General muestra el costo; los canales, el
+precio de la publicación**. La línea "Costo $971.00" que la v0.435.0 había
+puesto debajo del precio en Mercado Libre, Amazon y demás se quita: ahí la
+tarjeta es lo que cobra la publicación con su lista tachada si hay rebaja
+(`ROP-0266-DOR` en San Corpe: `$266.75` sobre `~~$599.00~~`), y nada más. El
+costo sigue en General y en el detalle del producto. El backend no cambia:
+`costo` sigue viajando en la respuesta por si otra vista lo necesita.
+
 ### v0.439.0 — La alerta lleva a la CUENTA donde está el margen negativo (Eduardo)
 
 Dos peticiones de Eduardo sobre la misma ficha de alerta.
