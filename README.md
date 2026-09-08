@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.449.0 — El costeo automático deja de contar como trabajo de la persona
+
+Cola de la v0.445.0. Ahí se sacó `accion='auto'` de la TARJETA de la banda pero
+no de la TABLA por persona, y la columna «Costeos» seguía acreditando el costeo
+que corre solo al crear un producto — que lleva el correo de quien pidió la
+creación, pero no lo hizo esa persona.
+
+Medido el 8-sep sobre 7 días: **28 de 117 renglones de costeo son automáticos**,
+repartidos muy desigual. El caso que lo deja claro es **Cinthya, que salía con
+10 «Costeos» sin haber recalculado ninguno**: los 10 son el costeo automático de
+los 25 productos que creó, o sea el mismo trabajo contado dos veces, una en
+«Creados» y otra en «Costeos». Su celda pasa a `0 / 0` — que en esta pantalla
+significa «no lo hizo», y es verdad. Andrea baja de 49 a 43; Valeria de 14 a 8.
+
+El filtro (`_SIN_AUTOMATICOS`) va en las **siete** consultas del módulo, no sólo
+en la de la tabla: la cobertura, la chispa del renglón, la píldora de errores y
+la gaveta de movimientos leen lo mismo. Si la celda dijera 43 y la gaveta listara
+49, el que mira deja de creerle a las dos.
+
+Es la premisa que el archivo ya declaraba en su encabezado —«deja fuera lo
+automático»— y que estos renglones se saltaban justo por venir firmados.
+
 ### v0.448.0 — «No hay competencia» y «no nos dejaron ver» dejan de ser lo mismo
 
 Sale de la pregunta de Eduardo en la v0.446.0. Ahí quedó DOCUMENTADO que ML nos

@@ -67,6 +67,23 @@ _EXITO = ("ok", "completado", "succeeded")
 #: Las acciones de `costos` que NO son costeo hecho a mano.
 _COSTOS_NO_MANUALES = ("auto", "validar", "desvalidar")
 
+#: EL COSTEO AUTOMÁTICO NO LO HIZO LA PERSONA, aunque lleve su correo.
+#: `accion='auto'` lo escribe el costeo que corre solo al CREAR un producto, y
+#: hereda el actor de quien pidió la creación. Esta pantalla existe para dejar
+#: fuera lo automático —lo dice su encabezado, y por eso ya se excluyen el
+#: sondeo, el fan-out y los ETL—; estos renglones se colaban porque venían
+#: firmados. Medido el 8-sep sobre 7 días: 28 de 117 renglones de costeo son
+#: automáticos, y el caso que lo deja claro es **Cinthya, que salía con 10
+#: «Costeos» sin haber recalculado ninguno**: los 10 son el costeo automático de
+#: los 25 productos que creó — el mismo trabajo contado dos veces, una en
+#: «Creados» y otra en «Costeos». Su celda pasa a `0 / 0`, que aquí significa
+#: «no lo hizo» y es verdad.
+#:
+#: Va en TODAS las consultas del módulo y no sólo en la tabla, a propósito: si
+#: la celda dice 20 y la gaveta de movimientos lista 48, el que mira deja de
+#: creerle a las dos.
+_SIN_AUTOMATICOS = "not (proceso = 'costos' and accion = 'auto')"
+
 #: `validar` no es un proceso propio en `ops.process_log` —es una ACCIÓN dentro
 #: de `costos`— pero SÍ es una columna propia en la tabla de personas, porque es
 #: la pregunta que la pantalla promete contestar. Se separa AL LEER, no al
@@ -184,6 +201,7 @@ def _procesos_sin_registro(dias: int) -> list[str]:
                       count(*) filter (where actor is not null) firmadas
                  from ops.process_log
                 where proceso = any(%s)
+                  and {_SIN_AUTOMATICOS}
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
                 group by 1""",
@@ -215,7 +233,7 @@ def _canales_por_persona(dias: int) -> dict[str, dict[str, dict[str, int]]]:
     """
     try:
         filas = supabase_db.fetch_all(
-            """select actor,
+            f"""select actor,
                       coalesce(detalle->>'canal', '(sin canal)') canal,
                       coalesce(r.value->>'cuenta', detalle->>'cuenta', '') cuenta,
                       count(*) total,
@@ -229,6 +247,7 @@ def _canales_por_persona(dias: int) -> dict[str, dict[str, dict[str, int]]]:
                              then detalle->'resultados' else '[]'::jsonb end) r
                         on true
                 where proceso = any(%s)
+                  and {_SIN_AUTOMATICOS}
                   and actor is not null
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
@@ -262,6 +281,7 @@ def cobertura(dias: int = 30) -> list[dict[str, Any]]:
                       count(distinct actor) filter (where actor is not null) personas
                  from ops.process_log
                 where proceso = any(%s)
+                  and {_SIN_AUTOMATICOS}
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
                 group by 1
@@ -445,11 +465,12 @@ def _series(dias: int) -> dict[str, list[int]]:
     """Movimientos por día y por persona — la chispa del renglón (sparkline)."""
     try:
         filas = supabase_db.fetch_all(
-            """select actor,
+            f"""select actor,
                       (created_at at time zone 'America/Mexico_City')::date dia,
                       count(*) n
                  from ops.process_log
                 where proceso = any(%s) and actor is not null
+                  and {_SIN_AUTOMATICOS}
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
                 group by actor, dia""",
@@ -512,6 +533,7 @@ def resumen(dias: int = 30) -> dict[str, Any]:
                       max(created_at) ultima
                  from ops.process_log
                 where proceso = any(%s)
+                  and {_SIN_AUTOMATICOS}
                   and actor is not null and actor <> %s
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
@@ -598,9 +620,10 @@ def _errores_por_persona(dias: int) -> dict[str, int]:
     """Cuántos movimientos fallaron, por persona. La píldora del renglón."""
     try:
         filas = supabase_db.fetch_all(
-            """select actor, count(*) n
+            f"""select actor, count(*) n
                  from ops.process_log
                 where proceso = any(%s) and actor is not null
+                  and {_SIN_AUTOMATICOS}
                   and estado <> all(%s) and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
                 group by actor""",
@@ -617,7 +640,10 @@ def _errores_por_persona(dias: int) -> dict[str, int]:
 def movimientos(limite: int = 100, usuario: str | None = None,
                 canal: str | None = None, dias: int = 30) -> list[dict[str, Any]]:
     """El detalle, uno por uno: quién, qué, sobre qué SKU y cuándo."""
+    # El MISMO filtro de la tabla: si la celda dice 20 y aquí salen 48, el que
+    # mira deja de creerle a las dos. Ver `_SIN_AUTOMATICOS`.
     where = ["proceso = any(%s)", "actor is not null",
+             _SIN_AUTOMATICOS,
              "estado <> all(%s)",
              "created_at >= now() - make_interval(days => %s)"]
     params: list[Any] = [list(_DE_PERSONA), list(_INTERMEDIOS), dias]
