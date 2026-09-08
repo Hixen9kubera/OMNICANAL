@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.446.0 — ML no devolvía «cero»: devolvía el muro de login (corrección)
+
+Eduardo preguntó lo que yo no me había preguntado: *«¿por qué justo ese término
+del casco no lo da ML?»*. La respuesta desmiente lo que escribí en v0.443.0.
+
+**No devuelve cero. Nos bloquea.** El registro de Apify de las 5 corridas de
+«casco integral moto» lo dice sin ambigüedad:
+
+```
+"#error": true,
+"url":       "https://listado.mercadolibre.com.mx/casco-integral-moto",
+"loadedUrl": "https://www.mercadolibre.com.mx/gz/account-verification?go=…",
+"retryCount": 8,
+"errorMessages": ["Error: BLOQUEADO", … ×9]
+```
+
+ML redirige esa URL a su **verificación de cuenta** — el mismo muro que sale
+desde nuestra IP. La `pageFunction` lo detecta bien y aborta; lo que falla es
+que arriba nadie distingue ese aborto de una búsqueda sin resultados.
+
+**No es el proxy, ni la IP, ni el momento, ni la categoría.** Tres controles:
+
+| Prueba | Resultado |
+|---|---|
+| «tenis hombre», **misma corrida, mismo proxy, mismo minuto** | 48 resultados |
+| «casco integral moto», 5 corridas × 9 intentos = **45** | 45 muros, 0 excepciones |
+| «casco para moto» — mismas palabras, misma categoría | **10 resultados en 100 s** |
+
+El tercero es el que cierra el caso: no son las palabras «casco» ni «moto», es
+**ese slug**. `casco-para-moto` tiene página; `casco-integral-moto` no, y ML
+manda lo que no reconoce a verificarse. (Cuál es la regla exacta de ML no lo
+sabemos y no lo vamos a saber; lo que sí está medido es que es determinista y
+depende de la URL.)
+
+**Lo que esto rompe, y que no estaba escrito en ningún lado:**
+
+1. **La pantalla miente con confianza.** Un término bloqueado y uno sin
+   competencia terminan idénticos: `vacío`. El usuario lee «no hay competencia
+   directa» cuando la verdad es «no pudimos verla».
+2. **Se paga en cada barrido, para siempre.** `medido_en` nunca se pone, así que
+   la cola de `competencia_buscar_apify.py` —que es `q not in ya`, alfabética—
+   lo vuelve a tomar SIEMPRE. Van 5 corridas del mismo término.
+3. **El docstring de `medir_busquedas` decía lo contrario de su propio código**
+   («igual queda marcado como medido»). Corregido en este commit; el
+   comportamiento NO se toca todavía.
+
+Medido en producción: de 1,828 términos, **1,058 medidos y ninguno con cero
+filas** — o sea que el `0` de hoy no existe en la base, se pierde. Quedan **771
+pendientes**, y no hay forma de saber cuántos son «pendientes» y cuántos
+«bloqueados desde hace semanas».
+
+**Propuesto, sin construir** (falta el dale): que `buscar_terminos` devuelva el
+`#error` en vez de tirarlo, guardar el término con `medido_en` y un motivo
+`bloqueado`, y que el panel diga *«ML no nos dejó ver este término»* en vez de
+«sin competencia». Eso corta el gasto repetido y quita la mentira de la
+pantalla.
+
 ### v0.445.0 — «Costos validados» contaba recálculos: las dos pantallas ya coinciden
 
 Eduardo vio el 8-sep que Análisis · Métricas decía **47 costos validados** de la
@@ -1137,9 +1194,15 @@ minutos de red ahí dentro es exactamente lo que prohíbe la regla 11.
 `raspando`, y a los 144 s queda `listo` con 10 filas guardadas y `medido_en`
 puesto.
 
-**Y de paso, dos cosas que NO eran el fallo:** el raspador está sano —«tenis
-hombre» devuelve 10 resultados— y «casco integral moto» sí devuelve **cero de
-verdad**. Un término sin resultados queda medido igual, porque ya se pagó.
+**Y de paso, una cosa que NO era el fallo:** el raspador está sano —«tenis
+hombre» devuelve 10 resultados en la misma corrida.
+
+⚠️ **Corrección (mismo día, ver v0.444.x abajo):** aquí escribí que «casco
+integral moto» *«sí devuelve cero de verdad»* y que *«un término sin resultados
+queda medido igual»*. **Las dos cosas son falsas** y se corrigen en la entrada
+siguiente: ML no devolvió cero, devolvió su **muro de login**; y un término sin
+filas **no** se marca medido — el código hace lo contrario de lo que dice su
+propio docstring.
 
 ### v0.442.0 — «Estatus de proceso» se convierte en VALIDADO BODEGA (4 requisitos)
 

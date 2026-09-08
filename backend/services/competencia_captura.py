@@ -1263,10 +1263,20 @@ async def medir_busquedas(terminos: list[str], limite: int = 10) -> dict[str, in
     atribución es por URL, así que agrupar aquí SÍ funciona (con el actor viejo
     de ML no: no etiquetaba de qué consulta venía cada resultado).
 
-    Un término que no devuelve nada NO es un fallo — hay búsquedas sin resultados
-    en ML— pero igual queda marcado como medido: ya se pagó y no hay que volver a
-    pagarlo. Por eso el valor puede ser 0 y aun así el término deja de estar
-    pendiente.
+    ⚠️ UN TÉRMINO QUE VUELVE VACÍO NO SE GUARDA, Y ESO CUESTA DINERO.
+    Este docstring decía lo contrario —«igual queda marcado como medido»— y era
+    falso: el `continue` de abajo se salta `reemplazar_busqueda`, así que
+    `medido_en` queda en NULL y el término sigue PENDIENTE. La cola alfabética de
+    `competencia_buscar_apify.py` lo vuelve a tomar en cada barrido y se vuelve a
+    pagar, para siempre.
+
+    Y «vacío» casi nunca significa «ML no tiene nada». Medido el 8-sep-2026 con
+    «casco integral moto»: 5 corridas × 9 intentos = 45, TODAS redirigidas a
+    `mercadolibre.com.mx/gz/account-verification` (el muro de login). En la misma
+    corrida, con el mismo proxy, «tenis hombre» devolvió 48 resultados. O sea que
+    hoy este `0` mezcla dos cosas MUY distintas —«no hay competencia» y «no
+    pudimos verla»— y la pantalla enseña la primera cuando la verdad es la
+    segunda. Separarlas está propuesto y sin construir.
     """
     if not terminos:
         return {}
