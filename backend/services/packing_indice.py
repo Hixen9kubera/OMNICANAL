@@ -92,6 +92,10 @@ PAT_PZTOT = re.compile(
 # Testigo del total REAL de la fila, que a veces contradice a la de arriba.
 PAT_CANT = re.compile(r"(cantidad_total|总产品数量|total products)", re.I)
 PAT_VALOR = re.compile(r"(valor_total|货值|total value|申报总价|total amount)", re.I)
+# El importe de línea dicho con todas sus letras (总/total): manda sobre el
+# `货值` a secas cuando los dos existen.
+PAT_VALOR_TOTAL = re.compile(
+    r"(valor_total|总货值|total value|申报总价|total amount|valor total)", re.I)
 PAT_VOLTOT = re.compile(r"(总体积|cbm_total|total volume|volumen total)", re.I)
 PAT_L = re.compile(r"(长|largo|length)", re.I)
 PAT_W = re.compile(r"(宽|ancho|width)", re.I)
@@ -99,8 +103,12 @@ PAT_H = re.compile(r"(高|alto|height)", re.I)
 # `price` a secas al final: hay packing lists cuyo encabezado es literalmente
 # "Price" (PCIU9532241). No se confunde con el importe de línea porque `col()`
 # lo busca con `excluir_total=True`, que descarta cualquier "总"/"total".
+# `货值` y `valor usd` entran SOLO con la guarda de `_detectar_columnas`: a
+# secas pueden ser el importe de la línea (muchos proveedores) o el
+# unitario (TLLU8977270, que trae "货值 VALOR USD" junto a "总货值 VALOR
+# TOTAL USD").
 PAT_PRECIO = re.compile(
-    r"(单价|产品申报单价|precio_usd|unit price|u\.price|\bprice\b)", re.I)
+    r"(单价|产品申报单价|precio_usd|unit price|u\.price|\bprice\b|货值|valor usd|valor unitario)", re.I)
 
 _MAX_COLS_TEXTO = 14      # más allá de la 14 ya son notas y firmas
 _MAX_TROZOS_TEXTO = 6
@@ -264,7 +272,17 @@ class Indice:
         # y confundirlos multiplica el costo del producto por sus piezas.
         self.c_precio = col(PAT_PRECIO, excluir_total=True)
         self.c_cant = col(PAT_CANT)
-        self.c_valor = col(PAT_VALOR)
+        # El importe de línea explícito (总货值 / valor total) gana; sin él,
+        # el `货值` a secas es el importe, como siempre.
+        self.c_valor = col(PAT_VALOR_TOTAL) or col(PAT_VALOR)
+        # GUARDA (8-sep-2026): un `货值`/`valor usd` a secas solo es precio
+        # UNITARIO si el archivo trae aparte el importe con 总/total; si es la
+        # única columna de valor, es el importe y NO hay precio unitario. Sin
+        # esto, TLLU8977270 salía "packing list puro" con el unitario a la
+        # vista, y al revés, un `货值` solo se habría multiplicado por las piezas.
+        if (self.c_precio and self.c_precio == col(PAT_VALOR)
+                and not col(PAT_VALOR_TOTAL)):
+            self.c_precio = None
         self.c_voltot = col(PAT_VOLTOT)
         self.c_l, self.c_w, self.c_h = col(PAT_L), col(PAT_W), col(PAT_H)
 

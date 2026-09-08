@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.453.0 — Validador de publicados: packing lists en español y renglón a mano (Eduardo)
+
+Dos SKUs que Eduardo no podía validar, y eran dos problemas distintos:
+
+**MAN-0493-BLN** — su packing list (`TLLU8977270=CI&PL (1).xlsx`, contenedor
+95) se rechazaba entero: *"No se encontró la columna de descripción del
+producto (encabezado detectado en la fila 5)"*. El encabezado sí la trae, pero
+dice `西语名称 / DESCRIPCION EN ESPAÑOL` y el parser solo aceptaba
+"descripcion" a secas. Además su precio unitario (`货值 VALOR USD`) caía en
+*importe de línea* porque toda `货值` se tomaba como total, y tiene tres
+columnas de fotos (empaque · producto · etiqueta) de las que "la que tiene más
+anclas" no es la del producto. `packing_parser` ahora:
+
+- reconoce la descripción por CONTENIDO (`descripcion`, `description`,
+  `西语名称`, `品名`), no por igualdad exacta;
+- distingue `货值`/`valor usd` sin "total"/"总" (unitario) de `总货值`/`valor
+  total` (importe de línea);
+- elige la columna de la foto de producto por encabezado (`产品实物`, `foto de
+  producto`, `product photo`) cuando lo hay; sin él, la autodetección de
+  siempre.
+
+**ORG-0826-VER-CLA** — su packing list (`CAAU5061672 PL.xlsx`) se lee bien,
+pero el renglón 50 no tiene foto (57 de 65 no la tienen) y el archivo no trae
+precio. Sin foto no hay empate automático ni candidatos de la IA, y el modal
+solo dejaba elegir entre candidatos: el SKU quedaba en "sin match" aunque la
+persona SUPIERA que es la fila 50. Ahora, con archivo localizado, hay un campo
+**"¿Sabes el renglón?"**: el número va por el mismo camino que un candidato
+(`corregir_fila`, que lo valida contra el archivo). Como el packing list es
+puro, el costo de producto se conserva de kubera ($75.81) y solo se rehace el
+flete con las medidas del renglón; el unitario se puede teclear en la celda de
+USD si hace falta.
+
+**Y un hallazgo sobre CAAU5061672 que explica el "flete en CERO"**: el
+`.xlsx` que está en la carpeta de Drive trae las cantidades y el CBM como
+FÓRMULAS sin valor guardado (`=E2*F2`, `=J2*I2*H2/10…`); openpyxl las lee como
+vacías y el flete sale en cero. La copia en Google Sheets que Eduardo editó sí
+exporta los valores calculados, así que **para ese contenedor conviene pegar la
+liga del Sheet** (o volver a guardar el archivo desde Excel con los valores).
+
+Probado con los dos archivos reales de Drive y una regresión contra los siete
+packing lists cacheados de agosto: los siete dan exactamente lo mismo que con
+el código anterior (columna de precio, importe, renglones, fotos, precio y
+CBM del primer renglón); TLLU8977270 pasa de rechazado a 21 renglones con
+foto, precio (USD 42.31) y medidas. El campo de renglón compila; no se pudo
+probar en el sandbox porque el Validador necesita Odoo y ML, que el sandbox no
+tiene.
+
 ### v0.452.0 — ML no nos bloqueaba: le pedíamos la búsqueda por la puerta equivocada
 
 Eduardo: *«¿cómo podemos hacer que ML no nos bloquee? porque lo hace».* La

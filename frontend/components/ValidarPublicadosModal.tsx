@@ -1475,6 +1475,35 @@ function PanelFotos({
         </div>
       )}
 
+      {/* Renglón a mano (Eduardo, 8-sep-2026). Los candidatos de arriba
+          solo existen cuando la IA pudo comparar fotos; en un packing list
+          "puro" sin fotos (CAAU5061672: 57 de 65 renglones sin foto) no hay
+          candidatos y el SKU se quedaba en "sin match" para siempre aunque la
+          persona SUPIERA que es la fila 50. El número va al mismo camino que
+          un candidato (`corregir_fila`), que lo valida contra el archivo. */}
+      {f.file_id && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+          <span className="font-semibold uppercase tracking-wide text-[10px] text-slate-400">
+            ¿Sabes el renglón?
+          </span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            placeholder="nº de fila"
+            disabled={ocupado}
+            title="Número de fila del Excel (el que ves en la hoja). Enter para usar ese renglón."
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              const n = Number((e.target as HTMLInputElement).value);
+              if (Number.isInteger(n) && n > 0) onElegirFila(n);
+            }}
+            className="w-24 rounded border border-slate-200 bg-white px-2 py-1 text-right text-[11px] tabular-nums outline-none focus:border-indigo-400 disabled:bg-slate-50"
+          />
+          <span>Enter para usar esa fila del archivo {f.archivo ? `«${f.archivo}»` : ""}.</span>
+        </div>
+      )}
+
       {/* Escape para los que no tienen packing list localizado */}
       {(!f.file_id || f.estado === "sin_insumo") && (
         <div className="mt-4 border-t border-slate-100 pt-3">

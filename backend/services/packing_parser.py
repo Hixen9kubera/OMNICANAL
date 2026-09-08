@@ -171,8 +171,13 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
             continue
 
         # Descripción del producto (inglés preferido, chino como respaldo)
+        # Por CONTENIDO y no por igualdad exacta: el packing list de
+        # TLLU8977270 trae "西语名称\nDESCRIPCION EN ESPAÑOL" y se rechazaba
+        # entero por no decir "descripcion" a secas (Eduardo, 8-sep-2026).
         if ("英文" in hl or "english" in hl or "description of goods" in hl
-                or hl in ("des.", "description", "descripcion", "descripción")):
+                or hl in ("des.", "description", "descripcion", "descripción")
+                or "descripcion" in hl or "descripción" in hl or "description" in hl
+                or "西语名称" in hl or "品名" in hl):
             cm.setdefault("producto", i)
         elif "producto" not in cm and ("中文" in hl or "chino" in hl):
             cm["producto"] = i
@@ -210,10 +215,18 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
             cm["cbm_master"] = i
 
         # Precio unitario (excluye los "total" / 货值 que son importes de línea)
+        es_total = "total" in hl or "总" in hl
         if any(k in hl for k in ("单价", "unit price", "precio_usd", "precio/usd",
                                  "u.price", "precio unitario")):
-            if "total" not in hl and "货值" not in hl:
+            if not es_total and "货值" not in hl:
                 cm.setdefault("precio_usd", i)
+        # "货值 VALOR USD" / "valor usd" SIN "total"/"总" es el unitario del
+        # renglón (TLLU8977270); con "总"/"total" es el importe de la línea y va
+        # abajo, a valor_total. Antes el unitario caía en valor_total y el
+        # archivo salía "sin precio".
+        elif (("货值" in hl or "valor usd" in hl or "valor unitario" in hl)
+                and not es_total):
+            cm.setdefault("precio_usd", i)
 
         # Cantidad TOTAL de producto del renglón. Ojo: muchos proveedores llaman
         # "piezas_totales" a las piezas POR CAJA y ponen el total real en otra
@@ -222,8 +235,9 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
                                  "总产品数量", "total products", "total pcs")):
             cm.setdefault("cantidad_total", i)
         # Importe de la línea: valor_total / precio_usd delata el total de piezas.
-        if any(k in hl for k in ("valor_total", "货值", "total value", "amount",
-                                 "total amount")):
+        if (any(k in hl for k in ("valor_total", "total value", "amount",
+                                  "total amount", "总货值", "valor total"))
+                or ("货值" in hl and es_total)):
             cm.setdefault("valor_total", i)
 
         # Peso
@@ -297,7 +311,6 @@ def leer(xlsx_bytes: bytes, columna_imagen: int | None = None) -> dict[str, Any]
     ``cbm_origen`` indicando de dónde salió (para poder auditarlo en la UI).
     """
     avisos: list[str] = []
-    imagenes = extraer_imagenes(xlsx_bytes, columna_imagen)
 
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), data_only=True)
     ws = wb.active
@@ -312,6 +325,20 @@ def leer(xlsx_bytes: bytes, columna_imagen: int | None = None) -> dict[str, Any]
             "No se encontró la columna de descripción del producto "
             f"(encabezado detectado en la fila {h_idx + 1})."
         )
+    # La columna de la FOTO DE PRODUCTO se toma del encabezado cuando lo dice:
+    # hay packing lists con tres columnas de fotos (empaque · producto ·
+    # etiqueta, TLLU8977270) y "la que tiene más anclas" puede ser la del
+    # empaque, con lo que ningún SKU empataría por foto. Sin encabezado que lo
+    # diga, se queda la autodetección de siempre.
+    if columna_imagen is None:
+        for i, h in enumerate(todas[h_idx]):
+            hl = _norm(h)
+            if hl and any(k in hl for k in ("产品实物", "产品图片", "foto de produc",
+                                            "foto del produc", "product photo",
+                                            "photo of product", "product picture")):
+                columna_imagen = i
+                break
+    imagenes = extraer_imagenes(xlsx_bytes, columna_imagen)
     if "piezas_total" not in cm:
         avisos.append("No se detectó columna de piezas totales; las cantidades "
                       "quedan en 0 y hay que capturarlas a mano.")
