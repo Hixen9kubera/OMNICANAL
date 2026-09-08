@@ -1001,6 +1001,22 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.435.0 — La tarjeta muestra el costo unitario de la pieza en todas las pestañas (Eduardo)
+
+La tarjeta de `TEC-0384-PLA` en Omnicanal mostraba `$2,754.66` (el precio de
+la tienda) y nada del costo, cuando el costo validado son **$88.00**. Ahora
+debajo del precio va **"Costo $88.00"**, y es el mismo número se mire desde
+General, Mercado Libre (BEKURA o San Corpe) o Amazon: el costo es del SKU, no
+del canal.
+
+- El dato es `costos_validados.costo_total` (producto + flete, por pieza).
+  General ya lo traía (v0.4xx, con respaldo a la meta de Woo); las pestañas de
+  marketplace salían sin él, así que `GET /api/productos` lo agrega ahí en el
+  mismo bloque que la marca de validación, con una sola consulta por página.
+- **No** se usa `costos_finales.costo_unitario`: es una copia por canal que ya
+  se quedó vieja una vez (el propio TEC-0384-PLA: $1,265 contra $88).
+- Sin costo, la tarjeta no pinta la línea.
+
 ### v0.434.0 — La alerta "Costo sin verificar" lleva a Análisis, no a Omnicanal (Eduardo)
 
 La campana enlazaba las dos alertas de costo a `/omnicanal?skus=…`. Para

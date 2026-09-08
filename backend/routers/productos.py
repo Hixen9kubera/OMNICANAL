@@ -330,6 +330,20 @@ async def listar_productos(
                      for v in (it.get("variantes") or []) if v.get("sku")]
         if skus_pag:
             marcas = await asyncio.to_thread(costing_read.revisados_por_sku, skus_pag)
+            # EL COSTO UNITARIO DE LA PIEZA, en todas las pestañas (Eduardo,
+            # 8-sep-2026). Es el `costo_total` de `costos_validados` —producto +
+            # flete, por pieza— y es el MISMO se mire desde General, Mercado
+            # Libre (las dos cuentas) o Amazon: el costo es del SKU, no del
+            # canal. General ya lo traía (bloque de arriba, con respaldo a Woo);
+            # los marketplaces salían sin él y la tarjeta callaba. NO se usa
+            # `costos_finales.costo_unitario`: es una copia por canal que ya se
+            # quedó vieja una vez (TEC-0384-PLA: $1,265 contra $88 validados).
+            if canal != Canal.GENERAL.value:
+                costos_pag = await asyncio.to_thread(costing_read.validados_de, skus_pag)
+                for it in items_raw:
+                    ct = (costos_pag.get(it.get("sku") or "") or {}).get("costo_total")
+                    if ct is not None:
+                        it["costo"] = float(ct)
 
             def _marcar(destino: dict[str, Any], m: dict[str, Any]) -> None:
                 destino["revisado_at"] = (m["revisado_at"].isoformat()

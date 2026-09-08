@@ -219,6 +219,18 @@ export default function ProductCard({
                   {precioMXN(producto.precio_base)}
                 </div>
               )}
+            {/* El COSTO UNITARIO de la pieza (Eduardo, 8-sep): producto + flete
+                de `costos_validados`, el mismo en todas las pestañas porque es
+                del SKU y no del canal. Va junto al precio para que el margen se
+                lea de un vistazo; sin costo no ocupa lugar. */}
+            {producto.costo != null && producto.costo > 0 && (
+              <div
+                className="mt-0.5 text-[11px] font-semibold text-slate-600"
+                title="Costo unitario de la pieza (producto + flete), el validado en Costos. Es el mismo en todos los canales."
+              >
+                Costo {precioMXN(producto.costo)}
+              </div>
+            )}
           </div>
 
           {/* Stock o puntos de canal */}
