@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.431.0 — La alerta se abre y enseña QUIÉNES son (Eduardo)
+
+La campana decía *"8 en margen negativo · peor −310% (ROP-0266-DOR)"* y ahí se
+acababa. Faltaba la pregunta obvia: **¿cuáles son las otras siete?** Ahora las
+dos alertas de costo se **despliegan en el sitio** con los SKUs de hoy, y cada
+uno lleva a su producto en Omnicanal.
+
+**SIN TABLA, A PROPÓSITO.** Se decidió que esto muestra **el estado de HOY**, no
+el seguimiento. Guardar la lista obligaría a mantenerla al día y a contestar
+"¿esto sigue siendo cierto?" cada vez que alguien la abre — y una lista guardada
+que envejece es exactamente la trampa de los 964 pedidos fantasma: *una foto
+detenida contesta con seguridad lo que ya no sabe*. Preguntando en vivo, la
+respuesta no puede quedar vieja. Se ve funcionando: una alerta del 4-sep abierta
+hoy dice **"Ya no queda ninguna. La alerta es de una corrida anterior."**
+
+**LOS CENSOS SE HICIERON PÚBLICOS EN VEZ DE DUPLICARSE.** `_censo_margen` pasa a
+`censo_margen()`, y el ranking que vivía dentro de `_revisar_top_sin_costo_
+revisado` sale a `censo_top_sin_costo()`. Los endpoints y la alarma llaman a las
+MISMAS funciones: si el aviso de Slack dice 8, la pantalla enseña esas 8. Con dos
+consultas separadas tarde o temprano se contradicen, y quien las lee deja de
+creerle a las dos — es la misma razón por la que el ranking ya salía de
+`_SQL_MARGEN_REAL_TOP` y no de un SQL propio.
+
+`GET /api/alertas/margen-negativo` · `GET /api/alertas/costo-sin-validar`, las
+dos en `operador`: **el KAM es quien las atiende**, y un margen negativo que solo
+puede ver un admin es un aviso que nadie va a resolver.
+
+**EN LA PANTALLA**
+
+- Un clic en la alerta la abre; el resto de avisos siguen llevando directo al
+  producto, porque no tienen lista que abrir.
+- **"Ver las 21 en Omnicanal"** manda a todas de un golpe — el filtro de esa
+  pestaña acepta la lista separada por comas. Es la acción principal; la lista de
+  abajo es para atacar una en concreto.
+- El **costo dudoso** se marca aparte (`costo 6.7×`) porque pide lo CONTRARIO:
+  ahí se revisa el costeo, no se baja la publicación.
+- El pie lleva el universo: *"evaluadas 17 de 1,140 publicaciones comprables"*.
+  Sin eso, "11 en negativo" se lee como si fueran 11 de 1,140.
+
+Verificado en el sandbox con los dos estados —lista llena y "ya no queda
+ninguna"— y los censos corridos contra producción en solo lectura: 11 en margen
+negativo (peor `TEC-0384-PLA`, −620%, costo 6.7×) y 2 de los 20 más vendidos sin
+costo verificado.
+
 ### v0.430.0 — La campana deja de ser un feed y pasa a ser una señal (Eduardo)
 
 Primer paso hacia el panel de alertas por rol. La campana **solo muestra

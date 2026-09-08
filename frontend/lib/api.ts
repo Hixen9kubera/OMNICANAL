@@ -1483,3 +1483,48 @@ export function movimientosInventario(
     signal,
   );
 }
+
+// ── Detalle de las alertas de costo ──────────────────────────────────
+// Se piden AL ABRIR la alerta, no al pintar la campana: los dos censos
+// recorren las publicaciones comprables y el top de ventas, así que cuestan.
+export interface AlertaMargenItem {
+  sku: string;
+  canal: string;
+  tienda: string | null;
+  titulo: string | null;
+  margen_pct: number;
+  precio: number;
+  costo: number;
+  dudoso: boolean;
+  veces_precio: number | null;
+}
+export interface AlertaMargenResp {
+  items: AlertaMargenItem[];
+  total: number;
+  perdida_real: number;
+  costo_dudoso: number;
+  evaluadas: number;
+  universo: number;
+  skus: string[];
+}
+export interface AlertaCostoItem {
+  sku: string;
+  rank: number;
+  unidades: number;
+  donde: string;
+  motivo: string;
+}
+export interface AlertaCostoResp {
+  items: AlertaCostoItem[];
+  total: number;
+  top_total: number;
+  skus: string[];
+}
+
+export function alertaMargenNegativo(signal?: AbortSignal): Promise<AlertaMargenResp> {
+  return getJSON<AlertaMargenResp>("/api/alertas/margen-negativo", signal);
+}
+
+export function alertaCostoSinValidar(signal?: AbortSignal): Promise<AlertaCostoResp> {
+  return getJSON<AlertaCostoResp>("/api/alertas/costo-sin-validar", signal);
+}

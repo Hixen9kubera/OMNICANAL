@@ -795,7 +795,7 @@ _NO_EVAL = {
 }
 
 
-def _censo_margen() -> dict[str, Any] | None:
+def censo_margen() -> dict[str, Any] | None:
     """
     Recorre lo COMPRABLE hoy en los cinco canales de venta y parte el universo
     en dos: lo evaluable (con su margen) y lo que no, con el motivo.
@@ -907,7 +907,7 @@ def _revisar_margen_negativo() -> None:
     tipo = "margen_negativo"
     if not _toca_hoy(tipo, settings.alertas_costos_hora_utc):
         return
-    censo = _censo_margen()
+    censo = censo_margen()
     if censo is None:
         return
     _sellar_corrida(tipo)
@@ -983,34 +983,20 @@ _TOP_DIAS = 30
 _TOP_LIMITE = 10
 
 
-def _revisar_top_sin_costo_revisado() -> None:
+def censo_top_sin_costo() -> dict[str, dict[str, Any]] | None:
     """
-    Un SKU entra al top 10 de más vendidos y su costo NO está verificado.
+    ``{ sku: {rn, uds, donde, pestanas, revisado, movida} }`` — los más
+    vendidos y si su costo está verificado. `None` si kubera no contesta.
 
-    LA LÓGICA: un costo dudoso en un producto que vende 5 piezas es ruido; en
-    uno que vende 600 decide dinero. Esta alarma no mide el costo — mide dónde
-    IMPORTA que esté mal.
-
-    EL RANKING NO SE REESCRIBE. Se corre `_SQL_MARGEN_REAL_TOP` de
-    `routers/fulfillment.py`, el mismo que alimenta la pantalla de Márgenes
-    reales, y se lee su `rn_g`: el ranking por SKU SUMANDO las cuentas. Ese
-    `rn_g` existe porque fundir dos top-10 por cuenta ya causó un incidente —un
-    SKU con 200 piezas en cada cuenta no entra a ningún top-10 por separado y
-    aun así es de los más vendidos—. Escribir un segundo top 10 aquí repetiría
-    exactamente ese error.
-
-    Ojo con `t.uds`: la consulta devuelve una fila POR CUENTA, así que las
-    unidades hay que SUMARLAS por SKU. Quedarse con la primera fila da el número
-    de una sola cuenta (MUE-0163-TEL sale con 17 uds en una y es el #1 del
-    catálogo).
+    PÚBLICA porque la pinta la pantalla Y la usa la alarma: si cada una armara
+    su propio ranking, el aviso diría "#6" y el panel mostraría otro. Es la
+    misma razón por la que el ranking sale de `_SQL_MARGEN_REAL_TOP` y no de una
+    consulta propia. La alarma decide CUÁNDO hablar; esto decide QUÉ hay.
     """
-    tipo = "top_costo_sin_revisar"
-    if not _toca_hoy(tipo, settings.alertas_costos_hora_utc):
-        return
     from routers.fulfillment import _SQL_MARGEN_REAL_TOP
     from services import supabase_db as sdb
     if not sdb.disponible():
-        return
+        return None
     # LAS TRES PESTAÑAS, NO SOLO "Todas" (Eduardo, 21-ago-2026). El filtro de
     # estado se aplica ANTES de numerar —pedir "activas" da el top 10 DE LAS
     # ACTIVAS—, así que cada pestaña tiene su propio ranking y un SKU puede ser
@@ -1046,6 +1032,36 @@ def _revisar_top_sin_costo_revisado() -> None:
             # y en "Activas").
             if d["donde"] == etiqueta:
                 d["uds"] += int(f.get("uds") or 0)
+    return top
+
+
+def _revisar_top_sin_costo_revisado() -> None:
+    """
+    Un SKU entra al top 10 de más vendidos y su costo NO está verificado.
+
+    LA LÓGICA: un costo dudoso en un producto que vende 5 piezas es ruido; en
+    uno que vende 600 decide dinero. Esta alarma no mide el costo — mide dónde
+    IMPORTA que esté mal.
+
+    EL RANKING NO SE REESCRIBE. Se corre `_SQL_MARGEN_REAL_TOP` de
+    `routers/fulfillment.py`, el mismo que alimenta la pantalla de Márgenes
+    reales, y se lee su `rn_g`: el ranking por SKU SUMANDO las cuentas. Ese
+    `rn_g` existe porque fundir dos top-10 por cuenta ya causó un incidente —un
+    SKU con 200 piezas en cada cuenta no entra a ningún top-10 por separado y
+    aun así es de los más vendidos—. Escribir un segundo top 10 aquí repetiría
+    exactamente ese error.
+
+    Ojo con `t.uds`: la consulta devuelve una fila POR CUENTA, así que las
+    unidades hay que SUMARLAS por SKU. Quedarse con la primera fila da el número
+    de una sola cuenta (MUE-0163-TEL sale con 17 uds en una y es el #1 del
+    catálogo).
+    """
+    tipo = "top_costo_sin_revisar"
+    if not _toca_hoy(tipo, settings.alertas_costos_hora_utc):
+        return
+    top = censo_top_sin_costo()
+    if top is None:
+        return
     _sellar_corrida(tipo)
     if not top:
         return   # sin ventas en la ventana: no hay ranking del que hablar

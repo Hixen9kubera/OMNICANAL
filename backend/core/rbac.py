@@ -138,6 +138,11 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # criterio que /api/fulfillment. Es la pestaña entera y el cajón de detalle
     # del producto; caía a admin por omisión, o sea rota para los nueve KAM.
     ("GET", "/api/publicaciones", "operador"),
+    # El detalle de las alertas de costo. `operador` y no `lectura` por el mismo
+    # criterio de arriba: devuelven precio, costo y margen. Y `operador` y no
+    # `admin` porque **el KAM es quien las atiende** — un margen negativo que
+    # solo puede ver un admin es un aviso que nadie va a resolver.
+    ("GET", "/api/alertas", "operador"),
     # Análisis → Amazon FBA · el tablero y la subida del CSV de Seller Central.
     # Vive dentro de un submenú que el KAM ya tiene abierto.
     ("GET", "/api/fba", "operador"),
