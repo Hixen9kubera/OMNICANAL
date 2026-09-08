@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.433.0 — El padre dice cuál de sus variantes tiene el costo validado (Eduardo)
+
+La tarjeta de `ROP-0266` (perchero, 2 variantes) no mostraba VALIDADO aunque
+`ROP-0266-DOR` ya estaba firmado por Andrea. No era un bug de la marca: **la
+marca vive en el SKU que se costeó, y un packing list nunca trae al padre, trae
+a la variante**. El listado solo preguntaba por los SKUs de las tarjetas.
+
+Ahora `GET /api/productos` consulta la marca también para los SKUs de las
+variantes, en el mismo lote (no cuesta un viaje más). Cada variante lleva su
+`revisado_at` / `revisado_por` / `revision_movida`, y el padre —cuando NO tiene
+marca propia— recibe `revision_variantes = {validadas, total, skus}`.
+
+En pantalla:
+
+- **Tarjeta del padre**: chip `VALIDADO PARCIAL 1/2` (con un filo ámbar) si
+  faltan variantes, o `VALIDADO · VARIANTES 2` si están todas. El tooltip nombra
+  los SKUs validados. El padre **nunca hereda** el VALIDADO a secas: una
+  variante validada no valida a las demás.
+- **Recuadro de variantes** (`VariantesTabla`, compartido por Productos y
+  Omnicanal): el chip VALIDADO aparece junto al SKU de la variante que lo tiene,
+  con la misma firma y fecha que en cualquier otra vista.
+
+Verificado en el sandbox con `ROP-0266-DOR` marcado y `ROP-0266-NEG` sin marca:
+la API devuelve `revision_variantes={validadas:1,total:2,skus:[ROP-0266-DOR]}` y
+la variante trae su firma.
+
 ### v0.432.0 — El enlace de la alerta llegaba a Omnicanal y no filtraba nada (Eduardo)
 
 Las alertas enlazaban a `/omnicanal?skus=A,B,C` desde la v0.431.0, **y la página

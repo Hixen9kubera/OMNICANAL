@@ -25,6 +25,17 @@ export interface VarianteResumen {
   contenedor: string | null; // nº de contenedor (costos_validados)
   // Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
   canales?: CanalResumen[];
+  // Marca de validación del costeo (0032) de ESTA variante; ausente = pendiente.
+  revisado_at?: string | null;
+  revisado_por?: string | null;
+  revision_movida?: boolean;
+}
+
+/** Padre SIN marca propia: cuántas de sus variantes tienen COSTO VALIDADO y cuáles. */
+export interface RevisionVariantes {
+  validadas: number;
+  total: number;
+  skus: string[];
 }
 
 export interface Producto {
@@ -68,6 +79,8 @@ export interface Producto {
   revisado_at?: string | null;
   revisado_por?: string | null;
   revision_movida?: boolean;
+  /* Solo padres sin marca propia con al menos una variante validada. */
+  revision_variantes?: RevisionVariantes | null;
 }
 
 export interface Paginacion {

@@ -3,6 +3,7 @@
 import { ChevronDown, ChevronRight, Layers } from "lucide-react";
 import type { Producto, VarianteResumen } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
+import ChipRevision from "./ChipRevision";
 import { TituloMoneda } from "./Moneda";
 
 /**
@@ -98,7 +99,15 @@ export function VariantesTabla({
           <tbody>
             {variantes.map((v) => (
               <tr key={v.sku} className="border-t border-slate-100">
-                <td className="py-1.5 pr-3 font-mono text-slate-500">{v.sku}</td>
+                <td className="py-1.5 pr-3 font-mono text-slate-500">
+                  <span className="inline-flex items-center gap-1.5">
+                    {v.sku}
+                    {/* La marca es de ESTA variante: aquí se ve cuál es la validada. */}
+                    <ChipRevision revisadoAt={v.revisado_at}
+                                  revisadoPor={v.revisado_por}
+                                  movida={v.revision_movida} />
+                  </span>
+                </td>
                 <td className="py-1.5 pr-3 font-medium text-slate-700">{v.nombre ?? "—"}</td>
                 <td
                   className={

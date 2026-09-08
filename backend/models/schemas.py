@@ -41,6 +41,20 @@ class VarianteResumen(BaseModel):
     contenedor: str | None = None  # nº de contenedor (costos_validados)
     # Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
     canales: list[CanalResumen] = []
+    # Marca de validación del costeo (0032) de ESTA variante. Igual que en el
+    # padre: solo viaja cuando existe.
+    revisado_at: str | None = None
+    revisado_por: str | None = None
+    revision_movida: bool = False
+
+
+class RevisionVariantes(BaseModel):
+    """Resumen para un PADRE sin marca propia: cuántas de sus variantes tienen
+    COSTO VALIDADO y cuáles. Con esto la tarjeta dice 'VALIDADO PARCIAL 1/2'
+    y nombra la variante, en vez de callar como si nadie hubiera costeado."""
+    validadas: int
+    total: int
+    skus: list[str] = Field(default_factory=list)
 
 
 class Producto(BaseModel):
@@ -96,6 +110,8 @@ class Producto(BaseModel):
     revisado_at: str | None = None
     revisado_por: str | None = None
     revision_movida: bool = False
+    # Solo padres SIN marca propia con al menos una variante validada.
+    revision_variantes: RevisionVariantes | None = None
 
     # Tipo de producto en WooCommerce: simple | variable (padre) | variation
     tipo: str | None = None

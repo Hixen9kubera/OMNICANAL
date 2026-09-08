@@ -6,7 +6,7 @@ import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 import { ChipMoneda } from "./Moneda";
-import ChipRevision from "./ChipRevision";
+import ChipRevision, { ChipRevisionVariantes } from "./ChipRevision";
 
 interface Props {
   producto: Producto;
@@ -140,6 +140,13 @@ export default function ProductCard({
           <ChipRevision revisadoAt={producto.revisado_at}
                         revisadoPor={producto.revisado_por}
                         movida={producto.revision_movida} />
+          {/* Padre sin marca propia pero con variantes validadas: se dice
+              cuántas, y el recuadro de variantes señala cuáles. */}
+          {!producto.revisado_at && producto.revision_variantes && (
+            <ChipRevisionVariantes validadas={producto.revision_variantes.validadas}
+                                   total={producto.revision_variantes.total}
+                                   skus={producto.revision_variantes.skus} />
+          )}
         </div>
 
         {/* FULL / FBA */}

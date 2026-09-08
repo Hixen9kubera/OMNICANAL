@@ -40,6 +40,43 @@ const fecha = (iso: string) => {
   }
 };
 
+/**
+ * ChipRevisionVariantes — el chip de un PADRE cuyo costo validado vive en sus
+ * variantes (Eduardo, 7-sep-2026).
+ *
+ * Un packing list nunca trae al padre, trae a la variante: ROP-0266-DOR quedó
+ * validado y la tarjeta de ROP-0266 seguía muda. Pero el padre NO hereda el
+ * VALIDADO a secas —una variante validada no valida a las otras—, así que el
+ * chip dice cuántas van ("VALIDADO PARCIAL 1/2") o que están todas ("VALIDADO
+ * · VARIANTES"), y el tooltip nombra cuáles.
+ */
+export function ChipRevisionVariantes({
+  validadas, total, skus,
+}: { validadas: number; total: number; skus: string[] }) {
+  if (!validadas) return null;
+  const todas = validadas >= total;
+  const lista = skus.join(", ");
+  const ayuda = todas
+    ? `Las ${total} variantes tienen el costo validado contra el packing list: ${lista}. `
+      + `El padre no lleva costo propio; el validado es el de cada variante.`
+    : `${validadas} de ${total} variantes con costo validado: ${lista}. `
+      + `Las demás siguen sin verificar — la marca es por variante, no del padre.`;
+  const clase = todas
+    ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
+    : "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 border-l-2 border-amber-400";
+  return (
+    <span
+      title={ayuda}
+      className={`inline-flex shrink-0 items-center gap-1 rounded px-1 text-[9px] font-bold ${clase}`}
+    >
+      {todas ? "VALIDADO · VARIANTES" : "VALIDADO PARCIAL"}
+      <span className="font-normal tabular-nums opacity-70">
+        {todas ? total : `${validadas}/${total}`}
+      </span>
+    </span>
+  );
+}
+
 export default function ChipRevision({
   revisadoAt, revisadoPor, movida = false, variante = "chip",
 }: Props) {

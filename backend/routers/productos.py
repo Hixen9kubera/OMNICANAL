@@ -314,17 +314,45 @@ async def listar_productos(
     # para cubrir TODOS los canales por igual — la tarjeta es la misma en todos.
     # Best-effort: si costeo no responde, las tarjetas salen sin la etiqueta en
     # vez de romper el listado, que es la vista principal del panel.
+    #
+    # LAS VARIANTES TAMBIÉN (Eduardo, 7-sep-2026). La marca vive en el SKU que
+    # se costeó, y un packing list nunca trae al padre: trae a la variante.
+    # ROP-0266-DOR quedó validado por Andrea y la tarjeta del padre ROP-0266
+    # seguía sin nada, como si nadie lo hubiera mirado. Se consultan los SKUs de
+    # las variantes en el MISMO lote, cada variante recibe su marca, y el padre
+    # —cuando no tiene la suya— recibe un resumen: cuántas de sus variantes
+    # están validadas y cuáles, para que la tarjeta pueda decir "VALIDADO
+    # PARCIAL 1/2" y nombrarla. El padre nunca hereda la marca a secas: una
+    # variante validada no valida a las demás.
     try:
         skus_pag = [it["sku"] for it in items_raw if it.get("sku")]
+        skus_pag += [v["sku"] for it in items_raw
+                     for v in (it.get("variantes") or []) if v.get("sku")]
         if skus_pag:
             marcas = await asyncio.to_thread(costing_read.revisados_por_sku, skus_pag)
+
+            def _marcar(destino: dict[str, Any], m: dict[str, Any]) -> None:
+                destino["revisado_at"] = (m["revisado_at"].isoformat()
+                                          if m["revisado_at"] else None)
+                destino["revisado_por"] = m["revisado_por"]
+                destino["revision_movida"] = m["movida"]
+
             for it in items_raw:
                 m = marcas.get(it.get("sku") or "")
-                if not m:
-                    continue
-                it["revisado_at"] = m["revisado_at"].isoformat() if m["revisado_at"] else None
-                it["revisado_por"] = m["revisado_por"]
-                it["revision_movida"] = m["movida"]
+                if m:
+                    _marcar(it, m)
+                variantes = it.get("variantes") or []
+                validadas = []
+                for v in variantes:
+                    mv = marcas.get(v.get("sku") or "")
+                    if mv:
+                        _marcar(v, mv)
+                        validadas.append(v["sku"])
+                if validadas and not m:
+                    it["revision_variantes"] = {
+                        "validadas": len(validadas), "total": len(variantes),
+                        "skus": validadas,
+                    }
     except Exception as exc:  # noqa: BLE001
         log.warning("marca de revisión no disponible (el listado sigue): %s", exc)
 
