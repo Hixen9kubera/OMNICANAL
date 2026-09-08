@@ -1001,6 +1001,85 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.451.0 — Piezas = free to use, y las cajas pasan a ser un COTEJO de tres
+
+Cuatro peticiones de Brandon del 8-sep. Una ya estaba hecha, dos destaparon
+defectos reales y la cuarta es un hueco que hay que nombrar.
+
+**1 · PIEZAS = free to use, on hand es trackeo.** La columna PIEZAS ya pintaba
+`free_qty`: eso no cambia. Lo que estaba mal es que **CAJAS salía del `on hand`**,
+o sea que las dos celdas de una misma fila usaban bases distintas. Se veía en
+`MUE-0135-NEG` (on hand 1, libre 0, factor 3): la tabla decía **Piezas 0 y Cajas
+0.33**, y ni cero ni un tercio de caja describían nada. Ahora las dos salen de lo
+libre, y el on hand aparece debajo —«1 on hand»— **solo cuando difiere**, que es
+lo que lo hace informativo en vez de ruido. El mismo desfase existía en el cajón:
+su «Jerarquía de empaque» rotulaba `Piezas` con el on hand mientras la tabla
+mostraba lo libre, así que las dos pantallas decían cosas distintas de la misma
+etiqueta. Ahora la cadena cierra: cajas × piezas/caja = las piezas que se ven.
+
+**2 · Stock por recibirse en el cajón — y el bug que destapó.** Se suma un bloque
+POR RECIBIRSE con las piezas prometidas, su equivalente en cajas y **cada
+documento abierto** con su OC y su edad. Al construirlo salió un defecto medido:
+`recepciones_pendientes_por_sku` no filtraba por tipo de documento, así que
+contaba como «por recibirse» **movimientos de SALIDA y traspasos internos**. En
+los SKUs piloto no era marginal sino total: `MUE-0135-NEG` y `TEC-0370-NEG`
+mostraban «3 recepciones · 3 piezas por recibirse» cuando lo que tenían era una
+entrega a cliente y dos traspasos internos — la misma pieza contada a lo largo de
+PICK → PACK → OUT. Su número correcto es **cero**, y ya lo dicen. A escala del
+catálogo: 12,547 movimientos pendientes, de los que solo 11,843 son entradas
+(704 de ruido, 5.6%).
+
+El bloque tiene prohibidas dos frases: «en camino» (son papeles que nadie validó)
+y cualquier fecha de llegada (en los 30 documentos abiertos la fecha programada ya
+pasó en el 100% de los casos). En su lugar marca los que llevan **más de 30 días
+sin validar**, que es lo que separa el papel vivo del abandonado. De paso se
+quitaron dos afirmaciones que estaban HARDCODEADAS —«ninguna está programada a
+futuro»—: son ciertas hoy, pero el día que entre una recepción futura la pantalla
+mentiría sin que nadie lo notara.
+
+**3 y 4 · Las cajas son TRES preguntas, no tres versiones de una.**
+
+| | Qué contesta | De dónde | Estado |
+|---|---|---|---|
+| **Bodega** | cuántas cajas contó almacén al recibir | — | **manda, y NO EXISTE** |
+| **Packing list** | cuántas embarcó el proveedor | `costing.costos_validados.cajas` | congelada, útil en 85.5% |
+| **Odoo** | cuántas llenarían las piezas libres de hoy | libres ÷ `units_per_master_box` | derivada |
+
+**El dato de almacén manda —y no existe en ningún sistema.** Se barrió el repo,
+los 16 esquemas de kubera, Odoo por XML-RPC y las 85 tablas de WordPress: en Odoo
+`product.packaging` tiene **0 registros**, hay **3** `stock.quant.package` en
+36,256 quants, y **0 de 1,264** recepciones validadas traen bultos. Es el tercer
+canal que falta, junto con la foto de bodega y el Excel de specs. Se pinta igual
+—vacío, en ámbar y rotulado «manda»— porque un hueco nombrado se puede exigir y
+una columna ausente no.
+
+**Las otras dos NO se restan.** La del packing list es el EMBARQUE y la de Odoo es
+el PISO de hoy: `TEC-0008-AMR` trae 200 cajas de packing list y 5 piezas físicas,
+y eso no es un descuadre — es que ya se vendieron. Por eso es un cotejo con tres
+números rotulados y no una resta con veredicto.
+
+La del packing list sale de `costing.costos_validados.cajas`, que **esta pestaña
+ya consultaba en su SELECT y tiraba a la basura**. Medido: viene de dos cargas
+masivas (21-may y 3-jun-2026) y todo lo creado después nace en NULL —incluidos 4
+de los 13 SKUs piloto, dados de alta el 4-sep—; llenas 15,343 de 15,849 (96.8%),
+pero 1,786 valen 0, así que útiles son 13,557 (**85.5%**).
+
+El número de cajas que calcula la pestaña **Costos** al validar (el modal de
+publicados en ML) **no se puede leer desde aquí**: vive solo en memoria con TTL de
+3 h, y al guardar persiste el archivo y los renglones en `costing.caja_compartida`
+pero **no el conteo de cajas**. Traerlo obligaría a bajar el xlsx de Drive por
+SKU, que no es una consulta de tabla.
+
+Esto **no contradice** la regla del 4-sep («las cajas y las piezas se toman de
+Odoo, jamás del packing list»): las piezas y las cajas del piso siguen saliendo de
+Odoo. El packing list entra únicamente como término de comparación, rotulado como
+embarque.
+
+Blindaje: `cotejo_cajas` viaja como campo OPCIONAL en el tipo del frontend. Back y
+front se despliegan por separado en Railway y durante el desfase el campo no
+viene; sin la guarda la pantalla se va en blanco, que es exactamente lo que pasó
+con `pendientes` el 6-sep.
+
 ### v0.450.0 — La vista de Lista sigue las mismas reglas que las tarjetas (Eduardo)
 
 La columna **Precio** de la vista de Lista seguía enseñando el precio de la
@@ -1038,6 +1117,7 @@ la gaveta de movimientos leen lo mismo. Si la celda dijera 43 y la gaveta listar
 
 Es la premisa que el archivo ya declaraba en su encabezado —«deja fuera lo
 automático»— y que estos renglones se saltaban justo por venir firmados.
+
 
 ### v0.448.0 — «No hay competencia» y «no nos dejaron ver» dejan de ser lo mismo
 

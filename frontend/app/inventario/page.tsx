@@ -599,8 +599,14 @@ function Tabla({
             <th className="w-14 px-3 py-3" />
             <th className="px-3 py-3 text-left font-bold">SKU · producto</th>
             <th className="px-3 py-3 text-left font-bold">Empaque</th>
-            <th className="px-3 py-3 text-right font-bold">Cajas</th>
-            <th className="px-3 py-3 text-right font-bold">Piezas</th>
+            <th className="px-3 py-3 text-right font-bold"
+                title="BOD = las que contó almacén (mandan, canal no construido). PL = las del packing list del proveedor. «En piso» = derivada de las piezas libres de Odoo.">
+              Cajas
+            </th>
+            <th className="px-3 py-3 text-right font-bold"
+                title="Free to use: lo vendible. El on hand se muestra debajo, y solo cuando difiere.">
+              Piezas
+            </th>
             <th className="px-3 py-3 text-right font-bold">Reserv.</th>
             <th className="px-3 py-3 text-left font-bold">Ubicación</th>
             <th className="px-3 py-3 text-left font-bold">Woo ↔ físico</th>
@@ -721,8 +727,31 @@ function Fila({
         </div>
       </td>
 
+      {/* Tres cajas, tres preguntas: la que MANDA es la de bodega y no existe.
+          Se pinta igual —en ámbar y vacía— porque un hueco rotulado se puede
+          exigir y una columna ausente no. */}
       <td className="px-3 py-2.5 text-right">
-        <div className="tabular-nums text-slate-700">{numCajas(f.cajas)}</div>
+        <div className="flex items-baseline justify-end gap-1.5"
+             title="Cajas que contó ALMACÉN al recibir. Mandan sobre las del packing list. Hoy no existe el canal para recibir ese dato.">
+          <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600">bod</span>
+          <span className="tabular-nums font-bold text-amber-600">—</span>
+        </div>
+        <div className="flex items-baseline justify-end gap-1.5"
+             title={f.cotejo_cajas?.packing_list === null
+               ? "Sin cajas en costos_validados para este SKU (la columna solo se llenó en las cargas de mayo y junio)."
+               : `${numCajas(f.cotejo_cajas?.packing_list)} cajas según el packing list del proveedor — lo que EMBARCÓ, no lo que hay hoy en piso.`}>
+          <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">pl</span>
+          <span className={`tabular-nums ${
+            f.cotejo_cajas?.packing_list === null ? "text-slate-300" : "font-bold text-slate-700"}`}>
+            {numCajas(f.cotejo_cajas?.packing_list)}
+          </span>
+        </div>
+        {f.cajas !== null && (
+          <div className="text-[10px] text-slate-400"
+               title="Cajas que llenarían las piezas LIBRES de hoy en Odoo. Es una derivación (libres ÷ piezas por caja), no un conteo.">
+            {numCajas(f.cajas)} en piso
+          </div>
+        )}
         {!!f.cajas_por_llegar && (
           <div
             className="text-[10px] text-amber-700"
@@ -738,6 +767,14 @@ function Fila({
           piezas === null ? "text-slate-300" : piezas > 0 ? "text-emerald-700" : "text-rose-600"}`}>
           {num(piezas)}
         </span>
+        {/* ON HAND es métrica de trackeo (Brandon, 8-sep): se ve, pero solo
+            cuando difiere de lo libre — si no, sería ruido repetido. */}
+        {f.stock_fisico !== null && f.stock_fisico !== piezas && (
+          <div className="text-[10px] text-slate-400"
+               title={`On hand: ${num(f.stock_fisico)} piezas están físicamente en bodega, pero ${num(f.reservado)} están comprometidas en pedidos. Lo vendible es lo libre.`}>
+            {num(f.stock_fisico)} on hand
+          </div>
+        )}
         {!!f.recepcion_piezas && (
           <div
             className="text-[10px] font-semibold text-amber-700"
@@ -748,7 +785,7 @@ function Fila({
                 : `el documento de recepción ${f.recepcion_ref ?? ""}, abierto en Odoo`}` +
               ` desde ${f.recepcion_desde.slice(0, 10)} y sin validar. ` +
               `No son ubicaciones ni lugares — por eso la columna Ubicación dice ` +
-              `«no recibido». Ninguna está programada a futuro.`
+              `«no recibido».`
             }
           >
             +{num(f.recepcion_piezas)} sin recibir
@@ -986,6 +1023,8 @@ function Cajon({
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
           <Jerarquia fila={fila} />
+          <PorRecibirse fila={fila} movs={movs} cargando={cargando} />
+          <CotejoCajasBloque fila={fila} />
           <DondeEsta fila={fila} />
           <ValidacionBodega fila={fila} />
           <Comercial fila={fila} />
@@ -1022,21 +1061,93 @@ function Jerarquia({ fila }: { fila: FilaInventario }) {
             : fila.contenedor_fuente === "costos_validados" ? "según costos_validados"
               : undefined)}
         {signo("=")}
-        {paso("Cajas", numCajas(fila.cajas), "en bodega")}
+        {paso("Cajas", numCajas(fila.cajas), "libres en piso")}
         {signo("×")}
         {paso("Piezas / caja", fila.piezas_por_caja === null ? "—" : String(fila.piezas_por_caja),
           "caja master de Odoo")}
         {signo("=")}
-        {paso("Piezas", num(fila.stock_fisico), "físico en Odoo", true)}
+        {/* La cadena CIERRA: cajas sale de dividir estas mismas piezas libres
+            entre el factor. Antes este paso enseñaba el on hand y las cajas
+            salían del on hand también, pero la tabla mostraba lo libre — el
+            cajon y la tabla decían cosas distintas de la misma etiqueta. */}
+        {paso("Piezas", num(fila.stock_odoo), "libres · free to use", true)}
       </div>
-      {!!fila.cajas_por_llegar && (
+      {fila.stock_fisico !== null && fila.stock_fisico !== fila.stock_odoo && (
         <p className="mt-1.5 text-[11px] text-slate-400">
-          Por llegar: {num(fila.recepcion_piezas)} piezas ≈ {numCajas(fila.cajas_por_llegar)} cajas.
+          On hand {num(fila.stock_fisico)} piezas — {num(fila.reservado)} comprometidas en
+          pedidos. El on hand es métrica de trackeo; lo vendible es lo libre.
         </p>
       )}
       {fila.embarque && (
         <p className="mt-1 text-[11px] text-slate-400">Embarque {fila.embarque}.</p>
       )}
+    </section>
+  );
+}
+
+/**
+ * EL COTEJO DE CAJAS — tres preguntas distintas, no tres versiones de una.
+ *
+ * Brandon, 8-sep: «necesitamos el dato que nos entrega almacén para realizar la
+ * comparativa; tiene más importancia lo que nos da almacén en cuestión de cajas».
+ * El dato de almacén MANDA — y hoy no existe en ningún sistema. Se barrió el
+ * repo, los 16 esquemas de kubera, Odoo por XML-RPC y las 85 tablas de
+ * WordPress: en Odoo `product.packaging` tiene CERO registros, hay 3
+ * `stock.quant.package` en 36,256 quants, y 0 de 1,264 recepciones validadas
+ * traen bultos. Se pinta igual, vacío y en ámbar, porque un hueco rotulado se
+ * puede exigir y una columna ausente no.
+ *
+ * Y las otras dos NO SE RESTAN: la del packing list es el EMBARQUE y la de Odoo
+ * es el PISO de hoy. TEC-0008-AMR trae 200 cajas de packing list y 5 piezas
+ * físicas: no es un descuadre, es que ya se vendieron.
+ */
+function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
+  const k = fila.cotejo_cajas;
+  if (!k) return null;   // backend viejo: no se pinta, no se rompe.
+  const tarjeta = (
+    titulo: string, valor: string, sub: string, tono: string, manda?: boolean,
+  ) => (
+    <div className={`flex-1 rounded-xl border p-3 ${tono}`}>
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-[0.06em] opacity-70">
+          {titulo}
+        </span>
+        {manda && (
+          <span className="rounded bg-amber-200/70 px-1 text-[9px] font-bold uppercase text-amber-900">
+            manda
+          </span>
+        )}
+      </div>
+      <div className="mt-1 text-xl font-extrabold tabular-nums">{valor}</div>
+      <div className="mt-0.5 text-[11px] leading-tight opacity-70">{sub}</div>
+    </div>
+  );
+  return (
+    <section>
+      <h3 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+        Cotejo de cajas
+      </h3>
+      <div className="mt-2 flex gap-1.5">
+        {tarjeta("Bodega", "—", "canal no construido: almacén todavía no tiene por dónde mandarlo",
+          "border-amber-200 bg-amber-50 text-amber-800", true)}
+        {tarjeta("Packing list", numCajas(k.packing_list),
+          k.packing_list === null
+            ? "sin dato en costos_validados"
+            : `lo que el proveedor EMBARCÓ${k.piezas_por_caja_pl ? ` · ${k.piezas_por_caja_pl} pzs/caja` : ""}`,
+          "border-slate-200 bg-white text-slate-900")}
+        {tarjeta("Odoo", numCajas(k.odoo),
+          k.odoo === null ? "sin piezas libres que llenen caja" : "derivada de las piezas libres",
+          "border-slate-200 bg-white text-slate-900")}
+      </div>
+      <p className="mt-1.5 text-[11px] text-slate-400">
+        {k.estado === "cotejable"
+          ? "El packing list es el EMBARQUE y Odoo es el PISO de hoy: no se restan. La diferencia normal es lo que ya se vendió."
+          : k.estado === "solo_pl"
+            ? "Solo hay la del embarque: no queda piso libre que contar."
+            : k.estado === "solo_odoo"
+              ? "Este SKU no trae cajas en costos_validados — la columna solo se llenó en las cargas de mayo y junio."
+              : "Ni packing list ni piso libre: no hay nada que cotejar todavía."}
+      </p>
     </section>
   );
 }
@@ -1115,8 +1226,7 @@ function DondeEsta({ fila }: { fila: FilaInventario }) {
             {fila.recepcion_dias !== null && `, el más viejo desde hace ${fila.recepcion_dias} días`}
             {fila.recepcion_ref && ` (${fila.recepcion_ref})`}, y nadie los ha
             validado. Por eso este SKU no tiene ubicación: no son lugares, son
-            papeles pendientes. Ninguno está programado a futuro, así que tampoco
-            es mercancía en camino.
+            papeles pendientes.
           </p>
         )}
       </div>
@@ -1253,6 +1363,108 @@ function Comercial({ fila }: { fila: FilaInventario }) {
             </div>
           );
         })}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * POR RECIBIRSE — cuántas piezas tiene prometidas el SKU y en qué documentos.
+ *
+ * Pedido de Brandon el 8-sep: «cuando abro un sku me muestra la cantidad de
+ * stock que está por recibirse».
+ *
+ * DOS COSAS QUE ESTE BLOQUE TIENE PROHIBIDO DECIR:
+ *
+ * 1. «En camino». Son documentos que Odoo tiene ABIERTOS y nadie validó; no hay
+ *    ninguna señal de que la mercancía se haya movido. Las 30 recepciones
+ *    huérfanas de mayo-junio siguen vivas y envenenan `incoming_qty` de 2,837
+ *    SKUs — el 30% de los padres.
+ * 2. Una fecha de llegada. Odoo solo da `scheduled_date` y en los 30 documentos
+ *    abiertos esa fecha ya pasó en el 100% de los casos. Por eso aquí se pinta
+ *    la EDAD del papel y no una promesa.
+ *
+ * El corte de 30 días separa el papel vivo del abandonado. No es adorno: un
+ * documento de 118 días y uno de ayer describen situaciones opuestas y la suma
+ * los aplana.
+ */
+function PorRecibirse({
+  fila, movs, cargando,
+}: {
+  fila: FilaInventario;
+  movs: MovimientosResp | null;
+  cargando: boolean;
+}) {
+  const docs = movs?.pendientes ?? [];
+  const piezas = docs.reduce((a, d) => a + d.piezas, 0);
+
+  // Sin recepciones abiertas no se pinta nada: un bloque en cero es ruido.
+  if (!cargando && !docs.length && !fila.recepcion_piezas) return null;
+
+  const viejos = docs.filter((d) => (d.creado_dias ?? 0) > 30);
+  return (
+    <section>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+          <FileClock className="h-3.5 w-3.5" />
+          Por recibirse
+        </h3>
+        {!cargando && (
+          <span className="text-[11px] text-amber-700">
+            {docs.length} {docs.length === 1 ? "documento abierto" : "documentos abiertos"}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-extrabold tabular-nums text-amber-800">
+            {cargando ? "…" : num(piezas)}
+          </span>
+          <span className="text-xs font-semibold text-amber-800">piezas prometidas</span>
+          {!cargando && !!fila.cajas_por_llegar && (
+            <span className="text-[11px] text-amber-700">
+              ≈ {numCajas(fila.cajas_por_llegar)} cajas
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 text-[11px] text-amber-800/80">
+          Ninguna ha entrado a bodega: son documentos abiertos en Odoo, sin validar.
+          No es mercancía en camino — no hay señal de que se haya movido.
+        </p>
+
+        {!cargando && docs.length > 0 && (
+          <div className="mt-2 space-y-1 border-t border-amber-200 pt-2">
+            {docs.map((d) => (
+              <div key={d.documento}
+                   className="flex flex-wrap items-baseline gap-x-2 text-[11px] text-amber-900">
+                <span className="font-mono font-bold">{d.documento}</span>
+                <span className="font-bold tabular-nums">{num(d.piezas)} pzas</span>
+                <span className="opacity-70">
+                  {d.orden_compra && `OC ${d.orden_compra} · `}
+                  {d.creado_dias !== null && `${d.creado_dias} d de creado`}
+                </span>
+                {(d.creado_dias ?? 0) > 30 && (
+                  <span className="rounded bg-amber-200/80 px-1.5 py-0.5 text-[10px] font-bold">
+                    sin validar hace {d.creado_dias} d
+                  </span>
+                )}
+                {d.sku_en_parcial && (
+                  <span className="rounded bg-white/70 px-1.5 py-0.5 text-[10px] font-bold">
+                    entró en la parcial: {num(d.sku_recibido)} de {num(d.sku_pedido)}
+                  </span>
+                )}
+              </div>
+            ))}
+            {viejos.length > 0 && (
+              <p className="pt-1 text-[11px] text-amber-800/80">
+                {viejos.length === docs.length
+                  ? "Todos llevan más de 30 días sin validar: papel abandonado, no entrega próxima."
+                  : `${viejos.length} de ${docs.length} llevan más de 30 días sin validar.`}
+              </p>
+            )}
+          </div>
+        )}
       </div>
     </section>
   );

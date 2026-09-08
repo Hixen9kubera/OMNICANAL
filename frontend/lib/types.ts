@@ -1719,6 +1719,29 @@ export interface CanalDelSku {
   fulfillment: boolean;
 }
 
+/** El cotejo de cajas: tres preguntas distintas, no tres versiones de una.
+ *
+ *  `bodega` es la que MANDA por decisión de Brandon (8-sep) y es siempre null:
+ *  ningún sistema la tiene. Se barrió el repo, los 16 esquemas de kubera, Odoo
+ *  por XML-RPC y las 85 tablas de WordPress.
+ *
+ *  `packing_list` es lo que el proveedor EMBARCÓ y `odoo` es el PISO de hoy, así
+ *  que no se restan: TEC-0008-AMR trae 200 cajas de packing list y 5 piezas
+ *  físicas, y eso no es un descuadre — es que ya se vendieron. */
+export interface CotejoCajas {
+  /** Siempre null hoy: el canal para recibirla no existe. */
+  bodega: number | null;
+  /** costing.costos_validados.cajas — congelado de mayo/junio, útil en 85.5%. */
+  packing_list: number | null;
+  piezas_por_caja_pl: number | null;
+  /** Derivada de las piezas libres de Odoo. */
+  odoo: number | null;
+  piezas_por_caja_odoo: number | null;
+  manda: "bodega";
+  estado: "cotejable" | "solo_pl" | "solo_odoo" | "sin_dato";
+  nota: string;
+}
+
 export interface FilaInventario {
   sku: string;
   existe_en_woo: boolean;
@@ -1750,11 +1773,18 @@ export interface FilaInventario {
   contenedor_no_comparable: boolean;
   /** Piezas por caja MASTER, de Odoo. Nunca del packing list. */
   piezas_por_caja: number | null;
-  /** Cajas del físico de Odoo — derivadas: piezas ÷ piezas por caja. */
+  /** Cajas de las piezas LIBRES de Odoo — derivadas: libres ÷ piezas por caja.
+   *  Desde el 8-sep sale de las libres y no del on hand, para que Piezas y
+   *  Cajas de una misma fila salgan de la misma base. */
   cajas: number | null;
   /** Cajas de lo que está en recepción abierta. */
   cajas_por_llegar: number | null;
   cbm_caja: number | null;
+  /** Las tres cajas del SKU: la que manda (bodega) y las dos que existen.
+   *  Opcional a proposito: backend y frontend se despliegan por separado y
+   *  durante el desfase el campo no viene. Sin esto la pantalla se va en
+   *  blanco, que fue exactamente lo que paso con `pendientes` el 6-sep. */
+  cotejo_cajas?: CotejoCajas;
 
   stock_woo: number | null;
   stock_odoo: number | null;

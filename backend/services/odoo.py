@@ -769,7 +769,17 @@ def recepciones_pendientes_por_sku(sku: str) -> list[dict[str, Any]]:
         movs = _models().execute_kw(
             settings.odoo_db, uid, settings.odoo_password,
             "stock.move", "search_read",
+            # `picking_code == incoming` NO es cosmetico: sin el, esta funcion
+            # contaba como «por recibirse» los movimientos pendientes de SALIDA
+            # y los traspasos internos. Medido el 8-sep-2026 sobre el catalogo:
+            # 12,547 movimientos pendientes en total y solo 11,843 son entradas
+            # — 704 de ruido (5.6%). En los SKUs piloto el efecto no era
+            # marginal sino TOTAL: MUE-0135-NEG y TEC-0370-NEG mostraban «3
+            # recepciones · 3 piezas por recibirse» cuando lo que tenían era 1
+            # entrega a cliente y 2 traspasos internos — la MISMA pieza contada
+            # a lo largo de la ruta PICK → PACK → OUT. Su numero correcto es 0.
             [[["product_id.default_code", "=", sku],
+              ["picking_code", "=", "incoming"],
               ["state", "not in", ["done", "cancel", "draft"]]]],
             {"fields": ["product_qty", "quantity", "picking_id", "reference",
                         "origin", "state", "date", "location_dest_id"]},
@@ -785,6 +795,10 @@ def recepciones_pendientes_por_sku(sku: str) -> list[dict[str, Any]]:
     for m in movs:
         pid = _id_de(m.get("picking_id"))
         destino = _nombre_de(m.get("location_dest_id"))
+        # Aqui SI va `product_qty` y no `quantity`, al reves que en el libro de
+        # movimientos: en un movimiento PENDIENTE `quantity` es lo reservado
+        # hasta ahora, y lo que se pregunta es cuanto FALTA por llegar, que es
+        # la demanda. La regla de «siempre quantity» aplica a lo ya HECHO.
         piezas = float(m.get("product_qty") or 0)
         if pid:
             d = por_picking.setdefault(pid, {"piezas": 0.0, "renglones": 0,

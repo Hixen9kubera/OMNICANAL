@@ -250,15 +250,25 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "contenedor_costo": emp_costo["crudo"],
         "contenedor_discrepa": discrepa,
         "contenedor_no_comparable": no_comparable,
-        # CAJAS Y PIEZAS/CAJA VIENEN DE ODOO, NUNCA DEL PACKING LIST
-        # (Brandon, 4-sep): "es inventario existente en físico de odoo". El
-        # packing list dice lo que el proveedor EMBARCÓ; Odoo dice lo que HAY.
-        # Las cajas no son un campo: se derivan del físico entre el factor.
+        # LAS PIEZAS QUE MANDAN SON LAS LIBRES ("free to use"), no el "on hand"
+        # (Brandon, 8-sep): el on hand es metrica de trackeo. Antes de esa
+        # fecha Piezas usaba `libre` y Cajas usaba `fisico`, o sea que las dos
+        # celdas de UNA MISMA FILA salian de bases distintas. Se veia: en
+        # MUE-0135-NEG (fisico 1, libre 0, factor 3) la tabla decia Piezas 0 y
+        # Cajas 0.33 — ni cero ni un tercio de caja describian nada.
+        #
+        # LAS CAJAS DE ODOO SIGUEN SIENDO DERIVADAS, NUNCA DEL PACKING LIST
+        # (Brandon, 4-sep): "es inventario existente en fisico de odoo". Odoo
+        # no tiene un contador de cajas y esta MEDIDO, no supuesto:
+        # product.packaging tiene 0 registros en toda la base, stock.quant.package
+        # tiene 3 en 36,256 quants, y 0 de 1,264 recepciones validadas traen
+        # bultos. Lo unico vivo es el factor `units_per_master_box`.
         "piezas_por_caja": _num((o or {}).get("piezas_por_caja")),
-        "cajas": _cajas((o or {}).get("fisico"), (o or {}).get("piezas_por_caja")),
+        "cajas": _cajas((o or {}).get("libre"), (o or {}).get("piezas_por_caja")),
         "cajas_por_llegar": _cajas((o or {}).get("entrante"),
                                    (o or {}).get("piezas_por_caja")),
         "cbm_caja": _num((o or {}).get("cbm_caja")),
+        "cotejo_cajas": _cotejo_cajas(o, c),
 
         # existencias
         "stock_woo": (w or {}).get("stock"),
@@ -821,6 +831,13 @@ def _costos(skus: list[str]) -> dict[str, dict[str, Any]]:
     filas nuevas nacen en NULL. Lo que se lee aquí es una foto histórica
     migrada, no un dato vivo, y por eso el contenedor de Odoo entra como
     segunda fuente en `_fila`.
+
+    Medido el 8-sep-2026 sobre las 15,849 filas de la tabla: `cajas` viene de
+    DOS cargas masivas (21-may: 11,806 filas, y 3-jun: 3,537) y todo lo creado
+    después nace en NULL — las 401 filas del 13-ago traen cero, y también 4 de
+    los 13 SKUs piloto, dados de alta el 4-sep. Llenas 15,343 (96.8%), pero
+    1,786 valen 0, así que ÚTILES son 13,557 (85.5%). Por eso `cajas` se usa
+    como COTEJO y jamás como la cifra principal: es la foto del embarque.
     """
     if not skus:
         return {}
@@ -916,6 +933,61 @@ def _empaque(crudo: Any) -> dict[str, str]:
     return {"iso": iso.group(1) if iso else "",
             "embarque": emb.group(1) if emb else "",
             "crudo": texto[:60]}
+
+
+def _cotejo_cajas(o: dict | None, c: dict | None) -> dict[str, Any]:
+    """
+    Las TRES cajas de un SKU, que son tres preguntas distintas (Brandon, 8-sep).
+
+      1. BODEGA       · cuantas cajas conto el almacen al recibir. MANDA sobre
+                        las otras dos, y HOY NO EXISTE en ningun sistema.
+      2. PACKING LIST · cuantas cajas dijo el proveedor que embarco.
+      3. ODOO         · cuantas cajas llenarian las piezas LIBRES de hoy.
+
+    Por que no se pueden restar entre si: la del packing list es una foto del
+    EMBARQUE y la de Odoo es el PISO de hoy. TEC-0008-AMR dice 200 cajas en el
+    packing list y tiene 5 piezas fisicas: no es un descuadre, es que ya se
+    vendieron. Por eso esto es un COTEJO con tres numeros rotulados y no una
+    resta con un veredicto.
+
+    De donde sale la del packing list: `costing.costos_validados.cajas`, que ya
+    se consultaba en el SELECT de esta pestana y se tiraba a la basura. Es un
+    CONGELADO de dos cargas masivas (21-may y 3-jun-2026): 15,343 de 15,849
+    filas la traen, pero de esas 1,786 valen 0, asi que utiles son 13,557
+    (85.5%). Todo lo creado despues del 3-jun tiene la columna en NULL —
+    incluidos 4 de los 13 SKUs piloto, dados de alta el 4-sep.
+
+    El numero de cajas que calcula la pestana COSTOS al validar (el modal de
+    publicados en ML) NO se puede leer desde aqui: vive solo en memoria, con
+    TTL de 3 h, y al guardar persiste el archivo y los renglones en
+    `costing.caja_compartida` pero NO el conteo de cajas. Traerlo obligaria a
+    bajar el xlsx de Drive por SKU, que no es una consulta de tabla.
+    """
+    pl = _num((c or {}).get("cajas"))
+    odoo_ = _cajas((o or {}).get("libre"), (o or {}).get("piezas_por_caja"))
+    if pl is not None and pl <= 0:
+        pl = None
+
+    if pl is not None and odoo_ is not None:
+        estado, nota = "cotejable", "embarque contra piso; no se restan"
+    elif pl is not None:
+        estado, nota = "solo_pl", "solo hay la del embarque: no queda piso libre"
+    elif odoo_ is not None:
+        estado, nota = "solo_odoo", "sin cajas en el packing list de kubera"
+    else:
+        estado, nota = "sin_dato", "ni packing list ni piso libre"
+
+    return {
+        # El que manda y el que falta son el mismo: ver la nota de arriba.
+        "bodega": None,
+        "packing_list": pl,
+        "piezas_por_caja_pl": _num((c or {}).get("piezas_por_caja")),
+        "odoo": odoo_,
+        "piezas_por_caja_odoo": _num((o or {}).get("piezas_por_caja")),
+        "manda": "bodega",
+        "estado": estado,
+        "nota": nota,
+    }
 
 
 def _cajas(piezas: Any, por_caja: Any) -> float | None:
