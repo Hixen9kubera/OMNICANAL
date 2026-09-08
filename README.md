@@ -1001,6 +1001,31 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.444.0 — La ventana de la alerta de costo baja de 30 a 7 días (Eduardo)
+
+Lo que se vigila es qué se está vendiendo AHORA. Con 30 días el ranking
+arrastraba un mes de historia: un producto que dejó de venderse hace tres
+semanas seguía ocupando un lugar del top 10 que ya no le tocaba.
+
+**Se movió en TRES lugares, no en uno, y no es alcance de más.** El comentario
+sobre `_TOP_DIAS` decía que la ventana es la misma que trae por omisión
+`GET /api/fulfillment/margenes-reales` *"para que la alerta y la pantalla nunca
+se contradigan"* — y el mensaje de Slack lo dice con todas sus letras: "los
+mismos rankings que Márgenes reales". Mover solo la alerta no desalineaba un
+detalle: volvía **mentira** el aviso, que mandaría a un top 10 de 7 días
+mientras la pantalla abre en 30. Así que van juntos `_TOP_DIAS`
+(`services/alertas.py`, que alimenta Slack Y la campana del panel), el valor por
+omisión del endpoint (`routers/fulfillment.py`) y el estado inicial del modal
+(`MargenesRealesModal.tsx`). 7 ya era una de las cuatro opciones del selector,
+así que no hubo que agregar nada. El comentario de `_toca_hoy` que decía "30
+días" a mano ahora nombra la constante, para que no se vuelva a desfasar.
+
+Medido contra producción antes de moverlo: en 7 días hay **359 SKUs distintos y
+2,888 unidades**, con un top 10 bien separado (116 uds el primero, 42 el
+décimo). La ventana da de sobra para un ranking. Efecto secundario esperado: el
+conjunto va a rotar más seguido, y la alerta suena *cuando el conjunto cambia*
+— así que va a hablar más que antes. Es lo que se pidió.
+
 ### v0.443.0 — El botón «Medir» hacía el trabajo y perdía la respuesta (Eduardo)
 
 Eduardo: *"al buscar competencia directa no funciona"*. La pantalla decía **«No

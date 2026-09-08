@@ -470,7 +470,11 @@ function TablaCuenta({ titulo, sub, filas, conCuentas }: {
 
 export default function MargenesRealesModal({ cerrar }: { cerrar: () => void }) {
   const [visible, setVisible] = useState(false);
-  const [dias, setDias] = useState(30);
+  // 7 d desde el 8-sep-2026 (Eduardo), antes 30. Tiene que coincidir con
+  // `_TOP_DIAS` de services/alertas.py: la alerta de "Costo sin verificar"
+  // dice "los mismos rankings que Márgenes reales", y si la pantalla abre en
+  // otra ventana el aviso manda a un top 10 que aquí no se ve.
+  const [dias, setDias] = useState(7);
   const [cuenta, setCuenta] = useState<FiltroCuenta>("TODAS");
   const [estado, setEstado] = useState<FiltroEstado>("TODAS");
   const [data, setData] = useState<Respuesta | null>(null);

@@ -752,9 +752,9 @@ def _toca_hoy(tipo: str, hora_utc: int) -> bool:
     ¿Le toca correr HOY a esta revisión diaria?
 
     El vigilante despierta cada `ALERTAS_MIN` (15 min). Sin esta compuerta, las
-    dos consultas de abajo —que barren 30 días de `channel.order_items` y las
-    ~5,000 publicaciones de ML— correrían unas 64 veces al día para contestar
-    exactamente lo mismo.
+    dos consultas de abajo —que barren `_TOP_DIAS` de `channel.order_items` y
+    las ~5,000 publicaciones de ML— correrían unas 64 veces al día para
+    contestar exactamente lo mismo.
 
     El sello va en la MISMA tabla `alertas_estado` y por la MISMA razón que el
     candado de enfriamiento: el proceso MUERE en cada deploy de Railway, y un
@@ -978,8 +978,15 @@ def _revisar_margen_negativo() -> None:
 # Ventana y tamaño del top: los MISMOS que trae por omisión
 # `GET /api/fulfillment/margenes-reales`, para que la alerta y la pantalla nunca
 # se contradigan. Si esto dice "TEC-X está en el top 10", el panel lo tiene que
-# estar mostrando en el top 10.
-_TOP_DIAS = 30
+# estar mostrando en el top 10. El mensaje de Slack lo dice con todas sus
+# letras ("los mismos rankings que Márgenes reales"), así que mover este número
+# sin mover el otro no desalinea un detalle: vuelve MENTIRA el aviso.
+#
+# 7 días desde el 8-sep-2026 (Eduardo), antes 30. Lo que se vigila es qué se
+# está vendiendo AHORA: con 30 días el ranking arrastraba un mes de historia y
+# un producto que dejó de venderse hace tres semanas seguía ocupando un lugar
+# del top 10 que ya no le tocaba.
+_TOP_DIAS = 7
 _TOP_LIMITE = 10
 
 

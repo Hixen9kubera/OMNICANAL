@@ -1136,7 +1136,7 @@ _ESTADOS_PUB = {"activa", "pausada"}
 
 @router.get("/margenes-reales")
 async def margenes_reales(
-    dias: int = Query(30, ge=7, le=90),
+    dias: int = Query(7, ge=7, le=90),
     limite: int = Query(10, ge=3, le=20),
     presupuesto: int = Query(250, ge=0, le=500),
     estado: str | None = Query(None, description="activa|pausada; omitido = ambas"),
