@@ -1001,6 +1001,23 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.438.0 — En General la tarjeta muestra el costo, no el precio (Eduardo)
+
+En la pestaña General la cifra grande de la tarjeta era el precio de la tienda
+propia con el sugerido tachado, y el costo iba en chico debajo. Eduardo lo
+invirtió: **General es el catálogo y lo que importa ahí es el costo**; el precio
+se cobra en cada canal y se ve en su pestaña.
+
+- **Único**: el costo unitario validado, grande (`CUNA-0020-GRI-OCS`:
+  `$1,471.47 MXN · COSTO UNITARIO`).
+- **Padre**: el rango de sus variantes (`ROP-0266`: `$971.00 – $972.30 MXN ·
+  COSTO · VARIANTES`); una sola cifra si coinciden.
+- **Sin costeo**: "Sin costo" en gris, para que el hueco se lea como dato
+  faltante y no como tarjeta rota.
+
+Las pestañas de canal no cambian: precio que cobra la publicación, lista
+tachada si hay rebaja, y el costo debajo (v0.435.0 / v0.437.0).
+
 ### v0.437.0 — Rango de costo en padres y precio real de la publicación en las tarjetas de canal (Eduardo)
 
 Con la v0.435.0 la tarjeta de `ROP-0266` en General decía **"Costo $1,162.30"**.

@@ -206,45 +206,74 @@ export default function ProductCard({
 
         <div className="mt-auto flex items-end justify-between gap-2 pt-1">
           <div>
-            {/* El chip va PEGADO al precio y no en un rótulo: en la tarjeta la
-                cifra viaja sola, sin encabezado que la contextualice. */}
-            <div className="flex items-baseline gap-1 text-lg font-extrabold tracking-tight text-slate-900">
-              {precioMXN(producto.precio)}
-              <ChipMoneda moneda="MXN" />
-            </div>
-            {producto.precio_base &&
-              producto.precio &&
-              producto.precio_base > producto.precio && (
-                <div className="text-xs text-slate-400 line-through">
-                  {precioMXN(producto.precio_base)}
+            {/* EN GENERAL LA CIFRA GRANDE ES EL COSTO, NO EL PRECIO (Eduardo,
+                8-sep-2026). El precio de la tienda propia no es lo que se
+                decide desde esta tarjeta —General es el catálogo, el precio se
+                cobra en cada canal— y encima venía inflado por el sugerido.
+                Único: su costo unitario ($1,471.47). Padre: el rango de sus
+                variantes ($971.00 – $972.30). Sin costeo: "Sin costo", para que
+                el hueco se lea como dato faltante y no como tarjeta rota.
+                En los canales sigue el precio que cobra la publicación con su
+                lista tachada, y el costo debajo. */}
+            {esGeneral ? (
+              producto.costo_rango ? (
+                <div
+                  title={`Costo de sus variantes (${producto.costo_rango.n} de ${producto.costo_rango.total} con costeo en Costos). El padre no tiene costeo propio: el costo es de cada variante.`}
+                >
+                  <div className="flex items-baseline gap-1 text-lg font-extrabold tracking-tight text-slate-900">
+                    {producto.costo_rango.min === producto.costo_rango.max
+                      ? precioMXN(producto.costo_rango.min)
+                      : `${precioMXN(producto.costo_rango.min)} – ${precioMXN(producto.costo_rango.max)}`}
+                    <ChipMoneda moneda="MXN" />
+                  </div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Costo · variantes
+                  </div>
                 </div>
-              )}
-            {/* El COSTO UNITARIO de la pieza (Eduardo, 8-sep): producto + flete
-                de `costos_validados`, el mismo en todas las pestañas porque es
-                del SKU y no del canal. Va junto al precio para que el margen se
-                lea de un vistazo; sin costo no ocupa lugar. */}
-            {producto.costo_rango ? (
-              /* Padre sin costeo propio: el rango de sus variantes, en vez de la
-                 meta vieja de Woo. Con una sola cifra (o todas iguales) no se
-                 pinta un rango de un solo número. */
-              <div
-                className="mt-0.5 text-[11px] font-semibold text-slate-600"
-                title={`Costo de sus variantes (${producto.costo_rango.n} de ${producto.costo_rango.total} con costeo en Costos). El padre no tiene costeo propio: el costo es de cada variante.`}
-              >
-                Costo{" "}
-                {producto.costo_rango.min === producto.costo_rango.max
-                  ? precioMXN(producto.costo_rango.min)
-                  : `${precioMXN(producto.costo_rango.min)} – ${precioMXN(producto.costo_rango.max)}`}
-                <span className="ml-1 font-normal text-slate-400">variantes</span>
-              </div>
-            ) : producto.costo != null && producto.costo > 0 ? (
-              <div
-                className="mt-0.5 text-[11px] font-semibold text-slate-600"
-                title="Costo unitario de la pieza (producto + flete), el validado en Costos. Es el mismo en todos los canales."
-              >
-                Costo {precioMXN(producto.costo)}
-              </div>
-            ) : null}
+              ) : producto.costo != null && producto.costo > 0 ? (
+                <div title="Costo unitario de la pieza (producto + flete), el validado en Costos.">
+                  <div className="flex items-baseline gap-1 text-lg font-extrabold tracking-tight text-slate-900">
+                    {precioMXN(producto.costo)}
+                    <ChipMoneda moneda="MXN" />
+                  </div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Costo unitario
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm font-semibold text-slate-300" title="Este SKU no tiene costeo en Costos.">
+                  Sin costo
+                </div>
+              )
+            ) : (
+              <>
+                {/* El chip va PEGADO al precio y no en un rótulo: en la tarjeta
+                    la cifra viaja sola, sin encabezado que la contextualice. */}
+                <div className="flex items-baseline gap-1 text-lg font-extrabold tracking-tight text-slate-900">
+                  {precioMXN(producto.precio)}
+                  <ChipMoneda moneda="MXN" />
+                </div>
+                {producto.precio_base &&
+                  producto.precio &&
+                  producto.precio_base > producto.precio && (
+                    <div className="text-xs text-slate-400 line-through">
+                      {precioMXN(producto.precio_base)}
+                    </div>
+                  )}
+                {/* El COSTO UNITARIO de la pieza (Eduardo, 8-sep): producto +
+                    flete de `costos_validados`, el mismo en todos los canales
+                    porque es del SKU. Va junto al precio para que el margen se
+                    lea de un vistazo; sin costo no ocupa lugar. */}
+                {producto.costo != null && producto.costo > 0 && (
+                  <div
+                    className="mt-0.5 text-[11px] font-semibold text-slate-600"
+                    title="Costo unitario de la pieza (producto + flete), el validado en Costos. Es el mismo en todos los canales."
+                  >
+                    Costo {precioMXN(producto.costo)}
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           {/* Stock o puntos de canal */}
