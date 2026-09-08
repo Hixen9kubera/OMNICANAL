@@ -92,7 +92,11 @@ async def candidatos(
     orden: str = Query("valor_desc", description="campo_dirección: valor|costo|stock|tipo + _asc|_desc"),
     categoria: str | None = Query(None, description="Filtro por nombre de categoría (parcial)"),
 ):
-    skus_filtro = [s for s in (skus or "").split(",") if s.strip()] or None
+    # `.strip()` en el valor: mismo defecto que en `routers/productos.py`. El
+    # marcador del campo dice "TEC-0001, ORG-0885, caminadora" —con espacios— y
+    # los términos después del primero llegaban con el espacio pegado, así que
+    # el `ilike` no los encontraba.
+    skus_filtro = [s.strip() for s in (skus or "").split(",") if s.strip()] or None
     # Índice agrupado por convención de SKU (CAT-####[-DETALLE]): una fila por
     # padre conceptual o producto único; ordenable por valor/costo/stock/tipo.
     grupos, total = await creacion.listar_candidatos_agrupados(

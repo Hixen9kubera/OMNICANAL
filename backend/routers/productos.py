@@ -110,7 +110,12 @@ async def listar_productos(
         raise HTTPException(404, f"Canal desconocido: {canal}")
 
     estados_lista = [e.strip() for e in estados.split(",")] if estados else None
-    skus_lista = [s for s in (skus or "").split(",") if s.strip()] or None
+    # `.strip()` en el VALOR, no solo en la condición. Antes se filtraban los
+    # vacíos con `if s.strip()` pero se guardaba `s` tal cual, así que
+    # "A, B, C" —con el espacio que el propio marcador del campo sugiere:
+    # "TEC-0001, ORG-0885, caminadora"— mandaba " B" y " C" con espacio, y el
+    # `ilike '% B%'` no encuentra nada. Solo el primero funcionaba.
+    skus_lista = [s.strip() for s in (skus or "").split(",") if s.strip()] or None
 
     # Se resuelve ANTES de listar: si el canal (o el camino de lectura) no puede
     # evaluar el criterio, no se filtra y se dice — nunca se devuelve un cero

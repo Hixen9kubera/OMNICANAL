@@ -59,6 +59,43 @@ export default function OmnicanalPage() {
   const primeraCarga = useRef(true);
   const [sel, setSel] = useState<Producto | null>(null);
 
+  // ── Llegar desde una alerta con el filtro ya puesto ──────────────────────
+  // Las alertas de la campana enlazan a `/omnicanal?skus=A,B,C`. Sin esto el
+  // enlace aterrizaba en el catálogo COMPLETO y había que copiar los SKUs a
+  // mano: el aviso decía qué está mal y no llevaba a ningún lado.
+  //
+  // Se lee de `window.location.search` y no con `useSearchParams`: ese hook
+  // obliga a envolver la página en un <Suspense> para el render estático, y
+  // ninguna pantalla del panel lo usa todavía. Dentro de un efecto el código
+  // solo corre en el navegador, así que no hay nada que envolver.
+  //
+  // Solo al MONTAR (`[]`): después manda lo que la persona escriba en el
+  // filtro. Si se releyera la URL en cada render, borrar el campo a mano lo
+  // volvería a llenar solo.
+  const abrirUnico = useRef<string | null>(null);
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("skus");
+    const lista = (q || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (!lista.length) return;
+    setSkusInput(lista.join(", "));
+    setSkusFiltro(lista.join(","));
+    // Con UN solo SKU, además de filtrar se ABRE su ficha: venir de una alerta
+    // de un producto concreto y tener que dar otro clic es un paso de más. Con
+    // varios no se abre ninguna — elegir una de catorce sería arbitrario.
+    if (lista.length === 1) abrirUnico.current = lista[0].toLowerCase();
+  }, []);
+
+  // El detalle se abre cuando LLEGAN los productos, no al montar: en ese
+  // momento todavía no existe la fila que hay que seleccionar.
+  useEffect(() => {
+    if (!abrirUnico.current || !productos.length) return;
+    const p = productos.find((x) => x.sku.toLowerCase() === abrirUnico.current);
+    if (p) {
+      setSel(p);
+      abrirUnico.current = null;   // una sola vez: que no reabra al paginar
+    }
+  }, [productos]);
+
   // Vista, orden y filtros
   const [vista, setVista] = useState<Vista>("mosaico");
   const [orden, setOrden] = useState("reciente");

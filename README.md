@@ -1001,6 +1001,44 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.432.0 — El enlace de la alerta llegaba a Omnicanal y no filtraba nada (Eduardo)
+
+Las alertas enlazaban a `/omnicanal?skus=A,B,C` desde la v0.431.0, **y la página
+nunca leía ese parámetro**. El clic aterrizaba en el catálogo completo y había
+que copiar los SKUs a mano: el aviso decía qué está mal y no llevaba a ningún
+lado.
+
+Ahora la pestaña lee `skus` al montar y llega con el filtro puesto. Y con **UN
+solo SKU además ABRE su ficha**: venir de una alerta de un producto concreto y
+tener que dar otro clic era un paso de más. Con varios no se abre ninguna —
+elegir una de catorce sería arbitrario.
+
+Se lee de `window.location.search` dentro de un efecto y no con
+`useSearchParams`: ese hook obliga a envolver la página en un `<Suspense>` para
+el render estático y ninguna pantalla del panel lo usa todavía. Dentro de un
+efecto el código solo corre en el navegador, así que no hay nada que envolver.
+Y solo al MONTAR: si se releyera la URL en cada render, borrar el campo a mano
+lo volvería a llenar solo.
+
+**Y DESTAPÓ UN BUG VIEJO DEL FILTRO DE SKUs.** Al probarlo, la petición viajaba
+con espacios tras las comas y devolvía menos de lo que debía. La causa:
+
+```python
+skus_lista = [s for s in (skus or "").split(",") if s.strip()]   # ← filtra
+                                                                 #   pero NO recorta
+```
+
+Se descarta el vacío con `s.strip()` y se guarda `s` **tal cual**, así que
+`"A, B, C"` mandaba `" B"` y `" C"` con el espacio pegado y el
+`ilike '% B%'` no encuentra nada: **solo funcionaba el primer término**. Y el
+marcador del propio campo invita a escribirlo así — *"TEC-0001, ORG-0885,
+caminadora"*, con espacios.
+
+Estaba en `routers/productos.py` y, con el mismo patrón, en `routers/crear.py`:
+las dos pestañas que tienen ese filtro. Comprobado contra el sandbox: la misma
+consulta con y sin espacios devuelve **6 y 6**; antes, con espacios, habría
+devuelto solo los del primer SKU.
+
 ### v0.431.0 — La alerta se abre y enseña QUIÉNES son (Eduardo)
 
 La campana decía *"8 en margen negativo · peor −310% (ROP-0266-DOR)"* y ahí se
