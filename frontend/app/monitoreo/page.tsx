@@ -106,6 +106,8 @@ interface Resumen {
   cobertura: Cobertura[];
   publicaciones_semana: PubCanal[];
   costos_semana: { actual?: number; previa?: number };
+  /** Costeos hechos a mano. NO son validaciones — ver la nota de la tarjeta. */
+  costeos_semana?: { actual?: number; previa?: number };
   meta_semanal: number;
   sin_movimientos: SinMovs[];
 }
@@ -119,12 +121,22 @@ interface Movimiento {
 
 // ── Vocabulario ─────────────────────────────────────────────────────────────
 /** Cada proceso tiene su verbo. Decir "publicado" de un costo es falso. */
+/*
+ * ⚠️ `costos` NO ERA "Costo validado", y así estuvo rotulado hasta el 8-sep.
+ * Un renglón de `costos` es un COSTEO —recalcular el costo de un SKU—, y
+ * validarlo es otro acto, que desde el 8-sep tiene su propio renglón
+ * (`accion='validar'`) y su propia columna. Medido en la semana 36: la columna
+ * decía 48 para Andrea cuando sus validaciones fueron 27; el resto eran
+ * recálculos y costeos automáticos de productos recién creados.
+ */
 const VERBO: Record<string, string> = {
-  publicar: "Publicado", costos: "Costo validado", crear: "Producto creado",
+  publicar: "Publicado", costos: "Costo recalculado", crear: "Producto creado",
+  validar: "Costo validado",
   competencia: "Competencia", precio: "Precio editado", stock: "Stock editado",
 };
 const COLUMNA: Record<string, string> = {
-  crear: "Creados", costos: "Costos val.", publicar: "Publicados",
+  crear: "Creados", costos: "Costeos", publicar: "Publicados",
+  validar: "Validados",
   competencia: "Competencia", precio: "Precio", stock: "Stock",
 };
 const NOMBRE_CANAL: Record<string, string> = {
@@ -570,11 +582,20 @@ function BandaMetas({ d }: { d: Resumen }) {
   // que contra lo medido (Amazon 12, TikTok 1) no era una meta sino un reproche.
   const META = d.meta_semanal ?? 10;
 
+  // ⚠️ ESTA TARJETA CONTABA RECÁLCULOS, NO VALIDACIONES (corregido el 8-sep).
+  // Decía 109 donde Análisis · Métricas decía 47 para la MISMA semana, y la
+  // razón es que leía `ops.process_log` —el acto de costear— en vez de
+  // `costing.costos_validados.revisado_at`, que es el que dice si el costo
+  // quedó validado. Ahora las dos pantallas leen lo mismo y coinciden por
+  // construcción. Los costeos siguen a la vista, en su renglón y con su nombre.
+  const costeos = d.costeos_semana?.actual ?? 0;
   const metas = [
     { clave: "general", titulo: "Costos validados",
       v: d.costos_semana?.actual ?? 0, previa: d.costos_semana?.previa ?? 0,
-      pendientes: 0, persona: d.costos_semana?.actual ?? 0, codigo: 0,
-      sinFirma: 0, mudo: false },
+      pendientes: 0, persona: 0, codigo: 0, sinFirma: 0, mudo: false,
+      nota: costeos > 0
+        ? `${costeos} costeo${costeos === 1 ? "" : "s"} aparte`
+        : undefined },
     ...CANALES_META.map((canal) => {
       const p = d.publicaciones_semana.find((x) => x.canal === canal);
       return {
@@ -587,6 +608,7 @@ function BandaMetas({ d }: { d: Resumen }) {
         codigo: p?.por_codigo ?? 0,
         sinFirma: p?.sin_firma ?? 0,
         mudo: d.canales_sin_registro.includes(canal),
+        nota: undefined as string | undefined,
       };
     }),
   ];
@@ -662,6 +684,12 @@ function BandaMetas({ d }: { d: Resumen }) {
                       vio 3: la pregunta "¿qué hice yo y qué fue de código?" no
                       se puede contestar si el total va suelto. */}
                   <p className="mt-1 flex flex-wrap gap-x-2 text-[10px] text-slate-400">
+                    {m.nota && (
+                      <span title={"Recálculos de costo desde el panel. Son trabajo, "
+                                   + "pero no son validaciones: costear un SKU y "
+                                   + "validar su costo son dos actos distintos."}>
+                        {m.nota}
+                      </span>)}
                     {m.persona > 0 && (
                       <span title="Las hizo una persona desde el panel">
                         {m.persona} de persona

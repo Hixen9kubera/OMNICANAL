@@ -64,8 +64,17 @@ const fMoney = (v: number | string | null | undefined) =>
   v == null ? "—" : `$${n(v).toLocaleString("es-MX", { maximumFractionDigits: 2 })}`;
 const fNum = (v: number | string | null | undefined) =>
   v == null ? "—" : n(v).toLocaleString("es-MX");
+/*
+ * ⚠️ EL `T00:00:00` NO ES ADORNO. `new Date("2026-08-31")` —una fecha PELONA—
+ * la lee JavaScript como medianoche UTC, que en CDMX es el 30 de agosto a las
+ * 18:00: el rótulo salía UN DÍA ANTES que el rango consultado. Se veía
+ * "Semana 36 · 30 ago – 5 sep" cuando la semana pedida al backend era del 31 de
+ * agosto al 6 de septiembre, y quien comparaba esa cifra contra Monitoreo la
+ * estaba comparando contra la semana equivocada. Con la hora pegada se lee como
+ * hora LOCAL y la fecha es la que dice el backend.
+ */
 const fFecha = (iso: string) =>
-  new Date(iso).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+  new Date(`${iso}T00:00:00`).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
 const fFechaHora = (iso: string) =>
   new Date(iso).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -209,7 +218,13 @@ export default function MetricasPage() {
     lunes.setDate(lunes.getDate() - dow);
     const domingo = new Date(lunes);
     domingo.setDate(domingo.getDate() + 6);
-    const iso = (d: Date) => d.toISOString().slice(0, 10);
+    // La fecha LOCAL, armada a mano. `toISOString()` pasa por UTC y devolvería
+    // el día siguiente para cualquiera al este de Greenwich — el mismo defecto
+    // que tenía `fFecha`, en espejo. Aquí no muerde en CDMX, pero el rango que
+    // se le pide al backend no puede depender de dónde esté abierto el panel.
+    const iso = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      + `-${String(d.getDate()).padStart(2, "0")}`;
     setRangoLibre(true);
     setDesde(iso(lunes));
     setHasta(iso(domingo));

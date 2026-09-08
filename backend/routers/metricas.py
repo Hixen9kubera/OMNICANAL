@@ -77,6 +77,25 @@ select a.legacy_code as cuenta, l.price
 # diferencia del resto del tab. `revisado_at` es NUEVO (recién empezó a
 # llenarse, 10 de 15,838 filas al 25-ago) y `revisado_por` es el actor que
 # validó (persona o proceso, p. ej. "resolver-packing-list").
+#
+# ⚠️ ES UN ESTADO, NO UN HISTORIAL, Y ESO TIENE UNA CONSECUENCIA INCÓMODA.
+# `revisado_at` vive en la fila del SKU (PK = sku) y se SOBRESCRIBE en cada
+# validación: revalidar un SKU no suma, lo MUEVE de semana. O sea que el número
+# de una semana ya cerrada puede encoger solo, sin que nadie se equivoque.
+# Medido el 8-sep no había pasado todavía (69 revisados = 20 + 47 + 2, las tres
+# semanas cuadran), pero pasará en cuanto se revalide algo viejo.
+#
+# La pregunta "cuántas VECES se validó" no la puede contestar esta columna. La
+# contesta `ops.process_log` con `accion='validar'`, que existe desde el 8-sep
+# (ver `costing_write.marcar_revisado`) y es lo que cuenta Monitoreo por
+# persona. Las dos cifras son verdad; si algún día no cuadran, la diferencia
+# son revalidaciones, no un error.
+#
+# Monitoreo lee ESTA MISMA columna para su tarjeta "Costos validados", con la
+# misma aritmética de semana CDMX (`services/monitoreo.py::costos_semana`), a
+# propósito: hasta el 8-sep leía la bitácora de costeos y enseñaba 109 donde
+# este tab enseñaba 47 para la misma semana. Si se cambia la definición de aquí,
+# hay que cambiarla allá.
 _SQL_COSTOS_VALIDADOS = """
 select cv.sku, cv.revisado_at, cv.revisado_por
   from costing.costos_validados cv

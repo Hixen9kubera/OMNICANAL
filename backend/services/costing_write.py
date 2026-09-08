@@ -131,7 +131,8 @@ def guardar_finales(sku: str, fila: dict[str, Any],
               _primaria, escribir_mysql)
 
 
-def marcar_revisado(sku: str, revisado: bool = True) -> dict[str, Any] | None:
+def marcar_revisado(sku: str, revisado: bool = True, *,
+                    bitacora: bool = True) -> dict[str, Any] | None:
     """
     Pone o quita la marca de "ya revisé este costeo" (migración 0032).
 
@@ -151,6 +152,33 @@ def marcar_revisado(sku: str, revisado: bool = True) -> dict[str, Any] | None:
     Devuelve la fila con la marca, o ``None`` si el SKU no tiene costeo: marcar
     como revisado algo que no existe no es un caso válido, y un silencio ahí
     haría creer al panel que se guardó.
+
+    VALIDAR DEJA BITÁCORA (8-sep). Hasta hoy no la dejaba, y eso era el hueco
+    que hacía imposible medir esta pantalla: el ÚNICO rastro de una validación
+    era ``revisado_at``, que es un ESTADO por SKU —se sobrescribe— y no dice
+    cuántas veces ni quién en cada ocasión. Monitoreo, que lee
+    ``ops.process_log``, no tenía ni una fila que contar y acababa enseñando
+    los RECÁLCULOS bajo el rótulo "Costos validados": medido el 8-sep, 110
+    actos de costeo en la semana 36 contra 47 validaciones reales.
+
+    El renglón va en la MISMA transacción del UPDATE —mismo cursor— por dos
+    razones: o quedan los dos o no queda ninguno (nada de validaciones sin
+    firma ni firmas sin validación), y ``actor`` se llena solo con el valor por
+    omisión de la migración 0029, que lee el ``app.usuario`` que ya puso
+    ``sdb.get_cursor``.
+
+    ``accion`` separa los dos sentidos: ``validar`` es lo que cuenta para la
+    meta, ``desvalidar`` es quitar la marca — un acto real y auditable, pero
+    que NO es trabajo de validación y por eso no se suma.
+
+    ⚠️ ``bitacora=False`` PARA CUANDO ESTA MARCA SE USA COMO CANDADO. En
+    ``packing_publicados`` la marca no significa "alguien revisó": es el candado
+    que protege el costeo, y se SUELTA y se vuelve a PONER alrededor del upsert
+    (``where revisado_at is null`` vive dentro del UPSERT). Firmar ese vaivén
+    llenaría la bitácora de un ``desvalidar`` + un ``validar`` por SKU que nadie
+    hizo — el mismo defecto que hace ver a los costeos automáticos como trabajo
+    de una persona, que es justo lo que este cambio vino a quitar. Quien mueve
+    el candado apaga la bitácora; quien de verdad valida la deja encendida.
     """
     sql = (
         """update costing.costos_validados
@@ -167,6 +195,12 @@ def marcar_revisado(sku: str, revisado: bool = True) -> dict[str, Any] | None:
     with sdb.get_cursor() as cur:
         cur.execute(sql, (sku,))
         fila = cur.fetchone()
+        if fila is not None and bitacora:
+            costing_mirror.insertar_log(
+                cur, sku, "validar" if revisado else "desvalidar",
+                "marcar_revisado",
+                {"revisado_at": fila["revisado_at"],
+                 "revisado_por": fila["revisado_por"]})
     if fila is None:
         log.info("marcar_revisado(%s): sin fila en costos_validados", sku)
     return dict(fila) if fila else None

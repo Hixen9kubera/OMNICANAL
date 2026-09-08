@@ -1001,6 +1001,77 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.445.0 — «Costos validados» contaba recálculos: las dos pantallas ya coinciden
+
+Eduardo vio el 8-sep que Análisis · Métricas decía **47 costos validados** de la
+semana 36 y Monitoreo decía **109** de la misma semana. Las dos cifras eran
+ciertas; ninguna era la que decía su rótulo.
+
+**Por qué pasaba.** Validar un costo —`POST /api/crear/costos/{sku}/revisar`—
+**no dejaba bitácora**: `costing_write.marcar_revisado` actualizaba
+`revisado_at` y nada más. Monitoreo, que lee `ops.process_log`, no tenía ni una
+fila de validación que contar, así que contaba lo único que había bajo
+`proceso='costos'`: los RECÁLCULOS. Medido contra producción en la semana 36
+(31 ago – 6 sep):
+
+| Lo que había | Cuánto |
+|---|---|
+| Renglones de costeo en la bitácora | 110 |
+| … sobre SKUs distintos (9 eran recálculos repetidos) | 101 |
+| … de los cuales `accion='auto'`, el costeo que corre al CREAR un producto | 38 (0 validados) |
+| … recalculados a mano y nunca validados | 17 |
+| **Validaciones reales** | **47** |
+
+Los 38 automáticos llevan el actor de quien creó el producto, así que se
+acreditaban como trabajo de validación de esa persona: por eso Andrea aparecía
+con 48 en la columna «Costos val.» cuando sus validaciones fueron 27.
+
+**Qué cambia.**
+
+- **Validar deja rastro.** `marcar_revisado` escribe su renglón en
+  `ops.process_log` (`accion='validar'`, y `desvalidar` al quitar la marca), en
+  la MISMA transacción del UPDATE: o quedan los dos o no queda ninguno. El
+  `actor` se llena solo con el valor por omisión de la migración 0029.
+- **La tarjeta del tablero cuenta validaciones**, leyendo
+  `costing.costos_validados.revisado_at` con la misma aritmética de semana CDMX
+  que `routers/metricas.py` — o sea que las dos pantallas coinciden **por
+  construcción**, y también hacia atrás, sin esperar a que se junte bitácora
+  nueva.
+- **Los costeos siguen a la vista, con su nombre.** `costeos_semana()` los
+  cuenta aparte (sin los automáticos) y salen como nota al pie de la tarjeta:
+  «17 costeos aparte».
+- **La marca también se usa como CANDADO, y eso no se firma.**
+  `packing_publicados` suelta y repone `revisado_at` alrededor del upsert
+  (el candado vive dentro del `where revisado_at is null`), así que sin cuidado
+  cada SKU resuelto habría dejado un `desvalidar` + un `validar` que nadie hizo
+  — el mismo defecto que este cambio vino a quitar. `marcar_revisado` acepta
+  `bitacora=False` para ese vaivén; la validación de verdad del resolver sí
+  queda firmada.
+- **La tabla de personas se parte en dos columnas**: «Costeos» y «Validados».
+  La división se hace AL LEER (`_PROCESO`), no al escribir: la bitácora conserva
+  el evento tal como ocurrió. La columna «Validados» aparece sola en cuanto
+  entre la primera validación firmada — antes de eso no se pinta un cero, que
+  sería decir «no lo hizo» de algo que no se sabía.
+
+**Dos desfases de un día que salieron en el mismo hilo.**
+
+- `costos_semana()` comparaba `created_at` (con zona) contra
+  `date_trunc('week', now() at time zone 'America/Mexico_City')`, que NO la
+  lleva: Postgres lo reinterpretaba en UTC y la semana arrancaba el **domingo a
+  las 18:00 CDMX**. Por eso la tarjeta decía 109 donde había 110. Ahora hay dos
+  constantes con su papel escrito, `_SEMANA_TS` y `_SEMANA_DIA`.
+- El rótulo del stepper de Métricas decía **«Semana 36 · 30 ago – 5 sep»** para
+  un rango que era 31 ago – 6 sep: `new Date("2026-08-31")` es medianoche UTC, o
+  sea el 30 en CDMX. Quien comparaba esa cifra contra Monitoreo la comparaba
+  contra la semana equivocada. Corregido en las dos direcciones (`fFecha` y el
+  `toISOString()` que armaba el rango).
+
+**Lo que sigue sin poder contestarse con `revisado_at`**, y queda escrito en
+`routers/metricas.py`: es un ESTADO por SKU y se sobrescribe, así que revalidar
+un SKU lo MUEVE de semana en vez de sumar — el número de una semana cerrada
+puede encoger solo. Cuántas VECES se validó lo contesta la bitácora nueva. Al
+8-sep las tres semanas cuadraban (69 revisados = 20 + 47 + 2).
+
 ### v0.444.0 — La ventana de la alerta de costo baja de 30 a 7 días (Eduardo)
 
 Lo que se vigila es qué se está vendiendo AHORA. Con 30 días el ranking

@@ -49,6 +49,32 @@ _INTERMEDIOS = ("en_cola", "procesando")
 # 'ok'. Sin esto, las creaciones saldrian todas como fallidas.
 _EXITO = ("ok", "completado", "succeeded")
 
+# ⚠️ VALIDAR UN COSTO NO ES COSTEARLO, Y LA PANTALLA LOS ENSEÑABA JUNTOS.
+# `proceso='costos'` mete en un mismo saco tres cosas distintas:
+#
+#   · `manual`     — alguien recalculó el costeo desde el panel
+#   · `auto`       — el costeo automático que corre al CREAR un producto. Lleva
+#                    el actor de quien creó el producto, pero esa persona no
+#                    costeó nada: se lo costeó el sistema
+#   · `validar`    — «revisé este costeo contra el packing list y está bien».
+#                    Existe en la bitácora desde el 8-sep; antes de esa fecha el
+#                    acto NO dejaba rastro (ver `costing_write.marcar_revisado`)
+#   · `desvalidar` — quitar la marca. Acto real y auditable, pero lo contrario
+#                    de trabajo de validación: no se suma a ninguna meta
+#
+# Medido el 8-sep sobre la semana 36: 110 renglones de `costos` que la columna
+# «Costos val.» presentaba como validaciones cuando las validaciones fueron 47.
+#: Las acciones de `costos` que NO son costeo hecho a mano.
+_COSTOS_NO_MANUALES = ("auto", "validar", "desvalidar")
+
+#: `validar` no es un proceso propio en `ops.process_log` —es una ACCIÓN dentro
+#: de `costos`— pero SÍ es una columna propia en la tabla de personas, porque es
+#: la pregunta que la pantalla promete contestar. Se separa AL LEER, no al
+#: escribir: la bitácora conserva el evento tal como ocurrió y la división es
+#: una decisión de presentación, igual que la fusión de los correos de Thalía.
+_PROCESO = ("case when proceso = 'costos' and accion = 'validar' "
+            "then 'validar' else proceso end")
+
 # Dos correos, una persona (Brandon, 5-ago). Se fusionan al MOSTRAR.
 _MISMA_PERSONA = {"sancorpethalia@kubera.mx": "thalias@kubera.mx"}
 
@@ -153,14 +179,14 @@ def _procesos_sin_registro(dias: int) -> list[str]:
     """
     try:
         filas = supabase_db.fetch_all(
-            """select proceso,
+            f"""select {_PROCESO} proceso,
                       count(*) filas,
                       count(*) filter (where actor is not null) firmadas
                  from ops.process_log
                 where proceso = any(%s)
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
-                group by proceso""",
+                group by 1""",
             (list(_DE_PERSONA), list(_INTERMEDIOS), dias))
     except Exception as exc:  # noqa: BLE001
         log.warning("no se pudo medir qué procesos firman: %s", exc)
@@ -230,7 +256,7 @@ def cobertura(dias: int = 30) -> list[dict[str, Any]]:
     """
     try:
         return supabase_db.fetch_all(
-            """select proceso,
+            f"""select {_PROCESO} proceso,
                       count(*) filas,
                       count(*) filter (where actor is not null) con_actor,
                       count(distinct actor) filter (where actor is not null) personas
@@ -238,7 +264,7 @@ def cobertura(dias: int = 30) -> list[dict[str, Any]]:
                 where proceso = any(%s)
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
-                group by proceso
+                group by 1
                 order by filas desc""",
             (list(_DE_PERSONA), list(_INTERMEDIOS), dias))
     except Exception as exc:  # noqa: BLE001
@@ -252,10 +278,26 @@ def cobertura(dias: int = 30) -> list[dict[str, Any]]:
 #: no era una meta sino un reproche permanente.
 META_SEMANAL = 10
 
-#: La semana ISO en hora de CDMX, que es donde trabaja el equipo. Sin el
-#: `at time zone`, las publicaciones de la noche del domingo caerían en la
-#: semana siguiente y la comparativa saldría movida.
-_SEMANA = "date_trunc('week', (%s at time zone 'America/Mexico_City'))"
+#: La semana en curso, en hora de CDMX, que es donde trabaja el equipo. Van DOS
+#: formas y la diferencia no es cosmética:
+#:
+#:   · `_SEMANA_TS`  — el INSTANTE en que arrancó la semana, ya como
+#:     `timestamptz`. Es la única forma válida de comparar contra columnas
+#:     `timestamptz` (`created_at`).
+#:   · `_SEMANA_DIA` — el lunes como FECHA, para comparar contra fechas ya
+#:     convertidas a CDMX.
+#:
+#: ⚠️ EL ERROR QUE ESTO CIERRA. `date_trunc('week', now() at time zone
+#: 'America/Mexico_City')` devuelve un timestamp SIN zona; al compararlo contra
+#: un `timestamptz` Postgres lo reinterpreta con la zona de la sesión —que en
+#: Railway es UTC— y la semana acababa arrancando el DOMINGO a las 18:00 CDMX,
+#: seis horas antes. Medido contra producción el 8-sep: la tarjeta decía 109
+#: costeos en la semana 36 donde había 110, con un renglón cruzado de semana.
+#: Es una diferencia chica que envenena justo lo que la pantalla promete —
+#: comparar una semana contra otra.
+_SEMANA_TS = ("(date_trunc('week', now() at time zone 'America/Mexico_City') "
+              "at time zone 'America/Mexico_City')")
+_SEMANA_DIA = "date_trunc('week', now() at time zone 'America/Mexico_City')::date"
 
 
 def publicaciones_semana() -> list[dict[str, Any]]:
@@ -266,7 +308,10 @@ def publicaciones_semana() -> list[dict[str, Any]]:
     un PUT create-or-replace, y el 48.5% de sus altas históricas son repeticiones
     del mismo SKU. Contarlas infla ese canal casi al doble.
     """
-    SEMANA = "date_trunc('week', now() at time zone 'America/Mexico_City')"
+    # `_SEMANA_TS` para el prefiltro (compara contra `primera`, que es
+    # `timestamptz`) y `_SEMANA_DIA` para los conteos (comparan contra `dia`,
+    # que ya viene convertido a CDMX). Ver el aviso de las constantes.
+    SEMANA = _SEMANA_DIA
     try:
         return supabase_db.fetch_all(
             f"""with primeras as (
@@ -288,26 +333,26 @@ def publicaciones_semana() -> list[dict[str, Any]]:
                    select canal, actor, confirmada,
                           (primera at time zone 'America/Mexico_City')::date dia
                      from primeras
-                    where primera >= ({SEMANA} - interval '1 week'))
+                    where primera >= ({_SEMANA_TS} - interval '1 week'))
                select canal,
-                      count(*) filter (where dia >= {SEMANA}::date) nuevas,
+                      count(*) filter (where dia >= {SEMANA}) nuevas,
                       -- Las TRES procedencias, separadas. Es la respuesta a
                       -- "¿qué hice yo a mano y qué fue de código?".
-                      count(*) filter (where dia >= {SEMANA}::date
+                      count(*) filter (where dia >= {SEMANA}
                                          and actor is not null
                                          and actor <> '{ACTOR_CODIGO}') con_actor,
-                      count(*) filter (where dia >= {SEMANA}::date
+                      count(*) filter (where dia >= {SEMANA}
                                          and actor = '{ACTOR_CODIGO}') por_codigo,
-                      count(*) filter (where dia >= {SEMANA}::date
+                      count(*) filter (where dia >= {SEMANA}
                                          and actor is null) sin_firma,
                       -- Las que se mandaron y el canal aún no ha juzgado. Se
                       -- cuentan para la meta —el trabajo se hizo— pero se
                       -- muestran aparte: dar por buena una pendiente de Walmart
                       -- sería optimista de más, porque de sus 66 veredictos
                       -- resueltos sólo 7 salieron bien.
-                      count(*) filter (where dia >= {SEMANA}::date
+                      count(*) filter (where dia >= {SEMANA}
                                          and not confirmada) sin_confirmar,
-                      count(*) filter (where dia <  {SEMANA}::date) previa
+                      count(*) filter (where dia <  {SEMANA}) previa
                  from fechadas
                 group by canal order by nuevas desc, previa desc""")
     except Exception as exc:  # noqa: BLE001
@@ -316,27 +361,83 @@ def publicaciones_semana() -> list[dict[str, Any]]:
 
 
 def costos_semana() -> dict[str, int]:
-    """Costos validados de esta semana y de la previa, para la comparativa.
+    """SKUs con el costo VALIDADO esta semana y la previa, para la comparativa.
 
-    Sale de `ops.process_log` y no de `costing.costos_validados.revisado_at`
-    porque aquí interesa el ACTO —alguien validó— y no el estado del SKU: un
-    costo puede volver a validarse, y las dos veces son trabajo hecho.
+    ⚠️ ESTA TARJETA CONTABA OTRA COSA. Hasta el 8-sep salía de `ops.process_log`
+    con `proceso='costos'`, y eso NO son validaciones: son RECÁLCULOS. Medido
+    contra producción en la semana 36 (31 ago – 6 sep), la diferencia era de
+    más del doble:
+
+      · 110 renglones de costeo … lo que enseñaba esta tarjeta (109, con el
+        desfase de 6 h que también se corrigió)
+      ·  → 101 SKUs distintos … 9 renglones eran recálculos repetidos del mismo
+        SKU; la tarjeta contaba actos, Análisis cuenta SKUs
+      ·  → 38 de esos SKUs eran `accion='auto'`: el costeo automático que corre
+        al CREAR un producto. NINGUNO quedó validado, pero llevan el actor de
+        quien creó el producto y se acreditaban como trabajo de validación
+      ·  →  47 validaciones reales
+
+    El tab Análisis · Métricas mostraba 47 y esta pantalla 109 para la MISMA
+    semana. Las dos cifras eran ciertas; ninguna de las dos era la que decía su
+    rótulo.
+
+    POR QUÉ AHORA SALE DE `costing.costos_validados.revisado_at`, y no de la
+    bitácora: es la MISMA fuente y la MISMA aritmética de semana que
+    `routers/metricas.py`, así que las dos pantallas coinciden **por
+    construcción** — no por disciplina de quien las mantenga — y coinciden
+    también hacia atrás, sin esperar a que se acumule bitácora nueva.
+
+    Lo que esta cifra NO es: el número de VECES que alguien validó. `revisado_at`
+    es un estado por SKU y se sobrescribe, así que revalidar un SKU lo mueve de
+    semana en vez de sumar. Esa otra pregunta —quién validó y cuántas veces— la
+    contesta la bitácora desde el 8-sep (`accion='validar'`, ver
+    `costing_write.marcar_revisado`), y es lo que alimenta la columna por
+    persona. Las dos son verdad; responden cosas distintas y por eso van
+    separadas.
     """
-    SEMANA = "date_trunc('week', now() at time zone 'America/Mexico_City')"
     try:
         f = supabase_db.fetch_all(
             f"""select
-                  count(*) filter (
-                    where created_at >= {SEMANA}) actual,
-                  count(*) filter (
-                    where created_at >= {SEMANA} - interval '1 week'
-                      and created_at <  {SEMANA}) previa
-                 from ops.process_log
-                where proceso = 'costos' and actor is not null
-                  and estado <> all(%s)""", (list(_INTERMEDIOS),))
+                  count(*) filter (where dia >= {_SEMANA_DIA}) actual,
+                  count(*) filter (where dia >= {_SEMANA_DIA} - 7
+                                     and dia <  {_SEMANA_DIA}) previa
+                 from (select (revisado_at at time zone 'America/Mexico_City')::date dia
+                         from costing.costos_validados
+                        where revisado_at is not null) v""")
         return {"actual": f[0]["actual"], "previa": f[0]["previa"]} if f else {}
     except Exception as exc:  # noqa: BLE001
-        log.warning("no se pudieron contar los costos de la semana: %s", exc)
+        log.warning("no se pudieron contar los costos validados de la semana: %s", exc)
+        return {}
+
+
+def costeos_semana() -> dict[str, int]:
+    """Costeos hechos a mano esta semana y la previa. NO son validaciones.
+
+    Es la cifra que esta pantalla enseñaba antes bajo el rótulo "Costos
+    validados"; se conserva porque mide algo real —cuánto costeo se movió— pero
+    con su nombre.
+
+    Se deja fuera `accion='auto'`: ese renglón lo escribe el costeo automático
+    de `crear_producto`, y aunque lleve el actor de quien creó el producto, no
+    es trabajo de costeo que esa persona haya hecho. Medido el 8-sep: 38 de los
+    101 SKUs de la semana 36 eran de ese tipo, y ninguno terminó validado.
+
+    Tampoco entra `validar`/`desvalidar`: eso es la otra tarjeta.
+    """
+    try:
+        f = supabase_db.fetch_all(
+            f"""select
+                  count(*) filter (where created_at >= {_SEMANA_TS}) actual,
+                  count(*) filter (where created_at >= {_SEMANA_TS} - interval '1 week'
+                                     and created_at <  {_SEMANA_TS}) previa
+                 from ops.process_log
+                where proceso = 'costos' and actor is not null
+                  and accion <> all(%s)
+                  and estado <> all(%s)""",
+            (list(_COSTOS_NO_MANUALES), list(_INTERMEDIOS)))
+        return {"actual": f[0]["actual"], "previa": f[0]["previa"]} if f else {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no se pudieron contar los costeos de la semana: %s", exc)
         return {}
 
 
@@ -403,7 +504,7 @@ def resumen(dias: int = 30) -> dict[str, Any]:
     """
     try:
         filas = supabase_db.fetch_all(
-            """select actor, proceso,
+            f"""select actor, {_PROCESO} proceso,
                       coalesce(detalle->>'canal', '(sin canal)') canal,
                       coalesce(detalle->>'cuenta', '') cuenta,
                       count(*) total,
@@ -414,7 +515,7 @@ def resumen(dias: int = 30) -> dict[str, Any]:
                   and actor is not null and actor <> %s
                   and estado <> all(%s)
                   and created_at >= now() - make_interval(days => %s)
-                group by actor, proceso, canal, cuenta
+                group by 1, 2, canal, cuenta
                 order by total desc""",
             (list(_EXITO), list(_DE_PERSONA), ACTOR_CODIGO,
              list(_INTERMEDIOS), dias),
@@ -488,6 +589,7 @@ def resumen(dias: int = 30) -> dict[str, Any]:
             "cobertura": cob,
             "publicaciones_semana": publicaciones_semana(),
             "costos_semana": costos_semana(),
+            "costeos_semana": costeos_semana(),
             "meta_semanal": META_SEMANAL,
             "sin_movimientos": _sin_movimientos(activos)}
 

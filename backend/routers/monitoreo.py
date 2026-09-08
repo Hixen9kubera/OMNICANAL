@@ -29,7 +29,7 @@ async def resumen(dias: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
     psycopg2, que BLOQUEA: llamarlo directo desde una corrutina detiene el event
     loop —o sea, el backend ENTERO— mientras responde, no sólo a quien pidió
     esto. Es la regla 11 de la casa y el defecto exacto del apagón de cinco horas
-    del 13-ago. Pesaba poco cuando era UNA consulta; desde el 4-sep son siete.
+    del 13-ago. Pesaba poco cuando era UNA consulta; desde el 8-sep son ocho.
     """
     return await asyncio.to_thread(monitoreo.resumen, dias)
 

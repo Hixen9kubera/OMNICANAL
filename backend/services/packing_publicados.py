@@ -1344,7 +1344,10 @@ def guardar(jid: str, skus: list[str],
         solté = False
         try:
             if bloqueo:
-                costing_write.marcar_revisado(sku, False)
+                # Sin bitácora: esto SUELTA el candado para poder escribir, no
+                # es que alguien haya des-validado el costo. Ver el aviso de
+                # `marcar_revisado`.
+                costing_write.marcar_revisado(sku, False, bitacora=False)
                 solté = True
             costing_write.guardar_validados(
                 sku,
@@ -1370,7 +1373,9 @@ def guardar(jid: str, skus: list[str],
             if solté:
                 # Compensación: devolver el candado que este bloque quitó.
                 try:
-                    costing_write.marcar_revisado(sku, True)
+                    # Compensación: devuelve el candado que ya estaba puesto.
+                    # No es una validación nueva, así que no se firma.
+                    costing_write.marcar_revisado(sku, True, bitacora=False)
                 except Exception:  # noqa: BLE001
                     log.exception("además, no se pudo restaurar el candado de %s", sku)
                     aviso += (" · ATENCIÓN: el candado de COSTO VALIDADO quedó "
