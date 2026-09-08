@@ -1001,6 +1001,61 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.448.0 — «No hay competencia» y «no nos dejaron ver» dejan de ser lo mismo
+
+Sale de la pregunta de Eduardo en la v0.446.0. Ahí quedó DOCUMENTADO que ML nos
+bloqueaba y que la pantalla lo enseñaba como ausencia de competencia; esto es el
+arreglo.
+
+**El cero tenía dos padres y la pantalla sólo conocía uno.** Un término que ML
+manda al muro de login y uno que de verdad no tiene resultados llegaban al panel
+idénticos: una lista vacía y el texto *«este término todavía no se ha medido»*.
+Peor: **ninguno de los dos se guardaba**, así que el término seguía pendiente y
+el siguiente barrido lo volvía a pagar — «casco integral moto» lleva **cinco
+corridas** por esa puerta.
+
+**Ahora hay tres finales, se escriben los tres, y se dicen distinto:**
+
+| Final | Qué se guarda | Qué lee el usuario |
+|---|---|---|
+| trajo filas | `estado='ok'` | los resultados |
+| se raspó y ML no tenía nada | `estado='vacio'` | «ML no devolvió nada. **Esta vez el cero sí es del mercado**» |
+| ML mandó a verificarse | `estado='bloqueado'` | «**ML no nos dejó ver este término.** No sabemos qué competencia hay — no es que no la haya» |
+
+**De dónde sale la prueba del bloqueo.** Apify no oculta las peticiones que
+fallan: empuja al dataset un registro con `#error` y el detalle en `#debug`.
+`buscar_terminos` lo tiraba a la basura. Ahora lo lee —la URL **pedida**, no la
+cargada, que es la del muro y no se puede cruzar con ningún término— y devuelve
+esos términos en un buzón opcional (`bloqueados`), el mismo patrón del `estado`
+de `competencia_ml._get`.
+
+**Lo que corta el gasto:** los tres finales marcan `medido_en`. La cola de
+`competencia_buscar_apify.py` es `q not in ya` sobre los medidos, así que un
+bloqueado sin marca vuelve a salir en TODOS los barridos. Reintentarlo sigue
+siendo posible —`estado='bloqueado'` tiene índice parcial— pero pasa a ser una
+decisión con su costo a la vista, no una fuga que nadie ve.
+
+**Migración 0048** (aplicada al sandbox y a producción antes del deploy, en ese
+orden: la columna es aditiva y el código viejo la ignora). `estado` con `check`
+de tres valores; las 1,828 filas ya medidas quedan en **NULL a propósito** — no
+se inventa su motivo, se llena solo con la próxima medición de cada término.
+
+**De paso, la regla 11.** `medir_busquedas` llamaba `_nuestras_publicaciones()` y
+`reemplazar_busqueda()` —psycopg2, bloqueante— de forma síncrona dentro de una
+corrutina. Desde la v0.443.0 corre en su propio hilo, así que no congelaba nada,
+pero era una trampa esperando a que alguien la volviera a llamar desde el loop.
+Las dos van a `asyncio.to_thread`.
+
+**11 pruebas nuevas** (49 en total), incluida la copia literal del registro de
+Apify de la corrida `1G1bYhC2HKVa1lYPV`: los dos términos, el mismo proxy, el
+mismo minuto, uno pasa y el otro no.
+
+**Lo que NO se tocó, a propósito:** cuando TODOS los términos de una corrida
+salen bloqueados, `_con_respaldo` considera la corrida inútil y reintenta con el
+actor de respaldo — o sea que se paga dos veces por algo que no va a funcionar.
+Es real y está medido, pero cambiar ese criterio afecta también a los bloqueos
+INTERMITENTES, que son justo para lo que existe el respaldo. Queda anotado.
+
 ### v0.447.0 — En los canales, el padre muestra lo que cobran sus variantes (Eduardo)
 
 En Mercado Libre las variantes son publicaciones propias con su propio precio,

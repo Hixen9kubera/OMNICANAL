@@ -257,7 +257,25 @@ def _normalizar(it: dict[str, Any], posicion: int) -> dict[str, Any]:
     }
 
 
+def _bloqueado_en(pag: dict[str, Any]) -> str | None:
+    """URL que ML mandó a verificarse, o `None` si la página salió bien.
+
+    Apify NO omite las peticiones que fallaron: empuja al dataset un registro
+    con `#error` y el detalle en `#debug`. Ese registro es la ÚNICA prueba de
+    que ML nos bloqueó, y hasta la v0.448.0 se tiraba a la basura junto con la
+    diferencia entre «no hay competencia» y «no pudimos verla».
+
+    Se lee la URL PEDIDA (`#debug.url`), no la cargada: la cargada es la del
+    muro (`/gz/account-verification?go=…`) y no se puede cruzar con el término.
+    """
+    if not pag.get("#error"):
+        return None
+    dbg = pag.get("#debug") or {}
+    return (dbg.get("url") or "").rstrip("/") or None
+
+
 async def buscar_terminos(terminos: list[str], limite: int = 10,
+                          bloqueados: set[str] | None = None,
                           ) -> dict[str, list[dict[str, Any]]]:
     """
     Búsqueda de varios términos con el navegador GENÉRICO. → { termino: [filas] }
@@ -272,7 +290,11 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
       • VOLUMEN: la página trae ~48 orgánicos por término, no 5.
 
     Y corre desde la infraestructura de Apify con proxy residencial, así que el
-    muro de login que ML levanta contra nuestra IP no aplica.
+    muro de login que ML levanta contra nuestra IP no aplica… CASI SIEMPRE. Hay
+    URLs que ML manda a verificarse pase lo que pase: «casco integral moto» lo
+    hizo 45 veces seguidas mientras «tenis hombre», en la misma corrida y con el
+    mismo proxy, traía 48 resultados. Quien pase un set en `bloqueados` recibe
+    ahí esos términos y puede distinguirlos de los que de verdad no tienen nada.
     """
     consultas = [t.strip() for t in dict.fromkeys(terminos) if t and t.strip()]
     if not consultas:
@@ -301,6 +323,16 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
 
     out: dict[str, list[dict[str, Any]]] = {}
     for pag in paginas:
+        murado = _bloqueado_en(pag)
+        if murado:
+            q = de_url.get(murado)
+            if q:
+                if bloqueados is not None:
+                    bloqueados.add(q)
+                log.warning("buscar_terminos: ML bloqueó %r (%s intentos) → %s",
+                            q, (pag.get("#debug") or {}).get("retryCount"),
+                            (pag.get("#debug") or {}).get("loadedUrl", "")[:80])
+            continue
         q = de_url.get((pag.get("url") or "").rstrip("/"))
         if not q:
             # Respaldo: reconstruir el término desde el slug del URL.
@@ -313,7 +345,7 @@ async def buscar_terminos(terminos: list[str], limite: int = 10,
                 filas.append(f)
         if filas:
             out[q] = filas
-    faltan = [q for q in consultas if q not in out]
+    faltan = [q for q in consultas if q not in out and q not in (bloqueados or ())]
     if faltan:
         log.warning("buscar_terminos: sin resultados para %s: %s",
                     len(faltan), faltan[:5])

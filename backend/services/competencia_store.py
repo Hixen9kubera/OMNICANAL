@@ -356,6 +356,17 @@ def reemplazar_busqueda(termino: str, periodo: str,
         "enrich.market_search_results y no hay a dónde.")
 
 
+def marcar_busqueda_bloqueada(termino: str) -> None:
+    """ML no nos dejó ver el término: queda medido, con motivo, sin borrar nada."""
+    r = _remoto()
+    if r:
+        r.marcar_busqueda_bloqueada(termino)
+        return
+    raise RuntimeError(
+        "No hay SUPABASE_DB_URL: el estado del término vive en "
+        "enrich.market_search_term y no hay a dónde escribirlo.")
+
+
 def busqueda(termino: str, limite: int = 5) -> list[dict[str, Any]]:
     """Los resultados guardados de un término. Vacío = no se ha medido."""
     r = _remoto()

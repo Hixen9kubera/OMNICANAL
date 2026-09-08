@@ -88,11 +88,16 @@ def _correr(jid: str, termino: str) -> None:
         # necesita su propio loop. No se puede colgar del loop del backend: eso
         # es justo lo que la regla 11 prohíbe (tres minutos de red bloquearían
         # el servidor entero).
-        guardadas = asyncio.run(competencia_captura.medir_busquedas([termino]))
+        murados: set[str] = set()
+        guardadas = asyncio.run(
+            competencia_captura.medir_busquedas([termino], bloqueados=murados))
         n = guardadas.get(termino, 0)
-        # Cero filas NO es error: hay búsquedas que ML no contesta con nada, y
-        # el término queda medido igual porque ya se pagó.
-        _marcar(jid, "listo", filas=n, vacio=n == 0)
+        # Cero filas NO es error, pero hay DOS ceros y no significan lo mismo:
+        # «ML no tiene nada» es un hecho del mercado; «ML no nos dejó ver» es un
+        # problema nuestro. Los dos quedan medidos —ya se pagaron— y el panel
+        # dice cuál de los dos fue.
+        _marcar(jid, "listo", filas=n, vacio=n == 0,
+                bloqueado=termino in murados)
     except Exception as exc:                                  # noqa: BLE001
         log.warning("la búsqueda de %r falló: %s", termino, exc)
         _marcar(jid, "error", error=str(exc)[:200])
@@ -107,7 +112,7 @@ def arrancar(termino: str) -> dict[str, Any]:
         _trabajos[jid] = {
             "id": jid, "termino": termino, "paso": "encolado",
             "paso_label": PASOS["encolado"], "creado": ahora, "actualizado": ahora,
-            "filas": None, "vacio": None, "error": None,
+            "filas": None, "vacio": None, "bloqueado": None, "error": None,
         }
     threading.Thread(target=_correr, args=(jid, termino),
                      name=f"busq-{jid}", daemon=True).start()

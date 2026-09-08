@@ -1082,6 +1082,10 @@ export interface CompetenciaDetalleSku {
   busqueda_general: CompetenciaResultado[];
   /** Cuándo se midió esa búsqueda. `null` = NUNCA, que no es lo mismo que vieja. */
   busqueda_medida_en: string | null;
+  /** Cómo terminó esa medición. Sin esto, una lista vacía se lee como «no tiene
+   *  competencia» aunque lo que pasó fue que ML nos mandó al muro de login.
+   *  `null` = se midió antes de la 0048 y no quedó registro del motivo. */
+  busqueda_estado: "ok" | "vacio" | "bloqueado" | null;
   sin_datos_ml: boolean;
   aviso: string | null;
 }

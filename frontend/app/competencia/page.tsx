@@ -744,22 +744,42 @@ function DetalleSku({
             />
           </div>
           {d.busqueda_general.length === 0 ? (
-            /* El mensaje viejo explicaba por qué la API no sirve
-               (`/sites/MLM/search` → 403). Cierto, pero inútil: no dice qué
-               hacer. La búsqueda se mide con Apify y cuesta ~$0.007 por término,
-               así que lo accionable es que ESE término todavía no se ha corrido. */
+            /* CUATRO vacíos distintos, y confundirlos ya costó caro. El mensaje
+               viejo daba uno solo —«todavía no se ha medido»— y lo mostraba
+               también cuando la medición SÍ había corrido y ML nos había
+               bloqueado: la pantalla afirmaba como hecho del mercado algo que era
+               un problema nuestro. Ver v0.446.0/v0.448.0 («casco integral moto»,
+               45 intentos, 45 muros de login). */
             <div className="py-3 text-center text-xs text-slate-400">
-              {d.termino_general ? (
+              {!d.termino_general ? (
+                <>
+                  Este SKU no tiene término general, así que no hay nada que
+                  buscar. Asígnale uno para poder medir su posición orgánica.
+                </>
+              ) : d.busqueda_estado === "bloqueado" ? (
+                <span className="mx-auto flex max-w-md items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-left text-amber-800">
+                  <Ban size={14} className="mt-0.5 shrink-0" />
+                  <span>
+                    <b>Mercado Libre no nos dejó ver este término.</b> Nos mandó a
+                    su pantalla de iniciar sesión en vez de a los resultados, así
+                    que <b>no sabemos</b> qué competencia hay — no es que no la
+                    haya. Suele ser cosa de la redacción exacta del término:
+                    cambiarlo por uno más común («casco para moto» en vez de
+                    «casco integral moto») casi siempre lo destraba.
+                  </span>
+                </span>
+              ) : d.busqueda_estado === "vacio" ? (
+                <>
+                  Se midió y <b>Mercado Libre no devolvió nada</b> para este
+                  término. Esta vez el cero sí es del mercado: no hay competencia
+                  orgánica que medir con esas palabras.
+                </>
+              ) : (
                 <>
                   Este término todavía no se ha medido. La posición orgánica se
                   captura con el buscador de Apify (~$0.007 por término) y se
                   guarda una sola vez: los demás SKUs con el mismo término la
                   reusan sin costo.
-                </>
-              ) : (
-                <>
-                  Este SKU no tiene término general, así que no hay nada que
-                  buscar. Asígnale uno para poder medir su posición orgánica.
                 </>
               )}
             </div>
@@ -1449,13 +1469,21 @@ function BotonMedirBusqueda({
         setMsg("Sigue corriendo. Recarga en un momento para ver el resultado.");
         return;
       }
-      // Cero resultados NO es un fallo: hay búsquedas que ML no contesta con
-      // nada, y el término queda medido igual. Decirlo así evita que se reporte
-      // como error algo que ya se pagó y está bien.
-      setMsg(r.vacio ? "Medido: ML no devolvió resultados para ese término."
-                     : `Listo: ${r.filas} resultados.`);
-      setTono(r.vacio ? "aviso" : "ok");
-      if (!r.vacio) onListo();
+      // Cero resultados NO es un fallo, pero hay DOS ceros y decirlos igual es
+      // lo que hacía que la pantalla afirmara «no hay competencia» cuando la
+      // verdad era «ML no nos dejó ver». Los dos quedan medidos —ya se pagaron—
+      // y por eso los dos recargan: el motivo se guardó y hay que mostrarlo.
+      if (r.bloqueado) {
+        setTono("error");
+        setMsg("ML no nos dejó ver ese término: mandó su pantalla de iniciar " +
+               "sesión. Queda anotado para no volver a pagarlo. Prueba con una " +
+               "redacción más común.");
+      } else {
+        setTono(r.vacio ? "aviso" : "ok");
+        setMsg(r.vacio ? "Medido: ML no tiene resultados para ese término."
+                       : `Listo: ${r.filas} resultados.`);
+      }
+      onListo();
     } catch (e) {
       // 409 = el candado de días. Aviso, no falla. Igual que en el de rankings.
       setTono(e instanceof ApiError && e.status === 409 ? "aviso" : "error");

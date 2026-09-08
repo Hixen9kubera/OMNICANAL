@@ -1242,7 +1242,8 @@ async def capturar_rankings_categorias(periodo: str | None = None,
             "terminos": terminos, "avisos": avisos}
 
 
-async def medir_busquedas(terminos: list[str], limite: int = 10) -> dict[str, int]:
+async def medir_busquedas(terminos: list[str], limite: int = 10,
+                          bloqueados: set[str] | None = None) -> dict[str, int]:
     """
     Mide la BÚSQUEDA GENERAL de estos términos y la guarda. → {término: filas}.
 
@@ -1263,31 +1264,57 @@ async def medir_busquedas(terminos: list[str], limite: int = 10) -> dict[str, in
     atribución es por URL, así que agrupar aquí SÍ funciona (con el actor viejo
     de ML no: no etiquetaba de qué consulta venía cada resultado).
 
-    ⚠️ UN TÉRMINO QUE VUELVE VACÍO NO SE GUARDA, Y ESO CUESTA DINERO.
-    Este docstring decía lo contrario —«igual queda marcado como medido»— y era
-    falso: el `continue` de abajo se salta `reemplazar_busqueda`, así que
-    `medido_en` queda en NULL y el término sigue PENDIENTE. La cola alfabética de
-    `competencia_buscar_apify.py` lo vuelve a tomar en cada barrido y se vuelve a
-    pagar, para siempre.
+    ── VACÍO Y BLOQUEADO SON DOS COSAS DISTINTAS (v0.448.0) ─────────────────
+    Hasta la v0.446.0 los dos terminaban igual —sin guardar nada— y eso costaba
+    por partida doble. Medido el 8-sep-2026 con «casco integral moto»: 5 corridas
+    × 9 intentos = 45, TODAS redirigidas a `/gz/account-verification`, el muro de
+    login de ML. En la MISMA corrida y con el mismo proxy «tenis hombre» devolvió
+    48 resultados, y «casco para moto» —mismas palabras, misma categoría—
+    devolvió 10. El cero no era del mercado: era nuestro.
 
-    Y «vacío» casi nunca significa «ML no tiene nada». Medido el 8-sep-2026 con
-    «casco integral moto»: 5 corridas × 9 intentos = 45, TODAS redirigidas a
-    `mercadolibre.com.mx/gz/account-verification` (el muro de login). En la misma
-    corrida, con el mismo proxy, «tenis hombre» devolvió 48 resultados. O sea que
-    hoy este `0` mezcla dos cosas MUY distintas —«no hay competencia» y «no
-    pudimos verla»— y la pantalla enseña la primera cuando la verdad es la
-    segunda. Separarlas está propuesto y sin construir.
+    Ahora los tres finales se guardan y se distinguen:
+
+      · con filas → 'ok'
+      · sin filas y sin bloqueo → 'vacio'. ML de verdad no tiene nada, y ahí la
+        pantalla SÍ puede decir «no hay competencia directa» sin mentir.
+      · bloqueado → 'bloqueado'. No sabemos qué hay, y se dice así.
+
+    Los tres marcan `medido_en`, y esa es la parte que corta el gasto: la cola de
+    `competencia_buscar_apify.py` es `q not in ya` sobre los medidos, así que sin
+    la marca un término bloqueado se vuelve a pagar en CADA barrido —por esa
+    puerta se fueron cinco corridas del mismo casco—. Reintentarlo sigue siendo
+    posible (`estado='bloqueado'` tiene su índice), pero pasa a ser una decisión
+    con su costo a la vista en vez de una fuga que nadie ve.
+
+    Quien pase un set en `bloqueados` recibe ahí los términos que ML no dejó ver;
+    es lo que el botón del panel usa para cambiar el mensaje.
     """
     if not terminos:
         return {}
-    res = await competencia_scraper.buscar_terminos(terminos, limite=limite)
+    murados: set[str] = bloqueados if bloqueados is not None else set()
+    res = await competencia_scraper.buscar_terminos(terminos, limite=limite,
+                                                   bloqueados=murados)
     periodo = competencia_store.periodo_actual()
-    nuestras = _nuestras_publicaciones()
+    nuestras = await asyncio.to_thread(_nuestras_publicaciones)
     guardadas: dict[str, int] = {}
     for termino in terminos:
         filas = res.get(termino) or []
         if not filas:
             guardadas[termino] = 0
+            # Anotar SIEMPRE, con el motivo. Es lo que impide que el siguiente
+            # barrido lo vuelva a pagar, y lo que deja a la pantalla decir cuál
+            # de los dos ceros es.
+            try:
+                if termino in murados:
+                    await asyncio.to_thread(
+                        competencia_store.marcar_busqueda_bloqueada, termino)
+                else:
+                    await asyncio.to_thread(
+                        competencia_store.reemplazar_busqueda, termino, periodo, [])
+            except Exception as exc:                              # noqa: BLE001
+                # Que falle la ANOTACIÓN no debe tumbar la tanda: los demás
+                # términos de la corrida ya se rasparon y hay que guardarlos.
+                log.warning("no se pudo anotar el término vacío %r: %s", termino, exc)
             continue
         # Las reseñas van en HILOS, no en línea. `competencia_ml.reviews` usa
         # `requests` —bloqueante— y esto ahora corre DENTRO del event loop del
@@ -1304,7 +1331,8 @@ async def medir_busquedas(terminos: list[str], limite: int = 10) -> dict[str, in
                 f["rating"] = f.get("rating") or r.get("rating")
         await enriquecer_visitas(filas)
         _marcar(filas, nuestras)
-        guardadas[termino] = competencia_store.reemplazar_busqueda(termino, periodo, filas)
+        guardadas[termino] = await asyncio.to_thread(
+            competencia_store.reemplazar_busqueda, termino, periodo, filas)
     return guardadas
 
 

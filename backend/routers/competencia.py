@@ -280,6 +280,10 @@ def detalle_sku(sku: str, limite_terminos: int = 20):
     return {
         "busqueda_general": general,
         "busqueda_medida_en": (est_term or {}).get("medido_en"),
+        # 'ok' | 'vacio' | 'bloqueado' | None (medido antes de la 0048). Sin
+        # esto, la lista vacía de abajo se lee como «no tiene competencia» aunque
+        # lo que pasó fue que ML nos mandó al muro de login.
+        "busqueda_estado": (est_term or {}).get("estado"),
         "sku": sku,
         "nombre": fila.get("nombre"),
         "imagen": fila.get("imagen"),

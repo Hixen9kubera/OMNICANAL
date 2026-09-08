@@ -257,7 +257,7 @@ def estado_termino(termino: str, canal: str = "mercado_libre") -> dict[str, Any]
     distintos (422 contra 409).
     """
     filas = supabase_db.fetch_all(
-        "SELECT termino, origen, medido_en, resultados, "
+        "SELECT termino, origen, medido_en, resultados, estado, "
         "       (now()::date - medido_en::date) AS dias "
         "  FROM enrich.market_search_term "
         " WHERE canal = %s AND lower(termino) = lower(%s) LIMIT 1", (canal, termino))
@@ -475,7 +475,8 @@ def activar_raiz(raiz_id: str, activo: bool = True,
 
 
 def _id_de_termino(cur, termino: str, canal: str, origen: str | None = None,
-                   medido: bool = False, resultados: int | None = None) -> int:
+                   medido: bool = False, resultados: int | None = None,
+                   estado: str | None = None) -> int:
     """
     Id del término en el catálogo, creándolo si no existe. → `market_search_term.id`
 
@@ -485,18 +486,26 @@ def _id_de_termino(cur, termino: str, canal: str, origen: str | None = None,
 
     `medido` solo se marca cuando de verdad se corrió el buscador; no cuando se le
     asigna el término a un SKU.
+
+    `estado` (0048) dice CÓMO terminó esa corrida: 'ok' | 'vacio' | 'bloqueado'.
+    Se sobrescribe en cada medición y NO va con COALESCE como los demás: un
+    término que hoy se pudo ver y ayer no tiene que poder volver a 'ok'. Los
+    otros tres campos sí conservan lo anterior, porque asignarle el término a un
+    SKU pasa por aquí y no debe borrar una medición.
     """
     cur.execute(
-        "INSERT INTO enrich.market_search_term (canal, termino, origen, medido_en, resultados) "
-        "VALUES (%s, %s, %s, CASE WHEN %s THEN now() ELSE NULL END, %s) "
+        "INSERT INTO enrich.market_search_term "
+        "       (canal, termino, origen, medido_en, resultados, estado) "
+        "VALUES (%s, %s, %s, CASE WHEN %s THEN now() ELSE NULL END, %s, %s) "
         "ON CONFLICT (canal, termino) DO UPDATE SET "
         # coalesce al revés en `origen`: el que ya estaba manda, para que una
         # propuesta de IA posterior no borre el rastro de una corrección humana.
         "  origen     = COALESCE(enrich.market_search_term.origen, EXCLUDED.origen), "
         "  medido_en  = COALESCE(EXCLUDED.medido_en, enrich.market_search_term.medido_en), "
-        "  resultados = COALESCE(EXCLUDED.resultados, enrich.market_search_term.resultados) "
+        "  resultados = COALESCE(EXCLUDED.resultados, enrich.market_search_term.resultados), "
+        "  estado     = COALESCE(EXCLUDED.estado, enrich.market_search_term.estado) "
         "RETURNING id",
-        (canal, termino.strip(), origen, medido, resultados))
+        (canal, termino.strip(), origen, medido, resultados, estado))
     return int(cur.fetchone()["id"])
 
 
@@ -559,6 +568,11 @@ def reemplazar_busqueda(termino: str, periodo: str, filas: list[dict[str, Any]],
     no devolvió nada también está pagado, y sin la marca se volvería a correr en
     cada barrido. `periodo` se acepta por compatibilidad de firma; la tabla nueva
     no lo tiene (el momento lo dice `capturado_en` / `medido_en`).
+
+    Vacío aquí significa VACÍO DE VERDAD —se raspó y ML no tenía nada—, y por eso
+    entra como 'vacio'. Si ML nos mandó al muro de login eso NO pasa por aquí,
+    va por `marcar_busqueda_bloqueada`: son dos hechos distintos y la pantalla
+    los dice distinto.
     """
     listas, vistos = [], set()
     for f in filas:
@@ -570,7 +584,8 @@ def reemplazar_busqueda(termino: str, periodo: str, filas: list[dict[str, Any]],
 
     marcas = "(" + ",".join(["%s"] * len(_COLS_SERP)) + ")"
     with supabase_db.get_cursor() as cur:
-        tid = _id_de_termino(cur, termino, canal, medido=True, resultados=len(listas))
+        tid = _id_de_termino(cur, termino, canal, medido=True, resultados=len(listas),
+                             estado="ok" if listas else "vacio")
         cur.execute("DELETE FROM enrich.market_search_results WHERE termino_id = %s", (tid,))
         for f in listas:
             d = {k: f.get(k) for k in _COLS_SERP}
@@ -581,6 +596,32 @@ def reemplazar_busqueda(termino: str, periodo: str, filas: list[dict[str, Any]],
                 f"VALUES {marcas}", tuple(d[k] for k in _COLS_SERP))
     log.info("market_search_results %s/%r ← %s filas", canal, termino, len(listas))
     return len(listas)
+
+
+def marcar_busqueda_bloqueada(termino: str, canal: str = CANAL_DEFAULT) -> None:
+    """
+    Deja constancia de que ML no nos dejó ver este término. NO borra lo guardado.
+
+    ── POR QUÉ SE MARCA COMO MEDIDO ALGO QUE NO SE PUDO MEDIR ─────────────────
+    Porque se PAGÓ. La cola de `competencia_buscar_apify.py` es `q not in ya`
+    sobre los términos con `medido_en`, así que un bloqueado sin marca vuelve a
+    salir en TODOS los barridos y se vuelve a cobrar cada vez — «casco integral
+    moto» lleva cinco corridas por esa puerta. Marcarlo corta el goteo.
+
+    ── POR QUÉ NO SE PIERDE LA POSIBILIDAD DE REINTENTAR ──────────────────────
+    Porque queda `estado='bloqueado'` y su índice parcial: pedir «los bloqueados
+    de hace más de N días» es una consulta, y reintentarlos pasa a ser una
+    DECISIÓN con su costo a la vista, en vez de un gasto automático que nadie ve.
+
+    ── LO QUE ESTABA GUARDADO SE RESPETA ──────────────────────────────────────
+    Un término que se midió bien en agosto y hoy se bloquea conserva sus filas y
+    su `resultados`: son viejas, pero son lo último que supimos. Lo que cambia es
+    que la pantalla ya puede decir que la última mirada rebotó.
+    """
+    with supabase_db.get_cursor() as cur:
+        _id_de_termino(cur, termino, canal, medido=True, estado="bloqueado")
+    log.warning("market_search_term %s/%r ← BLOQUEADO por ML (no se raspó)",
+                canal, termino)
 
 
 def guardar_publicaciones(filas: list[dict[str, Any]]) -> int:

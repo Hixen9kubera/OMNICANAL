@@ -1031,9 +1031,12 @@ export function rankingCategoria(
  *
  * El backend distingue dos negativas y hay que tratarlas distinto: **409** es el
  * candado de días (temporal, mañana se puede) y **422** es que el término no
- * está en el catálogo (esperar no lo arregla). `filas: 0` con `vacio: true`
- * tampoco es un error: hay búsquedas sin resultados en ML y el término queda
- * medido igual.
+ * está en el catálogo (esperar no lo arregla).
+ *
+ * `filas: 0` tampoco es un error, pero hay DOS ceros y no significan lo mismo:
+ * con `bloqueado: true` ML nos mandó al muro de login y no sabemos qué hay; sin
+ * él, ML de verdad no tiene nada. Los dos quedan medidos —ya se pagaron— pero
+ * sólo el segundo autoriza a decir «no hay competencia».
  */
 export interface TrabajoBusqueda {
   id: string;
@@ -1042,6 +1045,8 @@ export interface TrabajoBusqueda {
   termino?: string;
   filas?: number | null;
   vacio?: boolean | null;
+  /** ML nos mandó a verificarnos. Cero filas, pero por culpa nuestra, no suya. */
+  bloqueado?: boolean | null;
   error?: string | null;
 }
 
