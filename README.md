@@ -1001,6 +1001,22 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.450.0 — La vista de Lista sigue las mismas reglas que las tarjetas (Eduardo)
+
+La columna **Precio** de la vista de Lista seguía enseñando el precio de la
+tienda en General y el precio de la propia publicación del padre en los
+canales, cuando las tarjetas ya habían cambiado (v0.438.0–v0.447.0). Ahora la
+columna aplica las mismas reglas:
+
+- **General** → la columna se llama **Costo**: costo unitario validado; padre
+  sin costeo propio → rango de sus variantes (`$971.00 – $972.30 variantes`);
+  sin costeo → "Sin costo".
+- **Canales** → **Precio**: lo que cobra la publicación con su lista tachada
+  debajo; padre → rango de lo que cobran sus variantes en esa cuenta
+  (`$275.00 – $599.00 2 variantes`).
+
+Solo cambia el componente `ProductList`; los datos ya viajaban en la
+respuesta desde las versiones anteriores.
 ### v0.449.0 — El costeo automático deja de contar como trabajo de la persona
 
 Cola de la v0.445.0. Ahí se sacó `accion='auto'` de la TARJETA de la banda pero

@@ -97,7 +97,10 @@ export default function ProductList({
             {esGeneral && <th className="px-3 py-3 text-center font-semibold">Tipo</th>}
             {esGeneral && <th className="px-3 py-3 text-center font-semibold">Variantes</th>}
             <th className="px-3 py-3 font-semibold">Categoría</th>
-            <th className="px-3 py-3 text-right font-semibold">Precio</th>
+            {/* Mismo reparto que la tarjeta (v0.438.0–v0.447.0): General es el
+                catálogo y enseña el COSTO; los canales, el precio de la
+                publicación. */}
+            <th className="px-3 py-3 text-right font-semibold">{esGeneral ? "Costo" : "Precio"}</th>
             <th className="px-3 py-3 text-center font-semibold">Stock</th>
             <th className="px-3 py-3 text-center font-semibold">Estado</th>
             <th className="px-4 py-3 text-center font-semibold">
@@ -162,9 +165,47 @@ export default function ProductList({
                     {p.categoria_path.map((c) => c.nombre).join(" › ") || "—"}
                   </span>
                 </td>
-                {/* Precio */}
+                {/* Costo (General) o precio de la publicación (canales), con
+                    las mismas reglas que la tarjeta:
+                    · General: costo unitario; padre sin costeo propio → rango
+                      de sus variantes; sin costeo → "Sin costo".
+                    · Canales: lo que cobra con su lista tachada; padre → rango
+                      de lo que cobran sus variantes en esa cuenta. */}
                 <td className="px-3 py-2.5 text-right font-bold text-slate-900">
-                  {precioMXN(p.precio)}
+                  {esGeneral ? (
+                    p.costo_rango ? (
+                      <span title={`Costo de sus variantes (${p.costo_rango.n} de ${p.costo_rango.total} con costeo en Costos). El padre no tiene costeo propio.`}>
+                        {p.costo_rango.min === p.costo_rango.max
+                          ? precioMXN(p.costo_rango.min)
+                          : `${precioMXN(p.costo_rango.min)} – ${precioMXN(p.costo_rango.max)}`}
+                        <span className="ml-1 text-[10px] font-normal uppercase tracking-wide text-slate-400">variantes</span>
+                      </span>
+                    ) : p.costo != null && p.costo > 0 ? (
+                      <span title="Costo unitario de la pieza (producto + flete), el validado en Costos.">
+                        {precioMXN(p.costo)}
+                      </span>
+                    ) : (
+                      <span className="font-normal text-slate-300" title="Este SKU no tiene costeo en Costos.">Sin costo</span>
+                    )
+                  ) : p.precio_rango ? (
+                    <span title={`Lo que cobran sus variantes en esta cuenta (${p.precio_rango.n} de ${p.precio_rango.total} con publicación viva). La publicación del padre cobra ${precioMXN(p.precio)}.`}>
+                      {p.precio_rango.min === p.precio_rango.max
+                        ? precioMXN(p.precio_rango.min)
+                        : `${precioMXN(p.precio_rango.min)} – ${precioMXN(p.precio_rango.max)}`}
+                      <span className="ml-1 text-[10px] font-normal uppercase tracking-wide text-slate-400">
+                        {p.precio_rango.n} variante{p.precio_rango.n === 1 ? "" : "s"}
+                      </span>
+                    </span>
+                  ) : (
+                    <>
+                      {precioMXN(p.precio)}
+                      {p.precio_base && p.precio && p.precio_base > p.precio && (
+                        <div className="text-[11px] font-normal text-slate-400 line-through">
+                          {precioMXN(p.precio_base)}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </td>
                 {/* Stock */}
                 <td className="px-3 py-2.5 text-center">
