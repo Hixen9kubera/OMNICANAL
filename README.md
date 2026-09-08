@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.443.0 — El botón «Medir» hacía el trabajo y perdía la respuesta (Eduardo)
+
+Eduardo: *"al buscar competencia directa no funciona"*. La pantalla decía **«No
+se pudo medir.»** — mi mensaje de respaldo, el que sale cuando el error llega
+SIN detalle.
+
+**El backend nunca falló.** Reproducido contra producción:
+
+```
+POST /api/competencia/busqueda  {"termino": "casco integral moto"}
+→ OK en 178 s   {"ok": true, "filas": 0, "vacio": true}
+```
+
+**178 segundos.** Una petición así no sobrevive el viaje al navegador: se cae en
+el camino, el frontend recibe algo que no es JSON, `detail` queda vacío y sale el
+respaldo. Mientras tanto el raspado terminaba, se guardaba y **se pagaba**. Un
+botón que hace el trabajo y pierde la respuesta es peor que uno que falla: el
+usuario vuelve a apretarlo y vuelve a pagar.
+
+**El arreglo: se arranca y se pregunta**, el mismo molde que ya usan los
+resolvedores de costos (`packing_publicados`, `useTrabajoJob`):
+
+- `POST /api/competencia/busqueda` lanza un hilo y **devuelve el `jid` de
+  inmediato**;
+- `GET /api/competencia/busqueda/{jid}` dice cómo va (`encolado` → `raspando` →
+  `listo`/`error`);
+- el panel pregunta cada 3 s y mientras tanto dice *«Buscando en Mercado Libre…
+  tarda un par de minutos»*.
+
+Un 404 del estado **no** significa trabajo perdido: `medir_busquedas` guarda
+ANTES de marcar listo, así que el dato ya está y el panel recarga en vez de dar
+el intento por perdido.
+
+El hilo corre con su propio `asyncio.run` y no cuelga del loop del backend — tres
+minutos de red ahí dentro es exactamente lo que prohíbe la regla 11.
+
+**Verificado de punta a punta** contra la base real: devuelve al instante, pasa a
+`raspando`, y a los 144 s queda `listo` con 10 filas guardadas y `medido_en`
+puesto.
+
+**Y de paso, dos cosas que NO eran el fallo:** el raspador está sano —«tenis
+hombre» devuelve 10 resultados— y «casco integral moto» sí devuelve **cero de
+verdad**. Un término sin resultados queda medido igual, porque ya se pagó.
+
 ### v0.442.0 — «Estatus de proceso» se convierte en VALIDADO BODEGA (4 requisitos)
 
 Brandon fijó el 7-sep la regla que faltaba: **un producto no puede darse por

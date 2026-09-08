@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from config import settings
 from services import (
     competencia_captura, competencia_scraper, competencia_store,
+    competencia_trabajos,
 )
 
 log = logging.getLogger("omnicanal.routers.competencia")
@@ -459,7 +460,7 @@ def _validar_solo(cats: list[str], forzar: bool) -> tuple[list[str], list[str]]:
 @router.post("/busqueda")
 async def capturar_busqueda(req: BusquedaReq):
     """
-    Mide la BÚSQUEDA GENERAL de UN término. Cuesta ~$0.007 — una página.
+    ARRANCA la medición de UN término y devuelve su `jid`. Cuesta ~$0.007.
 
     ── POR QUÉ EXISTE ─────────────────────────────────────────────────────────
     Hasta hoy esta mitad del tab sólo se podía medir desde la terminal
@@ -496,17 +497,32 @@ async def capturar_busqueda(req: BusquedaReq):
             409, f"«{termino}» se midió hace {dias} día(s). Se puede volver a "
                  f"pedir en {DIAS_CANDADO - dias}.")
 
-    guardadas = await competencia_captura.medir_busquedas([termino])
-    n = guardadas.get(termino, 0)
-    return {
-        "ok": True,
-        "termino": termino,
-        "filas": n,
-        # Cero filas NO es un fallo: hay búsquedas sin resultados en ML, y el
-        # término queda marcado como medido igual (ya se pagó). Quien llame lo
-        # dice con esas palabras en vez de mostrar un error.
-        "vacio": n == 0,
-    }
+    # ── NO se raspa aquí: se arranca y se devuelve el `jid` ────────────────
+    #
+    # El raspado tarda MINUTOS —178 s medidos contra producción el 8-sep-2026
+    # para «casco integral moto»— y una petición de tres minutos no sobrevive el
+    # viaje al navegador. El backend terminaba bien y el panel enseñaba «No se
+    # pudo medir.»: el trabajo hecho, el dinero gastado y la respuesta perdida.
+    #
+    # Mismo molde que los resolvedores de costos: POST arranca, GET pregunta.
+    return competencia_trabajos.arrancar(termino)
+
+
+@router.get("/busqueda/{jid}")
+def estado_busqueda(jid: str):
+    """
+    Cómo va ese raspado. 404 si caducó o si el backend reinició.
+
+    Un 404 aquí NO significa que el trabajo se haya perdido: `medir_busquedas`
+    guarda ANTES de marcar el trabajo listo, así que el dato ya está en la base
+    y el panel lo nota igual porque `busqueda_medida_en` cambió. Lo que se
+    pierde es el aviso.
+    """
+    e = competencia_trabajos.estado(jid)
+    if not e:
+        raise HTTPException(404, "Ese trabajo ya no existe. Recarga para ver si "
+                                 "la medición alcanzó a guardarse.")
+    return e
 
 
 @router.post("/rankings")

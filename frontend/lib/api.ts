@@ -1035,13 +1035,24 @@ export function rankingCategoria(
  * tampoco es un error: hay búsquedas sin resultados en ML y el término queda
  * medido igual.
  */
+export interface TrabajoBusqueda {
+  id: string;
+  paso: "encolado" | "raspando" | "listo" | "error";
+  paso_label: string;
+  termino?: string;
+  filas?: number | null;
+  vacio?: boolean | null;
+  error?: string | null;
+}
+
+/** ARRANCA la medición y devuelve el `jid`. NO espera: el raspado tarda minutos. */
 export function capturarBusquedaCompetencia(termino: string, forzar = false) {
-  return postJSON<{
-    ok: boolean;
-    termino: string;
-    filas: number;
-    vacio: boolean;
-  }>("/api/competencia/busqueda", { termino, forzar });
+  return postJSON<TrabajoBusqueda>("/api/competencia/busqueda", { termino, forzar });
+}
+
+/** Cómo va ese raspado. 404 = caducó, pero el dato pudo alcanzar a guardarse. */
+export function estadoBusquedaCompetencia(jid: string) {
+  return getJSON<TrabajoBusqueda>(`/api/competencia/busqueda/${jid}`);
 }
 
 export function capturarRankingsCompetencia(

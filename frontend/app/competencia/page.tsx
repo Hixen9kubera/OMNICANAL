@@ -36,6 +36,7 @@ import {
   vistaCompetencia,
   capturarRankingsCompetencia,
   capturarBusquedaCompetencia,
+  estadoBusquedaCompetencia,
   mensajeDeError,
   ApiError,
 } from "@/lib/api";
@@ -1412,7 +1413,42 @@ function BotonMedirBusqueda({
     setMsg(null);
     setTono("ok");
     try {
-      const r = await capturarBusquedaCompetencia(termino!);
+      // ── Se ARRANCA y se pregunta, no se espera ───────────────────────
+      //
+      // El raspado tarda minutos (178 s medidos el 8-sep-2026) y una petición
+      // así no sobrevive el viaje: el backend terminaba bien y aquí se veía
+      // «No se pudo medir.» — trabajo hecho, dinero gastado, respuesta perdida.
+      const t0 = await capturarBusquedaCompetencia(termino!);
+      setMsg("Buscando en Mercado Libre… tarda un par de minutos.");
+      setTono("aviso");
+
+      // Se pregunta cada 3 s. El tope es generoso a propósito: rendirse antes
+      // de que termine reproduce el bug que esto vino a arreglar.
+      let r = t0;
+      for (let i = 0; i < 120 && r.paso !== "listo" && r.paso !== "error"; i++) {
+        await new Promise((s) => setTimeout(s, 3000));
+        try {
+          r = await estadoBusquedaCompetencia(t0.id);
+        } catch {
+          // 404: el trabajo caducó o el backend reinició. El dato PUDO
+          // guardarse igual —se escribe antes de marcar listo— así que se
+          // recarga en vez de dar el intento por perdido.
+          setMsg("Se perdió el aviso del servidor. Recargando por si ya se guardó…");
+          onListo();
+          return;
+        }
+      }
+
+      if (r.paso === "error") {
+        setTono("error");
+        setMsg(r.error || "No se pudo medir.");
+        return;
+      }
+      if (r.paso !== "listo") {
+        setTono("aviso");
+        setMsg("Sigue corriendo. Recarga en un momento para ver el resultado.");
+        return;
+      }
       // Cero resultados NO es un fallo: hay búsquedas que ML no contesta con
       // nada, y el término queda medido igual. Decirlo así evita que se reporte
       // como error algo que ya se pagó y está bien.
