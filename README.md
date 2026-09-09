@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.457.0 — Devoluciones pasa al modelo de cabecera + líneas (migración 0049)
+
+Se aplicó en producción la migración `0049` de devoluciones, escrita por el otro
+equipo y corregida aquí antes de aplicarla (v2.3). La tabla plana del 31-ago
+—una fila por claim, un solo SKU, sin historia— queda apartada como
+`channel.returns_ml_v0` con sus 62 filas intactas, y en su lugar van
+`channel.returns` + `return_items` + `return_history`, que sí saben de
+devoluciones de varios SKUs y de retrocesos de estado.
+
+**Este commit es la otra mitad de esa migración y tenía que salir junto con
+ella.** `fulfillment.py` no solo leía la vista `returns_daily`: también leía la
+TABLA directo, pidiéndole `piezas`, `valor` y `resolucion_motivo` — tres
+columnas que el modelo nuevo no tiene, porque las dos primeras se fueron a
+`return_items`. Eso lo detectamos revisando el código, no el SQL: la propuesta
+original solo había auditado la vista y daba por hecho que con eso alcanzaba.
+Sin este cambio la pestaña no se degrada, tira 500.
+
+Ahora lee `channel.returns_cabecera`, la vista que reconstruye esa forma plana
+sumando las líneas de cada devolución. Y el filtro pasa de `creado_at` a `date`:
+en la tabla vieja `creado_at` era la fecha del claim, en la nueva es
+`default now()`, o sea la hora de inserción. Dejarlo habría hecho que todo lo
+que cargue un backfill futuro cayera en el día de la carga, sin dar ningún
+error — el tipo de falla que no se nota hasta que alguien compara contra ML.
+
+**La pestaña queda en CEROS, y es lo esperado.** Los escritores que existen
+(`backfill_devoluciones_ml.py`) pueblan el modelo viejo con
+`on conflict (canal, cuenta, claim_id)`, llave que ya no existe, así que hasta
+que se escriba el cargador del modelo nuevo no hay de dónde traer datos. Las 62
+devoluciones no se perdieron: están en `returns_ml_v0` y el respaldo en JSONL
+vive en `Documents/respaldos_devoluciones/`. No se rompe ninguna captura
+automática porque no había: `sondear_devoluciones_ml.py` es de solo lectura y
+el backfill se corre a mano.
+
 ### v0.456.0 — El almacén pasa al frente, y DROP OFF se puede aislar de un clic
 
 Cinco peticiones de Brandon del 9-sep. Dos son quitar ruido, una es mostrar dos
