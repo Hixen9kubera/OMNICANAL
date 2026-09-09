@@ -54,6 +54,7 @@ se queda con lo que ya tenía.
 from __future__ import annotations
 
 import gc
+import io
 import logging
 import threading
 import time
@@ -85,6 +86,9 @@ _MAX_ARCHIVOS = 12
 _DIST_ACEPTA = 8
 # Hueco minimo contra el siguiente candidato para dar el empate por bueno.
 _HUECO_MINIMO = 8
+# Cuanto mejor tiene que ser el color del ganador para desempatar. Medido:
+# en TEC-0008-AMR el bueno da 4 y el siguiente 45, o sea 11x.
+_MARGEN_COLOR = 3
 _cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _candado = threading.Lock()
 _calentando: set[str] = set()
@@ -372,24 +376,95 @@ def _por_foto_de_odoo(ix: Any, sku: str, pidx: Any) -> list[int]:
         return []
 
     # EL EMPATE TIENE QUE SER INEQUIVOCO, y esta es la parte que mas importa.
-    # Estos packing lists traen VARIOS RENGLONES DEL MISMO PRODUCTO -lotes
-    # distintos, con fotos casi identicas- y quedarse con "el mas parecido"
-    # es echar un volado con cara de dato. Medido el 9-sep en TEC-0008-AMR:
-    # cuatro renglones "Lavadora de autos" a distancias 3, 5, 10 y 24, con
-    # 200, 400, 300 y 200 cajas. Elegir el de distancia 3 no esta justificado
-    # cuando hay otro a 5.
-    #
-    # Asi que se exige un HUECO claro contra el siguiente candidato que no sea
-    # el mismo empate. Sin hueco no se devuelve nada y la pantalla dice "sin
-    # renglon", que es la verdad: no se sabe cual es.
+    # Estos packing lists traen VARIOS RENGLONES DEL MISMO PRODUCTO -lotes o
+    # COLORES distintos, con fotos casi identicas- y quedarse con "el mas
+    # parecido" es echar un volado con cara de dato.
     mejor = cerca[0][0]
     filas = [f for d, f in cerca if d == mejor]
     siguiente = next((d for d, _f in cerca if d > mejor), None)
-    if siguiente is not None and (siguiente - mejor) < _HUECO_MINIMO:
-        log.info("packing_cajas: %s sin empate inequivoco (mejor %s, sigue %s)",
-                 sku, mejor, siguiente)
+    if siguiente is None or (siguiente - mejor) >= _HUECO_MINIMO:
+        return sorted(filas)
+
+    # ── SIN HUECO: DESEMPATA EL COLOR ────────────────────────────────────────
+    # El dHash es CIEGO AL COLOR a proposito (compara estructura sobre gris), y
+    # por eso los hermanos de color quedan pegadisimos. Recuperar esa dimension
+    # resuelve el caso limpiamente.
+    #
+    # Medido el 9-sep en TEC-0008-AMR (amarillo), cuyo packing list trae siete
+    # lavadoras de autos que solo difieren en color -CC22191YE, CC22191GY,
+    # CC22191OR, CA1556BK, CA1555YE, CC22663BK-:
+    #
+    #     fila  modelo      dHash   color    cajas
+    #        3  CC22191YE       3       4      200   <- la buena
+    #        5  CC22191OR       5      45      400
+    #        4  CC22191GY      10      77      300
+    #
+    # Donde el dHash daba 3 contra 5, el color da 4 contra 45. Y 200 es
+    # exactamente lo que dice costos_validados para ese SKU.
+    #
+    # Se exige un margen de 3x contra el segundo: si el color tampoco decide,
+    # NO se devuelve nada. Un "no se" es mejor que un numero de caja inventado.
+    candidatos = [f for d, f in cerca if d <= max(_DIST_ACEPTA, mejor)]
+    if len(candidatos) < 2:
+        return sorted(filas)
+    base = _color_medio(crudo)
+    if base is None:
+        log.info("packing_cajas: %s sin empate inequivoco y sin color (mejor %s, "
+                 "sigue %s)", sku, mejor, siguiente)
         return []
-    return sorted(filas)
+    pesos = []
+    for fila in candidatos:
+        idx = ix.fila_de_idx.get(fila)
+        foto = ix.fotos.get(idx) if idx is not None else None
+        c = _color_medio(foto.get("crudo")) if foto else None
+        if c is not None:
+            pesos.append((_dist_color(base, c), fila))
+    pesos.sort()
+    if len(pesos) >= 2 and pesos[0][0] * _MARGEN_COLOR <= pesos[1][0]:
+        log.info("packing_cajas: %s desempatado por COLOR -> fila %s "
+                 "(color %.0f contra %.0f; dHash era %s contra %s)",
+                 sku, pesos[0][1], pesos[0][0], pesos[1][0], mejor, siguiente)
+        return [pesos[0][1]]
+    log.info("packing_cajas: %s sin empate inequivoco (dHash %s/%s, color sin "
+             "margen)", sku, mejor, siguiente)
+    return []
+
+
+def _color_medio(datos: bytes) -> tuple[float, float, float] | None:
+    """El color medio del CENTRO de la imagen, aplanada sobre blanco.
+
+    El centro porque estas fotos son de catalogo con mucho fondo claro, y el
+    borde diluiria justo lo que distingue a un producto amarillo de uno naranja.
+    Sobre blanco porque muchas llegan en PNG con transparencia y componer sobre
+    negro invertiria la comparacion.
+    """
+    if not datos:
+        return None
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(datos))
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            fondo = Image.new("RGB", im.size, (255, 255, 255))
+            fondo.paste(im, mask=im.split()[-1])
+            im = fondo
+        else:
+            im = im.convert("RGB")
+        w, h = im.size
+        if w < 4 or h < 4:
+            return None
+        im = im.crop((w // 4, h // 4, w * 3 // 4, h * 3 // 4)).resize((16, 16))
+        px = list(im.getdata())
+        n = len(px) or 1
+        return tuple(sum(p[i] for p in px) / n for i in range(3))  # type: ignore[return-value]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("packing_cajas: color de una imagen: %s", exc)
+        return None
+
+
+def _dist_color(a: tuple[float, float, float],
+                b: tuple[float, float, float]) -> float:
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
 
 
 def _marcar_sin_dato(skus: list[str], resueltos: set[str]) -> None:

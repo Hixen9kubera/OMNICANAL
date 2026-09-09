@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.470.0 — El COLOR desempata lo que el dHash no puede ver
+
+Brandon, 9-sep: *«para TEC-0008-AMR sí existe packing list en el Drive, pero
+viene de diferente formato: tiene 2 hojas, donde en la segunda hoja está el
+producto y sus cantidades. Chécalo a detalle»*.
+
+**Lo revisé y las dos hojas dicen lo mismo.** `CI&PL=RFCU4071380` tiene
+`Packing list` (filas 2-8) y `Commercial Invoice` (filas 13-19), y son los
+MISMOS siete productos con idénticas cantidades: 79, 200, 300, 400, 550, 400,
+200. El indexador ya leía la hoja correcta. El formato no era el problema.
+
+**El problema era el COLOR.** Ese packing list trae siete lavadoras de autos que
+solo se diferencian en color, y su columna `marks_nos` lo dice en el código de
+modelo: `CC22191YE` (amarillo), `CC22191GY` (gris), `CC22191OR` (naranja),
+`CA1556BK`, `CA1555YE`, `CC22663BK`. `TEC-0008-AMR` es **AMR = amarillo**.
+
+Y el dHash es **ciego al color a propósito** — compara estructura sobre gris.
+Por eso los hermanos de color quedan pegadísimos y la v0.466.0, correctamente,
+se negaba a elegir:
+
+| fila | modelo | dHash | **color** | cajas |
+|---|---|---|---|---|
+| **3** | CC22191**YE** | 3 | **4** | **200** ✅ |
+| 5 | CC22191OR | 5 | 45 | 400 |
+| 4 | CC22191GY | 10 | 77 | 300 |
+
+Donde el dHash daba 3 contra 5, el color da **4 contra 45**. Recuperar esa
+dimensión resuelve el caso, y 200 es exactamente lo que dice `costos_validados`
+para ese SKU — o sea que hay con qué comprobarlo.
+
+Así que cuando el dHash NO tiene hueco claro, desempata el color medio del
+centro de la imagen (aplanado sobre blanco, porque muchas llegan en PNG con
+transparencia). Se exige un margen de **3×** contra el segundo; si el color
+tampoco decide, se sigue devolviendo nada. **Un «no sé» sigue siendo mejor que un
+número de caja inventado.**
+
+El piloto pasa de 12 a **13 de 14** SKUs con renglón. El único que queda fuera es
+`DEPO-0048-EST`, que no existe en Odoo (existe `DEPO-0048-MET`), así que no hay
+contenedor del que partir.
+
 ### v0.469.0 — Validador de publicados: el Google Sheet de Andrea ya se lee entero (Eduardo)
 
 Andrea no podía validar `ORG-0826-VER-CLA` aunque su hoja tiene la fila 50
