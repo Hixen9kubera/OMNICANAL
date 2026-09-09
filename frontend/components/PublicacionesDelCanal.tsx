@@ -22,7 +22,7 @@
  * regla de cuándo un costo no se puede creer.
  */
 
-import { AlertTriangle, ExternalLink, RefreshCw, Tag } from "lucide-react";
+import { AlertTriangle, ExternalLink, RefreshCw, Tag, Target } from "lucide-react";
 
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
 import { enlacePublicacion } from "@/lib/enlaces";
@@ -126,6 +126,67 @@ function Precio({ p }: { p: Publicacion }) {
       <div className="mt-1 text-[11px] text-slate-400" title={oferta.ayuda}>
         {oferta.label}
       </div>
+    </div>
+  );
+}
+
+/**
+ * EL PISO DE RENTABILIDAD (Eduardo, 9-sep-2026). Aparece SOLO cuando la
+ * publicación cae por debajo del 20% de margen sobre el precio; mientras esté
+ * por encima, la tarjeta no dice nada.
+ *
+ * Se decidió como PISO y no como meta porque el catálogo ya vive arriba: la
+ * fórmula de la casa apunta al 48% sobre el COSTO, que es ~20.7% sobre el
+ * precio. Un sugerido que dijera "baja un poco" en cientos de tarjetas no se
+ * leería en la única donde importa.
+ *
+ * Y TIENE DOS CARAS, que es lo que evita que haga daño. Medido el 9-sep: de
+ * 498 publicaciones de ML evaluables solo 31 tienen el costo verificado, y
+ * bajo el piso hay 14 con costo confiable contra 270 sin él. Esas 270 no
+ * tienen un precio malo — tienen un costo del que no nos podemos fiar. A esas
+ * el backend NO les manda precio (`precio_piso` viene null y `piso_aviso`
+ * dice por qué): el renglón manda a revisar el costeo en vez de empujar a
+ * subir el precio 20 veces por un dato de captura.
+ */
+function Piso({ p }: { p: Publicacion }) {
+  const objetivo = p.piso_objetivo ?? 0.2;
+  const meta = `${Math.round(objetivo * 100)}%`;
+
+  if (p.piso_aviso === "canal_sin_costo") {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400"
+           title={`El precio sugerido necesita la comisión del canal y su tarifa de envío para calcularse, y hoy solo Mercado Libre las tiene cargadas. No es que esta publicación esté bien o mal: todavía no se puede saber.`}>
+        <Target size={13} className="shrink-0 text-slate-300" />
+        <span>Precio sugerido: todavía no disponible en este canal</span>
+      </div>
+    );
+  }
+
+  if (p.piso_aviso === "costo_sin_verificar") {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-slate-100 pt-2 text-[11px]"
+           title={`Esta publicación está por debajo del ${meta} de margen, pero su costo no está verificado contra el packing list. Verificar el costo primero: si está mal capturado, el precio que haría falta también estaría mal.`}>
+        <AlertTriangle size={13} className="shrink-0 text-amber-600" />
+        <span className="font-semibold text-amber-700">Bajo el {meta} de margen</span>
+        <span className="text-slate-500">— el costo no está verificado, revísalo antes de mover el precio</span>
+      </div>
+    );
+  }
+
+  if (p.precio_piso == null) return null;   // por encima del piso: silencio
+
+  const veces = p.precio_vigente ? p.precio_piso / p.precio_vigente : null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-rose-100 bg-rose-50/60 -mx-3 px-3 pt-2 pb-1 text-[11px]"
+         title={`Al precio de hoy esta publicación deja ${fmtPctFirmado(p.margen_pct)} de margen. ${fmtMoneda(p.precio_piso)} es el precio al que alcanzaría el ${meta}, con la misma aritmética que el margen de arriba: comisión sobre el precio sin IVA, fee de envío del tramo que corresponda, e IVA.`}>
+      <Target size={13} className="shrink-0 text-rose-600" />
+      <span className="text-rose-700">Para {meta} de margen:</span>
+      <span className="font-black tabular-nums text-rose-700">{fmtMoneda(p.precio_piso)}</span>
+      {veces !== null && veces >= 1.15 && (
+        <span className="text-rose-500">
+          {veces.toFixed(1)}× lo que cobras
+        </span>
+      )}
     </div>
   );
 }
@@ -309,6 +370,11 @@ export default function PublicacionesDelCanal({
                 <Margen p={p} aviso={aviso} />
               </div>
             </div>
+
+            {/* El piso va DEBAJO de las dos columnas, no como una tercera: con
+                tres cifras a lo ancho del cajón ninguna se lee de un vistazo, y
+                esta solo aparece de vez en cuando. */}
+            <Piso p={p} />
 
             {conEnlace && enlacePublicacion(p.canal, p.listing_id, p.url) && (
               <div className="mt-2 flex justify-end">

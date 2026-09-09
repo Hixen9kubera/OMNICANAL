@@ -1207,6 +1207,41 @@ siguen con la cifra congelada, rotulada como tal.
 puso en Omnicanal), con el mismo chip, el mismo violeta y el mismo distintivo en
 cada fila, para que signifiquen lo mismo en las tres pantallas.
 
+### v0.459.0 — El precio que te devuelve al 20% de margen, en la ficha del canal (Eduardo)
+
+Pediste un precio sugerido a la derecha del que se cobra hoy. Salió como un
+RENGLÓN debajo de las dos columnas y no como una tercera, por dos razones: con
+tres cifras a lo ancho del cajón ninguna se lee de un vistazo, y este número
+casi nunca hace falta.
+
+**Es un PISO, no una meta.** El catálogo ya vive arriba del 20%: la fórmula de
+la casa apunta al 48% sobre el COSTO, que es ~20.7% sobre el precio — la cuna
+`CUNA-0020-GRI-OCS` está exactamente ahí. Un sugerido que dijera "baja un
+poco" en cientos de tarjetas no se leería en la única donde importa. Así que la
+tarjeta calla mientras estés por encima y solo habla cuando caes debajo.
+
+**Y tiene un tercer estado que no estaba en el plan; salió de medir.** De 498
+publicaciones de ML evaluables, **solo 31 tienen el costo verificado**. Bajo el
+piso hay 14 con costo confiable y **270 sin él**. Esas 270 no tienen un precio
+malo: tienen un costo del que no nos podemos fiar —el 30% del catálogo trae un
+precio en dólares redondeado (×19) como costo—. Decirle a alguien "sube de $219
+a $4,209" por un dato de captura habría roto publicaciones sanas. Cuando el
+costo no está verificado el renglón no da precio: manda a revisar el costeo.
+
+**El cálculo es el INVERSO EXACTO del margen que la ficha ya muestra**, no una
+fórmula aparte, para que la tarjeta no se contradiga consigo misma. Y va por
+ITERACIÓN, no por despeje: el fee de envío de ML es un escalón que depende del
+tramo de precio y el precio depende del fee — la propia `calc_fee_envio_ml` lo
+dice y `calcular_pricing` también itera. No se usó `costos.calc_precio_sugerido`
+porque ésa despeja sobre el COSTO: con 0.20 habría dado $2,818 en vez de $3,363
+en la cuna, $545 de diferencia y la mitad de la ganancia.
+
+Comprobado contra 400 publicaciones activas de ML: **387 de 387 precios
+calculados alcanzan el 20%, cero fallos** (13 sin datos para calcular). En los
+canales que no son Mercado Libre el renglón lo dice en voz alta —"todavía no
+disponible en este canal"— en vez de no pintar nada: una tarjeta muda se lee
+como "aquí no hay problema", que es lo contrario de lo que pasa.
+
 ### v0.458.0 — Los comentarios que agregué en la v0.457.0 iban DENTRO del SQL
 
 Error mío, y de los que solo se ven corriendo la cosa. Al explicar el cambio de

@@ -608,6 +608,20 @@ PRECIO_SIN_CONFIRMAR = "precio_sin_confirmar"
 # Contra qué precio se calculó el margen. Se dice explícitamente en vez de dejar
 # que el lector lo deduzca de `precio_vigente_confirmado`: quien pinta el número
 # necesita poder nombrar el precio sin recomponer la regla.
+# Por qué NO se sugiere un precio aunque la publicación esté bajo el piso.
+# Medido el 9-sep: de 498 publicaciones de ML evaluables, solo 31 tienen el
+# costo verificado. Bajo el piso hay 14 con costo confiable y 270 sin él —y
+# esas 270 no tienen un precio malo, tienen un costo del que no nos podemos
+# fiar. Decirle a alguien "sube de $219 a $4,209" con un costo sin verificar
+# es empujarlo a romper una publicación sana por un dato de captura.
+COSTO_SIN_VERIFICAR = "costo_sin_verificar"
+# El canal no tiene con qué calcular: `CANALES_CON_COSTO` hoy es solo
+# mercado_libre, así que en Amazon, Walmart, Temu y TikTok no hay comisión ni
+# tarifa de envío cargadas. Se dice explícitamente (Eduardo, 9-sep) en vez de
+# no pintar nada: una tarjeta muda se lee como "aquí no hay problema", que es
+# justo lo contrario de lo que pasa — no lo sabemos.
+CANAL_SIN_COSTO = "canal_sin_costo"
+
 PRECIO_COBRADO = "precio_cobrado"   # price_sale confirmado — lo que ML cobra
 PRECIO_ML = "precio_ml"             # price — el techo conocido, sin confirmar
 SIN_COMISION = "sin_comision"
@@ -621,6 +635,83 @@ def _num(v: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return f
+
+
+# El PISO de rentabilidad, SOBRE EL PRECIO (Eduardo, 9-sep-2026). No confundir
+# con `costos.MARGEN_DEFAULT = 0.48`, que va sobre el COSTO: son la misma
+# ganancia medida contra denominadores distintos y NO son comparables. La cuna
+# CUNA-0020-GRI-OCS está simultáneamente al 20.7% sobre precio y al 48% sobre
+# costo. Este 0.20 es el primero, que es el número que la ficha ya enseña y el
+# que usan las alertas de margen negativo.
+#
+# Es un PISO, no una meta: mientras la publicación esté por encima no se dice
+# nada. Se decidió así porque el catálogo ya vive arriba —la fórmula de la casa
+# apunta al 48% sobre costo, o sea ~20.7% sobre precio—, y un sugerido que
+# dijera "baja un poco" en cientos de tarjetas no se leería en la única donde
+# importa.
+PISO_MARGEN = 0.20
+
+
+def precio_para_margen(*, objetivo: float, costo_unitario: Any, pct_comision: Any,
+                       peso: Any, largo: Any = 0, ancho: Any = 0, alto: Any = 0,
+                       canal: str = "mercado_libre") -> float | None:
+    """
+    El precio al que esta publicación alcanzaría `objetivo` de margen SOBRE EL
+    PRECIO. `None` si no se puede calcular (los mismos motivos que `margen_de`).
+
+    SE RESUELVE ITERANDO, y no con la fórmula de `costos.calc_precio_sugerido`,
+    por dos razones distintas:
+
+      1. Aquélla despeja sobre el COSTO (`costo * (1 + margen)`), no sobre el
+         precio. Pasarle 0.20 daría el precio del 20% de ROI, que en la cuna es
+         $2,818 en vez de $3,363 — $545 de diferencia y la mitad de la ganancia.
+
+      2. El fee de envío de ML es un ESCALÓN que depende del tramo de precio
+         (`costos._columna_precio_ml`), y el precio depende del fee. No hay
+         forma cerrada: la propia `calc_fee_envio_ml` lo dice en su docstring y
+         `calcular_pricing` también itera. Con una fórmula, el número saldría
+         mal justo en las fronteras de tramo.
+
+    La búsqueda es por bisección sobre "¿este precio ya alcanza el objetivo?",
+    que es monótona salvo en los saltos de tramo. Por eso al final se VERIFICA
+    el resultado: si el precio hallado no alcanza el objetivo —porque el
+    objetivo cae dentro de un escalón— se sube hasta que lo alcance, y si no,
+    se devuelve None en vez de un número que no cumple lo que promete.
+    """
+    def margen(px: float) -> float | None:
+        return margen_de(precio=px, costo_unitario=costo_unitario,
+                         pct_comision=pct_comision, peso=peso, largo=largo,
+                         ancho=ancho, alto=alto, canal=canal)["margen_pct"]
+
+    cu = _num(costo_unitario)
+    if cu is None or cu <= 0 or margen(cu * 3.0) is None:
+        return None
+
+    # Cota superior: el margen crece con el precio, así que basta con estirar
+    # hasta que lo alcance. 40x el costo es absurdo como precio y sirve de tope
+    # duro para no iterar de más si los insumos son raros.
+    lo, hi = cu, cu * 3.0
+    while (margen(hi) or -1) < objetivo:
+        hi *= 2.0
+        if hi > cu * 40:
+            return None
+
+    for _ in range(40):                      # 40 pasos bastan para llegar al centavo
+        mid = (lo + hi) / 2.0
+        if (margen(mid) or -1) < objetivo:
+            lo = mid
+        else:
+            hi = mid
+
+    px = round(hi + 0.005, 2)                # redondeo hacia ARRIBA: el piso no se cruza por medio centavo
+    if (margen(px) or -1) < objetivo:        # el objetivo cayó dentro de un escalón de tarifa
+        for _ in range(200):
+            px = round(px + 1.0, 2)
+            if (margen(px) or -1) >= objetivo:
+                break
+        else:
+            return None
+    return px
 
 
 def margen_de(*, precio: Any, costo_unitario: Any, pct_comision: Any,
@@ -836,6 +927,31 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
          "margen_aviso": PRECIO_SIN_CONFIRMAR if marcado else None,
          "margen_contra": (None if m["margen_pct"] is None
                            else PRECIO_COBRADO if confirmado else PRECIO_ML)}
+
+    # ── EL PISO DE RENTABILIDAD (Eduardo, 9-sep-2026) ────────────────────────
+    # Tres estados, y el tercero es el que evita hacer daño:
+    #
+    #   por encima del piso  → nada. La tarjeta se queda callada, que es lo que
+    #                          hace que el renglón se lea cuando aparece.
+    #   debajo + costo VERIFICADO   → `precio_piso`, accionable.
+    #   debajo + costo SIN verificar → `piso_aviso`, SIN precio. Ahí lo que hay
+    #                          que revisar es el costeo, no la publicación.
+    #
+    # El cálculo solo corre en el segundo caso: son 14 de 498 publicaciones
+    # (medido), así que la iteración no se paga en las otras 484.
+    bajo_piso = m["margen_pct"] is not None and m["margen_pct"] < PISO_MARGEN
+    costo_verificado = r.get("revisado_at") is not None
+    m = {**m,
+         "piso_objetivo": PISO_MARGEN,
+         "precio_piso": (precio_para_margen(
+             objetivo=PISO_MARGEN, costo_unitario=r.get("costo_unitario"),
+             pct_comision=r.get("pct_comision"), peso=r.get("peso"),
+             largo=r.get("largo"), ancho=r.get("ancho"), alto=r.get("alto"),
+             canal=canal) if (bajo_piso and costo_verificado) else None),
+         "piso_aviso": (CANAL_SIN_COSTO
+                        if m["margen_motivo"] == SIN_COSTO_CANAL
+                        else COSTO_SIN_VERIFICAR
+                        if (bajo_piso and not costo_verificado) else None)}
 
     return {
         "sku": r["sku"],

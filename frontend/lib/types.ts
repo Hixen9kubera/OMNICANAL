@@ -1546,6 +1546,19 @@ export interface Publicacion {
   oferta_dias: number | null;
   /** `null` = NO SE PUEDE SABER (ver `margen_motivo`). Jamás tratarlo como 0. */
   margen_pct: number | null;
+  /** El piso de rentabilidad SOBRE EL PRECIO (0.20). No es ROI sobre el costo:
+   *  la misma ganancia medida contra el otro denominador da 48%. */
+  piso_objetivo?: number | null;
+  /** Precio al que esta publicación alcanzaría el piso. Llega SOLO cuando está
+   *  por debajo Y su costo está verificado; si no, null. */
+  precio_piso?: number | null;
+  /** Por qué no hay precio sugerido.
+   *  'costo_sin_verificar' — está bajo el piso, pero su costo no se ha
+   *    comparado contra el packing list, así que el precio que haría falta
+   *    tampoco sería confiable.
+   *  'canal_sin_costo' — el canal no tiene comisión ni tarifa de envío
+   *    cargadas (hoy, todos menos Mercado Libre). */
+  piso_aviso?: "costo_sin_verificar" | "canal_sin_costo" | null;
   roi: number | null;
   ganancia_neta: number | null;
   margen_motivo: MargenMotivo | null;
