@@ -1028,6 +1028,51 @@ libera limpio, cero residuo). Versión 0.461.0.
 
 ---
 
+### v0.463.0 — Un fallo interno de ML dejaba devoluciones invisibles para siempre
+
+Auditoría del flujo vivo dos horas después de encenderlo (v0.460.0). Se le
+preguntó a ML cuántas devoluciones declara y se comparó contra kubera:
+**faltaba una**, y la razón no era la que parecía.
+
+**El claim contestaba, su devolución no.** `GET /claims/5573786449` daba 200 y
+decía `type: returns` — la devolución existe y es real. Pero
+`/post-purchase/v2/claims/5573786449/returns` devolvía **401 «Error executing
+GET [client:shipments]»**: un fallo INTERNO de Mercado Libre, su servicio de
+devoluciones no pudo hablar con el de envíos. Se repitió en dos corridas con una
+hora de diferencia, así que no era el parpadeo de un minuto.
+
+Que no era permiso nuestro se comprobó cruzando cuentas: con la cuenta ajena
+(BEKURA) ML responde `403 «User does not have access to claim»`, que es la
+respuesta correcta para un claim que no es tuyo. Con la dueña, 401 interno.
+
+**El defecto era mío.** `_traer` trataba todo lo que no fuera 200 o 404 como «no
+sé» y **descartaba el claim entero**. Nació del arreglo del 429 de la v0.460.0
+—donde un límite de tasa se guardaba como dato falso— pero se pasó de largo: un
+429 se recupera reintentando, y este 401 no. Resultado: una devolución real y
+abierta, invisible mientras el problema de ML durara, sin que nadie se enterara.
+
+Ahora el claim se guarda con lo que SÍ se sabe. El envío y el estado del dinero
+quedan en NULL, que no es inventar: NULL significa «no se sabe», que es la
+verdad. El código del fallo va en `payload.returns_error` para distinguir
+después «esta devolución no tiene envío» de «no pudimos leer su envío», y el
+barrido de la hora siguiente la completa cuando ML se recupere. Perderla entera
+no se recuperaba nunca.
+
+**Y el mismo barrido destapó un gasto que alimenta al bug anterior.** Medido
+sobre `ops.webhook_events`: **141 avisos de `post_purchase` en 2 horas para 26
+claims distintos** — 5.4 por caso, porque ML manda el reclamo, su
+`actions-history` y reenvíos. Cada aviso disparaba un `GET /claims/{id}` para
+volver a descubrir que era una mediación y tirarla: ~115 llamadas inútiles cada
+dos horas. Con el 429 de esta mañana todavía fresco, eso no es desperdicio
+abstracto: es cavar el mismo pozo.
+
+Se recuerda en memoria el veredicto NEGATIVO —una mediación no se vuelve
+devolución, así que es seguro— con TTL de 6 h y tope de 5,000 entradas. Las
+devoluciones no se cachean jamás: su estado cambia, y cada aviso es justamente
+la señal de que cambió.
+
+Estado tras el arreglo: 392 devoluciones, hueco contra ML en **cero**.
+
 ### v0.460.0 — Las devoluciones de Mercado Libre dejan de tirarse a la basura
 
 Petición de Brandon del 8-sep: revisar las devoluciones de los cinco
