@@ -122,7 +122,12 @@ def extraer_imagenes(xlsx_bytes: bytes, columna: int | None = None) -> dict[int,
                     sin_resolver += 1
 
         if columna is None and anclas:
-            columna = Counter(col for col, _, _ in anclas).most_common(1)[0][0]
+            # Por FILAS DISTINTAS, no por anclas: el export de Google Sheets de
+            # CAAU5061672 trae 113 anclas repetidas en tres filas de la
+            # columna F (iconos duplicados) y 66 fotos reales, una por fila, en
+            # la B. Contar anclas elegía la F y dejaba 8 "fotos" basura.
+            columna = Counter(col for col, _ in {(c, r) for c, r, _ in anclas}
+                              ).most_common(1)[0][0]
 
         for col, fila, media in anclas:
             if columna is not None and col != columna:
@@ -201,6 +206,10 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
             cm.setdefault("ancho", i)
         if any(k in hl for k in ("高(cm)", "height", "altura", "货箱高度", "alto")):
             cm.setdefault("alto", i)
+        # "MEDIDA DE CAJA" con dos celdas vacías a la derecha: L · W · H seguidas.
+        if ("largo" not in cm and re.search(r"medidas?\s*(de\s*)?(la\s*)?caja|dimensi", hl)
+                and i + 2 < len(header) and not _norm(header[i + 1]) and not _norm(header[i + 2])):
+            cm["largo"], cm["ancho"], cm["alto"] = i, i + 1, i + 2
 
         # Volumen TOTAL de la fila — autoritativo cuando existe.
         if any(k in hl for k in ("总体积", "total volume", "total cbm", "cbm total",
@@ -217,7 +226,8 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
         # Precio unitario (excluye los "total" / 货值 que son importes de línea)
         es_total = "total" in hl or "总" in hl
         if any(k in hl for k in ("单价", "unit price", "precio_usd", "precio/usd",
-                                 "u.price", "precio unitario")):
+                                 "u.price", "precio unitario", "costo unitario",
+                                 "unit cost", "cost usd", "costo usd")):
             if not es_total and "货值" not in hl:
                 cm.setdefault("precio_usd", i)
         # "货值 VALOR USD" / "valor usd" SIN "total"/"总" es el unitario del
@@ -338,6 +348,14 @@ def leer(xlsx_bytes: bytes, columna_imagen: int | None = None) -> dict[str, Any]
                                             "photo of product", "product picture")):
                 columna_imagen = i
                 break
+        # Sin una columna "de producto" explícita, vale la genérica ("FOTO",
+        # "PHOTO", "图片"): solo cuando es la ÚNICA columna de fotos.
+        if columna_imagen is None:
+            genericas = [i for i, h in enumerate(todas[h_idx])
+                         if _norm(h) in ("foto", "fotos", "photo", "photos", "picture",
+                                         "image", "imagen", "图片", "照片", "产品图")]
+            if len(genericas) == 1:
+                columna_imagen = genericas[0]
     imagenes = extraer_imagenes(xlsx_bytes, columna_imagen)
     if "piezas_total" not in cm:
         avisos.append("No se detectó columna de piezas totales; las cantidades "

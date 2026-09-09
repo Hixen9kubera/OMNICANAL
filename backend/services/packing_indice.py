@@ -83,12 +83,14 @@ PAT_CAJA = re.compile(
 # un error de captura del proveedor que ninguna variante de "total ctn" empata.
 # Buscar el token que sí es estable (CTN/CTNS) sobrevive a esos dedazos.
 PAT_CAJAS = re.compile(
-    r"(num_cajas|箱数|件数|\bctns?\b|cartons?|cajas)", re.I)
-PAT_CBM = re.compile(r"(cbm_master|单箱体积|ctn measur|体积/箱|volumen/caja)", re.I)
+    r"(num_cajas|箱数|件数|\bctns?\b|cartons?|cajas|\bcajas?\b)", re.I)
+# `cbm` a secas entra con `evitar=PAT_VOLTOT`: "T.CBM"/"Total CBM" es el
+# volumen de la fila, no el de la caja (CAAU5061672).
+PAT_CBM = re.compile(r"(cbm_master|单箱体积|ctn measur|体积/箱|volumen/caja|\bcbm\b)", re.I)
 PAT_PZCAJA = re.compile(r"(piezas_x_caja|单箱产品申报数量|产品申报数量|单箱数量|"
-                        r"unit pcs|pcs/ctn|piezas por|per box|por caja)", re.I)
+                        r"unit pcs|pcs/ctn|piezas por|per box|por caja|\bu/c\b|pzs?/caja|pcs/box|unid/caja|units?/carton)", re.I)
 PAT_PZTOT = re.compile(
-    r"(piezas_totales|产品总件数|总个数|总产品数量|total qty|total pcs)", re.I)
+    r"(piezas_totales|产品总件数|总个数|总产品数量|total qty|total pcs|\bqty\b|\bcantidad\b)", re.I)
 # Testigo del total REAL de la fila, que a veces contradice a la de arriba.
 PAT_CANT = re.compile(r"(cantidad_total|总产品数量|total products)", re.I)
 PAT_VALOR = re.compile(r"(valor_total|货值|total value|申报总价|total amount)", re.I)
@@ -96,10 +98,13 @@ PAT_VALOR = re.compile(r"(valor_total|货值|total value|申报总价|total amou
 # `货值` a secas cuando los dos existen.
 PAT_VALOR_TOTAL = re.compile(
     r"(valor_total|总货值|total value|申报总价|total amount|valor total)", re.I)
-PAT_VOLTOT = re.compile(r"(总体积|cbm_total|total volume|volumen total)", re.I)
+PAT_VOLTOT = re.compile(r"(总体积|cbm_total|total volume|volumen total|t\.?\s*cbm|total\s*cbm|cbm\s*total)", re.I)
 PAT_L = re.compile(r"(长|largo|length)", re.I)
 PAT_W = re.compile(r"(宽|ancho|width)", re.I)
 PAT_H = re.compile(r"(高|alto|height)", re.I)
+# Un solo encabezado "MEDIDA DE CAJA" con dos celdas vacías a la derecha: las
+# tres medidas van seguidas (CAAU5061672: 70 · 40 · 67).
+PAT_MEDIDA = re.compile(r"(medidas?\s*(de\s*)?(la\s*)?caja|dimensi[oó]n|尺寸|箱规|meas\.?$)", re.I)
 # `price` a secas al final: hay packing lists cuyo encabezado es literalmente
 # "Price" (PCIU9532241). No se confunde con el importe de línea porque `col()`
 # lo busca con `excluir_total=True`, que descarta cualquier "总"/"total".
@@ -108,7 +113,7 @@ PAT_H = re.compile(r"(高|alto|height)", re.I)
 # unitario (TLLU8977270, que trae "货值 VALOR USD" junto a "总货值 VALOR
 # TOTAL USD").
 PAT_PRECIO = re.compile(
-    r"(单价|产品申报单价|precio_usd|unit price|u\.price|\bprice\b|货值|valor usd|valor unitario)", re.I)
+    r"(单价|产品申报单价|precio_usd|unit price|u\.price|\bprice\b|货值|valor usd|valor unitario|costo unitario|unit cost|cost usd|costo usd)", re.I)
 
 _MAX_COLS_TEXTO = 14      # más allá de la 14 ya son notas y firmas
 _MAX_TROZOS_TEXTO = 6
@@ -253,11 +258,14 @@ class Indice:
         self.fila_encabezado = h_idx + 1        # 1-based, como openpyxl
         enc = [str(v or "") for v in (todas[h_idx] if todas else [])]
 
-        def col(patron: re.Pattern, excluir_total: bool = False) -> int | None:
+        def col(patron: re.Pattern, excluir_total: bool = False,
+                evitar: re.Pattern | None = None) -> int | None:
             for i, e in enumerate(enc):
                 if not patron.search(e):
                     continue
                 if excluir_total and ("总" in e or "total" in e.lower()):
+                    continue
+                if evitar is not None and evitar.search(e):
                     continue
                 return i + 1                     # openpyxl cuenta desde 1
             return None
@@ -265,7 +273,7 @@ class Indice:
         self.c_total = col(PAT_TOTAL) or col(PAT_TOTAL_ALT)
         self.c_caja = col(PAT_CAJA)
         self.c_cajas = col(PAT_CAJAS)
-        self.c_cbm = col(PAT_CBM)
+        self.c_cbm = col(PAT_CBM, evitar=PAT_VOLTOT)
         self.c_pzcaja = col(PAT_PZCAJA)
         self.c_pztot = col(PAT_PZTOT)
         # El precio UNITARIO nunca lleva 总/total: eso es el importe de la línea,
@@ -285,6 +293,14 @@ class Indice:
             self.c_precio = None
         self.c_voltot = col(PAT_VOLTOT)
         self.c_l, self.c_w, self.c_h = col(PAT_L), col(PAT_W), col(PAT_H)
+        # "MEDIDA DE CAJA" en una sola celda con dos vacías a su derecha: las
+        # tres medidas seguidas (CAAU5061672). Solo si no se hallaron sueltas.
+        if not (self.c_l and self.c_w and self.c_h):
+            for i, e in enumerate(enc):
+                if PAT_MEDIDA.search(e) and i + 2 < len(enc) \
+                        and not enc[i + 1].strip() and not enc[i + 2].strip():
+                    self.c_l, self.c_w, self.c_h = i + 1, i + 2, i + 3
+                    break
 
         # Los avisos que vienen de `packing_parser` hablan de SUS columnas, y
         # este módulo tiene su propio juego de patrones —más amplio, porque lo

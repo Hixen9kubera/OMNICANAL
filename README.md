@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.469.0 — Validador de publicados: el Google Sheet de Andrea ya se lee entero (Eduardo)
+
+Andrea no podía validar `ORG-0826-VER-CLA` aunque su hoja tiene la fila 50
+completa (foto, 20 cajas × 12, 70×40×67, USD 3.99). Cuatro cosas, todas del
+lado del panel:
+
+- **La liga no se podía pegar.** El ruteo por contenedor encontró el `.xlsx`
+  de la carpeta (`CAAU5061672 PL.xlsx`, con fórmulas sin valor y sin fotos
+  útiles) y, como "ya había archivo", el cuadro de "pega la liga" se ocultaba.
+  Ahora aparece también en `sin_match`: si el archivo hallado no sirvió, se
+  puede dar otro.
+- **Las fotos se tiraban.** El export de Google Sheets trae 113 anclas
+  repetidas en tres filas de la columna F (iconos) y 66 fotos reales, una por
+  fila, en la B. "La columna con más anclas" elegía la F. Ahora se elige por
+  FILAS DISTINTAS, y un encabezado genérico "FOTO" vale cuando es la única
+  columna de fotos. Resultado: 65 fotos en vez de 8.
+- **Los números salían en cero.** Encabezados cortos en español que el índice
+  no conocía: `CAJA`, `U/C`, `QTY`, `MEDIDA DE CAJA` (una celda con las tres
+  medidas seguidas), `CBM` a secas, `T.CBM`, `COSTO UNITARIO USD`. Se agregan
+  como alias; `CBM` evita `T.CBM` (volumen de la fila) con la guarda `evitar`.
+- Con eso la fila 50 da: USD 3.99, caja 70×40×67, 12 por caja, 0.01563 m³ por
+  pieza → flete $117.25, costo $193.06.
+
+Regresión contra los siete packing lists cacheados de agosto y TLLU8977270:
+idénticos. El `.xlsx` de la carpeta de Drive sigue sin valores (son fórmulas
+sin caché): para ese contenedor hay que pegar la liga del Sheet.
 ### v0.468.0 — Cada variante se procesa sola en Crear Productos, y se va sin esperar a sus hermanas
 
 Petición de las KAM que trajo Brandon el 9-sep: *«requieren que las variantes en

@@ -1504,8 +1504,13 @@ function PanelFotos({
         </div>
       )}
 
-      {/* Escape para los que no tienen packing list localizado */}
-      {(!f.file_id || f.estado === "sin_insumo") && (
+      {/* Escape para los que no tienen packing list localizado — Y para los
+          que sí lo tienen pero no sirvió (Eduardo, 9-sep-2026): con
+          ORG-0826-VER-CLA el ruteo encontró el .xlsx de la carpeta, que
+          trae fórmulas sin valor y casi sin fotos, y como "ya había archivo"
+          la liga no se podía pegar. La copia en Google Sheets sí tiene la
+          fila 50 con foto y precio. */}
+      {(!f.file_id || f.estado === "sin_insumo" || f.estado === "sin_match") && (
         <div className="mt-4 border-t border-slate-100 pt-3">
           <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
             <Link2 size={12} /> ¿Sabes cuál es su packing list? Pega la liga de Drive
