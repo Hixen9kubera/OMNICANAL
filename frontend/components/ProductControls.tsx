@@ -1,6 +1,6 @@
 "use client";
 
-import { LayoutGrid, List, ArrowDownWideNarrow, BadgeCheck } from "lucide-react";
+import { LayoutGrid, List, ArrowDownWideNarrow, BadgeCheck, Warehouse } from "lucide-react";
 import type { CategoriaWC } from "@/lib/api";
 
 export type Vista = "mosaico" | "lista";
@@ -19,6 +19,9 @@ interface Props {
   /** Solo productos con el COSTO VALIDADO. Solo aplica en General. */
   revisado: boolean;
   onRevisado: (v: boolean) => void;
+  /** Solo productos con existencias en el almacén DROP OFF de Odoo. */
+  dropOff: boolean;
+  onDropOff: (v: boolean) => void;
   color: string;
   textoColor: string;
 }
@@ -39,6 +42,7 @@ const ESTADOS = [
 export default function ProductControls({
   vista, onVista, orden, onOrden, esGeneral,
   categorias, categoria, onCategoria, estados, onEstados, revisado, onRevisado,
+  dropOff, onDropOff,
   color, textoColor,
 }: Props) {
   const toggleEstado = (v: string) => {
@@ -123,6 +127,28 @@ export default function ProductControls({
           >
             <BadgeCheck size={14} className="shrink-0" />
             Costo validado
+        </button>
+
+        {/* SOLO DROP OFF (Brandon, 9-sep). DROP OFF es el almacén del que salen
+            los envíos a los marketplaces chinos, así que sus piezas están
+            comprometidas a un flujo distinto del de TEXCO y conviene poder
+            aislarlas de un clic. Va en TODAS las pestañas porque el almacén es
+            del SKU, no de la publicación. Se acumula con la búsqueda y con
+            "Filtrar SKUs" en vez de reemplazarlas. */}
+        <button
+            onClick={() => onDropOff(!dropOff)}
+            title={dropOff
+              ? "Mostrando SOLO los productos con existencias en el almacén DROP OFF de Odoo."
+              : "Filtrar a los productos con existencias en DROP OFF — el almacén del que salen los envíos a marketplaces chinos."}
+            className={[
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+              dropOff
+                ? "border-violet-300 bg-violet-50 text-violet-700"
+                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+            ].join(" ")}
+          >
+            <Warehouse size={14} className="shrink-0" />
+            Solo DROP OFF
         </button>
       </div>
 

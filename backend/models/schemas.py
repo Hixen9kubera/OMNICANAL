@@ -135,6 +135,13 @@ class Producto(BaseModel):
     # Solo padres SIN marca propia con al menos una variante validada.
     revision_variantes: RevisionVariantes | None = None
 
+    # ¿Tiene existencias en el almacén DROP OFF de Odoo (id 142)? Es el almacén
+    # del que salen los envíos a los marketplaces chinos, así que una pieza ahí
+    # está comprometida a un flujo distinto del de TEXCO. Se manda SOLO cuando
+    # es cierto: ausente = no está en DROP OFF, que es el caso de 13 mil de los
+    # 13,175 SKUs y no tiene sentido acarrear como miles de `false`.
+    drop_off: bool | None = None
+
     # Tipo de producto en WooCommerce: simple | variable (padre) | variation
     tipo: str | None = None
     # Si es padre (variable): sus variantes (vista Crear Productos)

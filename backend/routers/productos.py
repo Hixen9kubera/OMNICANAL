@@ -28,7 +28,7 @@ from models.schemas import (
     RespuestaProductos,
 )
 from services import (amazon, channel_read, costing_read, ejemplos, inventario,
-                      meli, presencia, publicar, studio, woocommerce)
+                      meli, odoo, presencia, publicar, studio, woocommerce)
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -105,6 +105,7 @@ async def listar_productos(
     skus: str | None = Query(None, description="Lista de SKUs/términos separados por coma: filtra y busca a la vez"),
     vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
     revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Todos los canales"),
+    drop_off: bool = Query(False, description="Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). Todos los canales"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
@@ -136,6 +137,47 @@ async def listar_productos(
     # filtrando SKUs, pedir "validados" debe ACOTAR lo suyo, no borrárselo. Y
     # `search` sigue vivo aparte — del otro lado son dos condiciones unidas por
     # AND (`woocommerce._buscar_wc_ids_db`).
+    # SOLO DROP OFF (Brandon, 9-sep). Misma estructura que el de costo validado
+    # y por la misma razon: se resuelve ANTES de listar para que el TOTAL y la
+    # PAGINACION salgan del subconjunto correcto.
+    #
+    # DE DONDE SALE. No hay marca de "producto drop off" en ningun sistema: en
+    # Odoo los 7 product.tag no tienen nada de Drop, meli_channel_mkt esta vacio
+    # en los 12,386 productos, y product.template.warehouse_id apunta a DROP en
+    # TODOS (es el default, filtrar por el devolveria el catalogo entero). Y en
+    # kubera NO hay ninguna tabla con el almacen por SKU: ops.stock_watch_photo
+    # guarda el stock de Odoo pero es el TOTAL, sin decir de que almacen. La
+    # UNICA senal real es tener existencias en las ubicaciones del almacen 142,
+    # que es lo que contesta `odoo.skus_por_almacen` en una sola consulta.
+    #
+    # `skus_exactos=True` NO es un detalle: la lista la resuelve el sistema, asi
+    # que sus SKUs son exactos. Pasarlos por el LIKE de la caja "Filtrar SKUs"
+    # tardaba 31 s (202 comodines contra el MySQL de WordPress) contra 0.23 s
+    # con igualdad. Medido el 9-sep.
+    skus_exactos = False
+    if drop_off:
+        try:
+            en_drop = await asyncio.to_thread(odoo.skus_por_almacen, "DROP")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("filtro DROP OFF no disponible: %s", exc)
+            raise HTTPException(
+                503, "No se pudo leer el almacén DROP OFF de Odoo. Quita el "
+                     "filtro para seguir viendo el catálogo.")
+        if skus_lista:
+            pedidos = {t.strip().lower() for t in skus_lista}
+            en_drop = [s for s in en_drop if s.lower() in pedidos]
+        # Con la lista vacia NO se llama a Woo sin filtro: `skus=[]` es falsy
+        # alla y devolveria el catalogo entero justo cuando la respuesta
+        # correcta es "ninguno".
+        if not en_drop:
+            return RespuestaProductos(
+                canal=canal, items=[], filtro_activas=filtro_activas,
+                paginacion=Paginacion(page=page, per_page=per_page, total=0,
+                                      total_pages=0, tiene_anterior=False,
+                                      tiene_siguiente=False))
+        skus_lista = en_drop
+        skus_exactos = True
+
     revisado_truncado = False
     if revisado:
         try:
@@ -165,7 +207,7 @@ async def listar_productos(
         items_raw, total, total_pages = await woocommerce.listar_productos(
             page=page, per_page=per_page, search=search,
             orden=orden, estados=estados_lista, categoria=categoria, skus=skus_lista,
-            vista=vista,
+            vista=vista, skus_exactos=skus_exactos,
         )
         # Enriquecer con presencia en marketplaces (puntos de colores).
         # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que
@@ -442,6 +484,25 @@ async def listar_productos(
                     }
     except Exception as exc:  # noqa: BLE001
         log.warning("marca de revisión no disponible (el listado sigue): %s", exc)
+
+    # ── DISTINTIVO DROP OFF ──────────────────────────────────────────────────
+    # Se marca SIEMPRE, con el filtro puesto o sin él: Brandon pidió (9-sep)
+    # "ubicar los productos que sean drop off para diferenciarlos correctamente"
+    # Y el filtro; el distintivo sirve justo cuando NO se está filtrando.
+    # Cuesta una consulta a Odoo cada media hora (`skus_por_almacen` cachea),
+    # y en un listado que ya tarda ~10 s contra WooCommerce en vivo es ruido.
+    # Si Odoo no contesta NO se rompe el listado: se queda sin distintivos.
+    try:
+        en_drop = set(await asyncio.to_thread(odoo.skus_por_almacen, "DROP"))
+        if en_drop:
+            for it in items_raw:
+                if (it.get("sku") or "").upper() in en_drop:
+                    it["drop_off"] = True
+                for v in (it.get("variantes") or []):
+                    if (v.get("sku") or "").upper() in en_drop:
+                        v["drop_off"] = True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("distintivo DROP OFF no disponible (el listado sigue): %s", exc)
 
     items = [Producto(**i) for i in items_raw]
     paginacion = Paginacion(

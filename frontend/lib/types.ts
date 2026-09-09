@@ -87,6 +87,9 @@ export interface Producto {
   revision_movida?: boolean;
   /* Solo padres sin marca propia con al menos una variante validada. */
   revision_variantes?: RevisionVariantes | null;
+  /** Tiene existencias en el almacén DROP OFF de Odoo. Solo viaja cuando es
+   *  cierto: ausente = no está en DROP OFF. */
+  drop_off?: boolean | null;
 }
 
 export interface Paginacion {

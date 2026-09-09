@@ -157,6 +157,7 @@ async def listar_productos(
     categoria: int | None = None,
     skus: list[str] | None = None,
     vista: str = "productos",
+    skus_exactos: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
@@ -171,6 +172,10 @@ async def listar_productos(
     - `skus`: términos separados por coma (ya en lista); filtra Y busca a la vez
       (SKU completo, parcial o palabra del nombre) — igual semántica que
       "Filtrar SKUs" en Crear Productos.
+    - `skus_exactos`: la lista NO la tecleó una persona, la resolvió el sistema
+      (los SKUs de un almacén, los de costo validado). Cambia el LIKE por
+      igualdad: 135 veces más rápido y sin falsos positivos. Ver
+      `_buscar_wc_ids_wp`.
     - Sin filtros → listado en vivo de WooCommerce.
     """
     campos = (
@@ -218,7 +223,8 @@ async def listar_productos(
             # En hilo aparte: las 2 consultas LIKE a Hostinger tardan ~1.5 s y
             # ejecutarlas inline congelaba el event loop entero (perf 05-ago).
             wc_ids, total_db = await asyncio.to_thread(
-                _buscar_wc_ids_db, search, page, per_page, orden, estados, skus, vista)
+                _buscar_wc_ids_db, search, page, per_page, orden, estados, skus,
+                vista, skus_exactos)
             if wc_ids:
                 r = await cli.get("/products", params={
                     **params, "include": ",".join(str(i) for i in wc_ids),
@@ -447,6 +453,7 @@ def _buscar_wc_ids_wp(
     estados: list[str] | None,
     skus: list[str] | None,
     vista: str,
+    skus_exactos: bool = False,
 ) -> tuple[list[int], int]:
     """
     Búsqueda contra WordPress EN VIVO (wp_posts + wp_postmeta).
@@ -457,6 +464,23 @@ def _buscar_wc_ids_wp(
 
     El filtro de estado sale de `VISTAS`, así que cada pestaña ve lo suyo:
     Productos publish/pending/ready, Crear draft/inprogress, Omnicanal todo.
+
+    `skus_exactos` cambia el LIKE por igualdad, y la diferencia es enorme.
+    El LIKE existe porque la caja «Filtrar SKUs» recibe lo que teclea una
+    persona, y ahí un fragmento TIENE que encontrar. Pero cuando la lista la
+    resolvió el sistema —los SKUs de un almacén, los de costo validado— los
+    SKUs son exactos, y el LIKE es a la vez más lento y menos correcto:
+
+      · LENTO: cada término se vuelve DOS comodines `%…%`. Medido el 9-sep con
+        los 94 SKUs de DROP OFF (101 tras expandir padres = 202 comodines
+        contra el MySQL de Hostinger): **31.3 s**. La misma lista con `IN`:
+        **0.23 s**. 135 veces más rápido.
+      · MENOS CORRECTO: `%ROP-0297-CAQ-30%` también casa con `ROP-0297-CAQ-300`
+        si existiera, y además el LIKE mira el TÍTULO del producto — en la
+        medición devolvía 72 productos donde la igualdad devuelve 71.
+
+    Los padres se siguen expandiendo igual en los dos caminos: un SKU de
+    variante no casa nunca con el SKU (más corto) de su padre.
     """
     from services import wp_db
     P = wp_db._prefix()
@@ -489,7 +513,13 @@ def _buscar_wc_ids_wp(
         # Variante → padre: la consulta solo mira `post_type='product'`, así que
         # un SKU de variante jamás matchea contra el SKU (más corto) de su padre.
         terminos, _ = wp_db.expandir_con_padres(list(skus))
-        if terminos:
+        if terminos and skus_exactos:
+            # Lista resuelta por el sistema: igualdad. Ver el docstring — son
+            # 135 veces más rápido y además no arrastra falsos positivos.
+            where.append(
+                f"sk.meta_value IN ({','.join(['%s'] * len(terminos))})")
+            args += list(terminos)
+        elif terminos:
             grupo = " OR ".join(["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos))
             where.append(f"({grupo})")
             for t in terminos:
@@ -543,6 +573,7 @@ def _buscar_wc_ids_db(
     estados: list[str] | None = None,
     skus: list[str] | None = None,
     vista: str = "productos",
+    skus_exactos: bool = False,
 ) -> tuple[list[int], int]:
     """
     Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) + lista
@@ -563,7 +594,8 @@ def _buscar_wc_ids_db(
     # Leyendo wp_posts/wp_postmeta se busca sobre el catálogo REAL y además se
     # respeta la pestaña (Crear necesita ver drafts; Omnicanal, todo).
     if wp_db.disponible():
-        return _buscar_wc_ids_wp(search, page, per_page, orden, estados, skus, vista)
+        return _buscar_wc_ids_wp(search, page, per_page, orden, estados, skus,
+                                 vista, skus_exactos)
 
     # Respaldo: sin acceso directo a WordPress se usa la maestra (incompleta).
     where = ["wc_id IS NOT NULL", "(status_wc IS NULL OR status_wc <> 'draft')"]

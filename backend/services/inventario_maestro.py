@@ -110,20 +110,29 @@ PILOTO: tuple[str, ...] = (
     "HERR-0146-EST", "VEH-0148-EST",
 )
 
-# Tres SKUs de REFERENCIA. Los diez del piloto no han llegado —cero piezas y
+# CUATRO SKUs de REFERENCIA. Los diez del piloto no han llegado —cero piezas y
 # cero movimientos—, así que con ellos solos la trazabilidad se ve vacía y no
 # se entiende para qué sirve. Éstos se eligieron midiendo VARIEDAD, no volumen:
-# entre los tres aparecen las siete causas (entrada, venta, envío a FULL,
-# devolución, ajuste, traspaso y merma), los tres almacenes, y los tres estados
+# entre los cuatro aparecen las siete causas (entrada, venta, envío a FULL,
+# devolución, ajuste, traspaso y merma), LOS TRES ALMACENES, y los tres estados
 # de la etapa «en proceso»:
 #
 #   MUE-0135-NEG  162 movs · recibido pero SIN RACK (ámbar) · TEXCO
 #   TEC-0008-AMR  108 movs · acomodado en J-28-N1 (verde)   · TEXCO
 #   TEC-0370-NEG  285 movs · acomodado en L-17-N3 (verde)   · DROP OFF, con traspaso
+#   ORG-0863-ROS  50,000 pzas · en la RAÍZ del almacén       · TEXCO II
+#
+# El cuarto se sumó el 9-sep y NO es decorativo: hasta ese día el comentario de
+# arriba decía «los tres almacenes» y era FALSO — medido, los tres primeros solo
+# tocan TEXCO y DROP OFF. Como el filtro «Bodega» se llena con las bodegas que
+# de verdad aparecen en las filas, TEXCO II era IMPOSIBLE de ofrecer, y TEXCO II
+# es el 40% del inventario: 1,104 SKUs y 466,147 piezas. Sin este SKU la
+# pantalla afirmaba tener tres almacenes enseñando dos.
 #
 # Los tres CUADRAN contra Odoo, así que también sirven para comprobar que el
 # saldo del libro reproduce el que el panel publica.
-REFERENCIA: tuple[str, ...] = ("MUE-0135-NEG", "TEC-0008-AMR", "TEC-0370-NEG")
+REFERENCIA: tuple[str, ...] = ("MUE-0135-NEG", "TEC-0008-AMR", "TEC-0370-NEG",
+                              "ORG-0863-ROS")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LA TABLA

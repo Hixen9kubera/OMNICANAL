@@ -157,6 +157,11 @@ export default function OmnicanalPage() {
   // SKUs que cada canal ya aplicaba. Se acumula con la búsqueda y con
   // "Filtrar SKUs" en vez de reemplazarlos.
   const [revisado, setRevisado] = useState(false);
+  // "Solo DROP OFF": los SKUs con existencias en el almacén DROP OFF de Odoo.
+  // Lo resuelve el backend con UNA consulta a Odoo (cacheada 30 min) porque no
+  // existe ninguna marca de "producto drop off" en ningún sistema: la única
+  // señal real es tener piezas en las ubicaciones de ese almacén.
+  const [dropOff, setDropOff] = useState(false);
   const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
 
   const topRef = useRef<HTMLDivElement>(null);
@@ -249,6 +254,7 @@ export default function OmnicanalPage() {
         estados,
         categoria: esGeneral ? categoria : null,
         revisado,
+        dropOff,
         // Omnicanal es la vista de CONTROL: muestra TODO el catálogo, incluidos
         // los drafts. Esconderlos hacía invisible un producto en draft pero VIVO
         // en un canal (TEC-1841-ROS vendió estando oculto; ver v0.29.0).
@@ -293,7 +299,7 @@ export default function OmnicanalPage() {
     return () => ctrl.abort();
     // `soloActivas` va aquí SÍ O SÍ: sin él, encender el chip no vuelve a
     // pedir y la rejilla se queda igual — se ve como que el filtro no sirve.
-  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria, revisado]);
+  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria, revisado, dropOff]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -537,6 +543,8 @@ export default function OmnicanalPage() {
             estados={estados}
             onEstados={(e) => { setEstados(e); setPage(1); }}
             revisado={revisado}
+            dropOff={dropOff}
+            onDropOff={(v) => { setDropOff(v); setPage(1); }}
             onRevisado={(v) => { setRevisado(v); setPage(1); }}
             color={tema.color}
             textoColor={tema.texto}

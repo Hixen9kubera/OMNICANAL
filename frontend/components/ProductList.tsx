@@ -132,7 +132,19 @@ export default function ProductList({
                     </div>
                     <div className="min-w-0">
                       <div className="truncate font-semibold text-slate-800">{p.nombre}</div>
-                      <span className="font-mono text-[11px] text-slate-400">{p.sku}</span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-[11px] text-slate-400">{p.sku}</span>
+                        {/* DROP OFF: mismo distintivo y mismo violeta que en el
+                            mosaico y en la pestaña Inventario. */}
+                        {p.drop_off && (
+                          <span
+                            title="Tiene existencias en el almacén DROP OFF de Odoo — el almacén del que salen los envíos a marketplaces chinos."
+                            className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700"
+                          >
+                            DROP OFF
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </td>

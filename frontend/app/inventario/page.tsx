@@ -49,6 +49,47 @@ import type {
   RecepcionPendiente,
 } from "@/lib/types";
 
+/**
+ * LOS TRES ALMACENES FÍSICOS, y DROP OFF se distingue a la vista.
+ *
+ * Brandon, 9-sep: «debe mostrarse los productos que pertenezcan a texco 1,
+ * texco 2 o DROP OFF; este último debe mostrarse de otro color». No es
+ * decoración: DROP OFF es el almacén del que salen los envíos a los
+ * marketplaces chinos, o sea que una pieza ahí está comprometida a un flujo
+ * distinto del de TEXCO. Verlo de un golpe cambia la decisión.
+ *
+ * Los nombres salen del `warehouse_id` de Odoo TAL CUAL — son TEXCO (id 135),
+ * TEXCO II (150) y DROP OFF (142)—, así que aquí no se normaliza nada: si
+ * alguien renombra un almacén en Odoo, aparece el nombre nuevo sin estilo
+ * propio en vez de desaparecer. Ojo con eso: `odoo_ventas.py:406` documenta que
+ * las fotos se llavean por NOMBRE de almacén y renombrarlo ya rompió algo.
+ *
+ * «sin almacén» es el cuarto cubo y NO es una bodega: son SCRAP y CUARENTENA,
+ * las dos ubicaciones internas sin `warehouse_id` que Odoo excluye de
+ * `qty_available`. Se pinta en rojo tenue porque esa mercancía no se vende.
+ */
+const ESTILO_BODEGA: Record<string, string> = {
+  "DROP OFF": "bg-violet-100 text-violet-700 ring-violet-200",
+  "TEXCO": "bg-sky-100 text-sky-700 ring-sky-200",
+  "TEXCO II": "bg-teal-100 text-teal-700 ring-teal-200",
+  "sin almacén": "bg-rose-50 text-rose-600 ring-rose-200",
+};
+const ESTILO_BODEGA_OTRA = "bg-slate-100 text-slate-600 ring-slate-200";
+
+function Almacen({ nombre, titulo }: { nombre: string; titulo?: string }) {
+  return (
+    <span
+      title={titulo ?? (nombre === "DROP OFF"
+        ? "DROP OFF: el almacén del que salen los envíos a marketplaces chinos"
+        : `Almacén ${nombre} según Odoo`)}
+      className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ring-1 ${
+        ESTILO_BODEGA[nombre] ?? ESTILO_BODEGA_OTRA}`}
+    >
+      {nombre}
+    </span>
+  );
+}
+
 /** El estado de uno de los cuatro requisitos, por su clave. */
 function punto(f: FilaInventario, clave: ClavePunto): EstadoPunto | null {
   return f.validacion_bodega.puntos.find((p) => p.clave === clave)?.estado ?? null;
@@ -526,7 +567,12 @@ function Herramientas({
         title="Trae del backend exactamente estos SKUs. Vacío = los 10 del piloto."
         className={`${campo} w-72`}
       />
-      <select value={bodega} onChange={(e) => setBodega(e.target.value)} className={campo}>
+      {/* Solo se ofrecen las bodegas que APARECEN en las filas que se estan
+          viendo, no las tres siempre: ofrecer un almacen vacio seria prometer
+          un filtro que devuelve cero. */}
+      <select value={bodega} onChange={(e) => setBodega(e.target.value)}
+              className={campo}
+              title="Los tres almacenes fisicos son TEXCO, TEXCO II y DROP OFF. Aqui solo salen los que aparecen en las filas que estas viendo.">
         <option value="">Bodega: todas</option>
         {bodegas.map((b) => <option key={b} value={b}>Bodega: {b}</option>)}
       </select>
@@ -752,49 +798,50 @@ function Fila({
             {numCajas(f.cajas)} en piso
           </div>
         )}
-        {!!f.cajas_por_llegar && (
-          <div
-            className="text-[10px] text-amber-700"
-            title="Las cajas que sumarían esas piezas cuando se validen. Todavía no están en bodega."
-          >
-            +{numCajas(f.cajas_por_llegar)} sin recibir
-          </div>
-        )}
+        {/* Las CAJAS POR RECIBIR se retiran de la tabla (Brandon, 9-sep): un
+            SKU puede tener varias órdenes de compra abiertas, y una sola cifra
+            sumada no dice de cuál viene ni si son comparables. El desglose por
+            documento vive en el cajón, que es donde se puede accionar. */}
       </td>
 
+      {/* LAS DOS CIFRAS, SIEMPRE (Brandon, 9-sep). Antes el on hand solo
+          aparecía cuando difería, y esconderlo cuando coincide obliga a saberse
+          la regla para leer la celda: un hueco no dice «son iguales», dice
+          «no sé». La correcta sigue siendo la libre — por eso va grande y en
+          color, y el on hand debajo, en gris y rotulado. */}
       <td className="px-3 py-2.5 text-right">
-        <span className={`font-bold tabular-nums ${
-          piezas === null ? "text-slate-300" : piezas > 0 ? "text-emerald-700" : "text-rose-600"}`}>
-          {num(piezas)}
-        </span>
-        {/* ON HAND es métrica de trackeo (Brandon, 8-sep): se ve, pero solo
-            cuando difiere de lo libre — si no, sería ruido repetido. */}
-        {f.stock_fisico !== null && f.stock_fisico !== piezas && (
-          <div className="text-[10px] text-slate-400"
-               title={`On hand: ${num(f.stock_fisico)} piezas están físicamente en bodega, pero ${num(f.reservado)} están comprometidas en pedidos. Lo vendible es lo libre.`}>
-            {num(f.stock_fisico)} on hand
-          </div>
-        )}
-        {!!f.recepcion_piezas && (
+        <div className="flex items-baseline justify-end gap-1.5"
+             title="Free to use: las piezas que se pueden vender hoy. Es la cifra correcta.">
+          <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">free</span>
+          <span className={`font-bold tabular-nums ${
+            piezas === null ? "text-slate-300" : piezas > 0 ? "text-emerald-700" : "text-rose-600"}`}>
+            {num(piezas)}
+          </span>
+        </div>
+        <div className="flex items-baseline justify-end gap-1.5"
+             title={f.reservado
+               ? `On hand: ${num(f.stock_fisico)} piezas están físicamente en bodega, pero ${num(f.reservado)} están comprometidas en pedidos. Métrica de trackeo — lo vendible es lo free.`
+               : "On hand: las piezas físicamente en bodega. Métrica de trackeo."}>
+          <span className="text-[9px] font-bold uppercase tracking-wide text-slate-300">on hand</span>
+          <span className={`tabular-nums ${
+            f.stock_fisico !== piezas ? "font-semibold text-slate-600" : "text-slate-400"}`}>
+            {num(f.stock_fisico)}
+          </span>
+        </div>
+        {/* De lo pendiente, en la tabla queda SOLO el número de recepciones
+            abiertas (Brandon, 9-sep). Las piezas sin recibir y los días se
+            fueron al cajón: la cifra sumada aplana varias órdenes de compra en
+            un número que no se puede accionar desde aquí, y los días cuentan
+            desde un papel cuya fecha programada ya venció en todos los casos.
+            El desglose por documento sigue completo al abrir el SKU. */}
+        {!!f.recepcion_docs && (
           <div
             className="text-[10px] font-semibold text-amber-700"
-            title={
-              `${num(f.recepcion_piezas)} piezas que NO están en bodega: siguen en ` +
-              `${f.recepcion_docs > 1
-                ? `${f.recepcion_docs} documentos de recepción abiertos en Odoo`
-                : `el documento de recepción ${f.recepcion_ref ?? ""}, abierto en Odoo`}` +
-              ` desde ${f.recepcion_desde.slice(0, 10)} y sin validar. ` +
-              `No son ubicaciones ni lugares — por eso la columna Ubicación dice ` +
-              `«no recibido».`
-            }
+            title="Documentos de recepción abiertos en Odoo y sin validar. Ábrelo para ver cuántas piezas trae cada uno, de qué orden de compra viene y cuánto lleva sin validarse."
           >
-            +{num(f.recepcion_piezas)} sin recibir
-            <div className="font-normal opacity-80">
-              {f.recepcion_docs > 1
-                ? `${f.recepcion_docs} recepciones abiertas`
-                : "1 recepción abierta"}
-              {" · "}{f.recepcion_dias} d
-            </div>
+            {f.recepcion_docs > 1
+              ? `${f.recepcion_docs} recepciones abiertas`
+              : "1 recepción abierta"}
           </div>
         )}
         {/* La etiqueta «N no vendibles» se quitó de la tabla (Eduardo, 8-sep). No
@@ -810,18 +857,35 @@ function Fila({
 
       <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">{num(f.reservado)}</td>
 
-      {/* UBICACIÓN: el rack arriba, la bodega abajo. Dato que solo tiene Odoo. */}
+      {/* UBICACIÓN: EL ALMACÉN PRIMERO y el rack debajo (Brandon, 9-sep) — antes
+          era al revés. La pregunta que se hace de un vistazo es «en cuál de las
+          tres bodegas está», no «en qué rack»: el rack solo sirve cuando ya
+          fuiste a la bodega correcta, y además NO la identifica — los 297
+          nombres de rack de DROP OFF están todos repetidos en TEXCO. El rack no
+          se borra, baja de renglón. Se listan TODAS las bodegas del SKU, no solo
+          la principal: 71 SKUs viven a la vez en TEXCO y DROP OFF. */}
       <td className="px-3 py-2.5">
-        {f.rack ? (
+        {f.bodegas.length > 0 ? (
           <>
-            <div className="flex items-center gap-1 font-mono text-xs text-slate-700">
-              <MapPin className="h-3 w-3 shrink-0 text-slate-300" />
-              {f.rack}
+            <div className="flex flex-wrap items-center gap-1">
+              {f.bodegas.map((b) => <Almacen key={b} nombre={b} />)}
             </div>
-            <div className="text-[10px] text-slate-400">
-              {f.bodega}
-              {f.n_ubicaciones > 1 && ` +${f.n_ubicaciones - 1} más`}
-            </div>
+            {f.rack ? (
+              <div className="mt-1 flex items-center gap-1 font-mono text-[11px] text-slate-500">
+                <MapPin className="h-3 w-3 shrink-0 text-slate-300" />
+                {f.rack}
+                {f.n_ubicaciones > 1 && (
+                  <span className="font-sans text-[10px] text-slate-400">
+                    +{f.n_ubicaciones - 1} más
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="mt-1 text-[10px] text-amber-700"
+                   title="Está en el almacén pero en la raíz o en zona de paso: nadie le asignó una posición.">
+                sin rack asignado
+              </div>
+            )}
           </>
         ) : f.recepcion_piezas ? (
           // Si hay recepción abierta, «sin ubicación» sonaba a dato faltante y
@@ -1173,7 +1237,10 @@ function DondeEsta({ fila }: { fila: FilaInventario }) {
             <div key={u.ubicacion}>
               {linea(
                 <>
-                  {u.bodega} · <span className="font-mono text-xs text-slate-700">{u.rack}</span>
+                  <Almacen nombre={u.bodega} />{" "}
+                  <span className="font-mono text-xs text-slate-700">
+                    {u.rack || (u.es_stage ? "zona de paso" : "sin rack")}
+                  </span>
                   {!u.vendible && (
                     <span className="ml-1 rounded bg-rose-50 px-1 py-0.5 text-[10px] font-bold text-rose-700">
                       no vendible

@@ -10,6 +10,7 @@ XML-RPC es parte de la stdlib, no requiere dependencias extra.
 from __future__ import annotations
 
 import logging
+import time
 import xmlrpc.client
 from functools import lru_cache
 from typing import Any
@@ -283,6 +284,83 @@ def contenedores_por_sku(skus: list[str] | None = None) -> dict[str, str]:
         # El SKU va aunque no tenga contenedor: el diccionario también sirve
         # para saber si un SKU EXISTE en Odoo (y por tanto si es hoja o padre).
         salida[sku] = (r.get("container_numbers") or "").strip()
+    return salida
+
+
+# Los SKUs de un almacen cambian despacio (mercancia que entra y sale de una
+# bodega, no precios), asi que media hora de cache es de sobra y evita repetir
+# la consulta en cada carga de pantalla. Se guarda por CODIGO de almacen.
+_ALMACEN_TTL = 1800.0
+_almacen_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def skus_por_almacen(codigo: str, *, ttl: float = _ALMACEN_TTL) -> list[str]:
+    """
+    Los SKUs que tienen existencias en UN almacen fisico. ``DROP`` | ``TEXCO``
+    | ``TEX2``.
+
+    LA PREGUNTA VA AL REVES QUE EL RESTO DEL MODULO, y por eso es barata. Todas
+    las demas funciones de aqui van SKU -> dato, asi que responder "quienes
+    estan en DROP OFF" obligaria a preguntar por los 13 mil SKUs del catalogo.
+    Preguntandole al ALMACEN es UNA sola consulta: medido el 9-sep-2026, 0.23 s
+    para los 94 SKUs y 11,085 piezas de DROP OFF.
+
+    POR QUE NO SE FILTRA POR NINGUN CAMPO DEL PRODUCTO. No existe marca que
+    diga "este producto es drop off". Medido: los 7 `product.tag` no tienen
+    nada de Drop, `meli_channel_mkt` esta vacio en los 12,386 productos, y
+    `product.template.warehouse_id` apunta a DROP en TODOS ellos porque es el
+    default -- filtrar por el devolveria el catalogo entero. La UNICA senal
+    real es tener existencias en las ubicaciones del almacen.
+
+    `child_of` sobre la ubicacion raiz es lo que hace que valga una sola
+    llamada: recorre el arbol entero del almacen (297 ubicaciones en DROP OFF)
+    sin tener que enumerarlas. Y el filtro de `usage` no sobra: sin el entrarian
+    ubicaciones de transito que cuelgan del almacen sin ser existencias suyas.
+    """
+    codigo = (codigo or "").strip().upper()
+    if not codigo:
+        return []
+    guardado = _almacen_cache.get(codigo)
+    if guardado and (time.monotonic() - guardado[0]) < ttl:
+        return guardado[1]
+
+    uid = _uid()
+    if not uid:
+        return []
+    try:
+        alm = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "stock.warehouse", "search_read", [[["code", "=", codigo]]],
+            {"fields": ["name", "view_location_id"], "limit": 1},
+        )
+        if not alm:
+            log.warning("Odoo skus_por_almacen: no existe el almacen %s", codigo)
+            return []
+        raiz = _id_de(alm[0].get("view_location_id"))
+        quants = _models().execute_kw(
+            settings.odoo_db, uid, settings.odoo_password,
+            "stock.quant", "search_read",
+            [[["location_id", "child_of", raiz],
+              ["location_id.usage", "=", "internal"],
+              ["quantity", ">", 0]]],
+            {"fields": ["product_id"]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Odoo skus_por_almacen(%s) fallo: %s", codigo, exc)
+        # Se devuelve lo ultimo bueno si lo hay: mejor una foto de hace un rato
+        # que vaciar un filtro y hacer creer que el almacen esta vacio.
+        return guardado[1] if guardado else []
+
+    vistos: set[str] = set()
+    for q in quants:
+        nombre = _nombre_de(q.get("product_id"))
+        # `product_id` llega como "[SKU] Nombre del producto".
+        if nombre.startswith("[") and "]" in nombre:
+            sku = nombre[1:nombre.index("]")].strip()
+            if sku:
+                vistos.add(sku.upper())
+    salida = sorted(vistos)
+    _almacen_cache[codigo] = (time.monotonic(), salida)
     return salida
 
 
@@ -732,10 +810,21 @@ def _rack(completo: str, bodega: str) -> str:
     Se quitan los dos primeros tramos (el almacén y el nombre de la nave, que
     se repiten en todas las filas y solo gastan ancho de columna) y el resto se
     une con guiones, que es como el equipo escribe un rack.
+
+    OJO: el rack NO identifica el almacen y no se puede usar para deducirlo.
+    Medido el 9-sep sobre las 30,949 ubicaciones internas: los 297 nombres de
+    rack de DROP OFF estan TODOS repetidos en TEXCO. El almacen sale del
+    `warehouse_id` de la ubicacion, nunca de este texto.
+
+    Cuando la mercancia esta en la RAIZ del almacen (``TEX2/FERRAFORME``, dos
+    tramos) no hay rack que mostrar: devolver ``FERRAFORME`` pintaba el nombre
+    de la nave como si fuera una posicion. Medido el 9-sep: es el caso de los
+    SKUs mas voluminosos de TEXCO II, ORG-0863-ROS entre ellos con 50,000
+    piezas. Ahora devuelve vacio, que es lo que hay: almacen si, rack no.
     """
     partes = [p.strip() for p in (completo or "").split("/") if p.strip()]
     if len(partes) <= 2:
-        return partes[-1] if partes else ""
+        return ""
     return "-".join(partes[2:])
 
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ImageIcon, PackageCheck, PackageX, Truck, X } from "lucide-react";
+import { ImageIcon, PackageCheck, PackageX, Truck, Warehouse, X } from "lucide-react";
 import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
@@ -140,6 +140,19 @@ export default function ProductCard({
           <ChipRevision revisadoAt={producto.revisado_at}
                         revisadoPor={producto.revisado_por}
                         movida={producto.revision_movida} />
+          {/* DROP OFF: el almacén del que salen los envíos a los marketplaces
+              chinos. Se pinta SIEMPRE que el SKU tenga piezas ahí, con el filtro
+              puesto o sin él — es justo cuando NO se está filtrando que sirve
+              enterarse. Violeta, el mismo color con el que la pestaña Inventario
+              marca ese almacén. */}
+          {producto.drop_off && (
+            <span
+              title="Tiene existencias en el almacén DROP OFF de Odoo — el almacén del que salen los envíos a marketplaces chinos."
+              className="flex items-center gap-1 rounded-full bg-violet-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm"
+            >
+              <Warehouse size={11} /> DROP OFF
+            </span>
+          )}
           {/* Padre sin marca propia pero con variantes validadas: se dice
               cuántas, y el recuadro de variantes señala cuáles. */}
           {!producto.revisado_at && producto.revision_variantes && (

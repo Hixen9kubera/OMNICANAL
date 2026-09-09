@@ -1001,6 +1001,81 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.456.0 — El almacén pasa al frente, y DROP OFF se puede aislar de un clic
+
+Cinco peticiones de Brandon del 9-sep. Dos son quitar ruido, una es mostrar dos
+cifras, y las dos últimas destaparon que **TEXCO II —el 40% del inventario— era
+invisible en el panel**.
+
+**1 · CAJAS: fuera «+N sin recibir».** Un SKU puede tener varias órdenes de
+compra abiertas y una sola cifra sumada no dice de cuál viene. El desglose por
+documento sigue completo en el cajón, que es donde se puede accionar.
+
+**2 · PIEZAS: fuera las piezas sin recibir y los días.** Queda solo el número de
+**recepciones abiertas**, que es lo que Brandon dijo que le sirve. Los días
+contaban desde un papel cuya fecha programada ya venció en el 100% de los casos,
+así que medían la edad del trámite, no una espera.
+
+**3 · PIEZAS: las DOS cifras, siempre.** `FREE` grande y en color —es la
+correcta, lo vendible— y `ON HAND` debajo, en gris. Antes el on hand solo
+aparecía cuando difería, y esconderlo obliga a saberse la regla para leer la
+celda: un hueco no dice «son iguales», dice «no sé».
+
+**4 · El ALMACÉN pasa al frente, y DROP OFF tiene su color.** La celda de
+UBICACIÓN mostraba el rack arriba y la bodega abajo; ahora es al revés. La
+pregunta que se hace de un vistazo es en cuál de las tres bodegas está, no en qué
+rack: el rack solo sirve cuando ya fuiste a la bodega correcta y **además no la
+identifica** — medido, los 297 nombres de rack de DROP OFF están todos repetidos
+en TEXCO. Se listan TODAS las bodegas del SKU, no solo la principal (71 SKUs
+viven a la vez en TEXCO y DROP OFF), y el rack no se borra: baja de renglón.
+
+Aquí salió el hallazgo grande. **La sospecha era que el panel colapsaba TEXCO I
+con TEXCO II. Es falso**: `bodega` sale del `warehouse_id` de Odoo, así que
+«TEXCO II» nunca se pierde. Lo que pasaba es otra cosa y es peor: **la pestaña
+corre sobre un piloto de 13 SKUs y ninguno tiene una sola pieza en TEXCO II**, así
+que el filtro «Bodega» —que se llena con las bodegas que de verdad aparecen— no
+podía ofrecer la tercera opción jamás. Y TEXCO II no es marginal: **1,104 SKUs y
+466,147 piezas, el 40% del inventario**. Se añadió `ORG-0863-ROS` (50,000 pzas en
+TEXCO II) como cuarto SKU de referencia; el comentario del código llevaba desde
+el principio afirmando que los tres de referencia cubrían «los tres almacenes», y
+era mentira.
+
+Dos arreglos que salieron del mismo barrido: `_rack` devolvía **`FERRAFORME`**
+—el nombre de la nave— como si fuera una posición cuando la mercancía está en la
+raíz del almacén, que es justo el caso de los SKUs más voluminosos de TEXCO II;
+ahora dice «sin rack asignado». Y hay un **cuarto cubo que nadie nombra**:
+«sin almacén» (SCRAP y CUARENTENA, 233 SKUs y 10,831 piezas), que el filtro
+oculta a propósito porque esa mercancía no se vende.
+
+**5 · Omnicanal: filtro y distintivo DROP OFF.** Chip «Solo DROP OFF» en todas
+las pestañas, y un distintivo violeta en cada producto que tenga piezas ahí —
+**con el filtro puesto o sin él**, porque es justo cuando no estás filtrando que
+sirve enterarte.
+
+Lo interesante es de dónde sale el dato: **no existe ninguna marca de «producto
+drop off» en ningún sistema.** En Odoo los 7 `product.tag` no tienen nada de
+Drop, `meli_channel_mkt` está vacío en los 12,386 productos, y
+`product.template.warehouse_id` apunta a DROP en TODOS porque es el default —
+filtrar por él devolvería el catálogo entero. Y en kubera no hay ninguna tabla
+con el almacén por SKU. La única señal real es tener existencias en las
+ubicaciones del almacén 142.
+
+Por eso se añadió `odoo.skus_por_almacen(codigo)`, que **invierte la pregunta**:
+el resto del módulo va SKU → dato, así que responder «quiénes están en DROP OFF»
+obligaría a preguntar por los 13 mil SKUs del catálogo. Preguntándole al ALMACÉN
+con `child_of` sobre su ubicación raíz es **una sola consulta**: medido, 94 SKUs
+y 11,085 piezas en 1.8 s, y cacheada 30 min.
+
+**Y el verdadero cuello de botella no era Odoo.** Pasar esos 94 SKUs por el
+filtro `skus=` que el panel ya tenía tardaba **31 s**: cada término se convierte
+en dos comodines `%…%` (101 tras expandir padres = 202 comodines contra el MySQL
+de Hostinger). Se añadió un camino de **igualdad exacta** para las listas que
+resuelve el sistema —no las que teclea una persona, donde el LIKE es necesario—:
+**0.23 s, 135 veces más rápido**, y además más correcto (el LIKE devolvía 72
+productos donde la igualdad devuelve 71, porque también casa contra el título).
+
+---
+
 ### 0.455.0 — La vacuna anticonexión-muerta llega al pool del espejo
 
 La tormenta del 9-sep (8:12–8:58): 152 líneas de bitácora de crear_producto
