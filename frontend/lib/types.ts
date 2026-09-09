@@ -1568,6 +1568,23 @@ export interface Publicacion {
    *  'canal_sin_costo' — el canal no tiene comisión ni tarifa de envío
    *    cargadas (hoy, todos menos Mercado Libre). */
   piso_aviso?: "costo_sin_verificar" | "canal_sin_costo" | null;
+  /** La aritmética del precio del piso, pieza por pieza, para explicarla en
+   *  pantalla. Llega solo cuando hay `precio_piso`. */
+  piso_desglose?: {
+    precio: number;
+    precio_sin_iva: number;
+    iva: number;
+    comision: number;
+    pct_comision: number;
+    fee_envio: number;
+    /** ML cobra por el MAYOR entre el peso real y el volumétrico. */
+    peso_efectivo: number;
+    peso_real: number | null;
+    costo: number;
+    ganancia: number;
+    margen_pct: number;
+    iva_rate: number;
+  } | null;
   roi: number | null;
   ganancia_neta: number | null;
   margen_motivo: MargenMotivo | null;

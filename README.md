@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.472.0 — El precio sugerido enseña su cuenta (Eduardo)
+
+El renglón del piso daba un número y había que creerlo. Ahora trae **"ver la
+cuenta"**: se despliega la aritmética completa, con las divisiones escritas.
+
+    Precio sugerido                $481.49
+    Precio sin IVA                 $415.08  = $481.49 ÷ 1.16
+    − IVA                           $66.41
+    − Comisión de Mercado Libre     $80.94  = $415.08 × 19.50%
+    − Envío                         $76.00  tarifa de 2.8 kg (volumétrico; el real son 2.383 kg)
+    − Costo del producto           $161.86
+    = Ganancia                      $96.28
+    Margen sobre el precio          +20.0%  = $96.28 ÷ $481.49
+
+**Las divisiones van escritas, no solo el resultado.** `$415.08 = $481.49 ÷
+1.16` explica el número más confuso de todos: ML cobra su comisión sobre el
+precio SIN IVA, no sobre lo que paga el cliente. Es el error más común al
+rehacer la cuenta a mano.
+
+**El peso dice cuál usó y por qué.** "2.8 kg (volumétrico; el real son 2.383
+kg)" — con el peso real a la vista en Costos, un fee calculado sobre otro
+número se lee como un error. La aclaración sale solo cuando el volumétrico
+gana; si manda el real, no estorba.
+
+**Y la nota final explica la aproximación**, porque quien intente reproducir el
+número exacto va a fallar: el envío cambia de tramo mientras subes el precio.
+Mejor decirlo que dejar que lo descubra creyendo que hay un bug.
+
+Es un panel que se queda abierto, no un tooltip: el punto es poder leerlo con
+calma o contra una calculadora. `piso_desglose` no recalcula nada distinto de
+`margen_de` — pide lo mismo y añade los dos números que la resta usa pero no
+devolvía: el precio sin IVA y el peso efectivo.
+
 ### v0.471.0 — La alerta de margen negativo dice de qué cuenta es cada SKU (Eduardo)
 
 La lista de "Margen negativo" en la campana mezclaba las dos cuentas de

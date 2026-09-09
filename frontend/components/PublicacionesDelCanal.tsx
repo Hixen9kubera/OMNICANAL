@@ -22,7 +22,8 @@
  * regla de cuándo un costo no se puede creer.
  */
 
-import { AlertTriangle, ExternalLink, RefreshCw, Tag, Target } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, ChevronDown, ExternalLink, RefreshCw, Tag, Target } from "lucide-react";
 
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
 import { enlacePublicacion } from "@/lib/enlaces";
@@ -149,6 +150,7 @@ function Precio({ p }: { p: Publicacion }) {
  * subir el precio 20 veces por un dato de captura.
  */
 function Piso({ p }: { p: Publicacion }) {
+  const [abierto, setAbierto] = useState(false);
   const objetivo = p.piso_objetivo ?? 0.2;
   const meta = `${Math.round(objetivo * 100)}%`;
 
@@ -176,16 +178,92 @@ function Piso({ p }: { p: Publicacion }) {
   if (p.precio_piso == null) return null;   // por encima del piso: silencio
 
   const veces = p.precio_vigente ? p.precio_piso / p.precio_vigente : null;
+  const d = p.piso_desglose;
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-rose-100 bg-rose-50/60 -mx-3 px-3 pt-2 pb-1 text-[11px]"
-         title={`Al precio de hoy esta publicación deja ${fmtPctFirmado(p.margen_pct)} de margen. ${fmtMoneda(p.precio_piso)} es el precio al que alcanzaría el ${meta}, con la misma aritmética que el margen de arriba: comisión sobre el precio sin IVA, fee de envío del tramo que corresponda, e IVA.`}>
-      <Target size={13} className="shrink-0 text-rose-600" />
-      <span className="text-rose-700">Para {meta} de margen:</span>
-      <span className="font-black tabular-nums text-rose-700">{fmtMoneda(p.precio_piso)}</span>
-      {veces !== null && veces >= 1.15 && (
-        <span className="text-rose-500">
-          {veces.toFixed(1)}× lo que cobras
-        </span>
+    <div className="mt-2 border-t border-rose-100 bg-rose-50/60 -mx-3 px-3 pt-2 pb-1">
+      <button
+        type="button"
+        onClick={() => setAbierto((v) => !v)}
+        disabled={!d}
+        className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 text-left text-[11px]"
+      >
+        <Target size={13} className="shrink-0 text-rose-600" />
+        <span className="text-rose-700">Para {meta} de margen:</span>
+        <span className="font-black tabular-nums text-rose-700">{fmtMoneda(p.precio_piso)}</span>
+        {veces !== null && veces >= 1.15 && (
+          <span className="text-rose-500">{veces.toFixed(1)}× lo que cobras</span>
+        )}
+        {d && (
+          <span className="ml-auto flex items-center gap-0.5 text-rose-500">
+            {abierto ? "ocultar" : "ver la cuenta"}
+            <ChevronDown size={12} className={abierto ? "rotate-180 transition" : "transition"} />
+          </span>
+        )}
+      </button>
+
+      {/* LA CUENTA, para que el número no haya que creerlo (Eduardo, 9-sep).
+          Es la misma resta que produce el margen de arriba, con los dos datos
+          que normalmente no se ven: el precio sin IVA —sobre el que ML cobra
+          su comisión, no sobre el precio de venta— y el peso EFECTIVO, que es
+          el mayor entre el real y el volumétrico. Sin ellos el fee y la
+          comisión parecen salidos de la nada. */}
+      {abierto && d && (
+        <div className="mb-1 mt-2 rounded-lg border border-rose-200 bg-white px-3 py-2">
+          <table className="w-full text-[11px] tabular-nums">
+            <tbody className="text-slate-600">
+              <tr>
+                <td className="py-0.5">Precio sugerido</td>
+                <td className="py-0.5 text-right font-semibold text-slate-800">{fmtMoneda(d.precio)}</td>
+              </tr>
+              <tr>
+                <td className="py-0.5 text-slate-500">Precio sin IVA</td>
+                <td className="py-0.5 text-right text-slate-500">
+                  {fmtMoneda(d.precio_sin_iva)}
+                  <span className="ml-1 text-slate-400">= {fmtMoneda(d.precio)} ÷ {(1 + d.iva_rate).toFixed(2)}</span>
+                </td>
+              </tr>
+              <tr><td className="py-0.5">− IVA</td>
+                  <td className="py-0.5 text-right">{fmtMoneda(d.iva)}</td></tr>
+              <tr><td className="py-0.5">− Comisión de Mercado Libre</td>
+                  <td className="py-0.5 text-right">
+                    {fmtMoneda(d.comision)}
+                    <span className="ml-1 text-slate-400">
+                      = {fmtMoneda(d.precio_sin_iva)} × {(d.pct_comision * 100).toFixed(2)}%
+                    </span>
+                  </td></tr>
+              <tr><td className="py-0.5">− Envío</td>
+                  <td className="py-0.5 text-right">
+                    {fmtMoneda(d.fee_envio)}
+                    <span className="ml-1 text-slate-400">
+                      tarifa de {d.peso_efectivo} kg
+                      {d.peso_real != null && d.peso_efectivo > d.peso_real
+                        ? ` (volumétrico; el real son ${d.peso_real} kg)`
+                        : ""}
+                    </span>
+                  </td></tr>
+              <tr><td className="py-0.5">− Costo del producto</td>
+                  <td className="py-0.5 text-right">{fmtMoneda(d.costo)}</td></tr>
+              <tr className="border-t border-slate-200">
+                <td className="pt-1 font-semibold text-slate-800">= Ganancia</td>
+                <td className="pt-1 text-right font-semibold text-emerald-700">{fmtMoneda(d.ganancia)}</td>
+              </tr>
+              <tr>
+                <td className="py-0.5 text-slate-500">Margen sobre el precio</td>
+                <td className="py-0.5 text-right text-slate-500">
+                  {fmtPctFirmado(d.margen_pct)}
+                  <span className="ml-1 text-slate-400">
+                    = {fmtMoneda(d.ganancia)} ÷ {fmtMoneda(d.precio)}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="mt-2 border-t border-slate-100 pt-1.5 text-[10px] leading-relaxed text-slate-400">
+            El envío sube por tramos de precio, así que al subir el precio ML también
+            cobra más envío. Por eso el número se busca por aproximación y no con una
+            fórmula: es el precio más bajo que llega al {meta}.
+          </p>
+        </div>
       )}
     </div>
   );

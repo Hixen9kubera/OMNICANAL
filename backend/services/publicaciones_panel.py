@@ -714,6 +714,40 @@ def precio_para_margen(*, objetivo: float, costo_unitario: Any, pct_comision: An
     return px
 
 
+def _desglose_piso(precio: float, r: dict, canal: str) -> dict[str, Any]:
+    """
+    La aritmética del precio del piso, pieza por pieza, para explicarla en
+    pantalla. No recalcula nada distinto de `margen_de`: pide lo mismo y le
+    suma los dos números que la resta usa pero no devuelve —el precio sin IVA
+    y el peso efectivo—, que son justo los que sorprenden al leer la cuenta.
+
+    El peso efectivo importa: ML cobra por el MAYOR entre el peso real y el
+    volumétrico, así que una caja grande y liviana paga tarifa de caja pesada.
+    Sin ese dato a la vista, el fee parece salido de la nada.
+    """
+    m = margen_de(precio=precio, costo_unitario=r.get("costo_unitario"),
+                  pct_comision=r.get("pct_comision"), peso=r.get("peso"),
+                  largo=r.get("largo"), ancho=r.get("ancho"),
+                  alto=r.get("alto"), canal=canal)
+    pe, _dims = costos._peso_efectivo(
+        _num(r.get("peso")) or 0, _num(r.get("largo")) or 0,
+        _num(r.get("ancho")) or 0, _num(r.get("alto")) or 0)
+    return {
+        "precio": precio,
+        "precio_sin_iva": round(precio / (1.0 + costos.IVA_RATE), 2),
+        "iva": m["iva_mnt"],
+        "comision": m["costo_comision"],
+        "pct_comision": m["pct_comision"],
+        "fee_envio": m["costo_fee_envio"],
+        "peso_efectivo": round(pe, 2),
+        "peso_real": _num(r.get("peso")),
+        "costo": m["costo_unitario"],
+        "ganancia": m["ganancia_neta"],
+        "margen_pct": m["margen_pct"],
+        "iva_rate": costos.IVA_RATE,
+    }
+
+
 def margen_de(*, precio: Any, costo_unitario: Any, pct_comision: Any,
               peso: Any, largo: Any = 0, ancho: Any = 0, alto: Any = 0,
               canal: str = "mercado_libre") -> dict[str, Any]:
@@ -941,13 +975,19 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
     # (medido), así que la iteración no se paga en las otras 484.
     bajo_piso = m["margen_pct"] is not None and m["margen_pct"] < PISO_MARGEN
     costo_verificado = r.get("revisado_at") is not None
+    _piso = (precio_para_margen(
+        objetivo=PISO_MARGEN, costo_unitario=r.get("costo_unitario"),
+        pct_comision=r.get("pct_comision"), peso=r.get("peso"),
+        largo=r.get("largo"), ancho=r.get("ancho"), alto=r.get("alto"),
+        canal=canal) if (bajo_piso and costo_verificado) else None)
     m = {**m,
          "piso_objetivo": PISO_MARGEN,
-         "precio_piso": (precio_para_margen(
-             objetivo=PISO_MARGEN, costo_unitario=r.get("costo_unitario"),
-             pct_comision=r.get("pct_comision"), peso=r.get("peso"),
-             largo=r.get("largo"), ancho=r.get("ancho"), alto=r.get("alto"),
-             canal=canal) if (bajo_piso and costo_verificado) else None),
+         "precio_piso": _piso,
+         # EL DESGLOSE, para que el número no haya que creerlo a ciegas
+         # (Eduardo, 9-sep). Es la misma resta que hace `margen_de`, servida
+         # pieza por pieza: quien abra la ventanita puede rehacer la cuenta a
+         # mano y llegar al mismo lugar. Va SOLO cuando hay precio que explicar.
+         "piso_desglose": (_desglose_piso(_piso, r, canal) if _piso else None),
          "piso_aviso": (CANAL_SIN_COSTO
                         if m["margen_motivo"] == SIN_COSTO_CANAL
                         else COSTO_SIN_VERIFICAR
