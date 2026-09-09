@@ -1001,6 +1001,23 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.458.0 — Los comentarios que agregué en la v0.457.0 iban DENTRO del SQL
+
+Error mío, y de los que solo se ven corriendo la cosa. Al explicar el cambio de
+fuente en `rentabilidad/drop` puse comentarios de Python (`#`) en un bloque que
+está DENTRO de un literal SQL, así que viajaron a Postgres:
+`syntax error at or near "#"`. La pestaña Drop devolvió 502 los minutos que
+tardó en detectarse.
+
+Lo delató la verificación posterior al deploy, no la revisión: `ast.parse` pasa
+limpio —el archivo es válido, la cadena también— y el otro endpoint del mismo
+módulo (`rentabilidad/devoluciones`, que también toqué) contestaba 200. Solo
+truena el que ejecuta ESA consulta. Comprobar la versión desplegada no es
+comprobar que funciona.
+
+Ahora son comentarios SQL (`--`). Y esta vez la consulta se extrajo del archivo
+y se corrió TAL CUAL contra producción antes de subirla.
+
 ### v0.457.0 — Devoluciones pasa al modelo de cabecera + líneas (migración 0049)
 
 Se aplicó en producción la migración `0049` de devoluciones, escrita por el otro

@@ -3039,17 +3039,17 @@ async def rentabilidad_drop(
                    coalesce(sum(piezas) filter (where not descartada),0)::bigint as piezas,
                    coalesce(sum(valor)  filter (where not descartada),0)::numeric as valor,
                    count(*) filter (where descartada)::int                       as descartadas
-            # La fuente es la VISTA, no la tabla (migración 0049, 9-sep). El
-            # modelo nuevo parte la devolución en cabecera + líneas, así que
-            # `piezas` y `valor` ya no son columnas de `channel.returns`: viven
-            # en `channel.return_items` y `returns_cabecera` las vuelve a sumar,
-            # una fila por devolución, que es la forma que esta consulta espera.
-            #
-            # Y EL FILTRO ES `date`, NO `creado_at`. En la tabla del 31-ago
-            # `creado_at` era la fecha del CLAIM; en el modelo nuevo es
-            # `default now()`, la hora de inserción. Dejarlo habría hecho que
-            # todo lo que cargue un backfill cayera en el día de la carga, sin
-            # dar ningún error. `date` sale de `abierta_at`, la fecha real.
+            -- La fuente es la VISTA, no la tabla (migración 0049, 9-sep). El
+            -- modelo nuevo parte la devolución en cabecera + líneas, así que
+            -- `piezas` y `valor` ya no son columnas de `channel.returns`: viven
+            -- en `channel.return_items`, y `returns_cabecera` las vuelve a
+            -- sumar, una fila por devolución — la forma que esto espera.
+            --
+            -- Y EL FILTRO ES `date`, NO `creado_at`. En la tabla del 31-ago
+            -- `creado_at` era la fecha del CLAIM; en el modelo nuevo es
+            -- `default now()`, la hora de inserción. Dejarlo habría hecho que
+            -- todo lo que cargue un backfill cayera en el día de la carga, sin
+            -- dar ningún error. `date` sale de `abierta_at`, la fecha real.
             from (select canal, cuenta, piezas, valor,
                          (coalesce(resolucion_motivo,'') = any(%(no_ocurrio)s)
                           or lower(coalesce(estado,'')) = 'failed') as descartada
