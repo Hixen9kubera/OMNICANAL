@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.455.0 — La vacuna anticonexión-muerta llega al pool del espejo
+
+La tormenta del 9-sep (8:12–8:58): 152 líneas de bitácora de crear_producto
+fallando con *server closed the connection unexpectedly*, +127 alertas
+silenciadas, y un reinicio de contenedor como única cura. Postgres nunca se
+reinició (corre desde el 15-jul): el pooler de Supabase mató las conexiones y
+el pool PROPIO de `kubera_mirror` (el de 6, v0.15.2) se quedó lleno de
+cadáveres — su `ping=1` es letra muerta con psycopg2 (la misma trampa de la
+v0.285) y **no tenía el reintento** que `supabase_db` recibió el 28-ago.
+
+Ningún dato se perdió: los 182 eventos cayeron a `espejo_kubera_log` y el
+reproceso los aplicó completos (182/182). Pero la red de rescate no es excusa
+para dejar el pool sin curar.
+
+**La vacuna**, calcada del patrón probado: `_reiniciar_pool()` (suelta el pool
+sin cerrarlo — los hilos en vuelo terminan con el suyo) y en `_trabajar` un
+reintento ÚNICO cuando `_es_conexion_muerta` — el MISMO detector de
+`supabase_db`, importado, no duplicado. Seguro: el intento fallido se deshizo
+y los upserts del espejo son idempotentes por `detail_ref`. Al segundo fallo,
+el camino de siempre (registro + rescate a `espejo_kubera_log`).
+
+Probado con la lección aprendida de que *una prueba que no puede fallar no
+prueba nada*: matar la conexión suelta la cura DBUtils solo (primer intento de
+test, descartado); la prueba buena mata la conexión **en el commit** — que es
+donde tronó producción — y con eso: WARNING emitido, 2 intentos, fila aplicada,
+cero residuo. Versión 0.455.0.
+
+---
+
 ### v0.454.0 — Al que no se pudo resolver solo se le escondia su propia foto
 
 La foto de la publicacion de Mercado Libre se traia DESPUES del corte por "sin

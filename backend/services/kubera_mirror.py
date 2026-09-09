@@ -236,6 +236,22 @@ def _get_pool():
     return _pool
 
 
+def _reiniciar_pool() -> None:
+    """
+    Suelta el pool actual; la siguiente llamada construye uno con conexiones
+    frescas. LA VACUNA de la v0.285/0.288 de supabase_db, que este pool no
+    tenía: el 9-sep-2026 el pooler de Supabase mató sus conexiones y, sin ping
+    útil (psycopg2 no tiene `ping()`; DBUtils lo apaga solo) ni reintento, CADA
+    escritura falló durante 47 minutos — 152 eventos de crear_producto al
+    rescate de espejo_kubera_log y un reinicio de contenedor para curarlo.
+    NO se cierra el pool viejo: los hilos que ya tienen conexión terminan con
+    ella y el pool se recoge solo cuando nadie lo referencia.
+    """
+    global _pool
+    with _pool_lock:
+        _pool = None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # API pública: espejar() — fire-and-forget, jamás lanza, jamás bloquea
 #
@@ -364,43 +380,62 @@ def espejar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
 def _trabajar(origen_py: str, funcion: str, tabla_mysql: str, tabla_kubera: str,
               operacion: str, payload: dict[str, Any], clave: str | None) -> None:
     t0 = time.perf_counter()
-    conn = None
+
+    def _intento() -> None:
+        conn = _get_pool().connection()
+        try:
+            with conn.cursor() as cur:
+                # SET LOCAL (transaccional): compatible con el pooler 6543.
+                cur.execute("select set_config('statement_timeout', '4000', true)")
+                cur.execute("select set_config('app.via', 'kubera_mirror', true)")
+                # Quién pidió esto. Este pool es PROPIO de kubera_mirror y no
+                # pasa por supabase_db.get_cursor, así que el cable de v0.233.0
+                # nunca se disparaba aquí — y por aquí pasan las ALTAS DE
+                # PRODUCTO. Cadena vacía queda como NULO (`nullif`, 0029).
+                cur.execute("select set_config('app.usuario', %s, true)",
+                            (actor.actual(),))
+                upsert(cur, payload)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        finally:
+            try:
+                conn.close()  # devuelve al pool
+            except Exception:  # noqa: BLE001
+                pass
+
     try:
         upsert = _UPSERTS.get(tabla_kubera)
         if upsert is None:
             raise ValueError(f"sin upsert definido para {tabla_kubera!r}")
-        conn = _get_pool().connection()
-        with conn.cursor() as cur:
-            # SET LOCAL (transaccional): compatible con el pooler 6543.
-            cur.execute("select set_config('statement_timeout', '4000', true)")
-            cur.execute("select set_config('app.via', 'kubera_mirror', true)")
-            # Quién pidió esto. Este pool es PROPIO de kubera_mirror y no pasa
-            # por supabase_db.get_cursor, así que el cable de v0.233.0 nunca se
-            # disparaba aquí — y por aquí pasan las ALTAS DE PRODUCTO. Cadena
-            # vacía queda como NULO gracias al `nullif` del default (0029).
-            cur.execute("select set_config('app.usuario', %s, true)",
-                        (actor.actual(),))
-            upsert(cur, payload)
-        conn.commit()
+        try:
+            _intento()
+        except Exception as exc:  # noqa: BLE001
+            # LA VACUNA (9-sep-2026): si el pool entregó una conexión que el
+            # pooler ya mató, se tira el pool y se reintenta UNA vez con uno
+            # fresco. Seguro: el intento fallido se deshizo (rollback o sesión
+            # perdida) y los upserts son idempotentes. El detector es el mismo
+            # que curó a supabase_db en producción desde el 28-ago.
+            from services.supabase_db import _es_conexion_muerta
+            if not _es_conexion_muerta(exc):
+                raise
+            log.warning("espejo kubera: conexión muerta del pool; se "
+                        "reconstruye y reintenta (%s→%s clave=%s): %s",
+                        tabla_mysql, tabla_kubera, clave, exc)
+            _reiniciar_pool()
+            _intento()
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                    clave, ok=True, ms=(time.perf_counter() - t0) * 1000)
     except Exception as exc:  # noqa: BLE001
-        try:
-            if conn is not None:
-                conn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         ms = (time.perf_counter() - t0) * 1000
         _registrar(origen_py, funcion, tabla_mysql, tabla_kubera, operacion,
                    clave, ok=False, ms=ms, exc=exc)
         _persistir_error(origen_py, funcion, tabla_mysql, tabla_kubera,
                          operacion, clave, exc, payload)
-    finally:
-        try:
-            if conn is not None:
-                conn.close()  # devuelve al pool
-        except Exception:  # noqa: BLE001
-            pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
