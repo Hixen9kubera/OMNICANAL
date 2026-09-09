@@ -204,6 +204,29 @@ def iniciar() -> None:
         log.info("Vigilante de inventario cada %s min (solo_registro=%s, tope=%s).",
                  settings.stock_watch_min, settings.stock_watch_solo_registro,
                  settings.stock_watch_tope)
+    # Devoluciones de ML: la RED DE SEGURIDAD del webhook `post_purchase`.
+    #
+    # El webhook avisa en segundos, pero un webhook PERDIDO es invisible —nada
+    # avisa de lo que no llegó— y ML deshabilita un topic al que se le contesta
+    # mal. Este barrido revisa las últimas 48 h y repone lo que falte. Escribir
+    # dos veces la misma devolución no cuesta nada: el upsert es idempotente.
+    #
+    # Arranca a los 4 min para no competir con el sync de inventario en el
+    # despertar del contenedor.
+    if getattr(settings, "devoluciones_ml_enabled", False):
+        from services import devoluciones_ml
+        _scheduler.add_job(
+            devoluciones_ml.revisar,
+            "interval",
+            minutes=settings.devoluciones_ml_min,
+            id="devoluciones_ml",
+            next_run_time=datetime.now() + timedelta(seconds=240),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Devoluciones ML: barrido cada %s min sobre %s días.",
+                 settings.devoluciones_ml_min, settings.devoluciones_ml_dias)
+
     # F2 — Espejo del DROP: stock_watch_foto (Woo) → channel.listings 'general'.
     # Job propio y NO un gancho al final de stock_watch: si el vigilante está
     # apagado o su pasada aborta (Odoo mudo), el DROP del panel debe seguir

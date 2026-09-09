@@ -1001,6 +1001,121 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.460.0 — Las devoluciones de Mercado Libre dejan de tirarse a la basura
+
+Petición de Brandon del 8-sep: revisar las devoluciones de los cinco
+marketplaces y empezar por Mercado Libre. Lo que se encontró al abrir: **la
+señal ya estaba llegando y nadie la escuchaba**. El topic `post_purchase` entró
+**1,811 veces en 3 días** (539 claims distintos) y caía entero en el `else` de
+`routers/webhooks.py`. La subtab Devoluciones de /analisis/rentabilidad existía
+desde el 31-ago, viva y bien construida, alimentada por una tabla plana de 62
+filas que **nadie volvió a escribir**: llevaba 9 días marcando $0.00.
+
+Todo lo que sigue está medido contra producción entre el 8 y el 9-sep.
+
+**El modelo nuevo (migración 0049).** `channel.returns` pasa de tabla plana —una
+fila por claim, un solo SKU— a cabecera + líneas + historia. La v2.1 de la
+propuesta **no se podía aplicar**: se escribió el 18-ago y el 31-ago alguien
+creó a mano un esquema distinto; `create table if not exists` era no-op y la
+migración abortaba en el segundo índice (`abierta_at` no existía). La v2.2 le
+agrega el prólogo de reconciliación —incluido el rename de los cinco índices,
+porque sus nombres son únicos POR ESQUEMA y un `create index if not exists`
+se habría saltado en silencio—, `venta_contaba` y `estado_dinero` (lo que la
+tabla del 31-ago aprendió en producción), y las cuatro columnas de
+`/claims/{id}/detail`. Las 62 filas viejas se conservan en `returns_ml_v0`.
+
+**Las cinco consultas del endpoint no se tocaron.** Conservar los nombres de
+columna en `returns_daily` fue la decisión que evitó reescribir la pestaña.
+
+**Tres endpoints, probados en vivo.** `GET /post-purchase/v1/claims/{id}` (quién
+y cuándo), `/post-purchase/v2/claims/{id}/returns` (piezas, envío, dinero) y
+`/post-purchase/v1/claims/{id}/detail` — este último es hallazgo nuevo y trae el
+motivo **en español**: «El comprador dijo que se arrepintió de la compra». La v1
+de `/returns` está deprecada desde may-2024 y contesta 400 genérico.
+
+**CUATRO BUGS QUE DESTAPÓ EL DRY-RUN, y el primero es del tipo caro.**
+
+1. **El 429 silencioso.** Con concurrencia 6, ML contestó `Too Many Requests` en
+   **5 de 23 claims (22%)**. La primera versión trataba el fallo del opcional
+   como `{}`, así que esos cinco se guardaban como devoluciones sin envío, sin
+   estado del dinero y con llave inventada — un límite de tasa convertido en
+   dato falso, sin un solo error en el log. Ahora hay reintento con backoff, y
+   se distingue `404` (no existe: es un hecho) de `429` (no contestó: se aborta
+   el claim y lo repone el barrido). Misma ventana: de 18 devoluciones con 5
+   corruptas a **23 completas**, y el valor subió de $16,225 a $18,251.
+2. **La llave era inestable.** Usaba el `id` de `/returns`, que **llega tarde**
+   —aparece cuando ML genera el envío de retorno— y **puede ser `0`** en las
+   `low_cost`. O sea: fila con llave provisional hoy y otra con la definitiva
+   mañana, y todas las low_cost pisándose en la llave "0". La llave pasa a ser
+   el **claim**, único y estable desde el primer segundo.
+3. **El aviso de cobertura miraba un solo borde.** `cobertura.desde >
+   periodo.desde` detecta pedir 90 días con 7 capturados, pero NO el caso
+   contrario, que fue el de todos los días del 31-ago al 9-sep: la captura había
+   TERMINADO antes de que el período empezara. La pantalla informaba «0.00% de
+   devolución» con la seguridad de un cero verdadero. Ahora son **tres estados**
+   (`completa` / `parcial` / `sin_datos`), los porcentajes salen en `null` y no
+   en `0`, y el caso disjunto tiene su propio banner rojo: «los guiones no
+   significan que no hubo devoluciones, significan que no las tenemos».
+4. **`claims/search` repite claims entre páginas.** Ordena por un campo que
+   CAMBIA mientras se pagina, así que un claim actualizado entre la página 1 y
+   la 2 se corre de sitio y sale en las dos. Medido: julio devolvió 66 filas con
+   63 claims distintos; agosto, 108 con 102 — un 5%. No corrompió nada (la
+   escritura es idempotente: 402 escrituras → 390 filas), pero **infló todos los
+   conteos del dry-run**, que es el número con el que se toma una decisión. Se
+   deduplica por id dentro de `_buscar`.
+
+**El backfill se corta en julio, y no por comodidad.** El barrido completo
+encontró **771 devoluciones** (365 Bekura + 406 San Corpe) en 148 días — la
+trampa de `abierta_at` no se pisó. Pero **423 de 771 no tienen su pedido en
+`channel.orders`**, porque la tubería de pedidos ML arrancó el 17-jul-2026 (feb
+1 pedido, may 4, jun 181, jul 7,603, ago 19,598). Esas órdenes SÍ existen en ML
+—comprobadas contra `/orders/{id}`: 200, de febrero, canceladas— pero nunca
+entraron. Escribirlas daría 423 filas sin SKU, valiendo $0, y con
+`es_fulfillment = false` por ser columna NOT NULL: **afirmando DROP donde no se
+sabe**. El desglose habría dicho FULL=334/DROP=437 con 423 "DROP" falsos.
+
+Decisión de Brandon: desde el 1-jul. **Estado final en producción, 390
+devoluciones** (los 404 del dry-run traían los repetidos del bug 4), y el
+contraste con el barrido completo es la prueba de que no se pierde nada:
+
+| | todo (inflado ×1.05) | desde julio, ya escrito |
+|---|---|---|
+| con SKU | 348 de 771 | **338 de 390** |
+| FULL / DROP | 334 / 437 | **325 / 65** |
+| valor devuelto | $228,565 | **$221,711** |
+
+Las 368 anteriores aportaban **cero dinero y un desglose falso**: 423 filas sin
+precio contadas como DROP sin serlo.
+
+**Dos cosas que el backfill no puede arreglar.** El motivo legible sale solo en
+**53 de 390**: `/detail` describe reclamos ABIERTOS, y la mayoría ya están
+reembolsados. Los motivos históricos son irrecuperables por esa vía; de aquí en
+adelante el webhook los captura mientras están vivos. Y de $221,711 devueltos,
+**solo $41,948 son restables** de las ventas: 264 corresponden a pedidos ya
+cancelados y `sales_daily` ya los excluye — restarlos otra vez sería contarlos
+dos veces. Es exactamente para lo que existe `venta_contaba`.
+
+**Una corrección que el propio bug 4 provocó.** Durante el dry-run pareció haber
+devoluciones multi-línea en ML (35 en el barrido completo, 9 desde julio) y se
+reportó como tal. Eran **artefacto de la paginación**: el mismo claim contado
+dos veces se veía como dos líneas de una misma devolución. Con la deduplicación
+puesta, `channel.return_items` tiene **0 devoluciones de más de una línea** —
+consistente con que 0 de 31,370 pedidos de ML llevan más de un SKU. La tabla de
+líneas sigue justificada por los otros canales (Walmart manda un motivo POR
+LÍNEA), no por Mercado Libre.
+
+**Lo que queda medible y pendiente.** 52 de 390 no cruzan contra un pedido
+—son de los primeros días de julio, antes de que la tubería estuviera al día— y
+se distinguen porque su `venta_contaba` es NULL. Y el motivo de las que no traen
+texto queda como código de ML (`PDD9939`), que la pantalla muestra crudo:
+mapearlo a español es un pendiente aparte.
+
+**Qué queda apagado.** `DEVOLUCIONES_ML_ENABLED` nace en `false`. Con ella se
+encienden dos cosas: la rama `post_purchase` del webhook (captura en segundos) y
+el barrido de respaldo cada 60 min sobre 48 h —que existe porque **un webhook
+perdido es invisible**: nada avisa de lo que no llegó—. Sin la bandera, el
+webhook solo registra «devolución vista (captura apagada)».
+
 ### v0.459.0 — Las cajas del packing list se leen del RENGLÓN, no de una columna congelada
 
 Brandon, 9-sep: *«ACC-0907-MET, veo que hay una caja con 20 piezas, por lo que

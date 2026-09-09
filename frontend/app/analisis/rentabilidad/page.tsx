@@ -45,12 +45,21 @@ interface Fila {
 }
 interface Resp {
   periodo: { dias: number | null; desde: string | null; hasta: string | null };
-  cobertura: { desde: string | null; hasta: string | null; total: number };
+  cobertura: {
+    desde: string | null; hasta: string | null; total: number;
+    // "completa"  el período cabe dentro de lo capturado
+    // "parcial"   se solapan a medias → el % está subestimado
+    // "sin_datos" no se tocan → el % NO EXISTE (llega en null, no en 0)
+    estado?: "completa" | "parcial" | "sin_datos";
+  };
   parcial: boolean;
+  // Los devueltos son NULLABLE a propósito: sin cobertura el backend manda
+  // null, no 0. Un 0 se lee como "no hubo devoluciones" y eso es justo lo que
+  // estos datos no pueden sostener.
   kpis: {
-    ingresos: number; devuelto_valor: number; pct_valor: number | null;
-    unidades: number; devuelto_unidades: number; pct_unidades: number | null;
-    devoluciones: number; valor_restable: number;
+    ingresos: number; devuelto_valor: number | null; pct_valor: number | null;
+    unidades: number; devuelto_unidades: number | null; pct_unidades: number | null;
+    devoluciones: number | null; valor_restable: number | null;
   };
   por_tipo: Record<"full" | "drop", {
     ingresos: number; unidades: number;
@@ -272,7 +281,34 @@ export default function RentabilidadPage() {
             </div>
           )}
 
-          {/* ── Aviso de cobertura: lo más importante de esta pantalla ── */}
+          {/* ── Aviso de cobertura: lo más importante de esta pantalla ──
+              Son DOS avisos, no uno, y la diferencia no es de tono.
+
+              "parcial"   → el número existe pero sale bajo (ámbar).
+              "sin_datos" → el número NO existe (rojo). Es el caso que estuvo
+                            saliendo mudo del 31-ago al 9-sep-2026: la captura
+                            se había detenido, el período pedido caía entero
+                            fuera de la cobertura, y la pantalla mostraba
+                            "0.00% de devolución" como si fuera un hecho. */}
+          {data?.cobertura?.estado === "sin_datos" && (
+            <div className="flex items-start gap-2.5 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-[13px] text-red-900">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>
+                <b>De este período no hay devoluciones capturadas.</b> Los
+                guiones no significan que no hubo devoluciones: significan que
+                no las tenemos.{" "}
+                {data.cobertura.desde && data.cobertura.hasta ? (
+                  <>Lo capturado va del <b>{data.cobertura.desde}</b> al{" "}
+                  <b>{data.cobertura.hasta}</b>; el período pedido arranca el{" "}
+                  <b>{data.periodo.desde}</b>. Elige un período dentro de esa
+                  ventana para ver un número real.</>
+                ) : (
+                  <>Todavía no se ha capturado ninguna devolución.</>
+                )}
+              </span>
+            </div>
+          )}
+
           {data?.parcial && (
             <div className="flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-900">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -297,7 +333,9 @@ export default function RentabilidadPage() {
                      ayuda="Ventas de Mercado Libre en el período (canal_ventas sin cancelados). Mismo universo que las devoluciones: si se compararan contra todos los canales, el % saldría diluido." />
                 <Kpi titulo="Devoluciones" valor={fM(k.devuelto_valor, 2)}
                      tono="rojo"
-                     pie={`${fN(k.devoluciones)} devoluciones`}
+                     pie={k.devoluciones == null
+                            ? "sin captura en este período"
+                            : `${fN(k.devoluciones)} devoluciones`}
                      ayuda="Valor devuelto = unidades devueltas × precio congelado de la venta. La API de ML no da el monto reembolsado; sale del precio real al que se vendió." />
                 <Kpi titulo="% de ingresos" valor={fP(k.pct_valor)}
                      tono={k.pct_valor != null && k.pct_valor >= 3 ? "rojo" : "neutro"}
@@ -330,7 +368,11 @@ export default function RentabilidadPage() {
                 />
               )}
 
-              {/* Lo restable: el matiz que evita restar de más */}
+              {/* Lo restable: el matiz que evita restar de más.
+                  Solo cuando hay algo devuelto — «de los $0.00 devueltos, solo
+                  $0.00 son restables» no informa nada y ocupa el lugar donde
+                  debe verse el aviso de que no hay datos. */}
+              {(k.devuelto_valor ?? 0) > 0 && (
               <div className="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[12px] text-slate-600 shadow-sm">
                 <Info size={14} className="mt-0.5 shrink-0 text-slate-400" />
                 <span>
@@ -341,6 +383,7 @@ export default function RentabilidadPage() {
                   Restar el total sería contarlo dos veces.
                 </span>
               </div>
+              )}
 
               {/* ── Por tienda ───────────────────────────────────────── */}
               {data.por_tienda.length > 1 && (

@@ -176,6 +176,21 @@ class Settings(BaseSettings):
     pedidos_walmart_solo_registro: bool = True
     pedidos_walmart_sondeo_min: int = 15
     pedidos_walmart_max_dias: int = 7
+
+    # ── DEVOLUCIONES DE MERCADO LIBRE ────────────────────────────────────────
+    # La captura vive en `services/devoluciones_ml.py` y alimenta la subtab
+    # Devoluciones de /analisis/rentabilidad.
+    #
+    # Dos caminos, y el segundo existe porque el primero no se puede auditar:
+    # el webhook `post_purchase` avisa en segundos, pero un webhook PERDIDO es
+    # invisible —nada avisa de lo que no llegó—, así que un barrido periódico
+    # revisa la ventana reciente y repone lo que falte. Escribir dos veces la
+    # misma devolución no cuesta nada: el upsert es idempotente.
+    #
+    # Apagado por default: enciende un flujo que escribe en producción.
+    devoluciones_ml_enabled: bool = False
+    devoluciones_ml_min: int = 60      # cada cuánto corre el barrido
+    devoluciones_ml_dias: int = 2      # cuánto mira hacia atrás cada pasada
     # ¿El fan-out ESCRIBE stock en TikTok? Interruptor propio, aparte de
     # `FANOUT_CANALES`, y a propósito: el valor de esa lista no se puede leer
     # desde fuera de Railway, así que si TikTok dependiera solo de ella un deploy

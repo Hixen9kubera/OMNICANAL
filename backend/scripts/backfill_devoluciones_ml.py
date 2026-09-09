@@ -1,235 +1,236 @@
+# -*- coding: utf-8 -*-
 """
-backfill_devoluciones_ml.py — puebla `channel.returns` con las devoluciones de ML.
+backfill_devoluciones_ml.py — trae la historia de devoluciones de ML a kubera.
 
 DRY-RUN POR DEFAULT. Sin `--aplicar` no escribe nada: solo dice qué escribiría.
 
-QUÉ RESUELVE AL CAPTURAR (y por qué cada una tiene su trampa)
--------------------------------------------------------------
-La API de claims NO trae SKU, ni precio, ni monto. Todo eso sale de cruzar
-`claim.resource_id` contra `channel.order_items` (empató 61/61 en los 7 días
-medidos). Tres decisiones que NO son obvias:
+QUÉ HACE
+────────
+Recorre `claims/search` mes por mes, y de cada devolución hace las tres
+llamadas y el cruce contra `channel.orders`. **No reimplanta nada**: usa las
+mismas funciones que el webhook (`services/devoluciones_ml.py`), así que lo que
+se ve en el dry-run es exactamente lo que va a escribir el flujo vivo.
 
-  1. `es_fulfillment` se copia de **order_items**, JAMÁS de `orders`. Esa
-     discrepa en el 40.11% de las líneas de ML (10,941 de 27,280), siempre en
-     el mismo sentido (orders=false / items=true; el inverso no existe). Leer
-     la de `orders` reportaría 2 devoluciones FULL de 62 en vez de 59.
+POR QUÉ MES POR MES
+───────────────────
+`claims/search` pagina con `offset`, pero la ventana completa (dic-2025 → hoy)
+son ~771 devoluciones por cuenta y el `paging.total` se vuelve poco fiable en
+rangos largos. Cortar por mes mantiene cada página chica y hace el progreso
+visible: si algo se cae a la mitad, se sabe DÓNDE.
 
-  2. `venta_contaba` = ¿la orden estaba DENTRO de sales_daily al capturar? Se
-     calcula con el MISMO filtro de la vista (migración 0030): `lower(estado)
-     not in (cancelled, invalid, canceled)` — en minúsculas, porque cada canal
-     escribe la cancelación con su propia caja. Sin esta columna el KPI resta
-     devoluciones ya descontadas y subestima las ventas netas ~30%.
-
-  3. `piezas` sale de `returns.orders[].return_quantity`, pero las devoluciones
-     `low_cost` (ML reembolsa sin pedir el retorno) llegan con `orders: []`.
-     Para esas se usa `claim.claimed_quantity`, que es el MISMO número en 62 de
-     62 medidas. Si no, se perderían 3 de cada 62 devoluciones.
-
-IDEMPOTENTE: `on conflict (canal, cuenta, claim_id) do update`. Correrlo dos
-veces no duplica. Los importes se REESCRIBEN a propósito — mientras la
-devolución esté abierta su estado cambia (label_generated → shipped → …).
+LA TRAMPA QUE ESTE SCRIPT EXISTE PARA NO PISAR
+──────────────────────────────────────────────
+El trigger `tg_returns_touch` sella `abierta_at` con `now()` si llega en NULL.
+Un backfill que no mande la fecha real colapsaría siete meses de historia en el
+día de hoy — `returns_daily` mostraría 771 devoluciones hoy y cero antes.
+`services/devoluciones_ml.armar()` manda SIEMPRE `claim.date_created`, y el
+dry-run imprime el rango de fechas resultante justo para poder verificarlo
+ANTES de escribir.
 
 USO
----
-    python backend/scripts/backfill_devoluciones_ml.py                 # dry-run
-    python backend/scripts/backfill_devoluciones_ml.py --aplicar
-    python backend/scripts/backfill_devoluciones_ml.py --recolectar --dias 7
-
-Sin `--recolectar` lee el crudo que dejó `sondear_devoluciones_ml.py` /
-`recolectar` en `reportes/devoluciones_7d.jsonl`.
+───
+    python backend/scripts/backfill_devoluciones_ml.py                  # dry-run, todo
+    python backend/scripts/backfill_devoluciones_ml.py --desde 2026-08-01
+    python backend/scripts/backfill_devoluciones_ml.py --cuenta BEKURA
+    python backend/scripts/backfill_devoluciones_ml.py --aplicar        # escribe
 """
 from __future__ import annotations
 
 import argparse
-import json
-import re
+import asyncio
 import sys
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-import psycopg2
-from psycopg2.extras import execute_values
+RAIZ = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RAIZ))
 
-RAIZ = Path(__file__).resolve().parents[2]
-CRUDO = RAIZ / "reportes" / "devoluciones_7d.jsonl"
+import httpx  # noqa: E402
 
-# El filtro de cancelación, IDÉNTICO al de la vista channel.sales_daily (0030).
-# Si esta lista se separa de la de allá, `venta_contaba` empieza a mentir.
-CANCELADOS = ("cancelled", "invalid", "canceled")
+from services import devoluciones_ml as dml  # noqa: E402
+from services import meli  # noqa: E402
 
-
-def dsn() -> str:
-    txt = (RAIZ / ".env").read_text()
-    return re.search(r"^SUPABASE_DB_URL=(.*)$", txt, re.M).group(1).strip().strip('"').strip("'")
-
-
-def _num(v, defecto=None):
-    """'1.0' → 1. La API manda las cantidades como string decimal."""
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return defecto
-
-
-def armar(filas: list[dict], cn) -> tuple[list[dict], list[str]]:
-    """Cruza cada devolución contra kubera y devuelve (filas_a_escribir, avisos)."""
-    oids = sorted({str((f.get("search") or {}).get("resource_id")) for f in filas})
-
-    cur = cn.cursor()
-    # El pedido: SKU, precio congelado y el es_fulfillment BUENO (order_items).
-    cur.execute("""
-        select o.external_order_id, o.cuenta, o.estado_canal,
-               i.item_id, i.sku, i.cantidad, i.precio_unitario, i.es_fulfillment
-        from channel.orders o
-        join channel.order_items i using (canal, cuenta, external_order_id)
-        where o.canal = 'mercado_libre' and o.external_order_id = any(%s)
-    """, (oids,))
-    lineas: dict[str, list[dict]] = {}
-    for r in cur.fetchall():
-        d = dict(zip(["oid", "cuenta", "estado", "item_id", "sku",
-                      "cantidad", "precio", "full"], r))
-        lineas.setdefault(d["oid"], []).append(d)
-
-    cur.execute("select id, channel_id, legacy_code from core.accounts")
-    cuentas = {(c, lc): i for i, c, lc in cur.fetchall()}
-
-    out, avisos = [], []
-    for f in filas:
-        s = f.get("search") or {}
-        det = f.get("detalle") or {}
-        ret = f.get("returns") or {}
-        cuenta = f.get("cuenta")
-        claim_id = str(s.get("id"))
-        oid = str(s.get("resource_id"))
-
-        ords = ret.get("orders") or []
-        item = ords[0] if ords else {}
-        item_id = item.get("item_id")
-
-        # piezas: return_quantity, y claimed_quantity para las low_cost sin orders[]
-        piezas = _num(item.get("return_quantity"))
-        if piezas is None:
-            piezas = _num(det.get("claimed_quantity"), 0)
-            if ords == []:
-                avisos.append(f"{claim_id}: sin orders[] ({ret.get('subtype')}), "
-                              f"piezas desde claimed_quantity={piezas}")
-
-        # el pedido: si el item_id empata, esa línea; si no, la única del pedido
-        cands = lineas.get(oid, [])
-        m = [l for l in cands if str(l["item_id"]) == str(item_id)]
-        linea = m[0] if m else (cands[0] if len(cands) == 1 else None)
-        if not cands:
-            avisos.append(f"{claim_id}: orden {oid} NO está en channel.orders "
-                          f"→ sin SKU ni precio")
-        elif not linea:
-            avisos.append(f"{claim_id}: orden {oid} tiene {len(cands)} líneas y el "
-                          f"item_id {item_id} no empató → sin SKU")
-
-        sku    = linea["sku"] if linea else None
-        precio = linea["precio"] if linea else None
-        full   = bool(linea["full"]) if linea else False
-        valor  = (float(precio) * piezas) if (precio is not None and piezas) else None
-
-        # ¿la venta seguía contando en sales_daily? Mismo filtro que la 0030.
-        estado_orden = (cands[0]["estado"] if cands else None)
-        contaba = (None if estado_orden is None
-                   else (estado_orden or "").lower() not in CANCELADOS)
-
-        res = det.get("resolution") or {}
-        env = (ret.get("shipments") or [{}])[0]
-
-        out.append({
-            "canal": "mercado_libre", "cuenta": cuenta, "claim_id": claim_id,
-            "account_id": cuentas.get(("mercado_libre", cuenta)),
-            "external_order_id": oid,
-            "return_id": str(ret.get("id")) if ret.get("id") is not None else None,
-            "item_id": item_id, "sku": sku, "piezas": piezas,
-            "precio_unitario": precio, "valor": valor, "comision_devuelta": None,
-            "es_fulfillment": full, "venta_contaba": contaba,
-            "estado": ret.get("status"), "estado_dinero": ret.get("status_money"),
-            "subtipo": ret.get("subtype"), "etapa": s.get("stage"),
-            "estado_claim": s.get("status"), "motivo_id": s.get("reason_id"),
-            "resolucion_motivo": res.get("reason"),
-            "cobertura_ml": res.get("applied_coverage"),
-            "cerrado_por": res.get("closed_by"),
-            "shipment_id": str(env.get("shipment_id")) if env.get("shipment_id") else None,
-            "estado_envio": env.get("status"), "tracking": env.get("tracking_number"),
-            "creado_at": s.get("date_created"),
-            "cerrado_at": res.get("date_created"),
-            "actualizado_canal_at": s.get("last_updated"),
-        })
-    return out, avisos
+# DÓNDE ARRANCA, Y POR QUÉ NO ES DONDE PARECE.
+#
+# La tentación es empezar donde empiezan las ventas. Pero lo que hace falta
+# para valorar una devolución no son las ventas: es el PEDIDO en
+# `channel.orders`, que es de donde salen el SKU, el precio congelado y si era
+# FULL. Y esa tubería arrancó el 17-jul-2026 (medido el 9-sep: feb 1 pedido,
+# may 4, jun 181, jul 7,603, ago 19,598).
+#
+# El barrido completo del 9-sep lo demostró: de 771 devoluciones históricas,
+# **423 no tienen su pedido en kubera**. Existen en ML —las comprobé una por
+# una contra `/orders/{id}`: 200, de febrero, ya canceladas— pero nunca
+# entraron. Escribirlas produciría 423 filas sin SKU, valiendo $0, y con
+# `es_fulfillment = false` por ser la columna NOT NULL: o sea AFIRMANDO que
+# eran DROP cuando no se sabe. El desglose por tipo diría FULL=334/DROP=437 con
+# 423 "DROP" que en realidad son "no sé".
+#
+# Decisión de Brandon (9-sep-2026): se captura desde julio. Las 368 anteriores
+# no se pierden —siguen en ML y se pueden traer el día que esos pedidos
+# entren—, y la pantalla ya sabe decir "de este período no hay datos" en vez de
+# pintar un 0% tranquilizador.
+ARRANQUE = "2026-07-01"
 
 
-COLUMNAS = """canal, cuenta, claim_id, account_id, external_order_id, return_id,
-    item_id, sku, piezas, precio_unitario, valor, comision_devuelta,
-    es_fulfillment, venta_contaba, estado, estado_dinero, subtipo, etapa,
-    estado_claim, motivo_id, resolucion_motivo, cobertura_ml, cerrado_por,
-    shipment_id, estado_envio, tracking, creado_at, cerrado_at,
-    actualizado_canal_at"""
+def _meses(desde: str, hasta: str) -> list[tuple[str, str]]:
+    """Parte el rango en tramos mensuales [(desde, hasta), …]."""
+    d0 = date.fromisoformat(desde)
+    d1 = date.fromisoformat(hasta)
+    tramos = []
+    cur = d0
+    while cur <= d1:
+        fin_mes = (cur.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        fin = min(fin_mes, d1)
+        tramos.append((cur.isoformat(), fin.isoformat()))
+        cur = fin + timedelta(days=1)
+    return tramos
 
 
-def main() -> int:
+async def recolectar(cuenta: str, desde: str, hasta: str,
+                     concurrencia: int) -> tuple[list, list, list[str]]:
+    """Devuelve (cabeceras, líneas, avisos) de una cuenta, sin escribir."""
+    tok = await asyncio.to_thread(meli._access_token, cuenta)
+    if not tok:
+        print(f"  ✗ {cuenta}: sin token vigente (regla 8)")
+        return [], [], []
+    cab_http = {"Authorization": f"Bearer {tok}"}
+    cuentas_kb = await asyncio.to_thread(dml._cuentas_kubera)
+    account_id = cuentas_kb.get((dml.CANAL, cuenta))
+
+    cabeceras, lineas, avisos = [], [], []
+    sem = asyncio.Semaphore(concurrencia)
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=40) as cli:
+        for m0, m1 in _meses(desde, hasta):
+            claims = await dml._buscar(cli, cab_http, m0, m1)
+            if not claims:
+                print(f"    {m0[:7]}  —")
+                continue
+
+            async def _uno(cid: str):
+                async with sem:
+                    return await dml._traer(cli, cab_http, cid)
+
+            crudos = await asyncio.gather(*(_uno(str(c["id"])) for c in claims),
+                                          return_exceptions=True)
+            # Un claim que no se pudo TRAER no es un claim que no existe: hay
+            # que decirlo y volver por él, no dejarlo caer en silencio.
+            caidos = [c for c in crudos if isinstance(c, BaseException)]
+            buenos = [c for c in crudos
+                      if isinstance(c, dict) and (c["claim"].get("type") == "returns")]
+            # Un solo viaje a la base por tramo, no uno por devolución.
+            oids = sorted({str(c["claim"].get("resource_id")) for c in buenos})
+            pedidos = await asyncio.to_thread(dml._lineas_de_pedidos, oids)
+
+            for c in buenos:
+                oid = str(c["claim"].get("resource_id"))
+                cb, ln, av = dml.armar(c, cuenta,
+                                       lineas_pedido=pedidos.get(oid, []),
+                                       account_id=account_id,
+                                       detectado_via="backfill")
+                cabeceras.append(cb)
+                lineas.extend(ln)
+                avisos.extend(av)
+            if caidos:
+                avisos.append(f"{m0[:7]}: {len(caidos)} claims no se pudieron traer "
+                              f"({type(caidos[0]).__name__}: {str(caidos[0])[:70]})")
+            print(f"    {m0[:7]}  {len(claims):>4} claims · {len(buenos):>4} devoluciones"
+                  + (f" · ⚠ {len(caidos)} NO SE PUDIERON TRAER" if caidos else ""))
+    return cabeceras, lineas, avisos
+
+
+def resumir(cabeceras: list[dict], lineas: list[dict], avisos: list[str]) -> None:
+    print("\n" + "═" * 72)
+    print(f"  DEVOLUCIONES A ESCRIBIR: {len(cabeceras)}   ·   LÍNEAS: {len(lineas)}")
+    print("═" * 72)
+    if not cabeceras:
+        return
+
+    por_ln = {}
+    for l in lineas:
+        por_ln.setdefault(l["external_return_id"], []).append(l)
+
+    fechas = sorted(c["abierta_at"][:10] for c in cabeceras if c.get("abierta_at"))
+    print(f"  rango de fechas   : {fechas[0]} → {fechas[-1]}"
+          f"   ({len(set(fechas))} días distintos)")
+    if len(set(fechas)) <= 1 and len(cabeceras) > 5:
+        print("  ⚠️  TODAS EN UN SOLO DÍA — abierta_at no se está mandando. NO APLICAR.")
+
+    print(f"  por cuenta        : {dict(Counter(c['cuenta'] for c in cabeceras))}")
+    print(f"  estado            : {dict(Counter(c['estado'] for c in cabeceras))}")
+    print(f"  estado del dinero : {dict(Counter(c['estado_dinero'] for c in cabeceras))}")
+    print(f"  FULL / DROP       : FULL={sum(1 for c in cabeceras if c['es_fulfillment'])}"
+          f"  DROP={sum(1 for c in cabeceras if not c['es_fulfillment'])}")
+    print(f"  venta_contaba     : {dict(Counter(c['venta_contaba'] for c in cabeceras))}")
+    print(f"  con motivo legible: {sum(1 for c in cabeceras if c['motivo_texto'])}/{len(cabeceras)}")
+    print(f"  multi-línea       : {sum(1 for v in por_ln.values() if len(v) > 1)}")
+
+    con_sku = [l for l in lineas if l["sku"]]
+    print(f"  líneas con SKU    : {len(con_sku)}/{len(lineas)}")
+
+    valor = sum(float(l["monto_unitario"]) * l["cantidad"]
+                for l in lineas if l["monto_unitario"])
+    contaba = {c["external_return_id"] for c in cabeceras if c["venta_contaba"]}
+    restable = sum(float(l["monto_unitario"]) * l["cantidad"] for l in lineas
+                   if l["monto_unitario"] and l["external_return_id"] in contaba)
+    piezas = sum(l["cantidad"] for l in lineas)
+    print(f"\n  PIEZAS devueltas  : {piezas:,}")
+    print(f"  VALOR devuelto    : ${valor:,.2f}")
+    print(f"    restable de ventas          : ${restable:,.2f}")
+    print(f"    ya descontado (cancelados)  : ${valor - restable:,.2f}")
+
+    if avisos:
+        print(f"\n  avisos ({len(avisos)}) — los 12 primeros:")
+        for a in avisos[:12]:
+            print(f"    · {a}")
+        tipos = Counter(a.split("→")[-1].strip()[:45] for a in avisos)
+        if len(avisos) > 12:
+            print(f"    … y {len(avisos)-12} más. Por tipo: {dict(tipos)}")
+
+
+async def main() -> int:
+    hoy = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     ap = argparse.ArgumentParser()
+    ap.add_argument("--desde", default=ARRANQUE)
+    ap.add_argument("--hasta", default=hoy)
+    ap.add_argument("--cuenta", choices=list(dml.CUENTAS))
+    ap.add_argument("--concurrencia", type=int, default=3,
+                    help="ML corta con 429 arriba de 3-4 en paralelo")
     ap.add_argument("--aplicar", action="store_true", help="escribe (default: dry-run)")
-    ap.add_argument("--crudo", default=str(CRUDO))
     args = ap.parse_args()
 
-    p = Path(args.crudo)
-    if not p.exists():
-        sys.exit(f"No hay crudo en {p}. Corre primero el recolector.")
-    filas = [json.loads(l) for l in p.open() if l.strip()]
-    print(f"crudo: {len(filas)} devoluciones ({p.name})")
+    cuentas = [args.cuenta] if args.cuenta else list(dml.CUENTAS)
+    print(f"Ventana: {args.desde} → {args.hasta}   cuentas: {', '.join(cuentas)}")
 
-    cn = psycopg2.connect(dsn(), connect_timeout=30)
-    try:
-        datos, avisos = armar(filas, cn)
+    cabeceras, lineas, avisos = [], [], []
+    for cuenta in cuentas:
+        print(f"\n■ {cuenta}")
+        cb, ln, av = await recolectar(cuenta, args.desde, args.hasta, args.concurrencia)
+        cabeceras += cb
+        lineas += ln
+        avisos += av
 
-        # Resumen ANTES de escribir: es lo que se revisa en el dry-run.
-        from collections import Counter
-        print(f"\nfilas a escribir: {len(datos)}")
-        print(f"  por cuenta      : {dict(Counter(d['cuenta'] for d in datos))}")
-        print(f"  FULL / DROP     : FULL={sum(1 for d in datos if d['es_fulfillment'])} "
-              f"DROP={sum(1 for d in datos if not d['es_fulfillment'])}")
-        print(f"  venta_contaba   : {dict(Counter(d['venta_contaba'] for d in datos))}")
-        print(f"  estado          : {dict(Counter(d['estado'] for d in datos))}")
-        print(f"  estado_dinero   : {dict(Counter(d['estado_dinero'] for d in datos))}")
-        print(f"  subtipo         : {dict(Counter(d['subtipo'] for d in datos))}")
-        print(f"  con SKU         : {sum(1 for d in datos if d['sku'])}/{len(datos)}")
-        print(f"  con valor       : {sum(1 for d in datos if d['valor'])}/{len(datos)}")
-        tot = sum(float(d['valor']) for d in datos if d['valor'])
-        rest = sum(float(d['valor']) for d in datos if d['valor'] and d['venta_contaba'])
-        print(f"  VALOR devuelto  : ${tot:,.2f}")
-        print(f"    de eso RESTABLE de ventas (venta_contaba): ${rest:,.2f}")
-        print(f"    ya descontado (orden cancelada)          : ${tot - rest:,.2f}")
-        if avisos:
-            print(f"\n  avisos ({len(avisos)}):")
-            for a in avisos:
-                print(f"    · {a}")
+    resumir(cabeceras, lineas, avisos)
 
-        if not args.aplicar:
-            print("\nDRY-RUN: no se escribió nada. Repite con --aplicar.")
-            return 0
+    if not args.aplicar:
+        print("\nDRY-RUN: no se escribió nada. Repite con --aplicar.")
+        return 0
 
-        cur = cn.cursor()
-        actualiza = ", ".join(
-            f"{c.strip()} = excluded.{c.strip()}"
-            for c in COLUMNAS.replace("\n", " ").split(",")
-            if c.strip() not in ("canal", "cuenta", "claim_id"))
-        orden = [c.strip() for c in COLUMNAS.replace("\n", " ").split(",")]
-        tuplas = [tuple(d[c] for c in orden) for d in datos]
-        execute_values(cur, f"""
-            insert into channel.returns ({COLUMNAS})
-            values %s
-            on conflict (canal, cuenta, claim_id) do update set {actualiza}
-        """, tuplas)
-        cn.commit()
-        print(f"\n✅ escritas {cur.rowcount} filas en channel.returns")
-        cur.execute("select count(*) from channel.returns")
-        print(f"   total en la tabla: {cur.fetchone()[0]}")
-    finally:
-        cn.close()
+    print("\nEscribiendo…")
+    por_ln: dict[str, list] = {}
+    for l in lineas:
+        por_ln.setdefault(l["external_return_id"], []).append(l)
+    escritas = 0
+    for cb in cabeceras:
+        await asyncio.to_thread(dml._guardar, cb, por_ln.get(cb["external_return_id"], []))
+        escritas += 1
+        if escritas % 50 == 0:
+            print(f"   {escritas}/{len(cabeceras)}")
+    print(f"\nOK — {escritas} devoluciones escritas en channel.returns.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

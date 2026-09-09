@@ -2823,27 +2823,64 @@ async def rentabilidad_devoluciones(
                 "tasa_valor": pct(dev_val, ing),
                 "tasa_unidades": pct(dev_uds, uds),
             }
-        # `parcial`: el período pide más atrás de lo que hay capturado.
-        parcial = bool(cob and cob["desde"] and cob["periodo_desde"]
-                       and cob["desde"] > cob["periodo_desde"])
+        # ── COBERTURA: SON TRES ESTADOS, NO UNO ─────────────────────────────
+        # La versión anterior comparaba un solo borde —`cobertura.desde >
+        # periodo.desde`, o sea "¿la captura empieza DESPUÉS del período?"— y
+        # por eso no veía el caso contrario, que fue el de todos los días entre
+        # el 31-ago y el 9-sep-2026: la captura había TERMINADO antes de que el
+        # período empezara. Con cobertura 24→31 de agosto y el período por
+        # omisión (últimos 7 días), la comparación daba `false`, no salía
+        # ningún banner, y la pantalla informaba «$0.00 devueltos · 0.00% de
+        # devolución» con la misma seguridad con la que informaría un cero
+        # verdadero.
+        #
+        # Es exactamente la falla que el punto 3 del encabezado de esta sección
+        # dice que no debe pasar. La diferencia entre los dos casos malos no es
+        # de grado, es de clase:
+        #
+        #   parcial    se solapan a medias → el % existe pero está SUBESTIMADO
+        #   sin_datos  no se tocan         → el % NO EXISTE. No es un cero, es
+        #                                    un hueco, y por eso los porcentajes
+        #                                    salen en null y no en 0.
+        c_desde = (cob or {}).get("desde")
+        c_hasta = (cob or {}).get("hasta")
+        p_desde = (cob or {}).get("periodo_desde")
+        p_hasta = (cob or {}).get("periodo_hasta")
+        if not (c_desde and c_hasta and p_desde and p_hasta):
+            estado_cobertura = "sin_datos"          # todavía no se capturó nada
+        elif c_hasta < p_desde or c_desde > p_hasta:
+            estado_cobertura = "sin_datos"          # ventanas disjuntas
+        elif c_desde <= p_desde and c_hasta >= p_hasta:
+            estado_cobertura = "completa"           # el período cabe dentro
+        else:
+            estado_cobertura = "parcial"
+        # Se conserva el booleano porque es el contrato que ya consume la
+        # pantalla; `estado` es el que distingue los tres casos.
+        parcial = estado_cobertura == "parcial"
+        sin_datos = estado_cobertura == "sin_datos"
+
         return {
             "ambiente": settings.app_env,
             "periodo": {"dias": None if (desde or hasta) else dias,
                         "desde": str(cob["periodo_desde"]) if cob else None,
                         "hasta": str(cob["periodo_hasta"]) if cob else None},
-            "cobertura": {"desde": str(cob["desde"]) if cob and cob["desde"] else None,
-                          "hasta": str(cob["hasta"]) if cob and cob["hasta"] else None,
-                          "total": (cob or {}).get("total", 0)},
+            "cobertura": {"desde": str(c_desde) if c_desde else None,
+                          "hasta": str(c_hasta) if c_hasta else None,
+                          "total": (cob or {}).get("total", 0),
+                          "estado": estado_cobertura},
             "parcial": parcial,
             "kpis": {
                 "ingresos": float(ventas["ingresos"] or 0),
-                "devuelto_valor": float(dev["valor"] or 0),
-                "pct_valor": pct(dev["valor"], ventas["ingresos"]),
+                # Sin cobertura no se devuelve 0: se devuelve null. Un 0 aquí
+                # se lee como "no hubo devoluciones", que es una afirmación que
+                # estos datos no sostienen.
+                "devuelto_valor": None if sin_datos else float(dev["valor"] or 0),
+                "pct_valor": None if sin_datos else pct(dev["valor"], ventas["ingresos"]),
                 "unidades": int(ventas["unidades"] or 0),
-                "devuelto_unidades": int(dev["unidades"] or 0),
-                "pct_unidades": pct(dev["unidades"], ventas["unidades"]),
-                "devoluciones": int(dev["devoluciones"] or 0),
-                "valor_restable": float(dev["valor_restable"] or 0),
+                "devuelto_unidades": None if sin_datos else int(dev["unidades"] or 0),
+                "pct_unidades": None if sin_datos else pct(dev["unidades"], ventas["unidades"]),
+                "devoluciones": None if sin_datos else int(dev["devoluciones"] or 0),
+                "valor_restable": None if sin_datos else float(dev["valor_restable"] or 0),
             },
             "por_tipo": {"full": _tipo(True), "drop": _tipo(False)},
             "por_tienda": por_tienda,

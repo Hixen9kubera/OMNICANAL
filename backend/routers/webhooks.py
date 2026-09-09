@@ -423,6 +423,50 @@ async def _procesar_ml(evento_id: int | None, payload: dict[str, Any]) -> None:
                 # "pedido WC #" en el log.
                 fallo = True
                 resultado += " · pedido WC falló: no se pudo traer la orden"
+        elif topic == "post_purchase" and "/claims/" in resource:
+            # DEVOLUCIONES. Este topic ya venía llegando —1,811 avisos en 3
+            # días medidos el 8-sep-2026— y caía entero en el `else` de abajo:
+            # la señal estaba, nadie la escuchaba.
+            #
+            # DOS COSAS QUE PARECEN DETALLE Y NO LO SON:
+            #
+            # 1. Del recurso solo se saca el ID, y del payload nada. La URL es
+            #    pública: si la devolución se armara con lo que llega,
+            #    cualquiera podría inventar una. Todo se le pregunta a ML.
+            #    Mismo criterio que `pedidos_tiktok`.
+            #
+            # 2. LA MAYORÍA DE ESTOS AVISOS NO SON DEVOLUCIONES. El topic trae
+            #    también mediaciones y cancelaciones —de 3,993 claims
+            #    históricos, 771 son `returns`—, y además llega dos veces por
+            #    caso: una con `actions:["claims"]` (el reclamo) y otra con
+            #    `["claims_actions"]` (su historial). El filtro por tipo vive
+            #    dentro de `devoluciones_ml.sincronizar`, que consulta y
+            #    descarta lo que no es devolución; aquí solo se filtra la
+            #    segunda copia, que apunta al MISMO claim y solo duplicaría la
+            #    consulta.
+            claim_id = resource.split("/claims/", 1)[1].split("/", 1)[0]
+            if not settings.devoluciones_ml_enabled:
+                sin_accion = True
+                resultado = f"devolución {claim_id} vista (captura apagada)"
+            elif not claim_id.isdigit():
+                sin_accion = True
+                resultado = f"post_purchase sin id de claim: {resource}"
+            else:
+                from services import devoluciones_ml
+                rd = await devoluciones_ml.sincronizar(
+                    claim_id, _cuenta_por_user(payload.get("user_id")),
+                    detectado_via="webhook")
+                if not rd.get("ok"):
+                    fallo = True
+                    resultado = f"devolución {claim_id} falló: {rd.get('motivo')}"
+                elif rd.get("accion") == "ignorado":
+                    sin_accion = True
+                    resultado = f"claim {claim_id} no es devolución ({rd.get('motivo')})"
+                else:
+                    sku = None
+                    resultado = (f"devolución {rd['devolucion']} · orden "
+                                 f"{rd['orden']} · {rd['estado']} · "
+                                 f"{rd['piezas']} pza(s)")
         else:
             sin_accion = True
             resultado = f"topic '{topic}' registrado (sin acción de stock)"
