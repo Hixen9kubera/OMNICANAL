@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.467.0 — La pregunta a Woo antes de soltar el candado ahora mira tres veces
+
+El 9-sep el par `701-1838195-8169814` → **#142678/#142679** nació así: en el
+relevo del deploy de las 19:48, el contenedor viejo creó #142678 (19:49:24),
+su registro en kubera falló (MySQL lo absorbió — la huella de siempre), y la
+salvaguarda de la v0.287 («pregúntale a Woo si ya existe antes de soltar el
+candado») consultó a Woo a las **19:49:23**: un segundo ANTES de que Woo
+terminara de persistir el pedido que ese mismo proceso acababa de mandar.
+Devolvió None → el candado se soltó → el contenedor nuevo, en su primer
+sondeo (19:50:42), lo volvió a crear como #142679.
+
+La v0.461.0 no aplicaba: esa cubre cuando kubera **no confirma el reclamo**
+(el sondeo se salta la pasada). Aquí el reclamo SÍ se ganó; lo que falló fue
+después, y la mirada única a Woo perdió la carrera de escritura por ~1 s.
+
+El refuerzo: `_pedido_en_woo(order_id)` — la misma consulta
+(`wp_db.pedido_por_ml_order_id`), pero **3 intentos con 1.5 s entre ellos**
+(~3 s en el peor caso). Se usa en los DOS sitios que miraban una sola vez: el
+camino de excepción antes de `liberar` (el que perdió hoy) y la adopción del
+reclamo huérfano de otro proceso. Solo se paga en el camino de fallo, que es
+raro; el camino feliz no pasa por aquí. Un error de la consulta cuenta como
+«no visto» y la siguiente mirada decide.
+
+Lo de raíz sigue siendo la salud de las conexiones a kubera/el pooler (murió
+a las 06:05, 14:12–14:58, 15:58–16:10, 19:24 y 19:49 del 9-sep) — eso no se
+arregla desde este repo. Este cambio cierra la ventana de ~1 s que convertía
+cada tormenta en un gemelo. Limpieza del día: #142657 y #142678 a la papelera
+(FBA, sin stock descontado, verificado antes), #142659 y #142679 conservados
+con su candado.
+
 ### v0.466.0 — El renglón del packing list se busca con la foto, no solo en la tabla
 
 Brandon, 9-sep: *«ORG-0863-ROS sí tiene packing list en el Drive que se conecta

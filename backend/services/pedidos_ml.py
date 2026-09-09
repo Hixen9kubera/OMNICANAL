@@ -489,6 +489,37 @@ async def sincronizar(order_id: str, forzar_estado: str | None = None,
                                               reintentable)
 
 
+async def _pedido_en_woo(order_id: str, intentos: int = 3,
+                         espera: float = 1.5) -> int | None:
+    """
+    `pedido_por_ml_order_id` con reintentos, porque UNA foto puede mentir por
+    un segundo: el 9-sep-2026 el par 701-1838195-8169814 → #142678/#142679
+    nació así. El contenedor viejo del relevo de deploy creó #142678 a las
+    19:49:24, su registro en kubera falló, y la consulta a Woo corrió a las
+    19:49:23 — Woo todavía no terminaba de persistir el pedido que ESE MISMO
+    proceso acababa de mandar. Devolvió None, el candado se soltó y el
+    contenedor nuevo creó el gemelo un minuto después.
+
+    Tres miradas con 1.5 s entre ellas (~3 s en el peor caso) cubren esa
+    carrera de escritura. Solo se paga en el camino de FALLO, que es raro;
+    el camino feliz no pasa por aquí. Un error de la consulta cuenta como
+    "no visto" y se reintenta igual: decidir con la mirada siguiente es
+    mejor que decidir sin ninguna.
+    """
+    from services import wp_db  # local: evita ciclo de importación
+    for i in range(intentos):
+        if i:
+            await asyncio.sleep(espera)
+        try:
+            wc = await asyncio.to_thread(
+                wp_db.pedido_por_ml_order_id, str(order_id))
+        except Exception:  # noqa: BLE001 — la siguiente mirada decide
+            wc = None
+        if wc:
+            return int(wc)
+    return None
+
+
 async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                                    proteger_stock: bool,
                                    orden: dict | None,
@@ -543,10 +574,9 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                 # No completó: o murió a media petición, o creó en Woo sin
                 # alcanzar a registrarlo — que es exactamente lo que dejó
                 # #123068/#123069. Se le pregunta a Woo, que es donde el
-                # duplicado se vería.
-                from services import wp_db  # local: evita ciclo de importación
-                wc_previo = await asyncio.to_thread(
-                    wp_db.pedido_por_ml_order_id, str(order_id))
+                # duplicado se vería — con reintentos (v0.467.0), por si el
+                # pedido del otro proceso todavía está aterrizando.
+                wc_previo = await _pedido_en_woo(str(order_id))
                 if wc_previo:
                     log.warning("orden %s: el reclamo era de otro proceso que no "
                                 "completó; se adopta el pedido %s que ya existía "
@@ -630,14 +660,12 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         # en la adopción que ya existe arriba (`pedido_por_ml_order_id`) y
         # completa el registro sobre el pedido que hay. Ni venta perdida ni
         # duplicado. Si Woo no lo tiene, se suelta como siempre.
+        # REINTENTOS EN LA MIRADA (v0.467.0): el 9-sep una sola consulta
+        # perdió esta carrera por ~1 segundo (#142678/#142679) — el pedido
+        # existía pero Woo aún no lo persistía cuando se preguntó. Ver
+        # `_pedido_en_woo`.
         if reclamo_mio:
-            ya_en_woo = None
-            try:
-                from services import wp_db  # local: evita ciclo de importación
-                ya_en_woo = await asyncio.to_thread(
-                    wp_db.pedido_por_ml_order_id, str(order_id))
-            except Exception:  # noqa: BLE001 — sin respuesta se decide como antes
-                ya_en_woo = None
+            ya_en_woo = await _pedido_en_woo(str(order_id))
             if ya_en_woo:
                 log.warning(
                     "orden %s: falló DESPUÉS de crear #%s en Woo; el reclamo se "
