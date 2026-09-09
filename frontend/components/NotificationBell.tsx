@@ -39,6 +39,19 @@ function iconoTopic(topic: string | null) {
   }
 }
 
+// A qué CUENTA pertenece cada renglón de la alerta (Eduardo, 9-sep-2026).
+// `tienda` es el código de la cuenta (BEKURA / SANCORFASHION) y para los demás
+// canales viene vacío: ahí se dice el canal. Sin esto la lista mezclaba las
+// dos cuentas de ML y no había forma de saber cuál publicación era.
+const TIENDAS: Record<string, string> = { BEKURA: "Kubera", SANCORFASHION: "San Corpe" };
+function etiquetaCuenta(canal?: string | null, tienda?: string | null): string {
+  if (tienda) return TIENDAS[tienda] ?? tienda;
+  const c = (canal || "").toLowerCase();
+  if (!c || c === "mercado_libre") return "";
+  return c === "amazon" ? "Amazon" : c === "tiktok" ? "TikTok" : c === "temu" ? "Temu"
+    : c === "walmart" ? "Walmart" : c;
+}
+
 function etiquetaTopic(topic: string | null): string {
   const map: Record<string, string> = {
     margen_negativo: "Margen negativo",
@@ -148,7 +161,17 @@ function DetalleAlerta({ topic, datos, error, onIr }: {
               onClick={onIr}
               className="flex items-baseline justify-between gap-2 rounded px-1.5 py-1 hover:bg-white"
             >
-              <span className="truncate font-mono text-[11px] text-slate-600">{it.sku}</span>
+              <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="truncate font-mono text-[11px] text-slate-600">{it.sku}</span>
+                {"tienda" in it && etiquetaCuenta(it.canal, it.tienda) && (
+                  <span
+                    className="shrink-0 rounded bg-yellow-100 px-1 text-[9px] font-semibold text-yellow-800"
+                    title={`Cuenta: ${etiquetaCuenta(it.canal, it.tienda)}`}
+                  >
+                    {etiquetaCuenta(it.canal, it.tienda)}
+                  </span>
+                )}
+              </span>
               {"margen_pct" in it ? (
                 <span className="flex shrink-0 items-baseline gap-1.5 text-[11px]">
                   {/* El COSTO DUDOSO se marca aparte porque pide lo contrario:

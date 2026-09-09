@@ -1001,6 +1001,15 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.471.0 — La alerta de margen negativo dice de qué cuenta es cada SKU (Eduardo)
+
+La lista de "Margen negativo" en la campana mezclaba las dos cuentas de
+Mercado Libre sin decirlo: `ROP-0266-DOR −310%` podía ser la publicación de
+Kubera o la de San Corpe, y son dos precios distintos. Cada renglón lleva ahora
+un chip con la cuenta (**Kubera** / **San Corpe**; en otros canales, el canal),
+tomado del `tienda` que la respuesta ya traía desde la v0.439.0 para armar el
+enlace. Solo cambia la campana.
+
 ### v0.470.0 — El COLOR desempata lo que el dHash no puede ver
 
 Brandon, 9-sep: *«para TEC-0008-AMR sí existe packing list en el Drive, pero
