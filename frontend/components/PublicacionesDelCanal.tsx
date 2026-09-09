@@ -149,6 +149,38 @@ function Precio({ p }: { p: Publicacion }) {
  * dice por qué): el renglón manda a revisar el costeo en vez de empujar a
  * subir el precio 20 veces por un dato de captura.
  */
+/**
+ * LO QUE COBRA EL MERCADO, como segunda opinión sobre el COSTO (Eduardo,
+ * 9-sep). Sale de Competencia, que ya guarda los precios de los resultados de
+ * búsqueda de ML; lo único que faltaba era cruzarlo con el SKU.
+ *
+ * NO es una sugerencia de precio y por eso no se pinta como tal: el cruce va
+ * por TÉRMINO DE BÚSQUEDA, no por producto exacto, así que la mediana describe
+ * una categoría. Un 1.2× no dice nada; un 4× no se explica por variación de
+ * modelo y delata un costo mal capturado — que es justo lo que hay que revisar
+ * cuando la tarjeta manda a revisar el costeo.
+ *
+ * Solo aparece cuando nuestro costo SUPERA lo que el mercado cobra, que ya es
+ * de por sí raro: significaría que la competencia vende con pérdida.
+ */
+function Mercado({ p }: { p: Publicacion }) {
+  const m = p.mercado;
+  if (!m || m.costo_veces == null || m.costo_veces <= 1) return null;
+  const fuerte = m.costo_veces >= 2;
+  return (
+    <div className={`mt-1.5 flex flex-wrap items-baseline gap-x-1.5 text-[11px] ${fuerte ? "text-amber-700" : "text-slate-500"}`}>
+      <span>El mercado lo vende alrededor de</span>
+      <span className="font-semibold tabular-nums">{fmtMoneda(m.mediana)}</span>
+      <span>y tu costo son</span>
+      <span className="font-semibold tabular-nums">{fmtMoneda(p.costo_unitario)}</span>
+      <span className={fuerte ? "font-semibold" : ""}>({m.costo_veces}×)</span>
+      <span className="text-slate-400">
+        · {m.n} publicaciones{m.dias != null ? `, hace ${m.dias} d` : ""}
+      </span>
+    </div>
+  );
+}
+
 function Piso({ p }: { p: Publicacion }) {
   const [abierto, setAbierto] = useState(false);
   const objetivo = p.piso_objetivo ?? 0.2;
@@ -166,11 +198,14 @@ function Piso({ p }: { p: Publicacion }) {
 
   if (p.piso_aviso === "costo_sin_verificar") {
     return (
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-slate-100 pt-2 text-[11px]"
+      <div className="mt-2 border-t border-slate-100 pt-2 text-[11px]"
            title={`Esta publicación está por debajo del ${meta} de margen, pero su costo no está verificado contra el packing list. Verificar el costo primero: si está mal capturado, el precio que haría falta también estaría mal.`}>
-        <AlertTriangle size={13} className="shrink-0 text-amber-600" />
-        <span className="font-semibold text-amber-700">Bajo el {meta} de margen</span>
-        <span className="text-slate-500">— el costo no está verificado, revísalo antes de mover el precio</span>
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <AlertTriangle size={13} className="shrink-0 text-amber-600" />
+          <span className="font-semibold text-amber-700">Bajo el {meta} de margen</span>
+          <span className="text-slate-500">— el costo no está verificado, revísalo antes de mover el precio</span>
+        </div>
+        <Mercado p={p} />
       </div>
     );
   }
@@ -207,6 +242,8 @@ function Piso({ p }: { p: Publicacion }) {
           su comisión, no sobre el precio de venta— y el peso EFECTIVO, que es
           el mayor entre el real y el volumétrico. Sin ellos el fee y la
           comisión parecen salidos de la nada. */}
+      <Mercado p={p} />
+
       {abierto && d && (
         <div className="mb-1 mt-2 rounded-lg border border-rose-200 bg-white px-3 py-2">
           <table className="w-full text-[11px] tabular-nums">

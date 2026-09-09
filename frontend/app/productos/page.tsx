@@ -161,7 +161,7 @@ export default function ProductosPage() {
               <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] opacity-80">
                 <Wand2 size={14} /> Estudio de producto
               </div>
-              <h1 className="mt-1 text-3xl font-extrabold tracking-tight">Productos</h1>
+              <h1 className="mt-1 text-3xl font-extrabold tracking-tight">Publicador</h1>
               <p className="mt-1 max-w-xl text-sm opacity-90">
                 Tu catálogo de WooCommerce. Haz clic en un producto para ver su ficha completa y
                 generar contenido optimizado por canal con IA.

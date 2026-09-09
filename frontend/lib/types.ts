@@ -1568,6 +1568,18 @@ export interface Publicacion {
    *  'canal_sin_costo' — el canal no tiene comisión ni tarifa de envío
    *    cargadas (hoy, todos menos Mercado Libre). */
   piso_aviso?: "costo_sin_verificar" | "canal_sin_costo" | null;
+  /** Lo que cobra el MERCADO por el término de búsqueda de este SKU, según
+   *  Competencia. Sirve para auditar el COSTO, no para fijar el precio: el
+   *  cruce es por término ("perchero de pie"), no por producto exacto. */
+  mercado?: {
+    mediana: number;
+    /** Cuántas publicaciones ajenas se midieron (mínimo 3). */
+    n: number;
+    /** Antigüedad de la última captura. */
+    dias: number | null;
+    /** Cuántas veces nuestro costo supera lo que el mercado cobra. */
+    costo_veces: number | null;
+  } | null;
   /** La aritmética del precio del piso, pieza por pieza, para explicarla en
    *  pantalla. Llega solo cuando hay `precio_piso`. */
   piso_desglose?: {

@@ -1001,6 +1001,18 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.474.0 — La pestaña «Productos» ahora se llama «Publicador» (Eduardo)
+
+Dos pestañas de productos, y la primera no crea ninguno: «Productos» y «Crear
+Productos» una al lado de la otra no decían cuál era cuál. El nombre viejo era
+el del CONTENIDO, no el del trabajo — ahí se prepara lo que se va a publicar:
+contenido por canal, títulos, descripciones e imágenes con IA.
+
+Cambia la etiqueta de la barra y el encabezado de la pantalla. **El `id` y la
+ruta `/productos` NO cambian**: los usan los enlaces guardados, la memoria del
+navegador y el catálogo de Accesos. Renombrar la ruta habría roto cada favorito
+del equipo para ganar coherencia que nadie ve.
+
 ### v0.473.0 — Rentabilidad ya dice POR QUÉ nos devuelven, no solo cuánto
 
 Brandon, mirando la pestaña: «las devoluciones no se trae el motivo?». Tenía

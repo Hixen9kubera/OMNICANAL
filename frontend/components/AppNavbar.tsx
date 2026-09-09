@@ -96,7 +96,13 @@ const ITEMS: NavItem[] = [
         descripcion: "Descargas en CSV y Excel" },
     ],
   },
-  { id: "productos", label: "Productos", icon: Package, href: "/productos" },
+  // "Publicador" y no "Productos" (Eduardo, 9-sep-2026). El nombre viejo no
+  // decía nada al lado de "Crear Productos" —dos pestañas de productos, y la
+  // primera no crea ninguno— y era el nombre del CONTENIDO, no del trabajo.
+  // Aquí se prepara lo que se va a publicar: contenido por canal, títulos,
+  // descripciones e imágenes. El `id` y la ruta NO cambian: los usan el
+  // catálogo de Accesos, los enlaces guardados y la memoria del navegador.
+  { id: "productos", label: "Publicador", icon: Package, href: "/productos" },
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   // Catálogo maestro de bodega: existencias, empaque y trazabilidad. Lectura
   // pura, así que la ve todo el equipo (en rbac.py su GET es de `lectura`).

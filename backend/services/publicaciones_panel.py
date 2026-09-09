@@ -1061,13 +1061,84 @@ def listar(*, canal: str | None = None, estado: str | None = None,
     clave, rev = _clave_orden(orden)
     filas.sort(key=clave, reverse=rev)
     ini = max(0, (page - 1) * per_page)
+    pagina = filas[ini:ini + per_page]
+    _adjuntar_mercado(pagina)
     return {
         "total": total,
         "page": page,
         "per_page": per_page,
-        "items": filas[ini:ini + per_page],
+        "items": pagina,
         "cobertura": _cobertura_de(filas, canales),
     }
+
+
+# ── LO QUE COBRA EL MERCADO, PARA AUDITAR EL COSTO ──────────────────────────
+#
+# Idea de Eduardo (9-sep): "de ese ROP-0266-DOR usualmente lo están vendiendo a
+# 250 pesos y tenemos nosotros el costo en casi 1000". Tenía razón, y el dato
+# para comprobarlo YA ESTÁ: Competencia guarda los precios de los resultados de
+# búsqueda de ML. Lo que faltaba era cruzarlo.
+#
+# SIRVE PARA AUDITAR EL COSTO, NO PARA FIJAR EL PRECIO, y la diferencia importa:
+# el cruce es por TÉRMINO DE BÚSQUEDA ("perchero de pie"), no por producto
+# exacto, así que la mediana describe una categoría, no a este SKU. Un 1.2× no
+# dice nada —modelos distintos, marcas distintas—; un 14× no se explica por
+# variación de modelo y delata un costo mal capturado.
+#
+# `es_nuestro` se excluye: comparar nuestro precio contra sí mismo no es
+# competencia. Y se piden al menos 3 observaciones, porque con una la mediana
+# es esa una.
+_SQL_MERCADO = """
+select cfg.sku::text                                                  as sku,
+       percentile_cont(0.5) within group (order by r.precio)          as mediana,
+       count(*)                                                       as n,
+       max(r.capturado_en)                                            as ultima
+  from enrich.market_sku_config cfg
+  join enrich.market_search_results r on r.termino_id = cfg.termino_id
+ where cfg.sku = any(%(skus)s)
+   and r.precio > 0
+   and coalesce(r.es_nuestro, false) = false
+ group by 1
+having count(*) >= 3
+"""
+
+
+def _adjuntar_mercado(items: list[dict]) -> None:
+    """Le pega a cada publicación de la PÁGINA lo que cobra el mercado por su
+    término. Solo la página —no las cientos de filas del censo— porque es una
+    consulta más y solo se ve lo que se pinta.
+
+    Falla en silencio a propósito: si Competencia no contesta, la tarjeta
+    pierde una pista, no la funcionalidad."""
+    skus = sorted({i["sku"] for i in items if i.get("sku")})
+    if not skus:
+        return
+    try:
+        from services import supabase_db as sdb
+        filas = sdb.fetch_all(_SQL_MERCADO, {"skus": skus})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mercado: no se pudo leer Competencia (%s)", exc)
+        return
+
+    por_sku = {f["sku"]: f for f in filas}
+    hoy = datetime.now(timezone.utc)
+    for i in items:
+        f = por_sku.get(i.get("sku"))
+        if not f or not f["mediana"]:
+            continue
+        mediana = float(f["mediana"])
+        costo = _num(i.get("costo_unitario"))
+        ultima = f["ultima"]
+        i["mercado"] = {
+            "mediana": round(mediana, 2),
+            "n": int(f["n"]),
+            "dias": (hoy - ultima).days if ultima else None,
+            # Cuántas veces nuestro costo supera lo que el mercado COBRA. >1 ya
+            # es raro (venderían con pérdida); >2 es casi seguro un costo mal
+            # capturado. Se manda el número y la pantalla decide el umbral.
+            "costo_veces": (round(costo / mediana, 1)
+                            if costo and mediana > 0 else None),
+        }
 
 
 def _clave_orden(orden: str):
