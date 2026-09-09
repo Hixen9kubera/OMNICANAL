@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -100,6 +101,50 @@ _ESTADO: dict[str, str] = {
     "failed":           "rechazada",
     "not_delivered":    "rechazada",
 }
+
+
+# ── Memoria de lo que NO es devolución ───────────────────────────────────────
+#
+# El topic `post_purchase` trae mediaciones y cancelaciones además de
+# devoluciones, y manda VARIOS avisos por el mismo caso: el reclamo, su
+# `actions-history`, y reenvíos. Medido el 9-sep sobre `ops.webhook_events`:
+# **141 avisos en 2 horas para 26 claims distintos** — 5.4 avisos por claim.
+#
+# Sin esto, cada aviso dispara un `GET /claims/{id}` a ML solo para volver a
+# descubrir que es una mediación y tirarla. Son ~115 llamadas inútiles cada dos
+# horas, y ML YA nos cortó con 429 una vez hoy: el gasto no es teórico, es el
+# mismo pozo del que salió el primer bug.
+#
+# Solo se cachea el veredicto NEGATIVO. Una mediación no se convierte en
+# devolución, así que recordarla unas horas es seguro. Las devoluciones NO se
+# cachean nunca: su estado cambia y cada aviso es justamente la señal de que
+# cambió.
+_NO_DEVOLUCION: dict[str, float] = {}
+_TTL_NO_DEVOLUCION = 6 * 3600
+_TOPE_CACHE = 5000
+
+
+def _ya_sabemos_que_no(claim_id: str) -> bool:
+    exp = _NO_DEVOLUCION.get(claim_id)
+    if exp is None:
+        return False
+    if exp < time.time():
+        _NO_DEVOLUCION.pop(claim_id, None)
+        return False
+    return True
+
+
+def _recordar_que_no(claim_id: str) -> None:
+    ahora = time.time()
+    if len(_NO_DEVOLUCION) >= _TOPE_CACHE:
+        # Poda simple: fuera lo vencido. Si aun así está lleno, se vacía — es
+        # un caché de conveniencia, no una fuente de verdad.
+        for k, v in list(_NO_DEVOLUCION.items()):
+            if v < ahora:
+                del _NO_DEVOLUCION[k]
+        if len(_NO_DEVOLUCION) >= _TOPE_CACHE:
+            _NO_DEVOLUCION.clear()
+    _NO_DEVOLUCION[claim_id] = ahora + _TTL_NO_DEVOLUCION
 
 
 def _num(v: Any, defecto: int | None = None) -> int | None:
@@ -181,8 +226,28 @@ async def _traer(cli: httpx.AsyncClient, cab: dict[str, str],
         raise SinRespuesta(f"claim {claim_id} → {st}")
 
     st_r, devol = await _pedir(cli, cab, f"/post-purchase/v2/claims/{claim_id}/returns")
+    fallo_returns: int | None = None
     if st_r not in (200, 404):
-        raise SinRespuesta(f"returns de {claim_id} → {st_r}")
+        # ⚠️ NO SE DESCARTA EL CLAIM. La primera versión lanzaba aquí, y eso
+        # dejaba una devolución REAL invisible mientras el problema durara.
+        #
+        # Medido el 9-sep con el claim 5573786449 (SANCORFASHION): el claim
+        # contesta 200 y dice `type: returns`, pero su `/returns` devuelve
+        # 401 «Error executing GET [client:shipments]» — un fallo INTERNO de
+        # ML, su servicio de devoluciones no pudo hablar con el de envíos. Se
+        # repitió en dos corridas con una hora de diferencia. Cruzándolo con la
+        # otra cuenta se confirma que no es permiso nuestro: con BEKURA da 403
+        # «User does not have access to claim», que es la respuesta correcta
+        # para un claim ajeno.
+        #
+        # Así que el claim YA nos dijo lo importante —que existe y que es una
+        # devolución—. Guardarlo con el envío y el dinero en NULL no es
+        # inventar: NULL significa «no se sabe», que es la verdad. El barrido
+        # de la hora siguiente lo completa cuando ML se recupere. Perderlo
+        # entero, en cambio, no se recupera nunca y nadie se entera.
+        log.warning("DEVOLUCION ML claim %s: /returns → %s, se captura sin "
+                    "envío ni estado del dinero", claim_id, st_r)
+        fallo_returns, devol = st_r, {}
 
     try:
         _, detalle = await _pedir(cli, cab, f"/post-purchase/v1/claims/{claim_id}/detail",
@@ -190,7 +255,12 @@ async def _traer(cli: httpx.AsyncClient, cab: dict[str, str],
     except SinRespuesta:
         detalle = {}   # se pierde el motivo legible, no la devolución
 
-    return {"claim": claim, "returns": devol or {}, "detalle": detalle or {}}
+    crudo = {"claim": claim, "returns": devol or {}, "detalle": detalle or {}}
+    if fallo_returns:
+        # Queda en el payload para poder distinguir después "esta devolución no
+        # tiene envío" de "no pudimos leer su envío".
+        crudo["returns_error"] = fallo_returns
+    return crudo
 
 
 # ── Cruzar contra lo nuestro ─────────────────────────────────────────────────
@@ -424,6 +494,8 @@ async def sincronizar(claim_id: str | int, cuenta: str, *,
     claim_id = str(claim_id)
     if cuenta not in CUENTAS:
         return {"ok": False, "motivo": f"cuenta desconocida: {cuenta}"}
+    if _ya_sabemos_que_no(claim_id):
+        return {"ok": True, "accion": "ignorado", "motivo": "no es devolución (recordado)"}
 
     propio = cli is None
     try:
@@ -445,6 +517,7 @@ async def sincronizar(claim_id: str | int, cuenta: str, *,
         if (crudo["claim"].get("type") or "") != "returns":
             # Mediaciones y cancelaciones entran por el mismo topic y son la
             # mayoría del volumen. No son devoluciones y no se guardan aquí.
+            _recordar_que_no(claim_id)
             return {"ok": True, "accion": "ignorado",
                     "motivo": f"tipo {crudo['claim'].get('type')}"}
 
