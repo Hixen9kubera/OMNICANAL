@@ -401,7 +401,11 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
     """
     wc_id = int(wc_id)
     post = wp_db.producto_wp(wc_id) or {}
-    meta = wp_db.postmeta_todo(wc_id)
+    # Si es una VARIACIÓN, lo que le falta lo pone el padre (Brandon, 9-sep-2026).
+    # Sin esto ninguna de las 7,477 variantes se puede publicar: `ml_categoria_id`
+    # —la elección humana, sin la cual `_faltantes` frena— vive SOLO en el padre
+    # en las 36 que midió. Qué se hereda y qué no: `wp_db._NO_HEREDA`.
+    meta, _heredadas = wp_db.postmeta_con_herencia(wc_id)
     atributos = wp_db.atributos_wc(wc_id)
 
     titulo = (campos.get("titulo") or "").strip() or (post.get("post_title") or "")
@@ -409,6 +413,17 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
     descripcion = (campos.get("descripcion") or "").strip()
     if not descripcion:
         descripcion = post.get("post_content") or post.get("post_excerpt") or ""
+    if not descripcion:
+        # `post_content` de una variación está VACÍO en las 7,477 del catálogo
+        # (su descripción vive en la meta `_variation_description`, y solo la
+        # tienen 3,348). Sin este respaldo, publicar una variante mandaría a ML
+        # una descripción en blanco.
+        descripcion = (meta.get("_variation_description") or "").strip()
+        if not descripcion:
+            padre_id = wp_db.padre_de(wc_id)
+            if padre_id:
+                pp = wp_db.producto_wp(padre_id) or {}
+                descripcion = pp.get("post_content") or pp.get("post_excerpt") or ""
     descripcion = _html_a_plano(descripcion)
 
     # Precio SIEMPRE regular (regla de la casa). Un padre variable NO guarda

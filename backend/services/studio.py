@@ -241,6 +241,13 @@ def metadata(sku: str, wc_id: int | None = None) -> dict[str, Any]:
                     "producto_correcto": m["producto_correcto"],
                     "atributos": m["atributos"],
                     "gtin": m.get("gtin"),
+                    # La variante ya es un SKU con ficha propia (Brandon,
+                    # 9-sep-2026). `heredado` dice qué campos son del PADRE y no
+                    # de este SKU — sobre todo la categoría ML, que es la que
+                    # manda al publicar y la que hay que revisar antes.
+                    "es_variacion": m.get("es_variacion", False),
+                    "padre_wc_id": m.get("padre_wc_id"),
+                    "heredado": m.get("heredado") or [],
                 })
                 return base
     except Exception as exc:  # noqa: BLE001

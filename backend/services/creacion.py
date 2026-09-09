@@ -364,6 +364,10 @@ async def listar_candidatos_agrupados(
     - valor del grupo = suma de (stock × costo) de cada miembro.
     - costo mostrado del grupo = el del primer miembro con costo en costos_finales.
     - `skus_filtro`: si viene, solo grupos cuya base o algún miembro esté en la lista.
+
+    NO SE APLANA AQUÍ (Brandon, 9-sep-2026): Crear Productos lista PADRES y el
+    alta llena al padre una vez; sus hijas heredan lo mismo. El aplanado vive en
+    la pestaña Productos. Ver `wp_db.indice_drafts`.
     """
     from services import wp_db
 

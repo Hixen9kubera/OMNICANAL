@@ -74,7 +74,6 @@ async def listar(
     }
 
 
-@router.get("/{sku}")
 async def ficha(sku: str):
     """La ficha de un SKU — lo mismo que un renglón, pero solo. Alimenta el
     cajón lateral del diseño."""
@@ -96,7 +95,7 @@ async def ficha(sku: str):
     return f
 
 
-@router.get("/{sku}/movimientos")
+@router.get("/{sku:path}/movimientos")
 async def movimientos(
     sku: str,
     causa: str | None = Query(
@@ -131,3 +130,19 @@ async def movimientos(
     except Exception as exc:  # noqa: BLE001
         log.exception("inventario.movimientos(%s) falló", sku)
         raise HTTPException(502, f"No se pudo leer el historial: {exc}") from exc
+
+
+# -- Registro DIFERIDO de la ruta comodín -------------------------------------
+# `{sku}` pasó a `{sku:path}` para que los 293 SKUs con diagonal
+# (`CALZ-0194-BLN/AZL-40`) dejen de dar 404: el parámetro normal no puede
+# abarcar un `/`, y el servidor decodifica el `%2F` ANTES de enrutar, así que
+# tampoco servía escaparlo desde el frontend.
+#
+# El precio de `:path` es que compila a `.*`, que es GOLOSO. Registrada en su
+# lugar original, esta comodín se tragaría a sus hermanas GET de más abajo
+# resolviéndolas como un SKU llamado "TEC-0935-ROS/movimientos"
+# — y no fallaría: devolvería 200 con la respuesta EQUIVOCADA y NINGÚN
+# error en los logs. Starlette devuelve la PRIMERA ruta que casa entera,
+# así que la comodín se declara arriba (donde se lee) y se REGISTRA aquí,
+# la última.
+router.get("/{sku:path}")(ficha)

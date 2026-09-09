@@ -127,6 +127,14 @@ def indice_drafts() -> list[dict[str, Any]]:
     que falta trabajar". Antes traía solo `draft`, así que los ~229 `inprogress`
     no salían aquí y se colaban en Productos, que es justo la pestaña de lo ya
     resuelto.
+
+    ÍNDICE DE PADRES, A PROPÓSITO, y aquí NO se aplana (Brandon, 9-sep-2026).
+    Crear Productos es donde se llena el producto UNA vez y sus hijas heredan lo
+    mismo; el aplanado vive en Productos, que es donde cada variante se afina
+    por separado. Se llegó a construir el índice aplanado aquí y se retiró: sin
+    la fila del padre no queda dónde disparar el alta masiva, que es lo único
+    que mueve la familia de `draft` a `pending` — o sea, se aplanaba la pestaña
+    y se cerraba la puerta de salida.
     """
     P = _prefix()
     rows = _fetch_all(
@@ -622,19 +630,50 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
     """
     Toda la metadata del Estudio para un producto, leída del postmeta (fuente de
     verdad de lo que está publicado en WooCommerce).
+
+    SI ES UNA VARIACIÓN, lo que no tiene propio lo pone el padre, y la respuesta
+    trae `heredado` con la lista de campos que vinieron de ahí — el Estudio los
+    marca para que nadie confunda «la categoría que elegí para este SKU» con «la
+    que estaba puesta en la familia». La distinción importa: la categoría del
+    padre MANDA al publicar, y hay padres con la categoría equivocada
+    (`VEH-0315` y `VEH-0316` apuntan a "Autos y Camionetas" teniendo hijas que
+    son bombas de dirección y soportes de motor). Ver `_NO_HEREDA` para lo que
+    NO se hereda nunca: SKU, existencias y códigos de barras.
     """
     claves = [
         "_regular_price", "_sale_price", "_price", "costo",
         "_stock", "_stock_odoo",
         "url_alibaba", "alibaba_price", "comentario_revision", "revision_producto_ok",
         "_weight", "_length", "_width", "_height",
-        "ml_category_id", "ml_categoria_path",
+        # LAS DOS LLAVES DE CATEGORÍA, y en este orden por algo: `ml_categoria_id`
+        # la escribe el PICKER DEL PANEL (elección humana) y es la que MANDA al
+        # publicar (`publicar_ready.py:448`); `ml_category_id` la escribe el
+        # predictor de Crear. El Estudio leía solo la del predictor y por eso
+        # enseñaba "sin categoría" en productos que sí tenían una elegida —
+        # `VEH-0315` y `VEH-0316` entre ellos. Con las variantes publicándose por
+        # su cuenta eso pasa de incómodo a peligroso: la pantalla decía "no hay
+        # categoría" y el publicador habría mandado MLM1744 ("Autos y
+        # Camionetas") a 47 bombas de dirección y soportes de motor.
+        "ml_categoria_id", "ml_category_id", "ml_categoria_path",
+        "ml_categoria_niveles",
         "ml_categoria_nivel_1", "ml_categoria_nivel_2", "ml_categoria_nivel_3",
         "ml_categoria_nivel_4", "ml_categoria_nivel_5",
         "_product_attributes",
         "_barcode", "_gtin",  # código de barras / GTIN (lo lee el publisher ML)
     ]
     m = postmeta(wc_id, claves)
+    heredado: list[str] = []
+    padre_id = padre_de(wc_id)
+    if padre_id:
+        mp = postmeta(padre_id, claves)
+        for k in claves:
+            if k in _NO_HEREDA:
+                continue
+            if str(m.get(k) or "").strip():
+                continue
+            if str(mp.get(k) or "").strip():
+                m[k] = mp[k]
+                heredado.append(k)
 
     def _f(k: str) -> float | None:
         v = m.get(k)
@@ -650,6 +689,18 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
         for i in range(1, 6)
         if (m.get(f"ml_categoria_nivel_{i}") or "").strip()
     ]
+    if not niveles:
+        # El picker del panel guarda los niveles como JSON en `ml_categoria_niveles`
+        # ([{id, name}, …]); las columnas `_nivel_N` las escribe el otro camino.
+        # Sin este respaldo, un producto categorizado desde el panel se veía sin
+        # ruta (VEH-0315 / VEH-0316).
+        try:
+            import json as _json
+            niveles = [str(n.get("name") or "").strip()
+                       for n in _json.loads(m.get("ml_categoria_niveles") or "[]")
+                       if str(n.get("name") or "").strip()]
+        except Exception:  # noqa: BLE001
+            niveles = []
     def _i(k: str) -> int | None:
         v = _f(k)
         return int(v) if v is not None else None
@@ -669,12 +720,26 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
         "alibaba_precio": _f("alibaba_price"),
         "producto_correcto": m.get("comentario_revision"),
         "gtin": (m.get("_barcode") or m.get("_gtin") or "").strip() or None,
+        # La del PANEL gana, igual que al publicar. Si la pantalla enseñara la
+        # del predictor y se publicara con la otra, la revisión previa no serviría
+        # de nada — que es justo lo que hay que evitar cuando una variante hereda
+        # la categoría de su padre.
         "categoria_ml": {
-            "category_id": m.get("ml_category_id"),
+            "category_id": (str(m.get("ml_categoria_id") or "").strip()
+                            or m.get("ml_category_id")),
             "ruta": m.get("ml_categoria_path"),
             "niveles": niveles,
-        } if (m.get("ml_category_id") or niveles) else None,
-        "atributos": _parse_product_attributes(m.get("_product_attributes")),
+        } if (m.get("ml_categoria_id") or m.get("ml_category_id") or niveles) else None,
+        # Los atributos de una variación son los que ELLA fija, no la lista de la
+        # familia: el padre `VEH-0315` declara `Modelo = "07 | 08 | 09 | …"` con
+        # las 28 opciones, y mostrar eso en la ficha de una sola pieza es falso.
+        "atributos": ([{"nombre": a["name"], "valor": (a["options"] or [""])[0]}
+                       for a in _atributos_de_variacion(wc_id, padre_id)]
+                      if padre_id else
+                      _parse_product_attributes(m.get("_product_attributes"))),
+        "es_variacion": bool(padre_id),
+        "padre_wc_id": padre_id,
+        "heredado": heredado,
     }
 
 
@@ -765,7 +830,18 @@ def atributos_wc(wc_id: int) -> list[dict[str, Any]]:
     Incluye los dos tipos, porque `_parse_product_attributes` descarta los de
     taxonomía y ahí viven color/material/talla — justo lo que Amazon
     (`_extract_pa_attrs`) y ML (`build_secondary_attributes`) necesitan.
+
+    SI ES UNA VARIACIÓN, manda el valor FIJADO en ella, no la lista del padre.
+    Y esto no es un detalle de presentación: `_product_attributes` solo existe en
+    el padre (0 de 7,477 variaciones lo tienen) y ahí `Modelo` vale
+    "07 | 08 | 09 | …" — las 28 opciones de la familia. `build_attributes` toma
+    `options[0]`, así que publicar `VEH-0315-03` heredando la lista tal cual le
+    pondría el modelo de OTRA pieza. La variación sí sabe cuál es el suyo: lo
+    guarda en su meta `attribute_<slug>`.
     """
+    padre = padre_de(wc_id)
+    if padre:
+        return _atributos_de_variacion(wc_id, padre)
     serializado = postmeta(wc_id, ["_product_attributes"]).get("_product_attributes")
     if not serializado:
         return []
@@ -791,6 +867,57 @@ def atributos_wc(wc_id: int) -> list[dict[str, Any]]:
             opciones = [v.strip() for v in crudo.split("|") if v.strip()]
         if opciones:
             salida.append({"name": nombre, "options": opciones})
+    return salida
+
+
+def _atributos_de_variacion(wc_id: int, padre: int) -> list[dict[str, Any]]:
+    """
+    Atributos de UNA variación en forma REST: el valor que ella fija, con el
+    nombre bonito que declara el padre.
+
+    Cada eje que la variación pincha vive en su meta `attribute_<slug>`. Los de
+    taxonomía (`attribute_pa_color`) guardan el SLUG del término y hay que
+    traducirlo a su etiqueta; los personalizados traen el texto literal. Es la
+    misma traducción que hace `variantes_por_padre` para pintar el nombre de la
+    variante, aquí en singular.
+
+    Los ejes que el padre declara pero la variación NO fija (los que valen "Any"
+    en WooCommerce) se dejan con las opciones del padre: son atributos del
+    producto, no del ejemplar.
+    """
+    P = _prefix()
+    metas = {r["meta_key"]: r["meta_value"] for r in _fetch_all(
+        f"""SELECT meta_key, meta_value FROM {P}postmeta
+             WHERE post_id = %s AND meta_key LIKE 'attribute\\_%%'""", (wc_id,))}
+    fijados: dict[str, str] = {}
+    for clave, valor in metas.items():
+        v = str(valor or "").strip()
+        if v:
+            fijados[clave[len("attribute_"):].lower()] = v
+
+    # Etiquetas de los que son taxonomía: (taxonomy, slug) -> nombre legible
+    etiquetas: dict[tuple[str, str], str] = {}
+    taxos = {(s, v) for s, v in fijados.items() if s.startswith("pa_")}
+    if taxos:
+        pht = ",".join(["%s"] * len({t for t, _ in taxos}))
+        phs = ",".join(["%s"] * len({s for _, s in taxos}))
+        for r in _fetch_all(
+            f"""SELECT tt.taxonomy, t.slug, t.name
+                  FROM {P}terms t
+                  JOIN {P}term_taxonomy tt ON tt.term_id = t.term_id
+                 WHERE tt.taxonomy IN ({pht}) AND t.slug IN ({phs})""",
+                tuple(sorted({t for t, _ in taxos})) + tuple(sorted({s for _, s in taxos}))):
+            etiquetas[(r["taxonomy"], r["slug"])] = r["name"]
+
+    salida: list[dict[str, Any]] = []
+    for eje in atributos_wc(padre):          # el padre da nombre y orden
+        slug = str(eje["name"]).lower()
+        valor = fijados.get(slug) or fijados.get(f"pa_{slug}")
+        if valor is None:
+            salida.append(eje)               # eje "Any": queda la lista del padre
+            continue
+        salida.append({"name": eje["name"],
+                       "options": [etiquetas.get((f"pa_{slug}", valor), valor)]})
     return salida
 
 
@@ -1181,3 +1308,483 @@ def maestro_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
                     d["n_hijas"] = int(r["n"])
 
     return salida
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APLANADO: la variante como FILA PROPIA
+#
+# Decisión de Brandon (9-sep-2026): un producto variable deja de verse como una
+# fila —la del padre, con sus hijas anidadas— y cada variante pasa a ser su
+# propia fila, con su SKU, su precio, su stock y su foto. El padre DESAPARECE:
+# «el padre es un SKU que no existe» (no se puede comprar ni publicar).
+#
+# POR QUÉ ESTO VIVE EN MySQL Y NO EN LA REST. `GET /products?include=<id>` NO
+# devuelve variaciones: probado el 9-sep contra producción, `include=14711`
+# (variante viva) contesta `[]` mientras `include=11459` (su padre) sí trae la
+# fila. Curiosamente `?sku=TEC-0664-ROS` SÍ la devuelve — la REST de Woo es
+# inconsistente entre `include` y `sku`. Si el índice del listado devolviera
+# ids de variante sin más, la pantalla saldría VACÍA, no mal.
+#
+# EL ESTADO LO MANDA EL PADRE, y no es un capricho: el `post_status` de una
+# variación significa «esta combinación está habilitada», no «está viva en la
+# tienda» —una hija `publish` de un padre `draft` no se puede comprar—. Medido:
+# 4,522 de las 7,477 variantes están en `publish` colgando de un padre en
+# `draft`. Filtrar por el estado propio de la hija llenaría la pestaña
+# Productos de mercancía que nadie terminó de crear.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Estados que deja pasar cada vista. Espeja `woocommerce.VISTAS`; se repite aquí
+# para que el SQL no dependa de importar el módulo de arriba (ciclo de imports).
+_VISTAS_SQL: dict[str, set[str] | None] = {
+    "productos": {"publish", "pending", "ready", "private"},
+    "crear": {"draft", "inprogress"},
+    "omnicanal": None,
+}
+
+# Estados del filtro explícito del panel. Espeja `woocommerce._ESTADOS_WC`.
+_ESTADOS_PANEL: dict[str, set[str]] = {
+    "publicado": {"publish"},
+    "inactivo": {"pending", "inprogress", "ready", "private"},
+}
+
+
+def _meta_sub(alias_id: str, clave: str) -> str:
+    """
+    Subconsulta correlacionada para una meta, con `MIN(meta_id)` — la MISMA fila
+    que devuelve `get_post_meta($id, $key, true)` en WordPress.
+
+    No es preferencia de estilo: un LEFT JOIN multiplica la fila cuando hay más
+    de una meta con esa clave, y eso pasa de verdad. El padre `VEH-0315` tiene
+    28 filas `_price` (WooCommerce guarda una por variante para poder ordenar
+    por rango de precio) y 398 SKUs del catálogo tienen `_price` repetido. Ese
+    JOIN ya duplicó productos en pantalla una vez (COC-0153, ago-2026).
+    """
+    P = _prefix()
+    return (f"(SELECT m.meta_value FROM {P}postmeta m "
+            f"WHERE m.post_id = {alias_id} AND m.meta_key = '{clave}' "
+            f"ORDER BY m.meta_id LIMIT 1)")
+
+
+def indice_plano(
+    vista: str = "productos",
+    search: str | None = None,
+    skus: list[str] | None = None,
+    estados: list[str] | None = None,
+    orden: str = "reciente",
+    page: int = 1,
+    per_page: int = 40,
+) -> tuple[list[dict[str, Any]], int]:
+    """
+    Índice del catálogo APLANADO: productos SIN variantes vivas + variaciones.
+
+    Devuelve ([{wc_id, tipo, parent_id}], total) ya paginado. `tipo` es
+    "product" o "product_variation": quien hidrata decide por dónde traer cada
+    fila (REST para los productos, `variantes_como_productos` para las hijas).
+
+    El universo, medido el 9-sep-2026:
+
+        vista        sueltos   variantes    total    (antes)
+        productos      2,346       2,951    5,297     2,908
+        crear          3,438       4,526    7,964     4,380
+        omnicanal      5,784       7,477   13,261     7,288
+
+    «Sueltos» = productos que NO tienen ninguna variante viva. Los 1,504 padres
+    que sí las tienen desaparecen y los reemplazan sus 7,477 hijas.
+
+    El filtro de estado se aplica AL PADRE cuando la fila es una variante (ver
+    el bloque de arriba). Por eso el `JOIN` con `pa`: sin él, las 4,522 hijas
+    `publish` de padres en `draft` se colarían en Productos.
+    """
+    if not disponible():
+        return [], 0
+    P = _prefix()
+
+    permitidos = _VISTAS_SQL.get(vista, _VISTAS_SQL["productos"])
+    if estados:                      # filtro explícito del panel
+        pedidos: set[str] = set()
+        for e in estados:
+            pedidos |= _ESTADOS_PANEL.get(e, set())
+        permitidos = pedidos if permitidos is None else (permitidos & pedidos)
+
+    def _cond_estado(alias: str) -> tuple[str, list[Any]]:
+        """El estado se mide sobre `alias` — que es el PADRE si la fila es una
+        variante. `None` = la vista no filtra (Omnicanal)."""
+        if permitidos is None:
+            return f"{alias}.post_status <> 'trash'", []
+        if not permitidos:           # intersección vacía: no pasa nadie
+            return "1 = 0", []
+        ph = ",".join(["%s"] * len(permitidos))
+        return f"{alias}.post_status IN ({ph})", sorted(permitidos)
+
+    est_p, arg_est_p = _cond_estado("p")
+    est_v, arg_est_v = _cond_estado("pa")
+
+    # Búsqueda: sobre el SKU y el título de LA PROPIA FILA, y además sobre el
+    # título del padre cuando es variante — ahí vive el nombre real del producto
+    # (la hija se llama "Christmas hat - Verde", y 1,541 de 7,477 ni siquiera
+    # llevan sufijo: repiten el título del padre tal cual).
+    #
+    # Aquí NO se usa `expandir_con_padres`: esa función traduce variante → padre
+    # porque los buscadores solo indexaban padres. Con el listado aplanado la
+    # variante ES la fila, así que traducirla la escondería justo cuando por fin
+    # puede mostrarse.
+    terminos = [t.strip() for t in (([search] if search else []) + list(skus or []))
+                if t and t.strip()]
+
+    sub_stock_p, sub_precio_p = _meta_sub("p.ID", "_stock"), _meta_sub("p.ID", "_price")
+    sub_stock_v, sub_precio_v = _meta_sub("v.ID", "_stock"), _meta_sub("v.ID", "_price")
+
+    sql_p = f"""
+        SELECT p.ID AS wc_id, 'product' AS tipo, 0 AS parent_id,
+               p.post_date AS fecha,
+               {sub_stock_p} AS stock, {sub_precio_p} AS precio
+          FROM {P}posts p
+          LEFT JOIN {P}postmeta sk ON sk.post_id = p.ID AND sk.meta_key = '_sku'
+         WHERE p.post_type = 'product' AND p.post_status <> 'trash'
+           AND {est_p}
+           AND NOT EXISTS (SELECT 1 FROM {P}posts h
+                            WHERE h.post_parent = p.ID
+                              AND h.post_type = 'product_variation'
+                              AND h.post_status <> 'trash')
+    """
+    sql_v = f"""
+        SELECT v.ID AS wc_id, 'product_variation' AS tipo,
+               v.post_parent AS parent_id, pa.post_date AS fecha,
+               {sub_stock_v} AS stock, {sub_precio_v} AS precio
+          FROM {P}posts v
+          JOIN {P}posts pa ON pa.ID = v.post_parent AND pa.post_status <> 'trash'
+          LEFT JOIN {P}postmeta sk ON sk.post_id = v.ID AND sk.meta_key = '_sku'
+         WHERE v.post_type = 'product_variation' AND v.post_status <> 'trash'
+           AND {est_v}
+    """
+    args_p: list[Any] = list(arg_est_p)
+    args_v: list[Any] = list(arg_est_v)
+    if terminos:
+        grupo_p = " OR ".join(
+            ["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos))
+        sql_p += f" AND ({grupo_p})"
+        for t in terminos:
+            args_p += [f"%{t}%", f"%{t}%"]
+        grupo_v = " OR ".join(
+            ["(sk.meta_value LIKE %s OR v.post_title LIKE %s OR pa.post_title LIKE %s)"]
+            * len(terminos))
+        sql_v += f" AND ({grupo_v})"
+        for t in terminos:
+            args_v += [f"%{t}%", f"%{t}%", f"%{t}%"]
+
+    orden_sql = {
+        "stock_desc":  "CAST(COALESCE(stock, 0) AS SIGNED) DESC",
+        "stock_asc":   "CAST(COALESCE(stock, 0) AS SIGNED) ASC",
+        "precio_desc": "CAST(COALESCE(precio, 0) AS DECIMAL(12,2)) DESC",
+        "precio_asc":  "CAST(COALESCE(precio, 0) AS DECIMAL(12,2)) ASC",
+    }.get(orden, "fecha DESC")
+
+    union = f"({sql_p}) UNION ALL ({sql_v})"
+    args = tuple(args_p + args_v)
+    try:
+        # COUNT y PÁGINA EN PARALELO. Las dos recorren la misma UNION y cada una
+        # cuesta lo mismo; en serie, Omnicanal tardaba 2.8 s. Es el mismo truco
+        # que ya usa `woocommerce._buscar_wc_ids_wp` y por el mismo motivo: el
+        # costo dominante es la ida y vuelta a Hostinger, no la CPU.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_total = ex.submit(_fetch_all, f"SELECT COUNT(*) n FROM ({union}) u", args)
+            f_filas = ex.submit(
+                _fetch_all,
+                # `wc_id DESC` de desempate: sin él, dos filas con el mismo valor
+                # de orden pueden salir distinto en páginas distintas y una se
+                # repite mientras otra no aparece nunca.
+                f"SELECT wc_id, tipo, parent_id FROM ({union}) u "
+                f"ORDER BY {orden_sql}, wc_id DESC LIMIT %s OFFSET %s",
+                args + (per_page, max(0, (page - 1) * per_page)))
+            total = f_total.result()[0]["n"]
+            filas = f_filas.result()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("indice_plano falló: %s", exc)
+        return [], 0
+    return ([{"wc_id": int(r["wc_id"]), "tipo": r["tipo"],
+              "parent_id": int(r["parent_id"] or 0) or None} for r in filas],
+            int(total))
+
+
+def variantes_como_productos(wc_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """
+    Variaciones vestidas con la MISMA forma que un producto de la REST de Woo:
+    { wc_id: {id, name, sku, price, regular_price, sale_price, stock_quantity,
+              status, type, categories, brands, images, short_description,
+              description, permalink, parent_id} }.
+
+    Así el listado las mezcla con los productos reales y TODO lo de abajo
+    —normalización, ruta de categoría, precios frescos, distintivo DROP OFF,
+    chips de revisión— sigue funcionando sin enterarse. La alternativa era
+    tocar cada uno de esos pasos.
+
+    QUÉ ES PROPIO Y QUÉ SE HEREDA. Medido sobre las 7,477 variantes vivas
+    (9-sep-2026), con subconsulta correlacionada:
+
+        campo            propio   hereda del padre
+        SKU               7,475          2 (sin SKU: 9271 y 9212)
+        stock             7,475          0   ← ninguna hereda stock
+        precio            6,041      1,436
+        miniatura         6,899        578
+        galería             210      7,267
+        descripción       3,348      4,129   (meta `_variation_description`)
+        categoría             0      7,477   ← una variación NO tiene categoría
+        estado                —      7,477   ← decisión de Brandon
+
+    Ojo con dos que suelen darse por sentadas y NO lo son: `post_content` de una
+    variación está vacío en las 7,477 (la descripción vive en la meta
+    `_variation_description`, no en el post), y de las 1,436 sin precio propio
+    solo 495 tienen un padre con precio — 941 se quedan sin precio en ninguna
+    parte, y eso hay que verlo en pantalla, no rellenarlo con un cero.
+
+    El ORDEN de las imágenes es el de `imagenes()` y por la misma razón: la
+    miniatura propia va PRIMERO porque es la foto de ESE color, y detrás la del
+    padre. No se repiten ids.
+    """
+    ids = [int(i) for i in (wc_ids or []) if i]
+    if not ids or not disponible():
+        return {}
+    P = _prefix()
+
+    filas: list[dict[str, Any]] = []
+    for i in range(0, len(ids), 400):
+        chunk = ids[i:i + 400]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            filas += _fetch_all(
+                f"""SELECT v.ID, v.post_parent, v.post_title, v.menu_order,
+                           pa.post_title  AS padre_titulo,
+                           pa.post_status AS padre_estado,
+                           pa.post_content AS padre_contenido,
+                           pa.post_excerpt AS padre_extracto
+                      FROM {P}posts v
+                      JOIN {P}posts pa ON pa.ID = v.post_parent
+                     WHERE v.ID IN ({ph})
+                       AND v.post_type = 'product_variation'""",
+                tuple(chunk))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("variantes_como_productos falló: %s", exc)
+            return {}
+    if not filas:
+        return {}
+
+    hijas = [int(r["ID"]) for r in filas]
+    padres = sorted({int(r["post_parent"]) for r in filas})
+    CLAVES = ("_sku", "_price", "_regular_price", "_sale_price", "_stock",
+              "_thumbnail_id", "_product_image_gallery", "_variation_description")
+    metas: dict[int, dict[str, str]] = {}
+    todos = hijas + padres
+    for i in range(0, len(todos), 400):
+        chunk = todos[i:i + 400]
+        ph = ",".join(["%s"] * len(chunk))
+        phk = ",".join(["%s"] * len(CLAVES))
+        for r in _fetch_all(
+            # `ORDER BY meta_id` + `setdefault`: se queda la PRIMERA fila de cada
+            # clave, que es la que WordPress considera «el» valor. Mismo motivo
+            # que `_meta_sub` — hay claves repetidas de verdad.
+            f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
+                 WHERE post_id IN ({ph}) AND meta_key IN ({phk})
+                 ORDER BY meta_id""",
+                tuple(chunk) + CLAVES):
+            metas.setdefault(int(r["post_id"]), {}).setdefault(
+                r["meta_key"], r["meta_value"])
+
+    # Categorías y marcas: SIEMPRE del padre (una variación no tiene ninguna de
+    # las dos — verificado: 0 de 7,477 tienen `product_cat` propia).
+    cats: dict[int, list[dict[str, Any]]] = {}
+    marcas: dict[int, list[dict[str, Any]]] = {}
+    if padres:
+        php = ",".join(["%s"] * len(padres))
+        for taxo, destino in (("product_cat", cats), ("product_brand", marcas)):
+            try:
+                for r in _fetch_all(
+                    f"""SELECT tr.object_id, t.term_id AS id, t.name, t.slug
+                          FROM {P}term_relationships tr
+                          JOIN {P}term_taxonomy tt
+                               ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                              AND tt.taxonomy = %s
+                          JOIN {P}terms t ON t.term_id = tt.term_id
+                         WHERE tr.object_id IN ({php})""",
+                        (taxo,) + tuple(padres)):
+                    destino.setdefault(int(r["object_id"]), []).append(
+                        {"id": r["id"], "name": r["name"], "slug": r["slug"]})
+            except Exception as exc:  # noqa: BLE001
+                # Sin `product_brand` instalado esto revienta; la fila sigue
+                # siendo válida sin marca.
+                log.debug("taxonomía %s no disponible: %s", taxo, exc)
+
+    # URLs de las imágenes de golpe
+    def _ids_img(mid: dict[str, str]) -> list[int]:
+        out: list[int] = []
+        t = str(mid.get("_thumbnail_id") or "").strip()
+        if t.isdigit() and int(t):
+            out.append(int(t))
+        for x in str(mid.get("_product_image_gallery") or "").split(","):
+            x = x.strip()
+            if x.isdigit() and int(x) not in out:
+                out.append(int(x))
+        return out
+
+    todas_img: list[int] = []
+    for r in filas:
+        for i in _ids_img(metas.get(int(r["ID"]), {})) + \
+                 _ids_img(metas.get(int(r["post_parent"]), {})):
+            if i not in todas_img:
+                todas_img.append(i)
+    url_img: dict[int, str] = {}
+    for i in range(0, len(todas_img), 400):
+        chunk = todas_img[i:i + 400]
+        ph = ",".join(["%s"] * len(chunk))
+        for r in _fetch_all(
+            f"SELECT ID, guid FROM {P}posts WHERE ID IN ({ph}) AND post_type='attachment'",
+                tuple(chunk)):
+            if r.get("guid"):
+                url_img[int(r["ID"])] = r["guid"]
+
+    base = (settings.wc_url or "").rstrip("/")
+    salida: dict[str, Any] = {}
+    for r in filas:
+        vid, pid = int(r["ID"]), int(r["post_parent"])
+        mv, mp = metas.get(vid, {}), metas.get(pid, {})
+
+        def _val(clave: str) -> str | None:
+            """Propio si tiene contenido; si no, el del padre."""
+            v = str(mv.get(clave) or "").strip()
+            if v:
+                return v
+            p = str(mp.get(clave) or "").strip()
+            return p or None
+
+        # Nombre: el título de la variación ya viene como "Padre - Opción", pero
+        # 1,541 repiten el del padre sin sufijo. En ésas se pega el SKU para que
+        # dos filas hermanas no se lean idénticas en pantalla.
+        titulo = (r.get("post_title") or "").strip()
+        padre_titulo = (r.get("padre_titulo") or "").strip()
+        sku = str(mv.get("_sku") or "").strip()
+        if not titulo:
+            titulo = padre_titulo
+        if titulo == padre_titulo and sku:
+            titulo = f"{titulo} — {sku}"
+
+        ids_im = _ids_img(mv)
+        for i in _ids_img(mp):
+            if i not in ids_im:
+                ids_im.append(i)
+
+        salida[vid] = {
+            "id": vid,
+            "parent_id": pid,
+            "sku": sku,                       # "" si no tiene: quien normaliza pone WC-<id>
+            "name": titulo,
+            "type": "variation",
+            # EL ESTADO ES EL DEL PADRE (decisión de Brandon, 9-sep). El propio
+            # de la hija dice si la combinación está habilitada, no si está viva.
+            "status": r.get("padre_estado"),
+            "price": _val("_price"),
+            "regular_price": _val("_regular_price"),
+            "sale_price": _val("_sale_price"),
+            # El stock NO se hereda: las 7,475 con SKU tienen el suyo y
+            # `_manage_stock='yes'`. Heredar el del padre sería inventar
+            # existencias — un padre variable ni siquiera gestiona stock.
+            "stock_quantity": _a_entero(mv.get("_stock")),
+            "categories": cats.get(pid, []),
+            "brands": marcas.get(pid, []),
+            "images": [{"src": url_img[i]} for i in ids_im if i in url_img],
+            "short_description": (mv.get("_variation_description")
+                                  or r.get("padre_extracto") or ""),
+            "description": (mv.get("_variation_description")
+                            or r.get("padre_contenido") or ""),
+            # `?p=<id>` en vez de armar el permalink a mano: WordPress redirige
+            # solo a la URL canónica, sea cual sea la estructura de enlaces.
+            "permalink": f"{base}/?p={pid}" if base else None,
+        }
+    return salida
+
+
+def _a_entero(v: Any) -> int | None:
+    try:
+        return int(float(v)) if v not in (None, "") else None
+    except (ValueError, TypeError):
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HERENCIA DE POSTMETA: lo que una variante necesita para poder PUBLICARSE
+#
+# Decisión de Brandon (9-sep-2026): «que herede del padre, ya que se puede
+# modificar la categoría en producto antes de publicar».
+#
+# El porqué, medido sobre los 36 SKUs que mandó ese día:
+#
+#     meta                 en la VARIANTE   solo en el PADRE
+#     _regular_price / _price      36/36            0
+#     _stock                       36/36            0
+#     ml_categoria_id               0/36           36     ← sin esto NO se publica
+#     _product_attributes           0/36           36
+#     _weight / _length / …         0/36            2
+#
+# O sea: la variante tiene lo COMERCIAL (precio, stock) y el padre tiene lo de
+# PUBLICAR. Sin herencia, `publicar_ready` frena con «falta categoría ML»
+# (publicar_ready.py:520) en las 7,477 variantes del catálogo.
+#
+# ⚠️ HEREDAR NO ES GRATIS Y NO SIEMPRE ES CORRECTO. La categoría del padre es
+# una ELECCIÓN HUMANA que MANDA al publicar (regla de la casa; caso
+# TEC-1812-NEG), así que un padre mal categorizado se propaga a todas sus hijas
+# de golpe y en silencio. Medido el mismo día: `VEH-0315` y `VEH-0316` tienen
+# `ml_categoria_id = MLM1744` = "Autos, Motos y Otros > Autos y Camionetas" —la
+# categoría para vender un AUTOMÓVIL— y sus 47 hijas son bombas de dirección y
+# soportes de motor. ML acepta esa categoría (`listing_allowed=True`), así que
+# no fallaría: publicaría refacciones anunciadas como coches. Por eso el Estudio
+# marca lo heredado (`heredadas`) en vez de presentarlo como propio: quien
+# publica tiene que VER que esa categoría no la eligió para ese SKU.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Metas que NUNCA se heredan, y el motivo de cada grupo:
+_NO_HEREDA: frozenset[str] = frozenset({
+    # Identidad de la fila.
+    "_sku",
+    # Existencias: heredarlas INVENTA mercancía. Además un padre variable ni
+    # siquiera gestiona stock (`_manage_stock='no'`), así que lo que se heredaría
+    # es un vacío o el total de la familia.
+    "_stock", "_manage_stock", "_stock_status", "_stock_odoo", "_backorders",
+    # Códigos de barras: cada variante lleva el SUYO por definición. Heredarlos
+    # publicaría el MISMO GTIN en N publicaciones distintas de ML.
+    "_barcode", "_gtin", "global_unique_id",
+    # Historial y reputación del padre: en la hija no significan nada.
+    "total_sales", "_wc_average_rating", "_wc_review_count",
+    # La foto se resuelve aparte y con orden propio (ver `imagenes()`): la
+    # miniatura de la variante va PRIMERO porque es la de ESE color, y detrás la
+    # galería del padre. Heredar `_thumbnail_id` rompería ese orden.
+    "_thumbnail_id",
+})
+
+
+def postmeta_con_herencia(wc_id: int) -> tuple[dict[str, Any], set[str]]:
+    """
+    Postmeta de un producto y, si es una VARIACIÓN, lo que le falta rellenado
+    con lo del padre.
+
+    Devuelve `(metas, heredadas)` — `heredadas` son las claves que vinieron del
+    padre, para que el Estudio pueda distinguirlas de las propias.
+
+    Para un producto simple `padre_de` devuelve None y esto se comporta
+    exactamente igual que `postmeta_todo`: mismas claves, ningún heredado.
+    """
+    propias = postmeta_todo(wc_id)
+    padre = padre_de(wc_id)
+    if not padre:
+        return propias, set()
+
+    heredadas: set[str] = set()
+    for clave, valor in postmeta_todo(padre).items():
+        if clave in _NO_HEREDA:
+            continue
+        # Solo rellena HUECOS: una meta propia con contenido siempre gana.
+        if str(propias.get(clave) or "").strip():
+            continue
+        if not str(valor or "").strip():
+            continue
+        propias[clave] = valor
+        heredadas.add(clave)
+    return propias, heredadas

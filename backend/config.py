@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     wpdb_password: str = ""
     wpdb_prefix: str = "wp_"  # prefijo de tablas ($table_prefix en wp-config)
 
+    # LISTADO APLANADO (Brandon, 9-sep-2026). Con `true`, cada variante es su
+    # propia fila en el listado y el padre desaparece: el catálogo pasa de 7,288
+    # filas a 13,261. Se apaga desde Railway SIN deploy si algo sale mal — y
+    # apagarlo devuelve la vista anidada de siempre, no una a medias.
+    # EXIGE WPDB_*: la REST de Woo no devuelve variaciones por `include`, así que
+    # sin la base de WordPress el aplanado se desactiva solo (ver listar_productos).
+    listado_aplanado: bool = False
+
     # ── IA ────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     gemini_api_key: str = ""

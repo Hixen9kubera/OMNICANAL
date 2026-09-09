@@ -106,6 +106,7 @@ async def listar_productos(
     vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
     revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Todos los canales"),
     drop_off: bool = Query(False, description="Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). Todos los canales"),
+    aplanar: bool | None = Query(None, description="Cada variante como fila propia y el padre fuera (7,288 filas → 13,261). Sin valor, manda LISTADO_APLANADO de Railway"),
 ):
     if not es_canal_valido(canal):
         raise HTTPException(404, f"Canal desconocido: {canal}")
@@ -207,7 +208,7 @@ async def listar_productos(
         items_raw, total, total_pages = await woocommerce.listar_productos(
             page=page, per_page=per_page, search=search,
             orden=orden, estados=estados_lista, categoria=categoria, skus=skus_lista,
-            vista=vista, skus_exactos=skus_exactos,
+            vista=vista, skus_exactos=skus_exactos, aplanar=aplanar,
         )
         # Enriquecer con presencia en marketplaces (puntos de colores).
         # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que
@@ -527,7 +528,7 @@ async def listar_categorias():
         return []
 
 
-@router.get("/{sku}/studio")
+@router.get("/{sku:path}/studio")
 async def studio_metadata(sku: str, wc_id: int | None = Query(None, description="wc_id para leer postmeta")):
     """
     Metadata extra para el Estudio del producto (pestaña PRODUCTOS):
@@ -543,7 +544,6 @@ async def studio_metadata(sku: str, wc_id: int | None = Query(None, description=
     return m
 
 
-@router.get("/{sku}", response_model=DetalleProducto)
 async def detalle_producto(sku: str, refrescar: bool = False):
     """
     Vista 360°: el SKU en WooCommerce + cada marketplace.
@@ -725,7 +725,7 @@ class ContenidoReq(BaseModel):
     atributos: list[dict] | None = None  # [{nombre, valor}] — atributos custom
 
 
-@router.post("/{sku}/contenido")
+@router.post("/{sku:path}/contenido")
 async def guardar_contenido(sku: str, req: ContenidoReq):
     """
     Guarda el CONTENIDO del producto (título/descripción/atributos custom) en
@@ -816,7 +816,7 @@ async def _categoria_del_canal(sku: str, canal: str) -> str | None:
     return None
 
 
-@router.put("/{sku}/canal/{canal}/contenido")
+@router.put("/{sku:path}/canal/{canal}/contenido")
 async def guardar_contenido_canal(sku: str, canal: str, req: ContenidoCanalReq,
                                   cuenta: str = Query("")):
     """Guarda el contenido de un SKU para un canal. Fusiona salvo `reemplazar`."""
@@ -838,7 +838,7 @@ async def guardar_contenido_canal(sku: str, canal: str, req: ContenidoCanalReq,
     return res
 
 
-@router.get("/{sku}/canal/{canal}/contenido")
+@router.get("/{sku:path}/canal/{canal}/contenido")
 async def leer_contenido_canal(sku: str, canal: str, cuenta: str = Query("")):
     """El contenido guardado. `existe:false` si nunca se guardó nada."""
     from services import channel_content
@@ -852,7 +852,7 @@ async def leer_contenido_canal(sku: str, canal: str, cuenta: str = Query("")):
     return {"existe": True, **doc}
 
 
-@router.get("/{sku}/canal/{canal}/faltantes")
+@router.get("/{sku:path}/canal/{canal}/faltantes")
 async def faltantes_canal(sku: str, canal: str, cuenta: str = Query("")):
     """
     El semáforo: qué le falta a este SKU para publicarse en este canal.
@@ -929,7 +929,7 @@ class CategoriaCanalReq(BaseModel):
     categoria_id: str
 
 
-@router.post("/{sku}/canal/tiktok/categoria")
+@router.post("/{sku:path}/canal/tiktok/categoria")
 def guardar_categoria_tiktok(sku: str, req: CategoriaCanalReq):
     """Guarda la categoría de TikTok elegida en el panel."""
     from services import tiktok_panel
@@ -939,7 +939,7 @@ def guardar_categoria_tiktok(sku: str, req: CategoriaCanalReq):
     return r
 
 
-@router.get("/{sku}/canal/tiktok/categoria/sugerida")
+@router.get("/{sku:path}/canal/tiktok/categoria/sugerida")
 async def sugerir_categoria_tiktok(sku: str, titulo: str = Query("")):
     """
     Una categoría RECOMENDADA para el SKU. Sugerencia: no se guarda.
@@ -955,7 +955,7 @@ async def sugerir_categoria_tiktok(sku: str, titulo: str = Query("")):
     return await tiktok_panel.sugerir_categoria(sku, titulo)
 
 
-@router.get("/{sku}/canal/tiktok/categoria")
+@router.get("/{sku:path}/canal/tiktok/categoria")
 def leer_categoria_tiktok(sku: str):
     """
     Qué categoría de TikTok tiene el SKU y DE DÓNDE sale.
@@ -992,7 +992,7 @@ def buscar_categorias_temu(q: str = Query(..., min_length=2),
     return {"canal": "temu", "resultados": temu_panel.buscar_categorias(q, limite)}
 
 
-@router.post("/{sku}/canal/temu/categoria")
+@router.post("/{sku:path}/canal/temu/categoria")
 def guardar_categoria_temu(sku: str, req: CategoriaCanalReq):
     """Guarda la categoría de Temu elegida en el panel."""
     from services import temu_panel
@@ -1002,7 +1002,7 @@ def guardar_categoria_temu(sku: str, req: CategoriaCanalReq):
     return r
 
 
-@router.get("/{sku}/canal/temu/categoria/sugerida")
+@router.get("/{sku:path}/canal/temu/categoria/sugerida")
 async def sugerir_categoria_temu(sku: str, titulo: str = Query("")):
     """
     Categoría RECOMENDADA para el SKU. Sugerencia: NO se guarda sola.
@@ -1020,7 +1020,7 @@ async def sugerir_categoria_temu(sku: str, titulo: str = Query("")):
     return await temu_panel.sugerir_categoria(sku, titulo)
 
 
-@router.get("/{sku}/canal/temu/categoria")
+@router.get("/{sku:path}/canal/temu/categoria")
 def leer_categoria_temu(sku: str):
     """Qué categoría de Temu tiene el SKU y DE DÓNDE sale (panel / canal / nada)."""
     from services import temu_panel
@@ -1037,7 +1037,7 @@ def leer_categoria_temu(sku: str):
             "name": f.get("name"), "path": f.get("path")}
 
 
-@router.get("/{sku}/canales/contenido")
+@router.get("/{sku:path}/canales/contenido")
 async def resumen_contenido_canales(sku: str):
     """Qué canales tienen contenido y cuántos campos — para pintar las pestañas
     sin traerse los documentos completos."""
@@ -1048,3 +1048,19 @@ async def resumen_contenido_canales(sku: str):
 
 def _paginas(total: int, per_page: int) -> int:
     return max(1, (total + per_page - 1) // per_page)
+
+
+# -- Registro DIFERIDO de la ruta comodín -------------------------------------
+# `{sku}` pasó a `{sku:path}` para que los 293 SKUs con diagonal
+# (`CALZ-0194-BLN/AZL-40`) dejen de dar 404: el parámetro normal no puede
+# abarcar un `/`, y el servidor decodifica el `%2F` ANTES de enrutar, así que
+# tampoco servía escaparlo desde el frontend.
+#
+# El precio de `:path` es que compila a `.*`, que es GOLOSO. Registrada en su
+# lugar original, esta comodín se tragaría a sus hermanas GET de más abajo
+# resolviéndolas como un SKU llamado "TEC-0935-ROS/canales/contenido"
+# — y no fallaría: devolvería 200 con la respuesta EQUIVOCADA y NINGÚN
+# error en los logs. Starlette devuelve la PRIMERA ruta que casa entera,
+# así que la comodín se declara arriba (donde se lee) y se REGISTRA aquí,
+# la última.
+router.get("/{sku:path}", response_model=DetalleProducto)(detalle_producto)

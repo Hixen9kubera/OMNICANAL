@@ -266,7 +266,7 @@ def historial(
     }
 
 
-@router.get("/historial/{sku}")
+@router.get("/historial/{sku:path}")
 def historial_sku(
     sku: str,
     limite: int = Query(100, ge=1, le=500),
@@ -384,8 +384,11 @@ async def guardar_gtin(req: GuardarGtin):
     gtin = "".join(ch for ch in (req.gtin or "") if ch.isdigit())
     if gtin and not (8 <= len(gtin) <= 14):
         raise HTTPException(422, "El GTIN debe tener entre 8 y 14 dígitos (EAN-8/UPC-12/EAN-13/GTIN-14).")
+    # Por `ruta_escritura`: el GTIN es de la PIEZA, y en un producto variable la
+    # pieza es la variante. Escribirlo por `/products/{id}` no lo guardaría.
+    ruta_gtin = await woocommerce.ruta_escritura(int(req.wc_id))
     async with woocommerce._client() as cli:
-        resp = await cli.put(f"/products/{req.wc_id}",
+        resp = await cli.put(ruta_gtin,
                              json={"meta_data": [{"key": "_barcode", "value": gtin}]},
                              timeout=60.0)
         if resp.status_code not in (200, 201):
@@ -437,8 +440,17 @@ async def guardar_categoria_ml(req: GuardarCategoriaML):
     # niveles legibles (los que pinta el breadcrumb del Estudio desde postmeta)
     for i, n in enumerate(niveles[:5], start=1):
         meta.append({"key": f"ml_categoria_nivel_{i}", "value": n["name"]})
+    # UNA VARIACIÓN SE ESCRIBE POR SU PROPIA RUTA. `PUT /products/{id}` LEE una
+    # variación (probado: devuelve 200), pero la regla de escritura ya está en la
+    # casa —`woocommerce.obtener_producto_por_sku`: «el update va a
+    # /products/{padre}/variations/{id}, no a /products/{id}»—. Con las variantes
+    # publicándose por su cuenta (Brandon, 9-sep-2026) esto dejó de ser teórico:
+    # es el guardado con el que se corrige la categoría heredada del padre ANTES
+    # de publicar, y si no persistiera, la corrección se perdería en silencio y
+    # se publicaría con la del padre.
+    ruta_wc = await woocommerce.ruta_escritura(int(req.wc_id))
     async with woocommerce._client() as cli:
-        resp = await cli.put(f"/products/{req.wc_id}", json={"meta_data": meta}, timeout=60.0)
+        resp = await cli.put(ruta_wc, json={"meta_data": meta}, timeout=60.0)
         if resp.status_code not in (200, 201):
             raise HTTPException(502, f"WooCommerce HTTP {resp.status_code}: {resp.text[:150]}")
     # F6 (corte categorías): kubera se entera de la elección AL GUARDARSE —
@@ -592,7 +604,7 @@ def costos_contenedores():
     return {"contenedores": [{"contenedor": r["contenedor"], "n": int(r["n"])} for r in rows]}
 
 
-@router.get("/costos/{sku}")
+@router.get("/costos/{sku:path}")
 async def costos_detalle(sku: str):
     """
     Desglose de costo/precio de un SKU para el container de Costos.
@@ -615,7 +627,7 @@ async def costos_detalle(sku: str):
                            "descuento": costos.DESCUENTO_BASE}}
 
 
-@router.post("/costos/{sku}/preview")
+@router.post("/costos/{sku:path}/preview")
 async def costos_preview(sku: str, req: RecalcularCostos):
     """
     Vista previa del recálculo (dims → CBM → costo → precios) SIN escribir nada.
@@ -754,7 +766,7 @@ async def _sync_woo_costo(sku: str, fila: dict) -> bool:
     return True
 
 
-@router.post("/costos/{sku}/revisar")
+@router.post("/costos/{sku:path}/revisar")
 async def costos_marcar_revisado(sku: str):
     """
     Marca este costeo como REVISADO contra el packing list (migración 0032).
@@ -775,7 +787,7 @@ async def costos_marcar_revisado(sku: str):
     return {"ok": True, **fila}
 
 
-@router.delete("/costos/{sku}/revisar")
+@router.delete("/costos/{sku:path}/revisar")
 async def costos_quitar_revisado(sku: str):
     """Quita la marca de revisado. No toca ningún costo."""
     fila = await run_in_threadpool(costing_write.marcar_revisado, sku, False)
@@ -784,7 +796,7 @@ async def costos_quitar_revisado(sku: str):
     return {"ok": True, **fila}
 
 
-@router.post("/costos/{sku}/recalcular")
+@router.post("/costos/{sku:path}/recalcular")
 async def costos_recalcular(sku: str, req: RecalcularCostos):
     """
     Recálculo MANUAL: aplica los overrides, deriva CBM de las dims, recalcula precio

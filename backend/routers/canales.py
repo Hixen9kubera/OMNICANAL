@@ -66,7 +66,7 @@ async def listar_canales(incluir_totales: bool = True):
     return salida
 
 
-@router.post("/{canal}/refrescar/{sku}")
+@router.post("/{canal}/refrescar/{sku:path}")
 async def refrescar(canal: str, sku: str, cuenta: str | None = None):
     """
     Refresca un SKU en vivo contra TODOS los canales y devuelve el inventario

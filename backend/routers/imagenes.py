@@ -49,7 +49,6 @@ class AgregarReq(BaseModel):
     imagenes: list[ImagenNueva] = []
 
 
-@router.get("/{sku}")
 async def galeria(sku: str, wc_id: int | None = Query(None)):
     """Galería completa del producto (portada + imágenes con id/posición)."""
     g = None
@@ -65,7 +64,7 @@ async def galeria(sku: str, wc_id: int | None = Query(None)):
     return g
 
 
-@router.post("/{sku}/procesar")
+@router.post("/{sku:path}/procesar")
 async def procesar(sku: str, req: ProcesarReq):
     """Lanza la edición con IA (según flags) en segundo plano y responde de inmediato."""
     con_flags = [
@@ -77,7 +76,7 @@ async def procesar(sku: str, req: ProcesarReq):
     return await editor.iniciar(sku, req.wc_id, [i.model_dump() for i in con_flags])
 
 
-@router.get("/{sku}/progreso")
+@router.get("/{sku:path}/progreso")
 async def progreso(sku: str):
     j = editor.progreso(sku)
     if not j:
@@ -86,7 +85,7 @@ async def progreso(sku: str):
     return j
 
 
-@router.post("/{sku}/eliminar")
+@router.post("/{sku:path}/eliminar")
 async def eliminar(sku: str, req: EliminarReq):
     """Quita una imagen de la galería (resuelve el padre si es variación)."""
     try:
@@ -102,7 +101,7 @@ async def eliminar(sku: str, req: EliminarReq):
     return {"ok": True, "image_id": req.image_id}
 
 
-@router.post("/{sku}/agregar")
+@router.post("/{sku:path}/agregar")
 async def agregar(sku: str, req: AgregarReq):
     """Sube imágenes nuevas (base64) a WP Media y las agrega a la galería del producto."""
     if not req.imagenes:
@@ -132,3 +131,19 @@ async def agregar(sku: str, req: AgregarReq):
         raise HTTPException(502, "No se pudo subir ninguna imagen a WordPress.")
     imagenes = await woocommerce.agregar_imagenes_galeria(int(parent_id), media_ids)
     return {"ok": True, "agregadas": len(media_ids), "imagenes": imagenes}
+
+
+# -- Registro DIFERIDO de la ruta comodín -------------------------------------
+# `{sku}` pasó a `{sku:path}` para que los 293 SKUs con diagonal
+# (`CALZ-0194-BLN/AZL-40`) dejen de dar 404: el parámetro normal no puede
+# abarcar un `/`, y el servidor decodifica el `%2F` ANTES de enrutar, así que
+# tampoco servía escaparlo desde el frontend.
+#
+# El precio de `:path` es que compila a `.*`, que es GOLOSO. Registrada en su
+# lugar original, esta comodín se tragaría a sus hermanas GET de más abajo
+# resolviéndolas como un SKU llamado "TEC-0935-ROS/progreso"
+# — y no fallaría: devolvería 200 con la respuesta EQUIVOCADA y NINGÚN
+# error en los logs. Starlette devuelve la PRIMERA ruta que casa entera,
+# así que la comodín se declara arriba (donde se lee) y se REGISTRA aquí,
+# la última.
+router.get("/{sku:path}")(galeria)

@@ -213,6 +213,14 @@ export interface ListarParams {
   revisado?: boolean;
   /** Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). */
   dropOff?: boolean;
+  /**
+   * Cada variante como FILA PROPIA y el padre fuera del listado (Brandon,
+   * 9-sep-2026): el catálogo pasa de 7,288 filas a 13,261.
+   *
+   * Sin valor manda `LISTADO_APLANADO` de Railway — por eso es `boolean | undefined`
+   * y no `boolean`: mandar `false` por omisión pisaría el flag del servidor.
+   */
+  aplanar?: boolean;
   vista?: "productos" | "crear" | "omnicanal";
 }
 
@@ -234,6 +242,9 @@ export function listarProductos(
   if (p.skus) q.set("skus", p.skus);
   if (p.revisado) q.set("revisado", "true");
   if (p.dropOff) q.set("drop_off", "true");
+  // `!== undefined`, no `if (p.aplanar)`: aquí `false` es una respuesta ("quiero
+  // el anidado"), no la ausencia de una. Omitirlo deja mandar al flag de Railway.
+  if (p.aplanar !== undefined) q.set("aplanar", String(p.aplanar));
   // Qué pestaña pide el listado: reparte el catálogo por estado de WooCommerce.
   // productos = publish/pending/ready · crear = draft/inprogress · omnicanal = todos.
   if (p.vista) q.set("vista", p.vista);

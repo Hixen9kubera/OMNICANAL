@@ -158,6 +158,7 @@ async def listar_productos(
     skus: list[str] | None = None,
     vista: str = "productos",
     skus_exactos: bool = False,
+    aplanar: bool | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
@@ -203,10 +204,66 @@ async def listar_productos(
         or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc")
     )
 
+    # LISTADO APLANADO (Brandon, 9-sep-2026): cada variante es su propia fila y
+    # el padre desaparece. Se decide aquí, no en cada rama, porque cambia el
+    # ÍNDICE entero —qué filas existen y cuántas son—, no solo cómo se pintan.
+    # `aplanar=None` (lo normal) deja mandar al flag de Railway; el parámetro
+    # explícito es para que el panel pueda pedir una u otra vista.
+    if aplanar is None:
+        aplanar = bool(settings.listado_aplanado)
+    # Sin la DB de WordPress no hay aplanado posible: la REST de Woo NO devuelve
+    # variaciones por `include` (probado 9-sep: `include=<id de variante>` → []),
+    # así que aplanar sin wp_db daría una pantalla VACÍA en vez de una mala.
+    if aplanar:
+        from services import wp_db
+        if not wp_db.disponible():
+            log.warning("listado aplanado pedido pero wp_db no está: se sirve anidado")
+            aplanar = False
+
     async with _client() as cli:
         data, total, total_pages = [], 0, 1
 
-        if categoria:
+        if aplanar:
+            # ÍNDICE PLANO en SQL (productos sin hijas + variaciones, el estado
+            # medido sobre el PADRE) y luego cada fila por su vía: los productos
+            # por REST —que es donde están frescos el permalink, la marca y las
+            # imágenes— y las variantes por MySQL, que es el ÚNICO sitio de donde
+            # se pueden traer.
+            #
+            # La categoría no se puede filtrar aquí: es un parámetro nativo de la
+            # REST de Woo y una variación no tiene categoría propia (0 de 7,477).
+            # Se hereda la del padre al hidratar, así que el filtro se aplica
+            # DESPUÉS, sobre las filas ya vestidas.
+            filas, total = await asyncio.to_thread(
+                wp_db.indice_plano, vista, search, list(skus or []) or None,
+                estados, orden, page, per_page)
+            total_pages = max(1, (total + per_page - 1) // per_page)
+            ids_prod = [f["wc_id"] for f in filas if f["tipo"] == "product"]
+            ids_var = [f["wc_id"] for f in filas if f["tipo"] == "product_variation"]
+
+            por_id: dict[int, dict[str, Any]] = {}
+            tareas: list[Any] = []
+            if ids_var:
+                tareas.append(asyncio.to_thread(wp_db.variantes_como_productos, ids_var))
+            if ids_prod:
+                tareas.append(cli.get("/products", params={
+                    **params, "include": ",".join(str(i) for i in ids_prod),
+                    "per_page": len(ids_prod), "page": 1}))
+            for res in await asyncio.gather(*tareas, return_exceptions=True):
+                if isinstance(res, Exception):
+                    log.warning("listado aplanado: una mitad del lote falló: %s", res)
+                    continue
+                if isinstance(res, dict):                 # variantes desde MySQL
+                    por_id.update(res)
+                elif getattr(res, "status_code", None) == 200:
+                    por_id.update({p["id"]: p for p in res.json()})
+            # El orden lo manda el índice, no el orden en que contestaron.
+            data = [por_id[f["wc_id"]] for f in filas if f["wc_id"] in por_id]
+            if categoria:
+                data = [p for p in data
+                        if any(c.get("id") == categoria for c in (p.get("categories") or []))]
+
+        elif categoria:
             # Ruta nativa WooCommerce por categoría (+ orden por precio si aplica)
             p = {**params, "category": categoria}
             if orden in ("precio_desc", "precio_asc"):
@@ -347,7 +404,11 @@ async def listar_productos(
             data = [p for p in data if p.get("status") in permitidos_vista]
 
         # Variantes de los padres `variable`: misma lectura que Crear Productos.
-        variantes_por_prod = await variantes_de_productos(cli, data)
+        # Con el listado APLANADO no hay nada que anidar: los padres variables no
+        # son fila (los reemplazan sus hijas) y una variante no tiene hijas. La
+        # llamada devolvería [] para todas, así que se ahorra el viaje.
+        variantes_por_prod = ([[]] * len(data) if aplanar
+                              else await variantes_de_productos(cli, data))
 
     # Resolvemos categorías en paralelo (cache compartida hace esto barato).
     rutas = await asyncio.gather(*[_categoria_de_producto(p) for p in data])
@@ -1723,6 +1784,7 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
     llamada con `include`) y los devuelve normalizados y EN EL MISMO ORDEN que se
     pidieron. Se usa en la vista "Crear Productos": el índice (qué wc_id) sale de
     la DB, pero todos los datos mostrados vienen en vivo de WooCommerce.
+
     """
     ids = [int(i) for i in wc_ids if i]
     if not ids:
@@ -1844,13 +1906,42 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
+async def ruta_escritura(wc_id: int) -> str:
+    """
+    Ruta REST por la que se ESCRIBE un producto: la suya si es un producto, y
+    `/products/{padre}/variations/{id}` si es una variación.
+
+    `GET /products/{id}` LEE una variación sin protestar —probado el 9-sep: 200
+    con su SKU y su tipo—, y de ahí sale la trampa: escribir por esa misma ruta
+    no persiste, y la REST tampoco devuelve un error que lo delate. La regla ya
+    estaba escrita en `obtener_producto_por_sku`; aquí se vuelve una sola pieza
+    porque ahora la variante es una FILA del panel y todo lo que se guarda desde
+    su ficha pasa por aquí.
+
+    Sin `wp_db` no se puede saber quién es el padre: se devuelve la ruta de
+    producto, que es el comportamiento de siempre.
+    """
+    try:
+        from services import wp_db
+        if wp_db.disponible():
+            padre = await asyncio.to_thread(wp_db.padre_de, int(wc_id))
+            if padre:
+                return f"/products/{padre}/variations/{int(wc_id)}"
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ruta_escritura(%s): no pude resolver el padre: %s", wc_id, exc)
+    return f"/products/{int(wc_id)}"
+
+
 # ── Contenido del producto (título / descripción / atributos) → WooCommerce ─────
 async def guardar_meta(wc_id: int, clave: str, valor: str) -> bool:
     """Guarda UNA meta del producto (p. ej. `amz_product_type` elegido en el
-    panel). Woo funde meta_data por clave: no toca las demás metas."""
+    panel). Woo funde meta_data por clave: no toca las demás metas.
+
+    Va por `ruta_escritura`: si el SKU es una variante, su postmeta vive en su
+    propio post y solo se escribe por la ruta de variaciones."""
     try:
         async with _client() as cli:
-            r = await cli.put(f"/products/{wc_id}", json={
+            r = await cli.put(await ruta_escritura(wc_id), json={
                 "meta_data": [{"key": clave, "value": valor}]})
             return r.status_code in (200, 201)
     except Exception as exc:  # noqa: BLE001
@@ -1891,6 +1982,34 @@ async def guardar_contenido_wc(
     duplicarlo dejaría dos atributos homónimos y Woo elige uno sin avisar.
     """
     payload: dict[str, Any] = {}
+    # UNA VARIACIÓN NO TIENE TÍTULO NI ATRIBUTOS PROPIOS QUE ESCRIBIR.
+    # Su `description` sí es suya (Woo la guarda en `_variation_description`), y
+    # se escribe por la ruta de variaciones. Pero `name` lo deriva WooCommerce del
+    # padre, y `attributes` son los EJES DE LA FAMILIA: mandarlos desde la ficha
+    # de una sola variante reescribiría el producto entero para sus hermanas.
+    # Se corta aquí, con un fallo VISIBLE, en vez de escribir en el sitio
+    # equivocado o tragarse el cambio en silencio — que es como se pierden las
+    # ediciones sin que nadie se entere.
+    from services import wp_db
+    padre_var = (await asyncio.to_thread(wp_db.padre_de, int(wc_id))
+                 if wp_db.disponible() else None)
+    if padre_var:
+        if titulo is not None or atributos is not None:
+            log.warning("guardar_contenido_wc %d es una VARIACIÓN: el título y los "
+                        "atributos son del padre %d, no se escriben desde aquí",
+                        wc_id, padre_var)
+            return False
+        if descripcion is None:
+            return False
+        async with _client() as cli:
+            rv = await cli.put(f"/products/{padre_var}/variations/{int(wc_id)}",
+                               json={"description": descripcion}, timeout=120.0)
+            if rv.status_code != 200:
+                log.warning("guardar_contenido_wc variación %d → %d %s",
+                            wc_id, rv.status_code, rv.text[:200])
+                return False
+        return True
+
     if titulo is not None:
         payload["name"] = titulo
     if descripcion is not None:

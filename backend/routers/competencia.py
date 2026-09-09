@@ -121,7 +121,7 @@ def sembrar(req: SembrarReq):
     return r
 
 
-@router.patch("/skus/{sku}")
+@router.patch("/skus/{sku:path}")
 def corregir_termino(sku: str, req: TerminoReq):
     """
     Corrige el término general. Queda marcado como 'manual' y ninguna corrida
@@ -238,7 +238,7 @@ def vista(canal: str = "mercado_libre"):
     }
 
 
-@router.get("/sku/{sku}")
+@router.get("/sku/{sku:path}")
 def detalle_sku(sku: str, limite_terminos: int = 20):
     """
     Lo que se abre al hacer clic en un SKU: sus dos búsquedas, lado a lado.
@@ -342,7 +342,7 @@ def sugerir_subcategoria(categoria_id: str):
     return r
 
 
-@router.post("/sku/{sku}/sugerir")
+@router.post("/sku/{sku:path}/sugerir")
 def sugerir_sku(sku: str):
     """
     UN título de máximo 60 caracteres para ese SKU, hecho a partir de la

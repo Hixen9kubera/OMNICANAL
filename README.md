@@ -1028,6 +1028,151 @@ libera limpio, cero residuo). Versión 0.461.0.
 
 ---
 
+### v0.464.0 — En Productos cada variante es un SKU, con su Estudio y su publicación
+
+Petición de Brandon del 9-sep: «en el panel un producto variable se ve como una
+sola fila, la del padre. Quiero que cada variante sea su propia fila, con su
+SKU, su precio, su stock y su foto», y poder **publicarlas individuales**.
+
+El reparto quedó así, y es decisión suya:
+
+| pestaña | qué muestra |
+|---|---|
+| **Crear Producto** | **PADRES**, como hasta hoy. El alta llena al padre UNA vez y sus hijas se llevan la misma información por herencia |
+| **Productos** | **APLANADO**: cada variante su fila. De 2,908 a 5,297 |
+| **Estudio + IA** | por variante, sobre su propio SKU |
+| **Publicar** | individual, por variante |
+
+Todo lo que sigue está medido contra producción ese mismo día. 7,477 variantes
+vivas bajo 1,504 padres; en Omnicanal el catálogo pasa de 7,288 filas a 13,261.
+
+**1 · Esto NO se arreglaba con un `WHERE`.** El listado no pinta las filas desde
+MySQL: las hidrata por REST con `GET /products?include=<wc_ids>`, y **esa ruta no
+devuelve variaciones**. Probado: `include=14711` (variante viva) contesta `[]`
+mientras `include=11459` (su padre) sí trae la fila. Curiosamente
+`?sku=TEC-0664-ROS` SÍ la devuelve — la REST de Woo es inconsistente entre
+`include` y `sku`. Si el índice hubiera devuelto ids de variante sin más, la
+pantalla habría salido **vacía**, no mal.
+
+La solución es `wp_db.variantes_como_productos`: viste a la variación con la
+misma forma que un producto de la REST, así que la normalización, la ruta de
+categoría, los precios frescos, el distintivo DROP OFF y los chips de revisión
+siguen funcionando sin enterarse. El índice nuevo es `wp_db.indice_plano`
+(UNION de productos-sin-hijas + variaciones, paginado en SQL).
+
+**2 · Se aplanó también Crear Productos y SE RETIRÓ**, a petición de Brandon.
+El motivo vale más que el código: sin la fila del padre no queda dónde disparar
+el alta masiva, que es **lo único que mueve la familia de `draft` a `pending`**.
+Se aplanaba la pestaña y se cerraba la puerta de salida — la KAM llenaba los 19
+SKUs y no había forma de pasarlos a Productos. Queda escrito en el docstring de
+`wp_db.indice_drafts` para que nadie lo vuelva a construir.
+
+**3 · El estado lo manda el PADRE**, y esa fue la decisión menos obvia. El
+`post_status` de una variación significa «esta combinación está habilitada», no
+«está viva en la tienda»: una hija `publish` de un padre `draft` no se puede
+comprar. Medido: **4,522 de las 7,477 están en ese caso**. Filtrar por el estado
+propio de la hija habría llenado Productos de mercancía que nadie terminó de
+crear.
+
+**4 · La herencia es lo que hace que «al crear el padre, sus hijas se lleven la
+misma información».** La variante tiene lo COMERCIAL y el padre lo de PUBLICAR.
+Sobre los 36 SKUs que mandó Brandon:
+
+| meta | en la variante | solo en el padre |
+|---|---|---|
+| `_regular_price` / `_price` / `_stock` | 36/36 | 0 |
+| `ml_categoria_id` | 0/36 | **36** ← sin esto no se publica |
+| `_product_attributes` | 0/36 | 36 |
+| peso y dimensiones | 0/36 | 2 |
+
+`wp_db.postmeta_con_herencia` rellena los huecos desde el padre. **Nunca** se
+heredan (`_NO_HEREDA`): el SKU, las existencias —heredarlas inventa mercancía— y
+los códigos de barras, porque heredar un GTIN publicaría el mismo código en N
+publicaciones distintas de ML.
+
+Los ATRIBUTOS no se heredan tal cual: el padre `VEH-0315` declara
+`Modelo = "07 | 08 | 09 | …"` con las 28 opciones de la familia, y
+`build_attributes` toma `options[0]` — publicar `VEH-0315-03` con esa lista le
+habría puesto el modelo de otra pieza. `_atributos_de_variacion` lee el valor que
+la variación fija en su meta `attribute_<slug>`. Verificado: `VEH-0316-SIL`
+hereda la categoría del padre y conserva su precio ($535.73), su stock (4) y su
+propio `Modelo: Sil`.
+
+**5 · El contenido por variante ya viajaba solo.** `enrich.channel_content`
+guarda por SKU, la IA guarda por SKU, y `publicar._rellenar_desde_guardado`
+devuelve esos campos al formulario al publicar (con el formulario mandando). No
+hizo falta nada nuevo: cada variante tiene su título y su descripción sin pisar
+a sus hermanas.
+
+**6 · La trampa de escribir en una variación.** `GET /products/{id}` LEE una
+variación sin protestar (devuelve 200 con su SKU), pero la escritura va a
+`/products/{padre}/variations/{id}` — la regla ya estaba escrita en
+`obtener_producto_por_sku` y ahora es una sola pieza: `woocommerce.ruta_escritura`.
+Sin ella, **el guardado de la categoría ML no habría persistido**, y como la REST
+no devuelve error, la corrección se habría perdido en silencio y el SKU se habría
+publicado con la del padre. Se corrigieron tres escritores más por lo mismo: GTIN
+(`_barcode`), `guardar_meta` (p. ej. `amz_product_type`) y `guardar_contenido_wc`
+—que en una variación escribe solo la descripción y RECHAZA visiblemente título y
+atributos, porque son de la familia—. El alta masiva de Crear se bloquea sobre una
+variante por la misma razón: su payload escribe `name`, `images` y `status`.
+
+**7 · El Estudio enseñaba una categoría y el publicador usaba otra.** Bug
+preexistente que aquí se volvía peligroso: `metadata_producto` leía solo
+`ml_category_id` (el predictor) y el publicador prefiere `ml_categoria_id` (el
+picker del panel, la elección humana que MANDA). Resultado: `VEH-0315` y
+`VEH-0316` se veían «sin categoría» teniendo una elegida. Ahora la pantalla
+enseña la misma que se publicaría, y `heredado` marca los campos que vienen del
+padre — porque una categoría heredada no es una categoría elegida para ESE SKU.
+
+⚠️ **Y ahí hay un hallazgo que no es de código.** `VEH-0315` y `VEH-0316` tienen
+`ml_categoria_id = MLM1744`, que es *«Autos, Motos y Otros > Autos y
+Camionetas»* —la categoría para vender un AUTOMÓVIL— y sus 47 hijas son bombas
+de dirección asistida y soportes de motor. ML **acepta** esa categoría
+(`listing_allowed=True`), así que publicar no fallaría: saldrían 47 refacciones
+anunciadas como coches. Su predictor dice `MLM373434`/`MLM437912` (bombas
+hidráulicas) y `MLM171475` (soportes de motor). **Hay que corregirla en el panel
+antes de publicar esa familia** — es el patrón de TEC-1812-NEG.
+
+**Cómo se enciende y se apaga.** `LISTADO_APLANADO` en Railway, y
+`?aplanar=true|false` en `/api/productos` para pedir una u otra vista sin tocar
+el flag. Apagarlo devuelve la vista anidada de siempre, no una a medias. Si
+`WPDB_*` no está configurado, el aplanado se desactiva solo: sin la base de
+WordPress no hay forma de traer una variación.
+
+**Rendimiento**: el índice plano tarda 0.83 s en Productos (antes 0.82 s) para un
+universo 82% más grande, gracias a paralelizar COUNT y página. El listado
+completo aplanado sale en 2.2 s contra los 4.1 s del anidado, porque se ahorra el
+paso de anidar variantes.
+
+**Lo que este cambio DESTAPA y sigue pendiente**, todo medido:
+
+- **35 de los 36 SKUs del Excel no tienen foto propia**: los 34 de `VEH-0315` y
+  `VEH-0316` mostrarán la misma única miniatura del padre. Separarlos no crea
+  fotos; eso es trabajo de subir imágenes.
+- **34 de 36 no tienen peso ni dimensiones** en ningún lado, ni la variante ni el
+  padre. ML y Amazon los necesitan para el envío.
+- **941 variantes del catálogo no tienen precio en ninguna parte** (1,436 sin
+  precio propio, de las que solo 495 tienen padre con precio) y **140 no tienen
+  ninguna imagen posible**, ni heredando.
+- El título por variante: en WooCommerce una variación no tiene título propio, así
+  que en el listado se compone como «Padre - Opción» (y con el SKU detrás en las
+  1,541 que repiten el título del padre tal cual). Para publicar sí hay título
+  propio: vive en `channel_content`, por SKU y por canal.
+
+**Rutas con diagonal: 404 resuelto.** Los 30 endpoints con `{sku}` pasan a
+`{sku:path}`. El parámetro normal no puede abarcar un `/` y el servidor
+decodifica el `%2F` ANTES de enrutar, así que escaparlo desde el frontend
+tampoco servía — afectaba a **293 variantes** (`CALZ-0194-BLN/AZL-40`), que
+escondidas tras su padre no se notaban y como fila propia no habrían podido abrir
+ficha, fotos ni costo. El precio de `:path` es que compila a `.*`, que es GOLOSO:
+en `imagenes.py`, `inventario.py` y `productos.py` la ruta comodín estaba
+declarada ANTES que sus hermanas GET y se las habría tragado —`GET
+/api/imagenes/{sku}/progreso` resuelto como un SKU llamado `"…/progreso"`, con
+200, la respuesta equivocada y ningún error en los logs—. Eran 9 rutas. Se
+declaran donde se leen y se REGISTRAN al final del archivo, que además aguanta
+que alguien agregue una hermana nueva mañana. Verificado con el enrutador real:
+22 de 22 casos, incluida la forma `%2F`.
+
 ### v0.463.0 — Un fallo interno de ML dejaba devoluciones invisibles para siempre
 
 Auditoría del flujo vivo dos horas después de encenderlo (v0.460.0). Se le

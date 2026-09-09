@@ -910,6 +910,25 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 _set(sku, "error", "No se encontró el producto en WooCommerce")
                 return
 
+            # UNA VARIANTE NO SE PUEDE "CREAR" POR ESTA VÍA, y se dice en vez de
+            # intentarlo. Desde el 9-sep las variantes son filas propias en Crear
+            # Productos (LISTADO_APLANADO), así que este botón ya se les puede
+            # apretar — pero el payload de aquí escribe `name`, `images` y el
+            # `status`, y en WooCommerce esas tres son del PADRE: una variación no
+            # tiene título propio, toma `image` en singular y su estado lo hereda.
+            # Mandarlo por la ruta de variaciones se tragaría el título y las
+            # imágenes SIN error (la REST no protesta), que es como se pierde el
+            # trabajo de una KAM sin que nadie se entere. Lo que sí es de la
+            # variante —costo, categoría ML, GTIN, imágenes, contenido— ya se
+            # edita desde su ficha y el Estudio, con las rutas correctas.
+            padre_id = await asyncio.to_thread(wp_db.padre_de, int(wc_id))
+            if padre_id:
+                _set(sku, "error",
+                     f"{sku} es una VARIANTE. El alta masiva escribe título, imágenes "
+                     f"y estado, que en WooCommerce son del producto padre. Crea el "
+                     f"padre y edita esta variante desde su ficha.", wc_id=wc_id)
+                return
+
             # Falta de costo: YA NO ABORTA (cambio del 4-ago).
             # El guard existía porque sin costo el producto terminaba en
             # `inprogress`, y esa pestaña es Crear, no Productos: el producto se
