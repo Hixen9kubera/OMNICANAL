@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.454.0 — Al que no se pudo resolver solo se le escondia su propia foto
+
+La foto de la publicacion de Mercado Libre se traia DESPUES del corte por "sin
+packing list", asi que nunca llegaba a traerse para los SKUs que caen ahi. El
+resultado era el peor posible: al unico renglon que de verdad hay que mirar a
+mano se le ocultaba lo unico que queda para reconocer el producto.
+
+Lo destapo CAM-0030-IND, publicado y ACTIVO en las dos cuentas, con su celda de
+ML vacia. No fallaba ML ni el token ni los datos: las dos publicaciones contestan
+200 con fotos, `publicados_ml` devuelve bien sus `item_id`, y corriendo
+`_publicacion_ml` a mano la foto baja (69,547 bytes). Simplemente nunca se
+llegaba a pedirla — el `return` estaba cinco lineas antes.
+
+El bloque se mueve ARRIBA del corte. Verificado con CAM-0030-IND y CAM-0030-MAT:
+siguen en `sin_insumo` —su contenedor no existe en ninguna fuente— pero ahora
+llegan con foto de Odoo Y foto de ML, que es con lo que una persona puede
+decidir.
+
+Es un defecto introducido en la v0.291.0, cuando la foto de ML paso a traerse
+siempre: se coloco en el lugar correcto para el caso comun y en el equivocado
+para el caso que mas la necesita.
+
 ### v0.453.0 — Validador de publicados: packing lists en español y renglón a mano (Eduardo)
 
 Dos SKUs que Eduardo no podía validar, y eran dos problemas distintos:

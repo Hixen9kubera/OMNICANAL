@@ -714,22 +714,21 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
         "cands_ia": [], "cands_img": {}, "cands_txt": {}, "veredicto": [],
     }
 
-    if not fids:
-        # El motivo CONCRETO cuando quien llama lo sabe. La frase generica solo
-        # queda para la correccion a mano, que entra por otro camino.
-        fila["detalle"] = motivo_sin or (
-            "no hay packing list utilizable para este SKU "
-            "(sin contenedor conocido o el archivo no se pudo leer)")
-        return fila
-
-    # ── La publicación de ML: SIEMPRE, no solo cuando la escalera falla ──
-    # Antes esto vivía dentro del peldaño de IA, así que un empate por sha256
-    # llegaba a la pantalla sin foto de Mercado Libre y no había con qué
-    # contrastarlo. Y es al revés de lo que conviene: el empate exacto es
-    # justamente el que nadie va a mirar dos veces, así que si resultó ser la
-    # foto equivocada —un SKU reciclado, una foto repetida entre renglones— se
-    # va derecho al catálogo. Poder ver las tres (Odoo · publicación · packing
-    # list) es lo que vuelve auditable la pantalla.
+    # ── La publicación de ML: SIEMPRE, y ANTES de cualquier salida ──
+    # Vivía dentro del peldaño de IA, así que un empate por sha256 llegaba a la
+    # pantalla sin foto de Mercado Libre y no había con qué contrastarlo. Y es
+    # al revés de lo que conviene: el empate exacto es justamente el que nadie
+    # va a mirar dos veces, así que si resultó ser la foto equivocada —un SKU
+    # reciclado, una foto repetida entre renglones— se va derecho al catálogo.
+    # Poder ver las tres (Odoo · publicación · packing list) es lo que vuelve
+    # auditable la pantalla.
+    #
+    # Y va ARRIBA del corte por "sin packing list", no debajo. Estaba después, y
+    # el resultado era el peor posible: al SKU que no se pudo resolver solo —el
+    # único que de verdad hay que mirar a mano— se le escondía la foto de su
+    # propio anuncio, que es lo único que queda para reconocerlo. Lo destapó
+    # CAM-0030-IND, publicado y activo en las dos cuentas, con su celda de ML
+    # vacía.
     #
     # Cuesta una llamada por SKU y `cache_ml` la comparte entre variantes del
     # mismo padre; frente a las dos llamadas de modelo del peldaño de IA, es
@@ -738,6 +737,14 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
     fila["titulo_ml"] = _ml.get("titulo") or None
     if _ml.get("foto"):
         fila["img_ml"] = packing_resolver._miniatura(_ml["foto"], _LADO_FOTO_UI)
+
+    if not fids:
+        # El motivo CONCRETO cuando quien llama lo sabe. La frase generica solo
+        # queda para la correccion a mano, que entra por otro camino.
+        fila["detalle"] = motivo_sin or (
+            "no hay packing list utilizable para este SKU "
+            "(sin contenedor conocido o el archivo no se pudo leer)")
+        return fila
 
     # ── Peldaño 0: la foto de Odoo ──
     mejor = None
