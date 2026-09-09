@@ -1001,6 +1001,57 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.465.0 — Debió llegar → llegó → hay disponible, y la resta que NO se hace
+
+Brandon, 9-sep: *«cuántas piezas debieron haber llegado según el packing list,
+cuántas llegaron realmente y cuántas actualmente hay disponibles»*. Las tres
+cifras, juntas y en la ficha del SKU.
+
+**La resta que este bloque tiene PROHIBIDO hacer es la de las dos últimas.** La
+diferencia entre lo recibido y lo que hay casi nunca es una merma: son VENTAS.
+`TEC-0370-NEG` recibió **168 piezas en 8 recepciones** desde diciembre y hoy
+tiene **8**; pintar «−160» ahí sería acusar un faltante inexistente. Lo salido
+se nombra aparte y en gris: *«de lo recibido ya salieron 160 piezas — ventas y
+envíos, no una merma»*.
+
+**«Llegó» es nuevo y no es «lo que hay»**: `odoo.recibido_por_sku` suma los
+`stock.move` de ENTRADA en estado `done` — mercancía que alguien validó al
+recibirla — con su número de documentos y sus fechas. Usa `quantity` (lo hecho)
+y no `product_qty`, al revés que las recepciones pendientes, donde lo que se
+pregunta es lo que falta por llegar y ahí manda la demanda.
+
+Y sale un dato que ordena la pestaña entera: **los diez SKUs del piloto llevan
+CERO piezas recibidas en su vida**, con 1,516 esperando en recepciones sin
+validar.
+
+**LOS RENGLONES DEL PACKING LIST SE COMPLETAN CON LA MISMA DETECCIÓN DE IMAGEN.**
+`caja_compartida` guarda los renglones que la validación de costos llegó a
+empatar, y a veces son menos de los que el SKU ocupa en el archivo. Ahora se
+completan con el dHash de la foto del renglón conocido contra el de todos los
+demás renglones del mismo packing list — gratis, porque el índice ya trae las
+fotos hasheadas. Medido contra lo que Odoo pidió, en los 9 SKUs con renglón:
+
+| método | aciertos exactos |
+|---|---|
+| solo los renglones registrados | 4 de 9 |
+| solo los gemelos por foto | 4 de 9 (y **pierde** ROP-0731-BLN) |
+| **la unión** | **6 de 9**, sin perder ninguno |
+
+Es la unión, porque los gemelos por foto solos bajan `ROP-0731-BLN` de 4
+renglones a 3: son vestidos de colores distintos y el dHash los separa.
+
+**Y CORRIGE UNA CONCLUSIÓN DE LA v0.459.0.** Ahí dije que `VEH-0148-EST`
+discrepaba —el renglón decía 7 cajas y la columna congelada 15— y que mandaba el
+renglón. Estaba leyendo **un solo renglón de los dos** que ocupa: con la unión da
+**15 cajas y 60 piezas**, que cuadra exacto contra lo que Odoo pidió *y* contra
+la columna congelada. La columna tenía razón.
+
+**LA COBERTURA SE DICE, NO SE ESCONDE.** Tres de los nueve siguen cortos
+(`HERR-0343-MET` cubre el 60%, `JUGU-1153-MET` el 21%, `ROP-0731-BLN` el 19%).
+En esos, «debió llegar» se rotula como **piso** y la ficha dice *«falta empatar
+renglón, no falta mercancía»*: acusar un faltante cuando lo que falta es el
+renglón sería inventar un descuadre.
+
 ### 0.461.0 — El sondeo se salta la pasada cuando el candado no puede confirmarse
 
 El cuádruple del 9-sep (701-2671362-7271458 → CUATRO pedidos) enseñó el hoyo que

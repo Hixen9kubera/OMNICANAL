@@ -169,20 +169,21 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     # carga tras un arranque en frío sale con la cifra congelada de
     # `costos_validados`; la siguiente ya trae la del renglón.
     pls = packing_cajas.por_sku(pedidos)
+    recs = odoo.recibido_por_sku(pedidos)
 
     salida = []
     for sku in pedidos:
         salida.append(_fila(sku, woo.get(sku), od.get(sku), costos.get(sku),
                             canales.get(sku, []), proceso.get(sku),
                             imgs.get(sku), ubis.get(sku, []),
-                            hermanos.get(sku, []), pls.get(sku)))
+                            hermanos.get(sku, []), pls.get(sku), recs.get(sku)))
     return salida
 
 
 def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pubs: list[dict], plog: dict | None, imagen: str | None,
           ubicaciones: list[dict], hermanos: list[dict],
-          pl: dict | None = None) -> dict[str, Any]:
+          pl: dict | None = None, rec: dict | None = None) -> dict[str, Any]:
     es_padre = bool(w and w["n_hijas"] > 0)
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
@@ -285,6 +286,7 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
                                    (o or {}).get("piezas_por_caja")),
         "cbm_caja": _num((o or {}).get("cbm_caja")),
         "cotejo_cajas": _cotejo_cajas(o, c, pl),
+        "recorrido": _recorrido(o, pl, rec),
 
         # existencias
         "stock_woo": (w or {}).get("stock"),
@@ -949,6 +951,63 @@ def _empaque(crudo: Any) -> dict[str, str]:
     return {"iso": iso.group(1) if iso else "",
             "embarque": emb.group(1) if emb else "",
             "crudo": texto[:60]}
+
+
+def _recorrido(o: dict | None, pl: dict | None,
+               rec: dict | None) -> dict[str, Any]:
+    """
+    LAS TRES CIFRAS DE UNA PIEZA (Brandon, 9-sep): «cuántas debieron llegar
+    según el packing list, cuántas llegaron realmente y cuántas hay disponibles».
+
+      · DEBIÓ LLEGAR · las piezas de los renglones del packing list.
+      · LLEGÓ        · entradas VALIDADAS en Odoo. No es «lo que hay».
+      · DISPONIBLE   · `free_qty` de hoy, lo vendible.
+
+    POR QUÉ NO SE RESTAN, y es lo que más importa de este bloque: la diferencia
+    entre lo recibido y lo disponible **casi nunca es una merma, son ventas**.
+    `TEC-0370-NEG` recibió 168 piezas en 8 documentos desde diciembre y hoy tiene
+    8: perfectamente normal. Un panel que pinte «−160» ahí está acusando un
+    faltante que no existe. Por eso aquí se dan las tres cifras rotuladas y la
+    única resta que sí se hace es la del packing list contra lo recibido, que sí
+    es «lo que falta por entrar».
+
+    Y LA COBERTURA SE DICE, NO SE ESCONDE. El packing list solo cubre los
+    renglones que se pudieron empatar. Medido el 9-sep en los 9 SKUs del piloto
+    con renglón: seis cuadran EXACTO contra lo que Odoo pidió —lo que valida el
+    método— pero tres se quedan cortos (`HERR-0343-MET` cubre el 60%,
+    `JUGU-1153-MET` el 21%, `ROP-0731-BLN` el 19%). En esos, «debió llegar» es
+    un piso, no el total, y así se rotula: decir que faltan piezas cuando lo que
+    falta es el renglón sería inventar un descuadre.
+    """
+    debio = _num((pl or {}).get("piezas_fila"))
+    llego = _num((rec or {}).get("piezas")) or 0.0
+    pendiente = _num((o or {}).get("entrante")) or 0.0
+    disponible = _num((o or {}).get("libre")) or 0.0
+    mano = _num((o or {}).get("fisico")) or 0.0
+
+    # Lo pedido a Odoo = lo ya recibido + lo que sigue en recepciones abiertas.
+    # Sirve para medir si el packing list cubre el embarque completo.
+    pedido = llego + pendiente
+    cobertura = (round(debio / pedido, 4) if debio and pedido else None)
+    completo = bool(cobertura is not None and abs(cobertura - 1) < 0.01)
+
+    return {
+        "debio_llegar": debio,
+        "llego": llego,
+        "documentos": (rec or {}).get("documentos") or 0,
+        "primera_entrada": _iso((rec or {}).get("primera")),
+        "ultima_entrada": _iso((rec or {}).get("ultima")),
+        "pendiente": pendiente,
+        "pedido_odoo": pedido or None,
+        "disponible": disponible,
+        "a_la_mano": mano,
+        # Qué parte del embarque cubren los renglones que se pudieron empatar.
+        # `None` = no hay renglón; 1.0 = cuadra exacto contra Odoo.
+        "cobertura_pl": cobertura,
+        "pl_completo": completo,
+        # Lo vendido/salido: se NOMBRA, nunca se pinta como faltante.
+        "salido": round(llego - mano, 2) if llego and llego > mano else None,
+    }
 
 
 def _cotejo_cajas(o: dict | None, c: dict | None,

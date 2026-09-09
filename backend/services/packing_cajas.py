@@ -172,45 +172,69 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
         if ix is None:
             continue
 
-        # El PRIMER renglón manda: cuando el cartón se comparte, todos los
-        # renglones del grupo traen el mismo conteo de cartones, así que tomarlo
-        # una vez es lo correcto y sumarlo es el error.
-        try:
-            d = ix.datos(renglones[0])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("packing_cajas: fila %s de %s ilegible: %s",
-                        renglones[0], archivo, exc)
-            continue
+        # ── TODOS los renglones del SKU, no solo los registrados ────────────
+        # `caja_compartida` guarda los renglones que la validación de costos
+        # llegó a empatar, y a veces son MENOS de los que el SKU ocupa en el
+        # archivo. Se completan con la MISMA detección de imagen: el dHash de la
+        # foto del renglón conocido contra el de todos los demás renglones del
+        # packing list. Es gratis — el índice ya trae las fotos hasheadas.
+        #
+        # Medido el 9-sep contra lo que Odoo pidió, en los 9 SKUs con renglón:
+        # solos, los registrados aciertan 4; solos, los gemelos por foto
+        # aciertan 4 pero PIERDEN uno (ROP-0731-BLN baja de 4 renglones a 3,
+        # porque son vestidos de colores distintos y el dHash los separa). La
+        # UNIÓN acierta 6 y no pierde ninguno, así que es la unión.
+        gemelos = _gemelos_por_foto(ix, renglones[0])
+        todos = sorted(set(renglones) | gemelos)
 
-        cajas = d.get("cajas")
-        if cajas is None:
-            # El archivo no trae columna de cartones. NO se asume 1: el propio
-            # `Indice.cajas()` devuelve None y no 1 justamente por esto.
-            continue
-
-        grupo = list(d.get("grupo") or [])
-        compartida = bool(grupo)
-
-        # Piezas del SKU: cuando ocupa varios renglones se SUMAN (son piezas
-        # distintas), al revés que las cajas. `ROP-0731-BLN` tiene 6+5+6+2 = 19
-        # piezas repartidas en cuatro renglones de un mismo cartón.
         piezas = 0.0
-        for r in renglones:
+        cajas = 0.0
+        cartones: set[frozenset] = set()
+        compartida = False
+        renglones_carton = len(todos)
+        piezas_grupo = None
+
+        for r in todos:
             try:
-                piezas += float(ix.datos(r).get("piezas_fila") or 0)
+                d = ix.datos(r)
             except Exception:  # noqa: BLE001
-                pass
+                continue
+            # Las PIEZAS se suman entre renglones: son piezas distintas.
+            piezas += float(d.get("piezas_fila") or 0)
+            if piezas_grupo is None:
+                piezas_grupo = _num(d.get("piezas_grupo"))
+
+            # Las CAJAS no: se cuentan UNA VEZ POR CARTÓN. Cuando varios
+            # renglones comparten cartón, todos reportan el mismo número
+            # (se hereda del ancla del merge) y sumarlos multiplica la caja.
+            grupo = set(d.get("grupo") or [])
+            if grupo:
+                compartida = True
+                renglones_carton = max(renglones_carton, len(grupo | set(todos)))
+            carton = frozenset(grupo | {r})
+            if carton in cartones:
+                continue
+            cartones.add(carton)
+            c = d.get("cajas")
+            # `Indice.cajas()` devuelve None —y no 1— cuando el archivo no trae
+            # columna de cartones. No se inventa el 1.
+            if c is not None:
+                cajas += float(c)
+
+        if not cartones:
+            continue
 
         salida[f["sku"]] = {
-            "cajas": round(float(cajas), 2),
+            "cajas": round(cajas, 2) or None,
             "compartida": compartida,
-            # Cuántos renglones comparten el cartón EN TOTAL (los del SKU más
-            # los ajenos). Es lo que explica que una caja "valga" menos de una.
-            "renglones_carton": len(set(grupo) | set(renglones)) if compartida else len(renglones),
-            "renglones": renglones,
+            "renglones_carton": renglones_carton,
+            "renglones": todos,
+            # Cuántos venían ya registrados, para poder auditar el aporte de la
+            # detección por foto sin volver a correrla.
+            "renglones_registrados": renglones,
             "archivo": archivo,
             "piezas_fila": round(piezas, 2) or None,
-            "piezas_grupo": _num(d.get("piezas_grupo")),
+            "piezas_grupo": piezas_grupo,
         }
 
     ahora = time.monotonic()
@@ -228,6 +252,34 @@ def _marcar_sin_dato(skus: list[str], resueltos: set[str]) -> None:
     for s in skus:
         if s not in resueltos:
             _cache[s] = (ahora, None)
+
+
+def _gemelos_por_foto(ix: Any, fila: int, umbral: int = 8) -> set[int]:
+    """Los renglones del MISMO archivo cuya foto es la misma que la de `fila`.
+
+    Es la misma detección de imagen que usa la validación de costos, en su
+    peldaño de dHash: distancia de Hamming ≤ 8 sobre 64 bits, el umbral que ya
+    está medido en el repo (92% de acierto exacto). Aquí es aún más seguro que
+    allá, porque no se compara contra el catálogo entero sino contra los
+    renglones de UN packing list.
+
+    Nunca reemplaza a los renglones registrados, solo los completa: en
+    `ROP-0731-BLN` esta búsqueda encuentra 3 y los registrados son 4 (son cinco
+    vestidos de colores distintos y el dHash los separa). Por eso el llamador
+    hace la unión.
+    """
+    from services import packing_indice as pidx
+    try:
+        idx = ix.fila_de_idx.get(fila)
+        base = ix.fotos.get(idx) if idx is not None else None
+        if not base:
+            return set()
+        return {ix.idx_de_fila[i] for i, ft in ix.fotos.items()
+                if i in ix.idx_de_fila
+                and pidx.distancia(ft["dh"], base["dh"]) <= umbral}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("packing_cajas: gemelos por foto de la fila %s: %s", fila, exc)
+        return set()
 
 
 def _indexar(archivo: str, contenedor: str, inventario: dict[str, str],

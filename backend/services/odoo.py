@@ -364,6 +364,69 @@ def skus_por_almacen(codigo: str, *, ttl: float = _ALMACEN_TTL) -> list[str]:
     return salida
 
 
+def recibido_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """
+    ``{ SKU: {piezas, documentos, primera, ultima} }`` — lo que de verdad ENTRÓ.
+
+    Son los `stock.move` de tipo ENTRADA y estado `done`: mercancía que alguien
+    validó al recibirla. Contesta el segundo de los tres números que pidió
+    Brandon el 9-sep — *cuántas debieron llegar, cuántas llegaron, cuántas hay*.
+
+    LAS TRES CIFRAS NO SE PUEDEN RESTAR A LA LIGERA, y por eso conviene tenerlas
+    juntas: lo recibido NO es lo que hay. Medido en el piloto: `TEC-0370-NEG`
+    recibió 168 piezas y hoy tiene 8 — la diferencia no es una merma, son ventas.
+    Y los diez SKUs del piloto llevan CERO piezas recibidas en su vida, con 1,516
+    esperando en recepciones sin validar.
+
+    Se usa `quantity` (lo HECHO) y no `product_qty` (lo pedido), que es la regla
+    del libro de movimientos de este módulo: en un movimiento ya validado
+    `quantity` reconstruye el saldo con 97.1% de acierto contra el 90.8% de
+    `product_qty`. Al revés que en `recepciones_pendientes_por_sku`, donde lo
+    que se pregunta es lo que FALTA por llegar y ahí manda la demanda.
+    """
+    skus = [s for s in (skus or []) if s]
+    if not skus:
+        return {}
+    uid = _uid()
+    if not uid:
+        return {}
+    salida: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(skus), 150):
+        lote = skus[i:i + 150]
+        try:
+            movs = _models().execute_kw(
+                settings.odoo_db, uid, settings.odoo_password,
+                "stock.move", "search_read",
+                [[["product_id.default_code", "in", lote],
+                  ["picking_code", "=", "incoming"],
+                  ["state", "=", "done"]]],
+                {"fields": ["product_id", "quantity", "picking_id", "date"]},
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Odoo recibido_por_sku falló: %s", exc)
+            continue
+        for m in movs:
+            nombre = _nombre_de(m.get("product_id"))
+            if not (nombre.startswith("[") and "]" in nombre):
+                continue
+            sku = nombre[1:nombre.index("]")].strip()
+            if not sku:
+                continue
+            d = salida.setdefault(sku, {"piezas": 0.0, "docs": set(),
+                                        "primera": None, "ultima": None})
+            d["piezas"] += float(m.get("quantity") or 0)
+            doc = _nombre_de(m.get("picking_id"))
+            if doc:
+                d["docs"].add(doc)
+            f = m.get("date")
+            if f:
+                d["primera"] = min(d["primera"] or f, f)
+                d["ultima"] = max(d["ultima"] or f, f)
+    return {k: {"piezas": round(v["piezas"], 2), "documentos": len(v["docs"]),
+                "primera": v["primera"], "ultima": v["ultima"]}
+            for k, v in salida.items()}
+
+
 def ping() -> bool:
     return _uid() is not None
 

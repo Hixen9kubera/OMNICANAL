@@ -1546,19 +1546,6 @@ export interface Publicacion {
   oferta_dias: number | null;
   /** `null` = NO SE PUEDE SABER (ver `margen_motivo`). Jamás tratarlo como 0. */
   margen_pct: number | null;
-  /** El piso de rentabilidad SOBRE EL PRECIO (0.20). No es ROI sobre el costo:
-   *  la misma ganancia medida contra el otro denominador da 48%. */
-  piso_objetivo?: number | null;
-  /** Precio al que esta publicación alcanzaría el piso. Llega SOLO cuando está
-   *  por debajo Y su costo está verificado; si no, null. */
-  precio_piso?: number | null;
-  /** Por qué no hay precio sugerido.
-   *  'costo_sin_verificar' — está bajo el piso, pero su costo no se ha
-   *    comparado contra el packing list, así que el precio que haría falta
-   *    tampoco sería confiable.
-   *  'canal_sin_costo' — el canal no tiene comisión ni tarifa de envío
-   *    cargadas (hoy, todos menos Mercado Libre). */
-  piso_aviso?: "costo_sin_verificar" | "canal_sin_costo" | null;
   roi: number | null;
   ganancia_neta: number | null;
   margen_motivo: MargenMotivo | null;
@@ -1771,6 +1758,28 @@ export interface CotejoCajas {
   nota: string;
 }
 
+/** Las tres cifras de una pieza: debió llegar → llegó → hay. */
+export interface RecorridoPieza {
+  /** Piezas de los renglones del packing list. `null` = sin renglón empatado. */
+  debio_llegar: number | null;
+  /** Entradas VALIDADAS en Odoo. NO es «lo que hay». */
+  llego: number;
+  documentos: number;
+  primera_entrada: string;
+  ultima_entrada: string;
+  /** Piezas en recepciones abiertas sin validar. */
+  pendiente: number;
+  /** Lo recibido + lo pendiente = lo que Odoo espera en total. */
+  pedido_odoo: number | null;
+  disponible: number;
+  a_la_mano: number;
+  /** Qué parte del pedido cubren los renglones empatados. 1 = exacto. */
+  cobertura_pl: number | null;
+  pl_completo: boolean;
+  /** Lo recibido que ya salió. Son VENTAS, no una merma. */
+  salido: number | null;
+}
+
 export interface FilaInventario {
   sku: string;
   existe_en_woo: boolean;
@@ -1814,6 +1823,8 @@ export interface FilaInventario {
    *  durante el desfase el campo no viene. Sin esto la pantalla se va en
    *  blanco, que fue exactamente lo que paso con `pendientes` el 6-sep. */
   cotejo_cajas?: CotejoCajas;
+  /** Debió llegar → llegó → hay disponible. */
+  recorrido?: RecorridoPieza;
 
   stock_woo: number | null;
   stock_odoo: number | null;

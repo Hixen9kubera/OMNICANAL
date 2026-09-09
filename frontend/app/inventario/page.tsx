@@ -1095,6 +1095,7 @@ function Cajon({
 
         <div className="flex-1 space-y-5 overflow-y-auto px-5 py-5">
           <Jerarquia fila={fila} />
+          <Recorrido fila={fila} />
           <PorRecibirse fila={fila} movs={movs} cargando={cargando} />
           <CotejoCajasBloque fila={fila} />
           <DondeEsta fila={fila} />
@@ -1475,6 +1476,107 @@ function Comercial({ fila }: { fila: FilaInventario }) {
           );
         })}
       </div>
+    </section>
+  );
+}
+
+/**
+ * EL RECORRIDO DE LA PIEZA — debió llegar → llegó → hay.
+ *
+ * Brandon, 9-sep: «cuántas piezas debieron haber llegado según el packing list,
+ * cuántas llegaron realmente y cuántas actualmente hay disponibles».
+ *
+ * LO QUE ESTE BLOQUE TIENE PROHIBIDO HACER ES RESTAR LAS DOS ÚLTIMAS. La
+ * diferencia entre lo recibido y lo que hay casi nunca es una merma: son
+ * VENTAS. `TEC-0370-NEG` recibió 168 piezas en 8 documentos desde diciembre y
+ * hoy tiene 8 — pintar «−160» ahí sería acusar un faltante inexistente. Por eso
+ * lo salido se NOMBRA aparte y en gris, y la única resta que se hace es la del
+ * packing list contra lo que ya entró.
+ *
+ * Y LA COBERTURA SE DICE. El packing list solo cubre los renglones que se
+ * pudieron empatar: seis de los nueve del piloto cuadran EXACTO contra lo que
+ * Odoo pidió —eso es lo que valida el método— pero tres se quedan cortos. En
+ * esos, «debió llegar» es un PISO y así se rotula: decir que faltan piezas
+ * cuando lo que falta es el renglón sería inventar un descuadre.
+ */
+function Recorrido({ fila }: { fila: FilaInventario }) {
+  const r = fila.recorrido;
+  if (!r) return null;
+  const cob = r.cobertura_pl;
+
+  const paso = (
+    t: string, v: string, sub: string, tono: string, chico?: string,
+  ) => (
+    <div className={`flex-1 rounded-xl border p-3 ${tono}`}>
+      <div className="text-[10px] font-bold uppercase tracking-[0.06em] opacity-70">{t}</div>
+      <div className="mt-1 text-xl font-extrabold tabular-nums">{v}</div>
+      <div className="mt-0.5 text-[11px] leading-tight opacity-70">{sub}</div>
+      {chico && <div className="mt-0.5 text-[10px] opacity-60">{chico}</div>}
+    </div>
+  );
+  const flecha = (
+    <span className="self-center px-1 text-sm font-bold text-slate-300">→</span>
+  );
+
+  return (
+    <section>
+      <h3 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+        Recorrido de la pieza
+      </h3>
+      <div className="mt-2 flex gap-1">
+        {paso("Debió llegar",
+          r.debio_llegar === null ? "—" : num(r.debio_llegar),
+          r.debio_llegar === null
+            ? "sin renglón del packing list"
+            : cob !== null && !r.pl_completo
+              ? `piso: los renglones cubren el ${Math.round(cob * 100)}%`
+              : "según el packing list",
+          r.debio_llegar === null
+            ? "border-slate-200 bg-white text-slate-400"
+            : r.pl_completo
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-amber-200 bg-amber-50 text-amber-900")}
+        {flecha}
+        {paso("Llegó", num(r.llego),
+          r.llego > 0
+            ? `en ${r.documentos} ${r.documentos === 1 ? "recepción validada" : "recepciones validadas"}`
+            : "nunca se ha recibido nada",
+          r.llego > 0
+            ? "border-slate-200 bg-white text-slate-900"
+            : "border-rose-200 bg-rose-50 text-rose-800",
+          r.llego > 0 && r.ultima_entrada
+            ? `última el ${r.ultima_entrada.slice(0, 10)}`
+            : r.pendiente > 0
+              ? `${num(r.pendiente)} esperan sin validar`
+              : undefined)}
+        {flecha}
+        {paso("Hay disponible", num(r.disponible), "free to use, hoy",
+          r.disponible > 0
+            ? "border-indigo-200 bg-indigo-50 text-indigo-900"
+            : "border-slate-200 bg-white text-slate-400",
+          r.a_la_mano !== r.disponible ? `${num(r.a_la_mano)} on hand` : undefined)}
+      </div>
+
+      {/* Lo salido se NOMBRA, jamás se pinta como faltante. */}
+      {r.salido !== null && (
+        <p className="mt-1.5 text-[11px] text-slate-400">
+          De lo recibido ya salieron <b>{num(r.salido)}</b> piezas — ventas y envíos,
+          no una merma. La resta entre «llegó» y «hay» no es un descuadre.
+        </p>
+      )}
+      {cob !== null && !r.pl_completo && (
+        <p className="mt-1.5 text-[11px] text-amber-700">
+          Los renglones empatados del packing list suman <b>{num(r.debio_llegar)}</b> piezas
+          y Odoo espera <b>{num(r.pedido_odoo)}</b>: falta empatar renglón, no falta
+          mercancía. Por eso no se pinta un faltante.
+        </p>
+      )}
+      {r.debio_llegar !== null && r.pl_completo && r.llego === 0 && r.pendiente > 0 && (
+        <p className="mt-1.5 text-[11px] text-slate-400">
+          El packing list cuadra EXACTO con lo que Odoo espera, y no ha entrado
+          nada: todo sigue en recepciones sin validar.
+        </p>
+      )}
     </section>
   );
 }
