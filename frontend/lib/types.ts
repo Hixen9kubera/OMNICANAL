@@ -1753,6 +1753,9 @@ export interface CotejoCajas {
    *  `costos_validados` = la columna congelada de mayo/junio. */
   pl_fuente: "renglon" | "costos_validados" | null;
   pl_archivo: string | null;
+  /** Cómo se encontró el renglón: `registrado` = lo guardó la validación de
+   *  costos; `foto` = lo empató la foto de Odoo contra el packing list. */
+  pl_origen_renglon?: "registrado" | "foto" | null;
   /** Los renglones del packing list que ocupa este SKU. */
   pl_renglones: number[] | null;
   /** El cartón se comparte con otros renglones: la caja NO es toda suya. */

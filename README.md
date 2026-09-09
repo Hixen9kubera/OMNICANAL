@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.466.0 — El renglón del packing list se busca con la foto, no solo en la tabla
+
+Brandon, 9-sep: *«ORG-0863-ROS sí tiene packing list en el Drive que se conecta
+en la función de costos; puedes utilizarlo para abarcar todos los packing lists
+que te faltan»*. Hecho.
+
+Hasta la v0.459.0 el renglón salía SOLO de `costing.caja_compartida`, que tiene
+**60 filas para 15,849 SKUs (0.38%)**. Ahora, cuando no hay fila registrada, se
+resuelve como lo hace la pestaña Costos: **contenedor de Odoo → archivo de Drive
+→ foto de Odoo contra las fotos del packing list**.
+
+`ORG-0863-ROS` era el caso: su foto empata con **distancia 0** contra el renglón
+**28** de `TLLU5922910 Lista de empaque.xlsx` — **25 cajas y 50,000 piezas**, que
+es exactamente lo que dice Odoo. Del piloto pasa de 9 a **12 de 14** con renglón.
+
+**EL EMPATE TIENE QUE SER INEQUÍVOCO, y esto es la mitad del trabajo.** Estos
+packing lists traen **varios renglones del MISMO producto** — lotes distintos con
+fotos casi idénticas — y quedarse con «el más parecido» es echar un volado con
+cara de dato. Medido en `TEC-0008-AMR`: cuatro renglones «Lavadora de autos» a
+distancias 3, 5, 10 y 24, con 200, 400, 300 y 200 cajas. Elegir el de 3 no está
+justificado habiendo otro a 5.
+
+Así que se exige un **hueco de al menos 8** contra el siguiente candidato. Sin
+hueco no se devuelve nada y la pantalla cae a la cifra congelada: `TEC-0008-AMR`
+queda rechazado, que es la respuesta correcta.
+
+Dos correcciones más que salieron de ahí:
+
+- **Los gemelos por foto solo se buscan cuando el renglón viene REGISTRADO.** Ahí
+  la validación ya decidió qué producto es y sus gemelos son más renglones del
+  mismo SKU (`TV-0001-MET` pasa de 1 renglón a 40 y da exacto las 40 piezas que
+  pidió Odoo). Cuando el renglón lo encontró la foto es al revés: los «gemelos»
+  son otros lotes del mismo producto. Sin este corte, `TEC-0008-AMR` devolvía
+  **600 piezas contra 208 recibidas**.
+- **La ficha distingue las dos procedencias.** «Leída del renglón N» cuando la
+  firmó una persona al validar el costo; «empatada por foto» cuando la dedujo una
+  imagen. No valen lo mismo y no se presentan igual.
+
+**MEMORIA ACOTADA, porque el contenedor es compartido.** Indexar un packing list
+cuesta hasta **473 MB de pico** (medido con el de 89 MB y 394 fotos), en el mismo
+proceso que atiende el webhook de ventas de Mercado Libre. Por eso los SKUs se
+agrupan **por archivo**, cada índice se suelta con `gc.collect()` antes de abrir
+el siguiente —el pico es UN archivo, no N— y hay tope de 12 archivos por pasada.
+Lo que no entra no se cachea, así que se resuelve en la siguiente.
+
+Solo se usan los dos primeros peldaños de la escalera (sha256 y dHash). No se
+sube a título ni a IA: cuestan llamadas de red por SKU y aquí se busca un dato de
+apoyo, no una validación de costo.
+
 ### v0.465.1 — Arreglo: la v0.465.0 borró tres campos de otra sesión y tiró el build
 
 El deploy del frontend de la v0.465.0 falló con *«Restore the piso_objetivo,

@@ -1207,7 +1207,7 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
           k.packing_list === null
             ? "ni renglón registrado ni cifra en costos_validados"
             : k.pl_fuente === "renglon"
-              ? `leída del renglón ${k.pl_renglones?.join(", ")}${
+              ? `${k.pl_origen_renglon === "foto" ? "empatada por foto" : "leída"} del renglón ${k.pl_renglones?.join(", ")}${
                   k.pl_compartida ? ` · cartón compartido entre ${k.pl_renglones_carton} renglones` : ""}`
               : "cifra congelada de costos_validados (mayo/junio)",
           k.pl_fuente === "renglon"
@@ -1225,12 +1225,13 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
             <span className="font-mono">{k.pl_archivo}</span>
             {k.pl_piezas !== null && <> · {num(k.pl_piezas)} piezas según el packing list</>}
           </div>
-          {/* El renglón lo resolvió la escalera de detección de imagen de la
-              pestaña Costos y quedó guardado; aquí solo se abre el archivo. */}
+          {/* De dónde vino el renglón. Los dos caminos NO valen lo mismo y por
+              eso se distinguen: uno lo firmó una persona al validar el costo, el
+              otro lo dedujo una imagen. */}
           <div className="opacity-75">
-            El renglón lo identificó la validación de costos (foto de Odoo → dHash →
-            título → foto de ML + IA) y quedó registrado; aquí solo se lee la columna
-            de cartones del archivo.
+            {k.pl_origen_renglon === "foto"
+              ? "Sin renglón registrado: se empató la FOTO DE ODOO contra las del packing list y coincidió sin ambigüedad. Si hubiera habido otro renglón parecido no se habría arriesgado un número."
+              : "El renglón lo identificó la validación de costos (foto de Odoo → dHash → título → foto de ML + IA) y quedó registrado; aquí solo se lee la columna de cartones del archivo."}
           </div>
           {k.pl_compartida && (
             <div className="mt-0.5 font-semibold text-amber-700">

@@ -1072,6 +1072,7 @@ def _cotejo_cajas(o: dict | None, c: dict | None,
         "pl_fuente": ("renglon" if del_renglon is not None
                       else "costos_validados" if congelado is not None else None),
         "pl_archivo": pc.get("archivo"),
+        "pl_origen_renglon": pc.get("origen_renglon"),
         "pl_renglones": pc.get("renglones") or None,
         "pl_compartida": bool(pc.get("compartida")),
         "pl_renglones_carton": pc.get("renglones_carton"),
