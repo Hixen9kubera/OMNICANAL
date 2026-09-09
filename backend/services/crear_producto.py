@@ -724,8 +724,13 @@ def datos_dinero(sku: str) -> dict[str, Any]:
 # ── Paso 6: Update a WooCommerce + status inprogress ────────────────────────────
 
 async def _actualizar_wc(wc_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    # Por `ruta_escritura`: si es una VARIACIÓN el update va a
+    # `/products/{padre}/variations/{id}`. La ruta de producto la LEE sin
+    # protestar —devuelve 200 con su SKU— pero escribir por ahí no persiste y la
+    # REST no da error, así que el alta habría dicho "listo" sin guardar nada.
+    ruta = await woocommerce.ruta_escritura(int(wc_id))
     async with woocommerce._client() as cli:
-        r = await cli.put(f"/products/{wc_id}", json=payload, timeout=180.0)
+        r = await cli.put(ruta, json=payload, timeout=180.0)
         r.raise_for_status()
         return r.json()
 
@@ -899,6 +904,76 @@ def _tiene_costo_base(sku: str) -> bool:
         return True
 
 
+async def _medios_para_galeria(sku: str, imagenes: list[dict]) -> list[int]:
+    """
+    Sube a WordPress las imágenes SECUNDARIAS de una variante y devuelve sus ids.
+
+    Hace falta porque una variación solo acepta UNA imagen (`image`) en la REST
+    de Woo: las demás no tienen dónde ir salvo la meta de galería, y esa meta
+    guarda IDS, no URLs. Como `LIMPIAR_CON_IA` está apagado, `procesar_imagenes`
+    devuelve `{"src": <url de Alibaba>}` sin subir nada —Woo las descarga él
+    solo al actualizar—, así que aquí hay que descargarlas y subirlas para tener
+    el id.
+
+    Vale la pena el viaje: `wp_db.imagenes()` lee esa galería propia de la
+    variación y es la que alimenta a los marketplaces. La tienda Woo seguirá
+    enseñando solo la principal, pero en ML y Amazon la variante lleva TODAS las
+    suyas, que es lo que se pidió.
+
+    Nunca rompe el alta: lo que no se pueda subir simplemente no entra.
+    """
+    ids: list[int] = []
+    for i, im in enumerate(imagenes or [], start=2):
+        if im.get("id"):
+            ids.append(int(im["id"]))
+            continue
+        url = str(im.get("src") or "").strip()
+        if not url:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as cli:
+                r = await cli.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200 or not r.content:
+                continue
+            mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
+            if not mime.startswith("image/"):
+                mime = "image/jpeg"
+            subida = await woocommerce.subir_imagen_wp(f"{sku}-{i}", r.content, mime)
+            if subida:
+                ids.append(int(subida[0]))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("imagen %d de la variante %s no se pudo subir: %s", i, sku, exc)
+    return ids
+
+
+async def _guardar_titulo_variante(sku: str, titulo: str, descripcion: str) -> None:
+    """
+    Guarda el título (y la descripción) de una VARIANTE en `enrich.channel_content`.
+
+    Es el único sitio donde una variante puede tener título propio: WooCommerce
+    deriva el `name` de una variación del padre, así que escribirlo allí se
+    pierde sin error. `publicar._rellenar_desde_guardado` devuelve estos campos
+    al formulario al publicar, y `publicar_ready` prefiere `campos["titulo"]`
+    sobre el `post_title` — así que la variante se publica con el suyo.
+
+    Se guarda por canal porque así está la tabla; `mercado_libre` es el que
+    publica hoy desde el panel. Nunca rompe el alta: si la BD no contesta, el
+    producto ya quedó escrito en Woo y el título se puede poner en el Estudio.
+    """
+    try:
+        from services import channel_content
+        if not channel_content.disponible():
+            return
+        contenido = {"titulo": titulo}
+        if descripcion:
+            contenido["descripcion"] = descripcion
+        for canal in ("mercado_libre",):
+            await channel_content.guardar(sku, canal, contenido,
+                                          origen={"por": "crear_producto"})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("título de la variante %s no se pudo guardar: %s", sku, exc)
+
+
 async def _procesar(sku: str, wc_id: int | None, url: str,
                     permitir_sin_costo: bool = False) -> None:
     async with _sem:
@@ -910,24 +985,9 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 _set(sku, "error", "No se encontró el producto en WooCommerce")
                 return
 
-            # UNA VARIANTE NO SE PUEDE "CREAR" POR ESTA VÍA, y se dice en vez de
-            # intentarlo. Desde el 9-sep las variantes son filas propias en Crear
-            # Productos (LISTADO_APLANADO), así que este botón ya se les puede
-            # apretar — pero el payload de aquí escribe `name`, `images` y el
-            # `status`, y en WooCommerce esas tres son del PADRE: una variación no
-            # tiene título propio, toma `image` en singular y su estado lo hereda.
-            # Mandarlo por la ruta de variaciones se tragaría el título y las
-            # imágenes SIN error (la REST no protesta), que es como se pierde el
-            # trabajo de una KAM sin que nadie se entere. Lo que sí es de la
-            # variante —costo, categoría ML, GTIN, imágenes, contenido— ya se
-            # edita desde su ficha y el Estudio, con las rutas correctas.
+            # ¿Es una VARIANTE? Cambia dónde se escribe casi todo (Brandon,
+            # 9-sep-2026: las KAM procesan cada variante por separado).
             padre_id = await asyncio.to_thread(wp_db.padre_de, int(wc_id))
-            if padre_id:
-                _set(sku, "error",
-                     f"{sku} es una VARIANTE. El alta masiva escribe título, imágenes "
-                     f"y estado, que en WooCommerce son del producto padre. Crea el "
-                     f"padre y edita esta variante desde su ficha.", wc_id=wc_id)
-                return
 
             # Falta de costo: YA NO ABORTA (cambio del 4-ago).
             # El guard existía porque sin costo el producto terminaba en
@@ -1001,19 +1061,47 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             if dinero.get("costo_comision") is not None:
                 meta.append({"key": "wc_kam_costo_comision", "value": str(dinero["costo_comision"])})
 
-            payload: dict[str, Any] = {"name": titulo, "meta_data": meta}
-            if (ia or {}).get("descripcion"):
-                payload["description"] = ia["descripcion"]
-            elif scrape["descripcion_proveedor"]:
-                payload["description"] = scrape["descripcion_proveedor"]
-            if imagenes:
-                payload["images"] = imagenes
+            descripcion_final = ((ia or {}).get("descripcion")
+                                 or scrape["descripcion_proveedor"] or "")
+
+            payload: dict[str, Any] = {"meta_data": meta}
+            if descripcion_final:
+                payload["description"] = descripcion_final
+
+            if padre_id:
+                # UNA VARIACIÓN NO TIENE NI TÍTULO NI GALERÍA EN WOOCOMMERCE.
+                #
+                # `name` lo deriva Woo del padre, así que mandarlo se pierde SIN
+                # error. El título de esta variante sí existe, pero en
+                # `enrich.channel_content` (por SKU y por canal), que es de donde
+                # el publicador lo toma con prioridad sobre el post_title — o
+                # sea: la variante se publica con SU título aunque la tienda Woo
+                # siga enseñando el del padre. Se guarda más abajo.
+                #
+                # Las imágenes van a `image` (una) y el resto a la meta de galería
+                # de la PROPIA variación: Woo solo pinta la primera, pero
+                # `wp_db.imagenes()` lee ambas y es lo que alimenta a los
+                # marketplaces — que es donde importa.
+                if imagenes:
+                    payload["image"] = imagenes[0]
+                    ids_extra = await _medios_para_galeria(sku, imagenes[1:])
+                    if ids_extra:
+                        meta.append({"key": "_product_image_gallery",
+                                     "value": ",".join(str(i) for i in ids_extra)})
+            else:
+                payload["name"] = titulo
+                if imagenes:
+                    payload["images"] = imagenes
             # Categoría ML → categoría de WooCommerce (reemplaza el departamento).
             if cat and cat.get("category_name"):
                 async with woocommerce._client() as _c:
                     wc_cat_id = await get_or_create_wc_categoria(
                         _c, cat["category_name"], cat.get("category_id", ""))
-                if wc_cat_id:
+                # `categories` NO existe en una variación: la categoría es del
+                # producto, y las 7,477 variantes vivas tienen CERO `product_cat`
+                # propia. Mandarla por la ruta de variaciones se descarta en
+                # silencio; la variante ya hereda la del padre al leerse.
+                if wc_cat_id and not padre_id:
                     payload["categories"] = [{"id": wc_cat_id}]
             if _fmt(dinero.get("precio_base")):
                 payload["regular_price"] = _fmt(dinero["precio_base"])
@@ -1073,10 +1161,29 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
             tiene_imgs = bool(imagenes)
             tiene_attrs = len(atributos) >= 2  # BRAND + al menos 1 más
             status_final = "pending"
-            await _estado_wc(wc_id, status_final)
-            # Sin esto el producto no se ve en Productos hasta que expire el
-            # índice del catálogo (15 min), aunque en Woo ya esté en `pending`.
-            woocommerce.actualizar_estado_en_cache(wc_id, status_final)
+            if padre_id:
+                # LA VARIANTE SE MUEVE SOLA, SIN TOCAR AL PADRE. No hay un
+                # `post_status` que sirva para decir "esta variante ya está
+                # trabajada" —el suyo dice si la combinación está habilitada—, así
+                # que la señal es la meta `META_PROCESADA`, y de ella sale el
+                # estado EFECTIVO que la saca de Crear y la mete en Productos.
+                # Sus hermanas se quedan en Crear, que es justo lo que se pidió:
+                # publicar una no espera a las demás.
+                #
+                # Al padre NO se le cambia el estado: si se pasara a `pending`
+                # ahora, las hermanas sin procesar desaparecerían de Crear con él.
+                # El padre se promueve al PUBLICAR, y de eso ya se encarga
+                # `publicar_ready`.
+                await woocommerce.guardar_meta(
+                    wc_id, wp_db.META_PROCESADA,
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+                # El título de la variante, donde sí cabe: por SKU y por canal.
+                await _guardar_titulo_variante(sku, titulo, descripcion_final)
+            else:
+                await _estado_wc(wc_id, status_final)
+                # Sin esto el producto no se ve en Productos hasta que expire el
+                # índice del catálogo (15 min), aunque en Woo ya esté en `pending`.
+                woocommerce.actualizar_estado_en_cache(wc_id, status_final)
 
             # El estado ya no distingue completo de parcial, así que lo que falta
             # se reporta aquí: es lo que queda como pendiente HUMANO en Productos.

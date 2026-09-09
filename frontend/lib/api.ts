@@ -387,6 +387,8 @@ export interface CandidatosParams {
   skus?: string; // lista separada por comas: solo esos SKUs
   orden?: string; // valor|costo|stock|tipo + _asc|_desc
   categoria?: string; // filtro por nombre de categoría (parcial)
+  /** Cada variante como fila propia, para procesarla sola. Sin valor manda LISTADO_APLANADO. */
+  aplanar?: boolean;
 }
 
 export function listarCandidatos(
@@ -400,6 +402,9 @@ export function listarCandidatos(
   if (p.skus) q.set("skus", p.skus);
   if (p.orden) q.set("orden", p.orden);
   if (p.categoria) q.set("categoria", p.categoria);
+  // `!== undefined`: `false` aquí es una respuesta ("quiero el agrupado"), no la
+  // ausencia de una. Omitirlo deja mandar al flag de Railway.
+  if (p.aplanar !== undefined) q.set("aplanar", String(p.aplanar));
   return getJSON<RespuestaProductos>(`/api/crear/candidatos?${q.toString()}`, signal);
 }
 

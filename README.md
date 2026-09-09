@@ -1001,6 +1001,109 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.468.0 — Cada variante se procesa sola en Crear Productos, y se va sin esperar a sus hermanas
+
+Petición de las KAM que trajo Brandon el 9-sep: *«requieren que las variantes en
+Crear Productos se procesen individualmente, sin el padre»*. Y la regla del
+desenlace, con sus palabras: *«si la primera variante se procesa deberá mandar
+esa variante a Productos para publicarlo, y se indicará qué variantes faltan por
+procesar, pero no es un bloqueante para publicar la variante individualmente»*.
+
+Completa la v0.464.0, que ya había aplanado la pestaña **Productos**. Ahora el
+camino entero es por SKU: se procesa en Crear → se afina en el Estudio con IA →
+se publica individual.
+
+**1 · El problema que había que resolver primero: no existe «variante
+trabajada».** En WooCommerce una variación no tiene un `post_status` que sirva
+para eso —el suyo dice si la combinación está habilitada— y el del padre es de
+la familia entera. Mover el padre a `pending` al procesar la primera hija
+habría hecho **desaparecer de Crear a las 18 hermanas sin procesar**, que es
+justo lo contrario de lo pedido.
+
+La señal es una meta nueva en la variante, `_crear_procesada_at`
+(`wp_db.META_PROCESADA`), y de ella sale el **estado efectivo** de la fila
+(`wp_db._estado_efectivo`): una variante marcada cuyo padre sigue en `draft`
+vale `pending`. Eso, y solo eso, la saca de Crear y la mete en Productos ella
+sola. Verificado ejecutando la expresión con la marca simulada, sin escribir en
+producción:
+
+| SKU | padre | hoy | si se marca |
+|---|---|---|---|
+| `VEH-0316-SIL` | draft | Crear | **Productos** |
+| `VEH-0315-03` | draft | Crear | **Productos** |
+| `MASC-1022-ROS` | pending | Productos | Productos (la marca no cambia nada) |
+
+**Al padre no se le toca el estado.** Se promueve al PUBLICAR, y de eso ya se
+encargaba `publicar_ready`, que mueve a `publish` el padre de una variante que
+se publica estando en borrador.
+
+**2 · El alta, escribiendo donde de verdad va cada cosa.** El payload de Crear
+escribe `name`, `images`, `categories` y `status`, y en WooCommerce **las cuatro
+son del padre**. Ahora se parte:
+
+| campo | producto | variante |
+|---|---|---|
+| precio, peso, medidas, metas ML | igual | igual, en la variación |
+| descripción | `description` | `description` de la variación |
+| **título** | `name` | **`channel_content`**, por SKU y canal |
+| **imágenes** | `images` (galería) | `image` + galería PROPIA de la variación |
+| categoría WC | `categories` | no se manda (la hereda del padre) |
+| desenlace | `status: pending` | la marca `_crear_procesada_at` |
+
+El **título** es el caso interesante: Woo deriva el `name` de una variación del
+padre, así que escribirlo ahí se pierde **sin error**. Pero sí existe título por
+variante — en `enrich.channel_content`, que es de donde
+`publicar._rellenar_desde_guardado` lo devuelve al formulario y donde
+`publicar_ready` lo prefiere sobre el `post_title`. O sea: la variante se
+publica con SU título aunque la tienda Woo siga enseñando el del padre.
+
+Las **imágenes** igual de concreto: una variación solo acepta UNA en la REST
+(`image`), así que las secundarias se suben a WordPress y sus ids van a la meta
+de galería **de la propia variación**. `wp_db.imagenes()` lee esa galería y es
+la que alimenta a los marketplaces: la tienda Woo pinta una, ML y Amazon
+reciben todas las suyas. Hizo falta subirlas a mano (`_medios_para_galeria`)
+porque con `LIMPIAR_CON_IA` apagado `procesar_imagenes` devuelve URLs de
+Alibaba, no ids.
+
+Y una que no se ve pero rompía todo: `_actualizar_wc` iba a `/products/{id}`,
+que **lee** una variación sin protestar (200 con su SKU) pero no la escribe. El
+alta habría dicho «listo» sin guardar nada. Ahora pasa por
+`woocommerce.ruta_escritura`.
+
+**3 · «Se indicará qué variantes faltan».** Cada fila-variante trae `hermanas`
+(`{total, pendientes}`) desde `wp_db.hermanas_pendientes`, y la tabla lo pinta
+como «N hermanas sin procesar». Es una cuenta, no un candado: la variante lista
+se publica igual.
+
+**4 · Crear aplanado.** `indice_drafts(aplanar)` deja de ser índice de PADRES:
+salen los que tienen variantes vivas y entran sus hijas, una por fila, con la
+categoría heredada del padre (ninguna de las 7,477 tiene `product_cat` propia).
+Las ya procesadas no aparecen. Medido: la pestaña pasa de **4,377 a 7,961**
+filas, y `VEH-0316` deja de ser una fila con 19 variantes anidadas para ser
+**19 filas independientes**, cada una con su stock.
+
+`_armar_grupos` **no agrupa** cuando se aplana, y eso importa: `_base_sku`
+agrupa por el PREFIJO del SKU, que es una PISTA y no un parentesco —ese mismo
+criterio ya fusionó en WooCommerce 104 pares `-EST`/`-MET` de los que 34 eran
+productos DISTINTOS (`services/odoo.py:640`)—. Agrupar después de aplanar
+habría vuelto a colapsar las 19 hijas de `VEH-0316` en una sola fila.
+
+También `productos_por_wc_id` —el hidratador de Crear— acepta ahora ids de
+variación: `include` no las devuelve (contesta `[]` sin avisar), así que las que
+falten se traen de MySQL. Sin eso las 19 filas salían **en blanco**.
+
+**Se enciende con el mismo `LISTADO_APLANADO`** (o `?aplanar=` por petición, ya
+en `/api/productos` y `/api/crear/candidatos`). Sin `WPDB_*` se desactiva solo y
+sirve la vista agrupada de siempre, que es una pantalla completa, no una a
+medias.
+
+**Verificado contra producción** (todo en lectura): 12/12 comprobaciones —Crear
+sin aplanar intacto con `VEH-0316` como una fila; aplanado con sus 19 hijas y la
+categoría heredada; una variante sin marca está en Crear y no en Productos; el
+contador da 19 de 19, 28 de 28 y 2 de 2 en las tres familias; las 19 filas
+validan contra el modelo `Producto` y un producto suelto no trae indicador—,
+más la tabla del estado efectivo de arriba. `tsc` limpio.
+
 ### v0.467.0 — La pregunta a Woo antes de soltar el candado ahora mira tres veces
 
 El 9-sep el par `701-1838195-8169814` → **#142678/#142679** nació así: en el

@@ -693,6 +693,18 @@ export default function CrearProductosPage() {
                           <div className="min-w-0 max-w-[230px]">
                             <div className="line-clamp-2 text-sm font-semibold leading-snug text-slate-800">{p.nombre}</div>
                             <span className="font-mono text-xs text-slate-400">{p.sku}</span>
+                            {/* Cuántas hermanas faltan. Procesar esta variante NO
+                                espera a las demás: se va sola a Productos y se
+                                puede publicar. Esto solo evita perderlas de vista. */}
+                            {p.hermanas && p.hermanas.pendientes > 1 && (
+                              <span
+                                className="ml-2 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700"
+                                title={`Esta familia tiene ${p.hermanas.total} variantes y ${p.hermanas.pendientes} siguen sin procesar. Procesar ésta no espera a las demás.`}
+                              >
+                                {p.hermanas.pendientes - 1} hermana
+                                {p.hermanas.pendientes - 1 === 1 ? "" : "s"} sin procesar
+                              </span>
+                            )}
                             {prog && (
                               <div
                                 className={[

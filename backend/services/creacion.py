@@ -282,8 +282,24 @@ _CLAVES_ORDEN = {
 }
 
 
-def _armar_grupos(indice: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Agrupa filas del índice por base de SKU y calcula costo/stock/valor."""
+def _armar_grupos(indice: list[dict[str, Any]],
+                  aplanar: bool = False) -> list[dict[str, Any]]:
+    """
+    Agrupa filas del índice por base de SKU y calcula costo/stock/valor.
+
+    CON `aplanar` NO SE AGRUPA: cada SKU es su propio grupo de uno, y por tanto
+    su propia fila. Es lo que pidió Brandon el 9-sep —cada variante se procesa
+    por separado— y agrupar lo desharía justo después de aplanar: las 19 hijas
+    de `VEH-0316` comparten base `VEH-0316` y volverían a colapsar en una sola
+    fila con 19 variantes anidadas, que es la pantalla de la que venimos.
+
+    Y hay un motivo más para no agrupar aquí: `_base_sku` agrupa por el PREFIJO
+    del SKU, que es una PISTA y no un parentesco. Ese criterio ya fusionó en
+    WooCommerce 104 pares -EST/-MET de los que 34 eran productos DISTINTOS (ver
+    `services/odoo.py:640`). Sobre un índice de variantes —donde el parentesco
+    real ya está en `post_parent`— adivinarlo por el texto sería volver a pisar
+    el mismo rastrillo.
+    """
     grupos: dict[str, dict[str, Any]] = {}
     skus_vistos: set[str] = set()
     for c in indice:
@@ -291,6 +307,9 @@ def _armar_grupos(indice: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if sku in skus_vistos:  # duplicados de imports viejos
             continue
         skus_vistos.add(sku)
+        if aplanar:
+            grupos[sku] = {"base": sku, "miembros": [{**c, "sufijo": None}]}
+            continue
         base, sufijo = _base_sku(sku)
         g = grupos.setdefault(base, {"base": base, "miembros": []})
         g["miembros"].append({**c, "sufijo": sufijo})
@@ -354,6 +373,7 @@ async def listar_candidatos_agrupados(
     skus_filtro: list[str] | None = None,
     orden: str = "valor_desc",
     categoria: str | None = None,
+    aplanar: bool | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Agrupa el índice de candidatos por base de SKU, calcula costo/stock/valor y
@@ -365,19 +385,29 @@ async def listar_candidatos_agrupados(
     - costo mostrado del grupo = el del primer miembro con costo en costos_finales.
     - `skus_filtro`: si viene, solo grupos cuya base o algún miembro esté en la lista.
 
-    NO SE APLANA AQUÍ (Brandon, 9-sep-2026): Crear Productos lista PADRES y el
-    alta llena al padre una vez; sus hijas heredan lo mismo. El aplanado vive en
-    la pestaña Productos. Ver `wp_db.indice_drafts`.
+    `aplanar` (None = manda `LISTADO_APLANADO`): cada variante es una fila propia
+    y se procesa sola; las ya procesadas salen del índice porque llevan
+    `wp_db.META_PROCESADA`. Necesita MySQL — por la vía de escaneo por API no hay
+    forma de traer variaciones sueltas.
     """
     from services import wp_db
+    from config import settings
+    if aplanar is None:
+        aplanar = bool(settings.listado_aplanado)
 
     if wp_db.disponible():
         # Con MySQL, leer el índice es 1 consulta rápida: se lee FRESCO en cada
         # carga (búsqueda/filtro/status siempre reflejan el estado actual, sin
         # depender del cache del sync).
-        indice = await asyncio.to_thread(wp_db.indice_drafts)
-        lista = await asyncio.to_thread(_armar_grupos, indice)
+        indice = await asyncio.to_thread(wp_db.indice_drafts, aplanar)
+        lista = await asyncio.to_thread(_armar_grupos, indice, aplanar)
     else:
+        # Sin MySQL no hay aplanado posible: el escaneo por API lista PRODUCTOS y
+        # la REST no devuelve variaciones sueltas. Se sirve agrupado, que es una
+        # pantalla completa y honesta, en vez de una vacía.
+        if aplanar:
+            log.warning("Crear Productos aplanado pedido sin wp_db: se sirve agrupado")
+            aplanar = False
         # Sin MySQL (escaneo por API): si el índice completo no está listo, la
         # página y las búsquedas se resuelven contra Woo al momento mientras el
         # índice se construye en segundo plano.
@@ -394,8 +424,15 @@ async def listar_candidatos_agrupados(
         # El índice solo tiene productos PADRE, y el match es "término ⊆ SKU":
         # una variante (`ACC-0069-ROS-2XL`) nunca cabe en su padre (`ACC-0069`).
         # Se traduce cada variante a su padre por estructura antes de filtrar.
-        expandidos, _ = await asyncio.to_thread(wp_db.expandir_con_padres, list(skus_filtro))
-        terminos = [s.strip().upper() for s in expandidos if s.strip()]
+        # APLANADO NO: ahí la variante ES la fila, y traducirla a su padre —que ya
+        # NO está en el índice— la escondería justo cuando por fin se puede
+        # mostrar. Pegar `VEH-0316-SIL` devolvería cero.
+        if aplanar:
+            terminos = [s.strip().upper() for s in skus_filtro if s.strip()]
+        else:
+            expandidos, _ = await asyncio.to_thread(
+                wp_db.expandir_con_padres, list(skus_filtro))
+            terminos = [s.strip().upper() for s in expandidos if s.strip()]
 
         def _match(g: dict[str, Any]) -> bool:
             for t in terminos:
@@ -520,4 +557,20 @@ async def items_candidatos(grupos: list[dict[str, Any]]) -> list[dict[str, Any]]
             "variantes": variantes,
         })
         items.append(item)
+
+    # CUÁNTAS HERMANAS FALTAN. Con el índice aplanado cada variante es una fila y,
+    # al procesarse, se va sola a Productos — sus hermanas se quedan aquí. Sin
+    # este dato la KAM no tiene forma de saber cuánto le falta a la familia, que
+    # es justo lo que pidió Brandon el 9-sep. No bloquea nada: es una cuenta.
+    padres = {int(i["parent_id"]) for i in items if i.get("parent_id")}
+    if padres:
+        try:
+            from services import wp_db as _wpdb
+            cuentas = await asyncio.to_thread(_wpdb.hermanas_pendientes, sorted(padres))
+            for it in items:
+                d = cuentas.get(int(it.get("parent_id") or 0))
+                if d and d["total"] > 1:
+                    it["hermanas"] = d
+        except Exception as exc:  # noqa: BLE001
+            log.warning("hermanas pendientes no disponible (la lista sigue): %s", exc)
     return items

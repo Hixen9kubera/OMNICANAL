@@ -91,6 +91,7 @@ async def candidatos(
     skus: str | None = Query(None, description="Lista de SKUs separados por coma: solo esos se muestran"),
     orden: str = Query("valor_desc", description="campo_dirección: valor|costo|stock|tipo + _asc|_desc"),
     categoria: str | None = Query(None, description="Filtro por nombre de categoría (parcial)"),
+    aplanar: bool | None = Query(None, description="Cada variante como fila propia, para procesarla sola. Sin valor, manda LISTADO_APLANADO"),
 ):
     # `.strip()` en el valor: mismo defecto que en `routers/productos.py`. El
     # marcador del campo dice "TEC-0001, ORG-0885, caminadora" —con espacios— y
@@ -100,7 +101,7 @@ async def candidatos(
     # Índice agrupado por convención de SKU (CAT-####[-DETALLE]): una fila por
     # padre conceptual o producto único; ordenable por valor/costo/stock/tipo.
     grupos, total = await creacion.listar_candidatos_agrupados(
-        page, per_page, search, skus_filtro, orden, categoria
+        page, per_page, search, skus_filtro, orden, categoria, aplanar
     )
 
     # Datos mostrados: TODO en vivo desde WooCommerce (nombre, precio, stock,

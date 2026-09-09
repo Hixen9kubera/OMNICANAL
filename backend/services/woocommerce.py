@@ -1804,6 +1804,19 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
         data = r.json()
 
         by_id = {p["id"]: p for p in data}
+        # `include` NO devuelve variaciones —contesta [] sin avisar—, así que las
+        # que falten se traen de MySQL ya vestidas con la misma forma. Es lo que
+        # permite que Crear Productos liste variantes sueltas; sin esto sus filas
+        # salían en blanco.
+        faltan = [i for i in ids if i not in by_id]
+        if faltan:
+            try:
+                from services import wp_db
+                if wp_db.disponible():
+                    by_id.update(await asyncio.to_thread(
+                        wp_db.variantes_como_productos, faltan))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("productos_por_wc_id: variantes desde MySQL fallaron: %s", exc)
         ordenados = [by_id[i] for i in ids if i in by_id]  # preserva el orden pedido
 
         variantes_por_prod = await variantes_de_productos(cli, ordenados)
@@ -1830,6 +1843,10 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
             "publicado": p.get("status") == "publish",
             "url": p.get("permalink"),
             "tipo": p.get("type"),
+            # `parent_id` solo viene en las filas que son VARIANTE (lo pone
+            # `wp_db.variantes_como_productos`). Se conserva porque de él cuelga
+            # el contador de hermanas pendientes de Crear Productos.
+            "parent_id": p.get("parent_id"),
             "variantes": variantes,
             "origen": "woocommerce",
         })

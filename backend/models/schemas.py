@@ -48,6 +48,12 @@ class VarianteResumen(BaseModel):
     revision_movida: bool = False
 
 
+class HermanasPendientes(BaseModel):
+    """Cuántas variantes tiene la familia y cuántas siguen sin procesar."""
+    total: int
+    pendientes: int
+
+
 class RevisionVariantes(BaseModel):
     """Resumen para un PADRE sin marca propia: cuántas de sus variantes tienen
     COSTO VALIDADO y cuáles. Con esto la tarjeta dice 'VALIDADO PARCIAL 1/2'
@@ -134,6 +140,13 @@ class Producto(BaseModel):
     revision_movida: bool = False
     # Solo padres SIN marca propia con al menos una variante validada.
     revision_variantes: RevisionVariantes | None = None
+
+    # Cuántas HERMANAS de esta variante siguen sin procesar (Brandon, 9-sep-2026).
+    # Con Crear Productos aplanado, una variante procesada se va sola a Productos
+    # y sus hermanas se quedan atrás; esto es lo que impide perderlas de vista.
+    # Es informativo: no bloquea publicar la variante que ya está lista. Se manda
+    # SOLO en filas que son variante, para no acarrear nulos por todo el catálogo.
+    hermanas: HermanasPendientes | None = None
 
     # ¿Tiene existencias en el almacén DROP OFF de Odoo (id 142)? Es el almacén
     # del que salen los envíos a los marketplaces chinos, así que una pieza ahí

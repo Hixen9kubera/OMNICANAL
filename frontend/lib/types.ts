@@ -87,6 +87,15 @@ export interface Producto {
   revision_movida?: boolean;
   /* Solo padres sin marca propia con al menos una variante validada. */
   revision_variantes?: RevisionVariantes | null;
+  /**
+   * Cuántas hermanas de esta variante siguen sin procesar. Con Crear Productos
+   * aplanado, una variante procesada se va sola a Productos y sus hermanas se
+   * quedan atrás: esto es lo que impide perderlas de vista. Solo llega en filas
+   * que son variante.
+   */
+  hermanas?: { total: number; pendientes: number } | null;
+  /** Padre de la fila cuando es una variante (de ahí cuelga `hermanas`). */
+  parent_id?: number | null;
   /** Tiene existencias en el almacén DROP OFF de Odoo. Solo viaja cuando es
    *  cierto: ausente = no está en DROP OFF. */
   drop_off?: boolean | null;

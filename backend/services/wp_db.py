@@ -117,7 +117,7 @@ def _categorias_por_post(ids: list[int]) -> dict[int, list[str]]:
     return salida
 
 
-def indice_drafts() -> list[dict[str, Any]]:
+def indice_drafts(aplanar: bool = False) -> list[dict[str, Any]]:
     """
     Todo lo que le toca a CREAR PRODUCTOS en una consulta (reemplaza ~50
     requests HTTP): [{wc_id, sku, nombre, estado, stock, categorias}], más
@@ -128,28 +128,66 @@ def indice_drafts() -> list[dict[str, Any]]:
     no salían aquí y se colaban en Productos, que es justo la pestaña de lo ya
     resuelto.
 
-    ÍNDICE DE PADRES, A PROPÓSITO, y aquí NO se aplana (Brandon, 9-sep-2026).
-    Crear Productos es donde se llena el producto UNA vez y sus hijas heredan lo
-    mismo; el aplanado vive en Productos, que es donde cada variante se afina
-    por separado. Se llegó a construir el índice aplanado aquí y se retiró: sin
-    la fila del padre no queda dónde disparar el alta masiva, que es lo único
-    que mueve la familia de `draft` a `pending` — o sea, se aplanaba la pestaña
-    y se cerraba la puerta de salida.
+    Con `aplanar=True` el índice deja de ser de PADRES y pasa a ser de SKUs: los
+    productos con variantes vivas salen y entran sus hijas, UNA POR FILA, para
+    que cada una se procese por separado (Brandon, 9-sep-2026, a petición de las
+    KAM). Las que ya llevan `META_PROCESADA` NO aparecen: ya se fueron a
+    Productos por su cuenta, sin esperar a las hermanas.
+
+    Ojo con una cosa que se intentó y se descartó: la primera versión aplanaba
+    la pestaña sin marca por variante, y entonces no quedaba dónde disparar el
+    alta ni cómo saber qué faltaba. La marca es lo que hace viable el aplanado
+    aquí; sin ella, aplanar cierra la puerta de salida.
     """
     P = _prefix()
-    rows = _fetch_all(
-        f"""SELECT p.ID AS wc_id, p.post_title AS nombre, p.post_status AS estado,
-                   sku.meta_value AS sku, stock.meta_value AS stock
-            FROM {P}posts p
-            LEFT JOIN {P}postmeta sku
-                   ON sku.post_id = p.ID AND sku.meta_key = '_sku'
-            LEFT JOIN {P}postmeta stock
-                   ON stock.post_id = p.ID AND stock.meta_key = '_stock'
-            WHERE p.post_type = 'product'
-              AND p.post_status IN ('draft', 'inprogress')
-            ORDER BY p.post_date DESC"""
-    )
-    cats = _categorias_por_post([r["wc_id"] for r in rows])
+    if aplanar:
+        # `parent_id` sale de la MISMA consulta: resolverlo en una segunda pasada
+        # costaba 2.66 s de los 4.8 s del índice entero (medido sobre 7,964 filas).
+        rows = _fetch_all(
+            f"""SELECT p.ID AS wc_id, p.post_title AS nombre, p.post_status AS estado,
+                       {_meta_sub('p.ID', '_sku')} AS sku,
+                       {_meta_sub('p.ID', '_stock')} AS stock,
+                       0 AS parent_id, p.post_date AS fecha
+                  FROM {P}posts p
+                 WHERE p.post_type = 'product'
+                   AND p.post_status IN ('draft', 'inprogress')
+                   AND NOT EXISTS (SELECT 1 FROM {P}posts h
+                                    WHERE h.post_parent = p.ID
+                                      AND h.post_type = 'product_variation'
+                                      AND h.post_status <> 'trash')
+                 UNION ALL
+                SELECT v.ID AS wc_id, v.post_title AS nombre, pa.post_status AS estado,
+                       {_meta_sub('v.ID', '_sku')} AS sku,
+                       {_meta_sub('v.ID', '_stock')} AS stock,
+                       v.post_parent AS parent_id, pa.post_date AS fecha
+                  FROM {P}posts v
+                  JOIN {P}posts pa ON pa.ID = v.post_parent
+                 WHERE v.post_type = 'product_variation' AND v.post_status <> 'trash'
+                   AND ({_estado_efectivo('pa', 'v')}) IN ('draft', 'inprogress')
+                 ORDER BY fecha DESC""")
+    else:
+        rows = _fetch_all(
+            f"""SELECT p.ID AS wc_id, p.post_title AS nombre, p.post_status AS estado,
+                       sku.meta_value AS sku, stock.meta_value AS stock,
+                       0 AS parent_id
+                FROM {P}posts p
+                LEFT JOIN {P}postmeta sku
+                       ON sku.post_id = p.ID AND sku.meta_key = '_sku'
+                LEFT JOIN {P}postmeta stock
+                       ON stock.post_id = p.ID AND stock.meta_key = '_stock'
+                WHERE p.post_type = 'product'
+                  AND p.post_status IN ('draft', 'inprogress')
+                ORDER BY p.post_date DESC"""
+        )
+    # La categoría de una variación es la de su PADRE: ninguna de las 7,477 tiene
+    # `product_cat` propia. Solo se preguntan las que pueden existir (productos y
+    # padres): pedirlas también para las 4,526 variantes era casi un segundo de
+    # consulta para recibir vacío.
+    padre_de_fila = {int(r["wc_id"]): int(r.get("parent_id") or 0) for r in rows}
+    con_categoria = sorted({pid or wid for wid, pid in padre_de_fila.items()})
+    cats_por_post = _categorias_por_post(con_categoria)
+    cats = {wid: cats_por_post.get(pid or wid, [])
+            for wid, pid in padre_de_fila.items()}
     salida = []
     for r in rows:
         stock = r.get("stock")
@@ -1333,6 +1371,25 @@ def maestro_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
 # Productos de mercancía que nadie terminó de crear.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# LA MARCA DE VARIANTE PROCESADA (Brandon, 9-sep-2026).
+#
+# Las KAM piden procesar cada variante POR SEPARADO en Crear Productos, y que la
+# que ya está lista se vaya sola a Productos «para publicarla, sin esperar a las
+# hermanas». En WooCommerce eso no se puede decir con el `post_status`: una
+# variación no tiene estado propio que signifique «trabajada» —el suyo dice si
+# la combinación está habilitada— y el del padre es de la familia entera.
+#
+# Así que el alta le pone ESTA meta a la variante al terminar, con la fecha. Es
+# lo único que distingue una variante lista de una pendiente, y de ahí sale el
+# «estado efectivo» que usan los dos índices: una variante marcada se comporta
+# como `pending` aunque su padre siga en `draft`, así que desaparece de Crear y
+# aparece en Productos ella sola.
+#
+# El padre NO se toca al marcar. Se promueve solo al PUBLICAR, y de eso ya se
+# encarga `publicar_ready` (mueve el padre a `publish` cuando se publica una
+# variante de un padre en borrador).
+META_PROCESADA = "_crear_procesada_at"
+
 # Estados que deja pasar cada vista. Espeja `woocommerce.VISTAS`; se repite aquí
 # para que el SQL no dependa de importar el módulo de arriba (ciclo de imports).
 _VISTAS_SQL: dict[str, set[str] | None] = {
@@ -1363,6 +1420,25 @@ def _meta_sub(alias_id: str, clave: str) -> str:
     return (f"(SELECT m.meta_value FROM {P}postmeta m "
             f"WHERE m.post_id = {alias_id} AND m.meta_key = '{clave}' "
             f"ORDER BY m.meta_id LIMIT 1)")
+
+
+def _estado_efectivo(alias_padre: str, alias_hija: str) -> str:
+    """
+    Expresión SQL con el estado que le toca a una fila-VARIANTE.
+
+    Normalmente es el del padre: el `post_status` de una variación dice si la
+    combinación está habilitada, no en qué punto del trabajo está el producto
+    (4,522 de las 7,477 son hijas `publish` de padres en `draft`).
+
+    La excepción es una variante YA PROCESADA colgando de un padre en borrador:
+    ésa vale `pending`, que es un estado de Productos. Es lo que hace que una
+    variante trabajada salga de Crear y se pueda publicar sin esperar a sus
+    hermanas — la regla que pidió Brandon. Si el padre ya está en un estado de
+    Productos, la marca no cambia nada.
+    """
+    return (f"CASE WHEN {alias_padre}.post_status IN ('draft', 'inprogress') "
+            f"      AND {_meta_sub(alias_hija + '.ID', META_PROCESADA)} IS NOT NULL "
+            f"     THEN 'pending' ELSE {alias_padre}.post_status END")
 
 
 def indice_plano(
@@ -1406,18 +1482,18 @@ def indice_plano(
             pedidos |= _ESTADOS_PANEL.get(e, set())
         permitidos = pedidos if permitidos is None else (permitidos & pedidos)
 
-    def _cond_estado(alias: str) -> tuple[str, list[Any]]:
-        """El estado se mide sobre `alias` — que es el PADRE si la fila es una
-        variante. `None` = la vista no filtra (Omnicanal)."""
+    def _cond_estado(expr: str, trash_alias: str) -> tuple[str, list[Any]]:
+        """`expr` es la expresión de estado de la fila (la columna del producto, o
+        el estado EFECTIVO si es variante). `None` = la vista no filtra."""
         if permitidos is None:
-            return f"{alias}.post_status <> 'trash'", []
+            return f"{trash_alias}.post_status <> 'trash'", []
         if not permitidos:           # intersección vacía: no pasa nadie
             return "1 = 0", []
         ph = ",".join(["%s"] * len(permitidos))
-        return f"{alias}.post_status IN ({ph})", sorted(permitidos)
+        return f"({expr}) IN ({ph})", sorted(permitidos)
 
-    est_p, arg_est_p = _cond_estado("p")
-    est_v, arg_est_v = _cond_estado("pa")
+    est_p, arg_est_p = _cond_estado("p.post_status", "p")
+    est_v, arg_est_v = _cond_estado(_estado_efectivo("pa", "v"), "pa")
 
     # Búsqueda: sobre el SKU y el título de LA PROPIA FILA, y además sobre el
     # título del padre cuando es variante — ahí vive el nombre real del producto
@@ -1505,6 +1581,40 @@ def indice_plano(
     return ([{"wc_id": int(r["wc_id"]), "tipo": r["tipo"],
               "parent_id": int(r["parent_id"] or 0) or None} for r in filas],
             int(total))
+
+
+def hermanas_pendientes(parent_ids: list[int]) -> dict[int, dict[str, int]]:
+    """
+    { padre_id: {"total": n, "pendientes": n} } — cuántas variantes vivas tiene
+    cada familia y cuántas siguen SIN procesar.
+
+    Es el «se indicará qué variantes faltan por procesar» de Brandon: una
+    variante lista se va a Productos sola, y esto es lo que evita que sus
+    hermanas se pierdan de vista. No bloquea nada — es información.
+    """
+    ids = sorted({int(i) for i in (parent_ids or []) if i})
+    if not ids or not disponible():
+        return {}
+    P = _prefix()
+    salida: dict[int, dict[str, int]] = {}
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            for r in _fetch_all(
+                f"""SELECT v.post_parent AS padre, COUNT(*) AS total,
+                           SUM({_meta_sub('v.ID', META_PROCESADA)} IS NULL) AS pendientes
+                      FROM {P}posts v
+                     WHERE v.post_parent IN ({ph})
+                       AND v.post_type = 'product_variation'
+                       AND v.post_status <> 'trash'
+                     GROUP BY v.post_parent""", tuple(chunk)):
+                salida[int(r["padre"])] = {"total": int(r["total"] or 0),
+                                           "pendientes": int(r["pendientes"] or 0)}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("hermanas_pendientes falló: %s", exc)
+            return salida
+    return salida
 
 
 def variantes_como_productos(wc_ids: list[int]) -> dict[int, dict[str, Any]]:
