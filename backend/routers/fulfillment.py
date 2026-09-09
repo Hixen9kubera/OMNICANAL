@@ -2756,6 +2756,30 @@ async def rentabilidad_devoluciones(
             where {_VENTANA} and {_UNIVERSO}
             group by 1 order by 4 desc"""), p)
 
+        # POR QUÉ NOS DEVUELVEN. Petición de Brandon (9-sep): la pantalla decía
+        # cuánto se devuelve y de qué SKU, pero no POR QUÉ.
+        #
+        # ESTA CONSULTA SOLO SIRVE SI EL TEXTO ESTA NORMALIZADO. El motivo es la
+        # etiqueta con la que se agrupa, asi que dos redacciones del mismo
+        # motivo lo parten en dos renglones. Paso: al mezclar el texto de
+        # `/claims/{id}/detail` ("El comprador dijo que se arrepintio de la
+        # compra") con el del catalogo de ML ("Llego lo que compre en buenas
+        # condiciones pero no lo quiero"), el arrepentimiento salia repartido en
+        # CINCO filas de 118, 28, 5, 3 y 1. Por eso `devoluciones_ml` prefiere
+        # SIEMPRE el catalogo, que da una redaccion por codigo.
+        #
+        # `sin_motivo` no se esconde: una devolucion sin motivo es un hueco de
+        # captura, y taparlo haria que los porcentajes sumaran 100% mintiendo.
+        por_motivo = await _fetch_all(_mx(f"""
+            select coalesce(resolucion_motivo, '(sin motivo)') as motivo,
+                   (resolucion_motivo is null)                 as sin_motivo,
+                   sum(returns_count)::int                     as devoluciones,
+                   sum(units_returned)::bigint                 as unidades,
+                   round(sum(value_returned), 2)               as valor
+            from channel.returns_daily
+            where {_VENTANA} and {_UNIVERSO}
+            group by 1, 2 order by 5 desc nulls last"""), p)
+
         # La tabla: devoluciones por SKU, y al lado lo VENDIDO del mismo SKU en
         # la misma ventana — sin eso, un SKU con 3 devoluciones de 500 ventas se
         # ve igual de mal que uno con 3 de 4.
@@ -2884,6 +2908,7 @@ async def rentabilidad_devoluciones(
             },
             "por_tipo": {"full": _tipo(True), "drop": _tipo(False)},
             "por_tienda": por_tienda,
+            "por_motivo": por_motivo,
             "tabla": tabla,
         }
     except HTTPException:

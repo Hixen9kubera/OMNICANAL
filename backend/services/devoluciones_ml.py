@@ -147,6 +147,46 @@ def _recordar_que_no(claim_id: str) -> None:
     _NO_DEVOLUCION[claim_id] = ahora + _TTL_NO_DEVOLUCION
 
 
+# ── El catálogo de motivos ───────────────────────────────────────────────────
+#
+# `GET /post-purchase/v1/claims/reasons/{id}` traduce el código de ML a texto:
+#
+#     PDD9939 → repentant_buyer
+#               «Llegó lo que compré en buenas condiciones pero no lo quiero»
+#
+# POR QUÉ IMPORTA. La primera versión sacaba el motivo de
+# `/claims/{id}/detail.problem`, que solo existe mientras el reclamo está
+# ABIERTO: llegaba en 53 de 392 devoluciones (13%). Para el resto la pantalla
+# terminaba mostrando `resolution.reason` —`item_returned`, `low_cost`— que NO
+# es un motivo: es cómo se resolvió, no por qué la devolvieron.
+#
+# El código sí está en las 392 de 392, y el catálogo lo traduce todo: 12 códigos
+# distintos, 12 traducidos. De ahí sale la lectura que sirve para decidir —336
+# arrepentimientos (86%, no es culpa nuestra) contra 37 por descripción, color o
+# producto equivocado, que sí lo son.
+#
+# El catálogo es ESTÁTICO, así que se cachea sin caducidad: son 12 filas y no
+# cambian de un día para otro.
+_MOTIVOS: dict[str, str] = {}
+
+
+async def motivo_de(cli: httpx.AsyncClient, cab: dict[str, str],
+                    reason_id: str | None) -> str | None:
+    """Texto en español del código de motivo. None si ML no lo conoce."""
+    if not reason_id:
+        return None
+    if reason_id in _MOTIVOS:
+        return _MOTIVOS[reason_id] or None
+    try:
+        st, j = await _pedir(cli, cab, f"/post-purchase/v1/claims/reasons/{reason_id}",
+                             reintentos=1)
+    except SinRespuesta:
+        return None            # sin caché: se reintenta la próxima vez
+    texto = (j.get("detail") or "").strip() if st == 200 else ""
+    _MOTIVOS[reason_id] = texto
+    return texto or None
+
+
 def _num(v: Any, defecto: int | None = None) -> int | None:
     """'1.0' → 1. La API manda las cantidades como string decimal."""
     try:
@@ -359,7 +399,10 @@ def armar(crudo: dict[str, Any], cuenta: str, *,
         "estado_dinero": money,
         "motivo": (res.get("reason") or None),
         "motivo_canal": claim.get("reason_id"),
-        "motivo_texto": det.get("problem"),
+        # El catálogo primero: existe para el 100% y su redacción es
+        # estable. `/detail.problem` solo vive mientras el reclamo está
+        # abierto (13% de cobertura) y lo redacta distinto.
+        "motivo_texto": crudo.get("motivo_catalogo") or det.get("problem"),
         "estado_titulo": det.get("title"),
         "accion_responsable": det.get("action_responsible"),
         "fecha_limite": det.get("due_date"),
@@ -520,6 +563,11 @@ async def sincronizar(claim_id: str | int, cuenta: str, *,
             _recordar_que_no(claim_id)
             return {"ok": True, "accion": "ignorado",
                     "motivo": f"tipo {crudo['claim'].get('type')}"}
+
+        # El motivo en español, del catálogo de ML. Va antes del cruce porque
+        # `armar` es pura: todo lo que necesita tiene que llegarle resuelto.
+        crudo["motivo_catalogo"] = await motivo_de(
+            cli, cab_http, crudo["claim"].get("reason_id"))
 
         oid = str(crudo["claim"].get("resource_id"))
         pedidos, cuentas = await asyncio.gather(

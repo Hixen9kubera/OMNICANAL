@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.473.0 — Rentabilidad ya dice POR QUÉ nos devuelven, no solo cuánto
+
+Brandon, mirando la pestaña: «las devoluciones no se trae el motivo?». Tenía
+razón, y el problema era más hondo de lo que parecía.
+
+**Lo que se mostraba no era el motivo.** En 336 de 392 devoluciones la pantalla
+acababa enseñando `resolution.reason` —`item_returned`, `low_cost`,
+`warehouse_decision`—, que **no dice por qué la devolvieron: dice cómo se
+resolvió**. El motivo de verdad venía de `/claims/{id}/detail.problem`, que solo
+existe mientras el reclamo está ABIERTO: llegaba en 53 de 392 (13%). Se había
+concluido que el histórico era irrecuperable.
+
+**Era recuperable, y por otra puerta.** El código del motivo (`motivo_canal`,
+p.ej. `PDD9939`) está en las 392 de 392, y `GET
+/post-purchase/v1/claims/reasons/{id}` lo traduce:
+
+    PDD9939 → repentant_buyer
+              «Llegó lo que compré en buenas condiciones pero no lo quiero»
+
+Doce códigos distintos en todo el histórico, **doce traducidos**. Cobertura del
+100%, incluido lo cerrado hace meses.
+
+**LA TRAMPA QUE HIZO INÚTIL EL PRIMER INTENTO.** Al rellenar solo las que
+faltaban quedaron dos redacciones del mismo motivo conviviendo: la del catálogo
+(voz del comprador, «Llegó lo que compré…») y la de `/detail` (voz del
+vendedor, «El comprador dijo que se arrepintió…»). Cada una es correcta por
+separado, y **juntas parten el desglose**: el arrepentimiento salía repartido en
+CINCO renglones de 118, 28, 5, 3 y 1. Un desglose por motivo que parte el motivo
+no sirve para nada.
+
+Cuando el texto es la ETIQUETA con la que se agrupa, la consistencia vale más
+que el matiz. Se normalizaron las 392 al catálogo (`--forzar`); el `problem`
+original sigue en `payload`. De 17 renglones fragmentados a **8 motivos reales**.
+
+**La sección nueva.** Ordenada por DINERO, no por cantidad: cinco
+arrepentimientos baratos importan menos que uno caro. Últimos 30 días:
+
+| | motivo | valor | |
+|---|---|---|---|
+| 155 | Llegó en buenas condiciones pero no lo quiero | $106,520 | **80.4%** |
+| 15 | No cumple con las características de la publicación | $11,948 | 9.0% |
+| 6 | Decía que era compatible con mi vehículo pero no lo es | $10,339 | 7.8% |
+| 1 | Recibí otro tipo de producto | $1,574 | 1.2% |
+| 4 | No es el color, tamaño o modelo que elegí | $915 | 0.7% |
+
+Lo que se lee ahí: **el 80% es arrepentimiento del comprador —no es culpa
+nuestra y no se puede evitar—, pero ~$24,000 (18%) sí lo son**: publicación que
+no cumple, compatibilidad mal declarada y producto equivocado. Ese es el pedazo
+sobre el que se puede hacer algo.
+
+Las devoluciones sin motivo NO se esconden: salen en ámbar como «sin motivo
+capturado». Taparlas haría que los porcentajes sumaran 100% mintiendo. Hoy son
+cero.
+
+La consulta se extrajo del archivo y se corrió TAL CUAL contra producción antes
+de subirla — la disciplina que dejó la v0.458.0.
+
 ### v0.472.0 — El precio sugerido enseña su cuenta (Eduardo)
 
 El renglón del piso daba un número y había que creerlo. Ahora trae **"ver la

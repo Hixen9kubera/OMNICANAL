@@ -69,6 +69,12 @@ interface Resp {
     tasa_valor: number | null; tasa_unidades: number | null;
   }>;
   por_tienda: { cuenta: string; devoluciones: number; unidades: number; valor: number }[];
+  // Por qué nos devuelven. `sin_motivo` marca el hueco de captura en vez de
+  // esconderlo: si se ocultara, los porcentajes sumarían 100% mintiendo.
+  por_motivo: {
+    motivo: string; sin_motivo: boolean;
+    devoluciones: number; unidades: number; valor: number;
+  }[];
   tabla: Fila[];
 }
 
@@ -402,6 +408,58 @@ export default function RentabilidadPage() {
                       </p>
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* ── Por qué nos devuelven ────────────────────────────
+                  El motivo sale del CATÁLOGO de Mercado Libre, no del texto
+                  libre del reclamo: una redacción por código, que es lo único
+                  que permite agrupar. Ordenado por dinero, no por cantidad —
+                  cinco arrepentimientos baratos importan menos que uno caro. */}
+              {(data.por_motivo?.length ?? 0) > 0 && (
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="border-b border-slate-100 px-4 py-2.5">
+                    <p className="text-sm font-bold text-slate-800">
+                      Por qué nos devuelven
+                      <span className="ml-2 text-[11px] font-normal text-slate-400">
+                        {fN(data.por_motivo.length)} motivos · ordenado por valor
+                      </span>
+                    </p>
+                  </div>
+                  <div className="divide-y divide-slate-50">
+                    {data.por_motivo.map((m) => {
+                      const total = data.por_motivo.reduce((a, x) => a + (x.valor ?? 0), 0);
+                      const pct = total > 0 ? ((m.valor ?? 0) / total) * 100 : 0;
+                      return (
+                        <div key={m.motivo} className="px-4 py-2.5">
+                          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                            <span className={`text-[13px] ${m.sin_motivo
+                              ? "italic text-amber-700" : "text-slate-700"}`}>
+                              {m.sin_motivo ? "Sin motivo capturado" : m.motivo}
+                            </span>
+                            <span className="flex items-baseline gap-3 whitespace-nowrap">
+                              <span className="text-[11px] tabular-nums text-slate-500">
+                                {fN(m.devoluciones)} dev · {fN(m.unidades)} uds
+                              </span>
+                              <span className="w-24 text-right text-[13px] font-semibold tabular-nums text-red-600">
+                                {fM(m.valor, 2)}
+                              </span>
+                              <span className="w-12 text-right text-[11px] tabular-nums text-slate-400">
+                                {fN(pct, 1)}%
+                              </span>
+                            </span>
+                          </div>
+                          {/* La barra es el % del DINERO devuelto, no del conteo:
+                              es la comparación que decide dónde mirar. */}
+                          <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-slate-100">
+                            <div className={`h-full rounded-full ${m.sin_motivo
+                              ? "bg-amber-400" : "bg-red-400"}`}
+                                 style={{ width: `${Math.max(pct, 0.6)}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
