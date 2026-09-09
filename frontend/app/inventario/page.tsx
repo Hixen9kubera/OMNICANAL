@@ -783,9 +783,17 @@ function Fila({
           <span className="tabular-nums font-bold text-amber-600">—</span>
         </div>
         <div className="flex items-baseline justify-end gap-1.5"
-             title={f.cotejo_cajas?.packing_list === null
-               ? "Sin cajas en costos_validados para este SKU (la columna solo se llenó en las cargas de mayo y junio)."
-               : `${numCajas(f.cotejo_cajas?.packing_list)} cajas según el packing list del proveedor — lo que EMBARCÓ, no lo que hay hoy en piso.`}>
+             title={!f.cotejo_cajas || f.cotejo_cajas.packing_list === null
+               ? "No hay cajas del packing list para este SKU: ni renglón registrado ni cifra en costos_validados."
+               : f.cotejo_cajas.pl_fuente === "renglon"
+                 ? `${numCajas(f.cotejo_cajas.packing_list)} cajas leídas del RENGLÓN ${f.cotejo_cajas.pl_renglones?.join(", ")} de ${f.cotejo_cajas.pl_archivo}`
+                   + (f.cotejo_cajas.pl_compartida
+                       ? ` — cartón COMPARTIDO entre ${f.cotejo_cajas.pl_renglones_carton} renglones`
+                       : "")
+                   + (f.cotejo_cajas.pl_congelado !== null
+                       ? `. Ojo: costos_validados dice ${f.cotejo_cajas.pl_congelado} — discrepan.`
+                       : "")
+                 : `${numCajas(f.cotejo_cajas.packing_list)} cajas según costos_validados (cifra CONGELADA de mayo/junio; este SKU no tiene renglón registrado).`}>
           <span className="text-[9px] font-bold uppercase tracking-wide text-slate-400">pl</span>
           <span className={`tabular-nums ${
             f.cotejo_cajas?.packing_list === null ? "text-slate-300" : "font-bold text-slate-700"}`}>
@@ -1196,13 +1204,49 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
           "border-amber-200 bg-amber-50 text-amber-800", true)}
         {tarjeta("Packing list", numCajas(k.packing_list),
           k.packing_list === null
-            ? "sin dato en costos_validados"
-            : `lo que el proveedor EMBARCÓ${k.piezas_por_caja_pl ? ` · ${k.piezas_por_caja_pl} pzs/caja` : ""}`,
-          "border-slate-200 bg-white text-slate-900")}
+            ? "ni renglón registrado ni cifra en costos_validados"
+            : k.pl_fuente === "renglon"
+              ? `leída del renglón ${k.pl_renglones?.join(", ")}${
+                  k.pl_compartida ? ` · cartón compartido entre ${k.pl_renglones_carton} renglones` : ""}`
+              : "cifra congelada de costos_validados (mayo/junio)",
+          k.pl_fuente === "renglon"
+            ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+            : "border-slate-200 bg-white text-slate-900")}
         {tarjeta("Odoo", numCajas(k.odoo),
           k.odoo === null ? "sin piezas libres que llenen caja" : "derivada de las piezas libres",
           "border-slate-200 bg-white text-slate-900")}
       </div>
+      {k.pl_fuente === "renglon" && (
+        <div className="mt-1.5 rounded-lg bg-slate-50 p-2 text-[11px] text-slate-500">
+          <div>
+            <b>De dónde sale:</b> renglón{k.pl_renglones && k.pl_renglones.length > 1 ? "es" : ""}{" "}
+            <b className="font-mono">{k.pl_renglones?.join(", ")}</b> de{" "}
+            <span className="font-mono">{k.pl_archivo}</span>
+            {k.pl_piezas !== null && <> · {num(k.pl_piezas)} piezas según el packing list</>}
+          </div>
+          {/* El renglón lo resolvió la escalera de detección de imagen de la
+              pestaña Costos y quedó guardado; aquí solo se abre el archivo. */}
+          <div className="opacity-75">
+            El renglón lo identificó la validación de costos (foto de Odoo → dHash →
+            título → foto de ML + IA) y quedó registrado; aquí solo se lee la columna
+            de cartones del archivo.
+          </div>
+          {k.pl_compartida && (
+            <div className="mt-0.5 font-semibold text-amber-700">
+              Cartón COMPARTIDO entre {k.pl_renglones_carton} renglones: la caja no es
+              toda de este SKU, y por eso no se suma una por renglón.
+            </div>
+          )}
+          {k.pl_congelado !== null && (
+            <div className="mt-0.5 font-semibold text-rose-700">
+              costos_validados dice {numCajas(k.pl_congelado)} cajas y el renglón dice{" "}
+              {numCajas(k.packing_list)}. Manda el renglón: la columna es un congelado
+              de mayo/junio.
+            </div>
+          )}
+        </div>
+      )}
+
       <p className="mt-1.5 text-[11px] text-slate-400">
         {k.estado === "cotejable"
           ? "El packing list es el EMBARQUE y Odoo es el PISO de hoy: no se restan. La diferencia normal es lo que ya se vendió."

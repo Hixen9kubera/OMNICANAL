@@ -96,7 +96,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from services import odoo, supabase_db as sdb, wp_db
+from services import odoo, packing_cajas, supabase_db as sdb, wp_db
 
 log = logging.getLogger("omnicanal.inventario_maestro")
 
@@ -163,19 +163,26 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     # 4-sep): se lee solo para el DESCUADRE, que por definición necesita las dos
     # cifras. Su `post_status` está prohibido como señal de etapa.
     woo = wp_db.maestro_por_sku(pedidos)
+    # Las CAJAS leídas del renglón del packing list. NO bloquea: devuelve lo que
+    # tenga en caché y calienta el resto en segundo plano, porque parsear los
+    # xlsx cuesta 45 s (llevan una foto incrustada por renglón). La primera
+    # carga tras un arranque en frío sale con la cifra congelada de
+    # `costos_validados`; la siguiente ya trae la del renglón.
+    pls = packing_cajas.por_sku(pedidos)
 
     salida = []
     for sku in pedidos:
         salida.append(_fila(sku, woo.get(sku), od.get(sku), costos.get(sku),
                             canales.get(sku, []), proceso.get(sku),
                             imgs.get(sku), ubis.get(sku, []),
-                            hermanos.get(sku, [])))
+                            hermanos.get(sku, []), pls.get(sku)))
     return salida
 
 
 def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pubs: list[dict], plog: dict | None, imagen: str | None,
-          ubicaciones: list[dict], hermanos: list[dict]) -> dict[str, Any]:
+          ubicaciones: list[dict], hermanos: list[dict],
+          pl: dict | None = None) -> dict[str, Any]:
     es_padre = bool(w and w["n_hijas"] > 0)
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
@@ -277,7 +284,7 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "cajas_por_llegar": _cajas((o or {}).get("entrante"),
                                    (o or {}).get("piezas_por_caja")),
         "cbm_caja": _num((o or {}).get("cbm_caja")),
-        "cotejo_cajas": _cotejo_cajas(o, c),
+        "cotejo_cajas": _cotejo_cajas(o, c, pl),
 
         # existencias
         "stock_woo": (w or {}).get("stock"),
@@ -944,7 +951,8 @@ def _empaque(crudo: Any) -> dict[str, str]:
             "crudo": texto[:60]}
 
 
-def _cotejo_cajas(o: dict | None, c: dict | None) -> dict[str, Any]:
+def _cotejo_cajas(o: dict | None, c: dict | None,
+                  pl: dict | None = None) -> dict[str, Any]:
     """
     Las TRES cajas de un SKU, que son tres preguntas distintas (Brandon, 8-sep).
 
@@ -959,23 +967,34 @@ def _cotejo_cajas(o: dict | None, c: dict | None) -> dict[str, Any]:
     vendieron. Por eso esto es un COTEJO con tres numeros rotulados y no una
     resta con un veredicto.
 
-    De donde sale la del packing list: `costing.costos_validados.cajas`, que ya
-    se consultaba en el SELECT de esta pestana y se tiraba a la basura. Es un
-    CONGELADO de dos cargas masivas (21-may y 3-jun-2026): 15,343 de 15,849
-    filas la traen, pero de esas 1,786 valen 0, asi que utiles son 13,557
-    (85.5%). Todo lo creado despues del 3-jun tiene la columna en NULL —
-    incluidos 4 de los 13 SKUs piloto, dados de alta el 4-sep.
+    LA DEL PACKING LIST TIENE DOS ORÍGENES Y NO VALEN LO MISMO (Brandon, 9-sep).
 
-    El numero de cajas que calcula la pestana COSTOS al validar (el modal de
-    publicados en ML) NO se puede leer desde aqui: vive solo en memoria, con
-    TTL de 3 h, y al guardar persiste el archivo y los renglones en
-    `costing.caja_compartida` pero NO el conteo de cajas. Traerlo obligaria a
-    bajar el xlsx de Drive por SKU, que no es una consulta de tabla.
+      1. `renglon` — se ABRE el packing list y se lee la columna de cartones
+         (箱数 / CTNS) del renglón exacto del SKU. Es el dato bueno. El renglón
+         no se vuelve a buscar: lo dejó registrado en `costing.caja_compartida`
+         la escalera de detección de imagen de la pestaña Costos (foto de Odoo
+         → dHash → título → foto de ML + IA), y hasta hoy nadie leía esa tabla.
+      2. `costos_validados` — la columna `cajas`, un CONGELADO de dos cargas
+         masivas (21-may y 3-jun-2026). Útiles 13,557 de 15,849 (85.5%), y TODO
+         lo creado después del 3-jun nace en NULL: por eso `ACC-0907-MET` salía
+         con «PL —» teniendo su renglón perfectamente identificado.
+
+    Cuando hay las dos y DIFIEREN se guardan las dos, porque la diferencia es la
+    noticia. Medido el 9-sep en el piloto: coinciden en ELEC-0034-EST (59),
+    OFI-0412-EST (22) y HERR-0146-EST (50), y discrepan en VEH-0148-EST (el
+    renglón dice 7, el congelado 15) y ROP-0731-BLN (1 contra 16).
+
+    OJO CON LA CAJA COMPARTIDA: cuando varios renglones comparten cartón, cada
+    uno reporta el MISMO número de cartones. Sumarlos multiplica la caja. Eso lo
+    resuelve `packing_cajas`, que nunca suma dentro de un grupo.
     """
-    pl = _num((c or {}).get("cajas"))
+    pc = pl or {}
+    congelado = _num((c or {}).get("cajas"))
+    if congelado is not None and congelado <= 0:
+        congelado = None
+    del_renglon = _num(pc.get("cajas"))
+    pl = del_renglon if del_renglon is not None else congelado
     odoo_ = _cajas((o or {}).get("libre"), (o or {}).get("piezas_por_caja"))
-    if pl is not None and pl <= 0:
-        pl = None
 
     if pl is not None and odoo_ is not None:
         estado, nota = "cotejable", "embarque contra piso; no se restan"
@@ -990,6 +1009,19 @@ def _cotejo_cajas(o: dict | None, c: dict | None) -> dict[str, Any]:
         # El que manda y el que falta son el mismo: ver la nota de arriba.
         "bodega": None,
         "packing_list": pl,
+        # De dónde salió la cifra de arriba, para poder discutirla.
+        "pl_fuente": ("renglon" if del_renglon is not None
+                      else "costos_validados" if congelado is not None else None),
+        "pl_archivo": pc.get("archivo"),
+        "pl_renglones": pc.get("renglones") or None,
+        "pl_compartida": bool(pc.get("compartida")),
+        "pl_renglones_carton": pc.get("renglones_carton"),
+        "pl_piezas": pc.get("piezas_fila"),
+        # El congelado se conserva SOLO cuando discrepa del renglón: si coincide
+        # es ruido, y si es el único que hay ya está arriba.
+        "pl_congelado": (congelado if del_renglon is not None
+                         and congelado is not None
+                         and abs(congelado - del_renglon) > 0.01 else None),
         "piezas_por_caja_pl": _num((c or {}).get("piezas_por_caja")),
         "odoo": odoo_,
         "piezas_por_caja_odoo": _num((o or {}).get("piezas_por_caja")),

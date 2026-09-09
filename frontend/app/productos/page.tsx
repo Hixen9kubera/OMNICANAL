@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2 } from "lucide-react";
+import { Search, RotateCw, ImageIcon, Wand2, ChevronRight, Pencil, Layers, Loader2, Warehouse } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
 import Pagination from "@/components/Pagination";
@@ -37,6 +37,11 @@ export default function ProductosPage() {
   const [busqueda, setBusqueda] = useState("");
   const [skusInput, setSkusInput] = useState("");
   const [skusFiltro, setSkusFiltro] = useState("");
+  // "Solo DROP OFF": los SKUs con existencias en el almacén DROP OFF de Odoo.
+  // Mismo filtro que en Omnicanal (v0.456.0) y por la misma razón: el almacén
+  // es del SKU, no de la publicación, así que la pregunta vale en las dos
+  // pantallas. Lo resuelve el backend con UNA consulta a Odoo, cacheada.
+  const [dropOff, setDropOff] = useState(false);
   const [cargando, setCargando] = useState(true);
   // Arranque en frío del backend: el índice de WooCommerce puede tardar varios
   // segundos en construirse. Mientras tanto, "0 resultados" no significa que
@@ -93,6 +98,7 @@ export default function ProductosPage() {
       {
         canal: "general", page, perPage: PER_PAGE,
         search: busqueda || undefined, skus: skusFiltro || undefined,
+        dropOff: dropOff || undefined,
         // Solo lo ya resuelto: publish / pending / ready. Lo que falta trabajar
         // (draft / inprogress) vive en Crear Productos.
         vista: "productos",
@@ -130,7 +136,7 @@ export default function ProductosPage() {
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro]);
+  }, [page, busqueda, skusFiltro, dropOff]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -194,6 +200,25 @@ export default function ProductosPage() {
               className="w-80 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 font-mono text-xs text-slate-700 outline-none transition-shadow placeholder:font-sans placeholder:text-sm placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-300"
             />
           </div>
+          {/* SOLO DROP OFF — el almacén del que salen los envíos a los
+              marketplaces chinos. Mismo chip, mismo violeta y mismo distintivo
+              que en Omnicanal, para que signifiquen lo mismo en las dos
+              pantallas. Se acumula con la búsqueda y con "Filtrar SKUs". */}
+          <button
+            onClick={() => { setDropOff(!dropOff); setPage(1); }}
+            title={dropOff
+              ? "Mostrando SOLO los productos con existencias en el almacén DROP OFF de Odoo."
+              : "Filtrar a los productos con existencias en DROP OFF — el almacén del que salen los envíos a marketplaces chinos."}
+            className={[
+              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+              dropOff
+                ? "border-violet-300 bg-violet-50 text-violet-700"
+                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+            ].join(" ")}
+          >
+            <Warehouse size={15} className="shrink-0" />
+            Solo DROP OFF
+          </button>
           <button
             onClick={cargar}
             title="Recargar"
@@ -284,6 +309,17 @@ export default function ProductosPage() {
                         <span className="shrink-0 rounded bg-slate-100 px-1.5 font-mono text-[10px] text-slate-400">
                           {p.sku}
                         </span>
+                        {/* DROP OFF: mismo distintivo, mismo violeta y mismo
+                            significado que en Omnicanal y en Inventario. Se
+                            pinta con el filtro puesto o sin el. */}
+                        {p.drop_off && (
+                          <span
+                            title="Tiene existencias en el almacén DROP OFF de Odoo — el almacén del que salen los envíos a marketplaces chinos."
+                            className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700"
+                          >
+                            DROP OFF
+                          </span>
+                        )}
                       </div>
                       {p.descripcion_corta && (
                         <p className="mt-0.5 line-clamp-1 text-xs text-slate-500">{p.descripcion_corta}</p>

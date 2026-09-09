@@ -1734,8 +1734,21 @@ export interface CanalDelSku {
 export interface CotejoCajas {
   /** Siempre null hoy: el canal para recibirla no existe. */
   bodega: number | null;
-  /** costing.costos_validados.cajas — congelado de mayo/junio, útil en 85.5%. */
+  /** Las cajas del packing list. Ver `pl_fuente` para saber de dónde salieron. */
   packing_list: number | null;
+  /** `renglon` = leído del xlsx en el renglón exacto del SKU (el dato bueno).
+   *  `costos_validados` = la columna congelada de mayo/junio. */
+  pl_fuente: "renglon" | "costos_validados" | null;
+  pl_archivo: string | null;
+  /** Los renglones del packing list que ocupa este SKU. */
+  pl_renglones: number[] | null;
+  /** El cartón se comparte con otros renglones: la caja NO es toda suya. */
+  pl_compartida: boolean;
+  pl_renglones_carton: number | null;
+  /** Piezas del SKU según el packing list (sí se suman entre renglones). */
+  pl_piezas: number | null;
+  /** La cifra congelada, SOLO cuando discrepa de la del renglón. */
+  pl_congelado: number | null;
   piezas_por_caja_pl: number | null;
   /** Derivada de las piezas libres de Odoo. */
   odoo: number | null;

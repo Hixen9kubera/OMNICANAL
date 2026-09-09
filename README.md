@@ -1001,6 +1001,70 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.459.0 — Las cajas del packing list se leen del RENGLÓN, no de una columna congelada
+
+Brandon, 9-sep: *«ACC-0907-MET, veo que hay una caja con 20 piezas, por lo que
+debe mostrarse en el PL 1 caja»*. Tenía razón, y el renglón ya estaba
+identificado — solo que el panel no lo miraba.
+
+**El número que se mostraba no venía de ningún renglón.** Venía de
+`costing.costos_validados.cajas`, un congelado de dos cargas masivas (21-may y
+3-jun-2026): todo lo dado de alta después nace en NULL, así que `ACC-0907-MET`,
+`TV-0001-MET`, `JUGU-1153-MET` y `HERR-0343-MET` salían con «PL —».
+
+**El renglón sí existía, guardado y sin leer.** La escalera de detección de
+imagen de la pestaña Costos (foto de Odoo → dHash → título → foto de ML + IA)
+persiste su resultado en `costing.caja_compartida` —archivo, renglones,
+piezas_grupo, cbm_grupo— y **nadie leía esa tabla**: se escribía y se olvidaba.
+`ACC-0907-MET` estaba ahí desde siempre como fila **762** de
+`SZLS50213900=CIPL(1) (1).xlsx`, exactamente la que Brandon encontró a mano.
+
+Ahora `packing_cajas.py` toma ese renglón, abre el xlsx y lee la columna de
+cartones (箱数 / CTNS). Resultado en el piloto:
+
+| SKU | renglón | PL antes | PL ahora |
+|---|---|---|---|
+| ACC-0907-MET | 762 | — | **1** (20 pzas) |
+| TV-0001-MET | 1351 | — | **1** |
+| JUGU-1153-MET | 1293 | — | **1** |
+| HERR-0343-MET | 1536 | — | **1** |
+| ELEC-0034-EST | 4 | 59 | 59 ✅ |
+| OFI-0412-EST | 5 | 22 | 22 ✅ |
+| HERR-0146-EST | 20 | 50 | 50 ✅ |
+| VEH-0148-EST | 23 | 15 | **7** ❌ |
+| ROP-0731-BLN | 684-687 | 16 | **1** ❌ |
+
+Tres coinciden, que es lo que valida el método. **Dos discrepan** y ahí manda el
+renglón: la columna es un congelado y el archivo es la fuente.
+
+**LA TRAMPA DE LA CAJA COMPARTIDA.** Cuando varios renglones comparten cartón,
+**cada uno reporta el MISMO número de cartones**, porque el valor se hereda del
+ancla del merge. `ROP-0731-BLN` ocupa las filas 684-687 y comparte cartón con la
+683 —cinco colores del mismo vestido de novia—: cada fila dice `cajas = 1`.
+Sumarlas da **4**. La verdad es **UNA caja compartida entre cinco renglones**,
+con 20 piezas de las que 19 son de este SKU. Por eso nunca se suma dentro de un
+grupo y la ficha dice «cartón compartido entre 5 renglones».
+
+**NO PUEDE CORRER DENTRO DE LA PETICIÓN.** Medido: 52 s en frío y **45 s con los
+archivos ya en disco** — el costo no es bajar de Drive, es parsear: el packing
+list de `SZLS50213900` pesa 11.6 MB porque lleva una foto incrustada por
+renglón. Así que la petición LEE la caché y nunca espera: la primera carga tras
+un arranque en frío sale con la cifra congelada y deja un hilo llenando la
+caché; la siguiente ya trae la del renglón. Caché por SKU, TTL de una hora (son
+documentos de embarque cerrados).
+
+La ficha del SKU dice ahora de dónde salió cada cifra: archivo, renglón, piezas
+del packing list, si el cartón se comparte, y —cuando discrepan— las dos cifras
+con cuál manda.
+
+**Cobertura, sin adornos:** `caja_compartida` tiene 60 filas para los 15,849
+SKUs de `costos_validados` (**0.38%**). Cubre 9 de los 13 del piloto. Los demás
+siguen con la cifra congelada, rotulada como tal.
+
+**Aparte, el filtro «Solo DROP OFF» llega a la pestaña Productos** (v0.456.0 lo
+puso en Omnicanal), con el mismo chip, el mismo violeta y el mismo distintivo en
+cada fila, para que signifiquen lo mismo en las tres pantallas.
+
 ### v0.458.0 — Los comentarios que agregué en la v0.457.0 iban DENTRO del SQL
 
 Error mío, y de los que solo se ven corriendo la cosa. Al explicar el cambio de
