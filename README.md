@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.465.1 — Arreglo: la v0.465.0 borró tres campos de otra sesión y tiró el build
+
+El deploy del frontend de la v0.465.0 falló con *«Restore the piso_objetivo,
+precio_piso and piso_aviso fields to the Publicacion interface»*. Se restauran.
+
+**QUÉ PASÓ, PORQUE LA LECCIÓN ES DE PROCEDIMIENTO.** Había un commit local de
+otra sesión en el árbol de trabajo, con un choque de versión contra `origin`.
+Para no arrastrarlo, publiqué desde un **worktree limpio sobre `origin/main`** —
+hasta ahí bien— pero llevé mis cambios **copiando los archivos enteros**. Y un
+archivo entero no es un cambio: es una FOTO de mi base, que era más vieja que
+`origin`. `frontend/lib/types.ts` había recibido mientras tanto tres campos
+nuevos en `Publicacion` (`piso_objetivo`, `precio_piso`, `piso_aviso`), y mi
+copia los pisó. Los componentes que los usan dejaron de compilar.
+
+El backend no se enteró y desplegó bien: por eso `/` respondía `0.465.0` con el
+frontend caído. **Que el backend responda la versión nueva NO significa que el
+deploy haya salido bien.**
+
+La regla que faltaba: **al publicar desde un worktree, aplicar un DIFF, nunca
+copiar archivos.** Y la verificación que lo habría cazado en dos segundos:
+
+```bash
+git diff <base>..<mi-commit> -- <archivo> | grep '^-'
+```
+
+Si aparece una sola línea que no sea tuya, estás borrando trabajo ajeno. Se
+corrió sobre los cinco archivos y solo `types.ts` estaba contaminado; los otros
+cuatro solo tenían borrados míos, intencionales.
+
 ### v0.465.0 — Debió llegar → llegó → hay disponible, y la resta que NO se hace
 
 Brandon, 9-sep: *«cuántas piezas debieron haber llegado según el packing list,
