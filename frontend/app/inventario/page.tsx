@@ -1209,7 +1209,9 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
             : k.pl_fuente === "renglon"
               ? `${k.pl_origen_renglon === "foto" ? "empatada por foto" : "leída"} del renglón ${k.pl_renglones?.join(", ")}${
                   k.pl_compartida ? ` · cartón compartido entre ${k.pl_renglones_carton} renglones` : ""}`
-              : "cifra congelada de costos_validados (mayo/junio)",
+              : k.pl_leyendo
+                ? "cifra congelada — leyendo el packing list para reemplazarla…"
+                : "cifra congelada de costos_validados (mayo/junio)",
           k.pl_fuente === "renglon"
             ? "border-emerald-200 bg-emerald-50 text-emerald-900"
             : "border-slate-200 bg-white text-slate-900")}
@@ -1526,14 +1528,23 @@ function Recorrido({ fila }: { fila: FilaInventario }) {
       </h3>
       <div className="mt-2 flex gap-1">
         {paso("Debió llegar",
-          r.debio_llegar === null ? "—" : num(r.debio_llegar),
+          r.debio_llegar === null ? (r.pl_leyendo ? "…" : "—") : num(r.debio_llegar),
           r.debio_llegar === null
-            ? "sin renglón del packing list"
+            // MIENTRAS SE LEE NO SE AFIRMA LA AUSENCIA. Brandon abrió
+            // ORG-0863-ROS el 9-sep y la ficha decía «sin renglón del packing
+            // list»: era falso, su archivo (89 MB, el mayor) iba octavo en la
+            // cola y aún no se había abierto. Un dato que no ha llegado no es
+            // un dato que no existe.
+            ? (r.pl_leyendo
+                ? "leyendo el packing list… recarga en un momento"
+                : "sin renglón del packing list")
             : cob !== null && !r.pl_completo
               ? `piso: los renglones cubren el ${Math.round(cob * 100)}%`
               : "según el packing list",
           r.debio_llegar === null
-            ? "border-slate-200 bg-white text-slate-400"
+            ? (r.pl_leyendo
+                ? "border-sky-200 bg-sky-50 text-sky-700"
+                : "border-slate-200 bg-white text-slate-400")
             : r.pl_completo
               ? "border-emerald-200 bg-emerald-50 text-emerald-900"
               : "border-amber-200 bg-amber-50 text-amber-900")}

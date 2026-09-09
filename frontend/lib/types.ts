@@ -1794,6 +1794,9 @@ export interface CotejoCajas {
   /** Cómo se encontró el renglón: `registrado` = lo guardó la validación de
    *  costos; `foto` = lo empató la foto de Odoo contra el packing list. */
   pl_origen_renglon?: "registrado" | "foto" | null;
+  /** El packing list todavía SE ESTÁ LEYENDO. NO es lo mismo que no tener
+   *  renglón: mientras sea true, la pantalla no puede afirmar la ausencia. */
+  pl_leyendo?: boolean;
   /** Los renglones del packing list que ocupa este SKU. */
   pl_renglones: number[] | null;
   /** El cartón se comparte con otros renglones: la caja NO es toda suya. */
@@ -1816,6 +1819,8 @@ export interface CotejoCajas {
 export interface RecorridoPieza {
   /** Piezas de los renglones del packing list. `null` = sin renglón empatado. */
   debio_llegar: number | null;
+  /** El packing list todavía se está leyendo (ver CotejoCajas.pl_leyendo). */
+  pl_leyendo?: boolean;
   /** Entradas VALIDADAS en Odoo. NO es «lo que hay». */
   llego: number;
   documentos: number;

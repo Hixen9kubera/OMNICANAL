@@ -94,6 +94,23 @@ _candado = threading.Lock()
 _calentando: set[str] = set()
 
 
+def calentando(skus: list[str]) -> set[str]:
+    """De los SKUs pedidos, cuales se estan leyendo AHORA MISMO.
+
+    Existe por un defecto que Brandon vio el 9-sep: abrio ORG-0863-ROS y la
+    ficha decia "sin renglon del packing list". Era MENTIRA -- su archivo
+    (89 MB, el mas grande de todos) era el octavo de la cola y todavia no se
+    habia abierto. La pantalla estaba afirmando una ausencia cuando lo unico
+    cierto era "todavia no lo he leido".
+
+    Es la misma leccion de los 964 pedidos fantasma: un None de una fuente que
+    aun no contesta NO significa "no existe", significa "aun no se". Aqui se
+    devuelve para que la pantalla pueda decir la diferencia.
+    """
+    with _candado:
+        return {s for s in (skus or []) if s in _calentando}
+
+
 def por_sku(skus: list[str], *, esperar: bool = False) -> dict[str, dict[str, Any]]:
     """
     ``{ SKU: {cajas, compartida, renglones, archivo, piezas_fila, piezas_grupo} }``

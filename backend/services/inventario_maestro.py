@@ -285,8 +285,8 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "cajas_por_llegar": _cajas((o or {}).get("entrante"),
                                    (o or {}).get("piezas_por_caja")),
         "cbm_caja": _num((o or {}).get("cbm_caja")),
-        "cotejo_cajas": _cotejo_cajas(o, c, pl),
-        "recorrido": _recorrido(o, pl, rec),
+        "cotejo_cajas": _cotejo_cajas(o, c, pl, pl_leyendo),
+        "recorrido": _recorrido(o, pl, rec, pl_leyendo),
 
         # existencias
         "stock_woo": (w or {}).get("stock"),
@@ -954,7 +954,7 @@ def _empaque(crudo: Any) -> dict[str, str]:
 
 
 def _recorrido(o: dict | None, pl: dict | None,
-               rec: dict | None) -> dict[str, Any]:
+               rec: dict | None, leyendo: bool = False) -> dict[str, Any]:
     """
     LAS TRES CIFRAS DE UNA PIEZA (Brandon, 9-sep): «cuántas debieron llegar
     según el packing list, cuántas llegaron realmente y cuántas hay disponibles».
@@ -993,6 +993,10 @@ def _recorrido(o: dict | None, pl: dict | None,
 
     return {
         "debio_llegar": debio,
+        # `true` = el packing list todavía SE ESTÁ LEYENDO. NO es lo mismo
+        # que no tener renglón, y la pantalla no puede decir lo segundo
+        # mientras sea cierto lo primero.
+        "pl_leyendo": bool(leyendo and debio is None),
         "llego": llego,
         "documentos": (rec or {}).get("documentos") or 0,
         "primera_entrada": _iso((rec or {}).get("primera")),
@@ -1011,7 +1015,8 @@ def _recorrido(o: dict | None, pl: dict | None,
 
 
 def _cotejo_cajas(o: dict | None, c: dict | None,
-                  pl: dict | None = None) -> dict[str, Any]:
+                  pl: dict | None = None,
+                  leyendo: bool = False) -> dict[str, Any]:
     """
     Las TRES cajas de un SKU, que son tres preguntas distintas (Brandon, 8-sep).
 
@@ -1073,6 +1078,7 @@ def _cotejo_cajas(o: dict | None, c: dict | None,
                       else "costos_validados" if congelado is not None else None),
         "pl_archivo": pc.get("archivo"),
         "pl_origen_renglon": pc.get("origen_renglon"),
+        "pl_leyendo": bool(leyendo and del_renglon is None),
         "pl_renglones": pc.get("renglones") or None,
         "pl_compartida": bool(pc.get("compartida")),
         "pl_renglones_carton": pc.get("renglones_carton"),

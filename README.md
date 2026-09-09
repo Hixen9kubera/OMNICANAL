@@ -1001,6 +1001,44 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.476.0 — «Sin renglón» era mentira: todavía se estaba leyendo
+
+Brandon, 9-sep: *«ojo aquí ya no veo los productos que debieron de haber llegado
+en el packing list, ¿qué pasó?»* — abrió `ORG-0863-ROS` y la ficha decía **«sin
+renglón del packing list»**.
+
+**Era falso, y el defecto es mío.** Los logs de producción lo dejan exacto: el
+calentado bajó **siete archivos** entre las 22:13:25 y las 22:13:51, y el octavo
+—`TLLU5922910 Lista de empaque.xlsx`, **89 MB**, el mayor de todos y justo el de
+ese SKU— aún no se había abierto. La captura se tomó **durante el calentado**.
+
+Lo que hacía la pantalla no era mostrar un hueco: era **afirmar una ausencia**.
+Es exactamente la lección de los 964 pedidos fantasma del 12-ago — *un `None` de
+una fuente que todavía no contesta no significa «no existe», significa «aún no
+sé»* — repetida en una pantalla en vez de en una tabla congelada.
+
+Ahora `packing_cajas.calentando()` dice qué SKUs se están leyendo en ese momento
+y la ficha lo distingue:
+
+| estado | antes | ahora |
+|---|---|---|
+| se está leyendo | «sin renglón del packing list» | «leyendo el packing list… recarga en un momento» |
+| de verdad no hay | «sin renglón del packing list» | igual |
+
+Y la tarjeta del cotejo, cuando cae a la cifra congelada teniendo lectura en
+curso, dice *«cifra congelada — leyendo el packing list para reemplazarla…»* en
+vez de presentarla como la respuesta final.
+
+**Por qué el calentado no se puede quitar** (y por eso el aviso es la solución,
+no un parche): abrir esos archivos cuesta 45-68 s para los 14 SKUs del piloto, y
+en Railway el caché de disco nace vacío en cada despliegue, así que los siete
+archivos se bajan de Drive otra vez. Meterlo en la petición sería bloquear la
+pantalla un minuto; lo correcto es decir que el dato viene en camino.
+
+Nota de operación: el `node_modules` del frontend estaba corrupto (faltaban
+`@next/env` y `.bin`, cosa de OneDrive) y `next build` no arrancaba. Reparado con
+`npm install`.
+
 ### v0.475.0 — Competencia como segunda opinión sobre el costo (Eduardo)
 
 Idea de Eduardo: *"de ese ROP-0266-DOR usualmente lo están vendiendo a 250 pesos
