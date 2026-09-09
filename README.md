@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.475.0 — Competencia como segunda opinión sobre el costo (Eduardo)
+
+Idea de Eduardo: *"de ese ROP-0266-DOR usualmente lo están vendiendo a 250 pesos
+y tenemos nosotros el costo en casi 1000"*. Tenía razón, y el dato para
+comprobarlo YA ESTABA: Competencia guarda los precios de los resultados de
+búsqueda de ML. Lo único que faltaba era cruzarlo con el SKU.
+
+Cuando la tarjeta manda a revisar el costeo, ahora dice POR QUÉ sospechar:
+
+    Bajo el 20% de margen — el costo no está verificado, revísalo antes de mover el precio
+    El mercado lo vende alrededor de $438.50 y tu costo son $1,700.88 (3.9×) · 10 publicaciones, hace 28 d
+
+**Sirve para auditar el COSTO, no para fijar el precio**, y la diferencia
+importa: el cruce va por TÉRMINO DE BÚSQUEDA ("silla plegable"), no por producto
+exacto, así que la mediana describe una categoría. Un 1.2× no dice nada —modelos
+y marcas distintas—; un 3.9× no se explica por variación de modelo. Por eso el
+renglón solo sale cuando nuestro costo SUPERA lo que el mercado cobra, que ya es
+de por sí raro: significaría que la competencia vende con pérdida. Ámbar a
+partir de 2×.
+
+Lleva siempre cuántas publicaciones se midieron y de cuándo: sin eso, un número
+de hace un mes se lee como si fuera de hoy. Se excluye `es_nuestro` —comparar
+nuestro precio contra sí mismo no es competencia— y se piden al menos 3
+observaciones, porque con una la mediana es esa una.
+
+La consulta corre SOLO sobre la página visible, no sobre el censo entero, y
+falla en silencio: si Competencia no contesta, la tarjeta pierde una pista, no
+la funcionalidad.
+
+MEDIDO contra producción antes de armarlo: 1,093 SKUs tienen costo y precio de
+mercado comparables; **283 tienen el costo por encima de la mediana del mercado
+y 128 a más del doble**. De esos 283, **275 no tienen el costo verificado** — o
+sea, son exactamente las publicaciones donde la tarjeta hoy solo podía decir
+"revisa el costo" sin argumento.
+
+⚠️ **Este cambio viajó por error dentro del commit del renombre a «Publicador»
+(v0.474.0)**: estaba sin commitear en el árbol al cambiar de rama y un
+`git add -A` lo barrió. Se quedó por decisión de Eduardo —ya estaba verificado
+en sandbox y es de solo lectura—, y esta entrada es el changelog que le faltaba.
+El código vive en v0.474.0, no en este commit.
+
 ### v0.474.0 — La pestaña «Productos» ahora se llama «Publicador» (Eduardo)
 
 Dos pestañas de productos, y la primera no crea ninguno: «Productos» y «Crear
