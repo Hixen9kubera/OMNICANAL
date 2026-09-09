@@ -141,7 +141,21 @@ def _espejo_inverso_mysql(clave: str, escribir_mysql: Callable[[], None]) -> Non
             pass
 
 
-def reclamar(canal: str, cuenta: str, external_order_id: str) -> bool:
+class CandadoIndisponible(RuntimeError):
+    """kubera no pudo CONFIRMAR el candado — no es "lo tiene otro", es "no sé".
+
+    Nace del cuádruple del 9-sep-2026 (701-2671362-7271458 → 4 pedidos): kubera
+    estuvo 12 minutos sin contestar, `reclamar` devolvió True tres sondeos
+    seguidos ("perder la venta es peor") y cada uno creó su pedido. Ese
+    intercambio es correcto para el WEBHOOK de ML, que no tiene reintento — pero
+    los SONDEOS (Amazon, M2E) vuelven solos en 5-10 min: para ellos, saltarse la
+    pasada cuesta minutos y evita el duplicado. El que pueda reintentar pide el
+    reclamo con `estricto=True` y atrapa esta excepción como "vuelve luego".
+    """
+
+
+def reclamar(canal: str, cuenta: str, external_order_id: str,
+             estricto: bool = False) -> bool:
     """
     Reserva el derecho a CREAR el pedido en Woo. True = lo ganamos nosotros.
 
@@ -161,8 +175,13 @@ def reclamar(canal: str, cuenta: str, external_order_id: str) -> bool:
     perdedor no crea; consulta. `wc_order_id` queda NULL hasta que el ganador
     complete — ese NULL es la señal de "reclamado, aún sin pedido".
 
-    Si kubera no responde, devuelve True: es preferible arriesgar un duplicado
-    (detectable y reparable) a perder la venta.
+    Si kubera no responde hay dos comportamientos, y el llamador elige:
+      · `estricto=False` (default, el webhook): devuelve True — es preferible
+        arriesgar un duplicado (detectable y reparable) a perder la venta,
+        porque un webhook no vuelve.
+      · `estricto=True` (los sondeos): levanta `CandadoIndisponible` — el
+        sondeo vuelve solo en 5-10 min, así que saltarse la pasada no pierde
+        nada y evita el duplicado. Lección del cuádruple del 9-sep-2026.
     """
     if not activo():
         return True
@@ -176,6 +195,10 @@ def reclamar(canal: str, cuenta: str, external_order_id: str) -> bool:
             {"ca": canal, "cu": cuenta, "id": str(external_order_id)})
         return fila is not None
     except Exception as exc:  # noqa: BLE001
+        if estricto:
+            raise CandadoIndisponible(
+                f"kubera no confirma el candado de {external_order_id}: {exc}"
+            ) from exc
         log.warning("reclamo de %s falló (%s); se sigue como si lo ganáramos: "
                     "perder la venta es peor que un duplicado reparable",
                     external_order_id, exc)

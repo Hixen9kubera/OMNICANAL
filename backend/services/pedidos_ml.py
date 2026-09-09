@@ -464,13 +464,20 @@ def _ya_compensado(wc_id: int, cuenta: str | None = None,
 
 async def sincronizar(order_id: str, forzar_estado: str | None = None,
                       proteger_stock: bool = False,
-                      orden: dict | None = None) -> dict:
+                      orden: dict | None = None,
+                      reintentable: bool = False) -> dict:
     """
     Trae la orden de ML y la crea (o actualiza) como pedido en WooCommerce.
 
     Idempotente Y serializada por orden: los webhooks repetidos de la misma
     venta actualizan el estado del mismo pedido, nunca duplican. `orden`
     permite pasar la orden ya traída (el webhook la consulta primero).
+
+    `reintentable=True` lo declaran los SONDEOS (Amazon, M2E): si kubera no
+    puede confirmar el candado, esta pasada se SALTA sin crear nada y el
+    siguiente ciclo (5-10 min) lo reintenta — a diferencia del webhook, que no
+    vuelve y por eso conserva el "crear aunque no haya candado". Cuádruple del
+    9-sep-2026: tres sondeos seguidos sin candado = tres pedidos de más.
     """
     if len(_locks) > 4000:  # poda: candados de órdenes viejas ya sin uso
         for k in [k for k, l in _locks.items() if not l.locked()][:2000]:
@@ -478,12 +485,14 @@ async def sincronizar(order_id: str, forzar_estado: str | None = None,
     lock = _locks.setdefault(str(order_id), asyncio.Lock())
     async with lock:
         return await _sincronizar_serializado(order_id, forzar_estado,
-                                              proteger_stock, orden)
+                                              proteger_stock, orden,
+                                              reintentable)
 
 
 async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                                    proteger_stock: bool,
-                                   orden: dict | None) -> dict:
+                                   orden: dict | None,
+                                   reintentable: bool = False) -> dict:
     _asegurar_schema()
     orden = orden or await meli.obtener_orden(order_id)
     if not orden:
@@ -509,8 +518,18 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
         cta = orden["cuenta"]
         cnl = _ESPEJO_ORIGEN.get(
             cta, (str(orden.get("detalle") or cta).lower(), "", ""))[0]
-        reclamo_mio = await asyncio.to_thread(
-            orders_write.reclamar, cnl, cta, str(order_id))
+        try:
+            reclamo_mio = await asyncio.to_thread(
+                orders_write.reclamar, cnl, cta, str(order_id), reintentable)
+        except orders_write.CandadoIndisponible as exc:
+            # Solo llega aquí un SONDEO (reintentable=True). Sin candado
+            # confirmable NO se crea nada: la pasada se salta y el siguiente
+            # ciclo lo reintenta — la venta entra minutos tarde, no duplicada.
+            log.warning("orden %s: %s — el sondeo se salta esta pasada y "
+                        "reintenta el siguiente ciclo", order_id, exc)
+            return {"ok": False, "reintentable": True,
+                    "motivo": "sin candado confirmable (kubera no responde); "
+                              "se reintenta el siguiente ciclo"}
         if not reclamo_mio:
             # Lo tiene otro proceso. Si sigue vivo termina en un parpadeo, así
             # que se le da margen antes de decidir nada.

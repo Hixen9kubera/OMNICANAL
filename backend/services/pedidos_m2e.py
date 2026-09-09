@@ -137,10 +137,16 @@ async def revisar() -> dict[str, Any]:
                         if previos.get(orden["id"]) == destino:
                             continue
                         rp = await pedidos_ml.sincronizar(
-                            orden["id"], forzar_estado=destino, orden=orden)
+                            orden["id"], forzar_estado=destino, orden=orden,
+                            # SONDEO: sin candado confirmable se salta la pasada;
+                            # este ciclo vuelve en 10 min (9-sep-2026).
+                            reintentable=True)
                         if rp.get("ok"):
                             creados += (rp.get("accion") == "creado")
                             actualizados += (rp.get("accion") == "actualizado")
+                        elif rp.get("reintentable"):
+                            log.warning("pedido M2E %s saltado (sin candado); "
+                                        "el siguiente ciclo lo reintenta", orden["id"])
                         else:
                             errores += 1
                             log.warning("pedido m2e %s falló: %s",

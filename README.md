@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### 0.461.0 — El sondeo se salta la pasada cuando el candado no puede confirmarse
+
+El cuádruple del 9-sep (701-2671362-7271458 → CUATRO pedidos) enseñó el hoyo que
+quedaba: con kubera sin contestar 12 minutos, `reclamar()` devolvía True tres
+sondeos seguidos — *"perder la venta es peor que un duplicado"* — y cada ciclo
+creó el suyo. Ese intercambio es correcto para el WEBHOOK de ML, que no vuelve.
+Para los SONDEOS es innecesario: Amazon vuelve en 5 min y M2E en 10, con
+ventana y dedupe que reintentan solos.
+
+**El cambio**: `reclamar()` gana `estricto` — con kubera muda, el default
+(webhook) sigue devolviendo True y creando, pero `estricto=True` levanta
+`CandadoIndisponible`. `sincronizar()` gana `reintentable`, que los dos
+sondeos declaran: al atrapar la excepción NO SE CREA NADA y la pasada se salta
+con su bitácora (`saltados` en el resumen del sondeo). La venta entra minutos
+tarde; el duplicado no nace aunque kubera se caiga una hora.
+
+Distinguir importa: "el candado lo tiene OTRO" sigue su camino de siempre
+(espera + adopción); lo nuevo es solo el tercer estado — "NO SÉ si hay candado"
+— que hasta hoy se disfrazaba de "lo gané". La lección de los 964 fantasma,
+otra vez: un fallo de lectura no significa "no existe".
+
+Probado con kubera caída simulada: webhook crea (sin cambio), sondeo levanta la
+excepción y se salta, y con kubera sana el estricto no altera nada (reclama y
+libera limpio, cero residuo). Versión 0.461.0.
+
+---
+
 ### v0.460.0 — Las devoluciones de Mercado Libre dejan de tirarse a la basura
 
 Petición de Brandon del 8-sep: revisar las devoluciones de los cinco

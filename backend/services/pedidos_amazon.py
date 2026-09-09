@@ -124,7 +124,7 @@ async def revisar(proteger_stock: bool = False,
     `proteger_stock=True` solo para la carga histórica (piezas MFN que ya
     salieron antes de que Woo fuera el maestro — descontarlas hoy duplicaría).
     """
-    creados = actualizados = sin_cambio = errores = 0
+    creados = actualizados = sin_cambio = errores = saltados = 0
     try:
         tok = await amazon._access_token()
         async with httpx.AsyncClient(timeout=30.0) as cli:
@@ -156,10 +156,17 @@ async def revisar(proteger_stock: bool = False,
                     orden = _normalizar(o, it.get("OrderItems") or [])
                     r = await pedidos_ml.sincronizar(
                         oid, forzar_estado=destino, orden=orden,
-                        proteger_stock=proteger_stock)
+                        proteger_stock=proteger_stock,
+                        # SONDEO: si kubera no confirma el candado, saltarse la
+                        # pasada — este ciclo vuelve en 5 min (9-sep-2026).
+                        reintentable=True)
                     if r.get("ok"):
                         creados += (r.get("accion") == "creado")
                         actualizados += (r.get("accion") == "actualizado")
+                    elif r.get("reintentable"):
+                        saltados += 1
+                        log.warning("pedido Amazon %s saltado (sin candado); "
+                                    "el siguiente ciclo lo reintenta", oid)
                     else:
                         errores += 1
                         log.warning("pedido Amazon %s falló: %s", oid, r.get("motivo"))
@@ -174,7 +181,7 @@ async def revisar(proteger_stock: bool = False,
     _ultimo.update(estado="ok", ts=datetime.now(timezone.utc).isoformat(),
                    ordenes=len(ordenes), creados=creados,
                    actualizados=actualizados, sin_cambio=sin_cambio,
-                   errores=errores)
+                   errores=errores, saltados=saltados)
     if creados or actualizados or errores:
         log.info("Pedidos Amazon: %d creados, %d actualizados, %d sin cambio, %d err",
                  creados, actualizados, sin_cambio, errores)
