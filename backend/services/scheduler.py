@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -92,6 +92,36 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Vigilante de ingresos a FBA cada %s min.", settings.full_watch_fba_min)
+    # Refresco de guías de Temu. La guía NO existe cuando nace la orden: la
+    # asigna la paquetería cuando el paquete sale. Y como Temu no manda avisos,
+    # sin este trabajo la entrega se queda sin rastreo para siempre. Cada 2 h es
+    # el punto: la guía tarda horas en aparecer desde el envío, así que más
+    # seguido sólo gasta llamadas contra una API con cuota y lista blanca.
+    if settings.temu_guias_enabled:
+        from services import pedidos_temu
+        async def _guias_temu():
+            # `datetime.now(timezone.utc)` y no `datetime.now()`: el scheduler
+            # corre en UTC y un naive se interpreta COMO si ya fuera UTC.
+            await pedidos_temu.refrescar_guias(
+                dias=settings.temu_guias_dias,
+                limite=settings.temu_guias_limite,
+                # Techo por vuelta: 80% del intervalo, para que una corrida
+                # lenta nunca pise a la siguiente ni la deje sin turno.
+                segundos_max=int(settings.temu_guias_min * 60 * 0.8),
+            )
+        _scheduler.add_job(
+            _guias_temu,
+            "interval",
+            minutes=settings.temu_guias_min,
+            id="temu_guias",
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Refresco de guías de Temu cada %s min (tope %s días, %s por vuelta).",
+                 settings.temu_guias_min, settings.temu_guias_dias,
+                 settings.temu_guias_limite)
+
     # Pedidos de Temu/TikTok vía M2E (sondeo; ver pedidos_m2e.py).
     if settings.pedidos_m2e_enabled and settings.mysql_enabled and settings.m2e_api_token:
         from services import pedidos_m2e

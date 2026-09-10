@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from config import settings
@@ -433,6 +433,125 @@ def elegir_almacen(lineas: list[dict[str, Any]],
 
 
 # ── Idempotencia ────────────────────────────────────────────────────────────
+
+def pendientes_de_guia(canal: str, dias: int = 14,
+                       limite: int = 60) -> list[dict[str, Any]]:
+    """
+    Órdenes de este canal cuya ENTREGA todavía no tiene número de rastreo.
+
+    ⚠️ BLOQUEA: llamar desde un hilo.
+
+    LA COLA SE LE PREGUNTA A ODOO, NO A LA BITÁCORA, y ésa es la corrección de
+    diseño que hizo falta. La primera versión elegía por `guia = ''` en
+    `ops.odoo_sale_orders`, pero esa columna la rellena el seam de la venta en
+    cualquier re-aviso SIN tocar Odoo: la fila salía de la cola y la entrega se
+    quedaba sin guía para siempre. Preguntando por lo que le falta a Odoo la
+    cola se vacía sola cuando el trabajo está hecho, y un fallo se reintenta a
+    la vuelta siguiente en vez de perderse.
+
+    SÓLO ENTREGAS DE SALIDA. Una orden en ruta de dos pasos cuelga PICK y PACK
+    (internos) y, si hubo devolución, también su entrada. Estampar el rastreo
+    del paquete en una transferencia interna o en una devolución es escribir un
+    dato falso donde alguien lo va a leer.
+    """
+    canal = (canal or "").lower()
+    partner = _PARTNER.get(canal)
+    if not partner:
+        return []
+    desde = (datetime.now(timezone.utc) - timedelta(days=int(dias))
+             ).strftime("%Y-%m-%d %H:%M:%S")
+    ordenes = _kw("sale.order", "search_read",
+                  [[["partner_id", "=", partner],
+                    ["client_order_ref", "!=", False],
+                    ["state", "!=", "cancel"],
+                    ["create_date", ">=", desde]]],
+                  {"fields": ["name", "client_order_ref", "picking_ids"],
+                   "order": "create_date asc", "limit": 400})
+    if not ordenes:
+        return []
+    todos = [i for o in ordenes for i in (o.get("picking_ids") or [])]
+    if not todos:
+        return []
+    # Las de SALIDA que siguen sin rastreo. `state != cancel`: una entrega
+    # cancelada ya no va a ninguna parte.
+    faltan = _kw("stock.picking", "search_read",
+                 [[["id", "in", todos],
+                   ["picking_type_code", "=", "outgoing"],
+                   ["state", "!=", "cancel"],
+                   ["carrier_tracking_ref", "in", [False, ""]]]],
+                 {"fields": ["id"]})
+    ids_faltan = {p["id"] for p in faltan}
+    if not ids_faltan:
+        return []
+    # La VENTA es la misma para las dos mitades de un surtido dividido: el ref
+    # lleva sufijo `#1`/`#2` y aquí se vuelve a unir, porque la guía es una sola.
+    por_venta: dict[str, dict[str, Any]] = {}
+    for o in ordenes:
+        pend = [i for i in (o.get("picking_ids") or []) if i in ids_faltan]
+        if not pend:
+            continue
+        venta = str(o["client_order_ref"]).split("#", 1)[0]
+        d = por_venta.setdefault(venta, {"order_id": venta, "ordenes": [],
+                                         "pickings": []})
+        d["ordenes"].append(o["name"])
+        d["pickings"].extend(pend)
+    return list(por_venta.values())[:int(limite)]
+
+
+def fijar_guia(canal: str, order_id: str, guia: str,
+               pickings: list[int] | None = None) -> dict[str, Any]:
+    """
+    Escribe el número de rastreo en las entregas de salida. ⚠️ BLOQUEA.
+
+    LA GUÍA NO VA EN LA ORDEN DE VENTA, VA EN LA ENTREGA: `stock.picking.
+    carrier_tracking_ref` es el campo de la casa —10,381 entregas ya lo usan,
+    incluidas todas las de Mercado Libre—.
+
+    SE ESCRIBE DESPUÉS DE CONFIRMAR, y no es un parche: la guía la asigna la
+    paquetería cuando el paquete SALE, y el paquete sale porque el almacén
+    surtió la entrega, que sólo existe si la orden está confirmada. Esperar la
+    guía para confirmar sería un círculo cerrado.
+
+    RESPETA LOS INTERRUPTORES, igual que `crear_orden` y `cancelar_orden`: si
+    alguien aprieta "Apagar todo" en la pestaña, esto también se detiene. Un
+    botón de pánico que no apaga todo no es un botón de pánico.
+
+    `carrier_id` NO se toca: exige un `delivery.carrier` dado de alta, y
+    adivinar cuál corresponde a "J&T express" escribiría un dato falso en un
+    campo que la gente usa para filtrar.
+    """
+    canal = (canal or "").lower()
+    if not guia:
+        return {"ok": False, "accion": "sin_guia"}
+    if not habilitado():
+        return {"ok": False, "accion": "apagado"}
+    if not canal_activo(canal):
+        return {"ok": False, "accion": "canal_apagado"}
+    if canal not in _PARTNER:
+        return {"ok": False, "accion": "canal_desconocido"}
+    try:
+        if not pickings:
+            return {"ok": False, "accion": "sin_entregas"}
+        # Se re-lee justo antes de escribir: entre que se armó la cola y ahora,
+        # alguien pudo ponerla a mano. Ese valor gana siempre.
+        vivas = _kw("stock.picking", "search_read",
+                    [[["id", "in", list(pickings)],
+                      ["picking_type_code", "=", "outgoing"],
+                      ["state", "!=", "cancel"],
+                      ["carrier_tracking_ref", "in", [False, ""]]]],
+                    {"fields": ["id"]})
+        objetivo = [p["id"] for p in vivas]
+        if not objetivo:
+            return {"ok": False, "accion": "ya_tenia", "escritas": 0}
+        _kw("stock.picking", "write", [objetivo, {"carrier_tracking_ref": guia}])
+        log.info("Odoo %s: guía %s escrita en %d entrega(s) de la venta %s",
+                 canal, guia, len(objetivo), order_id)
+        return {"ok": True, "accion": "escrita", "escritas": len(objetivo)}
+    except Exception as exc:  # noqa: BLE001 — nunca rompe el refresco
+        log.warning("Odoo %s: no se pudo escribir la guía de %s: %s",
+                    canal, order_id, exc)
+        return {"ok": False, "accion": "error", "motivo": str(exc)[:200]}
+
 
 def buscar_por_ref(canal: str, order_id: str) -> dict[str, Any] | None:
     """

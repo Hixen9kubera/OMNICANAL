@@ -159,6 +159,23 @@ class Settings(BaseSettings):
     # descuenta stock, y eso lleva el dale de Brandon (regla 3).
     pedidos_temu_sondeo_enabled: bool = False
     pedidos_temu_sondeo_solo_registro: bool = True
+
+    # ── REFRESCO DE GUÍAS DE TEMU ──────────────────────────────────────────
+    # La guía no existe cuando nace la orden: la asigna la paquetería al salir
+    # el paquete. Sin este trabajo la entrega se queda sin rastreo para siempre,
+    # porque Temu no manda avisos que la traigan después.
+    #
+    # NACE ENCENDIDA a propósito, contra la costumbre de la casa: sólo rellena
+    # un número de rastreo —no crea órdenes, no mueve stock, no puede
+    # sobrevender— y además respeta el interruptor maestro de Automatización,
+    # así que "Apagar todo" también la apaga. Este proyecto lleva TRES flujos
+    # muertos semanas por una variable que nadie dio de alta en Railway; para
+    # algo inocuo, nacer apagada es el riesgo mayor.
+    temu_guias_enabled: bool = True
+    temu_guias_min: int = 120          # cada 2 horas (decisión de Brandon, 10-sep)
+    temu_guias_dias: int = 14          # más allá, la guía ya no va a aparecer
+    temu_guias_limite: int = 60        # ventas por vuelta
+
     pedidos_temu_sondeo_min: int = 15
     # Tope de retroceso de la marca de agua. La de Temu está en el 11-ago (la
     # última venta que entró por M2E), así que sin tope el primer encendido

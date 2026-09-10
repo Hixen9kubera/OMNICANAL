@@ -43,6 +43,9 @@ de una venta que quizá se canceló, y eso ya cuesta dinero.
 """
 from __future__ import annotations
 
+import asyncio
+import time
+
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -254,6 +257,98 @@ def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
                       "apellido": "Temu"},
         "_estado_num": estado_num,
     }
+
+
+async def refrescar_guias(dias: int = 14, limite: int = 60,
+                          segundos_max: int = 900) -> dict[str, Any]:
+    """
+    Le pone número de rastreo a las entregas de Temu que aún no lo tienen.
+
+    POR QUÉ HACE FALTA UN TRABAJO APARTE. La guía no existe cuando nace la
+    orden: la asigna la paquetería cuando el paquete sale, o sea DESPUÉS de que
+    el almacén surta. El único momento en que la volveríamos a mirar sería al
+    llegar otro aviso de esa venta — y Temu no manda avisos.
+
+    LA COLA SALE DE ODOO, no de la bitácora. La primera versión preguntaba
+    `guia = ''` en `ops.odoo_sale_orders`, y eso estaba mal: esa columna la
+    rellena el seam en cualquier re-aviso sin tocar Odoo, así que la venta salía
+    de la cola y la entrega se quedaba sin rastreo para siempre. Preguntándole a
+    Odoo, la cola se vacía cuando el trabajo está hecho y un fallo se reintenta
+    solo a las dos horas.
+
+    TECHO DE TIEMPO. `xmlrpc` no lleva timeout en este proyecto, así que una
+    llamada colgada ocuparía un hilo del pool compartido y —con
+    `max_instances=1`— mataría el trabajo en silencio para siempre. El corte por
+    reloj lo convierte en "esta vuelta rindió menos", que se ve en el resumen.
+
+    Nunca lanza.
+    """
+    from services import odoo_ventas, odoo_ventas_log, temu
+
+    r: dict[str, Any] = {"pendientes": 0, "miradas": 0, "con_guia": 0,
+                         "sin_guia_aun": 0, "escritas_en_odoo": 0,
+                         "no_se_pudo_escribir": 0, "fallos_temu": 0,
+                         "cortado_por_tiempo": False}
+    if not temu.disponible():
+        return {**r, "error": "Temu no está configurado (falta app_key/secret/token)"}
+
+    try:
+        cola = await asyncio.to_thread(odoo_ventas.pendientes_de_guia,
+                                       "temu", dias, limite)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("refrescar_guias: no se pudo armar la cola: %s", exc)
+        return {**r, "error": str(exc)[:200]}
+    r["pendientes"] = len(cola)
+
+    limite_reloj = time.monotonic() + segundos_max
+    for item in cola:
+        if time.monotonic() > limite_reloj:
+            r["cortado_por_tiempo"] = True
+            break
+        sn = item["order_id"]
+        r["miradas"] += 1
+        try:
+            det = await _traer(sn)
+            if not det:
+                r["fallos_temu"] += 1
+                continue
+            renglones = det.get("orderList") or []
+            order_sn = (renglones[0] or {}).get("orderSn") if renglones else None
+            guia, paqueteria = await _traer_guia(sn, order_sn)
+        except Exception as exc:  # noqa: BLE001 — una mala no detiene las demás
+            r["fallos_temu"] += 1
+            log.warning("refrescar_guias: %s falló contra Temu: %s", sn, str(exc)[:150])
+            continue
+
+        if not guia:
+            # Lo NORMAL mientras no se envíe. No es un fallo: contarlo como tal
+            # haría que un contador de errores gritara todos los días sin que
+            # nada esté mal.
+            r["sin_guia_aun"] += 1
+            continue
+        r["con_guia"] += 1
+
+        # ODOO PRIMERO. Es lo que define la cola, así que si esto falla la venta
+        # sigue siendo candidata a la vuelta siguiente. Al revés, marcar la
+        # bitácora antes la sacaría de la cola aunque Odoo se hubiera quedado sin
+        # el dato.
+        res = await asyncio.to_thread(odoo_ventas.fijar_guia, "temu", sn, guia,
+                                      item["pickings"])
+        if res.get("ok"):
+            r["escritas_en_odoo"] += 1
+        else:
+            r["no_se_pudo_escribir"] += 1
+            log.warning("refrescar_guias: guía %s de %s NO llegó a Odoo (%s)",
+                        guia, sn, res.get("accion"))
+        try:
+            await asyncio.to_thread(odoo_ventas_log.actualizar_guia,
+                                    "temu", "TEMU", sn, guia, paqueteria)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("refrescar_guias: bitácora de %s: %s", sn, str(exc)[:150])
+
+    if r["pendientes"]:
+        log.info("Refresco de guías de Temu: %s", r)
+    return r
 
 
 async def procesar(parent_sn: str) -> dict[str, Any]:

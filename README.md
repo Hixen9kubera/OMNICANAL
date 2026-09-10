@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.494.0 — La guía de Temu llega sola a la entrega de Odoo, cada 2 horas
+
+Dale de Brandon: *"hazlo cada 2 horas con el tope de 14 días"*. La guía no existe
+cuando nace la orden —la asigna la paquetería cuando el paquete SALE— y Temu no
+manda avisos que la traigan después, así que sin este trabajo la entrega se
+queda sin rastreo para siempre aunque la guía exista.
+
+**DÓNDE VA.** En `stock.picking.carrier_tracking_ref` de la entrega de SALIDA,
+que es el campo de la casa: 10,381 entregas ya lo usan, incluidas todas las de
+Mercado Libre. Medido: en esta instancia el rastreo aparece en `outgoing` (148)
+y en un `internal` por orden (152, el de empaque). Se escribe **sólo en
+`outgoing`**: estampar el rastreo de un paquete en una transferencia interna —o
+peor, en la entrada de una devolución, que cuelga de la misma orden— es escribir
+un dato falso donde alguien lo va a leer.
+
+**POR QUÉ NO PUEDEN NACER SIN CONFIRMAR** — se evaluó y es un círculo cerrado:
+la guía aparece cuando sale el paquete → el paquete sale porque el almacén
+surtió la entrega → la entrega sólo existe si la orden está confirmada. Además
+confirmar es lo que RESERVA el inventario; en borrador `free_qty` no baja y se
+reabriría la ventana de sobreventa que la v0.487.0 cerró.
+
+**LA CORRECCIÓN DE DISEÑO, que salió de una revisión adversarial de tres lentes
+antes de subir.** La primera versión armaba la cola preguntándole a la BITÁCORA
+quién no tenía guía (`coalesce(guia,'') = ''`). Estaba mal, y las tres lentes lo
+cazaron por separado: esa columna la rellena el seam de la venta en cualquier
+re-aviso **sin tocar Odoo**, así que la venta salía de la cola y la entrega se
+quedaba sin rastreo — el flujo no habría escrito en Odoo casi nunca. Y era un
+intento único: si fallaba, la fila quedaba excluida para siempre.
+
+Ahora **la cola se le pregunta a Odoo**: órdenes del canal, de menos de 14 días,
+cuya entrega de salida no tiene rastreo. La cola se vacía sola cuando el trabajo
+está hecho y un fallo se reintenta a las dos horas, sin columna nueva ni
+migración.
+
+**Lo demás que trajo la revisión:**
+
+- `fijar_guia` **respeta los interruptores** (`habilitado()` y `canal_activo()`),
+  como sus dos hermanas del módulo. Un "Apagar todo" que no apagara esto no
+  sería un botón de pánico.
+- **Techo de tiempo por vuelta** (80% del intervalo). `xmlrpc` no lleva timeout
+  en este proyecto: una llamada colgada ocuparía un hilo del pool compartido y,
+  con `max_instances=1`, habría matado el trabajo en silencio para siempre.
+- **No pisa una guía existente**: se re-lee justo antes de escribir, así que el
+  trabajo manual gana aunque haya entrado entre que se armó la cola y ahora.
+- **Contadores honestos**: `sin_guia_aun` (lo normal) se separa de `fallos_temu`
+  y de `no_se_pudo_escribir`. Antes un `ok` sin haber escrito nada contaba como
+  éxito.
+- El surtido dividido se resuelve: las dos mitades llevan `#1`/`#2` y comparten
+  **una sola guía**, así que se agrupan por venta.
+- `datetime.now(timezone.utc)` en el job: el scheduler corre en UTC y un naive
+  se interpreta como si ya lo fuera.
+
+Cadencia: cada 120 min, tope 14 días, 60 ventas por vuelta. El corte a 14 días
+no es cosmético — una orden que no consiguió guía en dos semanas no la va a
+conseguir, y sin él el trabajo crecería para siempre preguntando por ventas
+muertas.
+
 ### v0.491.0 — El aviso de margen dice quién salió de la lista y por qué (Eduardo)
 
 **El problema.** La alerta solo recordaba la huella del conjunto, no a quién
