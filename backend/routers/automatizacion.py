@@ -414,6 +414,62 @@ async def temu_recuperar(
             "resultados": resultados}
 
 
+@router.get("/temu/guia", dependencies=[Depends(requiere_api_key)])
+async def temu_guia(sn: str = Query(..., description="parentOrderSn")):
+    """
+    ¿Por qué esta venta de Temu no tiene guía?
+
+    Hay DOS causas y no son lo mismo: que Temu todavía no la haya asignado
+    —porque la orden no se ha enviado— o que nuestra llamada esté rota. Hasta
+    hoy no se podían distinguir: `_traer_guia` se rinde con `log.debug` y
+    devuelve cadenas vacías, así que las dos se ven idénticas desde el panel
+    («sin guía») y desde los logs (nada, porque el nivel es INFO).
+
+    Llama al MISMO `pedidos_temu._traer_guia` que usa el flujo real —no una
+    reimplementación que podría diverger— y lo pone al lado del estado de envío
+    de la orden. Con eso la respuesta es inmediata: si la orden no está enviada
+    y no hay guía, el sistema está bien; si ESTÁ enviada y no hay guía, lo que
+    está roto es la llamada.
+
+    SOLO LECTURA. No escribe en Temu, ni en Woo, ni en Odoo, ni en kubera.
+    """
+    from services import pedidos_temu
+
+    try:
+        det = await asyncio.wait_for(pedidos_temu._traer(sn), timeout=30)  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "sn": sn, "motivo": f"no se pudo traer el detalle: {str(exc)[:200]}"}
+    if not det:
+        return {"ok": False, "sn": sn, "motivo": "Temu no devolvió el detalle de esa orden"}
+
+    pm = det.get("parentOrderMap") or {}
+    renglones = det.get("orderList") or []
+    order_sn = (renglones[0] or {}).get("orderSn") if renglones else None
+    enviada = bool(pm.get("parentShippingTime"))
+
+    try:
+        guia, paqueteria = await asyncio.wait_for(
+            pedidos_temu._traer_guia(sn, order_sn), timeout=30)  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        guia, paqueteria = "", f"error: {str(exc)[:150]}"
+
+    if guia:
+        veredicto = "HAY GUÍA: la llamada funciona y Temu ya la asignó."
+    elif not enviada:
+        veredicto = ("SIN GUÍA Y ES CORRECTO: la orden todavía no se envía "
+                     "(no tiene parentShippingTime), así que Temu aún no asigna guía.")
+    else:
+        veredicto = ("⚠️ LA ORDEN YA SE ENVIÓ Y NO HAY GUÍA: aquí el problema es "
+                     "nuestra llamada, no Temu. Revisar _traer_guia.")
+
+    return {"ok": True, "sn": sn, "order_sn": order_sn,
+            "estado": str(pm.get("parentOrderStatus")),
+            "enviada": enviada,
+            "hora_envio": pm.get("parentShippingTime"),
+            "guia": guia or None, "paqueteria": paqueteria or None,
+            "veredicto": veredicto}
+
+
 @router.get("/temu/censo")
 async def temu_censo(paginas: int = Query(5, ge=1, le=20),
                      por_pagina: int = Query(50, ge=10, le=100)):
