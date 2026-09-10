@@ -69,6 +69,7 @@ vacía, así que ninguna se pierde. El ruteo vive en `_WEBHOOK_POR_TIPO`, abajo.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -826,6 +827,11 @@ def censo_margen() -> dict[str, Any] | None:
     SELECT, y es más angosto que el `_BASE` de allá (no pide url, stock ni
     situación cruda) — así esta alarma no se cuelga de un archivo que está
     cambiando por otro lado.
+
+    Además de los conteos devuelve `por_publicacion` ("sku|canal|cuenta" →
+    estado): lo que cada publicación del universo es HOY —negativa, positiva o
+    el motivo por el que no se evaluó—. Es lo que deja decir por qué salió de
+    la lista alguien que estaba en la corrida anterior (`_seccion_salidas`).
     """
     from services import publicaciones_panel as pp
     from services import supabase_db as sdb
@@ -869,18 +875,23 @@ def censo_margen() -> dict[str, Any] | None:
 
     negativas: list[dict[str, Any]] = []
     motivos: dict[str, int] = {k: 0 for k in _NO_EVAL}
+    por_pub: dict[str, dict[str, Any]] = {}
     evaluadas = 0
     for r in filas:
         canal = r["canal"]
+        clave = _clave_pub(r)
         # El orden importa: los motivos son excluyentes y se cuentan una vez.
         if canal not in pp.CANALES_CON_COSTO:
             motivos["canal"] += 1
+            por_pub[clave] = {"estado": "canal"}
             continue
         if not r["costo_verificado"]:
             motivos["costo"] += 1
+            por_pub[clave] = {"estado": "costo"}
             continue
         if not r["precio_confirmado"]:
             motivos["precio"] += 1
+            por_pub[clave] = {"estado": "precio"}
             continue
         # Con la compuerta de precio puesta, el precio vigente ES `price_sale`:
         # no hay que elegir entre dos candidatos como en el panel.
@@ -891,15 +902,19 @@ def censo_margen() -> dict[str, Any] | None:
                          canal=canal)
         if m["margen_pct"] is None:
             motivos["insumos"] += 1
+            por_pub[clave] = {"estado": "insumos"}
             continue
         evaluadas += 1
+        pct = round(m["margen_pct"] * 100, 1)
         if m["margen_pct"] >= 0:
+            por_pub[clave] = {"estado": "positiva", "margen_pct": pct}
             continue
+        por_pub[clave] = {"estado": "negativa", "margen_pct": pct}
         cu, pv = float(r["costo_unitario"]), float(precio)
         negativas.append({
             "sku": r["sku"], "canal": canal, "tienda": r.get("tienda"),
             "precio": round(pv, 2), "costo": round(cu, 2),
-            "margen_pct": round(m["margen_pct"] * 100, 1),
+            "margen_pct": pct,
             # POR QUÉ es negativo, que es lo que decide la ACCIÓN. Ojo: un
             # "costo dudoso" que llega hasta aquí YA pasó la compuerta de
             # verificado — alguien lo comparó contra el packing list y aun así
@@ -908,7 +923,112 @@ def censo_margen() -> dict[str, Any] | None:
             "dudoso": cu > pv * _FACTOR_COSTO_DUDOSO,
         })
     return {"negativas": negativas, "motivos": motivos, "evaluadas": evaluadas,
-            "universo": len(filas)}
+            "universo": len(filas), "por_publicacion": por_pub}
+
+
+# ── Quién SALIÓ de la lista, y por qué (Eduardo, 10-sep-2026) ─────────────────
+#
+# La alerta solo guardaba la huella del conjunto (`alertas_estado.estado`,
+# varchar(30)), así que no sabía QUIÉN estaba la vez anterior: un SKU que salía
+# desaparecía sin decir si se arregló o si dejó de poderse evaluar. Caso real:
+# ROP-0266-DOR (-310%, costo validado) salió 11 minutos el 10-sep sin haberse
+# arreglado.
+#
+# Cada corrida deja su lista en `ops.process_log` —`detalle` es jsonb, así que
+# no hizo falta migración— y la siguiente la compara. La foto va SIN `sku` a
+# propósito: `inventario_maestro` muestra la última fila de la bitácora por
+# SKU, y una foto automática taparía las acciones de las personas. No usa
+# `bitacora.anotar`, que por diseño es solo para acciones de persona.
+#
+# Solo Slack lo dice; la campana del panel no cambia (decisión de Eduardo).
+_FOTO_PROCESO = "alerta_margen"
+_FOTO_ACCION = "foto_negativas"
+
+# Cómo se dice cada salida, en el orden en que conviene leerlas: primero lo que
+# pide una acción, al final lo resuelto. La llave es el estado de HOY en
+# `censo_margen()["por_publicacion"]`; `None` = ya no está en el universo, o sea
+# que dejó de ser comprable.
+_SALIDAS: dict[str | None, tuple[int, str, str]] = {
+    "costo": (0, "⚠️", "sin resolver: su costo ya no está validado (se editó o "
+                        "se quitó la marca) → revalidar"),
+    "insumos": (0, "⚠️", "sin resolver: faltan datos para calcular el margen "
+                          "(comisión, peso o precio)"),
+    "canal": (0, "⚠️", "sin resolver: el canal ya no tiene costo propio"),
+    "precio": (1, "⏳", "precio por confirmar: cambió de precio y ML aún no lo "
+                        "vuelve a observar"),
+    None: (2, "⏸️", "ya no está a la venta (pausada, sin stock o cerrada)"),
+    "positiva": (3, "✅", "se resolvió"),
+}
+
+
+def _clave_pub(n: dict[str, Any]) -> str:
+    """Identidad de una publicación en el censo y en la foto: SKU, canal y cuenta."""
+    return f"{n['sku']}|{n['canal']}|{n.get('tienda')}"
+
+
+def _foto_anterior() -> list[dict[str, Any]] | None:
+    """La lista de negativas de la corrida anterior. `None` = no hay foto (la
+    primera corrida) o no se pudo leer: en los dos casos NO se inventan salidas."""
+    try:
+        from services import supabase_db as sdb
+        fila = sdb.fetch_one(
+            "select detalle from ops.process_log where proceso = %s and accion = %s "
+            "order by created_at desc, id desc limit 1",
+            (_FOTO_PROCESO, _FOTO_ACCION))
+        if not fila or not fila.get("detalle"):
+            return None
+        d = fila["detalle"]
+        if isinstance(d, str):
+            d = json.loads(d)
+        return list(d.get("negativas") or [])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alertas: no se pudo leer la foto anterior del margen (%s)", exc)
+        return None
+
+
+def _guardar_foto(negativas: list[dict[str, Any]], censo: dict[str, Any]) -> None:
+    """Deja la lista de HOY para que la próxima corrida sepa quién salió."""
+    try:
+        from services import supabase_db as sdb
+        detalle = {
+            "negativas": [{"sku": n["sku"], "canal": n["canal"],
+                           "tienda": n.get("tienda"), "margen_pct": n["margen_pct"]}
+                          for n in negativas],
+            "evaluadas": censo["evaluadas"], "universo": censo["universo"],
+        }
+        sdb.execute(
+            "insert into ops.process_log (proceso, origen, accion, estado, detalle) "
+            "values (%s, 'alertas', %s, 'ok', %s::jsonb)",
+            (_FOTO_PROCESO, _FOTO_ACCION, json.dumps(detalle, ensure_ascii=False)))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("alertas: no se pudo guardar la foto del margen (%s)", exc)
+
+
+def _seccion_salidas(anteriores: list[dict[str, Any]] | None,
+                     negativas: list[dict[str, Any]],
+                     por_pub: dict[str, dict[str, Any]]) -> str:
+    """Las publicaciones que estaban en la lista anterior y hoy no, con el
+    porqué. Cadena vacía si nadie salió o si no hay foto con qué comparar."""
+    if not anteriores:
+        return ""
+    hoy = {_clave_pub(n) for n in negativas}
+    salidas: list[tuple[int, str, str]] = []
+    for n in anteriores:
+        clave = _clave_pub(n)
+        if clave in hoy:
+            continue
+        info = por_pub.get(clave) or {}
+        orden, marca, texto = _SALIDAS.get(info.get("estado"), _SALIDAS[None])
+        if info.get("estado") == "positiva" and info.get("margen_pct") is not None:
+            texto = f"se resolvió: margen +{info['margen_pct']}%"
+        salidas.append((orden, str(n["sku"]),
+                        f"· {marca} `{n['sku']}` {n['canal']}/{n.get('tienda')} — {texto}"))
+    if not salidas:
+        return ""
+    salidas.sort()
+    mas = f"\n_…y {len(salidas) - 10} más._" if len(salidas) > 10 else ""
+    return ("\n_Salieron desde el último aviso:_\n"
+            + "\n".join(s[2] for s in salidas[:10]) + mas)
 
 
 def _revisar_margen_negativo() -> None:
@@ -928,6 +1048,12 @@ def _revisar_margen_negativo() -> None:
     _sellar_corrida(tipo)
 
     negativas = censo["negativas"]
+    # Quién salió de la lista desde la corrida anterior, y por qué. La foto de
+    # HOY se guarda después de leer la anterior y antes de hablar: si Slack
+    # falla, la próxima corrida compara contra lo que había hoy de todos modos.
+    salidas = _seccion_salidas(_foto_anterior(), negativas,
+                               censo.get("por_publicacion") or {})
+    _guardar_foto(negativas, censo)
     sin_eval = censo["universo"] - censo["evaluadas"]
     # El conteo agregado viaja SIEMPRE, también cuando no hay ninguna negativa:
     # "0 en negativo" sobre 2 evaluadas de 781 no significa lo mismo que sobre
@@ -942,7 +1068,7 @@ def _revisar_margen_negativo() -> None:
     if not negativas:
         if avisar_estado(tipo, "ok", "",
                          texto_ok=f"*Sin SKUs con costo validado en margen "
-                                  f"negativo.*{cola}"):
+                                  f"negativo.*{salidas}{cola}"):
             _campana("margen_negativo",
                      "Sin SKUs con costo validado en margen negativo",
                      f"ok:{_hoy_utc()}")
@@ -981,7 +1107,7 @@ def _revisar_margen_negativo() -> None:
     hablo = avisar_estado(
         tipo, estado_slack,
         f"*{len(skus)} SKU(s) con costo validado en margen NEGATIVO{en_pubs}.*\n"
-        + "\n".join(lineas) + mas +
+        + "\n".join(lineas) + mas + salidas +
         "\n_Lista completa de hoy: esto suena cuando el CONJUNTO cambia, no "
         "todos los días._" + cola,
         texto_ok=f"*Ningún SKU con costo validado en margen negativo.*{cola}",
@@ -1150,7 +1276,16 @@ def _revisar_top_sin_costo_revisado() -> None:
 
 
 async def vigilante() -> None:
-    """Job del scheduler: cada revisión es independiente y best-effort."""
+    """
+    Job del scheduler: cada revisión es independiente y best-effort.
+
+    Cada una corre en `asyncio.to_thread` (regla 11). Todas son síncronas y le
+    preguntan a MySQL y a kubera —el candado de `alertas_estado`, el censo del
+    margen, la foto de la corrida anterior—, y este job vive en el event loop
+    del `AsyncIOScheduler`. Hasta v0.490.0 se llamaban directo, así que cada
+    consulta detenía el loop entero mientras contestaba la base. Ninguna usa
+    asyncio por dentro, y el estado compartido va con `_lock` (threading).
+    """
     if not disponible():
         return
     for revision in (_revisar_actas, _revisar_silencio_ventas, _revisar_tokens_rancios,
@@ -1159,7 +1294,7 @@ async def vigilante() -> None:
                      # frecuencia del job (ver el bloque de arriba).
                      _revisar_margen_negativo, _revisar_top_sin_costo_revisado):
         try:
-            revision()
+            await asyncio.to_thread(revision)
         except Exception as exc:  # noqa: BLE001
             log.warning("vigilante %s: %s", revision.__name__, exc)
 

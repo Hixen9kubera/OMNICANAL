@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.491.0 — El aviso de margen dice quién salió de la lista y por qué (Eduardo)
+
+**El problema.** La alerta solo recordaba la huella del conjunto, no a quién
+tenía: un SKU que salía de la lista desaparecía sin decir si se arregló o si dejó
+de poderse evaluar. Así pasó con `ROP-0266-DOR` el 10-sep.
+
+**Ahora, cada vez que la lista cambia, el mensaje de Slack cierra con «Salieron
+desde el último aviso»**: una línea por publicación que estaba en la corrida
+anterior y hoy no, con el porqué. Primero lo que pide una acción (⚠️ costo ya no
+validado → revalidar, o faltan datos; ⏳ precio por confirmar), después ⏸️ lo que
+dejó de estar a la venta, y al final ✅ lo resuelto, con su margen nuevo. Tope de
+10. También va en el «✅ Sin SKUs…», para que una lista que se vacía porque se
+editaron costos no se lea como una solución. Solo en Slack: la campana del panel
+no cambia (decisión de Eduardo).
+
+**Cómo lo sabe.** `censo_margen` devuelve además `por_publicacion`: qué es hoy
+cada publicación del universo (negativa, positiva o el motivo por el que no se
+evaluó); medido en producción, cubre las 1,110 comprables. Y cada corrida deja su
+lista en `ops.process_log` (`proceso = 'alerta_margen'`), sin SKU y sin
+migración, porque `detalle` ya es jsonb; la siguiente corrida la compara. La
+primera corrida después del deploy solo guarda la foto: la sección aparece desde
+la segunda.
+
+**Y de paso, regla 11.** `vigilante()` es un job del `AsyncIOScheduler` —vive en
+el event loop— y llamaba sus siete revisiones directo, así que cada consulta a
+MySQL o a kubera detenía el backend mientras contestaba la base. Ahora cada
+revisión corre en `asyncio.to_thread`. Ninguna usa asyncio por dentro, y el
+estado compartido ya iba con un `threading.Lock`.
+
+**Verificado sin enviar nada:** la sección con cuatro salidas (orden ⚠️ → ⏳ → ⏸️
+→ ✅; las que siguen en negativo y las nuevas no aparecen; tope de 10), la alerta
+completa (la sección cae entre la lista y la nota, la foto se guarda en cada
+corrida, la campana no cambia, el camino ✅ la lleva, y la primera corrida sin
+foto no inventa salidas), y las siete revisiones corriendo fuera del hilo
+principal.
+
 ### v0.489.0 — Un cambio de stock ya no deja «sin confirmar» el precio (Eduardo)
 
 **El caso.** `ROP-0266-DOR` salió de la alerta de margen negativo unos 11 minutos
