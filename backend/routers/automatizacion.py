@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Query, Request
 
@@ -352,6 +353,85 @@ def _buscar_guia(nodo, ruta="", hallazgos=None, hondo=0):
     elif isinstance(nodo, list) and nodo:
         _buscar_guia(nodo[0], f"{ruta}[]", hallazgos, hondo + 1)
     return hallazgos
+
+
+@router.get("/temu/censo")
+async def temu_censo(paginas: int = Query(5, ge=1, le=20),
+                     por_pagina: int = Query(50, ge=10, le=100)):
+    """
+    CUÁNTAS ventas tiene Temu de verdad, y de qué día — para poder compararlas
+    contra las órdenes de venta que hay en Odoo.
+
+    Nace de una pregunta concreta de Brandon (10-sep): *"revisa las órdenes de
+    venta que tenemos actualmente de TEMU y TIKTOK para ver si es necesario
+    crear las órdenes faltantes"*. Sin esto sólo se sabía el total (102) por una
+    muestra de 10; para decidir qué falta hace falta el reparto por día.
+
+    ES SOLO LECTURA. Recorre páginas de `bg.order.list.v2.get` y cuenta. No
+    escribe en Woo, ni en Odoo, ni en kubera, ni en Temu.
+
+    NO devuelve nada del comprador: por orden salen `parentOrderSn`, la fecha y
+    el estado, que es lo único que se necesita para cuadrar contra Odoo.
+
+    `temu.llamar` ES ASÍNCRONA y ya devuelve el `result` desenvuelto — nada de
+    `to_thread` ni de volver a buscar la envoltura.
+    """
+    from services import temu
+
+    vistas: dict[str, dict[str, Any]] = {}
+    total_declarado = None
+    paginas_leidas = 0
+    error = None
+    for pag in range(1, paginas + 1):
+        try:
+            d = await asyncio.wait_for(
+                temu.llamar("bg.order.list.v2.get",
+                            {"pageNumber": pag, "pageSize": por_pagina}),
+                timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            error = f"página {pag}: {str(exc)[:200]}"
+            break
+        d = d or {}
+        if total_declarado is None:
+            total_declarado = d.get("total") or d.get("totalCount")
+        # La lista viene con nombre distinto según la versión del endpoint; se
+        # toma la primera lista de diccionarios, igual que hace el sondeo.
+        lista = next((v for v in d.values()
+                      if isinstance(v, list) and v and isinstance(v[0], dict)), None)
+        if not lista:
+            break
+        paginas_leidas += 1
+        for o in lista:
+            pm = o.get("parentOrderMap") or {}
+            sn = pm.get("parentOrderSn") or o.get("parentOrderSn")
+            if not sn:
+                continue
+            ts = pm.get("parentOrderTime")
+            try:
+                dia = datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d")
+            except (TypeError, ValueError):
+                dia = "sin fecha"
+            vistas[str(sn)] = {"dia": dia,
+                               "estado": str(pm.get("parentOrderStatus")),
+                               "enviada": bool(pm.get("parentShippingTime"))}
+        if len(lista) < por_pagina:
+            break
+
+    por_dia: dict[str, int] = {}
+    por_estado: dict[str, int] = {}
+    for v in vistas.values():
+        por_dia[v["dia"]] = por_dia.get(v["dia"], 0) + 1
+        por_estado[v["estado"]] = por_estado.get(v["estado"], 0) + 1
+    return {
+        "total_declarado": total_declarado,
+        "leidas": len(vistas),
+        "paginas_leidas": paginas_leidas,
+        "error": error,
+        "por_dia": dict(sorted(por_dia.items(), reverse=True)),
+        "por_estado": dict(sorted(por_estado.items())),
+        "ordenes": [{"sn": k, **v} for k, v in
+                    sorted(vistas.items(), key=lambda kv: kv[1]["dia"], reverse=True)],
+    }
 
 
 @router.get("/temu/sondeo")
