@@ -20,9 +20,10 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from config import settings
+from core.seguridad import requiere_api_key
 from services import odoo_ventas, odoo_ventas_log
 
 log = logging.getLogger("omnicanal.automatizacion")
@@ -353,6 +354,64 @@ def _buscar_guia(nodo, ruta="", hallazgos=None, hondo=0):
     elif isinstance(nodo, list) and nodo:
         _buscar_guia(nodo[0], f"{ruta}[]", hallazgos, hondo + 1)
     return hallazgos
+
+
+@router.post("/temu/recuperar", dependencies=[Depends(requiere_api_key)])
+async def temu_recuperar(
+    sn: str = Query(..., description="parentOrderSn separados por coma. EXPLÍCITOS a propósito"),
+    aplicar: bool = Query(False, description="false = en seco; true = crea de verdad"),
+):
+    """
+    Mete a la tubería ventas de Temu que se perdieron, UNA POR UNA y nombradas.
+
+    POR QUÉ SE PIDEN LOS IDs EXPLÍCITOS y no un rango de días. Temu tiene 103
+    órdenes y Gabriela ya capturó a mano las 96 de agosto —sin
+    `client_order_ref`, así que la idempotencia NO las ve—. Un barrido por
+    fechas que se pasara de la raya crearía decenas de órdenes duplicadas en
+    Odoo, confirmadas y mordiendo inventario. Con la lista explícita, el peor
+    caso es exactamente lo que se escribió en la petición.
+
+    EN SECO POR OMISIÓN (`aplicar=false`): dice qué haría con cada id sin tocar
+    nada. Hay que pedir `aplicar=true` a propósito.
+
+    Cada venta pasa por `pedidos_temu.procesar`, que es EL MISMO camino del
+    webhook: trae el detalle de Temu, arma el pedido de Woo y la costura crea la
+    orden de venta en Odoo. No hay una segunda ruta que pueda divergir.
+
+    Idempotente por partida doble: el pedido de Woo se busca por su meta y la
+    orden de Odoo por `client_order_ref`. Repetir la llamada no duplica lo que
+    este mismo camino haya creado antes.
+    """
+    from services import pedidos_temu
+
+    ids = [x.strip() for x in (sn or "").split(",") if x.strip()]
+    if not ids:
+        return {"ok": False, "motivo": "sin ids"}
+    if len(ids) > 25:
+        return {"ok": False, "motivo": f"{len(ids)} ids: el tope es 25 por llamada"}
+
+    if not aplicar:
+        return {"ok": True, "modo": "EN SECO — no se tocó nada",
+                "recibidos": len(ids), "ids": ids,
+                "que_haria": "por cada id: traer el detalle de Temu → pedido en Woo → "
+                             "orden de venta en Odoo (confirmada, reserva inventario)",
+                "para_aplicar": "repetir con aplicar=true"}
+
+    resultados = []
+    for oid in ids:
+        try:
+            r = await pedidos_temu.procesar(oid)
+        except Exception as exc:  # noqa: BLE001 — una mala no tumba las demás
+            r = {"ok": False, "id": oid, "accion": "error", "motivo": str(exc)[:200]}
+        resultados.append({"sn": oid, "ok": bool(r.get("ok")),
+                           "accion": r.get("accion"), "motivo": r.get("motivo"),
+                           "pedido_wc": r.get("wc_order_id") or r.get("pedido")})
+        log.warning("TEMU recuperar %s → %s (%s)", oid, r.get("accion"), r.get("motivo"))
+
+    hechas = sum(1 for x in resultados if x["ok"])
+    return {"ok": True, "modo": "APLICADO", "pedidos": len(ids),
+            "con_exito": hechas, "sin_exito": len(ids) - hechas,
+            "resultados": resultados}
 
 
 @router.get("/temu/censo")
