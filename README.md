@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.484.0 — El sondeo de Temu dice QUÉ ESTADOS manda, que es lo que bloquea todo
+
+Brandon: *"lo que se necesita para hoy es que cuando un evento llegue de Temu se
+haga la orden de venta"*. El eslabón que lo impide no es el interruptor —está
+encendido— sino `pedidos_temu._ESTADOS_WC`, que conoce **un solo código**:
+
+    _ESTADOS_WC = {4: "processing"}
+
+Y ese 4 no salió de documentación —Temu no publica el enum— sino de **dos
+ventas** que entraron por M2E en agosto. Todo estado distinto se descarta hoy
+sin crear pedido, con un `warning` que muere en los logs. O sea: puede llegar el
+evento, cuadrar la firma, resolverse el id y traerse el detalle, y aun así no
+nacer la orden.
+
+`GET /api/automatizacion/temu/sondeo` ahora incluye `estados`: el reparto real
+de `parentOrderStatus` y `orderStatus` sobre la página muestreada, más
+**`sin_mapear`** — los códigos que hoy harían que la venta se pierda. Es el
+número que decide si el automatismo de Temu sirve o cree que sirve.
+
+Lectura pura sobre la llamada que el sondeo ya hacía: no agrega una petición a
+Temu ni escribe nada.
+
 ### v0.483.0 — Los webhooks de TikTok y Temu por fin dejan rastro
 
 Brandon: *"haz que persistan los webhooks de temu y de paso de tiktok también"*.

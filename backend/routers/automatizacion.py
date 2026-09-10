@@ -284,6 +284,33 @@ _CLAVES_GUIA = ("tracking", "waybill", "mailno", "expressno", "shipno",
                 "logisticsno", "deliveryno", "shipmentno", "expresscompany",
                 "shippingcompany", "logisticscompany", "carrier")
 
+def _contar_estados(lista: list[dict]) -> dict[str, Any]:
+    """Reparto de `parentOrderStatus` y `orderStatus` en la muestra.
+
+    Devuelve además `sin_mapear`: los códigos que HOY harían que la venta se
+    descarte en silencio. Es el número que decide si el automatismo de Temu
+    sirve o no.
+    """
+    from services.pedidos_temu import _ESTADOS_WC  # noqa: PLC0415
+    padres: dict[str, int] = {}
+    hijos: dict[str, int] = {}
+    for o in lista or []:
+        p = (o.get("parentOrderMap") or {}).get("parentOrderStatus")
+        if p is not None:
+            padres[str(p)] = padres.get(str(p), 0) + 1
+        for r in (o.get("orderList") or []):
+            h = r.get("orderStatus")
+            if h is not None:
+                hijos[str(h)] = hijos.get(str(h), 0) + 1
+    conocidos = {str(k) for k in _ESTADOS_WC}
+    return {
+        "parentOrderStatus": dict(sorted(padres.items())),
+        "orderStatus": dict(sorted(hijos.items())),
+        "mapeados_hoy": sorted(conocidos),
+        "sin_mapear": sorted({*padres, *hijos} - conocidos),
+    }
+
+
 def _buscar_guia(nodo, ruta="", hallazgos=None, hondo=0):
     """Recorre la respuesta buscando algo que se parezca a una guía."""
     if hallazgos is None:
@@ -410,6 +437,13 @@ async def temu_sondeo():
             "endpoint": exitosa["endpoint"],
             "total_declarado": total,
             "en_esta_pagina": len(lista),
+            # QUÉ ESTADOS MANDA TEMU DE VERDAD. `pedidos_temu._ESTADOS_WC` sólo
+            # conoce el código 4, y ese 4 salió de DOS ventas que entraron por
+            # M2E en agosto — no de documentación, que no existe. Todo estado
+            # distinto se descarta hoy sin crear pedido, así que saber cuáles
+            # existen es la diferencia entre automatizar Temu y creer que se
+            # automatizó. Se cuentan sobre la página muestreada.
+            "estados": _contar_estados(lista),
             "campos_por_orden": sorted(primera.keys())[:30],
             "guia_en_la_orden": bool(guias),
             "guia_en_envio": bool(guias_envio),
