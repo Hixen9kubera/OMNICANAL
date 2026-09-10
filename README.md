@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.478.0 — Publicador: vista de árbol por categoría, en ruta suelta (Eduardo)
+
+Diseño G de los ocho que se compararon en el lienzo. La lista de hoy corre
+APLANADA: cada variante es una fila suelta mezclada con los productos simples y
+sin ninguna señal de quién es su padre — en una muestra de 100 filas, 35 eran
+variantes huérfanas a la vista. Son 7,475 variantes de 1,502 padres.
+
+**No hizo falta un solo endpoint nuevo, y ese es el hallazgo.** El backend ya
+sabía agrupar: `?aplanar=false` devuelve 2,939 filas donde el padre viene como
+`tipo: "variable"` con sus variantes COMPLETAS dentro (precio, costo, stock,
+estado). Producción corre aplanada por `LISTADO_APLANADO` de Railway. Lo único
+que faltaba era la pantalla.
+
+Carga por categoría y no todo: el árbol pide los productos de UNA categoría al
+abrirla, colgando de la jerarquía de WooCommerce (`_categorias/lista` trae
+`parent`). Y el tope de variantes no es cosmético — `TEC-0377` tiene **103**,
+una por modelo de teléfono, y `CALZ-0058` tiene 90: volcarlas al abrir un nodo
+haría inservible el árbol.
+
+**RUTA SUELTA `/productos/arbol`, y nada la enlaza.** No reemplaza la lista ni
+cambia lo que el equipo ve: se abre a mano para compararla lado a lado con la
+vista actual antes de decidir si sustituye a la otra.
+
+**La agrupación individual/grupo funciona pero NO se guarda**, y la pantalla lo
+dice en voz alta en vez de aparentar que quedó guardada. Persistirla necesita
+una tabla y una decisión previa: si es global o por canal — Mercado Libre
+soporta variaciones nativas, Amazon usa padre/hijo y Temu no tiene API de alta,
+así que una sola decisión global puede no aguantar.
+
+⚠️ **Sin verificar en el sandbox, y no por descuido:** el Publicador lee
+WooCommerce y `env.staging` tiene las credenciales de Woo vacías a propósito, así
+que ahí el endpoint de categorías devuelve 0 y el de productos 500. Esa pantalla
+nunca ha podido probarse en sandbox. Se sube como ruta suelta justamente para
+poder verla con datos reales sin cambiarle nada al equipo.
+
 ### v0.477.0 — El sondeo nunca suelta el candado, y kubera ya no tapa la absorción
 
 Dos cerraduras, salidas de la madrugada del 10-sep (pares #143019/#143022 y
