@@ -23,11 +23,6 @@ export interface VarianteResumen {
   valor: number | null; // stock × costo
   estado: string | null;
   contenedor: string | null; // nº de contenedor (costos_validados)
-  // Regular, oferta y wc_id PROPIOS (vista de árbol); null = sin dato. El
-  // wc_id es el de la VARIACIÓN: el Estudio escribe y publica con él.
-  wc_id?: number | null;
-  precio_base?: number | null;
-  precio_oferta?: number | null;
   // Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
   canales?: CanalResumen[];
   // Marca de validación del costeo (0032) de ESTA variante; ausente = pendiente.

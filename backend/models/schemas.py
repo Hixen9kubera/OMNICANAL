@@ -39,13 +39,6 @@ class VarianteResumen(BaseModel):
     valor: float | None = None     # stock × costo
     estado: str | None = None
     contenedor: str | None = None  # nº de contenedor (costos_validados)
-    # Regular, oferta y wc_id PROPIOS de la variante (vista de árbol). Solo los
-    # llena el listado de Woo con la DB de WordPress a mano; None = sin dato,
-    # nunca "igual al padre". Sin declararlos aquí, el response_model los
-    # descartaría en silencio.
-    wc_id: int | None = None
-    precio_base: float | None = None
-    precio_oferta: float | None = None
     # Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
     canales: list[CanalResumen] = []
     # Marca de validación del costeo (0032) de ESTA variante. Igual que en el

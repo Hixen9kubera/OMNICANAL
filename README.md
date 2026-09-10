@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.481.0 — Se retira la vista de árbol del Publicador (Eduardo)
+
+Decisión de Eduardo (10-sep-2026): todavía no se implementa ese formato. Sale de
+producción `/productos/arbol` y se revierte todo lo que existía solo para ella:
+
+- la página (v0.478.0 – v0.480.0);
+- el modo solo lectura del Estudio (`soloLectura`, `avisoSoloLectura` y el
+  `Candado`): sin la vista de árbol nadie lo usaba;
+- el precio regular, la oferta y el `wc_id` por variante del listado
+  (`precios_variantes` en `wp_db.precios_y_costo_por_wc_id` y sus campos en
+  `VarianteResumen`).
+
+Esos archivos vuelven exactamente a como estaban antes de la vista de árbol.
+Productos y Omnicanal no cambian: nunca dependieron de nada de esto.
+
+**Guardada, no borrada.** La rama `feat/publicador-arbol` apunta a `0b69ff6`
+(v0.480.0), con la vista completa tal como estuvo en producción. Para retomarla
+basta revertir este commit o traer esa rama. Las entradas v0.478.0 – v0.480.0 de
+esta bitácora se quedan: cuentan lo que se construyó y lo que se midió.
+
+Sigue vivo, y no es de esta vista, el hallazgo de la v0.480.0: el rango de precio
+del padre y `costo_variantes` cuentan variaciones de la papelera.
+
 ### v0.480.0 — Árbol del Publicador: buscar por SKU, abrir el Estudio y precios por variante (Eduardo)
 
 Tres pedidos sobre la vista de árbol (`/productos/arbol`, sigue en ruta suelta).
