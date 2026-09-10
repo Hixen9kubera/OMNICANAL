@@ -1040,7 +1040,7 @@ def variantes_por_padre(padres: list[int]) -> dict[int, list[dict[str, Any]]]:
         for r in _fetch_all(
             f"""SELECT post_id, meta_key, meta_value FROM {P}postmeta
                 WHERE post_id IN ({ph2})
-                  AND (meta_key IN ('_sku', '_price', '_stock')
+                  AND (meta_key IN ('_sku', '_price', '_stock', '_barcode')
                        OR meta_key LIKE 'attribute\\_%%')""",
             tuple(chunk)):
             metas.setdefault(r["post_id"], {})[r["meta_key"]] = r["meta_value"]
@@ -1088,6 +1088,16 @@ def variantes_por_padre(padres: list[int]) -> dict[int, list[dict[str, Any]]]:
         except (TypeError, ValueError):
             return None
 
+    # Miniatura de CADA variante, en lote. Reusa `imagenes_por_wc_id`, que ya
+    # sabe resolver variaciones (el REST `?include=` no las devuelve). Son 6,899
+    # de 7,477 las que tienen foto propia: sin esto el rail del Estudio pintaría
+    # seis veces la misma imagen del padre y el color sería indistinguible.
+    try:
+        fotos = imagenes_por_wc_id(var_ids)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("miniaturas de variantes fallaron (%s); se sirven sin foto", exc)
+        fotos = {}
+
     salida: dict[int, list[dict[str, Any]]] = {p: [] for p in padres}
     for r in var_rows:
         m = metas.get(r["ID"], {})
@@ -1108,6 +1118,13 @@ def variantes_por_padre(padres: list[int]) -> dict[int, list[dict[str, Any]]]:
             "precio": _f(m.get("_price")),
             "stock": int(float(stock)) if stock not in (None, "") else None,
             "estado": r["post_status"],
+            # Lo que el rail del Estudio necesita para ABRIR la variante y
+            # pintarla: sin `wc_id` no hay a quién escribirle (`ruta_escritura`),
+            # sin foto no se distingue un color de otro, y el GTIN es de la
+            # PIEZA —el padre no tiene uno que valga— así que se lee aquí.
+            "wc_id": r["ID"],
+            "imagen": fotos.get(r["ID"]),
+            "gtin": (m.get("_barcode") or "").strip() or None,
         })
     return salida
 

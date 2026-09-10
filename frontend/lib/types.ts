@@ -5,11 +5,63 @@ export interface CategoriaNivel {
   nombre: string;
 }
 
+export interface CuentaEnCanal {
+  cuenta: string;
+  item_id?: string | null;
+  situacion?: string | null;
+  estado?: string | null;
+}
+
 export interface CanalResumen {
   canal: string;
   publicado: boolean;
   item_id: string | null;
   url: string | null;
+  /**
+   * CÓMO está, no sólo si está. `situacion` manda en Mercado Libre
+   * (active/paused/under_review) y `estado` —que es el `status` del canal—
+   * manda en TikTok (ACTIVATE/DRAFT). No son sinónimos: leer uno por el otro
+   * ya hizo que el fan-out descartara TikTok entero.
+   * La traducción a los 5 puntos del rail vive en `lib/estadoVariante.ts`.
+   */
+  situacion?: string | null;
+  estado?: string | null;
+  /** Una entrada por publicación: el mismo SKU vive en 2 cuentas de ML. */
+  cuentas?: CuentaEnCanal[];
+}
+
+/** Cómo sale al canal una familia de variantes. Es POR CANAL, no global. */
+export type ModoPublicacion = "agrupada" | "individual";
+
+/** `GET /api/productos/_estudio/config` */
+export interface EstudioConfig {
+  studio_variantes: boolean;
+  /**
+   * Canales donde el panel SABE ejecutar el modo agrupado. Hoy viene VACÍO: el
+   * publicador arma una ficha plana (la llave `variations` no existe en el
+   * repositorio) y no hay ni una publicación con variantes en las 2 cuentas de
+   * ML. La pantalla lo pinta como «Pronto» leyendo esta lista, para no tener la
+   * misma regla escrita en dos lados.
+   */
+  agrupada_habilitada: string[];
+  modo_por_omision: ModoPublicacion;
+  modo_disponible: boolean;
+}
+
+/** `GET /api/productos/{sku}/modo` */
+export interface ModoResp {
+  sku: string;
+  modo: Record<string, ModoPublicacion>;
+  por_omision: ModoPublicacion;
+  agrupada_habilitada: string[];
+  disponible: boolean;
+}
+
+/** `PUT /api/productos/{sku}/modo/{canal}` — nunca lanza; explica. */
+export interface ModoGuardado {
+  guardado: boolean;
+  modo: ModoPublicacion;
+  motivo: string | null;
 }
 
 export interface VarianteResumen {
@@ -23,6 +75,12 @@ export interface VarianteResumen {
   valor: number | null; // stock × costo
   estado: string | null;
   contenedor: string | null; // nº de contenedor (costos_validados)
+  /** A quién se le ESCRIBE (`woocommerce.ruta_escritura`). */
+  wc_id?: number | null;
+  /** Miniatura PROPIA de la variante — la del color. 6,899 de 7,477 la tienen. */
+  imagen?: string | null;
+  /** Meta `_barcode`. Es de la PIEZA: el padre no tiene un GTIN que valga. */
+  gtin?: string | null;
   // Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
   canales?: CanalResumen[];
   // Marca de validación del costeo (0032) de ESTA variante; ausente = pendiente.

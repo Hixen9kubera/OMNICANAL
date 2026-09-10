@@ -12,12 +12,28 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class CuentaEnCanal(BaseModel):
+    """Una publicación concreta: el mismo SKU vive en 2 cuentas de ML."""
+    cuenta: str = ""
+    item_id: str | None = None
+    situacion: str | None = None
+    estado: str | None = None
+
+
 class CanalResumen(BaseModel):
     """Indicador de presencia de un SKU en un canal (los 'puntos' de colores)."""
     canal: str
     publicado: bool = False
     item_id: str | None = None     # ml_item_id / asin / etc.
     url: str | None = None
+    # CÓMO está, no sólo si está. El rail de variantes del Estudio pinta
+    # distinto una pausada (existe pero no se vende) y una en revisión
+    # (enviada, sin confirmar) — dos cosas que "publicado: true" tapaba.
+    situacion: str | None = None
+    # `estado` es el `status` del canal, que NO es `situacion`: en TikTok manda
+    # `status` (ACTIVATE/DRAFT) y en Mercado Libre manda `situacion`.
+    estado: str | None = None
+    cuentas: list[CuentaEnCanal] = []
 
 
 class CategoriaNivel(BaseModel):
@@ -39,6 +55,14 @@ class VarianteResumen(BaseModel):
     valor: float | None = None     # stock × costo
     estado: str | None = None
     contenedor: str | None = None  # nº de contenedor (costos_validados)
+    # Lo que el rail de variantes del Estudio necesita para abrir y pintar cada
+    # variante. `wc_id` es a quién se le escribe (`woocommerce.ruta_escritura`);
+    # `imagen` es su miniatura PROPIA —la del color— y `gtin` la meta `_barcode`,
+    # que es de la PIEZA y no del padre. El respaldo REST no manda los dos
+    # últimos: ausente ≠ vacío.
+    wc_id: int | None = None
+    imagen: str | None = None
+    gtin: str | None = None
     # Presencia de ESTA variante en cada marketplace (Productos / Omnicanal).
     canales: list[CanalResumen] = []
     # Marca de validación del costeo (0032) de ESTA variante. Igual que en el

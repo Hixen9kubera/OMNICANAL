@@ -1759,6 +1759,11 @@ async def variantes_de_productos(
                         "precio": _to_float(v.get("price")),
                         "stock": v.get("stock_quantity"),
                         "estado": v.get("status"),
+                        # El camino rápido (wp_db) manda además imagen y GTIN.
+                        # Aquí NO se piden: serían una llamada REST más por
+                        # variante justo en el respaldo, que es el camino lento.
+                        # El rail los trata como ausentes, no como vacíos.
+                        "wc_id": v.get("id"),
                     })
                 return salida
             except Exception as exc:  # noqa: BLE001

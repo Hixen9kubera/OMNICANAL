@@ -8,11 +8,11 @@ import Pagination from "@/components/Pagination";
 import ChannelDots from "@/components/ChannelDots";
 import ProductStudio from "@/components/ProductStudio";
 import CostoEditor from "@/components/CostoEditor";
-import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/components/Variantes";
+import { ChipModo, esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/components/Variantes";
 import { TituloMoneda } from "@/components/Moneda";
 
-import { listarCanales, listarProductos } from "@/lib/api";
-import type { CanalInfo, Paginacion, Producto } from "@/lib/types";
+import { configEstudio, leerModosPublicacion, listarCanales, listarProductos } from "@/lib/api";
+import type { CanalInfo, EstudioConfig, ModoPublicacion, Paginacion, Producto } from "@/lib/types";
 
 const PER_PAGE = 40;
 const INDIGO = "#4F46E5";
@@ -53,6 +53,14 @@ export default function ProductosPage() {
   // llegue la respuesta real, incluso si por alguna razón cargando ya es false.
   const primeraCarga = useRef(true);
   const [sel, setSel] = useState<Producto | null>(null);
+  // Variante que abre seleccionada en el rail del Estudio (clic en un renglón
+  // de la tabla desplegada). null = abre en el padre / la primera.
+  const [varianteSel, setVarianteSel] = useState<string | null>(null);
+  // Config del Estudio. Mientras no llegue, el Estudio se comporta como el de
+  // siempre: `studio_variantes` ausente = cajón derecho, sin rail.
+  const [estudioConfig, setEstudioConfig] = useState<EstudioConfig | null>(null);
+  // { sku_padre: {canal: modo} } — sólo las familias con modo GUARDADO.
+  const [modos, setModos] = useState<Record<string, Record<string, ModoPublicacion>>>({});
   const [editCosto, setEditCosto] = useState<string | null>(null);
   // Padres con su lista de variantes desplegada (misma mecánica que Crear Productos)
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
@@ -73,7 +81,20 @@ export default function ProductosPage() {
 
   useEffect(() => {
     listarCanales().then(setCanales).catch(() => setCanales([]));
+    // Falla en silencio: sin config, el Estudio es el de siempre.
+    configEstudio().then(setEstudioConfig).catch(() => setEstudioConfig(null));
   }, []);
+
+  // El modo de las familias VISIBLES, en una sola llamada por página.
+  useEffect(() => {
+    const padres = productos.filter(esPadre).map((p) => p.sku);
+    if (!padres.length) { setModos({}); return; }
+    let vivo = true;
+    leerModosPublicacion(padres)
+      .then((r) => { if (vivo) setModos(r.modo ?? {}); })
+      .catch(() => { /* sin chip */ });
+    return () => { vivo = false; };
+  }, [productos]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -339,17 +360,22 @@ export default function ProductosPage() {
 
                   {/* Columna TIPO */}
                   <div className="hidden w-20 shrink-0 justify-center md:flex">
-                    <TipoBadge padre={padre} onClick={() => setSel(p)} />
+                    <TipoBadge padre={padre} onClick={() => { setVarianteSel(null); setSel(p); }} />
                   </div>
 
                   {/* Columna VARIANTES */}
                   <div className="hidden w-36 shrink-0 justify-center md:flex">
                     {padre ? (
-                      <VariantesBoton
-                        n={p.variantes.length}
-                        abierto={abierto}
-                        onClick={() => toggleExpandido(p.sku)}
-                      />
+                      <span className="flex flex-col items-center">
+                        <VariantesBoton
+                          n={p.variantes.length}
+                          abierto={abierto}
+                          onClick={() => toggleExpandido(p.sku)}
+                        />
+                        {Object.entries(modos[p.sku] ?? {}).map(([c, m]) => (
+                          <ChipModo key={c} modo={m} canalLabel={labelMap[c] ?? c} />
+                        ))}
+                      </span>
                     ) : (
                       <span className="text-xs text-slate-300">—</span>
                     )}
@@ -397,6 +423,7 @@ export default function ProductosPage() {
                       variantes={p.variantes}
                       colorMap={colorMap}
                       labelMap={labelMap}
+                      onVariante={(sku) => { setVarianteSel(sku); setSel(p); }}
                     />
                   </div>
                 )}
@@ -420,7 +447,15 @@ export default function ProductosPage() {
       </main>
 
       {/* Estudio de producto (overlay) */}
-      <ProductStudio sku={sel?.sku ?? null} producto={sel} canales={canales} onClose={() => setSel(null)} onGuardado={cargar} />
+      <ProductStudio
+        sku={sel?.sku ?? null}
+        producto={sel}
+        canales={canales}
+        estudioConfig={estudioConfig}
+        varianteInicial={varianteSel}
+        onClose={() => { setSel(null); setVarianteSel(null); }}
+        onGuardado={cargar}
+      />
     </div>
   );
 }

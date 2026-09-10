@@ -127,8 +127,15 @@ def presencia(skus: list[str]) -> list[dict[str, Any]]:
         _SEL + """ where l.canal = any(%s) and l.sku = any(%s::citext[])
                    and l.listing_id is not null and l.listing_id <> ''""",
         (list(CANALES), list(skus)))
+    # `estado_canal` (= `status`) viaja junto a `situacion` porque NO son lo
+    # mismo y cada canal usa uno: en Mercado Libre el que manda es `situacion`
+    # (active/paused/under_review) y en TikTok es `status` (ACTIVATE/DRAFT),
+    # donde `situacion` sólo cuenta cómo salió de la auditoría. El rail de
+    # variantes del Estudio pinta los dos casos, así que necesita los dos
+    # campos: con uno solo, medio catálogo sale "desconocido".
     return [{"sku": str(r["sku"]), "canal": r["canal"], "cuenta": r["cuenta"],
-             "item_id": r["item_id"], "situacion": r["situacion"]} for r in rows]
+             "item_id": r["item_id"], "situacion": r["situacion"],
+             "estado_canal": r.get("estado_canal")} for r in rows]
 
 
 def resumen_por_canal() -> list[dict[str, Any]]:

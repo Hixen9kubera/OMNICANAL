@@ -28,7 +28,10 @@ from models.schemas import (
     RespuestaProductos,
 )
 from services import (amazon, channel_read, costing_read, ejemplos, inventario,
-                      meli, odoo, presencia, publicar, studio, woocommerce)
+                      meli, modo_publicacion, odoo, presencia, publicar, studio,
+                      woocommerce)
+from config import settings
+from core import actor as core_actor
 
 log = logging.getLogger("omnicanal.routers.productos")
 router = APIRouter(prefix="/api/productos", tags=["productos"])
@@ -517,6 +520,41 @@ async def listar_productos(
     return RespuestaProductos(canal=canal, items=items, paginacion=paginacion,
                               filtro_activas=filtro_activas,
                               revisado_truncado=revisado_truncado)
+
+
+@router.get("/_estudio/config")
+async def config_estudio():
+    """
+    Lo que la pantalla necesita saber ANTES de abrir el Estudio.
+
+    Va con prefijo `_` y se declara aquí arriba por la misma razón que
+    `_categorias/lista`: la comodín `GET /{sku:path}` del final resolvería
+    `_estudio/config` como el detalle de un producto con ese nombre.
+
+    `agrupada_habilitada` sale del mismo sitio que lo usa el guardado
+    (`modo_publicacion`), para que la pantalla y el servidor no puedan
+    contradecirse sobre qué canales saben publicar agrupado.
+    """
+    return {
+        "studio_variantes": bool(settings.studio_variantes),
+        "agrupada_habilitada": list(modo_publicacion.AGRUPADA_HABILITADA),
+        "modo_por_omision": modo_publicacion.POR_OMISION,
+        "modo_disponible": modo_publicacion.disponible(),
+    }
+
+
+@router.get("/_estudio/modos")
+async def modos_estudio(skus: str = Query("", description="SKUs de PADRE separados por coma")):
+    """
+    El modo por canal de VARIAS familias, para el chip de la lista.
+
+    En lote y no una llamada por renglón: la lista pinta 40 productos por
+    página. Sólo devuelve las familias que tienen un modo GUARDADO — las que no
+    aparecen están en el de omisión, y el chip no se pinta. Decir "individual"
+    en todas sería ruido que no informa de nada.
+    """
+    lista = [s.strip() for s in (skus or "").split(",") if s.strip()]
+    return {"modo": await modo_publicacion.leer(lista)}
 
 
 @router.get("/_categorias/lista")
@@ -1048,6 +1086,50 @@ async def resumen_contenido_canales(sku: str):
 
 def _paginas(total: int, per_page: int) -> int:
     return max(1, (total + per_page - 1) // per_page)
+
+
+# ── MODO DE PUBLICACIÓN (agrupada | individual), por canal ────────────────────
+#
+# Se declara ANTES de la comodín de abajo. Si estas dos quedaran después de
+# `GET /{sku:path}`, esa `.*` se las tragaría y `/ABC/modo` volvería 200 con el
+# DETALLE de un producto llamado "ABC/modo" — sin un solo error en los logs.
+
+class ModoReq(BaseModel):
+    modo: str  # agrupada | individual
+
+
+@router.get("/{sku:path}/modo")
+async def leer_modo(sku: str):
+    """
+    El modo por canal de la familia de `sku`, y qué canales saben ejecutarlo.
+
+    `agrupada_habilitada` viene vacío hoy a propósito: el publicador arma una
+    ficha PLANA (la llave `variations` no existe en el repositorio) y no hay ni
+    una publicación con variantes en las dos cuentas de ML. La pantalla lo pinta
+    como «Pronto» leyendo esta lista, en vez de traer la regla escrita aparte y
+    que las dos se desincronicen.
+    """
+    return {
+        "sku": sku,
+        "modo": await modo_publicacion.leer_uno(sku),
+        "por_omision": modo_publicacion.POR_OMISION,
+        "agrupada_habilitada": list(modo_publicacion.AGRUPADA_HABILITADA),
+        "disponible": modo_publicacion.disponible(),
+    }
+
+
+@router.put("/{sku:path}/modo/{canal}")
+async def guardar_modo(sku: str, canal: str, req: ModoReq):
+    """
+    Fija el modo de la familia en un canal.
+
+    NO devuelve 4xx cuando no se pudo guardar: contesta `guardado: false` con el
+    motivo en texto. La pantalla tiene que poder seguir trabajando aunque la
+    preferencia no se persista, y el motivo es justo lo que se le enseña a quien
+    apretó el botón.
+    """
+    return await modo_publicacion.guardar(
+        sku, canal, req.modo, core_actor.actual() or None)
 
 
 # -- Registro DIFERIDO de la ruta comodín -------------------------------------

@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, ChevronRight, Layers } from "lucide-react";
-import type { Producto, VarianteResumen } from "@/lib/types";
+import { ChevronDown, ChevronRight, Layers, Split } from "lucide-react";
+import type { ModoPublicacion, Producto, VarianteResumen } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
 import ChipRevision from "./ChipRevision";
 import { TituloMoneda } from "./Moneda";
@@ -66,15 +66,48 @@ export function VariantesBoton({
   );
 }
 
+// ── Chip de MODO de publicación ─────────────────────────────────────────────
+//
+// Sólo se pinta cuando la familia tiene un modo GUARDADO para ese canal. Si no
+// hay nada guardado está en el de omisión (individual) y el chip no aparece:
+// escribir "individual" en los 1,504 padres sería ruido que no informa de nada.
+export function ChipModo({ modo, canalLabel }: {
+  modo: ModoPublicacion;
+  canalLabel: string;
+}) {
+  const agrupada = modo === "agrupada";
+  return (
+    <span
+      title={agrupada
+        ? `Sale como UNA publicación con selector de variante en ${canalLabel}`
+        : `Sale como una publicación POR VARIANTE en ${canalLabel}`}
+      className={[
+        "mt-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold",
+        agrupada ? "bg-emerald-50 text-emerald-700" : "bg-orange-50 text-orange-800",
+      ].join(" ")}
+    >
+      {agrupada ? <Layers size={10} /> : <Split size={10} />}
+      {agrupada ? "agrupada" : "individual"} en {canalLabel}
+    </span>
+  );
+}
+
 // ── Tabla de variantes (el recuadro que se despliega) ────────────────────────
 export function VariantesTabla({
   variantes,
   colorMap,
   labelMap,
+  onVariante,
 }: {
   variantes: VarianteResumen[];
   colorMap: Record<string, string>;
   labelMap: Record<string, string>;
+  /**
+   * Clic en un renglón → abre el Estudio con el rail puesto en ESA variante.
+   * Opcional a propósito: esta tabla la comparten Productos y Omnicanal, y sin
+   * el manejador se comporta exactamente como siempre.
+   */
+  onVariante?: (sku: string) => void;
 }) {
   return (
     <div className="rounded-xl border border-violet-100 bg-white p-3">
@@ -98,7 +131,15 @@ export function VariantesTabla({
           </thead>
           <tbody>
             {variantes.map((v) => (
-              <tr key={v.sku} className="border-t border-slate-100">
+              <tr
+                key={v.sku}
+                onClick={onVariante ? () => onVariante(v.sku) : undefined}
+                title={onVariante ? "Abrir el Estudio en esta variante" : undefined}
+                className={[
+                  "border-t border-slate-100",
+                  onVariante ? "cursor-pointer transition-colors hover:bg-violet-50/60" : "",
+                ].join(" ")}
+              >
                 <td className="py-1.5 pr-3 font-mono text-slate-500">
                   <span className="inline-flex items-center gap-1.5">
                     {v.sku}

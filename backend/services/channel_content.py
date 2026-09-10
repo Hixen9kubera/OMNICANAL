@@ -113,6 +113,18 @@ def _pool():
     return _POOL
 
 
+def pool_kubera():
+    """
+    El pool de kubera, prestado a módulos hermanos que escriben una tabla chica.
+
+    Existe por el presupuesto de conexiones, no por comodidad: el 23-jul se
+    perdieron 60 eventos del espejo por `TooManyConnections`, y cada pool nuevo
+    es otra mordida al mismo pastel. `modo_publicacion` guarda UNA fila cuando
+    alguien aprieta un botón — no justifica tres conexiones propias.
+    """
+    return _pool()
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Lectura
 # ══════════════════════════════════════════════════════════════════════════════

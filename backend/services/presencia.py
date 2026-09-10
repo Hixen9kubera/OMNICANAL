@@ -38,7 +38,8 @@ def _red_desde_kubera(skus: list[str], acc: dict, _agregar) -> None:
             continue
         for pub in pubs:
             _agregar(sku, Canal.MERCADO_LIBRE.value, True,
-                     pub.get("item_id"), pub.get("url"))
+                     pub.get("item_id"), pub.get("url"),
+                     situacion=pub.get("situacion"), cuenta=pub.get("cuenta"))
     for sku, est in channel_read.estado_amazon(skus).items():
         if not est.get("publicado") or Canal.AMAZON.value in acc.get(sku, {}):
             continue
@@ -61,20 +62,41 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
     acc: dict[str, dict[str, dict[str, Any]]] = {s: {} for s in skus}
     placeholders = ",".join(["%s"] * len(skus))
 
-    def _agregar(sku: str, canal: str, publicado: bool, item_id, url):
+    # Orden de gravedad de `situacion`: la que MANDA cuando un SKU está en un
+    # canal con varias cuentas. Publicada gana a pausada, y pausada a "todavía
+    # no sabemos" — nunca al revés: decir "activa" porque UNA cuenta lo está
+    # escondería que la otra lleva semanas pausada.
+    _PESO_SIT = {"active": 4, "under_review": 3, "paused": 2, "inactive": 1}
+
+    def _agregar(sku: str, canal: str, publicado: bool, item_id, url,
+                 situacion=None, cuenta=None, estado=None):
         if sku not in acc:
             return
+        # El rail de variantes del Estudio necesita saber CÓMO está, no solo si
+        # está: una publicación pausada existe en el canal pero no se vende, y
+        # una en revisión fue enviada sin confirmar. Los dos casos se pintaban
+        # igual que "publicada" mientras `situacion` se tiraba aquí.
+        sit = (situacion or "").lower() or None
+        est = (estado or "").lower() or None
+        cta = {"cuenta": cuenta or "", "item_id": item_id,
+               "situacion": sit, "estado": est}
         ent = acc[sku].get(canal)
         if ent is None:
             acc[sku][canal] = {
                 "canal": canal, "publicado": publicado,
                 "item_id": item_id, "url": url, "n": 1,
+                "situacion": sit, "estado": est, "cuentas": [cta],
             }
         else:
             ent["n"] += 1
             ent["publicado"] = ent["publicado"] or publicado
             if not ent["item_id"] and item_id:
                 ent["item_id"], ent["url"] = item_id, url
+            ent["cuentas"].append(cta)
+            if _PESO_SIT.get(sit or "", 0) > _PESO_SIT.get(ent.get("situacion") or "", 0):
+                ent["situacion"] = sit
+            if est and not ent.get("estado"):
+                ent["estado"] = est
 
     # FUENTE MÁS FRESCA: canal_inventario (espejo de canales). Lo alimentan el
     # sync de 15 min Y los webhooks de ML (items/stock_locations/orders_v2), así
@@ -103,7 +125,9 @@ def presencia_por_sku(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
             if situacion == "closed":
                 continue
             _agregar(r["sku"], r.get("canal") or Canal.MERCADO_LIBRE.value,
-                     True, r.get("item_id"), None)
+                     True, r.get("item_id"), None,
+                     situacion=r.get("situacion"), cuenta=r.get("cuenta"),
+                     estado=r.get("estado_canal"))
     except Exception as exc:  # noqa: BLE001
         log.warning("presencia (canal_inventario) falló: %s", exc)
 

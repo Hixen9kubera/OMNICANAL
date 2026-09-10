@@ -1001,6 +1001,94 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.498.0 — El Estudio abre al centro, con las variantes en un rail a la izquierda
+
+Aterriza el handoff de diseño del **Publicador Studio** (artboards 2a–2d). El
+Estudio deja de tratar cada SKU como si estuviera solo: las variantes de un
+padre se ven, se eligen y se editan sin salir del modal. **Entra APAGADO**
+(`STUDIO_VARIANTES=false`): con el flag en `false` el Estudio es el cajón
+derecho de siempre, sin rail y sin banda de modo, y la reversa es una variable
+en Railway, no un revert.
+
+Decisiones de Brandon (10-sep-2026) que fijan el alcance: el modo **agrupado se
+ve pero no se publica** («Pronto»); la lista sigue **anidada** (padre + «Ver
+variantes»), sin encender `LISTADO_APLANADO`; y **no se construye** el aviso de
+«variantes sueltas» del 2d.
+
+- **El truco que hace que las 900 líneas de campos no se enteren.** Todo el
+  cuerpo de `ProductStudio` se mueve por la variable `sku`. Redefinirla como
+  «la variante abierta» hace que cargar, guardar, Mejorar con IA, publicar,
+  imágenes y costos trabajen sobre esa variante sin tocar ni un campo. Cambiar
+  de renglón en el rail recarga la ficha entera sola, porque los efectos ya
+  dependían de `sku`.
+- **En agrupada se edita el PADRE, no «la primera como si fuera el padre».** En
+  WooCommerce el título, la descripción y la categoría viven en el post del
+  padre: **0 de 7,477 variaciones tienen categoría propia y ninguna tiene
+  título**. Editar la primera escribiría en el sitio equivocado. El rail sí la
+  marca y bloquea a las demás, que es lo que el diseño pide ver.
+- **El punto de estado traduce cinco vocabularios distintos**
+  (`lib/estadoVariante.ts`). Cada canal escribe su estado en un campo distinto y
+  el panel guarda DOS columnas que no significan lo mismo: en Mercado Libre
+  manda `situacion` (2,915 `paused` contra **473 activas**: lo normal ahí es
+  estar pausado, y pintarlo verde mentiría en el 86%) y en TikTok manda `status`
+  (`ACTIVATE`/`DRAFT`), donde `situacion` sólo cuenta la auditoría. **Se agrega
+  un quinto estado que el diseño no traía: «enviada, sin confirmar»** — 215
+  publicaciones en `under_review` más las `PENDING`/`PRE_APPROVED` de TikTok que
+  hoy se cuentan como éxito sin serlo.
+- **`presencia_por_sku` deja de tirar el estado.** Ya leía `situacion` y sólo la
+  usaba para descartar `closed`. Ahora conserva `situacion`, `estado` (el
+  `status` del canal) y la lista de `cuentas` — de ahí sale la banda «Publicado
+  en Mercado Libre · BEKURA + SANCORFASHION · ambas cuentas», que aplica al 83%
+  del catálogo de ML (2,460 SKUs en las dos cuentas contra 494 en una).
+- **`wp_db.variantes_por_padre` devuelve `wc_id`, `imagen` y `gtin`.** Sin
+  `wc_id` no hay a quién escribirle (`ruta_escritura`); sin foto propia el rail
+  pintaría seis veces la imagen del padre y el color sería indistinguible
+  (**6,899 de 7,477 tienen la suya**); y el GTIN es de la PIEZA, no del padre
+  (meta `_barcode`). La miniatura sale en lote reusando `imagenes_por_wc_id`.
+- **La etiqueta del rail es el `nombre` completo, no el color.** Los mockups
+  rotulan «Café», «Rosa» porque ahí el único eje es el color. En el catálogo
+  real `ACC-0424` tiene ocho variantes que sólo se distinguen por la TALLA
+  («Rosa / 39», «Rosa / 38»…): quedarse con el color las volvía ocho renglones
+  idénticos. `attribute_talla` aparece en 3,442 de las 7,477.
+- **El GTIN no cuenta como faltante**, aunque el mockup diga «sin GTIN ni
+  imagen». Casi ninguna variante tiene `_barcode`, así que contarlo dejaría el
+  contador clavado en «0 / N listas» y un aviso que sale siempre deja de leerse.
+  En la tabla POR VARIANTE se sigue mostrando: ahí es información, no bloqueo.
+- **Modo por canal, persistido en la base** (`channel.publication_mode`,
+  migración **0051**, llave `(sku_padre, canal)`). No en localStorage: dos
+  personas tienen que ver el mismo modo, porque el resultado es compartido. Y
+  **degrada**: sin `SUPABASE_DB_URL` o con la 0051 sin aplicar, contesta
+  `individual` y lo dice en pantalla en vez de romperse.
+- **Agrupada rehúsa guardarse y apaga Publicar.** `build_payload()` arma un
+  diccionario plano: la llave `variations` no aparece en el repositorio y hay
+  **0 publicaciones con variantes** en las dos cuentas de ML. Publicar en ese
+  modo mandaría una ficha plana con el precio mínimo de la familia — el defecto
+  que hoy deja **2,104 variantes incomprables bajo 418 padres aplastados**
+  (el 9-sep eran 311 padres y 1,722 variantes: creció en un día). Cuando el
+  adaptador aprenda a mandar `variations`, se agrega el canal a
+  `modo_publicacion.AGRUPADA_HABILITADA` y deja de ser «Pronto».
+- **El diálogo de desagrupar (2c) queda construido y DORMIDO** a propósito: sólo
+  aplica sobre una publicación viva con variantes, y hoy no existe ninguna. Su
+  contenido no es de UI sino de negocio —separar da de baja una publicación con
+  preguntas, reseñas y antigüedad— y tiene que estar pensado antes, no con
+  prisa. Su leyenda de estados SÍ se usa: cuelga del ícono del rail.
+- **La lista**: chip de modo bajo «Ver variantes» (sólo cuando la familia tiene
+  un modo guardado; escribir «individual» en los 1,504 padres sería ruido) y
+  clic en un renglón de la tabla desplegada abre el Estudio en ESA variante.
+
+Tres defectos encontrados al verificarlo contra producción, todos corregidos:
+el canal volvía a General al cambiar de modo (el reset colgaba de `sku`, que
+cambia al elegir variante; ahora cuelga del padre); el título salía duplicado
+—«… - Café — Café»— porque Woo ya le pega el color al `name` de la variación; y
+al acabarse la ficha el scroll seguía de largo hacia el listado y detrás del
+modal centrado no quedaba nada, lo que parecía una pantalla rota
+(`overscroll-contain` + bloqueo del scroll de fondo).
+
+**Verificado en local contra datos reales de producción, en sólo lectura**, con
+el scheduler desactivado a propósito: levantar el backend en la laptop con el
+`.env` de producción arranca los mismos trabajos programados que en Railway y
+es un segundo backend escribiendo donde ya escribe el de verdad.
+
 ### v0.495.0 — La 0050 guarda 90 días solo a quien lo necesita (Eduardo)
 
 Revisión de la migración 0050 de Brandon (retención de `ops.webhook_events` por

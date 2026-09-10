@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     # sin la base de WordPress el aplanado se desactiva solo (ver listar_productos).
     listado_aplanado: bool = False
 
+    # ESTUDIO CON VARIANTES (Brandon, 10-sep-2026). El Estudio rediseñado: modal
+    # centrado, rail de variantes a la izquierda y modo de publicación por canal.
+    # Convive con el cajón derecho de siempre en vez de reemplazarlo, para que la
+    # reversa sea apagar una variable en Railway y no un revert con deploy.
+    # El modo AGRUPADO se ve pero no se puede ejecutar todavía: ver
+    # `services/modo_publicacion.AGRUPADA_HABILITADA`.
+    studio_variantes: bool = False
+
     # ── IA ────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     gemini_api_key: str = ""

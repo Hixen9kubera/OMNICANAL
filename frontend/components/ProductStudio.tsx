@@ -23,6 +23,8 @@ import {
   Languages,
   Stamp,
   UserRound,
+  Layers,
+  Split,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -47,6 +49,8 @@ import type {
   PublicarPreview,
   PublicarResultado,
   StudioMetadata,
+  EstudioConfig,
+  ModoPublicacion,
 } from "@/lib/types";
 import {
   costoDetalle,
@@ -69,6 +73,8 @@ import {
   publicarConfirmar,
   publicarPreview,
   studioMetadata,
+  leerModoPublicacion,
+  guardarModoPublicacion,
   type ProductoIA,
 } from "@/lib/api";
 import { aNumero } from "@/lib/numeros";
@@ -84,11 +90,30 @@ import {
   limpiarBorrador,
 } from "@/lib/studioStore";
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
+import {
+  AvisoAgrupadaPronto,
+  BandaModo,
+  RailVariantes,
+  TablaPorVariante,
+  contarPublicadas,
+  faltantesDe,
+} from "./StudioVariantes";
+import { partesVariante } from "@/lib/coloresVariante";
+import { presenciaDe, puntoEstado } from "@/lib/estadoVariante";
 
 interface Props {
   sku: string | null;
   producto?: Producto | null;
   canales: CanalInfo[];
+  /**
+   * Config del Estudio (`GET /api/productos/_estudio/config`). Sin ella —o con
+   * `studio_variantes:false`— el Estudio se comporta EXACTAMENTE como siempre:
+   * cajón derecho, sin rail y sin banda de modo. Ésa es la reversa, y es una
+   * variable de Railway, no un revert.
+   */
+  estudioConfig?: EstudioConfig | null;
+  /** Variante que abre seleccionada (clic en la tabla desplegada de la lista). */
+  varianteInicial?: string | null;
   onClose: () => void;
   // Se llama tras guardar costo/precios, para que la lista que abrió el Estudio
   // (Productos/Omnicanal) refresque y no quede con el snapshot viejo.
@@ -175,9 +200,146 @@ const LIMITE_TITULO: Record<string, number> = {
   amazon: 200,
 };
 
-export default function ProductStudio({ sku, producto, canales, onClose, onGuardado }: Props) {
-  const { data, cargando, recargar } = useDetalleProducto(sku, producto);
+export default function ProductStudio({
+  sku: skuRaiz, producto, canales, estudioConfig, varianteInicial, onClose, onGuardado,
+}: Props) {
   const [canal, setCanal] = useState<string>(GENERAL);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // RAIL DE VARIANTES Y MODO DE PUBLICACIÓN
+  // ══════════════════════════════════════════════════════════════════════════
+  const variantes = useMemo(() => producto?.variantes ?? [], [producto]);
+  const conVariantes = !!estudioConfig?.studio_variantes && variantes.length > 0;
+
+  const [modoPorCanal, setModoPorCanal] = useState<Record<string, ModoPublicacion>>({});
+  const [varianteSel, setVarianteSel] = useState<string | null>(varianteInicial ?? null);
+  const [modoMsg, setModoMsg] = useState<string | null>(null);
+
+  // El modo es POR CANAL, no global: ML y Amazon admiten variantes nativas y
+  // TikTok las maneja distinto, así que el mismo producto puede estar agrupado
+  // en uno y separado en otro sin contradicción.
+  const modo: ModoPublicacion =
+    modoPorCanal[canal] ?? estudioConfig?.modo_por_omision ?? "individual";
+  // General NO es un marketplace: es la ficha de WooCommerce. Ahí no hay
+  // "una publicación con selector" que valga, así que el modo no aplica y la
+  // banda no se pinta. El rail sí: sirve para moverse entre variantes.
+  const canalEsGeneral = canal === GENERAL;
+  const agrupada = conVariantes && !canalEsGeneral && modo === "agrupada";
+  // Vacío hoy: el publicador arma una ficha PLANA. La lista la manda el
+  // servidor para que pantalla y backend no puedan contradecirse.
+  const agrupadaHabilitada = !!estudioConfig?.agrupada_habilitada?.includes(canal);
+
+  /**
+   * ⚠️ AQUÍ ESTÁ EL TRUCO, Y ES UNA SOLA LÍNEA.
+   *
+   * Todo el cuerpo de este componente —cargar, guardar, Mejorar con IA,
+   * publicar, imágenes, costos— se mueve por la variable `sku`. Redefinirla
+   * como "la variante abierta" hace que las ~900 líneas de campos de abajo
+   * trabajen sobre esa variante SIN tocar ni una de ellas. Los efectos ya
+   * dependen de `sku`, así que cambiar de renglón en el rail recarga la ficha
+   * entera sola.
+   *
+   * Por qué en AGRUPADA se edita el PADRE y no la primera variante: en
+   * WooCommerce el título, la descripción y la categoría viven en el post del
+   * padre — 0 de 7,477 variaciones tienen categoría propia y ninguna tiene
+   * título. Editar "la primera como si fuera el padre" escribiría en el sitio
+   * equivocado. El rail marca la primera y bloquea las demás, que es lo que el
+   * diseño pide ver; lo que se escribe es el padre.
+   */
+  const sku = !conVariantes || agrupada
+    ? skuRaiz
+    : varianteSel ?? variantes[0]?.sku ?? skuRaiz;
+
+  // `producto` es la fila del PADRE: sembrar con él la ficha de una variante
+  // pintaría el título y el precio del padre durante el primer render.
+  const { data, cargando, recargar } = useDetalleProducto(
+    sku, sku === skuRaiz ? producto : null);
+
+  // Otro producto abierto = rail a cero. Sin esto, abrir un SKU nuevo dejaría
+  // seleccionada una variante que ya no existe en esta familia.
+  useEffect(() => {
+    setVarianteSel(varianteInicial ?? null);
+    setModoMsg(null);
+  }, [skuRaiz, varianteInicial]);
+
+  /**
+   * Con el Estudio abierto, la página de atrás no se mueve.
+   *
+   * El Estudio de siempre era un cajón a pantalla completa y esto no se
+   * notaba. Centrado sí: al llegar al final de la ficha el scroll seguía de
+   * largo hacia el listado, la lista se iba 1,000 px hacia abajo y detrás del
+   * modal no quedaba nada — daba la impresión de que la pantalla se había roto.
+   * `overscroll-contain` en la ficha corta el encadenado; esto corta el resto
+   * (rueda sobre el fondo, teclas de página).
+   */
+  useEffect(() => {
+    if (!skuRaiz) return;
+    const previo = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previo; };
+  }, [skuRaiz]);
+
+  // El motivo de un modo que no se pudo guardar es DE ESE CANAL. Sin esto se
+  // quedaba colgado al cambiar de pestaña: el aviso de "el agrupado todavía no
+  // se publica" seguía en pantalla en General, donde ni siquiera hay banda de
+  // modo que lo explique.
+  useEffect(() => { setModoMsg(null); }, [canal]);
+
+  // El modo guardado de esta familia. Falla en silencio a 'individual': una
+  // preferencia que no se puede leer no es motivo para no abrir el Estudio.
+  useEffect(() => {
+    if (!conVariantes || !skuRaiz) return;
+    let vivo = true;
+    leerModoPublicacion(skuRaiz)
+      .then((r) => { if (vivo) setModoPorCanal(r.modo ?? {}); })
+      .catch(() => { /* individual por omisión */ });
+    return () => { vivo = false; };
+  }, [skuRaiz, conVariantes]);
+
+  const idxVariante = Math.max(0, variantes.findIndex((v) => v.sku === sku));
+  const etiquetaVariante = conVariantes
+    ? partesVariante(variantes[idxVariante]?.nombre).etiqueta
+    : "";
+  /**
+   * El color va en el título SÓLO si no está ya ahí.
+   *
+   * WooCommerce arma el `name` de una variación pegándole las opciones al del
+   * padre, así que muchas ya vienen con el color dentro: "Carriola … - Café".
+   * Añadirlo otra vez daba "Carriola … - Café — Café" (visto en MASC-1022-CAF).
+   */
+  const sufijoVariante = (() => {
+    if (!conVariantes || agrupada || !etiquetaVariante) return "";
+    const nombre = (data?.nombre ?? "").toLowerCase();
+    return nombre.includes(etiquetaVariante.toLowerCase()) ? "" : " — " + etiquetaVariante;
+  })();
+  // Los dos contadores de la banda de modo. `listas` = se pueden MANDAR (tienen
+  // precio, imagen y GTIN); `publicadas` = ya existen en este canal. No son lo
+  // mismo y el diseño enseña uno u otro según el modo.
+  const nListas = useMemo(
+    () => variantes.filter((v) => faltantesDe(v).length === 0).length, [variantes]);
+  const nPublicadas = useMemo(
+    () => contarPublicadas(variantes, canal), [variantes, canal]);
+  // La primera variante que NO se podría mandar: el canal la recibiría sin
+  // precio o sin foto, así que entra pausada en vez de a la venta.
+  const noListasResumen = useMemo(() => {
+    const v = variantes.find((x) => faltantesDe(x).length > 0);
+    return v ? partesVariante(v.nombre).etiqueta || v.sku : "";
+  }, [variantes]);
+  const yaPublicadaAqui = useMemo(() => {
+    const v = variantes[idxVariante];
+    return !!v && puntoEstado(canal, presenciaDe(v.canales, canal), v.stock, v.estado).estado !== "falta";
+  }, [variantes, idxVariante, canal]);
+
+  async function cambiarModo(m: ModoPublicacion) {
+    if (m === modo) return;
+    // Cambiar de modo es libre mientras la publicación no exista en el canal.
+    // El diálogo de desagrupar (DialogoDesagrupar) sólo aplica sobre una
+    // publicación VIVA con variantes, y hoy no existe ninguna.
+    setModoPorCanal((prev) => ({ ...prev, [canal]: m }));
+    setModoMsg(null);
+    const r = await guardarModoPublicacion(skuRaiz!, canal, m).catch(() => null);
+    if (r && !r.guardado && r.motivo) setModoMsg(r.motivo);
+  }
 
   // Al abrir el Studio (edición), SIEMPRE recargar en vivo de Woo: el cache de
   // la lista puede estar viejo (ej. descripción recién actualizada). Así los
@@ -310,9 +472,20 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
     return { color: canalInfo.color, texto: canalInfo.color_texto, acento: canalInfo.acento, suave: fb.suave ?? hexToRgba(canalInfo.color, 0.1) };
   }, [canalInfo, canal]);
 
-  // ── Reset al cambiar de SKU ─────────────────────────────────────────
+  /**
+   * El canal vuelve a General al abrir OTRO PRODUCTO — no al moverse entre las
+   * variantes de la misma familia.
+   *
+   * Va aparte del reset de abajo, y depende de `skuRaiz` en vez de `sku`,
+   * porque `sku` cambia también al elegir otra variante en el rail y al pasar
+   * de individual a agrupada (donde pasa a ser el padre). Colgado de `sku`, ese
+   * cambio de modo te devolvía a General a media edición: elegías "Agrupada"
+   * en Mercado Libre y la pantalla saltaba a la ficha de WooCommerce sola.
+   */
+  useEffect(() => { setCanal(GENERAL); }, [skuRaiz]);
+
+  // ── Reset al cambiar de SKU (incluye cambiar de VARIANTE) ───────────
   useEffect(() => {
-    setCanal(GENERAL);
     setImgActiva(0);
     setMeta(null);
     setCampos(CAMPOS_VACIOS);
@@ -1220,25 +1393,64 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   const pctImg = jobImg && jobImg.total ? Math.round((jobImg.procesadas / jobImg.total) * 100) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" style={variablesTema(tema)}>
+    <div
+      className={conVariantes
+        ? "fixed inset-0 z-50 flex items-center justify-center p-4"
+        : "fixed inset-0 z-50 flex justify-end"}
+      style={variablesTema(tema)}
+    >
       <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={onClose} />
 
-      <aside className="relative flex h-full w-full max-w-[960px] animate-slide-in flex-col bg-slate-50 shadow-2xl">
+      <aside
+        className={conVariantes
+          ? "relative flex h-[868px] max-h-[92vh] w-full max-w-[1160px] flex-col overflow-hidden rounded-[14px] bg-slate-50"
+          : "relative flex h-full w-full max-w-[960px] animate-slide-in flex-col bg-slate-50 shadow-2xl"}
+        style={conVariantes ? { boxShadow: "0 25px 50px -12px rgba(15,23,42,.45)" } : undefined}
+      >
         {/* Header temático por canal */}
         <div
           className="flex items-start justify-between gap-3 px-6 py-4 transition-colors duration-300"
           style={{ background: `linear-gradient(120deg, ${tema.color} 0%, ${hexToRgba(tema.acento, 0.92)} 100%)`, color: tema.texto }}
         >
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/90">
+            <div className={conVariantes
+              ? "flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[10px] bg-white/90"
+              : "flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/90"}>
               {data?.imagen ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={data.imagen} alt="" className="h-full w-full object-contain p-1" />
               ) : (<ImageIcon className="text-slate-300" />)}
             </div>
             <div className="min-w-0">
-              <span className="rounded-md bg-black/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold">{sku}</span>
-              <h2 className="mt-1 line-clamp-2 text-base font-bold leading-snug">{data?.nombre ?? "Cargando…"}</h2>
+              <span className="flex flex-wrap items-center gap-1.5">
+                {/* En agrupada manda el padre; en individual, la variante abierta. */}
+                <span className="rounded-md bg-black/15 px-1.5 py-0.5 font-mono text-[11px] font-semibold">
+                  {conVariantes && !agrupada ? sku : skuRaiz}
+                </span>
+                {conVariantes && (agrupada ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10.5px] font-bold text-violet-700">
+                    <Layers size={11} /> Padre · {variantes.length} variantes
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-[10.5px] font-bold text-orange-800">
+                    <Split size={11} /> Variante {idxVariante + 1} de {variantes.length}
+                  </span>
+                ))}
+                {producto?.drop_off && (
+                  <span
+                    className="inline-flex items-center rounded-full bg-violet-100 px-2 py-0.5 text-[10.5px] font-bold text-violet-700"
+                    title="Tiene existencias en el almacén DROP OFF de Odoo."
+                  >
+                    DROP OFF
+                  </span>
+                )}
+              </span>
+              <h2 className="mt-1 line-clamp-2 text-base font-bold leading-snug">
+                {data?.nombre ?? "Cargando…"}
+                {/* En individual el color SÍ va en el título: es una publicación
+                    por sí sola. En agrupada no, porque lo agrega el selector. */}
+                {sufijoVariante}
+              </h2>
             </div>
           </div>
           <button onClick={onClose} className="rounded-lg p-2 transition-colors hover:bg-black/15"><X size={20} /></button>
@@ -1277,13 +1489,23 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
           {puedeActualizar && (
             <button
               onClick={abrirPreview}
-              disabled={cargandoPreview || !data}
+              // Publicar en agrupada mandaría una ficha PLANA con el precio
+              // mínimo de la familia — el defecto que hoy deja 2,104 variantes
+              // incomprables en ML. Se apaga hasta que el publicador sepa
+              // mandar `variations`.
+              disabled={cargandoPreview || !data || (agrupada && !agrupadaHabilitada)}
               className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
               style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
             >
               {cargandoPreview ? <Loader2 size={17} className="animate-spin" /> : <UploadCloud size={17} />}
               {accionLabel} {canalInfo?.label ?? canal}
-              {canal === "mercado_libre" ? " · ambas cuentas" : cuentaSel ? ` · ${cuentaSel}` : ""}
+              {conVariantes
+                ? agrupada
+                  ? ` · 1 publicación con ${variantes.length} variantes`
+                  : ` · sólo ${etiquetaVariante || sku}`
+                : canal === "mercado_libre"
+                  ? " · ambas cuentas"
+                  : cuentaSel ? ` · ${cuentaSel}` : ""}
             </button>
           )}
 
@@ -1370,8 +1592,62 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
 
         </div>
 
-        {/* Cuerpo */}
-        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+        {/* Banda de modo: agrupada | individual, POR CANAL */}
+        {conVariantes && !canalEsGeneral && (
+          <BandaModo
+            modo={modo}
+            onModo={cambiarModo}
+            canalLabel={canalInfo?.label ?? canal}
+            nVariantes={variantes.length}
+            nListas={nListas}
+            nPublicadas={nPublicadas}
+            agrupadaHabilitada={agrupadaHabilitada}
+          />
+        )}
+
+        {/* Cuerpo: rail de variantes + ficha con scroll PROPIO */}
+        <div className={conVariantes ? "flex min-h-0 flex-1" : "contents"}>
+          {conVariantes && (
+            <RailVariantes
+              variantes={variantes}
+              canal={canal}
+              canalLabel={canalInfo?.label ?? canal}
+              modo={modo}
+              skuSel={agrupada ? variantes[0]?.sku ?? null : sku}
+              onSel={setVarianteSel}
+              tema={tema}
+            />
+          )}
+        <div className="flex-1 space-y-5 overflow-y-auto overscroll-contain px-6 py-5">
+          {conVariantes && agrupada && !agrupadaHabilitada && (
+            <AvisoAgrupadaPronto canalLabel={canalInfo?.label ?? canal} />
+          )}
+          {conVariantes && !canalEsGeneral && modoMsg && !(agrupada && !agrupadaHabilitada) && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">{modoMsg}</p>
+          )}
+          {conVariantes && (
+            <div className="flex items-center gap-2 text-[11px]">
+              {agrupada ? (
+                <>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-violet-700">
+                    Editando el padre{etiquetaVariante ? " · " + etiquetaVariante : ""}
+                  </span>
+                  <span className="text-slate-400">
+                    Título, descripción, categoría e imágenes van a las {variantes.length} variantes
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-orange-800">
+                    Ficha propia de {etiquetaVariante || sku}
+                  </span>
+                  <span className="text-slate-400">
+                    Nada de esto lo toca el padre ni las otras variantes
+                  </span>
+                </>
+              )}
+            </div>
+          )}
           {!data && cargando && (
             <div className="space-y-4">
               <div className="h-6 w-1/3 animate-pulse rounded bg-white" />
@@ -2274,7 +2550,62 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               )}
             </>
           )}
+
+          {/* Lo único que NO se hereda en modo agrupada */}
+          {conVariantes && agrupada && <TablaPorVariante variantes={variantes} />}
         </div>
+        </div>
+
+        {/* Footer: qué va a pasar, en una frase, + las dos acciones */}
+        {conVariantes && (
+          <div className="flex items-center gap-3 border-t border-slate-200 bg-white px-6 py-2.5">
+            <p className="min-w-0 flex-1 text-[12.5px] leading-snug text-slate-500">
+              {agrupada ? (
+                <>
+                  Se actualizará <strong className="text-slate-700">1 publicación</strong> con{" "}
+                  {variantes.length} variantes
+                  {noListasResumen ? " · " + noListasResumen + " entra pausada" : ""}
+                </>
+              ) : (
+                <>
+                  {yaPublicadaAqui ? "Se actualizará " : "Se creará "}
+                  <strong className="text-slate-700">1 publicación</strong> para{" "}
+                  {etiquetaVariante || sku}
+                  {variantes.length === 2
+                    ? " · la otra se publica desde su propia ficha"
+                    : variantes.length > 2
+                      ? " · las otras " + (variantes.length - 1) + " se publican desde su propia ficha"
+                      : ""}
+                </>
+              )}
+            </p>
+            <button
+              type="button"
+              onClick={onClose}
+              className="shrink-0 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={canal === GENERAL ? guardarContenidoWoo : subirContenidoCanal}
+              // En agrupada NO se guarda: el publicador no sabe mandar
+              // `variations`, así que persistir contenido "del padre para las 6"
+              // prometería algo que el canal no va a recibir.
+              disabled={!data || guardandoContenido || subiendoCanal || (agrupada && !agrupadaHabilitada)}
+              title={agrupada && !agrupadaHabilitada
+                ? "El modo agrupado todavía no se puede publicar en este canal"
+                : undefined}
+              className="flex shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
+            >
+              {guardandoContenido || subiendoCanal
+                ? <Loader2 size={14} className="animate-spin" />
+                : <Save size={14} />}
+              Guardar contenido
+            </button>
+          </div>
+        )}
       </aside>
 
       {/* Modal: vista previa del payload + confirmar (paso 4) */}

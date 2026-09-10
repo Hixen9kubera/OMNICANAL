@@ -706,6 +706,43 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── Estudio con variantes: config y modo de publicación ──────────────────────
+
+export function configEstudio(): Promise<import("./types").EstudioConfig> {
+  return getJSON("/api/productos/_estudio/config");
+}
+
+/** El modo por canal de VARIAS familias, para el chip de la lista. En lote. */
+export function leerModosPublicacion(
+  skus: string[],
+): Promise<{ modo: Record<string, Record<string, import("./types").ModoPublicacion>> }> {
+  if (!skus.length) return Promise.resolve({ modo: {} });
+  return getJSON(`/api/productos/_estudio/modos?skus=${encodeURIComponent(skus.join(","))}`);
+}
+
+export function leerModoPublicacion(sku: string): Promise<import("./types").ModoResp> {
+  return getJSON(`/api/productos/${encodeURIComponent(sku)}/modo`);
+}
+
+/**
+ * Fija el modo de una familia en un canal.
+ *
+ * El backend NO devuelve 4xx cuando no se puede guardar: contesta
+ * `{guardado:false, motivo}`. La pantalla sigue trabajando con el modo elegido
+ * y enseña el motivo — hoy, casi siempre, "el agrupado todavía no se publica
+ * en este canal".
+ */
+export function guardarModoPublicacion(
+  sku: string,
+  canal: string,
+  modo: import("./types").ModoPublicacion,
+): Promise<import("./types").ModoGuardado> {
+  return putJSON(
+    `/api/productos/${encodeURIComponent(sku)}/modo/${encodeURIComponent(canal)}`,
+    { modo },
+  );
+}
+
 export function guardarContenidoCanal(
   sku: string,
   canal: string,
