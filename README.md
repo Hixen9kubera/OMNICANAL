@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.495.0 — La 0050 guarda 90 días solo a quien lo necesita (Eduardo)
+
+Revisión de la migración 0050 de Brandon (retención de `ops.webhook_events` por
+canal, v0.483.0) antes de aplicarla en producción, con segunda opinión del
+consejo (claude-opus, claude-sonnet, claude-haiku). El SQL estaba bien; la
+regla fallaba hacia el lado caro.
+
+- **Lista de permitidos en vez de "todo menos ML".** Antes se guardaba 90 días
+  todo lo que no se llamara exactamente `mercado_libre`. Ahora solo `tiktok`,
+  `temu`, `odoo` y `alertas` guardan 90; todo lo demás (ML y cualquier canal
+  nuevo), 3. Un canal nuevo de alto volumen —el webhook de Woo, si algún día se
+  persiste ahí— o una etiqueta de ML mal escrita ya no hereda 90 días en
+  silencio: el error posible pasa de "la tabla crece sin freno", que es lo que
+  la 0004 existe para evitar, a "un canal nuevo se purga pronto hasta que
+  alguien lo agregue". Con los canales de hoy el resultado es idéntico.
+- **Transacción explícita** (`begin`/`commit`): el `drop` y el `create` ya no
+  dependen de pegar el archivo completo.
+- **`search_path = pg_catalog, pg_temp`** (antes `ops, public, pg_catalog`,
+  heredado de la 0004): en una función `security definer` el catálogo va
+  primero.
+- **`revoke` de EXECUTE** a `public`, `anon` y `authenticated`: una función que
+  borra no tiene por qué ser pública; pg_cron la corre como su dueño.
+- **Aviso en la cabecera de la 0004**: ya no es re-aplicable sola en una base
+  con la 0050 (recrearía la sobrecarga y la purga fallaría cada noche).
+- **`routers/webhooks.py`**: los pings y el estado de TikTok y Temu decían
+  `"persistencia": "ninguna — solo logs"`, falso desde la v0.483.0;
+  `/recibidos` decía "se purga a los 3 días" y topaba la consulta en 720 h
+  (ahora explica la regla por canal y acepta hasta 2,160 h); y un aviso de
+  TikTok/Temu descartado por duplicado deja rastro en el log, porque con 90
+  días de retención la ventana de duplicados también es de 90.
+
+Probado en el sandbox dentro de una transacción revertida: queda una sola
+firma de 3 argumentos, `anon` y `authenticated` sin EXECUTE, y la llamada
+exacta del cron borra lo esperado en 9 de 9 casos (ML de 4 días sí y de 2 no;
+tiktok de 100 sí y de 4 no; temu de 89 no; odoo de 50 no; alertas de 91 sí;
+`woocommerce` y `ml` de 4 sí). `humo_auth` 63/63. **Sigue pendiente de aplicar
+en producción**: antes del lunes 14-sep a las 08:20 UTC, cuando la purga
+borraría las primeras filas de TikTok.
+
 ### v0.494.0 — La guía de Temu llega sola a la entrega de Odoo, cada 2 horas
 
 Dale de Brandon: *"hazlo cada 2 horas con el tope de 14 días"*. La guía no existe

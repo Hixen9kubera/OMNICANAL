@@ -349,7 +349,14 @@ def _persistir_evento(canal: str, topic: str, external_id: str, delivery_id: str
              cuenta, json.dumps(_sin_pii(payload), ensure_ascii=False,
                                 default=str), firma_valida),
         )
-        return int(fila["id"]) if fila else None
+        if fila is None:
+            # Duplicado: la llave (env, canal, topic, external_id, delivery_id)
+            # ya existe. Con la retención de 90 días (migración 0050) la ventana
+            # de duplicados también es de 90: que quede rastro de lo descartado.
+            log.info("%s webhook duplicado descartado por idempotencia: %s %s",
+                     canal.upper(), topic, external_id)
+            return None
+        return int(fila["id"])
     except Exception as exc:  # noqa: BLE001 — jamás romper la recepción
         log.warning("%s webhook NO persistido (%s): %s", canal.upper(),
                     external_id, exc)
@@ -975,12 +982,12 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
 async def ping_tiktok():
     """Prueba de accesibilidad. TikTok valida que la URL responda al guardarla."""
     return {"ok": True, "canal": "tiktok", "modo": "observacion",
-            "persistencia": "ninguna — solo logs",
+            "persistencia": "ops.webhook_events (sin datos del comprador)",
             "eventos_en_memoria": len(_TIKTOK_LOG)}
 
 
 @router.get("/recibidos", dependencies=[Depends(requiere_api_key)])
-async def recibidos(horas: int = Query(72, ge=1, le=720),
+async def recibidos(horas: int = Query(72, ge=1, le=2160),
                     canal: str | None = Query(None, description="tiktok | temu | mercado_libre")):
     """
     Qué nos ha mandado cada marketplace, de verdad y por escrito.
@@ -992,9 +999,11 @@ async def recibidos(horas: int = Query(72, ge=1, le=720),
 
     Va CERRADO con API-Key: el payload puede traer ids de orden.
 
-    OJO CON LA VENTANA: `ops.webhook_events` se purga a los 3 días
-    (`ops.purgar_webhook_events`, migración 0004). Pedir 720 horas no inventa
-    historia; devuelve lo que sobrevivió. Por eso el resumen dice `desde`.
+    OJO CON LA VENTANA: `ops.webhook_events` se purga POR CANAL (migración
+    0050): tiktok, temu, odoo y alertas a los 90 días; mercado_libre y todo
+    lo demás a los 3 (antes de aplicar la 0050, 3 días para todos). Pedir
+    2,160 horas no inventa historia; devuelve lo que sobrevivió. Por eso el
+    resumen dice `desde`.
     """
     def _leer():
         donde = ["recibido_at >= now() - make_interval(hours => %(h)s)"]
@@ -1026,7 +1035,7 @@ async def recibidos(horas: int = Query(72, ge=1, le=720),
         return {"horas": horas, "resumen": [dict(r) for r in resumen],
                 "por_topic": [dict(r) for r in por_topic],
                 "ultimos": [dict(r) for r in ultimos],
-                "nota": "ops.webhook_events se purga a los 3 días (migración 0004)."}
+                "nota": "Retención por canal (migración 0050): tiktok, temu, odoo y alertas 90 días; mercado_libre y el resto, 3. Antes de aplicar la 0050, 3 días para todos."}
     return await asyncio.to_thread(_leer)
 
 
@@ -1289,7 +1298,7 @@ async def ping_temu():
     la URL al guardarla y sin esta respuesta el alta se rechaza.
     """
     return {"ok": True, "canal": "temu", "modo": "observacion",
-            "persistencia": "ninguna — solo logs",
+            "persistencia": "ops.webhook_events (sin datos del comprador)",
             "eventos_en_memoria": len(_TEMU_LOG)}
 
 
@@ -1338,7 +1347,7 @@ async def webhooks_activos():
                 "canal": "tiktok",
                 "estado": "observacion",
                 "url": f"{base}/api/webhooks/tiktok",
-                "persistencia": "ninguna — solo logs (fase 1)",
+                "persistencia": "ops.webhook_events (sin datos del comprador)",
                 "eventos_en_memoria": len(_TIKTOK_LOG),
                 "app_configurada": bool(settings.tiktok_app_key),
                 "canal_encendido": settings.tiktok_enabled,
@@ -1352,7 +1361,7 @@ async def webhooks_activos():
                 "canal": "temu",
                 "estado": "observacion",
                 "url": f"{base}/api/webhooks/temu",
-                "persistencia": "ninguna — solo logs (fase 1)",
+                "persistencia": "ops.webhook_events (sin datos del comprador)",
                 "eventos_en_memoria": len(_TEMU_LOG),
                 "alta": "MANUAL en Partner Platform → Webhook → Create webhook "
                         "(no hay permiso de API para suscribir)",

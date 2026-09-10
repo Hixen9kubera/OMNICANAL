@@ -13,6 +13,14 @@
 --
 -- Idempotente: re-aplicable sin efecto. En el sandbox, si pg_cron no está
 -- disponible, la función se crea igual y solo se omite la programación.
+--
+-- ⚠️ DESDE LA 0050 YA NO ES RE-APLICABLE SOLA en una base que tenga la 0050.
+-- La 0050 cambió la firma a tres argumentos: re-correr esta crearía OTRA VEZ
+-- la de dos junto a la de tres, y el cron (`purgar_webhook_events(3)`) encaja
+-- en las dos: `function ... is not unique` cada noche, sin aviso, con la
+-- tabla creciendo ~19,000 filas diarias. Para reprogramar el cron, corre solo
+-- el bloque `cron.schedule` del final. Recrear desde cero (aplicar_migraciones)
+-- sí es seguro: la 0050 corre después y deja una sola firma.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 do $$
