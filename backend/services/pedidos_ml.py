@@ -671,7 +671,26 @@ async def _sincronizar_serializado(order_id: str, forzar_estado: str | None,
                     "orden %s: falló DESPUÉS de crear #%s en Woo; el reclamo se "
                     "queda puesto para que el reintento lo adopte en vez de "
                     "duplicarlo (%s)", order_id, ya_en_woo, exc)
+            elif reintentable:
+                # SONDEO: EL CANDADO NO SE SUELTA (v0.477.0). El miedo que
+                # justificaba soltar —"si lo dejo puesto, la venta no se crea
+                # NUNCA"— no aplica cuando hay sondeo: el sondeo SIEMPRE
+                # regresa, y la rama del reclamo huérfano (arriba) resuelve un
+                # candado puesto sin pedido: adopta el que aparezca en Woo o
+                # lo crea si de verdad no hay nada. Soltarlo, en cambio, era
+                # la puerta de los gemelos cuando Woo creaba el pedido pero
+                # tardaba en hacerlo visible (500 fantasma): la mirada de
+                # arriba no lo veía, el candado se soltaba, y la siguiente
+                # pasada creaba otro en vez de adoptar. La venta de tormenta
+                # entra unos minutos tarde; duplicada, no.
+                log.warning(
+                    "orden %s: falló sin rastro en Woo; el candado se retiene "
+                    "y la siguiente pasada del sondeo decide — adopta o crea "
+                    "(%s)", order_id, exc)
             else:
+                # Webhook (ML): sin reintento garantizado, soltar sigue siendo
+                # lo correcto — un candado retenido sin otro aviso perdería la
+                # venta en silencio.
                 await asyncio.to_thread(
                     orders_write.liberar, cnl, cta, str(order_id))
         return {"ok": False, "motivo": f"error al crear pedido: {exc}"}

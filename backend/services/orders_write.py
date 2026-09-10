@@ -66,6 +66,36 @@ def _mysql_previo(external_order_id: str) -> int | None:
     return int(f["wc_order_id"]) if f and f.get("wc_order_id") else None
 
 
+def _absorcion_reciente(external_order_id: str) -> int | None:
+    """El wc_order_id que el FALLBACK escribió hace poco y kubera no alcanzó a ver.
+
+    El None de kubera puede ser MÁS VIEJO que la verdad (10-sep-2026, pares
+    #143019/#143022 y #143030/#143031): el registro del pedido cayó a MySQL
+    porque kubera estaba caída, kubera revivió dos minutos después, y su
+    channel.orders contestó "nueva" para una orden cuyo pedido YA existía —
+    solo que el registro vivía en la absorción. El sondeo creó el gemelo.
+
+    Es la misma regla de la fuente del bloque de arriba, completada: MySQL no
+    solo es la fresca cuando kubera está caída AHORA, también lo es para lo
+    que absorbió MIENTRAS estuvo caída. El filtro de 48 h separa una absorción
+    (reciente por definición) de la foto congelada del 12-ago, que es la que
+    parió los 964 fantasma y NO debe volver a contestar.
+
+    Best-effort a propósito: esto es una red EXTRA debajo de la respuesta de
+    kubera; si MySQL no contesta, se decide como antes (con kubera sola). El
+    error de la lectura de kubera sí sigue propagándose — esa red no cambia.
+    """
+    try:
+        from services import db
+        f = db.fetch_one(
+            "SELECT wc_order_id FROM pedidos_ml WHERE ml_order_id=%s "
+            "AND actualizado >= UTC_TIMESTAMP() - INTERVAL 48 HOUR",
+            (str(external_order_id),))
+        return int(f["wc_order_id"]) if f and f.get("wc_order_id") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def wc_order_id_previo(external_order_id: str) -> int | None:
     """`wc_order_id` ya registrado para esta orden, o None si de verdad es nueva.
 
@@ -78,7 +108,11 @@ def wc_order_id_previo(external_order_id: str) -> int | None:
     f = sdb.fetch_one(
         "select wc_order_id from channel.orders where external_order_id = %(id)s",
         {"id": str(external_order_id)})
-    return int(f["wc_order_id"]) if f and f.get("wc_order_id") else None
+    wc = int(f["wc_order_id"]) if f and f.get("wc_order_id") else None
+    if wc is None:
+        # kubera dice "nueva", pero pudo habérsela perdido: ver _absorcion_reciente.
+        wc = _absorcion_reciente(external_order_id)
+    return wc
 
 
 def estados_wc(cuentas: tuple[str, ...]) -> dict[str, str]:

@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.477.0 — El sondeo nunca suelta el candado, y kubera ya no tapa la absorción
+
+Dos cerraduras, salidas de la madrugada del 10-sep (pares #143019/#143022 y
+#143030/#143031, con kubera flapeando y dos pasadas seguidas del sondeo
+pariendo gemelos a 2 minutos de distancia).
+
+**1. `wc_order_id_previo` ya no se cree el "nueva" de kubera a ciegas.** El
+caso que faltaba de la regla de la fuente («se lee de donde se está
+escribiendo»): el registro del pedido cayó a MySQL a las 00:04:23 porque
+kubera estaba caída; kubera revivió; a las 00:06 el sondeo le preguntó y
+channel.orders contestó "nueva" — para una orden cuyo pedido YA existía, solo
+que su registro vivía en la absorción. Ahora, cuando kubera contesta None, se
+consulta también la absorción RECIENTE (`pedidos_ml` con `actualizado` en las
+últimas 48 h). El filtro de 48 h es lo que separa una absorción de la foto
+congelada del 12-ago (la de los 964 fantasma), que no debe volver a contestar
+jamás. Best-effort: si MySQL no responde, se decide como antes; el error de la
+lectura de kubera sigue propagándose igual.
+
+**2. Cuando falla el alta de un SONDEO, el candado se retiene.** Soltar el
+candado si la mirada a Woo no encuentra nada protegía de "la venta no se crea
+nunca" — un miedo que solo aplica a webhooks (ML), donde no hay reintento
+garantizado. El sondeo SIEMPRE regresa, y la rama del reclamo huérfano ya
+resuelve un candado puesto sin pedido: adopta el que aparezca o crea si de
+verdad no hay nada (quedó probado en el log de las 20:42:26 del 9-sep:
+"se adopta el pedido 142708"). Soltarlo era la puerta de los gemelos con los
+500 fantasma de Woo: el pedido existía pero aún no era visible, la mirada
+—aun con los 3 intentos de la v0.467— no lo veía, y la siguiente pasada
+creaba otro. Los webhooks de ML conservan el comportamiento de siempre.
+
+Costo asumido: una venta de sondeo atrapada en tormenta entra 2–5 minutos
+tarde en vez de duplicada. Con esto, las cuatro capas quedan: saltarse la
+pasada sin candado confirmable (v0.461), mirar tres veces antes de decidir
+(v0.467), no soltar nunca en sondeo (v0.477) y leer la absorción cuando
+kubera dice "nueva" (v0.477). Limpieza de la noche: #143019 (con su pieza
+devuelta — MFN, cancelado antes de papelera) y #143030 fuera; #143022 y
+#143031 conservados con su candado.
+
 ### v0.476.0 — «Sin renglón» era mentira: todavía se estaba leyendo
 
 Brandon, 9-sep: *«ojo aquí ya no veo los productos que debieron de haber llegado
