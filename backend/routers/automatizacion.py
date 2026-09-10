@@ -470,6 +470,73 @@ async def temu_guia(sn: str = Query(..., description="parentOrderSn")):
             "veredicto": veredicto}
 
 
+# Lo que dice cada código de Temu. Leerlos es la diferencia entre "no se puede"
+# y "se llama distinto": el sondeo del 1-sep encontró la guía justo así.
+_TEMU_CODIGOS = {
+    "3000003": "NO EXISTE ese tipo",
+    "3000037": "EXISTE, pero hay una versión más nueva",
+    "3000004": "EXISTÍA y se retiró (tiene sucesor)",
+    "3000032": "EXISTE pero NO tenemos permiso",
+    "5000003": "la IP no está en la lista blanca de Temu",
+    "120012016": "EXISTE y responde — sólo faltan parámetros",
+    "180020003": "EXISTE y responde — sólo faltan parámetros",
+    "4000000": "EXISTE y responde — parámetro inválido",
+}
+
+
+@router.get("/temu/probar", dependencies=[Depends(requiere_api_key)])
+async def temu_probar(tipos: str = Query(..., description="tipos separados por coma")):
+    """
+    ¿Existe este endpoint de Temu, y podemos llamarlo?
+
+    LLAMA CON PARÁMETROS VACÍOS, A PROPÓSITO. Lo que se está midiendo es la
+    EXISTENCIA y el PERMISO, y para eso el código de error basta y sobra. Un
+    endpoint de escritura —comprar una etiqueta, confirmar un envío— no puede
+    ejecutar nada sin id de pedido, almacén y servicio: contesta que le faltan
+    parámetros (`120012016` / `180020003`) y eso es justamente la respuesta que
+    se busca. No se manda NI UN dato real, así que no hay nada que se pueda
+    disparar por accidente.
+
+    Es la técnica que el 1-sep destapó que la guía sí existía: tres endpoints
+    "fallaban", pero dos decían `3000037`/`3000004` —o sea "me reemplazaron"—
+    y no `3000003` ("no existo"). Un "falla" a secas los habría enterrado.
+
+    Tope de 25 por llamada.
+    """
+    from services import temu
+
+    lista = [t.strip() for t in (tipos or "").split(",") if t.strip()]
+    if not lista:
+        return {"ok": False, "motivo": "sin tipos"}
+    if len(lista) > 25:
+        return {"ok": False, "motivo": f"{len(lista)} tipos: el tope es 25"}
+
+    async def _una(tipo: str) -> dict[str, Any]:
+        try:
+            r = await asyncio.wait_for(temu.llamar(tipo, {}), timeout=25)
+            return {"tipo": tipo, "existe": True, "permiso": True,
+                    "codigo": None, "lectura": "RESPONDE SIN PARÁMETROS",
+                    "muestra": str(r)[:160]}
+        except Exception as exc:  # noqa: BLE001
+            txt = str(exc)
+            cod = next((c for c in _TEMU_CODIGOS if c in txt), None)
+            existe = cod not in (None, "3000003")
+            return {"tipo": tipo, "existe": existe,
+                    "permiso": cod not in ("3000032", "5000003"),
+                    "codigo": cod,
+                    "lectura": _TEMU_CODIGOS.get(cod or "", "código no catalogado"),
+                    "error": txt[:200]}
+
+    res = []
+    for t in lista:
+        res.append(await _una(t))
+
+    existen = [r["tipo"] for r in res if r["existe"]]
+    return {"probados": len(res), "existen": existen,
+            "no_existen": [r["tipo"] for r in res if not r["existe"]],
+            "resultados": res}
+
+
 @router.get("/temu/censo")
 async def temu_censo(paginas: int = Query(5, ge=1, le=20),
                      por_pagina: int = Query(50, ge=10, le=100)):
