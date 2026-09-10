@@ -38,7 +38,7 @@ router = APIRouter(prefix="/api/alertas", tags=["alertas"])
 
 @router.get("/margen-negativo")
 async def margen_negativo() -> dict[str, Any]:
-    """Las publicaciones evaluables que HOY están en margen negativo."""
+    """Las publicaciones de SKUs con costo validado que HOY están en margen negativo."""
     censo = await asyncio.to_thread(alertas.censo_margen)
     if censo is None:
         raise HTTPException(503, "No se pudo leer el censo de márgenes.")

@@ -879,6 +879,15 @@ class Settings(BaseSettings):
     # api.slack.com/apps → la app de Kubera → Incoming Webhooks → Add New
     # Webhook to Workspace → elegir #avisos-costos.
     slack_webhook_costos: str = ""
+    # Canal PROPIO del margen negativo → #alerta-margenes (Eduardo, 10-sep-2026).
+    # Con ésta puesta, el de costos se queda solo con el top 10 con costo sin
+    # validar. VACÍA = el margen negativo sigue en #avisos-costos (y si ésa
+    # también está vacía, en #alertas-omnicanal): el código entra antes que el
+    # webhook sin mover nada, y el día que se ponga la variable la alarma se
+    # muda sola. Mismo trámite y misma regla que la de arriba —solo en Railway,
+    # nunca en el repo ni en el chat—, eligiendo #alerta-margenes. El canal es
+    # PRIVADO: quien cree el webhook tiene que estar dentro.
+    slack_webhook_margenes: str = ""
     # Vigilante de ausencias (actas faltantes, silencio de ventas): cada N min.
     alertas_min: int = 15
 

@@ -1001,6 +1001,46 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.482.0 — El margen negativo se muda a #alerta-margenes y habla de SKUs con costo validado (Eduardo)
+
+**Canal propio.** La revisión diaria de margen negativo deja #avisos-costos y va a
+#alerta-margenes (privado, creado el 10-sep) con su propia variable,
+`SLACK_WEBHOOK_MARGENES`. El top 10 con costo sin validar se queda en
+#avisos-costos. El ruteo pasó de un canal por tipo a una CADENA: margen negativo →
+margenes → costos → general. Sin la cadena, apuntar el tipo a una variable que
+todavía no existe lo habría mandado a #alertas-omnicanal, el canal de incidentes;
+con ella, mientras la variable no esté sigue sonando en #avisos-costos igual que
+hoy, y el día que se ponga se muda sola, sin otro deploy.
+
+**El canal nuevo no nace mudo.** `avisar_estado` solo habla cuando el estado
+cambia: al mudar el webhook, la alarma vigente no se habría repetido en el canal
+nuevo hasta que cambiara el conjunto de negativas o tocara el recordatorio
+semanal. El estado de Slack lleva ahora una marca cuando el canal propio está
+puesto, así que la primera corrida después de poner la variable repite ahí la
+alarma vigente, una sola vez. La campana del panel no se duplica: sigue con su
+huella.
+
+**«SKUs con costo validado» en vez de «publicaciones evaluables».** No fue solo la
+etiqueta. Lo evaluable ya exigía costo validado (`revisado_at` sin moverse desde
+la revisión), pero se contaba por PUBLICACIÓN, y un SKU vive en las dos cuentas de
+ML. Con la etiqueta nueva el número cuenta SKUs distintos, y dice cuántas
+publicaciones son cuando no coinciden. Medido hoy: **13 SKUs en 15 publicaciones**
+(`ORG-0475-NEG` y `TEC-2195-MUL-RGB` están en las dos cuentas); con el conteo
+viejo bajo la etiqueta nueva, el aviso habría dicho 15 SKUs. Las líneas siguen
+siendo por publicación, con canal y cuenta. Dentro del mismo aviso, «verificado»
+pasó a «validado» para no nombrar lo mismo con dos palabras.
+
+**Falta un paso que no es de código:** crear el webhook de #alerta-margenes
+(api.slack.com/apps → la app de Kubera → Incoming Webhooks → Add New Webhook to
+Workspace → #alerta-margenes; el canal es privado, así que lo crea alguien que
+esté dentro) y ponerlo en Railway como `SLACK_WEBHOOK_MARGENES`. Cambiar la
+variable reinicia el backend (regla 12).
+
+Verificado con el censo real de hoy, capturado sin enviar: la cadena en sus cuatro
+combinaciones, el encabezado nuevo, y que sin la variable el estado queda idéntico
+al de hoy (`neg15:…`, así que el deploy no repite el aviso en #avisos-costos),
+mientras que con ella gana la marca (`neg15:…@m`, 21 de 30 caracteres).
+
 ### v0.481.0 — Se retira la vista de árbol del Publicador (Eduardo)
 
 Decisión de Eduardo (10-sep-2026): todavía no se implementa ese formato. Sale de

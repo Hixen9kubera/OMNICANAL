@@ -59,12 +59,13 @@ Anti-spam, en dos capas (v0.31.0 — antes se colaba una alerta por deploy):
 Sin SLACK_WEBHOOK_URL todo el módulo es un no-op: se enciende/apaga con la pura
 variable, sin deploy.
 
-DOS CANALES, CON CAÍDA AL DE SIEMPRE (v0.271.0). Casi todo va a
-#alertas-omnicanal (`SLACK_WEBHOOK_URL`). Las DOS revisiones diarias del costeo
-van a #avisos-costos (`SLACK_WEBHOOK_COSTOS`), porque no son incidentes: un
-margen negativo se lee con calma; "los pedidos pararon" se atiende ya.
-Si `SLACK_WEBHOOK_COSTOS` está vacía, esas dos caen a `SLACK_WEBHOOK_URL` y
-suena todo donde sonaba antes. El ruteo vive en `_WEBHOOK_POR_TIPO`, abajo.
+TRES CANALES, CON CAÍDA ESCALONADA (v0.271.0, v0.482.0). Casi todo va a
+#alertas-omnicanal (`SLACK_WEBHOOK_URL`). Las revisiones diarias del costeo no
+son incidentes —un margen negativo se lee con calma; "los pedidos pararon" se
+atiende ya— y van aparte: el top 10 con costo sin validar a #avisos-costos
+(`SLACK_WEBHOOK_COSTOS`) y el margen negativo a #alerta-margenes
+(`SLACK_WEBHOOK_MARGENES`). Cada una cae a la anterior si su variable está
+vacía, así que ninguna se pierde. El ruteo vive en `_WEBHOOK_POR_TIPO`, abajo.
 """
 from __future__ import annotations
 
@@ -121,9 +122,9 @@ def disponible() -> bool:
 
 # ── A QUÉ CANAL VA CADA TIPO ──────────────────────────────────────────────────
 # Por omisión TODO va a `SLACK_WEBHOOK_URL` (#alertas-omnicanal). Las dos
-# revisiones diarias del costeo van a #avisos-costos porque no comparten
-# urgencia con el resto: nadie tiene que saltar por un margen negativo, pero sí
-# hay que leerlo. Revueltas con "los pedidos pararon", se pierden las dos cosas.
+# revisiones diarias del costeo van aparte porque no comparten urgencia con el
+# resto: nadie tiene que saltar por un margen negativo, pero sí hay que leerlo.
+# Revueltas con "los pedidos pararon", se pierden las dos cosas.
 #
 # EL RUTEO VA POR `tipo`, NO POR UN ARGUMENTO EN CADA LLAMADA, y no es pereza:
 # cada una de estas revisiones llama a `avisar_estado` DOS veces —la alarma y su
@@ -132,28 +133,35 @@ def disponible() -> bool:
 # costos acumula alarmas que nunca se ven cerrar. Con la tabla, el par no se
 # puede separar: la llave es la misma que ya identifica a la alarma.
 #
-# SIN LA VARIABLE NUEVA NO CAMBIA NADA: `_webhook_de` cae a la de siempre y las
-# dos siguen sonando en #alertas-omnicanal, igual que hoy. Por eso esto se puede
-# publicar antes de que el webhook exista.
+# CADA TIPO LLEVA UNA CADENA, NO UN CANAL: se usa el primer campo que tenga URL
+# y, si ninguno, `SLACK_WEBHOOK_URL`. El margen negativo se mudó a su propio
+# canal (#alerta-margenes, Eduardo 10-sep-2026) y su cadena conserva el de
+# costos como respaldo: mientras `SLACK_WEBHOOK_MARGENES` no exista sigue
+# sonando en #avisos-costos, igual que hoy, y el día que se ponga se muda sola,
+# sin otro deploy. Con un solo campo por tipo, la variable vacía lo habría
+# mandado de golpe a #alertas-omnicanal, que es justo el canal de incidentes.
 #
 # El valor es el NOMBRE del campo de `settings`, no la URL: una URL aquí sería
 # un secreto en el repo.
-_WEBHOOK_POR_TIPO: dict[str, str] = {
-    "margen_negativo": "slack_webhook_costos",
-    "top_costo_sin_revisar": "slack_webhook_costos",
+_WEBHOOK_POR_TIPO: dict[str, tuple[str, ...]] = {
+    "margen_negativo": ("slack_webhook_margenes", "slack_webhook_costos"),
+    "top_costo_sin_revisar": ("slack_webhook_costos",),
 }
 
 
 def _webhook_de(tipo: str) -> str:
-    """URL del canal de este `tipo`, con caída al canal general."""
+    """URL del canal de este `tipo`: la primera configurada de su cadena y, si
+    ninguna, la del canal general."""
     # Se corta en `:` igual que el enfriamiento (`acta:<dominio>`,
     # `publicar_500:<sku>`) para que un tipo con sufijo herede el canal de su
     # familia. Ojo: `_toca_hoy` sella con `<tipo>:corrida`, que nunca se manda a
     # Slack — solo se guarda el estado —, así que no hay riesgo de que el latch
     # diario se cuele por aquí.
-    campo = _WEBHOOK_POR_TIPO.get(tipo.split(":")[0])
-    propio = getattr(settings, campo, "") if campo else ""
-    return propio or settings.slack_webhook_url
+    for campo in _WEBHOOK_POR_TIPO.get(tipo.split(":")[0], ()):
+        url = getattr(settings, campo, "")
+        if url:
+            return url
+    return settings.slack_webhook_url
 
 
 # ── Candado PERSISTENTE (sobrevive a los deploys) ─────────────────────────────
@@ -789,7 +797,7 @@ _FACTOR_COSTO_DUDOSO = 1.5
 # con motivos que se traslapan no se puede leer.
 _NO_EVAL = {
     "canal": "el canal no tiene costo propio",
-    "costo": "costo sin verificar",
+    "costo": "costo sin validar",
     "precio": "precio sin confirmar",
     "insumos": "sin comisión/peso/precio",
 }
@@ -903,7 +911,13 @@ def censo_margen() -> dict[str, Any] | None:
 
 
 def _revisar_margen_negativo() -> None:
-    """Publicaciones EVALUABLES cuyo margen se fue a negativo. Una vez al día."""
+    """SKUs con costo validado cuyo margen se fue a negativo. Una vez al día.
+
+    Se evalúa por PUBLICACIÓN (un SKU puede estar en las dos cuentas de ML), y
+    las líneas siguen siendo por publicación, con su canal y cuenta. Pero el
+    encabezado cuenta SKUs DISTINTOS, porque eso es lo que dice el texto desde
+    el 10-sep-2026 (Eduardo: "SKUs con costo validado" en vez de "publicaciones
+    evaluables"): contar publicaciones bajo esa etiqueta inflaría el número."""
     tipo = "margen_negativo"
     if not _toca_hoy(tipo, settings.alertas_costos_hora_utc):
         return
@@ -926,10 +940,10 @@ def _revisar_margen_negativo() -> None:
 
     if not negativas:
         if avisar_estado(tipo, "ok", "",
-                         texto_ok=f"*Sin publicaciones evaluables en margen "
+                         texto_ok=f"*Sin SKUs con costo validado en margen "
                                   f"negativo.*{cola}"):
             _campana("margen_negativo",
-                     "Sin publicaciones evaluables en margen negativo",
+                     "Sin SKUs con costo validado en margen negativo",
                      f"ok:{_hoy_utc()}")
         return
 
@@ -939,10 +953,21 @@ def _revisar_margen_negativo() -> None:
     claves = sorted(f"{n['sku']}|{n['canal']}" for n in negativas)
     huella = "neg{}:{}".format(
         len(claves), hashlib.sha1("|".join(claves).encode()).hexdigest()[:12])
+    # El canal propio entra al estado de SLACK, no a la huella de la campana.
+    # `avisar_estado` solo habla cuando el estado cambia: sin esta marca, al
+    # poner `SLACK_WEBHOOK_MARGENES` la alarma vigente no se repetiría en
+    # #alerta-margenes hasta que cambiara el conjunto o tocara el recordatorio
+    # semanal — el canal nuevo nacería mudo. Con ella, la primera corrida tras
+    # poner la variable la manda allá una vez; la campana no se duplica porque
+    # sigue con `huella`. Con la marca cabe de sobra en el varchar(30).
+    estado_slack = huella + ("@m" if settings.slack_webhook_margenes else "")
+    skus = {n["sku"] for n in negativas}
+    en_pubs = ("" if len(skus) == len(negativas)
+               else f" (en {len(negativas)} publicaciones)")
 
     lineas = []
     for n in sorted(negativas, key=lambda x: x["margen_pct"])[:10]:
-        que = (f"COSTO DUDOSO — el costo verificado sigue siendo "
+        que = (f"COSTO DUDOSO — el costo validado sigue siendo "
                f"{n['costo'] / n['precio']:.1f}× el precio: revisar el COSTEO, "
                f"no bajar la publicación"
                if n["dudoso"] else
@@ -953,12 +978,12 @@ def _revisar_margen_negativo() -> None:
     mas = f"\n_…y {len(negativas) - 10} más._" if len(negativas) > 10 else ""
 
     hablo = avisar_estado(
-        tipo, huella,
-        f"*{len(negativas)} publicación(es) evaluable(s) con margen NEGATIVO.*\n"
+        tipo, estado_slack,
+        f"*{len(skus)} SKU(s) con costo validado en margen NEGATIVO{en_pubs}.*\n"
         + "\n".join(lineas) + mas +
         "\n_Lista completa de hoy: esto suena cuando el CONJUNTO cambia, no "
         "todos los días._" + cola,
-        texto_ok=f"*Ninguna publicación evaluable en margen negativo.*{cola}",
+        texto_ok=f"*Ningún SKU con costo validado en margen negativo.*{cola}",
         # Semanal: un margen negativo sin atender no cambia de urgencia cada
         # 24 h, y la revisión ya corre una sola vez al día.
         recordatorio_h=168)
@@ -1157,6 +1182,9 @@ def resumen_estado() -> dict[str, Any]:
             # la llave del canal. False aquí = las dos alarmas del costeo siguen
             # cayendo a #alertas-omnicanal, que es el comportamiento de siempre.
             "webhook_costos_configurado": bool(settings.slack_webhook_costos),
+            # Ídem para #alerta-margenes: False = el margen negativo sigue en
+            # #avisos-costos (o en el general, si tampoco está la de costos).
+            "webhook_margenes_configurado": bool(settings.slack_webhook_margenes),
             "candado_persistente": _persistente(),
             "persistido": [
                 {"tipo": f["tipo"], "estado": f.get("estado"),
