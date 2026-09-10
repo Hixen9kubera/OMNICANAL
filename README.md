@@ -1001,6 +1001,51 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.489.0 — Un cambio de stock ya no deja «sin confirmar» el precio (Eduardo)
+
+**El caso.** `ROP-0266-DOR` salió de la alerta de margen negativo unos 11 minutos
+el 10-sep sin haberse arreglado: sigue vendiéndose a $266.75 en SANCORFASHION con
+costo validado de $971 (-310%). A las 12:00 su stock FULL bajó de 9 a 8; ese
+cambio tocó la fila, y la regla de confirmación —`price_sale_at >= updated_at`—
+deja sin confirmar la promoción observada ante CUALQUIER cambio posterior. Hasta
+que el barrido la volvió a observar a las 12:12 contó como «precio sin
+confirmar», y la alerta la soltó sin decir por qué. Si la corrida de las 9:00 cae
+en uno de esos huecos, ese día el SKU desaparece como si se hubiera resuelto y al
+siguiente vuelve, con dos avisos de por medio.
+
+**La regla nueva:** un cambio que NO es de precio ya no tumba la confirmación
+mientras la observación tenga menos de 48 h. Los cambios de precio se saben por
+`channel.listing_history`, que llena un trigger, así que cualquier escritor deja
+huella. Pasadas las 48 h rige la regla vieja, y ese tope es la mitad del diseño:
+una promoción de ML puede terminar sin mover `price`, y la regla vieja se
+protegía de eso por accidente. Sin tope, las ~2,800 publicaciones inactivas
+observadas una sola vez el 20-ago quedarían confirmadas para siempre. 48 h cubre
+de sobra el ciclo del barrido: ninguna activa de ML tenía su observación de más
+de 48 h.
+
+**Una sola definición.** La regla vive en
+`publicaciones_panel.sql_oferta_sin_confirmar` y la importan el panel, la alerta
+de margen y el refresco al abrir (`precio_al_abrir`), para que los tres digan lo
+mismo de la misma publicación. Hasta aquí la alerta copiaba la regla en su propio
+SQL. `visto_at` no cambia (sigue ordenando «reciente»): la columna nueva es
+`oferta_sin_confirmar`.
+
+**El rendimiento se midió antes de elegir.** Preguntar «¿cuándo cambió el precio
+por última vez?» para cada fila tardaba 4.5 s en frío: para las ~4,200
+publicaciones que nunca cambiaron de precio, Postgres recorre todo su historial de
+stock buscando un cambio de precio que no existe. La versión final pregunta
+«¿cambió después de la observación?» y solo cuando hace falta —observación
+reciente con un cambio posterior—: 149 de 9,157 filas, 0.07 s. Sin DDL. Un índice
+parcial por `campo = 'price'` lo abarataría más, pero queda como opción: no se
+aplicó. Y el SQL completo del panel de ML tarda lo mismo con la columna
+nueva que sin ella: 0.25 s en caliente para 5,148 filas.
+
+**Efecto medido contra producción (solo lectura) con el código nuevo:** en el
+panel de ML, 2,911 → 2,767 ofertas sin confirmar (las inactivas viejas se quedan
+como estaban, a propósito); en la alerta, 35 → 37 publicaciones evaluadas y
+«precio sin confirmar» 2 → 0, con `ROP-0266-DOR` en la lista; y el refresco al
+abrir ya no le pregunta a ML por las dos publicaciones de `ROP-0266-DOR`.
+
 ### v0.487.0 — El tapón de Temu: la venta nace en el estado 2 y lo estábamos tirando
 
 Brandon: *"lo que se necesita para hoy es que cuando un evento llegue de Temu se

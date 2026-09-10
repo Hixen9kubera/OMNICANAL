@@ -12,7 +12,8 @@ publicación ACTIVA de Mercado Libre y guarda el `amount` —lo que el comprador
 PAGA— en `channel.listings.price_sale`, sellando `price_sale_at`.
 
 Con eso la oferta queda CONFIRMADA para `publicaciones_panel._oferta`, que es
-quien decide el margen del panel:
+quien decide el margen del panel. El caso directo de la regla
+(`publicaciones_panel.sql_oferta_sin_confirmar`) es:
 
     confirmada  ⇔  price_sale_at >= listings.updated_at
 
@@ -72,6 +73,12 @@ pasada única —la del 20-ago, que dejó 665 ofertas rancias aplicándose al ma
 cuatro días— no arregla nada; hay que repetirla. Es la moraleja que este archivo
 ya traía escrita y que ahora está medida: *una foto de precios sin quien la
 repita es una mentira con fecha de caducidad.*
+
+Desde v0.489.0 el agujero 2 se angostó: un cambio que NO es de precio —una
+venta que mueve el stock— ya no tumba una observación de menos de 48 h
+(`publicaciones_panel.OFERTA_VIGENCIA_H`). El barrido sigue haciendo falta: es
+lo que mantiene las observaciones dentro de esas 48 h, y lo único que vuelve a
+confirmar las que sí cambiaron de precio sin mandar aviso.
 
 ═══════════════════════════════════════════════════════════════════════════════
 UNA SOLA LLAMADA TRAE LOS DOS PRECIOS

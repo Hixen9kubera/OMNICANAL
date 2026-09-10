@@ -57,8 +57,9 @@ QUÉ NO HACE, A PROPÓSITO
    coincide se deja una línea de log y ahí se queda — para enterarnos si algún
    día empieza a derivar, sin estrenar un escritor que nadie pidió.
 
-DÓNDE SE SELLA LA CONFIRMACIÓN. El panel considera confirmado lo que cumple
-`price_sale_at >= updated_at` (`publicaciones_panel._oferta`). El UPDATE de aquí
+DÓNDE SE SELLA LA CONFIRMACIÓN. El panel considera confirmado lo que
+`publicaciones_panel.sql_oferta_sin_confirmar` da por confirmado, y su caso
+directo es `price_sale_at >= updated_at`. El UPDATE de aquí
 pone `price_sale_at = now()` y el trigger `trg_touch_listings` (BEFORE UPDATE,
 incondicional) pone `updated_at = now()`: `now()` es la hora de la TRANSACCIÓN,
 así que los dos salen idénticos. **Verificado, no supuesto** — probado contra el
@@ -81,6 +82,7 @@ import httpx
 
 from config import settings
 from services import meli
+from services import publicaciones_panel as pp
 from services import supabase_db as sdb
 
 log = logging.getLogger("omnicanal.precio_al_abrir")
@@ -102,16 +104,20 @@ TIMEOUT = "timeout"
 # el mismo `listing_id` (handoff a omni-datos del 25-ago). Se pregunta UNA vez y
 # el UPDATE, que va por `listing_id`, escribe en las dos.
 #
-# `min(price_sale_at)` y `max(updated_at)` son la lectura CONSERVADORA del par:
-# si cualquiera de las dos filas está rancia o sin confirmar, se refresca. Como
-# el UPDATE sella las dos a la vez, converge en una sola pasada.
-_SQL_OBJETIVO = """
+# `min(price_sale_at)` y `cambiada_at` son la lectura CONSERVADORA del par: si
+# cualquiera de las dos filas está rancia o sin confirmar, se refresca. Como el
+# UPDATE sella las dos a la vez, converge en una sola pasada. `cambiada_at` solo
+# existe si alguna fila quedó SIN CONFIRMAR según la MISMA regla del panel
+# (`pp.sql_oferta_sin_confirmar`, v0.489.0): un cambio de stock ya no dispara
+# una pregunta a ML mientras la observación tenga menos de 48 h.
+_SQL_OBJETIVO = f"""
 select l.listing_id                as listing_id,
        max(a.legacy_code)          as cuenta,
        count(*)                    as filas,
        count(l.price_sale_at)      as observadas,
        min(l.price_sale_at)        as observada_at,
-       max(l.updated_at)           as cambiada_at,
+       max(case when {pp.sql_oferta_sin_confirmar('l')}
+                then l.updated_at end) as cambiada_at,
        max(l.price_sale)           as price_sale,
        max(l.price_base)           as price_base
   from channel.listings l
@@ -154,8 +160,9 @@ def hay_que_preguntar(*, observada_at: Any, cambiada_at: Any, sin_observar: bool
     Se pregunta cuando:
       · nunca se observó (o alguna fila del par no se observó), o
       · la observación es más vieja que el piso, o
-      · la observación quedó SIN CONFIRMAR (`observada_at < cambiada_at`): la
-        publicación cambió después de mirarla, así que lo guardado ya no vale
+      · la observación quedó SIN CONFIRMAR (`observada_at < cambiada_at`): le
+        cambió el precio después de mirarla —o cualquier cosa, si la mirada
+        tiene más de 48 h—, así que lo guardado ya no vale
         para esta pantalla. Este es el caso que más se da hoy —202 confirmadas
         de 4,726 vivas el 26-ago— y es justo el que el cajón viene a cerrar.
 

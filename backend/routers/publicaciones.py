@@ -23,8 +23,10 @@ Las seis cosas que hay que saber antes de pintar esto:
      lado. NUNCA se devuelve 0 por falta de datos.
   3. `oferta_estado` tiene TRES valores. `desconocida` no es `sin_oferta`.
   4. Una oferta puede estar SIN CONFIRMAR (`oferta_confirmada: false`): se
-     observó antes del último cambio de la publicación, así que nadie sabe si
-     sigue viva. Esas NO se aplican — `precio_vigente` y el margen van contra
+     observó antes del último cambio de PRECIO de la publicación, así que nadie
+     sabe si sigue viva. Un cambio de stock ya no la tumba mientras la
+     observación tenga menos de 48 h (v0.489.0). Esas NO se aplican —
+     `precio_vigente` y el margen van contra
      el precio de lista, y `oferta_precio` / `oferta_desc_pct` llegan en null.
      Lo observado no se pierde: viaja en `oferta_precio_visto` /
      `oferta_desc_pct_visto` para pintarlo marcado. El censo trae el conteo en

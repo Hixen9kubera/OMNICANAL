@@ -810,10 +810,11 @@ def censo_margen() -> dict[str, Any] | None:
 
     LAS DOS COMPUERTAS
 
-      · PRECIO CONFIRMADO — `price_sale_at >= listings.updated_at`. Léase: la
-        promoción se observó DESPUÉS del último cambio de esa fila. La regla es
-        de `publicaciones_panel._oferta` (`oferta_confirmada`) y aquí va en SQL
-        porque así el filtro es barato; SI ALLÁ CAMBIA, ESTO SE MUEVE CON ELLA.
+      · PRECIO CONFIRMADO — `publicaciones_panel.sql_oferta_sin_confirmar`, el
+        MISMO fragmento que usa el panel: desde v0.489.0 se importa en vez de
+        copiar la regla, así que no pueden separarse. Un cambio de stock ya no
+        tumba una observación de menos de 48 h (fue lo que sacó a ROP-0266-DOR
+        de la lista 11 minutos el 10-sep, con -310% y costo validado).
         Sin confirmar, el precio es un techo, no lo que ML cobra.
       · COSTO VERIFICADO — `costing.costos_validados.revisado_at` no nulo (la
         marca de la migración 0032: "lo comparé contra el packing list") Y la
@@ -850,8 +851,8 @@ def censo_margen() -> dict[str, Any] | None:
     select l.sku::text as sku, l.canal as canal, a.legacy_code as tienda,
            p.name as titulo,
            l.price as precio_ml, l.price_sale as price_sale,
-           (l.price_sale is not null and l.price_sale_at >= l.updated_at)
-                                                          as precio_confirmado,
+           (l.price_sale is not null
+            and {pp.sql_oferta_sin_confirmar('l')} is false) as precio_confirmado,
            (v.revisado_at is not null
             and (v.updated_at is null or v.updated_at <= v.revisado_at))
                                                           as costo_verificado,

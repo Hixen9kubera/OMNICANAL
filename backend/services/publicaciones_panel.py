@@ -238,8 +238,8 @@ decía "cobra $117.45, −55%, margen −76.3%". ML cobraba $260.99 y ganaba din
 No era un caso: **665 publicaciones de ML, 665 sin confirmar, 0 confirmadas**
 (medido el 25-ago-2026 contra producción). Descuento fantasma promedio 38.21%.
 
-La regla nueva —y el detalle mecánico de por qué `updated_at` sirve de contra
-qué medirlo— está en `_oferta`. En una línea:
+La regla —y desde v0.489.0 por qué un cambio de stock ya no la tumba— está en
+`_oferta` y en `sql_oferta_sin_confirmar`. En una línea:
 
     una oferta que no se confirmó NO se aplica: se muestra y se marca.
 
@@ -496,7 +496,7 @@ def _utc(ts: Any) -> datetime | None:
 
 
 def _oferta(precio_lista: Any, price_sale: Any, price_sale_at: Any,
-            visto_at: Any) -> dict[str, Any]:
+            sin_confirmar: Any) -> dict[str, Any]:
     """
     Los tres estados de la oferta, y si está CONFIRMADA.
 
@@ -515,19 +515,20 @@ def _oferta(precio_lista: Any, price_sale: Any, price_sale_at: Any,
     aplicando era 38.21% ($357.30 por publicación) contra un precio que ML
     cobraba completo.
 
-        confirmada  ⇔  price_sale_at >= listings.updated_at
+        confirmada  ⇔  se observó  y  `sql_oferta_sin_confirmar` da false
 
-    Léase: la oferta se observó DESPUÉS del último cambio de esa fila. Si la
-    publicación cambió (precio, stock, situación) y nadie volvió a preguntar por
-    la promoción, lo guardado ya no está confirmado.
+    Hasta v0.488.0 la regla era `price_sale_at >= listings.updated_at`: la
+    oferta se observó DESPUÉS del último cambio de la fila, fuera cual fuera.
+    Desde v0.489.0 un cambio que NO es de precio (stock, estado) ya no la tumba
+    mientras la observación tenga menos de `OFERTA_VIGENCIA_H` horas — ahí está
+    el caso que lo motivó y por qué el tope es la mitad del diseño. Pasado el
+    tope rige la regla vieja: cualquier cambio la deja sin confirmar.
 
     Ojo con lo que `updated_at` mide de verdad: el upsert compartido solo
     dispara el UPDATE cuando un campo de negocio cambió (`is distinct from`), y
     el trigger `trg_touch_listings` sella `updated_at` en ese UPDATE. Así que es
-    "último CAMBIO", no "última mirada" — el criterio es conservador en la
-    dirección correcta (`updated_at` posterior prueba que sí hubo una pasada que
-    no tocó la oferta), pero una publicación que nunca cambia no envejece su
-    oferta sola.
+    "último CAMBIO", no "última mirada": una publicación que nunca cambia no
+    envejece su oferta sola.
 
     Ese hueco ya NO está vacío (medido 26-ago-2026: **202 filas confirmadas** de
     4,726 publicaciones vivas de ML, contra 0 el 25-ago). Lo llenan los dos
@@ -570,9 +571,9 @@ def _oferta(precio_lista: Any, price_sale: Any, price_sale_at: Any,
     vista = _utc(price_sale_at)
     dias = (round((datetime.now(timezone.utc) - vista).total_seconds() / 86400, 1)
             if vista else None)
-    cambio = _utc(visto_at)
     # Sin fecha de observación no hay nada que confirmar: se trata como vieja.
-    confirmada = bool(vista and (cambio is None or vista >= cambio))
+    # `sin_confirmar` es NULL solo cuando no hay observación.
+    confirmada = bool(vista and sin_confirmar is not None and not sin_confirmar)
     hay = p is not None and p > 0 and ps < p
     if not hay:
         return {"oferta_estado": OFERTA_SIN, "oferta_confirmada": confirmada,
@@ -813,6 +814,52 @@ def margen_de(*, precio: Any, costo_unitario: Any, pct_comision: Any,
     }
 
 
+# ── Cuándo un cambio de la fila deja la oferta SIN CONFIRMAR ─────────────────
+#
+# v0.489.0 (Eduardo, 10-sep-2026). Hasta ahí, CUALQUIER cambio posterior a la
+# observación (`updated_at > price_sale_at`) la tumbaba. Una venta FULL que
+# movía el stock bastaba para dejar sin confirmar un precio que nadie tocó, y
+# la publicación entraba y salía de la alerta de margen: ROP-0266-DOR (-310%,
+# costo validado) desapareció 11 minutos el 10-sep porque a las 12:00 su stock
+# FULL bajó de 9 a 8 y la promoción se re-observó hasta las 12:12.
+#
+# Ahora solo la tumba un cambio de PRECIO, que se sabe por
+# `channel.listing_history` — la llena un TRIGGER, así que cualquier escritor
+# deja huella. Con una salvedad que es la mitad del diseño: el perdón vale solo
+# mientras la observación tenga menos de `OFERTA_VIGENCIA_H`. Una promoción de
+# ML puede terminar sin mover `price`, y la regla vieja se protegía de eso por
+# accidente; sin el tope, las ~2,800 inactivas observadas una sola vez (20-ago)
+# quedarían confirmadas para siempre. Pasado el tope todo se comporta como
+# antes. 48 h cubre de sobra el ciclo del barrido (`PRECIOS_VENTA_POR_HORA`):
+# medido el 10-sep, ninguna activa de ML tenía su observación de más de 48 h.
+#
+# El CASE no es cosmético: el historial solo se consulta para observaciones
+# recientes con un cambio posterior — 149 de 9,157 filas, 0.07 s. La misma
+# pregunta sin el CASE tardaba 4.5 s en frío, porque para las 4,200
+# publicaciones que nunca cambiaron de precio recorre TODO su historial de
+# stock buscando un cambio de precio que no existe.
+OFERTA_VIGENCIA_H = 48
+
+
+def sql_oferta_sin_confirmar(a: str = "l") -> str:
+    """
+    Fragmento SQL sobre la fila `a` de `channel.listings`: ¿la observación de
+    `price_sale` ya NO vale? NULL = nunca se observó · false = confirmada ·
+    true = sin confirmar.
+
+    Lo usan el panel (`_BASE`), la alerta de margen (`alertas.censo_margen`) y
+    el refresco al abrir (`precio_al_abrir`): UNA sola definición, importada, para
+    que los tres digan lo mismo sobre la misma publicación.
+    """
+    return f"""(case when {a}.price_sale_at is null then null
+            when {a}.price_sale_at >= {a}.updated_at then false
+            when {a}.price_sale_at < now() - interval '{OFERTA_VIGENCIA_H} hours' then true
+            else exists (select 1 from channel.listing_history h
+                          where h.sku = {a}.sku and h.canal = {a}.canal
+                            and h.account_id = {a}.account_id and h.campo = 'price'
+                            and h.changed_at > {a}.price_sale_at) end)"""
+
+
 # ── Consulta ──────────────────────────────────────────────────────────────────
 #
 # El join de costos va por `f.canal = l.canal` (P4): una publicación de Amazon
@@ -821,7 +868,7 @@ def margen_de(*, precio: Any, costo_unitario: Any, pct_comision: Any,
 # Se excluyen los "fantasmas" del ETL de fusión —filas-identidad con TODO en
 # NULL, mismo filtro que `channel_read.leer_inventario`—: en ML son 266 de las
 # 267 filas sin `situacion`.
-_BASE = """
+_BASE = f"""
 select l.sku::text                       as sku,
        l.canal                           as canal,
        a.legacy_code                     as tienda,
@@ -842,6 +889,8 @@ select l.sku::text                       as sku,
        l.stock_fba                       as stock_fba,
        l.is_fulfillment                  as es_full,
        l.updated_at                      as visto_at,
+       -- ¿La observación de la promoción ya NO vale? Ver `OFERTA_VIGENCIA_H`.
+       {sql_oferta_sin_confirmar('l')} as oferta_sin_confirmar,
        -- `l.date_published` EXISTE en producción y NO en el sandbox (el clon es
        -- anterior a esa columna). No se pide: la fecha de alta no es parte de
        -- lo que esta pestaña contesta, y depender de una columna que solo está
@@ -892,7 +941,7 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
     estado = normalizar_estado(canal, r.get("situacion_cruda"),
                                r.get("status_crudo"))
     oferta = _oferta(r.get("precio_lista"), r.get("price_sale"),
-                     r.get("price_sale_at"), r.get("visto_at"))
+                     r.get("price_sale_at"), r.get("oferta_sin_confirmar"))
 
     # ── Precio vigente = lo que el comprador paga HOY ────────────────────
     #
