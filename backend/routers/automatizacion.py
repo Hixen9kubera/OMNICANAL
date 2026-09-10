@@ -481,6 +481,11 @@ _TEMU_CODIGOS = {
     "120012016": "EXISTE y responde — sólo faltan parámetros",
     "180020003": "EXISTE y responde — sólo faltan parámetros",
     "4000000": "EXISTE y responde — parámetro inválido",
+    "7000000": "EXISTE y responde — le faltan datos de negocio",
+    "10002": "EXISTE y responde — parámetros inválidos",
+    "120011002": "EXISTE y responde — parámetros inválidos",
+    "120018027": "EXISTE y responde — pide un packageSn válido",
+    "170070010": "EXISTE y responde — pide packageSn",
 }
 
 
@@ -519,12 +524,23 @@ async def temu_probar(tipos: str = Query(..., description="tipos separados por c
                     "muestra": str(r)[:160]}
         except Exception as exc:  # noqa: BLE001
             txt = str(exc)
-            cod = next((c for c in _TEMU_CODIGOS if c in txt), None)
-            existe = cod not in (None, "3000003")
+            import re as _re
+            m = _re.search(r"errorCode=(\d+)", txt)
+            cod = m.group(1) if m else next((c for c in _TEMU_CODIGOS if c in txt), None)
+            # ⚠️ SÓLO `3000003` SIGNIFICA "NO EXISTE". La primera versión daba por
+            # inexistente todo código que no estuviera en la tabla, y eso es
+            # exactamente el error que este sondeo vino a evitar: media docena de
+            # endpoints de compra de envío quedaron marcados como ausentes cuando
+            # lo que decían era "me faltan parámetros" — o sea que existen y
+            # además nos dejan llamarlos. Un diagnóstico que se equivoca hacia el
+            # "no se puede" cierra caminos que estaban abiertos.
+            existe = cod != "3000003"
             return {"tipo": tipo, "existe": existe,
                     "permiso": cod not in ("3000032", "5000003"),
                     "codigo": cod,
-                    "lectura": _TEMU_CODIGOS.get(cod or "", "código no catalogado"),
+                    "lectura": _TEMU_CODIGOS.get(
+                        cod or "", "EXISTE y responde — error de parámetros/negocio"
+                        if existe else "NO EXISTE"),
                     "error": txt[:200]}
 
     res = []
