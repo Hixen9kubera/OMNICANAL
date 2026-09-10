@@ -57,8 +57,28 @@ CUENTA = "TEMU"      # `pedidos_ml._ESPEJO_ORIGEN` ya lo mapea al canal temu
 # Lo ÚNICO con evidencia: las 2 órdenes reales de agosto traen 4 y son ventas
 # vivas. Cada código nuevo se agrega cuando se vea uno y se sepa qué era —
 # nunca "por si acaso".
+# EL ENUM, DEDUCIDO DE LOS HECHOS (10-sep-2026). Temu no lo publica, y hasta hoy
+# aquí vivía un solo código —el 4— que salió de DOS ventas de agosto. Medido
+# contra 10 órdenes reales con el sondeo (`/api/automatizacion/temu/sondeo`,
+# campo `estados.perfil_por_estado`), mirando lo único que no miente: si la
+# orden trae `parentShippingTime`, ya se envió.
+#
+#   estado 2 · 6 órdenes · enviadas 0 de 6 · confirmadas 6 de 6  → PAGADA, POR ENVIAR
+#   estado 4 · 1 orden   · enviadas 1 de 1                       → ENVIADA
+#   estado 5 · 3 órdenes · enviadas 3 de 3                       → ENTREGADA
+#
+# Y las fechas confirman el ciclo: las de estado 2 son del 8-sep (recientes) y
+# las de 4 y 5 del 19-ago. O sea `2 → 4 → 5`.
+#
+# ⚠️ POR QUÉ ESTO ERA EL TAPÓN. La venta NACE en 2, y 2 no estaba mapeado: cada
+# orden nueva se descartaba con un warning y no llegaba a crear pedido. Para
+# cuando alcanzaba el 4 —el único que conocíamos— ya se había enviado sola, así
+# que la orden de venta llegaba tarde o no llegaba. Nueve de cada diez órdenes
+# de la muestra caían fuera.
 _ESTADOS_WC: dict[int, str] = {
-    4: "processing",
+    2: "processing",   # pagada y sin enviar: ES la que hay que surtir
+    4: "processing",   # ya enviada; si no la vimos en 2, la venta sigue siendo real
+    5: "completed",    # entregada: se registra, pero ya no hay nada que surtir
 }
 
 _ultimo: dict[str, Any] = {"estado": "sin correr", "ts": None, "pedidos": 0}

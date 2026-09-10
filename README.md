@@ -1001,6 +1001,37 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.487.0 — El tapón de Temu: la venta nace en el estado 2 y lo estábamos tirando
+
+Brandon: *"lo que se necesita para hoy es que cuando un evento llegue de Temu se
+haga la orden de venta"*. Éste es el eslabón que lo impedía, y no era ningún
+interruptor: `_ESTADOS_WC` conocía **un solo código**, el `4`, salido de dos
+ventas de agosto. Temu no publica el enum.
+
+**MEDIDO** con el sondeo sobre 10 órdenes reales, mirando lo único que no miente
+—si la orden trae `parentShippingTime`, ya se envió:
+
+    estado 2 · 6 órdenes · enviadas 0 de 6 · confirmadas 6 de 6  → PAGADA, POR ENVIAR
+    estado 4 · 1 orden   · enviadas 1 de 1                       → ENVIADA
+    estado 5 · 3 órdenes · enviadas 3 de 3                       → ENTREGADA
+
+Las fechas cierran el argumento: las de estado 2 son del 8-sep y las de 4 y 5 del
+19-ago. El ciclo es `2 → 4 → 5`.
+
+**LA VENTA NACE EN 2.** Como 2 no estaba mapeado, cada orden nueva se descartaba
+con un `warning` y jamás llegaba a crear pedido; para cuando alcanzaba el 4 —el
+único que conocíamos— ya se había enviado sola. **Nueve de cada diez órdenes de
+la muestra caían fuera.** Se podía tener el interruptor encendido, la firma
+cuadrando y el detalle traído, y aun así no nacer la orden.
+
+Ahora: `2 → processing` (la que hay que surtir), `4 → processing` (si no la vimos
+en 2, la venta sigue siendo real) y `5 → completed` (entregada: se registra, ya
+no hay nada que surtir).
+
+Un código desconocido sigue sin crear pedido —eso está bien— pero desde la
+v0.483.0 el evento ya queda en `ops.webhook_events`, así que se puede mapear
+después en vez de perderlo.
+
 ### v0.484.0 — El sondeo de Temu dice QUÉ ESTADOS manda, que es lo que bloquea todo
 
 Brandon: *"lo que se necesita para hoy es que cuando un evento llegue de Temu se
