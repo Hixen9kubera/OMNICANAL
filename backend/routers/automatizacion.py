@@ -302,12 +302,43 @@ def _contar_estados(lista: list[dict]) -> dict[str, Any]:
             h = r.get("orderStatus")
             if h is not None:
                 hijos[str(h)] = hijos.get(str(h), 0) + 1
+<<<<<<< ours
+=======
+    # QUÉ SIGNIFICA CADA CÓDIGO, deducido de los HECHOS de cada orden en vez de
+    # adivinado. Temu no publica el enum, así que se mira lo único que no
+    # miente: si la orden ya tiene hora de envío, ya se envió; si tiene hora de
+    # confirmación, ya se confirmó. Un estado sin ninguna de las dos es una
+    # venta recién hecha — justo la que tiene que crear orden de venta.
+    perfil: dict[str, dict[str, Any]] = {}
+    for o in lista or []:
+        pm = o.get("parentOrderMap") or {}
+        cod = str(pm.get("parentOrderStatus"))
+        d = perfil.setdefault(cod, {"n": 0, "con_envio": 0, "con_confirmacion": 0,
+                                    "con_entrega_limite": 0, "ejemplo_tiempos": None})
+        d["n"] += 1
+        if pm.get("parentShippingTime"):
+            d["con_envio"] += 1
+        if pm.get("parentConfirmTime"):
+            d["con_confirmacion"] += 1
+        if pm.get("latestDeliveryTime"):
+            d["con_entrega_limite"] += 1
+        if d["ejemplo_tiempos"] is None:
+            # Sólo marcas de tiempo: no lleva nada del comprador.
+            d["ejemplo_tiempos"] = {k: pm.get(k) for k in
+                                    ("parentOrderTime", "parentConfirmTime",
+                                     "parentShippingTime", "latestDeliveryTime")}
+
+>>>>>>> theirs
     conocidos = {str(k) for k in _ESTADOS_WC}
     return {
         "parentOrderStatus": dict(sorted(padres.items())),
         "orderStatus": dict(sorted(hijos.items())),
         "mapeados_hoy": sorted(conocidos),
         "sin_mapear": sorted({*padres, *hijos} - conocidos),
+<<<<<<< ours
+=======
+        "perfil_por_estado": dict(sorted(perfil.items())),
+>>>>>>> theirs
     }
 
 
