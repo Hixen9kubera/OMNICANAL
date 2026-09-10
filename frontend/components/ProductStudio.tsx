@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   X,
+  Lock,
   ChevronRight,
   ImageIcon,
   ExternalLink,
@@ -93,6 +95,13 @@ interface Props {
   // Se llama tras guardar costo/precios, para que la lista que abrió el Estudio
   // (Productos/Omnicanal) refresque y no quede con el snapshot viejo.
   onGuardado?: () => void;
+  // SOLO LECTURA (vista de árbol, Eduardo 10-sep-2026): una variante cuyo padre
+  // se publica como GRUPO se puede abrir y revisar, pero no editar ni publicar
+  // sola — sus datos viajan en la publicación del grupo. Sin la prop, el
+  // Estudio es exactamente el de siempre.
+  soloLectura?: boolean;
+  // Por qué está bloqueado; se dice en el lugar de los botones de publicar.
+  avisoSoloLectura?: string;
 }
 
 const GENERAL = "general";
@@ -175,7 +184,20 @@ const LIMITE_TITULO: Record<string, number> = {
   amazon: 200,
 };
 
-export default function ProductStudio({ sku, producto, canales, onClose, onGuardado }: Props) {
+/** El candado del modo solo lectura. Apagado no envuelve NADA: Productos y
+ *  Omnicanal siguen pintando exactamente el DOM de siempre. Encendido, un
+ *  `<fieldset disabled>` apaga de un golpe cada input, select, textarea y botón
+ *  del cuerpo —incluidos los de los pickers hijos— sin cablear la prop control
+ *  por control. Lo que NO apaga son los manejadores montados fuera de un
+ *  control de formulario: por eso la galería se cierra aparte (`galEditable`). */
+function Candado({ activo, children }: { activo: boolean; children: ReactNode }) {
+  if (!activo) return <>{children}</>;
+  return <fieldset disabled className="min-w-0 space-y-5">{children}</fieldset>;
+}
+
+export default function ProductStudio({
+  sku, producto, canales, onClose, onGuardado, soloLectura = false, avisoSoloLectura,
+}: Props) {
   const { data, cargando, recargar } = useDetalleProducto(sku, producto);
   const [canal, setCanal] = useState<string>(GENERAL);
 
@@ -1212,7 +1234,10 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
   // del detalle (solo lectura hasta que lleguen los ids desde el backend).
   const galItems: GaleriaImagen[] =
     galeria ?? imagenes.map((src, i) => ({ id: 0, src, position: i }));
-  const galEditable = galeria !== null;
+  // En solo lectura la galería se VE pero no se toca. El recuadro de "agregar"
+  // es un <label> con onDrop, no un control de formulario: el fieldset del
+  // candado no lo apaga y seguiría aceptando fotos arrastradas.
+  const galEditable = galeria !== null && !soloLectura;
   const galIdxActiva = galItems.length ? Math.min(imgActiva, galItems.length - 1) : 0;
   const galActiva = galItems.length ? galItems[galIdxActiva] : null;
   const totalConFlags = galItems.filter((im) => im.id && hasFlags(im.id)).length;
@@ -1273,6 +1298,12 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
             })}
           </div>
 
+          {soloLectura ? (
+            <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
+              <Lock size={14} className="mt-0.5 shrink-0" />
+              <span>{avisoSoloLectura ?? "Solo lectura: puedes revisar los datos, pero no editarlos ni publicar desde aquí."}</span>
+            </div>
+          ) : (<>
           {/* PUBLICAR A {canal} — acción principal (arriba de Mejorar con IA) */}
           {puedeActualizar && (
             <button
@@ -1301,6 +1332,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
             <strong>Publicar</strong> envía los datos actuales al canal (revisas antes).{" "}
             <strong>Mejorar con IA</strong> optimiza título, descripción y atributos{esAmazon ? " + highlights, bullets y términos de búsqueda" : esTikTok ? " + puntos clave, con los atributos reales de su categoría de TikTok" : ""} y sugiere precio de competencia (no toca precio/costo/dimensiones).
           </p>
+          </>)}
 
           {/* EL PARTE DEL GENERADOR (Amazon).
               Amazon no rebota cuando te pasas: trunca o ignora el campo en
@@ -1372,6 +1404,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
 
         {/* Cuerpo */}
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+        <Candado activo={soloLectura}>
           {!data && cargando && (
             <div className="space-y-4">
               <div className="h-6 w-1/3 animate-pulse rounded bg-white" />
@@ -1580,7 +1613,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Imágenes</span>
                   <span className="text-[11px] text-slate-400">
-                    {galEditable ? `${galItems.length} en galería` : "cargando…"}
+                    {galeria !== null ? `${galItems.length} en galería` : "cargando…"}
                   </span>
                 </div>
 
@@ -2274,6 +2307,7 @@ export default function ProductStudio({ sku, producto, canales, onClose, onGuard
               )}
             </>
           )}
+        </Candado>
         </div>
       </aside>
 

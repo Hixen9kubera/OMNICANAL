@@ -509,21 +509,27 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
                 "precio_oferta": _f(d.get("_sale_price")),
                 "costo": _f(d.get("costo")),
                 "costo_variantes": {},
+                "precios_variantes": {},
             }
     for wc_id in ids_todos:
         salida.setdefault(wc_id, {"precio": None, "precio_base": None, "precio_oferta": None,
-                                  "costo": None, "costo_variantes": {}})
+                                  "costo": None, "costo_variantes": {}, "precios_variantes": {}})
 
     if padres:
         ph = ",".join(["%s"] * len(padres))
         var_rows = _fetch_all(
-            f"""SELECT ID, post_parent FROM {P}posts
+            f"""SELECT ID, post_parent, post_status FROM {P}posts
                 WHERE post_parent IN ({ph}) AND post_type = 'product_variation'""",
             tuple(padres),
         )
         por_padre: dict[int, list[int]] = {}
         for r in var_rows:
             por_padre.setdefault(r["post_parent"], []).append(r["ID"])
+        # Las de la papelera siguen contando para el rango del padre, como
+        # siempre, pero NO entran a `precios_variantes`: ese mapa va por SKU, y
+        # Woo deja que una variación viva repita el SKU de una borrada — la
+        # borrada podría pisarle el precio y el wc_id.
+        vivas = {r["ID"] for r in var_rows if r.get("post_status") != "trash"}
         var_ids = [vid for ids in por_padre.values() for vid in ids]
         vm: dict[int, dict[str, Any]] = {}
         for i in range(0, len(var_ids), 500):
@@ -552,6 +558,20 @@ def precios_y_costo_por_wc_id(items: list[dict[str, Any]]) -> dict[int, dict[str
                 str(vm.get(v, {}).get("_sku")): _f(vm.get(v, {}).get("costo"))
                 for v in var_ids_de_padre
                 if vm.get(v, {}).get("_sku") and _f(vm.get(v, {}).get("costo")) is not None
+            }
+            # Precio regular y de oferta PROPIOS de cada variante, con su wc_id
+            # (vista de árbol, Eduardo 10-sep-2026). Hasta la v0.479 solo
+            # viajaban al padre, resumidos como el mínimo del rango. El wc_id no
+            # es decorativo: el Estudio escribe y publica con él, y abrir una
+            # variante con el del padre la haría escribirle encima al padre.
+            salida[padre_id]["precios_variantes"] = {
+                str(vm[v]["_sku"]): {
+                    "wc_id": v,
+                    "precio_base": _f(vm[v].get("_regular_price")),
+                    "precio_oferta": _f(vm[v].get("_sale_price")),
+                }
+                for v in var_ids_de_padre
+                if v in vivas and vm.get(v, {}).get("_sku")
             }
 
     return salida

@@ -1001,6 +1001,61 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.480.0 — Árbol del Publicador: buscar por SKU, abrir el Estudio y precios por variante (Eduardo)
+
+Tres pedidos sobre la vista de árbol (`/productos/arbol`, sigue en ruta suelta).
+
+**Buscar por SKU.** Un buscador arriba del árbol, y no hizo falta endpoint:
+`search` con `aplanar=false` ya devuelve al PADRE cuando se escribe el SKU de una
+variante — medido contra producción, `TEC-1196-NEG` trae a `TEC-1196` con sus dos
+variantes dentro. Las que coinciden van primero y resaltadas (con 103 fundas, la
+buscada no puede quedar detrás del tope de 8), y un resultado único se abre en el
+detalle sin otro clic.
+
+**Clic en cualquier SKU abre el Estudio**, el mismo de Productos. Si el padre está
+en «grupo de variantes», la variante entra en SOLO LECTURA: se ve todo, pero sus
+datos viajan en la publicación del grupo, y editarla o publicarla sola
+contradiría la agrupación. El padre y los simples se abren editables.
+
+El candado es un `<fieldset disabled>` alrededor del cuerpo del Estudio: apaga de
+un golpe todos los controles —incluidos los de los pickers de categoría— sin
+cablear la prop control por control, y deja vivos los chips de canal para poder
+recorrerlos. Lo que un fieldset NO apaga es un `<label>` con `onDrop`: el recuadro
+de "agregar imagen" seguiría aceptando fotos arrastradas, así que la galería se
+cierra aparte. Con la prop apagada el Estudio pinta exactamente el DOM de
+siempre: Productos y Omnicanal no cambian.
+
+**Costo unitario, precio regular, precio de oferta y canales** por variante, con
+encabezado de columnas. Regular y oferta no existían por variante: solo viajaban
+al padre, resumidos como el mínimo del rango. `wp_db.precios_y_costo_por_wc_id` ya
+leía `_regular_price`/`_sale_price` de cada variación para sacar ese mínimo; ahora
+además los devuelve por SKU (`precios_variantes`), con el `wc_id` de la variación,
+sin una consulta más. Hubo que declararlos en `VarianteResumen`: el
+`response_model` del listado los habría descartado en silencio. El costo del padre
+dice cuántas variantes lo respaldan («1 de 2») cuando no todas tienen costo.
+
+**El `wc_id` no es decorativo.** El Estudio escribe y PUBLICA con `producto.wc_id`
+por encima del que resuelve solo por SKU: abrir una variante con el del padre la
+habría hecho escribirle encima al padre. Va el de la variación, o nulo para que
+el Estudio lo busque.
+
+**Los canales de una variante mentían por omisión.** TEC-1196 está en TikTok, ML y
+Amazon; sus variantes traen `canales: []` porque la publicación cuelga del SKU del
+padre. Pintar "—" diría que no se venden en ningún lado, así que la variante sin
+publicación propia muestra los del padre, atenuados y marcados «padre».
+
+**Verificado antes de subir** con el panel local contra producción a través de un
+proxy de solo lectura (GET pasa, todo lo demás 403): la búsqueda, el Estudio
+editable en modo individual y el de solo lectura en grupo —41 de 41 controles
+apagados por el navegador, la galería cargada con 6 fotos y sin recuadro de
+agregar ni botones de eliminar—, y que abrir el Estudio no dispara ninguna
+escritura: el proxy solo vio GET.
+
+**Hallazgo al margen, sin tocar:** la misma función cuenta las variaciones de la
+PAPELERA en el rango de precio del padre y en `costo_variantes`. Los
+`precios_variantes` nuevos ya las excluyen; lo demás se dejó como estaba para no
+mover precios de Productos sin medir antes cuántos casos hay.
+
 ### v0.479.0 — El árbol pedía 200 productos y el endpoint acepta 100
 
 La vista de árbol abría con una banda roja: `API 422`. Pedía `per_page=200` y

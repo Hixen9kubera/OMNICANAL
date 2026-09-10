@@ -471,10 +471,17 @@ async def listar_productos(
                 # misma pieza). `costo_propio` distingue una de otra en la tabla,
                 # para que un costo heredado no se lea como capturado.
                 propios = f.get("costo_variantes") or {}
+                precios_v = f.get("precios_variantes") or {}
                 for v in it.get("variantes", []):
                     propio = propios.get(v.get("sku"))
                     v["costo"] = propio if propio is not None else it["costo"]
                     v["costo_propio"] = propio is not None
+                    # Regular y oferta de ESTA variante (vista de árbol). Sin
+                    # dato se quedan en None: pintar el del padre sería inventar.
+                    pv = precios_v.get(v.get("sku")) or {}
+                    v["wc_id"] = pv.get("wc_id")
+                    v["precio_base"] = pv.get("precio_base")
+                    v["precio_oferta"] = pv.get("precio_oferta")
     except Exception as exc:  # noqa: BLE001
         log.warning("listar_productos: no se pudo refrescar precio/costo desde DB: %s", exc)
 
