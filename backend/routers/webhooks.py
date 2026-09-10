@@ -264,6 +264,98 @@ def _guardar_supabase(canal: str, payload: dict[str, Any]) -> int | None:
         return None
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  PERSISTENCIA DE TIKTOK Y TEMU  (10-sep-2026)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# POR QUÉ EXISTE. Hasta hoy los avisos de TikTok y Temu vivían SOLO en un
+# `deque` de 300 en memoria y en los logs de Railway. El deque se vacía en cada
+# despliegue —el 10-sep hubo cuatro— y los logs rotan por deployment. O sea:
+# no había forma de contestar "¿Temu nos mandó algo esta semana?", que es
+# exactamente la pregunta que hubo que responder cuando Brandon reportó ventas
+# de Temu que no aparecían. La auditoría de ese día lo midió: `ops.webhook_events`
+# tenía 55,342 avisos de Mercado Libre y CERO de Temu y TikTok.
+#
+# SE ESCRIBE ANTES DE ACUSAR RECIBO, a propósito y aunque cueste latencia. Un
+# receptor que contesta 200 y luego guarda tiene la misma fuga que veníamos a
+# cerrar: si el contenedor muere en medio, el marketplace lo da por entregado y
+# el evento no vuelve nunca.
+#
+# NO SE PIDE PERMISO A `SUPABASE_DUAL_WRITE`. Esa bandera gobierna el espejo de
+# MySQL, que aquí no existe: para estos dos canales kubera no es la copia, es el
+# registro. Colgar esto de una bandera ajena repetiría el defecto que ya costó
+# tres semanas de eventos de Temu descartados por una variable ausente.
+
+
+# Datos del COMPRADOR que no se guardan. La tabla es un registro técnico de
+# entregas, no un archivo de clientes: el proyecto ya cifró la PII de pedidos
+# (7,699 nombres) y persistir aquí el crudo abriría por detrás lo que se cerró
+# por delante. Se comparan en minúsculas y sin guiones bajos.
+_PII_LLAVES = frozenset({
+    "buyername", "buyeremail", "buyerphone", "buyerid",
+    "receivername", "receiverphone", "receiveraddress", "receivermobile",
+    "recipientname", "recipientphone", "recipientaddress", "recipient",
+    "consignee", "consigneephone", "fullname", "firstname", "lastname",
+    "phone", "phonenumber", "mobile", "telephone", "email",
+    "address", "addressdetail", "detailaddress", "addressline1", "addressline2",
+    "postcode", "zipcode", "idcard", "passport", "taxnumber",
+})
+
+
+def _sin_pii(v: Any, _hondo: int = 0) -> Any:
+    """El payload sin los campos personales del comprador.
+
+    Sustituye por el literal `"[pii]"` en vez de borrar la llave: así se ve que
+    el campo venía y qué nombre tenía —que es dato de diagnóstico— sin guardar
+    su contenido. El tope de profundidad evita que un payload malicioso con
+    anidamiento profundo tumbe el receptor.
+    """
+    if _hondo > 12:
+        return "[hondo]"
+    if isinstance(v, dict):
+        return {k: ("[pii]" if str(k).lower().replace("_", "") in _PII_LLAVES
+                    else _sin_pii(w, _hondo + 1))
+                for k, w in v.items()}
+    if isinstance(v, list):
+        return [_sin_pii(w, _hondo + 1) for w in v[:200]]
+    return v
+
+
+def _persistir_evento(canal: str, topic: str, external_id: str, delivery_id: str,
+                      payload: dict[str, Any], firma_valida: bool | None = None,
+                      cuenta: str | None = None) -> int | None:
+    """
+    Guarda un aviso de TikTok/Temu en `ops.webhook_events`. Devuelve su id.
+
+    ⚠️ BLOQUEA (escribe en Postgres): llamar desde un hilo, nunca dentro de una
+    corrutina — regla 11 de la casa.
+
+    NUNCA LANZA. Si kubera está caída, el evento se pierde igual que antes pero
+    la venta sigue su camino: romper la recepción por un fallo de la bitácora
+    sería cambiar una fuga por otra peor.
+    """
+    try:
+        if not sdb.disponible():
+            log.warning("%s webhook NO persistido: kubera no disponible", canal.upper())
+            return None
+        fila = sdb.execute_returning(
+            """insert into ops.webhook_events
+                 (env, canal, topic, external_id, delivery_id, cuenta,
+                  payload, firma_valida)
+               values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+               on conflict do nothing
+               returning id""",
+            (settings.app_env, canal, topic, external_id, delivery_id,
+             cuenta, json.dumps(_sin_pii(payload), ensure_ascii=False,
+                                default=str), firma_valida),
+        )
+        return int(fila["id"]) if fila else None
+    except Exception as exc:  # noqa: BLE001 — jamás romper la recepción
+        log.warning("%s webhook NO persistido (%s): %s", canal.upper(),
+                    external_id, exc)
+        return None
+
+
 def _actualizar_supabase(sb_id: int | None, sku=None, resultado=None) -> None:
     if not sb_id or not _dual_write_activo():
         return
@@ -838,10 +930,23 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
             "payload": payload,
         }
         _TIKTOK_LOG.append(evento)
-        # A los logs de Railway, completo: es el único registro de la fase 1.
+        # A los logs de Railway, completo: sobrevive al deploy, pero rota.
         log.info("TIKTOK webhook tipo=%s shop=%s firma=%s bytes=%s :: %s",
                  evento["tipo"], evento["shop_id"], firma, evento["bytes"],
                  json.dumps(payload, ensure_ascii=False)[:1500])
+
+        # ── A LA BITÁCORA, ANTES DE CONTESTAR ───────────────────────────────
+        # `id_de_evento` se resuelve aquí y NO más abajo: sirve de llave del
+        # renglón aunque los pedidos estén apagados. Un aviso que no se procesa
+        # igual hay que poder contarlo.
+        from services import pedidos_tiktok as _pt
+        oid = _pt.id_de_evento(payload)
+        await asyncio.to_thread(
+            _persistir_evento, "tiktok", f"tiktok.{evento['tipo']}",
+            oid or f"tipo:{evento['tipo']}",
+            str(payload.get("tts_notification_id")
+                or hashlib.sha256(crudo or b"").hexdigest()[:32]),
+            payload, firma, str(evento.get("shop_id") or "") or None)
 
         # ── LA VENTA SE VUELVE PEDIDO ────────────────────────────────────────
         # Del evento solo se toma el ID; la orden se pide a la API. Un evento es
@@ -854,8 +959,6 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
         # absoluta — otra cosa invita a reintentos y a que TikTok deshabilite la
         # suscripción, y el síntoma sería que dejan de entrar ventas).
         if settings.pedidos_tiktok_enabled:
-            from services import pedidos_tiktok
-            oid = pedidos_tiktok.id_de_evento(payload)
             if oid:
                 background.add_task(_procesar_tiktok, oid)
             else:
@@ -874,6 +977,74 @@ async def ping_tiktok():
     return {"ok": True, "canal": "tiktok", "modo": "observacion",
             "persistencia": "ninguna — solo logs",
             "eventos_en_memoria": len(_TIKTOK_LOG)}
+
+
+@router.get("/recibidos", dependencies=[Depends(requiere_api_key)])
+async def recibidos(horas: int = Query(72, ge=1, le=720),
+                    canal: str | None = Query(None, description="tiktok | temu | mercado_libre")):
+    """
+    Qué nos ha mandado cada marketplace, de verdad y por escrito.
+
+    Es la consulta que no se podía hacer antes del 10-sep: los avisos de TikTok
+    y Temu vivían en memoria y morían en cada despliegue, así que "¿Temu nos
+    llamó esta semana?" no tenía respuesta — sólo ausencia de pruebas, que no es
+    lo mismo que prueba de ausencia.
+
+    Va CERRADO con API-Key: el payload puede traer ids de orden.
+
+    OJO CON LA VENTANA: `ops.webhook_events` se purga a los 3 días
+    (`ops.purgar_webhook_events`, migración 0004). Pedir 720 horas no inventa
+    historia; devuelve lo que sobrevivió. Por eso el resumen dice `desde`.
+    """
+    def _leer():
+        donde = ["recibido_at >= now() - make_interval(hours => %(h)s)"]
+        par: dict[str, Any] = {"h": int(horas)}
+        if canal:
+            donde.append("canal = %(c)s")
+            par["c"] = canal
+        w = " and ".join(donde)
+        resumen = sdb.fetch_all(
+            f"""select canal, count(*) n,
+                       count(*) filter (where firma_valida is true) firma_ok,
+                       count(*) filter (where firma_valida is false) firma_mal,
+                       count(*) filter (where procesado) procesados,
+                       min(recibido_at) primero, max(recibido_at) ultimo
+                  from ops.webhook_events where {w}
+                 group by canal order by n desc""", par)
+        por_topic = sdb.fetch_all(
+            f"""select canal, topic, count(*) n, max(recibido_at) ultimo
+                  from ops.webhook_events where {w}
+                 group by canal, topic order by n desc limit 40""", par)
+        # Los últimos de los canales chicos, con payload. ML manda ~19,000 al
+        # día: volcarlos aquí sería ruido, y para ML ya existe su propio tab.
+        ultimos = sdb.fetch_all(
+            f"""select id, canal, topic, external_id, firma_valida, procesado,
+                       resultado, recibido_at, payload
+                  from ops.webhook_events
+                 where {w} and canal in ('tiktok','temu')
+                 order by recibido_at desc limit 40""", par)
+        return {"horas": horas, "resumen": [dict(r) for r in resumen],
+                "por_topic": [dict(r) for r in por_topic],
+                "ultimos": [dict(r) for r in ultimos],
+                "nota": "ops.webhook_events se purga a los 3 días (migración 0004)."}
+    return await asyncio.to_thread(_leer)
+
+
+@router.get("/temu/log", dependencies=[Depends(requiere_api_key)])
+async def log_temu(limite: int = Query(50, ge=1, le=300)):
+    """Lo que Temu mandó desde el último arranque (memoria del proceso).
+
+    Es el gemelo de `/tiktok/log` y comparte su límite: se vacía en cada
+    despliegue. Para la historia que SÍ sobrevive, usar `/recibidos`.
+    """
+    eventos = list(_TEMU_LOG)[-limite:]
+    eventos.reverse()
+    tipos: dict[str, int] = {}
+    for e in _TEMU_LOG:
+        tipos[str(e.get("tipo"))] = tipos.get(str(e.get("tipo")), 0) + 1
+    return {"total_en_memoria": len(_TEMU_LOG), "por_tipo": tipos,
+            "eventos": eventos,
+            "nota": "Sólo memoria: se vacía al desplegar. La historia va en /recibidos."}
 
 
 @router.get("/tiktok/log", dependencies=[Depends(requiere_api_key)])
@@ -1060,7 +1231,22 @@ async def recibir_temu(request: Request, background: BackgroundTasks):
         evento["firma_ok"] = _temu_firma_ok(cab, claro)
 
         _TEMU_LOG.append(evento)
-        # Completo a los logs de Railway: es el ÚNICO registro de esta fase.
+        # ── A LA BITÁCORA, ANTES DE CONTESTAR ───────────────────────────────
+        # Se persiste PASE LO QUE PASE con la firma. La firma decide si el
+        # evento mueve inventario, no si existió: un HMAC que no cuadra es
+        # justo lo que hay que poder mirar después, y hasta hoy se descartaba
+        # sin dejar rastro. Queda en la columna `firma_valida`.
+        from services import pedidos_temu as _ptm
+        oid_tm = _ptm.id_de_evento(payload)
+        await asyncio.to_thread(
+            _persistir_evento, "temu", f"temu.{evento['tipo'] or 'sin_tipo'}",
+            oid_tm or f"tipo:{evento['tipo'] or 'sin_tipo'}",
+            str(payload.get("messageId") or payload.get("message_id")
+                or hashlib.sha256(crudo or b"").hexdigest()[:32]),
+            payload, evento["firma_ok"],
+            str(evento.get("mall_id") or "") or None)
+
+        # Completo a los logs de Railway: el detalle que la bitácora recorta.
         log.info("TEMU webhook tipo=%s mall=%s bytes=%s firma=%s cabeceras=%s :: %s",
                  evento["tipo"], evento["mall_id"], evento["bytes"],
                  evento["firma_ok"],
@@ -1072,13 +1258,18 @@ async def recibir_temu(request: Request, background: BackgroundTasks):
         # inventario. `firma_ok is None` = no había firma que verificar (la
         # prueba de la consola), y eso tampoco crea pedidos.
         if evento["firma_ok"] is True:
-            from services import pedidos_temu
-            oid = pedidos_temu.id_de_evento(payload)
-            if oid:
-                background.add_task(_procesar_temu, oid)
+            if oid_tm:
+                background.add_task(_procesar_temu, oid_tm)
             else:
                 log.warning("TEMU webhook con firma válida pero SIN id de orden "
                             "reconocible: %s", json.dumps(payload, ensure_ascii=False)[:400])
+        else:
+            # Antes esta rama no existía y el evento se descartaba sin una sola
+            # línea. Un HMAC que no cuadra puede ser un impostor —o nuestro
+            # secreto mal puesto, que apagaría el canal entero en silencio.
+            log.warning("TEMU webhook DESCARTADO por firma (firma_ok=%s, tipo=%s). "
+                        "Queda en ops.webhook_events con firma_valida=%s.",
+                        evento["firma_ok"], evento["tipo"], evento["firma_ok"])
         # Temu no documenta qué cuerpo espera. Se devuelve la forma que aceptan
         # las APIs de su familia (`success: true`) MÁS las llaves que usan otros
         # canales, para que cualquier validador encuentre la suya.

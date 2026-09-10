@@ -1001,6 +1001,56 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.483.0 — Los webhooks de TikTok y Temu por fin dejan rastro
+
+Brandon: *"haz que persistan los webhooks de temu y de paso de tiktok también"*.
+Sale de la auditoría del 10-sep, que buscaba por qué las ventas de Temu no
+aparecían en el panel y se topó con que **la pregunta no tenía dónde
+contestarse**.
+
+**LO QUE HABÍA.** Los avisos de TikTok y Temu vivían en un `deque` de 300 **en
+memoria** y en los logs de Railway. El deque se vacía en cada despliegue —ese
+día hubo cuatro— y los logs rotan por deployment. Medido: `ops.webhook_events`
+tenía **55,342 avisos de Mercado Libre y CERO de TikTok y Temu**. No había forma
+de distinguir "Temu no nos mandó nada" de "nos mandó y lo perdimos", que son
+diagnósticos opuestos.
+
+**SE ESCRIBE ANTES DE ACUSAR RECIBO.** No es un detalle de orden: un receptor
+que contesta 200 y luego guarda tiene la misma fuga que se venía a cerrar — si
+el contenedor muere en medio, el marketplace lo da por entregado y el evento no
+vuelve nunca.
+
+**NO CUELGA DE `SUPABASE_DUAL_WRITE`.** Esa bandera gobierna el espejo de MySQL,
+que para estos dos canales no existe: kubera no es la copia, es el registro.
+Colgarlo de una bandera ajena repetiría el defecto que ya costó tres semanas de
+eventos de Temu descartados por una variable ausente.
+
+**LA FIRMA INVÁLIDA DEJA DE MORIR MUDA.** Se persiste pase lo que pase con el
+HMAC, y el veredicto va en `firma_valida`. La firma decide si el evento mueve
+inventario, no si existió — y un HMAC que no cuadra puede ser un impostor **o
+nuestro propio secreto mal puesto**, que apagaría el canal entero en silencio.
+La rama del descarte ahora escribe un `warning`; antes no existía.
+
+**SIN DATOS DEL COMPRADOR.** `_sin_pii` sustituye por `"[pii]"` los campos
+personales (nombre, teléfono, correo, domicilio) antes de escribir, en vez de
+borrarlos: se ve que el campo venía y cómo se llamaba —dato de diagnóstico— sin
+guardar su contenido. El proyecto ya cifró la PII de pedidos (7,699 nombres);
+persistir aquí el crudo abriría por detrás lo que se cerró por delante. Probado:
+4 campos personales fuera, 4 de diagnóstico dentro, y tope de profundidad para
+que un anidamiento hostil no tumbe el receptor.
+
+**PARA CONSULTARLO:** `GET /api/webhooks/recibidos?horas=72` — resumen por canal
+(cuántos, con firma buena, procesados, primero y último), corte por topic, y los
+últimos 40 de TikTok/Temu con su payload. Más `/temu/log`, gemelo del de TikTok.
+Los dos cerrados con API-Key.
+
+**MIGRACIÓN 0050, PENDIENTE DE APLICAR (Eduardo).** La retención de la 0004 son
+3 días para todos, y para ML está bien (~19,000 avisos/día). Aplicada a TikTok y
+Temu borra justo la evidencia: son unidades al día. La 0050 la vuelve **por
+canal** —ML 3 días, el resto 90— conservando la firma vieja, así que el `pg_cron`
+que ya corre sigue siendo correcto sin tocarlo. **Hasta que se aplique, lo que se
+persista desde hoy se seguirá purgando a los 3 días.**
+
 ### v0.482.0 — El margen negativo se muda a #alerta-margenes y habla de SKUs con costo validado (Eduardo)
 
 **Canal propio.** La revisión diaria de margen negativo deja #avisos-costos y va a
