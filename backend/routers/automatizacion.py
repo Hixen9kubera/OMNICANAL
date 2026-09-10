@@ -302,8 +302,6 @@ def _contar_estados(lista: list[dict]) -> dict[str, Any]:
             h = r.get("orderStatus")
             if h is not None:
                 hijos[str(h)] = hijos.get(str(h), 0) + 1
-<<<<<<< ours
-=======
     # QUÉ SIGNIFICA CADA CÓDIGO, deducido de los HECHOS de cada orden en vez de
     # adivinado. Temu no publica el enum, así que se mira lo único que no
     # miente: si la orden ya tiene hora de envío, ya se envió; si tiene hora de
@@ -328,17 +326,13 @@ def _contar_estados(lista: list[dict]) -> dict[str, Any]:
                                     ("parentOrderTime", "parentConfirmTime",
                                      "parentShippingTime", "latestDeliveryTime")}
 
->>>>>>> theirs
     conocidos = {str(k) for k in _ESTADOS_WC}
     return {
         "parentOrderStatus": dict(sorted(padres.items())),
         "orderStatus": dict(sorted(hijos.items())),
         "mapeados_hoy": sorted(conocidos),
         "sin_mapear": sorted({*padres, *hijos} - conocidos),
-<<<<<<< ours
-=======
         "perfil_por_estado": dict(sorted(perfil.items())),
->>>>>>> theirs
     }
 
 
