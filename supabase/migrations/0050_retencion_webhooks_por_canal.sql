@@ -28,6 +28,18 @@
 -- `pg_cron` que ya existe —`select ops.purgar_webhook_events(3)`— sigue siendo
 -- correcto sin tocarlo. Lo que cambia es que ya no arrastra a los demás.
 
+-- ⚠️ SE BORRA LA VERSIÓN DE DOS ARGUMENTOS ANTES DE CREAR LA DE TRES.
+-- `create or replace function` sólo reemplaza cuando la firma es IDÉNTICA; con
+-- distinto número de argumentos SOBRECARGA, y las dos quedan vivas. El cron
+-- llama `select ops.purgar_webhook_events(3)` —todos los días a las 08:20 UTC—
+-- y esa llamada encajaría en las dos versiones (las dos tienen defaults para el
+-- resto): Postgres respondería `function ... is not unique` y LA PURGA FALLARÍA
+-- CADA NOCHE, en silencio, con la tabla creciendo a ~19,000 filas diarias.
+--
+-- Va en la misma transacción que el `create`, así que no hay ventana en la que
+-- la función no exista.
+drop function if exists ops.purgar_webhook_events(int, int);
+
 create or replace function ops.purgar_webhook_events(
   dias int default 3,
   lote int default 20000,
