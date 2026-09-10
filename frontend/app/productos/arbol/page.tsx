@@ -42,8 +42,18 @@ import type { Producto, VarianteResumen } from "@/lib/types";
 const INDIGO = "#4F46E5";
 /** Cuántas variantes se pintan al abrir un padre. Ver la nota de arriba. */
 const TOPE_VARIANTES = 8;
-/** Los padres que se piden por categoría. Ninguna categoría de Woo llega ahí. */
-const POR_CATEGORIA = 200;
+/** Los padres que se piden al abrir una categoría.
+ *
+ *  100 y no más porque es el TECHO del endpoint (`PER_PAGE_MAX` en
+ *  routers/productos.py): pedir 200 devuelve un 422 de validación, no una
+ *  lista recortada. Fue el error de la v0.478.0 — se pidió 200 sin mirar el
+ *  límite y la pantalla abrió con una banda roja.
+ *
+ *  Y alcanza de sobra: medido contra producción, la categoría más grande de
+ *  WooCommerce tiene 21 productos ("Fundas y Carcasas"); ninguna de las 300
+ *  pasa de 100. Si algún día una creciera, esto la truncaría en silencio —
+ *  por eso la pantalla avisa cuando el total supera lo que trajo. */
+const POR_CATEGORIA = 100;
 
 type Modo = "individual" | "grupo";
 
@@ -67,6 +77,7 @@ export default function PublicadorArbolPage() {
   const [productos, setProductos] = useState<Record<number, Producto[]>>({});
   const [cargando, setCargando] = useState<Record<number, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  const [truncadas, setTruncadas] = useState<Record<number, number>>({});
 
   const [abiertoPadre, setAbiertoPadre] = useState<Record<string, boolean>>({});
   const [tope, setTope] = useState<Record<string, number>>({});
@@ -97,7 +108,18 @@ export default function PublicadorArbolPage() {
     // `aplanar: false` es TODO el truco: así el padre llega con sus variantes
     // dentro en vez de desperdigadas como filas hermanas.
     listarProductos({ canal: "general", categoria: id, perPage: POR_CATEGORIA, aplanar: false })
-      .then((r) => setProductos((p) => ({ ...p, [id]: r.items })))
+      .then((r) => {
+        setProductos((p) => ({ ...p, [id]: r.items }));
+        // ¿Se truncó? Se mira si vino la página COMPLETA, no si `total` supera
+        // a `items`: con `aplanar=false` el total se cuenta ANTES de agrupar,
+        // así que una categoría sana devuelve 29 items sobre un total de 37 —
+        // los 8 de diferencia son variantes que se metieron dentro de su padre.
+        // Comparar contra el total marcaría truncadas TODAS las categorías con
+        // variantes, que son justo las que esta pantalla existe para mostrar.
+        if (r.items.length >= POR_CATEGORIA) {
+          setTruncadas((t) => ({ ...t, [id]: r.items.length }));
+        }
+      })
       .catch((e: Error) => setError(e.message || "No se pudieron leer los productos."))
       .finally(() => setCargando((c) => ({ ...c, [id]: false })));
   }, [productos, cargando]);
@@ -179,6 +201,7 @@ export default function PublicadorArbolPage() {
                     productos={productos}
                     cargando={cargando}
                     onCategoria={abrirCategoria}
+                    truncadas={truncadas}
                     abiertoPadre={abiertoPadre}
                     onPadre={(sku) => {
                       setAbiertoPadre((a) => ({ ...a, [sku]: !a[sku] }));
@@ -226,7 +249,7 @@ export default function PublicadorArbolPage() {
 
 /* ── Una rama del árbol: categoría → (subcategorías) → padres → variantes ── */
 function Rama({
-  cat, hijas, abiertas, productos, cargando, onCategoria,
+  cat, hijas, abiertas, productos, cargando, onCategoria, truncadas,
   abiertoPadre, onPadre, tope, onMasVariantes, modoDe, sel, nivel = 0,
 }: {
   cat: CategoriaWC;
@@ -235,6 +258,7 @@ function Rama({
   productos: Record<number, Producto[]>;
   cargando: Record<number, boolean>;
   onCategoria: (id: number) => void;
+  truncadas: Record<number, number>;
   abiertoPadre: Record<string, boolean>;
   onPadre: (sku: string) => void;
   tope: Record<string, number>;
@@ -263,7 +287,7 @@ function Rama({
           {hijas.map((h) => (
             <Rama
               key={h.id} cat={h} hijas={[]} abiertas={abiertas} productos={productos}
-              cargando={cargando} onCategoria={onCategoria} abiertoPadre={abiertoPadre}
+              cargando={cargando} onCategoria={onCategoria} truncadas={truncadas} abiertoPadre={abiertoPadre}
               onPadre={onPadre} tope={tope} onMasVariantes={onMasVariantes}
               modoDe={modoDe} sel={sel} nivel={nivel + 1}
             />
@@ -278,6 +302,12 @@ function Rama({
           {!cargando[cat.id] && !lista.length && !hijas.length && (
             <div className="px-2 py-2 text-[11px] text-slate-300">sin productos aquí</div>
           )}
+
+          {truncadas[cat.id] ? (
+            <div className="px-2 py-1 text-[11px] text-amber-600">
+              solo los primeros {truncadas[cat.id]} — esta categoría creció y ya no cabe de una vez
+            </div>
+          ) : null}
 
           {lista.map((p) => {
             const vars = p.variantes ?? [];

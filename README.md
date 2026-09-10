@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.479.0 — El árbol pedía 200 productos y el endpoint acepta 100
+
+La vista de árbol abría con una banda roja: `API 422`. Pedía `per_page=200` y
+`PER_PAGE_MAX` es **100** — el endpoint no recorta, rechaza. Error mío de la
+v0.478.0: puse el número sin mirar el techo.
+
+100 alcanza de sobra y no es una apuesta: medido contra producción, la categoría
+más grande de WooCommerce tiene **21 productos** y ninguna de las 300 pasa de
+100. Aun así la pantalla ahora avisa si alguna creciera, porque truncar en
+silencio sería mostrar una categoría incompleta como si estuviera entera.
+
+**Y el aviso de truncado estuvo mal escrito en el primer intento**, lo cual vale
+la pena dejar anotado: comparaba `total` contra los items recibidos. Con
+`aplanar=false` el total se cuenta ANTES de agrupar, así que una categoría sana
+devuelve **29 items sobre un total de 37** — los 8 de diferencia son variantes
+que se metieron dentro de su padre. Ese aviso habría marcado como truncadas
+justo las categorías con variantes, que son las únicas que esta pantalla existe
+para mostrar. Ahora mira si vino la página completa, que es la pregunta real.
+
+Las dos cosas salieron de correr la llamada EXACTA contra producción antes de
+subir, no de leer el código.
+
 ### v0.478.0 — Publicador: vista de árbol por categoría, en ruta suelta (Eduardo)
 
 Diseño G de los ocho que se compararon en el lienzo. La lista de hoy corre
