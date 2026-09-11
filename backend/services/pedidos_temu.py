@@ -43,6 +43,8 @@ de una venta que quizá se canceló, y eso ya cuesta dinero.
 """
 from __future__ import annotations
 
+import json
+
 import asyncio
 import time
 
@@ -135,43 +137,65 @@ async def _traer(parent_sn: str) -> dict[str, Any] | None:
         return None
 
 
-async def _traer_guia(parent_sn: str, order_sn: str | None) -> tuple[str, str]:
+def _lista_de_dicts(r: Any) -> list[dict[str, Any]]:
+    """La primera lista de diccionarios de una respuesta de Temu, se llame como
+    se llame la llave: cambia entre versiones de un mismo endpoint."""
+    if isinstance(r, list):
+        return [x for x in r if isinstance(x, dict)]
+    if isinstance(r, dict):
+        for v in r.values():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v
+    return []
+
+
+async def _traer_guia_detalle(parent_sn: str, order_sn: str | None) -> dict[str, Any]:
     """
-    (guía, paquetería) de una orden de Temu. Cadenas vacías si no se pudo.
+    La guía de una orden de Temu, DICIENDO de qué fuente salió y qué contestó
+    cada una. `_traer_guia` es la envoltura de siempre para quien sólo quiere
+    (guía, paquetería).
 
-    HACE FALTA UNA SEGUNDA LLAMADA, y esto costó entenderlo. La guía **NO viene
-    en el pedido**: se buscó en toda la respuesta de `bg.order.detail.v2.get` y
-    del listado, en los dos vocabularios —`trackingNumber` en inglés y
-    `mailNo`/`waybill` en el chino de paquetería— y no aparece.
+    TRES FUENTES, porque la guía vive en sitios distintos según el momento:
 
-    Los endpoints de envío sí existen, pero hay que leer los CÓDIGOS de error
-    para verlo, porque un "falla" a secas los confunde con los inexistentes:
+      bg.logistics.shipment.v2.get     envío YA CONFIRMADO (o auto-envío). Son
+      bg.order.shippinginfo.v2.get     las que funcionaron con las órdenes de
+                                       agosto, que ya habían completado el ciclo.
 
-        bg.logistics.shipment.v2.get   120012016  "The parentOrder or Order is invalid"
-        bg.order.shippinginfo.v2.get   180020003  "Invalid param"
-        bg.shipping.order.get          3000003    "type not exists"  ← este sí no existe
+      bg.order.unshipped.package.get   etiqueta COMPRADA pero envío todavía NO
+                                       confirmado. Es el estado en que queda una
+                                       orden cuando alguien aprieta "Comprar
+                                       envío" en el seller center y aún no
+                                       aprieta "Confirmar envío": el paquete ya
+                                       tiene número de rastreo, la orden sigue en
+                                       "No enviado", y las dos primeras fuentes
+                                       contestan vacío. Temu lo confirma solo a
+                                       las 48 h: sin esta fuente, la guía llegaba
+                                       al panel dos días tarde.
 
-    Los dos primeros decían **"me faltan los parámetros"**, no "no existo": se
-    estaban llamando sin `parentOrderSn`/`orderSn`. Con ellos contestan.
-    Verificado contra una orden real el 2026-09-01:
+    Se descubrió el 10-sep: el refresco corrió cuatro veces sobre las siete
+    órdenes del día y siempre dijo `sin_guia_aun`, mientras en Temu ya se
+    estaban comprando las etiquetas.
 
-        shipmentInfoDTO[].trackingNumber = JMX600983301165
-        shipmentInfoDTO[].carrierName    = J&T express
+    ⚠️ UN PAQUETE SÓLO SE ACEPTA SI MENCIONA ESTA VENTA. Se pide filtrado por
+    `parentOrderSnList`, pero si Temu ignorara el filtro devolvería paquetes de
+    OTRAS órdenes, y pegarle a una venta la guía de otra es peor que no ponerle
+    ninguna: el paquete iría a la persona equivocada. Un envío combinado —dos
+    ventas en una caja— menciona a las dos, y las dos reciben la misma guía, que
+    es lo correcto.
 
-    FALLA SUAVE a propósito: sin guía la venta se registra igual y la columna
-    queda vacía. Que Temu no conteste no puede costar un pedido — y la guía
-    llega tarde de todos modos (Temu la asigna al generar la etiqueta).
+    YA NO FALLA MUDA: el `log.debug` de antes hacía idéntico "Temu todavía no la
+    asigna" y "la llamada está rota". Ahora cada error queda en `errores`.
     """
     from services import temu
 
+    errores: dict[str, str] = {}
     for tipo in ("bg.logistics.shipment.v2.get", "bg.order.shippinginfo.v2.get"):
         params = {k: v for k, v in (("parentOrderSn", str(parent_sn)),
                                     ("orderSn", order_sn)) if v}
         try:
             r = await temu.llamar(tipo, params)
         except Exception as exc:  # noqa: BLE001
-            log.debug("pedidos_temu: %s no dio guía de %s: %s",
-                      tipo, parent_sn, str(exc)[:120])
+            errores[tipo] = str(exc)[:160]
             continue
         envios = (r or {}).get("shipmentInfoDTO") or []
         if isinstance(envios, dict):
@@ -181,8 +205,35 @@ async def _traer_guia(parent_sn: str, order_sn: str | None) -> tuple[str, str]:
                 continue
             guia = str(e.get("trackingNumber") or "").strip()
             if guia:
-                return guia, str(e.get("carrierName") or "").strip()
-    return "", ""
+                return {"guia": guia, "paqueteria": str(e.get("carrierName") or "").strip(),
+                        "fuente": tipo, "errores": errores}
+
+    tipo = "bg.order.unshipped.package.get"
+    try:
+        r = await temu.llamar(tipo, {"parentOrderSnList": [str(parent_sn)],
+                                     "pageNumber": 1, "pageSize": 20})
+        for paq in _lista_de_dicts(r):
+            if str(parent_sn) not in json.dumps(paq, ensure_ascii=False, default=str):
+                continue
+            guia = str(paq.get("trackingNumber") or "").strip()
+            if guia:
+                return {"guia": guia, "paqueteria": str(paq.get("carrierName") or "").strip(),
+                        "fuente": tipo, "errores": errores,
+                        "package_sn": paq.get("packageSn")}
+    except Exception as exc:  # noqa: BLE001
+        errores[tipo] = str(exc)[:160]
+
+    return {"guia": "", "paqueteria": "", "fuente": None, "errores": errores}
+
+
+async def _traer_guia(parent_sn: str, order_sn: str | None) -> tuple[str, str]:
+    """(guía, paquetería) de una orden de Temu. Cadenas vacías si no hay.
+
+    Envoltura de `_traer_guia_detalle`, que es donde vive la explicación de las
+    tres fuentes. Falla suave: sin guía la venta se registra igual.
+    """
+    d = await _traer_guia_detalle(parent_sn, order_sn)
+    return d["guia"], d["paqueteria"]
 
 
 def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
@@ -288,7 +339,12 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     r: dict[str, Any] = {"pendientes": 0, "miradas": 0, "con_guia": 0,
                          "sin_guia_aun": 0, "escritas_en_odoo": 0,
                          "no_se_pudo_escribir": 0, "fallos_temu": 0,
-                         "cortado_por_tiempo": False}
+                         "cortado_por_tiempo": False,
+                         # De qué endpoint salió cada guía, y el primer error
+                         # visto de cada uno. Sin esto, cuatro vueltas seguidas
+                         # de "sin_guia_aun: 7" no decían si Temu no la tenía o
+                         # si la estábamos buscando en el sitio equivocado.
+                         "fuentes": {}, "errores_fuentes": {}}
     if not temu.disponible():
         return {**r, "error": "Temu no está configurado (falta app_key/secret/token)"}
 
@@ -314,7 +370,12 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
                 continue
             renglones = det.get("orderList") or []
             order_sn = (renglones[0] or {}).get("orderSn") if renglones else None
-            guia, paqueteria = await _traer_guia(sn, order_sn)
+            d = await _traer_guia_detalle(sn, order_sn)
+            guia, paqueteria = d["guia"], d["paqueteria"]
+            for k, v in (d.get("errores") or {}).items():
+                r["errores_fuentes"].setdefault(k, v)
+            if d.get("fuente"):
+                r["fuentes"][d["fuente"]] = r["fuentes"].get(d["fuente"], 0) + 1
         except Exception as exc:  # noqa: BLE001 — una mala no detiene las demás
             r["fallos_temu"] += 1
             log.warning("refrescar_guias: %s falló contra Temu: %s", sn, str(exc)[:150])

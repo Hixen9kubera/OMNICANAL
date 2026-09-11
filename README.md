@@ -1001,6 +1001,39 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.499.0 — La guía comprada en Temu y aún no confirmada vivía en otro endpoint
+
+Brandon, viendo la pestaña: *"creo que ya se generaron las guías, chécalo"*. El
+refresco de guías (v0.494.0) llevaba cuatro vueltas —20:10, 22:10, 00:10 y
+02:10 UTC— y las cuatro dijeron lo mismo sobre las siete órdenes del día:
+
+    pendientes 7 · miradas 7 · con_guia 0 · sin_guia_aun 7 · fallos_temu 0
+
+El trabajo funcionaba; **buscaba en el sitio equivocado.** `_traer_guia`
+preguntaba a `bg.logistics.shipment.v2.get` y `bg.order.shippinginfo.v2.get`,
+que según la documentación de Temu son para envíos **ya confirmados** (o de
+auto-envío). Las pruebas de la v0.493.0 salieron bien porque se hicieron contra
+órdenes de agosto que ya habían completado el ciclo.
+
+**EL HUECO: comprado pero no confirmado.** En el seller center "Comprar envío" y
+"Confirmar envío" son DOS botones. Entre uno y otro el paquete ya tiene número de
+rastreo, la orden sigue en "No enviado", y esas dos fuentes contestan vacío. La
+guía vive en **`bg.order.unshipped.package.get`**. Temu confirma solo a las 48 h,
+así que sin esta fuente la guía llegaba al panel —y a la entrega de Odoo— dos días
+tarde.
+
+**UN PAQUETE SÓLO SE ACEPTA SI MENCIONA ESTA VENTA.** Se pide filtrado por
+`parentOrderSnList`, pero si Temu ignorara el filtro devolvería paquetes de otras
+órdenes, y pegarle a una venta la guía de otra es peor que no ponerle ninguna: el
+paquete iría a la persona equivocada. Un envío combinado —dos ventas en una caja—
+menciona a las dos, y las dos reciben la misma guía, que es lo correcto.
+
+**YA NO FALLA MUDA.** `_traer_guia` se rendía con `log.debug`, y "Temu todavía no
+la asigna" se veía idéntico a "la estamos buscando en el lugar equivocado". Ahora
+`_traer_guia_detalle` dice de qué fuente salió cada guía y qué contestó cada una,
+y el resumen del refresco lleva `fuentes` y `errores_fuentes`. `_traer_guia` queda
+como envoltura con la misma firma, así que `procesar` y `/temu/guia` no cambian.
+
 ### v0.498.0 — El Estudio abre al centro, con las variantes en un rail a la izquierda
 
 Aterriza el handoff de diseño del **Publicador Studio** (artboards 2a–2d). El
