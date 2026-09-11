@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.506.0 — Inventario volvía a tronar: `pl_leyendo` se usaba sin definirse
+
+Reporte del 11-sep: la pestaña Inventario mostraba *«pl_leyendo no está
+definido»*. En los logs de producción: `NameError: name 'pl_leyendo' is not
+defined` en `inventario_maestro._fila`, línea 288.
+
+**La v0.476.0 dejó el cable a medias.** Cambió la llamada para pasarle
+`pl_leyendo` a `_cotejo_cajas` y a `_recorrido` —y ambas funciones sí
+aprendieron a recibirlo—, pero la variable nunca se definió dentro de `_fila`
+ni se la pasó `filas()`. El diff de ese commit solo trae las líneas que la
+USAN; ninguna la asigna (`git log -S "pl_leyendo = "` no encuentra nada en
+toda la historia del archivo). Como `_fila` corre para CADA renglón, cualquier
+consulta de Inventario reventaba entera, no un SKU.
+
+El arreglo es el cable que faltaba: `filas()` pregunta
+`packing_cajas.calentando(pedidos)` y le pasa a cada `_fila` si su SKU se está
+leyendo. Se pregunta **después** de `packing_cajas.por_sku`, no antes: es
+`por_sku` quien arranca la lectura en segundo plano, y preguntado antes, un
+arranque en frío contestaría «no se lee nada» y la ficha volvería a afirmar
+«sin renglón» — justo la mentira que la v0.476.0 vino a quitar.
+
+Verificado: la prueba reproduce el `NameError` sobre el código de
+producción sin tocar y pasa con el arreglo (con la bandera en `False` y en
+`True`); y `filas()` completo corre de punta a punta contra las fuentes reales
+(solo lecturas).
+
 ### v0.505.0 — El Publicador filtra por categoría (con buscador), y la categoría ya se suma a la búsqueda
 
 Eduardo, 11-sep-2026: «Para la pestaña del publicador puedes poner un filtro para

@@ -169,6 +169,10 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     # carga tras un arranque en frío sale con la cifra congelada de
     # `costos_validados`; la siguiente ya trae la del renglón.
     pls = packing_cajas.por_sku(pedidos)
+    # DESPUÉS de por_sku, no antes: es por_sku quien echa a andar la lectura
+    # en segundo plano. Preguntado antes, un arranque en frío contestaría "no
+    # se está leyendo nada" y la ficha volvería a afirmar "sin renglón".
+    leyendo = packing_cajas.calentando(pedidos)
     recs = odoo.recibido_por_sku(pedidos)
 
     salida = []
@@ -176,14 +180,16 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
         salida.append(_fila(sku, woo.get(sku), od.get(sku), costos.get(sku),
                             canales.get(sku, []), proceso.get(sku),
                             imgs.get(sku), ubis.get(sku, []),
-                            hermanos.get(sku, []), pls.get(sku), recs.get(sku)))
+                            hermanos.get(sku, []), pls.get(sku), recs.get(sku),
+                            pl_leyendo=sku in leyendo))
     return salida
 
 
 def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pubs: list[dict], plog: dict | None, imagen: str | None,
           ubicaciones: list[dict], hermanos: list[dict],
-          pl: dict | None = None, rec: dict | None = None) -> dict[str, Any]:
+          pl: dict | None = None, rec: dict | None = None,
+          pl_leyendo: bool = False) -> dict[str, Any]:
     es_padre = bool(w and w["n_hijas"] > 0)
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
