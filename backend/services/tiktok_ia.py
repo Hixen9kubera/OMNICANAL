@@ -84,9 +84,14 @@ _SISTEMA = (
 
 
 def _contexto(p: dict[str, Any], categoria: str | None) -> str:
+    from services import ia_variante
     attrs = "; ".join(f"{a.get('nombre')}: {a.get('valor')}"
                       for a in (p.get("atributos") or []) if a.get("nombre"))
+    # Si es una variante, va delante del PRODUCTO: el "Título hoy" suele ser el
+    # de la familia entera (1,541 variantes comparten título con su padre).
+    variante = ia_variante.bloque(p)
     return (
+        (f"{variante}\n\n" if variante else "") +
         f"PRODUCTO\n"
         f"  SKU:          {p.get('sku') or '(sin sku)'}\n"
         f"  Título hoy:   {p.get('nombre') or ''}\n"
@@ -123,6 +128,33 @@ def _categoria(sku: str) -> tuple[str | None, str | None]:
         return cid, (f.get("path") or f.get("name"))
     except Exception:  # noqa: BLE001
         return cid, None
+
+
+def _categoria_para_ia(producto: dict[str, Any]) -> tuple[str | None, str | None, str]:
+    """
+    (category_id, ruta, sku_padre_si_es_heredada) — SOLO para generar.
+
+    Medido el 11-sep: de todas las variantes, 2 tienen categoría de TikTok
+    propia. Sin heredar, la IA generaba para una variante sin atributos (la
+    categoría es lo que dice cuáles existen). Se hereda la del PADRE, resuelto
+    por `post_parent` y nunca por prefijo del SKU.
+
+    ⚠️ `_categoria` NO cambia y el publicador no pasa por aquí: publicar la
+    variante sigue exigiendo su propia categoría. Heredar para escribir un
+    borrador es barato; heredar para publicar es la regla 2 de la casa rota.
+    """
+    from services import ia_variante
+    sku = str(producto.get("sku") or "").strip()
+    if not sku:
+        return None, None, ""
+    cid, ruta = _categoria(sku)
+    if cid:
+        return cid, ruta, ""
+    padre = ia_variante.sku_padre_para_ia(producto)
+    if not padre:
+        return None, None, ""
+    cid, ruta = _categoria(padre)
+    return (cid, ruta, padre) if cid else (None, None, "")
 
 
 async def _atributos_de_categoria(categoria_id: str) -> list[dict[str, Any]]:
@@ -162,8 +194,11 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
     """
     from services import channel_content, ia_generadores, terminos_protegidos, tiktok_contenido
 
+    from services import ia_variante
+
     sku = str(producto.get("sku") or "").strip()
-    cat_id, cat_ruta = await asyncio.to_thread(_categoria, sku) if sku else (None, None)
+    cat_id, cat_ruta, heredada_de = (
+        await asyncio.to_thread(_categoria_para_ia, producto) if sku else (None, None, ""))
 
     user = (f"{_contexto(producto, cat_ruta)}\n"
             "Mejora el contenido y devuelve SOLO el JSON indicado.")
@@ -227,22 +262,41 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         "proveedor": res.get("proveedor"), "modelo": res.get("modelo"),
         "campos": campos,
         "rechazados": rechazados,
-        "avisos": ([f"atributos: {r}" for r in attr_rechazos] +
-                   ([attr_nota] if attr_nota else [])),
+        "avisos": ([ia_variante.aviso_heredada("TikTok", heredada_de, cat_ruta or cat_id)]
+                   if heredada_de else []) +
+                  [f"atributos: {r}" for r in attr_rechazos] +
+                  ([attr_nota] if attr_nota else []),
         "problemas": problemas,
         "terminos_detectados": terminos,
         "palabras_clave": data.get("palabras_clave") or [],
         "confianza": data.get("confianza"),
-        "product_type": cat_id, "product_type_origen": "listings" if cat_id else "auto",
+        "product_type": cat_id,
+        "product_type_origen": ("heredada del padre" if heredada_de
+                                else "listings" if cat_id else "auto"),
+        "categoria_heredada_de": heredada_de or None,
         "requisitos": await _cobertura(cat_id, campos),
         "guardado": None,
     }
 
-    if guardar and sku and campos:
+    # Con categoría HEREDADA los atributos NO se guardan: llevan los IDs
+    # (`product_attributes.<id>`) de la hoja del PADRE, y `publicar_tiktok`
+    # resuelve la categoría de la variante por su cuenta (panel → listings →
+    # recomendador, que falla el 49%) y manda lo guardado sin cotejar con qué
+    # hoja se generó. Con categoria=NULL en la fila, el desfase ni se detecta.
+    # El texto sí sirve en cualquier hoja; los atributos siguen en `campos` para
+    # que la persona los vea, y guardarlos queda en su botón.
+    guardables = {k: v for k, v in campos.items()
+                  if not (heredada_de and k == "atributos")}
+    if heredada_de and "atributos" in campos:
+        salida["avisos"].append("Los atributos NO se guardaron: son de la categoría "
+                                "del padre. Elige la de esta variante y vuelve a generar.")
+    if guardar and sku and guardables:
         salida["guardado"] = await channel_content.guardar(
-            sku, CANAL, campos, cuenta="",
-            origen={k: "ia" for k in campos},
-            categoria=cat_id, spec_version=SPEC_VERSION,
+            sku, CANAL, guardables, cuenta="",
+            origen={k: "ia" for k in guardables},
+            # Heredada NO se guarda como categoría de la variante: sería
+            # convertir una suposición de la IA en un dato del SKU.
+            categoria=None if heredada_de else cat_id, spec_version=SPEC_VERSION,
             hash_base=_hash_base(producto),
         )
     return salida
@@ -259,9 +313,10 @@ async def _atributos(producto: dict[str, Any], categoria: str | None,
     revisar. Guardar solo uno obliga a elegir entre que el semáforo funcione o
     que el panel se entienda.
     """
-    from services import ia_generadores, tiktok_atributos
+    from services import ia_generadores, ia_variante, tiktok_atributos
 
     prompt = tiktok_atributos.build_prompt(
+        variante=ia_variante.bloque(producto),
         sku=str(producto.get("sku") or ""),
         titulo=str(producto.get("nombre") or ""),
         descripcion=_sin_html(str(producto.get("descripcion") or "")),

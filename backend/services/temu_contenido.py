@@ -207,10 +207,16 @@ def _fmt(attrs: list[tuple[dict, set[int] | None]], etiqueta: str,
 # PROMPTS
 # ═════════════════════════════════════════════════════════════════════════════
 def build_prompt_contenido(*, sku: str, titulo_woo: str, descripcion_woo: str,
-                           categoria_ruta: str, atributos_woo: dict[str, Any] | None = None) -> str:
-    """Título, descripción y bullets pensados para cómo se compra en Temu."""
+                           categoria_ruta: str, atributos_woo: dict[str, Any] | None = None,
+                           variante: str = "") -> str:
+    """Título, descripción y bullets pensados para cómo se compra en Temu.
+
+    `variante` es el bloque de `ia_variante.bloque`: el título de Woo de una
+    variante suele ser el de la familia, y sin decirlo la IA escribe el mismo
+    título para todas las hermanas."""
     sufijo = sku.split("-")[-1].upper() if "-" in sku else ""
     color = COLOR_SKU.get(sufijo)
+    bloque_variante = f"\n## VARIANTE\n{variante}\n" if variante else ""
     return f"""Eres un especialista en listings para TEMU México. Escribes en español de México.
 
 Tu tarea: reescribir el título y la descripción de este producto para que se
@@ -223,7 +229,7 @@ entiendan solos y aparezcan en las búsquedas de Temu.
 - Categoría de Temu: {categoria_ruta}
 - Atributos que ya tiene en Woo: {json.dumps(atributos_woo or {}, ensure_ascii=False)}
 {f'- Color por el sufijo del SKU ({sufijo}): {color}' if color else ''}
-
+{bloque_variante}
 ## CÓMO SE COMPRA EN TEMU
 El comprador llega por búsqueda y decide con la foto y el título. No hay marca
 que lo respalde: el título tiene que decir QUÉ ES, PARA QUÉ SIRVE y su rasgo
@@ -278,9 +284,12 @@ verificable del producto. Empiezan con mayúscula. Sin emojis.
 def build_prompt_atributos(*, sku: str, titulo: str, descripcion: str,
                            categoria_ruta: str, props: list[dict[str, Any]],
                            atributos_woo: dict[str, Any] | None = None,
-                           elegidos: dict[int, list[int]] | None = None) -> str:
+                           elegidos: dict[int, list[int]] | None = None,
+                           variante: str = "") -> str:
     """Prompt de atributos. Si `elegidos` viene, es la SEGUNDA vuelta: solo pide
-    los condicionales que se destrabaron con lo ya elegido."""
+    los condicionales que se destrabaron con lo ya elegido. `variante` es el
+    bloque de `ia_variante.bloque` (valor fijado de cada eje)."""
+    bloque_variante = f"\n## VARIANTE\n{variante}\n" if variante else ""
     if elegidos:
         obligatorios = activados(props, elegidos)
         cabecera = ("SEGUNDA VUELTA. Con los valores que ya elegiste se "
@@ -304,7 +313,7 @@ def build_prompt_atributos(*, sku: str, titulo: str, descripcion: str,
 - Categoría de Temu: {categoria_ruta}
 - Atributos que ya tiene en Woo: {json.dumps(atributos_woo or {}, ensure_ascii=False)}
 {f'- Color por el sufijo del SKU ({sufijo}): {color}' if color else ''}
-
+{bloque_variante}
 ## {cabecera}
 {_fmt(obligatorios, 'OBLIGATORIOS — llénalos TODOS')}
 {_fmt(opcionales, 'OPCIONALES — llena los que puedas inferir con seguridad') if opcionales else ''}

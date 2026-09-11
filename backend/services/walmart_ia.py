@@ -75,22 +75,54 @@ def _categoria(sku: str, nombre: str, cats_woo: str
     LA ELECCIÓN DEL PANEL MANDA (regla 2 de la casa): primero
     `channel.product_category`, y solo si no hay nada se clasifica.
     """
-    from services import supabase_db as sdb
-    try:
-        filas = sdb.fetch_all(
-            """select category_id from channel.product_category
-                where channel_id = %s and sku = %s::citext""", (CANAL, sku))
-        elegida = (filas or [{}])[0].get("category_id")
-        if elegida:
-            return str(elegida), "panel", None
-    except Exception as exc:  # noqa: BLE001 — sin elección guardada, se clasifica
-        log.debug("walmart_ia: sin categoría elegida para %s: %s", sku, exc)
+    elegida = _elegida_en_panel(sku)
+    if elegida:
+        return elegida, "panel", None
 
     from services.publicar_walmart import clasificar
     clave, cfg, motivo = clasificar(sku, nombre, cats_woo)
     if cfg:
         return cfg["clave_visible"], "clasificado", None
     return None, "", motivo
+
+
+def _elegida_en_panel(sku: str) -> str | None:
+    """La categoría que eligió una persona en el panel para ese SKU, o None."""
+    from services import supabase_db as sdb
+    try:
+        filas = sdb.fetch_all(
+            """select category_id from channel.product_category
+                where channel_id = %s and sku = %s::citext""", (CANAL, sku))
+        elegida = (filas or [{}])[0].get("category_id")
+        return str(elegida) if elegida else None
+    except Exception as exc:  # noqa: BLE001 — sin elección guardada, se clasifica
+        log.debug("walmart_ia: sin categoría elegida para %s: %s", sku, exc)
+        return None
+
+
+def _categoria_para_ia(producto: dict[str, Any], nombre: str, cats_woo: str
+                       ) -> tuple[str | None, str, str | None, str]:
+    """
+    (categoría, origen, motivo del no, sku_padre_si_es_heredada) — SOLO para
+    generar contenido.
+
+    Orden: la elección del panel para la VARIANTE → la del panel para su PADRE
+    (por `post_parent`, nunca por prefijo) → el clasificador sobre la variante.
+    La del padre va antes que el clasificador por la regla 2 de la casa: una
+    elección humana para la familia pesa más que un detector de palabras.
+
+    ⚠️ El publicador no pasa por aquí (`publicar_walmart` clasifica por su
+    cuenta): heredar sirve para escribir el borrador, no decide dónde se publica.
+    """
+    from services import ia_variante
+    sku = str(producto.get("sku") or "").strip()
+    if not _elegida_en_panel(sku):
+        padre = ia_variante.sku_padre_para_ia(producto)
+        del_padre = _elegida_en_panel(padre) if padre else None
+        if del_padre:
+            return del_padre, "heredada del padre", None, padre
+    cat, origen, motivo = _categoria(sku, nombre, cats_woo)
+    return cat, origen, motivo, ""
 
 
 def _hash_base(producto: dict[str, Any]) -> str:
@@ -116,7 +148,7 @@ async def _preguntar(prompt: str, tope: int = 1800) -> dict[str, Any] | None:
 
 async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str, Any]:
     """Contenido de Walmart para un SKU: título, descripción, viñetas y atributos."""
-    from services import walmart_contenido as wc
+    from services import ia_variante, walmart_contenido as wc
 
     sku = str(producto.get("sku") or "").strip()
     if not sku:
@@ -124,13 +156,16 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
 
     nombre = str(producto.get("nombre") or "")
     cats_woo = str(producto.get("categoria") or producto.get("categorias") or "")
-    categoria, cat_origen, motivo = await asyncio.to_thread(
-        _categoria, sku, nombre, cats_woo)
+    categoria, cat_origen, motivo, heredada_de = await asyncio.to_thread(
+        _categoria_para_ia, producto, nombre, cats_woo)
     if not categoria:
         return _vacio(motivo or "Este SKU no cae en ninguna categoría de Walmart "
                                 "con exención de UPC.")
 
     avisos: list[str] = []
+    if heredada_de:
+        avisos.append(ia_variante.aviso_heredada("Walmart", heredada_de, categoria))
+    variante = ia_variante.bloque(producto)
     try:
         cat = await asyncio.to_thread(wc.catalogo, categoria)
     except Exception as exc:  # noqa: BLE001
@@ -153,6 +188,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         descripcion_woo=str(producto.get("descripcion") or ""),
         marca=str(producto.get("marca") or ""),
         atributos_conocidos=atributos_woo,
+        variante=variante,
     )
     data = await _preguntar(prompt, 2000)
     if not data:
@@ -189,6 +225,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         titulo=campos.get("titulo") or nombre,
         descripcion=campos.get("descripcion") or "",
         atributos_woo=atributos_woo,
+        variante=variante,
     )
     prop = await _preguntar(p2, 1800) or {}
     llamadas += 1
@@ -225,6 +262,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         "ok": True, "canal": CANAL, "sku": sku,
         "categoria_id": categoria, "categoria_ruta": categoria,
         "product_type": categoria, "product_type_origen": cat_origen,
+        "categoria_heredada_de": heredada_de or None,
         "requisitos": {
             "estado": "ok" if not de_ia else "incompleto",
             "product_type": categoria, "obligatorios": len(esperados),
@@ -244,11 +282,22 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         "avisos": avisos,
     }
 
-    if guardar and salida["campos"]:
+    # Heredada: los atributos NO se guardan. `categoria=None` no borra la que
+    # ya tuviera la fila (el UPSERT hace coalesce) y `contenido ||` sí reemplaza
+    # `atributos`: quedaría categoría X con atributos pensados para la Y del
+    # padre, y el candado `doc.categoria == categoria` de `publicar_walmart`
+    # pasaría — justo el "publicar mal sin error" que ese candado evita.
+    guardables = {k: v for k, v in salida["campos"].items()
+                  if not (heredada_de and k == "atributos")}
+    if heredada_de and "atributos" in salida["campos"]:
+        avisos.append("Los atributos NO se guardaron: son de la categoría del "
+                      "padre. Elige la de esta variante y vuelve a generar.")
+    if guardar and guardables:
         from services import channel_content as cc
         salida["guardado"] = await cc.guardar(
-            sku, CANAL, salida["campos"], cuenta=CUENTA,
-            origen={k: "ia" for k in salida["campos"]},
-            categoria=categoria, spec_version=SPEC_VERSION,
+            sku, CANAL, guardables, cuenta=CUENTA,
+            origen={k: "ia" for k in guardables},
+            # Heredada NO se guarda como categoría de la variante.
+            categoria=None if heredada_de else categoria, spec_version=SPEC_VERSION,
             hash_base=_hash_base(producto))
     return salida

@@ -447,7 +447,12 @@ export default function ProductosPage() {
       </main>
 
       {/* Estudio de producto (overlay) */}
+      {/* La llave cambia con el padre Y con la variante inicial: cada apertura
+          monta un Estudio nuevo, así su primer render ya nace en la variante
+          elegida en vez de en variantes[0] (que disparaba una carga de más cuya
+          respuesta podía pisar la buena). */}
       <ProductStudio
+        key={`${sel?.sku ?? ""}::${varianteSel ?? ""}`}
         sku={sel?.sku ?? null}
         producto={sel}
         canales={canales}

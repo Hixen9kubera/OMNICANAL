@@ -81,12 +81,19 @@ export function useDetalleProducto(sku: string | null, inicial?: Producto | null
   const [cargando, setCargando] = useState(false);
   const inicialRef = useRef(inicial);
   inicialRef.current = inicial;
+  // El SKU que se está mostrando AHORA. `recargar` no aborta (lo llaman a mano),
+  // así que su respuesta puede llegar cuando ya se abrió otro: en el Estudio,
+  // abrir desde el clic en una variante pedía primero la ficha de variantes[0]
+  // y esa respuesta, más lenta, pisaba la de la variante elegida.
+  const skuVigente = useRef(sku);
+  skuVigente.current = sku;
 
   const recargar = useCallback(async () => {
     if (!sku) return;
     try {
       const fresco = await detalleProducto(sku);
       setDetalleCache(sku, fresco);
+      if (skuVigente.current !== sku) return; // llegó tarde: es de otro SKU
       setData(fresco);
     } catch {
       /* noop */

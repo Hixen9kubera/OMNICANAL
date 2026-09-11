@@ -76,13 +76,17 @@ def _fmt_atributos(attrs: list[dict[str, Any]], etiqueta: str,
 
 def build_prompt(*, sku: str, titulo: str, descripcion: str,
                  categoria_nombre: str, atributos_woo: dict[str, Any],
-                 attrs_tiktok: list[dict[str, Any]]) -> str:
+                 attrs_tiktok: list[dict[str, Any]], variante: str = "") -> str:
     """
     El prompt canónico de atributos para TikTok Shop México.
 
     `attrs_tiktok` viene de `GET /product/202309/categories/{id}/attributes`,
     o sea de la categoría REAL del producto — nunca de una lista hardcodeada.
+
+    `variante` es el bloque de `ia_variante.bloque`: con él, los atributos
+    llevan el valor de ESTA variante y no la lista de la familia.
     """
+    bloque_variante = f"\n## VARIANTE\n{variante}\n" if variante else ""
     de_ficha = [a for a in attrs_tiktok if a.get("type") != "SALES_PROPERTY"]
     de_venta = [a for a in attrs_tiktok if a.get("type") == "SALES_PROPERTY"]
     oblig = [a for a in de_ficha if a.get("is_requried") or a.get("is_required")]
@@ -104,7 +108,7 @@ búsqueda; uno sin atributos existe pero nadie lo encuentra.
 - Categoría de TikTok: {categoria_nombre}
 - Atributos que ya tiene en WooCommerce: {json.dumps(atributos_woo, ensure_ascii=False) or '{{}}'}
 {f'- Pista de color por el sufijo del SKU ({sufijo}): {pista_color}' if pista_color else ''}
-
+{bloque_variante}
 ## {_fmt_atributos(oblig, 'ATRIBUTOS OBLIGATORIOS — llénalos TODOS')}
 ## {_fmt_atributos(opc, 'ATRIBUTOS OPCIONALES — llena todos los que puedas inferir con seguridad')}
 ## {_fmt_atributos(de_venta, 'ATRIBUTOS DE VENTA (variantes) — NO los devuelvas aquí, solo para tu contexto')}

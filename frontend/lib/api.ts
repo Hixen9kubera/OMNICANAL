@@ -575,7 +575,10 @@ export async function generarIA(p: GenerarIAParams): Promise<GenerarIAResp> {
   return res.json() as Promise<GenerarIAResp>;
 }
 
-export function mejorarIA(p: { canal: string; producto: ProductoIA }): Promise<MejorarResp> {
+// `cuenta`: la misma con la que el Estudio lee y guarda el contenido del canal.
+// En ML el mismo SKU puede ser dos productos según la cuenta (EST-0091), así que
+// lo que la IA genere tiene que caer en la fila (sku, canal, cuenta) correcta.
+export function mejorarIA(p: { canal: string; producto: ProductoIA; cuenta?: string }): Promise<MejorarResp> {
   return postJSON<MejorarResp>(`/api/ia/mejorar`, p);
 }
 

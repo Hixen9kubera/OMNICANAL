@@ -129,7 +129,11 @@ def _fmt_attr_list(attrs: list, label: str) -> str:
 
 
 def build_prompt(nombre, alibaba_titulo, atributos_actuales, caracteristicas_clave,
-                 meli_attrs, sku: str = "") -> str:
+                 meli_attrs, sku: str = "", variante: str = "") -> str:
+    # `variante` = el bloque de `ia_variante.bloque`: si el SKU es una variante,
+    # los atributos deben llevar SU valor (Cantidad = 3 piezas), no la lista de
+    # la familia que traen los atributos de Woo del padre.
+    bloque_variante = f"\n## Variante\n{variante}\n" if variante else ""
     secundarias = meli_attrs.get("secundarias", [])[:MAX_SECUNDARIAS]
     principales_str = _fmt_attr_list(
         meli_attrs.get("principales", []),
@@ -147,7 +151,7 @@ DEBES INTENTAR LLENAR CADA ATRIBUTO. Solo omite si es absolutamente imposible de
 - SKU: {sku or 'N/A'}
 - Nombre en tienda: {nombre}
 - Titulo de Alibaba (extrae datos de aqui): {alibaba_titulo or 'N/A'}
-
+{bloque_variante}
 ## Atributos actuales en WooCommerce (base, respeta los correctos)
 {atributos_actuales or 'Sin atributos'}
 
@@ -249,6 +253,7 @@ async def generar_atributos(
     atributos_actuales: str = "",
     caracteristicas_clave: str = "",
     sku: str = "",
+    variante: str = "",
 ) -> dict[str, Any]:
     """
     Devuelve:
@@ -257,7 +262,8 @@ async def generar_atributos(
     """
     meli_attrs = await get_meli_all_attributes(cat_id) if cat_id else {"principales": [], "secundarias": []}
     system = "Eres un experto en e-commerce para Mexico. Respondes siempre con JSON valido."
-    user = build_prompt(nombre, alibaba_titulo, atributos_actuales, caracteristicas_clave, meli_attrs, sku)
+    user = build_prompt(nombre, alibaba_titulo, atributos_actuales, caracteristicas_clave,
+                        meli_attrs, sku, variante=variante)
 
     try:
         result = await _deepseek_json(system, user)

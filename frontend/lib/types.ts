@@ -385,6 +385,11 @@ export interface StudioMetadata {
   producto_correcto: string | null;
   atributos: AtributoProducto[];
   estado?: EstadoPublicacion;
+  /** El SKU es una variación de Woo (services/studio.py, postmeta). */
+  es_variacion?: boolean;
+  padre_wc_id?: number | null;
+  /** Campos que vienen del PADRE y no de este SKU (p. ej. la categoría ML). */
+  heredado?: string[];
 }
 
 // ── Costos: desglose + recálculo (tab COSTOS) ────────────────────────

@@ -87,6 +87,15 @@ def _completar(system: str, user: str, max_tokens: int = 900) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 def _contexto(p: dict[str, Any]) -> str:
     partes: list[str] = []
+    # El bloque de VARIANTE va PRIMERO: es lo que cambia el sentido de todo lo
+    # demás (el "Nombre actual" suele ser el de la familia entera). Lo usan
+    # General, ML, los generadores por campo y Amazon (`amazon_ia` llama aquí).
+    from services import ia_variante
+    variante = ia_variante.bloque(p)
+    if variante:
+        partes.append(variante + "\n")
+    if p.get("sku"):
+        partes.append(f"SKU: {p['sku']}")
     if p.get("nombre"):
         partes.append(f"Nombre actual: {p['nombre']}")
     if p.get("marca"):
@@ -333,10 +342,12 @@ def _parse_json(texto: str) -> dict[str, Any]:
     return {}
 
 
-async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
+async def mejorar(canal: str, producto: dict[str, Any], *,
+                  cuenta: str = "") -> dict[str, Any]:
     """Mejora con IA varios campos del canal en una sola llamada (JSON). En Mercado
     Libre, además reemplaza los atributos por los REALES de la categoría
-    (principales + secundarios) vía el servicio ml_atributos."""
+    (principales + secundarios) vía el servicio ml_atributos, y guarda el
+    resultado en `enrich.channel_content` bajo (sku, mercado_libre, cuenta)."""
     # Amazon tiene circuito propio desde v0.137.0: los atributos salen de los
     # requisitos REALES de su productType (`channel.field_requirements`), el
     # resultado pasa por el validador de límites y se persiste en
@@ -389,7 +400,7 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
     # (principales + secundarios), con nombre legible + valor.
     if canal == "mercado_libre" and str(producto.get("ml_cat_id") or "").strip():
         try:
-            from services import ml_atributos
+            from services import ia_variante, ml_atributos
             attrs_actuales = "; ".join(
                 f"{a.get('nombre')}: {a.get('valor')}"
                 for a in (producto.get("atributos") or []) if a.get("nombre")
@@ -401,19 +412,111 @@ async def mejorar(canal: str, producto: dict[str, Any]) -> dict[str, Any]:
                 atributos_actuales=attrs_actuales,
                 caracteristicas_clave=_sin_html(str(producto.get("descripcion") or ""))[:1500],
                 sku=str(producto.get("sku") or ""),
+                variante=ia_variante.bloque(producto),
             )
             todos = r["meli_attrs"]["principales"] + r["meli_attrs"]["secundarias"]
             nombre_por_id = {a["id"]: a["name"] for a in todos}
             if r["atributos"]:
+                # `campo` = el ID de ML (COLOR, UNITS_PER_PACK…), junto al nombre
+                # legible. El legible es lo que un humano revisa; el ID es lo
+                # único que no se pierde al cruzar con la categoría — "Color" y
+                # "Color principal" son dos atributos distintos en ML. Mismo
+                # criterio que TikTok (`product_attributes.<id>`).
                 data["atributos"] = [
-                    {"nombre": nombre_por_id.get(k, k), "valor": v}
+                    {"nombre": nombre_por_id.get(k, k), "campo": k, "valor": v}
                     for k, v in r["atributos"].items()
                 ]
         except Exception as exc:  # noqa: BLE001
             log.warning("mejorar ML atributos: %s", exc)
 
-    return {"ok": True, "canal": canal, "proveedor": res.get("proveedor"),
-            "campos": data}
+    salida: dict[str, Any] = {"ok": True, "canal": canal,
+                              "proveedor": res.get("proveedor"), "campos": data}
+    # ML guarda como los demás canales. Hasta aquí era el ÚNICO (con General)
+    # que tiraba lo generado al cerrar el Estudio: Amazon, TikTok, Temu y
+    # Walmart lo dejaban en `enrich.channel_content`. General NO se guarda: su
+    # destino es Woo, por el botón "Guardar contenido".
+    if canal == "mercado_libre":
+        salida["guardado"] = await _guardar_ml(producto, data, cuenta)
+    return salida
+
+
+# Versión del contrato de contenido de ML que va a `spec_version`, para poder
+# distinguir después lo generado con qué reglas (igual que Amazon y TikTok).
+_ML_SPEC_VERSION = "ml-mx-2026-09"
+
+
+async def _guardar_ml(producto: dict[str, Any], data: dict[str, Any],
+                      cuenta: str) -> dict[str, Any] | None:
+    """
+    Persiste lo generado para ML en `enrich.channel_content`. Nunca lanza.
+
+    La `cuenta` es parte de la llave: BEKURA y SANCORFASHION publican con textos
+    distintos, y el publicador de ML lee con la cuenta de la petición
+    (`publicar._rellenar_desde_guardado`).
+
+    DOS LÍMITES, porque esta fila la LEE el publicador sin que nadie apriete
+    Guardar (rellena los campos vacíos del formulario) y el Estudio siembra con
+    ella la ficha:
+
+    1. NO PISA lo que escribió otro. `channel_content.guardar` fusiona llave a
+       llave sin mirar el origen, así que un solo clic "para ver qué propone"
+       reemplazaba el título que dejó Crear (`crear_producto.
+       _guardar_titulo_variante` — el ÚNICO lugar donde una variante tiene
+       título propio, porque Woo deriva el de la variación del padre) o el que
+       una persona guardó a mano. Se escribe una llave sólo si la fila no la
+       tiene o si la tenía la propia IA (`origen[llave] == "ia"`). Si no se
+       puede leer la fila, no se escribe nada: sin saber qué hay, no se pisa.
+    2. SIN ATRIBUTOS. Los de la IA llevan `nombre` = etiqueta legible ("Color
+       principal") y el ID de ML en `campo`, pero `publicar._confirmar_ml`
+       manda `{"id": a["nombre"]}` y `publicar_ready.construir_prod` indexa por
+       `nombre`: guardados, viajarían a ML como IDs que no existen. Se quedan en
+       el formulario, como antes, hasta que el publicador lea `campo`.
+    """
+    sku = str(producto.get("sku") or "").strip()
+    if not sku:
+        return None
+    campos: dict[str, Any] = {}
+    for k in ("titulo", "descripcion"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            campos[k] = v.strip()
+    if not campos:
+        return None
+    try:
+        from services import channel_content
+        from services.amazon_ia import hash_base
+        if not channel_content.disponible():
+            return {"ok": False, "sku": sku, "motivo": "KUBERA_DB_URL no configurada."}
+        try:
+            previo = await asyncio.to_thread(
+                channel_content._leer_sync, sku, "mercado_libre", cuenta or "")  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001
+            log.warning("mejorar ML: no se pudo leer %s, no se guarda: %s", sku, exc)
+            return {"ok": False, "sku": sku,
+                    "motivo": "No se pudo leer lo guardado; no se pisó nada."}
+        contenido_prev = (previo or {}).get("contenido") or {}
+        origen_prev = (previo or {}).get("origen") or {}
+        respetados = [k for k in campos
+                      if contenido_prev.get(k) and origen_prev.get(k) != "ia"]
+        for k in respetados:
+            campos.pop(k)
+        if not campos:
+            return {"ok": False, "sku": sku, "respetados": respetados,
+                    "motivo": "No se guardó: " + ", ".join(respetados) +
+                              " ya los había escrito una persona o Crear."}
+        res = await channel_content.guardar(
+            sku, "mercado_libre", campos, cuenta=cuenta or "",
+            origen={k: "ia" for k in campos},
+            categoria=str(producto.get("ml_cat_id") or "").strip() or None,
+            spec_version=_ML_SPEC_VERSION,
+            hash_base=hash_base(producto),
+        )
+        if respetados:
+            res["respetados"] = respetados
+        return res
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mejorar ML: no se pudo guardar %s: %s", sku, exc)
+        return {"ok": False, "sku": sku, "motivo": str(exc)[:300]}
 
 
 def generar(canal: str, generador_id: str, producto: dict[str, Any]) -> dict[str, Any]:

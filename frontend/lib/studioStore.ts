@@ -18,6 +18,15 @@ export interface MejoraCanal {
   atributos?: AtributoProducto[];
   /** Amazon: términos de búsqueda del backend (límite en BYTES). */
   searchTerms?: string;
+  /**
+   * Con qué versión de la SIEMBRA se escribió el borrador. Hasta que el Estudio
+   * mandó el wc_id de la variante, la ficha de una variante se sembraba con los
+   * atributos del PADRE — no sólo las listas ("3 piezas | 6 piezas"), también
+   * los de un solo valor que son de otra hermana (COMPATIBLE_CELLPHONE =
+   * Samsung S22+ en la funda de S23 Ultra). Sin marca = sembrado antes del
+   * arreglo: sus atributos de variante no se usan. Ver ProductStudio.
+   */
+  semilla?: number;
 }
 
 interface EstudioSku {

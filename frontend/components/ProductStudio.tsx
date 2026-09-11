@@ -89,6 +89,12 @@ import {
   setCompetencia as saveCompetencia,
   limpiarBorrador,
 } from "@/lib/studioStore";
+
+// Versión de la SIEMBRA de los borradores locales (studioStore). 2 = desde que
+// la ficha de una variante se siembra con SU wc_id y no con el del padre. Un
+// borrador de variante sin esta marca trae atributos del padre y los suyos se
+// ignoran al abrirla. Subirla invalida esos atributos en todos los navegadores.
+const SEMILLA_BORRADOR = 2;
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
 import {
   AvisoAgrupadaPronto,
@@ -212,6 +218,11 @@ export default function ProductStudio({
   const conVariantes = !!estudioConfig?.studio_variantes && variantes.length > 0;
 
   const [modoPorCanal, setModoPorCanal] = useState<Record<string, ModoPublicacion>>({});
+  // Lo que HAY GUARDADO en el servidor, aparte de lo que se ve. Sin separarlos,
+  // volver al modo por omisión en un canal sin fila hacía un PUT del default y
+  // la pantalla contestaba "Falta aplicar la migración 0051" por algo que ni
+  // siquiera había que guardar.
+  const [modoServidor, setModoServidor] = useState<Record<string, ModoPublicacion>>({});
   const [varianteSel, setVarianteSel] = useState<string | null>(varianteInicial ?? null);
   const [modoMsg, setModoMsg] = useState<string | null>(null);
 
@@ -255,6 +266,38 @@ export default function ProductStudio({
   const { data, cargando, recargar } = useDetalleProducto(
     sku, sku === skuRaiz ? producto : null);
 
+  /**
+   * EL wc_id DEL SKU ABIERTO — no el de `producto`, que es SIEMPRE el padre.
+   *
+   * `sku` ya se redefinía como la variante, pero el wc_id seguía saliendo de
+   * `producto?.wc_id`. Publicar la variante mandaba sku=variante con wc_id=padre
+   * (stock, fotos y atributos del padre), la ficha se sembraba con los
+   * atributos-LISTA de la familia ("3 piezas | 6 piezas") y el GTIN y la
+   * categoría ML se escribían en el padre, para todas sus hermanas.
+   *
+   * Sin la variante en la lista, `null`: el backend resuelve por SKU (studio,
+   * publicar y contenido lo hacen), que es mejor que adivinar con el del padre.
+   * Con STUDIO_VARIANTES apagado `sku === skuRaiz` siempre, y esto vale
+   * exactamente lo mismo que antes.
+   */
+  const esVariante = !!sku && sku !== skuRaiz;
+  const wcIdActivo: number | null = !esVariante
+    ? producto?.wc_id ?? null
+    : variantes.find((v) => v.sku === sku)?.wc_id
+      ?? (data?.sku === sku ? data?.wc_id : null)
+      ?? null;
+
+  /**
+   * Vista previa del modo agrupado: se ve, pero NO escribe.
+   *
+   * En agrupada `sku` es el PADRE, así que Mejorar con IA, el GTIN, la
+   * categoría, las imágenes y los precios escribirían sobre el padre — y el
+   * publicador todavía no sabe mandar `variations`. El footer ya tenía este
+   * candado; el cuerpo no, y por ahí se guardaba igual.
+   */
+  const soloVistaAgrupada = agrupada && !agrupadaHabilitada;
+  const TITULO_SOLO_VISTA = "Vista previa: el modo agrupado todavía no se puede publicar";
+
   // Otro producto abierto = rail a cero. Sin esto, abrir un SKU nuevo dejaría
   // seleccionada una variante que ya no existe en esta familia.
   useEffect(() => {
@@ -291,7 +334,11 @@ export default function ProductStudio({
     if (!conVariantes || !skuRaiz) return;
     let vivo = true;
     leerModoPublicacion(skuRaiz)
-      .then((r) => { if (vivo) setModoPorCanal(r.modo ?? {}); })
+      .then((r) => {
+        if (!vivo) return;
+        setModoPorCanal(r.modo ?? {});
+        setModoServidor(r.modo ?? {});
+      })
       .catch(() => { /* individual por omisión */ });
     return () => { vivo = false; };
   }, [skuRaiz, conVariantes]);
@@ -337,7 +384,14 @@ export default function ProductStudio({
     // publicación VIVA con variantes, y hoy no existe ninguna.
     setModoPorCanal((prev) => ({ ...prev, [canal]: m }));
     setModoMsg(null);
-    const r = await guardarModoPublicacion(skuRaiz!, canal, m).catch(() => null);
+    // Al servidor SÓLO si cambia lo guardado. Un canal sin fila ya ES el modo
+    // por omisión: volver a él es deshacer en pantalla, no una escritura.
+    const canalGuardado = canal;
+    const guardado = modoServidor[canalGuardado];
+    const porOmision = estudioConfig?.modo_por_omision ?? "individual";
+    if (guardado === undefined ? m === porOmision : m === guardado) return;
+    const r = await guardarModoPublicacion(skuRaiz!, canalGuardado, m).catch(() => null);
+    if (r?.guardado) setModoServidor((prev) => ({ ...prev, [canalGuardado]: m }));
     if (r && !r.guardado && r.motivo) setModoMsg(r.motivo);
   }
 
@@ -419,6 +473,9 @@ export default function ProductStudio({
   // validador rechazaría campos en silencio — que es justo lo que hace Amazon
   // y la razón por la que existe el validador.
   const [reporteIA, setReporteIA] = useState<MejorarResp | null>(null);
+  // Cuando la IA contesta ok=false (Temu sin categoría, proveedor caído) el
+  // botón volvía a su estado y no pasaba nada: parecía que no se había pulsado.
+  const [iaError, setIaError] = useState<string | null>(null);
 
   // Publicar (paso 4)
   const [previewPub, setPreviewPub] = useState<PublicarPreview | null>(null);
@@ -553,7 +610,9 @@ export default function ProductStudio({
   useEffect(() => {
     if (!sku) return;
     const ctrl = new AbortController();
-    studioMetadata(sku, producto?.wc_id ?? null, ctrl.signal)
+    // wc_id del SKU ABIERTO: con el del padre, la ficha de una variante salía
+    // con los atributos-lista de la familia y su categoría/GTIN.
+    studioMetadata(sku, wcIdActivo, ctrl.signal)
       .then((m) => {
         setMeta(m);
         setCatMlId((c) => c || (m.categoria_ml?.category_id ?? ""));
@@ -579,7 +638,7 @@ export default function ProductStudio({
       })
       .catch(() => setMeta(null));
     return () => ctrl.abort();
-  }, [sku, producto?.wc_id]);
+  }, [sku, wcIdActivo]);
 
   // Al cambiar de producto, el precio tecleado deja de aplicar.
   useEffect(() => {
@@ -634,21 +693,46 @@ export default function ProductStudio({
     // cuanto el contenido guardado llegaba del servidor.
     const srvAtrs = Array.isArray(srv.atributos)
       ? (srv.atributos as AtributoProducto[]) : undefined;
-    setAtributos(
-      (stored?.atributos && stored.atributos.length ? stored.atributos : null)
-      ?? srvAtrs ?? meta?.atributos ?? [],
-    );
+    const atrsBase = srvAtrs ?? meta?.atributos ?? [];
+    let atrsBorrador = stored?.atributos && stored.atributos.length ? stored.atributos : null;
+    // BORRADORES ENVENENADOS de una VARIANTE. Antes de que el Estudio mandara
+    // el wc_id de la variante, su ficha se sembraba con los atributos del
+    // PADRE y el autosave los dejó en el localStorage. No sólo las LISTAS de la
+    // familia ("3 piezas | 6 piezas"): también los de un solo valor que son de
+    // otra hermana — la corrida del 11-sep sacó COMPATIBLE_CELLPHONE = Samsung
+    // S22+ en la funda ACC-0234-GALAXYS23ULTRA. Ése no lleva " | " y pasaba el
+    // filtro; como el borrador manda sobre servidor y meta y viaja al publicar,
+    // la funda salía a ML como compatible con S22+. Un borrador de variante
+    // SIN la marca de siembra nueva es de antes del arreglo: sus atributos se
+    // tiran enteros (título y descripción sí eran de la variante y se quedan).
+    if (atrsBorrador && esVariante && stored?.semilla !== SEMILLA_BORRADOR) {
+      atrsBorrador = null;
+    }
+    // Y aun con la marca, un valor con " | " no es de esta pieza: se cambia
+    // por el del servidor/meta, o se descarta.
+    if (atrsBorrador && esVariante) {
+      atrsBorrador = atrsBorrador
+        .map((a) => ((a.valor ?? "").includes(" | ")
+          ? atrsBase.find((b) => b.nombre === a.nombre && !(b.valor ?? "").includes(" | ")) ?? null
+          : a))
+        .filter((a): a is AtributoProducto => a !== null);
+      if (!atrsBorrador.length) atrsBorrador = null;
+    }
+    setAtributos(atrsBorrador ?? atrsBase);
     setHighlights(stored?.highlights ?? (srv.highlights as string) ?? "");
     setBullets(stored?.bullets ?? (srv.bullets as string[]) ?? []);
     setSearchTerms(stored?.searchTerms ?? (srv.backend_search_terms as string) ?? "");
     const id = setTimeout(() => { cargandoCampos.current = false; }, 0);
     return () => clearTimeout(id);
-  }, [sku, canal, data?.nombre, data?.descripcion, meta, servidor]);
+  }, [sku, canal, data?.nombre, data?.descripcion, meta, servidor, esVariante]);
 
   // ── Persistir en memoria lo mejorado/editado (por sku+canal) ────────
   useEffect(() => {
     if (!sku || cargandoCampos.current) return;
-    saveMejora(sku, canal, { titulo, descripcion, atributos, highlights, bullets, searchTerms });
+    saveMejora(sku, canal, {
+      titulo, descripcion, atributos, highlights, bullets, searchTerms,
+      semilla: SEMILLA_BORRADOR,
+    });
   }, [sku, canal, titulo, descripcion, atributos, highlights, bullets, searchTerms]);
 
   // Cerrar con ESC
@@ -662,6 +746,11 @@ export default function ProductStudio({
     () => data?.canales.find((c) => c.canal === canal),
     [data, canal],
   );
+  // La cuenta del canal abierto. Va aquí arriba (y no junto a publicar) porque
+  // "Mejorar con IA" la manda y su useCallback la lee en sus dependencias al
+  // montar: declarada más abajo reventaba por zona muerta temporal.
+  const cuentaSel =
+    (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
   // El url guardado falta en muchas publicaciones y en otras apunta a una
   // publicación vieja (ver lib/enlaces.ts); se arma desde el id.
   const enlaceCanal = useMemo(
@@ -676,7 +765,11 @@ export default function ProductStudio({
   const esWalmart = canal === "walmart";
   // Los canales cuyo "Mejorar con IA" devuelve parte: qué no se aplicó, qué
   // marcas se sustituyeron y cuántos obligatorios de su categoría cubre.
+  // ML no trae parte, pero SÍ puede traer `guardado`: se pinta igual (abajo).
   const conParteIA = esAmazon || esTikTok || esTemu || esWalmart;
+  // ¿El SKU abierto es una VARIACIÓN de Woo? Por el rail (sku ≠ padre) o, con
+  // el rail apagado, porque la metadata del Estudio lo dice.
+  const esVariacionWoo = esVariante || !!meta?.es_variacion;
 
   // Los atributos de Walmart que hay GUARDADOS para este SKU. Vienen del
   // servidor (`enrich.channel_content`), que es la tabla de contenido POR
@@ -710,12 +803,20 @@ export default function ProductStudio({
   // Elegir categoría ML en el picker: actualiza el estado VIGENTE (breadcrumb +
   // contexto de IA) y PERSISTE en WooCommerce (ml_categoria_id — la elección
   // humana que MANDA al publicar). Antes solo cambiaba estado local y se perdía.
+  // A quién se le ESCRIBE la categoría y el GTIN. Para el SKU de siempre, el
+  // orden de antes (meta primero); para una variante, SU wc_id — con el del
+  // padre, el GTIN de una pieza se escribía en toda la familia.
+  const wcIdEscritura: number | null = esVariante
+    ? wcIdActivo ?? meta?.wc_id ?? null
+    : meta?.wc_id ?? producto?.wc_id ?? null;
+
   const elegirCategoriaML = useCallback(
     async (c: CategoriaMLResult) => {
+      if (soloVistaAgrupada) return;
       const niveles = c.path ? c.path.split(/\s*[>›]\s*/).filter(Boolean) : [c.name];
       setCatMlId(c.category_id);
       setCatMlNiveles(niveles);
-      const wcId = meta?.wc_id ?? producto?.wc_id ?? null;
+      const wcId = wcIdEscritura;
       if (!wcId) return;
       setGuardandoCat(true);
       try {
@@ -735,13 +836,14 @@ export default function ProductStudio({
         setGuardandoCat(false);
       }
     },
-    [meta?.wc_id, producto?.wc_id],
+    [wcIdEscritura, soloVistaAgrupada],
   );
 
   // Guardar el GTIN en WooCommerce (_barcode). El publisher ML lo usa cuando la
   // categoría exige código de barras real (ej. colchones en SANCORFASHION).
   const guardarGtinHandler = useCallback(async () => {
-    const wcId = meta?.wc_id ?? producto?.wc_id ?? null;
+    if (soloVistaAgrupada) return;
+    const wcId = wcIdEscritura;
     const limpio = gtin.replace(/\D/g, "");
     if (!wcId || limpio === (gtinGuardado ?? "")) return;
     setGuardandoGtin(true);
@@ -755,7 +857,7 @@ export default function ProductStudio({
     } finally {
       setGuardandoGtin(false);
     }
-  }, [gtin, gtinGuardado, meta?.wc_id, producto?.wc_id]);
+  }, [gtin, gtinGuardado, wcIdEscritura, soloVistaAgrupada]);
 
   const setCampo = (k: keyof Campos, v: string) => {
     if (k === "precioRegular" || k === "precioOferta" || k === "costo") {
@@ -800,12 +902,20 @@ export default function ProductStudio({
     // El parte es de ESE producto y ESE canal: al cambiar cualquiera de los
     // dos deja de aplicar, y dejarlo puesto sería leer el veredicto de otro.
     setReporteIA(null);
+    setIaError(null);
+    // El spinner es del producto+canal que se deja: se apaga AQUÍ y no desde
+    // la respuesta vencida. `mejorando` es un solo estado; apagarlo cuando
+    // volvía la respuesta vieja reactivaba el botón del canal nuevo con SU
+    // pedido todavía en vuelo, y un segundo clic lanzaba otra generación que
+    // también escribe en enrich.channel_content.
+    setMejorando(false);
   }, [sku, canal]);
 
   const mejorarConIA = useCallback(async () => {
-    if (!data || !sku) return;
+    if (!data || !sku || soloVistaAgrupada) return;
     const pedido = `${sku}:${canal}`;
     setMejorando(true);
+    setIaError(null);
     const modelo = atributos.find((a) => /model|modelo/i.test(a.nombre))?.valor || null;
     const ctx: ProductoIA = {
       nombre: titulo || data.nombre,
@@ -820,12 +930,22 @@ export default function ProductStudio({
       atributos,
     };
     const [mej, comp] = await Promise.allSettled([
-      mejorarIA({ canal, producto: ctx }),
+      // `cuenta`: la MISMA con la que se lee y guarda el contenido del canal
+      // (sólo ML la distingue). Sin ella, lo que la IA guardara de ML caía en
+      // la fila sin cuenta y la tarjeta de la cuenta abierta no lo veía.
+      mejorarIA({ canal, producto: ctx, cuenta: esML ? cuentaSel || "" : "" }),
       precioCompetencia({ producto: ctx, con_lista: true }),
     ]);
 
-    // ¿El usuario sigue en el mismo producto+canal? Si no, descartar TODO.
+    // ¿El usuario sigue en el mismo producto+canal? Si no, descartar TODO —
+    // también `mejorando`: ya lo apagó el efecto de [sku, canal] al cambiar.
     if (pedidoVigente.current !== pedido) return;
+
+    if (mej.status === "fulfilled" && !mej.value.ok) {
+      setIaError(mej.value.motivo || "La IA no pudo generar el contenido.");
+    } else if (mej.status === "rejected") {
+      setIaError(mensajeDeError(mej.reason, "No se pudo contactar a la IA."));
+    }
 
     if (mej.status === "fulfilled" && mej.value.ok && mej.value.campos) {
       const c = mej.value.campos;
@@ -863,12 +983,11 @@ export default function ProductStudio({
     } else {
       setCompetencia({ ok: false, motivo: "No se pudo consultar la competencia." });
     }
-  }, [data, sku, canal, titulo, descripcion, atributos, campos.precioRegular, campos.costo, categoriaMLTexto, categoriaWC]);
+  }, [data, sku, canal, titulo, descripcion, atributos, campos.precioRegular, campos.costo, categoriaMLTexto, categoriaWC,
+      esML, cuentaSel, soloVistaAgrupada]);
 
   // ── Publicar / actualizar en el canal (paso 4) ──────────────────────
   const itemIdSel = datosCanal?.item_id ?? null;
-  const cuentaSel =
-    (datosCanal?.extra as { cuenta?: string } | undefined)?.cuenta ?? producto?.cuenta ?? null;
 
   // Trae el contenido guardado en el SERVIDOR para el canal abierto.
   // Va aquí y no arriba porque necesita `cuentaSel`: en ML el mismo SKU puede
@@ -993,7 +1112,7 @@ export default function ProductStudio({
   // Estudio mostrando el viejo. El backend recalcula el desglose con este
   // precio, y "Regenerar" abajo lo vuelve a derivar del costo si hace falta.
   async function guardarPrecios() {
-    if (!sku) return;
+    if (!sku || soloVistaAgrupada) return;
     setGuardandoPrecios(true);
     setPrecioMsg(null);
     try {
@@ -1043,7 +1162,7 @@ export default function ProductStudio({
   }
 
   async function guardarCosto() {
-    if (!sku) return;
+    if (!sku || soloVistaAgrupada) return;
     setGuardandoCosto(true);
     setCostoMsg(null);
     try {
@@ -1096,7 +1215,10 @@ export default function ProductStudio({
       canal,
       cuenta: cuentaSel,
       sku,
-      wc_id: producto?.wc_id ?? meta?.wc_id ?? null,
+      // El de la VARIANTE abierta. Con el del padre, "publicar sólo esta
+      // variante" mandaba el stock, las fotos y los atributos de la familia.
+      // Con STUDIO_VARIANTES apagado wcIdActivo = producto?.wc_id: lo de antes.
+      wc_id: wcIdActivo ?? meta?.wc_id ?? null,
       item_id: itemIdSel,
       campos: {
         titulo, descripcion, highlights, bullets, atributos,
@@ -1144,7 +1266,9 @@ export default function ProductStudio({
   }
 
   // ── Editor de imágenes: helpers + acciones ──────────────────────────
-  const wcId = data?.wc_id ?? null;
+  // Variante: SU wc_id aunque `data` todavía sea la ficha del SKU anterior
+  // (hay un render entre cambiar de renglón y que llegue la nueva).
+  const wcId = esVariante ? wcIdActivo : data?.wc_id ?? null;
   const flagsDe = (id: number): FlagsImagen =>
     flagsImg[id] ?? { quitar_fondo: false, traducir_texto: false, quitar_logos: false, cambiar_modelo: false };
   const hasFlags = (id: number) => {
@@ -1196,7 +1320,7 @@ export default function ProductStudio({
   }
 
   async function procesarIA() {
-    if (!galeria) return;
+    if (!galeria || soloVistaAgrupada) return;
     const seleccion = galeria
       .filter((img) => img.id && hasFlags(img.id))
       .map((img) => ({ wc_image_id: img.id, src: img.src, ...flagsDe(img.id) }));
@@ -1213,7 +1337,7 @@ export default function ProductStudio({
   }
 
   async function eliminarImg(img: GaleriaImagen) {
-    if (!img.id) return;
+    if (!img.id || soloVistaAgrupada) return;
     if (!window.confirm("¿Quitar esta imagen del producto en WooCommerce?")) return;
     setEliminandoId(img.id);
     try {
@@ -1232,7 +1356,45 @@ export default function ProductStudio({
   }
 
   async function guardarContenidoWoo() {
-    if (!sku) return;
+    if (!sku || soloVistaAgrupada) return;
+    // UNA VARIACIÓN SÓLO TIENE DESCRIPCIÓN PROPIA en WooCommerce
+    // (`_variation_description`). El título lo deriva Woo del padre y los
+    // atributos son los ejes de la FAMILIA, así que el backend rechaza la
+    // escritura entera (502) si viene cualquiera de los dos — y el botón
+    // fallaba SIEMPRE en una variante. Se manda sólo lo que es suyo; omitir
+    // titulo/atributos no los borra (ContenidoReq los trata como None).
+    //
+    // Y SÓLO SI CAMBIÓ. La descripción que se carga de una variación sin la
+    // suya es la del PADRE (`_variation_description or padre_contenido`,
+    // wp_db) — así están ~4,100 de 7,477. Guardarla tal cual la COPIABA a la
+    // variación: la tienda la pintaba dos veces bajo el selector y, congelada
+    // ahí, las ediciones futuras del padre ya no llegaban a esa variante.
+    if (esVariacionWoo) {
+      const cargada = (data?.descripcion ?? "").trim();
+      const tituloCambio = !!titulo.trim() && titulo.trim() !== (data?.nombre ?? "").trim();
+      const notaTitulo = tituloCambio
+        ? " El título NO se guarda en WooCommerce (lo deriva del padre): se guarda por canal."
+        : "";
+      if (descripcion.trim() === cargada) {
+        setContenidoMsg({
+          ok: false,
+          texto: "Nada que guardar en WooCommerce: de una variante sólo la descripción es suya, y no cambió." + notaTitulo,
+        });
+        return;
+      }
+      setGuardandoContenido(true);
+      setContenidoMsg(null);
+      try {
+        await guardarContenido(sku, { wc_id: esVariante ? wcIdActivo : data?.wc_id ?? null, descripcion });
+        setContenidoMsg({ ok: true, texto: "Descripción de la variante guardada en WooCommerce." + notaTitulo });
+        onGuardado?.();
+      } catch {
+        setContenidoMsg({ ok: false, texto: "No se pudo guardar la descripción de la variante." });
+      } finally {
+        setGuardandoContenido(false);
+      }
+      return;
+    }
     setGuardandoContenido(true);
     setContenidoMsg(null);
     try {
@@ -1262,7 +1424,7 @@ export default function ProductStudio({
   // Manda SOLO los campos con contenido: el backend fusiona, así que subir la
   // pestaña de Amazon no borra lo que ya hubiera de otro campo.
   async function subirContenidoCanal() {
-    if (!sku) return;
+    if (!sku || soloVistaAgrupada) return;
     const contenido: Record<string, unknown> = {};
     if (titulo.trim()) contenido.titulo = titulo.trim();
     if (descripcion.trim()) contenido.descripcion = descripcion.trim();
@@ -1354,7 +1516,7 @@ export default function ProductStudio({
   }
 
   async function agregarArchivos(files: FileList | null) {
-    if (!files || !files.length || !sku) return;
+    if (!files || !files.length || !sku || soloVistaAgrupada) return;
     const lista = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (!lista.length) return;
     setAgregandoImg(true);
@@ -1512,7 +1674,10 @@ export default function ProductStudio({
           {/* MEJORAR CON IA — secundario */}
           <button
             onClick={mejorarConIA}
-            disabled={mejorando || !data}
+            // En la vista previa de agrupada, `sku` es el padre: lo que la IA
+            // guarda en el servidor caería en la fila del padre.
+            disabled={mejorando || !data || soloVistaAgrupada}
+            title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
             className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border-2 bg-white px-4 py-2 text-sm font-bold transition-all hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-60"
             style={{ borderColor: tema.color, color: tema.acento }}
           >
@@ -1529,7 +1694,18 @@ export default function ProductStudio({
               silencio. El validador propio sí avisa — y esto es donde se lee.
               Si no se pinta, rechazar un campo sería tan invisible como el
               fallo que el validador existe para evitar. */}
-          {reporteIA && conParteIA && (
+          {/* La IA contestó que no (Temu sin categoría, proveedor caído…).
+              Antes el botón volvía a su estado sin decir nada. */}
+          {iaError && (
+            <div className="mt-2 flex items-start gap-1.5 rounded-xl border border-rose-200 bg-rose-50 p-2.5 text-[11px] leading-relaxed text-rose-700">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              <span><strong>Mejorar con IA no se aplicó:</strong> {iaError}</span>
+            </div>
+          )}
+
+          {/* ML no trae parte de generador, pero si el backend guarda lo que
+              generó, `guardado` llega igual y se tiene que ver. */}
+          {reporteIA && (conParteIA || (esML && reporteIA.guardado)) && (
             <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-[11px] leading-relaxed">
               {reporteIA.product_type && (
                 <div className="text-slate-500">
@@ -1539,7 +1715,9 @@ export default function ProductStudio({
                       ? "Categoría de Walmart"
                       : esTemu
                         ? "Categoría de Temu"
-                        : "Categoría de TikTok"}{" "}
+                        : esML
+                          ? "Categoría de Mercado Libre"
+                          : "Categoría de TikTok"}{" "}
                   <strong className="text-slate-700">{reporteIA.product_type}</strong>
                   {reporteIA.product_type_origen ? ` (${reporteIA.product_type_origen})` : ""}
                   {reporteIA.requisitos?.estado === "sin_requisitos"
@@ -1708,6 +1886,14 @@ export default function ProductStudio({
                   un id numérico de hoja. Antes se pintaba SIEMPRE la de Mercado
                   Libre, así que estando en Amazon o TikTok se leía la categoría
                   de otro canal como si fuera la suya. */}
+              {/* Los pickers guardan solos y no reciben `disabled`: en la vista
+                  previa de agrupada (donde `sku` es el padre) se envuelven en
+                  un <fieldset disabled>, que apaga sus botones e inputs sin
+                  tocar los componentes. Sólo se monta si hay picker: vacío,
+                  sumaría un hueco de `space-y` en ML y en General. */}
+              {((esAmazon && wcId != null) || (esTikTok && sku) || (esTemu && sku)) && (
+              <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
               {esAmazon && wcId != null && (
                 <TipoAmazonPicker sku={sku!} wcId={wcId} titulo={titulo || data?.nombre} />
               )}
@@ -1720,6 +1906,8 @@ export default function ProductStudio({
                   existen, así que sin elegirla no hay contenido ni alta. */}
               {esTemu && sku && (
                 <CategoriaTemuPicker sku={sku} titulo={titulo || data?.nombre} />
+              )}
+              </fieldset>
               )}
 
               {/* PRECIO DE COMPETENCIA */}
@@ -1787,12 +1975,15 @@ export default function ProductStudio({
                         </span>
                       )}
                     </div>
-                    <CategoriaMLPicker
-                      value={catMlId}
-                      pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
-                      onChange={elegirCategoriaML}
-                      acento={tema.acento}
-                    />
+                    <fieldset disabled={soloVistaAgrupada} title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
+                      className={soloVistaAgrupada ? "min-w-0 opacity-60" : "min-w-0"}>
+                      <CategoriaMLPicker
+                        value={catMlId}
+                        pathInicial={catMlNiveles ?? meta?.categoria_ml?.niveles}
+                        onChange={elegirCategoriaML}
+                        acento={tema.acento}
+                      />
+                    </fieldset>
                   </>
                 )}
                 {/* La categoría de WooCommerce SOLO en General. En un
@@ -1839,6 +2030,8 @@ export default function ProductStudio({
                     value={gtin}
                     onChange={(e) => setGtin(e.target.value.replace(/[^\d]/g, ""))}
                     onBlur={guardarGtinHandler}
+                    disabled={soloVistaAgrupada}
+                    title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                     inputMode="numeric"
                     maxLength={14}
                     placeholder="EAN-13 / UPC-12 (8-14 dígitos)"
@@ -1961,7 +2154,8 @@ export default function ProductStudio({
                               </div>
                               <button
                                 onClick={() => eliminarImg(img)}
-                                disabled={eliminandoId === img.id}
+                                disabled={eliminandoId === img.id || soloVistaAgrupada}
+                                title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                                 className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
                               >
                                 {eliminandoId === img.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
@@ -1975,15 +2169,15 @@ export default function ProductStudio({
                   })}
                   {galEditable && (
                     <label
-                      onDragOver={(e) => { e.preventDefault(); setDragImg(true); }}
+                      onDragOver={(e) => { e.preventDefault(); if (!soloVistaAgrupada) setDragImg(true); }}
                       onDragLeave={() => setDragImg(false)}
                       onDrop={(e) => { e.preventDefault(); setDragImg(false); void agregarArchivos(e.dataTransfer.files); }}
-                      title="Agregar imágenes (clic o arrastra aquí)"
-                      className={["flex h-16 w-16 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors", dragImg ? "" : "border-slate-200 text-slate-300 hover:border-slate-300 hover:text-slate-400"].join(" ")}
+                      title={soloVistaAgrupada ? TITULO_SOLO_VISTA : "Agregar imágenes (clic o arrastra aquí)"}
+                      className={["flex h-16 w-16 flex-col items-center justify-center rounded-lg border-2 border-dashed transition-colors", soloVistaAgrupada ? "cursor-not-allowed opacity-50" : "cursor-pointer", dragImg ? "" : "border-slate-200 text-slate-300 hover:border-slate-300 hover:text-slate-400"].join(" ")}
                       style={dragImg ? { borderColor: tema.color, color: tema.color } : undefined}
                     >
                       {agregandoImg ? <Loader2 size={18} className="animate-spin" style={{ color: tema.color }} /> : <Plus size={20} />}
-                      <input type="file" accept="image/*" multiple className="hidden"
+                      <input type="file" accept="image/*" multiple className="hidden" disabled={soloVistaAgrupada}
                         onChange={(e) => { void agregarArchivos(e.target.files); e.currentTarget.value = ""; }} />
                     </label>
                   )}
@@ -1994,7 +2188,8 @@ export default function ProductStudio({
                   <>
                     <button
                       onClick={procesarIA}
-                      disabled={jobActivo || totalConFlags === 0}
+                      disabled={jobActivo || totalConFlags === 0 || soloVistaAgrupada}
+                      title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                       className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                     >
@@ -2207,7 +2402,8 @@ export default function ProductStudio({
                     {preciosEditados && (
                       <button
                         onClick={guardarPrecios}
-                        disabled={guardandoPrecios || !data}
+                        disabled={guardandoPrecios || !data || soloVistaAgrupada}
+                        title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                         className="flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                         style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
                       >
@@ -2340,7 +2536,8 @@ export default function ProductStudio({
                 {/* Guardar */}
                 <button
                   onClick={guardarCosto}
-                  disabled={guardandoCosto || !data}
+                  disabled={guardandoCosto || !data || soloVistaAgrupada}
+                  title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                   className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                   style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
                 >
@@ -2453,9 +2650,16 @@ export default function ProductStudio({
                       {contenidoMsg.texto}
                     </div>
                   )}
-                  <p className="mt-1.5 text-center text-[11px] text-slate-400">
-                    Guarda <strong>título, descripción y atributos</strong> en WooCommerce. Los borradores por canal se guardan solos y sobreviven al recargar la página.
-                  </p>
+                  {esVariacionWoo ? (
+                    <p className="mt-1.5 text-center text-[11px] text-amber-700">
+                      En WooCommerce sólo se guarda la <strong>descripción</strong> de esta variante: su título y
+                      sus atributos son de la familia. Los propios de la variante se guardan por canal.
+                    </p>
+                  ) : (
+                    <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                      Guarda <strong>título, descripción y atributos</strong> en WooCommerce. Los borradores por canal se guardan solos y sobreviven al recargar la página.
+                    </p>
+                  )}
                 </section>
               )}
 
@@ -2529,7 +2733,10 @@ export default function ProductStudio({
                 <section className="rounded-2xl border border-slate-200 bg-white p-4">
                   <button
                     onClick={subirContenidoCanal}
-                    disabled={subiendoCanal || !data}
+                    // El mismo candado que el footer: antes sólo lo tenía él, y
+                    // por este botón se guardaba igual el contenido del padre.
+                    disabled={subiendoCanal || !data || soloVistaAgrupada}
+                    title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                     className="flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                     style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})` }}
                   >
@@ -2592,10 +2799,8 @@ export default function ProductStudio({
               // En agrupada NO se guarda: el publicador no sabe mandar
               // `variations`, así que persistir contenido "del padre para las 6"
               // prometería algo que el canal no va a recibir.
-              disabled={!data || guardandoContenido || subiendoCanal || (agrupada && !agrupadaHabilitada)}
-              title={agrupada && !agrupadaHabilitada
-                ? "El modo agrupado todavía no se puede publicar en este canal"
-                : undefined}
+              disabled={!data || guardandoContenido || subiendoCanal || soloVistaAgrupada}
+              title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
               className="flex shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
               style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
             >

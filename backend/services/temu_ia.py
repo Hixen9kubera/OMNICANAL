@@ -85,6 +85,31 @@ def _categoria(sku: str) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _categoria_para_ia(producto: dict[str, Any]) -> tuple[str | None, str | None, str]:
+    """
+    (catId, ruta, sku_padre_si_es_heredada) — SOLO para generar contenido.
+
+    Medido el 11-sep: 4 variantes tienen categoría de Temu propia. Sin heredar,
+    "Mejorar con IA" en una variante fallaba con "no tiene categoría" aunque su
+    padre la tuviera. Se hereda la del PADRE por `post_parent`, nunca por
+    prefijo del SKU.
+
+    ⚠️ `_categoria` NO cambia: la usa `publicar_temu._armar`, y publicar una
+    variante con la hoja del padre sin que nadie la eligiera es la regla 2 de la
+    casa rota. Aquí solo se genera un borrador.
+    """
+    from services import ia_variante
+    sku = str(producto.get("sku") or "").strip()
+    cid, ruta = _categoria(sku)
+    if cid:
+        return cid, ruta, ""
+    padre = ia_variante.sku_padre_para_ia(producto)
+    if not padre:
+        return None, None, ""
+    cid, ruta = _categoria(padre)
+    return (cid, ruta, padre) if cid else (None, None, "")
+
+
 async def _props(cat_id: str) -> list[dict[str, Any]]:
     """
     Los atributos de la hoja, EN VIVO y con sus `vid`.
@@ -131,18 +156,22 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
     Devuelve siempre algo legible para el panel; los problemas viajan en
     `avisos` en vez de reventar.
     """
-    from services import channel_content, temu_contenido
+    from services import channel_content, ia_variante, temu_contenido
 
     sku = str(producto.get("sku") or "").strip()
     if not sku:
         return _vacio("Sin SKU.", None)
 
-    cat_id, cat_ruta = await asyncio.to_thread(_categoria, sku)
+    cat_id, cat_ruta, heredada_de = await asyncio.to_thread(_categoria_para_ia, producto)
     if not cat_id:
-        return _vacio("Este SKU no tiene categoría en Temu. Publícalo una vez "
-                      "o elige la categoría antes de generar contenido.", None)
+        return _vacio("Este SKU no tiene categoría en Temu (ni su padre, si es "
+                      "variante). Publícalo una vez o elige la categoría antes "
+                      "de generar contenido.", None)
 
     avisos: list[str] = []
+    if heredada_de:
+        avisos.append(ia_variante.aviso_heredada("Temu", heredada_de, cat_ruta or cat_id))
+    variante = ia_variante.bloque(producto)
     props = await _props(cat_id)
     if not props:
         avisos.append("No se pudo leer la plantilla de la categoría: se genera "
@@ -155,6 +184,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
         descripcion_woo=str(producto.get("descripcion") or ""),
         categoria_ruta=cat_ruta or str(cat_id),
         atributos_woo=producto.get("atributos") or {},
+        variante=variante,
     )
     data = await _preguntar(prompt, 2000)
     if not data:
@@ -189,7 +219,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
             sku=sku, titulo=campos.get("titulo") or "",
             descripcion=campos.get("descripcion") or "",
             categoria_ruta=cat_ruta or str(cat_id), props=props,
-            atributos_woo=producto.get("atributos") or {})
+            atributos_woo=producto.get("atributos") or {}, variante=variante)
         prop1 = await _preguntar(p1) or {}
         atributos, elegidos, rechazos = temu_contenido.validar_atributos(prop1, props)
         if rechazos:
@@ -205,7 +235,7 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
                 descripcion=campos.get("descripcion") or "",
                 categoria_ruta=cat_ruta or str(cat_id), props=props,
                 atributos_woo=producto.get("atributos") or {},
-                elegidos=elegidos)
+                elegidos=elegidos, variante=variante)
             prop2 = await _preguntar(p2) or {}
             extra, elegidos2, rech2 = temu_contenido.validar_atributos(prop2, props)
             atributos.extend(extra)
@@ -227,18 +257,28 @@ async def mejorar(producto: dict[str, Any], *, guardar: bool = True) -> dict[str
     salida: dict[str, Any] = {
         "ok": True, "canal": CANAL, "sku": sku,
         "categoria_id": cat_id, "categoria_ruta": cat_ruta,
+        "categoria_heredada_de": heredada_de or None,
         "campos": {k: v for k, v in campos.items() if v},
         "atributos": atributos,
         "llamadas_ia": 1 + (1 if problemas else 0) + (vueltas if props else 0),
         "avisos": avisos,
     }
 
-    if guardar and salida["campos"]:
+    # Heredada: los atributos son de la hoja del PADRE y se casan por nombre con
+    # la hoja de la variante al publicar (`publicar_temu`). No se guardan — el
+    # mismo criterio que TikTok y Walmart; siguen en la respuesta para verlos.
+    guardables = {k: v for k, v in salida["campos"].items()
+                  if not (heredada_de and k == "atributos")}
+    if heredada_de and "atributos" in salida["campos"]:
+        avisos.append("Los atributos NO se guardaron: son de la categoría del "
+                      "padre. Elige la de esta variante y vuelve a generar.")
+    if guardar and guardables:
         from services import channel_content as cc
         salida["guardado"] = await cc.guardar(
-            sku, CANAL, salida["campos"], cuenta="",
-            origen={k: "ia" for k in salida["campos"]},
-            categoria=cat_id, spec_version=SPEC_VERSION,
+            sku, CANAL, guardables, cuenta="",
+            origen={k: "ia" for k in guardables},
+            # Heredada NO se guarda como categoría de la variante.
+            categoria=None if heredada_de else cat_id, spec_version=SPEC_VERSION,
             hash_base=_hash_base(producto))
     return salida
 

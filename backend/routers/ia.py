@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from services import claude, competencia, ia_generadores
+from services import claude, competencia, ia_generadores, ia_variante
 
 router = APIRouter(prefix="/api/ia", tags=["ia"])
 
@@ -66,12 +66,20 @@ def generar(req: GenerarRequest) -> dict[str, Any]:
     """Genera contenido para un canal usando su prompt especializado."""
     producto = req.producto.model_dump()
     producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
+    # Endpoint síncrono: FastAPI lo corre en el threadpool, así que la lectura
+    # de WordPress puede ir directa. Mismo bloque de variante que /mejorar.
+    producto = ia_variante.preparar_sync(producto)
     return ia_generadores.generar(req.canal, req.generador, producto)
 
 
 class MejorarRequest(BaseModel):
     canal: str = "mercado_libre"
     producto: ProductoCtx = Field(default_factory=ProductoCtx)
+    # Cuenta del canal (BEKURA / SANCORFASHION en ML). Es parte de la llave de
+    # `enrich.channel_content` (sku, canal, cuenta): sin ella, lo que la IA
+    # genere para una cuenta de ML se guardaría donde el publicador de la otra
+    # también lo leería.
+    cuenta: str = ""
 
 
 @router.post("/mejorar")
@@ -85,7 +93,12 @@ async def mejorar(req: MejorarRequest) -> dict[str, Any]:
     `enrich.channel_content` con origen `ia`)."""
     producto = req.producto.model_dump()
     producto["atributos"] = [a.model_dump() for a in req.producto.atributos]
-    return await ia_generadores.mejorar(req.canal, producto)
+    # Si el SKU es una VARIANTE, la IA tiene que saberlo: 1,541 variantes
+    # comparten título con su padre y el Estudio siembra los atributos-LISTA
+    # de la familia ("3 piezas | 6 piezas"). `preparar` añade el valor fijado
+    # de cada eje, sanea esas listas y nunca lanza (sin WordPress, sigue igual).
+    producto = await ia_variante.preparar(producto)
+    return await ia_generadores.mejorar(req.canal, producto, cuenta=req.cuenta)
 
 
 class CompetenciaRequest(BaseModel):

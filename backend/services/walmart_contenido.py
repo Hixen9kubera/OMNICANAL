@@ -324,10 +324,15 @@ def _describe(categoria: str, campo: str) -> str:
 def build_prompt_contenido(*, sku: str, categoria: str, titulo_woo: str,
                            descripcion_woo: str, marca: str = "",
                            atributos_conocidos: dict | None = None,
-                           keywords: list[str] | None = None) -> str:
+                           keywords: list[str] | None = None,
+                           variante: str = "") -> str:
     atrs = "\n".join(f"    {k}: {v}" for k, v in (atributos_conocidos or {}).items()
                      if v) or "    (ninguno confirmado)"
     kw = ", ".join(keywords or []) or "(ninguna)"
+    # `variante` = bloque de `ia_variante.bloque`. El título de Woo de una
+    # variante suele ser el de la familia: sin esto, todas las hermanas salen
+    # con el mismo título en Walmart.
+    bloque_variante = f"\n{variante}\n" if variante else ""
     return f"""Actúa como especialista en optimización de listados (content \
 merchandising) para Walmart Marketplace México. Te doy información cruda de un \
 producto y la reescribes siguiendo ESTRICTAMENTE las reglas de abajo.
@@ -346,7 +351,7 @@ PRODUCTO
     Atributos conocidos:
 {atrs}
     Palabras clave:     {kw}
-
+{bloque_variante}
 1 · TÍTULO
    · Entre {TITULO_IDEAL[0]} y {TITULO_IDEAL[1]} caracteres. Tope duro {TITULO_MAX}.
    · Estructura: [Marca] + [Artículo] + [Característica o material] + [Modelo/tamaño/color]
@@ -397,7 +402,7 @@ SALIDA — SOLO JSON, sin texto alrededor:
 # ═════════════════════════════════════════════════════════════════════════════
 def build_prompt_atributos(*, sku: str, categoria: str, titulo: str,
                            descripcion: str, atributos_woo: dict | None = None,
-                           incluir_opcionales: int = 12) -> str:
+                           incluir_opcionales: int = 12, variante: str = "") -> str:
     """Pide los obligatorios de esa categoría y hasta N opcionales.
 
     Los opcionales NO son adorno: `offerScore` y `contentScore` de la Listing
@@ -419,6 +424,7 @@ def build_prompt_atributos(*, sku: str, categoria: str, titulo: str,
     bloque_opc = "\n".join(_describe(categoria, c) for c in opc)
     atrs = "\n".join(f"    {k}: {v}" for k, v in (atributos_woo or {}).items()
                      if v) or "    (ninguno)"
+    bloque_variante = f"\n{variante}\n" if variante else ""
 
     return f"""Eres catalogador de productos para Walmart México. Llenas los \
 atributos de ficha de UN producto, con lo que te doy. No inventas.
@@ -430,7 +436,7 @@ PRODUCTO
     Descripción: {descripcion[:1200]}
     Atributos que ya trae el catálogo:
 {atrs}
-
+{bloque_variante}
 OBLIGATORIOS de esta categoría — si falta alguno, Walmart RECHAZA el artículo:
 {bloque_obl or '  (ninguno propio de la categoría)'}
 

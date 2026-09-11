@@ -1001,6 +1001,73 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.503.0 — La variante se publica con SU wc_id, y la IA sabe de qué variante habla
+
+**El Estudio con variantes estuvo encendido 25 minutos y se apagó.** Brandon pidió
+encender `STUDIO_VARIANTES` el 11-sep a las 17:04 UTC. Una investigación con
+verificación adversarial (46 agentes, 40 conclusiones revisadas, 21 corregidas)
+encontró que el Estudio publicaba una variante con el `wc_id` del **padre**: el
+SKU del anuncio era el de la variante, pero el stock, las fotos y los atributos
+salían del padre. Se apagó a las 17:29. En esa ventana sólo se publicaron dos
+productos **simples** (`TEC-0050-ROS`, `MUE-0302-MAD-CAF`), que no pasan por el
+rail: sin daño. **`STUDIO_VARIANTES` sigue en `false`** hasta el dale.
+
+- **El `wc_id` sigue al SKU abierto** (`ProductStudio.tsx`, `wcIdActivo`).
+  `producto` es SIEMPRE la fila del padre (la lista es anidada), y el Estudio lo
+  usaba en publicar, en la ficha, en el GTIN y en la categoría ML. Medido en
+  `MASC-1022-CAF`: salía con stock 0 (ML lo convierte en 1) en vez de 20, con
+  `Color = "Café | Rosa"` y la categoría y el GTIN se escribían en el padre para
+  toda la familia. Ahora usa el `wc_id` de la variante (el que ya trae
+  `variantes_por_padre`); si no lo conoce manda `null` y el backend resuelve por
+  SKU. **Con el flag apagado `sku === skuRaiz` y el `wc_id` enviado es el mismo de
+  siempre.** Verificado en local contra producción (sólo lectura, scheduler
+  apagado): la vista previa de ML de `MASC-1022-CAF` sale con
+  `available_quantity: 20`, `SELLER_SKU` de la variante, precio 735.21 y
+  `Color = Café`.
+- **Guardar contenido (General) en una variación** manda sólo la descripción
+  (`_variation_description`) y sólo si cambió. Antes fallaba siempre con 502 porque
+  mandaba título y atributos, que en Woo son de la familia. Mandarla sin cambios
+  habría congelado la del padre en ~4,100 variaciones que no tienen propia.
+- **La vista previa de Agrupada no escribe nada**: IA, guardar canal, GTIN,
+  categorías (por `fieldset disabled`), imágenes y precios. En agrupada `sku` es
+  el padre y el cuerpo no tenía el candado que sí tenía el footer.
+- **Cambiar de modo** sólo llama al servidor si el destino difiere de lo guardado
+  (volver a Individual sin fila ya no pinta «Falta aplicar la migración 0051»).
+- **Carrera al abrir desde una variante**: el Estudio se remonta por llave y
+  `useDetalleProducto` descarta una respuesta tardía de otro SKU.
+- **Borradores viejos**: se marcan `semilla: 2`; los de una variante sin marca
+  pierden los atributos (traían listas y residuos del padre como
+  `COMPATIBLE_CELLPHONE = Samsung S22+` en la funda del S23 Ultra).
+- **Mejorar con IA enseña el motivo cuando falla** (Temu sin categoría fallaba en
+  silencio) y el spinner se apaga al cambiar de SKU o canal.
+- **La IA recibe un bloque VARIANTE** (`services/ia_variante.py`) en General, ML,
+  Amazon, TikTok, Temu, Walmart y `ml_atributos`: familia, SKU, valores fijados y
+  cuál la distingue de sus hermanas. Los ejes salen de la meta `attribute_*` de
+  la propia variación, no de la ficha del padre; «distintivo» = más de un valor
+  entre las hermanas (TEC-0988 declara Voltaje pero todas son 9 V: la distingue el
+  color). Las listas `" | "` se sanean al valor fijado. General, ML y Amazon ahora
+  llevan el SKU en el prompt. Antes 1,541 variantes con el mismo título que el
+  padre (ACC-0234 por modelo, TEC-0377 por «variante») recibían un contexto
+  idéntico.
+- **Mercado Libre guarda lo que genera la IA** en `channel_content` (sku,
+  'mercado_libre', cuenta) **sin pisar**: sólo llaves que no existen o que ya eran
+  de la IA — nunca el título de Crear ni lo guardado a mano. Los atributos de ML
+  NO se guardan: el publicador arma `{"id": nombre}` y habrían viajado como IDs
+  inexistentes («Color principal»).
+- **Categoría del padre sólo para la IA** en TikTok, Temu y Walmart (por
+  `post_parent`, nunca por prefijo). Con categoría heredada se guarda sólo el
+  texto, no los atributos: sus IDs son de la hoja del padre y el publicador
+  resuelve la categoría de la variante por su cuenta.
+
+Revisado por tres lentes (frontend, IA, producción); los hallazgos altos y medios
+se aplicaron. `tsc`, `next build`, `py_compile` e import en seco en verde.
+Pendiente (baja): elegir un modo antes de que conteste la lectura del servidor lo
+pisa; `sanear_atributos` deja pasar atributos de valor único del padre.
+
+Sigue pendiente y necesita dale: el stock al publicar se lee de `_stock_odoo`
+(meta que nadie escribe) antes que `_stock`; galería propia por variante; filtrar
+las fotos de las hermanas; candado para no publicar un SKU padre.
+
 ### v0.502.0 — La 0051 nace con candado y amarrada al catálogo (Eduardo)
 
 Revisión de la migración 0051 de Brandon (`channel.publication_mode`, el modo
