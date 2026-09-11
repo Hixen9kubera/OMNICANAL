@@ -431,7 +431,9 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
                     r["document_type"] = et["document_type"]
                     res = await asyncio.to_thread(odoo_ventas.fijar_etiqueta, "temu", sn,
                                                   item["sin_pdf"], et["pdf"], f"{guia}.pdf")
-                    if res.get("accion") == "ya_tenia":
+                    if res.get("accion") in ("ya_tenia", "sin_confirmar"):
+                        # Ya lo tenía, o se desconfirmó entre la cola y ahora:
+                        # no es un fallo, la vuelta siguiente lo vuelve a mirar.
                         pass
                     elif res.get("ok"):
                         r["pdf_subidos"] += 1

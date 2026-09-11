@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.501.0 — El PDF de la guía sólo entra a órdenes de venta CONFIRMADAS
+
+Brandon: *"el flujo es descargar el PDF y subirlo a la orden de venta después de
+estar confirmada"*.
+
+El número de guía ya respetaba ese orden sin proponérselo: un borrador no tiene
+entregas, así que no hay dónde escribirlo. El PDF no: la v0.500.0 lo habría subido
+también a una orden que se quedó en borrador (por ejemplo, un
+`no_se_pudo_confirmar`).
+
+Ahora `pendientes_de_guia` sólo pide PDF para órdenes en `sale`/`done`
+(`_CONFIRMADAS`), y `fijar_etiqueta` RE-LEE el estado justo antes de escribir: si
+la orden se desconfirmó entre que se armó la cola y la escritura, contesta
+`sin_confirmar` y no toca nada. El refresco lo cuenta como espera, no como fallo.
+Un borrador no se pierde: entra a la cola en la vuelta siguiente a su
+confirmación (dentro del tope de 14 días).
+
+Probado sin red contra un Odoo simulado: borrador fuera, confirmada con PDF
+verificado, `done` cuenta como confirmada, no se pisa un PDF existente, y lo que
+no empieza con `%PDF` no se sube.
+
 ### v0.500.0 — La guía de Temu entra a la orden de venta como PDF, verificada, a horas fijas
 
 Brandon, viendo la S38340: *"una vez recuperada la guía debe hacer 2 cosas:

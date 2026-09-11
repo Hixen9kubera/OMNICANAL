@@ -435,6 +435,11 @@ def elegir_almacen(lineas: list[dict[str, Any]],
 
 # ── Idempotencia ────────────────────────────────────────────────────────────
 
+# Estados de sale.order en que la orden ya está confirmada (en Odoo 17, "done"
+# es la confirmada y bloqueada). El PDF de la etiqueta sólo se sube a éstas.
+_CONFIRMADAS = ("sale", "done")
+
+
 def url_orden_publica() -> str:
     """Plantilla de la liga a una orden de venta, con `{id}` por sustituir.
 
@@ -488,7 +493,7 @@ def pendientes_de_guia(canal: str, dias: int = 14,
                     ["client_order_ref", "!=", False],
                     ["state", "!=", "cancel"],
                     ["create_date", ">=", desde]]],
-                  {"fields": ["name", "client_order_ref", "picking_ids",
+                  {"fields": ["name", "client_order_ref", "picking_ids", "state",
                               "meli_etiqueta_file"],
                    "order": "create_date asc", "limit": 400,
                    "context": {"bin_size": True}})
@@ -511,7 +516,12 @@ def pendientes_de_guia(canal: str, dias: int = 14,
     por_venta: dict[str, dict[str, Any]] = {}
     for o in ordenes:
         pend = [i for i in (o.get("picking_ids") or []) if i in ids_faltan]
-        sin_pdf = not o.get("meli_etiqueta_file")
+        # El PDF sólo va a órdenes CONFIRMADAS (el flujo de Brandon: confirmar,
+        # luego la etiqueta). Una en borrador espera: entra a la cola en la
+        # vuelta siguiente a su confirmación. El número no necesita esta
+        # guarda: un borrador no tiene entregas a las que escribirle.
+        sin_pdf = (not o.get("meli_etiqueta_file")
+                   and o.get("state") in _CONFIRMADAS)
         if not pend and not sin_pdf:
             continue
         venta = str(o["client_order_ref"]).split("#", 1)[0]
@@ -622,13 +632,16 @@ def fijar_etiqueta(canal: str, order_id: str, sale_ids: list[int],
         return {"ok": False, "accion": "sin_ordenes"}
     try:
         actuales = _kw("sale.order", "read",
-                       [list(sale_ids), ["meli_etiqueta_file", "partner_id"]],
+                       [list(sale_ids), ["meli_etiqueta_file", "partner_id", "state"]],
                        {"context": {"bin_size": True}})
-        objetivo = [o["id"] for o in actuales
-                    if not o.get("meli_etiqueta_file")
-                    and (o.get("partner_id") or [None])[0] == partner]
+        propias = [o for o in actuales
+                   if not o.get("meli_etiqueta_file")
+                   and (o.get("partner_id") or [None])[0] == partner]
+        # Se re-lee el estado justo antes de escribir: sólo CONFIRMADAS.
+        objetivo = [o["id"] for o in propias if o.get("state") in _CONFIRMADAS]
         if not objetivo:
-            return {"ok": False, "accion": "ya_tenia", "subidas": 0}
+            accion = "sin_confirmar" if propias else "ya_tenia"
+            return {"ok": False, "accion": accion, "subidas": 0}
         _kw("sale.order", "write",
             [objetivo, {"meli_etiqueta_file": base64.b64encode(pdf).decode("ascii"),
                         "meli_etiqueta_filename": nombre}])
