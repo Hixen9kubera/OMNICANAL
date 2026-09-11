@@ -1001,6 +1001,52 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.500.0 — La guía de Temu entra a la orden de venta como PDF, verificada, a horas fijas
+
+Brandon, viendo la S38340: *"una vez recuperada la guía debe hacer 2 cosas:
+pasar la guía a la orden de venta y asegurarse que se subió; y mostrarse en el
+panel"*. Más dos ajustes: horario fijo y la liga a Odoo.
+
+**"SUBIR GUÍA" ES UN ARCHIVO, NO UN NÚMERO.** El campo de la orden de venta es
+`sale.order.meli_etiqueta_file` (binario) con `meli_etiqueta_filename`. La
+convención de la casa la fijan las órdenes de SHEIN: el PDF de la etiqueta,
+nombrado como la guía (`JMX101802081356.pdf`). Hasta hoy el refresco escribía
+el número en la entrega (`carrier_tracking_ref`) pero la orden se quedaba con
+"Upload your file" vacío.
+
+**CÓMO SE BAJA LA ETIQUETA.** `bg.logistics.shipment.document.get` con el
+`packageSn` (que ya viene en `unshippedPackage[]` y en `shipmentInfoDTO[]`)
+devuelve una URL firmada que caduca en 10 minutos y NO se baja con un GET
+normal: pide cinco cabeceras `toa-*` cuya firma es el mismo algoritmo del
+`sign` normal (`temu._firmar`). Lo bajado se valida: si no empieza con `%PDF`
+no se sube — un HTML de error guardado como etiqueta sería peor que nada.
+`documentType` no está documentado; se prueban candidatos y el log dice cuál
+funcionó.
+
+**"ASEGURARSE QUE SE SUBIÓ".** Después de escribir, se RE-LEE: la guía en la
+entrega y el archivo en la orden. Sólo cuenta como hecho lo que Odoo devuelve
+al volver a preguntarle. No se pisa un archivo que ya esté: si alguien lo subió
+a mano, ese gana.
+
+**LA COLA AHORA MIRA LAS DOS COSAS.** Una venta sigue pendiente mientras le
+falte la guía en la entrega O el PDF en la orden. Se lee con `bin_size` para no
+bajar binarios sólo para saber si existen. Así las 7 de ayer —que ya tenían
+guía— vuelven a entrar para recibir su PDF.
+
+**HORARIO FIJO: 00:00, 02:00, 04:00… hora de México.** Antes corría "cada 120
+minutos desde el despliegue", o sea a horas que dependían de cuándo alguien
+subió código. Ahora es cron en `America/Mexico_City` (UTC-6 fijo desde 2022).
+
+**LA LIGA A ODOO** apuntaba al host de la API (`ifullmx-brea.odoo.com`) con el
+formato nuevo `/odoo/sales/`. Ahora usa la URL pública `ifull.odoo.com` con el
+formato que usa el equipo (`/web#id=…&cids=73&menu_id=240&action=400…`). Host y
+números viven en config (`ODOO_URL_PUBLICA`, `ODOO_WEB_*`), y `/estado` expone
+la plantilla para que el panel no la arme por su cuenta.
+
+Nota: el usuario de la API no tiene permiso para leer `base.automation`, así que
+no se pudo confirmar si subir a "Subir guía" dispara alguna automatización en
+Odoo. SHEIN ya recibe ese campo lleno, así que es la convención de la casa.
+
 ### v0.499.0 — La guía comprada en Temu y aún no confirmada vivía en otro endpoint
 
 Brandon, viendo la pestaña: *"creo que ya se generaron las guías, chécalo"*. El

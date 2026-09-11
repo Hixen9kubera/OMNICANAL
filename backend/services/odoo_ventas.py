@@ -56,6 +56,7 @@ contesta, no solo a quien llamó. Costó el apagón del 13-ago.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -434,12 +435,31 @@ def elegir_almacen(lineas: list[dict[str, Any]],
 
 # ── Idempotencia ────────────────────────────────────────────────────────────
 
+def url_orden_publica() -> str:
+    """Plantilla de la liga a una orden de venta, con `{id}` por sustituir.
+
+    Sale de config (`ODOO_URL_PUBLICA`, `ODOO_WEB_*`) y la expone `/estado`,
+    para que el panel no arme la liga por su cuenta con el host de la API.
+    """
+    base = (settings.odoo_url_publica or settings.odoo_url or "").rstrip("/")
+    return (f"{base}/web#id={{id}}&cids={settings.odoo_web_cids}"
+            f"&menu_id={settings.odoo_web_menu_venta}"
+            f"&action={settings.odoo_web_action_venta}&model=sale.order&view_type=form")
+
+
 def pendientes_de_guia(canal: str, dias: int = 14,
                        limite: int = 60) -> list[dict[str, Any]]:
     """
-    Órdenes de este canal cuya ENTREGA todavía no tiene número de rastreo.
+    Ventas del canal a las que todavía les falta ALGO de la guía.
 
     ⚠️ BLOQUEA: llamar desde un hilo.
+
+    Una venta sigue pendiente mientras le falte cualquiera de las DOS cosas que
+    pidió Brandon (11-sep):
+      · el número de rastreo en su ENTREGA de salida (`carrier_tracking_ref`), y
+      · el PDF de la etiqueta en la ORDEN, en el campo "Subir guía"
+        (`meli_etiqueta_file`) — la convención de la casa, la misma que ya
+        traen las órdenes de SHEIN (`JMX….pdf`).
 
     LA COLA SE LE PREGUNTA A ODOO, NO A LA BITÁCORA, y ésa es la corrección de
     diseño que hizo falta. La primera versión elegía por `guia = ''` en
@@ -448,6 +468,9 @@ def pendientes_de_guia(canal: str, dias: int = 14,
     quedaba sin guía para siempre. Preguntando por lo que le falta a Odoo la
     cola se vacía sola cuando el trabajo está hecho, y un fallo se reintenta a
     la vuelta siguiente en vez de perderse.
+
+    El PDF se revisa con `bin_size`: Odoo contesta el TAMAÑO en vez del binario,
+    y no hay que bajar cientos de KB por orden sólo para saber si existe.
 
     SÓLO ENTREGAS DE SALIDA. Una orden en ruta de dos pasos cuelga PICK y PACK
     (internos) y, si hubo devolución, también su entrada. Estampar el rastreo
@@ -465,52 +488,58 @@ def pendientes_de_guia(canal: str, dias: int = 14,
                     ["client_order_ref", "!=", False],
                     ["state", "!=", "cancel"],
                     ["create_date", ">=", desde]]],
-                  {"fields": ["name", "client_order_ref", "picking_ids"],
-                   "order": "create_date asc", "limit": 400})
+                  {"fields": ["name", "client_order_ref", "picking_ids",
+                              "meli_etiqueta_file"],
+                   "order": "create_date asc", "limit": 400,
+                   "context": {"bin_size": True}})
     if not ordenes:
         return []
     todos = [i for o in ordenes for i in (o.get("picking_ids") or [])]
-    if not todos:
-        return []
-    # Las de SALIDA que siguen sin rastreo. `state != cancel`: una entrega
-    # cancelada ya no va a ninguna parte.
-    faltan = _kw("stock.picking", "search_read",
-                 [[["id", "in", todos],
-                   ["picking_type_code", "=", "outgoing"],
-                   ["state", "!=", "cancel"],
-                   ["carrier_tracking_ref", "in", [False, ""]]]],
-                 {"fields": ["id"]})
-    ids_faltan = {p["id"] for p in faltan}
-    if not ids_faltan:
-        return []
+    ids_faltan: set[int] = set()
+    if todos:
+        # Las de SALIDA que siguen sin rastreo. `state != cancel`: una entrega
+        # cancelada ya no va a ninguna parte.
+        faltan = _kw("stock.picking", "search_read",
+                     [[["id", "in", todos],
+                       ["picking_type_code", "=", "outgoing"],
+                       ["state", "!=", "cancel"],
+                       ["carrier_tracking_ref", "in", [False, ""]]]],
+                     {"fields": ["id"]})
+        ids_faltan = {p["id"] for p in faltan}
     # La VENTA es la misma para las dos mitades de un surtido dividido: el ref
     # lleva sufijo `#1`/`#2` y aquí se vuelve a unir, porque la guía es una sola.
     por_venta: dict[str, dict[str, Any]] = {}
     for o in ordenes:
         pend = [i for i in (o.get("picking_ids") or []) if i in ids_faltan]
-        if not pend:
+        sin_pdf = not o.get("meli_etiqueta_file")
+        if not pend and not sin_pdf:
             continue
         venta = str(o["client_order_ref"]).split("#", 1)[0]
         d = por_venta.setdefault(venta, {"order_id": venta, "ordenes": [],
-                                         "pickings": []})
+                                         "pickings": [], "sin_pdf": []})
         d["ordenes"].append(o["name"])
         d["pickings"].extend(pend)
+        if sin_pdf:
+            d["sin_pdf"].append(o["id"])
     return list(por_venta.values())[:int(limite)]
 
 
 def fijar_guia(canal: str, order_id: str, guia: str,
                pickings: list[int] | None = None) -> dict[str, Any]:
     """
-    Escribe el número de rastreo en las entregas de salida. ⚠️ BLOQUEA.
+    Escribe el número de rastreo en las entregas de salida y lo VERIFICA. ⚠️ BLOQUEA.
 
-    LA GUÍA NO VA EN LA ORDEN DE VENTA, VA EN LA ENTREGA: `stock.picking.
-    carrier_tracking_ref` es el campo de la casa —10,381 entregas ya lo usan,
-    incluidas todas las de Mercado Libre—.
+    LA GUÍA (el número) VA EN LA ENTREGA: `stock.picking.carrier_tracking_ref`
+    es el campo de la casa —10,381 entregas ya lo usan, incluidas todas las de
+    Mercado Libre—. El PDF va aparte, en la orden: ver `fijar_etiqueta`.
 
     SE ESCRIBE DESPUÉS DE CONFIRMAR, y no es un parche: la guía la asigna la
-    paquetería cuando el paquete SALE, y el paquete sale porque el almacén
-    surtió la entrega, que sólo existe si la orden está confirmada. Esperar la
-    guía para confirmar sería un círculo cerrado.
+    paquetería cuando se compra el envío, y eso pasa con la orden ya viva.
+    Esperar la guía para confirmar sería un círculo cerrado.
+
+    "ASEGURARSE DE QUE SE SUBIÓ" (Brandon, 11-sep): tras escribir se RE-LEE, y
+    sólo es `ok` si Odoo devuelve la guía al volver a preguntarle. Un `write`
+    que contesta bien no prueba que el dato quedó.
 
     RESPETA LOS INTERRUPTORES, igual que `crear_orden` y `cancelar_orden`: si
     alguien aprieta "Apagar todo" en la pestaña, esto también se detiene. Un
@@ -544,11 +573,82 @@ def fijar_guia(canal: str, order_id: str, guia: str,
         if not objetivo:
             return {"ok": False, "accion": "ya_tenia", "escritas": 0}
         _kw("stock.picking", "write", [objetivo, {"carrier_tracking_ref": guia}])
-        log.info("Odoo %s: guía %s escrita en %d entrega(s) de la venta %s",
-                 canal, guia, len(objetivo), order_id)
-        return {"ok": True, "accion": "escrita", "escritas": len(objetivo)}
+        leidas = _kw("stock.picking", "read", [objetivo, ["carrier_tracking_ref"]])
+        verificada = bool(leidas) and all(
+            (p.get("carrier_tracking_ref") or "") == guia for p in leidas)
+        if verificada:
+            log.info("Odoo %s: guía %s escrita y verificada en %d entrega(s) de la venta %s",
+                     canal, guia, len(objetivo), order_id)
+        else:
+            log.warning("Odoo %s: la guía %s de %s NO quedó al re-leer: %s",
+                        canal, guia, order_id, leidas)
+        return {"ok": verificada, "accion": "escrita" if verificada else "no_verificada",
+                "escritas": len(objetivo), "verificada": verificada}
     except Exception as exc:  # noqa: BLE001 — nunca rompe el refresco
         log.warning("Odoo %s: no se pudo escribir la guía de %s: %s",
+                    canal, order_id, exc)
+        return {"ok": False, "accion": "error", "motivo": str(exc)[:200]}
+
+
+def fijar_etiqueta(canal: str, order_id: str, sale_ids: list[int],
+                   pdf: bytes, nombre: str) -> dict[str, Any]:
+    """
+    Sube el PDF de la etiqueta a "Subir guía" de la orden y lo VERIFICA. ⚠️ BLOQUEA.
+
+    El campo es `sale.order.meli_etiqueta_file` (+ `meli_etiqueta_filename`),
+    que es lo que ya llenan las órdenes de SHEIN: el PDF nombrado como la guía.
+
+    NO PISA: si la orden ya tiene archivo —alguien lo subió a mano, u otra
+    vuelta ya lo hizo— se deja. Y sólo toca órdenes del partner del canal: un
+    id que no fuera de Temu no recibe una etiqueta de Temu.
+
+    VERIFICADO: tras escribir se re-lee con `bin_size`; sólo es `ok` si Odoo
+    reporta el archivo y el nombre al volver a preguntarle.
+
+    RESPETA LOS INTERRUPTORES, como `crear_orden`, `cancelar_orden` y
+    `fijar_guia`.
+    """
+    canal = (canal or "").lower()
+    if not pdf or not pdf.startswith(b"%PDF"):
+        return {"ok": False, "accion": "sin_pdf"}
+    if not habilitado():
+        return {"ok": False, "accion": "apagado"}
+    if not canal_activo(canal):
+        return {"ok": False, "accion": "canal_apagado"}
+    partner = _PARTNER.get(canal)
+    if not partner:
+        return {"ok": False, "accion": "canal_desconocido"}
+    if not sale_ids:
+        return {"ok": False, "accion": "sin_ordenes"}
+    try:
+        actuales = _kw("sale.order", "read",
+                       [list(sale_ids), ["meli_etiqueta_file", "partner_id"]],
+                       {"context": {"bin_size": True}})
+        objetivo = [o["id"] for o in actuales
+                    if not o.get("meli_etiqueta_file")
+                    and (o.get("partner_id") or [None])[0] == partner]
+        if not objetivo:
+            return {"ok": False, "accion": "ya_tenia", "subidas": 0}
+        _kw("sale.order", "write",
+            [objetivo, {"meli_etiqueta_file": base64.b64encode(pdf).decode("ascii"),
+                        "meli_etiqueta_filename": nombre}])
+        leidas = _kw("sale.order", "read",
+                     [objetivo, ["meli_etiqueta_file", "meli_etiqueta_filename"]],
+                     {"context": {"bin_size": True}})
+        verificada = bool(leidas) and all(
+            o.get("meli_etiqueta_file") and o.get("meli_etiqueta_filename") == nombre
+            for o in leidas)
+        if verificada:
+            log.info("Odoo %s: etiqueta %s subida y verificada en %d orden(es) de %s (%s)",
+                     canal, nombre, len(objetivo), order_id,
+                     ", ".join(str(o.get("meli_etiqueta_file")) for o in leidas))
+        else:
+            log.warning("Odoo %s: la etiqueta %s de %s NO quedó al re-leer: %s",
+                        canal, nombre, order_id, leidas)
+        return {"ok": verificada, "accion": "subida" if verificada else "no_verificada",
+                "subidas": len(objetivo), "verificada": verificada}
+    except Exception as exc:  # noqa: BLE001 — nunca rompe el refresco
+        log.warning("Odoo %s: no se pudo subir la etiqueta de %s: %s",
                     canal, order_id, exc)
         return {"ok": False, "accion": "error", "motivo": str(exc)[:200]}
 

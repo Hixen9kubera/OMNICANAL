@@ -71,6 +71,9 @@ async def estado(canal: str | None = Query(None, description="acota los contador
                 # Para el enlace "Abrir en Odoo" del detalle. Es la URL pública
                 # de la instancia, no una credencial.
                 "odoo_url": (settings.odoo_url or "").rstrip("/"),
+                # La liga que abre la GENTE: host público y formato /web#…,
+                # con `{id}` por sustituir. Ver odoo_ventas.url_orden_publica.
+                "odoo_url_orden": odoo_ventas.url_orden_publica(),
             },
             "resumen": odoo_ventas_log.resumen(canal),
             "publicaciones": _publicaciones(),

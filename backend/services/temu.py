@@ -43,6 +43,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import secrets
 import time
 from typing import Any
 
@@ -177,6 +178,78 @@ async def llamar(tipo: str, datos: dict[str, Any] | None = None,
             f"Temu {tipo}: la llamada respondió OK pero la operación FALLÓ "
             f"(result.success=false): {res.get('errorMsg') or res.get('errorCode') or ''}")
     return res
+
+
+def _toa_cabeceras() -> dict[str, str]:
+    """
+    Las cinco cabeceras para BAJAR un archivo firmado de Temu (la etiqueta).
+
+    Lo dice la guía oficial 37 (Order Fulfillment Guide): la URL que devuelve
+    `bg.logistics.shipment.document.get` caduca a los 10 minutos y NO se baja
+    con un GET normal. Pide `toa-app-key`, `toa-access-token`, `toa-random` (32
+    dígitos al azar), `toa-timestamp` (10 dígitos, ±300 s) y `toa-sign`.
+
+    `toa-sign` es EL MISMO algoritmo del `sign` de las llamadas normales: las
+    cuatro llaves —con su prefijo `toa-`— ordenadas, concatenadas llave+valor,
+    envueltas en el app_secret y en MD5 mayúsculas. O sea `_firmar` tal cual.
+    """
+    cab = {
+        "toa-app-key": _cfg("temu_app_key"),
+        "toa-access-token": _cfg("temu_access_token"),
+        "toa-random": "".join(secrets.choice("0123456789") for _ in range(32)),
+        "toa-timestamp": str(int(time.time())),
+    }
+    cab["toa-sign"] = _firmar(cab)
+    return cab
+
+
+# `documentType` NO está documentado (la doc oficial deja la descripción vacía).
+# El SDK público usa el primero; los otros son la red. El que funcione queda en
+# el resumen del refresco (`document_type`), y con eso se puede fijar después.
+_TIPOS_DOCUMENTO = ("SHIPPING_LABEL_PDF", "SHIPPING_LABEL", "PDF")
+
+
+async def descargar_etiqueta(package_sn: str, timeout: float = 60.0) -> dict[str, Any]:
+    """
+    El PDF de la etiqueta de un paquete de Temu. Nunca lanza.
+
+    Devuelve `{ok, pdf, document_type, errores}`. SÓLO cuenta como bajado lo que
+    empieza con `%PDF`: una página de error, un JSON o un HTML guardados como
+    "etiqueta" en la orden serían peores que dejar el campo vacío — alguien
+    imprimiría basura creyendo que es la guía.
+
+    Error conocido: `120012038` = la etiqueta todavía no está lista
+    (`earliestTimeGetShippingDocument`). No es un fallo nuestro; la siguiente
+    vuelta del refresco la vuelve a pedir.
+    """
+    errores: dict[str, str] = {}
+    for doc in _TIPOS_DOCUMENTO:
+        try:
+            res = await llamar("bg.logistics.shipment.document.get",
+                               {"documentType": doc, "packageSnList": [str(package_sn)]})
+        except Exception as exc:  # noqa: BLE001
+            errores[doc] = str(exc)[:160]
+            continue
+        urls = [u for u in (res or {}).get("shippingLabelUrlList") or []
+                if isinstance(u, dict) and u.get("url")]
+        if not urls:
+            errores[doc] = f"sin url: {str(res)[:120]}"
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as cli:
+                resp = await cli.get(urls[0]["url"], headers=_toa_cabeceras())
+        except Exception as exc:  # noqa: BLE001
+            errores[doc] = f"descarga: {str(exc)[:140]}"
+            continue
+        if resp.status_code != 200:
+            errores[doc] = f"descarga HTTP {resp.status_code}: {resp.text[:120]}"
+            continue
+        if not resp.content.startswith(b"%PDF"):
+            errores[doc] = (f"no es PDF ({resp.headers.get('content-type')}): "
+                            f"{resp.content[:60]!r}")
+            continue
+        return {"ok": True, "pdf": resp.content, "document_type": doc, "errores": errores}
+    return {"ok": False, "pdf": b"", "document_type": None, "errores": errores}
 
 
 async def listar_productos(cubetas: tuple[int, ...] = CUBETAS) -> list[dict[str, Any]]:

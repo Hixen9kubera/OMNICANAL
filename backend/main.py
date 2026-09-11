@@ -111,9 +111,9 @@ async def lifespan(app: FastAPI):
              getattr(settings, "pedidos_temu_sondeo_solo_registro", True),
              "ENCENDIDO" if settings.fanout_temu else "apagado",
              "ENCENDIDO" if settings.temu_censo_enabled else "apagado")
-    log.info("Temu · refresco de guías: %s cada %s min (tope %s días)",
+    log.info("Temu · refresco de guías: %s cada %s h desde las 00:00 CDMX (tope %s días)",
              "ENCENDIDO" if settings.temu_guias_enabled else "apagado",
-             settings.temu_guias_min, settings.temu_guias_dias)
+             settings.temu_guias_cada_horas, settings.temu_guias_dias)
     # Y las órdenes de venta en Odoo, que son el otro flujo que mueve papel real.
     #
     # ⚠️ ESTA LÍNEA MENTÍA, y de la peor forma: la que se lee para diagnosticar.
@@ -170,7 +170,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.499.0",
+    version="0.500.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -258,7 +258,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.499.0",
+        "version": "0.500.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

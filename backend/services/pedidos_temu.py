@@ -206,7 +206,8 @@ async def _traer_guia_detalle(parent_sn: str, order_sn: str | None) -> dict[str,
             guia = str(e.get("trackingNumber") or "").strip()
             if guia:
                 return {"guia": guia, "paqueteria": str(e.get("carrierName") or "").strip(),
-                        "fuente": tipo, "errores": errores}
+                        "fuente": tipo, "errores": errores,
+                        "package_sn": e.get("packageSn")}
 
     tipo = "bg.order.unshipped.package.get"
     try:
@@ -313,19 +314,25 @@ def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
 async def refrescar_guias(dias: int = 14, limite: int = 60,
                           segundos_max: int = 900) -> dict[str, Any]:
     """
-    Le pone número de rastreo a las entregas de Temu que aún no lo tienen.
+    Completa la guía de las ventas de Temu que ya tienen orden en Odoo.
+
+    Por cada venta hace, en este orden, lo que pidió Brandon (11-sep):
+      1. el número de rastreo en la ENTREGA de salida, verificado al re-leer;
+      2. el PDF de la etiqueta en la ORDEN ("Subir guía"), verificado al re-leer;
+      3. la guía en la bitácora, que es lo que muestra el panel.
 
     POR QUÉ HACE FALTA UN TRABAJO APARTE. La guía no existe cuando nace la
-    orden: la asigna la paquetería cuando el paquete sale, o sea DESPUÉS de que
-    el almacén surta. El único momento en que la volveríamos a mirar sería al
-    llegar otro aviso de esa venta — y Temu no manda avisos.
+    orden: la asigna la paquetería cuando se compra el envío. El único momento
+    en que la volveríamos a mirar sería al llegar otro aviso de esa venta — y
+    Temu no manda avisos.
 
-    LA COLA SALE DE ODOO, no de la bitácora. La primera versión preguntaba
-    `guia = ''` en `ops.odoo_sale_orders`, y eso estaba mal: esa columna la
-    rellena el seam en cualquier re-aviso sin tocar Odoo, así que la venta salía
-    de la cola y la entrega se quedaba sin rastreo para siempre. Preguntándole a
-    Odoo, la cola se vacía cuando el trabajo está hecho y un fallo se reintenta
-    solo a las dos horas.
+    LA COLA SALE DE ODOO, no de la bitácora: una venta sigue pendiente mientras
+    le falte la guía en la entrega O el PDF en la orden (ver
+    `odoo_ventas.pendientes_de_guia`). Odoo va primero; si algo falla, la venta
+    sigue en la cola y la vuelta siguiente lo reintenta.
+
+    ENVÍO COMBINADO: dos ventas en una caja comparten paquete y etiqueta. El PDF
+    se baja una vez por vuelta y se sube a las dos.
 
     TECHO DE TIEMPO. `xmlrpc` no lleva timeout en este proyecto, así que una
     llamada colgada ocuparía un hilo del pool compartido y —con
@@ -337,14 +344,16 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     from services import odoo_ventas, odoo_ventas_log, temu
 
     r: dict[str, Any] = {"pendientes": 0, "miradas": 0, "con_guia": 0,
-                         "sin_guia_aun": 0, "escritas_en_odoo": 0,
-                         "no_se_pudo_escribir": 0, "fallos_temu": 0,
-                         "cortado_por_tiempo": False,
+                         "sin_guia_aun": 0, "guias_escritas": 0,
+                         "guias_verificadas": 0, "guias_no_escritas": 0,
+                         "pdf_subidos": 0, "pdf_verificados": 0, "pdf_fallos": 0,
+                         "pdf_sin_paquete": 0, "fallos_temu": 0,
+                         "cortado_por_tiempo": False, "document_type": None,
                          # De qué endpoint salió cada guía, y el primer error
                          # visto de cada uno. Sin esto, cuatro vueltas seguidas
                          # de "sin_guia_aun: 7" no decían si Temu no la tenía o
                          # si la estábamos buscando en el sitio equivocado.
-                         "fuentes": {}, "errores_fuentes": {}}
+                         "fuentes": {}, "errores_fuentes": {}, "errores_pdf": {}}
     if not temu.disponible():
         return {**r, "error": "Temu no está configurado (falta app_key/secret/token)"}
 
@@ -356,6 +365,7 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
         return {**r, "error": str(exc)[:200]}
     r["pendientes"] = len(cola)
 
+    pdf_por_paquete: dict[str, dict[str, Any]] = {}
     limite_reloj = time.monotonic() + segundos_max
     for item in cola:
         if time.monotonic() > limite_reloj:
@@ -371,7 +381,6 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
             renglones = det.get("orderList") or []
             order_sn = (renglones[0] or {}).get("orderSn") if renglones else None
             d = await _traer_guia_detalle(sn, order_sn)
-            guia, paqueteria = d["guia"], d["paqueteria"]
             for k, v in (d.get("errores") or {}).items():
                 r["errores_fuentes"].setdefault(k, v)
             if d.get("fuente"):
@@ -381,26 +390,58 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
             log.warning("refrescar_guias: %s falló contra Temu: %s", sn, str(exc)[:150])
             continue
 
+        guia, paqueteria, paquete = d["guia"], d["paqueteria"], d.get("package_sn")
         if not guia:
-            # Lo NORMAL mientras no se envíe. No es un fallo: contarlo como tal
-            # haría que un contador de errores gritara todos los días sin que
-            # nada esté mal.
+            # Lo NORMAL mientras nadie compre el envío. No es un fallo: contarlo
+            # como tal haría que un contador de errores gritara todos los días
+            # sin que nada esté mal.
             r["sin_guia_aun"] += 1
             continue
         r["con_guia"] += 1
 
-        # ODOO PRIMERO. Es lo que define la cola, así que si esto falla la venta
-        # sigue siendo candidata a la vuelta siguiente. Al revés, marcar la
-        # bitácora antes la sacaría de la cola aunque Odoo se hubiera quedado sin
-        # el dato.
-        res = await asyncio.to_thread(odoo_ventas.fijar_guia, "temu", sn, guia,
-                                      item["pickings"])
-        if res.get("ok"):
-            r["escritas_en_odoo"] += 1
-        else:
-            r["no_se_pudo_escribir"] += 1
-            log.warning("refrescar_guias: guía %s de %s NO llegó a Odoo (%s)",
-                        guia, sn, res.get("accion"))
+        # 1 · EL NÚMERO EN LA ENTREGA — sólo si le falta.
+        if item.get("pickings"):
+            res = await asyncio.to_thread(odoo_ventas.fijar_guia, "temu", sn, guia,
+                                          item["pickings"])
+            if res.get("accion") == "ya_tenia":
+                pass      # alguien la puso entre que se armó la cola y ahora
+            elif res.get("ok"):
+                r["guias_escritas"] += 1
+                r["guias_verificadas"] += 1 if res.get("verificada") else 0
+            else:
+                r["guias_no_escritas"] += 1
+                log.warning("refrescar_guias: guía %s de %s NO llegó a Odoo (%s)",
+                            guia, sn, res.get("accion"))
+
+        # 2 · EL PDF EN LA ORDEN ("Subir guía") — sólo si le falta.
+        if item.get("sin_pdf"):
+            if not paquete:
+                r["pdf_sin_paquete"] += 1
+            else:
+                if paquete not in pdf_por_paquete:
+                    pdf_por_paquete[paquete] = await temu.descargar_etiqueta(paquete)
+                et = pdf_por_paquete[paquete]
+                for k, v in (et.get("errores") or {}).items():
+                    r["errores_pdf"].setdefault(k, v)
+                if not et.get("ok"):
+                    r["pdf_fallos"] += 1
+                    log.warning("refrescar_guias: la etiqueta de %s (paquete %s) no se "
+                                "pudo bajar: %s", sn, paquete, et.get("errores"))
+                else:
+                    r["document_type"] = et["document_type"]
+                    res = await asyncio.to_thread(odoo_ventas.fijar_etiqueta, "temu", sn,
+                                                  item["sin_pdf"], et["pdf"], f"{guia}.pdf")
+                    if res.get("accion") == "ya_tenia":
+                        pass
+                    elif res.get("ok"):
+                        r["pdf_subidos"] += 1
+                        r["pdf_verificados"] += 1 if res.get("verificada") else 0
+                    else:
+                        r["pdf_fallos"] += 1
+                        log.warning("refrescar_guias: el PDF de %s NO quedó en Odoo (%s)",
+                                    sn, res.get("accion"))
+
+        # 3 · EL PANEL — la bitácora que pinta la pestaña Automatización.
         try:
             await asyncio.to_thread(odoo_ventas_log.actualizar_guia,
                                     "temu", "TEMU", sn, guia, paqueteria)

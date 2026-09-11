@@ -51,6 +51,15 @@ class Settings(BaseSettings):
 
     # ── Odoo ──────────────────────────────────────────────────
     odoo_url: str = ""
+    # La URL que ve la GENTE, no la de la API. `odoo_url` es el host por el que
+    # entra XML-RPC (ifullmx-brea.odoo.com); el equipo abre Odoo en
+    # ifull.odoo.com con el formato /web#… de siempre, y una liga armada con el
+    # host de la API abría en otra pantalla. Los tres números son de ESTA
+    # instancia: la compañía (cids) y el menú/acción de Órdenes de venta.
+    odoo_url_publica: str = "https://ifull.odoo.com"
+    odoo_web_cids: int = 73
+    odoo_web_menu_venta: int = 240
+    odoo_web_action_venta: int = 400
     odoo_db: str = ""
     odoo_user: str = ""
     odoo_password: str = ""
@@ -180,7 +189,9 @@ class Settings(BaseSettings):
     # muertos semanas por una variable que nadie dio de alta en Railway; para
     # algo inocuo, nacer apagada es el riesgo mayor.
     temu_guias_enabled: bool = True
-    temu_guias_min: int = 120          # cada 2 horas (decisión de Brandon, 10-sep)
+    # A HORAS FIJAS desde las 00:00 hora de México: 00:00, 02:00, 04:00…
+    # (Brandon, 11-sep). Antes era "cada 120 min desde el despliegue".
+    temu_guias_cada_horas: int = 2
     temu_guias_dias: int = 14          # más allá, la guía ya no va a aparecer
     temu_guias_limite: int = 60        # ventas por vuelta
 

@@ -197,6 +197,8 @@ interface Estado {
     escalon: string;
     escalon_id: "apagado" | "observando" | "creando" | "creando_confirmando";
     odoo_url: string;
+    /** Liga pública a una orden de venta; `{id}` se sustituye. */
+    odoo_url_orden: string;
     canales_estado?: Record<string, {
       encendido: boolean;
       persistido: boolean;
@@ -724,7 +726,7 @@ function Detalle({ o, odooUrl }: { o: OrdenOdoo; odooUrl: string }) {
         <div className="mt-4 space-y-2">
           {o.odoo_order_id && odooUrl && (
             <a
-              href={`${odooUrl}/odoo/sales/${o.odoo_order_id}`}
+              href={odooUrl.replace("{id}", String(o.odoo_order_id))}
               target="_blank"
               rel="noreferrer"
               className="flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2.5 text-[13px] font-bold text-white"
@@ -1209,7 +1211,7 @@ export default function AutomatizacionPage() {
               moviendo={moviendo || bloqueado}
               abierta={abierta}
               onAbrir={setAbierta}
-              odooUrl={ov?.odoo_url ?? ""}
+              odooUrl={ov?.odoo_url_orden ?? ""}
               filtrando={soloAccion}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
             />
