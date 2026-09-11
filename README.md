@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.502.0 — La 0051 nace con candado y amarrada al catálogo (Eduardo)
+
+Revisión de la migración 0051 de Brandon (`channel.publication_mode`, el modo
+agrupada/individual del Estudio de variantes, v0.498.0) antes de aplicarla en
+producción, con segunda opinión del consejo (claude-opus, claude-sonnet,
+claude-haiku). La idea estaba bien; la tabla nacía sin el blindaje del resto
+del esquema.
+
+- **RLS + `grant` a `service_role`**, como toda tabla de negocio (0016, 0049).
+  Sin esto `verificar_rls.py` —el chequeo que corre el job de CI «Blindaje
+  BD»— salía con exit 1 señalando justo esta tabla; ahora sale con exit 0.
+- **Llaves foráneas** a `core.channels(id)` y `core.products(sku)`, como el
+  resto del esquema v4, en lugar de la lista de canales escrita a mano en un
+  `check`: un canal nuevo se da de alta en `core.channels` y aquí funciona
+  solo. Los 1,502 padres con variantes ya tienen fila en `core.products`, y
+  ningún código de producción borra ni renombra SKUs ahí.
+- **Fuera el índice `(canal, sku)`**: la única lectura es `sku = any(...)`,
+  sin canal, y la sirve la llave primaria.
+- **Por canal, no por cuenta** (decisión de Eduardo): queda escrito en la
+  migración, con el caso EST-0091 por nombre, por qué esta tabla no lleva
+  `cuenta` aunque `enrich.channel_content` sí.
+- **`begin`/`commit`** y bloque de verificación y reversa.
+- **`services/modo_publicacion.py`**: los errores de las dos llaves nuevas
+  llegan legibles a la pantalla («El SKU X todavía no está en el maestro…»,
+  «El canal 'X' no existe en core.channels»), con el mismo patrón que
+  `channel_content.guardar`.
+
+Probado en el sandbox dentro de una transacción revertida: RLS activa,
+`service_role` con permisos y `anon` sin ellos, las cuatro restricciones
+esperadas y ningún índice extra; el upsert y la lectura exactos del servicio
+funcionan (con citext); un canal inexistente, un SKU fuera del maestro y un
+modo inválido fallan con su restricción, y los mensajes salen legibles con el
+texto real de Postgres. `humo_auth` 63/63. **Sigue pendiente de aplicar en
+producción**; no hay prisa: mientras `AGRUPADA_HABILITADA` esté vacío solo se
+puede guardar el valor por omisión.
+
 ### v0.501.0 — El PDF de la guía sólo entra a órdenes de venta CONFIRMADAS
 
 Brandon: *"el flujo es descargar el PDF y subirlo a la orden de venta después de

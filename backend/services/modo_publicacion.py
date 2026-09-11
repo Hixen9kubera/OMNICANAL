@@ -86,6 +86,21 @@ def _avisar_sin_tabla() -> None:
             "para todos los canales", TABLA, POR_OMISION)
 
 
+def _motivo_fk(texto: str, sku: str, canal: str) -> str | None:
+    """El motivo legible de las dos llaves foráneas de la 0051.
+
+    Misma disciplina que `channel_content.guardar`: el nombre de la
+    restricción viene en el texto del error, y lo que se pinta en pantalla
+    tiene que entenderse sin saber Postgres.
+    """
+    if "publication_mode_sku_fkey" in texto:
+        return (f"El SKU {sku} todavía no está en el maestro (core.products). "
+                "Lo agrega el ETL de las 06:15 UTC.")
+    if "publication_mode_canal_fkey" in texto:
+        return f"El canal '{canal}' no existe en core.channels."
+    return None
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Lectura
 # ══════════════════════════════════════════════════════════════════════════════
@@ -178,5 +193,8 @@ async def guardar(sku: str, canal: str, modo: str,
             _avisar_sin_tabla()
             return {"guardado": False, "modo": modo,
                     "motivo": "Falta aplicar la migración 0051."}
+        motivo = _motivo_fk(str(exc), sku, canal)
+        if motivo:
+            return {"guardado": False, "modo": modo, "motivo": motivo}
         log.warning("modo_publicacion.guardar falló: %s", exc)
         return {"guardado": False, "modo": modo, "motivo": str(exc)[:160]}
