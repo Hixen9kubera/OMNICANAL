@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.504.0 — Se publica el stock de Odoo, no una meta congelada
+
+Brandon, 11-sep-2026: «el stock está alineado al FREE_QTY de Odoo, cada variante
+debe salir con ese stock». Lo estaba `_stock`, pero el publicador no lo leía.
+
+`publicar_ready.construir_prod` tomaba `_stock_odoo or _stock`. `_stock_odoo` es
+una meta que **ningún código del repo escribe** (sólo se leía): quedó congelada en
+algún momento anterior. Medido contra `ops.stock_watch_photo` el 11-sep:
+
+| | `_stock` ≠ Odoo | `_stock_odoo` ≠ Odoo | `_stock_odoo` ≥ 1 con Odoo en 0 |
+|---|---|---|---|
+| variantes | 0 | 258 | **80** |
+| productos | 0 | 487 | **121** |
+
+`CALZ-0179` salía con 1,598 piezas teniendo 0. Afectaba a TODO lo que se publica
+(ML, Amazon, TikTok, Temu vía `construir_prod`), con o sin el Estudio de
+variantes. Ahora manda `_stock` —el que `stock_watch` en modo absoluto copia como
+`max(0, free_qty)`— y `_stock_odoo` sólo cubre el hueco si `_stock` no existe. La
+ficha del Estudio (`wp_db.metadata_producto`) sigue el mismo orden, para que lo que
+se ve sea lo que se publica.
+
 ### v0.503.0 — La variante se publica con SU wc_id, y la IA sabe de qué variante habla
 
 **El Estudio con variantes estuvo encendido 25 minutos y se apagó.** Brandon pidió

@@ -435,7 +435,16 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
     if not precio:
         precio = _f(meta.get("_price"))
 
-    stock = meta.get("_stock_odoo") or meta.get("_stock")
+    # `_stock` PRIMERO. Es el que `stock_watch` (modo absoluto) copia de Odoo:
+    # `max(0, free_qty)`, lo vendible de verdad. `_stock_odoo` es una meta que
+    # NINGÚN código del repo escribe (sólo se leía aquí): quedó congelada. Medido
+    # el 11-sep-2026 contra la foto de Odoo: `_stock` coincide en el 100%;
+    # `_stock_odoo` difiere en 258 variantes y 487 productos, y en 80 variantes y
+    # 121 productos dice que hay piezas cuando Odoo tiene 0 (CALZ-0179: 1,598
+    # contra 0). Leída primero, publicaba existencias inventadas.
+    stock = meta.get("_stock")
+    if stock in (None, ""):
+        stock = meta.get("_stock_odoo")
     try:
         stock = int(float(stock)) if stock not in (None, "") else 0
     except (TypeError, ValueError):

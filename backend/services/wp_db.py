@@ -753,7 +753,9 @@ def metadata_producto(wc_id: int) -> dict[str, Any]:
             "ancho": _f("_width"),
             "alto": _f("_height"),
         },
-        "stock": _i("_stock_odoo") if _i("_stock_odoo") is not None else _i("_stock"),
+        # `_stock` primero: es el que cuadra con `free_qty` de Odoo. Ver
+        # publicar_ready.construir_prod — `_stock_odoo` quedó congelada.
+        "stock": _i("_stock") if _i("_stock") is not None else _i("_stock_odoo"),
         "alibaba_url": m.get("url_alibaba"),
         "alibaba_precio": _f("alibaba_price"),
         "producto_correcto": m.get("comentario_revision"),
