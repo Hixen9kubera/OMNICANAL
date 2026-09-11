@@ -558,10 +558,12 @@ async def modos_estudio(skus: str = Query("", description="SKUs de PADRE separad
 
 
 @router.get("/_categorias/lista")
-async def listar_categorias():
+async def listar_categorias(
+    vista: str | None = Query(None, description="productos | crear | omnicanal: TODAS las categorías con productos en esa pestaña (SQL). Sin valor: las 300 con más publicados (REST)"),
+):
     """Categorías de WooCommerce (con productos) para el filtro de la vista General."""
     try:
-        return await woocommerce.listar_categorias()
+        return await woocommerce.listar_categorias(vista=vista)
     except Exception:  # noqa: BLE001
         return []
 

@@ -258,8 +258,14 @@ export interface CategoriaWC {
   count: number;
 }
 
-export function listarCategorias(signal?: AbortSignal): Promise<CategoriaWC[]> {
-  return getJSON<CategoriaWC[]>(`/api/productos/_categorias/lista`, signal);
+export function listarCategorias(
+  signal?: AbortSignal,
+  // Con `vista`: TODAS las categorías con productos en esa pestaña (1,224 en
+  // Productos), por nombre. Sin ella: las 300 con más publicados (Omnicanal).
+  vista?: "productos" | "crear" | "omnicanal",
+): Promise<CategoriaWC[]> {
+  const q = vista ? `?vista=${vista}` : "";
+  return getJSON<CategoriaWC[]>(`/api/productos/_categorias/lista${q}`, signal);
 }
 
 export function listarCanales(signal?: AbortSignal): Promise<CanalInfo[]> {

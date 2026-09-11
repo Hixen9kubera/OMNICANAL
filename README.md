@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.505.0 — El Publicador filtra por categoría (con buscador), y la categoría ya se suma a la búsqueda
+
+Eduardo, 11-sep-2026: «Para la pestaña del publicador puedes poner un filtro para
+buscar a través de categorías».
+
+**Filtro nuevo en el Publicador** (`frontend/components/FiltroCategoria.tsx`, junto
+a «Filtrar SKUs»): se escribe un pedazo del nombre —sin importar acentos— y la lista
+se reduce; flechas + Enter para elegir, la ✕ lo quita. Se acumula con la búsqueda,
+«Filtrar SKUs» y «Solo DROP OFF», y al cambiarlo vuelve a la página 1. Con buscador
+y no un `<select>` porque la vista Productos tiene productos en **1,224 categorías,
+638 de ellas con uno solo**.
+
+**La lista sale del SQL, no de la REST** (`GET /api/productos/_categorias/lista?vista=productos`
+→ `wp_db.categorias_en_uso`, 0.6 s). La REST (`hide_empty`) tenía dos límites: el
+`count` de Woo solo cuenta lo publicado y visible (962 categorías), y el endpoint
+cortaba en las 300 con más productos: **924 de las 1,224 no aparecían**. Sin `vista`
+el endpoint contesta lo de siempre, así que Omnicanal no cambia.
+
+**La categoría se filtra en SQL**, como la búsqueda y la lista de SKUs
+(`woocommerce.listar_productos` → `_buscar_wc_ids_wp` y `wp_db.indice_plano`; la
+condición vive en `wp_db.sql_en_categorias`). Antes iba por la REST nativa
+(`?category=`), con tres defectos que también sufría Omnicanal:
+
+| «Fundas y Carcasas» | antes | ahora |
+|---|---|---|
+| total en Productos | 37 (pintaba 29: contaba drafts que la vista quitaba después) | 29 |
+| + búsqueda «iphone» | ignoraba la búsqueda | 2 |
+| listado aplanado (`LISTADO_APLANADO`, hoy `false`) | total 5,344 y página 1 **vacía**: filtraba las 40 filas ya traídas | 233 filas paginadas |
+
+- Incluye las **subcategorías**, como la REST (`include_children` de `WP_Tax_Query`).
+  Hoy solo una tiene hijas: «Multímetro» pasa de 2 a 4 productos.
+- Sin la DB de WordPress queda la REST de respaldo. Los dos rescates por REST de la
+  rama de búsqueda (búsqueda sin resultados, SKU exacto) no corren con categoría:
+  no la conocen y traerían productos de fuera.
+
+**Verificación** (solo `SELECT` contra el WordPress de producción): los números de
+la tabla, el orden por precio y por stock dentro de la categoría, y sin categoría
+el aplanado sigue en 5,344 (regresión). 0.2–0.6 s por consulta. tsc limpio.
+
+**Pendiente:** Omnicanal sigue con su lista de siempre (las 300 con más publicados,
+ordenadas por conteo). Si se quiere completa, basta pedirla con `vista=omnicanal`.
+
 ### v0.504.0 — Se publica el stock de Odoo, no una meta congelada
 
 Brandon, 11-sep-2026: «el stock está alineado al FREE_QTY de Odoo, cada variante

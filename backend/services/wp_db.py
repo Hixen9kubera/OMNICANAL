@@ -1151,6 +1151,68 @@ def categorias_producto() -> dict[int, dict[str, Any]]:
     }
 
 
+def sql_en_categorias(alias: str, categorias: list[int]) -> tuple[str, list[int]]:
+    """
+    Condición «el post `alias` está en alguna de estas categorías» + sus args.
+
+    `categorias` son term_id de `product_cat` —los mismos ids que da la REST de
+    Woo— y quien llama ya trae las subcategorías: la REST las incluye con
+    `?category=` (`include_children` de WP_Tax_Query) y el filtro por SQL tiene
+    que contestar lo mismo.
+
+    EXISTS y no JOIN: un producto en dos de las categorías pedidas saldría dos
+    veces. La PK de term_relationships es (object_id, term_taxonomy_id), así que
+    cada fila cuesta una búsqueda por índice.
+    """
+    P = _prefix()
+    ph = ",".join(["%s"] * len(categorias))
+    return (f"EXISTS (SELECT 1 FROM {P}term_relationships ctr "
+            f"JOIN {P}term_taxonomy ctt ON ctt.term_taxonomy_id = ctr.term_taxonomy_id "
+            f"WHERE ctr.object_id = {alias}.ID AND ctt.taxonomy = 'product_cat' "
+            f"AND ctt.term_id IN ({ph}))",
+            [int(c) for c in categorias])
+
+
+def categorias_en_uso(vista: str = "productos") -> list[dict[str, Any]]:
+    """
+    Las categorías que TIENEN productos en esta vista: [{id, nombre, parent,
+    count}]. Es la lista del filtro por categoría del Publicador.
+
+    No sale de la REST (`/products/categories?hide_empty`) por dos razones,
+    medidas el 11-sep-2026: el `count` de Woo solo cuenta lo publicado y
+    visible —962 categorías— mientras la vista Productos también muestra
+    pending/ready/private y usa 1,224; y `woocommerce.listar_categorias`
+    cortaba en las 300 con más productos, así que 924 no aparecían: justo las
+    chicas, que son mayoría (638 tienen un solo producto).
+
+    `count` son productos (filas del listado anidado) asignados DIRECTO a la
+    categoría, sin sumar sus subcategorías.
+    """
+    import html
+    P = _prefix()
+    permitidos = _VISTAS_SQL.get(vista, _VISTAS_SQL["productos"])
+    if permitidos is None:
+        cond, args = "p.post_status <> 'trash'", []
+    elif not permitidos:
+        return []
+    else:
+        cond = f"p.post_status IN ({','.join(['%s'] * len(permitidos))})"
+        args = sorted(permitidos)
+    filas = _fetch_all(
+        f"""SELECT tt.term_id, t.name, tt.parent, COUNT(DISTINCT p.ID) AS n
+              FROM {P}term_relationships tr
+              JOIN {P}term_taxonomy tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+              JOIN {P}terms t ON t.term_id = tt.term_id
+              JOIN {P}posts p ON p.ID = tr.object_id
+             WHERE tt.taxonomy = 'product_cat' AND p.post_type = 'product'
+               AND {cond}
+             GROUP BY tt.term_id, t.name, tt.parent""",
+        tuple(args) or None)
+    return [{"id": int(r["term_id"]), "nombre": html.unescape(str(r["name"])),
+             "parent": int(r["parent"] or 0), "count": int(r["n"])}
+            for r in filas]
+
+
 def imagenes_por_wc_id(wc_ids: list[int]) -> dict[int, str]:
     """
     URL de la imagen principal por `wc_id`, **incluidas las VARIANTES**.
@@ -1468,6 +1530,7 @@ def indice_plano(
     orden: str = "reciente",
     page: int = 1,
     per_page: int = 40,
+    categorias: list[int] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Índice del catálogo APLANADO: productos SIN variantes vivas + variaciones.
@@ -1566,6 +1629,18 @@ def indice_plano(
         sql_v += f" AND ({grupo_v})"
         for t in terminos:
             args_v += [f"%{t}%", f"%{t}%", f"%{t}%"]
+
+    # Categoría: la de la PROPIA fila si es producto suelto, la del PADRE si es
+    # variante — igual que el estado. Una variación no tiene categoría propia en
+    # WordPress (0 de 7,477): la hereda. Filtrar aquí y no al hidratar es lo que
+    # hace que el total y las páginas salgan del subconjunto.
+    if categorias:
+        cond_p, arg_cat = sql_en_categorias("p", categorias)
+        cond_v, _ = sql_en_categorias("pa", categorias)
+        sql_p += f" AND {cond_p}"
+        sql_v += f" AND {cond_v}"
+        args_p += arg_cat
+        args_v += arg_cat
 
     orden_sql = {
         "stock_desc":  "CAST(COALESCE(stock, 0) AS SIGNED) DESC",

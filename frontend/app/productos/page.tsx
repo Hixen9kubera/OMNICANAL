@@ -8,10 +8,14 @@ import Pagination from "@/components/Pagination";
 import ChannelDots from "@/components/ChannelDots";
 import ProductStudio from "@/components/ProductStudio";
 import CostoEditor from "@/components/CostoEditor";
+import FiltroCategoria from "@/components/FiltroCategoria";
 import { ChipModo, esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "@/components/Variantes";
 import { TituloMoneda } from "@/components/Moneda";
 
-import { configEstudio, leerModosPublicacion, listarCanales, listarProductos } from "@/lib/api";
+import {
+  configEstudio, leerModosPublicacion, listarCanales, listarCategorias, listarProductos,
+  type CategoriaWC,
+} from "@/lib/api";
 import type { CanalInfo, EstudioConfig, ModoPublicacion, Paginacion, Producto } from "@/lib/types";
 
 const PER_PAGE = 40;
@@ -42,6 +46,11 @@ export default function ProductosPage() {
   // es del SKU, no de la publicación, así que la pregunta vale en las dos
   // pantallas. Lo resuelve el backend con UNA consulta a Odoo, cacheada.
   const [dropOff, setDropOff] = useState(false);
+  // Categoría de WooCommerce (id). El mismo filtro que Omnicanal, y como allá
+  // se acumula con la búsqueda, "Filtrar SKUs" y DROP OFF: el backend lo
+  // resuelve en la misma consulta, así que el total y las páginas son del filtro.
+  const [categoria, setCategoria] = useState<number | null>(null);
+  const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
   const [cargando, setCargando] = useState(true);
   // Arranque en frío del backend: el índice de WooCommerce puede tardar varios
   // segundos en construirse. Mientras tanto, "0 resultados" no significa que
@@ -83,6 +92,12 @@ export default function ProductosPage() {
     listarCanales().then(setCanales).catch(() => setCanales([]));
     // Falla en silencio: sin config, el Estudio es el de siempre.
     configEstudio().then(setEstudioConfig).catch(() => setEstudioConfig(null));
+    // TODAS las categorías con productos en esta vista (1,224, por SQL), no
+    // las 300 con más publicados que recibe Omnicanal. Por nombre, que es como
+    // se buscan. Sin categorías (falla) el filtro no se pinta.
+    listarCategorias(undefined, "productos")
+      .then((cs) => setCategorias([...cs].sort((a, b) => a.nombre.localeCompare(b.nombre, "es"))))
+      .catch(() => setCategorias([]));
   }, []);
 
   // El modo de las familias VISIBLES, en una sola llamada por página.
@@ -120,6 +135,7 @@ export default function ProductosPage() {
         canal: "general", page, perPage: PER_PAGE,
         search: busqueda || undefined, skus: skusFiltro || undefined,
         dropOff: dropOff || undefined,
+        categoria,
         // Solo lo ya resuelto: publish / pending / ready. Lo que falta trabajar
         // (draft / inprogress) vive en Crear Productos.
         vista: "productos",
@@ -132,7 +148,7 @@ export default function ProductosPage() {
         // Sin búsqueda/filtro y 0 resultados → probablemente el índice de
         // WooCommerce todavía se está construyendo (arranque en frío). Reintenta
         // en vez de mostrar "no encontrados".
-        if (!busqueda && !skusFiltro && r.paginacion.total === 0 && reintentos.current < 45) {
+        if (!busqueda && !skusFiltro && !categoria && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
           setTimeout(() => cargar(), 1000);
@@ -157,7 +173,7 @@ export default function ProductosPage() {
       })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, dropOff]);
+  }, [page, busqueda, skusFiltro, dropOff, categoria]);
 
   useEffect(() => cargar(), [cargar]);
 
@@ -221,6 +237,16 @@ export default function ProductosPage() {
               className="w-80 rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 font-mono text-xs text-slate-700 outline-none transition-shadow placeholder:font-sans placeholder:text-sm placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-300"
             />
           </div>
+          {/* CATEGORÍA de WooCommerce, con sus subcategorías (como Woo).
+              Buscable: son 1,224. Sin conteo junto al nombre a propósito: el
+              total de arriba ya es el del filtro. */}
+          {categorias.length > 0 && (
+            <FiltroCategoria
+              categorias={categorias}
+              valor={categoria}
+              onCambio={(id) => { setCategoria(id); setPage(1); }}
+            />
+          )}
           {/* SOLO DROP OFF — el almacén del que salen los envíos a los
               marketplaces chinos. Mismo chip, mismo violeta y mismo distintivo
               que en Omnicanal, para que signifiquen lo mismo en las dos

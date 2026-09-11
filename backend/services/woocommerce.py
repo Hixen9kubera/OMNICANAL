@@ -81,6 +81,35 @@ async def _cargar_categorias() -> dict[int, dict[str, Any]]:
     return cache
 
 
+async def _categoria_con_descendientes(cat_id: int) -> list[int]:
+    """
+    `cat_id` y todas sus subcategorías, a cualquier profundidad.
+
+    Es lo que contesta la REST de Woo con `?category=` (WP_Tax_Query incluye las
+    hijas por omisión) y el filtro por SQL tiene que decir lo mismo: si no,
+    elegir una categoría padre dejaría fuera lo que vive en sus hijas. Si el
+    árbol no se puede leer, se filtra solo por la categoría pedida.
+    """
+    try:
+        cats = await _cargar_categorias()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("árbol de categorías no disponible (%s): sin subcategorías", exc)
+        return [int(cat_id)]
+    hijos: dict[int, list[int]] = {}
+    for cid, c in cats.items():
+        hijos.setdefault(int(c.get("parent") or 0), []).append(int(cid))
+    salida: list[int] = []
+    pila, vistos = [int(cat_id)], set()
+    while pila:
+        c = pila.pop()
+        if c in vistos:      # un árbol sucio con ciclo no cuelga el listado
+            continue
+        vistos.add(c)
+        salida.append(c)
+        pila.extend(hijos.get(c, []))
+    return salida
+
+
 async def ruta_categoria(cat_id: int | None) -> list[dict[str, Any]]:
     """Devuelve la ruta completa [{id,nombre}, ...] desde la raíz hasta la hoja."""
     if not cat_id:
@@ -199,8 +228,20 @@ async def listar_productos(
         "_cb": str(time.time()),
     }
 
+    # CATEGORÍA POR SQL (11-sep-2026). Con la DB de WordPress la categoría es un
+    # filtro más de la consulta —como la búsqueda o la lista de SKUs— y no una
+    # ruta aparte. La REST nativa (`?category=`, abajo) ni combinaba con la
+    # búsqueda —escribir "iphone" con una categoría elegida devolvía la
+    # categoría entera— ni sabía de la vista: contaba todos los estados y la
+    # vista se filtraba después, así que "Fundas y Carcasas" decía 37 y pintaba
+    # 29. Sin wp_db esa ruta queda de respaldo.
+    from services import wp_db
+    cats: list[int] | None = None
+    if categoria and wp_db.disponible():
+        cats = await _categoria_con_descendientes(categoria)
+
     usa_db = bool(
-        search or estados or skus
+        search or estados or skus or cats
         or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc")
     )
 
@@ -230,13 +271,14 @@ async def listar_productos(
             # imágenes— y las variantes por MySQL, que es el ÚNICO sitio de donde
             # se pueden traer.
             #
-            # La categoría no se puede filtrar aquí: es un parámetro nativo de la
-            # REST de Woo y una variación no tiene categoría propia (0 de 7,477).
-            # Se hereda la del padre al hidratar, así que el filtro se aplica
-            # DESPUÉS, sobre las filas ya vestidas.
+            # La categoría va DENTRO del índice, medida sobre el padre cuando la
+            # fila es variante (una variación no tiene categoría propia: 0 de
+            # 7,477). Antes se filtraba después de hidratar, sobre las 40 filas
+            # de la página: el total seguía siendo el del catálogo entero (5,344)
+            # y la página 1 de "Fundas y Carcasas" salía VACÍA (11-sep).
             filas, total = await asyncio.to_thread(
                 wp_db.indice_plano, vista, search, list(skus or []) or None,
-                estados, orden, page, per_page)
+                estados, orden, page, per_page, categorias=cats)
             total_pages = max(1, (total + per_page - 1) // per_page)
             ids_prod = [f["wc_id"] for f in filas if f["tipo"] == "product"]
             ids_var = [f["wc_id"] for f in filas if f["tipo"] == "product_variation"]
@@ -259,12 +301,11 @@ async def listar_productos(
                     por_id.update({p["id"]: p for p in res.json()})
             # El orden lo manda el índice, no el orden en que contestaron.
             data = [por_id[f["wc_id"]] for f in filas if f["wc_id"] in por_id]
-            if categoria:
-                data = [p for p in data
-                        if any(c.get("id") == categoria for c in (p.get("categories") or []))]
 
-        elif categoria:
-            # Ruta nativa WooCommerce por categoría (+ orden por precio si aplica)
+        elif categoria and not cats:
+            # RESPALDO sin wp_db: ruta nativa WooCommerce por categoría (+ orden
+            # por precio si aplica). No combina con la búsqueda y cuenta todos
+            # los estados; con wp_db la categoría va por SQL, en `usa_db`.
             p = {**params, "category": categoria}
             if orden in ("precio_desc", "precio_asc"):
                 p["orderby"] = "price"
@@ -281,7 +322,7 @@ async def listar_productos(
             # ejecutarlas inline congelaba el event loop entero (perf 05-ago).
             wc_ids, total_db = await asyncio.to_thread(
                 _buscar_wc_ids_db, search, page, per_page, orden, estados, skus,
-                vista, skus_exactos)
+                vista, skus_exactos, cats)
             if wc_ids:
                 r = await cli.get("/products", params={
                     **params, "include": ",".join(str(i) for i in wc_ids),
@@ -304,8 +345,9 @@ async def listar_productos(
             # "bolsas" (destapado el 31-ago al filtrar por costo validado). Con
             # una lista de SKUs activa, "no hay nada" es una RESPUESTA, no un
             # fallo de la ruta de base — y el complemento por SKU exacto de más
-            # abajo ya cubre lo que la maestra no conoce.
-            if not data and search and not skus:
+            # abajo ya cubre lo que la maestra no conoce. Con CATEGORÍA, igual:
+            # la REST de aquí no la conoce y buscaría en el catálogo entero.
+            if not data and search and not skus and not cats:
                 if " " not in search.strip():
                     rs = await cli.get("/products", params={**params, "sku": search.strip()})
                     if rs.status_code == 200 and rs.json():
@@ -327,8 +369,9 @@ async def listar_productos(
             # ya resolvió la base MANDA. Este complemento pregunta por SKU
             # exacto sin mirar `search`, así que devolvía un producto que
             # NO casa con lo buscado — al filtrar por costo validado y
-            # escribir "bolsas" salía un SKU de audífonos (31-ago).
-            if skus and page == 1 and not search:
+            # escribir "bolsas" salía un SKU de audífonos (31-ago). Lo mismo con
+            # una CATEGORÍA elegida: el SKU exacto no sabe de categorías.
+            if skus and page == 1 and not search and not cats:
                 # Solo los términos que la búsqueda NO resolvió ya como SKU
                 # exacto: si todos están, la llamada extra sobra (perf 05-ago).
                 ya_exactos = {str(p.get("sku") or "").strip().upper() for p in data}
@@ -481,8 +524,38 @@ async def listar_productos(
     return items, total, total_pages
 
 
-async def listar_categorias(limite: int = 300) -> list[dict[str, Any]]:
-    """Categorías de WooCommerce con productos (id, nombre, count), para el filtro."""
+async def listar_categorias(limite: int = 300, vista: str | None = None) -> list[dict[str, Any]]:
+    """
+    Categorías de WooCommerce con productos (id, nombre, count), para el filtro.
+
+    Con `vista` (y la DB de WordPress) salen TODAS las que tienen productos en
+    esa pestaña, por nombre y sin tope: ver `wp_db.categorias_en_uso`. Sin ella,
+    la lista de siempre por REST —las `limite` con más productos publicados—,
+    que es la que usa Omnicanal ordenada por conteo.
+    """
+    if vista:
+        from services import wp_db
+        if wp_db.disponible():
+            try:
+                usadas = await asyncio.to_thread(wp_db.categorias_en_uso, vista)
+                por_id = {c["id"]: c for c in usadas}
+                # Los ANCESTROS también, aunque no tengan productos propios:
+                # elegir la padre trae los de sus hijas (el filtro las incluye).
+                try:
+                    arbol = await _cargar_categorias()
+                except Exception:  # noqa: BLE001
+                    arbol = {}
+                for c in usadas:
+                    p = c["parent"]
+                    while p and p not in por_id and p in arbol:
+                        por_id[p] = {"id": p, "nombre": arbol[p]["name"],
+                                     "parent": int(arbol[p].get("parent") or 0),
+                                     "count": 0}
+                        p = por_id[p]["parent"]
+                return sorted(por_id.values(), key=lambda c: c["nombre"].casefold())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("categorías de la vista %s fallaron (%s); respaldo REST",
+                            vista, exc)
     salida: list[dict[str, Any]] = []
     async with _client() as cli:
         page = 1
@@ -515,6 +588,7 @@ def _buscar_wc_ids_wp(
     skus: list[str] | None,
     vista: str,
     skus_exactos: bool = False,
+    categorias: list[int] | None = None,
 ) -> tuple[list[int], int]:
     """
     Búsqueda contra WordPress EN VIVO (wp_posts + wp_postmeta).
@@ -585,6 +659,12 @@ def _buscar_wc_ids_wp(
             where.append(f"({grupo})")
             for t in terminos:
                 args += [f"%{t}%", f"%{t}%"]
+    if categorias:
+        # Ya con sus subcategorías (`_categoria_con_descendientes`), y en AND
+        # con la búsqueda, los SKUs y el estado de la vista.
+        cond, arg_cat = wp_db.sql_en_categorias("p", categorias)
+        where.append(cond)
+        args += arg_cat
 
     # `_stock`/`_price` van por subconsulta correlacionada (no JOIN): 398 SKUs
     # tienen más de una fila de meta `_price` en wp_postmeta (dato sucio de
@@ -635,6 +715,7 @@ def _buscar_wc_ids_db(
     skus: list[str] | None = None,
     vista: str = "productos",
     skus_exactos: bool = False,
+    categorias: list[int] | None = None,
 ) -> tuple[list[int], int]:
     """
     Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) + lista
@@ -656,7 +737,7 @@ def _buscar_wc_ids_db(
     # respeta la pestaña (Crear necesita ver drafts; Omnicanal, todo).
     if wp_db.disponible():
         return _buscar_wc_ids_wp(search, page, per_page, orden, estados, skus,
-                                 vista, skus_exactos)
+                                 vista, skus_exactos, categorias)
 
     # Respaldo: sin acceso directo a WordPress se usa la maestra (incompleta).
     where = ["wc_id IS NOT NULL", "(status_wc IS NULL OR status_wc <> 'draft')"]
