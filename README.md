@@ -1001,6 +1001,36 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.508.0 — La marca de agua del sondeo de Temu se cerraba sola y perdía ventas
+
+La v0.507.0 hizo que el sondeo leyera 3 páginas, y la corrida siguiente lo dijo
+todo: **"110 vistas en 3 pág · 0 nuevas · 110 viejas · desde 09-12 00:34"**. Con
+tres páginas ya veía la venta que faltaba — y aun así la descartó.
+
+**LA MARCA MEDÍA LO NUESTRO, NO LO DEL CANAL.** `_desde()` salía de
+`orders_write.ultimo_actualizado("TEMU")`, que es el último `actualizado_at` de
+`channel.orders`: **cuándo registramos nosotros**, no cuándo se vendió. Cada
+pasada que registra algo la empuja a "ahora", así que la ventana se cierra sola.
+A las 00:44 se crearon 6 órdenes; a las 00:54 el corte ya era `00:34` y TODO
+quedó fuera. La venta `PO-128-08267415736954067` (11-sep 13:13 CST) se perdió
+así: cayó fuera de la página que se leyó, y cuando se leyeron más páginas la
+marca ya la había dejado atrás. **Lo que no se ve no se reintenta**, porque no
+hay nada que reintentar: no está en ninguna cola.
+
+Ahora la ventana es fija —`PEDIDOS_TEMU_SONDEO_MAX_DIAS` (2) hacia atrás— y
+basta con que la venta caiga ahí. Volver a ver lo mismo no cuesta: antes de
+tocar Woo se pregunta al registro con `wc_order_id_previo` y lo ya registrado se
+salta (`ya_registradas` en el resumen). Sin eso, cada pasada haría un PUT a Woo
+por cada venta de la ventana sin que nada hubiera cambiado. La consulta va en
+`asyncio.to_thread` (regla 11) y falla ABIERTO: si el registro no contesta,
+decide `sincronizar`, que tiene su propio candado — darla por registrada sin
+estarlo la perdería.
+
+Probado sin red: con la marca puesta en "hace 10 minutos" la ventana sigue
+siendo de 48 h; la venta de ayer que se había perdido se crea; la ya registrada
+se salta sin escribir en Woo; la de hace 5 días queda fuera; y repetir la pasada
+no vuelve a escribir nada.
+
 ### v0.507.0 — El sondeo de Temu miraba una sola página y perdía ventas del día
 
 Brandon, con el seller center abierto: *"mira esto"* — 13 pedidos sin enviar, dos

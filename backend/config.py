@@ -204,11 +204,15 @@ class Settings(BaseSettings):
     # despues, porque nunca la vio. Tres paginas son 150 pedidos por pasada,
     # tres llamadas cada 15 min.
     pedidos_temu_sondeo_paginas: int = 3
-    # Tope de retroceso de la marca de agua. La de Temu está en el 11-ago (la
-    # última venta que entró por M2E), así que sin tope el primer encendido
-    # barrería semanas: ~96 pedidos de Woo de una sentada, duplicando lo que
-    # Gabriela ya capturó. La marca evita repetir trabajo; NO es para recuperar
-    # historia — eso se pide aparte con `desde` explícito.
+    # LA VENTANA. Cada pasada mira las ventas de los últimos N días, y las que
+    # ya tienen pedido se saltan antes de tocar Woo. Antes esto era sólo el
+    # "tope" de una marca de agua, pero la marca era CUÁNDO REGISTRAMOS
+    # NOSOTROS: se empujaba a "ahora" en cada pasada y cerraba la ventana, así
+    # que una venta no vista se perdía para siempre (v0.508.0).
+    #
+    # Sigue acotada porque Temu tiene ~96 órdenes históricas que Gabriela ya
+    # capturó a mano; traer historia es una decisión aparte, con `desde`
+    # explícito.
     pedidos_temu_sondeo_max_dias: int = 2
 
     # ── SONDEO DE VENTAS DE WALMART (pieza 6) ─────────────────────

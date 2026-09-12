@@ -88,44 +88,30 @@ def estado() -> dict[str, Any]:
 
 def _desde() -> datetime:
     """
-    Desde cuándo mirar. Del REGISTRO, no del espejo (misma razón que Amazon:
-    con `pedidos_ml` congelada la marca se quedaba fija).
+    Desde cuándo mirar: SIEMPRE una ventana fija hacia atrás.
 
-    SIN REGISTRO PREVIO → AHORA, no el principio. Ver el encabezado: arrancar
-    sin marca traería 96 órdenes históricas de una sentada.
+    ANTES SALÍA DE UNA MARCA DE AGUA Y ESO PERDÍA VENTAS. La marca era el último
+    `actualizado_at` de `channel.orders` — o sea CUÁNDO REGISTRAMOS NOSOTROS, no
+    cuándo se vendió. Cada pasada que registra algo la empuja a "ahora", así que
+    la ventana se cerraba sola: en la corrida del 12-sep 00:54 el corte ya era
+    `00:34` del mismo día y las 110 órdenes vistas salieron todas como "viejas".
+
+    Y lo que queda fuera NO se reintenta, porque nunca se vio: la venta
+    `PO-128-08267415736954067` (11-sep 13:13 CST) se perdió así — cayó fuera de
+    la página que se leyó, y para cuando se leyeron más páginas la marca ya la
+    había dejado atrás. Una marca que avanza con NUESTRO trabajo, y no con el
+    del canal, convierte cualquier hueco en un hueco permanente.
+
+    Ahora la ventana es `PEDIDOS_TEMU_SONDEO_MAX_DIAS` hacia atrás y basta con
+    que una venta caiga ahí para que se recoja. Volver a ver lo mismo no cuesta
+    nada: lo ya registrado se salta ANTES de tocar Woo (ver `revisar`).
+
+    Sigue habiendo tope, y por lo mismo de siempre: Temu tiene ~96 órdenes
+    históricas que Gabriela ya capturó a mano. El histórico se trae aparte, con
+    `desde` explícito.
     """
-    ahora = datetime.now(timezone.utc)
-    try:
-        from services import orders_write
-        m = orders_write.ultimo_actualizado(CUENTA)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("pedidos_temu_sondeo: no se pudo leer la marca (%s); se usa AHORA", exc)
-        m = None
-    if not m:
-        return ahora
-    if m.tzinfo is None:
-        m = m.replace(tzinfo=timezone.utc)
-    marca = m - timedelta(minutes=_MARGEN_MIN)
-
-    # TOPE DE RETROCESO. La marca de Temu está en el 11-AGO —la última de las 2
-    # ventas que alcanzó a entrar por M2E antes de que se desinstalara—, así que
-    # "desde la última registrada" significaría barrer semanas de golpe: casi
-    # las 96 órdenes, cada una un pedido de Woo nuevo, una orden de Odoo
-    # duplicando la que Gabriela ya capturó, y el descuento de stock de
-    # mercancía que salió hace semanas.
-    #
-    # La marca sirve para no repetir trabajo, no para recuperar historia. Por
-    # eso se acota: traer el histórico es una decisión aparte y se pide con
-    # `desde` explícito.
-    tope = ahora - timedelta(days=int(getattr(
-        settings, "pedidos_temu_sondeo_max_dias", 2) or 2))
-    if marca < tope:
-        log.warning("pedidos_temu_sondeo: la marca (%s) es más vieja que el tope "
-                    "de %s; se limita a %s. El histórico se trae aparte, con "
-                    "`desde` explícito.", marca.date(),
-                    getattr(settings, "pedidos_temu_sondeo_max_dias", 2), tope.date())
-        return tope
-    return marca
+    dias = int(getattr(settings, "pedidos_temu_sondeo_max_dias", 2) or 2)
+    return datetime.now(timezone.utc) - timedelta(days=dias)
 
 
 def _creada_en(orden: dict[str, Any]) -> datetime | None:
@@ -139,6 +125,22 @@ def _creada_en(orden: dict[str, Any]) -> datetime | None:
                 except (TypeError, ValueError, OSError):
                     continue
     return None
+
+
+def _registrada(sn: str) -> bool:
+    """¿Esta venta ya tiene pedido? ⚠️ BLOQUEA: va en `to_thread`.
+
+    Falla ABIERTO: si el registro no contesta se devuelve False y `sincronizar`
+    decide, que tiene su propio candado de idempotencia. Al revés —dar por
+    registrada una venta que no lo está— la perdería.
+    """
+    try:
+        from services import orders_write
+        return orders_write.wc_order_id_previo(str(sn)) is not None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pedidos_temu_sondeo: no se pudo consultar el registro de %s: %s",
+                    sn, str(exc)[:120])
+        return False
 
 
 async def _listar(pagina: int) -> list[dict[str, Any]]:
@@ -175,6 +177,7 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
     from services import pedidos_temu, pedidos_ml
 
     vistas = nuevas = creadas = viejas = sin_sku = sin_mapear = 0
+    ya_registradas = 0
     errores: list[str] = []
     # La venta MAS NUEVA descartada por vieja. Si se acerca a "ahora", la
     # ventana se esta quedando corta y hay que mirarlo: asi se vio que la lista
@@ -201,6 +204,16 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                         vieja_mas_nueva = fecha
                     continue
                 nuevas += 1
+
+                # ¿Ya la tenemos? Se pregunta al REGISTRO, que es una consulta
+                # barata, en vez de dejar que `sincronizar` la "actualice": eso
+                # escribiría en Woo cada 15 minutos por cada venta de la
+                # ventana, sin que nada haya cambiado.
+                previo = await asyncio.to_thread(
+                    _registrada, sn)
+                if previo:
+                    ya_registradas += 1
+                    continue
 
                 orden = pedidos_temu._normalizar(sn, cruda)  # noqa: SLF001
                 if not any(i["sku"] for i in orden["items"]):
@@ -230,15 +243,17 @@ async def revisar(paginas: int | None = None, desde: datetime | None = None,
                     errores.append(f"{sn}: {str(r.get('motivo'))[:80]}")
         _ultimo.update(estado="ok", ts=datetime.now(timezone.utc).isoformat(),
                        vistas=vistas, nuevas=nuevas, creadas=creadas,
+                       ya_registradas=ya_registradas,
                        viejas=viejas, sin_sku=sin_sku, sin_mapear=sin_mapear,
                        solo_registro=solo_registro, desde=corte.isoformat(),
                        paginas_leidas=paginas_leidas,
                        vieja_mas_nueva=(vieja_mas_nueva.isoformat()
                                         if vieja_mas_nueva else None),
                        errores=errores[:10])
-        log.info("TEMU sondeo: %d vistas en %d pág · %d nuevas · %d %s · %d viejas "
-                 "(la más nueva: %s) · %d sin SKU · %d sin mapear · desde %s",
-                 vistas, paginas_leidas, nuevas, creadas,
+        log.info("TEMU sondeo: %d vistas en %d pág · %d en ventana · %d ya estaban · "
+                 "%d %s · %d fuera de ventana (la más nueva: %s) · %d sin SKU · "
+                 "%d sin mapear · desde %s",
+                 vistas, paginas_leidas, nuevas, ya_registradas, creadas,
                  "habría creado" if solo_registro else "creadas", viejas,
                  vieja_mas_nueva.strftime("%m-%d %H:%M") if vieja_mas_nueva else "-",
                  sin_sku, sin_mapear, corte.strftime("%m-%d %H:%M"))
