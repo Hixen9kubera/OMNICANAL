@@ -156,7 +156,7 @@ async def _listar(pagina: int) -> list[dict[str, Any]]:
     return []
 
 
-async def revisar(paginas: int = 1, desde: datetime | None = None,
+async def revisar(paginas: int | None = None, desde: datetime | None = None,
                   solo_registro: bool | None = None) -> dict[str, Any]:
     """
     Una pasada: órdenes nuevas de Temu → pedidos de Woo (y de ahí, el seam ya
@@ -169,16 +169,24 @@ async def revisar(paginas: int = 1, desde: datetime | None = None,
     """
     if solo_registro is None:
         solo_registro = bool(getattr(settings, "pedidos_temu_sondeo_solo_registro", True))
+    if paginas is None:
+        paginas = int(getattr(settings, "pedidos_temu_sondeo_paginas", 3) or 3)
     corte = desde or _desde()
     from services import pedidos_temu, pedidos_ml
 
     vistas = nuevas = creadas = viejas = sin_sku = sin_mapear = 0
     errores: list[str] = []
+    # La venta MAS NUEVA descartada por vieja. Si se acerca a "ahora", la
+    # ventana se esta quedando corta y hay que mirarlo: asi se vio que la lista
+    # de Temu no viene ordenada por fecha.
+    vieja_mas_nueva: datetime | None = None
+    paginas_leidas = 0
     try:
         for pagina in range(1, max(1, paginas) + 1):
             lote = await _listar(pagina)
             if not lote:
                 break
+            paginas_leidas += 1
             for cruda in lote:
                 vistas += 1
                 padre = cruda.get("parentOrderMap") or {}
@@ -189,6 +197,8 @@ async def revisar(paginas: int = 1, desde: datetime | None = None,
                 fecha = _creada_en(cruda)
                 if fecha and fecha < corte:
                     viejas += 1
+                    if vieja_mas_nueva is None or fecha > vieja_mas_nueva:
+                        vieja_mas_nueva = fecha
                     continue
                 nuevas += 1
 
@@ -222,12 +232,16 @@ async def revisar(paginas: int = 1, desde: datetime | None = None,
                        vistas=vistas, nuevas=nuevas, creadas=creadas,
                        viejas=viejas, sin_sku=sin_sku, sin_mapear=sin_mapear,
                        solo_registro=solo_registro, desde=corte.isoformat(),
+                       paginas_leidas=paginas_leidas,
+                       vieja_mas_nueva=(vieja_mas_nueva.isoformat()
+                                        if vieja_mas_nueva else None),
                        errores=errores[:10])
-        log.info("TEMU sondeo: %d vistas · %d nuevas · %d %s · %d viejas · "
-                 "%d sin SKU · %d sin mapear",
-                 vistas, nuevas, creadas,
-                 "habría creado" if solo_registro else "creadas",
-                 viejas, sin_sku, sin_mapear)
+        log.info("TEMU sondeo: %d vistas en %d pág · %d nuevas · %d %s · %d viejas "
+                 "(la más nueva: %s) · %d sin SKU · %d sin mapear · desde %s",
+                 vistas, paginas_leidas, nuevas, creadas,
+                 "habría creado" if solo_registro else "creadas", viejas,
+                 vieja_mas_nueva.strftime("%m-%d %H:%M") if vieja_mas_nueva else "-",
+                 sin_sku, sin_mapear, corte.strftime("%m-%d %H:%M"))
     except Exception as exc:  # noqa: BLE001
         log.exception("pedidos_temu_sondeo.revisar falló")
         _ultimo.update(estado="error", ts=datetime.now(timezone.utc).isoformat(),

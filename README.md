@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.507.0 — El sondeo de Temu miraba una sola página y perdía ventas del día
+
+Brandon, con el seller center abierto: *"mira esto"* — 13 pedidos sin enviar, dos
+de ese mismo día, y en Odoo no existía ninguno.
+
+**PRIMERO, LO QUE FALTABA.** El webhook de Temu **nunca ha llegado**:
+`ops.webhook_events` tiene CERO eventos de ese canal desde que se persisten. Las
+7 órdenes del 10-sep no las creó el webhook, las creó `POST /temu/recuperar` a
+mano. Con el sondeo apagado, Temu no tenía NINGUNA vía viva de ingesta. Brandon
+dio el dale y se encendió (`PEDIDOS_TEMU_SONDEO_ENABLED=true`,
+`PEDIDOS_TEMU_SONDEO_SOLO_REGISTRO=false`). Primera pasada: 6 ventas → S38434 a
+S38439, confirmadas en TEXCO.
+
+**PERO FALTÓ UNA, Y ESE ES EL BUG.** `bg.order.list.v2.get` **no devuelve las
+órdenes por fecha**. La pasada leyó 1 página de 50 y 44 eran viejas; la venta
+`PO-128-08267415736954067` (13:13 CST del mismo día) no venía en esa página. Y no
+es que "se reintenta luego": el sondeo solo mira la página 1, así que una venta
+que caiga fuera **no se ve nunca**. Se pierde en silencio, que es la peor forma.
+
+Ahora lee `PEDIDOS_TEMU_SONDEO_PAGINAS` (3 por omisión, 150 pedidos por pasada) y
+el resumen dice **en cuántas páginas** miró y **cuál es la venta más nueva que
+descartó por vieja**: si esa fecha se acerca a "ahora", la ventana se está
+quedando corta y se ve en el log en vez de descubrirse con una captura de
+pantalla.
+
+Probado sin red con tres páginas simuladas y una venta reciente escondida en la
+tercera: con una página se pierde (reproduce el fallo), con tres aparece; y el
+recorrido para al toparse con una página vacía.
+
 ### v0.506.0 — Inventario volvía a tronar: `pl_leyendo` se usaba sin definirse
 
 Reporte del 11-sep: la pestaña Inventario mostraba *«pl_leyendo no está

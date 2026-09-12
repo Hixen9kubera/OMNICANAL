@@ -153,8 +153,13 @@ def iniciar() -> None:
     # Ver services/pedidos_temu_sondeo.py — arranca en modo solo-registro.
     if getattr(settings, "pedidos_temu_sondeo_enabled", False):
         from services import pedidos_temu_sondeo
+        async def _sondeo_temu():
+            # Varias páginas: la lista de Temu no viene ordenada por fecha y con
+            # una sola se perdían ventas del mismo día. Ver config.
+            await pedidos_temu_sondeo.revisar(
+                paginas=settings.pedidos_temu_sondeo_paginas)
         _scheduler.add_job(
-            pedidos_temu_sondeo.revisar,
+            _sondeo_temu,
             "interval",
             minutes=settings.pedidos_temu_sondeo_min,
             id="pedidos_temu_sondeo",
@@ -162,8 +167,9 @@ def iniciar() -> None:
             max_instances=1,
             coalesce=True,
         )
-        log.info("Sondeo de ventas Temu cada %s min (solo_registro=%s).",
+        log.info("Sondeo de ventas Temu cada %s min, %s páginas (solo_registro=%s).",
                  settings.pedidos_temu_sondeo_min,
+                 settings.pedidos_temu_sondeo_paginas,
                  settings.pedidos_temu_sondeo_solo_registro)
     # Sondeo de ventas de WALMART (pieza 6). Es SONDEO y no webhook porque
     # `/v3/webhooks/subscriptions` devuelve 520 del lado de Walmart — el

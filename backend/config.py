@@ -196,6 +196,14 @@ class Settings(BaseSettings):
     temu_guias_limite: int = 60        # ventas por vuelta
 
     pedidos_temu_sondeo_min: int = 15
+    # PAGINAS POR PASADA. `bg.order.list.v2.get` NO devuelve las ordenes por
+    # fecha: en la primera pasada real (12-sep, 00:43 UTC) la pagina 1 traia 50
+    # pedidos de los que 44 eran viejos, y una venta de ESE MISMO DIA
+    # (PO-128-08267415736954067, 13:13 CST) se quedo fuera. Con una sola pagina
+    # una venta reciente puede no aparecer NUNCA: el sondeo no la reintenta
+    # despues, porque nunca la vio. Tres paginas son 150 pedidos por pasada,
+    # tres llamadas cada 15 min.
+    pedidos_temu_sondeo_paginas: int = 3
     # Tope de retroceso de la marca de agua. La de Temu está en el 11-ago (la
     # última venta que entró por M2E), así que sin tope el primer encendido
     # barrería semanas: ~96 pedidos de Woo de una sentada, duplicando lo que
