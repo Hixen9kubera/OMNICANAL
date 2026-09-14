@@ -1966,6 +1966,23 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
             # `stock_de_padre`; esta función se había quedado sin la regla.
             if data and data[0].get("type") == "variable":
                 variantes = (await variantes_de_productos(cli, [data[0]]))[0]
+            # Una VARIACIÓN nunca tiene su propia descripción en WooCommerce
+            # (el campo viene '' siempre, no es un dato que falte por cachear):
+            # la descripción es del PADRE y así la ve cualquier comprador, sin
+            # importar qué variante eligió. Sin este fallback, el Estudio de
+            # cada variante (SKU único desde v0.464.0) salía con Descripción
+            # vacía SIEMPRE, así se acabara de regenerar el producto entero
+            # (EST-0088-EST, sep-2026 — el padre EST-0088 sí la tenía).
+            if data and data[0].get("type") == "variation" and data[0].get("parent_id"):
+                if not (data[0].get("description") or data[0].get("short_description")):
+                    rp = await cli.get(
+                        f"/products/{data[0]['parent_id']}",
+                        params={"_fields": "description,short_description", "_cb": str(time.time())},
+                    )
+                    if rp.status_code == 200:
+                        padre = rp.json()
+                        data[0]["description"] = padre.get("description") or ""
+                        data[0]["short_description"] = padre.get("short_description") or ""
     except Exception as exc:  # noqa: BLE001
         log.warning("WooCommerce obtener_producto_por_sku(%s) falló: %s", sku, exc)
         return None

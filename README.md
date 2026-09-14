@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.512.0 — El Estudio de una VARIANTE nunca tuvo descripción, ni antes ni después de v0.511.0
+
+v0.511.0 no era el bug entero. Reportado de nuevo tras desplegarla: "sigo sin
+ver la descripción", en el Publicador — pero abriendo una VARIANTE
+(`EST-0088-EST`, `EST-0088-VER-BLN`, `EST-0088-ROJ-BLN`), no el padre
+(`EST-0088`, ya confirmado con descripción completa en v0.511.0).
+
+No es caché ni un hueco de fallback: **una `product_variation` de WooCommerce
+JAMÁS tiene su propio `description`/`short_description`** — el campo viene
+`''` desde el origen, siempre, para cualquier variante de cualquier producto.
+Confirmado contra la API: `GET /products?sku=EST-0088-EST` responde
+`{"description": "", "short_description": ""}`. Con "cada variante es un SKU"
+(v0.464.0) el Estudio abre variantes sueltas todo el tiempo, así que este
+hueco pegaba en cualquier producto con variantes, no solo en los recién
+regenerados.
+
+Fix (`obtener_producto_por_sku`): si el SKU resuelve a `type == "variation"`
+y su descripción viene vacía, se trae la del PADRE (`GET /products/{parent_id}`,
+con `_cb`) — es la misma que ve un comprador en la tienda sin importar qué
+variante eligió. Solo lectura/UI.
+
 ### v0.511.0 — El Estudio abría sin descripción justo después de regenerar en Crear Productos
 
 Mismo síntoma que v0.419.0/v0.420.0 pero en OTRA pantalla: la tarjeta de
