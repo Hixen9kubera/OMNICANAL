@@ -620,14 +620,14 @@ function FilaOrden({
         </div>
       )}
 
-      {abierta && <Detalle o={o} odooUrl={odooUrl} />}
+      {abierta && <Detalle o={o} odooUrl={odooUrl} ventaUrl={ventaUrl} />}
     </div>
   );
 }
 
 /* ── El detalle, in-situ ────────────────────────────────────────────────── */
 
-function Detalle({ o, odooUrl }: { o: OrdenOdoo; odooUrl: string }) {
+function Detalle({ o, odooUrl, ventaUrl = "" }: { o: OrdenOdoo; odooUrl: string; ventaUrl?: string }) {
   const [copiada, setCopiada] = useState(false);
   const piezas = o.lineas.reduce((n, l) => n + (l.cantidad ?? 0), 0);
   const rz = rezago(o.venta_at, o.creado_at);
@@ -799,6 +799,25 @@ function Detalle({ o, odooUrl }: { o: OrdenOdoo; odooUrl: string }) {
               Abrir {o.odoo_name} en Odoo
             </a>
           )}
+          {/* La venta en el seller center del canal, con SUS colores: es donde el
+              almacén compra el envío y genera la guía de esta venta exacta. */}
+          {o.external_order_id && ventaUrl.includes("{id}") && (() => {
+            const c = CANALES.find((x) => x.id === o.canal);
+            if (!c) return null;
+            return (
+              <a
+                href={ventaUrl.replace("{id}", encodeURIComponent(o.external_order_id))}
+                target="_blank"
+                rel="noreferrer"
+                title="Abrir la venta en el seller center para generar su guía"
+                className="flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2.5 text-[13px] font-bold text-white"
+                style={{ background: c.base }}
+              >
+                <ExternalLink className="h-4 w-4" style={c.id === "tiktok" ? { color: c.punto } : undefined} />
+                Abrir en {c.id === "tiktok" ? "TikTok" : c.nombre}
+              </a>
+            );
+          })()}
           {o.guia && (
             <button
               type="button"

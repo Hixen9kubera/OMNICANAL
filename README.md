@@ -1001,6 +1001,20 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.515.0 — "Abrir en Temu" junto a "Abrir en Odoo", con los colores del canal
+
+Brandon: *"tal como dice abrir en Odoo, puedes poner otro botón que diga abrir en
+Temu con los colores"*.
+
+En el detalle de cada venta, debajo de "Abrir S… en Odoo", un botón **"Abrir en
+Temu"** en el naranja de Temu (`#FB7701`, el mismo `base` de `CANALES`) que abre
+la venta exacta en el seller center — donde el almacén compra el envío y genera
+la guía. Usa la misma plantilla `url_venta` de `/estado`
+(`TEMU_URL_VENTA=https://mx.seller.temu.com/order-detail.html?parent_order_sn={id}`,
+verificada abriendo `PO-128-05574299556473671`: muestra esa venta y su "Comprar
+envío"). En TikTok sale "Abrir en TikTok" en negro con el ícono cian en cuanto
+exista `TIKTOK_URL_VENTA`; sin plantilla, no hay botón.
+
 ### v0.514.0 — «Por qué nos devuelven» marcaba 0.0% en todo, y la tabla ordenaba texto
 
 Brandon, 14-sep, con captura: «no se muestra el porcentaje de cada uno de estos
