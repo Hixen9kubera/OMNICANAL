@@ -41,6 +41,51 @@ async def _job():
         log.error("Sync de inventario falló: %s", exc)
 
 
+async def _tiktok_diagnostico_arranque() -> None:
+    """
+    El diagnóstico de TikTok, UNA vez, y la recuperación por variable si la hay.
+
+    POR QUÉ EN EL ARRANQUE Y NO SÓLO COMO ENDPOINT: el endpoint pide la llave del
+    panel, y la pregunta ("¿seguimos suscritos a los pedidos, se perdió alguna
+    venta?") tiene que quedar contestada en los logs de Railway aunque nadie
+    tenga sesión. TikTok sólo le contesta a la IP de Railway (36009033 desde la
+    laptop), así que éste es el único lugar donde se puede preguntar.
+
+    El diagnóstico va PRIMERO y por separado: si la recuperación falla o no se
+    pidió, la línea del diagnóstico ya quedó escrita. Nunca lanza — un job de
+    arranque que revienta deja una traza de APScheduler que nadie busca.
+    """
+    from services import tiktok_diagnostico as td
+
+    try:
+        d = await td.diagnosticar(settings.tiktok_diagnostico_dias)
+        log.info("%s", td.resumen_linea(d))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TIKTOK diagnostico al arrancar falló: %s", exc)
+
+    ids = (getattr(settings, "tiktok_recuperar_ids", "") or "").strip()
+    if not ids:
+        return
+    # SÍ ESCRIBE. Los ids son EXPLÍCITOS (TIKTOK_RECUPERAR_IDS) y `recuperar`
+    # lleva los candados del endpoint: tope 25, omite lo que ya dejó huella en
+    # la bitácora o en Odoo sin estar en channel.orders, y falla cerrado si no
+    # pudo leer los registros. El detalle por id lo loguea
+    # `recuperar` mismo; aquí va el veredicto y el recordatorio de vaciar.
+    try:
+        r = await td.recuperar(ids, aplicar=True)
+        if r.get("modo") != "APLICADO":
+            log.warning("TIKTOK recuperar (TIKTOK_RECUPERAR_IDS): NO se aplicó ninguno — %s %s",
+                        r.get("motivo"), r.get("errores") or "")
+            return
+        log.warning("TIKTOK recuperar (TIKTOK_RECUPERAR_IDS): %s con éxito, %s sin éxito "
+                    "[%s] — VACIAR la variable: cada reinicio la vuelve a procesar.",
+                    r.get("con_exito"), r.get("sin_exito"),
+                    ", ".join(f"{x.get('id')}:{x.get('accion')}"
+                              for x in r.get("resultados") or []))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TIKTOK recuperar (TIKTOK_RECUPERAR_IDS) falló: %s", exc)
+
+
 def iniciar() -> None:
     global _scheduler
     if _scheduler:
@@ -340,6 +385,28 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Censo de TikTok cada %s min.", settings.tiktok_censo_min)
+    # DIAGNÓSTICO DE TIKTOK, UNA SOLA VEZ (14-sep-2026): suscripción al aviso de
+    # pedidos + ventas de N días cruzadas contra los tres registros. Solo lectura
+    # (salvo TIKTOK_RECUPERAR_IDS, ver config). A los 3 min para no competir con
+    # el despertar del contenedor. No depende de MySQL: el token lo lee
+    # `tiktok.access_token` de donde toque (kubera o MySQL), y si no puede, el
+    # diagnóstico lo dice en su línea.
+    if getattr(settings, "tiktok_diagnostico_arranque", False):
+        _scheduler.add_job(
+            _tiktok_diagnostico_arranque,
+            "date",
+            # Con zona explícita: una fecha ingenua se lee en la zona del
+            # scheduler (UTC) y, fuera de un servidor en UTC, caería horas en el
+            # pasado y el job se daría por perdido sin correr.
+            run_date=datetime.now(timezone.utc) + timedelta(minutes=3),
+            id="tiktok_diagnostico_arranque",
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+        log.info("Diagnóstico de TikTok al arrancar en 3 min (%s días%s).",
+                 settings.tiktok_diagnostico_dias,
+                 ", y recuperación por TIKTOK_RECUPERAR_IDS"
+                 if (getattr(settings, "tiktok_recuperar_ids", "") or "").strip() else "")
     # Censo de Temu → channel.listings (status crudo + stock vivos). Sin esto,
     # el espejo de Temu se congela en el último `cargar_temu` manual.
     if settings.temu_censo_enabled and settings.mysql_enabled:

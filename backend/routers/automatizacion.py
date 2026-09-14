@@ -822,6 +822,52 @@ async def simular(
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+# TIKTOK · ¿SEGUIMOS SUSCRITOS A LOS PEDIDOS, Y SE PERDIÓ ALGUNA VENTA?
+# ═════════════════════════════════════════════════════════════════════════════
+@router.get("/tiktok/diagnostico", dependencies=[Depends(requiere_api_key)])
+async def tiktok_diagnostico(dias: int = Query(14, ge=1, le=45)):
+    """
+    La suscripción al aviso de PEDIDOS y las ventas de `dias` cruzadas contra
+    channel.orders, la bitácora de Odoo y Odoo (incluidas las capturas a mano,
+    que sólo se reconocen por el nombre del PDF de la guía).
+
+    POR QUÉ ES UN ENDPOINT: TikTok rechaza toda IP que no sea la de Railway
+    (`36009033`), así que desde la laptop no se puede preguntar. El mismo
+    diagnóstico corre una vez al arrancar y deja su línea en el log.
+
+    SOLO LECTURA y sin datos del comprador. Ver services/tiktok_diagnostico.py.
+    """
+    from services import tiktok_diagnostico as td
+
+    d = await td.diagnosticar(dias)
+    return {**d, "resumen": td.resumen_linea(d)}
+
+
+@router.post("/tiktok/recuperar", dependencies=[Depends(requiere_api_key)])
+async def tiktok_recuperar(
+    ids: str = Query(..., description="ids de orden de TikTok separados por coma. "
+                                      "EXPLÍCITOS a propósito (tope 25)"),
+    aplicar: bool = Query(False, description="false = en seco; true = crea de verdad"),
+):
+    """
+    Mete a la tubería ventas de TikTok que no entraron, NOMBRADAS una por una.
+
+    Mismo molde que `/temu/recuperar`: ids explícitos, tope 25, en seco por
+    omisión. Con `aplicar=true` cada id pasa por `pedidos_tiktok.procesar` —el
+    MISMO camino del webhook—, salvo las ventas que no están en channel.orders
+    pero ya dejaron huella en la bitácora o en Odoo (captura a mano por PDF,
+    `<id>#n`, otro cliente): la idempotencia de la tubería no las ve y se
+    duplicarían. Si no puede leer los registros, no aplica nada.
+
+    `GET /tiktok/diagnostico` devuelve en `ventas.para_recuperar` la lista lista
+    para pegar aquí.
+    """
+    from services import tiktok_diagnostico as td
+
+    return await td.recuperar(ids, aplicar=aplicar)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 # WALMART · PIEZA 6
 # ═════════════════════════════════════════════════════════════════════════════
 @router.get("/walmart/feed/{feed_id:path}")

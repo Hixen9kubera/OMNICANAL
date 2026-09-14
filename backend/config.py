@@ -65,7 +65,10 @@ class Settings(BaseSettings):
     # almacén abra la venta exacta desde el panel y compre/imprima su guía ahí.
     # VACÍO = el panel no muestra enlace: un formato adivinado mandaría a otra
     # pantalla. Se llena con una URL real copiada del navegador.
-    temu_url_venta: str = ""
+    # Verificada el 14-sep abriendo PO-128-05574299556473671: muestra esa venta
+    # y su "Comprar envío". Los parámetros _x_* de la URL original son rastreo
+    # de anuncios y sobran.
+    temu_url_venta: str = "https://mx.seller.temu.com/order-detail.html?parent_order_sn={id}"
     tiktok_url_venta: str = ""
     odoo_db: str = ""
     odoo_user: str = ""
@@ -747,6 +750,35 @@ class Settings(BaseSettings):
     # estar YA a la venta). Nace apagado (regla 3).
     tiktok_censo_enabled: bool = False
     tiktok_censo_min: int = 120
+    # DIAGNÓSTICO DE TIKTOK AL ARRANCAR (14-sep-2026). UNA corrida, 3 min después
+    # de iniciar: ¿la tienda sigue suscrita al aviso de PEDIDOS
+    # (ORDER_STATUS_CHANGE) y a nuestra URL, y hubo ventas en los últimos N días
+    # que no están en channel.orders, ni en la bitácora de Odoo, ni en Odoo? El
+    # aviso de pedido dejó de llegar el 4-sep y eso sólo lo puede contestar
+    # TikTok — que rechaza toda IP que no sea la de Railway (36009033), así que
+    # desde la laptop no hay forma de preguntarlo. Deja UNA línea en el log
+    # ("TIKTOK diagnostico"). Ver services/tiktok_diagnostico.py.
+    # NACE ENCENDIDO a propósito: es SOLO LECTURA —no escribe en TikTok, Odoo,
+    # kubera ni Woo—. La regla 3 es para lo que enciende flujos, no para lo que
+    # sólo mira. `dias` se acota a 1..45.
+    tiktok_diagnostico_arranque: bool = True
+    tiktok_diagnostico_dias: int = 14
+    # RECUPERACIÓN SIN SESIÓN DEL PANEL: ids de orden de TikTok separados por
+    # coma. Si trae algo, el MISMO job de arranque, DESPUÉS del diagnóstico,
+    # pasa ESOS ids por `pedidos_tiktok.procesar` — es decir, SÍ ESCRIBE: pedido
+    # en Woo y, según los escalones de odoo_ventas, orden de venta en Odoo (sin
+    # PEDIDOS_TIKTOK_ENABLED no crea nada). Es para cuando no se puede llamar a
+    # POST /api/automatizacion/tiktok/recuperar con la llave.
+    # Tope de 25: con más NO se procesa ninguno (el peor caso de un error de
+    # dedo tiene que ser acotado y visible, no "los primeros 25"). Lleva los
+    # mismos candados que el endpoint: omite lo que no está en channel.orders
+    # pero ya dejó huella en la bitácora o en Odoo, y no aplica nada si no pudo
+    # leer los registros.
+    # ⚠️ VACIARLA EN CUANTO SE VEA EL RESULTADO EN EL LOG. Cambiar una variable
+    # reinicia el contenedor (regla 12) y, con la lista puesta, cada reinicio la
+    # vuelve a procesar. Es idempotente —channel.orders es el candado—, pero es
+    # una escritura que nadie pidió esa vez.
+    tiktok_recuperar_ids: str = ""
     # Censo gemelo para Temu (temu_censo.py). Intervalo más laxo a propósito:
     # el presupuesto de API de Temu es más estricto y su catálogo cambia menos.
     temu_censo_enabled: bool = False

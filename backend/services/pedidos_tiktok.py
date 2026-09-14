@@ -32,6 +32,7 @@ contabilidad, y eso se enciende con el dale de Brandon, no con un deploy.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -156,7 +157,11 @@ def _normalizar(o: dict[str, Any]) -> dict[str, Any]:
 async def _traer(order_id: str) -> dict[str, Any] | None:
     """La orden COMPLETA desde TikTok. None si no se pudo."""
     from services import tiktok as tk
-    token, cipher = tk.access_token(), tk.cipher()
+    # EN UN HILO (regla 11): las dos son lecturas de BD SÍNCRONAS (kubera o
+    # MySQL). Aquí pasan el webhook y la recuperación, que la repite hasta 25
+    # veces seguidas: en la corrutina, cada una paraba el backend ENTERO
+    # mientras la base contestaba.
+    token, cipher = await asyncio.to_thread(lambda: (tk.access_token(), tk.cipher()))
     if not (token and cipher):
         log.warning("pedidos_tiktok: sin token o sin shop_cipher")
         return None

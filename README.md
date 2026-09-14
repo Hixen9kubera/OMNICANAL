@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.516.0 — Diagnóstico de TikTok desde Railway: ¿seguimos suscritos a los pedidos y se perdió alguna venta?
+
+El aviso de PEDIDO de TikTok dejó de llegar el 4-sep (desde el 10-sep sólo llegan
+tipos de producto 15/16/37/68) y la pregunta de si "no hubo ventas" o "se perdió
+la suscripción" sólo la contesta TikTok — que rechaza toda IP que no sea la de
+Railway (`36009033` desde la laptop).
+
+**`services/tiktok_diagnostico.py`** (nuevo):
+- `suscripciones()`: `GET /event/202309/webhooks` → si falta `ORDER_STATUS_CHANGE`
+  o si apunta a otra dirección que `/api/webhooks/tiktok`.
+- `ventas(dias)`: pagina `POST /order/202309/orders/search` y cruza cada orden
+  contra `channel.orders`, la bitácora `ops.odoo_sale_orders` y Odoo (por
+  `client_order_ref`, `<id>#n` y el PDF `<id>.pdf` de las capturadas a mano).
+  Devuelve faltantes, vendibles y `para_recuperar`.
+- **Cero datos del comprador**: `_orden_sin_pii` es el único punto que lee la
+  orden cruda y sólo copia id, estado, fechas, total, si trae guía, tipo de envío
+  y número de líneas.
+- Todo lo que bloquea (token, cipher, kubera, Odoo) va en `asyncio.to_thread`.
+
+**Endpoints** (con llave): `GET /api/automatizacion/tiktok/diagnostico?dias=14` y
+`POST /api/automatizacion/tiktok/recuperar?ids=&aplicar=false` — ids explícitos,
+tope 25, en seco por omisión, mismo camino que el webhook.
+
+**Job de arranque, una vez, a los 3 min** (`TIKTOK_DIAGNOSTICO_ARRANQUE`, nace
+encendido porque sólo mira): deja la línea `TIKTOK diagnostico` en los logs,
+legible sin sesión del panel. `TIKTOK_RECUPERAR_IDS` (vacía) permite recuperar
+ids explícitos sin llave; **sí escribe** y hay que vaciarla después.
+
+**Candado de la recuperación (bloqueador encontrado en revisión):** una venta que
+no está en `channel.orders` pero ya dejó huella en la bitácora o en Odoo (`<id>#1`,
+otro cliente, PDF manual) se OMITE con `omitida_ya_registrada`: `crear_orden`
+busca por referencia exacta y partner, no la vería y la duplicaría. Si no se
+pueden leer los registros, no se aplica nada.
+
+**Regla 11 en el webhook vivo:** `pedidos_tiktok._traer` leía token y cipher de
+forma síncrona dentro de la corrutina; ahora van en un hilo.
+
+**Temu:** `TEMU_URL_VENTA` queda también como valor por omisión en `config.py`
+(`https://mx.seller.temu.com/order-detail.html?parent_order_sn={id}`, verificada).
+
+Probado sin red: 114 comprobaciones (paginación, PII, cruce contra los tres
+registros, candado con aplicar, token fuera del loop, registro del job con
+`DateTrigger`). La prueba sobre el código previo a la revisión da 11 fallas.
+
 ### v0.515.0 — "Abrir en Temu" junto a "Abrir en Odoo", con los colores del canal
 
 Brandon: *"tal como dice abrir en Odoo, puedes poner otro botón que diga abrir en
