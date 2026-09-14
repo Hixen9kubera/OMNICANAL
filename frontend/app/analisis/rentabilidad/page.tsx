@@ -209,7 +209,10 @@ export default function RentabilidadPage() {
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
-      const cmp = typeof va === "string"
+      // Se decide por la COLUMNA, no por `typeof`: si un número llega como
+      // texto (pasó el 14-sep, ver `_flotantes` en fulfillment.py), olfatear
+      // el tipo lo ordena alfabéticamente — $99 antes que $2,968.
+      const cmp = orden === "sku"
         ? String(va).localeCompare(String(vb))
         : Number(va) - Number(vb);
       return asc ? cmp : -cmp;
@@ -427,9 +430,11 @@ export default function RentabilidadPage() {
                     </p>
                   </div>
                   <div className="divide-y divide-slate-50">
-                    {data.por_motivo.map((m) => {
-                      const total = data.por_motivo.reduce((a, x) => a + (x.valor ?? 0), 0);
-                      const pct = total > 0 ? ((m.valor ?? 0) / total) * 100 : 0;
+                    {data.por_motivo.map((m, _i, lista) => {
+                      // `Number()` a propósito: con texto, `+` CONCATENA y el
+                      // total deja de ser número — todo salía 0.0% (14-sep).
+                      const total = lista.reduce((a, x) => a + Number(x.valor ?? 0), 0);
+                      const pct = total > 0 ? (Number(m.valor ?? 0) / total) * 100 : 0;
                       return (
                         <div key={m.motivo} className="px-4 py-2.5">
                           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">

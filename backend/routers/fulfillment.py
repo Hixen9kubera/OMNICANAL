@@ -30,6 +30,8 @@ la BD — lo que se quitó es la columna, no el cálculo.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import asyncio
 import logging
 from datetime import date as _date
@@ -2658,6 +2660,31 @@ async def categorias_excel(
 # ventana madure.
 _CUENTAS_DEV = {"BEKURA", "SANCORFASHION"}
 
+
+def _flotantes(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Decimal → float en cada fila, para que el JSON lleve NÚMEROS.
+
+    ⚠️ NO ES COSMÉTICO. El endpoint va anotado `-> dict[str, Any]`, y con
+    FastAPI 0.115 + pydantic 2.10 esa anotación se usa como modelo de respuesta:
+    pydantic serializa `Decimal` en modo JSON como TEXTO. Probado con las mismas
+    versiones que producción:
+
+        con  -> dict[str, Any] : {"valor":"19625.16"}
+        sin anotación          : {"valor":19625.16}
+
+    Los KPI nunca lo sufrieron porque ya iban envueltos en `float()`. Las listas
+    salían crudas, y en el navegador eso rompió dos cosas a la vez (Brandon,
+    14-sep): en «Por qué nos devuelven» el `reduce` CONCATENABA en vez de sumar
+    —`0 + "18988.16" + "2066.00"`—, el total no era mayor que cero y todos los
+    motivos marcaban 0.0%; y la tabla por SKU, ordenada «por valor», ponía $99
+    primero y $2,968 a la mitad, porque ordenaba texto alfabéticamente.
+
+    `fM()` lo tapaba: formatea con `Number(v)`, así que las cifras SE VEÍAN
+    bien. Solo fallaba donde había aritmética u orden.
+    """
+    return [{k: (float(v) if isinstance(v, Decimal) else v) for k, v in fila.items()}
+            for fila in filas]
+
 # Las dos series comparten este filtro. Va aquí una sola vez para que no puedan
 # separarse: si una filtra por canal y la otra no, el porcentaje queda roto.
 _UNIVERSO = ("canal = 'mercado_libre' "
@@ -2907,9 +2934,9 @@ async def rentabilidad_devoluciones(
                 "valor_restable": None if sin_datos else float(dev["valor_restable"] or 0),
             },
             "por_tipo": {"full": _tipo(True), "drop": _tipo(False)},
-            "por_tienda": por_tienda,
-            "por_motivo": por_motivo,
-            "tabla": tabla,
+            "por_tienda": _flotantes(por_tienda),
+            "por_motivo": _flotantes(por_motivo),
+            "tabla": _flotantes(tabla),
         }
     except HTTPException:
         raise

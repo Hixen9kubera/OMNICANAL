@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.514.0 — «Por qué nos devuelven» marcaba 0.0% en todo, y la tabla ordenaba texto
+
+Brandon, 14-sep, con captura: «no se muestra el porcentaje de cada uno de estos
+parámetros». Los seis motivos decían **0.0%** y todas las barras estaban en el
+mínimo. En la misma pantalla había un segundo síntoma que nadie había reportado:
+la tabla por SKU, ordenada «VALOR DEV. ↓», ponía **$99.00 primero y $2,968.30 a
+la mitad**.
+
+**La primera hipótesis fue falsa, y conviene dejarlo escrito.** Se sospechó que
+`valor` llegaba como texto, se probó pasando las filas por `jsonable_encoder` y
+salió número. Descartada. Pero la pantalla seguía siendo la firma exacta de
+sumar textos, así que el camino de producción tenía que ser otro.
+
+**La causa real.** El endpoint va anotado `-> dict[str, Any]`, y con FastAPI
+0.115 + pydantic 2.10 esa anotación **se usa como modelo de respuesta**: pydantic
+serializa `Decimal` en modo JSON como TEXTO. La prueba de antes llamaba al
+encoder directo y se saltaba justo ese paso. Con las mismas versiones que
+producción:
+
+    con  -> dict[str, Any] : {"valor":"19625.16"}
+    sin anotación          : {"valor":19625.16}
+
+En el navegador, `0 + "18988.16" + "2066.00"` CONCATENA: el total dejaba de ser
+número, no era mayor que cero, y todos los motivos salían 0.0%. La tabla, que
+decidía cómo ordenar olfateando `typeof`, veía texto y ordenaba alfabéticamente.
+
+**Por qué nadie lo vio antes.** Los KPI de arriba siempre funcionaron: ya iban
+envueltos en `float()`. Y las cifras de las listas SE VEÍAN bien, porque `fM()`
+formatea con `Number(v)`. Solo fallaba donde había aritmética u orden. El
+endpoint hermano (`rentabilidad_drop`) no lo sufre: convierte con `float()`.
+
+**El arreglo, en dos capas.** En origen, `_flotantes()` convierte las tres
+listas (`por_tienda`, `por_motivo`, `tabla`) antes de responder. Y en el
+frontend, por si otro número vuelve a llegar como texto: el orden se decide por
+COLUMNA (`sku` es texto, lo demás número) en vez de por `typeof`, y la suma usa
+`Number()`. Verificado pasando la respuesta por la ruta real: de «no suma» a
+**87.7% · 9.2% · 1.2% · 0.9% · 0.5% · 0.4%**.
+
+Y un falso positivo descartado en la misma revisión: el `~5.26%` de la tasa DROP
+no es negativo ni está mal. La tilde gris marca muestra frágil (menos de 50
+unidades) y el número es exacto: 2 devueltas de 38 vendidas.
+
 ### v0.513.0 — Cada fila de Automatización dice de qué venta es, y se puede buscar
 
 Brandon: *"no se sabe exactamente qué venta o id de venta se tiene por cada orden
