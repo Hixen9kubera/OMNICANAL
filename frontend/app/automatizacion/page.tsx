@@ -199,6 +199,8 @@ interface Estado {
     odoo_url: string;
     /** Liga pública a una orden de venta; `{id}` se sustituye. */
     odoo_url_orden: string;
+    /** Enlace a la venta en el seller center, por canal; `{id}` se sustituye. Vacío = sin enlace. */
+    url_venta?: Record<string, string>;
     canales_estado?: Record<string, {
       encendido: boolean;
       persistido: boolean;
@@ -381,12 +383,68 @@ function Kpi({
 
 /* ── El renglón ─────────────────────────────────────────────────────────── */
 
-const GRID = "4px 250px 88px 116px 186px 96px 1fr 110px 26px";
+const GRID = "4px 230px 200px 104px 176px 96px 1fr 96px 26px";
+
+/** Normaliza para buscar: sin espacios ni mayúsculas (las guías se dictan con espacios). */
+const norm = (t: string | null | undefined) => (t ?? "").replace(/\s+/g, "").toLowerCase();
+
+/** ¿La orden coincide con lo que se busca? Venta del canal, orden de Odoo o guía. */
+function coincide(o: OrdenOdoo, q: string): boolean {
+  const n = norm(q);
+  if (!n) return true;
+  return [o.external_order_id, o.odoo_name, o.guia].some((v) => norm(v).includes(n));
+}
+
+/**
+ * El número de VENTA del canal (PO-128-… en Temu, el id largo en TikTok), con
+ * copiar. Es lo que el almacén ve en el seller center; sin él en la fila no hay
+ * forma de saber qué orden de Odoo y qué guía son de cuál venta — sólo se veía
+ * abriendo el detalle.
+ */
+function IdVenta({ id, url = "", className = "" }: { id: string; url?: string; className?: string }) {
+  const [copiado, setCopiado] = useState(false);
+  if (!id) return null;
+  const enlace = url.includes("{id}") ? url.replace("{id}", encodeURIComponent(id)) : "";
+  return (
+    <span className={`inline-flex max-w-full items-center gap-[6px] ${className}`}>
+      <button
+        type="button"
+        title={`Venta ${id} · clic para copiar`}
+        onClick={(e) => {
+          e.stopPropagation();
+          void navigator.clipboard.writeText(id).then(() => {
+            setCopiado(true);
+            setTimeout(() => setCopiado(false), 1500);
+          });
+        }}
+        className="group inline-flex min-w-0 items-center gap-[5px] font-mono text-[11px] text-slate-500 hover:text-slate-900"
+      >
+        <span className="truncate">{id}</span>
+        {copiado
+          ? <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-600" />
+          : <Copy className="h-3 w-3 shrink-0 text-slate-300 group-hover:text-slate-500" />}
+      </button>
+      {enlace && (
+        <a
+          href={enlace}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          title="Abrir esta venta en el seller center para generar su guía"
+          aria-label={`Abrir la venta ${id} en el seller center`}
+          className="shrink-0 text-slate-400 hover:text-indigo-600"
+        >
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+    </span>
+  );
+}
 
 function FilaOrden({
-  o, abierta, onAbrir, odooUrl,
+  o, abierta, onAbrir, odooUrl, ventaUrl = "",
 }: {
-  o: OrdenOdoo; abierta: boolean; onAbrir: () => void; odooUrl: string;
+  o: OrdenOdoo; abierta: boolean; onAbrir: () => void; odooUrl: string; ventaUrl?: string;
 }) {
   const d = desenlace(o);
   const s = V[d.v];
@@ -416,6 +474,7 @@ function FilaOrden({
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[11.5px]" style={{ color: "#4338ca" }}>
+            <IdVenta id={o.external_order_id} url={ventaUrl} className="text-indigo-700" />
             <span>Ningún almacén tenía la venta completa</span>
             {o.guia && (
               <span className="inline-flex items-center gap-[6px] rounded-full px-[9px] py-[3px] font-mono text-[11.5px] font-bold"
@@ -457,9 +516,12 @@ function FilaOrden({
             </div>
           )}
         </div>
-        <div className="truncate font-mono text-[13px] font-bold"
-             style={{ color: o.odoo_name ? (d.v === "inerte" ? "#94a3b8" : "#0f172a") : "#cbd5e1" }}>
-          {o.odoo_name ?? "—"}
+        <div className="min-w-0">
+          <div className="truncate font-mono text-[13px] font-bold"
+               style={{ color: o.odoo_name ? (d.v === "inerte" ? "#94a3b8" : "#0f172a") : "#cbd5e1" }}>
+            {o.odoo_name ?? "—"}
+          </div>
+          <IdVenta id={o.external_order_id} url={ventaUrl} />
         </div>
         <div className="truncate text-[12px] font-semibold text-slate-600">{o.almacen ?? "—"}</div>
         <div className="min-w-0">
@@ -513,6 +575,7 @@ function FilaOrden({
             </span>
             <Chevron className="h-[15px] w-[15px] shrink-0 text-slate-300" />
           </div>
+          <div className="pl-[15px]"><IdVenta id={o.external_order_id} url={ventaUrl} /></div>
           {o.motivo && (
             <div className="mt-1 pl-[15px] text-[11.5px]" style={{ color: s.motivoColor }}>{o.motivo}</div>
           )}
@@ -757,6 +820,7 @@ function Detalle({ o, odooUrl }: { o: OrdenOdoo; odooUrl: string }) {
 
 function TarjetaCanal({
   canal, ordenes, encendido, escalonId, moviendo, abierta, onAbrir, onSwitch, odooUrl, filtrando,
+  buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "",
 }: {
   canal: (typeof CANALES)[number];
   ordenes: OrdenOdoo[];
@@ -768,6 +832,10 @@ function TarjetaCanal({
   onSwitch: () => void;
   odooUrl: string;
   filtrando: boolean;
+  buscando?: string;
+  enOtroCanal?: number;
+  otroCanal?: string;
+  ventaUrl?: string;
 }) {
   const ultima = ordenes[0]?.creado_at ?? null;
   const conOrden = ordenes.filter((o) => o.odoo_name).length;
@@ -804,7 +872,7 @@ function TarjetaCanal({
       {ordenes.length > 0 && (
         <div className="hidden gap-3 border-b py-[9px] pr-5 text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400 lg:grid"
              style={{ gridTemplateColumns: GRID, borderColor: "#eef1f6" }}>
-          <span /><span>Desenlace</span><span>Orden Odoo</span><span>Almacén</span>
+          <span /><span>Desenlace</span><span>Orden Odoo · venta</span><span>Almacén</span>
           <span>Guía</span><span className="text-right">Total</span><span>Compra · proceso</span>
           <span className="text-right">Renglones</span><span />
         </div>
@@ -815,6 +883,7 @@ function TarjetaCanal({
           key={`${o.canal}-${o.external_order_id}`}
           o={o}
           odooUrl={odooUrl}
+          ventaUrl={ventaUrl}
           abierta={abierta === o.external_order_id}
           onAbrir={() => onAbrir(abierta === o.external_order_id ? null : o.external_order_id)}
         />
@@ -822,9 +891,13 @@ function TarjetaCanal({
 
       {ordenes.length === 0 && (
         <p className="px-5 py-8 text-center text-[12.5px] text-slate-400">
-          {filtrando
-            ? `${canal.nombre} no tiene nada pendiente.`
-            : `Todavía no ha entrado ninguna venta de ${canal.nombre}.`}
+          {buscando.trim()
+            ? enOtroCanal
+              ? `Nada en ${canal.nombre} con “${buscando.trim()}”, pero hay ${enOtroCanal} en ${otroCanal}: cambia de pestaña.`
+              : `Ninguna venta, orden ni guía coincide con “${buscando.trim()}”.`
+            : filtrando
+              ? `${canal.nombre} no tiene nada pendiente.`
+              : `Todavía no ha entrado ninguna venta de ${canal.nombre}.`}
         </p>
       )}
 
@@ -913,6 +986,7 @@ export default function AutomatizacionPage() {
 
   const [canal, setCanal] = useState<CanalId>("tiktok");
   const [soloAccion, setSoloAccion] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
   const [dias, setDias] = useState(30);
   const [abierta, setAbierta] = useState<string | null>(null);
   const [verParams, setVerParams] = useState(false);
@@ -1008,9 +1082,16 @@ export default function AutomatizacionPage() {
   const pendientesTotal = pendientes.tiktok + pendientes.temu;
 
   const visibles = useMemo(() => {
-    const l = porCanal[canal];
+    const l = porCanal[canal].filter((o) => coincide(o, busqueda));
     return soloAccion ? l.filter(pideAccion) : l;
-  }, [porCanal, canal, soloAccion]);
+  }, [porCanal, canal, soloAccion, busqueda]);
+
+  // Si lo buscado vive en el OTRO canal, se avisa en vez de mostrar "nada".
+  const enOtroCanal = useMemo(() => {
+    if (!norm(busqueda)) return 0;
+    const otroId = CANALES.find((c) => c.id !== canal)!.id;
+    return porCanal[otroId].filter((o) => coincide(o, busqueda)).length;
+  }, [porCanal, canal, busqueda]);
 
   const otro = CANALES.find((c) => c.id !== canal)!;
   const canalInfo = CANALES.find((c) => c.id === canal)!;
@@ -1111,7 +1192,9 @@ export default function AutomatizacionPage() {
         <div className="mt-5 flex flex-wrap items-center gap-[10px]">
           {CANALES.map((c) => {
             const sel = c.id === canal;
-            const n = soloAccion ? pendientes[c.id] : porCanal[c.id].length;
+            const n = norm(busqueda)
+              ? porCanal[c.id].filter((o) => coincide(o, busqueda)).length
+              : soloAccion ? pendientes[c.id] : porCanal[c.id].length;
             return (
               <button
                 key={c.id}
@@ -1138,6 +1221,15 @@ export default function AutomatizacionPage() {
           })}
 
           <div className="ml-auto flex flex-wrap items-center gap-[10px]">
+            <input
+              type="search"
+              value={busqueda}
+              onChange={(e) => { setBusqueda(e.target.value); setAbierta(null); }}
+              placeholder="Buscar venta, orden S… o guía"
+              aria-label="Buscar por número de venta, orden de Odoo o guía"
+              className="w-[250px] rounded-[10px] border bg-white px-3 py-[9px] font-mono text-[12.5px] text-slate-700 placeholder:font-sans placeholder:text-slate-400"
+              style={{ borderColor: "#e6e9f2" }}
+            />
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] border px-[13px] py-2 text-[13px] font-bold"
                    style={{ borderColor: "#FDE68A", background: "#FFFBEB", color: "#92400E" }}>
               <input type="checkbox" checked={soloAccion} style={{ accentColor: "#B45309" }}
@@ -1212,7 +1304,11 @@ export default function AutomatizacionPage() {
               abierta={abierta}
               onAbrir={setAbierta}
               odooUrl={ov?.odoo_url_orden ?? ""}
+              ventaUrl={ov?.url_venta?.[canal] ?? ""}
               filtrando={soloAccion}
+              buscando={busqueda}
+              enOtroCanal={enOtroCanal}
+              otroCanal={otro.nombre}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
             />
           )}

@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.513.0 — Cada fila de Automatización dice de qué venta es, y se puede buscar
+
+Brandon: *"no se sabe exactamente qué venta o id de venta se tiene por cada orden
+generada y cuál es cuál para tener su guía exacta"*.
+
+La fila mostraba la orden de Odoo (S38441) y la guía, pero **no el número de
+venta del canal** (`PO-128-…` en Temu, el id largo en TikTok), que es lo que el
+almacén ve en el seller center. Sólo aparecía abriendo el detalle. Sin él no hay
+forma de emparejar venta ↔ orden ↔ guía.
+
+- **La venta va en la fila**, debajo de la orden de Odoo (columna "Orden Odoo ·
+  venta"), con clic para copiar. También en la vista angosta y en el surtido
+  dividido.
+- **Buscador** por número de venta, orden `S…` o guía (ignora espacios y
+  mayúsculas). Si lo buscado está en el otro canal, lo dice en vez de mostrar
+  "nada".
+- **Enlace a la venta en el seller center** (para generar la guía ahí): va como
+  plantilla por canal, `TEMU_URL_VENTA` y `TIKTOK_URL_VENTA` con `{id}`, que
+  `/estado` expone en `url_venta`. **Nacen VACÍAS y así no se muestra enlace**:
+  un formato adivinado mandaría al almacén a otra pantalla. Se llenan con una URL
+  real copiada del navegador.
+
 ### v0.512.0 — El Estudio de una VARIANTE nunca tuvo descripción, ni antes ni después de v0.511.0
 
 v0.511.0 no era el bug entero. Reportado de nuevo tras desplegarla: "sigo sin

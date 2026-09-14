@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     odoo_web_cids: int = 73
     odoo_web_menu_venta: int = 240
     odoo_web_action_venta: int = 400
+    # Enlace a la VENTA en el seller center de cada canal, con `{id}` por
+    # sustituir (PO-128-… en Temu, el id largo en TikTok). Es para que el
+    # almacén abra la venta exacta desde el panel y compre/imprima su guía ahí.
+    # VACÍO = el panel no muestra enlace: un formato adivinado mandaría a otra
+    # pantalla. Se llena con una URL real copiada del navegador.
+    temu_url_venta: str = ""
+    tiktok_url_venta: str = ""
     odoo_db: str = ""
     odoo_user: str = ""
     odoo_password: str = ""

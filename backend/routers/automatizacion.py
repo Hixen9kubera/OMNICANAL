@@ -74,6 +74,10 @@ async def estado(canal: str | None = Query(None, description="acota los contador
                 # La liga que abre la GENTE: host público y formato /web#…,
                 # con `{id}` por sustituir. Ver odoo_ventas.url_orden_publica.
                 "odoo_url_orden": odoo_ventas.url_orden_publica(),
+                # La venta en el seller center de cada canal (`{id}` por
+                # sustituir). Vacía = sin enlace. Ver config.temu_url_venta.
+                "url_venta": {"temu": settings.temu_url_venta or "",
+                              "tiktok": settings.tiktok_url_venta or ""},
             },
             "resumen": odoo_ventas_log.resumen(canal),
             "publicaciones": _publicaciones(),
