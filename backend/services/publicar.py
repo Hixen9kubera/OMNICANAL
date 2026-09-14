@@ -12,6 +12,7 @@ Amazon        → PATCH /listings/2021-08-01/items/{seller}/{sku}
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -172,6 +173,117 @@ def _ml_publicaciones(sku: str | None) -> list[dict[str, Any]]:
     return [{"cuenta": c, "item_id": i} for c, i in por_cuenta.items()]
 
 
+# ═══════════════════ PAR sku/wc_id Y CANDADO DEL PADRE ═══════════════════════
+async def _asegurar_wc_id(req: dict[str, Any]) -> None:
+    """
+    Que `req["wc_id"]` sea el del `req["sku"]`. Nunca lanza.
+
+    POR QUÉ (defecto de la v0.498): el panel llegó a mandar el SKU de una
+    variante con el `wc_id` de OTRA fila, y `construir_prod` leía la ficha del
+    wc_id —fotos, precio, stock de otro producto— bajo el SKU pedido. El SKU
+    es la identidad que viaja al canal; el wc_id solo dice de dónde leer. Si
+    no casan, manda el SKU y el wc_id se vuelve a resolver.
+
+    Si viene vacío también se resuelve: TikTok y Temu, sin wc_id, publicaban
+    solo con lo del formulario, y el candado del padre no tendría qué mirar.
+    """
+    from services import wp_db
+
+    sku = str(req.get("sku") or "").strip()
+    wc_id = req.get("wc_id")
+    if not sku:
+        return
+    try:
+        if not await asyncio.to_thread(wp_db.disponible):
+            return
+        if wc_id:
+            m = await asyncio.to_thread(wp_db.postmeta, int(wc_id), ["_sku"])
+            real = str(m.get("_sku") or "").strip()
+            if real.upper() == sku.upper():
+                return
+            log.warning("publicar: wc_id %s tiene SKU %r y se pidió %r — se "
+                        "resuelve el wc_id por SKU", wc_id, real or "(vacío)", sku)
+        got = await asyncio.to_thread(wp_db.productos_por_sku, [sku])
+        nuevo = (got.get(sku) or {}).get("wc_id")
+        req["wc_id"] = int(nuevo) if nuevo else None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("publicar: no se pudo validar el par %s/%s: %s", sku, wc_id, exc)
+
+
+async def _hijas(req: dict[str, Any]) -> int:
+    """Variaciones vivas del wc_id pedido (>0 ⇒ es un SKU padre). Nunca lanza."""
+    from services import wp_db
+    wc_id = req.get("wc_id")
+    if not wc_id:
+        return 0
+    try:
+        return await asyncio.to_thread(wp_db.hijas_vivas, int(wc_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("publicar: no se pudo saber si %s es padre: %s", wc_id, exc)
+        return 0
+
+
+async def _candado_padre(req: dict[str, Any]) -> list[str]:
+    """
+    EL PADRE NUNCA SE PUBLICA (Brandon, 11-sep-2026): no existe en Odoo, no
+    tiene stock, y lo que se crea con su SKU queda con stock inventado que el
+    reparto nunca toca — hay 638 anuncios así en ML.
+
+    Lanza 409 si la operación CREA una publicación con un SKU padre. Si
+    ACTUALIZA una que ya existe, la deja pasar y devuelve el aviso (quitarle el
+    botón de actualizar dejaría esas 638 sin forma de corregirse desde el panel).
+
+    Cobertura por canal:
+      • Amazon: el PUT de Listings CREA (o reemplaza entero) → se frena.
+      • Temu: `goods.v3.add` siempre es alta → se frena.
+      • Walmart: el feed MP_ITEM es alta → se frena (y `_armar` lo frena otra
+        vez por el `type` de la REST, por si la BD de WordPress no contesta).
+      • TikTok: crea si no hay `item_id` ni listing registrado → se frena;
+        si ya existe es update → pasa con aviso.
+      • Mercado Libre: lo decide `_preview_ml` / `_confirmar_ml`, que son los
+        que saben si hay publicación viva; y `publicar_ready.crear_ml` lo
+        vuelve a frenar como embudo de toda alta.
+    Sin BD de WordPress no se puede medir y se deja pasar (Walmart sí frena).
+    """
+    from fastapi import HTTPException
+    from services.publicar_ready import MSG_PADRE, MSG_PADRE_UPDATE
+
+    n = await _hijas(req)
+    req["_hijas"] = n
+    if not n:
+        return []
+    canal = req.get("canal")
+    if canal in ("amazon", "temu", "walmart"):
+        raise HTTPException(409, MSG_PADRE)
+    if canal == "tiktok":
+        from services import publicar_tiktok
+        item_id = str(req.get("item_id") or "").strip() or await asyncio.to_thread(
+            publicar_tiktok._listing_id, str(req.get("sku") or ""))  # noqa: SLF001
+        if not item_id:
+            raise HTTPException(409, MSG_PADRE)
+        return [MSG_PADRE_UPDATE]
+    return []
+
+
+async def _aviso_imagenes(req: dict[str, Any]) -> str | None:
+    """La línea de fotos de la vista previa de una variación. Nunca lanza."""
+    from services import imagenes_variante, wp_db
+    wc_id = req.get("wc_id")
+    if not wc_id:
+        return None
+    if [u for u in ((req.get("campos") or {}).get("imagenes") or []) if str(u).strip()]:
+        return ("Fotos: vienen del contenido guardado para este canal y mandan "
+                "sobre las de WooCommerce.")
+    try:
+        if not await asyncio.to_thread(wp_db.disponible):
+            return None
+        r = await asyncio.to_thread(imagenes_variante.para_publicar, int(wc_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("aviso de imágenes (%s): %s", wc_id, exc)
+        return None
+    return imagenes_variante.aviso_legible(r[1]) if r else None
+
+
 # ═══════════════════════════ VISTA PREVIA ═══════════════════════════════════
 async def preview(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
@@ -179,6 +291,23 @@ async def preview(req: dict[str, Any]) -> dict[str, Any]:
     # lo guardado y el envío sí, el modal enseñaría una cosa y se publicaría
     # otra. La vista previa existe para que lo que se revisa sea lo que sale.
     await _rellenar_desde_guardado(req)
+    await _asegurar_wc_id(req)
+    avisos_padre = await _candado_padre(req)
+    r = await _preview_canal(canal, req)
+    if isinstance(r, dict) and r.get("ok"):
+        avisos = r.setdefault("avisos", [])
+        # ML en modo actualizar NO toca las fotos (`_update_ml_una` solo manda
+        # título, atributos y descripción): el aviso de fotos mentiría.
+        if not (canal == "mercado_libre" and r.get("modo") == "actualizar"):
+            aviso = await _aviso_imagenes(req)
+            if aviso:
+                avisos.insert(0, aviso)
+        for a in avisos_padre:
+            avisos.insert(0, a)
+    return r
+
+
+async def _preview_canal(canal: str | None, req: dict[str, Any]) -> dict[str, Any]:
     if canal == "mercado_libre":
         return await _preview_ml(req)
     if canal == "amazon":
@@ -233,6 +362,18 @@ async def _preview_ml(req: dict[str, Any]) -> dict[str, Any]:
 
     avisos: list[str] = []
     payload: dict[str, Any] | None = None
+    # Candado del padre (ver `_candado_padre`): crear → 409; actualizar lo vivo
+    # → pasa, con aviso. Las cuentas muertas NO se re-crean con SKU padre.
+    if req.get("_hijas"):
+        from fastapi import HTTPException
+        from services.publicar_ready import MSG_PADRE, MSG_PADRE_UPDATE
+        if not vivos:
+            raise HTTPException(409, MSG_PADRE)
+        avisos.append(MSG_PADRE_UPDATE)
+        for p in muertos:
+            avisos.append(f"{p['cuenta']}: su publicación ({p['item_id']}) fue "
+                          f"eliminada y NO se re-creará — {MSG_PADRE}")
+        muertos = []
     for p in muertos:
         avisos.append(
             f"{p['cuenta']}: la publicación anterior ({p['item_id']}) fue eliminada "
@@ -417,6 +558,15 @@ async def _preview_amazon(req: dict[str, Any]) -> dict[str, Any]:
                 log.warning("diagnóstico imágenes Amazon (%s): %s", sku, exc)
         else:
             avisos.append("El producto no tiene imágenes en WooCommerce: el listing quedará sin fotos.")
+        # El stock que viaja es el REAL (ver `publicar_ready.atributos_amazon`):
+        # con 0 Amazon crea el listing AGOTADO. Se dice antes de mandar.
+        try:
+            fa = (attributes.get("fulfillment_availability") or [{}])[0]
+            if int(fa.get("quantity") or 0) < 1:
+                avisos.append("Stock en Odoo = 0: el listing se creará AGOTADO en "
+                              "Amazon (no se inventa una pieza).")
+        except (TypeError, ValueError, AttributeError, IndexError):
+            pass
         payload = {"productType": pt or "(auto)", "requirements": "LISTING", "attributes": attributes}
     except Exception as exc:  # noqa: BLE001
         log.warning("preview amazon attrs (%s): %s", sku, exc)
@@ -480,13 +630,21 @@ async def _rellenar_desde_guardado(req: dict[str, Any]) -> None:
 async def confirmar(req: dict[str, Any]) -> dict[str, Any]:
     canal = req.get("canal")
     await _rellenar_desde_guardado(req)
+    # El MISMO par sku/wc_id y el MISMO candado que la vista previa: lo que se
+    # revisó es lo que sale. El 409 llega legible al modal (ApiError.detail) y
+    # el router lo anota en la bitácora como "rechazado".
+    await _asegurar_wc_id(req)
+    avisos_padre = await _candado_padre(req)
     if canal == "mercado_libre":
         return await _confirmar_ml(req)
     if canal == "amazon":
         return await _confirmar_amazon(req)
     if canal == "tiktok":
         from services import publicar_tiktok
-        return await publicar_tiktok.confirmar(req)
+        r = await publicar_tiktok.confirmar(req)
+        if avisos_padre and isinstance(r, dict):
+            r["avisos"] = avisos_padre + list(r.get("avisos") or [])
+        return r
     if canal == "temu":
         from services import publicar_temu
         return await publicar_temu.confirmar(req)
@@ -711,9 +869,14 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     if not title and not attrs and not desc:
         return {"ok": False, "motivo": "No había nada que enviar."}
 
+    es_padre = bool(req.get("_hijas"))
     pubs = _ml_publicaciones(sku)
     if not pubs:
         # No está publicado en ninguna cuenta → CREAR nuevo en ambas.
+        if es_padre:
+            from fastapi import HTTPException
+            from services.publicar_ready import MSG_PADRE
+            raise HTTPException(409, MSG_PADRE)
         return await _crear_ml(sku, wc_id, campos)
 
     # Verificación EN VIVO: items borrados en ML se re-crean (solo en esa
@@ -724,12 +887,35 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
     muertos = [p for p in pubs if not estados.get(p["cuenta"], {}).get("vivo", True)]
 
     if not vivos:
+        if es_padre:
+            from fastapi import HTTPException
+            from services.publicar_ready import MSG_PADRE
+            raise HTTPException(409, MSG_PADRE)
         return await _crear_ml(sku, wc_id, campos,
                                cuentas=[p["cuenta"] for p in muertos])
+
+    # SKU padre con publicación VIVA: se deja actualizar (es la única forma de
+    # tocar esas 638 desde el panel), pero se dice que hay que reemplazarla.
+    # Sus cuentas muertas NO se re-crean, y se vacían AQUÍ, igual que en
+    # `_preview_ml`: si se dejaran al embudo de `crear_ml`, éste devuelve una
+    # fila `ok: False` por cuenta → `ok_all` falso, la bitácora anota "fallido"
+    # y el modal enseña error aunque el PUT de la cuenta viva entró bien (caso:
+    # padre vivo en BEKURA y cerrado en SANCORFASHION). La vista previa ya
+    # había prometido "NO se re-creará"; confirmar cumple lo mismo.
+    avisos: list[str] = []
+    if es_padre:
+        from services.publicar_ready import MSG_PADRE, MSG_PADRE_UPDATE
+        avisos.append(MSG_PADRE_UPDATE)
+        for p in muertos:
+            avisos.append(f"{p['cuenta']}: su publicación ({p['item_id']}) fue "
+                          f"eliminada y NO se re-creó — {MSG_PADRE}")
+        muertos = []
 
     resultados: list[dict[str, Any]] = []
     for p in vivos:
         res = await _update_ml_una(p["cuenta"], p["item_id"], title, attrs, desc)
+        if es_padre:
+            res["aviso"] = MSG_PADRE_UPDATE
         _guardar_backlog_ml(
             p["cuenta"], sku, wc_id, p["item_id"], res["ok"], res["error"],
             res["ml_status"], res["desc_status"],
@@ -755,7 +941,8 @@ async def _confirmar_ml(req: dict[str, Any]) -> dict[str, Any]:
 
     ok_all = all(r["ok"] for r in resultados)
     return {"ok": ok_all, "canal": "mercado_libre", "modo": "actualizar",
-            "resultados": resultados, "registrado_en": "ml_backlog"}
+            "resultados": resultados, "registrado_en": "ml_backlog",
+            "avisos": avisos}
 
 
 def _attr_from(atributos: list[dict], nombre: str, default: str) -> str:
@@ -836,8 +1023,12 @@ def _amazon_attributes(sku: str, campos: dict[str, Any], mp: str) -> dict[str, A
             "currency": "MXN", "marketplace_id": mp,
             "our_price": [{"schedule": [{"value_with_tax": price}]}],
         }],
+        # Este mapeo es el RESPALDO para cuando la BD de WordPress no contesta,
+        # o sea: cuando NO sabemos el stock. Mandaba 10 piezas inventadas; 0
+        # deja el listing agotado hasta que el stock real lo alcance, que es
+        # lo honesto (mismo criterio que `publicar_ready.atributos_amazon`).
         "fulfillment_availability": [{
-            "fulfillment_channel_code": "DEFAULT", "quantity": 10, "marketplace_id": mp,
+            "fulfillment_channel_code": "DEFAULT", "quantity": 0, "marketplace_id": mp,
         }],
     }
 

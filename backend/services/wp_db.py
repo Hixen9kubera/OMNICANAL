@@ -341,6 +341,31 @@ def padre_de(wc_id: int) -> int | None:
     return int(padre) if padre else None
 
 
+def hijas_vivas(wc_id: int) -> int:
+    """
+    Cuántas variaciones (no en papelera) cuelgan de este `wc_id`, si es un
+    `product`. 0 para un simple, una variación o un id que no existe.
+
+    Es el detector del SKU PADRE, y va por estructura (`post_parent`), no por
+    el nombre: un padre variable no existe en Odoo ni tiene stock, y aun así se
+    podía publicar — hay 638 anuncios de ML con SKU padre, stock 1 (el
+    `DEFAULT_QUANTITY` del vendor) que el reparto de stock nunca actualiza.
+    Brandon (11-sep-2026): "el padre nunca se publica".
+    """
+    if not wc_id or not disponible():
+        return 0
+    P = _prefix()
+    rows = _fetch_all(
+        f"""SELECT COUNT(*) AS n
+              FROM {P}posts h
+              JOIN {P}posts p ON p.ID = h.post_parent AND p.post_type = 'product'
+             WHERE h.post_parent = %s AND h.post_type = 'product_variation'
+               AND h.post_status <> 'trash'""",
+        (int(wc_id),),
+    )
+    return int((rows[0] or {}).get("n") or 0) if rows else 0
+
+
 def ficha_basica(wc_id: int) -> dict[str, Any] | None:
     """
     { sku, name, status } de un producto por `wc_id`, leído de wp_posts.

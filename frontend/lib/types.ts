@@ -46,6 +46,15 @@ export interface EstudioConfig {
   agrupada_habilitada: string[];
   modo_por_omision: ModoPublicacion;
   modo_disponible: boolean;
+  /**
+   * GALERIA_VARIANTE. Encendido, el Estudio pide la galería con el wc_id de la
+   * variante abierta y cache-bust (la lista alimenta escrituras: reordenar
+   * manda los ids tal cual). Opcional a propósito: un backend que no lo
+   * declara es un backend con el flag apagado, y el Estudio pide la galería
+   * con la URL de siempre. Quien parte la sección en dos NO es este flag sino
+   * `es_variante` en la respuesta: la decisión es del servidor.
+   */
+  galeria_variante?: boolean;
 }
 
 /** `GET /api/productos/{sku}/modo` */
@@ -329,15 +338,69 @@ export interface ProgresoImagenes {
   imagenes: ImagenProgreso[];
 }
 
+/**
+ * Foto que la variante HEREDA del padre (portada + galería del padre).
+ *
+ * Se enseña aparte y de solo lectura porque la galería del padre guarda fotos
+ * de las hermanas: medido el 11-sep, fotos con el SKU de una hermana en el
+ * nombre se cuelan en 2,408 variaciones de 591 familias. `se_publica` es la
+ * decisión del backend (la misma que usan los publicadores) y `motivo` explica
+ * por qué se descarta, p.ej. "es foto de la hermana MASC-1022-ROS".
+ */
+export interface GaleriaHeredada {
+  id: number;
+  /** null cuando el adjunto ya no existe en Medios (el backend lo marca
+   *  `se_publica=false` con ese motivo): se pinta un hueco, no una imagen rota. */
+  src: string | null;
+  se_publica: boolean;
+  motivo: string | null;
+}
+
+/**
+ * Qué se publica de una variante: la MISMA regla que usan los publicadores
+ * (`imagenes_variante.para_publicar`), para que el Estudio no pueda prometer
+ * otra cosa que lo que sale al canal.
+ *   - "propias": tiene galería propia → solo sus fotos; las del padre no salen.
+ *   - "principal_y_padre": su foto principal + las del padre con se_publica.
+ *   - "solo_padre": sin foto propia → solo las del padre con se_publica.
+ *   - "sin_fotos": nada que publicar (el canal la rechazará o saldrá sin fotos).
+ */
+export type ReglaGaleria = "propias" | "principal_y_padre" | "solo_padre" | "sin_fotos";
+
 export interface GaleriaResp {
   sku: string;
   wc_id: number | null;
   parent_id: number | null;
   es_variacion?: boolean;
   portada: GaleriaImagen | null;
+  /** Para una VARIACIÓN (es_variante=true): SOLO sus fotos propias, la
+   *  principal primero y luego su galería propia. Si no, la de siempre. */
   imagenes: GaleriaImagen[];
   progreso?: ProgresoImagenes | null;
+  // ── Solo para una variación (contrato de galería por variante, fase 2) ──
+  es_variante?: boolean;
+  padre_wc_id?: number | null;
+  principal_id?: number | null;
+  heredadas?: GaleriaHeredada[];
+  regla?: ReglaGaleria;
+  /** `imagenes_variante.aviso_legible`: la misma línea que ve quien publica. */
+  aviso?: string | null;
 }
+
+/**
+ * Respuesta de toda escritura de galería (agregar, eliminar, principal,
+ * reordenar, adoptar). Para una variación con GALERIA_VARIANTE encendido es la
+ * galería RESULTANTE con la forma del GET, releída después de escribir — se
+ * pinta eso y no lo que se mandó: la REST de Woo acepta en silencio lo que no
+ * persiste. Para un producto normal (o con el flag apagado) sigue siendo la
+ * respuesta de siempre: `{ok, image_id}` al eliminar, `{ok, agregadas,
+ * imagenes}` al agregar.
+ */
+export type GaleriaEscrituraResp = Partial<GaleriaResp> & {
+  ok?: boolean;
+  agregadas?: number;
+  image_id?: number;
+};
 
 // ── IA: generadores de contenido por canal ──────────────────────────
 export interface GeneradorDef {

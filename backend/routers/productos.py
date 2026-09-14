@@ -537,6 +537,9 @@ async def config_estudio():
     """
     return {
         "studio_variantes": bool(settings.studio_variantes),
+        # La pantalla decide con esto si pinta la galería por variante; el
+        # servidor manda igual (con el flag apagado las rutas nuevas dan 409).
+        "galeria_variante": bool(settings.galeria_variante),
         "agrupada_habilitada": list(modo_publicacion.AGRUPADA_HABILITADA),
         "modo_por_omision": modo_publicacion.POR_OMISION,
         "modo_disponible": modo_publicacion.disponible(),

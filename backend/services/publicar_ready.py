@@ -54,6 +54,13 @@ _AMZ_HIGHLIGHTS_CANDIDATOS = (
 # deterministas de configuración cortan antes — ver crear_ml).
 MAX_INTENTOS_ML = 3
 
+# Mensajes de los candados de ALTA, compartidos con `publicar.py` y
+# `publicar_walmart.py` para que el panel diga lo mismo en todos los canales.
+MSG_PADRE = ("Es un SKU padre: no existe en Odoo ni tiene stock. "
+             "Elige una de sus variantes.")
+MSG_PADRE_UPDATE = "Publicación de un SKU padre: reemplázala por sus variantes."
+MSG_SIN_STOCK_ML = "Sin stock en Odoo (free_qty = 0): no se publica."
+
 _configurado = False
 
 
@@ -387,9 +394,23 @@ def _imagenes_para(wc_id: int, campos: dict[str, Any]) -> list[str]:
 
     Aquí NO se valida el tamaño: de eso se encarga `preparar_para_amazon`, que
     reescala lo que no llegue a 1000 px y rehospeda lo que tenga que convertir.
+
+    UNA VARIACIÓN YA NO SE LLEVA LA GALERÍA DEL PADRE ENTERA (11-sep-2026).
+    La galería del padre guarda fotos de las hermanas: en 2,408 variaciones de
+    591 familias se colaban archivos con el SKU de otra variante (el anuncio
+    del café salía con la foto del rosa). La regla vive en
+    `imagenes_variante.para_publicar`: galería propia → solo lo suyo; si no,
+    su principal + lo del padre que no es de una hermana. Para un producto que
+    no es variación devuelve None y se sigue con `wp_db.imagenes`, como antes.
     """
     propias = [str(u).strip() for u in (campos.get("imagenes") or []) if str(u).strip()]
-    return propias or wp_db.imagenes(wc_id)
+    if propias:
+        return propias
+    from services import imagenes_variante
+    de_variante = imagenes_variante.para_publicar(wc_id)
+    if de_variante is not None:
+        return de_variante[0]
+    return wp_db.imagenes(wc_id)
 
 
 def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, Any]:
@@ -520,6 +541,32 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
     }
 
 
+# ── Candados de ALTA (ML) ────────────────────────────────────────────────────
+
+def _stock_real(prod: dict[str, Any]) -> int:
+    """El stock que `construir_prod` leyó (`_stock` = max(0, free_qty) de Odoo)."""
+    try:
+        return int(float(prod.get("stock") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _candado_alta_ml(wc_id: int) -> str | None:
+    """
+    Motivo para NO crear, o None. Es el embudo de TODA alta de ML
+    (`preview_crear_ml` y `crear_ml`), así que el candado del padre vale
+    aunque alguien llame aquí sin pasar por el dispatcher de `publicar.py`.
+    Sin BD de WordPress no se puede medir: se deja pasar (construir_prod
+    fallaría igual un paso después).
+    """
+    try:
+        if await asyncio.to_thread(wp_db.hijas_vivas, int(wc_id)):
+            return MSG_PADRE
+    except Exception as exc:  # noqa: BLE001
+        log.warning("candado del padre (%s): %s", wc_id, exc)
+    return None
+
+
 # ── Mercado Libre: preview (dry-run) y creación real ─────────────────────────
 
 async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
@@ -531,7 +578,12 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     real), así la vista previa es rápida.
     """
     configurar()
+    motivo = await _candado_alta_ml(wc_id)
+    if motivo:
+        return {"ok": False, "motivo": motivo}
     prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
+    if _stock_real(prod) < 1:
+        return {"ok": False, "motivo": MSG_SIN_STOCK_ML}
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": f"Sin token de Mercado Libre para {cuenta}."}
@@ -562,10 +614,31 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     solo donde la publicación anterior fue eliminada en ML).
     """
     configurar()
+    objetivo = list(cuentas or _CUENTAS_ML)
+
+    def _rechazo(motivo: str) -> dict[str, Any]:
+        # `resultados` por cuenta Y `motivo`: `_confirmar_ml` re-crea las
+        # cuentas muertas leyendo `resultados`, y el alta directa lee `motivo`.
+        return {"ok": False, "canal": "mercado_libre", "modo": "crear",
+                "motivo": motivo, "registrado_en": "ml_backlog",
+                "resultados": [{"cuenta": c, "item_id": "", "ok": False,
+                                "error": motivo, "ml_status": None}
+                               for c in objetivo]}
+
+    motivo = await _candado_alta_ml(wc_id)
+    if motivo:
+        return _rechazo(motivo)
     prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
+    # STOCK EN CERO, HONESTO (11-sep-2026). Con stock 0 el vendor publica
+    # `DEFAULT_QUANTITY = 1` (publisher_core.py:212: `if prod['stock'] else 1`)
+    # y el anuncio nace ofreciendo una pieza que Odoo no tiene. No se toca el
+    # vendor (regla 1): el alta se frena aquí, igual que TikTok y Temu. La
+    # ACTUALIZACIÓN de una publicación viva no pasa por aquí ni toca stock.
+    if _stock_real(prod) < 1:
+        return _rechazo(MSG_SIN_STOCK_ML)
 
     resultados: list[dict[str, Any]] = []
-    for cuenta in (cuentas or _CUENTAS_ML):
+    for cuenta in objetivo:
         token = meli._access_token(cuenta)
         if not token:
             resultados.append({"cuenta": cuenta, "item_id": "", "ok": False,
@@ -748,6 +821,18 @@ async def atributos_amazon(sku: str, wc_id: int, campos: dict[str, Any], mp: str
     # revierte, el valor correcto se cambia en este bloque y en los dos sitios
     # de publicar.py, que son los tres lugares donde vive.
     attrs["country_of_origin"] = [{"value": "MX", "marketplace_id": mp}]
+
+    # STOCK REAL, AUNQUE SEA CERO (11-sep-2026). El mapper vendorizado manda
+    # `max(stock, 1)` (vendor/amazon_ready/attribute_mapper.py:178): con Odoo en
+    # 0 el listing nacía ofreciendo una pieza inexistente. Amazon SÍ acepta 0
+    # —deja el listing creado y AGOTADO—, así que aquí viaja lo que `construir_prod`
+    # leyó (`_stock` = max(0, free_qty) de Odoo). Mismo patrón que el país de
+    # origen de arriba: se pisa en el adaptador, el vendor no se toca (regla 1).
+    attrs["fulfillment_availability"] = [{
+        "fulfillment_channel_code": "DEFAULT",
+        "quantity": max(0, _stock_real(prod)),
+        "marketplace_id": mp,
+    }]
 
     # Imágenes: Amazon las ingiere por URL pública (las MISMAS que usa ML). El
     # mapper del vendor no las agrega, así que se inyectan aquí (en el adaptador):

@@ -10,6 +10,9 @@ y este servicio:
   4. Sube el resultado a WordPress Media (nuevo attachment).
   5. Reemplaza los IDs viejos por los nuevos en la galería del producto en UN SOLO
      PUT (evita la race condition de escrituras paralelas), + variaciones.
+     Con GALERIA_VARIANTE y un SKU variación, el paso 5 es otro: las editadas
+     van a la galería PROPIA de esa variación (`imagenes_variante.reemplazar`)
+     y el padre, las hermanas y commercekit_image_gallery no se tocan.
 
 El avance se consulta en GET /api/imagenes/{sku}/progreso (cola en memoria), con
 estado POR IMAGEN (pendiente/procesando/listo/error) para el label de carga del
@@ -339,10 +342,34 @@ async def iniciar(sku: str, wc_id: int | None, entradas: list[dict[str, Any]]) -
     Crea el job y lo lanza en segundo plano. `entradas`: lista de
     {wc_image_id, src, quitar_fondo, traducir_texto, cambiar_modelo}.
     Devuelve {ok, total, parent_id}.
+
+    Con GALERIA_VARIANTE y un SKU que es VARIACIÓN, rama propia (ver
+    `_iniciar_variante`). Apagada o no-variación: idéntico a siempre.
     """
+    if settings.galeria_variante:
+        var = await _variante(sku, wc_id)
+        if var:
+            return await _iniciar_variante(sku, var, entradas)
     g = await woocommerce.galeria_producto(wc_id, sku)
     parent_id = (g or {}).get("parent_id") or wc_id
 
+    imgs = _items(entradas)
+    _jobs[sku] = {
+        "sku": sku,
+        "wc_id": parent_id,
+        "estado": "procesando",
+        "total": len(imgs),
+        "procesadas": 0,
+        "paso_global": "Procesando imágenes…",
+        "actualizado": time.time(),
+        "imagenes": imgs,
+    }
+    asyncio.create_task(_run(sku, parent_id))
+    return {"ok": True, "total": len(imgs), "parent_id": parent_id}
+
+
+def _items(entradas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Las entradas del Studio como filas del job (estado por imagen)."""
     imgs = []
     for idx, e in enumerate(entradas):
         imgs.append({
@@ -361,10 +388,71 @@ async def iniciar(sku: str, wc_id: int | None, entradas: list[dict[str, Any]]) -
             "nueva_url": None,
             "nuevo_id": None,
         })
+    return imgs
 
+
+async def _variante(sku: str, wc_id: int | None) -> tuple[int, int] | None:
+    """
+    (wc_id, padre) si el SKU es una variación. Sin base de WordPress, si la
+    REST dice que es variación se niega (`SinBaseWP` → 503): caer a la rama de
+    siempre reemplazaría fotos en la galería del PADRE y en las hermanas.
+    """
+    from services import imagenes_variante
+    try:
+        return await asyncio.to_thread(imagenes_variante.resolver, sku, wc_id)
+    except imagenes_variante.SinBaseWP:
+        g = await woocommerce.galeria_producto(wc_id, sku)
+        if (g or {}).get("es_variacion"):
+            raise
+        return None
+
+
+async def _iniciar_variante(sku: str, var: tuple[int, int],
+                            entradas: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    "Procesar con IA" para UNA variante (GALERIA_VARIANTE encendida).
+
+    Solo acepta fotos de ESA variante: propias o heredadas del padre, por
+    `wc_image_id`. Cualquier otro id (o una entrada sin id) → `GaleriaInvalida`
+    (400) ANTES de gastar Gemini: en esta rama no hay "galería del padre" donde
+    reemplazar, y una foto sin id no tendría a quién sustituir.
+
+    Al terminar, `imagenes_variante.reemplazar` coloca las editadas: la de una
+    propia ocupa su lugar; la de una heredada entra a la galería propia (copia
+    al escribir). Padre, hermanas y `commercekit_image_gallery` NO se tocan.
+    """
+    from services import imagenes_variante
+
+    wc_var, padre = var
+    p = await asyncio.to_thread(imagenes_variante.propias, wc_var)
+    if p is None:
+        raise imagenes_variante.GaleriaInvalida(f"{sku} no es una variación.")
+    h = await asyncio.to_thread(imagenes_variante.heredadas, wc_var) or []
+    permitidas = set(imagenes_variante.ids_editables(p)) | {x["id"] for x in h if x.get("src")}
+    ajenas = [e.get("wc_image_id") for e in entradas
+              if not e.get("wc_image_id") or int(e["wc_image_id"]) not in permitidas]
+    if ajenas:
+        raise imagenes_variante.GaleriaInvalida(
+            f"Estas fotos no son de la variante {sku} (ni propias ni heredadas del "
+            f"padre): {ajenas}. Recarga la galería.")
+    # El `src` del cliente se ignora: se edita el archivo del id VALIDADO. Con
+    # un estado viejo tras reordenar/adoptar, la pantalla podía mandar el id de
+    # la principal de TEC-0664-ROS con el src de TEC-0664-AZL.png, y la editada
+    # (azul) habría ocupado el lugar de la rosa: la mezcla que esta fase quita.
+    srcs = {int(i["id"]): i["src"] for i in [p.get("principal"), *(p.get("galeria") or []), *h]
+            if i and i.get("id") and i.get("src")}
+    sin_archivo = [int(e["wc_image_id"]) for e in entradas if int(e["wc_image_id"]) not in srcs]
+    if sin_archivo:
+        raise imagenes_variante.GaleriaInvalida(
+            f"Estas fotos de {sku} no tienen archivo en Medios: {sin_archivo}.")
+    entradas = [{**e, "src": srcs[int(e["wc_image_id"])]} for e in entradas]
+
+    imgs = _items(entradas)
     _jobs[sku] = {
         "sku": sku,
-        "wc_id": parent_id,
+        "wc_id": wc_var,
+        "padre_wc_id": padre,
+        "es_variante": True,
         "estado": "procesando",
         "total": len(imgs),
         "procesadas": 0,
@@ -372,11 +460,13 @@ async def iniciar(sku: str, wc_id: int | None, entradas: list[dict[str, Any]]) -
         "actualizado": time.time(),
         "imagenes": imgs,
     }
-    asyncio.create_task(_run(sku, parent_id))
-    return {"ok": True, "total": len(imgs), "parent_id": parent_id}
+    asyncio.create_task(_run(sku, wc_var, variante=True))
+    return {"ok": True, "total": len(imgs), "parent_id": padre,
+            "wc_id": wc_var, "es_variante": True}
 
 
-async def _run(sku: str, parent_id: int | None) -> None:
+async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
+    """`variante=True`: `parent_id` es el wc_id de la VARIACIÓN (ver `_iniciar_variante`)."""
     job = _jobs.get(sku)
     if not job:
         return
@@ -444,9 +534,24 @@ async def _run(sku: str, parent_id: int | None) -> None:
 
     await asyncio.gather(*[_una(i) for i in job["imagenes"]], return_exceptions=True)
 
+    if variante:
+        # Rama de variante: una escritura bajo el candado de la variación, sobre
+        # la galería RELEÍDA en ese momento (la IA tardó minutos).
+        if id_map and parent_id:
+            from services import imagenes_variante
+            job["paso_global"] = "Actualizando la galería de la variante…"
+            _touch(sku)
+            try:
+                res = await imagenes_variante.reemplazar(int(parent_id), id_map)
+                job["galeria_ok"] = bool(res.get("ok"))
+                job["galeria_aviso"] = res.get("aviso")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("galería variante %s: %s", sku, exc)
+                job["galeria_ok"] = False
+                job["galeria_aviso"] = f"No se pudo guardar la galería: {exc}"
     # Un ÚNICO PUT que reemplaza todos los IDs viejos por los nuevos (evita la
     # race condition de escrituras paralelas descrita en el flujo de WooCommerce).
-    if id_map and parent_id:
+    elif id_map and parent_id:
         job["paso_global"] = "Actualizando galería en WooCommerce…"
         _touch(sku)
         try:

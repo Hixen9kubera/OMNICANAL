@@ -2051,7 +2051,7 @@ async def ruta_escritura(wc_id: int) -> str:
     """
     try:
         from services import wp_db
-        if wp_db.disponible():
+        if await asyncio.to_thread(wp_db.disponible):  # regla 11: su SELECT 1 bloquea
             padre = await asyncio.to_thread(wp_db.padre_de, int(wc_id))
             if padre:
                 return f"/products/{padre}/variations/{int(wc_id)}"

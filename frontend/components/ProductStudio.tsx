@@ -41,8 +41,12 @@ import type {
   CostoOverrides,
   DetalleCanal,
   FlagsImagen,
+  GaleriaEscrituraResp,
+  GaleriaHeredada,
   GaleriaImagen,
+  GaleriaResp,
   ImagenProgreso,
+  ReglaGaleria,
   MejorarResp,
   Producto,
   ProgresoImagenes,
@@ -56,9 +60,12 @@ import {
   costoDetalle,
   costoGuardar,
   costoPreview,
+  adoptarImagen,
   agregarImagenes,
   eliminarImagenGaleria,
   galeriaProducto,
+  hacerPrincipalImagen,
+  reordenarImagenes,
   guardarCategoriaML,
   guardarContenido,
   guardarContenidoCanal,
@@ -81,6 +88,7 @@ import { aNumero } from "@/lib/numeros";
 import { enlacePublicacion } from "@/lib/enlaces";
 import { ChipMoneda, TONO, type Moneda } from "@/components/Moneda";
 import CategoriaMLPicker from "./CategoriaMLPicker";
+import GaleriaVariante from "./GaleriaVariante";
 import { useDetalleProducto } from "@/lib/useDetalleProducto";
 import {
   getMejora,
@@ -420,6 +428,42 @@ export default function ProductStudio({
   const [dragImg, setDragImg] = useState(false);
   const pollImgRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Galería POR VARIANTE (fase 2, GALERIA_VARIANTE) ──
+  // Solo existe cuando el backend responde `es_variante: true`. En null la
+  // sección se pinta y se comporta EXACTAMENTE como en origin/main (galería
+  // única del padre). `galeria` sigue siendo la lista editable: para una
+  // variante, SUS fotos (principal primero, luego su galería propia).
+  const [infoVar, setInfoVar] = useState<{
+    principalId: number | null;
+    heredadas: GaleriaHeredada[];
+    regla: ReglaGaleria | undefined;
+    aviso: string | null;
+  } | null>(null);
+  // Heredada que se ve en grande (no se edita: solo se mira y se adopta).
+  const [heredadaActiva, setHeredadaActiva] = useState<number | null>(null);
+  // Foto con escritura en vuelo; -1 = una escritura sin foto concreta.
+  const [accionImgId, setAccionImgId] = useState<number | null>(null);
+  const [avisoGal, setAvisoGal] = useState<string | null>(null);
+  // SKU vigente para descartar respuestas que llegan tras cambiar de variante:
+  // sin esto, la galería de ROS podía pintarse encima de la de CAF.
+  const skuGalRef = useRef<string | null>(null);
+  // Candado síncrono de escrituras de galería de variante (ver escribirGaleria).
+  const escrituraGalRef = useRef(false);
+
+  // Con GALERIA_VARIANTE encendido la galería se pide con el wc_id del SKU
+  // ABIERTO —el de la variación, nunca el del padre— y con cache-bust: esa
+  // lista alimenta escrituras (reordenar manda sus ids tal cual) y LiteSpeed ya
+  // revirtió una galería editada por leer cacheado. Con el flag apagado (o sin
+  // config) no se manda nada de eso: la URL es la de siempre, y la reversa del
+  // flag deja al Estudio byte a byte como estaba.
+  const galeriaPorVariante = !!estudioConfig?.galeria_variante;
+  // Solo a una variante de la lista: para un simple o un padre `wcIdActivo` es
+  // `producto.wc_id`, y `galeria_producto` usa primero ese id y el SKU solo de
+  // respaldo — un wc_id de otra fila (el defecto de la v0.498) enseñaría otra
+  // galería con el flag encendido y la correcta con él apagado. Una variación
+  // abierta directo la resuelve el backend por SKU.
+  const wcIdGaleria: number | null = galeriaPorVariante && esVariante ? wcIdActivo : null;
+
   // Guardar contenido (título/descripción/atributos) a WooCommerce — canal General.
   const [guardandoContenido, setGuardandoContenido] = useState(false);
   const [contenidoMsg, setContenidoMsg] = useState<{ ok: boolean; texto: string } | null>(null);
@@ -437,14 +481,20 @@ export default function ProductStudio({
     setJobImg(null);
     setProcesandoIA(false);
     setImgActiva(0);
+    setInfoVar(null);
+    setHeredadaActiva(null);
+    setAccionImgId(null);
+    setAvisoGal(null);
+    skuGalRef.current = sku;
+    escrituraGalRef.current = false;
     if (pollImgRef.current) {
       clearInterval(pollImgRef.current);
       pollImgRef.current = null;
     }
     if (!sku) return;
     let vivo = true;
-    galeriaProducto(sku)
-      .then((g) => { if (vivo) setGaleria(g.imagenes ?? []); })
+    galeriaProducto(sku, wcIdGaleria, undefined, galeriaPorVariante)
+      .then((g) => { if (vivo) aplicarGaleria(g); })
       .catch(() => { if (vivo) setGaleria([]); });
     return () => {
       vivo = false;
@@ -453,8 +503,12 @@ export default function ProductStudio({
         pollImgRef.current = null;
       }
     };
+    // `wcIdGaleria` va en las dependencias: el wc_id de la variante puede
+    // resolverse un render después (llega con la lista de variantes o con la
+    // ficha) y la galería debe pedirse con él. Con el flag apagado vale null
+    // siempre y el efecto depende solo de `sku`, como antes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sku]);
+  }, [sku, wcIdGaleria]);
 
   // Campos que SÍ mejora la IA (por canal, persisten en memoria).
   const [titulo, setTitulo] = useState("");
@@ -1304,8 +1358,13 @@ export default function ProductStudio({
           setProcesandoIA(false);
           // Re-sincronizar la galería con WooCommerce (nuevos ids/urls) y limpiar flags.
           try {
-            const g = await galeriaProducto(sku!, wcId);
-            setGaleria(g.imagenes ?? []);
+            // Flag encendido: con el wc_id del SKU abierto y cache-bust — la IA
+            // acaba de escribir en Woo y una lectura cacheada devolvería la foto
+            // vieja. Apagado: la llamada de siempre.
+            const g = galeriaPorVariante
+              ? await galeriaProducto(sku!, wcIdGaleria, undefined, true)
+              : await galeriaProducto(sku!, wcId);
+            if (skuGalRef.current === sku) aplicarGaleria(g);
           } catch {
             /* se conserva la galería previa */
           }
@@ -1321,6 +1380,7 @@ export default function ProductStudio({
 
   async function procesarIA() {
     if (!galeria || soloVistaAgrupada) return;
+    if (infoVar && escrituraGalRef.current) return;
     const seleccion = galeria
       .filter((img) => img.id && hasFlags(img.id))
       .map((img) => ({ wc_image_id: img.id, src: img.src, ...flagsDe(img.id) }));
@@ -1329,15 +1389,31 @@ export default function ProductStudio({
     setProgresoImg({});
     setJobImg(null);
     try {
-      await procesarImagenesIA(sku!, { wc_id: wcId, imagenes: seleccion });
+      // Variante: solo SUS fotos van en `seleccion` (la lista editable son las
+      // propias) y el wc_id es el del SKU abierto; el backend mete la editada en
+      // la galería propia y no toca al padre ni a las hermanas.
+      await procesarImagenesIA(sku!, { wc_id: infoVar ? wcIdActivo : wcId, imagenes: seleccion });
       iniciarPollingImg();
-    } catch {
+    } catch (e) {
       setProcesandoIA(false);
+      // Variante: el motivo del servidor, en llano. Producto normal: como antes.
+      if (infoVar) setAvisoGal(mensajeDeError(e, "No se pudo lanzar el proceso con IA."));
     }
   }
 
   async function eliminarImg(img: GaleriaImagen) {
     if (!img.id || soloVistaAgrupada) return;
+    if (infoVar) {
+      // Variante: se quita de SU galería; el attachment sigue en Medios y
+      // el padre y las hermanas no se tocan. Si era la principal, el
+      // servidor decide quién la sustituye: se pinta lo que devuelva.
+      if (!window.confirm("¿Quitar esta foto de la variante? El archivo sigue en Medios y el padre no se toca.")) return;
+      await escribirGaleria(
+        () => eliminarImagenGaleria(sku!, { wc_id: wcIdActivo, image_id: img.id }),
+        { imgId: img.id, error: "No se pudo quitar la foto de la variante." },
+      );
+      return;
+    }
     if (!window.confirm("¿Quitar esta imagen del producto en WooCommerce?")) return;
     setEliminandoId(img.id);
     try {
@@ -1353,6 +1429,127 @@ export default function ProductStudio({
     } finally {
       setEliminandoId(null);
     }
+  }
+
+  // ── Galería por variante: pintar SIEMPRE lo que devuelve el servidor ──
+  // Tras cada escritura se pinta la galería RESULTANTE que manda el backend
+  // (releída después de escribir), nunca la que se envió: la REST de Woo
+  // acepta en silencio lo que no persiste — en una variación `images[]` se
+  // ignora, y `_product_image_gallery` nace duplicada (180 de 219 variaciones
+  // con galería propia ya traen >1 fila). Si no creyéramos al servidor, el
+  // Estudio enseñaría un orden que la tienda no tiene.
+
+  /** Aplica una respuesta con forma del GET. `foco` = id que queda activo. */
+  function aplicarGaleria(g: GaleriaResp, foco?: number | null) {
+    const imgs = g.imagenes ?? [];
+    setGaleria(imgs);
+    const heredadas = g.es_variante ? g.heredadas ?? [] : [];
+    setInfoVar(
+      g.es_variante
+        ? {
+            principalId: g.principal_id ?? null,
+            heredadas,
+            regla: g.regla,
+            aviso: g.aviso ?? null,
+          }
+        : null,
+    );
+    // Flags de fotos que ya no están (quitadas o reemplazadas por la IA) fuera.
+    const vivos = new Set(imgs.map((x) => x.id));
+    setFlagsImg((prev) => {
+      const n: Record<number, FlagsImagen> = {};
+      for (const [k, v] of Object.entries(prev)) if (vivos.has(Number(k))) n[Number(k)] = v;
+      return n;
+    });
+    const iFoco = foco != null ? imgs.findIndex((x) => x.id === foco) : -1;
+    if (iFoco >= 0) {
+      setImgActiva(iFoco);
+      setHeredadaActiva(null);
+      return;
+    }
+    setHeredadaActiva((prev) => {
+      if (prev != null && heredadas.some((h) => h.id === prev)) return prev;
+      // Sin fotos propias, la vista grande enseña la primera del padre: si no,
+      // una variante que solo hereda (MASC-1022-CAF) abriría con el hueco gris.
+      return imgs.length === 0 && heredadas.length ? heredadas[0].id : null;
+    });
+  }
+
+  /** Relee la galería con cache-bust (tras un fallo o si la respuesta no la trae). */
+  async function recargarGaleria(foco?: number | null) {
+    const skuInicio = sku;
+    if (!skuInicio) return;
+    try {
+      const g = await galeriaProducto(skuInicio, wcIdGaleria, undefined, true);
+      if (skuGalRef.current === skuInicio) aplicarGaleria(g, foco);
+    } catch {
+      /* se conserva lo que había */
+    }
+  }
+
+  /**
+   * Una escritura de galería de variante: bloquea, llama, pinta lo devuelto.
+   * Si falla (409 con el flag apagado, 400, 502…) enseña el `detail` del
+   * servidor en llano y relee: la escritura pudo quedar a medias (subió a
+   * Medios pero no se enganchó, p.ej.) y lo que se ve debe ser lo que hay.
+   */
+  async function escribirGaleria(
+    accion: () => Promise<GaleriaEscrituraResp>,
+    opts: { imgId?: number | null; foco?: number | null; error: string },
+  ) {
+    const jobEnCurso = procesandoIA || jobImg?.estado === "procesando";
+    // El ref y no solo el estado: dos clics en el mismo render leerían los dos
+    // `accionImgId === null` y cruzarían dos respuestas sobre la misma galería.
+    if (!sku || soloVistaAgrupada || jobEnCurso || escrituraGalRef.current) return;
+    const skuInicio = sku;
+    escrituraGalRef.current = true;
+    setAccionImgId(opts.imgId ?? -1);
+    setAvisoGal(null);
+    try {
+      const r = await accion();
+      if (skuGalRef.current !== skuInicio) return;
+      if (r?.es_variante && Array.isArray(r.imagenes)) {
+        // 200 con `ok: false` = WooCommerce no guardó lo pedido (el backend
+        // relee y lo dice en `aviso`). Va al recuadro ROJO, no a la línea
+        // violeta de la regla: ahí se confundía con un aviso informativo y
+        // quien editaba creía que la foto se había quitado. Caso a vigilar:
+        // quitar la única principal manda `{image:{id:0}}`, no probado en la
+        // versión de Woo de chunche.shop.
+        const fallo = r.ok === false;
+        aplicarGaleria(fallo ? { ...(r as GaleriaResp), aviso: null } : (r as GaleriaResp), opts.foco);
+        if (fallo) setAvisoGal(r.aviso ?? opts.error);
+      } else await recargarGaleria(opts.foco);
+    } catch (e) {
+      if (skuGalRef.current !== skuInicio) return;
+      setAvisoGal(mensajeDeError(e, opts.error));
+      await recargarGaleria();
+    } finally {
+      escrituraGalRef.current = false;
+      if (skuGalRef.current === skuInicio) setAccionImgId(null);
+    }
+  }
+
+  function hacerPrincipal(imageId: number) {
+    void escribirGaleria(
+      () => hacerPrincipalImagen(sku!, { wc_id: wcIdActivo, image_id: imageId }),
+      { imgId: imageId, foco: imageId, error: "No se pudo cambiar la foto principal." },
+    );
+  }
+
+  function reordenarGaleria(ids: number[]) {
+    // El foco sigue a la foto que se estaba viendo, esté donde quede.
+    const focoId = heredadaActiva == null ? galeria?.[imgActiva]?.id ?? null : null;
+    void escribirGaleria(
+      () => reordenarImagenes(sku!, { wc_id: wcIdActivo, ids }),
+      { foco: focoId, error: "No se pudo reordenar las fotos." },
+    );
+  }
+
+  function adoptarHeredada(imageId: number) {
+    void escribirGaleria(
+      () => adoptarImagen(sku!, { wc_id: wcIdActivo, image_id: imageId }),
+      { imgId: imageId, foco: imageId, error: "No se pudo usar la foto del padre en esta variante." },
+    );
   }
 
   async function guardarContenidoWoo() {
@@ -1519,6 +1716,31 @@ export default function ProductStudio({
     if (!files || !files.length || !sku || soloVistaAgrupada) return;
     const lista = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (!lista.length) return;
+    if (infoVar) {
+      // Variante: a SU galería (y si no tenía principal, la primera lo es).
+      // Mismo candado que las demás escrituras de variante.
+      if (escrituraGalRef.current || procesandoIA || jobImg?.estado === "procesando") return;
+      setAgregandoImg(true);
+      try {
+        const imagenes = await Promise.all(
+          lista.map(async (f) => ({
+            filename: f.name,
+            mime: f.type || "image/jpeg",
+            data_b64: await leerBase64(f),
+          })),
+        );
+        await escribirGaleria(
+          () => agregarImagenes(sku, { wc_id: wcIdActivo, imagenes }),
+          { error: "No se pudieron agregar las fotos a la variante." },
+        );
+      } catch {
+        setAvisoGal("No se pudieron leer los archivos.");
+      } finally {
+        setAgregandoImg(false);
+        setDragImg(false);
+      }
+      return;
+    }
     setAgregandoImg(true);
     try {
       const imagenes = await Promise.all(
@@ -1549,7 +1771,14 @@ export default function ProductStudio({
     galeria ?? imagenes.map((src, i) => ({ id: 0, src, position: i }));
   const galEditable = galeria !== null;
   const galIdxActiva = galItems.length ? Math.min(imgActiva, galItems.length - 1) : 0;
-  const galActiva = galItems.length ? galItems[galIdxActiva] : null;
+  // Variante: la vista grande puede estar enseñando una foto DEL PADRE (solo
+  // lectura). Sin `infoVar` esto es siempre null y todo queda como antes.
+  const heredadaVista = infoVar && heredadaActiva != null
+    ? infoVar.heredadas.find((h) => h.id === heredadaActiva) ?? null
+    : null;
+  const galActiva: GaleriaImagen | null = heredadaVista
+    ? (heredadaVista.src ? { id: heredadaVista.id, src: heredadaVista.src, position: -1 } : null)
+    : galItems.length ? galItems[galIdxActiva] : null;
   const totalConFlags = galItems.filter((im) => im.id && hasFlags(im.id)).length;
   const jobActivo = procesandoIA || jobImg?.estado === "procesando";
   const pctImg = jobImg && jobImg.total ? Math.round((jobImg.procesadas / jobImg.total) * 100) : 0;
@@ -2049,7 +2278,11 @@ export default function ProductStudio({
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[11px] font-bold uppercase tracking-[0.15em] text-slate-400">Imágenes</span>
                   <span className="text-[11px] text-slate-400">
-                    {galEditable ? `${galItems.length} en galería` : "cargando…"}
+                    {!galEditable
+                      ? "cargando…"
+                      : infoVar
+                        ? `${galItems.length} de la variante · ${infoVar.heredadas.length} del padre`
+                        : `${galItems.length} en galería`}
                   </span>
                 </div>
 
@@ -2068,6 +2301,11 @@ export default function ProductStudio({
                       <Loader2 size={26} className="animate-spin" style={{ color: tema.color }} />
                       <span className="text-xs font-semibold text-slate-500">{progresoImg[galActiva.id]?.paso}</span>
                     </div>
+                  )}
+                  {heredadaVista && (
+                    <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.15em] text-violet-700">
+                      <Layers size={10} /> Del padre
+                    </span>
                   )}
                 </div>
 
@@ -2095,7 +2333,39 @@ export default function ProductStudio({
                   </div>
                 )}
 
-                {/* Miniaturas con controles al hover (flags + eliminar) */}
+                {/* Variante (es_variante=true): fotos propias editables + las del
+                    padre de solo lectura. Si no, las miniaturas de siempre. */}
+                {infoVar ? (
+                  <GaleriaVariante
+                    propias={galItems}
+                    principalId={infoVar.principalId}
+                    heredadas={infoVar.heredadas}
+                    regla={infoVar.regla}
+                    aviso={infoVar.aviso}
+                    tema={tema}
+                    idxActiva={galIdxActiva}
+                    onSeleccionar={(i) => { setImgActiva(i); setHeredadaActiva(null); }}
+                    heredadaActiva={heredadaActiva}
+                    onVerHeredada={setHeredadaActiva}
+                    flagsDef={FLAGS_IMG}
+                    flagsImg={flagsImg}
+                    toggleFlag={toggleFlag}
+                    hasFlags={hasFlags}
+                    countFlags={countFlags}
+                    progreso={progresoImg}
+                    accionId={accionImgId}
+                    ocupado={jobActivo || accionImgId !== null || agregandoImg}
+                    agregando={agregandoImg}
+                    bloqueado={soloVistaAgrupada}
+                    tituloBloqueo={TITULO_SOLO_VISTA}
+                    onAgregar={(files) => { void agregarArchivos(files); }}
+                    onEliminar={(img) => { void eliminarImg(img); }}
+                    onPrincipal={hacerPrincipal}
+                    onReordenar={reordenarGaleria}
+                    onAdoptar={adoptarHeredada}
+                  />
+                ) : (
+                // Miniaturas con controles al hover (flags + eliminar)
                 <div className="flex flex-wrap gap-2">
                   {galItems.map((img, i) => {
                     const prog = img.id ? progresoImg[img.id] : undefined;
@@ -2182,13 +2452,14 @@ export default function ProductStudio({
                     </label>
                   )}
                 </div>
+                )}
 
                 {/* Procesar con IA (on-demand) */}
                 {galEditable && (
                   <>
                     <button
                       onClick={procesarIA}
-                      disabled={jobActivo || totalConFlags === 0 || soloVistaAgrupada}
+                      disabled={jobActivo || totalConFlags === 0 || soloVistaAgrupada || (!!infoVar && accionImgId !== null)}
                       title={soloVistaAgrupada ? TITULO_SOLO_VISTA : undefined}
                       className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold shadow-sm transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{ background: `linear-gradient(120deg, ${tema.color}, ${tema.acento})`, color: tema.texto }}
@@ -2200,10 +2471,27 @@ export default function ProductStudio({
                           ? `Procesar con IA · ${totalConFlags} imagen${totalConFlags > 1 ? "es" : ""}`
                           : "Procesar con IA"}
                     </button>
-                    <p className="mt-1.5 text-center text-[11px] text-slate-400">
-                      Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
-                    </p>
+                    {infoVar ? (
+                      <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                        Pasa el mouse sobre una foto <strong>de esta variante</strong> para elegir <strong>Fondo</strong>, <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong>. Al procesar, la editada <strong>reemplaza</strong> a la anterior solo en esta variante: el padre y las hermanas no cambian.
+                      </p>
+                    ) : (
+                      <p className="mt-1.5 text-center text-[11px] text-slate-400">
+                        Pasa el mouse sobre una imagen para elegir <strong>Fondo</strong> (quitar fondo), <strong>Traducir texto</strong>, <strong>Quitar logos</strong> o <strong>Modelo</strong> (cambiar persona), o eliminarla. Al procesar, la imagen editada <strong>reemplaza</strong> a la anterior en WooCommerce.
+                      </p>
+                    )}
                   </>
+                )}
+
+                {/* Error de una escritura de galería de variante, en llano. No
+                    depende de `infoVar`: si el flag se apagó a media sesión
+                    (409), la relectura ya no trae es_variante y el motivo
+                    tiene que seguir a la vista. */}
+                {avisoGal && (
+                  <div className="mt-2 flex items-start gap-1.5 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] font-semibold text-red-700">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                    <span>{avisoGal}</span>
+                  </div>
                 )}
               </section>
 

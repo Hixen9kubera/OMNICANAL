@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     # `services/modo_publicacion.AGRUPADA_HABILITADA`.
     studio_variantes: bool = False
 
+    # GALERÍA POR VARIANTE (fase 2 del Estudio, 14-sep-2026). Con `true`, las
+    # rutas de /api/imagenes editan las fotos PROPIAS de una variación
+    # (`_thumbnail_id` + meta `_kubera_galeria`) en vez de la galería del padre,
+    # que es de la familia entera: fotos con el SKU de una hermana se cuelan en
+    # 2,408 variaciones de 591 familias (medido el 11-sep). Apagada, todo
+    # endpoint de imágenes responde EXACTAMENTE como antes y las rutas nuevas
+    # (principal / reordenar / adoptar) contestan 409 — la reversa es esta
+    # variable, sin deploy. Ver `services/imagenes_variante.py`.
+    galeria_variante: bool = False
+
     # ── IA ────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     gemini_api_key: str = ""

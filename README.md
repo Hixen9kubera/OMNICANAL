@@ -1001,6 +1001,76 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.517.0 — Una variante publica SUS fotos, con su stock, y un SKU padre ya no se publica
+
+Brandon, 11-sep-2026: «el padre nunca se publica», «cada variante debe salir con el
+stock de FREE_QTY» y «cada SKU variante deberá tener sus propias imágenes y poder
+modificarlas». Tres cambios que entran en vivo y una galería por variante que
+entra APAGADA (`GALERIA_VARIANTE=false`) hasta su primera prueba real de escritura.
+
+**En vivo desde este despliegue**
+
+- **Fotos sin hermanas** (`services/imagenes_variante.py`, `para_publicar`). La usan
+  ML, Amazon, TikTok, Temu, Walmart y el semáforo de Productos. Antes una variación
+  se publicaba con la galería completa del padre, que guarda fotos de las hermanas:
+  por nombre de archivo se colaban en 2,408 variaciones de 591 familias; 146 padres
+  tienen miniaturas de 2+ hijas en su galería. Regla nueva: si la variación tiene
+  galería propia, sólo sus fotos; si no, su principal más lo del padre, descartando
+  la miniatura o la galería de una hermana y todo archivo con el SKU de una hermana
+  (por token: `ROP-0509-NEG-X` no casa con `ROP-0509-NEG-XL-1.jpg`). La vista previa
+  dice cuántas fotos son propias, cuántas del padre y cuántas se descartaron.
+  Medido en solo lectura: TEC-0664-ROS 10→9 (se va `TEC-0664-AZL.png`),
+  ORG-0841-ROS-S 6→3, MASC-1022-CAF 6→6. Un producto simple publica lo mismo que antes.
+- **Stock 0 honesto.** Con `_stock` en 0 (Odoo `free_qty`), el alta de ML se frena con
+  «Sin stock en Odoo (free_qty = 0): no se publica.» — el vendor la creaba con
+  `available_quantity: 1` (visto el 14-sep en COC-0153-MET). Amazon manda
+  `quantity: 0` y avisa «se creará AGOTADO» en vez del `max(stock, 1)` del vendor;
+  el respaldo sin base de WordPress inventaba 10 piezas y ahora manda 0. La
+  actualización de un anuncio vivo de ML no cambia.
+- **Candado del SKU padre** (`wp_db.hijas_vivas`, `publicar._candado_padre`): 409
+  «Es un SKU padre: no existe en Odoo ni tiene stock. Elige una de sus variantes.» en
+  vista previa y confirmar. Amazon, Temu y Walmart siempre; TikTok y ML cuando no hay
+  publicación. Un padre con anuncio vivo en ML (hay 638) se puede ACTUALIZAR con el
+  aviso «reemplázala por sus variantes» y sus cuentas muertas no se re-crean. Redes
+  extra en `publicar_ready._candado_alta_ml` y `publicar_walmart`. No cubre `scripts/`.
+- **El par sku/wc_id se valida** (`publicar._asegurar_wc_id`): si el `_sku` del wc_id
+  no es el SKU pedido, se resuelve por SKU. Cierra la puerta al defecto de la v0.498.
+- **Regla 11:** `wp_db.disponible()` va por `asyncio.to_thread` en Walmart y en
+  `woocommerce.ruta_escritura`.
+
+**Galería por variante — construida, APAGADA** (`GALERIA_VARIANTE`)
+
+- **Dónde se guarda: `_kubera_galeria`** en la variación (ids por coma, sin la
+  principal, que sigue en `_thumbnail_id`). NO `_product_image_gallery`: la REST de Woo
+  la esconde en el `meta_data` de una variación y cada escritura crea una fila nueva
+  (180 de 219 variaciones ya tienen filas duplicadas; el panel lee la última y
+  WordPress la primera). Las metas propias con guion bajo sí vuelven con su id y se
+  reescriben en su lugar (`_stock_odoo` en 5,897 variaciones y `_kubera_cbm` en 3,232,
+  0 duplicados). Lectura: si `_kubera_galeria` existe, aunque vacía, manda; si no, la
+  fila más reciente de `_product_image_gallery` (el legado de Crear).
+- **API** (`routers/imagenes.py`): el GET de una variación trae sus fotos propias, las
+  heredadas con «se publica / no se publica» y su motivo, la regla y un aviso;
+  `agregar`, `eliminar` y Procesar con IA operan sólo sobre la variante; nuevas
+  `principal`, `reordenar` y `adoptar` (traer una foto del padre). Un PUT por
+  `ruta_escritura` bajo candado por variación, releyendo después de escribir; si Woo
+  no guardó lo pedido responde `ok:false` y la pantalla lo pinta en rojo. Flag
+  apagado: todo igual que antes y las rutas nuevas dan 409.
+- **Estudio** (`components/GaleriaVariante.tsx`): «Fotos de esta variante» editables
+  (principal con estrella, flechas, quitar, IA) y «Del padre» en solo lectura con su
+  insignia y «Usar en esta variante». Verificado en local contra producción (solo
+  lectura) en MASC-1022-ROS: «1 de la variante · 6 del padre · 6 de 6 se publican».
+- **Antes de encenderla** falta una prueba real de escritura (pasos y reversa en
+  `scripts/probar_galeria_variante.py`) y cinco ajustes de la revisión: adoptar una
+  sola foto cambia la regla a «propias» y recorta lo que se publica sin avisar (MASC-1022-ROS
+  7→2); Procesar con IA desde el padre no actualiza a las hijas que adoptaron esa
+  foto; detectar filas duplicadas de `_kubera_galeria`; el filtro por nombre no ve
+  SKUs con diagonal ni fotos nombradas por color (~23 fotos); y apagar el flag con el
+  Estudio abierto dejaría editar la galería del padre hasta recargar. CommerceKit (la
+  galería por color de chunche.shop) no se toca.
+
+Revisado por tres lentes (publicación, escritura en Woo, pantalla); los 3 hallazgos
+medios aplicados. `tsc`, `next build`, `py_compile` e import en seco en verde.
+
 ### v0.516.0 — Diagnóstico de TikTok desde Railway: ¿seguimos suscritos a los pedidos y se perdió alguna venta?
 
 El aviso de PEDIDO de TikTok dejó de llegar el 4-sep (desde el 10-sep sólo llegan

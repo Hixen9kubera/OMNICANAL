@@ -28,6 +28,7 @@ import type {
   CostosListResp,
   DetalleProducto,
   FilaPublicado,
+  GaleriaEscrituraResp,
   GaleriaResp,
   GeneradorDef,
   GenerarIAResp,
@@ -621,8 +622,16 @@ export function galeriaProducto(
   sku: string,
   wcId?: number | null,
   signal?: AbortSignal,
+  cacheBust = false,
 ): Promise<GaleriaResp> {
-  const q = wcId ? `?wc_id=${wcId}` : "";
+  // `_cb` solo cuando lo pide quien llama (variantes y relecturas tras
+  // escribir): la lista que vuelve alimenta escrituras (reordenar manda los
+  // ids) y LiteSpeed ya revirtió una galería editada por leer cacheado.
+  // Sin él, la URL es la de siempre.
+  const params = new URLSearchParams();
+  if (wcId) params.set("wc_id", String(wcId));
+  if (cacheBust) params.set("_cb", String(Date.now()));
+  const q = params.toString() ? `?${params.toString()}` : "";
   return getJSON<GaleriaResp>(`/api/imagenes/${encodeURIComponent(sku)}${q}`, signal);
 }
 
@@ -654,8 +663,37 @@ export function progresoImagenes(
 export function eliminarImagenGaleria(
   sku: string,
   body: { wc_id: number | null; image_id: number },
-): Promise<{ ok: boolean; image_id: number }> {
+): Promise<GaleriaEscrituraResp> {
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/eliminar`, body);
+}
+
+// ── Galería POR VARIANTE ────────────────────────────────────────────────
+// Las tres mandan el wc_id de la VARIACIÓN abierta, nunca el del padre: con el
+// del padre el backend editaría la galería de toda la familia, que es justo lo
+// que esta fase deja de hacer. Devuelven la galería resultante (forma del GET).
+
+/** Esa foto propia pasa a principal; la anterior va al frente de la galería. */
+export function hacerPrincipalImagen(
+  sku: string,
+  body: { wc_id: number | null; image_id: number },
+): Promise<GaleriaEscrituraResp> {
+  return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/principal`, body);
+}
+
+/** Orden COMPLETO de las fotos propias; el primero queda de principal. */
+export function reordenarImagenes(
+  sku: string,
+  body: { wc_id: number | null; ids: number[] },
+): Promise<GaleriaEscrituraResp> {
+  return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/reordenar`, body);
+}
+
+/** Copia una foto heredada del padre a la galería propia (mismo attachment). */
+export function adoptarImagen(
+  sku: string,
+  body: { wc_id: number | null; image_id: number },
+): Promise<GaleriaEscrituraResp> {
+  return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/adoptar`, body);
 }
 
 export interface ImagenNueva {
@@ -667,7 +705,7 @@ export interface ImagenNueva {
 export function agregarImagenes(
   sku: string,
   body: { wc_id: number | null; imagenes: ImagenNueva[] },
-): Promise<{ ok: boolean; agregadas: number; imagenes: GaleriaResp["imagenes"] }> {
+): Promise<GaleriaEscrituraResp> {
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/agregar`, body);
 }
 

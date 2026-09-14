@@ -352,11 +352,36 @@ async def _armar(req: dict[str, Any]) -> dict[str, Any]:
     if not p:
         raise RuntimeError(f"El SKU {sku} no existe en WooCommerce.")
 
+    # EL PADRE NUNCA SE PUBLICA (Brandon, 11-sep-2026). El dispatcher de
+    # `publicar.py` ya lo frena por `wp_db`; esto es la segunda red para cuando
+    # la BD de WordPress no contesta: la REST dice el tipo por sí sola.
+    if p.get("type") == "variable":
+        from services.publicar_ready import MSG_PADRE
+        raise RuntimeError(MSG_PADRE)
+
     clave, cfg, motivo = await asyncio.to_thread(_categoria_cfg, p)
     if not cfg:
         raise RuntimeError(motivo or "Sin categoría autorizada.")
 
     imgs = [i.get("src") for i in (p.get("images") or []) if i.get("src")]
+    # UNA VARIACIÓN, CON LA MISMA REGLA QUE LOS DEMÁS CANALES. Walmart no pasa
+    # por `construir_prod`: lee la REST, que para una variación da su `image`
+    # (o la del padre si no tiene) y nada de la galería del padre filtrada. Se
+    # arma con `imagenes_variante.para_publicar` —galería propia → solo lo
+    # suyo; si no, su principal + lo del padre que no es de una hermana— para
+    # que el feed lleve lo mismo que ML y Amazon. Sin BD de WordPress queda lo
+    # de la REST, que es lo de siempre.
+    if p.get("type") == "variation" and p.get("id"):
+        try:
+            from services import imagenes_variante, wp_db
+            if await asyncio.to_thread(wp_db.disponible):  # regla 11
+                r_img = await asyncio.to_thread(
+                    imagenes_variante.para_publicar, int(p["id"]))
+                if r_img is not None:
+                    imgs = r_img[0]
+        except Exception as exc:  # noqa: BLE001
+            log.warning("publicar_walmart: imágenes de variante %s: %s — se usan "
+                        "las de la REST", sku, exc)
     if not imgs:
         raise RuntimeError("Sin imágenes: Walmart exige al menos la principal.")
     # El candado del precio. `_item()` cae a 1.0 cuando no lo encuentra, y un
