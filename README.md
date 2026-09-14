@@ -1001,6 +1001,43 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.518.0 — La regla de precios usa el PROMEDIO del mercado, y su nota es una tarjeta
+
+Eduardo, 14-sep-2026: «La opción A y aparte cambia la mediana por la media».
+
+**1. El precio de mercado es el promedio de la búsqueda, no la mediana.**
+`_SQL_MERCADO` trae `avg(r.precio) as promedio` y `_adjuntar_mercado` mide contra
+él todo lo que depende del precio de mercado: `margen_pct`, `ganancia_neta` y
+`costo_veces` (las dos fronteras no dependen de él). La tarjeta dice «promedio
+de 10 · «set de sartenes» · hoy». `mediana` sigue en la respuesta: la lee la
+pantalla anterior mientras el despliegue termina, y el frontend nuevo cae a ella
+si el backend todavía no manda `promedio`.
+
+El promedio es más sensible a los extremos y, en los cuatro SKUs medidos, sube el
+precio de mercado (producción, transacción de solo lectura, 0.35 s):
+
+| SKU · búsqueda | Mediana | Promedio | Margen a ese precio | Por venta |
+|---|---|---|---|---|
+| `COC-0159-NEG` · «set de sartenes» | $964.00 | $978.50 | +41.0 % | $401.50 |
+| `TEC-2195-MUL-RGB` · «lampara de techo inteligente» | $174.00 | $200.60 | −42.8 % | −$85.91 |
+| `ACC-0353-NEG-M` · «collar con gps para gatos» | $213.50 | $275.90 | +28.2 % | $77.85 |
+| `ACC-0305-18` · «pestañas magnéticas» | $116.50 | $134.00 | +23.8 % | $31.85 |
+
+**2. La nota al dejar el cursor es la opción A** del lienzo *Nota de la regla de
+precios*. Antes era un `title` nativo (cinco párrafos de texto corrido); ahora es
+una tarjeta blanca con bloques: «Si vendieras al precio de mercado» (margen y
+ganancia por venta, del tono de la regla), **Mercado** (promedio de N al buscar
+el término, resaltado, y la antigüedad), **Tu precio** (cuánto arriba o abajo),
+**Zonas** (leyenda de colores), **Costo** (solo si no está verificado) y el aviso
+de que es una referencia y el término se corrige en Competencia. Con costo dudoso
+agrega el aviso de la regla 1.5× en ámbar.
+
+Reusa `PanelHover` (el panel fijo de Análisis) con dos props nuevas, `claro` y
+`bloque`, sin cambiar su comportamiento por omisión. Es FIJO y no absoluto por la
+misma razón que en Análisis: la sección del canal lleva `overflow-hidden` y la
+nota se cortaría en su borde. Se encoge si la pantalla es más angosta que 372 px
+y se pinta arriba si no cabe abajo.
+
 ### v0.517.0 — Una variante publica SUS fotos, con su stock, y un SKU padre ya no se publica
 
 Brandon, 11-sep-2026: «el padre nunca se publica», «cada variante debe salir con el

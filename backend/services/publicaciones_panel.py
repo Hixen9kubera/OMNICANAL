@@ -1155,9 +1155,16 @@ def listar(*, canal: str | None = None, estado: str | None = None,
 #
 # `cfg.canal`: la PK es (sku, canal) y la regla es de Mercado Libre; sin el
 # filtro, un SKU configurado en otro canal mezclaría dos búsquedas en una mediana.
+#
+# EL PROMEDIO MANDA (Eduardo, 14-sep-2026): la regla y su nota usan la MEDIA de
+# la búsqueda, no la mediana. Es más sensible a los extremos —en «set de
+# sartenes» la mueven los protectores de $58 y las baterías de $1,599—, y eso es
+# justo lo que el término a la vista ayuda a detectar. La mediana sigue viajando
+# porque la pantalla anterior a v0.518.0 la lee.
 _SQL_MERCADO = """
 select cfg.sku::text                                                  as sku,
        min(st.termino)                                                as termino,
+       avg(r.precio)                                                  as promedio,
        percentile_cont(0.5) within group (order by r.precio)          as mediana,
        count(*)                                                       as n,
        max(r.capturado_en)                                            as ultima
@@ -1200,25 +1207,29 @@ def _adjuntar_mercado(items: list[dict]) -> None:
     hoy = datetime.now(timezone.utc)
     for i in items:
         f = por_sku.get(i.get("sku"))
-        if not f or not f["mediana"]:
+        if not f or not f["promedio"]:
             continue
+        promedio = float(f["promedio"])
         mediana = float(f["mediana"])
         costo = _num(i.get("costo_unitario"))
         ultima = f["ultima"]
         calc = i.get("_calc") or {}
-        a_mediana = margen_de(precio=mediana, **calc) if calc else {}
-        medible = a_mediana.get("margen_pct") is not None
+        # Todo lo que depende del precio de mercado se mide contra el PROMEDIO.
+        a_mercado = margen_de(precio=promedio, **calc) if calc else {}
+        medible = a_mercado.get("margen_pct") is not None
         i["mercado"] = {
+            "promedio": round(promedio, 2),
+            # Solo informativa desde v0.518.0: la lee la pantalla anterior.
             "mediana": round(mediana, 2),
             "n": int(f["n"]),
             "dias": (hoy - ultima).days if ultima else None,
-            # La búsqueda de la que sale la mediana (`enrich.market_search_term`).
+            # La búsqueda de la que sale el precio de mercado (`market_search_term`).
             "termino": f.get("termino"),
             # Cuántas veces nuestro costo supera lo que el mercado COBRA. >1 ya
             # es raro (venderían con pérdida); >2 es casi seguro un costo mal
             # capturado. Se manda el número y la pantalla decide el umbral.
-            "costo_veces": (round(costo / mediana, 1)
-                            if costo and mediana > 0 else None),
+            "costo_veces": (round(costo / promedio, 1)
+                            if costo and promedio > 0 else None),
             # LA REGLA DE PRECIOS (Eduardo, 14-sep-2026): el margen que dejaría
             # vender AL PRECIO DEL MERCADO y las dos fronteras que pintan sus
             # zonas —donde se deja de perder y donde se llega al piso—. Con la
@@ -1229,8 +1240,8 @@ def _adjuntar_mercado(items: list[dict]) -> None:
             # la regla no tiene zonas en el 94% de las tarjetas. Pero no son un
             # precio sugerido —ése sigue siendo `precio_piso`, que exige costo
             # verificado— y la pantalla no las rotula con monto en ese caso.
-            "margen_pct": a_mediana.get("margen_pct"),
-            "ganancia_neta": a_mediana.get("ganancia_neta"),
+            "margen_pct": a_mercado.get("margen_pct"),
+            "ganancia_neta": a_mercado.get("ganancia_neta"),
             "precio_equilibrio": (precio_para_margen(objetivo=0.0, **calc)
                                   if medible else None),
             "precio_para_piso": ((i.get("precio_piso")

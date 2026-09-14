@@ -1701,6 +1701,10 @@ export interface Publicacion {
     mediana: number;
     /** Cuántas publicaciones ajenas se midieron (mínimo 3). */
     n: number;
+    /** EL PRECIO DE MERCADO desde v0.518.0: el promedio de la búsqueda. Contra
+     *  él se miden `margen_pct` y `ganancia_neta`. Opcional: un backend
+     *  anterior no lo manda, y entonces vale `mediana`. */
+    promedio?: number | null;
     /** Antigüedad de la última captura. */
     dias: number | null;
     /** La búsqueda de la que sale la mediana ("set de sartenes"). Se nombra en

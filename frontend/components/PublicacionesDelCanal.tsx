@@ -23,8 +23,9 @@
  */
 
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, ChevronDown, ExternalLink, RefreshCw, Tag, Target } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, ChevronDown, ExternalLink, Info, RefreshCw, Tag, Target } from "lucide-react";
 
+import PanelHover from "@/components/PanelHover";
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
 import { enlacePublicacion } from "@/lib/enlaces";
 import {
@@ -234,11 +235,18 @@ function ReglaMercado({ p }: { p: Publicacion }) {
   const dudoso = margen !== null && costoImplausible(p.precio_vigente, p.costo_unitario, p.revisado_at);
   const conZonas = margen !== null && eq !== null && piso !== null;
 
+  // EL PROMEDIO MANDA (Eduardo, 14-sep-2026): el precio de mercado es la media
+  // de la búsqueda, no la mediana. `mediana` sigue llegando y es el respaldo
+  // mientras conteste un backend anterior a v0.518.0.
+  const precioMercado = m.promedio ?? m.mediana;
+  const estadistico = m.promedio != null ? "promedio" : "mediana";
+  const cuando = m.dias == null ? null : m.dias === 0 ? "hoy" : `hace ${m.dias} d`;
+
   // La escala va de 0 al mayor de los cuatro precios, con aire a la derecha
   // para que el último marcador no quede pegado a la orilla.
-  const tope = Math.max(m.mediana, tu ?? 0, eq ?? 0, piso ?? 0) * 1.12;
+  const tope = Math.max(precioMercado, tu ?? 0, eq ?? 0, piso ?? 0) * 1.12;
   const pos = (v: number) => Math.min(100, Math.max(0, (v / tope) * 100));
-  const pMe = pos(m.mediana);
+  const pMe = pos(precioMercado);
   const pTu = tu != null ? pos(tu) : null;
 
   const tono =
@@ -248,29 +256,113 @@ function ReglaMercado({ p }: { p: Publicacion }) {
           : margen < objetivo ? TONO_REGLA.amber
             : TONO_REGLA.emerald;
 
-  const rel = tu ? tu / m.mediana - 1 : null;
+  const rel = tu ? tu / precioMercado - 1 : null;
+  // "67 % abajo" — `null` cuando es el mismo precio (menos de medio punto).
+  const relCorto =
+    rel === null || Math.abs(rel) < 0.005 ? null
+      : `${Math.round(Math.abs(rel) * 100)} % ${rel > 0 ? "arriba" : "abajo"}`;
   const relTexto =
-    rel === null ? null
-      : Math.abs(rel) < 0.005 ? "tu precio es el del mercado"
-        : `tu precio está ${Math.round(Math.abs(rel) * 100)} % ${rel > 0 ? "arriba" : "abajo"}`;
+    rel === null ? null : relCorto ? `tu precio está ${relCorto}` : "tu precio es el del mercado";
 
-  const ayuda = [
-    `Mediana de lo que cobran ${m.n} publicaciones de la competencia en Mercado Libre al buscar ${m.termino ? `«${m.termino}»` : "el término de este SKU"}${m.dias != null ? (m.dias === 0 ? " (captura de hoy)" : ` (captura de hace ${m.dias} d)`) : ""}.`,
-    "Describe esa búsqueda, no este producto exacto: es una referencia, no un precio sugerido. Si el término no describe el producto, corrígelo en Competencia — la mediana cambia con él.",
-    margen !== null
-      ? `Si vendieras a ${fmtMoneda(m.mediana)}: ${fmtPctFirmado(margen)} de margen y ${fmtMoneda(m.ganancia_neta)} por venta, con la misma comisión, envío y costo que el margen de arriba.`
-      : "",
-    relTexto ? `${relTexto.charAt(0).toUpperCase()}${relTexto.slice(1)} del mercado.` : "",
-    conZonas ? `Zonas: rojo pierdes · ámbar menos del ${meta} · verde ${meta} o más.` : "",
-    conZonas && !verificado
-      ? "El costo no está verificado contra el packing list: por eso las fronteras no llevan precio."
-      : "",
-    dudoso && p.precio_vigente && p.costo_unitario
-      ? avisoCostoImplausible(p.precio_vigente, p.costo_unitario)
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  // LA NOTA al dejar el cursor (Eduardo, 14-sep-2026) — la opción A del lienzo
+  // «Nota de la regla de precios». Antes era un `title` nativo: cinco párrafos
+  // de texto corrido en el globo del sistema. Ahora son bloques con título: qué
+  // pasaría a precio de mercado, de dónde sale, tu precio y las zonas.
+  const etiqueta = "text-[10px] font-semibold uppercase tracking-wide text-slate-400";
+  const zonas: [string, string][] = [
+    ["bg-rose-200", "pierdes"],
+    ["bg-amber-200", `menos del ${meta}`],
+    ["bg-emerald-200", `${meta} o más`],
+  ];
+  const nota = (
+    <div>
+      <div className={etiqueta}>Si vendieras al precio de mercado</div>
+      {margen !== null && tono ? (
+        <>
+          <div className="mt-0.5 flex items-baseline gap-2">
+            <span className={`inline-flex items-center gap-1 text-xl font-black tabular-nums ${tono.big}`}>
+              {dudoso && <AlertTriangle size={15} className="shrink-0" />}
+              {fmtPctFirmado(margen)}
+            </span>
+            <span className={`text-xs font-semibold tabular-nums ${tono.sub}`}>
+              {fmtMoneda(m.ganancia_neta)} por venta
+            </span>
+          </div>
+          <p className="text-[11px] leading-snug text-slate-500">
+            Cobrando {fmtMoneda(precioMercado)}, con la misma comisión, envío y costo que el margen de hoy.
+          </p>
+        </>
+      ) : (
+        <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+          Cobrando {fmtMoneda(precioMercado)}. El margen no se puede calcular:{" "}
+          {MOTIVO_CORTO[(p.margen_motivo ?? "desconocido") as MargenMotivo] ?? "falta un dato del costeo"}.
+        </p>
+      )}
+
+      <div className="my-2.5 h-px bg-slate-100" />
+
+      <div className="grid grid-cols-[70px_minmax(0,1fr)] items-baseline gap-x-2.5 gap-y-2 text-[11px] leading-snug">
+        <span className={etiqueta}>Mercado</span>
+        <span className="text-slate-700">
+          {estadistico === "promedio" ? "Promedio" : "Mediana"} de {m.n} publicaciones al buscar{" "}
+          {m.termino ? (
+            <span className="whitespace-nowrap rounded bg-indigo-50 px-1.5 py-px font-semibold text-indigo-700">
+              {m.termino}
+            </span>
+          ) : (
+            "el término de este SKU"
+          )}
+          {cuando ? ` · ${cuando}` : ""}
+        </span>
+        {tu != null && (
+          <>
+            <span className={etiqueta}>Tu precio</span>
+            <span className="flex items-center gap-1 font-semibold tabular-nums text-slate-700">
+              {relCorto && rel !== null && rel > 0 && <ArrowUp size={12} className="shrink-0 text-indigo-500" />}
+              {relCorto && rel !== null && rel < 0 && <ArrowDown size={12} className="shrink-0 text-indigo-500" />}
+              {fmtMoneda(tu, p.moneda)} · {relCorto ? `${relCorto} del mercado` : "igual al mercado"}
+            </span>
+          </>
+        )}
+        {conZonas && (
+          <>
+            <span className={etiqueta}>Zonas</span>
+            <span className="flex flex-wrap gap-x-2.5 gap-y-1 text-slate-600">
+              {zonas.map(([color, texto]) => (
+                <span key={texto} className="flex items-center gap-1">
+                  <span className={`h-2.5 w-2.5 rounded-[3px] ${color}`} />
+                  {texto}
+                </span>
+              ))}
+            </span>
+          </>
+        )}
+        {conZonas && !verificado && (
+          <>
+            <span className={etiqueta}>Costo</span>
+            <span className="text-amber-700">
+              Sin verificar contra el packing list: por eso las fronteras no llevan precio.
+            </span>
+          </>
+        )}
+      </div>
+
+      {dudoso && p.precio_vigente && p.costo_unitario ? (
+        <p className="mt-2.5 rounded-md bg-amber-50 px-2 py-1.5 text-[10px] leading-relaxed text-amber-800">
+          {avisoCostoImplausible(p.precio_vigente, p.costo_unitario)}
+        </p>
+      ) : null}
+
+      <div className="mt-2.5 flex gap-1.5 rounded-md bg-slate-50 px-2 py-1.5 text-[10px] leading-relaxed text-slate-500">
+        <Info size={12} className="mt-px shrink-0 text-slate-400" />
+        <span>
+          Es {estadistico === "promedio" ? "el promedio" : "la mediana"} de esa búsqueda, no de este producto: una
+          referencia, no un precio sugerido. Si el
+          término no describe el producto, corrígelo en Competencia.
+        </span>
+      </div>
+    </div>
+  );
 
   const marcadores: Pieza[] = [
     {
@@ -278,7 +370,7 @@ function ReglaMercado({ p }: { p: Publicacion }) {
       nodo: (
         <>
           <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600">Mercado</span>
-          <span className="text-xs font-black tabular-nums text-slate-900">{fmtMoneda(m.mediana)}</span>
+          <span className="text-xs font-black tabular-nums text-slate-900">{fmtMoneda(precioMercado)}</span>
         </>
       ),
     },
@@ -296,7 +388,8 @@ function ReglaMercado({ p }: { p: Publicacion }) {
   }
 
   return (
-    <div className="mt-2.5 border-t border-slate-100 pt-2" title={ayuda}>
+    <PanelHover panel={nota} ancho={372} alto={330} claro bloque>
+    <div className="mt-2.5 border-t border-slate-100 pt-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-2">
         <div className="flex flex-wrap items-baseline gap-x-1.5">
           <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">
@@ -314,7 +407,7 @@ function ReglaMercado({ p }: { p: Publicacion }) {
             </>
           ) : (
             <>
-              <span className="text-base font-black tabular-nums text-slate-800">{fmtMoneda(m.mediana)}</span>
+              <span className="text-base font-black tabular-nums text-slate-800">{fmtMoneda(precioMercado)}</span>
               {relTexto && <span className="text-[11px] font-semibold text-slate-500">{relTexto}</span>}
             </>
           )}
@@ -324,14 +417,14 @@ function ReglaMercado({ p }: { p: Publicacion }) {
             subía el mercado de COC-0159-NEG a $964 con su competidor directo
             en $599; nombrado aquí, un término malo se nota sin abrir Competencia. */}
         <span className="text-[10px] text-slate-400">
-          mediana de {m.n}
+          {estadistico} de {m.n}
           {m.termino && (
             <>
               {" · "}
               <span className="font-semibold text-slate-500">«{m.termino}»</span>
             </>
           )}
-          {m.dias != null ? (m.dias === 0 ? " · hoy" : ` · hace ${m.dias} d`) : ""}
+          {cuando ? ` · ${cuando}` : ""}
           {conZonas && !verificado ? " · costo sin verificar" : ""}
         </span>
       </div>
@@ -383,6 +476,7 @@ function ReglaMercado({ p }: { p: Publicacion }) {
         )}
       </div>
     </div>
+    </PanelHover>
   );
 }
 
