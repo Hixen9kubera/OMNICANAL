@@ -1946,7 +1946,15 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
             # `parent_id` viaja porque este endpoint TAMBIÉN devuelve variaciones
             # (type='variation') y quien las quiera ESCRIBIR necesita al padre:
             # el update va a /products/{padre}/variations/{id}, no a /products/{id}.
-            r = await cli.get("/products", params={"sku": sku, "_fields": "id,name,sku,type,parent_id,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink"})
+            # `_cb` (cache-bust): esta es la ruta que alimenta el Estudio (regla
+            # nº5) — sin ella, abrir el Estudio justo después de regenerar en
+            # Crear Productos podía mostrar la descripción vieja (o vacía) un
+            # rato, aunque WooCommerce ya tuviera la nueva (EST-0088, sep-2026).
+            r = await cli.get("/products", params={
+                "sku": sku,
+                "_fields": "id,name,sku,type,parent_id,price,regular_price,sale_price,stock_quantity,status,categories,brands,images,description,short_description,attributes,permalink",
+                "_cb": str(time.time()),
+            })
             r.raise_for_status()
             data = r.json()
             # STOCK DE PADRE VARIABLE (auditoría 29-jul). En WooCommerce un
@@ -1976,7 +1984,7 @@ async def obtener_producto_por_sku(sku: str) -> dict[str, Any] | None:
         "imagenes": imgs,
         "marca": _marca(p),
         "descripcion": p.get("description"),
-        "descripcion_corta": p.get("short_description"),
+        "descripcion_corta": p.get("short_description") or p.get("description"),
         "atributos": _atributos(p),
         "precio": _to_float(p.get("price")),
         "precio_base": _to_float(p.get("regular_price")),

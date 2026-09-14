@@ -1001,6 +1001,24 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.511.0 — El Estudio abría sin descripción justo después de regenerar en Crear Productos
+
+Mismo síntoma que v0.419.0/v0.420.0 pero en OTRA pantalla: la tarjeta de
+Productos ya mostraba foto/descripción bien, pero al abrir el Estudio de un
+SKU recién regenerado (`EST-0088`) el campo Descripción salía vacío aunque
+WooCommerce ya tuviera el texto completo.
+
+Causa: `obtener_producto_por_sku()` — la función que alimenta
+`GET /api/productos/{sku}` y de ahí el Estudio (`useDetalleProducto` /
+`ProductStudio.tsx`) — es OTRA lectura de `/products` distinta a
+`listar_productos()` (la de la tarjeta, ya parcheada), y nunca llevó `_cb`
+(regla nº5, LiteSpeed). Además tenía el mismo hueco de `descripcion_corta`
+sin fallback a `description` que v0.420.0 ya había corregido en el listado.
+
+Fix (`services/woocommerce.py`, `obtener_producto_por_sku`): `_cb` en la
+consulta a `/products?sku=` + mismo fallback `short_description or
+description`. Solo lectura/UI.
+
 ### v0.510.0 — La regla de precios nombra la búsqueda de la que sale la mediana
 
 Eduardo, 14-sep-2026, tras ver que la regla le daba a `COC-0159-NEG` (set de 3
