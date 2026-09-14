@@ -22,7 +22,7 @@
  * regla de cuándo un costo no se puede creer.
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { AlertTriangle, ChevronDown, ExternalLink, RefreshCw, Tag, Target } from "lucide-react";
 
 import { costoImplausible, avisoCostoImplausible } from "@/lib/margen";
@@ -149,34 +149,229 @@ function Precio({ p }: { p: Publicacion }) {
  * dice por qué): el renglón manda a revisar el costeo en vez de empujar a
  * subir el precio 20 veces por un dato de captura.
  */
+/** Una etiqueta sobre la pista de la regla: dónde va (0–100) y qué dice. */
+type Pieza = { p: number; nodo: ReactNode };
+
+const TONO_REGLA = {
+  rose: { big: "text-rose-600", sub: "text-rose-500" },
+  amber: { big: "text-amber-700", sub: "text-amber-600" },
+  emerald: { big: "text-emerald-700", sub: "text-slate-500" },
+} as const;
+
 /**
- * LO QUE COBRA EL MERCADO, como segunda opinión sobre el COSTO (Eduardo,
- * 9-sep). Sale de Competencia, que ya guarda los precios de los resultados de
- * búsqueda de ML; lo único que faltaba era cruzarlo con el SKU.
- *
- * NO es una sugerencia de precio y por eso no se pinta como tal: el cruce va
- * por TÉRMINO DE BÚSQUEDA, no por producto exacto, así que la mediana describe
- * una categoría. Un 1.2× no dice nada; un 4× no se explica por variación de
- * modelo y delata un costo mal capturado — que es justo lo que hay que revisar
- * cuando la tarjeta manda a revisar el costeo.
- *
- * Solo aparece cuando nuestro costo SUPERA lo que el mercado cobra, que ya es
- * de por sí raro: significaría que la competencia vende con pérdida.
+ * Hasta dos etiquetas sobre la misma pista sin encimarse: centradas si hay
+ * aire, abiertas hacia fuera si están cerca, y en un solo renglón si ni así
+ * caben (los dos marcadores pegados a una orilla). `aire` es la distancia, en
+ * puntos de la escala, desde la que ya caben centradas.
  */
-function Mercado({ p }: { p: Publicacion }) {
-  const m = p.mercado;
-  if (!m || m.costo_veces == null || m.costo_veces <= 1) return null;
-  const fuerte = m.costo_veces >= 2;
+function ParEtiquetas({ piezas, top, aire }: { piezas: Pieza[]; top: string; aire: number }) {
+  const base = `absolute ${top} flex items-baseline gap-1 whitespace-nowrap`;
+  const centrada = (p: number) => (p < 12 ? "" : p > 88 ? "-translate-x-full" : "-translate-x-1/2");
+  const orden = [...piezas].sort((x, y) => x.p - y.p);
+  const sueltas = (
+    <>
+      {orden.map((x, i) => (
+        <div key={i} className={`${base} ${centrada(x.p)}`} style={{ left: `${x.p}%` }}>
+          {x.nodo}
+        </div>
+      ))}
+    </>
+  );
+  if (orden.length < 2) return sueltas;
+  const a = orden[0]!;
+  const b = orden[1]!;
+  if (b.p - a.p >= aire) return sueltas;
+  if (a.p >= 20 && b.p <= 80) {
+    return (
+      <>
+        <div className={`${base} -translate-x-full pr-1.5`} style={{ left: `${a.p}%` }}>{a.nodo}</div>
+        <div className={`${base} pl-1.5`} style={{ left: `${b.p}%` }}>{b.nodo}</div>
+      </>
+    );
+  }
+  const medio = (a.p + b.p) / 2;
   return (
-    <div className={`mt-1.5 flex flex-wrap items-baseline gap-x-1.5 text-[11px] ${fuerte ? "text-amber-700" : "text-slate-500"}`}>
-      <span>El mercado lo vende alrededor de</span>
-      <span className="font-semibold tabular-nums">{fmtMoneda(m.mediana)}</span>
-      <span>y tu costo son</span>
-      <span className="font-semibold tabular-nums">{fmtMoneda(p.costo_unitario)}</span>
-      <span className={fuerte ? "font-semibold" : ""}>({m.costo_veces}×)</span>
-      <span className="text-slate-400">
-        · {m.n} publicaciones{m.dias != null ? `, hace ${m.dias} d` : ""}
-      </span>
+    <div
+      className={`${base} gap-1.5 ${medio < 25 || medio > 75 ? "" : "-translate-x-1/2"}`}
+      style={medio < 25 ? { left: "0%" } : medio > 75 ? { right: "0%" } : { left: `${medio}%` }}
+    >
+      {a.nodo}
+      <span className="text-slate-300">·</span>
+      {b.nodo}
+    </div>
+  );
+}
+
+/**
+ * LA REGLA DE PRECIOS (Eduardo, 14-sep-2026) — la opción B del lienzo «Margen
+ * a precio de mercado». Pone NUESTRO precio y el de la competencia sobre las
+ * zonas de margen de ESTA publicación: rojo pierdes, ámbar menos del piso,
+ * verde el piso o más. Se lee sin leer números: basta ver en qué color cae
+ * cada marcador.
+ *
+ * SE PINTA SIEMPRE QUE HAYA MEDIANA. Hasta v0.508.0 solo salía cuando nuestro
+ * costo ya la superaba, en una línea gris de 11 px dentro del aviso del piso:
+ * en la mayoría de las tarjetas no aparecía, y cuando el mercado vende MÁS caro
+ * que nosotros —la señal para subir el precio— no aparecía nunca.
+ *
+ * Lo que sigue igual, y por eso va en el tooltip: la mediana es por TÉRMINO de
+ * búsqueda, no por producto exacto (`_adjuntar_mercado`). Es una referencia, no
+ * un precio sugerido. Por la misma razón, con el costo SIN verificar las
+ * fronteras se dibujan pero sin monto: "20 % · $4,209" sobre un costo mal
+ * capturado es justo el precio sugerido que `Piso` se niega a dar.
+ */
+function ReglaMercado({ p }: { p: Publicacion }) {
+  const m = p.mercado;
+  if (!m) return null;
+
+  const objetivo = p.piso_objetivo ?? 0.2;
+  const meta = `${Math.round(objetivo * 100)} %`;
+  const margen = m.margen_pct ?? null;
+  const eq = m.precio_equilibrio ?? null;
+  const piso = m.precio_para_piso ?? null;
+  const tu = p.precio_vigente;
+  const verificado = Boolean(p.revisado_at);
+  const dudoso = margen !== null && costoImplausible(p.precio_vigente, p.costo_unitario, p.revisado_at);
+  const conZonas = margen !== null && eq !== null && piso !== null;
+
+  // La escala va de 0 al mayor de los cuatro precios, con aire a la derecha
+  // para que el último marcador no quede pegado a la orilla.
+  const tope = Math.max(m.mediana, tu ?? 0, eq ?? 0, piso ?? 0) * 1.12;
+  const pos = (v: number) => Math.min(100, Math.max(0, (v / tope) * 100));
+  const pMe = pos(m.mediana);
+  const pTu = tu != null ? pos(tu) : null;
+
+  const tono =
+    margen === null ? null
+      : dudoso ? TONO_REGLA.amber
+        : margen < 0 ? TONO_REGLA.rose
+          : margen < objetivo ? TONO_REGLA.amber
+            : TONO_REGLA.emerald;
+
+  const rel = tu ? tu / m.mediana - 1 : null;
+  const relTexto =
+    rel === null ? null
+      : Math.abs(rel) < 0.005 ? "tu precio es el del mercado"
+        : `tu precio está ${Math.round(Math.abs(rel) * 100)} % ${rel > 0 ? "arriba" : "abajo"}`;
+
+  const ayuda = [
+    `Mediana de lo que cobran ${m.n} publicaciones de la competencia en Mercado Libre para el término de búsqueda de este SKU${m.dias != null ? ` (captura de hace ${m.dias} d)` : ""}.`,
+    "Describe la categoría, no este producto exacto: es una referencia, no un precio sugerido.",
+    margen !== null
+      ? `Si vendieras a ${fmtMoneda(m.mediana)}: ${fmtPctFirmado(margen)} de margen y ${fmtMoneda(m.ganancia_neta)} por venta, con la misma comisión, envío y costo que el margen de arriba.`
+      : "",
+    relTexto ? `${relTexto.charAt(0).toUpperCase()}${relTexto.slice(1)} del mercado.` : "",
+    conZonas ? `Zonas: rojo pierdes · ámbar menos del ${meta} · verde ${meta} o más.` : "",
+    conZonas && !verificado
+      ? "El costo no está verificado contra el packing list: por eso las fronteras no llevan precio."
+      : "",
+    dudoso && p.precio_vigente && p.costo_unitario
+      ? avisoCostoImplausible(p.precio_vigente, p.costo_unitario)
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const marcadores: Pieza[] = [
+    {
+      p: pMe,
+      nodo: (
+        <>
+          <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600">Mercado</span>
+          <span className="text-xs font-black tabular-nums text-slate-900">{fmtMoneda(m.mediana)}</span>
+        </>
+      ),
+    },
+  ];
+  if (pTu !== null) {
+    marcadores.push({
+      p: pTu,
+      nodo: (
+        <>
+          <span className="text-[10px] font-bold uppercase tracking-wide text-slate-600">Tú</span>
+          <span className="text-xs font-black tabular-nums text-slate-900">{fmtMoneda(tu, p.moneda)}</span>
+        </>
+      ),
+    });
+  }
+
+  return (
+    <div className="mt-2.5 border-t border-slate-100 pt-2" title={ayuda}>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+        <div className="flex flex-wrap items-baseline gap-x-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-indigo-500">
+            {margen !== null ? "A precio de mercado" : "Precio de mercado"}
+          </span>
+          {margen !== null && tono ? (
+            <>
+              <span className={`inline-flex items-center gap-1 text-base font-black tabular-nums ${tono.big}`}>
+                {dudoso && <AlertTriangle size={13} className="shrink-0" />}
+                {fmtPctFirmado(margen)}
+              </span>
+              <span className={`text-[11px] font-semibold tabular-nums ${tono.sub}`}>
+                {dudoso ? "costo dudoso" : `${fmtMoneda(m.ganancia_neta)} por venta`}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="text-base font-black tabular-nums text-slate-800">{fmtMoneda(m.mediana)}</span>
+              {relTexto && <span className="text-[11px] font-semibold text-slate-500">{relTexto}</span>}
+            </>
+          )}
+        </div>
+        <span className="text-[10px] text-slate-400">
+          mediana de {m.n}
+          {m.dias != null ? ` · hace ${m.dias} d` : ""}
+          {conZonas && !verificado ? " · costo sin verificar" : ""}
+        </span>
+      </div>
+
+      <div className={`relative mt-1.5 ${conZonas ? "h-[60px]" : "h-[42px]"}`}>
+        <ParEtiquetas piezas={marcadores} top="top-0" aire={22} />
+        <div className="absolute inset-x-0 top-6 flex h-2 overflow-hidden rounded-full bg-slate-200">
+          {conZonas && (
+            <>
+              <div className="bg-rose-200" style={{ width: `${pos(eq!)}%` }} />
+              <div className="bg-amber-200" style={{ width: `${pos(piso!) - pos(eq!)}%` }} />
+              <div className="flex-1 bg-emerald-200" />
+            </>
+          )}
+        </div>
+        <div
+          className="absolute top-[17px] h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-indigo-600 ring-2 ring-white"
+          style={{ left: `${pMe}%` }}
+        />
+        {pTu !== null && (
+          <div
+            className="absolute top-[17px] h-[22px] w-[3px] -translate-x-1/2 rounded-sm bg-slate-900 ring-2 ring-white"
+            style={{ left: `${pTu}%` }}
+          />
+        )}
+        {conZonas && (
+          <ParEtiquetas
+            top="top-[44px]"
+            aire={18}
+            piezas={[
+              {
+                p: pos(eq!),
+                nodo: (
+                  <span className="text-[10px] tabular-nums text-slate-500">
+                    {verificado ? `0 % · ${fmtMoneda(eq)}` : "0 %"}
+                  </span>
+                ),
+              },
+              {
+                p: pos(piso!),
+                nodo: (
+                  <span className="text-[10px] tabular-nums text-slate-500">
+                    {verificado ? `${meta} · ${fmtMoneda(piso)}` : meta}
+                  </span>
+                ),
+              },
+            ]}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -205,7 +400,6 @@ function Piso({ p }: { p: Publicacion }) {
           <span className="font-semibold text-amber-700">Bajo el {meta} de margen</span>
           <span className="text-slate-500">— el costo no está verificado, revísalo antes de mover el precio</span>
         </div>
-        <Mercado p={p} />
       </div>
     );
   }
@@ -242,8 +436,6 @@ function Piso({ p }: { p: Publicacion }) {
           su comisión, no sobre el precio de venta— y el peso EFECTIVO, que es
           el mayor entre el real y el volumétrico. Sin ellos el fee y la
           comisión parecen salidos de la nada. */}
-      <Mercado p={p} />
-
       {abierto && d && (
         <div className="mb-1 mt-2 rounded-lg border border-rose-200 bg-white px-3 py-2">
           <table className="w-full text-[11px] tabular-nums">
@@ -486,9 +678,11 @@ export default function PublicacionesDelCanal({
               </div>
             </div>
 
-            {/* El piso va DEBAJO de las dos columnas, no como una tercera: con
-                tres cifras a lo ancho del cajón ninguna se lee de un vistazo, y
-                esta solo aparece de vez en cuando. */}
+            {/* La regla y el piso van DEBAJO de las dos columnas, no como una
+                tercera: con tres cifras a lo ancho del cajón ninguna se lee de
+                un vistazo. La regla primero, porque es la referencia (dónde
+                está el mercado); el piso, cuando aparece, es la acción. */}
+            <ReglaMercado p={p} />
             <Piso p={p} />
 
             {conEnlace && enlacePublicacion(p.canal, p.listing_id, p.url) && (

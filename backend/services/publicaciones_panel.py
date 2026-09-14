@@ -1072,6 +1072,13 @@ def _enriquecer(r: dict[str, Any]) -> dict[str, Any]:
         "visto_at": r.get("visto_at"),
         **oferta,
         **m,
+        # Lo que `_adjuntar_mercado` necesita para la regla de precios (margen a
+        # la mediana y sus dos fronteras). PRIVADO: `listar` lo quita antes de
+        # responder — el peso y las medidas no son parte del contrato.
+        "_calc": {"costo_unitario": r.get("costo_unitario"),
+                  "pct_comision": r.get("pct_comision"), "peso": r.get("peso"),
+                  "largo": r.get("largo"), "ancho": r.get("ancho"),
+                  "alto": r.get("alto"), "canal": canal},
     }
 
 
@@ -1112,6 +1119,8 @@ def listar(*, canal: str | None = None, estado: str | None = None,
     ini = max(0, (page - 1) * per_page)
     pagina = filas[ini:ini + per_page]
     _adjuntar_mercado(pagina)
+    for i in pagina:                 # privado de `_enriquecer`: no sale en la respuesta
+        i.pop("_calc", None)
     return {
         "total": total,
         "page": page,
@@ -1153,12 +1162,18 @@ having count(*) >= 3
 
 
 def _adjuntar_mercado(items: list[dict]) -> None:
-    """Le pega a cada publicación de la PÁGINA lo que cobra el mercado por su
-    término. Solo la página —no las cientos de filas del censo— porque es una
-    consulta más y solo se ve lo que se pinta.
+    """Le pega a cada publicación de Mercado Libre de la PÁGINA lo que cobra el
+    mercado por su término y dónde queda su margen a ese precio. Solo la página
+    —no las cientos de filas del censo— porque es una consulta más y las dos
+    fronteras de la regla se buscan iterando: solo se paga lo que se pinta.
+
+    SOLO MERCADO LIBRE: Competencia guarda resultados de búsqueda de ML. Pegarle
+    esa mediana a una tarjeta de Amazon la presentaría como la competencia de
+    Amazon, que nadie ha medido.
 
     Falla en silencio a propósito: si Competencia no contesta, la tarjeta
     pierde una pista, no la funcionalidad."""
+    items = [i for i in items if i.get("canal") == "mercado_libre"]
     skus = sorted({i["sku"] for i in items if i.get("sku")})
     if not skus:
         return
@@ -1178,6 +1193,9 @@ def _adjuntar_mercado(items: list[dict]) -> None:
         mediana = float(f["mediana"])
         costo = _num(i.get("costo_unitario"))
         ultima = f["ultima"]
+        calc = i.get("_calc") or {}
+        a_mediana = margen_de(precio=mediana, **calc) if calc else {}
+        medible = a_mediana.get("margen_pct") is not None
         i["mercado"] = {
             "mediana": round(mediana, 2),
             "n": int(f["n"]),
@@ -1187,6 +1205,23 @@ def _adjuntar_mercado(items: list[dict]) -> None:
             # capturado. Se manda el número y la pantalla decide el umbral.
             "costo_veces": (round(costo / mediana, 1)
                             if costo and mediana > 0 else None),
+            # LA REGLA DE PRECIOS (Eduardo, 14-sep-2026): el margen que dejaría
+            # vender AL PRECIO DEL MERCADO y las dos fronteras que pintan sus
+            # zonas —donde se deja de perder y donde se llega al piso—. Con la
+            # MISMA cuenta que el margen de hoy (`margen_de`), para que las
+            # cifras de la tarjeta se puedan comparar entre sí.
+            #
+            # Las fronteras viajan aunque el costo NO esté verificado: sin ellas
+            # la regla no tiene zonas en el 94% de las tarjetas. Pero no son un
+            # precio sugerido —ése sigue siendo `precio_piso`, que exige costo
+            # verificado— y la pantalla no las rotula con monto en ese caso.
+            "margen_pct": a_mediana.get("margen_pct"),
+            "ganancia_neta": a_mediana.get("ganancia_neta"),
+            "precio_equilibrio": (precio_para_margen(objetivo=0.0, **calc)
+                                  if medible else None),
+            "precio_para_piso": ((i.get("precio_piso")
+                                  or precio_para_margen(objetivo=PISO_MARGEN, **calc))
+                                 if medible else None),
         }
 
 

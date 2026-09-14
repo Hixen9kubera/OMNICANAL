@@ -1001,6 +1001,60 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.509.0 — La regla de precios: nuestro precio y el del mercado sobre las zonas de margen
+
+Eduardo, 14-sep-2026: «Implementa la opción B en el panel, quita la regla de que
+solo se muestre cuando nuestro costeo lo supera, que se muestre siempre». La
+opción B es la «Regla de precios» del lienzo *Margen a precio de mercado*.
+
+**Qué había.** La mediana de Competencia (`_adjuntar_mercado`, 9-sep) salía en
+la tarjeta de publicación SOLO cuando nuestro costo ya la superaba, como una
+línea gris de 11 px dentro del aviso del piso del 20 %. En la mayoría de las
+tarjetas no aparecía, y el caso que más le sirve al equipo comercial —el mercado
+vende MÁS caro que nosotros— no aparecía nunca.
+
+**Qué hay ahora** (`PublicacionesDelCanal.tsx`, `ReglaMercado`), debajo de las
+dos columnas, en TODA publicación de Mercado Libre con mediana:
+
+- **Titular:** «A precio de mercado −59.4 % · −$103.37 por venta» — el margen
+  que dejaría vender a la mediana, con la misma cuenta que «Margen si vendo una
+  hoy» (comisión, envío por tramo y peso, costo). Rojo si pierde, ámbar bajo el
+  piso, verde en el piso o más; ámbar con ⚠ si el costo es dudoso (regla 1.5×).
+- **La regla:** una pista con las zonas de ESTA publicación (rojo pierdes · ámbar
+  menos del 20 % · verde 20 % o más) y dos marcadores, **Mercado** y **Tú**. Las
+  etiquetas no se enciman: centradas si hay aire, abiertas hacia fuera si están
+  cerca, en un solo renglón si ni así caben.
+- **Las fronteras** «0 % · $362.75» y «20 % · $543.76» llevan monto SOLO con el
+  costo verificado. Con el costo sin verificar se dibujan sin monto y el titular
+  dice «costo sin verificar»: un «20 % · $4,209» sobre un costo mal capturado es
+  el mismo precio sugerido que el piso se niega a dar desde v0.462.0.
+- **El tooltip** dice lo que no cambia: la mediana es por TÉRMINO de búsqueda, no
+  por producto exacto — una referencia, no un precio sugerido.
+
+**Backend** (`publicaciones_panel._adjuntar_mercado`): `mercado` suma
+`margen_pct`, `ganancia_neta`, `precio_equilibrio` (margen 0 %) y
+`precio_para_piso` (20 %), con `margen_de` y `precio_para_margen`. Las dos
+fronteras viajan aunque el costo no esté verificado (sin ellas no hay zonas en el
+94% de las tarjetas); `precio_piso` sigue exigiendo costo verificado. Para
+calcularlas, `_enriquecer` guarda los insumos en `_calc`, que `listar` quita
+antes de responder. Y `mercado` ya **solo se adjunta a Mercado Libre**:
+Competencia mide búsquedas de ML, y en una tarjeta de Amazon esa mediana se
+leería como la competencia de Amazon.
+
+| Publicación | Hoy | A la mediana | 0 % | 20 % |
+|---|---|---|---|---|
+| Lámpara LED RGB `MLM2992944703` (mercado $174.00) | −15.0 % | −59.4 % | $362.75 | $543.76 |
+| Collar para gatos `MLM2948190895` (mercado $213.50) | −10.2 % | +16.2 % | $159.39 | $229.98 |
+| Pestañas magnéticas `MLM2803848271` (mercado $116.50) | +40.1 % | +16.2 % | $81.62 | $124.69 |
+
+**Verificación.** Prueba de `listar` con filas y medianas dobladas y las medidas
+reales de los tres SKUs (leídas en transacción de solo lectura): los tres dan los
+números de la tabla, la de Amazon sale sin `mercado` y `_calc` no aparece en la
+respuesta. Costo: 500 publicaciones con mediana en 0.16 s (va en hilo). tsc
+limpio. En el cajón real contra producción (proxy de solo lectura, backend
+anterior) la regla se pinta sin zonas y sin errores: es lo que se ve durante el
+despliegue, mientras el backend nuevo no llega.
+
 ### v0.508.0 — La marca de agua del sondeo de Temu se cerraba sola y perdía ventas
 
 La v0.507.0 hizo que el sondeo leyera 3 páginas, y la corrida siguiente lo dijo

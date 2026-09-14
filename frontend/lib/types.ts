@@ -1642,6 +1642,17 @@ export interface Publicacion {
     dias: number | null;
     /** Cuántas veces nuestro costo supera lo que el mercado cobra. */
     costo_veces: number | null;
+    /** Margen SOBRE EL PRECIO si se vendiera a la mediana, con la misma cuenta
+     *  que `margen_pct`. `null` = no se puede calcular (sin costo, comisión o
+     *  peso). Opcionales: un backend anterior a v0.509.0 no los manda. */
+    margen_pct?: number | null;
+    ganancia_neta?: number | null;
+    /** Precio donde el margen llega a 0 %: la frontera entre perder y ganar. */
+    precio_equilibrio?: number | null;
+    /** Precio donde el margen llega al piso. Viaja aunque el costo no esté
+     *  verificado (la regla lo necesita para sus zonas), pero NO es un precio
+     *  sugerido: con costo sin verificar no se rotula con monto. */
+    precio_para_piso?: number | null;
   } | null;
   /** La aritmética del precio del piso, pieza por pieza, para explicarla en
    *  pantalla. Llega solo cuando hay `precio_piso`. */
