@@ -1001,6 +1001,35 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.510.0 — La regla de precios nombra la búsqueda de la que sale la mediana
+
+Eduardo, 14-sep-2026, tras ver que la regla le daba a `COC-0159-NEG` (set de 3
+sartenes de hierro fundido) un mercado de **$964**: la búsqueda configurada,
+«set de sartenes», devuelve 10 resultados de los que solo 4 son sets de 3 —el
+resto son baterías de 25–34 piezas, un set de 4 y unos protectores de fieltro
+de $58—, y su competidor comparable (Cookify, hierro fundido) cobra $599. La
+regla decía «a precio de mercado +40.6 %» y «tu precio está 74 % abajo».
+
+La mediana es tan buena como el término, así que ahora **la tarjeta lo nombra**:
+«mediana de 10 · «set de sartenes» · hoy». Un término malo se nota sin abrir
+Competencia, y el tooltip dice qué hacer: corregirlo ahí, porque la mediana
+cambia con él.
+
+- `_SQL_MERCADO` trae `termino` de `enrich.market_search_term` y filtra
+  `cfg.canal = 'mercado_libre'` (la PK de `market_sku_config` es `(sku, canal)`:
+  sin el filtro, un SKU configurado en otro canal mezclaría dos búsquedas).
+- «hace 0 d» ahora dice «hoy», como la pantalla de Competencia.
+
+**No confundir con la columna «Mediana» de Competencia → «Nuestros SKUs en…»**
+($497 para ese mismo SKU): ésa es la mediana de los MÁS VENDIDOS de la
+subcategoría, la misma para todos sus SKUs. La regla usa la competencia directa
+—los resultados de la búsqueda del SKU, última captura, sin los nuestros—.
+
+**Verificación.** La consulta nueva contra producción (transacción de solo
+lectura), 4 SKUs en 0.25 s, con las mismas medianas de v0.509.0: «set de sartenes»
+$964 (10), «lampara de techo inteligente» $174 (5), «collar con gps para gatos»
+$213.50 (10), «pestañas magnéticas» $116.50 (10). tsc limpio.
+
 ### v0.509.0 — La regla de precios: nuestro precio y el del mercado sobre las zonas de margen
 
 Eduardo, 14-sep-2026: «Implementa la opción B en el panel, quita la regla de que

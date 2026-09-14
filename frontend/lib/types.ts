@@ -1640,6 +1640,10 @@ export interface Publicacion {
     n: number;
     /** Antigüedad de la última captura. */
     dias: number | null;
+    /** La búsqueda de la que sale la mediana ("set de sartenes"). Se nombra en
+     *  la tarjeta porque la mediana es tan buena como el término. Opcional: un
+     *  backend anterior a v0.510.0 no lo manda. */
+    termino?: string | null;
     /** Cuántas veces nuestro costo supera lo que el mercado cobra. */
     costo_veces: number | null;
     /** Margen SOBRE EL PRECIO si se vendiera a la mediana, con la misma cuenta

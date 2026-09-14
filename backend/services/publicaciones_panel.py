@@ -1146,14 +1146,26 @@ def listar(*, canal: str | None = None, estado: str | None = None,
 # `es_nuestro` se excluye: comparar nuestro precio contra sí mismo no es
 # competencia. Y se piden al menos 3 observaciones, porque con una la mediana
 # es esa una.
+#
+# EL TÉRMINO VIAJA (Eduardo, 14-sep-2026) para que la tarjeta lo nombre: la
+# mediana es tan buena como la búsqueda. «set de sartenes» devolvía 4 baterías de
+# 25–34 piezas y unos protectores de fieltro junto a los sets de 3, y la regla le
+# ponía a COC-0159-NEG un mercado de $964 cuando su competidor comparable cobra
+# $599. Con el término a la vista, un término malo se ve sin abrir Competencia.
+#
+# `cfg.canal`: la PK es (sku, canal) y la regla es de Mercado Libre; sin el
+# filtro, un SKU configurado en otro canal mezclaría dos búsquedas en una mediana.
 _SQL_MERCADO = """
 select cfg.sku::text                                                  as sku,
+       min(st.termino)                                                as termino,
        percentile_cont(0.5) within group (order by r.precio)          as mediana,
        count(*)                                                       as n,
        max(r.capturado_en)                                            as ultima
   from enrich.market_sku_config cfg
+  join enrich.market_search_term st on st.id = cfg.termino_id
   join enrich.market_search_results r on r.termino_id = cfg.termino_id
  where cfg.sku = any(%(skus)s)
+   and cfg.canal = 'mercado_libre'
    and r.precio > 0
    and coalesce(r.es_nuestro, false) = false
  group by 1
@@ -1200,6 +1212,8 @@ def _adjuntar_mercado(items: list[dict]) -> None:
             "mediana": round(mediana, 2),
             "n": int(f["n"]),
             "dias": (hoy - ultima).days if ultima else None,
+            # La búsqueda de la que sale la mediana (`enrich.market_search_term`).
+            "termino": f.get("termino"),
             # Cuántas veces nuestro costo supera lo que el mercado COBRA. >1 ya
             # es raro (venderían con pérdida); >2 es casi seguro un costo mal
             # capturado. Se manda el número y la pantalla decide el umbral.

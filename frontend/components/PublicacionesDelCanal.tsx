@@ -255,8 +255,8 @@ function ReglaMercado({ p }: { p: Publicacion }) {
         : `tu precio está ${Math.round(Math.abs(rel) * 100)} % ${rel > 0 ? "arriba" : "abajo"}`;
 
   const ayuda = [
-    `Mediana de lo que cobran ${m.n} publicaciones de la competencia en Mercado Libre para el término de búsqueda de este SKU${m.dias != null ? ` (captura de hace ${m.dias} d)` : ""}.`,
-    "Describe la categoría, no este producto exacto: es una referencia, no un precio sugerido.",
+    `Mediana de lo que cobran ${m.n} publicaciones de la competencia en Mercado Libre al buscar ${m.termino ? `«${m.termino}»` : "el término de este SKU"}${m.dias != null ? (m.dias === 0 ? " (captura de hoy)" : ` (captura de hace ${m.dias} d)`) : ""}.`,
+    "Describe esa búsqueda, no este producto exacto: es una referencia, no un precio sugerido. Si el término no describe el producto, corrígelo en Competencia — la mediana cambia con él.",
     margen !== null
       ? `Si vendieras a ${fmtMoneda(m.mediana)}: ${fmtPctFirmado(margen)} de margen y ${fmtMoneda(m.ganancia_neta)} por venta, con la misma comisión, envío y costo que el margen de arriba.`
       : "",
@@ -319,9 +319,19 @@ function ReglaMercado({ p }: { p: Publicacion }) {
             </>
           )}
         </div>
+        {/* EL TÉRMINO, a la vista (Eduardo, 14-sep): la mediana es tan buena
+            como la búsqueda. «set de sartenes» mezclaba baterías de 25 piezas y
+            subía el mercado de COC-0159-NEG a $964 con su competidor directo
+            en $599; nombrado aquí, un término malo se nota sin abrir Competencia. */}
         <span className="text-[10px] text-slate-400">
           mediana de {m.n}
-          {m.dias != null ? ` · hace ${m.dias} d` : ""}
+          {m.termino && (
+            <>
+              {" · "}
+              <span className="font-semibold text-slate-500">«{m.termino}»</span>
+            </>
+          )}
+          {m.dias != null ? (m.dias === 0 ? " · hoy" : ` · hace ${m.dias} d`) : ""}
           {conZonas && !verificado ? " · costo sin verificar" : ""}
         </span>
       </div>
