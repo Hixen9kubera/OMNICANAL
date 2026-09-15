@@ -1001,6 +1001,32 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.522.0 — Los envíos combinados se ven en el panel: mismo color, "1 caja", una sola etiqueta
+
+Brandon, viendo S38339/S38343 y S38489/S38490 con la misma guía: *"debe verse
+visualmente que se encuentran combinadas"* — y **sin cambiar Odoo**.
+
+Temu junta en UN paquete con UNA etiqueta las ventas del mismo comprador a la
+misma dirección que aún no salen (el "2 pedidos se pueden enviar juntos" del
+seller center). Las dos órdenes traen el mismo PDF en "Subir guía". Si el almacén
+no lo ve, empaca por separado e imprime la misma guía dos veces. Medido el 15-sep:
+3 envíos combinados de 37 órdenes con guía (S38339+S38343, S38448+S38503 —dos
+compras con 45 h de diferencia y 22 piezas en una caja—, S38489+S38490).
+
+Todo es de pantalla (`frontend/app/automatizacion/page.tsx`), deducido de la guía
+que ya trae la bitácora:
+- `combinadosDe` agrupa por (canal, guía) sobre la lista COMPLETA del canal —no la
+  filtrada—, con ventas distintas (el surtido dividido es otra cosa). Letra por
+  canal (A, B…) que sigue a la venta más vieja, para que no brinque al refrescar.
+- **Fila**: la guía se pinta del color del grupo, distintivo "Combinado A · con
+  S38343" y franja del mismo color en el borde derecho, así la pareja se reconoce
+  aunque quede lejos en la lista. Clic en el distintivo = el buscador las muestra
+  juntas.
+- **Detalle**: recuadro "Envío combinado A · 2 órdenes, 1 caja" con la otra orden,
+  las piezas de toda la caja y la instrucción: surtir todas, misma caja, etiqueta
+  una sola vez.
+- **Encabezado del canal**: "· N envíos combinados".
+
 ### v0.521.0 — Pestaña FULLFILMENT: el diseño completo, navegable en el panel (sin backend todavía)
 
 Brandon: *"arranca con el frontend para ver el diseño de cómo quedaría, después el

@@ -40,7 +40,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, Braces, Camera, CheckCircle2, ChevronDown, ChevronRight,
   ChevronUp, Clock, Copy, ExternalLink, ImageIcon, Loader2, MousePointerClick,
-  Package, PackageX, Power, Radio, RotateCw, Truck, Undo2, X,
+  Link2, Package, PackageX, Power, Radio, RotateCw, Truck, Undo2, X,
 } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
@@ -396,6 +396,97 @@ function coincide(o: OrdenOdoo, q: string): boolean {
 }
 
 /**
+ * ENVÍO COMBINADO: dos o más ventas del MISMO canal que comparten guía. Temu las
+ * junta cuando el mismo comprador compra varias veces a la misma dirección antes
+ * de que salga el envío: salen en UNA caja con UNA etiqueta (las dos órdenes
+ * traen el mismo PDF en "Subir guía"). Si el almacén no lo ve, empaca por
+ * separado, imprime la misma guía dos veces y la segunda caja no tiene guía
+ * válida. Es SÓLO pantalla: se deduce de la guía que ya trae la bitácora y Odoo
+ * no se toca (Brandon, 15-sep).
+ */
+interface Combinado {
+  guia: string;
+  n: number;
+  /** A, B, C… por canal, para distinguir grupos a simple vista. */
+  letra: string;
+  color: string;
+  suave: string;
+  companeras: { odoo_name: string | null; external_order_id: string }[];
+  /** Piezas de TODA la caja, no sólo de esta orden. */
+  piezas: number;
+}
+
+const COLORES_COMBINADO = [
+  { color: "#7C3AED", suave: "#F3EEFF" },
+  { color: "#0E7490", suave: "#E4F6F9" },
+  { color: "#BE185D", suave: "#FDEEF5" },
+  { color: "#4D7C0F", suave: "#EFF7E4" },
+  { color: "#1D4ED8", suave: "#EAF0FE" },
+  { color: "#B45309", suave: "#FDF3E6" },
+] as const;
+
+const claveOrden = (o: { canal: string; external_order_id: string }) => `${o.canal}-${o.external_order_id}`;
+
+/**
+ * Agrupa por guía sobre la lista COMPLETA de un canal —no la filtrada— para que
+ * una orden sepa de su compañera aunque el buscador o el filtro la escondan. La
+ * letra sigue a la venta más vieja del grupo, así no brinca al refrescar.
+ */
+function combinadosDe(lista: OrdenOdoo[]): Record<string, Combinado> {
+  const grupos = new Map<string, OrdenOdoo[]>();
+  for (const o of lista) {
+    const g = norm(o.guia);
+    if (!g) continue;
+    const k = `${o.canal}|${g}`;
+    const arr = grupos.get(k) ?? [];
+    // Distinta VENTA: el surtido dividido (una venta, dos órdenes) es otra cosa.
+    if (!arr.some((x) => x.external_order_id === o.external_order_id)) arr.push(o);
+    grupos.set(k, arr);
+  }
+  const t = (o: OrdenOdoo) => Date.parse(o.venta_at ?? o.creado_at ?? "") || 0;
+  const multiples = [...grupos.values()]
+    .filter((g) => g.length > 1)
+    .sort((a, b) => Math.min(...a.map(t)) - Math.min(...b.map(t)));
+  const out: Record<string, Combinado> = {};
+  multiples.forEach((g, i) => {
+    const pal = COLORES_COMBINADO[i % COLORES_COMBINADO.length];
+    const piezas = g.reduce((n, o) => n + o.lineas.reduce((m, l) => m + (l.cantidad ?? 0), 0), 0);
+    for (const o of g) {
+      out[claveOrden(o)] = {
+        guia: o.guia ?? "",
+        n: g.length,
+        letra: String.fromCharCode(65 + (i % 26)),
+        color: pal.color,
+        suave: pal.suave,
+        companeras: g.filter((x) => x !== o)
+          .map((x) => ({ odoo_name: x.odoo_name, external_order_id: x.external_order_id })),
+        piezas,
+      };
+    }
+  });
+  return out;
+}
+
+const nombresCompaneras = (c: Combinado) =>
+  c.companeras.map((x) => x.odoo_name ?? x.external_order_id).join(", ");
+
+/** El distintivo en la fila: mismo color que su(s) compañera(s). Clic = verlas juntas. */
+function ChipCombinado({ c, onVerJuntas }: { c: Combinado; onVerJuntas?: (guia: string) => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onVerJuntas?.(c.guia); }}
+      title={`Envío combinado ${c.letra}: ${c.n} órdenes van en 1 caja con 1 sola etiqueta (${c.piezas} piezas). Clic para verlas juntas.`}
+      className="mt-[4px] inline-flex max-w-full items-center gap-[5px] rounded-full px-[8px] py-[2px] text-[10.5px] font-extrabold"
+      style={{ background: "#fff", color: c.color, boxShadow: `inset 0 0 0 1.5px ${c.color}` }}
+    >
+      <Link2 className="h-3 w-3 shrink-0" />
+      <span className="truncate">Combinado {c.letra} · con {nombresCompaneras(c)}</span>
+    </button>
+  );
+}
+
+/**
  * El número de VENTA del canal (PO-128-… en Temu, el id largo en TikTok), con
  * copiar. Es lo que el almacén ve en el seller center; sin él en la fila no hay
  * forma de saber qué orden de Odoo y qué guía son de cuál venta — sólo se veía
@@ -442,9 +533,10 @@ function IdVenta({ id, url = "", className = "" }: { id: string; url?: string; c
 }
 
 function FilaOrden({
-  o, abierta, onAbrir, odooUrl, ventaUrl = "",
+  o, abierta, onAbrir, odooUrl, ventaUrl = "", combinado, onVerJuntas,
 }: {
   o: OrdenOdoo; abierta: boolean; onAbrir: () => void; odooUrl: string; ventaUrl?: string;
+  combinado?: Combinado; onVerJuntas?: (guia: string) => void;
 }) {
   const d = desenlace(o);
   const s = V[d.v];
@@ -455,7 +547,12 @@ function FilaOrden({
   const Chevron = abierta ? ChevronUp : ChevronDown;
 
   return (
-    <div style={{ background: s.filaBg, borderBottom: "1px solid #f4f6fa" }}>
+    <div style={{
+      background: s.filaBg, borderBottom: "1px solid #f4f6fa",
+      // Franja del color del grupo en el borde derecho: la pareja se reconoce
+      // aunque quede lejos en la lista.
+      boxShadow: combinado ? `inset -5px 0 0 ${combinado.color}` : undefined,
+    }}>
       {/* ── ANCHO · SURTIDO DIVIDIDO: rejilla propia. Lo que hay que leer no
              son columnas, es una frase: una venta, dos órdenes, una guía. ── */}
       {dividido ? (
@@ -526,10 +623,13 @@ function FilaOrden({
         <div className="truncate text-[12px] font-semibold text-slate-600">{o.almacen ?? "—"}</div>
         <div className="min-w-0">
           {o.guia ? (
-            <>
-              <div className="truncate font-mono text-[12.5px] font-bold text-slate-700">{o.guia}</div>
+            <div className={combinado ? "-mx-[7px] rounded-[9px] px-[7px] py-[4px]" : ""}
+                 style={combinado ? { background: combinado.suave } : undefined}>
+              <div className="truncate font-mono text-[12.5px] font-bold"
+                   style={{ color: combinado ? combinado.color : "#334155" }}>{o.guia}</div>
               <div className="truncate text-[11px] text-slate-400">{o.paqueteria ?? ""}</div>
-            </>
+              {combinado && <ChipCombinado c={combinado} onVerJuntas={onVerJuntas} />}
+            </div>
           ) : (
             <div className="text-[11px] text-slate-400">sin guía</div>
           )}
@@ -588,6 +688,9 @@ function FilaOrden({
             <span className="text-slate-300">·</span>
             <span>{piezas} renglones</span>
           </div>
+          {combinado && (
+            <div className="pl-[15px]"><ChipCombinado c={combinado} onVerJuntas={onVerJuntas} /></div>
+          )}
           <div className="mt-[5px] flex flex-wrap items-center gap-[10px] pl-[15px] text-[11px] text-slate-400">
             <span>compra <span className="font-mono font-bold text-slate-600">{fecha(o.venta_at)}</span></span>
             <span>proceso <span className="font-mono font-bold text-slate-600">{fecha(o.creado_at)}</span></span>
@@ -620,14 +723,17 @@ function FilaOrden({
         </div>
       )}
 
-      {abierta && <Detalle o={o} odooUrl={odooUrl} ventaUrl={ventaUrl} />}
+      {abierta && <Detalle o={o} odooUrl={odooUrl} ventaUrl={ventaUrl} combinado={combinado} onVerJuntas={onVerJuntas} />}
     </div>
   );
 }
 
 /* ── El detalle, in-situ ────────────────────────────────────────────────── */
 
-function Detalle({ o, odooUrl, ventaUrl = "" }: { o: OrdenOdoo; odooUrl: string; ventaUrl?: string }) {
+function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
+  o: OrdenOdoo; odooUrl: string; ventaUrl?: string;
+  combinado?: Combinado; onVerJuntas?: (guia: string) => void;
+}) {
   const [copiada, setCopiada] = useState(false);
   const piezas = o.lineas.reduce((n, l) => n + (l.cantidad ?? 0), 0);
   const rz = rezago(o.venta_at, o.creado_at);
@@ -818,6 +924,26 @@ function Detalle({ o, odooUrl, ventaUrl = "" }: { o: OrdenOdoo; odooUrl: string;
               </a>
             );
           })()}
+          {combinado && (
+            <div className="rounded-[10px] px-3 py-[10px] text-[12px] leading-snug"
+                 style={{ background: combinado.suave, boxShadow: `inset 0 0 0 1.5px ${combinado.color}` }}>
+              <div className="flex items-center gap-[6px] text-[12.5px] font-extrabold" style={{ color: combinado.color }}>
+                <Link2 className="h-4 w-4 shrink-0" />
+                Envío combinado {combinado.letra} · {combinado.n} órdenes, 1 caja
+              </div>
+              <div className="mt-[6px] text-slate-600">
+                Esta guía también es de <b className="font-mono">{nombresCompaneras(combinado)}</b>.
+                Surte todas, empácalas en la <b>misma caja</b> ({combinado.piezas} piezas en total) e
+                imprime la etiqueta <b>una sola vez</b>.
+              </div>
+              {onVerJuntas && (
+                <button type="button" onClick={() => onVerJuntas(combinado.guia)}
+                        className="mt-2 text-[11.5px] font-bold underline" style={{ color: combinado.color }}>
+                  Ver las {combinado.n} juntas
+                </button>
+              )}
+            </div>
+          )}
           {o.guia && (
             <button
               type="button"
@@ -840,6 +966,7 @@ function Detalle({ o, odooUrl, ventaUrl = "" }: { o: OrdenOdoo; odooUrl: string;
 function TarjetaCanal({
   canal, ordenes, encendido, escalonId, moviendo, abierta, onAbrir, onSwitch, odooUrl, filtrando,
   buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "", arriba = 0,
+  combinados = {}, onVerJuntas,
 }: {
   canal: (typeof CANALES)[number];
   ordenes: OrdenOdoo[];
@@ -859,6 +986,9 @@ function TarjetaCanal({
    *  la vista con el mismo buscador/filtro. Sin esto la lista decía "nada
    *  coincide" o "nada pendiente" justo debajo de una tarjeta con órdenes. */
   arriba?: number;
+  /** Envíos combinados del canal, por `claveOrden`. */
+  combinados?: Record<string, Combinado>;
+  onVerJuntas?: (guia: string) => void;
 }) {
   const ultima = ordenes[0]?.creado_at ?? null;
   const SECCION = "«Confirmadas en Odoo · canceladas en el canal»";
@@ -884,6 +1014,10 @@ function TarjetaCanal({
           <div className="text-[11.5px]" style={{ color: canal.tintaSuave }}>
             {ordenes.length} {ordenes.length === 1 ? "venta procesada" : "ventas procesadas"}
             {ultima && ` · última ${haceCuanto(ultima)}`}
+            {(() => {
+              const g = new Set(ordenes.map((o) => combinados[claveOrden(o)]?.guia).filter(Boolean)).size;
+              return g > 0 ? ` · ${g} ${g === 1 ? "envío combinado" : "envíos combinados"}` : null;
+            })()}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-3">
@@ -908,6 +1042,8 @@ function TarjetaCanal({
           o={o}
           odooUrl={odooUrl}
           ventaUrl={ventaUrl}
+          combinado={combinados[claveOrden(o)]}
+          onVerJuntas={onVerJuntas}
           abierta={abierta === o.external_order_id}
           onAbrir={() => onAbrir(abierta === o.external_order_id ? null : o.external_order_id)}
         />
@@ -1621,6 +1757,17 @@ export default function AutomatizacionPage() {
     return base;
   }, [ordenes]);
 
+  // Letras por canal (A, B… en cada uno); las llaves no chocan porque llevan el canal.
+  const combinados = useMemo(
+    () => ({ ...combinadosDe(porCanal.tiktok), ...combinadosDe(porCanal.temu) }),
+    [porCanal],
+  );
+  const verJuntas = useCallback((guia: string) => {
+    setBusqueda(guia);
+    setSoloAccion(false);
+    setAbierta(null);
+  }, []);
+
   const pendientes = useMemo(() => ({
     tiktok: porCanal.tiktok.filter(pideAccion).length,
     temu: porCanal.temu.filter(pideAccion).length,
@@ -1899,6 +2046,8 @@ export default function AutomatizacionPage() {
               enOtroCanal={enOtroCanal}
               otroCanal={otro.nombre}
               arriba={sinPermisoCanc ? 0 : canc.aLaVista[canal]}
+              combinados={combinados}
+              onVerJuntas={verJuntas}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
             />
           )}
