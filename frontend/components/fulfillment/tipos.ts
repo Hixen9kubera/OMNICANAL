@@ -1,9 +1,10 @@
 /**
  * Tipos de la pestaña FULLFILMENT.
  *
- * Tienen la FORMA de lo que va a devolver el backend (`/api/fulfillment/envios/…`),
- * no la de la maqueta: hoy los llena `datosDiseno.ts` y el día que exista el API
- * se cambia la fuente sin tocar un solo componente.
+ * `Envio`, `RespuestaEnvios` y `ResumenGrupo` son la forma EXACTA de
+ * `GET /api/fulfillment/envios` (backend/services/fulfillment_envios.py). Lo que
+ * todavía es diseño (planeación, ficha de SKU, variaciones) usa los mismos tipos
+ * con los datos de `datosDiseno.ts`.
  *
  * La regla que atraviesa todos los tipos: `null` significa «no lo sabemos» y
  * NUNCA se colapsa a 0. Un cero es un dato; un null es un hueco, y la pantalla
@@ -30,44 +31,103 @@ export interface Instante {
  * `null`: ninguna se deduce de otra.
  */
 export const ETAPAS = [
-  { t: "Solicitado", sub: "lista de Andy" },
-  { t: "Validado", sub: "Bodega aprobó" },
-  { t: "Orden Odoo", sub: "picking outgoing" },
-  // «Recolectado» es la VALIDACIÓN del picking en Odoo: la recolección física
-  // no la guarda nadie. Por eso el sub-rótulo lo dice.
-  { t: "Recolectado", sub: "picking validado" },
-  { t: "Recibido", sub: "aviso del almacén" },
-  { t: "Activo", sub: "prende en FULL" },
-  { t: "1ª venta", sub: "primera venta" },
+  { t: "Solicitado", corto: "Solicitado", sub: "lista de Andy" },
+  { t: "Validado", corto: "Validado", sub: "Bodega aprobó" },
+  // La fecha es la de la ORDEN DE VENTA: la teclea la KAM. El picking lo crea
+  // OdooBot al confirmarla, así que su fecha no dice nada de una persona.
+  { t: "Orden de venta", corto: "Orden", sub: "la crea la KAM en Odoo" },
+  // `date_done` del OUT. Medido el 14-sep: en 16 de 43 envíos ML ya había
+  // recibido ANTES de esta validación. No es la hora del camión y no se rotula así.
+  { t: "Salida validada", corto: "Salida", sub: "en Odoo · no es el camión" },
+  { t: "Recibido", corto: "Recibido", sub: "aviso del almacén" },
+  { t: "Activo", corto: "Activo", sub: "prende en FULL" },
+  { t: "1ª venta", corto: "1ª venta", sub: "primera venta" },
 ] as const;
 
 export type EstadoEnvio =
-  | "cerrado"            // el marketplace terminó de contar
-  | "recepcion"          // salió de bodega, el almacén aún no cuenta: NO es rechazo
-  | "sinEnlazar"         // la orden no trae número de envío: no hay tasa posible
-  | "sinVenta"           // recibido y activo, sin primera venta todavía
-  | "amazonSinLectura"   // FBA: la Inbound API no se consulta todavía
-  | "wfs";               // WFS: no hay una sola orden
+  // ── los que devuelve el backend ──
+  | "abierta"            // la salida existe en Odoo y bodega no la ha validado
+  | "salio"              // ML: salida validada; las recepciones aún no se leen
+  | "sinEnlazar"         // ML: la orden no trae número de envío → no hay tasa posible
+  | "fbaSinLectura"      // FBA: la app de Amazon no tiene permiso de Inbound (403)
+  | "wfsSinLectura"      // WFS: la API responde, falta leerla
+  // ── solo en la pantalla de Variaciones (ejemplos de diseño) ──
+  | "cerrado" | "recepcion" | "sinVenta" | "amazonSinLectura" | "wfs";
 
 export interface Envio {
-  /** Nombre del picking OUT en Odoo. */
+  /** id del picking OUT en Odoo (solo en datos reales). */
+  id?: number;
+  /** La orden de venta (S#####). */
   orden: string | null;
+  /** El picking OUT (TEXCO/OUT/…). */
+  salida?: string;
+  almacen?: string | null;
+  estado_odoo?: string;
   /** Número del envío en el marketplace, ya normalizado (sin «Envío #»). */
   envio: string | null;
+  /** De dónde salió el número: lo tecleó la KAM en la referencia o está en el socio. */
+  envio_origen?: "referencia" | "socio" | null;
+  /** La referencia TAL CUAL la tecleó la KAM. */
+  referencia?: string | null;
+  socio?: string;
   canal: Canal;
-  /** Sólo ML distingue cuenta; FBA es San Corpe; WFS aún no se sabe. */
+  /** Sólo ML distingue cuenta; FBA es San Corpe; WFS y los creadores sin regla → null. */
   cuenta: Cuenta | null;
+  /** Por qué tiene (o no tiene) esa cuenta. Se enseña: la regla depende de personas. */
+  cuenta_regla?: string;
   kam: string | null;
+  /** Piezas hechas. null = la salida no se ha validado (no es un cero). */
   piezas: number | null;
   pedidas: number | null;
-  /** Derivadas del factor de caja: se pintan con «~» y «estimadas». */
+  /** Derivadas del factor de caja: se pintan con «~» y «estimadas». null = sin factor. */
   cajas: number | null;
   etapas: (Instante | null)[];
   estado: EstadoEnvio;
-  /** Sólo si el marketplace dio recibidas y rechazadas explícitas. */
+  n_skus?: number;
+  /** Sólo si el marketplace dio recibidas y rechazadas explícitas (diseño). */
   tasaPct?: number;
 }
 
+/** Un renglón de `GET /api/fulfillment/envios/{id}`. */
+export interface LineaOdoo {
+  sku: string;
+  nombre: string;
+  pedidas: number;
+  /** null = la salida no se ha validado. */
+  enviadas: number | null;
+}
+
+export interface EnvioConLineas extends Envio {
+  lineas: LineaOdoo[];
+}
+
+export interface ResumenGrupo {
+  salidas: number;
+  hechas: number;
+  abiertas: number;
+  piezas_enviadas: number;
+  piezas_pedidas_hechas: number;
+  piezas_abiertas: number;
+  sin_numero: number;
+  desde: string | null;
+  hasta: string | null;
+  /** 7 posiciones, lunes = 0, en hora de CDMX. */
+  dias_orden: number[];
+  dias_validacion: number[];
+  orden_a_validacion_dias: { n: number; mediana: number | null; p90: number | null };
+}
+
+export interface RespuestaEnvios {
+  envios: Envio[];
+  /** Llaves: "meli", "meli:Kubera", "meli:San Corpe", "meli:sin_asignar", "amazon", "walmart". */
+  resumen: Record<string, ResumenGrupo>;
+  excluidas: { venta_amazon_mfn: number; otro: number };
+  generado: string;
+  fuente: string;
+  _cache?: { edad_s: number; ttl_s: number };
+}
+
+/** Renglón de ejemplo de la pantalla de Variaciones. */
 export interface LineaEnvio {
   sku: string;
   nombre: string;

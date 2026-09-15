@@ -6,12 +6,13 @@
  * Walmart). Lo que se pidió, lo que salió, lo que el marketplace recibió — y lo
  * que todavía no se mide.
  *
- * ESTADO: VISTA DE DISEÑO (14-sep-2026). Se construyó el frontend primero, a
- * partir del mockup `FULLFILMENT.dc.html` y su handoff, para ver cómo queda
- * antes de hacer el backend. Los datos salen de
- * `components/fulfillment/datosDiseno.ts`; la franja ámbar de arriba lo dice.
- * El API irá bajo `/api/fulfillment/envios/…` (el prefijo `/api/fulfillment`
- * es el de Análisis; ver `backend/core/rbac.py:136`).
+ * ESTADO: POR ETAPAS. v0.521.0 subió el diseño completo con datos del mockup;
+ * v0.523.0 conecta la primera lectura real, `GET /api/fulfillment/envios`
+ * (salidas de Odoo a FULL/FBA/WFS clasificadas por canal y cuenta, reglas en
+ * backend/services/fulfillment_envios.py). Lo que aún es mockup vive en
+ * `components/fulfillment/datosDiseno.ts` y cada tarjeta que lo usa lleva el
+ * chip «diseño». El prefijo `/api/fulfillment` es el de Análisis: sus GET
+ * heredan `operador` (backend/core/rbac.py).
  *
  * La carpeta ES la ruta; `SesionGuard` ya lo monta `app/layout.tsx`, así que
  * aquí NO va — pero `AppNavbar` sí, porque el layout no lo pinta.
@@ -20,18 +21,19 @@
  * «fue cero» (caja blanca), y ninguna etapa se deduce restando otra.
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { ArrowUpDown, CircleDashed, Clock, Database, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowUpDown, CircleDashed, Clock, Database, RefreshCw } from "lucide-react";
 import AppNavbar from "@/components/AppNavbar";
+import { API_BASE, fetchSesion } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
-import { ENVIOS, FBA, FECHA_DISENO, PLAN, SKU_EJEMPLO, TABLERO } from "@/components/fulfillment/datosDiseno";
+import { FECHA_DISENO, PLAN, SKU_EJEMPLO } from "@/components/fulfillment/datosDiseno";
 import Tablero from "@/components/fulfillment/Tablero";
 import { DetalleEnvio, TablaEnvios } from "@/components/fulfillment/Envios";
 import Planeacion from "@/components/fulfillment/Planeacion";
 import PorSku from "@/components/fulfillment/PorSku";
 import Variaciones from "@/components/fulfillment/Variaciones";
-import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, num } from "@/components/fulfillment/ui";
-import type { Envio, FiltroCanal, FiltroCuenta, Rol } from "@/components/fulfillment/tipos";
+import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, dia, num } from "@/components/fulfillment/ui";
+import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/components/fulfillment/tipos";
 
 /** El rótulo se escribió así en la petición. Se cambia aquí y en AppNavbar. */
 const ROTULO = "FULLFILMENT";
@@ -51,14 +53,35 @@ const CANALES: { k: FiltroCanal; t: string; punto: string; titulo?: string }[] =
   { k: "todos", t: "Todos", punto: "#818CF8" },
   { k: "meli", t: "Mercado Libre", punto: "#FFE600" },
   { k: "amazon", t: "Amazon FBA", punto: "#FF9900" },
-  { k: "walmart", t: "Walmart WFS", punto: "#0071DC", titulo: "Sin una sola orden en Odoo: toda la vista queda rayada." },
+  { k: "walmart", t: "Walmart WFS", punto: "#0071DC", titulo: "Un solo envío a WFS en toda la historia." },
 ];
 
 export default function FulfillmentPage() {
   const [pantalla, setPantalla] = useState<Pantalla>("tablero");
   const [canal, setCanal] = useState<FiltroCanal>("todos");
   const [cuenta, setCuenta] = useState<FiltroCuenta>("todas");
-  const [abierto, setAbierto] = useState<Envio>(ENVIOS[0]);
+  const [abierto, setAbierto] = useState<Envio | null>(null);
+
+  // La lectura real: una sola para toda la pestaña (Tablero, Envíos y Detalle
+  // salen de la misma respuesta; el backend la guarda 2 min).
+  const [datos, setDatos] = useState<RespuestaEnvios | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(true);
+  const cargar = useCallback(async (refrescar = false) => {
+    setCargando(true);
+    setError(null);
+    try {
+      const r = await fetchSesion(`${API_BASE}/api/fulfillment/envios${refrescar ? "?refrescar=true" : ""}`,
+                                  { cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
+      setDatos(await r.json() as RespuestaEnvios);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+  useEffect(() => { void cargar(); }, [cargar]);
 
   // El rol real decide qué acciones se ven habilitadas. El cambiador «Vista
   // previa como» existe sólo mientras la pestaña es diseño: deja ver lo que ve
@@ -75,23 +98,29 @@ export default function FulfillmentPage() {
   const rol: Rol = rolVista ?? rolReal ?? "admin";
 
   const tema = TEMA_CANAL[canal];
-  const envios = useMemo(() => ENVIOS
+  const todos = useMemo(() => datos?.envios ?? [], [datos]);
+  const envios = useMemo(() => todos
     .filter((e) => canal === "todos" || e.canal === canal)
+    // Con una cuenta elegida, los envíos de ML sin cuenta NO entran: no se sabe de cuál son.
     .filter((e) => cuenta === "todas" || e.canal !== "meli" || e.cuenta === cuenta),
-  [canal, cuenta]);
+  [todos, canal, cuenta]);
+  const detalle = abierto ?? envios[0] ?? null;
 
   // La cifra grande sigue al canal: bajo el chip de Amazon no puede ir la de FULL.
-  const heroTablero = canal === "amazon"
-    ? { cifra: num(FBA.piezas), pie: "piezas enviadas a FBA", nota: `${FBA.ordenes} órdenes de salida · ${FBA.cuenta}` }
-    : canal === "walmart"
-      ? { cifra: "—", pie: "piezas enviadas a WFS", nota: "sin registro: no hay órdenes con socio Walmart" }
-      : { cifra: num(TABLERO.enviadoFull.piezas), pie: "piezas enviadas a FULL",
-          nota: `${TABLERO.enviadoFull.ordenes} órdenes · ${TABLERO.enviadoFull.desde} → ${FECHA_DISENO}` };
+  const grupo = datos?.resumen[
+    canal === "amazon" ? "amazon" : canal === "walmart" ? "walmart" : cuenta === "todas" ? "meli" : `meli:${cuenta}`];
+  const heroTablero = grupo
+    ? { cifra: num(grupo.piezas_enviadas),
+        pie: `piezas enviadas a ${canal === "amazon" ? "FBA" : canal === "walmart" ? "WFS" : "FULL"}`,
+        nota: `${num(grupo.hechas)} salidas validadas en Odoo · ${dia(grupo.desde)} → ${dia(grupo.hasta)}` }
+    : { cifra: "…", pie: cargando ? "leyendo Odoo" : "sin lectura", nota: "" };
   const hero = {
     tablero: heroTablero,
-    envios: { cifra: String(envios.length), pie: "envíos en la vista",
-              nota: `de ${TABLERO.enviadoFull.ordenes} órdenes de salida medidas` },
-    detalle: { cifra: num(abierto.piezas), pie: "piezas del envío", nota: `orden ${abierto.orden ?? "—"} · ${abierto.kam ?? "—"}` },
+    envios: { cifra: num(envios.length), pie: "envíos en la vista",
+              nota: `de ${num(todos.length)} salidas a FULL, FBA y WFS en Odoo` },
+    detalle: { cifra: detalle ? num(detalle.piezas ?? detalle.pedidas) : "—",
+               pie: detalle?.piezas === null ? "piezas pedidas, sin validar" : "piezas del envío",
+               nota: detalle ? `${detalle.orden ?? "—"} · ${detalle.salida ?? "—"} · ${detalle.kam ?? "—"}` : "" },
     planeacion: { cifra: num(PLAN.reduce((a, r) => a + r.pidio, 0)), pie: "piezas que pidió Andy",
                   nota: `${PLAN.length} renglones en la lista de la semana` },
     sku: { cifra: String(SKU_EJEMPLO.enFullHoy), pie: "piezas en FULL hoy",
@@ -107,13 +136,14 @@ export default function FulfillmentPage() {
       <AppNavbar />
       <main className="mx-auto max-w-[1600px] px-4 pb-10 pt-[22px] sm:px-6">
 
-        {/* Nadie debe confundir la maqueta con una lectura en vivo. */}
+        {/* Conviven datos en vivo y del mockup: nadie debe confundir unos con otros. */}
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-[12.5px] text-amber-900">
           <CircleDashed className="h-4 w-4 shrink-0 text-amber-600" />
-          <b>Vista de diseño.</b>
+          <b>En construcción por etapas.</b>
           <span>
-            Todavía no hay backend: las cifras agregadas son las que midió el diseño el {FECHA_DISENO} y los
-            envíos, la planeación y la ficha de SKU son ejemplos simulados. Ningún botón escribe en ninguna parte.
+            <b>En vivo desde Odoo</b>: envíos y su detalle, enviado a FULL/FBA/WFS, envíos sin número, días de
+            proceso y captura por KAM. <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): stock en FULL, agotado,
+            stock FBA, planeación, ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
           </span>
         </div>
 
@@ -141,7 +171,7 @@ export default function FulfillmentPage() {
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className={pastilla}><ArrowUpDown className="h-3.5 w-3.5" />Odoo → paquetería del canal → almacén del marketplace</span>
                 <span className={pastilla}><Clock className="h-3.5 w-3.5" />Semana ISO · hora de Ciudad de México</span>
-                <span className={pastilla}><Database className="h-3.5 w-3.5" />Recepciones: registro desde {FECHA_DISENO}</span>
+                <span className={pastilla}><Database className="h-3.5 w-3.5" />Envíos: Odoo en vivo · recepciones: aún no se leen</span>
               </div>
             </div>
             <div className="flex items-start gap-4">
@@ -150,10 +180,10 @@ export default function FulfillmentPage() {
                 <div className="mt-1 text-[11px] font-bold uppercase tracking-[.06em] opacity-70">{hero.pie}</div>
                 <div className="mt-2 text-xs opacity-85">{hero.nota}</div>
               </div>
-              <button type="button" disabled
-                      title="Vista de diseño: no hay nada que volver a leer todavía."
-                      className="cursor-not-allowed rounded-lg bg-white/15 p-2 opacity-60">
-                <RefreshCw className="h-4 w-4" />
+              <button type="button" onClick={() => void cargar(true)} disabled={cargando}
+                      title={`Volver a leer Odoo${datos?._cache ? ` · la lectura actual tiene ${datos._cache.edad_s} s` : ""}`}
+                      className="rounded-lg bg-white/15 p-2 transition hover:bg-white/25 disabled:opacity-50">
+                <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
               </button>
             </div>
           </div>
@@ -244,22 +274,46 @@ export default function FulfillmentPage() {
           <span className="ml-auto text-[11px] text-slate-400">Nunca se resta una etapa de otra para inventar la siguiente.</span>
         </div>
 
-        {pantalla === "tablero" && <Tablero canal={canal} cuenta={cuenta} />}
-        {pantalla === "envios" && (
-          <TablaEnvios envios={envios} total={TABLERO.enviadoFull.ordenes}
-                       onAbrir={(e) => { setAbierto(e); setPantalla("detalle"); }} />
+        {error && (
+          <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[12.5px] text-rose-800">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              <b>No se pudo leer Odoo.</b> Lo que depende de la lectura en vivo queda en blanco — no en cero.
+              Error del backend: <code className="font-mono">{error}</code>
+            </span>
+          </div>
         )}
-        {pantalla === "detalle" && <DetalleEnvio envio={abierto} onVolver={() => setPantalla("envios")} />}
+
+        {pantalla === "tablero" && <Tablero canal={canal} cuenta={cuenta} datos={datos} />}
+        {pantalla === "envios" && (datos
+          ? <TablaEnvios envios={envios} total={todos.length}
+                         onAbrir={(e) => { setAbierto(e); setPantalla("detalle"); }} />
+          : <Espera cargando={cargando} />)}
+        {pantalla === "detalle" && (detalle
+          ? <DetalleEnvio envio={detalle} onVolver={() => setPantalla("envios")} />
+          : <Espera cargando={cargando} />)}
         {pantalla === "planeacion" && <Planeacion rol={rol} />}
         {pantalla === "sku" && <PorSku />}
         {pantalla === "variaciones" && <Variaciones />}
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
-          Mockup de diseño. Las cifras de FULL, FBA, Odoo y días de proceso son las medidas el {FECHA_DISENO}; todo lo
-          rayado es un hueco real de datos, no un cero. Las recepciones, los rechazos y las tasas de validado/enviado
-          empiezan a existir el día que el panel las guarde.
+          {datos
+            ? `Fuente en vivo: ${datos.fuente}. Lectura de ${new Date(datos.generado).toLocaleString("es-MX", { timeZone: "America/Mexico_City" })}.`
+            : "Sin lectura de Odoo todavía."}{" "}
+          Canal por el nombre del socio; cuenta por quien creó la orden de venta (Thalia = San Corpe, Cinthya = Kubera;
+          evidencia orden por orden en docs/FULLFILMENT_EVIDENCIA_ORDENES.md). Todo lo rayado es un hueco real de
+          datos, no un cero.
         </p>
       </main>
+    </div>
+  );
+}
+
+function Espera({ cargando }: { cargando: boolean }) {
+  return (
+    <div className="mt-4 rounded-2xl border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500"
+         style={{ background: FONDO_RAYADO }}>
+      {cargando ? "Leyendo las salidas de Odoo…" : "Sin lectura de Odoo: revisa el error de arriba y vuelve a intentar."}
     </div>
   );
 }

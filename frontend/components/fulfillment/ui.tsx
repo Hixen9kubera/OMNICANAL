@@ -95,6 +95,34 @@ export function ChipSinRegistro({ titulo, texto = "sin registro" }: { titulo?: s
   );
 }
 
+/**
+ * De dónde sale la cifra de esa tarjeta. Mientras la pestaña se construye por
+ * etapas conviven datos en vivo y datos del mockup: cada tarjeta dice cuál es.
+ */
+export function ChipFuente({ vivo, titulo }: { vivo: boolean; titulo?: string }) {
+  return vivo ? (
+    <span title={titulo ?? "Se lee de Odoo en cada carga (caché de 2 min)."}
+          className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-[.05em] text-emerald-700">
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Odoo en vivo
+    </span>
+  ) : (
+    <span title={titulo ?? "Cifra del mockup de diseño (14-sep-2026): todavía no se lee de ningún sistema."}
+          className="inline-flex items-center rounded-full border border-dashed border-slate-300 bg-white px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-[.05em] text-slate-400">
+      diseño
+    </span>
+  );
+}
+
+/** «13 ene» en hora de CDMX. */
+export function dia(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const partes = Object.fromEntries(FMT_CDMX.formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
+  return `${Number(partes.day)} ${MESES[Number(partes.month) - 1]}`;
+}
+
+export const DIAS_SEMANA = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"] as const;
+export const DIAS_NOMBRE = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"] as const;
+
 export function ChipDatosDesde({ desde }: { desde: string }) {
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.04em] text-amber-700">
@@ -131,26 +159,48 @@ export function ChipCanal({ canal, cuenta }: { canal: Canal; cuenta: Cuenta | nu
 
 // ── El rail de siete etapas ─────────────────────────────────────────────────
 export interface Paso {
-  t: string; v: string; sub: string; tono: "dato" | "espera" | "hueco"; titulo: string;
+  t: string; corto: string; v: string; sub: string; tono: "dato" | "espera" | "hueco"; titulo: string;
 }
+
+/** Por qué la etapa «Recibido» no tiene dato, según el estado del envío real. */
+const SIN_LECTURA: Partial<Record<Envio["estado"], { sub: string; titulo: string }>> = {
+  salio: { sub: "aún no se guarda",
+           titulo: "Las recepciones de FULL todavía no se guardan. Ojo: la llegada casi nunca es INBOUND_RECEPTION, llega como TRANSFER_DELIVERY." },
+  sinEnlazar: { sub: "sin número, no se cruza",
+                titulo: "Sin número de envío no hay con qué cruzar lo que salió contra lo que llegó." },
+  fbaSinLectura: { sub: "Amazon: sin permiso",
+                   titulo: "La app de Amazon no tiene el permiso de Inbound (responde 403): no se pueden leer los envíos." },
+  wfsSinLectura: { sub: "falta leer WFS",
+                   titulo: "La API de WFS en México sí responde; falta conectarla al panel." },
+};
 
 /** Traduce las etapas de un envío a su lectura. Ninguna se deduce de otra. */
 export function pasosDe(e: Envio): Paso[] {
-  return ETAPAS.map(({ t, sub }, i) => {
+  const abierta = e.estado_odoo !== undefined && e.estado_odoo !== "done";
+  return ETAPAS.map(({ t, corto, sub }, i) => {
     const inst = e.etapas[i];
     if (inst) {
-      return { t, v: fecha(inst), sub, tono: "dato" as const,
+      return { t, corto, v: fecha(inst), sub, tono: "dato" as const,
                titulo: `${t} · ${fecha(inst)} (hora de CDMX)${inst.aprox ? " — hora observada, no la del evento" : ""}` };
+    }
+    // Salida real todavía sin validar: el dato viene (ámbar), no es un hueco.
+    if (i === 3 && abierta) {
+      return { t, corto, v: "en espera", sub: "bodega no ha validado", tono: "espera" as const,
+               titulo: `${t}: la salida existe en Odoo (${e.salida ?? ""}) y bodega aún no la valida.` };
+    }
+    if (i === 4 && !abierta && SIN_LECTURA[e.estado]) {
+      const s = SIN_LECTURA[e.estado]!;
+      return { t, corto, v: "sin lectura", sub: s.sub, tono: "hueco" as const, titulo: `${t}: ${s.titulo}` };
     }
     // «Recibido» en curso es ÁMBAR: el dato viene, no ha llegado. No se resta
     // enviadas − recibidas para inventar un rechazo.
     if (i === 4 && (e.estado === "recepcion" || e.estado === "amazonSinLectura")) {
       const amz = e.estado === "amazonSinLectura";
       const v = amz ? "sin lectura" : "en recepción";
-      return { t, v, sub: amz ? "Amazon no se consulta" : "el almacén no ha contado", tono: "espera" as const,
+      return { t, corto, v, sub: amz ? "Amazon no se consulta" : "el almacén no ha contado", tono: "espera" as const,
                titulo: `${t} · ${v} — no se resta para inventar un rechazo` };
     }
-    return { t, v: "sin dato", sub, tono: "hueco" as const,
+    return { t, corto, v: "sin dato", sub, tono: "hueco" as const,
              titulo: `${t}: no hay registro todavía. No es un cero.` };
   });
 }
@@ -171,7 +221,7 @@ export function Rail({ pasos, grande }: { pasos: Paso[]; grande?: boolean }) {
                style={p.tono === "hueco" ? { background: FONDO_RAYADO } : undefined}
                className={`min-w-0 flex-1 rounded-lg border ${tono.caja} ${grande ? "p-3" : "px-[7px] py-1.5"}`}>
             <div className={`truncate font-bold uppercase tracking-[.04em] ${tono.rotulo} ${grande ? "text-[10.5px]" : "text-[9.5px]"}`}>
-              {p.t}
+              {grande ? p.t : p.corto}
             </div>
             <div className={`mt-0.5 truncate font-mono font-bold ${tono.valor} ${grande ? "text-[13px]" : "text-[10.5px]"}`}>
               {p.v}
@@ -186,9 +236,18 @@ export function Rail({ pasos, grande }: { pasos: Paso[]; grande?: boolean }) {
 
 /** La tasa de recepción de un envío. «no calculable» y «en recepción» NO son 0%. */
 export function tasaDe(e: Envio): { texto: string; nota: string; clase: string; rayada?: boolean } {
+  const hueco = "border-dashed border-slate-300 text-slate-400";
   switch (e.estado) {
     case "sinEnlazar":
       return { texto: "no calculable", nota: "sin número de envío", clase: "border-amber-300 bg-amber-50 text-amber-700" };
+    case "abierta":
+      return { texto: "aún no sale", nota: "salida sin validar", clase: "border-amber-300 bg-amber-50 text-amber-700" };
+    case "salio":
+      return { texto: "sin registro", nota: "recepciones aún no se leen", clase: hueco, rayada: true };
+    case "fbaSinLectura":
+      return { texto: "sin registro", nota: "Amazon no deja leer (403)", clase: hueco, rayada: true };
+    case "wfsSinLectura":
+      return { texto: "sin registro", nota: "falta leer la API de WFS", clase: hueco, rayada: true };
     case "wfs":
       return { texto: "sin registro", nota: "no hay órdenes WFS", clase: "border-dashed border-slate-300 text-slate-400", rayada: true };
     case "recepcion":

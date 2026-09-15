@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.523.0 — FULLFILMENT lee Odoo: cada envío a FULL, FBA y WFS con su orden, su salida y su cuenta
+
+Brandon: *"dale, pero indícame de dónde obtienes los datos, dame la orden de venta y cuáles fueron
+tus reglas"*. Primera lectura REAL de la pestaña. **Solo lectura de Odoo**: no escribe en ninguna
+parte, no enciende ningún flujo.
+
+**Endpoints** (`routers/fulfillment_envios.py`, reglas en `services/fulfillment_envios.py`):
+- `GET /api/fulfillment/envios` — las salidas de Odoo a ML FULL, Amazon FBA y Walmart WFS, con
+  canal, cuenta **y la regla que la asignó**, orden de venta (S#####), salida (TEXCO/OUT/…),
+  referencia tecleada, número de envío normalizado, piezas y un resumen por canal/cuenta (días de
+  la semana en hora de CDMX, mediana y p90 de orden → validación). Sin renglones: pesaría 450 KB.
+- `GET /api/fulfillment/envios/{id}` — una salida con sus renglones por SKU.
+- XML-RPC en `asyncio.to_thread` (regla 11) y `cache_lectura` de 2 min; los dos comparten lectura.
+- Cuelgan de `/api/fulfillment` → heredan `GET … operador` de `core/rbac.py`. Sin POST.
+
+**Las reglas, medidas el 14-sep** (evidencia orden por orden en `docs/FULLFILMENT_EVIDENCIA_ORDENES.md`,
+sondeo completo en `docs/FULLFILMENT_SONDEO_DESTINOS.md`):
+- En Odoo **ningún campo dice canal ni cuenta**: todas las salidas van a `Customers` y el socio es un
+  contacto nuevo por orden (219 "FULL"). Canal por el NOMBRE del socio: `FULL…` y `MERCADO LIBRE` →
+  ML FULL; `AMAZON…` con ≥40 piezas → FBA (con 1–7 son ventas MFN y se excluyen: hoy 35); `WFS…` →
+  WFS (los `WALMART #…` son ventas S2H). El filtro viejo por subcadena (`odoo._causa`) contaba 1,065
+  "envíos"; son 230.
+- **Cuenta de ML = quién creó la orden de venta**: Thalia (usuario 152) → San Corpe, Cinthya (153) →
+  Kubera. Probado contra la API de ML: 27 de 27 números de Thalia en SANCORFASHION, 21 de 21 de
+  Cinthya en BEKURA, cero cruzados; verificado otra vez en vivo el 15-sep (`S33830`, `S32443`,
+  `S30942`, `S26840`). Otro creador → **sin cuenta** (hoy 5: Vale, Liliana, Administrador); no se
+  adivina. Cada envío enseña su `cuenta_regla`.
+- `date_done` es "salida validada en Odoo", **no el camión**: en 16 de 43 envíos ML ya había recibido antes.
+
+**Pantalla:**
+- Envíos y Detalle salen de Odoo. Cada renglón enseña envío, orden, salida, quién la armó y por qué
+  tiene esa cuenta; el detalle agrega «De dónde sale este envío» (modelo de Odoo, referencia tecleada,
+  origen del número) y los SKUs con pedidas y enviadas.
+- Tablero: enviado a FULL/FBA/WFS, envíos sin número, días de proceso y captura por KAM (con los
+  últimos 30 días: solo 1 de 17 salidas a FULL trae número) en vivo. Stock en FULL, agotado y stock
+  FBA siguen siendo del mockup y llevan el chip «diseño»; planeación, ficha de SKU y variaciones, igual.
+- Etapas nuevas del rail: «Orden de venta» (la crea la KAM) y «Salida validada». Recibido va «sin
+  lectura» con el motivo por canal (FULL: aún no se guarda; FBA: 403 de Amazon; WFS: falta conectar).
+- Correcciones al diseño de la v0.521.0: las cuentas de los ejemplos estaban al revés (Thalía es San
+  Corpe) y WFS no está vacío (hay un envío de 304 piezas).
+
+Medido al subir: 217 salidas a FULL (118,250 piezas, 57 sin número), 12 a FBA (4,296), 1 a WFS
+(304). Contra la evidencia de ML: 155 coinciden, 4 contradicen (3 envíos gemelos conocidos y 1 orden
+abierta) y 1 queda sin cuenta. Pruebas: `tests/test_fulfillment_envios.py` 15/15; `tsc` limpio y
+`next build` en verde; pantallas revisadas contra Odoo real con un servidor mínimo que solo monta este
+router (sin scheduler).
+
 ### v0.522.0 — Los envíos combinados se ven en el panel: mismo color, "1 caja", una sola etiqueta
 
 Brandon, viendo S38339/S38343 y S38489/S38490 con la misma guía: *"debe verse

@@ -1,21 +1,21 @@
 /**
  * DATOS DE DISEÑO de la pestaña FULLFILMENT — todavía no hay backend.
  *
- * Salen del mockup `FULLFILMENT.dc.html` (handoff de diseño, 14-sep-2026) y
- * valen como CONTRATO DE FORMA, no de contenido:
- *   · las cifras agregadas (116,895 piezas, 204 órdenes, días de proceso, stock
- *     FULL por cuenta, FBA) son las que midió la sesión de diseño ese día;
- *   · los envíos, renglones de planeación y la ficha de SKU son EJEMPLOS
- *     simulados para juzgar cómo se ve cada estado.
+ * Salen del mockup `FULLFILMENT.dc.html` (handoff de diseño, 14-sep-2026) y valen
+ * como CONTRATO DE FORMA, no de contenido. Desde v0.523.0 los envíos, el enviado
+ * a FULL/FBA/WFS, los envíos sin número, los días de proceso y la captura por
+ * KAM ya salen de Odoo (`/api/fulfillment/envios`); aquí queda SOLO lo que aún no
+ * tiene fuente:
+ *   · stock en FULL por cuenta y stock FBA (cifras del mockup, cada tarjeta que
+ *     las usa lleva el chip «diseño»);
+ *   · planeación semanal y ficha de SKU (ejemplos simulados);
+ *   · los ejemplos de la pantalla de Variaciones (`TABLERO`, `DIAS`, `ENVIOS`).
  *
- * Cuando exista `/api/fulfillment/envios/…`, este archivo se borra y la página
- * lee de ahí con los mismos tipos (`tipos.ts`). Mientras exista, la página
- * enseña la franja «Vista de diseño» arriba: nadie debe confundir estas cifras
- * con una lectura en vivo.
+ * Cada bloque se borra el día que su dato tenga fuente.
  */
 
 import type {
-  CuentaFull, DiaSemana, Envio, Instante, LineaEnvio, RenglonPlan,
+  CuentaFull, DiaSemana, Envio, Instante, RenglonPlan,
 } from "./tipos";
 
 export const FECHA_DISENO = "14 sep 2026";
@@ -26,10 +26,6 @@ const cdmx = (fecha: string, aprox = false): Instante =>
 
 export const TABLERO = {
   enviadoFull: { piezas: 116_895, ordenes: 204, desde: "13 ene", hasta: "14 sep", pctDePedido: 97.9 },
-  sinEnlazar: { ordenes: 49, de: 204, pct: 24 },
-  /** Recepciones del almacén en los 3 días que retiene el aviso crudo de ML. */
-  ventana3Dias: { recepciones: 0, retiros: 44, ventas: 45, ajustes: 18 },
-  proceso: { medianaDias: 8, p90Dias: 15 },
 };
 
 export const DIAS: DiaSemana[] = [
@@ -53,40 +49,34 @@ export const FBA = {
   ordenes: 40, piezas: 4_353, pctDePedido: 100,
 };
 
-/** Calidad con la que cada KAM teclea el número de envío en la orden de Odoo. */
-export const CAPTURA_KAM = [
-  { kam: "Thalía", conNumero: 89, ordenes: 111, formato: "75652884" },
-  { kam: "Cinthya", conNumero: 50, ordenes: 90, formato: "Envío #70688003" },
-];
-
 export const ENVIOS: Envio[] = [
   {
-    orden: "S04918", envio: "75652884", canal: "meli", cuenta: "Kubera", kam: "Thalía",
+    orden: "S04918", envio: "75652884", canal: "meli", cuenta: "San Corpe", kam: "Thalía",
     piezas: 1_240, pedidas: 1_265, cajas: 31, estado: "recepcion",
     etapas: [cdmx("2026-09-02T11:02"), cdmx("2026-09-02T17:40"), cdmx("2026-09-03T09:15"),
              cdmx("2026-09-05T13:22"), null, null, null],
   },
   {
-    orden: "S04902", envio: "70688003", canal: "meli", cuenta: "San Corpe", kam: "Cinthya",
+    orden: "S04902", envio: "70688003", canal: "meli", cuenta: "Kubera", kam: "Cinthya",
     piezas: 890, pedidas: 890, cajas: 23, estado: "cerrado", tasaPct: 96,
     etapas: [cdmx("2026-08-26T10:40"), cdmx("2026-08-26T16:05"), cdmx("2026-08-27T08:58"),
              cdmx("2026-08-29T12:10"), cdmx("2026-08-31T09:14"), cdmx("2026-08-31T11:00", true),
              cdmx("2026-09-01T16:41")],
   },
   {
-    orden: "S04877", envio: null, canal: "meli", cuenta: "Kubera", kam: "Thalía",
+    orden: "S04877", envio: null, canal: "meli", cuenta: "San Corpe", kam: "Thalía",
     piezas: 430, pedidas: 455, cajas: 11, estado: "sinEnlazar",
     etapas: [null, null, cdmx("2026-08-20T09:30"), cdmx("2026-08-22T14:48"), null, null, null],
   },
   {
-    orden: "S04861", envio: "71421571", canal: "meli", cuenta: "San Corpe", kam: "Cinthya",
+    orden: "S04861", envio: "71421571", canal: "meli", cuenta: "Kubera", kam: "Cinthya",
     piezas: 1_690, pedidas: 1_690, cajas: 42, estado: "cerrado", tasaPct: 88,
     etapas: [cdmx("2026-08-18T10:15"), cdmx("2026-08-18T18:20"), cdmx("2026-08-19T09:02"),
              cdmx("2026-08-21T11:35"), cdmx("2026-08-24T08:40"), cdmx("2026-08-24T10:30", true),
              cdmx("2026-08-24T21:07")],
   },
   {
-    orden: "S04840", envio: "71421653", canal: "meli", cuenta: "Kubera", kam: "Thalía",
+    orden: "S04840", envio: "71421653", canal: "meli", cuenta: "San Corpe", kam: "Thalía",
     piezas: 310, pedidas: 310, cajas: 8, estado: "sinVenta", tasaPct: 100,
     etapas: [cdmx("2026-08-11T11:48"), cdmx("2026-08-11T15:30"), cdmx("2026-08-12T08:45"),
              cdmx("2026-08-14T10:02"), cdmx("2026-08-18T09:20"), cdmx("2026-08-18T12:00", true),
@@ -104,50 +94,6 @@ export const ENVIOS: Envio[] = [
     etapas: [null, null, null, null, null, null, null],
   },
 ];
-
-const LINEAS_BASE = [
-  { sku: "TEC-0664-ROS", nombre: "Set de brochas rosa", publicacion: "MLM1874553201", enviadas: 420, cajas: 11 },
-  { sku: "ORG-0841-ROS", nombre: "Organizador 6 cajones", publicacion: "MLM1902114887", enviadas: 96, cajas: 4 },
-  { sku: "MASC-1022-CAF", nombre: "Mascarilla café x24", publicacion: "MLM1755320914", enviadas: 300, cajas: 7 },
-  { sku: "HERR-0029", nombre: "Caja de herramientas", publicacion: "MLM1688204471", enviadas: 274, cajas: 6 },
-  { sku: "EST-0091", nombre: "Repisa flotante", publicacion: "MLM1640998233", enviadas: 150, cajas: 3 },
-];
-
-/**
- * Renglones simulados de un envío. Sólo un envío CERRADO trae recibidas y
- * rechazadas; en cualquier otro estado van en null — y NUNCA se calculan
- * restando recibidas de enviadas.
- */
-export function lineasDe(e: Envio): LineaEnvio[] {
-  const cerrado = e.estado === "cerrado" || e.estado === "sinVenta";
-  const pct = (e.tasaPct ?? 96) / 100;
-  // Se reparte el envío entre los cinco renglones de ejemplo para que el total
-  // de la tabla cuadre con el del renglón de Envíos.
-  const base = LINEAS_BASE.reduce((a, l) => a + l.enviadas, 0);
-  const piezas = e.piezas ?? base;
-  const enviadas = LINEAS_BASE.map((l) => Math.round((l.enviadas * piezas) / base));
-  enviadas[0] += piezas - enviadas.reduce((a, v) => a + v, 0);
-  // Lo que pidió la orden de más cae en el primer renglón (el recorte de ejemplo).
-  const recorte = Math.max(0, (e.pedidas ?? piezas) - piezas);
-  // Solicitadas y validadas sólo existen si el rail tiene esas etapas: una
-  // columna con cifra bajo una etapa «sin dato» se contradiría.
-  const haySolicitud = !!e.etapas[0];
-  const hayValidacion = !!e.etapas[1];
-  return LINEAS_BASE.map((l, i) => {
-    const env = enviadas[i];
-    const recibidas = cerrado ? Math.round(env * pct) : null;
-    return {
-      // Los MLM de ejemplo no aplican a un envío de FBA: ahí va «—», no un ID ajeno.
-      sku: l.sku, nombre: l.nombre, publicacion: e.canal === "meli" ? l.publicacion : null,
-      solicitadas: haySolicitud ? env + (i === 0 ? recorte : 0) : null,
-      validadas: hayValidacion ? env : null,
-      enviadas: env,
-      recibidas,
-      rechazadas: cerrado && recibidas !== null ? env - recibidas : null,
-      cajas: Math.max(1, Math.round((l.cajas * env) / l.enviadas)),
-    };
-  });
-}
 
 export const PLAN: RenglonPlan[] = [
   { sku: "TEC-0664-ROS", nombre: "Set de brochas rosa", destino: "meli_bekura", libre: 318, pidio: 240, bodega: 240, ia: 210, estado: "aprobado" },

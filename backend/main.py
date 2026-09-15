@@ -25,7 +25,7 @@ from models.schemas import HealthCheck
 from routers import (alertas as r_alertas, auth, automatizacion, canales, competencia,
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
-                     fba, fulfillment, ia, imagenes, inventario, metricas, migracion,
+                     fba, fulfillment, fulfillment_envios, ia, imagenes, inventario, metricas, migracion,
                      productos, publicaciones, publicar, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
@@ -170,7 +170,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.522.0",
+    version="0.523.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -235,6 +235,9 @@ app.include_router(auth.router)
 app.include_router(migracion.router)
 app.include_router(fanout.router)
 app.include_router(fulfillment.router)
+# FULLFILMENT · envíos a FULL/FBA/WFS leídos de Odoo (lectura pura). Va bajo
+# /api/fulfillment/envios: no choca con ninguna ruta de Análisis.
+app.include_router(fulfillment_envios.router)
 app.include_router(fba.router)
 app.include_router(metricas.router)
 app.include_router(tiktok.router)
@@ -258,7 +261,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.522.0",
+        "version": "0.523.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }
