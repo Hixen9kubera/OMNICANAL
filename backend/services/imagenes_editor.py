@@ -13,6 +13,9 @@ y este servicio:
      Con GALERIA_VARIANTE y un SKU variación, el paso 5 es otro: las editadas
      van a la galería PROPIA de esa variación (`imagenes_variante.reemplazar`)
      y el padre, las hermanas y commercekit_image_gallery no se tocan.
+     Con GALERIA_VARIANTE y el SKU PADRE, tras el paso 5 de siempre los ids
+     viejos se cambian también en `_kubera_galeria` de las hijas que los
+     tengan (`imagenes_variante.reemplazar_en_hijas`).
 
 El avance se consulta en GET /api/imagenes/{sku}/progreso (cola en memoria), con
 estado POR IMAGEN (pendiente/procesando/listo/error) para el label de carga del
@@ -558,6 +561,21 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
             await woocommerce.reemplazar_imagenes_galeria(int(parent_id), id_map)
         except Exception as exc:  # noqa: BLE001
             log.warning("reemplazar galería %s: %s", sku, exc)
+        # A2 · Con GALERIA_VARIANTE, las hijas que ya ADOPTARON una foto del
+        # padre la tienen copiada en su `_kubera_galeria`, que la rama de arriba
+        # no conoce: seguirían publicando la original sin editar. Se propagan
+        # los ids SÓLO en las hijas que tengan alguno (cada una bajo su candado);
+        # la miniatura de las hijas ya la cambió `reemplazar_imagenes_galeria` y
+        # no se vuelve a escribir. Va DESPUÉS y no en paralelo: así la relectura
+        # de cada hija ya ve su miniatura nueva. Flag apagado: no se llama.
+        if settings.galeria_variante:
+            from services import imagenes_variante
+            try:
+                job["hijas_galeria"] = await imagenes_variante.reemplazar_en_hijas(
+                    int(parent_id), id_map)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("galería de hijas %s: %s", sku, exc)
+                job["hijas_galeria"] = {"error": str(exc)}
 
     errores = sum(1 for i in job["imagenes"] if i["estado"] == "error")
     job["estado"] = "completado"

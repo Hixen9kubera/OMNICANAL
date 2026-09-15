@@ -191,6 +191,39 @@ def _imagenes_de_post(filas_post: dict[str, list[dict[str, Any]]]
     return (miniatura[0] if miniatura else None, galeria, len(g_filas))
 
 
+def _galeria_de_crear_vigente(filas_post: dict[str, list[dict[str, Any]]]) -> list[int]:
+    """
+    Las fotos de galería que hacen a una foto del padre "DE ESTA HERMANA" (ver
+    `heredadas`): las que Crear le puso (`_product_image_gallery`, fila
+    ganadora) y que siguen en su galería efectiva. NO toda su galería efectiva.
+
+    POR QUÉ (medido el 14-sep-2026 con lecturas reales y escrituras dobles,
+    `rev_real_hermanas.py`): desde el sembrado de A1 (`_base_editable`), la
+    primera edición de una variante copia a su `_kubera_galeria` las fotos
+    GENÉRICAS del padre que ya publicaba. Si esa meta contara como "suya",
+    adoptar una foto en MASC-1022-ROS (wc 138777) dejaba a su hermana
+    MASC-1022-CAF (wc 138776) de 6 fotos publicables en 0 —regla sin_fotos—, sin
+    ningún aviso: el de `_guardar` sólo mide la variante editada. Y cuando CAF
+    hiciera su primera edición, su sembrado ya saldría sin ellas y la pérdida
+    quedaría fija en su meta.
+
+    Lo de Crear sí es de la hermana (lo subió Crear para ese SKU y el padre lo
+    acumula en su cajón de sastre). La intersección con la galería efectiva
+    hace que, si en el Estudio le QUITAN a la hermana una foto que Crear le
+    puso por error (el "clon sin limpiar"), deje de reclamarla.
+
+    Lo que se pierde a propósito: adoptar una foto genérica del padre ya no la
+    "reclama" frente a las hermanas (con el sembrado no hay forma de distinguir
+    la adoptada de la sembrada sin guardar más metas). Para reclamarla está la
+    principal: la miniatura de una hermana SÍ se sigue descartando.
+    """
+    legado = filas_post.get(META_GALERIA) or []
+    if not legado:
+        return []
+    efectiva, _, _ = _galeria_efectiva(filas_post)
+    return [i for i in _ids_csv(_ganadora(legado)["value"]) if i in efectiva]
+
+
 def _adjuntos(ids: list[int]) -> dict[int, dict[str, str]]:
     """
     { id: {src, archivo} } de los adjuntos que EXISTEN. `src` es el `guid`
@@ -260,6 +293,39 @@ def _tokens(texto: str) -> list[str]:
     return _TOKEN.findall(str(texto or "").upper())
 
 
+def _formas_sku(sku: str) -> list[list[str]]:
+    """
+    Las secuencias de tokens con las que un SKU puede aparecer en un NOMBRE de
+    archivo:
+
+      1. el SKU tal cual partido en tokens: `CALZ-0194-BLN/AZL-40` →
+         CALZ 0194 BLN AZL 40 (lo que ya se buscaba);
+      2. cada segmento separado por `-` reducido a alfanumérico:
+         CALZ 0194 BLNAZL 40.
+
+    POR QUÉ LA SEGUNDA (medido en SÓLO LECTURA el 14-sep-2026): WordPress quita
+    la diagonal al sanear el nombre del archivo, así que la foto de
+    `CALZ-0194-BLN/GRI-40` se llama `CALZ-0194-BLNGRI-40.png` —un token
+    BLNGRI— y la forma 1 no casaba nunca. La variación CALZ-0194-BLN/AZL-40
+    (wc 27587) heredaba del padre y publicaba BLNGRI-40/-39/-38 de las hermanas
+    grises. Hay 293 SKUs con diagonal en el catálogo.
+
+    LÍMITE CONOCIDO (a propósito, sin resolver): una foto nombrada SOLO por el
+    color (`zapato-gris-2.jpg`) o con un nombre genérico (`H4da94…webp`) no
+    lleva ningún SKU y se sigue publicando como del padre. Adivinar colores por
+    palabra suelta daría falsos descartes (GRIS ⊂ GRISACEO, NEGRO en marcas…).
+    """
+    formas: list[list[str]] = []
+    t = _tokens(sku)
+    if t:
+        formas.append(t)
+    segs = [re.sub(r"[^A-Z0-9]", "", s) for s in str(sku or "").upper().split("-")]
+    segs = [s for s in segs if s]
+    if segs and segs not in formas:
+        formas.append(segs)
+    return formas
+
+
 def _lleva_sku(tokens_archivo: list[str], sku: str) -> bool:
     """
     ¿El nombre del archivo contiene el SKU como secuencia COMPLETA de tokens?
@@ -267,12 +333,17 @@ def _lleva_sku(tokens_archivo: list[str], sku: str) -> bool:
     Por token y no por subcadena, a propósito: `ROP-0509-NEG-XL-1.jpg` NO lleva
     el SKU `ROP-0509-NEG-X` (XL ≠ X), y con `in` sobre el texto sí "casaría" y
     se descartaría la foto de la talla que se vende.
+
+    Se prueba cada forma de `_formas_sku` (el SKU con diagonal pierde la
+    diagonal en el nombre del archivo).
     """
-    t = _tokens(sku)
-    if not t or len(t) > len(tokens_archivo):
-        return False
-    n = len(t)
-    return any(tokens_archivo[i:i + n] == t for i in range(len(tokens_archivo) - n + 1))
+    for t in _formas_sku(sku):
+        n = len(t)
+        if n > len(tokens_archivo):
+            continue
+        if any(tokens_archivo[i:i + n] == t for i in range(len(tokens_archivo) - n + 1)):
+            return True
+    return False
 
 
 def _img(i: int | None, adj: dict[int, dict[str, str]]) -> dict[str, Any] | None:
@@ -344,8 +415,10 @@ def heredadas(wc_id: int) -> list[dict[str, Any]] | None:
            se_publica: bool, motivo: str | None }]
 
     `se_publica=False` cuando la foto es de una HERMANA:
-      • es la miniatura o está en la galería propia de otra variación del
-        mismo padre (y no es también de ésta — 98 comparten miniatura), o
+      • es la miniatura de otra variación del mismo padre, o está en la
+        galería que CREAR le puso a esa hermana y ella sigue teniendo (ver
+        `_galeria_de_crear_vigente`) — y no es también de ésta: 98 comparten
+        miniatura —, o
       • el NOMBRE del archivo lleva el SKU de una hermana y no el propio
         (comparación por token, ver `_lleva_sku`), o
       • el adjunto ya no existe.
@@ -378,7 +451,8 @@ def heredadas(wc_id: int) -> list[dict[str, Any]] | None:
     # id → (sku de la hermana, "miniatura" | "galería")
     de_hermana: dict[int, tuple[str, str]] = {}
     for h in hermanas:
-        h_min, h_gal, _ = _imagenes_de_post(filas.get(h, {}))
+        h_min, _, _ = _imagenes_de_post(filas.get(h, {}))
+        h_gal = _galeria_de_crear_vigente(filas.get(h, {}))
         etiqueta = skus.get(h) or f"wc_id {h}"
         if h_min:
             de_hermana.setdefault(h_min, (etiqueta, "miniatura"))
@@ -422,7 +496,12 @@ def para_publicar(wc_id: int, *, _propias: dict[str, Any] | None = None,
 
     info = { regla: "propias" | "principal_y_padre" | "solo_padre" | "sin_fotos",
              propias: n, heredadas_usadas: n, descartadas_hermanas: n,
-             sin_fotos: bool, descartes: [{id, motivo}], filas_galeria: n }
+             sin_fotos: bool, descartes: [{id, motivo}], filas_galeria: n,
+             ids: [ids de adjunto en el orden de `urls`] }
+
+    `ids` es lo que usa el SEMBRADO de la galería propia (ver
+    `_base_editable`): para copiar lo que hoy se publica hace falta el adjunto,
+    no la URL.
 
     `_propias` / `_heredadas`: lo ya leído por quien llama (la vista del
     Estudio lee las dos cosas y no tiene por qué repetir ~10 consultas). Los
@@ -434,6 +513,7 @@ def para_publicar(wc_id: int, *, _propias: dict[str, Any] | None = None,
     if p is None:
         return None
     urls: list[str] = []
+    ids: list[int] = []
     vistos: set[int] = set()
 
     def _sumar(img: dict[str, Any] | None) -> bool:
@@ -441,6 +521,7 @@ def para_publicar(wc_id: int, *, _propias: dict[str, Any] | None = None,
             return False
         vistos.add(img["id"])
         urls.append(img["src"])
+        ids.append(int(img["id"]))
         return True
 
     descartes: list[dict[str, Any]] = []
@@ -477,6 +558,7 @@ def para_publicar(wc_id: int, *, _propias: dict[str, Any] | None = None,
         "sin_fotos": not urls,
         "descartes": descartes,
         "filas_galeria": p["filas_galeria"],
+        "ids": ids,
     }
     return urls, info
 
@@ -589,6 +671,13 @@ def _aviso_vista(p: dict[str, Any], info: dict[str, Any]) -> str | None:
         partes.append(f"La galería de esta variante viene de Crear y WordPress guarda "
                       f"{p['galeria_filas_distintas']} versiones distintas: se muestra la "
                       f"más reciente, y la primera edición la deja fija.")
+    if p.get("galeria_fuente") == "propia" and (p.get("filas_galeria") or 0) > 1:
+        # A3. `_kubera_galeria` se escribe por su id (ver `_meta_galeria`) y no
+        # debería repetirse nunca; si se repite es que la REST volvió a hacer lo
+        # de `_product_image_gallery` (180 de 219 variaciones duplicadas). Manda
+        # la fila más alta, pero la tienda y otros lectores pueden ver otra.
+        partes.append(f"WooCommerce guardó la galería en {p['filas_galeria']} filas: "
+                      f"avisa a sistemas.")
     return " ".join(partes) or None
 
 
@@ -611,6 +700,13 @@ def vista(wc_id: int) -> dict[str, Any] | None:
 
     None si `wc_id` no es una variación.
     """
+    r = _vista_e_info(wc_id)
+    return r[0] if r else None
+
+
+def _vista_e_info(wc_id: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    """(vista, propias, info de `para_publicar`) con UNA sola ronda de lecturas:
+    `_guardar` necesita las tres para comparar lo que se publicaba antes y después."""
     p = propias(wc_id)
     if p is None:
         return None
@@ -635,7 +731,7 @@ def vista(wc_id: int) -> dict[str, Any] | None:
                       for x in h if x.get("src") and x["id"] not in propias_ids],
         "regla": info.get("regla"),
         "aviso": _aviso_vista(p, info),
-    }
+    }, p, info
 
 
 # ── Escritura de bajo nivel ──────────────────────────────────────────────────
@@ -795,7 +891,8 @@ def candado(wc_id: int) -> asyncio.Lock:
 
 
 async def _guardar(wc_id: int, antes: dict[str, Any], principal: int | None,
-                   galeria: list[int]) -> dict[str, Any]:
+                   galeria: list[int], *,
+                   heredadas_antes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """
     Escribe principal + galería propia en UNA sola PUT y devuelve la vista
     RELEÍDA. Quien llama ya tiene el candado y leyó `antes` DENTRO de él.
@@ -810,6 +907,28 @@ async def _guardar(wc_id: int, antes: dict[str, Any], principal: int | None,
     versión es más vieja y contesta 400, no se escribe nada y la relectura lo
     dice (`ok: false` + aviso).
 
+    A1 · RED DE SEGURIDAD DE LO PUBLICABLE. Antes de escribir se mide
+    `para_publicar` con `antes` (y `heredadas_antes` si quien llama ya las
+    leyó) y después con lo releído. Si baja el número de fotos que se mandarían
+    a los canales, el aviso lo dice: «Se publicarán N fotos (antes M)». El
+    sembrado de `_base_editable` hace que eso sólo pase cuando alguien QUITA
+    fotos; si aparece en otro caso, es un defecto que conviene ver en pantalla
+    y no descubrir en el anuncio.
+
+    A3 · FILAS DUPLICADAS. Tras releer se cuentan las filas de
+    `_kubera_galeria` (la relectura es un SELECT de TODAS las filas, ver
+    `_filas_imagen`). Más de una → log.warning, y la vista lo avisa.
+
+    HERMANAS. Lo único de esta escritura que cambia lo publicable de OTRA
+    variante es la principal: la miniatura de una variación descarta esa foto
+    del padre en sus hermanas (ver `heredadas`). Medido con lecturas reales y
+    PUT dobles (`rev_real_correcciones.py`): adoptar la segunda heredada en
+    MUE-0160-NEG (wc 15203, sin miniatura) la hace principal, y sus 2 hermanas
+    pasan de 5 a 4 fotos; en COC-0154-NAR, igual. Es a propósito —la portada de
+    un color no debe salir en el anuncio de otro—, pero no puede pasar callado:
+    si la principal nueva es una foto del padre se avisa cuántas hermanas sin
+    galería propia la heredan ("hasta": alguna ya la descartaba por nombre).
+
     Devuelve { ok, http, sin_cambios, **vista, aviso }.
     """
     from services import woocommerce
@@ -821,7 +940,11 @@ async def _guardar(wc_id: int, antes: dict[str, Any], principal: int | None,
     cambia_galeria = (galeria != galeria_antes or antes.get("galeria_fuente") != "propia")
 
     http: int | None = None
+    info_antes: dict[str, Any] | None = None
     if cambia_principal or cambia_galeria:
+        r_antes = await asyncio.to_thread(
+            para_publicar, int(wc_id), _propias=antes, _heredadas=heredadas_antes)
+        info_antes = r_antes[1] if r_antes else None
         ruta = await _ruta_variacion(int(wc_id))
         cuerpo: dict[str, Any] = {}
         async with woocommerce._client() as cli:  # noqa: SLF001
@@ -836,14 +959,34 @@ async def _guardar(wc_id: int, antes: dict[str, Any], principal: int | None,
                 log.warning("galería variante %s: PUT %s → %s %s",
                             wc_id, ruta, http, rp.text[:200])
 
-    despues = await asyncio.to_thread(propias, int(wc_id))
-    v = await asyncio.to_thread(vista, int(wc_id))
-    if despues is None or v is None:
+    releido = await asyncio.to_thread(_vista_e_info, int(wc_id))
+    if releido is None:
         raise SinBaseWP(f"No se pudo releer la variación {wc_id} después de escribir.")
+    v, despues, info_despues = releido
     cuadra = (despues.get("principal_guardada") == principal
               and despues.get("galeria_guardada") == galeria)
     ok = bool(cuadra and (http is None or http < 300))
     avisos = [v.get("aviso")] if v.get("aviso") else []
+    if despues.get("galeria_fuente") == "propia" and (despues.get("filas_galeria") or 0) > 1:
+        log.warning("galería variante %s: %s quedó en %s filas tras escribir (la REST "
+                    "la duplicó); manda la de meta_id más alto", wc_id,
+                    META_GALERIA_PROPIA, despues["filas_galeria"])
+    if info_antes is not None:
+        n_antes = len(info_antes.get("ids") or [])
+        n_despues = len(info_despues.get("ids") or [])
+        if n_despues < n_antes:
+            regla = ""
+            if info_antes.get("regla") != info_despues.get("regla"):
+                regla = f"; la regla pasó de {info_antes.get('regla')} a {info_despues.get('regla')}"
+            avisos.append(f"Se publicarán {n_despues} fotos (antes {n_antes}{regla}).")
+    if (http is not None and http < 300 and principal
+            and principal != principal_antes and despues.get("principal_guardada") == principal):
+        n_h = await asyncio.to_thread(_hermanas_que_heredan, int(despues["padre"]),
+                                      int(wc_id), int(principal))
+        if n_h:
+            avisos.append(f"La foto {principal} también es del padre y ahora es la principal "
+                          f"de esta variante: hasta {n_h} hermana(s) que heredan del padre "
+                          f"dejan de publicarla.")
     if not ok:
         avisos.insert(0, (
             f"WooCommerce respondió {http} y la galería releída no es la pedida "
@@ -854,11 +997,102 @@ async def _guardar(wc_id: int, antes: dict[str, Any], principal: int | None,
             **v, "aviso": " ".join(avisos) or None}
 
 
+def _hermanas_que_heredan(padre: int, wc_id: int, image_id: int) -> int:
+    """
+    Cuántas hermanas de `wc_id` heredan del padre (galería efectiva vacía) una
+    foto que es del padre (`image_id` en su portada o galería) sin tenerla de
+    miniatura. 0 si la foto no es del padre. Dos consultas, sin `heredadas` por
+    hermana: es un aviso, no una decisión.
+    """
+    hermanas = _hermanas(int(padre), int(wc_id))
+    if not hermanas:
+        return 0
+    filas = _filas_imagen([int(padre), *hermanas])
+    p_min, p_gal, _ = _imagenes_de_post(filas.get(int(padre), {}))
+    if int(image_id) != p_min and int(image_id) not in p_gal:
+        return 0
+    n = 0
+    for h in hermanas:
+        h_min, h_gal, _ = _imagenes_de_post(filas.get(h, {}))
+        if not h_gal and h_min != int(image_id):
+            n += 1
+    return n
+
+
 async def _leer(wc_id: int) -> dict[str, Any]:
     p = await asyncio.to_thread(propias, int(wc_id))
     if p is None:
         raise GaleriaInvalida(f"{wc_id} no es una variación: su galería vive en el producto.")
     return p
+
+
+async def _base_editable(wc_id: int, p: dict[str, Any], *,
+                         h: list[dict[str, Any]] | None = None,
+                         ) -> tuple[int | None, list[int], list[dict[str, Any]] | None]:
+    """
+    (principal, galería, heredadas_leídas): la base SEMBRADA sobre la que
+    agregan fotos `agregar`, `adoptar` y `reemplazar`.
+
+    A1 · SEMBRADO. Mientras la galería efectiva de la variación está vacía, lo
+    que se publica puede incluir fotos del padre (`principal_y_padre` /
+    `solo_padre`). En cuanto se escribe la meta con algo dentro, la regla pasa a
+    `propias` y el padre deja de opinar. Sin sembrar, adoptar UNA heredada en
+    MASC-1022-ROS (wc 138777: principal + 6 del padre = 7 publicables, medido el
+    14-sep-2026) dejaba la galería propia con esa sola foto y la siguiente
+    publicación mandaba 2 en vez de 7, sin aviso.
+
+    Por eso, la escritura que deja por PRIMERA vez la galería propia con algo
+    dentro parte de lo que HOY se publica: los ids de `para_publicar` en su
+    orden, sin la principal (ella sigue en `_thumbnail_id`) y, por
+    construcción, sin las descartadas (hermanas y adjuntos inexistentes).
+
+    SÓLO CUANDO HACE FALTA (revisión del 14-sep-2026). Sembrar congela en la
+    variante una copia de las fotos del padre: lo que después cambie en el
+    padre ya no le llega (salvo el reemplazo de la IA, `reemplazar_en_hijas`).
+    Si la operación deja la galería propia VACÍA, la herencia sigue viva en
+    `para_publicar` y no se pierde nada, así que no se siembra:
+      • `quitar`, `hacer_principal` y `reordenar` nunca siembran: con la
+        galería vacía sólo pueden tocar la principal. Antes `quitar` la
+        principal subía a portada la primera foto del PADRE, y esa miniatura
+        nueva la descartaba en todas las hermanas ("es la miniatura de la
+        hermana X") — con dobles, la hermana pasaba de [21,20,22,23,24] a
+        [21,22,23,24] por quitarle una foto a OTRA variante.
+      • `agregar` y `adoptar` siembran sólo si algo va a la GALERÍA (una
+        principal nueva sola no apaga la herencia).
+      • `reemplazar` siempre: la editada de una heredada tiene que ocupar el
+        lugar de la ORIGINAL, que si no se seguiría publicando desde el padre.
+
+    SE DECIDE COMO `para_publicar`: por si la galería efectiva TIENE fotos, no
+    por si existe la clave. Una `_kubera_galeria` vacía (o con todos sus ids
+    rotos) NO apaga la herencia en `para_publicar` —publica principal + padre—,
+    así que también se siembra. Antes se saltaba el sembrado con la clave vacía
+    "para no resucitar las del padre", pero ya estaban resucitadas: con dobles,
+    VAR con clave "" publicaba 4 (principal_y_padre) y adoptar una heredada la
+    dejaba en 2 (propias). Una sola semántica en los dos lugares: "galería
+    vacía = hereda del padre" (la de la docstring del módulo).
+
+    Con galería propia no vacía (incluido el legado de Crear) devuelve
+    `ids_editables` tal cual: no hay nada que sembrar.
+
+    `h`: heredadas ya leídas por quien llama. `heredadas_leídas` es None si no
+    hizo falta leerlas; si se leyeron, `_guardar` las reutiliza en vez de
+    repetir ~6 consultas.
+    """
+    principal, galeria = _base_propia(p)
+    if p.get("galeria"):  # misma condición que la regla `propias` de `para_publicar`
+        return principal, galeria, h
+    if h is None:
+        h = await asyncio.to_thread(heredadas, int(wc_id)) or []
+    # Con propias y heredadas ya leídas, `para_publicar` no consulta nada.
+    r = para_publicar(int(wc_id), _propias=p, _heredadas=h)
+    ids = list((r[1].get("ids") if r else None) or [])
+    return principal, [i for i in ids if i != principal], h
+
+
+def _base_propia(p: dict[str, Any]) -> tuple[int | None, list[int]]:
+    """(principal, galería) SIN sembrar: sólo lo que el Estudio enseña como propio."""
+    principal = int(p["principal"]["id"]) if p.get("principal") else None
+    return principal, [i for i in ids_editables(p) if i != principal]
 
 
 def _exigir_propia(p: dict[str, Any], image_id: int) -> None:
@@ -869,17 +1103,24 @@ def _exigir_propia(p: dict[str, Any], image_id: int) -> None:
 
 
 async def agregar(wc_id: int, media_ids: list[int]) -> dict[str, Any]:
-    """Añade adjuntos ya subidos a la galería propia; sin principal, el primero lo es."""
+    """
+    Añade adjuntos ya subidos a la galería propia; sin principal, el primero lo
+    es. Si alguno va a la galería y la variante heredaba, se siembra antes
+    (A1, ver `_base_editable`): la subida se suma a lo que ya se publicaba.
+    """
     nuevos = _limpios(media_ids)
     async with candado(wc_id):
         p = await _leer(wc_id)
-        actuales = ids_editables(p)
-        nuevos = [i for i in nuevos if i not in actuales]
-        principal = p["principal"]["id"] if p.get("principal") else None
-        galeria = [i for i in actuales if i != principal]
+        principal, galeria = _base_propia(p)
+        nuevos = [i for i in nuevos if i not in ([principal] if principal else []) + galeria]
         if principal is None and nuevos:
             principal, nuevos = nuevos[0], nuevos[1:]
-        return await _guardar(wc_id, p, principal, galeria + nuevos)
+        h = None
+        if nuevos and not galeria:
+            _, galeria, h = await _base_editable(wc_id, p)
+            galeria = [i for i in galeria if i != principal]
+            nuevos = [i for i in nuevos if i not in galeria]
+        return await _guardar(wc_id, p, principal, galeria + nuevos, heredadas_antes=h)
 
 
 async def quitar(wc_id: int, image_id: int) -> dict[str, Any]:
@@ -887,28 +1128,31 @@ async def quitar(wc_id: int, image_id: int) -> dict[str, Any]:
     Quita una foto PROPIA. Si era la principal, la primera de la galería sube
     a principal (o la variante se queda sin principal). El adjunto NO se borra
     de Media: puede ser la foto del padre o de una hermana.
+
+    No siembra (ver `_base_editable`): en una variante que heredaba, quitar la
+    principal la deja sin `_thumbnail_id` y se siguen publicando las mismas del
+    padre. NO se sube una foto del padre a portada: esa miniatura la descartaría
+    en todas las hermanas.
     """
     image_id = int(image_id)
     async with candado(wc_id):
         p = await _leer(wc_id)
         _exigir_propia(p, image_id)
-        actuales = ids_editables(p)
-        principal = p["principal"]["id"] if p.get("principal") else None
-        galeria = [i for i in actuales if i != principal and i != image_id]
+        principal, galeria = _base_propia(p)
+        galeria = [i for i in galeria if i != image_id]
         if principal == image_id:
             principal = galeria.pop(0) if galeria else None
         return await _guardar(wc_id, p, principal, galeria)
 
 
 async def hacer_principal(wc_id: int, image_id: int) -> dict[str, Any]:
-    """Esa foto propia pasa a principal; la anterior, al frente de la galería."""
+    """Esa foto propia pasa a principal; la anterior, al frente de la galería. No siembra."""
     image_id = int(image_id)
     async with candado(wc_id):
         p = await _leer(wc_id)
         _exigir_propia(p, image_id)
-        actuales = ids_editables(p)
-        principal = p["principal"]["id"] if p.get("principal") else None
-        galeria = [i for i in actuales if i != principal and i != image_id]
+        principal, galeria = _base_propia(p)
+        galeria = [i for i in galeria if i != image_id]
         if principal and principal != image_id:
             galeria.insert(0, principal)
         return await _guardar(wc_id, p, image_id, galeria)
@@ -919,6 +1163,10 @@ async def reordenar(wc_id: int, ids: list[int]) -> dict[str, Any]:
     Orden COMPLETO de las propias; el primero queda de principal. Tiene que ser
     exactamente el mismo conjunto: un reordenar no agrega ni quita, y un id de
     más o de menos significa que la pantalla trabaja con una galería vieja.
+
+    El conjunto se valida contra las propias que la pantalla VE. No siembra (ver
+    `_base_editable`): con la galería vacía el pedido es a lo sumo la principal,
+    y la herencia sigue igual.
     """
     pedido = [int(i) for i in ids or []]
     async with candado(wc_id):
@@ -935,27 +1183,44 @@ async def reordenar(wc_id: int, ids: list[int]) -> dict[str, Any]:
 
 async def adoptar(wc_id: int, image_id: int) -> dict[str, Any]:
     """
-    Una foto HEREDADA del padre pasa a la galería propia (mismo adjunto, no se
-    copia el archivo). Si la variante no tenía principal, la adoptada lo es —
-    la misma regla que `agregar`: una variante sin principal la tienda la pinta
+    Una foto HEREDADA del padre pasa a las propias (mismo adjunto, no se copia
+    el archivo). Si la variante no tenía principal, la adoptada lo es — la
+    misma regla que `agregar`: una variante sin principal la tienda la pinta
     con la foto del padre. Adoptar una que ya es propia no escribe nada.
+
+    SIN PRINCIPAL (`solo_padre`) la adoptada pasa a portada AUNQUE ya se
+    publicara. Revisión del 14-sep-2026: con el sembrado siempre activo, una
+    heredada publicable ya estaba en la base y el bloque que la promovía no
+    corría; con dobles, variante sin miniatura y publicables [20,22,23],
+    adoptar 22 (el color que se vende) dejaba la portada en 20 y
+    `_thumbnail_id` vacío —la tienda seguía pintando la del padre y ML/Amazon
+    tomaban la 20 de portada—, y el clic sólo congelaba el sembrado. Medido en
+    SÓLO LECTURA: 127 variaciones sin foto propia con 2+ heredadas publicables
+    (p. ej. MUE-0160-NEG wc 15203, COC-0154-NAR wc 119063). Ahora queda
+    principal 22 y se publican [22,20,23]; la galería no se siembra (la
+    herencia sigue viva).
+
+    CON PRINCIPAL, la adoptada va a la galería y, si es la primera foto de
+    galería, se siembra antes (A1): si ya se publicaba queda en su lugar y lo
+    publicable no cambia; si no (p. ej. la foto de una hermana), va al final: +1.
     """
     image_id = int(image_id)
     async with candado(wc_id):
         p = await _leer(wc_id)
-        actuales = ids_editables(p)
-        principal = p["principal"]["id"] if p.get("principal") else None
-        galeria = [i for i in actuales if i != principal]
-        if image_id not in actuales:
-            h = await asyncio.to_thread(heredadas, int(wc_id)) or []
-            if not any(x["id"] == image_id and x.get("src") for x in h):
-                raise GaleriaInvalida(
-                    f"La foto {image_id} no es heredada del padre de esta variante.")
-            if principal is None:
-                principal = image_id
-            else:
-                galeria.append(image_id)
-        return await _guardar(wc_id, p, principal, galeria)
+        principal, galeria = _base_propia(p)
+        if image_id == principal or image_id in galeria:
+            return await _guardar(wc_id, p, principal, galeria)
+        h = await asyncio.to_thread(heredadas, int(wc_id)) or []
+        if not any(x["id"] == image_id and x.get("src") for x in h):
+            raise GaleriaInvalida(
+                f"La foto {image_id} no es heredada del padre de esta variante.")
+        if principal is None:
+            return await _guardar(wc_id, p, image_id, galeria, heredadas_antes=h)
+        if not galeria:
+            _, galeria, h = await _base_editable(wc_id, p, h=h)
+        if image_id not in galeria:
+            galeria.append(image_id)
+        return await _guardar(wc_id, p, principal, galeria, heredadas_antes=h)
 
 
 async def reemplazar(wc_id: int, id_map: dict[int, int]) -> dict[str, Any]:
@@ -966,20 +1231,26 @@ async def reemplazar(wc_id: int, id_map: dict[int, int]) -> dict[str, Any]:
     hermanas). La base se relee DENTRO del candado, porque la IA tarda minutos y
     la galería pudo cambiar mientras tanto; una original que ya no es propia ni
     heredada (la quitaron en ese rato) no resucita.
+
+    Primera escritura (A1): la base sembrada ya trae las heredadas publicables,
+    así que la editada de una de ellas ocupa SU lugar (no se va al final) y las
+    demás del padre siguen publicándose.
     """
     mapa = {int(k): int(v) for k, v in (id_map or {}).items() if k and v}
     async with candado(wc_id):
         p = await _leer(wc_id)
-        actuales = ids_editables(p)
-        principal = p["principal"]["id"] if p.get("principal") else None
-        galeria = [mapa.get(i, i) for i in actuales if i != principal]
+        principal, base, h = await _base_editable(wc_id, p)
+        actuales = ([principal] if principal else []) + base
+        galeria = [mapa.get(i, i) for i in base]
         if principal is not None:
             principal = mapa.get(principal, principal)
         ajenas = [k for k in mapa if k not in actuales]
         if ajenas:
-            h = {x["id"] for x in (await asyncio.to_thread(heredadas, int(wc_id)) or [])}
+            if h is None:
+                h = await asyncio.to_thread(heredadas, int(wc_id)) or []
+            ids_h = {x["id"] for x in h}
             for k in ajenas:
-                if k not in h:
+                if k not in ids_h:
                     log.warning("reemplazar(%s): la original %s ya no es propia ni "
                                 "heredada; su editada %s no se agrega", wc_id, k, mapa[k])
                     continue
@@ -987,4 +1258,70 @@ async def reemplazar(wc_id: int, id_map: dict[int, int]) -> dict[str, Any]:
                     principal = mapa[k]
                 elif mapa[k] not in galeria:
                     galeria.append(mapa[k])
-        return await _guardar(wc_id, p, principal, galeria)
+        return await _guardar(wc_id, p, principal, galeria, heredadas_antes=h)
+
+
+async def reemplazar_en_hijas(padre: int, id_map: dict[int, int]) -> dict[str, Any]:
+    """
+    A2 · "Procesar con IA" corrido sobre el SKU PADRE (rama de siempre), con
+    GALERIA_VARIANTE encendida.
+
+    La rama de siempre (`woocommerce.reemplazar_imagenes_galeria`) cambia los
+    ids viejos por los nuevos en la galería del padre, en
+    `commercekit_image_gallery` y en el `_thumbnail_id` de cada hija que
+    apuntaba a una original. Pero NO conoce `_kubera_galeria`: una hija que ya
+    adoptó esa foto del padre seguiría publicando la ORIGINAL (sin fondo
+    quitado, sin traducir) mientras el padre y la tienda ya enseñan la editada.
+
+    Aquí, por cada hija viva del padre (`post_parent`, nunca prefijo de SKU) y
+    SÓLO si su `_kubera_galeria` contiene alguno de los ids viejos, bajo el
+    candado de ESA hija: se relee, se sustituyen los ids en su lugar y se
+    escribe con `_guardar` (una PUT de `meta_data` por la ruta de variación).
+    La principal NO se toca: ya la cubrió la rama de siempre, y duplicarlo
+    serían dos escrituras de `image` compitiendo. Si la miniatura nueva quedó
+    también dentro de la galería, `_guardar` la quita de la galería (no se
+    publica dos veces).
+
+    Las hijas SIN la meta nueva no se tocan: siguen heredando del padre, que ya
+    tiene las editadas. Tampoco se siembra (A1) nada: esto no es una edición de
+    la hija sino la propagación de una del padre.
+
+    Quien llama decide el flag (`imagenes_editor._run`); con el flag apagado
+    esta función no se llama. Devuelve
+        { hijas: n, con_originales: [wc_id], actualizadas: [wc_id],
+          fallidas: [{wc_id, error}] }
+    """
+    mapa = {int(k): int(v) for k, v in (id_map or {}).items() if k and v}
+    res: dict[str, Any] = {"hijas": 0, "con_originales": [], "actualizadas": [], "fallidas": []}
+    if not mapa or not padre:
+        return res
+    hijas = await asyncio.to_thread(_hermanas, int(padre), 0)
+    res["hijas"] = len(hijas)
+    if not hijas:
+        return res
+    filas = await asyncio.to_thread(_filas_imagen, hijas)
+
+    def _con_originales(h: int) -> bool:
+        g = _ganadora(filas.get(h, {}).get(META_GALERIA_PROPIA) or [])
+        return bool(g) and any(i in mapa for i in _ids_csv(g["value"]))
+
+    for h in [x for x in hijas if _con_originales(x)]:
+        res["con_originales"].append(h)
+        try:
+            async with candado(h):
+                p = await _leer(h)  # relectura DENTRO del candado
+                if p.get("galeria_fuente") != "propia":
+                    continue
+                antes = list(p.get("galeria_guardada") or [])
+                nueva = [mapa.get(i, i) for i in antes]
+                if nueva == antes:  # la cambiaron mientras la IA corría
+                    continue
+                r = await _guardar(h, p, p.get("principal_guardada"), nueva)
+            if r.get("ok"):
+                res["actualizadas"].append(h)
+            else:
+                res["fallidas"].append({"wc_id": h, "error": r.get("aviso")})
+        except Exception as exc:  # noqa: BLE001 — una hija no frena a las demás
+            log.warning("reemplazar_en_hijas(%s): hija %s: %s", padre, h, exc)
+            res["fallidas"].append({"wc_id": h, "error": str(exc)})
+    return res

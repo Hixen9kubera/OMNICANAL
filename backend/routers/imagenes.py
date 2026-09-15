@@ -21,6 +21,18 @@ Toda escritura devuelve la galería RELEÍDA con la forma del GET (+ `ok`); un
 qué quedó. Errores del pedido → 400; sin base de WordPress → 503 (sin ella no
 se sabe qué fotos son de la variante, y caer a la galería del padre editaría la
 de toda la familia).
+
+MARCADOR `variante: true` (A5) en el cuerpo de eliminar / agregar / procesar
+─────────────────────────────────────────────────────────────────────────────
+El Estudio lo manda cuando la galería que tiene abierta está en modo variante.
+Sin él, esas tres rutas deciden solas (flag + resolución) y, si alguien apaga
+GALERIA_VARIANTE con el Estudio abierto sobre una variante, el siguiente clic
+en "quitar" editaba la galería del PADRE —la de toda la familia— creyendo que
+quitaba una foto de la variante. Con el marcador:
+  • flag apagado → 409 con el mismo texto de las rutas nuevas, y no se toca nada;
+  • flag encendido y el SKU no es variación → 400;
+  • sin base de WordPress → 503 (nunca cae a la rama del padre).
+Sin marcador, todo como antes.
 """
 from __future__ import annotations
 
@@ -52,11 +64,13 @@ class ImagenFlags(BaseModel):
 class ProcesarReq(BaseModel):
     wc_id: int | None = None
     imagenes: list[ImagenFlags] = []
+    variante: bool = False  # A5: la pantalla está en modo variante
 
 
 class EliminarReq(BaseModel):
     wc_id: int | None = None
     image_id: int
+    variante: bool = False  # A5
 
 
 class ImagenNueva(BaseModel):
@@ -68,6 +82,7 @@ class ImagenNueva(BaseModel):
 class AgregarReq(BaseModel):
     wc_id: int | None = None
     imagenes: list[ImagenNueva] = []
+    variante: bool = False  # A5
 
 
 class ImagenVarianteReq(BaseModel):
@@ -106,7 +121,11 @@ async def _variante_o_none(sku: str, wc_id: int | None) -> tuple[int, int] | Non
 
 
 async def _variante_obligatoria(sku: str, wc_id: int | None) -> tuple[int, int]:
-    """Para las rutas NUEVAS: 409 con el flag apagado, 400 si no es variación."""
+    """
+    Para las rutas NUEVAS, y para eliminar/agregar/procesar cuando llega el
+    marcador `variante: true` (A5): 409 con el flag apagado, 400 si no es
+    variación, 503 sin base de WordPress. Nunca devuelve None.
+    """
     if not settings.galeria_variante:
         raise HTTPException(409, _APAGADA)
     try:
@@ -180,6 +199,10 @@ async def procesar(sku: str, req: ProcesarReq):
     ]
     if not con_flags:
         raise HTTPException(400, "Ninguna imagen tiene flags seleccionados.")
+    if req.variante:
+        # A5: 409/400/503 ANTES de gastar Gemini. `iniciar` vuelve a resolver
+        # (lectura barata) y toma la rama de variante con el mismo resultado.
+        await _variante_obligatoria(sku, req.wc_id)
     try:
         return await editor.iniciar(sku, req.wc_id, [i.model_dump() for i in con_flags])
     except imagenes_variante.GaleriaInvalida as exc:  # solo la rama de variante lanza
@@ -200,7 +223,8 @@ async def progreso(sku: str):
 @router.post("/{sku:path}/eliminar")
 async def eliminar(sku: str, req: EliminarReq):
     """Quita una imagen de la galería (resuelve el padre si es variación)."""
-    var = await _variante_o_none(sku, req.wc_id)
+    var = await (_variante_obligatoria(sku, req.wc_id) if req.variante
+                 else _variante_o_none(sku, req.wc_id))
     if var:
         res = await _escribir(sku, imagenes_variante.quitar, var[0], req.image_id)
         res["image_id"] = req.image_id
@@ -241,8 +265,9 @@ async def agregar(sku: str, req: AgregarReq):
     """Sube imágenes nuevas (base64) a WP Media y las agrega a la galería del producto."""
     if not req.imagenes:
         raise HTTPException(400, "No se enviaron imágenes.")
-    # La variante se resuelve ANTES de subir: un 400/503 no deja adjuntos huérfanos.
-    var = await _variante_o_none(sku, req.wc_id)
+    # La variante se resuelve ANTES de subir: un 400/409/503 no deja adjuntos huérfanos.
+    var = await (_variante_obligatoria(sku, req.wc_id) if req.variante
+                 else _variante_o_none(sku, req.wc_id))
     if var:
         media_ids = await _subir_a_media(sku, req.imagenes)
         if not media_ids:

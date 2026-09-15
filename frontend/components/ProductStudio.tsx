@@ -1392,7 +1392,14 @@ export default function ProductStudio({
       // Variante: solo SUS fotos van en `seleccion` (la lista editable son las
       // propias) y el wc_id es el del SKU abierto; el backend mete la editada en
       // la galería propia y no toca al padre ni a las hermanas.
-      await procesarImagenesIA(sku!, { wc_id: infoVar ? wcIdActivo : wcId, imagenes: seleccion });
+      // `variante: true`: si el flag se apagó con el Estudio abierto, 409 en vez
+      // de procesar sobre la galería del padre (ver api.ts).
+      await procesarImagenesIA(
+        sku!,
+        infoVar
+          ? { wc_id: wcIdActivo, imagenes: seleccion, variante: true }
+          : { wc_id: wcId, imagenes: seleccion },
+      );
       iniciarPollingImg();
     } catch (e) {
       setProcesandoIA(false);
@@ -1409,7 +1416,7 @@ export default function ProductStudio({
       // servidor decide quién la sustituye: se pinta lo que devuelva.
       if (!window.confirm("¿Quitar esta foto de la variante? El archivo sigue en Medios y el padre no se toca.")) return;
       await escribirGaleria(
-        () => eliminarImagenGaleria(sku!, { wc_id: wcIdActivo, image_id: img.id }),
+        () => eliminarImagenGaleria(sku!, { wc_id: wcIdActivo, image_id: img.id, variante: true }),
         { imgId: img.id, error: "No se pudo quitar la foto de la variante." },
       );
       return;
@@ -1730,7 +1737,7 @@ export default function ProductStudio({
           })),
         );
         await escribirGaleria(
-          () => agregarImagenes(sku, { wc_id: wcIdActivo, imagenes }),
+          () => agregarImagenes(sku, { wc_id: wcIdActivo, imagenes, variante: true }),
           { error: "No se pudieron agregar las fotos a la variante." },
         );
       } catch {

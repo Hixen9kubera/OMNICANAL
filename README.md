@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.519.0 — La galería por variante deja de quitarle fotos a las hermanas (sigue apagada)
+
+Cinco ajustes a la galería por variante de la v0.517.0, todos detrás de
+`GALERIA_VARIANTE` (apagada), más dos arreglos al filtro de fotos que **sí** están
+en vivo porque los usa la publicación. Revisados por dos lentes; el hallazgo alto y
+los dos medios, aplicados.
+
+**En vivo (publicación)**
+
+- **SKUs con diagonal.** WordPress quita la `/` del nombre del archivo, así que el
+  filtro no reconocía `CALZ-0194-BLNAZL-40.png` como de `CALZ-0194-BLN/AZL-40` ni
+  `MUE-0195-PLA-1018.png` como de `MUE-0195-PLA-10/18`. Ahora cada segmento del SKU
+  también se compara reducido a alfanumérico. Efecto medido en las 293 variaciones
+  con diagonal: 8 de la familia CALZ-0194 dejan de publicar las fotos de sus
+  hermanas grises (9 → 2) y 2 de MUE-0195 recuperan la suya, que antes se descartaba
+  como de la hermana sin diagonal (1 → 2). **Las otras 283, las 218 con galería de
+  Crear y 150 al azar publican exactamente lo mismo que en la v0.517.0** (comparación
+  versión en vivo contra nueva, en solo lectura).
+
+**Apagado (galería editable)**
+
+- **Editar una variante ya no le quita fotos a sus hermanas.** Con datos reales,
+  adoptar una foto en MASC-1022-ROS dejaba a MASC-1022-CAF de 6 fotos publicables en
+  0: la regla contaba como «de hermana» cualquier foto del padre que otra variación
+  tuviera en su galería. Ahora sólo cuentan su miniatura, un archivo con su SKU, o una
+  foto que Crear le puso en `_product_image_gallery` y sigue ahí.
+- **Sembrado al primer cambio.** La primera vez que algo entra a la galería propia
+  (`agregar`, `adoptar`, IA) se copia antes lo que hoy se publica del padre, para que
+  la variante no publique menos fotos: adoptar en MASC-1022-ROS pasaba de 7 a 2 y
+  ahora queda en 7. `quitar`, `hacer_principal` y `reordenar` no siembran. Una
+  galería vacía significa «hereda del padre», igual al publicar que al sembrar. Si una
+  escritura baja las fotos publicables, la respuesta lo dice.
+- **Adoptar en una variante sin principal la hace portada** aunque ya se publicara
+  (127 variaciones, p. ej. MUE-0160-NEG y COC-0154-NAR).
+- **Procesar con IA desde el padre** actualiza la galería propia de las hijas que
+  tenían la foto original.
+- **Filas duplicadas de `_kubera_galeria`**: si WooCommerce llegara a guardar la
+  galería en más de una fila, la vista y la escritura lo avisan.
+- **Marcador de variante:** agregar, quitar y Procesar con IA mandan `variante: true`
+  desde el modo variante; si el flag se apagó con el Estudio abierto, el backend
+  contesta 409 en vez de editar la galería del padre.
+- **`scripts/probar_galeria_variante.py`**: los pasos de la primera prueba real se
+  reescribieron para el sembrado (prueban el almacén con dos escrituras de bajo nivel
+  y, aparte, que editar una variante no cambia a su hermana).
+
+Sigue abierto: quitar una foto del PADRE no llega a las hijas que ya tienen galería
+propia sembrada; adoptar ya no reclama una foto genérica contra las hermanas (sólo
+la principal lo hace); y falta la primera prueba real de escritura antes de encender.
+
 ### v0.518.0 — La regla de precios usa el PROMEDIO del mercado, y su nota es una tarjeta
 
 Eduardo, 14-sep-2026: «La opción A y aparte cambia la mediana por la media».

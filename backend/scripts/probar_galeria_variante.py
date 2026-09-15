@@ -37,23 +37,35 @@ Elegir la variación:
     reordenar).
 
 Pasos — sin arrancar el backend, desde una consola con el .env de producción,
-UN paso a la vez, corriendo este script con ese SKU entre paso y paso:
+UN paso a la vez, corriendo este script con ese SKU (y con UNA HERMANA suya)
+entre paso y paso. Los pasos 1-3 prueban el ALMACÉN con la escritura de bajo
+nivel, que no siembra; los 4-5 prueban el flujo del Estudio, que sí siembra
+(la primera escritura que mete algo a la galería copia antes lo que hoy se
+publica del padre, para que la variante no publique menos fotos).
 
-  0. `python -m scripts.probar_galeria_variante <SKU>` > antes.txt. Anotar
-     wc_id, `principal_id` y los ids de 2 heredadas (H1, H2).
-  1. adoptar H1:
+  0. `python -m scripts.probar_galeria_variante <SKU> <SKU_HERMANA>` > antes.txt.
+     Anotar wc_id, `principal_id` y los ids de 2 heredadas publicables (H1, H2).
+  1. fijar_galeria con [H1]:
        python -c "import asyncio; from services import imagenes_variante as v;
-                  print(asyncio.run(v.adoptar(<wc_id>, <H1>)))"
+                  print(asyncio.run(v.fijar_galeria(<wc_id>, [<H1>])))"
      Esperado: ok True; en la BD UNA fila `_kubera_galeria` = "H1"; en la REST
      (GET /products/{padre}/variations/{id}?_cb=…) la meta aparece CON id.
-  2. adoptar H2 → la misma fila (mismo meta_id) = "H1,H2". SI APARECE UNA
-     SEGUNDA FILA, PARAR: la tesis (1) es falsa y el almacén hay que cambiarlo.
-  3. reordenar [principal, H2, H1] → misma fila = "H2,H1".
-  4. hacer_principal H2 → `_thumbnail_id` = H2, galería = "<principal>,H1";
-     la REST `image.id` = H2. Mirar la variante en la tienda: pinta H2.
-  5. hacer_principal <principal original> → vuelve la foto de siempre.
-  6. quitar H1, quitar H2 → `_kubera_galeria` = "" (la fila QUEDA).
-  7. (prueba de la tesis 2, opcional) en una variación de prueba cuya única
+     Anotar ese meta_id.
+  2. fijar_galeria con [H1, H2] → la MISMA fila (mismo meta_id) = "H1,H2".
+     SI APARECE UNA SEGUNDA FILA, PARAR: la tesis (1) es falsa y el almacén hay
+     que cambiarlo antes de encender nada.
+  3. Revertir la galería (ver "Revertir": borrar la fila con value null) y
+     correr el paso 0: tiene que salir IGUAL que antes.txt.
+  4. Flujo del Estudio — adoptar H1:
+       python -c "import asyncio; from services import imagenes_variante as v;
+                  print(asyncio.run(v.adoptar(<wc_id>, <H1>)))"
+     Esperado: ok True; UNA fila `_kubera_galeria` con el SEMBRADO (las fotos
+     del padre que hoy se publican, en su orden, sin la principal); `regla`
+     pasa a "propias" con el MISMO número de URLs publicables que antes.txt
+     (o una más si H1 no se publicaba). La HERMANA sigue EXACTAMENTE igual que
+     en antes.txt: editar una variante no le quita fotos a sus hermanas.
+  5. Revertir otra vez y comparar con antes.txt.
+  6. (prueba de la tesis 2, opcional) en una variación de prueba cuya única
      foto sea desechable: quitar la principal → `_thumbnail_id` vacío o sin
      fila. Si Woo contesta 400 `woocommerce_variation_invalid_image_id`, la
      función ya lo reporta como ok False y no se escribe nada.

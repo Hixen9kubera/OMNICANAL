@@ -643,9 +643,13 @@ export interface ProcesarImagenItem {
   cambiar_modelo: boolean;
 }
 
+// `variante: true` (eliminar / agregar / procesar): la galería abierta está en
+// modo VARIANTE. Si el flag GALERIA_VARIANTE se apagó con el Estudio abierto,
+// el backend responde 409 y no toca nada; sin la marca, esas rutas caían a la
+// galería del PADRE y el clic editaba la de toda la familia.
 export function procesarImagenesIA(
   sku: string,
-  body: { wc_id: number | null; imagenes: ProcesarImagenItem[] },
+  body: { wc_id: number | null; imagenes: ProcesarImagenItem[]; variante?: boolean },
 ): Promise<{ ok: boolean; total: number; parent_id: number | null }> {
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/procesar`, body);
 }
@@ -662,7 +666,7 @@ export function progresoImagenes(
 
 export function eliminarImagenGaleria(
   sku: string,
-  body: { wc_id: number | null; image_id: number },
+  body: { wc_id: number | null; image_id: number; variante?: boolean },
 ): Promise<GaleriaEscrituraResp> {
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/eliminar`, body);
 }
@@ -704,7 +708,7 @@ export interface ImagenNueva {
 
 export function agregarImagenes(
   sku: string,
-  body: { wc_id: number | null; imagenes: ImagenNueva[] },
+  body: { wc_id: number | null; imagenes: ImagenNueva[]; variante?: boolean },
 ): Promise<GaleriaEscrituraResp> {
   return postJSON(`/api/imagenes/${encodeURIComponent(sku)}/agregar`, body);
 }
