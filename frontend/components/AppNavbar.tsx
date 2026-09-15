@@ -25,6 +25,7 @@ import {
   PackageX,
   type LucideIcon,
   Network,
+  Truck,
   Warehouse,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
@@ -123,6 +124,12 @@ const ITEMS: NavItem[] = [
   // propia pantalla lo enseña en modo lectura para que se note antes de tocarlo.
   { id: "automatizacion", label: "Automatización", icon: Workflow,
     href: "/automatizacion" },
+  // FULLFILMENT (handoff de diseño, 14-sep-2026): el circuito de mercancía a
+  // FULL, FBA y WFS. Va junto a Automatización, la otra pestaña que vigila un
+  // flujo vivo. BETA mientras sea vista de diseño: sus datos aún no son en vivo.
+  // El rótulo se escribió así en la petición; la ruta usa la ortografía técnica.
+  { id: "fulfillment", label: "FULLFILMENT", icon: Truck, href: "/fulfillment",
+    beta: true },
   { id: "competencia", label: "Competencia", icon: Trophy, href: "/competencia",
     beta: true },
   // OPERACIONES absorbió a MONITOREO y WEBHOOKS como entradas de su submenú

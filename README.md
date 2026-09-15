@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.521.0 — Pestaña FULLFILMENT: el diseño completo, navegable en el panel (sin backend todavía)
+
+Brandon: *"arranca con el frontend para ver el diseño de cómo quedaría, después el
+backend"*. La pestaña del circuito de mercancía a los almacenes de los marketplaces
+—FULL de ML (Kubera y San Corpe), FBA de Amazon y WFS de Walmart— ya se puede
+recorrer en `/fulfillment`. **Es VISTA DE DISEÑO**: no lee ni escribe nada, y lo dice
+una franja ámbar arriba de todo.
+
+**Qué se ve** (portado del mockup `FULLFILMENT.dc.html` y su handoff del 14-sep):
+- **Tablero**: KPIs (enviado a FULL, hoy en FULL, agotado, tasa de recepción rayada,
+  envíos sin enlazar), la gráfica obligatoria de tasa de éxito —rayada, porque la
+  historia de recepciones no existe—, el embudo de piezas (2 de 5 escalones con
+  fuente), los días de proceso orden creada / salida hecha en hora de CDMX, el
+  agotado por cuenta, FBA, WFS y la calidad de captura del número de envío por KAM.
+- **Envíos**: un renglón por envío con su rail de 7 etapas (Solicitado → Validado →
+  Orden Odoo → Recolectado → Recibido → Activo → 1ª venta); **Detalle** por SKU con
+  solicitadas, validadas, enviadas, en recepción, recibidas, rechazadas y cajas est.
+- **Planeación semanal**: lista de Andy → validación de Bodega → reajuste → orden.
+  "Generar orden de salida" y "Cargar envío al marketplace" van PINTADOS y
+  DESHABILITADOS con su motivo en el `title` (flujo vivo, regla 3). El "Reajustar con
+  IA" es simulado.
+- **Por SKU / MLM** (la vida del producto en FULL) y **Variaciones** (2-3 formas de la
+  gráfica, el embudo, el rail y los días, para elegir antes del backend).
+
+**Reglas del diseño que el código ya respeta** (y el backend no debe romper):
+- `null` = «no lo sabemos» y se pinta RAYADO; nunca se colapsa a 0. Cuatro lecturas
+  con leyenda fija bajo los filtros: dato real, cero real, sin dato, en espera.
+- `enviadas − recibidas` NO es rechazo: «en recepción» (ámbar) y «rechazadas» (rosa)
+  son columnas distintas y la segunda sólo se llena con la cifra explícita del canal.
+- «Envío sin enlazar» es estado de primera (tasa «no calculable», no 0%). Las cajas
+  llevan «~» y «estimadas». «Recolectado» = picking validado, nunca «en tránsito».
+- La tasa de validado se calcula sobre los renglones que Bodega YA revisó.
+- Con Amazon o Walmart elegido el tablero no enseña cifras de FULL de ML; el
+  "enviado a FULL" con filtro de cuenta avisa que Odoo todavía no separa la cuenta.
+- El mínimo de salidas se busca en días hábiles (el sábado es medio turno).
+
+**Archivos**: `frontend/app/fulfillment/page.tsx` y `frontend/components/fulfillment/`
+(`tipos.ts` con la forma de la respuesta futura, `datosDiseno.ts` con las cifras del
+mockup, `ui.tsx` con `RAYADO`/`ChipSinRegistro`/`BotonBloqueado`/`Rail` copiados de
+Monitoreo e Inventario, y una vista por archivo). Entrada BETA en `AppNavbar` entre
+Automatización y Competencia. El día del backend se borra `datosDiseno.ts` y la
+página lee `/api/fulfillment/envios/…` con los mismos tipos. Ojo con ese prefijo: es
+el de Análisis, así que las lecturas heredan `GET /api/fulfillment → operador`
+(`rbac.py`) y los POST necesitan su propia línea.
+
+`tsc` limpio y `next build` en verde sobre `origin/main`; las seis vistas revisadas en
+Chromium a 1600 y 1280 px sin errores de consola.
+
 ### v0.520.0 — Automatización ve las confirmadas que el canal canceló; y los respaldos de TikTok, construidos y APAGADOS
 
 Dos bloques. El primero se ve hoy; el segundo espera el dale de Brandon (regla 3).
