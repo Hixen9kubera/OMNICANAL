@@ -119,6 +119,13 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # tocarlo y no en un 403.
     ("GET", "/api/automatizacion/estado", "operador"),
     ("GET", "/api/automatizacion/ordenes-odoo", "operador"),
+    # GUÍAS DEL DÍA (Brandon, 15-sep-2026): vista previa, Excel y PDF de las
+    # etiquetas de las órdenes generadas un día. Los usa el ALMACÉN, que no es
+    # admin. El prefijo cubre `/guias-del-dia`, `/excel` y `/pdf` y nada más:
+    # son lecturas (no escriben en Odoo ni en la base). El PDF trae la dirección
+    # del comprador porque ES la etiqueta que se pega en la caja; el JSON y el
+    # Excel no llevan nada del comprador.
+    ("GET", "/api/automatizacion/guias-del-dia", "operador"),
     ("GET", "/api/automatizacion", "admin"),             # el resto: diagnósticos
     ("POST", "/api/automatizacion", "admin"),
     ("POST", "/api/sync/precios-venta", "admin"),        # barrido de precios

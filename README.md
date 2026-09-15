@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.524.0 — Guías del día: elige el día, imprime todas las etiquetas y baja el Excel del almacén
+
+Brandon: *"un botón para descargar las guías de todas las órdenes y que me
+permitas seleccionar el día… se genera un excel donde primeramente me traerá la
+orden de venta, las piezas, el sku y después la guía, en caso de que una orden
+tenga una guía combinada de otro día que la traiga… y que especifique con un
+color las filas que tengan la misma guía"*.
+
+**Botón "Guías del día"** en Automatización: día (atajos Hoy/Ayer, en hora de
+México) + canal (Temu / TikTok / Ambos), vista previa y dos descargas.
+
+- **`services/guias_del_dia.py`** (nuevo): `dia()` toma las órdenes GENERADAS ese
+  día (`creado_at` de la bitácora, límites [00:00,24:00) de CDMX → UTC; sin base
+  de zonas, UTC-6 fijo) y suma las de OTROS días que comparten guía con alguna,
+  marcadas `otro_dia`. Sólo lectura: kubera con SELECT y Odoo con `search_read`
+  (`bin_size` para saber si hay PDF sin bajarlo).
+- **Excel** (openpyxl): una fila por SKU con las columnas en el orden pedido —
+  Orden de venta · Piezas · SKU · Guía · Paquetería · Venta del canal · Canal ·
+  Fecha · Envío combinado · Nota. Las filas de un mismo envío combinado llevan el
+  mismo relleno y cada grupo el suyo; las de otro día van en cursiva y dichas en
+  la columna "Envío combinado". Guía, venta, orden y SKU como TEXTO (49504479885478
+  no se vuelve notación científica). Encabezado en negrita, fila congelada,
+  autofiltro y hoja "Resumen" con conteos y leyenda.
+- **PDF** (pypdf, nuevo en requirements): las etiquetas del día en UN archivo, UNA
+  por guía — un envío combinado se imprime una sola vez — en el orden del Excel.
+  Se arma en memoria y no toca disco: trae la dirección del comprador.
+- **Avisa lo que falta**: si Odoo tiene un archivo que no es PDF o está dañado, la
+  respuesta lo dice en cabeceras y la ventana pinta un aviso rojo con las órdenes
+  que se quedaron sin etiqueta. Una etiqueta combinada entre dos días se marca
+  ("también en el PDF del 12-09") y hay casilla para omitirla, nunca por omisión.
+  Las canceladas quedan al final, en gris y fuera del PDF.
+- **Un solo color por envío** en toda la pantalla: `frontend/lib/combinados.ts` es
+  el gemelo de la regla del backend (el grupo se nombra por el final de la guía y
+  el color sale de la guía, con choques resueltos por día), así la pestaña, la
+  ventana y el Excel coinciden. La paleta nueva de 8 tiene contraste medido.
+- Endpoints `GET /api/automatizacion/guias-del-dia`, `/excel` y `/pdf` (RBAC
+  **operador**: lo usa el almacén), con validación de fecha y canal, tope por día
+  y errores que no se disfrazan.
+
+Probado sin red: 130 comprobaciones (límites del día, combinada de otro día,
+relleno en todas las filas del grupo y en ninguna fuera, guía como texto, una
+página por guía, sin PII, sin escrituras) y contra los datos reales del 13-sep en
+sólo lectura: 16 órdenes, 2 envíos combinados, 14 etiquetas, 42 piezas.
+
 ### v0.523.0 — FULLFILMENT lee Odoo: cada envío a FULL, FBA y WFS con su orden, su salida y su cuenta
 
 Brandon: *"dale, pero indícame de dónde obtienes los datos, dame la orden de venta y cuáles fueron

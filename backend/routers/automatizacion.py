@@ -3,6 +3,8 @@ automatizacion.py — Lo que el panel automatiza sin que nadie lo empuje.
 
   GET  /api/automatizacion/estado           → banderas y contadores
   GET  /api/automatizacion/ordenes-odoo     → la bitácora que pinta el tab
+  GET  /api/automatizacion/guias-del-dia    → las órdenes generadas un día y sus
+       …/guias-del-dia/excel · …/pdf          guías: vista previa, Excel y PDF
   GET  /api/automatizacion/simular?venta=   → QUÉ orden armaría esa venta, sin
                                               escribir nada en Odoo
 
@@ -18,9 +20,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
 from config import settings
 from core.seguridad import requiere_api_key
@@ -211,6 +215,186 @@ def ordenes_odoo(
     foto congelada en `ops.odoo_sale_order_items`.
     """
     return {"ordenes": odoo_ventas_log.historial(limite, canal, solo_problemas, dias)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# GUÍAS DEL DÍA · las órdenes generadas un día, en Excel y en un solo PDF
+# ═════════════════════════════════════════════════════════════════════════════
+# Los tres son `def`, no `async def`, a propósito: leen kubera (psycopg2) y Odoo
+# (XML-RPC), que bloquean, y FastAPI corre los `def` en su pool de hilos
+# (regla 11). Son de `operador` en core/rbac.py: los usa el almacén.
+
+_FECHA_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _args_guias(fecha: str | None, canal: str | None) -> tuple[date, str]:
+    """Valida el día (hora de México) y el canal; 400 con la explicación si no."""
+    from services import guias_del_dia as gd
+
+    hoy = gd.hoy_mx()
+    if not isinstance(fecha, str) or not fecha.strip():
+        f = hoy
+    else:
+        texto = fecha.strip()
+        try:
+            if not _FECHA_RE.match(texto):
+                raise ValueError(texto)
+            f = date.fromisoformat(texto)
+        except ValueError:
+            raise HTTPException(400, "fecha inválida: usa AAAA-MM-DD") from None
+    if f > hoy:
+        raise HTTPException(400, "esa fecha todavía no llega en hora de México")
+    if f < hoy - timedelta(days=400):
+        raise HTTPException(400, "fecha fuera de rango: hasta 400 días atrás")
+    c = (canal if isinstance(canal, str) else "todos").strip().lower() or "todos"
+    if c == "ambos":
+        c = "todos"
+    if c not in ("temu", "tiktok", "todos"):
+        raise HTTPException(400, "canal inválido: temu | tiktok | todos")
+    return f, c
+
+
+def _datos_guias(f: date, c: str) -> dict:
+    """Lee el día. Un fallo de la base NO se disfraza de "no hubo órdenes"."""
+    from services import guias_del_dia as gd, supabase_db as sdb
+
+    if not sdb.disponible():
+        raise HTTPException(503, "BD kubera no configurada en este ambiente")
+    try:
+        return gd.dia(f, c)
+    except gd.GuiasError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except gd.CanalInvalido as exc:
+        # SÓLO el canal es un error de quien pide. Cualquier otro ValueError es
+        # un fallo de adentro y no se le devuelve su texto crudo como si fuera
+        # culpa de la petición.
+        raise HTTPException(400, str(exc)) from None
+    except Exception as exc:  # noqa: BLE001
+        log.warning("guias-del-dia %s %s: no se pudieron armar las guías (%s: %s)",
+                    f, c, type(exc).__name__, str(exc)[:200])
+        raise HTTPException(502, "no se pudieron leer las órdenes del día "
+                                 "(bitácora u Odoo)") from None
+
+
+def _lista_cabecera(nombres: list[str], tope: int = 1500) -> str:
+    """Nombres de orden separados por ", " para una cabecera: ASCII y cortada
+    ENTRE nombres (un nombre partido no se reconoce del otro lado)."""
+    fuera = ""
+    for n in nombres:
+        n = n.encode("ascii", "replace").decode("ascii")
+        prox = f"{fuera}, {n}" if fuera else n
+        if len(prox) > tope:
+            return f"{fuera}, ..." if fuera else "..."
+        fuera = prox
+    return fuera
+
+
+def _sin_ordenes(datos: dict, f: date, c: str) -> None:
+    if not datos.get("ordenes"):
+        from services import guias_del_dia as gd
+
+        raise HTTPException(
+            404, f"No hay órdenes generadas el {f:%d-%m-%Y} en {gd.ETIQUETA_CANAL[c]}.")
+
+
+@router.get("/guias-del-dia")
+def guias_del_dia(
+    fecha: str | None = Query(None, description="AAAA-MM-DD, día en hora de México; "
+                                                "sin ella, hoy"),
+    canal: str = Query("todos", description="temu | tiktok | todos"),
+):
+    """
+    Vista previa: las órdenes GENERADAS ese día (hora de México) con su guía,
+    más las de OTROS días que comparten guía con alguna (envío combinado), ya en
+    el orden del Excel, con el código ("…2532") y el color de cada grupo, si
+    Odoo tiene el PDF y qué etiquetas también salen en el PDF de otro día.
+
+    Sin datos del comprador. SOLO LECTURA. Ver services/guias_del_dia.py.
+    """
+    f, c = _args_guias(fecha, canal)
+    return _datos_guias(f, c)
+
+
+@router.get("/guias-del-dia/excel")
+def guias_del_dia_excel(
+    fecha: str | None = Query(None, description="AAAA-MM-DD, día en hora de México"),
+    canal: str = Query("todos", description="temu | tiktok | todos"),
+):
+    """El Excel: una fila por SKU, envíos combinados pintados, hoja Resumen."""
+    from services import guias_del_dia as gd
+
+    f, c = _args_guias(fecha, canal)
+    datos = _datos_guias(f, c)
+    _sin_ordenes(datos, f, c)
+    try:
+        contenido = gd.excel(datos)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("guias-del-dia/excel %s %s: %s", f, c, type(exc).__name__)
+        raise HTTPException(500, "no se pudo generar el Excel") from None
+    nombre = f"guias_{c}_{f.isoformat()}.xlsx"
+    return Response(content=contenido, media_type=_XLSX, headers={
+        "Content-Disposition": f'attachment; filename="{nombre}"',
+        "Access-Control-Expose-Headers": "Content-Disposition",
+        "Cache-Control": "no-store",
+    })
+
+
+@router.get("/guias-del-dia/pdf")
+def guias_del_dia_pdf(
+    fecha: str | None = Query(None, description="AAAA-MM-DD, día en hora de México"),
+    canal: str = Query("todos", description="temu | tiktok | todos"),
+    omitir_dia_anterior: bool = Query(
+        False, description="true = sin las etiquetas que ya salen en el PDF de un "
+                           "día anterior (envío combinado que empezó otro día)"),
+):
+    """
+    UN PDF con las etiquetas en el orden del Excel, una por guía distinta (un
+    envío combinado sale una vez). Trae la dirección del comprador —es la
+    etiqueta—: se arma en memoria y no se guarda en ningún lado.
+
+    `X-Guias-Etiquetas` = cuántas salieron. `X-Guias-Faltantes` = cuántas guías
+    NO salieron (sin PDF en Odoo, archivo que no es PDF o PDF ilegible) y
+    `X-Guias-Faltantes-Ordenes` = cuáles, por nombre de orden: la ventana las
+    compara con lo que avisó ANTES de descargar y grita las que no esperaba.
+    `X-Guias-Omitidas` = las que se dejaron fuera con `omitir_dia_anterior`.
+    """
+    from services import guias_del_dia as gd
+
+    f, c = _args_guias(fecha, canal)
+    datos = _datos_guias(f, c)
+    _sin_ordenes(datos, f, c)
+    if datos.get("odoo_ok") is False:
+        raise HTTPException(502, "Odoo no respondió: no se pudo revisar qué órdenes "
+                                 "tienen el PDF de su guía")
+    try:
+        contenido, info = gd.pdf(datos, omitir_dia_anterior=omitir_dia_anterior)
+    except gd.GuiasError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except gd.DependenciaFaltante as exc:
+        # No es Odoo: al servidor le falta la librería. Decir "Odoo" mandaría a
+        # buscar el problema al lugar equivocado.
+        log.error("guias-del-dia/pdf: falta la dependencia %s en el servidor", exc)
+        raise HTTPException(500, f"falta la dependencia {exc} en el servidor: "
+                                 "no se puede armar el PDF") from None
+    except Exception as exc:  # noqa: BLE001
+        # Sólo el tipo: el mensaje de un PDF roto podría citar la etiqueta.
+        log.warning("guias-del-dia/pdf %s %s: %s", f, c, type(exc).__name__)
+        raise HTTPException(502, "no se pudieron leer las guías de Odoo") from None
+    faltan = [" + ".join(x["ordenes"]) for x in info["faltantes"]]
+    omitidas = [" + ".join(x["ordenes"]) for x in info["omitidas"]]
+    nombre = f"guias_{c}_{f.isoformat()}.pdf"
+    return Response(content=contenido, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{nombre}"',
+        "X-Guias-Etiquetas": str(info["etiquetas"]),
+        "X-Guias-Faltantes": str(len(faltan)),
+        "X-Guias-Faltantes-Ordenes": _lista_cabecera(faltan),
+        "X-Guias-Omitidas": str(len(omitidas)),
+        "Access-Control-Expose-Headers": ("Content-Disposition, X-Guias-Etiquetas, "
+                                          "X-Guias-Faltantes, X-Guias-Faltantes-Ordenes, "
+                                          "X-Guias-Omitidas"),
+        "Cache-Control": "no-store",
+    })
 
 
 @router.get("/canceladas-confirmadas", dependencies=[Depends(requiere_api_key)])

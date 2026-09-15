@@ -150,8 +150,13 @@ export async function fetchSesion(url: string, init: RequestInit = {},
  * `Authorization`, y desde el 5-ago (enforcement) eso devuelve 401 — el usuario
  * bajaba un archivo de error en vez del reporte. Se pide por fetch, se arma un
  * blob y se dispara la descarga desde el propio navegador.
+ *
+ * Devuelve las CABECERAS de la respuesta: hay descargas que dicen en ellas qué
+ * trajeron (las guías del día cuentan las etiquetas que salieron y cuáles no).
+ * Quien no las necesite, las ignora. Sólo se leen las que el backend expone en
+ * `Access-Control-Expose-Headers`.
  */
-export async function descargar(url: string, nombreSugerido: string): Promise<void> {
+export async function descargar(url: string, nombreSugerido: string): Promise<Headers> {
   const res = await fetchSesion(url, { cache: "no-store" });
   if (!res.ok) throw await errorDeRespuesta(res, url);
   const blob = await res.blob();
@@ -169,6 +174,7 @@ export async function descargar(url: string, nombreSugerido: string): Promise<vo
   enlace.remove();
   // Liberar el objeto: sin esto el blob se queda en memoria toda la sesión.
   setTimeout(() => URL.revokeObjectURL(enlace.href), 30_000);
+  return res.headers;
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {

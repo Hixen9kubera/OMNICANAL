@@ -38,11 +38,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle, Braces, Camera, CheckCircle2, ChevronDown, ChevronRight,
-  ChevronUp, Clock, Copy, ExternalLink, ImageIcon, Loader2, MousePointerClick,
-  Link2, Package, PackageX, Power, Radio, RotateCw, Truck, Undo2, X,
+  AlertTriangle, Braces, CalendarDays, Camera, CheckCircle2, ChevronDown, ChevronRight,
+  ChevronUp, Clock, Copy, ExternalLink, FileSpreadsheet, ImageIcon, Loader2, MousePointerClick,
+  Link2, Package, PackageX, Power, Printer, Radio, RotateCw, Truck, Undo2, X,
 } from "lucide-react";
-import { API_BASE, fetchSesion } from "@/lib/api";
+import { API_BASE, descargar, fetchSesion, mensajeDeError } from "@/lib/api";
+import { claveOrden, combinadosDe, type Combinado } from "@/lib/combinados";
+import { ddmm, revisarPdf, type AvisoPdf, type GuiaGrupo, type GuiasDia } from "@/lib/guiasDelDia";
 import AppNavbar from "@/components/AppNavbar";
 import { quienSoy } from "@/lib/sesion";
 
@@ -403,70 +405,11 @@ function coincide(o: OrdenOdoo, q: string): boolean {
  * separado, imprime la misma guía dos veces y la segunda caja no tiene guía
  * válida. Es SÓLO pantalla: se deduce de la guía que ya trae la bitácora y Odoo
  * no se toca (Brandon, 15-sep).
+ *
+ * El nombre ("…2532") y el color del grupo salen de `lib/combinados.ts`, la
+ * misma regla que usan la ventana "Guías del día" y su Excel: el mismo envío se
+ * lee igual en las tres.
  */
-interface Combinado {
-  guia: string;
-  n: number;
-  /** A, B, C… por canal, para distinguir grupos a simple vista. */
-  letra: string;
-  color: string;
-  suave: string;
-  companeras: { odoo_name: string | null; external_order_id: string }[];
-  /** Piezas de TODA la caja, no sólo de esta orden. */
-  piezas: number;
-}
-
-const COLORES_COMBINADO = [
-  { color: "#7C3AED", suave: "#F3EEFF" },
-  { color: "#0E7490", suave: "#E4F6F9" },
-  { color: "#BE185D", suave: "#FDEEF5" },
-  { color: "#4D7C0F", suave: "#EFF7E4" },
-  { color: "#1D4ED8", suave: "#EAF0FE" },
-  { color: "#B45309", suave: "#FDF3E6" },
-] as const;
-
-const claveOrden = (o: { canal: string; external_order_id: string }) => `${o.canal}-${o.external_order_id}`;
-
-/**
- * Agrupa por guía sobre la lista COMPLETA de un canal —no la filtrada— para que
- * una orden sepa de su compañera aunque el buscador o el filtro la escondan. La
- * letra sigue a la venta más vieja del grupo, así no brinca al refrescar.
- */
-function combinadosDe(lista: OrdenOdoo[]): Record<string, Combinado> {
-  const grupos = new Map<string, OrdenOdoo[]>();
-  for (const o of lista) {
-    const g = norm(o.guia);
-    if (!g) continue;
-    const k = `${o.canal}|${g}`;
-    const arr = grupos.get(k) ?? [];
-    // Distinta VENTA: el surtido dividido (una venta, dos órdenes) es otra cosa.
-    if (!arr.some((x) => x.external_order_id === o.external_order_id)) arr.push(o);
-    grupos.set(k, arr);
-  }
-  const t = (o: OrdenOdoo) => Date.parse(o.venta_at ?? o.creado_at ?? "") || 0;
-  const multiples = [...grupos.values()]
-    .filter((g) => g.length > 1)
-    .sort((a, b) => Math.min(...a.map(t)) - Math.min(...b.map(t)));
-  const out: Record<string, Combinado> = {};
-  multiples.forEach((g, i) => {
-    const pal = COLORES_COMBINADO[i % COLORES_COMBINADO.length];
-    const piezas = g.reduce((n, o) => n + o.lineas.reduce((m, l) => m + (l.cantidad ?? 0), 0), 0);
-    for (const o of g) {
-      out[claveOrden(o)] = {
-        guia: o.guia ?? "",
-        n: g.length,
-        letra: String.fromCharCode(65 + (i % 26)),
-        color: pal.color,
-        suave: pal.suave,
-        companeras: g.filter((x) => x !== o)
-          .map((x) => ({ odoo_name: x.odoo_name, external_order_id: x.external_order_id })),
-        piezas,
-      };
-    }
-  });
-  return out;
-}
-
 const nombresCompaneras = (c: Combinado) =>
   c.companeras.map((x) => x.odoo_name ?? x.external_order_id).join(", ");
 
@@ -476,12 +419,12 @@ function ChipCombinado({ c, onVerJuntas }: { c: Combinado; onVerJuntas?: (guia: 
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onVerJuntas?.(c.guia); }}
-      title={`Envío combinado ${c.letra}: ${c.n} órdenes van en 1 caja con 1 sola etiqueta (${c.piezas} piezas). Clic para verlas juntas.`}
+      title={`Envío combinado ${c.codigo} (guía ${c.guia}): ${c.n} órdenes van en 1 caja con 1 sola etiqueta (${c.piezas} piezas). Clic para verlas juntas.`}
       className="mt-[4px] inline-flex max-w-full items-center gap-[5px] rounded-full px-[8px] py-[2px] text-[10.5px] font-extrabold"
       style={{ background: "#fff", color: c.color, boxShadow: `inset 0 0 0 1.5px ${c.color}` }}
     >
       <Link2 className="h-3 w-3 shrink-0" />
-      <span className="truncate">Combinado {c.letra} · con {nombresCompaneras(c)}</span>
+      <span className="truncate">Combinado {c.codigo} · con {nombresCompaneras(c)}</span>
     </button>
   );
 }
@@ -929,7 +872,7 @@ function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
                  style={{ background: combinado.suave, boxShadow: `inset 0 0 0 1.5px ${combinado.color}` }}>
               <div className="flex items-center gap-[6px] text-[12.5px] font-extrabold" style={{ color: combinado.color }}>
                 <Link2 className="h-4 w-4 shrink-0" />
-                Envío combinado {combinado.letra} · {combinado.n} órdenes, 1 caja
+                Envío combinado {combinado.codigo} · {combinado.n} órdenes, 1 caja
               </div>
               <div className="mt-[6px] text-slate-600">
                 Esta guía también es de <b className="font-mono">{nombresCompaneras(combinado)}</b>.
@@ -1015,7 +958,7 @@ function TarjetaCanal({
             {ordenes.length} {ordenes.length === 1 ? "venta procesada" : "ventas procesadas"}
             {ultima && ` · última ${haceCuanto(ultima)}`}
             {(() => {
-              const g = new Set(ordenes.map((o) => combinados[claveOrden(o)]?.guia).filter(Boolean)).size;
+              const g = new Set(ordenes.map((o) => combinados[claveOrden(o)]?.clave).filter(Boolean)).size;
               return g > 0 ? ` · ${g} ${g === 1 ? "envío combinado" : "envíos combinados"}` : null;
             })()}
           </div>
@@ -1615,6 +1558,522 @@ function SinVentas({ estado }: { estado: Estado }) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   GUÍAS DEL DÍA — las guías de las órdenes GENERADAS un día (Brandon, 15-sep)
+   ══════════════════════════════════════════════════════════════════════════
+
+   "Un botón para descargar las guías de todas las órdenes y que me permitas
+   seleccionar el día" + un Excel con orden, piezas, SKU y guía, donde las filas
+   de un envío combinado —aunque la otra orden sea de OTRO día— van del mismo
+   color, y cada grupo de un color distinto.
+
+   Todo lo decide el backend (services/guias_del_dia.py): qué entra al día (en
+   hora de México), los grupos, su nombre (el final de la guía, "…2532") y sus
+   COLORES —la misma regla que la pestaña, `lib/combinados.ts`—, el orden de las
+   filas y qué guías no tienen PDF. Aquí sólo se pinta, con los mismos colores
+   del Excel, para que la vista previa y la hoja se lean igual.
+
+   Y aquí se COMPRUEBA el PDF que llegó: con `bin_size` Odoo sólo dice que hay
+   un archivo, no si es un PDF legible. Si al armarlo se cayó alguno, lo dicen
+   las cabeceras de la descarga y la ventana lo avisa sin que se quite solo. */
+
+type CanalGuias = CanalId | "todos";
+
+
+const ZONA_MX = "America/Mexico_City";
+
+const ETIQUETA_CANAL: Record<string, string> = {
+  temu: "Temu", tiktok: "TikTok", todos: "Temu y TikTok",
+};
+
+/** "AAAA-MM-DD" de hoy —o de hace `menos` días— EN HORA DE MÉXICO, no la del
+ *  navegador: el almacén trabaja en la de allá y el backend corta el día igual. */
+function diaMX(menos = 0): string {
+  const partes = new Intl.DateTimeFormat("en-US", {
+    timeZone: ZONA_MX, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date());
+  const v = (t: string) => Number(partes.find((p) => p.type === t)?.value);
+  return new Date(Date.UTC(v("year"), v("month") - 1, v("day") - menos)).toISOString().slice(0, 10);
+}
+
+/** "13 sep 2026" a partir de "2026-09-13", sin pasar por la zona del navegador. */
+function diaLegible(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${Number(m[3])} ${MESES[Number(m[2]) - 1]} ${m[1]}` : iso;
+}
+
+/** "21:04" en hora de México. */
+function horaMX(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("es-MX", {
+    timeZone: ZONA_MX, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(d);
+}
+
+/** Cada pedazo de la nota del backend, con el tono que le toca. */
+function ChipsNota({ nota }: { nota: string }) {
+  const piezas = nota.split(" · ").map((t) => t.trim()).filter(Boolean);
+  if (!piezas.length) return null;
+  return (
+    <span className="inline-flex flex-wrap gap-[5px]">
+      {piezas.map((t) => {
+        // "sin guía" es tan grave como "sin PDF": sin guía la caja no sale.
+        // ("sin PDF (se imprime la de …)" NO: su etiqueta sí sale, por la compañera.)
+        const tono = t.startsWith("otro día")
+          ? { bg: "#FFFBEB", fg: "#92400E" }
+          : t === "sin PDF" || t === "sin guía" || t.startsWith("no se encontró")
+            ? { bg: "#FFF1F2", fg: "#9F1239" }
+            : t.includes("cancelada")
+              ? { bg: "#F1F5F9", fg: "#64748B" }
+              : { bg: "#F1F5F9", fg: "#475569" };
+        return (
+          <span key={t} className="whitespace-nowrap rounded-full px-[8px] py-[2px] text-[10.5px] font-bold"
+                style={{ background: tono.bg, color: tono.fg }}>
+            {t}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function ChipGrupo({ g }: { g: GuiaGrupo }) {
+  return (
+    <span
+      title={`Envío combinado ${g.codigo}: ${g.n} órdenes en 1 caja con 1 sola etiqueta (${g.piezas} piezas)`
+             + (g.etiqueta_tambien_en.length
+               ? `. Su etiqueta también sale en el PDF del ${g.etiqueta_tambien_en.map(ddmm).join(", ")}.`
+               : "")}
+      className="inline-flex max-w-full items-center gap-[5px] rounded-full bg-white px-[8px] py-[2px] text-[10.5px] font-extrabold"
+      style={{ color: g.tinta, boxShadow: `inset 0 0 0 1.5px ${g.tinta}` }}
+    >
+      <Link2 className="h-3 w-3 shrink-0" />
+      <span className="truncate">{g.codigo} · con {g.companeras.join(", ")}</span>
+    </span>
+  );
+}
+
+function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerrar: () => void }) {
+  const hoy = diaMX();
+  const ayer = diaMX(1);
+  const [fecha, setFecha] = useState(hoy);
+  const [canal, setCanal] = useState<CanalGuias>(canalInicial);
+  const [datos, setDatos] = useState<GuiasDia | null>(null);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [bajando, setBajando] = useState<"excel" | "pdf" | null>(null);
+  const [errorDescarga, setErrorDescarga] = useState<string | null>(null);
+  /* No se quita solo: se cierra a mano o al volver a bajar el PDF. Lleva su día
+     en el texto, así que puede quedarse aunque se cambie de día. */
+  const [avisoPdf, setAvisoPdf] = useState<AvisoPdf | null>(null);
+  /* Nunca por omisión: una etiqueta que no sale es una caja que no se envía. */
+  const [omitirAnteriores, setOmitirAnteriores] = useState(false);
+
+  const fechaValida = /^\d{4}-\d{2}-\d{2}$/.test(fecha);
+  const qs = `fecha=${encodeURIComponent(fecha)}&canal=${canal}`;
+
+  /* Cada cambio de día o canal pide de nuevo, y la respuesta vieja se descarta:
+     dos clics rápidos (Hoy → Ayer) no pueden dejar pintado el día equivocado. */
+  useEffect(() => {
+    setErrorDescarga(null);
+    setOmitirAnteriores(false);
+    if (!fechaValida) {
+      setDatos(null);
+      setError("Elige un día.");
+      setCargando(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    setCargando(true);
+    setError(null);
+    void (async () => {
+      try {
+        const r = await fetchSesion(`${API_BASE}/api/automatizacion/guias-del-dia?${qs}`,
+                                    { signal: ctrl.signal, cache: "no-store" });
+        if (!r.ok) {
+          let detalle = `HTTP ${r.status}`;
+          try {
+            const j = (await r.json()) as { detail?: unknown };
+            if (typeof j.detail === "string" && j.detail.trim()) detalle = j.detail;
+          } catch { /* sin cuerpo JSON */ }
+          throw new Error(detalle);
+        }
+        const j = (await r.json()) as GuiasDia;
+        if (!ctrl.signal.aborted) setDatos(j);
+      } catch (err) {
+        if (ctrl.signal.aborted) return;
+        setDatos(null);
+        setError(err instanceof Error ? err.message : "no se pudo cargar");
+      } finally {
+        if (!ctrl.signal.aborted) setCargando(false);
+      }
+    })();
+    return () => ctrl.abort();
+  }, [qs, fechaValida]);
+
+  useEffect(() => {
+    const tecla = (e: KeyboardEvent) => { if (e.key === "Escape" && !bajando) onCerrar(); };
+    window.addEventListener("keydown", tecla);
+    return () => window.removeEventListener("keydown", tecla);
+  }, [onCerrar, bajando]);
+
+  const bajar = async (que: "excel" | "pdf") => {
+    setBajando(que);
+    setErrorDescarga(null);
+    const omitir = que === "pdf" && omitirAnteriores && (datos?.resumen.etiquetas_dia_anterior ?? 0) > 0;
+    if (que === "pdf") setAvisoPdf(null);
+    try {
+      const cab = await descargar(
+        `${API_BASE}/api/automatizacion/guias-del-dia/${que}?${qs}${omitir ? "&omitir_dia_anterior=true" : ""}`,
+        `guias_${canal}_${fecha}.${que === "excel" ? "xlsx" : "pdf"}`);
+      if (que === "pdf" && datos) setAvisoPdf(revisarPdf(cab, datos, omitir));
+    } catch (err) {
+      setErrorDescarga(mensajeDeError(err, que === "excel"
+        ? "No se pudo descargar el Excel."
+        : "No se pudieron descargar las guías."));
+    } finally {
+      setBajando(null);
+    }
+  };
+
+  const r = datos?.resumen;
+  const hay = Boolean(datos && datos.ordenes.length > 0);
+  const faltan = datos?.faltantes_pdf ?? [];
+  const repetidas = datos?.etiquetas_repetidas ?? [];
+  const anteriores = r?.etiquetas_dia_anterior ?? 0;
+  const aImprimir = (r?.etiquetas ?? 0) - (omitirAnteriores ? anteriores : 0);
+  const puedePdf = hay && Boolean(datos?.odoo_ok) && aImprimir > 0;
+
+  const pildora = (activa: boolean) => ({
+    background: activa ? "#111827" : "#fff",
+    borderColor: activa ? "#111827" : "#e6e9f2",
+    color: activa ? "#fff" : "#374151",
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 sm:items-center sm:p-4"
+         onClick={() => !bajando && onCerrar()}>
+      <div role="dialog" aria-modal="true" aria-labelledby="guias-dia-titulo"
+           className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-t-[18px] bg-white shadow-2xl sm:rounded-[18px]"
+           onClick={(e) => e.stopPropagation()}>
+
+        {/* ── Cabecera ── */}
+        <div className="flex items-start gap-3 border-b px-4 py-4 sm:px-6" style={{ borderColor: "#eef1f6" }}>
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]"
+                style={{ background: "#EEF0FF", color: "#4338CA" }}>
+            <Printer className="h-5 w-5" />
+          </span>
+          <div className="min-w-0">
+            <h3 id="guias-dia-titulo" className="text-[16px] font-extrabold text-slate-900">Guías del día</h3>
+            <p className="mt-0.5 text-[12.5px] leading-relaxed text-slate-500">
+              Las órdenes de venta generadas ese día en Odoo, en hora de México. Si una comparte
+              guía con una orden de otro día, esa también sale y las dos van del mismo color.
+            </p>
+          </div>
+          <button type="button" onClick={onCerrar} aria-label="Cerrar" disabled={Boolean(bajando)}
+                  className="ml-auto text-slate-300 hover:text-slate-500 disabled:opacity-40">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* ── Día y canal ── */}
+        <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3 sm:px-6" style={{ borderColor: "#eef1f6" }}>
+          <label className="inline-flex items-center gap-2 rounded-[10px] border bg-white px-3 py-[6px]"
+                 style={{ borderColor: "#e6e9f2" }}>
+            <CalendarDays className="h-[15px] w-[15px] text-slate-400" />
+            <input
+              type="date"
+              value={fecha}
+              max={hoy}
+              onChange={(e) => setFecha(e.target.value)}
+              aria-label="Día en que se generaron las órdenes"
+              className="bg-transparent font-mono text-[12.5px] text-slate-700 outline-none"
+            />
+          </label>
+          {([["Hoy", hoy], ["Ayer", ayer]] as const).map(([txt, valor]) => (
+            <button key={txt} type="button" onClick={() => setFecha(valor)}
+                    className="rounded-full border px-[13px] py-[6px] text-[12.5px] font-bold"
+                    style={pildora(fecha === valor)}>
+              {txt}
+            </button>
+          ))}
+          <div className="flex overflow-hidden rounded-[10px] border sm:ml-auto" role="group"
+               aria-label="Canal" style={{ borderColor: "#e6e9f2" }}>
+            {([["temu", "Temu"], ["tiktok", "TikTok"], ["todos", "Ambos"]] as const).map(([id, txt], i) => (
+              <button key={id} type="button" onClick={() => setCanal(id)} aria-pressed={canal === id}
+                      className="px-[13px] py-[6px] text-[12.5px] font-bold"
+                      style={{
+                        borderLeft: i ? "1px solid #e6e9f2" : undefined,
+                        background: canal === id ? "#111827" : "#fff",
+                        color: canal === id ? "#fff" : "#374151",
+                      }}>
+                {txt}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Resumen ── */}
+        {r && hay && !cargando && (
+          <div className="flex flex-wrap items-center gap-[6px] border-b px-4 py-[10px] text-[12px] sm:px-6"
+               style={{ borderColor: "#eef1f6", background: "#fbfcfe" }}>
+            <span className="mr-1 font-bold text-slate-700">{diaLegible(datos!.fecha)}</span>
+            {([
+              ["Órdenes", r.total, ""],
+              ["Etiquetas", r.etiquetas, ""],
+              ["Piezas", r.piezas, ""],
+              ["Combinados", r.combinados, r.combinados ? "#6D28D9" : ""],
+              ["De otro día", r.de_otro_dia, r.de_otro_dia ? "#92400E" : ""],
+              ["Sin guía", r.sin_guia, r.sin_guia ? "#9F1239" : ""],
+              ["Sin PDF", r.sin_pdf, r.sin_pdf ? "#9F1239" : ""],
+              ...(r.canceladas ? [["Canceladas", r.canceladas, "#64748B"] as const] : []),
+            ] as const).map(([txt, n, color]) => (
+              <span key={txt} className="inline-flex items-center gap-[5px] rounded-full border bg-white px-[9px] py-[2px]"
+                    style={{ borderColor: "#e6e9f2" }}>
+                <span className="text-slate-500">{txt}</span>
+                <span className="font-mono font-extrabold" style={{ color: color || "#0f172a" }}>{n}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* ── Vista previa ── */}
+        <div className="min-h-[120px] flex-1 overflow-y-auto px-4 py-3 sm:px-6">
+          {cargando ? (
+            <div className="space-y-2 py-2">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="h-9 animate-pulse rounded-[10px] bg-slate-100" />
+              ))}
+            </div>
+          ) : error ? (
+            <p className="flex items-center gap-2 rounded-[12px] px-3 py-2.5 text-[13px]"
+               style={{ background: "#FFF1F2", color: "#9F1239" }}>
+              <AlertTriangle className="h-4 w-4 shrink-0" />{error}
+            </p>
+          ) : !hay ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <PackageX className="h-7 w-7 text-slate-300" />
+              <p className="text-[13.5px] font-bold text-slate-600">
+                No hay órdenes generadas el {diaLegible(fecha)}
+                {canal === "todos" ? "" : ` en ${canal === "temu" ? "Temu" : "TikTok"}`}.
+              </p>
+              <p className="text-[12px] text-slate-400">Prueba otro día o cambia de canal.</p>
+            </div>
+          ) : (
+            <>
+              {/* Pantalla ancha: tabla, una fila por orden con sus SKU apilados. */}
+              <table className="hidden w-full border-separate border-spacing-0 text-[12.5px] sm:table">
+                <thead>
+                  <tr className="text-left text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400">
+                    <th className="py-2 pl-3 pr-2">Orden</th>
+                    <th className="px-2 py-2 text-right">Pzs</th>
+                    <th className="px-2 py-2">SKU</th>
+                    <th className="px-2 py-2">Guía</th>
+                    <th className="px-2 py-2">Envío combinado</th>
+                    <th className="px-2 py-2">Nota</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {datos!.ordenes.map((o) => {
+                    const g = o.grupo;
+                    const celda = "border-t px-2 py-[7px] align-top";
+                    return (
+                      <tr key={`${o.canal}-${o.venta}`}
+                          style={{ background: g ? g.color : undefined, opacity: o.cancelada ? 0.6 : 1 }}>
+                        <td className={`${celda} pl-3`}
+                            style={{ borderColor: "#eef1f6", boxShadow: g ? `inset 4px 0 0 ${g.tinta}` : undefined }}>
+                          <div className="font-mono font-bold text-slate-800">{o.orden || "—"}</div>
+                          <div className="font-mono text-[10.5px] text-slate-500">
+                            {canal === "todos" && `${o.canal === "temu" ? "Temu" : "TikTok"} · `}
+                            {o.fecha_dia} {horaMX(o.fecha)}
+                          </div>
+                        </td>
+                        <td className={`${celda} text-right font-mono font-bold text-slate-700`}
+                            style={{ borderColor: "#eef1f6" }}>
+                          {o.lineas.length > 1
+                            ? o.lineas.map((l, i) => <div key={i}>{l.piezas}</div>)
+                            : o.piezas_total}
+                        </td>
+                        <td className={`${celda} font-mono text-slate-700`} style={{ borderColor: "#eef1f6" }}>
+                          {o.lineas.length
+                            ? o.lineas.map((l, i) => <div key={i}>{l.sku || "—"}</div>)
+                            : "—"}
+                        </td>
+                        <td className={`${celda} font-mono text-slate-800`} style={{ borderColor: "#eef1f6" }}>
+                          {o.guia || <span className="text-slate-400">—</span>}
+                          {o.paqueteria && <div className="font-sans text-[10.5px] text-slate-500">{o.paqueteria}</div>}
+                        </td>
+                        <td className={celda} style={{ borderColor: "#eef1f6" }}>
+                          {g ? <ChipGrupo g={g} /> : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className={celda} style={{ borderColor: "#eef1f6" }}>
+                          <ChipsNota nota={o.nota} />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* Pantalla angosta: tarjetas. */}
+              <div className="space-y-2 sm:hidden">
+                {datos!.ordenes.map((o) => {
+                  const g = o.grupo;
+                  return (
+                    <div key={`${o.canal}-${o.venta}`} className="rounded-[12px] border px-3 py-2"
+                         style={{
+                           borderColor: g ? g.tinta : "#e6e9f2",
+                           background: g ? g.color : "#fff",
+                           borderLeftWidth: g ? 4 : 1,
+                           opacity: o.cancelada ? 0.6 : 1,
+                         }}>
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-mono text-[13px] font-bold text-slate-800">{o.orden || "—"}</span>
+                        <span className="font-mono text-[11px] text-slate-500">
+                          {canal === "todos" && `${o.canal === "temu" ? "Temu" : "TikTok"} · `}
+                          {o.fecha_dia} {horaMX(o.fecha)}
+                        </span>
+                      </div>
+                      <div className="mt-[2px] break-all font-mono text-[12px] text-slate-800">
+                        {o.guia || "sin guía"}
+                        {o.paqueteria && <span className="font-sans text-[11px] text-slate-500"> · {o.paqueteria}</span>}
+                      </div>
+                      <div className="mt-1 space-y-[1px] font-mono text-[11.5px] text-slate-600">
+                        {o.lineas.map((l, i) => (
+                          <div key={i}>{l.piezas} × {l.sku || "—"}</div>
+                        ))}
+                      </div>
+                      {(g || o.nota) && (
+                        <div className="mt-[6px] flex flex-wrap gap-[5px]">
+                          {g && <ChipGrupo g={g} />}
+                          <ChipsNota nota={o.nota} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* ── Avisos y descargas ── */}
+        <div className="max-h-[45vh] shrink-0 overflow-y-auto border-t px-4 py-3 sm:px-6"
+             style={{ borderColor: "#eef1f6" }}>
+          {datos && hay && !cargando && !datos.odoo_ok && (
+            <p className="mb-2 flex items-start gap-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+               style={{ background: "#FFFBEB", color: "#92400E" }}>
+              <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
+              Odoo no respondió: no se pudo revisar qué órdenes tienen su PDF. El Excel sí se puede bajar;
+              el PDF, en un momento.
+            </p>
+          )}
+          {datos && hay && !cargando && faltan.length > 0 && (
+            <p className="mb-2 flex items-start gap-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+               style={{ background: "#FFF1F2", color: "#9F1239" }}>
+              <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
+              <span>
+                {faltan.length === 1 ? "1 guía no saldrá" : `${faltan.length} guías no saldrán`} en el PDF
+                porque Odoo no tiene su archivo:{" "}
+                <strong className="font-mono font-bold">
+                  {faltan.map((f) => f.ordenes.join(" + ")).join(", ")}
+                </strong>
+              </span>
+            </p>
+          )}
+          {datos && hay && !cargando && repetidas.length > 0 && (
+            <div className="mb-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+                 style={{ background: "#FFFBEB", color: "#92400E" }}>
+              <p className="flex items-start gap-2">
+                <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
+                <span>
+                  {repetidas.length === 1
+                    ? "1 etiqueta de este PDF también sale"
+                    : `${repetidas.length} etiquetas de este PDF también salen`} en el PDF de otro día
+                  (envío combinado entre días):{" "}
+                  {repetidas.map((e, i) => (
+                    <span key={`${e.canal}-${e.guia}`}>
+                      {i > 0 && "; "}
+                      <strong className="font-mono font-bold">{e.codigo}</strong>{" "}
+                      ({e.ordenes.join(" + ")}) también en el del {e.tambien_en.map(ddmm).join(", ")}
+                    </span>
+                  ))}.
+                  {" "}Si ya la imprimiste ese día, no la vuelvas a pegar.
+                </span>
+              </p>
+              {anteriores > 0 && (
+                <label className="mt-[6px] flex cursor-pointer items-center gap-2 pl-6 font-bold">
+                  <input type="checkbox" checked={omitirAnteriores}
+                         onChange={(e) => setOmitirAnteriores(e.target.checked)} />
+                  No repetir en este PDF {anteriores === 1
+                    ? "la que ya sale en el PDF de un día anterior"
+                    : `las ${anteriores} que ya salen en el PDF de un día anterior`}
+                </label>
+              )}
+            </div>
+          )}
+          {avisoPdf && (
+            <div role="alert" className="mb-2 flex items-start gap-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+                 style={{ background: "#FFF1F2", color: "#9F1239", boxShadow: "inset 0 0 0 1.5px #FDA4AF" }}>
+              <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
+              <span className="min-w-0 flex-1">
+                {avisoPdf.salieron === null ? (
+                  <>No se pudo comprobar cuántas etiquetas trae el PDF del{" "}
+                    <b>{diaLegible(avisoPdf.dia)} · {ETIQUETA_CANAL[avisoPdf.canal] ?? avisoPdf.canal}</b>:
+                    deberían ser <b>{avisoPdf.esperadas}</b>. Cuéntalas antes de imprimir.</>
+                ) : (
+                  <>El PDF del{" "}
+                    <b>{diaLegible(avisoPdf.dia)} · {ETIQUETA_CANAL[avisoPdf.canal] ?? avisoPdf.canal}</b>{" "}
+                    salió con <b>{avisoPdf.salieron}</b> de <b>{avisoPdf.esperadas}</b> etiquetas.</>
+                )}
+                {avisoPdf.ordenes.length > 0 && (
+                  <> No salieron:{" "}
+                    <strong className="font-mono font-bold">{avisoPdf.ordenes.join(", ")}</strong>
+                    {" "}— Odoo tiene un archivo en &quot;Subir guía&quot;, pero no es un PDF o está dañado.
+                    Esas cajas no tienen etiqueta: vuelve a subir su guía en Odoo.</>
+                )}
+              </span>
+              <button type="button" onClick={() => setAvisoPdf(null)} aria-label="Cerrar aviso"
+                      className="shrink-0 opacity-60 hover:opacity-100">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+          {errorDescarga && (
+            <p className="mb-2 flex items-start gap-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+               style={{ background: "#FFF1F2", color: "#9F1239" }}>
+              <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />{errorDescarga}
+            </p>
+          )}
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <button type="button" onClick={() => void bajar("excel")}
+                    disabled={!hay || cargando || Boolean(bajando)}
+                    className="inline-flex items-center justify-center gap-2 rounded-[10px] border bg-white px-4 py-[9px] text-[13px] font-bold text-slate-700 disabled:opacity-50"
+                    style={{ borderColor: "#e6e9f2" }}>
+              {bajando === "excel" ? <Loader2 className="h-4 w-4 animate-spin" />
+                                   : <FileSpreadsheet className="h-4 w-4" style={{ color: "#047857" }} />}
+              Descargar Excel
+            </button>
+            <button type="button" onClick={() => void bajar("pdf")}
+                    disabled={!puedePdf || cargando || Boolean(bajando)}
+                    title={hay && !puedePdf
+                      ? (r?.etiquetas ? "Todas las etiquetas ya salen en el PDF de un día anterior"
+                                      : "Ninguna orden de ese día tiene su PDF en Odoo")
+                      : undefined}
+                    className="inline-flex items-center justify-center gap-2 rounded-[10px] px-4 py-[9px] text-[13px] font-bold text-white disabled:opacity-50"
+                    style={{ background: "#4F46E5" }}>
+              {bajando === "pdf" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+              Descargar guías (PDF){r && hay ? ` · ${aImprimir}` : ""}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    LA PANTALLA
    ══════════════════════════════════════════════════════════════════════════ */
 
@@ -1630,6 +2089,8 @@ export default function AutomatizacionPage() {
   const [dias, setDias] = useState(30);
   const [abierta, setAbierta] = useState<string | null>(null);
   const [verParams, setVerParams] = useState(false);
+  const [verGuias, setVerGuias] = useState(false);
+  const cerrarGuias = useCallback(() => setVerGuias(false), []);
 
   const [confirmar, setConfirmar] = useState<
     { que: "general" | CanalId; encender: boolean } | null
@@ -1757,7 +2218,7 @@ export default function AutomatizacionPage() {
     return base;
   }, [ordenes]);
 
-  // Letras por canal (A, B… en cada uno); las llaves no chocan porque llevan el canal.
+  // Grupos por canal; las llaves no chocan porque llevan el canal.
   const combinados = useMemo(
     () => ({ ...combinadosDe(porCanal.tiktok), ...combinadosDe(porCanal.temu) }),
     [porCanal],
@@ -1934,6 +2395,15 @@ export default function AutomatizacionPage() {
           })}
 
           <div className="ml-auto flex flex-wrap items-center gap-[10px]">
+            <button
+              type="button"
+              onClick={() => setVerGuias(true)}
+              title="Excel y PDF con las guías de las órdenes generadas un día"
+              className="inline-flex items-center gap-[7px] rounded-[10px] border bg-white px-[13px] py-[9px] text-[13px] font-bold text-slate-700 hover:text-indigo-600"
+              style={{ borderColor: "#e6e9f2" }}
+            >
+              <Printer className="h-[15px] w-[15px]" />Guías del día
+            </button>
             <input
               type="search"
               value={busqueda}
@@ -2086,6 +2556,9 @@ export default function AutomatizacionPage() {
           )}
         </div>
       </main>
+
+      {/* ── GUÍAS DEL DÍA ── abre en el canal de la pestaña activa. */}
+      {verGuias && <GuiasDelDia canalInicial={canal} onCerrar={cerrarGuias} />}
 
       {/* ── CONFIRMACIÓN ──
           La asimetría es a propósito: apagar explica QUÉ deja de pasar y quién
