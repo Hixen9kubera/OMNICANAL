@@ -46,6 +46,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -652,3 +653,130 @@ def access_token(shop_id: str | None = None) -> str | None:
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo leer el token de TikTok: %s", exc)
         return None
+
+
+# ── Etiqueta de envío (PDF) ───────────────────────────────────────────────────
+#
+# POR QUÉ (14-sep-2026). Las ventas de TikTok con `shipping_type=TIKTOK` llevan
+# la guía que compra TikTok, y el almacén necesita el PDF en la orden de Odoo
+# ("Subir guía", `meli_etiqueta_file`) igual que ya pasa con Temu y SHEIN. Hasta
+# hoy lo bajaba una persona del seller center y lo subía a mano como
+# `<order_id>.pdf`.
+#
+# EL PDF TRAE LA DIRECCIÓN DEL COMPRADOR: vive SÓLO en memoria y va directo a
+# Odoo. Nunca a disco, a un log, a kubera ni a una respuesta del API.
+#
+# LOS CÓDIGOS, CLASIFICADOS. Un "falló" a secas mezcla tres cosas que se
+# atienden distinto, y confundirlas es cómo un contador de errores termina
+# gritando todos los días sin que nada esté mal:
+#   · reintentables — tropiezo de TikTok; la vuelta siguiente lo vuelve a pedir.
+#   · aún no agendado — lo NORMAL entre AWAITING_SHIPMENT y el agendado de la
+#     recolección: la etiqueta todavía no existe. Tampoco es un fallo.
+#   · terminales — el paquete no da etiqueta nunca (cancelado, no es envío de
+#     TikTok, id ajeno a la tienda…). Reintentar sólo gasta cuota.
+
+_RUTA_DOCUMENTOS = "/fulfillment/202309/packages/{package_id}/shipping_documents"
+ETIQUETA_REINTENTABLES = frozenset({"11034037", "11034023", "21023022"})
+ETIQUETA_NO_AGENDADO = frozenset({"21023035", "21042104"})
+ETIQUETA_TERMINALES = frozenset({"21042102", "21023059", "11034002", "21008017",
+                                 "21008043", "21023046", "21011001"})
+_CODIGO_EN_ERROR = re.compile(r"code=(\d+)")
+
+
+def codigo_de_error(exc: BaseException | str | None) -> str | None:
+    """El `code` de negocio de TikTok dentro del error de `llamar`, o None.
+
+    `llamar` levanta `RuntimeError("TikTok <ruta> → code=<n> <mensaje> …")`; el
+    código es lo único estable de ese texto (el mensaje cambia de idioma).
+    """
+    m = _CODIGO_EN_ERROR.search(str(exc or ""))
+    return m.group(1) if m else None
+
+
+def clasificar_error_etiqueta(codigo: str | int | None) -> dict[str, Any]:
+    """`{clase, reintentable, terminal}` de un código de shipping_documents.
+
+    Un código DESCONOCIDO no es terminal: no se da por perdida una etiqueta por
+    un número que nadie ha visto. Tampoco se marca reintentable — la cola de
+    guías sale de Odoo y lo vuelve a mirar sola, así que no hace falta afirmarlo.
+    """
+    c = str(codigo) if codigo is not None else ""
+    if c in ETIQUETA_REINTENTABLES:
+        return {"clase": "reintentable", "reintentable": True, "terminal": False}
+    if c in ETIQUETA_NO_AGENDADO:
+        return {"clase": "no_agendado", "reintentable": True, "terminal": False}
+    if c in ETIQUETA_TERMINALES:
+        return {"clase": "terminal", "reintentable": False, "terminal": True}
+    return {"clase": "desconocido", "reintentable": False, "terminal": False}
+
+
+async def descargar_etiqueta(package_id: str, token: str | None = None,
+                             shop_cipher: str | None = None,
+                             timeout: float = 60.0) -> dict[str, Any]:
+    """
+    El PDF de la etiqueta de un paquete de TikTok. Nunca lanza.
+
+    `GET /fulfillment/202309/packages/{package_id}/shipping_documents` con
+    `document_type=SHIPPING_LABEL`, `document_size=A6`, `document_format=PDF` →
+    `data.doc_url` (válida 24 h) + `data.tracking_number`. El PDF se baja EN
+    MEMORIA y sólo cuenta si empieza con `%PDF`: una página de error guardada
+    como "etiqueta" es peor que el campo vacío — alguien imprimiría basura.
+
+    Devuelve `{ok, pdf, tracking_number, codigo, clase, reintentable, terminal,
+    motivo}`. `motivo` NUNCA lleva la `doc_url` (es una liga firmada) ni el
+    contenido descargado.
+
+    `token`/`shop_cipher` se aceptan de quien llama para no releer la BD por
+    cada paquete; si faltan, se leen EN UN HILO (regla 11).
+    """
+    fuera: dict[str, Any] = {"ok": False, "pdf": b"", "tracking_number": "",
+                             "codigo": None, "clase": None, "reintentable": False,
+                             "terminal": False, "motivo": None}
+    pid = str(package_id or "").strip()
+    if not pid.isdigit():
+        return {**fuera, "clase": "terminal", "terminal": True,
+                "motivo": "package_id vacío o no numérico"}
+    try:
+        if not (token and shop_cipher):
+            token, shop_cipher = await asyncio.to_thread(
+                lambda: (access_token(), cipher()))
+        if not (token and shop_cipher):
+            return {**fuera, "clase": "reintentable", "reintentable": True,
+                    "motivo": "TikTok sin token o sin shop_cipher"}
+        try:
+            data = await llamar(_RUTA_DOCUMENTOS.format(package_id=pid), token,
+                                {"shop_cipher": shop_cipher,
+                                 "document_type": "SHIPPING_LABEL",
+                                 "document_size": "A6", "document_format": "PDF"})
+        except Exception as exc:  # noqa: BLE001
+            codigo = codigo_de_error(exc)
+            clase = clasificar_error_etiqueta(codigo) if codigo else {
+                "clase": "reintentable", "reintentable": True, "terminal": False}
+            return {**fuera, **clase, "codigo": codigo,
+                    "motivo": str(exc)[:200]}
+        data = data if isinstance(data, dict) else {}
+        guia = str(data.get("tracking_number") or "").strip()
+        url = str(data.get("doc_url") or "").strip()
+        if not url:
+            return {**fuera, "tracking_number": guia, "clase": "reintentable",
+                    "reintentable": True, "motivo": "TikTok no devolvió doc_url"}
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as cli:
+                resp = await cli.get(url)
+        except Exception as exc:  # noqa: BLE001 — el texto de httpx puede traer la URL
+            return {**fuera, "tracking_number": guia, "clase": "reintentable",
+                    "reintentable": True, "motivo": f"descarga: {type(exc).__name__}"}
+        if resp.status_code != 200:
+            return {**fuera, "tracking_number": guia, "clase": "reintentable",
+                    "reintentable": True, "motivo": f"descarga HTTP {resp.status_code}"}
+        contenido = resp.content or b""
+        if not contenido.startswith(b"%PDF"):
+            return {**fuera, "tracking_number": guia, "codigo": "no_pdf",
+                    "clase": "reintentable", "reintentable": True,
+                    "motivo": f"no es PDF ({resp.headers.get('content-type')}, "
+                              f"{len(contenido)} bytes)"}
+        return {**fuera, "ok": True, "pdf": contenido, "tracking_number": guia,
+                "clase": "ok"}
+    except Exception as exc:  # noqa: BLE001 — nunca lanza
+        return {**fuera, "clase": "reintentable", "reintentable": True,
+                "motivo": f"{type(exc).__name__}: {str(exc)[:150]}"}

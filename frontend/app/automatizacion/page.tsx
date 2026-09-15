@@ -36,11 +36,11 @@
  * Solo admin: la orden trae la guía del comprador.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, Braces, Camera, CheckCircle2, ChevronDown, ChevronRight,
   ChevronUp, Clock, Copy, ExternalLink, ImageIcon, Loader2, MousePointerClick,
-  Package, Power, Radio, RotateCw, Truck, X,
+  Package, PackageX, Power, Radio, RotateCw, Truck, Undo2, X,
 } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import AppNavbar from "@/components/AppNavbar";
@@ -839,7 +839,7 @@ function Detalle({ o, odooUrl, ventaUrl = "" }: { o: OrdenOdoo; odooUrl: string;
 
 function TarjetaCanal({
   canal, ordenes, encendido, escalonId, moviendo, abierta, onAbrir, onSwitch, odooUrl, filtrando,
-  buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "",
+  buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "", arriba = 0,
 }: {
   canal: (typeof CANALES)[number];
   ordenes: OrdenOdoo[];
@@ -855,8 +855,13 @@ function TarjetaCanal({
   enOtroCanal?: number;
   otroCanal?: string;
   ventaUrl?: string;
+  /** Cuántas órdenes de «Confirmadas en Odoo · canceladas en el canal» quedan a
+   *  la vista con el mismo buscador/filtro. Sin esto la lista decía "nada
+   *  coincide" o "nada pendiente" justo debajo de una tarjeta con órdenes. */
+  arriba?: number;
 }) {
   const ultima = ordenes[0]?.creado_at ?? null;
+  const SECCION = "«Confirmadas en Odoo · canceladas en el canal»";
   const conOrden = ordenes.filter((o) => o.odoo_name).length;
   // "En observación" no es lo mismo que "encendido": el canal puede estar
   // encendido y el escalón medir sin escribir. Decir sólo "encendido" haría
@@ -911,11 +916,15 @@ function TarjetaCanal({
       {ordenes.length === 0 && (
         <p className="px-5 py-8 text-center text-[12.5px] text-slate-400">
           {buscando.trim()
-            ? enOtroCanal
-              ? `Nada en ${canal.nombre} con “${buscando.trim()}”, pero hay ${enOtroCanal} en ${otroCanal}: cambia de pestaña.`
-              : `Ninguna venta, orden ni guía coincide con “${buscando.trim()}”.`
+            ? arriba
+              ? `Ninguna venta procesada coincide con “${buscando.trim()}”; ${arriba === 1 ? "la orden que coincide está" : `las ${arriba} órdenes que coinciden están`} arriba, en ${SECCION}.`
+              : enOtroCanal
+                ? `Nada en ${canal.nombre} con “${buscando.trim()}”, pero hay ${enOtroCanal} en ${otroCanal}: cambia de pestaña.`
+                : `Ninguna venta, orden ni guía coincide con “${buscando.trim()}”.`
             : filtrando
-              ? `${canal.nombre} no tiene nada pendiente.`
+              ? arriba
+                ? `${canal.nombre} no tiene ventas procesadas pendientes; lo que pide acción está arriba, en ${SECCION} (${arriba}).`
+                : `${canal.nombre} no tiene nada pendiente.`
               : `Todavía no ha entrado ninguna venta de ${canal.nombre}.`}
         </p>
       )}
@@ -928,6 +937,482 @@ function TarjetaCanal({
             Clic en un renglón abre el detalle con el stock del momento
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Confirmadas en Odoo · canceladas en el canal ───────────────────────── */
+
+/** Una orden CONFIRMADA en Odoo cuya venta el canal canceló. Sin datos del
+ *  comprador: el backend la arma campo por campo
+ *  (services/odoo_ventas_conciliacion.py). */
+interface CanceladaConfirmada {
+  canal: string;
+  odoo_order_id: number;
+  odoo_name: string | null;
+  odoo_estado: string | null;
+  venta: string;
+  estado_canal: string | null;
+  /** true = channel.orders la tenía abierta y el canal contestó EN VIVO que está cancelada. */
+  estado_vivo?: boolean;
+  /** "automatica" = amarrada por client_order_ref; "manual" = por el PDF `<id>.pdf`. */
+  origen: "automatica" | "manual";
+  fecha_orden: string | null;
+  venta_at: string | null;
+  entrega: "hecha" | "pendiente" | "sin_entrega";
+  devolucion_registrada: boolean;
+  devolucion_hecha: boolean;
+  que_hacer: "revisar_regreso" | "cancelar_en_odoo" | "validar_devolucion" | "devuelta";
+}
+
+/** La pregunta EN VIVO al canal por las ventas que channel.orders guarda abiertas
+ *  (hoy sólo TikTok). `error` = no se pudo confirmar: lo guardado puede ser viejo. */
+interface VivoCanal {
+  abiertas: number;
+  consultadas: number;
+  omitidas: number;
+  respondidas: number;
+  canceladas: number;
+  al: string | null;
+  error: string | null;
+}
+
+interface CanalCanceladas {
+  ok: boolean;
+  criterio: string;
+  /** false = hoy NO se pueden ver las cancelaciones de este canal (Temu): una
+   *  lista vacía no significa "nada que revisar", significa "no se sabe". */
+  detectable?: boolean;
+  razon_no_detectable?: string | null;
+  ventas_canceladas: number;
+  estados_vistos?: Record<string, number>;
+  /** El último `actualizado_at` del canal en la ventana: de cuándo es lo guardado. */
+  estado_al?: string | null;
+  vivo?: VivoCanal | null;
+  cache_edad_s?: number;
+  ordenes: CanceladaConfirmada[];
+  por_que_hacer?: Record<string, number>;
+  total: number;
+  cruce_incompleto: boolean;
+  error: string | null;
+}
+
+interface RespuestaCanceladas {
+  ok: boolean;
+  generado: string;
+  dias: number;
+  canales: Record<string, CanalCanceladas>;
+  ordenes: CanceladaConfirmada[];
+  error: string | null;
+}
+
+/** La ventana de esta sección NO es la del selector "Procesadas": aquél mira
+ *  cuándo corrió el automatismo; aquí importa cuándo fue la VENTA, y las
+ *  canceladas que siguen vivas en Odoo son de hace semanas. */
+const DIAS_CANCELADAS = 90;
+
+/** Lo que pide cada caso. Mismas familias visuales que los desenlaces: la
+ *  mercancía que salió sin volver es ámbar (grave, pero ya pasó); la orden que
+ *  sigue reservando stock de una venta muerta es roja, como
+ *  `no_se_pudo_cancelar` ("Orden viva, venta muerta"). */
+const QUE_HACER: Record<CanceladaConfirmada["que_hacer"], { txt: string; v: Variante; nota: string }> = {
+  revisar_regreso:    { txt: "Salió del almacén · sin devolución", v: "ambar",
+                        nota: "El almacén debe revisar si la mercancía regresó" },
+  cancelar_en_odoo:   { txt: "Entrega pendiente · reserva stock", v: "rojo",
+                        nota: "Cancelar la orden en Odoo para liberar el inventario" },
+  validar_devolucion: { txt: "Devolución registrada, sin recibir", v: "obs",
+                        nota: "Validar la entrada cuando llegue la mercancía" },
+  devuelta:           { txt: "Devolución recibida", v: "ok",
+                        nota: "La mercancía ya regresó" },
+};
+
+/** ¿La orden de esta sección coincide con lo que se busca? Mismo `norm` que la
+ *  lista: la venta del canal o la orden S… de Odoo. Sin esto el buscador decía
+ *  "nada coincide" con la orden a la vista, arriba, en esta tarjeta. */
+function coincideCancelada(o: CanceladaConfirmada, q: string): boolean {
+  const n = norm(q);
+  if (!n) return true;
+  return [o.venta, o.odoo_name].some((v) => norm(v).includes(n));
+}
+
+/** Pide acción todo menos lo ya devuelto. Es la definición de esta sección, no
+ *  la de `pideAccion` (ésa sigue siendo la del `solo_problemas` del backend). */
+const pideAccionCancelada = (o: CanceladaConfirmada) => o.que_hacer !== "devuelta";
+
+/** Los estados que guarda channel.orders, dichos para quien no leyó el código.
+ *  Temu no publica su enum: 2/4/5 están medidos (pedidos_temu.py). */
+const ESTADO_CANAL_TXT: Record<string, Record<string, string>> = {
+  temu: { "2": "pagada, por enviar", "4": "enviada", "5": "entregada", pending: "pendiente (M2E)" },
+  tiktok: {
+    UNPAID: "sin pagar", ON_HOLD: "en espera", AWAITING_SHIPMENT: "por enviar",
+    PARTIALLY_SHIPPING: "envío parcial", AWAITING_COLLECTION: "por recolectar",
+    IN_TRANSIT: "en tránsito", DELIVERED: "entregada", COMPLETED: "completada",
+    CANCELLED: "cancelada",
+  },
+};
+
+function estadoCanalTxt(canal: string, e: string): string {
+  if (!e) return "sin estado";
+  return ESTADO_CANAL_TXT[canal]?.[e] ?? ESTADO_CANAL_TXT[canal]?.[e.toUpperCase()] ?? `sin traducir (“${e}”)`;
+}
+
+/** Lo confirmado en vivo y la edad de la caché. De cuándo es lo GUARDADO
+ *  (`estado_al`) va en el encabezado de la tarjeta, donde se lee primero. */
+function frescuraCanceladas(d: CanalCanceladas, canalNombre: string): { txt: string; aviso: string | null } {
+  const partes: string[] = [];
+  const v = d.vivo;
+  let aviso: string | null = null;
+  if (v && v.abiertas > 0) {
+    if (v.error) {
+      aviso = `No se pudo confirmar con ${canalNombre} el estado de ${v.consultadas} venta${v.consultadas === 1 ? "" : "s"} `
+        + `que channel.orders guarda abierta${v.consultadas === 1 ? "" : "s"}: si ${canalNombre} las canceló después, `
+        + `sus órdenes no salen aquí. (${v.error})`;
+    } else {
+      partes.push(`${v.consultadas} abierta${v.consultadas === 1 ? "" : "s"} confirmada${v.consultadas === 1 ? "" : "s"} en vivo`
+        + (v.al ? ` al ${fecha(v.al)}` : "")
+        + (v.canceladas ? ` (${v.canceladas} ya cancelada${v.canceladas === 1 ? "" : "s"})` : ""));
+    }
+    if (v.omitidas) partes.push(`${v.omitidas} sin consultar por el tope`);
+  }
+  if (d.cache_edad_s) partes.push(`leído hace ${d.cache_edad_s} s`);
+  return { txt: partes.join(" · "), aviso };
+}
+
+const ENTREGA: Record<CanceladaConfirmada["entrega"], { txt: string; bg: string; fg: string }> = {
+  hecha:       { txt: "Entrega hecha", bg: "#FFFBEB", fg: "#92400E" },
+  pendiente:   { txt: "Entrega pendiente", bg: "#F1F5F9", fg: "#475569" },
+  sin_entrega: { txt: "Sin entrega", bg: "#F8FAFC", fg: "#94A3B8" },
+};
+
+function Chip({ c }: { c: { txt: string; bg: string; fg: string } }) {
+  return (
+    <span className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-[8px] py-[3px] text-[11px] font-bold"
+          style={{ background: c.bg, color: c.fg }}>
+      {c.txt}
+    </span>
+  );
+}
+
+function FilaCancelada({
+  o, canal, odooUrl, ventaUrl,
+}: {
+  o: CanceladaConfirmada; canal: (typeof CANALES)[number]; odooUrl: string; ventaUrl: string;
+}) {
+  const q = QUE_HACER[o.que_hacer] ?? { txt: o.que_hacer, v: "inerte" as Variante, nota: "" };
+  const s = V[q.v];
+  const e = ENTREGA[o.entrega] ?? ENTREGA.sin_entrega;
+  const dev = o.devolucion_registrada
+    ? { txt: o.devolucion_hecha ? "Devolución recibida" : "Devolución registrada", bg: "#ECFDF5", fg: "#047857" }
+    : { txt: "Sin devolución", bg: o.entrega === "hecha" ? "#FFF1F2" : "#F8FAFC",
+        fg: o.entrega === "hecha" ? "#9F1239" : "#94A3B8" };
+  const enlaceOdoo = odooUrl.includes("{id}") ? odooUrl.replace("{id}", String(o.odoo_order_id)) : "";
+  const enlaceVenta = ventaUrl.includes("{id}") ? ventaUrl.replace("{id}", encodeURIComponent(o.venta)) : "";
+  // La cancelación que sólo se supo preguntando EN VIVO: channel.orders todavía
+  // la guarda abierta, así que en cualquier otra pantalla sigue pareciendo viva.
+  const vivo = o.estado_vivo ? (
+    <span className="whitespace-nowrap text-[10.5px] font-bold" style={{ color: "#9F1239" }}
+          title={`channel.orders la guarda abierta; ${canal.nombre} contestó en vivo que está cancelada`}>
+      cancelada en vivo
+    </span>
+  ) : null;
+
+  const botones = (
+    <div className="flex flex-wrap items-center gap-[6px]">
+      {enlaceOdoo && (
+        <a href={enlaceOdoo} target="_blank" rel="noreferrer"
+           title={`Abrir ${o.odoo_name ?? "la orden"} en Odoo`}
+           className="inline-flex items-center gap-[5px] whitespace-nowrap rounded-[8px] px-[9px] py-[5px] text-[11.5px] font-bold text-white"
+           style={{ background: "#4F46E5" }}>
+          <ExternalLink className="h-3 w-3" />Odoo
+        </a>
+      )}
+      {enlaceVenta && (
+        <a href={enlaceVenta} target="_blank" rel="noreferrer"
+           title="Abrir la venta en el seller center"
+           className="inline-flex items-center gap-[5px] whitespace-nowrap rounded-[8px] px-[9px] py-[5px] text-[11.5px] font-bold text-white"
+           style={{ background: canal.base }}>
+          <ExternalLink className="h-3 w-3" style={canal.id === "tiktok" ? { color: canal.punto } : undefined} />
+          {canal.id === "tiktok" ? "TikTok" : canal.nombre}
+        </a>
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ background: s.filaBg, borderBottom: "1px solid #f4f6fa" }}>
+      {/* ── ANCHO ── */}
+      <div className="hidden items-center gap-3 pr-5 lg:grid"
+           style={{ gridTemplateColumns: "4px 250px 190px 150px 1fr auto" }}>
+        <span className="h-full min-h-[50px]" style={{ background: s.marca || "transparent" }} />
+        <div className="min-w-0 py-[9px]">
+          <div className="flex items-center gap-[7px]">
+            <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: s.punto }} />
+            <span className="truncate text-[13px] leading-tight" style={{ fontWeight: s.peso, color: s.color }}>
+              {q.txt}
+            </span>
+          </div>
+          {q.nota && (
+            <div className="mt-[3px] truncate pl-[14px] text-[11.5px]" style={{ color: s.motivoColor }}>{q.nota}</div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate font-mono text-[13px] font-bold text-slate-900">{o.odoo_name ?? "—"}</span>
+            <span className="text-[10.5px] text-slate-400">{o.origen === "manual" ? "a mano" : "automática"}</span>
+            {vivo}
+          </div>
+          <IdVenta id={o.venta} url={ventaUrl} />
+        </div>
+        <div className="text-[11.5px] text-slate-500">
+          <div><span className="text-slate-400">orden </span>
+            <span className="font-mono font-bold text-slate-700">{fecha(o.fecha_orden)}</span></div>
+          <div><span className="text-slate-400">venta </span>
+            <span className="font-mono font-bold text-slate-700">{fecha(o.venta_at)}</span></div>
+        </div>
+        <div className="flex flex-wrap items-center gap-[6px]">
+          <Chip c={e} />
+          <Chip c={dev} />
+        </div>
+        {botones}
+      </div>
+
+      {/* ── ANGOSTO: apilado; la barra de familia sobrevive ── */}
+      <div className="grid gap-3 lg:hidden" style={{ gridTemplateColumns: "4px 1fr" }}>
+        <span className="h-full" style={{ background: s.marca || "transparent" }} />
+        <div className="min-w-0 py-3 pr-[14px]">
+          <div className="flex items-center gap-2">
+            <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: s.punto }} />
+            <span className="min-w-0 truncate text-[13px]" style={{ fontWeight: s.peso, color: s.color }}>{q.txt}</span>
+            <span className="ml-auto shrink-0 font-mono text-[13px] font-bold text-slate-900">{o.odoo_name ?? "—"}</span>
+          </div>
+          <div className="pl-[15px]"><IdVenta id={o.venta} url={ventaUrl} /></div>
+          {q.nota && <div className="mt-1 pl-[15px] text-[11.5px]" style={{ color: s.motivoColor }}>{q.nota}</div>}
+          <div className="mt-2 flex flex-wrap items-center gap-2 pl-[15px]">
+            <Chip c={e} />
+            <Chip c={dev} />
+            <span className="text-[11px] text-slate-400">
+              orden <span className="font-mono font-bold text-slate-600">{fecha(o.fecha_orden)}</span>
+              {" · "}{o.origen === "manual" ? "a mano" : "automática"}
+            </span>
+            {vivo}
+          </div>
+          <div className="mt-2 pl-[15px]">{botones}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CanceladasConfirmadas({
+  canal, datos, dias, cargando, error, odooUrl, ventaUrl, onReintentar,
+  busqueda = "", soloAccion = false,
+}: {
+  canal: (typeof CANALES)[number];
+  datos: CanalCanceladas | null;
+  dias: number;
+  cargando: boolean;
+  error: string | null;
+  odooUrl: string;
+  ventaUrl: string;
+  onReintentar: () => void;
+  /** El buscador y la casilla de la pantalla: esta tarjeta obedece a los mismos. */
+  busqueda?: string;
+  soloAccion?: boolean;
+}) {
+  const [verTodas, setVerTodas] = useState(false);
+  useEffect(() => { setVerTodas(false); }, [canal.id]);
+
+  const ordenes = datos?.ordenes ?? [];
+  const total = ordenes.length;
+  const buscando = Boolean(norm(busqueda));
+  // Lo que el buscador y "Sólo lo que requiere acción" dejan a la vista.
+  const filtradas = ordenes.filter((o) => coincideCancelada(o, busqueda)
+                                         && (!soloAccion || pideAccionCancelada(o)));
+  const regreso = datos?.por_que_hacer?.revisar_regreso ?? 0;
+  const reservan = datos?.por_que_hacer?.cancelar_en_odoo ?? 0;
+  // Las explicaciones siguen a lo que está a la vista; los chips del encabezado, al total.
+  const hayReservan = filtradas.some((o) => o.que_hacer === "cancelar_en_odoo");
+  const hayRegreso = filtradas.some((o) => o.que_hacer === "revisar_regreso");
+  const MUESTRA = 5;
+  // Buscando se enseña TODO lo que coincide: una coincidencia en la fila 40 no
+  // puede quedar escondida detrás de "Ver las N".
+  const visibles = verTodas || buscando ? filtradas : filtradas.slice(0, MUESTRA);
+  const falla = error ?? datos?.error ?? null;
+  const estadosVistos = Object.entries(datos?.estados_vistos ?? {});
+  // Temu: hoy no se pueden ver sus cancelaciones. Una lista vacía ahí NO es
+  // "nada que revisar": es "no se sabe", y se dice así, sin palomita verde.
+  const noDetectable = datos?.detectable === false;
+  const frescura = datos ? frescuraCanceladas(datos, canal.nombre) : { txt: "", aviso: null };
+  const estadosTxt = estadosVistos.length > 0
+    ? estadosVistos.map(([k, n]) => `${estadoCanalTxt(canal.id, k)} (${n})`).join(" · ")
+    : "";
+
+  return (
+    <div className="mt-[14px] overflow-hidden rounded-[18px] border bg-white"
+         style={{ borderColor: total ? "#FDE68A" : "#d9dcec", boxShadow: "0 1px 2px rgba(16,24,40,.04)" }}>
+      <div className="flex flex-wrap items-center gap-[14px] border-b px-5 py-[13px]"
+           style={{ borderColor: "#eef1f6", background: total ? "#FFFBEB" : "#fbfcfe" }}>
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px]"
+              style={{ background: total ? "#FEF3C7" : "#F1F5F9", color: total ? "#B45309" : "#94a3b8" }}>
+          <PackageX className="h-4 w-4" />
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[14.5px] font-extrabold text-slate-900">
+              Confirmadas en Odoo · canceladas en el canal
+            </span>
+            {!cargando && datos && !(noDetectable && total === 0) && (
+              <span className="rounded-full px-2 py-[2px] font-mono text-[11px] font-bold"
+                    style={{ background: total ? "#FDE68A" : "#F1F5F9", color: total ? "#92400E" : "#64748B" }}>
+                {filtradas.length !== total ? `${filtradas.length} de ${total}` : total}
+              </span>
+            )}
+          </div>
+          <div className="text-[11.5px] text-slate-500">
+            {canal.nombre} · ventas de los últimos {dias} días
+            {datos && !noDetectable
+              && ` · ${datos.ventas_canceladas} cancelada${datos.ventas_canceladas === 1 ? "" : "s"} en el canal`}
+            {datos?.estado_al && ` · estado del canal guardado al ${fecha(datos.estado_al)}`}
+          </div>
+        </div>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {reservan > 0 && (
+            <span className="rounded-full px-[9px] py-[3px] text-[11px] font-extrabold" style={{ background: "#FFE4E6", color: "#9F1239" }}>
+              {reservan} reservan stock
+            </span>
+          )}
+          {regreso > 0 && (
+            <span className="rounded-full px-[9px] py-[3px] text-[11px] font-extrabold" style={{ background: "#FEF3C7", color: "#92400E" }}>
+              {regreso} salieron sin devolución
+            </span>
+          )}
+          <button type="button" onClick={onReintentar} disabled={cargando} aria-label="Actualizar canceladas"
+                  className="inline-flex items-center justify-center rounded-[8px] border bg-white p-[6px] text-slate-500 hover:text-indigo-600 disabled:opacity-50"
+                  style={{ borderColor: "#e6e9f2" }}>
+            <RotateCw className={`h-[13px] w-[13px] ${cargando ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+      </div>
+
+      {cargando && !datos ? (
+        <div className="space-y-2 px-5 py-4">
+          <div className="h-3 w-1/3 animate-pulse rounded-full bg-slate-100" />
+          <div className="h-3 w-2/3 animate-pulse rounded-full bg-slate-50" />
+        </div>
+      ) : falla && !total ? (
+        <div className="flex flex-wrap items-center gap-3 px-5 py-4 text-[12.5px]" style={{ color: "#9F1239" }}>
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          <span className="min-w-0">No se pudo revisar: {falla}</span>
+          <button type="button" onClick={onReintentar}
+                  className="ml-auto rounded-[8px] border bg-white px-3 py-[5px] text-[12px] font-semibold text-slate-600"
+                  style={{ borderColor: "#e6e9f2" }}>
+            Reintentar
+          </button>
+        </div>
+      ) : total === 0 && noDetectable ? (
+        <div className="px-5 py-5">
+          <div className="flex items-center gap-2 text-[13px] font-semibold" style={{ color: "#92400E" }}>
+            <AlertTriangle className="h-4 w-4 shrink-0" style={{ color: "#B45309" }} />
+            No disponible para {canal.nombre}: no registramos sus cancelaciones.
+          </div>
+          <p className="mt-2 pl-6 text-[11.5px] leading-relaxed text-slate-500">
+            Por qué: {datos?.razon_no_detectable ?? "el canal no avisa de sus cancelaciones"}.
+            {" "}Esta lista no puede decir si hay órdenes confirmadas con la venta cancelada: revísalas
+            {" "}en el seller center.
+            {estadosTxt && ` Estados que guarda channel.orders en la ventana: ${estadosTxt}.`}
+          </p>
+        </div>
+      ) : total === 0 ? (
+        <div className="px-5 py-5">
+          <div className="flex items-center gap-2 text-[13px] text-slate-600">
+            {frescura.aviso
+              ? <AlertTriangle className="h-4 w-4 shrink-0" style={{ color: "#B45309" }} />
+              : <CheckCircle2 className="h-4 w-4 shrink-0" style={{ color: "#10b981" }} />}
+            {frescura.aviso
+              ? `Con lo guardado, ninguna orden confirmada de ${canal.nombre} tiene su venta cancelada.`
+              : `Ninguna orden confirmada de ${canal.nombre} tiene su venta cancelada. No hay nada que revisar.`}
+          </div>
+          {frescura.aviso && (
+            <p className="mt-2 pl-6 text-[11.5px]" style={{ color: "#92400E" }}>{frescura.aviso}</p>
+          )}
+          {datos && (frescura.txt || datos.ventas_canceladas === 0) && (
+            <p className="mt-2 pl-6 text-[11.5px] text-slate-400">
+              {datos.ventas_canceladas === 0 && `Cuenta como cancelada: ${datos.criterio}. `}
+              {frescura.txt && `${frescura.txt.charAt(0).toUpperCase()}${frescura.txt.slice(1)}.`}
+              {datos.ventas_canceladas === 0 && estadosTxt && ` Estados guardados: ${estadosTxt}.`}
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* QUÉ HACER — en palabras, antes de la lista, en el orden de la lista.
+              Si el buscador o la casilla no dejan ninguna a la vista, sobra. */}
+          <div className="space-y-[6px] border-b px-5 py-3 text-[12.5px]"
+               style={{ borderColor: "#eef1f6" }} hidden={filtradas.length === 0 && !frescura.aviso}>
+            {hayReservan && (
+              <p className="flex items-start gap-2" style={{ color: "#9F1239" }}>
+                <Package className="mt-[2px] h-[14px] w-[14px] shrink-0" />
+                <span>
+                  <strong className="font-bold">La entrega sigue pendiente:</strong> la orden reserva inventario
+                  de una venta que ya no existe. Hay que cancelarla en Odoo.
+                </span>
+              </p>
+            )}
+            {hayRegreso && (
+              <p className="flex items-start gap-2" style={{ color: "#92400E" }}>
+                <Truck className="mt-[2px] h-[14px] w-[14px] shrink-0" />
+                <span>
+                  <strong className="font-bold">La entrega salió y no hay devolución:</strong> el almacén debe
+                  revisar si la mercancía regresó. Si regresó, hay que registrar la devolución en Odoo.
+                </span>
+              </p>
+            )}
+            {filtradas.some((o) => o.devolucion_registrada) && (
+              <p className="flex items-start gap-2 text-slate-500">
+                <Undo2 className="mt-[2px] h-[14px] w-[14px] shrink-0" />
+                <span>Las que ya tienen devolución registrada sólo piden validarla cuando llegue.</span>
+              </p>
+            )}
+            {frescura.aviso && (
+              <p className="flex items-start gap-2" style={{ color: "#92400E" }}>
+                <AlertTriangle className="mt-[2px] h-[14px] w-[14px] shrink-0" />
+                <span>{frescura.aviso}</span>
+              </p>
+            )}
+          </div>
+
+          {filtradas.length === 0 && (
+            <p className="px-5 py-4 text-[12.5px] text-slate-400">
+              {buscando
+                ? `Ninguna de ${total === 1 ? "la orden" : `las ${total} órdenes`} coincide con “${busqueda.trim()}”.`
+                : `Ninguna de ${total === 1 ? "la orden" : `las ${total} órdenes`} pide acción: ya tienen la devolución recibida.`}
+            </p>
+          )}
+
+          {visibles.map((o) => (
+            <FilaCancelada key={`${o.canal}-${o.odoo_order_id}`} o={o} canal={canal}
+                           odooUrl={odooUrl} ventaUrl={ventaUrl} />
+          ))}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-[12px] text-slate-400">
+            <span>
+              {total} {total === 1 ? "orden" : "órdenes"} · cuenta como cancelada: {datos?.criterio}
+              {frescura.txt && ` · ${frescura.txt}`}
+              {noDetectable && datos?.razon_no_detectable && (
+                <span style={{ color: "#92400E" }}> · puede faltar alguna: {datos.razon_no_detectable}</span>
+              )}
+              {falla && <span style={{ color: "#9F1239" }}> · incompleto: {falla}</span>}
+            </span>
+            {!buscando && filtradas.length > MUESTRA && (
+              <button type="button" onClick={() => setVerTodas((v) => !v)}
+                      className="inline-flex items-center gap-[5px] font-semibold text-indigo-600 hover:text-indigo-800">
+                {verTodas ? <ChevronUp className="h-[13px] w-[13px]" /> : <ChevronDown className="h-[13px] w-[13px]" />}
+                {verTodas ? "Ver menos" : `Ver las ${filtradas.length}`}
+              </button>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
@@ -1065,6 +1550,48 @@ export default function AutomatizacionPage() {
 
   useEffect(() => { void cargar(); }, [cargar]);
 
+  /* LAS CONFIRMADAS CUYA VENTA SE CANCELÓ van en su propia carga, fuera del
+     `Promise.all` de arriba: leen Odoo en vivo (segundos, no milisegundos) y
+     un fallo aquí no debe tapar la bitácora con el banner rojo. Es de admin en
+     el RBAC: a quien le conteste 401/403 la sección simplemente no se pinta —
+     un permiso denegado no es un error de la pantalla. */
+  const [canceladas, setCanceladas] = useState<RespuestaCanceladas | null>(null);
+  const [cargandoCanc, setCargandoCanc] = useState(true);
+  const [errorCanc, setErrorCanc] = useState<string | null>(null);
+  const [sinPermisoCanc, setSinPermisoCanc] = useState(false);
+  /* UNA LECTURA A LA VEZ. Barre Odoo en vivo (segundos, con techo de minutos si
+     Odoo se cuelga): tres clics seguidos en Actualizar lanzaban tres barridos y
+     la respuesta vieja podía pisar a la nueva. Mientras hay una en vuelo, pedir
+     otra no hace nada — la que corre ya trae lo más nuevo. El backend además
+     guarda el resultado unos segundos y no deja dos barridos a la vez. */
+  const enVueloCanc = useRef(false);
+
+  const cargarCanceladas = useCallback(async () => {
+    if (enVueloCanc.current) return;
+    enVueloCanc.current = true;
+    setCargandoCanc(true);
+    setErrorCanc(null);
+    try {
+      const r = await fetchSesion(
+        `${API_BASE}/api/automatizacion/canceladas-confirmadas?dias=${DIAS_CANCELADAS}`);
+      if (r.status === 401 || r.status === 403) {
+        setSinPermisoCanc(true);
+        setCanceladas(null);
+        return;
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setSinPermisoCanc(false);
+      setCanceladas(await r.json());
+    } catch (err) {
+      setErrorCanc(err instanceof Error ? err.message : "no se pudo cargar");
+    } finally {
+      enVueloCanc.current = false;
+      setCargandoCanc(false);
+    }
+  }, []);
+
+  useEffect(() => { void cargarCanceladas(); }, [cargarCanceladas]);
+
   const mover = useCallback(async (encendido: boolean, porque = "", cual?: string) => {
     setMoviendo(true);
     try {
@@ -1098,7 +1625,27 @@ export default function AutomatizacionPage() {
     tiktok: porCanal.tiktok.filter(pideAccion).length,
     temu: porCanal.temu.filter(pideAccion).length,
   }), [porCanal]);
-  const pendientesTotal = pendientes.tiktok + pendientes.temu;
+
+  /* LA TARJETA DE CANCELADAS ENTRA A LAS MISMAS CUENTAS que la lista. Sus
+     órdenes también piden acción y también se buscan: si el contador de "Sólo
+     lo que requiere acción" o la píldora del canal dijeran 0 con órdenes rojas
+     a la vista, la pantalla se contradiría. `pideAccion` NO cambia (sigue
+     siendo el `solo_problemas` del backend): aquí se SUMA la otra sección. */
+  const canc = useMemo(() => {
+    const de = (id: CanalId) => canceladas?.canales?.[id]?.ordenes ?? [];
+    return {
+      accion: { tiktok: de("tiktok").filter(pideAccionCancelada).length,
+                temu: de("temu").filter(pideAccionCancelada).length },
+      buscadas: { tiktok: de("tiktok").filter((o) => coincideCancelada(o, busqueda)).length,
+                  temu: de("temu").filter((o) => coincideCancelada(o, busqueda)).length },
+      // Lo que la tarjeta deja a la vista con el buscador Y la casilla a la vez.
+      aLaVista: { tiktok: de("tiktok").filter((o) => coincideCancelada(o, busqueda)
+                                                   && (!soloAccion || pideAccionCancelada(o))).length,
+                  temu: de("temu").filter((o) => coincideCancelada(o, busqueda)
+                                               && (!soloAccion || pideAccionCancelada(o))).length },
+    };
+  }, [canceladas, busqueda, soloAccion]);
+  const pendientesTotal = pendientes.tiktok + pendientes.temu + canc.accion.tiktok + canc.accion.temu;
 
   const visibles = useMemo(() => {
     const l = porCanal[canal].filter((o) => coincide(o, busqueda));
@@ -1109,8 +1656,8 @@ export default function AutomatizacionPage() {
   const enOtroCanal = useMemo(() => {
     if (!norm(busqueda)) return 0;
     const otroId = CANALES.find((c) => c.id !== canal)!.id;
-    return porCanal[otroId].filter((o) => coincide(o, busqueda)).length;
-  }, [porCanal, canal, busqueda]);
+    return porCanal[otroId].filter((o) => coincide(o, busqueda)).length + canc.buscadas[otroId];
+  }, [porCanal, canal, busqueda, canc]);
 
   const otro = CANALES.find((c) => c.id !== canal)!;
   const canalInfo = CANALES.find((c) => c.id === canal)!;
@@ -1212,8 +1759,8 @@ export default function AutomatizacionPage() {
           {CANALES.map((c) => {
             const sel = c.id === canal;
             const n = norm(busqueda)
-              ? porCanal[c.id].filter((o) => coincide(o, busqueda)).length
-              : soloAccion ? pendientes[c.id] : porCanal[c.id].length;
+              ? porCanal[c.id].filter((o) => coincide(o, busqueda)).length + canc.buscadas[c.id]
+              : soloAccion ? pendientes[c.id] + canc.accion[c.id] : porCanal[c.id].length;
             return (
               <button
                 key={c.id}
@@ -1271,13 +1818,16 @@ export default function AutomatizacionPage() {
             </select>
             <button
               type="button"
-              onClick={() => void cargar()}
+              // `cargarCanceladas` no apila: si su barrido de Odoo sigue en vuelo, no
+              // lanza otro. El botón se deshabilita sólo con la bitácora, que es
+              // rápida, para no bloquear su recarga detrás de un Odoo lento.
+              onClick={() => { void cargar(); void cargarCanceladas(); }}
               disabled={cargando}
               aria-label="Actualizar"
               className="inline-flex items-center justify-center rounded-[10px] border bg-white p-[9px] text-slate-500 hover:text-indigo-600 disabled:opacity-50"
               style={{ borderColor: "#e6e9f2" }}
             >
-              <RotateCw className={`h-[15px] w-[15px] ${cargando ? "animate-spin" : ""}`} />
+              <RotateCw className={`h-[15px] w-[15px] ${cargando || cargandoCanc ? "animate-spin" : ""}`} />
             </button>
           </div>
         </div>
@@ -1285,7 +1835,7 @@ export default function AutomatizacionPage() {
         {/* EL PUENTE ENTRE CANALES. Con listas separadas, un error en Temu no se
             ve mientras miras TikTok. El contador de la casilla suma los dos,
             y esta línea dice dónde está lo que no estás viendo. */}
-        {pendientes[otro.id] > 0 && (
+        {pendientes[otro.id] + canc.accion[otro.id] > 0 && (
           <button
             type="button"
             onClick={() => { setCanal(otro.id); setSoloAccion(true); setAbierta(null); }}
@@ -1293,10 +1843,30 @@ export default function AutomatizacionPage() {
             style={{ background: "#FFFBEB", color: "#92400E" }}
           >
             <AlertTriangle className="h-[14px] w-[14px]" />
-            {otro.nombre} tiene {pendientes[otro.id]} que requiere
-            {pendientes[otro.id] === 1 ? "" : "n"} acción
+            {otro.nombre} tiene {pendientes[otro.id] + canc.accion[otro.id]} que requiere
+            {pendientes[otro.id] + canc.accion[otro.id] === 1 ? "" : "n"} acción
             <ChevronRight className="h-[14px] w-[14px]" />
           </button>
+        )}
+
+        {/* ── CONFIRMADAS EN ODOO · CANCELADAS EN EL CANAL ──
+            Antes de la lista y no al final: son órdenes que piden que alguien
+            haga algo HOY (mercancía que salió con una venta muerta, o
+            inventario reservado para nadie), y al pie de cientos de renglones
+            no las vería nadie. */}
+        {!sinPermisoCanc && (
+          <CanceladasConfirmadas
+            canal={canalInfo}
+            datos={canceladas?.canales?.[canal] ?? null}
+            dias={canceladas?.dias ?? DIAS_CANCELADAS}
+            cargando={cargandoCanc}
+            error={errorCanc}
+            odooUrl={ov?.odoo_url_orden ?? ""}
+            ventaUrl={ov?.url_venta?.[canal] ?? ""}
+            onReintentar={() => void cargarCanceladas()}
+            busqueda={busqueda}
+            soloAccion={soloAccion}
+          />
         )}
 
         {/* ── LA LISTA ── */}
@@ -1328,6 +1898,7 @@ export default function AutomatizacionPage() {
               buscando={busqueda}
               enOtroCanal={enOtroCanal}
               otroCanal={otro.nombre}
+              arriba={sinPermisoCanc ? 0 : canc.aLaVista[canal]}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
             />
           )}

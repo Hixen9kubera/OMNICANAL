@@ -81,8 +81,45 @@ async def estado(canal: str | None = Query(None, description="acota los contador
             },
             "resumen": odoo_ventas_log.resumen(canal),
             "publicaciones": _publicaciones(),
+            "tiktok_respaldos": _tiktok_respaldos(),
         }
     return await asyncio.to_thread(_leer)
+
+
+def _tiktok_respaldos() -> dict:
+    """
+    Las banderas de los respaldos del aviso de pedidos de TikTok (14-sep-2026),
+    y lo que dijo la última pasada de cada uno EN ESTE PROCESO.
+
+    SÓLO LECTURA de `settings` y de memoria: aquí no se enciende ni se apaga
+    nada — cada bandera es una variable de Railway (regla 3). Las pasadas son
+    conteos sin datos del comprador. Nunca rompe la pantalla.
+    """
+    try:
+        from services import pedidos_tiktok, pedidos_tiktok_sondeo, tiktok_webhook_reintentos
+
+        def _b(nombre: str, omision: bool = False) -> bool:
+            return bool(getattr(settings, nombre, omision))
+
+        return {
+            "banderas": {
+                "pedidos_tiktok_enabled": _b("pedidos_tiktok_enabled"),
+                "pedidos_tiktok_sondeo_enabled": _b("pedidos_tiktok_sondeo_enabled"),
+                "pedidos_tiktok_sondeo_solo_registro":
+                    _b("pedidos_tiktok_sondeo_solo_registro", True),
+                "tiktok_webhook_reintentos_enabled": _b("tiktok_webhook_reintentos_enabled"),
+                "tiktok_guias_enabled": _b("tiktok_guias_enabled"),
+            },
+            "ultima_pasada": {
+                "sondeo": {k: v for k, v in pedidos_tiktok_sondeo.estado().items()
+                           if k != "errores"},
+                "reintentos": tiktok_webhook_reintentos.estado(),
+                "guias": pedidos_tiktok.estado_guias(),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001
+        log.debug("automatizacion: respaldos de TikTok ilegibles (%s)", exc)
+        return {}
 
 
 def _publicaciones() -> dict[str, dict[str, int | None]]:
@@ -174,6 +211,28 @@ def ordenes_odoo(
     foto congelada en `ops.odoo_sale_order_items`.
     """
     return {"ordenes": odoo_ventas_log.historial(limite, canal, solo_problemas, dias)}
+
+
+@router.get("/canceladas-confirmadas", dependencies=[Depends(requiere_api_key)])
+async def canceladas_confirmadas(
+    canal: str | None = Query(None, description="tiktok | temu. Sin canal, los dos"),
+    dias: int = Query(90, ge=1, le=365,
+                      description="ventana por la fecha en que la venta entró a channel.orders"),
+):
+    """
+    Órdenes CONFIRMADAS en Odoo (sale/done) cuya venta está CANCELADA en el canal,
+    con el estado de su entrega de salida y si hay devolución registrada.
+
+    Cubre las capturas A MANO (amarradas por el PDF `<id>.pdf`), que
+    `cancelar_orden` no ve porque busca por `client_order_ref`. SOLO LECTURA y
+    sin datos del comprador. Ver services/odoo_ventas_conciliacion.py.
+
+    Es de admin (regla de prefijo en core/rbac.py): no trae PII, pero la regla
+    del tab abre sólo `/estado` y `/ordenes-odoo` al KAM y abrir más es decisión.
+    """
+    from services import odoo_ventas_conciliacion as oc
+
+    return await oc.canceladas_confirmadas(canal, dias)
 
 
 @router.post("/backfill")
@@ -825,11 +884,21 @@ async def simular(
 # TIKTOK · ¿SEGUIMOS SUSCRITOS A LOS PEDIDOS, Y SE PERDIÓ ALGUNA VENTA?
 # ═════════════════════════════════════════════════════════════════════════════
 @router.get("/tiktok/diagnostico", dependencies=[Depends(requiere_api_key)])
-async def tiktok_diagnostico(dias: int = Query(14, ge=1, le=45)):
+async def tiktok_diagnostico(
+    dias: int = Query(14, ge=1, le=45),
+    ids: str | None = Query(None, description="opcional: ids de orden de TikTok separados "
+                                              "por coma; su estado VIVO en TikTok y en qué "
+                                              "registro está cada uno (tope 200)"),
+):
     """
     La suscripción al aviso de PEDIDOS y las ventas de `dias` cruzadas contra
     channel.orders, la bitácora de Odoo y Odoo (incluidas las capturas a mano,
     que sólo se reconocen por el nombre del PDF de la guía).
+
+    Con `ids`, además, el estado ACTUAL de esas órdenes en TikTok (detalle en
+    lotes de 50) y si están en channel.orders, en la bitácora y en Odoo. Sirve
+    para las ventas que la búsqueda por fecha no enseña o cuyo estado en
+    channel.orders se quedó viejo (una AWAITING_SHIPMENT del 14-ago).
 
     POR QUÉ ES UN ENDPOINT: TikTok rechaza toda IP que no sea la de Railway
     (`36009033`), así que desde la laptop no se puede preguntar. El mismo
@@ -840,7 +909,14 @@ async def tiktok_diagnostico(dias: int = Query(14, ge=1, le=45)):
     from services import tiktok_diagnostico as td
 
     d = await td.diagnosticar(dias)
-    return {**d, "resumen": td.resumen_linea(d)}
+    fuera = {**d, "resumen": td.resumen_linea(d)}
+    # `isinstance`: llamada directa a la función, el valor por omisión es el
+    # `Query(None)` de FastAPI, que no es None y es "verdadero".
+    if isinstance(ids, str) and ids.strip():
+        r = await td.estado_ids(ids)
+        fuera["ids"] = r
+        fuera["resumen_ids"] = td.resumen_ids(r)
+    return fuera
 
 
 @router.post("/tiktok/recuperar", dependencies=[Depends(requiere_api_key)])

@@ -299,6 +299,11 @@ _PII_LLAVES = frozenset({
     "phone", "phonenumber", "mobile", "telephone", "email",
     "address", "addressdetail", "detailaddress", "addressline1", "addressline2",
     "postcode", "zipcode", "idcard", "passport", "taxnumber",
+    # Los de la ORDEN de TikTok (14-sep-2026): el aviso de pedido hoy sólo trae
+    # id y estado, pero el receptor también los escribe al log y la lista negra
+    # tiene que cubrir lo que la API de órdenes ya usa por nombre.
+    "buyermessage", "buyernickname", "buyeravatar", "buyeruserid", "userid",
+    "cpf", "cpfname", "postalcode", "fulladdress",
 })
 
 
@@ -839,20 +844,64 @@ from collections import deque
 _TIKTOK_LOG: deque = deque(maxlen=300)
 
 
-async def _procesar_tiktok(order_id: str) -> None:
+async def _procesar_tiktok(order_id: str, evento_id: int | None = None,
+                           guia_inmediata: bool = False) -> None:
     """La venta de TikTok → pedido, YA fuera del ciclo de respuesta.
 
     Nunca lanza: una tarea de fondo que revienta se lleva su traza al log de
     Starlette y nadie la ve. Aquí se registra el resultado, que es lo que
     permite auditar después si un pedido entró o no.
+
+    EL RESULTADO QUEDA EN LA FILA DEL AVISO (14-sep-2026): `procesado`,
+    `resultado` y `procesado_at` si salió (o es terminal); si falló, `intentos+1`
+    y `next_retry_at` con espera creciente para el reprocesador
+    (TIKTOK_WEBHOOK_REINTENTOS_ENABLED). Antes la fila decía `procesado=false`
+    para siempre, entrara o no la venta. Ver services/tiktok_webhook_reintentos.
+    ⚠️ Este marcado corre con PEDIDOS_TIKTOK_ENABLED aunque los reintentos estén
+    apagados (bitácora viva desde el deploy). Un `order_id` no numérico sale de
+    `procesar` como TERMINAL: no se le programa reintento.
+
+    `guia_inmediata`: el aviso anunció AWAITING_COLLECTION y TIKTOK_GUIAS está
+    encendido → DESPUÉS del pedido (que es lo que monta la orden de Odoo) se
+    intenta la etiqueta de esa venta sin esperar al job de 20 min.
     """
     from services import pedidos_tiktok
+    from services import tiktok_webhook_reintentos as twr
+    r: dict[str, Any] | None = None
     try:
         r = await pedidos_tiktok.procesar(order_id)
         log.info("TIKTOK pedido %s → %s", order_id,
-                 r.get("accion") or r.get("motivo"))
-    except Exception:  # noqa: BLE001
+                 (r or {}).get("accion") or (r or {}).get("motivo"))
+    except Exception as exc:  # noqa: BLE001
         log.exception("TIKTOK pedido %s falló en segundo plano", order_id)
+        r = {"ok": False, "motivo": f"{type(exc).__name__}: {str(exc)[:150]}"}
+    if evento_id:
+        try:
+            await asyncio.to_thread(twr.marcar, evento_id, r, 0)
+        except Exception as exc:  # noqa: BLE001 — marcar no lanza; cinturón
+            log.warning("TIKTOK aviso %s: no se pudo marcar: %s", evento_id, exc)
+    if guia_inmediata:
+        await _guia_tiktok_inmediata(order_id)
+
+
+async def _guia_tiktok_inmediata(order_id: str) -> None:
+    """La etiqueta de UNA venta en cuanto TikTok agenda la recolección. Nunca lanza.
+
+    Detrás de la MISMA bandera que el job (TIKTOK_GUIAS_ENABLED): quien llama ya
+    la revisó, y aquí se vuelve a mirar por si se apagó entre el aviso y ahora.
+    """
+    if not getattr(settings, "tiktok_guias_enabled", False):
+        return
+    from services import pedidos_tiktok
+    try:
+        g = await pedidos_tiktok.refrescar_guias(
+            dias=settings.tiktok_guias_dias, limite=settings.tiktok_guias_limite,
+            segundos_max=120, solo_ids=[order_id])
+        log.info("TIKTOK guía inmediata %s → pendientes=%s subidos=%s motivos=%s%s",
+                 order_id, g.get("pendientes"), g.get("pdf_subidos"),
+                 g.get("motivos"), f" ({g['omitido']})" if g.get("omitido") else "")
+    except Exception:  # noqa: BLE001
+        log.exception("TIKTOK guía inmediata %s falló", order_id)
 
 
 def _firma_tiktok_ok(cuerpo: bytes, cabeceras: dict) -> bool | None:
@@ -923,6 +972,12 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
             payload = json.loads(crudo or b"{}")
         except Exception:  # noqa: BLE001
             payload = {"_no_json": (crudo or b"")[:2000].decode("utf-8", "replace")}
+        if not isinstance(payload, dict):
+            # JSON válido que no es objeto (`[..]`, `"x"`, `null`, `3`): el `.get`
+            # de abajo tronaba y el aviso se perdía sin llegar a la bitácora. Se
+            # envuelve para que quede registrado (con `_sin_pii`, que recorre
+            # listas) y se contesta 200 igual.
+            payload = {"_no_objeto": type(payload).__name__, "valor": payload}
 
         firma = _firma_tiktok_ok(crudo, cab)
         evento = {
@@ -938,22 +993,29 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
         }
         _TIKTOK_LOG.append(evento)
         # A los logs de Railway, completo: sobrevive al deploy, pero rota.
+        # Con `_sin_pii`, como la bitácora: el log de Railway no es menos
+        # público que la tabla.
         log.info("TIKTOK webhook tipo=%s shop=%s firma=%s bytes=%s :: %s",
                  evento["tipo"], evento["shop_id"], firma, evento["bytes"],
-                 json.dumps(payload, ensure_ascii=False)[:1500])
+                 json.dumps(_sin_pii(payload), ensure_ascii=False, default=str)[:1500])
 
         # ── A LA BITÁCORA, ANTES DE CONTESTAR ───────────────────────────────
         # `id_de_evento` se resuelve aquí y NO más abajo: sirve de llave del
         # renglón aunque los pedidos estén apagados. Un aviso que no se procesa
-        # igual hay que poder contarlo.
+        # igual hay que poder contarlo. El id que devuelve es el renglón donde
+        # `_procesar_tiktok` apunta el resultado (None = duplicado o kubera
+        # caída: se procesa igual, sólo que sin marca).
         from services import pedidos_tiktok as _pt
         oid = _pt.id_de_evento(payload)
-        await asyncio.to_thread(
+        evento_id = await asyncio.to_thread(
             _persistir_evento, "tiktok", f"tiktok.{evento['tipo']}",
             oid or f"tipo:{evento['tipo']}",
             str(payload.get("tts_notification_id")
                 or hashlib.sha256(crudo or b"").hexdigest()[:32]),
             payload, firma, str(evento.get("shop_id") or "") or None)
+        # Etiqueta al agendarse la recolección: sólo con TIKTOK_GUIAS_ENABLED.
+        guia_ya = bool(oid and getattr(settings, "tiktok_guias_enabled", False)
+                       and _pt.estado_de_evento(payload) == "AWAITING_COLLECTION")
 
         # ── LA VENTA SE VUELVE PEDIDO ────────────────────────────────────────
         # Del evento solo se toma el ID; la orden se pide a la API. Un evento es
@@ -967,10 +1029,15 @@ async def recibir_tiktok(request: Request, background: BackgroundTasks):
         # suscripción, y el síntoma sería que dejan de entrar ventas).
         if settings.pedidos_tiktok_enabled:
             if oid:
-                background.add_task(_procesar_tiktok, oid)
+                background.add_task(_procesar_tiktok, oid, evento_id, guia_ya)
             else:
                 log.info("TIKTOK webhook sin id de orden reconocible: %s",
-                         json.dumps(payload, ensure_ascii=False)[:300])
+                         json.dumps(_sin_pii(payload), ensure_ascii=False,
+                                    default=str)[:300])
+        elif guia_ya:
+            # Sin pedidos no hay nada que procesar, pero una orden de Odoo que ya
+            # existía (creada antes) igual necesita su etiqueta.
+            background.add_task(_guia_tiktok_inmediata, oid)
         return {"code": 0, "message": "success"}
     except Exception:  # noqa: BLE001 — jamás propagar: ver GUARDA ABSOLUTA
         log.exception("Fallo recibiendo el webhook de TikTok; se responde 200 "

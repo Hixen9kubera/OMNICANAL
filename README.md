@@ -1001,6 +1001,49 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.520.0 — Automatización ve las confirmadas que el canal canceló; y los respaldos de TikTok, construidos y APAGADOS
+
+Dos bloques. El primero se ve hoy; el segundo espera el dale de Brandon (regla 3).
+
+**1 · "Confirmadas en Odoo · canceladas en el canal"** (Brandon: *"en Automatización
+debe de mostrarme las órdenes confirmadas que fueron canceladas"*). Sólo lectura.
+- `services/odoo_ventas_conciliacion.py` + `GET /api/automatizacion/canceladas-confirmadas`:
+  órdenes de Odoo en `sale`/`done` cuya venta está CANCELADA, emparejadas por
+  `client_order_ref` (con `#n`) o por el PDF `<id>.pdf` de las capturadas a mano,
+  en dos pasadas (5 capturas de TikTok están con otro cliente). Por orden: entrega
+  hecha/pendiente/sin entrega y si hay devolución. Caché 90 s y un solo barrido a la vez.
+- TikTok: el estado guardado dejó de moverse el 4-sep, así que las no terminales se
+  preguntan en vivo a TikTok (lotes de 50) y la tarjeta dice de qué fecha es el dato.
+- **Temu NO es detectable** y la pantalla lo dice: su estado en `channel.orders`
+  nunca se actualiza después de nacer (el sondeo salta lo registrado). No hay
+  palomita verde falsa.
+- Medido (TikTok, 90 días): 87 confirmadas con venta cancelada, todas capturadas a
+  mano — 84 salieron sin devolución, 2 con entrega pendiente (cancelarlas en Odoo),
+  1 con devolución recibida. Las urgentes (reservan stock) van primero.
+- La tarjeta obedece al buscador y a "Sólo lo que requiere acción".
+- `TIKTOK_DIAGNOSTICO_IDS`: el job de arranque loguea el estado vivo de ids explícitos
+  (línea "TIKTOK ids"); `GET /tiktok/diagnostico?ids=`.
+
+**2 · Respaldos del aviso de TikTok, TODOS APAGADOS por omisión:**
+- **Sondeo de pedidos** (`PEDIDOS_TIKTOK_SONDEO_ENABLED=false`, `_SOLO_REGISTRO=true`):
+  ventana FIJA por `update_time` (lección v0.508.0), pagina completo, re-procesa lo ya
+  registrado si cambió de estado (para que las cancelaciones lleguen), crea sólo ventas
+  de menos de 48 h, y el candado de huella pregunta a channel.orders, la bitácora, Odoo
+  y **Woo** (`wp_db.pedidos_por_ml_order_ids`, falla cerrado). Canario: "venta que el
+  webhook no trajo".
+- **Avisos marcados y reintentados** (`TIKTOK_WEBHOOK_REINTENTOS_ENABLED=false`): el
+  receptor ya apunta `procesado/resultado/intentos/next_retry_at` en `ops.webhook_events`
+  (bitácora viva: antes decía `procesado=false` para siempre); el reprocesador toma lo
+  vencido de 48 h, espera 2 min × 2^(n−1) hasta 6 h, tope 6 intentos.
+- **Guía de TikTok** (`TIKTOK_GUIAS_ENABLED=false`, cada 20 min + disparo en
+  AWAITING_COLLECTION): `tiktok.descargar_etiqueta` → `shipping_documents`
+  (SHIPPING_LABEL/A6/PDF, sólo en memoria, exige `%PDF`), número a la entrega y PDF a la
+  orden como **`<order_id>.pdf`** (decisión de Brandon), verificado al re-leer. Primero
+  las que esperan recolección; las recolectadas/canceladas/SELLER/ON_HOLD no gastan cupo.
+- Receptor: payload no-objeto ya no se pierde; el log de Railway pasa por `_sin_pii`.
+
+Pruebas sin red: 114 + 130 + 225 comprobaciones, 0 fallas; `tsc` limpio.
+
 ### v0.519.0 — La galería por variante deja de quitarle fotos a las hermanas (sigue apagada)
 
 Cinco ajustes a la galería por variante de la v0.517.0, todos detrás de

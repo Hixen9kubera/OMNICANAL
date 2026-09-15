@@ -17,6 +17,10 @@ Por eso esto vive en el backend y no en un script de escritorio.
      apuntando a NUESTRA URL?
   2. `ventas(dias)`    → ¿qué ventas tiene TikTok en la ventana, y cuáles no
      aparecen en NINGUNO de nuestros tres registros?
+  3. `estado_ids(ids)` → para ventas NOMBRADAS: su estado VIVO en TikTok y en
+     qué registro está cada una. Existe porque channel.orders puede guardar un
+     estado viejo (una AWAITING_SHIPMENT del 14-ago que nadie actualizó) y la
+     búsqueda por fecha no enseña lo que quedó fuera de la ventana.
 
 LOS TRES REGISTROS, Y POR QUÉ HACEN FALTA LOS TRES
 --------------------------------------------------
@@ -91,6 +95,13 @@ _MAX_PAGINAS = 50
 # Mismo tope que la recuperación de Temu: el peor caso de un error de dedo es
 # acotado y está escrito en la petición.
 TOPE_RECUPERAR = 25
+
+# `estado_ids` (sólo lectura). `GET /order/202309/orders` acepta hasta 50 ids por
+# llamada ("Max count: 50" en la doc, separados por coma). 200 = 4 llamadas: un
+# techo contra un pegado accidental, no un límite que se espere tocar. Los que
+# pasan del tope NO se consultan y el resultado dice cuántos (`omitidos`).
+LOTE_DETALLE = 50
+TOPE_ESTADO_IDS = 200
 
 # Techos por paso. `wait_for` sobre un `to_thread` no mata el hilo, pero SÍ
 # devuelve el control: el diagnóstico contesta aunque Odoo se quede colgado.
@@ -775,3 +786,162 @@ async def recuperar(ids: str | list[str] | None, aplicar: bool = False) -> dict[
                 "resultados": resultados}
     except Exception as exc:  # noqa: BLE001 — nunca lanza
         return {"ok": False, "motivo": _err(exc)}
+
+
+# ── 5. ESTADO VIVO DE IDS NOMBRADOS (SÓLO LECTURA) ───────────────────────────
+
+async def estados_vivos(ids: list[str]) -> dict[str, Any]:
+    """
+    SÓLO la pregunta a TikTok: el estado ACTUAL de ids ya limpios (numéricos,
+    sin repetir, acotados por quien llama), en lotes de `LOTE_DETALLE`.
+
+    Es la mitad de red de `estado_ids`, separada para que la reuse la
+    conciliación de Automatización (odoo_ventas_conciliacion) sin arrastrar el
+    cruce contra los tres registros, que allá no hace falta.
+
+    Cada orden pasa por `_orden_sin_pii`; de la respuesta cruda no sale nada
+    más. Token y cipher en hilo (regla 11). Un lote que falla no tumba a los
+    demás. Nunca lanza.
+
+    → {"vistas": {id: fila sin PII}, "fallo_por_id": {id: error},
+       "lotes": n, "sin_credenciales": bool, "errores": [..]}
+    """
+    fuera: dict[str, Any] = {"vistas": {}, "fallo_por_id": {}, "lotes": 0,
+                             "sin_credenciales": True, "errores": []}
+    errores: list[str] = fuera["errores"]
+    try:
+        from services import tiktok as tk
+
+        try:
+            token, ciph = await _credenciales()
+        except Exception as exc:  # noqa: BLE001
+            token, ciph = None, None
+            errores.append(f"credenciales: {_err(exc)}")
+        fuera["sin_credenciales"] = not (token and ciph)
+        if not (token and ciph):
+            if not errores:
+                errores.append("TikTok sin token o sin shop_cipher")
+            return fuera
+        for n, i in enumerate(range(0, len(ids), LOTE_DETALLE), start=1):
+            lote = list(ids[i:i + LOTE_DETALLE])
+            fuera["lotes"] += 1
+            try:
+                data = await asyncio.wait_for(
+                    tk.llamar(_RUTA_DETALLE, token,
+                              {"shop_cipher": ciph, "ids": ",".join(lote)}),
+                    _T_TIKTOK)
+            except Exception as exc:  # noqa: BLE001 — un lote malo no tumba a los demás
+                errores.append(f"orders lote {n}: {_err(exc)}")
+                for x in lote:
+                    fuera["fallo_por_id"][x] = _err(exc)
+                continue
+            pedidos = set(lote)
+            for o in (data or {}).get("orders") or []:
+                if isinstance(o, dict):
+                    f = _orden_sin_pii(o)
+                    if f["id"] in pedidos:
+                        fuera["vistas"][f["id"]] = f
+    except Exception as exc:  # noqa: BLE001 — nunca lanza
+        errores.append(_err(exc))
+    return fuera
+
+
+async def estado_ids(ids: str | list[str] | None) -> dict[str, Any]:
+    """
+    Estado ACTUAL en TikTok de órdenes nombradas, y en qué registro está cada una.
+
+    SÓLO LECTURA: `GET /order/202309/orders` en lotes de `LOTE_DETALLE` (50, el
+    máximo de la doc) + los tres registros (`_registros`). No procesa nada: para
+    meter una venta a la tubería está `recuperar`, con sus candados.
+
+    Cada orden pasa por `_orden_sin_pii` y NADA MÁS sale de la respuesta cruda.
+
+    Un lote que falla no tumba a los demás: sus ids quedan con `error_tiktok` y
+    el resto se consulta igual. "TikTok no la devolvió" se dice como tal —puede
+    ser un id de otra tienda o mal copiado— y no se confunde con un error.
+
+    Nunca lanza.
+    """
+    fuera: dict[str, Any] = {"ok": False, "recibidos": 0, "consultados": 0, "omitidos": 0,
+                             "invalidos": [], "lotes": 0, "devueltas": 0, "ids": [],
+                             "cruce_incompleto": False, "errores": [], "error": None}
+    try:
+        lista = _parsear_ids(ids)
+        fuera["recibidos"] = len(lista)
+        fuera["invalidos"] = [x[:40] for x in lista if not x.isdigit()]
+        validos = [x for x in lista if x.isdigit()]
+        if len(validos) > TOPE_ESTADO_IDS:
+            fuera["omitidos"] = len(validos) - TOPE_ESTADO_IDS
+            validos = validos[:TOPE_ESTADO_IDS]
+        fuera["consultados"] = len(validos)
+        if not validos:
+            fuera["error"] = ("sin ids" if not lista
+                              else "ningún id válido: los ids de orden de TikTok son numéricos")
+            return fuera
+
+        viva = await estados_vivos(validos)
+        fuera["lotes"] = viva["lotes"]
+        errores: list[str] = list(viva["errores"])
+        vistas: dict[str, dict[str, Any]] = viva["vistas"]
+        fallo_por_id: dict[str, str] = viva["fallo_por_id"]
+        sin_credenciales = viva["sin_credenciales"]
+
+        reg = await _registros(validos)
+        errores.extend(reg["errores"])
+        canal, bitacora, odoo = reg["channel_orders"], reg["bitacora"], reg["odoo"]
+
+        filas = []
+        for oid in validos:
+            f = vistas.get(oid)
+            if f:
+                fallo = None
+            elif sin_credenciales:
+                fallo = "TikTok sin token o sin shop_cipher"
+            else:
+                fallo = fallo_por_id.get(oid) or "TikTok no devolvió la orden"
+            filas.append({
+                "id": oid,
+                "tiktok": _publica(f) if f else None,
+                "genera_pedido": _genera_pedido(f["status"]) if f else None,
+                "error_tiktok": fallo,
+                "registros": {"channel_orders": oid in canal, "bitacora": oid in bitacora,
+                              "odoo": odoo.get(oid)},
+            })
+        fuera.update(ok=not errores, devueltas=len(vistas), ids=filas,
+                     cruce_incompleto=bool(reg["errores"]), errores=errores,
+                     error="; ".join(errores) or None)
+    except Exception as exc:  # noqa: BLE001 — nunca lanza
+        fuera["error"] = _err(exc)
+    return fuera
+
+
+def resumen_ids(r: dict[str, Any]) -> str:
+    """
+    `estado_ids` en UNA línea de log ("TIKTOK ids …"): por id, su estado vivo,
+    si trae guía, la fecha de su última actualización y en qué registro está.
+    Sólo campos de la lista blanca. Nunca lanza.
+    """
+    try:
+        partes = [f"TIKTOK ids consultados={r.get('consultados', 0)} "
+                  f"devueltas={r.get('devueltas', 0)} lotes={r.get('lotes', 0)}"
+                  f"{' INCOMPLETO' if r.get('cruce_incompleto') else ''}"
+                  f"{' omitidos=' + str(r.get('omitidos')) if r.get('omitidos') else ''}"]
+        for fila in (r.get("ids") or [])[:60]:
+            tt = fila.get("tiktok") or {}
+            reg = fila.get("registros") or {}
+            if tt:
+                vivo = (f"{tt.get('status')} guia={int(bool(tt.get('tiene_guia')))} "
+                        f"upd={str(tt.get('update_time') or '?')[:10]}")
+            else:
+                vivo = f"SIN_TIKTOK({str(fila.get('error_tiktok') or '?')[:60]})"
+            partes.append(f"{fila.get('id')}:{vivo} co={int(bool(reg.get('channel_orders')))} "
+                          f"bit={int(bool(reg.get('bitacora')))} odoo={reg.get('odoo') or '-'}")
+        if len(r.get("ids") or []) > 60:
+            partes.append(f"+{len(r['ids']) - 60}")
+        if r.get("invalidos"):
+            partes.append(f"invalidos={','.join(r['invalidos'][:10])}")
+        if r.get("error"):
+            partes.append(f"error={str(r.get('error'))[:300]}")
+        return " · ".join(partes)
+    except Exception as exc:  # noqa: BLE001
+        return f"TIKTOK ids: no se pudo resumir ({type(exc).__name__})"

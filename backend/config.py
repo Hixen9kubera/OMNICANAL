@@ -159,6 +159,52 @@ class Settings(BaseSettings):
     # mercancía sale de nuestra bodega.
     pedidos_tiktok_enabled: bool = False
 
+    # ── RESPALDOS DEL AVISO DE PEDIDOS DE TIKTOK (14-sep-2026) ─────────────
+    # El aviso ORDER_STATUS_CHANGE era la única vía de las ventas de TikTok y
+    # no tenía red: dejó de llegar el 4-sep sin que nada lo dijera. TODO nace
+    # APAGADO (regla 3): las tres cosas pueden crear pedidos o escribir en Odoo.
+    #
+    # SONDEO (services/pedidos_tiktok_sondeo.py): cada N min pregunta a TikTok
+    # las ventas actualizadas en los últimos N DÍAS (ventana fija por
+    # update_time, SIN marca de agua — la lección v0.508.0 de Temu). Procesa las
+    # que channel.orders no tiene (con el candado de huella de la recuperación)
+    # y las registradas cuyo estado cambió (cancelaciones incluidas). Deja el
+    # canario "TIKTOK sondeo: venta que el webhook no trajo". Encendido, arranca
+    # en SOLO_REGISTRO: clasifica y cuenta, no procesa.
+    pedidos_tiktok_sondeo_enabled: bool = False
+    pedidos_tiktok_sondeo_solo_registro: bool = True
+    pedidos_tiktok_sondeo_min: int = 15
+    pedidos_tiktok_sondeo_dias: int = 2        # se acota a 1..15
+    # Antigüedad máxima (por create_time) de una venta SIN REGISTRO que el sondeo
+    # procesa sola. Más vieja, sólo se reporta (`ids_nuevas_viejas`) y entra con
+    # POST /api/automatizacion/tiktok/recuperar por ids: un cambio de estado de una venta de hace
+    # semanas mueve su update_time y la metía a la ventana, y ahí es donde más
+    # probable es que ya esté capturada a mano. Se acota a 1..360.
+    pedidos_tiktok_sondeo_max_horas: int = 48
+    # REINTENTOS DEL AVISO (services/tiktok_webhook_reintentos.py): el receptor
+    # ya MARCA cada aviso (procesado/resultado, o intentos+next_retry_at con
+    # espera creciente 2 min·2^n, tope 6 h) — y lo hace con PEDIDOS_TIKTOK_ENABLED
+    # AUNQUE ESTA BANDERA ESTÉ APAGADA: es bitácora y entra viva con el deploy.
+    # Este job vuelve a pasar por
+    # `procesar` los vencidos de las últimas 48 h, hasta TOPE intentos, con el
+    # candado de huella. Sin PEDIDOS_TIKTOK_ENABLED no hace nada.
+    tiktok_webhook_reintentos_enabled: bool = False
+    tiktok_webhook_reintentos_min: int = 5
+    tiktok_webhook_reintentos_tope: int = 6
+    # GUÍA Y ETIQUETA PDF (pedidos_tiktok.refrescar_guias): número de rastreo en
+    # la entrega de salida y el PDF de TikTok ("Subir guía", `<order_id>.pdf`)
+    # en la orden CONFIRMADA de Odoo, verificados al re-leer. Cada 20 min porque
+    # el PDF sólo existe entre el agendado (AWAITING_COLLECTION) y la
+    # recolección; con la bandera encendida, además, un aviso AWAITING_COLLECTION
+    # lo intenta en el momento. Apagada por omisión, a diferencia de la de Temu:
+    # escribe en Odoo y cuelga un trabajo del aviso vivo (regla 3). No pisa un
+    # PDF ya subido y no toca capturas a mano (sin client_order_ref no entran a
+    # la cola), pero encenderla es decisión, no efecto de un deploy.
+    tiktok_guias_enabled: bool = False
+    tiktok_guias_min: int = 20
+    tiktok_guias_dias: int = 14
+    tiktok_guias_limite: int = 50
+
     # ── ÓRDENES DE VENTA EN ODOO (TikTok / Temu) ──────────────────────────
     # La venta del marketplace se vuelve orden de venta en Odoo, como ya pasa
     # con Mercado Libre vía `meli_oerp`. Ver services/odoo_ventas.py.
@@ -773,6 +819,16 @@ class Settings(BaseSettings):
     # sólo mira. `dias` se acota a 1..45.
     tiktok_diagnostico_arranque: bool = True
     tiktok_diagnostico_dias: int = 14
+    # ESTADO VIVO DE VENTAS NOMBRADAS, en el MISMO job de arranque (14-sep-2026):
+    # ids de orden de TikTok separados por coma. Si trae algo, después del
+    # diagnóstico pregunta a TikTok el estado ACTUAL de esos ids (detalle en
+    # lotes de 50, tope 200) y los cruza con channel.orders, la bitácora y Odoo.
+    # Deja UNA línea en el log ("TIKTOK ids"). SOLO LECTURA —no procesa, no
+    # crea pedidos ni órdenes— por eso no pide la regla 3; para escribir está
+    # TIKTOK_RECUPERAR_IDS. Sólo corre con TIKTOK_DIAGNOSTICO_ARRANQUE encendido.
+    # Vaciarla cuando ya se leyó: no hace daño, pero cada reinicio vuelve a
+    # preguntar. Ver tiktok_diagnostico.estado_ids.
+    tiktok_diagnostico_ids: str = ""
     # RECUPERACIÓN SIN SESIÓN DEL PANEL: ids de orden de TikTok separados por
     # coma. Si trae algo, el MISMO job de arranque, DESPUÉS del diagnóstico,
     # pasa ESOS ids por `pedidos_tiktok.procesar` — es decir, SÍ ESCRIBE: pedido

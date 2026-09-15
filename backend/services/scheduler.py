@@ -43,7 +43,8 @@ async def _job():
 
 async def _tiktok_diagnostico_arranque() -> None:
     """
-    El diagnóstico de TikTok, UNA vez, y la recuperación por variable si la hay.
+    El diagnóstico de TikTok, UNA vez; el estado vivo de TIKTOK_DIAGNOSTICO_IDS
+    (sólo lectura) y la recuperación de TIKTOK_RECUPERAR_IDS, si las hay.
 
     POR QUÉ EN EL ARRANQUE Y NO SÓLO COMO ENDPOINT: el endpoint pide la llave del
     panel, y la pregunta ("¿seguimos suscritos a los pedidos, se perdió alguna
@@ -62,6 +63,17 @@ async def _tiktok_diagnostico_arranque() -> None:
         log.info("%s", td.resumen_linea(d))
     except Exception as exc:  # noqa: BLE001
         log.warning("TIKTOK diagnostico al arrancar falló: %s", exc)
+
+    # ESTADO VIVO de ventas nombradas (TIKTOK_DIAGNOSTICO_IDS). Sólo lectura. Va
+    # antes de la recuperación y en su propio try: si falla, la recuperación
+    # pedida sigue su curso, y al revés.
+    ids_diag = (getattr(settings, "tiktok_diagnostico_ids", "") or "").strip()
+    if ids_diag:
+        try:
+            r = await td.estado_ids(ids_diag)
+            log.info("%s", td.resumen_ids(r))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("TIKTOK ids (TIKTOK_DIAGNOSTICO_IDS) falló: %s", exc)
 
     ids = (getattr(settings, "tiktok_recuperar_ids", "") or "").strip()
     if not ids:
@@ -216,6 +228,66 @@ def iniciar() -> None:
                  settings.pedidos_temu_sondeo_min,
                  settings.pedidos_temu_sondeo_paginas,
                  settings.pedidos_temu_sondeo_solo_registro)
+    # ── RESPALDOS DEL AVISO DE PEDIDOS DE TIKTOK (14-sep-2026) ─────────────────
+    # Los tres nacen APAGADOS (regla 3) y cada uno cuelga de su propia bandera:
+    # con la bandera apagada el job NI SE REGISTRA. Ver config.py.
+    #
+    # Sondeo: ventana fija por update_time; procesa lo que el aviso no trajo y
+    # los cambios de estado. Ver services/pedidos_tiktok_sondeo.py.
+    if getattr(settings, "pedidos_tiktok_sondeo_enabled", False):
+        from services import pedidos_tiktok_sondeo
+        _scheduler.add_job(
+            pedidos_tiktok_sondeo.revisar,
+            "interval",
+            minutes=max(1, int(settings.pedidos_tiktok_sondeo_min)),
+            id="pedidos_tiktok_sondeo",
+            next_run_time=datetime.now() + timedelta(seconds=270),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Sondeo de ventas TikTok cada %s min, ventana %s días "
+                 "(solo_registro=%s).", settings.pedidos_tiktok_sondeo_min,
+                 settings.pedidos_tiktok_sondeo_dias,
+                 settings.pedidos_tiktok_sondeo_solo_registro)
+    # Reintentos de los avisos de TikTok que fallaron al procesarse.
+    if getattr(settings, "tiktok_webhook_reintentos_enabled", False):
+        from services import tiktok_webhook_reintentos
+        _scheduler.add_job(
+            tiktok_webhook_reintentos.reprocesar,
+            "interval",
+            minutes=max(1, int(settings.tiktok_webhook_reintentos_min)),
+            id="tiktok_webhook_reintentos",
+            next_run_time=datetime.now() + timedelta(seconds=330),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Reintentos de avisos de TikTok cada %s min (tope %s intentos).",
+                 settings.tiktok_webhook_reintentos_min,
+                 settings.tiktok_webhook_reintentos_tope)
+    # Guía + etiqueta PDF de TikTok en Odoo. Cada 20 min: el PDF sólo existe
+    # entre el agendado de la recolección y la recolección.
+    if getattr(settings, "tiktok_guias_enabled", False):
+        from services import pedidos_tiktok as _ptk
+        _min_guias = max(1, int(settings.tiktok_guias_min))
+
+        async def _guias_tiktok() -> None:
+            await _ptk.refrescar_guias(
+                dias=settings.tiktok_guias_dias,
+                limite=settings.tiktok_guias_limite,
+                # Techo por vuelta: 80% del intervalo, como en Temu.
+                segundos_max=int(_min_guias * 60 * 0.8),
+            )
+        _scheduler.add_job(
+            _guias_tiktok,
+            "interval",
+            minutes=_min_guias,
+            id="tiktok_guias",
+            next_run_time=datetime.now() + timedelta(seconds=360),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Guías/etiquetas de TikTok cada %s min (tope %s días, %s por vuelta).",
+                 _min_guias, settings.tiktok_guias_dias, settings.tiktok_guias_limite)
     # Sondeo de ventas de WALMART (pieza 6). Es SONDEO y no webhook porque
     # `/v3/webhooks/subscriptions` devuelve 520 del lado de Walmart — el
     # catálogo de eventos sí contesta, la suscripción no. Ver
@@ -403,8 +475,10 @@ def iniciar() -> None:
             max_instances=1,
             misfire_grace_time=600,
         )
-        log.info("Diagnóstico de TikTok al arrancar en 3 min (%s días%s).",
+        log.info("Diagnóstico de TikTok al arrancar en 3 min (%s días%s%s).",
                  settings.tiktok_diagnostico_dias,
+                 ", estado de TIKTOK_DIAGNOSTICO_IDS"
+                 if (getattr(settings, "tiktok_diagnostico_ids", "") or "").strip() else "",
                  ", y recuperación por TIKTOK_RECUPERAR_IDS"
                  if (getattr(settings, "tiktok_recuperar_ids", "") or "").strip() else "")
     # Censo de Temu → channel.listings (status crudo + stock vivos). Sin esto,

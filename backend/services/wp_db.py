@@ -321,6 +321,42 @@ def pedido_por_ml_order_id(ml_order_id: str) -> int | None:
     return int(wc) if wc else None
 
 
+def pedidos_por_ml_order_ids(ml_order_ids: list[str]) -> dict[str, int]:
+    """
+    `{orden del canal: wc_order_id}` de las que YA tienen pedido en Woo, en UNA
+    consulta. ⚠️ BLOQUEA.
+
+    A diferencia de `pedido_por_ml_order_id`, LANZA si no puede preguntar (sin
+    credenciales, base caída): la usan candados que fallan CERRADO
+    (`pedidos_tiktok_sondeo.filtrar_por_huella`), y ahí un "no sé" convertido en
+    "no existe" es exactamente el pedido gemelo que el candado quiere evitar.
+    Misma regla que la individual: el más antiguo, sin la papelera.
+    """
+    ids = sorted({str(i).strip() for i in (ml_order_ids or []) if str(i).strip()})
+    if not ids:
+        return {}
+    if not disponible():
+        raise RuntimeError("la base de WordPress no está disponible")
+    P = _prefix()
+    fuera: dict[str, int] = {}
+    for i in range(0, len(ids), 200):
+        trozo = ids[i:i + 200]
+        marcas = ", ".join(["%s"] * len(trozo))
+        rows = _fetch_all(
+            f"""SELECT m.meta_value AS orden, MIN(o.id) AS wc_id
+                  FROM {P}wc_orders_meta m
+                  JOIN {P}wc_orders o ON o.id = m.order_id
+                 WHERE m.meta_key = '_ml_order_id' AND m.meta_value IN ({marcas})
+                   AND o.status <> 'trash'
+                 GROUP BY m.meta_value""",
+            tuple(trozo),
+        )
+        for row in rows:
+            if row.get("wc_id"):
+                fuera[str(row["orden"])] = int(row["wc_id"])
+    return fuera
+
+
 def padre_de(wc_id: int) -> int | None:
     """
     `post_parent` de una variación, por su propio `wc_id`. None si no es
