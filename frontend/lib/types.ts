@@ -55,6 +55,15 @@ export interface EstudioConfig {
    * `es_variante` en la respuesta: la decisión es del servidor.
    */
   galeria_variante?: boolean;
+  /**
+   * CREAR_FOTOS_A_VARIANTES. Encendido, procesar un PADRE en Crear guarda sus
+   * fotos de Alibaba en la `_kubera_galeria` de cada hija que no tenga fotos
+   * propias (Apify devuelve UNA lista plana, sin fotos por color: no hay forma
+   * de repartirlas). Crear solo lo usa para decir en pantalla qué va a pasar.
+   * Opcional por la misma razón que `galeria_variante`: un backend que no lo
+   * declara lo tiene apagado.
+   */
+  crear_fotos_a_variantes?: boolean;
 }
 
 /** `GET /api/productos/{sku}/modo` */
@@ -163,6 +172,9 @@ export interface Producto {
   hermanas?: { total: number; pendientes: number } | null;
   /** Padre de la fila cuando es una variante (de ahí cuelga `hermanas`). */
   parent_id?: number | null;
+  /** SKU del padre de una fila variante. Opcional: a 17-sep el listado de
+   *  candidatos solo trae `parent_id`; si llega, Crear lo pinta en «Variante de …». */
+  padre_sku?: string | null;
   /** Tiene existencias en el almacén DROP OFF de Odoo. Solo viaja cuando es
    *  cierto: ausente = no está en DROP OFF. */
   drop_off?: boolean | null;

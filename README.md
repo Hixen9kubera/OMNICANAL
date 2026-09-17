@@ -1001,6 +1001,84 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.525.0 — Crear Productos por padre o por variante, y las fotos del padre llegan a sus variantes (copia apagada)
+
+Brandon, 17-sep-2026: *"en la pestaña de crear productos … no me permite buscar en
+alibaba cada variante y solo me deja buscar el padre … deberás de crear un switch que
+me permita separar crear productos por variante y por padre que es el agrupado … una
+vez que se procese el padre en crear productos, las imágenes que se recuperan de apify
+… se guardan en cada una de sus variantes"*.
+
+**En vivo: el control «Por padre | Por variante» en Crear**
+(`frontend/app/crear/page.tsx`)
+
+- **Por padre** (el de siempre, agrupado): una fila por padre con «Ver variantes» y
+  UNA URL de Alibaba para toda la familia.
+- **Por variante**: una fila por variante, cada una con su propia URL, su insignia
+  «Variante» y «Variante · N hermanas pendientes». Es para familias donde cada
+  variante es otro producto (VEH-0316: 19 kits de faros distintos). Pide la lista con
+  `aplanar: true`, que ya existía en el backend.
+- La elección se recuerda por navegador (`omnicanal:crear:modo`, con try/catch) y la
+  tabla no se pinta hasta leerla, para no pedir dos veces. Cambiar de modo regresa a la
+  página 1 y limpia la selección, pero conserva las URLs escritas.
+- **No se encolan padre e hija a la vez**: si el padre está en cola o procesándose,
+  sus variantes dicen «Esperando a <SKU>» y no se pueden mandar (y al revés).
+- Una respuesta vieja ya no pisa a la nueva al cambiar de modo o de filtro
+  (`claveVigente`), y el sondeo de progreso usa la función de carga vigente.
+- Bajo las variantes de un padre variable, una leyenda dice qué pasa con sus fotos
+  (según el flag de abajo).
+
+Verificado en local con el backend sin scheduler y SÓLO LECTURA, filtro VEH-0316:
+por padre = 1 fila con 19 variantes y una URL; por variante = 16 filas, cada una con
+su URL. No se mandó nada a Crear.
+
+**Apagado: `CREAR_FOTOS_A_VARIANTES` (nuevo, `false`)**
+
+Apify (`happitap~alibaba-product-scraper`) devuelve UNA lista plana de ~6 fotos por
+URL, sin fotos por color. Con el flag encendido, al terminar el PUT de un **padre** en
+Crear, esas fotos (portada + galería, con los ids que Woo ya descargó) se guardan en la
+`_kubera_galeria` de cada variante:
+
+- **Se copia** a la hija sin fotos propias; **se actualiza** la que tiene la copia
+  intacta de una corrida anterior; **se omite** la que ya tiene fotos propias, la que
+  Crear procesó sola (`_crear_procesada_at`) y la que está en cola en Crear.
+- **Familia trabajada por variante** (alguna hija procesada sola o en Crear): no se
+  copia a NINGUNA. VEH-0316 queda con sus 19 variantes intactas.
+- Nunca toca el `_thumbnail_id` de una hija, nunca marca el alta como fallida (el
+  padre ya quedó escrito) y deja en la bitácora «Fotos del padre guardadas en N
+  variantes (M con fotos propias no se tocaron)».
+- Se quitan de la copia las fotos que son de una hermana (su miniatura o un archivo con
+  su SKU), igual que al publicar.
+- Todo bajo `imagenes_variante.candado(padre)` y cada hija bajo el suyo; máximo 3
+  escrituras a la vez; la decisión se rehace ya con el candado de cada hija tomado.
+- `plan_fotos_padre` es la versión de sólo lectura. Planes medidos en producción:
+  MASC-1022 → copia a CAF y ROS; VEH-0316 → las 19 omitidas; PEL-0005 y BEB-0004
+  parciales.
+
+**Sin flag, pero sin efecto hoy: las copias se mantienen al día**
+
+- Quitar o agregar una foto en el Estudio del **padre** y «Procesar con IA» desde el
+  padre ahora actualizan las hijas que guardan la copia intacta
+  (`sincronizar_copias`, respuesta `hijas_sincronizadas`). Nunca crean la meta.
+- `reemplazar_en_hijas` (IA del padre → hijas que tenían la foto original) deja de
+  depender de `GALERIA_VARIANTE`: la copia de Crear existe con ese flag apagado.
+- Hoy **ninguna variante tiene `_kubera_galeria`** (los dos flags que la escriben están
+  apagados), así que en vivo esto es una lectura a MySQL por edición del padre.
+- Al procesar una **variante** en Crear, si ya tiene `_kubera_galeria`, se reescribe con
+  su galería nueva (si no la tiene no se crea). El PUT de la variante va bajo su candado.
+- `GET /api/productos/_estudio/config` agrega `crear_fotos_a_variantes`.
+
+**Base de datos**: nada nuevo. Las fotos viven en WooCommerce/MySQL como siempre:
+`_thumbnail_id` (principal de la variante), `_product_image_gallery` (galería de
+Crear), `_kubera_galeria` (galería propia, v0.517.0) y `_crear_procesada_at`. La única
+tabla nueva de todo el trabajo de variantes sigue siendo `channel.publication_mode`
+(migración 0051).
+
+Sigue abierto: el backend todavía no rechaza encolar padre e hija a la vez (lo frena la
+pantalla); `padre_sku` no viaja en la lista aplanada; la copia ocupa un lugar del
+semáforo de Crear; CommerceKit (fotos por color en la tienda) no se toca; y falta la
+primera escritura real controlada antes de encender el flag.
+
 ### v0.524.0 — Guías del día: elige el día, imprime todas las etiquetas y baja el Excel del almacén
 
 Brandon: *"un botón para descargar las guías de todas las órdenes y que me

@@ -20,6 +20,7 @@ import {
   ArrowDown,
   ArrowUpDown,
   Container,
+  Split,
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
@@ -31,6 +32,7 @@ import {
   sincronizarDrafts,
   progresoCreacion,
   categoriasDisponibles,
+  configEstudio,
   type ProgresoCreacionItem,
 } from "@/lib/api";
 import type { Paginacion, Producto } from "@/lib/types";
@@ -38,6 +40,24 @@ import type { Paginacion, Producto } from "@/lib/types";
 const PER_PAGE = 50;
 const COLOR = "#4F46E5"; // índigo Kubera
 const ACENTO = "#818CF8";
+
+/**
+ * Cómo se listan los candidatos. «Por padre» = la familia en una fila (una URL
+ * de Alibaba para todas, el caso MASC-1022: mismo producto en colores). «Por
+ * variante» = cada hija con su propia URL (el caso VEH-0316: cada variante es
+ * otro producto en Alibaba). Antes de esto la pantalla no mandaba `aplanar` y
+ * mandaba LISTADO_APLANADO, apagado en Railway: Brandon solo podía ver el padre.
+ */
+type ModoLista = "padre" | "variante";
+const LS_MODO = "omnicanal:crear:modo";
+
+function leerModoGuardado(): ModoLista {
+  try {
+    return localStorage.getItem(LS_MODO) === "variante" ? "variante" : "padre";
+  } catch {
+    return "padre"; // ventana privada / almacenamiento bloqueado
+  }
+}
 
 function precioMXN(v: number | null): string {
   if (v === null || v === undefined) return "—";
@@ -78,6 +98,23 @@ export default function CrearProductosPage() {
   useEffect(() => {
     categoriasDisponibles()
       .then((r) => setCategoriasLista(r.categorias))
+      .catch(() => {});
+  }, []);
+
+  // Modo de la lista. `null` hasta leer localStorage en el cliente: leerlo en el
+  // inicializador de useState rompería la hidratación (el servidor no tiene
+  // localStorage), y arrancar con "padre" para luego corregir pediría la lista
+  // DOS veces y podía pintar el modo equivocado un instante.
+  const [modo, setModo] = useState<ModoLista | null>(null);
+  useEffect(() => setModo(leerModoGuardado()), []);
+
+  // CREAR_FOTOS_A_VARIANTES: solo cambia la leyenda bajo las variantes de un
+  // padre. Si la config no responde se asume apagado — la leyenda de apagado
+  // ("publican las fotos del padre mientras no tengan propias") es cierta igual.
+  const [fotosAVariantes, setFotosAVariantes] = useState(false);
+  useEffect(() => {
+    configEstudio()
+      .then((c) => setFotosAVariantes(Boolean(c.crear_fotos_a_variantes)))
       .catch(() => {});
   }, []);
   // Orden por columna: valor|costo|stock|tipo + _asc|_desc
@@ -156,22 +193,32 @@ export default function CrearProductosPage() {
   // false mientras el backend sigue construyendo el índice (carga progresiva)
   const [indiceCompleto, setIndiceCompleto] = useState(true);
   const reintentos = useRef(0);
+  // Clave de la ÚLTIMA consulta pedida. Los reintentos en silencio (setTimeout
+  // de 4-5 s) cierran sobre el `cargar` de su momento: sin esta clave, cambiar a
+  // «Por variante» mientras el índice se construye dejaba que un reintento
+  // atrasado del modo anterior pisara la tabla con filas agrupadas.
+  const claveVigente = useRef("");
 
   const cargar = useCallback((silencioso = false) => {
+    if (modo === null) return; // aún no se sabe el modo: no pedir de más
     const ctrl = new AbortController();
+    const params = {
+      page,
+      perPage: PER_PAGE,
+      search: busqueda || undefined,
+      skus: skusFiltro || undefined,
+      orden,
+      categoria: categoriaFiltro || undefined,
+      // SIEMPRE explícito: sin valor el backend decide por LISTADO_APLANADO y la
+      // pantalla dejaría de mostrar lo que dice el control.
+      aplanar: modo === "variante",
+    };
+    const clave = JSON.stringify(params);
+    claveVigente.current = clave;
     if (!silencioso) setCargando(true);
-    listarCandidatos(
-      {
-        page,
-        perPage: PER_PAGE,
-        search: busqueda || undefined,
-        skus: skusFiltro || undefined,
-        orden,
-        categoria: categoriaFiltro || undefined,
-      },
-      ctrl.signal,
-    )
+    listarCandidatos(params, ctrl.signal)
       .then((r) => {
+        if (clave !== claveVigente.current) return; // respuesta de otra consulta
         setProductos(r.items);
         setPag(r.paginacion);
         setIndiceCompleto(r.completo !== false);
@@ -183,25 +230,59 @@ export default function CrearProductosPage() {
         // que el total y el orden se vayan actualizando sin parpadeos.
         if (r.completo === false && !filtrando) {
           setPreparando(r.paginacion.total === 0);
-          setTimeout(() => cargar(true), 4000);
+          setTimeout(() => {
+            if (clave === claveVigente.current) cargarRef.current(true);
+          }, 4000);
           return;
         }
         // Sin búsqueda/filtro y 0 resultados → índice aún vacío; reintentar.
         if (!filtrando && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
-          setTimeout(() => cargar(), 5000);
+          setTimeout(() => {
+            if (clave === claveVigente.current) cargarRef.current();
+          }, 5000);
         } else {
           reintentos.current = 0;
           setPreparando(false);
         }
       })
       .catch(() => {})
-      .finally(() => setCargando(false));
+      .finally(() => {
+        // Una respuesta vieja no apaga el esqueleto de la consulta que sí vale.
+        if (clave === claveVigente.current) setCargando(false);
+      });
     return () => ctrl.abort();
-  }, [page, busqueda, skusFiltro, orden, categoriaFiltro]);
+  }, [page, busqueda, skusFiltro, orden, categoriaFiltro, modo]);
+
+  // El ÚLTIMO `cargar`. Los temporizadores (reintentos y el polling de progreso)
+  // viven más que el render que los creó: si cerraban sobre su `cargar`, al
+  // terminar la cola pedían con el modo y la página de cuando se encoló —la tabla
+  // se llenaba de variantes con el control en «Por padre»— y, tras recargar la
+  // pantalla, con `modo === null`, así que no pedían nada y lo ya creado seguía
+  // a la vista, seleccionable para crearse otra vez (revisión del 17-sep-2026).
+  const cargarRef = useRef(cargar);
+  cargarRef.current = cargar;
 
   useEffect(() => cargar(), [cargar]);
+
+  // Cambiar de modo: página 1 y selección vacía — un SKU de padre seleccionado
+  // no existe como fila en «Por variante» (y al revés), así que se mandaría a
+  // crear algo que ya no está a la vista. Las URLs tecleadas SE CONSERVAN: van
+  // por SKU y reaparecen si se vuelve al modo donde se escribieron.
+  function cambiarModo(nuevo: ModoLista) {
+    if (nuevo === modo) return;
+    try {
+      localStorage.setItem(LS_MODO, nuevo);
+    } catch {
+      /* privado/bloqueado: se olvida al recargar, la pantalla sigue */
+    }
+    reintentos.current = 0;
+    setModo(nuevo);
+    setPage(1);
+    setSeleccion(new Set());
+    setResultado(null);
+  }
 
   // ── Sincronizar Odoo → Woo (crea drafts de los SKUs faltantes) ──────
   const [sincronizando, setSincronizando] = useState(false);
@@ -253,7 +334,10 @@ export default function CrearProductosPage() {
     setSeleccion((prev) => {
       const next = new Set(prev);
       if (todosSelPagina) skusPagina.forEach((s) => next.delete(s));
-      else skusPagina.forEach((s) => next.add(s));
+      else
+        productos.forEach((p) => {
+          if (!parienteEnProceso(p)) next.add(p.sku);
+        });
       return next;
     });
   }
@@ -270,6 +354,36 @@ export default function CrearProductosPage() {
   // lista de lo ya procesado).
   const sesionSkus = useRef<Set<string>>(new Set());
 
+  // ¿Algún pariente de esta fila está en cola o procesándose? Con el control de
+  // modo se puede encolar una variante en «Por variante» y a su padre en «Por
+  // padre» en el mismo minuto: el backend corre dos a la vez y cada fila sólo
+  // enseñaba SU progreso. Si el padre terminaba primero, la variante (aún sin
+  // procesar) recibía las fotos del padre —otro producto en VEH-0316— y el
+  // padre, al pasar a `pending`, sacaba de Crear a las hermanas pendientes
+  // (revisión del 17-sep-2026). Devuelve el SKU que bloquea, o null.
+  const parienteEnProceso = useCallback(
+    (p: Producto): string | null => {
+      const activos = progreso.filter(
+        (x) => x.estado === "en_cola" || x.estado === "procesando",
+      );
+      if (!activos.length) return null;
+      if (p.variantes.length > 0) {
+        const hija = activos.find(
+          (x) =>
+            x.sku !== p.sku &&
+            p.variantes.some((v) => v.sku === x.sku || (v.wc_id != null && v.wc_id === x.wc_id)),
+        );
+        if (hija) return hija.sku;
+      }
+      if (p.parent_id) {
+        const padre = activos.find((x) => x.wc_id != null && x.wc_id === p.parent_id);
+        if (padre) return padre.sku;
+      }
+      return null;
+    },
+    [progreso],
+  );
+
   const iniciarPolling = useCallback(() => {
     if (pollRef.current) return;
     pollRef.current = setInterval(async () => {
@@ -283,13 +397,13 @@ export default function CrearProductosPage() {
         if (!activos && pollRef.current) {
           clearInterval(pollRef.current);
           pollRef.current = null;
-          cargar(); // los completados salen de Crear Productos
+          cargarRef.current(); // los completados salen de Crear Productos
         }
       } catch {
         /* siguiente tick */
       }
     }, 5000);
-  }, [cargar]);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -351,7 +465,19 @@ export default function CrearProductosPage() {
       setSeleccion(new Set());
       items.forEach((i) => sesionSkus.current.add(i.sku));
       setProgreso(
-        items.map((i) => ({ sku: i.sku, estado: "en_cola", paso: "En cola…" })),
+        (prev) => [
+          // Lo que ya corría sigue a la vista (y bloqueando a sus parientes)
+          // hasta el siguiente tick del polling.
+          ...prev.filter((x) => !items.some((i) => i.sku === x.sku)),
+          ...items.map(
+            (i): ProgresoCreacionItem => ({
+              sku: i.sku,
+              estado: "en_cola",
+              paso: "En cola…",
+              wc_id: i.wc_id,
+            }),
+          ),
+        ],
       );
       iniciarPolling();
     } catch (e) {
@@ -469,6 +595,40 @@ export default function CrearProductosPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Por padre | Por variante. Mientras se lee localStorage ningún
+                botón aparece activo: pintar "Por padre" y saltar a "Por
+                variante" un instante después confunde más que esperar. */}
+            <div
+              role="group"
+              aria-label="Cómo listar los productos"
+              className="flex items-center rounded-lg border border-slate-200 bg-white p-0.5"
+            >
+              {([
+                { valor: "padre", texto: "Por padre", Icono: Layers,
+                  ayuda: "Una fila por familia: una URL de Alibaba para el padre y todas sus variantes" },
+                { valor: "variante", texto: "Por variante", Icono: Split,
+                  ayuda: "Una fila por variante: cada una con su propia URL de Alibaba y se procesa sola" },
+              ] as const).map(({ valor, texto, Icono, ayuda }) => {
+                const activo = modo === valor;
+                return (
+                  <button
+                    key={valor}
+                    type="button"
+                    onClick={() => cambiarModo(valor)}
+                    aria-pressed={activo}
+                    title={ayuda}
+                    className={[
+                      "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-semibold transition-colors",
+                      activo ? "text-white shadow-sm" : "text-slate-500 hover:bg-slate-50 hover:text-slate-700",
+                    ].join(" ")}
+                    style={activo ? { backgroundColor: COLOR } : undefined}
+                  >
+                    <Icono size={15} />
+                    {texto}
+                  </button>
+                );
+              })}
+            </div>
             <div className="relative">
               <Search
                 size={16}
@@ -650,8 +810,12 @@ export default function CrearProductosPage() {
                     (p.tipo === "padre" || p.tipo === "variable") &&
                     p.variantes.length > 0;
                   const abierto = esPadre && expandidos.has(p.sku);
+                  // Fila que es una variación (listado aplanado): trae su padre
+                  // o, al menos, la cuenta de hermanas que cuelga de él.
+                  const esVariante = !esPadre && Boolean(p.parent_id || p.hermanas);
                   // Estado de creación de ESTE producto (si está en la cola)
                   const prog = progreso.find((x) => x.sku === p.sku);
+                  const bloqueo = prog ? null : parienteEnProceso(p);
                   return (
                     <Fragment key={p.sku}>
                     <tr
@@ -665,8 +829,14 @@ export default function CrearProductosPage() {
                         <input
                           type="checkbox"
                           checked={sel}
+                          disabled={Boolean(bloqueo) && !sel}
                           onChange={() => toggle(p.sku)}
-                          className="h-4 w-4 cursor-pointer accent-indigo-600"
+                          title={
+                            bloqueo
+                              ? `${bloqueo} se está creando: espera a que termine para no mezclar sus fotos.`
+                              : undefined
+                          }
+                          className="h-4 w-4 cursor-pointer accent-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
                         />
                       </td>
                       {/* Producto */}
@@ -696,7 +866,38 @@ export default function CrearProductosPage() {
                             {/* Cuántas hermanas faltan. Procesar esta variante NO
                                 espera a las demás: se va sola a Productos y se
                                 puede publicar. Esto solo evita perderlas de vista. */}
-                            {p.hermanas && p.hermanas.pendientes > 1 && (
+                            {modo === "variante" && esVariante ? (
+                              // «Por variante»: de qué familia es y cuánto le falta.
+                              // `pendientes` incluye a esta fila, por eso el −1.
+                              // El SKU del padre solo se pinta si el backend lo
+                              // manda (`padre_sku`); hoy el listado trae `parent_id`.
+                              <div
+                                className="mt-0.5 flex items-center gap-1 text-[11px] font-medium text-violet-600"
+                                title={
+                                  p.hermanas
+                                    ? `Esta familia tiene ${p.hermanas.total} variantes y ${p.hermanas.pendientes} siguen sin procesar. Procesar ésta no espera a las demás.`
+                                    : "Procesar esta variante no espera a sus hermanas."
+                                }
+                              >
+                                <Split size={11} className="shrink-0" />
+                                <span className="truncate">
+                                  {p.padre_sku ? (
+                                    <>
+                                      Variante de <span className="font-mono">{p.padre_sku}</span>
+                                    </>
+                                  ) : (
+                                    "Variante"
+                                  )}
+                                  {p.hermanas &&
+                                    (() => {
+                                      const n = Math.max(0, p.hermanas.pendientes - 1);
+                                      return n === 0
+                                        ? " · ninguna hermana pendiente"
+                                        : ` · ${n} hermana${n === 1 ? "" : "s"} pendiente${n === 1 ? "" : "s"}`;
+                                    })()}
+                                </span>
+                              </div>
+                            ) : p.hermanas && p.hermanas.pendientes > 1 && (
                               <span
                                 className="ml-2 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700"
                                 title={`Esta familia tiene ${p.hermanas.total} variantes y ${p.hermanas.pendientes} siguen sin procesar. Procesar ésta no espera a las demás.`}
@@ -704,6 +905,17 @@ export default function CrearProductosPage() {
                                 {p.hermanas.pendientes - 1} hermana
                                 {p.hermanas.pendientes - 1 === 1 ? "" : "s"} sin procesar
                               </span>
+                            )}
+                            {bloqueo && (
+                              <div
+                                className="mt-1 flex items-center gap-1.5 text-xs font-medium text-slate-500"
+                                title="Crear un padre y una de sus variantes a la vez mezcla sus fotos."
+                              >
+                                <Loader2 size={13} className="shrink-0 animate-spin" />
+                                <span className="truncate">
+                                  Esperando a <span className="font-mono">{bloqueo}</span>
+                                </span>
+                              </div>
                             )}
                             {prog && (
                               <div
@@ -741,6 +953,10 @@ export default function CrearProductosPage() {
                         {esPadre ? (
                           <span className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-bold text-violet-700">
                             <Layers size={13} /> Padre
+                          </span>
+                        ) : esVariante ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-white px-2.5 py-1 text-xs font-semibold text-violet-600">
+                            <Split size={13} /> Variante
                           </span>
                         ) : (
                           <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-semibold text-slate-500">
@@ -882,6 +1098,20 @@ export default function CrearProductosPage() {
                                 ))}
                               </tbody>
                             </table>
+                            {/* Qué pasa con las fotos de estas variantes al crear el
+                                padre. Apify trae UNA lista plana de ~6 fotos sin
+                                color, así que la regla es por familia, no por foto. */}
+                            {/* Sólo en un padre VARIABLE de Woo: los grupos «padre»
+                                que arma el backend juntando productos simples por
+                                prefijo (33 de 4,249 el 17-sep, p. ej. VEH-0173) no
+                                tienen variaciones y ninguna leyenda sería cierta. */}
+                            {p.tipo === "variable" && (
+                              <p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400">
+                                {fotosAVariantes
+                                  ? "Al crear este padre, sus fotos de Alibaba se guardan en las variantes que no tengan fotos propias."
+                                  : "Las variantes publican las fotos del padre mientras no tengan propias."}
+                              </p>
+                            )}
                           </div>
                         </td>
                       </tr>

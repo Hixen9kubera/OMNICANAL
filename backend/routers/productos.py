@@ -540,6 +540,9 @@ async def config_estudio():
         # La pantalla decide con esto si pinta la galería por variante; el
         # servidor manda igual (con el flag apagado las rutas nuevas dan 409).
         "galeria_variante": bool(settings.galeria_variante),
+        # Crear lo usa para explicar qué pasa con las fotos de las variantes al
+        # crear un padre (ver `config.crear_fotos_a_variantes`).
+        "crear_fotos_a_variantes": bool(settings.crear_fotos_a_variantes),
         "agrupada_habilitada": list(modo_publicacion.AGRUPADA_HABILITADA),
         "modo_por_omision": modo_publicacion.POR_OMISION,
         "modo_disponible": modo_publicacion.disponible(),

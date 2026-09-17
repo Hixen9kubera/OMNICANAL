@@ -118,6 +118,19 @@ class Settings(BaseSettings):
     # variable, sin deploy. Ver `services/imagenes_variante.py`.
     galeria_variante: bool = False
 
+    # FOTOS DEL PADRE A SUS VARIANTES AL CREAR (17-sep-2026). Apify devuelve
+    # UNA lista plana de ~6 fotos por URL de Alibaba, sin fotos por color: al
+    # procesar un PADRE en Crear, esas fotos sólo llegan a su portada y
+    # galería, y las hijas publican lo que hereden (principal + padre sin lo de
+    # hermanas). Con `true`, tras el PUT del padre se COPIAN a la
+    # `_kubera_galeria` de cada hija que no tenga fotos propias (o que tenga la
+    # copia intacta de una corrida anterior); la que ya tiene fotos —VEH-0316:
+    # cada variante es otro producto con su propia URL— NO se toca, ni se toca
+    # ningún `_thumbnail_id`. Nace APAGADA porque escribe en N variaciones por
+    # alta: es un flujo vivo y lleva el dale de Brandon. No depende de
+    # GALERIA_VARIANTE. Ver `imagenes_variante.plan_fotos_padre`.
+    crear_fotos_a_variantes: bool = False
+
     # ── IA ────────────────────────────────────────────────────
     anthropic_api_key: str = ""
     gemini_api_key: str = ""

@@ -555,27 +555,49 @@ async def _run(sku: str, parent_id: int | None, variante: bool = False) -> None:
     # Un ÚNICO PUT que reemplaza todos los IDs viejos por los nuevos (evita la
     # race condition de escrituras paralelas descrita en el flujo de WooCommerce).
     elif id_map and parent_id:
+        from services import imagenes_variante
         job["paso_global"] = "Actualizando galería en WooCommerce…"
         _touch(sku)
-        try:
-            await woocommerce.reemplazar_imagenes_galeria(int(parent_id), id_map)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("reemplazar galería %s: %s", sku, exc)
-        # A2 · Con GALERIA_VARIANTE, las hijas que ya ADOPTARON una foto del
-        # padre la tienen copiada en su `_kubera_galeria`, que la rama de arriba
-        # no conoce: seguirían publicando la original sin editar. Se propagan
-        # los ids SÓLO en las hijas que tengan alguno (cada una bajo su candado);
-        # la miniatura de las hijas ya la cambió `reemplazar_imagenes_galeria` y
-        # no se vuelve a escribir. Va DESPUÉS y no en paralelo: así la relectura
-        # de cada hija ya ve su miniatura nueva. Flag apagado: no se llama.
-        if settings.galeria_variante:
-            from services import imagenes_variante
+        # Lectura previa, reemplazo y propagación a las hijas van bajo
+        # `candado(padre)`, el mismo de quitar/agregar en el Estudio y de la copia
+        # de Crear: una escritura colada entre la lista "antes" y la
+        # sincronización dejaba copias que ya no casaban con ninguna lista futura
+        # (revisión del 17-sep-2026). La IA ya terminó: sólo cubre escrituras.
+        async with imagenes_variante.candado(int(parent_id)):
+            # La lista del padre ANTES de escribir: con ella `sincronizar_copias`
+            # reconoce qué hijas guardan una copia intacta (ver más abajo). None si
+            # la base no contesta → no se sincroniza, pero la edición sigue.
+            lista_antes = await imagenes_variante.leer_fotos_padre(int(parent_id))
+            try:
+                await woocommerce.reemplazar_imagenes_galeria(int(parent_id), id_map)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reemplazar galería %s: %s", sku, exc)
+            # A2 · Las hijas que tienen una foto del padre copiada en su
+            # `_kubera_galeria` (adoptada en el Estudio, o la copia de Crear con
+            # CREAR_FOTOS_A_VARIANTES) no las conoce la rama de arriba: seguirían
+            # publicando la original sin editar. Se propagan los ids SÓLO en las
+            # hijas que tengan alguno (cada una bajo su candado); la miniatura de
+            # las hijas ya la cambió `reemplazar_imagenes_galeria` y no se vuelve a
+            # escribir. Va DESPUÉS y no en paralelo: así la relectura de cada hija
+            # ya ve su miniatura nueva.
+            #
+            # Ya NO depende de GALERIA_VARIANTE (17-sep-2026): la copia de Crear
+            # existe con ese flag apagado, y sin hijas con la meta esto es una
+            # lectura y nada más.
             try:
                 job["hijas_galeria"] = await imagenes_variante.reemplazar_en_hijas(
                     int(parent_id), id_map)
             except Exception as exc:  # noqa: BLE001
                 log.warning("galería de hijas %s: %s", sku, exc)
                 job["hijas_galeria"] = {"error": str(exc)}
+            # C4 · Si la lista del padre cambió de otra forma que un reemplazo en su
+            # lugar (p. ej. Woo no aceptó un id y lo quitó), las copias intactas se
+            # rehacen con la lista releída. Tras `reemplazar_en_hijas` lo normal es
+            # que no quede ninguna por tocar. Nunca lanza.
+            if lista_antes is not None:
+                lista_despues = await imagenes_variante.leer_fotos_padre(int(parent_id))
+                job["hijas_sincronizadas"] = await imagenes_variante.sincronizar_copias(
+                    int(parent_id), lista_antes, lista_despues)
 
     errores = sum(1 for i in job["imagenes"] if i["estado"] == "error")
     job["estado"] = "completado"

@@ -974,6 +974,119 @@ async def _guardar_titulo_variante(sku: str, titulo: str, descripcion: str) -> N
         log.warning("título de la variante %s no se pudo guardar: %s", sku, exc)
 
 
+async def _galeria_propia_si_existe(sku: str, wc_id: int,
+                                    galeria: list[int]) -> list[dict[str, Any]]:
+    """
+    El `meta_data` para dejar `_kubera_galeria` = la galería de Crear de esta
+    variante, SÓLO si la meta ya existe (0 filas hoy: la crean el Estudio con
+    GALERIA_VARIANTE y la copia de CREAR_FOTOS_A_VARIANTES). Si no existe no se
+    crea: la variante sigue leyendo su `_product_image_gallery` como siempre.
+
+    Filas leídas de MySQL (sin caché) y el id de la meta con `_cb` (regla 5,
+    `imagenes_variante._meta_galeria`). Si la base no contesta se sigue sin
+    ella y queda en el log: el alta no se detiene por esto.
+    """
+    from services import imagenes_variante
+
+    try:
+        filas = await asyncio.to_thread(imagenes_variante._filas_galeria, int(wc_id))  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        log.warning("crear[%s]: no se pudo leer _kubera_galeria: %s", sku, exc)
+        return []
+    if not filas:
+        return []
+    ruta = await woocommerce.ruta_escritura(int(wc_id))
+    async with woocommerce._client() as cli:  # noqa: SLF001
+        return await imagenes_variante._meta_galeria(  # noqa: SLF001
+            cli, ruta, ",".join(str(i) for i in galeria))
+
+
+def _en_crear() -> tuple[set[int], set[str]]:
+    """
+    (wc_ids, skus) de lo que está en cola o procesándose en Crear AHORA.
+
+    Lo usa la copia de fotos del padre para no escribirle a una variante cuyo
+    alta va en camino (revisión del 17-sep-2026, probado con dobles): con el
+    control «Por padre | Por variante» se puede encolar VEH-0316-HCR-9601 y a
+    su padre en el mismo minuto, `_sem` deja correr a los dos, y si el padre
+    terminaba primero la variante —aún sin `_crear_procesada_at`— recibía las
+    fotos del padre, que son de otro producto. Se llama desde la corrutina:
+    `_progreso` lo muta el event loop y no se itera desde un hilo.
+    """
+    ids: set[int] = set()
+    skus: set[str] = set()
+    for it in list(_progreso.values()):
+        if it.get("estado") in ("en_cola", "procesando"):
+            skus.add(str(it.get("sku") or ""))
+            try:
+                if it.get("wc_id"):
+                    ids.add(int(it["wc_id"]))
+            except (TypeError, ValueError):
+                pass
+    skus.discard("")
+    return ids, skus
+
+
+async def _fotos_a_variantes(sku: str, wc_id: int, wc_prod: dict[str, Any] | None,
+                             fotos_antes: list[int] | None) -> None:
+    """
+    Paso de bitácora tras el PUT del PADRE: sus fotos (portada + galería, los
+    ids que Woo ya descargó) se guardan en la `_kubera_galeria` de las hijas
+    sin fotos propias o con la copia intacta de una corrida anterior. Las que
+    ya tienen fotos —VEH-0316: cada variante es otro producto con su URL— no
+    se tocan, ni el `_thumbnail_id` de ninguna.
+
+    Tampoco se copia a NINGUNA si la familia se trabaja por variante (alguna
+    hija procesada sola o en Crear): ver `imagenes_variante._decidir`.
+
+    Corre con `candado(padre)` tomado por quien llama desde antes de leer
+    `fotos_antes`: una edición del padre en el Estudio a media copia dejaría a
+    las hijas con una lista vieja.
+
+    NUNCA marca el alta como fallida: el padre ya quedó escrito con sus fotos y
+    las hijas siguen publicando lo heredado. El fallo queda en la bitácora
+    (mismo `_set` que los demás pasos) y en el log.
+    """
+    from services import imagenes_variante
+
+    if fotos_antes is None:
+        _set(sku, "procesando", "Fotos del padre: no se guardaron en las variantes "
+                                "(la base de WordPress no contestó)", wc_id=wc_id)
+        return
+    # Los ids del PUT: `images[]` del producto, portada primero. Si la
+    # respuesta no los trae, `copiar_fotos_padre` relee MySQL.
+    ids_put = [int(i["id"]) for i in ((wc_prod or {}).get("images") or [])
+               if isinstance(i, dict) and str(i.get("id") or "").isdigit() and int(i["id"]) > 0]
+    _set(sku, "procesando", "Guardando las fotos del padre en sus variantes…", wc_id=wc_id)
+    try:
+        r = await imagenes_variante.copiar_fotos_padre(wc_id, fotos_antes, ids_put or None,
+                                                       en_crear=_en_crear)
+    except Exception as exc:  # noqa: BLE001 — copiar_fotos_padre no lanza; por si acaso
+        log.warning("crear[%s]: fotos a variantes falló: %s", sku, exc)
+        r = {"error": str(exc)}
+    if r.get("error"):
+        _set(sku, "procesando",
+             f"Fotos del padre: no se guardaron en las variantes ({r['error']})"[:255],
+             wc_id=wc_id)
+        return
+    n = int(r.get("copiadas") or 0) + int(r.get("actualizadas") or 0)
+    paso = (f"Fotos del padre guardadas en {n} variantes "
+            f"({int(r.get('con_fotos_propias') or 0)} con fotos propias no se tocaron)")
+    fallidas = [d.get("sku") or d.get("wc_id") for d in r.get("detalle") or []
+                if d.get("accion") == "fallida"]
+    if r.get("familia_por_variante"):
+        paso += f" · familia trabajada por variante ({r['familia_por_variante']}): no se copió"
+    if fallidas:
+        paso += f" · {len(fallidas)} no se pudieron guardar"
+    # El detalle por hija NO viaja completo: `_persistir_log` trunca a 4 KB y
+    # una familia de 30 tallas lo rompería. Van los conteos y quién falló.
+    _set(sku, "procesando", paso, wc_id=wc_id,
+         fotos_variantes={k: r.get(k) for k in ("hijas", "copiadas", "actualizadas",
+                                                "omitidas", "con_fotos_propias",
+                                                "fallidas", "familia_por_variante")},
+         fotos_variantes_fallidas=fallidas[:20])
+
+
 async def _procesar(sku: str, wc_id: int | None, url: str,
                     permitir_sin_costo: bool = False) -> None:
     async with _sem:
@@ -1065,6 +1178,8 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                                  or scrape["descripcion_proveedor"] or "")
 
             payload: dict[str, Any] = {"meta_data": meta}
+            # Galería que Crear le deja a una VARIANTE (None = no trajo fotos).
+            galeria_variante: list[int] | None = None
             if descripcion_final:
                 payload["description"] = descripcion_final
 
@@ -1085,6 +1200,7 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 if imagenes:
                     payload["image"] = imagenes[0]
                     ids_extra = await _medios_para_galeria(sku, imagenes[1:])
+                    galeria_variante = list(ids_extra or [])
                     if ids_extra:
                         meta.append({"key": "_product_image_gallery",
                                      "value": ",".join(str(i) for i in ids_extra)})
@@ -1137,7 +1253,50 @@ async def _procesar(sku: str, wc_id: int | None, url: str,
                 meta.append({"key": "ml_atributos", "value": json.dumps(atributos, ensure_ascii=False)})
             payload["meta_data"] = meta
 
-            wc_prod = await _actualizar_wc(wc_id, payload)
+            # FOTOS DEL PADRE A SUS VARIANTES (CREAR_FOTOS_A_VARIANTES). Sólo al
+            # procesar un PADRE con hijas vivas y fotos nuevas: Apify da UNA lista
+            # plana sin fotos por color, así que lo único que se puede hacer con
+            # las variantes es darles la del padre. La lista del padre se lee
+            # ANTES del PUT: con ella se reconoce qué hijas guardan la copia
+            # intacta de una corrida anterior (ver `imagenes_variante._decidir`).
+            #
+            # Lectura previa, PUT y copia van bajo `candado(padre)` (revisión del
+            # 17-sep-2026): el mismo que toman las ediciones de la galería del
+            # padre en el Estudio, para que ninguna se cuele entre la lista
+            # "antes" y la copia. Va ANTES de pasar a `pending` y de registrar el
+            # nacimiento: si el contenedor se reinicia a media copia, el padre
+            # sigue en draft y vuelve a Crear, y la corrida siguiente reconoce
+            # las copias intactas; al revés quedaba en `pending` sin acta.
+            hijas_padre: list[int] = []
+            if settings.crear_fotos_a_variantes and not padre_id and imagenes:
+                from services import imagenes_variante
+                try:
+                    hijas_padre = await asyncio.to_thread(
+                        imagenes_variante.hijas_vivas, int(wc_id))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("crear[%s]: no se pudo leer a las variantes: %s", sku, exc)
+
+            if hijas_padre:
+                from services import imagenes_variante
+                async with imagenes_variante.candado(int(wc_id)):
+                    fotos_antes = await imagenes_variante.leer_fotos_padre(int(wc_id))
+                    wc_prod = await _actualizar_wc(wc_id, payload)
+                    await _fotos_a_variantes(sku, int(wc_id), wc_prod, fotos_antes)
+            elif padre_id and galeria_variante is not None:
+                # VARIANTE con fotos: bajo SU candado —el mismo de la copia del
+                # padre y del Estudio—, y si ya tiene `_kubera_galeria` (la copia
+                # del padre o una edición) se reescribe en el MISMO PUT con su
+                # galería de Crear. Esa meta MANDA sobre `_product_image_gallery`:
+                # sin esto, una variante que recibió la copia y después se
+                # procesó sola seguía publicando las fotos del padre junto a su
+                # miniatura nueva (revisión del 17-sep-2026, probado con dobles).
+                from services import imagenes_variante
+                async with imagenes_variante.candado(int(wc_id)):
+                    meta.extend(await _galeria_propia_si_existe(sku, int(wc_id),
+                                                                galeria_variante))
+                    wc_prod = await _actualizar_wc(wc_id, payload)
+            else:
+                wc_prod = await _actualizar_wc(wc_id, payload)
 
             # Paso 9: el desenlace SIEMPRE es `pending`.
             # `inprogress` se retiró como resultado posible (4-ago): la vista

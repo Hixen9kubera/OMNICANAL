@@ -33,6 +33,18 @@ quitaba una foto de la variante. Con el marcador:
   • flag encendido y el SKU no es variación → 400;
   • sin base de WordPress → 503 (nunca cae a la rama del padre).
 Sin marcador, todo como antes.
+
+COPIAS DEL PADRE EN LAS HIJAS (17-sep-2026, `_sincronizar_hijas`)
+──────────────────────────────────────────────────────────────────
+Eliminar/agregar por la rama del PADRE responden además `hijas_sincronizadas`:
+las hijas con la copia intacta de su galería en `_kubera_galeria` (la de Crear
+con CREAR_FOTOS_A_VARIANTES) reciben la lista nueva. No depende de
+GALERIA_VARIANTE y nunca vuelve la respuesta un error.
+
+Leer la lista "antes", escribir el padre y sincronizar van bajo
+`imagenes_variante.candado(padre)`: dos borrados seguidos en el Estudio del
+padre se solapaban (el segundo omitía a una hija que el primero aún no
+actualizaba) y la hija quedaba desincronizada para siempre.
 """
 from __future__ import annotations
 
@@ -151,6 +163,33 @@ async def _escribir(sku: str, op: Any, *args: Any) -> dict[str, Any]:
     return res
 
 
+async def _sincronizar_hijas(sku: str, parent_id: int,
+                             lista_antes: list[int] | None) -> dict[str, Any]:
+    """
+    C4 · Tras escribir la galería del PADRE por la rama de siempre: las hijas
+    con la copia INTACTA de sus fotos en `_kubera_galeria` (la de Crear con
+    CREAR_FOTOS_A_VARIANTES, o un sembrado del Estudio) reciben la lista nueva;
+    las que personalizaron o heredan no se tocan. Sin eso, quitar del padre
+    una foto equivocada la dejaba publicándose en todas las hijas copiadas.
+
+    No depende de GALERIA_VARIANTE. Corre siempre sobre `parent_id`, también
+    cuando la rama de siempre resolvió el padre desde una variación (flag
+    apagado): lo que cambió es la galería del padre. Nunca lanza: la escritura
+    del padre ya ocurrió y la respuesta no debe volverse un 500 por esto.
+    """
+    try:
+        despues = (await imagenes_variante.leer_fotos_padre(parent_id)
+                   if lista_antes is not None else None)
+        res = await imagenes_variante.sincronizar_copias(parent_id, lista_antes, despues)
+    except Exception as exc:  # noqa: BLE001 — sincronizar_copias no lanza; por si acaso
+        log.warning("sincronizar hijas %s (%s): %s", sku, parent_id, exc)
+        return {"padre": parent_id, "error": str(exc)}
+    if res.get("actualizadas") or res.get("fallidas"):
+        log.info("galería de %s (padre %s): %s copia(s) de hijas actualizadas, %s fallida(s)",
+                 sku, parent_id, res.get("actualizadas"), res.get("fallidas"))
+    return res
+
+
 # ── Rutas ────────────────────────────────────────────────────────────────────
 
 async def galeria(sku: str, wc_id: int | None = Query(None)):
@@ -236,10 +275,13 @@ async def eliminar(sku: str, req: EliminarReq):
     parent_id = (g or {}).get("parent_id") or req.wc_id
     if not parent_id:
         raise HTTPException(400, "No se pudo resolver el producto en WooCommerce.")
-    ok = await woocommerce.eliminar_imagen_galeria(int(parent_id), req.image_id)
-    if not ok:
-        raise HTTPException(502, "No se pudo eliminar la imagen en WooCommerce.")
-    return {"ok": True, "image_id": req.image_id}
+    async with imagenes_variante.candado(int(parent_id)):
+        lista_antes = await imagenes_variante.leer_fotos_padre(int(parent_id))
+        ok = await woocommerce.eliminar_imagen_galeria(int(parent_id), req.image_id)
+        if not ok:
+            raise HTTPException(502, "No se pudo eliminar la imagen en WooCommerce.")
+        sincronizadas = await _sincronizar_hijas(sku, int(parent_id), lista_antes)
+    return {"ok": True, "image_id": req.image_id, "hijas_sincronizadas": sincronizadas}
 
 
 async def _subir_a_media(sku: str, imagenes: list[ImagenNueva]) -> list[int]:
@@ -286,8 +328,12 @@ async def agregar(sku: str, req: AgregarReq):
     media_ids = await _subir_a_media(sku, req.imagenes)
     if not media_ids:
         raise HTTPException(502, "No se pudo subir ninguna imagen a WordPress.")
-    imagenes = await woocommerce.agregar_imagenes_galeria(int(parent_id), media_ids)
-    return {"ok": True, "agregadas": len(media_ids), "imagenes": imagenes}
+    async with imagenes_variante.candado(int(parent_id)):
+        lista_antes = await imagenes_variante.leer_fotos_padre(int(parent_id))
+        imagenes = await woocommerce.agregar_imagenes_galeria(int(parent_id), media_ids)
+        sincronizadas = await _sincronizar_hijas(sku, int(parent_id), lista_antes)
+    return {"ok": True, "agregadas": len(media_ids), "imagenes": imagenes,
+            "hijas_sincronizadas": sincronizadas}
 
 
 @router.post("/{sku:path}/principal")
