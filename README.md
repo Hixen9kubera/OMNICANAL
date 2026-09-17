@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.527.0 — La guía de TikTok se veía en el panel y Odoo seguía vacío
+
+Brandon, 17-sep: *"sí se jalan las guías de TikTok pero no se están guardando en
+Odoo"*. Medido: S38736 y S38775 confirmadas, con su guía (`JMX500893448414`,
+`JMX500895208241`, J&T MX) en la bitácora —que es lo que pinta el panel— y en
+Odoo **sin rastreo en la entrega y sin PDF**, las 2 de 2.
+
+**Dos causas, una de código y una de interruptor.**
+
+1. **El código se saltaba la venta entera cuando no había etiqueta que pedir.**
+   En `pedidos_tiktok._refrescar_guias`, `shipping_type != "TIKTOK"` (envío del
+   VENDEDOR, que TikTok no etiqueta: 11034002/21008017) y `sin paquete` hacían
+   `continue` ANTES de escribir nada. Pero el NÚMERO de guía viene en la orden
+   igual, y a la entrega le faltaba. Ahora esas dos ramas encolan la venta con
+   prioridad "sólo guía" (sin pedir etiqueta) si su entrega no tiene rastreo: la
+   etiqueta es de TikTok, el número es de quien lo tenga. Los motivos se siguen
+   contando y la memoria sigue recordando que ahí no hay etiqueta.
+2. **`TIKTOK_GUIAS_ENABLED` estaba en `false`** — nació apagada a propósito
+   (regla 3) y TikTok no tenía ventas cuando se construyó. Se enciende con este
+   cambio, que es justo lo que pidió Brandon.
+
+Probado sin red con los dos casos reales (envío del vendedor con guía, y envío de
+TikTok sin paquete con guía): el número llega a la entrega, no se pide etiqueta
+donde no aplica y la bitácora sólo se toca cuando hay guía. **Control**: la misma
+prueba sobre el código anterior falla en 4 puntos. Las suites previas siguen en
+verde (225 + 130 + 114 y la de guías del día).
+
 ### v0.526.0 — Flujo del SKU en Omnicanal: la etapa como filtro y un sello por producto (detrás de `INVENTARIO_FLUJO_ENABLED`)
 
 Eduardo, 14–17-sep-2026: *"un Flujo donde tener una barra donde podamos ver qué SKUs

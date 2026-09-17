@@ -504,8 +504,15 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
                 _recordar(oid, "estado_cancelled")
             continue
         if f["shipping_type"] != "TIKTOK":
+            # ENVÍO DEL VENDEDOR: TikTok no entrega etiqueta (11034002/21008017),
+            # pero el NÚMERO sí puede venir en la orden. Antes se saltaba la venta
+            # entera y la entrega se quedaba sin rastreo para siempre: es lo que
+            # pasó con S38736 y S38775 (17-sep), con su guía visible en el panel y
+            # Odoo vacío. La etiqueta es de TikTok; el número, de quien lo tenga.
             _contar(r, "motivos", "envio_no_tiktok")
             _recordar(oid, "envio_no_tiktok")
+            if item.get("pickings") and f["guia"]:
+                trabajo.append((_PRIORIDAD_SOLO_GUIA, n, item, f, False))
             continue
         solo_guia = bool(item.get("pickings") and f["guia"])
         if st in _ESTADOS_RECOLECTADOS:
@@ -517,7 +524,11 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
                 _recordar(oid, f"estado_{st.lower()}")
             continue
         if not f["paquetes"]:
+            # Sin paquete no hay etiqueta que pedir, pero el número puede existir
+            # igual (mismo caso que el envío del vendedor).
             _contar(r, "motivos", "sin_paquete")
+            if item.get("pickings") and f["guia"]:
+                trabajo.append((_PRIORIDAD_SOLO_GUIA, n, item, f, False))
             continue
         rec = None if solo_ids is not None else _recordado(oid)
         if rec:
