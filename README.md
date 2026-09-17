@@ -1016,7 +1016,7 @@ vez que se procese el padre en crear productos, las imágenes que se recuperan d
   UNA URL de Alibaba para toda la familia.
 - **Por variante**: una fila por variante, cada una con su propia URL, su insignia
   «Variante» y «Variante · N hermanas pendientes». Es para familias donde cada
-  variante es otro producto (VEH-0316: 19 kits de faros distintos). Pide la lista con
+  variante es otro producto (VEH-0316: 19 bombas de dirección, una por modelo de auto). Pide la lista con
   `aplanar: true`, que ya existía en el backend.
 - La elección se recuerda por navegador (`omnicanal:crear:modo`, con try/catch) y la
   tabla no se pinta hasta leerla, para no pedir dos veces. Cambiar de modo regresa a la
