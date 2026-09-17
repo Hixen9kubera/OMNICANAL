@@ -1079,7 +1079,8 @@ Topes en todas las respuestas (50 por omisión, 500 máximo) y **aviso explícit
 cuando se cortan**: truncar en silencio es cómo se saca una conclusión de media
 tabla creyendo que era la tabla entera.
 
-Config de despliegue en `backend/railway.mcp-research.json`. Detalle completo,
+Desplegado en Railway como el servicio `mcp-research` (la config vive ahí, no
+en un archivo del repo: Config-as-Code está deprecado). Detalle completo,
 mediciones y cómo conectarlo: `backend/mcp_research/README.md`.
 
 ### v0.531.0 — El sello se abre: la evidencia del flujo, por SKU, en una tarjeta

@@ -114,17 +114,35 @@ una llave compartida no se puede revocar por persona — cortarle el acceso a
 alguien obliga a rotarla para todos. El día que eso estorbe, es añadir una
 llave a la lista, no rehacer el servidor.
 
-## Desplegar en Railway
+## Desplegado en Railway
 
-`backend/railway.mcp-research.json` deja el servicio listo: `rootDirectory` =
-`backend`, y arranca con el transporte http. **Falta crear el servicio y darle
-las variables** — eso no se hizo sin el dale de Brandon.
+Servicio **`mcp-research`** en el proyecto `Hixen9Proyects`, entorno
+`production`, desplegado el 17-sep-2026. Auto-deploy desde `main` como el resto.
 
-Un detalle del build: Nixpacks instala solo `backend/requirements.txt` en la
-fase de instalación, y el `buildCommand` mete después el del MCP. El resultado
-es una imagen donde `fastapi` queda con una versión de starlette que no le
-sirve — **da igual, este servicio nunca lo importa**, pero conviene saberlo
-antes de asustarse con el aviso de pip en el log.
+| Ajuste | Valor |
+|---|---|
+| `rootDirectory` | `backend` |
+| `buildCommand` | `pip install -r mcp_research/requirements.txt` |
+| `startCommand` | `python -m mcp_research.server --transport http --host 0.0.0.0 --port $PORT` |
+| `healthcheckPath` | `/salud` |
+| `watchPatterns` | `backend/mcp_research/**`, `config.py`, `services/odoo.py`, `services/supabase_db.py` |
+
+⚠️ **La configuración vive en Railway, NO en un archivo del repo.** Se intentó
+con `backend/railway.mcp-research.json` y Railway lo rechazó: *"Config as Code
+(railway.json / railway.toml) is deprecated. Use Infrastructure as Code
+(.railway/railway.ts) instead."* El archivo se borró en vez de dejarlo ahí
+pareciendo vivo — un config que nadie lee es cómo se cree haber cambiado algo
+que sigue igual (la misma lección que el cron de `deltas-orders`, que siguió
+corriendo dos commits después de su "retiro"). Los `railway.*.json` de los otros
+servicios están en esa misma situación: siguen en el repo y ya no mandan.
+
+Las credenciales NO están copiadas: son **referencias** a las del backend
+(`${{BackendOmnicanal.SUPABASE_DB_URL}}`, `ODOO_*`). Si se rota la contraseña de
+Odoo o el DSN, este servicio la sigue solo. La única variable propia es
+`MCP_AUTH_TOKEN`.
+
+`watchPatterns` evita que cada cambio del backend reconstruya el MCP: sólo lo
+rebuildean sus propios archivos y los tres módulos que importa.
 
 ---
 
