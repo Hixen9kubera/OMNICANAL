@@ -224,6 +224,7 @@ export function sufijoCuenta(
 export function textoVariantes(v: ResumenVariantesFlujo): string {
   const partes: string[] = [];
   if (v.en_full) partes.push(`${v.en_full} En FULL`);
+  if (v.en_fba) partes.push(`${v.en_fba} En FBA`);
   if (v.en_drop) partes.push(`${v.en_drop} En DROP`);
   if (v.bodega_3de4) partes.push(`${v.bodega_3de4} 3 de 4`);
   if (v.recibido) partes.push(`${v.recibido} Recibido`);
@@ -289,6 +290,15 @@ export const NOTA_ETAPA: Record<string, NotaEtapa> = {
       + "4 de 4. El costo no cuenta.",
     fuente: "Cruce de costos validados (kubera) con la foto de Odoo.",
     clic: "No filtra: está bloqueado mientras specs no tenga definición.",
+  },
+  en_fba: {
+    que: "SKUs con stock en FBA, la bodega de Amazon.",
+    fuente: "Publicaciones de Amazon en kubera (sincronizadas cada 15 min): "
+      + "stock FBA mayor a 0.",
+    clic: "Filtra el catálogo a esos SKUs.",
+    ojo: "FBA no es FULL: son bodegas distintas y se cuentan aparte. Walmart "
+      + "WFS no aparece porque no hay dato para contarlo, y TikTok y Temu "
+      + "despachan desde nuestro almacén.",
   },
   en_full: {
     que: "SKUs con stock en FULL de Mercado Libre, en cualquiera de las dos "

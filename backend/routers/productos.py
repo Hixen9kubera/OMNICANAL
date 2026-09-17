@@ -128,7 +128,13 @@ _SUFIJO_REVISADO = (" Quita el filtro Costo validado para seguir viendo el "
 
 def _validar_etapa(etapa: str | None) -> str | None:
     """400 ANTES de cualquier I/O: una etapa que no existe no merece una
-    consulta. Cada rechazo dice por qué y a dónde ir."""
+    consulta. Cada rechazo dice por qué y a dónde ir.
+
+    NO se rechaza pedir la bodega de otro canal (`en_fba` desde TikTok): la
+    lista existe y es honesta —esos SKUs están en FBA— y cerrarla rompería a
+    quien ya llama la API con su propia combinación. Qué segmento se PINTA en
+    cada pestaña lo decide `BODEGA_DEL_CANAL`, que es una decisión de pantalla,
+    no del contrato."""
     if etapa is None:
         return None
     e = etapa.strip()

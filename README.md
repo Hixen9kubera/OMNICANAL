@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.530.0 — La bodega del marketplace es de cada canal: FULL en ML, FBA en Amazon, y donde no hay, no se pinta
+
+Eduardo, 17-sep-2026, viendo «EN FULL (ML)» en la pestaña de TikTok: *"adapta el
+filtro para que en canales donde no haya full cambie su nombre correspondiente,
+por ejemplo amazon fba y cosas así; si no tiene, no debería por qué aparecer"*.
+
+**Qué se pinta en cada pestaña**
+
+| Pestaña | Segmento | Regla |
+|---|---|---|
+| Mercado Libre | En FULL | `stock_full > 0` en ML |
+| General | En FULL (ML) | lo mismo, con el dueño en la etiqueta porque mezcla canales |
+| Amazon | **En FBA** (nuevo) | `stock_fba > 0` en Amazon |
+| TikTok · Temu · Walmart | ninguno | no tienen bodega del marketplace que se pueda contar |
+
+Walmart WFS no se pinta porque NO HAY DATO: medido el 17-sep, sus 235 filas de
+`channel.listings` no traen stock ni logística. Un cero ahí se leería como
+«ninguno» cuando lo cierto es «no se mide». TikTok y Temu despachan desde nuestro
+almacén.
+
+**Backend**
+
+- `_SQL_KUBERA` gana el conjunto `en_fba` (Amazon con `stock_fba > 0`) en la misma
+  consulta y la misma vuelta de la foto: no cuesta una lectura más.
+- Etapa nueva `en_fba` con su ficha (`_META`), sus dos desgloses —cumple 3 de 4 y
+  fuera de Odoo— y su lista filtrable: `GET /api/productos?etapa=en_fba`.
+- `BODEGA_DEL_CANAL` decide qué segmento manda `/api/inventario/flujo/canal` en
+  cada pestaña. `/api/inventario/flujo` (la vista del catálogo) las trae las dos.
+- El sello de la fila trae `destino.fba` y, en la pestaña de Amazon, el texto
+  empieza por SU bodega: «En FBA», y «En FBA · también FULL (ML)» cuando el SKU
+  está en las dos. Fuera de Amazon dice «En FBA (Amazon)», para que no se lea como
+  bodega de la pestaña en la que estás.
+- Lo que NO cambia: pedir `etapa=en_fba` desde otra pestaña sigue contestando 200.
+  La lista existe y es honesta; qué segmento se PINTA es una decisión de pantalla,
+  no del contrato.
+
+**Cifras del sandbox (17-sep):** Amazon 23 SKUs en FBA (22 publicados), Mercado
+Libre 429 en FULL, y ni un segmento de bodega en TikTok, Temu y Walmart.
+
+225 pruebas OK (4 nuevas: qué pinta cada canal, el orden del segmento, los
+canales sin bodega y el texto del sello), `tsc` y `next build` limpios.
+
 ### v0.529.0 — El detalle del producto ya no congela el backend (regla 11)
 
 El vigilante del event loop cachó dos veces al backend de producción PARADO el

@@ -435,6 +435,9 @@ def _kubera_filas(n: int = 100) -> list[dict]:
         sku = f"SKU-{i:04d}-NEG"
         filas.append({"sku": sku, "recibido": i <= 60,
                       "costo_validado": i <= 5, "en_full": 50 < i <= 70,
+                      # FBA es la bodega de Amazon: 68–72 para que 68–70 estén
+                      # en las DOS y se vea cuál gana en el sello.
+                      "en_fba": 67 < i <= 72,
                       "con_renglon": i <= 80,
                       "wc_id": 1000 + i, "wc_parent_id": hijos.get(sku)})
     filas.append({"sku": "ROP-0695-BEI-m", "recibido": True,
@@ -945,9 +948,12 @@ class ContratoSkus(_ConParches):
         invf._foto = _foto()
         resp = self.c.get("/api/inventario/flujo").json()
         self.assertEqual(resp["estado"], "listo")
+        # `en_fba` (la bodega de Amazon) entra aquí desde el 17-sep: /flujo es la
+        # vista del CATÁLOGO y las dos bodegas existen en él. Quién se pinta en
+        # cada pestaña lo decide `/flujo/canal`, no esta lista.
         self.assertEqual([e["clave"] for e in resp["etapas"]],
                          ["recibido", "validado_bodega", "listo_envio", "en_full",
-                          "en_drop", "restock"])
+                          "en_fba", "en_drop", "restock"])
         for e in resp["etapas"] + [resp["carril"]]:
             self.assertTrue(e["falta"], e["clave"])
             self.assertTrue(e["definicion"], e["clave"])

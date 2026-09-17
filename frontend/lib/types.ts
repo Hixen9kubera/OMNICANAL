@@ -2195,7 +2195,7 @@ export interface InventarioResp {
 
 export type ClaveFlujo =
   | "recibido" | "validado_bodega" | "bodega_3de4" | "listo_envio"
-  | "en_full" | "en_drop" | "restock" | "costo_validado";
+  | "en_full" | "en_fba" | "en_drop" | "restock" | "costo_validado";
 
 /** `n: null` = sin dato; `0` = se midió y da cero. No son lo mismo. */
 export type EstadoFlujo = "medido" | "proxy" | "bloqueado" | "por_definir" | "sin_dato";
@@ -2225,7 +2225,8 @@ export interface FuenteFlujo {
 /** Las cuatro etapas que el backend sabe convertir en lista (`etapa=`).
  *  `validado_bodega`, `listo_envio` y `restock` están vacías por construcción:
  *  se pintan, no se filtran. */
-export type EtapaOmnicanal = "recibido" | "bodega_3de4" | "en_full" | "en_drop";
+export type EtapaOmnicanal =
+  | "recibido" | "bodega_3de4" | "en_full" | "en_fba" | "en_drop";
 
 /** Cuadro del sello. `na` = la pregunta no aplica (un padre no se recibe);
  *  `sin_dato` = la fuente no respondió. Ninguno de los dos culpa al producto,
@@ -2235,7 +2236,7 @@ export type EstadoCuadroFlujo = "listo" | "falta" | "espera" | "na" | "sin_dato"
 /** La etapa que gana en el sello, en el orden del backend. `ninguna` solo se
  *  emite con las tres fuentes utilizables; si alguna cayó, es `sin_dato`. */
 export type EtapaSello =
-  | "padre" | "en_full_y_drop" | "en_full" | "en_drop" | "listo_envio"
+  | "padre" | "en_full_y_drop" | "en_full" | "en_fba" | "en_drop" | "listo_envio"
   | "validado_bodega" | "bodega_3de4" | "recibido" | "ninguna" | "sin_dato";
 
 /** Resumen de las variantes de un padre, por PERTENENCIA a cada lista de la
@@ -2245,6 +2246,8 @@ export interface ResumenVariantesFlujo {
   recibido: number;
   bodega_3de4: number;
   en_full: number;
+  /** Amazon con stock en FBA: su bodega, que NO es FULL. */
+  en_fba: number;
   en_drop: number;
   sin_dato: number;
 }

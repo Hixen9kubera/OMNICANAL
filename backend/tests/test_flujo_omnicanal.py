@@ -319,7 +319,7 @@ class SelloPuro(_Base):
         self.assertEqual(s["pasos"]["bodega"]["ubicacion"], "na")
         self.assertEqual(s["variantes"],
                          {"total": 2, "recibido": 2, "bodega_3de4": 2,
-                          "en_full": 0, "en_drop": 1, "sin_dato": 0})
+                          "en_full": 0, "en_fba": 0, "en_drop": 1, "sin_dato": 0})
         self.assertTrue(s["etapa_texto"].startswith("Padre · "))
         self.assertIn("de 2", s["etapa_texto"])
 
@@ -337,7 +337,7 @@ class SelloPuro(_Base):
         sellos = [self._sello(f"SKU-{i:04d}-NEG") for i in (2, 30, 55, 90)]
         self.assertEqual(invf.resumen_variantes(sellos),
                          {"total": 4, "recibido": 3, "bodega_3de4": 2,
-                          "en_full": 1, "en_drop": 1, "sin_dato": 0})
+                          "en_full": 1, "en_fba": 0, "en_drop": 1, "sin_dato": 0})
 
     def test_le_falta_nunca_habla_de_destino_costo_ni_restock(self):
         prohibidas = ("costo", "precio", "flete", "margen", "FULL", "DROP",
@@ -420,6 +420,58 @@ def _etapa(resp, clave):
     if resp["carril"]["clave"] == clave:
         return resp["carril"]
     return next(e for e in resp["etapas"] if e["clave"] == clave)
+
+
+class BodegaDelCanal(_Base):
+    """Cada pestaña pinta SU bodega del marketplace, o ninguna (Eduardo, 17-sep).
+
+    FULL es de Mercado Libre y FBA de Amazon: son bodegas distintas, con dato
+    distinto. TikTok y Temu despachan de nuestro almacén y de Walmart WFS no hay
+    dato, así que ahí el segmento no existe — un cero se leería como «ninguno»
+    cuando lo cierto es «no se mide»."""
+
+    def _claves(self, canal):
+        return [e["clave"] for e in _conteo(canal=canal)["etapas"]]
+
+    def test_ml_y_general_pintan_full(self):
+        for canal in ("mercado_libre", "general"):
+            self.assertIn("en_full", self._claves(canal), canal)
+            self.assertNotIn("en_fba", self._claves(canal), canal)
+
+    def test_amazon_pinta_fba_y_no_full(self):
+        claves = self._claves("amazon")
+        self.assertIn("en_fba", claves)
+        self.assertNotIn("en_full", claves)
+        # Y va en el MISMO lugar del camino que ocupaba FULL: entre Listo y DROP.
+        self.assertEqual(claves.index("en_fba"), claves.index("en_drop") - 1)
+        self.assertEqual(_etapa(_conteo(canal="amazon"), "en_fba")["titulo"], "En FBA")
+
+    def test_los_canales_sin_bodega_no_la_pintan(self):
+        for canal in ("tiktok", "temu", "walmart"):
+            claves = self._claves(canal)
+            self.assertNotIn("en_full", claves, canal)
+            self.assertNotIn("en_fba", claves, canal)
+            # El resto del camino sigue completo: lo que falta es la bodega.
+            self.assertEqual(claves, ["recibido", "bodega_3de4", "validado_bodega",
+                                      "listo_envio", "en_drop", "restock"], canal)
+
+    def test_el_sello_dice_fba_y_full_por_separado(self):
+        # SKU-0071: solo FBA. SKU-0069: en las dos, y gana FULL.
+        solo_fba = invf.sello(_fp(), "SKU-0071-NEG", canal="amazon")
+        self.assertEqual(solo_fba["etapa"], "en_fba")
+        self.assertEqual(solo_fba["etapa_texto"], "En FBA")
+        self.assertIs(solo_fba["pasos"]["destino"]["fba"], True)
+        self.assertIs(solo_fba["pasos"]["destino"]["full"], False)
+        # En las dos bodegas: la etapa la gana FULL, pero en la pestaña de
+        # Amazon el texto empieza por SU bodega y menciona la otra.
+        ambas = invf.sello(_fp(), "SKU-0069-NEG", canal="amazon")
+        self.assertEqual(ambas["etapa"], "en_full")
+        self.assertEqual(ambas["etapa_texto"], "En FBA · también FULL (ML)")
+        self.assertEqual(invf.sello(_fp(), "SKU-0069-NEG",
+                                    canal="mercado_libre")["etapa_texto"], "En FULL")
+        # Fuera de Amazon, «En FBA» lleva de quién es la bodega.
+        fuera = invf.sello(_fp(), "SKU-0071-NEG", canal="tiktok")
+        self.assertEqual(fuera["etapa_texto"], "En FBA (Amazon)")
 
 
 class ConteosCanal(_Base):

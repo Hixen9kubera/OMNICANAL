@@ -283,15 +283,23 @@ export default function FlujoEtapas({
   const eRecibido = porClave.get("recibido") ?? null;
   const eBodega = porClave.get("bodega_3de4") ?? null;
   const eListo = porClave.get("listo_envio") ?? null;
-  const eFull = porClave.get("en_full") ?? null;
+  // LA BODEGA DEL MARKETPLACE ES DE CADA CANAL. El backend manda en `etapas`
+  // la que aplica —`en_full` en General y ML, `en_fba` en Amazon— y NINGUNA en
+  // los canales que no tienen (TikTok y Temu despachan de nuestro almacén, y de
+  // Walmart WFS no hay dato). Aquí solo se pinta lo que llegó: adivinarlo sería
+  // ofrecer un filtro que el servidor no sabe aplicar.
+  const claveMarketplace: EtapaOmnicanal | null =
+    porClave.has("en_full") ? "en_full" : porClave.has("en_fba") ? "en_fba" : null;
+  const eMarketplace = claveMarketplace ? porClave.get(claveMarketplace) ?? null : null;
   const eDrop = porClave.get("en_drop") ?? null;
   const eRestock = porClave.get("restock") ?? null;
   const carril = conteos?.carril ?? null;
 
-  // «En FULL» es de Mercado Libre: en las otras pestañas hay que decirlo o la
-  // cifra se lee como FBA/WFS, que no entran.
-  const etiquetaFull =
-    canal === "mercado_libre" || canal === "general" ? "En FULL" : "En FULL (ML)";
+  // «En FULL» es de Mercado Libre: en General —que mezcla canales— hay que
+  // decirlo o la cifra se lee como la bodega de cualquiera.
+  const etiquetaMarketplace = eMarketplace
+    ? (claveMarketplace === "en_full" && canal === "general" ? "En FULL (ML)" : eMarketplace.titulo)
+    : "";
 
   const ayudaListo = [
     eListo?.n_sin_specs != null
@@ -461,21 +469,23 @@ export default function FlujoEtapas({
 
           <Chevron />
 
-          <Seg
-            {...tema}
-            etiqueta={etiquetaFull}
-            muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />}
-            cifraNodo={<span style={estiloCifra}>{numero(eFull)}</span>}
-            nota={
-              <Nota
-                clave="en_full" titulo={etiquetaFull}
-                muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />} avisos={avisos(eFull)}
-              />
-            }
-            activo={etapa === "en_full"}
-            deshabilitado={!clicable(eFull, false)}
-            onClick={() => elegir("en_full")}
-          />
+          {claveMarketplace && eMarketplace && (
+            <Seg
+              {...tema}
+              etiqueta={etiquetaMarketplace}
+              muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />}
+              cifraNodo={<span style={estiloCifra}>{numero(eMarketplace)}</span>}
+              nota={
+                <Nota
+                  clave={claveMarketplace} titulo={etiquetaMarketplace}
+                  muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />} avisos={avisos(eMarketplace)}
+                />
+              }
+              activo={etapa === claveMarketplace}
+              deshabilitado={!clicable(eMarketplace, false)}
+              onClick={() => elegir(claveMarketplace)}
+            />
+          )}
 
           {/* En DROP no lleva chevron: es el OTRO destino, no el paso siguiente. */}
           <Seg

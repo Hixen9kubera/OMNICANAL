@@ -111,23 +111,51 @@ FUENTES = ("kubera", "odoo", "odoo_drop", "canales")
 FUENTES_BARRA = FUENTES[:3]
 
 ETAPAS_FILTRABLES = frozenset({"recibido", "bodega_3de4", "validado_bodega",
-                               "listo_envio", "en_full", "en_drop",
+                               "listo_envio", "en_full", "en_fba", "en_drop",
                                "costo_validado"})
 
 # Las únicas que /api/productos sabe convertir en una lista de SKUs exacta. Las
 # demás dan 400 con su motivo: `validado_bodega` y `listo_envio` están vacías
 # por construcción mientras specs no tenga definición (ver `_META`), `restock`
 # no tiene regla y `costo_validado` ya viaja por `revisado=`.
-ETAPAS_OMNICANAL = ("recibido", "bodega_3de4", "en_full", "en_drop")
+ETAPAS_OMNICANAL = ("recibido", "bodega_3de4", "en_full", "en_fba", "en_drop")
 
 # Las que se leen de la foto (`en_drop` se lee en vivo con `odoo.estado_almacen`).
-ETAPAS_DE_FOTO = ("recibido", "bodega_3de4", "en_full")
+ETAPAS_DE_FOTO = ("recibido", "bodega_3de4", "en_full", "en_fba")
 
 # Los criterios de conteo, que son los interruptores de la lista y NO el
 # contador de la pestaña: en TikTok y Walmart el contador cuenta todas las filas
 # mientras «Solo publicados» filtra por `status`, así que un conteo que siguiera
 # al contador no cuadraría nunca con la paginación.
 CRITERIOS = ("todas", "publicados", "activas")
+
+# LA BODEGA DEL MARKETPLACE ES DE CADA CANAL (Eduardo, 17-sep: «en canales donde
+# no haya full cambia su nombre… si no tiene, no debería aparecer»). FULL es de
+# Mercado Libre y FBA es de Amazon: son bodegas distintas, con dato distinto
+# (`stock_full` contra `stock_fba`), y llamarle FULL a lo de Amazon fue el
+# defecto que se corrige aquí.
+#
+# Los que NO están en este mapa no tienen bodega del marketplace y su segmento
+# no se pinta: TikTok y Temu despachan desde nuestro almacén.
+#
+# WALMART SÍ TIENE BODEGA —WFS es su FULL (`pedidos_walmart.py:166`)— y aun así
+# no se pinta, porque NADIE ESCRIBE el dato por SKU: `cargar_walmart.py` es un
+# script a mano que guarda listing_id, status, precio y categoría, nunca
+# `is_fulfillment` ni stock. Medido el 17-sep: 235 publicaciones, las 235 con
+# `is_fulfillment = false` y sin tocarse desde el 17-ago. Un «En WFS · 0» diría
+# «ninguno» cuando lo cierto es «no lo sincronizamos». Lo que hoy sí sabe el
+# panel de WFS es otra cosa: las SALIDAS a su almacén (pestaña FULLFILMENT, que
+# las lee de Odoo) y las ventas despachadas desde ahí (`isWFSEnabled` de cada
+# línea de pedido). El día que algo escriba la bandera por SKU, este mapa es el
+# único lugar que hay que tocar.
+#
+# General se queda con FULL de ML porque es el único almacén de marketplace que
+# el catálogo entero sabe contar; la etiqueta lo dice.
+BODEGA_DEL_CANAL = {
+    "general": "en_full",
+    "mercado_libre": "en_full",
+    "amazon": "en_fba",
+}
 
 # UNA consulta, con la forma medida en 0.23–0.68 s (15-sep). Los JOIN van por
 # CITEXT NATIVO, sin `::text`: con el cast se pierde `ROP-0695-BEI-m` (la
@@ -150,17 +178,23 @@ with cv as (
   select sku from channel.listings
   where canal = 'mercado_libre' and stock_full > 0
   group by sku
+), fba as (
+  select sku from channel.listings
+  where canal = 'amazon' and stock_fba > 0
+  group by sku
 )
 select p.sku::text                        as sku,
        coalesce(cv.recibido, false)       as recibido,
        coalesce(cv.costo_validado, false) as costo_validado,
        (ml.sku is not null)               as en_full,
+       (fba.sku is not null)              as en_fba,
        (cv.sku is not null)               as con_renglon,
        p.wc_id                            as wc_id,
        p.wc_parent_id                     as wc_parent_id
 from core.products p
 left join cv on cv.sku = p.sku
 left join ml on ml.sku = p.sku
+left join fba on fba.sku = p.sku
 """
 
 # `con_renglon` distingue «no tiene renglón en costos» de «tiene renglón pero
@@ -192,6 +226,8 @@ class DatosKubera:
     recibido: frozenset[str]
     costo_validado: frozenset[str]
     en_full: frozenset[str]
+    # Amazon con `stock_fba > 0`: su bodega del marketplace, que NO es FULL.
+    en_fba: frozenset[str] = frozenset()
     # SKUs CON renglón en costos_validados (aunque venga en cero).
     con_renglon: frozenset[str] = frozenset()
     # canon → (wc_id, wc_parent_id|None). El 0 de Woo se trata como None: en
@@ -422,6 +458,7 @@ def _derivar_kubera(filas: list[dict[str, Any]]) -> DatosKubera:
     recibido: set[str] = set()
     costo: set[str] = set()
     full: set[str] = set()
+    fba: set[str] = set()
     renglon: set[str] = set()
     wc: dict[str, tuple[int, int | None]] = {}
     for f in filas:
@@ -435,6 +472,8 @@ def _derivar_kubera(filas: list[dict[str, Any]]) -> DatosKubera:
             costo.add(sku)
         if f.get("en_full"):
             full.add(sku)
+        if f.get("en_fba"):
+            fba.add(sku)
         if f.get("con_renglon"):
             renglon.add(sku)
         wc_id = int(f.get("wc_id") or 0)
@@ -442,7 +481,7 @@ def _derivar_kubera(filas: list[dict[str, Any]]) -> DatosKubera:
             padre = int(f.get("wc_parent_id") or 0) or None
             wc[sku] = (wc_id, padre)
     return DatosKubera(frozenset(universo), frozenset(recibido),
-                       frozenset(costo), frozenset(full),
+                       frozenset(costo), frozenset(full), frozenset(fba),
                        con_renglon=frozenset(renglon),
                        wc=MappingProxyType(wc))
 
@@ -695,6 +734,7 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
         listas["recibido"] = k.recibido
         listas["costo_validado"] = k.costo_validado
         listas["en_full"] = k.en_full
+        listas["en_fba"] = k.en_fba
 
     tres: frozenset[str] = frozenset()
     if o is not None:
@@ -727,6 +767,8 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
     cruces["recibido_y_3de4"] = _n(ko, lambda: len(k.recibido & tres))
     cruces["en_full.cumple_3de4"] = _n(ko, lambda: len(k.en_full & tres))
     cruces["en_full.fuera_de_odoo"] = _n(ko, lambda: len(k.en_full - o.activos))
+    cruces["en_fba.cumple_3de4"] = _n(ko, lambda: len(k.en_fba & tres))
+    cruces["en_fba.fuera_de_odoo"] = _n(ko, lambda: len(k.en_fba - o.activos))
     cruces["costo_validado.cumple_3de4"] = _n(ko, lambda: len(k.costo_validado & tres))
     cruces["en_drop.cumple_3de4"] = _n(d is not None and o is not None,
                                        lambda: len(set(listas["en_drop"]) & tres))
@@ -839,6 +881,26 @@ _META: dict[str, dict[str, Any]] = {
             "sin sufijo: no se cruzan con bodega (catálogo)",
         ],
     },
+    "en_fba": {
+        "titulo": "En FBA", "estado": "medido", "filtrable": True,
+        "depende": ("kubera",),
+        "definicion": "Amazon con stock_fba > 0 (su bodega, no es FULL)",
+        "fuente": "kubera · channel.listings (sync de 15 min)",
+        "desglose": [
+            ("cumple_3de4", "Cumple 3 de 4 de bodega", "en_fba.cumple_3de4",
+             ("kubera", "odoo")),
+            ("fuera_de_odoo", "No existen en Odoo activo", "en_fba.fuera_de_odoo",
+             ("kubera", "odoo")),
+        ],
+        "falta": [
+            "Confirmar que `stock_fba` se sincroniza con la misma frecuencia que "
+            "`stock_full`: si se queda viejo, la etapa envejece sin avisar (KAM)",
+            "Walmart WFS no se puede contar por SKU: nadie escribe `is_fulfillment` "
+            "ni stock de ese canal (las 235 filas vienen de `cargar_walmart.py`, "
+            "a mano, sin tocarse desde el 17-ago), así que su segmento no se "
+            "pinta. Las salidas a WFS sí se ven en FULLFILMENT (Eduardo o KAM)",
+        ],
+    },
     "en_drop": {
         "titulo": "En DROP", "estado": "medido", "filtrable": True,
         "depende": ("odoo_drop",),
@@ -877,7 +939,7 @@ _META: dict[str, dict[str, Any]] = {
 }
 
 _ORDEN_ETAPAS = ("recibido", "validado_bodega", "listo_envio", "en_full",
-                 "en_drop", "restock")
+                 "en_fba", "en_drop", "restock")
 
 
 class _Contexto:
@@ -1192,6 +1254,7 @@ _SKU_SINTETICO = re.compile(r"^WC-\d+$", re.IGNORECASE)
 _ETAPA_TEXTO = {
     "en_full_y_drop": "En FULL y DROP",
     "en_full": "En FULL",
+    "en_fba": "En FBA",
     "en_drop": "En DROP",
     "listo_envio": "Listo para FULL o DROP",
     "validado_bodega": "Validado bodega",
@@ -1205,7 +1268,8 @@ _ETAPA_TEXTO = {
 # etiqueta lleva «(ML)» o se leería como FBA o WFS, que no son lo mismo.
 _CANALES_FULL_PROPIO = ("general", "mercado_libre")
 
-_TITULOS_VARIANTES = (("en_full", "En FULL"), ("en_drop", "En DROP"),
+_TITULOS_VARIANTES = (("en_full", "En FULL"), ("en_fba", "En FBA"),
+                      ("en_drop", "En DROP"),
                       ("bodega_3de4", "3 de 4"), ("recibido", "Recibido"),
                       ("sin_dato", "sin dato"))
 
@@ -1227,7 +1291,7 @@ def resumen_variantes(sellos: Iterable[Mapping[str, Any]]) -> dict[str, int]:
     resuelta: una variante En FULL que además cumple 3 de 4 cuenta en las dos.
     Así el resumen del padre dice lo mismo que el stepper."""
     salida = {"total": 0, "recibido": 0, "bodega_3de4": 0, "en_full": 0,
-              "en_drop": 0, "sin_dato": 0}
+              "en_fba": 0, "en_drop": 0, "sin_dato": 0}
     for s in sellos:
         if not s:
             continue
@@ -1245,6 +1309,8 @@ def resumen_variantes(sellos: Iterable[Mapping[str, Any]]) -> dict[str, int]:
             salida["bodega_3de4"] += 1
         if dest.get("full") is True:
             salida["en_full"] += 1
+        if dest.get("fba") is True:
+            salida["en_fba"] += 1
         if dest.get("drop") is True:
             salida["en_drop"] += 1
         if s.get("etapa") == "sin_dato":
@@ -1390,10 +1456,11 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
 
     # ── DESTINO ──────────────────────────────────────────────────────────────
     full = None if k is None else (canon is not None and canon in k.en_full)
+    fba = None if k is None else (canon is not None and canon in k.en_fba)
     drop = None if d is None else mayus in d.skus
     cuentas = None if c is None else list(c.full_cuentas.get(mayus, ()))
     destino = {
-        "full": full, "drop": drop, "full_cuentas": cuentas,
+        "full": full, "fba": fba, "drop": drop, "full_cuentas": cuentas,
         "sin_dato": not (full is True or drop is True) and (full is None or drop is None),
         "vieja": bool(foto.fuentes["kubera"].vieja or foto.fuentes["odoo_drop"].vieja),
     }
@@ -1406,6 +1473,10 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
         etapa = "en_full_y_drop"
     elif full:
         etapa = "en_full"
+    elif fba:
+        # Debajo de FULL a propósito: un SKU en las dos bodegas se lee como «En
+        # FULL» en cualquier pestaña, que es la que mueve más piezas.
+        etapa = "en_fba"
     elif drop:
         etapa = "en_drop"
     elif listo["estado"] == "si":
@@ -1429,6 +1500,17 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
         texto = _ETAPA_TEXTO[etapa]
         if etapa in ("en_full", "en_full_y_drop") and canal not in _CANALES_FULL_PROPIO:
             texto = texto.replace("En FULL", "En FULL (ML)")
+        if etapa == "en_fba" and canal != "amazon":
+            # Fuera de Amazon, «En FBA» a secas se leería como bodega de ESTE
+            # canal; el sufijo dice de quién es.
+            texto = "En FBA (Amazon)"
+        if BODEGA_DEL_CANAL.get(canal) == "en_fba" and fba:
+            # En la pestaña de Amazon manda SU bodega: un SKU que está en las
+            # dos decía «En FULL (ML)» mientras el filtro activo era FBA, y la
+            # fila parecía de otra etapa. La otra no se esconde, se menciona.
+            texto = "En FBA" + (" · también FULL (ML)" if full else "")
+            if drop:
+                texto += " y DROP"
     if destino["sin_dato"]:
         texto += " · destino sin dato"
 
@@ -1482,6 +1564,19 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
 # porque es la que se puede pulsar: la de 4 de 4 está bloqueada por specs.
 _ORDEN_CANAL = ("recibido", "bodega_3de4", "validado_bodega", "listo_envio",
                 "en_full", "en_drop", "restock")
+
+
+def _orden_de(canal: str) -> tuple[str, ...]:
+    """El mismo orden, con LA bodega de este canal — o sin ninguna.
+
+    `en_full` es el hueco del molde: se sustituye por la etapa que el canal sí
+    tiene (FBA en Amazon) y se quita donde no hay ninguna."""
+    bodega = BODEGA_DEL_CANAL.get(canal)
+    if bodega == "en_full":
+        return _ORDEN_CANAL
+    return tuple(e for e in _ORDEN_CANAL if e != "en_full"
+                 ) if bodega is None else tuple(
+        bodega if e == "en_full" else e for e in _ORDEN_CANAL)
 
 
 def _criterio_efectivo(canal: str, criterio: str,
@@ -1640,7 +1735,7 @@ def _conteos_canal(foto: Foto | None, ahora: datetime, *, canal: str,
                 if hay_foto and ctx.ok(_deps_numero(("kubera", "odoo"))) else None)
         return salida
 
-    etapas = [_entrada(c_) for c_ in _ORDEN_CANAL]
+    etapas = [_entrada(c_) for c_ in _orden_de(canal)]
     carril = _entrada("costo_validado")
     carril["param"] = "revisado"
 
