@@ -864,7 +864,9 @@ async def studio_metadata(sku: str, wc_id: int | None = Query(None, description=
     subniveles, y campos de Alibaba/atributos (postmeta) si hay WPDB_*.
     El estado de publicación se consulta EN VIVO (ML/Amazon) para que sea real-time.
     """
-    m = studio.metadata(sku, wc_id)
+    # Regla 11: `metadata` lee kubera y WordPress; síncrona aquí congelaba el
+    # backend entero mientras contestaba la base.
+    m = await asyncio.to_thread(studio.metadata, sku, wc_id)
     try:
         m["estado"] = await publicar.estado_live(sku)
     except Exception:  # noqa: BLE001
@@ -932,8 +934,14 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         estado=base.get("estado"),
     ))
 
-    # Inventario en vivo cacheado para este SKU (todas las cuentas/canales)
-    inv = inventario.leer_inventario([sku]).get(sku, {})
+    # Inventario en vivo cacheado para este SKU (todas las cuentas/canales).
+    # Regla 11: las seis lecturas de este detalle (ésta, ML, Amazon y los tres
+    # paneles) van a un hilo. Síncronas, cada una detenía el loop mientras la
+    # base contestaba — el 17-sep el vigilante lo cachó dos veces, 5.1 s y
+    # 5.8 s parado en `walmart_panel.datos_de`, y ahí no se atiende ni un
+    # webhook de venta. Se dejan EN SERIE, una tras otra, para no pedirle seis
+    # conexiones a la vez al pool de Supabase, que tiene ~6 en total.
+    inv = (await asyncio.to_thread(inventario.leer_inventario, [sku])).get(sku, {})
 
     def _aplicar_inv(canal: str, cuenta: str, dc: DetalleCanal) -> DetalleCanal:
         datos = inv.get(f"{canal}|{cuenta}")
@@ -950,7 +958,7 @@ async def detalle_producto(sku: str, refrescar: bool = False):
         return dc
 
     # Mercado Libre (cache) — una entrada por cuenta publicada
-    ml_items, _ = meli.listar(search=sku, per_page=5)
+    ml_items, _ = await asyncio.to_thread(meli.listar, search=sku, per_page=5)
     cuentas_vistas: set[str] = set()
     for m in ml_items:
         cta = m.get("cuenta") or ""
@@ -970,7 +978,7 @@ async def detalle_producto(sku: str, refrescar: bool = False):
     # Amazon (cache). IGUALDAD EXACTA, nunca `search=` — ése hace LIKE de prefijo
     # y con 693 SKUs que son prefijo de otros el detalle acababa mostrando la
     # publicación de OTRO producto (auditoría 29-jul).
-    a = amazon.por_sku(sku)
+    a = await asyncio.to_thread(amazon.por_sku, sku)
     if a:
         dc = DetalleCanal(
             canal=Canal.AMAZON.value,
@@ -990,7 +998,7 @@ async def detalle_producto(sku: str, refrescar: bool = False):
     # misma tabla que lo alimenta todo. Añadirlo dos veces solo podía
     # contradecirse.
     from services import tiktok_panel
-    tk = tiktok_panel.datos_de(sku)
+    tk = await asyncio.to_thread(tiktok_panel.datos_de, sku)
     if tk:
         detalle.canales.append(DetalleCanal(
             canal=Canal.TIKTOK.value,
@@ -1009,7 +1017,7 @@ async def detalle_producto(sku: str, refrescar: bool = False):
     # Temu (kubera). Mismo trato que TikTok y por la misma razón: 160
     # publicaciones vivas que el cajón no mostraba.
     from services import temu_panel
-    tm = temu_panel.datos_de(sku)
+    tm = await asyncio.to_thread(temu_panel.datos_de, sku)
     if tm:
         detalle.canales.append(DetalleCanal(
             canal=Canal.TEMU.value,
@@ -1028,7 +1036,7 @@ async def detalle_producto(sku: str, refrescar: bool = False):
 
     # Walmart MX (kubera). Mismo trato que TikTok y Temu.
     from services import walmart_panel
-    wm = walmart_panel.datos_de(sku)
+    wm = await asyncio.to_thread(walmart_panel.datos_de, sku)
     if wm:
         detalle.canales.append(DetalleCanal(
             canal=Canal.WALMART.value,
@@ -1121,24 +1129,25 @@ async def _categoria_del_canal(sku: str, canal: str) -> str | None:
     try:
         if canal == "amazon":
             from services import publicar, studio
-            wc_id = (studio.metadata(sku, None) or {}).get("wc_id")
-            pt, _origen = publicar._pt_resuelto(sku, wc_id)  # noqa: SLF001
+            # Regla 11 también aquí: las cuatro ramas leen kubera o WordPress.
+            wc_id = (await asyncio.to_thread(studio.metadata, sku, None) or {}).get("wc_id")
+            pt, _origen = await asyncio.to_thread(publicar._pt_resuelto, sku, wc_id)  # noqa: SLF001
             return pt
         if canal == "mercado_libre":
             from services import studio
-            cat = (studio.metadata(sku, None) or {}).get("categoria_ml") or {}
+            cat = (await asyncio.to_thread(studio.metadata, sku, None) or {}).get("categoria_ml") or {}
             return cat.get("category_id") or None
         if canal == "temu":
             # Panel > publicación, igual que TikTok. Sin esto el Estudio pedía
             # los requisitos con categoría None y el semáforo se caía.
             from services import temu_panel
-            return temu_panel.categoria_de(sku)
+            return await asyncio.to_thread(temu_panel.categoria_de, sku)
         if canal == "tiktok":
             # ⚠️ En TikTok la categoría vive en `listings.category_id`; en Amazon
             # vive en `product_type`. Cruzar los requisitos por la columna
             # equivocada devuelve cero filas SIN dar error.
             from services import tiktok_panel
-            return tiktok_panel.categoria_de(sku)
+            return await asyncio.to_thread(tiktok_panel.categoria_de, sku)
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo resolver la categoría de %s en %s: %s", sku, canal, exc)
     return None
@@ -1212,7 +1221,8 @@ async def _datos_publicables(sku: str) -> dict[str, Any]:
     """
     try:
         from services import publicar_ready, studio, wp_db
-        if not wp_db.disponible():
+        # `disponible` abre la conexión y hace SELECT 1: es red, va en hilo.
+        if not await asyncio.to_thread(wp_db.disponible):
             return {}
         wc_id = (await asyncio.to_thread(studio.metadata, sku, None) or {}).get("wc_id")
         if not wc_id:

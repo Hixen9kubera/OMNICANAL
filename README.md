@@ -1001,6 +1001,41 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.529.0 — El detalle del producto ya no congela el backend (regla 11)
+
+El vigilante del event loop cachó dos veces al backend de producción PARADO el
+17-sep-2026 —5.1 s a las 17:53 y 5.8 s a las 18:12—, con y sin
+`INVENTARIO_FLUJO_ENABLED`, siempre en la misma pila:
+`detalle_producto > walmart_panel.datos_de > supabase_db.fetch_all`. Mientras el
+loop está parado no se atiende NADA: ni un webhook de venta de Mercado Libre, ni
+el panel de nadie. Es el defecto del apagón del 13-ago, otra vez.
+
+**Qué se arregló** (`backend/routers/productos.py`): las doce lecturas que
+esperaban a la base dentro de una corrutina pasan a `asyncio.to_thread`.
+
+- `detalle_producto`: las seis del cajón — `inventario.leer_inventario`,
+  `meli.listar`, `amazon.por_sku` y los tres `*_panel.datos_de`. Van EN SERIE, no
+  en paralelo: el pool de Supabase tiene ~6 conexiones y el detalle no puede
+  pedirlas todas de golpe.
+- `studio_metadata`, `_categoria_del_canal` (las cuatro ramas: `studio.metadata`
+  ×2, `publicar._pt_resuelto`, `temu_panel.categoria_de`,
+  `tiktok_panel.categoria_de`) y `_datos_publicables` (`wp_db.disponible`).
+
+Lo que se deja síncrono a propósito: la foto del flujo (`inventario_flujo.sello`,
+`lista_etapa`, `ids_woo`, `expandir_padres`, `foto_para_peticion`), que trabaja en
+memoria sobre un índice ya armado, y `modo_publicacion.disponible`, que solo mira
+una variable.
+
+**Prueba nueva** (`backend/tests/test_regla_11_productos.py`, 3 casos): lee el AST
+del router y falla si CUALQUIER `async def` vuelve a llamar síncrona una función
+de `services` —no solo las rutas con prueba propia—, más el detalle ejercitado
+con la app real y los servicios simulados, que comprueba que la respuesta no
+cambió. Comprobado a la inversa: al revertir una sola llamada, falla.
+
+221 pruebas OK. En el sandbox no se puede ejercitar el detalle (necesita MySQL,
+apagado ahí a propósito): la verificación de esa ruta es la prueba con la app
+real; el listado y el flujo del sandbox siguen dando las mismas cifras.
+
 ### v0.528.0 — El rail de FULLFILMENT llega hasta la venta: llegada observada, activación y 1ª venta
 
 Brandon: *"el rail de las etapas es donde debemos de completarlo con la información que tienes"*. De las siete
