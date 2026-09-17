@@ -1001,6 +1001,87 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.532.0 — Un MCP de research: cuatro datos del negocio, y ninguna llave para escribir
+
+Encargo de Brandon: que Claude pueda consultar visitas, ventas por canal, stock
+libre y cajas sin pasar por el panel. Vive en `backend/mcp_research/` y es
+**solo lectura** — no tiene una sola herramienta de escritura, ni "por si acaso".
+
+**Cuatro herramientas sueltas, no una que arme el cruce.** Decisión de Brandon
+(17-sep): los datos se piden por separado y el cruce lo arma quien pregunta,
+según sea resurtido, precios, qué publicar o qué descontinuar. Una herramienta
+que decide por su cuenta cuál cruce hacer se equivoca en silencio.
+
+| Herramienta | Fuente |
+|---|---|
+| `visitas` | `enrich.listing_visits` + `enrich.market_listing_metrics` (kubera) |
+| `ventas` | `channel.sales_daily_completa` (kubera) |
+| `stock_libre` | Odoo `free_qty` en vivo |
+| `cajas` | Odoo `units_per_master_box` en vivo |
+
+**El candado de solo-lectura se ganó a pulso.** La primera versión exigía que la
+consulta empezara en `SELECT`/`WITH`, y eso NO alcanza:
+
+```sql
+with x as (update core.products set sku='x' returning 1) select * from x
+```
+
+arranca con `WITH`, pasa esa guarda, y es un UPDATE a la tabla entera. En la
+prueba llegó a producción y sólo rebotó contra una restricción de unicidad —
+`core.products` quedó intacta (22,416 filas, 22,416 SKUs distintos, cero con el
+valor de prueba), pero el candado no tuvo nada que ver con eso. Ahora se
+rechazan los verbos de escritura **en cualquier parte** de la sentencia, con los
+literales de texto desnudados antes para que un `where titulo = 'set de copas'`
+no dé falso positivo.
+
+**Lo que NO se hace, y es la regla 13:** no se marca la sesión de solo-lectura.
+El DSN va al pooler transaccional (6543), donde las conexiones se comparten
+entre clientes y un `SET SESSION ... READ ONLY` se queda pegado para el
+siguiente — que puede ser el backend registrando una venta. Aquí sólo hay
+`SELECT`, así que no hace falta marcar nada; verificado con
+`show default_transaction_read_only` sobre seis conexiones después de cada
+prueba.
+
+**Venv propio, obligatorio.** El SDK de MCP arrastra `sse-starlette` → starlette
+≥1.6, y el backend está clavado en fastapi 0.115.6 → starlette <0.42. Instalar
+`mcp` en el venv del backend LO ROMPE (pasó al construir esto; se revierte con
+`pip install "starlette>=0.40,<0.42"` y quitando `sse-starlette`). Pinear
+`mcp<2` no salva: arrastra el mismo paquete. Por eso
+`backend/mcp_research/requirements.txt` es aparte.
+
+**Tres cosas que se midieron y no coincidían con lo que se creía** (17-sep-2026):
+
+1. `channel.sales_daily_completa` corta el histórico el **15-jul**, no el 16-feb:
+   antes de esa fecha sólo hay Mercado Libre. Y **Walmart no tiene una sola
+   fila** aunque sí vende. La herramienta devuelve `cobertura` y
+   `canales_sin_datos` en vez de contestar 0 — un 0 se lee como "no vendió", y
+   la verdad es "no se midió".
+2. `enrich.listing_visits` tiene ventana de **90 días** además de 7/30/60.
+3. **93 publicaciones de ML sirven a DOS SKUs.** Sus visitas no se pueden
+   repartir: ML las cuenta una vez, para el anuncio. Se suman y se marca cuánto
+   viene de publicaciones compartidas.
+
+**El bug que no se copió:** `inventario_maestro._cajas` guarda con `f < 1`, así
+que con factor **1** pasa de largo y devuelve las piezas — al revés de lo que
+promete su propio docstring. Aquí la guarda es `f <= 1` y las cajas salen
+`null`, porque un factor de 1 no describe una caja sino la falta del dato (644
+productos así). Aquel archivo no se tocó: es del panel y tiene su contrato.
+
+**Transporte y llave.** `--transport stdio` para local; `--transport http`
+(Streamable HTTP) para el servicio central, que **no arranca sin
+`MCP_AUTH_TOKEN`** — un servidor abierto con el DSN de producción adentro no
+puede ser el comportamiento por omisión. `/salud` queda abierto, `/mcp` exige
+`Authorization: Bearer` y compara con `hmac.compare_digest`. La variable acepta
+varias llaves separadas por coma; hoy es una sola compartida (decisión de
+Brandon), que no se puede revocar por persona.
+
+Topes en todas las respuestas (50 por omisión, 500 máximo) y **aviso explícito
+cuando se cortan**: truncar en silencio es cómo se saca una conclusión de media
+tabla creyendo que era la tabla entera.
+
+Config de despliegue en `backend/railway.mcp-research.json`. Detalle completo,
+mediciones y cómo conectarlo: `backend/mcp_research/README.md`.
+
 ### v0.531.0 — El sello se abre: la evidencia del flujo, por SKU, en una tarjeta
 
 Eduardo eligió la dirección B de las maquetas: *«La B, constrúyela»*. El sello de

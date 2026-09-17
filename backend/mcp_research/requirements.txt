@@ -1,0 +1,18 @@
+# Dependencias del MCP de research. VENV PROPIO, y no es por gusto:
+# el SDK de MCP arrastra `sse-starlette`, que exige starlette >= 1.6, mientras
+# que el backend está clavado en fastapi 0.115.6, que exige starlette < 0.42.
+# No pueden convivir en el mismo entorno. Como este servidor sólo importa
+# `config`, `services.odoo` y `services.supabase_db` —ninguno necesita
+# fastapi—, separarlos sale gratis.
+#
+#   python -m venv backend/mcp_research/.venv
+#   backend/mcp_research/.venv/Scripts/pip install -r backend/mcp_research/requirements.txt
+
+mcp>=2.2,<3
+uvicorn[standard]==0.34.0     # sólo para --transport http
+
+# Lo que necesitan los módulos que se reusan de backend/services/
+psycopg2-binary==2.9.10       # services/supabase_db.py  (Odoo va por xmlrpc, que es stdlib)
+DBUtils==3.1.0                # el pool de supabase_db
+pydantic-settings==2.7.1      # config.py
+python-dotenv==1.0.1          # config.py lee el .env de la raíz del repo
