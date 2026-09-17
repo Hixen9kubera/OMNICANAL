@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.534.0 — Las dos etapas sin dato vuelven al rail, pero ahora PIDEN algo
+
+Brandon, una hora después de pedir que se borraran: *"mejor si déjalos e indican qué deben hacer… veo que
+Andy puede solicitarlo"*. Tenía razón las dos veces, y la diferencia está en el texto: como "sin dato" no le
+pedían nada a nadie y eran ruido; como **"por capturar"** son una instrucción.
+
+- **Solicitado** → «lo pide Andy · la lista del martes».
+- **Validado** → «lo recorta Bodega · cuánto sí se puede surtir».
+
+En la tabla, donde la celda es angosta, las dos dicen **«por capturar»**; en el detalle del envío se lee el
+nombre completo, y el `title` explica POR QUÉ importa cada una (sin la lista de Andy no hay "cuánto se pidió",
+y la cantidad de la orden de Odoo ya viene recortada, así que tomarla de ahí pondría la tasa de validado en
+100%).
+
+Un tono visual nuevo, **`pendiente`**: rayado como un hueco —porque dato no hay— pero con el texto en índigo,
+para que no se confunda con "no lo sabemos". Los otros cuatro tonos no se tocan.
+
+El modelo de datos NO cambió: `etapas` sigue siendo la lista de 5 con fuente real (v0.533.0); las dos que
+piden captura viven en `ETAPAS_POR_CAPTURAR` y las agrega el rail. El día que se capturen, se mueven a
+`ETAPAS` con su fecha y dejan de ser un aviso.
+
+`tsc` limpio y `next build` en verde; la pantalla de Variaciones pasa a siete etapas con el nodo pendiente en
+su propio color.
+
 ### v0.533.0 — El rail de FULLFILMENT se queda con cinco etapas: fuera las dos que nadie registra
 
 Brandon, viendo la tabla: *"las primeras 2 etapas son solicitado y validado pero no entiendo qué son esas

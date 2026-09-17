@@ -17,7 +17,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import type { Canal, Cuenta, Envio, Instante } from "./tipos";
-import { ETAPAS } from "./tipos";
+import { ETAPAS, ETAPAS_POR_CAPTURAR } from "./tipos";
 
 // ── Las texturas ────────────────────────────────────────────────────────────
 export const RAYADO: CSSProperties = {
@@ -159,7 +159,13 @@ export function ChipCanal({ canal, cuenta }: { canal: Canal; cuenta: Cuenta | nu
 
 // ── El rail de siete etapas ─────────────────────────────────────────────────
 export interface Paso {
-  t: string; corto: string; v: string; sub: string; tono: "dato" | "espera" | "hueco"; titulo: string;
+  t: string; corto: string; v: string;
+  /** Valor para la celda angosta de la tabla, donde el texto largo se corta. */
+  vc?: string;
+  sub: string;
+  // `pendiente` es un hueco que además PIDE ALGO: lleva el verbo y a quién le toca.
+  tono: "dato" | "espera" | "hueco" | "pendiente";
+  titulo: string;
 }
 
 /** Por qué la etapa «Recibido» no tiene dato, según el estado del envío real. */
@@ -185,7 +191,13 @@ export function pasosDe(e: Envio): Paso[] {
                      c && `${c.llegaron} de ${c.skus} SKUs`,
                      c && `${c.activos} de ${c.skus} SKUs`,
                      c && `${c.vendieron} de ${c.skus} SKUs`];
-  return ETAPAS.map(({ t, corto, sub }, i) => {
+  // Primero los dos pasos que todavía nadie captura: en vez de "sin dato" dicen
+  // a quién le toca. Así el rail pide lo que falta en lugar de sólo lamentarlo.
+  const porCapturar: Paso[] = ETAPAS_POR_CAPTURAR.map(({ t, corto, accion, sub, porque }) => ({
+    t, corto, v: accion, vc: "por capturar", sub, tono: "pendiente" as const,
+    titulo: `${t}: ${porque}`,
+  }));
+  return porCapturar.concat(ETAPAS.map(({ t, corto, sub }, i) => {
     const inst = e.etapas[i];
     if (inst) {
       const conteo = cobertura[i];
@@ -212,13 +224,16 @@ export function pasosDe(e: Envio): Paso[] {
     }
     return { t, corto, v: "sin dato", sub, tono: "hueco" as const,
              titulo: `${t}: no hay registro todavía. No es un cero.` };
-  });
+  }));
 }
 
 const TONO_PASO = {
   dato: { caja: "border-emerald-200 bg-emerald-50", rotulo: "text-emerald-700", valor: "text-emerald-800" },
   espera: { caja: "border-amber-300 bg-amber-50", rotulo: "text-amber-700", valor: "text-amber-800" },
   hueco: { caja: "border-dashed border-slate-300", rotulo: "text-slate-400", valor: "text-slate-400" },
+  // Rayado igual que un hueco —porque dato NO hay—, pero con el texto en índigo:
+  // no es "no lo sabemos", es "falta que alguien lo haga".
+  pendiente: { caja: "border-dashed border-indigo-300", rotulo: "text-indigo-500", valor: "text-indigo-600" },
 };
 
 export function Rail({ pasos, grande }: { pasos: Paso[]; grande?: boolean }) {
@@ -234,7 +249,7 @@ export function Rail({ pasos, grande }: { pasos: Paso[]; grande?: boolean }) {
               {grande ? p.t : p.corto}
             </div>
             <div className={`mt-0.5 truncate font-mono font-bold ${tono.valor} ${grande ? "text-[13px]" : "text-[10.5px]"}`}>
-              {p.v}
+              {grande ? p.v : p.vc ?? p.v}
             </div>
             {grande && <div className={`mt-0.5 truncate text-[11px] ${tono.rotulo} opacity-80`}>{p.sub}</div>}
           </div>

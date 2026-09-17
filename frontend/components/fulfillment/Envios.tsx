@@ -154,8 +154,9 @@ export function TablaEnvios({
 
       <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs text-slate-400">
         <span><b>Salida validada</b> es cuando bodega cierra la salida en Odoo, no la hora del camión: en 16 de 43 envíos medidos ML ya había recibido antes.</span>
-        <span>Antes de la orden hay dos pasos que hoy no registra ningún sistema —la lista de Andy y el recorte de
-          Bodega—: se capturan en Planeación semanal y ahí volverán al rail.</span>
+        <span><b>Las dos primeras etapas piden acción, no son un dato faltante</b>: la lista de Andy y el recorte
+          de Bodega se capturan en Planeación semanal. Hasta que se capturen no se puede saber cuánto se pidió
+          ni cuánto recortó Bodega.</span>
       </div>
     </Tarjeta>
   );

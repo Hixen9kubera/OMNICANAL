@@ -30,10 +30,29 @@ export interface Instante {
  * Las siete etapas de un envío, en orden. Cada una tiene fecha propia o es
  * `null`: ninguna se deduce de otra.
  */
-// Eran siete: al principio iban "Solicitado" (la lista de Andy) y "Validado"
-// (el recorte de Bodega). Se quitaron el 17-sep-2026 porque ningún sistema las
-// registra y sólo pintaban dos celdas rayadas por renglón; el paso sigue
-// existiendo en el negocio y se captura en Planeación semanal.
+/**
+ * Los dos pasos que ocurren ANTES de que exista la orden en Odoo. No los
+ * registra ningún sistema todavía, así que en el rail no dicen "sin dato" (que
+ * no le pide nada a nadie) sino **qué falta hacer y quién lo hace**.
+ *
+ * Historia corta: el 17-sep se quitaron por eso mismo —dos celdas rayadas en
+ * cada renglón— y Brandon pidió devolverlas como AVISO: *"déjalos e indican qué
+ * deben hacer"*. Andy es quien puede levantar la solicitud, así que el rail se
+ * lo dice por su nombre.
+ *
+ * El día que se capturen dejan de ser aviso y pasan a `ETAPAS` con su fecha.
+ */
+export const ETAPAS_POR_CAPTURAR = [
+  { t: "Solicitado", corto: "Solicitado", accion: "lo pide Andy",
+    sub: "la lista del martes",
+    porque: "Nadie guarda la lista de Andy: sin ella no se sabe cuánto se pidió, y la tasa de "
+      + "validado no existe. Se captura en Planeación semanal." },
+  { t: "Validado", corto: "Validado", accion: "lo recorta Bodega",
+    sub: "cuánto sí se puede surtir",
+    porque: "El recorte de Bodega no queda en ningún lado: la cantidad de la orden de Odoo ya viene "
+      + "recortada, así que tomarla de ahí pondría la tasa de validado en 100%." },
+] as const;
+
 export const ETAPAS = [
   // La fecha es la de la ORDEN DE VENTA: la teclea la KAM. El picking lo crea
   // OdooBot al confirmarla, así que su fecha no dice nada de una persona.

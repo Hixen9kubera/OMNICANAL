@@ -268,11 +268,11 @@ function VariacionB() {
 function VariacionC() {
   const e = ENVIOS[0];   // un envío en recepción: tiene los tres tonos
   const pasos = pasosDe(e);
-  const deltas = ["03 sep 09:15", "+2 d", "en curso", "sin dato", "sin dato"];
+  const deltas = ["lo pide Andy", "lo recorta Bodega", "03 sep 09:15", "+2 d", "en curso", "sin dato", "sin dato"];
   return (
     <Tarjeta>
       <Ceja>Variación C · rail de etapas del envío</Ceja>
-      <h2 className="mt-1 text-[17px] font-extrabold text-slate-900">Cinco etapas, una fecha o un estado en cada una</h2>
+      <h2 className="mt-1 text-[17px] font-extrabold text-slate-900">Siete etapas: cinco con fecha y dos que piden captura</h2>
       <div className="mt-4 flex flex-col gap-3.5">
         <Opcion titulo="C1 · celdas parejas (la que usa la tabla de Envíos)"
                 pie="Legible en una tabla de 40 renglones y no promete movimiento físico donde no lo hay.">
@@ -287,18 +287,25 @@ function VariacionC() {
             <div className="relative flex justify-between">
               {pasos.map((p, i) => {
                 const alin = i === 0 ? "text-left" : i === pasos.length - 1 ? "text-right" : "text-center";
-                const nodo = p.tono === "dato"
+                // El nodo pendiente va hueco con borde índigo: es lo que falta hacer.
+                const nodo = p.tono === "pendiente"
+                  ? { background: "#fff", border: "2px dashed #a5b4fc" }
+                  : p.tono === "dato"
                   ? { background: "#059669", border: "3px solid #fff", boxShadow: "0 0 0 1px #059669" }
                   : p.tono === "espera"
                     ? { background: "#f59e0b", border: "3px solid #fff", boxShadow: "0 0 0 1px #f59e0b" }
                     : { background: "#fff", border: "2px dashed #cbd5e1" };
-                const color = p.tono === "dato" ? "text-slate-600" : p.tono === "espera" ? "text-amber-700" : "text-slate-400";
+                const color = p.tono === "dato" ? "text-slate-600"
+                  : p.tono === "espera" ? "text-amber-700"
+                  : p.tono === "pendiente" ? "text-indigo-500" : "text-slate-400";
                 return (
                   <div key={p.t} className={`w-[14%] ${alin}`}>
                     <div className={`h-3.5 w-3.5 rounded-full ${i === 0 ? "ml-0.5" : i === pasos.length - 1 ? "ml-auto mr-0.5" : "mx-auto"}`}
                          style={nodo} />
                     <div className={`mt-1.5 text-[9.5px] font-bold uppercase ${color}`}>{p.t}</div>
-                    <div className={`font-mono text-[10px] ${p.tono === "espera" ? "text-amber-700" : p.tono === "hueco" ? "text-slate-400" : "text-slate-500"}`}>
+                    <div className={`font-mono text-[10px] ${p.tono === "espera" ? "text-amber-700"
+                      : p.tono === "pendiente" ? "text-indigo-600"
+                      : p.tono === "hueco" ? "text-slate-400" : "text-slate-500"}`}>
                       {deltas[i]}
                     </div>
                   </div>
