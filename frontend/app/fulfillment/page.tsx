@@ -141,9 +141,10 @@ export default function FulfillmentPage() {
           <CircleDashed className="h-4 w-4 shrink-0 text-amber-600" />
           <b>En construcción por etapas.</b>
           <span>
-            <b>En vivo desde Odoo</b>: envíos y su detalle, enviado a FULL/FBA/WFS, envíos sin número, días de
-            proceso y captura por KAM. <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): stock en FULL, agotado,
-            stock FBA, planeación, ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
+            <b>En vivo</b>: los envíos y su detalle salen de Odoo; la <b>llegada a FULL, la activación y la
+            primera venta</b> se observan en kubera (Mercado Libre no publica los envíos a Full por API, así que
+            no hay declaradas ni motivos). <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): stock en FULL,
+            agotado, stock FBA, planeación, ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
           </span>
         </div>
 

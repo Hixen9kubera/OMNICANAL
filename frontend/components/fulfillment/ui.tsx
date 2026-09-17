@@ -164,8 +164,8 @@ export interface Paso {
 
 /** Por qué la etapa «Recibido» no tiene dato, según el estado del envío real. */
 const SIN_LECTURA: Partial<Record<Envio["estado"], { sub: string; titulo: string }>> = {
-  salio: { sub: "aún no se guarda",
-           titulo: "Las recepciones de FULL todavía no se guardan. Ojo: la llegada casi nunca es INBOUND_RECEPTION, llega como TRANSFER_DELIVERY." },
+  salio: { sub: "sin movimiento aún",
+           titulo: "Ningún SKU de este envío subió su stock en FULL después de la salida. Mercado Libre no tiene API de envíos a Full: esto es lo que ve el sync cada 15 min." },
   sinEnlazar: { sub: "sin número, no se cruza",
                 titulo: "Sin número de envío no hay con qué cruzar lo que salió contra lo que llegó." },
   fbaSinLectura: { sub: "Amazon: sin permiso",
@@ -177,11 +177,21 @@ const SIN_LECTURA: Partial<Record<Envio["estado"], { sub: string; titulo: string
 /** Traduce las etapas de un envío a su lectura. Ninguna se deduce de otra. */
 export function pasosDe(e: Envio): Paso[] {
   const abierta = e.estado_odoo !== undefined && e.estado_odoo !== "done";
+  const c = e.cobertura;
+  // Las tres últimas etapas son por SKU: el rail enseña la primera fecha y
+  // CUÁNTOS de los SKUs del envío llegaron ahí. Sin eso, una sola pieza de un
+  // SKU parecería el envío entero.
+  const cobertura = [undefined, undefined, undefined, undefined,
+                     c && `${c.llegaron} de ${c.skus} SKUs`,
+                     c && `${c.activos} de ${c.skus} SKUs`,
+                     c && `${c.vendieron} de ${c.skus} SKUs`];
   return ETAPAS.map(({ t, corto, sub }, i) => {
     const inst = e.etapas[i];
     if (inst) {
-      return { t, corto, v: fecha(inst), sub, tono: "dato" as const,
-               titulo: `${t} · ${fecha(inst)} (hora de CDMX)${inst.aprox ? " — hora observada, no la del evento" : ""}` };
+      const conteo = cobertura[i];
+      return { t, corto, v: fecha(inst), sub: conteo ?? sub, tono: "dato" as const,
+               titulo: `${t} · ${fecha(inst)} (hora de CDMX)${conteo ? ` · ${conteo}` : ""}`
+                 + (inst.aprox ? " — hora en que se OBSERVÓ, no la del evento" : "") };
     }
     // Salida real todavía sin validar: el dato viene (ámbar), no es un hueco.
     if (i === 3 && abierta) {

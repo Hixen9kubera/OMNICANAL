@@ -51,7 +51,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from config import settings
-from services import odoo
+from services import fulfillment_etapas, odoo
 
 log = logging.getLogger("omnicanal.fulfillment_envios")
 
@@ -314,9 +314,13 @@ def leer() -> dict[str, Any]:
     """BLOQUEANTE. El router la corre en un hilo."""
     pickings, ordenes, movs = _leer_odoo()
     datos = armar(pickings, ordenes, movs)
+    # Las tres etapas que kubera sí puede llenar (recibido observado, activo y
+    # 1ª venta). Si kubera no contesta, quedan en `null` y la pestaña lo dice.
+    datos["etapas_kubera"] = fulfillment_etapas.enriquecer(datos["envios"])
     datos["generado"] = datetime.now(timezone.utc).isoformat()
     datos["fuente"] = ("Odoo: stock.picking de salida (socio FULL/AMAZON/WFS/MERCADO LIBRE) "
-                       "+ sale.order (quién la creó y su referencia) + stock.move")
+                       "+ sale.order (quién la creó y su referencia) + stock.move; "
+                       "llegada, activación y 1ª venta observadas en kubera")
     log.info("fulfillment_envios: %d salidas (%s)", len(datos["envios"]),
              {k: v["salidas"] for k, v in datos["resumen"].items()})
     return datos

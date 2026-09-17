@@ -11,8 +11,8 @@
  *   · cada renglón enseña su orden de venta, su salida y POR QUÉ tiene esa
  *     cuenta: la regla depende de quién creó la orden y tiene que verse;
  *   · «envío sin enlazar» es un estado de primera: ni 0 ni escondido;
- *   · recibidas y rechazadas van en «sin dato» hasta que exista la lectura; la
- *     segunda jamás se deriva restando;
+ *   · lo que se pinta como llegada es OBSERVADO por el sync (ML no publica los
+ *     envíos a Full por API): jamás se rotula como el conteo del marketplace;
  *   · nunca «en tránsito»: la etapa es «salida validada en Odoo».
  */
 
@@ -61,9 +61,9 @@ export function TablaEnvios({
             <tr className="bg-slate-50 text-left text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-500">
               <th className="px-3.5 py-2.5">Envío · orden · salida</th>
               <th className="px-3.5 py-2.5">Canal · cuenta</th>
-              <th className="w-[44%] px-3.5 py-2.5">Rail de etapas</th>
+              <th className="w-[50%] px-3.5 py-2.5">Rail de etapas</th>
               <th className="px-3.5 py-2.5 text-right">Piezas</th>
-              <th className="px-3.5 py-2.5 text-right">Tasa de recepción</th>
+              <th className="px-3.5 py-2.5 text-right" title="Cuántos SKUs del envío subieron su stock en FULL después de la salida. Observado por el sync cada 15 min: Mercado Libre no publica los envíos a Full por API.">Llegada observada</th>
               <th className="px-3.5 py-2.5" />
             </tr>
           </thead>
@@ -93,9 +93,6 @@ export function TablaEnvios({
                          title={e.cuenta_regla}>
                       {e.cuenta ?? (e.canal === "walmart" ? "Walmart MX" : "sin asignar")}
                     </div>
-                    {e.cuenta_regla && (
-                      <div className="mt-0.5 max-w-[190px] text-[10.5px] leading-tight text-slate-400">{e.cuenta_regla}</div>
-                    )}
                   </td>
                   <td className="px-3.5 py-[11px] align-middle">
                     <Rail pasos={pasosDe(e)} />
@@ -109,11 +106,22 @@ export function TablaEnvios({
                     </div>
                   </td>
                   <td className="px-3.5 py-[11px] text-right">
-                    <div className={`inline-flex rounded-md border px-2 py-1 text-[11px] font-bold ${tasa.clase}`}
-                         style={tasa.rayada ? { background: FONDO_RAYADO } : undefined}>
-                      {tasa.texto}
-                    </div>
-                    <div className="mt-1 text-[11px] text-slate-400">{tasa.nota}</div>
+                    {e.cobertura && e.cobertura.llegaron > 0 ? (
+                      <>
+                        <div className="inline-flex rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-700">
+                          {e.cobertura.llegaron} de {e.cobertura.skus} SKUs
+                        </div>
+                        <div className="mt-1 text-[11px] text-slate-400">llegaron a FULL</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className={`inline-flex rounded-md border px-2 py-1 text-[11px] font-bold ${tasa.clase}`}
+                             style={tasa.rayada ? { background: FONDO_RAYADO } : undefined}>
+                          {tasa.texto}
+                        </div>
+                        <div className="mt-1 text-[11px] text-slate-400">{tasa.nota}</div>
+                      </>
+                    )}
                   </td>
                   <td className="px-3.5 py-[11px] text-right">
                     <button type="button" onClick={() => onAbrir(e)}
@@ -185,12 +193,6 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
   const sinDato = (titulo: string) => (
     <span title={titulo} className="font-mono text-[11px] font-bold text-slate-400">sin dato</span>
   );
-  const sReg = (
-    <span className="rounded border border-dashed border-slate-300 px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-slate-400"
-          style={{ background: FONDO_RAYADO }}
-          title="La lista de Andy y la validación de Bodega todavía no se guardan en ningún sistema.">s/reg</span>
-  );
-
   return (
     <Tarjeta className="mt-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -243,9 +245,10 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
       {e.estado === "sinEnlazar" && (
         <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3">
           <p className="text-[12.5px] leading-relaxed text-amber-900">
-            <b>Envío sin enlazar.</b> La referencia de la orden en Odoo no trae número de envío de Mercado Libre,
-            así que no hay con qué cruzar lo que salió contra lo que el almacén recibió. Esta orden{" "}
-            <b>no puede tener tasa de recepción</b> — y eso no es un cero.
+            <b>Envío sin enlazar.</b> La referencia de la orden en Odoo no trae el número del envío, así que no
+            hay con qué cruzarlo contra el conteo de Mercado Libre. Lo de abajo es la <b>llegada observada</b> por
+            nuestro sync, no lo que ML dio por recibido: la diferencia entre declarado y recibido{" "}
+            <b>no se puede calcular</b>. Y eso no es un cero.
           </p>
         </div>
       )}
@@ -261,12 +264,14 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
           <thead>
             <tr className="bg-slate-50 text-left text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-500">
               <th className="px-3.5 py-2.5">SKU · producto</th>
-              <th className="px-3.5 py-2.5 text-right">Solicit.</th>
-              <th className="px-3.5 py-2.5 text-right">Valid.</th>
-              <th className="px-3.5 py-2.5 text-right" title="product_qty de los movimientos de la salida">Pedidas en la orden</th>
+              <th className="px-3.5 py-2.5 text-right" title="product_qty de los movimientos de la salida">Pedidas</th>
               <th className="px-3.5 py-2.5 text-right" title="quantity hecha al validar la salida">Enviadas</th>
-              <th className="px-3.5 py-2.5 text-right text-emerald-700">Recibidas</th>
-              <th className="px-3.5 py-2.5 text-right text-rose-800">Rechazadas</th>
+              <th className="px-3.5 py-2.5 text-right text-emerald-700"
+                  title="Primera subida de stock en FULL tras la salida, vista por el sync cada 15 min.">Llegó a FULL</th>
+              <th className="px-3.5 py-2.5 text-right"
+                  title="Piezas que entraron a FULL en la ventana del envío. OJO: puede incluir piezas de otro envío del mismo SKU.">Piezas que entraron</th>
+              <th className="px-3.5 py-2.5 text-right">Activo</th>
+              <th className="px-3.5 py-2.5 text-right">1ª venta</th>
             </tr>
           </thead>
           <tbody>
@@ -276,28 +281,49 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
                   <div className="font-mono text-[12.5px] font-bold text-slate-900">{l.sku}</div>
                   <div className="max-w-[420px] truncate text-[11.5px] text-slate-400" title={l.nombre}>{l.nombre}</div>
                 </td>
-                <td className="px-3.5 py-[9px] text-right">{sReg}</td>
-                <td className="px-3.5 py-[9px] text-right">{sReg}</td>
                 <td className="px-3.5 py-[9px] text-right font-mono tabular-nums text-slate-600">{num(l.pedidas)}</td>
                 <td className="px-3.5 py-[9px] text-right font-mono font-bold tabular-nums text-slate-900">
                   {l.enviadas === null ? <span className="text-amber-700">sin validar</span> : num(l.enviadas)}
                 </td>
-                <td className="px-3.5 py-[9px] text-right">{sinDato("Las recepciones del marketplace todavía no se leen.")}</td>
-                <td className="px-3.5 py-[9px] text-right">{sinDato("Solo se llena con la cifra explícita del marketplace; nunca restando.")}</td>
+                <td className="px-3.5 py-[9px] text-right font-mono text-[11.5px] text-emerald-700">
+                  {l.llegada ? fecha({ ts: l.llegada, aprox: true }) : sinDato("Ningún movimiento de stock FULL de este SKU tras la salida.")}
+                </td>
+                <td className="px-3.5 py-[9px] text-right font-mono tabular-nums text-slate-600">
+                  {l.piezas_llegadas ? num(l.piezas_llegadas) : "—"}
+                </td>
+                <td className="px-3.5 py-[9px] text-right font-mono text-[11.5px] text-slate-600">
+                  {l.activacion ? fecha({ ts: l.activacion, aprox: true }) : sinDato("La publicación no se prendió en FULL en la ventana.")}
+                </td>
+                <td className="px-3.5 py-[9px] text-right font-mono text-[11.5px] text-slate-600">
+                  {l.primera_venta ?? sinDato("Sin ventas FULL de este SKU después de la salida.")}
+                </td>
               </tr>
             ))}
             {!detalle && !error && (
               <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">Leyendo los renglones en Odoo…</td></tr>
             )}
+            {detalle && lineas.length === 0 && (
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">Esta salida no tiene renglones en Odoo.</td></tr>
+            )}
           </tbody>
           {lineas.length > 0 && (
             <tfoot>
               <tr className="border-t-2 border-slate-200 bg-slate-50 text-[12.5px] font-bold">
-                <td colSpan={3} className="px-3.5 py-2.5 text-slate-600">Total de la salida</td>
+                <td className="px-3.5 py-2.5 text-slate-600">Total de la salida</td>
                 <td className="px-3.5 py-2.5 text-right font-mono tabular-nums text-slate-600">{num(e.pedidas)}</td>
                 <td className="px-3.5 py-2.5 text-right font-mono tabular-nums text-slate-900">{hecha ? num(e.piezas) : "—"}</td>
-                <td className="px-3.5 py-2.5 text-right">{sinDato("Sin lectura de recepciones.")}</td>
-                <td className="px-3.5 py-2.5 text-right">{sinDato("Sin lectura de recepciones.")}</td>
+                <td className="px-3.5 py-2.5 text-right font-mono text-[11.5px] text-emerald-700">
+                  {e.cobertura ? `${e.cobertura.llegaron} de ${e.cobertura.skus} SKUs` : "—"}
+                </td>
+                <td className="px-3.5 py-2.5 text-right font-mono tabular-nums text-slate-600">
+                  {e.cobertura?.piezas_llegadas ? num(e.cobertura.piezas_llegadas) : "—"}
+                </td>
+                <td className="px-3.5 py-2.5 text-right font-mono text-[11.5px] text-slate-600">
+                  {e.cobertura ? `${e.cobertura.activos} de ${e.cobertura.skus}` : "—"}
+                </td>
+                <td className="px-3.5 py-2.5 text-right font-mono text-[11.5px] text-slate-600">
+                  {e.cobertura ? `${e.cobertura.vendieron} de ${e.cobertura.skus}` : "—"}
+                </td>
               </tr>
             </tfoot>
           )}
@@ -307,15 +333,17 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3">
           <p className="text-[12.5px] leading-relaxed text-amber-900">
-            <b>Recibidas y rechazadas todavía no se leen.</b> Cuando se lean, lo que el almacén no ha contado va
-            en <b>en recepción</b>, y solo pasa a <b>rechazadas</b> cuando el marketplace lo dice como cantidad
-            explícita — nunca restando enviadas menos recibidas.
+            <b>«Llegó a FULL» no es el conteo de Mercado Libre.</b> Su API no publica los envíos a Full: no hay
+            declaradas, ni procesadas, ni motivos. Esto es la subida de stock que ve nuestro sync cada 15 minutos,
+            o sea cuando las piezas ya se pueden vender — puede ser días después de que el panel diga
+            «procesamiento finalizado». Las <b>piezas que entraron</b> pueden incluir otro envío del mismo SKU.
           </p>
         </div>
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
           <p className="text-[12.5px] leading-relaxed text-slate-600">
-            <b>Sin cajas.</b> Odoo no registra cajas ni usa paquetes, y el factor de caja por SKU aún no se cruza
-            aquí. Las cajas del packing list son cartones de <b>importación</b>, no de envío a FULL.
+            <b>Lo declarado y lo rechazado viven sólo en el panel de ML.</b> Las unidades declaradas del envío, las
+            diferencias (de más o de menos) y los motivos («mal embalada», «no apta para vender en Full») no
+            existen en ninguna respuesta de su API: se capturan a mano o no se muestran.
           </p>
         </div>
       </div>

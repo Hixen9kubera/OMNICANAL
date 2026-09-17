@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.528.0 — El rail de FULLFILMENT llega hasta la venta: llegada observada, activación y 1ª venta
+
+Brandon: *"el rail de las etapas es donde debemos de completarlo con la información que tienes"*. De las siete
+etapas había dos con fecha; ahora hay cinco. Y el detalle del envío se limpió: fuera las columnas que no tenían
+fuente.
+
+**Antes hubo que averiguar si Mercado Libre publica los envíos a Full. NO los publica** (medido el 17-sep con
+590 GET y la documentación oficial; reporte en `scratchpad`, resumen en la memoria del proyecto):
+- no existe ningún GET que devuelva un envío a Full por su número — 30 rutas probadas con las dos cuentas; un
+  envío a Full **no es un `shipment`**, y el 403 de `/inbounds*` sale igual con rutas inventadas, así que no
+  prueba nada;
+- la **Inbound FBM API** (`POST /marketplace/fbm/inbounds`) existe pero es del **modelo Fulfillment China**:
+  crea envíos, no lee los que se arman en el Seller Center, y termina devolviendo un enlace a una pantalla web;
+- **declaradas, diferencias y motivos** («mal embalada», «no apta para vender en Full») **no existen en ninguna
+  respuesta**: sólo viven en el panel. Las diferencias son firmadas (en el envío 75649765 hay +75 y −47).
+
+**Lo que sí se puede, y es lo que hace esta versión** (`services/fulfillment_etapas.py`, lectura pura de kubera):
+- **RECIBIDO → llegada OBSERVADA**: primera subida de `stock_full` de cada SKU tras la salida validada
+  (`channel.listing_history`, la foto del sync cada 15 min). Es "ya se puede vender", no el conteo de ML: el
+  envío 76309173 decía "procesamiento finalizado 410/410" cuando por API sólo habían bajado 170 piezas.
+- **ACTIVO**: primera vez que la publicación se marca `is_fulfillment` o su `stock_full` sube desde 0.
+- **1ª VENTA**: `channel.sales_daily_completa` con `is_full`, por día.
+- Las tres viajan con `aprox` (es cuándo se OBSERVÓ) y con **cobertura por SKU** — el rail dice "5 de 6 SKUs",
+  porque una pieza de un SKU no es el envío entero.
+
+**Reglas que impiden que esto mienta** (y sus pruebas, `tests/test_fulfillment_etapas.py`, 9 casos):
+- una salida **sin validar no tiene llegada**: lo que entrara a FULL sería de otro envío del mismo SKU;
+- ventanas de 30 días (llegada) y 45 (activación); antes del 17-jul no hay historia y se dice "sin dato";
+- el stock de la otra cuenta no cuenta; FBA se cruza contra la cuenta AMAZON;
+- las **piezas que entraron pueden incluir otro envío del mismo SKU** (los envíos al mismo CEDIS bajan por
+  goteo), así que esa cifra sólo aparece en el detalle y rotulada, nunca en el rail;
+- si kubera no contesta, las tres etapas quedan en `null` y la pestaña sigue: no se inventa una fecha.
+
+**Pantalla**: la última columna de Envíos pasa de "tasa de recepción" (que no existe) a **"llegada observada"**
+con los SKUs que llegaron; el detalle cambia Solicit./Valid./Recibidas/Rechazadas —cuatro columnas sin fuente—
+por **Llegó a FULL · Piezas que entraron · Activo · 1ª venta**, y explica en dos notas qué es cada cosa y qué
+vive sólo en el panel de ML. En la tabla, la regla de la cuenta se movió al tooltip.
+
+Medido al subir: de 230 salidas, **56 con llegada, 50 con activación y 58 con primera venta**; el resto es
+anterior al 17-jul o sigue sin validar. `tsc` limpio, `next build` en verde, 24 pruebas en verde y la pantalla
+revisada contra Odoo y kubera reales con un servidor mínimo que sólo monta este router.
+
 ### v0.527.0 — La guía de TikTok se veía en el panel y Odoo seguía vacío
 
 Brandon, 17-sep: *"sí se jalan las guías de TikTok pero no se están guardando en

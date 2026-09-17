@@ -39,7 +39,10 @@ export const ETAPAS = [
   // `date_done` del OUT. Medido el 14-sep: en 16 de 43 envíos ML ya había
   // recibido ANTES de esta validación. No es la hora del camión y no se rotula así.
   { t: "Salida validada", corto: "Salida", sub: "en Odoo · no es el camión" },
-  { t: "Recibido", corto: "Recibido", sub: "aviso del almacén" },
+  // NO es el aviso de ML (su API no tiene envíos a Full): es la subida de
+  // stock_full que ve el sync cada 15 min, o sea cuando las piezas ya se pueden
+  // vender. Por eso viaja con `aprox` y se rotula "observado".
+  { t: "Recibido", corto: "Recibido", sub: "llegada observada" },
   { t: "Activo", corto: "Activo", sub: "prende en FULL" },
   { t: "1ª venta", corto: "1ª venta", sub: "primera venta" },
 ] as const;
@@ -84,6 +87,15 @@ export interface Envio {
   etapas: (Instante | null)[];
   estado: EstadoEnvio;
   n_skus?: number;
+  /** Cuántos SKUs del envío ya llegaron, se activaron y vendieron (observado). */
+  cobertura?: {
+    skus: number;
+    llegaron: number;
+    /** Piezas que ENTRARON a FULL en la ventana: puede incluir otro envío del mismo SKU. */
+    piezas_llegadas: number;
+    activos: number;
+    vendieron: number;
+  };
   /** Sólo si el marketplace dio recibidas y rechazadas explícitas (diseño). */
   tasaPct?: number;
 }
@@ -95,6 +107,11 @@ export interface LineaOdoo {
   pedidas: number;
   /** null = la salida no se ha validado. */
   enviadas: number | null;
+  /** Observado en kubera tras la salida; ausente = no se vio nada. */
+  llegada?: string;
+  piezas_llegadas?: number;
+  activacion?: string;
+  primera_venta?: string;
 }
 
 export interface EnvioConLineas extends Envio {
@@ -122,6 +139,11 @@ export interface RespuestaEnvios {
   /** Llaves: "meli", "meli:Kubera", "meli:San Corpe", "meli:sin_asignar", "amazon", "walmart". */
   resumen: Record<string, ResumenGrupo>;
   excluidas: { venta_amazon_mfn: number; otro: number };
+  /** Si kubera contestó, y con qué ventanas se buscaron llegada y activación. */
+  etapas_kubera?: {
+    kubera: boolean; motivo?: string; desde_historia?: string;
+    ventana_llegada_dias?: number; ventana_activacion_dias?: number;
+  };
   generado: string;
   fuente: string;
   _cache?: { edad_s: number; ttl_s: number };
