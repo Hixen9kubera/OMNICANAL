@@ -150,11 +150,14 @@ def listar(
     estados: list[str] | None = None,
     skus_filtro: list[str] | None = None,
     solo_activas: bool = False,
+    skus_exactos: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """`solo_activas`: sólo lo comprable HOY (`situacion` BUYABLE/PUBLISHED),
     criterio de `publicaciones_panel`. DISCOVERABLE queda FUERA: se ve en el
     catálogo y no se puede comprar. Requiere la rejilla de kubera — ver
-    `puede_filtrar_activas`."""
+    `puede_filtrar_activas`.
+    `skus_exactos`: la lista la resolvió el sistema; se compara por igualdad en
+    vez de `ilike`. Solo la rejilla de kubera lo entiende (ver `meli.listar`)."""
     # PASO 3 · BLOQUE 2 (19-ago). Ver la nota larga en channel_read: la columna
     # `stock` deja de ser la foto de Odoo y pasa a ser el stock del canal.
     if settings.supabase_read_publicaciones:
@@ -162,7 +165,8 @@ def listar(
         filas, total = channel_read.rejilla_amazon(
             page=page, per_page=per_page, search=search,
             solo_publicados=solo_publicados, orden=orden, estados=estados,
-            skus_filtro=skus_filtro, solo_activas=solo_activas)
+            skus_filtro=skus_filtro, solo_activas=solo_activas,
+            skus_exactos=skus_exactos)
         return [_normalizar(f) for f in filas], total
 
     offset = (page - 1) * per_page

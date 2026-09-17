@@ -768,10 +768,33 @@ _ORDEN = {
 }
 
 
+def filtro_sql_publicado(canal: str) -> tuple[str, dict]:
+    """
+    `(expresión, params)` de «existe en el marketplace» para ML o Amazon.
+
+    Existe para que la fuente `canales` del flujo del SKU INTERPOLE el mismo
+    predicado que la rejilla en vez de escribirlo otra vez: dos copias de
+    «publicado» se desincronizan sin que nada falle, y entonces el número del
+    stepper y el total de la lista dejan de cuadrar.
+    """
+    if canal == "mercado_libre":
+        return _PUB_ML, {}
+    if canal == "amazon":
+        return _PUB_AMZ, {"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)}
+    raise ValueError(f"{canal}: sin predicado de publicado en channel_read")
+
+
 def _filtros(base, *, search, solo_publicados, cuenta, estados, skus_filtro,
-             pub_expr, activas=None):
+             pub_expr, activas=None, skus_exactos=False):
     """
     Arma el WHERE compartido por las dos rejillas. Devuelve (sql, params).
+
+    `skus_exactos` dice que la lista NO la tecleó nadie: la resolvió el sistema
+    (los SKUs de una etapa del flujo, los del almacén DROP, los de costo
+    validado). Entonces el `ilike '%t%'` —que además mira el NOMBRE— sobra y
+    miente: se compara por igualdad en minúsculas, que con 13,557 SKUs mide
+    110 ms contra 1,572 ms de `any(citext[])` y no pierde las 3 publicaciones
+    escritas en minúsculas.
 
     `activas` es el `(expr, params)` de `publicaciones_panel.filtro_sql_activas`
     y cuando viene MANDA sobre `solo_publicados` y sobre `estados`: son dos
@@ -799,7 +822,10 @@ def _filtros(base, *, search, solo_publicados, cuenta, estados, skus_filtro,
         elif "inactivo" in estados and "publicado" not in estados:
             sql += f" and not ({pub_expr})"
     terminos = [t.strip() for t in (skus_filtro or []) if t.strip()]
-    if terminos:
+    if terminos and skus_exactos:
+        sql += " and lower(l.sku::text) = any(%(skus_exactos)s)"
+        params["skus_exactos"] = sorted({t.lower() for t in terminos})
+    elif terminos:
         piezas = []
         for n, t in enumerate(terminos):
             piezas.append(f"(p.name ilike %(sku_{n})s or l.sku::text ilike %(sku_{n})s)")
@@ -833,12 +859,12 @@ def _activas(canal, solo_activas):
 
 def rejilla_ml(*, page, per_page, search=None, solo_publicados=False,
                cuenta=None, orden="reciente", estados=None, skus_filtro=None,
-               solo_activas=False):
+               solo_activas=False, skus_exactos=False):
     """Gemela de `meli.listar`. Filas con las llaves que espera `_normalizar`."""
     sql, params = _filtros(_REJILLA_ML, search=search,
                            solo_publicados=solo_publicados, cuenta=cuenta,
                            estados=estados, skus_filtro=skus_filtro,
-                           pub_expr=_PUB_ML,
+                           pub_expr=_PUB_ML, skus_exactos=skus_exactos,
                            activas=_activas("mercado_libre", solo_activas))
     return _pagina(sql, params, orden, per_page, page,
                    "publicado desc, sku")
@@ -846,12 +872,12 @@ def rejilla_ml(*, page, per_page, search=None, solo_publicados=False,
 
 def rejilla_amazon(*, page, per_page, search=None, solo_publicados=False,
                    orden="reciente", estados=None, skus_filtro=None,
-                   solo_activas=False):
+                   solo_activas=False, skus_exactos=False):
     """Gemela de `amazon.listar`."""
     sql, params = _filtros(_REJILLA_AMZ, search=search,
                            solo_publicados=solo_publicados, cuenta=None,
                            estados=estados, skus_filtro=skus_filtro,
-                           pub_expr=_PUB_AMZ,
+                           pub_expr=_PUB_AMZ, skus_exactos=skus_exactos,
                            activas=_activas("amazon", solo_activas))
     params.update({"pub": list(_AMZ_PUBLICADO), "viva": list(_AMZ_VIVA)})
     return _pagina(sql, params, orden, per_page, page,

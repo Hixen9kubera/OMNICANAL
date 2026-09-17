@@ -188,6 +188,9 @@ async def listar_productos(
     vista: str = "productos",
     skus_exactos: bool = False,
     aplanar: bool | None = None,
+    ids_productos: list[int] | None = None,
+    ids_filas: list[int] | None = None,
+    estricto: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
     Lista productos paginados. Devuelve (items_normalizados, total, total_pages).
@@ -206,6 +209,15 @@ async def listar_productos(
       (los SKUs de un almacén, los de costo validado). Cambia el LIKE por
       igualdad: 135 veces más rápido y sin falsos positivos. Ver
       `_buscar_wc_ids_wp`.
+    - `ids_productos` / `ids_filas`: la lista ya viene resuelta como wc_id desde
+      `core.products` (una etapa del flujo). Se filtra por la PK de WordPress
+      —`p.ID IN` en el anidado, `v.ID`/`p.ID` en el aplanado— y no se toca
+      `meta_value` ni se expanden padres: evita las 17 consultas en serie de
+      `skus_padre` y el recorrido con 13.5k comodines.
+    - `estricto`: la lista la resolvió el SISTEMA. Toda falla de lectura LANZA
+      (`wp_db.FiltroExactoNoAplicable`) en vez de devolver `[], 0` o media
+      página. Un cero silencioso con el segmento encendido miente, que es justo
+      lo que la regla «vacío no es cero» promete evitar.
     - Sin filtros → listado en vivo de WooCommerce.
     """
     campos = (
@@ -241,7 +253,7 @@ async def listar_productos(
         cats = await _categoria_con_descendientes(categoria)
 
     usa_db = bool(
-        search or estados or skus or cats
+        search or estados or skus or cats or ids_productos is not None
         or orden in ("stock_desc", "stock_asc", "precio_desc", "precio_asc")
     )
 
@@ -258,6 +270,9 @@ async def listar_productos(
     if aplanar:
         from services import wp_db
         if not wp_db.disponible():
+            if estricto:
+                raise wp_db.FiltroExactoNoAplicable(
+                    "sin la base de WordPress no hay listado aplanado que filtrar")
             log.warning("listado aplanado pedido pero wp_db no está: se sirve anidado")
             aplanar = False
 
@@ -276,9 +291,16 @@ async def listar_productos(
             # 7,477). Antes se filtraba después de hidratar, sobre las 40 filas
             # de la página: el total seguía siendo el del catálogo entero (5,344)
             # y la página 1 de "Fundas y Carcasas" salía VACÍA (11-sep).
+            # `skus_exactos and estricto`: la igualdad es para las listas que
+            # resuelve el SISTEMA en omnicanal. El `drop_off=` legado de
+            # /productos también llega con `skus_exactos`, y ahí el aplanado
+            # tiene que conservar el LIKE de siempre —«ROP-0695» encontrando a
+            # «ROP-0695-BEI-M»—: esa ruta queda congelada por contrato.
             filas, total = await asyncio.to_thread(
                 wp_db.indice_plano, vista, search, list(skus or []) or None,
-                estados, orden, page, per_page, categorias=cats)
+                estados, orden, page, per_page, categorias=cats,
+                ids=ids_filas, skus_exactos=skus_exactos and estricto,
+                estricto=estricto)
             total_pages = max(1, (total + per_page - 1) // per_page)
             ids_prod = [f["wc_id"] for f in filas if f["tipo"] == "product"]
             ids_var = [f["wc_id"] for f in filas if f["tipo"] == "product_variation"]
@@ -293,6 +315,13 @@ async def listar_productos(
                     "per_page": len(ids_prod), "page": 1}))
             for res in await asyncio.gather(*tareas, return_exceptions=True):
                 if isinstance(res, Exception):
+                    # Con una lista del sistema, media página es una MENTIRA
+                    # distinta del cero pero igual de callada: en el sandbox el
+                    # aplanado pintaba 2 de 3 ítems porque la mitad REST se
+                    # perdía aquí dentro sin que nadie se enterara.
+                    if estricto:
+                        raise wp_db.FiltroExactoNoAplicable(
+                            f"la hidratación del aplanado falló a medias: {res}") from res
                     log.warning("listado aplanado: una mitad del lote falló: %s", res)
                     continue
                 if isinstance(res, dict):                 # variantes desde MySQL
@@ -322,21 +351,33 @@ async def listar_productos(
             # ejecutarlas inline congelaba el event loop entero (perf 05-ago).
             wc_ids, total_db = await asyncio.to_thread(
                 _buscar_wc_ids_db, search, page, per_page, orden, estados, skus,
-                vista, skus_exactos, cats)
+                vista, skus_exactos, cats, ids_productos, estricto)
             if wc_ids:
-                r = await cli.get("/products", params={
-                    **params, "include": ",".join(str(i) for i in wc_ids),
-                    "per_page": len(wc_ids),
-                    # wc_ids YA es el recorte de esta página (LIMIT/OFFSET en SQL);
-                    # "page" aquí volvería a paginar sobre ese conjunto ya chico
-                    # (mismo bug que en la rama de abajo, corregido igual).
-                    "page": 1,
-                })
+                try:
+                    r = await cli.get("/products", params={
+                        **params, "include": ",".join(str(i) for i in wc_ids),
+                        "per_page": len(wc_ids),
+                        # wc_ids YA es el recorte de esta página (LIMIT/OFFSET en SQL);
+                        # "page" aquí volvería a paginar sobre ese conjunto ya chico
+                        # (mismo bug que en la rama de abajo, corregido igual).
+                        "page": 1,
+                    })
+                except httpx.HTTPError as exc:
+                    # Sin `estricto` esto ya se comía la página entera y dejaba
+                    # `data` vacío; lo nuevo es DECIRLO cuando la lista es del
+                    # sistema, en vez de enseñar cero productos.
+                    if estricto:
+                        raise wp_db.FiltroExactoNoAplicable(
+                            f"WooCommerce no contestó el lote de la página: {exc}") from exc
+                    raise
                 if r.status_code == 200:
                     by_id = {p["id"]: p for p in r.json()}
                     data = [by_id[i] for i in wc_ids if i in by_id]  # preserva el orden
                     total = total_db
                     total_pages = max(1, (total_db + per_page - 1) // per_page)
+                elif estricto:
+                    raise wp_db.FiltroExactoNoAplicable(
+                        f"WooCommerce contestó {r.status_code} al lote de la página")
             # Fallback SKU exacto / nombre si la DB no resolvió (p. ej. solo search).
             #
             # NO se dispara si hay filtro de SKUs: este fallback pregunta a Woo
@@ -347,7 +388,11 @@ async def listar_productos(
             # fallo de la ruta de base — y el complemento por SKU exacto de más
             # abajo ya cubre lo que la maestra no conoce. Con CATEGORÍA, igual:
             # la REST de aquí no la conoce y buscaría en el catálogo entero.
-            if not data and search and not skus and not cats:
+            # `not estricto`: con una lista del sistema este respaldo pregunta a
+            # Woo SOLO por `search` y resucitaría el catálogo entero sin la
+            # lista — justo la ruta por ids, donde `skus` va en None y la guarda
+            # de arriba no alcanza.
+            if not data and search and not skus and not cats and not estricto:
                 if " " not in search.strip():
                     rs = await cli.get("/products", params={**params, "sku": search.strip()})
                     if rs.status_code == 200 and rs.json():
@@ -371,14 +416,27 @@ async def listar_productos(
             # NO casa con lo buscado — al filtrar por costo validado y
             # escribir "bolsas" salía un SKU de audífonos (31-ago). Lo mismo con
             # una CATEGORÍA elegida: el SKU exacto no sabe de categorías.
-            if skus and page == 1 and not search and not cats:
+            # La corrección del FANTASMA (las filas que el SQL cuenta y el
+            # `include` no devuelve) tiene que correr también en la ruta por
+            # ids, donde `skus` va en None: por eso la condición mira las dos.
+            if (skus or ids_productos is not None) and page == 1 and not search and not cats:
                 # Solo los términos que la búsqueda NO resolvió ya como SKU
                 # exacto: si todos están, la llamada extra sobra (perf 05-ago).
                 ya_exactos = {str(p.get("sku") or "").strip().upper() for p in data}
-                terminos = [t.strip() for t in skus
+                terminos = [t.strip() for t in (skus or [])
                             if t.strip() and " " not in t.strip()
                             and t.strip().upper() not in ya_exactos]
-                if terminos:
+                # El complemento pide a Woo hasta 100 SKUs que NO están en la
+                # página y suma lo que encuentre al total: con una lista del
+                # sistema mayor que `per_page` eso INFLA el total con filas de
+                # otras páginas.
+                # Se apaga con `estricto` y NO con `skus_exactos`: el
+                # `drop_off=` legado de /productos también viaja con
+                # `skus_exactos` y esa ruta queda congelada por contrato —
+                # quitarle el complemento le bajaría la lista y el total sin
+                # que nadie lo pidiera. El mismo defecto del total inflado sigue
+                # ahí, y ahí se queda hasta que se decida tocar /productos.
+                if terminos and not estricto:
                     rs = await cli.get("/products", params={
                         **params, "sku": ",".join(terminos[:100]),
                         "per_page": 100, "page": 1,
@@ -589,6 +647,8 @@ def _buscar_wc_ids_wp(
     vista: str,
     skus_exactos: bool = False,
     categorias: list[int] | None = None,
+    ids_productos: list[int] | None = None,
+    estricto: bool = False,
 ) -> tuple[list[int], int]:
     """
     Búsqueda contra WordPress EN VIVO (wp_posts + wp_postmeta).
@@ -616,6 +676,10 @@ def _buscar_wc_ids_wp(
 
     Los padres se siguen expandiendo igual en los dos caminos: un SKU de
     variante no casa nunca con el SKU (más corto) de su padre.
+
+    `ids_productos` se salta todo eso: la lista ya viene resuelta como `wc_id`
+    desde `core.products`, así que filtra por la PK y no toca `meta_value` ni
+    pregunta por padres (el colapso variante → padre ya se hizo en memoria).
     """
     from services import wp_db
     P = wp_db._prefix()
@@ -633,11 +697,19 @@ def _buscar_wc_ids_wp(
         if valores:
             where.append(f"p.post_status IN ({','.join(['%s'] * len(valores))})")
             args += valores
+    if ids_productos is not None:
+        # Lista vacía = CERO filas, nunca «no filtres».
+        limpios_ids = sorted({int(i) for i in ids_productos if i})
+        if not limpios_ids:
+            where.append("1 = 0")
+        else:
+            where.append(f"p.ID IN ({','.join(['%s'] * len(limpios_ids))})")
+            args += limpios_ids
     if search:
         # Variante → padre, igual que en `skus` de abajo: la caja de búsqueda
         # recibía el mismo trato de antes y `JUGU-1179-NEG` devolvía 0 (el SKU
         # del padre, `JUGU-1179`, es más corto y no contiene al de la variante).
-        terminos_s, _ = wp_db.expandir_con_padres([search])
+        terminos_s, _ = wp_db.expandir_con_padres([search], estricto=estricto)
         if terminos_s:
             grupo_s = " OR ".join(
                 ["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos_s))
@@ -647,7 +719,7 @@ def _buscar_wc_ids_wp(
     if skus:
         # Variante → padre: la consulta solo mira `post_type='product'`, así que
         # un SKU de variante jamás matchea contra el SKU (más corto) de su padre.
-        terminos, _ = wp_db.expandir_con_padres(list(skus))
+        terminos, _ = wp_db.expandir_con_padres(list(skus), estricto=estricto)
         if terminos and skus_exactos:
             # Lista resuelta por el sistema: igualdad. Ver el docstring — son
             # 135 veces más rápido y además no arrastra falsos positivos.
@@ -701,8 +773,13 @@ def _buscar_wc_ids_wp(
             total = f_total.result()[0]["n"]
             filas = f_ids.result()
         return [f["ID"] for f in filas], int(total)
+    except wp_db.FiltroExactoNoAplicable:
+        raise
     except Exception as exc:  # noqa: BLE001
         log.warning("búsqueda en WordPress falló (%s); se usa la maestra", exc)
+        if estricto:
+            raise wp_db.FiltroExactoNoAplicable(
+                f"WordPress no resolvió el índice de la página: {exc}") from exc
         return [], 0
 
 
@@ -716,6 +793,8 @@ def _buscar_wc_ids_db(
     vista: str = "productos",
     skus_exactos: bool = False,
     categorias: list[int] | None = None,
+    ids_productos: list[int] | None = None,
+    estricto: bool = False,
 ) -> tuple[list[int], int]:
     """
     Resuelve búsqueda parcial + filtro de estado + orden (stock/precio) + lista
@@ -737,7 +816,15 @@ def _buscar_wc_ids_db(
     # respeta la pestaña (Crear necesita ver drafts; Omnicanal, todo).
     if wp_db.disponible():
         return _buscar_wc_ids_wp(search, page, per_page, orden, estados, skus,
-                                 vista, skus_exactos, categorias)
+                                 vista, skus_exactos, categorias,
+                                 ids_productos, estricto)
+
+    # LA MAESTRA NO SIRVE PARA UNA LISTA DEL SISTEMA: está congelada desde el
+    # 23-jul con 5,381 de 7,151 productos y no conoce `wc_id` como filtro. Con
+    # `estricto` se dice en vez de servir un subconjunto con cara de completo.
+    if estricto:
+        raise wp_db.FiltroExactoNoAplicable(
+            "sin la base de WordPress el filtro exacto no se puede aplicar")
 
     # Respaldo: sin acceso directo a WordPress se usa la maestra (incompleta).
     where = ["wc_id IS NOT NULL", "(status_wc IS NULL OR status_wc <> 'draft')"]

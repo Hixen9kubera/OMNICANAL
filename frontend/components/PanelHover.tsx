@@ -19,11 +19,15 @@
    `claro` y `bloque` (14-sep-2026) son para la nota de la regla de precios, que
    vive en el cajón del producto: una tarjeta blanca con secciones, sobre un
    bloque y no sobre una celda. El fijo también ahí es obligatorio: la sección
-   del canal lleva overflow-hidden y un panel absoluto se cortaría en su borde. */
+   del canal lleva overflow-hidden y un panel absoluto se cortaría en su borde.
+
+   `envoltura` (17-sep-2026) es para las pestañas del stepper de /omnicanal:
+   cada una es un botón dentro de una fila flex, y el `w-full` de siempre haría
+   que cada envoltura pidiera el ancho entero de la fila. */
 
 import { useCallback, useState } from "react";
 
-export default function PanelHover({ children, panel, ancho = 290, alto = 190, claro = false, bloque = false }: {
+export default function PanelHover({ children, panel, ancho = 290, alto = 190, claro = false, bloque = false, envoltura }: {
   children: React.ReactNode; panel: React.ReactNode; ancho?: number;
   /** Alto aproximado del panel: decide si se pinta abajo o arriba. */
   alto?: number;
@@ -31,6 +35,8 @@ export default function PanelHover({ children, panel, ancho = 290, alto = 190, c
   claro?: boolean;
   /** Envuelve un bloque (`div`) en vez de una celda (`span` en línea). */
   bloque?: boolean;
+  /** Clases del `div` envolvente cuando `bloque`, en lugar de las de siempre. */
+  envoltura?: string;
 }) {
   const [pos, setPos] = useState<{ x: number; y: number; arriba: boolean; w: number } | null>(null);
   const abrir = useCallback((el: HTMLElement) => {
@@ -67,7 +73,7 @@ export default function PanelHover({ children, panel, ancho = 290, alto = 190, c
   };
 
   return bloque ? (
-    <div className="block w-full cursor-help" {...eventos}>
+    <div className={envoltura ?? "block w-full cursor-help"} {...eventos}>
       {children}
       {globo}
     </div>

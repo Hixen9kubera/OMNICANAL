@@ -13,7 +13,7 @@ import logging
 import time
 import xmlrpc.client
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from config import settings
 
@@ -327,30 +327,47 @@ def skus_por_almacen(codigo: str, *, ttl: float = _ALMACEN_TTL) -> list[str]:
     uid = _uid()
     if not uid:
         return []
+
+    def _llamar(modelo: str, metodo: str, args: list[Any], kwargs: dict[str, Any]) -> Any:
+        return _models().execute_kw(settings.odoo_db, uid, settings.odoo_password,
+                                    modelo, metodo, args, kwargs)
+
     try:
-        alm = _models().execute_kw(
-            settings.odoo_db, uid, settings.odoo_password,
-            "stock.warehouse", "search_read", [[["code", "=", codigo]]],
-            {"fields": ["name", "view_location_id"], "limit": 1},
-        )
-        if not alm:
-            log.warning("Odoo skus_por_almacen: no existe el almacen %s", codigo)
-            return []
-        raiz = _id_de(alm[0].get("view_location_id"))
-        quants = _models().execute_kw(
-            settings.odoo_db, uid, settings.odoo_password,
-            "stock.quant", "search_read",
-            [[["location_id", "child_of", raiz],
-              ["location_id.usage", "=", "internal"],
-              ["quantity", ">", 0]]],
-            {"fields": ["product_id"]},
-        )
+        salida = _consultar_almacen(codigo, _llamar)
     except Exception as exc:  # noqa: BLE001
         log.warning("Odoo skus_por_almacen(%s) fallo: %s", codigo, exc)
         # Se devuelve lo ultimo bueno si lo hay: mejor una foto de hace un rato
         # que vaciar un filtro y hacer creer que el almacen esta vacio.
         return guardado[1] if guardado else []
+    if salida is None:
+        log.warning("Odoo skus_por_almacen: no existe el almacen %s", codigo)
+        return []
+    _almacen_cache[codigo] = (time.monotonic(), salida)
+    return salida
 
+
+def _consultar_almacen(codigo: str,
+                       llamar: Callable[[str, str, list[Any], dict[str, Any]], Any]
+                       ) -> list[str] | None:
+    """
+    Las dos consultas de `skus_por_almacen` —almacén por código y quants bajo
+    su ubicación raíz— con el transporte que decida quien llama. `None` si el
+    almacén no existe; LANZA si Odoo falla.
+
+    Existe para que la regla viva en UN lugar: `skus_por_almacen` la corre con
+    `_models()` (sin timeout, como siempre) y `estado_almacen` con `_kw_flujo`
+    (con timeout), y los dos escriben la misma caché.
+    """
+    alm = llamar("stock.warehouse", "search_read", [[["code", "=", codigo]]],
+                 {"fields": ["name", "view_location_id"], "limit": 1})
+    if not alm:
+        return None
+    raiz = _id_de(alm[0].get("view_location_id"))
+    quants = llamar("stock.quant", "search_read",
+                    [[["location_id", "child_of", raiz],
+                      ["location_id.usage", "=", "internal"],
+                      ["quantity", ">", 0]]],
+                    {"fields": ["product_id"]})
     vistos: set[str] = set()
     for q in quants:
         nombre = _nombre_de(q.get("product_id"))
@@ -359,9 +376,7 @@ def skus_por_almacen(codigo: str, *, ttl: float = _ALMACEN_TTL) -> list[str]:
             sku = nombre[1:nombre.index("]")].strip()
             if sku:
                 vistos.add(sku.upper())
-    salida = sorted(vistos)
-    _almacen_cache[codigo] = (time.monotonic(), salida)
-    return salida
+    return sorted(vistos)
 
 
 def recibido_por_sku(skus: list[str]) -> dict[str, dict[str, Any]]:
@@ -1396,3 +1411,266 @@ def _causa(mov: dict[str, Any], u_org: tuple[str, str], u_dst: tuple[str, str],
             return "envio_full"
         return "venta"
     return "otro"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLUJO DEL SKU — lecturas de CATÁLOGO COMPLETO
+#
+# Todo lo de arriba va SKU → dato, en lotes, y se TRAGA las excepciones: una
+# fila sin dato es mejor que una pantalla caída. Para una foto que CUENTA el
+# catálogo entero ese contrato es veneno: un lote que falla en silencio
+# convierte 8 mil «con ubicación» en 3 mil creíbles, y `_uid()` guarda en caché
+# un `None` tras una autenticación fallida, así que todo sale vacío sin un solo
+# error. Por eso estas funciones son distintas a propósito:
+#
+#   · LANZAN la excepción. Quien las llama decide qué hacer con la falla
+#     (inventario_flujo conserva su último resultado bueno y lo marca `vieja`).
+#   · VACÍO ES FALLA. En un Odoo con 13 mil productos activos, un catálogo, un
+#     conjunto de quants o de fotos vacío no es un cero: es una lectura rota.
+#   · TIMEOUT EXPLÍCITO. `xmlrpc.client` no trae ninguno por omisión y el
+#     `ServerProxy` de `_models()` no lo configura: una red partida deja el
+#     hilo colgado para siempre. Se agrega SOLO aquí, con transporte propio,
+#     para no alterar el comportamiento de ninguna función existente.
+#   · NUNCA PIDEN BINARIOS. Ni `image_1920` ni `image_256`: la foto se pregunta
+#     con un dominio (ver `_DOMINIO_FOTO`) y solo viajan ids.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TransporteConTiempo(xmlrpc.client.Transport):
+    """HTTP con timeout de socket. `make_connection` crea la conexión sin
+    conectar; poner `timeout` antes de que `connect()` lo lea es suficiente."""
+
+    def __init__(self, timeout: float) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):  # type: ignore[override]
+        conn = super().make_connection(host)
+        conn.timeout = self._timeout
+        return conn
+
+
+class _TransporteSeguroConTiempo(xmlrpc.client.SafeTransport):
+    """Lo mismo sobre HTTPS, que es como se habla con ifull.odoo.com."""
+
+    def __init__(self, timeout: float) -> None:
+        super().__init__()
+        self._timeout = timeout
+
+    def make_connection(self, host):  # type: ignore[override]
+        conn = super().make_connection(host)
+        conn.timeout = self._timeout
+        return conn
+
+
+def _timeout_flujo(timeout: float | None) -> float:
+    return float(timeout if timeout is not None
+                 else settings.inventario_flujo_timeout_s)
+
+
+def _proxy_con_tiempo(ruta: str, timeout: float) -> xmlrpc.client.ServerProxy:
+    """Un `ServerProxy` NUEVO por llamada: no son seguros entre hilos, y el
+    armado de la foto corre en su propio hilo mientras el panel usa los otros."""
+    if not settings.odoo_url:
+        raise RuntimeError("ODOO_URL no está configurada")
+    url = f"{settings.odoo_url}/xmlrpc/2/{ruta}"
+    transporte = (_TransporteSeguroConTiempo(timeout) if url.startswith("https")
+                  else _TransporteConTiempo(timeout))
+    return xmlrpc.client.ServerProxy(url, transport=transporte)
+
+
+# uid PROPIO de estas lecturas. No se reusa `_uid()` por dos razones: su
+# `authenticate` no tiene timeout, y guarda `None` en caché para siempre tras
+# una falla. Aquí solo se guarda un uid BUENO; una falla se reintenta la vez
+# siguiente. `_uid()` queda intacto para no cambiarle nada a nadie más.
+_uid_flujo: int | None = None
+
+
+def _uid_con_tiempo(timeout: float) -> int:
+    global _uid_flujo
+    if _uid_flujo:
+        return _uid_flujo
+    uid = _proxy_con_tiempo("common", timeout).authenticate(
+        settings.odoo_db, settings.odoo_user, settings.odoo_password, {})
+    if not uid:
+        raise RuntimeError("Odoo rechazó la autenticación (uid vacío)")
+    _uid_flujo = int(uid)
+    return _uid_flujo
+
+
+def _kw_flujo(modelo: str, metodo: str, args: list[Any],
+              kwargs: dict[str, Any] | None = None, *,
+              timeout: float | None = None) -> Any:
+    t = _timeout_flujo(timeout)
+    uid = _uid_con_tiempo(t)
+    return _proxy_con_tiempo("object", t).execute_kw(
+        settings.odoo_db, uid, settings.odoo_password, modelo, metodo, args,
+        kwargs or {})
+
+
+def catalogo_productos(*, timeout: float | None = None) -> list[dict[str, Any]]:
+    """
+    ``[{id, default_code, tmpl_id, active}]`` de TODO `product.product`,
+    archivados incluidos (`active_test=False`). ~27 mil filas; 3.9–6.8 s de día.
+
+    SIN filtrar `default_code`, a propósito: la tabla (`variantes_por_sku`)
+    busca hermanos por plantilla sin ese filtro, así que un hermano SIN código
+    también cuenta como variante. Filtrando saldrían 1,171 SKUs con hermanos en
+    vez de 1,173 y el flujo contradiría a la columna de abajo.
+
+    `default_code` sale recortado; `""` cuando no hay. Lanza si viene vacío.
+    """
+    filas = _kw_flujo(
+        "product.product", "search_read", [[]],
+        {"fields": ["id", "default_code", "product_tmpl_id", "active"],
+         "order": "id", "context": {"active_test": False}},
+        timeout=timeout)
+    if not filas:
+        raise RuntimeError("catálogo de Odoo vacío: se trata como falla, no como cero")
+    return [{"id": int(f["id"]),
+             "default_code": (f.get("default_code") or "").strip(),
+             "tmpl_id": _id_de(f.get("product_tmpl_id")),
+             "active": bool(f.get("active"))} for f in filas]
+
+
+def quants_internos_por_producto(*, timeout: float | None = None) -> dict[int, float]:
+    """
+    ``{ product_id: suma de quantity }`` de los quants en ubicación `internal`
+    con `quantity != 0`. Es la MISMA regla que `ubicaciones_por_sku` (usage
+    internal y se salta los quants en cero), hecha en UNA llamada con
+    `read_group`. 2.6–5.3 s, ~8,558 grupos.
+
+    Lo que cuenta es que el producto APAREZCA, no la suma: +5 y −5 en dos
+    racks suman 0 y la tabla igual dice «con ubicación» (dos quants ≠ 0). Por
+    eso el grupo se conserva aunque sume cero.
+
+    La llave es el id de `product_id`; nunca se interpreta el texto
+    ``[SKU] nombre``. Lanza si no hay grupos.
+    """
+    grupos = _kw_flujo(
+        "stock.quant", "read_group",
+        [[["location_id.usage", "=", "internal"], ["quantity", "!=", 0]],
+         ["quantity:sum"], ["product_id"]],
+        {"lazy": False}, timeout=timeout)
+    salida: dict[int, float] = {}
+    for g in grupos or []:
+        pid = _id_de(g.get("product_id"))
+        if pid:
+            salida[int(pid)] = float(g.get("quantity") or 0)
+    if not salida:
+        raise RuntimeError("Odoo no devolvió quants internos: se trata como falla")
+    return salida
+
+
+# La traducción a dominio de `inventario_maestro.estado_stock`: listo solo con
+# piezas a la mano Y disponibles. Odoo evalúa las dos del lado del servidor.
+_DOMINIO_STOCK_LIBRE: list[Any] = [["qty_available", ">", 0], ["free_qty", ">", 0]]
+
+# NUNCA `image_1920` a secas: en Odoo 17 ese filtro sobre product.product se
+# ignora SIN error (`!= False` y `= False` devuelven los mismos 13,189; de 400
+# SKUs sin foto real, `skus_con_imagen` marcó 397 «con foto»). El `image_256`
+# que pinta la tabla es la imagen de la variante o, si no hay, la de su
+# plantilla: exactamente estas dos ramas.
+_DOMINIO_FOTO: list[Any] = ["|", ["image_variant_1920", "!=", False],
+                            ["product_tmpl_id.image_1920", "!=", False]]
+
+
+def ids_con_stock_libre(*, timeout: float | None = None) -> set[int]:
+    """Ids de `product.product` (archivados incluidos, como `detalle_por_sku`)
+    con `qty_available > 0` y `free_qty > 0`. Solo ids: `search`, no `read`.
+    Lanza si viene vacío."""
+    ids = _kw_flujo("product.product", "search", [_DOMINIO_STOCK_LIBRE],
+                    {"context": {"active_test": False}}, timeout=timeout)
+    if not ids:
+        raise RuntimeError("Odoo no devolvió productos con stock libre: "
+                           "se trata como falla")
+    return {int(i) for i in ids}
+
+
+def ids_con_foto(*, timeout: float | None = None) -> set[int]:
+    """Ids de `product.product` (archivados incluidos, como `miniaturas_por_sku`)
+    con imagen propia o de su plantilla, sin traer un solo byte de imagen.
+    Lanza si viene vacío."""
+    ids = _kw_flujo("product.product", "search", [_DOMINIO_FOTO],
+                    {"context": {"active_test": False}}, timeout=timeout)
+    if not ids:
+        raise RuntimeError("Odoo no devolvió productos con foto: se trata como falla")
+    return {int(i) for i in ids}
+
+
+def existencias_por_id(ids: Iterable[int], *,
+                       timeout: float | None = None) -> dict[int, tuple[float, float]]:
+    """
+    ``{ id: (qty_available, free_qty) }`` de los productos pedidos, archivados
+    incluidos. `free_qty` ausente vale lo físico, igual que `detalle_por_sku`.
+
+    Es para DESEMPATAR códigos repetidos como los desempata la tabla: gana el
+    activo con más `qty_available` y luego más `free_qty`. La suma de quants
+    internos no sirve de aproximación: incluye SCRAP y CUARENTENA, que son
+    `internal` sin almacén y Odoo deja fuera de `qty_available` (`_vendible`),
+    así que el flujo podía juzgar un producto que la fila nunca elige. Solo se
+    piden los ids empatados en `active` (unas decenas), no el catálogo.
+
+    Sin ids no llama. Lanza si pidió ids y no volvió ninguno.
+    """
+    pedidos = sorted({int(i) for i in ids})
+    if not pedidos:
+        return {}
+    salida: dict[int, tuple[float, float]] = {}
+    LOTE = 1000
+    for i in range(0, len(pedidos), LOTE):
+        filas = _kw_flujo(
+            "product.product", "search_read", [[["id", "in", pedidos[i:i + LOTE]]]],
+            {"fields": ["qty_available", "free_qty"],
+             "context": {"active_test": False}},
+            timeout=timeout)
+        for f in filas or []:
+            fisico = float(f.get("qty_available") or 0)
+            libre = f.get("free_qty")
+            libre = fisico if libre is None or libre is False else float(libre)
+            salida[int(f["id"])] = (fisico, libre)
+    if not salida:
+        raise RuntimeError("Odoo no devolvió existencias de los códigos repetidos: "
+                           "se trata como falla")
+    return salida
+
+
+def estado_almacen(codigo: str) -> tuple[set[str], float]:
+    """
+    ``(SKUs EN MAYÚSCULAS, edad en segundos)`` del almacén, con la misma regla y
+    la MISMA caché (`_almacen_cache`) que `skus_por_almacen`.
+
+    `skus_por_almacen` NO avisa cuando falla: devuelve su último resultado bueno
+    —o `[]` si no hay— y sigue. Para el flujo eso es indistinguible de «el
+    almacén está vacío». Aquí la falla se destapa: sin ninguna lectura buena se
+    LANZA; con una anterior se devuelve con su antigüedad, para que quien llama
+    la marque `vieja` cuando pase del TTL.
+
+    No envuelve `skus_por_almacen`, aunque comparten regla y caché, por dos
+    razones que sí dejaban el flujo colgado o ciego:
+      · aquella habla sin timeout, así que un Odoo que acepta la conexión y no
+        contesta dejaba el hilo de lectura bloqueado para siempre, y cada armado
+        sumaba otro;
+      · aquella usa `_uid()`, que guarda `None` en caché tras una autenticación
+        fallida (un deploy de Odoo): desde ahí DROP quedaba caído hasta
+        reiniciar el proceso. `_kw_flujo` reintenta la autenticación.
+    """
+    codigo = (codigo or "").strip().upper()
+    if not codigo:
+        raise ValueError("código de almacén vacío")
+    guardado = _almacen_cache.get(codigo)
+    if guardado and (time.monotonic() - guardado[0]) < _ALMACEN_TTL:
+        return set(guardado[1]), max(0.0, time.monotonic() - guardado[0])
+    try:
+        salida = _consultar_almacen(
+            codigo, lambda modelo, metodo, args, kwargs: _kw_flujo(modelo, metodo,
+                                                                   args, kwargs))
+        if salida is None:
+            raise RuntimeError(f"Odoo: no existe el almacén {codigo}")
+    except Exception as exc:  # noqa: BLE001
+        if guardado is None:
+            raise
+        log.warning("Odoo estado_almacen(%s) falló; se sirve la lectura anterior: %s",
+                    codigo, exc)
+        return set(guardado[1]), max(0.0, time.monotonic() - guardado[0])
+    _almacen_cache[codigo] = (time.monotonic(), salida)
+    return set(salida), 0.0

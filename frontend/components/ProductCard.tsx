@@ -7,6 +7,7 @@ import ChannelDots from "./ChannelDots";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 import { ChipMoneda } from "./Moneda";
 import ChipRevision, { ChipRevisionVariantes } from "./ChipRevision";
+import { SelloTarjeta } from "./SelloFlujo";
 
 interface Props {
   producto: Producto;
@@ -16,6 +17,8 @@ interface Props {
   colorMap: Record<string, string>;
   labelMap: Record<string, string>;
   onClick: () => void;
+  /** id de cuenta → nombre visible, para el «· por San Corpe» del sello. */
+  etiquetasCuenta?: Record<string, string>;
 }
 
 function precioMXN(v: number | null): string {
@@ -29,11 +32,13 @@ function precioMXN(v: number | null): string {
 
 export default function ProductCard({
   producto,
+  canal,
   esGeneral,
   color,
   colorMap,
   labelMap,
   onClick,
+  etiquetasCuenta = {},
 }: Props) {
   const cat = producto.categoria_path;
   const stockNum = producto.stock ?? 0;
@@ -144,8 +149,10 @@ export default function ProductCard({
               chinos. Se pinta SIEMPRE que el SKU tenga piezas ahí, con el filtro
               puesto o sin él — es justo cuando NO se está filtrando que sirve
               enterarse. Violeta, el mismo color con el que la pestaña Inventario
-              marca ese almacén. */}
-          {producto.drop_off && (
+              marca ese almacén.
+              Con sello NO se pinta: abajo ya dice «En DROP», y repetirlo arriba
+              hace pensar que son dos cosas distintas. */}
+          {producto.drop_off && !producto.flujo && (
             <span
               title="Tiene existencias en el almacén DROP OFF de Odoo — el almacén del que salen los envíos a marketplaces chinos."
               className="flex items-center gap-1 rounded-full bg-violet-600 px-2 py-1 text-[10px] font-bold text-white shadow-sm"
@@ -202,6 +209,17 @@ export default function ProductCard({
             {cat.map((c) => c.nombre).join(" › ")}
           </div>
         )}
+
+        {/* Sello del flujo. Va aquí, entre la categoría y el precio: es lo que
+            hay que saber ANTES de decidir sobre la publicación. Sin foto no se
+            pinta nada (y el badge DROP OFF de arriba vuelve a aparecer). */}
+        <SelloTarjeta
+          sello={producto.flujo}
+          canal={canal}
+          cuenta={producto.cuenta}
+          etiquetasCuenta={etiquetasCuenta}
+          revisado={!!producto.revisado_at}
+        />
 
         {/* Variantes: botón que despliega el recuadro */}
         {padre && (

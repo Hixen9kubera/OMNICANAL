@@ -40,6 +40,14 @@ CANAL = "tiktok"
 # FAILED) existe pero no se vende, y esa diferencia es la que el panel pinta.
 ESTADO_VIVO = "ACTIVATE"
 
+
+def filtro_sql_publicado(alias: str = "l", clave: str = "tk_vivo") -> tuple[str, dict]:
+    """`(expresión, params)` de «está publicado» en TikTok, para que la rejilla y
+    la fuente `canales` del flujo del SKU compartan el predicado en vez de
+    escribirlo cada una. `alias` es el de `channel.listings` en la consulta que
+    lo pega y `clave` el nombre del parámetro, para no chocar."""
+    return f"{alias}.status = %({clave})s", {clave: ESTADO_VIVO}
+
 _SEL = """
     select l.sku::text as sku, p.wc_id, p.name as nombre,
            l.price, l.stock_own, l.status, l.situacion, l.listing_id, l.url,
@@ -91,7 +99,8 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
            solo_publicados: bool = False, orden: str = "reciente",
            estados: list[str] | None = None,
            skus_filtro: list[str] | None = None,
-           solo_activas: bool = False) -> tuple[list[dict[str, Any]], int]:
+           solo_activas: bool = False,
+           estricto: bool = False) -> tuple[list[dict[str, Any]], int]:
     """
     Publicaciones de TikTok con los filtros de la pantalla. (items, total).
 
@@ -100,6 +109,11 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
     que el día que TikTok cambie de vocabulario los dos filtros se muevan
     juntos. HOY devuelve CERO en producción y no es una falla: las 283
     publicaciones `APPROVED` están `SELLER_DEACTIVATED`.
+
+    `estricto` es para las listas que resolvió el SISTEMA (una etapa del flujo,
+    el almacén DROP). Ahí el `[], 0` de abajo mentiría: diría «ninguna
+    publicación en esta etapa» cuando lo cierto es «kubera no contestó». Con
+    `estricto` la falla se lanza y el router la convierte en 503.
     """
     where, params = [], {"canal": CANAL}
     if search:
@@ -112,14 +126,17 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
             where.append(frag[0])
             params.update(frag[1])
     elif solo_publicados or (estados and "publicado" in estados and "inactivo" not in estados):
-        where.append("l.status = %(vivo)s")
-        params["vivo"] = ESTADO_VIVO
+        expr, p = filtro_sql_publicado("l", "vivo")
+        where.append(expr)
+        params.update(p)
     elif estados and "inactivo" in estados and "publicado" not in estados:
         where.append("l.status is distinct from %(vivo)s")
         params["vivo"] = ESTADO_VIVO
     if skus_filtro:
-        where.append("l.sku::text = any(%(skus)s)")
-        params["skus"] = list(skus_filtro)
+        # `lower()` de los dos lados: la igualdad era sensible a mayúsculas y
+        # dejaba fuera los SKUs escritos distinto entre core.products y el canal.
+        where.append("lower(l.sku::text) = any(%(skus)s)")
+        params["skus"] = sorted({str(s).lower() for s in skus_filtro})
 
     filtro = (" and " + " and ".join(where)) if where else ""
     orden_sql = _ORDEN.get(orden, _ORDEN["reciente"])
@@ -136,6 +153,8 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
         return [_normalizar(f) for f in filas], int((total or [{}])[0].get("n") or 0)
     except Exception as exc:  # noqa: BLE001
         log.warning("tiktok_panel.listar falló: %s", exc)
+        if estricto:
+            raise
         return [], 0
 
 

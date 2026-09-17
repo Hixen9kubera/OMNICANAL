@@ -2,8 +2,15 @@
 
 import { LayoutGrid, List, ArrowDownWideNarrow, BadgeCheck, Warehouse } from "lucide-react";
 import type { CategoriaWC } from "@/lib/api";
+import type { ConteoCanalFlujo, EtapaOmnicanal } from "@/lib/types";
+import FlujoEtapas from "./FlujoEtapas";
 
 export type Vista = "mosaico" | "lista";
+
+/** `legado` = la foto del flujo está apagada en este ambiente
+ *  (INVENTARIO_FLUJO_ENABLED=false): se pintan los dos chips de siempre, que
+ *  no dependen de ella. Lo decide la respuesta de /flujo/canal, no el cliente. */
+export type ModoFlujo = "legado" | "stepper";
 
 interface Props {
   vista: Vista;
@@ -16,12 +23,20 @@ interface Props {
   onCategoria: (c: number | null) => void;
   estados: string[];
   onEstados: (e: string[]) => void;
-  /** Solo productos con el COSTO VALIDADO. Solo aplica en General. */
+  /** Solo productos con el COSTO VALIDADO. Vale en TODAS las pestañas: la marca
+   *  es del SKU, no de la publicación. Corre APARTE de la etapa y se suma con
+   *  AND — el costo validado no es requisito para enviar. */
   revisado: boolean;
   onRevisado: (v: boolean) => void;
-  /** Solo productos con existencias en el almacén DROP OFF de Odoo. */
-  dropOff: boolean;
-  onDropOff: (v: boolean) => void;
+  /** Etapa del flujo. Absorbe el viejo chip «Solo DROP OFF» como `en_drop`. */
+  etapa: EtapaOmnicanal | null;
+  onEtapa: (e: EtapaOmnicanal | null) => void;
+  conteos: ConteoCanalFlujo | null;
+  modoFlujo: ModoFlujo;
+  totalTodas: number | null;
+  atenuar: boolean;
+  atenuarCarril: boolean;
+  canal: string;
   color: string;
   textoColor: string;
 }
@@ -42,7 +57,7 @@ const ESTADOS = [
 export default function ProductControls({
   vista, onVista, orden, onOrden, esGeneral,
   categorias, categoria, onCategoria, estados, onEstados, revisado, onRevisado,
-  dropOff, onDropOff,
+  etapa, onEtapa, conteos, modoFlujo, totalTodas, atenuar, atenuarCarril, canal,
   color, textoColor,
 }: Props) {
   const toggleEstado = (v: string) => {
@@ -106,50 +121,68 @@ export default function ProductControls({
           </select>
         )}
 
-        {/* COSTO VALIDADO — en TODAS las pestañas: la marca es del SKU, no de
-            la publicación, así que "¿ya revisamos su costo?" tiene sentido lo
-            mismo en la tienda que en Mercado Libre o Amazon. El backend la
-            cruza contra el filtro de SKUs que cada canal ya aplicaba, y se
-            acumula con la búsqueda y con "Filtrar SKUs" en vez de
-            reemplazarlas: sirve para acotar una búsqueda que ya venías
-            haciendo. */}
-        <button
-            onClick={() => onRevisado(!revisado)}
-            title={revisado
-              ? "Mostrando SOLO los productos cuyo costo ya fue revisado y firmado."
-              : "Filtrar a los productos cuyo costo ya fue revisado y firmado (etiqueta VALIDADO)."}
-            className={[
-              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
-              revisado
-                ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-            ].join(" ")}
-          >
-            <BadgeCheck size={14} className="shrink-0" />
-            Costo validado
-        </button>
+        {/* EL CAMINO DEL SKU. Con la foto encendida, los dos chips de antes son
+            dos paradas del mismo camino y se leen mejor juntos: «Costo validado»
+            es el carril de al lado y «Solo DROP OFF» es la etapa `en_drop`, con
+            la misma regla y la misma caché de Odoo.
 
-        {/* SOLO DROP OFF (Brandon, 9-sep). DROP OFF es el almacén del que salen
-            los envíos a los marketplaces chinos, así que sus piezas están
-            comprometidas a un flujo distinto del de TEXCO y conviene poder
-            aislarlas de un clic. Va en TODAS las pestañas porque el almacén es
-            del SKU, no de la publicación. Se acumula con la búsqueda y con
-            "Filtrar SKUs" en vez de reemplazarlas. */}
-        <button
-            onClick={() => onDropOff(!dropOff)}
-            title={dropOff
-              ? "Mostrando SOLO los productos con existencias en el almacén DROP OFF de Odoo."
-              : "Filtrar a los productos con existencias en DROP OFF — el almacén del que salen los envíos a marketplaces chinos."}
-            className={[
-              "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
-              dropOff
-                ? "border-violet-300 bg-violet-50 text-violet-700"
-                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-            ].join(" ")}
-          >
-            <Warehouse size={14} className="shrink-0" />
-            Solo DROP OFF
-        </button>
+            Con la foto apagada NO hay camino que pintar, pero esos dos filtros
+            sí funcionan (Odoo y costos se leen en vivo): se conservan tal cual
+            para no perder de un día para otro lo que ya se usaba. */}
+        {modoFlujo === "stepper" ? (
+          <FlujoEtapas
+            conteos={conteos}
+            etapa={etapa}
+            onEtapa={onEtapa}
+            revisado={revisado}
+            onRevisado={onRevisado}
+            totalTodas={totalTodas}
+            atenuar={atenuar}
+            atenuarCarril={atenuarCarril}
+            canal={canal}
+            color={color}
+            textoColor={textoColor}
+          />
+        ) : (
+          <>
+            <button
+              onClick={() => onRevisado(!revisado)}
+              title={revisado
+                ? "Mostrando SOLO los productos cuyo costo ya fue revisado y firmado."
+                : "Filtrar a los productos cuyo costo ya fue revisado y firmado (etiqueta VALIDADO)."}
+              className={[
+                "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+                revisado
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+              ].join(" ")}
+            >
+              <BadgeCheck size={14} className="shrink-0" />
+              Costo validado
+            </button>
+
+            {/* SOLO DROP OFF (Brandon, 9-sep). DROP OFF es el almacén del que
+                salen los envíos a los marketplaces chinos, así que sus piezas
+                están comprometidas a un flujo distinto del de TEXCO y conviene
+                poder aislarlas de un clic. Va en TODAS las pestañas porque el
+                almacén es del SKU, no de la publicación. */}
+            <button
+              onClick={() => onEtapa(etapa === "en_drop" ? null : "en_drop")}
+              title={etapa === "en_drop"
+                ? "Mostrando SOLO los productos con existencias en el almacén DROP OFF de Odoo."
+                : "Filtrar a los productos con existencias en DROP OFF — el almacén del que salen los envíos a marketplaces chinos."}
+              className={[
+                "inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium",
+                etapa === "en_drop"
+                  ? "border-violet-300 bg-violet-50 text-violet-700"
+                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+              ].join(" ")}
+            >
+              <Warehouse size={14} className="shrink-0" />
+              Solo DROP OFF
+            </button>
+          </>
+        )}
       </div>
 
       {/* Filtro inteligente de estado — visible en vista LISTA */}

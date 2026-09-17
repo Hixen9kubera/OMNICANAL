@@ -1001,6 +1001,87 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.526.0 — Flujo del SKU en Omnicanal: la etapa como filtro y un sello por producto (detrás de `INVENTARIO_FLUJO_ENABLED`)
+
+Eduardo, 14–17-sep-2026: *"un Flujo donde tener una barra donde podamos ver qué SKUs
+están en: Recibido, Validado Bodega, Enviado a Full o Drop, Restock"*. De cuatro
+diseños eligió la **opción B en Omnicanal** («primero en sandbox»), pidió quitar la
+barra que se había probado arriba de /inventario y agregar notas a cada pestaña.
+
+**En pantalla (/omnicanal, con el flag encendido)**
+
+- **Selector de etapas** en la fila de filtros: Todas · Recibido (aprox.) · Validado
+  bodega (3 de 4 sin specs) · Listo para FULL o DROP (bloqueado) · En FULL · En DROP ·
+  Restock (por definir) · Costo validado (aparte). Los conteos siguen a la pestaña, la
+  cuenta y el criterio (Todas / Solo publicados / Solo activas). Sustituye a los chips
+  «Costo validado» y «Solo DROP OFF».
+- **Sello por producto**: columna «Flujo» en la Lista y sello en el Mosaico. Cinco pasos
+  (Recibido, cuatro cuadros de bodega, Listo, destino, Restock), la etapa en texto y
+  «le falta: …». Un padre resume a sus variantes («2 En FULL · 1 Recibido de 3»).
+- **Nota al pasar el cursor** en cada pestaña: qué cuenta, de dónde sale el dato, qué
+  hace el clic y qué NO significa. Lo que depende del momento (foto vencida, conteo
+  caído, filtros encima) va aparte, en ámbar.
+- Con una etapa puesta, el encabezado, la paginación y el selector dicen el mismo
+  número. La etapa se reinicia al cambiar de pestaña.
+- **Degradado honesto**: si Odoo, WordPress o el canal no responden con una etapa
+  puesta, aviso ámbar con el motivo y «Quitar etapa» (503), nunca «0 productos».
+- **Con el flag apagado** la pestaña se ve como antes: vuelven los dos chips, sin
+  selector ni sello.
+
+**Backend**
+
+- `services/inventario_flujo.py` (nuevo): foto del catálogo en memoria (TTL 30 min,
+  job del scheduler a los +210 s) con cuatro fuentes independientes —kubera, Odoo,
+  Odoo DROP y `channel.listings`— e índice O(1) por SKU. Una fuente caída no apaga
+  las demás; una lectura sospechosamente chica no reemplaza a la buena.
+- `GET /api/inventario/flujo/canal` (conteos del selector), `/flujo` y `/flujo/skus`
+  (diagnóstico: ninguna pantalla los usa).
+- `GET /api/productos` acepta `etapa=` (`recibido`, `bodega_3de4`, `en_full`,
+  `en_drop`) con **total exacto**: el filtro va en SQL antes de paginar
+  (`lower(sku) = any(...)` en ML, Amazon y paneles; ids de Woo en General). Las
+  «listas del sistema» corren en modo estricto: una falla da 503 con motivo en vez de
+  una lista vacía o a medias. Cada ítem trae `flujo` (el sello).
+- Regla 11: meli, amazon, los paneles, presencia, `leer_inventario` y el distintivo
+  DROP pasan a `asyncio.to_thread`.
+- `inventario_maestro`: las reglas de ubicación, stock y foto salen a funciones puras
+  que comparten la columna «Validado bodega» y el flujo.
+- `odoo.py`: lecturas de catálogo completo, de solo lectura y con timeout propio.
+
+**Reglas de cada etapa**
+
+| Etapa | Regla | Fuente |
+|---|---|---|
+| Recibido | `cajas > 0` y `piezas_por_caja > 0` | `costing.costos_validados` — **aproximado**: cargas del 21-may y 3-jun, sin escritor vivo |
+| Validado bodega | ubicación interna, stock y foto (3 de 4); specs sin definición → 4 de 4 = 0 | Odoo |
+| Listo para FULL o DROP | Recibido + bodega 4 de 4 | bloqueado mientras falte specs |
+| En FULL | `stock_full > 0` en ML, cualquier cuenta (del SKU, no de la cuenta) | `channel.listings` |
+| En DROP | existencias > 0 en ubicaciones internas del almacén DROP OFF | Odoo (caché 30 min) |
+| Restock | — | por definir |
+| Costo validado | `revisado_at` no nulo; corre aparte y no bloquea el envío | `costing.costos_validados` |
+
+**Cambios de conducta declarados**
+
+- «Solo DROP OFF» y «Costo validado» ahora son exactos (antes `ilike`/`LIKE`): pueden
+  dar menos filas que antes.
+- Con Odoo o un canal caído y un filtro puesto: 503 con motivo, no «0 productos».
+- /inventario queda exactamente como en v0.525.0.
+
+**Verificación**
+
+- 218 pruebas (`python -m unittest`), `tsc` y `next build` en verde.
+- Sandbox local (kubera sandbox refrescada desde producción, Odoo de producción en
+  solo lectura, procesos que escriben apagados y panel detrás de un proxy de solo GET):
+  Mercado Libre · Kubera → Todas 2,631 · Recibido 1,535 · 3 de 4 1,274 · En FULL 429 ·
+  En DROP 65 · Costo validado 56; con En FULL el total del filtro = paginación =
+  encabezado; Amazon con «En FULL (ML)»; aviso 503; modo legado con el flag apagado.
+- **No probado en sandbox**: la pestaña General (lee WooCommerce de producción).
+
+**Pendiente**
+
+- Un «Recibido» real: registro por SKU + embarque con cajas y un escritor vivo a kubera
+  (hoy nadie escribe esas columnas y el Resolver escribe a MySQL).
+- Definición de specs y regla de restock.
+
 ### v0.525.0 — Crear Productos por padre o por variante, y las fotos del padre llegan a sus variantes (copia apagada)
 
 Brandon, 17-sep-2026: *"en la pestaña de crear productos … no me permite buscar en

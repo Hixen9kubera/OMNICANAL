@@ -9,6 +9,8 @@ el frontend Next.js. Un mismo producto se "proyecta" según el canal pedido:
 """
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -70,6 +72,11 @@ class VarianteResumen(BaseModel):
     revisado_at: str | None = None
     revisado_por: str | None = None
     revision_movida: bool = False
+    # El sello del flujo de ESTA variante (`inventario_flujo.sello`). Va tipado
+    # flojo a propósito: la forma la fijan las pruebas del sello y los tipos de
+    # TypeScript, y pydantic 2 DESCARTA en silencio las llaves que no declara —
+    # por eso el `drop_off` de las variantes nunca llegó al navegador.
+    flujo: dict[str, Any] | None = None
 
 
 class HermanasPendientes(BaseModel):
@@ -179,6 +186,11 @@ class Producto(BaseModel):
     # 13,175 SKUs y no tiene sentido acarrear como miles de `false`.
     drop_off: bool | None = None
 
+    # El sello del flujo del SKU: en qué etapa está y qué le falta para la
+    # siguiente (`inventario_flujo.sello`). `None` cuando no hay nada honesto
+    # que decir: la foto apagada o calentando, o un SKU sintético `WC-<id>`.
+    flujo: dict[str, Any] | None = None
+
     # Tipo de producto en WooCommerce: simple | variable (padre) | variation
     tipo: str | None = None
     # Si es padre (variable): sus variantes (vista Crear Productos)
@@ -217,6 +229,22 @@ class FiltroActivas(BaseModel):
     nota: str | None = None             # la trampa del canal, o el porqué de no aplicarlo
 
 
+class FiltroEtapa(BaseModel):
+    """
+    Qué pasó con `etapa=` en ESTA petición.
+
+    Viaja SIEMPRE que se pidió una etapa, incluidas las salidas tempranas con
+    total 0, y el frontend lo trata como PRUEBA de que el servidor la aplicó:
+    FastAPI ignora los parámetros que no conoce, así que un backend anterior
+    devolvería el catálogo entero con cara de estar filtrado.
+    """
+    etapa: str
+    fuente: str                         # "foto" | "odoo_drop"
+    generado: str | None = None         # cuándo se armó la foto (ISO Z)
+    vieja: bool = False                 # la fuente sirvió su último dato bueno
+    n_skus: int = 0                     # cuántos SKUs quedaron tras intersectar
+
+
 class RespuestaProductos(BaseModel):
     canal: str
     items: list[Producto]
@@ -230,6 +258,11 @@ class RespuestaProductos(BaseModel):
     # por lo tanto la lista puede estar incompleta. Un filtro que devuelve de
     # menos sin decirlo es peor que no tenerlo.
     revisado_truncado: bool = False
+    # En qué estado está la foto del flujo para ESTA petición. Con "apagado" o
+    # "calentando" ningún ítem trae `flujo` y la pantalla se pinta como antes.
+    flujo_estado: str = "apagado"       # apagado | calentando | vieja | listo
+    flujo_generado: str | None = None   # cuándo se armó la foto (ISO Z)
+    filtro_etapa: FiltroEtapa | None = None
 
 
 class SubCuentaInfo(BaseModel):

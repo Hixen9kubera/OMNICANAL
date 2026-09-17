@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -23,13 +24,15 @@ from models.schemas import (
     DetalleCanal,
     DetalleProducto,
     FiltroActivas,
+    FiltroEtapa,
     Paginacion,
     Producto,
     RespuestaProductos,
 )
 from services import (amazon, channel_read, costing_read, ejemplos, inventario,
                       meli, modo_publicacion, odoo, presencia, publicar, studio,
-                      woocommerce)
+                      woocommerce, wp_db)
+from services import inventario_flujo as invf
 from config import settings
 from core import actor as core_actor
 
@@ -93,6 +96,215 @@ def _filtro_activas(canal: str, pedido: bool) -> FiltroActivas | None:
                          valores=vivos, nota=nota)
 
 
+# ── ETAPA DEL FLUJO — el stepper de /omnicanal ───────────────────────────────
+#
+# El chip «Solo DROP OFF» y el botón «Costo validado» ya resolvían una lista de
+# SKUs ANTES de listar, para que el TOTAL y la PAGINACIÓN salieran del
+# subconjunto. `etapa=` es lo mismo con las etapas del flujo del SKU, y hereda
+# esa estructura entera.
+#
+# LO QUE SÍ CAMBIA: MODO ESTRICTO. Cuando la lista la resolvió el SISTEMA —una
+# etapa, o «Costo validado» dentro de omnicanal— ninguna capa puede devolver
+# `[], 0` ni media página ante una falla. Los paneles, WordPress y el REST de
+# Woo hacen justo eso hoy, y con el segmento resaltado un cero se lee como «no
+# hay ninguno en esta etapa» cuando lo cierto es «no pude leer». Por eso toda
+# falla sale como 503 con su motivo, en todos los canales.
+
+_ETAPAS_400 = {
+    "validado_bodega": ("validado_bodega: bloqueada. 4 de 4 da 0 mientras specs "
+                        "no tenga definición; usa etapa=bodega_3de4"),
+    "listo_envio": "listo_envio: bloqueada. Depende de Validado bodega 4 de 4",
+    "restock": "restock: etapa por definir, sin lista",
+    "costo_validado": ("costo_validado no es etapa en esta vista: usa "
+                       "revisado=true"),
+}
+
+_SUFIJO_FOTO = " Quita el filtro de etapa para seguir viendo el catálogo."
+_SUFIJO_DROP = (" Quita el filtro En DROP (Solo DROP OFF) para seguir viendo "
+                "el catálogo.")
+_SUFIJO_REVISADO = (" Quita el filtro Costo validado para seguir viendo el "
+                    "catálogo.")
+
+
+def _validar_etapa(etapa: str | None) -> str | None:
+    """400 ANTES de cualquier I/O: una etapa que no existe no merece una
+    consulta. Cada rechazo dice por qué y a dónde ir."""
+    if etapa is None:
+        return None
+    e = etapa.strip()
+    if not e:
+        return None
+    if e in invf.ETAPAS_OMNICANAL:
+        return e
+    raise HTTPException(400, _ETAPAS_400.get(e, f"{e[:40]}: etapa desconocida"))
+
+
+def _sin_filtro(mensaje: str, etapa: str | None) -> None:
+    """El 503 de una lista del sistema que no se pudo resolver, con el botón de
+    salida en el propio texto."""
+    if etapa is None:
+        sufijo = _SUFIJO_REVISADO
+    elif etapa == "en_drop":
+        sufijo = _SUFIJO_DROP
+    else:
+        sufijo = _SUFIJO_FOTO
+    raise HTTPException(503, mensaje + sufijo)
+
+
+@dataclass
+class _Etapa:
+    """Lo que la etapa le deja al resto del endpoint."""
+    skus_lista: list[str] | None = None
+    skus_exactos: bool = False
+    lista_del_sistema: bool = False
+    ids_productos: list[int] | None = None
+    ids_filas: list[int] | None = None
+    filtro_etapa: FiltroEtapa | None = None
+    vacio: bool = False
+    # Los SKUs del almacén DROP ya leídos: el distintivo de más abajo los
+    # reutiliza en vez de volver a preguntarle a Odoo.
+    en_drop: set[str] | None = field(default=None)
+
+
+async def _resolver_etapa(*, canal: str, etapa: str | None, revisado: bool,
+                          vista: str, skus_lista: list[str] | None,
+                          skus_exactos: bool, fp: Any,
+                          vacio_previo: bool) -> _Etapa:
+    """Convierte `etapa=` en la lista de SKUs (o los wc_id) que cada canal ya
+    sabe aplicar, o lanza el 503 que explica por qué no se pudo."""
+    lista_del_sistema = bool(etapa) or bool(revisado and vista == "omnicanal")
+    res = _Etapa(skus_lista=skus_lista, skus_exactos=skus_exactos,
+                 lista_del_sistema=lista_del_sistema)
+    if not lista_del_sistema:
+        return res
+
+    # ── ¿puede este canal filtrar EXACTO? ────────────────────────────────────
+    # Las etapas de la FOTO nacen exactas: si el canal no sabe aplicar una lista
+    # así, no hay respuesta honesta y se dice.
+    #
+    # En DROP y Costo validado son otra cosa: existían como chips ANTES de esta
+    # entrega y siguen a la vista con la foto APAGADA, que es el modo legado y
+    # es como viene producción (config.py:888, y `SUPABASE_READ_PUBLICACIONES`
+    # también en false). Estrenar ahí un 503 dejaría los dos filtros de siempre
+    # rotos en Shein, ML y Amazon el mismo día del despliegue, sin que nadie lo
+    # pidiera. Con la foto encendida el stepper ya no ofrece el clic en esos
+    # canales (`_conteos_canal` apaga TODOS los segmentos con `puede_filtrar`),
+    # así que el 503 del contrato sigue cubriendo el camino nuevo entero.
+    de_la_foto = bool(etapa) and etapa != "en_drop"
+    if de_la_foto or settings.inventario_flujo_enabled:
+        if canal == Canal.SHEIN.value:
+            _sin_filtro("Shein se pinta con datos de ejemplo: no filtra por etapa.",
+                        etapa)
+        if (canal in (Canal.MERCADO_LIBRE.value, Canal.AMAZON.value)
+                and not settings.supabase_read_publicaciones):
+            _sin_filtro("La rejilla lee MySQL (SUPABASE_READ_PUBLICACIONES apagado) "
+                        "y no puede filtrar exacto.", etapa)
+
+    es_general = canal == Canal.GENERAL.value
+
+    if etapa:
+        # ── de dónde sale el conjunto ────────────────────────────────────────
+        if etapa == "en_drop":
+            # En vivo y con la MISMA regla y caché que el chip de siempre, pero
+            # con `estado_almacen`, que LANZA cuando no tiene lectura buena:
+            # `skus_por_almacen` devuelve `[]` y Odoo caído decía «0 productos».
+            try:
+                crudos, edad = await asyncio.to_thread(odoo.estado_almacen, "DROP")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("filtro En DROP no disponible: %s", exc)
+                _sin_filtro("No se pudo leer el almacén DROP OFF de Odoo.", etapa)
+            conjunto = {(s or "").strip().upper() for s in crudos if s}
+            res.en_drop = set(conjunto)
+            # La antigüedad viene JUSTO para poder juzgarla: con Odoo caído,
+            # `estado_almacen` sirve su última lectura buena sin tope de edad, y
+            # afirmar `vieja=False` diría que la foto del almacén es de ahora
+            # cuando puede ser de hace horas. Mismo umbral que `_resolver_fuente`
+            # le aplica a `DatosDrop`.
+            fuente, generado = "odoo_drop", None
+            vieja = edad >= invf.TTL_S
+        else:
+            # En General la etapa se aplica por `wc_id`, que solo existe en
+            # core.products: sin kubera no hay puente y se dice.
+            le = invf.lista_etapa(fp, etapa, requiere_kubera=es_general)
+            if le.estado == "apagado":
+                _sin_filtro("La foto del flujo está apagada en este ambiente "
+                            "(INVENTARIO_FLUJO_ENABLED=false).", etapa)
+            if le.estado == "calentando":
+                _sin_filtro("La foto del flujo se está armando (12–35 s).", etapa)
+            if le.estado == "sin_dato":
+                _sin_filtro(le.motivo or "La foto del flujo no tiene ese dato.",
+                            etapa)
+            conjunto = set(le.skus_mayus)
+            fuente, generado, vieja = "foto", le.generado, le.vieja
+
+        # ── se cruza con lo que ya venía filtrado ────────────────────────────
+        if vacio_previo:
+            conjunto = set()
+        elif skus_lista:
+            pedidos = {t.strip().upper() for t in skus_lista if t.strip()}
+            if es_general and fp.usable:
+                # Escribir el SKU del PADRE con una etapa puesta daba 0: la
+                # etapa vive en las variantes. Se expanden en memoria.
+                pedidos = invf.expandir_padres(fp, pedidos)
+            conjunto &= pedidos
+
+        res.filtro_etapa = FiltroEtapa(etapa=etapa, fuente=fuente,
+                                       generado=generado, vieja=vieja,
+                                       n_skus=len(conjunto))
+        if not conjunto:
+            res.vacio = True
+            return res
+        res.skus_lista = sorted(conjunto)
+        res.skus_exactos = True
+    elif vacio_previo:
+        res.vacio = True
+        return res
+
+    # ── General necesita WordPress para filtrar exacto ───────────────────────
+    if es_general:
+        if not await asyncio.to_thread(wp_db.disponible):
+            _sin_filtro("Sin la base de WordPress no se puede filtrar General "
+                        "exacto.", etapa)
+        if etapa and etapa != "en_drop":
+            # Por la PK de WordPress y no por `meta_value`: evita las 17
+            # consultas en serie de `skus_padre` y los 13.5k comodines. El
+            # método ya cuadró con DROP (71 productos = 71).
+            ids_p, ids_f = invf.ids_woo(fp, {s.upper() for s in (res.skus_lista or [])})
+            if not ids_p and not ids_f:
+                res.vacio = True
+                return res
+            res.ids_productos, res.ids_filas = ids_p, ids_f
+            res.skus_lista = None
+    res.skus_exactos = True
+    return res
+
+
+async def _leer_canal(ctx: tuple[str, bool, str | None], fn: Any,
+                      *args: Any, **kwargs: Any) -> tuple[list[dict], int]:
+    """La rejilla de un marketplace, en hilo (regla 11) y honesta.
+
+    `ctx` es `(canal, estricto, etapa)` y va en una tupla y no como tres
+    parámetros para que no choque con los `kwargs` de la rejilla, que ya trae
+    uno llamado `estricto`.
+
+    Sin `estricto` se comporta exactamente como antes. Con él —lista del
+    sistema— cualquier excepción sale como 503: los tres paneles devuelven
+    `[], 0` ante cualquier falla y `meli`/`amazon` propagan, así que sin esto la
+    mitad de los canales enseñaría «0 productos en esta etapa» por una caída de
+    kubera."""
+    canal, estricto, etapa = ctx
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if not estricto:
+            raise
+        log.warning("%s no pudo aplicar el filtro del sistema: %s", canal, exc)
+        _sin_filtro(f"No se pudo leer {canal} con el filtro.", etapa)
+        raise  # inalcanzable: `_sin_filtro` siempre lanza
+
+
 @router.get("", response_model=RespuestaProductos)
 async def listar_productos(
     canal: str = Query(Canal.GENERAL.value, description="Canal/marketplace"),
@@ -109,6 +321,7 @@ async def listar_productos(
     vista: str = Query("productos", description="productos (publish/pending/ready) | crear (draft/inprogress) | omnicanal (todos)"),
     revisado: bool = Query(False, description="Solo productos con el COSTO VALIDADO (marca revisado_at, migración 0032). Todos los canales"),
     drop_off: bool = Query(False, description="Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). Todos los canales"),
+    etapa: str | None = Query(None, max_length=40, description="Etapa del flujo del SKU: recibido | bodega_3de4 | en_full | en_drop. Se suma con AND a todo lo demás; la lista la resuelve el sistema, así que cualquier falla da 503 y nunca una lista incompleta"),
     aplanar: bool | None = Query(None, description="Cada variante como fila propia y el padre fuera (7,288 filas → 13,261). Sin valor, manda LISTADO_APLANADO de Railway"),
 ):
     if not es_canal_valido(canal):
@@ -127,6 +340,17 @@ async def listar_productos(
     # sin explicación.
     filtro_activas = _filtro_activas(canal, solo_activas)
     activas = bool(filtro_activas and filtro_activas.aplicado)
+
+    etapa = _validar_etapa(etapa)
+    # La foto se toma UNA vez por petición: las 40 tarjetas, el filtro y el
+    # sello tienen que salir de la misma. Best-effort — con el flag apagado
+    # devuelve una constante sin tocar nada, y si aun así lanzara, el listado
+    # sigue vivo sin sellos (solo una etapa de foto daría 503, más abajo).
+    try:
+        fp = invf.foto_para_peticion()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("foto del flujo no disponible (el listado sigue): %s", exc)
+        fp = invf.FOTO_APAGADA
 
     # SOLO COSTO VALIDADO. El filtro se resuelve ANTES de listar y se convierte
     # en el filtro de SKUs que cada canal ya sabía aplicar: así la PAGINACIÓN y
@@ -159,6 +383,11 @@ async def listar_productos(
     # tardaba 31 s (202 comodines contra el MySQL de WordPress) contra 0.23 s
     # con igualdad. Medido el 9-sep.
     skus_exactos = False
+    # Con la lista vacía NO se llama a Woo sin filtro: `skus=[]` es falsy allá y
+    # devolvería el catálogo entero justo cuando la respuesta correcta es
+    # "ninguno". La salida temprana se difiere hasta después de resolver la
+    # etapa, para que `filtro_etapa` viaje también en ese 200 con total 0.
+    vacio_previo = False
     if drop_off:
         try:
             en_drop = await asyncio.to_thread(odoo.skus_por_almacen, "DROP")
@@ -170,17 +399,11 @@ async def listar_productos(
         if skus_lista:
             pedidos = {t.strip().lower() for t in skus_lista}
             en_drop = [s for s in en_drop if s.lower() in pedidos]
-        # Con la lista vacia NO se llama a Woo sin filtro: `skus=[]` es falsy
-        # alla y devolveria el catalogo entero justo cuando la respuesta
-        # correcta es "ninguno".
         if not en_drop:
-            return RespuestaProductos(
-                canal=canal, items=[], filtro_activas=filtro_activas,
-                paginacion=Paginacion(page=page, per_page=per_page, total=0,
-                                      total_pages=0, tiene_anterior=False,
-                                      tiene_siguiente=False))
-        skus_lista = en_drop
-        skus_exactos = True
+            vacio_previo = True
+        else:
+            skus_lista = en_drop
+            skus_exactos = True
 
     revisado_truncado = False
     if revisado:
@@ -195,30 +418,48 @@ async def listar_productos(
         if skus_lista:
             pedidos = {t.strip().lower() for t in skus_lista}
             marcados = [s for s in marcados if s.lower() in pedidos]
-        # Sin un solo validado NO se llama a Woo con la lista vacía: `skus=[]`
-        # es falsy allá y el filtro desaparecería, devolviendo el catálogo
-        # entero justo cuando la respuesta correcta es "ninguno".
         if not marcados:
-            return RespuestaProductos(
-                canal=canal, items=[], filtro_activas=filtro_activas,
-                revisado_truncado=revisado_truncado,
-                paginacion=Paginacion(page=page, per_page=per_page, total=0,
-                                      total_pages=0, tiene_anterior=False,
-                                      tiene_siguiente=False))
-        skus_lista = marcados
+            vacio_previo = True
+        else:
+            skus_lista = marcados
+
+    et = await _resolver_etapa(canal=canal, etapa=etapa, revisado=revisado,
+                               vista=vista, skus_lista=skus_lista,
+                               skus_exactos=skus_exactos, fp=fp,
+                               vacio_previo=vacio_previo)
+    skus_lista, skus_exactos = et.skus_lista, et.skus_exactos
+    estricto = et.lista_del_sistema
+
+    if vacio_previo or et.vacio:
+        return RespuestaProductos(
+            canal=canal, items=[], filtro_activas=filtro_activas,
+            revisado_truncado=revisado_truncado,
+            flujo_estado=fp.estado, flujo_generado=fp.generado,
+            filtro_etapa=et.filtro_etapa,
+            paginacion=Paginacion(page=page, per_page=per_page, total=0,
+                                  total_pages=0, tiene_anterior=False,
+                                  tiene_siguiente=False))
 
     if canal == Canal.GENERAL.value:
-        items_raw, total, total_pages = await woocommerce.listar_productos(
-            page=page, per_page=per_page, search=search,
-            orden=orden, estados=estados_lista, categoria=categoria, skus=skus_lista,
-            vista=vista, skus_exactos=skus_exactos, aplanar=aplanar,
-        )
+        try:
+            items_raw, total, total_pages = await woocommerce.listar_productos(
+                page=page, per_page=per_page, search=search,
+                orden=orden, estados=estados_lista, categoria=categoria,
+                skus=skus_lista, vista=vista, skus_exactos=skus_exactos,
+                aplanar=aplanar, ids_productos=et.ids_productos,
+                ids_filas=et.ids_filas, estricto=estricto,
+            )
+        except wp_db.FiltroExactoNoAplicable as exc:
+            log.warning("General no pudo aplicar el filtro exacto: %s", exc)
+            _sin_filtro("WordPress no respondió con el filtro exacto.", etapa)
         # Enriquecer con presencia en marketplaces (puntos de colores).
         # Un solo lote: los SKUs de los padres MÁS los de sus variantes, para que
         # cada variante muestre en qué canales está publicada.
         skus = [i["sku"] for i in items_raw]
         skus += [v["sku"] for i in items_raw for v in (i.get("variantes") or [])]
-        pres = presencia.presencia_por_sku(skus)
+        # En hilo (regla 11): `presencia` abre psycopg2 y esperaba conexión del
+        # pool bloqueante dentro de la corrutina del listado.
+        pres = await asyncio.to_thread(presencia.presencia_por_sku, skus)
 
         # ── COSTO y CATEGORÍA desde kubera, con RESPALDO a lo de Woo ──────────
         # Van en el MISMO lote que `presencia`, así que no cuestan un viaje más.
@@ -301,15 +542,20 @@ async def listar_productos(
             it["publicado"] = bool(canales_propios or canales_variantes)
 
     elif canal == Canal.MERCADO_LIBRE.value:
-        items_raw, total = meli.listar(page, per_page, search, solo_publicados, cuenta,
-                                       orden=orden, estados=estados_lista, skus_filtro=skus_lista,
-                                       solo_activas=activas)
+        # `to_thread` en las seis rejillas (regla 11): todas abren psycopg2, que
+        # BLOQUEA, y con una lista de 13.5k SKUs esperar conexión del pool de 6
+        # dentro de la corrutina detiene el backend ENTERO, no solo a quien pidió.
+        items_raw, total = await _leer_canal(
+            (canal, estricto, etapa), meli.listar, page, per_page, search, solo_publicados, cuenta,
+            orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+            solo_activas=activas, skus_exactos=estricto)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.AMAZON.value:
-        items_raw, total = amazon.listar(page, per_page, search, solo_publicados,
-                                         orden=orden, estados=estados_lista, skus_filtro=skus_lista,
-                                         solo_activas=activas)
+        items_raw, total = await _leer_canal(
+            (canal, estricto, etapa), amazon.listar, page, per_page, search, solo_publicados,
+            orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+            solo_activas=activas, skus_exactos=estricto)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.TIKTOK.value:
@@ -317,9 +563,10 @@ async def listar_productos(
         # apagados desde el 13-ago). Es la primera lectura de listado del panel
         # que va directo a kubera; ML y Amazon siguen en MySQL.
         from services import tiktok_panel
-        items_raw, total = tiktok_panel.listar(
-            page, per_page, search, solo_publicados, orden=orden,
-            estados=estados_lista, skus_filtro=skus_lista, solo_activas=activas)
+        items_raw, total = await _leer_canal(
+            (canal, estricto, etapa), tiktok_panel.listar, page, per_page, search, solo_publicados,
+            orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+            solo_activas=activas, estricto=estricto)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.TEMU.value:
@@ -327,22 +574,25 @@ async def listar_productos(
         # esta pestaña mostraba datos de EJEMPLO encima de un canal con 160
         # publicaciones vivas.
         from services import temu_panel
-        items_raw, total = temu_panel.listar(
-            page, per_page, search, solo_publicados, orden=orden,
-            estados=estados_lista, skus_filtro=skus_lista, solo_activas=activas)
+        items_raw, total = await _leer_canal(
+            (canal, estricto, etapa), temu_panel.listar, page, per_page, search, solo_publicados,
+            orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+            solo_activas=activas, estricto=estricto)
         total_pages = _paginas(total, per_page)
 
     elif canal == Canal.WALMART.value:
         # `channel.listings` en kubera, como TikTok y Temu. Antes caía en
         # `ejemplos.py` con 235 artículos reales publicados.
         from services import walmart_panel
-        items_raw, total = walmart_panel.listar(
-            page, per_page, search, solo_publicados, orden=orden,
-            estados=estados_lista, skus_filtro=skus_lista, solo_activas=activas)
+        items_raw, total = await _leer_canal(
+            (canal, estricto, etapa), walmart_panel.listar, page, per_page, search, solo_publicados,
+            orden=orden, estados=estados_lista, skus_filtro=skus_lista,
+            solo_activas=activas, estricto=estricto)
         total_pages = _paginas(total, per_page)
 
     else:  # shein  → ejemplos
-        items_raw, total = ejemplos.listar(canal, page, per_page, search)
+        items_raw, total = await asyncio.to_thread(
+            ejemplos.listar, canal, page, per_page, search)
         total_pages = _paginas(total, per_page)
 
     # Imágenes: los canales de marketplace/ejemplo comparten el producto de
@@ -356,7 +606,9 @@ async def listar_productos(
                     it["imagen"] = imgs[it["wc_id"]]
 
         # Inventario en vivo cacheado (precio real + desglose stock_real/full/fba).
-        inv = inventario.leer_inventario([it["sku"] for it in items_raw])
+        # En hilo por lo mismo que el de las variantes, más abajo (regla 11).
+        inv = await asyncio.to_thread(
+            inventario.leer_inventario, [it["sku"] for it in items_raw])
         for it in items_raw:
             # EL PRECIO DE UNA TARJETA DE CANAL ES EL DE LA PUBLICACIÓN (Eduardo,
             # 8-sep-2026): lo que COBRA hoy —con descuento si lo hay— y, tachado,
@@ -493,11 +745,20 @@ async def listar_productos(
     # Se marca SIEMPRE, con el filtro puesto o sin él: Brandon pidió (9-sep)
     # "ubicar los productos que sean drop off para diferenciarlos correctamente"
     # Y el filtro; el distintivo sirve justo cuando NO se está filtrando.
-    # Cuesta una consulta a Odoo cada media hora (`skus_por_almacen` cachea),
-    # y en un listado que ya tarda ~10 s contra WooCommerce en vivo es ruido.
+    # Cuesta una consulta a Odoo cada media hora (la caché del almacén dura
+    # eso), y en un listado que ya tarda ~10 s contra Woo en vivo es ruido.
     # Si Odoo no contesta NO se rompe el listado: se queda sin distintivos.
+    #
+    # Sale de `estado_almacen` y no de `skus_por_almacen`: es la misma regla y
+    # la misma caché, pero con timeout y sin tragarse la falla. Y si el filtro
+    # `etapa=en_drop` ya lo resolvió, se reutiliza ese conjunto en vez de
+    # preguntarle otra vez a Odoo en la misma petición.
     try:
-        en_drop = set(await asyncio.to_thread(odoo.skus_por_almacen, "DROP"))
+        if et.en_drop is not None:
+            en_drop = et.en_drop
+        else:
+            crudos, _edad = await asyncio.to_thread(odoo.estado_almacen, "DROP")
+            en_drop = {(s or "").strip().upper() for s in crudos if s}
         if en_drop:
             for it in items_raw:
                 if (it.get("sku") or "").upper() in en_drop:
@@ -507,6 +768,24 @@ async def listar_productos(
                         v["drop_off"] = True
     except Exception as exc:  # noqa: BLE001
         log.warning("distintivo DROP OFF no disponible (el listado sigue): %s", exc)
+
+    # ── SELLO DEL FLUJO ──────────────────────────────────────────────────────
+    # En qué etapa está cada fila y qué le falta para la siguiente. Solo
+    # memoria: ni una consulta más. Best-effort como el distintivo de arriba —
+    # un sello que no se puede armar sale `None` y la tarjeta se pinta sin él,
+    # que es como se ve hoy.
+    if fp.estado not in ("apagado", "calentando"):
+        try:
+            for it in items_raw:
+                it["flujo"] = invf.sello(fp, it.get("sku") or "", canal=canal)
+                for v in (it.get("variantes") or []):
+                    v["flujo"] = invf.sello(fp, v.get("sku") or "", canal=canal)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("sello del flujo no disponible (el listado sigue): %s", exc)
+            for it in items_raw:
+                it["flujo"] = None
+                for v in (it.get("variantes") or []):
+                    v["flujo"] = None
 
     items = [Producto(**i) for i in items_raw]
     paginacion = Paginacion(
@@ -519,7 +798,10 @@ async def listar_productos(
     )
     return RespuestaProductos(canal=canal, items=items, paginacion=paginacion,
                               filtro_activas=filtro_activas,
-                              revisado_truncado=revisado_truncado)
+                              revisado_truncado=revisado_truncado,
+                              flujo_estado=fp.estado,
+                              flujo_generado=fp.generado,
+                              filtro_etapa=et.filtro_etapa)
 
 
 @router.get("/_estudio/config")

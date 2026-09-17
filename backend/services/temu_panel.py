@@ -95,7 +95,8 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
            solo_publicados: bool = False, orden: str = "reciente",
            estados: list[str] | None = None,
            skus_filtro: list[str] | None = None,
-           solo_activas: bool = False) -> tuple[list[dict[str, Any]], int]:
+           solo_activas: bool = False,
+           estricto: bool = False) -> tuple[list[dict[str, Any]], int]:
     """
     Publicaciones de Temu con los filtros de la pantalla. (items, total).
 
@@ -104,14 +105,18 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
     que en el propio Seller Center se llama literalmente "Activo o inactivo".
     Por eso `publicaciones_panel` las marca `puede_estar_activa` y el censo
     viaja con su `NOTA_CANAL`: el filtro acota, no promete.
+
+    `estricto`: con una lista resuelta por el sistema, un `[], 0` diría
+    «ninguna» cuando lo cierto es «kubera no contestó». Ahí se lanza.
     """
     where, params = [], {"canal": CANAL}
     if search:
         where.append("(l.sku::text ilike %(like)s or p.name ilike %(like)s)")
         params["like"] = f"%{search}%"
     if skus_filtro:
-        where.append("l.sku::text = any(%(skus)s)")
-        params["skus"] = list(skus_filtro)
+        # `lower()` de los dos lados, igual que en TikTok y Walmart.
+        where.append("lower(l.sku::text) = any(%(skus)s)")
+        params["skus"] = sorted({str(s).lower() for s in skus_filtro})
     if solo_activas:
         from services import publicaciones_panel
         frag = publicaciones_panel.filtro_sql_activas(CANAL)
@@ -137,6 +142,8 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
         return [_normalizar(f) for f in filas], int((total or [{}])[0].get("n") or 0)
     except Exception as exc:  # noqa: BLE001
         log.warning("temu_panel.listar falló: %s", exc)
+        if estricto:
+            raise
         return [], 0
 
 

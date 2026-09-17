@@ -39,6 +39,9 @@ import type {
   PublicadosArranque,
   PublicadosEstado,
   InventarioResp,
+  ConteoCanalFlujo,
+  CriterioConteo,
+  EtapaOmnicanal,
   MovimientosResp,
   PublicadosGuardado,
   PublicarPreview,
@@ -221,6 +224,13 @@ export interface ListarParams {
   /** Solo productos con existencias en el almacén DROP OFF de Odoo (id 142). */
   dropOff?: boolean;
   /**
+   * Etapa del flujo del SKU (opción B de /omnicanal). Se suma con AND a todo
+   * lo demás y convierte la petición en LISTA DEL SISTEMA: el canal filtra por
+   * SKU exacto y cualquier falla de lectura responde 503, nunca una lista a
+   * medias. La respuesta trae `filtro_etapa` como prueba de que se aplicó.
+   */
+  etapa?: EtapaOmnicanal;
+  /**
    * Cada variante como FILA PROPIA y el padre fuera del listado (Brandon,
    * 9-sep-2026): el catálogo pasa de 7,288 filas a 13,261.
    *
@@ -249,6 +259,7 @@ export function listarProductos(
   if (p.skus) q.set("skus", p.skus);
   if (p.revisado) q.set("revisado", "true");
   if (p.dropOff) q.set("drop_off", "true");
+  if (p.etapa) q.set("etapa", p.etapa);
   // `!== undefined`, no `if (p.aplanar)`: aquí `false` es una respuesta ("quiero
   // el anidado"), no la ausencia de una. Omitirlo deja mandar al flag de Railway.
   if (p.aplanar !== undefined) q.set("aplanar", String(p.aplanar));
@@ -1588,6 +1599,27 @@ export function listarInventario(
   if (skus?.length) qs.set("skus", skus.join(","));
   const cola = qs.toString();
   return getJSON(`/api/inventario${cola ? `?${cola}` : ""}`, signal);
+}
+
+/**
+ * Los conteos del stepper de /omnicanal: la MISMA foto, cruzada con las
+ * publicaciones de este canal, esta cuenta y este criterio de lista.
+ *
+ * Es solo memoria en el backend (no cruza nada en la petición), así que se
+ * puede pedir en cada cambio de pestaña. Un 404 significa backend anterior a
+ * la opción B: ahí se cae al modo legado, sin reintentar.
+ */
+export function flujoCanal(
+  p: { canal: string; cuenta?: string | null; criterio?: CriterioConteo; aplanar?: boolean },
+  signal?: AbortSignal,
+): Promise<ConteoCanalFlujo> {
+  const q = new URLSearchParams({ canal: p.canal });
+  // La cuenta solo la entiende Mercado Libre; en los demás canales el backend
+  // la ignora, así que no se manda vacía para no ensuciar la llave de caché.
+  if (p.cuenta) q.set("cuenta", p.cuenta);
+  if (p.criterio) q.set("criterio", p.criterio);
+  if (p.aplanar !== undefined) q.set("aplanar", String(p.aplanar));
+  return getJSON<ConteoCanalFlujo>(`/api/inventario/flujo/canal?${q.toString()}`, signal);
 }
 
 /**

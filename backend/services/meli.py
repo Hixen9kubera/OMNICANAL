@@ -132,6 +132,7 @@ def listar(
     estados: list[str] | None = None,
     skus_filtro: list[str] | None = None,
     solo_activas: bool = False,
+    skus_exactos: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Devuelve (items, total) desde el cache MySQL.
@@ -142,6 +143,11 @@ def listar(
     `solo_activas`: sólo lo que se puede comprar HOY (`situacion='active'`),
     criterio de `publicaciones_panel`. Requiere la rejilla de kubera — ver
     `puede_filtrar_activas`.
+    `skus_exactos`: la lista la resolvió el sistema (una etapa del flujo, el
+    almacén DROP, el costo validado), así que se compara por igualdad y no por
+    `ilike`. Solo lo entiende la rejilla de kubera: el respaldo de MySQL no
+    puede filtrar exacto, y por eso quien pide una lista del sistema con
+    `SUPABASE_READ_PUBLICACIONES` apagado recibe un 503 ANTES de llegar aquí.
     """
     # PASO 3 · BLOQUE 2 (19-ago). La rejilla entera sale de channel.listings.
     # Sin try/except: si kubera no contesta, la tabla debe romperse, no salir
@@ -152,7 +158,7 @@ def listar(
             page=page, per_page=per_page, search=search,
             solo_publicados=solo_publicados, cuenta=cuenta, orden=orden,
             estados=estados, skus_filtro=skus_filtro,
-            solo_activas=solo_activas)
+            solo_activas=solo_activas, skus_exactos=skus_exactos)
         return [_normalizar(f) for f in filas], total
 
     offset = (page - 1) * per_page

@@ -92,6 +92,22 @@ _MARGEN_COLOR = 3
 _cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _candado = threading.Lock()
 _calentando: set[str] = set()
+# UN SOLO HILO DE CALENTADO A LA VEZ, en todo el proceso. Antes cada llamada a
+# `por_sku` con SKUs nuevos soltaba su propio hilo, y `_calentando` solo evitaba
+# repetir el MISMO SKU. Con la tabla fija de 14 SKUs daba igual; con el «Flujo
+# del SKU» cada página de una etapa trae 40 SKUs distintos, así que diez
+# clics de página eran diez hilos abriendo packing lists a la vez — y cada
+# archivo puede costar ~473 MB de pico en el contenedor que también atiende el
+# webhook de ventas. El tope de `_MAX_ARCHIVOS` es POR PASADA, no global.
+#
+# Lo que llega mientras hay un hilo trabajando se ENCOLA (`_cola`) y ese mismo
+# hilo lo toma en su siguiente vuelta, fusionado en una sola pasada. Los SKUs
+# encolados ya están en `_calentando`, así que la fila sigue diciendo «leyendo»
+# y no «sin renglón» — que es la diferencia que `calentando()` existe para
+# cuidar. El semáforo y la cola se tocan SIEMPRE bajo `_candado`: así «la cola
+# está vacía, suelto el semáforo» y «encolo, ¿hay hilo?» no se pueden cruzar.
+_semaforo = threading.BoundedSemaphore(1)
+_cola: dict[str, None] = {}   # dict y no set: conserva el orden de llegada
 
 
 def calentando(skus: list[str]) -> set[str]:
@@ -147,23 +163,51 @@ def por_sku(skus: list[str], *, esperar: bool = False) -> dict[str, dict[str, An
 
 
 def _calentar_aparte(skus: list[str]) -> None:
-    """Un hilo llena la caché sin que la petición lo espere."""
+    """Un hilo llena la caché sin que la petición lo espere. Si ya hay uno
+    trabajando, los SKUs se encolan para su siguiente vuelta (ver `_semaforo`)."""
     with _candado:
         pendientes = [s for s in skus if s not in _calentando]
         if not pendientes:
             return
         _calentando.update(pendientes)
+        _cola.update(dict.fromkeys(pendientes))
+        if not _semaforo.acquire(blocking=False):
+            return            # el hilo vivo los toma al terminar su pasada
+    threading.Thread(target=_trabajar_cola, name="packing-cajas",
+                     daemon=True).start()
 
-    def _correr() -> None:
-        try:
-            _resolver(pendientes)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("packing_cajas: calentado falló: %s", exc)
-        finally:
+
+def _trabajar_cola() -> None:
+    """El único hilo de calentado. Vacía la cola por pasadas y suelta el
+    semáforo solo cuando la encuentra vacía, bajo el mismo candado con que se
+    encola."""
+    try:
+        while True:
             with _candado:
-                _calentando.difference_update(pendientes)
-
-    threading.Thread(target=_correr, name="packing-cajas", daemon=True).start()
+                if not _cola:
+                    _semaforo.release()
+                    return
+                lote = list(_cola)
+                _cola.clear()
+            try:
+                _resolver(lote)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("packing_cajas: calentado falló: %s", exc)
+            finally:
+                # Igual que antes: lo que la pasada no alcanzó por el tope de
+                # archivos NO se cachea y sale de `_calentando`, así la próxima
+                # petición lo vuelve a pedir en vez de quedarse «leyendo».
+                with _candado:
+                    _calentando.difference_update(lote)
+    except BaseException:
+        # Solo algo que no es Exception (el intérprete apagándose) llega aquí.
+        # Se suelta todo para no dejar SKUs «leyendo» para siempre ni el
+        # semáforo tomado sin hilo que lo devuelva.
+        with _candado:
+            _calentando.difference_update(_cola)
+            _cola.clear()
+            _semaforo.release()
+        raise
 
 
 def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:

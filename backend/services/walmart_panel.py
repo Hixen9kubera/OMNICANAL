@@ -48,6 +48,13 @@ CANAL = "walmart"
 ESTADO_VIVO = "PUBLISHED"
 SIN_CATEGORIA = "Por Defecto"
 
+
+def filtro_sql_publicado(alias: str = "l", clave: str = "wm_vivo") -> tuple[str, dict]:
+    """`(expresión, params)` de «está publicado» en Walmart, compartido entre la
+    rejilla y la fuente `canales` del flujo del SKU: un predicado escrito dos
+    veces se desincroniza sin que nada falle."""
+    return f"upper({alias}.status) = %({clave})s", {clave: ESTADO_VIVO}
+
 _SEL = """
     select l.sku::text as sku, p.wc_id, p.name as nombre,
            l.price, l.stock_own, l.status, l.situacion, l.listing_id, l.url,
@@ -95,21 +102,26 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
            solo_publicados: bool = False, orden: str = "reciente",
            estados: list[str] | None = None,
            skus_filtro: list[str] | None = None,
-           solo_activas: bool = False) -> tuple[list[dict[str, Any]], int]:
+           solo_activas: bool = False,
+           estricto: bool = False) -> tuple[list[dict[str, Any]], int]:
     """
     Publicaciones de Walmart con los filtros de la pantalla. (items, total).
 
     `solo_activas` usa el criterio de `publicaciones_panel`, que aquí coincide
     con `ESTADO_VIVO` (`PUBLISHED`, 207 de 235). Se pide en vez de re-escribirse
     para que los dos filtros no puedan separarse.
+
+    `estricto`: con una lista resuelta por el sistema, un `[], 0` diría
+    «ninguna» cuando lo cierto es «kubera no contestó». Ahí se lanza.
     """
     where, params = [], {"canal": CANAL}
     if search:
         where.append("(l.sku::text ilike %(like)s or p.name ilike %(like)s)")
         params["like"] = f"%{search}%"
     if skus_filtro:
-        where.append("l.sku::text = any(%(skus)s)")
-        params["skus"] = list(skus_filtro)
+        # `lower()` de los dos lados, igual que en TikTok y Temu.
+        where.append("lower(l.sku::text) = any(%(skus)s)")
+        params["skus"] = sorted({str(s).lower() for s in skus_filtro})
     if solo_activas:
         from services import publicaciones_panel
         frag = publicaciones_panel.filtro_sql_activas(CANAL)
@@ -117,8 +129,9 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
             where.append(frag[0])
             params.update(frag[1])
     elif solo_publicados or (estados and "publicado" in estados and "inactivo" not in estados):
-        where.append("upper(l.status) = %(vivo)s")
-        params["vivo"] = ESTADO_VIVO
+        expr, p = filtro_sql_publicado("l", "vivo")
+        where.append(expr)
+        params.update(p)
     elif estados and "inactivo" in estados and "publicado" not in estados:
         where.append("upper(l.status) is distinct from %(vivo)s")
         params["vivo"] = ESTADO_VIVO
@@ -137,6 +150,8 @@ def listar(page: int = 1, per_page: int = 40, search: str | None = None,
         return [_normalizar(f) for f in filas], int((total or [{}])[0].get("n") or 0)
     except Exception as exc:  # noqa: BLE001
         log.warning("walmart_panel.listar falló: %s", exc)
+        if estricto:
+            raise
         return [], 0
 
 

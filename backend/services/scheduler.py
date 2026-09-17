@@ -577,6 +577,40 @@ def iniciar() -> None:
         log.info("Vigilante de alertas (Slack) cada %s min.", settings.alertas_min)
     else:
         log.info("Alertas Slack APAGADAS (sin SLACK_WEBHOOK_URL).")
+    # FLUJO DEL SKU: rearma la foto del catálogo que lee el stepper de /omnicanal.
+    # El job NO la arma: solo lanza el hilo propio de `inventario_flujo` y
+    # vuelve. El armado tarda 12–35 s contra Odoo; esperarlo aquí ocuparía el
+    # loop, y mandarlo a `asyncio.to_thread` ocuparía uno de los ~6 hilos que
+    # comparten el pool de Supabase y los webhooks de ventas.
+    #
+    # `forzar=True` a propósito: el job corre cada 30 min y la foto vence a
+    # los 1800 s, así que preguntando «¿ya venció?» la encontraría con 29 min y
+    # medio y se saltaría una vuelta entera — la foto viviría una hora.
+    #
+    # +210 s: después de sync (30), odoo_watch (120) y stock_watch (180), para
+    # que el primer golpe a Odoo tras un deploy no caiga encima de los otros.
+    if settings.inventario_flujo_enabled and settings.odoo_url:
+        from services import inventario_flujo
+
+        async def _flujo_precalentar() -> None:
+            inventario_flujo.calentar_en_fondo(forzar=True, motivo="scheduler")
+
+        _scheduler.add_job(
+            _flujo_precalentar,
+            "interval",
+            minutes=settings.inventario_flujo_min,
+            id="inventario_flujo",
+            # Con zona: el scheduler va en UTC y una fecha ingenua, fuera de un
+            # servidor en UTC, cae horas en el pasado y la primera foto se pierde.
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=210),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Flujo del SKU: foto del catálogo cada %s min.",
+                 settings.inventario_flujo_min)
+    else:
+        log.info("Flujo del SKU APAGADO (INVENTARIO_FLUJO_ENABLED=%s, ODOO_URL=%s).",
+                 settings.inventario_flujo_enabled, bool(settings.odoo_url))
     _scheduler.start()
     if settings.sync_enabled:
         log.info("Sync programado cada %s min.", settings.sync_interval_min)

@@ -105,6 +105,9 @@ export interface VarianteResumen {
   revisado_at?: string | null;
   revisado_por?: string | null;
   revision_movida?: boolean;
+  /** Sello del flujo de ESTA variante. Cada una lleva el suyo: nunca se hereda
+   *  del padre ni se suma hacia arriba (el padre no se costea ni se recibe). */
+  flujo?: SelloFlujo | null;
 }
 
 /** Padre SIN marca propia: cuántas de sus variantes tienen COSTO VALIDADO y cuáles. */
@@ -178,6 +181,10 @@ export interface Producto {
   /** Tiene existencias en el almacén DROP OFF de Odoo. Solo viaja cuando es
    *  cierto: ausente = no está en DROP OFF. */
   drop_off?: boolean | null;
+  /** Etapa del SKU según la foto del flujo. `null` = la foto no está usable
+   *  (apagada o armándose) o el SKU es sintético (`WC-123`): sin sello no se
+   *  pinta nada, que no es lo mismo que «no tiene etapa». */
+  flujo?: SelloFlujo | null;
 }
 
 export interface Paginacion {
@@ -229,6 +236,17 @@ export interface RespuestaProductos extends RespuestaProductosBase {
   items: Producto[];
   paginacion: Paginacion;
   filtro_activas?: FiltroActivas | null;
+  /** En qué estado estaba la foto del flujo cuando se armó esta respuesta.
+   *  `apagado` también cubre el caso de que leerla lanzara: sin foto no hay
+   *  sellos, pero la lista sigue sirviéndose. */
+  flujo_estado?: EstadoFotoFlujo;
+  flujo_generado?: string | null;
+  /** PRUEBA de que el servidor aplicó la etapa. Si se pidió `etapa=` y esto no
+   *  viene, el backend es anterior a la opción B y FastAPI ignoró el parámetro:
+   *  la lista de abajo NO está filtrada. */
+  filtro_etapa?: FiltroEtapa | null;
+  /** `revisado=` cortó en 2,000 SKUs (costing_read.skus_revisados). */
+  revisado_truncado?: boolean;
 }
 
 export interface SubCuentaInfo {
@@ -2160,6 +2178,198 @@ export interface InventarioResp {
   piloto: string[];
   es_piloto: boolean;
   resumen: ResumenInventario;
+}
+
+/* ── Flujo del SKU: el vocabulario común ───────────────────────────────────
+   NO reutiliza `Etapa`, `ClaveEtapa` ni `EstadoEtapa`: esos son los estados de
+   costo y envío de CADA FILA. Esto nombra las etapas del catálogo entero, que
+   el backend mide sobre una foto en memoria rearmada cada 30 min (Odoo tarda
+   12–35 s de día, no cabe en una petición). Ninguno de estos tipos lleva
+   dinero, a propósito: todo lo que cuelga de /api/inventario queda con rol
+   lectura.
+
+   Los tres viven aquí porque los usa el stepper de /omnicanal (ver más abajo);
+   /inventario ya no pinta la barra. `GET /api/inventario/flujo` y
+   `/flujo/skus` siguen vivos en el backend, pero hoy ningún tipo del panel
+   modela sus respuestas: quien vuelva a consumirlos tiene que redeclararlas. */
+
+export type ClaveFlujo =
+  | "recibido" | "validado_bodega" | "bodega_3de4" | "listo_envio"
+  | "en_full" | "en_drop" | "restock" | "costo_validado";
+
+/** `n: null` = sin dato; `0` = se midió y da cero. No son lo mismo. */
+export type EstadoFlujo = "medido" | "proxy" | "bloqueado" | "por_definir" | "sin_dato";
+
+export interface FuenteFlujo {
+  ok: boolean;
+  vieja: boolean;
+  generado: string | null;
+  ms: number | null;
+  error: string | null;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   FLUJO DEL SKU DENTRO DE OMNICANAL (opción B)
+
+   Lo de arriba nombra las etapas sobre el catálogo ENTERO. Esto es lo mismo
+   visto desde una pestaña: los conteos por canal y cuenta
+   (`/api/inventario/flujo/canal`) y el SELLO de cada fila, que viaja dentro
+   de cada `Producto`. Sale de la MISMA foto en memoria, así que un número y
+   un sello de la misma vuelta siempre cuentan la misma historia.
+
+   Regla que atraviesa todo: `null` NUNCA es cero. Un `n: null` significa que
+   la fuente no contestó, y un cuadro en `sin_dato` que no sabemos, no que el
+   producto no lo cumpla.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/** Las cuatro etapas que el backend sabe convertir en lista (`etapa=`).
+ *  `validado_bodega`, `listo_envio` y `restock` están vacías por construcción:
+ *  se pintan, no se filtran. */
+export type EtapaOmnicanal = "recibido" | "bodega_3de4" | "en_full" | "en_drop";
+
+/** Cuadro del sello. `na` = la pregunta no aplica (un padre no se recibe);
+ *  `sin_dato` = la fuente no respondió. Ninguno de los dos culpa al producto,
+ *  y por eso no se pintan como `falta` en el título. */
+export type EstadoCuadroFlujo = "listo" | "falta" | "espera" | "na" | "sin_dato";
+
+/** La etapa que gana en el sello, en el orden del backend. `ninguna` solo se
+ *  emite con las tres fuentes utilizables; si alguna cayó, es `sin_dato`. */
+export type EtapaSello =
+  | "padre" | "en_full_y_drop" | "en_full" | "en_drop" | "listo_envio"
+  | "validado_bodega" | "bodega_3de4" | "recibido" | "ninguna" | "sin_dato";
+
+/** Resumen de las variantes de un padre, por PERTENENCIA a cada lista de la
+ *  foto. No es una partición: un SKU puede estar en dos. */
+export interface ResumenVariantesFlujo {
+  total: number;
+  recibido: number;
+  bodega_3de4: number;
+  en_full: number;
+  en_drop: number;
+  sin_dato: number;
+}
+
+export interface SelloFlujo {
+  etapa: EtapaSello;
+  /** Ya armado por el backend, con el «(ML)» fuera de Mercado Libre y el
+   *  « · destino sin dato» cuando toca. El frontend no lo recompone. */
+  etapa_texto: string;
+  /** Camino a Listo. Nunca menciona destino, costo ni restock. */
+  le_falta: string[];
+  en_catalogo: boolean | null;
+  pasos: {
+    recibido: {
+      estado: "si" | "no" | "sin_dato" | "na";
+      motivo: "sin_renglon" | "sin_cajas" | null;
+      vieja: boolean;
+      generado: string | null;
+    };
+    bodega: {
+      ubicacion: EstadoCuadroFlujo;
+      stock: EstadoCuadroFlujo;
+      foto: EstadoCuadroFlujo;
+      specs: EstadoCuadroFlujo;
+      /** Cuántos cuadros están en listo. Hoy el máximo real es 3: specs no
+       *  tiene definición. `null` = Odoo no contestó. */
+      n_listo: number | null;
+      en_odoo: boolean | null;
+      archivado: boolean | null;
+      codigo_odoo: string | null;
+      /** Los tres cuadros en listo pero el SKU fuera de la lista `bodega_3de4`:
+       *  Odoo lo escribe distinto y la intersección distingue mayúsculas. */
+      escritura_distinta: boolean;
+      vieja: boolean;
+      generado: string | null;
+    };
+    listo: { estado: "bloqueado" | "si" | "no" | "sin_dato" | "na" };
+    destino: {
+      full: boolean | null;
+      drop: boolean | null;
+      /** `null` = la fuente de canales no está utilizable. `[]` sería «ninguna
+       *  cuenta», que es otra cosa. */
+      full_cuentas: string[] | null;
+      sin_dato: boolean;
+      vieja: boolean;
+    };
+    restock: { estado: "por_definir" };
+  };
+  /** Solo en un padre (algún producto lo lleva como `wc_parent_id`). */
+  variantes: ResumenVariantesFlujo | null;
+}
+
+export type EstadoFotoFlujo = "apagado" | "calentando" | "vieja" | "listo";
+
+export interface FiltroEtapa {
+  etapa: EtapaOmnicanal;
+  fuente: "foto" | "odoo_drop";
+  generado: string | null;
+  vieja: boolean;
+  n_skus: number;
+}
+
+/** El mismo interruptor con el que pagina la lista: el conteo tiene que seguir
+ *  a los chips, no al contador de la pestaña (en TikTok y Walmart difieren). */
+export type CriterioConteo = "todas" | "publicados" | "activas";
+
+export type EstadoConteoCanal = "apagado" | "calentando" | "sin_dato" | "vieja" | "listo";
+
+/** Qué cuenta cada `n`: en los canales una publicación; en General un producto
+ *  de Woo (padre colapsado) o una fila si el listado va aplanado. */
+export type UnidadConteo = "publicacion" | "producto_woo" | "fila_woo";
+
+export interface EtapaCanalFlujo {
+  clave: ClaveFlujo;
+  titulo: string;
+  /** `null` = no se pudo contar. Nunca se pinta como 0. */
+  n: number | null;
+  estado: EstadoFlujo;
+  filtrable: boolean;
+  /** El NÚMERO y el CLIC son independientes: una caída de `canales` deja el
+   *  conteo en `null` y el filtro sigue pulsable. */
+  clicable: boolean;
+  vieja: boolean;
+  motivo?: string | null;
+  /** Por qué `n` es `null` aunque la etapa sí se pueda abrir. */
+  n_motivo?: string | null;
+  /** Solo `listo_envio`: lo que habría si specs no bloqueara. */
+  n_sin_specs?: number | null;
+  /** Solo el carril: con qué parámetro se pide (`revisado`). */
+  param?: string;
+}
+
+export interface FuenteConteoFlujo extends FuenteFlujo {
+  /** La lectura llegó demasiado chica contra la anterior: se sospecha truncada. */
+  sospechosa?: boolean;
+}
+
+export interface ConteoCanalFlujo {
+  canal: string;
+  cuenta: string | null;
+  criterio: CriterioConteo;
+  /** Lo que el backend pudo aplicar de verdad: Temu no filtra publicados y hay
+   *  canales sin predicado de activas, así que caen a `todas`. */
+  criterio_efectivo: CriterioConteo;
+  unidad: UnidadConteo;
+  /** General cuenta desde `core.products`, que no cubre todo Woo: las cifras
+   *  van con «≈». */
+  unidad_aprox: boolean;
+  estado: EstadoConteoCanal;
+  motivo: string | null;
+  generado: string | null;
+  edad_s: number | null;
+  ttl_s: number;
+  fuentes: Record<"kubera" | "odoo" | "odoo_drop" | "canales", FuenteConteoFlujo>;
+  /** El «Todas» del stepper. `null` en General: ahí la unidad no cuadra con la
+   *  paginación y se prefiere el total de la propia lista. */
+  total: number | null;
+  etapas: EtapaCanalFlujo[];
+  carril: EtapaCanalFlujo;
+  /** Cifras de TODO el catálogo, para los title. No dependen de la cuenta. */
+  catalogo: {
+    recibido: number | null;
+    recibido_fuera_de_odoo: number | null;
+    recibido_y_3de4: number | null;
+  };
 }
 
 export type CausaMovimiento =

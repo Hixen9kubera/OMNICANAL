@@ -14,6 +14,8 @@ interface Props {
   colorMap: Record<string, string>;
   labelMap: Record<string, string>;
   onSelect: (p: Producto) => void;
+  /** id de cuenta → nombre visible, para el «· por San Corpe» del sello. */
+  etiquetasCuenta?: Record<string, string>;
 }
 
 // Esqueleto de carga (40 tarjetas)
@@ -48,6 +50,7 @@ export default function ProductGrid({
   colorMap,
   labelMap,
   onSelect,
+  etiquetasCuenta,
 }: Props) {
   if (!cargando && productos.length === 0) {
     if (preparando) {
@@ -87,6 +90,7 @@ export default function ProductGrid({
             color={color}
             colorMap={colorMap}
             labelMap={labelMap}
+            etiquetasCuenta={etiquetasCuenta}
             onClick={() => onSelect(p)}
           />
         ))

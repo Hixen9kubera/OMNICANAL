@@ -890,6 +890,22 @@ class Settings(BaseSettings):
     # correcto (por DELTA) vive en `stock_watch`; esto se queda apagado.
     odoo_watch_auto_push: bool = False
 
+    # ── Flujo del SKU (stepper de /omnicanal, services/inventario_flujo.py) ──
+    # Una FOTO del catálogo en memoria: kubera (0.2–0.7 s) + cuatro lecturas de
+    # catálogo completo a Odoo (12–35 s de día) + los SKUs del almacén DROP.
+    # Es solo LECTURA, pero cada armado son 12–35 s de lecturas de catálogo
+    # completo contra el Odoo de producción, así que nace APAGADO: con false no
+    # hay job ni armado a petición, y el stepper responde «apagado» con el
+    # motivo. Encenderlo en producción es decisión de Eduardo después de
+    # medirlo en el sandbox.
+    inventario_flujo_enabled: bool = False
+    # Cada cuánto el scheduler rearma la foto (minutos). La foto vence a los
+    # 1800 s pase lo que pase: bajar esto no la vuelve más fresca que eso.
+    inventario_flujo_min: int = 30
+    # Timeout por llamada XML-RPC de las lecturas nuevas (y statement_timeout de
+    # la consulta a kubera). `xmlrpc.client` no trae ninguno por omisión.
+    inventario_flujo_timeout_s: int = 60
+
     # ── Alta automática de SKUs nuevos de Odoo (sincronizar_drafts) ───
     # El alta Odoo→Woo era el ÚNICO paso del pipeline que dependía de que
     # alguien apretara el botón "Sincronizar Odoo" de la pestaña Crear. Mientras

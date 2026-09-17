@@ -4,6 +4,8 @@ import { Fragment, useState } from "react";
 import { ImageIcon, PackageCheck, PackageX, Truck, PackageSearch, Loader2 } from "lucide-react";
 import type { Producto } from "@/lib/types";
 import ChannelDots from "./ChannelDots";
+import ChipRevision from "./ChipRevision";
+import { SelloCeldaLista } from "./SelloFlujo";
 import { esPadre, TipoBadge, VariantesBoton, VariantesTabla } from "./Variantes";
 
 interface Props {
@@ -15,6 +17,17 @@ interface Props {
   colorMap: Record<string, string>;
   labelMap: Record<string, string>;
   onSelect: (p: Producto) => void;
+  /** La foto del flujo está encendida: se pinta la columna «Flujo». Con el flag
+   *  apagado la tabla queda exactamente como antes. */
+  flujoVisible?: boolean;
+  /** La foto se está armando: la columna existe y sus celdas dicen «calentando…». */
+  flujoCalentando?: boolean;
+  canal: string;
+  /** id de cuenta → nombre visible, para el «· por San Corpe» del sello. */
+  etiquetasCuenta?: Record<string, string>;
+  /** Hay una etapa puesta y «Filtrar SKUs» escrito: con etapa la comparación es
+   *  por SKU COMPLETO, así que un término parcial da 0 y hay que decirlo. */
+  etapaConSkus?: boolean;
 }
 
 function precioMXN(v: number | null): string {
@@ -35,6 +48,11 @@ export default function ProductList({
   colorMap,
   labelMap,
   onSelect,
+  flujoVisible = false,
+  flujoCalentando = false,
+  canal,
+  etiquetasCuenta = {},
+  etapaConSkus = false,
 }: Props) {
   // Padres con su lista de variantes desplegada (mecánica de Crear Productos)
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set());
@@ -79,9 +97,16 @@ export default function ProductList({
             <p className="text-base font-semibold text-slate-600">
               No se encontraron productos
             </p>
-            <p className="text-sm text-slate-400">
-              Prueba con otra búsqueda o cambia de canal.
-            </p>
+            {etapaConSkus ? (
+              <p className="max-w-xl px-6 text-sm text-slate-400">
+                Con una etapa, Filtrar SKUs compara el SKU completo. Para
+                parciales usa el buscador SKU o nombre.
+              </p>
+            ) : (
+              <p className="text-sm text-slate-400">
+                Prueba con otra búsqueda o cambia de canal.
+              </p>
+            )}
           </>
         )}
       </div>
@@ -90,10 +115,20 @@ export default function ProductList({
 
   return (
     <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-card">
-      <table className="w-full min-w-[820px] text-sm">
+      {/* Con la columna Flujo (330 px) el mínimo de 820 ya no alcanza: la tabla
+          se apretaba hasta partir los nombres. El contenedor ya se desplaza. */}
+      <table className={`w-full text-sm ${flujoVisible ? "min-w-[1100px]" : "min-w-[820px]"}`}>
         <thead>
           <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
             <th className="px-4 py-3 font-semibold">Producto</th>
+            {flujoVisible && (
+              <th
+                title="Etapa del SKU según la foto del flujo. Recibido, 4 cuadros de bodega, Listo, En FULL o DROP, Restock."
+                className="w-[330px] px-3 py-3 font-semibold"
+              >
+                Flujo
+              </th>
+            )}
             {esGeneral && <th className="px-3 py-3 text-center font-semibold">Tipo</th>}
             {esGeneral && <th className="px-3 py-3 text-center font-semibold">Variantes</th>}
             <th className="px-3 py-3 font-semibold">Categoría</th>
@@ -134,9 +169,17 @@ export default function ProductList({
                       <div className="truncate font-semibold text-slate-800">{p.nombre}</div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-mono text-[11px] text-slate-400">{p.sku}</span>
+                        {/* VALIDADO junto al SKU: el costo validado corre en
+                            paralelo al flujo y el sello no lo menciona, así que
+                            aquí es donde se ve. */}
+                        <ChipRevision revisadoAt={p.revisado_at}
+                                      revisadoPor={p.revisado_por}
+                                      movida={p.revision_movida} />
                         {/* DROP OFF: mismo distintivo y mismo violeta que en el
-                            mosaico y en la pestaña Inventario. */}
-                        {p.drop_off && (
+                            mosaico y en la pestaña Inventario. Con sello NO se
+                            pinta: la columna Flujo ya dice «En DROP», y dos
+                            marcas para el mismo hecho se leen como dos hechos. */}
+                        {p.drop_off && !p.flujo && (
                           <span
                             title="Tiene existencias en el almacén DROP OFF de Odoo — el almacén del que salen los envíos a marketplaces chinos."
                             className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-bold text-violet-700"
@@ -148,6 +191,17 @@ export default function ProductList({
                     </div>
                   </div>
                 </td>
+                {/* Flujo */}
+                {flujoVisible && (
+                  <SelloCeldaLista
+                    sello={p.flujo}
+                    calentando={flujoCalentando}
+                    canal={canal}
+                    cuenta={p.cuenta}
+                    etiquetasCuenta={etiquetasCuenta}
+                    revisado={!!p.revisado_at}
+                  />
+                )}
                 {/* Tipo: Padre o Único */}
                 {esGeneral && (
                   <td className="px-3 py-2.5 text-center">
@@ -273,7 +327,7 @@ export default function ProductList({
               {/* Variantes del padre (desplegable) */}
               {abierto && (
                 <tr className="border-b border-slate-100 bg-violet-50/40">
-                  <td colSpan={8} className="px-4 pb-4 pt-1">
+                  <td colSpan={flujoVisible ? 9 : 8} className="px-4 pb-4 pt-1">
                     <VariantesTabla
                       variantes={p.variantes}
                       colorMap={colorMap}

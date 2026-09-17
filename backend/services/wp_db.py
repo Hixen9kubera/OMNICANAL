@@ -34,6 +34,16 @@ _ok: bool | None = None
 _ok_ts: float = 0.0
 
 
+class FiltroExactoNoAplicable(RuntimeError):
+    """WordPress no pudo resolver una lista que resolvió el SISTEMA.
+
+    Vive en la capa MÁS BAJA a propósito: `woocommerce` la lanza y el router la
+    traduce a 503, y un solo tipo de excepción evita el ciclo de imports entre
+    los dos. Existe porque las rutas de General se tragan sus fallas y devuelven
+    `[], 0`: con una etapa puesta eso no es «ninguno», es «no sé», y enseñarlo
+    como cero es exactamente lo que la regla «vacío no es cero» prohíbe."""
+
+
 def _prefix() -> str:
     return settings.wpdb_prefix or "wp_"
 
@@ -453,10 +463,13 @@ def sku_padre(sku: str) -> str:
     return str(rows[0]["sku_padre"]) if rows and rows[0].get("sku_padre") else ""
 
 
-def skus_padre(skus: list[str]) -> dict[str, str]:
+def skus_padre(skus: list[str], *, estricto: bool = False) -> dict[str, str]:
     """
     `sku_padre` en LOTE: { sku_variante: sku_padre } en una sola consulta.
     Los SKUs que no son variación simplemente no aparecen en el diccionario.
+
+    `estricto`: con una lista del sistema, cortar a media tanda devolvería un
+    mapa PARCIAL y el filtro saldría incompleto sin decirlo. Ahí se lanza.
     """
     limpios = [s.strip() for s in (skus or []) if s and s.strip()]
     if not limpios or not disponible():
@@ -480,6 +493,9 @@ def skus_padre(skus: list[str]) -> dict[str, str]:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("skus_padre falló: %s", exc)
+            if estricto:
+                raise FiltroExactoNoAplicable(
+                    f"WordPress no resolvió los padres de la lista: {exc}") from exc
             return salida
         for r in rows:
             hijo, padre = r.get("sku_hijo"), r.get("sku_padre")
@@ -488,7 +504,8 @@ def skus_padre(skus: list[str]) -> dict[str, str]:
     return salida
 
 
-def expandir_con_padres(terminos: list[str]) -> tuple[list[str], dict[str, str]]:
+def expandir_con_padres(terminos: list[str], *,
+                        estricto: bool = False) -> tuple[list[str], dict[str, str]]:
     """
     Los buscadores del panel indexan solo productos PADRE (`post_type='product'`)
     y matchean con "el término CABE dentro del SKU". El SKU completo de una
@@ -509,7 +526,7 @@ def expandir_con_padres(terminos: list[str]) -> tuple[list[str], dict[str, str]]
     # Solo se busca padre de lo que PUEDA ser un SKU: la caja de búsqueda
     # también recibe texto libre ("disfraz de bruja"), y ahí la consulta sobra.
     candidatos = [t for t in limpios if " " not in t]
-    mapa = skus_padre(candidatos) if candidatos else {}
+    mapa = skus_padre(candidatos, estricto=estricto) if candidatos else {}
     vistos = {t.upper() for t in limpios}
     salida = list(limpios)
     for padre in mapa.values():
@@ -1592,6 +1609,9 @@ def indice_plano(
     page: int = 1,
     per_page: int = 40,
     categorias: list[int] | None = None,
+    ids: list[int] | None = None,
+    skus_exactos: bool = False,
+    estricto: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     Índice del catálogo APLANADO: productos SIN variantes vivas + variaciones.
@@ -1613,8 +1633,32 @@ def indice_plano(
     El filtro de estado se aplica AL PADRE cuando la fila es una variante (ver
     el bloque de arriba). Por eso el `JOIN` con `pa`: sin él, las 4,522 hijas
     `publish` de padres en `draft` se colarían en Productos.
+
+    TRES MODOS PARA LA MISMA PREGUNTA, según quién resolvió la lista:
+      · `ids`: la lista viene de `core.products` (una etapa del flujo). Filtra
+        por la PK (`p.ID` / `v.ID`) y ni siquiera toca `meta_value`.
+      · `skus_exactos`: la lista son SKUs del sistema (DROP, costo validado).
+        `sk.meta_value IN (...)` en las dos mitades, SIN comodines — aquí no se
+        expande la variante a su padre, porque en el aplanado la variante ES la
+        fila.
+      · ninguno: el LIKE de siempre, que es lo que necesita la caja que teclea
+        una persona.
+
+    En los DOS primeros modos `search` va por su cuenta y se suma con AND: la
+    etapa acota el catálogo, no reemplaza lo que la persona escribió. Antes
+    caían en el mismo saco que `skus` y la caja de búsqueda se PERDÍA — con
+    `ids` ni siquiera llegaba al SQL, y con `skus_exactos` entraba como un
+    elemento más del `IN`, donde ningún término tecleado casa jamás. En el modo
+    de la caja siguen siendo el mismo saco unido por OR, que es lo que
+    «Filtrar SKUs» promete.
+
+    `estricto` convierte la falla en `FiltroExactoNoAplicable` en vez del
+    `[], 0` de abajo: con una lista del sistema, cero no es la respuesta.
     """
     if not disponible():
+        if estricto:
+            raise FiltroExactoNoAplicable(
+                "la base de WordPress no está configurada (WPDB_*)")
         return [], 0
     P = _prefix()
 
@@ -1647,7 +1691,14 @@ def indice_plano(
     # porque los buscadores solo indexaban padres. Con el listado aplanado la
     # variante ES la fila, así que traducirla la escondería justo cuando por fin
     # puede mostrarse.
-    terminos = [t.strip() for t in (([search] if search else []) + list(skus or []))
+    #
+    # La lista del SISTEMA y la caja de búsqueda son dos preguntas distintas y
+    # se responden por separado (ver el docstring): sumarlas al mismo saco hacía
+    # que la etapa borrara lo tecleado.
+    lista_del_sistema = ids is not None or skus_exactos
+    busqueda = (search or "").strip()
+    terminos = [t.strip() for t in (([busqueda] if busqueda and not lista_del_sistema
+                                     else []) + list(skus or []))
                 if t and t.strip()]
 
     sub_stock_p, sub_precio_p = _meta_sub("p.ID", "_stock"), _meta_sub("p.ID", "_price")
@@ -1678,7 +1729,26 @@ def indice_plano(
     """
     args_p: list[Any] = list(arg_est_p)
     args_v: list[Any] = list(arg_est_v)
-    if terminos:
+    if ids is not None:
+        # Por la PK. Una lista vacía tiene que dar CERO filas, nunca «no
+        # filtres»: `1 = 0` es la respuesta, no la ausencia de pregunta.
+        limpios_ids = sorted({int(i) for i in ids if i})
+        if not limpios_ids:
+            sql_p += " AND 1 = 0"
+            sql_v += " AND 1 = 0"
+        else:
+            ph_ids = ",".join(["%s"] * len(limpios_ids))
+            sql_p += f" AND p.ID IN ({ph_ids})"
+            sql_v += f" AND v.ID IN ({ph_ids})"
+            args_p += limpios_ids
+            args_v += limpios_ids
+    elif terminos and skus_exactos:
+        ph_sk = ",".join(["%s"] * len(terminos))
+        sql_p += f" AND sk.meta_value IN ({ph_sk})"
+        sql_v += f" AND sk.meta_value IN ({ph_sk})"
+        args_p += list(terminos)
+        args_v += list(terminos)
+    elif terminos:
         grupo_p = " OR ".join(
             ["(sk.meta_value LIKE %s OR p.post_title LIKE %s)"] * len(terminos))
         sql_p += f" AND ({grupo_p})"
@@ -1690,6 +1760,15 @@ def indice_plano(
         sql_v += f" AND ({grupo_v})"
         for t in terminos:
             args_v += [f"%{t}%", f"%{t}%", f"%{t}%"]
+
+    if busqueda and lista_del_sistema:
+        # ADEMÁS de la lista y con AND: escribir «bolsa» con Recibido puesto
+        # tiene que dar las bolsas DE esa etapa, no la etapa entera.
+        sql_p += " AND (sk.meta_value LIKE %s OR p.post_title LIKE %s)"
+        args_p += [f"%{busqueda}%", f"%{busqueda}%"]
+        sql_v += (" AND (sk.meta_value LIKE %s OR v.post_title LIKE %s "
+                  "OR pa.post_title LIKE %s)")
+        args_v += [f"%{busqueda}%", f"%{busqueda}%", f"%{busqueda}%"]
 
     # Categoría: la de la PROPIA fila si es producto suelto, la del PADRE si es
     # variante — igual que el estado. Una variación no tiene categoría propia en
@@ -1732,6 +1811,9 @@ def indice_plano(
             filas = f_filas.result()
     except Exception as exc:  # noqa: BLE001
         log.warning("indice_plano falló: %s", exc)
+        if estricto:
+            raise FiltroExactoNoAplicable(
+                f"WordPress no resolvió el índice aplanado: {exc}") from exc
         return [], 0
     return ([{"wc_id": int(r["wc_id"]), "tipo": r["tipo"],
               "parent_id": int(r["parent_id"] or 0) or None} for r in filas],

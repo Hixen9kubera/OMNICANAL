@@ -439,6 +439,42 @@ def _punto(fila: dict[str, Any], clave: str) -> str:
 # LAS CINCO ETAPAS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# LAS REGLAS DE BODEGA, SUELTAS Y PURAS. Viven fuera de `_validacion_bodega` por
+# una sola razón: el «Flujo del SKU» (services/inventario_flujo.py) cuenta
+# el catálogo entero con ESTAS MISMAS funciones. Si la tarjeta y la columna de
+# abajo usaran reglas escritas dos veces, tarde o temprano una cambiaría sin la
+# otra y la pantalla diría «5,155 con foto» encima de filas que dicen «falta».
+# Aquí solo se decide el ESTADO; las etiquetas y detalles siguen en la fila.
+# Cambiar una regla es cambiarla en los dos lados a la vez, a propósito.
+
+def estado_ubicacion(n_ubicaciones: int | None) -> str:
+    """UBICACIÓN: `listo` con al menos un quant interno distinto de cero —
+    incluidos SCRAP, CUARENTENA y negativos—, `falta` sin ninguno."""
+    return "listo" if n_ubicaciones else "falta"
+
+
+def estado_stock(a_la_mano: float | None, disponible: float | None) -> str:
+    """STOCK: `listo` solo con piezas a la mano Y disponibles. Con físico y
+    cero libres (todo reservado) el punto NO se cumple."""
+    return "listo" if (a_la_mano or 0) > 0 and (disponible or 0) > 0 else "falta"
+
+
+def estado_foto(n_variantes: int | None, hay_foto: bool) -> str:
+    """FOTO, la regla condicional: sin variantes basta la imagen de Odoo
+    (`listo`/`falta`); con variantes la imagen genérica no distingue cuál es
+    cuál y se espera la de bodega (`espera`), o no aplica si no hay ni esa
+    (`na`). Variantes = hermanos por plantilla + hermanos por código base, como
+    los devuelve `odoo.variantes_por_sku`."""
+    if (n_variantes or 0) <= 0:
+        return "listo" if hay_foto else "falta"
+    return "espera" if hay_foto else "na"
+
+
+def estado_specs() -> str:
+    """SPECS: en espera permanente mientras no exista la matriz por categoría."""
+    return "espera"
+
+
 def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
     """
     VALIDADO BODEGA: los CUATRO requisitos que definió Brandon el 7-sep-2026.
@@ -462,7 +498,7 @@ def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
     puntos: list[dict[str, Any]] = []
 
     # ── 1 · UBICACIÓN ───────────────────────────────────────────────────────
-    if fila["n_ubicaciones"]:
+    if estado_ubicacion(fila["n_ubicaciones"]) == "listo":
         # Tener ubicación ya cumple: significa que entró. Que sea zona de paso
         # en vez de rack se dice como detalle, no invalida — pero importa,
         # porque el 80% del inventario vive así.
@@ -489,7 +525,7 @@ def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
     # físicamente, «disponible» es lo que queda libre después de reservas.
     mano = fila["stock_fisico"] or 0
     disp = fila["stock_odoo"] or 0
-    if mano > 0 and disp > 0:
+    if estado_stock(mano, disp) == "listo":
         reservadas = mano - disp
         puntos.append(_pto(
             "stock", "Stock", "listo", f"{disp:.0f} disponibles",
@@ -517,18 +553,16 @@ def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
     # bodega aplica SOLO a productos con variantes, porque ahí una foto genérica
     # no distingue cuál es cuál. Un producto simple queda validado con la foto
     # que ya tiene en Odoo.
-    con_variantes = fila["n_variantes_odoo"] > 0
-    hay_foto = bool(fila["imagen"])
-    if not con_variantes:
-        if hay_foto:
-            puntos.append(_pto("foto", "Foto", "listo", "con foto",
-                               "producto simple: basta la imagen de Odoo",
-                               "odoo image_256"))
-        else:
-            puntos.append(_pto("foto", "Foto", "falta", "sin foto",
-                               "producto simple sin imagen en Odoo",
-                               "odoo image_256"))
-    elif hay_foto:
+    foto = estado_foto(fila["n_variantes_odoo"], bool(fila["imagen"]))
+    if foto == "listo":
+        puntos.append(_pto("foto", "Foto", "listo", "con foto",
+                           "producto simple: basta la imagen de Odoo",
+                           "odoo image_256"))
+    elif foto == "falta":
+        puntos.append(_pto("foto", "Foto", "falta", "sin foto",
+                           "producto simple sin imagen en Odoo",
+                           "odoo image_256"))
+    elif foto == "espera":
         hermanos = ", ".join(h["sku"] for h in fila["variantes_odoo"][:3])
         puntos.append(_pto(
             "foto", "Foto", "espera", "espera foto de bodega",
@@ -545,7 +579,7 @@ def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
     # formato del Excel y la vía de entrega están sin decidir (Brandon, 7-sep).
     # Mientras eso no exista, NINGÚN producto puede quedar validado del todo —
     # que es exactamente lo que se pidió.
-    puntos.append(_pto("specs", "Specs", "espera", "en espera",
+    puntos.append(_pto("specs", "Specs", estado_specs(), "en espera",
                        "matriz por categoría: falta definir el formato del "
                        "Excel y cómo llega",
                        "pendiente de definición"))

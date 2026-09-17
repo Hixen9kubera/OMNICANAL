@@ -13,16 +13,37 @@ import ChannelLegend from "@/components/ChannelLegend";
 import Pagination from "@/components/Pagination";
 import ProductGrid from "@/components/ProductGrid";
 import ProductList from "@/components/ProductList";
-import ProductControls, { type Vista } from "@/components/ProductControls";
+import ProductControls, { type ModoFlujo, type Vista } from "@/components/ProductControls";
 import ProductDetailDrawer from "@/components/ProductDetailDrawer";
 import ResumenPublicacionesCanal from "@/components/ResumenPublicacionesCanal";
 
-import { listarCanales, listarProductos, listarCategorias, type CategoriaWC } from "@/lib/api";
-import type { CanalInfo, FiltroActivas, Paginacion, Producto } from "@/lib/types";
+import {
+  ApiError, flujoCanal, listarCanales, listarProductos, listarCategorias,
+  mensajeDeError, type CategoriaWC,
+} from "@/lib/api";
+import type {
+  CanalInfo, ConteoCanalFlujo, EstadoFotoFlujo, EtapaOmnicanal, FiltroActivas,
+  Paginacion, Producto,
+} from "@/lib/types";
+import { criterioDe } from "@/lib/flujo";
 import { THEME_FALLBACK, hexToRgba, variablesTema, type CanalTheme } from "@/lib/theme";
 
 const PER_PAGE = 40;
 const GENERAL = "general";
+
+const PAG_CERO: Paginacion = {
+  page: 1, per_page: PER_PAGE, total: 0, total_pages: 1,
+  tiene_anterior: false, tiene_siguiente: false,
+};
+
+// La foto tarda 12–35 s en armarse tras un redeploy: 8 vueltas de 15 s cubren
+// el caso normal sin martillar el backend si se atora.
+const REINTENTOS_CONTEOS = 8;
+const ESPERA_CONTEOS_MS = 15_000;
+// Un error de red o un 502 de un backend que se está levantando no es lo mismo
+// que «esta ruta no existe»: dos vueltas cortas y se deja de insistir.
+const REINTENTOS_ERROR_CONTEOS = 2;
+const ESPERA_ERROR_CONTEOS_MS = 2_000;
 
 export default function OmnicanalPage() {
   const [canales, setCanales] = useState<CanalInfo[]>([]);
@@ -112,6 +133,11 @@ export default function OmnicanalPage() {
     setSkusInput(texto);
     setSkusFiltro(texto);
     setPage(1);
+    // Y SE LIMPIA LA ETAPA: con una puesta, la alerta aterrizaría en la
+    // intersección de sus SKUs con la etapa — casi siempre vacía — y el aviso
+    // volvería a no llevar a ningún lado.
+    setEtapa(null);
+    setErrorFiltro(null);
 
     // Con UN solo SKU, ademas de filtrar se ABRE su ficha: venir de una alerta
     // de un producto concreto y tener que dar otro clic es un paso de mas. Con
@@ -157,14 +183,56 @@ export default function OmnicanalPage() {
   // SKUs que cada canal ya aplicaba. Se acumula con la búsqueda y con
   // "Filtrar SKUs" en vez de reemplazarlos.
   const [revisado, setRevisado] = useState(false);
-  // "Solo DROP OFF": los SKUs con existencias en el almacén DROP OFF de Odoo.
-  // Lo resuelve el backend con UNA consulta a Odoo (cacheada 30 min) porque no
-  // existe ninguna marca de "producto drop off" en ningún sistema: la única
-  // señal real es tener piezas en las ubicaciones de ese almacén.
-  const [dropOff, setDropOff] = useState(false);
+  // ETAPA DEL FLUJO. Absorbe al viejo chip "Solo DROP OFF" como `en_drop` — es
+  // la misma pregunta, la misma consulta a Odoo y la misma caché de 30 min — y
+  // suma Recibido, 3 de 4 y En FULL, que salen de la foto en memoria.
+  // A diferencia del chip, NO persiste al cambiar de pestaña: heredar un filtro
+  // de canal en canal deja la pestaña nueva en una lista que nadie pidió.
+  const [etapa, setEtapa] = useState<EtapaOmnicanal | null>(null);
+  // Conteos del stepper para ESTA pestaña, cuenta y criterio. `null` = todavía
+  // no contestó (o falló): el stepper se pinta en esqueleto, no en ceros.
+  const [conteos, setConteos] = useState<ConteoCanalFlujo | null>(null);
+  // En qué estado venía la foto en la ÚLTIMA respuesta de la lista. Decide si
+  // hay columna Flujo y si sus celdas dicen "calentando…".
+  const [flujoEstado, setFlujoEstado] = useState<EstadoFotoFlujo>("apagado");
+  // La lista pedida con etapa o con costo validado NO se pudo servir. No es
+  // "no hay productos": es "no se pudo preguntar", y se dice con su motivo.
+  const [errorFiltro, setErrorFiltro] = useState<{ mensaje: string; esperaFoto: boolean } | null>(null);
+  // Con la foto apagada (INVENTARIO_FLUJO_ENABLED=false, que es como viene
+  // producción) se pintan los dos chips de siempre. Lo decide la respuesta del
+  // backend, nunca el cliente: adivinarlo escondería filtros que sí funcionan.
+  const [modoFlujo, setModoFlujo] = useState<ModoFlujo>("legado");
+  // Contadores de recarga: TODA carga pasa por su efecto. Sin esto, el botón
+  // Recargar y los reintentos llamaban a `cargar` por su cuenta y la respuesta
+  // vieja podía pisar a la nueva.
+  const [recargaLista, setRecargaLista] = useState(0);
+  const [recargaConteos, setRecargaConteos] = useState(0);
   const [categorias, setCategorias] = useState<CategoriaWC[]>([]);
 
   const topRef = useRef<HTMLDivElement>(null);
+  // El único temporizador de la lista. Vive en un ref para que el cleanup del
+  // efecto lo mate: si no, un reintento encolado revive una petición de un
+  // filtro que el usuario ya cambió.
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // El total de "Todas" cuando la lista venía SIN filtros, con la llave de la
+  // vista que lo produjo. Sin la llave, el número de una pestaña se colaba en
+  // otra y el stepper decía una cifra que no era de ahí.
+  const totalTodasRef = useRef<{ llave: string; total: number } | null>(null);
+  // La hora de la foto que están usando los conteos. Va en un ref y no en las
+  // dependencias de `cargar`: compararlas no debe provocar otra carga.
+  const conteosGeneradoRef = useRef<string | null>(null);
+  const intentosConteos = useRef(0);
+  // Rescates de "la foto se está armando": acotados, o la lista y el conteo se
+  // llamarían el uno al otro para siempre. `rescatadoCon` guarda la foto con la
+  // que YA se rescató: sin esa marca, cada conteo nuevo relanza la lista aunque
+  // sea la misma foto de siempre.
+  const rescates = useRef(0);
+  const rescatadoCon = useRef<string | null>(null);
+  // Fallos seguidos de /flujo/canal (que no sean 404). Un tropiezo pasajero en
+  // la PRIMERA llamada no puede decidir el modo de toda la sesión.
+  const fallosConteos = useRef(0);
+  // El temporizador de ese reintento, para que el cleanup del efecto lo mate.
+  const timerConteos = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Canal activo + tema ─────────────────────────────────────────────
   const canalActivo = useMemo(
@@ -172,6 +240,13 @@ export default function OmnicanalPage() {
     [canales, canal],
   );
   const esGeneral = canal === GENERAL;
+
+  // Con qué criterio pagina la lista HOY. El conteo del stepper sigue a estos
+  // interruptores y no al contador de la pestaña: en TikTok y Walmart ese
+  // contador cuenta todas las filas y "Solo publicados" filtra otra cosa.
+  const criterio = criterioDe(esGeneral, soloActivas, soloPublicados);
+  // Qué vista produjo un total. En General la cuenta siempre es null.
+  const llaveVista = `${canal}|${esGeneral ? "" : cuenta ?? ""}|${criterio}`;
 
   // ── Las DOS lecturas de `filtro_activas` ────────────────────────────
   // Se separan a propósito: pintarlas igual es exactamente el error que el
@@ -208,6 +283,12 @@ export default function OmnicanalPage() {
     () => Object.fromEntries(canales.map((c) => [c.id, c.label])),
     [canales],
   );
+  // id de cuenta → nombre visible ("BEKURA" → "Kubera"). El sello dice «· por
+  // San Corpe» y la fila solo trae el id, que nadie reconoce.
+  const etiquetasCuenta = useMemo(
+    () => Object.fromEntries((canalActivo?.subcuentas ?? []).map((s) => [s.id, s.label])),
+    [canalActivo],
+  );
 
   // ── Carga inicial de canales ────────────────────────────────────────
   useEffect(() => {
@@ -237,9 +318,19 @@ export default function OmnicanalPage() {
   }, [skusInput]);
 
   // ── Carga de productos ──────────────────────────────────────────────
+  // UNA SOLA VÍA: esta función solo se invoca desde su efecto. Recargar y los
+  // reintentos suben `recargaLista`, que vuelve a dispararlo; el cleanup aborta
+  // la petición anterior y mata el temporizador. Así no hay dos cargas vivas
+  // pisándose ni respuestas viejas ganándole a la nueva.
   const cargar = useCallback(() => {
     const ctrl = new AbortController();
     setCargando(true);
+    // El aviso muere con el filtro que lo produjo. Sin esto, pulsar «Quitar
+    // etapa» con el backend caído dejaba la caja ámbar del filtro anterior en
+    // pantalla —ya sin ningún botón, porque los dos dependen de `etapa` y
+    // `revisado`— diciendo «No se pudo filtrar» cuando ya no hay filtro puesto:
+    // el camino de error de abajo reintenta en silencio y nunca la limpia.
+    if (!etapa && !revisado) setErrorFiltro(null);
     listarProductos(
       {
         canal,
@@ -254,7 +345,7 @@ export default function OmnicanalPage() {
         estados,
         categoria: esGeneral ? categoria : null,
         revisado,
-        dropOff,
+        etapa: etapa ?? undefined,
         // Omnicanal es la vista de CONTROL: muestra TODO el catálogo, incluidos
         // los drafts. Esconderlos hacía invisible un producto en draft pero VIVO
         // en un canal (TEC-1841-ROS vendió estando oculto; ver v0.29.0).
@@ -263,19 +354,56 @@ export default function OmnicanalPage() {
       ctrl.signal,
     )
       .then((r) => {
+        // PRUEBA de que el servidor aplicó la etapa. FastAPI ignora en silencio
+        // los parámetros que no conoce, así que un backend anterior a la opción
+        // B devolvería el catálogo ENTERO con el segmento encendido. Eso es
+        // peor que un error: es una lista que miente.
+        if (etapa && !r.filtro_etapa) {
+          setProductos([]);
+          setPag(PAG_CERO);
+          setPreparando(false);
+          setErrorFiltro({
+            mensaje: "El servidor no aplicó la etapa (versión anterior del backend).",
+            esperaFoto: false,
+          });
+          primeraCarga.current = false;
+          return;
+        }
         setProductos(r.items);
         setPag(r.paginacion);
         // Viene sólo si se pidió el filtro. Se guarda SIEMPRE (aunque sea
         // `null`) para no arrastrar la nota de una petición anterior.
         setFiltroActivas(r.filtro_activas ?? null);
+        setFlujoEstado(r.flujo_estado ?? "apagado");
+        setErrorFiltro(null);
+        rescates.current = 0;
+        rescatadoCon.current = null;
+
+        // El "Todas" del stepper solo se puede afirmar con una lista SIN
+        // filtrar, y solo vale para la vista que lo produjo.
+        const sinFiltros = !etapa && !revisado && !busqueda && !skusFiltro
+          && !estados.length && !(esGeneral && categoria);
+        if (sinFiltros) {
+          totalTodasRef.current = { llave: llaveVista, total: r.paginacion.total };
+        }
+        // La lista trae una foto más nueva que la del stepper: se vuelven a
+        // pedir los conteos o las cifras contradirían a la paginación.
+        if (r.flujo_generado && conteosGeneradoRef.current
+            && r.flujo_generado !== conteosGeneradoRef.current) {
+          setRecargaConteos((n) => n + 1);
+        }
+
         // Sin búsqueda/filtro y 0 resultados → probablemente el índice todavía
         // se está construyendo (arranque en frío). Reintenta en vez de mostrar
         // "no encontrados". Solo aplica al canal GENERAL (WooCommerce);
         // ML/Amazon leen de MySQL propio y no tienen este arranque en frío.
-        if (esGeneral && !busqueda && !skusFiltro && r.paginacion.total === 0 && reintentos.current < 45) {
+        // Con etapa o costo validado NO se reintenta: ahí un 0 es la respuesta
+        // del filtro, no un índice a medias.
+        if (esGeneral && !busqueda && !skusFiltro && !etapa && !revisado
+            && r.paginacion.total === 0 && reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
-          setTimeout(() => cargar(), 1000);
+          timerRef.current = setTimeout(() => setRecargaLista((n) => n + 1), 1000);
           return;
         }
         reintentos.current = 0;
@@ -283,25 +411,131 @@ export default function OmnicanalPage() {
         primeraCarga.current = false;
       })
       .catch((exc) => {
+        if (exc?.name === "AbortError") return;
+        // CON FILTRO DEL SISTEMA NO SE REINTENTA. El backend contesta 503 con
+        // el motivo (Odoo caído, foto armándose, WordPress sin responder) y
+        // machacarlo 45 veces ni lo arregla ni lo explica: la lista se vacía y
+        // se dice qué pasó, con el botón para quitar el filtro.
+        if (etapa || revisado) {
+          const err = exc as { status?: number; detail?: string };
+          setProductos([]);
+          setPag(PAG_CERO);
+          setPreparando(false);
+          setErrorFiltro({
+            mensaje: mensajeDeError(exc, `No se pudo aplicar el filtro (${err?.status ?? "red"}).`),
+            esperaFoto: err?.status === 503 && /armando/i.test(err?.detail ?? ""),
+          });
+          primeraCarga.current = false;
+          return;
+        }
         // El backend puede tardar en levantarse (deploy/reinicio) y rechazar la
         // conexión: reintentamos igual que con 0 resultados, en vez de dejar la
         // pantalla en "no encontrados" por un error de red silencioso.
-        if (exc?.name === "AbortError") return;
         if (reintentos.current < 45) {
           reintentos.current += 1;
           setPreparando(true);
-          setTimeout(() => cargar(), 1000);
+          timerRef.current = setTimeout(() => setRecargaLista((n) => n + 1), 1000);
         } else {
           primeraCarga.current = false;
         }
       })
-      .finally(() => setCargando(false));
-    return () => ctrl.abort();
+      // Tras un abort la petición nueva ya encendió `cargando`: apagarlo aquí
+      // dejaría la rejilla en "no encontrados" mientras la buena viaja.
+      .finally(() => { if (!ctrl.signal.aborted) setCargando(false); });
+    return () => {
+      ctrl.abort();
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    };
     // `soloActivas` va aquí SÍ O SÍ: sin él, encender el chip no vuelve a
     // pedir y la rejilla se queda igual — se ve como que el filtro no sirve.
-  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria, revisado, dropOff]);
+  }, [canal, page, busqueda, skusFiltro, soloPublicados, soloActivas, cuenta, esGeneral, orden, estados, categoria, revisado, etapa, llaveVista, recargaLista]);
 
   useEffect(() => cargar(), [cargar]);
+
+  // ── Conteos del stepper ─────────────────────────────────────────────
+  // Cada vista empieza con su propia cuota de reintentos: si no, entrar a la
+  // cuarta pestaña heredaría las vueltas gastadas en la primera.
+  useEffect(() => {
+    intentosConteos.current = 0;
+    fallosConteos.current = 0;
+  }, [canal, cuenta, criterio]);
+
+  // Solo memoria en el backend (la misma foto que los sellos), así que se puede
+  // pedir en cada cambio de pestaña, cuenta o criterio.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    flujoCanal({ canal, cuenta: esGeneral ? null : cuenta, criterio }, ctrl.signal)
+      .then((r) => {
+        setConteos(r);
+        conteosGeneradoRef.current = r.generado;
+        fallosConteos.current = 0;
+        // El MODO lo decide el backend: con la foto apagada no hay camino que
+        // pintar, pero DROP y costo validado siguen sirviendo.
+        setModoFlujo(r.estado === "apagado" ? "legado" : "stepper");
+      })
+      .catch((exc) => {
+        if ((exc as { name?: string })?.name === "AbortError") return;
+        setConteos(null);
+        conteosGeneradoRef.current = null;
+        // 404 = backend anterior a la opción B (la ruta no existe y cae en la
+        // ficha comodín). No hay nada que esperar: se baja a modo legado.
+        if (exc instanceof ApiError && exc.status === 404) {
+          setModoFlujo("legado");
+          return;
+        }
+        // Cualquier OTRO error (502 de un backend reiniciándose, red) deja el
+        // modo como estaba, y como arranca en «legado» un solo tropiezo en la
+        // primera llamada pintaba los chips viejos toda la sesión: el esqueleto
+        // del stepper se volvía inalcanzable. Se reintenta un par de veces, que
+        // es lo que tarda un redeploy en aceptar conexiones.
+        if (fallosConteos.current < REINTENTOS_ERROR_CONTEOS) {
+          fallosConteos.current += 1;
+          timerConteos.current = setTimeout(
+            () => setRecargaConteos((n) => n + 1), ESPERA_ERROR_CONTEOS_MS);
+        }
+      });
+    return () => {
+      ctrl.abort();
+      if (timerConteos.current) {
+        clearTimeout(timerConteos.current);
+        timerConteos.current = null;
+      }
+    };
+  }, [canal, cuenta, esGeneral, criterio, recargaConteos]);
+
+  // La foto se está armando: se vuelve a preguntar, acotado. Se limpia en cada
+  // respuesta, así que nunca quedan dos temporizadores pidiendo lo mismo.
+  useEffect(() => {
+    if (conteos?.estado !== "calentando") return;
+    if (intentosConteos.current >= REINTENTOS_CONTEOS) return;
+    const t = setTimeout(() => {
+      intentosConteos.current += 1;
+      setRecargaConteos((n) => n + 1);
+    }, ESPERA_CONTEOS_MS);
+    return () => clearTimeout(t);
+  }, [conteos]);
+
+  // La lista se quedó esperando la foto y el conteo dice que ya está: se
+  // recupera SOLA, sin que nadie tenga que volver a dar clic.
+  //
+  // UNA VEZ POR FOTO, anclado a su hora y no a la identidad del objeto. El
+  // rescate se auto-realimentaba: subía también `recargaConteos`, el conteo
+  // (memoria, ~50 ms) contestaba mucho antes que la lista (segundos), `conteos`
+  // llegaba como otro objeto, el efecto volvía a correr con `errorFiltro` aún
+  // puesto y el cleanup de `cargar` abortaba la petición en vuelo para lanzar
+  // otra. El tope de 8 no evitaba el ciclo: garantizaba 8 consultas pesadas
+  // encadenadas contra WordPress donde el plan promete UNA. Y no hay nada que
+  // volver a pedirle al conteo: es justo el que disparó el rescate.
+  useEffect(() => {
+    if (!errorFiltro?.esperaFoto || !conteos) return;
+    if (conteos.estado !== "listo" && conteos.estado !== "vieja") return;
+    const marca = `${conteos.generado ?? ""}|${conteos.estado}`;
+    if (rescatadoCon.current === marca) return;
+    if (rescates.current >= REINTENTOS_CONTEOS) return;
+    rescatadoCon.current = marca;
+    rescates.current += 1;
+    setRecargaLista((n) => n + 1);
+  }, [conteos, errorFiltro]);
 
   // ── Cambio de canal ─────────────────────────────────────────────────
   function seleccionarCanal(nuevo: string) {
@@ -324,6 +558,18 @@ export default function OmnicanalPage() {
     setCategoria(null);
     setEstados([]);
     setRevisado(false);
+    // La etapa se REINICIA, igual que el costo validado. El viejo chip DROP OFF
+    // sí persistía, sin ninguna razón escrita, y arrastrarlo llevaría por un
+    // clic de pestaña a una consulta de General por ids que nadie pidió.
+    setEtapa(null);
+    setErrorFiltro(null);
+    // Los conteos son de la pestaña anterior: se borran para que el stepper
+    // pinte esqueleto en vez de las cifras del canal que se acaba de dejar.
+    setConteos(null);
+    conteosGeneradoRef.current = null;
+    rescates.current = 0;
+    rescatadoCon.current = null;
+    fallosConteos.current = 0;
     setOrden("reciente");
     // Buscador y "Filtrar SKUs": cada pestaña empieza limpia (evita que un
     // filtro de un canal se reaplique sin querer al cambiar a otro).
@@ -372,8 +618,11 @@ export default function OmnicanalPage() {
               </p>
             </div>
             <div className="text-right">
+              {/* Con el filtro caído la cifra grande sería la de la petición
+                  anterior: se pone en "—" para que nadie la lea como el total
+                  de lo que está viendo (que es nada). */}
               <div className="text-4xl font-black tabular-nums">
-                {new Intl.NumberFormat("es-MX").format(pag.total)}
+                {errorFiltro ? "—" : new Intl.NumberFormat("es-MX").format(pag.total)}
               </div>
               <div className="text-xs font-semibold uppercase tracking-wide opacity-80">
                 {esGeneral ? "productos" : "publicaciones"}
@@ -520,7 +769,12 @@ export default function OmnicanalPage() {
             </div>
 
             <button
-              onClick={cargar}
+              onClick={() => {
+                // Se suben los contadores en vez de llamar a `cargar`: la carga
+                // tiene UNA sola vía, la del efecto, que aborta la anterior.
+                setRecargaLista((n) => n + 1);
+                setRecargaConteos((n) => n + 1);
+              }}
               title="Recargar"
               className="flex items-center justify-center rounded-lg border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:bg-slate-50"
             >
@@ -543,9 +797,24 @@ export default function OmnicanalPage() {
             estados={estados}
             onEstados={(e) => { setEstados(e); setPage(1); }}
             revisado={revisado}
-            dropOff={dropOff}
-            onDropOff={(v) => { setDropOff(v); setPage(1); }}
             onRevisado={(v) => { setRevisado(v); setPage(1); }}
+            etapa={etapa}
+            onEtapa={(e) => { setEtapa(e); setPage(1); }}
+            conteos={conteos}
+            modoFlujo={modoFlujo}
+            // El conteo por canal manda; si no lo hay (General, o el conteo
+            // caído), sirve el total de la propia lista, pero SOLO si salió de
+            // esta misma vista y sin filtros.
+            totalTodas={
+              conteos?.total
+              ?? (totalTodasRef.current?.llave === llaveVista ? totalTodasRef.current.total : null)
+            }
+            // Las cifras del stepper son del canal y la cuenta: no saben de
+            // búsqueda, SKUs, estados ni categoría. Con alguno puesto se apagan
+            // en vez de contradecir a la paginación.
+            atenuar={!!(busqueda || skusFiltro || estados.length || revisado || (esGeneral && categoria))}
+            atenuarCarril={etapa !== null}
+            canal={canal}
             color={tema.color}
             textoColor={tema.texto}
           />
@@ -586,14 +855,56 @@ export default function OmnicanalPage() {
           </div>
         )}
 
+        {/* EL FILTRO DEL SISTEMA NO SE PUDO APLICAR. No se pinta lista, ni
+            paginación, ni "no encontrados": lo de abajo sería el catálogo sin
+            filtrar, y con el segmento encendido eso se lee como si el filtro
+            hubiera dado eso. El motivo lo escribe el backend (Odoo caído, la
+            foto armándose, WordPress sin responder) y aquí solo se muestra,
+            con la salida a la mano. */}
+        {errorFiltro && (
+          <div className="mt-4 flex flex-wrap items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-500" />
+            <span className="min-w-0 flex-1">
+              <strong>No se pudo filtrar.</strong> {errorFiltro.mensaje}
+              {errorFiltro.esperaFoto && (
+                <span className="block text-xs text-amber-700">
+                  Se recarga sola en cuanto la foto esté lista.
+                </span>
+              )}
+            </span>
+            <span className="flex flex-wrap items-center gap-2">
+              {etapa && (
+                <button
+                  onClick={() => { setEtapa(null); setPage(1); }}
+                  className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                >
+                  {modoFlujo === "legado" && etapa === "en_drop"
+                    ? "Quitar Solo DROP OFF"
+                    : "Quitar etapa"}
+                </button>
+              )}
+              {revisado && (
+                <button
+                  onClick={() => { setRevisado(false); setPage(1); }}
+                  className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                >
+                  Quitar Costo validado
+                </button>
+              )}
+            </span>
+          </div>
+        )}
+
         {/* Paginación superior */}
-        <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <Pagination pag={pag} color={tema.color} textoColor={tema.texto} onPage={irPagina} />
-        </div>
+        {!errorFiltro && (
+          <div className="mt-4 rounded-xl border border-slate-200 bg-white px-4 py-3">
+            <Pagination pag={pag} color={tema.color} textoColor={tema.texto} onPage={irPagina} />
+          </div>
+        )}
 
         {/* Productos: mosaico o lista */}
         <div className="mt-5">
-          {activasCeroReal ? (
+          {errorFiltro ? null : activasCeroReal ? (
             // El canal contestó y la respuesta es CERO. Va aquí, en lugar de la
             // rejilla, porque ProductGrid/ProductList dirían "No se encontraron
             // productos · Prueba con otra búsqueda" — que se lee como "no hay
@@ -624,6 +935,7 @@ export default function OmnicanalPage() {
               color={tema.color}
               colorMap={colorMap}
               labelMap={labelMap}
+              etiquetasCuenta={etiquetasCuenta}
               onSelect={(p) => setSel(p)}
             />
           ) : (
@@ -636,14 +948,21 @@ export default function OmnicanalPage() {
               colorMap={colorMap}
               labelMap={labelMap}
               onSelect={(p) => setSel(p)}
+              flujoVisible={flujoEstado !== "apagado"}
+              flujoCalentando={flujoEstado === "calentando"}
+              canal={canal}
+              etiquetasCuenta={etiquetasCuenta}
+              etapaConSkus={!!etapa && !!skusFiltro}
             />
           )}
         </div>
 
         {/* Paginación inferior */}
-        <div className="mt-6 rounded-xl border border-slate-200 bg-white px-4 py-3">
-          <Pagination pag={pag} color={tema.color} textoColor={tema.texto} onPage={irPagina} />
-        </div>
+        {!errorFiltro && (
+          <div className="mt-6 rounded-xl border border-slate-200 bg-white px-4 py-3">
+            <Pagination pag={pag} color={tema.color} textoColor={tema.texto} onPage={irPagina} />
+          </div>
+        )}
 
         {/* Aviso de canal de ejemplo */}
         {canalActivo && !canalActivo.habilitado && (
