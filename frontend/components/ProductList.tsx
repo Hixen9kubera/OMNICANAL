@@ -200,6 +200,9 @@ export default function ProductList({
                     cuenta={p.cuenta}
                     etiquetasCuenta={etiquetasCuenta}
                     revisado={!!p.revisado_at}
+                    sku={p.sku}
+                    nombre={p.nombre}
+                    clave={p.item_id}
                   />
                 )}
                 {/* Tipo: Padre o Único */}

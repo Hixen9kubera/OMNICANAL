@@ -1001,6 +1001,58 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.531.0 — El sello se abre: la evidencia del flujo, por SKU, en una tarjeta
+
+Eduardo eligió la dirección B de las maquetas: *«La B, constrúyela»*. El sello de
+cada producto deja de ser un dibujo con tooltip y se vuelve el botón que abre la
+prueba: de dónde salieron las cajas, qué validó bodega y —sobre todo— qué parte
+de eso no lo guarda nadie.
+
+**Cómo se comporta** (`frontend/components/TarjetaSello.tsx`, nuevo)
+
+- Clic en el sello (Lista y Mosaico) → tarjeta de 452 px anclada a él, que NO
+  empuja la tabla. Una sola abierta a la vez; se cierra con la X, con Escape o
+  con un clic fuera, y el foco vuelve al sello.
+- Posición FIJA calculada del rect del sello y en un portal a `document.body`:
+  la tabla vive en un `overflow-x-auto` que recortaría una tarjeta absoluta, y la
+  tarjeta del Mosaico lleva `hover:-translate-y-1` —un ancestro con `transform`
+  deja de ser el viewport para lo que cuelga en `position: fixed`—. El clic no
+  abre el cajón del producto (`stopPropagation`).
+- **Dos velocidades**: lo que ya viaja en la fila (`producto.flujo`) se pinta al
+  instante; la evidencia sale de `GET /api/inventario?skus=<sku>`, que tarda
+  ~6 s por SKU, y llega a un esqueleto. Lo traído se guarda en memoria (60 SKUs)
+  para que reabrir sea inmediato, y la petición se aborta al cerrar.
+
+**Qué muestra**, en cuatro tramos, cada uno con «De dónde sale» y «No se guarda»:
+
+- **Recibido**: cajas y piezas por caja del packing list contra Odoo contra
+  bodega, con el contenedor y el embarque. Cuando el renglón salió del archivo de
+  Drive lo nombra (`TXGU7518788 Lista de empaque.xlsx`, renglón 84, empatado por
+  foto); cuando salió de la copia congelada de costos validados, lo dice.
+- **Validado bodega**: los cuatro requisitos con el detalle real de Odoo.
+- **Destino**: FULL, FBA y DROP por separado, con sus piezas y sus cuentas.
+- **Qué le falta**: lo que hoy bloquea a ese SKU.
+
+**Lo que la tarjeta dice que NO existe** (y por eso se construyó): el conteo de
+cajas en piso —la cifra que la regla declara ganadora— no se captura en ningún
+lado; de qué archivo salió el dato solo se sabe cuando el packing list se pudo
+leer; nadie firma la validación de bodega, se deduce de Odoo; specs no tiene
+definición, y por eso 4 de 4 y «Listo» dan 0 en todo el catálogo; y un SKU llega
+en varios contenedores mientras la base guarda uno.
+
+**Dos defectos que salieron al probar y se corrigieron**: un producto padre
+mostraba «0 de 4» donde la pregunta no aplica, y un `full = false` medido se
+pintaba como «la fuente no contestó».
+
+**Fuera de alcance, declarado**: «Ver en Inventario» no lleva el SKU (esa pantalla
+no lee la URL) y no hay enlace a Odoo (el frontend no tiene su dirección).
+
+Verificado en el sandbox con SKUs reales: `ACC-0356-BLN` enseña 8 cajas del
+packing list contra 4.5 de Odoo y 11.25 contra 50 piezas por caja, con la nota de
+que son dos fuentes del mismo embarque; un SKU sin renglón muestra «sin dato», no
+cero; con el backend caído la tarjeta aguanta y ofrece reintentar. `tsc` y
+`next build` limpios.
+
 ### v0.530.0 — La bodega del marketplace es de cada canal: FULL en ML, FBA en Amazon, y donde no hay, no se pinta
 
 Eduardo, 17-sep-2026, viendo «EN FULL (ML)» en la pestaña de TikTok: *"adapta el

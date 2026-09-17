@@ -15,6 +15,7 @@ import {
   textoVariantes, tituloSello, type Muestra,
 } from "@/lib/flujo";
 import type { SelloFlujo } from "@/lib/types";
+import { TarjetaSello, useSelloAbierto } from "./TarjetaSello";
 
 interface DatosFila {
   sello: SelloFlujo | null | undefined;
@@ -27,6 +28,12 @@ interface DatosFila {
   etiquetasCuenta?: Record<string, string>;
   /** El SKU tiene costo validado. No es un paso del flujo: se usa para decirlo. */
   revisado?: boolean;
+  /** SKU y nombre: la cabecera de la tarjeta dice de qué fila salió. */
+  sku: string;
+  nombre: string;
+  /** Distingue dos publicaciones del MISMO SKU en un canal (el `item_id` de la
+   *  fila). Sin esto las dos tarjetas se abrirían a la vez. */
+  clave?: string | number | null;
 }
 
 function Cuadro({ m, x, w, rx, opacidad }: {
@@ -112,6 +119,62 @@ function lineas(sello: SelloFlujo): { titulo: string; detalle: string | null } {
   };
 }
 
+/**
+ * El sello, clicable, y su tarjeta.
+ *
+ * Es un hook y no un componente porque el `title` NATIVO vive en el contenedor
+ * de la celda: con la tarjeta abierta hay que quitarlo (dos ayudas encimadas se
+ * leen como un error), y para eso quien pinta el contenedor necesita saber si
+ * está abierta.
+ *
+ * El clic se detiene aquí: la fila y la tarjeta del Mosaico abren el cajón del
+ * producto, y pedir la evidencia del flujo no es pedir el cajón.
+ */
+function useSelloClicable({
+  sello, sku, nombre, canal, cuenta, etiquetasCuenta = {}, revisado, clave,
+}: DatosFila & { sello: SelloFlujo }) {
+  const { abierta, alternar, cerrar, boton } = useSelloAbierto(
+    `${canal}:${cuenta ?? ""}:${clave ?? ""}:${sku}`,
+  );
+  const pista = <SelloPista sello={sello} />;
+
+  return {
+    abierta,
+    // Con la tarjeta abierta el title desaparece; lo demás lo sigue explicando.
+    titulo: abierta ? undefined : tituloSello(sello, { revisado, etiquetas: etiquetasCuenta }),
+    nodo: (
+      <>
+        <button
+          ref={boton}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); alternar(); }}
+          aria-expanded={abierta}
+          aria-label={`Ver la evidencia del flujo de ${sku}`}
+          className={[
+            "flex shrink-0 rounded transition-shadow",
+            abierta
+              ? "ring-4 ring-indigo-500/20"
+              : "hover:ring-4 hover:ring-indigo-500/10 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-indigo-500/30",
+          ].join(" ")}
+        >
+          {pista}
+        </button>
+        {abierta && (
+          <TarjetaSello
+            sello={sello}
+            sku={sku}
+            nombre={nombre}
+            pista={pista}
+            etiquetasCuenta={etiquetasCuenta}
+            boton={boton}
+            cerrar={cerrar}
+          />
+        )}
+      </>
+    ),
+  };
+}
+
 /** «le falta: …», o el resumen de variantes si la fila es un padre. */
 function Falta({ sello, detalle }: { sello: SelloFlujo; detalle: string | null }) {
   if (detalle) return <span className="text-slate-500">{detalle}</span>;
@@ -124,28 +187,30 @@ function Falta({ sello, detalle }: { sello: SelloFlujo; detalle: string | null }
   );
 }
 
-/** La columna «Flujo» de la Lista. */
-export function SelloCeldaLista({
-  sello, calentando, canal, cuenta, etiquetasCuenta = {}, revisado,
-}: DatosFila) {
-  if (!sello) {
+/** La columna «Flujo» de la Lista. Sin sello no hay hook que llamar: el caso
+ *  vacío se resuelve antes de entrar a la celda con sello. */
+export function SelloCeldaLista(props: DatosFila) {
+  if (!props.sello) {
     return (
       <td className="px-3 py-2.5 text-xs text-slate-300">
-        {calentando ? "calentando…" : "—"}
+        {props.calentando ? "calentando…" : "—"}
       </td>
     );
   }
+  return <CeldaConSello {...props} sello={props.sello} />;
+}
+
+function CeldaConSello(props: DatosFila & { sello: SelloFlujo }) {
+  const { sello, canal, cuenta, etiquetasCuenta = {} } = props;
+  const { titulo: tituloNativo, nodo } = useSelloClicable(props);
   const sufijo = sufijoCuenta(sello, canal, cuenta, etiquetasCuenta);
   const apagada = sello.etapa === "ninguna" || sello.etapa === "sin_dato";
   const { titulo, detalle } = lineas(sello);
 
   return (
     <td className="px-3 py-2.5">
-      <div
-        title={tituloSello(sello, { revisado, etiquetas: etiquetasCuenta })}
-        className="flex items-center gap-3"
-      >
-        <SelloPista sello={sello} />
+      <div title={tituloNativo} className="flex items-center gap-3">
+        {nodo}
         <div className="min-w-0 flex-1">
           <div className={[
             "truncate text-xs font-semibold leading-4",
@@ -165,11 +230,14 @@ export function SelloCeldaLista({
 
 /** El sello dentro de la tarjeta del Mosaico. Sin sello no se pinta nada: la
  *  tarjeta conserva su badge DROP OFF y no queda un hueco sin explicar. */
-export function SelloTarjeta({
-  sello, canal, cuenta, etiquetasCuenta = {}, revisado,
-}: DatosFila) {
-  if (!sello) return null;
+export function SelloTarjeta(props: DatosFila) {
+  if (!props.sello) return null;
+  return <TarjetaConSello {...props} sello={props.sello} />;
+}
 
+function TarjetaConSello(props: DatosFila & { sello: SelloFlujo }) {
+  const { sello, canal, cuenta, etiquetasCuenta = {} } = props;
+  const { titulo: tituloNativo, nodo } = useSelloClicable(props);
   const sufijo = sufijoCuenta(sello, canal, cuenta, etiquetasCuenta);
   const apagada = sello.etapa === "ninguna" || sello.etapa === "sin_dato";
   const { titulo, detalle } = lineas(sello);
@@ -180,7 +248,7 @@ export function SelloTarjeta({
 
   return (
     <div
-      title={tituloSello(sello, { revisado, etiquetas: etiquetasCuenta })}
+      title={tituloNativo}
       className="flex flex-col gap-1 border-t border-slate-100 pt-2"
     >
       <div className={[
@@ -191,7 +259,7 @@ export function SelloTarjeta({
         {sufijo && <span className="font-normal text-slate-400">{sufijo}</span>}
       </div>
       <div className="flex items-center justify-between gap-2">
-        <SelloPista sello={sello} />
+        {nodo}
         <span className="whitespace-nowrap text-[10px] font-semibold leading-[15px] tabular-nums text-slate-400">
           {bodega}
         </span>

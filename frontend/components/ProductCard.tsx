@@ -219,6 +219,9 @@ export default function ProductCard({
           cuenta={producto.cuenta}
           etiquetasCuenta={etiquetasCuenta}
           revisado={!!producto.revisado_at}
+          sku={producto.sku}
+          nombre={producto.nombre}
+          clave={producto.item_id}
         />
 
         {/* Variantes: botón que despliega el recuadro */}
