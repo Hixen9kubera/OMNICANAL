@@ -245,10 +245,17 @@ def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> d
             "pedidas": round(pedidas),
             # Odoo no registra cajas; el factor por SKU aún no se cruza aquí.
             "cajas": None,
-            # Solicitado · Validado por Bodega · Orden creada · Salida validada ·
-            # Recibido · Activo · 1ª venta. Solo hay fuente para dos.
-            "etapas": [None, None,
-                       {"ts": orden_creada} if orden_creada else None,
+            # Orden de venta · Salida validada · Recibido · Activo · 1ª venta.
+            # Las dos primeras salen de Odoo; las otras tres las llena
+            # `fulfillment_etapas` desde kubera si hay con qué.
+            #
+            # Aquí VIVÍAN dos etapas más, "Solicitado" y "Validado por Bodega"
+            # (la lista de Andy y su recorte). Se quitaron el 17-sep-2026
+            # (Brandon: "si no sirven de nada bórralos"): ningún sistema las
+            # registra, así que eran dos celdas rayadas en cada renglón. El
+            # concepto no se perdió — vive en Planeación semanal, que es donde
+            # se capturarían. Vuelven al rail el día que se guarden de verdad.
+            "etapas": [{"ts": orden_creada} if orden_creada else None,
                        {"ts": validada} if validada else None,
                        None, None, None],
             "estado": _estado(canal, hecha, numero),
@@ -279,8 +286,8 @@ def resumir(envios: list[dict[str, Any]]) -> dict[str, Any]:
         for c in claves:
             g = grupo(c)
             g["salidas"] += 1
-            creada = e["etapas"][2]["ts"] if e["etapas"][2] else None
-            validada = e["etapas"][3]["ts"] if e["etapas"][3] else None
+            creada = e["etapas"][0]["ts"] if e["etapas"][0] else None
+            validada = e["etapas"][1]["ts"] if e["etapas"][1] else None
             if e["estado_odoo"] == "done":
                 g["hechas"] += 1
                 g["piezas_enviadas"] += e["piezas"] or 0

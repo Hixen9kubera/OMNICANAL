@@ -30,9 +30,11 @@ export interface Instante {
  * Las siete etapas de un envío, en orden. Cada una tiene fecha propia o es
  * `null`: ninguna se deduce de otra.
  */
+// Eran siete: al principio iban "Solicitado" (la lista de Andy) y "Validado"
+// (el recorte de Bodega). Se quitaron el 17-sep-2026 porque ningún sistema las
+// registra y sólo pintaban dos celdas rayadas por renglón; el paso sigue
+// existiendo en el negocio y se captura en Planeación semanal.
 export const ETAPAS = [
-  { t: "Solicitado", corto: "Solicitado", sub: "lista de Andy" },
-  { t: "Validado", corto: "Validado", sub: "Bodega aprobó" },
   // La fecha es la de la ORDEN DE VENTA: la teclea la KAM. El picking lo crea
   // OdooBot al confirmarla, así que su fecha no dice nada de una persona.
   { t: "Orden de venta", corto: "Orden", sub: "la crea la KAM en Odoo" },

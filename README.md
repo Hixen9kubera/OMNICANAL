@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.533.0 — El rail de FULLFILMENT se queda con cinco etapas: fuera las dos que nadie registra
+
+Brandon, viendo la tabla: *"las primeras 2 etapas son solicitado y validado pero no entiendo qué son esas
+etapas, si no sirven de nada bórralos"*. Tenía razón: **Solicitado** (la lista de Andy) y **Validado** (el
+recorte de Bodega) describen el proceso real del equipo, pero **ningún sistema las registra** — eran dos
+celdas rayadas en cada uno de los 230 renglones, 460 casillas diciendo "sin dato".
+
+El rail pasa de 7 a **5 etapas**: Orden de venta · Salida validada · Recibido · Activo · 1ª venta. Las dos
+primeras salen de Odoo y las tres últimas se observan en kubera (v0.528.0).
+
+- El concepto NO se perdió: los dos pasos siguen siendo el corazón de **Planeación semanal**, que es la
+  pantalla donde se capturarían. Una nota al pie de la tabla lo dice y explica que vuelven al rail el día que
+  se guarden de verdad. La razón queda escrita en `tipos.ts` y en `fulfillment_envios.py` para que nadie los
+  reponga por costumbre.
+- Con dos celdas menos, las cinco que quedan son más anchas y la fecha ya no se corta.
+- `etapas` es ahora una lista de 5 en toda la cadena (servicio, enriquecimiento, rail, detalle y los ejemplos
+  de la pantalla de Variaciones, que pasó a decir "cinco etapas").
+
+24 pruebas en verde —incluida una nueva que fija que el rail son 5 etapas y que `armar` deja las tres últimas
+en `null`—, `tsc` limpio y `next build` en verde.
+
 ### v0.532.0 — Un MCP de research: cuatro datos del negocio, y ninguna llave para escribir
 
 Encargo de Brandon: que Claude pueda consultar visitas, ventas por canal, stock

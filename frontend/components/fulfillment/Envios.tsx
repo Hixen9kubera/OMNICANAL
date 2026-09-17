@@ -154,7 +154,8 @@ export function TablaEnvios({
 
       <div className="mt-3 flex flex-wrap justify-between gap-2 text-xs text-slate-400">
         <span><b>Salida validada</b> es cuando bodega cierra la salida en Odoo, no la hora del camión: en 16 de 43 envíos medidos ML ya había recibido antes.</span>
-        <span>No decimos «en tránsito» hasta que el marketplace confirme que la mercancía viaja.</span>
+        <span>Antes de la orden hay dos pasos que hoy no registra ningún sistema —la lista de Andy y el recorte de
+          Bodega—: se capturan en Planeación semanal y ahí volverán al rail.</span>
       </div>
     </Tarjeta>
   );
@@ -233,8 +234,8 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
       <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
         <div className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">De dónde sale este envío</div>
         <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-[12.5px] sm:grid-cols-2 xl:grid-cols-3">
-          <Dato t="Orden de venta (Odoo sale.order)" v={`${e.orden ?? "—"} · creada por ${e.kam ?? "—"} · ${fecha(e.etapas[2])}`} />
-          <Dato t="Salida (Odoo stock.picking)" v={`${e.salida ?? "—"} · ${e.almacen ?? "—"} · estado ${e.estado_odoo ?? "—"}${hecha ? ` · validada ${fecha(e.etapas[3])}` : ""}`} />
+          <Dato t="Orden de venta (Odoo sale.order)" v={`${e.orden ?? "—"} · creada por ${e.kam ?? "—"} · ${fecha(e.etapas[0])}`} />
+          <Dato t="Salida (Odoo stock.picking)" v={`${e.salida ?? "—"} · ${e.almacen ?? "—"} · estado ${e.estado_odoo ?? "—"}${hecha ? ` · validada ${fecha(e.etapas[1])}` : ""}`} />
           <Dato t="Socio de la orden" v={`«${e.socio ?? "—"}» → ${e.canal === "meli" ? "ML FULL" : e.canal === "amazon" ? "Amazon FBA (≥ 40 piezas)" : "Walmart WFS"}`} />
           <Dato t="Referencia tecleada por la KAM" v={e.referencia ? `«${e.referencia}»` : "vacía"} />
           <Dato t="Número de envío" v={e.envio ? `${e.envio} · sacado de ${e.envio_origen === "socio" ? "el nombre del socio" : "la referencia"}` : "no hay: sin número no se puede cruzar con el marketplace"} />

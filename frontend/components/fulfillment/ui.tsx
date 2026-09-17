@@ -181,7 +181,7 @@ export function pasosDe(e: Envio): Paso[] {
   // Las tres últimas etapas son por SKU: el rail enseña la primera fecha y
   // CUÁNTOS de los SKUs del envío llegaron ahí. Sin eso, una sola pieza de un
   // SKU parecería el envío entero.
-  const cobertura = [undefined, undefined, undefined, undefined,
+  const cobertura = [undefined, undefined,
                      c && `${c.llegaron} de ${c.skus} SKUs`,
                      c && `${c.activos} de ${c.skus} SKUs`,
                      c && `${c.vendieron} de ${c.skus} SKUs`];
@@ -194,17 +194,17 @@ export function pasosDe(e: Envio): Paso[] {
                  + (inst.aprox ? " — hora en que se OBSERVÓ, no la del evento" : "") };
     }
     // Salida real todavía sin validar: el dato viene (ámbar), no es un hueco.
-    if (i === 3 && abierta) {
+    if (i === 1 && abierta) {
       return { t, corto, v: "en espera", sub: "bodega no ha validado", tono: "espera" as const,
                titulo: `${t}: la salida existe en Odoo (${e.salida ?? ""}) y bodega aún no la valida.` };
     }
-    if (i === 4 && !abierta && SIN_LECTURA[e.estado]) {
+    if (i === 2 && !abierta && SIN_LECTURA[e.estado]) {
       const s = SIN_LECTURA[e.estado]!;
       return { t, corto, v: "sin lectura", sub: s.sub, tono: "hueco" as const, titulo: `${t}: ${s.titulo}` };
     }
     // «Recibido» en curso es ÁMBAR: el dato viene, no ha llegado. No se resta
     // enviadas − recibidas para inventar un rechazo.
-    if (i === 4 && (e.estado === "recepcion" || e.estado === "amazonSinLectura")) {
+    if (i === 2 && (e.estado === "recepcion" || e.estado === "amazonSinLectura")) {
       const amz = e.estado === "amazonSinLectura";
       const v = amz ? "sin lectura" : "en recepción";
       return { t, corto, v, sub: amz ? "Amazon no se consulta" : "el almacén no ha contado", tono: "espera" as const,

@@ -138,11 +138,12 @@ class Armar(unittest.TestCase):
 
     def test_lo_no_medido_va_en_none(self):
         e = self.por_orden["S30942"]
-        self.assertIsNone(e["etapas"][0], "solicitado: la lista de Andy no existe")
-        self.assertIsNone(e["etapas"][1], "validado por Bodega: no existe")
-        self.assertIsNotNone(e["etapas"][2])
-        self.assertIsNotNone(e["etapas"][3])
-        self.assertTrue(all(x is None for x in e["etapas"][4:]), "recibido/activo/1ª venta: sin fuente")
+        # El rail son 5 etapas: las dos de Odoo y las tres que llena kubera.
+        self.assertEqual(len(e["etapas"]), 5)
+        self.assertIsNotNone(e["etapas"][0], "orden de venta")
+        self.assertIsNotNone(e["etapas"][1], "salida validada")
+        self.assertTrue(all(x is None for x in e["etapas"][2:]),
+                        "recibido/activo/1ª venta las llena kubera, no `armar`")
         self.assertIsNone(e["cajas"])
 
     def test_abierta_sin_numero_es_sin_enlazar_y_sin_piezas_enviadas(self):
@@ -150,7 +151,7 @@ class Armar(unittest.TestCase):
         self.assertEqual(e["estado"], "sinEnlazar")
         self.assertIsNone(e["piezas"], "una salida abierta no ha enviado nada: None, no 0")
         self.assertEqual(e["pedidas"], 63)
-        self.assertIsNone(e["etapas"][3])
+        self.assertIsNone(e["etapas"][1], "sin validar no hay fecha de salida")
 
     def test_fba_y_sin_cuenta(self):
         self.assertEqual(self.por_orden["S38241"]["estado"], "fbaSinLectura")

@@ -379,7 +379,7 @@ function CapturaKam({ envios, cuenta }: { envios: Envio[]; cuenta: FiltroCuenta 
       // El número a veces NO está en la referencia sino en el nombre del socio.
       if (!r.ejemplo) r.ejemplo = e.envio_origen === "socio" ? `socio «${e.socio}»` : e.referencia ?? null;
     }
-    const creada = e.etapas[2]?.ts ? Date.parse(e.etapas[2].ts) : 0;
+    const creada = e.etapas[0]?.ts ? Date.parse(e.etapas[0].ts) : 0;
     if (creada >= hace30) {
       r.t30 += 1;
       if (e.envio) r.c30 += 1;

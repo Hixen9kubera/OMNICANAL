@@ -36,7 +36,7 @@ SALIDA = datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc)
 def _envio(validada: datetime | None = SALIDA, skus=("A", "B")):
     return {
         "canal": "meli", "cuenta": "Kubera", "estado_odoo": "done" if validada else "waiting",
-        "etapas": [None, None, {"ts": (SALIDA - timedelta(days=2)).isoformat()},
+        "etapas": [{"ts": (SALIDA - timedelta(days=2)).isoformat()},
                    {"ts": validada.isoformat()} if validada else None, None, None, None],
         "lineas": [{"sku": s, "nombre": s, "pedidas": 10, "enviadas": 10} for s in skus],
     }
@@ -51,15 +51,15 @@ class Atribucion(unittest.TestCase):
     def test_salida_sin_validar_no_tiene_llegada(self):
         e = _envio(validada=None)
         fe.aplicar([e], _datos(llegadas={("A", ACC): ([SALIDA + timedelta(hours=5)], [7])}))
-        self.assertIsNone(e["etapas"][4], "sin salida validada no se atribuye nada")
+        self.assertIsNone(e["etapas"][2], "sin salida validada no se atribuye nada")
         self.assertNotIn("cobertura", e)
 
     def test_llegada_dentro_de_la_ventana(self):
         e = _envio()
         cuando = SALIDA + timedelta(days=2)
         fe.aplicar([e], _datos(llegadas={("A", ACC): ([cuando], [7])}))
-        self.assertEqual(e["etapas"][4]["ts"], cuando.isoformat())
-        self.assertTrue(e["etapas"][4]["aprox"], "es cuándo se observó, no cuándo ocurrió")
+        self.assertEqual(e["etapas"][2]["ts"], cuando.isoformat())
+        self.assertTrue(e["etapas"][2]["aprox"], "es cuándo se observó, no cuándo ocurrió")
         self.assertEqual(e["cobertura"], {"skus": 2, "llegaron": 1, "piezas_llegadas": 7,
                                           "activos": 0, "vendieron": 0})
         self.assertEqual(e["lineas"][0]["piezas_llegadas"], 7)
@@ -70,7 +70,7 @@ class Atribucion(unittest.TestCase):
         tarde = SALIDA + timedelta(days=fe.DIAS_LLEGADA + 5)
         antes = SALIDA - timedelta(days=3)
         fe.aplicar([e], _datos(llegadas={("A", ACC): ([antes, tarde], [3, 9])}))
-        self.assertIsNone(e["etapas"][4])
+        self.assertIsNone(e["etapas"][2])
         self.assertEqual(e["cobertura"]["llegaron"], 0)
 
     def test_activacion_y_primera_venta(self):
@@ -79,25 +79,25 @@ class Atribucion(unittest.TestCase):
         fe.aplicar([e], _datos(
             activaciones={("A", ACC): [SALIDA - timedelta(days=10), act]},
             ventas={("A", "BEKURA"): [date(2026, 8, 1), date(2026, 8, 25)]}))
-        self.assertEqual(e["etapas"][5]["ts"], act.isoformat(), "la activación vieja no cuenta")
-        self.assertEqual(e["etapas"][6]["ts"][:10], "2026-08-25", "la venta anterior a la salida no cuenta")
+        self.assertEqual(e["etapas"][3]["ts"], act.isoformat(), "la activación vieja no cuenta")
+        self.assertEqual(e["etapas"][4]["ts"][:10], "2026-08-25", "la venta anterior a la salida no cuenta")
         self.assertEqual((e["cobertura"]["activos"], e["cobertura"]["vendieron"]), (1, 1))
 
     def test_cuenta_equivocada_no_cruza(self):
         e = _envio()
         fe.aplicar([e], _datos(llegadas={("A", "otro"): ([SALIDA + timedelta(days=1)], [5])}))
-        self.assertIsNone(e["etapas"][4], "el stock de la otra cuenta no es de este envío")
+        self.assertIsNone(e["etapas"][2], "el stock de la otra cuenta no es de este envío")
 
     def test_envios_viejos_sin_historia(self):
         viejo = datetime(2026, 3, 1, tzinfo=timezone.utc)
         e = _envio(validada=viejo)
         fe.aplicar([e], _datos(llegadas={("A", ACC): ([viejo + timedelta(days=1)], [5])}))
-        self.assertIsNone(e["etapas"][4], "antes del 17-jul no hay historia que mirar")
+        self.assertIsNone(e["etapas"][2], "antes del 17-jul no hay historia que mirar")
 
     def test_sin_kubera_no_pasa_nada(self):
         e = _envio()
         fe.aplicar([e], None)
-        self.assertEqual(e["etapas"][4:], [None, None, None])
+        self.assertEqual(e["etapas"][2:], [None, None, None])
 
 
 class Canales(unittest.TestCase):

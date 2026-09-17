@@ -29,9 +29,10 @@ por lo que de verdad es.
 · 1ª VENTA → `channel.sales_daily_completa` con `is_full`. Es por DÍA, no por
   hora: se manda a medianoche del día de la venta y se rotula como día.
 
-Las dos etapas que faltan (SOLICITADO y VALIDADO por Bodega) no tienen fuente
-en ningún sistema: la lista de Andy no se guarda y las unidades declaradas del
-envío sólo viven en el Seller Center de ML.
+El rail tenía dos etapas más —SOLICITADO y VALIDADO por Bodega— y se quitaron el
+17-sep-2026: no las registra ningún sistema (la lista de Andy no se guarda y las
+unidades declaradas sólo viven en el Seller Center de ML), así que eran dos
+celdas rayadas en cada renglón. Vuelven cuando se capturen de verdad.
 
 OJO CON LAS PIEZAS: las que entran a FULL en la ventana de un envío **pueden
 incluir las de otro envío del mismo SKU** (los envíos a un mismo CEDIS se
@@ -132,14 +133,14 @@ def _primera(fechas: list[datetime], desde: datetime, hasta: datetime) -> dateti
 
 
 def aplicar(envios: list[dict[str, Any]], datos: dict[str, Any] | None) -> None:
-    """Rellena etapas[4], [5] y [6] y agrega `cobertura` a cada envío. In place."""
+    """Rellena etapas[2], [3] y [4] y agrega `cobertura` a cada envío. In place."""
     if not datos:
         return
     for e in envios:
         # SÓLO salidas ya validadas. Una salida que bodega no ha cerrado no puede
         # tener "llegada": lo que entrara a FULL en esos días sería de otro envío
         # del mismo SKU, y atribuírselo a éste sería inventar.
-        base_iso = (e["etapas"][3] or {}).get("ts")
+        base_iso = (e["etapas"][1] or {}).get("ts")
         codigo = _codigo(e["canal"], e.get("cuenta"))
         if not base_iso or not codigo:
             continue
@@ -179,11 +180,11 @@ def aplicar(envios: list[dict[str, Any]], datos: dict[str, Any] | None) -> None:
         n = len(e["lineas"]) or 1
         if llego:
             # `aprox`: la hora es cuándo lo VIO el sync (cada 15 min), no cuándo ocurrió.
-            e["etapas"][4] = {"ts": min(llego).isoformat(), "aprox": True}
+            e["etapas"][2] = {"ts": min(llego).isoformat(), "aprox": True}
         if activo:
-            e["etapas"][5] = {"ts": min(activo).isoformat(), "aprox": True}
+            e["etapas"][3] = {"ts": min(activo).isoformat(), "aprox": True}
         if vendio:
-            e["etapas"][6] = {"ts": datetime.combine(
+            e["etapas"][4] = {"ts": datetime.combine(
                 min(vendio), datetime.min.time(), tzinfo=timezone.utc).isoformat(), "aprox": True}
         e["cobertura"] = {
             "skus": n,

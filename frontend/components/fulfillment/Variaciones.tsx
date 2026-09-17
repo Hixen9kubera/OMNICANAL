@@ -268,11 +268,11 @@ function VariacionB() {
 function VariacionC() {
   const e = ENVIOS[0];   // un envío en recepción: tiene los tres tonos
   const pasos = pasosDe(e);
-  const deltas = ["02 sep 11:02", "+6 h", "+16 h", "+2 d", "en curso", "sin dato", "sin dato"];
+  const deltas = ["03 sep 09:15", "+2 d", "en curso", "sin dato", "sin dato"];
   return (
     <Tarjeta>
       <Ceja>Variación C · rail de etapas del envío</Ceja>
-      <h2 className="mt-1 text-[17px] font-extrabold text-slate-900">Siete etapas, una fecha o un estado en cada una</h2>
+      <h2 className="mt-1 text-[17px] font-extrabold text-slate-900">Cinco etapas, una fecha o un estado en cada una</h2>
       <div className="mt-4 flex flex-col gap-3.5">
         <Opcion titulo="C1 · celdas parejas (la que usa la tabla de Envíos)"
                 pie="Legible en una tabla de 40 renglones y no promete movimiento físico donde no lo hay.">
