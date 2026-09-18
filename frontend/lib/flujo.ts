@@ -173,7 +173,7 @@ export function tituloSello(
       .map((c) => NOMBRE_CUADRO[c]);
     const detalle = [
       listos.length ? enumerar(listos) : "",
-      "specs sin definición",
+      "specs no se evalúa en esta foto",
     ].filter(Boolean).join("; ");
     const archivado = b.archivado ? ", archivado en Odoo" : "";
     partes.push(`Validado bodega: ${b.n_listo} de 4 (${detalle})${archivado}`);
@@ -298,21 +298,22 @@ export const NOTA_ETAPA: Record<string, NotaEtapa> = {
   },
   bodega_3de4: {
     que: "De los SKUs de la pestaña Inventario, los que cumplen 3 de los 4 "
-      + "requisitos: ubicación, stock y foto. El cuarto, specs, no tiene "
-      + "definición.",
+      + "requisitos: ubicación, stock y foto. El cuarto, specs, no se evalúa "
+      + "en esta foto.",
     fuente: "Odoo, leído en una foto que se rearma cada 30 min, con la misma "
       + "regla que la columna Validado bodega de Inventario, y solo sobre los "
       + "SKUs de esa lista (hoy 14).",
     clic: "Filtra el catálogo a los que cumplen 3 de 4.",
-    ojo: "Validado bodega completo (4 de 4) da 0 hasta que se defina specs, y "
-      + "los SKUs fuera de la lista de Inventario no se cuentan aquí aunque "
-      + "Odoo tenga sus datos.",
+    ojo: "Validado bodega completo (4 de 4) da 0 mientras esta foto no evalúe "
+      + "specs: la matriz por categoría ya existe y la ficha del producto sí la "
+      + "usa, pero el flujo todavía no la lee. Y los SKUs fuera de la lista de "
+      + "Inventario no se cuentan aquí aunque Odoo tenga sus datos.",
   },
   listo_envio: {
     que: "De los SKUs de la pestaña Inventario, los listos para mandarse a FULL "
       + "o DROP: Recibido y Validado bodega 4 de 4. El costo no cuenta.",
     fuente: "Cruce de costos validados (kubera) con la foto de Odoo.",
-    clic: "No filtra: está bloqueado mientras specs no tenga definición.",
+    clic: "No filtra: está bloqueado mientras esta foto no evalúe specs.",
   },
   en_fba: {
     que: "SKUs con stock en FBA, la bodega de Amazon.",

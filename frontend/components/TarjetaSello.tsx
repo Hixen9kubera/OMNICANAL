@@ -26,8 +26,9 @@
 
    · LO QUE NO SE GUARDA SE ESCRIBE. Cada tramo lleva «De dónde sale» y «No se
      guarda» porque el hueco es el hallazgo: el conteo de cajas en piso es el que
-     MANDA y no existe en ningún sistema, specs no tiene definición y por eso
-     Listo da 0 en todo el catálogo, y la validación de bodega no la firma nadie
+     MANDA y no existe en ningún sistema, esta foto todavía no evalúa specs
+     —la matriz existe desde v0.540.0, el flujo aún no la lee— y por eso Listo
+     da 0 en todo el catálogo, y la validación de bodega no la firma nadie
      — se deduce de Odoo. Un `null` aquí nunca se pinta como 0. */
 
 import Link from "next/link";

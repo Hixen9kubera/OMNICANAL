@@ -111,8 +111,8 @@ def _filtro_activas(canal: str, pedido: bool) -> FiltroActivas | None:
 # falla sale como 503 con su motivo, en todos los canales.
 
 _ETAPAS_400 = {
-    "validado_bodega": ("validado_bodega: bloqueada. 4 de 4 da 0 mientras specs "
-                        "no tenga definición; usa etapa=bodega_3de4"),
+    "validado_bodega": ("validado_bodega: bloqueada. 4 de 4 da 0 mientras la foto "
+                        "no evalúe specs; usa etapa=bodega_3de4"),
     "listo_envio": "listo_envio: bloqueada. Depende de Validado bodega 4 de 4",
     "restock": "restock: etapa por definir, sin lista",
     "costo_validado": ("costo_validado no es etapa en esta vista: usa "

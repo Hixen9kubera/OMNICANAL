@@ -135,7 +135,7 @@ ETAPAS_FILTRABLES = frozenset({"recibido", "bodega_3de4", "validado_bodega",
 
 # Las únicas que /api/productos sabe convertir en una lista de SKUs exacta. Las
 # demás dan 400 con su motivo: `validado_bodega` y `listo_envio` están vacías
-# por construcción mientras specs no tenga definición (ver `_META`), `restock`
+# por construcción mientras esta foto no evalúe specs (ver `_META`), `restock`
 # no tiene regla y `costo_validado` ya viaja por `revisado=`.
 ETAPAS_OMNICANAL = ("recibido", "bodega_3de4", "en_full", "en_fba", "en_drop")
 
@@ -1056,7 +1056,9 @@ _META: dict[str, dict[str, Any]] = {
         "fuente": ("la lista de la pestaña Inventario (inventario_maestro.PILOTO + "
                    "REFERENCIA, hoy 14 SKUs) · Odoo · stock.quant, product.product, "
                    "imágenes"),
-        "motivo": "Bloqueado: specs no tiene definición, así que 4 de 4 da 0 por construcción",
+        "motivo": ("Bloqueado: esta foto todavía no evalúa specs —llama a "
+                   "inventario_maestro.estado_specs() sin datos y recibe "
+                   "«espera»—, así que 4 de 4 da 0 por construcción"),
         "desglose": [("recibido_y_3de4", "Cumple lo anterior (Recibido) con 3 de 4",
                       "recibido_y_3de4", ("kubera", "odoo"))],
         "falta": [
@@ -1065,8 +1067,9 @@ _META: dict[str, dict[str, Any]] = {
             "el día que exista la tabla de listas de prioridad (Eduardo con bodega)",
             "Del resto del catálogo no se afirma nada AUNQUE Odoo tenga ubicación, "
             "stock y foto: no está validado ni reprobado, está sin validar",
-            "Specs: no existe la matriz por categoría ni el canal para capturarla "
-            "(catálogo o contenido, con bodega)",
+            "Specs: la matriz por categoría YA existe (channel.field_requirements) "
+            "y la ficha del producto la evalúa por canal desde v0.540.0; lo que "
+            "falta es leerla AQUÍ, SKU por SKU, dentro de la foto (catálogo)",
             "Foto de bodega para productos con variantes: el canal (Slack) no está "
             "construido (bodega)",
             "Decisión D2: ¿los hermanos por código base cuentan como variantes? El "

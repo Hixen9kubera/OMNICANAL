@@ -1001,6 +1001,40 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.543.0 — El flujo deja de decir que specs «no tiene definición»
+
+Corrección de TEXTO, no de número. v0.540.0 (de hoy, otra sesión) le dio datos a
+specs: `channel.field_requirements`, 74,086 filas, y `inventario_maestro.detalle_specs`
+ya dice por SKU y por canal qué atributo le falta. La foto del flujo no cambió de
+comportamiento —sigue llamando a `estado_specs()` sin argumentos, que devuelve
+«espera»— pero lo que le decía al usuario quedó falso: «specs no tiene definición»
+ya no es cierto, la matriz existe.
+
+**El número no se mueve**: Validado bodega 4 de 4 sigue en 0 y `etapa=validado_bodega`
+y `etapa=listo_envio` siguen respondiendo 400. Lo que cambia es el MOTIVO que se lee
+en pantalla y en la API: de «specs no tiene definición» a «esta foto todavía no
+evalúa specs».
+
+**Backend**
+
+- `inventario_flujo._META["validado_bodega"]["motivo"]`: ahora nombra la causa real
+  (la foto llama a `estado_specs()` sin datos), no una ausencia que ya no existe.
+- El pendiente de `falta` decía «no existe la matriz por categoría ni el canal para
+  capturarla». Ahora dice lo contrario y lo que de verdad queda: leerla AQUÍ, SKU
+  por SKU, dentro del armado de la foto.
+- `productos._ETAPAS_400["validado_bodega"]`: «mientras la foto no evalúe specs».
+
+**Frontend**
+
+- `flujo.ts`: el renglón del sello («specs no se evalúa en esta foto»), la nota de
+  la pestaña *3 de 4* y el porqué de que *Listo* no filtre.
+- Comentarios de cabecera de `FlujoEtapas.tsx` y `TarjetaSello.tsx`.
+
+**Lo que sigue pendiente** (y ahora se puede hacer): que `armar_foto` lea la spec de
+cada SKU y llame a `detalle_specs`. Es lo único que haría que 4 de 4 deje de dar 0.
+
+Sin cambio de comportamiento: 265 pruebas del backend en verde y `tsc` limpio.
+
 ### v0.542.0 — La validación del flujo solo cuenta los SKUs de la pestaña Inventario
 
 Eduardo, 18-sep-2026, con las cifras enfrente: *«la idea es solo mostrar de la tab

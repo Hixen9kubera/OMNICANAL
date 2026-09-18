@@ -442,7 +442,7 @@ export default function FlujoEtapas({
 
           <Chevron />
 
-          {/* Listo: 0 por construcción mientras specs no tenga definición. No se
+          {/* Listo: 0 por construcción mientras la foto no evalúe specs. No se
               deshabilita «porque no hay dato» — se deshabilita porque no hay
               lista que filtrar, y el title lo dice. */}
           <Seg
