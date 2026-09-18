@@ -322,12 +322,25 @@ function TextoNoSeGuardaPl({ c }: { c: CotejoCajas }) {
   return <>No se registra {huecos.join(", ni ")}.</>;
 }
 
+/** El SKU no está en la lista de la pestaña Inventario: el dato de abajo puede
+ *  existir, pero nadie lo ha validado. Se dice ANTES de las cifras para que no
+ *  se lean como una validación. */
+function SinValidar({ que }: { que: string }) {
+  return (
+    <p className="rounded-md bg-slate-100 px-2 py-1.5 text-[11px] leading-[15px] text-slate-600">
+      Sin validar: este SKU no está en la lista de Inventario, así que no cuenta
+      en {que}. Lo de abajo es el dato que existe hoy, no una revisión.
+    </p>
+  );
+}
+
 function TramoRecibido({
   sello, fila, cargando, error, reintentar,
 }: {
   sello: SelloFlujo; fila: FilaInventario | null; cargando: boolean;
   error: string | null; reintentar: () => void;
 }) {
+  const sinValidar = !sello.en_piloto && sello.etapa !== "padre";
   const c = fila?.cotejo_cajas;
   const piezasPl = c ? piezasDe(c.packing_list, c.piezas_por_caja_pl) : null;
   const piezasOdoo = c ? piezasDe(c.odoo, c.piezas_por_caja_odoo) : null;
@@ -376,6 +389,7 @@ function TramoRecibido({
         </p>
       ) : (
         <>
+          {sinValidar && <SinValidar que="Recibido" />}
           <div className="grid grid-cols-[88px_repeat(3,minmax(0,1fr))] items-center gap-x-2 gap-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2.5">
             <span />
             <span className="text-[9px] font-bold uppercase leading-3 tracking-wide text-slate-400">Packing list</span>
@@ -468,6 +482,7 @@ function TramoBodega({
 }) {
   const b = sello.pasos.bodega;
   const padre = sello.etapa === "padre";
+  const sinValidar = !sello.en_piloto && !padre;
   const vb = fila?.validacion_bodega;
   // El conteo lo manda la evidencia cuando llega; mientras, el del sello, que ya
   // viaja en la fila. Los dos salen de la misma foto de Odoo. En un PADRE no se
@@ -481,7 +496,8 @@ function TramoBodega({
       <div className="flex items-center justify-between gap-2">
         <Rotulo muestra={MUESTRA_FLUJO.bodega}>Validado bodega</Rotulo>
         <span className="text-[11px] font-bold leading-[14px] text-slate-600">
-          {padre ? "no aplica" : cumplidos === null ? "sin dato de Odoo" : `${cumplidos} de 4`}
+          {padre || sinValidar ? "no aplica"
+            : cumplidos === null ? "sin dato de Odoo" : `${cumplidos} de 4`}
         </span>
       </div>
 
@@ -489,6 +505,25 @@ function TramoBodega({
         <p className="text-[11px] leading-[15px] text-slate-500">
           No aplica a un padre: los cuatro requisitos se miden por variante.
         </p>
+      ) : sinValidar ? (
+        <>
+          <SinValidar que="Validado bodega" />
+          {vb?.puntos?.length ? (
+            <div className="grid grid-cols-2 gap-x-2.5 gap-y-2 opacity-70">
+              {vb.puntos.map((punto) => (
+                <div key={punto.clave} className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-[11px] font-semibold leading-4 text-slate-600">
+                    {punto.titulo}
+                  </span>
+                  <span className="text-[10px] leading-[14px] text-slate-500">
+                    {punto.etiqueta}
+                    {punto.detalle ? ` · ${punto.detalle}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-x-2.5 gap-y-2">

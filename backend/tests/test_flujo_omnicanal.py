@@ -38,7 +38,8 @@ from routers import inventario as ruta_inv  # noqa: E402
 from routers import productos as ruta_prod  # noqa: E402
 from services import channel_read, inventario_flujo as invf  # noqa: E402
 from services import temu_panel, tiktok_panel, walmart_panel, woocommerce, wp_db  # noqa: E402
-from tests.test_inventario_flujo import T0, _kubera_filas, _odoo_crudo  # noqa: E402
+from tests.test_inventario_flujo import (T0, UNIVERSO_PRUEBA, _kubera_filas,  # noqa: E402
+                                         _odoo_crudo)
 
 # La función REAL, guardada antes de que ninguna prueba la parche: hace falta
 # para comprobar que su `[], 0` de siempre sigue ahí sin `estricto`.
@@ -155,6 +156,14 @@ def _fp(foto: invf.Foto | None = None, *, estado="listo", ahora=T0) -> invf.Foto
 class _Base(unittest.TestCase):
     def setUp(self):
         invf._foto = None
+        # El universo de validación de las pruebas: el catálogo entero del
+        # fixture. Ver `UNIVERSO_PRUEBA` en test_inventario_flujo — sin esto las
+        # cuatro etapas de validación contarían los 14 SKUs reales de
+        # /inventario, que no existen en este mundo inventado, y todas las
+        # cifras de aquí (66, 40, 60…) serían cero.
+        pu = mock.patch.object(invf, "UNIVERSO_VALIDACION", UNIVERSO_PRUEBA)
+        pu.start()
+        self.addCleanup(pu.stop)
         self.addCleanup(setattr, invf, "_foto", None)
         p = mock.patch.object(invf, "calentar_en_fondo", return_value=False)
         p.start()
@@ -430,6 +439,118 @@ class SelloPuro(_Base):
                     if palabra in ("costo",) and "en costos" in texto:
                         continue      # «sin cajas en costos» es el motivo, no un monto
                     self.assertNotIn(palabra, texto, f"{sku}: {texto}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1 bis · FUERA DE LA LISTA DE /inventario
+#
+# Eduardo, 18-sep: «solo mostrar de la tab de inventario esos SKUs que ya
+# tenemos ahí… los demás son independientes». Para los de fuera la validación no
+# existe —ni cumplida ni reprobada—, y el sello tiene que decir eso sin acusar
+# al producto de nada.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FueraDelPiloto(_Base):
+    """SKU-0010 DENTRO de la lista; 0011 tiene los mismos datos y está fuera."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(invf, "UNIVERSO_VALIDACION",
+                              frozenset({"SKU-0010-NEG"}))
+        p.start()
+        self.addCleanup(p.stop)
+        self.fp = _fp()
+
+    def test_dentro_de_la_lista_todo_como_siempre(self):
+        s = invf.sello(self.fp, "SKU-0010-NEG")
+        self.assertIs(s["en_piloto"], True)
+        self.assertEqual(s["pasos"]["recibido"]["estado"], "si")
+        self.assertEqual(s["pasos"]["bodega"]["n_listo"], 3)
+        self.assertEqual(s["etapa"], "bodega_3de4")
+        self.assertIn("specs", s["le_falta"])
+
+    def test_fuera_de_la_lista_con_todos_los_datos_no_se_juzga(self):
+        """0011 trae renglón con cajas en costos y sus tres cuadros de Odoo en
+        listo. Aun así no cuenta: el dato existe, la validación no."""
+        s = invf.sello(self.fp, "SKU-0011-NEG")
+        self.assertIs(s["en_piloto"], False)
+        self.assertEqual(s["pasos"]["recibido"], {
+            "estado": "na", "motivo": "fuera_piloto", "fuente": None,
+            "vieja": False, "generado": "2026-09-15T15:40:00Z"})
+        b = s["pasos"]["bodega"]
+        self.assertEqual((b["ubicacion"], b["stock"], b["foto"], b["specs"]),
+                         ("na", "na", "na", "na"))
+        self.assertIsNone(b["n_listo"])
+        # Lo que SÍ se midió se conserva: es dato de Odoo, no una exigencia.
+        self.assertIs(b["en_odoo"], True)
+        self.assertIs(b["archivado"], False)
+        self.assertEqual(b["codigo_odoo"], "SKU-0011-NEG")
+        self.assertEqual(s["pasos"]["listo"], {"estado": "na"})
+        self.assertEqual(s["etapa"], "sin_validar")
+        self.assertEqual(s["etapa_texto"], "Sin validar · fuera de Inventario")
+        self.assertEqual(s["le_falta"], [],
+                         "no se le exige nada a quien nadie puso a validar")
+
+    def test_el_conteo_y_el_sello_cuentan_lo_mismo(self):
+        """0010 y 0011 son idénticos en datos; el conteo tiene que incluir uno y
+        solo uno, el mismo que el sello llama Recibido."""
+        self.assertIn("SKU-0010-NEG", self.fp.foto.listas["recibido"])
+        self.assertNotIn("SKU-0011-NEG", self.fp.foto.listas["recibido"])
+
+    def test_fuera_de_la_lista_no_se_acusa_de_escritura_distinta(self):
+        """`escritura_distinta` significa «Odoo lo escribe de otra forma». Con el
+        recorte, estar fuera de `bodega_3de4` es lo NORMAL para el catálogo
+        entero: sin la guarda el sello mandaría a corregir miles de nombres que
+        ya coinciden."""
+        b = invf.sello(self.fp, "SKU-0011-NEG")["pasos"]["bodega"]
+        self.assertIs(b["escritura_distinta"], False)
+        self.assertNotIn("SKU-0011-NEG", self.fp.foto.listas["bodega_3de4"])
+
+    def test_el_destino_no_depende_de_la_lista(self):
+        """Una publicación en FULL o unas existencias en DROP son hechos del
+        canal: la etapa la sigue ganando el destino aunque el SKU esté fuera."""
+        full = invf.sello(self.fp, "SKU-0055-NEG")
+        self.assertIs(full["en_piloto"], False)
+        self.assertEqual(full["etapa"], "en_full")
+        self.assertEqual(full["pasos"]["recibido"]["motivo"], "fuera_piloto")
+        self.assertEqual(full["le_falta"], [])
+        drop = invf.sello(self.fp, "SKU-0002-NEG")
+        self.assertEqual(drop["etapa"], "en_drop")
+        fba = invf.sello(self.fp, "SKU-0071-NEG", canal="amazon")
+        self.assertEqual(fba["etapa"], "en_fba")
+
+    def test_con_una_fuente_caida_es_sin_dato_y_no_sin_validar(self):
+        """«Sin validar» afirma que el SKU no tiene destino. Con kubera o DROP
+        caídos podría tenerlo y nadie lo sabría: ahí manda el «ya no sé»."""
+        for fuera in ("kubera", "drop"):
+            s = invf.sello(_fp(_foto_omni(**{fuera: False})), "SKU-0011-NEG")
+            self.assertEqual(s["etapa"], "sin_dato", fuera)
+            self.assertIs(s["en_piloto"], False, fuera)
+            self.assertEqual(s["le_falta"], [], fuera)
+
+    def test_el_padre_manda_sobre_la_lista(self):
+        """Un padre no se juzga por pieza: su etapa sigue siendo `padre` esté o
+        no en la lista, y su resumen cuenta lo que cuentan sus variantes."""
+        s = invf.sello(self.fp, "SKU-0001-NEG")
+        self.assertIs(s["en_piloto"], False)
+        self.assertEqual(s["etapa"], "padre")
+        self.assertEqual(s["le_falta"], [])
+        self.assertEqual(s["variantes"],
+                         {"total": 2, "recibido": 0, "bodega_3de4": 0,
+                          "en_full": 0, "en_fba": 0, "en_drop": 1, "sin_dato": 0})
+
+    def test_el_stepper_cuenta_solo_los_de_la_lista(self):
+        """La misma historia en el conteo: de las 60 publicaciones de BEKURA,
+        Recibido baja a la única que además está puesta a validar. En FULL y el
+        carril no se mueven: miden el catálogo entero."""
+        r = _conteo(self.fp.foto, cuenta="BEKURA")
+        self.assertEqual(r["total"], 60)
+        self.assertEqual(_etapa(r, "recibido")["n"], 1)
+        self.assertEqual(_etapa(r, "bodega_3de4")["n"], 1)
+        self.assertEqual(_etapa(r, "en_full")["n"], 10, "no se recorta")
+        self.assertEqual(_etapa(r, "costo_validado")["n"], 5, "no se recorta")
+        self.assertEqual(r["catalogo"]["recibido"], 1)
+        self.assertEqual(_etapa(r, "listo_envio")["n_sin_specs"], 1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

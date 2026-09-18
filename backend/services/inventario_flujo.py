@@ -20,6 +20,22 @@ decisión con algo que no significa lo que parece. Recibido es el ejemplo: el
 18-sep pasó de 13,557 (solo el packing list congelado de may–jun) a una unión
 con el empaque declarado en Odoo, y NINGUNA de las dos columnas dice «llegó».
 
+LA VALIDACIÓN SOLO EXISTE PARA LOS SKUs DE /inventario
+------------------------------------------------------
+Desde el 18-sep las CUATRO etapas que afirman una validación —Recibido, 3 de 4,
+Validado bodega y Listo— cuentan únicamente los SKUs de la pestaña Inventario
+(`UNIVERSO_VALIDACION`, importado de `inventario_maestro`). Es la decisión de
+Eduardo con las cifras medidas enfrente: «esos son los que tenemos validados en
+realidad… los demás son independientes». Del resto del catálogo no se afirma
+que esté validado NI que esté reprobado: está **sin validar**, que es la etapa
+nueva del sello, y por eso a esos SKUs `le_falta` sale vacía. Tener cajas en
+costos o empaque declarado en Odoo no es haber sido recibido; contarlos era lo
+que daba 13,557 «recibidos» que nadie recibió.
+
+Las demás etapas NO se recortan: En FULL, En FBA, En DROP y el carril Costo
+validado siguen midiendo el catálogo entero, porque una publicación o unas
+existencias son hechos del canal y del almacén, no un juicio de bodega.
+
 POR QUÉ UNA FOTO EN MEMORIA Y NO UNA CONSULTA POR PETICIÓN
 ---------------------------------------------------------
 Contar el catálogo cuesta 0.2–0.7 s de kubera y 12–35 s de Odoo de día. Eso no
@@ -75,6 +91,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
 
@@ -124,6 +141,53 @@ ETAPAS_OMNICANAL = ("recibido", "bodega_3de4", "en_full", "en_fba", "en_drop")
 
 # Las que se leen de la foto (`en_drop` se lee en vivo con `odoo.estado_almacen`).
 ETAPAS_DE_FOTO = ("recibido", "bodega_3de4", "en_full", "en_fba")
+
+# EL UNIVERSO DE VALIDACIÓN: la lista de la pestaña Inventario, ni un SKU más.
+#
+# Eduardo, 18-sep, con las cifras medidas a la vista: «la idea es solo mostrar
+# de la tab de inventario esos SKUs que ya tenemos ahí, que son 14, porque esos
+# son los que tenemos validados en realidad; entonces en omnicanal deberíamos
+# tener solo esos 14 recibidos y validados por bodega, los demás son
+# independientes».
+#
+# Se recortan CUATRO etapas —`recibido`, `bodega_3de4`, `validado_bodega` y
+# `listo_envio`—, que son las que afirman una VALIDACIÓN. `en_full`, `en_fba`,
+# `en_drop` y el carril `costo_validado` NO se tocan: una publicación con stock
+# en FULL o unas existencias en DROP son hechos del canal y del almacén, no un
+# juicio de bodega, y medirlos sobre 14 SKUs sería perder la única cifra del
+# catálogo entero que esta pantalla tiene.
+#
+# SE IMPORTA, NO SE COPIA. Es la MISMA sonda que arma la tabla de /inventario:
+# el día que se reemplace por la tabla de listas de prioridad, el flujo la sigue
+# solo, sin que nadie se acuerde de este archivo. Una copia garantizaría que las
+# dos pantallas terminen diciendo cosas distintas del mismo SKU, que es justo lo
+# que D2 prohíbe.
+UNIVERSO_VALIDACION: frozenset[str] = frozenset(inv.PILOTO) | frozenset(inv.REFERENCIA)
+
+
+@lru_cache(maxsize=4)
+def _mayus_de(conjunto: frozenset[str]) -> frozenset[str]:
+    """Un conjunto de SKUs en MAYÚSCULAS, memoizado por el conjunto mismo.
+
+    `sello` pregunta por el universo una vez por fila (40 por página, más las
+    variantes de cada padre). Con la sonda de 14 recalcularlo sería gratis, pero
+    el día que sea la tabla de listas de prioridad serían miles de `upper()` por
+    fila: una constante convertida en recorrido. El `frozenset` cachea su propio
+    hash, así que la búsqueda es O(1) aunque el conjunto crezca, y parchear
+    `UNIVERSO_VALIDACION` en las pruebas cambia la llave y rehace la memoria."""
+    return frozenset(s.upper() for s in conjunto)
+
+
+def _solo_validacion(conjunto: Iterable[str]) -> frozenset[str]:
+    """El conjunto recortado a `UNIVERSO_VALIDACION`, CONSERVANDO la escritura de
+    origen (la de `core.products` o la de Odoo, según de dónde venga el set).
+
+    El cruce va por mayúsculas a propósito: los conjuntos de la foto traen
+    escrituras mezcladas y una intersección directa dejaría fuera un SKU de la
+    lista solo por cómo lo escribe la otra punta —el mismo `ROP-0695-BEI-m` que
+    obligó a `_canonicos`—. Ahí el conteo diría «no validado» de algo validado."""
+    uni = _mayus_de(UNIVERSO_VALIDACION)
+    return frozenset(s for s in conjunto if s.upper() in uni)
 
 # Los criterios de conteo, que son los interruptores de la lista y NO el
 # contador de la pestaña: en TikTok y Walmart el contador cuenta todas las filas
@@ -817,21 +881,29 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
     # (decisión de Eduardo, 18-sep: «para los recibidos por packing list vamos a
     # usar los que hay en inventario nada más»): las cajas del packing list
     # congelado O el empaque master declarado en Odoo. La unión, no la
-    # intersección, y acotada al universo de core.products (D6).
+    # intersección, acotada al universo de core.products (D6) y —desde el
+    # 18-sep por la tarde— a los SKUs QUE DE VERDAD SE VALIDAN, los de la lista
+    # de /inventario (`UNIVERSO_VALIDACION`).
     #
     # NO se exige stock libre: eso mediría existencias de hoy, no recepción.
     #
-    # `empaque_d6` es la mitad de Odoo YA recortada al universo, y se guarda
-    # porque los dos desgloses («solo del packing list», «solo empaque de
-    # Odoo») tienen que restar sobre el mismo conjunto que se contó. La
-    # intersección es SENSIBLE A MAYÚSCULAS, igual que `bodega_3de4`: un SKU
-    # que Odoo escribe distinto queda fuera de la lista y el sello lo dice por
-    # su nombre en vez de contradecir al conteo.
+    # `empaque_d6` es la mitad de Odoo YA recortada al universo de kubera. Las
+    # dos mitades se recortan al universo de validación ANTES de unirse, porque
+    # los dos desgloses («solo del packing list», «solo empaque de Odoo») tienen
+    # que restar sobre el MISMO conjunto que se contó: sumar una mitad del
+    # catálogo con otra de la lista chica daría partes que no cuadran con su
+    # total. La intersección con Odoo es SENSIBLE A MAYÚSCULAS, igual que
+    # `bodega_3de4`: un SKU que Odoo escribe distinto queda fuera de la lista y
+    # el sello lo dice por su nombre en vez de contradecir al conteo.
     empaque_d6: frozenset[str] = frozenset()
+    pl_val: frozenset[str] = frozenset()    # packing list, ya recortado
+    emp_val: frozenset[str] = frozenset()   # empaque de Odoo, ya recortado
     recibido: frozenset[str] = frozenset()
     if k is not None and o is not None:
         empaque_d6 = o.empaque & k.universo
-        recibido = k.recibido | empaque_d6
+        pl_val = _solo_validacion(k.recibido)
+        emp_val = _solo_validacion(empaque_d6)
+        recibido = pl_val | emp_val
         listas["recibido"] = recibido
     # Con kubera u Odoo caído la lista se queda VACÍA a propósito y `_META`
     # declara las dos dependencias: media regla daría una cifra a medias, que
@@ -843,16 +915,24 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
         # códigos de Odoo — para «listo» da lo mismo, porque un SKU que no está
         # en Odoo nunca cumple ubicación, stock ni foto.
         base = k.universo if k is not None else o.codigos
-        tres = o.ubicacion & o.stock & o.foto & base
+        # Y encima de D6, la lista de /inventario: D6 dice DE DÓNDE salen los
+        # SKUs, esto dice a CUÁLES se les ha pedido una validación. Bodega no ha
+        # revisado el catálogo entero, y contar los que nadie revisó como
+        # «reprobados» es inventarles una falta.
+        base_val = _solo_validacion(base)
+        tres = o.ubicacion & o.stock & o.foto & base_val
         # 4 de 4 exige specs; con la regla compartida, hoy es vacío por
         # construcción — y el día que specs exista, deja de serlo sin tocar esto.
         cuatro = tres if inv.estado_specs() == "listo" else frozenset()
         listas["bodega_3de4"] = tres
         listas["validado_bodega"] = cuatro
-        requisitos = {"ubicacion": len(o.ubicacion & base),
-                      "stock": len(o.stock & base),
-                      "foto": len(o.foto & base),
-                      "foto_espera": len(o.foto_espera & base)}
+        # Los cuatro requisitos son el DESGLOSE de Validado bodega: se cuentan
+        # sobre lo mismo que la tarjeta o el cuadro diría «12,300 con ubicación»
+        # encima de un «0 validados», que es mezclar catálogo con lista chica.
+        requisitos = {"ubicacion": len(o.ubicacion & base_val),
+                      "stock": len(o.stock & base_val),
+                      "foto": len(o.foto & base_val),
+                      "foto_espera": len(o.foto_espera & base_val)}
         if k is not None:
             listas["listo_envio"] = recibido & cuatro
 
@@ -864,15 +944,14 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
         return valor() if condicion else None
 
     ko = k is not None and o is not None
-    # Los tres cruces de Recibido salen de la UNIÓN, que es lo que cuenta la
-    # tarjeta. `fuera_de_odoo` puede traer ahora SKUs de la mitad de Odoo: son
-    # los que tienen empaque declarado pero el producto está archivado.
+    # Los tres cruces de Recibido salen de la UNIÓN YA RECORTADA, que es lo que
+    # cuenta la tarjeta. `fuera_de_odoo` puede traer SKUs de la mitad de Odoo:
+    # son los que tienen empaque declarado pero el producto está archivado.
     cruces["recibido.fuera_de_odoo"] = _n(ko, lambda: len(recibido - o.activos))
-    # `k.recibido` ya está dentro del universo por construcción (`_derivar_kubera`
-    # solo mete SKUs de core.products), así que no hace falta recortarlo otra vez.
-    cruces["recibido.solo_packing_list"] = _n(
-        ko, lambda: len(k.recibido - empaque_d6))
-    cruces["recibido.solo_odoo"] = _n(ko, lambda: len(empaque_d6 - k.recibido))
+    # `pl_val` y `emp_val` son las dos mitades con el MISMO recorte, así que las
+    # dos partes suman exactamente el total de la tarjeta.
+    cruces["recibido.solo_packing_list"] = _n(ko, lambda: len(pl_val - emp_val))
+    cruces["recibido.solo_odoo"] = _n(ko, lambda: len(emp_val - pl_val))
     cruces["recibido_y_3de4"] = _n(ko, lambda: len(recibido & tres))
     cruces["en_full.cumple_3de4"] = _n(ko, lambda: len(k.en_full & tres))
     cruces["en_full.fuera_de_odoo"] = _n(ko, lambda: len(k.en_full - o.activos))
@@ -899,6 +978,16 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
 # QUÉ DICE CADA TARJETA (textos a la vista, sin montos)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# El mismo renglón para las CUATRO etapas que no se recortan (En FULL, En FBA,
+# En DROP y el carril): su cifra sigue siendo del catálogo entero, pero su
+# desglose «cumple 3 de 4» se cruza con una lista de 14, y eso se dice donde se
+# lee la tarjeta, no en el mensaje del commit.
+_FALTA_CRUCE_VALIDACION = (
+    "El desglose «cumple 3 de 4» se cruza contra los SKUs de la pestaña "
+    "Inventario (inventario_maestro.PILOTO + REFERENCIA, hoy 14), los únicos que "
+    "bodega validó: del resto no se afirma validación aunque Odoo tenga los tres "
+    "datos, así que ese número NO es «cuántos del canal están bien en bodega»")
+
 # `depende`: las fuentes sin las cuales la cifra no existe. `desglose`: (clave,
 # título, llave en `Foto.cruces`, fuentes). «Cumple lo anterior» va aquí: las
 # etapas NO son subconjuntos estrictos (de 499 en FULL, 221 cumplen 3 de 4), así
@@ -909,14 +998,19 @@ _META: dict[str, dict[str, Any]] = {
         # Las DOS fuentes desde el 18-sep: la cifra es una unión, y con una sola
         # mitad sería una cifra a medias que nadie puede distinguir de la buena.
         "depende": ("kubera", "odoo"),
-        "definicion": ("Las dos columnas de /inventario: cajas y piezas por caja "
-                       "mayores que 0 en costos validados, O empaque master "
-                       "declarado en Odoo (units_per_master_box > 0). Unión, no "
-                       "intersección; no se exige stock libre. Los que no existen "
-                       "en Odoo activo cuentan dentro y se desglosan aparte "
-                       "(decisión de Eduardo, 18-sep)"),
-        "fuente": ("kubera · costing.costos_validados (congelado de las cargas del "
-                   "21-may y 3-jun) + Odoo · product.product.units_per_master_box"),
+        "definicion": ("SOLO los SKUs de la pestaña Inventario —los únicos que "
+                       "bodega recibió y validó de verdad (Eduardo, 18-sep)— y de "
+                       "ésos, los que cumplen alguna de las dos columnas que esa "
+                       "pestaña ya enseña: cajas y piezas por caja mayores que 0 en "
+                       "costos validados, O empaque master declarado en Odoo "
+                       "(units_per_master_box > 0). Unión, no intersección; no se "
+                       "exige stock libre. El resto del catálogo NO se cuenta "
+                       "aunque tenga cajas en costos o empaque en Odoo. Los que no "
+                       "existen en Odoo activo cuentan dentro y se desglosan aparte"),
+        "fuente": ("la lista de la pestaña Inventario (inventario_maestro.PILOTO + "
+                   "REFERENCIA, hoy 14 SKUs) cruzada con kubera · "
+                   "costing.costos_validados (congelado de las cargas del 21-may y "
+                   "3-jun) y con Odoo · product.product.units_per_master_box"),
         "desglose": [
             ("solo_packing_list", "Solo del packing list",
              "recibido.solo_packing_list", ("kubera", "odoo")),
@@ -926,6 +1020,14 @@ _META: dict[str, dict[str, Any]] = {
              "recibido.fuera_de_odoo", ("kubera", "odoo")),
         ],
         "falta": [
+            "LA LISTA DE LOS QUE SE VALIDAN ESTÁ FIJA EN EL CÓDIGO: es la sonda "
+            "de la pestaña Inventario (inventario_maestro.PILOTO + REFERENCIA, hoy "
+            "14 SKUs) y se reemplaza el día que exista la tabla de listas de "
+            "prioridad. Hoy no hay dónde capturar «bodega ya recibió y validó este "
+            "SKU» (Eduardo con bodega)",
+            "El resto del catálogo no se cuenta AUNQUE tenga el dato en costos o "
+            "en Odoo: tener cajas o empaque declarado no es haber sido validado, y "
+            "contarlos daba 13,557 «recibidos» que nadie recibió",
             "NINGUNA DE LAS DOS COLUMNAS DICE «LLEGÓ». El packing list es un "
             "congelado de las cargas del 21-may y 3-jun —dice lo que el proveedor "
             "embarcó— y el empaque de Odoo dice CÓMO viene empacado el producto, "
@@ -948,12 +1050,21 @@ _META: dict[str, dict[str, Any]] = {
     "validado_bodega": {
         "titulo": "Validado bodega", "estado": "bloqueado", "filtrable": False,
         "depende": ("odoo",),
-        "definicion": "Ubicación, stock, foto y specs en listo (los cuatro)",
-        "fuente": "Odoo · stock.quant, product.product, imágenes",
+        "definicion": ("Ubicación, stock, foto y specs en listo (los cuatro), y "
+                       "SOLO entre los SKUs de la pestaña Inventario: son los "
+                       "únicos que bodega puso a validar (Eduardo, 18-sep)"),
+        "fuente": ("la lista de la pestaña Inventario (inventario_maestro.PILOTO + "
+                   "REFERENCIA, hoy 14 SKUs) · Odoo · stock.quant, product.product, "
+                   "imágenes"),
         "motivo": "Bloqueado: specs no tiene definición, así que 4 de 4 da 0 por construcción",
         "desglose": [("recibido_y_3de4", "Cumple lo anterior (Recibido) con 3 de 4",
                       "recibido_y_3de4", ("kubera", "odoo"))],
         "falta": [
+            "La lista de los que se validan está FIJA EN EL CÓDIGO (la sonda de "
+            "/inventario: inventario_maestro.PILOTO + REFERENCIA) y se reemplaza "
+            "el día que exista la tabla de listas de prioridad (Eduardo con bodega)",
+            "Del resto del catálogo no se afirma nada AUNQUE Odoo tenga ubicación, "
+            "stock y foto: no está validado ni reprobado, está sin validar",
             "Specs: no existe la matriz por categoría ni el canal para capturarla "
             "(catálogo o contenido, con bodega)",
             "Foto de bodega para productos con variantes: el canal (Slack) no está "
@@ -971,17 +1082,36 @@ _META: dict[str, dict[str, Any]] = {
     "bodega_3de4": {
         "titulo": "3 de 4 sin specs", "estado": "medido", "filtrable": True,
         "depende": ("odoo",),
-        "definicion": "Ubicación, stock y foto en listo; specs no se toma en cuenta",
+        "definicion": ("Ubicación, stock y foto en listo; specs no se toma en "
+                       "cuenta. SOLO entre los SKUs de la pestaña Inventario: del "
+                       "resto del catálogo no se afirma validación aunque Odoo "
+                       "tenga los tres datos (Eduardo, 18-sep)"),
+        "fuente": ("la lista de la pestaña Inventario (inventario_maestro.PILOTO + "
+                   "REFERENCIA, hoy 14 SKUs) · Odoo · stock.quant, product.product, "
+                   "imágenes"),
+        "falta": [
+            "La lista de los que se validan está FIJA EN EL CÓDIGO (la sonda de "
+            "/inventario: inventario_maestro.PILOTO + REFERENCIA) y se reemplaza "
+            "el día que exista la tabla de listas de prioridad (Eduardo con bodega)",
+        ],
     },
     "listo_envio": {
         "titulo": "Listo para FULL o DROP", "estado": "bloqueado", "filtrable": False,
         "depende": ("kubera", "odoo"),
-        "definicion": "Recibido y Validado bodega 4 de 4 (el costo no cuenta)",
-        "fuente": "cruce en memoria de kubera y Odoo",
+        "definicion": ("Recibido y Validado bodega 4 de 4 (el costo no cuenta), y "
+                       "SOLO entre los SKUs de la pestaña Inventario: las dos "
+                       "etapas que cruza ya están recortadas a esa lista"),
+        "fuente": ("cruce en memoria de la lista de la pestaña Inventario "
+                   "(inventario_maestro.PILOTO + REFERENCIA, hoy 14 SKUs), kubera "
+                   "y Odoo"),
         "motivo": "Bloqueado: depende de Validado bodega 4 de 4, que es 0 mientras falten specs",
         "desglose": [("recibido_y_3de4", "Si specs no bloqueara (Recibido con 3 de 4)",
                       "recibido_y_3de4", ("kubera", "odoo"))],
         "falta": [
+            "La lista de los que se validan está FIJA EN EL CÓDIGO (la sonda de "
+            "/inventario: inventario_maestro.PILOTO + REFERENCIA) y se reemplaza "
+            "el día que exista la tabla de listas de prioridad. Un SKU fuera de "
+            "ella nunca llega aquí, tenga lo que tenga en costos y en Odoo",
             "Specs (la etapa es 0 por construcción mientras falten)",
             "Criterio de a cuál de los dos va cada SKU, FULL o DROP: no se ha "
             "investigado si existe un campo que lo diga (KAM o Eduardo)",
@@ -993,12 +1123,13 @@ _META: dict[str, dict[str, Any]] = {
         "definicion": "Mercado Libre con stock_full > 0 (D3)",
         "fuente": "kubera · channel.listings (sync de 15 min)",
         "desglose": [
-            ("cumple_3de4", "Cumple 3 de 4 de bodega", "en_full.cumple_3de4",
+            ("cumple_3de4", "Cumple 3 de 4 de bodega (solo los de Inventario)", "en_full.cumple_3de4",
              ("kubera", "odoo")),
             ("fuera_de_odoo", "No existen en Odoo activo", "en_full.fuera_de_odoo",
              ("kubera", "odoo")),
         ],
         "falta": [
+            _FALTA_CRUCE_VALIDACION,
             "Decisión D3: una sola definición (stock_full de ML, is_fulfillment o "
             "FBA/WFS). La columna de la tabla todavía suma stock_full de todos los "
             "canales, así que puede no coincidir con esta tarjeta (Eduardo o KAM)",
@@ -1014,12 +1145,13 @@ _META: dict[str, dict[str, Any]] = {
         "definicion": "Amazon con stock_fba > 0 (su bodega, no es FULL)",
         "fuente": "kubera · channel.listings (sync de 15 min)",
         "desglose": [
-            ("cumple_3de4", "Cumple 3 de 4 de bodega", "en_fba.cumple_3de4",
+            ("cumple_3de4", "Cumple 3 de 4 de bodega (solo los de Inventario)", "en_fba.cumple_3de4",
              ("kubera", "odoo")),
             ("fuera_de_odoo", "No existen en Odoo activo", "en_fba.fuera_de_odoo",
              ("kubera", "odoo")),
         ],
         "falta": [
+            _FALTA_CRUCE_VALIDACION,
             "Confirmar que `stock_fba` se sincroniza con la misma frecuencia que "
             "`stock_full`: si se queda viejo, la etapa envejece sin avisar (KAM)",
             "Walmart WFS no se puede contar por SKU: nadie escribe `is_fulfillment` "
@@ -1033,9 +1165,10 @@ _META: dict[str, dict[str, Any]] = {
         "depende": ("odoo_drop",),
         "definicion": "Existencias > 0 en ubicaciones internas del almacén DROP OFF",
         "fuente": "Odoo · stock.quant del almacén DROP (caché de 30 min)",
-        "desglose": [("cumple_3de4", "Cumple 3 de 4 de bodega", "en_drop.cumple_3de4",
+        "desglose": [("cumple_3de4", "Cumple 3 de 4 de bodega (solo los de Inventario)", "en_drop.cumple_3de4",
                       ("odoo_drop", "odoo"))],
         "falta": [
+            _FALTA_CRUCE_VALIDACION,
             "La lista cuenta también ubicaciones no vendibles del almacén; la "
             "columna «bodegas» de la fila solo cuenta las vendibles, así que un "
             "SKU puede estar aquí y no enseñar DROP en la fila (bodega)",
@@ -1055,9 +1188,10 @@ _META: dict[str, dict[str, Any]] = {
         "definicion": ("Costo con candado: revisado_at no nulo. No es lo contrario "
                        "del chip «sin costo» de la tabla, que significa «sin renglón»"),
         "fuente": "kubera · costing.costos_validados.revisado_at",
-        "desglose": [("cumple_3de4", "Cumple 3 de 4 de bodega",
+        "desglose": [("cumple_3de4", "Cumple 3 de 4 de bodega (solo los de Inventario)",
                       "costo_validado.cumple_3de4", ("kubera", "odoo"))],
         "falta": [
+            _FALTA_CRUCE_VALIDACION,
             "Revisión humana: casi ninguna fila tiene revisado_at (equipo de costos)",
             "Medidas de caja y datos de costeo confiables: sin reverificar en "
             "esta pantalla (costos)",
@@ -1387,6 +1521,10 @@ _ETAPA_TEXTO = {
     "validado_bodega": "Validado bodega",
     "bodega_3de4": "Bodega 3 de 4 (sin specs)",
     "recibido": "Recibido (aprox.)",
+    # Fuera de la lista de /inventario. NO es «sin etapa» (que es un juicio
+    # cumplido: se le midió y no cumple nada) ni «sin dato» (que es una fuente
+    # caída): es que a este SKU nadie le ha pedido todavía una validación.
+    "sin_validar": "Sin validar · fuera de Inventario",
     "ninguna": "Sin etapa del flujo",
     "sin_dato": "Sin dato del flujo",
 }
@@ -1487,6 +1625,13 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
     mayus = sku.upper()
     canon = idx.kub_mayus.get(mayus)
     en_catalogo = None if k is None else canon is not None
+    # ¿ESTE SKU ESTÁ PUESTO A VALIDAR? La lista de /inventario es la de los que
+    # bodega recibió y revisó de verdad (Eduardo, 18-sep). Fuera de ella los tres
+    # pasos de validación salen en `na`, no en «no»: un «no» se lee como una
+    # falta del producto, y lo que falta es que alguien lo ponga a validar. No
+    # depende de ninguna fuente —la lista vive en el código—, así que se sabe
+    # incluso con kubera y Odoo caídos.
+    en_piloto = mayus in _mayus_de(UNIVERSO_VALIDACION)
 
     vieja_k = foto.fuentes["kubera"].vieja
     gen_k = _iso(foto.fuentes["kubera"].generado)
@@ -1531,6 +1676,12 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
     if es_padre:
         # Un padre ni se costea ni se empaca: las que llegan son sus variantes.
         recibido = {"estado": "na", "motivo": None, "fuente": None,
+                    "vieja": vieja_r, "generado": gen_r}
+    elif not en_piloto:
+        # Fuera de la lista de /inventario. `na` con su motivo, nunca «no»: el
+        # dato de costos o de Odoo puede estar ahí —y de hecho suele estar—, lo
+        # que no está es la recepción validada por bodega.
+        recibido = {"estado": "na", "motivo": "fuera_piloto", "fuente": None,
                     "vieja": vieja_r, "generado": gen_r}
     elif pl or emp:
         # Basta UNA: es una unión. `fuente` dice cuál contestó, que es lo que
@@ -1598,14 +1749,31 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
             # fuera de la lista por más idéntico que esté escrito en los dos
             # lados. Acusarlo mandaría a alguien a corregir un nombre que ya
             # coincide y taparía el hueco real, que es el del seam.
+            # Y `en_piloto` es la TERCERA explicación, la que llegó el 18-sep:
+            # la lista `bodega_3de4` se recorta a los SKUs de /inventario, así
+            # que estar fuera de ella es lo NORMAL para el catálogo entero. Sin
+            # esta condición el sello acusaría de «escrito distinto en Odoo» a
+            # miles de SKUs con sus tres cuadros en listo y mandaría a corregir
+            # nombres que ya coinciden. La acusación solo tiene sentido cuando el
+            # SKU sí debería estar en la lista.
             "escritura_distinta": bool(
-                tres_listo and en_catalogo is not False
+                en_piloto and tres_listo and en_catalogo is not False
                 and mayus not in idx.etapas_mayus.get("bodega_3de4", frozenset())),
             "vieja": vieja_o, "generado": gen_o,
         }
 
+    if not es_padre and not en_piloto:
+        # LOS CUATRO CUADROS EN `na`, y lo demás tal cual se midió. El dato de
+        # Odoo existe (en qué código quedó, si está archivado) y sirve para
+        # entender la fila; lo que no existe es la validación, y pintar
+        # «ubicación falta» de un SKU que nadie revisó le inventa un reprobado.
+        bodega = {**bodega, "ubicacion": "na", "stock": "na", "foto": "na",
+                  "specs": "na", "n_listo": None}
+
     # ── LISTO PARA FULL O DROP ───────────────────────────────────────────────
-    if es_padre:
+    if es_padre or not en_piloto:
+        # Un padre no se juzga por pieza, y a un SKU fuera de la lista no se le
+        # puede preguntar si ya está listo: no ha empezado el camino.
         listo = {"estado": "na"}
     elif specs != "listo":
         listo = {"estado": "bloqueado"}
@@ -1641,6 +1809,17 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
         etapa = "en_fba"
     elif drop:
         etapa = "en_drop"
+    elif not en_piloto:
+        # El DESTINO no depende de la lista de /inventario —una publicación en
+        # FULL es un hecho del canal— y por eso se resuelve arriba, igual que
+        # siempre. Lo que queda debajo son las etapas de validación, y ésas no
+        # existen para un SKU que nadie puso a validar: «sin validar», que no es
+        # «sin etapa» (juicio cumplido) ni «sin dato» (fuente caída).
+        #
+        # Con kubera o DROP caídos el SKU todavía PODRÍA tener destino sin que
+        # se sepa, y afirmar «sin validar» escondería esa posibilidad: ahí manda
+        # el «ya no sé» de siempre.
+        etapa = "sin_validar" if (k is not None and d is not None) else "sin_dato"
     elif listo["estado"] == "si":
         etapa = "listo_envio"
     elif bodega["n_listo"] == 4:
@@ -1678,7 +1857,12 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
 
     # ── LE FALTA (el camino a Listo; destino, costo y restock nunca entran) ──
     le_falta: list[str] = []
-    if not es_padre:
+    # VACÍA fuera de la lista de /inventario (Eduardo, 18-sep): no se le puede
+    # exigir nada a un SKU que nadie ha puesto a validar. Los huecos de Odoo
+    # siguen a la vista en `pasos.bodega` —eso es dato, no exigencia—, pero
+    # pedirle «ubicación, stock, foto» a los 22 mil del catálogo convertiría la
+    # columna en una lista de tareas que nadie encargó.
+    if not es_padre and en_piloto:
         if recibido["estado"] == "sin_dato" and pl is None:
             le_falta.append("sin dato de kubera")
         # El otro sin_dato de Recibido es el de Odoo (`emp is None`), y ahí NO
@@ -1722,6 +1906,10 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
         "etapa_texto": texto,
         "le_falta": le_falta,
         "en_catalogo": en_catalogo,
+        # Si este SKU está en la lista de /inventario, o sea si su validación
+        # existe. Va de primer nivel porque explica de una vez los tres `na` de
+        # abajo y la etapa `sin_validar`, y porque no depende de ninguna fuente.
+        "en_piloto": en_piloto,
         "pasos": {"recibido": recibido, "bodega": bodega, "listo": listo,
                   "destino": destino, "restock": {"estado": "por_definir"}},
         "variantes": variantes,

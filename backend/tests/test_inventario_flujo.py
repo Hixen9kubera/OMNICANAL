@@ -270,9 +270,31 @@ def _con_odoo(falso: OdooDeMentira):
             mock.patch.object(odoo, "_proxy_con_tiempo", return_value=falso)]
 
 
+#: El universo de validación DE LAS PRUEBAS: todos los SKUs de los fixtures.
+#:
+#: Desde el 18-sep las cuatro etapas de validación cuentan solo los SKUs de la
+#: pestaña Inventario (`invf.UNIVERSO_VALIDACION`, 14 en producción). Los
+#: fixtures de este archivo son un catálogo inventado —`SKU-0001-NEG`…— que no
+#: tiene nada que ver con esa lista, así que sin parchearla TODAS las cifras de
+#: estas pruebas (61, 66, 40…) medirían el vacío y la suite dejaría de decir
+#: nada. Se parchea con el catálogo ENTERO del fixture para que cada prueba siga
+#: midiendo lo que medía; las del recorte lo vuelven a parchear con el conjunto
+#: chico que les interesa, y `UniversoDeValidacion` comprueba que por omisión
+#: sale de `inventario_maestro`.
+UNIVERSO_PRUEBA: frozenset[str] = frozenset(
+    [f"SKU-{i:04d}-NEG" for i in range(1, 201)]
+    + ["ROP-0695-BEI-M", "PL-0012-NEG", "SOLO-ODOO", "HERM-0001-A",
+       "HERM-0001-B", "ARCH-0001", "AMB-0001", "DIST-0001",
+       "FUERA-DEL-CATALOGO", "NO-EXISTE"]
+    + [p["code"].upper() for p in _mundo_paridad().productos if p["code"]])
+
+
 class _ConParches(unittest.TestCase):
     def setUp(self):
         invf._foto = None
+        pu = mock.patch.object(invf, "UNIVERSO_VALIDACION", UNIVERSO_PRUEBA)
+        pu.start()
+        self.addCleanup(pu.stop)
         invf._hilos_fuente.clear()
         self.addCleanup(invf._hilos_fuente.clear)
         # Ninguna prueba debe lanzar el armado real en un hilo de fondo.
@@ -781,6 +803,128 @@ class RecibidoUnion(_ConParches):
         self.assertEqual(
             invf.codigos_con_empaque(empatados, {1: (0.0, 0.0), 2: (9.0, 9.0)}),
             {"DUP-0001"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6 ter · EL UNIVERSO DE VALIDACIÓN: SOLO LOS SKUs DE /inventario
+#
+# Decisión de Eduardo (18-sep, con las cifras medidas enfrente): «solo mostrar
+# de la tab de inventario esos SKUs que ya tenemos ahí, que son 14, porque esos
+# son los que tenemos validados en realidad… los demás son independientes».
+#
+# Se recortan CUATRO etapas: recibido, bodega_3de4, validado_bodega y
+# listo_envio. En FULL, En FBA, En DROP y el carril NO se tocan.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#: Seis SKUs del fixture, elegidos para que el recorte se NOTE en cada etapa:
+#:   · 0010 → solo packing list        · 0058 → en las dos columnas
+#:   · 0073 → solo empaque de Odoo     · 0030 → 3 de 4 y packing list
+#:   · 0055 → En FULL (y packing list) · 0002 → En DROP (y packing list)
+#: Fuera quedan a propósito SKUs con exactamente los mismos datos (0011, 0031…):
+#: son los que prueban que lo que decide es la LISTA, no el dato.
+_SEIS = frozenset({"SKU-0010-NEG", "SKU-0058-NEG", "SKU-0073-NEG",
+                   "SKU-0030-NEG", "SKU-0055-NEG", "SKU-0002-NEG"})
+
+
+class UniversoDeValidacion(unittest.TestCase):
+    """Sin `_ConParches` a propósito: aquí se mira el valor REAL de la sonda."""
+
+    def test_por_omision_sale_de_inventario_maestro(self):
+        """IMPORTADA, no copiada: el día que la sonda se reemplace por la tabla
+        de listas de prioridad, el flujo tiene que seguirla sola. Una copia haría
+        que /inventario y /omnicanal dijeran cosas distintas del mismo SKU."""
+        self.assertEqual(invf.UNIVERSO_VALIDACION,
+                         frozenset(inv.PILOTO) | frozenset(inv.REFERENCIA))
+        self.assertEqual(len(invf.UNIVERSO_VALIDACION), 14)
+
+    def test_el_recorte_no_distingue_mayusculas(self):
+        """Los conjuntos de la foto traen escrituras mezcladas (kubera, Odoo).
+        Un SKU de la lista escrito distinto en el catálogo tiene que contar: si
+        no, la tarjeta diría «no validado» de algo que bodega sí validó."""
+        with mock.patch.object(invf, "UNIVERSO_VALIDACION",
+                               frozenset({"rop-0695-bei-m"})):
+            self.assertEqual(invf._solo_validacion({"ROP-0695-BEI-m", "OTRO"}),
+                             frozenset({"ROP-0695-BEI-m"}),
+                             "se conserva la escritura de origen")
+
+
+class RecorteDeEtapas(_ConParches):
+    def setUp(self):
+        super().setUp()
+        # Encima del parche del fixture entero, la lista chica de esta sección.
+        p = mock.patch.object(invf, "UNIVERSO_VALIDACION", _SEIS)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_las_cuatro_etapas_se_recortan_a_la_lista(self):
+        foto = _foto()
+        rec = set(foto.listas["recibido"])
+        self.assertEqual(rec, {"SKU-0010-NEG", "SKU-0058-NEG", "SKU-0073-NEG",
+                               "SKU-0030-NEG", "SKU-0055-NEG", "SKU-0002-NEG"},
+                         "los seis: cinco por packing list, 0073 por Odoo")
+        # 3 de 4 exige quants (`_odoo_crudo` los da a los 100) y los seis los
+        # tienen, así que el recorte es lo ÚNICO que baja la cifra de 100 a 6.
+        self.assertEqual(set(foto.listas["bodega_3de4"]), set(_SEIS))
+        for etapa in ("recibido", "bodega_3de4", "validado_bodega", "listo_envio"):
+            self.assertLessEqual(set(foto.listas[etapa]), set(_SEIS), etapa)
+
+    def test_un_sku_con_todo_el_dato_pero_fuera_de_la_lista_no_cuenta(self):
+        """SKU-0011 tiene EXACTAMENTE lo mismo que SKU-0010 —renglón con cajas y
+        quants en Odoo—. La única diferencia es que nadie lo puso a validar."""
+        foto = _foto()
+        self.assertIn("SKU-0010-NEG", foto.listas["recibido"])
+        self.assertNotIn("SKU-0011-NEG", foto.listas["recibido"])
+        self.assertNotIn("SKU-0011-NEG", foto.listas["bodega_3de4"])
+
+    def test_las_demas_etapas_y_el_carril_no_se_recortan(self):
+        """«Los demás son independientes» (Eduardo): una publicación en FULL o
+        unas existencias en DROP son hechos del canal y del almacén, no un
+        juicio de bodega. Si se recortaran, se perdería la única cifra del
+        catálogo entero que tiene esta pantalla."""
+        foto = _foto()
+        self.assertEqual(len(foto.listas["en_full"]), 20, "51–70, sin recortar")
+        self.assertEqual(len(foto.listas["en_fba"]), 5, "68–72, sin recortar")
+        self.assertEqual(len(foto.listas["costo_validado"]), 5, "1–5")
+        # En DROP trae SKU-0001, que NO está en la lista de validación.
+        self.assertIn("SKU-0001-NEG", foto.listas["en_drop"])
+
+    def test_los_desgloses_suman_sobre_lo_restringido(self):
+        """Las dos mitades reparten la cifra SIN HUECOS: si una se recortara y
+        la otra no, las partes no sumarían su total y nadie sabría cuál miente."""
+        foto = _foto()
+        c = foto.cruces
+        total = len(foto.listas["recibido"])
+        self.assertEqual(total, 6)
+        # 0058 está en las dos columnas: 5 solo packing list, 1 solo Odoo, y el
+        # que está en ambas no aparece en ninguno de los dos desgloses.
+        self.assertEqual(c["recibido.solo_packing_list"], 4,
+                         "0010, 0030, 0055 y 0002")
+        self.assertEqual(c["recibido.solo_odoo"], 1, "0073")
+        self.assertEqual(c["recibido_y_3de4"], 6)
+        self.assertEqual(c["recibido.fuera_de_odoo"], 0)
+
+    def test_los_requisitos_cuentan_sobre_lo_restringido(self):
+        """Son el desglose de Validado bodega: con el catálogo entero dirían
+        «100 con ubicación» encima de un «0 validados», que es mezclar la cifra
+        del catálogo con la de la lista chica."""
+        r = _foto().requisitos
+        self.assertEqual(r["ubicacion"], 6)
+        self.assertEqual(r["stock"], 6)
+        self.assertEqual(r["foto"], 6)
+
+    def test_el_cruce_de_en_full_se_mide_contra_los_validados(self):
+        """En FULL sigue contando 20, pero su desglose solo puede cruzarse con
+        los que se validan: de los 20, los de la lista son 0055 y 0058."""
+        c = _foto().cruces
+        self.assertEqual(c["en_full.cumple_3de4"], 2)
+        self.assertEqual(c["en_drop.cumple_3de4"], 1, "SKU-0002; 0001 está fuera")
+
+    def test_sin_kubera_el_recorte_sigue_aplicando_a_lo_de_odoo(self):
+        """Con kubera caído la base es el catálogo de Odoo; la lista chica se
+        aplica igual, porque no depende de ninguna fuente: vive en el código."""
+        foto = _foto(kubera=invf.Lectura(error="RuntimeError: caída", generado=T0))
+        self.assertEqual(set(foto.listas["bodega_3de4"]), set(_SEIS))
+        self.assertEqual(foto.listas["recibido"], (), "sin kubera no hay cifra")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

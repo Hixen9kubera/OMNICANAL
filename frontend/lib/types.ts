@@ -2292,7 +2292,8 @@ export type EstadoCuadroFlujo = "listo" | "falta" | "espera" | "na" | "sin_dato"
  *  emite con las tres fuentes utilizables; si alguna cayó, es `sin_dato`. */
 export type EtapaSello =
   | "padre" | "en_full_y_drop" | "en_full" | "en_fba" | "en_drop" | "listo_envio"
-  | "validado_bodega" | "bodega_3de4" | "recibido" | "ninguna" | "sin_dato";
+  | "validado_bodega" | "bodega_3de4" | "recibido" | "sin_validar" | "ninguna"
+  | "sin_dato";
 
 /** Resumen de las variantes de un padre, por PERTENENCIA a cada lista de la
  *  foto. No es una partición: un SKU puede estar en dos. */
@@ -2312,6 +2313,11 @@ export interface SelloFlujo {
   /** Ya armado por el backend, con el «(ML)» fuera de Mercado Libre y el
    *  « · destino sin dato» cuando toca. El frontend no lo recompone. */
   etapa_texto: string;
+  /** El SKU está en la lista de la pestaña Inventario, la única con validación
+   *  real. Fuera de ella, Recibido, bodega y Listo van en `na` y `le_falta`
+   *  llega VACÍA — que ahí no significa «ya está listo», significa que nadie lo
+   *  puso a validar. Es `en_piloto` quien manda, no la lista vacía. */
+  en_piloto: boolean;
   /** Camino a Listo. Nunca menciona destino, costo ni restock. */
   le_falta: string[];
   en_catalogo: boolean | null;
@@ -2321,8 +2327,9 @@ export interface SelloFlujo {
       /** De cuál de las dos columnas de /inventario salió. `null` cuando no
        *  está en ninguna, no aplica o no se sabe. */
       fuente: "packing_list" | "odoo" | "ambas" | null;
-      /** Solo describe el lado del packing list, el único con dos grados. */
-      motivo: "sin_renglon" | "sin_cajas" | null;
+      /** `fuera_piloto` = el SKU no está en la lista de Inventario. Los otros
+       *  dos describen el lado del packing list, el único con dos grados. */
+      motivo: "sin_renglon" | "sin_cajas" | "fuera_piloto" | null;
       vieja: boolean;
       generado: string | null;
     };

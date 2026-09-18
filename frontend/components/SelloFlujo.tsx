@@ -52,12 +52,15 @@ function Cuadro({ m, x, w, rx, opacidad }: {
 export function SelloPista({ sello }: { sello: SelloFlujo }) {
   const p = sello.pasos;
   const padre = sello.etapa === "padre";
-  // En un padre, Recibido y bodega no aplican (no se costea ni se recibe): se
-  // dibujan apagados en vez de mentir con cuatro cuadros vacíos.
-  const tenue = padre ? 0.55 : undefined;
+  // Dos casos en que Recibido y bodega NO aplican, y por eso se dibujan
+  // apagados en vez de mentir con cuadros vacíos —que se leerían como «no
+  // cumple»—: un padre (no se costea ni se recibe por pieza) y un SKU fuera de
+  // la lista de Inventario, donde nadie lo ha puesto a validar.
+  const sinValidar = !sello.en_piloto && !padre;
+  const tenue = padre || sinValidar ? 0.55 : undefined;
 
   const recibido =
-    padre || p.recibido.estado === "sin_dato" ? MUESTRA_FLUJO.sin_dato
+    padre || sinValidar || p.recibido.estado === "sin_dato" ? MUESTRA_FLUJO.sin_dato
       : p.recibido.estado === "si" ? MUESTRA_FLUJO.recibido
         : MUESTRA_FLUJO.falta;
 
@@ -86,7 +89,7 @@ export function SelloPista({ sello }: { sello: SelloFlujo }) {
       {ORDEN_CUADROS.map((c, i) => (
         <Cuadro
           key={c}
-          m={padre ? MUESTRA_FLUJO.sin_dato : muestraCuadro(p.bodega[c], c)}
+          m={padre || sinValidar ? MUESTRA_FLUJO.sin_dato : muestraCuadro(p.bodega[c], c)}
           x={X_CUADRO[i]} w={5} rx={1.5} opacidad={tenue}
         />
       ))}

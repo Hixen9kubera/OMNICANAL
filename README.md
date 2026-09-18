@@ -1001,6 +1001,59 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.542.0 — La validación del flujo solo cuenta los SKUs de la pestaña Inventario
+
+Eduardo, 18-sep-2026, con las cifras enfrente: *«la idea es solo mostrar de la tab
+de inventario esos SKUs que ya tenemos ahí, que son 14, porque esos son los que
+tenemos validados en realidad; entonces en omnicanal deberíamos tener solo esos 14
+recibidos y validados por bodega, los demás son independientes»*.
+
+Ayer Recibido pasó a contar las dos columnas de Inventario y dio 18,602 de 22,416
+SKUs. El número era correcto y la etapa seguía siendo falsa: tener cajas en costos
+o empaque declarado en Odoo no es que bodega haya recibido y revisado nada.
+
+**Qué se recorta y qué no**
+
+    Recibido · 3 de 4 · Validado bodega · Listo   →  solo los 14 de /inventario
+    En FULL · En FBA · En DROP · Costo validado   →  el catálogo entero, igual
+
+Una publicación con stock en FULL o unas existencias en DROP son hechos del canal
+y del almacén, no un juicio de bodega.
+
+**Medido sobre los 14**: los 14 entran en Recibido (10 por cajas del packing list,
+13 por empaque de Odoo) y 4 cumplen 3 de 4 — OFI-0412-EST, HERR-0146-EST,
+TEC-0008-AMR y ORG-0863-ROS. El stepper de Mercado Libre · Kubera pasa de
+2,182 / 1,261 a **Recibido 5 · Validado bodega 3**; en Amazon queda 1 y en General 0.
+
+**Backend**
+
+- `inventario_flujo.UNIVERSO_VALIDACION` se **importa** de `inventario_maestro`
+  (`PILOTO + REFERENCIA`), no se copia: el día que la sonda se reemplace por su
+  tabla, el flujo la sigue solo. El recorte cruza sin distinguir mayúsculas y
+  conserva la escritura de origen, o un `ROP-0695-BEI-m` de la lista se perdería.
+- Las dos mitades de Recibido se recortan ANTES de unirse y los requisitos de
+  bodega cuentan sobre lo mismo que su tarjeta: ninguna cifra mezcla el catálogo
+  con la lista chica. Los desgloses «cumple 3 de 4» de las etapas NO recortadas
+  dicen ahora «(solo los de Inventario)».
+- El sello gana `en_piloto` y la etapa **`sin_validar`**. Fuera de la lista:
+  Recibido en `na` con motivo `fuera_piloto`, los cuatro cuadros en `na` con
+  `n_listo` nulo —pero `en_odoo`, `archivado` y `codigo_odoo` se conservan, que
+  son dato— y `le_falta` VACÍA: no se le exige nada a un SKU que nadie puso a
+  validar. El destino (FULL, FBA, DROP) sigue mandando en la etapa si lo tiene.
+- `escritura_distinta` ahora exige `en_piloto`: con la lista recortada, estar
+  fuera de `bodega_3de4` es lo normal, y sin la guarda el sello habría acusado a
+  miles de SKUs de tener el nombre mal escrito en Odoo.
+
+**En pantalla**: el sello de un SKU sin validar se dibuja apagado —como el de un
+padre— y su texto dice «sin validar, fuera de la lista de Inventario»; la tarjeta
+lo avisa ANTES de las cifras («lo de abajo es el dato que existe hoy, no una
+revisión») y sigue mostrando la evidencia. Las notas del selector declaran que el
+resto del catálogo no se cuenta aunque tenga el dato.
+
+265 pruebas (17 nuevas), `tsc` y `next build` limpios. Verificado en el sandbox:
+catálogo 14, ML · Kubera 5 y 3, y el sello de `ACC-0001-AZL` —fuera de la lista—
+sigue diciendo «En FULL» sin fingir validación.
+
 ### v0.541.0 — «Recibido» son las dos columnas de Inventario: el packing list o el empaque de Odoo
 
 Eduardo, 18-sep-2026: *«para los recibidos por packing list vamos a usar los que

@@ -106,6 +106,7 @@ const FUENTE_RECIBIDO: Record<string, string> = {
 const MOTIVO_RECIBIDO: Record<string, string> = {
   sin_renglon: "no, sin renglón en costos validados ni empaque en Odoo",
   sin_cajas: "no, sin cajas en costos validados ni empaque en Odoo",
+  fuera_piloto: "no aplica: fuera de la lista de Inventario",
 };
 
 const NOMBRE_CUADRO: Record<ClaveCuadro, string> = {
@@ -146,15 +147,21 @@ export function tituloSello(
   // mercancía llegó. El packing list es un congelado del embarque y el empaque
   // de Odoo describe la caja, no la recepción.
   const r = p.recibido;
-  const rTexto = r.estado === "no"
-    ? (r.motivo ? MOTIVO_RECIBIDO[r.motivo] : "no")
-    : (RECIBIDO_TEXTO[r.estado] ?? r.estado);
+  const rTexto = r.motivo === "fuera_piloto"
+    ? MOTIVO_RECIBIDO.fuera_piloto
+    : r.estado === "no"
+      ? (r.motivo ? MOTIVO_RECIBIDO[r.motivo] : "no")
+      : (RECIBIDO_TEXTO[r.estado] ?? r.estado);
   const rFuente = r.estado === "si" && r.fuente ? (FUENTE_RECIBIDO[r.fuente] ?? "") : "";
   partes.push(`Recibido (aprox.): ${rTexto}${rFuente}`);
 
   // 2. Los cuatro cuadros de bodega.
   const b = p.bodega;
-  if (s.etapa === "padre") {
+  if (!s.en_piloto && s.etapa !== "padre") {
+    // Fuera de la lista de Inventario no hay validación que contar, y el dato
+    // que sí existe (Odoo, costos) se enseña en la tarjeta, no aquí.
+    partes.push("Validado bodega: sin validar, fuera de la lista de Inventario");
+  } else if (s.etapa === "padre") {
     partes.push("Validado bodega: no aplica a un padre");
   } else if (b.n_listo === null) {
     partes.push("Validado bodega: sin dato de Odoo");
@@ -278,28 +285,32 @@ export const NOTA_ETAPA: Record<string, NotaEtapa> = {
     clic: "Quita el filtro de etapa y vuelve al catálogo completo.",
   },
   recibido: {
-    que: "SKUs de los que se sabe cómo vienen encajados: por el packing list o "
-      + "por el empaque de Odoo. Son las dos columnas de cajas de Inventario.",
-    fuente: "Costos validados en kubera (cajas y piezas por caja, congelado en "
-      + "las cargas del 21-may y del 3-jun) O piezas por caja del producto en "
-      + "Odoo, que se lee en cada foto. Basta con una de las dos.",
+    que: "De los SKUs que están en la pestaña Inventario, los que traen cajas: "
+      + "por el packing list o por el empaque de Odoo.",
+    fuente: "Solo se cuentan los SKUs de la lista de Inventario, que hoy son 14 "
+      + "y están fijos en el código. De ésos: cajas y piezas por caja en costos "
+      + "validados (congelado de mayo y junio) o piezas por caja en Odoo.",
     clic: "Filtra el catálogo a esos SKUs.",
-    ojo: "Es aproximado: NINGUNA de las dos dice que la mercancía llegó. El "
-      + "packing list es la foto del embarque y el empaque de Odoo describe la "
-      + "caja. No es la recepción de Odoo ni lo que contó bodega, y no "
-      + "distingue embarques.",
+    ojo: "El resto del catálogo NO se cuenta aunque tenga el dato: nadie lo ha "
+      + "puesto a validar. Y ninguna de las dos columnas dice que la mercancía "
+      + "llegó — el packing list es la foto del embarque y el empaque de Odoo "
+      + "describe la caja.",
   },
   bodega_3de4: {
-    que: "SKUs con 3 de los 4 requisitos de bodega: ubicación, stock y foto. "
-      + "El cuarto, specs, todavía no tiene definición.",
+    que: "De los SKUs de la pestaña Inventario, los que cumplen 3 de los 4 "
+      + "requisitos: ubicación, stock y foto. El cuarto, specs, no tiene "
+      + "definición.",
     fuente: "Odoo, leído en una foto que se rearma cada 30 min, con la misma "
-      + "regla que la columna Validado bodega de Inventario.",
+      + "regla que la columna Validado bodega de Inventario, y solo sobre los "
+      + "SKUs de esa lista (hoy 14).",
     clic: "Filtra el catálogo a los que cumplen 3 de 4.",
-    ojo: "Validado bodega completo (4 de 4) da 0 hasta que se defina specs.",
+    ojo: "Validado bodega completo (4 de 4) da 0 hasta que se defina specs, y "
+      + "los SKUs fuera de la lista de Inventario no se cuentan aquí aunque "
+      + "Odoo tenga sus datos.",
   },
   listo_envio: {
-    que: "SKUs listos para mandarse a FULL o DROP: Recibido y Validado bodega "
-      + "4 de 4. El costo no cuenta.",
+    que: "De los SKUs de la pestaña Inventario, los listos para mandarse a FULL "
+      + "o DROP: Recibido y Validado bodega 4 de 4. El costo no cuenta.",
     fuente: "Cruce de costos validados (kubera) con la foto de Odoo.",
     clic: "No filtra: está bloqueado mientras specs no tenga definición.",
   },
