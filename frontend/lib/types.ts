@@ -1583,8 +1583,13 @@ export interface FilaPublicado {
   costo: number | null;
   /** De dónde salió el costo de producto: del packing list o del ya guardado. */
   origen_prod: "packing_list" | "kubera" | null;
-  caja_lwh: [number, number, number] | null;
-  pieza_lwh: [number, number, number] | null;
+  // CADA MEDIDA PUEDE FALTAR POR SEPARADO. El tipo decía
+  // `[number, number, number] | null` —o las tres o ninguna— y esa promesa era
+  // falsa: cuando el renglón del packing list trae el volumen en su columna sin
+  // medir la caja, el backend manda [null, null, null]. Como el tipo juraba que
+  // no podía pasar, tsc no avisó y el formateador reventó en producción.
+  caja_lwh: [number | null, number | null, number | null] | null;
+  pieza_lwh: [number | null, number | null, number | null] | null;
 
   // contraste con lo que hay hoy en costos_validados
   costo_viejo: number | null;

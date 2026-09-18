@@ -151,8 +151,17 @@ const esSegura = (f: FilaPublicado) =>
 
 const num = (v: number | null | undefined, dec = 2) =>
   v == null ? "—" : v.toFixed(dec);
-const lwh = (v: [number, number, number] | null) =>
-  v ? `${v[0].toFixed(1)}×${v[1].toFixed(1)}×${v[2].toFixed(1)}` : "—";
+// Las medidas se leen UNA POR UNA, como `num`, porque el renglón puede traer
+// la lista completa de huecos. El packing list de DEC-0012-ROS da el volumen
+// en su propia columna y no mide largo, ancho ni alto: el backend manda
+// entonces [null, null, null] (packing_publicados.py:890). Para JavaScript esa
+// lista SÍ es un dato, así que pasaba el `v ?` y reventaba en `v[0].toFixed(1)`
+// — y eso no dejaba una celda vacía, tiraba la pantalla entera con
+// "Application error: a client-side exception has occurred" (18-sep-2026).
+const lwh = (v: (number | null)[] | null) =>
+  v && v.some((x) => x != null)
+    ? v.map((x) => (x == null ? "—" : x.toFixed(1))).join("×")
+    : "—";
 
 export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: Props) {
   /**

@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.535.0 — Validar costos tiraba la pantalla: una medida vacía no es una medida
+
+Reporte de Eduardo (18-sep): al validar costos aparece *«Application error: a
+client-side exception has occurred»* y la pantalla entera se cae.
+
+**No era el servidor.** En los logs, la corrida de Eduardo (trabajo
+`69c003a6b136`) arrancó con 202 y el panel la consultó cada 3 s con 200 OK
+cada vez. Lo que fallaba era DIBUJAR la respuesta.
+
+**La causa, en una línea.** El formateador de medidas era este:
+
+```ts
+const lwh = (v) => v ? `${v[0].toFixed(1)}×${v[1].toFixed(1)}×${v[2].toFixed(1)}` : "—";
+```
+
+Esa pregunta protege contra «no hay lista», pero el backend no manda eso: cuando el renglón del packing list trae
+el volumen en su propia columna y nadie midió la caja, manda la lista COMPLETA
+DE HUECOS, `[null, null, null]` (`packing_publicados.py:890`). Para JavaScript
+esa lista sí es un dato: pasaba la pregunta y reventaba en `v[0].toFixed(1)`
+con `TypeError: Cannot read properties of null`. Y como pasa durante el
+dibujado, React no deja una celda vacía: desmonta la página entera.
+
+Lo destapó `DEC-0012-ROS` —flores artificiales, volumen por columna, sin largo,
+ancho ni alto— pero el defecto existe desde que nació el validador (27-ago).
+No es una regresión de esta semana: estaba dormido esperando un SKU sin medir.
+
+**Por qué tsc no lo cazó, que es la parte que importa.** El tipo declaraba
+`caja_lwh: [number, number, number] | null` — o las tres medidas o ninguna.
+Esa promesa era falsa y el compilador la creyó, así que nunca hubo aviso. El
+tipo ahora dice la verdad (`[number | null, number | null, number | null]`) y
+el formateador lee las medidas UNA POR UNA, igual que `num` ya hacía con los
+demás números: si falta una sola se ve cuál falta (`12.0×—×8.0`), si faltan las
+tres la celda es un guion.
+
+Verificado: la expresión vieja reventada y la nueva corrida contra los cuatro
+casos (nula, completa, tres huecos, mixta), con los valores REALES del renglón
+que rompió producción; `tsc --noEmit` limpio con el tipo estricto y
+`next build` en verde.
+
 ### v0.534.0 — Las dos etapas sin dato vuelven al rail, pero ahora PIDEN algo
 
 Brandon, una hora después de pedir que se borraran: *"mejor si déjalos e indican qué deben hacer… veo que
