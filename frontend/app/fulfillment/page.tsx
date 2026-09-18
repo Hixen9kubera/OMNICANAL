@@ -28,7 +28,7 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 import { FECHA_DISENO, PLAN, SKU_EJEMPLO } from "@/components/fulfillment/datosDiseno";
 import Tablero from "@/components/fulfillment/Tablero";
-import { DetalleEnvio, TablaEnvios } from "@/components/fulfillment/Envios";
+import { DetalleEnvioModal, TablaEnvios } from "@/components/fulfillment/Envios";
 import Planeacion from "@/components/fulfillment/Planeacion";
 import PorSku from "@/components/fulfillment/PorSku";
 import Variaciones from "@/components/fulfillment/Variaciones";
@@ -38,12 +38,11 @@ import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/c
 /** El rótulo se escribió así en la petición. Se cambia aquí y en AppNavbar. */
 const ROTULO = "FULLFILMENT";
 
-type Pantalla = "tablero" | "envios" | "detalle" | "planeacion" | "sku" | "variaciones";
+type Pantalla = "tablero" | "envios" | "planeacion" | "sku" | "variaciones";
 
 const PANTALLAS: { k: Pantalla; t: string }[] = [
   { k: "tablero", t: "Tablero" },
   { k: "envios", t: "Envíos" },
-  { k: "detalle", t: "Detalle de un envío" },
   { k: "planeacion", t: "Planeación semanal" },
   { k: "sku", t: "Por SKU / MLM" },
   { k: "variaciones", t: "Variaciones" },
@@ -104,7 +103,6 @@ export default function FulfillmentPage() {
     // Con una cuenta elegida, los envíos de ML sin cuenta NO entran: no se sabe de cuál son.
     .filter((e) => cuenta === "todas" || e.canal !== "meli" || e.cuenta === cuenta),
   [todos, canal, cuenta]);
-  const detalle = abierto ?? envios[0] ?? null;
 
   // La cifra grande sigue al canal: bajo el chip de Amazon no puede ir la de FULL.
   const grupo = datos?.resumen[
@@ -118,9 +116,6 @@ export default function FulfillmentPage() {
     tablero: heroTablero,
     envios: { cifra: num(envios.length), pie: "envíos en la vista",
               nota: `de ${num(todos.length)} salidas a FULL, FBA y WFS en Odoo` },
-    detalle: { cifra: detalle ? num(detalle.piezas ?? detalle.pedidas) : "—",
-               pie: detalle?.piezas === null ? "piezas pedidas, sin validar" : "piezas del envío",
-               nota: detalle ? `${detalle.orden ?? "—"} · ${detalle.salida ?? "—"} · ${detalle.kam ?? "—"}` : "" },
     planeacion: { cifra: num(PLAN.reduce((a, r) => a + r.pidio, 0)), pie: "piezas que pidió Andy",
                   nota: `${PLAN.length} renglones en la lista de la semana` },
     sku: { cifra: String(SKU_EJEMPLO.enFullHoy), pie: "piezas en FULL hoy",
@@ -288,14 +283,14 @@ export default function FulfillmentPage() {
         {pantalla === "tablero" && <Tablero canal={canal} cuenta={cuenta} datos={datos} />}
         {pantalla === "envios" && (datos
           ? <TablaEnvios envios={envios} total={todos.length}
-                         onAbrir={(e) => { setAbierto(e); setPantalla("detalle"); }} />
-          : <Espera cargando={cargando} />)}
-        {pantalla === "detalle" && (detalle
-          ? <DetalleEnvio envio={detalle} onVolver={() => setPantalla("envios")} />
+                         onAbrir={setAbierto} />
           : <Espera cargando={cargando} />)}
         {pantalla === "planeacion" && <Planeacion rol={rol} />}
         {pantalla === "sku" && <PorSku />}
         {pantalla === "variaciones" && <Variaciones />}
+
+        {/* El detalle de un envío se abre ENCIMA de la tabla, no en otra pestaña. */}
+        {abierto && <DetalleEnvioModal envio={abierto} onCerrar={() => setAbierto(null)} />}
 
         <p className="mt-4 text-xs leading-relaxed text-slate-400">
           {datos

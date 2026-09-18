@@ -66,6 +66,8 @@ export function fecha(i: Instante | null | undefined): string {
   if (!i) return "sin dato";
   const partes = Object.fromEntries(
     FMT_CDMX.formatToParts(new Date(i.ts)).map((p) => [p.type, p.value]));
+  // Un dato por DÍA no lleva hora: inventarle "18:00" sería mentir.
+  if (i.dia) return `${partes.day} ${MESES[Number(partes.month) - 1]}`;
   const hora = `${partes.hour === "24" ? "00" : partes.hour}:${partes.minute}`;
   return `${partes.day} ${MESES[Number(partes.month) - 1]} ${i.aprox ? "~" : ""}${hora}`;
 }
@@ -202,8 +204,9 @@ export function pasosDe(e: Envio): Paso[] {
     if (inst) {
       const conteo = cobertura[i];
       return { t, corto, v: fecha(inst), sub: conteo ?? sub, tono: "dato" as const,
-               titulo: `${t} · ${fecha(inst)} (hora de CDMX)${conteo ? ` · ${conteo}` : ""}`
-                 + (inst.aprox ? " — hora en que se OBSERVÓ, no la del evento" : "") };
+               titulo: `${t} · ${fecha(inst)} (${inst.dia ? "día" : "hora"} de CDMX)${conteo ? ` · ${conteo}` : ""}`
+                 + (inst.aprox ? " — hora en que se OBSERVÓ, no la del evento" : "")
+                 + (inst.dia ? " — se cuenta por día: no hay hora" : "") };
     }
     // Salida real todavía sin validar: el dato viene (ámbar), no es un hueco.
     if (i === 1 && abierta) {
@@ -288,4 +291,94 @@ export function tasaDe(e: Envio): { texto: string; nota: string; clase: string; 
       };
     }
   }
+}
+
+// ── El rail C2: línea con nodos y el tiempo entre etapas ───────────────────
+// Elegido por Brandon (17-sep) para el detalle: contesta «qué tramo alarga el
+// envío» de un vistazo. La primera etapa con fecha dice la fecha; las demás,
+// cuánto tardaron desde la anterior, con la fecha en chico debajo.
+
+/** Número de día de calendario en CDMX (para restar días sin inventar horas). */
+function diaCdmx(ts: string): number {
+  const p = Object.fromEntries(FMT_CDMX.formatToParts(new Date(ts)).map((x) => [x.type, x.value]));
+  return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day)) / 86_400_000;
+}
+
+/** «+7 d», «~+3 h», «mismo día». Un dato por DÍA sólo se resta en días. */
+function tramo(desde: Instante, hasta: Instante): string {
+  if (desde.dia || hasta.dia) {
+    const d = diaCdmx(hasta.ts) - diaCdmx(desde.ts);
+    return d === 0 ? "mismo día" : `${d > 0 ? "+" : "−"}${Math.abs(d)} d`;
+  }
+  const ms = Date.parse(hasta.ts) - Date.parse(desde.ts);
+  const a = Math.abs(ms);
+  const h = a / 3_600_000;
+  // «+7 d 15 h», no «+8 d»: redondear días enteros escondería medio día.
+  const horas = Math.round(h);
+  const dias = Math.floor(horas / 24);
+  const resto = horas - dias * 24;
+  const cuanto = h < 1 ? `${Math.max(1, Math.round(a / 60_000))} min`
+    : h < 48 ? `${Math.round(h)} h` : `${dias} d${resto ? ` ${resto} h` : ""}`;
+  // Una hora OBSERVADA hace aproximado el tramo entero.
+  return `${desde.aprox || hasta.aprox ? "~" : ""}${ms < 0 ? "−" : "+"}${cuanto}`;
+}
+
+const NODO: Record<Paso["tono"], { punto: string; rotulo: string; valor: string }> = {
+  dato: { punto: "bg-emerald-600 ring-1 ring-emerald-600 border-[3px] border-white",
+          rotulo: "text-slate-700", valor: "text-slate-900" },
+  espera: { punto: "bg-amber-500 ring-1 ring-amber-500 border-[3px] border-white",
+            rotulo: "text-amber-700", valor: "text-amber-700" },
+  hueco: { punto: "bg-white border-2 border-dashed border-slate-300", rotulo: "text-slate-400", valor: "text-slate-400" },
+  pendiente: { punto: "bg-white border-2 border-dashed border-indigo-300", rotulo: "text-indigo-500", valor: "text-indigo-600" },
+};
+
+export function RailLinea({ envio }: { envio: Envio }) {
+  const pasos = pasosDe(envio);
+  // Las etapas que piden captura van primero y no tienen instante.
+  const desfase = pasos.length - envio.etapas.length;
+  const instantes = pasos.map((_, i) => (i >= desfase ? envio.etapas[i - desfase] ?? null : null));
+  const n = pasos.length;
+  const col = 100 / n;
+  let previo: Instante | null = null;
+
+  return (
+    <div className="relative">
+      {/* la vía, de centro a centro */}
+      <div className="absolute top-[8px] h-[3px] rounded-full bg-slate-100"
+           style={{ left: `${col / 2}%`, right: `${col / 2}%` }} />
+      {/* los tramos recorridos: sólo entre dos etapas con dato (o hacia la que viene) */}
+      {pasos.slice(0, -1).map((p, i) => {
+        const sig = pasos[i + 1].tono;
+        if (p.tono !== "dato" || (sig !== "dato" && sig !== "espera")) return null;
+        return (
+          <div key={`tramo-${p.t}`}
+               className={`absolute top-[8px] h-[3px] ${sig === "dato" ? "bg-emerald-600" : "bg-amber-400"}`}
+               style={{ left: `${col * (i + 0.5)}%`, width: `${col}%` }} />
+        );
+      })}
+      <div className="relative grid" style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
+        {pasos.map((p, i) => {
+          const inst = instantes[i];
+          const estilo = NODO[p.tono];
+          let valor = p.v;
+          let debajo = p.sub;
+          if (p.tono === "dato" && inst) {
+            valor = previo ? tramo(previo, inst) : fecha(inst);
+            // Debajo: la fecha (si arriba va el tramo) y cuántos SKUs llegaron ahí.
+            const cobertura = /de \d+ SKUs/.test(p.sub) ? p.sub : null;
+            debajo = [previo ? fecha(inst) : null, cobertura].filter(Boolean).join(" · ") || p.sub;
+            previo = inst;
+          }
+          return (
+            <div key={p.t} className="flex flex-col items-center px-1 text-center" title={p.titulo}>
+              <span className={`h-[18px] w-[18px] rounded-full ${estilo.punto}`} />
+              <span className={`mt-2.5 text-[10px] font-bold uppercase tracking-[.05em] ${estilo.rotulo}`}>{p.t}</span>
+              <span className={`mt-0.5 font-mono text-[12.5px] font-bold ${estilo.valor}`}>{valor}</span>
+              <span className="mt-0.5 text-[10.5px] leading-tight text-slate-400">{debajo}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }

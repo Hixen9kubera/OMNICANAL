@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.539.0 — FULLFILMENT: el detalle de un envío se abre ENCIMA de la tabla, con el rail en línea (C2)
+
+Pedido de Brandon (17-sep): *"al presionar el botón de detalle de una orden aparece un POP con la información y
+se puede cerrar… como el formato de C2, que sea minimalista"*.
+
+**Ventana emergente en vez de pestaña.** Desaparece la pestaña «Detalle de un envío»: el botón **Detalle** de
+cada renglón abre la ventana sobre la tabla y se cierra con la ✕, con **Esc** o con un clic fuera. La tabla no
+se mueve ni pierde la página en la que ibas. Mientras está abierta, la página de atrás no se desplaza.
+
+**El rail C2** (el que se eligió en Variaciones): una línea con un nodo por etapa. La primera etapa con fecha
+dice la fecha; las demás dicen **cuánto tardaron desde la anterior** (`+7 d 15 h`, `~+3 h`), con la fecha en
+chico debajo y cuántos SKUs llegaron ahí. Así se ve de un vistazo qué tramo alarga el envío. Los tramos se
+pintan sólo entre dos etapas con dato (verde) o hacia la que viene (ámbar); nunca a través de un hueco. Una
+hora OBSERVADA (`~`) vuelve aproximado el tramo entero. En pantallas angostas el rail se desliza en lugar de
+encimar las siete etapas.
+
+Lo demás, compacto: encabezado con número de envío, canal, cuenta, orden, salida, KAM y piezas; la tabla por
+SKU (pedidas, enviadas, llegó a FULL/FBA/WFS, entraron, activo, 1ª venta); y el «de dónde sale cada dato» en
+chico al pie. Las etiquetas dicen FBA o WFS cuando el envío no es de Mercado Libre, y la nota del pie explica
+por qué lo del almacén es observado según el canal (ML no publica los envíos a Full; Amazon responde 403;
+WFS falta conectarse).
+
+**Bug de la 1ª venta: se pintaba UN DÍA ANTES.** `channel.sales_daily_completa` fecha la venta por día de
+CDMX (`creado_at AT TIME ZONE 'America/Mexico_City'`), y `fulfillment_etapas` la mandaba como medianoche
+**UTC** de ese día — que en CDMX son las 18:00 del día anterior. S37015 decía «08 sep ~18:00» para una venta
+del **9**. Ahora va como mediodía CDMX con `dia: true`, y el panel pinta sólo el día (`09 sep`), sin la hora
+inventada. Los tramos hacia una etapa por día se cuentan en días de calendario (`+5 d`, «mismo día»).
+
+Probado con S37015 (San Corpe, 6 SKUs) contra Odoo y kubera en vivo: orden 27 ago 18:54 → salida `+7 d 15 h`
+→ recibido `~+3 h` (5 de 6 SKUs) → activo `~+9 h` (4 de 6) → 1ª venta `+5 d` el 09 sep (2 de 6). 24 pruebas
+de backend en verde (una nueva fija el formato del día), `tsc` limpio y `next build` en verde.
+
 ### v0.538.0 — "Falta generar guía": las órdenes que esperan que alguien compre el envío, a la vista
 
 Brandon, 18-sep: *"¿puedes hacer un tag o algo visual donde indique qué órdenes no

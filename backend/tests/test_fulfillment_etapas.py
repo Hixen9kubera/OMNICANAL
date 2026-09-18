@@ -81,6 +81,10 @@ class Atribucion(unittest.TestCase):
             ventas={("A", "BEKURA"): [date(2026, 8, 1), date(2026, 8, 25)]}))
         self.assertEqual(e["etapas"][3]["ts"], act.isoformat(), "la activación vieja no cuenta")
         self.assertEqual(e["etapas"][4]["ts"][:10], "2026-08-25", "la venta anterior a la salida no cuenta")
+        # Es un DÍA de México: mediodía CDMX y marcado como día, no medianoche UTC
+        # (que en CDMX caía a las 18:00 del día anterior).
+        self.assertEqual(e["etapas"][4]["ts"], "2026-08-25T12:00:00-06:00")
+        self.assertTrue(e["etapas"][4]["dia"])
         self.assertEqual((e["cobertura"]["activos"], e["cobertura"]["vendieron"]), (1, 1))
 
     def test_cuenta_equivocada_no_cruza(self):

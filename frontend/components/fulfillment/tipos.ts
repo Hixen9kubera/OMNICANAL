@@ -24,6 +24,8 @@ export type Rol = "admin" | "kam";
 export interface Instante {
   ts: string;          // ISO 8601 con zona
   aprox?: boolean;
+  /** Sólo se sabe el DÍA (p. ej. la 1ª venta): se pinta sin hora. */
+  dia?: boolean;
 }
 
 /**

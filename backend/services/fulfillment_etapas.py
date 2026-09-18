@@ -184,8 +184,12 @@ def aplicar(envios: list[dict[str, Any]], datos: dict[str, Any] | None) -> None:
         if activo:
             e["etapas"][3] = {"ts": min(activo).isoformat(), "aprox": True}
         if vendio:
-            e["etapas"][4] = {"ts": datetime.combine(
-                min(vendio), datetime.min.time(), tzinfo=timezone.utc).isoformat(), "aprox": True}
+            # La venta se fecha por DÍA en hora de CDMX (`sales_daily` hace
+            # `creado_at AT TIME ZONE 'America/Mexico_City'`). Se manda al
+            # mediodía de ese día con `dia: True` y el panel pinta sólo el día.
+            # Antes iba a medianoche UTC: en CDMX eso son las 18:00 del día
+            # ANTERIOR, y el rail decía "08 sep ~18:00" para una venta del 9.
+            e["etapas"][4] = {"ts": f"{min(vendio).isoformat()}T12:00:00-06:00", "dia": True}
         e["cobertura"] = {
             "skus": n,
             "llegaron": len(llego), "piezas_llegadas": round(piezas),

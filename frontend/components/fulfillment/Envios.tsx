@@ -16,11 +16,11 @@
  *   · nunca «en tránsito»: la etapa es «salida validada en Odoo».
  */
 
-import { useEffect, useState } from "react";
-import { ArrowLeft, Copy, Download } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Copy, Download, X } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import {
-  ChipCanal, ChipFuente, Ceja, FONDO_RAYADO, Rail, Tarjeta, fecha, num, pasosDe, tasaDe,
+  ChipCanal, ChipFuente, Ceja, FONDO_RAYADO, Rail, RailLinea, Tarjeta, fecha, num, pasosDe, tasaDe,
 } from "./ui";
 import type { Envio, EnvioConLineas } from "./tipos";
 
@@ -162,7 +162,13 @@ export function TablaEnvios({
   );
 }
 
-export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver: () => void }) {
+/**
+ * El detalle de un envío en una VENTANA EMERGENTE sobre la tabla (Brandon,
+ * 17-sep): ya no es una pestaña a la que hay que irse y volver. Se cierra con
+ * la ✕, con Esc o haciendo clic fuera. Minimalista a propósito: el rail C2
+ * arriba, los SKUs en medio y el origen de cada dato, en chico, abajo.
+ */
+export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onCerrar: () => void }) {
   const [copiado, setCopiado] = useState(false);
   const [detalle, setDetalle] = useState<EnvioConLineas | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -182,174 +188,169 @@ export function DetalleEnvio({ envio: base, onVolver }: { envio: Envio; onVolver
     return () => { vivo = false; };
   }, [base.id]);
 
+  // Esc cierra, y la página de atrás no se desplaza mientras la ventana está abierta.
+  // `onCerrar` va en una ref: la página lo recrea en cada render y no queremos
+  // reenganchar el teclado (ni soltar el bloqueo del scroll) cada vez.
+  const cerrar = useRef(onCerrar);
+  cerrar.current = onCerrar;
+  useEffect(() => {
+    const alTeclear = (ev: KeyboardEvent) => { if (ev.key === "Escape") cerrar.current(); };
+    window.addEventListener("keydown", alTeclear);
+    const antes = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", alTeclear);
+      document.body.style.overflow = antes;
+    };
+  }, []);
+
   const e = detalle ?? base;
   const lineas = detalle?.lineas ?? [];
   const hecha = e.estado_odoo === "done";
+  const almacen = e.canal === "amazon" ? "FBA" : e.canal === "walmart" ? "WFS" : "FULL";
+  // Por qué lo que se ve en el almacén es OBSERVADO y no el conteo del canal.
+  const porQue = e.canal === "amazon"
+    ? "la app de Amazon no tiene permiso de Inbound (403), así que sus envíos no se leen"
+    : e.canal === "walmart"
+      ? "la API de WFS en México responde, pero falta conectarla al panel"
+      : "Mercado Libre no publica los envíos a Full, así que lo declarado, las diferencias y sus motivos sólo viven en su panel";
 
   const copiar = () => {
     void navigator.clipboard?.writeText(e.envio ?? "sin número de envío");
     setCopiado(true);
     setTimeout(() => setCopiado(false), 1500);
   };
-
   const sinDato = (titulo: string) => (
-    <span title={titulo} className="font-mono text-[11px] font-bold text-slate-400">sin dato</span>
+    <span title={titulo} className="text-slate-300">—</span>
   );
+
   return (
-    <Tarjeta className="mt-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2"><Ceja>Detalle del envío</Ceja><ChipFuente vivo /></div>
-          <h2 className="mt-1 flex flex-wrap items-center gap-2.5 text-[20px] font-extrabold tracking-tight text-slate-900">
-            <span className={`font-mono ${e.envio ? "" : "text-amber-700"}`}>{e.envio ?? "sin número"}</span>
-            <ChipCanal canal={e.canal} cuenta={e.cuenta} />
-            <span className={`text-sm font-semibold ${e.cuenta || e.canal === "walmart" ? "text-slate-500" : "text-amber-700"}`}>
-              {e.cuenta ?? (e.canal === "walmart" ? "Walmart MX" : "sin asignar")}
-            </span>
-          </h2>
-          <p className="mt-1 text-[13px] text-slate-500">
-            Orden de venta <b className="font-mono text-slate-700">{e.orden ?? "—"}</b> · salida{" "}
-            <b className="font-mono text-slate-700">{e.salida ?? "—"}</b> · armó{" "}
-            <b className="text-slate-700">{e.kam ?? "—"}</b> ·{" "}
-            {hecha ? `${num(e.piezas)} piezas` : `${num(e.pedidas)} piezas pedidas, sin validar`}
-            {lineas.length ? ` en ${lineas.length} SKUs` : ""}
-          </p>
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 px-4 py-10 backdrop-blur-[2px]"
+         onClick={onCerrar}>
+      <div role="dialog" aria-modal="true" aria-label={`Detalle del envío ${e.envio ?? e.orden ?? ""}`}
+           onClick={(ev) => ev.stopPropagation()}
+           className="w-full max-w-[1080px] animate-fade-in rounded-2xl bg-white shadow-2xl">
+        {/* ── encabezado ─────────────────────────────────────────── */}
+        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className={`font-mono text-lg font-extrabold ${e.envio ? "text-slate-900" : "text-amber-700"}`}>
+                {e.envio ?? "sin número"}
+              </span>
+              <ChipCanal canal={e.canal} cuenta={e.cuenta} />
+              <span className={`text-sm font-semibold ${e.cuenta || e.canal === "walmart" ? "text-slate-500" : "text-amber-700"}`}
+                    title={e.cuenta_regla}>
+                {e.cuenta ?? (e.canal === "walmart" ? "Walmart MX" : "sin asignar")}
+              </span>
+            </div>
+            <p className="mt-0.5 text-[12.5px] text-slate-500">
+              <span className="font-mono">{e.orden ?? "—"}</span> · <span className="font-mono">{e.salida ?? "—"}</span>
+              {" "}· armó {e.kam ?? "—"} ·{" "}
+              {hecha ? `${num(e.piezas)} piezas` : `${num(e.pedidas)} pedidas, sin validar`}
+              {lineas.length ? ` · ${lineas.length} SKUs` : ""}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button type="button" onClick={copiar} disabled={!e.envio} title="Copiar el número del envío"
+                    className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40">
+              {copiado ? <span className="text-xs font-semibold text-emerald-600">copiado</span> : <Copy className="h-4 w-4" />}
+            </button>
+            <button type="button" onClick={onCerrar} title="Cerrar (Esc)"
+                    className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={onVolver}
-                  className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-50">
-            <ArrowLeft className="h-4 w-4" /> Volver a Envíos
-          </button>
-          <button type="button" onClick={copiar} disabled={!e.envio}
-                  className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-slate-300">
-            <Copy className="h-4 w-4" /> {copiado ? "Copiado" : "Copiar número"}
-          </button>
-        </div>
-      </div>
 
-      <div className="mt-4">
-        <Rail pasos={pasosDe(e)} grande />
-      </div>
-
-      {/* De dónde sale cada dato de este renglón (pedido de Brandon, 15-sep). */}
-      <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-3">
-        <div className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">De dónde sale este envío</div>
-        <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-[12.5px] sm:grid-cols-2 xl:grid-cols-3">
-          <Dato t="Orden de venta (Odoo sale.order)" v={`${e.orden ?? "—"} · creada por ${e.kam ?? "—"} · ${fecha(e.etapas[0])}`} />
-          <Dato t="Salida (Odoo stock.picking)" v={`${e.salida ?? "—"} · ${e.almacen ?? "—"} · estado ${e.estado_odoo ?? "—"}${hecha ? ` · validada ${fecha(e.etapas[1])}` : ""}`} />
-          <Dato t="Socio de la orden" v={`«${e.socio ?? "—"}» → ${e.canal === "meli" ? "ML FULL" : e.canal === "amazon" ? "Amazon FBA (≥ 40 piezas)" : "Walmart WFS"}`} />
-          <Dato t="Referencia tecleada por la KAM" v={e.referencia ? `«${e.referencia}»` : "vacía"} />
-          <Dato t="Número de envío" v={e.envio ? `${e.envio} · sacado de ${e.envio_origen === "socio" ? "el nombre del socio" : "la referencia"}` : "no hay: sin número no se puede cruzar con el marketplace"} />
-          <Dato t="Cuenta" v={e.cuenta_regla ?? "—"} />
-        </dl>
-      </div>
-
-      {e.estado === "sinEnlazar" && (
-        <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3">
-          <p className="text-[12.5px] leading-relaxed text-amber-900">
-            <b>Envío sin enlazar.</b> La referencia de la orden en Odoo no trae el número del envío, así que no
-            hay con qué cruzarlo contra el conteo de Mercado Libre. Lo de abajo es la <b>llegada observada</b> por
-            nuestro sync, no lo que ML dio por recibido: la diferencia entre declarado y recibido{" "}
-            <b>no se puede calcular</b>. Y eso no es un cero.
-          </p>
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-[12.5px] text-rose-800">
-          No se pudieron leer los renglones de esta salida. Error del backend: <code className="font-mono">{error}</code>
-        </div>
-      )}
-
-      <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
-        <table className="w-full min-w-[900px] border-collapse text-[13px]">
-          <thead>
-            <tr className="bg-slate-50 text-left text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-500">
-              <th className="px-3.5 py-2.5">SKU · producto</th>
-              <th className="px-3.5 py-2.5 text-right" title="product_qty de los movimientos de la salida">Pedidas</th>
-              <th className="px-3.5 py-2.5 text-right" title="quantity hecha al validar la salida">Enviadas</th>
-              <th className="px-3.5 py-2.5 text-right text-emerald-700"
-                  title="Primera subida de stock en FULL tras la salida, vista por el sync cada 15 min.">Llegó a FULL</th>
-              <th className="px-3.5 py-2.5 text-right"
-                  title="Piezas que entraron a FULL en la ventana del envío. OJO: puede incluir piezas de otro envío del mismo SKU.">Piezas que entraron</th>
-              <th className="px-3.5 py-2.5 text-right">Activo</th>
-              <th className="px-3.5 py-2.5 text-right">1ª venta</th>
-            </tr>
-          </thead>
-          <tbody>
-            {lineas.map((l) => (
-              <tr key={l.sku} className="border-t border-slate-100">
-                <td className="px-3.5 py-[9px]">
-                  <div className="font-mono text-[12.5px] font-bold text-slate-900">{l.sku}</div>
-                  <div className="max-w-[420px] truncate text-[11.5px] text-slate-400" title={l.nombre}>{l.nombre}</div>
-                </td>
-                <td className="px-3.5 py-[9px] text-right font-mono tabular-nums text-slate-600">{num(l.pedidas)}</td>
-                <td className="px-3.5 py-[9px] text-right font-mono font-bold tabular-nums text-slate-900">
-                  {l.enviadas === null ? <span className="text-amber-700">sin validar</span> : num(l.enviadas)}
-                </td>
-                <td className="px-3.5 py-[9px] text-right font-mono text-[11.5px] text-emerald-700">
-                  {l.llegada ? fecha({ ts: l.llegada, aprox: true }) : sinDato("Ningún movimiento de stock FULL de este SKU tras la salida.")}
-                </td>
-                <td className="px-3.5 py-[9px] text-right font-mono tabular-nums text-slate-600">
-                  {l.piezas_llegadas ? num(l.piezas_llegadas) : "—"}
-                </td>
-                <td className="px-3.5 py-[9px] text-right font-mono text-[11.5px] text-slate-600">
-                  {l.activacion ? fecha({ ts: l.activacion, aprox: true }) : sinDato("La publicación no se prendió en FULL en la ventana.")}
-                </td>
-                <td className="px-3.5 py-[9px] text-right font-mono text-[11.5px] text-slate-600">
-                  {l.primera_venta ?? sinDato("Sin ventas FULL de este SKU después de la salida.")}
-                </td>
-              </tr>
-            ))}
-            {!detalle && !error && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-400">Leyendo los renglones en Odoo…</td></tr>
-            )}
-            {detalle && lineas.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500">Esta salida no tiene renglones en Odoo.</td></tr>
-            )}
-          </tbody>
-          {lineas.length > 0 && (
-            <tfoot>
-              <tr className="border-t-2 border-slate-200 bg-slate-50 text-[12.5px] font-bold">
-                <td className="px-3.5 py-2.5 text-slate-600">Total de la salida</td>
-                <td className="px-3.5 py-2.5 text-right font-mono tabular-nums text-slate-600">{num(e.pedidas)}</td>
-                <td className="px-3.5 py-2.5 text-right font-mono tabular-nums text-slate-900">{hecha ? num(e.piezas) : "—"}</td>
-                <td className="px-3.5 py-2.5 text-right font-mono text-[11.5px] text-emerald-700">
-                  {e.cobertura ? `${e.cobertura.llegaron} de ${e.cobertura.skus} SKUs` : "—"}
-                </td>
-                <td className="px-3.5 py-2.5 text-right font-mono tabular-nums text-slate-600">
-                  {e.cobertura?.piezas_llegadas ? num(e.cobertura.piezas_llegadas) : "—"}
-                </td>
-                <td className="px-3.5 py-2.5 text-right font-mono text-[11.5px] text-slate-600">
-                  {e.cobertura ? `${e.cobertura.activos} de ${e.cobertura.skus}` : "—"}
-                </td>
-                <td className="px-3.5 py-2.5 text-right font-mono text-[11.5px] text-slate-600">
-                  {e.cobertura ? `${e.cobertura.vendieron} de ${e.cobertura.skus}` : "—"}
-                </td>
-              </tr>
-            </tfoot>
+        {/* ── el rail C2 ─────────────────────────────────────────── */}
+        <div className="px-6 pb-5 pt-6">
+          {/* En pantallas angostas el rail se desliza: siete etapas no caben en 390 px. */}
+          <div className="overflow-x-auto">
+            <div className="min-w-[680px]">
+              <RailLinea envio={e} />
+            </div>
+          </div>
+          {e.estado === "sinEnlazar" && (
+            <p className="mt-4 text-center text-[11.5px] text-amber-700">
+              Sin número de envío en Odoo: no se puede cruzar con el conteo de Mercado Libre, así que la diferencia
+              entre declarado y recibido no se puede calcular.
+            </p>
           )}
-        </table>
-      </div>
+        </div>
 
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <div className="rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-3">
-          <p className="text-[12.5px] leading-relaxed text-amber-900">
-            <b>«Llegó a FULL» no es el conteo de Mercado Libre.</b> Su API no publica los envíos a Full: no hay
-            declaradas, ni procesadas, ni motivos. Esto es la subida de stock que ve nuestro sync cada 15 minutos,
-            o sea cuando las piezas ya se pueden vender — puede ser días después de que el panel diga
-            «procesamiento finalizado». Las <b>piezas que entraron</b> pueden incluir otro envío del mismo SKU.
-          </p>
+        {/* ── los SKUs ───────────────────────────────────────────── */}
+        <div className="border-t border-slate-100 px-6 py-4">
+          {error ? (
+            <p className="text-[12.5px] text-rose-700">No se pudieron leer los renglones: <code className="font-mono">{error}</code></p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] border-collapse text-[12.5px]">
+                <thead>
+                  <tr className="text-left text-[10px] font-bold uppercase tracking-[.06em] text-slate-400">
+                    <th className="pb-2">SKU</th>
+                    <th className="pb-2 text-right">Pedidas</th>
+                    <th className="pb-2 text-right">Enviadas</th>
+                    <th className="pb-2 text-right" title={`Primera subida de stock en ${almacen} tras la salida (sync cada 15 min).`}>Llegó a {almacen}</th>
+                    <th className="pb-2 text-right" title="Pueden incluir piezas de otro envío del mismo SKU.">Entraron</th>
+                    <th className="pb-2 text-right">Activo</th>
+                    <th className="pb-2 text-right">1ª venta</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lineas.map((l) => (
+                    <tr key={l.sku} className="border-t border-slate-100">
+                      <td className="py-2 pr-3">
+                        <div className="font-mono font-bold text-slate-800">{l.sku}</div>
+                        <div className="max-w-[360px] truncate text-[11px] text-slate-400" title={l.nombre}>{l.nombre}</div>
+                      </td>
+                      <td className="py-2 text-right font-mono tabular-nums text-slate-500">{num(l.pedidas)}</td>
+                      <td className="py-2 text-right font-mono font-bold tabular-nums text-slate-800">
+                        {l.enviadas === null ? <span className="font-normal text-amber-700">sin validar</span> : num(l.enviadas)}
+                      </td>
+                      <td className="py-2 text-right font-mono text-[11.5px] text-emerald-700">
+                        {l.llegada ? fecha({ ts: l.llegada, aprox: true }) : sinDato(`Sin movimiento de stock ${almacen} tras la salida.`)}
+                      </td>
+                      <td className="py-2 text-right font-mono tabular-nums text-slate-500">
+                        {l.piezas_llegadas ? num(l.piezas_llegadas) : sinDato("—")}
+                      </td>
+                      <td className="py-2 text-right font-mono text-[11.5px] text-slate-500">
+                        {l.activacion ? fecha({ ts: l.activacion, aprox: true }) : sinDato(`No se prendió en ${almacen} en la ventana.`)}
+                      </td>
+                      <td className="py-2 text-right font-mono text-[11.5px] text-slate-500">
+                        {l.primera_venta
+                          ? fecha({ ts: `${l.primera_venta}T12:00:00-06:00`, dia: true })
+                          : sinDato(`Sin ventas ${almacen} de este SKU tras la salida.`)}
+                      </td>
+                    </tr>
+                  ))}
+                  {!detalle && (
+                    <tr><td colSpan={7} className="py-6 text-center text-slate-400">Leyendo los renglones en Odoo…</td></tr>
+                  )}
+                  {detalle && lineas.length === 0 && (
+                    <tr><td colSpan={7} className="py-6 text-center text-slate-400">Esta salida no tiene renglones en Odoo.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3">
-          <p className="text-[12.5px] leading-relaxed text-slate-600">
-            <b>Lo declarado y lo rechazado viven sólo en el panel de ML.</b> Las unidades declaradas del envío, las
-            diferencias (de más o de menos) y los motivos («mal embalada», «no apta para vender en Full») no
-            existen en ninguna respuesta de su API: se capturan a mano o no se muestran.
+
+        {/* ── de dónde sale, en chico ────────────────────────────── */}
+        <div className="rounded-b-2xl border-t border-slate-100 bg-slate-50/60 px-6 py-3">
+          <dl className="grid gap-x-6 gap-y-1 text-[11.5px] sm:grid-cols-2 lg:grid-cols-3">
+            <Dato t="Orden de venta" v={`${e.orden ?? "—"} · ${e.kam ?? "—"} · ${fecha(e.etapas[0])}`} />
+            <Dato t="Salida" v={`${e.salida ?? "—"} · ${e.estado_odoo ?? "—"}${hecha ? ` · ${fecha(e.etapas[1])}` : ""}`} />
+            <Dato t="Socio" v={`«${e.socio ?? "—"}»`} />
+            <Dato t="Referencia en Odoo" v={e.referencia ? `«${e.referencia}»` : "vacía"} />
+            <Dato t="Número de envío" v={e.envio ? `${e.envio} (de ${e.envio_origen === "socio" ? "el socio" : "la referencia"})` : "no hay"} />
+            <Dato t="Cuenta" v={e.cuenta_regla ?? "—"} />
+          </dl>
+          <p className="mt-2 text-[10.5px] text-slate-400">
+            Llegó, activo y 1ª venta son observados por nuestro sync (~ = hora en que se vio): {porQue}.
           </p>
         </div>
       </div>
-    </Tarjeta>
+    </div>
   );
 }
 
