@@ -4,39 +4,60 @@
  * FULLFILMENT · Tablero — KPIs, la gráfica obligatoria, el embudo, los días de
  * proceso, el agotado en FULL, FBA, WFS y la calidad de captura por KAM.
  *
- * Construido por etapas: lo que ya sale de Odoo (enviado, sin número, días de
- * proceso, captura por KAM, salidas a FBA y WFS) lleva el chip «Odoo en vivo»;
- * lo que sigue siendo del mockup (stock en FULL, agotado, stock FBA) lleva el
- * chip «diseño». Nunca se mezclan en la misma cifra.
- *
- * Dos de los cinco escalones del embudo existen. Pintar 0 en los otros tres
- * sería mentir con una cifra que la gente creería: por eso van rayados.
+ * Desde v0.546.0 todo lo que tiene fuente es REAL (Brandon, 18-sep: "ya con
+ * estos datos llena de datos reales el tablero"). Cada cifra lleva su chip:
+ *   · «Odoo en vivo»  — enviado, validado, lo no surtido, sin número, días y
+ *                       captura por KAM;
+ *   · «ML en vivo»    — la llegada a FULL por los avisos de Mercado Libre
+ *                       (fbm_stock_operations): recibido, no recibido, en
+ *                       recepción, tiempos y lo vendido desde que llegó; y el
+ *                       stock de hoy (channel.listings, que el sync y los avisos
+ *                       actualizan en minutos);
+ *   · «Amazon en vivo» — lo disponible en FBA.
+ * Lo que sigue sin fuente —la lista de Andy, lo reservado y en camino de FBA,
+ * WFS— va rayado: pintar 0 ahí sería mentir con una cifra que la gente creería.
  */
 
 import type { ReactNode } from "react";
 import { AlertTriangle, Boxes, Link2Off, PackageCheck, Truck } from "lucide-react";
-import { FBA, FULL_POR_CUENTA } from "./datosDiseno";
 import {
-  Ceja, ChipFuente, ChipSinRegistro, DIAS_NOMBRE, DIAS_SEMANA, PUNTO_CUENTA, RAYADO, Tarjeta, dia, num,
+  Ceja, ChipFuente, ChipSinRegistro, DIAS_NOMBRE, DIAS_SEMANA, FONDO_RAYADO_AMBAR, PUNTO_CUENTA, RAYADO,
+  Tarjeta, dia, num,
 } from "./ui";
-import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, ResumenGrupo } from "./tipos";
+import type {
+  Cuenta, Envio, FiltroCanal, FiltroCuenta, Mediana, RespuestaEnvios, ResumenGrupo, ResumenRecepcion,
+  SemanaRecepcion, StockCuenta, StockHoy,
+} from "./tipos";
+
+const TIT_AVISOS = "Avisos de FULL de Mercado Libre (webhook fbm_stock_operations) que el backend resuelve a "
+  + "tipo, piezas y SKU. Cada operación cuenta una vez.";
+const TIT_STOCK = "channel.listings de kubera: el sync de canales y los avisos de ML lo actualizan en minutos. "
+  + "Cuadra con la API de ML (18-sep: 1,010 contra 996 publicaciones FULL en Kubera, 867 contra 866 en San Corpe).";
+const RAYADO_ROSA = "repeating-linear-gradient(135deg,#fecdd3 0 4px,#fb7185 4px 8px)";
 
 export default function Tablero({
   canal, cuenta, datos,
 }: { canal: FiltroCanal; cuenta: FiltroCuenta; datos: RespuestaEnvios | null }) {
   if (canal === "amazon" || canal === "walmart") {
     return <SoloPrograma canal={canal} grupo={datos?.resumen[canal] ?? null}
-                         mfn={datos?.excluidas.venta_amazon_mfn ?? null} />;
+                         mfn={datos?.excluidas.venta_amazon_mfn ?? null} fba={datos?.stock?.fba ?? null} />;
   }
 
-  const g = datos?.resumen[cuenta === "todas" ? "meli" : `meli:${cuenta}`] ?? null;
+  const clave = cuenta === "todas" ? "meli" : `meli:${cuenta}`;
+  const g = datos?.resumen[clave] ?? null;
+  const r = datos?.recepcion?.[clave] ?? null;
   const sinAsignar = datos?.resumen["meli:sin_asignar"] ?? null;
-  const cuentas = FULL_POR_CUENTA.filter((c) => cuenta === "todas" || c.cuenta === cuenta);
-  const hoy = cuentas.reduce((a, c) => a + c.piezas, 0);
-  const enCero = cuentas.reduce((a, c) => a + c.enCero, 0);
-  const publicaciones = cuentas.reduce((a, c) => a + c.publicaciones, 0);
+  const stock: StockHoy | null = datos?.stock ?? null;
+  const cuentas = (["Kubera", "San Corpe"] as Cuenta[])
+    .filter((c) => cuenta === "todas" || c === cuenta)
+    .flatMap((c) => (stock?.full[c] ? [{ cuenta: c, s: stock.full[c] as StockCuenta }] : []));
+  const hoy = cuentas.reduce((a, c) => a + c.s.piezas, 0);
+  const enCero = cuentas.reduce((a, c) => a + c.s.en_cero, 0);
+  const publicaciones = cuentas.reduce((a, c) => a + c.s.publicaciones, 0);
+  const conStock = cuentas.reduce((a, c) => a + c.s.con_stock, 0);
   const pctPedido = g && g.piezas_pedidas_hechas
     ? Math.round((g.piezas_enviadas / g.piezas_pedidas_hechas) * 1000) / 10 : null;
+  const leyendo = datos ? "kubera no contestó" : "leyendo…";
 
   return (
     <>
@@ -48,32 +69,32 @@ export default function Tablero({
                ? `piezas en ${num(g.hechas)} salidas validadas · ${dia(g.desde)} → ${dia(g.hasta)}`
                  + (g.abiertas ? ` · ${g.abiertas} abiertas con ${num(g.piezas_abiertas)} pzs` : "")
                : "leyendo Odoo…"} />
-        <Kpi icono={<Boxes className="h-3.5 w-3.5" />} rotulo="Hoy en FULL"
-             cifra={num(hoy)}
-             pie={cuentas.map((c) => `${c.cuenta} ${num(c.piezas)}`).join(" · ")} />
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.06em] text-rose-800">
-              <AlertTriangle className="h-3.5 w-3.5" /> Agotado en FULL
-            </span>
-            <ChipFuente vivo={false} />
+        {cuentas.length ? (
+          <Kpi icono={<Boxes className="h-3.5 w-3.5" />} rotulo="Hoy en FULL" vivo fuente="ML en vivo" tituloFuente={TIT_STOCK}
+               cifra={num(hoy)}
+               pie={`${cuentas.map((c) => `${c.cuenta} ${num(c.s.piezas)}`).join(" · ")} · en ${num(conStock)} publicaciones con stock`} />
+        ) : (
+          <KpiHueco rotulo="Hoy en FULL" nota={leyendo} />
+        )}
+        {publicaciones ? (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.06em] text-rose-800">
+                <AlertTriangle className="h-3.5 w-3.5" /> Agotado en FULL
+              </span>
+              <ChipFuente vivo texto="ML en vivo" titulo={TIT_STOCK} />
+            </div>
+            <div className="mt-2 text-[28px] font-extrabold leading-none tracking-tight tabular-nums text-rose-800">
+              {Math.round((enCero / publicaciones) * 100)}%
+            </div>
+            <div className="mt-1 text-xs text-rose-800/85">
+              {num(enCero)} de {num(publicaciones)} publicaciones FULL en cero
+            </div>
           </div>
-          <div className="mt-2 text-[28px] font-extrabold leading-none tracking-tight tabular-nums text-rose-800">
-            {Math.round((enCero / publicaciones) * 100)}%
-          </div>
-          <div className="mt-1 text-xs text-rose-800/85">
-            {num(enCero)} de {num(publicaciones)} publicaciones FULL en cero
-          </div>
-        </div>
-        <div className="rounded-2xl p-4" style={RAYADO}>
-          <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">
-            <PackageCheck className="h-3.5 w-3.5" /> Tasa de recepción
-          </div>
-          <div className="mt-2"><ChipSinRegistro /></div>
-          <div className="mt-2 text-xs text-slate-500">
-            las recepciones de FULL todavía no se guardan
-          </div>
-        </div>
+        ) : (
+          <KpiHueco rotulo="Agotado en FULL" nota={leyendo} />
+        )}
+        <KpiTasa r={r} cargando={!datos} />
         <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4">
           <div className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.06em] text-amber-700">
@@ -93,7 +114,8 @@ export default function Tablero({
       {cuenta === "todas" && sinAsignar && sinAsignar.salidas > 0 && (
         <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/60 px-4 py-2.5 text-[12.5px] text-amber-900">
           <b>{sinAsignar.salidas} salidas a FULL sin cuenta</b> ({num(sinAsignar.piezas_enviadas)} piezas): las creó alguien
-          que no es Thalia ni Cinthya, y la regla no adivina. Cuentan en «Todas» y no en ninguna cuenta.
+          que no es Thalia ni Cinthya, y la regla no adivina. Cuentan en «Todas» y no en ninguna cuenta, y su llegada
+          no se mide: sin cuenta no se sabe qué almacén de ML mirar.
         </div>
       )}
 
@@ -102,74 +124,64 @@ export default function Tablero({
         <Tarjeta>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div>
-              <Ceja>Requisito · gráfica principal</Ceja>
+              <div className="flex items-center gap-2">
+                <Ceja>Requisito · gráfica principal</Ceja>
+                <ChipFuente vivo texto="ML en vivo" titulo={TIT_AVISOS} />
+              </div>
               <h2 className="mt-1 text-[17px] font-extrabold tracking-tight text-slate-900">
-                Tasa de éxito del envío — piezas entregadas contra rechazadas
+                Tasa de éxito del envío — piezas recibidas contra no recibidas
               </h2>
             </div>
-            <ChipSinRegistro texto="aún no medido" />
+            <span className="text-[11px] text-slate-400">por semana de la salida validada · hora de CDMX</span>
           </div>
-          <div className="mt-3.5 flex min-h-[196px] items-center justify-center rounded-xl px-5 py-6 text-center" style={RAYADO}>
-            <div className="max-w-[560px]">
-              <p className="text-sm font-semibold text-slate-700">
-                Las recepciones del almacén FULL todavía no se guardan: el aviso de Mercado Libre se retiene
-                3 días y el desglose de lo rechazado se descarga y se desecha.
-              </p>
-              <p className="mt-2 text-[12.5px] leading-relaxed text-slate-500">
-                Ojo para cuando se construya: la llegada a FULL casi nunca se registra como{" "}
-                <code className="font-mono text-[11.5px] text-slate-700">INBOUND_RECEPTION</code> (431 contra
-                17,496 <code className="font-mono text-[11.5px] text-slate-700">TRANSFER_DELIVERY</code> desde
-                enero). Contar solo la primera daría «recibidas» casi en cero. Esto no es un cero: es un hueco.
-              </p>
-            </div>
-          </div>
+          {r ? <GraficaSemanas semanas={r.semanas} />
+             : <div className="mt-3.5 flex min-h-[190px] items-center justify-center rounded-xl text-sm text-slate-500" style={RAYADO}>
+                 {datos ? "Todavía no hay salidas validadas con avisos de ML en esta vista." : "Leyendo Odoo y los avisos de ML…"}
+               </div>}
+          {r && <ResumenGrafica r={r} />}
           <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3">
             <p className="text-[12.5px] leading-relaxed text-rose-800">
-              <b>Regla de la gráfica:</b> mientras el marketplace sigue recibiendo,{" "}
-              <i>enviadas − recibidas</i> NO es un rechazo — es trabajo en curso. El rechazo
-              se pinta sólo cuando el marketplace lo da como cantidad explícita. La vista separa{" "}
-              <b>en recepción</b> de <b>rechazado</b>.
+              <b>Regla (Brandon, 18-sep):</b> lo que salió de Odoo y <b>10 días después</b> no llegó a FULL cuenta como{" "}
+              <b>no recibido por ML</b>. Antes de eso va en ámbar: <b>en recepción</b>, no es rechazo. ML no publica
+              la cantidad rechazada ni el motivo: es lo enviado que no llegó.
             </p>
           </div>
-          <p className="mt-2.5 text-xs text-slate-400">
-            Tres formas propuestas de esta gráfica, con datos simulados, en la pantalla <b>Variaciones</b>.
-          </p>
+          {r && r.peores.length > 0 && <Peores peores={r.peores} />}
         </Tarjeta>
 
         <Tarjeta>
-          <Ceja>Embudo de piezas · lo que ya se puede medir</Ceja>
+          <Ceja>Embudo de piezas · dónde se pierde la mercancía</Ceja>
           <div className="mt-3.5 flex flex-col gap-2">
             <Escalon titulo="Solicitadas" nota="La lista de Andy no vive en ningún sistema: Andy no aparece creando ni validando salidas en Odoo." />
-            <Escalon titulo="Validadas por Bodega"
-                     nota="La cantidad de Odoo ya trae el recorte: tomarla de ahí pondría la tasa en 100%." />
-            <div className="rounded-[10px] border border-emerald-200 bg-emerald-50 px-3 py-2.5">
-              <div className="flex items-baseline justify-between">
-                <span className="flex items-center gap-2 text-[12.5px] font-bold text-emerald-800">Enviadas <ChipFuente vivo /></span>
-                <span className="font-mono text-[15px] font-extrabold tabular-nums text-emerald-800">
-                  {g ? num(g.piezas_enviadas) : "…"}
-                </span>
-              </div>
-              <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-emerald-100">
-                <div className="h-full rounded-full bg-emerald-600" style={{ width: `${Math.min(100, pctPedido ?? 0)}%` }} />
-              </div>
-              <p className="mt-1 text-[11.5px] text-emerald-700">
-                {pctPedido !== null ? `${pctPedido}% de lo que pedían esas salidas` : "—"} · sólo el paso{" "}
-                <code className="font-mono">outgoing</code>, nunca PICK/PACK
-              </p>
-            </div>
-            <Escalon titulo="Recibidas · rechazadas" nota="Empieza el día que se guarden las llegadas del almacén FULL." />
-            <div className="rounded-[10px] border border-slate-200 bg-white px-3 py-2.5">
-              <div className="flex items-baseline justify-between">
-                <span className="text-[12.5px] font-bold text-slate-700">Vendidas desde FULL</span>
-                <span className="font-mono text-[10px] font-bold uppercase tracking-[.05em] text-emerald-700">existe</span>
-              </div>
-              <p className="mt-1 text-[11.5px] text-slate-500">
-                Ventas y primera venta por SKU ya se leen; el % del envío vendido necesita el enlace al envío.
-              </p>
-            </div>
+            <EscalonDato titulo="Validadas por Bodega" cifra={g ? num(g.piezas_pedidas_hechas) : "…"}
+                         nota="Lo que pide la orden de venta: ya trae el recorte de Bodega. Sin la lista de Andy no se sabe cuánto recortó." />
+            <EscalonDato titulo="Enviadas" cifra={g ? num(g.piezas_enviadas) : "…"} pct={pctPedido}
+                         nota={g
+                           ? `${pctPedido ?? "—"}% de lo validado · Odoo no surtió ${num(g.piezas_no_surtidas ?? 0)} piezas en `
+                             + `${g.salidas_con_faltante ?? 0} salidas (bodega no las tenía al validar)`
+                           : "—"} />
+            {r && r.enviadas_cerradas ? (
+              <EscalonDato titulo="Recibidas por ML" fuente="ML en vivo" tituloFuente={TIT_AVISOS}
+                           cifra={num(r.recibidas_cerradas)} pct={r.tasa_recepcion}
+                           nota={`${r.tasa_recepcion}% de ${num(r.enviadas_cerradas)} en ${r.cerrados} envíos cerrados desde el `
+                             + `${dia(r.desde)} · ML no recibió ${num(r.no_recibidas)}`
+                             + (r.en_proceso ? ` · ${num(r.enviadas_en_proceso - r.recibidas_en_proceso)} en recepción` : "")} />
+            ) : (
+              <Escalon titulo="Recibidas por ML" nota="Todavía no cierra ningún envío con avisos (10 días tras la salida)." />
+            )}
+            {r && r.recibidas ? (
+              <EscalonDato titulo="Vendidas desde FULL" fuente="ML en vivo" tituloFuente={TIT_AVISOS}
+                           cifra={`~${num(r.vendidas)}`} pct={Math.round((r.vendidas / r.recibidas) * 1000) / 10}
+                           nota={`~${Math.round((r.vendidas / r.recibidas) * 100)}% de ${num(r.recibidas)} recibidas · aprox.: ventas FULL `
+                             + "de cada SKU desde que llegó, topadas a lo que llegó (si ya había piezas de antes, una venta pudo salir de ésas)"} />
+            ) : (
+              <Escalon titulo="Vendidas desde FULL" nota="Sin llegadas medidas en esta vista." />
+            )}
           </div>
           <p className="mt-3 text-xs text-slate-400">
-            Dos de los cinco escalones existen. Pintar 0 en los otros tres sería mentir con una cifra que la gente creería.
+            Ojo con las bases: Validadas y Enviadas cuentan toda la historia de Odoo{g ? ` (desde el ${dia(g.desde)})` : ""};
+            Recibidas y Vendidas, sólo las salidas con avisos de ML{r ? ` (desde el ${dia(r.desde)})` : ""}. Solicitadas sigue
+            sin fuente.
           </p>
         </Tarjeta>
       </div>
@@ -199,45 +211,60 @@ export default function Tablero({
             <Dato rotulo="Lo que dicen los datos" cifra={g ? picos(g) : "—"}
                   pie="los dos días con más órdenes y más validaciones" chico />
           </div>
+          <div className="mt-2.5 grid gap-2.5 sm:grid-cols-2">
+            <Dato rotulo="De salida validada a la 1ª llegada a FULL" cifra={dias(r?.salida_a_primera_llegada_dias)}
+                  pie={pieMediana(r?.salida_a_primera_llegada_dias, "envíos",
+                                  "puede ser negativa: ML a veces recibe antes de que bodega valide")}
+                  fuente="ML en vivo" />
+            <Dato rotulo="De salida validada a envío completo" cifra={dias(r?.salida_a_completo_dias)}
+                  pie={pieMediana(r?.salida_a_completo_dias, "envíos completos",
+                                  "hasta la tanda con la que el último SKU alcanzó lo enviado")}
+                  fuente="ML en vivo" />
+          </div>
         </Tarjeta>
 
         <div className="flex flex-col gap-3">
           <Tarjeta>
             <div className="flex items-center justify-between gap-2">
               <Ceja>Agotado en FULL · por cuenta</Ceja>
-              <ChipFuente vivo={false} />
+              <ChipFuente vivo texto="ML en vivo" titulo={TIT_STOCK} />
             </div>
-            <div className="mt-3 flex flex-col gap-3.5">
-              {cuentas.map((c) => (
-                <div key={c.cuenta}>
-                  <div className="flex items-baseline justify-between">
-                    <span className="inline-flex items-center gap-[7px] text-[13px] font-bold text-slate-700">
-                      <span className="h-[9px] w-[9px] rounded-full" style={{ background: PUNTO_CUENTA[c.cuenta] }} />
-                      {c.cuenta}
-                    </span>
-                    <span className="text-xs text-slate-500">
-                      <b className="font-mono text-rose-800">{num(c.enCero)}</b> de {num(c.publicaciones)} en cero
-                    </span>
+            {cuentas.length ? (
+              <div className="mt-3 flex flex-col gap-3.5">
+                {cuentas.map(({ cuenta: c, s }) => (
+                  <div key={c}>
+                    <div className="flex items-baseline justify-between">
+                      <span className="inline-flex items-center gap-[7px] text-[13px] font-bold text-slate-700">
+                        <span className="h-[9px] w-[9px] rounded-full" style={{ background: PUNTO_CUENTA[c] }} />
+                        {c}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        <b className="font-mono text-rose-800">{num(s.en_cero)}</b> de {num(s.publicaciones)} en cero
+                      </span>
+                    </div>
+                    <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                      <div className="h-full bg-rose-600" style={{ width: `${(s.en_cero / Math.max(1, s.publicaciones)) * 100}%` }} />
+                    </div>
+                    <div className="mt-1 text-[11.5px] text-slate-400">
+                      {num(s.piezas)} piezas en {num(s.con_stock)} publicaciones con stock
+                    </div>
                   </div>
-                  <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-slate-100">
-                    <div className="h-full bg-rose-600" style={{ width: `${(c.enCero / c.publicaciones) * 100}%` }} />
-                  </div>
-                  <div className="mt-1 text-[11.5px] text-slate-400">
-                    {num(c.piezas)} piezas en {c.conStock} publicaciones con stock
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-slate-400">{datos ? "Sin lectura del stock: kubera no contestó." : "Leyendo…"}</p>
+            )}
             <p className="mt-3 text-[11.5px] leading-relaxed text-slate-500">
-              Cuando se conecte serán <b>ceros reales</b>: la publicación existe, está marcada FULL y no tiene
-              ni una pieza en el almacén del marketplace.
+              <b>Ceros reales</b>: la publicación existe, está marcada FULL y no tiene ni una pieza en el almacén de
+              Mercado Libre.
             </p>
           </Tarjeta>
 
           {canal === "todos" && (
             <Tarjeta>
               <Ceja>Los otros dos programas</Ceja>
-              <TarjetaFba grupo={datos?.resumen.amazon ?? null} mfn={datos?.excluidas.venta_amazon_mfn ?? null} />
+              <TarjetaFba grupo={datos?.resumen.amazon ?? null} mfn={datos?.excluidas.venta_amazon_mfn ?? null}
+                          fba={datos?.stock?.fba ?? null} />
               <TarjetaWfs grupo={datos?.resumen.walmart ?? null} />
             </Tarjeta>
           )}
@@ -271,8 +298,17 @@ function picos(g: ResumenGrupo): string {
   return `se crean ${top2(g.dias_orden).join(" y ")} · se validan ${top2(g.dias_validacion).join(" y ")}`;
 }
 
-function Kpi({ icono, rotulo, cifra, pie, vivo }: {
-  icono: ReactNode; rotulo: string; cifra: string; pie: string; vivo?: boolean;
+function dias(m: Mediana | undefined): string {
+  return m?.mediana != null ? `${m.mediana} días` : "—";
+}
+
+function pieMediana(m: Mediana | undefined, unidad: string, nota: string): string {
+  if (!m || !m.n) return `sin ${unidad} medidos todavía · ${nota}`;
+  return `mediana · ${m.p90} días en el peor 10% · ${m.n} ${unidad} · ${nota}`;
+}
+
+function Kpi({ icono, rotulo, cifra, pie, vivo, fuente, tituloFuente }: {
+  icono: ReactNode; rotulo: string; cifra: string; pie: string; vivo?: boolean; fuente?: string; tituloFuente?: string;
 }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-card">
@@ -280,10 +316,147 @@ function Kpi({ icono, rotulo, cifra, pie, vivo }: {
         <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">
           {icono} {rotulo}
         </span>
-        <ChipFuente vivo={!!vivo} />
+        <ChipFuente vivo={!!vivo} texto={fuente} titulo={tituloFuente} />
       </div>
       <div className="mt-2 text-[28px] font-extrabold leading-none tracking-tight tabular-nums text-slate-900">{cifra}</div>
       <div className="mt-1 text-xs text-slate-500">{pie}</div>
+    </div>
+  );
+}
+
+/** La tasa de recepción: sólo envíos CERRADOS. Verde ≥97%, ámbar ≥90%, rosa abajo. */
+function KpiTasa({ r, cargando }: { r: ResumenRecepcion | null; cargando: boolean }) {
+  if (!r || r.tasa_recepcion === null) {
+    return <KpiHueco rotulo="Tasa de recepción"
+                     nota={cargando ? "leyendo avisos de ML…" : "todavía no cierra ningún envío (10 días tras la salida)"} />;
+  }
+  const t = r.tasa_recepcion;
+  const tono = t >= 97 ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+    : t >= 90 ? "border-amber-300 bg-amber-50 text-amber-800" : "border-rose-200 bg-rose-50 text-rose-800";
+  return (
+    <div className={`rounded-2xl border p-4 ${tono}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[.06em]">
+          <PackageCheck className="h-3.5 w-3.5" /> Tasa de recepción
+        </span>
+        <ChipFuente vivo texto="ML en vivo" titulo={TIT_AVISOS} />
+      </div>
+      <div className="mt-2 text-[28px] font-extrabold leading-none tracking-tight tabular-nums">{t}%</div>
+      <div className="mt-1 text-xs opacity-85">
+        {num(r.recibidas_cerradas)} de {num(r.enviadas_cerradas)} pzs en {r.cerrados} envíos cerrados · ML no recibió{" "}
+        {num(r.no_recibidas)}
+      </div>
+    </div>
+  );
+}
+
+/** La gráfica obligatoria (forma A1 de Variaciones): barras apiladas por semana, con datos reales. */
+function GraficaSemanas({ semanas }: { semanas: SemanaRecepcion[] }) {
+  const max = Math.max(1, ...semanas.map((s) => s.enviadas));
+  const alto = (v: number) => (v / max) * 150;
+  return (
+    <>
+      <div className="mt-4 flex h-[200px] items-end gap-2.5">
+        {semanas.map((s) => {
+          const noDudosas = s.no_recibidas - s.dudosas;
+          const cerrada = s.en_recepcion === 0 && s.recibidas + s.no_recibidas > 0;
+          const tasa = cerrada ? Math.round((s.recibidas / (s.recibidas + s.no_recibidas)) * 1000) / 10 : null;
+          const titulo = s.envios === 0
+            ? `Semana del ${dia(s.lunes)}: ninguna salida a FULL validada (cero real)`
+            : `Semana del ${dia(s.lunes)} · ${s.envios} envíos · ${num(s.enviadas)} enviadas: ${num(s.recibidas)} recibidas`
+              + (s.no_recibidas ? `, ${num(s.no_recibidas)} no recibidas` : "")
+              + (s.dudosas ? ` (${num(s.dudosas)} podrían ser publicaciones con variantes)` : "")
+              + (s.en_recepcion ? `, ${num(s.en_recepcion)} en recepción` : "");
+          return (
+            <div key={s.lunes} className="flex min-w-0 flex-1 flex-col justify-end" title={titulo}>
+              <div className={`mb-1 text-center font-mono text-[10.5px] font-bold tabular-nums ${
+                tasa === null ? "text-amber-700" : tasa >= 97 ? "text-emerald-700" : tasa >= 90 ? "text-amber-700" : "text-rose-700"}`}>
+                {s.envios === 0 ? "" : tasa !== null ? `${tasa}%` : "en curso"}
+              </div>
+              {s.envios === 0 ? (
+                <div className="h-[3px] rounded bg-slate-200" />
+              ) : (
+                <div className="flex flex-col justify-end overflow-hidden rounded-t-[4px]">
+                  {noDudosas > 0 && <div className="bg-rose-600" style={{ height: Math.max(3, alto(noDudosas)) }} />}
+                  {s.dudosas > 0 && <div style={{ height: Math.max(3, alto(s.dudosas)), background: RAYADO_ROSA }} />}
+                  {s.en_recepcion > 0 && (
+                    <div className="border border-amber-300"
+                         style={{ height: Math.max(3, alto(s.en_recepcion)), background: FONDO_RAYADO_AMBAR }} />
+                  )}
+                  {s.recibidas > 0 && <div className="bg-emerald-600" style={{ height: Math.max(3, alto(s.recibidas)) }} />}
+                </div>
+              )}
+              <div className="mt-1.5 text-center text-[10.5px] font-semibold text-slate-600">{s.semana}</div>
+              <div className="text-center text-[10px] text-slate-400">{dia(s.lunes)}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2.5 flex flex-wrap gap-3 text-[11px] text-slate-500">
+        <Muestra fondo="#059669" texto="recibido por ML" />
+        <Muestra fondo="#e11d48" texto="no recibido (envío cerrado)" />
+        <Muestra fondo={RAYADO_ROSA} texto="no recibido, con avisos sin SKU (variantes)" />
+        <Muestra fondo={FONDO_RAYADO_AMBAR} borde="1px solid #FCD34D" texto="en recepción (aún no cierra)" />
+      </div>
+    </>
+  );
+}
+
+function Muestra({ fondo, borde, texto }: { fondo: string; borde?: string; texto: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="h-2 w-3 rounded-sm" style={{ background: fondo, border: borde }} />
+      {texto}
+    </span>
+  );
+}
+
+function ResumenGrafica({ r }: { r: ResumenRecepcion }) {
+  const enRecepcion = r.enviadas_en_proceso - r.recibidas_en_proceso;
+  const celda = (rotulo: string, cifra: string, pie: string, clase: string) => (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5">
+      <div className="text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400">{rotulo}</div>
+      <div className={`mt-0.5 font-mono text-lg font-extrabold tabular-nums ${clase}`}>{cifra}</div>
+      <div className="text-[11px] text-slate-500">{pie}</div>
+    </div>
+  );
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+      {celda("Enviadas", num(r.enviadas), `${r.envios} envíos desde el ${dia(r.desde)}`, "text-slate-900")}
+      {celda("Recibidas por ML", num(r.recibidas), `${r.skus_completos} de ${r.skus_cerrados} SKUs completos (cerrados)`, "text-emerald-700")}
+      {celda("No recibidas", num(r.no_recibidas),
+             r.no_recibidas_dudosas ? `${num(r.no_recibidas_dudosas)} podrían ser variantes` : `${r.envios_con_faltante} envíos con faltante`,
+             "text-rose-700")}
+      {celda("En recepción", num(enRecepcion), `${r.en_proceso} envíos aún sin cerrar`, "text-amber-700")}
+    </div>
+  );
+}
+
+function Peores({ peores }: { peores: ResumenRecepcion["peores"] }) {
+  return (
+    <div className="mt-3">
+      <div className="text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400">
+        Los envíos cerrados con más piezas que ML no recibió
+      </div>
+      <div className="mt-1.5 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {peores.map((p) => (
+          <div key={`${p.orden}-${p.salida}`} className="px-3 py-2 text-[12.5px]">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="font-mono font-bold text-slate-800">
+                {p.orden}
+                <span className="font-normal text-slate-400"> · {p.salida} · {p.cuenta} · salió {dia(p.validada)}</span>
+              </span>
+              <span className="font-semibold text-rose-700">no recibió {num(p.no_recibidas)} de {num(p.enviadas)}</span>
+            </div>
+            {(p.vieja || p.dudosa) && (
+              <div className="mt-0.5 text-[11px] text-amber-700">
+                {p.vieja ? `Orden del ${dia(p.creada)} validada el ${dia(p.validada)}: revisar si la salida fue física. ` : ""}
+                {p.dudosa ? "Hubo avisos sin SKU (publicaciones con variantes) antes de su cierre: lo no recibido puede estar ahí." : ""}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -300,10 +473,36 @@ function Escalon({ titulo, nota }: { titulo: string; nota: string }) {
   );
 }
 
-function Dato({ rotulo, cifra, pie, chico }: { rotulo: string; cifra: string; pie: string; chico?: boolean }) {
+function EscalonDato({ titulo, cifra, nota, pct, fuente, tituloFuente }: {
+  titulo: string; cifra: string; nota: string; pct?: number | null; fuente?: string; tituloFuente?: string;
+}) {
+  return (
+    <div className="rounded-[10px] border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="flex items-center gap-2 text-[12.5px] font-bold text-emerald-800">
+          {titulo} <ChipFuente vivo texto={fuente} titulo={tituloFuente} />
+        </span>
+        <span className="font-mono text-[15px] font-extrabold tabular-nums text-emerald-800">{cifra}</span>
+      </div>
+      {pct != null && (
+        <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-emerald-100">
+          <div className="h-full rounded-full bg-emerald-600" style={{ width: `${Math.min(100, pct)}%` }} />
+        </div>
+      )}
+      <p className="mt-1 text-[11.5px] text-emerald-700">{nota}</p>
+    </div>
+  );
+}
+
+function Dato({ rotulo, cifra, pie, chico, fuente }: {
+  rotulo: string; cifra: string; pie: string; chico?: boolean; fuente?: string;
+}) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-3.5 py-3">
-      <div className="text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400">{rotulo}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400">{rotulo}</div>
+        {fuente && <ChipFuente vivo texto={fuente} titulo={TIT_AVISOS} />}
+      </div>
       <div className={`mt-1 font-extrabold text-slate-900 ${chico ? "text-sm" : "text-xl tabular-nums"}`}>{cifra}</div>
       <div className="mt-0.5 text-[11.5px] text-slate-500">{pie}</div>
     </div>
@@ -415,7 +614,9 @@ function CapturaKam({ envios, cuenta }: { envios: Envio[]; cuenta: FiltroCuenta 
   );
 }
 
-function TarjetaFba({ grupo, mfn }: { grupo: ResumenGrupo | null; mfn: number | null }) {
+function TarjetaFba({ grupo, mfn, fba }: {
+  grupo: ResumenGrupo | null; mfn: number | null; fba: StockHoy["fba"] | null;
+}) {
   return (
     <div className="mt-3 rounded-xl border border-[#f1e0c0] bg-[#FFF4E0] px-3.5 py-3">
       <div className="flex items-center justify-between">
@@ -430,12 +631,19 @@ function TarjetaFba({ grupo, mfn }: { grupo: ResumenGrupo | null; mfn: number | 
           ? <><b>{num(grupo.piezas_enviadas)}</b> piezas en {grupo.hechas} salidas validadas{grupo.abiertas ? ` · ${grupo.abiertas} abiertas (${num(grupo.piezas_abiertas)} pzs)` : ""}</>
           : "leyendo Odoo…"}
       </p>
-      <div className="mt-2 flex items-center gap-2"><ChipFuente vivo={false} /><span className="text-[10.5px] text-[#7c5a1e]">stock en FBA</span></div>
+      <div className="mt-2 flex items-center gap-2">
+        <ChipFuente vivo texto="Amazon en vivo" titulo="channel.listings de kubera: el sync de Amazon. Sólo lo disponible." />
+        <span className="text-[10.5px] text-[#7c5a1e]">stock en FBA</span>
+      </div>
       <div className="mt-1.5 grid grid-cols-3 gap-2">
-        {([["disponibles", FBA.disponibles], ["reservadas", FBA.reservadas], ["en camino", FBA.enCamino]] as const).map(([r, v]) => (
-          <div key={r}>
-            <div className="font-mono text-[17px] font-extrabold tabular-nums text-[#131A22]">{num(v)}</div>
-            <div className="text-[10.5px] text-[#7c5a1e]">{r}</div>
+        <div>
+          <div className="font-mono text-[17px] font-extrabold tabular-nums text-[#131A22]">{fba ? num(fba.piezas) : "—"}</div>
+          <div className="text-[10.5px] text-[#7c5a1e]">disponibles{fba ? ` · ${fba.con_stock} publicaciones` : ""}</div>
+        </div>
+        {(["reservadas", "en camino"] as const).map((r) => (
+          <div key={r} className="rounded-md px-1.5 py-1" style={RAYADO}>
+            <div className="font-mono text-[10px] font-bold uppercase text-slate-400">sin registro</div>
+            <div className="text-[10.5px] text-slate-500">{r}</div>
           </div>
         ))}
       </div>
@@ -474,8 +682,8 @@ function TarjetaWfs({ grupo }: { grupo: ResumenGrupo | null }) {
  * pintar las cifras de Mercado Libre bajo el chip de Amazon sería mentir con
  * el color. Lo que no tiene fuente va rayado entero.
  */
-function SoloPrograma({ canal, grupo, mfn }: {
-  canal: "amazon" | "walmart"; grupo: ResumenGrupo | null; mfn: number | null;
+function SoloPrograma({ canal, grupo, mfn, fba }: {
+  canal: "amazon" | "walmart"; grupo: ResumenGrupo | null; mfn: number | null; fba: StockHoy["fba"] | null;
 }) {
   const amazon = canal === "amazon";
   return (
@@ -485,8 +693,13 @@ function SoloPrograma({ canal, grupo, mfn }: {
              cifra={grupo ? num(grupo.piezas_enviadas) : "…"}
              pie={grupo ? `piezas en ${grupo.hechas} salidas validadas${grupo.abiertas ? ` · ${grupo.abiertas} abiertas` : ""}` : "leyendo Odoo…"} />
         {amazon ? (
-          <Kpi icono={<Boxes className="h-3.5 w-3.5" />} rotulo="Disponibles en FBA" cifra={num(FBA.disponibles)}
-               pie={`${num(FBA.reservadas)} reservadas · ${num(FBA.enCamino)} en camino`} />
+          fba ? (
+            <Kpi icono={<Boxes className="h-3.5 w-3.5" />} rotulo="Disponibles en FBA" vivo fuente="Amazon en vivo"
+                 tituloFuente="channel.listings de kubera: el sync de Amazon. Sólo lo disponible."
+                 cifra={num(fba.piezas)} pie={`en ${fba.con_stock} publicaciones · reservadas y en camino: sin registro`} />
+          ) : (
+            <KpiHueco rotulo="Disponibles en FBA" nota="kubera no contestó" />
+          )
         ) : (
           <KpiHueco rotulo="Stock en WFS" nota="la API de inventario WFS responde 401" />
         )}
@@ -516,7 +729,7 @@ function SoloPrograma({ canal, grupo, mfn }: {
         </Tarjeta>
         <Tarjeta>
           <Ceja>Programa</Ceja>
-          {amazon ? <TarjetaFba grupo={grupo} mfn={mfn} /> : <TarjetaWfs grupo={grupo} />}
+          {amazon ? <TarjetaFba grupo={grupo} mfn={mfn} fba={fba} /> : <TarjetaWfs grupo={grupo} />}
         </Tarjeta>
       </div>
     </>

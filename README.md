@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.546.0 — FULLFILMENT: el Tablero con datos reales (recepción por semana, embudo completo, stock de hoy)
+
+Brandon, con los avisos de FULL ya medidos: *"ya con estos datos puedes llenar de datos reales el tablero; una
+vez que lo llenes lo reviso y te indico qué puntos son innecesarios"*. Todo lo que tiene fuente se llenó; cada
+cifra lleva su chip — **Odoo en vivo**, **ML en vivo** (avisos de FULL y `channel.listings`) o **Amazon en
+vivo** — y lo que sigue sin fuente va rayado.
+
+**Lo que dejó de ser diseño** (cifras del 18-sep):
+- **Hoy en FULL**: 17,030 piezas (Kubera 11,819 · San Corpe 5,211) en 479 publicaciones con stock. Sale de
+  `channel.listings`, que cuadra con la API de ML (1,010 contra 996 publicaciones FULL en Kubera, 867 contra
+  866 en San Corpe).
+- **Agotado en FULL**: 75% (1,400 de 1,879 publicaciones FULL en cero), total y por cuenta.
+- **Tasa de recepción**: 89.2% — 7,066 de 7,923 piezas en 14 envíos cerrados; ML no recibió 857 (194 con
+  avisos sin SKU de publicaciones con variantes, que pueden no ser rechazo). Verde ≥97%, ámbar ≥90%, rosa abajo.
+- **La gráfica obligatoria** (forma A1 de Variaciones): barras apiladas por semana de la salida validada —
+  recibido, no recibido, no recibido «con variantes» (rayado) y en recepción (ámbar) —, con la tasa encima de
+  cada semana cerrada (S34 99.9%, S35 92.3%, S36 83.8%, S37 100%, S38 en curso). Una semana sin salidas es un
+  cero real, no se salta. Debajo, los envíos cerrados con más piezas no recibidas, marcando las órdenes
+  viejas (S26840: orden del 23-abr validada el 4-sep, «revisar si la salida fue física») y los que tuvieron
+  avisos sin SKU antes de su cierre.
+- **El embudo**, cuatro de cinco escalones reales: Validadas por Bodega (lo que pide la orden: 121,316) →
+  Enviadas (118,797, 97.9%; **Odoo no surtió 2,528 piezas en 44 salidas**) → Recibidas por ML (89.2% de los
+  envíos cerrados) → Vendidas desde FULL (~33%, aprox.: ventas FULL de cada SKU desde que llegó, topadas a lo
+  que llegó). Solicitadas (la lista de Andy) sigue sin fuente. La nota dice que las bases no son las mismas:
+  Odoo desde el 13-ene, los avisos desde el 19-ago.
+- **Días**: de salida validada a la 1ª llegada a FULL, **1.2 días** (mediana; puede ser negativa porque ML
+  a veces recibe antes de que bodega valide) y a envío completo **4.2 días** — medido con la tanda con la
+  que el último SKU alcanzó lo enviado, no con la última tanda (los «+N» de ML llegan días después y lo
+  inflaban a 12.7).
+- **FBA**: 1,315 piezas disponibles en 22 publicaciones. Reservadas y en camino, sin registro. Sin filtro de
+  fecha: el sync sólo toca la fila cuando el dato cambia, así que un `updated_at` viejo no es un dato viejo.
+
+**Backend.** `fulfillment_etapas.resumir_recepcion()` (función pura, con pruebas) arma por grupo
+(`meli`, `meli:Kubera`, `meli:San Corpe`) lo cerrado contra lo que está en recepción, las semanas seguidas,
+los tiempos y los peores; `stock_actual()` lee el stock de hoy. Cada renglón gana `completo_en` y
+`vendidas`; el resumen de Odoo gana `piezas_no_surtidas` y `salidas_con_faltante`. Todo viaja en
+`GET /api/fulfillment/envios` (`recepcion`, `stock`).
+
+46 pruebas de backend en verde (6 nuevas del Tablero: cerrado contra en proceso, semanas seguidas con
+ceros, lo no validado fuera, momento de completo, vendidas topadas), `tsc` limpio y `next build` en verde.
+
 ### v0.545.2 — FULLFILMENT: cada aviso de FULL cuenta UNA vez (ML los reenvía y la bitácora los repetía)
 
 Brandon preguntó por el webhook del evento de S38279 (EST-0078-TRANS-GRI, que el panel pintaba «26 de 25,

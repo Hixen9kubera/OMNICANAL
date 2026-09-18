@@ -138,8 +138,9 @@ export default function FulfillmentPage() {
           <span>
             <b>En vivo</b>: los envíos y su detalle salen de Odoo; la <b>llegada a FULL</b> sale de los avisos de
             FULL de Mercado Libre (con lo que no recibió) y la <b>primera venta</b> de kubera (ML no publica los envíos
-            a Full por API, así que no hay declaradas ni motivos). <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): stock en FULL,
-            agotado, stock FBA, planeación, ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
+            a Full por API, así que no hay declaradas ni motivos). El <b>Tablero</b> ya es todo real: stock en FULL y FBA, agotado,
+            recepción por semana y embudo. <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): planeación,
+            ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
           </span>
         </div>
 

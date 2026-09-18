@@ -131,13 +131,44 @@ _SQL_ACTIVACIONES = """
      group by 1, 2
 """
 
-# Primera venta FULL por SKU y cuenta (la vista ya une el histórico con lo vivo).
+# Ventas FULL por SKU y cuenta, por día (la vista ya une el histórico con lo
+# vivo): la 1ª venta y cuántas piezas se vendieron desde que llegó el envío.
 _SQL_VENTAS = """
     select sku::text sku, cuenta,
-           array_agg(date order by date) dias
+           array_agg(date order by date) dias,
+           array_agg(units_sold order by date) unidades
       from channel.sales_daily_completa
      where is_full and units_sold > 0
      group by 1, 2
+"""
+
+# El stock que HOY tienen las publicaciones FULL de cada cuenta. Cuadra con ML:
+# medido el 18-sep, 1,010 publicaciones FULL de Kubera contra 996 que da su API
+# y 867 de San Corpe contra 866.
+_SQL_STOCK_FULL = """
+    select a.legacy_code cuenta,
+           count(*) publicaciones,
+           count(*) filter (where coalesce(l.stock_full, 0) = 0) en_cero,
+           count(*) filter (where coalesce(l.stock_full, 0) > 0) con_stock,
+           coalesce(sum(l.stock_full), 0)::int piezas,
+           max(l.updated_at) al
+      from channel.listings l join core.accounts a on a.id = l.account_id
+     where a.legacy_code in ('BEKURA', 'SANCORFASHION')
+       and l.canal = 'mercado_libre' and l.is_fulfillment
+     group by 1
+"""
+
+# FBA: sólo lo DISPONIBLE (lo reservado y lo que va en camino no se guarda).
+# Sin filtro de fecha: el sync sólo toca la fila cuando el dato CAMBIA, así que
+# un `updated_at` viejo no es un dato viejo (medido: 12 cambios de stock en 7
+# días). Fuera las borradas y cerradas.
+_SQL_STOCK_FBA = """
+    select count(*) filter (where coalesce(l.stock_fba, 0) > 0) con_stock,
+           coalesce(sum(l.stock_fba), 0)::int piezas,
+           max(l.updated_at) al
+      from channel.listings l join core.accounts a on a.id = l.account_id
+     where a.legacy_code = 'AMAZON'
+       and coalesce(l.status, '') <> 'DELETED' and coalesce(l.situacion, '') <> 'closed'
 """
 
 
@@ -151,9 +182,12 @@ def _leer() -> dict[str, Any] | None:
               for f in sdb.fetch_all(_SQL_AVISOS, (DESDE_AVISOS,))}
     llegadas = {(f["sku"], f["acc"]): (f["fechas"], f["deltas"]) for f in sdb.fetch_all(_SQL_LLEGADAS)}
     activaciones = {(f["sku"], f["acc"]): f["fechas"] for f in sdb.fetch_all(_SQL_ACTIVACIONES)}
-    ventas = {(f["sku"], f["cuenta"]): f["dias"] for f in sdb.fetch_all(_SQL_VENTAS)}
+    ventas, unidades = {}, {}
+    for f in sdb.fetch_all(_SQL_VENTAS):
+        ventas[(f["sku"], f["cuenta"])] = f["dias"]
+        unidades[(f["sku"], f["cuenta"])] = (f["dias"], f["unidades"])
     return {"cuentas": por_codigo, "avisos": avisos, "llegadas": llegadas,
-            "activaciones": activaciones, "ventas": ventas}
+            "activaciones": activaciones, "ventas": ventas, "ventas_unidades": unidades}
 
 
 # La cuenta del envío (como la ve el panel) → el código con el que kubera guarda
@@ -184,8 +218,11 @@ def _inicio(e: dict[str, Any]) -> datetime | None:
     return creada
 
 
+_CDMX = timezone(timedelta(hours=-6))
+
+
 def _venta_desde(dias: list[Any], desde: datetime) -> Any | None:
-    i = bisect.bisect_left(dias, desde.astimezone(timezone(timedelta(hours=-6))).date())
+    i = bisect.bisect_left(dias, desde.astimezone(_CDMX).date())
     return dias[i] if i < len(dias) else None
 
 
@@ -242,8 +279,27 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
                 if d:
                     vendio.append(d)
                     r["primera_venta"] = d.isoformat()
+                # VENDIDAS DESDE QUE LLEGÓ: ventas FULL del SKU desde la 1ª tanda
+                # hasta la siguiente orden del mismo SKU (lo de después es de ésa),
+                # topadas a lo que llegó. Es APROXIMADO: si ya había piezas de antes
+                # en FULL, una venta pudo salir de ésas.
+                dias_v, unid_v = datos.get("ventas_unidades", {}).get((r["sku"], codigo), ([], []))
+                hasta_v = min(sig + [ahora]).astimezone(_CDMX).date()
+                j0 = bisect.bisect_left(dias_v, fechas[i0].astimezone(_CDMX).date())
+                j1 = bisect.bisect_left(dias_v, hasta_v)
+                tope = min(llegadas, int((r.get("enviadas") if hecha else r["pedidas"]) or llegadas))
+                r["vendidas"] = min(int(sum(unid_v[j0:j1])), tope)
 
             enviadas = r.get("enviadas")
+            # Cuándo quedó COMPLETO: la tanda con la que la suma alcanzó lo enviado.
+            # (La última tanda no sirve: los «+N» de ML llegan días después.)
+            if hecha and enviadas and llegadas >= enviadas:
+                acumulado = 0
+                for t, n in zip(fechas[i0:i1], piezas[i0:i1]):
+                    acumulado += n
+                    if acumulado >= enviadas:
+                        r["completo_en"] = t.isoformat()
+                        break
             if not hecha:
                 # Sin salida validada no se juzga nada (y ML a veces recibe antes).
                 r["estado_llegada"] = "llegando" if llegadas else None
@@ -278,6 +334,7 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
             "completos": sum(1 for r in esperados if r.get("estado_llegada") == "completo"),
             "activos": len(primeras), "vendieron": len(vendio),
             "piezas_enviadas": piezas_env, "piezas_llegadas": piezas_lleg,
+            "piezas_vendidas": sum(int(r.get("vendidas") or 0) for r in esperados),
             "cerrado": cerrado,
             "rechazadas": (sum(int(r.get("rechazadas") or 0) for r in e["lineas"]) if cerrado else None),
             "cierre": ((salida + timedelta(days=DIAS_CIERRE)).isoformat() if hecha and salida else None),
@@ -352,6 +409,144 @@ def aplicar(envios: list[dict[str, Any]], datos: dict[str, Any] | None,
     for e in envios:
         if e["canal"] == "amazon":
             _aplicar_sync(e, datos, "AMAZON")
+
+
+# ── El Tablero: recepción por cuenta y semana, y el stock de hoy ─────────────
+
+def _mediana_p90(xs: list[float]) -> dict[str, Any]:
+    xs = sorted(xs)
+    if not xs:
+        return {"n": 0, "mediana": None, "p90": None}
+    mitad = len(xs) // 2
+    m = xs[mitad] if len(xs) % 2 else (xs[mitad - 1] + xs[mitad]) / 2
+    return {"n": len(xs), "mediana": round(m, 1), "p90": round(xs[min(len(xs) - 1, int(len(xs) * 0.9))], 1)}
+
+
+def _semana_vacia(anio_semana: tuple[int, int], lunes: str) -> dict[str, Any]:
+    return {"semana": f"S{anio_semana[1]}", "lunes": lunes, "envios": 0, "enviadas": 0,
+            "recibidas": 0, "no_recibidas": 0, "dudosas": 0, "en_recepcion": 0}
+
+
+def resumir_recepcion(envios: list[dict[str, Any]], ahora: datetime | None = None) -> dict[str, Any]:
+    """
+    Lo que el Tablero pinta de la llegada a FULL, por grupo ("meli", "meli:Kubera",
+    "meli:San Corpe"). Sólo salidas VALIDADAS con avisos (cuenta conocida, desde
+    el 12-ago). Función pura: se prueba sin kubera.
+
+    Un envío CERRADO (10 días tras la salida) aporta recibidas y NO recibidas; uno
+    abierto aporta recibidas y «en recepción»: lo que falta todavía no es rechazo.
+    """
+    ahora = ahora or datetime.now(timezone.utc)
+    grupos: dict[str, dict[str, Any]] = {}
+
+    def grupo(clave: str) -> dict[str, Any]:
+        return grupos.setdefault(clave, {
+            "envios": 0, "cerrados": 0, "en_proceso": 0,
+            "enviadas_cerradas": 0, "recibidas_cerradas": 0,
+            "no_recibidas": 0, "no_recibidas_dudosas": 0, "envios_con_faltante": 0,
+            "skus_cerrados": 0, "skus_completos": 0,
+            "enviadas_en_proceso": 0, "recibidas_en_proceso": 0,
+            "enviadas": 0, "recibidas": 0, "vendidas": 0,
+            "desde": None, "hasta": None,
+            "_primera": [], "_completo": [], "_semanas": {}, "_peores": []})
+
+    for e in envios:
+        c = e.get("cobertura") or {}
+        salida = _ts(e["etapas"][1])
+        if (e["canal"] != "meli" or c.get("fuente") != "avisos"
+                or e.get("estado_odoo") != "done" or not salida):
+            continue
+        env = int(c.get("piezas_enviadas") or 0)
+        rec = int(c.get("piezas_llegadas") or 0)
+        cerrado = bool(c.get("cerrado"))
+        no_rec = int(c.get("rechazadas") or 0) if cerrado else 0
+        dudosa = bool(c.get("sin_sku"))
+        local = salida.astimezone(_CDMX)
+        clave_semana = local.isocalendar()[:2]
+        lunes = (local - timedelta(days=local.weekday())).date().isoformat()
+        primera = _ts(e["etapas"][2])
+        completos_en = [datetime.fromisoformat(r["completo_en"]) for r in e["lineas"] if r.get("completo_en")]
+        creada = _ts(e["etapas"][0])
+        # Una orden que tardó más de 30 días en validarse (S26840: de abril a
+        # septiembre) no es un envío normal: se marca para que se revise a mano.
+        vieja = bool(creada and (salida - creada).days > 30)
+        for clave in ("meli", f"meli:{e.get('cuenta')}"):
+            g = grupo(clave)
+            g["envios"] += 1
+            g["enviadas"] += env
+            g["recibidas"] += rec
+            g["vendidas"] += int(c.get("piezas_vendidas") or 0)
+            g["desde"] = min(g["desde"] or salida.isoformat(), salida.isoformat())
+            g["hasta"] = max(g["hasta"] or salida.isoformat(), salida.isoformat())
+            if cerrado:
+                g["cerrados"] += 1
+                g["enviadas_cerradas"] += env
+                g["recibidas_cerradas"] += rec
+                g["no_recibidas"] += no_rec
+                g["skus_cerrados"] += int(c.get("skus") or 0)
+                g["skus_completos"] += int(c.get("completos") or 0)
+                if no_rec:
+                    g["envios_con_faltante"] += 1
+                    g["_peores"].append({"orden": e.get("orden"), "salida": e.get("salida"),
+                                         "cuenta": e.get("cuenta"), "enviadas": env,
+                                         "no_recibidas": no_rec, "dudosa": dudosa, "vieja": vieja,
+                                         "creada": creada.isoformat() if creada else None,
+                                         "validada": salida.isoformat()})
+                    if dudosa:
+                        g["no_recibidas_dudosas"] += no_rec
+            else:
+                g["en_proceso"] += 1
+                g["enviadas_en_proceso"] += env
+                g["recibidas_en_proceso"] += rec
+            if primera:
+                g["_primera"].append((primera - salida).total_seconds() / 86400)
+            if completos_en and c.get("skus") and c.get("completos") == c.get("skus"):
+                g["_completo"].append((max(completos_en) - salida).total_seconds() / 86400)
+            s = g["_semanas"].setdefault(clave_semana, _semana_vacia(clave_semana, lunes))
+            s["envios"] += 1
+            s["enviadas"] += env
+            s["recibidas"] += rec
+            if cerrado:
+                s["no_recibidas"] += no_rec
+                s["dudosas"] += no_rec if dudosa else 0
+            else:
+                s["en_recepcion"] += max(0, env - rec)
+
+    esta = ahora.astimezone(_CDMX).isocalendar()[:2]
+    for g in grupos.values():
+        g["tasa_recepcion"] = (round(g["recibidas_cerradas"] / g["enviadas_cerradas"] * 100, 1)
+                               if g["enviadas_cerradas"] else None)
+        g["salida_a_primera_llegada_dias"] = _mediana_p90(g.pop("_primera"))
+        g["salida_a_completo_dias"] = _mediana_p90(g.pop("_completo"))
+        g["peores"] = sorted(g.pop("_peores"), key=lambda p: -p["no_recibidas"])[:6]
+        semanas = g.pop("_semanas")
+        # Semanas SEGUIDAS hasta la actual: una semana sin salidas es un cero real.
+        serie = []
+        if semanas:
+            cursor = datetime.fromisoformat(min(s["lunes"] for s in semanas.values()))
+            while cursor.isocalendar()[:2] <= esta:
+                k = cursor.isocalendar()[:2]
+                serie.append(semanas.get(k) or _semana_vacia(k, cursor.date().isoformat()))
+                cursor += timedelta(days=7)
+        g["semanas"] = serie
+    return grupos
+
+
+def stock_actual() -> dict[str, Any] | None:
+    """El stock de HOY en FULL (por cuenta) y en FBA. BLOQUEANTE. Nunca revienta."""
+    try:
+        if not sdb.disponible():
+            return None
+        nombre = {"BEKURA": "Kubera", "SANCORFASHION": "San Corpe"}
+        full = {nombre[f["cuenta"]]: {**f, "al": f["al"].isoformat() if f.get("al") else None}
+                for f in sdb.fetch_all(_SQL_STOCK_FULL)}
+        fba = sdb.fetch_one(_SQL_STOCK_FBA)
+        return {"full": full,
+                "fba": {**fba, "al": fba["al"].isoformat() if fba.get("al") else None} if fba else None,
+                "fuente": "channel.listings (sync de canales + avisos de ML)"}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("stock de FULL/FBA: kubera no contestó (%s)", exc)
+        return None
 
 
 def enriquecer(envios: list[dict[str, Any]]) -> dict[str, Any]:

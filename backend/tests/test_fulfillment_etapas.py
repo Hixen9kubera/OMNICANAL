@@ -76,6 +76,14 @@ class LlegadaPorAvisos(unittest.TestCase):
         self.assertEqual((c["skus"], c["llegaron"], c["completos"], c["rechazadas"]), (2, 1, 1, 10))
         self.assertEqual((c["piezas_enviadas"], c["piezas_llegadas"], c["cerrado"]), (20, 10, True))
 
+    def test_completo_es_la_tanda_que_alcanza_lo_enviado(self):
+        e = _envio(skus=("A",))
+        t1, t2, t3 = (SALIDA + timedelta(days=d) for d in (1, 2, 6))
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((t1, 4), (t2, 6), (t3, 2))}), ahora=CERRADO)
+        self.assertEqual(e["lineas"][0]["completo_en"], t2.isoformat(), "el +2 del día 6 no alarga el envío")
+        r = fe.resumir_recepcion([e], ahora=CERRADO)
+        self.assertEqual(r["meli"]["salida_a_completo_dias"], {"n": 1, "mediana": 2.0, "p90": 2.0})
+
     def test_antes_del_cierre_no_hay_rechazo(self):
         e = _envio()
         fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 3))}),
@@ -207,6 +215,61 @@ class LlegadaPorAvisos(unittest.TestCase):
         e = _envio()
         fe.aplicar([e], None)
         self.assertEqual(e["etapas"][2:], [None, None, None])
+
+
+class Tablero(unittest.TestCase):
+    """`resumir_recepcion`: lo que pinta el Tablero. Cerrado aporta recibidas y NO
+    recibidas; abierto aporta recibidas y «en recepción» (todavía no es rechazo)."""
+
+    def setUp(self):
+        self.e1 = _envio(skus=("A", "B"))                           # cierra: A llega, B no
+        salida2 = CERRADO - timedelta(days=2)
+        self.e2 = _envio(skus=("C",), orden=salida2 - timedelta(days=1), validada=salida2)   # abierto
+        avisos = {("A", "BEKURA"): _aviso((SALIDA + timedelta(days=2), 10)),
+                  ("C", "BEKURA"): _aviso((salida2 + timedelta(days=1), 4))}
+        fe.aplicar([self.e1, self.e2], _datos(avisos=avisos), ahora=CERRADO)
+        self.r = fe.resumir_recepcion([self.e1, self.e2], ahora=CERRADO)
+
+    def test_cerrado_y_en_proceso_por_separado(self):
+        g = self.r["meli"]
+        self.assertEqual((g["envios"], g["cerrados"], g["en_proceso"]), (2, 1, 1))
+        self.assertEqual((g["enviadas_cerradas"], g["recibidas_cerradas"], g["no_recibidas"]), (20, 10, 10))
+        self.assertEqual(g["tasa_recepcion"], 50.0)
+        self.assertEqual((g["enviadas_en_proceso"], g["recibidas_en_proceso"]), (10, 4))
+        self.assertEqual(self.r["meli:Kubera"]["no_recibidas"], 10)
+        self.assertEqual(g["peores"][0]["no_recibidas"], 10)
+
+    def test_semanas_seguidas_con_ceros_reales(self):
+        serie = self.r["meli"]["semanas"]
+        self.assertEqual([s["semana"] for s in serie], ["S34", "S35", "S36"])
+        self.assertEqual(serie[1]["envios"], 0, "una semana sin salidas es un cero real, no un hueco")
+        self.assertEqual((serie[0]["recibidas"], serie[0]["no_recibidas"]), (10, 10))
+        self.assertEqual((serie[2]["en_recepcion"], serie[2]["no_recibidas"]), (6, 0),
+                         "lo que falta de un envío abierto es recepción, no rechazo")
+
+    def test_lo_no_validado_o_sin_avisos_no_entra(self):
+        abierta = _envio(skus=("Z",), validada=None)
+        fe.aplicar([abierta], _datos(), ahora=CERRADO)
+        self.assertEqual(fe.resumir_recepcion([abierta], ahora=CERRADO), {})
+
+
+class VendidasDesdeQueLlego(unittest.TestCase):
+    def _con_ventas(self, dias, unidades, llegan=10):
+        e = _envio(skus=("A",))
+        d = _datos(avisos={("A", "BEKURA"): _aviso((SALIDA + timedelta(days=2), llegan))})
+        d["ventas_unidades"] = {("A", "BEKURA"): (dias, unidades)}
+        fe.aplicar([e], d, ahora=CERRADO)
+        return e
+
+    def test_cuenta_desde_la_llegada_y_se_topa_a_lo_que_llego(self):
+        # llega el 24-ago (mediodía CDMX): la venta del 23 no cuenta; 7 + 9 = 16, topado a 10
+        e = self._con_ventas([date(2026, 8, 23), date(2026, 8, 25), date(2026, 8, 26)], [5, 7, 9])
+        self.assertEqual(e["lineas"][0]["vendidas"], 10)
+        self.assertEqual(e["cobertura"]["piezas_vendidas"], 10)
+
+    def test_menos_ventas_que_piezas(self):
+        e = self._con_ventas([date(2026, 8, 25)], [3])
+        self.assertEqual(e["lineas"][0]["vendidas"], 3)
 
 
 class AmazonConElSync(unittest.TestCase):

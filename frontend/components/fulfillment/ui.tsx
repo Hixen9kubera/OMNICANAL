@@ -101,11 +101,11 @@ export function ChipSinRegistro({ titulo, texto = "sin registro" }: { titulo?: s
  * De dónde sale la cifra de esa tarjeta. Mientras la pestaña se construye por
  * etapas conviven datos en vivo y datos del mockup: cada tarjeta dice cuál es.
  */
-export function ChipFuente({ vivo, titulo }: { vivo: boolean; titulo?: string }) {
+export function ChipFuente({ vivo, titulo, texto }: { vivo: boolean; titulo?: string; texto?: string }) {
   return vivo ? (
     <span title={titulo ?? "Se lee de Odoo en cada carga (caché de 2 min)."}
           className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-[.05em] text-emerald-700">
-      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> Odoo en vivo
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {texto ?? "Odoo en vivo"}
     </span>
   ) : (
     <span title={titulo ?? "Cifra del mockup de diseño (14-sep-2026): todavía no se lee de ningún sistema."}

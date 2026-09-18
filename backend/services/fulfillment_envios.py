@@ -300,6 +300,8 @@ def resumir(envios: list[dict[str, Any]]) -> dict[str, Any]:
             "salidas": 0, "hechas": 0, "abiertas": 0, "piezas_enviadas": 0,
             # Lo que pedían las salidas YA hechas: contra esto se mide cuánto salió.
             "piezas_pedidas_hechas": 0, "piezas_abiertas": 0, "sin_numero": 0, "desde": None, "hasta": None,
+            # Lo que Odoo canceló al validar (bodega no lo tenía): el segundo recorte.
+            "piezas_no_surtidas": 0, "salidas_con_faltante": 0,
             "dias_orden": [0] * 7, "dias_validacion": [0] * 7, "_tramos": []})
 
     for e in envios:
@@ -315,6 +317,9 @@ def resumir(envios: list[dict[str, Any]]) -> dict[str, Any]:
                 g["hechas"] += 1
                 g["piezas_enviadas"] += e["piezas"] or 0
                 g["piezas_pedidas_hechas"] += e["pedidas"] or 0
+                g["piezas_no_surtidas"] += e.get("faltante_odoo") or 0
+                if e.get("faltante_odoo"):
+                    g["salidas_con_faltante"] += 1
             else:
                 g["abiertas"] += 1
                 g["piezas_abiertas"] += e["pedidas"] or 0
@@ -347,6 +352,9 @@ def leer() -> dict[str, Any]:
     # Las tres etapas que kubera sí puede llenar (recibido observado, activo y
     # 1ª venta). Si kubera no contesta, quedan en `null` y la pestaña lo dice.
     datos["etapas_kubera"] = fulfillment_etapas.enriquecer(datos["envios"])
+    # Lo que pinta el Tablero: la recepción por cuenta y semana, y el stock de hoy.
+    datos["recepcion"] = fulfillment_etapas.resumir_recepcion(datos["envios"])
+    datos["stock"] = fulfillment_etapas.stock_actual()
     datos["generado"] = datetime.now(timezone.utc).isoformat()
     datos["fuente"] = ("Odoo: stock.picking de salida (socio FULL/AMAZON/WFS/MERCADO LIBRE) "
                        "+ sale.order (quién la creó y su referencia) + stock.move (con los "

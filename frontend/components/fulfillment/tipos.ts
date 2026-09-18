@@ -182,6 +182,61 @@ export interface ResumenGrupo {
   dias_orden: number[];
   dias_validacion: number[];
   orden_a_validacion_dias: { n: number; mediana: number | null; p90: number | null };
+  /** Lo que Odoo canceló al validar la salida (bodega no lo tenía). */
+  piezas_no_surtidas?: number;
+  salidas_con_faltante?: number;
+}
+
+export interface Mediana { n: number; mediana: number | null; p90: number | null }
+
+/** Una semana de la gráfica principal (semana ISO de la salida validada, hora de CDMX). */
+export interface SemanaRecepcion {
+  semana: string;
+  lunes: string;
+  envios: number;
+  enviadas: number;
+  recibidas: number;
+  /** Envíos CERRADOS (10 días): lo enviado que no llegó. */
+  no_recibidas: number;
+  /** De ésas, las de envíos con avisos sin SKU (publicaciones con variantes). */
+  dudosas: number;
+  /** Envíos abiertos: lo que falta todavía NO es rechazo. */
+  en_recepcion: number;
+}
+
+/**
+ * `recepcion` de `GET /api/fulfillment/envios`: la llegada a FULL (avisos de ML)
+ * por grupo ("meli", "meli:Kubera", "meli:San Corpe"). Sólo salidas validadas
+ * con cuenta conocida desde el 12-ago.
+ */
+export interface ResumenRecepcion {
+  envios: number; cerrados: number; en_proceso: number;
+  enviadas_cerradas: number; recibidas_cerradas: number;
+  no_recibidas: number; no_recibidas_dudosas: number; envios_con_faltante: number;
+  skus_cerrados: number; skus_completos: number;
+  enviadas_en_proceso: number; recibidas_en_proceso: number;
+  enviadas: number; recibidas: number; vendidas: number;
+  desde: string | null; hasta: string | null;
+  tasa_recepcion: number | null;
+  salida_a_primera_llegada_dias: Mediana;
+  salida_a_completo_dias: Mediana;
+  peores: {
+    orden: string | null; salida: string | null; cuenta: Cuenta | null;
+    enviadas: number; no_recibidas: number; dudosa: boolean; vieja: boolean;
+    creada: string | null; validada: string;
+  }[];
+  semanas: SemanaRecepcion[];
+}
+
+export interface StockCuenta {
+  publicaciones: number; en_cero: number; con_stock: number; piezas: number; al: string | null;
+}
+
+/** El stock de HOY: FULL por cuenta y FBA (sólo disponible). null = kubera no contestó. */
+export interface StockHoy {
+  full: Partial<Record<Cuenta, StockCuenta>>;
+  fba: { con_stock: number; piezas: number; al: string | null } | null;
+  fuente: string;
 }
 
 export interface RespuestaEnvios {
@@ -189,6 +244,8 @@ export interface RespuestaEnvios {
   /** Llaves: "meli", "meli:Kubera", "meli:San Corpe", "meli:sin_asignar", "amazon", "walmart". */
   resumen: Record<string, ResumenGrupo>;
   excluidas: { venta_amazon_mfn: number; otro: number };
+  recepcion?: Record<string, ResumenRecepcion>;
+  stock?: StockHoy | null;
   /** Si kubera contestó, y con qué ventanas se buscaron llegada y activación. */
   etapas_kubera?: {
     kubera: boolean; motivo?: string; desde_historia?: string; desde_avisos?: string;
