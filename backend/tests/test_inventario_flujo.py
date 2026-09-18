@@ -134,7 +134,11 @@ class OdooDeMentira:
             "image_1920": _IGNORADO,
             "incoming_qty": 0.0, "outgoing_qty": 0.0, "container_numbers": False,
             "sale_ok": True, "create_date": False, "write_date": False,
-            "categ_id": False, "units_per_master_box": False, "cbm_master_box": False,
+            "categ_id": False,
+            # Odoo devuelve `False` —no 0— cuando el campo numérico está vacío;
+            # es justo la trampa que `catalogo_productos` tiene que traducir.
+            "units_per_master_box": p.get("caja") or False,
+            "cbm_master_box": False,
         }
         return valores[campo]
 
@@ -407,15 +411,62 @@ class ParidadFotoTabla(_ConParches):
         hojas_foto = [t[0] for t in odoo._DOMINIO_FOTO if isinstance(t, list)]
         self.assertEqual(hojas_foto, ["image_variant_1920", "product_tmpl_id.image_1920"])
 
+    def test_el_empaque_viaja_en_la_lectura_que_ya_se_hacia(self):
+        """`units_per_master_box` se pide en el `search_read` del catálogo que
+        ya trae las ~27 mil filas. Una lectura de catálogo completo más contra
+        el Odoo de producción son 3.9–6.8 s por armado, y este dato vale menos
+        que eso."""
+        self._crudo_foto()
+        catalogos = [c for c in self.falso.llamadas
+                     if c[0] == "product.product" and c[1] == "search_read"
+                     and not c[2][0]]        # dominio vacío = catálogo entero
+        self.assertEqual(len(catalogos), 1, "una sola lectura de catálogo")
+        self.assertIn("units_per_master_box", catalogos[0][3]["fields"])
+
+    def test_el_false_de_odoo_no_se_vuelve_un_cero_creible(self):
+        """Odoo devuelve `False` cuando el campo numérico está vacío. Traducirlo
+        a `0.0` daría «empaque declarado de cero piezas», que es un dato donde
+        no lo hay; `catalogo_productos` lo deja en `None` como la tabla."""
+        falso = OdooDeMentira(
+            [dict(id=1, code="CON-CAJA", tmpl=1, caja=24),
+             dict(id=2, code="SIN-CAJA", tmpl=2)], set(), [], {})
+        with mock.patch.object(odoo, "_uid_con_tiempo", return_value=1), \
+                mock.patch.object(odoo, "_proxy_con_tiempo", return_value=falso):
+            catalogo = odoo.catalogo_productos()
+        por_codigo = {p["default_code"]: p["piezas_por_caja"] for p in catalogo}
+        self.assertEqual(por_codigo, {"CON-CAJA": 24.0, "SIN-CAJA": None})
+        self.assertEqual(invf.codigos_con_empaque(catalogo), {"CON-CAJA"})
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Fixtures pequeños para el resto
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _odoo_crudo(n: int = 100, con_quants: int | None = None) -> dict:
+#: Los índices con EMPAQUE MASTER declarado en Odoo (`units_per_master_box > 0`),
+#: la segunda mitad de Recibido desde el 18-sep. Cubre los tres casos de
+#: `fuente` porque `_kubera_filas` marca `recibido` hasta el 60:
+#:   · 56–60 → en las DOS  (`fuente: "ambas"`)
+#:   · 73–77 → solo Odoo   (`fuente: "odoo"`)
+#:   · 1–55  → solo packing list (`fuente: "packing_list"`)
+#: Así la unión suma 5 sobre los 61 de antes: 66.
+#:
+#: Los «solo Odoo» van en el 73–77 y no pegados al 61 a propósito: 51–70 están
+#: En FULL y 68–72 En FBA, y la etapa del sello la ganan las bodegas, así que
+#: ahí no se vería que el empaque por sí solo mueve el SKU a Recibido.
+EMPAQUE_ODOO = frozenset(range(56, 61)) | frozenset(range(73, 78))
+
+
+def _odoo_crudo(n: int = 100, con_quants: int | None = None,
+                empaque: frozenset[int] | set[int] | None = None) -> dict:
+    """El molde de `_leer_odoo`. `piezas_por_caja` es `units_per_master_box` ya
+    traducido por `odoo.catalogo_productos` (`None` cuando Odoo devuelve
+    `False`), tal como lo recibe `_derivar_odoo`."""
     con_quants = n if con_quants is None else con_quants
+    emp = EMPAQUE_ODOO if empaque is None else set(empaque)
     catalogo = [{"id": i, "default_code": f"SKU-{i:04d}-NEG", "tmpl_id": 1000 + i,
-                 "active": True} for i in range(1, n + 1)]
+                 "active": True,
+                 "piezas_por_caja": 12.0 if i in emp else None}
+                for i in range(1, n + 1)]
     return {"catalogo": catalogo,
             "quants": {i: 1.0 for i in range(1, con_quants + 1)},
             "libres": set(range(1, n + 1)),
@@ -428,6 +479,9 @@ def _kubera_filas(n: int = 100) -> list[dict]:
     `con_renglon` hasta el 80 para que 61–80 den «sin cajas» y 81–100 «sin
     renglón», que son huecos distintos. SKU-0002 y SKU-0003 cuelgan de SKU-0001
     en Woo: eso lo vuelve un PADRE y da material para el modo padre del sello.
+
+    `recibido` aquí es SOLO la mitad del packing list; la etapa completa es esto
+    unido a `EMPAQUE_ODOO` (ver `_odoo_crudo`).
     """
     hijos = {"SKU-0002-NEG": 1001, "SKU-0003-NEG": 1001}
     filas = []
@@ -560,9 +614,17 @@ class CatalogoVacio(_ConParches):
         self.assertEqual(vb["estado"], "sin_dato")
         self.assertIsNone(vb["sub"]["n"])
         self.assertIn("sin dato de odoo", vb["motivo"])
-        self.assertIsNone(_etapa(resp, "recibido")["desglose"][0]["n"],
-                          "un cruce con Odoo sin dato no puede salir en cero")
-        self.assertEqual(_etapa(resp, "recibido")["n"], 61)
+        rec = _etapa(resp, "recibido")
+        for d in rec["desglose"]:
+            self.assertIsNone(d["n"], "un cruce con Odoo sin dato no puede salir "
+                                      f"en cero ({d['clave']})")
+        # LA MITAD DE LA REGLA NO ES UNA CIFRA. Desde el 18-sep Recibido es la
+        # unión del packing list y el empaque de Odoo: con Odoo caído, contar
+        # solo los 61 de kubera daría un número más chico de lo real que nadie
+        # puede distinguir del bueno.
+        self.assertIsNone(rec["n"])
+        self.assertEqual(rec["estado"], "sin_dato")
+        self.assertIn("sin dato de odoo", rec["motivo"])
 
     def test_lo_anterior_de_mas_de_2_h_ya_no_se_sirve(self):
         viejisima = _foto(ahora=T0 - timedelta(hours=3))
@@ -624,6 +686,101 @@ class CaidaBrusca(_ConParches):
         self.assertTrue(f.vieja)
         self.assertFalse(f.ok)
         self.assertEqual(f.generado, T0 - timedelta(seconds=invf.TTL_S + 60))
+
+    def test_un_desplome_del_empaque_tambien_es_lectura_sospechosa(self):
+        """`empaque` entra en `DatosOdoo.tamanos()` porque desde el 18-sep es la
+        mitad de Recibido: si el campo llegara vacío para todo el catálogo —un
+        cambio de permisos, por ejemplo— la etapa se desplomaría sin que
+        ninguna lectura fallara, que es el «vacío no es cero» de siempre."""
+        anterior = _foto(odoo_=_odoo_crudo(empaque=range(1, 61)))
+        self.assertEqual(anterior.fuentes["odoo"].datos.tamanos()["empaque"], 60)
+        nueva = _foto(odoo_=_odoo_crudo(empaque=()), anterior=anterior,
+                      ahora=T0 + timedelta(minutes=30))
+        f = nueva.fuentes["odoo"]
+        self.assertTrue(f.sospechosa)
+        self.assertIn("empaque 60 → 0", f.error)
+        self.assertEqual(f.datos.tamanos()["empaque"], 60, "se conserva lo anterior")
+        # Y se acepta cuando la siguiente lectura repite la caída.
+        confirmada = _foto(odoo_=_odoo_crudo(empaque=()), anterior=nueva,
+                           ahora=T0 + timedelta(minutes=60))
+        self.assertTrue(confirmada.fuentes["odoo"].ok)
+        self.assertEqual(confirmada.fuentes["odoo"].datos.tamanos()["empaque"], 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6 bis · LA REGLA DE RECIBIDO: LAS DOS COLUMNAS DE /inventario
+#
+# Decisión de Eduardo (18-sep): «para los recibidos por packing list vamos a
+# usar los que hay en inventario nada más». Recibido = cajas del packing list
+# congelado O empaque master declarado en Odoo. Unión, no intersección.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RecibidoUnion(_ConParches):
+    def test_la_union_suma_los_que_solo_trae_odoo(self):
+        rec = set(_foto().listas["recibido"])
+        self.assertEqual(len(rec), 66, "61 del packing list + 5 que solo trae Odoo")
+        self.assertIn("SKU-0010-NEG", rec, "solo packing list")
+        self.assertIn("SKU-0058-NEG", rec, "en las dos")
+        self.assertIn("SKU-0073-NEG", rec, "solo empaque de Odoo")
+        self.assertNotIn("SKU-0070-NEG", rec, "en ninguna de las dos")
+
+    def test_el_desglose_reparte_la_cifra_sin_huecos(self):
+        foto = _foto()
+        solo_pl = foto.cruces["recibido.solo_packing_list"]
+        solo_odoo = foto.cruces["recibido.solo_odoo"]
+        self.assertEqual((solo_pl, solo_odoo), (56, 5))
+        # 56 solo del packing list + 5 solo de Odoo + 5 en las dos (56–60) = 66.
+        self.assertEqual(solo_pl + solo_odoo + 5, len(foto.listas["recibido"]))
+
+    def test_la_union_no_depende_del_stock(self):
+        """RECIBIR NO ES TENER. Un catálogo entero sin una pieza libre ni una
+        ubicación sigue dando los mismos 66: exigir stock mediría existencias de
+        hoy, no recepción (Eduardo, 18-sep: «no se exige stock libre»)."""
+        sin_nada = _odoo_crudo()
+        sin_nada["libres"] = set()
+        sin_nada["quants"] = {}
+        foto = _foto(odoo_=sin_nada)
+        self.assertEqual(foto.listas["bodega_3de4"], (),
+                         "la prueba distingue el caso: bodega sí se cae")
+        self.assertEqual(len(foto.listas["recibido"]), 66)
+
+    def test_con_odoo_caido_la_etapa_no_da_una_cifra_a_medias(self):
+        invf._foto = _foto(odoo_=invf.Lectura(error="RuntimeError: sin red",
+                                              generado=T0))
+        with mock.patch.object(invf, "_ahora", return_value=T0):
+            resp = invf.conteos()
+        rec = _etapa(resp, "recibido")
+        self.assertIsNone(rec["n"], "61 de kubera sería media regla")
+        self.assertEqual(rec["estado"], "sin_dato")
+        self.assertIn("sin dato de odoo", rec["motivo"])
+        for d in rec["desglose"]:
+            self.assertIsNone(d["n"], d["clave"])
+        self.assertEqual(invf._foto.listas["recibido"], (),
+                         "la lista se queda vacía a propósito")
+
+    def test_el_empaque_se_lee_del_producto_que_la_tabla_enseña(self):
+        """Con el código repetido manda el REPRESENTANTE (activo, físico,
+        libre), que es el que `odoo.detalle_por_sku` deja en la fila. Un
+        `bool_or` diría «recibido» de un empaque que la columna de /inventario
+        tiene vacía."""
+        catalogo = [
+            # El archivado trae empaque; el ACTIVO no. La fila enseña el activo.
+            {"id": 1, "default_code": "DUP-0001", "tmpl_id": 11, "active": True,
+             "piezas_por_caja": None},
+            {"id": 2, "default_code": "DUP-0001", "tmpl_id": 12, "active": False,
+             "piezas_por_caja": 30.0},
+            # Al revés: el activo sí lo trae.
+            {"id": 3, "default_code": "DUP-0002", "tmpl_id": 13, "active": True,
+             "piezas_por_caja": 8.0},
+            {"id": 4, "default_code": "DUP-0002", "tmpl_id": 14, "active": False,
+             "piezas_por_caja": None},
+        ]
+        self.assertEqual(invf.codigos_con_empaque(catalogo), {"DUP-0002"})
+        # Empatados en `active`: desempata la existencia, como `detalle_por_sku`.
+        empatados = [dict(c, active=True) for c in catalogo[:2]]
+        self.assertEqual(
+            invf.codigos_con_empaque(empatados, {1: (0.0, 0.0), 2: (9.0, 9.0)}),
+            {"DUP-0001"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -958,9 +1115,22 @@ class ContratoSkus(_ConParches):
             self.assertTrue(e["falta"], e["clave"])
             self.assertTrue(e["definicion"], e["clave"])
         rec = _etapa(resp, "recibido")
-        self.assertEqual((rec["n"], rec["estado"]), (61, "proxy"))
-        self.assertEqual(rec["desglose"], [{"clave": "fuera_de_odoo",
-                                            "titulo": "No existen en Odoo activo", "n": 1}])
+        # 61 del packing list (1–60 más ROP-0695-BEI-m) ∪ 10 con empaque de Odoo
+        # (56–65), de los que 5 son nuevos: 66.
+        self.assertEqual((rec["n"], rec["estado"]), (66, "proxy"))
+        self.assertEqual(rec["desglose"],
+                         [{"clave": "solo_packing_list",
+                           "titulo": "Solo del packing list", "n": 56},
+                          {"clave": "solo_odoo",
+                           "titulo": "Solo empaque de Odoo", "n": 5},
+                          {"clave": "fuera_de_odoo",
+                           "titulo": "No existen en Odoo activo", "n": 1}])
+        # EL DESGLOSE SUMA LO QUE DICE: solo uno + solo el otro + los dos = la
+        # cifra de la tarjeta. Sin esta cuenta, dos porciones que no cierran
+        # pasarían por un desglose completo.
+        solo_pl = rec["desglose"][0]["n"]
+        solo_odoo = rec["desglose"][1]["n"]
+        self.assertEqual(solo_pl + solo_odoo + 5, rec["n"], "5 están en las dos")
         restock = _etapa(resp, "restock")
         self.assertEqual((restock["n"], restock["estado"], restock["filtrable"]),
                          (None, "por_definir", False))
@@ -975,7 +1145,9 @@ class ContratoSkus(_ConParches):
         full = _etapa(resp, "en_full")
         self.assertEqual({d["clave"]: d["n"] for d in full["desglose"]},
                          {"cumple_3de4": 20, "fuera_de_odoo": 0})
-        self.assertEqual(_etapa(resp, "listo_envio")["desglose"][0]["n"], 60)
+        # «Si specs no bloqueara» = Recibido ∩ 3 de 4, y Recibido ya es la unión:
+        # los 66 menos ROP-0695-BEI-m, que no existe en Odoo y nunca cumple 3 de 4.
+        self.assertEqual(_etapa(resp, "listo_envio")["desglose"][0]["n"], 65)
         self.assertEqual(resp["carril"]["n"], 5)
         self.assertEqual(resp["universo"]["n"], 101)
 

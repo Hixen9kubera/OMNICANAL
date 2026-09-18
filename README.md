@@ -1001,6 +1001,55 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.541.0 — «Recibido» son las dos columnas de Inventario: el packing list o el empaque de Odoo
+
+Eduardo, 18-sep-2026: *«para los recibidos por packing list vamos a usar los que
+hay en inventario nada más»*. La etapa contaba solo el congelado de costos
+validados; ahora cuenta lo mismo que la tabla de /inventario muestra en su
+columna de cajas.
+
+**La regla**
+
+    Recibido = cajas y piezas por caja > 0 en costos validados
+               O empaque master declarado en Odoo (`units_per_master_box` > 0)
+
+Unión, no intersección, y **sin exigir stock libre**: eso mediría existencias de
+hoy, no recepción — un SKU que llegó y se vendió completo seguiría siendo
+recibido. Medido antes de elegir, sobre 22,416 SKUs: la regla vieja daba 13,557,
+el empaque de Odoo solo da 9,953, y la unión **18,602** (8,674 solo del packing
+list · 5,045 solo de Odoo · 4,883 en las dos). En Mercado Libre · Kubera sube de
+1,538 a 2,182 de 2,631 publicaciones.
+
+**Lo que se sigue diciendo en voz alta**: ninguna de las dos columnas dice que la
+mercancía LLEGÓ. El packing list es la foto del embarque —congelada en las cargas
+del 21-may y 3-jun— y el empaque de Odoo describe la caja. Por eso la etapa
+conserva su «aprox.» y su estado `proxy`.
+
+**Backend**
+
+- `odoo.catalogo_productos` suma `units_per_master_box` al mismo `search_read`:
+  cero lecturas nuevas. El empaque se toma del producto REPRESENTANTE del código
+  (activo > físico > libre), igual que la tabla de /inventario, y no de
+  «cualquiera con ese código».
+- `DatosOdoo` gana `empaque`, vigilado por la guarda de lectura sospechosa: si
+  `units_per_master_box` llegara vacío para todo el catálogo, ninguna lectura
+  fallaría y la etapa se desplomaría en silencio.
+- La etapa pasa a depender de kubera **y** de Odoo: con una de las dos caída dice
+  «sin dato» y `/api/productos?etapa=recibido` responde 503 con su motivo, en vez
+  de una cifra a medias. Se tapó de paso una fuga por la que el conteo del
+  catálogo se cerraba solo con kubera y habría pintado 0 donde lo cierto es «no
+  sé».
+- El stepper desglosa «solo del packing list» y «solo empaque de Odoo», y el
+  sello por SKU gana `pasos.recibido.fuente` (`packing_list` | `odoo` | `ambas`).
+
+**En pantalla**: el sello dice «Recibido (aprox.): sí · por el packing list / por
+el empaque de Odoo / por las dos columnas», y la tarjeta del sello lo muestra como
+píldora junto a «aprox.», encima de la tabla de tres cifras que ya traía.
+
+248 pruebas (14 nuevas: las tres fuentes, la unión sin stock, Odoo caído, el
+desglose que suma, el representante contra el código), `tsc` y `next build`
+limpios. Verificado en el sandbox con la foto viva.
+
 ### v0.540.0 — Specs por canal: qué atributo exige cada canal, y el punto 4 de bodega deja de estar en espera
 
 Encargo a Brandon (17-sep): *«tener una lista de Specs por categoría que sea

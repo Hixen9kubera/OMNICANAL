@@ -189,6 +189,13 @@ function Rotulo({ children, muestra }: { children: React.ReactNode; muestra?: Mu
   );
 }
 
+/** Qué columna de /inventario dio el «sí» de Recibido, en dos palabras. */
+const FUENTE_CORTA: Record<string, string> = {
+  packing_list: "packing list",
+  odoo: "empaque Odoo",
+  ambas: "las dos",
+};
+
 function Pildora({ texto, clase }: { texto: string; clase: string }) {
   return (
     <span className={`rounded px-1.5 text-[9px] font-bold uppercase leading-[14px] tracking-wide ${clase}`}>
@@ -338,6 +345,14 @@ function TramoRecibido({
               {fila.embarque && ` · embarque ${fila.embarque}`}
               {fila.contenedor_es_booking && " (booking)"}
             </span>
+          )}
+          {/* Cuál de las dos columnas lo dio. Sin esto, la tabla de abajo enseña
+              tres cifras y no se sabe cuál fue la que contó. */}
+          {sello.pasos.recibido.estado === "si" && sello.pasos.recibido.fuente && (
+            <Pildora
+              texto={FUENTE_CORTA[sello.pasos.recibido.fuente]}
+              clase="bg-slate-100 text-slate-600"
+            />
           )}
           {/* En un padre no hay recepción que aproximar: la insignia sobraría. */}
           {sello.pasos.recibido.estado !== "na" && (

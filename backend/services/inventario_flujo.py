@@ -13,10 +13,12 @@ para FULL o DROP → En FULL | En DROP → Restock, y cuáles son? Con un carril
 aparte, Costo validado, que es pregunta comercial y no de almacén.
 
 Y cada etapa dice QUÉ INFORMACIÓN LE FALTA (`falta`), con qué regla cuenta
-(`definicion`) y de dónde sale (`fuente`). No es adorno: tres de las cifras
-dependen de decisiones de negocio abiertas (D1–D6 del plan del 15-sep), y una
-tarjeta que enseña 13,557 sin decir «esto es un congelado de may–jun» es cómo
-se toma una decisión con un número que no significa lo que parece.
+(`definicion`) y de dónde sale (`fuente`). No es adorno: varias de las cifras
+dependen de decisiones de negocio abiertas (D2–D6 del plan del 15-sep), y una
+tarjeta que enseña un número sin decir de qué está hecho es cómo se toma una
+decisión con algo que no significa lo que parece. Recibido es el ejemplo: el
+18-sep pasó de 13,557 (solo el packing list congelado de may–jun) a una unión
+con el empaque declarado en Odoo, y NINGUNA de las dos columnas dice «llegó».
 
 POR QUÉ UNA FOTO EN MEMORIA Y NO UNA CONSULTA POR PETICIÓN
 ---------------------------------------------------------
@@ -167,6 +169,12 @@ BODEGA_DEL_CANAL = {
 # `stock_full > 0`. La columna de la fila todavía suma `stock_full` de todos
 # los canales (inventario_maestro.py, `_fila`); esa corrección espera a que D3
 # se apruebe, y la diferencia se declara en `falta`.
+#
+# OJO CON EL NOMBRE: la columna `recibido` de esta consulta es solo la MITAD de
+# la etapa Recibido —las cajas del packing list—. La otra mitad (el empaque
+# master de Odoo) no vive en kubera y se une en `armar_foto`. Se conserva el
+# nombre porque es el conjunto que sale de esta fuente y así lo lee
+# `DatosKubera.recibido`; la etapa completa es la unión.
 _SQL_KUBERA = """
 with cv as (
   select sku,
@@ -223,6 +231,9 @@ _VACIO: Mapping[Any, Any] = MappingProxyType({})
 @dataclass(frozen=True)
 class DatosKubera:
     universo: frozenset[str]
+    # SOLO la mitad del packing list (cajas y piezas por caja > 0). La etapa
+    # Recibido es esto UNIDO al empaque de Odoo (`DatosOdoo.empaque`), y la unión
+    # la hace `armar_foto`: aquí no se puede, esta clase solo sabe de kubera.
     recibido: frozenset[str]
     costo_validado: frozenset[str]
     en_full: frozenset[str]
@@ -255,10 +266,26 @@ class DatosOdoo:
     # sin imagen) de «foto na» (variante sin hermanos con foto), que es justo la
     # diferencia entre «súbele una foto» y «espera la foto de bodega».
     estados: Mapping[str, tuple[str, str, str]] = _VACIO
+    # Códigos con EMPAQUE MASTER declarado (`units_per_master_box > 0`), la
+    # segunda mitad de Recibido desde el 18-sep. Es el mismo dato que la columna
+    # «piezas por caja» de /inventario, no una regla nueva: dice CÓMO viene
+    # empacado el producto, no que haya llegado.
+    empaque: frozenset[str] = frozenset()
 
     def tamanos(self) -> dict[str, int]:
+        # `empaque` SÍ se vigila: dentro de core.products son 9,953 SKUs
+        # (medición de Eduardo, 18-sep, sobre 22,416) y este conjunto es el de
+        # TODOS los códigos de Odoo, o sea aún mayor — muy por encima de
+        # `_MIN_VIGILADO`. Desde el 18-sep es la mitad de Recibido, la cifra más
+        # grande de la tarjeta. Si el campo llegara vacío para el
+        # catálogo entero —un `search_read` que devuelve el campo en `False`
+        # por un cambio de permisos, por ejemplo— la etapa se desplomaría sin
+        # que ninguna lectura fallara: exactamente el «vacío no es cero» que
+        # este módulo existe para impedir. La guarda lo conserva y solo acepta
+        # la caída si la SIGUIENTE lectura la repite.
         return {"catalogo": len(self.codigos), "ubicacion": len(self.ubicacion),
-                "stock": len(self.stock), "foto": len(self.con_imagen)}
+                "stock": len(self.stock), "foto": len(self.con_imagen),
+                "empaque": len(self.empaque)}
 
 
 @dataclass(frozen=True)
@@ -425,12 +452,8 @@ def estados_bodega(catalogo: list[dict[str, Any]], quants: Mapping[int, float],
         # (`odoo._DOMINIO_STOCK_LIBRE`): pertenecer al conjunto es cumplir las
         # dos. Se pasa por la regla compartida para que un cambio de umbral en
         # la tabla rompa la prueba de paridad en vez de pasar callado.
-        libre = False
-        if propios:
-            ex = existencias or {}
-            rep = max(propios, key=lambda p: (bool(p.get("active")),
-                                              *ex.get(p["id"], (0.0, 0.0))))
-            libre = rep["id"] in libres
+        rep = _representante(propios, existencias)
+        libre = rep is not None and rep["id"] in libres
         cumple = 1.0 if libre else 0.0
         stock = inv.estado_stock(cumple, cumple)
 
@@ -446,6 +469,57 @@ def estados_bodega(catalogo: list[dict[str, Any]], quants: Mapping[int, float],
         foto = inv.estado_foto(len(hermanos) + len(extra), hay_foto)
 
         salida[sku] = (ubic, stock, foto)
+    return salida
+
+
+def _representante(propios: list[dict[str, Any]] | list[Mapping[str, Any]],
+                   existencias: Mapping[int, tuple[float, float]] | None,
+                   ) -> Mapping[str, Any] | None:
+    """El producto que la FILA juzga cuando un `default_code` está repetido.
+
+    La clave es la de `odoo.detalle_por_sku` —`max((previo, nuevo), key=(activo,
+    físico, libre))`—, que es de donde la tabla saca stock y piezas por caja.
+    Vivía dos veces escrita a mano dentro de este archivo; se extrae porque
+    ahora la usan DOS conjuntos (stock y empaque) y una copia que se desincronice
+    haría que la tarjeta y la columna dijeran cosas distintas del mismo SKU (D2).
+
+    `existencias` solo trae los ids de `ids_para_desempate` (código repetido Y
+    empatado en `active`): con un activo y archivados gana el activo sin mirar
+    existencias, igual que la fila."""
+    if not propios:
+        return None
+    ex = existencias or {}
+    return max(propios, key=lambda p: (bool(p.get("active")),
+                                       *ex.get(p["id"], (0.0, 0.0))))
+
+
+def codigos_con_empaque(catalogo: Iterable[Mapping[str, Any]],
+                        existencias: Mapping[int, tuple[float, float]] | None = None,
+                        ) -> set[str]:
+    """Los `default_code` con EMPAQUE MASTER declarado: la mitad de Odoo de la
+    etapa Recibido (Eduardo, 18-sep). PURA.
+
+    Se lee del MISMO producto que la tabla enseña —el representante— y no de
+    «alguno con ese código». La diferencia solo aparece en los códigos
+    repetidos (5 SKUs con dos productos ACTIVOS, más los que tienen archivados
+    al lado), y ahí un `bool_or` diría «recibido» de un empaque que la columna
+    de /inventario no está enseñando: la tarjeta acusaría a la columna de estar
+    vacía. Recibido copia lo que la tabla ya muestra, no una lectura propia.
+
+    El criterio es `> 0`, tal cual lo pidió Eduardo. `catalogo_productos` ya
+    tradujo el `False` de Odoo a `None`, así que aquí nunca llega un cero
+    ambiguo. Los ARCHIVADOS cuentan: la tabla también los enseña (marcados) y
+    guardan piezas reales en racks."""
+    por_codigo: dict[str, list[Mapping[str, Any]]] = {}
+    for p in catalogo:
+        cod = p.get("default_code") or ""
+        if cod:
+            por_codigo.setdefault(cod, []).append(p)
+    salida: set[str] = set()
+    for cod, propios in por_codigo.items():
+        rep = _representante(propios, existencias)
+        if rep is not None and (rep.get("piezas_por_caja") or 0) > 0:
+            salida.add(cod)
     return salida
 
 
@@ -542,6 +616,9 @@ def _derivar_odoo(crudo: Mapping[str, Any]) -> DatosOdoo:
                if p.get("default_code") and p.get("active")}
     con_imagen = {p["default_code"] for p in catalogo
                   if p.get("default_code") and p["id"] in fotos}
+    # El empaque se decide con la MISMA regla (y el mismo representante) que la
+    # columna de /inventario; ver `codigos_con_empaque`.
+    empaque = codigos_con_empaque(catalogo, crudo.get("existencias"))
     return DatosOdoo(
         codigos=frozenset(estados),
         activos=frozenset(activos),
@@ -551,6 +628,7 @@ def _derivar_odoo(crudo: Mapping[str, Any]) -> DatosOdoo:
         foto_espera=frozenset(s for s, e in estados.items() if e[2] == "espera"),
         con_imagen=frozenset(con_imagen),
         estados=MappingProxyType(estados),
+        empaque=frozenset(empaque),
     )
 
 
@@ -731,10 +809,33 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
     cruces: dict[str, int | None] = {}
 
     if k is not None:
-        listas["recibido"] = k.recibido
         listas["costo_validado"] = k.costo_validado
         listas["en_full"] = k.en_full
         listas["en_fba"] = k.en_fba
+
+    # RECIBIDO son las DOS columnas que ya enseña la tabla de /inventario
+    # (decisión de Eduardo, 18-sep: «para los recibidos por packing list vamos a
+    # usar los que hay en inventario nada más»): las cajas del packing list
+    # congelado O el empaque master declarado en Odoo. La unión, no la
+    # intersección, y acotada al universo de core.products (D6).
+    #
+    # NO se exige stock libre: eso mediría existencias de hoy, no recepción.
+    #
+    # `empaque_d6` es la mitad de Odoo YA recortada al universo, y se guarda
+    # porque los dos desgloses («solo del packing list», «solo empaque de
+    # Odoo») tienen que restar sobre el mismo conjunto que se contó. La
+    # intersección es SENSIBLE A MAYÚSCULAS, igual que `bodega_3de4`: un SKU
+    # que Odoo escribe distinto queda fuera de la lista y el sello lo dice por
+    # su nombre en vez de contradecir al conteo.
+    empaque_d6: frozenset[str] = frozenset()
+    recibido: frozenset[str] = frozenset()
+    if k is not None and o is not None:
+        empaque_d6 = o.empaque & k.universo
+        recibido = k.recibido | empaque_d6
+        listas["recibido"] = recibido
+    # Con kubera u Odoo caído la lista se queda VACÍA a propósito y `_META`
+    # declara las dos dependencias: media regla daría una cifra a medias, que
+    # es justo lo que nadie puede distinguir de una cifra real.
 
     tres: frozenset[str] = frozenset()
     if o is not None:
@@ -753,7 +854,7 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
                       "foto": len(o.foto & base),
                       "foto_espera": len(o.foto_espera & base)}
         if k is not None:
-            listas["listo_envio"] = k.recibido & cuatro
+            listas["listo_envio"] = recibido & cuatro
 
     if d is not None:
         candidatos = o.codigos if o is not None else (k.universo if k is not None else ())
@@ -763,8 +864,16 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
         return valor() if condicion else None
 
     ko = k is not None and o is not None
-    cruces["recibido.fuera_de_odoo"] = _n(ko, lambda: len(k.recibido - o.activos))
-    cruces["recibido_y_3de4"] = _n(ko, lambda: len(k.recibido & tres))
+    # Los tres cruces de Recibido salen de la UNIÓN, que es lo que cuenta la
+    # tarjeta. `fuera_de_odoo` puede traer ahora SKUs de la mitad de Odoo: son
+    # los que tienen empaque declarado pero el producto está archivado.
+    cruces["recibido.fuera_de_odoo"] = _n(ko, lambda: len(recibido - o.activos))
+    # `k.recibido` ya está dentro del universo por construcción (`_derivar_kubera`
+    # solo mete SKUs de core.products), así que no hace falta recortarlo otra vez.
+    cruces["recibido.solo_packing_list"] = _n(
+        ko, lambda: len(k.recibido - empaque_d6))
+    cruces["recibido.solo_odoo"] = _n(ko, lambda: len(empaque_d6 - k.recibido))
+    cruces["recibido_y_3de4"] = _n(ko, lambda: len(recibido & tres))
     cruces["en_full.cumple_3de4"] = _n(ko, lambda: len(k.en_full & tres))
     cruces["en_full.fuera_de_odoo"] = _n(ko, lambda: len(k.en_full - o.activos))
     cruces["en_fba.cumple_3de4"] = _n(ko, lambda: len(k.en_fba & tres))
@@ -797,14 +906,30 @@ def armar_foto(kubera: Lectura | None, odoo_: Lectura | None, drop: Lectura | No
 _META: dict[str, dict[str, Any]] = {
     "recibido": {
         "titulo": "Recibido", "estado": "proxy", "filtrable": True,
-        "depende": ("kubera",),
-        "definicion": ("Cajas y piezas por caja mayores que 0 en costos validados "
-                       "(D1: «> 0»; los que no existen en Odoo activo cuentan "
-                       "dentro y se desglosan aparte)"),
-        "fuente": "kubera · costing.costos_validados (congelado may–jun)",
-        "desglose": [("fuera_de_odoo", "No existen en Odoo activo",
-                      "recibido.fuera_de_odoo", ("kubera", "odoo"))],
+        # Las DOS fuentes desde el 18-sep: la cifra es una unión, y con una sola
+        # mitad sería una cifra a medias que nadie puede distinguir de la buena.
+        "depende": ("kubera", "odoo"),
+        "definicion": ("Las dos columnas de /inventario: cajas y piezas por caja "
+                       "mayores que 0 en costos validados, O empaque master "
+                       "declarado en Odoo (units_per_master_box > 0). Unión, no "
+                       "intersección; no se exige stock libre. Los que no existen "
+                       "en Odoo activo cuentan dentro y se desglosan aparte "
+                       "(decisión de Eduardo, 18-sep)"),
+        "fuente": ("kubera · costing.costos_validados (congelado de las cargas del "
+                   "21-may y 3-jun) + Odoo · product.product.units_per_master_box"),
+        "desglose": [
+            ("solo_packing_list", "Solo del packing list",
+             "recibido.solo_packing_list", ("kubera", "odoo")),
+            ("solo_odoo", "Solo empaque de Odoo",
+             "recibido.solo_odoo", ("kubera", "odoo")),
+            ("fuera_de_odoo", "No existen en Odoo activo",
+             "recibido.fuera_de_odoo", ("kubera", "odoo")),
+        ],
         "falta": [
+            "NINGUNA DE LAS DOS COLUMNAS DICE «LLEGÓ». El packing list es un "
+            "congelado de las cargas del 21-may y 3-jun —dice lo que el proveedor "
+            "embarcó— y el empaque de Odoo dice CÓMO viene empacado el producto, "
+            "no que haya entrado a la bodega. La etapa sigue siendo un proxy",
             "Cajas y piezas por caja por SKU y contenedor de lo llegado después "
             "del 3-jun: nada escribe esas columnas desde el 27-jul (Compras o "
             "logística)",
@@ -814,8 +939,10 @@ _META: dict[str, dict[str, Any]] = {
             "libre en buena parte de las confirmadas (quien captura compras)",
             "Acceso a la API de Drive por carpeta: hoy se lee HTML no documentado "
             "(Eduardo o administración de Google Workspace)",
-            "Decisión D1: ¿Recibido = viene en el packing list o entró en Odoo? "
-            "¿Cuentan los que están en cero y los que no existen en Odoo? (Eduardo)",
+            "units_per_master_box = 1 cuenta como empaque declarado, y 644 de "
+            "los 9,926 poblados del catálogo activo valen exactamente 1 (la "
+            "medición que cita inventario_maestro._cajas): «1 pieza por caja» "
+            "casi siempre es el hueco, no una caja de una pieza (catálogo)",
         ],
     },
     "validado_bodega": {
@@ -1379,23 +1506,58 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
             [sello(fp, h, canal=canal, _profundidad=1) for h in hijos])
 
     # ── RECIBIDO ─────────────────────────────────────────────────────────────
+    # El código de Odoo se resuelve ANTES que Recibido porque desde el 18-sep la
+    # etapa también se contesta con el empaque master, que es un campo de
+    # `product.product`: la misma resolución por `default_code` exacto que usa
+    # Bodega más abajo, hecha una sola vez.
+    codigo, ambiguo = _codigo_odoo(sku, canon, o, idx)
+
+    # Las DOS mitades por separado. `None` es «ya no sé», nunca «no»:
+    #   · `pl`  — sin kubera no se sabe si hay cajas en el packing list.
+    #   · `emp` — sin Odoo, o con el código ambiguo (el mismo SKU escrito de dos
+    #     formas), no se sabe de qué producto leer el empaque. Que el SKU NO
+    #     exista en Odoo sí se sabe, y entonces es `False`, no `None`.
+    pl = None if k is None else (canon is not None and canon in k.recibido)
+    emp = (None if (o is None or ambiguo)
+           else (codigo is not None and codigo in o.empaque))
+
+    # La frescura del paso es la de la MÁS VIEJA de las dos fuentes que lo
+    # contestan (`destino` ya hacía lo mismo con kubera y DROP): un Odoo de hace
+    # tres horas envejece la cifra aunque kubera esté al día, y enseñar la fecha
+    # de kubera a secas diría que el dato es más fresco de lo que es.
+    vieja_r = bool(vieja_k or vieja_o)
+    gen_r = min([g for g in (gen_k, gen_o) if g], default=None)
+
     if es_padre:
-        recibido = {"estado": "na", "motivo": None, "vieja": vieja_k,
-                    "generado": gen_k}
-    elif k is None:
-        recibido = {"estado": "sin_dato", "motivo": None, "vieja": vieja_k,
-                    "generado": gen_k}
-    elif canon is not None and canon in k.recibido:
-        recibido = {"estado": "si", "motivo": None, "vieja": vieja_k,
-                    "generado": gen_k}
+        # Un padre ni se costea ni se empaca: las que llegan son sus variantes.
+        recibido = {"estado": "na", "motivo": None, "fuente": None,
+                    "vieja": vieja_r, "generado": gen_r}
+    elif pl or emp:
+        # Basta UNA: es una unión. `fuente` dice cuál contestó, que es lo que
+        # separa «viene en el packing list del embarque» de «Odoo sabe cómo se
+        # empaca» — dos evidencias distintas del mismo casillero, y ninguna de
+        # las dos afirma que la mercancía entró a la bodega.
+        recibido = {"estado": "si", "motivo": None,
+                    "fuente": ("ambas" if (pl and emp)
+                               else "packing_list" if pl else "odoo"),
+                    "vieja": vieja_r, "generado": gen_r}
+    elif pl is None or emp is None:
+        # Una mitad dice «no» y la otra «no sé»: el SKU podría estar en la que
+        # falta, así que el casillero entero es sin dato. Es la lección de los
+        # 964 pedidos fantasma aplicada a media regla.
+        recibido = {"estado": "sin_dato", "motivo": None, "fuente": None,
+                    "vieja": vieja_r, "generado": gen_r}
     else:
+        # Ninguna de las dos. El motivo sigue describiendo el lado del packing
+        # list, que es el accionable y el único que distingue dos huecos («no
+        # tiene renglón en costos» contra «tiene renglón y viene en cero»); el
+        # lado de Odoo no tiene grados y se nombra entero en `le_falta`.
         motivo = ("sin_renglon" if canon is None or canon not in k.con_renglon
                   else "sin_cajas")
-        recibido = {"estado": "no", "motivo": motivo, "vieja": vieja_k,
-                    "generado": gen_k}
+        recibido = {"estado": "no", "motivo": motivo, "fuente": None,
+                    "vieja": vieja_r, "generado": gen_r}
 
     # ── BODEGA ───────────────────────────────────────────────────────────────
-    codigo, ambiguo = _codigo_odoo(sku, canon, o, idx)
     specs = inv.estado_specs() if o is not None else "sin_dato"
     if es_padre:
         bodega = {"ubicacion": "na", "stock": "na", "foto": "na", "specs": "na",
@@ -1517,12 +1679,20 @@ def sello(fp: FotoPeticion, sku: str, *, canal: str = "general",
     # ── LE FALTA (el camino a Listo; destino, costo y restock nunca entran) ──
     le_falta: list[str] = []
     if not es_padre:
-        if recibido["estado"] == "sin_dato":
+        if recibido["estado"] == "sin_dato" and pl is None:
             le_falta.append("sin dato de kubera")
+        # El otro sin_dato de Recibido es el de Odoo (`emp is None`), y ahí NO
+        # se escribe nada: el renglón de bodega de más abajo ya dice «sin dato
+        # de Odoo» por la misma caída, y repetirlo mandaría a revisar dos cosas
+        # donde solo hay una.
         elif recibido["estado"] == "no":
-            le_falta.append("Recibido (no tiene renglón en costos)"
-                            if recibido["motivo"] == "sin_renglon"
-                            else "Recibido (sin cajas en costos)")
+            # Se nombran LAS DOS mitades: con la regla nueva un «Recibido (sin
+            # cajas en costos)» a secas haría pensar que llenando el packing
+            # list se resuelve, cuando declarar el empaque en Odoo también basta.
+            le_falta.append(
+                "Recibido (no tiene renglón en costos ni empaque en Odoo)"
+                if recibido["motivo"] == "sin_renglon"
+                else "Recibido (sin cajas en costos ni empaque en Odoo)")
         if bodega["ubicacion"] == "sin_dato":
             le_falta.append("sin dato de Odoo")
         elif bodega["en_odoo"] is False:
@@ -1769,8 +1939,13 @@ def _conteos_canal(foto: Foto | None, ahora: datetime, *, canal: str,
         "etapas": etapas,
         "carril": carril,
         "catalogo": {
+            # Las DOS fuentes: desde el 18-sep Recibido es la unión del packing
+            # list y el empaque de Odoo, y con Odoo caído la lista de la foto se
+            # queda vacía a propósito. Mirar solo `kubera` aquí pintaría ese
+            # vacío como un 0 del catálogo entero.
             "recibido": (len(idx.etapas_mayus.get("recibido", ()))
-                         if hay_foto and ctx.usable["kubera"] else None),
+                         if hay_foto and ctx.ok(_META["recibido"]["depende"])
+                         else None),
             "recibido_fuera_de_odoo": foto.cruces.get("recibido.fuera_de_odoo") if hay_foto else None,
             "recibido_y_3de4": foto.cruces.get("recibido_y_3de4") if hay_foto else None,
         },

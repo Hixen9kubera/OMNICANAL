@@ -2318,6 +2318,10 @@ export interface SelloFlujo {
   pasos: {
     recibido: {
       estado: "si" | "no" | "sin_dato" | "na";
+      /** De cuál de las dos columnas de /inventario salió. `null` cuando no
+       *  está en ninguna, no aplica o no se sabe. */
+      fuente: "packing_list" | "odoo" | "ambas" | null;
+      /** Solo describe el lado del packing list, el único con dos grados. */
       motivo: "sin_renglon" | "sin_cajas" | null;
       vieja: boolean;
       generado: string | null;

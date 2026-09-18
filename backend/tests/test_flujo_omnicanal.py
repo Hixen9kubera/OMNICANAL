@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -62,6 +63,11 @@ def _odoo_omni() -> dict:
       · `ARCH-0001`   — archivado.
       · `Amb-0001` / `AMB-0001` — el mismo código con dos escrituras: no se
                         adivina cuál es.
+
+    `SOLO-ODOO` además trae EMPAQUE MASTER: es el caso que fija el recorte D6
+    de la unión de Recibido —tiene con qué contar por el lado de Odoo, pero no
+    está en `core.products`, así que NO entra en la lista de la etapa— aunque
+    su sello sí pueda decir «recibido por Odoo», que es la verdad de ese SKU.
     """
     crudo = _odoo_crudo(100, con_quants=40)
     catalogo = list(crudo["catalogo"])
@@ -70,9 +76,9 @@ def _odoo_omni() -> dict:
     fotos = set(crudo["fotos"])
 
     def _mas(id_: int, code: str, tmpl: int, *, activo=True, quant=True,
-             libre=True, foto=True):
+             libre=True, foto=True, caja=None):
         catalogo.append({"id": id_, "default_code": code, "tmpl_id": tmpl,
-                         "active": activo})
+                         "active": activo, "piezas_por_caja": caja})
         if quant:
             quants[id_] = 1.0
         if libre:
@@ -80,7 +86,7 @@ def _odoo_omni() -> dict:
         if foto:
             fotos.add(id_)
 
-    _mas(501, "SOLO-ODOO", 2501)
+    _mas(501, "SOLO-ODOO", 2501, caja=6.0)
     _mas(502, "HERM-0001-A", 2502)
     _mas(503, "HERM-0001-B", 2502)          # hermana por plantilla → foto espera
     _mas(504, "ARCH-0001", 2504, activo=False)
@@ -174,20 +180,95 @@ class SelloPuro(_Base):
         self.assertEqual(s["pasos"]["recibido"]["motivo"], None)
 
     def test_recibido_no_distingue_sin_cajas_de_sin_renglon(self):
+        # Ninguno de los dos tiene empaque en Odoo (`EMPAQUE_ODOO` son 56–60 y
+        # 73–77),
+        # así que el «no» sigue siendo un «no» con la regla nueva y el motivo
+        # sigue describiendo el lado accionable, el del packing list.
         con = self._sello("SKU-0070-NEG")      # tiene renglón, sin cajas
         sin = self._sello("SKU-0090-NEG")      # ni renglón
         self.assertEqual(con["pasos"]["recibido"], {
-            "estado": "no", "motivo": "sin_cajas", "vieja": False,
-            "generado": "2026-09-15T15:40:00Z"})
+            "estado": "no", "motivo": "sin_cajas", "fuente": None,
+            "vieja": False, "generado": "2026-09-15T15:40:00Z"})
         self.assertEqual(sin["pasos"]["recibido"]["motivo"], "sin_renglon")
-        self.assertIn("Recibido (sin cajas en costos)", con["le_falta"])
-        self.assertIn("Recibido (no tiene renglón en costos)", sin["le_falta"])
+        # El texto NOMBRA LAS DOS MITADES: llenar el packing list no es el único
+        # camino, declarar el empaque en Odoo también cuenta.
+        self.assertIn("Recibido (sin cajas en costos ni empaque en Odoo)",
+                      con["le_falta"])
+        self.assertIn("Recibido (no tiene renglón en costos ni empaque en Odoo)",
+                      sin["le_falta"])
 
     def test_sin_kubera_recibido_es_sin_dato_y_no_no(self):
         s = invf.sello(_fp(_foto_omni(kubera=False)), "SKU-0001-NEG")
         self.assertEqual(s["pasos"]["recibido"]["estado"], "sin_dato")
         self.assertEqual(s["en_catalogo"], None)
         self.assertIn("sin dato de kubera", s["le_falta"])
+
+    def test_recibido_dice_de_cual_de_las_dos_columnas_sale(self):
+        """`fuente` separa «viene en el packing list del embarque» de «Odoo sabe
+        cómo se empaca»: dos evidencias distintas del mismo casillero, y ninguna
+        de las dos afirma que la mercancía entró a la bodega."""
+        for sku, fuente in (("SKU-0010-NEG", "packing_list"),
+                            ("SKU-0073-NEG", "odoo"),
+                            ("SKU-0058-NEG", "ambas")):
+            paso = self._sello(sku)["pasos"]["recibido"]
+            self.assertEqual((paso["estado"], paso["fuente"]), ("si", fuente), sku)
+        ninguna = self._sello("SKU-0070-NEG")["pasos"]["recibido"]
+        self.assertEqual((ninguna["estado"], ninguna["fuente"]), ("no", None))
+
+    def test_el_empaque_de_odoo_solo_cambia_la_etapa_y_borra_el_renglon(self):
+        # SKU-0073 tiene renglón en costos SIN cajas: antes del 18-sep caía en
+        # «ninguna» y `le_falta` pedía Recibido. Con el empaque declarado la
+        # etapa es Recibido y ese renglón desaparece; lo de bodega sigue igual.
+        s = self._sello("SKU-0073-NEG")
+        self.assertEqual(s["etapa"], "recibido")
+        self.assertEqual([t for t in s["le_falta"] if t.startswith("Recibido")], [])
+        self.assertIn("ubicación", s["le_falta"], "bodega no cambia")
+
+    def test_odoo_caido_deja_recibido_en_sin_dato_y_no_en_no(self):
+        """Con Odoo caído solo se sabe la mitad de la regla. Un SKU que SÍ viene
+        en el packing list se puede afirmar igual —basta una de las dos—; uno
+        que no, no: podría traer empaque declarado y nadie lo sabría."""
+        fp = _fp(_foto_omni(odoo=False))
+        con_pl = invf.sello(fp, "SKU-0010-NEG")["pasos"]["recibido"]
+        self.assertEqual((con_pl["estado"], con_pl["fuente"]), ("si", "packing_list"))
+        sin_pl = invf.sello(fp, "SKU-0070-NEG")
+        self.assertEqual(sin_pl["pasos"]["recibido"]["estado"], "sin_dato")
+        self.assertIsNone(sin_pl["pasos"]["recibido"]["fuente"])
+        # El hueco es de Odoo y el renglón de bodega ya lo dice: no se repite,
+        # y sobre todo no se acusa a kubera de una caída que no es suya.
+        self.assertIn("sin dato de Odoo", sin_pl["le_falta"])
+        self.assertNotIn("sin dato de kubera", sin_pl["le_falta"])
+
+    def test_el_empaque_fuera_de_core_products_no_entra_en_la_lista(self):
+        """D6: el universo es core.products. SOLO-ODOO trae empaque master pero
+        no está en el catálogo de kubera: su sello puede decir «recibido por
+        Odoo», que es la verdad de ese SKU, y aun así NO cuenta en la etapa. El
+        hueco es del seam y `le_falta` lo nombra en vez de esconderlo."""
+        fp = _fp()
+        s = invf.sello(fp, "SOLO-ODOO")
+        self.assertEqual(s["pasos"]["recibido"]["fuente"], "odoo")
+        self.assertIs(s["en_catalogo"], False)
+        self.assertNotIn("SOLO-ODOO", fp.foto.listas["recibido"])
+        self.assertIn("no está en el catálogo de kubera", s["le_falta"])
+
+    def test_la_frescura_de_recibido_es_la_de_la_fuente_mas_vieja(self):
+        """El paso lo contestan DOS fuentes, así que su fecha es la de la más
+        vieja: enseñar la de kubera a secas diría que el dato es más fresco de
+        lo que es (`destino` ya hacía lo mismo con kubera y DROP)."""
+        vieja = invf.armar_foto(
+            invf.Lectura(datos=_kubera_filas(), generado=T0),
+            invf.Lectura(datos=_odoo_omni(), generado=T0), None, None, ahora=T0)
+        nueva = invf.armar_foto(
+            invf.Lectura(datos=_kubera_filas(), generado=T0 + timedelta(minutes=30)),
+            invf.Lectura(error="RuntimeError: caída",
+                         generado=T0 + timedelta(minutes=30)),
+            None, vieja, ahora=T0 + timedelta(minutes=30))
+        self.assertTrue(nueva.fuentes["odoo"].vieja)
+        paso = invf.sello(_fp(nueva, ahora=T0 + timedelta(minutes=30)),
+                          "SKU-0010-NEG")["pasos"]["recibido"]
+        self.assertIs(paso["vieja"], True)
+        self.assertEqual(paso["generado"], "2026-09-15T15:40:00Z",
+                         "la de Odoo, que es la vieja")
 
     # ── bodega ───────────────────────────────────────────────────────────────
     def test_cuadros_copiados_de_odoo(self):
@@ -358,7 +439,8 @@ class SelloPuro(_Base):
 class ListaEtapaYIds(_Base):
     def test_lista_por_estado(self):
         fp = _fp()
-        self.assertEqual(len(invf.lista_etapa(fp, "recibido").skus_mayus), 61)
+        self.assertEqual(len(invf.lista_etapa(fp, "recibido").skus_mayus), 66,
+                         "61 del packing list ∪ 10 con empaque de Odoo (5 nuevos)")
         self.assertEqual(invf.lista_etapa(fp, "recibido").estado, "listo")
         sin_k = invf.lista_etapa(_fp(_foto_omni(kubera=False)), "recibido")
         self.assertEqual(sin_k.estado, "sin_dato")
@@ -528,14 +610,14 @@ class ConteosCanal(_Base):
         self.assertEqual(r["unidad"], "producto_woo")
         self.assertIs(r["unidad_aprox"], True)
         self.assertIsNone(r["total"], "el total lo manda la rejilla, no el conteo")
-        # Los 61 SKUs de Recibido son 59 productos de Woo: SKU-0002 y SKU-0003
+        # Los 66 SKUs de Recibido son 64 productos de Woo: SKU-0002 y SKU-0003
         # colapsan en su padre (1001), que además es Recibido por sí mismo.
-        self.assertEqual(_etapa(r, "recibido")["n"], 59)
+        self.assertEqual(_etapa(r, "recibido")["n"], 64)
 
     def test_general_aplanado_cuenta_filas_sin_padres(self):
         r = _conteo(canal="general", aplanado=True)
         self.assertEqual(r["unidad"], "fila_woo")
-        self.assertEqual(_etapa(r, "recibido")["n"], 60, "el padre no es fila")
+        self.assertEqual(_etapa(r, "recibido")["n"], 65, "el padre no es fila")
 
     def test_canales_caido_apaga_la_cifra_pero_no_el_clic(self):
         r = _conteo(_foto_omni(canales=False), cuenta="BEKURA")
@@ -595,7 +677,7 @@ class ConteosCanal(_Base):
 
     def test_catalogo_lleva_las_cifras_del_universo(self):
         r = _conteo(cuenta="BEKURA")
-        self.assertEqual(r["catalogo"]["recibido"], 61)
+        self.assertEqual(r["catalogo"]["recibido"], 66)
         self.assertEqual(r["catalogo"]["recibido_y_3de4"], 40)
         self.assertEqual(r["ttl_s"], invf.TTL_S)
         self.assertEqual(r["generado"], "2026-09-15T15:40:00Z")
@@ -717,7 +799,7 @@ class FuenteCanales(_Base):
         self.assertFalse(foto.fuentes["canales"].ok)
         for n in invf.FUENTES_BARRA:
             self.assertTrue(foto.fuentes[n].ok, n)
-        self.assertEqual(len(foto.listas["recibido"]), 61)
+        self.assertEqual(len(foto.listas["recibido"]), 66)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -869,8 +951,8 @@ class ProductosEtapa(_Base):
         self.assertEqual(r.status_code, 200)
         kw = self.llamadas["woo"]
         self.assertIsNone(kw["skus"], "la lista viaja como ids, no como SKUs")
-        self.assertEqual(len(kw["ids_productos"]), 59)
-        self.assertEqual(len(kw["ids_filas"]), 61)
+        self.assertEqual(len(kw["ids_productos"]), 64)
+        self.assertEqual(len(kw["ids_filas"]), 66)
         self.assertIs(kw["estricto"], True)
 
     def test_general_en_drop_baja_por_sku_exacto(self):
@@ -962,6 +1044,20 @@ class ProductosEtapa(_Base):
         r = self._get(etapa="bodega_3de4")
         self.assertEqual(r.status_code, 503)
         self.assertIn("sin dato de odoo", r.json()["detail"])
+
+    def test_recibido_sin_odoo_da_503_y_no_una_lista_a_medias(self):
+        """Recibido depende de las DOS fuentes desde el 18-sep. Con Odoo caído
+        la lista de kubera existe pero le faltan los que solo trae el empaque:
+        filtrar con ella diría «no hay» de productos que sí están en la etapa.
+        Sigue siendo filtrable —con las dos fuentes sanas contesta 200—, lo que
+        cambia es que ahora también se niega cuando Odoo no está."""
+        invf._foto = _foto_omni(odoo=False)
+        r = self._get(etapa="recibido")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("sin dato de odoo", r.json()["detail"])
+        self.assertIn("Quita el filtro de etapa", r.json()["detail"])
+        invf._foto = _foto_omni()
+        self.assertEqual(self._get(etapa="recibido").status_code, 200)
 
     def test_el_canal_que_falla_con_etapa_da_503_y_sin_ella_sigue_como_hoy(self):
         # Con el panel REAL: su `except` devuelve `[], 0` ante cualquier falla,

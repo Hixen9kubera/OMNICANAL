@@ -1509,19 +1509,31 @@ def _kw_flujo(modelo: str, metodo: str, args: list[Any],
 
 def catalogo_productos(*, timeout: float | None = None) -> list[dict[str, Any]]:
     """
-    ``[{id, default_code, tmpl_id, active}]`` de TODO `product.product`,
-    archivados incluidos (`active_test=False`). ~27 mil filas; 3.9–6.8 s de día.
+    ``[{id, default_code, tmpl_id, active, piezas_por_caja}]`` de TODO
+    `product.product`, archivados incluidos (`active_test=False`). ~27 mil
+    filas; 3.9–6.8 s de día.
 
     SIN filtrar `default_code`, a propósito: la tabla (`variantes_por_sku`)
     busca hermanos por plantilla sin ese filtro, así que un hermano SIN código
     también cuenta como variante. Filtrando saldrían 1,171 SKUs con hermanos en
     vez de 1,173 y el flujo contradiría a la columna de abajo.
 
+    `piezas_por_caja` es `units_per_master_box`, el EMPAQUE MASTER declarado, y
+    viaja en este mismo `search_read` porque pedir un campo más de una lectura
+    que ya trae las ~27 mil filas no cuesta una llamada extra (18-sep: la etapa
+    Recibido pasó a contar también el empaque de Odoo, y sin esto haría falta
+    una quinta lectura de catálogo completo contra el Odoo de producción).
+    Se traduce con la MISMA coerción que `detalle_por_sku`, que es la que
+    alimenta la columna «piezas por caja» de /inventario: Odoo devuelve `False`
+    —no `0`— cuando el campo está vacío, así que el falsy se vuelve `None` y
+    nunca un cero creíble.
+
     `default_code` sale recortado; `""` cuando no hay. Lanza si viene vacío.
     """
     filas = _kw_flujo(
         "product.product", "search_read", [[]],
-        {"fields": ["id", "default_code", "product_tmpl_id", "active"],
+        {"fields": ["id", "default_code", "product_tmpl_id", "active",
+                    "units_per_master_box"],
          "order": "id", "context": {"active_test": False}},
         timeout=timeout)
     if not filas:
@@ -1529,7 +1541,10 @@ def catalogo_productos(*, timeout: float | None = None) -> list[dict[str, Any]]:
     return [{"id": int(f["id"]),
              "default_code": (f.get("default_code") or "").strip(),
              "tmpl_id": _id_de(f.get("product_tmpl_id")),
-             "active": bool(f.get("active"))} for f in filas]
+             "active": bool(f.get("active")),
+             "piezas_por_caja": (float(f["units_per_master_box"])
+                                 if f.get("units_per_master_box") else None)}
+            for f in filas]
 
 
 def quants_internos_por_producto(*, timeout: float | None = None) -> dict[int, float]:

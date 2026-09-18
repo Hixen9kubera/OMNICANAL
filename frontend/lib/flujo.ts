@@ -91,12 +91,21 @@ export function criterioDe(
 const RECIBIDO_TEXTO: Record<string, string> = {
   si: "sí",
   na: "no aplica",
-  sin_dato: "sin dato de kubera",
+  sin_dato: "sin dato de kubera o de Odoo",
+};
+
+/** De dónde salió el «sí». Son las dos columnas de cajas de /inventario, y no
+ *  valen lo mismo: el packing list es la foto del embarque —congelada— y el
+ *  empaque de Odoo dice cómo viene empacado, no que haya llegado. */
+const FUENTE_RECIBIDO: Record<string, string> = {
+  packing_list: " · por el packing list",
+  odoo: " · por el empaque de Odoo",
+  ambas: " · por las dos columnas",
 };
 
 const MOTIVO_RECIBIDO: Record<string, string> = {
-  sin_renglon: "no, sin renglón en costos validados",
-  sin_cajas: "no, sin cajas en costos validados",
+  sin_renglon: "no, sin renglón en costos validados ni empaque en Odoo",
+  sin_cajas: "no, sin cajas en costos validados ni empaque en Odoo",
 };
 
 const NOMBRE_CUADRO: Record<ClaveCuadro, string> = {
@@ -133,13 +142,15 @@ export function tituloSello(
   const p = s.pasos;
   const partes: string[] = [];
 
-  // 1. Recibido — siempre «aprox.»: es un proxy congelado de costos validados,
-  // no la recepción real de Odoo.
+  // 1. Recibido — siempre «aprox.»: ninguna de las dos columnas dice que la
+  // mercancía llegó. El packing list es un congelado del embarque y el empaque
+  // de Odoo describe la caja, no la recepción.
   const r = p.recibido;
   const rTexto = r.estado === "no"
     ? (r.motivo ? MOTIVO_RECIBIDO[r.motivo] : "no")
     : (RECIBIDO_TEXTO[r.estado] ?? r.estado);
-  partes.push(`Recibido (aprox.): ${rTexto}`);
+  const rFuente = r.estado === "si" && r.fuente ? (FUENTE_RECIBIDO[r.fuente] ?? "") : "";
+  partes.push(`Recibido (aprox.): ${rTexto}${rFuente}`);
 
   // 2. Los cuatro cuadros de bodega.
   const b = p.bodega;
@@ -267,15 +278,16 @@ export const NOTA_ETAPA: Record<string, NotaEtapa> = {
     clic: "Quita el filtro de etapa y vuelve al catálogo completo.",
   },
   recibido: {
-    que: "SKUs que traen cajas y piezas por caja capturadas: señal de que "
-      + "vinieron en un packing list.",
-    fuente: "Costos validados en kubera: cajas mayor a 0 y piezas por caja "
-      + "mayor a 0. Viene de las cargas del 21-may y del 3-jun; nada lo "
-      + "actualiza desde entonces.",
+    que: "SKUs de los que se sabe cómo vienen encajados: por el packing list o "
+      + "por el empaque de Odoo. Son las dos columnas de cajas de Inventario.",
+    fuente: "Costos validados en kubera (cajas y piezas por caja, congelado en "
+      + "las cargas del 21-may y del 3-jun) O piezas por caja del producto en "
+      + "Odoo, que se lee en cada foto. Basta con una de las dos.",
     clic: "Filtra el catálogo a esos SKUs.",
-    ojo: "Es aproximado. No es la recepción de Odoo ni lo que contó bodega, "
-      + "no distingue embarques, y lo creado después del 3-jun sale como no "
-      + "recibido aunque haya llegado.",
+    ojo: "Es aproximado: NINGUNA de las dos dice que la mercancía llegó. El "
+      + "packing list es la foto del embarque y el empaque de Odoo describe la "
+      + "caja. No es la recepción de Odoo ni lo que contó bodega, y no "
+      + "distingue embarques.",
   },
   bodega_3de4: {
     que: "SKUs con 3 de los 4 requisitos de bodega: ubicación, stock y foto. "
