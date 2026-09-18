@@ -1001,6 +1001,25 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.545.2 — FULLFILMENT: cada aviso de FULL cuenta UNA vez (ML los reenvía y la bitácora los repetía)
+
+Brandon preguntó por el webhook del evento de S38279 (EST-0078-TRANS-GRI, que el panel pintaba «26 de 25,
+completo · +1»). Siguiéndolo de punta a punta —el aviso crudo en `ops.webhook_events`, la operación en la API
+de ML y el renglón en `ops.fanout_log`— apareció que la operación **6355804565657261632** está DOS veces en la
+bitácora (18:11:14 y 18:15:58): ML reenvió el aviso y `stock_full` lo volvió a anotar (su candado de
+idempotencia sólo sella los movimientos que tocan Woo, no los `full_ignorado`). La pieza «de más» era esa.
+
+Medido: **396 operaciones de llegada duplicadas** desde el 12-ago (255 Kubera, 141 San Corpe), unas **930
+piezas contadas dos veces (7%)**; el duplicado llega a la mediana 4.5 min después y hasta ~30 min. Ninguna
+operación tiene dos SKUs. `_SQL_AVISOS` ahora toma **una fila por operación** (`distinct on (item_id)`, la
+más temprana).
+
+No sólo inflaba: **un duplicado también tapaba faltantes**. Con cada operación una vez, S38279 queda 25 de 25
+y S37750 sigue 410/410, pero S37012 pasa de 19 a **32 piezas no recibidas** (MUE-0160-NEG 97 de 100,
+MUE-0160-GRI-NEG 94 de 100, TEC-0381-MET 46 de 50…) y S36102 de 57 a 62. Lo que todavía sale «+N» ya no son
+duplicados: es ML moviendo piezas entre sus bodegas con el mismo tipo de aviso (y, ojo, eso sí puede tapar
+un faltante de 1–2 piezas en SKUs que ya tenían stock en FULL).
+
 ### v0.545.1 — FULLFILMENT: la ventana de llegada empieza 4 días antes de la validación, no al crear la orden
 
 La v0.545.0 arrancaba la ventana de cada envío cuando se CREA la orden, para no perder lo que ML recibe antes

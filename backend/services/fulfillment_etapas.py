@@ -34,8 +34,10 @@ LAS REGLAS QUE NO SE AFLOJAN
      llegue después es de ésa) o a los 30 días.
   3. RECHAZO = lo enviado que no llegó cuando el envío ya CERRÓ (10 días después
      de la salida). Antes de eso es "en proceso": las tandas tardan días.
-  4. Llegar MÁS de lo enviado no es sobrante: ML mueve piezas entre sus bodegas
-     con el mismo tipo de aviso. Se tope a lo enviado y se dice.
+  4. Cada operación de ML cuenta UNA vez: ML reenvía avisos y la bitácora los
+     repetía (7% de las piezas, v0.545.2). Llegar MÁS de lo enviado, ya sin
+     duplicados, no es sobrante: ML mueve piezas entre sus bodegas con el mismo
+     tipo de aviso. Se tope a lo enviado y se dice.
   5. Un aviso cuyo SKU no se pudo leer (publicación con VARIANTES: el SKU vive en
      cada variante) queda como '?'. Si en la ventana de un envío con faltantes
      hubo de ésos, se avisa: "pueden ser de este envío" (S36996 llegó así).
@@ -82,15 +84,23 @@ _SQL_CUENTAS = """
 
 # Llegadas a FULL avisadas por ML y resueltas por el backend (stock_full.py).
 # El `%` va DOBLE: con parámetros, psycopg2 lee `%` como un hueco.
+#
+# UNA VEZ POR OPERACIÓN (`distinct on (item_id)`, que aquí es el id de la
+# operación de ML). ML reenvía el mismo aviso —mediana 4.5 min después, hasta
+# media hora— y la bitácora lo anota otra vez: medido el 18-sep, 396 operaciones
+# duplicadas y ~930 piezas contadas dos veces (7%). S38279 salía "26 de 25, +1"
+# por la operación 6355804565657261632 anotada a las 18:11 y a las 18:15. Y un
+# duplicado también puede TAPAR un faltante: 29 reales + 1 repetida = "completo".
 _SQL_AVISOS = r"""
     select cuenta, sku, array_agg(ts order by ts) fechas, array_agg(n order by ts) piezas
-      from (select cuenta, sku::text sku, ts,
+      from (select distinct on (item_id) cuenta, sku::text sku, ts,
                    (regexp_match(resultado, '^(?:TRANSFER_DELIVERY|INBOUND_RECEPTION) x(\d+)'))[1]::int n
               from ops.fanout_log
              where motivo = 'movimiento FULL/FBA'
                and cuenta in ('BEKURA', 'SANCORFASHION')
                and ts >= %s
-               and (resultado like 'TRANSFER_DELIVERY%%' or resultado like 'INBOUND_RECEPTION%%')) t
+               and (resultado like 'TRANSFER_DELIVERY%%' or resultado like 'INBOUND_RECEPTION%%')
+             order by item_id, ts) t
      where n is not null
      group by 1, 2
 """
