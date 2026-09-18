@@ -24,9 +24,12 @@ de `channel.listing_history`, y eso fallaba de dos formas:
     rail pintaba esa hora como llegada y "entraron 760".
 
 LAS REGLAS QUE NO SE AFLOJAN
-  1. La ventana empieza cuando se CREA la orden, no cuando bodega valida: en
-     S35628 ML recibió el 23-ago y Odoo validó el 26. Con la ventana en la
-     validación, 21 SKUs salían "no llegó" habiendo llegado completos.
+  1. La ventana empieza 4 días ANTES de que bodega valide (nunca antes de
+     crearse la orden): en S35628 ML recibió el 23-ago y Odoo validó el 26, y
+     con la ventana en la validación 21 SKUs salían "no llegó" habiendo llegado.
+     Medido en 173 casos limpios: lo más temprano de verdad fue 3.2 días antes;
+     lo de 4 a 28 días antes era de OTRO envío (arrancar al crear la orden le
+     colgaba a S37015 las últimas tandas del envío anterior del mismo SKU).
   2. Termina en la siguiente orden del mismo SKU en la misma cuenta (lo que
      llegue después es de ésa) o a los 30 días.
   3. RECHAZO = lo enviado que no llegó cuando el envío ya CERRÓ (10 días después
@@ -63,6 +66,9 @@ DIAS_ACTIVACION = 45
 # Días después de la salida en que el envío se da por cerrado: lo que no llegó
 # para entonces, ML no lo recibió.
 DIAS_CIERRE = 10
+# Cuánto ANTES de la validación en Odoo puede llegar la mercancía a ML (bodega
+# valida tarde): medido, a lo más 3.2 días en 173 casos.
+DIAS_ADELANTO = 4
 
 # El histórico de cambios del sync arranca aquí (Amazon).
 DESDE_HISTORIA = datetime(2026, 7, 17, tzinfo=timezone.utc)
@@ -159,6 +165,15 @@ def _ts(etapa: dict | None) -> datetime | None:
     return datetime.fromisoformat(etapa["ts"]) if etapa and etapa.get("ts") else None
 
 
+def _inicio(e: dict[str, Any]) -> datetime | None:
+    """Desde cuándo una llegada puede ser de este envío (regla 1 del encabezado)."""
+    creada, salida = _ts(e["etapas"][0]), _ts(e["etapas"][1])
+    if salida:
+        tope = salida - timedelta(days=DIAS_ADELANTO)
+        return max(creada, tope) if creada else tope
+    return creada
+
+
 def _venta_desde(dias: list[Any], desde: datetime) -> Any | None:
     i = bisect.bisect_left(dias, desde.astimezone(timezone(timedelta(hours=-6))).date())
     return dias[i] if i < len(dias) else None
@@ -180,7 +195,7 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
     inicios: dict[tuple[str, str], list[datetime]] = defaultdict(list)
     for e in envios:
         codigo = _codigo(e["canal"], e.get("cuenta"))
-        ini = _ts(e["etapas"][0]) or _ts(e["etapas"][1])
+        ini = _inicio(e)
         if e["canal"] == "meli" and codigo and ini:
             for r in e["lineas"]:
                 inicios[(codigo, r["sku"])].append(ini)
@@ -191,7 +206,7 @@ def _aplicar_meli(envios: list[dict[str, Any]], datos: dict[str, Any], ahora: da
 
     for e in envios:
         codigo = _codigo(e["canal"], e.get("cuenta"))
-        ini = _ts(e["etapas"][0]) or _ts(e["etapas"][1])
+        ini = _inicio(e)
         if e["canal"] != "meli" or not codigo or not ini or ini < DESDE_AVISOS:
             # Sin cuenta no se sabe a qué bodega mirar; antes del 12-ago no hay
             # avisos resueltos. En los dos casos, "sin dato" y no "rechazado".

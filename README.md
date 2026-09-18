@@ -1001,6 +1001,20 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.545.1 — FULLFILMENT: la ventana de llegada empieza 4 días antes de la validación, no al crear la orden
+
+La v0.545.0 arrancaba la ventana de cada envío cuando se CREA la orden, para no perder lo que ML recibe antes
+de que bodega valide. Con datos reales eso le colgaba a un envío las últimas tandas del envío ANTERIOR del
+mismo SKU: S37015 (orden 27-ago, salida 04-sep) salía «Recibido 29 ago», que eran piezas de S35635.
+
+Medido en 173 casos limpios (un solo envío del SKU en ±30 días): cuando ML recibe antes de la validación es
+**a lo más 3.2 días antes** (S35628: 23-ago contra 26-ago). Las 9 «llegadas» de 4 a 28 días antes eran de
+otra cosa. Ahora la ventana empieza en `max(creación de la orden, validación − 4 días)` (`DIAS_ADELANTO`);
+sin validar, en la creación. Con eso S36990 y S37015 reciben el 06-sep, S35628 conserva su 22-ago, y S26840
+(orden de abril validada el 04-sep) ya se juzga: 474 piezas sin una sola llegada en ninguna cuenta.
+
+Una prueba nueva lo fija (la tanda de 5 días antes de validar es del envío anterior). 40 pruebas en verde.
+
 ### v0.545.0 — FULLFILMENT: la llegada a FULL sale de los avisos de ML, con lo que no recibió; y se ve lo que Odoo no surtió
 
 Brandon, con S37750 en la mano: el panel decía que llegaron 5 de 6 SKUs y en Mercado Libre

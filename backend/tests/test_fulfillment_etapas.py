@@ -6,8 +6,9 @@ Desde v0.545.0 la llegada de Mercado Libre sale de los AVISOS de FULL
 el 18-sep: su suma por SKU da exacto lo que salió de Odoo. Estas pruebas fijan
 las reglas que evitan que esa medición mienta:
 
-  1. la ventana empieza al CREAR la orden: ML puede recibir antes de que bodega
-     valide (S35628: recibió el 23-ago, validó el 26);
+  1. la ventana empieza 4 días antes de que bodega valide (nunca antes de la
+     orden): ML puede recibir antes (S35628: recibió el 23-ago, validó el 26),
+     pero lo de más atrás es de otro envío;
   2. termina en la siguiente orden del mismo SKU y cuenta: lo de después es de ésa;
   3. RECHAZO sólo con el envío CERRADO (10 días tras la salida); antes, "en proceso";
   4. lo que llega DE MÁS se topa a lo enviado (ML baraja entre bodegas);
@@ -98,6 +99,14 @@ class LlegadaPorAvisos(unittest.TestCase):
         fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((antes, 10))}), ahora=CERRADO)
         self.assertEqual(e["lineas"][0]["estado_llegada"], "completo")
         self.assertEqual(e["etapas"][2]["ts"], antes.isoformat())
+
+    def test_lo_de_mas_de_4_dias_antes_de_validar_es_de_otro_envio(self):
+        salida = ORDEN + timedelta(days=10)
+        e = _envio(skus=("A",), validada=salida)
+        avisos = {("A", "BEKURA"): _aviso((salida - timedelta(days=5), 10), (salida - timedelta(days=3), 10))}
+        fe.aplicar([e], _datos(avisos=avisos), ahora=salida + timedelta(days=fe.DIAS_CIERRE + 1))
+        self.assertEqual(e["lineas"][0]["llegadas"], 10, "la tanda de 5 días antes es del envío anterior")
+        self.assertEqual(e["etapas"][2]["ts"], (salida - timedelta(days=3)).isoformat())
 
     def test_lo_anterior_a_la_orden_no_es_de_este_envio(self):
         e = _envio(skus=("A",))
