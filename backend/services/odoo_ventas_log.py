@@ -178,6 +178,112 @@ def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
         return False
 
 
+# Acciones que dicen "no hay orden en Odoo" por un TROPIEZO que alguien puede
+# arreglar después: SKU sin producto, error, o el automatismo apagado/observando
+# en ese momento. NO van las que dicen "no debía haber orden" (nació cancelada,
+# sin orden al cancelar): vincularlas pegaría una venta muerta a una orden viva.
+_ACCIONES_SIN_ORDEN = ("sku_sin_producto", "error", "apagado", "canal_apagado",
+                       "solo_registro", "simulado")
+
+
+def vincular_sin_orden(canal: str, dias: int = 30, limite: int = 200) -> dict[str, Any]:
+    """
+    Vincula a su orden de Odoo las ventas que la bitácora dejó SIN orden. ⚠️ BLOQUEA.
+
+    POR QUÉ. `registrar` sólo corre cuando la automatización crea la orden. Si
+    no pudo —el caso real: la venta 586126707939116455 de TikTok vendió el SKU
+    PADRE ROP-0256, que no existe en Odoo— y alguien la crea aparte con el
+    número de venta como referencia (S38923 con la variante ROP-0256-NAR-XL,
+    18-sep), la bitácora nunca se entera: el tab seguía diciendo "Error · SKU
+    sin producto" con la orden viva en Odoo.
+
+    Busca en Odoo, con el partner del canal y sin canceladas, órdenes cuyo
+    `client_order_ref` sea la venta o `<venta>#n` (surtido dividido), y llena
+    la fila: id, nombre(s), estado, almacén(es) y una acción que dice lo que
+    Odoo tiene ("confirmada" o "creada"), con un motivo que cuenta que se
+    vinculó y qué decía antes. SÓLO escribe la bitácora, nunca Odoo, y SÓLO
+    filas sin `odoo_order_id`: re-correrlo no pisa nada. Nunca lanza.
+    """
+    from services import odoo_ventas
+    from services import supabase_db as sdb
+
+    r: dict[str, Any] = {"canal": canal, "revisadas": 0, "vinculadas": 0, "ventas": []}
+    partner = odoo_ventas._PARTNER.get(canal)
+    if not partner:
+        return {**r, "error": f"canal '{canal}' sin partner"}
+    try:
+        filas = sdb.fetch_all(
+            """select cuenta, external_order_id, accion from ops.odoo_sale_orders
+                where canal = %(c)s and odoo_order_id is null
+                  and accion = any(%(a)s)
+                  and creado_at > now() - make_interval(days => %(d)s)
+                order by creado_at desc limit %(l)s""",
+            {"c": canal, "a": list(_ACCIONES_SIN_ORDEN), "d": int(dias), "l": int(limite)})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("vincular_sin_orden(%s): no se pudo leer la bitácora: %s",
+                    canal, str(exc)[:150])
+        return {**r, "error": f"bitácora: {str(exc)[:150]}"}
+    r["revisadas"] = len(filas)
+    if not filas:
+        return r
+
+    antes = {str(f["external_order_id"]): (f["cuenta"], f["accion"]) for f in filas}
+    ventas = list(antes)
+    # (ref exacta) | (ref =like venta#%) | … y además partner y no cancelada.
+    terminos: list[Any] = [["client_order_ref", "in", ventas]]
+    terminos += [["client_order_ref", "=like", f"{v}#%"] for v in ventas]
+    dominio = (["|"] * (len(terminos) - 1) + terminos
+               + [["partner_id", "=", partner], ["state", "!=", "cancel"]])
+    try:
+        ords = odoo_ventas._kw("sale.order", "search_read", [dominio],
+                               {"fields": ["id", "name", "client_order_ref", "state",
+                                           "warehouse_id"],
+                                "order": "id asc"})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("vincular_sin_orden(%s): Odoo no contestó: %s", canal, str(exc)[:150])
+        return {**r, "error": f"odoo: {str(exc)[:150]}"}
+
+    por_venta: dict[str, list[dict[str, Any]]] = {}
+    for o in ords or []:
+        v = str(o.get("client_order_ref") or "").split("#", 1)[0]
+        if v in antes:
+            por_venta.setdefault(v, []).append(o)
+
+    for v, partes in por_venta.items():
+        partes.sort(key=lambda o: (str(o.get("client_order_ref") or ""), o["id"]))
+        confirmadas = all(o.get("state") in ("sale", "done") for o in partes)
+        accion = "confirmada" if confirmadas else "creada"
+        nombres = " + ".join(str(o.get("name")) for o in partes)
+        almacenes = " + ".join(str((o.get("warehouse_id") or [None, "—"])[1]) for o in partes)
+        alm_id = (partes[0].get("warehouse_id") or [None])[0]
+        cuenta, accion_vieja = antes[v]
+        try:
+            n = sdb.execute(
+                """update ops.odoo_sale_orders
+                      set odoo_order_id = %(id)s, odoo_name = %(n)s, estado = %(e)s,
+                          accion = %(a)s, almacen_id = %(ai)s, almacen = %(al)s,
+                          cobertura = %(cob)s, motivo = %(m)s, actualizado_at = now()
+                    where canal = %(c)s and cuenta = %(cu)s
+                      and external_order_id = %(v)s and odoo_order_id is null""",
+                {"id": partes[0]["id"], "n": nombres, "e": partes[0].get("state") or "",
+                 "a": accion, "ai": alm_id, "al": almacenes,
+                 "cob": "dividida" if len(partes) > 1 else "completa",
+                 "m": (f"Vinculada sola: {nombres} se creó aparte en Odoo con esta "
+                       f"venta como referencia (antes: {accion_vieja})."),
+                 "c": canal, "cu": cuenta, "v": v})
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vincular_sin_orden(%s): no se pudo vincular %s: %s",
+                        canal, v, str(exc)[:150])
+            continue
+        if n:
+            r["vinculadas"] += 1
+            r["ventas"].append({"venta": v, "orden": nombres, "accion": accion})
+    if r["vinculadas"]:
+        log.info("Bitácora %s: %s venta(s) vinculadas a su orden de Odoo: %s", canal,
+                 r["vinculadas"], ", ".join(f"{x['venta']}→{x['orden']}" for x in r["ventas"]))
+    return r
+
+
 def historial(limite: int = 100, canal: str | None = None,
               solo_problemas: bool = False,
               dias: int | None = None) -> list[dict[str, Any]]:

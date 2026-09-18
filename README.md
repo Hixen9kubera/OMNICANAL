@@ -1001,6 +1001,33 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.536.0 — Una venta que quedó sin orden se vincula sola cuando la orden aparece en Odoo
+
+Brandon, 18-sep: *"la orden S38923 ya está creada en Odoo pero no la veo corregida
+en Automatización"*. La venta de TikTok 586126707939116455 vendió el SKU PADRE
+`ROP-0256` (no existe en Odoo) y la bitácora la dejó en "Error · SKU sin producto".
+Se creó aparte S38923 con la variante `ROP-0256-NAR-XL` y el número de venta como
+referencia, pero `registrar` sólo corre cuando la automatización crea la orden: la
+bitácora nunca se enteró.
+
+**`odoo_ventas_log.vincular_sin_orden(canal)`** (nuevo) toma las filas SIN
+`odoo_order_id` cuya acción es un tropiezo arreglable (`sku_sin_producto`, `error`,
+`apagado`, `canal_apagado`, `solo_registro`, `simulado` — nunca las canceladas), busca
+en Odoo con el partner del canal y sin canceladas una orden cuyo `client_order_ref`
+sea la venta o `<venta>#n` (surtido dividido), y llena la fila: id, nombre(s),
+estado, almacén(es), acción según lo que Odoo tiene (`confirmada`/`creada`) y un
+motivo que dice que se vinculó y qué decía antes. **Sólo escribe la bitácora, nunca
+Odoo**, y sólo filas sin orden: re-correrlo no pisa nada.
+
+Corre cada 15 min para TikTok y Temu (`ODOO_VENTAS_VINCULAR_ENABLED`, nace encendido
+porque sólo toca la bitácora; primera pasada 2½ min después de arrancar).
+
+Probado sin red (orden simple, surtido dividido con una parte en borrador, sin orden,
+Odoo caído, canal sin partner) y con un **simulacro de sólo lectura contra lo real**:
+de 30 ventas de TikTok sin orden vincula exactamente 1 —586126707939116455 → S38923,
+confirmada, TEXCO—; las 29 "apagado" de agosto no tienen orden con su referencia y
+no se tocan.
+
 ### v0.535.0 — Validar costos tiraba la pantalla: una medida vacía no es una medida
 
 Reporte de Eduardo (18-sep): al validar costos aparece *«Application error: a

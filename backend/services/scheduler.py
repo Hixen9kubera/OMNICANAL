@@ -149,6 +149,31 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Vigilante de ingresos a FBA cada %s min.", settings.full_watch_fba_min)
+    # VINCULAR ventas que quedaron sin orden y después se crearon aparte en Odoo
+    # (18-sep-2026: S38923 para la venta de TikTok con SKU padre). Sólo escribe
+    # la bitácora del tab, nunca Odoo. Ver odoo_ventas_log.vincular_sin_orden.
+    if getattr(settings, "odoo_ventas_vincular_enabled", False):
+        from services import odoo_ventas_log as _ovl
+
+        async def _vincular_sin_orden() -> None:
+            import asyncio as _aio
+            for _canal in ("tiktok", "temu"):
+                try:
+                    await _aio.to_thread(_ovl.vincular_sin_orden, _canal)
+                except Exception as exc:  # noqa: BLE001 — nunca tumba al scheduler
+                    log.warning("vincular_sin_orden(%s) falló: %s", _canal, exc)
+
+        _min_vinc = max(5, int(settings.odoo_ventas_vincular_min))
+        _scheduler.add_job(
+            _vincular_sin_orden,
+            "interval",
+            minutes=_min_vinc,
+            id="odoo_ventas_vincular",
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=150),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Vincular ventas sin orden con Odoo cada %s min (tiktok, temu).", _min_vinc)
     # Refresco de guías de Temu. La guía NO existe cuando nace la orden: la
     # asigna la paquetería cuando se compra el envío. Y como Temu no manda
     # avisos, sin este trabajo la entrega se queda sin rastreo para siempre.

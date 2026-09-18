@@ -237,6 +237,14 @@ class Settings(BaseSettings):
     # A qué canales aplica. Temu se suma cuando se sepa por qué solo entraron 2
     # ventas por la tubería contra 49 capturas manuales.
     odoo_ventas_canales: str = "tiktok"
+    # VINCULAR LO QUE QUEDÓ SIN ORDEN (18-sep-2026). Si la automatización no pudo
+    # crear la orden (SKU sin producto, error de Odoo, apagado) y después alguien
+    # la crea aparte en Odoo con el número de venta como referencia, la bitácora
+    # nunca se enteraba y el tab seguía diciendo "Error". Este trabajo busca esas
+    # órdenes en Odoo y las vincula. Sólo escribe la BITÁCORA (ops.odoo_sale_orders),
+    # nunca Odoo: por eso nace encendido. Ver odoo_ventas_log.vincular_sin_orden.
+    odoo_ventas_vincular_enabled: bool = True
+    odoo_ventas_vincular_min: int = 15
     # ¿El webhook de Temu CREA pedidos en WooCommerce? Apagado: el receptor
     # registra, descifra y verifica la firma, pero no escribe. Ojo con lo que
     # NO se puede hacer aunque se encienda: Temu no expone el importe del
