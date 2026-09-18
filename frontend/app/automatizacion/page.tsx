@@ -184,6 +184,28 @@ interface OrdenOdoo {
   /** Cuándo COMPRÓ el cliente. Null si la venta no está en channel.orders. */
   venta_at: string | null;
   lineas: Linea[];
+  /** SÓLO en un surtido dividido, y sólo cuando Odoo contestó: una por orden
+   *  de Odoo, con lo que lleva. NO viene en la bitácora: se pide aparte
+   *  (`/ordenes-odoo/partes`) después de pintar la lista y se cuelga aquí.
+   *  Sin esto la fila se pinta como siempre. */
+  partes?: ParteOdoo[];
+}
+
+/** Una de las órdenes de un surtido dividido, leída de Odoo al vuelo
+ *  (backend: odoo_ventas.partes_de_ventas). */
+interface ParteOdoo {
+  odoo_order_id: number;
+  odoo_name: string;
+  ref: string;
+  parte: number;
+  almacen: string | null;
+  estado: string | null;
+  lineas: { sku: string; titulo: string | null; cantidad: number }[];
+  /** La de SU entrega de salida en Odoo; vacía = todavía sin guía. */
+  guia: string;
+  paqueteria: string;
+  tiene_pdf: boolean;
+  pdf_nombre: string | null;
 }
 
 interface Estado {
@@ -290,9 +312,50 @@ function desenlace(o: OrdenOdoo): { txt: string; v: Variante; urgente?: string }
  *  vuelven a separar para poder pintarlas como lo que son: dos entregas de la
  *  misma compra. */
 function partes(o: OrdenOdoo): Array<{ nombre: string; almacen: string }> {
+  if (o.partes?.length) {
+    return o.partes.map((p) => ({ nombre: p.odoo_name, almacen: p.almacen ?? "—" }));
+  }
   const nombres = (o.odoo_name ?? "").split(" + ").map((s) => s.trim()).filter(Boolean);
   const almacenes = (o.almacen ?? "").split(" + ").map((s) => s.trim()).filter(Boolean);
   return nombres.map((nombre, i) => ({ nombre, almacen: almacenes[i] ?? "—" }));
+}
+
+/** ¿La fila es de un surtido dividido? Lo dice la bitácora: cobertura
+ *  `dividida`, o dos nombres de orden ("S1 + S2") — que también pasa con una
+ *  venta partida Y sin respaldo (`parcial`). A éstas, y sólo a éstas, se les
+ *  piden a Odoo sus partes. */
+function esDividida(o: OrdenOdoo): boolean {
+  return o.cobertura === "dividida" || (o.odoo_name ?? "").includes(" + ");
+}
+
+/** La paquetería de cada parte. Odoo casi nunca la trae (`carrier_id` pide un
+ *  transportista dado de alta), la bitácora sí. Se le presta a una parte SÓLO
+ *  si su guía es una de las de la bitácora y ésta tiene una sola paquetería:
+ *  con dos cajas de dos paqueterías no se sabe cuál es de cuál. */
+function conPaqueteria(ps: ParteOdoo[], o: OrdenOdoo): ParteOdoo[] {
+  const paq = (o.paqueteria ?? "").trim();
+  if (!paq || paq.includes(" + ")) return ps;
+  const deBitacora = new Set((o.guia ?? "").split(" + ").map((g) => g.replace(/\s+/g, "").toLowerCase()).filter(Boolean));
+  return ps.map((p) => (!p.paqueteria && p.guia && deBitacora.has(p.guia.replace(/\s+/g, "").toLowerCase())
+    ? { ...p, paqueteria: paq } : p));
+}
+
+/** Las partes VIVAS: una orden cancelada en Odoo no es una entrega. */
+const partesVivas = (ps: ParteOdoo[] | undefined) => (ps ?? []).filter((p) => p.estado !== "cancel");
+
+/** Las guías DISTINTAS de un surtido dividido: las de sus partes vivas si Odoo
+ *  las dio; si no, las de la bitácora ("G1 + G2" cuando son dos cajas). */
+function guiasDivididas(o: OrdenOdoo): string[] {
+  const crudas = o.partes?.length
+    ? partesVivas(o.partes).flatMap((p) => p.guia.split(" + "))
+    : (o.guia ?? "").split(" + ");
+  const vistas = new Set<string>();
+  const fuera: string[] = [];
+  for (const g of crudas.map((s) => s.trim()).filter(Boolean)) {
+    const k = g.replace(/\s+/g, "").toLowerCase();
+    if (!vistas.has(k)) { vistas.add(k); fuera.push(g); }
+  }
+  return fuera;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -394,7 +457,8 @@ const norm = (t: string | null | undefined) => (t ?? "").replace(/\s+/g, "").toL
 function coincide(o: OrdenOdoo, q: string): boolean {
   const n = norm(q);
   if (!n) return true;
-  return [o.external_order_id, o.odoo_name, o.guia].some((v) => norm(v).includes(n));
+  return [o.external_order_id, o.odoo_name, o.guia, ...(o.partes ?? []).map((p) => p.guia)]
+    .some((v) => norm(v).includes(n));
 }
 
 /**
@@ -475,6 +539,132 @@ function IdVenta({ id, url = "", className = "" }: { id: string; url?: string; c
   );
 }
 
+/** "Abrir en Temu" / "Abrir en TikTok": la venta en el seller center, con los
+ *  colores del canal. Null si no hay plantilla de enlace o canal conocido.
+ *
+ *  La plantilla sale de `/estado` (`url_venta`, por canal). En TikTok viene de
+ *  `TIKTOK_URL_VENTA`, que por omisión está VACÍA (backend/config.py): sin esa
+ *  variable, TikTok no tiene botón de la venta —ni aquí ni en el Detalle— y
+ *  sólo queda el de Odoo. No es un fallo de la pantalla. */
+function enlaceVenta(o: OrdenOdoo, ventaUrl: string) {
+  if (!o.external_order_id || !ventaUrl.includes("{id}")) return null;
+  const c = CANALES.find((x) => x.id === o.canal);
+  if (!c) return null;
+  return {
+    href: ventaUrl.replace("{id}", encodeURIComponent(o.external_order_id)),
+    texto: `Abrir en ${c.id === "tiktok" ? "TikTok" : c.nombre}`,
+    fondo: c.base,
+    icono: c.id === "tiktok" ? c.punto : undefined,
+  };
+}
+
+/**
+ * Un surtido dividido, parte por parte (Brandon, 18-sep): "dentro del div de
+ * cada orden de venta, la información de los productos que se van a enviar,
+ * cada uno con su botón para consultar la orden de venta y la venta".
+ *
+ * Cada parte es SU orden de Odoo: su almacén, sus productos, SU guía (la de su
+ * entrega; una caja por almacén puede traer guías distintas) y si ya tiene el
+ * PDF. El botón de Odoo abre ESA orden —antes sólo había uno, y abría la
+ * primera—; el del canal abre la venta, que es la misma para todas.
+ */
+function PartesDivididas({ o, partes: ps, odooUrl, ventaUrl }: {
+  o: OrdenOdoo; partes: ParteOdoo[]; odooUrl: string; ventaUrl: string;
+}) {
+  const venta = enlaceVenta(o, ventaUrl);
+  // "entrega i de n" cuenta sólo las VIVAS: una cancelada en Odoo no es una
+  // entrega y se rotula como tal, sin número.
+  const vivas = partesVivas(ps);
+  /* Dos columnas sólo desde `lg`: a media anchura (768–1023 px) una tarjeta
+     de ~320 px partía "Abrir S38861 en Odoo" en dos renglones. En teléfono
+     (< 640 px) los dos botones van uno debajo del otro, a lo ancho. */
+  return (
+    <div className="grid gap-[10px] px-[14px] pb-3 lg:grid-cols-2 lg:pl-[34px] lg:pr-5">
+      {ps.map((p) => {
+        const piezas = p.lineas.reduce((n, l) => n + (l.cantidad ?? 0), 0);
+        const cancelada = p.estado === "cancel";
+        const numero = vivas.indexOf(p) + 1;
+        const hrefOdoo = odooUrl.includes("{id}") ? odooUrl.replace("{id}", String(p.odoo_order_id)) : "";
+        return (
+          <div key={p.odoo_order_id}
+               className="min-w-0 rounded-[12px] border bg-white p-3"
+               style={{ borderColor: "#dfe3f5", opacity: cancelada ? 0.6 : 1 }}>
+            <div className="flex flex-wrap items-center gap-x-[8px] gap-y-1">
+              <span className="font-mono text-[13px] font-bold" style={{ color: "#4F46E5" }}>{p.odoo_name}</span>
+              <span className="text-[12px] font-semibold text-slate-600">{p.almacen ?? "—"}</span>
+              {cancelada && (
+                <span className="rounded-full bg-slate-100 px-[7px] py-[1px] text-[10px] font-extrabold uppercase text-slate-500">
+                  cancelada en Odoo
+                </span>
+              )}
+              {!cancelada && (
+                <span className="ml-auto shrink-0 rounded-full px-[8px] py-[2px] text-[10px] font-extrabold uppercase tracking-[.04em]"
+                      style={{ background: "#EEF0FF", color: "#4338CA" }}>
+                  entrega {numero} de {vivas.length}
+                </span>
+              )}
+            </div>
+
+            <ul className="mt-2 space-y-[5px]">
+              {p.lineas.map((l, j) => (
+                <li key={`${l.sku}-${j}`} className="flex min-w-0 items-baseline gap-2 text-[12px]">
+                  <span className="shrink-0 font-mono text-[11.5px] font-bold text-slate-700">{l.sku || "(sin SKU)"}</span>
+                  <span className="min-w-0 flex-1 truncate text-slate-500" title={l.titulo ?? undefined}>
+                    {l.titulo ?? ""}
+                  </span>
+                  <span className="shrink-0 font-mono font-bold text-slate-900">×{l.cantidad}</span>
+                </li>
+              ))}
+              {p.lineas.length === 0 && <li className="text-[11.5px] text-slate-400">Sin renglones en Odoo</li>}
+            </ul>
+
+            <div className="mt-2 flex flex-wrap items-center gap-x-[8px] gap-y-1 border-t pt-2 text-[11.5px]"
+                 style={{ borderColor: "#f1f3f9" }}>
+              <Truck className="h-[13px] w-[13px] shrink-0 text-slate-400" />
+              {p.guia
+                ? <span className="font-mono font-bold text-slate-800">{p.guia}</span>
+                : <span className="text-slate-400">sin guía</span>}
+              {p.guia && p.paqueteria && <span className="text-slate-400">{p.paqueteria}</span>}
+              <span className="rounded-full px-[7px] py-[1px] text-[10px] font-extrabold"
+                    title={p.tiene_pdf ? (p.pdf_nombre ?? "PDF en «Subir guía»") : "Sin PDF en «Subir guía»"}
+                    style={p.tiene_pdf
+                      ? { background: "#ECFDF5", color: "#047857" }
+                      : { background: "#F1F5F9", color: "#64748B" }}>
+                PDF {p.tiene_pdf ? "sí" : "no"}
+              </span>
+              <span className="ml-auto inline-flex items-center gap-[5px] text-slate-500">
+                <Package className="h-[13px] w-[13px] text-slate-300" />{piezas} pzas
+              </span>
+            </div>
+
+            <div className="mt-[10px] flex flex-wrap gap-2">
+              {hrefOdoo && (
+                <a href={hrefOdoo} target="_blank" rel="noreferrer"
+                   onClick={(e) => e.stopPropagation()}
+                   className="inline-flex w-full items-center justify-center gap-[6px] whitespace-nowrap rounded-[9px] px-3 py-2 text-[12px] font-bold text-white sm:w-auto sm:flex-1"
+                   style={{ background: "#4F46E5" }}>
+                  <ExternalLink className="h-[14px] w-[14px]" />
+                  Abrir {p.odoo_name} en Odoo
+                </a>
+              )}
+              {venta && (
+                <a href={venta.href} target="_blank" rel="noreferrer"
+                   onClick={(e) => e.stopPropagation()}
+                   title="Abrir la venta en el seller center para generar su guía"
+                   className="inline-flex w-full items-center justify-center gap-[6px] whitespace-nowrap rounded-[9px] px-3 py-2 text-[12px] font-bold text-white sm:w-auto sm:flex-1"
+                   style={{ background: venta.fondo }}>
+                  <ExternalLink className="h-[14px] w-[14px]" style={venta.icono ? { color: venta.icono } : undefined} />
+                  {venta.texto}
+                </a>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function FilaOrden({
   o, abierta, onAbrir, odooUrl, ventaUrl = "", combinado, onVerJuntas,
 }: {
@@ -486,6 +676,13 @@ function FilaOrden({
   const piezas = o.lineas.reduce((n, l) => n + (l.cantidad ?? 0), 0);
   const rz = rezago(o.venta_at, o.creado_at);
   const dividido = d.v === "dividido";
+  /* VARIAS ÓRDENES, pinte como se pinte la fila. Una venta partida Y sin
+     respaldo sale ámbar (`parcial` gana en `desenlace`), pero sigue siendo dos
+     entregas: sus recuadros se dibujan igual. Es la sobreventa, justo la que
+     más hay que mirar — y así la pestaña cuenta lo mismo que el Excel. */
+  const variasOrdenes = Boolean(o.partes?.length) || partes(o).length > 1;
+  const vivas = o.partes?.length ? partesVivas(o.partes) : null;
+  const canceladas = o.partes?.length ? o.partes.length - vivas!.length : 0;
 
   const Chevron = abierta ? ChevronUp : ChevronDown;
 
@@ -510,18 +707,36 @@ function FilaOrden({
             <span className="text-[13.5px] font-bold" style={{ color: s.color }}>Surtido dividido</span>
             <span className="shrink-0 rounded-full px-[8px] py-[2px] text-[9.5px] font-extrabold uppercase tracking-[.05em]"
                   style={{ background: "#EEF0FF", color: "#4338CA" }}>
-              {partes(o).length} órdenes · 1 venta
+              {(() => {
+                const n = vivas ? vivas.length : partes(o).length;
+                return `${n} ${n === 1 ? "orden" : "órdenes"} · 1 venta`;
+              })()}
+              {canceladas > 0 && ` · ${canceladas} cancelada${canceladas === 1 ? "" : "s"}`}
             </span>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-[11.5px]" style={{ color: "#4338ca" }}>
             <IdVenta id={o.external_order_id} url={ventaUrl} className="text-indigo-700" />
             <span>Ningún almacén tenía la venta completa</span>
-            {o.guia && (
-              <span className="inline-flex items-center gap-[6px] rounded-full px-[9px] py-[3px] font-mono text-[11.5px] font-bold"
-                    style={{ background: "#EEF0FF" }}>
-                <Truck className="h-3 w-3" />{o.guia} · una sola guía
-              </span>
-            )}
+            {(() => {
+              const gs = guiasDivididas(o);
+              if (!gs.length) return null;
+              // Con las partes de Odoo se sabe cuál entrega sigue sin guía: una
+              // guía no es "una sola guía" si la otra caja todavía no tiene. Una
+              // parte cancelada en Odoo no espera guía: no cuenta.
+              const sinGuia = (vivas ?? []).filter((p) => !p.guia.trim()).length;
+              // Los NÚMEROS siempre a la vista: sin Odoo (sin recuadros) el
+              // renglón es el único lugar donde se leen.
+              const texto = (gs.length === 1 ? `${gs[0]} · una sola guía` : `${gs.join(" + ")} · una por caja`);
+              return (
+                <span className="inline-flex items-center gap-[6px] rounded-full px-[9px] py-[3px] font-mono text-[11.5px] font-bold"
+                      style={{ background: "#EEF0FF" }}>
+                  <Truck className="h-3 w-3" />
+                  {sinGuia
+                    ? `${gs.join(" + ")} · ${sinGuia} ${sinGuia === 1 ? "entrega" : "entregas"} sin guía`
+                    : texto}
+                </span>
+              );
+            })()}
             <span className="ml-auto font-mono text-[13px] font-bold text-slate-900">{dinero(o.total)}</span>
             <span className="whitespace-nowrap text-slate-400">
               compra <span className="font-mono font-bold text-slate-600">{fecha(o.venta_at)}</span>
@@ -645,8 +860,14 @@ function FilaOrden({
         </div>
       </div>
 
-      {/* ── Las dos entregas de un surtido dividido, con su conector ── */}
-      {dividido && (
+      {/* ── Las entregas de un surtido dividido. Con las partes de Odoo, cada
+             una es un recuadro con SUS productos, SU guía y SUS botones; sin
+             ellas (Odoo no contestó o todavía no llega), la lista de siempre.
+             Va por `variasOrdenes`, no por el color: también en ámbar. ── */}
+      {o.partes && o.partes.length > 0 && (
+        <PartesDivididas o={o} partes={o.partes} odooUrl={odooUrl} ventaUrl={ventaUrl} />
+      )}
+      {variasOrdenes && !o.partes?.length && (
         <div className="pb-3 pl-[34px] pr-5">
           {partes(o).map((p, i) => (
             <div key={p.nombre}
@@ -836,34 +1057,68 @@ function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
         </dl>
 
         <div className="mt-4 space-y-2">
-          {o.odoo_order_id && odooUrl && (
+          {/* SURTIDO DIVIDIDO: un botón por orden. El único de antes decía
+              "Abrir S38861 + S38862" y abría sólo la primera. */}
+          {o.partes && o.partes.length > 0 && odooUrl.includes("{id}") && o.partes.map((p) => (
             <a
-              href={odooUrl.replace("{id}", String(o.odoo_order_id))}
+              key={p.odoo_order_id}
+              href={odooUrl.replace("{id}", String(p.odoo_order_id))}
               target="_blank"
               rel="noreferrer"
               className="flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2.5 text-[13px] font-bold text-white"
               style={{ background: "#4F46E5" }}
             >
               <ExternalLink className="h-4 w-4" />
-              Abrir {o.odoo_name} en Odoo
+              Abrir {p.odoo_name} en Odoo
+              {p.almacen && <span className="font-semibold opacity-75">· {p.almacen}</span>}
             </a>
-          )}
+          ))}
+          {!o.partes?.length && o.odoo_order_id && odooUrl && (() => {
+            /* Sin las partes de Odoo (no contestó, o todavía no llegan), la
+               bitácora sólo sabe el id de la PRIMERA orden. El botón dice cuál
+               abre de verdad —antes decía "Abrir S1 + S2" y abría sólo S1— y
+               las demás quedan nombradas para buscarlas a mano. */
+            const nombres = partes(o).map((p) => p.nombre);
+            const otras = nombres.slice(1);
+            return (
+              <>
+                <a
+                  href={odooUrl.replace("{id}", String(o.odoo_order_id))}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2.5 text-[13px] font-bold text-white"
+                  style={{ background: "#4F46E5" }}
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  Abrir {otras.length ? nombres[0] : o.odoo_name} en Odoo
+                </a>
+                {otras.length > 0 && (
+                  <p className="rounded-[10px] px-3 py-2 text-[11.5px] leading-snug"
+                     style={{ background: "#EEF0FF", color: "#4338CA" }}>
+                    {otras.length === 1
+                      ? `${otras[0]} también es de esta venta y Odoo no la dio aquí: búscala por nombre.`
+                      : `${otras.join(", ")} también son de esta venta y Odoo no las dio aquí: búscalas por nombre.`}
+                  </p>
+                )}
+              </>
+            );
+          })()}
           {/* La venta en el seller center del canal, con SUS colores: es donde el
               almacén compra el envío y genera la guía de esta venta exacta. */}
-          {o.external_order_id && ventaUrl.includes("{id}") && (() => {
-            const c = CANALES.find((x) => x.id === o.canal);
-            if (!c) return null;
+          {(() => {
+            const v = enlaceVenta(o, ventaUrl);
+            if (!v) return null;
             return (
               <a
-                href={ventaUrl.replace("{id}", encodeURIComponent(o.external_order_id))}
+                href={v.href}
                 target="_blank"
                 rel="noreferrer"
                 title="Abrir la venta en el seller center para generar su guía"
                 className="flex w-full items-center justify-center gap-2 rounded-[10px] px-3 py-2.5 text-[13px] font-bold text-white"
-                style={{ background: c.base }}
+                style={{ background: v.fondo }}
               >
-                <ExternalLink className="h-4 w-4" style={c.id === "tiktok" ? { color: c.punto } : undefined} />
-                Abrir en {c.id === "tiktok" ? "TikTok" : c.nombre}
+                <ExternalLink className="h-4 w-4" style={v.icono ? { color: v.icono } : undefined} />
+                {v.texto}
               </a>
             );
           })()}
@@ -2147,6 +2402,51 @@ export default function AutomatizacionPage() {
 
   useEffect(() => { void cargar(); }, [cargar]);
 
+  /* LAS PARTES DE CADA SURTIDO DIVIDIDO van en su propia carga, DESPUÉS de
+     pintar la lista y fuera del `Promise.all` de arriba: leen Odoo en vivo, y
+     un Odoo lento tenía TODA la bitácora en "cargando" (medido: 0.8 s la
+     bitácora sola, 3.3 s con las partes, 8 s o más con Odoo colgado). Sólo se
+     piden las filas partidas. Si falla, esas filas se quedan como estaban
+     —la lista de nombres de siempre— y no sale ningún banner rojo. */
+  const [partesOdoo, setPartesOdoo] = useState<Record<string, ParteOdoo[]>>({});
+  const turnoPartes = useRef(0);
+  useEffect(() => {
+    const ventasPorCanal: Record<string, string[]> = {};
+    for (const o of ordenes) {
+      if (!esDividida(o) || !o.external_order_id) continue;
+      if (!ventasPorCanal[o.canal]) ventasPorCanal[o.canal] = [];
+      ventasPorCanal[o.canal].push(o.external_order_id);
+    }
+    const canales = Object.keys(ventasPorCanal);
+    if (!canales.length) return;
+    const turno = ++turnoPartes.current;
+    void Promise.all(canales.map(async (c) => {
+      const ventas = Array.from(new Set(ventasPorCanal[c])).slice(0, 80);
+      try {
+        const r = await fetchSesion(
+          `${API_BASE}/api/automatizacion/ordenes-odoo/partes?canal=${encodeURIComponent(c)}` +
+          `&ventas=${encodeURIComponent(ventas.join(","))}`);
+        if (!r.ok) return null;
+        const j = await r.json();
+        return j.ok ? { canal: c, partes: (j.partes ?? {}) as Record<string, ParteOdoo[]> } : null;
+      } catch {
+        return null;
+      }
+    })).then((res) => {
+      // Llegó una carga más nueva mientras ésta volaba: gana la nueva.
+      if (turno !== turnoPartes.current) return;
+      setPartesOdoo((prev) => {
+        const m = { ...prev };
+        for (const x of res) {
+          if (!x) continue;        // ese canal no contestó: se queda lo que ya había
+          for (const k of Object.keys(m)) if (k.startsWith(`${x.canal}|`)) delete m[k];
+          for (const [v, ps] of Object.entries(x.partes)) m[`${x.canal}|${v}`] = ps;
+        }
+        return m;
+      });
+    });
+  }, [ordenes]);
+
   /* LAS CONFIRMADAS CUYA VENTA SE CANCELÓ van en su propia carga, fuera del
      `Promise.all` de arriba: leen Odoo en vivo (segundos, no milisegundos) y
      un fallo aquí no debe tapar la bitácora con el banner rojo. Es de admin en
@@ -2212,11 +2512,14 @@ export default function AutomatizacionPage() {
   const ov = estado?.odoo_ventas;
   const porCanal = useMemo(() => {
     const base = { tiktok: [] as OrdenOdoo[], temu: [] as OrdenOdoo[] };
-    for (const o of ordenes) {
+    for (const orden of ordenes) {
+      // Las partes de Odoo se cuelgan aquí, sólo a las filas partidas.
+      const ps = esDividida(orden) ? partesOdoo[`${orden.canal}|${orden.external_order_id}`] : undefined;
+      const o = ps?.length ? { ...orden, partes: conPaqueteria(ps, orden) } : orden;
       if (o.canal === "tiktok" || o.canal === "temu") base[o.canal].push(o);
     }
     return base;
-  }, [ordenes]);
+  }, [ordenes, partesOdoo]);
 
   // Grupos por canal; las llaves no chocan porque llevan el canal.
   const combinados = useMemo(

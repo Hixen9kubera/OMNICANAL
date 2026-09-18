@@ -1001,6 +1001,50 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.537.0 — Surtido dividido: cada orden con sus productos, sus botones y SU guía
+
+Brandon, 18-sep, sobre la venta Temu PO-128-10289257052790014 partida en S38861
+(TEXCO) y S38862 (TEXCO II): *"las 2 órdenes tienen un solo botón… pon dentro del
+div de cada orden los productos que se van a enviar, cada uno con su botón… y el
+fix para adjuntar su guía"*.
+
+**El problema.** La bitácora guarda UNA fila por venta con el id de la PRIMERA orden
+("S38861 + S38862"): el botón abría sólo S38861 y nada decía qué lleva cada una.
+Y el refresco de guías le ponía a TODAS las partes la guía del PRIMER paquete: con
+dos almacenes normalmente hay dos cajas y dos guías, y la segunda orden se quedaba
+con la guía de la otra caja — y para siempre, porque `fijar_guia`/`fijar_etiqueta`
+no pisan.
+
+**Panel.** Cada parte es un recuadro: S…, almacén, "entrega i de n", SUS productos
+(SKU, título, piezas), su guía y PDF, y dos botones — "Abrir S38861 en Odoo" (con
+SU id) y "Abrir en Temu/TikTok". Las partes se leen de Odoo al vuelo
+(`odoo_ventas.partes_de_ventas`, sin migración) por un endpoint aparte,
+`GET /api/automatizacion/ordenes-odoo/partes` (8 s por llamada, 15 s en total, tope
+80), que el panel pide DESPUÉS de pintar la lista: un Odoo lento ya no frena la
+bitácora. Sin Odoo, la fila se ve como antes y el Detalle dice qué otra orden es de
+la venta. Una parte cancelada no cuenta como "sin guía".
+
+**Guías por parte (Temu y TikTok).** `emparejar_partes`: con UN paquete y una sola
+parte, como siempre; con varias partes, un paquete sólo va a una parte si se sabe
+qué lleva y trae TODOS sus SKUs y piezas (Temu: `shippableOrders`/`shipmentInfoDTO`
+por skuId; TikTok: líneas por `package_id`). Todo lo dudoso —SKU repartido, contenido
+desconocido, SKU distinto al del canal, una consulta que falló— NO se escribe: se
+cuenta (`partes_ambiguas`, `divididas_incompletas`) y se avisa sin datos del
+comprador, para ponerlo a mano. La etiqueta se pide por `packageSn`; la memoria de
+etiqueta de TikTok es por paquete. La bitácora sólo guarda las guías que de verdad
+quedaron en Odoo ("G1 + G2" si son dos) y un re-aviso ya no la regresa a "G1".
+Una venta NO dividida —o "#n" con una sola parte viva— sigue por el código de antes,
+idéntica (probado contra origin/main).
+
+**Excel del día.** Cada SKU de una venta partida va bajo SU orden con SU guía; el PDF
+imprime una etiqueta por guía distinta. Las guías "G1 + G2" se comparan por separado.
+
+Probado sin red: 136 comprobaciones, con prueba diferencial contra origin/main para
+lo no dividido y tres mutaciones (primer paquete a todos, regla vieja, sin
+"incompleta") que la prueba detecta. Suites previas en verde; `tsc` limpio. Leído
+en sólo lectura contra Odoo real: S38861 (ACC-0696 140 cm ×50 y 90 cm ×20) y S38862
+(ACC-0574-LIL ×1, DEC-0078-PLA ×5).
+
 ### v0.536.0 — Una venta que quedó sin orden se vincula sola cuando la orden aparece en Odoo
 
 Brandon, 18-sep: *"la orden S38923 ya está creada en Odoo pero no la veo corregida

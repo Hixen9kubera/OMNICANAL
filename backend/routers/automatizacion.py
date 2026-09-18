@@ -3,6 +3,8 @@ automatizacion.py — Lo que el panel automatiza sin que nadie lo empuje.
 
   GET  /api/automatizacion/estado           → banderas y contadores
   GET  /api/automatizacion/ordenes-odoo     → la bitácora que pinta el tab
+       …/ordenes-odoo/partes                  y, aparte, qué lleva cada orden de
+                                              un surtido dividido (Odoo al vuelo)
   GET  /api/automatizacion/guias-del-dia    → las órdenes generadas un día y sus
        …/guias-del-dia/excel · …/pdf          guías: vista previa, Excel y PDF
   GET  /api/automatizacion/simular?venta=   → QUÉ orden armaría esa venta, sin
@@ -213,8 +215,59 @@ def ordenes_odoo(
 
     Ese último dato no se puede pedir en vivo — `free_qty` ya cambió. Sale de la
     foto congelada en `ops.odoo_sale_order_items`.
+
+    Sólo kubera, a propósito: lo que va en cada orden de un surtido dividido se
+    le pide a Odoo APARTE (`/ordenes-odoo/partes`), después de pintar la lista.
+    Si viniera aquí, un Odoo lento tendría toda la bitácora en "cargando".
     """
     return {"ordenes": odoo_ventas_log.historial(limite, canal, solo_problemas, dias)}
+
+
+# Cuántas ventas partidas se leen por llamada, cuánto se le espera a CADA
+# consulta a Odoo y cuánto a la lectura entera. Hoy son un puñado; los topes
+# existen para que un Odoo colgado no deje un hilo esperando un minuto.
+_MAX_DIVIDIDAS = 80
+_TIMEOUT_PARTES_S = 8.0
+_PLAZO_PARTES_S = 15.0
+# Un id de venta de Temu ("PO-128-…") o de TikTok (sólo dígitos). Lo demás se
+# descarta antes de armar el dominio de Odoo.
+_VENTA_VALIDA = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{2,63}")
+
+
+@router.get("/ordenes-odoo/partes")
+def ordenes_odoo_partes(
+    canal: str = Query(..., description="tiktok | temu"),
+    ventas: str = Query(..., max_length=6000,
+                        description="ids de venta del canal, separados por coma"),
+):
+    """
+    SURTIDO DIVIDIDO: una venta que ningún almacén tenía completa nace en dos o
+    más órdenes de Odoo. La bitácora guarda UNA fila con el `odoo_order_id` de
+    la PRIMERA parte y las líneas de la venta sin decir a qué parte van, así que
+    el panel sólo podía abrir ésa. Aquí se le pregunta a Odoo qué orden es cada
+    parte, qué lleva, su guía y si tiene PDF (`odoo_ventas.partes_de_ventas`,
+    sólo `search_read`).
+
+    `{ok, partes: {venta: [parte]}}`. El panel lo pide DESPUÉS de pintar la
+    lista y sólo para las filas partidas; si Odoo no contesta, `ok=false` y las
+    filas se quedan como estaban. Es `def`: FastAPI lo corre en su pool de
+    hilos (regla 11). Sin datos del comprador: `partner_shipping_id` ni se pide.
+    """
+    canal = (canal or "").strip().lower()
+    if canal not in odoo_ventas.canales_posibles():
+        raise HTTPException(400, f"canal desconocido: {canal!r}")
+    lista = [v for v in dict.fromkeys(x.strip() for x in ventas.split(","))
+             if v and _VENTA_VALIDA.fullmatch(v)][:_MAX_DIVIDIDAS]
+    if not lista:
+        return {"ok": True, "partes": {}}
+    try:
+        partes = odoo_ventas.partes_de_ventas(canal, lista, timeout=_TIMEOUT_PARTES_S,
+                                              plazo_total=_PLAZO_PARTES_S)
+    except Exception as exc:  # noqa: BLE001 — la pantalla sigue con lo de siempre
+        log.warning("ordenes-odoo/partes: Odoo no dio las partes de %d venta(s) de %s (%s)",
+                    len(lista), canal, str(exc)[:160])
+        return {"ok": False, "partes": {}, "error": "Odoo no contestó a tiempo"}
+    return {"ok": True, "partes": partes}
 
 
 # ═════════════════════════════════════════════════════════════════════════════

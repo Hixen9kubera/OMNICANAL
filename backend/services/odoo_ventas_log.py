@@ -155,6 +155,11 @@ def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
     Es un UPDATE, no un upsert, a propósito: si la venta no está registrada no
     hay que inventarle una fila a medias. Y no pisa una guía existente con
     vacío — solo avanza de '' a valor.
+
+    TAMPOCO RETROCEDE UN SURTIDO DIVIDIDO: si la fila dice "G1 + G2" (una venta
+    en dos cajas, lo escribe el refresco de guías) y llega "G1" —el re-aviso del
+    canal trae la guía del PRIMER paquete—, se deja "G1 + G2". Sólo aplica a
+    filas cuya guía ya trae " + "; las demás siguen igual que siempre.
     """
     from services import supabase_db as sdb
 
@@ -169,7 +174,9 @@ def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
                 where canal = %(c)s and cuenta = %(cu)s
                   and external_order_id = %(o)s
                   and (coalesce(guia, '') is distinct from %(g)s
-                       or coalesce(paqueteria, '') is distinct from %(p)s)""",
+                       or coalesce(paqueteria, '') is distinct from %(p)s)
+                  and not (%(g)s <> '' and position(' + ' in coalesce(guia, '')) > 0
+                           and %(g)s = any(string_to_array(guia, ' + ')))""",
             {"c": canal, "cu": cuenta, "o": str(order_id),
              "g": guia or "", "p": paqueteria or ""})
         return bool(n)

@@ -372,7 +372,100 @@ def _guia_sin_pii(o: dict[str, Any]) -> dict[str, Any]:
          if str(l.get("shipping_provider_name") or "").strip()), "")
     return {"id": base["id"], "status": base["status"],
             "shipping_type": (base["shipping_type"] or "").upper(),
-            "paquetes": paquetes, "guia": guia, "paqueteria": paqueteria}
+            "paquetes": paquetes, "guia": guia, "paqueteria": paqueteria,
+            "paquetes_detalle": _paquetes_detalle(o, lineas, paquetes, guia, paqueteria),
+            "skus_canal": _skus_canal(lineas)}
+
+
+def _skus_canal(lineas: list[dict[str, Any]]) -> list[str] | None:
+    """Todos los `seller_sku` de la venta, o None si alguna línea no lo trae
+    (no se sabe completo). Sirve para ver si una parte de Odoo lleva un SKU que
+    el canal nunca vendió (variante puesta a mano): ésa no cruza jamás."""
+    skus = [str(l.get("seller_sku") or "").strip() for l in lineas]
+    if not skus or not all(skus):
+        return None
+    return sorted(set(skus))
+
+
+def _paquetes_detalle(o: dict[str, Any], lineas: list[dict[str, Any]],
+                      paquetes: list[str], guia: str,
+                      paqueteria: str) -> list[dict[str, Any]]:
+    """
+    Cada paquete de la orden con SU guía y SUS SKUs, para el surtido dividido.
+    Sólo ids, guías, paqueterías y SKUs: nada del comprador.
+
+    Sale de `line_items[]`: cada línea dice en qué `package_id` va, con qué
+    `tracking_number` y cuál es su `seller_sku` (nuestro SKU). `skus = None` =
+    no se sabe qué lleva (un paquete que sólo aparece en `packages[]`, o una
+    línea sin `seller_sku`): quien empareja no lo toma por vacío.
+
+    `cantidades` = piezas por SKU. TikTok no manda `quantity` en la línea: cada
+    línea es UNA pieza (cada una trae su propio `package_id`), así que se
+    cuentan. Hace falta para el SKU repartido entre partes.
+
+    Sin paquetes pero con guía en el encabezado → UN paquete de contenido
+    desconocido con esa guía (la regla de siempre: una guía para la venta).
+    """
+    por_id: dict[str, dict[str, Any]] = {}
+
+    def _p(clave: str, pid: str) -> dict[str, Any]:
+        return por_id.setdefault(clave, {"id": pid, "guia": "", "paqueteria": "",
+                                         "_skus": set(), "_desconocido": False,
+                                         "_con_lineas": False, "_piezas": {}})
+
+    for pid in paquetes:
+        _p(pid, pid)
+    for l in lineas:
+        pid = str(l.get("package_id") or "").strip()
+        trk = str(l.get("tracking_number") or "").strip()
+        if pid:
+            d = _p(pid, pid)
+        elif trk:
+            d = _p(f"guia:{''.join(trk.split()).lower()}", "")
+        else:
+            continue       # sin paquete todavía: no va en ninguno
+        d["_con_lineas"] = True
+        sku = str(l.get("seller_sku") or "").strip()
+        if sku:
+            d["_skus"].add(sku)
+            d["_piezas"][sku] = d["_piezas"].get(sku, 0) + 1
+        else:
+            d["_desconocido"] = True
+        if trk and not d["guia"]:
+            d["guia"] = trk
+            d["paqueteria"] = str(l.get("shipping_provider_name") or "").strip()
+    if not por_id and guia:
+        return [{"id": "", "guia": guia, "paqueteria": paqueteria, "skus": None,
+                 "cantidades": {}}]
+    salida = []
+    for d in por_id.values():
+        conocido = d["_con_lineas"] and not d["_desconocido"] and d["_skus"]
+        salida.append({"id": d["id"], "guia": d["guia"], "paqueteria": d["paqueteria"],
+                       "skus": sorted(d["_skus"]) if conocido else None,
+                       "cantidades": dict(d["_piezas"]) if conocido else {}})
+    if len(salida) == 1 and not salida[0]["guia"] and guia:
+        # Un solo paquete y la guía sólo en el encabezado: es la suya.
+        salida[0]["guia"] = guia
+        salida[0]["paqueteria"] = salida[0]["paqueteria"] or paqueteria
+    # Varios con la MISMA guía son una caja.
+    fundidos: list[dict[str, Any]] = []
+    por_guia: dict[str, dict[str, Any]] = {}
+    for p in salida:
+        g = "".join(p["guia"].split()).lower()
+        if g and g in por_guia:
+            q = por_guia[g]
+            q["skus"] = (None if q["skus"] is None or p["skus"] is None
+                         else sorted(set(q["skus"]) | set(p["skus"])))
+            # Líneas distintas (cada una es una pieza con su paquete): se suman.
+            q["cantidades"] = ({} if q["skus"] is None else
+                               {k: q["cantidades"].get(k, 0) + p["cantidades"].get(k, 0)
+                                for k in set(q["cantidades"]) | set(p["cantidades"])})
+            q["id"] = q["id"] or p["id"]
+            continue
+        if g:
+            por_guia[g] = p
+        fundidos.append(p)
+    return fundidos
 
 
 async def _detalles_en_lotes(ids: list[str], token: str, ciph: str,
@@ -404,6 +497,154 @@ async def _detalles_en_lotes(ids: list[str], token: str, ciph: str,
 
 def _contar(r: dict[str, Any], clave: str, subclave: str) -> None:
     r[clave][subclave] = r[clave].get(subclave, 0) + 1
+
+
+def _paquetes_para_emparejar(f: dict[str, Any]) -> list[dict[str, Any]]:
+    """Los paquetes del detalle, con su contenido. Si el detalle no trae el
+    desglose (`paquetes_detalle`), se arma con lo que hay SIN inventar
+    contenido: un paquete (o sólo la guía del encabezado) = uno de contenido
+    desconocido; varios = varios desconocidos (y por tanto, nada se empareja)."""
+    detalle = f.get("paquetes_detalle")
+    if isinstance(detalle, list):
+        return [dict(p) for p in detalle if isinstance(p, dict)]
+    ids = [str(p) for p in (f.get("paquetes") or []) if str(p or "").strip()]
+    if len(ids) > 1:
+        return [{"id": i, "guia": "", "paqueteria": "", "skus": None} for i in ids]
+    if ids or f.get("guia"):
+        return [{"id": ids[0] if ids else "", "guia": f.get("guia") or "",
+                 "paqueteria": f.get("paqueteria") or "", "skus": None}]
+    return []
+
+
+async def _guia_dividida(item: dict[str, Any], f: dict[str, Any], pedir_pdf: bool,
+                         r: dict[str, Any], etiquetas: dict[str, dict[str, Any]],
+                         token: str, ciph: str, usar_memoria: bool = True) -> None:
+    """
+    Una venta de TikTok partida en varias órdenes de Odoo (surtido dividido):
+    cada parte recibe el número y la etiqueta de SU paquete (`line_items[]`
+    dice qué `seller_sku` va en qué `package_id`). Sólo con evidencia (ver
+    `odoo_ventas.emparejar_partes`): lo que no se pueda emparejar con certeza
+    no se toca y queda contado en `partes_ambiguas` con un aviso sin PII.
+
+    El número se escribe aunque no haya etiqueta (envío del vendedor, ya
+    recolectada, sin agendar): la etiqueta es de TikTok, el número de quien lo
+    tenga — el mismo arreglo del 17-sep, parte por parte.
+
+    LA MEMORIA DE "ETIQUETA TERMINAL" ES POR PAQUETE, no por venta: si la caja
+    de una parte ya se recolectó, la etiqueta de la OTRA caja se sigue pidiendo
+    (su ventana, agendado → recolección, es corta). `usar_memoria=False` en el
+    disparo inmediato, igual que el camino de siempre.
+
+    La bitácora sólo recibe las guías que quedaron puestas en Odoo.
+    """
+    from services import odoo_ventas, odoo_ventas_log
+    from services import tiktok as tk
+
+    oid = str(item["order_id"])
+    r["divididas"] += 1
+    paquetes = _paquetes_para_emparejar(f)
+    partes = item.get("partes") or []
+    asignacion = odoo_ventas.emparejar_partes(partes, paquetes, f.get("skus_canal"))
+    pidio_etiqueta = False
+    contados: set[str] = set()
+    puestas: list[dict[str, Any]] = []       # para la bitácora, en orden de parte
+    for parte in partes:
+        dec = asignacion.get(int(parte["sale_id"])) or {}
+        if not (parte.get("pickings") or parte.get("sin_pdf")):
+            # Ya tiene todo. Su guía cuenta para la bitácora si es la de SU paquete.
+            if dec.get("estado") == "asignada" and str(
+                    (dec.get("paquete") or {}).get("guia") or "").strip():
+                puestas.append(dec["paquete"])
+            continue
+        if dec.get("estado") == "ambigua":
+            r["partes_ambiguas"] += 1
+            log.warning("TIKTOK guías: venta %s dividida — a %s no se le escribe guía: %s",
+                        oid, parte.get("nombre") or parte["sale_id"], dec.get("motivo"))
+            continue
+        if dec.get("estado") != "asignada":
+            r["partes_sin_guia_aun"] += 1
+            continue
+        paq = dec["paquete"]
+        guia = str(paq.get("guia") or "").strip()
+        pid = str(paq.get("id") or "").strip()
+        terminal_visto = bool(usar_memoria and pid and _recordado(f"paquete:{pid}"))
+        necesita_pdf = bool(pedir_pdf and parte.get("sin_pdf") and pid and not terminal_visto)
+        et: dict[str, Any] | None = None
+        if (pedir_pdf and pid and not terminal_visto
+                and (necesita_pdf or (parte.get("pickings") and not guia))):
+            pidio_etiqueta = True
+            if pid not in etiquetas:
+                etiquetas[pid] = await tk.descargar_etiqueta(pid, token, ciph)
+            et = etiquetas[pid]
+            if not guia and et.get("tracking_number"):
+                guia = str(et["tracking_number"]).strip()
+                paq["guia"] = guia        # también para la bitácora de la venta
+            if not et.get("ok") and pid not in contados:
+                contados.add(pid)         # un paquete cuenta una vez, no por parte
+                if et.get("codigo"):
+                    _contar(r, "codigos", str(et["codigo"]))
+                if et.get("clase") == "no_agendado":
+                    r["pdf_sin_agendar"] += 1
+                elif et.get("terminal"):
+                    r["pdf_terminales"] += 1
+                    # Se recuerda ESTE paquete, no la venta (ver arriba).
+                    _recordar(f"paquete:{pid}", "etiqueta_terminal")
+                    log.warning("TIKTOK guías: un paquete de %s no da etiqueta (code=%s)",
+                                oid, et.get("codigo"))
+                else:
+                    r["pdf_fallos"] += 1
+        if not guia and not (et and et.get("ok")):
+            if et is None:
+                r["partes_sin_guia_aun"] += 1
+            continue
+        r["partes_asignadas"] += 1
+
+        # 1 · EL NÚMERO EN SUS ENTREGAS (fijar_guia re-lee después de escribir).
+        guia_en_odoo = bool(guia) and not parte.get("pickings")
+        if parte.get("pickings") and guia:
+            res = await asyncio.to_thread(odoo_ventas.fijar_guia, "tiktok", oid,
+                                          guia, parte["pickings"])
+            if res.get("accion") == "ya_tenia":
+                guia_en_odoo = True
+            elif res.get("ok") and res.get("verificada"):
+                r["guias_escritas"] += 1
+                r["guias_verificadas"] += 1
+                guia_en_odoo = True
+            else:
+                r["guias_no_escritas"] += 1
+                log.warning("TIKTOK guías: la guía de %s (%s) NO quedó en Odoo (%s)",
+                            oid, parte.get("nombre"), res.get("accion"))
+        if guia_en_odoo:
+            puestas.append(paq)
+
+        # 2 · EL PDF DE SU PAQUETE EN SU ORDEN, `<order_id>.pdf`.
+        if necesita_pdf and et and et.get("ok"):
+            res = await asyncio.to_thread(odoo_ventas.fijar_etiqueta, "tiktok", oid,
+                                          [int(parte["sale_id"])], et["pdf"], f"{oid}.pdf")
+            if res.get("accion") in ("ya_tenia", "sin_confirmar"):
+                pass
+            elif res.get("ok") and res.get("verificada"):
+                r["pdf_subidos"] += 1
+                r["pdf_verificados"] += 1
+            else:
+                r["pdf_fallos"] += 1
+                log.warning("TIKTOK guías: el PDF de %s (%s) NO quedó en Odoo (%s)",
+                            oid, parte.get("nombre"), res.get("accion"))
+
+    # 3 · LA BITÁCORA: sólo lo que quedó en Odoo. La guía si es una, "G1 + G2"
+    #     si son varias; nada si ninguna parte recibió la suya.
+    if any(str(q.get("guia") or "").strip() for q in paquetes):
+        r["con_guia"] += 1
+    elif not pidio_etiqueta:
+        r["sin_guia_aun"] += 1
+    guia_venta, paqueteria = odoo_ventas.guias_de_venta(puestas)
+    if not guia_venta:
+        return
+    try:
+        await asyncio.to_thread(odoo_ventas_log.actualizar_guia, "tiktok", CUENTA, oid,
+                                guia_venta, paqueteria)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("TIKTOK guías: bitácora de %s: %s", oid, str(exc)[:150])
 
 
 async def refrescar_guias(dias: int = 14, limite: int = 50, segundos_max: int = 900,
@@ -449,6 +690,11 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
                          "pdf_subidos": 0, "pdf_verificados": 0, "pdf_fallos": 0,
                          "pdf_sin_agendar": 0, "pdf_terminales": 0, "multi_paquete": 0,
                          "diferidas": 0, "recordadas": 0,
+                         # Surtido dividido: por PARTE (orden de Odoo) cuántas
+                         # recibieron su paquete, cuántas esperan y cuántas no
+                         # se pudieron emparejar con certeza (no se tocan).
+                         "divididas": 0, "partes_asignadas": 0,
+                         "partes_sin_guia_aun": 0, "partes_ambiguas": 0,
                          "motivos": {}, "codigos": {}, "cortado_por_tiempo": False,
                          "errores": [], "error": None}
     try:
@@ -556,6 +802,12 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
                 r["cortado_por_tiempo"] = True
                 break
             oid = str(item["order_id"])
+            if item.get("dividida"):
+                # Surtido dividido: cada orden de Odoo con SU paquete. Lo de
+                # abajo queda intacto para las ventas que no se partieron.
+                await _guia_dividida(item, f, pedir_pdf, r, etiquetas, token, ciph,
+                                     usar_memoria=solo_ids is None)
+                continue
             if pedir_pdf and len(f["paquetes"]) > 1:
                 # Surtido en varios paquetes: la orden tiene UN campo de PDF.
                 # Se sube el del primero y queda contado para revisarlo.

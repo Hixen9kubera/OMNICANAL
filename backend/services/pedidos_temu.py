@@ -227,6 +227,426 @@ async def _traer_guia_detalle(parent_sn: str, order_sn: str | None) -> dict[str,
     return {"guia": "", "paqueteria": "", "fuente": None, "errores": errores}
 
 
+# La fuente de envío YA CONFIRMADO del camino dividido. `bg.order.shippinginfo.v2.get`
+# NO está aquí a propósito: según la doc de Temu es la DIRECCIÓN del comprador
+# (receiptName, mobile, addressLine…), no los paquetes. En el camino dividido se
+# pedía una vez por `orderSn`: descargas de PII inútiles, multiplicadas. (El
+# camino de una venta sin partir la sigue pidiendo tal cual: no se toca sin su
+# propio dale.)
+_FUENTE_ENVIO = "bg.logistics.shipment.v2.get"
+
+
+def _norm_guia(g: str | None) -> str:
+    return "".join(str(g or "").split()).lower()
+
+
+def _entero(v: Any) -> int | None:
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def _fundir(grupos_ids: list[set[str]]) -> list[list[int]]:
+    """Índices agrupados por llaves compartidas (unión-búsqueda), en el orden
+    en que aparece el primero de cada grupo. Un elemento sin llaves va solo."""
+    padre = list(range(len(grupos_ids)))
+
+    def raiz(i: int) -> int:
+        while padre[i] != i:
+            padre[i] = padre[padre[i]]
+            i = padre[i]
+        return i
+
+    dueno: dict[str, int] = {}
+    for i, ids in enumerate(grupos_ids):
+        for k in ids:
+            if k in dueno:
+                a, b = raiz(dueno[k]), raiz(i)
+                if a != b:
+                    padre[max(a, b)] = min(a, b)
+            else:
+                dueno[k] = i
+    salida: dict[int, list[int]] = {}
+    for i in range(len(grupos_ids)):
+        salida.setdefault(raiz(i), []).append(i)
+    return [salida[k] for k in sorted(salida)]
+
+
+async def _paquetes_de_venta(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
+    """
+    TODOS los paquetes de una venta de Temu, QUÉ SKUs lleva cada uno y CUÁNTAS
+    piezas. Para el surtido dividido: `_traer_guia_detalle` se queda con el
+    PRIMERO que mencione la venta, y con dos cajas eso le pega a la segunda
+    parte la guía de la otra.
+
+    Devuelve `{paquetes: [{package_sn, guia, paqueteria, skus, cantidades,
+    fuente}], skus_venta, incompleto, errores, fuentes}`. `skus = None`
+    significa "no se sabe qué lleva", y quien empareja lo trata como tal (nunca
+    como "va vacío"); un SKU que no está en `cantidades` es "no se sabe cuántas".
+
+    DE DÓNDE SALE EL CONTENIDO (el SKU es `orderList[].productList[].extCode`;
+    el paquete dice qué `orderSn` lleva, nunca el SKU):
+      · `bg.order.unshipped.package.get` → `packageDetail.shippableOrders[]`: la
+        lista COMPLETA de órdenes de ese paquete, con `quantity` (etiqueta
+        comprada, envío sin confirmar). Sólo cuentan las de ESTA venta: una
+        caja combinada trae también las de otra.
+      · `bg.logistics.shipment.v2.get`, orden por orden → `shipmentInfoDTO[]`
+        con `skuId` (el de Temu, que el detalle liga a su `orderSn`) y
+        `quantity`. Un renglón sin `skuId` deja ese paquete de contenido
+        desconocido.
+      · el propio detalle, `orderList[].packageSnInfo[]`: cuenta los paquetes
+        aunque todavía no tengan guía, y dice su contenido sólo si TODAS las
+        órdenes lo traen (sin piezas).
+
+    EL MISMO PAQUETE TIENE VARIOS NÚMEROS: `packageSn`, `mainPackageSn` y
+    `subPackageSnList`. Se funden por cualquiera de ellos —si no, la misma caja
+    contaba dos veces y la venta quedaba ambigua para siempre— y la etiqueta se
+    pide con `packageSn`, como el camino de siempre (probado con las órdenes
+    reales). Después, varios paquetes con la misma guía son una caja.
+
+    `incompleto = True` si ALGUNA consulta a Temu falló: lo que se ve es parcial
+    y quien llama no escribe nada esa vuelta. Un dato a medias no se degrada a
+    "contenido desconocido → a todas".
+    """
+    from services import temu
+
+    sn = str(parent_sn)
+    renglones = [o for o in (det.get("orderList") or []) if isinstance(o, dict)]
+    skus_de: dict[str, set[str] | None] = {}
+    por_skuid: dict[str, set[str]] = {}
+    for o in renglones:
+        osn = str(o.get("orderSn") or "").strip()
+        if not osn:
+            continue
+        s = {str(p.get("extCode") or "").strip() for p in (o.get("productList") or [])
+             if isinstance(p, dict)}
+        s.discard("")
+        skus_de[osn] = s or None
+        sid = str(o.get("skuId") or "").strip()
+        if sid:
+            por_skuid.setdefault(sid, set()).add(osn)
+    todos_skus: set[str] = set()
+    for s in skus_de.values():
+        todos_skus |= s or set()
+    skus_venta = (sorted(todos_skus) if skus_de and all(s for s in skus_de.values())
+                  and len(skus_de) == len(renglones) else None)
+
+    # Cada vez que una fuente menciona un paquete es una OBSERVACIÓN; al final
+    # se funden las que comparten número.
+    obs: list[dict[str, Any]] = []
+
+    def _obs(ids: list[str], etiqueta: str, guia: str, paqueteria: str,
+             fuente: str | None) -> dict[str, Any]:
+        o = {"ids": {i for i in ids if i}, "etiqueta": etiqueta or None,
+             "guia": guia, "paqueteria": paqueteria, "fuente": fuente if guia else None,
+             "ordenes": set(), "fuentes": set(), "cant_orden": {}, "cant_skuid": {}}
+        obs.append(o)
+        return o
+
+    errores: dict[str, str] = {}
+    fuentes: dict[str, int] = {}
+    incompleto = False
+
+    # 1 · ENVÍO YA CONFIRMADO, orden por orden.
+    tipo = _FUENTE_ENVIO
+    hallo = False
+    for osn in skus_de:
+        try:
+            res = await temu.llamar(tipo, {"parentOrderSn": sn, "orderSn": osn})
+        except Exception as exc:  # noqa: BLE001
+            errores.setdefault(tipo, str(exc)[:160])
+            incompleto = True
+            continue
+        envios = (res or {}).get("shipmentInfoDTO") or []
+        if isinstance(envios, dict):
+            envios = [envios]
+        for e in envios:
+            if not isinstance(e, dict):
+                continue
+            guia = str(e.get("trackingNumber") or "").strip()
+            psn = str(e.get("packageSn") or "").strip()
+            if not (guia or psn):
+                continue
+            subs = [str(x.get("packageSn") or "").strip()
+                    for x in (e.get("subPackageShipmentInfoList") or []) if isinstance(x, dict)]
+            d = _obs([psn, *subs], psn, guia, str(e.get("carrierName") or "").strip(), tipo)
+            sid = str(e.get("skuId") or "").strip()
+            if sid in por_skuid:
+                d["ordenes"] |= por_skuid[sid]
+                d["fuentes"].add("envio")
+                n = _entero(e.get("quantity"))
+                if n is not None:
+                    d["cant_skuid"][sid] = n
+            else:
+                d["fuentes"].add("envio_incompleto")
+            hallo = hallo or bool(guia)
+    if hallo:
+        fuentes[tipo] = fuentes.get(tipo, 0) + 1
+
+    # 2 · ETIQUETA COMPRADA, ENVÍO SIN CONFIRMAR.
+    tipo = "bg.order.unshipped.package.get"
+    try:
+        res = await temu.llamar(tipo, {"parentOrderSnList": [sn],
+                                       "pageNumber": 1, "pageSize": 20})
+        con_guia = False
+        for q in _lista_de_dicts(res):
+            # La misma guarda de `_traer_guia_detalle`: un paquete que no
+            # menciona esta venta no es suyo, aunque Temu ignore el filtro.
+            if sn not in json.dumps(q, ensure_ascii=False, default=str):
+                continue
+            psn = str(q.get("packageSn") or "").strip()
+            principal = str(q.get("mainPackageSn") or "").strip()
+            subs = [str(x or "").strip() for x in (q.get("subPackageSnList") or [])
+                    if isinstance(x, (str, int))]
+            guia = str(q.get("trackingNumber") or "").strip()
+            if not (psn or principal or guia):
+                continue
+            d = _obs([psn, principal, *subs], psn or principal, guia,
+                     str(q.get("carrierName") or "").strip(), tipo)
+            con_guia = con_guia or bool(guia)
+            envia = (q.get("packageDetail") or {}).get("shippableOrders") \
+                if isinstance(q.get("packageDetail"), dict) else None
+            if isinstance(envia, list):
+                for so in envia:
+                    if not isinstance(so, dict):
+                        continue
+                    osn = str(so.get("orderSn") or "").strip()
+                    padre = str(so.get("parentOrderSn") or "").strip()
+                    if osn and (not padre or padre == sn):
+                        d["ordenes"].add(osn)
+                        n = _entero(so.get("quantity"))
+                        if n is not None:
+                            d["cant_orden"][osn] = max(d["cant_orden"].get(osn, 0), n)
+                d["fuentes"].add("sin_enviar")
+        if con_guia:
+            fuentes[tipo] = fuentes.get(tipo, 0) + 1
+    except Exception as exc:  # noqa: BLE001
+        errores[tipo] = str(exc)[:160]
+        incompleto = True
+
+    # 3 · LOS PAQUETES QUE DECLARA EL DETALLE, tengan guía o no.
+    info_completa = bool(renglones) and all(o.get("packageSnInfo") for o in renglones)
+    for o in renglones:
+        osn = str(o.get("orderSn") or "").strip()
+        for pi in (o.get("packageSnInfo") or []):
+            psn = str((pi or {}).get("packageSn") or "").strip() if isinstance(pi, dict) else ""
+            if not psn:
+                continue
+            d = _obs([psn], psn, "", "", None)
+            if osn:
+                d["ordenes"].add(osn)
+            d["fuentes"].add("detalle")
+
+    # 4 · UN PAQUETE = todas sus observaciones (por cualquiera de sus números).
+    por_paquete: list[dict[str, Any]] = []
+    for idx in _fundir([o["ids"] or {f"obs:{i}"} for i, o in enumerate(obs)]):
+        grupo = [obs[i] for i in idx]
+        con_guia_obs = next((o for o in grupo if o["guia"]), None)
+        f: set[str] = set().union(*(o["fuentes"] for o in grupo))
+        ordenes: set[str] = set().union(*(o["ordenes"] for o in grupo))
+        cant_orden: dict[str, int] = {}
+        cant_skuid: dict[str, int] = {}
+        for o in grupo:
+            for k, n in o["cant_orden"].items():
+                cant_orden[k] = max(cant_orden.get(k, 0), n)
+            for k, n in o["cant_skuid"].items():
+                cant_skuid[k] = max(cant_skuid.get(k, 0), n)
+        conocido = ("sin_enviar" in f
+                    or ("envio" in f and "envio_incompleto" not in f)
+                    or ("detalle" in f and info_completa))
+        skus: list[str] | None = None
+        if conocido and ordenes:
+            acum: set[str] | None = set()
+            for osn in ordenes:
+                s = skus_de.get(osn)
+                if s is None:
+                    acum = None
+                    break
+                acum |= s
+            skus = sorted(acum) if acum else None
+        # CUÁNTAS PIEZAS de cada SKU: por orden (sin enviar) o por skuId
+        # (confirmado). Lo que no se pueda atribuir a UN SKU queda sin número.
+        cantidades: dict[str, int] = {}
+        if skus is not None:
+            dudosos: set[str] = set()
+            cubiertas: set[str] = set()
+            for osn in ordenes:
+                if osn not in cant_orden:
+                    continue
+                s = skus_de.get(osn) or set()
+                cubiertas.add(osn)
+                if len(s) == 1:
+                    x = next(iter(s))
+                    cantidades[x] = cantidades.get(x, 0) + cant_orden[osn]
+                else:
+                    dudosos |= s
+            for sid, n in cant_skuid.items():
+                osns = {x for x in por_skuid.get(sid, set()) if x in ordenes} - cubiertas
+                if not osns:
+                    continue
+                s = set().union(*((skus_de.get(x) or set()) for x in osns))
+                cubiertas |= osns
+                if len(s) == 1:
+                    x = next(iter(s))
+                    cantidades[x] = cantidades.get(x, 0) + n
+                else:
+                    dudosos |= s
+            for osn in ordenes - cubiertas:
+                dudosos |= skus_de.get(osn) or set()
+            cantidades = {k: v for k, v in cantidades.items() if k not in dudosos}
+        etiqueta = ((con_guia_obs or {}).get("etiqueta")
+                    or next((o["etiqueta"] for o in grupo if o["etiqueta"]), None))
+        por_paquete.append({
+            "package_sn": etiqueta,
+            "guia": (con_guia_obs or {}).get("guia") or "",
+            "paqueteria": (con_guia_obs or {}).get("paqueteria") or "",
+            "skus": skus, "cantidades": cantidades,
+            "fuente": (con_guia_obs or {}).get("fuente")})
+
+    # 5 · Varios paquetes con la MISMA guía son una caja.
+    lista: list[dict[str, Any]] = []
+    por_guia: dict[str, dict[str, Any]] = {}
+    for p in por_paquete:
+        g = _norm_guia(p["guia"])
+        if g and g in por_guia:
+            q = por_guia[g]
+            q["skus"] = (None if q["skus"] is None or p["skus"] is None
+                         else sorted(set(q["skus"]) | set(p["skus"])))
+            # La misma caja vista dos veces no suma: se toma lo mayor (si fueran
+            # dos cajas, se queda corto, y corto = ambigua, nunca de más).
+            q["cantidades"] = {k: max(q["cantidades"].get(k, 0), p["cantidades"].get(k, 0))
+                               for k in set(q["cantidades"]) | set(p["cantidades"])}
+            q["package_sn"] = q["package_sn"] or p["package_sn"]
+            continue
+        if g:
+            por_guia[g] = p
+        lista.append(p)
+    return {"paquetes": lista, "skus_venta": skus_venta, "incompleto": incompleto,
+            "errores": errores, "fuentes": fuentes}
+
+
+async def _guia_dividida(item: dict[str, Any], det: dict[str, Any], r: dict[str, Any],
+                         pdf_por_paquete: dict[str, dict[str, Any]]) -> None:
+    """
+    El refresco de UNA venta partida en varias órdenes de Odoo (surtido
+    dividido). Cada parte recibe la guía y el PDF de SU paquete; la que no se
+    pueda emparejar con certeza no recibe nada y queda contada
+    (`partes_ambiguas`) con un aviso sin datos del comprador. Ver
+    `odoo_ventas.emparejar_partes` para las reglas.
+
+    Si alguna consulta a Temu falló, la vuelta no escribe NADA de esa venta
+    (`divididas_incompletas`): con la foto a medias, un paquete que sí se veía
+    podía parecer el único y llevarse las dos partes.
+
+    La bitácora sólo recibe las guías que quedaron puestas en Odoo: si ninguna
+    parte recibió la suya, no se toca.
+    """
+    from services import odoo_ventas, odoo_ventas_log, temu
+
+    sn = item["order_id"]
+    r["divididas"] += 1
+    info = await _paquetes_de_venta(sn, det)
+    for k, v in (info.get("errores") or {}).items():
+        r["errores_fuentes"].setdefault(k, v)
+    for k, n in (info.get("fuentes") or {}).items():
+        r["fuentes"][k] = r["fuentes"].get(k, 0) + n
+    if info.get("incompleto"):
+        r["divididas_incompletas"] += 1
+        log.warning("refrescar_guias: venta %s dividida — una consulta a Temu falló "
+                    "(%s); no se escribe nada esta vuelta", sn,
+                    ", ".join(sorted(info.get("errores") or {})) or "?")
+        return
+    paquetes = info["paquetes"]
+    if not any(p.get("guia") for p in paquetes):
+        r["sin_guia_aun"] += 1
+        return
+    r["con_guia"] += 1
+
+    partes = item.get("partes") or []
+    asignacion = odoo_ventas.emparejar_partes(partes, paquetes, info.get("skus_venta"))
+    puestas: list[dict[str, Any]] = []       # para la bitácora, en orden de parte
+    for parte in partes:
+        dec = asignacion.get(int(parte["sale_id"])) or {}
+        paquete = dec.get("paquete") or {}
+        guia = str(paquete.get("guia") or "").strip()
+        if not (parte.get("pickings") or parte.get("sin_pdf")):
+            # Esa parte ya tiene todo. Su guía cuenta para la bitácora si es la
+            # de SU paquete (ya estaba en sus entregas).
+            if dec.get("estado") == "asignada" and guia:
+                puestas.append(paquete)
+            continue
+        if dec.get("estado") == "ambigua":
+            r["partes_ambiguas"] += 1
+            log.warning("refrescar_guias: venta %s dividida — a %s no se le escribe "
+                        "guía: %s", sn, parte.get("nombre") or parte["sale_id"],
+                        dec.get("motivo"))
+            continue
+        if dec.get("estado") != "asignada" or not guia:
+            r["partes_sin_guia_aun"] += 1
+            continue
+        r["partes_asignadas"] += 1
+
+        # 1 · EL NÚMERO EN SUS ENTREGAS.
+        guia_en_odoo = not parte.get("pickings")
+        if parte.get("pickings"):
+            res = await asyncio.to_thread(odoo_ventas.fijar_guia, "temu", sn, guia,
+                                          parte["pickings"])
+            if res.get("accion") == "ya_tenia":
+                guia_en_odoo = True
+            elif res.get("ok"):
+                r["guias_escritas"] += 1
+                r["guias_verificadas"] += 1 if res.get("verificada") else 0
+                guia_en_odoo = bool(res.get("verificada"))
+            else:
+                r["guias_no_escritas"] += 1
+                log.warning("refrescar_guias: guía %s de %s (%s) NO llegó a Odoo (%s)",
+                            guia, sn, parte.get("nombre"), res.get("accion"))
+        if guia_en_odoo:
+            puestas.append(paquete)
+
+        # 2 · EL PDF DE SU PAQUETE EN SU ORDEN.
+        if parte.get("sin_pdf"):
+            psn = paquete.get("package_sn")
+            if not psn:
+                r["pdf_sin_paquete"] += 1
+                continue
+            if psn not in pdf_por_paquete:
+                pdf_por_paquete[psn] = await temu.descargar_etiqueta(psn)
+            et = pdf_por_paquete[psn]
+            for k, v in (et.get("errores") or {}).items():
+                r["errores_pdf"].setdefault(k, v)
+            if not et.get("ok"):
+                r["pdf_fallos"] += 1
+                log.warning("refrescar_guias: la etiqueta de %s (paquete %s) no se "
+                            "pudo bajar: %s", sn, psn, et.get("errores"))
+                continue
+            r["document_type"] = et["document_type"]
+            res = await asyncio.to_thread(odoo_ventas.fijar_etiqueta, "temu", sn,
+                                          [int(parte["sale_id"])], et["pdf"], f"{guia}.pdf")
+            if res.get("accion") in ("ya_tenia", "sin_confirmar"):
+                pass
+            elif res.get("ok"):
+                r["pdf_subidos"] += 1
+                r["pdf_verificados"] += 1 if res.get("verificada") else 0
+            else:
+                r["pdf_fallos"] += 1
+                log.warning("refrescar_guias: el PDF de %s (%s) NO quedó en Odoo (%s)",
+                            sn, parte.get("nombre"), res.get("accion"))
+
+    # 3 · LA BITÁCORA: sólo lo que quedó en Odoo. La guía si es una, "G1 + G2"
+    #     si son varias; nada si ninguna parte recibió la suya.
+    guia_venta, paqueteria = odoo_ventas.guias_de_venta(puestas)
+    if not guia_venta:
+        return
+    try:
+        await asyncio.to_thread(odoo_ventas_log.actualizar_guia,
+                                "temu", "TEMU", sn, guia_venta, paqueteria)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("refrescar_guias: bitácora de %s: %s", sn, str(exc)[:150])
+
+
 async def _traer_guia(parent_sn: str, order_sn: str | None) -> tuple[str, str]:
     """(guía, paquetería) de una orden de Temu. Cadenas vacías si no hay.
 
@@ -334,6 +754,12 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     ENVÍO COMBINADO: dos ventas en una caja comparten paquete y etiqueta. El PDF
     se baja una vez por vuelta y se sube a las dos.
 
+    SURTIDO DIVIDIDO (una venta, dos o más órdenes vivas: `dividida` en la
+    cola): se piden TODOS los paquetes de la venta y cada parte recibe la guía y
+    el PDF del que lleva SUS SKUs (`_guia_dividida`). Sólo con evidencia: lo que
+    no se pueda emparejar con certeza no se toca, y si una consulta falló, esa
+    venta espera a la vuelta siguiente.
+
     TECHO DE TIEMPO. `xmlrpc` no lleva timeout en este proyecto, así que una
     llamada colgada ocuparía un hilo del pool compartido y —con
     `max_instances=1`— mataría el trabajo en silencio para siempre. El corte por
@@ -353,7 +779,15 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
                          # visto de cada uno. Sin esto, cuatro vueltas seguidas
                          # de "sin_guia_aun: 7" no decían si Temu no la tenía o
                          # si la estábamos buscando en el sitio equivocado.
-                         "fuentes": {}, "errores_fuentes": {}, "errores_pdf": {}}
+                         "fuentes": {}, "errores_fuentes": {}, "errores_pdf": {},
+                         # Surtido dividido (una venta, varias órdenes): cuántas
+                         # se miraron, y por PARTE cuántas recibieron su paquete,
+                         # cuántas esperan y cuántas no se pudieron emparejar
+                         # con certeza (a ésas no se les escribe nada), y las
+                         # ventas que no se tocaron porque una consulta falló.
+                         "divididas": 0, "partes_asignadas": 0,
+                         "partes_sin_guia_aun": 0, "partes_ambiguas": 0,
+                         "divididas_incompletas": 0}
     if not temu.disponible():
         return {**r, "error": "Temu no está configurado (falta app_key/secret/token)"}
 
@@ -377,6 +811,12 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
             det = await _traer(sn)
             if not det:
                 r["fallos_temu"] += 1
+                continue
+            if item.get("dividida"):
+                # Varias órdenes en Odoo: cada una con SU paquete. Lo de abajo
+                # (el primer paquete para toda la venta) queda intacto para las
+                # ventas que no se partieron.
+                await _guia_dividida(item, det, r, pdf_por_paquete)
                 continue
             renglones = det.get("orderList") or []
             order_sn = (renglones[0] or {}).get("orderSn") if renglones else None

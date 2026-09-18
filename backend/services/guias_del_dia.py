@@ -26,8 +26,17 @@ ENVÍO COMBINADO
 Dos o más VENTAS del mismo canal con la MISMA guía: Temu las junta en una caja
 con una etiqueta cuando el mismo comprador compra varias veces antes del envío,
 y las órdenes traen el mismo PDF. La guía se compara sin espacios ni mayúsculas.
-Un surtido dividido (una venta, dos órdenes "S1 + S2") NO es combinado: es una
-sola fila de la bitácora.
+Un surtido dividido (una venta, dos órdenes "S1 + S2") NO es combinado.
+
+SURTIDO DIVIDIDO (18-sep-2026)
+──────────────────────────────
+Una venta que ningún almacén tenía completa nace en DOS órdenes (S38861 en
+TEXCO, S38862 en TEXCO II). La bitácora la guarda en una fila con las líneas de
+la venta, sin decir qué lleva cada orden; así el Excel ponía todos los SKUs bajo
+"S38861 + S38862" con una sola guía. Ahora cada parte es SU orden, con SUS SKUs
+y la guía de SU entrega en Odoo (`_leer_partes`), y el PDF saca una etiqueta
+por guía distinta: una si la venta va en una caja, dos si va en dos. Si Odoo no
+contesta, la venta sale junta, como antes.
 
 Si una orden ACTIVA del día comparte guía con una de OTRO día (S38448 del 12-sep
 y S38503 del 13-sep, 22 piezas en una caja), la de otro día SE TRAE y queda
@@ -279,6 +288,14 @@ def _cancelada_en_bitacora(f: dict[str, Any]) -> bool:
 # que `limites_utc` y `norm_guia`.
 _SQL_VENTANA = "o.creado_at >= %(desde)s and o.creado_at < %(hasta)s"
 _SQL_GUIA_NORM = r"lower(regexp_replace(coalesce(o.guia, ''), '\s+', '', 'g'))"
+# SURTIDO DIVIDIDO EN DOS CAJAS: la bitácora guarda "G1 + G2" (una fila por
+# venta). Comparada entera, esa fila nunca coincidía con la venta B combinada
+# con la caja G1: desde el día de A se traía a B (sus claves salen partidas en
+# Python, `_guias_de`), pero desde el día de B no se traía a A. Se compara
+# también CADA guía de la fila, con la misma normalización.
+_SQL_GUIA_COMPONENTE = (r"exists (select 1 from unnest(string_to_array(coalesce(o.guia, ''), ' + '))"
+                        r" as g(parte) where (o.canal || '|' || "
+                        r"lower(regexp_replace(g.parte, '\s+', '', 'g'))) = any(%(claves)s))")
 
 # Sólo las columnas que se van a usar. `ops.odoo_sale_orders` no guarda nada del
 # comprador, y aun así se nombra campo por campo: un `select *` heredaría lo que
@@ -339,7 +356,8 @@ def _leer_misma_guia(claves: list[str], desde: datetime,
     # Una de más que el techo: así se sabe si hubo que cortar.
     return sdb.fetch_all(
         _SQL_BASE + f"""
-       and (o.canal || '|' || {_SQL_GUIA_NORM}) = any(%(claves)s)
+       and ((o.canal || '|' || {_SQL_GUIA_NORM}) = any(%(claves)s)
+            or {_SQL_GUIA_COMPONENTE})
        and not ({_SQL_VENTANA})
      order by o.creado_at, o.odoo_name
      limit %(lim)s""",
@@ -392,6 +410,48 @@ def _leer_odoo(filas: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     return list(vistos.values())
 
 
+def _leer_partes(filas: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """
+    Las órdenes de Odoo de cada surtido dividido, con SUS SKUs y SU guía.
+    {(canal, venta): [parte, …]} — sólo las que de verdad salen partidas (≥ 2).
+
+    La bitácora guarda una fila por venta con las líneas de la VENTA sin decir a
+    qué orden van, y la guía de la venta ("G1 + G2" si son dos cajas). Para que
+    cada SKU quede bajo SU orden y con SU guía se le pregunta a Odoo
+    (`odoo_ventas.partes_de_ventas`: sólo `search_read`). Si Odoo no contesta,
+    la venta sale como antes: una fila "S1 + S2".
+    """
+    from services import odoo_ventas
+
+    por_canal: dict[str, list[str]] = {}
+    for f in filas:
+        if len(_partes(f.get("odoo_name"))) > 1 and f.get("external_order_id"):
+            por_canal.setdefault(str(f.get("canal") or ""), []).append(
+                str(f["external_order_id"]))
+    salida: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for canal, ventas in por_canal.items():
+        try:
+            res = odoo_ventas.partes_de_ventas(canal, ventas)
+        except Exception as exc:  # noqa: BLE001 — la venta sale junta, como antes
+            log.warning("guias_del_dia: Odoo no dio las partes de %d surtido(s) "
+                        "dividido(s) de %s (%s)", len(ventas), canal, str(exc)[:160])
+            continue
+        for venta, ps in (res or {}).items():
+            if len(ps) > 1:
+                salida[(canal, str(venta))] = ps
+    return salida
+
+
+def _guias_de(f: dict[str, Any],
+              partes: dict[tuple[str, str], list[dict[str, Any]]]) -> list[str]:
+    """Las guías de una fila: la suya (partida en " + " si son varias) y, si es
+    surtido dividido, la de cada parte."""
+    guias = [g.strip() for g in str(f.get("guia") or "").split(" + ") if g.strip()]
+    for p in partes.get((str(f.get("canal") or ""), str(f.get("external_order_id") or "")), []):
+        guias += [g.strip() for g in str(p.get("guia") or "").split(" + ") if g.strip()]
+    return guias
+
+
 def _leer_pdfs(ids: list[int]) -> dict[int, bytes]:
     """Los PDFs de etiqueta, en memoria. Nunca se escriben ni se registran."""
     from services import odoo_ventas
@@ -415,13 +475,80 @@ def _leer_pdfs(ids: list[int]) -> dict[int, bytes]:
 
 # ── El armado (puro: se prueba sin red) ──────────────────────────────────────
 
+def _ordenes_de_partes(f: dict[str, Any], llave: tuple[str, str, str], otro: bool,
+                       ps: list[dict[str, Any]], por_id: dict[int, dict[str, Any]],
+                       nota_accion: str | None) -> list[dict[str, Any]]:
+    """
+    Un surtido dividido, UNA orden por parte: cada una con SUS SKUs y piezas,
+    SU guía (la de su entrega en Odoo) y SU PDF. Así el Excel pone cada SKU
+    bajo la orden que de verdad lo lleva, y el PDF saca una etiqueta por guía
+    distinta: una si la venta va en una caja, dos si va en dos.
+
+    La guía es la de la ENTREGA de esa parte y nada más. Si todavía no la
+    tiene, sale "sin guía": suponerle la de la venta sería imprimirle la
+    etiqueta de la otra caja.
+    """
+    creado = _a_mx(f.get("creado_at"))
+    paq_fila = str(f.get("paqueteria") or "").strip()
+    salida = []
+    for i, p in enumerate(ps, 1):
+        oid = int(p.get("odoo_order_id") or 0)
+        doc = por_id.get(oid)
+        tiene_pdf = bool(doc.get("meli_etiqueta_file")) if doc else bool(p.get("tiene_pdf"))
+        estado = (doc or {}).get("state") or p.get("estado")
+        # Mismo orden de precedencia que una orden entera (ver `armar`).
+        nota_cancel = (nota_accion
+                       or ("cancelada en Odoo" if estado == "cancel" else None)
+                       or (_NOTA_CANAL if f.get("cancelada_canal") else None))
+        guia = str(p.get("guia") or "").strip()
+        paq = str(p.get("paqueteria") or "").strip() or (
+            paq_fila if guia and paq_fila and " + " not in paq_fila else "")
+        lineas = [{"sku": str(l.get("sku") or "").strip(),
+                   "piezas": int(l.get("cantidad") or 0)} for l in (p.get("lineas") or [])]
+        salida.append({
+            "orden": str(p.get("odoo_name") or ""),
+            "odoo_ids": [oid] if oid else [],
+            "pdf_odoo_id": oid if (tiene_pdf and oid) else None,
+            "venta": llave[2],
+            "canal": llave[0],
+            "cuenta": llave[1],
+            "fecha": creado.isoformat() if creado else None,
+            "fecha_dia": creado.strftime("%d-%m") if creado else "",
+            "almacen": str(p.get("almacen") or ""),
+            "guia": guia,
+            "paqueteria": paq,
+            "lineas": lineas,
+            "piezas_total": sum(ln["piezas"] for ln in lineas),
+            "grupo": None,
+            "otro_dia": otro,
+            "tiene_pdf": tiene_pdf,
+            "en_odoo": True,
+            "cancelada": bool(nota_cancel),
+            "nota": "",
+            # "1 de 2": qué entrega de la venta es. Sólo existe en un surtido
+            # dividido; el resto de las órdenes no trae esta llave.
+            "parte": f"{i} de {len(ps)}",
+            "_hermanas": [str(q.get("odoo_name") or "") for q in ps if q is not p],
+            "_ts": creado.timestamp() if creado else 0.0,
+            "_dia": creado.date().isoformat() if creado else "",
+            "_cancel": nota_cancel or "",
+        })
+    return salida
+
+
 def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
           odoo: list[dict[str, Any]] | None, fecha: date,
-          canal: str) -> dict[str, Any]:
+          canal: str,
+          partes_venta: dict[tuple[str, str], list[dict[str, Any]]] | None = None
+          ) -> dict[str, Any]:
     """
     Junta bitácora + Odoo en la lista YA ORDENADA como va en el Excel:
     primero los envíos combinados (del más viejo al más nuevo), luego las demás
     con guía (por número de orden), luego las sin guía y al final las canceladas.
+
+    `partes_venta` ({(canal, venta): [parte]}, de `_leer_partes`) parte cada surtido
+    dividido en una orden por parte. Sin él —o si Odoo no contestó— la venta
+    partida sale como siempre: una fila "S1 + S2".
     """
     odoo_ok = odoo is not None
     por_id = {int(d["id"]): d for d in (odoo or []) if d.get("id")}
@@ -435,6 +562,12 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
         if llave in vistas:
             continue
         vistas.add(llave)
+
+        ps = (partes_venta or {}).get((llave[0], llave[2]))
+        if ps and len(ps) > 1:
+            ordenes.extend(_ordenes_de_partes(
+                f, llave, otro, ps, por_id, _NOTA_CANCELADA.get(str(f.get("accion") or ""))))
+            continue
 
         nombre = str(f.get("odoo_name") or "")
         partes = _partes(nombre)
@@ -531,6 +664,10 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
     # ── Notas ────────────────────────────────────────────────────────────
     for o in ordenes:
         notas = []
+        if o.get("parte"):
+            hermanas = [h for h in o.get("_hermanas") or [] if h]
+            notas.append(f"surtido dividido · entrega {o['parte']}"
+                         + (f" · con {', '.join(hermanas)}" if hermanas else ""))
         if o["otro_dia"]:
             notas.append(f"otro día ({o['fecha_dia']})" if o["fecha_dia"] else "otro día")
         if o["cancelada"]:
@@ -559,7 +696,7 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
 
     ordenes.sort(key=_clave)
     for o in ordenes:
-        for k in ("_ts", "_cancel", "_gi", "_dia"):
+        for k in ("_ts", "_cancel", "_gi", "_dia", "_hermanas"):
             o.pop(k, None)
 
     plan = plan_etiquetas(ordenes, fecha)
@@ -624,8 +761,11 @@ def plan_etiquetas(ordenes: list[dict[str, Any]],
         if o.get("cancelada"):
             continue
         g = norm_guia(o.get("guia"))
+        # Sin guía, la etiqueta es de la venta… salvo en un surtido dividido,
+        # donde cada parte puede traer SU caja y SU PDF.
         k = (f"{o['canal']}|{g}" if g
-             else f"venta|{o['canal']}|{o.get('cuenta', '')}|{o['venta']}")
+             else f"venta|{o['canal']}|{o.get('cuenta', '')}|{o['venta']}"
+             + (f"|{o.get('orden')}" if o.get("parte") else ""))
         e = por_clave.get(k)
         if e is None:
             e = {"clave": k, "guia": o.get("guia") or "", "canal": o["canal"],
@@ -660,21 +800,26 @@ def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
             f"El {fecha:%d-%m-%Y} tiene más de {MAX_ORDENES} órdenes"
             + (": elige un solo canal." if canal == "todos"
                else ". Pide ayuda para bajarlas por partes."))
+    # SURTIDO DIVIDIDO: cada orden con SUS SKUs y SU guía, leídas de Odoo.
+    partes = _leer_partes(filas)
     # Sólo las guías de órdenes que siguen vivas: la de otro día que compartía
     # guía con una cancelada ya no completa ninguna caja. (Lo cancelado en Odoo
-    # a mano se ve hasta leer Odoo; `armar` lo filtra de nuevo.)
-    claves = sorted({clave_guia(f["canal"], f.get("guia"))
-                     for f in filas
-                     if norm_guia(f.get("guia")) and not _cancelada_en_bitacora(f)})
+    # a mano se ve hasta leer Odoo; `armar` lo filtra de nuevo.) Una venta
+    # partida en dos cajas aporta sus DOS guías.
+    claves = sorted({clave_guia(f["canal"], g)
+                     for f in filas if not _cancelada_en_bitacora(f)
+                     for g in _guias_de(f, partes) if norm_guia(g)})
     otras = _leer_misma_guia(claves, desde, hasta)
     if len(otras) > _MAX_OTRO_DIA:
         raise GuiasError(
             f"Las órdenes del {fecha:%d-%m-%Y} comparten guía con más de "
             f"{_MAX_OTRO_DIA} órdenes de otros días: algo no cuadra con las guías. "
             "Pide ayuda antes de imprimir.")
+    if otras:
+        partes.update(_leer_partes(otras))
     odoo = _leer_odoo(filas + otras) if (filas or otras) else []
 
-    datos = armar(filas, otras, odoo, fecha, canal)
+    datos = armar(filas, otras, odoo, fecha, canal, partes_venta=partes)
     datos["desde_utc"] = desde.isoformat()
     datos["hasta_utc"] = hasta.isoformat()
     r = datos["resumen"]

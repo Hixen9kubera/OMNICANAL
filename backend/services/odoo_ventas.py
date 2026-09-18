@@ -512,9 +512,17 @@ def pendientes_de_guia(canal: str, dias: int = 14,
                      {"fields": ["id"]})
         ids_faltan = {p["id"] for p in faltan}
     # La VENTA es la misma para las dos mitades de un surtido dividido: el ref
-    # lleva sufijo `#1`/`#2` y aquí se vuelve a unir, porque la guía es una sola.
+    # lleva sufijo `#1`/`#2` y aquí se vuelve a unir en UN renglón de la cola.
+    # Pero la guía NO tiene por qué ser una sola (ver `_agregar_partes`).
     por_venta: dict[str, dict[str, Any]] = {}
+    # Todas las órdenes vivas de cada venta partida, tengan trabajo o no: para
+    # emparejar paquetes hace falta saber qué lleva CADA parte, también la que
+    # ya quedó completa (un SKU repartido entre las dos no sirve para decidir).
+    todas_divididas: dict[str, list[dict[str, Any]]] = {}
     for o in ordenes:
+        venta = str(o["client_order_ref"]).split("#", 1)[0]
+        if "#" in str(o["client_order_ref"]):
+            todas_divididas.setdefault(venta, []).append(o)
         pend = [i for i in (o.get("picking_ids") or []) if i in ids_faltan]
         # El PDF sólo va a órdenes CONFIRMADAS (el flujo de Brandon: confirmar,
         # luego la etiqueta). Una en borrador espera: entra a la cola en la
@@ -524,14 +532,445 @@ def pendientes_de_guia(canal: str, dias: int = 14,
                    and o.get("state") in _CONFIRMADAS)
         if not pend and not sin_pdf:
             continue
-        venta = str(o["client_order_ref"]).split("#", 1)[0]
         d = por_venta.setdefault(venta, {"order_id": venta, "ordenes": [],
                                          "pickings": [], "sin_pdf": []})
         d["ordenes"].append(o["name"])
         d["pickings"].extend(pend)
         if sin_pdf:
             d["sin_pdf"].append(o["id"])
-    return list(por_venta.values())[:int(limite)]
+    # PARTIDA DE VERDAD = DOS O MÁS ÓRDENES VIVAS. Un ref con '#' y una sola
+    # orden viva (la otra se canceló, o la #2 nunca se llegó a crear) es una
+    # venta de una orden: va por el camino de siempre, el probado en producción,
+    # y no por el emparejador.
+    todas_divididas = {v: os for v, os in todas_divididas.items() if len(os) >= 2}
+    salida = list(por_venta.values())[:int(limite)]
+    divididas = [d for d in salida if d["order_id"] in todas_divididas]
+    if divididas:
+        _agregar_partes(divididas, todas_divididas, ids_faltan)
+    return salida
+
+
+# ── Surtido dividido: una venta, varias órdenes, quizá varios paquetes ──────
+#
+# LO QUE ESTABA MAL (18-sep-2026, venta Temu PO-128-10289257052790014 → S38861
+# en TEXCO + S38862 en TEXCO II). La cola unía las partes en un renglón y el
+# refresco le escribía a TODAS las entregas la guía del PRIMER paquete que
+# mencionara la venta. Si la venta sale en dos cajas —una por almacén, que es
+# justo lo que pasa cuando se parte—, la segunda entrega se quedaba con la guía
+# de la otra caja. Y `fijar_guia` no pisa lo que ya tiene: el error era para
+# siempre.
+#
+# Ahora el renglón de una venta partida lleva `dividida=True` y `partes`, una
+# por orden de Odoo, con SUS entregas pendientes, si le falta el PDF y QUÉ SKUs
+# lleva. Con eso cada refresco decide parte por parte (`emparejar_partes`). Lo
+# que devuelve la cola para una venta NO partida no cambia en nada.
+
+def _num_parte(ref: str) -> int:
+    """"PO-1#2" → 2; sin sufijo → 0 (la venta a secas va primero)."""
+    _v, _s, suf = str(ref or "").partition("#")
+    return int(suf) if suf.isdigit() else 0
+
+
+def _lineas_de_ordenes(order_ids: list[int], kw: Any = None) -> dict[int, list[dict[str, Any]]]:
+    """
+    {sale_id: [{sku, titulo, cantidad}]} leído de Odoo. ⚠️ BLOQUEA.
+
+    El SKU es el `default_code` del PRODUCTO, no el texto de la línea: el texto
+    lo puede editar cualquiera en Odoo, el producto no. Una línea cuyo producto
+    no tenga código sale con `sku = ""`, y quien empareja la trata como
+    desconocida (no adivina). Las secciones y notas (`display_type`) no son
+    mercancía y se saltan.
+    """
+    kw = kw or _kw
+    ids = sorted({int(i) for i in order_ids if i})
+    if not ids:
+        return {}
+    lineas = kw("sale.order.line", "search_read",
+                [[["order_id", "in", ids]]],
+                {"fields": ["order_id", "product_id", "product_uom_qty", "name",
+                            "display_type"]}) or []
+    pids = sorted({int(l["product_id"][0]) for l in lineas
+                   if not l.get("display_type") and l.get("product_id")})
+    codigos: dict[int, str] = {}
+    if pids:
+        for p in kw("product.product", "search_read", [[["id", "in", pids]]],
+                    {"fields": ["default_code"],
+                     "context": {"active_test": False}}) or []:
+            codigos[int(p["id"])] = str(p.get("default_code") or "").strip()
+    salida: dict[int, list[dict[str, Any]]] = {i: [] for i in ids}
+    for l in lineas:
+        if l.get("display_type"):
+            continue
+        oid = int((l.get("order_id") or [0])[0] or 0)
+        pid = int((l.get("product_id") or [0])[0] or 0) if l.get("product_id") else 0
+        sku = codigos.get(pid, "")
+        titulo = str(l.get("name") or "").strip()
+        # El nombre lo armamos como "[SKU] título del canal": se le quita el
+        # prefijo para no repetir el SKU en pantalla.
+        if sku and titulo.startswith(f"[{sku}]"):
+            titulo = titulo[len(sku) + 2:].strip()
+        try:
+            cantidad = float(l.get("product_uom_qty") or 0)
+        except (TypeError, ValueError):
+            cantidad = 0.0
+        salida.setdefault(oid, []).append({
+            "sku": sku, "titulo": titulo[:300] or None,
+            "cantidad": int(cantidad) if cantidad == int(cantidad) else cantidad})
+    return salida
+
+
+def _skus(lineas: list[dict[str, Any]] | None) -> list[str] | None:
+    """Los SKUs de una parte, o None si NO se sabe con certeza (sin líneas, o
+    alguna sin código). None nunca se confunde con "no lleva nada"."""
+    if not lineas or any(not l.get("sku") for l in lineas):
+        return None
+    return sorted({l["sku"] for l in lineas})
+
+
+def _cantidades(lineas: list[dict[str, Any]] | None) -> dict[str, float] | None:
+    """{sku: piezas} de una parte (suma si el SKU sale en varias líneas), o None
+    en los mismos casos que `_skus`. Hace falta para el SKU repartido entre
+    partes: saber si UN paquete lleva todas sus piezas o sólo las de una."""
+    if _skus(lineas) is None:
+        return None
+    salida: dict[str, float] = {}
+    for l in lineas or []:
+        try:
+            n = float(l.get("cantidad") or 0)
+        except (TypeError, ValueError):
+            return None
+        salida[l["sku"]] = salida.get(l["sku"], 0.0) + n
+    return salida
+
+
+def _agregar_partes(items: list[dict[str, Any]],
+                    todas: dict[str, list[dict[str, Any]]],
+                    ids_faltan: set[int]) -> None:
+    """Le cuelga `dividida` y `partes` a los renglones de venta partida.
+
+    Si leer las líneas falla, las partes salen con `skus=None`: el refresco
+    sólo podrá aplicar la regla del paquete único y lo demás lo deja para la
+    vuelta siguiente. Una falla aquí NUNCA tumba la cola de las ventas que no
+    están partidas.
+    """
+    ids = [int(o["id"]) for d in items for o in todas.get(d["order_id"], [])]
+    try:
+        por_orden: dict[int, list[dict[str, Any]]] | None = _lineas_de_ordenes(ids)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pendientes_de_guia: no se pudieron leer los productos de %d "
+                    "orden(es) de surtido dividido (%s); se emparejan sin SKU",
+                    len(ids), str(exc)[:160])
+        por_orden = None
+    for d in items:
+        partes = []
+        for o in sorted(todas.get(d["order_id"], []),
+                        key=lambda x: (_num_parte(x["client_order_ref"]), x["id"])):
+            partes.append({
+                "sale_id": int(o["id"]),
+                "nombre": o.get("name") or "",
+                "ref": str(o["client_order_ref"]),
+                "pickings": [i for i in (o.get("picking_ids") or []) if i in ids_faltan],
+                "sin_pdf": bool(not o.get("meli_etiqueta_file")
+                                and o.get("state") in _CONFIRMADAS),
+                "skus": (_skus(por_orden.get(int(o["id"])))
+                         if por_orden is not None else None),
+                "cantidades": (_cantidades(por_orden.get(int(o["id"])))
+                               if por_orden is not None else None),
+            })
+        d["dividida"] = True
+        d["partes"] = partes
+
+
+def emparejar_partes(partes: list[dict[str, Any]],
+                     paquetes: list[dict[str, Any]],
+                     skus_canal: list[str] | None = None) -> dict[int, dict[str, Any]]:
+    """
+    ¿Qué paquete le toca a cada parte de una venta partida? PURA: sin red.
+
+    `partes`     = [{sale_id, skus: [..] | None, cantidades: {sku: n} | None}]
+                   (de `pendientes_de_guia`)
+    `paquetes`   = [{guia, skus: [..] | None, cantidades: {sku: n}, ...}] (del
+                   canal; skus None = no se sabe qué lleva; un SKU que falta en
+                   `cantidades` = no se sabe cuántas piezas). Ya fusionados.
+    `skus_canal` = TODOS los SKUs de la venta según el canal, o None si no se
+                   saben completos.
+
+    Devuelve {sale_id: {"estado", "paquete", "motivo"}} con estado:
+      · `asignada`    → ése es SU paquete (puede no tener guía todavía);
+      · `sin_paquete` → sus productos no van en ningún paquete aún: esperar;
+      · `ambigua`     → no se puede saber con certeza: NO se le escribe nada.
+
+    LAS REGLAS (Brandon, 18-sep; la a, endurecida el mismo día):
+      a) UN solo paquete a la vista → se le da a la parte que DEMOSTRADAMENTE
+         va ahí: se sabe qué lleva el paquete, se sabe qué lleva la parte, y
+         todos sus SKUs van dentro. "Sólo veo un paquete" NO es "la venta va en
+         un paquete": la caja del otro almacén puede no haberse comprado aún.
+         Por eso un paquete de contenido desconocido, o una parte de SKUs
+         desconocidos, queda `ambigua`.
+      b) VARIOS paquetes → cada parte recibe el que contiene SUS SKUs, y sólo si
+         es exactamente uno y los contiene todos.
+      c) Lo que no se pueda emparejar con certeza → nada. Nunca adivinar: la
+         entrega no se vuelve a pisar, y una guía ajena manda la caja a otra
+         parte.
+
+    SKU REPARTIDO entre dos partes (pide 3, TEXCO tiene 2 y TEXCO II 1 → regla 3
+    de `planear_almacenes`): que el SKU vaya en el paquete no dice de qué
+    almacén salió la pieza. Con un solo paquete sólo cuenta si el paquete lleva
+    TODAS las piezas de la venta de ese SKU (la cantidad que Temu y TikTok sí
+    mandan); si no, o si no se sabe, `ambigua`. Con varios, siempre `ambigua`.
+
+    SKU DISTINTO AL DEL CANAL (se vendió el padre y en Odoo va la variante; se
+    cambió a mano): esa parte nunca va a cruzar con ningún paquete. Antes se
+    quedaba "esperando" para siempre; ahora sale `ambigua` con su motivo, para
+    que se vea en el resumen y alguien la ponga a mano.
+
+    Con UNA sola parte no hay nada que repartir: el paquete es suyo, como en
+    una venta sin partir.
+    """
+    def _conj(v: Any) -> set[str] | None:
+        if v is None:
+            return None
+        s = {str(x).strip() for x in v if str(x or "").strip()}
+        return s or None
+
+    def _cant(v: Any) -> dict[str, float]:
+        salida_c: dict[str, float] = {}
+        if isinstance(v, dict):
+            for k, n in v.items():
+                try:
+                    if str(k or "").strip() and n is not None:
+                        salida_c[str(k).strip()] = float(n)
+                except (TypeError, ValueError):
+                    continue
+        return salida_c
+
+    varias = len(partes) > 1
+    cuenta: dict[str, int] = {}
+    # Piezas de cada SKU en TODA la venta (suma de las partes). None = no se sabe.
+    total: dict[str, float | None] = {}
+    for p in partes:
+        cp = _cant(p.get("cantidades")) if p.get("cantidades") is not None else None
+        for s in (_conj(p.get("skus")) or ()):
+            cuenta[s] = cuenta.get(s, 0) + 1
+            n = None if cp is None else cp.get(s)
+            total[s] = None if (n is None or total.get(s, 0.0) is None) else total.get(s, 0.0) + n
+    compartidos = {s for s, n in cuenta.items() if n > 1}
+    todos = set(cuenta)
+    canal = _conj(skus_canal)
+    paqs = [(q, _conj(q.get("skus")), _cant(q.get("cantidades"))) for q in paquetes]
+
+    def _no_cubre(cq: dict[str, float], skus: set[str]) -> list[str]:
+        """Los SKUs repartidos de los que el paquete NO lleva todas las piezas."""
+        return sorted(x for x in skus & compartidos
+                      if total.get(x) is None or cq.get(x) is None or cq[x] < total[x])
+
+    salida: dict[int, dict[str, Any]] = {}
+    for p in partes:
+        sid = int(p["sale_id"])
+        s = _conj(p.get("skus"))
+        if varias and s is not None and canal is not None and not s <= canal:
+            salida[sid] = {"estado": "ambigua", "paquete": None,
+                           "motivo": "SKU distinto al del canal: "
+                                     + ", ".join(sorted(s - canal))}
+            continue
+        if not paqs:
+            salida[sid] = {"estado": "sin_paquete", "paquete": None,
+                           "motivo": "la venta no tiene paquete todavía"}
+            continue
+        if len(paqs) == 1:
+            q, c, cq = paqs[0]
+            if not varias:
+                # Una sola orden: lo de siempre (el camino de una venta sin partir).
+                if c is None or s is None or todos <= c or s <= c:
+                    salida[sid] = {"estado": "asignada", "paquete": q,
+                                   "motivo": "un solo paquete para toda la venta"}
+                elif not (s & c):
+                    salida[sid] = {"estado": "sin_paquete", "paquete": None,
+                                   "motivo": "el único paquete no lleva sus SKUs"}
+                else:
+                    salida[sid] = {"estado": "ambigua", "paquete": None,
+                                   "motivo": "el único paquete lleva sólo parte de sus SKUs"}
+                continue
+            if c is None:
+                salida[sid] = {"estado": "ambigua", "paquete": None,
+                               "motivo": "no se sabe qué lleva el único paquete a la vista"}
+            elif s is None:
+                salida[sid] = {"estado": "ambigua", "paquete": None,
+                               "motivo": "no se sabe qué SKUs lleva la parte"}
+            elif s <= c:
+                faltan = _no_cubre(cq, s)
+                if faltan:
+                    salida[sid] = {"estado": "ambigua", "paquete": None,
+                                   "motivo": "SKU repartido entre partes y el paquete no "
+                                             "lleva todas sus piezas: " + ", ".join(faltan)}
+                else:
+                    salida[sid] = {"estado": "asignada", "paquete": q,
+                                   "motivo": "sus SKUs van en el único paquete"}
+            elif not (s & c):
+                salida[sid] = {"estado": "sin_paquete", "paquete": None,
+                               "motivo": "el único paquete no lleva sus SKUs"}
+            else:
+                salida[sid] = {"estado": "ambigua", "paquete": None,
+                               "motivo": "el único paquete lleva sólo parte de sus SKUs"}
+            continue
+        paqs2 = [(q, c) for q, c, _cq in paqs]
+        if any(c is None for _q, c in paqs2):
+            salida[sid] = {"estado": "ambigua", "paquete": None,
+                           "motivo": f"{len(paqs2)} paquetes y de alguno no se sabe qué lleva"}
+            continue
+        if s is None:
+            salida[sid] = {"estado": "ambigua", "paquete": None,
+                           "motivo": "no se sabe qué SKUs lleva la parte"}
+            continue
+        cands = [(q, c) for q, c in paqs2 if s & c]
+        if not cands:
+            salida[sid] = {"estado": "sin_paquete", "paquete": None,
+                           "motivo": "ninguno de los paquetes lleva sus SKUs"}
+        elif len(cands) > 1:
+            salida[sid] = {"estado": "ambigua", "paquete": None,
+                           "motivo": f"sus SKUs van en {len(cands)} paquetes"}
+        elif s & compartidos:
+            salida[sid] = {"estado": "ambigua", "paquete": None,
+                           "motivo": "un SKU está repartido entre partes"}
+        elif not s <= cands[0][1]:
+            salida[sid] = {"estado": "ambigua", "paquete": None,
+                           "motivo": "parte de sus SKUs no va en ningún paquete"}
+        else:
+            salida[sid] = {"estado": "asignada", "paquete": cands[0][0],
+                           "motivo": "el único paquete con sus SKUs"}
+    return salida
+
+
+def guias_de_venta(paquetes: list[dict[str, Any]]) -> tuple[str, str]:
+    """
+    La guía de la VENTA para la bitácora: la guía si es una sola, "G1 + G2" si
+    son varias, en el orden dado y sin repetir. La paquetería, igual.
+
+    Quien llama pasa SÓLO los paquetes que quedaron puestos en Odoo, parte por
+    parte (#1, #2…): la bitácora es lo que pinta el panel y lo que cruza el
+    Excel del día; una guía que no llegó a ninguna entrega no va ahí.
+    """
+    orden = [q for q in paquetes if isinstance(q, dict)]
+    guias: list[str] = []
+    vistas: set[str] = set()
+    paqs: list[str] = []
+    for q in orden:
+        g = str(q.get("guia") or "").strip()
+        clave = "".join(g.split()).lower()
+        if not g or clave in vistas:
+            continue
+        vistas.add(clave)
+        guias.append(g)
+        pq = str(q.get("paqueteria") or "").strip()
+        if pq and pq not in paqs:
+            paqs.append(pq)
+    return " + ".join(guias), " + ".join(paqs)
+
+
+def partes_de_ventas(canal: str, ventas: list[str],
+                     timeout: float | None = None,
+                     plazo_total: float | None = None) -> dict[str, list[dict[str, Any]]]:
+    """
+    Las órdenes de Odoo de cada venta, con lo que va en cada una. ⚠️ BLOQUEA.
+
+    {venta: [{odoo_order_id, odoo_name, ref, parte, almacen, estado,
+              lineas: [{sku, titulo, cantidad}], guia, paqueteria,
+              tiene_pdf, pdf_nombre}]}
+
+    POR QUÉ SE LE PREGUNTA A ODOO. La bitácora guarda UNA fila por venta —su
+    llave es la venta— con `odoo_order_id` de la PRIMERA parte y las líneas de
+    la venta sin decir a qué parte van. Lo que se partió vive en Odoo, y de ahí
+    se lee al vuelo: sin migración, sin columnas nuevas.
+
+    Pocas consultas por lote, sin importar cuántas ventas: órdenes (por
+    `client_order_ref`, la venta exacta o `venta#n`), sus líneas, el código de
+    sus productos y sus entregas de salida. El PDF se revisa con `bin_size` (el
+    tamaño, no el archivo). `timeout` (segundos) acota cada llamada y
+    `plazo_total` la lectura ENTERA: con Odoo lento, cuatro llamadas de 8 s por
+    lote se volvían más de un minuto. Si se acaba el plazo, lanza `TimeoutError`
+    y quien llama sigue sin partes.
+
+    SÓLO LECTURA: `search_read`, nada más.
+    """
+    canal = (canal or "").lower()
+    partner = _PARTNER.get(canal)
+    if not partner:
+        return {}
+    unicas = list(dict.fromkeys(str(v).strip() for v in ventas if str(v or "").strip()))
+    if not unicas:
+        return {}
+    limite_reloj = (time.monotonic() + float(plazo_total)) if plazo_total else None
+    if timeout is None and limite_reloj is None:
+        kw = _kw
+    else:
+        def kw(modelo: str, metodo: str, args: list, kwargs: dict | None = None) -> Any:
+            t = timeout
+            if limite_reloj is not None:
+                resta = limite_reloj - time.monotonic()
+                if resta <= 0.05:
+                    raise TimeoutError("se acabó el plazo para leer las partes en Odoo")
+                t = resta if t is None else min(float(t), resta)
+            return odoo._kw_flujo(modelo, metodo, args, kwargs, timeout=t)
+
+    salida: dict[str, list[dict[str, Any]]] = {}
+    for i in range(0, len(unicas), 40):
+        lote = unicas[i:i + 40]
+        condiciones: list[Any] = []
+        for v in lote:
+            condiciones += [["client_order_ref", "=", v],
+                            ["client_order_ref", "=like", f"{v}#%"]]
+        dominio = ([["partner_id", "=", partner]]
+                   + ["|"] * (len(condiciones) - 1) + condiciones)
+        ordenes = kw("sale.order", "search_read", [dominio],
+                     {"fields": ["name", "client_order_ref", "state", "warehouse_id",
+                                 "picking_ids", "meli_etiqueta_file",
+                                 "meli_etiqueta_filename"],
+                      "context": {"bin_size": True}}) or []
+        # `=like` trata `_` como comodín: se re-filtra por la forma exacta.
+        pedidas = set(lote)
+        propias = []
+        for o in ordenes:
+            ref = str(o.get("client_order_ref") or "")
+            venta, _s, suf = ref.partition("#")
+            if venta in pedidas and (not _s or suf.isdigit()):
+                propias.append(o)
+        if not propias:
+            continue
+        lineas = _lineas_de_ordenes([o["id"] for o in propias], kw)
+        picks = sorted({p for o in propias for p in (o.get("picking_ids") or [])})
+        salidas: dict[int, dict[str, Any]] = {}
+        if picks:
+            for p in kw("stock.picking", "search_read",
+                        [[["id", "in", picks], ["picking_type_code", "=", "outgoing"]]],
+                        {"fields": ["name", "state", "carrier_tracking_ref",
+                                    "carrier_id"]}) or []:
+                salidas[int(p["id"])] = p
+        for o in propias:
+            vivas = [salidas[p] for p in (o.get("picking_ids") or [])
+                     if p in salidas and salidas[p].get("state") != "cancel"]
+            guias = list(dict.fromkeys(
+                str(p.get("carrier_tracking_ref") or "").strip() for p in vivas
+                if str(p.get("carrier_tracking_ref") or "").strip()))
+            paqs = list(dict.fromkeys(
+                str((p.get("carrier_id") or [None, ""])[1] or "").strip() for p in vivas
+                if p.get("carrier_id")))
+            ref = str(o.get("client_order_ref") or "")
+            salida.setdefault(ref.partition("#")[0], []).append({
+                "odoo_order_id": int(o["id"]),
+                "odoo_name": o.get("name") or "",
+                "ref": ref,
+                "parte": _num_parte(ref) or 1,
+                "almacen": (o.get("warehouse_id") or [None, None])[1],
+                "estado": o.get("state"),
+                "lineas": lineas.get(int(o["id"]), []),
+                "guia": " + ".join(guias),
+                "paqueteria": " + ".join(p for p in paqs if p),
+                "tiene_pdf": bool(o.get("meli_etiqueta_file")),
+                "pdf_nombre": o.get("meli_etiqueta_filename") or None,
+            })
+    for v in salida:
+        salida[v].sort(key=lambda p: (_num_parte(p["ref"]), p["odoo_order_id"]))
+    return salida
 
 
 def fijar_guia(canal: str, order_id: str, guia: str,
