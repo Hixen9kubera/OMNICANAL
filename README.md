@@ -1001,6 +1001,29 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.538.0 — "Falta generar guía": las órdenes que esperan que alguien compre el envío, a la vista
+
+Brandon, 18-sep: *"¿puedes hacer un tag o algo visual donde indique qué órdenes no
+tienen guía y hace falta generarla?"*. La guía la da el canal cuando alguien COMPRA
+el envío (Temu) o lo AGENDA (TikTok); hasta entonces la orden de Odoo existe y la
+caja no puede salir, y en el tab eso se veía como un "sin guía" gris.
+
+Sólo pantalla (`frontend/app/automatizacion/page.tsx`):
+- `entregasSinGuia`/`faltaGuia`: orden VIVA en Odoo (confirmada, creada, ya
+  existía, no se pudo confirmar), venta de los últimos 14 días —la ventana de los
+  refrescos de guías— y sin guía. En un surtido dividido cuenta cada entrega viva
+  sin guía. Canceladas, sin orden y ventas viejas no se marcan.
+- Distintivo **"Falta generar guía · hace N h"** que sube de color con la espera
+  (< 24 h ámbar, 24–48 h naranja, ≥ 48 h rojo "urgente") y trae el atajo "Comprar
+  envío en Temu" / "Agendar envío en TikTok" a la venta en el seller center. En la
+  fila ancha y angosta, en la fila del surtido dividido y en cada recuadro de parte.
+- Encabezado del canal: "· N sin guía". Casilla **"Sólo sin guía (N)"** junto a
+  "Sólo lo que requiere acción" (que no cambia: sigue siendo el `solo_problemas` del
+  backend).
+
+Medido al publicar: 2 órdenes marcadas — el surtido dividido de Temu S38861 + S38862
+y S38923 de TikTok, ambas en ámbar; las demás recientes ya tienen guía.
+
 ### v0.537.0 — Surtido dividido: cada orden con sus productos, sus botones y SU guía
 
 Brandon, 18-sep, sobre la venta Temu PO-128-10289257052790014 partida en S38861

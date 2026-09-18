@@ -558,6 +558,72 @@ function enlaceVenta(o: OrdenOdoo, ventaUrl: string) {
   };
 }
 
+/* ══ FALTA GENERAR GUÍA (Brandon, 18-sep) ═════════════════════════════════
+   "un tag o algo visual donde indique qué órdenes no tienen guía y hace falta
+   generarla". La guía la da el canal cuando alguien COMPRA el envío (Temu) o
+   lo AGENDA (TikTok): hasta entonces la orden de Odoo existe, pero la caja no
+   puede salir. Sólo se marcan órdenes VIVAS con orden en Odoo y de los últimos
+   14 días —la misma ventana que los refrescos de guías—: una venta vieja sin
+   guía ya no la va a traer nadie, y marcarla sólo sería ruido. */
+const ACCIONES_CON_ORDEN_VIVA = new Set(["confirmada", "creada", "ya_existia", "no_se_pudo_confirmar"]);
+const VENTANA_GUIA_H = 14 * 24;
+
+function horasDesde(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? null : (Date.now() - t) / 3_600_000;
+}
+
+/** Cuántas ENTREGAS de esta venta siguen esperando guía (0 = nada que generar).
+ *  En un surtido dividido cuenta cada parte viva; sin las partes de Odoo, la
+ *  venta cuenta entera sólo si no trae ninguna guía. */
+function entregasSinGuia(o: OrdenOdoo): number {
+  if (!o.odoo_order_id || !ACCIONES_CON_ORDEN_VIVA.has(o.accion)) return 0;
+  const h = horasDesde(o.venta_at ?? o.creado_at);
+  if (h === null || h > VENTANA_GUIA_H) return 0;
+  if (o.partes?.length) return partesVivas(o.partes).filter((p) => !(p.guia ?? "").trim()).length;
+  if (partes(o).length > 1) return guiasDivididas(o).length ? 0 : partes(o).length;
+  return (o.guia ?? "").trim() ? 0 : 1;
+}
+
+const faltaGuia = (o: OrdenOdoo) => entregasSinGuia(o) > 0;
+
+/** El color sube con la espera: < 24 h ámbar, 24–48 h naranja, ≥ 48 h rojo. */
+function nivelGuia(o: OrdenOdoo) {
+  const h = horasDesde(o.venta_at ?? o.creado_at) ?? 0;
+  const edad = h < 1 ? "recién" : h < 24 ? `hace ${Math.floor(h)} h` : `hace ${Math.floor(h / 24)} d`;
+  if (h >= 48) return { edad, fondo: "#FEE2E2", tinta: "#991B1B", borde: "#FCA5A5", urgente: true };
+  if (h >= 24) return { edad, fondo: "#FFEDD5", tinta: "#9A3412", borde: "#FDBA74", urgente: false };
+  return { edad, fondo: "#FEF3C7", tinta: "#92400E", borde: "#FCD34D", urgente: false };
+}
+
+/** El distintivo, con el atajo a la venta en el seller center para generar el
+ *  envío. `compacto` para los recuadros del surtido dividido. */
+function TagFaltaGuia({ o, ventaUrl, compacto = false }: {
+  o: OrdenOdoo; ventaUrl: string; compacto?: boolean;
+}) {
+  const n = nivelGuia(o);
+  const venta = enlaceVenta(o, ventaUrl);
+  const accion = o.canal === "tiktok" ? "Agendar envío en TikTok" : "Comprar envío en Temu";
+  return (
+    <span className="inline-flex max-w-full flex-wrap items-center gap-x-[8px] gap-y-[3px]">
+      <span className="inline-flex items-center gap-[5px] rounded-full px-[8px] py-[2px] text-[10.5px] font-extrabold"
+            title="La orden de Odoo existe, pero el canal todavía no da guía: hay que generar el envío en el seller center."
+            style={{ background: n.fondo, color: n.tinta, boxShadow: `inset 0 0 0 1px ${n.borde}` }}>
+        <AlertTriangle className="h-3 w-3 shrink-0" />
+        {compacto ? "Falta guía" : "Falta generar guía"} · {n.edad}{n.urgente ? " · urgente" : ""}
+      </span>
+      {venta && !compacto && (
+        <a href={venta.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+           className="inline-flex items-center gap-[4px] text-[10.5px] font-bold underline"
+           style={{ color: n.tinta }}>
+          <ExternalLink className="h-3 w-3" />{accion}
+        </a>
+      )}
+    </span>
+  );
+}
+
 /**
  * Un surtido dividido, parte por parte (Brandon, 18-sep): "dentro del div de
  * cada orden de venta, la información de los productos que se van a enviar,
@@ -623,7 +689,9 @@ function PartesDivididas({ o, partes: ps, odooUrl, ventaUrl }: {
               <Truck className="h-[13px] w-[13px] shrink-0 text-slate-400" />
               {p.guia
                 ? <span className="font-mono font-bold text-slate-800">{p.guia}</span>
-                : <span className="text-slate-400">sin guía</span>}
+                : (!cancelada && faltaGuia(o)
+                    ? <TagFaltaGuia o={o} ventaUrl={ventaUrl} compacto />
+                    : <span className="text-slate-400">sin guía</span>)}
               {p.guia && p.paqueteria && <span className="text-slate-400">{p.paqueteria}</span>}
               <span className="rounded-full px-[7px] py-[1px] text-[10px] font-extrabold"
                     title={p.tiene_pdf ? (p.pdf_nombre ?? "PDF en «Subir guía»") : "Sin PDF en «Subir guía»"}
@@ -719,7 +787,7 @@ function FilaOrden({
             <span>Ningún almacén tenía la venta completa</span>
             {(() => {
               const gs = guiasDivididas(o);
-              if (!gs.length) return null;
+              if (!gs.length) return faltaGuia(o) ? <TagFaltaGuia o={o} ventaUrl={ventaUrl} /> : null;
               // Con las partes de Odoo se sabe cuál entrega sigue sin guía: una
               // guía no es "una sola guía" si la otra caja todavía no tiene. Una
               // parte cancelada en Odoo no espera guía: no cuenta.
@@ -727,7 +795,7 @@ function FilaOrden({
               // Los NÚMEROS siempre a la vista: sin Odoo (sin recuadros) el
               // renglón es el único lugar donde se leen.
               const texto = (gs.length === 1 ? `${gs[0]} · una sola guía` : `${gs.join(" + ")} · una por caja`);
-              return (
+              return (<>
                 <span className="inline-flex items-center gap-[6px] rounded-full px-[9px] py-[3px] font-mono text-[11.5px] font-bold"
                       style={{ background: "#EEF0FF" }}>
                   <Truck className="h-3 w-3" />
@@ -735,7 +803,8 @@ function FilaOrden({
                     ? `${gs.join(" + ")} · ${sinGuia} ${sinGuia === 1 ? "entrega" : "entregas"} sin guía`
                     : texto}
                 </span>
-              );
+                {sinGuia > 0 && faltaGuia(o) && <TagFaltaGuia o={o} ventaUrl={ventaUrl} compacto />}
+              </>);
             })()}
             <span className="ml-auto font-mono text-[13px] font-bold text-slate-900">{dinero(o.total)}</span>
             <span className="whitespace-nowrap text-slate-400">
@@ -788,6 +857,8 @@ function FilaOrden({
               <div className="truncate text-[11px] text-slate-400">{o.paqueteria ?? ""}</div>
               {combinado && <ChipCombinado c={combinado} onVerJuntas={onVerJuntas} />}
             </div>
+          ) : faltaGuia(o) ? (
+            <TagFaltaGuia o={o} ventaUrl={ventaUrl} />
           ) : (
             <div className="text-[11px] text-slate-400">sin guía</div>
           )}
@@ -846,6 +917,9 @@ function FilaOrden({
             <span className="text-slate-300">·</span>
             <span>{piezas} renglones</span>
           </div>
+          {faltaGuia(o) && (
+            <div className="mt-[6px] pl-[15px]"><TagFaltaGuia o={o} ventaUrl={ventaUrl} /></div>
+          )}
           {combinado && (
             <div className="pl-[15px]"><ChipCombinado c={combinado} onVerJuntas={onVerJuntas} /></div>
           )}
@@ -1215,6 +1289,12 @@ function TarjetaCanal({
             {(() => {
               const g = new Set(ordenes.map((o) => combinados[claveOrden(o)]?.clave).filter(Boolean)).size;
               return g > 0 ? ` · ${g} ${g === 1 ? "envío combinado" : "envíos combinados"}` : null;
+            })()}
+            {(() => {
+              const n = ordenes.filter(faltaGuia).length;
+              return n > 0
+                ? <span className="font-bold" style={{ color: "#B45309" }}>{` · ${n} sin guía`}</span>
+                : null;
             })()}
           </div>
         </div>
@@ -2340,6 +2420,7 @@ export default function AutomatizacionPage() {
 
   const [canal, setCanal] = useState<CanalId>("tiktok");
   const [soloAccion, setSoloAccion] = useState(false);
+  const [soloSinGuia, setSoloSinGuia] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [dias, setDias] = useState(30);
   const [abierta, setAbierta] = useState<string | null>(null);
@@ -2560,8 +2641,15 @@ export default function AutomatizacionPage() {
 
   const visibles = useMemo(() => {
     const l = porCanal[canal].filter((o) => coincide(o, busqueda));
-    return soloAccion ? l.filter(pideAccion) : l;
-  }, [porCanal, canal, soloAccion, busqueda]);
+    const a = soloAccion ? l.filter(pideAccion) : l;
+    return soloSinGuia ? a.filter(faltaGuia) : a;
+  }, [porCanal, canal, soloAccion, busqueda, soloSinGuia]);
+
+  // Órdenes vivas que esperan que alguien genere el envío en el canal.
+  const sinGuia = useMemo(() => ({
+    tiktok: porCanal.tiktok.filter(faltaGuia).length,
+    temu: porCanal.temu.filter(faltaGuia).length,
+  }), [porCanal]);
 
   // Si lo buscado vive en el OTRO canal, se avisa en vez de mostrar "nada".
   const enOtroCanal = useMemo(() => {
@@ -2725,6 +2813,16 @@ export default function AutomatizacionPage() {
                 {pendientesTotal}
               </span>
             </label>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] border px-[13px] py-2 text-[13px] font-bold"
+                   title="Órdenes vivas de Odoo cuya venta todavía no tiene guía: hay que comprar o agendar el envío en el canal."
+                   style={{ borderColor: "#FCA5A5", background: "#FEF2F2", color: "#991B1B" }}>
+              <input type="checkbox" checked={soloSinGuia} style={{ accentColor: "#B91C1C" }}
+                     onChange={(e) => { setSoloSinGuia(e.target.checked); setAbierta(null); }} />
+              Sólo sin guía
+              <span className="rounded-full px-[7px] font-mono text-[11px]" style={{ background: "#FECACA" }}>
+                {sinGuia[canal]}
+              </span>
+            </label>
             <select
               value={dias}
               onChange={(e) => setDias(Number(e.target.value))}
@@ -2814,7 +2912,7 @@ export default function AutomatizacionPage() {
               onAbrir={setAbierta}
               odooUrl={ov?.odoo_url_orden ?? ""}
               ventaUrl={ov?.url_venta?.[canal] ?? ""}
-              filtrando={soloAccion}
+              filtrando={soloAccion || soloSinGuia}
               buscando={busqueda}
               enOtroCanal={enOtroCanal}
               otroCanal={otro.nombre}
