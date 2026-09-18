@@ -1001,6 +1001,63 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.545.0 — FULLFILMENT: la llegada a FULL sale de los avisos de ML, con lo que no recibió; y se ve lo que Odoo no surtió
+
+Brandon, con S37750 en la mano: el panel decía que llegaron 5 de 6 SKUs y en Mercado Libre
+**DEC-0182-BLN tenía 150 piezas en FULL**. Pidió revisar los webhooks de FULL de las dos cuentas, ver si
+llega el aumento de stock por la cantidad pedida, y fijó dos reglas: *si llega menos, ML rechazó unidades*;
+*si un SKU no llega, ML lo rechazó completo*. Y una tercera para Odoo: *cuando la salida ya esté entregada,
+enseñar lo pedido contra lo entregado, incluso los ceros*.
+
+**Lo que se midió (18-sep, solo lectura).**
+- Los avisos `fbm_stock_operations` llegan de **las dos cuentas** (3.5 días en `ops.webhook_events`: Kubera
+  1,360 y San Corpe 870; ML se guarda solo 3 días, 0050). El backend ya resolvía cada uno a tipo, piezas y
+  SKU y lo anotaba en `ops.fanout_log` desde el 27-jul (41,780 movimientos, ningún día sin registro).
+- La mercancía de un envío entra como `TRANSFER_DELIVERY` (vía CEDIS) o `INBOUND_RECEPTION`, en tandas de
+  1 a 4 días. **Su suma por SKU da exacto lo enviado**: S37750 → DEC-0182-BLN 150 de 150 en 8 avisos
+  (15–18 sep), DEC-0182-NEG 150/150, VAR-0670-NEG 30/30, TEC-1812-NEG 30/30.
+- Por qué el panel no lo vio: DEC-0182-BLN vive en **MLM6015038652, que `channel.listings` no tiene**, y
+  el rail medía la llegada con `channel.listing_history`. Además el sync registró un salto falso
+  0 → 610 → 0 en DEC-0182-NEG el 12-sep: de ahí salían «11 sep ~21:35» y «entraron 760».
+- **ML recibe antes de que bodega valide**: en S35628 las piezas llegaron el 23-ago y Odoo validó el 26.
+  Con la ventana en la validación, 21 SKUs salían «no llegó» habiendo llegado completos.
+- Cada operación trae un `inbound_id`, pero son **varios por SKU** (traspasos internos del CEDIS): no es el
+  número de envío del panel, así que ese número sigue sin poder deducirse.
+
+**Lo que cambia.**
+- **Recibido (ML) = suma de avisos por SKU**, desde que se CREA la orden hasta la siguiente orden del mismo
+  SKU en la misma cuenta (o 30 días). Lo de más se topa a lo enviado (ML baraja piezas entre sus bodegas con
+  el mismo aviso) y se enseña como «+N».
+- **Rechazo** = lo enviado que no llegó con el envío **cerrado: 10 días después de la salida**. Antes de
+  eso, «en proceso». Por SKU: «ML no recibió N» o «ML no recibió nada (N)».
+- **Activo** = cuándo quedó activo el ÚLTIMO SKU que llegó; **1ª venta** = primer día con venta FULL desde
+  que ese SKU llegó, y en el rail se mide desde la primera llegada.
+- **Avisos sin SKU**: una publicación con **variantes** guarda el SKU en cada variante y el backend no lo
+  lee (queda '?'). Si antes del cierre de un envío con faltantes hubo avisos así en la cuenta, la ventana
+  lo advierte. Así llegó S36996 (5 sillas, 100 pzs): 89 avisos «sin SKU» del 7–8 sep, 4 de 5 cantidades
+  cuadran.
+- **Lo que Odoo no surtió**: el panel descartaba los movimientos **cancelados**, y cuando bodega valida sin
+  tener un SKU Odoo cancela ese renglón. En S38407 desaparecía TEC-1661-NEG-5C (10 pedidas, 0 entregadas).
+  Ahora, en una salida YA validada, cuenta como pedido con su 0 y se marca «Odoo no la surtió»; el
+  encabezado dice «Odoo no surtió 10 de 58» y la tabla de envíos lo repite. En una salida abierta un
+  cancelado es un renglón que la KAM quitó y no se pide. Los renglones en 0 de la orden van al final, en gris.
+- En la tabla, la columna «Llegada a FULL» dice «6 de 6 SKUs · completos», «ML no recibió 183 pzs»,
+  «0 de 48 pzs · llegando · cierra 28 sep», «aún no sale» o «sin cuenta» (el número de envío ya no hace
+  falta para saber si llegó; la cuenta sí). FBA sigue con lo que ve el sync, como antes.
+
+**Resultados con datos reales** (19 salidas desde el 20-ago): S37750 6/6 completos; S35628 26 de 29
+completos y ML no recibió 183 (TEC-0004-BLN 20 de 200); S37012 26 de 30 y 19 sin recibir; S38407 con su
+faltante de Odoo. S26840 (orden de abril validada el 04-sep, 569 pzs) no tiene una sola llegada en ninguna
+cuenta.
+
+**Pendiente que toca el webhook vivo (no va aquí):** `stock_full.procesar_operacion` lee el SKU del ítem y
+no de la variante; con `include_attributes=all` y la variante cuyo `inventory_id` coincide, dejarían de
+salir avisos «sin SKU».
+
+39 pruebas de backend en verde: las de etapas se reescribieron para los avisos (suma de tandas, cierre,
+rechazo parcial y total, llegada antes de validar, corte en la siguiente orden, tope, otra cuenta, sin SKU)
+y hay 3 nuevas de lo que Odoo no surtió. `tsc` limpio y `next build` en verde.
+
 ### v0.544.0 — Specs editables por Bodega, y el flujo de movimientos sale de la ficha
 
 Dos peticiones de Brandon (18-sep).

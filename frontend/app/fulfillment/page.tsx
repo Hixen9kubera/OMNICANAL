@@ -136,9 +136,9 @@ export default function FulfillmentPage() {
           <CircleDashed className="h-4 w-4 shrink-0 text-amber-600" />
           <b>En construcción por etapas.</b>
           <span>
-            <b>En vivo</b>: los envíos y su detalle salen de Odoo; la <b>llegada a FULL, la activación y la
-            primera venta</b> se observan en kubera (Mercado Libre no publica los envíos a Full por API, así que
-            no hay declaradas ni motivos). <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): stock en FULL,
+            <b>En vivo</b>: los envíos y su detalle salen de Odoo; la <b>llegada a FULL</b> sale de los avisos de
+            FULL de Mercado Libre (con lo que no recibió) y la <b>primera venta</b> de kubera (ML no publica los envíos
+            a Full por API, así que no hay declaradas ni motivos). <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): stock en FULL,
             agotado, stock FBA, planeación, ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
           </span>
         </div>
@@ -167,7 +167,7 @@ export default function FulfillmentPage() {
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 <span className={pastilla}><ArrowUpDown className="h-3.5 w-3.5" />Odoo → paquetería del canal → almacén del marketplace</span>
                 <span className={pastilla}><Clock className="h-3.5 w-3.5" />Semana ISO · hora de Ciudad de México</span>
-                <span className={pastilla}><Database className="h-3.5 w-3.5" />Envíos: Odoo en vivo · recepciones: aún no se leen</span>
+                <span className={pastilla}><Database className="h-3.5 w-3.5" />Envíos: Odoo en vivo · llegadas: avisos de FULL de ML</span>
               </div>
             </div>
             <div className="flex items-start gap-4">

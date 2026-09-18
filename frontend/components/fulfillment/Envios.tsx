@@ -11,7 +11,10 @@
  *   · cada renglón enseña su orden de venta, su salida y POR QUÉ tiene esa
  *     cuenta: la regla depende de quién creó la orden y tiene que verse;
  *   · «envío sin enlazar» es un estado de primera: ni 0 ni escondido;
- *   · lo que se pinta como llegada es OBSERVADO por el sync (ML no publica los
+ *   · la llegada de ML sale de los AVISOS de FULL (fbm_stock_operations): la
+ *     suma por SKU contra lo enviado; con el envío cerrado, lo que falta es lo
+ *     que ML no recibió (Brandon, 18-sep). FBA sigue con lo OBSERVADO por el sync
+ *   · lo que se pinta como llegada de FBA es OBSERVADO por el sync (ML no publica los
  *     envíos a Full por API): jamás se rotula como el conteo del marketplace;
  *   · nunca «en tránsito»: la etapa es «salida validada en Odoo».
  */
@@ -22,7 +25,7 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import {
   ChipCanal, ChipFuente, Ceja, FONDO_RAYADO, Rail, RailLinea, Tarjeta, fecha, num, pasosDe, tasaDe,
 } from "./ui";
-import type { Envio, EnvioConLineas } from "./tipos";
+import type { Envio, EnvioConLineas, LineaOdoo } from "./tipos";
 
 const POR_PAGINA = 40;
 
@@ -63,7 +66,7 @@ export function TablaEnvios({
               <th className="px-3.5 py-2.5">Canal · cuenta</th>
               <th className="w-[50%] px-3.5 py-2.5">Rail de etapas</th>
               <th className="px-3.5 py-2.5 text-right">Piezas</th>
-              <th className="px-3.5 py-2.5 text-right" title="Cuántos SKUs del envío subieron su stock en FULL después de la salida. Observado por el sync cada 15 min: Mercado Libre no publica los envíos a Full por API.">Llegada observada</th>
+              <th className="px-3.5 py-2.5 text-right" title="Mercado Libre: suma de los avisos de FULL (webhook fbm_stock_operations) por SKU contra lo enviado. Diez días después de la salida, lo que falta es lo que ML no recibió.">Llegada a FULL</th>
               <th className="px-3.5 py-2.5" />
             </tr>
           </thead>
@@ -104,9 +107,25 @@ export function TablaEnvios({
                     <div className="text-[11px] text-slate-400">
                       de {num(e.pedidas)} pedidas{e.n_skus ? ` · ${e.n_skus} SKUs` : ""}
                     </div>
+                    {!!e.faltante_odoo && (
+                      <div className="text-[11px] font-semibold text-amber-700"
+                           title="Bodega validó la salida sin tener todo: Odoo canceló esos renglones y la orden quedó con Entregado menor a lo pedido.">
+                        Odoo no surtió {num(e.faltante_odoo)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3.5 py-[11px] text-right">
-                    {e.cobertura && e.cobertura.llegaron > 0 ? (
+                    {e.cobertura?.fuente === "avisos" ? (
+                      <Llegada c={e.cobertura} />
+                    ) : e.canal === "meli" && !e.cuenta ? (
+                      <>
+                        <div className="inline-flex rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-700"
+                             title={e.cuenta_regla}>
+                          sin cuenta
+                        </div>
+                        <div className="mt-1 text-[11px] text-slate-400">no se sabe qué bodega mirar</div>
+                      </>
+                    ) : e.cobertura && e.cobertura.llegaron > 0 ? (
                       <>
                         <div className="inline-flex rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-700">
                           {e.cobertura.llegaron} de {e.cobertura.skus} SKUs
@@ -207,6 +226,7 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
   const e = detalle ?? base;
   const lineas = detalle?.lineas ?? [];
   const hecha = e.estado_odoo === "done";
+  const avisos = e.cobertura?.fuente === "avisos";
   const almacen = e.canal === "amazon" ? "FBA" : e.canal === "walmart" ? "WFS" : "FULL";
   // Por qué lo que se ve en el almacén es OBSERVADO y no el conteo del canal.
   const porQue = e.canal === "amazon"
@@ -247,7 +267,10 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
               <span className="font-mono">{e.orden ?? "—"}</span> · <span className="font-mono">{e.salida ?? "—"}</span>
               {" "}· armó {e.kam ?? "—"} ·{" "}
               {hecha ? `${num(e.piezas)} piezas` : `${num(e.pedidas)} pedidas, sin validar`}
-              {lineas.length ? ` · ${lineas.length} SKUs` : ""}
+              {lineas.length ? ` · ${lineas.filter((l) => l.pedidas > 0 || (l.enviadas ?? 0) > 0).length} SKUs` : ""}
+              {!!e.faltante_odoo && (
+                <span className="font-semibold text-amber-700"> · Odoo no surtió {num(e.faltante_odoo)} de {num(e.pedidas)}</span>
+              )}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -270,10 +293,11 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
               <RailLinea envio={e} />
             </div>
           </div>
-          {e.estado === "sinEnlazar" && (
-            <p className="mt-4 text-center text-[11.5px] text-amber-700">
-              Sin número de envío en Odoo: no se puede cruzar con el conteo de Mercado Libre, así que la diferencia
-              entre declarado y recibido no se puede calcular.
+          {e.cobertura?.sin_sku && (
+            <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11.5px] text-amber-800">
+              Ojo: entre la orden y el cierre llegaron a esta cuenta <b>{num(e.cobertura.sin_sku.piezas)} piezas</b> que
+              ML no deja ligar a un SKU (publicaciones con variantes: el SKU vive en cada variante). Si este envío
+              llevaba productos con variantes, lo que aparece como no recibido puede estar ahí.
             </p>
           )}
         </div>
@@ -284,37 +308,44 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
             <p className="text-[12.5px] text-rose-700">No se pudieron leer los renglones: <code className="font-mono">{error}</code></p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] border-collapse text-[12.5px]">
+              <table className="w-full min-w-[820px] border-collapse text-[12.5px]">
                 <thead>
                   <tr className="text-left text-[10px] font-bold uppercase tracking-[.06em] text-slate-400">
                     <th className="pb-2">SKU</th>
-                    <th className="pb-2 text-right">Pedidas</th>
-                    <th className="pb-2 text-right">Enviadas</th>
-                    <th className="pb-2 text-right" title={`Primera subida de stock en ${almacen} tras la salida (sync cada 15 min).`}>Llegó a {almacen}</th>
-                    <th className="pb-2 text-right" title="Pueden incluir piezas de otro envío del mismo SKU.">Entraron</th>
-                    <th className="pb-2 text-right">Activo</th>
+                    <th className="pb-2 text-right" title="Lo que pidió la orden de venta en Odoo.">Pedidas</th>
+                    <th className="pb-2 text-right" title="Lo que bodega entregó al validar la salida (Entregado en Odoo). Sólo cuando la salida ya se validó.">Enviadas</th>
+                    <th className="pb-2 text-right"
+                        title={avisos ? "Suma de los avisos de FULL de Mercado Libre para este SKU desde que se creó la orden."
+                                      : `Primera subida de stock en ${almacen} tras la salida (sync cada 15 min).`}>
+                      Llegaron a {almacen}
+                    </th>
+                    <th className="pb-2 pl-4">Qué pasó</th>
+                    <th className="pb-2 text-right" title="Primera tanda que quedó vendible.">1ª llegada</th>
                     <th className="pb-2 text-right">1ª venta</th>
                   </tr>
                 </thead>
                 <tbody>
                   {lineas.map((l) => (
-                    <tr key={l.sku} className="border-t border-slate-100">
+                    <tr key={l.sku} className={`border-t border-slate-100 ${l.pedidas <= 0 && !l.enviadas ? "opacity-50" : ""}`}>
                       <td className="py-2 pr-3">
                         <div className="font-mono font-bold text-slate-800">{l.sku}</div>
                         <div className="max-w-[360px] truncate text-[11px] text-slate-400" title={l.nombre}>{l.nombre}</div>
                       </td>
                       <td className="py-2 text-right font-mono tabular-nums text-slate-500">{num(l.pedidas)}</td>
-                      <td className="py-2 text-right font-mono font-bold tabular-nums text-slate-800">
+                      <td className={`py-2 text-right font-mono font-bold tabular-nums ${
+                        l.faltante_odoo ? "text-amber-700" : "text-slate-800"}`}
+                          title={l.faltante_odoo ? `Odoo no surtió ${l.faltante_odoo} de ${l.pedidas}.` : undefined}>
                         {l.enviadas === null ? <span className="font-normal text-amber-700">sin validar</span> : num(l.enviadas)}
                       </td>
-                      <td className="py-2 text-right font-mono text-[11.5px] text-emerald-700">
-                        {l.llegada ? fecha({ ts: l.llegada, aprox: true }) : sinDato(`Sin movimiento de stock ${almacen} tras la salida.`)}
+                      <td className="py-2 text-right font-mono font-bold tabular-nums text-slate-800">
+                        {avisos
+                          ? (l.llegadas ? num(l.llegadas) : (l.pedidas > 0 || l.enviadas ? <span className="font-normal text-slate-300">0</span> : null))
+                          : (l.piezas_llegadas ? num(l.piezas_llegadas) : sinDato("—"))}
                       </td>
-                      <td className="py-2 text-right font-mono tabular-nums text-slate-500">
-                        {l.piezas_llegadas ? num(l.piezas_llegadas) : sinDato("—")}
-                      </td>
-                      <td className="py-2 text-right font-mono text-[11.5px] text-slate-500">
-                        {l.activacion ? fecha({ ts: l.activacion, aprox: true }) : sinDato(`No se prendió en ${almacen} en la ventana.`)}
+                      <td className="py-2 pl-4 text-[11.5px]"><EstadoLinea l={l} /></td>
+                      <td className="py-2 text-right font-mono text-[11.5px] text-emerald-700"
+                          title={l.llegada_ultima && l.llegada_ultima !== l.llegada ? `última tanda: ${fecha({ ts: l.llegada_ultima })}` : undefined}>
+                        {l.llegada ? fecha({ ts: l.llegada, aprox: !avisos }) : sinDato(`Sin llegada a ${almacen}.`)}
                       </td>
                       <td className="py-2 text-right font-mono text-[11.5px] text-slate-500">
                         {l.primera_venta
@@ -346,12 +377,62 @@ export function DetalleEnvioModal({ envio: base, onCerrar }: { envio: Envio; onC
             <Dato t="Cuenta" v={e.cuenta_regla ?? "—"} />
           </dl>
           <p className="mt-2 text-[10.5px] text-slate-400">
-            Llegó, activo y 1ª venta son observados por nuestro sync (~ = hora en que se vio): {porQue}.
+            {avisos
+              ? <>Llegaron = avisos de FULL de Mercado Libre (webhook fbm_stock_operations) de esta cuenta, por SKU, desde que
+                  se creó la orden hasta la siguiente orden del mismo SKU. Diez días después de la salida, lo que falta se
+                  cuenta como no recibido por ML; lo que llega de más (+N) es ML moviendo piezas entre sus bodegas. Lo
+                  declarado y los motivos de rechazo sólo viven en su panel.</>
+              : <>Llegó, activo y 1ª venta son observados por nuestro sync (~ = hora en que se vio): {porQue}.</>}
           </p>
         </div>
       </div>
     </div>
   );
+}
+
+/** La celda de llegada de ML: completo, en proceso o lo que ML no recibió. */
+function Llegada({ c }: { c: NonNullable<Envio["cobertura"]> }) {
+  const env = c.piezas_enviadas ?? null;
+  const ambar = "border-amber-300 bg-amber-50 text-amber-700";
+  const [clase, texto, nota] = c.rechazadas
+    ? ["border-rose-200 bg-rose-50 text-rose-700", `ML no recibió ${num(c.rechazadas)} pzs`,
+       `${c.completos ?? 0} de ${c.skus} SKUs completos`]
+    : env !== null && c.skus > 0 && c.completos === c.skus
+      ? ["border-emerald-200 bg-emerald-50 text-emerald-700", `${c.completos} de ${c.skus} SKUs`, "completos en FULL"]
+      : env === null
+        // ML a veces recibe ANTES de que bodega valide: se enseña, sin juzgar.
+        ? (c.llegaron > 0 ? [ambar, `${num(c.piezas_llegadas)} pzs llegaron`, "bodega no ha validado"]
+                          : [ambar, "aún no sale", "salida sin validar"])
+        : [ambar, `${num(c.piezas_llegadas)} de ${num(env)} pzs`,
+           c.cierre ? `llegando · cierra ${fecha({ ts: c.cierre, dia: true })}` : "llegando"];
+  return (
+    <>
+      <div className={`inline-flex rounded-md border px-2 py-1 text-[11px] font-bold ${clase}`}>{texto}</div>
+      <div className="mt-1 text-[11px] text-slate-400">{nota}</div>
+    </>
+  );
+}
+
+/** Qué pasó con un SKU: lo dice en palabras, con su color. */
+function EstadoLinea({ l }: { l: LineaOdoo }) {
+  if (l.pedidas <= 0 && !l.enviadas) return <span className="text-slate-300">en 0 en la orden</span>;
+  if (l.enviadas === 0) {
+    return <span className="font-semibold text-amber-700" title="Bodega validó sin esta pieza: Odoo canceló el renglón.">Odoo no la surtió</span>;
+  }
+  switch (l.estado_llegada) {
+    case "completo":
+      return <span className="font-semibold text-emerald-700">completo{l.llegadas_extra ? ` · +${l.llegadas_extra}` : ""}</span>;
+    case "en_proceso":
+      return <span className="font-semibold text-amber-700">en proceso</span>;
+    case "llegando":
+      return <span className="font-semibold text-amber-700" title="ML ya avisó piezas y bodega no ha validado la salida en Odoo.">llegando · sin validar</span>;
+    case "rechazo_parcial":
+      return <span className="font-semibold text-rose-700">ML no recibió {num(l.rechazadas)}</span>;
+    case "rechazo_total":
+      return <span className="font-semibold text-rose-700">ML no recibió nada ({num(l.rechazadas)})</span>;
+    default:
+      return <span className="text-slate-300">—</span>;
+  }
 }
 
 function Dato({ t, v }: { t: string; v: string }) {

@@ -1,18 +1,22 @@
-"""Pruebas de las tres etapas que se reconstruyen: llegada, activación y 1ª venta.
+"""Pruebas de las etapas que se reconstruyen: recibido, activo y 1ª venta.
 
 ── QUÉ FIJAN ───────────────────────────────────────────────────────────────────
-El 17-sep-2026 se midió que **Mercado Libre no tiene API de envíos a Full**: no
-hay declaradas, ni estado, ni motivos. Lo único que se puede reconstruir es lo
-que el sync ve en `channel.listing_history` y lo que venden esos SKUs. Estas
-pruebas fijan las reglas que evitan que esa reconstrucción mienta:
+Desde v0.545.0 la llegada de Mercado Libre sale de los AVISOS de FULL
+(`fbm_stock_operations`, resueltos a tipo/piezas/SKU en `ops.fanout_log`). Medido
+el 18-sep: su suma por SKU da exacto lo que salió de Odoo. Estas pruebas fijan
+las reglas que evitan que esa medición mienta:
 
-  1. una salida SIN validar no tiene llegada (sería de otro envío del mismo SKU);
-  2. sólo cuentan los movimientos DENTRO de la ventana (30 días llegada, 45
-     activación): lo de tres meses después no es de este envío;
-  3. las fechas reconstruidas viajan como `aprox` — son cuándo se OBSERVÓ;
-  4. la cobertura se cuenta por SKU («4 de 6»), para que una pieza de un SKU no
-     parezca el envío entero;
-  5. si kubera no contesta, las etapas quedan en None y NADA se inventa.
+  1. la ventana empieza al CREAR la orden: ML puede recibir antes de que bodega
+     valide (S35628: recibió el 23-ago, validó el 26);
+  2. termina en la siguiente orden del mismo SKU y cuenta: lo de después es de ésa;
+  3. RECHAZO sólo con el envío CERRADO (10 días tras la salida); antes, "en proceso";
+  4. lo que llega DE MÁS se topa a lo enviado (ML baraja entre bodegas);
+  5. si hubo avisos sin SKU legible (publicación con variantes) y faltan piezas,
+     se avisa en vez de callar;
+  6. lo que Odoo no surtió (0 entregadas) no se espera ni se cuenta como rechazo;
+  7. antes del 12-ago (sin avisos resueltos) y sin kubera, NADA se inventa.
+
+Amazon FBA sigue con lo que ve el sync (`channel.listing_history`), como `aprox`.
 
 No se llama a kubera: `aplicar()` recibe los datos ya leídos.
 
@@ -29,79 +33,181 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services import fulfillment_etapas as fe  # noqa: E402
 
-ACC = "11111111-1111-1111-1111-111111111111"
-SALIDA = datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc)
+ORDEN = datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc)
+SALIDA = ORDEN + timedelta(days=2)
+CERRADO = SALIDA + timedelta(days=fe.DIAS_CIERRE + 1)
+ABIERTO = SALIDA + timedelta(days=2)
 
 
-def _envio(validada: datetime | None = SALIDA, skus=("A", "B")):
+def _envio(skus=("A", "B"), enviadas=10, orden=ORDEN, validada=SALIDA, cuenta="Kubera", canal="meli"):
     return {
-        "canal": "meli", "cuenta": "Kubera", "estado_odoo": "done" if validada else "waiting",
-        "etapas": [{"ts": (SALIDA - timedelta(days=2)).isoformat()},
+        "canal": canal, "cuenta": cuenta, "estado_odoo": "done" if validada else "waiting",
+        "etapas": [{"ts": orden.isoformat()},
                    {"ts": validada.isoformat()} if validada else None, None, None, None],
-        "lineas": [{"sku": s, "nombre": s, "pedidas": 10, "enviadas": 10} for s in skus],
+        "lineas": [{"sku": s, "nombre": s, "pedidas": 10,
+                    "enviadas": enviadas if validada else None} for s in skus],
     }
 
 
-def _datos(llegadas=None, activaciones=None, ventas=None):
-    return {"cuentas": {"BEKURA": ACC, "SANCORFASHION": "otro", "AMAZON": "amz"},
-            "llegadas": llegadas or {}, "activaciones": activaciones or {}, "ventas": ventas or {}}
+def _datos(avisos=None, ventas=None, llegadas=None, activaciones=None):
+    return {"cuentas": {"BEKURA": "kub", "SANCORFASHION": "sc", "AMAZON": "amz"},
+            "avisos": avisos or {}, "ventas": ventas or {},
+            "llegadas": llegadas or {}, "activaciones": activaciones or {}}
 
 
-class Atribucion(unittest.TestCase):
-    def test_salida_sin_validar_no_tiene_llegada(self):
-        e = _envio(validada=None)
-        fe.aplicar([e], _datos(llegadas={("A", ACC): ([SALIDA + timedelta(hours=5)], [7])}))
-        self.assertIsNone(e["etapas"][2], "sin salida validada no se atribuye nada")
-        self.assertNotIn("cobertura", e)
+def _aviso(*tandas):
+    """[(cuándo, piezas), ...] → (fechas, piezas) como las devuelve la consulta."""
+    return ([t for t, _ in tandas], [n for _, n in tandas])
 
-    def test_llegada_dentro_de_la_ventana(self):
+
+class LlegadaPorAvisos(unittest.TestCase):
+    def test_la_suma_de_tandas_completa_y_lo_que_no_llego_es_rechazo(self):
         e = _envio()
-        cuando = SALIDA + timedelta(days=2)
-        fe.aplicar([e], _datos(llegadas={("A", ACC): ([cuando], [7])}))
-        self.assertEqual(e["etapas"][2]["ts"], cuando.isoformat())
-        self.assertTrue(e["etapas"][2]["aprox"], "es cuándo se observó, no cuándo ocurrió")
-        self.assertEqual(e["cobertura"], {"skus": 2, "llegaron": 1, "piezas_llegadas": 7,
-                                          "activos": 0, "vendieron": 0})
-        self.assertEqual(e["lineas"][0]["piezas_llegadas"], 7)
-        self.assertNotIn("llegada", e["lineas"][1], "el SKU sin movimiento no inventa fecha")
+        t1, t2 = SALIDA + timedelta(days=2), SALIDA + timedelta(days=3)
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((t1, 4), (t2, 6))}), ahora=CERRADO)
+        a, b = e["lineas"]
+        self.assertEqual((a["llegadas"], a["estado_llegada"]), (10, "completo"))
+        self.assertEqual(a["llegada"], t1.isoformat())
+        self.assertEqual(a["llegada_ultima"], t2.isoformat())
+        self.assertEqual((b["llegadas"], b["estado_llegada"], b["rechazadas"]), (0, "rechazo_total", 10))
+        self.assertEqual(e["etapas"][2], {"ts": t1.isoformat()}, "hora del aviso, no del sync: sin aprox")
+        c = e["cobertura"]
+        self.assertEqual((c["skus"], c["llegaron"], c["completos"], c["rechazadas"]), (2, 1, 1, 10))
+        self.assertEqual((c["piezas_enviadas"], c["piezas_llegadas"], c["cerrado"]), (20, 10, True))
 
-    def test_fuera_de_la_ventana_no_cuenta(self):
+    def test_antes_del_cierre_no_hay_rechazo(self):
         e = _envio()
-        tarde = SALIDA + timedelta(days=fe.DIAS_LLEGADA + 5)
-        antes = SALIDA - timedelta(days=3)
-        fe.aplicar([e], _datos(llegadas={("A", ACC): ([antes, tarde], [3, 9])}))
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 3))}),
+                   ahora=ABIERTO)
+        self.assertEqual(e["lineas"][0]["estado_llegada"], "en_proceso")
+        self.assertEqual(e["lineas"][1]["estado_llegada"], "en_proceso")
+        self.assertNotIn("rechazadas", e["lineas"][1])
+        self.assertIsNone(e["cobertura"]["rechazadas"], "abierto: todavía no se sabe")
+        self.assertFalse(e["cobertura"]["cerrado"])
+
+    def test_rechazo_parcial(self):
+        e = _envio(skus=("A",))
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((SALIDA + timedelta(days=2), 7))}),
+                   ahora=CERRADO)
+        self.assertEqual((e["lineas"][0]["estado_llegada"], e["lineas"][0]["rechazadas"]),
+                         ("rechazo_parcial", 3))
+
+    def test_ml_recibe_antes_de_que_bodega_valide(self):
+        e = _envio(skus=("A",))
+        antes = ORDEN + timedelta(days=1)            # S35628: 23-ago contra validación del 26
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((antes, 10))}), ahora=CERRADO)
+        self.assertEqual(e["lineas"][0]["estado_llegada"], "completo")
+        self.assertEqual(e["etapas"][2]["ts"], antes.isoformat())
+
+    def test_lo_anterior_a_la_orden_no_es_de_este_envio(self):
+        e = _envio(skus=("A",))
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((ORDEN - timedelta(hours=1), 10))}),
+                   ahora=CERRADO)
+        self.assertEqual(e["lineas"][0]["llegadas"], 0)
         self.assertIsNone(e["etapas"][2])
-        self.assertEqual(e["cobertura"]["llegaron"], 0)
 
-    def test_activacion_y_primera_venta(self):
+    def test_la_ventana_se_corta_en_la_siguiente_orden(self):
+        e1 = _envio(skus=("A",))
+        orden2 = ORDEN + timedelta(days=10)
+        e2 = _envio(skus=("A",), orden=orden2, validada=orden2 + timedelta(days=1))
+        avisos = {("A", "BEKURA"): _aviso((ORDEN + timedelta(days=3), 10), (orden2 + timedelta(days=2), 10))}
+        fe.aplicar([e1, e2], _datos(avisos=avisos), ahora=orden2 + timedelta(days=20))
+        self.assertEqual(e1["lineas"][0]["llegadas"], 10, "lo del día 12 es de la segunda orden")
+        self.assertEqual(e2["lineas"][0]["llegadas"], 10)
+
+    def test_llegar_de_mas_se_topa_a_lo_enviado(self):
+        e = _envio(skus=("A",))
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((SALIDA + timedelta(days=2), 12))}),
+                   ahora=CERRADO)
+        a = e["lineas"][0]
+        self.assertEqual((a["estado_llegada"], a["llegadas_extra"]), ("completo", 2))
+        self.assertEqual(e["cobertura"]["piezas_llegadas"], 10, "no se cuentan piezas que no se mandaron")
+
+    def test_la_otra_cuenta_no_cruza(self):
+        e = _envio(skus=("A",))
+        fe.aplicar([e], _datos(avisos={("A", "SANCORFASHION"): _aviso((SALIDA + timedelta(days=1), 10))}),
+                   ahora=CERRADO)
+        self.assertEqual(e["lineas"][0]["llegadas"], 0)
+
+    def test_avisos_sin_sku_se_advierten_si_faltan_piezas(self):
+        e = _envio(skus=("A",))
+        avisos = {("?", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 20), (SALIDA + timedelta(days=2), 11))}
+        fe.aplicar([e], _datos(avisos=avisos), ahora=CERRADO)
+        self.assertEqual(e["cobertura"]["sin_sku"], {"piezas": 31, "avisos": 2})
+
+    def test_lo_sin_sku_despues_del_cierre_no_se_le_cuelga(self):
+        e = _envio(skus=("A",))
+        tarde = SALIDA + timedelta(days=fe.DIAS_CIERRE + 2)
+        fe.aplicar([e], _datos(avisos={("?", "BEKURA"): _aviso((tarde, 30))}),
+                   ahora=tarde + timedelta(days=1))
+        self.assertNotIn("sin_sku", e["cobertura"])
+
+    def test_sin_faltantes_no_hay_advertencia(self):
+        e = _envio(skus=("A",))
+        avisos = {("A", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 10)),
+                  ("?", "BEKURA"): _aviso((SALIDA + timedelta(days=1), 20))}
+        fe.aplicar([e], _datos(avisos=avisos), ahora=CERRADO)
+        self.assertNotIn("sin_sku", e["cobertura"])
+
+    def test_lo_que_odoo_no_surtio_no_es_rechazo(self):
+        e = _envio(skus=("A",), enviadas=0)
+        fe.aplicar([e], _datos(), ahora=CERRADO)
+        self.assertIsNone(e["lineas"][0]["estado_llegada"])
+        self.assertNotIn("rechazadas", e["lineas"][0])
+        self.assertEqual(e["cobertura"]["rechazadas"], 0)
+
+    def test_salida_abierta_no_se_juzga(self):
+        e = _envio(skus=("A",), validada=None)
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((ORDEN + timedelta(days=1), 4))}),
+                   ahora=CERRADO)
+        self.assertEqual(e["lineas"][0]["estado_llegada"], "llegando")
+        self.assertIsNone(e["cobertura"]["rechazadas"])
+        self.assertIsNotNone(e["etapas"][2], "lo que ya llegó se enseña aunque Odoo no valide")
+
+    def test_activo_es_cuando_llego_el_ultimo_sku(self):
         e = _envio()
-        act = SALIDA + timedelta(days=1)
-        fe.aplicar([e], _datos(
-            activaciones={("A", ACC): [SALIDA - timedelta(days=10), act]},
-            ventas={("A", "BEKURA"): [date(2026, 8, 1), date(2026, 8, 25)]}))
-        self.assertEqual(e["etapas"][3]["ts"], act.isoformat(), "la activación vieja no cuenta")
-        self.assertEqual(e["etapas"][4]["ts"][:10], "2026-08-25", "la venta anterior a la salida no cuenta")
+        t1, t2 = SALIDA + timedelta(days=1), SALIDA + timedelta(days=3)
+        avisos = {("A", "BEKURA"): _aviso((t1, 10)), ("B", "BEKURA"): _aviso((t2, 10))}
+        fe.aplicar([e], _datos(avisos=avisos), ahora=CERRADO)
+        self.assertEqual((e["etapas"][2]["ts"], e["etapas"][3]["ts"]), (t1.isoformat(), t2.isoformat()))
+
+    def test_primera_venta_desde_que_llego(self):
+        e = _envio(skus=("A",))
+        llega = datetime(2026, 8, 24, 20, 0, tzinfo=timezone.utc)
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((llega, 10))},
+                               ventas={("A", "BEKURA"): [date(2026, 8, 23), date(2026, 8, 25)]}),
+                   ahora=CERRADO)
         # Es un DÍA de México: mediodía CDMX y marcado como día, no medianoche UTC
         # (que en CDMX caía a las 18:00 del día anterior).
-        self.assertEqual(e["etapas"][4]["ts"], "2026-08-25T12:00:00-06:00")
-        self.assertTrue(e["etapas"][4]["dia"])
-        self.assertEqual((e["cobertura"]["activos"], e["cobertura"]["vendieron"]), (1, 1))
+        self.assertEqual(e["etapas"][4], {"ts": "2026-08-25T12:00:00-06:00", "dia": True},
+                         "la venta anterior a la llegada no cuenta")
 
-    def test_cuenta_equivocada_no_cruza(self):
-        e = _envio()
-        fe.aplicar([e], _datos(llegadas={("A", "otro"): ([SALIDA + timedelta(days=1)], [5])}))
-        self.assertIsNone(e["etapas"][2], "el stock de la otra cuenta no es de este envío")
+    def test_antes_de_los_avisos_no_se_juzga(self):
+        viejo = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        e = _envio(orden=viejo, validada=viejo + timedelta(days=2))
+        fe.aplicar([e], _datos(), ahora=CERRADO)
+        self.assertNotIn("cobertura", e, "sin avisos no hay con qué decir 'rechazado'")
+        self.assertEqual(e["etapas"][2:], [None, None, None])
 
-    def test_envios_viejos_sin_historia(self):
-        viejo = datetime(2026, 3, 1, tzinfo=timezone.utc)
-        e = _envio(validada=viejo)
-        fe.aplicar([e], _datos(llegadas={("A", ACC): ([viejo + timedelta(days=1)], [5])}))
-        self.assertIsNone(e["etapas"][2], "antes del 17-jul no hay historia que mirar")
+    def test_sin_cuenta_no_se_mira_ninguna_bodega(self):
+        e = _envio(cuenta=None)
+        fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((SALIDA, 10))}), ahora=CERRADO)
+        self.assertNotIn("cobertura", e)
 
     def test_sin_kubera_no_pasa_nada(self):
         e = _envio()
         fe.aplicar([e], None)
         self.assertEqual(e["etapas"][2:], [None, None, None])
+
+
+class AmazonConElSync(unittest.TestCase):
+    def test_fba_sigue_con_listing_history_y_aprox(self):
+        e = _envio(canal="amazon", cuenta="San Corpe")
+        cuando = SALIDA + timedelta(days=2)
+        fe.aplicar([e], _datos(llegadas={("A", "amz"): ([cuando], [7])}), ahora=CERRADO)
+        self.assertEqual(e["etapas"][2], {"ts": cuando.isoformat(), "aprox": True})
+        self.assertEqual(e["cobertura"]["fuente"], "sync")
+        self.assertEqual(e["lineas"][0]["piezas_llegadas"], 7)
 
 
 class Canales(unittest.TestCase):

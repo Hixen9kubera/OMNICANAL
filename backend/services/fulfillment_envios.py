@@ -41,6 +41,11 @@ docs/FULLFILMENT_EVIDENCIA_ORDENES.md.
 
 5. Nada de lo que no se mide se inventa: solicitadas, validadas por Bodega,
    recibidas, activación y primera venta van en None hasta que tengan fuente.
+
+6. Los movimientos CANCELADOS de una salida ya validada SÍ cuentan como pedidos:
+   es lo que bodega no tuvo (Odoo cancela el renglón al validar sin pendiente y
+   la orden queda con Entregado = 0). En una salida abierta, un cancelado es un
+   renglón que la KAM quitó y no se pide.
 """
 from __future__ import annotations
 
@@ -185,9 +190,13 @@ def _leer_odoo() -> tuple[list[dict], dict[int, dict], list[dict]]:
         settings.odoo_db, uid, settings.odoo_password, "sale.order", "read", [so_ids],
         {"fields": ["name", "create_uid", "user_id", "client_order_ref", "create_date", "state"]},
     )} if so_ids else {}
+    # CON los movimientos cancelados. Cuando bodega valida una salida sin tener
+    # un SKU, Odoo CANCELA ese renglón (demanda 10, hecho 0) y la orden de venta
+    # queda con Entregado = 0. Filtrarlos escondía justo lo que Odoo no surtió:
+    # en S38407 desaparecía TEC-1661-NEG-5C (10 pedidas, 0 entregadas).
     movs = sr(
         "stock.move",
-        [["picking_id", "in", [p["id"] for p in pickings]], ["state", "!=", "cancel"]],
+        [["picking_id", "in", [p["id"] for p in pickings]]],
         ["picking_id", "product_id", "product_qty", "quantity", "state"],
     ) if pickings else []
     return pickings, ordenes, movs
@@ -195,9 +204,15 @@ def _leer_odoo() -> tuple[list[dict], dict[int, dict], list[dict]]:
 
 def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> dict[str, Any]:
     """Clasifica y arma la respuesta. Función pura: se prueba sin Odoo."""
+    hechas = {p["id"] for p in pickings if p["state"] == "done"}
     lineas: dict[int, dict[str, dict[str, Any]]] = {}
     for mv in movs:
         pid = _id(mv["picking_id"])
+        # Un renglón cancelado en una salida ABIERTA es uno que la KAM quitó o
+        # redujo: ya no se pide. En una salida VALIDADA es lo que bodega no tuvo
+        # —Odoo lo cancela al validar sin pendiente— y sí se tiene que ver.
+        if mv.get("state") == "cancel" and pid not in hechas:
+            continue
         completo = _nombre(mv["product_id"])
         mm = _RE_SKU.match(completo)
         sku, nombre = (mm.group(1), mm.group(2)) if mm else (completo, "")
@@ -212,7 +227,9 @@ def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> d
     excluidas = {"venta_amazon_mfn": 0, "otro": 0}
     for p in pickings:
         socio = _nombre(p["partner_id"])
-        ren = sorted(lineas.get(p["id"], {}).values(), key=lambda r: -r["pedidas"])
+        # Los renglones en 0 (la KAM los dejó en la orden sin cantidad) al final.
+        ren = sorted(lineas.get(p["id"], {}).values(),
+                     key=lambda r: (r["pedidas"] <= 0 and r["enviadas"] <= 0, -r["pedidas"]))
         pedidas = sum(r["pedidas"] for r in ren)
         hecha = p["state"] == "done"
         enviadas = sum(r["enviadas"] for r in ren) if hecha else None
@@ -259,9 +276,15 @@ def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> d
                        {"ts": validada} if validada else None,
                        None, None, None],
             "estado": _estado(canal, hecha, numero),
+            # Lo que Odoo NO surtió, sólo cuando la salida ya se validó: antes de
+            # eso un 0 entregado no es un faltante, es que todavía no sale.
+            "faltante_odoo": (round(sum(max(0.0, r["pedidas"] - r["enviadas"]) for r in ren))
+                              if hecha else None),
             "lineas": [{"sku": r["sku"], "nombre": r["nombre"],
                         "pedidas": round(r["pedidas"]),
-                        "enviadas": round(r["enviadas"]) if hecha else None}
+                        "enviadas": round(r["enviadas"]) if hecha else None,
+                        "faltante_odoo": (round(max(0.0, r["pedidas"] - r["enviadas"]))
+                                          if hecha else None)}
                        for r in ren],
         })
 
@@ -326,8 +349,10 @@ def leer() -> dict[str, Any]:
     datos["etapas_kubera"] = fulfillment_etapas.enriquecer(datos["envios"])
     datos["generado"] = datetime.now(timezone.utc).isoformat()
     datos["fuente"] = ("Odoo: stock.picking de salida (socio FULL/AMAZON/WFS/MERCADO LIBRE) "
-                       "+ sale.order (quién la creó y su referencia) + stock.move; "
-                       "llegada, activación y 1ª venta observadas en kubera")
+                       "+ sale.order (quién la creó y su referencia) + stock.move (con los "
+                       "cancelados de una salida validada: lo que Odoo no surtió); llegada a FULL: "
+                       "avisos fbm_stock_operations de ML resueltos por SKU (ops.fanout_log); "
+                       "1ª venta: ventas FULL en kubera")
     log.info("fulfillment_envios: %d salidas (%s)", len(datos["envios"]),
              {k: v["salidas"] for k, v in datos["resumen"].items()})
     return datos

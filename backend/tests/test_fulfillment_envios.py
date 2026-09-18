@@ -169,5 +169,46 @@ class Armar(unittest.TestCase):
         self.assertEqual(r["meli:Kubera"]["dias_orden"][3], 2)
 
 
+
+class LoQueOdooNoSurtio(unittest.TestCase):
+    """S38407 (18-sep): bodega validó sin tener TEC-1661-NEG-5C y Odoo CANCELÓ ese
+    renglón (10 pedidas, 0 hechas). El panel filtraba los cancelados y el SKU
+    desaparecía. En una salida validada se ve con su 0; en una abierta, un
+    cancelado es un renglón que la KAM quitó y no se pide."""
+
+    def setUp(self):
+        pickings = [_picking(1, "FULL", 38407), _picking(2, "FULL", 38500, estado="waiting")]
+        ordenes = {o["id"]: o for o in [_orden(38407, 153, "Cinthya", ""),
+                                        _orden(38500, 153, "Cinthya", "")]}
+        movs = [
+            _mov(1, "EST-0055-MET", 35, 35),
+            _mov(1, "TEC-1661-NEG-5C", 10, 0, estado="cancel"),
+            _mov(1, "TEC-1661-NEG-5C", 0, 0, estado="cancel"),     # el renglón en 0 que deja Odoo
+            _mov(1, "CUNA-0009-BLN", 0, 0, estado="cancel"),       # la KAM lo dejó en 0
+            _mov(2, "TEC-1", 20, 0, estado="assigned"),
+            _mov(2, "TEC-2", 5, 0, estado="cancel"),                # quitado antes de validar
+        ]
+        d = fe.armar(pickings, ordenes, movs)
+        self.e = {x["orden"]: x for x in d["envios"]}
+
+    def test_el_cancelado_de_una_salida_validada_se_ve_con_su_cero(self):
+        e = self.e["S38407"]
+        por_sku = {l["sku"]: l for l in e["lineas"]}
+        self.assertEqual((por_sku["TEC-1661-NEG-5C"]["pedidas"], por_sku["TEC-1661-NEG-5C"]["enviadas"],
+                          por_sku["TEC-1661-NEG-5C"]["faltante_odoo"]), (10, 0, 10))
+        self.assertEqual((e["pedidas"], e["piezas"], e["faltante_odoo"]), (45, 35, 10))
+
+    def test_los_renglones_en_cero_van_al_final(self):
+        skus = [l["sku"] for l in self.e["S38407"]["lineas"]]
+        self.assertEqual(skus[-1], "CUNA-0009-BLN")
+        self.assertEqual(self.e["S38407"]["lineas"][-1]["pedidas"], 0)
+
+    def test_en_una_salida_abierta_el_cancelado_no_se_pide(self):
+        e = self.e["S38500"]
+        self.assertEqual([l["sku"] for l in e["lineas"]], ["TEC-1"])
+        self.assertEqual(e["pedidas"], 20)
+        self.assertIsNone(e["faltante_odoo"], "sin validar, un 0 no es faltante")
+
+
 if __name__ == "__main__":
     unittest.main()

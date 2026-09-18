@@ -62,10 +62,12 @@ export const ETAPAS = [
   // `date_done` del OUT. Medido el 14-sep: en 16 de 43 envíos ML ya había
   // recibido ANTES de esta validación. No es la hora del camión y no se rotula así.
   { t: "Salida validada", corto: "Salida", sub: "en Odoo · no es el camión" },
-  // NO es el aviso de ML (su API no tiene envíos a Full): es la subida de
-  // stock_full que ve el sync cada 15 min, o sea cuando las piezas ya se pueden
-  // vender. Por eso viaja con `aprox` y se rotula "observado".
-  { t: "Recibido", corto: "Recibido", sub: "llegada observada" },
+  // ML: el primer AVISO de FULL de ML (webhook `fbm_stock_operations`) con
+  // piezas de este envío ya vendibles. Desde v0.545.0; antes era la subida de
+  // stock_full que veía el sync, que no veía publicaciones fuera de
+  // channel.listings (DEC-0182-BLN) ni distinguía un salto falso.
+  // FBA sigue con el sync y viaja con `aprox`.
+  { t: "Recibido", corto: "Recibido", sub: "llegada a FULL" },
   { t: "Activo", corto: "Activo", sub: "prende en FULL" },
   { t: "1ª venta", corto: "1ª venta", sub: "primera venta" },
 ] as const;
@@ -110,14 +112,29 @@ export interface Envio {
   etapas: (Instante | null)[];
   estado: EstadoEnvio;
   n_skus?: number;
-  /** Cuántos SKUs del envío ya llegaron, se activaron y vendieron (observado). */
+  /** Lo pedido que Odoo NO surtió (salida validada con renglones en 0). null = sin validar. */
+  faltante_odoo?: number | null;
+  /**
+   * Cuántos SKUs del envío llegaron, se activaron y vendieron.
+   * ML (`fuente: "avisos"`): suma de los avisos de FULL por SKU, topada a lo
+   * enviado; con el envío CERRADO (10 días tras la salida) lo que falta es
+   * `rechazadas`. FBA (`fuente: "sync"`): lo que vio el sync.
+   */
   cobertura?: {
+    fuente?: "avisos" | "sync";
     skus: number;
     llegaron: number;
-    /** Piezas que ENTRARON a FULL en la ventana: puede incluir otro envío del mismo SKU. */
     piezas_llegadas: number;
     activos: number;
     vendieron: number;
+    completos?: number;
+    piezas_enviadas?: number | null;
+    cerrado?: boolean;
+    /** null = el envío no ha cerrado: todavía no se sabe. */
+    rechazadas?: number | null;
+    cierre?: string | null;
+    /** Avisos de FULL sin SKU legible (publicación con variantes) antes del cierre. */
+    sin_sku?: { piezas: number; avisos: number };
   };
   /** Sólo si el marketplace dio recibidas y rechazadas explícitas (diseño). */
   tasaPct?: number;
@@ -130,8 +147,18 @@ export interface LineaOdoo {
   pedidas: number;
   /** null = la salida no se ha validado. */
   enviadas: number | null;
-  /** Observado en kubera tras la salida; ausente = no se vio nada. */
+  /** Lo pedido que Odoo no surtió al validar. null = la salida no se ha validado. */
+  faltante_odoo?: number | null;
+  /** ML: piezas avisadas por ML (fbm_stock_operations) para este SKU en la ventana. */
+  llegadas?: number;
+  /** Lo que llegó de más: ML también baraja piezas entre sus bodegas. */
+  llegadas_extra?: number;
+  estado_llegada?: "completo" | "en_proceso" | "llegando" | "rechazo_parcial" | "rechazo_total" | null;
+  rechazadas?: number;
+  /** Primera y última tanda. */
   llegada?: string;
+  llegada_ultima?: string;
+  /** FBA: lo que vio el sync. */
   piezas_llegadas?: number;
   activacion?: string;
   primera_venta?: string;
@@ -164,8 +191,8 @@ export interface RespuestaEnvios {
   excluidas: { venta_amazon_mfn: number; otro: number };
   /** Si kubera contestó, y con qué ventanas se buscaron llegada y activación. */
   etapas_kubera?: {
-    kubera: boolean; motivo?: string; desde_historia?: string;
-    ventana_llegada_dias?: number; ventana_activacion_dias?: number;
+    kubera: boolean; motivo?: string; desde_historia?: string; desde_avisos?: string;
+    ventana_llegada_dias?: number; ventana_activacion_dias?: number; cierre_dias?: number;
   };
   generado: string;
   fuente: string;

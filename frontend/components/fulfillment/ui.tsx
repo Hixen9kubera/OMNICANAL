@@ -165,6 +165,10 @@ export interface Paso {
   /** Valor para la celda angosta de la tabla, donde el texto largo se corta. */
   vc?: string;
   sub: string;
+  /** Cuántos SKUs llegaron a esa etapa; va debajo de la fecha en el rail C2. */
+  conteo?: string;
+  /** El conteo trae una mala noticia (ML no recibió piezas): se pinta en rosa. */
+  alerta?: boolean;
   // `pendiente` es un hueco que además PIDE ALGO: lleva el verbo y a quién le toca.
   tono: "dato" | "espera" | "hueco" | "pendiente";
   titulo: string;
@@ -189,8 +193,15 @@ export function pasosDe(e: Envio): Paso[] {
   // Las tres últimas etapas son por SKU: el rail enseña la primera fecha y
   // CUÁNTOS de los SKUs del envío llegaron ahí. Sin eso, una sola pieza de un
   // SKU parecería el envío entero.
-  const cobertura = [undefined, undefined,
-                     c && `${c.llegaron} de ${c.skus} SKUs`,
+  // ML (avisos): el Recibido dice cuántos SKUs llegaron COMPLETOS y, con el
+  // envío cerrado, cuánto no recibió ML. Antes del cierre es "en proceso".
+  const avisos = c?.fuente === "avisos";
+  const recibido = !c ? undefined
+    : !avisos ? `${c.llegaron} de ${c.skus} SKUs`
+    : c.rechazadas ? `${c.completos ?? 0} de ${c.skus} completos · ML no recibió ${num(c.rechazadas)} pzs`
+    : c.cerrado || c.completos === c.skus ? `${c.completos ?? 0} de ${c.skus} SKUs completos`
+    : `${num(c.piezas_llegadas)} de ${num(c.piezas_enviadas ?? null)} pzs · en proceso`;
+  const cobertura = [undefined, undefined, recibido,
                      c && `${c.activos} de ${c.skus} SKUs`,
                      c && `${c.vendieron} de ${c.skus} SKUs`];
   // Primero los dos pasos que todavía nadie captura: en vez de "sin dato" dicen
@@ -203,15 +214,33 @@ export function pasosDe(e: Envio): Paso[] {
     const inst = e.etapas[i];
     if (inst) {
       const conteo = cobertura[i];
-      return { t, corto, v: fecha(inst), sub: conteo ?? sub, tono: "dato" as const,
+      const salida = e.etapas[1];
+      const antes = i === 2 && salida && Date.parse(inst.ts) < Date.parse(salida.ts);
+      return { t, corto, v: fecha(inst), sub: conteo ?? sub, conteo, tono: "dato" as const,
+               alerta: i === 2 && avisos && !!c?.rechazadas,
                titulo: `${t} · ${fecha(inst)} (${inst.dia ? "día" : "hora"} de CDMX)${conteo ? ` · ${conteo}` : ""}`
                  + (inst.aprox ? " — hora en que se OBSERVÓ, no la del evento" : "")
-                 + (inst.dia ? " — se cuenta por día: no hay hora" : "") };
+                 + (inst.dia ? " — se cuenta por día: no hay hora" : "")
+                 + (i === 2 && avisos ? " — primer aviso de FULL de Mercado Libre con piezas de este envío" : "")
+                 + (antes ? " — ML recibió ANTES de que bodega validara la salida en Odoo" : "") };
     }
     // Salida real todavía sin validar: el dato viene (ámbar), no es un hueco.
     if (i === 1 && abierta) {
       return { t, corto, v: "en espera", sub: "bodega no ha validado", tono: "espera" as const,
                titulo: `${t}: la salida existe en Odoo (${e.salida ?? ""}) y bodega aún no la valida.` };
+    }
+    // ML con avisos: el número de envío ya no hace falta para saber si llegó.
+    if (i === 2 && avisos && c && !abierta) {
+      if (c.cerrado) {
+        return { t, corto, v: "no llegó", sub: `ML no recibió ${num(c.rechazadas ?? 0)} pzs`,
+                 tono: "hueco" as const, alerta: true,
+                 titulo: `${t}: diez días después de la salida no llegó ningún aviso de FULL de ML para este envío.` };
+      }
+      return { t, corto, v: "en espera", vc: "llegando",
+               sub: c.cierre ? `cierra ${fecha({ ts: c.cierre, dia: true })}` : "sin avisos todavía",
+               tono: "espera" as const,
+               titulo: `${t}: todavía no llega ningún aviso de FULL de ML con piezas de este envío. `
+                 + "Las tandas suelen empezar 1 a 3 días después de la salida." };
     }
     if (i === 2 && !abierta && SIN_LECTURA[e.estado]) {
       const s = SIN_LECTURA[e.estado]!;
@@ -271,7 +300,7 @@ export function tasaDe(e: Envio): { texto: string; nota: string; clase: string; 
     case "abierta":
       return { texto: "aún no sale", nota: "salida sin validar", clase: "border-amber-300 bg-amber-50 text-amber-700" };
     case "salio":
-      return { texto: "sin registro", nota: "recepciones aún no se leen", clase: hueco, rayada: true };
+      return { texto: "sin registro", nota: "sin avisos de FULL que leer", clase: hueco, rayada: true };
     case "fbaSinLectura":
       return { texto: "sin registro", nota: "Amazon no deja leer (403)", clase: hueco, rayada: true };
     case "wfsSinLectura":
@@ -317,7 +346,8 @@ function tramo(desde: Instante, hasta: Instante): string {
   const horas = Math.round(h);
   const dias = Math.floor(horas / 24);
   const resto = horas - dias * 24;
-  const cuanto = h < 1 ? `${Math.max(1, Math.round(a / 60_000))} min`
+  if (a < 60_000) return "mismo minuto";
+  const cuanto = h < 1 ? `${Math.round(a / 60_000)} min`
     : h < 48 ? `${Math.round(h)} h` : `${dias} d${resto ? ` ${resto} h` : ""}`;
   // Una hora OBSERVADA hace aproximado el tramo entero.
   return `${desde.aprox || hasta.aprox ? "~" : ""}${ms < 0 ? "−" : "+"}${cuanto}`;
@@ -340,6 +370,9 @@ export function RailLinea({ envio }: { envio: Envio }) {
   const n = pasos.length;
   const col = 100 / n;
   let previo: Instante | null = null;
+  // La 1ª venta se mide desde la PRIMERA llegada: «Activo» es cuando quedó
+  // activo el ÚLTIMO SKU, y otro SKU del mismo envío pudo venderse antes.
+  const recibido = instantes[desfase + 2];
 
   return (
     <div className="relative">
@@ -363,10 +396,10 @@ export function RailLinea({ envio }: { envio: Envio }) {
           let valor = p.v;
           let debajo = p.sub;
           if (p.tono === "dato" && inst) {
-            valor = previo ? tramo(previo, inst) : fecha(inst);
+            const base = i === desfase + 4 && recibido ? recibido : previo;
+            valor = base ? tramo(base, inst) : fecha(inst);
             // Debajo: la fecha (si arriba va el tramo) y cuántos SKUs llegaron ahí.
-            const cobertura = /de \d+ SKUs/.test(p.sub) ? p.sub : null;
-            debajo = [previo ? fecha(inst) : null, cobertura].filter(Boolean).join(" · ") || p.sub;
+            debajo = [previo ? fecha(inst) : null, p.conteo].filter(Boolean).join(" · ") || p.sub;
             previo = inst;
           }
           return (
@@ -374,7 +407,9 @@ export function RailLinea({ envio }: { envio: Envio }) {
               <span className={`h-[18px] w-[18px] rounded-full ${estilo.punto}`} />
               <span className={`mt-2.5 text-[10px] font-bold uppercase tracking-[.05em] ${estilo.rotulo}`}>{p.t}</span>
               <span className={`mt-0.5 font-mono text-[12.5px] font-bold ${estilo.valor}`}>{valor}</span>
-              <span className="mt-0.5 text-[10.5px] leading-tight text-slate-400">{debajo}</span>
+              <span className={`mt-0.5 text-[10.5px] leading-tight ${p.alerta ? "font-semibold text-rose-600" : "text-slate-400"}`}>
+                {debajo}
+              </span>
             </div>
           );
         })}
