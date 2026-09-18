@@ -96,7 +96,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from services import odoo, packing_cajas, supabase_db as sdb, wp_db
+from services import odoo, packing_cajas, specs, supabase_db as sdb, wp_db
 
 log = logging.getLogger("omnicanal.inventario_maestro")
 
@@ -173,6 +173,11 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     # en segundo plano. Preguntado antes, un arranque en frío contestaría "no
     # se está leyendo nada" y la ficha volvería a afirmar "sin renglón".
     leyendo = packing_cajas.calentando(pedidos)
+    # Lo que cada canal exige de este SKU segun su categoria. Solo kubera:
+    # la eleccion de categoria de ML y el product type de Amazon viven en
+    # metas de WordPress, que estan fuera de alcance por decision de
+    # Brandon (17-sep). Lo que no este en kubera sale GRIS, nunca verde.
+    specs_ = specs._por_sku_sync(pedidos)
     recs = odoo.recibido_por_sku(pedidos)
 
     salida = []
@@ -181,7 +186,8 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
                             canales.get(sku, []), proceso.get(sku),
                             imgs.get(sku), ubis.get(sku, []),
                             hermanos.get(sku, []), pls.get(sku), recs.get(sku),
-                            pl_leyendo=sku in leyendo))
+                            pl_leyendo=sku in leyendo,
+                            spec=specs_.get(sku)))
     return salida
 
 
@@ -189,7 +195,8 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           pubs: list[dict], plog: dict | None, imagen: str | None,
           ubicaciones: list[dict], hermanos: list[dict],
           pl: dict | None = None, rec: dict | None = None,
-          pl_leyendo: bool = False) -> dict[str, Any]:
+          pl_leyendo: bool = False,
+          spec: dict | None = None) -> dict[str, Any]:
     es_padre = bool(w and w["n_hijas"] > 0)
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
@@ -293,6 +300,8 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "cbm_caja": _num((o or {}).get("cbm_caja")),
         "cotejo_cajas": _cotejo_cajas(o, c, pl, pl_leyendo),
         "recorrido": _recorrido(o, pl, rec, pl_leyendo),
+        # Lo que cada canal exige, por su categoria. Ver services/specs.py.
+        "specs": spec,
 
         # existencias
         "stock_woo": (w or {}).get("stock"),
@@ -331,7 +340,7 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
                      "listing_id": p.get("listing_id"),
                      "fulfillment": bool(p.get("is_fulfillment"))} for p in pubs],
     }
-    fila["validacion_bodega"] = _validacion_bodega(fila, c)
+    fila["validacion_bodega"] = _validacion_bodega(fila, c, spec)
     fila["comercial"] = _comercial(fila, c, pubs)
     # El último paso registrado en el panel: no valida nada, solo dice quién
     # tocó el SKU por última vez.
@@ -470,12 +479,75 @@ def estado_foto(n_variantes: int | None, hay_foto: bool) -> str:
     return "espera" if hay_foto else "na"
 
 
-def estado_specs() -> str:
-    """SPECS: en espera permanente mientras no exista la matriz por categoría."""
-    return "espera"
+def estado_specs(spec: dict | None = None) -> str:
+    """SPECS como TEXTO de estado — el contrato que ya tenía esta función.
+
+    NO SE LE CAMBIA LA FIRMA. `services/inventario_flujo.py` la llama SIN
+    argumentos en dos sitios (:748 y :1399) y compara el resultado con el texto
+    "listo". Cuando esta función pasó a tener datos el 17-sep, exigirle un
+    argumento y devolver un diccionario la habría roto en producción con un
+    TypeError. Sin `spec` sigue devolviendo "espera", que es exactamente lo que
+    ese módulo recibía antes; el detalle nuevo vive en `detalle_specs`.
+    """
+    return detalle_specs(spec)["estado"] if spec is not None else "espera"
 
 
-def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
+def detalle_specs(spec: dict | None) -> dict[str, str]:
+    """SPECS: el cuarto requisito, con datos de verdad desde el 17-sep-2026.
+
+    Dejó de ser «espera» permanente porque la matriz por categoría YA EXISTE y
+    nadie la estaba mirando: `channel.field_requirements`, 74,086 filas
+    (amazon 64,125 · walmart 3,331 · mercado_libre 2,765 · temu 2,086 ·
+    tiktok 1,779), cargada de la API de cada canal.
+
+    EL VEREDICTO ES EL DE MERCADO LIBRE, no el de los cuatro canales, y es
+    decisión de Brandon con su razón medida: ML cubre 7,812 SKUs contra 177 de
+    Temu, así que exigir los cuatro dejaría en rojo casi todo el catálogo por un
+    hueco de DATOS, no por un producto incompleto. Los otros tres se muestran en
+    la ficha, pero informan; no bloquean.
+
+    GRIS NUNCA ES VERDE. Sin categoría, o con categoría pero sin que nadie le
+    haya preguntado al canal qué exige, el punto NO se da por cumplido: decir
+    «listo» porque no se hizo la pregunta es el error que esta pantalla tiene
+    prohibido cometer. Y las filas comodín del canal (ML tiene 12 que pide
+    siempre) NO cuentan como verificación de la categoría — con solo ésas,
+    `ROP-0731-BLN` salía «faltan 7 de 12» con cara de dato cuando lo único
+    cierto es que nadie preguntó qué pide MLM431078. Sí pide: BRAND, MODEL y
+    COLOR.
+    """
+    if not spec:
+        return {"estado": "espera", "etiqueta": "sin leer",
+                "detalle": "no se pudo consultar la matriz de requisitos",
+                "fuente": "channel.field_requirements"}
+
+    ml = next((c for c in spec["canales"] if c["canal"] == "mercado_libre"), None)
+    otros = [c for c in spec["canales"] if c["canal"] != "mercado_libre"
+             and c["estado"] in ("listo", "incompleto")]
+    cola = f" · {len(otros)} canal(es) más con requisitos" if otros else ""
+
+    if not ml or ml["estado"] == "sin_categoria":
+        return {"estado": "falta", "etiqueta": "sin categoría en ML",
+                "detalle": "sin categoría no se puede saber qué exige el canal" + cola,
+                "fuente": "channel.product_category"}
+    if ml["estado"] == "sin_verificar":
+        return {"estado": "espera", "etiqueta": "sin verificar",
+                "detalle": f"{ml['categoria']}: nadie ha leído qué exige esa "
+                           f"categoría{cola}",
+                "fuente": "channel.field_requirements"}
+    if ml["estado"] == "incompleto":
+        faltan = ", ".join(f["campo"] for f in ml["faltan"][:4])
+        return {"estado": "falta",
+                "etiqueta": f"faltan {len(ml['faltan'])} de {ml['obligatorios']}",
+                "detalle": f"{ml['categoria']}: {faltan}{cola}",
+                "fuente": "channel.field_requirements"}
+    return {"estado": "listo", "etiqueta": "completo en ML",
+            "detalle": f"{ml['categoria']}: sus {ml['obligatorios']} obligatorios "
+                       f"están llenos{cola}",
+            "fuente": "channel.field_requirements"}
+
+
+def _validacion_bodega(fila: dict, c: dict | None,
+                       spec: dict | None = None) -> dict[str, Any]:
     """
     VALIDADO BODEGA: los CUATRO requisitos que definió Brandon el 7-sep-2026.
     Un producto no está validado si le falta uno solo.
@@ -575,14 +647,10 @@ def _validacion_bodega(fila: dict, c: dict | None) -> dict[str, Any]:
                            "bodega (Slack) — canal no construido"))
 
     # ── 4 · SPECS ───────────────────────────────────────────────────────────
-    # Siempre en espera: bodega mandará una matriz por categoría, pero el
-    # formato del Excel y la vía de entrega están sin decidir (Brandon, 7-sep).
-    # Mientras eso no exista, NINGÚN producto puede quedar validado del todo —
-    # que es exactamente lo que se pidió.
-    puntos.append(_pto("specs", "Specs", estado_specs(), "en espera",
-                       "matriz por categoría: falta definir el formato del "
-                       "Excel y cómo llega",
-                       "pendiente de definición"))
+    # Ya NO es «espera» fijo: consulta la matriz por categoría. Ver estado_specs.
+    e = detalle_specs(spec)
+    puntos.append(_pto("specs", "Specs", e["estado"], e["etiqueta"],
+                       e["detalle"], e["fuente"]))
 
     cumplidos = sum(1 for p in puntos if p["estado"] == "listo")
     return {

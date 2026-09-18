@@ -46,7 +46,7 @@ import { listarInventario, mensajeDeError, movimientosInventario } from "@/lib/a
 import type {
   ClaveEtapa, ClavePunto, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
   InventarioResp, Movimiento, MovimientosResp, OrdenCompra,
-  RecepcionPendiente,
+  RecepcionPendiente, SpecCanal,
 } from "@/lib/types";
 
 /**
@@ -1100,6 +1100,7 @@ function Cajon({
           <CotejoCajasBloque fila={fila} />
           <DondeEsta fila={fila} />
           <ValidacionBodega fila={fila} />
+          <SpecsPorCanal fila={fila} />
           <Comercial fila={fila} />
 
           <FlujoResumen movs={movs} cargando={cargando} error={error}
@@ -1502,6 +1503,136 @@ function Comercial({ fila }: { fila: FilaInventario }) {
  * esos, «debió llegar» es un PISO y así se rotula: decir que faltan piezas
  * cuando lo que falta es el renglón sería inventar un descuadre.
  */
+/**
+ * SPECS POR CANAL — qué característica necesita este producto en cada canal.
+ *
+ * Encargo a Brandon (17-sep-2026): «una lista de Specs por categoría, editable,
+ * para que Bodega la genere en su validación y las Publicaciones la envíen».
+ *
+ * CASI NADA DE ESTO ES NUEVO. La matriz ya existía en kubera desde agosto
+ * (`channel.field_requirements`, 74,086 filas leídas de la API de cada canal) y
+ * nadie la miraba desde aquí. Esto la pinta.
+ *
+ * LOS COLORES SON LOS DE MARCA, y solo en el filete y la etiqueta: el #FFE600
+ * de Mercado Libre y el #FB7701 de Temu, usados de fondo, se leen como
+ * advertencia. El ESTADO lo dicen los mismos verdes/ámbar/rojos del resto de la
+ * ficha, para que la lectura no dependa de reconocer la marca.
+ *
+ * SOLO CUATRO CANALES. Walmart queda fuera porque sus requisitos están
+ * llaveados por 76 nombres de esquema y sus 235 publicaciones por 100 nombres
+ * de hoja: cruzan CERO. WooCommerce, porque sus 13,212 listings traen
+ * `category_id` NULL al 100% y la tienda no tiene atributos obligatorios por
+ * categoría. Enseñarlos sería enseñar dos columnas grises para siempre.
+ */
+const ESTILO_SPEC: Record<SpecCanal["estado"], string> = {
+  listo: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  incompleto: "border-rose-200 bg-rose-50 text-rose-800",
+  sin_verificar: "border-slate-200 bg-slate-50 text-slate-500",
+  sin_categoria: "border-slate-200 bg-white text-slate-400",
+};
+
+function SpecsPorCanal({ fila }: { fila: FilaInventario }) {
+  const s = fila.specs;
+  if (!s) return null;
+
+  return (
+    <section>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
+          Specs por canal
+        </h3>
+        <span className="text-[11px] text-slate-400">
+          el veredicto de bodega es el de Mercado Libre
+        </span>
+      </div>
+
+      <div className="mt-2 space-y-1.5">
+        {s.canales.map((c) => (
+          <div
+            key={c.canal}
+            className={`rounded-xl border p-2.5 ${ESTILO_SPEC[c.estado]}`}
+            style={{ borderLeftWidth: 4, borderLeftColor: c.color }}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+                style={{ backgroundColor: c.color, color: c.color_texto }}
+              >
+                {c.etiqueta}
+              </span>
+              <span className="text-xs font-bold">
+                {c.estado === "listo"
+                  ? `completo · ${c.obligatorios} atributo(s)`
+                  : c.estado === "incompleto"
+                    ? `faltan ${c.faltan.length} de ${c.obligatorios} por capturar`
+                    : c.estado === "sin_verificar"
+                      ? "sin verificar"
+                      : "sin categoría"}
+              </span>
+              {c.categoria && (
+                <span className="font-mono text-[10px] opacity-60"
+                      title={`Categoría en ${c.etiqueta}, según ${c.categoria_fuente}`}>
+                  {c.categoria}
+                </span>
+              )}
+            </div>
+
+            {/* Lo que falta, por su nombre. Un «faltan 9» sin los nombres no
+                se puede accionar — y SOLO los de captura: los campos del
+                cuerpo de la publicación van abajo, en gris, porque los arma el
+                publicador. Mezclarlos daba «faltan 11 de 16» cuando el trabajo
+                de verdad eran 4 atributos. */}
+            {c.faltan.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {c.faltan.map((f) => (
+                  <span
+                    key={f.campo}
+                    title={f.canonico ? `Campo canónico: ${f.canonico}` : undefined}
+                    className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[10px] font-bold ring-1 ring-current"
+                  >
+                    {f.campo}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {c.estado === "sin_verificar" && (
+              <p className="mt-1 text-[11px]">
+                Nadie le ha preguntado a {c.etiqueta} qué exige esta categoría.
+                No es que no exija nada — por eso no cuenta como listo.
+              </p>
+            )}
+            {c.estado === "sin_categoria" && (
+              <p className="mt-1 text-[11px]">
+                Sin categoría asignada en {c.etiqueta}: no hay contra qué
+                comparar.
+              </p>
+            )}
+
+            {(c.automaticos.length > 0 || c.del_publicador.length > 0 || c.leido_at) && (
+              <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] opacity-60">
+                {c.del_publicador.length > 0 && (
+                  <span title={`El publicador los arma del producto: ${c.del_publicador.join(", ")}`}>
+                    {c.del_publicador.length} del cuerpo de la publicación
+                  </span>
+                )}
+                {c.automaticos.length > 0 && (
+                  <span title={c.automaticos.join(", ")}>
+                    {c.automaticos.length} con valor por omisión
+                  </span>
+                )}
+                {c.leido_at && (
+                  <span>requisitos leídos el {c.leido_at.slice(0, 10)}</span>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Recorrido({ fila }: { fila: FilaInventario }) {
   const r = fila.recorrido;
   if (!r) return null;

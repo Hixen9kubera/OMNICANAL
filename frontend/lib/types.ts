@@ -2019,6 +2019,54 @@ export interface RecorridoPieza {
   salido: number | null;
 }
 
+/** Lo que UN canal exige de un SKU, según la categoría que tenga ahí.
+ *
+ *  Los cuatro estados no son cosméticos:
+ *  `sin_categoria`  — el SKU no tiene categoría en ese canal.
+ *  `sin_verificar`  — hay categoría, pero nadie le preguntó al canal qué exige.
+ *                     GRIS, y NUNCA cuenta como listo: decir «completo» porque
+ *                     no se hizo la pregunta es la mentira que este panel tiene
+ *                     prohibida.
+ *  `incompleto`     — faltan ATRIBUTOS de captura.
+ *  `listo`          — los atributos de captura sin valor por omisión están
+ *                     llenos. */
+export interface SpecCanal {
+  canal: string;
+  etiqueta: string;
+  /** Color de marca del canal, del registro canónico (`/api/canales`). */
+  color: string;
+  color_texto: string;
+  acento: string;
+  categoria: string | null;
+  /** De dónde salió la categoría: panel (la eligió una persona), real,
+   *  predictor, o «publicación» si se leyó del listing vivo. */
+  categoria_fuente: string | null;
+  estado: "listo" | "incompleto" | "sin_verificar" | "sin_categoria";
+  /** Solo los atributos que CAPTURA una persona. */
+  obligatorios: number;
+  total: number;
+  /** Los atributos de captura que faltan. Estos sí bloquean la publicación. */
+  faltan: { campo: string; canonico: string | null; tipo: string | null }[];
+  /** Los que pone el publicador con su valor por omisión: no son trabajo de
+   *  bodega y pintarlos en rojo mandaría a alguien a llenar lo que se llena
+   *  solo. */
+  automaticos: string[];
+  /** Campos del CUERPO de la publicación (title, price, pictures…) que el
+   *  publicador arma del producto. No los captura nadie a mano, así que no
+   *  cuentan como pendiente — contarlos convertía «4 atributos» en «11 de 16». */
+  del_publicador: string[];
+  llenos: string[];
+  /** Cuándo se le preguntó por última vez al canal. */
+  leido_at: string | null;
+}
+
+export interface SpecsSku {
+  canales: SpecCanal[];
+  /** El veredicto para bodega, que es el de Mercado Libre. */
+  veredicto: SpecCanal["estado"];
+  canal_veredicto: string;
+}
+
 export interface FilaInventario {
   sku: string;
   existe_en_woo: boolean;
@@ -2064,6 +2112,8 @@ export interface FilaInventario {
   cotejo_cajas?: CotejoCajas;
   /** Debió llegar → llegó → hay disponible. */
   recorrido?: RecorridoPieza;
+  /** Lo que cada canal exige de este SKU, por su categoría. */
+  specs?: SpecsSku | null;
 
   stock_woo: number | null;
   stock_odoo: number | null;

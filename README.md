@@ -1001,6 +1001,64 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.540.0 — Specs por canal: qué atributo exige cada canal, y el punto 4 de bodega deja de estar en espera
+
+Encargo a Brandon (17-sep): *«tener una lista de Specs por categoría que sea
+editable para que Bodega lo genere en su validación y las Publicaciones lo
+envíen»*. Esta versión es la **lectura**; la edición va aparte.
+
+**Casi nada es nuevo, y eso es lo importante.** La matriz ya existía en kubera
+desde agosto —`channel.field_requirements`, **74,086 filas** leídas de la API de
+cada canal (amazon 64,125 · walmart 3,331 · mercado_libre 2,765 · temu 2,086 ·
+tiktok 1,779)— y nadie la miraba desde Inventario. `services/specs.py` no la
+reconstruye: la lee y la cruza con lo que el SKU tiene capturado en
+`enrich.channel_content`.
+
+**En la ficha**, un bloque «Specs por canal» con los cuatro canales del MVP, cada
+uno con su color de marca (del registro canónico, no de una copia) en el filete y
+la etiqueta, y el estado en los verdes/rojos/grises del resto de la ficha. Y el
+cuarto punto de VALIDADO BODEGA **deja de ser «espera» fijo**: ahora dice
+«faltan 4 de 5 por capturar · MLM81144: IS_FOLDABLE, MAX_WEIGHT_SUPPORTED…».
+
+**Solo kubera (Brandon, 17-sep): prohibido WordPress.** La categoría de ML y el
+product type de Amazon se leen de `channel.product_category` y
+`channel.listings`; lo que no esté ahí sale gris. Walmart y Woo quedan fuera:
+los requisitos de Walmart están llaveados por 76 nombres de esquema y sus 235
+publicaciones por 100 nombres de hoja —**cruzan cero**— y Woo no tiene
+categorías en kubera.
+
+**Tres trampas medidas que el código ya esquiva:**
+
+1. **Amazon se cruza por `product_type`, nunca por `category_id`**: los 1,822
+   listings lo tienen NULL al 100% y el JOIN devuelve cero **sin dar error**.
+2. **«Sin requisitos» no es «completo».** Las filas comodín (`categoria_id='*'`,
+   las 12 que ML pide siempre) no bastan para dar la categoría por verificada.
+   La primera versión decía «faltan 7 de 12» a SKUs de los que solo se sabía
+   eso; ahora dicen **«sin verificar»** en gris, y gris nunca cuenta como listo.
+   Y el hueco es real y reparable: ML sí publica los obligatorios de esas
+   categorías (`ROP-0731-BLN` pide BRAND, MODEL, COLOR), solo que nunca se
+   cargaron.
+3. **Atributos de captura contra campos del cuerpo.** Brandon preguntó si los
+   «16 obligatorios» de `TEC-0370-NEG` bloqueaban la publicación. Verificado
+   contra la API de ML en vivo: son **4**. `MLM81144` exige cinco atributos
+   —BRAND, MODEL, POWER_SUPPLY_TYPE, IS_FOLDABLE, MAX_WEIGHT_SUPPORTED— y BRAND
+   trae valor por omisión. Los otros once eran `title`, `price`, `pictures`…:
+   el cuerpo de la publicación, que arma el publicador. Ahora se cuentan aparte.
+
+**El veredicto de bodega es el de Mercado Libre** (decisión de Brandon): cubre
+7,812 SKUs contra 177 de Temu, así que exigir los cuatro dejaría en rojo casi
+todo por un hueco de datos. Los otros tres informan; no bloquean.
+
+**Compatibilidad:** `inventario_maestro.estado_specs()` conserva su firma —sin
+argumentos, devuelve texto— porque `services/inventario_flujo.py` la llama así
+en dos sitios y compara con `"listo"`. Cambiarle la firma lo habría tirado con un
+TypeError. El detalle nuevo vive en `detalle_specs()`.
+
+**Sigue pendiente, con su visto bueno porque escribe en kubera:** cargar los
+requisitos de ML para las categorías en gris, y que el cargador tome también
+`conditional_required` (hoy solo toma `required`, así que GTIN y
+EMPTY_GTIN_REASON nunca llegan a la tabla).
+
 ### v0.539.0 — FULLFILMENT: el detalle de un envío se abre ENCIMA de la tabla, con el rail en línea (C2)
 
 Pedido de Brandon (17-sep): *"al presionar el botón de detalle de una orden aparece un POP con la información y
@@ -1032,6 +1090,7 @@ inventada. Los tramos hacia una etapa por día se cuentan en días de calendario
 Probado con S37015 (San Corpe, 6 SKUs) contra Odoo y kubera en vivo: orden 27 ago 18:54 → salida `+7 d 15 h`
 → recibido `~+3 h` (5 de 6 SKUs) → activo `~+9 h` (4 de 6) → 1ª venta `+5 d` el 09 sep (2 de 6). 24 pruebas
 de backend en verde (una nueva fija el formato del día), `tsc` limpio y `next build` en verde.
+
 
 ### v0.538.0 — "Falta generar guía": las órdenes que esperan que alguien compre el envío, a la vista
 
