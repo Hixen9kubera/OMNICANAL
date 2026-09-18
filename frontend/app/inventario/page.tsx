@@ -42,11 +42,14 @@ import {
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
-import { listarInventario, mensajeDeError, movimientosInventario } from "@/lib/api";
+import {
+  guardarSpecsCanal, listarInventario, mensajeDeError, movimientosInventario,
+  specsCanal,
+} from "@/lib/api";
 import type {
   ClaveEtapa, ClavePunto, Cuadre, EstadoEtapa, EstadoPunto, FilaInventario,
   InventarioResp, Movimiento, MovimientosResp, OrdenCompra,
-  RecepcionPendiente, SpecCanal,
+  RecepcionPendiente, SpecCanal, CampoSpec, EditorSpecs,
 } from "@/lib/types";
 
 /**
@@ -1005,7 +1008,6 @@ function Cajon({
 }) {
   const [movs, setMovs] = useState<MovimientosResp | null>(null);
   const [cargando, setCargando] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCerrar();
@@ -1013,18 +1015,16 @@ function Cajon({
     return () => window.removeEventListener("keydown", onKey);
   }, [onCerrar]);
 
-  // Aquí solo se pide el RESUMEN: los últimos movimientos reales. El detalle
-  // completo, con filtros y ventana, vive en la pantalla de trazabilidad.
+  // Se piden los movimientos SOLO por sus `pendientes`, que alimentan «Por
+  // recibirse». El flujo de movimientos ya no se pinta aquí: vive detrás del
+  // botón de flechas. Si la consulta falla, «Por recibirse» cae a la cifra de
+  // la fila y no se rompe nada.
   useEffect(() => {
     const ctrl = new AbortController();
     setCargando(true);
-    setError(null);
     movimientosInventario(fila.sku, "reales", 6, null, ctrl.signal)
       .then(setMovs)
-      .catch((e: unknown) => {
-        if ((e as { name?: string })?.name === "AbortError") return;
-        setError(mensajeDeError(e, "No se pudo leer el flujo de movimientos."));
-      })
+      .catch(() => { /* ver arriba: la fila trae el respaldo */ })
       .finally(() => setCargando(false));
     return () => ctrl.abort();
   }, [fila.sku]);
@@ -1102,9 +1102,12 @@ function Cajon({
           <ValidacionBodega fila={fila} />
           <SpecsPorCanal fila={fila} />
           <Comercial fila={fila} />
-
-          <FlujoResumen movs={movs} cargando={cargando} error={error}
-                        onTraza={onTraza} />
+          {/* El FLUJO DE MOVIMIENTOS ya no vive en la ficha (Brandon, 18-sep):
+              se consulta con el botón de flechas —el de la columna Trazabilidad
+              o el «Movimiento» de esta cabecera—, que abre la trazabilidad
+              completa con filtros, ventana y CSV. Tenerlo aquí también era
+              duplicar la misma lista en dos sitios. La consulta de movimientos
+              de arriba SE QUEDA: «Por recibirse» usa sus `pendientes`. */}
         </div>
       </aside>
     </div>
@@ -1533,7 +1536,9 @@ const ESTILO_SPEC: Record<SpecCanal["estado"], string> = {
 
 function SpecsPorCanal({ fila }: { fila: FilaInventario }) {
   const s = fila.specs;
+  const [canal, setCanal] = useState<string>("mercado_libre");
   if (!s) return null;
+  const actual = s.canales.find((c) => c.canal === canal) ?? s.canales[0];
 
   return (
     <section>
@@ -1542,94 +1547,274 @@ function SpecsPorCanal({ fila }: { fila: FilaInventario }) {
           Specs por canal
         </h3>
         <span className="text-[11px] text-slate-400">
-          el veredicto de bodega es el de Mercado Libre
+          Mercado Libre obligatorio · los demás opcionales por ahora
         </span>
       </div>
 
-      <div className="mt-2 space-y-1.5">
-        {s.canales.map((c) => (
-          <div
-            key={c.canal}
-            className={`rounded-xl border p-2.5 ${ESTILO_SPEC[c.estado]}`}
-            style={{ borderLeftWidth: 4, borderLeftColor: c.color }}
-          >
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className="rounded px-1.5 py-0.5 text-[10px] font-bold"
-                style={{ backgroundColor: c.color, color: c.color_texto }}
-              >
-                {c.etiqueta}
+      {/* Las píldoras de canal, como en el Publicador. El color de marca va en
+          el punto y en el borde de la seleccionada; el ESTADO lo dice el texto,
+          para que se lea sin reconocer la marca. */}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {s.canales.map((c) => {
+          const sel = c.canal === actual.canal;
+          return (
+            <button
+              key={c.canal} type="button" onClick={() => setCanal(c.canal)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold transition ${
+                sel ? "bg-white shadow-sm" : "border-slate-200 bg-white/60 text-slate-500 hover:bg-white"}`}
+              style={sel ? { borderColor: c.color, boxShadow: `0 0 0 1px ${c.color}` } : undefined}
+            >
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: c.color }} />
+              {c.etiqueta}
+              <span className={`font-semibold ${
+                c.estado === "listo" ? "text-emerald-600"
+                  : c.estado === "incompleto" ? "text-rose-600" : "text-slate-400"}`}>
+                {c.estado === "listo" ? "✓"
+                  : c.estado === "incompleto" ? `${c.faltan.length}` : "·"}
               </span>
-              <span className="text-xs font-bold">
-                {c.estado === "listo"
-                  ? `completo · ${c.obligatorios} atributo(s)`
-                  : c.estado === "incompleto"
-                    ? `faltan ${c.faltan.length} de ${c.obligatorios} por capturar`
-                    : c.estado === "sin_verificar"
-                      ? "sin verificar"
-                      : "sin categoría"}
-              </span>
-              {c.categoria && (
-                <span className="font-mono text-[10px] opacity-60"
-                      title={`Categoría en ${c.etiqueta}, según ${c.categoria_fuente}`}>
-                  {c.categoria}
-                </span>
-              )}
-            </div>
-
-            {/* Lo que falta, por su nombre. Un «faltan 9» sin los nombres no
-                se puede accionar — y SOLO los de captura: los campos del
-                cuerpo de la publicación van abajo, en gris, porque los arma el
-                publicador. Mezclarlos daba «faltan 11 de 16» cuando el trabajo
-                de verdad eran 4 atributos. */}
-            {c.faltan.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {c.faltan.map((f) => (
-                  <span
-                    key={f.campo}
-                    title={f.canonico ? `Campo canónico: ${f.canonico}` : undefined}
-                    className="rounded bg-white/70 px-1.5 py-0.5 font-mono text-[10px] font-bold ring-1 ring-current"
-                  >
-                    {f.campo}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {c.estado === "sin_verificar" && (
-              <p className="mt-1 text-[11px]">
-                Nadie le ha preguntado a {c.etiqueta} qué exige esta categoría.
-                No es que no exija nada — por eso no cuenta como listo.
-              </p>
-            )}
-            {c.estado === "sin_categoria" && (
-              <p className="mt-1 text-[11px]">
-                Sin categoría asignada en {c.etiqueta}: no hay contra qué
-                comparar.
-              </p>
-            )}
-
-            {(c.automaticos.length > 0 || c.del_publicador.length > 0 || c.leido_at) && (
-              <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] opacity-60">
-                {c.del_publicador.length > 0 && (
-                  <span title={`El publicador los arma del producto: ${c.del_publicador.join(", ")}`}>
-                    {c.del_publicador.length} del cuerpo de la publicación
-                  </span>
-                )}
-                {c.automaticos.length > 0 && (
-                  <span title={c.automaticos.join(", ")}>
-                    {c.automaticos.length} con valor por omisión
-                  </span>
-                )}
-                {c.leido_at && (
-                  <span>requisitos leídos el {c.leido_at.slice(0, 10)}</span>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+            </button>
+          );
+        })}
       </div>
+
+      <EditorCanal key={`${fila.sku}-${actual.canal}`} sku={fila.sku} resumen={actual} />
     </section>
+  );
+}
+
+/**
+ * EL EDITOR DE UN CANAL — la lista completa de atributos de la categoría,
+ * editable por Bodega (Brandon, 18-sep): «trae todas las características
+ * obligatorias o principales y las secundarias como opcionales de llenarse».
+ *
+ * SE GUARDA DONDE GUARDA EL PUBLICADOR (`enrich.channel_content`), así que lo que
+ * capture Bodega aparece allá y lo recoge la publicación. Guardado EXPLÍCITO
+ * con botón, como el resto del panel: nada de autoguardado, porque un campo a
+ * medio escribir viajaría a Mercado Libre.
+ *
+ * LA LISTA NO ES LA DEL PUBLICADOR. La de allá sale de WordPress y es la que
+ * tenga el producto en Woo; ésta es la que EXIGE el canal para la categoría —
+ * de la API pública de ML, o de `channel.field_requirements` para los demás.
+ */
+function EditorCanal({ sku, resumen }: { sku: string; resumen: SpecCanal }) {
+  const [ed, setEd] = useState<EditorSpecs | null>(null);
+  const [valores, setValores] = useState<Record<string, string>>({});
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [guardando, setGuardando] = useState(false);
+  const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
+  const [verOpcionales, setVerOpcionales] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setCargando(true);
+    setError(null);
+    specsCanal(sku, resumen.canal, ctrl.signal)
+      .then((r) => {
+        setEd(r);
+        setValores(Object.fromEntries(r.campos.map((c) => [c.campo, c.valor ?? ""])));
+      })
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === "AbortError") return;
+        setError(mensajeDeError(e, "No se pudieron leer los atributos."));
+      })
+      .finally(() => setCargando(false));
+    return () => ctrl.abort();
+  }, [sku, resumen.canal]);
+
+  const cambiados = useMemo(() => {
+    if (!ed) return 0;
+    return ed.campos.filter((c) => (valores[c.campo] ?? "") !== (c.valor ?? "")).length;
+  }, [ed, valores]);
+
+  const faltanOblig = useMemo(
+    () => (ed?.campos ?? []).filter((c) => c.obligatorio && !(valores[c.campo] ?? "").trim()),
+    [ed, valores]);
+
+  async function guardar() {
+    if (!ed) return;
+    setGuardando(true);
+    setAviso(null);
+    try {
+      const etiquetas = Object.fromEntries(ed.campos.map((c) => [c.campo, c.etiqueta]));
+      const r = await guardarSpecsCanal(sku, ed.canal, valores, etiquetas);
+      // Lo guardado pasa a ser el nuevo «valor de origen», para que el
+      // contador de cambios vuelva a cero sin volver a pedir la lista.
+      setEd({ ...ed, campos: ed.campos.map((c) => ({ ...c, valor: valores[c.campo] ?? "" })) });
+      setAviso({ ok: true, texto: `Guardado · ${r.guardados} atributo(s) en ${resumen.etiqueta}.` });
+    } catch (e) {
+      setAviso({ ok: false, texto: mensajeDeError(e, "No se pudo guardar.") });
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const marco = "mt-2 rounded-xl border bg-white p-3";
+
+  if (cargando) {
+    return (
+      <div className={`${marco} flex items-center gap-2 text-xs text-slate-400`}
+           style={{ borderLeftWidth: 4, borderLeftColor: resumen.color }}>
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Leyendo los atributos de {resumen.etiqueta}…
+      </div>
+    );
+  }
+  if (error || !ed) {
+    return (
+      <div className={`${marco} border-rose-200 text-xs text-rose-700`}>
+        {error ?? "Sin datos."}
+      </div>
+    );
+  }
+
+  const oblig = ed.campos.filter((c) => c.obligatorio);
+  const opc = ed.campos.filter((c) => !c.obligatorio);
+
+  return (
+    <div className={marco} style={{ borderLeftWidth: 4, borderLeftColor: resumen.color }}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded px-1.5 py-0.5 text-[10px] font-bold"
+              style={{ backgroundColor: resumen.color, color: resumen.color_texto }}>
+          {resumen.etiqueta}
+        </span>
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+          ed.canal_obligatorio ? "bg-rose-50 text-rose-700" : "bg-slate-100 text-slate-500"}`}>
+          {ed.canal_obligatorio ? "obligatorio" : "opcional por ahora"}
+        </span>
+        {ed.categoria && (
+          <span className="font-mono text-[10px] text-slate-400"
+                title={`Categoría según ${ed.categoria_fuente ?? "?"}`}>
+            {ed.categoria}
+          </span>
+        )}
+        {ed.campos.length > 0 && (
+          <span className={`ml-auto text-xs font-bold ${
+            faltanOblig.length ? "text-rose-600" : "text-emerald-600"}`}>
+            {faltanOblig.length
+              ? `faltan ${faltanOblig.length} de ${oblig.length} obligatorios`
+              : `obligatorios completos (${oblig.length})`}
+          </span>
+        )}
+      </div>
+
+      {ed.aviso && <p className="mt-2 text-xs text-slate-500">{ed.aviso}</p>}
+
+      {oblig.length > 0 && (
+        <CamposSpec titulo={`Obligatorios · ${oblig.length}`} campos={oblig}
+                    valores={valores} setValores={setValores} />
+      )}
+
+      {opc.length > 0 && (
+        <div className="mt-3">
+          <button type="button" onClick={() => setVerOpcionales((v) => !v)}
+                  className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400 hover:text-slate-600">
+            {verOpcionales ? "▾" : "▸"} Opcionales · {opc.length}
+          </button>
+          {verOpcionales && (
+            <CamposSpec titulo="" campos={opc} valores={valores} setValores={setValores} />
+          )}
+        </div>
+      )}
+
+      {ed.campos.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2">
+          <span className="text-[10px] text-slate-400">
+            lista: {ed.fuente_lista} · se guarda donde guarda el Publicador
+          </span>
+          <div className="flex items-center gap-2">
+            {aviso && (
+              <span className={`text-xs ${aviso.ok ? "text-emerald-700" : "text-rose-700"}`}>
+                {aviso.texto}
+              </span>
+            )}
+            <button type="button" onClick={guardar} disabled={guardando || cambiados === 0}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-40">
+              {guardando && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {cambiados ? `Guardar ${cambiados} cambio(s)` : "Sin cambios"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Una fila por atributo. El control depende del tipo: sí/no, número con su
+ *  unidad, o texto con sugerencias (en ML los valores son sugerencias casi
+ *  siempre, así que se deja escribir otro). */
+function CamposSpec({
+  titulo, campos, valores, setValores,
+}: {
+  titulo: string;
+  campos: CampoSpec[];
+  valores: Record<string, string>;
+  setValores: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+}) {
+  const poner = (campo: string, v: string) => setValores((p) => ({ ...p, [campo]: v }));
+  const campoCss = "w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700 outline-none focus:border-indigo-300";
+  return (
+    <div className="mt-2">
+      {titulo && (
+        <div className="text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">{titulo}</div>
+      )}
+      <div className="mt-1 space-y-1.5">
+        {campos.map((c) => {
+          const v = valores[c.campo] ?? "";
+          const vacio = c.obligatorio && !v.trim();
+          const lista = `lista-${c.campo}`;
+          let control: React.ReactNode;
+          if (c.tipo === "boolean") {
+            const ops = c.valores.length ? c.valores : ["Sí", "No"];
+            control = (
+              <select value={v} onChange={(e) => poner(c.campo, e.target.value)} className={campoCss}>
+                <option value="">—</option>
+                {ops.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            );
+          } else if (c.tipo === "number_unit" && c.unidades.length) {
+            // Se guarda como «120 kg», que es como ML espera el value_name.
+            const [num, ...resto] = v.split(" ");
+            const unidad = resto.join(" ") || c.unidades[0];
+            control = (
+              <div className="flex gap-1.5">
+                <input type="number" value={num ?? ""} className={campoCss}
+                       onChange={(e) => poner(c.campo, e.target.value ? `${e.target.value} ${unidad}` : "")} />
+                <select value={unidad} className={`${campoCss} w-24`}
+                        onChange={(e) => poner(c.campo, num ? `${num} ${e.target.value}` : "")}>
+                  {c.unidades.map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
+            );
+          } else {
+            control = (
+              <>
+                <input value={v} onChange={(e) => poner(c.campo, e.target.value)}
+                       list={c.valores.length ? lista : undefined}
+                       type={c.tipo === "number" ? "number" : "text"} className={campoCss} />
+                {c.valores.length > 0 && (
+                  <datalist id={lista}>
+                    {c.valores.map((o) => <option key={o} value={o} />)}
+                  </datalist>
+                )}
+              </>
+            );
+          }
+          return (
+            <div key={c.campo} className="grid grid-cols-[minmax(0,11rem)_1fr] items-center gap-2">
+              <label className="min-w-0" title={c.campo}>
+                <span className={`block truncate text-xs font-semibold ${vacio ? "text-rose-700" : "text-slate-600"}`}>
+                  {c.etiqueta}{c.obligatorio && <span className="text-rose-500"> *</span>}
+                </span>
+                {c.etiqueta !== c.campo && (
+                  <span className="block truncate font-mono text-[9px] text-slate-300">{c.campo}</span>
+                )}
+              </label>
+              {control}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1823,122 +2008,6 @@ function PorRecibirse({
         )}
       </div>
     </section>
-  );
-}
-
-/* ─────────── resumen de movimientos DENTRO de la ficha (1d) ─────────── */
-
-/**
- * «Flujo de movimientos del SKU»: los últimos seis renglones y una salida a la
- * pantalla completa. Es un RESUMEN a propósito — el detalle con filtros,
- * ventana y CSV vive en `Trazabilidad`, detrás del botón «Movimiento».
- */
-function FlujoResumen({
-  movs, cargando, error, onTraza,
-}: {
-  movs: MovimientosResp | null;
-  cargando: boolean;
-  error: string | null;
-  onTraza: () => void;
-}) {
-  return (
-    <section>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-slate-400">
-          <History className="h-3.5 w-3.5" />
-          Flujo de movimientos del SKU
-        </h3>
-        <button
-          type="button" onClick={onTraza}
-          className="rounded-lg px-2 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50"
-        >
-          Ver historial completo →
-        </button>
-      </div>
-
-      {movs && movs.cuadra === false && (
-        <div className="mt-2 flex items-start gap-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-800 ring-1 ring-amber-200">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>
-            El libro suma {num(movs.saldo_libro)} y Odoo publica {num(movs.saldo_odoo)}.
-            La diferencia es real y hay que revisarla con Inventarios — no es un
-            error de esta pantalla.
-          </span>
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-2 rounded-lg bg-rose-50 p-2.5 text-xs text-rose-700 ring-1 ring-rose-200">
-          {error}
-        </div>
-      )}
-
-      {cargando ? (
-        <div className="py-8 text-center text-slate-400">
-          <Loader2 className="mx-auto h-5 w-5 animate-spin" />
-          <p className="mt-2 text-xs">Leyendo el libro de Odoo…</p>
-        </div>
-      ) : !movs?.movimientos.length ? (
-        <p className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-6 text-center text-xs text-slate-400">
-          Sin movimientos registrados en Odoo para este SKU.
-          {!!movs?.pendientes?.length && (
-            <span className="mt-1 block font-semibold text-amber-700">
-              Tiene {movs.pendientes?.length}{" "}
-              {movs.pendientes?.length === 1
-                ? "recepción abierta" : "recepciones abiertas"}
-              {" "}sin validar — míralas en el historial completo.
-            </span>
-          )}
-        </p>
-      ) : (
-        <>
-          <div className="mt-2 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white">
-            {movs.movimientos.map((m, i) => (
-              <RenglonResumen key={`${m.documento}-${m.fecha}-${i}`} m={m} />
-            ))}
-          </div>
-          <p className="mt-1.5 text-[11px] text-slate-400">
-            {movs.movimientos.length} de {num(movs.total_historico)} movimientos ·
-            saldo {num(movs.saldo_libro)}
-            {movs.cuadra && " · cuadra con Odoo"}
-          </p>
-        </>
-      )}
-    </section>
-  );
-}
-
-function RenglonResumen({ m }: { m: Movimiento }) {
-  const Icono = ICONO_CAUSA[m.causa] ?? Package;
-  return (
-    <div className="flex items-center gap-3 px-3 py-2">
-      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ${
-        COLOR_CAUSA[m.causa] ?? "bg-slate-100 text-slate-500 ring-slate-200"}`}>
-        <Icono className="h-3.5 w-3.5" />
-      </span>
-      <span className="w-24 shrink-0 text-[11px] tabular-nums text-slate-400">
-        {fechaCorta(m.fecha)}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-xs font-semibold text-slate-700">
-          {ETIQUETA_CAUSA[m.causa] ?? m.causa}
-          {m.contraparte ? ` · ${m.contraparte}` : ""}
-        </div>
-        <div className="truncate font-mono text-[10px] text-slate-400">
-          {m.documento}{m.referencia ? ` · ${m.referencia}` : ""}
-        </div>
-      </div>
-      <span className={`w-16 shrink-0 text-right text-xs font-bold tabular-nums ${
-        m.delta > 0 ? "text-emerald-700" : m.delta < 0 ? "text-rose-700" : "text-slate-300"}`}>
-        {m.delta > 0 ? "+" : ""}{m.delta === 0 ? "—" : num(m.delta)}
-      </span>
-      <span className="w-20 shrink-0 text-right text-[11px] tabular-nums text-slate-400">
-        saldo {num(m.saldo)}
-      </span>
-      <span className="w-24 shrink-0 truncate text-right text-[11px] text-slate-400">
-        {m.quien || "—"}
-      </span>
-    </div>
   );
 }
 

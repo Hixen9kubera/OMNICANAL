@@ -22,10 +22,12 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from core.marketplaces import es_canal_valido
 from services import inventario_flujo as invf
 from services import inventario_maestro as inv
+from services import specs_editor
 
 log = logging.getLogger("omnicanal.routers.inventario")
 
@@ -243,4 +245,31 @@ async def movimientos(
 # error en los logs. Starlette devuelve la PRIMERA ruta que casa entera,
 # así que la comodín se declara arriba (donde se lee) y se REGISTRA aquí,
 # la última.
+# ── SPECS EDITABLES (Brandon, 18-sep) ──────────────────────────────────────
+# Van ANTES del comodín `/{sku:path}` de abajo: `:path` es goloso y, registrado
+# primero, se tragaría "TEC-0370-NEG/specs/mercado_libre" entero como SKU.
+
+class _GuardarSpecs(BaseModel):
+    valores: dict[str, str] = {}
+    etiquetas: dict[str, str] = {}
+
+
+@router.get("/{sku:path}/specs/{canal}")
+async def specs_de_canal(sku: str, canal: str):
+    """Los atributos de un SKU en un canal, con su valor actual. Solo kubera y
+    la API pública del canal: nada de WordPress (Brandon, 17-sep)."""
+    return await asyncio.to_thread(specs_editor.editor_sync, sku.strip(), canal)
+
+
+@router.put("/{sku:path}/specs/{canal}")
+async def guardar_specs(sku: str, canal: str, body: _GuardarSpecs):
+    """Guarda lo que capturó Bodega en `enrich.channel_content`, el mismo sitio
+    donde escribe el Publicador. Ver services/specs_editor.py."""
+    res = await asyncio.to_thread(specs_editor.guardar_sync, sku.strip(), canal,
+                                  body.valores, body.etiquetas)
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("motivo") or "No se pudo guardar.")
+    return res
+
+
 router.get("/{sku:path}")(ficha)

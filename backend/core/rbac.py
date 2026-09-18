@@ -225,6 +225,10 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # de services/inventario_maestro.py). El día que se agregue el POST de
     # entrada por packing list, necesita SU PROPIA línea aquí — listar el GET no
     # cubre el POST, que es exactamente lo que produjo los tres 403 por sorpresa.
+    # Bodega captura los atributos de specs por canal (18-sep). Es el mismo
+    # nivel que guardar contenido por canal en el Publicador (PUT
+    # /api/productos, operador): escribe en el mismo sitio.
+    ("PUT", "/api/inventario", "operador"),
     ("GET", "/api/inventario", "lectura"),
 )
 

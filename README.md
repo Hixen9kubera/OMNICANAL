@@ -1001,6 +1001,62 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.544.0 — Specs editables por Bodega, y el flujo de movimientos sale de la ficha
+
+Dos peticiones de Brandon (18-sep).
+
+**1 · Los specs se pueden capturar.** *«Estos campos deben ser editables para
+que bodega pueda poner los datos correctos. Trae todas las características
+obligatorias o principales y las secundarias como opcionales de llenarse.
+Mercado Libre obligatorio y los demás marketplaces opcionales por el
+momento»*.
+
+«Specs por canal» ahora tiene píldoras de canal como el Publicador y, debajo, el
+editor del canal elegido: **obligatorios** arriba, **opcionales** desplegables.
+El control depende del tipo del atributo —sí/no, número con su unidad (kg, cm,
+W), texto con sugerencias— y se guarda con botón, sin autoguardado: un campo a
+medio escribir viajaría a Mercado Libre.
+
+**La lista NO se copió del Publicador, y es a propósito.** El apartado Atributos
+del Publicador saca su lista de WordPress (`studio.metadata` →
+`wp_db.metadata_producto` → `_product_attributes`): son los atributos que tenga
+el producto en Woo, no los que EXIGE el canal, y leerlos viola la regla de
+Brandon del 17-sep (solo Supabase). Aquí:
+
+- **Mercado Libre** sale de su **API pública** (`/categories/{id}/attributes`):
+  no es WordPress ni escribe nada. Hace falta porque kubera NO tiene los
+  opcionales de ML — sus 2,765 filas en `field_requirements` son todas
+  obligatorias. En `MLM81144` la API da **26 campos visibles, 5 obligatorios y
+  21 opcionales**, con etiqueta en español, tipo, valores y unidades. Efecto
+  inmediato: `ROP-0731-BLN`, que salía «sin verificar», ya trae sus 17.
+- **Amazon, TikTok, Temu** salen de `channel.field_requirements`. En Amazon se
+  quitan el contenido y la mecánica de oferta (título, viñetas, imágenes,
+  precio, variaciones, cumplimiento): en `FLAT_SCREEN_DISPLAY_MOUNT` sus tres
+  «obligatorios» eran `item_name`, `bullet_point` y `product_description`, que
+  arma el Publicador. Quedan 47 atributos físicos.
+
+**Se guarda donde guarda el Publicador**, `enrich.channel_content`, con tres
+cuidados que el propio Publicador enseñó (`services/specs_editor.py`): se manda
+la lista **completa** fusionada por campo (el `||` de jsonb pisaría la lista
+entera), se manda **siempre la categoría** resuelta desde kubera (si falta, el
+router del Publicador la lee de WordPress), y en ML `nombre` = **el ID del
+atributo**, porque al actualizar `_confirmar_ml` usa `nombre` como id.
+
+**Lo que esto NO resuelve (y espera el visto bueno de Brandon):** al CREAR una
+publicación nueva de ML, el adaptador `publicar_ready.construir_prod` toma los
+atributos PRIMERO de las metas `ml_attr_*` de WordPress y lo de kubera solo como
+respaldo. En altas nuevas, lo que capture Bodega no gana a una meta que ya
+exista. Al ACTUALIZAR sí viaja lo de kubera. Cambiarlo es tocar el flujo de
+publicación vivo.
+
+**2 · El flujo de movimientos sale de la ficha.** Se consulta con el botón de
+flechas de la columna Trazabilidad (y el «Movimiento» de la cabecera de la
+ficha), que abre la trazabilidad completa. La consulta de movimientos de la
+ficha se queda: «Por recibirse» usa sus `pendientes`.
+
+RBAC: `PUT /api/inventario` → `operador`, el mismo nivel que guardar contenido
+por canal en el Publicador.
+
 ### v0.543.0 — El flujo deja de decir que specs «no tiene definición»
 
 Corrección de TEXTO, no de número. v0.540.0 (de hoy, otra sesión) le dio datos a

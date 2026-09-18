@@ -2060,6 +2060,39 @@ export interface SpecCanal {
   leido_at: string | null;
 }
 
+/** Un atributo editable de un SKU en un canal. */
+export interface CampoSpec {
+  /** Id nativo del canal (ML: COLOR, MODEL…; Amazon: snake_case). */
+  campo: string;
+  /** Nombre legible. En ML viene en español de su API; en Amazon y TikTok
+   *  kubera solo guarda el id, y se enseña ése. */
+  etiqueta: string;
+  obligatorio: boolean;
+  /** string | number | number_unit | boolean | list… */
+  tipo: string | null;
+  /** Valores sugeridos. En ML son SUGERENCIAS: se deja escribir otro. */
+  valores: string[];
+  /** Unidades permitidas (kg, cm, W…) para los `number_unit`. */
+  unidades: string[];
+  /** Lo que ya está guardado en `enrich.channel_content`. */
+  valor: string;
+}
+
+/** El editor de un canal: la lista completa de campos de la categoría. */
+export interface EditorSpecs {
+  ok: boolean;
+  sku: string;
+  canal: string;
+  categoria: string | null;
+  categoria_fuente: string | null;
+  /** Mercado Libre obligatorio, los demás opcionales por ahora. */
+  canal_obligatorio: boolean;
+  campos: CampoSpec[];
+  /** De dónde salió la lista: la API pública de ML o `field_requirements`. */
+  fuente_lista: string | null;
+  aviso: string | null;
+}
+
 export interface SpecsSku {
   canales: SpecCanal[];
   /** El veredicto para bodega, que es el de Mercado Libre. */

@@ -43,6 +43,7 @@ import type {
   CriterioConteo,
   EtapaOmnicanal,
   MovimientosResp,
+  EditorSpecs,
   PublicadosGuardado,
   PublicarPreview,
   PublicarReq,
@@ -1627,6 +1628,25 @@ export function flujoCanal(
  * los pasos internos PICK/PACK de Odoo — son mayoría (91 de 117 renglones en
  * un SKU medido) y no mueven saldo. `"todo"` los incluye.
  */
+/** Los atributos editables de un SKU en un canal. Solo kubera y la API
+ *  pública del canal: nada de WordPress (Brandon, 17-sep). */
+export function specsCanal(sku: string, canal: string,
+                           signal?: AbortSignal): Promise<EditorSpecs> {
+  return getJSON(`/api/inventario/${encodeURIComponent(sku)}/specs/${canal}`, signal);
+}
+
+/** Guarda lo que capturó Bodega. Se mandan TODOS los campos del formulario:
+ *  el backend fusiona por campo con lo que ya estaba y escribe la lista
+ *  completa (el `||` de jsonb pisaría la lista entera si solo fuera una parte).
+ *  Un valor vacío QUITA el atributo. */
+export function guardarSpecsCanal(
+  sku: string, canal: string,
+  valores: Record<string, string>, etiquetas: Record<string, string>,
+): Promise<{ ok: boolean; guardados: number; categoria: string }> {
+  return putJSON(`/api/inventario/${encodeURIComponent(sku)}/specs/${canal}`,
+                 { valores, etiquetas });
+}
+
 export function movimientosInventario(
   sku: string,
   causa = "reales",
