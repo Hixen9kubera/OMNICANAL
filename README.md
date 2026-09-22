@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.547.0 — El MCP no era inalcanzable: mi candado contestaba 401 hasta a quien venía a preguntar por la puerta
+
+Brandon intentó conectar el MCP desde el diálogo «Add custom connector» de
+Claude Desktop y recibió **«Couldn't reach Omnicanal»** — contra un servidor
+que respondía perfecto por `curl`: `/salud` en 200 e `initialize` en 200 con
+todas las capacidades. El servidor estaba impecable; lo que fallaba era el
+candado.
+
+`_app_http` dejaba pasar **sólo `/salud`** y devolvía 401 a todo lo demás. Eso
+rompía dos cosas que ningún cliente puede saltarse:
+
+**1. El preflight de CORS.** El navegador manda un `OPTIONS` ANTES de la
+petición real para preguntar si tiene permiso — y en ese `OPTIONS` **no manda
+`Authorization`**, por definición: está preguntando si puede mandarla. Exigir
+la llave ahí es pedirle la contraseña a quien viene a preguntar dónde está la
+puerta. El preflight moría en 401, y **un preflight fallido se ve exactamente
+igual que un servidor caído**. De ahí el mensaje.
+
+**2. El descubrimiento de OAuth.** `GET /.well-known/oauth-protected-resource`
+contestaba 401, y un 401 en esa ruta es precisamente la señal que dice «este
+recurso está protegido, ve a autenticarte». Por eso el diálogo marcaba
+**«Sign in now · Detected»** ofreciendo un OAuth que este servidor no tiene.
+Este MCP se autentica con una llave estática; la respuesta honesta a esa ruta
+es **404**.
+
+Arreglado:
+
+* `OPTIONS` pasa sin llave y contesta 204 con las cabeceras de CORS.
+* `/.well-known/*` contesta 404 con un cuerpo que explica que aquí se usa
+  `Authorization: Bearer`, no OAuth.
+* Todas las respuestas llevan CORS, con `Access-Control-Expose-Headers:
+  Mcp-Session-Id`. Sin eso el navegador ESCONDE el id de sesión que el
+  `initialize` devuelve, y la sesión se pierde en el primer turno — un fallo
+  que no da error, sólo deja de funcionar.
+* `Access-Control-Allow-Origin: *` es correcto aquí porque la autorización va
+  en una CABECERA y no en una cookie: no hay credenciales de navegador que
+  proteger.
+
+Lo que NO cambió: `/mcp` sigue cerrado. Verificado tras el arreglo — 401 sin
+llave y 401 con llave mala, en local y en producción.
+
+**La lección, que vale más que el parche:** un candado que responde 401 a TODO
+no es más seguro, es más difícil de diagnosticar. El 401 dejó de ser
+información y pasó a ser ruido: tapaba por igual una llave mala, una ruta
+inexistente y un preflight legítimo. Y el síntoma que produjo —«no se puede
+alcanzar el servidor»— apuntaba al lugar equivocado, que es la peor propiedad
+que puede tener un mensaje de error.
+
 ### v0.546.0 — FULLFILMENT: el Tablero con datos reales (recepción por semana, embudo completo, stock de hoy)
 
 Brandon, con los avisos de FULL ya medidos: *"ya con estos datos puedes llenar de datos reales el tablero; una

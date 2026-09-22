@@ -35,6 +35,7 @@ entorno, no rehacer el servidor.
 from __future__ import annotations
 
 import argparse
+import hmac
 import logging
 import os
 import sys
@@ -233,10 +234,53 @@ def _tokens() -> list[str]:
     return [t.strip() for t in crudo.split(",") if t.strip()]
 
 
+ABIERTAS = frozenset({"/salud"})
+
+# Cabeceras de CORS. El cliente de MCP necesita LEER `mcp-session-id` de la
+# respuesta del `initialize` para mandarlo en las siguientes peticiones: si no
+# se expone, el navegador se lo esconde y la sesión se pierde en el primer
+# turno. `*` en el origen es correcto aquí porque la autorización viaja en una
+# CABECERA y no en una cookie — no hay credenciales de navegador que proteger.
+_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": ("Authorization, Content-Type, Accept, "
+                                     "Mcp-Session-Id, MCP-Protocol-Version, "
+                                     "Last-Event-ID"),
+    "Access-Control-Expose-Headers": "Mcp-Session-Id, MCP-Protocol-Version",
+    "Access-Control-Max-Age": "86400",
+}
+
+
 def _app_http(host: str):
-    """Streamable HTTP con la llave al frente."""
+    """
+    Streamable HTTP con la llave al frente.
+
+    LAS DOS EXCEPCIONES AL 401, y las dos se ganaron en carne propia el
+    22-sep-2026, cuando el conector de Claude Desktop contestó "Couldn't reach
+    Omnicanal" contra un servidor que respondía perfecto por curl:
+
+    1. **`OPTIONS` pasa SIN llave.** Es el preflight de CORS, y el navegador
+       NO manda `Authorization` en un preflight — por definición, porque está
+       preguntando si tiene permiso de mandarla. Exigir la llave ahí es pedirle
+       la contraseña a quien viene a preguntar dónde está la puerta: el
+       preflight falla, y un preflight fallido se ve EXACTAMENTE igual que un
+       servidor caído.
+
+    2. **`/.well-known/*` contesta 404, no 401.** Un 401 en la ruta de
+       descubrimiento de OAuth es la señal que dice "este recurso está
+       protegido, ve a autenticarte" — así que el diálogo del conector detectó
+       un OAuth que aquí no existe y marcó "Sign in now · Detected". Este
+       servidor se autentica con una llave estática, no con OAuth: la respuesta
+       honesta es "esa ruta no existe".
+
+    La lección de fondo: un candado que responde 401 a TODO no es más seguro,
+    es más difícil de diagnosticar. El 401 dejó de ser información y pasó a ser
+    ruido de fondo — tapaba por igual una llave mala, una ruta inexistente y un
+    preflight legítimo.
+    """
     from starlette.middleware.base import BaseHTTPMiddleware
-    from starlette.responses import JSONResponse
+    from starlette.responses import JSONResponse, Response
 
     validas = _tokens()
 
@@ -244,23 +288,42 @@ def _app_http(host: str):
     async def salud(_req):                                   # noqa: ANN001
         return JSONResponse({"ok": True, "servidor": "omnicanal-research",
                              "solo_lectura": True,
-                             "configurado": cx.configurado()})
+                             "configurado": cx.configurado()},
+                            headers=_CORS)
 
     app = servidor.streamable_http_app(host=host)
 
     class Llave(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):        # noqa: ANN001
-            if request.url.path == "/salud":
-                return await call_next(request)
-            cab = request.headers.get("authorization", "")
-            dado = cab[7:].strip() if cab.lower().startswith("bearer ") else ""
-            # Comparación normal y no `hmac.compare_digest` sería el descuido
-            # típico: el tiempo de `==` filtra cuántos caracteres acertaste.
-            import hmac
-            if not any(hmac.compare_digest(dado, t) for t in validas):
-                return JSONResponse({"error": "Llave inválida o ausente."},
-                                    status_code=401)
-            return await call_next(request)
+            ruta = request.url.path
+
+            # Preflight: sin llave, siempre (ver el docstring, punto 1).
+            if request.method == "OPTIONS":
+                return Response(status_code=204, headers=_CORS)
+
+            # Descubrimiento de OAuth: no existe, y se dice (punto 2).
+            if ruta.startswith("/.well-known/"):
+                return JSONResponse(
+                    {"error": "Este servidor no usa OAuth: se autentica con "
+                              "una llave estática en la cabecera Authorization."},
+                    status_code=404, headers=_CORS)
+
+            if ruta not in ABIERTAS:
+                cab = request.headers.get("authorization", "")
+                dado = cab[7:].strip() if cab.lower().startswith("bearer ") else ""
+                # `hmac.compare_digest` y no `==`: el tiempo de `==` filtra
+                # cuántos caracteres acertaste.
+                if not any(hmac.compare_digest(dado, t) for t in validas):
+                    return JSONResponse(
+                        {"error": "Llave inválida o ausente. Se espera la "
+                                  "cabecera 'Authorization: Bearer <llave>'."},
+                        status_code=401, headers=_CORS)
+
+            respuesta = await call_next(request)
+            # `setdefault`: si el SDK ya puso lo suyo, manda el SDK.
+            for k, v in _CORS.items():
+                respuesta.headers.setdefault(k, v)
+            return respuesta
 
     app.add_middleware(Llave)
     return app
