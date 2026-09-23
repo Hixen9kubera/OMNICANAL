@@ -1001,6 +1001,31 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.553.0 — El modal deja de culpar a Odoo cuando el que no tiene número es Woo
+
+Complemento de la v0.552.0, a pedido de Eduardo (23-sep). El candado de alta de
+Mercado Libre no le pregunta a Odoo: lee el `_stock` de Woo. Cuando Woo no
+tenía número («Gestionar inventario» apagado) el modal decía *«Sin stock en
+Odoo (free_qty = 0)»* y mandaba a buscar el problema a Odoo, donde TEC-2370-MET
+tenía 60 piezas libres.
+
+`construir_prod` ahora marca `sin_inventario_woo` (el `_stock` de Woo vacío) y
+las dos compuertas —vista previa y alta— eligen el motivo con
+`_motivo_sin_stock`:
+- **Woo sin número** → *«WooCommerce no lleva el inventario de este producto
+  ("Gestionar inventario" apagado): no hay número de piezas que publicar. Si
+  Odoo tiene piezas, el vigilante de stock lo corrige solo en su siguiente
+  pasada (cada 20 min).»*
+- **Woo en 0** → el mensaje de siempre, que ahí sí es cierto: Woo copia el
+  `free_qty` de Odoo.
+
+Solo cambia el TEXTO del rechazo: qué se publica y qué no, sigue igual.
+
+**Verificado:** 4 pruebas nuevas (`tests/test_publicar_ready_stock.py`, junto
+con las 8 del vigilante: 12 en verde) y `construir_prod` real contra Woo, solo
+lectura: CAS-0016-PLA-AZL (sin número) da el mensaje nuevo y ORG-0020-NEG
+(gestionado, en 0) conserva «Sin stock en Odoo».
+
 ### v0.552.0 — «Sin stock en Odoo» con 60 piezas en Odoo: Woo sin número no es Woo en cero
 
 Reporte de Eduardo (23-sep), repetido «unas cuantas veces»: al publicar

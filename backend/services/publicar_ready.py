@@ -60,6 +60,13 @@ MSG_PADRE = ("Es un SKU padre: no existe en Odoo ni tiene stock. "
              "Elige una de sus variantes.")
 MSG_PADRE_UPDATE = "Publicación de un SKU padre: reemplázala por sus variantes."
 MSG_SIN_STOCK_ML = "Sin stock en Odoo (free_qty = 0): no se publica."
+# Woo SIN número ("Gestionar inventario" apagado) no es Woo en cero: el candado lee
+# el `_stock` de Woo, no a Odoo, y con el texto de arriba mandaba a buscar el
+# problema a Odoo cuando ahí sí había piezas (TEC-2370-MET, 60 libres, 23-sep).
+MSG_SIN_INVENTARIO_WOO = (
+    "WooCommerce no lleva el inventario de este producto (\"Gestionar inventario\" "
+    "apagado): no hay número de piezas que publicar. Si Odoo tiene piezas, el "
+    "vigilante de stock lo corrige solo en su siguiente pasada (cada 20 min).")
 
 _configurado = False
 
@@ -514,6 +521,7 @@ def construir_prod(sku: str, wc_id: int, campos: dict[str, Any]) -> dict[str, An
         "width":            _dim("ancho", "_width"),
         "height":           _dim("alto", "_height"),
         "stock":            stock,
+        "sin_inventario_woo": meta.get("_stock") in (None, ""),
         "ml_category_id":   cat_id,
         "ml_category_name": cat_nombre,
         # Con categoría elegida en el panel NO se pasan las categorías WC:
@@ -551,6 +559,11 @@ def _stock_real(prod: dict[str, Any]) -> int:
         return 0
 
 
+def _motivo_sin_stock(prod: dict[str, Any]) -> str:
+    """Por qué no se publica un producto con stock < 1."""
+    return MSG_SIN_INVENTARIO_WOO if prod.get("sin_inventario_woo") else MSG_SIN_STOCK_ML
+
+
 async def _candado_alta_ml(wc_id: int) -> str | None:
     """
     Motivo para NO crear, o None. Es el embudo de TODA alta de ML
@@ -583,7 +596,7 @@ async def preview_crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
         return {"ok": False, "motivo": motivo}
     prod = await asyncio.to_thread(construir_prod, sku, wc_id, campos)
     if _stock_real(prod) < 1:
-        return {"ok": False, "motivo": MSG_SIN_STOCK_ML}
+        return {"ok": False, "motivo": _motivo_sin_stock(prod)}
     token = meli._access_token(cuenta)
     if not token:
         return {"ok": False, "motivo": f"Sin token de Mercado Libre para {cuenta}."}
@@ -635,7 +648,7 @@ async def crear_ml(sku: str, wc_id: int, campos: dict[str, Any],
     # vendor (regla 1): el alta se frena aquí, igual que TikTok y Temu. La
     # ACTUALIZACIÓN de una publicación viva no pasa por aquí ni toca stock.
     if _stock_real(prod) < 1:
-        return _rechazo(MSG_SIN_STOCK_ML)
+        return _rechazo(_motivo_sin_stock(prod))
 
     resultados: list[dict[str, Any]] = []
     for cuenta in objetivo:
