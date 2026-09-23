@@ -1001,6 +1001,71 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.550.0 — "Esta orden viaja en la misma caja que…": el envío combinado, escrito en la orden de venta
+
+Brandon, 23-sep: *"¿hay forma de poner una nota a las órdenes con guías
+combinadas de Temu en Odoo?"* → *"dale con las notas, me interesa más que se
+encuentre en la ORDEN DE VENTA, que indique con qué órdenes de venta está
+combinada"*. Temu mete varias compras del mismo comprador en UNA caja: dos
+órdenes de Odoo con la misma guía y el mismo PDF. Quien empaca no lo sabía, y
+el riesgo es empacar por separado e imprimir dos veces la misma etiqueta. Medido
+el 23-sep en la ventana de 21 días: **10 cajas compartidas, 27 órdenes** — una
+guía con SEIS órdenes dentro.
+
+**Nuevo `backend/services/odoo_notas_combinado.py`** (`notar_combinados(canal)`,
+expuesto también como `odoo_ventas.notar_combinados`). Agrupa las entregas de
+salida vivas por `carrier_tracking_ref` y, para cada guía con 2+ órdenes,
+escribe un bloque al PRINCIPIO de `sale.order.note` sin tocar los Términos que
+ya traía cada orden:
+
+> **ENVÍO COMBINADO** · Esta orden (S39058, TEXCO II) viaja en la MISMA caja
+> que: S39007 (TEXCO), S39008 (TEXCO II), S39009 (TEXCO), S39014 (TEXCO),
+> S39015 (TEXCO II) · 6 órdenes de venta · Guía JMX601023471023 (…1023) ·
+> Imprimir la etiqueta UNA sola vez.
+
+Además: la etiqueta `crm.tag` **"ENVÍO COMBINADO"** (comando 4, jamás el 6: las
+del equipo no se tocan), la misma frase en `stock.picking.note` de la entrega
+—lo que tiene delante quien empaca, hasta hoy vacía— y un apunte en el
+historial, sólo cuando el aviso nace o cambia.
+
+**El vocabulario se alinea con lo que el almacén ya lee.** Una sola venta partida
+en dos órdenes (`<venta>#1` / `#2`) NO es un envío combinado —así lo definen el
+Excel de Guías del día y la pestaña—, así que su bloque dice **SURTIDO
+DIVIDIDO**; y el conteo se desambigua ("6 órdenes de venta (4 ventas)") porque
+la pestaña cuenta ventas y el Excel cuenta órdenes. El almacén va en el texto
+(TEXCO / TEXCO II): los grupos de hoy cruzan las dos bodegas y "empaca junto" no
+dice nada si las hermanas están en almacenes distintos.
+
+**Se mantiene solo y falla cerrado.** Job cada 15 min (tiktok y temu) tras la
+bandera `ODOO_VENTAS_NOTAS_COMBINADO_ENABLED`, que **nace apagada** (encenderla
+es encender un flujo vivo, regla 3) y respeta además el interruptor general y el
+del canal. Re-lee ANTES de escribir (una edición humana en los Términos gana) y
+DESPUÉS (un write que contesta bien no prueba que quedó). Si entra otra orden al
+paquete, el texto se actualiza; si deja de compartir guía o la hermana se
+cancela, se retira el bloque y la etiqueta —incluso de las canceladas, que se
+leen aparte justo para eso—, salvo que la caja YA haya salido (todas sus
+entregas en `done`): ahí el registro se conserva, porque a los 21 días la
+hermana sale de la ventana y borrarlo diría "viaja sola" sobre una caja que se
+fue acompañada.
+
+**El campo es `sanitize=True`** y en toda la base no había un solo registro con
+comentarios html, así que la ida y vuelta de las marcas `<!-- OMNICANAL:COMBINADO -->`
+nunca se había probado. Dos defensas en vez de una apuesta: el **cinturón** —el
+bloque también se reconoce por su texto visible, así que un saneador que se coma
+los comentarios sigue REEMPLAZANDO en vez de apilar— y el **freno**: si la nota
+no vuelve reconocible ni por marca ni por texto, se levanta un candado de módulo
+y no se escribe nada más, ni en esa vuelta ni en las siguientes. Daño máximo:
+una orden. ⚠️ `sale.order.note` es "Terms and conditions" y Odoo lo copia a
+`account.move.narration` al facturar: queda dicho a sabiendas (hoy 0 de 120
+facturadas).
+
+Probado sin red: **112 comprobaciones** (grupos de 6 y de 2, surtido dividido,
+idempotencia, entra/sale una hermana, canceladas, dos cajas en una orden,
+interruptores, Odoo caído, saneador que se come las marcas y saneador que se
+lleva hasta el texto). Simulacro contra el Odoo real en SOLO LECTURA (doble
+candado: `dry_run` + un `_kw` que revienta ante cualquier escritura): 10 grupos,
+27 órdenes, 82 operaciones previstas, 0 errores, 7 llamadas y todas de lectura.
+
 ### v0.549.0 — La calidad y la experiencia de compra de cada publicación ya tienen dónde guardarse, con historia diaria y para todos los canales (sin pantalla; el barrido nace apagado)
 
 Eduardo, 23-sep-2026: *«mantén esto totalmente aparte, todavía no lo usaremos,

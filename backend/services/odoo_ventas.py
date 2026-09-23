@@ -1338,6 +1338,21 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
                 "order_id": order_id}
 
 
+def notar_combinados(canal: str, dias: int = 21, limite: int = 300,
+                     dry_run: bool = False) -> dict[str, Any]:
+    """
+    "Esta orden viaja en la MISMA caja que…" escrito en Odoo. ⚠️ BLOQUEA.
+
+    Vive en `services/odoo_notas_combinado.py` —este archivo ya pasa de 1,300
+    líneas— y se re-exporta aquí porque es parte de la misma familia: lee las
+    mismas órdenes, usa el mismo `_kw` y obedece los mismos interruptores que
+    `fijar_guia` y `fijar_etiqueta`. Ver allá el porqué de cada decisión.
+    """
+    from services import odoo_notas_combinado
+    return odoo_notas_combinado.notar_combinados(canal, dias=dias, limite=limite,
+                                                 dry_run=dry_run)
+
+
 def cancelar_orden(canal: str, order_id: str) -> dict[str, Any]:
     """
     El marketplace canceló: la orden de Odoo se cancela también.

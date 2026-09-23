@@ -174,6 +174,43 @@ def iniciar() -> None:
             coalesce=True,
         )
         log.info("Vincular ventas sin orden con Odoo cada %s min (tiktok, temu).", _min_vinc)
+    # NOTA DE ENVÍO COMBINADO en Odoo (23-sep-2026). Cuando dos o más órdenes
+    # de venta comparten la guía de su entrega de salida, viajan en UNA caja:
+    # cada una se entera de con cuáles va, y de que la etiqueta se imprime una
+    # sola vez. ⚠️ A DIFERENCIA del job de arriba, ESTE SÍ ESCRIBE EN ODOO —
+    # por eso obedece también el interruptor general y el del canal, que se
+    # leen dentro del hilo (regla 11), y por eso su bandera NACE APAGADA: sin
+    # encenderla a mano en Railway el job ni siquiera se registra, que es lo
+    # que se quiere hasta que pase el canario y esté el dale de Brandon.
+    # Ver services/odoo_notas_combinado.py y config.py.
+    if getattr(settings, "odoo_ventas_notas_combinado_enabled", False):
+        from services import odoo_notas_combinado as _onc
+
+        async def _notas_combinado() -> None:
+            import asyncio as _aio
+            for _canal in ("tiktok", "temu"):
+                try:
+                    await _aio.to_thread(
+                        _onc.notar_combinados, _canal,
+                        settings.odoo_ventas_notas_combinado_dias,
+                        settings.odoo_ventas_notas_combinado_limite)
+                except Exception as exc:  # noqa: BLE001 — nunca tumba al scheduler
+                    log.warning("notar_combinados(%s) falló: %s", _canal, exc)
+
+        _min_notas = max(5, int(settings.odoo_ventas_notas_combinado_min))
+        _scheduler.add_job(
+            _notas_combinado,
+            "interval",
+            minutes=_min_notas,
+            id="odoo_notas_combinado",
+            # 210 s: después del vinculador (150 s) para no abrir dos
+            # conversaciones con Odoo en el mismo segundo del arranque.
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=210),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Nota de envío combinado en Odoo cada %s min (tiktok, temu).",
+                 _min_notas)
     # Refresco de guías de Temu. La guía NO existe cuando nace la orden: la
     # asigna la paquetería cuando se compra el envío. Y como Temu no manda
     # avisos, sin este trabajo la entrega se queda sin rastreo para siempre.

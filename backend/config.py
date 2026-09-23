@@ -245,6 +245,51 @@ class Settings(BaseSettings):
     # nunca Odoo: por eso nace encendido. Ver odoo_ventas_log.vincular_sin_orden.
     odoo_ventas_vincular_enabled: bool = True
     odoo_ventas_vincular_min: int = 15
+    # NOTA DE ENVÍO COMBINADO (23-sep-2026, pedido de Brandon). Temu junta
+    # en UNA caja varias compras del mismo comprador a la misma dirección:
+    # dos o más órdenes de venta de Odoo terminan con la MISMA guía en su
+    # entrega de salida (medido ese día: 6 grupos en 21 días, uno de seis
+    # órdenes). Sin aviso, el almacén empaca por separado e imprime la misma
+    # etiqueta dos veces. Este trabajo le escribe a cada orden CON QUÉ OTRAS
+    # ÓRDENES viaja.
+    #
+    # ⚠️ ESTO SÍ ESCRIBE EN ODOO, y por eso obedece los MISMOS interruptores
+    # que `fijar_guia`: además de esta bandera, `odoo_ventas_enabled` (el
+    # botón de pánico del panel) y el switch del canal. Qué escribe, y nada
+    # más que eso:
+    #   · `sale.order.note`  → un bloque entre marcas HTML propias, al
+    #     principio; lo que ya había NO se pisa (las 95 órdenes traen texto).
+    #     ⚠️ Ese campo es "Terms and conditions", y al facturar Odoo lo copia a
+    #     `account.move.narration`: el aviso de almacén acabaría en las
+    #     condiciones de la factura. Hoy no hay ninguna facturada (0 de 120;
+    #     37 en "to invoice") y se acepta a sabiendas, porque es el campo que
+    #     pidió el encargo y el que el almacén tiene delante.
+    #   · `sale.order.tag_ids` → enlaza la crm.tag "ENVÍO COMBINADO"
+    #     (comando 4: nunca quita las etiquetas del equipo).
+    #   · `stock.picking.note` de la entrega de salida.
+    #   · un mensaje en el historial, SÓLO cuando el bloque nace o cambia.
+    # Y retira todo eso cuando la orden deja de estar combinada.
+    #
+    # CÓMO SE APAGA, sin deploy: esta variable en false (se detiene sólo la
+    # nota) o el switch general/por canal del panel (se detiene todo lo que
+    # escribe en Odoo). Lo ya escrito se queda; para retirarlo hay que
+    # dejarla encendida y quitar la guía repetida, que es lo que dispara la
+    # limpieza.
+    #
+    # ⚠️ NACE APAGADA, y no por prudencia genérica: encenderla es encender un
+    # flujo de negocio VIVO (regla 3 de CLAUDE.md). Con esto en true, el primer
+    # tick tras el deploy —a los 210 s de levantar el contenedor— escribe en 27
+    # órdenes de venta vivas, 27 entregas y crea una crm.tag, sin que nadie esté
+    # mirando. Antes de encenderla en Railway hacen falta DOS cosas: el CANARIO
+    # (escribir el bloque en UNA sola orden en vivo y confirmar que las marcas
+    # `<!-- OMNICANAL:COMBINADO -->` vuelven tal cual al releer — el campo es
+    # sanitize=True y ese caso nunca se ha probado) y el dale explícito de
+    # Brandon. Encender tarde no cuesta nada; encender temprano sí.
+    # Ver services/odoo_notas_combinado.py.
+    odoo_ventas_notas_combinado_enabled: bool = False
+    odoo_ventas_notas_combinado_min: int = 15
+    odoo_ventas_notas_combinado_dias: int = 21
+    odoo_ventas_notas_combinado_limite: int = 300
     # ¿El webhook de Temu CREA pedidos en WooCommerce? Apagado: el receptor
     # registra, descifra y verifica la firma, pero no escribe. Ojo con lo que
     # NO se puede hacer aunque se encienda: Temu no expone el importe del
