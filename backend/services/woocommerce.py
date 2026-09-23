@@ -1967,11 +1967,18 @@ async def productos_por_wc_id(wc_ids: list[int]) -> list[dict[str, Any]]:
         "stock_status,status,type,categories,brands,images,permalink"
     )
     async with _client() as cli:
+        # `_cb` (cache-bust): tercera aparición de este hueco (regla nº5,
+        # LiteSpeed) — esta es la ruta que alimenta Crear Productos, y sin
+        # ella un producto recién editado (imagen/nombre/precio) seguía
+        # mostrando lo viejo ahí un rato aunque `listar_productos` y
+        # `obtener_producto_por_sku` (ya parcheadas) mostraran lo fresco
+        # (VAR-0436-NEG-6C, sep-2026).
         r = await cli.get("/products", params={
             "include": ",".join(str(i) for i in ids),
             "per_page": min(len(ids), 100),
             "status": "any",
             "_fields": campos,
+            "_cb": str(time.time()),
         })
         r.raise_for_status()
         data = r.json()

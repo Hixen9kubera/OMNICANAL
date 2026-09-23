@@ -1001,6 +1001,24 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.548.0 — Crear Productos también mostraba la imagen vieja tras actualizar (tercera aparición del mismo hueco)
+
+Reportado con `VAR-0436-NEG-6C`: se reemplazó su galería por la foto de Odoo
+(dos veces seguidas, cada una con un media_id distinto — confirmado que la
+escritura en WooCommerce quedó bien las dos veces), pero la persona seguía
+viendo la imagen anterior en el panel incluso después de recargar fuerte.
+`listar_productos()` (v0.419.0) y `obtener_producto_por_sku()` (v0.511.0) ya
+estaban parchadas y devolvían lo fresco — la tercera lectura de `/products`
+que le falta a un producto era `productos_por_wc_id()`, la que alimenta
+específicamente **Crear Productos** (donde vive este SKU, en `draft`), y
+nunca llevó `_cb` (regla nº5, LiteSpeed).
+
+Fix (`services/woocommerce.py`, `productos_por_wc_id`): mismo `_cb` de
+siempre. Auditadas las demás lecturas de `/products` del archivo: las que
+faltaban (`drafts_pagina`, `buscar_drafts`) no traen `images` en sus
+`_fields` —no pueden mostrar una foto vieja porque no muestran foto—, así
+que no comparten el síntoma. Solo lectura/UI.
+
 ### v0.547.0 — El MCP no era inalcanzable: mi candado contestaba 401 hasta a quien venía a preguntar por la puerta
 
 Brandon intentó conectar el MCP desde el diálogo «Add custom connector» de
