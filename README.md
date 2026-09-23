@@ -1001,6 +1001,47 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.552.0 — «Sin stock en Odoo» con 60 piezas en Odoo: Woo sin número no es Woo en cero
+
+Reporte de Eduardo (23-sep), repetido «unas cuantas veces»: al publicar
+TEC-2370-MET el modal decía *«Sin stock en Odoo (free_qty = 0): no se
+publica»* en las dos cuentas. **Odoo tenía 60 piezas libres**, sin reservas,
+en `TEX2/FERRAFORME/REQUERIMENTOS`.
+
+**La cadena, eslabón por eslabón:**
+1. **Crear productos da de alta sin prender «Gestionar inventario»**, y Woo la
+   deja apagada: el producto nace sin número (`_manage_stock = no`,
+   `_stock` vacío).
+2. **El vigilante se saltaba todo lo que no tuviera número**
+   (`if w["stock"] is None: continue`). Veía las 60 piezas —su foto lo
+   dice— pero nunca las copiaba.
+3. **El candado de publicar (v0.517.0) no le pregunta a Odoo: lee el `_stock`
+   de Woo.** El hueco lo leía como 0 y el mensaje culpaba a Odoo.
+
+Medido el 23-sep: **36 productos simples, 4,564 piezas**, en la misma trampa.
+El salto existía por los padres `variable` (1,504), que no llevan stock propio;
+el problema es que también atrapaba a los simples.
+
+**El arreglo.** La decisión Odoo → Woo sale a una función pura,
+`_deltas_odoo`, y un Woo sin número ya no se salta: se le prende la casilla y
+se le copia Odoo, con tres límites —
+- solo en modo ABSOLUTO (el delta no tiene base de la cual partir);
+- nunca a un padre `variable`: `_leer_woo` ahora trae el `product_type` de
+  cada producto, en vez de adivinarlo;
+- **solo si Odoo tiene piezas** (opción «a» de Eduardo). Hay 22 simples sin
+  número y con 0 en Odoo que Woo hoy ofrece como disponibles; prenderles la
+  casilla los pasaría a «agotado». Esos se revisan a mano, no los decide el
+  vigilante.
+
+TEC-2370-MET se arregló a mano antes del deploy (casilla prendida, 60 piezas,
+leído de vuelta en la BD). La primera pasada tras el deploy escribe los otros
+35, y el fan-out empuja su stock a los canales donde ya estén publicados.
+
+**Verificado:** 8 pruebas nuevas (`tests/test_stock_watch.py`) y una pasada EN
+SECO contra Odoo y Woo reales, sin escribir: el SQL nuevo lee 14,762 SKUs y
+detecta 1,504 padres variables; la pasada escribiría exactamente 35 (tope del
+cortacircuitos: 300), **0 de los 22 en cero y 0 padres**.
+
 ### v0.551.0 — El flujo del SKU se lee como flujo, sin «Listo para FULL o DROP», y la pestaña General dice que no cuenta borradores
 
 Pedido de Eduardo (23-sep-2026), tres cambios en Omnicanal. El diseño se eligió

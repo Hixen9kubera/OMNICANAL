@@ -218,12 +218,18 @@ def _leer_woo() -> dict[str, dict[str, Any]]:
     P = wp_db._prefix()
     fuera: dict[str, dict[str, Any]] = {}
     for r in wp_db._fetch_all(
-        f"""SELECT sk.meta_value sku, st.meta_value stock, p.ID, p.post_type, p.post_parent
+        f"""SELECT sk.meta_value sku, st.meta_value stock, p.ID, p.post_type, p.post_parent,
+                   pt.slug ptype
             FROM {P}postmeta sk
             JOIN {P}posts p ON p.ID = sk.post_id
                  AND p.post_type IN ('product','product_variation')
                  AND p.post_status <> 'trash'
             LEFT JOIN {P}postmeta st ON st.post_id = p.ID AND st.meta_key = '_stock'
+            LEFT JOIN (SELECT tr.object_id, t.slug
+                         FROM {P}term_relationships tr
+                         JOIN {P}term_taxonomy tt ON tt.term_taxonomy_id = tr.term_taxonomy_id
+                              AND tt.taxonomy = 'product_type'
+                         JOIN {P}terms t ON t.term_id = tt.term_id) pt ON pt.object_id = p.ID
             WHERE sk.meta_key = '_sku' AND sk.meta_value <> ''"""):
         s = (r["sku"] or "").strip()
         if not s:
@@ -233,7 +239,7 @@ def _leer_woo() -> dict[str, dict[str, Any]]:
         except (TypeError, ValueError):
             v = None
         fuera[s] = {"stock": v, "id": r["ID"], "tipo": r["post_type"],
-                    "padre": r["post_parent"]}
+                    "padre": r["post_parent"], "variable": r.get("ptype") == "variable"}
     return fuera
 
 
@@ -296,6 +302,46 @@ async def _escribir_woo(cambios: list[tuple[str, int, dict]]) -> tuple[int, set[
                 log.warning("stock_watch: batch variaciones de %s falló: %s", padre, exc)
             await asyncio.sleep(0.5)
     return hechos, ok_skus
+
+
+def _deltas_odoo(od: dict[str, int], wo: dict[str, dict[str, Any]],
+                 foto: dict[str, dict[str, int | None]],
+                 absoluto: bool) -> list[tuple[str, int, dict]]:
+    """Los destinos Odoo -> Woo de una pasada: [(sku, destino, fila de Woo)].
+
+    WOO SIN NÚMERO (`_stock` vacío) es "Gestionar inventario" apagado, y así
+    nace todo lo que da de alta Crear productos. Saltarlo siempre lo dejaba
+    fuera para siempre: el candado de publicar leía el hueco como 0 y culpaba a
+    Odoo ("Sin stock en Odoo"). El 23-sep eran 36 simples con 4,564 piezas
+    libres que no se podían publicar (TEC-2370-MET: 60).
+
+    Ahora se le prende y se le copia Odoo, pero con tres límites:
+      · solo en modo ABSOLUTO: el delta no tiene una base de la cual partir;
+      · nunca a un padre `variable`: el stock lo llevan sus variaciones;
+      · solo si Odoo TIENE piezas (opción «a» de Eduardo, 23-sep). Prenderla
+        con 0 pasaría a "agotado" productos que Woo hoy ofrece como
+        disponibles; esos se revisan a mano, no los decide el vigilante.
+    """
+    deltas: list[tuple[str, int, dict]] = []
+    for sku, ahora_od in od.items():
+        w = wo.get(sku)
+        if w is None:
+            continue
+        if w["stock"] is None:
+            if absoluto and ahora_od > 0 and not w.get("variable"):
+                deltas.append((sku, ahora_od, w))
+            continue
+        if absoluto:
+            # `od` ya viene con max(0, …) aplicado arriba.
+            destino = ahora_od
+        else:
+            ant = foto.get(sku, {}).get("odoo")
+            if ant is None or ahora_od == ant:
+                continue
+            destino = max(0, w["stock"] + (ahora_od - ant))
+        if destino != w["stock"]:
+            deltas.append((sku, destino, w))
+    return deltas
 
 
 async def revisar(forzar: bool = False) -> dict[str, Any]:
@@ -365,21 +411,7 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         # El modo se cambia con una variable, sin deploy: si el absoluto resulta
         # equivocado, se vuelve al delta en un minuto.
         absoluto = bool(getattr(settings, "stock_watch_absoluto", False))
-        deltas: list[tuple[str, int, dict]] = []
-        for sku, ahora_od in od.items():
-            w = wo.get(sku)
-            if w is None or w["stock"] is None:
-                continue
-            if absoluto:
-                # `od` ya viene con max(0, …) aplicado arriba.
-                destino = ahora_od
-            else:
-                ant = foto.get(sku, {}).get("odoo")
-                if ant is None or ahora_od == ant:
-                    continue
-                destino = max(0, w["stock"] + (ahora_od - ant))
-            if destino != w["stock"]:
-                deltas.append((sku, destino, w))
+        deltas = _deltas_odoo(od, wo, foto, absoluto)
 
         # ── 2) CAMBIOS DE WOO (venga de donde venga) → canales ────────────
         movidos_woo: list[tuple[str, int | None, int | None]] = []
