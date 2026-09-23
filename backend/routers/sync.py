@@ -18,6 +18,13 @@ sync.py — Endpoints del sistema de sincronización de inventario.
          (`/items/{id}/sale_price` → `channel.listings.price_sale`). El GET es
          lectura pura. Ver services/precios_venta.py para el porqué y la
          cadencia; el scheduler ya lo corre solo si PRECIOS_VENTA_BARRIDO=true.
+
+  POST /api/sync/calidad-ml?limite=
+  GET  /api/sync/calidad-ml
+       → Barrido de la «Calidad» de las activas de ML
+         (`/item/{id}/performance` → `enrich.listing_health`, 0053). El GET es
+         lectura pura. Ver services/calidad_ml.py; el scheduler lo corre solo
+         si CALIDAD_ML_ENABLED=true (y SYNC_ENABLED).
 """
 from __future__ import annotations
 
@@ -121,6 +128,45 @@ def precios_venta_estado():
         "por_hora": settings.precios_venta_por_hora,
         "pasada_al_arrancar": settings.precios_venta_arranque,
         "estado": precios_venta.estado(),
+    }
+
+
+@router.post("/calidad-ml")
+async def calidad_ml_barrer(
+    limite: int | None = Query(None, ge=1, le=5000,
+                               description="Tope de publicaciones. Sin límite = "
+                                           "todas las activas sin captura de hoy."),
+):
+    """
+    Dispara el barrido de CALIDAD de las activas de ML y contesta de inmediato.
+
+    Es el mismo trabajo que hace el scheduler (`calidad_ml.corrida_programada`)
+    pero a mano y sin esperar a la hora: mide las activas que no tengan captura
+    de HOY (hora de México). NO espera a que termine; el avance se lee con el
+    GET. Habla con ML y escribe `enrich.listing_health`, así que obedece las
+    mismas dos llaves que el job: `SYNC_ENABLED` y `CALIDAD_ML_ENABLED`.
+    """
+    from services import calidad_ml
+    if not settings.sync_enabled:
+        return {"ok": False, "motivo": "SYNC_ENABLED apagado (modo puros pedidos)"}
+    if not settings.calidad_ml_enabled:
+        return {"ok": False, "motivo": "CALIDAD_ML_ENABLED apagado"}
+    estado_actual = await calidad_ml.refrescar_en_fondo(limite=limite, motivo="manual")
+    return {"ok": True, "estado": estado_actual}
+
+
+@router.get("/calidad-ml")
+def calidad_ml_estado():
+    """Avance del barrido de calidad de ML. Lectura pura, no dispara nada."""
+    from services import calidad_ml
+    return {
+        "encendido": bool(settings.sync_enabled and settings.calidad_ml_enabled),
+        "sync_enabled": settings.sync_enabled,
+        "calidad_ml": settings.calidad_ml_enabled,
+        "cada_min": settings.calidad_ml_min,
+        "desde_hora_utc": settings.calidad_ml_hora_utc,
+        "por_corrida": settings.calidad_ml_por_corrida,
+        "estado": calidad_ml.estado(),
     }
 
 

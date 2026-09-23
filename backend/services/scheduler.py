@@ -578,6 +578,32 @@ def iniciar() -> None:
         log.info("Barrido de precios de venta ML APAGADO "
                  "(PRECIOS_VENTA_BARRIDO=%s, SYNC_ENABLED=%s).",
                  settings.precios_venta_barrido, settings.sync_enabled)
+    # Calidad de las publicaciones ML (/item/{id}/performance → 0053). Por
+    # INTERVALO y no a hora fija: cada vuelta mide solo lo que no tenga captura
+    # de HOY, así que un deploy a la hora del cron no se come el día y los
+    # huecos de un 429 se llenan en la vuelta siguiente. Antes de
+    # CALIDAD_ML_HORA_UTC la vuelta sale sin hacer nada. El job solo lanza la
+    # task de fondo y vuelve; el candado de `calidad_ml` impide dos barridos.
+    if settings.sync_enabled and settings.calidad_ml_enabled:
+        from services import calidad_ml
+        _scheduler.add_job(
+            calidad_ml.corrida_programada,
+            "interval",
+            minutes=max(15, int(settings.calidad_ml_min)),
+            id="calidad_ml",
+            # Con zona (ver inventario_flujo) y a los 20 min del boot, detrás
+            # del barrido de precios y de la primera pasada del sync.
+            next_run_time=datetime.now(timezone.utc) + timedelta(minutes=20),
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info("Calidad ML: vuelta cada %s min, desde las %02d UTC, tope %s.",
+                 max(15, int(settings.calidad_ml_min)),
+                 settings.calidad_ml_hora_utc,
+                 settings.calidad_ml_por_corrida or "sin tope")
+    else:
+        log.info("Calidad ML APAGADA (CALIDAD_ML_ENABLED=%s, SYNC_ENABLED=%s).",
+                 settings.calidad_ml_enabled, settings.sync_enabled)
     # Vigilante de alertas (Slack): detecta AUSENCIAS — actas de migración
     # faltantes/con deltas, silencio de ventas, tokens rancios. Solo existe si
     # hay SLACK_WEBHOOK_URL; los errores push (espejo, refresh de tokens) no

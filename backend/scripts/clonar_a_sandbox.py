@@ -115,6 +115,18 @@ TABLAS: list[tuple[str, str | None]] = [
     ("enrich.market_highlights", None),      # el sondeo gratis de ML
     ("enrich.market_terms", None),           # los términos más buscados
     ("enrich.product_media", None),          # las fotos: sin esto el tab sale gris
+
+    # ── SALUD DE PUBLICACIONES (0053) — calidad y experiencia por canal ──────
+    # Las dos referencian core.channels y core.accounts, que se clonan arriba,
+    # y ninguna a la otra: el orden entre ellas da igual. OJO: el
+    # `truncate core.accounts cascade` de arriba las VACÍA en el sandbox aunque
+    # producción todavía no las tenga (el pre-vuelo las salta si no existen
+    # allá); en ese caso se re-siembran con calidad_ml_sandbox.py.
+    ("enrich.listing_health", None),         # lo último de cada (publicación, métrica)
+    # La historia crece ~770k filas/año: se topa por `dia`, lo más reciente.
+    # Topada, una serie puede quedar sin su primer día con jsonb (los demás
+    # días lo guardan NULL si la huella no cambió); en el sandbox no importa.
+    ("enrich.listing_health_hist", "dia"),   # una fila por (publicación, métrica, día)
 ]
 
 # Nunca. Ver el encabezado.

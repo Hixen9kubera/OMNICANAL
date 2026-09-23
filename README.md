@@ -1001,6 +1001,138 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.549.0 — La calidad y la experiencia de compra de cada publicación ya tienen dónde guardarse, con historia diaria y para todos los canales (sin pantalla; el barrido nace apagado)
+
+Eduardo, 23-sep-2026: *«mantén esto totalmente aparte, todavía no lo usaremos,
+pero necesitamos en producción las tablas para calidad y experiencia y
+almacenar esta información»*. A `main` llega SOLO la **captura**: las dos tablas
+(migración **0053**) y el barrido de Mercado Libre que las llena. **Nada de
+pantalla**: la columna «Salud en ML», los filtros, la tarjeta del cajón y la
+rejilla de stock viven aparte en la rama `feat/calidad-ml` (worktree
+`_wt_flujo`, v0.548–v0.552 de esa rama) y no se fusionan con esto.
+
+**Qué se guarda, por publicación activa de ML:**
+
+- **Calidad** (`GET /item/{id}/performance`): la nota 0-100, el nivel de ML
+  (Básica / Estándar / Profesional) y la lista de lo que ML pide para subirla,
+  cada pendiente con su acción corta y **el enlace a la pantalla de ML donde se
+  corrige**, agrupados por bloque («Datos del producto», «Condiciones de venta»).
+- **Experiencia de compra**
+  (`GET /reputation/items/{id}/purchase_experience/integrators?locale=es_MX`;
+  sin `locale` ML contesta 400): el valor, el color y su texto («Mala», «Media»,
+  «Buena»), la consecuencia («Tienes muy baja exposición»), la acción principal,
+  las razones y las recomendaciones.
+
+**Por qué multicanal desde el día uno** (`0053_enrich_listing_health.sql`).
+Se investigó con la documentación oficial qué da cada canal por API y nadie da
+lo mismo: ML puntaje + experiencia completos; Walmart MX puntaje 0-100 con
+subpuntajes y posventa en conteos; Amazon MX sin puntaje, solo issues
+ERROR/WARNING y BUYABLE/DISCOVERABLE; TikTok diagnóstico por campo; Temu
+banderas de tráfico. Una tabla con columnas de ML habría pedido una migración
+por canal y por métrica. Por eso:
+
+- **La llave es `(canal, account_id, listing_id, metrica)`**, con FK a
+  `core.channels` y `core.accounts` (el uuid de la cuenta, la misma convención
+  de `channel.listings`). El mismo `listing_id` en otra cuenta u otro canal
+  nunca se cruza.
+- **Formato largo: una fila por métrica.** `calidad` y `experiencia` son dos
+  filas de la misma publicación; una métrica nueva (p. ej. `trafico` de Temu)
+  es una fila más con otro `metrica`, **sin DDL** (un check solo exige el
+  formato del nombre).
+- **`nivel` NORMALIZADO** (`bueno` | `medio` | `malo`) para poder cruzar
+  canales; la etiqueta del canal viaja intacta en `nivel_canal`
+  («Profesional», «Mala»). ML: good→bueno, medium→medio, bad→malo; experiencia
+  green→bueno, orange/yellow→medio, red→malo. `valor` (0-100) y `nivel` son
+  opcionales porque Amazon y Temu no dan número; lo propio de cada canal va en
+  `detalle` (jsonb) y los pendientes en una lista normalizada `pendientes`
+  (`clave`, `titulo`, `accion`, `link`, `grupo`, `severidad`).
+- **Amazon irá por SKU del vendedor, NO por ASIN**: los issues son por SKU y hay
+  1,825 publicaciones sobre 1,396 ASIN. `listing_id` es texto para que quepa
+  cualquiera (MLM…, SKU, id de TikTok/Temu/Walmart).
+- **Tres estados, y ninguno es un cero**: `medida` (el canal contestó con algo
+  que decir; un check lo exige), `no_calculada` (el canal contestó que NO la
+  califica: el 400 «Entity not calculated» de ML, con su mensaje en `motivo`) y
+  `sin_datos` (contestó pero aún no tiene con qué: experiencia gris / -1, sin
+  ventas). Red caída, 401, 429 agotado o 5xx **no escriben fila**: «no pude
+  preguntar» no es «no tiene», y una fila de error pisaría la medición buena de
+  ayer.
+
+**La historia** — `enrich.listing_health` guarda lo ÚLTIMO de cada
+(publicación, métrica); `enrich.listing_health_hist` guarda **una fila por
+(publicación, métrica, día de México)**, y una segunda medición del mismo día la
+reemplaza. Los escalares (`estado`, `valor`, `nivel`, `nivel_canal`,
+`n_pendientes`) van todos los días; `pendientes` y `detalle` **solo cuando
+cambian**: Postgres calcula una `huella` (md5 de los dos jsonb) y, si es igual a
+la del día guardado anterior, los deja en NULL. Medido: con todo lo activo de
+los 5 canales son ~770k filas/año y **~80 MB/año**, contra 544 MB/año guardando
+la foto completa cada día (la base entera pesa 433 MB). Sin particionar ni
+retención por ahora; si hace falta, retención con pg_cron como
+`ops.purgar_webhook_events`. Índices: `(canal, metrica, nivel)` en la actual y
+`(dia)` en la historia.
+
+Las dos tablas nacen con RLS + `grant all … to service_role` en la MISMA
+migración y cero políticas (patrón de la casa); `schema_manifest.json` suma
+las dos (`enrich` 12 → 14). **La 0053 NO está aplicada en producción** (sí en el
+sandbox): aplicarla es su propia acta de doble candado.
+
+**El barrido — APAGADO** (`CALIDAD_ML_ENABLED=false` por defecto, y además exige
+`SYNC_ENABLED`, igual que el barrido de precios). Con el flag apagado el
+scheduler ni registra el job. Al encenderlo (`services/calidad_ml.py`):
+
+- El job `calidad_ml` despierta cada `CALIDAD_ML_MIN` (60 min), pero **no hace
+  nada antes de `CALIDAD_ML_HORA_UTC`** (11 UTC = 05:00 CDMX) y cada vuelta mide
+  **solo lo que no tenga captura de HOY** (hora de México): en la práctica, UNA
+  pasada al día. Va por intervalo y no a hora fija para que un deploy a la hora
+  del cron no se coma el día y un hueco de 429 se complete solo en la vuelta
+  siguiente; una publicación cuya experiencia falló vuelve a entrar, pero solo
+  si su calidad tiene más de 3 h (3-4 reintentos al día, no 13).
+- **~570 publicaciones activas × 2 consultas a ML** (calidad y experiencia), 8
+  en paralelo, en tandas de 100; cada tanda se guarda en UNA transacción
+  (`listing_health` + el día en `listing_health_hist`). Un 429 respeta
+  `Retry-After` (tope 30 s). `CALIDAD_ML_POR_CORRIDA` pone tope por vuelta
+  (0 = sin tope).
+- Si la calidad falla, no se escribe nada (y la experiencia ni se pregunta); si
+  falla solo la experiencia, se escribe la calidad y la experiencia anterior se
+  **conserva intacta**, sin historia de experiencia ese día.
+- **Token**: `meli._access_token` en `asyncio.to_thread` y, ante un 401,
+  `meli._renovar_con_candado` — el MISMO candado por cuenta que usan los
+  webhooks de pedidos, **nunca** `refrescar_token` pelado (ML rota el
+  refresh_token en cada uso y dos renovaciones a la vez acaban en
+  `invalid_grant`). Se renueva **como mucho una vez por cuenta y barrido**. Por
+  eso el job vive dentro del backend y no como cron de Railway.
+- Regla 11: toda la base va en `asyncio.to_thread` (hay una prueba estática que
+  lo revisa sobre el AST del módulo). Cada barrido deja una fila en
+  `ops.process_log` (`proceso='calidad_ml'`).
+
+**A mano**: `POST /api/sync/calidad-ml?limite=` dispara el mismo barrido en
+fondo y contesta de inmediato (obedece las mismas dos llaves: con cualquiera
+apagada devuelve `ok: false` y el motivo); `GET /api/sync/calidad-ml` es lectura
+pura del avance (fase, consultadas, guardadas, 429, sin token).
+
+**Lo que viaja sin usarse**: los lectores de `calidad_ml` (`resumen_por_items`,
+`detalle_por_items`, `conteo`, `filtro_sql`, `filtro_sql_experiencia`) llegan
+completos pero en `main` no los llama nada; son los que usa la pantalla de
+`feat/calidad-ml`. El criterio de «activa» del barrido sale de
+`publicaciones_panel.filtro_sql_activas` (import perezoso), que ya existía.
+
+**Sandbox**: `clonar_a_sandbox.py` clona las dos tablas (la historia topada
+por `dia`); `scripts/calidad_ml_sandbox.py` siembra el sandbox con respuestas
+REALES de ML (en seco por defecto, `--real` escribe): aborta si el destino es
+producción, lee los tokens de producción en una transacción `read only` —nunca
+de sesión, regla 13— y **nunca renueva** (un 401 cuenta como `sin_token`).
+
+**De paso** (`meli._renovar_con_candado`): la rama «otra tarea renovó hace
+<120 s» leía el token de forma síncrona dentro del loop (regla 11). Ahora va en
+`asyncio.to_thread`.
+
+**Encenderlo NO es parte de este cambio**: primero aplicar la 0053 en
+producción (doble candado) y después `CALIDAD_ML_ENABLED=true`, que es un flujo
+nuevo que habla con ML y escribe en kubera → dale de Brandon (regla 3).
+
+Pruebas: **397 del backend en verde** (287 antes + 102 de `test_calidad_ml` +
+8 contra el SQL real del sandbox, que se saltan por defecto); con
+`OMNI_PRUEBAS_SANDBOX=1` esas 8 pasan contra el sandbox. `verificar_rls.py` OK.
+
 ### v0.548.0 — Crear Productos también mostraba la imagen vieja tras actualizar (tercera aparición del mismo hueco)
 
 Reportado con `VAR-0436-NEG-6C`: se reemplazó su galería por la foto de Odoo

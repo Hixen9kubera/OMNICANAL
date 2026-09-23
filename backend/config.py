@@ -426,6 +426,26 @@ class Settings(BaseSettings):
     # Pasada COMPLETA una sola vez al arrancar, para no esperar un ciclo entero
     # a que se drene el atraso acumulado mientras el backend estuvo abajo.
     precios_venta_arranque: bool = True
+
+    # ── Calidad de publicaciones ML (/item/{id}/performance) ──
+    # Pregunta la «Calidad» (score, nivel y lo que ML pide mejorar) de cada
+    # publicación ACTIVA de ML y la guarda en enrich.listing_health (0053), una
+    # fila por publicación y métrica, con su serie diaria en
+    # enrich.listing_health_hist. Ver el encabezado de `services/calidad_ml.py`.
+    #
+    # NACE APAGADO (regla 3): habla con ML y escribe en kubera. Respeta
+    # SYNC_ENABLED por encima de este flag, igual que el barrido de precios.
+    calidad_ml_enabled: bool = False
+    # Cada cuánto despierta el job. Cada vuelta mide SOLO lo que no tenga
+    # captura de HOY (hora de México): con ~557 activas, la primera vuelta del
+    # día hace el trabajo y las demás cuestan una consulta — y si un deploy o un
+    # 429 dejó huecos, la siguiente los completa sola.
+    calidad_ml_min: int = 60
+    # No antes de esta hora UTC (11 = 05:00 CDMX): el panel amanece al día sin
+    # chocar con el cron de visitas de competencia (12 UTC).
+    calidad_ml_hora_utc: int = 11
+    # Tope de publicaciones por vuelta. 0 = sin tope.
+    calidad_ml_por_corrida: int = 0
     competencia_con_detalle: bool = True
 
     # ── Base de datos MySQL (cache híbrido) ───────────────────

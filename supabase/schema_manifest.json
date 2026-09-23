@@ -479,6 +479,52 @@
     },
     "rls": true
    },
+   "listing_health": {
+    "columnas": [
+     "canal:text:notnull",
+     "account_id:uuid:notnull",
+     "listing_id:text:notnull",
+     "metrica:text:notnull",
+     "estado:text:notnull",
+     "valor:numeric:null",
+     "nivel:text:null",
+     "nivel_canal:text:null",
+     "n_pendientes:smallint:null",
+     "pendientes:jsonb:notnull",
+     "detalle:jsonb:notnull",
+     "motivo:text:null",
+     "medido_en:timestamp with time zone:null",
+     "capturado_en:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
+   "listing_health_hist": {
+    "columnas": [
+     "canal:text:notnull",
+     "account_id:uuid:notnull",
+     "listing_id:text:notnull",
+     "metrica:text:notnull",
+     "dia:date:notnull",
+     "estado:text:notnull",
+     "valor:numeric:null",
+     "nivel:text:null",
+     "nivel_canal:text:null",
+     "n_pendientes:smallint:null",
+     "huella:text:notnull",
+     "pendientes:jsonb:null",
+     "detalle:jsonb:null",
+     "capturado_en:timestamp with time zone:notnull"
+    ],
+    "constraints": {
+     "FOREIGN KEY": 2,
+     "PRIMARY KEY": 1
+    },
+    "rls": true
+   },
    "market_bestsellers": {
     "columnas": [
      "canal:text:notnull",
@@ -899,7 +945,7 @@
   "channel": 10,
   "core": 5,
   "costing": 8,
-  "enrich": 12,
+  "enrich": 14,
   "migration": 4,
   "ops": 6
  },

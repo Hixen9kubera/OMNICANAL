@@ -340,7 +340,7 @@ async def _renovar_con_candado(cuenta: str) -> str | None:
     async with lock:
         # Si otra tarea acaba de renovar (ráfaga), usar ese token sin re-rotar.
         if _time.time() - _refresh_ts.get(cuenta, 0) < 120:
-            return _access_token(cuenta)
+            return await _asyncio.to_thread(_access_token, cuenta)
         nuevo = await _asyncio.to_thread(refrescar_token, cuenta)
         if nuevo:
             _refresh_ts[cuenta] = _time.time()
