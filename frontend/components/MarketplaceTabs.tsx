@@ -14,6 +14,15 @@ function formatoTotal(n: number | null): string {
   return new Intl.NumberFormat("es-MX").format(n);
 }
 
+/** La pestaña General cuenta con la vista «productos» de Woo (publicados,
+ *  pendientes y listos) y el encabezado y «Todo el catálogo» con la vista
+ *  «omnicanal», que suma los borradores. Son dos cifras verdaderas de dos
+ *  preguntas distintas: se dice cuál es cuál en la propia pastilla para que la
+ *  diferencia no se lea como un error (Eduardo, 23-sep). */
+const GENERAL = "general";
+const AYUDA_GENERAL =
+  "Publicados, pendientes y listos. Los borradores de Crear Productos no cuentan aquí.";
+
 export default function MarketplaceTabs({ canales, activo, onSelect }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -66,7 +75,8 @@ export default function MarketplaceTabs({ canales, activo, onSelect }: Props) {
               </span>
             ) : c.total_productos !== null ? (
               <span
-                className="rounded-full px-2 py-0.5 text-[11px] font-bold"
+                title={c.id === GENERAL ? AYUDA_GENERAL : undefined}
+                className="whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-bold tabular-nums"
                 style={{
                   backgroundColor: seleccionado
                     ? "rgba(255,255,255,0.25)"
@@ -75,6 +85,9 @@ export default function MarketplaceTabs({ canales, activo, onSelect }: Props) {
                 }}
               >
                 {formatoTotal(c.total_productos)}
+                {c.id === GENERAL && (
+                  <span className="font-semibold opacity-80"> · sin borradores</span>
+                )}
               </span>
             ) : null}
           </button>

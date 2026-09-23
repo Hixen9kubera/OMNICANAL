@@ -1,7 +1,14 @@
 "use client";
 
-/* El STEPPER de etapas de /omnicanal: el camino del SKU, con la cifra de ESTA
-   pestaña y ESTA cuenta en cada paso.
+/* El STEPPER de /omnicanal: el FLUJO del SKU, de Recibido a Restock, con la
+   cifra de ESTA pestaña y ESTA cuenta en cada paso.
+
+   Opción 2 del lienzo (Eduardo, 23-sep): FLECHAS ENCADENADAS. Cada paso es una
+   flecha con su número que entra en la siguiente, para que se lea como un
+   camino y no como una fila de filtros sueltos. Dos cosas salen del camino a
+   propósito: «Todo el catálogo» —es la SALIDA del filtro, no un paso— y
+   «Costo validado», que corre en paralelo y lo dice debajo. «Listo para FULL o
+   DROP» ya no es parada: se quitó aquí y en el sello de la lista.
 
    Sustituye a los chips «Costo validado» y «Solo DROP OFF». Tres reglas que
    vienen del backend y no se recalculan aquí:
@@ -12,7 +19,7 @@
      ofrecería un filtro que el servidor no sabe aplicar. */
 
 import { useMemo } from "react";
-import { BadgeCheck, ChevronRight, Lock } from "lucide-react";
+import { BadgeCheck } from "lucide-react";
 
 import PanelHover from "@/components/PanelHover";
 import {
@@ -30,7 +37,7 @@ interface Props {
   onEtapa: (e: EtapaOmnicanal | null) => void;
   revisado: boolean;
   onRevisado: (v: boolean) => void;
-  /** El «Todas» del stepper. `null` cuando no se puede afirmar. */
+  /** La cifra de «Todo el catálogo». `null` cuando no se puede afirmar. */
   totalTodas: number | null;
   /** Hay búsqueda, SKUs, estados o categoría: las cifras ya no describen la
    *  lista de abajo. Se apagan en vez de mentir. */
@@ -51,7 +58,8 @@ const FUENTES: { k: "kubera" | "odoo" | "odoo_drop"; t: string }[] = [
   { k: "odoo_drop", t: "Odoo DROP" },
 ];
 
-/** La misma muestra del sello, a 12×8. El stepper es la leyenda de los colores. */
+/** La misma muestra del sello, a 12×8. La nota de cada paso la lleva junto al
+ *  título: es la leyenda de los colores del sello de la lista. */
 function MuestraChip({ m }: { m: Muestra }) {
   return (
     <svg
@@ -95,17 +103,9 @@ function Pildora({ texto, clase }: { texto: string; clase: string }) {
   );
 }
 
-function Chevron() {
-  return (
-    <span className="flex items-center px-px text-slate-300" aria-hidden="true">
-      <ChevronRight size={12} />
-    </span>
-  );
-}
-
 const ETIQUETA_NOTA = "text-[10px] font-semibold uppercase tracking-wide text-slate-400";
 
-/** La nota de una pestaña. Mismo molde que la nota de la regla de precios:
+/** La nota de un paso. Mismo molde que la nota de la regla de precios:
  *  título con su muestra de color, una frase, y las preguntas en dos columnas.
  *  `avisos` es lo que depende del momento (foto vencida, conteo caído, filtros
  *  encima) y va en ámbar para que no se lea como parte de la definición. */
@@ -155,67 +155,204 @@ function Nota({ clave, titulo, muestra, pildora, detalle, avisos }: {
   );
 }
 
-const CLASE_SEG =
-  "flex flex-col justify-center gap-px border-0 px-2.5 text-left transition-colors";
 const CLASE_ETIQUETA =
-  "flex items-center gap-1 whitespace-nowrap text-[10px] font-semibold uppercase leading-3 tracking-wide";
+  "flex items-center gap-1.5 whitespace-nowrap text-[10px] font-bold uppercase leading-3 tracking-wide";
 const CLASE_CIFRA =
   "flex items-center gap-1 whitespace-nowrap text-sm font-bold leading-4 tabular-nums";
+/** Los dos botones sueltos (Todo el catálogo y Costo validado): rectángulos
+ *  sin recorte, así que el anillo de foco de siempre sí se ve entero. */
+const CLASE_SUELTO =
+  "box-border flex h-10 shrink-0 flex-col justify-center gap-px rounded-lg border px-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 focus-visible:ring-offset-1";
 
-interface PropsSeg {
+/* ── Las flechas ─────────────────────────────────────────────────────────────
+   El recorte va en `clip-path` y no en un SVG de fondo: así el ÁREA DE CLIC es
+   la flecha misma, y la punta de un paso se puede pulsar aunque caiga dentro
+   de la caja de la siguiente (cada una se monta 10 px sobre la anterior para
+   que la punta entre en la muesca). Por la misma razón la envoltura de la nota
+   es `pointer-events-none`: su caja es rectangular y se comería esa punta.
+
+   Y el recorte NUNCA va en un ancestro de la nota: `clip-path` recorta también
+   a los descendientes `fixed`, y la nota se volvería invisible. Por eso en
+   Destino —que tiene dos botones, cada uno con su nota— la flecha es un fondo
+   aparte y los botones van encima, sin recortar. */
+type Forma = "primera" | "media" | "ultima";
+
+const PUNTA = 16;
+const CLIP: Record<Forma, string> = {
+  primera: `polygon(0 0, calc(100% - ${PUNTA}px) 0, 100% 50%, calc(100% - ${PUNTA}px) 100%, 0 100%)`,
+  media: `polygon(0 0, calc(100% - ${PUNTA}px) 0, 100% 50%, calc(100% - ${PUNTA}px) 100%, 0 100%, ${PUNTA}px 50%)`,
+  ultima: `polygon(0 0, 100% 0, 100% 100%, 0 100%, ${PUNTA}px 50%)`,
+};
+const RELLENO: Record<Forma, string> = {
+  primera: "rounded-l-lg pl-3 pr-[22px]",
+  media: "pl-[26px] pr-[22px]",
+  ultima: "rounded-r-lg pl-[26px] pr-3.5",
+};
+/** Cada flecha se monta sobre la siguiente: la punta entra en la muesca. */
+const MONTAJE: Record<Forma, string> = {
+  primera: "-mr-2.5",
+  media: "-mr-2.5",
+  ultima: "",
+};
+
+/** El tinte de cada paso: el tono de su muestra del sello, en claro. */
+const TINTE = {
+  recibido: "#e0f2fe",
+  bodega: "#d1fae5",
+  destino: "#e0e7ff",
+  restock: "#f1f5f9",
+} as const;
+const GRIS_POR_DEFINIR = "#94a3b8";
+const TEXTO_PASO = "#334155";
+const ETIQUETA_PASO = "#475569";
+
+/** El número del paso. Va `aria-hidden`: quien lee con lector oye «Paso N»
+ *  del texto oculto de al lado, no un «1» suelto pegado a la etiqueta. */
+function NumeroPaso({ n, fondo, texto }: { n: number; fondo: string; texto: string }) {
+  return (
+    <>
+      <span
+        aria-hidden="true"
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold leading-4"
+        style={{ backgroundColor: fondo, color: texto }}
+      >
+        {n}
+      </span>
+      <span className="sr-only">{`Paso ${n}: `}</span>
+    </>
+  );
+}
+
+/** El anillo de foco de una flecha. El `outline` lo corta el `clip-path` —en la
+ *  punta y en la muesca no se vería—, así que se dibuja ADENTRO, en la parte
+ *  recta de la flecha, con el color del texto para que se vea también sobre el
+ *  color del canal. */
+function FocoFlecha({ forma }: { forma: Forma }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-y-1 hidden rounded-md border-2 border-current group-focus-visible:block"
+      style={{
+        left: forma === "primera" ? 4 : PUNTA + 4,
+        right: forma === "ultima" ? 4 : PUNTA + 4,
+      }}
+    />
+  );
+}
+
+interface PropsFlecha {
+  forma: Forma;
+  paso: number;
   etiqueta: string;
-  muestra?: React.ReactNode;
+  tinte: string;
   cifraNodo: React.ReactNode;
   /** La nota al pasar el cursor: qué cuenta, de dónde sale y qué hace el clic. */
   nota: React.ReactNode;
   activo?: boolean;
   deshabilitado?: boolean;
+  /** Restock: el número va en gris, como su muestra punteada. */
+  porDefinir?: boolean;
   onClick?: () => void;
-  /** Fondo propio (bloqueado, por definir). El activo manda sobre él. */
-  fondo?: string;
-  texto?: string;
-  borde?: "izq" | "der";
   color: string;
   textoColor: string;
 }
 
-/** Un segmento del grupo. `activo` pinta el color del canal, como la pestaña. */
-function Seg({
-  etiqueta, muestra, cifraNodo, nota, activo, deshabilitado, onClick,
-  fondo, texto, borde, color, textoColor,
-}: PropsSeg) {
-  const estilo: React.CSSProperties = activo
-    ? { backgroundColor: color, color: textoColor, paddingLeft: 12, paddingRight: 12 }
-    : { backgroundColor: fondo ?? "#ffffff", color: texto ?? "#334155" };
-  // La nota va AFUERA del botón: un `title` nativo tarda en salir, pinta texto
-  // corrido y el equipo no lo encontraba. El panel sale al instante y trae las
-  // cuatro preguntas de cada pestaña.
+/** Un paso de una sola lista. `activo` pinta el color del canal, como la
+ *  pestaña; el número se invierte para seguir viéndose sobre él. */
+function Flecha({
+  forma, paso, etiqueta, tinte, cifraNodo, nota, activo, deshabilitado,
+  porDefinir, onClick, color, textoColor,
+}: PropsFlecha) {
+  const numero = activo
+    ? { fondo: textoColor, texto: color }
+    : porDefinir
+      ? { fondo: GRIS_POR_DEFINIR, texto: "#ffffff" }
+      : { fondo: color, texto: textoColor };
   return (
-    <PanelHover claro bloque envoltura="flex" ancho={340} alto={300} panel={nota}>
-    <button
-      type="button"
-      disabled={deshabilitado}
-      onClick={onClick}
-      aria-pressed={activo}
-      className={[
-        CLASE_SEG,
-        borde === "izq" ? "border-l border-slate-200" : "",
-        borde === "der" ? "border-r border-slate-200" : "",
-        deshabilitado ? "cursor-not-allowed" : "cursor-pointer hover:brightness-95",
-      ].join(" ")}
-      style={estilo}
+    <PanelHover
+      claro bloque ancho={340} alto={300} panel={nota}
+      envoltura={`pointer-events-none flex shrink-0 ${MONTAJE[forma]}`}
     >
-      <span
-        className={CLASE_ETIQUETA}
-        style={activo ? { color: textoColor, opacity: 0.8 } : { color: texto ?? "#94a3b8" }}
+      <button
+        type="button"
+        disabled={deshabilitado}
+        onClick={onClick}
+        aria-pressed={activo}
+        className={[
+          "group pointer-events-auto relative flex h-14 flex-col justify-center gap-1 border-0 text-left transition-[filter] focus-visible:outline-none",
+          RELLENO[forma],
+          deshabilitado ? "cursor-not-allowed" : "cursor-pointer hover:brightness-95",
+        ].join(" ")}
+        style={{
+          clipPath: CLIP[forma],
+          backgroundColor: activo ? color : tinte,
+          color: activo ? textoColor : TEXTO_PASO,
+        }}
       >
-        {muestra}
+        <FocoFlecha forma={forma} />
+        <span
+          className={CLASE_ETIQUETA}
+          style={activo ? { color: textoColor, opacity: 0.85 } : { color: ETIQUETA_PASO }}
+        >
+          <NumeroPaso n={paso} {...numero} />
+          {etiqueta}
+        </span>
+        <span className={CLASE_CIFRA} style={activo ? { fontWeight: 800 } : undefined}>
+          {cifraNodo}
+        </span>
+      </button>
+    </PanelHover>
+  );
+}
+
+interface PropsDestino {
+  etiqueta: string;
+  cifraTexto: string;
+  estiloCifra?: React.CSSProperties;
+  nota: React.ReactNode;
+  activo: boolean;
+  deshabilitado: boolean;
+  onClick: () => void;
+  color: string;
+  textoColor: string;
+}
+
+/** Uno de los dos destinos DENTRO de la flecha 3. Es un botón propio, con su
+ *  nota y su `aria-pressed`: son dos listas distintas y la flecha no elige. */
+function BotonDestino({
+  etiqueta, cifraTexto, estiloCifra, nota, activo, deshabilitado, onClick,
+  color, textoColor,
+}: PropsDestino) {
+  return (
+    <PanelHover
+      claro bloque ancho={340} alto={300} panel={nota}
+      envoltura="pointer-events-auto flex"
+    >
+      <button
+        type="button"
+        disabled={deshabilitado}
+        onClick={onClick}
+        aria-pressed={activo}
+        className={[
+          "flex items-baseline gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-xs font-semibold leading-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-1",
+          deshabilitado ? "cursor-not-allowed" : "cursor-pointer hover:bg-white/70",
+        ].join(" ")}
+        style={activo ? { backgroundColor: color, color: textoColor } : { color: TEXTO_PASO }}
+      >
         {etiqueta}
-      </span>
-      <span className={CLASE_CIFRA} style={activo ? { fontWeight: 800 } : undefined}>
-        {cifraNodo}
-      </span>
-    </button>
+        {/* `estiloCifra` va AL FINAL y gana también activo, igual que en la
+            Flecha: con filtros la cifra no describe la lista de abajo, y el
+            paso pulsado no la vuelve verdad. Se apaga en vez de mentir. */}
+        <span
+          className="text-sm font-bold tabular-nums"
+          style={{
+            ...(activo ? { color: textoColor, fontWeight: 800 } : { color: "#0f172a" }),
+            ...(estiloCifra ?? {}),
+          }}
+        >
+          {cifraTexto}
+        </span>
+      </button>
     </PanelHover>
   );
 }
@@ -234,9 +371,9 @@ export default function FlujoEtapas({
   // no falta. Es la misma distinción del resto de la barra.
   const pendiente = !conteos || conteos.estado === "calentando";
   const aprox = !!conteos?.unidad_aprox;
-  // «Todas» en General NO sale del conteo —ahí `total` viaja en null— sino del
-  // total de la propia lista, que es EXACTO y es el mismo número que enseña el
-  // hero. Marcarlo «≈» lo ponía a contradecir a la cifra grande de arriba.
+  // «Todo el catálogo» en General NO sale del conteo —ahí `total` viaja en
+  // null— sino del total de la propia lista, que es EXACTO y es el mismo número
+  // que enseña el hero. Marcarlo «≈» lo ponía a contradecir a la cifra grande.
   const aproxTodas = aprox && conteos?.total != null;
   // Shein se pinta con datos de ejemplo: no hay SKU real que cruzar, así que ni
   // el esqueleto ofrece En DROP ni el carril.
@@ -257,8 +394,8 @@ export default function FlujoEtapas({
   }
 
   /** Lo que depende del momento y la nota no puede decir de antemano. `fija`
-   *  = etapa bloqueada o por definir: el backend manda en `motivo` y `n_motivo`
-   *  el MISMO texto que la nota ya explica, y se repetía. */
+   *  = paso por definir: el backend manda en `motivo` y `n_motivo` el MISMO
+   *  texto que la nota ya explica, y se repetía. */
   function avisos(e: EtapaCanalFlujo | null, fija = false): string[] {
     const partes: string[] = [];
     if (!fija && e && (e.n === null || e.n === undefined)) {
@@ -271,8 +408,8 @@ export default function FlujoEtapas({
     return Array.from(new Set(partes.filter(Boolean)));
   }
 
-  /** Clic en la etapa activa = volver a Todas. Un segundo clic no puede dejar
-   *  la vista en el mismo sitio sin manera obvia de salir. */
+  /** Clic en el paso activo = volver a todo el catálogo. Un segundo clic no
+   *  puede dejar la vista en el mismo sitio sin manera obvia de salir. */
   function elegir(e: EtapaOmnicanal) {
     onEtapa(etapa === e ? null : e);
   }
@@ -282,7 +419,6 @@ export default function FlujoEtapas({
 
   const eRecibido = porClave.get("recibido") ?? null;
   const eBodega = porClave.get("bodega_3de4") ?? null;
-  const eListo = porClave.get("listo_envio") ?? null;
   // LA BODEGA DEL MARKETPLACE ES DE CADA CANAL. El backend manda en `etapas`
   // la que aplica —`en_full` en General y ML, `en_fba` en Amazon— y NINGUNA en
   // los canales que no tienen (TikTok y Temu despachan de nuestro almacén, y de
@@ -301,15 +437,6 @@ export default function FlujoEtapas({
     ? (claveMarketplace === "en_full" && canal === "general" ? "En FULL (ML)" : eMarketplace.titulo)
     : "";
 
-  const ayudaListo = [
-    eListo?.n_sin_specs != null
-      ? `Si specs no bloqueara, en esta cuenta: ${cifra(eListo.n_sin_specs, aprox)}.`
-      : "",
-    conteos?.catalogo?.recibido_y_3de4 != null
-      ? `En todo el catálogo: ${cifra(conteos.catalogo.recibido_y_3de4)}.`
-      : "",
-  ].filter(Boolean).join(" ");
-
   const ayudaRecibido = conteos?.catalogo?.recibido_fuera_de_odoo != null
     && conteos?.catalogo?.recibido != null
     ? `En todo el catálogo, ${cifra(conteos.catalogo.recibido_fuera_de_odoo)} de los `
@@ -317,7 +444,7 @@ export default function FlujoEtapas({
     : "";
 
   const tituloRotulo =
-    `Etapas del flujo por SKU: ${textoUnidad(conteos)}. `
+    `Flujo del SKU, de Recibido a Restock: ${textoUnidad(conteos)}. `
     + (conteos?.generado
       ? `Foto de las ${hora} (hora de CDMX); se rearma cada ${Math.round((conteos.ttl_s ?? 1800) / 60)} min.`
       : "La foto del flujo todavía no está lista.")
@@ -325,12 +452,14 @@ export default function FlujoEtapas({
       ? ` Este canal no sabe filtrar «${conteos.criterio}»: se contó con «${conteos.criterio_efectivo}».`
       : "");
 
+  const carrilDeshabilitado = conteos ? !carril?.clicable : !puedeFiltrar;
+
   return (
-    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-2">
       {/* Rótulo: qué se está contando y de cuándo es el dato. */}
-      <div title={tituloRotulo} className="flex flex-col justify-center gap-0.5">
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-          Etapa
+      <div title={tituloRotulo} className="flex shrink-0 flex-col justify-center gap-0.5">
+        <span className="whitespace-nowrap text-xs font-semibold uppercase tracking-wide text-slate-400">
+          Flujo del SKU
         </span>
         <span className="flex items-center gap-1.5 whitespace-nowrap text-[10px] leading-3 text-slate-400">
           <span className="flex items-center gap-[3px]">
@@ -369,34 +498,45 @@ export default function FlujoEtapas({
         </span>
       </div>
 
-      {/* El grupo mide ~900 px y la fila envuelve: el desplazamiento es SUYO,
-          para que a 400 px no se desplace la página entera. */}
+      {/* Todo el catálogo — siempre pulsable: es la SALIDA del filtro, no un
+          paso, y por eso vive fuera de las flechas. No se pinta con el color
+          del canal ni cuando no hay etapa puesta: ese color significa «hay un
+          filtro aplicado». */}
+      <PanelHover
+        claro bloque envoltura="flex shrink-0" ancho={340} alto={300}
+        panel={<Nota clave="todas" titulo="Todo el catálogo" avisos={avisos(null)} />}
+      >
+        <button
+          type="button"
+          onClick={() => onEtapa(null)}
+          className={`${CLASE_SUELTO} cursor-pointer border-slate-200 bg-white hover:brightness-95`}
+          style={{ color: TEXTO_PASO }}
+        >
+          <span className={CLASE_ETIQUETA} style={{ color: "#94a3b8" }}>
+            Todo el catálogo
+          </span>
+          <span className={CLASE_CIFRA}>
+            <span style={estiloCifra}>
+              {totalTodas === null ? (pendiente ? "…" : "—") : cifra(totalTodas, aproxTodas)}
+            </span>
+          </span>
+        </button>
+      </PanelHover>
+
+      {/* Las flechas miden ~800 px y la fila envuelve: el desplazamiento es
+          SUYO, para que a 400 px no se desplace la página entera. */}
       <div className="max-w-full overflow-x-auto">
         <div
           role="group"
-          aria-label="Etapa del flujo"
-          className="inline-flex h-[38px] items-stretch overflow-hidden rounded-lg border border-slate-200 bg-white"
+          aria-label="Pasos del flujo, de Recibido a Restock"
+          className="flex w-max items-center"
         >
-          {/* Todas — siempre pulsable: es la SALIDA del filtro, no una etapa.
-              Por eso no se pinta con el color del canal ni cuando no hay etapa
-              puesta: ese color significa «hay un filtro aplicado». */}
-          <Seg
+          <Flecha
             {...tema}
-            etiqueta="Todas"
-            cifraNodo={
-              <span style={estiloCifra}>
-                {totalTodas === null ? (pendiente ? "…" : "—") : cifra(totalTodas, aproxTodas)}
-              </span>
-            }
-            nota={<Nota clave="todas" titulo="Todas" avisos={avisos(null)} />}
-            onClick={() => onEtapa(null)}
-            borde="der"
-          />
-
-          <Seg
-            {...tema}
+            forma="primera"
+            paso={1}
             etiqueta="Recibido"
-            muestra={<MuestraChip m={MUESTRA_FLUJO.recibido} />}
+            tinte={TINTE.recibido}
             cifraNodo={
               <>
                 <span style={estiloCifra}>{numero(eRecibido)}</span>
@@ -416,12 +556,12 @@ export default function FlujoEtapas({
             onClick={() => elegir("recibido")}
           />
 
-          <Chevron />
-
-          <Seg
+          <Flecha
             {...tema}
+            forma="media"
+            paso={2}
             etiqueta="Validado bodega"
-            muestra={<MuestraBodega />}
+            tinte={TINTE.bodega}
             cifraNodo={
               <>
                 <span style={estiloCifra}>{numero(eBodega)}</span>
@@ -440,78 +580,71 @@ export default function FlujoEtapas({
             onClick={() => elegir("bodega_3de4")}
           />
 
-          <Chevron />
-
-          {/* Listo: 0 por construcción mientras la foto no evalúe specs. No se
-              deshabilita «porque no hay dato» — se deshabilita porque no hay
-              lista que filtrar, y el title lo dice. */}
-          <Seg
-            {...tema}
-            etiqueta="Listo para FULL o DROP"
-            muestra={<MuestraChip m={MUESTRA_FLUJO.listo} />}
-            cifraNodo={
-              <span className="flex items-center gap-1 text-xs font-bold leading-4">
-                <Lock size={12} /> bloqueado
-              </span>
-            }
-            nota={
-              <Nota
-                clave="listo_envio" titulo="Listo para FULL o DROP"
-                muestra={<MuestraChip m={MUESTRA_FLUJO.listo} />}
-                pildora={<Pildora texto="bloqueado" clase="bg-amber-50 text-amber-700 ring-1 ring-amber-200" />}
-                detalle={ayudaListo} avisos={avisos(eListo, true)}
-              />
-            }
-            deshabilitado
-            fondo="#fffbeb"
-            texto="#b45309"
-          />
-
-          <Chevron />
-
-          {claveMarketplace && eMarketplace && (
-            <Seg
-              {...tema}
-              etiqueta={etiquetaMarketplace}
-              muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />}
-              cifraNodo={<span style={estiloCifra}>{numero(eMarketplace)}</span>}
-              nota={
-                <Nota
-                  clave={claveMarketplace} titulo={etiquetaMarketplace}
-                  muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />} avisos={avisos(eMarketplace)}
-                />
-              }
-              activo={etapa === claveMarketplace}
-              deshabilitado={!clicable(eMarketplace, false)}
-              onClick={() => elegir(claveMarketplace)}
+          {/* 3 · Destino: DOS listas en una sola flecha, separadas por «o». No
+              son pasos seguidos sino los dos caminos de salida del SKU. */}
+          <div
+            role="group"
+            aria-label="Paso 3: Destino"
+            className={`pointer-events-none relative flex h-14 shrink-0 flex-col justify-center gap-0.5 ${RELLENO.media} ${MONTAJE.media}`}
+          >
+            <span
+              aria-hidden="true"
+              className="absolute inset-0"
+              style={{ clipPath: CLIP.media, backgroundColor: TINTE.destino }}
             />
-          )}
-
-          {/* En DROP no lleva chevron: es el OTRO destino, no el paso siguiente. */}
-          <Seg
-            {...tema}
-            etiqueta="En DROP"
-            muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />}
-            cifraNodo={<span style={estiloCifra}>{numero(eDrop)}</span>}
-            nota={
-              <Nota
-                clave="en_drop" titulo="En DROP"
-                muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />} avisos={avisos(eDrop)}
+            {/* El rótulo lo dice ya el `aria-label` del grupo: aquí se oculta
+                para que el lector no lo lea dos veces. */}
+            <span aria-hidden="true" className={`relative ${CLASE_ETIQUETA}`} style={{ color: ETIQUETA_PASO }}>
+              <NumeroPaso n={3} fondo={color} texto={textoColor} />
+              Destino
+            </span>
+            <span className="relative -ml-1.5 flex items-center gap-1">
+              {claveMarketplace && eMarketplace && (
+                <>
+                  <BotonDestino
+                    {...tema}
+                    etiqueta={etiquetaMarketplace}
+                    cifraTexto={numero(eMarketplace)}
+                    estiloCifra={estiloCifra}
+                    nota={
+                      <Nota
+                        clave={claveMarketplace} titulo={etiquetaMarketplace}
+                        muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />} avisos={avisos(eMarketplace)}
+                      />
+                    }
+                    activo={etapa === claveMarketplace}
+                    deshabilitado={!clicable(eMarketplace, false)}
+                    onClick={() => elegir(claveMarketplace)}
+                  />
+                  <span aria-hidden="true" className="text-[11px] font-semibold text-slate-400">o</span>
+                </>
+              )}
+              <BotonDestino
+                {...tema}
+                etiqueta="En DROP"
+                cifraTexto={numero(eDrop)}
+                estiloCifra={estiloCifra}
+                nota={
+                  <Nota
+                    clave="en_drop" titulo="En DROP"
+                    muestra={<MuestraChip m={MUESTRA_FLUJO.destino} />} avisos={avisos(eDrop)}
+                  />
+                }
+                activo={etapa === "en_drop"}
+                deshabilitado={!clicable(eDrop, puedeFiltrar)}
+                onClick={() => elegir("en_drop")}
               />
-            }
-            activo={etapa === "en_drop"}
-            deshabilitado={!clicable(eDrop, puedeFiltrar)}
-            onClick={() => elegir("en_drop")}
-            borde="izq"
-          />
+            </span>
+          </div>
 
-          <Chevron />
-
-          <Seg
+          <Flecha
             {...tema}
+            forma="ultima"
+            paso={4}
             etiqueta="Restock"
-            muestra={<MuestraChip m={MUESTRA_FLUJO.restock} />}
-            cifraNodo={<span className="text-xs font-semibold leading-4">por definir</span>}
+            tinte={TINTE.restock}
+            porDefinir
+            cifraNodo={<span className="text-xs font-semibold leading-4 text-slate-500">por definir</span>}
             nota={
               <Nota
                 clave="restock" titulo="Restock"
@@ -521,58 +654,61 @@ export default function FlujoEtapas({
               />
             }
             deshabilitado
-            fondo="#f8fafc"
-            texto="#94a3b8"
           />
         </div>
       </div>
 
-      {/* Costo validado va APARTE del grupo: corre en paralelo al camino, no es
-          un paso de él. Se suma con AND a la etapa. */}
-      <PanelHover
-        claro bloque envoltura="flex" ancho={340} alto={300}
-        panel={
-          <Nota
-            clave="costo_validado" titulo="Costo validado"
-            muestra={<BadgeCheck size={12} className="shrink-0" color="#059669" />}
-            pildora={<Pildora texto="aparte" clase="bg-slate-100 text-slate-500" />}
-            avisos={[
-              carril?.n_motivo ?? "",
-              carril?.vieja || vencida ? `Cifra de la foto de las ${hora}, vencida.` : "",
-              atenuarCarril ? NOTA_CARRIL : (atenuar ? NOTA_ATENUAR : ""),
-            ].filter(Boolean)}
-          />
-        }
-      >
-      <button
-        type="button"
-        disabled={conteos ? !carril?.clicable : !puedeFiltrar}
-        onClick={() => onRevisado(!revisado)}
-        aria-pressed={revisado}
-        className={[
-          "box-border flex h-[38px] flex-col justify-center gap-px rounded-lg border px-2.5 text-left transition-colors",
-          revisado ? "border-transparent" : "border-slate-200 bg-white",
-          (conteos ? !carril?.clicable : !puedeFiltrar) ? "cursor-not-allowed" : "cursor-pointer hover:brightness-95",
-        ].join(" ")}
-        style={revisado ? { backgroundColor: color, color: textoColor } : { color: "#334155" }}
-      >
-        <span
-          className={CLASE_ETIQUETA}
-          style={revisado ? { color: textoColor, opacity: 0.8 } : { color: "#94a3b8" }}
+      {/* Costo validado va APARTE de las flechas: corre en paralelo al camino,
+          no es un paso de él, y lo dice debajo. Se suma con AND a la etapa. */}
+      <div className="flex shrink-0 flex-col gap-0.5">
+        <PanelHover
+          claro bloque envoltura="flex" ancho={340} alto={300}
+          panel={
+            <Nota
+              clave="costo_validado" titulo="Costo validado"
+              muestra={<BadgeCheck size={12} className="shrink-0" color="#059669" />}
+              pildora={<Pildora texto="aparte" clase="bg-slate-100 text-slate-500" />}
+              avisos={[
+                carril?.n_motivo ?? "",
+                carril?.vieja || vencida ? `Cifra de la foto de las ${hora}, vencida.` : "",
+                atenuarCarril ? NOTA_CARRIL : (atenuar ? NOTA_ATENUAR : ""),
+              ].filter(Boolean)}
+            />
+          }
         >
-          <BadgeCheck size={12} className="shrink-0" color={revisado ? textoColor : "#059669"} />
-          Costo validado
+          <button
+            type="button"
+            disabled={carrilDeshabilitado}
+            onClick={() => onRevisado(!revisado)}
+            aria-pressed={revisado}
+            className={[
+              CLASE_SUELTO,
+              revisado ? "border-transparent" : "border-slate-200 bg-white",
+              carrilDeshabilitado ? "cursor-not-allowed" : "cursor-pointer hover:brightness-95",
+            ].join(" ")}
+            style={revisado ? { backgroundColor: color, color: textoColor } : { color: TEXTO_PASO }}
+          >
+            <span
+              className={CLASE_ETIQUETA}
+              style={revisado ? { color: textoColor, opacity: 0.8 } : { color: "#94a3b8" }}
+            >
+              <BadgeCheck size={12} className="shrink-0" color={revisado ? textoColor : "#059669"} />
+              Costo validado
+            </span>
+            <span className={CLASE_CIFRA}>
+              <span style={atenuarCarril || atenuar ? { color: revisado ? textoColor : "#94a3b8" } : undefined}>
+                {carril?.n === null || carril?.n === undefined
+                  ? (pendiente ? "…" : "—")
+                  : cifra(carril.n, aprox)}
+              </span>
+              <Pildora texto="aparte" clase="bg-slate-100 text-slate-500" />
+            </span>
+          </button>
+        </PanelHover>
+        <span className="whitespace-nowrap text-[10px] leading-3 text-slate-400">
+          carril aparte · no es un paso
         </span>
-        <span className={CLASE_CIFRA}>
-          <span style={atenuarCarril || atenuar ? { color: revisado ? textoColor : "#94a3b8" } : undefined}>
-            {carril?.n === null || carril?.n === undefined
-              ? (pendiente ? "…" : "—")
-              : cifra(carril.n, aprox)}
-          </span>
-          <Pildora texto="aparte" clase="bg-slate-100 text-slate-500" />
-        </span>
-      </button>
-      </PanelHover>
+      </div>
     </div>
   );
 }

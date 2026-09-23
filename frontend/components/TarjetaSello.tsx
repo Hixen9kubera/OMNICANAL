@@ -27,8 +27,8 @@
    · LO QUE NO SE GUARDA SE ESCRIBE. Cada tramo lleva «De dónde sale» y «No se
      guarda» porque el hueco es el hallazgo: el conteo de cajas en piso es el que
      MANDA y no existe en ningún sistema, esta foto todavía no evalúa specs
-     —la matriz existe desde v0.540.0, el flujo aún no la lee— y por eso Listo
-     da 0 en todo el catálogo, y la validación de bodega no la firma nadie
+     —la matriz existe desde v0.540.0, el flujo aún no la lee— y por eso 4 de
+     4 da 0 en todo el catálogo, y la validación de bodega no la firma nadie
      — se deduce de Odoo. Un `null` aquí nunca se pinta como 0. */
 
 import Link from "next/link";
@@ -578,7 +578,7 @@ function TramoBodega({
               <>
                 Foto de Odoo de las {horaCdmx(b.generado)} h: stock.quant,
                 qty_available / free_qty, image_256. Specs no tiene fuente, y por eso
-                4 de 4 —y Listo— dan 0 en todo el catálogo.
+                4 de 4 da 0 en todo el catálogo.
               </>
             }
             noSeGuarda={
@@ -720,7 +720,7 @@ function Destino({
  *  ningún campo: es una decisión que nadie ha tomado todavía. */
 const PORQUE_FALTA: Record<string, string> = {
   specs: "matriz por categoría: falta definir el formato del Excel y cómo llega. "
-    + "Sin eso, «Listo para FULL o DROP» sigue bloqueado para todo el catálogo.",
+    + "Sin eso, ningún SKU del catálogo llega a 4 de 4 en Validado bodega.",
 };
 
 function TramoFalta({ sello, fila }: { sello: SelloFlujo; fila: FilaInventario | null }) {
@@ -734,12 +734,13 @@ function TramoFalta({ sello, fila }: { sello: SelloFlujo; fila: FilaInventario |
       </span>
       {sello.etapa === "padre" ? (
         <p className="text-[11px] leading-[15px] text-slate-500">
-          Un padre no tiene camino propio a Listo: le falta lo que les falte a sus
+          Un padre no tiene camino propio: le falta lo que les falte a sus
           variantes, y cada una lo dice en su propia fila.
         </p>
       ) : sello.le_falta.length === 0 ? (
         <p className="text-[11px] leading-[15px] text-slate-500">
-          Nada en el camino a Listo. El destino, el costo y el restock corren aparte.
+          Nada de Recibido ni de Validado bodega. El destino, el costo y el
+          restock corren aparte.
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
@@ -809,7 +810,7 @@ export function TarjetaSello({
   sello: SelloFlujo;
   sku: string;
   nombre: string;
-  /** La pista de 5 cuadros, ya dibujada. Llega como prop y no importada de
+  /** La pista del sello, ya dibujada. Llega como prop y no importada de
    *  SelloFlujo.tsx: ese módulo importa ÉSTE, y el ciclo lo pagaríamos con un
    *  `undefined` en tiempo de carga. */
   pista: React.ReactNode;

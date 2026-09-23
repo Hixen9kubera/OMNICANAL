@@ -266,6 +266,12 @@ export interface CanalInfo {
   origen: string;
   descripcion: string;
   total_productos: number | null;
+  /** Solo en `general`: el total de la vista «omnicanal» (todos los estados,
+   *  borradores incluidos), el mismo número que la cifra grande de /omnicanal
+   *  sin filtros. `total_productos` sigue siendo SIN borradores; la resta es
+   *  lo que el encabezado dice como «incluye N borradores». `null` o ausente
+   *  en los demás canales, o cuando Woo no contestó: nunca se pinta como 0. */
+  total_catalogo?: number | null;
   subcuentas: SubCuentaInfo[];
 }
 
@@ -2310,9 +2316,11 @@ export interface FuenteFlujo {
    producto no lo cumpla.
    ───────────────────────────────────────────────────────────────────────── */
 
-/** Las cuatro etapas que el backend sabe convertir en lista (`etapa=`).
- *  `validado_bodega`, `listo_envio` y `restock` están vacías por construcción:
- *  se pintan, no se filtran. */
+/** Las etapas que el backend sabe convertir en lista (`etapa=`).
+ *  `validado_bodega` y `restock` están vacías por construcción: se pintan, no
+ *  se filtran. `listo_envio` el backend la sigue mandando en `etapas`, pero la
+ *  pantalla ya no la pinta (Eduardo, 23-sep: el flujo va de Recibido a
+ *  Restock sin esa parada). */
 export type EtapaOmnicanal =
   | "recibido" | "bodega_3de4" | "en_full" | "en_fba" | "en_drop";
 
@@ -2322,7 +2330,9 @@ export type EtapaOmnicanal =
 export type EstadoCuadroFlujo = "listo" | "falta" | "espera" | "na" | "sin_dato";
 
 /** La etapa que gana en el sello, en el orden del backend. `ninguna` solo se
- *  emite con las tres fuentes utilizables; si alguna cayó, es `sin_dato`. */
+ *  emite con las tres fuentes utilizables; si alguna cayó, es `sin_dato`.
+ *  `listo_envio` sigue en el contrato aunque la pantalla ya no tenga esa
+ *  parada: exige 4 de 4 y specs no se evalúa, así que hoy ningún SKU llega. */
 export type EtapaSello =
   | "padre" | "en_full_y_drop" | "en_full" | "en_fba" | "en_drop" | "listo_envio"
   | "validado_bodega" | "bodega_3de4" | "recibido" | "sin_validar" | "ninguna"
@@ -2347,11 +2357,12 @@ export interface SelloFlujo {
    *  « · destino sin dato» cuando toca. El frontend no lo recompone. */
   etapa_texto: string;
   /** El SKU está en la lista de la pestaña Inventario, la única con validación
-   *  real. Fuera de ella, Recibido, bodega y Listo van en `na` y `le_falta`
+   *  real. Fuera de ella, Recibido y bodega van en `na` y `le_falta`
    *  llega VACÍA — que ahí no significa «ya está listo», significa que nadie lo
    *  puso a validar. Es `en_piloto` quien manda, no la lista vacía. */
   en_piloto: boolean;
-  /** Camino a Listo. Nunca menciona destino, costo ni restock. */
+  /** Lo que le falta de Recibido y de Validado bodega (4 de 4). Nunca
+   *  menciona destino, costo ni restock. */
   le_falta: string[];
   en_catalogo: boolean | null;
   pasos: {
@@ -2383,7 +2394,6 @@ export interface SelloFlujo {
       vieja: boolean;
       generado: string | null;
     };
-    listo: { estado: "bloqueado" | "si" | "no" | "sin_dato" | "na" };
     destino: {
       full: boolean | null;
       drop: boolean | null;
@@ -2433,8 +2443,6 @@ export interface EtapaCanalFlujo {
   motivo?: string | null;
   /** Por qué `n` es `null` aunque la etapa sí se pueda abrir. */
   n_motivo?: string | null;
-  /** Solo `listo_envio`: lo que habría si specs no bloqueara. */
-  n_sin_specs?: number | null;
   /** Solo el carril: con qué parámetro se pide (`revisado`). */
   param?: string;
 }
@@ -2461,7 +2469,7 @@ export interface ConteoCanalFlujo {
   edad_s: number | null;
   ttl_s: number;
   fuentes: Record<"kubera" | "odoo" | "odoo_drop" | "canales", FuenteConteoFlujo>;
-  /** El «Todas» del stepper. `null` en General: ahí la unidad no cuadra con la
+  /** El «Todo el catálogo» del stepper. `null` en General: ahí la unidad no cuadra con la
    *  paginación y se prefiere el total de la propia lista. */
   total: number | null;
   etapas: EtapaCanalFlujo[];
@@ -2470,7 +2478,6 @@ export interface ConteoCanalFlujo {
   catalogo: {
     recibido: number | null;
     recibido_fuera_de_odoo: number | null;
-    recibido_y_3de4: number | null;
   };
 }
 

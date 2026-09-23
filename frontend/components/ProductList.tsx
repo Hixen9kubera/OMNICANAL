@@ -123,7 +123,7 @@ export default function ProductList({
             <th className="px-4 py-3 font-semibold">Producto</th>
             {flujoVisible && (
               <th
-                title="Etapa del SKU según la foto del flujo. Recibido, 4 cuadros de bodega, Listo, En FULL o DROP, Restock."
+                title="Etapa del SKU según la foto del flujo. Recibido, 4 cuadros de bodega, Destino (FULL o DROP), Restock."
                 className="w-[330px] px-3 py-3 font-semibold"
               >
                 Flujo

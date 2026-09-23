@@ -1,6 +1,11 @@
 "use client";
 
-/* El SELLO: los cinco pasos del flujo de un SKU en 109×10 px.
+/* El SELLO: los cuatro pasos del flujo de un SKU en 89×10 px —Recibido, los
+   cuatro cuadros de Validado bodega, Destino y Restock—, los mismos cuatro que
+   las flechas del stepper. «Listo para FULL o DROP» salió del flujo el 23-sep
+   (Eduardo): el cuadro se quitó aquí también para que el sello no enseñe una
+   parada que el stepper ya no tiene.
+
    Se pinta igual en la Lista y en el Mosaico porque es la MISMA lectura, y con
    las mismas muestras que el stepper para que el filtro sirva de leyenda.
 
@@ -48,7 +53,8 @@ function Cuadro({ m, x, w, rx, opacidad }: {
   );
 }
 
-/** La pista de 5 pasos. Geometría fija de la maqueta: no se reescala. */
+/** La pista de 4 pasos. Geometría fija de la maqueta: no se reescala; sin el
+ *  cuadro de Listo, Destino y Restock se recorren 20 px a la izquierda. */
 export function SelloPista({ sello }: { sello: SelloFlujo }) {
   const p = sello.pasos;
   const padre = sello.etapa === "padre";
@@ -64,11 +70,6 @@ export function SelloPista({ sello }: { sello: SelloFlujo }) {
       : p.recibido.estado === "si" ? MUESTRA_FLUJO.recibido
         : MUESTRA_FLUJO.falta;
 
-  const listo =
-    p.listo.estado === "si" ? MUESTRA_FLUJO.bodega
-      : p.listo.estado === "sin_dato" ? MUESTRA_FLUJO.sin_dato
-        : MUESTRA_FLUJO.listo;
-
   const destino =
     p.destino.sin_dato ? MUESTRA_FLUJO.sin_dato
       : (p.destino.full || p.destino.drop) ? MUESTRA_FLUJO.destino
@@ -81,7 +82,7 @@ export function SelloPista({ sello }: { sello: SelloFlujo }) {
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      width="109" height="10" viewBox="0 0 109 10" fill="none"
+      width="89" height="10" viewBox="0 0 89 10" fill="none"
       className="shrink-0"
       aria-hidden="true"
     >
@@ -93,9 +94,8 @@ export function SelloPista({ sello }: { sello: SelloFlujo }) {
           x={X_CUADRO[i]} w={5} rx={1.5} opacidad={tenue}
         />
       ))}
-      <Cuadro m={listo} x={53.5} w={15} rx={2} />
-      <Cuadro m={destino} x={73.5} w={15} rx={2} />
-      <Cuadro m={MUESTRA_FLUJO.restock} x={93.5} w={15} rx={2} />
+      <Cuadro m={destino} x={53.5} w={15} rx={2} />
+      <Cuadro m={MUESTRA_FLUJO.restock} x={73.5} w={15} rx={2} />
     </svg>
   );
 }

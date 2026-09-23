@@ -20,7 +20,8 @@ import type {
 /* ── Paleta ────────────────────────────────────────────────────────────────
    Sólida, no los tintes de tarjeta de /inventario (sky-50, indigo-50…): en un
    cuadro de 5×9 px un tinte claro se lee como vacío. Es la misma muestra que
-   lleva cada segmento del stepper. */
+   lleva la nota de cada paso del stepper; las flechas usan el tinte claro del
+   mismo tono (cielo, esmeralda, índigo, gris), que ahí sí se lee. */
 export interface Muestra {
   fill: string;
   stroke: string;
@@ -31,7 +32,6 @@ export const MUESTRA_FLUJO = {
   recibido: { fill: "#38bdf8", stroke: "#38bdf8" },
   bodega: { fill: "#10b981", stroke: "#10b981" },
   specs: { fill: "#fde68a", stroke: "#fcd34d" },
-  listo: { fill: "#fffbeb", stroke: "#f59e0b", dash: "2 1.5" },
   destino: { fill: "#6366f1", stroke: "#6366f1" },
   restock: { fill: "none", stroke: "#94a3b8", dash: "1.5 1.5" },
   /** Blanco con trazo gris: el producto NO lo cumple. */
@@ -123,7 +123,7 @@ function enumerar(partes: string[]): string {
 }
 
 /**
- * El `title` del sello: los cinco pasos en una línea, con el mismo orden y el
+ * El `title` del sello: los cuatro pasos en una línea, con el mismo orden y el
  * mismo vocabulario que los cuadros. Es lo único que explica POR QUÉ un SKU
  * cayó en su etapa, así que no se recorta.
  *
@@ -182,14 +182,7 @@ export function tituloSello(
     partes.push(`Odoo lo escribe ${b.codigo_odoo}`);
   }
 
-  // 3. Listo para FULL o DROP.
-  const listo: Record<string, string> = {
-    bloqueado: "bloqueado", si: "sí", no: "no",
-    sin_dato: "sin dato", na: "no aplica",
-  };
-  partes.push(`Listo: ${listo[p.listo.estado] ?? p.listo.estado}`);
-
-  // 4. Destino. Las cuentas solo se nombran si la fuente de canales contestó:
+  // 3. Destino. Las cuentas solo se nombran si la fuente de canales contestó:
   // una lista vacía sería «ninguna cuenta», que es otra afirmación.
   const d = p.destino;
   const etiquetas = opciones?.etiquetas ?? {};
@@ -203,7 +196,7 @@ export function tituloSello(
   else partes.push("En FULL o DROP: sin dato");
   if (d.sin_dato) partes.push("destino sin dato");
 
-  // 5. Restock.
+  // 4. Restock.
   partes.push("Restock: por definir");
 
   // La hora manda: un sello vencido sigue siendo útil, pero hay que decirlo.
@@ -308,12 +301,6 @@ export const NOTA_ETAPA: Record<string, NotaEtapa> = {
       + "specs: la matriz por categoría ya existe y la ficha del producto sí la "
       + "usa, pero el flujo todavía no la lee. Y los SKUs fuera de la lista de "
       + "Inventario no se cuentan aquí aunque Odoo tenga sus datos.",
-  },
-  listo_envio: {
-    que: "De los SKUs de la pestaña Inventario, los listos para mandarse a FULL "
-      + "o DROP: Recibido y Validado bodega 4 de 4. El costo no cuenta.",
-    fuente: "Cruce de costos validados (kubera) con la foto de Odoo.",
-    clic: "No filtra: está bloqueado mientras esta foto no evalúe specs.",
   },
   en_fba: {
     que: "SKUs con stock en FBA, la bodega de Amazon.",

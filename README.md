@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.551.0 — El flujo del SKU se lee como flujo, sin «Listo para FULL o DROP», y la pestaña General dice que no cuenta borradores
+
+Pedido de Eduardo (23-sep-2026), tres cambios en Omnicanal. El diseño se eligió
+en el lienzo «Flujo del SKU más claro» (opción 2, flechas encadenadas).
+
+**1. La diferencia entre 3,035 y 7,288, a la vista.** Los dos números cuentan el
+mismo catálogo de Woo con reglas distintas: la pestaña General cuenta la vista
+«productos» (publicados, pendientes y listos) y la cifra grande y «Todo el
+catálogo» cuentan todos los estados. Medido en producción: 1,996 publicados +
+914 pendientes + 128 listos = 3,038 (3,035 en vivo), más 4,250 borradores =
+7,288. Las variantes no cuentan en ninguno (van dentro de su padre).
+- La pestaña dice «3,035 · sin borradores», con la explicación al pasar el
+  cursor.
+- La cifra grande de General, sin filtros, agrega «incluye N borradores». N es
+  la resta de los dos totales, así que siempre cuadra en pantalla; con
+  cualquier filtro puesto la línea no sale.
+- `GET /api/canales` agrega `total_catalogo` a General: el mismo listado que
+  pinta la cifra grande (`vista="omnicanal"`), leído en paralelo con
+  `total_productos`, que no cambia. Si uno falla, ese queda en null y el otro
+  sigue.
+- De paso, las siete lecturas síncronas de `routers/canales.py` (contadores de
+  ML, Amazon, TikTok, Temu y Walmart, y `leer_inventario`) van en
+  `asyncio.to_thread` (regla 11): cada `GET /api/canales` detenía el backend
+  entero mientras respondían.
+
+**2. Sin «Listo para FULL o DROP».** Sale del stepper, de su nota, y del sello
+de las tarjetas y de la lista (de 5 a 4 cuadros). La API del flujo no cambia:
+la etapa se sigue calculando, simplemente no se pinta.
+
+**3. Recibido → Restock se lee como flujo.** El stepper ahora son flechas
+encadenadas y numeradas: 1 Recibido · 2 Validado bodega · 3 Destino · 4
+Restock. En Destino van juntos «En FULL (ML)» (o «En FBA», según el canal) **o**
+«En DROP»: son dos destinos del mismo paso, y la flecha que antes los ponía uno
+tras otro decía lo contrario. «Todas» sale del grupo como «Todo el catálogo»,
+porque es quitar el filtro, no un paso; «Costo validado» sigue aparte con la
+leyenda «carril aparte · no es un paso». Se conserva todo lo de antes: el paso
+activo con el color del canal, clic en el activo para volver, notas al pasar
+el cursor, «aprox.», avisos de foto vencida y el desplazamiento propio en
+pantallas angostas.
+
+**Verificado en el sandbox:** en Mercado Libre, Recibido filtra 5, En FULL 438
+(la misma cifra de su flecha) y un segundo clic regresa a los 2,641; a 375 px la
+página no se desplaza a lo ancho. En General (el sandbox no tiene Woo, así que
+los totales se simularon con las cifras medidas): «3,035 · sin borradores» y
+«7,288 · incluye N borradores», que desaparece con un filtro puesto. Backend
+407 pruebas OK (+10 en `tests/test_canales_totales.py`); `tsc` limpio.
+
 ### v0.550.0 — "Esta orden viaja en la misma caja que…": el envío combinado, escrito en la orden de venta
 
 Brandon, 23-sep: *"¿hay forma de poner una nota a las órdenes con guías

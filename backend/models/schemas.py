@@ -283,6 +283,11 @@ class CanalInfo(BaseModel):
     origen: str
     descripcion: str
     total_productos: int | None = None  # conteo (cuando se solicita)
+    # Solo General: el catálogo COMPLETO (vista «omnicanal», borradores
+    # incluidos) — el número del encabezado de Omnicanal. `total_productos` de
+    # General es sin borradores (vista «productos»). None en los demás canales
+    # o si la lectura falló. Ver routers/canales.listar_canales.
+    total_catalogo: int | None = None
     subcuentas: list[SubCuentaInfo] = Field(default_factory=list)
 
 

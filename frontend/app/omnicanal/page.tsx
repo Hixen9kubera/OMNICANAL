@@ -248,6 +248,32 @@ export default function OmnicanalPage() {
   // Qué vista produjo un total. En General la cuenta siempre es null.
   const llaveVista = `${canal}|${esGeneral ? "" : cuenta ?? ""}|${criterio}`;
 
+  // «incluye N borradores» (Eduardo, 23-sep). La cifra grande de General SIN
+  // filtros sale de la vista «omnicanal» de Woo —todos los estados— y la
+  // pestaña General, de la vista «productos», sin borradores: 7,288 contra
+  // 3,035 se leía como un error. /api/canales manda los dos totales y la resta
+  // es la diferencia. Solo se afirma cuando la cifra grande ES el total del
+  // catálogo: General, sin ningún filtro, la lista que se ve salió de esta
+  // misma vista sin filtrar (el ref que ya alimenta a «Todo el catálogo») Y
+  // esa cifra es exactamente el `total_catalogo` con el que se hizo la resta.
+  // La lista se relee en cada carga y /api/canales no: si el catálogo se movió
+  // a media sesión, 7,295 − 4,253 ya no cuadra con la pestaña. Mientras no
+  // cuadren se calla y se vuelven a pedir los canales (efecto de abajo). Si
+  // falta un total no se inventa.
+  const borradores = (() => {
+    const cat = canalActivo?.total_catalogo;
+    const pub = canalActivo?.total_productos;
+    if (!esGeneral || typeof cat !== "number" || typeof pub !== "number") return null;
+    const sinFiltros = !etapa && !revisado && !busqueda && !skusFiltro
+      && !estados.length && !categoria;
+    const limpio = totalTodasRef.current;
+    if (!sinFiltros || errorFiltro || preparando) return null;
+    if (limpio?.llave !== llaveVista || limpio.total !== pag.total) return null;
+    if (pag.total !== cat) return null;
+    const n = cat - pub;
+    return n >= 0 ? n : null;
+  })();
+
   // ── Las DOS lecturas de `filtro_activas` ────────────────────────────
   // Se separan a propósito: pintarlas igual es exactamente el error que el
   // bloque existe para evitar.
@@ -290,15 +316,43 @@ export default function OmnicanalPage() {
     [canalActivo],
   );
 
-  // ── Carga inicial de canales ────────────────────────────────────────
-  useEffect(() => {
+  // ── Canales (pestañas y los dos totales de General) ─────────────────
+  // Se leen al montar, al Recargar y cuando la cifra grande deja de cuadrar con
+  // `total_catalogo`. Si dos lecturas se cruzan gana la última PEDIDA, no la
+  // última en llegar. Solo la inicial vacía las pestañas si falla: una relectura
+  // fallida deja las que ya había.
+  const canalesSeq = useRef(0);
+  const leerCanales = useCallback((inicial: boolean) => {
+    const n = ++canalesSeq.current;
     listarCanales()
-      .then(setCanales)
-      .catch(() => setCanales([]));
+      .then((c) => { if (n === canalesSeq.current) setCanales(c); })
+      .catch(() => { if (inicial && n === canalesSeq.current) setCanales([]); });
+  }, []);
+
+  useEffect(() => {
+    leerCanales(true);
     listarCategorias()
       .then(setCategorias)
       .catch(() => setCategorias([]));
-  }, []);
+  }, [leerCanales]);
+
+  // La lista se relee en cada carga (paginar, ordenar, Recargar) y trae el
+  // total fresco; /api/canales no. Si una carga SIN filtros de General trae un
+  // total distinto de `total_catalogo`, el catálogo cambió en la sesión
+  // (borradores nuevos, uno publicado…) y se piden otra vez los canales para
+  // que pestaña, cifra grande y «incluye N» se muevan juntos. Una vez por cada
+  // total distinto: si el backend todavía responde el viejo (caché del
+  // índice), no se insiste en bucle y «incluye N» sigue callado.
+  const catalogoPedidoPara = useRef<number | null>(null);
+  useEffect(() => {
+    const cat = canalActivo?.total_catalogo;
+    const limpio = totalTodasRef.current;
+    if (!esGeneral || typeof cat !== "number") return;
+    if (limpio?.llave !== llaveVista || limpio.total !== pag.total) return;
+    if (limpio.total === cat || catalogoPedidoPara.current === limpio.total) return;
+    catalogoPedidoPara.current = limpio.total;
+    leerCanales(false);
+  }, [esGeneral, canalActivo, llaveVista, pag.total, leerCanales]);
 
   // ── Debounce de búsqueda ────────────────────────────────────────────
   useEffect(() => {
@@ -627,6 +681,15 @@ export default function OmnicanalPage() {
               <div className="text-xs font-semibold uppercase tracking-wide opacity-80">
                 {esGeneral ? "productos" : "publicaciones"}
               </div>
+              {borradores !== null && (
+                <div
+                  className="mt-0.5 text-xs font-semibold tabular-nums opacity-85"
+                  title="Borradores de Crear Productos: cuentan en esta cifra y en «Todo el catálogo», pero no en la pestaña General, que cuenta publicados, pendientes y listos."
+                >
+                  incluye {new Intl.NumberFormat("es-MX").format(borradores)}{" "}
+                  {borradores === 1 ? "borrador" : "borradores"}
+                </div>
+              )}
             </div>
           </div>
           {/* Decoración */}
@@ -772,8 +835,11 @@ export default function OmnicanalPage() {
               onClick={() => {
                 // Se suben los contadores en vez de llamar a `cargar`: la carga
                 // tiene UNA sola vía, la del efecto, que aborta la anterior.
+                // Los canales también: si se publicó un borrador, la cifra
+                // grande no se mueve pero la pestaña y «incluye N» sí.
                 setRecargaLista((n) => n + 1);
                 setRecargaConteos((n) => n + 1);
+                leerCanales(false);
               }}
               title="Recargar"
               className="flex items-center justify-center rounded-lg border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:bg-slate-50"
