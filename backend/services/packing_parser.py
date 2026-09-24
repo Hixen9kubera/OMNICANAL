@@ -179,14 +179,25 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
         # Por CONTENIDO y no por igualdad exacta: el packing list de
         # TLLU8977270 trae "西语名称\nDESCRIPCION EN ESPAÑOL" y se rechazaba
         # entero por no decir "descripcion" a secas (Eduardo, 8-sep-2026).
-        if ("英文" in hl or "english" in hl or "description of goods" in hl
+        # "material_chino" / "uso_chino" también dicen "chino" y NO son el
+        # nombre del producto: sin esta exclusión, 027F655823 tomaba
+        # "高密度板/MDF" como descripción de sus 45 renglones.
+        es_chino = (("中文" in hl or "chino" in hl or "chinese" in hl)
+                    and not any(k in hl for k in ("material", "uso", "用途",
+                                                  "funcion", "función",
+                                                  "marca", "modelo")))
+        if (hl in ("producto", "producto_ingles", "producto_inglés",
+                   "nombre_producto", "descripcion_producto")
+                or "英文" in hl or "english" in hl or "description of goods" in hl
                 or hl in ("des.", "description", "descripcion", "descripción")
                 or "descripcion" in hl or "descripción" in hl or "description" in hl
                 or "西语名称" in hl or "品名" in hl):
             cm.setdefault("producto", i)
-        elif "producto" not in cm and ("中文" in hl or "chino" in hl):
+            if not es_chino:
+                cm.setdefault("producto_no_chn", i)
+        elif "producto" not in cm and es_chino:
             cm["producto"] = i
-        if "中文" in hl or "chino" in hl:
+        if es_chino:
             cm.setdefault("producto_chn", i)
 
         # Cantidades
@@ -251,11 +262,28 @@ def mapear_columnas(header: list[Any]) -> dict[str, int]:
             cm.setdefault("valor_total", i)
 
         # Peso
-        if any(k in hl for k in ("总毛重", "gross weight", "毛重", "g.w")):
+        if any(k in hl for k in ("总毛重", "gross weight", "毛重", "g.w",
+                                 "peso bruto", "peso_bruto")):
             cm.setdefault("peso_bruto", i)
-        elif any(k in hl for k in ("总净重", "net weight", "净重", "n.w")) \
+        elif any(k in hl for k in ("总净重", "net weight", "净重", "n.w",
+                                   "peso neto", "peso_neto")) \
                 and "peso_bruto" not in cm:
             cm["peso_bruto"] = i
+        # Tercer nivel: el proveedor da el peso TOTAL del renglón sin decir
+        # "bruto" ni "neto" (HPCU4441843: "货箱重量总/total kg(KG)"). Sin esto la
+        # columna no se detectaba y TODO el archivo salía con peso 0, en
+        # silencio: no había aviso que lo dijera.
+        elif (any(k in hl for k in ("货箱重量总", "total kg", "peso total", "总重量"))
+                and "peso_bruto" not in cm):
+            cm["peso_bruto"] = i
+
+    # "品名" (nombre de producto) lo dicen TANTO la columna china como la
+    # inglesa, y la china suele ir PRIMERO: con setdefault, `producto` se
+    # quedaba con el chino y el empate por texto nunca veía el nombre en inglés
+    # (HPCU4441843 trae 产品中文品名 en A y 产品英文品名 en B; el resolver mostraba
+    # "过滤器" y jamás "filter"). Si hubo una columna que NO es la china, manda.
+    if "producto_no_chn" in cm:
+        cm["producto"] = cm.pop("producto_no_chn")
     return cm
 
 
@@ -360,6 +388,11 @@ def leer(xlsx_bytes: bytes, columna_imagen: int | None = None) -> dict[str, Any]
     if "piezas_total" not in cm:
         avisos.append("No se detectó columna de piezas totales; las cantidades "
                       "quedan en 0 y hay que capturarlas a mano.")
+    # El peso callaba: sin columna detectada, los 66 renglones de HPCU4441843
+    # salían con peso 0 y nada lo decía. Un 0 que nadie avisa se guarda igual.
+    if "peso_bruto" not in cm:
+        avisos.append("No se detectó columna de peso; el peso de cada renglón "
+                      "queda en 0 y hay que capturarlo a mano.")
 
     # Los merges se miran en la columna de volumen; si no hay, en la de cajas.
     col_merge = cm.get("cbm_master", cm.get("cajas"))
@@ -370,7 +403,14 @@ def leer(xlsx_bytes: bytes, columna_imagen: int | None = None) -> dict[str, Any]
         fila = todas[idx]
         if not any(v not in (None, "") for v in fila):
             continue
-        if cm["producto"] >= len(fila) or not fila[cm["producto"]]:
+        # Un renglón cuenta si tiene descripción en CUALQUIERA de las dos
+        # columnas: ahora que `producto` prefiere la inglesa, un archivo con el
+        # inglés a medio llenar perdería filas que antes sí entraban.
+        i_chn_col = cm.get("producto_chn")
+        hay_prod = cm["producto"] < len(fila) and fila[cm["producto"]]
+        hay_chn = (i_chn_col is not None and i_chn_col < len(fila)
+                   and fila[i_chn_col])
+        if not hay_prod and not hay_chn:
             continue
 
         fila_excel = idx + 1
@@ -423,10 +463,12 @@ def leer(xlsx_bytes: bytes, columna_imagen: int | None = None) -> dict[str, Any]
             cbm_por_pieza = 0.0
             cbm_origen = "sin_datos"
 
-        producto = str(fila[cm["producto"]]).strip()
+        producto = str(fila[cm["producto"]]).strip() if hay_prod else ""
         chn = ""
-        if "producto_chn" in cm and cm["producto_chn"] < len(fila) and fila[cm["producto_chn"]]:
-            chn = str(fila[cm["producto_chn"]]).strip()
+        if hay_chn:
+            chn = str(fila[i_chn_col]).strip()
+        if not producto:
+            producto = chn
 
         filas.append({
             "fila_excel": fila_excel,

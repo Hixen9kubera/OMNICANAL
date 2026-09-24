@@ -1001,6 +1001,45 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.564.0 — El Resolver leía los packing lists en chino y tiraba el peso a la basura
+
+Salió de un caso concreto: `TEC-2370-MET` (Descalcificador de Agua) no tenía
+contenedor en kubera y al subir su packing list al Resolver, la pantalla de
+Costos mostraba "过滤器" en vez de "filter" y el peso en 0. Al revisar el
+archivo aparecieron tres huecos del parser, todos en `mapear_columnas`:
+
+1. **La columna de producto se quedaba con la china.** Los encabezados dicen
+   "品名" (nombre de producto) TANTO en la columna china como en la inglesa
+   —`产品中文品名` en A, `产品英文品名` en B— y como la china va primero, el
+   `setdefault` la fijaba y la inglesa ya no entraba. El empate por texto (y el
+   prompt del LLM) nunca veían el nombre legible. Ahora se recuerda aparte la
+   primera columna que NO es china y al cerrar el barrido esa manda.
+2. **Ninguna columna de peso.** El parser buscaba `总毛重 / gross weight / 毛重 /
+   g.w` y este proveedor escribe `货箱重量总/total kg(KG)`; otra familia de
+   archivos usa encabezados normalizados (`peso_bruto_kg`, `peso_neto_kg`) que
+   tampoco caían. Resultado: **el archivo entero salía con peso 0, en silencio**.
+   Se agregan los dos juegos de encabezados y, sobre todo, un **aviso** cuando
+   no se detecta columna de peso — que es lo que faltaba para que el 0 no se
+   guardara sin que nadie lo notara.
+3. **`material_chino` ganaba la descripción.** En los archivos normalizados la
+   única columna que decía "chino" era la del material, así que los 45 renglones
+   de `027F655823` se llamaban todos "高密度板/MDF". Se excluyen los encabezados
+   que además dicen material / uso / marca / modelo, y se reconoce `producto`
+   como nombre de columna.
+
+Además, un renglón ahora cuenta si tiene descripción en **cualquiera** de las
+dos columnas (antes, con `producto` apuntando al inglés, un archivo con el
+inglés a medio llenar habría perdido filas) y el texto cae al chino cuando el
+inglés viene vacío.
+
+Medido contra **23 packing lists reales** del Drive, antes vs después: ninguno
+pierde renglones de producto, uno **gana** el que se le caía (`OOLU9155398`,
+fila con inglés y chino vacío) y otro deja de contar su fila de totales como
+producto (`027F655823`, 45 → 44). El peso pasa de detectarse en 6 archivos a
+**16 de 23**, y en 13 la descripción pasa de chino a inglés/español. Solo
+lectura: no cambia nada de lo que se escribe, solo lo que el Resolver entiende
+del archivo.
+
 ### v0.563.0 — La categoría de ML se encuentra por su nombre, no solo por el título del producto
 
 Pedido de Eduardo (24-sep) tras un mes de casos en los que el picker de categoría
