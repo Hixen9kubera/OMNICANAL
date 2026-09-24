@@ -144,11 +144,18 @@ def _campos_ml(categoria: str) -> list[dict[str, Any]]:
             "campo": a.get("id"),
             "etiqueta": a.get("name") or a.get("id"),
             "obligatorio": "required" in tags or "catalog_required" in tags,
+            # PARENT_PK/CHILD_PK/PRODUCT_IDENTIFIER/FAMILY = el producto;
+            # ITEM = datos FISCALES de la venta (clave SAT, IVA, IEPS,
+            # pedimento). El checklist de almacén pliega los ITEM. (`relevance`
+            # no sirve para eso: vale 1 en todos los visibles.)
+            "jerarquia": a.get("hierarchy"),
             "tipo": a.get("value_type"),
             # Los valores de ML son SUGERENCIAS en casi todos los campos de
             # texto: se ofrecen, pero se deja escribir otro.
             "valores": [v.get("name") for v in (a.get("values") or []) if v.get("name")],
             "unidades": [u.get("name") for u in (a.get("allowed_units") or []) if u.get("name")],
+            # La que ML asume cuando llega un número sin unidad.
+            "unidad_default": a.get("default_unit"),
         })
     # Obligatorios arriba, en el orden en que ML los da.
     salida.sort(key=lambda x: not x["obligatorio"])

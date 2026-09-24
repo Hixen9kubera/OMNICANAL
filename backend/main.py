@@ -22,7 +22,8 @@ from config import settings, validar_ambiente
 from core.marketplaces import lista_canales
 from core.middleware import identidad
 from models.schemas import HealthCheck
-from routers import (alertas as r_alertas, auth, automatizacion, canales, competencia,
+from routers import (alertas as r_alertas, auth, automatizacion, canales, checklist,
+                     competencia,
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
                      fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, metricas, migracion,
@@ -170,7 +171,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.559.0",
+    version="0.560.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -257,6 +258,9 @@ app.include_router(automatizacion.router)
 # movió. LECTURA PURA — no escribe stock en ninguna parte (ver la cabecera de
 # services/inventario_maestro.py para el porqué medido).
 app.include_router(inventario.router)
+# Inventario · Checklist: la validación de almacén (24-sep). Router propio: el
+# de inventario termina en una ruta glotona `/{sku:path}`.
+app.include_router(checklist.router)
 
 
 @app.get("/", tags=["meta"])
@@ -264,7 +268,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.559.0",
+        "version": "0.560.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

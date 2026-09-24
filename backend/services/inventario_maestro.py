@@ -96,7 +96,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from services import odoo, packing_cajas, specs, supabase_db as sdb, wp_db
+from services import (checklist, odoo, packing_cajas, specs, supabase_db as sdb,
+                      wp_db)
 
 log = logging.getLogger("omnicanal.inventario_maestro")
 
@@ -179,6 +180,9 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
     # Brandon (17-sep). Lo que no este en kubera sale GRIS, nunca verde.
     specs_ = specs._por_sku_sync(pedidos)
     recs = odoo.recibido_por_sku(pedidos)
+    # Las cajas que CONTÓ almacén, capturadas en Inventario · Checklist
+    # (ops.checklist_almacen, 0058). Nunca truena: sin la tabla, vacío.
+    bodega = checklist.almacen_de(pedidos)
 
     salida = []
     for sku in pedidos:
@@ -187,7 +191,7 @@ def filas(skus: list[str] | None = None) -> list[dict[str, Any]]:
                             imgs.get(sku), ubis.get(sku, []),
                             hermanos.get(sku, []), pls.get(sku), recs.get(sku),
                             pl_leyendo=sku in leyendo,
-                            spec=specs_.get(sku)))
+                            spec=specs_.get(sku), bodega=bodega.get(sku)))
     return salida
 
 
@@ -196,7 +200,8 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
           ubicaciones: list[dict], hermanos: list[dict],
           pl: dict | None = None, rec: dict | None = None,
           pl_leyendo: bool = False,
-          spec: dict | None = None) -> dict[str, Any]:
+          spec: dict | None = None,
+          bodega: dict | None = None) -> dict[str, Any]:
     es_padre = bool(w and w["n_hijas"] > 0)
 
     emp_odoo = _empaque((o or {}).get("contenedor"))
@@ -298,7 +303,7 @@ def _fila(sku: str, w: dict | None, o: dict | None, c: dict | None,
         "cajas_por_llegar": _cajas((o or {}).get("entrante"),
                                    (o or {}).get("piezas_por_caja")),
         "cbm_caja": _num((o or {}).get("cbm_caja")),
-        "cotejo_cajas": _cotejo_cajas(o, c, pl, pl_leyendo),
+        "cotejo_cajas": _cotejo_cajas(o, c, pl, pl_leyendo, bodega),
         "recorrido": _recorrido(o, pl, rec, pl_leyendo),
         # Lo que cada canal exige, por su categoria. Ver services/specs.py.
         "specs": spec,
@@ -1124,12 +1129,15 @@ def _recorrido(o: dict | None, pl: dict | None,
 
 def _cotejo_cajas(o: dict | None, c: dict | None,
                   pl: dict | None = None,
-                  leyendo: bool = False) -> dict[str, Any]:
+                  leyendo: bool = False,
+                  bodega: dict | None = None) -> dict[str, Any]:
     """
     Las TRES cajas de un SKU, que son tres preguntas distintas (Brandon, 8-sep).
 
-      1. BODEGA       · cuantas cajas conto el almacen al recibir. MANDA sobre
-                        las otras dos, y HOY NO EXISTE en ningun sistema.
+      1. BODEGA       · cuantas cajas conto el almacen. MANDA sobre las otras
+                        dos. No existia en ningun sistema hasta el Checklist de
+                        almacen (24-sep, ops.checklist_almacen): hoy llega de
+                        ahi, y es None mientras nadie la capture.
       2. PACKING LIST · cuantas cajas dijo el proveedor que embarco.
       3. ODOO         · cuantas cajas llenarian las piezas LIBRES de hoy.
 
@@ -1178,8 +1186,11 @@ def _cotejo_cajas(o: dict | None, c: dict | None,
         estado, nota = "sin_dato", "ni packing list ni piso libre"
 
     return {
-        # El que manda y el que falta son el mismo: ver la nota de arriba.
-        "bodega": None,
+        # El que manda: lo que almacén contó en el Checklist. None = sin capturar.
+        "bodega": (bodega or {}).get("cajas"),
+        "bodega_piezas_por_caja": (bodega or {}).get("piezas_por_caja"),
+        "bodega_por": (bodega or {}).get("capturado_por"),
+        "bodega_en": (bodega or {}).get("capturado_en"),
         "packing_list": pl,
         # De dónde salió la cifra de arriba, para poder discutirla.
         "pl_fuente": ("renglon" if del_renglon is not None

@@ -1647,6 +1647,70 @@ export function guardarSpecsCanal(
                  { valores, etiquetas });
 }
 
+// ── Inventario · Checklist (validación de almacén) ──────────────────────────
+
+export function tableroChecklist(
+  semana: string | undefined, signal?: AbortSignal,
+): Promise<import("./types").TableroChecklist> {
+  const q = semana ? `?semana=${encodeURIComponent(semana)}` : "";
+  return getJSON(`/api/checklist${q}`, signal);
+}
+
+/** Agrega SKUs al lote de la semana. Acepta el texto pegado de Excel tal cual. */
+export function agregarAlChecklist(semana: string, skus: string): Promise<{
+  ok: boolean; agregados?: number; ya_estaban?: number; desconocidos?: string[];
+  falta_migracion?: boolean; motivo?: string;
+}> {
+  return postJSON("/api/checklist/lote", { semana, skus });
+}
+
+export function quitarDelChecklist(semana: string, skus: string[]): Promise<{
+  ok: boolean; quitados?: number; motivo?: string;
+}> {
+  return postJSON("/api/checklist/lote/quitar", { semana, skus });
+}
+
+export function matrizChecklist(
+  categoria: string, signal?: AbortSignal,
+): Promise<import("./types").MatrizChecklist> {
+  return getJSON(`/api/checklist/matriz/${encodeURIComponent(categoria)}`, signal);
+}
+
+export function guardarMatrizChecklist(
+  categoria: string, campos: Record<string, boolean>,
+): Promise<{ ok: boolean; guardados?: number; motivo?: string }> {
+  return putJSON(`/api/checklist/matriz/${encodeURIComponent(categoria)}`, { campos });
+}
+
+/** Excel o CSV de los SKUs elegidos (sin elegir, todo el lote de la semana). */
+export function descargarChecklist(
+  formato: "excel" | "csv", semana: string, skus: string[],
+): Promise<Headers> {
+  const q = new URLSearchParams({ semana });
+  if (skus.length) q.set("skus", skus.join(","));
+  return descargar(`${BASE}/api/checklist/${formato}?${q}`,
+                   `checklist_${semana}.${formato === "excel" ? "xlsx" : "csv"}`);
+}
+
+/** Sube el Excel/CSV llenado. `aplicar=false` = solo decir qué cambiaría. */
+export async function importarChecklist(
+  archivo: File, aplicar: boolean,
+): Promise<import("./types").ImportacionChecklist> {
+  const fd = new FormData();
+  fd.append("archivo", archivo);
+  fd.append("aplicar", aplicar ? "true" : "false");
+  // Sin Content-Type a mano: el navegador pone el boundary del multipart.
+  const res = await fetchSesion(`${BASE}/api/checklist/importar`, { method: "POST", body: fd });
+  if (!res.ok) throw await errorDeRespuesta(res, "/api/checklist/importar");
+  return res.json();
+}
+
+export function guardarAlmacenChecklist(
+  sku: string, valores: Record<string, string>,
+): Promise<{ ok: boolean; guardados?: number; motivo?: string }> {
+  return putJSON(`/api/checklist/almacen/${encodeURIComponent(sku)}`, { valores });
+}
+
 export function movimientosInventario(
   sku: string,
   causa = "reales",

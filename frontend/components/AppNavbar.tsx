@@ -27,6 +27,7 @@ import {
   Network,
   Truck,
   Warehouse,
+  ClipboardCheck,
 } from "lucide-react";
 import NotificationBell from "./NotificationBell";
 import { cerrarSesion, quienSoy, type Usuario } from "@/lib/sesion";
@@ -107,7 +108,18 @@ const ITEMS: NavItem[] = [
   { id: "omnicanal", label: "Omnicanal", icon: Share2, href: "/omnicanal" },
   // Catálogo maestro de bodega: existencias, empaque y trazabilidad. Lectura
   // pura, así que la ve todo el equipo (en rbac.py su GET es de `lectura`).
-  { id: "inventario", label: "Inventario", icon: Warehouse, href: "/inventario" },
+  // El CHECKLIST (24-sep, Brandon) es la segunda entrada: la validación de
+  // almacén —atributos que exige ML, medidas, cajas y piezas— por lote semanal.
+  // Mismo molde de submenú que Análisis; las dos rutas son páginas autónomas.
+  {
+    id: "inventario", label: "Inventario", icon: Warehouse, href: "/inventario",
+    submenu: [
+      { label: "Catálogo Maestro", href: "/inventario", icon: Warehouse,
+        descripcion: "Existencias, empaque y trazabilidad por SKU" },
+      { label: "Checklist", href: "/inventario/checklist", icon: ClipboardCheck,
+        descripcion: "Validación de almacén: atributos de ML, medidas, cajas y piezas" },
+    ],
+  },
   { id: "crear", label: "Crear Productos", icon: PackagePlus, href: "/crear" },
   { id: "costos", label: "Costos", icon: Calculator, href: "/costos" },
   // Va aquí, entre Costos y Competencia (handoff de diseño, 4-sep). Estaba al

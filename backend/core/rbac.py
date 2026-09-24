@@ -238,6 +238,14 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # /api/productos, operador): escribe en el mismo sitio.
     ("PUT", "/api/inventario", "operador"),
     ("GET", "/api/inventario", "lectura"),
+    # Inventario · CHECKLIST (24-sep): la validación de almacén. Mirar el lote
+    # y bajar el Excel no trae costos ni márgenes → `lectura`. CAPTURAR
+    # (cargar el Excel, medidas, la matriz, armar el lote) escribe atributos
+    # que viajan a Mercado Libre → `operador`, el mismo nivel que el Estudio.
+    # Los tres verbos listados, porque la regla es por (método, prefijo).
+    ("GET", "/api/checklist", "lectura"),
+    ("POST", "/api/checklist", "operador"),
+    ("PUT", "/api/checklist", "operador"),
 )
 
 # Índice ordenado por prefijo más largo: la regla específica gana.

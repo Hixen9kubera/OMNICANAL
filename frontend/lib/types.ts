@@ -1972,8 +1972,11 @@ export interface CanalDelSku {
  *  que no se restan: TEC-0008-AMR trae 200 cajas de packing list y 5 piezas
  *  físicas, y eso no es un descuadre — es que ya se vendieron. */
 export interface CotejoCajas {
-  /** Siempre null hoy: el canal para recibirla no existe. */
+  /** Las cajas que CONTÓ almacén en Inventario · Checklist. null = sin capturar. */
   bodega: number | null;
+  bodega_piezas_por_caja?: number | null;
+  bodega_por?: string | null;
+  bodega_en?: string | null;
   /** Las cajas del packing list. Ver `pl_fuente` para saber de dónde salieron. */
   packing_list: number | null;
   /** `renglon` = leído del xlsx en el renglón exacto del SKU (el dato bueno).
@@ -2579,4 +2582,114 @@ export interface MovimientosResp {
   /** false = el libro no reproduce el saldo de Odoo. Se avisa, no se disimula. */
   cuadra: boolean | null;
   por_causa: Record<string, number>;
+}
+
+// ── Inventario · Checklist (validación de almacén) ───────────────────────────
+
+/** Qué tan exigido es un atributo: de ML, por la matriz del equipo, u
+ *  opcional — del producto (principal) o de facturación (secundario). */
+export type NivelChecklist = "ml" | "matriz" | "principal" | "secundario";
+
+export interface CampoChecklist {
+  campo: string;
+  etiqueta: string;
+  nivel: NivelChecklist;
+  exigido: boolean;
+  tipo: string | null;
+  /** Jerarquía de ML. `ITEM` = dato fiscal (clave SAT, IVA…): nivel secundario. */
+  jerarquia: string | null;
+  valores: string[];
+  unidades: string[];
+  /** La unidad que ML asume si llega un número solo. */
+  unidad_default: string | null;
+}
+
+export interface AlmacenChecklist {
+  largo_cm: number | null;
+  ancho_cm: number | null;
+  alto_cm: number | null;
+  peso_kg: number | null;
+  cajas: number | null;
+  piezas_por_caja: number | null;
+  fuente: string | null;
+  capturado_por: string | null;
+  capturado_en: string | null;
+}
+
+export type EstadoChecklist = "completo" | "incompleto" | "sin_categoria" | "sin_lista";
+
+export interface FilaChecklist {
+  sku: string;
+  titulo: string | null;
+  url_ml: string | null;
+  categoria: string | null;
+  categoria_fuente: string | null;
+  categoria_nombre: string | null;
+  categoria_ruta: string | null;
+  exigidos_total: number;
+  exigidos_llenos: number;
+  faltan_ml: { campo: string; etiqueta: string; nivel: NivelChecklist }[];
+  opcionales_total: number;
+  opcionales_llenos: number;
+  almacen: AlmacenChecklist;
+  faltan_almacen: string[];
+  piezas_total: number | null;
+  estado: EstadoChecklist;
+  agregado_por: string | null;
+  agregado_en: string | null;
+}
+
+export interface TableroChecklist {
+  ok: boolean;
+  /** La migración 0058 no está aplicada en kubera: la pantalla lo dice. */
+  falta_migracion: boolean;
+  motivo: string | null;
+  semana: string;
+  semana_fin: string;
+  semanas: { semana: string; skus: number }[];
+  campos_almacen: { campo: string; etiqueta: string }[];
+  filas: FilaChecklist[];
+  categorias: {
+    categoria: string; nombre: string | null; skus: number;
+    obligatorios_ml: number; promovidos: number;
+  }[];
+  resumen: {
+    total: number; completos: number; incompletos: number;
+    sin_categoria: number; faltan_ml: number; faltan_almacen: number;
+  };
+}
+
+export interface MatrizChecklist {
+  ok: boolean;
+  falta_migracion: boolean;
+  motivo: string | null;
+  categoria: string;
+  nombre: string | null;
+  ruta: string | null;
+  campos: CampoChecklist[];
+}
+
+export interface RenglonImportacion {
+  sku: string | null;
+  campo: string | null;
+  hoja: string | null;
+  fila: number | null;
+  motivo: string;
+}
+
+export interface ImportacionChecklist {
+  ok: boolean;
+  falta_migracion?: boolean;
+  motivo?: string | null;
+  aplicado: boolean;
+  archivo: string;
+  skus: number;
+  cambios: {
+    sku: string; campo: string; etiqueta: string;
+    antes: string; despues: string; tipo: "ml" | "almacen";
+  }[];
+  errores: RenglonImportacion[];
+  avisos: RenglonImportacion[];
+  sin_cambios: number;
+  guardados?: { ml: number; almacen: number; fallidos: { sku: string; motivo: string }[] };
 }

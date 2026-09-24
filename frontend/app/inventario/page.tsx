@@ -42,6 +42,7 @@ import {
 } from "lucide-react";
 
 import AppNavbar from "@/components/AppNavbar";
+import InventarioPestanas from "@/components/InventarioPestanas";
 import {
   guardarSpecsCanal, listarInventario, mensajeDeError, movimientosInventario,
   specsCanal,
@@ -318,6 +319,7 @@ export default function InventarioPage() {
     <div className="min-h-screen bg-[#f6f7fb]">
       <AppNavbar />
       <main className="mx-auto max-w-[1400px] px-4 py-6">
+        <InventarioPestanas />
         <Banner resumen={r} esPiloto={datos?.es_piloto ?? true}
                 cargando={cargando} onRecargar={cargar} />
 
@@ -1205,8 +1207,16 @@ function CotejoCajasBloque({ fila }: { fila: FilaInventario }) {
         Cotejo de cajas
       </h3>
       <div className="mt-2 flex gap-1.5">
-        {tarjeta("Bodega", "—", "canal no construido: almacén todavía no tiene por dónde mandarlo",
-          "border-amber-200 bg-amber-50 text-amber-800", true)}
+        {/* Desde el 24-sep la cuenta de almacén llega del Checklist. Sin
+            captura se sigue diciendo que falta: es el dato que manda. */}
+        {k.bodega === null || k.bodega === undefined
+          ? tarjeta("Bodega", "—", "sin capturar: almacén lo cuenta en Inventario → Checklist",
+              "border-amber-200 bg-amber-50 text-amber-800", true)
+          : tarjeta("Bodega", numCajas(k.bodega),
+              `contadas por almacén${k.bodega_piezas_por_caja ? ` · ${num(k.bodega_piezas_por_caja)} pzs/caja` : ""}${
+                k.bodega_por ? ` · ${k.bodega_por.split("@")[0]}` : ""}${
+                k.bodega_en ? ` · ${fechaCorta(k.bodega_en)}` : ""}`,
+              "border-emerald-200 bg-emerald-50 text-emerald-900", true)}
         {tarjeta("Packing list", numCajas(k.packing_list),
           k.packing_list === null
             ? "ni renglón registrado ni cifra en costos_validados"

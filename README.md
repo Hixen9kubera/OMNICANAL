@@ -1001,6 +1001,75 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.560.0 — Inventario → CHECKLIST: la validación de almacén, con su Excel de ida y vuelta
+
+Brandon (24-sep): una pestaña de almacén que diga si cada SKU tiene los
+atributos que Mercado Libre exige y que además pida **medidas, cajas y piezas**.
+Cada semana se eligen ~100 SKUs, se baja un Excel con lo que falta, almacén lo
+llena y se vuelve a cargar. De los opcionales se elige cuáles se vuelven
+obligatorios: la **matriz**. Se enseñó en local con 26 SKUs reales antes de subir.
+
+**⚠️ Necesita la migración `0058_ops_checklist_almacen.sql` en producción (la
+aplica Eduardo, doble candado).** Mientras no esté, la pestaña dice «falta la
+migración 0058» y no truena; el Catálogo Maestro sigue igual. Se numeró 0058
+porque la 0054–0057 ya las ocupó otra rama el mismo día.
+
+**Qué hay en la pantalla** (`/inventario/checklist`, submenú de Inventario y
+sub-pestañas «Catálogo Maestro | Checklist» en las dos páginas):
+- **Lote por semana** (lunes a domingo, flechas para cambiar). Se pega la
+  columna de SKUs tal cual de Excel; los que kubera no conoce se avisan y no
+  entran. Quitar del lote no borra lo capturado.
+- **Estado por SKU**: completo = todos los atributos EXIGIDOS (obligatorios de
+  ML + los de la matriz) y los seis datos de almacén (largo, ancho, alto, peso
+  del producto EMPACADO, cajas, piezas por caja). KPIs que filtran.
+- **Matriz de obligatorios** por categoría de ML: los de ML vienen bloqueados
+  (bajarlos no serviría, ML los rechaza igual); los opcionales se suben con un
+  clic y quedan en naranja en pantalla y en el Excel.
+- **Excel**: una hoja por categoría, pre-llenado con lo ya capturado, renglón 1
+  oculto con las claves (así se sabe qué es cada columna al cargarlo), colores
+  del canal (amarillo ML, naranja matriz, azul almacén), listas desplegables con
+  los valores de ML (con aviso, no bloqueo: ML acepta texto libre en casi todo),
+  validación numérica en lo de almacén y hoja de instrucciones con índice.
+- **CSV largo** (un renglón por SKU y campo): el formato para automatizar.
+- **Cargar**: primero enseña QUÉ cambiaría (antes → queda), errores por celda y
+  avisos; nada se guarda hasta confirmar. Una celda vacía no borra nada.
+- **Captura en pantalla** de medidas y cajas de un SKU (sin Excel).
+
+**Dónde se guarda.** Los atributos van a `enrich.channel_content` vía
+`specs_editor.guardar_sync` — el mismo sitio que el Publicador, con sus tres
+cuidados (lista completa, categoría explícita, `nombre` = id de ML). Medidas,
+cajas y piezas van a `ops.checklist_almacen`, que por fin alimenta la caja
+**«Bodega»** del cotejo de cajas del Catálogo Maestro (era `None` desde el 8-sep
+porque nadie la medía). Solo kubera y la API pública de ML: nada de WordPress.
+
+**Tres cosas medidas que decidieron el diseño:**
+- «Principal vs secundario» NO sale de `relevance`: vale 1 en TODOS los
+  atributos visibles. Sale de la jerarquía de ML: `ITEM` = datos fiscales (clave
+  SAT, IVA, IEPS, pedimento, nombre en factura) → secundario, plegado en el
+  Excel porque almacén no los conoce. Todo lo demás es del producto.
+- Un número sin unidad toma el `default_unit` de ML, no la primera unidad de la
+  lista: en «Peso máximo soportado» la primera es `g` y «20» de un corral son
+  20 kg. Si ML no da default y hay varias unidades, se pide la unidad.
+- Una celda pre-llenada que nadie tocó no se «normaliza»: sin eso, recargar el
+  Excel intacto inventaba cambios (18 → «18 meses»).
+
+**Lo que NO hace, a propósito:** no manda las medidas a ML como
+`SELLER_PACKAGE_*` (deciden la tarifa de envío: es dinero en publicaciones
+vivas, regla 3). Y en ALTAS NUEVAS de ML siguen ganando las metas `ml_attr_*` de
+WordPress sobre kubera (`publicar_ready.construir_prod`): lo capturado llega a
+las publicaciones existentes; a las nuevas, cuando se cambie esa prioridad.
+
+**Permisos** (`core/rbac.py`): GET `/api/checklist` = lectura (no trae costos);
+POST/PUT = operador. No existe un rol «almacén» (`core.usuarios` solo admite
+admin/operador/lectura): hoy lo ve todo el equipo y capturan KAM y admin.
+
+**Archivos:** `services/checklist.py`, `routers/checklist.py`,
+`supabase/migrations/0058_ops_checklist_almacen.sql`,
+`frontend/app/inventario/checklist/page.tsx`,
+`frontend/components/InventarioPestanas.tsx`; y cambios chicos en
+`inventario_maestro.py` (cotejo), `specs_editor.py` (`jerarquia`,
+`unidad_default`), navbar, `api.ts` y `types.ts`.
+
 ### v0.559.0 — Los tokens de Mercado Libre pueden leerse y renovarse solo desde kubera
 
 A pedido de Eduardo (24-sep): que los tokens solo se lean de kubera. Todo va
