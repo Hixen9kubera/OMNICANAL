@@ -638,14 +638,24 @@ def _app_de_cuenta(cuenta: str) -> tuple[str, str] | None:
     (app_id, client_secret) para renovar, del ENTORNO y nunca de una tabla:
     primero los de la cuenta (MELI_APP_ID_<CUENTA>, MELI_CLIENT_SECRET_<CUENTA>),
     si no, los globales (MELI_APP_ID/MELI_CLIENT_SECRET, la app de los webhooks).
+
+    La clave puede venir CIFRADA con `DB_ENCRYPTION_KEY` (prefijo Fernet), tal
+    como está en `ml_tokens_dashboard`: se copia así, sin descifrarla, y no queda
+    en claro ni en la lista de variables de Railway. Solo se descifra aquí, en
+    memoria, al renovar.
     """
     app = os.environ.get(f"MELI_APP_ID_{cuenta}", "").strip()
     secreto = os.environ.get(f"MELI_CLIENT_SECRET_{cuenta}", "").strip()
-    if app and secreto:
-        return app, secreto
-    if settings.meli_app_id and settings.meli_client_secret:
-        return settings.meli_app_id, settings.meli_client_secret
-    return None
+    if not (app and secreto):
+        app, secreto = settings.meli_app_id, settings.meli_client_secret
+    if not (app and secreto):
+        return None
+    try:
+        return app, _dec(_fernet(), secreto)
+    except Exception as exc:  # noqa: BLE001 — cifrada con otra llave: no se renueva
+        log.warning("La clave de ML de %s no se pudo descifrar (%s).",
+                    cuenta, type(exc).__name__)
+        return None
 
 
 def _app_del_token(token: str | None) -> str | None:

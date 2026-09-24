@@ -44,16 +44,18 @@ _APP = "7777"
 if not _HIJO:
     # El ambiente de la prueba se arma UNA vez aquí y los hijos lo heredan.
     from cryptography.fernet import Fernet
+    _llave = Fernet.generate_key()
     os.environ.update({
         "APP_ENV": "staging",
         "MYSQL_ENABLED": "false",
         "TOKENS_SOLO_KUBERA": "true",
-        "DB_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+        "DB_ENCRYPTION_KEY": _llave.decode(),
         # Nunca las de verdad, aunque env.staging las trajera.
         "MELI_APP_ID": "9999",
         "MELI_CLIENT_SECRET": "secreto-global-de-prueba",
         f"MELI_APP_ID_{_CUENTA}": _APP,
-        f"MELI_CLIENT_SECRET_{_CUENTA}": "secreto-de-prueba",
+        # CIFRADA, como se copia de `ml_tokens_dashboard` a Railway.
+        f"MELI_CLIENT_SECRET_{_CUENTA}": Fernet(_llave).encrypt(b"secreto-de-prueba").decode(),
     })
 
 from config import settings  # noqa: E402
@@ -154,8 +156,9 @@ try:
     with mock.patch.object(meli.httpx, "post", ml):
         tok = meli.refrescar_token(_CUENTA)
     enviado = ml.llamadas[0] if ml.llamadas else {}
-    check("ML recibe la app de la cuenta y el refresh_token de kubera",
-          (enviado.get("client_id"), enviado.get("refresh_token")) == (_APP, "rt-semilla"))
+    check("ML recibe la app de la cuenta, su clave DESCIFRADA y el refresh_token de kubera",
+          (enviado.get("client_id"), enviado.get("client_secret"), enviado.get("refresh_token"))
+          == (_APP, "secreto-de-prueba", "rt-semilla"))
     ahora = fila()
     check("el par nuevo quedó en kubera, cifrado y junto",
           (ahora["access"], ahora["refresh"]) == (tok, "rt-nuevo"))

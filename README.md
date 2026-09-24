@@ -1001,6 +1001,27 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.561.0 — La clave de cada app de ML puede ir cifrada en Railway
+
+Pregunta de Eduardo al elegir el camino A de la v0.559.0 (24-sep): *¿las claves
+están cifradas?* En `ml_tokens_dashboard`, sí: la clave (`client_secret`) y los
+tokens están cifrados con Fernet (`DB_ENCRYPTION_KEY`); el `app_id` no, porque no
+es secreto. En Railway, en cambio, `MELI_CLIENT_SECRET` (la app 8902) está en
+claro.
+
+Desde esta versión `MELI_CLIENT_SECRET_<CUENTA>` (y la global) **puede ir
+cifrada**. Se copia de `ml_tokens_dashboard` tal cual, sin descifrarla nunca en
+el camino, y `meli._app_de_cuenta` la descifra en memoria solo al renovar. Si
+viene cifrada con otra llave, no se renueva y se avisa; también lo detecta
+`revisar_tokens_solo_kubera.py`, que compara huellas después de descifrar.
+
+Dicho de frente: la llave vive en el mismo servicio (`DB_ENCRYPTION_KEY`), así
+que esto no protege contra quien tenga acceso completo a Railway. Lo que evita es
+que la clave quede legible al listar las variables, en capturas de pantalla o en
+logs. Sin `TOKENS_SOLO_KUBERA` no cambia nada.
+
+Pruebas: 26 unitarias; sandbox 18/18 (ML recibe la clave ya descifrada).
+
 ### v0.560.0 — Inventario → CHECKLIST: la validación de almacén, con su Excel de ida y vuelta
 
 Brandon (24-sep): una pestaña de almacén que diga si cada SKU tiene los

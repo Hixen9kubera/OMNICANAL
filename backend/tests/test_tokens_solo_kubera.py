@@ -135,6 +135,17 @@ class AppDeCuenta(_Base):
         with mock.patch.object(meli.settings, "meli_app_id", ""):
             self.assertIsNone(meli._app_de_cuenta("BEKURA"))
 
+    def test_la_clave_cifrada_se_descifra_en_memoria(self):
+        with mock.patch.dict(os.environ, {"MELI_APP_ID_BEKURA": _APP_JOSE,
+                                          "MELI_CLIENT_SECRET_BEKURA": enc("s-jose")}):
+            self.assertEqual(meli._app_de_cuenta("BEKURA"), (_APP_JOSE, "s-jose"))
+
+    def test_cifrada_con_otra_llave_es_none(self):
+        otra = Fernet(Fernet.generate_key()).encrypt(b"s-jose").decode()
+        with mock.patch.dict(os.environ, {"MELI_APP_ID_BEKURA": _APP_JOSE,
+                                          "MELI_CLIENT_SECRET_BEKURA": otra}):
+            self.assertIsNone(meli._app_de_cuenta("BEKURA"))
+
 
 class AppDelToken(unittest.TestCase):
     def test_lee_el_numero_de_app(self):
@@ -159,8 +170,9 @@ class Renovar(_Base):
             "refresh_token": "rt-nuevo"})
 
     def _con_app_de_jose(self):
+        # La clave va CIFRADA, como se copia de `ml_tokens_dashboard` a Railway.
         return mock.patch.dict(os.environ, {"MELI_APP_ID_BEKURA": _APP_JOSE,
-                                            "MELI_CLIENT_SECRET_BEKURA": "s-jose"})
+                                            "MELI_CLIENT_SECRET_BEKURA": enc("s-jose")})
 
     def test_renueva_con_la_app_de_la_cuenta_y_guarda_bajo_candado(self):
         with self._con_app_de_jose():
