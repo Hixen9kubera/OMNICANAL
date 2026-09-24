@@ -37,15 +37,16 @@ export interface Instante {
  *
  * Historia corta: el 17-sep se quitaron por eso mismo —dos celdas rayadas en
  * cada renglón— y Brandon pidió devolverlas como AVISO: *"déjalos e indican qué
- * deben hacer"*. Desde v0.556.0 la solicitud nace en «Crear FULL»: con la tabla
- * `ops.fulfillment_solicitudes` (migración 0054) se guarda y estas dos etapas
- * pueden pasar a `ETAPAS` con su fecha.
+ * deben hacer"*. Desde v0.556.0 la solicitud nace en «Crear FULL», y desde v0.567.0
+ * se guarda en la bitácora (`ops.process_log`, proceso 'fulfillment', una fila por
+ * SKU y tienda; la 0054 se retiró). Falta que el rail la lea para que estas dos
+ * etapas pasen a `ETAPAS` con su fecha.
  */
 export const ETAPAS_POR_CAPTURAR = [
   { t: "Solicitado", corto: "Solicitado", accion: "se pide en Crear FULL",
     sub: "la lista de la semana",
-    porque: "La solicitud original no se guarda en ningún sistema todavía: sin ella no se sabe cuánto se "
-      + "pidió y la tasa de validado no existe. Nace en «Crear FULL»." },
+    porque: "La solicitud original sólo queda guardada cuando la orden nace en «Crear FULL», y esta vista "
+      + "todavía no la lee: sin ella no se sabe cuánto se pidió y la tasa de validado no existe." },
   { t: "Validado", corto: "Validado", accion: "lo recorta Bodega",
     sub: "cuánto sí se puede surtir",
     porque: "El recorte de Bodega no queda en ningún lado: la cantidad de la orden de Odoo ya viene "

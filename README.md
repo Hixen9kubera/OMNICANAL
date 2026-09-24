@@ -1001,6 +1001,42 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.567.0 — La solicitud de Crear FULL se guarda en la bitácora: sin tabla nueva, y la 0054 se retira
+
+Brandon, 24-sep, al revisar si la 0054 era necesaria o convenía normalizar con lo que ya existe: *"dale el
+cambio ya"*. La solicitud original de «Crear FULL» (lo sugerido y lo pedido antes de que Odoo o bodega recorten:
+lo único que permite la etapa «Solicitado → Validado» y la tasa de validado) ya no necesita tabla propia.
+
+**Qué cambia.** `_guardar_solicitud` (`services/fulfillment_full.py`) escribe en `ops.process_log`, la bitácora de
+acciones de personas que ya usan publicar, precio, stock y costos (`services/bitacora.py`): `proceso =
+'fulfillment'`, `accion = 'solicitud'`, `origen = 'panel'`, el SKU, quién (`actor`) y, en `detalle`, la tienda,
+canal y cuenta (como los anota la bitácora: `mercado_libre` / `BEKURA`), la clave, si fue de prueba, lo sugerido,
+lo solicitado, lo que sí fue por almacén con su orden de Odoo, los recortes (el del reparto entre tiendas y el de
+lo libre) y los parámetros de la corrida. Una fila por SKU y tienda. `detail_ref =
+fulfillment:<clave>:<tienda>:<sku>` y el INSERT lleva `not exists` por esa llave: reintentar con la misma clave no
+duplica. Si la bitácora falla, la orden se crea igual y la confirmación lo dice (antes decía «falta aplicar la
+migración 0054»). La forma de las filas la arma `filas_solicitud`, función pura.
+
+**Por qué no hacía falta la tabla.** Medido el 24-sep en kubera, sólo con SELECT: `ops.process_log` no restringe
+`proceso` (sólo tiene la llave primaria), su `sku` es citext sin llave foránea, ya tiene los índices `(proceso,
+created_at desc)` y `(sku)` —las dos lecturas que se necesitan— y ningún cron la purga (el único,
+`retencion_webhook_events`, limpia `ops.webhook_events`). Hoy tiene 8,593 filas (3.6 MB); una planeación suma
+cientos por semana. **Quién la lee** (la regla del 12-ago): `monitoreo.py` cuenta sólo su lista declarada de
+procesos; la bitácora de Crear, `alertas.py` y `competencia_scraper.py` filtran el suyo; y los tres que no filtran
+sólo MUESTRAN —los últimos 8 eventos de `/flujo`, el «último paso» del SKU en Inventario («no valida nada») y la
+vista `ops.rastro_autoria`, donde el SKU gana su renglón de FULL—. Ninguno decide con estas filas.
+`ops.odoo_sale_orders` se descartó porque el flujo de ventas SÍ decide con ella (la espera de guía esconde stock
+vía `stock_watch`).
+
+**La 0054 se borró del repo**: nunca se aplicó (`to_regclass('ops.fulfillment_solicitudes')` es nulo). A Eduardo se
+le mandó la nota con la revisión; si quiere columnas tipadas para reportes, puede crear una vista sobre
+`ops.process_log` (borrador en esa nota). La app no la necesita.
+
+**Verificado:** la parte SELECT del INSERT se corrió contra kubera sin escribir (lee el JSON, el SKU entra como
+citext y el `not exists` contesta); 39 pruebas de fulfillment (3 nuevas: forma de las filas con sus órdenes y
+recortes, no duplicar, y que un fallo de la bitácora no detenga la creación). Sigue pendiente que el rail de
+Envíos lea estas filas para llenar «Solicitado → Validado». «Crear en Odoo» sigue apagado.
+
 ### v0.566.0 — Planeación semanal de FULL por tienda y con IA: buscar SKUs, crear las órdenes por cuenta y adjuntar la guía
 
 Brandon, 24-sep, con el prompt estándar «PLANEACIÓN SEMANAL DE FULL — KUBERA / OMNICANAL»: *"crear una orden de

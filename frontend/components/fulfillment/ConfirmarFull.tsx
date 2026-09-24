@@ -103,7 +103,7 @@ export default function ConfirmarFull({ pedidos, semana, params, rol, onDescarga
             </div>
             <p className="mt-1 text-[12px]">
               Siguiente paso: crea el envío en el marketplace y adjunta aquí su número y su guía en PDF.
-              {resultado.solicitud_guardada === false && " La solicitud original NO se guardó (falta aplicar la migración 0054)."}
+              {resultado.solicitud_guardada === false && " La solicitud original NO quedó en la bitácora: la orden sí se creó; avisa a sistemas."}
             </p>
           </div>
         )}

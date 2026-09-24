@@ -1030,34 +1030,76 @@ def _socio(tienda: str) -> int:
     return pid
 
 
+# La solicitud vive en la bitácora de acciones de personas (`ops.process_log`, la
+# misma de publicar, precio, stock y costos; ver services/bitacora.py): una fila
+# por SKU y tienda. No tiene tabla propia: la 0054 se retiró sin aplicarse
+# (v0.567.0). Medido antes de decidirlo: la tabla no restringe `proceso`, ya tiene
+# índices (proceso, created_at) y (sku), no la purga ningún cron, y quienes la leen
+# sin filtrar por proceso sólo MUESTRAN (/flujo, «último paso» de Inventario y
+# ops.rastro_autoria); ninguno decide con estas filas.
+PROCESO_BITACORA = "fulfillment"
+
+
+def filas_solicitud(clave: str, tienda: str, prueba: bool, parametros: dict[str, Any],
+                    pedidas: list[dict[str, Any]], previa: dict[str, Any],
+                    ordenes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Las filas de bitácora de una solicitud, una por SKU pedido. Función pura."""
+    d = TIENDAS[tienda]
+    orden_de = {o["almacen"]: o for o in ordenes}
+    van: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for p in previa["partes"]:
+        o = orden_de.get(p["almacen"]) or {}
+        for l in p["lineas"]:
+            van[l["sku"]].append({"almacen": p["almacen"], "cantidad": l["cantidad"],
+                                  "orden": o.get("orden"), "orden_id": o.get("id")})
+    # Un SKU puede traer dos recortes: el del reparto entre tiendas y el de lo libre.
+    recortes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in previa.get("recortes") or []:
+        recortes[r["sku"]].append({"pedidas": r.get("pedidas"), "van": r.get("van"), "porque": r.get("porque")})
+    filas = []
+    for l in pedidas:
+        almacenes = van.get(l["sku"], [])
+        filas.append({
+            "sku": l["sku"],
+            "ref": f"{PROCESO_BITACORA}:{clave}:{tienda}:{l['sku']}",
+            "detalle": {
+                # canal y cuenta como los anota bitacora.py («mercado_libre», «BEKURA»).
+                "tienda": tienda, "canal": {"meli": "mercado_libre"}.get(d["canal"], d["canal"]),
+                "cuenta": d["codigo"], "clave": clave, "prueba": bool(prueba),
+                "sugerido": l.get("sugerido"), "solicitado": l["cantidad"],
+                "van": sum(x["cantidad"] for x in almacenes), "almacenes": almacenes,
+                "recortes": recortes.get(l["sku"], []), "parametros": parametros or {},
+            },
+        })
+    return filas
+
+
 def _guardar_solicitud(clave: str, tienda: str, prueba: bool, quien: str, parametros: dict[str, Any],
                        pedidas: list[dict[str, Any]], previa: dict[str, Any],
                        ordenes: list[dict[str, Any]]) -> bool:
     """
-    La solicitud ORIGINAL (lo sugerido y lo pedido) antes de que bodega recorte:
-    lo único que hace posible la etapa «Solicitado» y la tasa de validado. Necesita
-    la migración 0054; sin ella NO se detiene la creación, se avisa.
+    La solicitud ORIGINAL (lo sugerido y lo pedido) antes de que Odoo o bodega
+    recorten: lo único que hace posible la etapa «Solicitado» y la tasa de
+    validado. Va a `ops.process_log` (proceso 'fulfillment', accion 'solicitud').
+    Idempotente por `detail_ref`: reintentar con la misma clave no duplica. Si
+    falla NO se detiene la creación: la respuesta lo avisa.
     """
-    van: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for p in previa["partes"]:
-        for l in p["lineas"]:
-            van[l["sku"]].append({"almacen": p["almacen"], "cantidad": l["cantidad"]})
-    renglones = [{"sku": l["sku"], "sugerido": l.get("sugerido"), "solicitado": l["cantidad"],
-                  "van": sum(x["cantidad"] for x in van.get(l["sku"], [])), "almacenes": van.get(l["sku"], [])}
-                 for l in pedidas]
+    filas = filas_solicitud(clave, tienda, prueba, parametros, pedidas, previa, ordenes)
+    if not filas:
+        return True
     try:
-        sdb.execute(
-            """insert into ops.fulfillment_solicitudes
-                   (clave, tienda, prueba, quien, parametros, lineas, recortes, ordenes)
-               values (%(clave)s, %(tienda)s, %(prueba)s, %(quien)s, %(par)s::jsonb, %(lin)s::jsonb,
-                       %(rec)s::jsonb, %(ord)s::jsonb)
-               on conflict (clave, tienda) do nothing""",
-            {"clave": clave, "tienda": tienda, "prueba": bool(prueba), "quien": (quien or "")[:120] or None,
-             "par": json.dumps(parametros or {}), "lin": json.dumps(renglones),
-             "rec": json.dumps(previa.get("recortes") or []), "ord": json.dumps(ordenes)})
+        nuevas = sdb.execute(
+            """insert into ops.process_log (proceso, origen, sku, accion, estado, detalle, detail_ref, actor)
+               select %(proceso)s, 'panel', r.sku::citext, 'solicitud', 'ok', r.detalle, r.ref, %(quien)s
+                 from jsonb_to_recordset(%(filas)s::jsonb) as r(sku text, ref text, detalle jsonb)
+                where not exists (select 1 from ops.process_log p
+                                   where p.proceso = %(proceso)s and p.detail_ref = r.ref)""",
+            {"proceso": PROCESO_BITACORA, "quien": (quien or "")[:120] or None, "filas": json.dumps(filas)})
+        log.info("crear FULL: solicitud %s/%s en la bitácora (%s filas nuevas de %s)",
+                 clave, tienda, nuevas, len(filas))
         return True
     except Exception as exc:  # noqa: BLE001
-        log.warning("crear FULL: la solicitud %s/%s no se guardó (¿falta la migración 0054?): %s", clave, tienda, exc)
+        log.warning("crear FULL: la solicitud %s/%s no se guardó en la bitácora: %s", clave, tienda, exc)
         return False
 
 

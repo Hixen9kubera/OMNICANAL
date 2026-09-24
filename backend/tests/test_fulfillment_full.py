@@ -11,6 +11,8 @@
   4. Con el interruptor APAGADO nada se escribe; encendido: borrador, precio 0,
      socio fijo por tienda, «PRUEBA» en modo prueba, y la clave no duplica.
   5. La guía sólo se adjunta a órdenes del PANEL que siguen en borrador.
+  5b. La solicitud original va a la bitácora (ops.process_log), una fila por SKU
+      y tienda, sin duplicar; si la bitácora falla, la creación sigue.
   6. Lo que sugiera la IA se valida: fuera de la planeación o sobre lo libre no pasa.
 
 No se llama a Odoo, kubera ni Mercado Libre: se sustituyen por falsos.
@@ -19,6 +21,7 @@ No se llama a Odoo, kubera ni Mercado Libre: se sustituyen por falsos.
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from datetime import date, datetime, timedelta, timezone
@@ -378,6 +381,51 @@ class Guia(unittest.TestCase):
         self.assertEqual((r["accion"], odoo.llamadas), ("apagado", []))
         r, odoo = self._adjuntar(ajena, pdf=b"no soy pdf")
         self.assertEqual((r["accion"], odoo.llamadas), ("sin_pdf", []))
+
+
+class SolicitudEnBitacora(unittest.TestCase):
+    """La solicitud original va a ops.process_log: una fila por SKU y tienda, sin duplicar."""
+
+    PREVIA = {"partes": [{"almacen_id": TEXCO, "almacen": "TEXCO",
+                          "lineas": [{"sku": "A", "cantidad": 10}, {"sku": "B", "cantidad": 5}]},
+                         {"almacen_id": TEXCO2, "almacen": "TEXCO II", "lineas": [{"sku": "A", "cantidad": 2}]}],
+              "recortes": [{"tienda": "meli:Kubera", "sku": "B", "pedidas": 8, "van": 6, "porque": "reparto"},
+                           {"tienda": "meli:Kubera", "sku": "B", "pedidas": 6, "van": 5,
+                            "porque": "sólo hay 5 libres en Odoo"}]}
+    PEDIDAS = [{"sku": "A", "cantidad": 12, "sugerido": 12}, {"sku": "B", "cantidad": 8, "sugerido": 5}]
+    ORDENES = [{"id": 901, "orden": "S901", "almacen": "TEXCO"}, {"id": 902, "orden": "S902", "almacen": "TEXCO II"}]
+
+    def test_una_fila_por_sku_con_lo_que_fue_y_sus_ordenes(self):
+        f = ff.filas_solicitud("a1b2c3d4e5", "meli:Kubera", True, {"cobertura_dias": 30},
+                               self.PEDIDAS, self.PREVIA, self.ORDENES)
+        self.assertEqual([x["sku"] for x in f], ["A", "B"])
+        self.assertEqual(f[0]["ref"], "fulfillment:a1b2c3d4e5:meli:Kubera:A")
+        a, b = (x["detalle"] for x in f)
+        self.assertEqual((a["solicitado"], a["sugerido"], a["van"]), (12, 12, 12))
+        self.assertEqual([(x["almacen"], x["cantidad"], x["orden"]) for x in a["almacenes"]],
+                         [("TEXCO", 10, "S901"), ("TEXCO II", 2, "S902")])
+        self.assertEqual((a["canal"], a["cuenta"], a["prueba"]), ("mercado_libre", "BEKURA", True))
+        self.assertEqual((b["solicitado"], b["sugerido"], b["van"]), (8, 5, 5))
+        self.assertEqual(len(b["recortes"]), 2, "el del reparto entre tiendas y el de lo libre, los dos")
+
+    def test_se_escribe_en_la_bitacora_sin_duplicar(self):
+        llamadas = []
+        with mock.patch.object(ff.sdb, "execute", lambda sql, p=None: llamadas.append((sql, p)) or 2):
+            ok = ff._guardar_solicitud("a1b2c3d4e5", "meli:Kubera", False, "brandon@kubera.mx", {},
+                                       self.PEDIDAS, self.PREVIA, self.ORDENES)
+        self.assertTrue(ok)
+        sql, p = llamadas[0]
+        self.assertIn("insert into ops.process_log", sql)
+        self.assertIn("not exists", sql, "reintentar con la misma clave no duplica")
+        self.assertEqual((p["proceso"], p["quien"]), ("fulfillment", "brandon@kubera.mx"))
+        self.assertEqual(len(json.loads(p["filas"])), 2)
+
+    def test_si_la_bitacora_falla_la_creacion_sigue(self):
+        def revienta(*a, **k):
+            raise RuntimeError("kubera no contesta")
+        with mock.patch.object(ff.sdb, "execute", revienta):
+            self.assertFalse(ff._guardar_solicitud("a1b2c3d4e5", "meli:Kubera", True, "", {},
+                                                   self.PEDIDAS, self.PREVIA, self.ORDENES))
 
 
 class ValidarIA(unittest.TestCase):
