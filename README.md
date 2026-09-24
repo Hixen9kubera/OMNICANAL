@@ -1001,6 +1001,28 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.554.0 — La nota de envío combinado, ENCENDIDA: y el saneador de Odoo sí se come los comentarios
+
+Dale de Brandon el 23-sep ("enciéndelo"). `ODOO_VENTAS_NOTAS_COMBINADO_ENABLED`
+en true en Railway (BackendOmnicanal, production).
+
+**Primera vuelta, 02:31 UTC**: 10 cajas compartidas, 27 órdenes — 27 notas, 27
+etiquetas (se creó la `crm.tag` "ENVÍO COMBINADO", id 30), 27 entregas, 54
+verificaciones, **0 errores**. **Segunda vuelta, 02:46 UTC**: 0 escrituras, 0
+apuntes, 4 segundos. Verificado leyendo Odoo: 1 aviso por nota, 1 por entrega,
+1 apunte por historial, y las 27 conservan intactos sus Términos.
+
+**Lo que se midió y nadie sabía** (venía como duda en v0.550.0): el saneador de
+este Odoo 17 **SE COME los comentarios HTML**. Las 27 notas quedaron guardadas
+sin `<!-- OMNICANAL:COMBINADO -->` y las 27 se reconocen hoy por el CINTURÓN —el
+texto visible del aviso—, que se había añadido justo antes de publicar. Sin él
+esto habría apilado un párrafo y dos mensajes cada 15 minutos (~2,600 escrituras
+al día) o, con el freno, se habría detenido tras la primera orden. Consecuencia
+operativa, ahora escrita en el encabezado del módulo: **las marcas son adorno;
+quien sostiene la idempotencia es la frase**. Cambiar el título del aviso o su
+última frase (`SELLO_VISIBLE`) deja huérfanos los bloques ya escritos — primero
+se limpian, o se amplía `_RE_VISIBLE` para reconocer también el texto anterior.
+
 ### v0.553.0 — El modal deja de culpar a Odoo cuando el que no tiene número es Woo
 
 Complemento de la v0.552.0, a pedido de Eduardo (23-sep). El candado de alta de

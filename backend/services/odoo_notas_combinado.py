@@ -100,19 +100,33 @@ LAS REGLAS QUE ESTO OBEDECE
 7. **Nunca lanza.** La llama un job del scheduler; un fallo suyo no puede
    tumbar nada. Los errores se cuentan y se devuelven.
 
-EL FRENO: SI LAS MARCAS NO VUELVEN, SE DETIENE (no se reintenta)
-────────────────────────────────────────────────────────────────
-Toda la idempotencia cuelga de que Odoo devuelva los comentarios html tal como
-se mandaron. Y `sale.order.note` es `sanitize=True` (medido con `fields_get`):
-el saneador demostrablemente reformatea —el texto plano de `crear_orden` está
-guardado como `<p>…</p>`— y en TODA la base no hay un solo registro con `<!--`
-en un campo saneado, así que este caso exacto nunca se ha probado en vivo.
+EL SANEADOR SE COME LAS MARCAS — MEDIDO EN VIVO EL 23-SEP-2026
+──────────────────────────────────────────────────────────────
+⚠️ **No es una hipótesis: pasó.** En la primera corrida real (27 órdenes de
+Temu, 02:31 UTC) Odoo guardó las notas SIN los comentarios html: las 27 se
+reconocen hoy por el CINTURÓN, o sea por el texto visible del aviso. Las marcas
+`<!-- OMNICANAL:COMBINADO -->` quedan como adorno: se siguen mandando —si algún
+día el saneador las respetara, mejor— pero **quien sostiene la idempotencia es
+la frase**, no el comentario. Cambiar el texto del título o de la última frase
+(`SELLO_VISIBLE`) dejaría huérfanos los 27 bloques ya escritos, y la vuelta
+siguiente apilaría uno nuevo encima. Si hay que cambiarlo: primero se limpian
+los bloques viejos, o se amplía `_RE_VISIBLE` para reconocer también el
+anterior.
 
-Si el saneador se comiera las marcas, `bloque_actual` devolvería None en la
-vuelta siguiente y `con_bloque` ANTEPONDRÍA un párrafo nuevo sobre el anterior:
-medido, la nota crece ~158 caracteres por vuelta y el historial suma 2 mensajes
-por vuelta. Con el job cada 15 min sobre 27 órdenes eso es ~2,600 escrituras y
-~5,200 mensajes AL DÍA, y limpiarlo es a mano, orden por orden.
+Segunda vuelta (02:46 UTC): 0 escrituras, 0 apuntes, 4 segundos. Verificado
+leyendo Odoo: 1 aviso por nota, 1 por entrega, 1 apunte por historial, y los
+Términos previos intactos en las 27.
+
+Toda la idempotencia cuelga, entonces, de reconocer lo ya escrito. El campo
+`sale.order.note` es `sanitize=True` (medido con `fields_get`) y el saneador
+reformatea: el texto plano de `crear_orden` está guardado como `<p>…</p>`.
+
+Sin nada que reconocer, `bloque_actual` devolvería None en la vuelta siguiente y
+`con_bloque` ANTEPONDRÍA un párrafo nuevo sobre el anterior: medido, la nota
+crece ~158 caracteres por vuelta y el historial suma 2 mensajes por vuelta. Con
+el job cada 15 min sobre 27 órdenes eso es ~2,600 escrituras y ~5,200 mensajes
+AL DÍA, y limpiarlo es a mano, orden por orden. Eso es exactamente lo que habría
+pasado aquí sin el cinturón: el saneador se las comió el primer día.
 
 Por eso hay DOS defensas, y ninguna depende de adivinar qué hace el saneador:
 
@@ -151,9 +165,12 @@ from typing import Any
 
 log = logging.getLogger("omnicanal.odoo_notas_combinado")
 
-# Las marcas. Son comentarios HTML: invisibles en la ficha de Odoo y, a la vez,
-# el único modo fiable de saber qué trozo de la nota es nuestro y cuál lo
-# escribió una persona. Cambiarlas dejaría huérfanos los bloques ya puestos.
+# Las marcas. Son comentarios HTML: invisibles en la ficha de Odoo y la forma
+# limpia de saber qué trozo de la nota es nuestro. ⚠️ EL SANEADOR DE ESTE ODOO
+# SE LAS COME (medido el 23-sep-2026, las 27 órdenes): se siguen mandando por si
+# algún día sobrevivieran, pero quien reconoce el bloque en la práctica es
+# `SELLO_VISIBLE`, abajo. Cambiarlas ya no deja huérfano nada; cambiar el TEXTO
+# del aviso, sí.
 MARCA_INI = "<!-- OMNICANAL:COMBINADO -->"
 MARCA_FIN = "<!-- /OMNICANAL:COMBINADO -->"
 _RE_BLOQUE = re.compile(re.escape(MARCA_INI) + r".*?" + re.escape(MARCA_FIN), re.S)
