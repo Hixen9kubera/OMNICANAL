@@ -216,6 +216,31 @@ export function Ventana({
   );
 }
 
+/**
+ * La ayuda de un encabezado (Brandon, 24-sep: "al pasar el cursor por el header
+ * me indique brevemente a qué se refiere cada columna, respetando los colores de
+ * Omnicanal"). CSS puro: aparece con el cursor y con el teclado (foco), en el
+ * índigo del panel. `lado` la alinea para que no se salga de la tabla en las
+ * columnas de las orillas. Escondida es `display: none`, no `invisible`: una
+ * ayuda invisible en la orilla derecha ensanchaba la página en el celular.
+ */
+export function Ayuda({ texto, children, lado = "centro" }: {
+  texto: string; children: ReactNode; lado?: "centro" | "izq" | "der";
+}) {
+  const pos = lado === "izq" ? "left-0" : lado === "der" ? "right-0" : "left-1/2 -translate-x-1/2";
+  const flecha = lado === "izq" ? "left-4" : lado === "der" ? "right-4" : "left-1/2 -translate-x-1/2";
+  return (
+    <span tabIndex={0} className="group/ayuda relative inline-flex cursor-help items-center gap-1 outline-none">
+      <span className="border-b border-dotted border-slate-300 group-hover/ayuda:border-indigo-400">{children}</span>
+      <span role="tooltip"
+            className={`pointer-events-none absolute top-full z-30 mt-2 hidden w-64 max-w-[calc(100vw-2rem)] rounded-lg bg-indigo-950 px-3 py-2 text-left text-[11.5px] font-medium normal-case leading-snug tracking-normal text-indigo-50 shadow-xl ring-1 ring-indigo-400/30 group-hover/ayuda:block group-focus/ayuda:block ${pos}`}>
+        <span className={`absolute -top-1 h-2 w-2 rotate-45 bg-indigo-950 ${flecha}`} />
+        {texto}
+      </span>
+    </span>
+  );
+}
+
 /** El botón ✕ de la esquina de una ventana. */
 export function BotonCerrar({ onClick }: { onClick: () => void }) {
   return (

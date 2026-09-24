@@ -125,6 +125,10 @@ def clasificar_canal(socio: str, piezas: float) -> str | None:
     s = _norm(socio)
     if re.match(r"^FULL\b", s) or s == "MERCADO LIBRE":
         return "meli"
+    # El socio fijo de FBA que usa «Crear FULL» es FBA con cualquier número de
+    # piezas: el umbral de abajo existe para las ventas MFN capturadas a mano.
+    if s == "AMAZON FBA":
+        return "amazon"
     if re.match(r"^AMAZON\b", s):
         return "amazon" if piezas >= UMBRAL_FBA_PIEZAS else None
     if re.match(r"^WFS\b", s):

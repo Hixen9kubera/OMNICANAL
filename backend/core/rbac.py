@@ -154,6 +154,12 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # Odoo—. Se listan aunque admin sea el default: tiene que ser una decisión
     # escrita, no un olvido (auditar_rbac.py).
     ("POST", "/api/fulfillment/crear-full/vista-previa", "operador"),
+    # v0.566.0 · la planeación en Excel y la revisión con IA tampoco escriben: son
+    # del KAM que planea. (Cada revisión con IA lee ~120 mil tokens y tarda 2-4 min;
+    # tope de dos a la vez en services/fulfillment_ia.py.) Crear, la guía y el
+    # interruptor siguen en admin por la línea de abajo.
+    ("POST", "/api/fulfillment/crear-full/excel", "operador"),
+    ("POST", "/api/fulfillment/crear-full/ia", "operador"),
     ("POST", "/api/fulfillment/crear-full", "admin"),
     # Omnicanal · las publicaciones por canal, con su `margen_pct` — mismo
     # criterio que /api/fulfillment. Es la pestaña entera y el cajón de detalle

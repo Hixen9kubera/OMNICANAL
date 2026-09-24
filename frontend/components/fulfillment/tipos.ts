@@ -232,32 +232,78 @@ export interface RespuestaEnvios {
   _cache?: { edad_s: number; ttl_s: number };
 }
 
-// ── Crear FULL ──────────────────────────────────────────────────────────────
+// ── Crear FULL: la planeación semanal por tienda ────────────────────────────
 
-/** Un SKU con venta FULL en la cuenta: los INSUMOS; la cantidad la calcula `proponer.ts`. */
-export interface FilaPropuesta {
+/**
+ * Las tiendas de la planeación. Temu y TikTok NO: son únicamente DROP (Brandon,
+ * 24-sep-2026). Lo que se queda en bodega para ellos es el «colchón para DROP».
+ */
+export type Tienda = "meli:Kubera" | "meli:San Corpe" | "amazon" | "walmart";
+export const TIENDAS: Tienda[] = ["meli:Kubera", "meli:San Corpe", "amazon", "walmart"];
+
+export type AlertaFila = "sin_categoria" | "reciclado" | "medidas" | "cerrada_en_ml";
+
+/** Un SKU publicado en una tienda: los INSUMOS; la cantidad la calcula `proponer.ts`. */
+export interface FilaPlan {
+  tienda: Tienda;
   sku: string;
+  /** El nombre de Omnicanal (core.products), como pide el prompt estándar. */
   nombre: string | null;
   product_id: number | null;
+  publicada: boolean;
   listing_id: string | null;
   url: string | null;
   situacion: string | null;
-  v30: number;
+  /** La publicación ya es FULL/FBA. null = no se sabe. */
+  en_almacen: boolean | null;
+  /** Mercado Libre la confirmó EN VIVO al armar la planeación o al buscarla. */
+  verificada: boolean;
+  titulo_mkt: string | null;
+  categoria: string | null;
+  /** Vendidas en la ventana (vv) y en los últimos 7 días. */
+  vv: number;
   v7: number;
   ultima_venta: string | null;
-  /** null = la publicación FULL no está en channel.listings: no se sabe (no es 0). */
-  stock_full: number | null;
+  /** En el almacén del marketplace HOY. null = no se sabe (WFS, sin publicación): no es 0. */
+  stock: number | null;
   en_camino: number;
   camino: string[];
   borrador: number;
   borradores: string[];
-  /** Libre por almacén (TEXCO, TEXCO II). null = el SKU no existe en Odoo. */
+  /** Libre en Odoo por almacén. null = el SKU no está en Odoo → «pendiente». */
   libre: Record<string, number> | null;
+  /** Piezas por caja del packing list. */
+  caja: number | null;
+  alertas: AlertaFila[];
+  /** Si es ganador agotado: reemplazos YA publicados con stock (mismo modelo, luego misma categoría). */
+  reemplazos: { sku: string; nombre: string | null; tipo: string; libre: number }[];
+}
+
+export interface TiendaPlan {
+  nombre: string;
+  canal: Canal;
+  cuenta: Cuenta | null;
+  almacen: "FULL" | "FBA" | "WFS";
+  destino: string;
+  socio: string;
+  publicadas: number;
+  verificadas: number;
+  filas: FilaPlan[];
+}
+
+/** Lo que SE ESTÁ MANDANDO esta semana a una tienda. */
+export interface SemanaTienda {
+  envios: number;
+  piezas: number;
+  skus: number;
+  salieron: { envios: number; piezas: number };
+  por_validar: { envios: number; piezas: number };
 }
 
 export interface BorradorFull {
   id: number;
   orden: string;
+  tienda: Tienda | null;
   cuenta: Cuenta | null;
   cuenta_regla: string;
   socio: string;
@@ -267,6 +313,7 @@ export interface BorradorFull {
   origen: string | null;
   almacen: string | null;
   panel: boolean;
+  prueba: boolean;
   piezas: number;
   skus: number;
   url: string;
@@ -280,45 +327,76 @@ export interface Interruptor {
   actualizado_at: string | null;
 }
 
+/** Los "PARÁMETROS DE ESTA CORRIDA" del prompt estándar. */
 export interface ParametrosFull {
   cobertura_dias: number;
+  ventana_dias: number;
   min_piezas: number;
-  min_ventas_30: number;
+  /** Ganador = vendió ≥ esto en la ventana (el prompt dice 3). */
+  min_ventas: number;
   dejar_en_bodega: number;
 }
 
 export interface PropuestaFull {
   generado: string;
   semana: { semana: string; anio: number; lunes: string; domingo: string };
+  ventana: { dias: number; desde: string; hasta: string };
   parametros: ParametrosFull;
   almacenes: string[];
-  cuentas: Record<Cuenta, FilaPropuesta[]>;
+  tiendas: Record<Tienda, TiendaPlan>;
   borradores: BorradorFull[];
-  zombis: { orden: string | null; salida: string | null; cuenta: Cuenta; creada: string; piezas: number }[];
-  /** Todo lo que va hacia FULL por cuenta (no sólo de los SKUs con venta). */
-  en_camino: Record<Cuenta, { piezas: number; skus: number }>;
+  zombis: { orden: string | null; salida: string | null; tienda: Tienda; cuenta: Cuenta | null; creada: string;
+            piezas: number }[];
+  esta_semana: Partial<Record<Tienda, SemanaTienda>>;
+  en_camino: Record<Tienda, { piezas: number; skus: number }>;
   interruptor: Interruptor;
+  ia_disponible: boolean;
   fuente: string;
   _cache?: { edad_s: number; ttl_s: number };
 }
 
-/** Lo que contestan la vista previa y la creación. */
+export interface ParteOrden {
+  almacen_id: number;
+  almacen: string;
+  piezas: number;
+  lineas: { sku: string; nombre: string | null; cantidad: number }[];
+}
+
+export interface OrdenCreada {
+  id: number; orden: string; estado: string; almacen: string; piezas: number; ya_existia: boolean; url?: string;
+}
+
+/** Lo que contestan la vista previa y la creación, por tienda. */
 export interface ResultadoCrear {
   ok: boolean;
   accion?: "apagado" | "creada" | "ya_existia" | "nada_que_crear" | "sin_clave";
   motivo?: string | null;
-  cuenta?: Cuenta;
-  socio?: string;
-  partes?: { almacen_id: number; almacen: string; piezas: number;
-             lineas: { sku: string; nombre: string | null; cantidad: number }[] }[];
-  recortes?: { sku: string; pedidas: number; van: number; porque: string }[];
+  prueba?: boolean;
+  tiendas?: { tienda: Tienda; nombre: string; socio: string; partes: ParteOrden[];
+              recortes: { sku: string; pedidas: number; van: number; porque: string; tienda?: Tienda }[];
+              piezas_pedidas: number; piezas: number; ordenes?: OrdenCreada[]; solicitud_guardada?: boolean }[];
   no_en_odoo?: string[];
+  avisos?: { tienda: Tienda; sku: string; aviso: string }[];
   piezas_pedidas?: number;
   piezas?: number;
-  ordenes?: { id: number; orden: string; estado: string; almacen: string; piezas: number;
-              ya_existia: boolean; url?: string }[];
   solicitud_guardada?: boolean;
   interruptor?: Interruptor;
+}
+
+export interface ResultadoGuia {
+  ok: boolean; accion: string; motivo?: string; orden?: string; referencia?: string | null; pdf?: string | null;
+}
+
+/** La revisión de la planeación con IA (Claude), ya validada por el backend. */
+export interface RevisionIA {
+  confirmacion: string;
+  resumen: string;
+  ajustes: { tienda: Tienda; sku: string; cantidad: number; motivo: string; nota: string | null }[];
+  reemplazos: { tienda: Tienda; agotado: string; reemplazo: string; tipo_match: string; motivo: string }[];
+  alertas: { tienda: string; sku: string; tipo: string; detalle: string }[];
+  descartados: Record<string, unknown>[];
+  modelo?: string;
+  tokens?: { entrada: number; salida: number };
 }
 
 // ── La ficha del SKU ────────────────────────────────────────────────────────

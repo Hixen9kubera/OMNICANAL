@@ -1001,6 +1001,92 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.566.0 — Planeación semanal de FULL por tienda y con IA: buscar SKUs, crear las órdenes por cuenta y adjuntar la guía
+
+Brandon, 24-sep, con el prompt estándar «PLANEACIÓN SEMANAL DE FULL — KUBERA / OMNICANAL»: *"crear una orden de
+prueba con el prompt de planeación semanal con datos frescos… de productos publicados en Mercado Libre POR CADA
+CUENTA… buscar los SKUs para ponerlos en la planeación, modificar sus cantidades, registrarlos en Odoo según la
+cuenta y el marketplace y después adjuntar la guía… descargar la lista sin problemas"*. Y: *"temu y tiktok son
+únicamente drop por lo que no entran en full"*.
+
+**Tiendas, cada una con SUS publicaciones.** ML Kubera, ML San Corpe, Amazon FBA y Walmart WFS se prenden y apagan
+en tarjetas (el navegador recuerda la elección; por omisión, las dos cuentas de ML) y la planeación, el Excel, la
+IA y la creación usan sólo las activas; cada tarjeta dice cuántas piezas y SKUs van a esa tienda. Lo publicado sale
+de `channel.listings` (ML activa, pausada o en revisión; Amazon lo no borrado) y **Mercado Libre se verifica EN
+VIVO** (`/items?ids=`, de 20 en 20): el stock en FULL, el estado y el título son los de ahora. Walmart se lee de
+su API en vivo (su copia en kubera es del 17-ago). Temu y TikTok no entran: son sólo DROP, y lo que se les guarda
+es el «dejar en bodega».
+
+**El saldo, como lo pidió.** *En FULL hoy* suma Kubera + San Corpe (17,300 = 12,099 + 5,201 el 24-sep).
+*Publicaciones sin FULL* (antes «agotadas en FULL»): 1,431 de 1,926. *En camino a FULL · esta semana*: piezas de
+cuántos SKUs se están mandando ESTA semana (salidas validadas desde el lunes + las que esperan validación; 1,338
+pzs de 62 SKUs en 3 envíos). *Por mandar*: la planeación, editable, con lo que se aplique de la IA.
+
+**La planeación es el prompt estándar** (`proponer.ts`): velocidad = venta de la ventana / días; objetivo =
+⌈venta × cobertura / ventana⌉; pidió = objetivo − en el almacén − en camino − en borradores (la única desviación
+deliberada: el prompt no resta lo que ya va en camino y mandaría dos veces); bodega = libre en Odoo − colchón
+DROP, repartido entre las tiendas activas que piden el mismo producto; propuesta = el menor de los dos, 0 si queda
+bajo el mínimo por renglón; estados aprobado · recorte · pendiente (sin dato de Odoo: NO es un cero) · cubierto.
+Ganador agotado = vendió ≥ 3 sin libre en Odoo ni stock en el almacén, con hasta 3 reemplazos YA publicados en
+esa tienda y con libre (primero el mismo modelo, luego la misma categoría). Cobertura, ventana (7/14/30/60/90;
+cambiarla vuelve a leer las ventas), mínimo, umbral de ganador y colchón se mueven en pantalla. Salida B–E del
+prompt: totales por tienda con tasa de validado y final contra pedido, ganadores agotados con su reemplazo, SKUs
+separados por coma (copiar) y alertas (sin categoría, título del marketplace que no se parece al producto
+—reciclados—, caja máster ~60×41×41 con ≤ 0.5 kg, publicación cerrada en ML, sin verificar en vivo). Cada
+encabezado explica su columna al pasar el cursor, en el índigo del panel. El orden de la tabla no depende de lo
+tecleado: el renglón no salta a media captura.
+
+**Buscar y agregar SKUs.** Sólo entre lo PUBLICADO en la tienda elegida, por SKU, por nombre o pegando varios
+separados por coma; la base de un modelo trae sus variantes (`JUGU-0100` → `JUGU-0100-ROJ`; antes se daba por
+«no publicado»). Lo que no está en la copia se le pregunta a ML por `seller_sku`, y lo que no existe se dice.
+
+**Revisión con IA** (`services/fulfillment_ia.py`, Claude `claude-opus-5`). Recibe el prompt estándar tal cual,
+más cómo corre dentro del panel (los datos ya vienen calculados y en vivo; no inventar cifras; MySQL congelado),
+y la planeación compacta (≤ 250 renglones por tienda). Contesta con esquema JSON: confirmación de cuentas y
+ventana, ajustes con motivo, reemplazos, alertas y resumen. Razonamiento adaptativo y reemplazo del servidor si el
+modelo declina. **Nada se aplica solo**: el servidor descarta lo que no está en la planeación o pasa de lo libre
+(se enseña qué y por qué) y cada ajuste se acepta con un clic o «Aplicar todos». Medido el 24-sep: 227 s, ~120
+mil tokens de entrada y ~21 mil de salida, 13 ajustes y 54 reemplazos válidos. La primera corrida real los
+descartó TODOS porque la IA nombró la tienda «ML Kubera»: el esquema ahora exige la llave (`meli:Kubera`) y el
+validador traduce nombres y códigos (`BEKURA`, `meli_bekura`). Corre en un hilo, dos a la vez como máximo.
+Requiere `ANTHROPIC_API_KEY` (sin ella el botón no aparece).
+
+**Excel** (`services/fulfillment_excel.py`, `POST /crear-full/excel`): Resumen, una hoja por tienda con todas las
+columnas del prompt y la publicación, Ganadores agotados con reemplazo, SKUs por coma y Alertas.
+
+**Crear en Odoo, por tienda y almacén.** «Revisar y crear» relee lo libre en Odoo y ML en vivo y enseña la vista
+previa exacta: una cotización en BORRADOR por tienda y almacén (TEXCO / TEXCO II), precio 0, sin impuestos, con
+el socio fijo de la tienda (`FULL KUBERA`, `FULL SAN CORPE`, `AMAZON FBA`, `WFS WALMART`; se crea la primera vez),
+lo libre repartido sin prometer dos veces entre tiendas, y qué se recorta y por qué. **Modo PRUEBA por omisión**:
+la orden lleva «PRUEBA · NO CONFIRMAR NI SURTIR» en la referencia y la nota, y sus borradores no se restan de la
+siguiente planeación. Idempotente por la clave de la confirmación; se relee después de crear; **nunca confirma**.
+Después, **la guía del marketplace**: número del envío + PDF → referencia del cliente y «Subir guía»
+(`meli_etiqueta_file`), sólo en órdenes que creó el panel y siguen en borrador, y se relee para confirmar. Los
+borradores del panel también la ofrecen desde la lista de borradores.
+
+**Sigue APAGADO (regla 3).** El interruptor `fulfillment_crear_full` nunca se ha movido (verificado en kubera el
+24-sep): con él apagado, «Crear» contesta la vista previa y no escribe. Lo enciende un admin desde la pantalla.
+Permisos: planeación, búsqueda, vista previa, Excel e IA son de KAM; crear, guía e interruptor, de admin.
+
+**Base de datos: la 0054 se REESCRIBIÓ y sigue SIN aplicar.** `ops.fulfillment_solicitudes` ahora guarda una fila
+por clave y TIENDA (lo sugerido, lo pedido, lo que va por almacén, los recortes y las órdenes creadas). No se
+guardó en `ops.odoo_sale_orders`: esa tabla es una VENTA por renglón con una sola orden de Odoo, y la leen para
+decidir `odoo_ventas_log` (la espera de guía que esconde stock), las guías del día, los indicadores de
+Automatización y el diagnóstico de TikTok; mezclar ahí planeaciones de FULL obligaba a filtrar en todos esos
+lectores y aun así a alterarla. Sin la tabla nada se rompe: la creación avisa `solicitud_guardada: false`.
+
+**También:** el clasificador de envíos toma el socio exacto «AMAZON FBA» como FBA aunque lleve menos de 40 piezas
+(el umbral es para las ventas MFN capturadas a mano). Las tablas largas tienen su propio scroll con el encabezado
+fijo, y en celular la pantalla ya no se ensancha (las ayudas escondidas eran `invisible` y empujaban la página).
+
+**Verificado** contra datos reales con una API local (kubera sólo SELECT, Odoo sólo lectura con las escrituras
+SIMULADAS en memoria, tokens de ML sólo leídos): 2,663 publicadas en ML Kubera (428 de 429 renglones verificados en
+vivo) y 2,679 en San Corpe (337 de 342); Amazon 1,426; Walmart 208 en vivo. Flujo completo en navegador: tiendas,
+ayudas, búsqueda, edición, Excel, IA real, vista previa (4 cotizaciones: 2 cuentas × 2 almacenes), creación de
+prueba simulada y guía adjuntada. 36 pruebas de fulfillment (la suite completa, 555, en verde), `tsc` limpio y
+`next build` en verde. **Límites:** Walmart no tiene ventas registradas y el stock de WFS no se puede leer (401):
+se planea a mano; el stock FBA es el del sync de 15 min.
+
 ### v0.565.0 — Checklist normalizado: nada de tablas repetidas, y la lista «Week 39» entra tal cual
 
 Brandon revisó la 0058 en Supabase antes de aplicarla (24-sep): *«cada SKU

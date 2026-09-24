@@ -1,137 +1,134 @@
 /**
- * La propuesta de «Crear FULL»: cuánto mandar de cada SKU a FULL.
+ * La planeación semanal: cuánto mandar de cada SKU a cada tienda, con las reglas
+ * del PROMPT ESTÁNDAR (el texto completo vive en backend/services/fulfillment_ia.py).
  *
- * Se calcula AQUÍ, en el navegador, para que mover la cobertura o el mínimo se
- * vea al instante sin volver a leer Odoo. Los insumos (ventas, stock en FULL, en
- * camino, borradores y libre por almacén) los arma
- * `backend/services/fulfillment_full.py`; el encabezado de ese archivo explica de
- * dónde sale cada uno.
+ * Se calcula AQUÍ, en el navegador, para que mover un parámetro, prender o apagar
+ * una tienda o corregir un renglón se vea al instante sin volver a leer Odoo. Los
+ * insumos los arma `backend/services/fulfillment_full.py`.
  *
- *   venta diaria = ventas FULL de 30 días / 30
- *   objetivo     = ⌈venta diaria × días de cobertura⌉
- *   necesidad    = objetivo − en FULL hoy − en camino − en borradores
- *   libre        = TEXCO + TEXCO II − lo que se deja en bodega (DROP)
- *   sugerido     = min(necesidad, libre). Si las DOS cuentas piden el mismo SKU y
- *                  no alcanza, lo libre se reparte en proporción a lo que
- *                  necesita cada una (las dos compiten por el mismo stock de
- *                  Odoo: 9 SKUs el 18-sep, y en 4 la suma pasaba lo libre).
+ *   velocidad  = vendidas en la ventana / días de la ventana
+ *   objetivo   = ⌈vendidas × cobertura / ventana⌉
+ *   pidió      = max(0, objetivo − en el almacén − en camino − en borradores)
+ *   bodega     = libre en Odoo − colchón DROP, REPARTIDO entre las tiendas activas
+ *                que piden el mismo producto (en proporción a lo que pidió cada una)
+ *   propuesta  = min(bodega, pidió); menos del mínimo por renglón → 0
+ *   estado     = aprobado (bodega ≥ pidió) · recorte (bodega < pidió) ·
+ *                pendiente (sin dato de Odoo: NO es un cero)
  *
- * Nada de esto escribe: es la sugerencia que la persona corrige renglón por
- * renglón antes de crear.
+ * UNA diferencia deliberada con el prompt: al faltante también se le resta lo que
+ * ya va en camino y lo de borradores; el prompt resta sólo el stock del almacén y
+ * mandaría dos veces lo que salió el lunes y ML todavía no recibe.
+ *
+ * Nada de esto escribe: es la sugerencia que la persona corrige antes de crear.
  */
 
-import type { Cuenta, FilaPropuesta, ParametrosFull } from "./tipos";
+import type { FilaPlan, ParametrosFull, Tienda } from "./tipos";
 
-export const CUENTAS: Cuenta[] = ["Kubera", "San Corpe"];
+export type EstadoRenglon = "aprobado" | "recorte" | "pendiente" | "cubierto";
 
-export type EstadoPropuesta =
-  | "mandar"        // necesita y Odoo alcanza
-  | "tope_odoo"     // necesita más de lo que Odoo tiene libre: va lo que hay
-  | "sin_odoo"      // necesita y Odoo no tiene (o menos del mínimo): señal de COMPRAS, no de FULL
-  | "no_en_odoo"    // el SKU no existe en Odoo
-  | "bajo_minimo"   // le falta menos del mínimo por renglón
-  | "cubierto"      // lo que hay en FULL + en camino alcanza la cobertura
-  | "poca_venta";   // vende menos del mínimo en 30 días: el ritmo es ruido
-
-export interface Propuesta extends FilaPropuesta {
-  venta_dia: number;
-  /** Cuántos días aguanta lo que hay HOY en FULL. null = stock desconocido o sin venta. */
-  aguanta: number | null;
+export interface Renglon extends FilaPlan {
+  clave: string;
+  /** Agregado a mano (búsqueda o reemplazo): no venía en la planeación. */
+  agregado?: boolean;
+  velocidad: number;
   objetivo: number;
-  necesidad: number;
+  pidio: number;
   libre_total: number | null;
-  /** Lo libre que le toca a esta cuenta después del reparto. */
-  libre_asignado: number | null;
-  sugerido: number;
-  estado: EstadoPropuesta;
-  /** Si el libre se repartió con la otra cuenta, cómo. */
-  repartido?: string;
-  /** La venta de 7 días va muy por encima del ritmo de 30. */
+  bodega: number | null;
+  propuesta: number;
+  estado: EstadoRenglon;
+  /** Vendió ≥ el umbral, sin libre en Odoo y sin stock en el almacén. */
+  ganador_agotado: boolean;
+  aguanta: number | null;
   sube: boolean;
+  repartido?: string;
+}
+
+export interface Totales {
+  renglones: number;
+  pedidas: number;
+  propuestas: number;
+  a_mandar: number;
+  skus_a_mandar: number;
+  /** bodega / pedido de los renglones revisados (sin pendientes). null = nada que medir. */
+  tasa_validado: number | null;
+  /** lo que se va a mandar contra lo pedido. */
+  final_vs_pedido: number | null;
+  pendientes: number;
 }
 
 const suma = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+export const claveDe = (t: Tienda, sku: string) => `${t}|${sku}`;
 
-export function proponer(cuentas: Partial<Record<Cuenta, FilaPropuesta[]>>,
-                         p: ParametrosFull): Record<Cuenta, Propuesta[]> {
-  const base = {} as Record<Cuenta, Propuesta[]>;
-  for (const c of CUENTAS) {
-    base[c] = (cuentas[c] ?? []).map((f) => {
-      const vd = f.v30 / 30;
-      // Multiplicar ANTES de dividir: 125/30×30 da 125.00000000000001 y el
-      // redondeo hacia arriba lo volvía 126.
-      const objetivo = Math.ceil((f.v30 * p.cobertura_dias) / 30);
-      const necesidad = objetivo - (f.stock_full ?? 0) - f.en_camino - f.borrador;
-      const libreTotal = f.libre ? Math.max(0, suma(Object.values(f.libre)) - p.dejar_en_bodega) : null;
-      return {
-        ...f, venta_dia: vd, objetivo, necesidad,
-        aguanta: vd > 0 && f.stock_full !== null ? f.stock_full / vd : null,
-        libre_total: libreTotal, libre_asignado: libreTotal, sugerido: 0, estado: "cubierto",
-        sube: vd > 0 && f.v7 / 7 > 1.5 * vd,
-      };
-    });
-  }
+export function planear(filas: FilaPlan[], p: ParametrosFull, agregadas: Set<string> = new Set()): Renglon[] {
+  const ventana = Math.max(1, p.ventana_dias);
+  const base: Renglon[] = filas.map((f) => {
+    const objetivo = Math.ceil((f.vv * p.cobertura_dias) / ventana);
+    const pidio = Math.max(0, objetivo - (f.stock ?? 0) - f.en_camino - f.borrador);
+    const libreTotal = f.libre ? Math.max(0, suma(Object.values(f.libre)) - p.dejar_en_bodega) : null;
+    const velocidad = f.vv / ventana;
+    const clave = claveDe(f.tienda, f.sku);
+    return {
+      ...f, clave, agregado: agregadas.has(clave), velocidad, objetivo, pidio,
+      libre_total: libreTotal, bodega: libreTotal, propuesta: 0, estado: "cubierto",
+      ganador_agotado: false,
+      aguanta: velocidad > 0 && f.stock !== null ? f.stock / velocidad : null,
+      sube: velocidad > 0 && f.v7 / 7 > 1.5 * velocidad,
+    };
+  });
 
-  // El mismo producto pedido por las DOS cuentas y lo libre no alcanza: se
-  // reparte en proporción a la necesidad de cada una.
-  const porProducto = new Map<number, { cuenta: Cuenta; r: Propuesta }[]>();
-  for (const c of CUENTAS) {
-    for (const r of base[c]) {
-      if (r.product_id === null || r.necesidad <= 0 || r.v30 < p.min_ventas_30) continue;
-      const lista = porProducto.get(r.product_id) ?? [];
-      lista.push({ cuenta: c, r });
-      porProducto.set(r.product_id, lista);
-    }
+  // El MISMO producto pedido por varias tiendas activas y lo libre no alcanza:
+  // se reparte en proporción a lo que pidió cada una.
+  const porProducto = new Map<number, Renglon[]>();
+  for (const r of base) {
+    if (r.product_id === null || r.pidio <= 0) continue;
+    const l = porProducto.get(r.product_id) ?? [];
+    l.push(r);
+    porProducto.set(r.product_id, l);
   }
   for (const lista of porProducto.values()) {
     if (lista.length < 2) continue;
-    const libre = lista[0].r.libre_total ?? 0;
-    const total = suma(lista.map((x) => x.r.necesidad));
+    const libre = lista[0].libre_total ?? 0;
+    const total = suma(lista.map((r) => r.pidio));
     if (total <= libre) continue;
     let resto = libre;
-    lista.forEach((x, i) => {
-      const parte = i === lista.length - 1 ? resto : Math.floor((libre * x.r.necesidad) / total);
+    lista.forEach((r, i) => {
+      const parte = i === lista.length - 1 ? resto : Math.floor((libre * r.pidio) / total);
       resto -= parte;
-      x.r.libre_asignado = parte;
-      const otra = lista.filter((y) => y !== x).map((y) => y.cuenta).join(", ");
-      x.r.repartido = `Las dos cuentas lo piden y Odoo tiene ${libre} libres: ${parte} para ${x.cuenta}, `
-        + `el resto para ${otra}.`;
+      r.bodega = parte;
+      r.repartido = `${lista.length} tiendas lo piden y Odoo tiene ${libre} libres: ${parte} para ésta.`;
     });
   }
 
-  for (const c of CUENTAS) {
-    for (const r of base[c]) {
-      if (r.v30 < p.min_ventas_30) { r.estado = "poca_venta"; continue; }
-      if (r.necesidad <= 0) { r.estado = "cubierto"; continue; }
-      if (r.necesidad < p.min_piezas) { r.estado = "bajo_minimo"; continue; }
-      if (r.libre_total === null) { r.estado = "no_en_odoo"; continue; }
-      const puede = Math.min(r.necesidad, r.libre_asignado ?? 0);
-      if (puede < p.min_piezas) { r.estado = "sin_odoo"; continue; }
-      r.sugerido = puede;
-      r.estado = puede < r.necesidad ? "tope_odoo" : "mandar";
+  for (const r of base) {
+    if (r.bodega === null) {
+      r.estado = "pendiente";
+    } else if (r.pidio <= 0) {
+      r.estado = "cubierto";
+    } else {
+      r.estado = r.bodega >= r.pidio ? "aprobado" : "recorte";
+      const n = Math.min(r.bodega, r.pidio);
+      r.propuesta = n >= p.min_piezas ? n : 0;
     }
-    // Lo más urgente arriba: lo que se manda, y dentro de eso lo que menos aguanta.
-    const peso: Record<EstadoPropuesta, number> = {
-      mandar: 0, tope_odoo: 0, sin_odoo: 1, no_en_odoo: 1, bajo_minimo: 2, cubierto: 3, poca_venta: 4,
-    };
-    base[c].sort((a, b) => peso[a.estado] - peso[b.estado]
-      || (a.aguanta ?? -1) - (b.aguanta ?? -1)
-      || b.v30 - a.v30);
+    r.ganador_agotado = r.vv >= p.min_ventas && r.libre_total === 0 && (r.stock ?? 0) === 0;
   }
   return base;
 }
 
-/** El CSV de la lista final (para quien la siga capturando a mano en Odoo). */
-export function csvDe(filas: Propuesta[], cantidades: Record<string, number>, cuenta: Cuenta): string {
-  const enc = ["sku", "producto", "cuenta", "publicacion", "vende_30d", "en_full_hoy", "en_camino",
-               "en_borradores", "libre_texco", "libre_texco_ii", "sugerido", "a_mandar"];
-  const celda = (v: unknown) => {
-    const s = v === null || v === undefined ? "" : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+/** Los totales B del prompt para un conjunto de renglones y sus cantidades finales. */
+export function totalesDe(renglones: Renglon[], cantidad: (r: Renglon) => number): Totales {
+  const revisados = renglones.filter((r) => r.estado !== "pendiente" && r.pidio > 0);
+  const pedRev = suma(revisados.map((r) => r.pidio));
+  const pedidas = suma(renglones.map((r) => r.pidio));
+  const aMandar = suma(renglones.map(cantidad));
+  return {
+    renglones: renglones.length,
+    pedidas,
+    propuestas: suma(renglones.map((r) => r.propuesta)),
+    a_mandar: aMandar,
+    skus_a_mandar: renglones.filter((r) => cantidad(r) > 0).length,
+    tasa_validado: pedRev ? Math.round((suma(revisados.map((r) => Math.min(r.bodega ?? 0, r.pidio))) / pedRev) * 1000) / 10 : null,
+    final_vs_pedido: pedidas ? Math.round((aMandar / pedidas) * 1000) / 10 : null,
+    pendientes: renglones.filter((r) => r.estado === "pendiente").length,
   };
-  const lineas = filas
-    .filter((f) => (cantidades[f.sku] ?? 0) > 0)
-    .map((f) => [f.sku, f.nombre, cuenta, f.listing_id, f.v30, f.stock_full, f.en_camino, f.borrador,
-                 f.libre?.["TEXCO"], f.libre?.["TEXCO II"], f.sugerido, cantidades[f.sku]].map(celda).join(","));
-  return [enc.join(","), ...lineas].join("\n");
 }

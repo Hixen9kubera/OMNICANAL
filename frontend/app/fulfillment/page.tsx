@@ -8,8 +8,10 @@
  * ORDEN DE APP (Brandon, 24-sep-2026): "como las aplicaciones de banco —
  * consultar el saldo y ejecutar una transacción—: primero CREAR FULL, después
  * ENVÍOS para checar los status, después ANÁLISIS". Tres pantallas y nada más:
- *   · Crear FULL  — el saldo de la cuenta y la propuesta de la semana → borrador
- *                   en Odoo (components/fulfillment/CrearFull.tsx);
+ *   · Crear FULL  — el saldo y la PLANEACIÓN SEMANAL por tienda (ML Kubera, ML San
+ *                   Corpe, Amazon FBA, Walmart WFS; Temu y TikTok son sólo DROP), con
+ *                   IA, búsqueda de SKUs y órdenes en Odoo por tienda
+ *                   (components/fulfillment/CrearFull.tsx, v0.566.0);
  *   · Envíos      — en qué va cada salida, con su detalle en ventana
  *                   (components/fulfillment/Envios.tsx);
  *   · Análisis    — enviado contra recibido, POR SEMANA
@@ -35,7 +37,7 @@ import Analisis from "@/components/fulfillment/Analisis";
 import CrearFull from "@/components/fulfillment/CrearFull";
 import { DetalleEnvioModal, TablaEnvios, seguimientoDe } from "@/components/fulfillment/Envios";
 import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, num } from "@/components/fulfillment/ui";
-import type { Cuenta, Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/components/fulfillment/tipos";
+import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/components/fulfillment/tipos";
 
 /** El rótulo se escribió así en la petición. Se cambia aquí y en AppNavbar. */
 const ROTULO = "FULLFILMENT";
@@ -67,7 +69,7 @@ export default function FulfillmentPage() {
   const [cuenta, setCuenta] = useState<FiltroCuenta>("todas");
   const [abierto, setAbierto] = useState<Envio | null>(null);
   const [recarga, setRecarga] = useState(0);
-  const [porMandar, setPorMandar] = useState<{ skus: number; piezas: number; cuenta: Cuenta } | null>(null);
+  const [porMandar, setPorMandar] = useState<{ skus: number; piezas: number; tiendas: number } | null>(null);
 
   // La pantalla viaja en el #: recargar no te regresa al inicio y se puede
   // mandar la liga de «Envíos» o «Análisis».
@@ -135,7 +137,7 @@ export default function FulfillmentPage() {
 
   // Lo que dice cada botón debajo de su nombre: el "saldo" de esa pantalla.
   const sub: Record<Pantalla, string> = {
-    crear: porMandar ? `${num(porMandar.skus)} SKUs · ${num(porMandar.piezas)} pzs por mandar (${porMandar.cuenta})` : "la propuesta de la semana",
+    crear: porMandar ? `${num(porMandar.piezas)} pzs de ${num(porMandar.skus)} SKUs por mandar · ${porMandar.tiendas} tienda${porMandar.tiendas === 1 ? "" : "s"}` : "la planeación de la semana",
     envios: datos ? `${enCurso.porValidar} por validar · ${enCurso.llegando} llegando` : "leyendo Odoo…",
     analisis: "enviado contra recibido, por semana",
   };
@@ -190,7 +192,7 @@ export default function FulfillmentPage() {
           </nav>
         </section>
 
-        {/* ── Filtros: sólo donde se ven envíos (un FULL se crea para UNA cuenta) ── */}
+        {/* ── Filtros: sólo donde se ven envíos (Crear FULL tiene sus propias tiendas) ── */}
         {pantalla !== "crear" && (
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -249,7 +251,7 @@ export default function FulfillmentPage() {
         )}
 
         {pantalla === "crear" && (
-          <CrearFull cuentaInicial={cuenta} stock={datos?.stock} rol={rol} recarga={recarga} onEstado={setPorMandar} />
+          <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} onEstado={setPorMandar} />
         )}
         {pantalla === "envios" && (datos
           ? <TablaEnvios envios={envios} total={todos.length} onAbrir={setAbierto} />
