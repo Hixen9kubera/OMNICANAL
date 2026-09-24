@@ -25,8 +25,13 @@ export interface GuiaOrden {
   orden: string;
   venta: string;
   canal: string;
+  /** Cuándo NACIÓ la orden en Odoo: el día que se eligió arriba. */
   fecha: string | null;
   fecha_dia: string;
+  /** Cuándo entró la VENTA. Desde la creación diferida (23-sep) puede ser de
+   *  un día anterior: la orden nace cuando aparece la guía. */
+  vendida_at: string | null;
+  vendida_dia: string;
   almacen: string;
   guia: string;
   paqueteria: string;
@@ -44,11 +49,28 @@ export interface GuiasDia {
   fecha: string;
   canal: string;
   odoo_ok: boolean;
+  /** Por dónde se contó el día: `odoo` = por `create_date` de la orden (el
+   *  hecho); `bitacora` = por la fecha de la VENTA, porque Odoo no contestó. */
+  dia_por?: "odoo" | "bitacora";
+  /** false = el día se contó por la bitácora y bajo la creación diferida eso no
+   *  es una aproximación: es OTRO día. El archivo sale igual (falla hacia
+   *  mostrar) pero no se puede empacar por él. */
+  dia_confiable?: boolean;
+  aviso_dia?: string | null;
+  /** Ventas que comparten guía con una orden de este día y todavía NO tienen
+   *  orden en Odoo: esa caja va incompleta. No son renglones de la tabla —de
+   *  ellas no hay nada que empacar— sino un aviso. */
+  hermanas_sin_orden?: { canal: string; venta: string; guia: string }[];
+  aviso_hermana_sin_orden?: string | null;
   ordenes: GuiaOrden[];
   resumen: {
     total: number; del_dia: number; de_otro_dia: number; con_guia: number; sin_guia: number;
     sin_pdf: number; combinados: number; canceladas: number; piezas: number;
     etiquetas: number; sin_etiqueta: number;
+    /** De `del_dia`, las que nacieron de una venta de un día anterior. */
+    de_venta_anterior?: number;
+    /** Órdenes de este día cuya caja lleva además una venta sin orden todavía. */
+    con_hermana_sin_orden?: number;
     /** De `etiquetas`, las que también salen en el PDF de otro día / de uno anterior. */
     etiquetas_otro_dia: number; etiquetas_dia_anterior: number;
   };

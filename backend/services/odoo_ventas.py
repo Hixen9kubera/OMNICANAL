@@ -212,6 +212,211 @@ def fijar_canal(canal: str, encendido: bool, quien: str = "",
         return {**estado_interruptor(), "ok": False, "motivo": str(exc)[:300]}
 
 
+# ── El interruptor de ESPERAR LA GUÍA (23-sep-2026) ─────────────────────────
+# "Sólo crear el ESPACIO de la orden en omnicanal… pero NO generar la orden en
+# Odoo hasta tener la guía de Temu" (Brandon). Con esto encendido para un canal,
+# `crear_orden` calcula todo y NO escribe; la orden nace después, en el trabajo
+# de guías, cuando el canal por fin entrega la guía.
+#
+# Vive en la misma tabla y con la misma forma que el switch por canal, por lo
+# mismo: apagarlo no puede exigir un deploy. Llave
+# `odoo_ventas_espera_guia_canal_<canal>`.
+_FLAG_ESPERA = "odoo_ventas_espera_guia"
+_cache_espera: dict[str, dict[str, Any]] = {}
+
+# QUIÉN CREA LA ORDEN DESPUÉS. Es el trabajo de guías de cada canal, y por eso
+# esta bandera FALLA CERRADO si ese trabajo está apagado: diferir la creación
+# sin nadie que la retome deja la venta en el limbo para siempre. Mejor una
+# orden de más en el tablero del almacén que una venta que nunca llega.
+_JOB_GUIAS = {"tiktok": "tiktok_guias_enabled", "temu": "temu_guias_enabled"}
+
+
+def _flag_espera(canal: str) -> str:
+    return f"{_FLAG_ESPERA}_canal_{canal}"
+
+
+def espera_guia_activa(canal: str, refrescar: bool = False) -> bool:
+    """
+    ¿Este canal ESPERA la guía para crear la orden? ⚠️ BLOQUEA: desde un hilo.
+
+    Dice sólo eso. NO dice si se va a crear: eso lo deciden los interruptores de
+    arriba, que mandan (ver `crear_orden`). Con `SOLO_REGISTRO=true` esto no
+    cambia nada, porque no había nada que diferir.
+    """
+    canal = (canal or "").lower()
+    if canal not in _CANALES_POSIBLES:
+        return False
+    if not bool(getattr(settings, _JOB_GUIAS.get(canal, ""), False)):
+        # El trabajo que crearía la orden después no corre: se crea al vender,
+        # como siempre. Se avisa fuerte porque es una bandera encendida que no
+        # está haciendo lo que su nombre dice.
+        if _pidio_espera(canal):
+            log.warning("odoo_ventas: %s pide esperar la guía pero su trabajo de "
+                        "guías (%s) está APAGADO: nadie crearía la orden después. "
+                        "Se sigue creando al vender.", canal, _JOB_GUIAS.get(canal))
+            _avisar_huerfanas(canal)
+        return False
+    c = _cache_espera.setdefault(canal, {"valor": None, "ts": 0.0})
+    ahora = time.time()
+    if refrescar or c["valor"] is None or (ahora - c["ts"]) > _TTL:
+        c.update(**_pedir_flag_espera(canal), ts=ahora)
+    return bool(c["valor"])
+
+
+# Cada cuánto se puede repetir el aviso de huérfanas por canal. `espera_guia_
+# activa` se llama una vez por venta; sin esta pausa, un día con tráfico llenaría
+# la campana con la misma noticia.
+_AVISO_HUERFANAS_S = 3600.0
+_aviso_huerfanas: dict[str, float] = {}
+
+
+def _avisar_huerfanas(canal: str) -> int:
+    """
+    Cuenta las esperas que se quedaron SIN NADIE QUE LAS CREE y lo sube a la
+    campana. ⚠️ BLOQUEA (ya corre dentro del hilo de `crear_orden`). Nunca lanza.
+
+    EL CASO. La guarda de arriba falla cerrado sólo HACIA ADELANTE: al apagar el
+    trabajo de guías, las ventas nuevas vuelven a crearse al vender. Pero las
+    filas `espera_guia` que YA existían no las retoma nadie —el scheduler ni
+    siquiera registra el job—: siguen escondiendo stock hasta caducar y después
+    desaparecen sin orden. Y el aviso que había ("espera pedida, pero inactiva")
+    suena a configuración incoherente, no a nueve ventas en el limbo.
+
+    Así que se dice el NÚMERO, y se dice por la campana, que es donde se mira
+    cuando nadie está abriendo el panel. La salida a mano es
+    `POST /api/automatizacion/espera/drenar`.
+    """
+    ahora = time.time()
+    if ahora - _aviso_huerfanas.get(canal, 0.0) < _AVISO_HUERFANAS_S:
+        return 0
+    _aviso_huerfanas[canal] = ahora
+    try:
+        from services import odoo_ventas_log
+        n = int((odoo_ventas_log.contar_esperas(
+            canal, dias=_dias_espera()) or {}).get("ventas") or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_avisar_huerfanas(%s): %s", canal, exc)
+        return 0
+    if not n:
+        return 0
+    msg = (f"{n} venta(s) de {canal} esperan su guía y su trabajo de guías "
+           f"({_JOB_GUIAS.get(canal)}) está APAGADO: nadie va a crear esas "
+           f"órdenes en Odoo, y mientras tanto siguen escondiendo su stock. "
+           f"Se drenan con POST /api/automatizacion/espera/drenar?canal={canal}.")
+    log.error("odoo_ventas: %s", msg)
+    try:
+        from services import alertas
+        # `avisar_estado` y no `avisar`: esto DURA días (el job sigue apagado
+        # hasta que alguien lo encienda), y con `avisar` serían cuatro mensajes
+        # idénticos al día. Además así se anuncia la recuperación —el drenaje o
+        # el reencendido— en vez de que el aviso se apague en silencio.
+        alertas.avisar_estado(
+            f"odoo_espera_huerfana:{canal}", "huerfanas", msg,
+            texto_ok=(f"Ya no quedan ventas de {canal} esperando guía sin quién "
+                      f"las cree."))
+    except Exception as exc:  # noqa: BLE001 — la campana nunca rompe nada
+        log.debug("_avisar_huerfanas: no se pudo subir a la campana (%s)", exc)
+    return n
+
+
+def _dias_espera() -> int:
+    """
+    LA VENTANA DE LA ESPERA, en un solo sitio. ⚠️ Leerla de aquí y de ningún
+    otro lado es el arreglo, no un detalle.
+
+    Había TRES ajustes que decían ser el mismo: `odoo_ventas_espera_guia_dias`
+    (que usa `stock_watch._ventana_pendientes` para decidir cuánto stock
+    esconder) y `temu_guias_dias`/`tiktok_guias_dias` (que el scheduler le pasa
+    al trabajo de guías y llegaban hasta `pendientes_sin_orden`). Coincidían en
+    14 por omisión y los comentarios afirmaban que no podían desincronizarse.
+
+    Podían. Bajar `TEMU_GUIAS_DIAS` a 7 —una variable de rendimiento, nadie
+    pensaría que toca inventario— dejaba siete días de mercancía escondida sin
+    nadie que fuera a crear la orden; subirlo a 21 hacía lo contrario y peor:
+    las piezas volvían al anaquel el día 14 mientras el trabajo todavía crearía
+    la orden el 20, y se sobrevende. Ahora la ventana de la espera es ÉSTA, el
+    `dias` del job manda sólo sobre la cola de Odoo, y no hay dos números que
+    puedan separarse.
+    """
+    return max(1, int(getattr(settings, "odoo_ventas_espera_guia_dias", 14) or 14))
+
+
+def _huerfanas(canal: str) -> dict[str, Any]:
+    """Las esperas vivas de un canal, para el panel. ⚠️ BLOQUEA. Nunca lanza."""
+    try:
+        from services import odoo_ventas_log
+        return odoo_ventas_log.contar_esperas(canal, dias=_dias_espera())
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_huerfanas(%s): %s", canal, exc)
+        return {"ventas": 0, "mas_vieja_h": 0.0}
+
+
+def _limite_espera(limite: int) -> int:
+    """El tope de la mitad de espera de la cola. Usa
+    `ODOO_VENTAS_ESPERA_GUIA_LIMITE` —que hasta ahora no leía NADIE: una
+    variable de configuración que nadie lee es una promesa de control que no
+    existe— y nunca pide más de lo que cabe en la vuelta."""
+    return max(1, min(int(limite),
+                      int(getattr(settings, "odoo_ventas_espera_guia_limite", 60) or 60)))
+
+
+def _pedir_flag_espera(canal: str) -> dict[str, Any]:
+    """El valor persistido del switch, o el de la variable de entorno."""
+    from services import supabase_db as sdb
+    fila = None
+    try:
+        fila = sdb.fetch_one(
+            "select valor, motivo, actualizado_por from ops.automatizacion_flags "
+            "where flag = %(f)s", {"f": _flag_espera(canal)})
+    except Exception as exc:  # noqa: BLE001
+        log.debug("odoo_ventas: espera de guía de %s no legible (%s)", canal, exc)
+    if fila:
+        return {"valor": bool(fila["valor"]), "persistido": True,
+                "por": fila.get("actualizado_por"), "motivo": fila.get("motivo")}
+    return {"valor": _por_omision_espera(canal), "persistido": False,
+            "por": None, "motivo": None}
+
+
+def _por_omision_espera(canal: str) -> bool:
+    crudo = str(getattr(settings, "odoo_ventas_espera_guia_canales", "") or "")
+    return canal in {x.strip().lower() for x in crudo.split(",") if x.strip()}
+
+
+def _pidio_espera(canal: str) -> bool:
+    """¿Alguien pidió esperar la guía en este canal? SIN mirar si se puede.
+    Sólo para avisar del caso incoherente; no decide nada."""
+    c = _cache_espera.get(canal)
+    if c and c.get("valor") is not None:
+        return bool(c["valor"])
+    return _por_omision_espera(canal)
+
+
+def fijar_espera_guia(canal: str, encendido: bool, quien: str = "",
+                      motivo: str = "") -> dict[str, Any]:
+    """Mueve el switch de "esperar la guía" de UN canal. Nunca lanza."""
+    from services import supabase_db as sdb
+    canal = (canal or "").lower()
+    if canal not in _CANALES_POSIBLES:
+        return {"ok": False, "motivo": f"canal '{canal}' no soportado"}
+    try:
+        sdb.execute(
+            """insert into ops.automatizacion_flags
+                   (flag, valor, motivo, actualizado_at, actualizado_por)
+               values (%(f)s, %(v)s, %(m)s, now(), %(q)s)
+               on conflict (flag) do update set
+                   valor = excluded.valor, motivo = excluded.motivo,
+                   actualizado_at = now(), actualizado_por = excluded.actualizado_por""",
+            {"f": _flag_espera(canal), "v": bool(encendido),
+             "m": (motivo or "")[:300] or None, "q": (quien or "")[:120] or None})
+        log.warning("Esperar la guía para crear en Odoo · canal %s: %s por %s%s", canal,
+                    "ENCENDIDO" if encendido else "APAGADO", quien or "?",
+                    f" — {motivo}" if motivo else "")
+        return {"ok": True, **estado_interruptor()}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("no se pudo mover la espera de guía del canal %s", canal)
+        return {**estado_interruptor(), "ok": False, "motivo": str(exc)[:300]}
+
+
 def estado_interruptor() -> dict[str, Any]:
     """Lo que pinta el switch: el general, y el de cada canal."""
     habilitado(refrescar=True)
@@ -219,11 +424,36 @@ def estado_interruptor() -> dict[str, Any]:
     for c in sorted(_CANALES_POSIBLES):
         canal_activo(c, refrescar=True)
         d = _cache_canales.get(c, {})
+        espera = _pedir_flag_espera(c)
+        _cache_espera.setdefault(c, {}).update(**espera, ts=time.time())
+        # UNA sola vez: además de leer la guarda del job, puede disparar el
+        # aviso de huérfanas (y ése hace una consulta y habla con la campana).
+        activa = espera_guia_activa(c)
         canales_estado[c] = {
             "encendido": bool(d.get("valor")),
             "persistido": bool(d.get("persistido")),
             "actualizado_por": d.get("por"),
             "motivo": d.get("motivo"),
+            # Lo que alguien PIDIÓ y lo que de verdad está pasando: si el
+            # trabajo de guías está apagado, el switch dice "sí" y el flujo
+            # crea al vender. La pantalla tiene que poder decir las dos cosas.
+            #
+            # `refrescar=False` a propósito: el caché se acaba de llenar dos
+            # líneas arriba con `_pedir_flag_espera`, y pedirlo otra vez sería
+            # una segunda lectura a kubera POR CANAL en un endpoint que ya
+            # bloquea. Lo único que añade esta llamada es la guarda del job.
+            "espera_guia": bool(espera["valor"]),
+            "espera_guia_activa": activa,
+            "espera_guia_persistida": bool(espera["persistido"]),
+            "espera_guia_por": espera.get("por"),
+            # CUÁNTAS quedaron colgadas. Sólo se cuenta cuando la espera está
+            # PEDIDA pero el trabajo de guías apagado, que es el único caso en
+            # que el número cambia lo que hay que hacer: el chip ámbar pasa de
+            # "espera pedida, pero inactiva" —que suena inocuo— a "9 ventas sin
+            # quién las cree". Una consulta más sólo en ese caso.
+            "espera_huerfanas": (
+                int((_huerfanas(c) or {}).get("ventas") or 0)
+                if bool(espera["valor"]) and not activa else 0),
         }
     return {
         "encendido": bool(_cache["valor"]),
@@ -499,6 +729,25 @@ def pendientes_de_guia(canal: str, dias: int = 14,
                    "context": {"bin_size": True}})
     if not ordenes:
         return []
+    return _cola_desde_ordenes(ordenes, limite)
+
+
+def _cola_desde_ordenes(ordenes: list[dict[str, Any]], limite: int,
+                        siempre_partes: bool = False) -> list[dict[str, Any]]:
+    """
+    De órdenes de Odoo ya leídas a renglones de cola. ⚠️ BLOQUEA (lee entregas).
+
+    Es el cuerpo que comparten `pendientes_de_guia` —la cola del canal entero—
+    y `cola_de_una_venta` —el renglón de UNA venta recién creada—. Se extrajo al
+    diferir la creación hasta la guía: la orden nace y hay que escribirle el
+    número y el PDF EN LA MISMA VUELTA (`fijar_etiqueta` sólo sube a órdenes
+    confirmadas), así que hace falta armar su renglón sin esperar a la siguiente
+    barrida por fecha.
+
+    `siempre_partes` cuelga `partes` también a las ventas de UNA sola orden.
+    `dividida` sigue significando lo de siempre —dos o más órdenes vivas— y es
+    lo que decide el camino del emparejador; `partes` es sólo la forma de datos.
+    """
     todos = [i for o in ordenes for i in (o.get("picking_ids") or [])]
     ids_faltan: set[int] = set()
     if todos:
@@ -518,11 +767,11 @@ def pendientes_de_guia(canal: str, dias: int = 14,
     # Todas las órdenes vivas de cada venta partida, tengan trabajo o no: para
     # emparejar paquetes hace falta saber qué lleva CADA parte, también la que
     # ya quedó completa (un SKU repartido entre las dos no sirve para decidir).
-    todas_divididas: dict[str, list[dict[str, Any]]] = {}
+    todas_ordenes: dict[str, list[dict[str, Any]]] = {}
     for o in ordenes:
         venta = str(o["client_order_ref"]).split("#", 1)[0]
-        if "#" in str(o["client_order_ref"]):
-            todas_divididas.setdefault(venta, []).append(o)
+        if siempre_partes or "#" in str(o["client_order_ref"]):
+            todas_ordenes.setdefault(venta, []).append(o)
         pend = [i for i in (o.get("picking_ids") or []) if i in ids_faltan]
         # El PDF sólo va a órdenes CONFIRMADAS (el flujo de Brandon: confirmar,
         # luego la etiqueta). Una en borrador espera: entra a la cola en la
@@ -542,12 +791,51 @@ def pendientes_de_guia(canal: str, dias: int = 14,
     # orden viva (la otra se canceló, o la #2 nunca se llegó a crear) es una
     # venta de una orden: va por el camino de siempre, el probado en producción,
     # y no por el emparejador.
-    todas_divididas = {v: os for v, os in todas_divididas.items() if len(os) >= 2}
+    divididas = {v for v, os in todas_ordenes.items() if len(os) >= 2}
     salida = list(por_venta.values())[:int(limite)]
-    divididas = [d for d in salida if d["order_id"] in todas_divididas]
-    if divididas:
-        _agregar_partes(divididas, todas_divididas, ids_faltan)
+    con_partes = [d for d in salida
+                  if d["order_id"] in (todas_ordenes if siempre_partes else divididas)]
+    if con_partes:
+        _agregar_partes(con_partes, todas_ordenes, ids_faltan, divididas)
     return salida
+
+
+def cola_de_una_venta(canal: str, order_id: str) -> dict[str, Any] | None:
+    """
+    El renglón de cola de UNA venta, leído de Odoo ahora mismo. ⚠️ BLOQUEA.
+
+    Para la creación diferida: la orden acaba de nacer y hay que escribirle el
+    número y subirle el PDF SIN esperar a la vuelta siguiente. Devuelve la misma
+    forma que `pendientes_de_guia` (con `partes` siempre, aunque sea una sola),
+    o `None` si a esa venta ya no le falta nada.
+
+    Se le pregunta a ODOO, nunca a la bitácora: el renglón tiene que describir lo
+    que de verdad quedó escrito, incluido lo que pusiera otra persona a mano.
+    """
+    canal = (canal or "").lower()
+    partner = _PARTNER.get(canal)
+    if not partner or not str(order_id or "").strip():
+        return None
+    venta = str(order_id).strip()
+    ordenes = _kw("sale.order", "search_read",
+                  [[["partner_id", "=", partner], ["state", "!=", "cancel"],
+                    "|", ["client_order_ref", "=", venta],
+                    ["client_order_ref", "=like", f"{venta}#%"]]],
+                  {"fields": ["name", "client_order_ref", "picking_ids", "state",
+                              "meli_etiqueta_file"],
+                   "order": "id asc", "context": {"bin_size": True}}) or []
+    # `=like` trata `_` como comodín: se re-filtra por la forma exacta, igual
+    # que en `partes_de_ventas`.
+    propias = []
+    for o in ordenes:
+        ref = str(o.get("client_order_ref") or "")
+        base, sep, suf = ref.partition("#")
+        if base == venta and (not sep or suf.isdigit()):
+            propias.append(o)
+    if not propias:
+        return None
+    filas = _cola_desde_ordenes(propias, 1, siempre_partes=True)
+    return filas[0] if filas else None
 
 
 # ── Surtido dividido: una venta, varias órdenes, quizá varios paquetes ──────
@@ -645,8 +933,16 @@ def _cantidades(lineas: list[dict[str, Any]] | None) -> dict[str, float] | None:
 
 def _agregar_partes(items: list[dict[str, Any]],
                     todas: dict[str, list[dict[str, Any]]],
-                    ids_faltan: set[int]) -> None:
+                    ids_faltan: set[int],
+                    divididas: set[str] | None = None) -> None:
     """Le cuelga `dividida` y `partes` a los renglones de venta partida.
+
+    `divididas` son las ventas con DOS O MÁS órdenes vivas. Con `siempre_partes`
+    entran aquí también las de una sola orden —para que el emparejador pueda
+    trabajar con la misma forma de datos— y ésas salen con `dividida=False`:
+    seguir el camino del surtido dividido con una sola parte sería mentirle al
+    resumen. Sin el argumento, todas cuentan como divididas (los llamadores
+    viejos sólo mandaban ésas).
 
     Si leer las líneas falla, las partes salen con `skus=None`: el refresco
     sólo podrá aplicar la regla del paquete único y lo demás lo deja para la
@@ -677,7 +973,7 @@ def _agregar_partes(items: list[dict[str, Any]],
                 "cantidades": (_cantidades(por_orden.get(int(o["id"])))
                                if por_orden is not None else None),
             })
-        d["dividida"] = True
+        d["dividida"] = (divididas is None or d["order_id"] in divididas)
         d["partes"] = partes
 
 
@@ -1127,7 +1423,8 @@ def buscar_por_ref(canal: str, order_id: str) -> dict[str, Any] | None:
 def crear_orden(canal: str, order_id: str, fecha: str | None,
                 items: list[dict[str, Any]],
                 confirmar: bool | None = None,
-                dry_run: bool = False) -> dict[str, Any]:
+                dry_run: bool = False,
+                esperar_guia: bool | None = None) -> dict[str, Any]:
     """
     La orden de venta en Odoo. Idempotente por `client_order_ref`.
 
@@ -1139,6 +1436,11 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
     endpoint `/simular`: sin este parámetro, "simular" dejaría de simular en
     cuanto alguien apagara `SOLO_REGISTRO`, y el que lo llamara para mirar
     estaría creando órdenes de verdad.
+
+    `esperar_guia` decide si esta venta sólo deja su ESPACIO (`None` = pregunta
+    al switch del canal, que es lo que hace el camino de una venta). El trabajo
+    de guías pasa `False` cuando ya tiene la guía en la mano y viene a crear de
+    verdad: sin eso, la venta volvería a diferirse y la orden no nacería jamás.
 
     NUNCA lanza: la llama el camino de una venta, y una venta no se puede caer
     porque Odoo no contestó. Un pedido sin orden en Odoo se repara; una venta
@@ -1167,8 +1469,20 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
 
     if confirmar is None:
         confirmar = bool(getattr(settings, "odoo_ventas_confirmar", False))
-    solo_registro = (dry_run or apagado_general or apagado_canal
-                     or bool(getattr(settings, "odoo_ventas_solo_registro", True)))
+    solo_registro_cfg = bool(getattr(settings, "odoo_ventas_solo_registro", True))
+
+    # ESPERAR LA GUÍA es el escalón de MÁS ARRIBA de la escalera, y por eso se
+    # pregunta al final: sólo difiere lo que de verdad se iba a crear. Con el
+    # general apagado, el canal apagado o SOLO_REGISTRO encendido no hay nada
+    # que diferir, y decir "espera guía" ahí escondería el motivo real detrás de
+    # uno nuevo. El orden del `accion` de abajo repite esta misma prioridad.
+    espera = False
+    if (not dry_run and not apagado_general and not apagado_canal
+            and not solo_registro_cfg):
+        espera = (espera_guia_activa(canal) if esperar_guia is None
+                  else bool(esperar_guia))
+    solo_registro = (dry_run or apagado_general or apagado_canal or espera
+                     or solo_registro_cfg)
     partner = _PARTNER.get(canal)
     if not partner:
         return {"ok": False, "motivo": f"canal '{canal}' sin partner configurado"}
@@ -1247,12 +1561,18 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
             accion = ("simulado" if dry_run
                       else "apagado" if apagado_general
                       else "canal_apagado" if apagado_canal
+                      else "espera_guia" if espera
                       else "solo_registro")
             motivos = {
                 "apagado": "el interruptor general está apagado: se midió el "
                            "stock y no se escribió en Odoo",
                 "canal_apagado": f"el canal {canal} está apagado: se midió el "
                                  "stock y no se escribió en Odoo",
+                # NO es un error y la pantalla no debe pintarlo como tal: es el
+                # ESPACIO de la orden. La orden nace cuando el canal entregue la
+                # guía, y entonces esta misma fila se rellena.
+                "espera_guia": "esperando la guía del canal para crear la orden "
+                               "en Odoo: se midió el stock y no se escribió nada",
             }
             return {"ok": True, "accion": accion, "canal": canal,
                     "motivo": motivos.get(accion),
@@ -1336,6 +1656,397 @@ def crear_orden(canal: str, order_id: str, fecha: str | None,
         log.exception("odoo_ventas.crear_orden(%s, %s) falló", canal, order_id)
         return {"ok": False, "motivo": str(exc)[:300], "canal": canal,
                 "order_id": order_id}
+
+
+# ── Creación diferida: la orden nace cuando aparece la guía ─────────────────
+#
+# EL BLOQUEADOR QUE HUBO QUE RESOLVER. `pendientes_de_guia` le pregunta a ODOO
+# quién espera guía, y una venta sin orden no existe para Odoo: la cola se
+# quedaría vacía y nadie crearía nada. Así que la cola se INVIERTE — la parte de
+# las ventas sin orden sale de la bitácora (`ops.odoo_sale_orders`).
+#
+# ⚠️ Y LA CONDICIÓN DE SALIDA DE ESA COLA ES UN HECHO DE ODOO
+# (`odoo_order_id is not null`), NUNCA la columna `guia`. Es exactamente la
+# lección que ya está escrita en `pendientes_de_guia`: la primera versión de la
+# cola de guías elegía por esa columna, que el seam de la venta rellena en
+# cualquier re-aviso SIN tocar Odoo, y las filas salían de la cola con la
+# entrega vacía PARA SIEMPRE. Aquí sería peor: saldrían sin orden, y la venta
+# nunca llegaría al almacén.
+
+def cola_de_guias(canal: str, dias: int = 14,
+                  limite: int = 60) -> list[dict[str, Any]]:
+    """
+    La cola COMPLETA del trabajo de guías. ⚠️ BLOQUEA: llamar desde un hilo.
+
+    Dos orígenes, y por eso son dos consultas y no una:
+      · las ventas que YA tienen orden en Odoo y a las que les falta el número
+        o el PDF (`pendientes_de_guia`, la de siempre);
+      · las que sólo tienen su ESPACIO —`accion='espera_guia'` y sin
+        `odoo_order_id`— y cuya orden hay que CREAR en cuanto haya guía
+        (`odoo_ventas_log.pendientes_sin_orden`), marcadas con `espera_guia`.
+
+    Las que esperan van PRIMERO: son las que todavía no le han dicho nada al
+    almacén. Si una venta apareciera en las dos —la bitácora no alcanzó a
+    anotar el `odoo_order_id`— gana la de Odoo, que es el hecho; la
+    idempotencia de `crear_orden` la cubre de todos modos.
+
+    LOS DOS FALLOS NO SON SIMÉTRICOS, a propósito:
+      · si la BITÁCORA no contesta, se sigue con la cola de siempre. Perder las
+        que esperan sólo aplaza su orden una vuelta, y parar por eso dejaría sin
+        guía a las que ya tienen orden;
+      · si ODOO no contesta, esto LANZA y el trabajo entero se detiene con su
+        error a la vista. Sin Odoo no se puede crear ni escribir nada, así que
+        seguir sólo gastaría cuota del canal y llenaría el resumen de fallos
+        que no dicen nada. Los dos trabajos ya lo atrapan y reportan
+        `error: cola: …`; es el comportamiento que tenían antes de esto.
+    """
+    canal = (canal or "").lower()
+    espera: list[dict[str, Any]] = []
+    try:
+        from services import odoo_ventas_log
+        # ⚠️ `dias` MANDA SÓLO SOBRE LA COLA DE ODOO. La mitad de espera usa
+        # `_dias_espera()`, que es la MISMA ventana que `stock_watch` usa para
+        # decidir cuánto stock esconder. Antes aquí se pasaba el `dias` del job,
+        # así que `TEMU_GUIAS_DIAS` —una variable de rendimiento que nadie
+        # relacionaría con inventario— movía la ventana de creación y la
+        # desalineaba de la del inventario: a la baja, días de mercancía
+        # escondida sin nadie que creara la orden; al alza, piezas devueltas al
+        # anaquel mientras el trabajo todavía las crearía. Ver `_dias_espera`.
+        espera = odoo_ventas_log.pendientes_sin_orden(
+            canal, dias=_dias_espera(), limite=_limite_espera(limite))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cola_de_guias(%s): la bitácora no contestó (%s); sólo van las "
+                    "que ya tienen orden", canal, str(exc)[:150])
+    con_orden = pendientes_de_guia(canal, dias, limite)
+    ya = {str(d["order_id"]) for d in con_orden}
+    espera = [d for d in espera if str(d["order_id"]) not in ya]
+
+    # EL LÍMITE ES DE LA VUELTA, NO DE CADA ORIGEN. Sumar dos colas de `limite`
+    # duplicaría el trabajo por vuelta sin que nadie lo hubiera pedido. Y se
+    # reparte a MEDIAS en vez de dar prioridad a uno: con la cola de espera por
+    # delante, un atasco de ventas por crear dejaría sin guía a las órdenes que
+    # ya existen —el almacén las tiene impresas y esperando el número— y al
+    # revés, una cola larga de guías retrasaría para siempre las ventas que el
+    # almacén todavía no ve. Cada mitad que sobra se la queda la otra.
+    tope = max(1, int(limite))
+    if len(espera) + len(con_orden) > tope:
+        mitad = tope // 2
+        n_esp = min(len(espera), max(mitad, tope - len(con_orden)))
+        espera, con_orden = espera[:n_esp], con_orden[:tope - n_esp]
+    return espera + con_orden
+
+
+def mantener_espera(canal: str, forzar: bool = False) -> dict[str, Any]:
+    """
+    El mantenimiento de la cola de espera, antes de cada vuelta del trabajo de
+    guías. ⚠️ BLOQUEA: llamar desde un hilo. Nunca lanza. **No escribe en Odoo.**
+
+    Tres cosas, y cada una tapa una forma distinta de perder una venta:
+
+    1 · REPONER LOS ESPACIOS QUE NO SE ESCRIBIERON. Con la creación diferida, la
+        fila de la bitácora dejó de ser una bitácora y pasó a ser el ÚNICO
+        camino por el que una venta llega a Odoo — y falla en silencio
+        (`registrar` devuelve False y el seam se lo traga). Un tropiezo de dos
+        minutos de kubera y esas ventas no existen para nadie: ni orden, ni
+        espacio, ni resta de stock, y el sondeo no vuelve a pasar por ellas.
+        Aquí se vuelve a mirar `channel.orders` y se les crea el espacio que les
+        faltaba. Se pasa `esperar_guia=True` EXPLÍCITO: esta reposición no puede
+        escribir en Odoo ni por accidente.
+
+    2 · CADUCAR lo que ya no va a resolver, para que no se esfume en silencio al
+        cumplir la ventana (ver `odoo_ventas_log.caducar_esperas`).
+
+    3 · VINCULAR lo que alguien creó a mano. Bajo el régimen diferido esto dejó
+        de ser un extra: es lo que apaga la resta de stock cuando la orden
+        aparece por un camino que no es el nuestro, y lo que repara la fila
+        cuando la bitácora no se enteró de una orden que sí nació. Por eso corre
+        aquí, dentro del trabajo que sí está encendido, y no sólo detrás de
+        `ODOO_VENTAS_VINCULAR_ENABLED`.
+
+    Todo esto sólo corre cuando el canal está de verdad en régimen diferido.
+    `forzar=True` es el DRENAJE A MANO (el trabajo de guías está apagado y hay
+    cola huérfana): hace 2 y 3 —que son reparaciones y siempre son correctas—
+    pero NO 1, porque con el régimen apagado una venta nueva ya se crea al
+    vender y reponerle un "espacio" sería inventar una espera que nadie pidió.
+    """
+    r: dict[str, Any] = {"canal": canal, "espacios_repuestos": 0,
+                         "espacios_fallidos": 0, "caducadas": 0, "vinculadas": 0}
+    activo = espera_guia_activa(canal)
+    if not activo and not forzar:
+        return {**r, "nota": "el canal no espera la guía: no hay nada que mantener"}
+    from services import odoo_ventas_log
+
+    dias = _dias_espera()
+    # 1 · los espacios que no quedaron escritos
+    faltan: list[dict[str, Any]] = []
+    if activo:
+        try:
+            horas = max(1, int(getattr(settings, "odoo_ventas_espera_repone_h", 48) or 48))
+            faltan = odoo_ventas_log.ventas_sin_fila(canal, horas=horas)
+        except Exception as exc:  # noqa: BLE001
+            faltan = []
+            r["error_reponer"] = str(exc)[:150]
+            log.warning("mantener_espera(%s): no se pudo mirar channel.orders: %s",
+                        canal, str(exc)[:150])
+    for v in faltan:
+        try:
+            fecha = v["creado_at"].isoformat() if v.get("creado_at") else None
+            res = crear_orden(canal, str(v["order_id"]), fecha,
+                              list(v.get("items") or []), esperar_guia=True)
+            if odoo_ventas_log.registrar(canal, v["cuenta"], str(v["order_id"]),
+                                         res, list(v.get("items") or [])):
+                r["espacios_repuestos"] += 1
+            else:
+                r["espacios_fallidos"] += 1
+        except Exception as exc:  # noqa: BLE001 — una mala no detiene las demás
+            r["espacios_fallidos"] += 1
+            log.warning("mantener_espera(%s): no se pudo reponer el espacio de "
+                        "%s: %s", canal, v.get("order_id"), str(exc)[:150])
+    if r["espacios_repuestos"] or r["espacios_fallidos"]:
+        log.warning("Odoo %s: %s venta(s) no tenían ni su ESPACIO en la bitácora "
+                    "(kubera no contestó al venderse). Repuestos: %s, fallidos: %s.",
+                    canal, len(faltan), r["espacios_repuestos"], r["espacios_fallidos"])
+        _avisar_espacios_perdidos(canal, len(faltan), r["espacios_fallidos"])
+
+    # 2 · las que se pasaron de la ventana
+    try:
+        r["caducadas"] = int(odoo_ventas_log.caducar_esperas(
+            canal, dias=dias).get("caducadas") or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mantener_espera(%s): caducar falló: %s", canal, str(exc)[:150])
+
+    # 3 · las que alguien creó a mano
+    try:
+        r["vinculadas"] = int(odoo_ventas_log.vincular_sin_orden(
+            canal, dias=max(dias, 30)).get("vinculadas") or 0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("mantener_espera(%s): vincular falló: %s", canal, str(exc)[:150])
+    return r
+
+
+def _avisar_espacios_perdidos(canal: str, vistas: int, fallidos: int) -> None:
+    """La campana cuando hubo ventas sin espacio. Nunca lanza."""
+    try:
+        from services import alertas
+        alertas.avisar(
+            f"odoo_espacio_perdido:{canal}",
+            f"{vistas} venta(s) de {canal} se registraron SIN su espacio en la "
+            f"bitácora (kubera no contestó en el instante de la venta). Sin esa "
+            f"fila no hay orden en Odoo, no se ven en /automatizacion y su stock "
+            f"se vuelve a ofrecer. Repuestas: {vistas - fallidos}; "
+            f"todavía sin espacio: {fallidos}.")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("_avisar_espacios_perdidos: %s", exc)
+
+
+def drenar_espera(canal: str, limite: int = 60) -> dict[str, Any]:
+    """
+    Crea las órdenes de la cola de espera AUNQUE el trabajo de guías esté
+    apagado. ⚠️ BLOQUEA. Nunca lanza.
+
+    Es la salida a mano del caso que deja huérfanas: se apaga
+    `TEMU_GUIAS_ENABLED`/`TIKTOK_GUIAS_ENABLED` con ventas ya esperando, las
+    nuevas vuelven a crearse al vender (falla cerrado) y las que estaban en la
+    cola no las retoma NADIE. Hasta ahora la única salida era volver a encender
+    el trabajo entero.
+
+    Devuelve la cola para que el que llama —el endpoint— la recorra con el
+    canal en la mano: aquí no se sabe pedir una guía a Temu ni a TikTok.
+    """
+    from services import odoo_ventas_log
+    try:
+        cola = odoo_ventas_log.pendientes_sin_orden(
+            canal, dias=_dias_espera(), limite=_limite_espera(limite))
+    except Exception as exc:  # noqa: BLE001
+        return {"canal": canal, "error": str(exc)[:200], "pendientes": 0}
+    return {"canal": canal, "pendientes": len(cola), "cola": cola}
+
+
+def crear_con_guia(canal: str, cuenta: str, order_id: str, fecha: str | None,
+                   items: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Ahora que la venta tiene guía: crea la orden, la confirma, y devuelve su
+    renglón de cola para escribirle el número y el PDF EN LA MISMA VUELTA.
+    ⚠️ BLOQUEA: llamar desde un hilo. Nunca lanza.
+
+    EL PLAN DE ALMACENES SE RECALCULA, no se reusa. `crear_orden` vuelve a
+    preguntar `free_qty` y a correr `planear_almacenes` con el stock de HOY, y
+    eso es el punto: entre la venta y la guía pasan uno o dos días (Temu:
+    mediana 28.4 h), y el almacén que cubría entonces puede no cubrir ahora —o
+    al revés, una recepción puede haber vuelto innecesario partir la venta.
+    Surtir por la foto de anteayer es surtir de un almacén vacío.
+
+    La foto VIEJA no se pierde ni se pisa: vive en `ops.odoo_sale_order_items.
+    stock_libre` (la del instante de la venta, el único dato irrecuperable de la
+    tabla) y la bitácora nunca la re-escribe. Lo que sí se actualiza es la
+    DECISIÓN —almacén, cobertura, total—, porque la de la fila era la de un plan
+    que no llegó a ejecutarse. Si el plan cambió, se dice en el motivo.
+
+    Devuelve `{ok, accion, resultado, cola, motivo}`. `cola` es el renglón de
+    `cola_de_una_venta` (o None si a la orden ya no le falta nada).
+    """
+    from services import odoo_ventas_log
+
+    antes = {}
+    try:
+        antes = odoo_ventas_log.plan_guardado(canal, cuenta, order_id) or {}
+    except Exception as exc:  # noqa: BLE001 — sólo sirve para redactar el motivo
+        log.debug("crear_con_guia: no se pudo leer el plan guardado de %s (%s)",
+                  order_id, exc)
+
+    r = crear_orden(canal, str(order_id), fecha, items, esperar_guia=False)
+    if not r.get("odoo_id"):
+        # No nació. Se deja la fila como está —sigue en espera— y la vuelta
+        # siguiente lo reintenta: la cola se vacía por el HECHO de que exista la
+        # orden, así que un fallo nunca la saca. Sólo se anota el tropiezo.
+        motivo = (r.get("motivo") or r.get("accion")
+                  or "Odoo no creó la orden y no dijo por qué")
+        log.warning("Odoo %s: la venta %s ya tiene guía pero la orden NO se creó "
+                    "(%s): %s", canal, order_id, r.get("accion"), motivo)
+        try:
+            odoo_ventas_log.anotar_intento(canal, cuenta, order_id, motivo)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("crear_con_guia: no se pudo anotar el intento (%s)", exc)
+        return {"ok": False, "accion": r.get("accion") or "error",
+                "resultado": r, "cola": None, "motivo": motivo}
+
+    if r.get("accion") == "ya_existia":
+        # Alguien la creó a mano entre la venta y ahora (o `vincular_sin_orden`
+        # no llegó primero). No hay plan nuevo que contar y no se pisa el viejo:
+        # `crear_orden` sale por idempotencia antes de calcular nada.
+        #
+        # PERO puede estar en BORRADOR —la capturaron y no la confirmaron— y un
+        # borrador NO reserva. Se intenta confirmar aquí, una vez: si no, la
+        # fila saldría de la resta de stock (ya tiene `odoo_order_id`) sin que
+        # Odoo hubiera apartado una sola pieza.
+        r = _confirmar_si_borrador(canal, order_id, r)
+        cambio = "La orden ya existía en Odoo: sólo se vincula."
+    else:
+        cambio = _cambio_de_plan(antes, r)
+    horas = _horas_desde(antes.get("creado_at"))
+    # ⚠️ ORDEN EXISTE ≠ ORDEN RESERVA. `crear_orden` devuelve
+    # `no_se_pudo_confirmar` CON `odoo_id` cuando Odoo la dejó en borrador. Eso
+    # no es una creación lograda: no reserva, el stock se sigue ofreciendo y hay
+    # que volver a intentarlo. Se escribe el id igual —el hecho de que la orden
+    # existe no se puede perder, y `piezas_sin_orden` sigue restándole las
+    # piezas por su ACCIÓN, no por el id— pero se devuelve `ok=False` para que
+    # el trabajo lo cuente como intento fallido y no como `creadas`.
+    sin_reservar = r.get("accion") == odoo_ventas_log.ACCION_SIN_RESERVA
+    r = dict(r, motivo=(("Orden creada al aparecer la guía"
+                         if not sin_reservar else
+                         "Orden creada al aparecer la guía pero SIN CONFIRMAR "
+                         "(no reserva)")
+                        + (f", {horas:.1f} h después de la venta" if horas else "")
+                        + ". " + cambio
+                        + (" " + (r.get("motivo") or "") if sin_reservar else "")))
+    anotada = False
+    try:
+        anotada = bool(odoo_ventas_log.registrar(canal, cuenta, str(order_id), r,
+                                                 items, refrescar_plan=True))
+    except Exception as exc:  # noqa: BLE001 — la orden ya existe; eso es lo que no se pierde
+        log.warning("crear_con_guia: la bitácora de %s no se pudo actualizar: %s",
+                    order_id, str(exc)[:150])
+    if not anotada:
+        # EL PEOR CRUCE, y no se cura solo. La orden nació (Odoo YA reservó) y
+        # la bitácora no se enteró: la fila se queda `espera_guia` con
+        # `odoo_order_id` NULL y `piezas_sin_orden` sigue restando sus piezas
+        # ENCIMA de la reserva. No es una pasada: es cada 20 minutos hasta que
+        # caduque o alguien corra `vincular_sin_orden` (que está detrás de otra
+        # bandera y puede estar apagada). Con los SKUs sin holgura eso es dejar
+        # de vender. Así que se reintenta el UPDATE MÍNIMO —cuatro columnas,
+        # ninguna línea—, que tiene mucha más probabilidad de pasar.
+        try:
+            if odoo_ventas_log.fijar_orden(
+                    canal, cuenta, str(order_id), int(r["odoo_id"]),
+                    nombre=str(r.get("nombre") or ""),
+                    estado=str(r.get("estado") or ""),
+                    accion=str(r.get("accion") or ""),
+                    motivo=str(r.get("motivo") or "")):
+                log.warning("crear_con_guia: la bitácora de %s no aceptó el "
+                            "registro completo, pero SÍ el id de la orden (%s): "
+                            "la resta de stock deja de duplicarse.",
+                            order_id, r.get("odoo_id"))
+            else:
+                log.error("crear_con_guia: la orden %s de la venta %s existe en "
+                          "Odoo y la bitácora NO lo sabe. Mientras siga así, su "
+                          "stock se descuenta DOS veces (reserva + resta).",
+                          r.get("nombre"), order_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("crear_con_guia: ni el id de la orden de %s se pudo "
+                      "anotar (%s)", order_id, str(exc)[:150])
+
+    cola = None
+    try:
+        cola = cola_de_una_venta(canal, str(order_id))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("crear_con_guia: no se pudo armar el renglón de cola de %s: %s",
+                    order_id, str(exc)[:150])
+    log.info("Odoo %s: venta %s → %s creada AL APARECER LA GUÍA (%s). %s",
+             canal, order_id, r.get("nombre"), r.get("accion"), cambio)
+    if sin_reservar:
+        log.warning("Odoo %s: la orden %s de la venta %s se quedó EN BORRADOR: no "
+                    "reserva. Se cuenta como intento fallido y se reintenta la "
+                    "vuelta siguiente; su stock se sigue restando mientras tanto.",
+                    canal, r.get("nombre"), order_id)
+    return {"ok": not sin_reservar, "accion": r.get("accion"), "resultado": r,
+            "cola": cola, "motivo": r.get("motivo")}
+
+
+def _confirmar_si_borrador(canal: str, order_id: str,
+                           r: dict[str, Any]) -> dict[str, Any]:
+    """
+    Una orden que YA EXISTÍA pero está en `draft` no reserva: se intenta
+    confirmar una vez y se re-lee. ⚠️ BLOQUEA. Nunca lanza.
+
+    Se RE-LEE a propósito, no se supone: `action_confirm` contesta igual cuando
+    no mueve nada — la misma lección que `cancelar_orden` ya tenía escrita. Si
+    sigue en borrador, la acción pasa a `no_se_pudo_confirmar` y con eso
+    `piezas_sin_orden` le sigue restando las piezas y el panel la pide a mano.
+    """
+    if str(r.get("estado") or "") != "draft":
+        return r
+    if not bool(getattr(settings, "odoo_ventas_confirmar", False)):
+        return r
+    oid = int(r["odoo_id"])
+    try:
+        _kw("sale.order", "action_confirm", [[oid]])
+        leida = _kw("sale.order", "read", [[oid], ["name", "state"]])[0]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("crear_con_guia: no se pudo confirmar el borrador %s de %s: %s",
+                    oid, order_id, str(exc)[:150])
+        leida = {"state": "draft"}
+    if leida.get("state") == "sale":
+        log.info("Odoo %s: la orden %s de %s estaba en borrador y se confirmó.",
+                 canal, r.get("nombre"), order_id)
+        return dict(r, estado="sale", accion="confirmada")
+    return dict(r, estado=leida.get("state") or "draft",
+                accion="no_se_pudo_confirmar",
+                motivo=(f"La orden ya existía en '{leida.get('state')}' y no se "
+                        "pudo confirmar: NO reserva, el stock se sigue ofreciendo."))
+
+
+def _cambio_de_plan(antes: dict[str, Any], ahora: dict[str, Any]) -> str:
+    """Una frase que dice si el almacén de hoy es el del día de la venta."""
+    viejo = str(antes.get("almacen") or "").strip()
+    nuevo = str(ahora.get("almacen") or "").strip()
+    cob_v = str(antes.get("cobertura") or "").strip()
+    cob_n = str(ahora.get("cobertura") or "").strip()
+    if not viejo:
+        return f"Almacén: {nuevo or '—'} (cobertura {cob_n or '—'})."
+    if viejo == nuevo and cob_v == cob_n:
+        return (f"Plan de almacenes recalculado con stock de hoy: igual que el día "
+                f"de la venta ({nuevo}, cobertura {cob_n or '—'}).")
+    return (f"Plan de almacenes recalculado con stock de hoy: CAMBIÓ — el día de "
+            f"la venta era {viejo} (cobertura {cob_v or '—'}) y hoy es "
+            f"{nuevo or '—'} (cobertura {cob_n or '—'}).")
+
+
+def _horas_desde(cuando: Any) -> float | None:
+    """Horas entre `cuando` (datetime de la bitácora) y ahora. None si no se sabe."""
+    if not isinstance(cuando, datetime):
+        return None
+    ref = cuando if cuando.tzinfo else cuando.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ref).total_seconds() / 3600.0)
 
 
 def notar_combinados(canal: str, dias: int = 21, limite: int = 300,

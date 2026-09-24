@@ -33,6 +33,20 @@
  * existe y el cliente ya pagó. Un solo rojo volvía a aplanar lo que este
  * rediseño vino a separar.
  *
+ * ─────────────────────────────────────────────────────────────────────────
+ * "ESPERANDO GUÍA": UNA CUARTA FAMILIA (23-sep-2026)
+ * ─────────────────────────────────────────────────────────────────────────
+ * Con la creación diferida, una venta puede quedarse un día o dos SIN ORDEN
+ * EN ODOO, esperando que el canal dé la guía. Eso no cabía en las tres
+ * familias: no pide que nadie repare nada (no es roja), no terminó bien
+ * todavía (no es verde) y no es inerte —es una venta viva y el reloj corre—.
+ * Lleva barra CIAN, chip con la antigüedad, su propio contador por canal y su
+ * filtro, y NO entra en "lo que requiere acción": esperar es lo normal.
+ *
+ * Y obligó a reencuadrar el distintivo viejo: "falta la guía" describía por
+ * igual a la venta sin orden y a la orden sin guía, que para quien surte son
+ * cosas opuestas. Ver el bloque "LAS DOS ESPERAS" más abajo.
+ *
  * Solo admin: la orden trae la guía del comprador.
  */
 
@@ -81,14 +95,21 @@ const CANALES = [
 
 type CanalId = (typeof CANALES)[number]["id"];
 
-/** Las cinco variantes visuales. `marca` vacía = sin barra, que es lo que
- *  separa a los inertes de todo lo demás. */
+/** Las variantes visuales. `marca` vacía = sin barra, que es lo que separa a
+ *  los inertes de todo lo demás.
+ *
+ *  `espera` es de la creación diferida (23-sep): la venta dejó su ESPACIO y su
+ *  orden nace cuando aparezca la guía. NO es un fallo —nada salió mal y nadie
+ *  tiene que reparar nada—, pero tampoco es inerte: es una venta viva que está
+ *  pasando algo. Por eso lleva barra (como las que piden atención) en CIAN, que
+ *  no es ninguno de los dos rojos ni el verde de "salió bien". */
 const V = {
   rojo:     { marca: "#E11D48", filaBg: "#FFFBFB", punto: "#E11D48", color: "#9F1239", peso: 700, motivoColor: "#be123c" },
   ambar:    { marca: "#F59E0B", filaBg: "#FFFDF7", punto: "#F59E0B", color: "#92400E", peso: 700, motivoColor: "#b45309" },
   ok:       { marca: "#A7F3D0", filaBg: "#ffffff", punto: "#10B981", color: "#334155", peso: 600, motivoColor: "#94a3b8" },
   inerte:   { marca: "",        filaBg: "#ffffff", punto: "#CBD5E1", color: "#94A3B8", peso: 500, motivoColor: "#b6c0cf" },
   obs:      { marca: "",        filaBg: "#ffffff", punto: "#7DD3FC", color: "#64748B", peso: 500, motivoColor: "#94a3b8" },
+  espera:   { marca: "#7DD3FC", filaBg: "#F9FDFF", punto: "#0EA5E9", color: "#075985", peso: 600, motivoColor: "#0284c7" },
   dividido: { marca: "#818CF8", filaBg: "#FAFBFF", punto: "#4F46E5", color: "#3730A3", peso: 700, motivoColor: "#4338ca" },
 } as const;
 
@@ -105,6 +126,14 @@ const ESTADOS: Record<string, { txt: string; v: Variante; urgente?: string }> = 
   error:                  { txt: "Error", v: "rojo" },
   no_se_pudo_confirmar:   { txt: "No se pudo confirmar", v: "rojo", urgente: "Sobreventa viva" },
   no_se_pudo_cancelar:    { txt: "No se pudo cancelar", v: "rojo", urgente: "Orden viva, venta muerta" },
+  // Pasaron los días de la ventana y el canal nunca dio la guía: su orden ya no
+  // nace sola. En ROJO y no en cian: la espera dejó de ser "esperar es lo
+  // normal" y pasó a ser una venta que nadie va a surtir si no la capturan.
+  espera_caducada:        { txt: "Esperó su guía y caducó", v: "rojo", urgente: "Nadie va a crear esta orden" },
+  // ── En curso: no salió nada mal, todavía no termina ──────────────────
+  // La venta apartó su lugar y su orden nace cuando el canal dé la guía
+  // (creación diferida, 23-sep). El almacén no tiene nada que surtir de ésta.
+  espera_guia:            { txt: "Esperando guía", v: "espera" },
   // ── Salieron bien ────────────────────────────────────────────────────
   confirmada:             { txt: "Confirmada (Odoo reservó)", v: "ok" },
   creada:                 { txt: "Creada (en borrador)", v: "ok" },
@@ -112,6 +141,10 @@ const ESTADOS: Record<string, { txt: string; v: Variante; urgente?: string }> = 
   // ── No piden nada ────────────────────────────────────────────────────
   nacio_cancelada:        { txt: "Nació cancelada", v: "inerte" },
   sin_orden:              { txt: "Cancelada · no había orden", v: "inerte" },
+  // Se canceló mientras esperaba la guía: nunca hubo orden y ya no la habrá.
+  // Es la mitad buena de la creación diferida —TikTok cancela el 58% de sus
+  // ventas—: esa orden fantasma ya no llega al tablero del almacén.
+  cancelada_sin_orden:    { txt: "Cancelada esperando guía", v: "inerte" },
   ya_cancelada:           { txt: "Ya estaba cancelada", v: "inerte" },
   cancelada:              { txt: "Cancelada", v: "inerte" },
   apagado:                { txt: "Apagado", v: "inerte" },
@@ -230,9 +263,23 @@ interface Estado {
       persistido: boolean;
       actualizado_por: string | null;
       motivo: string | null;
+      /** LO QUE SE PIDIÓ: crear la orden hasta que aparezca la guía. */
+      espera_guia?: boolean;
+      /** LO QUE DE VERDAD PASA. Falla cerrado: si el trabajo de guías del canal
+       *  está apagado, nadie retomaría la venta, así que se ignora la espera y
+       *  se crea al vender. Las dos llaves existen para poder decirlo. */
+      espera_guia_activa?: boolean;
+      espera_guia_persistida?: boolean;
+      espera_guia_por?: string | null;
+      /* Ventas que se quedaron esperando sin nadie que cree su orden, porque el
+         trabajo de guías del canal está apagado. Sólo viene con número en ese
+         caso; 0 en cualquier otro. */
+      espera_huerfanas?: number;
     }>;
   };
-  resumen: { total_30d: number; parciales: number; errores: number; nota?: string };
+  resumen: { total_30d: number; parciales: number; errores: number; nota?: string;
+             espacios_30d?: number; caducadas_30d?: number;
+             por_accion?: Record<string, number> };
   publicaciones?: Record<string, { total: number; activas: number | null }>;
 }
 
@@ -285,19 +332,41 @@ const dinero = (n: number | null) =>
  *  del backend (`solo_problemas`), y tiene que seguir siéndolo: dos criterios
  *  que contestan la misma pregunta y no coinciden es peor que no tener filtro. */
 function pideAccion(o: OrdenOdoo): boolean {
-  return o.cobertura === "parcial"
-    || ["error", "sku_sin_producto", "no_se_pudo_cancelar", "no_se_pudo_confirmar"]
+  /* La ESPERA no pide nada: `desenlace` la pinta cian diciendo "esperar es lo
+     normal", y dejarla dentro del filtro contradecía a la propia fila. Su
+     `cobertura` es el plan del dry-run del día de la venta, que `crear_con_guia`
+     vuelve a calcular con el stock del día en que nazca la orden: alarmar por él
+     es alarmar por una reserva que ni se ha intentado. Y `espera_caducada` SÍ
+     pide: pasaron los 14 días, nadie va a crear esa orden sola. */
+  return (!esperandoGuia(o) && o.cobertura === "parcial")
+    || ["error", "sku_sin_producto", "no_se_pudo_cancelar", "no_se_pudo_confirmar",
+        "espera_caducada"]
         .includes(o.accion);
 }
+
+/** ¿Esta venta sólo tiene su ESPACIO? Es decir: quedó registrada, se le calculó
+ *  el plan, y su orden en Odoo NO existe todavía porque se espera la guía.
+ *
+ *  Se piden las DOS cosas —la acción y que no haya orden— a propósito: en
+ *  cuanto la orden nace, la bitácora pisa `espera_guia` con `confirmada`, pero
+ *  si una vuelta se quedara a medias (orden creada, bitácora sin escribir), el
+ *  `odoo_order_id` manda. Es el mismo criterio con el que sale de la cola en el
+ *  backend: un HECHO DE ODOO, nunca la columna `guia`. */
+const esperandoGuia = (o: OrdenOdoo) => o.accion === "espera_guia" && !o.odoo_order_id;
 
 /** El desenlace de una venta, ya resuelto a estilo.
  *
  *  ORDEN DE PRECEDENCIA, y no es arbitrario:
- *    1. `parcial` gana sobre todo — se creó sin respaldo, y eso es lo que hay
- *       que saber aunque la acción diga "confirmada".
+ *    0. `espera_guia` gana sobre la cobertura: lo que hay guardado es un PLAN
+ *       que nunca se ejecutó (se recalcula al crear, con el stock de ese día),
+ *       y pintarlo "sin respaldo de inventario" en ámbar sería alarmar por una
+ *       reserva que ni siquiera se ha intentado.
+ *    1. `parcial` gana sobre lo demás — se creó sin respaldo, y eso es lo que
+ *       hay que saber aunque la acción diga "confirmada".
  *    2. `dividida` después — es información, no fallo.
  *    3. la acción, para todo lo demás. */
 function desenlace(o: OrdenOdoo): { txt: string; v: Variante; urgente?: string } {
+  if (esperandoGuia(o)) return ESTADOS.espera_guia;
   if (o.cobertura === "parcial") {
     return { txt: "Sin respaldo de inventario", v: "ambar" };
   }
@@ -431,8 +500,9 @@ function Escalon({ id }: { id: Estado["odoo_ventas"]["escalon_id"] }) {
 
 function Kpi({
   rotulo, valor, pie, tono,
-}: { rotulo: string; valor: number; pie: string; tono?: "ambar" | "rojo" }) {
-  const color = tono === "ambar" ? "#B45309" : tono === "rojo" ? "#9F1239" : "#0f172a";
+}: { rotulo: string; valor: number; pie: string; tono?: "ambar" | "rojo" | "espera" }) {
+  const color = tono === "ambar" ? "#B45309" : tono === "rojo" ? "#9F1239"
+              : tono === "espera" ? "#0369A1" : "#0f172a";
   return (
     <div className="border-l px-[22px] py-[14px] first:border-l-0" style={{ borderColor: "#eef1f6" }}>
       <div className="text-[11px] font-bold uppercase tracking-[.07em] text-slate-400">
@@ -558,13 +628,28 @@ function enlaceVenta(o: OrdenOdoo, ventaUrl: string) {
   };
 }
 
-/* ══ FALTA GENERAR GUÍA (Brandon, 18-sep) ═════════════════════════════════
-   "un tag o algo visual donde indique qué órdenes no tienen guía y hace falta
-   generarla". La guía la da el canal cuando alguien COMPRA el envío (Temu) o
-   lo AGENDA (TikTok): hasta entonces la orden de Odoo existe, pero la caja no
-   puede salir. Sólo se marcan órdenes VIVAS con orden en Odoo y de los últimos
-   14 días —la misma ventana que los refrescos de guías—: una venta vieja sin
-   guía ya no la va a traer nadie, y marcarla sólo sería ruido. */
+/* ══ LAS DOS ESPERAS, que no son la misma (23-sep) ════════════════════════
+   Desde la creación diferida hay DOS estados que se podrían contar con las
+   mismas palabras —"falta la guía"— y significan cosas distintas para quien
+   surte:
+
+     ORDEN CREADA, SIN GUÍA  → la orden ya está en Odoo y el almacén la ve en
+       su tablero, pero la caja no puede salir hasta que alguien compre el
+       envío (Temu) o lo agende (TikTok).  ·  `TagFaltaGuia`
+     ESPERANDO GUÍA          → NO hay orden en Odoo. La venta dejó su espacio
+       aquí y nada más; no hay nada que surtir ni nada que buscar en Odoo, y la
+       orden nacerá sola cuando la guía aparezca.  ·  `TagEsperandoGuia`
+
+   Por eso el distintivo viejo dejó de decir "Falta generar guía" a secas y
+   ahora dice de quién habla ("Orden creada · falta la guía"). El atajo al
+   seller center es el MISMO en los dos: es el mismo botón el que destraba las
+   dos esperas.
+
+   El de la orden creada es de Brandon (18-sep): "un tag o algo visual donde
+   indique qué órdenes no tienen guía y hace falta generarla". Sólo se marcan
+   órdenes VIVAS con orden en Odoo y de los últimos 14 días —la misma ventana
+   que los refrescos de guías—: una venta vieja sin guía ya no la va a traer
+   nadie, y marcarla sólo sería ruido. */
 const ACCIONES_CON_ORDEN_VIVA = new Set(["confirmada", "creada", "ya_existia", "no_se_pudo_confirmar"]);
 const VENTANA_GUIA_H = 14 * 24;
 
@@ -597,6 +682,12 @@ function nivelGuia(o: OrdenOdoo) {
   return { edad, fondo: "#FEF3C7", tinta: "#92400E", borde: "#FCD34D", urgente: false };
 }
 
+/** El atajo que destraba la espera: la venta en el seller center, que es donde
+ *  se compra (Temu) o se agenda (TikTok) el envío. Es el mismo para los dos
+ *  distintivos. */
+const textoAtajo = (canal: string) =>
+  canal === "tiktok" ? "Agendar envío en TikTok" : "Comprar envío en Temu";
+
 /** El distintivo, con el atajo a la venta en el seller center para generar el
  *  envío. `compacto` para los recuadros del surtido dividido. */
 function TagFaltaGuia({ o, ventaUrl, compacto = false }: {
@@ -604,20 +695,81 @@ function TagFaltaGuia({ o, ventaUrl, compacto = false }: {
 }) {
   const n = nivelGuia(o);
   const venta = enlaceVenta(o, ventaUrl);
-  const accion = o.canal === "tiktok" ? "Agendar envío en TikTok" : "Comprar envío en Temu";
   return (
     <span className="inline-flex max-w-full flex-wrap items-center gap-x-[8px] gap-y-[3px]">
       <span className="inline-flex items-center gap-[5px] rounded-full px-[8px] py-[2px] text-[10.5px] font-extrabold"
-            title="La orden de Odoo existe, pero el canal todavía no da guía: hay que generar el envío en el seller center."
+            title={"La orden YA EXISTE en Odoo y el almacén la ve, pero el canal todavía no da "
+                   + "guía: hay que generar el envío en el seller center. (Distinto de "
+                   + "«Esperando guía», donde ni siquiera hay orden.)"}
             style={{ background: n.fondo, color: n.tinta, boxShadow: `inset 0 0 0 1px ${n.borde}` }}>
         <AlertTriangle className="h-3 w-3 shrink-0" />
-        {compacto ? "Falta guía" : "Falta generar guía"} · {n.edad}{n.urgente ? " · urgente" : ""}
+        {compacto ? "Falta la guía" : "Orden creada · falta la guía"} · {n.edad}
+        {n.urgente ? " · urgente" : ""}
       </span>
       {venta && !compacto && (
         <a href={venta.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
            className="inline-flex items-center gap-[4px] text-[10.5px] font-bold underline"
            style={{ color: n.tinta }}>
-          <ExternalLink className="h-3 w-3" />{accion}
+          <ExternalLink className="h-3 w-3" />{textoAtajo(o.canal)}
+        </a>
+      )}
+    </span>
+  );
+}
+
+/* ── ESPERANDO GUÍA: la venta apartada, sin orden en Odoo ────────────────── */
+
+/** Cuánto lleva esperando esta venta, contado desde que el cliente compró (o
+ *  desde que la procesamos, si el canal no dijo cuándo). */
+const horasEsperando = (o: OrdenOdoo) => horasDesde(o.venta_at ?? o.creado_at) ?? 0;
+
+/** El tono sube con la espera, pero NUNCA arranca en rojo: esperar es lo normal
+ *  (Temu: mediana 28.4 h, p75 63.3 h). Pasadas las 72 h ya es raro, y pasada la
+ *  ventana de la cola (14 d) nadie va a crear esa orden: ahí sí es un problema
+ *  y hay que capturarla a mano o cancelarla. */
+function nivelEspera(h: number) {
+  const edad = h < 1 ? "recién" : h < 24 ? `hace ${Math.floor(h)} h` : `hace ${Math.floor(h / 24)} d`;
+  if (h >= VENTANA_GUIA_H) {
+    return { edad, fondo: "#FFF1F2", tinta: "#9F1239", borde: "#FDA4AF", aviso: "fuera de plazo" };
+  }
+  if (h >= 72) return { edad, fondo: "#FFF7ED", tinta: "#9A3412", borde: "#FDBA74", aviso: "" };
+  return { edad, fondo: "#F0F9FF", tinta: "#075985", borde: "#7DD3FC", aviso: "" };
+}
+
+/** El distintivo de la venta que espera su guía. NO lleva el triángulo de
+ *  aviso: no es un fallo. Con la guía ya en la bitácora dice otra cosa —la
+ *  orden nace en la próxima vuelta del trabajo de guías—, porque una guía
+ *  puesta por un re-aviso del canal NO saca a la venta de la cola: de ahí sale
+ *  por tener orden en Odoo, nunca por tener guía. */
+function TagEsperandoGuia({ o, ventaUrl, compacto = false }: {
+  o: OrdenOdoo; ventaUrl: string; compacto?: boolean;
+}) {
+  const h = horasEsperando(o);
+  const n = nivelEspera(h);
+  const venta = enlaceVenta(o, ventaUrl);
+  const conGuia = Boolean((o.guia ?? "").trim());
+  return (
+    <span className="inline-flex max-w-full flex-wrap items-center gap-x-[8px] gap-y-[3px]">
+      <span className="inline-flex items-center gap-[5px] rounded-full px-[8px] py-[2px] text-[10.5px] font-extrabold"
+            title={conGuia
+              ? "El canal ya dio la guía. La orden en Odoo nace en la próxima vuelta del "
+                + "trabajo de guías, con su número y su PDF puestos en la misma vuelta."
+              : "La venta está apartada aquí y su orden en Odoo NO existe todavía: nace "
+                + "cuando el canal dé la guía. No hay nada que surtir ni que buscar en Odoo. "
+                + "(Distinto de «Orden creada · falta la guía».)"}
+            style={{ background: conGuia ? "#ECFDF5" : n.fondo,
+                     color: conGuia ? "#047857" : n.tinta,
+                     boxShadow: `inset 0 0 0 1px ${conGuia ? "#6EE7B7" : n.borde}` }}>
+        <Clock className="h-3 w-3 shrink-0" />
+        {conGuia
+          ? (compacto ? "Guía lista" : "Guía lista · la orden nace en la próxima vuelta")
+          : <>Esperando guía · {n.edad}{n.aviso ? ` · ${n.aviso}` : ""}</>}
+      </span>
+      {venta && !compacto && !conGuia && (
+        <a href={venta.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+           className="inline-flex items-center gap-[4px] text-[10.5px] font-bold underline"
+           style={{ color: n.tinta }}>
+          <ExternalLink className="h-3 w-3" />{textoAtajo(o.canal)}
         </a>
       )}
     </span>
@@ -841,15 +993,38 @@ function FilaOrden({
           )}
         </div>
         <div className="min-w-0">
-          <div className="truncate font-mono text-[13px] font-bold"
-               style={{ color: o.odoo_name ? (d.v === "inerte" ? "#94a3b8" : "#0f172a") : "#cbd5e1" }}>
-            {o.odoo_name ?? "—"}
-          </div>
+          {/* Un guión no distingue "no se pudo crear" de "todavía no toca".
+              Con la creación diferida hay que decir cuál de las dos es. */}
+          {!o.odoo_name && esperandoGuia(o) ? (
+            <div className="truncate text-[12px] font-bold" style={{ color: "#0284c7" }}>
+              aún sin orden
+            </div>
+          ) : (
+            <div className="truncate font-mono text-[13px] font-bold"
+                 style={{ color: o.odoo_name ? (d.v === "inerte" ? "#94a3b8" : "#0f172a") : "#cbd5e1" }}>
+              {o.odoo_name ?? "—"}
+            </div>
+          )}
           <IdVenta id={o.external_order_id} url={ventaUrl} />
         </div>
-        <div className="truncate text-[12px] font-semibold text-slate-600">{o.almacen ?? "—"}</div>
+        {/* "(plan)" también aquí. El detalle ya lo decía —"sin orden todavía,
+            el almacén no es un hecho"— y la LISTA es donde el almacén planea el
+            día: quien marca "Sólo esperando guía" lee esta columna como la
+            bodega donde están apartadas las piezas, y no lo están. */}
+        <div className="truncate text-[12px] font-semibold text-slate-600"
+             title={esperandoGuia(o)
+               ? "Plan del día de la venta: se vuelve a calcular cuando nazca la orden"
+               : undefined}
+             style={esperandoGuia(o) ? { color: "#0369A1" } : undefined}>
+          {o.almacen ? (esperandoGuia(o) ? `${o.almacen} (plan)` : o.almacen) : "—"}
+        </div>
         <div className="min-w-0">
-          {o.guia ? (
+          {/* La espera va PRIMERO, incluso con guía: mientras no haya orden en
+              Odoo, lo que pasa con esta venta es que está esperando — y el
+              número de guía a secas haría pensar que ya hay caja que surtir. */}
+          {esperandoGuia(o) ? (
+            <TagEsperandoGuia o={o} ventaUrl={ventaUrl} />
+          ) : o.guia ? (
             <div className={combinado ? "-mx-[7px] rounded-[9px] px-[7px] py-[4px]" : ""}
                  style={combinado ? { background: combinado.suave } : undefined}>
               <div className="truncate font-mono text-[12.5px] font-bold"
@@ -900,7 +1075,7 @@ function FilaOrden({
             <span className="text-[13.5px]" style={{ fontWeight: s.peso, color: s.color }}>{d.txt}</span>
             <span className="ml-auto font-mono text-[13px] font-bold"
                   style={{ color: o.odoo_name ? "#0f172a" : "#cbd5e1" }}>
-              {o.odoo_name ?? "—"}
+              {o.odoo_name ?? (esperandoGuia(o) ? "" : "—")}
             </span>
             <Chevron className="h-[15px] w-[15px] shrink-0 text-slate-300" />
           </div>
@@ -911,12 +1086,20 @@ function FilaOrden({
           <div className="mt-2 flex flex-wrap items-center gap-2 pl-[15px] text-[11.5px] text-slate-500">
             {o.guia && <span className="font-mono font-bold text-slate-700">{o.guia}</span>}
             {o.guia && <span className="text-slate-300">·</span>}
-            <span>{o.almacen ?? "—"}</span>
+            <span title={esperandoGuia(o)
+                    ? "Plan del día de la venta: se vuelve a calcular cuando nazca la orden"
+                    : undefined}
+                  style={esperandoGuia(o) ? { color: "#0369A1" } : undefined}>
+              {o.almacen ? (esperandoGuia(o) ? `${o.almacen} (plan)` : o.almacen) : "—"}
+            </span>
             <span className="text-slate-300">·</span>
             <span className="font-mono font-bold text-slate-900">{dinero(o.total)}</span>
             <span className="text-slate-300">·</span>
             <span>{piezas} renglones</span>
           </div>
+          {esperandoGuia(o) && (
+            <div className="mt-[6px] pl-[15px]"><TagEsperandoGuia o={o} ventaUrl={ventaUrl} /></div>
+          )}
           {faltaGuia(o) && (
             <div className="mt-[6px] pl-[15px]"><TagFaltaGuia o={o} ventaUrl={ventaUrl} /></div>
           )}
@@ -1094,6 +1277,52 @@ function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
       {/* ── Cronología, datos y acciones ── */}
       <div className="border-t p-5 xl:border-l xl:border-t-0"
            style={{ borderColor: "#eef1f6", background: "#fbfcfe" }}>
+        {/* QUÉ ESTÁ PASANDO, antes que cualquier dato. Abrir el detalle de una
+            venta sin orden en Odoo y encontrar sólo campos vacíos se lee como
+            un fallo; esto dice que no lo es, y qué falta para que deje de
+            estarlo. El plan que se ve abajo es el del día de la venta y se
+            vuelve a calcular al crear: por eso se avisa aquí. */}
+        {esperandoGuia(o) && (
+          <div className="mb-4 rounded-[10px] px-3 py-[10px] text-[12px] leading-snug"
+               style={{ background: "#F0F9FF", boxShadow: "inset 0 0 0 1.5px #7DD3FC" }}>
+            <div className="flex items-center gap-[6px] text-[12.5px] font-extrabold"
+                 style={{ color: "#075985" }}>
+              <Clock className="h-4 w-4 shrink-0" />
+              Esperando guía · {nivelEspera(horasEsperando(o)).edad}
+            </div>
+            <div className="mt-[6px] text-slate-600">
+              {(o.guia ?? "").trim() ? (
+                <>El canal ya dio la guía <b className="font-mono">{o.guia}</b>: la orden en Odoo
+                  nace en la próxima vuelta del trabajo de guías, con su número y su PDF.</>
+              ) : (
+                <>Esta venta <b>no tiene orden en Odoo todavía</b>, y es a propósito: nace cuando
+                  el canal dé la guía, ya con el número y la etiqueta puestos. Mientras tanto no
+                  hay nada que surtir. El almacén y la cobertura de abajo son el plan del día de
+                  la venta y se vuelven a calcular al crearla, con el stock de ese momento.</>
+              )}
+            </div>
+            {/* La cobertura parcial de una espera NO es una alarma: el plan se
+                recalcula al crear. Sin esta línea, el "parcial" de abajo se lee
+                como la sobreventa que sí significa en una orden ya creada. */}
+            {o.cobertura === "parcial" && (
+              <div className="mt-[6px] text-slate-600">
+                El plan del día de la venta no alcanzaba a cubrirla, pero eso no es un
+                problema todavía: se vuelve a calcular con el stock del día en que nazca
+                la orden.
+              </div>
+            )}
+            {/* H17 · la captura a mano. El propio panel es lo que invita a
+                buscarla en Odoo; si alguien la captura, `piezas_sin_orden`
+                (que decide por la bitácora) sigue restando encima de la
+                reserva de Odoo hasta que la vinculación se entere. */}
+            <div className="mt-[6px] text-slate-600">
+              ¿La buscaste en Odoo y no está? Es normal: todavía no existe. <b>No la
+              captures a mano</b> — nace sola en cuanto el canal dé la guía, ya con su
+              número y su etiqueta. Si la capturas igual, el panel tarda hasta 15 minutos
+              en enterarse y en ese rato el stock de sus SKUs se descuenta dos veces.
+            </div>
+          </div>
+        )}
         <div className="text-[10.5px] font-bold uppercase tracking-[.06em] text-slate-400">Cronología</div>
         <div className="mt-2 space-y-2 text-[12px]">
           <div>
@@ -1118,9 +1347,11 @@ function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
         <dl className="mt-2 space-y-1.5 text-[12px]">
           {[
             ["Canal", o.canal === "temu" ? "Temu" : "TikTok Shop"],
-            ["Almacén", o.almacen ?? "—"],
+            // Sin orden todavía, el almacén no es un hecho: es el plan que se
+            // calculó al vender y que se vuelve a calcular al crear.
+            [esperandoGuia(o) ? "Almacén (plan)" : "Almacén", o.almacen ?? "—"],
             ["Paquetería", o.paqueteria ?? "—"],
-            ["Estado en Odoo", o.estado ?? "—"],
+            ["Estado en Odoo", esperandoGuia(o) ? "sin orden todavía" : o.estado ?? "—"],
             ["Venta", o.external_order_id],
           ].map(([k, v]) => (
             <div key={k} className="flex justify-between gap-3">
@@ -1238,7 +1469,7 @@ function Detalle({ o, odooUrl, ventaUrl = "", combinado, onVerJuntas }: {
 function TarjetaCanal({
   canal, ordenes, encendido, escalonId, moviendo, abierta, onAbrir, onSwitch, odooUrl, filtrando,
   buscando = "", enOtroCanal = 0, otroCanal = "", ventaUrl = "", arriba = 0,
-  combinados = {}, onVerJuntas,
+  combinados = {}, onVerJuntas, esperaGuia,
 }: {
   canal: (typeof CANALES)[number];
   ordenes: OrdenOdoo[];
@@ -1261,6 +1492,9 @@ function TarjetaCanal({
   /** Envíos combinados del canal, por `claveOrden`. */
   combinados?: Record<string, Combinado>;
   onVerJuntas?: (guia: string) => void;
+  /** El switch de la creación diferida de ESTE canal: lo pedido y lo que de
+   *  verdad pasa. Los dos, porque pueden no coincidir (ver el tipo `Estado`). */
+  esperaGuia?: { pedida: boolean; activa: boolean; huerfanas?: number };
 }) {
   const ultima = ordenes[0]?.creado_at ?? null;
   const SECCION = "«Confirmadas en Odoo · canceladas en el canal»";
@@ -1296,9 +1530,49 @@ function TarjetaCanal({
                 ? <span className="font-bold" style={{ color: "#B45309" }}>{` · ${n} sin guía`}</span>
                 : null;
             })()}
+            {/* Las que esperan guía se cuentan APARTE de "sin guía": aquéllas
+                ya tienen orden y ésta no, y son dos trabajos distintos. */}
+            {(() => {
+              const n = ordenes.filter(esperandoGuia).length;
+              return n > 0
+                ? <span className="font-bold" style={{ color: "#0369A1" }}>
+                    {` · ${n} esperando guía`}
+                  </span>
+                : null;
+            })()}
           </div>
         </div>
         <div className="ml-auto flex items-center gap-3">
+          {/* EL MODO DEL CANAL, no un botón: se enciende desde el backend
+              (`POST /interruptor?que=espera_guia&canal=…`). Se pintan los dos
+              casos porque "pedido" y "pasando" pueden no coincidir. */}
+          {esperaGuia?.pedida && (
+            <span className="inline-flex items-center gap-[5px] rounded-full px-[9px] py-[3px] text-[11px] font-extrabold"
+                  title={esperaGuia.activa
+                    ? "Las ventas nuevas de este canal dejan su espacio y su orden en Odoo nace "
+                      + "cuando aparece la guía. Las ya creadas se quedan como están."
+                    : "Se pidió esperar la guía, pero el trabajo de guías de este canal está "
+                      + "apagado: nadie retomaría la venta, así que la orden se sigue creando "
+                      + "al vender."
+                      + (esperaGuia.huerfanas
+                         ? ` Y las ${esperaGuia.huerfanas} que YA estaban esperando no las `
+                           + "crea nadie: se drenan con POST /api/automatizacion/espera/drenar."
+                         : "")}
+                  style={esperaGuia.activa
+                    ? { background: "#F0F9FF", color: "#075985", boxShadow: "inset 0 0 0 1px #7DD3FC" }
+                    : { background: "#FFFBEB", color: "#92400E", boxShadow: "inset 0 0 0 1px #FCD34D" }}>
+              {esperaGuia.activa ? <Clock className="h-3 w-3" /> : <AlertTriangle className="h-3 w-3" />}
+              {/* El número, no sólo el aviso: "espera pedida, pero inactiva"
+                  suena a configuración incoherente; "9 ventas sin quién las
+                  cree" es lo que de verdad está pasando. */}
+              {esperaGuia.activa
+                ? "La orden nace con la guía"
+                : "Espera pedida, pero inactiva"
+                  + (esperaGuia.huerfanas
+                     ? ` · ${esperaGuia.huerfanas} venta${esperaGuia.huerfanas === 1 ? "" : "s"} sin quién las cree`
+                     : "")}
+            </span>
+          )}
           <span className="text-[12px] font-bold" style={{ color: rotuloColor }}>{rotulo}</span>
           <Switch activo={encendido} ocupado={moviendo} ancho={40}
                   etiqueta={`interruptor de ${canal.nombre}`} onClick={onSwitch} />
@@ -2102,8 +2376,9 @@ function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerr
           <div className="min-w-0">
             <h3 id="guias-dia-titulo" className="text-[16px] font-extrabold text-slate-900">Guías del día</h3>
             <p className="mt-0.5 text-[12.5px] leading-relaxed text-slate-500">
-              Las órdenes de venta generadas ese día en Odoo, en hora de México. Si una comparte
-              guía con una orden de otro día, esa también sale y las dos van del mismo color.
+              Las órdenes de venta <b className="font-bold">generadas</b> ese día en Odoo, en hora
+              de México — la venta puede ser de un día anterior. Si una comparte guía con una
+              orden de otro día, esa también sale y las dos van del mismo color.
             </p>
           </div>
           <button type="button" onClick={onCerrar} aria-label="Cerrar" disabled={Boolean(bajando)}
@@ -2122,7 +2397,8 @@ function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerr
               value={fecha}
               max={hoy}
               onChange={(e) => setFecha(e.target.value)}
-              aria-label="Día en que se generaron las órdenes"
+              aria-label="Día en que se generaron las órdenes en Odoo"
+              title="El día en que la orden NACIÓ en Odoo, que es el día en que hay que empacarla. No el día de la venta."
               className="bg-transparent font-mono text-[12.5px] text-slate-700 outline-none"
             />
           </label>
@@ -2160,6 +2436,10 @@ function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerr
               ["Piezas", r.piezas, ""],
               ["Combinados", r.combinados, r.combinados ? "#6D28D9" : ""],
               ["De otro día", r.de_otro_dia, r.de_otro_dia ? "#92400E" : ""],
+              // Nacieron ese día PERO la venta es anterior (creación diferida).
+              // Sin esto, el Excel del día trae ventas viejas sin explicación.
+              ...(r.de_venta_anterior
+                ? [["De venta anterior", r.de_venta_anterior, "#0369A1"] as const] : []),
               ["Sin guía", r.sin_guia, r.sin_guia ? "#9F1239" : ""],
               ["Sin PDF", r.sin_pdf, r.sin_pdf ? "#9F1239" : ""],
               ...(r.canceladas ? [["Canceladas", r.canceladas, "#64748B"] as const] : []),
@@ -2223,6 +2503,15 @@ function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerr
                             {canal === "todos" && `${o.canal === "temu" ? "Temu" : "TikTok"} · `}
                             {o.fecha_dia} {horaMX(o.fecha)}
                           </div>
+                          {/* La fecha de la VENTA, sólo cuando NO es la misma:
+                              repetirla en cada fila sería ruido, y callarla
+                              cuando difiere deja al almacén sin saber por qué
+                              una orden de hoy trae una compra de anteayer. */}
+                          {o.vendida_dia && o.vendida_dia !== o.fecha_dia && (
+                            <div className="text-[10.5px]" style={{ color: "#0369A1" }}>
+                              venta {o.vendida_dia}
+                            </div>
+                          )}
                         </td>
                         <td className={`${celda} text-right font-mono font-bold text-slate-700`}
                             style={{ borderColor: "#eef1f6" }}>
@@ -2268,6 +2557,9 @@ function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerr
                         <span className="font-mono text-[11px] text-slate-500">
                           {canal === "todos" && `${o.canal === "temu" ? "Temu" : "TikTok"} · `}
                           {o.fecha_dia} {horaMX(o.fecha)}
+                          {o.vendida_dia && o.vendida_dia !== o.fecha_dia && (
+                            <span style={{ color: "#0369A1" }}> · venta {o.vendida_dia}</span>
+                          )}
                         </span>
                       </div>
                       <div className="mt-[2px] break-all font-mono text-[12px] text-slate-800">
@@ -2302,6 +2594,34 @@ function GuiasDelDia({ canalInicial, onCerrar }: { canalInicial: CanalId; onCerr
               <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
               Odoo no respondió: no se pudo revisar qué órdenes tienen su PDF. El Excel sí se puede bajar;
               el PDF, en un momento.
+            </p>
+          )}
+          {/* EL DÍA SE CONTÓ POR OTRA COSA. Sin Odoo no hay `create_date`, así
+              que el día se cuenta por la fecha de la VENTA: con la creación
+              diferida encendida eso puede traer órdenes que no son de hoy y
+              dejar fuera las que sí. Se dice, no se disimula. */}
+          {datos && !cargando && datos.dia_por === "bitacora" && (
+            <p className="mb-2 flex items-start gap-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+               style={{ background: "#FFF1F2", color: "#9F1239" }}>
+              <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
+              <span>
+                Odoo no contestó: este archivo se armó por la <b>fecha de la venta</b>, no por
+                el día en que nació la orden. Con la creación diferida <b>no son el mismo
+                día</b> — trae ventas que todavía no tienen caja y le faltan órdenes que sí
+                nacieron hoy. <b>No empaques por él</b>: vuelve a intentar en un momento.
+              </span>
+            </p>
+          )}
+          {/* LA CAJA QUE VA INCOMPLETA. La hermana comparte guía pero su orden
+              todavía no nace, así que no existe en la tabla: sin este aviso, el
+              archivo presenta como caja lista una caja a la que le falta la
+              mitad — y desde la creación diferida "está en el archivo de hoy"
+              significa "sale hoy". */}
+          {datos && hay && !cargando && datos.aviso_hermana_sin_orden && (
+            <p className="mb-2 flex items-start gap-2 rounded-[10px] px-3 py-2 text-[12.5px]"
+               style={{ background: "#FFFBEB", color: "#92400E" }}>
+              <AlertTriangle className="mt-[1px] h-4 w-4 shrink-0" />
+              <span>{datos.aviso_hermana_sin_orden}</span>
             </p>
           )}
           {datos && hay && !cargando && faltan.length > 0 && (
@@ -2421,6 +2741,7 @@ export default function AutomatizacionPage() {
   const [canal, setCanal] = useState<CanalId>("tiktok");
   const [soloAccion, setSoloAccion] = useState(false);
   const [soloSinGuia, setSoloSinGuia] = useState(false);
+  const [soloEsperando, setSoloEsperando] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [dias, setDias] = useState(30);
   const [abierta, setAbierta] = useState<string | null>(null);
@@ -2642,13 +2963,23 @@ export default function AutomatizacionPage() {
   const visibles = useMemo(() => {
     const l = porCanal[canal].filter((o) => coincide(o, busqueda));
     const a = soloAccion ? l.filter(pideAccion) : l;
-    return soloSinGuia ? a.filter(faltaGuia) : a;
-  }, [porCanal, canal, soloAccion, busqueda, soloSinGuia]);
+    const b = soloSinGuia ? a.filter(faltaGuia) : a;
+    return soloEsperando ? b.filter(esperandoGuia) : b;
+  }, [porCanal, canal, soloAccion, busqueda, soloSinGuia, soloEsperando]);
 
   // Órdenes vivas que esperan que alguien genere el envío en el canal.
   const sinGuia = useMemo(() => ({
     tiktok: porCanal.tiktok.filter(faltaGuia).length,
     temu: porCanal.temu.filter(faltaGuia).length,
+  }), [porCanal]);
+
+  /* Ventas apartadas cuya orden todavía no nace. Se cuentan por canal y NO se
+     suman a "lo que requiere acción": esperar es lo esperado, y meterlas ahí
+     volvería a llenar de ruido el contador que este tablero separó a propósito.
+     La que lleva demasiado esperando se delata sola, por el color de su chip. */
+  const esperando = useMemo(() => ({
+    tiktok: porCanal.tiktok.filter(esperandoGuia).length,
+    temu: porCanal.temu.filter(esperandoGuia).length,
   }), [porCanal]);
 
   // Si lo buscado vive en el OTRO canal, se avisa en vez de mostrar "nada".
@@ -2735,11 +3066,35 @@ export default function AutomatizacionPage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 border-t sm:grid-cols-3" style={{ borderColor: "#eef1f6" }}>
+            {/* El cuarto contador sólo existe cuando hay algo que contar: con la
+                creación diferida apagada sería un 0 permanente ocupando un
+                cuarto de la fila. Sale de la misma lista que pinta la pantalla
+                —los dos canales—, así que nunca se contradice con las tarjetas. */}
+            <div className={`grid grid-cols-1 border-t ${esperando.tiktok + esperando.temu > 0
+                             ? "sm:grid-cols-4" : "sm:grid-cols-3"}`}
+                 style={{ borderColor: "#eef1f6" }}>
+              {/* ⚠️ "Órdenes creadas" cuenta SÓLO las que tienen orden en Odoo
+                  (`resumen.total_30d` ya viene filtrado por `odoo_order_id is
+                  not null`). Antes era un `count(*)` de toda la bitácora, así
+                  que metía las `espera_guia` y las `cancelada_sin_orden` ahí
+                  dentro — las MISMAS filas que el contador de al lado, con el
+                  rótulo contrario. Con Temu a mediana 28.4 h y ~9-10 ventas en
+                  cola eso no es un borde: es el tablero de todos los días. */}
               <Kpi rotulo={`Órdenes creadas · ${dias} d`} valor={estado!.resumen.total_30d}
-                   pie={`de ${ordenes.length} ventas`} />
-              <Kpi rotulo="Sin respaldo de inventario" valor={estado!.resumen.parciales}
-                   pie="se crearon sin stock" tono={estado!.resumen.parciales ? "ambar" : undefined} />
+                   pie={`de ${ordenes.length} ventas`
+                        + (esperando.tiktok + esperando.temu > 0
+                           ? ` · ${esperando.tiktok + esperando.temu} esperando su guía` : "")} />
+              {esperando.tiktok + esperando.temu > 0 && (
+                <Kpi rotulo="Esperando guía" valor={esperando.tiktok + esperando.temu}
+                     pie="sin orden en Odoo todavía" tono="espera" />
+              )}
+              {/* "Creadas sin respaldo": la cobertura de una venta que espera es
+                  el plan del dry-run y se recalcula al nacer la orden. Sólo se
+                  cuenta la de las que YA se crearon, donde la reserva de verdad
+                  no va a ocurrir. */}
+              <Kpi rotulo="Creadas sin respaldo de inventario" valor={estado!.resumen.parciales}
+                   pie="la reserva no va a ocurrir"
+                   tono={estado!.resumen.parciales ? "ambar" : undefined} />
               <Kpi rotulo="Con error" valor={estado!.resumen.errores}
                    pie="nadie las capturó" tono={estado!.resumen.errores ? "rojo" : undefined} />
             </div>
@@ -2814,15 +3169,30 @@ export default function AutomatizacionPage() {
               </span>
             </label>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] border px-[13px] py-2 text-[13px] font-bold"
-                   title="Órdenes vivas de Odoo cuya venta todavía no tiene guía: hay que comprar o agendar el envío en el canal."
+                   title="Órdenes que YA EXISTEN en Odoo y cuya venta todavía no tiene guía: hay que comprar o agendar el envío en el canal."
                    style={{ borderColor: "#FCA5A5", background: "#FEF2F2", color: "#991B1B" }}>
               <input type="checkbox" checked={soloSinGuia} style={{ accentColor: "#B91C1C" }}
                      onChange={(e) => { setSoloSinGuia(e.target.checked); setAbierta(null); }} />
-              Sólo sin guía
+              Sólo órdenes sin guía
               <span className="rounded-full px-[7px] font-mono text-[11px]" style={{ background: "#FECACA" }}>
                 {sinGuia[canal]}
               </span>
             </label>
+            {/* Sólo aparece cuando hay alguna: mientras la creación diferida esté
+                apagada, este filtro contaría siempre 0 y sería un control muerto
+                en una barra que ya está llena. */}
+            {esperando[canal] > 0 && (
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] border px-[13px] py-2 text-[13px] font-bold"
+                     title="Ventas apartadas SIN orden en Odoo: su orden nace cuando el canal dé la guía. No hay nada que surtir todavía."
+                     style={{ borderColor: "#7DD3FC", background: "#F0F9FF", color: "#075985" }}>
+                <input type="checkbox" checked={soloEsperando} style={{ accentColor: "#0284C7" }}
+                       onChange={(e) => { setSoloEsperando(e.target.checked); setAbierta(null); }} />
+                Sólo esperando guía
+                <span className="rounded-full px-[7px] font-mono text-[11px]" style={{ background: "#BAE6FD" }}>
+                  {esperando[canal]}
+                </span>
+              </label>
+            )}
             <select
               value={dias}
               onChange={(e) => setDias(Number(e.target.value))}
@@ -2912,13 +3282,21 @@ export default function AutomatizacionPage() {
               onAbrir={setAbierta}
               odooUrl={ov?.odoo_url_orden ?? ""}
               ventaUrl={ov?.url_venta?.[canal] ?? ""}
-              filtrando={soloAccion || soloSinGuia}
+              filtrando={soloAccion || soloSinGuia || soloEsperando}
               buscando={busqueda}
               enOtroCanal={enOtroCanal}
               otroCanal={otro.nombre}
               arriba={sinPermisoCanc ? 0 : canc.aLaVista[canal]}
               combinados={combinados}
               onVerJuntas={verJuntas}
+              esperaGuia={{
+                pedida: Boolean(ov?.canales_estado?.[canal]?.espera_guia),
+                activa: Boolean(ov?.canales_estado?.[canal]?.espera_guia_activa),
+                /* CUÁNTAS quedaron colgadas. El backend sólo lo cuenta cuando la
+                   espera está pedida y su trabajo de guías apagado — el único
+                   caso en que el número cambia lo que hay que hacer. */
+                huerfanas: Number(ov?.canales_estado?.[canal]?.espera_huerfanas ?? 0),
+              }}
               onSwitch={() => setConfirmar({ que: canal, encender: !canalEncendido(canal) })}
             />
           )}

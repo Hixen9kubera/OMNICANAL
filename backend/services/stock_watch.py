@@ -45,6 +45,40 @@ COBERTURA: la foto de `odoo_watch` vive en `productos.stock_odoo`, que solo cubr
 5,381 SKUs (tabla legada del robot, congelada). Ésta cubre el catálogo completo
 (13,000 de Odoo / 14,422 de Woo), por eso guarda su propia foto.
 
+LO VENDIDO QUE TODAVÍA NO TIENE ORDEN (`STOCK_WATCH_RESTA_PENDIENTES`, 23-sep)
+------------------------------------------------------------------------------
+Desde que la orden de Odoo nace CUANDO APARECE LA GUÍA y no al vender
+(`ODOO_VENTAS_ESPERA_GUIA_CANALES`), hay una ventana de uno o dos días —Temu:
+mediana 28.4 h, p75 63.3 h— en la que la venta existe y su orden no. Sin orden
+no hay reserva, así que `free_qty` sigue contando la pieza vendida, el modo
+ABSOLUTO la copia a Woo y el fan-out la devuelve al anaquel de los canales.
+
+El arreglo es una resta de ESTE lado —Brandon fue explícito en que a Odoo no se
+le escribe nada para apartar—:
+
+    destino = max(0, free_qty_odoo − piezas_vendidas_sin_orden)
+
+Las piezas salen de `odoo_ventas_log.piezas_sin_orden`: sólo filas con
+`odoo_order_id IS NULL`, sólo `accion='espera_guia'`, sólo dentro de la ventana
+de espera. Es UNA consulta por pasada, agregada por SKU; nunca una por SKU.
+
+EL CRUCE (cuando la orden por fin nace) es lo delicado, porque durante unos
+segundos podrían convivir la reserva de Odoo y esta resta. Se resuelve por el
+ORDEN DE LAS DOS LECTURAS: primero los pendientes, después el catálogo de Odoo.
+Con ese orden el único desajuste posible es restar de más por una pasada —la
+pieza queda escondida 20 minutos y la pasada siguiente la devuelve—. Al revés
+el desajuste sería ofrecer de más, que es exactamente lo que esto viene a
+evitar. Se prefiere esconder a resucitar: está medido en
+`scratchpad/test_stock_pendientes.py`.
+
+  · SÓLO en modo ABSOLUTO. En DELTA la venta ya bajó Woo por su cuenta
+    (`PEDIDOS_WC_DESCUENTA_STOCK=true` desde el día 1), y restar encima sería
+    el doble descuento de verdad.
+  · FALLA CERRADO: si no se puede MEDIR lo pendiente, la pasada no copia nada
+    de Odoo a Woo. `piezas_sin_orden` nunca lanza —devuelve `{}` ante cualquier
+    error— y aquí `{}` y "la base no contestó" tienen consecuencias opuestas.
+    Ver `_pendientes`.
+
 CANDADOS (nace apagado; encenderlo MUEVE INVENTARIO REAL — regla 3):
   · `STOCK_WATCH_ENABLED=false`      — no corre.
   · `STOCK_WATCH_SOLO_REGISTRO=true` — clasifica y ANOTA lo que haría, sin escribir.
@@ -92,11 +126,50 @@ def tope() -> int:
     return int(getattr(settings, "stock_watch_tope", 300) or 300)
 
 
+def resta_pendientes() -> bool:
+    """¿Se descuentan las piezas vendidas cuya orden todavía no nace en Odoo?
+
+    Sólo tiene sentido con el modo ABSOLUTO encendido: es ahí donde Woo COPIA
+    `free_qty`, y por tanto donde una pieza vendida sin reservar reaparece. En
+    DELTA la venta ya bajó Woo por su cuenta y restar otra vez la descontaría
+    dos veces, así que la bandera se ignora (ver `_deltas_odoo`). Se comprueba
+    aquí además de allí para que `estado()` diga la verdad en el panel.
+    """
+    return (bool(getattr(settings, "stock_watch_resta_pendientes", False))
+            and bool(getattr(settings, "stock_watch_absoluto", False)))
+
+
+def _ventana_pendientes() -> int:
+    """Los días que una venta sin orden puede seguir escondiendo su mercancía.
+
+    Es la MISMA ventana en la que el trabajo de guías sigue dispuesto a crear la
+    orden, y no una propia: mientras se pueda crear hay que esconder, y en
+    cuanto se deja de crear hay que devolver. Dos plazos distintos sólo podrían
+    desincronizarse, y los dos lados de esa brecha son un error — resucitar
+    mercancía vendida, o esconderla para siempre.
+
+    ⚠️ Y ESO ANTES ERA MENTIRA. Este lado leía `odoo_ventas_espera_guia_dias` y
+    el otro usaba el `dias` que el scheduler le pasaba al job
+    (`temu_guias_dias` / `tiktok_guias_dias`): tres ajustes distintos que
+    coincidían en 14 por omisión. Bajar `TEMU_GUIAS_DIAS` a 7 —una variable de
+    rendimiento— dejaba siete días de mercancía escondida sin nadie que creara
+    la orden; subirlo a 21 devolvía las piezas al anaquel mientras el job
+    todavía crearía la orden, y eso es sobreventa. Se arregló en el otro lado:
+    `odoo_ventas.cola_de_guias` usa `_dias_espera()`, que lee esta MISMA
+    variable. Ahora hay un solo número; ver `odoo_ventas._dias_espera`.
+    """
+    return int(getattr(settings, "odoo_ventas_espera_guia_dias", 14) or 14)
+
+
 def estado() -> dict[str, Any]:
     return {**_ultimo, "habilitado": habilitado(),
             "solo_registro": solo_registro(), "tope": tope(),
             "modo": "absoluto (Odoo master)" if getattr(settings, "stock_watch_absoluto", False)
                     else "delta (Woo conserva su base)",
+            "resta_pendientes": resta_pendientes(),
+            "resta_pendientes_pedida": bool(
+                getattr(settings, "stock_watch_resta_pendientes", False)),
+            "resta_pendientes_dias": _ventana_pendientes(),
             "foto_en_kubera": kubera_escribe(), "foto_decide_kubera": kubera_decide()}
 
 
@@ -187,6 +260,118 @@ def _guardar_foto(filas: list[tuple[str, int | None, int | None]]) -> None:
             stock_watch_read.foto_guardar(filas, ahora)
         except Exception as exc:  # noqa: BLE001
             log.warning("stock_watch: copia de la foto a kubera falló: %s", exc)
+
+
+class RestaNoConfiable(RuntimeError):
+    """No se pudo MEDIR lo vendido-sin-orden. La pasada no copia Odoo → Woo."""
+
+
+def _pendientes() -> dict[str, Any]:
+    """Piezas ya vendidas cuya orden todavía NO existe en Odoo. ⚠️ BLOQUEA.
+
+    Devuelve `{"pend": {sku: piezas}, "ventas": n, "mas_vieja_h": h,
+    "muestra": [...]}`. LANZA `RestaNoConfiable` si no puede responder con
+    certeza — y eso es el punto entero de esta función.
+
+    POR QUÉ NO BASTA `piezas_sin_orden`. Ese helper nunca lanza: ante cualquier
+    fallo devuelve `{}`, que aquí significaría "no hay nada vendido pendiente" y
+    mandaría copiar `free_qty` tal cual — resucitando lo vendido justo cuando la
+    base está caída y nadie lo está mirando. `{}` legítimo y `{}` por error son
+    indistinguibles desde fuera, y tienen consecuencias opuestas.
+
+    Así que la pregunta se hace DOS veces: primero una consulta CENTINELA que sí
+    propaga su error y cuenta los espacios abiertos, y sólo después la que trae
+    los números. Si el centinela cuenta ventas esperando y el desglose llega
+    vacío, algo se rompió entre una y otra: se falla cerrado. Son dos consultas
+    agregadas por pasada (cada 20 min), no una por SKU.
+
+    ⚠️ PERO "VINO VACÍO" TENÍA DOS CAUSAS Y SE TRATABAN IGUAL, y la segunda no
+    es transitoria: `registrar` salta las líneas con `cantidad <= 0` o SKU
+    vacío pero SÍ escribe el encabezado, así que un encabezado SIN RENGLONES es
+    un estado alcanzable y estable. Con una sola venta así —y siendo la única
+    que espera— el desglose venía vacío, esto lanzaba, y el tramo Odoo→Woo se
+    saltaba ENTERO cada 20 minutos durante los 14 días de la ventana: una
+    recepción de mercancía no llegaba nunca a la tienda y un SKU agotado en Odoo
+    no bajaba nunca a 0 en Woo. Catorce días sin sincronizar inventario hace más
+    daño que la pieza que se intentaba esconder.
+
+    Por eso el centinela cuenta ADEMÁS cuántas de esas ventas tienen renglones
+    (`ventas_con_items`, mismo `where`, misma consulta). Si ninguna los tiene,
+    un desglose vacío es la respuesta CORRECTA —no hay nada que restar— y la
+    pasada sigue con su aviso. Sólo se falla cerrado cuando alguna SÍ tenía
+    renglones y aun así no vino nada: eso sólo puede ser un fallo real.
+
+    El centinela aprovecha para traer la ANTIGÜEDAD de la espera más vieja y una
+    muestra de números de venta, que es lo que hace legible el log: sin eso, un
+    "se restaron 86 piezas" no dice si son de hoy o de una venta muerta de hace
+    dos semanas. Números de venta, jamás datos del comprador.
+    """
+    from services import odoo_ventas_log as oul
+
+    dias = _ventana_pendientes()
+    # Propaga su error a propósito (es el centinela): `_pendientes` entera falla
+    # cerrado si kubera no contesta.
+    c = oul.centinela_pendientes(dias=dias)
+    ventas = int(c.get("ventas") or 0)
+    horas = float(c.get("mas_vieja_h") or 0)
+    muestra = list(c.get("muestra") or [])
+    con_items = int(c.get("ventas_con_items") or 0)
+
+    if not ventas:
+        return {"pend": {}, "ventas": 0, "mas_vieja_h": 0.0, "muestra": []}
+
+    crudo = oul.piezas_sin_orden(dias=dias)
+    if not crudo and con_items:
+        # Había ventas CON renglones y el desglose vino vacío: la base se cayó
+        # entre las dos consultas. Sin saber cuánto restar, no se copia nada.
+        raise RestaNoConfiable(
+            f"{ventas} ventas esperando guía ({con_items} con renglones) y el "
+            f"desglose por SKU vino vacío")
+    if not crudo:
+        # Ninguna tenía renglones: no es un fallo de medición, es una venta con
+        # las líneas perdidas. Se resta 0 y se SIGUE copiando — pero se dice,
+        # porque una venta sin renglones es un dato roto que alguien tiene que
+        # mirar, no algo que se pueda dejar pasar en silencio.
+        log.warning("stock_watch: %s venta(s) esperando guía y NINGUNA tiene "
+                    "renglones en ops.odoo_sale_order_items (%s). No hay nada "
+                    "que restar y la copia Odoo→Woo sigue; revisar esas ventas.",
+                    ventas, ", ".join(muestra) or "?")
+        return {"pend": {}, "ventas": ventas, "mas_vieja_h": round(horas, 1),
+                "muestra": muestra, "sin_renglones": ventas}
+
+    pend = {s: int(round(float(v))) for s, v in crudo.items()
+            if float(v or 0) > 0}
+    return {"pend": pend, "ventas": ventas, "mas_vieja_h": round(horas, 1),
+            "muestra": muestra,
+            "sin_renglones": max(0, ventas - con_items)}
+
+
+def _vincular_capturadas() -> dict[str, int]:
+    """
+    Pega a su orden de Odoo las ventas que alguien capturó A MANO, antes de
+    medir los pendientes. ⚠️ BLOQUEA: se llama con `asyncio.to_thread`.
+
+    Sólo para los canales que de verdad están en régimen diferido — es el único
+    caso en que la bitácora manda sobre el inventario. Nunca lanza hacia fuera
+    (el que llama lo atrapa igual) y no escribe en Odoo: `vincular_sin_orden`
+    sólo LEE Odoo y escribe la bitácora.
+    """
+    from services import odoo_ventas
+    fuera: dict[str, int] = {}
+    for canal in sorted(odoo_ventas.canales_posibles()):
+        try:
+            if not odoo_ventas.espera_guia_activa(canal):
+                continue
+            from services import odoo_ventas_log
+            n = int((odoo_ventas_log.vincular_sin_orden(canal, dias=30)
+                     or {}).get("vinculadas") or 0)
+            if n:
+                fuera[canal] = n
+                log.info("stock_watch: %s orden(es) de %s capturadas a mano se "
+                         "vincularon antes de medir pendientes", n, canal)
+        except Exception as exc:  # noqa: BLE001 — una mala no detiene las demás
+            log.debug("_vincular_capturadas(%s): %s", canal, exc)
+    return fuera
 
 
 def _anotar(sku: str, accion: str, motivo: str, resultado: str) -> None:
@@ -306,7 +491,8 @@ async def _escribir_woo(cambios: list[tuple[str, int, dict]]) -> tuple[int, set[
 
 def _deltas_odoo(od: dict[str, int], wo: dict[str, dict[str, Any]],
                  foto: dict[str, dict[str, int | None]],
-                 absoluto: bool) -> list[tuple[str, int, dict]]:
+                 absoluto: bool,
+                 pend: dict[str, int] | None = None) -> list[tuple[str, int, dict]]:
     """Los destinos Odoo -> Woo de una pasada: [(sku, destino, fila de Woo)].
 
     WOO SIN NÚMERO (`_stock` vacío) es "Gestionar inventario" apagado, y así
@@ -321,19 +507,46 @@ def _deltas_odoo(od: dict[str, int], wo: dict[str, dict[str, Any]],
       · solo si Odoo TIENE piezas (opción «a» de Eduardo, 23-sep). Prenderla
         con 0 pasaría a "agotado" productos que Woo hoy ofrece como
         disponibles; esos se revisan a mano, no los decide el vigilante.
+
+    `pend` son las piezas YA VENDIDAS cuya orden todavía no nace en Odoo, y se
+    restan de `free_qty` antes de copiar. **Sólo se aplican en ABSOLUTO**, y eso
+    es una salvaguarda, no una omisión: en DELTA la venta ya bajó Woo por su
+    cuenta (`PEDIDOS_WC_DESCUENTA_STOCK=true` desde el día 1), así que restarlas
+    otra vez descontaría la misma pieza dos veces. Por eso la condición vive en
+    el código y no sólo en el comentario de la bandera.
+
+    La resta se aplica también al caso de "Woo sin número": prender "Gestionar
+    inventario" con el `free_qty` crudo publicaría como disponible una pieza que
+    ya se vendió. Si al restar no queda nada, no se prende — que es la misma
+    prudencia de la regla de arriba: el vigilante no manda a "agotado" lo que
+    Woo hoy ofrece; eso lo revisa una persona.
     """
+    pend = pend or {}
     deltas: list[tuple[str, int, dict]] = []
     for sku, ahora_od in od.items():
         w = wo.get(sku)
         if w is None:
             continue
+        # En DELTA nunca se resta — y hay TRES cosas sosteniéndolo, porque el
+        # día que se caiga una nadie se va a enterar mirando este renglón:
+        #   1) `resta_pendientes()` exige el modo absoluto, así que en delta
+        #      `pend` ni siquiera se consulta y llega vacío;
+        #   2) este `if absoluto`;
+        #   3) `libre` sólo se CONSUME en las dos ramas de absoluto — la rama
+        #      del delta calcula su destino aparte, a partir de la foto.
+        # Lo que hay que cuidar al tocar esto es (3): restar `pend` dentro de la
+        # fórmula del delta descontaría dos veces la misma pieza, porque la
+        # venta ya bajó Woo por su cuenta.
+        # `max(0, …)` porque los pendientes pueden superar a `free_qty` (una
+        # venta que Odoo todavía no conoce), y ahí lo correcto es cero.
+        libre = max(0, ahora_od - pend.get(sku, 0)) if absoluto else ahora_od
         if w["stock"] is None:
-            if absoluto and ahora_od > 0 and not w.get("variable"):
-                deltas.append((sku, ahora_od, w))
+            if absoluto and libre > 0 and not w.get("variable"):
+                deltas.append((sku, libre, w))
             continue
         if absoluto:
             # `od` ya viene con max(0, …) aplicado arriba.
-            destino = ahora_od
+            destino = libre
         else:
             ant = foto.get(sku, {}).get("odoo")
             if ant is None or ahora_od == ant:
@@ -355,6 +568,85 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         t0 = time.time()
         await asyncio.to_thread(_asegurar_schema)
         from services import odoo, fanout_stock
+
+        # ── LO VENDIDO SIN ORDEN, **ANTES** DE PREGUNTARLE A ODOO ─────────
+        #
+        # El orden de estas dos lecturas es la única defensa contra el CRUCE:
+        # el instante en que la orden por fin nace en Odoo y la reserva real
+        # toma el relevo de esta resta. Las dos fuentes son sistemas distintos
+        # y no se pueden leer a la vez, así que siempre habrá una ventana; lo
+        # que se elige es HACIA DÓNDE se equivoca.
+        #
+        #   pendientes → Odoo  (lo que se hace): si la orden nace en medio, se
+        #     ve la reserva nueva Y los pendientes viejos. Se resta de más por
+        #     UNA pasada: la pieza queda escondida ≤20 min y la vuelta
+        #     siguiente la devuelve sola, porque la fila ya salió de la cola.
+        #
+        #   Odoo → pendientes (lo contrario): se ve el `free_qty` de ANTES de
+        #     la reserva y los pendientes ya en cero. Se ofrece de más: la
+        #     pieza vendida vuelve al anaquel y al fan-out — exactamente el
+        #     problema que esta parte viene a resolver.
+        #
+        # Entre esconder 20 minutos y resucitar, se esconde. Medido en
+        # `scratchpad/test_stock_pendientes.py` ("el cruce", los dos sentidos).
+        #
+        # LO QUE CUESTA, para que nadie lo reporte como un bug: cada cruce son
+        # DOS empujes al fan-out en 20 minutos. La pasada del cruce baja Woo y
+        # encola el SKU; la siguiente lo sube de vuelta y lo encola otra vez. El
+        # anaquel de Temu/TikTok hace 204→191→204 sin que nada haya cambiado de
+        # verdad. Es barato y se auto-sana: la ventana real es el hueco entre
+        # `action_confirm` y el `registrar` que le sigue —segundos— sobre un
+        # ciclo de 1,200 s. No se corrige porque la alternativa (releer los
+        # pendientes antes de bajar) añade una consulta por pasada para ahorrar
+        # un parpadeo que ya va en la dirección segura.
+        #
+        # ── Y ANTES DE LEER LOS PENDIENTES, VINCULAR LO QUE SE CAPTURÓ A MANO ─
+        #
+        # `piezas_sin_orden` decide por `odoo_order_id is null` EN LA BITÁCORA,
+        # que no le pregunta a Odoo. Cuando Gabriela crea y confirma la orden
+        # directamente en Odoo, Odoo reserva al INSTANTE (`free_qty` baja) pero
+        # la bitácora no se entera hasta que corre `vincular_sin_orden` (cada 15
+        # min). En ese hueco esta pasada resta otra vez lo que Odoo ya reservó:
+        # doble descuento, y el propio panel es lo que invita a capturarla.
+        #
+        # Se auto-sana y el error va hacia esconder (no hay sobreventa), pero en
+        # los cuatro SKUs sin holgura medidos deja el anaquel en 0 y publica el
+        # agotado en los canales DROP. Así que la lectura de la bitácora se hace
+        # DESPUÉS de vincular, no antes: el hueco deja de ser estructural.
+        # Nunca rompe la pasada — si Odoo no contesta se sigue como antes.
+        if resta_pendientes():
+            try:
+                await asyncio.to_thread(_vincular_capturadas)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("stock_watch: no se pudo vincular lo capturado a "
+                            "mano antes de leer pendientes (%s); se sigue", exc)
+
+        pend: dict[str, int] = {}
+        pend_info: dict[str, Any] = {}
+        if resta_pendientes():
+            try:
+                pend_info = await asyncio.to_thread(_pendientes)
+                pend = pend_info.get("pend") or {}
+            except Exception as exc:  # noqa: BLE001
+                # FALLA CERRADO. No se sabe cuánto hay vendido sin surtir, así
+                # que no se copia NADA de Odoo a Woo: mejor que Woo se quede
+                # como está —desactualizado— a que copie un `free_qty` que
+                # todavía cuenta piezas ya vendidas. El tramo Woo→canales sigue
+                # corriendo más abajo: replica lo que Woo YA dice y por tanto no
+                # puede resucitar nada que Woo no estuviera ofreciendo.
+                msg = (f"No se pudo medir lo vendido-sin-orden ({exc}). "
+                       f"NO se copió nada de Odoo a Woo en esta pasada; el "
+                       f"tramo Woo→canales sí corrió.")
+                log.error("stock_watch: %s", msg)
+                await asyncio.to_thread(_anotar, "*", "stock_watch_freno",
+                                        "pendientes no medibles", msg)
+                pend_info = {"error": str(exc)[:200]}
+                pend = {}
+                resta_ciega = True
+            else:
+                resta_ciega = False
+        else:
+            resta_ciega = False
 
         catalogo = await asyncio.to_thread(odoo.listar_catalogo)
         if not catalogo:
@@ -411,7 +703,11 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         # El modo se cambia con una variable, sin deploy: si el absoluto resulta
         # equivocado, se vuelve al delta en un minuto.
         absoluto = bool(getattr(settings, "stock_watch_absoluto", False))
-        deltas = _deltas_odoo(od, wo, foto, absoluto)
+        # `resta_ciega` es el fallo cerrado de más arriba: se sabe que hay algo
+        # vendido sin surtir pero no cuánto, así que el tramo Odoo→Woo se
+        # cancela ENTERO. No es lo mismo que `pend = {}` (que significa "no hay
+        # nada pendiente" y sí deja copiar).
+        deltas = [] if resta_ciega else _deltas_odoo(od, wo, foto, absoluto, pend)
 
         # ── 2) CAMBIOS DE WOO (venga de donde venga) → canales ────────────
         movidos_woo: list[tuple[str, int | None, int | None]] = []
@@ -438,9 +734,16 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
         fallidos = ({s for s, _d, _w in deltas} - deltas_ok) if not solo_registro() else set()
         for sku, destino, w in deltas[:200]:
             fallo = sku in fallidos
+            # El motivo dice el `free_qty` CRUDO y, aparte, cuántas piezas se le
+            # restaron: sin las dos cifras no se puede reconstruir después por
+            # qué Woo quedó donde quedó. El desglose venta por venta no cabe
+            # aquí (esta consulta viene agregada por SKU) y vive en el panel,
+            # en `odoo_ventas_log.pendientes_sin_orden`.
+            restado = pend.get(sku, 0)
             await asyncio.to_thread(
                 _anotar, sku, "odoo_delta" if not solo_registro() else "odoo_delta_registro",
-                f"delta de Odoo (foto {foto.get(sku, {}).get('odoo')} -> {od[sku]})",
+                f"delta de Odoo (foto {foto.get(sku, {}).get('odoo')} -> {od[sku]})"
+                + (f" − {restado} vendidas sin orden" if restado else ""),
                 f"Woo {w['stock']} -> {destino}"
                 + (" (ESCRITURA FALLÓ — se reintenta la próxima pasada)" if fallo else ""))
 
@@ -499,14 +802,51 @@ async def revisar(forzar: bool = False) -> dict[str, Any]:
                 filas.append((s, None, od[s]))
         await asyncio.to_thread(_guardar_foto, filas)
 
+        # Sólo se CUENTAN las piezas que de verdad cambiaron un destino: `pend`
+        # trae todo lo vendido-sin-orden, pero un SKU que Odoo ni siquiera lista
+        # no resta nada, y decir "86 restadas" cuando 20 no se aplicaron sería
+        # exactamente el tipo de número que después nadie logra cuadrar.
+        aplicados = {s: pend[s] for s, _d, _w in deltas if s in pend}
+        huerfanos = sorted(set(pend) - set(od))
         _ultimo.update(
             estado="ok", ts=time.time(), segundos=round(time.time() - t0, 1),
             skus_odoo=len(od), skus_woo=len(wo),
             odoo_deltas=len(deltas), woo_escritos=escritos,
             woo_cambios=len(movidos_woo), encolados=encolados,
             solo_registro=solo_registro(),
+            resta_pendientes=resta_pendientes(),
+            resta_ciega=resta_ciega,
+            pendientes_ventas=int(pend_info.get("ventas") or 0),
+            pendientes_espera_mas_vieja_h=float(pend_info.get("mas_vieja_h") or 0),
+            pendientes_skus=len(aplicados),
+            pendientes_piezas=sum(aplicados.values()),
+            pendientes_ventas_muestra=list(pend_info.get("muestra") or [])[:10],
+            pendientes_sin_sku_en_odoo=huerfanos[:10],
+            pendientes_detalle=[f"{s}: −{n}" for s, n in
+                                sorted(aplicados.items(), key=lambda kv: -kv[1])[:10]],
             muestra=[f"{s}: Woo {w['stock']}→{d}" for s, d, w in deltas[:6]]
                     + [f"{s}: Woo {a}→{b} → canales" for s, a, b in movidos_woo[:6]])
+        if resta_ciega:
+            _ultimo["nota"] = ("No se pudo medir lo vendido-sin-orden: el tramo "
+                               "Odoo→Woo se saltó entero (falla cerrado). "
+                               + str(pend_info.get("error") or ""))
+        else:
+            # `_ultimo` es un dict que se ACTUALIZA, no se reemplaza: sin esto,
+            # la nota de una pasada frenada se quedaría pegada en el panel
+            # durante las pasadas buenas que vinieran después.
+            _ultimo.pop("nota", None)
+        if aplicados:
+            log.info("stock_watch: %d pzas de %d SKUs restadas por %d ventas sin "
+                     "orden en Odoo (la más vieja lleva %.1f h): %s",
+                     sum(aplicados.values()), len(aplicados),
+                     int(pend_info.get("ventas") or 0),
+                     float(pend_info.get("mas_vieja_h") or 0),
+                     ", ".join(f"{s} −{n}" for s, n in
+                               sorted(aplicados.items(), key=lambda kv: -kv[1])[:8]))
+        if huerfanos:
+            log.warning("stock_watch: %d SKUs vendidos-sin-orden no están en el "
+                        "catálogo de Odoo, no se les pudo restar nada: %s",
+                        len(huerfanos), ", ".join(huerfanos[:8]))
         if total:
             log.info("stock_watch: %d deltas de Odoo (%d escritos) · %d cambios de Woo "
                      "(%d encolados)%s", len(deltas), escritos, len(movidos_woo), encolados,

@@ -164,10 +164,20 @@ async def interruptor(
     motivo: str = Query("", description="por qué se apaga (queda en la bitácora)"),
     canal: str | None = Query(None, description="tiktok | temu. Sin canal, mueve "
                                                 "el interruptor GENERAL"),
+    que: str = Query("crear", description="crear = generar órdenes (el de siempre); "
+                                          "espera_guia = esperar la guía para "
+                                          "crearlas (exige canal)"),
     request: Request = None,  # noqa: B008
 ):
     """
     Enciende o apaga la generación de órdenes de venta en Odoo.
+
+    `que=espera_guia` mueve otro switch, el de la creación DIFERIDA de ese canal
+    (Brandon, 23-sep): con él encendido la venta sólo deja su espacio y la orden
+    nace cuando aparece la guía. Es por canal a la fuerza —no hay versión
+    general— porque TikTok y Temu no van al mismo ritmo, y no crea ni apaga
+    nada por sí solo: si la generación de órdenes está apagada, esto no hace
+    nada. Ver `odoo_ventas.espera_guia_activa`.
 
     APAGAR ES INMEDIATO Y SEGURO: lo que ya se creó en Odoo se queda (son
     órdenes reales de un pedido real), pero no nace ninguna nueva. El apagado
@@ -192,6 +202,12 @@ async def interruptor(
         quien = str(getattr(ident, "actor", "") or "")
     except Exception:  # noqa: BLE001
         pass
+    if (que or "").strip().lower() in ("espera_guia", "espera-guia"):
+        if not canal:
+            return {"ok": False, "motivo": "la espera de guía se enciende por canal: "
+                                           "falta `canal` (tiktok | temu)"}
+        return await asyncio.to_thread(
+            odoo_ventas.fijar_espera_guia, canal, bool(encendido), quien, motivo)
     if canal:
         return await asyncio.to_thread(
             odoo_ventas.fijar_canal, canal, bool(encendido), quien, motivo)
@@ -486,6 +502,15 @@ async def backfill(
     un ejemplo de cada caso (creada, parcial, sin producto, nació cancelada)
     puede tomar días. Esto reproduce la semana pasada de una vez.
 
+    ⚠️ NO PISA UNA ESPERA VIVA. Desde la creación diferida, `accion` dejó de
+    ser una etiqueta y pasó a ser la llave de dos colas (la de creación y la de
+    la resta de stock), y este endpoint escribe `accion='simulado'`. Correrlo
+    sobre una venta en `espera_guia` la sacaba de las dos de golpe: su orden no
+    nacía nunca, el almacén no se enteraba y su stock volvía al anaquel, sin un
+    solo renglón de log. El candado vive en el UPSERT de `odoo_ventas_log.
+    registrar` (`_GUARDA_ESPERA`), no aquí: así protege a cualquiera que escriba
+    esa tabla, no sólo a este endpoint.
+
     LAS FILAS QUEDAN MARCADAS COMO `simulado`, y eso no es un detalle: quien
     abra el tab tiene que poder distinguir de un golpe lo que de verdad pasó de
     lo que se reconstruyó. Una simulación que se ve idéntica a la realidad es
@@ -537,6 +562,38 @@ async def backfill(
                 "nota": "simulación: NADA se escribió en Odoo"}
 
     return await asyncio.to_thread(_correr)
+
+
+@router.post("/espera/drenar", dependencies=[Depends(requiere_api_key)])
+async def espera_drenar(
+    canal: str = Query(..., description="tiktok | temu"),
+    limite: int = Query(60, ge=1, le=200),
+):
+    """
+    Crea en Odoo las órdenes de la cola de espera AUNQUE el trabajo de guías de
+    ese canal esté apagado.
+
+    PARA QUÉ EXISTE. La bandera de esperar la guía falla cerrado sólo hacia
+    ADELANTE: si alguien apaga `TEMU_GUIAS_ENABLED`/`TIKTOK_GUIAS_ENABLED`, las
+    ventas NUEVAS vuelven a crearse al vender, pero las que ya estaban en la
+    cola no las retoma nadie — siguen escondiendo stock hasta caducar y después
+    desaparecen sin orden. Hasta ahora la única salida era volver a encender el
+    trabajo entero, que es justo lo que alguien acababa de apagar por algo.
+
+    Hace lo mismo que la vuelta normal, venta por venta: pide la guía al canal,
+    si no hay la deja esperando, y si hay crea + confirma + número + PDF. NO
+    salta ninguna guarda de negocio: si la venta está cancelada no se crea, y
+    una venta que ya tiene orden sale por idempotencia.
+    """
+    canal = (canal or "").strip().lower()
+    if canal not in ("tiktok", "temu"):
+        raise HTTPException(400, "canal debe ser 'tiktok' o 'temu'")
+    if canal == "temu":
+        from services import pedidos_temu as mod
+    else:
+        from services import pedidos_tiktok as mod
+    r = await mod.refrescar_guias(limite=limite, forzar_espera=True)
+    return {"ok": not r.get("error"), "canal": canal, "drenado": r}
 
 
 # Las llamadas del sondeo de Temu. La lista es FIJA y toda de lectura: el

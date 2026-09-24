@@ -34,10 +34,59 @@ _COLS = ("canal, cuenta, external_order_id, odoo_order_id, odoo_name, estado, "
          "accion, almacen_id, almacen, cobertura, guia, paqueteria, total, "
          "motivo, creado_at, actualizado_at")
 
+# La venta dejó su ESPACIO y espera la guía para que nazca su orden. Es la
+# acción que arma la cola invertida de `odoo_ventas.cola_de_guias`.
+ACCION_ESPERA = "espera_guia"
+# Se canceló ANTES de tener guía: no hay nada que crear y no debe haberlo. Fuera
+# de `_ACCIONES_SIN_ORDEN` a propósito, por la misma razón que `nacio_cancelada`.
+ACCION_CANCELADA_SIN_ORDEN = "cancelada_sin_orden"
+# Se acabó la ventana y la guía nunca llegó. SALE de las dos colas —ya no se va
+# a crear, ya no esconde stock— pero NO desaparece: se queda visible en el panel
+# en rojo. Una fila que se esfuma al cumplir 14 días es una venta que nadie
+# supo nunca que existió.
+ACCION_ESPERA_CADUCADA = "espera_caducada"
+# La orden EXISTE en Odoo pero se quedó en borrador: no reserva. Para el stock
+# cuenta igual que si no existiera — ver `piezas_sin_orden`.
+ACCION_SIN_RESERVA = "no_se_pudo_confirmar"
+
+# Acciones que sólo MIRAN: nadie escribió en Odoo y nadie lo va a hacer por
+# ellas. Son las que NO pueden pisar un `espera_guia`; ver `_GUARDA_ESPERA`.
+_ACCIONES_SIMULACION = ("simulado", "apagado", "canal_apagado", "solo_registro")
+
+# ⚠️ EL CANDADO DE LA COLA. Desde que la creación es diferida, `accion` dejó de
+# ser una etiqueta descriptiva y pasó a ser LA LLAVE de dos colas:
+# `pendientes_sin_orden` (quién todavía tiene que nacer en Odoo) y
+# `piezas_sin_orden` (cuánto stock hay que esconder mientras tanto). Las dos
+# filtran por `accion = 'espera_guia'`.
+#
+# Y el UPSERT de abajo lo corre CUALQUIERA, incluido
+# `POST /api/automatizacion/backfill`, que reproduce la semana pasada con
+# `crear_orden(dry_run=True)` y por tanto devuelve `accion='simulado'`. Sin este
+# candado, correr el backfill sobre una venta que espera guía la sacaba de las
+# DOS colas de golpe: su orden no nacía nunca en Odoo (el trabajo de guías ya no
+# la veía), el almacén no se enteraba de la venta, y además su stock volvía al
+# anaquel de Woo y de los canales. `vincular_sin_orden` tampoco la rescataba,
+# porque nunca iba a existir una orden que vincular. Sin log y sin contador: se
+# descubría cuando reclamaba el cliente.
+#
+# Es exactamente la lección de `odoo_ventas.pendientes_de_guia` con otra
+# columna: una fila no puede salir de la cola sin que el HECHO haya ocurrido.
+# Así que una acción de simulación NUNCA pisa una espera viva. Lo que sí pasa:
+# `crear_con_guia` trae `odoo_order_id` (el hecho) y entra;
+# `marcar_cancelada_sin_orden` es un UPDATE aparte y no pasa por aquí; y
+# cualquier acción que no sea de simulación (`error`, `sku_sin_producto`,
+# `sin_orden`…) también entra, porque dice algo que la fila no sabía.
+_GUARDA_ESPERA = (
+    f"ops.odoo_sale_orders.accion = '{ACCION_ESPERA}' "
+    "and ops.odoo_sale_orders.odoo_order_id is null "
+    "and excluded.odoo_order_id is null "
+    f"and excluded.accion in ({', '.join(chr(39) + a + chr(39) for a in _ACCIONES_SIMULACION)})")
+
 
 def registrar(canal: str, cuenta: str, order_id: str, resultado: dict[str, Any],
               items: list[dict[str, Any]] | None = None,
-              guia: str = "", paqueteria: str = "") -> bool:
+              guia: str = "", paqueteria: str = "",
+              refrescar_plan: bool = False, intentos: int = 3) -> bool:
     """
     Guarda (o actualiza) el renglón de esta venta y sus líneas.
 
@@ -49,11 +98,47 @@ def registrar(canal: str, cuenta: str, order_id: str, resultado: dict[str, Any],
     id de orden solo es único DENTRO de una cuenta: el mismo canal con dos
     tiendas puede repetir el número, y sin ella la segunda venta pisaría a la
     primera. Es la misma llave que ya usa `channel.orders`.
+
+    `refrescar_plan=True` deja escribir ADEMÁS almacén, cobertura y total. Es
+    para la creación diferida (`odoo_ventas.crear_con_guia`) y sólo para ella:
+    cuando la orden nace uno o dos días después de la venta, lo que hay en esas
+    columnas es un plan que NUNCA se ejecutó, y dejarlo ahí mandaría al almacén
+    a la bodega equivocada. No confundir con la foto de stock: ésa sigue siendo
+    intocable y no se re-escribe ni con esto (ver el UPSERT de las líneas).
+
+    `intentos` REINTENTA el escritorio entero antes de rendirse, y desde la
+    creación diferida eso dejó de ser un lujo. Antes esta fila era una bitácora:
+    si kubera tropezaba, se perdía la foto de stock y nada más — la orden ya
+    estaba en Odoo y `pendientes_de_guia` (que le pregunta a ODOO) la seguía
+    viendo. Ahora la fila ES LA COLA: sin ella la venta no existe para nadie, no
+    hay orden, no hay espacio en el panel, el sondeo no vuelve a pasar por ella
+    (salta lo ya registrado) y su stock se ofrece otra vez. Un tropiezo de dos
+    minutos del pooler bastaba. El reintento tapa el parpadeo; el hueco largo lo
+    tapa `odoo_ventas.reponer_espacios`, que vuelve a mirar `channel.orders`.
+
+    ⚠️ BLOQUEA (psycopg2 y, ahora, `time.sleep` entre intentos): desde un hilo.
+    El seam ya la llama con `asyncio.to_thread` (regla 11).
     """
+    import time
+
     from services import supabase_db as sdb
 
     foto = resultado.get("stock_foto") or {}
-    try:
+    # El plan SÓLO se re-escribe si el que llama lo pidió Y trae uno. Un
+    # `coalesce` sin la bandera dejaría pasar cualquier re-registro; con la
+    # bandera y sin valor, se conserva lo que había.
+    plan_sql = ("""
+                        almacen_id    = coalesce(excluded.almacen_id,
+                                                 ops.odoo_sale_orders.almacen_id),
+                        almacen       = coalesce(nullif(excluded.almacen, ''),
+                                                 ops.odoo_sale_orders.almacen),
+                        cobertura     = coalesce(nullif(excluded.cobertura, ''),
+                                                 ops.odoo_sale_orders.cobertura),
+                        total         = coalesce(excluded.total,
+                                                 ops.odoo_sale_orders.total),"""
+                if refrescar_plan else "")
+
+    def _escribir() -> None:
         with sdb.get_cursor() as cur:
             cur.execute(
                 f"""insert into ops.odoo_sale_orders ({_COLS})
@@ -65,8 +150,17 @@ def registrar(canal: str, cuenta: str, order_id: str, resultado: dict[str, Any],
                                                  ops.odoo_sale_orders.odoo_order_id),
                         odoo_name     = coalesce(excluded.odoo_name,
                                                  ops.odoo_sale_orders.odoo_name),
-                        estado        = excluded.estado,
-                        accion        = excluded.accion,
+                        -- EL CANDADO DE LA COLA (ver `_GUARDA_ESPERA`): una
+                        -- acción de SIMULACIÓN no puede sacar de la cola a una
+                        -- venta que espera su guía. Va en los tres campos que
+                        -- describen el desenlace, porque dejar la acción y
+                        -- pisarle el motivo contaría dos historias distintas.
+                        estado        = case when {_GUARDA_ESPERA}
+                                             then ops.odoo_sale_orders.estado
+                                             else excluded.estado end,
+                        accion        = case when {_GUARDA_ESPERA}
+                                             then ops.odoo_sale_orders.accion
+                                             else excluded.accion end,
                         -- La guía puede llegar VACÍA en el primer aviso y con
                         -- valor después; nunca al revés. `nullif`+`coalesce`
                         -- deja pasar '' → valor y bloquea valor → ''.
@@ -74,10 +168,13 @@ def registrar(canal: str, cuenta: str, order_id: str, resultado: dict[str, Any],
                                                  ops.odoo_sale_orders.guia),
                         paqueteria    = coalesce(nullif(excluded.paqueteria, ''),
                                                  ops.odoo_sale_orders.paqueteria),
-                        motivo        = excluded.motivo,
+                        motivo        = case when {_GUARDA_ESPERA}
+                                             then ops.odoo_sale_orders.motivo
+                                             else excluded.motivo end,{plan_sql}
                         actualizado_at = now()
-                    -- almacen/cobertura/total NO se re-tocan: son de la decisión
-                    -- original y describen el momento en que se creó la orden.
+                    -- almacen/cobertura/total NO se re-tocan salvo con
+                    -- `refrescar_plan`: son de la decisión original y describen
+                    -- el momento en que se creó la orden.
                 """,
                 {"canal": canal, "cuenta": cuenta, "oid": str(order_id),
                  "odoo_id": resultado.get("odoo_id"),
@@ -133,10 +230,27 @@ def registrar(canal: str, cuenta: str, order_id: str, resultado: dict[str, Any],
                      "cant": cant,
                      "pu": it.get("precio_unitario"),
                      "libre": _json.dumps(f) if f else None})
-        return True
-    except Exception as exc:  # noqa: BLE001 — una bitácora no tumba una venta
-        log.warning("odoo_ventas_log.registrar(%s, %s): %s", canal, order_id, exc)
-        return False
+
+    # El reintento es CORTO a propósito: corre en el camino de una venta (en un
+    # hilo, pero el sondeo del canal espera). Medio segundo y uno y medio tapan
+    # el parpadeo del pooler; un corte de dos minutos no se tapa aquí y por eso
+    # existe `reponer_espacios`.
+    ultimo: Exception | None = None
+    for n in range(max(1, int(intentos))):
+        try:
+            _escribir()
+            if n:
+                log.info("odoo_ventas_log.registrar(%s, %s): quedó al intento %s",
+                         canal, order_id, n + 1)
+            return True
+        except Exception as exc:  # noqa: BLE001 — una bitácora no tumba una venta
+            ultimo = exc
+            if n + 1 < max(1, int(intentos)):
+                time.sleep(0.5 * (n + 1))
+    log.warning("odoo_ventas_log.registrar(%s, %s): %s intento(s) y no se pudo: %s. "
+                "Si esta venta esperaba guía, su ESPACIO no quedó escrito y sólo "
+                "`reponer_espacios` la recupera.", canal, order_id, intentos, ultimo)
+    return False
 
 
 def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
@@ -189,8 +303,433 @@ def actualizar_guia(canal: str, cuenta: str, order_id: str, guia: str,
 # arreglar después: SKU sin producto, error, o el automatismo apagado/observando
 # en ese momento. NO van las que dicen "no debía haber orden" (nació cancelada,
 # sin orden al cancelar): vincularlas pegaría una venta muerta a una orden viva.
+#
+# `espera_guia` SÍ va, y es una decisión: esa venta es una venta VIVA cuya orden
+# todavía no nace. Si Gabriela se adelanta y la captura a mano, vincularla es lo
+# correcto —la fila cuenta la verdad y sale de la cola de espera por el HECHO de
+# que la orden existe—. Y no puede duplicar: `crear_orden` empieza por
+# `buscar_por_ref` y devolvería `ya_existia`.
+#
+# `espera_caducada` TAMBIÉN va: la guía nunca llegó y nosotros ya no la vamos a
+# crear, pero si alguien la captura a mano la fila tiene que enterarse. Es el
+# caso en que vincular es MÁS necesario, no menos.
 _ACCIONES_SIN_ORDEN = ("sku_sin_producto", "error", "apagado", "canal_apagado",
-                       "solo_registro", "simulado")
+                       "solo_registro", "simulado", "espera_guia",
+                       "espera_caducada")
+
+
+def pendientes_sin_orden(canal: str, dias: int = 14,
+                         limite: int = 60) -> list[dict[str, Any]]:
+    """
+    Las ventas que sólo tienen su ESPACIO: esperan la guía para nacer en Odoo.
+
+    ⚠️ BLOQUEA (psycopg2): llamar desde un hilo.
+
+    LA CONDICIÓN DE SALIDA ES `odoo_order_id is not null` — un HECHO DE ODOO— y
+    NUNCA la columna `guia`. Esto no es estilo: la primera versión de la cola de
+    guías filtraba por `guia` y, como el seam de la venta rellena esa columna en
+    cualquier re-aviso sin tocar Odoo, las filas salían de la cola con la
+    entrega vacía para siempre (está contado en `odoo_ventas.pendientes_de_guia`).
+    Aquí el mismo error sería peor: la venta saldría de la cola SIN ORDEN, y el
+    almacén nunca se enteraría de ella.
+
+    Devuelve renglones con la forma de la cola de guías —`pickings` y `sin_pdf`
+    vacíos, porque todavía no hay nada en Odoo— más `espera_guia=True` y la
+    ANTIGÜEDAD, que es lo que hace visible en el panel a una venta que lleva
+    demasiado esperando. Sin datos del comprador. Nunca lanza.
+
+    ⚠️ SE REPARTE ENTRE LO NUEVO Y LO VIEJO, y no es un detalle de estilo.
+    Con `order by creado_at asc` a secas, las ventas que NUNCA resuelven se
+    quedan pegadas a la cabeza de la cola los 14 días enteros. Y en Temu ese
+    relleno está garantizado: `_ESTADOS_WC` sólo mapea {2,4,5}, así que una
+    venta en cualquier otro estado no se crea, no se marca y no sale. En cuanto
+    hay más esperando que el tope de la vuelta, las ventas NUEVAS —las que
+    justamente van a recibir su guía en las próximas horas, con la mediana de
+    Temu en 28.4 h— dejan de mirarse hasta que las viejas caduquen… y para
+    entonces la nueva también caducó. Reproducido con 200 viejas + 1 de hoy:
+    doce vueltas seguidas devolvían las MISMAS 60 viejas.
+    Así que la mitad del cupo es para las más NUEVAS y la otra mitad para las
+    más VIEJAS: lo nuevo entra siempre, y la cola vieja no se abandona.
+    """
+    from services import supabase_db as sdb
+
+    canal = (canal or "").lower()
+    if not canal:
+        return []
+    tope = max(1, int(limite))
+    nuevas = (tope + 1) // 2          # la mitad de arriba, redondeando a favor
+    try:
+        filas = sdb.fetch_all(
+            """with cola as (
+                 select cuenta, external_order_id, creado_at, motivo, almacen,
+                        cobertura,
+                        extract(epoch from (now() - creado_at)) / 3600.0 as horas,
+                        row_number() over (order by creado_at desc) as rn_nueva,
+                        row_number() over (order by creado_at asc)  as rn_vieja
+                   from ops.odoo_sale_orders
+                  where canal = %(c)s and odoo_order_id is null
+                    and accion = %(a)s
+                    and creado_at > now() - make_interval(days => %(d)s))
+               select cuenta, external_order_id, creado_at, motivo, almacen,
+                      cobertura, horas
+                 from cola
+                where rn_nueva <= %(nuevas)s or rn_vieja <= %(viejas)s
+                order by creado_at asc limit %(l)s""",
+            {"c": canal, "a": ACCION_ESPERA, "d": int(dias), "l": tope,
+             "nuevas": nuevas, "viejas": tope - nuevas})
+    except Exception as exc:  # noqa: BLE001
+        log.warning("pendientes_sin_orden(%s): %s", canal, str(exc)[:150])
+        return []
+    return [{"order_id": str(f["external_order_id"]), "cuenta": f["cuenta"],
+             "espera_guia": True, "pickings": [], "sin_pdf": [], "ordenes": [],
+             "creado_at": f["creado_at"], "antiguedad_h": float(f["horas"] or 0),
+             "almacen_al_vender": f["almacen"], "cobertura_al_vender": f["cobertura"]}
+            for f in filas]
+
+
+def caducar_esperas(canal: str, dias: int, limite: int = 500) -> dict[str, Any]:
+    """
+    Las esperas que se pasaron de la ventana dejan de esperar EN VOZ ALTA.
+    ⚠️ BLOQUEA. Nunca lanza.
+
+    Sin esto, una venta que cumple los `dias` simplemente deja de aparecer: sale
+    de la cola de creación y de la resta de stock porque las dos consultas
+    filtran por fecha, y en el panel se queda en cian diciendo "Esperando guía"
+    para siempre, cuando ya no la espera nadie. Es la misma forma de fallar que
+    este cambio vino a corregir: una fila que se va de la cola sin que el hecho
+    haya ocurrido.
+
+    Marcarla `espera_caducada` la saca de las dos colas POR SU ACCIÓN (no por
+    una fecha que nadie ve), la pinta en rojo, y la deja vinculable si alguien
+    la captura a mano. No toca Odoo: ahí nunca hubo nada.
+    """
+    from services import supabase_db as sdb
+    try:
+        n = sdb.execute(
+            """update ops.odoo_sale_orders
+                  set accion = %(cad)s, motivo = %(m)s, actualizado_at = now()
+                where canal = %(c)s and odoo_order_id is null
+                  and accion = %(a)s
+                  and creado_at <= now() - make_interval(days => %(d)s)
+                  and external_order_id in (
+                      select external_order_id from ops.odoo_sale_orders
+                       where canal = %(c)s and odoo_order_id is null
+                         and accion = %(a)s
+                         and creado_at <= now() - make_interval(days => %(d)s)
+                       order by creado_at asc limit %(l)s)""",
+            {"c": (canal or "").lower(), "a": ACCION_ESPERA,
+             "cad": ACCION_ESPERA_CADUCADA, "d": int(dias), "l": int(limite),
+             "m": (f"Pasaron {int(dias)} días y el canal nunca dio la guía: la "
+                   "orden en Odoo ya NO se va a crear sola y sus piezas vuelven "
+                   "al anaquel. Si la venta es real, hay que capturarla a mano.")})
+        if n:
+            log.warning("Odoo %s: %s venta(s) llevaban más de %s días esperando "
+                        "guía y se marcaron CADUCADAS: su orden no nacerá sola.",
+                        canal, n, dias)
+        return {"canal": canal, "caducadas": int(n or 0)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("caducar_esperas(%s): %s", canal, str(exc)[:150])
+        return {"canal": canal, "caducadas": 0, "error": str(exc)[:150]}
+
+
+def contar_esperas(canal: str | None = None, dias: int = 14) -> dict[str, Any]:
+    """
+    Cuántas ventas están esperando su guía y desde cuándo. ⚠️ BLOQUEA.
+
+    Existe para poder decir un NÚMERO donde hoy sólo hay un aviso. Cuando
+    alguien apaga el trabajo de guías con la espera encendida, las ventas nuevas
+    vuelven a crearse al vender (falla cerrado) pero las que YA estaban en la
+    cola no las retoma nadie: siguen escondiendo stock hasta caducar y después
+    desaparecen sin orden. Un chip ámbar que dice "espera pedida, pero inactiva"
+    suena a que no pasa nada; "9 ventas sin quién las cree" no. Nunca lanza.
+    """
+    from services import supabase_db as sdb
+    donde = ["odoo_order_id is null", "accion = %(a)s",
+             "creado_at > now() - make_interval(days => %(d)s)"]
+    params: dict[str, Any] = {"a": ACCION_ESPERA, "d": int(dias)}
+    if canal:
+        donde.append("canal = %(c)s")
+        params["c"] = canal.lower()
+    try:
+        f = sdb.fetch_one(
+            f"""select count(*) as ventas,
+                       coalesce(extract(epoch from (now() - min(creado_at)))
+                                / 3600.0, 0) as horas
+                  from ops.odoo_sale_orders
+                 where {' and '.join(donde)}""", params) or {}
+        return {"ventas": int(f.get("ventas") or 0),
+                "mas_vieja_h": round(float(f.get("horas") or 0), 1)}
+    except Exception as exc:  # noqa: BLE001
+        log.debug("contar_esperas(%s): %s", canal, exc)
+        return {"ventas": 0, "mas_vieja_h": 0.0, "error": str(exc)[:150]}
+
+
+def ventas_sin_fila(canal: str, horas: int = 48,
+                    limite: int = 200) -> list[dict[str, Any]]:
+    """
+    Ventas de `channel.orders` que NO tienen renglón en la bitácora. ⚠️ BLOQUEA.
+
+    EL AGUJERO QUE TAPA. Con la creación diferida, esta tabla dejó de ser una
+    bitácora y pasó a ser el ÚNICO camino por el que una venta llega a Odoo. Y
+    ese camino falla en silencio: `registrar` devuelve False y el seam se lo
+    traga. Si kubera tropieza en el instante de la venta no queda fila, no hay
+    "espacio", la cola no la ve, `vincular_sin_orden` tampoco (sólo mira filas
+    que existen) y su stock se ofrece otra vez. El sondeo no vuelve a pasar por
+    ella. Antes el mismo fallo era inocuo: la orden ya estaba en Odoo y
+    `pendientes_de_guia` —que le pregunta a ODOO— la seguía viendo.
+
+    Trae la venta con sus líneas, listas para `crear_orden`. SIN datos del
+    comprador: sólo id, cuenta, fecha y renglones. Nunca lanza.
+    """
+    from services import supabase_db as sdb
+    try:
+        return [dict(f) for f in sdb.fetch_all(
+            """select o.external_order_id as order_id, o.cuenta, o.creado_at,
+                      o.estado_wc,
+                      coalesce((select json_agg(json_build_object(
+                            'sku', i.sku::text, 'cantidad', i.cantidad,
+                            'precio_unitario', i.precio_unitario,
+                            'titulo', i.titulo) order by i.linea)
+                          from channel.order_items i
+                         where i.canal = o.canal
+                           and i.external_order_id = o.external_order_id),
+                        '[]'::json) as items
+                 from channel.orders o
+                where o.canal = %(c)s
+                  and o.creado_at > now() - make_interval(hours => %(h)s)
+                  and not exists (select 1 from ops.odoo_sale_orders b
+                                   where b.canal = o.canal and b.cuenta = o.cuenta
+                                     and b.external_order_id = o.external_order_id)
+                order by o.creado_at asc limit %(l)s""",
+            {"c": (canal or "").lower(), "h": int(horas), "l": int(limite)})]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("ventas_sin_fila(%s): %s", canal, str(exc)[:150])
+        return []
+
+
+def fijar_orden(canal: str, cuenta: str, order_id: str, odoo_id: int,
+                nombre: str = "", estado: str = "", accion: str = "",
+                motivo: str = "") -> bool:
+    """
+    Anota SÓLO que la orden ya existe en Odoo. ⚠️ BLOQUEA. Nunca lanza.
+
+    ES EL REINTENTO MÍNIMO de `registrar`, y tapa el peor cruce que tiene la
+    creación diferida: la orden nace en Odoo —Odoo YA reservó— y justo entonces
+    kubera no contesta al `registrar`. `crear_con_guia` sigue adelante a
+    propósito (la orden existe, y eso es lo que no se puede perder), pero la
+    fila se queda `espera_guia` con `odoo_order_id` NULL… y `piezas_sin_orden`
+    sigue restando sus piezas ENCIMA de la reserva de Odoo. No es un cruce de
+    una pasada que se cura solo: la fila no sale de la cola, así que la resta se
+    repite cada 20 minutos hasta que caduque o corra `vincular_sin_orden`.
+
+    Este UPDATE escribe cuatro columnas y ninguna línea, así que tiene mucha más
+    probabilidad de pasar que el UPSERT completo. Sólo toca filas SIN orden:
+    re-correrlo no pisa nada.
+    """
+    from services import supabase_db as sdb
+    try:
+        n = sdb.execute(
+            """update ops.odoo_sale_orders
+                  set odoo_order_id = %(id)s,
+                      odoo_name = coalesce(nullif(%(n)s, ''), odoo_name),
+                      estado = coalesce(nullif(%(e)s, ''), estado),
+                      accion = coalesce(nullif(%(a)s, ''), accion),
+                      motivo = coalesce(nullif(%(m)s, ''), motivo),
+                      actualizado_at = now()
+                where canal = %(c)s and cuenta = %(cu)s
+                  and external_order_id = %(o)s and odoo_order_id is null""",
+            {"id": int(odoo_id), "n": (nombre or "")[:120], "e": (estado or "")[:60],
+             "a": (accion or "")[:40], "m": (motivo or "")[:300],
+             "c": (canal or "").lower(), "cu": cuenta, "o": str(order_id)})
+        return bool(n)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("fijar_orden(%s, %s): %s", canal, order_id, str(exc)[:150])
+        return False
+
+
+def plan_guardado(canal: str, cuenta: str, order_id: str) -> dict[str, Any] | None:
+    """El almacén y la cobertura que se decidieron EL DÍA DE LA VENTA, más
+    cuándo fue. ⚠️ BLOQUEA. Sólo para poder decir en el motivo si el plan de hoy
+    es el mismo; no decide nada. Nunca lanza."""
+    from services import supabase_db as sdb
+    try:
+        return sdb.fetch_one(
+            """select almacen, cobertura, creado_at, accion
+                 from ops.odoo_sale_orders
+                where canal = %(c)s and cuenta = %(cu)s
+                  and external_order_id = %(o)s""",
+            {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id)})
+    except Exception as exc:  # noqa: BLE001
+        log.debug("plan_guardado(%s, %s): %s", canal, order_id, exc)
+        return None
+
+
+def anotar_intento(canal: str, cuenta: str, order_id: str, motivo: str) -> bool:
+    """
+    Deja dicho que esta vuelta intentó crear la orden y no pudo. ⚠️ BLOQUEA.
+
+    NO cambia la acción: la fila tiene que SEGUIR en la cola de espera para que
+    la vuelta siguiente lo reintente. Sólo escribe el motivo y la hora, que es
+    lo que hace visible en el panel una venta que lleva varias vueltas fallando
+    en vez de una que simplemente no tiene guía todavía. Nunca lanza.
+    """
+    from services import supabase_db as sdb
+    try:
+        sdb.execute(
+            """update ops.odoo_sale_orders
+                  set motivo = %(m)s, actualizado_at = now()
+                where canal = %(c)s and cuenta = %(cu)s
+                  and external_order_id = %(o)s and odoo_order_id is null""",
+            {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id),
+             "m": f"Ya hay guía pero la orden no se pudo crear: {motivo}"[:300]})
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.debug("anotar_intento(%s, %s): %s", canal, order_id, exc)
+        return False
+
+
+def marcar_cancelada_sin_orden(canal: str, cuenta: str, order_id: str,
+                               estado: str = "") -> bool:
+    """
+    La venta se canceló mientras esperaba su guía: sale de la cola y NO se crea.
+    ⚠️ BLOQUEA. Nunca lanza.
+
+    Es la mitad buena del cambio: hoy TikTok cancela el 58% de sus ventas y cada
+    una deja una orden confirmada que el almacén tiene que aprender a ignorar.
+    Con la creación diferida, esa orden simplemente nunca existe.
+
+    Sólo toca filas SIN orden. Si la orden ya nació —alguien la creó a mano, o
+    la carrera se perdió por segundos— esto no la toca y la cancelación la
+    atiende `odoo_ventas.cancelar_orden`, que es quien sabe hablar con Odoo.
+    """
+    from services import supabase_db as sdb
+    try:
+        n = sdb.execute(
+            """update ops.odoo_sale_orders
+                  set accion = %(a)s, estado = %(e)s, motivo = %(m)s,
+                      actualizado_at = now()
+                where canal = %(c)s and cuenta = %(cu)s
+                  and external_order_id = %(o)s
+                  and odoo_order_id is null and accion = %(esp)s""",
+            {"c": (canal or "").lower(), "cu": cuenta, "o": str(order_id),
+             "a": ACCION_CANCELADA_SIN_ORDEN, "e": (estado or "")[:60],
+             "esp": ACCION_ESPERA,
+             "m": ("El canal la canceló mientras esperaba su guía: no se crea "
+                   "orden en Odoo" + (f" (estado {estado})" if estado else "") + ".")})
+        if n:
+            log.info("Odoo %s: la venta %s se canceló esperando guía — no se crea "
+                     "orden", canal, order_id)
+        return bool(n)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("marcar_cancelada_sin_orden(%s, %s): %s", canal, order_id, exc)
+        return False
+
+
+def piezas_sin_orden(canal: str | None = None, dias: int = 14) -> dict[str, float]:
+    """
+    {sku: piezas} comprometidas por ventas que TODAVÍA NO tienen orden en Odoo.
+    ⚠️ BLOQUEA. Nunca lanza: si algo falla devuelve {}, que es no restar nada.
+
+    PARA QUÉ. Mientras la orden no nace, Odoo no reserva: `free_qty` no baja,
+    `stock_watch` copia ese número a Woo y el fan-out devuelve al anaquel la
+    pieza que alguien ya compró. Esto es lo que hay que RESTAR antes de copiar
+    (`destino = max(0, free_qty − pendientes)`), y es la parte C del encargo.
+
+    Deja fuera a propósito lo que no está vendido-y-sin-surtir: sólo
+    `accion='espera_guia'`, sólo sin `odoo_order_id` y sólo dentro de la
+    ventana. El tope de días importa: una venta muerta que nadie canceló no
+    puede esconder stock para siempre.
+
+    ⚠️ CON UNA EXCEPCIÓN: `no_se_pudo_confirmar`. El relevo resta→reserva se
+    dispara con "ya hay orden", pero una orden puede EXISTIR SIN RESERVAR: si
+    Odoo la deja en borrador, `crear_orden` devuelve esa acción con el
+    `odoo_id` lleno, la fila recibe su `odoo_order_id` y la resta se apagaría…
+    sin que `free_qty` hubiera bajado una sola pieza. El diseño promete que "la
+    reserva real toma el relevo", y en ese caso la reserva nunca llega. Así que
+    la condición de salida es el HECHO COMPLETO —orden que además reserva— y no
+    sólo el id. Medido: 0 de 109 filas en 90 días; raro, no imposible.
+    """
+    from services import supabase_db as sdb
+    donde = ["""((o.odoo_order_id is null and o.accion = %(a)s)
+                 or o.accion = %(nc)s)""",
+             "o.creado_at > now() - make_interval(days => %(d)s)"]
+    params: dict[str, Any] = {"a": ACCION_ESPERA, "nc": ACCION_SIN_RESERVA,
+                              "d": int(dias)}
+    if canal:
+        donde.append("o.canal = %(c)s")
+        params["c"] = canal.lower()
+    try:
+        filas = sdb.fetch_all(
+            f"""select i.sku, sum(i.cantidad) as piezas
+                  from ops.odoo_sale_orders o
+                  join ops.odoo_sale_order_items i
+                    on i.canal = o.canal and i.cuenta = o.cuenta
+                   and i.external_order_id = o.external_order_id
+                 where {' and '.join(donde)}
+                 group by i.sku""", params)
+        return {str(f["sku"]): float(f["piezas"] or 0) for f in filas
+                if str(f["sku"] or "").strip()}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("piezas_sin_orden: %s", str(exc)[:150])
+        return {}
+
+
+def centinela_pendientes(canal: str | None = None,
+                         dias: int = 14) -> dict[str, Any]:
+    """
+    El CENTINELA de la resta de stock: cuántas ventas están comprometidas y
+    cuántas de ellas tienen renglones. ⚠️ BLOQUEA. **LANZA** si no puede
+    responder — es su razón de existir.
+
+    POR QUÉ HAY QUE CONTAR LOS RENGLONES APARTE. `piezas_sin_orden` nunca lanza:
+    ante cualquier fallo devuelve `{}`, que significaría "no hay nada vendido
+    pendiente" y mandaría copiar `free_qty` tal cual. Así que se pregunta dos
+    veces… pero "vino vacío" tenía DOS causas y se trataban igual:
+
+      · kubera se cayó entre las dos consultas → transitorio, hay que frenar;
+      · una venta esperando no tiene renglones → PERMANENTE y alcanzable:
+        `registrar` salta las líneas con `cantidad <= 0` o SKU vacío pero SÍ
+        escribe el encabezado. Una sola venta así frenaba el tramo Odoo→Woo
+        ENTERO cada 20 minutos durante los 14 días de la ventana: una recepción
+        de mercancía no llegaba nunca a la tienda y un SKU agotado en Odoo no
+        bajaba nunca a 0 en Woo. Catorce días sin sincronizar inventario hace
+        más daño que la pieza que se intentaba esconder.
+
+    Con `ventas_con_items` las dos se distinguen sin adivinar: si NINGUNA de las
+    ventas contadas tiene renglones, un desglose vacío es la respuesta CORRECTA
+    (no hay nada que restar) y la pasada sigue. Si alguna los tiene y el
+    desglose llega vacío, sí se rompió algo y se falla cerrado.
+
+    Es el mismo `where` que `piezas_sin_orden`, en la misma consulta agregada.
+    """
+    from services import supabase_db as sdb
+    donde = ["""((o.odoo_order_id is null and o.accion = %(a)s)
+                 or o.accion = %(nc)s)""",
+             "o.creado_at > now() - make_interval(days => %(d)s)"]
+    params: dict[str, Any] = {"a": ACCION_ESPERA, "nc": ACCION_SIN_RESERVA,
+                              "d": int(dias)}
+    if canal:
+        donde.append("o.canal = %(c)s")
+        params["c"] = canal.lower()
+    f = sdb.fetch_one(
+        f"""select count(*) as ventas,
+                   count(*) filter (where o.renglones > 0) as ventas_con_items,
+                   coalesce(extract(epoch from (now() - min(o.creado_at)))
+                            / 3600.0, 0) as horas,
+                   (array_agg(o.canal || ' ' || o.external_order_id
+                              order by o.creado_at asc))[1:10] as muestra
+              from (select o.*,
+                           (select count(*) from ops.odoo_sale_order_items i
+                             where i.canal = o.canal and i.cuenta = o.cuenta
+                               and i.external_order_id = o.external_order_id)
+                           as renglones
+                      from ops.odoo_sale_orders o) o
+             where {' and '.join(donde)}""", params) or {}
+    return {"ventas": int(f.get("ventas") or 0),
+            "ventas_con_items": int(f.get("ventas_con_items") or 0),
+            "mas_vieja_h": round(float(f.get("horas") or 0), 1),
+            # Números de venta, JAMÁS datos del comprador.
+            "muestra": list(f.get("muestra") or [])}
 
 
 def vincular_sin_orden(canal: str, dias: int = 30, limite: int = 200) -> dict[str, Any]:
@@ -327,9 +866,16 @@ def historial(limite: int = 100, canal: str | None = None,
         #                               borrador: NO reserva, así que el stock
         #                               se sigue ofreciendo. Sobreventa viva
         #                               hasta que alguien la confirme a mano.
+        #   espera_caducada           → pasaron los 14 días, el canal nunca dio
+        #                               la guía y su orden ya no nace sola. Si
+        #                               la venta es real hay que capturarla.
+        #
+        # La `cobertura parcial` se pide SÓLO de las que ya tienen orden: en una
+        # espera ese dato es el plan del dry-run, que se recalcula al crear.
         donde.append("(o.accion in ('error','sku_sin_producto',"
-                     "'no_se_pudo_cancelar','no_se_pudo_confirmar') "
-                     "or o.cobertura = 'parcial')")
+                     "'no_se_pudo_cancelar','no_se_pudo_confirmar',"
+                     "'espera_caducada') "
+                     "or (o.cobertura = 'parcial' and o.odoo_order_id is not null))")
     try:
         filas = sdb.fetch_all(
             f"""select o.canal, o.cuenta, o.external_order_id, o.odoo_order_id,
@@ -381,11 +927,18 @@ def resumen(canal: str | None = None) -> dict[str, Any]:
         params["canal"] = canal
     try:
         filas = sdb.fetch_all(
-            f"""select accion, cobertura, count(*) n
+            f"""select accion, cobertura, (odoo_order_id is not null) as en_odoo,
+                       count(*) n
                  from ops.odoo_sale_orders
                 where {donde}
-                group by 1, 2""", params)
-        total = sum(f["n"] for f in filas)
+                group by 1, 2, 3""", params)
+        # ⚠️ LOS CONTADORES SE ACOTAN AL HECHO DE ODOO. El rótulo dice "Órdenes
+        # creadas", y con la creación diferida un `count(*)` a secas metía ahí
+        # las `espera_guia` y las `cancelada_sin_orden` — ventas que NO tienen
+        # orden en Odoo— justo al lado del KPI "Esperando guía", contando las
+        # MISMAS filas con el rótulo contrario. Con Temu a mediana 28.4 h y
+        # ~9-10 ventas en cola, eso no es un borde: es el estado normal.
+        total = sum(f["n"] for f in filas if f["en_odoo"])
         # El GROUP BY es por (accion, cobertura), así que una misma acción
         # aparece en VARIAS filas — una por cobertura. Construir el dict por
         # comprensión dejaba solo la última y el contador salía más bajo que la
@@ -396,11 +949,25 @@ def resumen(canal: str | None = None) -> dict[str, Any]:
         return {
             "total_30d": total,
             "por_accion": por_accion,
-            "parciales": sum(f["n"] for f in filas if f["cobertura"] == "parcial"),
+            # "Se crearon sin stock" sólo puede decirse de las que SE CREARON.
+            # La cobertura de una fila en espera es el plan del dry-run del día
+            # de la venta, y `crear_con_guia` lo vuelve a calcular con el stock
+            # del día en que nazca la orden: alarmar por él es alarmar por una
+            # reserva que ni se ha intentado.
+            "parciales": sum(f["n"] for f in filas
+                             if f["cobertura"] == "parcial" and f["en_odoo"]),
             "errores": sum(f["n"] for f in filas
                            if f["accion"] in ("error", "sku_sin_producto")),
+            # Los ESPACIOS: ventas registradas cuya orden todavía no nace. Se
+            # calcula aquí para que la pantalla no tenga que deducirlo de la
+            # lista que trae (que está paginada y diría otro número).
+            "espacios_30d": sum(f["n"] for f in filas
+                                if f["accion"] == ACCION_ESPERA and not f["en_odoo"]),
+            "caducadas_30d": sum(f["n"] for f in filas
+                                 if f["accion"] == ACCION_ESPERA_CADUCADA),
         }
     except Exception as exc:  # noqa: BLE001
         log.warning("odoo_ventas_log.resumen: %s", exc)
         return {"total_30d": 0, "por_accion": {}, "parciales": 0, "errores": 0,
+                "espacios_30d": 0, "caducadas_30d": 0,
                 "nota": "la tabla ops.odoo_sale_orders todavía no existe"}

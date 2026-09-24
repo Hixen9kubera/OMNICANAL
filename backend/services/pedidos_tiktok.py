@@ -468,11 +468,32 @@ def _paquetes_detalle(o: dict[str, Any], lineas: list[dict[str, Any]],
     return fundidos
 
 
+def _venta_sin_pii(o: dict[str, Any]) -> dict[str, Any]:
+    """
+    Lo MÍNIMO para crear la orden de venta en Odoo: la fecha y las líneas.
+
+    Se usa en la creación diferida, donde la orden nace en este trabajo y no en
+    el camino de la venta, así que aquí hace falta el mismo payload que arma
+    `procesar`. Sale de `_normalizar` —las mismas líneas, agrupadas igual, para
+    que la orden sea idéntica a la que habría nacido al vender— y se le quitan
+    `comprador` y todo lo demás: de esa función sólo cruzan `fecha` e `items`,
+    que llevan SKU, título, piezas y precio. Nada del comprador entra a Odoo
+    (el partner es fijo por canal) ni a ningún log.
+    """
+    n = _normalizar(o)
+    return {"fecha": n.get("fecha"), "items": n.get("items") or []}
+
+
 async def _detalles_en_lotes(ids: list[str], token: str, ciph: str,
-                             r: dict[str, Any]) -> dict[str, dict[str, Any]]:
+                             r: dict[str, Any],
+                             con_venta: set[str] | None = None) -> dict[str, dict[str, Any]]:
     """El detalle de TODOS los ids en llamadas de hasta 50. Un lote que falla no
     tumba a los demás: sus ids quedan sin detalle y la vuelta siguiente los
-    vuelve a pedir."""
+    vuelve a pedir.
+
+    `con_venta` son los ids que además necesitan el payload para CREAR su orden
+    en Odoo (los que esperan guía). Sólo a ésos se les cuelga `venta`, para no
+    pasear líneas de pedido de ventas que no las necesitan."""
     from services import tiktok as tk
 
     detalles: dict[str, dict[str, Any]] = {}
@@ -491,6 +512,8 @@ async def _detalles_en_lotes(ids: list[str], token: str, ciph: str,
             if isinstance(o, dict):
                 f = _guia_sin_pii(o)
                 if f["id"] in pedidos:
+                    if con_venta and f["id"] in con_venta:
+                        f["venta"] = _venta_sin_pii(o)
                     detalles[f["id"]] = f
     return detalles
 
@@ -514,6 +537,68 @@ def _paquetes_para_emparejar(f: dict[str, Any]) -> list[dict[str, Any]]:
         return [{"id": ids[0] if ids else "", "guia": f.get("guia") or "",
                  "paqueteria": f.get("paqueteria") or "", "skus": None}]
     return []
+
+
+async def _crear_al_tener_guia(item: dict[str, Any], f: dict[str, Any],
+                               r: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Una venta de TikTok que sólo tenía su ESPACIO y ya tiene guía: NACE su orden.
+
+    Devuelve el renglón de cola de la orden recién creada —para que esta misma
+    vuelta le escriba el número y le suba el PDF, que es lo único que funciona
+    (`fijar_etiqueta` sólo sube a órdenes confirmadas y la ventana de la etiqueta
+    de TikTok es corta)— o `None` cuando no hay nada que hacer todavía. En ese
+    caso la venta SIGUE en la cola: sólo sale por tener `odoo_order_id`.
+
+    EL ESTADO SE RE-LEE ANTES DE CREAR, y en TikTok esto es lo más valioso del
+    cambio: cancela el 58% de sus ventas, y con la creación diferida una venta
+    cancelada antes de su guía simplemente nunca existe en Odoo. El riesgo nuevo
+    es el inverso —que se cancele DESPUÉS de tener guía—, y por eso la guarda
+    está aquí, contra el `status` del detalle que se acaba de traer, y no sólo en
+    la clasificación de arriba.
+    """
+    from services import odoo_ventas, odoo_ventas_log
+
+    oid = str(item["order_id"])
+    cuenta = item.get("cuenta") or CUENTA
+    st = str(f.get("status") or "").upper()
+    if st == "CANCELLED":
+        r["canceladas_sin_crear"] += 1
+        await asyncio.to_thread(odoo_ventas_log.marcar_cancelada_sin_orden,
+                                "tiktok", cuenta, oid, st)
+        return None
+    if st in _ESTADOS_SIN_ETIQUETA:
+        # UNPAID / ON_HOLD: la venta todavía puede morir. No se crea.
+        _contar(r, "motivos", f"espera_estado_{st.lower()}")
+        return None
+    guia = str(f.get("guia") or "").strip() or next(
+        (str(p.get("guia") or "").strip() for p in _paquetes_para_emparejar(f)
+         if str(p.get("guia") or "").strip()), "")
+    if not guia:
+        # Lo normal hasta que TikTok asigna el envío.
+        r["sin_guia_aun"] += 1
+        return None
+    venta = f.get("venta") or {}
+    if not venta.get("items"):
+        # Sin líneas no hay orden que crear. Se queda esperando y se ve.
+        r["creadas_fallidas"] += 1
+        _contar(r, "fallos_al_crear", "sin_lineas_en_tiktok")
+        log.warning("TIKTOK espera de guía: la venta %s ya tiene guía pero TikTok no "
+                    "devolvió sus líneas: no se crea la orden.", oid)
+        return None
+
+    res = await asyncio.to_thread(odoo_ventas.crear_con_guia, "tiktok", cuenta, oid,
+                                  venta.get("fecha"), venta["items"])
+    if not res.get("ok"):
+        r["creadas_fallidas"] += 1
+        _contar(r, "fallos_al_crear", str(res.get("accion") or "error"))
+        return None
+    r["creadas"] += 1
+    nuevo = res.get("cola")
+    if not nuevo:
+        return None
+    nuevo["order_id"] = oid
+    return nuevo
 
 
 async def _guia_dividida(item: dict[str, Any], f: dict[str, Any], pedir_pdf: bool,
@@ -541,7 +626,12 @@ async def _guia_dividida(item: dict[str, Any], f: dict[str, Any], pedir_pdf: boo
     from services import tiktok as tk
 
     oid = str(item["order_id"])
-    r["divididas"] += 1
+    if item.get("dividida"):
+        # Con UNA sola parte esto también sirve —el emparejador trata "una
+        # parte, un paquete" como el caso de siempre— y por ahí entra la orden
+        # recién nacida de la creación diferida. Pero `divididas` cuenta las que
+        # de verdad se partieron: inflarlo haría ilegible el resumen.
+        r["divididas"] += 1
     paquetes = _paquetes_para_emparejar(f)
     partes = item.get("partes") or []
     asignacion = odoo_ventas.emparejar_partes(partes, paquetes, f.get("skus_canal"))
@@ -648,7 +738,8 @@ async def _guia_dividida(item: dict[str, Any], f: dict[str, Any], pedir_pdf: boo
 
 
 async def refrescar_guias(dias: int = 14, limite: int = 50, segundos_max: int = 900,
-                          solo_ids: list[str] | None = None) -> dict[str, Any]:
+                          solo_ids: list[str] | None = None,
+                          forzar_espera: bool = False) -> dict[str, Any]:
     """
     Completa guía (número en la entrega) y etiqueta (PDF en la orden) de las
     ventas de TikTok que ya tienen orden en Odoo. Nunca lanza.
@@ -661,12 +752,17 @@ async def refrescar_guias(dias: int = 14, limite: int = 50, segundos_max: int = 
     escribir), no renglones de la cola: lo que se descarta sin llamar a TikTok
     (cancelada, SELLER, ON_HOLD, ya recolectada, recordada) no ocupa lugar, y lo
     que no cupo sale en `diferidas` con AWAITING_COLLECTION siempre primero.
+
+    `forzar_espera=True` es el DRENAJE A MANO
+    (`POST /api/automatizacion/espera/drenar`): vacía la cola de espera aunque
+    el trabajo esté apagado. No salta ninguna guarda de negocio.
     """
     if solo_ids is not None and _candado_guias.locked():
         return {"omitido": "otra vuelta de guías en curso", "pendientes": 0}
     async with _candado_guias:
         try:
-            r = await _refrescar_guias(dias, limite, segundos_max, solo_ids)
+            r = await _refrescar_guias(dias, limite, segundos_max, solo_ids,
+                                       forzar_espera)
         except Exception as exc:  # noqa: BLE001 — cinturón: nunca lanza
             log.exception("pedidos_tiktok.refrescar_guias falló")
             r = {"error": f"{type(exc).__name__}: {str(exc)[:200]}", "pendientes": 0}
@@ -678,7 +774,8 @@ async def refrescar_guias(dias: int = 14, limite: int = 50, segundos_max: int = 
 
 
 async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
-                           solo_ids: list[str] | None) -> dict[str, Any]:
+                           solo_ids: list[str] | None,
+                           forzar_espera: bool = False) -> dict[str, Any]:
     import time as _time
 
     from services import odoo_ventas, odoo_ventas_log
@@ -695,12 +792,33 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
                          # se pudieron emparejar con certeza (no se tocan).
                          "divididas": 0, "partes_asignadas": 0,
                          "partes_sin_guia_aun": 0, "partes_ambiguas": 0,
+                         # CREACIÓN DIFERIDA (23-sep): las ventas que sólo
+                         # tienen su ESPACIO y cuya orden nace aquí, al aparecer
+                         # la guía. `canceladas_sin_crear` es la mitad buena del
+                         # cambio: órdenes que el almacén ya no verá nacer.
+                         "esperando": 0, "creadas": 0, "creadas_fallidas": 0,
+                         "canceladas_sin_crear": 0, "espera_mas_vieja_h": 0.0,
+                         "fallos_al_crear": {}, "mantenimiento": {},
                          "motivos": {}, "codigos": {}, "cortado_por_tiempo": False,
                          "errores": [], "error": None}
+    # Antes de la cola: reponer los espacios que kubera no dejó escribir,
+    # caducar lo que ya no resuelve y vincular lo capturado a mano. No escribe
+    # en Odoo y no corre si el canal no está en régimen diferido. En el disparo
+    # inmediato de un aviso (`solo_ids`) se salta: ahí interesa la velocidad y
+    # el job de los 20 min ya lo hace.
+    if solo_ids is None:
+        try:
+            r["mantenimiento"] = await asyncio.to_thread(
+                odoo_ventas.mantener_espera, "tiktok", forzar_espera)
+        except Exception as exc:  # noqa: BLE001 — nunca tumba la vuelta
+            log.warning("TIKTOK guías: el mantenimiento de la espera falló: %s",
+                        str(exc)[:150])
     try:
         # SIEMPRE la cola completa: el límite va después del estado en TikTok.
+        # `cola_de_guias` suma las que esperan la guía para NACER (sin orden en
+        # Odoo, que por eso no puede contarlas él).
         cola = await asyncio.to_thread(
-            odoo_ventas.pendientes_de_guia, "tiktok", int(dias), COLA_MAX)
+            odoo_ventas.cola_de_guias, "tiktok", int(dias), COLA_MAX)
     except Exception as exc:  # noqa: BLE001
         log.warning("TIKTOK guías: no se pudo armar la cola: %s", str(exc)[:200])
         return {**r, "error": f"cola: {str(exc)[:200]}"}
@@ -708,6 +826,10 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
         pedidos = {str(x) for x in solo_ids}
         cola = [c for c in cola if str(c.get("order_id")) in pedidos]
     r["pendientes"] = len(cola)
+    esperando = [c for c in cola if c.get("espera_guia")]
+    r["esperando"] = len(esperando)
+    r["espera_mas_vieja_h"] = round(max((float(c.get("antiguedad_h") or 0)
+                                         for c in esperando), default=0.0), 1)
     if not cola:
         return r
 
@@ -726,13 +848,20 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
             _contar(r, "motivos", "ref_no_numerica")
             continue
         rec = None if solo_ids is not None else _recordado(oid)
-        if rec and not item.get("pickings"):
+        # LA MEMORIA NO PUEDE ESCONDER A UNA QUE ESPERA SU ORDEN. Recuerda que
+        # un paquete no da etiqueta, no que la venta esté atendida: si su orden
+        # todavía no existe, esa venta no ha llegado al almacén y hay que
+        # mirarla igual.
+        if rec and not item.get("pickings") and not item.get("espera_guia"):
             r["recordadas"] += 1
             _contar(r, "motivos", rec)
             continue
         por_mirar.append(item)
     ids = [str(c["order_id"]) for c in por_mirar]
-    detalles = await _detalles_en_lotes(ids, token, ciph, r) if ids else {}
+    # Sólo las que esperan necesitan además sus líneas, para poder crear.
+    con_venta = {str(c["order_id"]) for c in por_mirar if c.get("espera_guia")}
+    detalles = (await _detalles_en_lotes(ids, token, ciph, r, con_venta)
+                if ids else {})
 
     # 2 · CLASIFICAR CON EL DETALLE. Lo descartado no ocupa lugar del límite.
     trabajo: list[tuple[int, int, dict[str, Any], dict[str, Any], bool]] = []
@@ -742,12 +871,21 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
         if not f:
             _contar(r, "motivos", "sin_detalle_tiktok")
             continue
+        espera = bool(item.get("espera_guia"))
         st = f["status"]
         if st in _ESTADOS_SIN_ETIQUETA:
             # ON_HOLD: esperar. UNPAID/CANCELLED: no hay nada que enviar.
             _contar(r, "motivos", f"estado_{st.lower()}")
             if st == "CANCELLED":
                 _recordar(oid, "estado_cancelled")
+                if espera:
+                    # LA MITAD BUENA DEL CAMBIO: se canceló antes de tener guía,
+                    # así que su orden nunca nace y el almacén nunca la ve. Sale
+                    # de la cola con su motivo escrito, no en silencio.
+                    r["canceladas_sin_crear"] += 1
+                    await asyncio.to_thread(
+                        odoo_ventas_log.marcar_cancelada_sin_orden, "tiktok",
+                        item.get("cuenta") or CUENTA, oid, st)
             continue
         if f["shipping_type"] != "TIKTOK":
             # ENVÍO DEL VENDEDOR: TikTok no entrega etiqueta (11034002/21008017),
@@ -757,12 +895,18 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
             # Odoo vacío. La etiqueta es de TikTok; el número, de quien lo tenga.
             _contar(r, "motivos", "envio_no_tiktok")
             _recordar(oid, "envio_no_tiktok")
-            if item.get("pickings") and f["guia"]:
+            if (item.get("pickings") or espera) and f["guia"]:
                 trabajo.append((_PRIORIDAD_SOLO_GUIA, n, item, f, False))
             continue
-        solo_guia = bool(item.get("pickings") and f["guia"])
+        # HAY TRABAJO TAMBIÉN SI LA ORDEN NO EXISTE. Las tres guardas de abajo
+        # preguntaban "¿le falta el número a alguna entrega?", y una venta que
+        # espera su orden no tiene entregas: sin el `or espera` se descartaban
+        # en silencio justo las que había que crear.
+        solo_guia = bool((item.get("pickings") or espera) and f["guia"])
         if st in _ESTADOS_RECOLECTADOS:
             # Ya recogida: sin PDF posible. El número, si la entrega lo espera.
+            # Y si la orden ni siquiera existe, sigue habiendo que crearla: la
+            # venta ocurrió y el almacén tiene que verla, aunque llegue tarde.
             if solo_guia:
                 trabajo.append((_PRIORIDAD_SOLO_GUIA, n, item, f, False))
             else:
@@ -773,11 +917,11 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
             # Sin paquete no hay etiqueta que pedir, pero el número puede existir
             # igual (mismo caso que el envío del vendedor).
             _contar(r, "motivos", "sin_paquete")
-            if item.get("pickings") and f["guia"]:
+            if (item.get("pickings") or espera) and f["guia"]:
                 trabajo.append((_PRIORIDAD_SOLO_GUIA, n, item, f, False))
             continue
         rec = None if solo_ids is not None else _recordado(oid)
-        if rec:
+        if rec and not espera:
             # Etiqueta terminal ya vista: no se vuelve a pedir; sólo el número.
             if solo_guia:
                 trabajo.append((_PRIORIDAD_SOLO_GUIA, n, item, f, False))
@@ -802,6 +946,17 @@ async def _refrescar_guias(dias: int, limite: int, segundos_max: int,
                 r["cortado_por_tiempo"] = True
                 break
             oid = str(item["order_id"])
+            if item.get("espera_guia"):
+                # Sólo tenía su ESPACIO. Si ya hay guía, la orden NACE aquí y
+                # sigue de largo por el mismo camino: número en la entrega y PDF
+                # en la orden, en esta misma vuelta (la ventana de la etiqueta
+                # de TikTok es corta y `fijar_etiqueta` exige orden confirmada).
+                nuevo = await _crear_al_tener_guia(item, f, r)
+                if nuevo is None:
+                    continue
+                await _guia_dividida(nuevo, f, pedir_pdf, r, etiquetas, token, ciph,
+                                     usar_memoria=solo_ids is None)
+                continue
             if item.get("dividida"):
                 # Surtido dividido: cada orden de Odoo con SU paquete. Lo de
                 # abajo queda intacto para las ventas que no se partieron.

@@ -12,14 +12,35 @@ LA PETICIÓN (Brandon, 15-sep-2026)
      color las filas que tengan la misma guía, si son varias que se distingan
      con colores distintos"
 
-QUÉ ES "EL DÍA"
-───────────────
-El día en que se GENERÓ la orden de venta en Odoo: `creado_at` de la bitácora
-(`ops.odoo_sale_orders`), que se escribe una vez y no se re-toca. Se cuenta en
-HORA DE LA CIUDAD DE MÉXICO, porque es la hora del almacén: el día 13 va de las
-00:00 a las 24:00 de allá, convertido a UTC para preguntarle a la base. Contarlo
-en UTC —la hora del servidor— mandaba al día siguiente todo lo generado después
-de las 18:00, que es justo la tanda de la tarde.
+QUÉ ES "EL DÍA" — y por qué ya no lo contesta la bitácora (23-sep-2026)
+────────────────────────────────────────────────────────────────────────
+El día en que se GENERÓ la orden de venta en Odoo. Ése es el día que el almacén
+cree que está pidiendo cuando elige una fecha: el de las cajas que hoy hay que
+empacar. Se cuenta en HORA DE LA CIUDAD DE MÉXICO, porque es la hora del
+almacén: el día 13 va de las 00:00 a las 24:00 de allá, convertido a UTC para
+preguntarle a la base. Contarlo en UTC —la hora del servidor— mandaba al día
+siguiente todo lo generado después de las 18:00, que es justo la tanda de la
+tarde.
+
+Hasta hoy ese día se leía de `creado_at` de la bitácora, y era correcto porque
+la orden nacía EN LA MISMA VUELTA que la venta: las dos fechas eran la misma
+con segundos de diferencia. **Con la creación diferida deja de serlo.** Desde
+el 23-sep la orden puede nacer cuando aparece la guía —Temu: mediana 28.4 h,
+p75 63.3 h— y `creado_at` pasa a ser el día de la VENTA. Contar por ahí dejaría
+fuera del Excel justo las órdenes que nacieron hoy (las de las ventas de
+anteayer) y metería ventas de hoy que todavía no tienen caja. Con la mediana
+medida, eso es la mayoría del archivo.
+
+Así que el día se cuenta por `create_date` de la orden en Odoo, que es un HECHO
+DE ODOO y no un reflejo nuestro. Se pregunta en la misma lectura que ya se hacía
+para saber qué órdenes tienen PDF (`_CAMPOS_ODOO`), sobre una ventana ANCHA de
+candidatas (`_MARGEN_DIAS` días hacia atrás: la venta pudo ser de la semana
+pasada). Y si Odoo no contesta se vuelve a `creado_at`, que es lo de siempre:
+el archivo sale, con su aviso (`dia_por`), en vez de no salir.
+
+Las dos fechas viajan en cada orden y van las dos en el Excel —`fecha`
+(generada en Odoo) y `vendida_at` (la venta)—: con la creación diferida son
+días distintos y el almacén tiene que poder ver cuál es cuál.
 
 ENVÍO COMBINADO
 ───────────────
@@ -112,6 +133,25 @@ MAX_ORDENES = 600
 # Techo de órdenes de OTROS días que comparten guía. Mismo criterio: pasarse
 # responde un error explicado, nunca una lista cortada.
 _MAX_OTRO_DIA = 200
+# CUÁNTO SE MIRA HACIA ATRÁS para buscar candidatas. La orden de una venta
+# diferida nace cuando aparece su guía, así que una orden generada hoy puede
+# venir de una venta de hace días.
+#
+# TREINTA, no catorce: la espera de guía dura 14 días
+# (`odoo_ventas_espera_guia_dias`), pero `odoo_ventas_log.vincular_sin_orden`
+# mira 30 — y una orden que Gabriela captura A MANO hoy, para una venta de hace
+# tres semanas, también nació HOY y también hay que empacarla hoy. El plazo
+# tiene que cubrir al MÁS LARGO de los dos caminos que le pueden dar una orden
+# nueva a una venta vieja; si no, esa caja no aparece en ningún día.
+#
+# Lo que queda fuera (venta de más de 30 días que recibe orden hoy) sale por el
+# respaldo sólo si Odoo no contesta, así que se asume: es capturar a mano una
+# venta de hace un mes. Medido el 23-sep: 107 filas en 15 días — la ventana
+# ancha cuesta una consulta indexada y un lote de ids a Odoo.
+_MARGEN_DIAS = 30
+# Techo de candidatas (la ventana ancha). Sólo sirven para preguntarle a Odoo
+# cuáles nacieron el día pedido; el techo del DÍA sigue siendo `MAX_ORDENES`.
+_MAX_CANDIDATAS = 3000
 _LOTE_ODOO = 200     # ids por consulta de estado (bin_size: no baja binarios)
 _LOTE_PDF = 8        # PDFs por consulta: ~80 KB cada uno en base64
 
@@ -230,7 +270,15 @@ def limites_utc(fecha: date) -> tuple[datetime, datetime]:
     return desde.astimezone(timezone.utc), hasta.astimezone(timezone.utc)
 
 
-def _a_mx(valor: Any) -> datetime | None:
+def _a_utc(valor: Any) -> datetime | None:
+    """
+    Cualquier fecha que llegue, en UTC y con zona. None si no se entiende.
+
+    Sin zona = UTC, y eso incluye a Odoo: su `create_date` viaja como texto
+    "2026-09-23 03:12:44" SIN zona y SIEMPRE en UTC (Odoo guarda todo en UTC y
+    sólo lo traduce en la interfaz). Leerlo como hora local correría el día
+    seis horas y mandaría media tanda de la tarde al día siguiente.
+    """
     if not valor:
         return None
     if isinstance(valor, str):
@@ -240,9 +288,12 @@ def _a_mx(valor: Any) -> datetime | None:
             return None
     if not isinstance(valor, datetime):
         return None
-    if valor.tzinfo is None:
-        valor = valor.replace(tzinfo=timezone.utc)
-    return valor.astimezone(TZ_MX)
+    return valor.replace(tzinfo=timezone.utc) if valor.tzinfo is None else valor
+
+
+def _a_mx(valor: Any) -> datetime | None:
+    u = _a_utc(valor)
+    return u.astimezone(TZ_MX) if u else None
 
 
 def ddmm(dia_iso: str) -> str:
@@ -331,9 +382,17 @@ _SQL_BASE = """
 """
 
 
-def _leer_dia(desde: datetime, hasta: datetime,
-              canales: tuple[str, ...]) -> list[dict[str, Any]]:
-    """Las órdenes con orden en Odoo GENERADAS en [desde, hasta)."""
+def _leer_candidatas(desde: datetime, hasta: datetime,
+                     canales: tuple[str, ...]) -> list[dict[str, Any]]:
+    """
+    Las que PODRÍAN tener su orden generada en [desde, hasta): las ventas del
+    día y las de los `_MARGEN_DIAS` anteriores.
+
+    La ventana es de la VENTA (`creado_at`), que es lo único que la base sabe.
+    Quién nació de verdad ese día lo dice Odoo después (`_del_dia`). Se pide
+    ancha porque con la creación diferida la orden de hoy puede venir de una
+    venta de hace tres días.
+    """
     from services import supabase_db as sdb
 
     return sdb.fetch_all(
@@ -342,13 +401,92 @@ def _leer_dia(desde: datetime, hasta: datetime,
        and {_SQL_VENTANA}
      order by o.creado_at, o.odoo_name
      limit %(lim)s""",
-        {"canales": list(canales), "desde": desde, "hasta": hasta,
-         "lim": MAX_ORDENES + 1})
+        {"canales": list(canales), "desde": desde - timedelta(days=_MARGEN_DIAS),
+         "hasta": hasta, "lim": _MAX_CANDIDATAS + 1})
 
 
-def _leer_misma_guia(claves: list[str], desde: datetime,
-                     hasta: datetime) -> list[dict[str, Any]]:
-    """Las de OTROS días que comparten guía (misma `canal|guía normalizada`)."""
+def _leer_hermanas_sin_orden(claves: list[str],
+                             canales: tuple[str, ...]) -> list[dict[str, Any]]:
+    """
+    Las ventas que comparten guía con una orden de este día y TODAVÍA NO tienen
+    orden en Odoo (`accion='espera_guia'`). ⚠️ BLOQUEA. Nunca lanza.
+
+    Es el punto ciego que abrió la creación diferida: `_SQL_BASE` exige
+    `odoo_order_id is not null`, así que estas filas no existen para el día ni
+    para `_leer_misma_guia`, y una caja con dos ventas dentro se presenta como
+    "0 envíos combinados". No van a la tabla —de ellas no hay nada que empacar
+    todavía— sino a un AVISO: esa caja va incompleta.
+
+    Sin datos del comprador: sólo canal, venta y guía.
+    """
+    if not claves:
+        return []
+    from services import odoo_ventas_log
+    from services import supabase_db as sdb
+
+    try:
+        return [dict(f) for f in sdb.fetch_all(
+            f"""select o.canal, o.cuenta, o.external_order_id, o.guia, o.creado_at
+                  from ops.odoo_sale_orders o
+                 where o.odoo_order_id is null
+                   and o.accion = %(a)s
+                   and o.canal = any(%(canales)s)
+                   and ((o.canal || '|' || {_SQL_GUIA_NORM}) = any(%(claves)s)
+                        or {_SQL_GUIA_COMPONENTE})
+                 order by o.creado_at limit 50""",
+            {"a": odoo_ventas_log.ACCION_ESPERA, "claves": list(claves),
+             "canales": list(canales)})]
+    except Exception as exc:  # noqa: BLE001 — un aviso no puede tumbar el Excel
+        log.warning("guias_del_dia: no se pudieron leer las hermanas sin orden: %s",
+                    str(exc)[:150])
+        return []
+
+
+def _avisar_hermanas_sin_orden(datos: dict[str, Any],
+                               sin_orden: list[dict[str, Any]]) -> None:
+    """Mete el aviso en el payload, en el Resumen y en la Nota de cada fila."""
+    datos["hermanas_sin_orden"] = [
+        {"canal": str(h.get("canal") or ""), "venta": str(h.get("external_order_id") or ""),
+         "guia": str(h.get("guia") or "")} for h in sin_orden]
+    datos["resumen"]["con_hermana_sin_orden"] = 0
+    if not sin_orden:
+        return
+    por_clave: dict[str, list[str]] = {}
+    for h in sin_orden:
+        for g in str(h.get("guia") or "").split(" + "):
+            k = clave_guia(str(h.get("canal") or ""), g)
+            if norm_guia(g):
+                por_clave.setdefault(k, []).append(str(h.get("external_order_id") or ""))
+    tocadas = 0
+    for o in datos.get("ordenes") or []:
+        ventas = por_clave.get(clave_guia(o.get("canal"), o.get("guia")))
+        if not ventas:
+            continue
+        tocadas += 1
+        aviso = (f"Falta su hermana: la venta {', '.join(ventas)} comparte esta "
+                 "guía y su orden todavía no nace.")
+        o["nota"] = f"{o['nota']} · {aviso}" if o.get("nota") else aviso
+        o["hermana_sin_orden"] = ventas
+    datos["resumen"]["con_hermana_sin_orden"] = tocadas
+    datos["aviso_hermana_sin_orden"] = (
+        f"Ojo: {tocadas} orden(es) de este día comparten guía con una venta que "
+        "TODAVÍA NO tiene orden en Odoo — su hermana está esperando su propia "
+        "guía. Esa caja va incompleta: no la cierres hasta que la hermana "
+        "aparezca.") if tocadas else None
+
+
+def _leer_misma_guia(claves: list[str],
+                     vistas: list[str]) -> list[dict[str, Any]]:
+    """
+    Las de OTROS días que comparten guía (misma `canal|guía normalizada`).
+
+    "Otro día" se dice EXCLUYENDO LAS QUE YA ESTÁN, no por fecha: desde que el
+    día se cuenta por la generación en Odoo, una venta puede caer dentro de la
+    ventana de `creado_at` y aun así ser de otro día (su orden nació después).
+    Con el `not (ventana)` de antes, ésa no se traía ni por un lado ni por el
+    otro y su caja salía a medias. `vistas` son las llaves
+    `canal|cuenta|venta` que ya entraron.
+    """
     if not claves:
         return []
     from services import supabase_db as sdb
@@ -358,14 +496,19 @@ def _leer_misma_guia(claves: list[str], desde: datetime,
         _SQL_BASE + f"""
        and ((o.canal || '|' || {_SQL_GUIA_NORM}) = any(%(claves)s)
             or {_SQL_GUIA_COMPONENTE})
-       and not ({_SQL_VENTANA})
+       and (o.canal || '|' || o.cuenta || '|' || o.external_order_id)
+           <> all(%(vistas)s)
      order by o.creado_at, o.odoo_name
      limit %(lim)s""",
-        {"claves": list(claves), "desde": desde, "hasta": hasta,
+        {"claves": list(claves), "vistas": list(vistas),
          "lim": _MAX_OTRO_DIA + 1})
 
 
-_CAMPOS_ODOO = ["name", "state", "meli_etiqueta_file", "meli_etiqueta_filename"]
+# `create_date` es CUÁNDO NACIÓ LA ORDEN EN ODOO, que es el día que cuenta (ver
+# el encabezado). Viene en el mismo `search_read` que ya se hacía para el PDF:
+# preguntarlo no cuesta una llamada más.
+_CAMPOS_ODOO = ["name", "state", "create_date",
+                "meli_etiqueta_file", "meli_etiqueta_filename"]
 
 
 def _leer_odoo(filas: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
@@ -408,6 +551,66 @@ def _leer_odoo(filas: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
                     str(exc)[:200])
         return None
     return list(vistos.values())
+
+
+def _indices(odoo: list[dict[str, Any]] | None
+             ) -> tuple[dict[int, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Los documentos de Odoo por id y por nombre, que es como se buscan."""
+    docs = odoo or []
+    return ({int(d["id"]): d for d in docs if d.get("id")},
+            {str(d.get("name")): d for d in docs if d.get("name")})
+
+
+def _generada(f: dict[str, Any], por_id: dict[int, dict[str, Any]],
+              por_nombre: dict[str, dict[str, Any]]) -> datetime | None:
+    """
+    Cuándo NACIÓ EN ODOO la orden de esta fila (UTC), o None si Odoo no la dio.
+
+    Se busca por id —lo que guarda la bitácora— y, si no está, por nombre: de
+    un surtido dividido la bitácora sólo tiene el id de la primera parte. Las
+    partes nacen en la misma llamada, así que cualquiera contesta el mismo día.
+    """
+    doc = por_id.get(int(f["odoo_order_id"])) if f.get("odoo_order_id") else None
+    if doc is None:
+        doc = next((por_nombre[n] for n in _partes(f.get("odoo_name"))
+                    if n in por_nombre), None)
+    return _a_utc(doc.get("create_date")) if doc else None
+
+
+def _del_dia(candidatas: list[dict[str, Any]], odoo: list[dict[str, Any]] | None,
+             desde: datetime, hasta: datetime) -> tuple[list[dict[str, Any]], str]:
+    """
+    De las candidatas, las que NACIERON EN ODOO en [desde, hasta). Y por dónde
+    se contó: `odoo` (el hecho) o `bitacora` (el respaldo).
+
+    FALLA HACIA MOSTRAR, no hacia esconder. Si Odoo no contestó, el día se
+    cuenta como siempre —por `creado_at`— y se dice en la respuesta; un Excel
+    de más se revisa, uno que no sale deja cajas sin empacar. Lo mismo fila por
+    fila: la que Odoo no conoce (se borró la orden, o el id quedó viejo) se
+    juzga por `creado_at` en vez de desaparecer.
+
+    ⚠️ PERO BAJO LA CREACIÓN DIFERIDA ESE RESPALDO ES SISTEMÁTICAMENTE FALSO, no
+    aproximado. `creado_at` es el día de la VENTA, y la orden nace uno o dos
+    días después (Temu: p25 7.9 h, mediana 28.4 h, p75 63.3 h). El archivo
+    listaría las ventas de hoy —que todavía no tienen caja— y omitiría las
+    órdenes nacidas hoy, que son las ventas de anteayer. Es el mismo
+    razonamiento con el que se separaron las dos fechas, aplicado al camino de
+    error. Sigue saliendo (falla hacia mostrar) pero se devuelve
+    `dia_por='bitacora'`, y `armar` marca el archivo como NO CONFIABLE para que
+    nadie empaque por él sin releerlo. La corrección de fondo necesita una
+    columna nueva (`ops.odoo_sale_orders.orden_creada_at`, escrita cuando
+    `odoo_order_id` pasa de NULL a valor): está PROPUESTA, no aplicada.
+    """
+    if odoo is None:
+        return ([f for f in candidatas
+                 if desde <= (_a_utc(f.get("creado_at")) or hasta) < hasta], "bitacora")
+    por_id, por_nombre = _indices(odoo)
+    fuera = []
+    for f in candidatas:
+        cuando = _generada(f, por_id, por_nombre) or _a_utc(f.get("creado_at"))
+        if cuando and desde <= cuando < hasta:
+            fuera.append(f)
+    return (fuera, "odoo")
 
 
 def _leer_partes(filas: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict[str, Any]]]:
@@ -477,7 +680,8 @@ def _leer_pdfs(ids: list[int]) -> dict[int, bytes]:
 
 def _ordenes_de_partes(f: dict[str, Any], llave: tuple[str, str, str], otro: bool,
                        ps: list[dict[str, Any]], por_id: dict[int, dict[str, Any]],
-                       nota_accion: str | None) -> list[dict[str, Any]]:
+                       nota_accion: str | None,
+                       generada: datetime | None = None) -> list[dict[str, Any]]:
     """
     Un surtido dividido, UNA orden por parte: cada una con SUS SKUs y piezas,
     SU guía (la de su entrega en Odoo) y SU PDF. Así el Excel pone cada SKU
@@ -488,7 +692,10 @@ def _ordenes_de_partes(f: dict[str, Any], llave: tuple[str, str, str], otro: boo
     tiene, sale "sin guía": suponerle la de la venta sería imprimirle la
     etiqueta de la otra caja.
     """
-    creado = _a_mx(f.get("creado_at"))
+    # Las partes de un surtido dividido nacen en la MISMA llamada, así que
+    # comparten el día de generación de su venta.
+    vendida = _a_mx(f.get("creado_at"))
+    creado = generada or vendida
     paq_fila = str(f.get("paqueteria") or "").strip()
     salida = []
     for i, p in enumerate(ps, 1):
@@ -514,6 +721,8 @@ def _ordenes_de_partes(f: dict[str, Any], llave: tuple[str, str, str], otro: boo
             "cuenta": llave[1],
             "fecha": creado.isoformat() if creado else None,
             "fecha_dia": creado.strftime("%d-%m") if creado else "",
+            "vendida_at": vendida.isoformat() if vendida else None,
+            "vendida_dia": vendida.strftime("%d-%m") if vendida else "",
             "almacen": str(p.get("almacen") or ""),
             "guia": guia,
             "paqueteria": paq,
@@ -549,10 +758,15 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
     `partes_venta` ({(canal, venta): [parte]}, de `_leer_partes`) parte cada surtido
     dividido en una orden por parte. Sin él —o si Odoo no contestó— la venta
     partida sale como siempre: una fila "S1 + S2".
+
+    DOS FECHAS POR ORDEN. `fecha` es cuándo NACIÓ LA ORDEN en Odoo —el día que
+    ordena, agrupa y nombra al archivo— y `vendida_at` cuándo entró la venta.
+    Eran la misma hasta el 23-sep; con la creación diferida se separan por días
+    (ver el encabezado). Sin Odoo, `fecha` cae en `creado_at`: es lo que se
+    sabe, y es lo que era antes.
     """
     odoo_ok = odoo is not None
-    por_id = {int(d["id"]): d for d in (odoo or []) if d.get("id")}
-    por_nombre = {str(d.get("name")): d for d in (odoo or []) if d.get("name")}
+    por_id, por_nombre = _indices(odoo)
 
     ordenes: list[dict[str, Any]] = []
     vistas: set[tuple[str, str, str]] = set()
@@ -563,10 +777,16 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
             continue
         vistas.add(llave)
 
+        # El día de esta venta: el de su orden en Odoo, y si Odoo no la dio, el
+        # de la bitácora (que es lo que era antes de la creación diferida).
+        vendida = _a_mx(f.get("creado_at"))
+        generada = _a_mx(_generada(f, por_id, por_nombre))
+
         ps = (partes_venta or {}).get((llave[0], llave[2]))
         if ps and len(ps) > 1:
             ordenes.extend(_ordenes_de_partes(
-                f, llave, otro, ps, por_id, _NOTA_CANCELADA.get(str(f.get("accion") or ""))))
+                f, llave, otro, ps, por_id, _NOTA_CANCELADA.get(str(f.get("accion") or "")),
+                generada))
             continue
 
         nombre = str(f.get("odoo_name") or "")
@@ -579,7 +799,7 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
                 docs.append(por_nombre[n])
         con_pdf = [d for d in docs if d.get("meli_etiqueta_file")]
 
-        creado = _a_mx(f.get("creado_at"))
+        creado = generada or vendida
         lineas = _lineas(f.get("lineas"))
         accion = str(f.get("accion") or "")
         nota_cancel = _NOTA_CANCELADA.get(accion)
@@ -598,6 +818,8 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
             "cuenta": llave[1],
             "fecha": creado.isoformat() if creado else None,
             "fecha_dia": creado.strftime("%d-%m") if creado else "",
+            "vendida_at": vendida.isoformat() if vendida else None,
+            "vendida_dia": vendida.strftime("%d-%m") if vendida else "",
             "almacen": str(f.get("almacen") or ""),
             "guia": str(f.get("guia") or "").strip(),
             "paqueteria": str(f.get("paqueteria") or "").strip(),
@@ -702,11 +924,18 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
     plan = plan_etiquetas(ordenes, fecha)
     activas = [o for o in ordenes if not o["cancelada"]]
     de_otro = sum(1 for o in ordenes if o["otro_dia"])
+    # Las que nacieron hoy DE UNA VENTA DE OTRO DÍA. Antes del 23-sep esto era
+    # siempre 0 (la orden nacía con la venta); con la creación diferida es la
+    # mayoría, y es lo que explica por qué el Excel del día trae ventas viejas.
+    diferidas = sum(1 for o in ordenes
+                    if not o["otro_dia"] and o.get("vendida_dia")
+                    and o.get("fecha_dia") and o["vendida_dia"] != o["fecha_dia"])
     repetidas = [e for e in plan if e["pdf_odoo_id"] and e["tambien_en"]]
     resumen = {
         "total": len(ordenes),
         "del_dia": len(ordenes) - de_otro,
         "de_otro_dia": de_otro,
+        "de_venta_anterior": diferidas,
         "con_guia": sum(1 for o in ordenes if o["guia"]),
         "sin_guia": sum(1 for o in ordenes if not o["guia"]),
         "sin_pdf": sum(1 for o in activas if o["tiene_pdf"] is False),
@@ -725,6 +954,24 @@ def armar(filas_dia: list[dict[str, Any]], filas_otro: list[dict[str, Any]],
         "canal": canal,
         "zona": "America/Mexico_City",
         "odoo_ok": odoo_ok,
+        # Por dónde se contó el día: "odoo" (el `create_date` de la orden, que
+        # es el hecho) o "bitacora" (el respaldo, cuando Odoo no contestó). Lo
+        # pone `dia()`; `armar` sola no lo sabe, y dice lo que puede.
+        "dia_por": "odoo" if odoo_ok else "bitacora",
+        # ⚠️ Y SI SE CONTÓ POR LA BITÁCORA, EL DÍA NO ES EL DÍA. Con la creación
+        # diferida `creado_at` es la fecha de la VENTA y la orden nace uno o dos
+        # días después: el archivo trae las ventas de hoy (sin caja que empacar)
+        # y omite las órdenes nacidas hoy (las ventas de anteayer). Sale igual
+        # —falla hacia mostrar— pero marcado, para que el almacén no empaque por
+        # él creyendo que es el del día. Ver `_del_dia`.
+        "dia_confiable": bool(odoo_ok),
+        "aviso_dia": (None if odoo_ok else
+                      "Odoo no contestó: este archivo se armó por la FECHA DE LA "
+                      "VENTA, no por el día en que nació la orden. Con la "
+                      "creación diferida no son el mismo día — trae ventas que "
+                      "todavía no tienen caja y le faltan órdenes que sí "
+                      "nacieron hoy. NO empaques por él: vuelve a intentarlo "
+                      "cuando Odoo conteste."),
         "ordenes": ordenes,
         "grupos": grupos,
         "resumen": resumen,
@@ -785,8 +1032,14 @@ def plan_etiquetas(ordenes: list[dict[str, Any]],
 
 def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
     """
-    Las órdenes generadas `fecha` (hora de México) + las de otros días que
-    comparten guía con ellas. ⚠️ BLOQUEA: llamar desde un hilo.
+    Las órdenes GENERADAS EN ODOO el `fecha` (hora de México) + las de otros
+    días que comparten guía con ellas. ⚠️ BLOQUEA: llamar desde un hilo.
+
+    EL ORDEN DE LOS PASOS IMPORTA. Primero se piden candidatas anchas (la venta
+    pudo ser de días atrás), luego se le pregunta a Odoo cuáles nacieron ese día
+    —y de paso su estado y si tienen PDF, que es la lectura que ya se hacía— y
+    sólo entonces se buscan las compañeras de envío combinado: buscarlas antes
+    sería buscarle compañera a una orden que no es de este día.
     """
     canal = (canal or "todos").strip().lower()
     if canal not in (*CANALES, "todos"):
@@ -794,7 +1047,14 @@ def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
     canales = CANALES if canal == "todos" else (canal,)
     desde, hasta = limites_utc(fecha)
 
-    filas = _leer_dia(desde, hasta, canales)
+    candidatas = _leer_candidatas(desde, hasta, canales)
+    if len(candidatas) > _MAX_CANDIDATAS:
+        raise GuiasError(
+            f"Hay más de {_MAX_CANDIDATAS} ventas en los {_MARGEN_DIAS + 1} días "
+            f"previos al {fecha:%d-%m-%Y} y no se puede saber cuáles nacieron ese "
+            "día" + (": elige un solo canal." if canal == "todos" else ". Pide ayuda."))
+    docs = _leer_odoo(candidatas) if candidatas else []
+    filas, dia_por = _del_dia(candidatas, docs, desde, hasta)
     if len(filas) > MAX_ORDENES:
         raise GuiasError(
             f"El {fecha:%d-%m-%Y} tiene más de {MAX_ORDENES} órdenes"
@@ -809,7 +1069,8 @@ def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
     claves = sorted({clave_guia(f["canal"], g)
                      for f in filas if not _cancelada_en_bitacora(f)
                      for g in _guias_de(f, partes) if norm_guia(g)})
-    otras = _leer_misma_guia(claves, desde, hasta)
+    vistas = [f"{f['canal']}|{f['cuenta']}|{f['external_order_id']}" for f in filas]
+    otras = _leer_misma_guia(claves, vistas)
     if len(otras) > _MAX_OTRO_DIA:
         raise GuiasError(
             f"Las órdenes del {fecha:%d-%m-%Y} comparten guía con más de "
@@ -817,24 +1078,67 @@ def dia(fecha: date, canal: str = "todos") -> dict[str, Any]:
             "Pide ayuda antes de imprimir.")
     if otras:
         partes.update(_leer_partes(otras))
-    odoo = _leer_odoo(filas + otras) if (filas or otras) else []
+    # Las compañeras de otro día no estaban entre las candidatas (su venta puede
+    # ser de hace meses): su estado y su PDF se piden aparte. Si cualquiera de
+    # las dos lecturas falló, `odoo` es None y la vista lo dice — no se inventa
+    # media respuesta. Con Odoo ya caído no se vuelve a intentar: sería esperar
+    # otro tiempo de espera completo para recibir el mismo silencio.
+    docs_otras = _leer_odoo(otras) if (otras and docs is not None) else []
+    odoo = (None if (docs is None or docs_otras is None)
+            else list({int(d["id"]): d for d in docs + docs_otras if d.get("id")}.values()))
 
+    # ⚠️ LA HERMANA QUE TODAVÍA NO TIENE ORDEN. `_SQL_BASE` exige
+    # `odoo_order_id is not null`, así que una venta en `espera_guia` no existe
+    # ni para el día ni para `_leer_misma_guia`: el archivo del día en que nace
+    # la PRIMERA hermana la muestra sola, con guía, con PDF y con "0 envíos
+    # combinados". Antes eso era inocuo —una orden podía estar en el archivo sin
+    # guía y el almacén sabía esperarla—; con la creación diferida toda orden
+    # nace YA con guía y PDF, así que "está en el archivo de hoy" pasó a
+    # significar "sale hoy". Se imprime la etiqueta, se cierra la caja con la
+    # mitad dentro y se va.
+    #
+    # El dato para evitarlo YA está en la bitácora: `actualizar_guia` no exige
+    # orden, así que la fila en espera puede traer su guía. Se saca como AVISO,
+    # no como renglón de la tabla: de ella todavía no hay nada que empacar.
     datos = armar(filas, otras, odoo, fecha, canal, partes_venta=partes)
+    sin_orden = _leer_hermanas_sin_orden(claves, canales)
+    _avisar_hermanas_sin_orden(datos, sin_orden)
     datos["desde_utc"] = desde.isoformat()
     datos["hasta_utc"] = hasta.isoformat()
+    datos["dia_por"] = dia_por
     r = datos["resumen"]
-    log.info("guias_del_dia %s %s: %d órdenes (%d de otro día), %d combinados, "
-             "%d sin guía, %d sin PDF, %d etiquetas también en otro día, odoo_ok=%s",
-             fecha, canal, r["total"], r["de_otro_dia"], r["combinados"], r["sin_guia"],
-             r["sin_pdf"], r["etiquetas_otro_dia"], datos["odoo_ok"])
+    log.info("guias_del_dia %s %s: %d órdenes de %d candidatas (día por %s; %d de "
+             "otro día, %d de una venta anterior), %d combinados, %d sin guía, "
+             "%d sin PDF, %d etiquetas también en otro día, odoo_ok=%s",
+             fecha, canal, r["total"], len(candidatas), dia_por, r["de_otro_dia"],
+             r["de_venta_anterior"], r["combinados"], r["sin_guia"], r["sin_pdf"],
+             r["etiquetas_otro_dia"], datos["odoo_ok"])
     return datos
 
 
 # ── Excel ────────────────────────────────────────────────────────────────────
 
+# LAS DOS FECHAS, y en este orden. "Generada en Odoo" es la que manda —es el
+# día que se eligió arriba y el día en que hay que empacar—, y la otra va al
+# lado para que nadie las confunda: desde la creación diferida (23-sep) una
+# orden generada hoy puede ser de una venta de hace tres días, y la columna
+# vieja "Fecha de la orden" se leía como las dos cosas a la vez.
+#
+# ⚠️ SE LLAMA "VENTA REGISTRADA", NO "FECHA DE LA VENTA". El valor es
+# `creado_at` de la bitácora, que es cuándo NOSOTROS procesamos la venta, no
+# cuándo compró el cliente — el propio panel distingue las dos con todas sus
+# letras ("El cliente compró" vs "Nosotros la procesamos") y `historial` trae el
+# `venta_at` real con un subselect a `channel.orders` que este Excel no hace.
+# Con el sondeo recuperando ventas tarde (caso real: compra del 22-ago
+# procesada el 2-sep) la palabra "venta" a secas mandaba a buscar esa compra al
+# seller center en el día equivocado. Si algún día se quiere el rótulo exacto,
+# el arreglo es traer `venta_at` en `_SQL_BASE`, no renombrar de vuelta.
 _COLUMNAS = ("Orden de venta", "Piezas", "SKU", "Guía", "Paquetería",
-             "Venta del canal", "Canal", "Fecha de la orden", "Envío combinado", "Nota")
-_ANCHOS = (18, 8, 24, 22, 14, 30, 9, 18, 34, 34)
+             "Venta del canal", "Canal", "Generada en Odoo", "Venta registrada",
+             "Envío combinado", "Nota")
+_ANCHOS = (18, 8, 24, 22, 14, 30, 9, 18, 18, 34, 34)
+# Las columnas de fecha (1-based), que llevan formato de fecha y no de texto.
+_COL_FECHAS = (8, 9)
 _TEXTO = "@"
 
 
@@ -900,12 +1204,14 @@ def excel(datos: dict[str, Any]) -> bytes:
         combinado = texto_combinado(o)
         fuente = apagada if o.get("cancelada") else de_otro_dia if o.get("otro_dia") else normal
         creado = _a_mx(o.get("fecha"))
+        vendida = _a_mx(o.get("vendida_at"))
         lineas = o.get("lineas") or [{"sku": "", "piezas": o.get("piezas_total") or 0}]
         for ln in lineas:
             valores = (_txt(o.get("orden")), int(ln.get("piezas") or 0), _txt(ln.get("sku")),
                        _txt(o.get("guia")), _txt(o.get("paqueteria")), _txt(o.get("venta")),
                        ETIQUETA_CANAL.get(o.get("canal"), o.get("canal")),
                        creado.replace(tzinfo=None) if creado else None,
+                       vendida.replace(tzinfo=None) if vendida else None,
                        _txt(combinado), _txt(o.get("nota")))
             for c, v in enumerate(valores, 1):
                 cel = ws.cell(r, c, v)
@@ -915,7 +1221,8 @@ def excel(datos: dict[str, Any]) -> bytes:
                 if relleno is not None:
                     cel.fill = relleno
             ws.cell(r, 2).alignment = Alignment(horizontal="center")
-            ws.cell(r, 8).number_format = "dd-mm-yyyy hh:mm"
+            for c in _COL_FECHAS:
+                ws.cell(r, c).number_format = "dd-mm-yyyy hh:mm"
             r += 1
 
     ws.freeze_panes = "A2"
@@ -935,17 +1242,34 @@ def _hoja_resumen(wb: Any, datos: dict[str, Any], fecha: date, canal: str) -> No
     rs["A1"] = f"Guías del día {fecha:%d-%m-%Y} · {ETIQUETA_CANAL.get(canal, canal)}"
     rs["A1"].font = Font(name="Arial", size=13, bold=True)
     rs["A2"] = ("Órdenes de venta generadas ese día en Odoo (hora de la Ciudad de "
-                "México), más las de otros días que comparten guía con alguna de ellas.")
+                "México), más las de otros días que comparten guía con alguna de ellas. "
+                "La venta puede haberse registrado un día antes: la orden nace cuando "
+                "aparece la guía, y por eso el Excel trae las dos fechas.")
     rs["A2"].font = Font(name="Arial", size=9, italic=True)
+    fila_aviso = 3
+    if datos.get("dia_por") == "bitacora":
+        # En ROJO, no ámbar: con la creación diferida este archivo no es "puede
+        # faltar alguna", es OTRO DÍA. Ver `_del_dia`.
+        rs.cell(fila_aviso, 1, datos.get("aviso_dia") or (
+            "Odoo no respondió: el día se contó por la fecha de la VENTA, no por la "
+            "de generación de la orden. NO empaques por este archivo.")
+        ).font = Font(name="Arial", size=9, bold=True, color="B91C1C")
+        fila_aviso += 1
+    if datos.get("aviso_hermana_sin_orden"):
+        rs.cell(fila_aviso, 1, datos["aviso_hermana_sin_orden"]).font = Font(
+            name="Arial", size=9, bold=True, color="B45309")
 
     conteos = (
         ("Órdenes en el archivo", res.get("total", 0)),
         ("Generadas ese día", res.get("del_dia", 0)),
+        ("   de ellas, de una venta de un día anterior", res.get("de_venta_anterior", 0)),
         ("De otro día (comparten guía)", res.get("de_otro_dia", 0)),
         ("Con guía", res.get("con_guia", 0)),
         ("Sin guía", res.get("sin_guia", 0)),
         ("Sin PDF en Odoo", res.get("sin_pdf", 0)),
         ("Envíos combinados", res.get("combinados", 0)),
+        ("   con hermana todavía sin orden (caja incompleta)",
+         res.get("con_hermana_sin_orden", 0)),
         ("Canceladas (no se envían)", res.get("canceladas", 0)),
         # Con archivo en Odoo: si alguno no es un PDF legible, lo avisa la
         # descarga del PDF, no esta hoja (aquí no se bajan los archivos).

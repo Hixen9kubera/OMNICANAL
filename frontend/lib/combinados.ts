@@ -99,9 +99,19 @@ export function diaMX(ms: number): string {
   return `${v("year")}-${v("month")}-${v("day")}`;
 }
 
-/** Acciones de la bitácora con las que la caja NO sale (no forman envío combinado). */
+/** Acciones de la bitácora con las que la caja NO sale (no forman envío combinado).
+ *
+ *  `cancelada_sin_orden` es de la creación diferida (23-sep): el canal canceló
+ *  mientras la venta esperaba su guía, así que nunca hubo orden ni la habrá.
+ *  Si se colara, una venta muerta arrastraría a una viva al mismo grupo y el
+ *  almacén buscaría en la caja algo que no existe.
+ *
+ *  `espera_guia` NO está aquí a propósito: esa venta SÍ va a salir, y si el
+ *  canal ya le puso la misma guía que a otra, es la misma caja — verlo desde
+ *  antes de que nazca su orden es justo lo útil. */
 export const ACCIONES_CANCELADA: ReadonlySet<string> = new Set([
   "cancelada", "ya_cancelada", "no_se_pudo_cancelar", "solo_registro_cancelar", "nacio_cancelada",
+  "cancelada_sin_orden",
 ]);
 
 /** Lo mínimo de una fila de la bitácora para agruparla. */

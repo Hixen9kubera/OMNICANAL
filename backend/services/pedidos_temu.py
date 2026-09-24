@@ -527,8 +527,111 @@ async def _paquetes_de_venta(parent_sn: str, det: dict[str, Any]) -> dict[str, A
             "errores": errores, "fuentes": fuentes}
 
 
+async def _crear_al_tener_guia(item: dict[str, Any], det: dict[str, Any],
+                               r: dict[str, Any]) -> tuple[dict[str, Any] | None,
+                                                           dict[str, Any] | None]:
+    """
+    Una venta que sólo tenía su ESPACIO y ya tiene guía: NACE su orden en Odoo.
+
+    Devuelve `(renglón de cola, paquetes)` para que la misma vuelta le escriba el
+    número y le suba el PDF —`fijar_etiqueta` sólo sube a órdenes confirmadas, así
+    que partir esto en dos vueltas costaría dos horas—, o `(None, None)` cuando no
+    hay nada que hacer todavía. En ese caso la venta SIGUE en la cola: sólo sale
+    de ella cuando exista su `odoo_order_id`, que es un hecho de Odoo.
+
+    EL ORDEN IMPORTA y es el del encargo: primero se RE-LEE el estado de la venta,
+    después se mira si hay guía, y sólo entonces se crea.
+
+    ⚠️ LO QUE TEMU NO DEJA SABER. El código de "cancelada" de Temu no está
+    mapeado —nunca se ha visto uno; ver el encabezado de `_ESTADOS_WC` y
+    `odoo_ventas_conciliacion`—, así que aquí no se puede preguntar "¿está
+    cancelada?". Se pregunta lo contrario, que sí se puede: **¿sigue en un estado
+    que conocemos y que significa venta viva?** Un código fuera del mapa NO crea
+    nada y queda contado y en el log. Falla cerrado: si el día de mañana Temu
+    empieza a mandar el código de cancelada, esto ya no crea esa orden hoy, sin
+    tocar una línea. Y el día que alguien mapee `N: "cancelled"`, la rama de
+    cancelar de abajo se enciende sola.
+    """
+    from services import odoo_ventas, odoo_ventas_log
+
+    sn = item["order_id"]
+    cuenta = item.get("cuenta") or CUENTA
+
+    # 1 · ¿SIGUE VIVA? El estado se re-lee del detalle que se acaba de traer.
+    #     EN UN HILO (regla 11): `_normalizar` parece puro y no lo es — llama a
+    #     `_precio_catalogo`, que es un SELECT a kubera con psycopg2 y BLOQUEA.
+    #     Desde la corrutina pararía el backend ENTERO por cada venta que espera
+    #     guía, no sólo este trabajo.
+    orden = await asyncio.to_thread(_normalizar, sn, det)
+    estado_num = orden.pop("_estado_num", None)
+    try:
+        destino = _ESTADOS_WC.get(int(estado_num))
+    except (TypeError, ValueError):
+        destino = None
+    if destino == "cancelled":
+        r["canceladas_sin_crear"] += 1
+        await asyncio.to_thread(odoo_ventas_log.marcar_cancelada_sin_orden,
+                                CANAL, cuenta, sn, str(estado_num))
+        return None, None
+    if not destino:
+        r["estado_sin_mapear"] += 1
+        # El CÓDIGO CRUDO, contado aparte: es la única forma de descubrir cuál
+        # es el `orderStatus` de "cancelada" en Temu, que hoy no conocemos y por
+        # eso una venta muerta se queda esperando los 14 días enteros.
+        _contar_espera(r, "estados_sin_mapear", str(estado_num))
+        log.warning("TEMU espera de guía: la venta %s está en orderStatus=%s, que no "
+                    "está en el mapa verificado: NO se crea la orden y sigue "
+                    "esperando.", sn, estado_num)
+        return None, None
+
+    # 2 · ¿HAY GUÍA? Los paquetes de la venta entera, que es lo que después
+    #     necesita el emparejador si la orden nace partida.
+    info = await _paquetes_de_venta(sn, det)
+    for k, v in (info.get("errores") or {}).items():
+        r["errores_fuentes"].setdefault(k, v)
+    for k, n in (info.get("fuentes") or {}).items():
+        r["fuentes"][k] = r["fuentes"].get(k, 0) + n
+    if info.get("incompleto"):
+        # Una consulta a Temu falló: la foto de paquetes está a medias. NO se
+        # crea con eso. Crear es lo que el almacén ve, y la vuelta siguiente es
+        # en dos horas sobre una mediana de 28: esperar no cuesta nada.
+        r["espera_incompleta"] += 1
+        log.warning("TEMU espera de guía: %s — una consulta a Temu falló (%s); no se "
+                    "crea nada esta vuelta", sn,
+                    ", ".join(sorted(info.get("errores") or {})) or "?")
+        return None, None
+    if not any(p.get("guia") for p in info["paquetes"]):
+        # Lo NORMAL: la guía aparece a las horas o al día siguiente.
+        r["sin_guia_aun"] += 1
+        return None, None
+    r["con_guia"] += 1
+
+    # 3 · NACE LA ORDEN. `crear_con_guia` recalcula el plan de almacenes con el
+    #     stock de HOY (bloquea: por eso va en un hilo, regla 11).
+    res = await asyncio.to_thread(odoo_ventas.crear_con_guia, CANAL, cuenta, sn,
+                                  orden.get("fecha"), orden.get("items") or [])
+    if not res.get("ok"):
+        r["creadas_fallidas"] += 1
+        _contar_espera(r, "fallos_al_crear", str(res.get("accion") or "error"))
+        return None, None
+    r["creadas"] += 1
+    nuevo = res.get("cola")
+    if not nuevo:
+        # Nació y no le falta nada (sin entregas pendientes y con PDF): raro,
+        # pero no es un fallo. Ya salió de la cola por tener `odoo_order_id`.
+        return None, None
+    nuevo["order_id"] = sn
+    return nuevo, info
+
+
+def _contar_espera(r: dict[str, Any], clave: str, subclave: str) -> None:
+    r.setdefault(clave, {})
+    r[clave][subclave] = r[clave].get(subclave, 0) + 1
+
+
 async def _guia_dividida(item: dict[str, Any], det: dict[str, Any], r: dict[str, Any],
-                         pdf_por_paquete: dict[str, dict[str, Any]]) -> None:
+                         pdf_por_paquete: dict[str, dict[str, Any]],
+                         info: dict[str, Any] | None = None) -> None:
     """
     El refresco de UNA venta partida en varias órdenes de Odoo (surtido
     dividido). Cada parte recibe la guía y el PDF de SU paquete; la que no se
@@ -542,27 +645,39 @@ async def _guia_dividida(item: dict[str, Any], det: dict[str, Any], r: dict[str,
 
     La bitácora sólo recibe las guías que quedaron puestas en Odoo: si ninguna
     parte recibió la suya, no se toca.
+
+    `info` ya traído (creación diferida: los paquetes se pidieron para decidir si
+    ya había guía) se reusa tal cual, y entonces NO se vuelve a contar en el
+    resumen ni se re-consulta a Temu. Con una sola parte esto también sirve —el
+    emparejador trata "una parte, un paquete" como el caso de siempre—, así que
+    la orden recién nacida entra por aquí sea partida o no; `divididas` sólo
+    cuenta las que de verdad lo están.
     """
     from services import odoo_ventas, odoo_ventas_log, temu
 
     sn = item["order_id"]
-    r["divididas"] += 1
-    info = await _paquetes_de_venta(sn, det)
-    for k, v in (info.get("errores") or {}).items():
-        r["errores_fuentes"].setdefault(k, v)
-    for k, n in (info.get("fuentes") or {}).items():
-        r["fuentes"][k] = r["fuentes"].get(k, 0) + n
-    if info.get("incompleto"):
-        r["divididas_incompletas"] += 1
-        log.warning("refrescar_guias: venta %s dividida — una consulta a Temu falló "
-                    "(%s); no se escribe nada esta vuelta", sn,
-                    ", ".join(sorted(info.get("errores") or {})) or "?")
-        return
-    paquetes = info["paquetes"]
-    if not any(p.get("guia") for p in paquetes):
-        r["sin_guia_aun"] += 1
-        return
-    r["con_guia"] += 1
+    if item.get("dividida"):
+        r["divididas"] += 1
+    if info is None:
+        info = await _paquetes_de_venta(sn, det)
+        for k, v in (info.get("errores") or {}).items():
+            r["errores_fuentes"].setdefault(k, v)
+        for k, n in (info.get("fuentes") or {}).items():
+            r["fuentes"][k] = r["fuentes"].get(k, 0) + n
+        if info.get("incompleto"):
+            r["divididas_incompletas"] += 1
+            log.warning("refrescar_guias: venta %s dividida — una consulta a Temu falló "
+                        "(%s); no se escribe nada esta vuelta", sn,
+                        ", ".join(sorted(info.get("errores") or {})) or "?")
+            return
+        paquetes = info["paquetes"]
+        if not any(p.get("guia") for p in paquetes):
+            r["sin_guia_aun"] += 1
+            return
+        r["con_guia"] += 1
+    else:
+        # Ya se comprobó arriba que hay guía y que la foto está completa.
+        paquetes = info["paquetes"]
 
     partes = item.get("partes") or []
     asignacion = odoo_ventas.emparejar_partes(partes, paquetes, info.get("skus_venta"))
@@ -732,7 +847,8 @@ def _normalizar(parent_sn: str, det: dict[str, Any]) -> dict[str, Any]:
 
 
 async def refrescar_guias(dias: int = 14, limite: int = 60,
-                          segundos_max: int = 900) -> dict[str, Any]:
+                          segundos_max: int = 900,
+                          forzar_espera: bool = False) -> dict[str, Any]:
     """
     Completa la guía de las ventas de Temu que ya tienen orden en Odoo.
 
@@ -751,6 +867,15 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     `odoo_ventas.pendientes_de_guia`). Odoo va primero; si algo falla, la venta
     sigue en la cola y la vuelta siguiente lo reintenta.
 
+    …CON UNA EXCEPCIÓN, la creación diferida (23-sep-2026). Cuando el canal
+    espera la guía para crear (`odoo_ventas.espera_guia_activa`), la venta
+    todavía NO tiene orden en Odoo y por tanto Odoo no puede saber de ella: esa
+    parte de la cola sale de la bitácora, de las filas con `accion='espera_guia'`
+    y sin `odoo_order_id` (`odoo_ventas.cola_de_guias`). Para ésas, este trabajo
+    hace primero lo que falta —re-leer el estado de la venta y CREAR la orden— y
+    después sigue con lo de siempre, todo en la misma vuelta. Y salen de la cola
+    por tener `odoo_order_id`, nunca por la columna `guia`.
+
     ENVÍO COMBINADO: dos ventas en una caja comparten paquete y etiqueta. El PDF
     se baja una vez por vuelta y se sube a las dos.
 
@@ -759,6 +884,12 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
     el PDF del que lleva SUS SKUs (`_guia_dividida`). Sólo con evidencia: lo que
     no se pueda emparejar con certeza no se toca, y si una consulta falló, esa
     venta espera a la vuelta siguiente.
+
+    `forzar_espera=True` es el DRENAJE A MANO
+    (`POST /api/automatizacion/espera/drenar`): la vuelta corre aunque el
+    trabajo esté apagado, para vaciar una cola que se quedó huérfana. No salta
+    ninguna guarda de negocio — sigue sin crear las canceladas y sigue pidiendo
+    la guía al canal.
 
     TECHO DE TIEMPO. `xmlrpc` no lleva timeout en este proyecto, así que una
     llamada colgada ocuparía un hilo del pool compartido y —con
@@ -787,17 +918,54 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
                          # ventas que no se tocaron porque una consulta falló.
                          "divididas": 0, "partes_asignadas": 0,
                          "partes_sin_guia_aun": 0, "partes_ambiguas": 0,
-                         "divididas_incompletas": 0}
+                         "divididas_incompletas": 0,
+                         # CREACIÓN DIFERIDA (23-sep): las ventas que sólo
+                         # tienen su ESPACIO y cuya orden nace aquí, al aparecer
+                         # la guía. `esperando` es el tamaño de esa cola —lo que
+                         # el almacén todavía no ve—, y `creadas` lo que nació
+                         # esta vuelta.
+                         "esperando": 0, "creadas": 0, "creadas_fallidas": 0,
+                         "canceladas_sin_crear": 0, "estado_sin_mapear": 0,
+                         # POR CÓDIGO, no sólo el total. En Temu no hay ningún
+                         # `orderStatus` mapeado a "cancelada" (`_ESTADOS_WC`
+                         # sólo conoce {2,4,5}), así que una venta muerta no
+                         # tiene HOY ninguna vía de salir de la espera: se queda
+                         # restando sus ~9.5 piezas hasta caducar. La guarda
+                         # inversa ("sólo creo estados que conozco") es la
+                         # decisión correcta mientras el código no se conozca;
+                         # lo que faltaba era MEDIRLO. Con este contador el
+                         # primer código de cancelada se identifica solo y se
+                         # puede mapear.
+                         "estados_sin_mapear": {},
+                         "espera_incompleta": 0, "espera_mas_vieja_h": 0.0,
+                         "mantenimiento": {}, "fallos_al_crear": {}}
     if not temu.disponible():
         return {**r, "error": "Temu no está configurado (falta app_key/secret/token)"}
 
+    # Antes de la cola: reponer los espacios que kubera no dejó escribir,
+    # caducar lo que ya no resuelve y vincular lo capturado a mano. No escribe
+    # en Odoo y no corre si el canal no está en régimen diferido.
     try:
-        cola = await asyncio.to_thread(odoo_ventas.pendientes_de_guia,
+        r["mantenimiento"] = await asyncio.to_thread(
+            odoo_ventas.mantener_espera, "temu", forzar_espera)
+    except Exception as exc:  # noqa: BLE001 — el mantenimiento nunca tumba la vuelta
+        log.warning("refrescar_guias: el mantenimiento de la espera falló: %s",
+                    str(exc)[:150])
+
+    try:
+        # La cola COMPLETA: las que ya tienen orden en Odoo y les falta la guía,
+        # más las que esperan la guía para que su orden NAZCA. Ver
+        # `odoo_ventas.cola_de_guias`.
+        cola = await asyncio.to_thread(odoo_ventas.cola_de_guias,
                                        "temu", dias, limite)
     except Exception as exc:  # noqa: BLE001
         log.warning("refrescar_guias: no se pudo armar la cola: %s", exc)
         return {**r, "error": str(exc)[:200]}
     r["pendientes"] = len(cola)
+    esperando = [c for c in cola if c.get("espera_guia")]
+    r["esperando"] = len(esperando)
+    r["espera_mas_vieja_h"] = round(max((float(c.get("antiguedad_h") or 0)
+                                         for c in esperando), default=0.0), 1)
 
     pdf_por_paquete: dict[str, dict[str, Any]] = {}
     limite_reloj = time.monotonic() + segundos_max
@@ -811,6 +979,15 @@ async def refrescar_guias(dias: int = 14, limite: int = 60,
             det = await _traer(sn)
             if not det:
                 r["fallos_temu"] += 1
+                continue
+            if item.get("espera_guia"):
+                # Sólo tiene su ESPACIO. Si ya hay guía, la orden NACE aquí y
+                # sigue de largo por el mismo camino que cualquier otra: número
+                # en la entrega y PDF en la orden, en esta misma vuelta.
+                nuevo, info = await _crear_al_tener_guia(item, det, r)
+                if nuevo is None:
+                    continue
+                await _guia_dividida(nuevo, det, r, pdf_por_paquete, info=info)
                 continue
             if item.get("dividida"):
                 # Varias órdenes en Odoo: cada una con SU paquete. Lo de abajo

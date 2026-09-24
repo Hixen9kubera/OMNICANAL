@@ -1001,6 +1001,66 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.555.0 — La orden de Odoo nace CON su guía; mientras tanto, la venta se aparta en el panel
+
+Brandon, 23-sep: *"las órdenes confirmadas son un detalle porque ALMACÉN SE
+CONFUNDE… en vez de crear la orden y confirmarla, mejor sólo crear el ESPACIO de
+la orden en omnicanal para identificar que hubo una venta, pero no generar la
+orden en Odoo hasta tener la guía; una vez que se detecte que tiene guía, se crea
+la orden adjuntando al mismo tiempo la guía"*. Aplica a **Temu y TikTok**; las
+órdenes ya creadas siguen su curso. **Todo nace APAGADO.**
+
+**El problema real.** El almacén abre Odoo y ve órdenes confirmadas que no puede
+surtir: la guía la da el canal cuando alguien COMPRA el envío (Temu: mediana
+28 h, p75 63 h) o lo AGENDA (TikTok: mediana ~23 h). Y en TikTok el **58% de las
+ventas se cancela**, así que media pantalla de órdenes confirmadas era mercancía
+que nunca iba a salir.
+
+**Al vender** el seam ya no crea: `crear_orden(..., esperar_guia=True)` calcula
+producto, plan de almacenes, cobertura y —lo irrecuperable— la FOTO DE STOCK del
+instante, y deja la fila con `accion='espera_guia'` y `odoo_order_id` vacío. A
+Odoo no se le escribe nada.
+
+**Al aparecer la guía**, el job del canal (Temu 2 h, TikTok 20 min) crea,
+confirma, escribe el número en la entrega y sube el PDF **en la misma vuelta**,
+recalculando `planear_almacenes` con `free_qty` de HOY (la foto vieja se
+conserva como historia, nunca como decisión). Un día después el almacén correcto
+puede ser otro.
+
+**La cola se invirtió.** Antes se le preguntaba a Odoo qué órdenes no tenían
+guía; sin orden, la venta no existía para nadie y el flujo se mordía la cola.
+Ahora la cola sale de `ops.odoo_sale_orders` y **una fila sólo sale de ella
+cuando `odoo_order_id` deja de ser NULL** —un hecho de Odoo—, nunca por la
+columna `guia`: ése fue el bug de 2024 que dejó entregas vacías para siempre.
+Reparto mitad nuevas / mitad viejas para que un atasco no entierre lo reciente.
+
+**El stock, como lo pidió Brandon** (*"Odoo se deja sin moverse y de nuestro lado
+el stock sí se mueve"*): `stock_watch` resta las piezas comprometidas por ventas
+sin orden antes de copiar a Woo (`STOCK_WATCH_RESTA_PENDIENTES`). Sin eso, el
+modo absoluto devolvería al anaquel ~86 piezas en todo momento y el fan-out las
+empujaría a los canales. Cuando la orden nace, la reserva real toma el relevo y
+la resta desaparece sola; falla CERRADO (si no puede leer los pendientes, no
+toca el stock).
+
+**Falla cerrado en lo demás también**: si el job de guías del canal está
+apagado, la espera se ignora y se crea al vender (diferir sin nadie que retome
+deja la venta en el limbo); `mantener_espera` repone el espacio si kubera
+parpadeó al registrarlo; `espera_caducada` saca de la cola lo que venció la
+ventana y lo pinta rojo; y Temu, que no sabe decir "cancelada", sólo crea
+estados que conoce (2/4/5) y cuenta los demás.
+
+**En el panel** el estado "Esperando guía" se lee como lo que es —apartada, no
+error—: chip propio con la antigüedad, contador y filtro por canal, el atajo al
+seller center, y los KPI dejan de mezclar espacios con órdenes. El Excel de
+Guías del día avisa cuando el día de la venta y el día de la orden ya no
+coinciden, y marca las cajas cuya hermana todavía no tiene orden.
+
+Probado sin red: **190 comprobaciones** del núcleo (+21 mutaciones, todas
+detectadas), 70 del stock y las suites previas en verde; `tsc` limpio; simulacro
+contra Odoo/Temu/TikTok reales en SOLO LECTURA (10 ventas esperarían, 26 piezas
+en 8 SKUs). Orden de encendido documentado: vincular → job de guías → resta de
+pendientes → espera en Temu → observar → espera en TikTok.
+
 ### v0.554.0 — La nota de envío combinado, ENCENDIDA: y el saneador de Odoo sí se come los comentarios
 
 Dale de Brandon el 23-sep ("enciéndelo"). `ODOO_VENTAS_NOTAS_COMBINADO_ENABLED`

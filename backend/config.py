@@ -237,6 +237,73 @@ class Settings(BaseSettings):
     # A qué canales aplica. Temu se suma cuando se sepa por qué solo entraron 2
     # ventas por la tubería contra 49 capturas manuales.
     odoo_ventas_canales: str = "tiktok"
+    # ── LA ORDEN NACE CUANDO APARECE LA GUÍA (23-sep-2026, Brandon) ──────
+    # "Las órdenes confirmadas son un detalle porque ALMACÉN SE CONFUNDE. En
+    # vez de crear la orden y confirmarla, mejor sólo crear el ESPACIO de la
+    # orden en omnicanal para identificar que hubo una venta, pero NO generar
+    # la orden en Odoo hasta tener la guía."
+    #
+    # Con esto encendido para un canal, la venta deja en la bitácora una fila
+    # con `accion='espera_guia'` y `odoo_order_id` VACÍO —el "espacio"— y no se
+    # escribe nada en Odoo. El trabajo de guías (Temu cada 2 h, TikTok cada 20
+    # min) la recoge, y en cuanto el canal entrega la guía hace TODO en la
+    # misma vuelta: crear, confirmar, número en la entrega y PDF en la orden.
+    # Por qué en la misma vuelta: `fijar_etiqueta` sólo sube el PDF a órdenes
+    # en `sale`/`done`, así que separar los pasos costaría otra vuelta entera.
+    #
+    # LO QUE CAMBIA PARA EL ALMACÉN: la orden de Odoo nace ~1-2 días después de
+    # la venta (Temu medido: p25 7.9 h, mediana 28.4 h, p75 63.3 h, n=89;
+    # TikTok mediana ~23 h), y nace YA con su guía. Desaparecen del tablero las
+    # órdenes confirmadas sin nada que empacar — que en TikTok son la mayoría,
+    # porque cancela el 58% de sus ventas.
+    #
+    # ⚠️ ES UN ESCALÓN MÁS DE LA ESCALERA DE ARRIBA, no un atajo: sólo hace
+    # algo cuando la automatización YA crearía (ENABLED=true, SOLO_REGISTRO=
+    # false y el canal encendido). Con SOLO_REGISTRO=true no cambia nada.
+    #
+    # ⚠️ NACE APAGADA (cadena vacía) y se enciende por canal desde el panel,
+    # sin deploy (`ops.automatizacion_flags`, llave
+    # `odoo_ventas_espera_guia_canal_<canal>`), igual que el switch por canal.
+    #
+    # ⚠️ FALLA CERRADO: si el trabajo de guías de ese canal está apagado
+    # (`TEMU_GUIAS_ENABLED` / `TIKTOK_GUIAS_ENABLED`), esto se ignora y se
+    # vuelve a crear al vender. Sin ese trabajo NADIE crearía la orden nunca y
+    # las ventas se quedarían en el limbo: el almacén dejaría de ver ventas
+    # reales, que es peor que el problema que esto viene a resolver.
+    #
+    # ⚠️ EL STOCK QUEDA DESTAPADO mientras la orden no existe: sin orden no hay
+    # reserva, `free_qty` no baja y `stock_watch` (modo absoluto) devuelve la
+    # pieza vendida al anaquel de Woo y de ahí a los canales. Temu vende ~9.5
+    # piezas por orden: ~86 piezas en el aire en todo momento. La resta la hace
+    # `stock_watch` con su propia bandera (parte C del encargo, de otro agente)
+    # leyendo `odoo_ventas_log.piezas_sin_orden`. ANTES DE ENCENDER ESTO en un
+    # canal con SKUs sin holgura (medidos: ACC-0696-ROJ-NEG-140CM,
+    # ACC-0696-ROJ-NEG-90CM, ACC-0574-LIL, DEC-0078-PLA), esa resta tiene que
+    # estar viva.
+    odoo_ventas_espera_guia_canales: str = ""
+    # LA VENTANA DE LA ESPERA, Y ES LA ÚNICA. Más allá de estos días la guía ya
+    # no va a aparecer: la venta se marca `espera_caducada` —en rojo en el
+    # panel, no desaparece— y deja de esconder stock.
+    #
+    # ⚠️ LA LEEN LOS DOS LADOS Y POR ESO NO PUEDEN SEPARARSE: `cola_de_guias`
+    # (cuánto tiempo seguimos dispuestos a crear la orden) y
+    # `stock_watch._ventana_pendientes` (cuánto tiempo seguimos escondiendo la
+    # pieza). Antes la cola usaba el `dias` del job —`TEMU_GUIAS_DIAS`,
+    # `TIKTOK_GUIAS_DIAS`—, que son variables de RENDIMIENTO: bajarlas a 7
+    # dejaba siete días de mercancía escondida sin nadie que fuera a crear la
+    # orden, y subirlas a 21 devolvía las piezas al anaquel el día 14 mientras
+    # el trabajo todavía las crearía el 20 (sobreventa). Ahora `*_guias_dias`
+    # manda sólo sobre la cola de ODOO. No volver a partirla en dos.
+    odoo_ventas_espera_guia_dias: int = 14
+    # El tope de la MITAD de espera de cada vuelta de la cola (la otra mitad es
+    # para las órdenes que ya existen y esperan su número). Nunca pide más de lo
+    # que cabe en la vuelta del job.
+    odoo_ventas_espera_guia_limite: int = 60
+    # Cuántas horas atrás mira `mantener_espera` en `channel.orders` buscando
+    # ventas que se quedaron SIN su espacio porque kubera no contestó al
+    # venderse. 48 h cubre de sobra el peor tropiezo visto del pooler y es más
+    # ancho que la mediana de la guía de Temu (28.4 h).
+    odoo_ventas_espera_repone_h: int = 48
     # VINCULAR LO QUE QUEDÓ SIN ORDEN (18-sep-2026). Si la automatización no pudo
     # crear la orden (SKU sin producto, error de Odoo, apagado) y después alguien
     # la crea aparte en Odoo con el número de venta como referencia, la bitácora
@@ -1010,6 +1077,37 @@ class Settings(BaseSettings):
     # delta no ve. Nace apagado; encenderlo cambia lo que se publica en las
     # tiendas y por eso es un acto explícito (regla 3).
     stock_watch_absoluto: bool = False
+    # ── LO VENDIDO NO REAPARECE MIENTRAS SU ORDEN NO NACE (parte C, 23-sep) ──
+    # Compañera de `ODOO_VENTAS_ESPERA_GUIA_CANALES`. Con la creación diferida,
+    # entre la venta y la guía (Temu: mediana 28.4 h, p75 63.3 h) NO hay orden
+    # en Odoo, y sin orden no hay reserva: `free_qty` sigue contando la pieza
+    # que alguien ya compró. En modo ABSOLUTO esta pasada copiaría ese número a
+    # Woo y el fan-out lo empujaría a los canales — la pieza vendida vuelve al
+    # anaquel. Con esto encendido el destino pasa a ser
+    #
+    #     destino = max(0, free_qty_odoo − piezas_vendidas_sin_orden)
+    #
+    # Brandon fue explícito: a Odoo NO se le escribe nada para apartar ("Odoo se
+    # deja sin moverse y de nuestro lado el stock sí se mueve"). Esta resta vive
+    # SÓLO de este lado; Odoo ni se entera.
+    #
+    # ⚠️ SÓLO en modo ABSOLUTO. En DELTA la venta ya bajó Woo por su cuenta
+    # (`PEDIDOS_WC_DESCUENTA_STOCK`), así que restar otra vez sería el doble
+    # descuento de verdad. `_deltas_odoo` lo impide, no sólo este comentario.
+    #
+    # ⚠️ FALLA CERRADO: si no se puede MEDIR cuánto hay pendiente, la pasada no
+    # copia nada de Odoo a Woo (el tramo Woo→canales sigue, que no puede
+    # resucitar nada). `piezas_sin_orden` devuelve {} tanto cuando no hay nada
+    # como cuando la base no contesta, y esas dos cosas tienen consecuencias
+    # opuestas: por eso `_pendientes` pregunta además con una consulta que SÍ
+    # puede fallar.
+    #
+    # LA VENTANA es la de `odoo_ventas_espera_guia_dias` y no una propia, a
+    # propósito: mientras sigamos dispuestos a crear la orden hay que seguir
+    # escondiendo la pieza, y en cuanto dejamos de crearla hay que devolverla.
+    # Dos plazos distintos sólo podrían desincronizarse, y cualquiera de los dos
+    # lados de esa brecha es un error (resucitar, o esconder para siempre).
+    stock_watch_resta_pendientes: bool = False
     # ── PASO 2 de la migración: la foto sale de MySQL (ops.stock_watch_photo).
     # DOS flags y no uno, y se encienden en ESTE orden con días de por medio:
     #

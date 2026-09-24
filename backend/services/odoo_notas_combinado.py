@@ -182,9 +182,17 @@ _RE_BLOQUE = re.compile(re.escape(MARCA_INI) + r".*?" + re.escape(MARCA_FIN), re
 # peor caso el bloque se REEMPLAZA igual en vez de apilarse, y el freno sólo
 # salta si no vuelve ni el comentario ni el texto.
 SELLO_VISIBLE = "Imprimir la etiqueta UNA sola vez"
+# ⚠️ EL PATRÓN SE AMPLIÓ, LA FRASE NO. Al avisar de una hermana que YA SALIÓ
+# hicieron falta dos cosas que el patrón original no admitía: un título con
+# sufijo ("ENVÍO COMBINADO · UNA PARTE YA SALIÓ") y una oración DESPUÉS del
+# sello. Cambiar `SELLO_VISIBLE` habría dejado huérfanos los 27 bloques ya
+# escritos —y la vuelta siguiente apilaría uno nuevo encima—, así que se hizo lo
+# que manda el encabezado: conservar la frase exacta y ENSANCHAR el
+# reconocimiento. `[^<]*` en los dos puntos, que es texto y nunca etiquetas: los
+# bloques viejos siguen casando con las dos partes vacías.
 _RE_VISIBLE = re.compile(
-    r"(?:<p[^>]*>\s*<(?:b|strong)>\s*(?:ENVÍO COMBINADO|SURTIDO DIVIDIDO)\s*"
-    r"</(?:b|strong)>.*?" + re.escape(SELLO_VISIBLE) + r"\.?\s*</p>)+", re.S)
+    r"(?:<p[^>]*>\s*<(?:b|strong)>\s*(?:ENVÍO COMBINADO|SURTIDO DIVIDIDO)[^<]*"
+    r"</(?:b|strong)>.*?" + re.escape(SELLO_VISIBLE) + r"\.?[^<]*</p>)+", re.S)
 
 # Lo que se busca en Odoo para encontrar lo NUESTRO sin depender del html
 # completo: el trozo estable de la marca, que sirve en un dominio `like`.
@@ -273,10 +281,16 @@ def almacen_de(nombre_entrega: Any) -> str:
 
 def _nombre_hermana(h: Any) -> str:
     """Una hermana se acepta como texto ("S39008") o como
-    `{"nombre", "almacen"}`. Lo primero mantiene `texto_bloque` usable a secas."""
+    `{"nombre", "almacen", "enviada"}`. Lo primero mantiene `texto_bloque`
+    usable a secas.
+
+    "YA ENVIADA" va pegado al nombre, no sólo en la oración de abajo: quien
+    empaca lee la lista de hermanas y decide con ella."""
     if isinstance(h, dict):
         nombre = _html.escape(str(h.get("nombre") or ""))
         alm = str(h.get("almacen") or "")
+        if h.get("enviada"):
+            alm = f"{alm} · YA ENVIADA" if alm else "YA ENVIADA"
         return f"{nombre} ({_html.escape(alm)})" if alm else nombre
     return _html.escape(str(h))
 
@@ -289,6 +303,14 @@ def _frase_grupo(g: dict[str, Any]) -> tuple[str, str, str]:
     """
     total = int(g["total"])
     ventas = int(g.get("ventas") or total)
+    if g.get("hermana_enviada"):
+        # La caja ya se fue y esta orden no iba dentro. El título tiene que
+        # decirlo ANTES que nada: quien lo lee está a punto de no imprimir una
+        # etiqueta y de ir a buscar una caja que no existe.
+        return ("ENVÍO COMBINADO · UNA PARTE YA SALIÓ",
+                "iba a viajar en la MISMA caja que:",
+                f"{total} órdenes de venta ({ventas} ventas)"
+                if ventas != total else f"{total} órdenes de venta")
     if ventas >= 2:
         # "6 órdenes de venta (4 ventas)": el Excel cuenta órdenes y la pestaña
         # cuenta ventas. Decir los dos números evita que la misma caja tenga
@@ -324,11 +346,21 @@ def texto_bloque(grupos: list[dict[str, Any]], sujeto: str = "Esta orden") -> st
         titulo, verbo, cuantas = _frase_grupo(g)
         guia = _html.escape(str(g["guia"]))
         corto = codigo_guia(g["guia"])
+        # ⚠️ EL SELLO NO SE TOCA. `SELLO_VISIBLE` ("Imprimir la etiqueta UNA
+        # sola vez") es lo que `_RE_VISIBLE` busca cuando el saneador de Odoo se
+        # come las marcas HTML, y de eso cuelga la idempotencia de los 27
+        # bloques YA escritos: cambiar la frase los deja huérfanos y la vuelta
+        # siguiente apila un bloque nuevo encima. Así que la frase se CONSERVA
+        # y el aviso de la hermana ya enviada se AÑADE DESPUÉS.
+        aviso = ("" if not g.get("hermana_enviada") else
+                 " Esa caja ya salió del almacén, así que esta orden NO puede "
+                 "viajar en ella: no reimprimas esta guía y avisa a quien lleva "
+                 "el canal antes de enviar nada.")
         parrafos.append(
             f"<p><b>{titulo}</b> · {_html.escape(sujeto)} {verbo} "
             f"{hermanas} · {cuantas} · "
             f"Guía {guia}{f' ({_html.escape(corto)})' if corto else ''} · "
-            "Imprimir la etiqueta UNA sola vez.</p>")
+            f"Imprimir la etiqueta UNA sola vez.{aviso}</p>")
     return f"{MARCA_INI}{''.join(parrafos)}{MARCA_FIN}"
 
 
@@ -393,10 +425,20 @@ def agrupar(ordenes: list[dict[str, Any]],
             clave = _normalizar_guia(guia)
             if not clave:
                 continue
-            g = grupos.setdefault(clave, {"guia": guia, "ordenes": {}, "ventas": set()})
+            g = grupos.setdefault(clave, {"guia": guia, "ordenes": {}, "ventas": set(),
+                                          "enviadas": set()})
             g["ordenes"].setdefault(oid, []).append(int(pid))
             g["ventas"].add(venta)
-    return {k: {**g, "ventas": len(g["ventas"])}
+            # ⚠️ LA QUE YA SALIÓ. Las `done` se agrupan —la caja es la misma y
+            # el almacén tiene los dos documentos delante— pero hay que DECIRLO.
+            # Con la creación diferida las hermanas dejaron de nacer en la misma
+            # vuelta: la de hoy recibe una nota que la manda a juntarse con una
+            # caja que se fue AYER, y encima le prohíbe imprimir su etiqueta.
+            # Antes no podía pasar: las dos órdenes existían desde la venta y
+            # recibían la guía en la misma pasada.
+            if p.get("state") == "done":
+                g["enviadas"].add(oid)
+    return {k: {**g, "ventas": len(g["ventas"]), "enviadas": sorted(g["enviadas"])}
             for k, g in grupos.items() if len(g["ordenes"]) >= 2}
 
 
@@ -425,14 +467,21 @@ def grupos_por_orden(grupos: dict[str, dict[str, Any]],
     for clave in sorted(grupos, key=lambda k: grupos[k]["guia"]):
         g = grupos[clave]
         ids = sorted(g["ordenes"])
+        enviadas = {int(x) for x in (g.get("enviadas") or ())}
         for oid in ids:
             hermanas = sorted(
-                ({"nombre": nombre.get(x) or str(x), "almacen": _alm(x, g)}
+                ({"nombre": nombre.get(x) or str(x), "almacen": _alm(x, g),
+                  "enviada": x in enviadas}
                  for x in ids if x != oid),
                 key=lambda h: h["nombre"])
             salida.setdefault(oid, []).append({
                 "guia": g["guia"], "hermanas": hermanas, "total": len(ids),
                 "ventas": int(g.get("ventas") or len(ids)),
+                # ¿ALGUNA HERMANA YA SALIÓ del almacén y ESTA todavía no? Es el
+                # único caso en que el aviso normal miente: no hay caja que
+                # compartir, se fue. Si la que ya salió es ella misma, no hay
+                # nada que advertir — ya está fuera.
+                "hermana_enviada": bool(enviadas - {oid}) and oid not in enviadas,
                 "pickings": sorted(g["ordenes"][oid]), "almacen": _alm(oid, g),
             })
     return salida
@@ -758,8 +807,12 @@ def _marcar(kw: Any, r: dict[str, Any], estado: dict[str, Any],
             partes.append(f"<b>{titulo}</b> · Esta orden {verbo} "
                           f"{_html.escape(nombres)} "
                           f"(guía {_html.escape(str(g['guia']))}).")
+        aviso = ("" if not any(g.get("hermana_enviada") for g in grupos) else
+                 " Esa caja ya salió del almacén, así que esta orden NO puede "
+                 "viajar en ella: no reimprimas esta guía y avisa a quien lleva "
+                 "el canal antes de enviar nada.")
         cuerpo = ("<p>" + " ".join(partes)
-                  + " Imprimir la etiqueta UNA sola vez.</p>")
+                  + " Imprimir la etiqueta UNA sola vez." + aviso + "</p>")
         r["planeado"].append({"modelo": "sale.order", "metodo": "message_post",
                               "ids": [oid], "nombre": o.get("name"),
                               "vals": {"body": cuerpo}})
@@ -825,6 +878,8 @@ def _texto_llano(hermana: Any) -> str:
     """El nombre de una hermana, sin html, para el cuerpo del historial."""
     if isinstance(hermana, dict):
         alm = str(hermana.get("almacen") or "")
+        if hermana.get("enviada"):
+            alm = f"{alm} · YA ENVIADA" if alm else "YA ENVIADA"
         nombre = str(hermana.get("nombre") or "")
         return f"{nombre} ({alm})" if alm else nombre
     return str(hermana)
