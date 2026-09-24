@@ -3,9 +3,9 @@
 /**
  * Piezas visuales compartidas por las vistas de FULLFILMENT.
  *
- * `RAYADO`, `ChipSinRegistro` y `BotonBloqueado` son COPIAS de las funciones
- * locales de `app/monitoreo/page.tsx` y `app/inventario/page.tsx` (allá no se
- * exportan). Si cambia el lenguaje visual del panel, cambia en los tres lados.
+ * `RAYADO` y `ChipSinRegistro` son COPIAS de las funciones locales de
+ * `app/monitoreo/page.tsx` y `app/inventario/page.tsx` (allá no se exportan).
+ * Si cambia el lenguaje visual del panel, cambia en los tres lados.
  *
  * LAS CUATRO LECTURAS de cada cifra (regla dura del diseño):
  *   dato real        → esmeralda sólido
@@ -14,8 +14,10 @@
  *   en espera        → ámbar: el dato viene y todavía no llega
  */
 
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import type { LucideIcon } from "lucide-react";
+import { createPortal } from "react-dom";
+import { X } from "lucide-react";
 import type { Canal, Cuenta, Envio, Instante } from "./tipos";
 import { ETAPAS, ETAPAS_POR_CAPTURAR } from "./tipos";
 
@@ -26,6 +28,7 @@ export const RAYADO: CSSProperties = {
 };
 export const FONDO_RAYADO = "repeating-linear-gradient(135deg,#f8fafc 0 5px,#eef2f7 5px 10px)";
 export const FONDO_RAYADO_AMBAR = "repeating-linear-gradient(135deg,#FEF3C7 0 5px,#FDE68A 5px 10px)";
+export const RAYADO_ROSA = "repeating-linear-gradient(135deg,#fecdd3 0 4px,#fb7185 4px 8px)";
 
 // ── Canales y cuentas ───────────────────────────────────────────────────────
 // Colores de `lib/theme.ts` (espejo de backend/core/marketplaces.py). `chip` es
@@ -72,6 +75,37 @@ export function fecha(i: Instante | null | undefined): string {
   return `${partes.day} ${MESES[Number(partes.month) - 1]} ${i.aprox ? "~" : ""}${hora}`;
 }
 
+/** «13 ene» en hora de CDMX. */
+export function dia(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const partes = Object.fromEntries(FMT_CDMX.formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
+  return `${Number(partes.day)} ${MESES[Number(partes.month) - 1]}`;
+}
+
+/** «14–20 sep» para el lunes de una semana (fecha sin hora, «2026-09-14»). */
+export function rangoSemana(lunes: string): string {
+  const [a, m, d] = lunes.split("-").map(Number);
+  const ini = new Date(Date.UTC(a, m - 1, d));
+  const fin = new Date(Date.UTC(a, m - 1, d + 6));
+  const mi = MESES[ini.getUTCMonth()];
+  const mf = MESES[fin.getUTCMonth()];
+  return mi === mf ? `${ini.getUTCDate()}–${fin.getUTCDate()} ${mf}` : `${ini.getUTCDate()} ${mi} – ${fin.getUTCDate()} ${mf}`;
+}
+
+/** Semana ISO de un instante, en hora de CDMX: «2026-S38». */
+export function semanaIso(iso: string): string {
+  const p = Object.fromEntries(FMT_CDMX.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
+  // La semana ISO es la de su JUEVES: el jueves decide el año y el número.
+  const jueves = (f: Date) => {
+    const x = new Date(f);
+    x.setUTCDate(x.getUTCDate() - ((x.getUTCDay() + 6) % 7) + 3);
+    return x;
+  };
+  const j = jueves(new Date(Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day))));
+  const j1 = jueves(new Date(Date.UTC(j.getUTCFullYear(), 0, 4)));
+  return `${j.getUTCFullYear()}-S${1 + Math.round((j.getTime() - j1.getTime()) / (7 * 86_400_000))}`;
+}
+
 // ── Contenedores ────────────────────────────────────────────────────────────
 export function Tarjeta({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
@@ -97,54 +131,13 @@ export function ChipSinRegistro({ titulo, texto = "sin registro" }: { titulo?: s
   );
 }
 
-/**
- * De dónde sale la cifra de esa tarjeta. Mientras la pestaña se construye por
- * etapas conviven datos en vivo y datos del mockup: cada tarjeta dice cuál es.
- */
-export function ChipFuente({ vivo, titulo, texto }: { vivo: boolean; titulo?: string; texto?: string }) {
-  return vivo ? (
+/** De dónde sale la cifra: «Odoo en vivo», «ML en vivo»… El `title` dice cómo se lee. */
+export function ChipFuente({ titulo, texto }: { titulo?: string; texto?: string }) {
+  return (
     <span title={titulo ?? "Se lee de Odoo en cada carga (caché de 2 min)."}
           className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-[.05em] text-emerald-700">
       <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" /> {texto ?? "Odoo en vivo"}
     </span>
-  ) : (
-    <span title={titulo ?? "Cifra del mockup de diseño (14-sep-2026): todavía no se lee de ningún sistema."}
-          className="inline-flex items-center rounded-full border border-dashed border-slate-300 bg-white px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-[.05em] text-slate-400">
-      diseño
-    </span>
-  );
-}
-
-/** «13 ene» en hora de CDMX. */
-export function dia(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const partes = Object.fromEntries(FMT_CDMX.formatToParts(new Date(iso)).map((p) => [p.type, p.value]));
-  return `${Number(partes.day)} ${MESES[Number(partes.month) - 1]}`;
-}
-
-export const DIAS_SEMANA = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"] as const;
-export const DIAS_NOMBRE = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"] as const;
-
-export function ChipDatosDesde({ desde }: { desde: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-300 bg-amber-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[.04em] text-amber-700">
-      <span className="h-2.5 w-2.5 rounded-full border-2 border-dashed border-amber-600" />
-      Datos desde {desde}
-    </span>
-  );
-}
-
-export function BotonBloqueado({
-  icono: Icono, texto, razon, primario,
-}: { icono: LucideIcon; texto: string; razon: string; primario?: boolean }) {
-  return (
-    <button
-      type="button" disabled title={`Bloqueado — ${razon}`}
-      className={`flex cursor-not-allowed items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold ${
-        primario ? "bg-indigo-300 text-white" : "border border-slate-200 bg-white text-slate-300"}`}
-    >
-      <Icono className="h-4 w-4" /> {texto}
-    </button>
   );
 }
 
@@ -156,6 +149,80 @@ export function ChipCanal({ canal, cuenta }: { canal: Canal; cuenta: Cuenta | nu
       <span className="h-2 w-2 rounded-full" style={{ background: puntoDe(canal, cuenta) }} />
       {t.nombre}
     </span>
+  );
+}
+
+export function ChipCuenta({ cuenta }: { cuenta: Cuenta }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-[3px] text-[11.5px] font-bold text-slate-600">
+      <span className="h-2 w-2 rounded-full" style={{ background: PUNTO_CUENTA[cuenta] }} />
+      {cuenta}
+    </span>
+  );
+}
+
+// ── La ventana emergente ────────────────────────────────────────────────────
+// Se cierra con la ✕, con Esc o con clic fuera, y se pueden APILAR: la ficha
+// del SKU se abre ENCIMA del detalle del envío (Brandon, 24-sep: "el por SKU es
+// solamente un POP"). Esc cierra sólo la de arriba, y la página de atrás no se
+// desplaza mientras quede alguna abierta.
+//
+// Va en un portal a <body>: el cuadro de la ventana se anima con `transform`, y
+// un `position: fixed` DENTRO de algo transformado deja de medirse contra la
+// pantalla — la ventana de encima quedaría encerrada en la de abajo.
+const pila: number[] = [];
+let consecutivo = 0;
+let abiertas = 0;
+let overflowOriginal = "";
+
+export function Ventana({
+  onCerrar, etiqueta, ancho = "max-w-[1080px]", children,
+}: { onCerrar: () => void; etiqueta: string; ancho?: string; children: ReactNode }) {
+  const cerrar = useRef(onCerrar);
+  cerrar.current = onCerrar;
+  const [id] = useState(() => ++consecutivo);
+  const [montada, setMontada] = useState(false);
+
+  useEffect(() => {
+    pila.push(id);
+    if (abiertas++ === 0) {
+      overflowOriginal = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+    }
+    const alTeclear = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" && pila[pila.length - 1] === id) cerrar.current();
+    };
+    window.addEventListener("keydown", alTeclear);
+    setMontada(true);
+    return () => {
+      window.removeEventListener("keydown", alTeclear);
+      const i = pila.indexOf(id);
+      if (i >= 0) pila.splice(i, 1);
+      if (--abiertas === 0) document.body.style.overflow = overflowOriginal;
+    };
+  }, [id]);
+
+  if (!montada || typeof document === "undefined") return null;
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 px-3 py-8 backdrop-blur-[2px] sm:px-4 sm:py-10"
+         onClick={(ev) => { ev.stopPropagation(); cerrar.current(); }}>
+      <div role="dialog" aria-modal="true" aria-label={etiqueta}
+           onClick={(ev) => ev.stopPropagation()}
+           className={`w-full ${ancho} animate-fade-in rounded-2xl bg-white shadow-2xl`}>
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** El botón ✕ de la esquina de una ventana. */
+export function BotonCerrar({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} title="Cerrar (Esc)"
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+      <X className="h-5 w-5" />
+    </button>
   );
 }
 
@@ -176,10 +243,10 @@ export interface Paso {
 
 /** Por qué la etapa «Recibido» no tiene dato, según el estado del envío real. */
 const SIN_LECTURA: Partial<Record<Envio["estado"], { sub: string; titulo: string }>> = {
-  salio: { sub: "sin movimiento aún",
-           titulo: "Ningún SKU de este envío subió su stock en FULL después de la salida. Mercado Libre no tiene API de envíos a Full: esto es lo que ve el sync cada 15 min." },
+  salio: { sub: "sin avisos que leer",
+           titulo: "Este envío no tiene avisos de FULL de Mercado Libre que medir (salió antes del 12-ago o sin cuenta)." },
   sinEnlazar: { sub: "sin número, no se cruza",
-                titulo: "Sin número de envío no hay con qué cruzar lo que salió contra lo que llegó." },
+                titulo: "Sin número de envío ni cuenta no hay con qué cruzar lo que salió contra lo que llegó." },
   fbaSinLectura: { sub: "Amazon: sin permiso",
                    titulo: "La app de Amazon no tiene el permiso de Inbound (responde 403): no se pueden leer los envíos." },
   wfsSinLectura: { sub: "falta leer WFS",
@@ -246,14 +313,6 @@ export function pasosDe(e: Envio): Paso[] {
       const s = SIN_LECTURA[e.estado]!;
       return { t, corto, v: "sin lectura", sub: s.sub, tono: "hueco" as const, titulo: `${t}: ${s.titulo}` };
     }
-    // «Recibido» en curso es ÁMBAR: el dato viene, no ha llegado. No se resta
-    // enviadas − recibidas para inventar un rechazo.
-    if (i === 2 && (e.estado === "recepcion" || e.estado === "amazonSinLectura")) {
-      const amz = e.estado === "amazonSinLectura";
-      const v = amz ? "sin lectura" : "en recepción";
-      return { t, corto, v, sub: amz ? "Amazon no se consulta" : "el almacén no ha contado", tono: "espera" as const,
-               titulo: `${t} · ${v} — no se resta para inventar un rechazo` };
-    }
     return { t, corto, v: "sin dato", sub, tono: "hueco" as const,
              titulo: `${t}: no hay registro todavía. No es un cero.` };
   }));
@@ -268,22 +327,17 @@ const TONO_PASO = {
   pendiente: { caja: "border-dashed border-indigo-300", rotulo: "text-indigo-500", valor: "text-indigo-600" },
 };
 
-export function Rail({ pasos, grande }: { pasos: Paso[]; grande?: boolean }) {
+export function Rail({ pasos }: { pasos: Paso[] }) {
   return (
-    <div className={`flex items-stretch ${grande ? "gap-2" : "gap-[3px]"}`}>
+    <div className="flex items-stretch gap-[3px]">
       {pasos.map((p) => {
         const tono = TONO_PASO[p.tono];
         return (
           <div key={p.t} title={p.titulo}
                style={p.tono === "hueco" ? { background: FONDO_RAYADO } : undefined}
-               className={`min-w-0 flex-1 rounded-lg border ${tono.caja} ${grande ? "p-3" : "px-[7px] py-1.5"}`}>
-            <div className={`truncate font-bold uppercase tracking-[.04em] ${tono.rotulo} ${grande ? "text-[10.5px]" : "text-[9.5px]"}`}>
-              {grande ? p.t : p.corto}
-            </div>
-            <div className={`mt-0.5 truncate font-mono font-bold ${tono.valor} ${grande ? "text-[13px]" : "text-[10.5px]"}`}>
-              {grande ? p.v : p.vc ?? p.v}
-            </div>
-            {grande && <div className={`mt-0.5 truncate text-[11px] ${tono.rotulo} opacity-80`}>{p.sub}</div>}
+               className={`min-w-0 flex-1 rounded-lg border px-[7px] py-1.5 ${tono.caja}`}>
+            <div className={`truncate text-[9.5px] font-bold uppercase tracking-[.04em] ${tono.rotulo}`}>{p.corto}</div>
+            <div className={`mt-0.5 truncate font-mono text-[10.5px] font-bold ${tono.valor}`}>{p.vc ?? p.v}</div>
           </div>
         );
       })}
@@ -291,7 +345,7 @@ export function Rail({ pasos, grande }: { pasos: Paso[]; grande?: boolean }) {
   );
 }
 
-/** La tasa de recepción de un envío. «no calculable» y «en recepción» NO son 0%. */
+/** La celda de llegada de un envío sin avisos de ML. «Sin registro» y «aún no sale» NO son 0%. */
 export function tasaDe(e: Envio): { texto: string; nota: string; clase: string; rayada?: boolean } {
   const hueco = "border-dashed border-slate-300 text-slate-400";
   switch (e.estado) {
@@ -299,26 +353,12 @@ export function tasaDe(e: Envio): { texto: string; nota: string; clase: string; 
       return { texto: "no calculable", nota: "sin número de envío", clase: "border-amber-300 bg-amber-50 text-amber-700" };
     case "abierta":
       return { texto: "aún no sale", nota: "salida sin validar", clase: "border-amber-300 bg-amber-50 text-amber-700" };
-    case "salio":
-      return { texto: "sin registro", nota: "sin avisos de FULL que leer", clase: hueco, rayada: true };
     case "fbaSinLectura":
       return { texto: "sin registro", nota: "Amazon no deja leer (403)", clase: hueco, rayada: true };
     case "wfsSinLectura":
       return { texto: "sin registro", nota: "falta leer la API de WFS", clase: hueco, rayada: true };
-    case "wfs":
-      return { texto: "sin registro", nota: "no hay órdenes WFS", clase: "border-dashed border-slate-300 text-slate-400", rayada: true };
-    case "recepcion":
-      return { texto: "en recepción", nota: "aún no es un rechazo", clase: "border-amber-300 bg-amber-50 text-amber-700" };
-    case "amazonSinLectura":
-      return { texto: "sin registro", nota: "Amazon no se consulta", clase: "border-dashed border-slate-300 text-slate-400", rayada: true };
-    default: {
-      const alto = (e.tasaPct ?? 0) >= 95;
-      return {
-        texto: `${e.tasaPct}% recibido`,
-        nota: alto ? "rechazo explícito bajo" : "rechazo explícito del canal",
-        clase: alto ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-800",
-      };
-    }
+    default:
+      return { texto: "sin registro", nota: "sin avisos de FULL que leer", clase: hueco, rayada: true };
   }
 }
 

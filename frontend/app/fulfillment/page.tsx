@@ -3,16 +3,20 @@
 /**
  * /fulfillment — Pestaña FULLFILMENT: el circuito de mercancía a los almacenes
  * de los marketplaces (FULL de ML en Kubera y San Corpe, FBA de Amazon, WFS de
- * Walmart). Lo que se pidió, lo que salió, lo que el marketplace recibió — y lo
- * que todavía no se mide.
+ * Walmart).
  *
- * ESTADO: POR ETAPAS. v0.521.0 subió el diseño completo con datos del mockup;
- * v0.523.0 conecta la primera lectura real, `GET /api/fulfillment/envios`
- * (salidas de Odoo a FULL/FBA/WFS clasificadas por canal y cuenta, reglas en
- * backend/services/fulfillment_envios.py). Lo que aún es mockup vive en
- * `components/fulfillment/datosDiseno.ts` y cada tarjeta que lo usa lleva el
- * chip «diseño». El prefijo `/api/fulfillment` es el de Análisis: sus GET
- * heredan `operador` (backend/core/rbac.py).
+ * ORDEN DE APP (Brandon, 24-sep-2026): "como las aplicaciones de banco —
+ * consultar el saldo y ejecutar una transacción—: primero CREAR FULL, después
+ * ENVÍOS para checar los status, después ANÁLISIS". Tres pantallas y nada más:
+ *   · Crear FULL  — el saldo de la cuenta y la propuesta de la semana → borrador
+ *                   en Odoo (components/fulfillment/CrearFull.tsx);
+ *   · Envíos      — en qué va cada salida, con su detalle en ventana
+ *                   (components/fulfillment/Envios.tsx);
+ *   · Análisis    — enviado contra recibido, POR SEMANA
+ *                   (components/fulfillment/Analisis.tsx).
+ * La ficha de un SKU/MLM dejó de ser pestaña: es la ventana que se abre al tocar
+ * un SKU dentro del detalle de un envío (FichaSku.tsx). Las pantallas de diseño
+ * (Planeación con datos simulados, Variaciones) se retiraron en v0.556.0.
  *
  * La carpeta ES la ruta; `SesionGuard` ya lo monta `app/layout.tsx`, así que
  * aquí NO va — pero `AppNavbar` sí, porque el layout no lo pinta.
@@ -22,30 +26,26 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowUpDown, CircleDashed, Clock, Database, RefreshCw } from "lucide-react";
+import type { ComponentType } from "react";
+import { AlertTriangle, BarChart3, PlusCircle, RefreshCw, Truck } from "lucide-react";
 import AppNavbar from "@/components/AppNavbar";
 import { API_BASE, fetchSesion } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
-import { FECHA_DISENO, PLAN, SKU_EJEMPLO } from "@/components/fulfillment/datosDiseno";
-import Tablero from "@/components/fulfillment/Tablero";
-import { DetalleEnvioModal, TablaEnvios } from "@/components/fulfillment/Envios";
-import Planeacion from "@/components/fulfillment/Planeacion";
-import PorSku from "@/components/fulfillment/PorSku";
-import Variaciones from "@/components/fulfillment/Variaciones";
-import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, dia, num } from "@/components/fulfillment/ui";
-import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/components/fulfillment/tipos";
+import Analisis from "@/components/fulfillment/Analisis";
+import CrearFull from "@/components/fulfillment/CrearFull";
+import { DetalleEnvioModal, TablaEnvios, seguimientoDe } from "@/components/fulfillment/Envios";
+import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, num } from "@/components/fulfillment/ui";
+import type { Cuenta, Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/components/fulfillment/tipos";
 
 /** El rótulo se escribió así en la petición. Se cambia aquí y en AppNavbar. */
 const ROTULO = "FULLFILMENT";
 
-type Pantalla = "tablero" | "envios" | "planeacion" | "sku" | "variaciones";
+type Pantalla = "crear" | "envios" | "analisis";
 
-const PANTALLAS: { k: Pantalla; t: string }[] = [
-  { k: "tablero", t: "Tablero" },
-  { k: "envios", t: "Envíos" },
-  { k: "planeacion", t: "Planeación semanal" },
-  { k: "sku", t: "Por SKU / MLM" },
-  { k: "variaciones", t: "Variaciones" },
+const PANTALLAS: { k: Pantalla; t: string; icono: ComponentType<{ className?: string }> }[] = [
+  { k: "crear", t: "Crear FULL", icono: PlusCircle },
+  { k: "envios", t: "Envíos", icono: Truck },
+  { k: "analisis", t: "Análisis", icono: BarChart3 },
 ];
 
 const CANALES: { k: FiltroCanal; t: string; punto: string; titulo?: string }[] = [
@@ -55,14 +55,35 @@ const CANALES: { k: FiltroCanal; t: string; punto: string; titulo?: string }[] =
   { k: "walmart", t: "Walmart WFS", punto: "#0071DC", titulo: "Un solo envío a WFS en toda la historia." },
 ];
 
+function pantallaDeLaUrl(): Pantalla {
+  if (typeof window === "undefined") return "crear";
+  const h = window.location.hash.replace("#", "");
+  return h === "envios" || h === "analisis" ? h : "crear";
+}
+
 export default function FulfillmentPage() {
-  const [pantalla, setPantalla] = useState<Pantalla>("tablero");
+  const [pantalla, setPantalla] = useState<Pantalla>("crear");
   const [canal, setCanal] = useState<FiltroCanal>("todos");
   const [cuenta, setCuenta] = useState<FiltroCuenta>("todas");
   const [abierto, setAbierto] = useState<Envio | null>(null);
+  const [recarga, setRecarga] = useState(0);
+  const [porMandar, setPorMandar] = useState<{ skus: number; piezas: number; cuenta: Cuenta } | null>(null);
 
-  // La lectura real: una sola para toda la pestaña (Tablero, Envíos y Detalle
-  // salen de la misma respuesta; el backend la guarda 2 min).
+  // La pantalla viaja en el #: recargar no te regresa al inicio y se puede
+  // mandar la liga de «Envíos» o «Análisis».
+  useEffect(() => {
+    setPantalla(pantallaDeLaUrl());
+    const alCambiar = () => setPantalla(pantallaDeLaUrl());
+    window.addEventListener("hashchange", alCambiar);
+    return () => window.removeEventListener("hashchange", alCambiar);
+  }, []);
+  const ir = (p: Pantalla) => {
+    setPantalla(p);
+    window.history.replaceState(null, "", p === "crear" ? window.location.pathname : `#${p}`);
+  };
+
+  // La lectura de envíos: una sola para Envíos, Análisis y el saldo de Crear FULL
+  // (el backend la guarda 2 min).
   const [datos, setDatos] = useState<RespuestaEnvios | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cargando, setCargando] = useState(true);
@@ -81,195 +102,141 @@ export default function FulfillmentPage() {
     }
   }, []);
   useEffect(() => { void cargar(); }, [cargar]);
+  const actualizar = () => { void cargar(true); setRecarga((n) => n + 1); };
 
-  // El rol real decide qué acciones se ven habilitadas. El cambiador «Vista
-  // previa como» existe sólo mientras la pestaña es diseño: deja ver lo que ve
-  // un KAM sin cambiar de cuenta. El candado de verdad es core/rbac.py.
-  const [rolReal, setRolReal] = useState<Rol | null>(null);
-  const [rolVista, setRolVista] = useState<Rol | null>(null);
+  // El rol real decide si «Crear en Odoo» se puede tocar. El candado de verdad es
+  // core/rbac.py: crear y el interruptor son de admin.
+  const [rol, setRol] = useState<Rol>("kam");
   useEffect(() => {
     let vivo = true;
-    void quienSoy().then((u) => {
-      if (vivo && u.autenticado) setRolReal(u.rol === "admin" ? "admin" : "kam");
-    });
+    void quienSoy().then((u) => { if (vivo && u.autenticado) setRol(u.rol === "admin" ? "admin" : "kam"); });
     return () => { vivo = false; };
   }, []);
-  const rol: Rol = rolVista ?? rolReal ?? "admin";
 
-  const tema = TEMA_CANAL[canal];
   const todos = useMemo(() => datos?.envios ?? [], [datos]);
   const envios = useMemo(() => todos
     .filter((e) => canal === "todos" || e.canal === canal)
     // Con una cuenta elegida, los envíos de ML sin cuenta NO entran: no se sabe de cuál son.
     .filter((e) => cuenta === "todas" || e.canal !== "meli" || e.cuenta === cuenta),
   [todos, canal, cuenta]);
+  const enCurso = useMemo(() => {
+    let porValidar = 0;
+    let llegando = 0;
+    for (const e of envios) {
+      const s = seguimientoDe(e);
+      if (s === "por_validar") porValidar += 1;
+      if (s === "llegando") llegando += 1;
+    }
+    return { porValidar, llegando };
+  }, [envios]);
 
-  // La cifra grande sigue al canal: bajo el chip de Amazon no puede ir la de FULL.
-  const grupo = datos?.resumen[
-    canal === "amazon" ? "amazon" : canal === "walmart" ? "walmart" : cuenta === "todas" ? "meli" : `meli:${cuenta}`];
-  const heroTablero = grupo
-    ? { cifra: num(grupo.piezas_enviadas),
-        pie: `piezas enviadas a ${canal === "amazon" ? "FBA" : canal === "walmart" ? "WFS" : "FULL"}`,
-        nota: `${num(grupo.hechas)} salidas validadas en Odoo · ${dia(grupo.desde)} → ${dia(grupo.hasta)}` }
-    : { cifra: "…", pie: cargando ? "leyendo Odoo" : "sin lectura", nota: "" };
-  const hero = {
-    tablero: heroTablero,
-    envios: { cifra: num(envios.length), pie: "envíos en la vista",
-              nota: `de ${num(todos.length)} salidas a FULL, FBA y WFS en Odoo` },
-    planeacion: { cifra: num(PLAN.reduce((a, r) => a + r.pidio, 0)), pie: "piezas que pidió Andy",
-                  nota: `${PLAN.length} renglones en la lista de la semana` },
-    sku: { cifra: String(SKU_EJEMPLO.enFullHoy), pie: "piezas en FULL hoy",
-           nota: `${SKU_EJEMPLO.sku} · cobertura ${SKU_EJEMPLO.coberturaDias} días` },
-    variaciones: { cifra: "4", pie: "componentes con opciones", nota: "gráfica, embudo, rail y días" },
-  }[pantalla];
-
-  const pastilla = "inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-2.5 py-1 text-[11px] font-semibold opacity-90";
   const verCuentas = canal === "todos" || canal === "meli";
+  const edad = datos?._cache?.edad_s;
+
+  // Lo que dice cada botón debajo de su nombre: el "saldo" de esa pantalla.
+  const sub: Record<Pantalla, string> = {
+    crear: porMandar ? `${num(porMandar.skus)} SKUs · ${num(porMandar.piezas)} pzs por mandar (${porMandar.cuenta})` : "la propuesta de la semana",
+    envios: datos ? `${enCurso.porValidar} por validar · ${enCurso.llegando} llegando` : "leyendo Odoo…",
+    analisis: "enviado contra recibido, por semana",
+  };
 
   return (
     <div className="min-h-screen bg-[#f6f7fb]">
       <AppNavbar />
       <main className="mx-auto max-w-[1600px] px-4 pb-10 pt-[22px] sm:px-6">
 
-        {/* Conviven datos en vivo y del mockup: nadie debe confundir unos con otros. */}
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-[12.5px] text-amber-900">
-          <CircleDashed className="h-4 w-4 shrink-0 text-amber-600" />
-          <b>En construcción por etapas.</b>
-          <span>
-            <b>En vivo</b>: los envíos y su detalle salen de Odoo; la <b>llegada a FULL</b> sale de los avisos de
-            FULL de Mercado Libre (con lo que no recibió) y la <b>primera venta</b> de kubera (ML no publica los envíos
-            a Full por API, así que no hay declaradas ni motivos). El <b>Tablero</b> ya es todo real: stock en FULL y FBA, agotado,
-            recepción por semana y embudo. <b>Diseño</b> (mockup del {FECHA_DISENO}, con su chip): planeación,
-            ficha de SKU y variaciones. Ningún botón escribe en ninguna parte.
-          </span>
-        </div>
-
-        {/* ── Hero ───────────────────────────────────────────────────────── */}
-        <section
-          className={`relative overflow-hidden rounded-2xl px-6 py-5 shadow-[0_2px_8px_rgba(79,70,229,.25)] ${
-            canal === "todos" ? "bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700" : ""}`}
-          style={{ background: canal === "todos" ? undefined : tema.color, color: tema.texto }}>
-          <div className="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-white/10" />
-          <div className="relative flex flex-wrap items-start justify-between gap-6">
-            <div className="min-w-0">
+        {/* ── Encabezado y las tres pantallas ──────────────────────────────── */}
+        <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 via-indigo-600 to-violet-700 px-5 py-4 text-white shadow-[0_2px_8px_rgba(79,70,229,.25)] sm:px-6">
+          <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full bg-white/10" />
+          <div className="relative flex flex-wrap items-start justify-between gap-3">
+            <div>
               <p className="text-[11px] font-bold uppercase tracking-[.08em] opacity-70">
-                Circuito de mercancía a los almacenes del marketplace
+                Mercado Libre FULL (Kubera y San Corpe) · Amazon FBA · Walmart WFS
               </p>
-              <h1 className="mt-1 flex flex-wrap items-center gap-2.5 text-3xl font-extrabold tracking-tight">
-                {ROTULO}
-                <span className="rounded-full bg-white/20 px-2.5 py-1 text-xs font-bold">
-                  {canal === "todos" ? "3 programas · 2 cuentas de ML" : tema.nombre}
-                </span>
-              </h1>
-              <p className="mt-1.5 max-w-2xl text-sm opacity-85">
-                FULL de Mercado Libre (Kubera y San Corpe), FBA de Amazon y WFS de Walmart. Lo que se pidió, lo
-                que salió, lo que el marketplace recibió — y lo que todavía no se mide.
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <span className={pastilla}><ArrowUpDown className="h-3.5 w-3.5" />Odoo → paquetería del canal → almacén del marketplace</span>
-                <span className={pastilla}><Clock className="h-3.5 w-3.5" />Semana ISO · hora de Ciudad de México</span>
-                <span className={pastilla}><Database className="h-3.5 w-3.5" />Envíos: Odoo en vivo · llegadas: avisos de FULL de ML</span>
-              </div>
+              <h1 className="mt-0.5 text-2xl font-extrabold tracking-tight sm:text-3xl">{ROTULO}</h1>
             </div>
-            <div className="flex items-start gap-4">
-              <div className="text-right">
-                <div className="text-4xl font-extrabold leading-none tracking-tight tabular-nums">{hero.cifra}</div>
-                <div className="mt-1 text-[11px] font-bold uppercase tracking-[.06em] opacity-70">{hero.pie}</div>
-                <div className="mt-2 text-xs opacity-85">{hero.nota}</div>
-              </div>
-              <button type="button" onClick={() => void cargar(true)} disabled={cargando}
-                      title={`Volver a leer Odoo${datos?._cache ? ` · la lectura actual tiene ${datos._cache.edad_s} s` : ""}`}
+            <div className="flex items-center gap-2 text-[11.5px] opacity-90">
+              <span className="hidden sm:inline">
+                {cargando ? "leyendo Odoo…" : edad !== undefined ? `Odoo en vivo · leído hace ${edad < 60 ? `${edad} s` : `${Math.round(edad / 60)} min`}` : ""}
+              </span>
+              <button type="button" onClick={actualizar} disabled={cargando}
+                      title="Volver a leer Odoo, los avisos de ML y la propuesta"
                       className="rounded-lg bg-white/15 p-2 transition hover:bg-white/25 disabled:opacity-50">
                 <RefreshCw className={`h-4 w-4 ${cargando ? "animate-spin" : ""}`} />
               </button>
             </div>
           </div>
+
+          <nav className="relative mt-4 grid grid-cols-3 gap-2" aria-label="Pantallas de FULLFILMENT">
+            {PANTALLAS.map((p, n) => {
+              const on = pantalla === p.k;
+              const Icono = p.icono;
+              return (
+                <button key={p.k} type="button" onClick={() => ir(p.k)} aria-current={on ? "page" : undefined}
+                        className={`flex min-w-0 items-center gap-3 rounded-xl px-3 py-2.5 text-left transition sm:px-4 ${
+                          on ? "bg-white text-indigo-800 shadow-md" : "bg-white/10 text-white hover:bg-white/20"}`}>
+                  <span className={`hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg sm:flex ${on ? "bg-indigo-600 text-white" : "bg-white/15"}`}>
+                    <Icono className="h-5 w-5" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-[15px] font-extrabold leading-tight">
+                      <span className={`text-[11px] font-bold ${on ? "text-indigo-400" : "opacity-60"}`}>{n + 1}</span>{p.t}
+                    </span>
+                    <span className={`block truncate text-[11px] ${on ? "text-indigo-600/80" : "opacity-75"}`}>{sub[p.k]}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
         </section>
 
-        {/* ── Pantallas y filtros ────────────────────────────────────────── */}
-        <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-          <div className="flex overflow-hidden rounded-[10px] border border-slate-200 bg-white">
-            {PANTALLAS.map((p) => {
-              const on = pantalla === p.k;
-              return (
-                <button key={p.k} type="button" onClick={() => setPantalla(p.k)}
-                        className={`border-r border-slate-100 px-3.5 py-2 text-[13px] last:border-r-0 ${
-                          on ? "bg-indigo-50 font-bold text-indigo-800" : "font-medium text-slate-500 hover:bg-slate-50"}`}>
-                  {p.t}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">Canal</span>
-            {CANALES.map((c) => {
-              const on = canal === c.k;
-              const th = TEMA_CANAL[c.k];
-              return (
-                <button key={c.k} type="button" title={c.titulo ?? c.t}
-                        onClick={() => { setCanal(c.k); setCuenta("todas"); }}
-                        className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold"
-                        style={{ borderColor: on ? th.borde : "#e2e8f0", background: on ? th.suave : "#fff", color: on ? th.chip : "#64748b" }}>
-                  <span className="h-2 w-2 rounded-full" style={{ background: c.punto }} />{c.t}
-                </button>
-              );
-            })}
-          </div>
-
-          {verCuentas && (
+        {/* ── Filtros: sólo donde se ven envíos (un FULL se crea para UNA cuenta) ── */}
+        {pantalla !== "crear" && (
+          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">Cuenta</span>
-              {(["todas", "Kubera", "San Corpe"] as FiltroCuenta[]).map((k) => {
-                const on = cuenta === k;
+              <span className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">Canal</span>
+              {CANALES.map((c) => {
+                const on = canal === c.k;
+                const th = TEMA_CANAL[c.k];
                 return (
-                  <button key={k} type="button" onClick={() => setCuenta(k)}
-                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
-                            on ? "border-indigo-200 bg-indigo-50 text-indigo-800" : "border-slate-200 bg-white text-slate-500"}`}>
-                    <span className="h-2 w-2 rounded-full"
-                          style={{ background: k === "todas" ? "#cbd5e1" : PUNTO_CUENTA[k] }} />
-                    {k === "todas" ? "Todas" : k}
+                  <button key={c.k} type="button" title={c.titulo ?? c.t}
+                          onClick={() => { setCanal(c.k); setCuenta("todas"); }}
+                          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold"
+                          style={{ borderColor: on ? th.borde : "#e2e8f0", background: on ? th.suave : "#fff", color: on ? th.chip : "#64748b" }}>
+                    <span className="h-2 w-2 rounded-full" style={{ background: c.punto }} />{c.t}
                   </button>
                 );
               })}
             </div>
-          )}
-
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400"
-                  title="Sólo mientras la pestaña es diseño: deja ver lo que ve cada rol.">
-              Vista previa como
-            </span>
-            <div className="flex overflow-hidden rounded-lg border border-slate-200 bg-white">
-              {(["kam", "admin"] as Rol[]).map((r) => (
-                <button key={r} type="button" onClick={() => setRolVista(r)}
-                        className={`px-3 py-1.5 text-xs font-semibold ${
-                          rol === r ? "bg-indigo-50 text-indigo-800" : "text-slate-500 hover:bg-slate-50"}`}>
-                  {r === "kam" ? "KAM" : "Admin"}
-                </button>
-              ))}
+            {verCuentas && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">Cuenta</span>
+                {(["todas", "Kubera", "San Corpe"] as FiltroCuenta[]).map((k) => {
+                  const on = cuenta === k;
+                  return (
+                    <button key={k} type="button" onClick={() => setCuenta(k)}
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                              on ? "border-indigo-200 bg-indigo-50 text-indigo-800" : "border-slate-200 bg-white text-slate-500"}`}>
+                      <span className="h-2 w-2 rounded-full"
+                            style={{ background: k === "todas" ? "#cbd5e1" : PUNTO_CUENTA[k] }} />
+                      {k === "todas" ? "Todas" : k}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+              <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-5 rounded bg-emerald-600" />dato real</span>
+              <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-5 rounded border border-slate-200 bg-white" />cero real</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-2.5 w-5 rounded border border-dashed border-slate-300" style={{ background: FONDO_RAYADO }} />sin dato, no es cero
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-amber-700">
+                <span className="h-2.5 w-5 rounded border border-amber-300 bg-amber-100" />en espera
+              </span>
             </div>
           </div>
-        </div>
-
-        {/* ── Leyenda fija: vive bajo los filtros, no en un tooltip ──────── */}
-        <div className="mt-3 flex flex-wrap items-center gap-x-[18px] gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5">
-          <span className="text-[11px] font-bold uppercase tracking-[.06em] text-slate-400">Cómo leer esta pestaña</span>
-          <span className="inline-flex items-center gap-[7px] text-xs text-slate-600">
-            <span className="h-3 w-[26px] rounded bg-emerald-600" />dato real
-          </span>
-          <span className="inline-flex items-center gap-[7px] text-xs text-slate-600">
-            <span className="h-3 w-[26px] rounded border border-slate-200 bg-white" />cero real — pasó y fue cero
-          </span>
-          <span className="inline-flex items-center gap-[7px] text-xs text-slate-600">
-            <span className="h-3 w-[26px] rounded border border-dashed border-slate-300" style={{ background: FONDO_RAYADO }} />
-            sin dato todavía — no es un cero
-          </span>
-          <span className="inline-flex items-center gap-[7px] text-xs text-amber-700">
-            <span className="h-3 w-[26px] rounded border border-amber-300 bg-amber-100" />en espera — el dato viene, aún no llega
-          </span>
-          <span className="ml-auto text-[11px] text-slate-400">Nunca se resta una etapa de otra para inventar la siguiente.</span>
-        </div>
+        )}
 
         {error && (
           <div className="mt-3 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-[12.5px] text-rose-800">
@@ -281,26 +248,26 @@ export default function FulfillmentPage() {
           </div>
         )}
 
-        {pantalla === "tablero" && <Tablero canal={canal} cuenta={cuenta} datos={datos} />}
+        {pantalla === "crear" && (
+          <CrearFull cuentaInicial={cuenta} stock={datos?.stock} rol={rol} recarga={recarga} onEstado={setPorMandar} />
+        )}
         {pantalla === "envios" && (datos
-          ? <TablaEnvios envios={envios} total={todos.length}
-                         onAbrir={setAbierto} />
+          ? <TablaEnvios envios={envios} total={todos.length} onAbrir={setAbierto} />
           : <Espera cargando={cargando} />)}
-        {pantalla === "planeacion" && <Planeacion rol={rol} />}
-        {pantalla === "sku" && <PorSku />}
-        {pantalla === "variaciones" && <Variaciones />}
+        {pantalla === "analisis" && <Analisis canal={canal} cuenta={cuenta} datos={datos} onAbrir={setAbierto} />}
 
-        {/* El detalle de un envío se abre ENCIMA de la tabla, no en otra pestaña. */}
+        {/* El detalle de un envío se abre ENCIMA, y la ficha de un SKU encima de él. */}
         {abierto && <DetalleEnvioModal envio={abierto} onCerrar={() => setAbierto(null)} />}
 
-        <p className="mt-4 text-xs leading-relaxed text-slate-400">
-          {datos
-            ? `Fuente en vivo: ${datos.fuente}. Lectura de ${new Date(datos.generado).toLocaleString("es-MX", { timeZone: "America/Mexico_City" })}.`
-            : "Sin lectura de Odoo todavía."}{" "}
-          Canal por el nombre del socio; cuenta por quien creó la orden de venta (Thalia = San Corpe, Cinthya = Kubera;
-          evidencia orden por orden en docs/FULLFILMENT_EVIDENCIA_ORDENES.md). Todo lo rayado es un hueco real de
-          datos, no un cero.
-        </p>
+        {pantalla !== "crear" && (
+          <p className="mt-4 text-xs leading-relaxed text-slate-400">
+            {datos
+              ? `Fuente en vivo: ${datos.fuente}. Lectura de ${new Date(datos.generado).toLocaleString("es-MX", { timeZone: "America/Mexico_City" })}.`
+              : "Sin lectura de Odoo todavía."}{" "}
+            Canal por el nombre del socio; cuenta por el socio fijo (FULL KUBERA / FULL SAN CORPE) o por quien creó la orden
+            de venta (Thalia = San Corpe, Cinthya = Kubera; evidencia en docs/FULLFILMENT_EVIDENCIA_ORDENES.md).
+          </p>
+        )}
       </main>
     </div>
   );

@@ -281,6 +281,18 @@ class Settings(BaseSettings):
     # ACC-0696-ROJ-NEG-90CM, ACC-0574-LIL, DEC-0078-PLA), esa resta tiene que
     # estar viva.
     odoo_ventas_espera_guia_canales: str = ""
+    # ── CREAR FULL desde la pestaña FULLFILMENT (v0.556.0, 24-sep-2026) ──────
+    # Con esto encendido, «Crear FULL» escribe en Odoo la cotización en BORRADOR
+    # (una por almacén) y, la primera vez, el socio fijo de la cuenta («FULL
+    # KUBERA» / «FULL SAN CORPE»). Nunca confirma: confirmar reserva stock y crea
+    # el picking de bodega, y eso lo sigue haciendo la KAM en Odoo.
+    #
+    # ⚠️ NACE APAGADO: es un flujo que escribe en Odoo (regla 3). Apagado, el
+    # botón contesta la vista previa exacta de lo que se crearía. Se enciende SIN
+    # deploy desde la propia pestaña (admin), en `ops.automatizacion_flags` con
+    # la llave `fulfillment_crear_full`; esta variable es sólo el valor por
+    # omisión cuando la fila no existe.
+    fulfillment_crear_full: bool = False
     # LA VENTANA DE LA ESPERA, Y ES LA ÚNICA. Más allá de estos días la guía ya
     # no va a aparecer: la venta se marca `espera_caducada` —en rojo en el
     # panel, no desaparece— y deja de esconder stock.

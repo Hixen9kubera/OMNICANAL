@@ -1001,6 +1001,77 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.556.0 — FULLFILMENT como app: Crear FULL, Envíos y Análisis por semana (y la ficha del SKU es una ventana)
+
+Brandon, 24-sep: *"pensando como una app cualquiera… como las aplicaciones de banco, que mayormente me
+interesan 2 cosas, consultar mi saldo y después ejecutar una transacción: deberá mostrarse primero CREAR FULL
+y después ENVÍOS para checar los status de mis envíos, después ANÁLISIS… el por SKU o MLM es solamente un POP
+cuando selecciono un SKU dentro del detalle de envío, y en análisis debe ser semanal: cuánto se envía a FULL
+cada semana y cuánto se recibe cada semana"*.
+
+**La pestaña queda en tres pantallas, en ese orden** (la del `#` de la URL se conserva al recargar):
+
+1. **Crear FULL** (la primera). Arriba, el SALDO de la cuenta —Kubera o San Corpe: un FULL es de una sola
+   cuenta—: piezas en FULL hoy, % de publicaciones FULL agotadas, lo que va en camino y lo que hay por mandar.
+   Abajo, la PROPUESTA de la semana SKU por SKU: `⌈venta FULL 30 d × cobertura / 30⌉ − en FULL − en camino −
+   en borradores`, topada por lo libre en Odoo (TEXCO + TEXCO II) y repartida entre las dos cuentas cuando las
+   dos piden el mismo SKU y no alcanza. Los cuatro supuestos (cobertura 30 días, mínimo 5 pzs por renglón,
+   venta mínima 3 en 30 días, colchón para DROP 0) se mueven en pantalla y la propuesta se recalcula al
+   instante (`components/fulfillment/proponer.ts`); cada cantidad se corrige a mano. Filtros: por mandar ·
+   sin stock en Odoo (señal de COMPRAS, no de FULL) · ya cubiertos · todos. «Descargar lista» baja el CSV.
+   Debajo, los borradores FULL que ya existen en Odoo (21 días) y las órdenes abiertas olvidadas (S26441,
+   S25795), que se enseñan y NO se cuentan como en camino.
+   «Revisar y crear» pide la **vista previa con el libre de Odoo releído en ese momento**: una cotización por
+   almacén (TEXCO si cubre todo; si no, cada renglón entero donde alcance; sólo se parte si ninguno alcanza) y
+   qué se recorta y por qué.
+2. **Envíos**: la tabla de siempre con los estados como filtros —por validar · llegando a FULL · completos ·
+   ML no recibió · sin medir— y búsqueda por orden, salida o número de envío. El renglón entero abre el detalle.
+3. **Análisis**, todo POR SEMANA (reemplaza al Tablero de v0.546.0, que mezclaba totales desde enero con fotos
+   de hoy). La semana es la ISO de la salida validada en Odoo (CDMX) y lo recibido es lo que ML avisó **de esos
+   envíos**, llegue cuando llegue: así enviado y recibido hablan de las mismas piezas. Semana elegida con ‹ ›
+   (arranca en la en curso si ya tiene salidas; si no, en la última que sí): enviado (y lo que Odoo no surtió),
+   recibido con su tasa, en recepción o no recibido, tiempos, el corte por cuenta y sus envíos. Gráfica de 12
+   semanas y tabla de todas. Lo que salió antes del 12-ago, sin cuenta o a FBA/WFS va en gris: no es un cero.
+   Cifras del 24-sep: S38 2,020 enviadas → 1,972 recibidas, 48 en recepción; S36 3,761 → 3,154 (83.9%).
+
+**La ficha del SKU/MLM ya no es pestaña**: es la ventana que se abre al tocar un SKU dentro del detalle de un
+envío, ENCIMA de él (Esc cierra sólo la de arriba). Todo es dato (`GET /api/fulfillment/sku/{sku}`): la
+publicación de cada cuenta con su stock en FULL, lo que vende y cuánto aguanta, la venta FULL de 12 semanas,
+cada envío de Odoo que llevó el SKU con lo que llegó, cada aviso de llegada de ML y lo libre en Odoo.
+
+**Crear en Odoo nace APAGADO (regla 3).** Con el interruptor `fulfillment_crear_full` de
+`ops.automatizacion_flags` apagado —el valor por omisión—, «Crear» contesta la vista previa exacta y no escribe.
+Lo enciende un admin desde la propia pantalla (sin deploy; queda quién y cuándo). Encendido escribe SÓLO:
+`res.partner.create` del socio fijo de la cuenta la primera vez («FULL KUBERA» / «FULL SAN CORPE») y
+`sale.order.create` en BORRADOR, una por almacén, precio 0 y sin impuestos. **Nunca confirma** (eso reserva
+stock y crea el picking: lo sigue haciendo la KAM). Idempotente por `origin` (lleva la clave que genera el
+navegador: un doble clic no crea dos) y a Odoo se le relee después de crear. Permisos (`core/rbac.py`): la
+vista previa es de KAM; crear y el interruptor, de admin.
+
+**Por qué un socio fijo.** La API de Odoo crea como José Enrique, y la regla de cuenta por creador (Thalia =
+San Corpe, Cinthya = Kubera) daba «sin cuenta». `asignar_cuenta` ahora lee primero el socio fijo; si las KAM lo
+adoptan para sus órdenes a mano, la cuenta deja de depender de quién captura. Las órdenes del panel dicen
+«armó Panel · <quién>».
+
+**Base de datos — una tabla propuesta, SIN aplicar: `supabase/migrations/0054_fulfillment_solicitudes.sql`.**
+Guarda lo SUGERIDO y lo SOLICITADO por SKU antes de que la KAM o bodega lo recorten en Odoo (Odoo no guarda la
+cantidad original del renglón). Es lo único que puede llenar las etapas «Solicitado» y «Validado» del rail y
+la tasa de validado; también dice quién pidió qué desde el panel. Sin ella nada se rompe: se crea igual y la
+respuesta avisa `solicitud_guardada: false`.
+
+**Se retiró** lo que era diseño: Planeación semanal (lista simulada de Andy), Por SKU (ejemplo), Variaciones,
+`datosDiseno.ts`, el cambiador «Vista previa como» y el aviso de construcción. Del Tablero salen el mapa de
+días de la semana y la captura por KAM; el stock de hoy y el agotado pasan al saldo de Crear FULL.
+
+**Backend.** `services/fulfillment_full.py` (insumos de la propuesta, en camino, reparto por almacén, vista
+previa, crear e interruptor), `services/fulfillment_sku.py` (la ficha), `routers/fulfillment_full.py`
+(`/api/fulfillment/crear-full`, `/crear-full/vista-previa`, `/crear-full/interruptor`, `/sku/{sku}`) y
+`fulfillment_etapas.resumir_semanas` en lugar de `resumir_recepcion`. 72 pruebas de fulfillment (eran 46; las nuevas fijan
+en camino, borradores por cuenta, hueco ≠ cero, reparto por almacén, apagado no escribe, idempotencia, socio
+fijo, semanas con ceros reales) y la suite completa en verde (445); `tsc` limpio y `next build` en verde.
+Verificado de punta a punta contra datos reales con una API local de solo lectura (las escrituras a Odoo se
+simularon en memoria: nunca salieron).
+
 ### v0.555.0 — La orden de Odoo nace CON su guía; mientras tanto, la venta se aparta en el panel
 
 Brandon, 23-sep: *"las órdenes confirmadas son un detalle porque ALMACÉN SE

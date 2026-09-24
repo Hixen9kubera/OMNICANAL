@@ -411,7 +411,7 @@ def aplicar(envios: list[dict[str, Any]], datos: dict[str, Any] | None,
             _aplicar_sync(e, datos, "AMAZON")
 
 
-# ── El Tablero: recepción por cuenta y semana, y el stock de hoy ─────────────
+# ── Análisis: POR SEMANA, cuánto se envió y cuánto de eso recibió ML ─────────
 
 def _mediana_p90(xs: list[float]) -> dict[str, Any]:
     xs = sorted(xs)
@@ -422,114 +422,127 @@ def _mediana_p90(xs: list[float]) -> dict[str, Any]:
     return {"n": len(xs), "mediana": round(m, 1), "p90": round(xs[min(len(xs) - 1, int(len(xs) * 0.9))], 1)}
 
 
-def _semana_vacia(anio_semana: tuple[int, int], lunes: str) -> dict[str, Any]:
-    return {"semana": f"S{anio_semana[1]}", "lunes": lunes, "envios": 0, "enviadas": 0,
-            "recibidas": 0, "no_recibidas": 0, "dudosas": 0, "en_recepcion": 0}
+def _semana_vacia(clave: tuple[int, int], lunes: str) -> dict[str, Any]:
+    return {"semana": f"S{clave[1]}", "anio": clave[0], "lunes": lunes,
+            # Lo que dice Odoo de las salidas VALIDADAS esa semana.
+            "envios": 0, "pedidas": 0, "enviadas": 0, "no_surtidas": 0, "sin_numero": 0,
+            # Lo que se pudo MEDIR con los avisos de FULL (cuenta conocida, desde
+            # el 12-ago). Lo demás salió sin con qué medirlo: no es "no recibido".
+            "medidos": 0, "enviadas_medidas": 0, "recibidas": 0, "vendidas": 0,
+            "cerrados": 0, "enviadas_cerradas": 0, "recibidas_cerradas": 0,
+            "no_recibidas": 0, "dudosas": 0,
+            "abiertos": 0, "en_recepcion": 0,
+            "_primera": [], "_completo": [], "_orden": []}
 
 
-def resumir_recepcion(envios: list[dict[str, Any]], ahora: datetime | None = None) -> dict[str, Any]:
+def resumir_semanas(envios: list[dict[str, Any]], ahora: datetime | None = None) -> dict[str, Any]:
     """
-    Lo que el Tablero pinta de la llegada a FULL, por grupo ("meli", "meli:Kubera",
-    "meli:San Corpe"). Sólo salidas VALIDADAS con avisos (cuenta conocida, desde
-    el 12-ago). Función pura: se prueba sin kubera.
+    La pestaña ANÁLISIS (Brandon, 24-sep-2026: "las métricas semanalmente: cuánto
+    se envía a FULL cada semana y cuánto se recibe"). Función pura: se prueba sin
+    kubera ni Odoo.
 
-    Un envío CERRADO (10 días tras la salida) aporta recibidas y NO recibidas; uno
-    abierto aporta recibidas y «en recepción»: lo que falta todavía no es rechazo.
+    La semana es la ISO de la SALIDA VALIDADA en hora de CDMX, y lo recibido es
+    lo que ML avisó DE ESOS ENVÍOS, llegue cuando llegue (de lo que salió el
+    viernes, ML recibe el lunes: sigue siendo de su semana). Contar por fecha del
+    aviso mezclaría envíos de dos semanas y además los movimientos internos de
+    ML entre sus bodegas, que llegan con el mismo tipo de aviso.
+
+    Por grupo ("meli", "meli:Kubera", "meli:San Corpe", "meli:sin_asignar",
+    "amazon", "walmart"): las semanas SEGUIDAS desde la primera salida hasta la
+    actual —una semana sin salidas es un cero real, no se salta— y lo que está
+    POR VALIDAR hoy (salidas abiertas: todavía no salen, no son de ninguna semana).
+
+    Un envío CERRADO (10 días tras la salida) aporta recibidas y NO recibidas;
+    uno abierto, recibidas y «en recepción»: lo que falta todavía no es rechazo.
+    La tasa de la semana se calcula SOLO sobre sus envíos cerrados.
     """
     ahora = ahora or datetime.now(timezone.utc)
     grupos: dict[str, dict[str, Any]] = {}
 
     def grupo(clave: str) -> dict[str, Any]:
-        return grupos.setdefault(clave, {
-            "envios": 0, "cerrados": 0, "en_proceso": 0,
-            "enviadas_cerradas": 0, "recibidas_cerradas": 0,
-            "no_recibidas": 0, "no_recibidas_dudosas": 0, "envios_con_faltante": 0,
-            "skus_cerrados": 0, "skus_completos": 0,
-            "enviadas_en_proceso": 0, "recibidas_en_proceso": 0,
-            "enviadas": 0, "recibidas": 0, "vendidas": 0,
-            "desde": None, "hasta": None,
-            "_primera": [], "_completo": [], "_semanas": {}, "_peores": []})
+        return grupos.setdefault(clave, {"_semanas": {}, "por_validar": {"envios": 0, "pedidas": 0}})
 
     for e in envios:
-        c = e.get("cobertura") or {}
+        claves = [e["canal"]]
+        if e["canal"] == "meli":
+            claves.append(f"meli:{e.get('cuenta') or 'sin_asignar'}")
+        lineas = e.get("lineas") or []
+        pedidas = e.get("pedidas")
+        if pedidas is None:
+            pedidas = sum(int(r.get("pedidas") or 0) for r in lineas)
         salida = _ts(e["etapas"][1])
-        if (e["canal"] != "meli" or c.get("fuente") != "avisos"
-                or e.get("estado_odoo") != "done" or not salida):
+        if e.get("estado_odoo") != "done" or not salida:
+            for k in claves:
+                g = grupo(k)
+                g["por_validar"]["envios"] += 1
+                g["por_validar"]["pedidas"] += int(pedidas or 0)
             continue
-        env = int(c.get("piezas_enviadas") or 0)
-        rec = int(c.get("piezas_llegadas") or 0)
-        cerrado = bool(c.get("cerrado"))
-        no_rec = int(c.get("rechazadas") or 0) if cerrado else 0
-        dudosa = bool(c.get("sin_sku"))
+
+        enviadas = e.get("piezas")
+        if enviadas is None:
+            enviadas = sum(int(r.get("enviadas") or 0) for r in lineas)
         local = salida.astimezone(_CDMX)
         clave_semana = local.isocalendar()[:2]
         lunes = (local - timedelta(days=local.weekday())).date().isoformat()
-        primera = _ts(e["etapas"][2])
-        completos_en = [datetime.fromisoformat(r["completo_en"]) for r in e["lineas"] if r.get("completo_en")]
-        creada = _ts(e["etapas"][0])
-        # Una orden que tardó más de 30 días en validarse (S26840: de abril a
-        # septiembre) no es un envío normal: se marca para que se revise a mano.
-        vieja = bool(creada and (salida - creada).days > 30)
-        for clave in ("meli", f"meli:{e.get('cuenta')}"):
-            g = grupo(clave)
-            g["envios"] += 1
-            g["enviadas"] += env
-            g["recibidas"] += rec
-            g["vendidas"] += int(c.get("piezas_vendidas") or 0)
-            g["desde"] = min(g["desde"] or salida.isoformat(), salida.isoformat())
-            g["hasta"] = max(g["hasta"] or salida.isoformat(), salida.isoformat())
-            if cerrado:
-                g["cerrados"] += 1
-                g["enviadas_cerradas"] += env
-                g["recibidas_cerradas"] += rec
-                g["no_recibidas"] += no_rec
-                g["skus_cerrados"] += int(c.get("skus") or 0)
-                g["skus_completos"] += int(c.get("completos") or 0)
-                if no_rec:
-                    g["envios_con_faltante"] += 1
-                    g["_peores"].append({"orden": e.get("orden"), "salida": e.get("salida"),
-                                         "cuenta": e.get("cuenta"), "enviadas": env,
-                                         "no_recibidas": no_rec, "dudosa": dudosa, "vieja": vieja,
-                                         "creada": creada.isoformat() if creada else None,
-                                         "validada": salida.isoformat()})
-                    if dudosa:
-                        g["no_recibidas_dudosas"] += no_rec
-            else:
-                g["en_proceso"] += 1
-                g["enviadas_en_proceso"] += env
-                g["recibidas_en_proceso"] += rec
-            if primera:
-                g["_primera"].append((primera - salida).total_seconds() / 86400)
-            if completos_en and c.get("skus") and c.get("completos") == c.get("skus"):
-                g["_completo"].append((max(completos_en) - salida).total_seconds() / 86400)
-            s = g["_semanas"].setdefault(clave_semana, _semana_vacia(clave_semana, lunes))
+        c = e.get("cobertura") or {}
+        medido = e["canal"] == "meli" and c.get("fuente") == "avisos"
+        creada, primera = _ts(e["etapas"][0]), _ts(e["etapas"][2])
+        completos_en = [datetime.fromisoformat(r["completo_en"]) for r in lineas if r.get("completo_en")]
+
+        for k in claves:
+            s = grupo(k)["_semanas"].setdefault(clave_semana, _semana_vacia(clave_semana, lunes))
             s["envios"] += 1
-            s["enviadas"] += env
+            s["pedidas"] += int(pedidas or 0)
+            s["enviadas"] += int(enviadas or 0)
+            s["no_surtidas"] += int(e.get("faltante_odoo") or 0)
+            s["sin_numero"] += 0 if e.get("envio") else 1
+            if creada:
+                s["_orden"].append((salida - creada).total_seconds() / 86400)
+            if not medido:
+                continue
+            env_m = int(c.get("piezas_enviadas") or 0)
+            rec = int(c.get("piezas_llegadas") or 0)
+            s["medidos"] += 1
+            s["enviadas_medidas"] += env_m
             s["recibidas"] += rec
-            if cerrado:
+            s["vendidas"] += int(c.get("piezas_vendidas") or 0)
+            if c.get("cerrado"):
+                no_rec = int(c.get("rechazadas") or 0)
+                s["cerrados"] += 1
+                s["enviadas_cerradas"] += env_m
+                s["recibidas_cerradas"] += rec
                 s["no_recibidas"] += no_rec
-                s["dudosas"] += no_rec if dudosa else 0
+                # Con avisos sin SKU (publicaciones con variantes) antes del
+                # cierre, lo "no recibido" puede estar ahí: se cuenta aparte.
+                s["dudosas"] += no_rec if c.get("sin_sku") else 0
             else:
-                s["en_recepcion"] += max(0, env - rec)
+                s["abiertos"] += 1
+                s["en_recepcion"] += max(0, env_m - rec)
+            if primera:
+                s["_primera"].append((primera - salida).total_seconds() / 86400)
+            if completos_en and c.get("skus") and c.get("completos") == c.get("skus"):
+                s["_completo"].append((max(completos_en) - salida).total_seconds() / 86400)
 
     esta = ahora.astimezone(_CDMX).isocalendar()[:2]
-    for g in grupos.values():
-        g["tasa_recepcion"] = (round(g["recibidas_cerradas"] / g["enviadas_cerradas"] * 100, 1)
-                               if g["enviadas_cerradas"] else None)
-        g["salida_a_primera_llegada_dias"] = _mediana_p90(g.pop("_primera"))
-        g["salida_a_completo_dias"] = _mediana_p90(g.pop("_completo"))
-        g["peores"] = sorted(g.pop("_peores"), key=lambda p: -p["no_recibidas"])[:6]
-        semanas = g.pop("_semanas")
-        # Semanas SEGUIDAS hasta la actual: una semana sin salidas es un cero real.
+    salida_g: dict[str, Any] = {}
+    for k, g in grupos.items():
+        semanas = g["_semanas"]
         serie = []
         if semanas:
             cursor = datetime.fromisoformat(min(s["lunes"] for s in semanas.values()))
             while cursor.isocalendar()[:2] <= esta:
-                k = cursor.isocalendar()[:2]
-                serie.append(semanas.get(k) or _semana_vacia(k, cursor.date().isoformat()))
+                ck = cursor.isocalendar()[:2]
+                s = semanas.get(ck) or _semana_vacia(ck, cursor.date().isoformat())
+                s["tasa"] = (round(s["recibidas_cerradas"] / s["enviadas_cerradas"] * 100, 1)
+                             if s["enviadas_cerradas"] else None)
+                s["actual"] = ck == esta
+                s["salida_a_primera_llegada_dias"] = _mediana_p90(s.pop("_primera"))
+                s["salida_a_completo_dias"] = _mediana_p90(s.pop("_completo"))
+                s["orden_a_salida_dias"] = _mediana_p90(s.pop("_orden"))
+                serie.append(s)
                 cursor += timedelta(days=7)
-        g["semanas"] = serie
-    return grupos
+        salida_g[k] = {"semanas": serie, "por_validar": g["por_validar"]}
+    return salida_g
 
 
 def stock_actual() -> dict[str, Any] | None:

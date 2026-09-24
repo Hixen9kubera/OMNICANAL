@@ -81,8 +81,8 @@ class LlegadaPorAvisos(unittest.TestCase):
         t1, t2, t3 = (SALIDA + timedelta(days=d) for d in (1, 2, 6))
         fe.aplicar([e], _datos(avisos={("A", "BEKURA"): _aviso((t1, 4), (t2, 6), (t3, 2))}), ahora=CERRADO)
         self.assertEqual(e["lineas"][0]["completo_en"], t2.isoformat(), "el +2 del día 6 no alarga el envío")
-        r = fe.resumir_recepcion([e], ahora=CERRADO)
-        self.assertEqual(r["meli"]["salida_a_completo_dias"], {"n": 1, "mediana": 2.0, "p90": 2.0})
+        s = fe.resumir_semanas([e], ahora=CERRADO)["meli"]["semanas"][0]
+        self.assertEqual(s["salida_a_completo_dias"], {"n": 1, "mediana": 2.0, "p90": 2.0})
 
     def test_antes_del_cierre_no_hay_rechazo(self):
         e = _envio()
@@ -217,40 +217,63 @@ class LlegadaPorAvisos(unittest.TestCase):
         self.assertEqual(e["etapas"][2:], [None, None, None])
 
 
-class Tablero(unittest.TestCase):
-    """`resumir_recepcion`: lo que pinta el Tablero. Cerrado aporta recibidas y NO
-    recibidas; abierto aporta recibidas y «en recepción» (todavía no es rechazo)."""
+class Semanas(unittest.TestCase):
+    """`resumir_semanas`: lo que pinta Análisis. Por semana de la SALIDA VALIDADA,
+    lo enviado y lo que de ESO recibió ML. Cerrado aporta NO recibidas; abierto,
+    «en recepción» (todavía no es rechazo). La tasa, sólo sobre lo cerrado."""
 
     def setUp(self):
-        self.e1 = _envio(skus=("A", "B"))                           # cierra: A llega, B no
+        self.e1 = _envio(skus=("A", "B"))                           # S34, cierra: A llega, B no
         salida2 = CERRADO - timedelta(days=2)
-        self.e2 = _envio(skus=("C",), orden=salida2 - timedelta(days=1), validada=salida2)   # abierto
+        self.e2 = _envio(skus=("C",), orden=salida2 - timedelta(days=1), validada=salida2)   # S36, abierto
         avisos = {("A", "BEKURA"): _aviso((SALIDA + timedelta(days=2), 10)),
                   ("C", "BEKURA"): _aviso((salida2 + timedelta(days=1), 4))}
         fe.aplicar([self.e1, self.e2], _datos(avisos=avisos), ahora=CERRADO)
-        self.r = fe.resumir_recepcion([self.e1, self.e2], ahora=CERRADO)
+        self.r = fe.resumir_semanas([self.e1, self.e2], ahora=CERRADO)
 
-    def test_cerrado_y_en_proceso_por_separado(self):
-        g = self.r["meli"]
-        self.assertEqual((g["envios"], g["cerrados"], g["en_proceso"]), (2, 1, 1))
-        self.assertEqual((g["enviadas_cerradas"], g["recibidas_cerradas"], g["no_recibidas"]), (20, 10, 10))
-        self.assertEqual(g["tasa_recepcion"], 50.0)
-        self.assertEqual((g["enviadas_en_proceso"], g["recibidas_en_proceso"]), (10, 4))
-        self.assertEqual(self.r["meli:Kubera"]["no_recibidas"], 10)
-        self.assertEqual(g["peores"][0]["no_recibidas"], 10)
-
-    def test_semanas_seguidas_con_ceros_reales(self):
+    def test_semana_cerrada_y_semana_en_recepcion(self):
         serie = self.r["meli"]["semanas"]
         self.assertEqual([s["semana"] for s in serie], ["S34", "S35", "S36"])
-        self.assertEqual(serie[1]["envios"], 0, "una semana sin salidas es un cero real, no un hueco")
-        self.assertEqual((serie[0]["recibidas"], serie[0]["no_recibidas"]), (10, 10))
-        self.assertEqual((serie[2]["en_recepcion"], serie[2]["no_recibidas"]), (6, 0),
-                         "lo que falta de un envío abierto es recepción, no rechazo")
+        s34, s35, s36 = serie
+        self.assertEqual((s34["enviadas"], s34["recibidas"], s34["no_recibidas"], s34["tasa"]),
+                         (20, 10, 10, 50.0))
+        self.assertEqual(s35["envios"], 0, "una semana sin salidas es un cero real, no un hueco")
+        self.assertEqual((s36["enviadas"], s36["recibidas"], s36["en_recepcion"], s36["no_recibidas"]),
+                         (10, 4, 6, 0), "lo que falta de un envío abierto es recepción, no rechazo")
+        self.assertIsNone(s36["tasa"], "sin envíos cerrados no hay tasa")
+        self.assertTrue(s36["actual"])
+        self.assertFalse(s34["actual"])
 
-    def test_lo_no_validado_o_sin_avisos_no_entra(self):
+    def test_por_cuenta(self):
+        self.assertEqual(self.r["meli:Kubera"]["semanas"][0]["no_recibidas"], 10)
+        self.assertNotIn("meli:San Corpe", self.r)
+
+    def test_tiempos_de_la_semana(self):
+        s34 = self.r["meli"]["semanas"][0]
+        self.assertEqual(s34["salida_a_primera_llegada_dias"]["mediana"], 2.0)
+        self.assertEqual(s34["orden_a_salida_dias"]["mediana"], 2.0)
+
+    def test_lo_abierto_va_por_validar_y_no_a_una_semana(self):
         abierta = _envio(skus=("Z",), validada=None)
         fe.aplicar([abierta], _datos(), ahora=CERRADO)
-        self.assertEqual(fe.resumir_recepcion([abierta], ahora=CERRADO), {})
+        r = fe.resumir_semanas([abierta], ahora=CERRADO)
+        self.assertEqual(r["meli"]["por_validar"], {"envios": 1, "pedidas": 10})
+        self.assertEqual(r["meli"]["semanas"], [])
+
+    def test_sin_medicion_es_enviado_y_no_no_recibido(self):
+        sin_cuenta = _envio(skus=("A",), cuenta=None)
+        fe.aplicar([sin_cuenta], _datos(), ahora=CERRADO)
+        r = fe.resumir_semanas([sin_cuenta], ahora=CERRADO)
+        s = r["meli"]["semanas"][0]
+        self.assertEqual((s["enviadas"], s["medidos"], s["no_recibidas"], s["tasa"]), (10, 0, 0, None))
+        self.assertIn("meli:sin_asignar", r)
+
+    def test_odoo_no_surtio_y_sin_numero(self):
+        e = _envio(skus=("A",))
+        e.update(pedidas=12, piezas=10, faltante_odoo=2, envio=None)
+        r = fe.resumir_semanas([e], ahora=CERRADO)
+        s = r["meli"]["semanas"][0]
+        self.assertEqual((s["pedidas"], s["enviadas"], s["no_surtidas"], s["sin_numero"]), (12, 10, 2, 1))
 
 
 class VendidasDesdeQueLlego(unittest.TestCase):

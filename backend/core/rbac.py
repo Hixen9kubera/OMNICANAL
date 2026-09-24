@@ -141,6 +141,14 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     # ══ OPERADOR (KAM) — sus seis pestañas, completas ════════════════════════
     # Análisis · trae `costo` y `margen_pct`, por eso no baja a lectura.
     ("GET", "/api/fulfillment", "operador"),
+    # FULLFILMENT · «Crear FULL» (v0.556.0). La VISTA PREVIA es del KAM: no
+    # escribe, relee el libre de Odoo y dice qué se crearía. CREAR y el
+    # INTERRUPTOR escriben en Odoo (o encienden esa escritura) y quedan en admin
+    # hasta que Brandon diga si las KAM crean desde aquí —hoy capturan a mano en
+    # Odoo—. Se listan aunque admin sea el default: tiene que ser una decisión
+    # escrita, no un olvido (auditar_rbac.py).
+    ("POST", "/api/fulfillment/crear-full/vista-previa", "operador"),
+    ("POST", "/api/fulfillment/crear-full", "admin"),
     # Omnicanal · las publicaciones por canal, con su `margen_pct` — mismo
     # criterio que /api/fulfillment. Es la pestaña entera y el cajón de detalle
     # del producto; caía a admin por omisión, o sea rota para los nueve KAM.

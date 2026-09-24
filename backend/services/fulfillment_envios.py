@@ -35,6 +35,11 @@ docs/FULLFILMENT_EVIDENCIA_ORDENES.md.
    personas; se rompe el día que una KAM cubra a la otra, y por eso cada envío
    lleva `cuenta_regla` diciendo de dónde salió.
 
+   ANTES que el creador manda el SOCIO FIJO de la cuenta («FULL KUBERA» / «FULL
+   SAN CORPE», v0.556.0): es el que usa «Crear FULL» del panel, porque la API de
+   Odoo crea como José Enrique y la regla por creador daría «sin cuenta». La
+   cuenta queda escrita en la orden, no en quién la tecleó.
+
 4. `date_done` de la salida NO es la hora del camión: en 16 de 43 envíos
    verificados ML ya había recibido piezas ANTES de que bodega validara. Se
    rotula "salida validada en Odoo", nunca "salió" ni "en tránsito".
@@ -65,6 +70,16 @@ _KAM_CUENTA: dict[int, tuple[str, str]] = {
     152: ("SANCORFASHION", "San Corpe"),   # Thalia
     153: ("BEKURA", "Kubera"),             # Cinthya
 }
+
+# Los socios FIJOS por cuenta (nombre normalizado → cuenta legible). Los crea
+# «Crear FULL» la primera vez que escribe en Odoo; si las KAM los adoptan para
+# sus órdenes a mano, la cuenta deja de depender de quién captura.
+SOCIOS_FULL: dict[str, str] = {"FULL KUBERA": "Kubera", "FULL SAN CORPE": "San Corpe"}
+
+# `origin` de las órdenes que crea el panel: «Panel FULLFILMENT · FULL <cuenta> ·
+# <quién> · <clave> · <almacén>». Es texto plano (no lo sanea Odoo, a diferencia
+# de `note`) y lleva la clave con la que se hace idempotente la creación.
+ORIGEN_PANEL = "Panel FULLFILMENT"
 
 # Umbral que separa un envío a FBA de una venta MFN con el mismo socio AMAZON.
 # Medido: envíos de 47 a 1,664 piezas; ventas de 1 a 7. Sin traslape.
@@ -126,6 +141,9 @@ def asignar_cuenta(canal: str, socio: str, creador_id: int | None,
         return None, "Walmart MX tiene una sola cuenta; no se separa"
     if _norm(socio) == "MERCADO LIBRE":
         return "Kubera", "socio «MERCADO LIBRE»: las 2 órdenes medidas llegaron a BEKURA"
+    if _norm(socio) in SOCIOS_FULL:
+        legible = SOCIOS_FULL[_norm(socio)]
+        return legible, f"socio fijo «{_norm(socio)}» → {legible}"
     if creador_id in _KAM_CUENTA:
         _, legible = _KAM_CUENTA[creador_id]
         return legible, f"creó la orden {creador} → {legible}"
@@ -148,6 +166,16 @@ def numero_envio(canal: str, referencia: str | None, socio: str) -> tuple[str | 
         m = _RE_FBA.search(ref)
         return (m.group(1).upper(), "referencia") if m else (None, None)
     return None, None
+
+
+def quien_armo(orden: dict[str, Any]) -> str | None:
+    """Quién armó la orden. Las del panel las crea la API de Odoo (José Enrique):
+    ahí manda quién apretó «Crear FULL», que va escrito en el `origin`."""
+    origen = str(orden.get("origin") or "")
+    if origen.startswith(ORIGEN_PANEL):
+        partes = [p.strip() for p in origen.split("·")]
+        return f"Panel · {partes[2]}" if len(partes) > 2 and partes[2] else "Panel"
+    return _nombre(orden.get("create_uid")) or None
 
 
 def _estado(canal: str, hecha: bool, numero: str | None) -> str:
@@ -188,7 +216,7 @@ def _leer_odoo() -> tuple[list[dict], dict[int, dict], list[dict]]:
     so_ids = sorted({_id(p["sale_id"]) for p in pickings if _id(p["sale_id"])})
     ordenes = {o["id"]: o for o in m.execute_kw(
         settings.odoo_db, uid, settings.odoo_password, "sale.order", "read", [so_ids],
-        {"fields": ["name", "create_uid", "user_id", "client_order_ref", "create_date", "state"]},
+        {"fields": ["name", "create_uid", "user_id", "client_order_ref", "create_date", "state", "origin"]},
     )} if so_ids else {}
     # CON los movimientos cancelados. Cuando bodega valida una salida sin tener
     # un SKU, Odoo CANCELA ese renglón (demanda 10, hecho 0) y la orden de venta
@@ -253,7 +281,7 @@ def armar(pickings: list[dict], ordenes: dict[int, dict], movs: list[dict]) -> d
             "canal": canal,
             "cuenta": cuenta,
             "cuenta_regla": regla,
-            "kam": creador or None,
+            "kam": quien_armo(o),
             "socio": socio,
             "referencia": o.get("client_order_ref") or None,
             "envio": numero,
@@ -352,8 +380,9 @@ def leer() -> dict[str, Any]:
     # Las tres etapas que kubera sí puede llenar (recibido observado, activo y
     # 1ª venta). Si kubera no contesta, quedan en `null` y la pestaña lo dice.
     datos["etapas_kubera"] = fulfillment_etapas.enriquecer(datos["envios"])
-    # Lo que pinta el Tablero: la recepción por cuenta y semana, y el stock de hoy.
-    datos["recepcion"] = fulfillment_etapas.resumir_recepcion(datos["envios"])
+    # Lo que pinta Análisis (enviado y recibido POR SEMANA) y el saldo de hoy en
+    # FULL que abre «Crear FULL».
+    datos["semanas"] = fulfillment_etapas.resumir_semanas(datos["envios"])
     datos["stock"] = fulfillment_etapas.stock_actual()
     datos["generado"] = datetime.now(timezone.utc).isoformat()
     datos["fuente"] = ("Odoo: stock.picking de salida (socio FULL/AMAZON/WFS/MERCADO LIBRE) "

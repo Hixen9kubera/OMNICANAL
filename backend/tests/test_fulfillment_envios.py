@@ -79,6 +79,21 @@ class Cuenta(unittest.TestCase):
     def test_mercado_libre_exacto_es_kubera(self):
         self.assertEqual(fe.asignar_cuenta("meli", "MERCADO LIBRE", 176, "Nancy Cruz")[0], "Kubera")
 
+    def test_el_socio_fijo_manda_sobre_el_creador(self):
+        # «Crear FULL» crea como José Enrique (151): la cuenta la dice el socio.
+        self.assertEqual(fe.asignar_cuenta("meli", "FULL KUBERA", 151, "José Enrique")[0], "Kubera")
+        self.assertEqual(fe.asignar_cuenta("meli", " full  san corpe ", 151, "José Enrique")[0], "San Corpe")
+        # …y gana aunque la capture la KAM de la otra cuenta.
+        self.assertEqual(fe.asignar_cuenta("meli", "FULL KUBERA", 152, "Thalia")[0], "Kubera")
+        self.assertEqual(fe.clasificar_canal("FULL SAN CORPE", 10), "meli")
+
+    def test_quien_armo_una_orden_del_panel(self):
+        o = {"create_uid": [151, "José Enrique"],
+             "origin": "Panel FULLFILMENT · FULL Kubera · brandon · a1b2c3d4 · TEXCO"}
+        self.assertEqual(fe.quien_armo(o), "Panel · brandon")
+        self.assertEqual(fe.quien_armo({"create_uid": [153, "Cinthya"], "origin": "S1"}), "Cinthya")
+        self.assertIsNone(fe.quien_armo({}))
+
     def test_fba_y_wfs(self):
         self.assertEqual(fe.asignar_cuenta("amazon", "AMAZON", 176, "Nancy Cruz")[0], "San Corpe")
         self.assertIsNone(fe.asignar_cuenta("walmart", "WFS 0029563GDM", 153, "Cinthya")[0])
