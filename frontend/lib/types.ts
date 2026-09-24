@@ -617,6 +617,13 @@ export interface CategoriaMLResult {
   name: string;
   path: string;
   domain: string;
+  // false = RAMA: Mercado Libre no acepta publicar ahí (listing_allowed).
+  publicable?: boolean;
+  // El predictor de ML (domain_discovery) también la propone.
+  sugerida?: boolean;
+  // Solo en el lookup por ID de una rama: las publicables que cuelgan de ella.
+  subcategorias?: CategoriaMLResult[];
+  subcategorias_total?: number;
 }
 
 export interface CostoOverrides {

@@ -1001,6 +1001,90 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.563.0 — La categoría de ML se encuentra por su nombre, no solo por el título del producto
+
+Pedido de Eduardo (24-sep) tras un mes de casos en los que el picker de categoría
+del Estudio no encontraba la categoría que el equipo veía en Mercado Libre:
+*Lavabos para Baño* (Hogar › Baños), *Bocinas* (Audio), los dos *Otros* de
+cosmetología. Todas existían y aceptaban publicaciones; lo que fallaba era el
+buscador.
+
+**Por qué fallaba.** El picker buscaba solo con `domain_discovery`, que no es un
+índice del árbol de ML sino un **predictor**: contesta *"si un producto se llamara
+así, ¿dónde lo pondría yo?"*. Con el título de un producto acierta; con el nombre
+de una categoría falla de dos formas, las dos medidas:
+
+- **Invisibles.** MLM31513 (Hogar › Baños › Lavabos), MLM2868 (Audio › Bocinas) y
+  MLM455803 / MLM456150 (los *Otros* de cosmetología) no salen con ninguna
+  consulta: para el lavabo se probaron siete variantes.
+- **Choque de nombres.** Sale primero otra categoría que se llama igual, de otro
+  árbol: *Lavabos para Baño* de Construcción o de Accesorios Náuticos, *Bocinas*
+  de Audio Portátil. Buscar "otros" devuelve cinco categorías llamadas *Otros* y
+  ninguna es la de cosmetología.
+
+**Qué cambió.** Ahora busca en dos lados y los mezcla:
+
+1. **El árbol completo de ML** (`channel.ml_category_tree`, migración 0059): salen
+   las categorías donde ML acepta publicar cuya ruta contiene **todas** las
+   palabras tecleadas, sin importar acentos, mayúsculas ni plural ("de", "para",
+   "y" se ignoran). Primero las que traen más palabras en su propio nombre; entre
+   ésas, las de más publicaciones. La regla vive en `services/categorias_arbol.py`.
+2. **El predictor**, como antes, debajo. Cuando también propone una de las de
+   arriba, ésta lleva la etiqueta **"Sugerida por ML"**.
+
+Con el título de un producto el árbol no encuentra nada (sus palabras no están en
+ninguna ruta) y contesta el predictor igual que siempre.
+
+| Búsqueda | Antes | Ahora |
+| --- | --- | --- |
+| `lavabo` | MLM31513 nunca salía | 2.ª de 4, junto a las otras tres "Lavabos" con su ruta |
+| `bocinas` | MLM2868 nunca salía | 2.ª |
+| `otros cosmetologia` | nunca salían | 1.ª y 2.ª |
+| `soportes para vehiculos` | 1.ª | 1.ª |
+
+**Las ramas ya no se pueden elegir.** Pegar el ID de una categoría donde ML no deja
+publicar (un breadcrumb cortado: *Equipos de Cosmetología >*) la muestra
+deshabilitada, con el aviso, y lista debajo sus **8** subcategorías publicables.
+Antes se podía elegir y ML la habría rechazado al publicar.
+
+**La tabla es aparte a propósito** (decisión de Eduardo). `channel.categories`
+guarda para ML solo las ~2,700 categorías que usa algún SKU, y hay código que la
+lee con ese significado. `ml_category_tree` solo dice *"esta categoría existe en
+ML hoy"* y no guarda nada nuestro: 12,263 filas, 10,654 publicables, ~8 MB.
+
+**De dónde sale y cuándo se refresca.** `scripts/cargar_arbol_ml.py` baja
+`GET /sites/MLM/categories/all` (una llamada pública, ~2 s) y reemplaza la tabla
+en una transacción, borrando lo que ML retiró. Aborta sin tocar nada si llegan
+menos de 10,000 categorías o si el árbol encoge más de 10%. Corre **todos los días
+encadenado al cron de las 06:15** (`etl-core-products`, `railway.etl-core.json`),
+después de los dos ETLs y con `&&`: si falla, no tapa el resultado de ellos. Toma
+la DSN de `SUPABASE_DB_URL` del entorno y valida que sea el proyecto del
+`--destino`. Solo necesita la librería estándar y `psycopg2`, lo que ya instala
+el build mínimo de ese cron.
+
+**De paso:**
+
+- El endpoint leía el token de ML **dentro de la corrutina, en cada tecleo**: son
+  consultas a la base que detenían el backend entero (regla 11). Ahora va en un
+  hilo. Y las rutas de las sugerencias salen del árbol: a ML solo se le pregunta
+  por las que falten.
+- Bug de v0.283.0: el aviso *"Sin resultados / Mercado Libre no reconoce…"* nunca
+  se veía, porque vivía dentro de un bloque que solo se pinta cuando hay
+  resultados.
+- Sin la tabla, o con la tabla vacía, todo contesta como antes.
+
+**Numeración.** La migración nació como 0058 y con ese nombre se aplicó. Mientras
+se construía, main publicó `0058_ops_checklist_almacen` (v0.560.0); ésta, que
+todavía no llegaba a main, se renumeró a **0059**. No hay tabla de control de
+migraciones, así que la tabla aplicada no cambia.
+
+**Aplicado y verificado.** 0059 en sandbox y producción el 24-sep (sí de
+Eduardo), con comprobación antes y después en la misma transacción, y carga
+inicial en los dos (en producción, 12,263 en 4.5 s). Los casos de la tabla se
+verificaron con SQL real en los dos entornos, los endpoints por HTTP y el picker
+en el navegador contra el sandbox (selección, rama bloqueada, avisos). 22 pruebas
+(`tests/test_categorias_arbol.py`), `tsc` limpio, `verificar_rls` OK.
+
 ### v0.562.0 — /investigacion: lecturas a la API de Temu desde producción, con candado de escritura
 
 Brandon, 24-sep: *"si Temu no te deja acceder, entra a omnicanal para hacer las

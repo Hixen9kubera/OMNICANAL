@@ -472,41 +472,78 @@ async def obtener_categoria_ml(cat_id: str):
     Detalle de UNA categoría ML por ID: nombre, path completo (Nivel1 > … > hoja)
     y dominio. Público (sin token). Lo usa el picker del Estudio para mostrar el
     breadcrumb completo cuando ya hay un ml_cat_id guardado pero sin niveles en
-    el postmeta de Woo (categorías asignadas por un proceso viejo, solo con ID).
+    el postmeta de Woo (categorías asignadas por un proceso viejo, solo con ID),
+    y cuando alguien PEGA un ID en el buscador.
+
+    `publicable` es `settings.listing_allowed` de ML. Si es false —una RAMA,
+    típicamente un breadcrumb cortado ("Equipos de Cosmetología >")— trae además
+    las categorías publicables que cuelgan de ella (`subcategorias`, del árbol de
+    la 0059): ML rechaza publicar en la rama, pero las opciones reales están
+    debajo. Sin árbol cargado, `subcategorias` sale vacía.
     """
+    import asyncio
     import httpx
+    from services import categorias_arbol
     async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=15.0) as cli:
         r = await cli.get(f"/categories/{cat_id}")
     if r.status_code != 200:
         raise HTTPException(404, f"Categoría {cat_id} no encontrada.")
     d = r.json()
     niveles = [p.get("name", "") for p in (d.get("path_from_root") or [])]
-    return {
+    publicable = bool((d.get("settings") or {}).get("listing_allowed", True))
+    salida = {
         "category_id": cat_id,
         "name": d.get("name") or "",
         "domain": "",  # /categories/{id} no trae dominio; solo lo trae domain_discovery
         "path": " > ".join(niveles),
+        "publicable": publicable,
     }
+    if not publicable:
+        subs, total = await asyncio.to_thread(categorias_arbol.hojas_bajo, cat_id)
+        salida["subcategorias"] = subs
+        salida["subcategorias_total"] = total
+    return salida
 
 
 @router.get("/categorias-ml")
 async def buscar_categorias_ml(
-    q: str = Query(..., min_length=2, description="Nombre a buscar"),
+    q: str = Query(..., min_length=2, description="Nombre de la categoría o título del producto"),
     limite: int = Query(8, ge=1, le=15),
 ):
     """
-    Busca categorías de Mercado Libre por NOMBRE (domain_discovery) y devuelve, por
-    cada una: category_id, nombre, path (Nivel1 > … > hoja) y dominio. Para el picker
-    de categoría del Estudio (define la comisión del cálculo del costo).
+    Busca categorías de Mercado Libre por TEXTO para el picker del Estudio (la
+    categoría define la comisión del cálculo del costo). Busca en DOS lados:
+
+      1. El ÁRBOL completo (`channel.ml_category_tree`, migración 0059): las
+         categorías publicables cuya ruta contiene todas las palabras. Encuentra
+         una categoría por su NOMBRE ("lavabos", "otros cosmetologia").
+      2. El PREDICTOR de ML (`domain_discovery`): dónde pondría ML un producto
+         con ese título. Encuentra la categoría a partir del TÍTULO.
+
+    Hasta v0.559 solo existía el 2, y con el nombre de una categoría fallaba:
+    medido en septiembre, Lavabos (Hogar › Baños) o Bocinas (Audio) no salían
+    nunca, y cuando dos categorías se llaman igual salía primero la de otro
+    árbol. La regla de coincidencia y el orden viven en
+    `services/categorias_arbol.py`; el orden final: primero lo del árbol,
+    después lo que SOLO propone el predictor.
+
+    Cada resultado: category_id, name, path (Nivel1 > … > hoja), domain,
+    `publicable` y `sugerida` (el predictor también la propone). Sin la tabla
+    —o vacía— el 1 no aporta nada y esto contesta como antes.
     """
     import asyncio
     import httpx
     from config import settings
-    from services import meli
+    from services import categorias_arbol, meli
+
+    arbol = await asyncio.to_thread(categorias_arbol.buscar, q, limite)
 
     # Token de ml_tokens (Fernet, llave en .env). domain_discovery y /categories son
     # PÚBLICOS, así que si el token está vencido/inválido reintentamos sin auth.
-    token = meli._access_token(costos.DEFAULT_ACCOUNT) or meli._access_token()
+    # En un hilo: leerlo son consultas a la base (regla 11 de CLAUDE.md) — antes
+    # detenía el backend entero en cada tecleo del buscador.
+    token = await asyncio.to_thread(
+        lambda: meli._access_token(costos.DEFAULT_ACCOUNT) or meli._access_token())
 
     async with httpx.AsyncClient(base_url="https://api.mercadolibre.com", timeout=20.0) as cli:
         async def _get(path: str, params: dict | None = None):
@@ -519,39 +556,58 @@ async def buscar_categorias_ml(
         try:
             r = await _get(f"/sites/{settings.ml_site_id}/domain_discovery/search",
                            {"limit": limite, "q": q})
+            cands = r.json() if r.status_code == 200 else []
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(502, f"Error consultando Mercado Libre: {exc}")
-        cands = r.json() if r.status_code == 200 else []
+            # Con el árbol respondiendo, un tropiezo del predictor no deja a nadie
+            # sin opciones: se contesta con lo que coincidió.
+            if not arbol:
+                raise HTTPException(502, f"Error consultando Mercado Libre: {exc}")
+            log.warning("domain_discovery falló (%s); se contesta solo con el árbol", exc)
+            cands = []
 
         vistos: set[str] = set()
-        base: list[dict] = []
+        sugeridas: list[dict] = []
         for d in cands:
             cid = d.get("category_id")
             if not cid or cid in vistos:
                 continue
             vistos.add(cid)
-            base.append({
+            sugeridas.append({
                 "category_id": cid,
                 "name": d.get("category_name") or "",
                 "domain": d.get("domain_name") or "",
                 "path": "",
+                "publicable": True,
             })
 
-        async def _path(cid: str) -> str:
+        # La ruta sale del árbol cuando la categoría está ahí; a ML solo se le
+        # pregunta por las que falten (antes: una llamada por cada sugerencia).
+        conocidas = await asyncio.to_thread(
+            categorias_arbol.info, [s["category_id"] for s in sugeridas])
+
+        async def _detalle(cid: str) -> dict:
             try:
                 rc = await _get(f"/categories/{cid}")
                 if rc.status_code == 200:
-                    pr = rc.json().get("path_from_root") or []
-                    return " > ".join(p.get("name", "") for p in pr)
+                    j = rc.json()
+                    pr = j.get("path_from_root") or []
+                    return {"path": " > ".join(p.get("name", "") for p in pr),
+                            "publicable": bool((j.get("settings") or {})
+                                               .get("listing_allowed", True))}
             except Exception:  # noqa: BLE001
                 pass
-            return ""
+            return {}
 
-        paths = await asyncio.gather(*[_path(b["category_id"]) for b in base])
-        for b, p in zip(base, paths):
-            b["path"] = p or b["name"]
+        faltan = [s for s in sugeridas if s["category_id"] not in conocidas]
+        detalles = await asyncio.gather(*[_detalle(s["category_id"]) for s in faltan])
+        for s, det in zip(faltan, detalles):
+            conocidas[s["category_id"]] = det
+        for s in sugeridas:
+            det = conocidas.get(s["category_id"]) or {}
+            s["path"] = det.get("path") or s["name"]
+            s["publicable"] = det.get("publicable", True)
 
-    return {"resultados": base}
+    return {"resultados": categorias_arbol.mezclar(arbol, sugeridas)}
 
 
 # ── Costos: consulta + recálculo manual ────────────────────────────────────────
