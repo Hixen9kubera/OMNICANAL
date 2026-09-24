@@ -253,7 +253,16 @@ def editor_sync(sku: str, canal: str) -> dict[str, Any]:
                          "sabe qué campos pide."}
 
     if canal == "mercado_libre":
-        campos = _campos_ml(cat)
+        # La MATRIZ del checklist de almacén (filas `fuente = 'manual'` de
+        # field_requirements) también manda aquí: lo que el equipo subió a
+        # obligatorio se enseña obligatorio en el cajón. Y se COPIA cada campo:
+        # la lista de `_campos_ml` es la caché compartida entre peticiones y
+        # abajo se le escribe el valor de este SKU.
+        promovidos = {r["campo"] for r in specs.matriz(canal, cat)
+                      if r.get("fuente") == "manual" and r.get("obligatorio")}
+        campos = [dict(c, obligatorio=c["obligatorio"] or c["campo"] in promovidos)
+                  for c in _campos_ml(cat)]
+        campos.sort(key=lambda x: not x["obligatorio"])
         fuente = "API pública de Mercado Libre"
     else:
         campos = _campos_kubera(canal, cat)

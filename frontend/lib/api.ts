@@ -1705,6 +1705,21 @@ export async function importarChecklist(
   return res.json();
 }
 
+/** La lista de la semana tal cual la arma el equipo (hojas «Week NN»).
+ *  `aplicar=false` = solo decir qué hojas trae y cuál tomaría. */
+export async function cargarListaChecklist(
+  archivo: File, semana: string, hoja: string | null, aplicar: boolean,
+): Promise<import("./types").ListaChecklist> {
+  const fd = new FormData();
+  fd.append("archivo", archivo);
+  fd.append("semana", semana);
+  if (hoja) fd.append("hoja", hoja);
+  fd.append("aplicar", aplicar ? "true" : "false");
+  const res = await fetchSesion(`${BASE}/api/checklist/lista`, { method: "POST", body: fd });
+  if (!res.ok) throw await errorDeRespuesta(res, "/api/checklist/lista");
+  return res.json();
+}
+
 export function guardarAlmacenChecklist(
   sku: string, valores: Record<string, string>,
 ): Promise<{ ok: boolean; guardados?: number; motivo?: string }> {

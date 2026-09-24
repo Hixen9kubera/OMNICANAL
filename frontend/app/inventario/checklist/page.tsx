@@ -31,14 +31,14 @@ import {
 import AppNavbar from "@/components/AppNavbar";
 import InventarioPestanas from "@/components/InventarioPestanas";
 import {
-  agregarAlChecklist, descargarChecklist, guardarAlmacenChecklist,
+  agregarAlChecklist, cargarListaChecklist, descargarChecklist, guardarAlmacenChecklist,
   guardarMatrizChecklist, importarChecklist, matrizChecklist, mensajeDeError,
   quitarDelChecklist, tableroChecklist,
 } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 import type {
   CampoChecklist, EstadoChecklist, FilaChecklist, ImportacionChecklist,
-  MatrizChecklist, NivelChecklist, TableroChecklist,
+  ListaChecklist, MatrizChecklist, NivelChecklist, SistemaChecklist, TableroChecklist,
 } from "@/lib/types";
 
 /* ─────────────────────────────── estilos ─────────────────────────────── */
@@ -91,6 +91,17 @@ function haceCuanto(iso: string | null): string {
 
 const n = (v: number | null | undefined) =>
   v === null || v === undefined ? "—" : v.toLocaleString("es-MX", { maximumFractionDigits: 2 });
+
+/** La referencia de costos_validados en una línea (NO son medidas). */
+function textoSistema(s: SistemaChecklist | null): string {
+  if (!s) return "sin datos en el sistema";
+  const partes: string[] = [];
+  if (s.largo && s.ancho && s.alto) partes.push(`${n(s.largo)}×${n(s.ancho)}×${n(s.alto)} cm`);
+  if (s.peso) partes.push(`${n(s.peso)} kg`);
+  if (s.cajas_pl !== null || s.piezas_por_caja_pl !== null)
+    partes.push(`PL ${n(s.cajas_pl)} cajas × ${n(s.piezas_por_caja_pl)} pzs`);
+  return partes.join(" · ") || "sin datos en el sistema";
+}
 
 function medidas(f: FilaChecklist): string | null {
   const a = f.almacen;
@@ -235,7 +246,7 @@ export default function ChecklistPage() {
         )}
 
         <Semana
-          semana={semanaVista} semanas={datos?.semanas ?? []}
+          semana={semanaVista} etiqueta={datos?.etiqueta ?? ""} semanas={datos?.semanas ?? []}
           onCambiar={(s) => { setSemana(s); setSel(new Set()); setAbierto(null); }}
         />
 
@@ -314,8 +325,14 @@ export default function ChecklistPage() {
       </main>
 
       {modal === "agregar" && semanaVista && (
-        <ModalAgregar semana={semanaVista} onCerrar={() => setModal(null)}
-                      onListo={(msg) => { setModal(null); setAviso(msg); cargar(); }} />
+        <ModalAgregar semana={semanaVista} etiqueta={datos?.etiqueta ?? ""}
+                      onCerrar={() => setModal(null)}
+                      onListo={(msg, otra) => {
+                        setModal(null); setAviso(msg);
+                        // La lista trae su propia semana («Week 39»): se salta a ella.
+                        if (otra && otra !== semanaVista) { setSemana(otra); setSel(new Set()); }
+                        else cargar();
+                      }} />
       )}
       {modal === "matriz" && (
         <ModalMatriz
@@ -428,10 +445,11 @@ function Banner({
 }
 
 function Semana({
-  semana, semanas, onCambiar,
+  semana, etiqueta, semanas, onCambiar,
 }: {
   semana: string;
-  semanas: { semana: string; skus: number }[];
+  etiqueta: string;
+  semanas: { semana: string; etiqueta: string; skus: number }[];
   onCambiar: (s: string | undefined) => void;
 }) {
   if (!semana) return null;
@@ -444,7 +462,10 @@ function Semana({
           <ChevronLeft className="h-4 w-4" />
         </button>
         <span className="px-3 text-sm font-bold text-slate-800">
-          Semana del {dia(semana)} al {dia(masDias(semana, 6))}
+          {etiqueta || "Semana"}
+          <span className="ml-1.5 font-medium text-slate-400">
+            · {dia(semana)} al {dia(masDias(semana, 6))}
+          </span>
         </span>
         <button type="button" onClick={() => onCambiar(masDias(semana, 7))}
                 className="rounded-r-xl p-2 text-slate-500 hover:bg-slate-50" title="Semana siguiente">
@@ -461,7 +482,7 @@ function Semana({
           {otras.slice(0, 6).map((s) => (
             <button key={s.semana} type="button" onClick={() => onCambiar(s.semana)}
                     className="rounded-full bg-white px-2.5 py-1 font-semibold text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50">
-              {dia(s.semana)} · {s.skus}
+              {s.etiqueta} · {s.skus}
             </button>
           ))}
         </div>
@@ -613,6 +634,11 @@ function FilaTabla({
             )}
           </div>
           <div className="mt-0.5 line-clamp-2 text-xs text-slate-500">{f.titulo ?? "—"}</div>
+          {f.comentario && (
+            <div className="mt-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">
+              {f.comentario}
+            </div>
+          )}
         </td>
         <td className="max-w-[220px] px-3 py-3">
           {f.categoria ? (
@@ -758,6 +784,10 @@ function Detalle({
         <h4 className="text-[11px] font-bold uppercase tracking-[0.06em] text-sky-700">
           Almacén · producto empacado
         </h4>
+        <p className="mt-1 rounded-lg bg-slate-50 px-2 py-1 text-[11px] text-slate-500"
+           title="costing.costos_validados: el volumen de flete y las cajas del packing list">
+          <b className="text-slate-600">En sistema (no es medida):</b> {textoSistema(f.almacen.sistema)}
+        </p>
         <div className="mt-2 grid grid-cols-3 gap-2">
           {campos.map((c) => (
             <label key={c.k} className="text-[11px] font-semibold text-slate-500">
@@ -776,8 +806,7 @@ function Detalle({
           <span className="text-[11px] text-slate-400">
             {f.almacen.capturado_en
               ? `Última captura ${haceCuanto(f.almacen.capturado_en)}${
-                  f.almacen.capturado_por ? ` por ${f.almacen.capturado_por.split("@")[0]}` : ""}${
-                  f.almacen.fuente ? ` · ${f.almacen.fuente}` : ""}`
+                  f.almacen.capturado_por ? ` por ${f.almacen.capturado_por.split("@")[0]}` : ""}`
               : "Sin capturar todavía"}
           </span>
           {puedeCapturar && (
@@ -826,13 +855,55 @@ function Modal({
 }
 
 function ModalAgregar({
-  semana, onCerrar, onListo,
-}: { semana: string; onCerrar: () => void; onListo: (msg: string) => void }) {
+  semana, etiqueta, onCerrar, onListo,
+}: {
+  semana: string;
+  etiqueta: string;
+  onCerrar: () => void;
+  /** `otra` = la semana a la que se agregó, si la lista traía la suya. */
+  onListo: (msg: string, otra?: string) => void;
+}) {
+  const [modo, setModo] = useState<"lista" | "pegar">("lista");
   const [texto, setTexto] = useState("");
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [desconocidos, setDesconocidos] = useState<string[]>([]);
+  const [archivo, setArchivo] = useState<File | null>(null);
+  const [previa, setPrevia] = useState<ListaChecklist | null>(null);
   const cuantos = texto.split(/[\s,;]+/).filter(Boolean).length;
+
+  const leerLista = async (f: File, hoja: string | null) => {
+    setArchivo(f);
+    setError(null);
+    setEnviando(true);
+    try {
+      const r = await cargarListaChecklist(f, semana, hoja, false);
+      if (!r.ok) { setError(r.motivo ?? "No se pudo leer la lista."); setPrevia(null); }
+      else setPrevia(r);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo leer la lista."));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const agregarLista = async () => {
+    if (!archivo || !previa) return;
+    setEnviando(true);
+    setError(null);
+    try {
+      const r = await cargarListaChecklist(archivo, semana, previa.elegida, true);
+      if (!r.ok || !r.aplicado) { setError(r.motivo ?? "No se pudo agregar."); return; }
+      onListo(`${r.etiqueta}: ${r.agregados ?? 0} agregados${
+        r.ya_estaban ? `, ${r.ya_estaban} ya estaban` : ""}${
+        r.desconocidos.length ? `, ${r.desconocidos.length} no existen en kubera` : ""}.`,
+        r.semana);
+    } catch (e) {
+      setError(mensajeDeError(e, "No se pudo agregar."));
+    } finally {
+      setEnviando(false);
+    }
+  };
 
   const enviar = async () => {
     setEnviando(true);
@@ -856,18 +927,88 @@ function ModalAgregar({
     }
   };
 
+  const pestaña = (m: "lista" | "pegar", t: string) => (
+    <button type="button" onClick={() => { setModo(m); setError(null); }}
+            className={`rounded-lg px-3 py-1.5 text-sm font-semibold transition ${
+              modo === m ? "bg-indigo-600 text-white" : "text-slate-500 hover:bg-slate-100"}`}>
+      {t}
+    </button>
+  );
+
   return (
     <Modal titulo="Agregar SKUs al lote"
-           sub={`Semana del ${dia(semana)} al ${dia(masDias(semana, 6))}`} onCerrar={onCerrar}>
-      <p className="text-sm text-slate-600">
-        Pega la columna de SKUs tal cual la copias de Excel (uno por renglón, o
-        separados por coma). Los repetidos se ignoran.
-      </p>
-      <textarea
-        value={texto} onChange={(e) => setTexto(e.target.value)} rows={10} autoFocus
-        placeholder={"TEC-0370-NEG\nORG-0863-ROS\nACC-0907-MET\n…"}
-        className="mt-3 w-full rounded-xl border border-slate-200 p-3 font-mono text-sm text-slate-800 outline-none focus:border-indigo-300"
-      />
+           sub={`${etiqueta || "Semana"} · del ${dia(semana)} al ${dia(masDias(semana, 6))}`}
+           onCerrar={onCerrar}>
+      <div className="mb-3 flex w-fit gap-1 rounded-xl bg-slate-50 p-1 ring-1 ring-slate-200">
+        {pestaña("lista", "Lista de la semana (Excel)")}
+        {pestaña("pegar", "Pegar SKUs")}
+      </div>
+
+      {modo === "lista" ? (
+        <>
+          <p className="text-sm text-slate-600">
+            El Excel de validación tal cual: una hoja <b>«Week NN»</b> con columna
+            <b> SKU</b> (con o sin corchetes) y, si quieres, <b>Comentarios</b>. Lo
+            demás (contenedor, tarima…) se ignora. La semana sale del nombre de la hoja.
+          </p>
+          <label className="mt-3 flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/60 px-4 py-5 text-center hover:border-indigo-300"
+                 onDragOver={(e) => e.preventDefault()}
+                 onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) void leerLista(f, null); }}>
+            {enviando && !previa ? <Loader2 className="h-5 w-5 animate-spin text-indigo-500" />
+              : <FileSpreadsheet className="h-5 w-5 text-slate-400" />}
+            <span className="text-sm font-semibold text-slate-700">
+              {archivo ? archivo.name : "Arrastra el Excel de la semana o haz clic"}
+            </span>
+            <input type="file" accept=".xlsx,.xlsm,.csv" className="hidden"
+                   onChange={(e) => { const f = e.target.files?.[0]; if (f) void leerLista(f, null); }} />
+          </label>
+          {previa && (
+            <div className="mt-3 space-y-2">
+              <div className="flex flex-wrap gap-1.5">
+                {previa.hojas.map((h) => (
+                  <button key={h.hoja} type="button"
+                          onClick={() => archivo && void leerLista(archivo, h.hoja)}
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition ${
+                            h.hoja === previa.elegida
+                              ? "bg-indigo-600 text-white ring-indigo-600"
+                              : "bg-white text-slate-600 ring-slate-200 hover:bg-slate-50"}`}>
+                    {h.hoja} · {h.skus}
+                  </button>
+                ))}
+              </div>
+              <div className="rounded-xl bg-indigo-50 p-3 text-sm text-indigo-900 ring-1 ring-indigo-200">
+                Hoja <b>{previa.elegida}</b> → <b>{previa.etiqueta}</b> (del {dia(previa.semana)} al{" "}
+                {dia(masDias(previa.semana, 6))}): <b>{previa.skus}</b> SKUs
+                {previa.comentarios > 0 && <>, {previa.comentarios} con comentario</>}.
+                {previa.semana !== semana && (
+                  <div className="mt-1 text-xs text-indigo-700">
+                    Es otra semana que la que estás viendo: al agregar se abre {previa.etiqueta}.
+                  </div>
+                )}
+                {previa.desconocidos.length > 0 && (
+                  <div className="mt-1 text-xs text-amber-800">
+                    {previa.desconocidos.length} no existen en kubera y no se agregarán:{" "}
+                    <span className="font-mono">{previa.desconocidos.join(", ")}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-slate-600">
+            Pega la columna de SKUs tal cual la copias de Excel (uno por renglón, o
+            separados por coma). Los repetidos se ignoran.
+          </p>
+          <textarea
+            value={texto} onChange={(e) => setTexto(e.target.value)} rows={10} autoFocus
+            placeholder={"TEC-0370-NEG\nORG-0863-ROS\nACC-0907-MET\n…"}
+            className="mt-3 w-full rounded-xl border border-slate-200 p-3 font-mono text-sm text-slate-800 outline-none focus:border-indigo-300"
+          />
+        </>
+      )}
+
       {error && (
         <div className="mt-2 rounded-lg bg-amber-50 p-2.5 text-xs text-amber-900 ring-1 ring-amber-200">
           {error}
@@ -877,17 +1018,27 @@ function ModalAgregar({
         </div>
       )}
       <div className="mt-4 flex items-center justify-between">
-        <span className="text-xs text-slate-400">{cuantos} SKU(s) en el texto</span>
+        <span className="text-xs text-slate-400">
+          {modo === "pegar" ? `${cuantos} SKU(s) en el texto` : ""}
+        </span>
         <div className="flex gap-2">
           <button type="button" onClick={desconocidos.length ? () => onListo("Lote actualizado.") : onCerrar}
                   className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100">
             {desconocidos.length ? "Listo" : "Cancelar"}
           </button>
-          <button type="button" onClick={enviar} disabled={!cuantos || enviando}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
-            {enviando && <Loader2 className="h-4 w-4 animate-spin" />}
-            Agregar
-          </button>
+          {modo === "lista" ? (
+            <button type="button" onClick={agregarLista} disabled={!previa || enviando}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+              {enviando && previa && <Loader2 className="h-4 w-4 animate-spin" />}
+              {previa ? `Agregar ${previa.skus} a ${previa.etiqueta}` : "Agregar"}
+            </button>
+          ) : (
+            <button type="button" onClick={enviar} disabled={!cuantos || enviando}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+              {enviando && <Loader2 className="h-4 w-4 animate-spin" />}
+              Agregar
+            </button>
+          )}
         </div>
       </div>
     </Modal>

@@ -2611,6 +2611,19 @@ export interface CampoChecklist {
   unidad_default: string | null;
 }
 
+/** Lo que HOY dice el sistema (costing.costos_validados), solo de referencia:
+ *  sus medidas son el volumen de flete reconstruido y sus cajas las del
+ *  packing list. NO son medidas de almacén. */
+export interface SistemaChecklist {
+  largo: number | null;
+  ancho: number | null;
+  alto: number | null;
+  peso: number | null;
+  cajas_pl: number | null;
+  piezas_por_caja_pl: number | null;
+}
+
+/** Lo que almacén midió y contó (core.products.almacen_*). */
 export interface AlmacenChecklist {
   largo_cm: number | null;
   ancho_cm: number | null;
@@ -2618,9 +2631,9 @@ export interface AlmacenChecklist {
   peso_kg: number | null;
   cajas: number | null;
   piezas_por_caja: number | null;
-  fuente: string | null;
   capturado_por: string | null;
   capturado_en: string | null;
+  sistema: SistemaChecklist | null;
 }
 
 export type EstadoChecklist = "completo" | "incompleto" | "sin_categoria" | "sin_lista";
@@ -2642,6 +2655,8 @@ export interface FilaChecklist {
   faltan_almacen: string[];
   piezas_total: number | null;
   estado: EstadoChecklist;
+  /** La columna «Comentarios» de la lista semanal. */
+  comentario: string | null;
   agregado_por: string | null;
   agregado_en: string | null;
 }
@@ -2653,7 +2668,9 @@ export interface TableroChecklist {
   motivo: string | null;
   semana: string;
   semana_fin: string;
-  semanas: { semana: string; skus: number }[];
+  /** «Week 39»: la semana ISO, como el equipo nombra sus hojas. */
+  etiqueta: string;
+  semanas: { semana: string; etiqueta: string; skus: number }[];
   campos_almacen: { campo: string; etiqueta: string }[];
   filas: FilaChecklist[];
   categorias: {
@@ -2682,6 +2699,24 @@ export interface RenglonImportacion {
   hoja: string | null;
   fila: number | null;
   motivo: string;
+}
+
+/** La lista semanal subida como Excel: qué hojas trae y cuál se tomó. */
+export interface ListaChecklist {
+  ok: boolean;
+  motivo?: string | null;
+  falta_migracion?: boolean;
+  aplicado: boolean;
+  hojas: { hoja: string; semana_iso: number | null; skus: number;
+           semana: string; etiqueta: string }[];
+  elegida: string;
+  semana: string;
+  etiqueta: string;
+  skus: number;
+  comentarios: number;
+  desconocidos: string[];
+  agregados?: number;
+  ya_estaban?: number;
 }
 
 export interface ImportacionChecklist {

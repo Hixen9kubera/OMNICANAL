@@ -17,9 +17,10 @@ almacén? «Completo» es la suma de dos listas:
 
   1. ATRIBUTOS DE ML que se EXIGEN: los obligatorios del propio ML
      (`required` / `catalog_required` de su API pública) MÁS los opcionales que
-     el equipo subió a obligatorios en la MATRIZ (`ops.checklist_matriz`).
+     el equipo subió a obligatorios en la MATRIZ (filas `fuente = 'manual'`
+     de `channel.field_requirements`).
   2. LO QUE ALMACÉN MIDE Y CUENTA: largo, ancho, alto y peso del producto
-     EMPACADO, cajas y piezas por caja (`ops.checklist_almacen`).
+     EMPACADO, cajas y piezas por caja (columnas `almacen_*` de `core.products`).
 
 DE DÓNDE SALE CADA COSA — solo kubera y la API pública de ML (regla de
 Brandon del 17-sep: nada de WordPress)
@@ -35,9 +36,29 @@ Brandon del 17-sep: nada de WordPress)
 DÓNDE SE GUARDA LO QUE SUBE ALMACÉN
   · Atributos → `specs_editor.guardar_sync`, que fusiona por campo y escribe
     la lista COMPLETA (los tres cuidados de su cabecera).
-  · Medidas, cajas, piezas → `ops.checklist_almacen` (migración 0058). Es la
-    caja «Bodega» del cotejo del Catálogo Maestro, que hasta hoy era NULL
-    porque nadie la medía.
+  · Medidas, cajas, piezas → columnas `almacen_*` de `core.products`
+    (migración 0058). Es la caja «Bodega» del cotejo del Catálogo Maestro, que
+    hasta hoy era NULL porque nadie la medía.
+  · La MATRIZ → `channel.field_requirements` con fuente = 'manual': la misma
+    lista de requisitos por categoría que ya existe, sin tabla aparte.
+
+NORMALIZACIÓN (Brandon, 24-sep: «buscarlo en la base de datos para no repetir»)
+Las columnas largo/ancho/alto/peso/cajas/piezas_por_caja de
+`costing.costos_validados` se REVISARON y no son el mismo dato:
+  · sus medidas son el volumen de FLETE reconstruido del CBM (solo el 26% cuadra
+    con el flete; ACC-0313-NEG dice 60×51×51 cm y 0.281 kg = la caja máster), y
+    costos.py las usa para flete y comisión de envío: escribir ahí la medida real
+    cambiaría precios en el siguiente recálculo;
+  · sus cajas y piezas por caja son las del PACKING LIST (las escribe el
+    Resolver), la otra mitad de la comparación que pidió Brandon el 8-sep.
+Por eso lo de almacén va en columnas propias, en la fila del producto, y lo de
+costos_validados se enseña al lado como REFERENCIA («en sistema»). Y no en
+costos_validados: Costos decide «sin costo» por la existencia de la fila, y
+crearle fila a un SKU sin costo lo sacaría de la lista de trabajo de los KAM.
+
+LA SEMANA es la ISO, la que el equipo llama «Week 39». La lista semanal llega
+como Excel (una hoja «Week NN» con columna SKU, con o sin corchetes) y se carga
+tal cual con `lista_sync`.
 
 DOS DECISIONES QUE CONVIENE SABER
   · UNA CELDA VACÍA NO BORRA NADA. El Excel sale pre-llenado con lo que ya hay;
@@ -48,8 +69,8 @@ DOS DECISIONES QUE CONVIENE SABER
     dinero en publicaciones vivas, y eso espera su dale (regla 3).
 
 SI LA MIGRACIÓN 0058 NO ESTÁ APLICADA, la pestaña lo dice en vez de tronar:
-todo lo que toca las tablas nuevas levanta `FaltaMigracion` y el router lo
-devuelve como `falta_migracion: true`.
+todo lo que toca la tabla o las columnas nuevas levanta `FaltaMigracion` y el
+router lo devuelve como `falta_migracion: true`.
 """
 from __future__ import annotations
 
@@ -96,12 +117,18 @@ _HILOS_GUARDAR = 4        # SKUs guardados en paralelo (el pool de kubera es chi
 
 
 class FaltaMigracion(RuntimeError):
-    """Las tablas `ops.checklist_*` no existen todavía (migración 0058)."""
+    """`ops.checklist_lote` o las columnas `almacen_*` no existen (migración 0058)."""
+
+
+_MSG_MIGRACION = ("Falta aplicar la migración 0058 (ops.checklist_lote y las "
+                  "columnas almacen_* de core.products) en kubera.")
 
 
 def _sin_tabla(exc: Exception) -> bool:
-    return (getattr(exc, "pgcode", None) == "42P01"
-            or ("does not exist" in str(exc) and "checklist_" in str(exc)))
+    """42P01 = tabla que no existe; 42703 = columna que no existe."""
+    return (getattr(exc, "pgcode", None) in ("42P01", "42703")
+            or ("does not exist" in str(exc)
+                and ("checklist_" in str(exc) or "almacen_" in str(exc))))
 
 
 def _q(sql: str, params: Any = None) -> list[dict[str, Any]]:
@@ -109,8 +136,7 @@ def _q(sql: str, params: Any = None) -> list[dict[str, Any]]:
         return sdb.fetch_all(sql, params)
     except Exception as exc:  # noqa: BLE001
         if _sin_tabla(exc):
-            raise FaltaMigracion(
-                "Falta aplicar la migración 0058 (ops.checklist_*) en kubera.") from exc
+            raise FaltaMigracion(_MSG_MIGRACION) from exc
         raise
 
 
@@ -125,6 +151,18 @@ def hoy() -> dt.date:
 def lunes(fecha: dt.date | None = None) -> dt.date:
     f = fecha or hoy()
     return f - dt.timedelta(days=f.weekday())
+
+
+def etiqueta(semana: dt.date) -> str:
+    """El lunes → «Week 39», como el equipo nombra sus hojas."""
+    return f"Week {semana.isocalendar()[1]}"
+
+
+def lunes_iso(anio: int, numero: int) -> dt.date | None:
+    try:
+        return dt.date.fromisocalendar(anio, numero, 1)
+    except ValueError:
+        return None
 
 
 def semana_de(texto: str | None) -> dt.date:
@@ -163,20 +201,17 @@ def limpiar_skus(crudo: Iterable[str] | str | None) -> list[str]:
 def _canonicos(skus: list[str]) -> tuple[dict[str, str], list[str]]:
     """Empata lo que se pegó con el SKU real (sin importar mayúsculas).
 
-    Vale cualquier SKU que kubera conozca: `core.products` o una categoría ML
-    en `channel.product_category`. Devuelve ({pegado_mayus: real}, desconocidos).
+    Vale el SKU que esté en `core.products`: es la llave foránea del lote y la
+    fila donde se guarda lo de almacén. Devuelve ({pegado_mayus: real},
+    desconocidos).
     """
     if not skus:
         return {}, []
     mayus = [s.upper() for s in skus]
     reales: dict[str, str] = {}
-    for sql in ("select sku from core.products where upper(sku) = any(%s)",
-                "select sku from channel.product_category where upper(sku) = any(%s)"):
-        try:
-            for r in sdb.fetch_all(sql, (mayus,)):
-                reales.setdefault(r["sku"].upper(), r["sku"])
-        except Exception as exc:  # noqa: BLE001
-            log.warning("checklist: no se pudo verificar SKUs: %s", exc)
+    for r in sdb.fetch_all("select sku::text as sku from core.products "
+                           "where upper(sku::text) = any(%s)", (mayus,)):
+        reales.setdefault(r["sku"].upper(), r["sku"])
     desconocidos = [s for s in skus if s.upper() not in reales]
     return reales, desconocidos
 
@@ -251,30 +286,79 @@ def _campos_por_categoria(cats: Iterable[str]) -> dict[str, list[dict[str, Any]]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Las tablas nuevas (0058)
+# Lo de almacén (core.products.almacen_*, 0058) y la matriz (field_requirements)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _almacen(skus: list[str]) -> dict[str, dict[str, Any]]:
+# La clave de la pantalla/Excel → la columna de core.products.
+_COLUMNA = {
+    "largo_cm": "almacen_largo_cm", "ancho_cm": "almacen_ancho_cm",
+    "alto_cm": "almacen_alto_cm", "peso_kg": "almacen_peso_kg",
+    "cajas": "almacen_cajas", "piezas_por_caja": "almacen_piezas_por_caja",
+}
+
+
+def _num_o_none(v: Any, entero: bool = False) -> Any:
+    if v is None:
+        return None
+    return int(v) if entero else float(v)
+
+
+def _capturado(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """Lo que almacén midió y contó, de core.products. Solo lo capturado en el
+    Checklist: si nadie lo ha medido, todo viene en None."""
+    if not skus:
+        return {}
+    cols = ", ".join(_COLUMNA.values())
+    salida: dict[str, dict[str, Any]] = {}
+    for r in _q(f"select sku::text as sku, {cols}, almacen_por, almacen_en "
+                f"from core.products where sku::text = any(%s)", (skus,)):
+        d = {k: _num_o_none(r.get(c), _LOG_TIPO[k] == "entero")
+             for k, c in _COLUMNA.items()}
+        d["capturado_por"] = r.get("almacen_por")
+        d["capturado_en"] = r["almacen_en"].isoformat() if r.get("almacen_en") else None
+        salida[r["sku"]] = d
+    return salida
+
+
+def _sistema(skus: list[str]) -> dict[str, dict[str, Any]]:
+    """Lo que YA dice el sistema, como REFERENCIA: costos_validados. No son
+    medidas de almacén (ver la cabecera); se enseñan al lado para comparar."""
     if not skus:
         return {}
     salida: dict[str, dict[str, Any]] = {}
-    for r in _q("select * from ops.checklist_almacen where sku = any(%s)", (skus,)):
-        d = dict(r)
-        for k in _LOG_CLAVES:
-            v = d.get(k)
-            if v is not None:
-                d[k] = int(v) if _LOG_TIPO[k] == "entero" else float(v)
-        if d.get("capturado_en"):
-            d["capturado_en"] = d["capturado_en"].isoformat()
-        salida[r["sku"]] = d
+    try:
+        for r in sdb.fetch_all(
+                "select sku::text as sku, largo, ancho, alto, peso, cajas, "
+                "       piezas_por_caja "
+                "from costing.costos_validados where sku::text = any(%s)", (skus,)):
+            salida[r["sku"]] = {
+                "largo": _num_o_none(r["largo"]), "ancho": _num_o_none(r["ancho"]),
+                "alto": _num_o_none(r["alto"]), "peso": _num_o_none(r["peso"]),
+                "cajas_pl": _num_o_none(r["cajas"]),
+                "piezas_por_caja_pl": _num_o_none(r["piezas_por_caja"]),
+            }
+    except Exception as exc:  # noqa: BLE001
+        log.warning("checklist: costos_validados no disponible: %s", exc)
+    return salida
+
+
+def _almacen(skus: list[str]) -> dict[str, dict[str, Any]]:
+    capturado = _capturado(skus)
+    sistema = _sistema(skus)
+    salida = {}
+    for s in skus:
+        d = dict(capturado.get(s) or {**{k: None for k in _LOG_CLAVES},
+                                      "capturado_por": None, "capturado_en": None})
+        d["sistema"] = sistema.get(s)
+        salida[s] = d
     return salida
 
 
 def almacen_de(skus: list[str]) -> dict[str, dict[str, Any]]:
     """Para el Catálogo Maestro: lo capturado, o {} si la 0058 no existe aún.
-    NUNCA truena — el cotejo de cajas no puede caerse por una tabla nueva."""
+    NUNCA truena — el cotejo de cajas no puede caerse por unas columnas nuevas."""
     try:
-        return _almacen(skus)
+        return {s: d for s, d in _capturado(skus).items() if d.get("capturado_en")}
     except Exception as exc:  # noqa: BLE001
         if not isinstance(exc, FaltaMigracion):
             log.warning("checklist: almacén no disponible: %s", exc)
@@ -282,42 +366,72 @@ def almacen_de(skus: list[str]) -> dict[str, dict[str, Any]]:
 
 
 def _matriz(cats: Iterable[str]) -> dict[str, dict[str, bool]]:
+    """Las promociones del equipo: filas `fuente = 'manual'` de ML en
+    channel.field_requirements. Las de la API (`fuente = 'api'`) son los
+    obligatorios del propio ML y NO son matriz."""
     cats = sorted({c for c in cats if c})
     if not cats:
         return {}
     salida: dict[str, dict[str, bool]] = {}
-    for r in _q("select categoria_id, campo, obligatorio from ops.checklist_matriz "
-                "where canal = %s and categoria_id = any(%s)", (CANAL, cats)):
-        salida.setdefault(r["categoria_id"], {})[r["campo"]] = bool(r["obligatorio"])
+    for r in sdb.fetch_all(
+            "select categoria_id, campo from channel.field_requirements "
+            "where canal = %s and fuente = 'manual' and obligatorio "
+            "  and categoria_id = any(%s)", (CANAL, cats)):
+        salida.setdefault(r["categoria_id"], {})[r["campo"]] = True
     return salida
 
 
-def _guardar_almacen(filas: dict[str, dict[str, Any]], fuente: str, por: str) -> int:
-    """UPSERT por SKU. Solo pisa las columnas que traen valor (coalesce): una
-    captura parcial no borra lo que ya se había medido."""
-    if not filas:
-        return 0
-    cols = ", ".join(_LOG_CLAVES)
-    marcas = ", ".join(["%s"] * len(_LOG_CLAVES))
-    sets = ", ".join(f"{k} = coalesce(excluded.{k}, ops.checklist_almacen.{k})"
-                     for k in _LOG_CLAVES)
-    sql = (f"insert into ops.checklist_almacen (sku, {cols}, fuente, capturado_por, "
-           f"capturado_en) values (%s, {marcas}, %s, %s, now()) "
-           f"on conflict (sku) do update set {sets}, fuente = excluded.fuente, "
-           f"capturado_por = excluded.capturado_por, capturado_en = now()")
+def _escribir_matriz(cat: str, promover: dict[str, str | None],
+                     quitar: Iterable[str]) -> int:
+    """Sube (inserta la fila manual) o baja (borra la fila manual). NUNCA toca
+    una fila de la API: la guarda `fuente = 'manual'` vive en el SQL del upsert
+    y del delete, no en quien llama."""
+    quitar = list(quitar)
 
     def _hacer() -> int:
+        n = 0
+        with sdb.get_cursor() as cur:
+            for campo, tipo in promover.items():
+                cur.execute(
+                    "insert into channel.field_requirements as fr "
+                    "  (canal, categoria_id, campo, obligatorio, tipo, fuente, leido_at) "
+                    "values (%s, %s, %s, true, %s, 'manual', now()) "
+                    "on conflict (canal, categoria_id, campo) do update set "
+                    "  obligatorio = true, updated_at = now() "
+                    "where fr.fuente = 'manual'", (CANAL, cat, campo, tipo))
+                n += cur.rowcount
+            for campo in quitar:
+                cur.execute(
+                    "delete from channel.field_requirements "
+                    "where canal = %s and categoria_id = %s and campo = %s "
+                    "  and fuente = 'manual'", (CANAL, cat, campo))
+                n += cur.rowcount
+        return n
+    return sdb.reintentar_transitorio(_hacer)
+
+
+def _guardar_almacen(filas: dict[str, dict[str, Any]], por: str) -> int:
+    """UPDATE de core.products por SKU. Solo pisa lo que trae valor (coalesce):
+    una captura parcial no borra lo que ya se había medido. La fila siempre
+    existe: el SKU se validó contra core.products."""
+    if not filas:
+        return 0
+    sets = ", ".join(f"{c} = coalesce(%s, {c})" for c in _COLUMNA.values())
+    sql = (f"update core.products set {sets}, almacen_por = %s, "
+           f"almacen_en = now() where sku = %s")
+
+    def _hacer() -> int:
+        n = 0
         with sdb.get_cursor() as cur:
             for sku, vals in filas.items():
-                cur.execute(sql, (sku, *[vals.get(k) for k in _LOG_CLAVES],
-                                  fuente, por or None))
-        return len(filas)
+                cur.execute(sql, (*[vals.get(k) for k in _COLUMNA], por or None, sku))
+                n += cur.rowcount
+        return n
     try:
         return sdb.reintentar_transitorio(_hacer)
     except Exception as exc:  # noqa: BLE001
         if _sin_tabla(exc):
-            raise FaltaMigracion(
-                "Falta aplicar la migración 0058 (ops.checklist_*) en kubera.") from exc
+            raise FaltaMigracion(_MSG_MIGRACION) from exc
         raise
 
 
@@ -425,8 +539,8 @@ def _evaluar(sku: str, ctx: dict[str, Any]) -> dict[str, Any]:
         "opcionales_total": len(opcionales),
         "opcionales_llenos": sum(1 for c in opcionales
                                  if not _vacio(valores.get(c["campo"]))),
-        "almacen": {k: alm.get(k) for k in (*_LOG_CLAVES, "fuente",
-                                             "capturado_por", "capturado_en")},
+        "almacen": {k: alm.get(k) for k in (*_LOG_CLAVES, "capturado_por",
+                                             "capturado_en", "sistema")},
         "faltan_almacen": faltan_alm,
         "piezas_total": cajas * ppc if cajas is not None and ppc is not None else None,
         "estado": estado,
@@ -437,13 +551,18 @@ def tablero_sync(semana_txt: str | None) -> dict[str, Any]:
     semana = semana_de(semana_txt)
     base = {"semana": semana.isoformat(),
             "semana_fin": (semana + dt.timedelta(days=6)).isoformat(),
+            "etiqueta": etiqueta(semana),
             "campos_almacen": [{"campo": k, "etiqueta": e} for k, e, _ in LOGISTICA]}
     try:
-        semanas = [{"semana": r["semana"].isoformat(), "skus": r["n"]} for r in _q(
+        semanas = [{"semana": r["semana"].isoformat(), "etiqueta": etiqueta(r["semana"]),
+                    "skus": r["n"]} for r in _q(
             "select semana, count(*) n from ops.checklist_lote "
             "group by semana order by semana desc limit 26")]
-        lote = _q("select sku, agregado_por, agregado_en from ops.checklist_lote "
-                  "where semana = %s order by agregado_en, sku", (semana,))
+        # El orden de la LISTA: agregado_en usa clock_timestamp() renglón por
+        # renglón, así la tabla sale en el orden en que almacén armó su hoja.
+        lote = _q("select sku::text as sku, comentario, agregado_por, agregado_en "
+                  "from ops.checklist_lote where semana = %s order by agregado_en, sku",
+                  (semana,))
         skus = [r["sku"] for r in lote]
         ctx = _contexto(skus)
     except FaltaMigracion as exc:
@@ -456,6 +575,7 @@ def tablero_sync(semana_txt: str | None) -> dict[str, Any]:
     for r in lote:
         f = _evaluar(r["sku"], ctx)
         f["url_ml"] = urls.get(r["sku"])
+        f["comentario"] = r.get("comentario")
         f["agregado_por"] = r["agregado_por"]
         f["agregado_en"] = r["agregado_en"].isoformat() if r["agregado_en"] else None
         filas.append(f)
@@ -491,7 +611,11 @@ def _resumen(filas: list[dict[str, Any]]) -> dict[str, int]:
 # El lote de la semana
 # ══════════════════════════════════════════════════════════════════════════════
 
-def agregar_sync(semana_txt: str | None, crudo: Iterable[str] | str) -> dict[str, Any]:
+def agregar_sync(semana_txt: str | None, crudo: Iterable[str] | str,
+                 comentarios: dict[str, str] | None = None) -> dict[str, Any]:
+    """Agrega SKUs al lote. `comentarios` va por SKU en MAYÚSCULAS (la columna
+    «Comentarios» de la lista semanal); a un SKU que ya estaba solo se le
+    actualiza el comentario."""
     semana = semana_de(semana_txt)
     pegados = limpiar_skus(crudo)
     if len(pegados) > _MAX_SKUS_LOTE:
@@ -499,28 +623,37 @@ def agregar_sync(semana_txt: str | None, crudo: Iterable[str] | str) -> dict[str
                                        f"carga es {_MAX_SKUS_LOTE}."}
     reales, desconocidos = _canonicos(pegados)
     skus = [reales[s.upper()] for s in pegados if s.upper() in reales]
+    comentarios = {k.upper(): v for k, v in (comentarios or {}).items() if v}
     por = actor.actual() or None
     nuevos = 0
     if skus:
-        sql = ("insert into ops.checklist_lote (semana, sku, agregado_por) "
-               "values (%s, %s, %s) on conflict (semana, sku) do nothing")
+        try:
+            ya = {r["sku"].upper() for r in _q(
+                "select sku::text as sku from ops.checklist_lote "
+                "where semana = %s and sku::text = any(%s)", (semana, skus))}
+        except FaltaMigracion as exc:
+            return {"ok": False, "falta_migracion": True, "motivo": str(exc)}
 
         def _hacer() -> int:
             n = 0
             with sdb.get_cursor() as cur:
                 for s in skus:
-                    cur.execute(sql, (semana, s, por))
-                    n += cur.rowcount
+                    com = comentarios.get(s.upper())
+                    if s.upper() not in ya:
+                        cur.execute(
+                            "insert into ops.checklist_lote (semana, sku, comentario, "
+                            "agregado_por, agregado_en) values (%s, %s, %s, %s, "
+                            "clock_timestamp()) on conflict (semana, sku) do nothing",
+                            (semana, s, com, por))
+                        n += cur.rowcount
+                    elif com:
+                        cur.execute("update ops.checklist_lote set comentario = %s "
+                                    "where semana = %s and sku = %s", (com, semana, s))
             return n
-        try:
-            nuevos = sdb.reintentar_transitorio(_hacer)
-        except Exception as exc:  # noqa: BLE001
-            if _sin_tabla(exc):
-                return {"ok": False, "falta_migracion": True,
-                        "motivo": "Falta aplicar la migración 0058 en kubera."}
-            raise
-    return {"ok": True, "semana": semana.isoformat(), "agregados": nuevos,
-            "ya_estaban": len(skus) - nuevos, "desconocidos": desconocidos}
+        nuevos = sdb.reintentar_transitorio(_hacer)
+    return {"ok": True, "semana": semana.isoformat(), "etiqueta": etiqueta(semana),
+            "agregados": nuevos, "ya_estaban": len(skus) - nuevos,
+            "desconocidos": desconocidos}
 
 
 def quitar_sync(semana_txt: str | None, crudo: Iterable[str] | str) -> dict[str, Any]:
@@ -533,8 +666,7 @@ def quitar_sync(semana_txt: str | None, crudo: Iterable[str] | str) -> dict[str,
                         (semana, skus))
     except Exception as exc:  # noqa: BLE001
         if _sin_tabla(exc):
-            return {"ok": False, "falta_migracion": True,
-                    "motivo": "Falta aplicar la migración 0058 en kubera."}
+            return {"ok": False, "falta_migracion": True, "motivo": _MSG_MIGRACION}
         raise
     return {"ok": True, "quitados": n}
 
@@ -547,12 +679,7 @@ def matriz_sync(cat: str) -> dict[str, Any]:
     crudos = specs_editor._campos_ml(cat)
     nombre = _nombres_categoria([cat]).get(cat) or {}
     base = {"categoria": cat, "nombre": nombre.get("nombre"), "ruta": nombre.get("ruta")}
-    try:
-        promovidos = _matriz([cat]).get(cat) or {}
-    except FaltaMigracion as exc:
-        return {**base, "ok": False, "falta_migracion": True, "motivo": str(exc),
-                "campos": []}
-    campos = campos_de(cat, crudos, promovidos)
+    campos = campos_de(cat, crudos, _matriz([cat]).get(cat) or {})
     return {**base, "ok": True, "falta_migracion": False,
             "motivo": None if campos else
             "Mercado Libre no contestó qué pide esta categoría; intenta en un momento.",
@@ -570,25 +697,12 @@ def guardar_matriz_sync(cat: str, cambios: dict[str, bool]) -> dict[str, Any]:
                if k in crudos and not crudos[k].get("obligatorio")}
     if not validos:
         return {"ok": True, "guardados": 0}
-    por = actor.actual() or None
-    sql = ("insert into ops.checklist_matriz (canal, categoria_id, campo, obligatorio, "
-           "actualizado_por) values (%s, %s, %s, %s, %s) "
-           "on conflict (canal, categoria_id, campo) do update set "
-           "obligatorio = excluded.obligatorio, "
-           "actualizado_por = excluded.actualizado_por, actualizado_en = now()")
-
-    def _hacer() -> int:
-        with sdb.get_cursor() as cur:
-            for campo, ob in validos.items():
-                cur.execute(sql, (CANAL, cat, campo, ob, por))
-        return len(validos)
-    try:
-        n = sdb.reintentar_transitorio(_hacer)
-    except Exception as exc:  # noqa: BLE001
-        if _sin_tabla(exc):
-            return {"ok": False, "falta_migracion": True,
-                    "motivo": "Falta aplicar la migración 0058 en kubera."}
-        raise
+    promover = {k: crudos[k].get("tipo") for k, v in validos.items() if v}
+    quitar = [k for k, v in validos.items() if not v]
+    n = _escribir_matriz(cat, promover, quitar)
+    # field_requirements no tiene columna de autor: queda en el log.
+    log.info("checklist: %s cambió la matriz de %s: +%s -%s", actor.actual() or "?",
+             cat, sorted(promover), sorted(quitar))
     return {"ok": True, "guardados": n}
 
 
@@ -703,8 +817,29 @@ def _skus_export(semana_txt: str | None, sel: str | None) -> tuple[dt.date, list
     if elegidos:
         return semana, elegidos
     return semana, [r["sku"] for r in _q(
-        "select sku from ops.checklist_lote where semana = %s order by agregado_en, sku",
-        (semana,))]
+        "select sku::text as sku from ops.checklist_lote where semana = %s "
+        "order by agregado_en, sku", (semana,))]
+
+
+def _texto_sistema(ref: dict[str, Any] | None) -> str:
+    """La referencia de costos_validados en una línea: lo que HOY dice el
+    sistema, que almacén NO debe copiar (son flete y packing list, no medidas)."""
+    if not ref:
+        return "sin datos en el sistema"
+    partes = []
+    if all(ref.get(k) for k in ("largo", "ancho", "alto")):
+        partes.append(f"{ref['largo']:g}×{ref['ancho']:g}×{ref['alto']:g} cm")
+    if ref.get("peso"):
+        partes.append(f"{ref['peso']:g} kg")
+    if ref.get("cajas_pl") is not None or ref.get("piezas_por_caja_pl") is not None:
+        partes.append(f"PL {_texto(ref.get('cajas_pl')) or '—'} cajas × "
+                      f"{_texto(ref.get('piezas_por_caja_pl')) or '—'} pzs")
+    return " · ".join(partes) or "sin datos en el sistema"
+
+
+def _nombre_archivo(semana: dt.date, n: int, ext: str) -> str:
+    anio, num, _ = semana.isocalendar()
+    return f"checklist_week{num}_{anio}_{n}skus.{ext}"
 
 
 def _grupos(skus: list[str], ctx: dict[str, Any]) -> list[tuple[str | None, list[str]]]:
@@ -785,6 +920,9 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
             {"clave": "sku", "titulo": "SKU", "pista": "no lo cambies", "nivel": "id", "ancho": 20},
             {"clave": "titulo", "titulo": "Producto", "pista": "solo referencia",
              "nivel": "id", "ancho": 42},
+            {"clave": "sistema", "titulo": "En sistema (NO es medida)",
+             "pista": "flete y packing list: no lo copies, mide", "nivel": "id",
+             "ancho": 34},
         ]
         columnas += [{"clave": k, "titulo": e, "pista": "Almacén · " + (
             "entero" if t == "entero" else "número"), "nivel": "almacen", "ancho": 13,
@@ -821,6 +959,8 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
                     v: Any = sku
                 elif clave == "titulo":
                     v = ctx["titulos"].get(sku) or ""
+                elif clave == "sistema":
+                    v = _texto_sistema(alm.get("sistema"))
                 elif col["nivel"] == "almacen":
                     v = alm.get(clave)
                 else:
@@ -875,7 +1015,7 @@ def excel_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
 
     buf = io.BytesIO()
     wb.save(buf)
-    nombre = f"checklist_almacen_{semana.isoformat()}_{len(skus)}skus.xlsx"
+    nombre = _nombre_archivo(semana, len(skus), "xlsx")
     return buf.getvalue(), nombre
 
 
@@ -889,22 +1029,26 @@ def _instrucciones(ws, semana: dt.date, n: int, indice: list, fill, negrita) -> 
     ws.column_dimensions["E"].width = 14
     ws["A1"] = "CHECKLIST DE ALMACÉN — Mercado Libre"
     ws["A1"].font = Font(bold=True, size=16, color="1E1B4B")
-    ws["A2"] = (f"Semana del {semana.strftime('%d/%m/%Y')} · {n} SKUs · generado "
+    fin = semana + dt.timedelta(days=6)
+    ws["A2"] = (f"{etiqueta(semana)} · del {semana.strftime('%d/%m')} al "
+                f"{fin.strftime('%d/%m/%Y')} · {n} SKUs · generado "
                 f"{dt.datetime.now(_ZONA).strftime('%d/%m/%Y %H:%M')}"
                 + (f" por {actor.actual()}" if actor.actual() else ""))
     ws["A2"].font = Font(color="475569")
 
     pasos = [
         "1. Cada hoja es una categoría de Mercado Libre. Llena las celdas de color.",
-        "2. AZUL = almacén: medidas del producto EMPACADO (cm y kg), cuántas CAJAS "
-        "hay y cuántas PIEZAS trae cada caja.",
+        "2. AZUL = almacén: MIDE el producto EMPACADO (cm y kg), cuenta las CAJAS "
+        "y cuántas PIEZAS trae cada caja.",
+        "   La columna gris «En sistema» es lo que hoy dice el sistema (flete y "
+        "packing list). NO la copies: es la referencia contra la que se compara.",
         "3. AMARILLO = lo que Mercado Libre exige. NARANJA = lo que el equipo "
         "decidió exigir (matriz).",
         "4. Las columnas grises son opcionales. Las de FACTURACIÓN (clave SAT, "
         "IVA, IEPS, pedimento) vienen plegadas: no son de almacén.",
         "5. NO cambies la columna SKU ni borres el renglón oculto 1: así se sabe "
         "qué es cada cosa al cargarlo.",
-        "6. Una celda vacía NO borra nada. Lo que ya estaba capturado viene "
+        "6. Una celda vacía NO borra nada. Lo que almacén ya capturó antes viene "
         "pre-llenado: corrígelo si está mal.",
         "7. Guarda y cárgalo en Omnicanal → Inventario → Checklist → «Cargar "
         "Excel». Antes de guardar te enseña qué va a cambiar.",
@@ -941,7 +1085,11 @@ def csv_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["sku", "producto", "categoria_id", "categoria", "campo", "etiqueta",
-                "nivel", "tipo", "unidades", "valor"])
+                "nivel", "tipo", "unidades", "en_sistema", "valor"])
+    # La referencia de costos_validados que corresponde a cada campo de almacén.
+    ref_de = {"largo_cm": "largo", "ancho_cm": "ancho", "alto_cm": "alto",
+              "peso_kg": "peso", "cajas": "cajas_pl",
+              "piezas_por_caja": "piezas_por_caja_pl"}
     for sku in skus:
         cat = (ctx["cats_por_sku"].get(sku) or {}).get("categoria")
         nombre = ((ctx["nombres"].get(cat) or {}).get("nombre") or "") if cat else ""
@@ -949,14 +1097,15 @@ def csv_sync(semana_txt: str | None, sel: str | None) -> tuple[bytes, str]:
         alm = ctx["almacen"].get(sku) or {}
         for k, e, t in LOGISTICA:
             v = alm.get(k)
+            ref = (alm.get("sistema") or {}).get(ref_de[k])
             w.writerow([sku, titulo, cat or "", nombre, k, e, "almacen", t, "",
-                        "" if v is None else _texto(v)])
+                        _texto(ref), "" if v is None else _texto(v)])
         valores = ctx["valores"].get(sku) or {}
         for c in ((ctx["campos"].get(cat) or []) if cat else []):
             w.writerow([sku, titulo, cat, nombre, c["campo"], c["etiqueta"], c["nivel"],
-                        c.get("tipo") or "", "/".join(c.get("unidades") or []),
+                        c.get("tipo") or "", "/".join(c.get("unidades") or []), "",
                         valores.get(c["campo"], "")])
-    nombre = f"checklist_almacen_{semana.isoformat()}_{len(skus)}skus.csv"
+    nombre = _nombre_archivo(semana, len(skus), "csv")
     # BOM: sin él, Excel en español abre los acentos como basura.
     return ("﻿" + buf.getvalue()).encode("utf-8"), nombre
 
@@ -991,7 +1140,7 @@ def _celdas_xlsx(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], li
             if not sku:
                 continue
             for j, clave in enumerate(claves):
-                if j == 0 or not clave or clave in ("titulo",):
+                if j == 0 or not clave or clave in ("titulo", "sistema"):
                     continue
                 v = _texto(fila[j]) if j < len(fila) else ""
                 if v:
@@ -1028,7 +1177,6 @@ def _celdas_csv(datos: bytes) -> tuple[list[tuple[str, str, str, str, int]], lis
 
 def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str, Any]:
     ext = (nombre_archivo or "").lower().rsplit(".", 1)[-1]
-    fuente = "csv" if ext == "csv" else "excel"
     try:
         if ext in ("xlsx", "xlsm"):
             celdas, errores = _celdas_xlsx(datos)
@@ -1138,7 +1286,7 @@ def importar_sync(datos: bytes, nombre_archivo: str, aplicar: bool) -> dict[str,
     guardados_alm = 0
     if alm:
         try:
-            guardados_alm = _guardar_almacen(alm, fuente, actor.actual())
+            guardados_alm = _guardar_almacen(alm, actor.actual())
         except FaltaMigracion as exc:
             fallidos.append({"sku": "—", "motivo": str(exc)})
         except Exception as exc:  # noqa: BLE001
@@ -1170,7 +1318,137 @@ def guardar_almacen_sync(sku: str, valores: dict[str, Any]) -> dict[str, Any]:
     if not fila:
         return {"ok": True, "guardados": 0}
     try:
-        _guardar_almacen({real: fila}, "panel", actor.actual())
+        _guardar_almacen({real: fila}, actor.actual())
     except FaltaMigracion as exc:
         return {"ok": False, "falta_migracion": True, "motivo": str(exc)}
     return {"ok": True, "guardados": len(fila)}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# La lista de la semana — el Excel que arma el equipo («Week 39»)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Cada semana llegaba con otras columnas (Week 36: SKU y contenedor sin
+# encabezado; Week 37: SKU, stock y almacén; Week 39: sku entre corchetes,
+# contenedor, tarima, comentarios). El ESTÁNDAR que se acepta es el mínimo
+# común: una hoja «Week NN» con una columna «SKU» (con o sin corchetes) y, si
+# hay, una «Comentarios». Lo demás se ignora: contenedor ya vive en
+# costos_validados y la tarima es ubicación de Odoo, no se repiten aquí.
+
+_HOJA_SEMANA = re.compile(r"(?i)\b(?:week|wk|semana|sem)\s*[-_.]?\s*(\d{1,2})\b")
+_PARECE_SKU = re.compile(r"^[A-Za-z]{2,6}-[A-Za-z0-9][A-Za-z0-9/_.\-]*$")
+
+
+def _sku_de_lista(v: Any) -> str:
+    """'[MIC-0001-GRI]' → 'MIC-0001-GRI'. Las listas copian el SKU como lo
+    escribe Ferraforme, entre corchetes."""
+    return re.sub(r"[\[\]\s]", "", _texto(v))
+
+
+def _hojas_lista(datos: bytes, nombre: str) -> list[dict[str, Any]]:
+    """Cada hoja que trae SKUs: {hoja, semana_iso, skus, comentarios}."""
+    tablas: list[tuple[str, list[list[Any]]]] = []
+    if nombre.lower().endswith(".csv"):
+        texto = datos.decode("utf-8-sig", errors="replace")
+        try:
+            dialecto = csv.Sniffer().sniff(texto[:4096], delimiters=",;\t")
+        except csv.Error:
+            dialecto = csv.excel
+        tablas.append((nombre.rsplit(".", 1)[0],
+                       list(csv.reader(io.StringIO(texto), dialecto))))
+    else:
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(datos), data_only=True, read_only=True)
+        for ws in wb.worksheets:
+            filas = []
+            for i, fila in enumerate(ws.iter_rows(values_only=True)):
+                if i >= 5000:
+                    break
+                filas.append(list(fila))
+            tablas.append((ws.title, filas))
+        wb.close()
+
+    salida = []
+    for titulo, filas in tablas:
+        col_sku, col_com, inicio = None, None, 0
+        for i, fila in enumerate(filas[:5]):
+            textos = [_texto(x).strip().lower() for x in fila]
+            if "sku" in textos:
+                col_sku = textos.index("sku")
+                col_com = next((j for j, x in enumerate(textos)
+                                if x.startswith("comentario")), None)
+                inicio = i + 1
+                break
+        if col_sku is None:
+            col_sku = 0   # sin encabezado (así venía la Week 36): la primera columna
+        skus: list[str] = []
+        comentarios: dict[str, str] = {}
+        vistos: set[str] = set()
+        for fila in filas[inicio:]:
+            if col_sku >= len(fila):
+                continue
+            s = _sku_de_lista(fila[col_sku])
+            if not s or not _PARECE_SKU.match(s) or s.upper() in vistos:
+                continue
+            vistos.add(s.upper())
+            skus.append(s)
+            if col_com is not None and col_com < len(fila):
+                c = _texto(fila[col_com]).strip()
+                if c:
+                    comentarios[s.upper()] = c
+        if skus:
+            m = _HOJA_SEMANA.search(titulo)
+            salida.append({"hoja": titulo, "semana_iso": int(m.group(1)) if m else None,
+                           "skus": skus, "comentarios": comentarios})
+    return salida
+
+
+def lista_sync(datos: bytes, nombre: str, semana_txt: str | None,
+               hoja: str | None, aplicar: bool) -> dict[str, Any]:
+    """Carga la lista semanal al lote. Con `aplicar=false` dice qué hojas vio,
+    cuál tomaría y a qué semana; con `true` la agrega.
+
+    La hoja se elige así: la que se pidió; si no, la «Week NN» de la semana que
+    se está viendo; si no, la de número más alto. La semana sale del NOMBRE de
+    la hoja («Week 39» → lunes 21-sep-2026), en el año ISO de la semana vista.
+    """
+    try:
+        hojas = _hojas_lista(datos, nombre or "")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("checklist: no se pudo leer la lista %s: %s", nombre, exc)
+        return {"ok": False, "motivo": f"No se pudo leer el archivo: {exc}"}
+    if not hojas:
+        return {"ok": False, "motivo": "No encontré ninguna hoja con una columna SKU."}
+
+    vista = semana_de(semana_txt)
+    anio, num_vista, _ = vista.isocalendar()
+
+    def lunes_de(h: dict[str, Any]) -> dt.date:
+        return (lunes_iso(anio, h["semana_iso"]) if h["semana_iso"] else None) or vista
+
+    elegida = next((h for h in hojas if hoja and h["hoja"] == hoja), None)
+    if elegida is None:
+        con_numero = [h for h in hojas if h["semana_iso"]]
+        elegida = (next((h for h in con_numero if h["semana_iso"] == num_vista), None)
+                   or max(con_numero, key=lambda h: h["semana_iso"], default=None)
+                   or hojas[0])
+    semana = lunes_de(elegida)
+    _, desconocidos = _canonicos(elegida["skus"])
+    base = {
+        "ok": True,
+        "hojas": [{"hoja": h["hoja"], "semana_iso": h["semana_iso"],
+                   "skus": len(h["skus"]), "semana": lunes_de(h).isoformat(),
+                   "etiqueta": etiqueta(lunes_de(h))} for h in hojas],
+        "elegida": elegida["hoja"], "semana": semana.isoformat(),
+        "etiqueta": etiqueta(semana), "skus": len(elegida["skus"]),
+        "comentarios": len(elegida["comentarios"]), "desconocidos": desconocidos,
+    }
+    if not aplicar:
+        return {**base, "aplicado": False}
+    res = agregar_sync(semana.isoformat(), elegida["skus"], elegida["comentarios"])
+    if not res.get("ok"):
+        return {**base, **res, "aplicado": False}
+    log.info("checklist: %s cargó la lista %s/%s → %s: %d nuevos, %d ya estaban",
+             actor.actual() or "?", nombre, elegida["hoja"], etiqueta(semana),
+             res.get("agregados", 0), res.get("ya_estaban", 0))
+    return {**base, **res, "aplicado": True}

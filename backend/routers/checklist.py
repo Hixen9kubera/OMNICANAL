@@ -113,6 +113,19 @@ async def importar(archivo: UploadFile = File(...), aplicar: bool = Form(False))
                                    aplicar)
 
 
+@router.post("/lista")
+async def lista(archivo: UploadFile = File(...), semana: str | None = Form(None),
+                hoja: str | None = Form(None), aplicar: bool = Form(False)):
+    """La lista de la semana tal cual la arma el equipo (Excel con hojas «Week
+    NN» y columna SKU, con o sin corchetes). Sin `aplicar` dice qué hojas vio y
+    cuál tomaría; con `aplicar` la agrega al lote de esa semana."""
+    datos = await archivo.read()
+    if len(datos) > _MAX_ARCHIVO:
+        raise HTTPException(413, "El archivo pesa más de 15 MB.")
+    return await asyncio.to_thread(ck.lista_sync, datos, archivo.filename or "",
+                                   semana, hoja, aplicar)
+
+
 @router.put("/almacen/{sku:path}")
 async def guardar_almacen(sku: str, body: _Almacen):
     """Captura en pantalla de medidas, cajas y piezas de UN SKU."""

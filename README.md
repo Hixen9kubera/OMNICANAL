@@ -1001,6 +1001,76 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.565.0 — Checklist normalizado: nada de tablas repetidas, y la lista «Week 39» entra tal cual
+
+Brandon revisó la 0058 en Supabase antes de aplicarla (24-sep): *«cada SKU
+deberá guardar su contenido de atributos en channel_content… las dimensiones y
+el número de cajas debes de buscarlo actualmente en la base de datos para no
+repetir y normalizar la base de datos»*. Y mandó la lista de la semana
+(`Validación.xlsx`, hoja «Week 39»): *«debemos de estandarizarlo»*.
+
+**⚠️ La migración `0058_ops_checklist_almacen.sql` se REESCRIBIÓ. No estaba
+aplicada en producción.** Si alguien aplicó la versión vieja en el sandbox, su
+paso 0 borra las dos tablas que ya no existen.
+
+**Qué quedó de la 0058:**
+- `ops.checklist_lote`: la única tabla nueva, porque no hay nada parecido. Ahora
+  con `comentario` (la columna «Comentarios» de la lista) y llave foránea a
+  `core.products`.
+- **8 columnas `almacen_*` en `core.products`**: largo, ancho, alto y peso del
+  producto empacado, cajas, piezas por caja, quién y cuándo.
+- ~~`ops.checklist_matriz`~~ → la matriz son filas `fuente = 'manual'` de
+  `channel.field_requirements` (el CHECK ya lo admitía; hay 3,331 así de
+  Walmart). El upsert y el delete llevan `fuente = 'manual'` en el SQL: jamás
+  tocan una fila de la API.
+- ~~`ops.checklist_almacen`~~ → las columnas de `core.products`.
+- Los atributos nunca estuvieron en la migración: van a
+  `enrich.channel_content` (canal `mercado_libre`, `contenido->'atributos'`).
+
+**Por qué NO se reusan `largo/ancho/alto/peso/cajas/piezas_por_caja` de
+`costing.costos_validados`** (se revisaron primero, era lo que pedía Brandon):
+- Sus medidas no son medidas. Son el volumen de flete reconstruido del CBM: de
+  15,452 filas solo el 26% cuadra con el flete guardado y 5,854 tienen densidad
+  imposible. Por ejemplo, `ACC-0313-NEG` dice 60×51×51 cm y 0.281 kg, que es la
+  caja máster. Además `costos.py` las **usa**: con `auto_cbm`, que la pestaña
+  Costos manda encendido, el flete se recalcula de largo×ancho×alto, y la
+  comisión de envío de ML sale de ahí. Si almacén escribiera ahí su medida,
+  cambiarían costos y precios en el siguiente recálculo. Brandon eligió
+  columnas propias; que costos use la medida real es otra decisión.
+- Sus cajas y piezas por caja las escribe el **Resolver** desde el packing list.
+  Son la otra mitad de la comparación que Brandon pidió el 8-sep. Pisarlas
+  borraría esa comparación, y el Resolver pisaría a su vez el conteo de almacén.
+- ¿Por qué `core.products` y no una fila nueva en `costos_validados`? Porque
+  Costos y Fulfillment deciden «sin costo» por la **existencia** de la fila
+  (`v.sku is null`, `costing_read.py:141`). En la Week 39, 46 de 100 SKUs no
+  tienen fila de costo: crearla los sacaba de la lista de trabajo de los KAM.
+  `core.products` tiene fila para los 22,416 SKUs, y medidas y piezas por caja
+  son datos del producto.
+
+Lo de `costos_validados` se enseña al lado como **referencia**, en la pantalla
+y en una columna gris del Excel. El texto es «En sistema (NO es medida): 32×22×8
+cm · 1.5 kg · PL 12 cajas × 24 pzs». Así almacén no lo copia: mide.
+
+**La lista semanal, estandarizada** (`POST /api/checklist/lista`):
+- Se sube el Excel tal cual. Se reconoce la hoja «Week NN» y la columna «SKU»,
+  con o sin los corchetes de Ferraforme (`[MIC-0001-GRI]`); «Comentarios» es
+  opcional y lo demás (contenedor, tarima) se ignora porque ya vive en otro
+  lado. También sirven hojas sin encabezado, como venía la Week 36.
+- La semana sale del **nombre de la hoja**: «Week 39» → lunes 21-sep-2026. Toda
+  la pantalla nombra las semanas así, igual que el equipo.
+- Primero enseña las hojas que vio y cuál va a tomar; al agregar, la tabla sale
+  en el **orden de la lista** (`agregado_en` con `clock_timestamp()`).
+- Probado con `Validación.xlsx`: Week 36 (91 SKUs únicos de 119 renglones), Week
+  37 (130) y Week 39 (100, los 100 en kubera). De esos 100, 84 tienen categoría
+  de ML y solo 1 tiene atributos capturados.
+
+**También:** el editor de specs del cajón ahora marca como obligatorio lo que
+subió la matriz, y copia los campos en vez de escribir sobre la caché compartida
+de `_campos_ml`.
+
+Sigue sin tocar costos, precios ni publicaciones. Todo lo nuevo espera la 0058;
+sin ella la pestaña lo dice y el Catálogo sigue igual.
+
 ### v0.564.0 — El Resolver leía los packing lists en chino y tiraba el peso a la basura
 
 Salió de un caso concreto: `TEC-2370-MET` (Descalcificador de Agua) no tenía
