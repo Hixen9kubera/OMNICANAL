@@ -1773,3 +1773,46 @@ export function alertaMargenNegativo(signal?: AbortSignal): Promise<AlertaMargen
 export function alertaCostoSinValidar(signal?: AbortSignal): Promise<AlertaCostoResp> {
   return getJSON<AlertaCostoResp>("/api/alertas/costo-sin-validar", signal);
 }
+
+// ── Investigación: LECTURAS a la Open API de Temu desde producción ─────────
+// Temu sólo acepta la IP de Railway; esto pasa por el backend, que exige admin
+// con sesión, aplica el candado de escritura (sólo `…get` / `…query`) y
+// devuelve la respuesta REDACTADA. Ver backend/routers/investigacion.py.
+
+export interface InvestigacionTemuSugerido {
+  type: string;
+  estado: string;
+  para: string;
+  params: Record<string, unknown>;
+}
+
+export interface InvestigacionTemuTipos {
+  temu_configurado: boolean;
+  regla: Record<string, unknown>;
+  limite: { llamadas: number; por_segundos: number; alcance: string };
+  timeout_s: number;
+  codigos: Record<string, string>;
+  sugeridos: InvestigacionTemuSugerido[];
+}
+
+export interface InvestigacionTemuResp {
+  ok: boolean;
+  type: string;
+  ms: number;
+  codigo: string | null;
+  lectura?: string | null;
+  error?: string | null;
+  campos_redactados?: number;
+  result?: unknown;
+}
+
+export function tiposInvestigacionTemu(signal?: AbortSignal): Promise<InvestigacionTemuTipos> {
+  return getJSON<InvestigacionTemuTipos>("/api/investigacion/temu/tipos", signal);
+}
+
+export function investigarTemu(
+  type: string,
+  params: Record<string, unknown>,
+): Promise<InvestigacionTemuResp> {
+  return postJSON<InvestigacionTemuResp>("/api/investigacion/temu", { type, params });
+}

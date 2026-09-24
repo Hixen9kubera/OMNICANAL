@@ -26,7 +26,7 @@ from routers import (alertas as r_alertas, auth, automatizacion, canales, checkl
                      competencia,
                      costos_publicados, flujo, monitoreo,
                      crear, fanout,
-                     fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, metricas, migracion,
+                     fba, fulfillment, fulfillment_envios, fulfillment_full, ia, imagenes, inventario, investigacion, metricas, migracion,
                      productos, publicaciones, publicar, resolver, sync, ventas,
                      tiktok, webhooks)
 from services import db, odoo, scheduler, woocommerce
@@ -171,7 +171,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.561.0",
+    version="0.562.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -261,6 +261,10 @@ app.include_router(inventario.router)
 # Inventario · Checklist: la validación de almacén (24-sep). Router propio: el
 # de inventario termina en una ruta glotona `/{sku:path}`.
 app.include_router(checklist.router)
+# Investigación: LECTURAS a la Open API de Temu desde la IP de Railway (la
+# única que Temu acepta). Sólo admin con sesión, candado de escritura y
+# respuesta redactada — ver la cabecera de routers/investigacion.py.
+app.include_router(investigacion.router)
 
 
 @app.get("/", tags=["meta"])
@@ -268,7 +272,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.561.0",
+        "version": "0.562.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

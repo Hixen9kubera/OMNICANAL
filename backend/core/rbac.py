@@ -97,6 +97,12 @@ REGLAS: tuple[tuple[str, str, str], ...] = (
     ("GET", "/api/webhooks/ml/log", "admin"),
     ("GET", "/api/auditoria", "admin"),                  # la bitácora misma
     ("POST", "/api/crear/destrabar", "admin"),           # fuerza un lote atorado
+    # INVESTIGACIÓN (24-sep-2026): proxy de LECTURA a la Open API de Temu con
+    # las credenciales de la tienda. El router exige admin con sesión POR SU
+    # CUENTA (no depende de RBAC_ENFORCED); se lista para que sea una decisión
+    # escrita y el auditor no lo cuente como olvido.
+    ("GET", "/api/investigacion", "admin"),
+    ("POST", "/api/investigacion", "admin"),
     # Estas cuatro familias YA pedían admin —por omisión, no por decisión— y
     # está bien que lo pidan: sus pestañas son soloAdmin y traen datos del
     # comprador o tokens. Se listan para que el auditor pueda llegar a CERO;

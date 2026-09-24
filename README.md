@@ -1001,6 +1001,38 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.562.0 — /investigacion: lecturas a la API de Temu desde producción, con candado de escritura
+
+Brandon, 24-sep: *"si Temu no te deja acceder, entra a omnicanal para hacer las
+investigaciones en producción; crea un endpoint específicamente para
+investigaciones"*. La Open API de Temu sólo contesta a la IP de Railway (desde
+fuera: `5000003 NOT_IN_IP_WHITE_LIST`), y la pregunta del día —¿se puede comprar
+una guía por BODEGA en vez de una combinada?— necesita leer almacenes,
+cotizaciones y el origen de guías ya compradas.
+
+- `POST /api/investigacion/temu` {type, params} y `GET /api/investigacion/temu/tipos`
+  (`backend/routers/investigacion.py` + `services/investigacion_temu.py`). Reusa
+  `temu.llamar`: misma firma y sobre que producción.
+- **Candado, falla cerrado** (400 y no sale a la red): forma estricta sin
+  normalizar nada; la última parte debe ser `get` o `query`; lista negra de verbos
+  por segmento y por subcadena (create, confirm, cancel, split, print, buy…); veto
+  a la familia `local.goods.spec.id` (termina en `.get` pero GENERA); los params no
+  pueden traer llaves del sobre (type, access_token, sign…) — `temu.llamar` los
+  mezcla DESPUÉS de fijar el type y un `{"type": "…create"}` lo pisaba.
+- **Redactor por lista blanca**: un texto sólo sale si su llave es del negocio
+  (ids, sn, guía, almacén, paquetería, SKU, importes, estados, errores de Temu);
+  lo demás, `[redactado]`, incluidos roles de persona y `buyerId`. La URL de la
+  etiqueta también (el PDF lleva la dirección del comprador). Nada del payload a
+  disco ni a logs: sólo quién, type, código y ms.
+- Sólo **admin con sesión** (401/403 para lo demás, también la X-API-Key); regla
+  RBAC explícita. 30 llamadas/min globales + 3 simultáneas, timeout 20 s.
+- Página `/investigacion` (sin entrada en el menú): tipos sugeridos, params en
+  JSON, respuesta formateada y copiable. Usa el cliente de API existente.
+
+Probado sin red: **781 comprobaciones** (el catálogo de 207 tipos de Temu: 88
+lecturas pasan, las 60 escrituras dan 400 sin un byte a la red; inyecciones por
+params, unicode, mayúsculas; PII en 5 envolturas). `tsc` limpio.
+
 ### v0.561.0 — La clave de cada app de ML puede ir cifrada en Railway
 
 Pregunta de Eduardo al elegir el camino A de la v0.559.0 (24-sep): *¿las claves
