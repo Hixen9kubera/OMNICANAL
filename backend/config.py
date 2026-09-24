@@ -1223,6 +1223,22 @@ class Settings(BaseSettings):
     supabase_write_tokens: bool = False
     supabase_read_tokens: bool = False
 
+    # ── Tokens de ML SOLO desde kubera (24-sep) ──────────────────────────────
+    # Con el flag, `meli` deja de mirar MySQL para los tokens: lee el par de
+    # `ops.ml_tokens` y renueva bajo un candado de Postgres que comparten TODOS
+    # los procesos. El de antes era por proceso, y el 24-sep SANCORFASHION se
+    # renovó dos veces en el mismo segundo.
+    #
+    # La app y la clave de cada cuenta salen del ENTORNO, nunca de una tabla:
+    #   MELI_APP_ID_<CUENTA> / MELI_CLIENT_SECRET_<CUENTA>  (p. ej. _BEKURA),
+    #   y si no están, las globales MELI_APP_ID / MELI_CLIENT_SECRET.
+    # El token trae dentro el número de la app que lo emitió; si no coincide
+    # con la del entorno NO se intenta renovar (ML lo rechazaría) y se avisa.
+    #
+    # MySQL se sigue ESCRIBIENDO como respaldo: si el flag se apaga, el camino
+    # viejo toma el refresh_token de `ml_tokens_dashboard` y tiene que estar vivo.
+    tokens_solo_kubera: bool = False
+
     # ── F2: espejo del DROP (bodega propia) → channel.listings 'general' ──
     # Lee stock_watch_foto (la que ya refresca el vigilante de arriba) y la
     # espeja a la BD kubera. NO mueve inventario: solo copia lo que Woo ya

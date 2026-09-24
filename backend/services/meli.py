@@ -14,6 +14,8 @@ El "FULL" de Mercado Libre = logistic_type == "fulfillment".
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from typing import Any
 
 import httpx
@@ -278,7 +280,11 @@ def _access_token(cuenta: str | None = None) -> str | None:
     conectan ahí; ese proceso renueva proactivamente cada ~6 h) y `ml_tokens`
     (que este backend también mantiene al refrescar reactivamente). Comparar
     `updated_at` evita quedarse con una copia vieja si el otro proceso ya renovó.
+
+    Con TOKENS_SOLO_KUBERA no hay arbitraje: el token sale solo de kubera.
     """
+    if settings.tokens_solo_kubera:
+        return _access_token_kubera(cuenta)
     try:
         candidatos = []
         # PASO 6 (19-ago): kubera entra al MISMO arbitraje por recencia, no lo
@@ -321,6 +327,34 @@ def _access_token(cuenta: str | None = None) -> str | None:
         return raw  # ya venía en claro
     except Exception as exc:  # noqa: BLE001
         log.warning("No se pudo leer token ML: %s", exc)
+        return None
+
+
+def _clave(cuenta: str | None) -> str | None:
+    """
+    La cuenta como está guardada en kubera: en MAYÚSCULAS.
+
+    MySQL compara sin distinguir mayúsculas y Postgres no: `competencia_ml` pide
+    'bekura' y en MySQL la hallaba. Sin esto, con el flag esa llamada se quedaría
+    sin token — y peor, al renovar crearía una fila 'bekura' al lado de 'BEKURA'.
+    """
+    return (cuenta or "").strip().upper() or None
+
+
+def _access_token_kubera(cuenta: str | None) -> str | None:
+    """TOKENS_SOLO_KUBERA: el access_token sale SOLO de `ops.ml_tokens`."""
+    try:
+        from services import tokens_read
+        fila = tokens_read.leer(_clave(cuenta))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo leer token ML de kubera (%s): %s", cuenta, exc)
+        return None
+    if not fila or not fila.get("access_token"):
+        return None
+    try:
+        return _dec(_fernet(), fila["access_token"])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("No se pudo desencriptar token ML (%s): %s", cuenta, exc)
         return None
 
 
@@ -510,7 +544,11 @@ def refrescar_token(cuenta: str) -> str | None:
     la fila), para que ambos procesos queden sincronizados con el refresh_token
     vigente — ML lo rota en cada uso, así que si quedan desincronizados el
     siguiente refresh de cualquiera de los dos falla con invalid_grant.
+
+    Con TOKENS_SOLO_KUBERA renueva `_refrescar_solo_kubera`, bajo candado.
     """
+    if settings.tokens_solo_kubera:
+        return _refrescar_solo_kubera(cuenta)
     creds = _credenciales_refresh(cuenta)
     if not creds:
         log.warning("Sin credenciales para renovar token de %s "
@@ -526,17 +564,7 @@ def refrescar_token(cuenta: str) -> str | None:
             "refresh_token": rt,
         }, timeout=20)
         if r.status_code != 200:
-            log.warning("Refresh token ML %s falló: %s %s", cuenta, r.status_code, r.text[:150])
-            try:
-                from services import alertas
-                alertas.avisar(
-                    "tokens_ml",
-                    f"*Refresh de token ML {cuenta} FALLÓ* ({r.status_code}: "
-                    f"{r.text[:100]}). Si es `invalid_grant`, el refresh_token "
-                    f"murió y hay que re-autorizar — los pedidos de esa cuenta "
-                    f"pueden parar.")
-            except Exception:  # noqa: BLE001
-                pass
+            _avisar_refresh_fallido(cuenta, r)
             return None
         tok = r.json()
         nuevo = tok["access_token"]
@@ -574,6 +602,205 @@ def refrescar_token(cuenta: str) -> str | None:
     except Exception as exc:  # noqa: BLE001
         log.warning("Refresh token ML %s error: %s", cuenta, exc)
         return None
+
+
+def _avisar_refresh_fallido(cuenta: str, r) -> None:
+    log.warning("Refresh token ML %s falló: %s %s", cuenta, r.status_code, r.text[:150])
+    try:
+        from services import alertas
+        alertas.avisar(
+            "tokens_ml",
+            f"*Refresh de token ML {cuenta} FALLÓ* ({r.status_code}: "
+            f"{r.text[:100]}). Si es `invalid_grant`, el refresh_token "
+            f"murió y hay que re-autorizar — los pedidos de esa cuenta "
+            f"pueden parar.")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ── TOKENS_SOLO_KUBERA: renovar sin MySQL ─────────────────────────────────────
+# Si otro proceso renovó hace menos de esto, su token se reutiliza en vez de
+# gastar el refresh_token otra vez. Misma ventana que `_renovar_con_candado`.
+_REUSO_S = 120
+# Candado por cuenta DENTRO del proceso, antes del de Postgres: así una ráfaga
+# de hilos espera aquí y no ocupando las 6 conexiones del pool de kubera.
+_hilos_lock = threading.Lock()
+_hilos: dict[str, threading.Lock] = {}
+
+
+def _candado_hilo(cuenta: str) -> threading.Lock:
+    with _hilos_lock:
+        return _hilos.setdefault(cuenta, threading.Lock())
+
+
+def _app_de_cuenta(cuenta: str) -> tuple[str, str] | None:
+    """
+    (app_id, client_secret) para renovar, del ENTORNO y nunca de una tabla:
+    primero los de la cuenta (MELI_APP_ID_<CUENTA>, MELI_CLIENT_SECRET_<CUENTA>),
+    si no, los globales (MELI_APP_ID/MELI_CLIENT_SECRET, la app de los webhooks).
+    """
+    app = os.environ.get(f"MELI_APP_ID_{cuenta}", "").strip()
+    secreto = os.environ.get(f"MELI_CLIENT_SECRET_{cuenta}", "").strip()
+    if app and secreto:
+        return app, secreto
+    if settings.meli_app_id and settings.meli_client_secret:
+        return settings.meli_app_id, settings.meli_client_secret
+    return None
+
+
+def _app_del_token(token: str | None) -> str | None:
+    """
+    La app que emitió un access_token de ML: `APP_USR-<app_id>-<fecha>-...`.
+    El número de app NO es secreto (sale en la URL de autorización); el resto
+    del token sí, y aquí no se devuelve nada más.
+    """
+    partes = (token or "").split("-")
+    if len(partes) > 2 and partes[0] == "APP_USR" and partes[1].isdigit():
+        return partes[1]
+    return None
+
+
+def _refrescar_solo_kubera(cuenta: str) -> str | None:
+    """
+    Renueva leyendo y guardando SOLO en kubera, bajo un candado que comparten
+    todos los procesos (`tokens_read.candado_renovacion`).
+
+    El par nuevo se guarda antes de soltar el candado: quien espera, al entrar,
+    ya lo ve con `edad_s` chica y lo reutiliza en vez de volver a gastar el
+    refresh_token. MySQL recibe una copia DESPUÉS, sin decidir nada: es la
+    reversa por si el flag se apaga.
+    """
+    from services import tokens_read
+    clave = _clave(cuenta)
+    if not clave:
+        return None
+    app = _app_de_cuenta(clave)
+    if not app:
+        log.warning("Sin app de ML para renovar %s: faltan MELI_APP_ID_%s y "
+                    "MELI_CLIENT_SECRET_%s (o las globales).", clave, clave, clave)
+        return None
+    app_id, secreto = app
+    f = _fernet()
+    nuevo = par = None
+    with _candado_hilo(clave):
+        try:
+            with tokens_read.candado_renovacion(clave) as (fila, guardar_par):
+                if not fila or not fila.get("refresh_token"):
+                    log.warning("Sin refresh_token de %s en kubera; no se puede "
+                                "renovar.", clave)
+                    return None
+                actual = _dec(f, fila.get("access_token"))
+                if fila.get("edad_s") is not None and fila["edad_s"] < _REUSO_S:
+                    log.info("Token ML %s: otro proceso lo acaba de renovar; "
+                             "se reutiliza.", clave)
+                    return actual
+                emisora = _app_del_token(actual)
+                if emisora and emisora != app_id:
+                    _avisar_app_distinta(clave, emisora, app_id)
+                    return None
+                rt = _dec(f, fila["refresh_token"])
+                r = httpx.post(f"{_API}/oauth/token", data={
+                    "grant_type": "refresh_token",
+                    "client_id": app_id,
+                    "client_secret": secreto,
+                    "refresh_token": rt,
+                }, timeout=20)
+                if r.status_code != 200:
+                    _avisar_refresh_fallido(clave, r)
+                    return None
+                tok = r.json()
+                nuevo = tok["access_token"]
+                par = (_enc(f, nuevo), _enc(f, tok.get("refresh_token", rt)))
+                guardar_par(*par)
+        except Exception as exc:  # noqa: BLE001
+            if not par:
+                log.warning("Refresh token ML %s error: %s", clave, exc)
+                return None
+            # ML YA rotó el refresh_token: si este par se pierde, la cuenta
+            # queda sin forma de renovar y hay que re-autorizarla a mano.
+            log.error("El par nuevo de %s no se guardó bajo el candado (%s); "
+                      "se reintenta fuera.", clave, exc)
+            try:
+                tokens_read.guardar(clave, *par)
+            except Exception as exc2:  # noqa: BLE001
+                log.error("El par nuevo de %s NO se pudo guardar en kubera: %s",
+                          clave, exc2)
+                try:
+                    from services import alertas
+                    alertas.avisar(
+                        "tokens_ml",
+                        f"*Token ML {clave} renovado pero NO guardado en kubera* "
+                        f"({type(exc2).__name__}). ML ya rotó el refresh_token: "
+                        f"si la copia de MySQL tampoco quedó, hay que re-autorizar "
+                        f"la cuenta.")
+                except Exception:  # noqa: BLE001
+                    pass
+    _espejar_mysql(clave, *par)
+    log.info("Token ML %s renovado (solo kubera).", clave)
+    return nuevo
+
+
+def _avisar_app_distinta(cuenta: str, emisora: str, app_id: str) -> None:
+    log.warning("Token ML %s es de la app %s y el entorno da la %s: no se "
+                "renueva.", cuenta, emisora, app_id)
+    try:
+        from services import alertas
+        alertas.avisar(
+            "tokens_ml",
+            f"*No se renovó el token ML {cuenta}*: lo emitió la app {emisora} "
+            f"y el entorno da la app {app_id}; ML lo rechazaría. Definir "
+            f"`MELI_APP_ID_{cuenta}`/`MELI_CLIENT_SECRET_{cuenta}` con los de la "
+            f"app {emisora}, o re-autorizar la cuenta con la {app_id}. El token "
+            f"vigente vence a las ~6 h de su última renovación.")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def revisar_apps_kubera() -> list[dict[str, Any]]:
+    """
+    ANTES de encender TOKENS_SOLO_KUBERA: por cada cuenta de `ops.ml_tokens`,
+    ¿el entorno da la app que emitió su token? Si no, al vencer el token no se
+    podría renovar y esa cuenta se quedaría sin API. Solo lee; devuelve números
+    de app y edades, nunca un token ni una clave.
+    """
+    from services import supabase_db as sdb
+    f = _fernet()
+    filas = sdb.fetch_all(
+        "select cuenta, access_token, extract(epoch from (now() - updated_at))::float "
+        "/ 60 as edad_min from ops.ml_tokens order by cuenta")
+    salida = []
+    for r in filas:
+        cuenta = r["cuenta"]
+        try:
+            emisora = _app_del_token(_dec(f, r["access_token"]))
+        except Exception:  # noqa: BLE001 — no descifra: la llave no es la de estos tokens
+            emisora = "no-descifra"
+        app = _app_de_cuenta(cuenta)
+        propia = bool(os.environ.get(f"MELI_APP_ID_{cuenta}", "").strip()
+                      and os.environ.get(f"MELI_CLIENT_SECRET_{cuenta}", "").strip())
+        salida.append({
+            "cuenta": cuenta,
+            "app_token": emisora,
+            "app_entorno": app[0] if app else None,
+            "fuente": "cuenta" if propia else ("global" if app else "ninguna"),
+            "coincide": bool(app) and emisora == app[0],
+            "edad_min": round(r["edad_min"] or 0),
+        })
+    return salida
+
+
+def _espejar_mysql(cuenta: str, enc_at: str, enc_rt: str) -> None:
+    """Copia a MySQL para que apagar el flag no deje un refresh_token quemado."""
+    if not settings.mysql_enabled:
+        return
+    for tabla in ("ml_tokens", "ml_tokens_dashboard"):
+        try:
+            with db.get_cursor() as cur:
+                cur.execute(
+                    f"UPDATE {tabla} SET access_token=%s, refresh_token=%s, "
+                    f"updated_at=NOW() WHERE cuenta=%s", (enc_at, enc_rt, cuenta))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("No se pudo copiar el token de %s a %s: %s", cuenta, tabla, exc)
 
 
 # ── Refresco en vivo contra la API de Mercado Libre ───────────────────────────

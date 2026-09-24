@@ -89,10 +89,13 @@ BEKURA="Kubera" y SANCORFASHION="San Corpe")**, **Amazon** (San Corpe) y, vía
    decidir nada leyéndola por API (la limpieza del 17-jul canceló de más por
    fiarse de esa lectura; Woo aguantó por su contabilidad por línea
    `_reduced_stock`).
-8. **Tokens ML**: los renueva un proceso externo irregular; si mueren, el
-   backend se auto-sana en `meli.obtener_orden` (401 → refresh con candado por
-   cuenta). Si los pedidos paran: 1º revisar `ml_tokens_dashboard.updated_at`,
-   2º probar el token con `/users/me`.
+8. **Tokens ML**: los renueva el PROPIO backend al primer 401 tras vencer
+   (~6 h, con candado por cuenta; medido el 24-sep-2026: el renovador externo
+   ya no corre). Si los pedidos paran: 1º revisar `ops.ml_tokens.updated_at`
+   (y `ml_tokens_dashboard` mientras `TOKENS_SOLO_KUBERA` siga apagado), 2º
+   probar el token con `/users/me`, 3º buscar `Refresh token ML` en los logs.
+   Los tokens son de la app que los EMITIÓ (hoy 1446…/1267…, no la 8902): antes
+   de encender `TOKENS_SOLO_KUBERA`, `scripts/revisar_tokens_solo_kubera.py`.
 9. **Equipo activo en `main`**: siempre `git pull --rebase` antes de push.
    Commits con changelog; versión `+0.1` en `backend/main.py` (dos lugares) y
    entrada DETALLADA en README por cada feature.

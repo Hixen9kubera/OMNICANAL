@@ -64,8 +64,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterator
 
 from services import supabase_db as sdb
 
@@ -121,6 +122,20 @@ def guardar(cuenta: str, access_token: str, refresh_token: str,
     # Asi que si hay llave configurada y el valor NO viene cifrado, algo se rompio
     # y NO se guarda. Sin llave (ambientes de desarrollo) se deja pasar avisando,
     # porque ahi no hay nada que proteger.
+    _exigir_cifrado(cuenta, access_token, refresh_token)
+    return sdb.execute(_UPSERT, (cuenta, access_token, refresh_token, cuando))
+
+
+_UPSERT = """insert into ops.ml_tokens (cuenta, access_token, refresh_token, updated_at)
+           values (%s, %s, %s, coalesce(%s, clock_timestamp()))
+           on conflict (cuenta) do update set
+             access_token  = excluded.access_token,
+             refresh_token = excluded.refresh_token,
+             updated_at    = excluded.updated_at"""
+
+
+def _exigir_cifrado(cuenta: str, access_token: str, refresh_token: str) -> None:
+    """La guarda de `guardar`, aparte para que el candado la use igual."""
     from config import settings as _s
     en_claro = [n for n, v in (("access", access_token), ("refresh", refresh_token))
                 if not str(v or "").startswith("gAAAAA")]
@@ -134,14 +149,47 @@ def guardar(cuenta: str, access_token: str, refresh_token: str,
                     "%s sin cifrar (ambiente de desarrollo).",
                     cuenta, "/".join(en_claro))
 
-    return sdb.execute(
-        """insert into ops.ml_tokens (cuenta, access_token, refresh_token, updated_at)
-           values (%s, %s, %s, coalesce(%s, now()))
-           on conflict (cuenta) do update set
-             access_token  = excluded.access_token,
-             refresh_token = excluded.refresh_token,
-             updated_at    = excluded.updated_at""",
-        (cuenta, access_token, refresh_token, cuando))
+
+# Tope de espera por el candado. Quien lo tiene lo suelta en cuanto ML contesta,
+# y el POST a /oauth/token se corta a los 20 s: 45 s solo se alcanzan si algo se
+# colgó, y entonces es mejor rendirse que acumular conexiones del pool esperando.
+_ESPERA_CANDADO = "45s"
+
+
+@contextmanager
+def candado_renovacion(cuenta: str) -> Iterator[tuple[dict[str, Any] | None, Any]]:
+    """
+    El candado de RENOVACIÓN de una cuenta, compartido por TODOS los procesos.
+
+    Este módulo sigue sin llamar a la API de ML: el candado solo ordena la fila.
+    Entrega `(fila, guardar_par)`:
+
+      · `fila` se lee YA DENTRO del candado, con `edad_s` = segundos desde la
+        última renovación. Si otro proceso renovó mientras se esperaba, aquí ya
+        se ve el par nuevo y no hay que volver a gastar el refresh_token.
+      · `guardar_par(access, refresh)` guarda el par nuevo en la MISMA
+        transacción, antes de soltar el candado.
+
+    Es `pg_advisory_XACT_lock`, no de sesión: el pooler de transacciones (6543)
+    no garantiza la misma sesión entre sentencias, y un candado de sesión se
+    quedaría pegado a una conexión COMPARTIDA (la misma trampa de la regla 13).
+    El de transacción se suelta solo con el commit o el rollback.
+    """
+    with sdb.get_cursor() as cur:
+        cur.execute("select set_config('lock_timeout', %s, true)", (_ESPERA_CANDADO,))
+        cur.execute("select pg_advisory_xact_lock(hashtext('ml_tokens:renovar'), "
+                    "hashtext(%s))", (cuenta,))
+        cur.execute(
+            """select cuenta, access_token, refresh_token,
+                      extract(epoch from (clock_timestamp() - updated_at))::float as edad_s
+                 from ops.ml_tokens where cuenta = %s""", (cuenta,))
+        fila = cur.fetchone()
+
+        def guardar_par(access_token: str, refresh_token: str) -> None:
+            _exigir_cifrado(cuenta, access_token, refresh_token)
+            cur.execute(_UPSERT, (cuenta, access_token, refresh_token, None))
+
+        yield fila, guardar_par
 
 
 def censo() -> list[dict[str, Any]]:

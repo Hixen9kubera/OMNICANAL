@@ -488,6 +488,9 @@ def _revisar_silencio_ventas() -> None:
 
 def _revisar_tokens_rancios() -> None:
     """El renovador externo refresca ~cada 6 h; 12 h sin tocar = está caído."""
+    if settings.tokens_solo_kubera:
+        _revisar_tokens_rancios_kubera()
+        return
     from services import db
     try:
         fila = db.fetch_one("SELECT MAX(updated_at) AS ult FROM ml_tokens_dashboard")
@@ -504,6 +507,34 @@ def _revisar_tokens_rancios() -> None:
                f"*Tokens ML sin renovar hace {horas:.0f} h* (el renovador externo "
                f"corre ~cada 6 h). El backend se auto-sana al primer 401, pero si "
                f"el refresh_token muere, los pedidos paran. Probar `/users/me`.",
+               nivel="🟡")
+
+
+def _revisar_tokens_rancios_kubera() -> None:
+    """
+    TOKENS_SOLO_KUBERA: la edad de CADA cuenta en `ops.ml_tokens`.
+
+    Por cuenta y no el MAX de todas: con el MAX, una cuenta al día tapaba a la
+    otra muerta. Y ya no hay renovador externo (medido el 24-sep): renueva el
+    propio panel al primer 401 después de que el token vence (~6 h), así que
+    12 h sin renovar = el panel lo intentó y no pudo.
+    """
+    from services import supabase_db as sdb
+    try:
+        filas = sdb.fetch_all(
+            "select cuenta, extract(epoch from (now() - updated_at))::float / 3600 "
+            "as horas from ops.ml_tokens order by cuenta")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("vigilante tokens: %s", exc)
+        return
+    rancias = [f for f in filas if f.get("horas") is not None and f["horas"] >= 12]
+    if rancias:
+        detalle = ", ".join(f"{f['cuenta']} hace {f['horas']:.0f} h" for f in rancias)
+        avisar("tokens_rancios",
+               f"*Tokens ML sin renovar*: {detalle}. El panel los renueva solo al "
+               f"primer 401 tras vencer (~6 h); 12 h = lo intentó y no pudo — "
+               f"buscar `Refresh token ML` en los logs. Si el refresh_token "
+               f"muere, los pedidos paran. Probar `/users/me`.",
                nivel="🟡")
 
 

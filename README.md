@@ -1001,6 +1001,64 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.559.0 — Los tokens de Mercado Libre pueden leerse y renovarse solo desde kubera
+
+A pedido de Eduardo (24-sep): que los tokens solo se lean de kubera. Todo va
+detrás de `TOKENS_SOLO_KUBERA` (**apagado por default**): con el flag apagado el
+backend se comporta igual que en la v0.558.0.
+
+**Por qué.** `meli._access_token` compara tres copias (kubera, `ml_tokens` y
+`ml_tokens_dashboard`) y `_credenciales_refresh` saca la app y la clave de
+`ml_tokens_dashboard`. Medido el 24-sep: el renovador externo ya no corre; el que
+renueva es el propio panel, al primer 401 tras vencer, y escribe las tres copias
+en el mismo segundo. Y su candado era por proceso: ese día SANCORFASHION se
+renovó dos veces en el mismo segundo.
+
+**Qué cambia con el flag:**
+- `_access_token` lee SOLO `ops.ml_tokens`, con la cuenta en mayúsculas
+  (Postgres distingue y MySQL no: `competencia_ml` pide `'bekura'`). Si kubera no
+  contesta, `None`; nunca una copia de MySQL.
+- `refrescar_token` → `_refrescar_solo_kubera`: candado de Postgres por cuenta
+  (`tokens_read.candado_renovacion`, `pg_advisory_xact_lock`: de transacción,
+  así sirve con el pooler 6543) que comparten todos los procesos, más uno por
+  hilo para no llenar el pool. Dentro relee la fila: si otro la renovó hace
+  menos de 2 min, la reutiliza sin gastar el refresh_token. El par nuevo se
+  guarda antes de soltar el candado, y si no se pudo, se reintenta fuera (ML ya
+  rotó el refresh_token). Espera máxima 45 s (`lock_timeout` local).
+- La app y la clave salen del **entorno**: `MELI_APP_ID_<CUENTA>` /
+  `MELI_CLIENT_SECRET_<CUENTA>`, y si no están, las globales. Nunca de una
+  tabla (nota de la 0023).
+- El token dice qué app lo emitió (`APP_USR-<app>-…`). Si el entorno da otra, no
+  se llama a ML (lo rechazaría) y se avisa con las dos apps.
+- MySQL recibe copia del par nuevo: es la reversa. Con el flag apagado, el camino
+  viejo toma el refresh_token de `ml_tokens_dashboard`, que tiene que estar vivo.
+- El vigilante `tokens_rancios` mira CADA cuenta en kubera; antes tomaba el MAX
+  de MySQL, donde una cuenta al día tapaba a la otra.
+
+**Revisión previa: `scripts/revisar_tokens_solo_kubera.py`** (solo lee). Por
+cuenta: app del token contra app del entorno, y si la clave es la misma que hoy
+renueva bien en `ml_tokens_dashboard` (huellas, nunca valores). Corrida contra
+producción el 24-sep: **las dos cuentas saldrían NO**. Sus tokens son de las
+apps 1446…/1267… (las de José) y el entorno solo tiene la 8902. Encender así
+dejaría a las dos cuentas sin API al vencer el token.
+
+**Pruebas.** 24 unitarias (`tests/test_tokens_solo_kubera.py`) y
+`scripts/probar_tokens_solo_kubera_sandbox.py` contra el sandbox sin MySQL, con
+tokens inventados y ML simulado: 17/17. Incluye la carrera: tres PROCESOS piden
+renovar a la vez con ML tardando 3 s → una sola renovación, los tres salen con
+el mismo token y es el que quedó en kubera.
+
+**Para encender (producción, con el sí de Eduardo):**
+1. Definir en BackendOmnicanal `MELI_APP_ID_BEKURA`/`MELI_CLIENT_SECRET_BEKURA`
+   y `MELI_APP_ID_SANCORFASHION`/`MELI_CLIENT_SECRET_SANCORFASHION` con la app
+   que emitió cada token, sin que las claves pasen por el chat. Cambiar
+   variables reinicia el contenedor (regla 12).
+2. `revisar_tokens_solo_kubera.py` → OK en las dos.
+3. `TOKENS_SOLO_KUBERA=true` y una renovación vigilada. Si ML la rechaza no se
+   quema nada: se apaga el flag y sigue el camino viejo.
+
+Reversa: `TOKENS_SOLO_KUBERA=false`, sin deploy.
+
 ### v0.558.0 — Los packing lists viven en Supabase y cada costo queda ligado al papel exacto del que salió
 
 A pedido de Eduardo (23-sep). Casi todo va detrás de `PACKING_LEER_STORAGE`
