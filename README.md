@@ -1001,6 +1001,53 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.568.0 — El agente de planeación: instrucciones libres, precio de cada SKU y conversación de seguimiento
+
+Brandon, 24-sep: *"en la mejora con IA me gustaría agregar un campo donde pueda escribir algo más al prompt… toma
+todos los que tengan ticket menor de 300, donde de la lista de SKUs que tenemos y sus precios se determine cuáles
+se manejarán… que pueda comentarle como si fuera un AGENTE para determinar la planeación de la semana según los
+datos que tenemos y qué nos recomienda hacer"*.
+
+**El botón es ahora «Planear con IA» y abre el agente, que no corre solo.** La persona escribe instrucciones
+(opcional; hay ejemplos de un clic: «Toma sólo los SKUs con precio menor a $300», «Prioriza lo que más vendió en
+los últimos 7 días», «Redondea a cajas completas», «No mandes reciclados», «¿Qué me recomiendas comprar?») y
+puede seguir la conversación. Cada turno contesta **qué hizo** con la instrucción (cuántos SKUs y piezas quedan por
+tienda y por qué), **recomendaciones** concretas para la semana, los **ajustes** (con «Aplicar» / «Aplicar
+todos»), los reemplazos de ganadores agotados, alertas, confirmación y resumen. Los turnos anteriores se pliegan;
+lo aplicado queda marcado; «Nueva conversación» empieza de cero. Nada se aplica solo y el servidor sigue
+descartando lo que no esté en la planeación o pase de lo libre.
+
+**El precio de cada SKU** (el «ticket»): Mercado Libre lo da EN VIVO en la misma verificación de `/items`; Amazon
+sale de `channel.listings.price` y Walmart de su API (`price.amount`). Aparece como columna «Precio» en la tabla,
+en la búsqueda de SKUs, en el Excel (y en la hoja de reemplazos) y en los candidatos de reemplazo. Medido el
+24-sep: 429 de 429 renglones de Kubera con precio, 337 de 342 de San Corpe, 46 de 55 de Amazon y 18 de 22 de
+Walmart; 226 y 181 por debajo de $300 en cada cuenta de ML.
+
+**La IA ve la planeación COMPLETA** de las tiendas activas, no sólo los renglones «importantes»: tabla compacta
+(`columnas` + `filas`) con precio, venta, stock, en camino, borradores, libre, pidió, propuesta, a mandar, estado,
+caja y alertas. Pesa ~79 mil tokens por las dos cuentas; la versión anterior mandaba ~120 mil con menos renglones
+como objetos. El backend acepta los dos formatos (`renglones_de`).
+
+**Seguimiento con caché.** El servidor no guarda conversaciones: la pantalla manda en cada turno la planeación de
+AHORA, la instrucción y el historial compacto (instrucción + respuesta + ajustes). La planeación va primero con
+`cache_control`, así que un seguimiento sobre la misma tabla la relee de la caché del servidor: medido, 79,187 de
+83,020 tokens de entrada salieron de caché y la respuesta tardó 40 s. Si entre turnos se aplican ajustes, la
+tabla cambia y ese turno se paga completo (es la tabla correcta).
+
+**Esfuerzo medio y más tope de salida.** Con el esfuerzo por omisión, el primer turno con «menor a $300» tardó
+303 s y usó 31,453 de los 32,000 tokens de salida permitidos (casi se corta). Con `effort: "medium"` la misma
+instrucción dio los mismos 45 ajustes en 170 s y 18,250 tokens. El tope sube a 64,000, la espera del backend a
+900 s y la de la pantalla a 15 minutos.
+
+**Probado con datos reales** (API local de sólo lectura, llamadas reales a Claude): «Toma sólo los SKUs con precio
+menor a $300» bajó a 0 los 45 renglones de $300 o más (31 en Kubera y 14 en San Corpe) y dejó 90 SKUs y 2,830
+piezas. «Aplicar todos» llevó la barra de 3,885 a 2,830 piezas, lo mismo que dijo la IA. Además señaló los que
+quedaron fuera por poco (`TEC-2165-NEG-2PZ` a $319), los SKUs sin precio que no pudo filtrar y a quién comprar. El
+seguimiento «¿qué 5 SKUs mandarías primero?» contestó con los datos de la tabla. 44 pruebas de fulfillment (5
+nuevas: tabla compacta con respuesta y recomendaciones, la planeación primero y en caché, el seguimiento recuerda
+la conversación, arranque con instrucciones y con el cuerpo viejo, y precio del renglón); suite completa en verde;
+`tsc` limpio.
+
 ### v0.567.0 — La solicitud de Crear FULL se guarda en la bitácora: sin tabla nueva, y la 0054 se retira
 
 Brandon, 24-sep, al revisar si la 0054 era necesaria o convenía normalizar con lo que ya existe: *"dale el

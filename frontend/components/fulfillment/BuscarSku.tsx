@@ -11,7 +11,7 @@
 import { useState } from "react";
 import { CheckCircle2, Plus, Search } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
-import { FONDO_RAYADO, num } from "./ui";
+import { FONDO_RAYADO, num, pesos } from "./ui";
 import type { FilaPlan, Tienda, TiendaPlan } from "./tipos";
 
 export default function BuscarSku({ tiendas, ventana, enPlan, onAgregar }: {
@@ -85,6 +85,7 @@ export default function BuscarSku({ tiendas, ventana, enPlan, onAgregar }: {
                   <span className="text-slate-400"> · {(f.nombre ?? f.titulo_mkt ?? "").slice(0, 70)}</span>
                   <span className="block text-[11px] text-slate-500">
                     {f.verificada ? <span className="text-emerald-700">publicada, verificada en vivo</span> : "publicada (copia del sync)"}
+                    {f.precio ? ` · ${pesos(f.precio)}` : ""}
                     {" "}· vendió {num(f.vv)} · en almacén {f.stock === null ? "?" : num(f.stock)}
                     {" "}· libre en Odoo {libre === null ? "no está en Odoo" : num(libre)}
                   </span>

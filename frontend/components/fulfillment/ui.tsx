@@ -55,6 +55,12 @@ export function puntoDe(canal: Canal, cuenta: Cuenta | null): string {
 }
 
 // ── Formatos ────────────────────────────────────────────────────────────────
+/** Un precio en pesos: sin centavos si es entero. */
+export const pesos = (n: number | null | undefined, vacio = "—") =>
+  n === null || n === undefined ? vacio
+    : new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", minimumFractionDigits: n % 1 ? 2 : 0,
+                                       maximumFractionDigits: 2 }).format(n);
+
 export const num = (n: number | null | undefined, vacio = "—") =>
   n === null || n === undefined ? vacio : n.toLocaleString("es-MX");
 

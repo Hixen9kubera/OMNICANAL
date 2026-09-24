@@ -256,7 +256,7 @@ _SQL_VENTAS = """
 _SQL_PUBLICACIONES = """
     select a.legacy_code codigo, l.sku::text sku, l.listing_id, l.url, l.status, l.situacion,
            coalesce(l.is_fulfillment, false) en_almacen, l.logistic_type, l.category_id, l.product_type,
-           coalesce(l.stock_full, 0)::int stock_full, coalesce(l.stock_fba, 0)::int stock_fba
+           coalesce(l.stock_full, 0)::int stock_full, coalesce(l.stock_fba, 0)::int stock_fba, l.price
       from channel.listings l join core.accounts a on a.id = l.account_id
      where (a.legacy_code in ('BEKURA', 'SANCORFASHION') and l.canal = 'mercado_libre'
             and l.situacion in ('active', 'paused', 'under_review'))
@@ -273,6 +273,18 @@ _SQL_MEDIDAS = """
 """
 
 
+def _precio(valor: Any) -> float | None:
+    """El precio de venta de la publicación en pesos. Walmart lo manda como
+    `{"amount": …, "currency": "MXN"}`; ML y la copia del sync, como número."""
+    if isinstance(valor, dict):
+        valor = valor.get("amount")
+    try:
+        n = float(valor)
+    except (TypeError, ValueError):
+        return None
+    return round(n, 2) if n > 0 else None
+
+
 def _por_sku(filas: list[dict], clave: str = "sku") -> dict[str, dict]:
     return {f[clave]: f for f in filas}
 
@@ -287,6 +299,7 @@ def _publicaciones() -> dict[str, dict[str, dict[str, Any]]]:
             continue
         f["stock"] = f["stock_fba"] if t == "amazon" else f["stock_full"]
         f["categoria"] = f.get("category_id") or f.get("product_type")
+        f["precio"] = _precio(f.get("price"))
         # Una publicación por SKU y cuenta (medido); si hubiera dos, gana la que
         # ya está en el almacén del marketplace.
         previa = salida[t].get(f["sku"])
@@ -316,7 +329,7 @@ def _walmart_en_vivo() -> dict[str, dict[str, Any]]:
             salida[sku] = {"sku": sku, "listing_id": it.get("wpid"), "url": None,
                            "situacion": str(it.get("lifecycleStatus") or "").lower() or "published",
                            "en_almacen": None, "categoria": it.get("productType"), "stock": None,
-                           "titulo": it.get("productName")}
+                           "titulo": it.get("productName"), "precio": _precio(it.get("price"))}
     return salida
 
 
@@ -339,7 +352,7 @@ def verificar_ml(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any
     token = _token_ml(codigo)
     if not token:
         return {}
-    campos = "id,status,sub_status,available_quantity,shipping,title,category_id"
+    campos = "id,status,sub_status,available_quantity,shipping,title,category_id,price"
     lotes = [ids[i:i + 20] for i in range(0, len(ids), 20)]
 
     def lote(grupo: list[str]) -> list[dict]:
@@ -366,6 +379,7 @@ def verificar_ml(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any
                     "stock": b.get("available_quantity"),
                     "logistica": (b.get("shipping") or {}).get("logistic_type"),
                     "titulo": b.get("title"), "categoria": b.get("category_id"),
+                    "precio": b.get("price"),
                 }
     return salida
 
@@ -549,7 +563,8 @@ def reemplazos_para(sku: str, tienda: str, pubs: dict[str, dict[str, Any]],
     mismos = sorted((s for s in pubs if s not in vistos and modelo_base(s) == base
                      and libre_total.get(s, 0) > 0), key=lambda s: -libre_total.get(s, 0))
     for s in mismos:
-        salida.append({"sku": s, "nombre": nombres.get(s), "tipo": "mismo modelo", "libre": libre_total[s]})
+        salida.append({"sku": s, "nombre": nombres.get(s), "tipo": "mismo modelo", "libre": libre_total[s],
+                       "precio": _precio(pubs[s].get("precio"))})
         vistos.add(s)
         if len(salida) >= tope:
             return salida
@@ -557,7 +572,8 @@ def reemplazos_para(sku: str, tienda: str, pubs: dict[str, dict[str, Any]],
         misma_cat = sorted((s for s, p in pubs.items() if s not in vistos and p.get("categoria") == categoria
                             and libre_total.get(s, 0) > 0), key=lambda s: -libre_total.get(s, 0))
         for s in misma_cat[:tope - len(salida)]:
-            salida.append({"sku": s, "nombre": nombres.get(s), "tipo": "misma categoría", "libre": libre_total[s]})
+            salida.append({"sku": s, "nombre": nombres.get(s), "tipo": "misma categoría", "libre": libre_total[s],
+                           "precio": _precio(pubs[s].get("precio"))})
     return salida
 
 
@@ -572,6 +588,7 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
         # stock propio del vendedor, así que ahí se queda lo del sync (0 en FULL).
         stock = int(vivo["stock"])
     titulo = (vivo or {}).get("titulo") or (pub or {}).get("titulo")
+    precio = _precio((vivo or {}).get("precio")) or _precio((pub or {}).get("precio"))
     alertas = []
     if pub and not (pub.get("categoria") or (vivo or {}).get("categoria")):
         alertas.append("sin_categoria")
@@ -591,6 +608,7 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
         "en_almacen": bool((vivo or {}).get("logistica") == "fulfillment") if vivo else (pub or {}).get("en_almacen"),
         "verificada": vivo is not None, "titulo_mkt": titulo,
         "categoria": (vivo or {}).get("categoria") or (pub or {}).get("categoria"),
+        "precio": precio,
         "vv": int((venta or {}).get("vv") or 0), "v7": int((venta or {}).get("v7") or 0),
         "ultima_venta": (venta or {}).get("ultima").isoformat() if (venta or {}).get("ultima") else None,
         "stock": stock,
@@ -881,6 +899,7 @@ def buscar(tienda: str, texto: str, envios: list[dict[str, Any]], ventana: int =
             if f["codigo"] == codigo:
                 f["stock"] = f["stock_fba"] if tienda == "amazon" else f["stock_full"]
                 f["categoria"] = f.get("category_id") or f.get("product_type")
+                f["precio"] = _precio(f.get("price"))
                 pubs[tienda][f["sku"]] = f
     universo = pubs.get(tienda, {})
     nombres_todos: dict[str, str] = {}

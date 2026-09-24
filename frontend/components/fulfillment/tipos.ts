@@ -261,6 +261,8 @@ export interface FilaPlan {
   verificada: boolean;
   titulo_mkt: string | null;
   categoria: string | null;
+  /** Precio de venta HOY en esa tienda, en pesos (ML en vivo). null = no se sabe. */
+  precio: number | null;
   /** Vendidas en la ventana (vv) y en los últimos 7 días. */
   vv: number;
   v7: number;
@@ -277,7 +279,7 @@ export interface FilaPlan {
   caja: number | null;
   alertas: AlertaFila[];
   /** Si es ganador agotado: reemplazos YA publicados con stock (mismo modelo, luego misma categoría). */
-  reemplazos: { sku: string; nombre: string | null; tipo: string; libre: number }[];
+  reemplazos: { sku: string; nombre: string | null; tipo: string; libre: number; precio?: number | null }[];
 }
 
 export interface TiendaPlan {
@@ -388,8 +390,12 @@ export interface ResultadoGuia {
   ok: boolean; accion: string; motivo?: string; orden?: string; referencia?: string | null; pdf?: string | null;
 }
 
-/** La revisión de la planeación con IA (Claude), ya validada por el backend. */
+/** Un turno del agente de planeación (Claude), ya validado por el backend. */
 export interface RevisionIA {
+  /** Lo que la IA le contesta a la persona sobre su instrucción. */
+  respuesta: string;
+  /** Acciones concretas para la semana, como las diría un planeador. */
+  recomendaciones: string[];
   confirmacion: string;
   resumen: string;
   ajustes: { tienda: Tienda; sku: string; cantidad: number; motivo: string; nota: string | null }[];
@@ -397,7 +403,8 @@ export interface RevisionIA {
   alertas: { tienda: string; sku: string; tipo: string; detalle: string }[];
   descartados: Record<string, unknown>[];
   modelo?: string;
-  tokens?: { entrada: number; salida: number };
+  /** `cache` = tokens de entrada que se releyeron de la caché (turnos de seguimiento). */
+  tokens?: { entrada: number; salida: number; cache?: number };
 }
 
 // ── La ficha del SKU ────────────────────────────────────────────────────────

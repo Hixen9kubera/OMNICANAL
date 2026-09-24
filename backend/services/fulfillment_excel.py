@@ -23,6 +23,7 @@ _NEGRITA = Font(bold=True)
 
 COLUMNAS = [
     ("sku", "SKU", 20), ("nombre", "Nombre (Omnicanal)", 44), ("destino", "Destino", 12),
+    ("precio", "Precio (MXN)", 12),
     ("vv", "Vendió (ventana)", 12), ("v7", "Vendió 7 d", 10), ("stock", "En almacén hoy", 13),
     ("en_camino", "En camino", 10), ("borrador", "En borradores", 12), ("libre", "Libre Odoo", 11),
     ("pidio", "Pidió (faltante)", 13), ("bodega_puede", "Bodega puede", 12), ("propuesta", "Propuesta", 11),
@@ -75,12 +76,13 @@ def armar(plan: dict[str, Any]) -> bytes:
 
     g = wb.create_sheet("Ganadores agotados")
     _encabezado(g, [("Tienda", 16), ("SKU agotado", 20), ("Nombre", 40), ("Vendió", 10),
-                    ("Reemplazo", 20), ("Nombre del reemplazo", 40), ("Match", 18), ("Libre", 10)])
+                    ("Reemplazo", 20), ("Nombre del reemplazo", 40), ("Match", 18), ("Libre", 10),
+                    ("Precio del reemplazo", 14)])
     for x in plan.get("ganadores") or []:
         cand = x.get("candidatos") or [{}]
         for c in cand:
             g.append([x.get("tienda"), x.get("sku"), x.get("nombre"), x.get("vv"),
-                      c.get("sku"), c.get("nombre"), c.get("tipo"), c.get("libre")])
+                      c.get("sku"), c.get("nombre"), c.get("tipo"), c.get("libre"), c.get("precio")])
 
     s = wb.create_sheet("SKUs")
     _encabezado(s, [("Tienda", 16), ("SKUs a enviar, separados por coma", 120)])

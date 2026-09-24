@@ -9,7 +9,8 @@
  *   · SALDO: en FULL hoy (las dos cuentas), publicaciones sin FULL, lo que se está
  *     mandando ESTA semana y lo que hay por mandar según la planeación.
  *   · PLANEACIÓN: las reglas del prompt estándar (`proponer.ts`), editable renglón
- *     por renglón; buscar y agregar SKUs publicados; revisión con IA.
+ *     por renglón; buscar y agregar SKUs publicados; el AGENTE de planeación (IA con
+ *     instrucciones libres y seguimiento, sobre la planeación completa con precios).
  *   · SALIDA del prompt: A) la tabla, B) totales con tasa de validado, C) ganadores
  *     agotados con reemplazo, D) SKUs separados por coma, E) alertas.
  *   · CREAR: vista previa con Odoo y ML releídos, modo prueba, una orden por tienda
@@ -28,10 +29,10 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import BuscarSku from "./BuscarSku";
 import ConfirmarFull, { GuiaOrden } from "./ConfirmarFull";
 import PanelIA, { datosParaIA } from "./RevisionIA";
-import type { EstadoIA } from "./RevisionIA";
+import type { TurnoIA } from "./RevisionIA";
 import { claveDe, planear, totalesDe } from "./proponer";
 import type { Renglon, Totales } from "./proponer";
-import { Ayuda, Ceja, FONDO_RAYADO, PUNTO_CUENTA, Tarjeta, dia, num, rangoSemana } from "./ui";
+import { Ayuda, Ceja, FONDO_RAYADO, PUNTO_CUENTA, Tarjeta, dia, num, pesos, rangoSemana } from "./ui";
 import type {
   FilaPlan, Interruptor, ParametrosFull, PropuestaFull, RevisionIA, Rol, StockHoy, Tienda,
 } from "./tipos";
@@ -88,7 +89,9 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
   const [filtro, setFiltro] = useState<Filtro>("mandar");
   const [busca, setBusca] = useState("");
   const [revisar, setRevisar] = useState(false);
-  const [ia, setIa] = useState<EstadoIA | null>(null);
+  // El agente de planeación: abierto o no, y la conversación (se conserva al cerrarlo).
+  const [agente, setAgente] = useState(false);
+  const [turnos, setTurnos] = useState<TurnoIA[]>([]);
   const [aviso, setAviso] = useState<string | null>(null);
   const iaVivo = useRef(0);
 
@@ -190,6 +193,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
         sku: r.sku, nombre: r.nombre, destino: datos!.tiendas[t].destino, vv: r.vv, v7: r.v7, stock: r.stock,
         en_camino: r.en_camino, borrador: r.borrador, libre: r.libre_total, pidio: r.pidio, bodega_puede: r.bodega,
         propuesta: r.propuesta, a_mandar: cantidad(r), estado: r.estado, caja: r.caja, listing_id: r.listing_id,
+        precio: r.precio,
       })),
     })),
     ganadores: renglones.filter((r) => r.ganador_agotado).map((r) => ({
@@ -220,27 +224,38 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
     void navigator.clipboard?.writeText(skus.join(", "));
     setAviso(`${skus.length} SKUs copiados${t ? ` de ${datos?.tiendas[t].nombre}` : ""}.`);
   };
-  const pedirIA = async () => {
+  const ponTurno = (id: number, cambios: Partial<TurnoIA>) =>
+    setTurnos((ts) => ts.map((t) => (t.id === id ? { ...t, ...cambios } : t)));
+  const pedirIA = async (instruccion: string) => {
     if (!datos || !params) return;
-    const vuelta = ++iaVivo.current;
-    setIa({ estado: "corriendo", segundos: 0 });
+    const vuelta = iaVivo.current;
+    const id = Date.now();
+    // Lo que ya contestó la IA, compacto: el servidor no guarda conversaciones.
+    const historial = turnos.filter((t) => t.resultado).map((t) => ({
+      instruccion: t.instruccion,
+      respuesta: { respuesta: t.resultado!.respuesta, resumen: t.resultado!.resumen,
+                   ajustes: t.resultado!.ajustes.map((a) => ({ tienda: a.tienda, sku: a.sku, cantidad: a.cantidad })) },
+    }));
+    setTurnos((ts) => [...ts, { id, instruccion, estado: "corriendo", segundos: 0 }]);
     try {
-      const r = await fetchSesion(`${API_BASE}/api/fulfillment/crear-full/ia`,
-                                  { method: "POST", body: JSON.stringify(datosParaIA(renglones, cantidad, params, datos, tiendasActivas)) },
-                                  { "Content-Type": "application/json" });
+      const r = await fetchSesion(`${API_BASE}/api/fulfillment/crear-full/ia`, {
+        method: "POST",
+        body: JSON.stringify({ datos: datosParaIA(renglones, cantidad, params, datos, tiendasActivas),
+                               instrucciones: instruccion, historial }),
+      }, { "Content-Type": "application/json" });
       const d = await r.json() as { ok: boolean; id?: string; motivo?: string };
       if (!r.ok || !d.ok || !d.id) throw new Error(d.motivo ?? `HTTP ${r.status}`);
-      // Hasta 10 minutos: lo mismo que espera el backend a Claude.
-      for (let i = 0; i < 200 && vuelta === iaVivo.current; i++) {
+      // Hasta 15 minutos: lo mismo que espera el backend a Claude.
+      for (let i = 0; i < 300 && vuelta === iaVivo.current; i++) {
         await new Promise((res) => setTimeout(res, 3000));
         const e = await (await fetchSesion(`${API_BASE}/api/fulfillment/crear-full/ia/${d.id}`, { cache: "no-store" })).json();
         if (vuelta !== iaVivo.current) return;
-        if (e.estado === "corriendo") { setIa({ estado: "corriendo", segundos: e.segundos }); continue; }
-        if (e.estado === "listo") { setIa({ estado: "listo", resultado: e.resultado }); return; }
+        if (e.estado === "corriendo") { ponTurno(id, { segundos: e.segundos }); continue; }
+        if (e.estado === "listo") { ponTurno(id, { estado: "listo", resultado: e.resultado }); return; }
         throw new Error(e.motivo ?? "la revisión se perdió");
       }
     } catch (e: unknown) {
-      if (vuelta === iaVivo.current) setIa({ estado: "error", motivo: e instanceof Error ? e.message : String(e) });
+      if (vuelta === iaVivo.current) ponTurno(id, { estado: "error", motivo: e instanceof Error ? e.message : String(e) });
     }
   };
   const aplicarIA = (ajustes: RevisionIA["ajustes"]) => {
@@ -275,15 +290,16 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
             <h2 className="mt-1 text-[22px] font-extrabold tracking-tight text-slate-900">Crear FULL</h2>
             <p className="mt-0.5 max-w-2xl text-[13px] text-slate-500">
               La planeación del prompt estándar con datos en vivo: cada tienda con sus publicaciones. Corrige, agrega
-              SKUs, revisa con IA y crea las órdenes en Odoo; después adjuntas la guía del marketplace.
+              SKUs, pídele a la IA lo que necesites y crea las órdenes en Odoo; después adjuntas la guía del marketplace.
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
             {datos && <EstadoInterruptor interruptor={datos.interruptor} rol={rol} onCambio={() => void cargar(false, ventana)} />}
             {datos?.ia_disponible && (
-              <button type="button" onClick={() => void pedirIA()} disabled={ia?.estado === "corriendo" || !renglones.length}
+              <button type="button" onClick={() => setAgente(true)} disabled={!renglones.length}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-sm font-bold text-white shadow-sm hover:bg-violet-700 disabled:opacity-50">
-                <Sparkles className="h-4 w-4" /> {ia?.estado === "corriendo" ? "La IA está revisando…" : "Revisar con IA"}
+                <Sparkles className="h-4 w-4" />
+                {turnos.some((t) => t.estado === "corriendo") ? "La IA está pensando…" : "Planear con IA"}
               </button>
             )}
           </div>
@@ -348,10 +364,11 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
         </div>
       )}
 
-      {ia && datos && (
-        <PanelIA key={iaVivo.current} ia={ia} datos={datos} onAplicar={aplicarIA}
+      {agente && datos && (
+        <PanelIA turnos={turnos} datos={datos} onAplicar={aplicarIA} onEnviar={(t) => void pedirIA(t)}
                  onAgregarReemplazo={(t, s) => void agregarPorSku(t, s)}
-                 onCerrar={() => { iaVivo.current++; setIa(null); }} />
+                 onNueva={() => { iaVivo.current++; setTurnos([]); }}
+                 onCerrar={() => setAgente(false)} />
       )}
 
       {/* ── La planeación ────────────────────────────────────────────────── */}
@@ -432,11 +449,12 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
         </div>
 
         <div className="mt-3 max-h-[70vh] overflow-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[1320px] border-collapse text-[12.5px]">
+          <table className="w-full min-w-[1400px] border-collapse text-[12.5px]">
             <thead className="sticky top-0 z-10">
               <tr className="bg-slate-50 text-left text-[10px] font-bold uppercase tracking-[.06em] text-slate-500">
                 <th className="px-3 py-2.5"><Ayuda lado="izq" texto="El SKU con el nombre de Omnicanal. Abajo, su publicación en el marketplace; «en vivo» = Mercado Libre la confirmó al armar la planeación.">SKU · producto</Ayuda></th>
                 {vista === "todas" && <th className="px-3 py-2.5"><Ayuda lado="izq" texto="A qué almacén va: FULL de Kubera, FULL de San Corpe, FBA de Amazon o WFS de Walmart.">Tienda</Ayuda></th>}
+                <th className="px-3 py-2.5 text-right"><Ayuda texto="Precio de venta HOY en esa tienda (Mercado Libre en vivo; Amazon y Walmart, el de su publicación). Sirve para planear por ticket.">Precio</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Piezas vendidas en esa tienda en la ventana y su ritmo por día. ↑ = la última semana vende más de 1.5 veces ese ritmo.">Vende</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que hay HOY en el almacén del marketplace (FULL, FBA o WFS). En Mercado Libre se lee en vivo. «?» = no se sabe, no es 0.">En almacén</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Cuántos días alcanza lo que hay en el almacén al ritmo de la ventana.">Aguanta</Ayuda></th>
@@ -456,13 +474,13 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
                         onCambio={(v) => fijar(r.clave, v)} />
               ))}
               {!datos && (
-                <tr><td colSpan={12} className="px-4 py-12 text-center text-sm text-slate-500" style={{ background: FONDO_RAYADO }}>
+                <tr><td colSpan={13} className="px-4 py-12 text-center text-sm text-slate-500" style={{ background: FONDO_RAYADO }}>
                   {cargando ? "Leyendo ventas, publicaciones (verificando en vivo con Mercado Libre), envíos y lo libre en Odoo… tarda unos 25 segundos."
                             : "Sin planeación: revisa el error de arriba."}
                 </td></tr>
               )}
               {datos && visibles.length === 0 && (
-                <tr><td colSpan={12} className="px-4 py-10 text-center text-sm text-slate-500">
+                <tr><td colSpan={13} className="px-4 py-10 text-center text-sm text-slate-500">
                   {tiendasActivas.length ? "Nada en este filtro." : "Prende al menos una tienda."}
                 </td></tr>
               )}
@@ -607,6 +625,7 @@ function FilaUI({ r, valor, editada, conTienda, nombreTienda, onCambio }: {
         </div>
       </td>
       {conTienda && <td className="px-3 py-2 text-[11.5px] font-semibold text-slate-600">{nombreTienda}</td>}
+      <td className="px-3 py-2 text-right font-mono text-[12px] tabular-nums text-slate-700">{pesos(r.precio)}</td>
       <td className="px-3 py-2 text-right">
         <div className="font-mono font-bold tabular-nums text-slate-800">{num(r.vv)}</div>
         <div className="text-[10.5px] text-slate-400" title={`Últimos 7 días: ${r.v7}`}>

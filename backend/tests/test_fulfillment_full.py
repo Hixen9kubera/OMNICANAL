@@ -14,6 +14,8 @@
   5b. La solicitud original va a la bitácora (ops.process_log), una fila por SKU
       y tienda, sin duplicar; si la bitácora falla, la creación sigue.
   6. Lo que sugiera la IA se valida: fuera de la planeación o sobre lo libre no pasa.
+  7. La IA como agente (v0.568.0): tabla compacta con precio, instrucciones de la persona,
+     seguimiento con historial y la planeación primero, en caché.
 
 No se llama a Odoo, kubera ni Mercado Libre: se sustituyen por falsos.
 
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -466,9 +469,83 @@ class ValidarIA(unittest.TestCase):
         ajuste = fia.ESQUEMA["properties"]["ajustes"]["items"]["properties"]["tienda"]
         self.assertEqual(ajuste["enum"], ["meli:Kubera", "meli:San Corpe", "amazon", "walmart"])
 
+    def test_tabla_compacta_respuesta_y_recomendaciones(self):
+        datos = {"tiendas": {"meli:Kubera": {
+            "columnas": ["sku", "precio", "libre"], "filas": [["A", 250.0, 10], ["B", 480.0, 6]],
+            "ganadores_agotados": []}}}
+        r = fia.validar({"respuesta": "Tomé los de menos de $300.", "recomendaciones": ["Mandar A", "Comprar Z"],
+                         "ajustes": [{"tienda": "meli:Kubera", "sku": "A", "cantidad": 8, "motivo": "ticket bajo"},
+                                     {"tienda": "meli:Kubera", "sku": "B", "cantidad": 0, "motivo": "ticket alto"}],
+                         "reemplazos": [], "alertas": [], "confirmacion": "c", "resumen": "r"}, datos)
+        self.assertEqual([(a["sku"], a["cantidad"]) for a in r["ajustes"]], [("A", 8), ("B", 0)],
+                         "la tabla compacta también dice qué SKUs y cuánto libre hay")
+        self.assertEqual(r["respuesta"], "Tomé los de menos de $300.")
+        self.assertEqual(r["recomendaciones"], ["Mandar A", "Comprar Z"])
+
+    def test_la_planeacion_va_primero_y_en_cache(self):
+        m = fia.mensajes({"tiendas": {}}, "sólo SKUs con precio menor a $300")
+        self.assertEqual(len(m), 1)
+        datos, instruccion = m[0]["content"]
+        self.assertEqual(datos["cache_control"], {"type": "ephemeral"})
+        self.assertIn("menor a $300", instruccion["text"])
+        self.assertNotIn("cache_control", instruccion, "la instrucción cambia: va después de la caché")
+        self.assertIn("Sin instrucciones", fia.mensajes({"tiendas": {}})[0]["content"][1]["text"])
+
+    def test_el_seguimiento_recuerda_la_conversacion(self):
+        historial = fia.historial_limpio([
+            {"instruccion": "sólo menores a 300", "respuesta": {"respuesta": "Listo: 40 SKUs.", "resumen": "r1",
+                                                                "ajustes": [{"tienda": "meli:Kubera", "sku": "A",
+                                                                             "cantidad": 8, "motivo": "x"}]}},
+            {"instruccion": "basura sin respuesta"},
+            "tampoco esto",
+            {"instruccion": "ahora quita los reciclados", "respuesta": {"respuesta": "Quité 3.", "ajustes": []}},
+        ])
+        self.assertEqual([t["instruccion"] for t in historial], ["sólo menores a 300", "ahora quita los reciclados"])
+        m = fia.mensajes({"tiendas": {}}, "¿qué me recomiendas comprar?", historial)
+        self.assertEqual([x["role"] for x in m], ["user", "assistant", "user", "assistant", "user"])
+        self.assertIn("sólo menores a 300", m[0]["content"][1]["text"])
+        self.assertIn("Listo: 40 SKUs.", m[1]["content"])
+        self.assertNotIn("motivo", m[1]["content"], "lo anterior se le recuerda compacto")
+        self.assertIn("ahora quita los reciclados", m[2]["content"])
+        self.assertIn("qué me recomiendas comprar", m[4]["content"])
+
+    def test_arranca_con_instrucciones_y_acepta_el_cuerpo_viejo(self):
+        vistos = []
+
+        def llamar(datos, instrucciones="", historial=None):
+            vistos.append((instrucciones, len(historial or [])))
+            return {"respuesta": {"respuesta": "ok", "ajustes": [], "reemplazos": [], "alertas": [],
+                                  "recomendaciones": [], "confirmacion": "", "resumen": ""},
+                    "modelo": "claude-opus-5", "tokens": {"entrada": 1, "salida": 1, "cache": 0}}
+
+        with mock.patch.object(fia, "disponible", lambda: True), mock.patch.object(fia, "_llamar", llamar):
+            nuevo = fia.iniciar({"datos": self.DATOS, "instrucciones": "  sólo < 300  ", "historial": []}, "b@k.mx")
+            viejo = fia.iniciar(self.DATOS, "b@k.mx")
+            for r in (nuevo, viejo):
+                self.assertTrue(r["ok"])
+                for _ in range(200):
+                    if fia.estado(r["id"])["estado"] != "corriendo":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(fia.estado(r["id"])["estado"], "listo")
+        self.assertEqual(sorted(vistos), [("", 0), ("sólo < 300", 0)])
+
     def test_sin_clave_no_arranca(self):
         with mock.patch.object(fia.settings, "anthropic_api_key", ""):
             self.assertFalse(fia.iniciar(self.DATOS)["ok"])
+
+
+class Precio(unittest.TestCase):
+    def test_ml_en_vivo_manda_y_walmart_trae_monto(self):
+        self.assertEqual(ff._precio({"amount": "249.5", "currency": "MXN"}), 249.5)
+        self.assertIsNone(ff._precio(None))
+        self.assertIsNone(ff._precio(0), "un precio en 0 no es un precio")
+        f = ff._fila("meli:Kubera", "A", None, {"listing_id": "MLM1", "precio": 300}, {"precio": 279.0},
+                     None, None, None, None, "A", None)
+        self.assertEqual(f["precio"], 279.0)
+        f = ff._fila("amazon", "A", None, {"listing_id": "B0", "precio": "412.00"}, None,
+                     None, None, None, None, "A", None)
+        self.assertEqual(f["precio"], 412.0)
 
 
 class Excel(unittest.TestCase):
