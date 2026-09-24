@@ -65,7 +65,10 @@ drop table if exists ops.checklist_matriz;
 -- ───────────────────────────────────────────────────────────────────────────
 create table if not exists ops.checklist_lote (
     semana       date         not null,              -- el LUNES de la semana ISO («Week 39»)
-    sku          citext       not null references core.products(sku) on delete cascade,
+    -- Sin ON DELETE CASCADE (Eduardo, 24-sep): la misma regla que las otras 14
+    -- llaves hacia core.products. Borrar un producto que está en un lote falla
+    -- en vez de llevarse el lote en silencio.
+    sku          citext       not null references core.products(sku),
     comentario   text,                               -- la columna «Comentarios» de la lista semanal
     agregado_por text,
     agregado_en  timestamptz  not null default now(),

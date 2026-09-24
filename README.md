@@ -1001,6 +1001,30 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.569.0 — La 0058 sin ON DELETE CASCADE, antes de llegar a producción
+
+Decisión de Eduardo (24-sep-2026), tras la revisión de la 0058
+(`ops.checklist_lote` + las 8 columnas `almacen_*` de `core.products`), que
+todavía no se había aplicado en producción.
+
+- La llave `ops.checklist_lote.sku → core.products(sku)` pierde el
+  `on delete cascade` y queda con la regla por defecto, igual que las otras 14
+  llaves que apuntan a `core.products` (13 NO ACTION y 1 RESTRICT). Borrar un
+  producto que esté en un lote ahora falla, en vez de llevarse el lote en
+  silencio. En la práctica casi no pasa: `core.products` lleva 5 borrados desde
+  el 30-jun y solo en scripts `probar_*`; «quitar del lote» borra la fila del
+  lote directo y no depende de la cascada.
+- Es el único cambio: el resto de la 0058 queda igual. No hay código que
+  dependa de la cascada (grep en backend y frontend).
+- **Ensayo en el sandbox** antes de producción: la 0058 se aplicó en 0.39 s y el
+  flujo del checklist pasó 124 de 130 comprobaciones (lista, lote, Excel,
+  importar, captura de almacén, Catálogo Maestro). Las 6 fallas son del código
+  de la pestaña, no de la migración, y quedan para Brandon: las unidades
+  escritas se ignoran («250 g» se guarda como 250 kg); las obligatorias que se
+  suben desde la matriz se guardan sin `campo_canonico` y el Publicador las
+  sigue viendo faltantes; una medida de 1e6 o más devuelve 500; y en la
+  importación, una medida fuera de rango tumba las medidas de todo el archivo.
+
 ### v0.568.0 — El agente de planeación: instrucciones libres, precio de cada SKU y conversación de seguimiento
 
 Brandon, 24-sep: *"en la mejora con IA me gustaría agregar un campo donde pueda escribir algo más al prompt… toma
