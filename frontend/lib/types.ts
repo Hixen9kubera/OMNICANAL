@@ -1527,6 +1527,7 @@ export interface PreflightResp {
 export type EstadoPublicado =
   | "sha256"      // la foto de Odoo y la del packing list son el MISMO archivo
   | "dhash"       // se parecen lo suficiente (≤8/64) y con margen sobre el 2º
+  | "ferraforme"  // Ferraforme ubica el SKU en ese renglón y la foto no decidió
   | "ia"          // foto de la publicación de ML + veredicto de visión
   | "sin_match"   // nadie resolvió: lo decide un humano viendo las fotos
   | "sin_insumo"; // faltó el insumo (sin contenedor, sin foto, sin archivo)
@@ -1617,6 +1618,8 @@ export interface PublicadosResumen {
   resueltos: number;
   sha256: number;
   dhash: number;
+  /** Solo lo manda un backend con PACKING_LEER_STORAGE; ausente = 0. */
+  ferraforme?: number;
   ia: number;
   sin_match: number;
   sin_insumo: number;

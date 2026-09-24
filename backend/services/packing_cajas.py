@@ -234,11 +234,16 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
     from services import odoo, supabase_db as sdb
     from services import packing_drive_carpeta as drive, packing_indice as pidx
 
+    from config import settings
+
     registrados: dict[str, dict[str, Any]] = {}
+    # Con el flag, también la huella de la versión que se validó (0056): así se
+    # abre ESE archivo del bucket y no el que haya hoy en Drive.
+    huella = ", archivo_sha256" if settings.packing_leer_storage else ""
     try:
         for f in sdb.fetch_all(
-                "select sku::text as sku, archivo, renglones, contenedor_base "
-                "from costing.caja_compartida where sku::text = any(%s)", (skus,)):
+                "select sku::text as sku, archivo, renglones, contenedor_base" + huella
+                + " from costing.caja_compartida where sku::text = any(%s)", (skus,)):
             registrados[f["sku"]] = f
     except Exception as exc:  # noqa: BLE001
         log.warning("packing_cajas: caja_compartida no disponible: %s", exc)
@@ -263,13 +268,16 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
         except Exception as exc:  # noqa: BLE001
             log.warning("packing_cajas: contenedores de Odoo: %s", exc)
 
-    por_archivo: dict[tuple[str, str], list[str]] = {}
+    # (archivo, contenedor, huella): la huella va en la llave porque dos SKUs del
+    # mismo archivo pudieron validarse contra versiones distintas.
+    por_archivo: dict[tuple[str, str, str], list[str]] = {}
     for sku in skus:
         reg = registrados.get(sku)
         if reg:
             archivo = (reg.get("archivo") or "").strip()
             if archivo:
-                clave = (archivo, reg.get("contenedor_base") or "")
+                clave = (archivo, reg.get("contenedor_base") or "",
+                         reg.get("archivo_sha256") or "")
                 por_archivo.setdefault(clave, []).append(sku)
             continue
         crudo = contenedores.get(sku.upper()) or contenedores.get(sku) or ""
@@ -278,7 +286,7 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
         for ref in drive.codigos_de(crudo):
             hallados = drive.archivos_de(ref, inventario)
             if hallados:
-                por_archivo.setdefault((hallados[0][1], ref), []).append(sku)
+                por_archivo.setdefault((hallados[0][1], ref, ""), []).append(sku)
                 break
 
     # Tope por pasada: sin él, pedir 200 SKUs de 40 contenedores distintos
@@ -290,8 +298,8 @@ def _resolver(skus: list[str]) -> dict[str, dict[str, Any]]:
                  len(por_archivo), _MAX_ARCHIVOS)
 
     salida: dict[str, dict[str, Any]] = {}
-    for (archivo, contenedor), suyos in archivos:
-        ix = _indexar(archivo, contenedor, inventario, drive, pidx)
+    for (archivo, contenedor, sha), suyos in archivos:
+        ix = _indexar(archivo, contenedor, inventario, drive, pidx, sha)
         if ix is None:
             continue
         try:
@@ -566,8 +574,17 @@ def _gemelos_por_foto(ix: Any, fila: int, umbral: int = 8) -> set[int]:
 
 
 def _indexar(archivo: str, contenedor: str, inventario: dict[str, str],
-             drive: Any, pidx: Any) -> Any:
+             drive: Any, pidx: Any, sha256: str = "") -> Any:
     """El xlsx del renglón, indexado. `None` si no se puede."""
+    if sha256:
+        # La versión EXACTA contra la que se validó el costo, si ya está en el
+        # bucket. Si no está (o Storage falla), se sigue por nombre como antes.
+        from services import packing_storage
+        try:
+            if (datos := packing_storage.bajar_por_huella(sha256)) is not None:
+                return pidx.indexar(datos, archivo)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("packing_cajas: %s no salió del bucket por huella: %s", archivo, exc)
     # OJO: `inventario()` va {file_id: nombre}, no al revés. Buscar por nombre
     # con `inventario.get(archivo)` devuelve None SIEMPRE y en silencio.
     candidatos = []

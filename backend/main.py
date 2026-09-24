@@ -170,7 +170,7 @@ app = FastAPI(
         "Temu, Shein)."
     ),
 
-    version="0.557.0",
+    version="0.558.0",
     lifespan=lifespan,
     # /docs, /redoc y /openapi.json publican el mapa COMPLETO de los 84
     # endpoints: rutas, parámetros y esquemas. Con la API abierta eso es un
@@ -264,7 +264,7 @@ def raiz():
     return {
         "app": "OMNICANAL Â· Kubera",
 
-        "version": "0.557.0",
+        "version": "0.558.0",
         "docs": "/docs",
         "canales": [c["id"] for c in lista_canales()],
     }

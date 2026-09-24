@@ -157,6 +157,13 @@ class Settings(BaseSettings):
     # account de Google en el repo, y por eso el inventario se lee de la página
     # pública — ver packing_drive_carpeta.
     pl_drive_carpeta_id: str = "1PstK1At4DwUH0QUsIOXr9Zgb2TZJHgrM"
+    # Leer los packing lists del bucket privado `packing-lists` de Supabase
+    # (migración 0055) ANTES que de Drive, y ligar cada procedencia de
+    # `caja_compartida` a la huella exacta del archivo (0056). Drive queda de
+    # respaldo: lo que no esté copiado, o si Storage falla, se baja como siempre.
+    # Encenderlo EXIGE la 0055 y la 0056 aplicadas en esa base: con el flag
+    # prendido se lee y escribe `caja_compartida.archivo_sha256`.
+    packing_leer_storage: bool = False
     # Lo mismo para TikTok. Ojo: al crear, el producto todavía NO está publicado
     # en TikTok, así que no tiene categoría y sus atributos no se pueden pedir —
     # se genera el título y la descripción, y los atributos entran cuando el SKU

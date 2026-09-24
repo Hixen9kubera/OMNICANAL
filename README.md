@@ -1001,6 +1001,61 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.558.0 — Los packing lists viven en Supabase y cada costo queda ligado al papel exacto del que salió
+
+A pedido de Eduardo (23-sep). Casi todo va detrás de `PACKING_LEER_STORAGE`
+(apagado por default): con el flag apagado el backend se comporta como en la
+v0.553.0, **salvo el guardado del validador de publicados, que ahora también
+escribe el contenedor** (ver abajo).
+
+**Por qué.** Los packing lists solo vivían en Drive: el backend listaba la
+carpeta raspando su página y bajaba cada archivo a `/tmp`, que se borra en cada
+deploy. Los archivos se siguen editando después de creados (51 de 193 medidos),
+así que un mismo costo podía salir de versiones distintas; y la procedencia
+(`caja_compartida`) guardaba el NOMBRE del archivo, que se renombra.
+
+**Qué hay:**
+- **Bucket privado `packing-lists` + `costing.packing_archivos` (0055).** Una
+  fila por versión; el objeto se nombra por su sha256 y nunca se pisa (Storage
+  no versiona ni entra en el respaldo diario). Sin políticas en
+  `storage.objects`: solo el backend con `service_role`.
+- **`scripts/copiar_packing_lists.py`**: copia idempotente de las dos carpetas
+  (originales y Ferraforme) desde un manifiesto que NO va en el repo, o de un
+  archivo local. Arriba de 6 MB sube por TUS. Se niega a escribir en producción
+  sin `--produccion`.
+- **Lectura desde el bucket.** Con el flag, `packing_drive_carpeta.bajar()` lee
+  primero la última versión copiada (verificando su huella) y solo cae a Drive
+  si no está; `inventario()` suma lo copiado.
+- **Procedencia por versión (0056).** `caja_compartida.archivo_sha256`: el costo
+  queda ligado a (huella, renglones) y no a (nombre, renglones). El piloto de
+  Inventario abre esa versión exacta.
+- **Ferraforme como referencia (0057).** `costing.packing_ubicaciones` +
+  `scripts/indexar_ferraforme.py`: en qué renglón del ORIGINAL está cada SKU
+  según la copia homologada — por misma fila (si el archivo cuadra ≥90% fila por
+  fila) o por texto que aparece una sola vez; solo columnas de texto no
+  retocadas; también lee el "[SKU] nombre" de Odoo entre corchetes. El
+  validador lo consulta primero y la foto de Odoo es la segunda opinión:
+  coinciden → empate por foto (aprobable en lote); discrepan → gana la foto con
+  confianza baja; la foto no decide → decide Ferraforme y la IA no se llama. A
+  un SKU sin contenedor conocido le aporta su archivo.
+- **El validador guarda el contenedor** en `costos_validados` con la forma de
+  sus compañeros ("TGHU6894814 - 80"). `upsert_validados` lo recibe opcional con
+  `coalesce`: Regenerar, el editor y el espejo no lo borran. Corre aunque el flag
+  esté apagado.
+- **Frontend:** estado "Ferraforme" en el validador (etiqueta y contador); no
+  entra en "Marcar los seguros".
+
+**Medido en el sandbox (23-sep):** 172 de 185 archivos copiados (los 13 de más
+de 50 MB esperan que se suba el límite global de Storage); 4,760 SKUs ubicados
+por Ferraforme; el renglón del índice es el que lee el parser en 32/32; los SKUs
+entre corchetes (29, contenedor 80) cuadran con la OC de Odoo en precio 29/29 y
+con la foto de Odoo 29/29, sin contradicciones. De punta a punta:
+ELEC-0143-DJ6-NEG, sin contenedor en ninguna fuente, sale "foto de Odoo · dHash
+· Ferraforme coincide", renglón 14, costo 725.75 (el guardado tenía 538.11).
+
+**Para encenderlo:** aplicar 0055–0057, correr la copia y el índice contra
+producción, y `PACKING_LEER_STORAGE=true`. El flag EXIGE las tres migraciones.
+
 ### v0.557.0 — El cron de /highlights espera el token nuevo en vez de abortar por un minuto
 
 Alerta del 24-sep: `competencia-visitas` terminó en CRASHED. La primera mitad

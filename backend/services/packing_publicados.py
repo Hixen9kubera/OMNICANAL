@@ -71,6 +71,7 @@ from services import (
     packing_comparador as comp,
     packing_drive,
     packing_drive_carpeta as carpeta,
+    packing_ferraforme,
     packing_indice,
     packing_resolver,
 )
@@ -378,6 +379,9 @@ def preflight(skus: list[str]) -> dict[str, Any]:
     # desanimando de un flujo que sí puede resolverlo. Se paga una vez cada 6 h
     # (el inventario está cacheado y es compartido con el trabajo).
     inv = carpeta.inventario(completo=True)
+    # Ferraforme (0057): un SKU sin contenedor en Odoo ni kubera pero ubicado
+    # por Ferraforme SÍ tiene archivo; sin esto el pronóstico lo daría por perdido.
+    ubic = _ubicaciones(todas)
 
     elegibles = []
     for s in vivos:
@@ -388,6 +392,8 @@ def preflight(skus: list[str]) -> dict[str, Any]:
         archivos: set[str] = set()
         for _f, ref in refs:
             archivos.update(fid for fid, _n in carpeta.archivos_de(ref, inv))
+        for v in variantes:
+            archivos.update(u["original_file_id"] for u in ubic.get(v, []))
         fuentes = {f for f, _ in refs}
         # Dos fuentes que no hablan del mismo contenedor: no es un error, es un
         # aviso — el empate por imagen va a tener que decidir.
@@ -563,6 +569,19 @@ def _procesar(jid: str, objetivos: list[tuple[str, str]], cat: dict[str, str],
                     p = plan.setdefault(fid, {"nombre": nombre, "skus": []})
                     if v not in p["skus"]:
                         p["skus"].append(v)
+        # 2b) Ferraforme (0057). Solo AGREGA, y solo a quien se quedó sin archivo
+        # (Odoo y kubera callados, o su archivo fuera del inventario): le mete el
+        # original donde Ferraforme lo ubica. A un SKU que ya tiene archivos no
+        # le abre otros embarques; si Ferraforme dice otro, se reporta en la fila.
+        ubic = _ubicaciones(variantes)
+        for v, us in ubic.items():
+            if any(v in p["skus"] for p in plan.values()):
+                continue
+            for u in us:
+                p = plan.setdefault(u["original_file_id"],
+                                    {"nombre": u["original_nombre"], "skus": []})
+                if v not in p["skus"]:
+                    p["skus"].append(v)
 
         # 3) Bajar e indexar cada archivo UNA vez (varios SKUs lo comparten)
         indices: dict[str, packing_indice.Indice] = {}
@@ -627,7 +646,8 @@ def _procesar(jid: str, objetivos: list[tuple[str, str]], cat: dict[str, str],
                 fids=fids, indices=indices, huella_odoo=huellas_odoo.get(sku),
                 motivo_sin=motivo_sin,
                 refs=refs_de.get(sku) or [], guardado=guardados.get(sku) or {},
-                tarifa=tarifa, tc=tc, usar_ia=usar_ia, cache_ml=cache_ml)
+                tarifa=tarifa, tc=tc, usar_ia=usar_ia, cache_ml=cache_ml,
+                ubicaciones=ubic.get(sku.upper()))
             filas.append(fila)
             with _lock:
                 if t := _trabajos.get(jid):
@@ -671,10 +691,61 @@ def _resumen(filas: list[dict[str, Any]]) -> dict[str, int]:
         return sum(1 for f in filas if f.get("estado") == estado)
     return {"total": len(filas),
             "resueltos": sum(1 for f in filas
-                             if f.get("estado") in ("sha256", "dhash", "ia")),
-            "sha256": n("sha256"), "dhash": n("dhash"), "ia": n("ia"),
+                             if f.get("estado") in ("sha256", "dhash", "ferraforme", "ia")),
+            "sha256": n("sha256"), "dhash": n("dhash"), "ferraforme": n("ferraforme"),
+            "ia": n("ia"),
             "sin_match": n("sin_match"), "sin_insumo": n("sin_insumo"),
             "ya_validados": sum(1 for f in filas if f.get("revisado_at"))}
+
+
+# ── Ferraforme (0057) ────────────────────────────────────────────────────────
+def _ubicaciones(skus: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Dónde ubica Ferraforme a cada SKU. Solo con PACKING_LEER_STORAGE (la
+    tabla exige la 0057); si falla, la escalera sigue como antes."""
+    if not settings.packing_leer_storage or not skus:
+        return {}
+    try:
+        return packing_ferraforme.ubicaciones_de(skus)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Ferraforme no disponible, la escalera sigue sin él: %s", exc)
+        return {}
+
+
+def _ferraforme(ubicaciones: list[dict[str, Any]], fids: list[str],
+                indices: dict[str, packing_indice.Indice],
+                ) -> tuple[tuple[str, int, str] | None, str | None]:
+    """
+    ``((file_id, renglón, detalle), None)`` si la ubicación de Ferraforme se
+    puede usar TAL CUAL; si no, ``(None, por qué)`` para decírselo al humano.
+
+    Tal cual quiere decir tres cosas: el original está entre los archivos que
+    esta escalera abrió; es la MISMA versión contra la que se cotejó (si el
+    original cambió, las filas pudieron moverse); y es un solo archivo —si
+    Ferraforme ubica el SKU en dos embarques, que decida la foto.
+    """
+    if not ubicaciones:
+        return None, None
+    en_juego = [u for u in ubicaciones if u["original_file_id"] in indices
+                and u["original_file_id"] in fids]
+    if not en_juego:
+        otros = sorted({u["original_nombre"] for u in ubicaciones})
+        return None, "Ferraforme lo ubica en otro packing list: " + ", ".join(otros[:3])
+    archivos = sorted({u["original_file_id"] for u in en_juego})
+    if len(archivos) > 1:
+        return None, f"Ferraforme lo ubica en {len(archivos)} packing lists; decide la foto"
+    ix = indices[archivos[0]]
+    en_juego = [u for u in en_juego if u["original_sha256"] == ix.sha256]
+    if not en_juego:
+        return None, ("Ferraforme se cotejó contra otra versión de este packing list "
+                      "(hay que volver a correr indexar_ferraforme.py)")
+    filas = sorted({u["original_fila"] for u in en_juego if u["original_fila"] in ix.por_fila})
+    if not filas:
+        return None, "el renglón que da Ferraforme no se pudo leer en el original"
+    otras = ""
+    if len(filas) > 1:
+        otras = (f" (también en {', '.join(map(str, filas[1:6]))}"
+                 f"{'…' if len(filas) > 6 else ''})")
+    return (archivos[0], filas[0], f"Ferraforme lo ubica en el renglón {filas[0]}{otras}"), None
 
 
 # ── Un SKU ───────────────────────────────────────────────────────────────────
@@ -684,7 +755,8 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
                   huella_odoo: dict[str, Any] | None,
                   refs: list[tuple[str, str]], guardado: dict[str, Any],
                   tarifa: float, tc: float, usar_ia: bool,
-                  cache_ml: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                  cache_ml: dict[str, dict[str, Any]],
+                  ubicaciones: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     pub = pubs[0] if pubs else {}
     fila: dict[str, Any] = {
         "sku": sku, "padre": padre,
@@ -696,7 +768,7 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
         "lexico": None,
         "fuente": (refs[0][0] if refs else None),
         "ref": (refs[0][1] if refs else None),
-        "file_id": None, "archivo": None, "fila_excel": None,
+        "file_id": None, "archivo": None, "archivo_sha256": None, "fila_excel": None,
         "producto_chn": None, "grupo": [],
         "precio_usd": None, "piezas_grupo": None, "cbm_pieza": None,
         "piezas_fila": None, "cajas": None, "precio_manual": False,
@@ -746,6 +818,13 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
             "(sin contenedor conocido o el archivo no se pudo leer)")
         return fila
 
+    # ── Ferraforme: la referencia, consultada ANTES que fotos e IA ──
+    # La foto de Odoo corre de todos modos como segunda opinión (abajo): si las
+    # dos dan el mismo renglón, gana la foto —determinista, aprobable en lote—;
+    # si discrepan, gana la foto SIN lote y se dice qué dice Ferraforme; y si la
+    # foto no decide, decide Ferraforme y la IA ni se llama.
+    ferra, nota_ferra = _ferraforme(ubicaciones or [], fids, indices)
+
     # ── Peldaño 0: la foto de Odoo ──
     mejor = None
     d0_reportado: int | None = None
@@ -771,6 +850,21 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
                          "misma foto (sha256)" if exacto
                          else f"distancia {d0}/64 · 2º a {seg}",
                          0, "alta")
+
+    if ferra is not None:
+        fid_f, fe_f, det_f = ferra
+        if mejor is None:
+            fila.update({"estado": "ferraforme", "peldano": None, "detalle": det_f,
+                         "confianza": "alta"})
+            _aplicar_renglon(fila, indices[fid_f], fila_excel=fe_f, guardado=guardado,
+                             tarifa=tarifa, tc=tc)
+            return fila
+        if mejor[0] == fid_f and indices[mejor[0]].idx_de_fila.get(mejor[1]) == fe_f:
+            mejor = (*mejor[:3], f"{mejor[3]} · Ferraforme coincide", *mejor[4:])
+        else:
+            # Dos fuentes independientes discrepan: no es para aprobar en lote.
+            mejor = (*mejor[:3], f"{mejor[3]} · OJO: Ferraforme dice el renglón {fe_f}",
+                     mejor[4], "baja")
 
     # ── Peldaño 1 y 2: léxico informativo + IA ──
     cands_ia: list[dict[str, Any]] = []
@@ -834,9 +928,13 @@ def _resolver_uno(*, sku: str, padre: str | None, pubs: list[dict[str, Any]],
             f"foto de Odoo a {d0_reportado}/64 y la IA no confirmó nada"
             if d0_reportado is not None else
             "sin foto en Odoo y la IA no confirmó nada")
+        if nota_ferra:
+            fila["detalle"] += f" · {nota_ferra}"
         return fila
 
     fid, idx, metodo, detalle, peldano, confianza = mejor
+    if nota_ferra:
+        detalle = f"{detalle} · {nota_ferra}"
     fila.update({"estado": metodo, "peldano": peldano, "detalle": detalle,
                  "confianza": confianza})
     _aplicar_renglon(fila, indices[fid], idx_foto=idx, guardado=guardado,
@@ -874,7 +972,8 @@ def _aplicar_renglon(fila: dict[str, Any], ix: packing_indice.Indice, *,
     costo = packing_indice.costo_de(dd, tarifa, tc,
                                     _f(guardado.get("costo_producto")))
     fila.update({
-        "file_id": ix.file_id or None, "archivo": ix.nombre, "fila_excel": fe,
+        "file_id": ix.file_id or None, "archivo": ix.nombre,
+        "archivo_sha256": ix.sha256, "fila_excel": fe,
         "producto_chn": ix.texto_fila(fe), "grupo": dd["grupo"],
         "precio_usd": _r(dd["precio_usd"], 4),
         "piezas_grupo": _r(dd["piezas_grupo"], 3),
@@ -1222,6 +1321,49 @@ def _contenedor_de(archivo: str, ref: str) -> str:
     return comp.normalizar_contenedor(ref or "")
 
 
+def _contenedor_para_costos(base: str, cache: dict[str, str | None]) -> str | None:
+    """
+    Qué va en ``costos_validados.contenedor`` para el embarque ``base``, con la
+    MISMA forma que ya usan los demás SKUs de ese contenedor: "TGHU6894814 - 80"
+    (el código más el número de contenedor de Kubera; así están 15,152 de
+    15,862 filas). El filtro de la pestaña Costos agrupa por el texto exacto, y
+    "TGHU6894814" a secas abriría un grupo aparte del de sus 29 compañeros.
+
+    Si ningún SKU lo tiene todavía, el número sale del archivo de Ferraforme
+    de ese embarque ("… contenedor 80.xlsx", tabla 0055, solo con el flag); y si
+    tampoco hay, va el código pelón. ``None`` si no hay código: el upsert
+    conserva entonces lo que hubiera.
+    """
+    if not base:
+        return None
+    if base in cache:
+        return cache[base]
+    valor: str | None = base
+    try:
+        fila = _consulta_uno(
+            r"""select contenedor from costing.costos_validados
+                 where regexp_replace(contenedor, '\s*-\s*\d+$', '') = %s
+                 group by 1 order by count(*) desc, 1 limit 1""", (base,))
+        if fila:
+            valor = fila["contenedor"]
+        elif settings.packing_leer_storage:
+            f = _consulta_uno(
+                """select nombre from costing.packing_archivos
+                    where tipo = 'ferraforme' and contenedor_base = %s limit 1""", (base,))
+            m = re.search(r"contenedor\s*(\d+)", (f or {}).get("nombre") or "", re.I)
+            if m:
+                valor = f"{base} - {m[1]}"
+    except Exception as exc:  # noqa: BLE001 — sin la forma de la casa, el código pelón
+        log.warning("contenedor de %s: %s", base, exc)
+    cache[base] = valor
+    return valor
+
+
+def _consulta_uno(sql: str, params: tuple) -> dict[str, Any] | None:
+    from services import supabase_db as sdb
+    return sdb.fetch_one(sql, params)
+
+
 def _registrar_procedencia(sku: str, fila: dict[str, Any]) -> None:
     """Deja el archivo y los renglones de los que salió el costo de este SKU."""
     archivo = (fila.get("archivo") or "").strip()
@@ -1240,6 +1382,7 @@ def _registrar_procedencia(sku: str, fila: dict[str, Any]) -> None:
     cbm_pieza = fila.get("cbm_pieza")
     costing_write.guardar_caja_compartida(
         sku, contenedor, archivo, renglones,
+        archivo_sha256=fila.get("archivo_sha256"),
         piezas_grupo=float(piezas) if piezas else None,
         # El CBM del CARTÓN, que es lo que se repartió: por pieza × piezas.
         cbm_grupo=(round(float(cbm_pieza) * float(piezas), 6)
@@ -1275,6 +1418,7 @@ def guardar(jid: str, skus: list[str],
     pedidos = [s.strip().upper() for s in (skus or []) if (s or "").strip()]
     liberar = {s.strip().upper() for s in (liberar_candado or [])}
     escritos, detalle, saltados, errores = 0, [], [], []
+    contenedores: dict[str, str | None] = {}     # base → valor ya resuelto, por guardado
 
     # La regla crítica, otra vez y justo antes de escribir: el trabajo vive
     # hasta 3 h y una publicación pudo cerrarse en el ínterin. Además el `jid`
@@ -1362,7 +1506,12 @@ def guardar(jid: str, skus: list[str],
                  "peso": _f(fila.get("peso_pieza")) or None,
                  "costo_producto": _f(fila.get("producto_mxn")),
                  "costo_cbm": _f(fila.get("flete")),
-                 "costo_total": _f(fila.get("costo"))},
+                 "costo_total": _f(fila.get("costo")),
+                 # El embarque del que salió ESTE costo. Sin él la columna se
+                 # quedaba vacía o con el contenedor de otra carga.
+                 "contenedor": _contenedor_para_costos(
+                     _contenedor_de(fila.get("archivo") or "", fila.get("ref") or ""),
+                     contenedores)},
                 escribir_mysql=lambda: None,
                 accion="resolver-publicados",
                 origen="panel-costos")

@@ -214,6 +214,10 @@ class Indice:
     def __init__(self, datos: bytes, nombre: str, file_id: str = "") -> None:
         self.nombre = nombre
         self.file_id = file_id
+        # La huella del archivo EXACTO que se leyó: es lo que liga una
+        # procedencia a su versión (caja_compartida.archivo_sha256, 0056). El
+        # nombre y el file_id no alcanzan: el archivo se sigue editando en Drive.
+        self.sha256 = hashlib.sha256(datos).hexdigest()
         leido = packing_parser.leer(datos)
         self.filas: list[dict[str, Any]] = leido["filas"]
         self.avisos: list[str] = list(leido["avisos"])

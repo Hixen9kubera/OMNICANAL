@@ -208,6 +208,7 @@ def marcar_revisado(sku: str, revisado: bool = True, *,
 
 def guardar_caja_compartida(
     sku: str, contenedor: str, archivo: str, renglones: list[int], *,
+    archivo_sha256: str | None = None,
     skus_grupo: list[str] | None = None,
     piezas_grupo: float | None = None,
     cbm_grupo: float | None = None,
@@ -265,6 +266,16 @@ def guardar_caja_compartida(
              skus_grupo or None,
              piezas_grupo, cbm_grupo, cbm_origen, nota))
         fila = cur.fetchone()
+        if fila and settings.packing_leer_storage:
+            # La huella del archivo EXACTO que se leyó (0056): el nombre no
+            # alcanza, porque el archivo se sigue editando en Drive. Va aparte y
+            # solo con el flag: sin la 0056 la columna no existe y tiraría el
+            # guardado entero. Se escribe aunque venga None — una huella vieja
+            # junto a renglones nuevos sería una procedencia falsa.
+            cur.execute(
+                """update costing.caja_compartida set archivo_sha256 = %s
+                    where sku = %s and contenedor_base = %s""",
+                (archivo_sha256, sku, fila["contenedor_base"]))
     return dict(fila) if fila else None
 
 

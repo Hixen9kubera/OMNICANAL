@@ -82,6 +82,15 @@ const PELDANO: Record<EstadoPublicado, { chip: string; label: string; ayuda: str
       "Peldaño 0 — las fotos se parecen lo suficiente (distancia ≤8 de 64 bits) "
       + "y con margen sobre el segundo candidato.",
   },
+  ferraforme: {
+    chip: "bg-sky-50 text-sky-700 ring-sky-200",
+    label: "Ferraforme",
+    ayuda:
+      "Ferraforme (la copia homologada del packing list) ubica el SKU en este "
+      + "renglón, y el renglón dice lo mismo que el original. La foto de Odoo no "
+      + "lo confirmó ni lo contradijo, así que no se gastó IA. Es una referencia "
+      + "humana, no una foto: míralo antes de aprobarlo.",
+  },
   ia: {
     chip: "bg-violet-50 text-violet-700 ring-violet-200",
     label: "foto de ML + IA",
@@ -470,6 +479,9 @@ export default function ValidarPublicadosModal({ skus, onCerrar, onGuardado }: P
                   {res?.sha256 ?? 0} foto exacta
                 </Pastilla>
                 <Pastilla tono="bg-teal-50 text-teal-700">{res?.dhash ?? 0} dHash</Pastilla>
+                {(res?.ferraforme ?? 0) > 0 && (
+                  <Pastilla tono="bg-sky-50 text-sky-700">{res?.ferraforme} por Ferraforme</Pastilla>
+                )}
                 <Pastilla tono="bg-violet-50 text-violet-700">{res?.ia ?? 0} por IA</Pastilla>
                 <Pastilla tono="bg-amber-50 text-amber-800">
                   {res?.sin_match ?? 0} sin empate

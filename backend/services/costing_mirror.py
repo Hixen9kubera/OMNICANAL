@@ -96,8 +96,13 @@ def _asegurar_identidad(cur, sku: str) -> None:
 def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
     """Upsert de costing.costos_validados a nivel cursor (lo comparten el espejo
     F3, el corte F6 de costing_write y el reproceso de espejo_kubera_log).
-    Solo las columnas que costos.py toca; contenedor/cajas/etc. de la fila
+    Solo las columnas que costos.py toca; cajas/piezas_por_caja de la fila
     existente se conservan, igual que en MySQL.
+
+    ``contenedor`` es OPCIONAL y entra con ``coalesce``: quien no lo manda (el
+    recálculo de costos.py, el editor del panel) conserva el que había; quien lo
+    manda (el validador de publicados, que sabe de qué embarque salió el costo)
+    lo actualiza. Sin el coalesce, cada "Regenerar" lo borraría a NULL.
 
     CANDADO DE COSTO VALIDADO (21-ago-2026, Brandon): si la fila tiene
     ``revisado_at``, el UPDATE no la toca. Un costo reconstruido a mano desde el
@@ -115,22 +120,26 @@ def upsert_validados(cur, sku: str, fila: dict[str, Any]) -> None:
     """
     cur.execute(
         """insert into costing.costos_validados
-             (sku, largo, alto, ancho, peso, costo_producto, costo_cbm, costo_total)
+             (sku, largo, alto, ancho, peso, costo_producto, costo_cbm, costo_total,
+              contenedor)
            values (%(sku)s, %(largo)s, %(alto)s, %(ancho)s, %(peso)s,
-                   %(costo_producto)s, %(costo_cbm)s, %(costo_total)s)
+                   %(costo_producto)s, %(costo_cbm)s, %(costo_total)s, %(contenedor)s)
            on conflict (sku) do update set
              largo = excluded.largo, alto = excluded.alto, ancho = excluded.ancho,
              peso = excluded.peso, costo_producto = excluded.costo_producto,
-             costo_cbm = excluded.costo_cbm, costo_total = excluded.costo_total
+             costo_cbm = excluded.costo_cbm, costo_total = excluded.costo_total,
+             contenedor = coalesce(excluded.contenedor, costos_validados.contenedor)
            where costos_validados.revisado_at is null
              and (costos_validados.largo, costos_validados.alto,
                   costos_validados.ancho, costos_validados.peso,
                   costos_validados.costo_producto, costos_validados.costo_cbm,
-                  costos_validados.costo_total)
+                  costos_validados.costo_total, costos_validados.contenedor)
              is distinct from
                  (excluded.largo, excluded.alto, excluded.ancho, excluded.peso,
-                  excluded.costo_producto, excluded.costo_cbm, excluded.costo_total)""",
-        {**fila, "sku": sku, "costo_total": fila.get("costo_total")},
+                  excluded.costo_producto, excluded.costo_cbm, excluded.costo_total,
+                  coalesce(excluded.contenedor, costos_validados.contenedor))""",
+        {**fila, "sku": sku, "costo_total": fila.get("costo_total"),
+         "contenedor": fila.get("contenedor")},
     )
 
 

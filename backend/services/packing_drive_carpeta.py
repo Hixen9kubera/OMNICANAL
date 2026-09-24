@@ -41,7 +41,7 @@ import time
 import requests
 
 from config import settings
-from services import packing_drive
+from services import packing_drive, packing_storage
 
 log = logging.getLogger("omnicanal.packing.drive_carpeta")
 
@@ -161,9 +161,13 @@ def inventario(refrescar: bool = False, completo: bool = False) -> dict[str, str
         fresco = _inventario and (time.time() - _inventario_en) < _TTL_INVENTARIO
         if fresco and not refrescar:
             return dict(_inventario)
+    copiados = _copiados()          # fuera del lock: es una consulta a la base
+    with _lock:
         # La semilla va DEBAJO de lo ya conocido: es el piso, no la verdad
-        # final. Un nombre que el raspado haya corregido gana sobre ella.
-        conocidos = {**_semilla(), **_inventario}
+        # final. Un nombre que el raspado haya corregido gana sobre ella. Lo
+        # copiado al bucket va en medio: más nuevo que la semilla, más viejo
+        # que el raspado.
+        conocidos = {**_semilla(), **copiados, **_inventario}
 
     carpeta = (settings.pl_drive_carpeta_id or "").strip()
     if not carpeta:
@@ -225,6 +229,17 @@ def inventario(refrescar: bool = False, completo: bool = False) -> dict[str, str
         return dict(_inventario)
 
 
+def _copiados() -> dict[str, str]:
+    """Lo que ya está en el bucket. Solo suma: es un piso más, como la semilla."""
+    if not settings.packing_leer_storage:
+        return {}
+    try:
+        return packing_storage.inventario()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("inventario del bucket no disponible: %s", exc)
+        return {}
+
+
 # ── Referencia → archivos ────────────────────────────────────────────────────
 def _plano(t: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (t or "").lower())
@@ -277,6 +292,16 @@ def bajar(file_id: str, nombre: str = "") -> bytes:
     fid = (file_id or "").strip()
     if not fid:
         raise packing_drive.DriveError("El FILE_ID llegó vacío.")
+    if settings.packing_leer_storage:
+        # Primero el bucket (0055): la versión copiada no cambia entre deploys
+        # ni porque alguien edite el archivo en Drive, así que el mismo costo
+        # sale del mismo papel. Lo que no esté copiado cae a Drive, como antes.
+        try:
+            if (datos := packing_storage.bajar_vigente(fid)) is not None:
+                return datos
+        except Exception as exc:  # noqa: BLE001 — Drive sigue siendo el respaldo
+            log.warning("packing list %s: no salió de Storage, se baja de Drive: %s",
+                        nombre or fid, exc)
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         destino = _CACHE_DIR / f"pl_{fid}.xlsx"
