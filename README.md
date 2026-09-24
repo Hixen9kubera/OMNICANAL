@@ -1001,6 +1001,48 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.557.0 — El cron de /highlights espera el token nuevo en vez de abortar por un minuto
+
+Alerta del 24-sep: `competencia-visitas` terminó en CRASHED. La primera mitad
+(`competencia_visitas.py`) salió bien —5,089 publicaciones medidas, 951 filas
+movidas—; la segunda (`competencia_highlights.py`) arrancó a las 12:21 con el
+token de BEKURA recién vencido: **las 1,238 categorías dieron 401**, `sano()`
+abortó sin escribir (bien hecho: un 0 falso apagaría el barrido) y el cron salió
+con error. **El token nuevo llegó a las 12:23.** Del 12 al 23-sep la misma
+corrida trajo entre 982 y 1,007 categorías con ranking todos los días: fue la
+primera vez.
+
+**Por qué este cron y no el backend.** El renovador externo cambia el token de
+Mercado Libre cada ~6 h y lo cambia YA VENCIDO: quedan huecos de un par de
+minutos. El backend los aguanta porque renueva solo ante un 401; este cron no
+puede, porque en Railway solo tiene tres variables (sin MySQL ni credenciales).
+Y como la hora del renovador se corre unos minutos en cada vuelta, el choque con
+la corrida de mediodía vuelve de vez en cuando.
+
+**El arreglo, solo en el script.** Si ninguna categoría devuelve ranking,
+`esperar_token_nuevo` espera a que el token deje de ser el que falló
+(revisando cada 30 s, hasta 15 min) y se vuelve a sondear UNA vez. Si el token
+nuevo no llega, se aborta exactamente como antes. El cliente de ML y el backend
+no cambian: en una petición del panel no se debe esperar minutos.
+
+**La recuperación del 24-sep, y lo que enseñó.** Se relanzó el cron moviendo su
+horario por API; corrió, pero **dos despliegues lo mataron a media corrida** (un
+redeploy a las 16:15 y el push de la v0.556.0 a las 16:38, que detuvo los
+contenedores a las 16:40:17 justo mientras `guardar` escribía: la transacción se
+deshizo entera, 0 filas). Un cron de Railway no sobrevive a un deploy de su
+servicio, y este servicio redespliega con CUALQUIER push a `main`. Se terminó
+corriendo SOLO el paso de /highlights a mano, con las tres variables del propio
+servicio y el código de `main`: 1,238 categorías escritas (1,003 con ranking) y
+la bitácora del 24-sep completa. El horario quedó restaurado en `0 12 * * *`.
+
+Esta versión iba a ser la v0.556.0; otra sesión publicó ese número primero y se
+renumeró.
+
+**Verificado:** 5 pruebas nuevas (`tests/test_competencia_highlights_token.py`:
+la espera ante token que cambia, que ya había cambiado, que nunca llega y que
+no existe; y `main` volviendo a sondear y guardando), junto con las 30 de
+competencia: 35 en verde, reaplicado como diff sobre la v0.556.0.
+
 ### v0.556.0 — FULLFILMENT como app: Crear FULL, Envíos y Análisis por semana (y la ficha del SKU es una ventana)
 
 Brandon, 24-sep: *"pensando como una app cualquiera… como las aplicaciones de banco, que mayormente me

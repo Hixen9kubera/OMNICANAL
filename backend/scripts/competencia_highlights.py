@@ -55,11 +55,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.basicConfig(level=logging.WARNING,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-from services import competencia_ml, competencia_store, supabase_db  # noqa: E402
+from services import competencia_ml, competencia_store, meli, supabase_db  # noqa: E402
 
 CANAL = "mercado_libre"
 CONCURRENCIA = 8      # medido: 134 ms por categoría, 2.5 min las 1,129
 TOPE_HUELLA = 10      # la huella mira el top 10: abajo el orden es ruido
+# El renovador externo cambia el token de ML cada ~6 h y lo cambia YA VENCIDO:
+# quedan huecos de un par de minutos sin token válido, y este cron no puede
+# renovar solo (en Railway no tiene MySQL ni credenciales). El 24-sep cayó justo
+# en uno: 1,238 categorías con 401 a las 12:22 y el token nuevo llegó a las 12:23.
+ESPERA_TOKEN_MAX_S = 900
+ESPERA_TOKEN_PASO_S = 30
 
 
 def _huella(entradas: list[dict[str, Any]]) -> str | None:
@@ -298,6 +304,20 @@ def guardar(res: dict[str, list[dict[str, Any]] | None]) -> tuple[int, int]:
     return escritas, cambios
 
 
+def esperar_token_nuevo(usado: str | None) -> bool:
+    """True en cuanto el token de ML ya no es el que falló; False si no cambió a tiempo."""
+    clave = competencia_ml._CUENTA_DEFAULT.upper()
+    fin = time.monotonic() + ESPERA_TOKEN_MAX_S
+    while True:
+        competencia_ml._olvidar_token(clave)
+        actual = meli._access_token(clave)
+        if actual and actual != usado:
+            return True
+        if time.monotonic() >= fin:
+            return False
+        time.sleep(ESPERA_TOKEN_PASO_S)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--real", action="store_true", help="Escribe. Sin esto, sólo sondea.")
@@ -316,8 +336,17 @@ def main() -> int:
     print(f"  categorías a sondear : {len(cats)}")
     print(f"  concurrencia         : {CONCURRENCIA}")
 
+    token_usado = meli._access_token(competencia_ml._CUENTA_DEFAULT.upper())
     t0 = time.time()
     res = asyncio.run(sondear(cats))
+    if not any(res.values()):
+        print()
+        print("  ninguna categoría devolvió ranking: ¿token vencido? esperando uno nuevo…")
+        if esperar_token_nuevo(token_usado):
+            print("  llegó un token nuevo: se vuelve a sondear")
+            res = asyncio.run(sondear(cats))
+        else:
+            print(f"  no llegó un token nuevo en {ESPERA_TOKEN_MAX_S // 60} min")
     dt = time.time() - t0
 
     con = sum(1 for v in res.values() if v)
