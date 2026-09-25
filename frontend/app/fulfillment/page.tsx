@@ -20,6 +20,12 @@
  * un SKU dentro del detalle de un envío (FichaSku.tsx). Las pantallas de diseño
  * (Planeación con datos simulados, Variaciones) se retiraron en v0.556.0.
  *
+ * v0.570.0 (Brandon: "se deja Crear FULL únicamente para crear FULLs"): los
+ * totales, los ganadores con su reemplazo, los títulos contra Odoo y las órdenes
+ * sin completar se ven en Análisis · «Planeación de la semana». Crear FULL se
+ * queda MONTADO aunque se cambie de pantalla —lo editado y la conversación con la
+ * IA no se pierden— y le pasa esos datos a Análisis con `onPlan`.
+ *
  * La carpeta ES la ruta; `SesionGuard` ya lo monta `app/layout.tsx`, así que
  * aquí NO va — pero `AppNavbar` sí, porque el layout no lo pinta.
  *
@@ -35,9 +41,11 @@ import { API_BASE, fetchSesion } from "@/lib/api";
 import { quienSoy } from "@/lib/sesion";
 import Analisis from "@/components/fulfillment/Analisis";
 import CrearFull from "@/components/fulfillment/CrearFull";
+import type { PedidoReemplazo } from "@/components/fulfillment/CrearFull";
+import type { PlanAnalisis } from "@/components/fulfillment/AnalisisPlaneacion";
 import { DetalleEnvioModal, TablaEnvios, seguimientoDe } from "@/components/fulfillment/Envios";
 import { FONDO_RAYADO, PUNTO_CUENTA, TEMA_CANAL, num } from "@/components/fulfillment/ui";
-import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol } from "@/components/fulfillment/tipos";
+import type { Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, Rol, Tienda } from "@/components/fulfillment/tipos";
 
 /** El rótulo se escribió así en la petición. Se cambia aquí y en AppNavbar. */
 const ROTULO = "FULLFILMENT";
@@ -70,6 +78,13 @@ export default function FulfillmentPage() {
   const [abierto, setAbierto] = useState<Envio | null>(null);
   const [recarga, setRecarga] = useState(0);
   const [porMandar, setPorMandar] = useState<{ skus: number; piezas: number; tiendas: number } | null>(null);
+  // Lo que Crear FULL le pasa a Análisis, y los reemplazos que Análisis le pide a Crear FULL.
+  const [plan, setPlan] = useState<PlanAnalisis | null>(null);
+  const [reemplazo, setReemplazo] = useState<PedidoReemplazo | null>(null);
+  const pedirReemplazo = useCallback((tienda: Tienda, sku: string, de: string) =>
+    setReemplazo({ id: Date.now(), tienda, sku, de }), []);
+  const reemplazoHecho = useCallback((id: number) =>
+    setReemplazo((r) => (r && r.id === id ? null : r)), []);
 
   // La pantalla viaja en el #: recargar no te regresa al inicio y se puede
   // mandar la liga de «Envíos» o «Análisis».
@@ -139,7 +154,7 @@ export default function FulfillmentPage() {
   const sub: Record<Pantalla, string> = {
     crear: porMandar ? `${num(porMandar.piezas)} pzs de ${num(porMandar.skus)} SKUs por mandar · ${porMandar.tiendas} tienda${porMandar.tiendas === 1 ? "" : "s"}` : "la planeación de la semana",
     envios: datos ? `${enCurso.porValidar} por validar · ${enCurso.llegando} llegando` : "leyendo Odoo…",
-    analisis: "enviado contra recibido, por semana",
+    analisis: plan ? `por semana · ${num(plan.ganadores.length)} ganadores sin existencia` : "enviado contra recibido, por semana",
   };
 
   return (
@@ -250,13 +265,16 @@ export default function FulfillmentPage() {
           </div>
         )}
 
-        {pantalla === "crear" && (
-          <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} onEstado={setPorMandar} />
-        )}
+        {/* Siempre montado: cambiar de pantalla no borra lo editado ni la conversación con la IA. */}
+        <div className={pantalla === "crear" ? "" : "hidden"}>
+          <CrearFull stock={datos?.stock} rol={rol} recarga={recarga} onEstado={setPorMandar}
+                     onPlan={setPlan} reemplazoPedido={reemplazo} onReemplazoHecho={reemplazoHecho} />
+        </div>
         {pantalla === "envios" && (datos
           ? <TablaEnvios envios={envios} total={todos.length} onAbrir={setAbierto} />
           : <Espera cargando={cargando} />)}
-        {pantalla === "analisis" && <Analisis canal={canal} cuenta={cuenta} datos={datos} onAbrir={setAbierto} />}
+        {pantalla === "analisis" && <Analisis canal={canal} cuenta={cuenta} datos={datos} onAbrir={setAbierto}
+                                              plan={plan} onAgregarReemplazo={pedirReemplazo} />}
 
         {/* El detalle de un envío se abre ENCIMA, y la ficha de un SKU encima de él. */}
         {abierto && <DetalleEnvioModal envio={abierto} onCerrar={() => setAbierto(null)} />}

@@ -116,7 +116,8 @@ PARAMETROS: dict[str, int] = {
 }
 VENTANAS = (7, 14, 30, 60, 90)
 TRANSITO_DIAS = 21
-BORRADOR_DIAS = 21
+BORRADOR_DIAS = 21          # los borradores que se RESTAN de la planeación
+BORRADOR_VISTA_DIAS = 90    # los que se ENSEÑAN en «órdenes sin completar» (Análisis)
 PRUEBA_REF = "PRUEBA · NO CONFIRMAR NI SURTIR"
 
 _CDMX = timezone(timedelta(hours=-6))
@@ -160,12 +161,30 @@ def _palabras(texto: str | None) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9]+", t) if len(w) > 2 and w not in _PALABRAS_VACIAS}
 
 
+def _raiz(w: str) -> str:
+    return w[:5] if len(w) > 5 else w
+
+
 def parecido(a: str | None, b: str | None) -> float | None:
-    """Palabras en común entre dos títulos (0 a 1). None si alguno no dice nada."""
-    pa, pb = _palabras(a), _palabras(b)
-    if len(pa) < 2 or len(pb) < 2:
+    """
+    Palabras en común entre dos títulos (0 a 1), por RAÍZ: «flores»/«flor»,
+    «masajeador»/«masaje» y «ramas»/«rama» cuentan como la misma. Medido el 24-sep
+    contra Odoo: con palabras exactas 120 títulos «no coincidían» y casi todos eran
+    el mismo producto dicho distinto; con raíces, 72. None si alguno no dice nada.
+    """
+    ra, rb = {_raiz(w) for w in _palabras(a)}, {_raiz(w) for w in _palabras(b)}
+    if len(ra) < 2 or len(rb) < 2:
         return None
-    return len(pa & pb) / min(len(pa), len(pb))
+    comunes = sum(1 for x in ra if any(x == y or (len(x) >= 4 and len(y) >= 4 and (x.startswith(y) or y.startswith(x)))
+                                       for y in rb))
+    return comunes / min(len(ra), len(rb))
+
+
+def _foto_ml(url: str | None) -> str | None:
+    """La foto de la publicación: `thumbnail` viene en http y chica (-I); se pide en https y completa (-O)."""
+    if not url:
+        return None
+    return re.sub(r"-I\.(jpe?g|png|webp)$", r"-O.\1", url.replace("http://", "https://"))
 
 
 def medidas_sospechosas(m: dict[str, Any] | None) -> bool:
@@ -352,7 +371,7 @@ def verificar_ml(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any
     token = _token_ml(codigo)
     if not token:
         return {}
-    campos = "id,status,sub_status,available_quantity,shipping,title,category_id,price"
+    campos = "id,status,sub_status,available_quantity,shipping,title,category_id,price,thumbnail"
     lotes = [ids[i:i + 20] for i in range(0, len(ids), 20)]
 
     def lote(grupo: list[str]) -> list[dict]:
@@ -380,6 +399,7 @@ def verificar_ml(codigo: str, listing_ids: list[str]) -> dict[str, dict[str, Any
                     "logistica": (b.get("shipping") or {}).get("logistic_type"),
                     "titulo": b.get("title"), "categoria": b.get("category_id"),
                     "precio": b.get("price"),
+                    "imagen": _foto_ml(b.get("thumbnail")),
                 }
     return salida
 
@@ -412,7 +432,7 @@ def buscar_ml_por_sku(codigo: str, sku: str) -> list[str]:
 
 def _borradores(ahora: datetime) -> list[dict[str, Any]]:
     """Las cotizaciones a FULL/FBA/WFS que YA existen en Odoo (21 días)."""
-    desde = (ahora - timedelta(days=BORRADOR_DIAS)).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    desde = (ahora - timedelta(days=BORRADOR_VISTA_DIAS)).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     ordenes = odoo_ventas._kw(
         "sale.order", "search_read",
         [[["state", "=", "draft"], ["create_date", ">=", desde],
@@ -444,9 +464,11 @@ def _borradores(ahora: datetime) -> list[dict[str, Any]]:
                                             fenv._nombre(o.get("create_uid")))
         tienda = tienda_de_envio({"canal": canal, "cuenta": cuenta})
         origen = str(o.get("origin") or "")
+        creada = fenv._iso(o.get("create_date"))
+        dias = _dias_desde(creada, ahora)
         salida.append({
             "id": o["id"], "orden": o["name"], "tienda": tienda, "cuenta": cuenta, "cuenta_regla": regla,
-            "socio": socio, "kam": fenv.quien_armo(o), "creada": fenv._iso(o.get("create_date")),
+            "socio": socio, "kam": fenv.quien_armo(o), "creada": creada, "dias": dias,
             "referencia": o.get("client_order_ref") or None, "origen": origen or None,
             "almacen": fenv._nombre(o.get("warehouse_id")) or None,
             "panel": origen.startswith(fenv.ORIGEN_PANEL),
@@ -458,6 +480,45 @@ def _borradores(ahora: datetime) -> list[dict[str, Any]]:
 
 
 # ── Funciones puras (se prueban sin Odoo, kubera ni ML) ─────────────────────
+
+def _dias_desde(iso: str | datetime | None, ahora: datetime) -> int | None:
+    """Días completos desde una fecha (con zona). None si no hay fecha."""
+    if not iso:
+        return None
+    dt = iso if isinstance(iso, datetime) else datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0, (ahora - dt).days)
+
+
+def se_resta(borrador: dict[str, Any]) -> bool:
+    """Un borrador se resta de la planeación si es de una tienda, no es PRUEBA y tiene
+    21 días o menos. Los más viejos se ENSEÑAN (Análisis) pero ya no se restan."""
+    return (bool(borrador.get("tienda")) and not borrador.get("prueba")
+            and (borrador.get("dias") or 0) <= BORRADOR_DIAS)
+
+
+def salidas_abiertas(envios: list[dict[str, Any]], ahora: datetime) -> list[dict[str, Any]]:
+    """
+    Cada salida a FULL/FBA/WFS que existe en Odoo y bodega no ha validado, con
+    CUÁNTO LLEVA sin completarse (Brandon, 24-sep). Las de más de 21 días son
+    «olvidadas»: no cuentan como en camino y siguen reservando stock en Odoo.
+    La más vieja primero.
+    """
+    salida = []
+    for e in envios:
+        tienda = tienda_de_envio(e)
+        if not tienda or e.get("estado_odoo") == "done":
+            continue
+        creada = _ts(e["etapas"][0])
+        dias = _dias_desde(creada, ahora)
+        salida.append({"orden": e.get("orden"), "salida": e.get("salida"), "tienda": tienda,
+                       "cuenta": e.get("cuenta"), "kam": e.get("kam"),
+                       "creada": creada.isoformat() if creada else None, "dias": dias,
+                       "piezas": int(e.get("pedidas") or 0),
+                       "olvidada": dias is not None and dias > TRANSITO_DIAS})
+    return sorted(salida, key=lambda x: -(x["dias"] or 0))
+
 
 def en_camino(envios: list[dict[str, Any]],
               ahora: datetime) -> tuple[dict[tuple[str, str], dict[str, Any]], list[dict[str, Any]]]:
@@ -549,31 +610,35 @@ def esta_semana(envios: list[dict[str, Any]], ahora: datetime) -> dict[str, dict
 
 
 def reemplazos_para(sku: str, tienda: str, pubs: dict[str, dict[str, Any]],
-                    libre_total: dict[str, int], nombres: dict[str, str], tope: int = 3) -> list[dict[str, Any]]:
+                    libre_total: dict[str, int], nombres: dict[str, str],
+                    vendidas: dict[str, int] | None = None, tope: int = 3) -> list[dict[str, Any]]:
     """
-    GANADOR AGOTADO → REEMPLAZO, en el orden del prompt: (1) el MISMO MODELO en otro
-    color o talla con stock libre; (2) la MISMA CATEGORÍA del marketplace, mayor
-    libre primero. Sólo lo YA PUBLICADO en esa tienda.
+    GANADOR SIN EXISTENCIA → su REEMPLAZO. El ganador no se puede surtir (0 libre en
+    Odoo y 0 en el almacén); el reemplazo es el SIGUIENTE que SÍ VENDE en esa tienda
+    y SÍ tiene libre en Odoo (Brandon, 24-sep: "su reemplazo debe ser el que sigue con
+    ventas"). Orden del prompt: (1) el MISMO MODELO (otro color o talla), (2) la
+    MISMA CATEGORÍA del marketplace; dentro de cada uno, el que más vende primero.
+    Sólo lo YA PUBLICADO en esa tienda.
     """
+    vendidas = vendidas or {}
     base = modelo_base(sku)
-    propia = pubs.get(sku) or {}
-    categoria = propia.get("categoria")
-    salida: list[dict[str, Any]] = []
-    vistos = {sku}
-    mismos = sorted((s for s in pubs if s not in vistos and modelo_base(s) == base
-                     and libre_total.get(s, 0) > 0), key=lambda s: -libre_total.get(s, 0))
-    for s in mismos:
-        salida.append({"sku": s, "nombre": nombres.get(s), "tipo": "mismo modelo", "libre": libre_total[s],
-                       "precio": _precio(pubs[s].get("precio"))})
-        vistos.add(s)
+    categoria = (pubs.get(sku) or {}).get("categoria")
+
+    def sirve(s: str) -> bool:
+        return s != sku and libre_total.get(s, 0) > 0 and vendidas.get(s, 0) > 0
+
+    def orden(s: str) -> tuple[int, int]:
+        return (-vendidas.get(s, 0), -libre_total.get(s, 0))
+
+    mismos = sorted((s for s in pubs if sirve(s) and modelo_base(s) == base), key=orden)
+    misma_cat = sorted((s for s, p in pubs.items() if sirve(s) and s not in mismos and categoria
+                        and p.get("categoria") == categoria), key=orden)
+    salida = []
+    for s, tipo in [(s, "mismo modelo") for s in mismos] + [(s, "misma categoría") for s in misma_cat]:
+        salida.append({"sku": s, "nombre": nombres.get(s), "tipo": tipo, "libre": libre_total[s],
+                       "vendio": vendidas[s], "precio": _precio(pubs[s].get("precio"))})
         if len(salida) >= tope:
-            return salida
-    if categoria:
-        misma_cat = sorted((s for s, p in pubs.items() if s not in vistos and p.get("categoria") == categoria
-                            and libre_total.get(s, 0) > 0), key=lambda s: -libre_total.get(s, 0))
-        for s in misma_cat[:tope - len(salida)]:
-            salida.append({"sku": s, "nombre": nombres.get(s), "tipo": "misma categoría", "libre": libre_total[s],
-                           "precio": _precio(pubs[s].get("precio"))})
+            break
     return salida
 
 
@@ -592,7 +657,10 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
     alertas = []
     if pub and not (pub.get("categoria") or (vivo or {}).get("categoria")):
         alertas.append("sin_categoria")
-    p = parecido(titulo, nombre)
+    # El título del marketplace contra el nombre de ODOO (Brandon, 24-sep); sin
+    # producto en Odoo, contra el de Omnicanal.
+    nombre_odoo = (producto or {}).get("name")
+    p = parecido(titulo, nombre_odoo or nombre)
     if p is not None and p < 0.15:
         alertas.append("reciclado")
     if medidas_sospechosas(medidas):
@@ -606,7 +674,15 @@ def _fila(tienda: str, sku: str, venta: dict | None, pub: dict | None, vivo: dic
         "publicada": pub is not None, "listing_id": (pub or {}).get("listing_id"), "url": (pub or {}).get("url"),
         "situacion": estado_vivo or (pub or {}).get("situacion"),
         "en_almacen": bool((vivo or {}).get("logistica") == "fulfillment") if vivo else (pub or {}).get("en_almacen"),
-        "verificada": vivo is not None, "titulo_mkt": titulo,
+        "verificada": vivo is not None, "titulo_mkt": titulo, "nombre_odoo": nombre_odoo,
+        # Las fotos sólo viajan donde hacen falta: en los que el título no coincide.
+        "imagen_mkt": (vivo or {}).get("imagen") if "reciclado" in alertas else None,
+        "parecido": round(p, 2) if p is not None and "reciclado" in alertas else None,
+        # Si el título del marketplace TAMPOCO se parece al nombre del catálogo, es lo
+        # primero que hay que revisar; si sí se parece, casi siempre es redacción (Odoo
+        # trae nombres del proveedor, a veces en inglés), pero se enseña igual con foto.
+        "titulo_urgente": ("reciclado" in alertas
+                           and ((parecido(titulo, nombre) or 0) < 0.5) if nombre_odoo else None),
         "categoria": (vivo or {}).get("categoria") or (pub or {}).get("categoria"),
         "precio": precio,
         "vv": int((venta or {}).get("vv") or 0), "v7": int((venta or {}).get("v7") or 0),
@@ -633,8 +709,8 @@ def armar_propuesta(tiendas: list[str], ventas: list[dict], pubs: dict[str, dict
     camino, zombis = en_camino(envios, ahora)
     borr: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {"piezas": 0, "detalle": []})
     for b in borradores:
-        # Las PRUEBAS no se restan: nadie las va a surtir.
-        if not b.get("tienda") or b.get("prueba"):
+        # Las PRUEBAS no se restan (nadie las va a surtir) y los de más de 21 días tampoco.
+        if not se_resta(b):
             continue
         for r in b["lineas"]:
             if r["cantidad"] > 0:
@@ -667,7 +743,8 @@ def armar_propuesta(tiendas: list[str], ventas: list[dict], pubs: dict[str, dict
             # Ganador agotado (el umbral de ventas lo aplica la pantalla): sin stock
             # libre y sin stock en el almacén del marketplace.
             if f["vv"] > 0 and p and libre_total.get(sku, 0) == 0 and (f["stock"] or 0) == 0:
-                f["reemplazos"] = reemplazos_para(sku, t, pubs.get(t, {}), libre_total, nombres)
+                f["reemplazos"] = reemplazos_para(sku, t, pubs.get(t, {}), libre_total, nombres,
+                                                  {s: int(v.get("vv") or 0) for s, v in ventas_por[t].items()})
             lista.append(f)
         lista.sort(key=lambda f: (-f["vv"], f["sku"]))
         filas[t] = lista
@@ -690,6 +767,7 @@ def armar_propuesta(tiendas: list[str], ventas: list[dict], pubs: dict[str, dict
                         "filas": filas.get(t, [])} for t in tiendas},
         "borradores": borradores,
         "zombis": zombis,
+        "abiertas": salidas_abiertas(envios, ahora),
         "esta_semana": esta_semana(envios, ahora),
         "en_camino": {t: {"piezas": sum(v["piezas"] for (tt, _), v in camino.items() if tt == t),
                           "skus": sum(1 for (tt, _) in camino if tt == t)} for t in TIENDAS},
@@ -830,7 +908,7 @@ def leer_propuesta(envios: list[dict[str, Any]], ventana: int = 30, ahora: datet
     for (t, s) in camino:
         candidatos[t].add(s)
     for b in borradores:
-        if b.get("tienda") and not b.get("prueba"):
+        if se_resta(b):
             candidatos[b["tienda"]].update(r["sku"] for r in b["lineas"])
 
     # Mercado Libre EN VIVO para las publicaciones que entran.
@@ -839,29 +917,11 @@ def leer_propuesta(envios: list[dict[str, Any]], ventana: int = 30, ahora: datet
         ids = [pubs[t][s]["listing_id"] for s in candidatos[t] if s in pubs[t]]
         vivos[t] = verificar_ml(TIENDAS[t]["codigo"], ids)
 
-    # Odoo: primero los candidatos; luego los posibles REEMPLAZOS de los que se
-    # agotaron (mismo modelo o misma categoría), para saber cuáles tienen libre.
+    # Odoo: lo libre de los candidatos. Los REEMPLAZOS ya están entre ellos: un
+    # reemplazo tiene que vender en esa tienda, y todo lo que vende es candidato.
     todos = sorted(set().union(*candidatos.values()))
     productos = odoo_ventas.productos_por_sku(todos)
     libres = odoo_ventas.libre_por_almacen([p["id"] for p in productos.values()])
-
-    def libre_de(sku: str) -> int:
-        p = productos.get(sku)
-        return sum(max(0, int(libres.get(p["id"], {}).get(w, 0) or 0)) for w, _ in ALMACENES) if p else 0
-
-    extra: set[str] = set()
-    for t, skus in candidatos.items():
-        for s in skus:
-            pub = pubs.get(t, {}).get(s)
-            if s in productos and libre_de(s) == 0:
-                base, cat = modelo_base(s), (pub or {}).get("categoria")
-                extra.update(x for x, p in pubs.get(t, {}).items()
-                             if modelo_base(x) == base or (cat and p.get("categoria") == cat))
-    extra -= set(productos)
-    if extra:
-        mas = odoo_ventas.productos_por_sku(sorted(extra))
-        productos.update(mas)
-        libres.update(odoo_ventas.libre_por_almacen([p["id"] for p in mas.values()]))
 
     skus_todos = sorted(set(productos) | set(todos))
     nombres = {f["sku"]: f["name"] for f in sdb.fetch_all(_SQL_NOMBRES, {"skus": skus_todos})}
@@ -962,6 +1022,27 @@ def buscar(tienda: str, texto: str, envios: list[dict[str, Any]], ventana: int =
                            camino.get((tienda, s)), None, nombres.get(s), medidas.get(s)))
     return {"ok": True, "tienda": tienda, "filas": filas, "no_publicados": no_publicados,
             "generado": ahora.isoformat()}
+
+
+def _tipo_imagen(b64: str) -> str:
+    return ("image/png" if b64.startswith("iVBOR") else "image/webp" if b64.startswith("UklGR")
+            else "image/gif" if b64.startswith("R0lGOD") else "image/jpeg")
+
+
+def imagenes_odoo(skus: list[str]) -> dict[str, str | None]:
+    """La foto de cada producto en Odoo (`image_128`) como data URI, para compararla
+    con la de la publicación. None = el producto no tiene foto o no está en Odoo."""
+    limpios = sorted({(s or "").strip() for s in skus if (s or "").strip()})[:60]
+    productos = odoo_ventas.productos_por_sku(limpios)
+    salida: dict[str, str | None] = {s: None for s in limpios}
+    if not productos:
+        return salida
+    sku_de = {p["id"]: s for s, p in productos.items()}
+    for f in odoo_ventas._kw("product.product", "read", [list(sku_de), ["image_128"]]):
+        b64 = f.get("image_128")
+        if b64 and sku_de.get(f["id"]):
+            salida[sku_de[f["id"]]] = f"data:{_tipo_imagen(b64)};base64,{b64}"
+    return salida
 
 
 def vista_previa(tiendas: list[dict[str, Any]], prueba: bool = True) -> dict[str, Any]:

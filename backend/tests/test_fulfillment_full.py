@@ -16,6 +16,8 @@
   6. Lo que sugiera la IA se valida: fuera de la planeación o sobre lo libre no pasa.
   7. La IA como agente (v0.568.0): tabla compacta con precio, instrucciones de la persona,
      seguimiento con historial y la planeación primero, en caché.
+  8. Análisis (v0.570.0): el reemplazo es el siguiente que VENDE y tiene stock; el título se
+     compara contra Odoo con la foto; cada orden sin completar dice cuánto lleva.
 
 No se llama a Odoo, kubera ni Mercado Libre: se sustituyen por falsos.
 
@@ -107,6 +109,13 @@ class Utilidades(unittest.TestCase):
         self.assertGreater(ff.parecido("Audífonos inalámbricos BT 5.3 invisibles",
                                        "AUDIFONOS INVISIBLES VERDADERAMENTE CON BT 5.3"), 0.3)
         self.assertIsNone(ff.parecido("X", "Algo largo aquí"), "con una palabra no se juzga")
+        self.assertGreaterEqual(ff.parecido("Flores artificiales rama 5 cabezas", "Flor artificial ramas densas"), 0.5,
+                                "por raíz: flores/flor, artificiales/artificial, rama/ramas")
+
+    def test_la_foto_de_ml_en_https_y_completa(self):
+        self.assertEqual(ff._foto_ml("http://http2.mlstatic.com/D_935594-MLM107_022026-I.jpg"),
+                         "https://http2.mlstatic.com/D_935594-MLM107_022026-O.jpg")
+        self.assertIsNone(ff._foto_ml(None))
 
     def test_medidas_sospechosas_del_prompt(self):
         self.assertTrue(ff.medidas_sospechosas({"largo": 41, "ancho": 60, "alto": 40, "peso": 0.3}))
@@ -120,6 +129,8 @@ class Propuesta(unittest.TestCase):
         ventas = [{"canal": "mercado_libre", "cuenta": "BEKURA", "sku": "TEC-0001-ROS", "vv": 60, "v7": 20,
                    "ultima": date(2026, 9, 23)},
                   {"canal": "mercado_libre", "cuenta": "BEKURA", "sku": "TEC-0002-NEG", "vv": 9, "v7": 1, "ultima": None},
+                  {"canal": "mercado_libre", "cuenta": "BEKURA", "sku": "TEC-0002-AZL", "vv": 4, "v7": 1, "ultima": None},
+                  {"canal": "mercado_libre", "cuenta": "BEKURA", "sku": "HOG-0100-BLN", "vv": 15, "v7": 2, "ultima": None},
                   {"canal": "mercado_libre", "cuenta": "SANCORFASHION", "sku": "TEC-0001-ROS", "vv": 30, "v7": 7,
                    "ultima": None},
                   {"canal": "amazon", "cuenta": "AMAZON", "sku": "VIA-0024-NEG", "vv": 12, "v7": 3, "ultima": None}]
@@ -131,6 +142,8 @@ class Propuesta(unittest.TestCase):
                     "TEC-0002-AZL": {"sku": "TEC-0002-AZL", "listing_id": "MLM3", "url": "u", "situacion": "active",
                                      "en_almacen": True, "categoria": "MLM20", "stock": 4},
                     "HOG-0100-BLN": {"sku": "HOG-0100-BLN", "listing_id": "MLM4", "url": "u", "situacion": "active",
+                                     "en_almacen": False, "categoria": "MLM20", "stock": 0},
+                    "HOG-0200-NEG": {"sku": "HOG-0200-NEG", "listing_id": "MLM5", "url": "u", "situacion": "active",
                                      "en_almacen": False, "categoria": "MLM20", "stock": 0}},
                 "meli:San Corpe": {}, "amazon": {}, "walmart": {}}
         vivos = {"meli:Kubera": {"MLM1": {"estado": "paused", "stock": 0, "logistica": "fulfillment",
@@ -138,10 +151,14 @@ class Propuesta(unittest.TestCase):
         borradores = [
             {"orden": "S38878", "tienda": "meli:Kubera", "prueba": False, "lineas": [{"sku": "TEC-0001-ROS", "cantidad": 20}]},
             {"orden": "S39000", "tienda": "meli:Kubera", "prueba": True, "lineas": [{"sku": "TEC-0001-ROS", "cantidad": 99}]},
+            {"orden": "S37000", "tienda": "meli:Kubera", "prueba": False, "dias": 40,
+             "lineas": [{"sku": "TEC-0001-ROS", "cantidad": 7}]},
         ]
         productos = {"TEC-0001-ROS": {"id": 1, "name": "Brochas"}, "TEC-0002-NEG": {"id": 2, "name": "Tablet negra"},
-                     "TEC-0002-AZL": {"id": 3, "name": "Tablet azul"}, "HOG-0100-BLN": {"id": 4, "name": "Lámpara"}}
-        libres = {1: {TEXCO: 30, TEXCO2: -4}, 2: {TEXCO: 0, TEXCO2: 0}, 3: {TEXCO: 0, TEXCO2: 8}, 4: {TEXCO: 50}}
+                     "TEC-0002-AZL": {"id": 3, "name": "Tablet azul"}, "HOG-0100-BLN": {"id": 4, "name": "Lámpara"},
+                     "HOG-0200-NEG": {"id": 5, "name": "Lámpara negra"}}
+        libres = {1: {TEXCO: 30, TEXCO2: -4}, 2: {TEXCO: 0, TEXCO2: 0}, 3: {TEXCO: 0, TEXCO2: 8}, 4: {TEXCO: 50},
+                  5: {TEXCO: 99}}
         nombres = {"TEC-0001-ROS": "SET DE BROCHAS ROSA"}
         self.p = ff.armar_propuesta(list(ff.TIENDAS), ventas, pubs, vivos, [_envio(hecha=False, dias=1,
                                     lineas=(("TEC-0001-ROS", 10, 0, 0),))], borradores, productos, libres,
@@ -154,14 +171,16 @@ class Propuesta(unittest.TestCase):
         a = self.fila("meli:Kubera", "TEC-0001-ROS")
         self.assertEqual(a["stock"], 0, "ML en vivo (0) manda sobre la copia del sync (12)")
         self.assertTrue(a["verificada"])
-        self.assertEqual((a["vv"], a["en_camino"], a["borrador"]), (60, 10, 20), "la prueba (99) no se resta")
+        self.assertEqual((a["vv"], a["en_camino"], a["borrador"]), (60, 10, 20),
+                         "la prueba (99) no se resta, ni el borrador de 40 días (7)")
         self.assertEqual(a["libre"], {"TEXCO": 30, "TEXCO II": 0}, "libre negativo es cero para planear")
         self.assertEqual(a["nombre"], "SET DE BROCHAS ROSA", "el nombre de Omnicanal, no el de Odoo")
 
     def test_ganador_agotado_trae_reemplazos_publicados(self):
         g = self.fila("meli:Kubera", "TEC-0002-NEG")
-        self.assertEqual([(r["sku"], r["tipo"]) for r in g["reemplazos"]],
-                         [("TEC-0002-AZL", "mismo modelo"), ("HOG-0100-BLN", "misma categoría")])
+        self.assertEqual([(r["sku"], r["tipo"], r["vendio"]) for r in g["reemplazos"]],
+                         [("TEC-0002-AZL", "mismo modelo", 4), ("HOG-0100-BLN", "misma categoría", 15)],
+                         "el siguiente que VENDE y tiene stock; HOG-0200-NEG tiene 99 libres pero no vende")
 
     def test_cada_tienda_con_sus_skus(self):
         self.assertEqual([f["sku"] for f in self.p["tiendas"]["meli:San Corpe"]["filas"]], ["TEC-0001-ROS"])
@@ -546,6 +565,50 @@ class Precio(unittest.TestCase):
         f = ff._fila("amazon", "A", None, {"listing_id": "B0", "precio": "412.00"}, None,
                      None, None, None, None, "A", None)
         self.assertEqual(f["precio"], 412.0)
+
+
+class Analisis(unittest.TestCase):
+    """Lo que se mudó a Análisis: órdenes sin completar y títulos contra Odoo."""
+
+    def test_cada_salida_abierta_dice_cuanto_lleva(self):
+        r = ff.salidas_abiertas([_envio(orden="S1", hecha=False, dias=2),
+                                 _envio(orden="S2", hecha=False, dias=30),
+                                 _envio(orden="S3", hecha=True)], AHORA)
+        self.assertEqual([(x["orden"], x["dias"], x["olvidada"]) for x in r], [("S2", 31, True), ("S1", 3, False)],
+                         "la más vieja primero; la validada no está")
+
+    def test_borrador_que_se_resta(self):
+        self.assertTrue(ff.se_resta({"tienda": "meli:Kubera", "prueba": False, "dias": 21}))
+        self.assertFalse(ff.se_resta({"tienda": "meli:Kubera", "prueba": False, "dias": 22}), "más de 21 días")
+        self.assertFalse(ff.se_resta({"tienda": "meli:Kubera", "prueba": True, "dias": 1}), "prueba")
+        self.assertFalse(ff.se_resta({"tienda": None, "prueba": False, "dias": 1}), "sin tienda")
+
+    def test_el_titulo_se_compara_contra_odoo_con_su_foto(self):
+        vivo = {"titulo": "Monitor portátil para xbox gaming ps5", "imagen": "https://http2.mlstatic.com/x.jpg",
+                "estado": "active", "categoria": "MLM1"}
+        f = ff._fila("meli:Kubera", "TEC-0492-MUL", None, {"listing_id": "MLM9", "categoria": "MLM1"}, vivo,
+                     {"id": 9, "name": "PANTALLA LED P1.86 INTERIOR UHD"}, None, None, None, "Pantalla LED", None)
+        self.assertIn("reciclado", f["alertas"])
+        self.assertEqual((f["nombre_odoo"], f["imagen_mkt"], f["parecido"]),
+                         ("PANTALLA LED P1.86 INTERIOR UHD", "https://http2.mlstatic.com/x.jpg", 0.0))
+        self.assertTrue(f["titulo_urgente"], "tampoco se parece al nombre del catálogo («Pantalla LED»)")
+        igual = ff._fila("meli:Kubera", "ORG-0561-NEG", None, {"listing_id": "MLM8", "categoria": "MLM1"},
+                         {**vivo, "titulo": "Funda protectora para ropa larga negra"},
+                         {"id": 8, "name": "PROTECTOR DE ROPA MAS LARGA NEGRO"}, None, None, None,
+                         "Organizador plegable para cajuela", None)
+        self.assertNotIn("reciclado", igual["alertas"],
+                         "ML y Odoo dicen lo mismo aunque el nombre de Omnicanal esté mal")
+        self.assertIsNone(igual["imagen_mkt"], "la foto sólo viaja cuando no coinciden")
+
+    def test_fotos_de_odoo_como_data_uri(self):
+        def kw(modelo, metodo, args, kwargs=None):
+            self.assertEqual((modelo, metodo), ("product.product", "read"))
+            return [{"id": 1, "image_128": "iVBORw0KGgo"}, {"id": 2, "image_128": False}]
+        with mock.patch.object(ff.odoo_ventas, "productos_por_sku",
+                               lambda skus: {"A": {"id": 1}, "B": {"id": 2}}), \
+             mock.patch.object(ff.odoo_ventas, "_kw", kw):
+            r = ff.imagenes_odoo(["A", "B", "C"])
+        self.assertEqual(r, {"A": "data:image/png;base64,iVBORw0KGgo", "B": None, "C": None})
 
 
 class Excel(unittest.TestCase):

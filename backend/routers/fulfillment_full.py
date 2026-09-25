@@ -8,6 +8,7 @@ y services/fulfillment_sku.py.
                                                  Corpe, Amazon FBA, Walmart WFS), borradores,
                                                  lo que sale esta semana y el interruptor
   GET  /api/fulfillment/crear-full/buscar        SKUs publicados en una tienda (ML en vivo)
+  GET  /api/fulfillment/crear-full/imagenes      la foto de Odoo de cada SKU (títulos que no coinciden)
   POST /api/fulfillment/crear-full/vista-previa  qué se crearía, releyendo Odoo y ML. No escribe.
   POST /api/fulfillment/crear-full/excel         la planeación en .xlsx. No escribe.
   POST /api/fulfillment/crear-full/ia            arranca la revisión con IA (Claude). No escribe.
@@ -95,6 +96,16 @@ async def buscar(tienda: str = Query(...), q: str = Query(..., max_length=2000),
         return await asyncio.to_thread(fulfillment_full.buscar, tienda, q, envios["envios"], ventana)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, f"no se pudo buscar: {exc}") from exc
+
+
+@router.get("/crear-full/imagenes")
+async def imagenes(skus: str = Query(..., max_length=4000)) -> dict[str, Any]:
+    """La foto de Odoo de cada SKU (hasta 60), para compararla con la del marketplace."""
+    lista = [s for s in skus.split(",") if s.strip()]
+    try:
+        return {"imagenes": await asyncio.to_thread(fulfillment_full.imagenes_odoo, lista)}
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"Odoo no contestó: {exc}") from exc
 
 
 @router.post("/crear-full/vista-previa")

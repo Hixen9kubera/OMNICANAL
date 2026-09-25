@@ -260,6 +260,13 @@ export interface FilaPlan {
   /** Mercado Libre la confirmó EN VIVO al armar la planeación o al buscarla. */
   verificada: boolean;
   titulo_mkt: string | null;
+  /** El nombre del producto en ODOO: contra él se compara el título del marketplace. */
+  nombre_odoo: string | null;
+  /** Sólo cuando el título no coincide: la foto de la publicación y qué tanto se parecen (0 a 1). */
+  imagen_mkt: string | null;
+  parecido: number | null;
+  /** Tampoco se parece al nombre del catálogo: revisar primero. */
+  titulo_urgente: boolean | null;
   categoria: string | null;
   /** Precio de venta HOY en esa tienda, en pesos (ML en vivo). null = no se sabe. */
   precio: number | null;
@@ -279,7 +286,9 @@ export interface FilaPlan {
   caja: number | null;
   alertas: AlertaFila[];
   /** Si es ganador agotado: reemplazos YA publicados con stock (mismo modelo, luego misma categoría). */
-  reemplazos: { sku: string; nombre: string | null; tipo: string; libre: number; precio?: number | null }[];
+  /** Si es ganador SIN EXISTENCIA: el siguiente que vende y tiene stock (mismo modelo, luego misma categoría). */
+  reemplazos: { sku: string; nombre: string | null; tipo: string; libre: number; vendio?: number;
+                precio?: number | null }[];
 }
 
 export interface TiendaPlan {
@@ -312,6 +321,8 @@ export interface BorradorFull {
   socio: string;
   kam: string | null;
   creada: string | null;
+  /** Cuánto lleva sin confirmarse. Más de 21 días: se enseña, ya no se resta. */
+  dias: number | null;
   referencia: string | null;
   origen: string | null;
   almacen: string | null;
@@ -320,6 +331,20 @@ export interface BorradorFull {
   piezas: number;
   skus: number;
   url: string;
+}
+
+/** Una salida a FULL/FBA/WFS que bodega no ha validado, con cuánto lleva. */
+export interface SalidaAbierta {
+  orden: string | null;
+  salida: string | null;
+  tienda: Tienda;
+  cuenta: Cuenta | null;
+  kam: string | null;
+  creada: string | null;
+  dias: number | null;
+  piezas: number;
+  /** Más de 21 días: no cuenta como en camino y sigue reservando stock. */
+  olvidada: boolean;
 }
 
 export interface Interruptor {
@@ -351,6 +376,7 @@ export interface PropuestaFull {
   zombis: { orden: string | null; salida: string | null; tienda: Tienda; cuenta: Cuenta | null; creada: string;
             piezas: number }[];
   esta_semana: Partial<Record<Tienda, SemanaTienda>>;
+  abiertas: SalidaAbierta[];
   en_camino: Record<Tienda, { piezas: number; skus: number }>;
   interruptor: Interruptor;
   ia_disponible: boolean;

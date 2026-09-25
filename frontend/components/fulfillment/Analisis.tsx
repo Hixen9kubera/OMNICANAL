@@ -18,16 +18,23 @@
  *
  * Los datos: `semanas` de `GET /api/fulfillment/envios`
  * (fulfillment_etapas.resumir_semanas); los envíos de la semana se filtran aquí.
+ *
+ * Desde v0.570.0 Análisis tiene una segunda vista, «Planeación de la semana»
+ * (AnalisisPlaneacion.tsx): los totales, los ganadores sin existencia con su
+ * reemplazo, los títulos que no coinciden con Odoo y las órdenes sin completar,
+ * que salieron de Crear FULL para dejarlo sólo para crear (Brandon, 24-sep).
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import PlaneacionSemana from "./AnalisisPlaneacion";
+import type { PlanAnalisis } from "./AnalisisPlaneacion";
 import { seguimientoDe } from "./Envios";
 import {
   Ceja, ChipCanal, ChipFuente, FONDO_RAYADO, FONDO_RAYADO_AMBAR, PUNTO_CUENTA, RAYADO, RAYADO_ROSA, Tarjeta,
   num, rangoSemana, semanaIso,
 } from "./ui";
-import type { Cuenta, Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, SemanaAnalisis } from "./tipos";
+import type { Cuenta, Envio, FiltroCanal, FiltroCuenta, RespuestaEnvios, SemanaAnalisis, Tienda } from "./tipos";
 
 const TIT_AVISOS = "Avisos de FULL de Mercado Libre (webhook fbm_stock_operations) resueltos a tipo, piezas y SKU; "
   + "cada operación cuenta una vez.";
@@ -35,7 +42,50 @@ const EN_GRAFICA = 12;
 
 const llave = (s: Pick<SemanaAnalisis, "anio" | "semana">) => `${s.anio}-${s.semana}`;
 
-export default function Analisis({ canal, cuenta, datos, onAbrir }: {
+type Vista = "envios" | "planeacion";
+const LLAVE_VISTA = "fulfillment.analisis_vista";
+
+export default function Analisis({ canal, cuenta, datos, onAbrir, plan, onAgregarReemplazo }: {
+  canal: FiltroCanal; cuenta: FiltroCuenta; datos: RespuestaEnvios | null; onAbrir: (e: Envio) => void;
+  plan: PlanAnalisis | null; onAgregarReemplazo: (tienda: Tienda, sku: string, de: string) => void;
+}) {
+  const [vista, setVista] = useState<Vista>("envios");
+  useEffect(() => {
+    try {
+      const v = window.localStorage.getItem(LLAVE_VISTA);
+      if (v === "envios" || v === "planeacion") setVista(v);
+    } catch { /* sin almacenamiento */ }
+  }, []);
+  const cambiar = (v: Vista) => {
+    setVista(v);
+    try { window.localStorage.setItem(LLAVE_VISTA, v); } catch { /* sin almacenamiento */ }
+  };
+  const opciones: { k: Vista; t: string; sub: string }[] = [
+    { k: "envios", t: "Enviado vs recibido", sub: "por semana" },
+    { k: "planeacion", t: "Planeación de la semana",
+      sub: plan ? `${num(plan.ganadores.length)} ganadores sin existencia · ${num(plan.titulos.length)} títulos por revisar`
+        : "leyendo la planeación…" },
+  ];
+  return (
+    <>
+      <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        {opciones.map((o) => (
+          <button key={o.k} type="button" onClick={() => cambiar(o.k)} aria-pressed={vista === o.k}
+                  className={`min-w-0 rounded-xl border px-4 py-2.5 text-left transition ${
+                    vista === o.k ? "border-indigo-200 bg-white shadow-sm" : "border-slate-200 bg-slate-50 hover:bg-white"}`}>
+            <span className={`block text-[14px] font-extrabold ${vista === o.k ? "text-indigo-800" : "text-slate-600"}`}>{o.t}</span>
+            <span className="block truncate text-[11.5px] text-slate-500">{o.sub}</span>
+          </button>
+        ))}
+      </div>
+      {vista === "envios"
+        ? <EnviosPorSemana canal={canal} cuenta={cuenta} datos={datos} onAbrir={onAbrir} />
+        : <PlaneacionSemana plan={plan} canal={canal} cuenta={cuenta} onAgregarReemplazo={onAgregarReemplazo} />}
+    </>
+  );
+}
+
+function EnviosPorSemana({ canal, cuenta, datos, onAbrir }: {
   canal: FiltroCanal; cuenta: FiltroCuenta; datos: RespuestaEnvios | null; onAbrir: (e: Envio) => void;
 }) {
   const grupo = canal === "amazon" || canal === "walmart" ? canal : cuenta === "todas" ? "meli" : `meli:${cuenta}`;

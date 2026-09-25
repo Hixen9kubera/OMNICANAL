@@ -83,7 +83,7 @@ export default function PanelIA({ turnos, datos, onEnviar, onAplicar, onAgregarR
   datos: PropuestaFull;
   onEnviar: (instruccion: string) => void;
   onAplicar: (ajustes: Revision["ajustes"]) => void;
-  onAgregarReemplazo: (tienda: Tienda, sku: string) => void;
+  onAgregarReemplazo: (tienda: Tienda, sku: string, de: string) => void;
   onNueva: () => void;
   onCerrar: () => void;
 }) {
@@ -166,7 +166,7 @@ export default function PanelIA({ turnos, datos, onEnviar, onAplicar, onAgregarR
 function Turno({ turno, ultimo, datos, onAplicar, onAgregarReemplazo }: {
   turno: TurnoIA; ultimo: boolean; datos: PropuestaFull;
   onAplicar: (ajustes: Revision["ajustes"]) => void;
-  onAgregarReemplazo: (tienda: Tienda, sku: string) => void;
+  onAgregarReemplazo: (tienda: Tienda, sku: string, de: string) => void;
 }) {
   const r = turno.resultado;
   const nombre = (t: string) => datos.tiendas[t as Tienda]?.nombre ?? t;
@@ -272,7 +272,7 @@ function Turno({ turno, ultimo, datos, onAplicar, onAgregarReemplazo }: {
                         </span>
                         {hechos.has(`r|${x.tienda}|${x.reemplazo}`) ? hecho("agregado") : (
                           <button type="button"
-                                  onClick={() => { onAgregarReemplazo(x.tienda, x.reemplazo); marcar([`r|${x.tienda}|${x.reemplazo}`]); }}
+                                  onClick={() => { onAgregarReemplazo(x.tienda, x.reemplazo, x.agotado); marcar([`r|${x.tienda}|${x.reemplazo}`]); }}
                                   className="rounded-md border border-violet-200 px-2 py-1 text-[11px] font-bold text-violet-700 hover:bg-violet-50">
                             Agregar a la planeación
                           </button>

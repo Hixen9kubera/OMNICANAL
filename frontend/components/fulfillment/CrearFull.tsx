@@ -11,10 +11,15 @@
  *   · PLANEACIÓN: las reglas del prompt estándar (`proponer.ts`), editable renglón
  *     por renglón; buscar y agregar SKUs publicados; el AGENTE de planeación (IA con
  *     instrucciones libres y seguimiento, sobre la planeación completa con precios).
- *   · SALIDA del prompt: A) la tabla, B) totales con tasa de validado, C) ganadores
- *     agotados con reemplazo, D) SKUs separados por coma, E) alertas.
  *   · CREAR: vista previa con Odoo y ML releídos, modo prueba, una orden por tienda
  *     y almacén, y la guía del marketplace después. Detrás del interruptor.
+ *
+ * SÓLO PARA CREAR FULLs (Brandon, 24-sep, v0.570.0): los totales, los ganadores sin
+ * existencia con su reemplazo, los títulos que no coinciden con Odoo y las órdenes
+ * sin completar se ven en Análisis. Esta pantalla se los pasa con `onPlan` y se
+ * queda montada aunque se cambie de pantalla (page.tsx), para no perder lo editado.
+ * Un SKU se puede QUITAR de la planeación (y restaurar), y un reemplazo agregado
+ * desde Análisis o la IA queda marcado «REEMPLAZO de …».
  *
  * Los insumos: `GET /api/fulfillment/crear-full` (backend/services/fulfillment_full.py).
  */
@@ -23,9 +28,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlertTriangle, ArrowRight, Boxes, ClipboardCopy, Download, ExternalLink, PackageX, Power, RotateCcw, Search,
-  Sparkles, Truck,
+  Sparkles, Trash2, Truck,
 } from "lucide-react";
 import { API_BASE, fetchSesion } from "@/lib/api";
+import type { PlanAnalisis } from "./AnalisisPlaneacion";
 import BuscarSku from "./BuscarSku";
 import ConfirmarFull, { GuiaOrden } from "./ConfirmarFull";
 import PanelIA, { datosParaIA } from "./RevisionIA";
@@ -38,7 +44,7 @@ import type {
 } from "./tipos";
 import { TIENDAS } from "./tipos";
 
-type Filtro = "mandar" | "recorte" | "pendiente" | "ganadores" | "cubiertos" | "todos";
+type Filtro = "mandar" | "recorte" | "pendiente" | "ganadores" | "cubiertos" | "todos" | "quitados";
 
 const FILTROS: { k: Filtro; t: string; titulo: string }[] = [
   { k: "mandar", t: "Por mandar", titulo: "Lo que la planeación manda, más lo que agregaste o cambiaste a mano." },
@@ -47,6 +53,7 @@ const FILTROS: { k: Filtro; t: string; titulo: string }[] = [
   { k: "ganadores", t: "Ganadores agotados", titulo: "Vendieron bien y no hay ni en Odoo ni en el almacén: se sugiere reemplazo." },
   { k: "cubiertos", t: "Ya cubiertos", titulo: "Lo que hay, lo que va en camino y los borradores alcanzan la cobertura." },
   { k: "todos", t: "Todos", titulo: "Todos los SKUs de la planeación de las tiendas activas." },
+  { k: "quitados", t: "Quitados", titulo: "Los SKUs que quitaste de la planeación: se pueden restaurar." },
 ];
 
 const COLOR_TIENDA: Record<Tienda, string> = {
@@ -70,11 +77,18 @@ function leerActivas(): Record<Tienda, boolean> {
   }
 }
 
-export default function CrearFull({ stock, rol, recarga, onEstado }: {
+export interface PedidoReemplazo { id: number; tienda: Tienda; sku: string; de: string }
+
+export default function CrearFull({ stock, rol, recarga, onEstado, onPlan, reemplazoPedido, onReemplazoHecho }: {
   stock: StockHoy | null | undefined;
   rol: Rol;
   recarga: number;
   onEstado?: (e: { skus: number; piezas: number; tiendas: number } | null) => void;
+  /** Lo que se ve en Análisis · «Planeación de la semana». */
+  onPlan?: (p: PlanAnalisis | null) => void;
+  /** Un reemplazo pedido desde Análisis: se marca aquí y se avisa con `onReemplazoHecho`. */
+  reemplazoPedido?: PedidoReemplazo | null;
+  onReemplazoHecho?: (id: number) => void;
 }) {
   const [datos, setDatos] = useState<PropuestaFull | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +100,9 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
   const [vista, setVista] = useState<Tienda | "todas">("todas");
   const [editadas, setEditadas] = useState<Record<string, number>>({});
   const [agregadas, setAgregadas] = useState<FilaPlan[]>([]);
+  // Quitados de la planeación (se pueden restaurar) y los que entraron como REEMPLAZO de otro.
+  const [quitadas, setQuitadas] = useState<Set<string>>(new Set());
+  const [reemplazoDe, setReemplazoDe] = useState<Record<string, string>>({});
   const [filtro, setFiltro] = useState<Filtro>("mandar");
   const [busca, setBusca] = useState("");
   const [revisar, setRevisar] = useState(false);
@@ -121,7 +138,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
   useEffect(() => { void cargar(recarga > 0, ventana); }, [cargar, recarga, ventana]);
 
   const tiendasActivas = TIENDAS.filter((t) => activas[t] && datos?.tiendas[t]);
-  const renglones = useMemo(() => {
+  const todos = useMemo(() => {
     if (!datos || !params) return [];
     const filas = tiendasActivas.flatMap((t) => datos.tiendas[t].filas);
     const ya = new Set(filas.map((f) => claveDe(f.tienda, f.sku)));
@@ -129,6 +146,9 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
     return planear(filas.concat(extra), params, new Set(extra.map((f) => claveDe(f.tienda, f.sku))));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [datos, params, agregadas, activas]);
+  // Lo quitado no se planea, no se crea, no va al Excel ni a la IA.
+  const renglones = useMemo(() => todos.filter((r) => !quitadas.has(r.clave)), [todos, quitadas]);
+  const quitados = useMemo(() => todos.filter((r) => quitadas.has(r.clave)), [todos, quitadas]);
   const cantidad = useCallback((r: Renglon) => editadas[r.clave] ?? r.propuesta, [editadas]);
   const porTienda = useMemo(() => Object.fromEntries(tiendasActivas.map((t) => [t, totalesDe(
     renglones.filter((r) => r.tienda === t), cantidad)])) as Record<Tienda, Totales>,
@@ -151,26 +171,43 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
     }
   };
   const enVista = renglones.filter((r) => vista === "todas" || r.tienda === vista);
+  const quitadosEnVista = quitados.filter((r) => vista === "todas" || r.tienda === vista);
   const q = busca.trim().toUpperCase();
-  const visibles = enVista.filter((r) => enFiltro(r, filtro)
-    && (!q || r.sku.toUpperCase().includes(q) || (r.nombre ?? "").toUpperCase().includes(q)))
+  const visibles = (filtro === "quitados" ? quitadosEnVista : enVista.filter((r) => enFiltro(r, filtro)))
+    .filter((r) => !q || r.sku.toUpperCase().includes(q) || (r.nombre ?? "").toUpperCase().includes(q))
     // El orden NO depende de lo tecleado: si dependiera, el renglón saltaría de lugar a media captura.
-    .sort((a, b) => Number(b.agregado ?? false) - Number(a.agregado ?? false) || b.propuesta - a.propuesta
+    .sort((a, b) => Number(b.clave in reemplazoDe) - Number(a.clave in reemplazoDe)
+      || Number(b.agregado ?? false) - Number(a.agregado ?? false) || b.propuesta - a.propuesta
       || (a.aguanta ?? -1) - (b.aguanta ?? -1) || b.vv - a.vv || a.sku.localeCompare(b.sku));
 
   const fijar = (clave: string, v: string) => {
     const n = Math.max(0, Math.min(100_000, parseInt(v.replace(/[^\d]/g, ""), 10) || 0));
     setEditadas((e) => ({ ...e, [clave]: n }));
   };
-  const hayCambios = Object.keys(editadas).length > 0 || agregadas.length > 0;
+  const hayCambios = Object.keys(editadas).length > 0 || agregadas.length > 0 || quitadas.size > 0;
   const enPlan = useMemo(() => new Set(renglones.map((r) => r.clave)), [renglones]);
+  const enTodos = useMemo(() => new Set(todos.map((r) => r.clave)), [todos]);
 
+  const quitar = (r: Renglon) => {
+    setQuitadas((q) => new Set(q).add(r.clave));
+    setAviso(`Quitaste ${r.sku} de ${datos?.tiendas[r.tienda]?.nombre ?? r.tienda}. Está en «Quitados» por si lo quieres de vuelta.`);
+  };
+  const restaurar = (r: Renglon) => {
+    setQuitadas((q) => { const n = new Set(q); n.delete(r.clave); return n; });
+    setAviso(`${r.sku} regresó a la planeación.`);
+  };
   const agregar = (filas: FilaPlan[]) => {
-    setAgregadas((a) => [...a, ...filas.filter((f) => !enPlan.has(claveDe(f.tienda, f.sku)))]);
+    // Lo que se había quitado y se vuelve a pedir, se restaura.
+    setQuitadas((q) => {
+      const n = new Set(q);
+      filas.forEach((f) => n.delete(claveDe(f.tienda, f.sku)));
+      return n;
+    });
+    setAgregadas((a) => [...a, ...filas.filter((f) => !enTodos.has(claveDe(f.tienda, f.sku)))]);
     setAviso(`Agregado${filas.length > 1 ? "s" : ""}: ${filas.map((f) => f.sku).join(", ")}. Escribe cuántas piezas mandar.`);
     setFiltro("mandar");
   };
-  const agregarPorSku = async (tienda: Tienda, sku: string, cant?: number) => {
+  const agregarPorSku = async (tienda: Tienda, sku: string, cant?: number, de?: string) => {
     setAviso(`Buscando ${sku} en ${datos?.tiendas[tienda]?.nombre ?? tienda} (Mercado Libre en vivo)…`);
     const r = await fetchSesion(`${API_BASE}/api/fulfillment/crear-full/buscar?tienda=${encodeURIComponent(tienda)}`
       + `&q=${encodeURIComponent(sku)}&ventana=${ventana}`, { cache: "no-store" });
@@ -179,7 +216,30 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
     if (!f) { setAviso(`${sku} no está publicado en ${datos?.tiendas[tienda]?.nombre ?? tienda}.`); return; }
     agregar([f]);
     if (cant !== undefined) setEditadas((e) => ({ ...e, [claveDe(tienda, sku)]: cant }));
+    if (de) setReemplazoDe((m) => ({ ...m, [claveDe(tienda, sku)]: de }));
   };
+  /**
+   * Un REEMPLAZO: como vende en esa tienda, casi siempre ya es renglón de la
+   * planeación; se marca «REEMPLAZO de …» y se pone en «Por mandar» para que se le
+   * escriba cantidad. Si no estuviera, se busca y se agrega.
+   */
+  const marcarReemplazo = (tienda: Tienda, sku: string, de: string) => {
+    const clave = claveDe(tienda, sku);
+    if (!enTodos.has(clave)) { void agregarPorSku(tienda, sku, undefined, de); return; }
+    setQuitadas((q) => { const n = new Set(q); n.delete(clave); return n; });
+    setReemplazoDe((m) => ({ ...m, [clave]: de }));
+    const r = todos.find((x) => x.clave === clave);
+    setEditadas((e) => (clave in e ? e : { ...e, [clave]: r?.propuesta ?? 0 }));
+    setAviso(`${sku} entra como REEMPLAZO de ${de} (${de} no se puede surtir: no hay existencia). Escribe cuántas mandar.`);
+    setFiltro("mandar");
+  };
+  // Lo que se pidió desde Análisis.
+  useEffect(() => {
+    if (!reemplazoPedido || !datos) return;
+    marcarReemplazo(reemplazoPedido.tienda, reemplazoPedido.sku, reemplazoPedido.de);
+    onReemplazoHecho?.(reemplazoPedido.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reemplazoPedido?.id, datos]);
 
   // ── Excel, SKUs y la IA ──────────────────────────────────────────────────
   const planParaExcel = () => ({
@@ -193,7 +253,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
         sku: r.sku, nombre: r.nombre, destino: datos!.tiendas[t].destino, vv: r.vv, v7: r.v7, stock: r.stock,
         en_camino: r.en_camino, borrador: r.borrador, libre: r.libre_total, pidio: r.pidio, bodega_puede: r.bodega,
         propuesta: r.propuesta, a_mandar: cantidad(r), estado: r.estado, caja: r.caja, listing_id: r.listing_id,
-        precio: r.precio,
+        precio: r.precio, reemplazo_de: reemplazoDe[r.clave] ?? null,
       })),
     })),
     ganadores: renglones.filter((r) => r.ganador_agotado).map((r) => ({
@@ -259,13 +319,47 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
     }
   };
   const aplicarIA = (ajustes: RevisionIA["ajustes"]) => {
-    for (const a of ajustes) {
+    const validos = ajustes.filter((a) => !quitadas.has(claveDe(a.tienda, a.sku)));
+    for (const a of validos) {
       if (enPlan.has(claveDe(a.tienda, a.sku))) setEditadas((e) => ({ ...e, [claveDe(a.tienda, a.sku)]: a.cantidad }));
       else void agregarPorSku(a.tienda, a.sku, a.cantidad);
     }
-    setAviso(`${ajustes.length} ajuste${ajustes.length === 1 ? "" : "s"} de la IA aplicado${ajustes.length === 1 ? "" : "s"}.`);
+    const saltados = ajustes.length - validos.length;
+    setAviso(`${validos.length} ajuste${validos.length === 1 ? "" : "s"} de la IA aplicado${validos.length === 1 ? "" : "s"}`
+      + (saltados ? `; ${saltados} no, porque quitaste esos SKUs.` : "."));
     setFiltro("mandar");
   };
+
+  // ── Lo que se ve en Análisis · «Planeación de la semana» ─────────────────
+  // Ganadores y títulos salen de las CUATRO tiendas (no dependen de lo editado);
+  // los totales, de la planeación que se está armando.
+  const paraAnalisis = useMemo(() => (datos && params
+    ? planear(TIENDAS.filter((t) => datos.tiendas[t]).flatMap((t) => datos.tiendas[t].filas), params) : []),
+  [datos, params]);
+  const plan = useMemo<PlanAnalisis | null>(() => {
+    if (!datos) return null;
+    const nombres = Object.fromEntries(TIENDAS.map((t) => [t, datos.tiendas[t]?.nombre ?? t])) as Record<Tienda, string>;
+    const almacen = Object.fromEntries(TIENDAS.map((t) => [t, datos.tiendas[t]?.almacen ?? "almacén"])) as Record<Tienda, string>;
+    return {
+      semana: `${datos.semana.semana} · ${rangoSemana(datos.semana.lunes)}`,
+      generado: datos.generado, nombres, almacen,
+      totales: tiendasActivas.map((t) => ({ tienda: t, t: porTienda[t] })).filter((x) => x.t),
+      total,
+      ganadores: paraAnalisis.filter((r) => r.ganador_agotado).sort((a, b) => b.vv - a.vv).map((r) => ({
+        tienda: r.tienda, sku: r.sku, nombre: r.nombre, vv: r.vv, v7: r.v7, precio: r.precio, stock: r.stock,
+        url: r.url, reemplazos: r.reemplazos })),
+      titulos: paraAnalisis.filter((r) => r.alertas.includes("reciclado")).map((r) => ({
+        tienda: r.tienda, sku: r.sku, nombre: r.nombre, nombre_odoo: r.nombre_odoo, titulo_mkt: r.titulo_mkt,
+        imagen_mkt: r.imagen_mkt, url: r.url, listing_id: r.listing_id, parecido: r.parecido,
+        urgente: r.titulo_urgente })),
+      otras: alertasDe(paraAnalisis.filter((r) => r.alertas.some((a) => a !== "reciclado")), datos)
+        .filter((a) => a.tipo !== "reciclado")
+        .map((a) => ({ tienda: a.tienda_llave, sku: a.sku, tipo: a.tipo, detalle: a.detalle })),
+      borradores: datos.borradores, abiertas: datos.abiertas ?? [],
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datos, paraAnalisis, porTienda, total.a_mandar, total.pedidas, total.propuestas, activas]);
+  useEffect(() => { onPlan?.(plan); }, [plan, onPlan]);
 
   // ── Saldo ────────────────────────────────────────────────────────────────
   const full = (["Kubera", "San Corpe"] as const).map((c) => ({ c, s: stock?.full[c] }));
@@ -366,7 +460,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
 
       {agente && datos && (
         <PanelIA turnos={turnos} datos={datos} onAplicar={aplicarIA} onEnviar={(t) => void pedirIA(t)}
-                 onAgregarReemplazo={(t, s) => void agregarPorSku(t, s)}
+                 onAgregarReemplazo={(t, s, de) => marcarReemplazo(t, s, de)}
                  onNueva={() => { iaVivo.current++; setTurnos([]); }}
                  onCerrar={() => setAgente(false)} />
       )}
@@ -402,7 +496,10 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
             )}
             {datos && params && (hayCambios || JSON.stringify({ ...params, ventana_dias: 0 }) !== JSON.stringify({ ...datos.parametros, ventana_dias: 0 })) && (
               <button type="button"
-                      onClick={() => { setParams({ ...datos.parametros, ventana_dias: datos.ventana.dias }); setEditadas({}); setAgregadas([]); }}
+                      onClick={() => {
+                        setParams({ ...datos.parametros, ventana_dias: datos.ventana.dias });
+                        setEditadas({}); setAgregadas([]); setQuitadas(new Set()); setReemplazoDe({});
+                      }}
                       className="mb-0.5 inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-100">
                 <RotateCcw className="h-3.5 w-3.5" /> volver a la propuesta
               </button>
@@ -434,11 +531,13 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
               </button>
             ))}
           </div>
-          {FILTROS.map((f) => (
+          {FILTROS.filter((f) => f.k !== "quitados" || quitados.length > 0).map((f) => (
             <button key={f.k} type="button" title={f.titulo} onClick={() => setFiltro(f.k)}
                     className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold ${
                       filtro === f.k ? "border-indigo-200 bg-indigo-50 text-indigo-800" : "border-slate-200 bg-white text-slate-500"}`}>
-              {f.t}<span className="font-mono text-[11px] opacity-70">{enVista.filter((r) => enFiltro(r, f.k)).length}</span>
+              {f.t}<span className="font-mono text-[11px] opacity-70">
+                {f.k === "quitados" ? quitadosEnVista.length : enVista.filter((r) => enFiltro(r, f.k)).length}
+              </span>
             </button>
           ))}
           <label className="ml-auto flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5">
@@ -449,7 +548,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
         </div>
 
         <div className="mt-3 max-h-[70vh] overflow-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[1400px] border-collapse text-[12.5px]">
+          <table className="w-full min-w-[1440px] border-collapse text-[12.5px]">
             <thead className="sticky top-0 z-10">
               <tr className="bg-slate-50 text-left text-[10px] font-bold uppercase tracking-[.06em] text-slate-500">
                 <th className="px-3 py-2.5"><Ayuda lado="izq" texto="El SKU con el nombre de Omnicanal. Abajo, su publicación en el marketplace; «en vivo» = Mercado Libre la confirmó al armar la planeación.">SKU · producto</Ayuda></th>
@@ -465,22 +564,24 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
                 <th className="px-3 py-2.5 text-right"><Ayuda texto="Lo que conviene mandar: el menor entre lo que pidió y lo que bodega puede (0 si queda debajo del mínimo por renglón).">Propuesta</Ayuda></th>
                 <th className="px-3 py-2.5 text-right"><Ayuda lado="der" texto="Lo que se va a crear en Odoo. Cámbialo aquí; en azul lo que editaste.">A mandar</Ayuda></th>
                 <th className="px-3 py-2.5"><Ayuda lado="der" texto="Aprobado: bodega cubre lo pedido. Recorte: Odoo no alcanza, va lo que hay. Pendiente: sin dato de Odoo (no es un cero). Cubierto: ya alcanza.">Estado</Ayuda></th>
+                <th className="px-2 py-2.5"><span className="sr-only">Quitar</span></th>
               </tr>
             </thead>
             <tbody>
               {visibles.map((r) => (
-                <FilaUI key={r.clave} r={r} valor={cantidad(r)} editada={r.clave in editadas}
+                <FilaUI key={r.clave} r={r} valor={filtro === "quitados" ? 0 : cantidad(r)} editada={r.clave in editadas}
                         conTienda={vista === "todas"} nombreTienda={datos?.tiendas[r.tienda].nombre ?? r.tienda}
-                        onCambio={(v) => fijar(r.clave, v)} />
+                        quitada={filtro === "quitados"} reemplazoDe={reemplazoDe[r.clave]}
+                        onCambio={(v) => fijar(r.clave, v)} onQuitar={() => quitar(r)} onRestaurar={() => restaurar(r)} />
               ))}
               {!datos && (
-                <tr><td colSpan={13} className="px-4 py-12 text-center text-sm text-slate-500" style={{ background: FONDO_RAYADO }}>
+                <tr><td colSpan={14} className="px-4 py-12 text-center text-sm text-slate-500" style={{ background: FONDO_RAYADO }}>
                   {cargando ? "Leyendo ventas, publicaciones (verificando en vivo con Mercado Libre), envíos y lo libre en Odoo… tarda unos 25 segundos."
                             : "Sin planeación: revisa el error de arriba."}
                 </td></tr>
               )}
               {datos && visibles.length === 0 && (
-                <tr><td colSpan={13} className="px-4 py-10 text-center text-sm text-slate-500">
+                <tr><td colSpan={14} className="px-4 py-10 text-center text-sm text-slate-500">
                   {tiendasActivas.length ? "Nada en este filtro." : "Prende al menos una tienda."}
                 </td></tr>
               )}
@@ -511,11 +612,7 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
         </div>
       </Tarjeta>
 
-      {datos && params && <SalidaPrompt renglones={renglones} porTienda={porTienda} total={total} datos={datos}
-                                        tiendas={tiendasActivas} cantidad={cantidad} onCopiar={copiarSkus}
-                                        onAgregar={(t, s) => void agregarPorSku(t, s)} />}
-
-      {datos && <Pendientes datos={datos} rol={rol} />}
+      {datos && <CreadasAqui datos={datos} rol={rol} />}
 
       <p className="text-xs leading-relaxed text-slate-400">
         {datos ? `Fuente: ${datos.fuente}. Leído ${new Date(datos.generado).toLocaleString("es-MX", { timeZone: "America/Mexico_City" })}.` : ""}
@@ -538,16 +635,18 @@ export default function CrearFull({ stock, rol, recarga, onEstado }: {
 function alertasDe(renglones: Renglon[], datos: PropuestaFull | null) {
   const texto: Record<string, (r: Renglon) => string> = {
     sin_categoria: () => "la publicación no tiene categoría",
-    reciclado: (r) => `el título del marketplace («${(r.titulo_mkt ?? "").slice(0, 60)}») no se parece al producto («${(r.nombre ?? "").slice(0, 60)}»)`,
+    reciclado: (r) => `el título del marketplace («${(r.titulo_mkt ?? "").slice(0, 60)}») no se parece al de Odoo («${(r.nombre_odoo ?? r.nombre ?? "").slice(0, 60)}»)`,
     medidas: () => "caja master sospechosa: peso ≤ 0.5 kg con medidas ~60×41×41",
     cerrada_en_ml: () => "la publicación está cerrada o inactiva en Mercado Libre",
   };
-  const salida: { tienda: string; sku: string; tipo: string; detalle: string }[] = renglones.flatMap((r) => r.alertas.map((a) => ({
-    tienda: datos?.tiendas[r.tienda].nombre ?? r.tienda, sku: r.sku, tipo: a, detalle: texto[a]?.(r) ?? a })));
+  const salida: { tienda: string; tienda_llave: Tienda; sku: string; tipo: string; detalle: string }[] =
+    renglones.flatMap((r) => r.alertas.map((a) => ({
+      tienda: datos?.tiendas[r.tienda].nombre ?? r.tienda, tienda_llave: r.tienda, sku: r.sku, tipo: a,
+      detalle: texto[a]?.(r) ?? a })));
   for (const r of renglones) {
     if (r.tienda.startsWith("meli") && r.publicada && !r.verificada) {
-      salida.push({ tienda: datos?.tiendas[r.tienda].nombre ?? r.tienda, sku: r.sku, tipo: "sin_verificar",
-                    detalle: "Mercado Libre no la confirmó en vivo: el dato es del sync" });
+      salida.push({ tienda: datos?.tiendas[r.tienda].nombre ?? r.tienda, tienda_llave: r.tienda, sku: r.sku,
+                    tipo: "sin_verificar", detalle: "Mercado Libre no la confirmó en vivo: el dato es del sync" });
     }
   }
   return salida;
@@ -596,21 +695,33 @@ const ESTADO: Record<Renglon["estado"], { t: string; c: string }> = {
   cubierto: { t: "cubierto", c: "border-slate-200 bg-white text-slate-400" },
 };
 
-function FilaUI({ r, valor, editada, conTienda, nombreTienda, onCambio }: {
-  r: Renglon; valor: number; editada: boolean; conTienda: boolean; nombreTienda: string; onCambio: (v: string) => void;
+function FilaUI({ r, valor, editada, conTienda, nombreTienda, quitada, reemplazoDe, onCambio, onQuitar, onRestaurar }: {
+  r: Renglon; valor: number; editada: boolean; conTienda: boolean; nombreTienda: string; quitada: boolean;
+  reemplazoDe?: string; onCambio: (v: string) => void; onQuitar: () => void; onRestaurar: () => void;
 }) {
   const e = ESTADO[r.estado];
   const tonoAguanta = r.aguanta === null ? "text-slate-300"
     : r.aguanta < 7 ? "text-rose-700" : r.aguanta < 15 ? "text-amber-700" : "text-slate-600";
   return (
-    <tr className={`border-t border-slate-100 align-top ${valor > 0 ? "" : "bg-slate-50/40"}`}>
+    <tr className={`border-t border-slate-100 align-top ${quitada ? "opacity-60" : valor > 0 ? "" : "bg-slate-50/40"}`}>
       <td className="px-3 py-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="font-mono text-[12.5px] font-bold text-slate-900">{r.sku}</span>
           {r.stock === 0 && <span className="rounded border border-rose-200 bg-rose-50 px-1.5 text-[9.5px] font-bold uppercase text-rose-700">sin stock</span>}
           {r.ganador_agotado && <span className="rounded border border-violet-200 bg-violet-50 px-1.5 text-[9.5px] font-bold uppercase text-violet-700">ganador agotado</span>}
-          {r.agregado && <span className="rounded border border-indigo-200 bg-indigo-50 px-1.5 text-[9.5px] font-bold uppercase text-indigo-700">agregado</span>}
-          {r.alertas.includes("reciclado") && <span className="rounded border border-amber-300 bg-amber-50 px-1.5 text-[9.5px] font-bold uppercase text-amber-700" title={`Marketplace: «${r.titulo_mkt}»`}>¿reciclado?</span>}
+          {reemplazoDe && (
+            <span className="rounded bg-violet-600 px-1.5 text-[9.5px] font-extrabold uppercase text-white"
+                  title={`${reemplazoDe} no se puede surtir: no hay existencia en Odoo ni en el almacén`}>
+              reemplazo de {reemplazoDe}
+            </span>
+          )}
+          {r.agregado && !reemplazoDe && <span className="rounded border border-indigo-200 bg-indigo-50 px-1.5 text-[9.5px] font-bold uppercase text-indigo-700">agregado</span>}
+          {r.alertas.includes("reciclado") && r.titulo_urgente && (
+            <span className="rounded border border-amber-300 bg-amber-50 px-1.5 text-[9.5px] font-bold uppercase text-amber-700"
+                  title={`El título de la publicación («${r.titulo_mkt}») no se parece al de Odoo («${r.nombre_odoo}») ni al del catálogo. Compara las fotos en Análisis.`}>
+              ¿reciclado?
+            </span>
+          )}
         </div>
         <div className="max-w-[330px] truncate text-[11px] text-slate-500" title={r.nombre ?? ""}>{r.nombre ?? "—"}</div>
         <div className="flex items-center gap-1.5 text-[10.5px]">
@@ -660,7 +771,7 @@ function FilaUI({ r, valor, editada, conTienda, nombreTienda, onCambio }: {
       </td>
       <td className="px-3 py-2 text-right font-mono font-bold tabular-nums text-indigo-700">{r.propuesta ? num(r.propuesta) : "—"}</td>
       <td className="px-3 py-2 text-right">
-        <input type="text" inputMode="numeric" value={valor ? String(valor) : ""} placeholder="0"
+        <input type="text" inputMode="numeric" value={valor ? String(valor) : ""} placeholder="0" disabled={quitada}
                onChange={(ev) => onCambio(ev.target.value)}
                className={`w-20 rounded-md border px-2 py-1 text-right font-mono text-[13px] font-bold tabular-nums focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100 ${
                  editada ? "border-indigo-300 bg-indigo-50 text-indigo-900" : "border-slate-200 text-slate-900"}`} />
@@ -672,187 +783,61 @@ function FilaUI({ r, valor, editada, conTienda, nombreTienda, onCambio }: {
         <span className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-bold ${e.c}`}
               style={r.estado === "pendiente" ? { background: FONDO_RAYADO } : undefined}>{e.t}</span>
       </td>
+      <td className="px-2 py-2 text-right">
+        {quitada ? (
+          <button type="button" onClick={onRestaurar} title="Regresar este SKU a la planeación"
+                  className="inline-flex items-center gap-1 rounded-md border border-indigo-200 px-2 py-1 text-[11px] font-bold text-indigo-700 hover:bg-indigo-50">
+            <RotateCcw className="h-3.5 w-3.5" /> Restaurar
+          </button>
+        ) : (
+          <button type="button" onClick={onQuitar} title="Quitar este SKU de la planeación (se puede restaurar en «Quitados»)"
+                  aria-label={`Quitar ${r.sku}`}
+                  className="rounded-md p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-600">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
+      </td>
     </tr>
   );
 }
 
-/** B, C, D y E del prompt estándar: totales, ganadores agotados, SKUs por coma y alertas. */
-function SalidaPrompt({ renglones, porTienda, total, datos, tiendas, cantidad, onCopiar, onAgregar }: {
-  renglones: Renglon[]; porTienda: Record<Tienda, Totales>; total: Totales; datos: PropuestaFull; tiendas: Tienda[];
-  cantidad: (r: Renglon) => number; onCopiar: (t?: Tienda) => void; onAgregar: (t: Tienda, sku: string) => void;
-}) {
-  const ganadores = renglones.filter((r) => r.ganador_agotado);
-  const alertas = alertasDe(renglones, datos);
-  const pct = (n: number | null) => (n === null ? "—" : `${n}%`);
-  return (
-    <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-      <Tarjeta className="min-w-0">
-        <Ceja>B · Totales por tienda</Ceja>
-        <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200">
-          <table className="w-full min-w-[560px] text-[12px]">
-            <thead>
-              <tr className="bg-slate-50 text-left text-[10px] font-bold uppercase tracking-[.05em] text-slate-400">
-                <th className="px-3 py-2">Tienda</th>
-                <th className="px-2 py-2 text-right"><Ayuda texto="Suma de lo que pidió cada renglón (el faltante).">Pedidas</Ayuda></th>
-                <th className="px-2 py-2 text-right"><Ayuda texto="Suma de la propuesta: lo que bodega puede surtir.">Propuestas</Ayuda></th>
-                <th className="px-2 py-2 text-right"><Ayuda texto="Lo que se va a crear, con tus cambios.">A mandar</Ayuda></th>
-                <th className="px-2 py-2 text-right"><Ayuda texto="Tasa de validado del prompt: lo que bodega puede entre lo pedido, sólo de los renglones con dato de Odoo.">Validado</Ayuda></th>
-                <th className="px-2 py-2 text-right"><Ayuda lado="der" texto="Lo que se va a mandar contra lo pedido.">Final vs pedido</Ayuda></th>
-                <th className="px-3 py-2 text-right"><Ayuda lado="der" texto="Renglones sin dato de Odoo: quedan pendientes, no en cero.">Pendientes</Ayuda></th>
-              </tr>
-            </thead>
-            <tbody>
-              {tiendas.map((t) => {
-                const x = porTienda[t];
-                return (
-                  <tr key={t} className="border-t border-slate-100">
-                    <td className="px-3 py-1.5 font-semibold text-slate-700">{datos.tiendas[t].nombre}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums">{num(x?.pedidas)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums">{num(x?.propuestas)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono font-bold tabular-nums">{num(x?.a_mandar)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums">{pct(x?.tasa_validado ?? null)}</td>
-                    <td className="px-2 py-1.5 text-right font-mono tabular-nums">{pct(x?.final_vs_pedido ?? null)}</td>
-                    <td className="px-3 py-1.5 text-right font-mono tabular-nums text-slate-500">{num(x?.pendientes)}</td>
-                  </tr>
-                );
-              })}
-              <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold">
-                <td className="px-3 py-1.5">Total</td>
-                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{num(total.pedidas)}</td>
-                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{num(total.propuestas)}</td>
-                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{num(total.a_mandar)}</td>
-                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{pct(total.tasa_validado)}</td>
-                <td className="px-2 py-1.5 text-right font-mono tabular-nums">{pct(total.final_vs_pedido)}</td>
-                <td className="px-3 py-1.5 text-right font-mono tabular-nums">{num(total.pendientes)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div className="mt-4">
-          <Ceja>D · SKUs a enviar, separados por coma</Ceja>
-          <div className="mt-1.5 flex flex-col gap-1.5">
-            {tiendas.map((t) => {
-              const skus = renglones.filter((r) => r.tienda === t && cantidad(r) > 0).map((r) => r.sku);
-              return (
-                <div key={t} className="rounded-lg border border-slate-200 px-3 py-2 text-[11.5px]">
-                  <div className="flex items-center justify-between">
-                    <b className="text-slate-700">{datos.tiendas[t].nombre} · {skus.length}</b>
-                    <button type="button" onClick={() => onCopiar(t)} disabled={!skus.length}
-                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:underline disabled:opacity-40">
-                      <ClipboardCopy className="h-3 w-3" /> copiar
-                    </button>
-                  </div>
-                  <p className="mt-0.5 break-words font-mono text-slate-500">{skus.join(", ") || "—"}</p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </Tarjeta>
-
-      <div className="flex min-w-0 flex-col gap-3">
-        <Tarjeta>
-          <Ceja>C · Ganadores agotados y su reemplazo · {ganadores.length}</Ceja>
-          <p className="mt-1 text-[11.5px] text-slate-500">
-            Vendieron al menos {datos.parametros.min_ventas} en la ventana y no hay ni en Odoo ni en el almacén. Reemplazos YA
-            publicados en esa tienda con stock libre: primero el mismo modelo, luego la misma categoría.
-          </p>
-          <div className="mt-2 max-h-[300px] divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
-            {ganadores.map((g) => (
-              <div key={g.clave} className="px-3 py-2 text-[12px]">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span><span className="font-mono font-bold text-slate-800">{g.sku}</span>
-                    <span className="text-slate-400"> · {datos.tiendas[g.tienda].nombre} · vendió {num(g.vv)}</span></span>
-                </div>
-                {g.reemplazos.length ? g.reemplazos.map((x) => (
-                  <div key={x.sku} className="mt-1 flex flex-wrap items-center justify-between gap-2 pl-3">
-                    <span className="text-slate-600">→ <span className="font-mono font-semibold">{x.sku}</span>
-                      <span className="text-slate-400"> · {x.tipo} · libre {num(x.libre)} · {(x.nombre ?? "").slice(0, 40)}</span></span>
-                    <button type="button" onClick={() => onAgregar(g.tienda, x.sku)}
-                            className="rounded-md border border-indigo-200 px-2 py-0.5 text-[11px] font-bold text-indigo-700 hover:bg-indigo-50">
-                      Agregar
-                    </button>
-                  </div>
-                )) : <div className="mt-0.5 pl-3 text-[11px] text-slate-400">Sin reemplazo publicado con stock: señal de compras.</div>}
-              </div>
-            ))}
-            {ganadores.length === 0 && <p className="px-3 py-3 text-[12px] text-slate-400">Ninguno en las tiendas activas.</p>}
-          </div>
-        </Tarjeta>
-
-        <Tarjeta>
-          <Ceja>E · Alertas · {alertas.length}</Ceja>
-          <div className="mt-2 max-h-[240px] divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
-            {alertas.map((a, i) => (
-              <div key={`${a.sku}-${a.tipo}-${i}`} className="px-3 py-1.5 text-[12px]">
-                <span className="font-mono font-bold text-slate-800">{a.sku}</span>
-                <span className="text-slate-400"> · {a.tienda} · </span>
-                <span className="text-amber-800">{a.detalle}</span>
-              </div>
-            ))}
-            {alertas.length === 0 && <p className="px-3 py-3 text-[12px] text-slate-400">Sin alertas.</p>}
-          </div>
-        </Tarjeta>
-      </div>
-    </div>
-  );
-}
-
-/** Lo que ya existe en Odoo: borradores (con su guía si los creó el panel) y órdenes olvidadas. */
-function Pendientes({ datos, rol }: { datos: PropuestaFull; rol: Rol }) {
+/**
+ * Lo que se creó DESDE AQUÍ y sigue en borrador: el último paso de crear un FULL es
+ * adjuntar la guía del marketplace. Cuánto lleva cada orden sin completarse (todas,
+ * no sólo las del panel) se ve en Análisis.
+ */
+function CreadasAqui({ datos, rol }: { datos: PropuestaFull; rol: Rol }) {
   const [guia, setGuia] = useState<number | null>(null);
+  const propias = datos.borradores.filter((b) => b.panel);
+  if (!propias.length) return null;
   return (
-    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-      <Tarjeta className="min-w-0">
-        <Ceja>Borradores en Odoo · últimos 21 días</Ceja>
-        <p className="mt-1 text-[12px] text-slate-500">
-          Cotizaciones a FULL, FBA o WFS que nadie confirma todavía. Las de cada tienda ya se restan de la planeación; las de
-          PRUEBA y las «sin tienda» no.
-        </p>
-        <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
-          {datos.borradores.map((b) => (
-            <div key={b.id} className="px-3 py-2 text-[12.5px]">
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <a href={b.url} target="_blank" rel="noreferrer" className="hover:underline">
-                  <span className="font-mono font-bold text-slate-800">{b.orden}</span>
-                  <span className="text-slate-400"> · {b.kam ?? "—"} · {dia(b.creada)}{b.almacen ? ` · ${b.almacen}` : ""}</span>
-                </a>
-                <span className="flex items-center gap-1.5 text-[11.5px] font-semibold">
-                  {b.prueba && <span className="rounded bg-amber-100 px-1.5 text-[10px] font-bold text-amber-800">PRUEBA</span>}
-                  <span className={b.tienda ? "text-slate-600" : "text-amber-700"} title={b.cuenta_regla}>
-                    {num(b.piezas)} pzs · {b.skus} SKUs · {b.tienda ? datos.tiendas[b.tienda]?.nombre ?? b.tienda : "sin tienda"}
-                  </span>
-                </span>
-              </div>
-              {b.referencia && <div className="text-[11px] text-slate-400">ref «{b.referencia}»</div>}
-              {b.panel && rol === "admin" && (guia === b.id
-                ? <div className="mt-1"><GuiaOrden orden={{ id: b.id, orden: b.orden }} compacta /></div>
-                : <button type="button" onClick={() => setGuia(b.id)}
-                          className="mt-1 text-[11px] font-semibold text-indigo-600 hover:underline">Adjuntar guía del marketplace</button>)}
-            </div>
-          ))}
-          {datos.borradores.length === 0 && <p className="px-3 py-3 text-[12px] text-slate-400">Ninguno.</p>}
-        </div>
-      </Tarjeta>
-      <Tarjeta className="min-w-0">
-        <Ceja>Salidas abiertas hace más de 21 días</Ceja>
-        <p className="mt-1 text-[12px] text-slate-500">
-          No cuentan como «en camino»: son órdenes que nadie cerró y siguen reservando stock en Odoo.
-        </p>
-        <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
-          {datos.zombis.map((z) => (
-            <div key={`${z.orden}-${z.salida}`} className="flex items-baseline justify-between px-3 py-2 text-[12.5px]">
-              <span className="font-mono font-bold text-slate-800">{z.orden}
-                <span className="font-normal text-slate-400"> · {z.salida} · {datos.tiendas[z.tienda]?.nombre} · desde el {dia(z.creada)}</span>
+    <Tarjeta>
+      <Ceja>Creadas desde aquí · en borrador · {propias.length}</Ceja>
+      <p className="mt-1 text-[12px] text-slate-500">
+        Adjunta el número del envío y la guía del marketplace. Cuánto lleva cada orden sin completarse está en Análisis.
+      </p>
+      <div className="mt-2 divide-y divide-slate-100 rounded-xl border border-slate-200">
+        {propias.map((b) => (
+          <div key={b.id} className="px-3 py-2 text-[12.5px]">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <a href={b.url} target="_blank" rel="noreferrer" className="hover:underline">
+                <span className="font-mono font-bold text-slate-800">{b.orden}</span>
+                <span className="text-slate-400"> · {b.tienda ? datos.tiendas[b.tienda]?.nombre : "sin tienda"}
+                  {b.almacen ? ` · ${b.almacen}` : ""} · {num(b.piezas)} pzs</span>
+              </a>
+              <span className="flex items-center gap-1.5 text-[11.5px]">
+                {b.prueba && <span className="rounded bg-amber-100 px-1.5 text-[10px] font-bold text-amber-800">PRUEBA</span>}
+                {b.referencia && <span className="text-slate-400">ref «{b.referencia}»</span>}
               </span>
-              <span className="text-[11.5px] font-semibold text-amber-700">{num(z.piezas)} pzs</span>
             </div>
-          ))}
-          {datos.zombis.length === 0 && <p className="px-3 py-3 text-[12px] text-slate-400">Ninguna.</p>}
-        </div>
-      </Tarjeta>
-    </div>
+            {rol === "admin" && (guia === b.id
+              ? <div className="mt-1"><GuiaOrden orden={{ id: b.id, orden: b.orden }} compacta /></div>
+              : <button type="button" onClick={() => setGuia(b.id)}
+                        className="mt-1 text-[11px] font-semibold text-indigo-600 hover:underline">Adjuntar guía del marketplace</button>)}
+          </div>
+        ))}
+      </div>
+    </Tarjeta>
   );
 }
 

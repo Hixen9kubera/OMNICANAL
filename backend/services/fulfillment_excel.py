@@ -28,7 +28,7 @@ COLUMNAS = [
     ("en_camino", "En camino", 10), ("borrador", "En borradores", 12), ("libre", "Libre Odoo", 11),
     ("pidio", "Pidió (faltante)", 13), ("bodega_puede", "Bodega puede", 12), ("propuesta", "Propuesta", 11),
     ("a_mandar", "A mandar", 10), ("estado", "Estado", 12), ("caja", "Piezas por caja", 12),
-    ("listing_id", "Publicación", 16),
+    ("listing_id", "Publicación", 16), ("reemplazo_de", "Reemplazo de", 16),
 ]
 
 

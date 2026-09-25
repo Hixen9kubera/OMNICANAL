@@ -1001,6 +1001,54 @@ cerrados devuelven `category_id.not_modifiable`).
   placeholders). El `client_secret` expuesto conocido vive en el repo externo
   `publicador` — su rotación sigue pendiente allá.
 
+### v0.570.0 — Crear FULL sólo para crear; la planeación se analiza en Análisis (ganadores con su reemplazo, títulos contra Odoo con fotos, órdenes sin completar)
+
+Brandon, 24-sep: *"me debes de dar la opción de poder borrar un SKU… me sirven sólo la B, los ganadores y su reemplazo;
+su reemplazo debe ser el que sigue con ventas, especificar que es REEMPLAZO, es decir que no se puede surtir porque no
+hay stock en existencia; las alertas son más como productos que en su título de ML no se parece a Odoo y sus imágenes de
+comparación, y las 2 últimas serán para indicar cuánto tiempo lleva sin completarse una orden"*. Y enseguida: *"todos
+los puntos se pasan a Análisis y se deja la pestaña de Crear FULL ÚNICAMENTE PARA CREAR FULLS"*.
+
+**Crear FULL queda para crear.** Tiendas, saldo, parámetros, buscar SKUs, la tabla, el agente de IA, Excel y «Revisar
+y crear». Debajo de la tabla ya no hay salida del prompt (B, C, D, E) ni borradores. Sólo aparecen las órdenes
+**creadas desde aquí** que siguen en borrador, para adjuntar su guía (el último paso de crear un FULL).
+- **Quitar un SKU**: cada renglón tiene su botón. Lo quitado no se planea, no va a la IA, al Excel ni a Odoo, y
+  queda en el filtro «Quitados» para restaurarlo. «Volver a la propuesta» lo restaura todo, y buscarlo de nuevo también.
+- **Un reemplazo entra marcado «REEMPLAZO de …»** (desde Análisis o desde el agente), arriba de «Por mandar»,
+  con la explicación de que el otro no se puede surtir. El Excel lleva la columna «Reemplazo de».
+- La etiqueta «¿reciclado?» de la tabla sólo sale en los títulos urgentes (abajo). La lista completa está en Análisis.
+- **Crear FULL se queda montado** aunque se cambie de pantalla (page.tsx lo oculta, no lo desmonta): lo editado,
+  lo quitado y la conversación con la IA ya no se pierden al ir a Envíos o Análisis y volver.
+
+**Análisis tiene dos vistas**: «Enviado vs recibido» (la de siempre, por semana) y **«Planeación de la semana»**,
+con los filtros de canal y cuenta:
+- **B · Totales por tienda** de la planeación que se está armando en Crear FULL, con lo editado.
+- **Ganadores sin existencia y su REEMPLAZO.** El ganador vendió pero **no se puede surtir**: 0 libres en Odoo y 0 en
+  el almacén. El reemplazo es el **siguiente que SÍ vende en esa tienda y SÍ tiene libre en Odoo**: primero el mismo
+  modelo y luego la misma categoría, el que más vende primero (`reemplazos_para` ahora exige ventas; antes ordenaba
+  sólo por libre). Se ven primero los que tienen reemplazo (22 el 24-sep) y aparte los que no (143, señal de
+  compras). «Agregar a Crear FULL» lo marca allá como reemplazo.
+- **Títulos que no coinciden: marketplace contra ODOO, con las dos fotos.** Antes se comparaba contra el nombre de
+  Omnicanal; ahora contra Odoo, que es el producto físico. La foto del marketplace viene de la verificación en vivo
+  de ML (`thumbnail` en https y tamaño completo; `secure_thumbnail` no lo manda `/items?ids=`). La de Odoo es su
+  `image_128`, pedida aparte (`GET /crear-full/imagenes`, hasta 60 SKUs por tanda). La comparación usa **raíces**
+  (flores/flor, masajeador/masaje). Con palabras exactas marcaba 120, casi todos el mismo producto dicho distinto
+  (Odoo trae nombres del proveedor, a veces en inglés); con raíces, 72. Van en dos grupos: **«Revisar primero»**
+  (11: tampoco se parecen al nombre del catálogo) y **«Probablemente sólo cambia la redacción»** (61). Nada se
+  esconde, porque hay errores reales en los dos: `TEC-1013-NEG` es «micrófonos» en ML y en el catálogo, y «cámara
+  endoscópica» en Odoo. Las demás alertas (caja sospechosa, sin categoría, cerrada) van plegadas.
+- **Órdenes sin completar, con cuánto llevan.** «Borradores sin confirmar» (ahora hasta 90 días; sólo los de 21 o
+  menos se restan de la planeación, `se_resta`) y **«Salidas sin validar»**, todas y no sólo las olvidadas
+  (`salidas_abiertas`). La más vieja primero, en rojo las de más de 21 días. El 24-sep: S25795 lleva 168 días y
+  S26441, 157.
+
+**Verificado con datos reales** (API local de sólo lectura): quitar y restaurar mueven la barra (3,744 → 3,447 →
+3,744); lo quitado sobrevive al cambio de pantalla; en Análisis cargan las 72 fotos de ML y las 72 de Odoo; agregar
+el reemplazo de `CAM-0030-IND` (`CAM-0030-MAT`, mismo modelo, vendió 78, 91 libres) lo deja en Crear FULL marcado
+y arriba. 49 pruebas de fulfillment (reemplazo que vende, borrador viejo que no se resta, salidas con su edad,
+título contra Odoo con foto, raíces, fotos de Odoo); suite completa en verde; `tsc` y `next build` limpios; móvil
+a 390 px sin scroll lateral.
+
 ### v0.569.0 — La 0058 sin ON DELETE CASCADE, antes de llegar a producción
 
 Decisión de Eduardo (24-sep-2026), tras la revisión de la 0058
